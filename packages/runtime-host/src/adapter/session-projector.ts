@@ -483,6 +483,9 @@ export class RuntimeHostSessionProjector {
         recoverable: false,
         reason: root.failureClass,
         message: root.failureMessage ?? `Turn failed: ${root.failureClass}`,
+        ...(root.contextBudgetExhaustedDetail
+          ? { details: { contextBudgetExhaustedDetail: root.contextBudgetExhaustedDetail } }
+          : {}),
       });
     } else {
       events.push({

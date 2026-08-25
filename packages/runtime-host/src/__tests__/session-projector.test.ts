@@ -270,6 +270,46 @@ test('reseeds the latest provider retry when the active Turn still carries one',
   assert.equal(seeded[0] && 'phase' in seeded[0] ? seeded[0].phase : undefined, 'scheduled');
 });
 
+test('projects structured context-budget failure detail to the Desktop event', () => {
+  const projector = new RuntimeHostSessionProjector(
+    snapshot(),
+    createRuntimeHostSessionProjectionSeed([], snapshot()),
+    () => 10,
+  );
+
+  const events = projector.accept({
+    kind: 'subscription.session_projection',
+    hostEpoch: 'host-1',
+    subscriptionId: 'subscription-1',
+    sequence: 1,
+    snapshot: snapshot({
+      projectionRevision: 2,
+      rootTurn: {
+        sessionId: 'session-1',
+        turnId: 'turn-1',
+        runId: 'run-1',
+        status: 'failed',
+        terminalEventId: 'terminal-1',
+        failureClass: 'context_budget_exhausted',
+        contextBudgetExhaustedDetail: 'malformed_summary_missing_section',
+      },
+    }),
+  }).events;
+
+  assert.deepEqual(events, [
+    {
+      type: 'error',
+      id: 'terminal-1',
+      turnId: 'turn-1',
+      ts: 10,
+      recoverable: false,
+      reason: 'context_budget_exhausted',
+      message: 'Turn failed: context_budget_exhausted',
+      details: { contextBudgetExhaustedDetail: 'malformed_summary_missing_section' },
+    },
+  ]);
+});
+
 test('emits a live provider retry when the snapshot overlay appears, then drops it after content', () => {
   const projector = new RuntimeHostSessionProjector(
     snapshot(),

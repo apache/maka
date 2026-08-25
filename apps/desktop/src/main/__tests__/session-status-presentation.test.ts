@@ -50,6 +50,19 @@ describe('failed turn recovery presentation', () => {
     );
   });
 
+  it('offers configuration or task recovery after runtime context exhaustion', () => {
+    assert.deepEqual(
+      deriveFailedTurnRecovery(
+        { ...outputFreeFailure, errorClass: 'context_budget_exhausted' },
+        'zh',
+      ),
+      {
+        action: 'check_connection',
+        label: '检查模型的上下文窗口设置、切换模型，或开启新任务',
+      },
+    );
+  });
+
   it('keeps the generic retry fallback for an unknown output-free failure', () => {
     assert.deepEqual(
       deriveFailedTurnRecovery({ ...outputFreeFailure, errorClass: 'unknown_failure' }, 'en'),

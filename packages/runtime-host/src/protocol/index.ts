@@ -97,6 +97,8 @@ export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 55 as const;
 // principal, closing pairing-finalize races that credential-by-ID revocation cannot.
 // 54: Client-bound pairing candidates restrict pre-claim authority and bind
 // their durable credential to the claiming Client identity.
+// 54: Failed Turn snapshots preserve the structured context-budget exhaustion
+// detail. Epoch-53 peers reject the optional field on the closed snapshot shape.
 // 53: Message admission answers `turn.message.submit` with an explicit
 // disposition, and queued Messages can be proven cancelled. Older peers read the
 // answer as a bare acknowledgement and cannot reconcile their own projection.

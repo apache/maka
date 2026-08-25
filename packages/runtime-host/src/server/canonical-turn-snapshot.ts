@@ -18,7 +18,7 @@
  */
 
 import type { AgentRunHeader } from '@maka/core/agent-run';
-import type { ContextCompactionOutcome } from '@maka/core/events';
+import type { ContextBudgetExhaustedDetail, ContextCompactionOutcome } from '@maka/core/events';
 import { truncateUtf8 } from '@maka/core/diagnostic-log';
 import { redactSecrets } from '@maka/core/redaction';
 import { classifyTerminalRuntimeLedger } from '@maka/runtime/terminal-run-commit';
@@ -78,6 +78,9 @@ export async function readCanonicalTurnSnapshot(
               '…',
             )
           : undefined;
+      const contextBudgetExhaustedDetail = readContextBudgetExhaustedDetail(
+        fact.terminalEvent.actions?.stateDelta?.contextBudgetExhaustedDetail,
+      );
       return {
         sessionId,
         turnId,
@@ -86,6 +89,7 @@ export async function readCanonicalTurnSnapshot(
         terminalEventId: fact.terminalEvent.id,
         failureClass: fact.failureClass,
         ...(failureMessage ? { failureMessage } : {}),
+        ...(contextBudgetExhaustedDetail ? { contextBudgetExhaustedDetail } : {}),
       };
     }
     if (!fact.abortSource) throw new Error('Cancelled terminal fact has no abort source');
@@ -108,6 +112,22 @@ export async function readCanonicalTurnSnapshot(
     throw new Error('Non-created Run has no durable start fact');
   }
   return { sessionId, turnId, runId, status: run.status };
+}
+
+function readContextBudgetExhaustedDetail(
+  value: unknown,
+): ContextBudgetExhaustedDetail | undefined {
+  if (
+    value === 'no_safe_completed_span' ||
+    value === 'summarizer_failed' ||
+    value === 'malformed_summary_missing_section' ||
+    value === 'malformed_summary_truncated' ||
+    value === 'malformed_summary_too_small_for_fold' ||
+    value === 'head_anchor_exceeds_capacity'
+  ) {
+    return value;
+  }
+  return undefined;
 }
 
 function readContextCompactionOutcome(value: unknown): ContextCompactionOutcome | undefined {

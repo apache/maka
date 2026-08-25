@@ -21,6 +21,7 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
 import { describeSessionErrorReason } from '../../renderer/session-error-presentation.js';
+import { sessionEventErrorMessage } from '../../renderer/model-connection-errors.js';
 import { deriveFailedTurnRecovery, describeTurnErrorClass } from '../../renderer/session-status-presentation.js';
 
 describe('provider capacity presentation', () => {
@@ -39,5 +40,23 @@ describe('provider capacity presentation', () => {
     assert.equal(recovery.action, 'retry');
     assert.match(recovery.label, /等待几分钟|切换模型/);
     assert.doesNotMatch(recovery.label, /直接重试/);
+  });
+});
+
+describe('context compaction failure presentation', () => {
+  it('shows actionable malformed-summary guidance', () => {
+    const message = sessionEventErrorMessage({
+      type: 'error',
+      id: 'error-1',
+      turnId: 'turn-1',
+      ts: 1,
+      recoverable: false,
+      reason: 'context_budget_exhausted',
+      message: 'Turn failed: context_budget_exhausted',
+      details: { contextBudgetExhaustedDetail: 'malformed_summary_missing_section' },
+    });
+
+    assert.match(message, /上下文压缩/);
+    assert.match(message, /上下文窗口设置|切换模型|开启新任务/);
   });
 });

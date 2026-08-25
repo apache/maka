@@ -25,7 +25,10 @@ import {
 } from './history-compact-summary-validation.js';
 import { toolResultOutput } from './tool-result-output.js';
 import type { HistoryCompactSummaryInput } from './ai-sdk-compaction-contract.js';
-import { HistoryCompactSummarizerError } from './history-compact-error.js';
+import {
+  HistoryCompactSummarizerError,
+  isMalformedHistoryCompactSummaryReason,
+} from './history-compact-error.js';
 import { isTextHistoryCompactCheckpoint } from './history-compact-checkpoint.js';
 import { fitHistoryCompactMessages } from './history-compact-input-fit.js';
 import type { AiSdkUsageLike } from './model-adapter.js';
@@ -75,6 +78,16 @@ const SUMMARIZATION_SYSTEM_PROMPT = [
   'Keep each section concise. Preserve exact file paths, function names, commands, and error messages.',
 ].join('\n');
 
+function repairSummarizationSystemPrompt(reason: string): string {
+  return [
+    SUMMARIZATION_SYSTEM_PROMPT,
+    '',
+    `A prior attempt was rejected as ${reason}.`,
+    'Produce one complete replacement summary from the source conversation.',
+    'Every required section must appear in order with substantive content. Do not discuss the repair.',
+  ].join('\n');
+}
+
 export function buildLlmHistorySummarizer(options: BuildLlmHistorySummarizerOptions) {
   return async (input: HistoryCompactSummaryInput): Promise<string | undefined> => {
     const previousCheckpoint =
@@ -100,7 +113,7 @@ export function buildLlmHistorySummarizer(options: BuildLlmHistorySummarizerOpti
           ],
         });
       }
-      const messages = fitHistoryCompactMessages(projectedMessages, {
+      const initialMessages = fitHistoryCompactMessages(projectedMessages, {
         maxInputEstimatedTokens: input.inputBudget?.maxEstimatedTokens,
         charsPerToken: input.inputBudget?.charsPerToken,
         fixedInputChars: SUMMARIZATION_SYSTEM_PROMPT.length,
@@ -119,26 +132,51 @@ export function buildLlmHistorySummarizer(options: BuildLlmHistorySummarizerOpti
             ...(input.abortSignal ? { abortSignal: input.abortSignal } : {}),
           })
         : options.resolveModel();
-      const result = await generateText({
-        model,
-        instructions: SUMMARIZATION_SYSTEM_PROMPT,
-        messages,
-        ...(options.providerOptions !== undefined
-          ? { providerOptions: options.providerOptions }
-          : {}),
-        ...(input.abortSignal ? { abortSignal: input.abortSignal } : {}),
-      });
-      if (rawFinishReasonString(result.finishReason) === 'length') {
-        throw new HistoryCompactSummarizerError('output_length');
+      const generateSummary = async (
+        step: number,
+        instructions: string,
+        messages: ModelMessage[],
+      ) => {
+        providerRequestTracker?.setStep(step);
+        const result = await generateText({
+          model,
+          instructions,
+          messages,
+          ...(options.providerOptions !== undefined
+            ? { providerOptions: options.providerOptions }
+            : {}),
+          ...(input.abortSignal ? { abortSignal: input.abortSignal } : {}),
+        });
+        if (rawFinishReasonString(result.finishReason) === 'length') {
+          throw new HistoryCompactSummarizerError('output_length');
+        }
+        const defect = findCheckpointSummaryDefect(result.text, {
+          coveredRuntimeEvents: input.source.foldedRuntimeEvents,
+          ...(input.inputBudget?.charsPerToken !== undefined
+            ? { charsPerToken: input.inputBudget.charsPerToken }
+            : {}),
+        });
+        return { text: result.text, defect };
+      };
+
+      const initial = await generateSummary(0, SUMMARIZATION_SYSTEM_PROMPT, initialMessages);
+      if (!initial.defect) return initial.text;
+      if (!isMalformedHistoryCompactSummaryReason(initial.defect)) {
+        throw new HistoryCompactSummarizerError(initial.defect);
       }
-      const defect = findCheckpointSummaryDefect(result.text, {
-        coveredRuntimeEvents: input.source.foldedRuntimeEvents,
-        ...(input.inputBudget?.charsPerToken !== undefined
-          ? { charsPerToken: input.inputBudget.charsPerToken }
-          : {}),
+
+      // A malformed provider completion is often repairable, but retries must
+      // be bounded: one stricter attempt, then the caller's failure circuit
+      // records the stable defect for this compaction input.
+      const repairInstructions = repairSummarizationSystemPrompt(initial.defect);
+      const repairMessages = fitHistoryCompactMessages(projectedMessages, {
+        maxInputEstimatedTokens: input.inputBudget?.maxEstimatedTokens,
+        charsPerToken: input.inputBudget?.charsPerToken,
+        fixedInputChars: repairInstructions.length,
       });
-      if (defect) throw new HistoryCompactSummarizerError(defect);
-      return result.text;
+      const repaired = await generateSummary(1, repairInstructions, repairMessages);
+      if (repaired.defect) throw new HistoryCompactSummarizerError(repaired.defect);
+      return repaired.text;
     } catch (error) {
       if (error instanceof HistoryCompactSummarizerError) throw error;
       throw new HistoryCompactSummarizerError('provider_error', { cause: error });

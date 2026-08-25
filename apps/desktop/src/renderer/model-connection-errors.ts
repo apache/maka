@@ -60,6 +60,13 @@ export function sessionEventErrorMessage(
   if (isNoRealConnectionEvent(event)) {
     return noRealConnectionSetupDescription(noRealConnectionReasonFromEvent(event), locale);
   }
+  const contextBudgetDetail =
+    event.details && !Array.isArray(event.details)
+      ? event.details.contextBudgetExhaustedDetail
+      : undefined;
+  if (typeof contextBudgetDetail === 'string' && contextBudgetDetail.startsWith('malformed_summary_')) {
+    return getDesktopConversationCopy(locale).turnError.malformedSummary;
+  }
   const reasonDescription = describeSessionErrorReason(event.reason, locale);
   if (reasonDescription) return reasonDescription;
   const fallback = getDesktopConversationCopy(locale).actions.conversationErrorFallback;

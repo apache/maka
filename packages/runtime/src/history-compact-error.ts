@@ -26,6 +26,21 @@ export type HistoryCompactSummarizerFailureReason =
   | 'malformed_summary_truncated'
   | 'malformed_summary_too_small_for_fold';
 
+export type MalformedHistoryCompactSummaryReason = Extract<
+  HistoryCompactSummarizerFailureReason,
+  `malformed_summary_${string}`
+>;
+
+export function isMalformedHistoryCompactSummaryReason(
+  reason: string,
+): reason is MalformedHistoryCompactSummaryReason {
+  return (
+    reason === 'malformed_summary_missing_section' ||
+    reason === 'malformed_summary_truncated' ||
+    reason === 'malformed_summary_too_small_for_fold'
+  );
+}
+
 export class HistoryCompactSummarizerError extends Error {
   constructor(
     readonly reason: HistoryCompactSummarizerFailureReason,

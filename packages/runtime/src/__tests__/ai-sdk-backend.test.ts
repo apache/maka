@@ -5336,6 +5336,85 @@ describe('AiSdkBackend model history', () => {
     });
   });
 
+  test('does not redispatch an unchanged malformed compaction input', async () => {
+    let calls = 0;
+    const backend = createTestAiSdkBackend({
+      sessionId: 'session-1',
+      header: header(),
+      appendMessage: async () => {},
+      connection: connection(),
+      apiKey: 'sk-test',
+      modelId: 'mock-model-id',
+      modelFactory: () => completionModel(),
+      tools: [],
+      newId: idGenerator(),
+      now: monotonicClock(),
+      contextBudget: {
+        name: 'malformed-summary-circuit-test',
+        maxHistoryEstimatedTokens: 10_000,
+        charsPerToken: 1,
+        historyCompact: { enabled: true },
+      },
+      summarizeHistoryCompact: async () => {
+        calls += 1;
+        throw new HistoryCompactSummarizerError('malformed_summary_missing_section');
+      },
+      recordHistoryCompactCheckpoint: () => {
+        throw new Error('must not persist');
+      },
+    });
+    const history = [
+      runtimeTextEvent({
+        id: 'circuit-old',
+        turnId: 'old',
+        role: 'user',
+        author: 'user',
+        text: 'old '.repeat(100),
+      }),
+      runtimeTextEvent({
+        id: 'circuit-recent',
+        turnId: 'recent',
+        role: 'model',
+        author: 'agent',
+        text: 'recent',
+      }),
+    ];
+
+    const first = await backend.compactHistory({
+      turnId: 'turn-compact-1',
+      runId: 'run-1',
+      runtimeContext: history,
+    });
+    const repeated = await backend.compactHistory({
+      turnId: 'turn-compact-2',
+      runId: 'run-2',
+      runtimeContext: history,
+    });
+
+    assert.equal(calls, 1);
+    assert.deepEqual(first.outcome, {
+      kind: 'failed',
+      reason: 'malformed_summary_missing_section',
+    });
+    assert.deepEqual(repeated.outcome, first.outcome);
+
+    await backend.compactHistory({
+      turnId: 'turn-compact-3',
+      runId: 'run-3',
+      runtimeContext: [
+        ...history,
+        runtimeTextEvent({
+          id: 'circuit-changed',
+          turnId: 'changed',
+          role: 'user',
+          author: 'user',
+          text: 'new source history',
+        }),
+      ],
+    });
+    assert.equal(calls, 2, 'changed source fingerprint is eligible again');
+  });
+
   test('manual compactHistory is a no-op when context budget is disabled', async () => {
     const backend = createTestAiSdkBackend({
       sessionId: 'session-1',

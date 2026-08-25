@@ -1198,6 +1198,9 @@ export type ContextCompactionOutcome =
 export type ContextBudgetExhaustedDetail =
   | 'no_safe_completed_span'
   | 'summarizer_failed'
+  | 'malformed_summary_missing_section'
+  | 'malformed_summary_truncated'
+  | 'malformed_summary_too_small_for_fold'
   | 'head_anchor_exceeds_capacity';
 
 export type CompleteStopReason = CompleteEvent['stopReason'];

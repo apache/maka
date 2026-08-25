@@ -282,6 +282,7 @@ import {
   projectHistoryCompactCheckpointReplay,
   type HistoryCompactCheckpoint,
 } from './history-compact-checkpoint.js';
+import { isMalformedHistoryCompactSummaryReason } from './history-compact-error.js';
 import { resolveSelectedModelContextWindow } from './context-budget-policy.js';
 export {
   DEFAULT_PERMISSION_TIMEOUT_MS,
@@ -3625,7 +3626,9 @@ export class AiSdkBackend implements AgentBackend {
         compactionFailure =
           compactResult.outcome.reason === 'no_safe_completed_span'
             ? 'no_safe_completed_span'
-            : 'summarizer_failed';
+            : isMalformedHistoryCompactSummaryReason(compactResult.outcome.reason)
+              ? compactResult.outcome.reason
+              : 'summarizer_failed';
       }
       contextBudgetDiagnostic = mergeContextBudgetDiagnostic(
         contextBudgetDiagnostic ??

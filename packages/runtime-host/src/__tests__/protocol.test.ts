@@ -189,6 +189,10 @@ describe('Runtime Host bootstrap protocol', () => {
     assert.ok(RUNTIME_HOST_COMPATIBILITY_EPOCH > 47);
   });
 
+  test('publishes a new compatibility epoch for context-budget failure detail', () => {
+    assert.ok(RUNTIME_HOST_COMPATIBILITY_EPOCH > 48);
+  });
+
   test('adds credential rotation without changing existing credential inputs', () => {
     const issueInput = {
       principalKind: 'remote_owner',
@@ -1686,6 +1690,15 @@ describe('Runtime Host bootstrap protocol', () => {
     };
 
     assert.deepEqual(decodeHostFrame(response), response);
+    const withContextDetail = {
+      ...response,
+      result: {
+        ...response.result,
+        failureClass: 'context_budget_exhausted',
+        contextBudgetExhaustedDetail: 'malformed_summary_missing_section' as const,
+      },
+    };
+    assert.deepEqual(decodeHostFrame(withContextDetail), withContextDetail);
     assert.throws(
       () =>
         decodeHostFrame({

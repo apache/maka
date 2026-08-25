@@ -180,5 +180,8 @@ export function deriveFailedTurnRecovery(input: FailedTurnRecoveryInput, locale:
   if (lower === 'context_overflow') {
     return { action: 'continue', label: copy.contextOverflow };
   }
+  if (lower === 'context_budget_exhausted') {
+    return { action: 'check_connection', label: copy.contextBudgetExhausted };
+  }
   return { action: 'retry', label: copy.retry };
 }
