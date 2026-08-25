@@ -17,7 +17,6 @@
  * under the License.
  */
 
-(feat(cli): responsive priority-based status line for narrow terminals (#3421))
 import { Markdown, visibleWidth } from '@earendil-works/pi-tui';
 import type {
   ProviderRetryEvent,
@@ -1417,17 +1416,17 @@ export function renderMakaPiStatusLine(metadata: MakaPiTranscriptMetadata, width
     const pct = Math.round((used / metadata.modelContextWindow) * 100);
     // #1064: color warning — yellow >80%, red >95%, dim otherwise.
     const ctxColor = pct > 95 ? ansi.red : pct > 80 ? ansi.yellow : ansi.dim;
-    parts.push(
-      ctxColor(
+    parts.push({
+      text: ctxColor(
         `ctx ${formatTokenCount(used)}/${formatTokenCount(metadata.modelContextWindow)} ${pct}%`,
       ),
-    );
+    });
   } else if (metadata.modelContextWindow !== undefined) {
     // #3371: the window is known but no usage has arrived yet (fresh session,
     // or the provider doesn't report per-step input tokens). Degrade
     // explicitly, pi-style, instead of hiding the segment silently — the user
     // can then tell "not measured yet" apart from "window unknown".
-    parts.push(ansi.dim(`ctx ?/${formatTokenCount(metadata.modelContextWindow)}`));
+    parts.push({ text: ansi.dim(`ctx ?/${formatTokenCount(metadata.modelContextWindow)}`) });
   }
   if (usage) {
     if (usage.costUsd > 0) {
@@ -1470,7 +1469,7 @@ function fitStatusLine(segments: MakaPiStatusLineSegment[], sep: string, width: 
   let kept = segments;
   // Drop whole low-value segments, lowest rank first, re-checking after each
   // rank so the fewest possible segments are sacrificed.
-  for (let rank = 0; lineWidth(kept) > width; rank++) {
+  while (lineWidth(kept) > width) {
     const droppable = kept.some((segment) => segment.dropRank !== undefined);
     if (!droppable) break;
     const lowest = Math.min(

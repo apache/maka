@@ -242,6 +242,8 @@ describe('Maka Pi TUI transcript', () => {
       ),
       /ctx 20k\/500k 4%/,
     );
+  });
+
   test('status line drops whole low-value segments on overflow, lowest rank first (#3421)', () => {
     const richMeta = {
       ...meta(),
