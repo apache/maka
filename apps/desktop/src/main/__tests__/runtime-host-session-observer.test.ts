@@ -28,7 +28,10 @@ import {
   type SessionTranscriptPage,
   type SubscriptionFrame,
 } from "@maka/runtime-host/protocol";
-import { RuntimeHostSubscriptionError } from "@maka/runtime-host/client";
+import {
+  RuntimeHostOperationError,
+  RuntimeHostSubscriptionError,
+} from "@maka/runtime-host/client";
 import type { DesktopRuntimeHostSession } from "../runtime-host-client.js";
 import {
   DESKTOP_TRANSCRIPT_FRAGMENT_MAX_BYTES,
@@ -1619,6 +1622,66 @@ test("reopens an evicted active subscription without a renderer resubscribe", as
   );
 
   await observer.unobserve("observer-1");
+  await observer.close();
+});
+
+test("recovers when transcript paging loses the active subscription", async () => {
+  const firstEvents = new AsyncFrameQueue();
+  const secondEvents = new AsyncFrameQueue();
+  const target = eventTarget(12);
+  let openCount = 0;
+  const observer = new RuntimeHostSessionObserver({
+    client: {
+      openSession: async () => {
+        openCount += 1;
+        const first = openCount === 1;
+        const events = first ? firstEvents : secondEvents;
+        return runtimeHostSessionFixture({
+          snapshot: continuitySnapshot(),
+          transcript: Promise.resolve([]),
+          events,
+          loadTranscriptPage: async () => {
+            if (first) {
+              throw new RuntimeHostOperationError(
+                "session.transcript.page",
+                "not_found",
+                "Session subscription was not found",
+              );
+            }
+            return {
+              kind: "page",
+              sessionId: "session-1",
+              source: "durable",
+              direction: "newer",
+              throughSequence: 0,
+              rawBytes: 0,
+              fragments: [],
+              nextCursor: null,
+            };
+          },
+          async close() {
+            events.end();
+          },
+        });
+      },
+    },
+    emitSessionsChanged() {},
+  });
+
+  await observer.observe("session-1", "observer-1", target);
+  firstEvents.push({
+    kind: "subscription.transcript_advanced",
+    hostEpoch: "host-1",
+    subscriptionId: "subscription-session-1",
+    sessionId: "session-1",
+    sequence: 1,
+    throughSequence: 0,
+  });
+  await waitFor(() => openCount === 2);
+
+  secondEvents.push(deltaFrame(1, 0, "recovered"));
+  await waitFor(() => target.events.some((event) => event.type === "text_delta"));
+  assert.equal(target.events.some((event) => event.type === "error"), false);
   await observer.close();
 });
 
