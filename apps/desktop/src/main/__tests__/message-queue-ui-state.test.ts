@@ -35,7 +35,7 @@ test('queue_update events drive the independent desktop queue projection', () =>
     setLiveTurnBySession: controller.setLiveTurnBySession,
     setInteractionBySession: controller.setInteractionBySession,
     setMessageQueueBySession: controller.setMessageQueueBySession,
-    projectTransientMessage: (_sessionId, message) => transientMessages.push(message),
+    projectQueuedTransientMessages: (_sessionId, messages) => transientMessages.push(...messages),
     removeTransientMessage: (_sessionId, messageId) =>
       removedTransientMessageIds.push(messageId),
     showModelSetupToast() {},
@@ -88,7 +88,8 @@ test('queue_update events drive the independent desktop queue projection', () =>
     {
       type: 'user',
       id: 'message-steer',
-      turnId: 'message-steer',
+      turnId: 'turn-1',
+      transientPlacement: 'current_turn',
       ts: 1,
       text: 'adjust this run',
     },
@@ -96,6 +97,7 @@ test('queue_update events drive the independent desktop queue projection', () =>
       type: 'user',
       id: 'message-next',
       turnId: 'message-next',
+      transientPlacement: 'next_turn',
       ts: 1,
       text: 'do this next',
     },

@@ -143,6 +143,42 @@ describe('single live-turn handoff', () => {
     assert.equal((markup.match(/data-virtual-turn-id="turn-1"/g) ?? []).length, 1);
   });
 
+  it('keeps an unresolved root transient before a live Turn that arrived before IPC settled', () => {
+    const markup = renderWithLocale(createElement(ChatView, {
+      activeSession: {
+        id: 'session-1', name: 'pending', lastMessageAt: 1, status: 'running', backend: 'ai-sdk',
+        labels: [], isFlagged: false, isArchived: false, hasUnread: false,
+        llmConnectionSlug: 'conn', connectionLocked: false, model: 'model', permissionMode: 'ask',
+      },
+      messages: [],
+      transientMessages: [
+        {
+          type: 'user', id: 'message-1', turnId: 'message-1', ts: 1, text: 'send now',
+          transientPlacement: 'turn_source',
+        },
+        {
+          type: 'user', id: 'message-next', turnId: 'message-next', ts: 2, text: 'do this next',
+          transientPlacement: 'next_turn',
+        },
+      ],
+      scrollBehavior: 'smooth',
+      liveTurn: {
+        turnId: 'host-turn',
+        phase: 'streamed',
+        steps: [{
+          stepId: 'assistant-1',
+          text: { text: 'live answer', truncated: false, complete: false },
+          tools: [],
+        }],
+      },
+      onNew() {},
+    } satisfies Parameters<typeof ChatView>[0]));
+
+    assert.ok(markup.indexOf('send now') < markup.indexOf('data-turn-id="host-turn"'));
+    assert.ok(markup.indexOf('do this next') > markup.indexOf('data-turn-id="host-turn"'));
+    assert.equal((markup.match(/data-transient-message-id=/g) ?? []).length, 2);
+  });
+
   it('renders one ordered timeline: thinking before its tool and answer', () => {
     const markup = renderLiveTurn({
       turnId: 'turn-1',

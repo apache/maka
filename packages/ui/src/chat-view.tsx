@@ -60,9 +60,14 @@ export interface LiveContentActivationSnapshot {
   entries: ReadonlyMap<string, string>;
 }
 
+export type TransientUserMessageProjection = Extract<StoredMessage, { type: 'user' }> & {
+  /** Presentation-only placement until canonical transcript grouping arrives. */
+  transientPlacement?: 'turn_source' | 'current_turn' | 'next_turn';
+};
+
 export function ChatView(props: {
   messages: StoredMessage[];
-  transientMessages?: readonly Extract<StoredMessage, { type: 'user' }>[];
+  transientMessages?: readonly TransientUserMessageProjection[];
   messageLoading?: boolean;
   liveTurn?: LiveTurnProjection;
   /** Live display content already present when the host activated this conversation surface. */
@@ -457,17 +462,22 @@ export function ChatView(props: {
     }
   }, [revealTurn]);
   const mountedTurns = turns.slice(mountStart, mountEnd);
-  const inlineTransientMessage = tailTurnId
-    ? transientMessages.find((message) => {
-        if (message.turnId !== tailTurnId) return false;
+  const inlineTransientMessages = tailTurnId
+    ? transientMessages.filter((message) => {
         const turn = mountedTurns.find((candidate) => candidate.turnId === tailTurnId);
-        return turn !== undefined
-          && turn.user === undefined
-          && !turn.timeline.some(
-            (item) => item.kind === 'user' && item.messageId === message.id,
-          );
+        if (
+          turn === undefined
+          || turn.user !== undefined
+          || turn.timeline.some((item) => item.kind === 'user' && item.messageId === message.id)
+        ) {
+          return false;
+        }
+        return message.turnId === tailTurnId || message.transientPlacement === 'turn_source';
       })
-    : undefined;
+    : [];
+  const inlineTransientMessageIds = new Set(
+    inlineTransientMessages.map((message) => message.id),
+  );
   const { highlightedTurnId } = useChatScroll({
     scrollRef,
     sessionId: props.activeSession?.id,
@@ -652,12 +662,15 @@ export function ChatView(props: {
                     className="maka-turn-virtual-item"
                     data-virtual-turn-id={turn.turnId}
                   >
-                    {inlineTransientMessage?.turnId === turn.turnId ? (
-                      <TransientUserMessage
-                        message={inlineTransientMessage}
-                        onReadAttachmentBytes={props.onReadAttachmentBytes}
-                      />
-                    ) : null}
+                    {turn.turnId === tailTurnId
+                      ? inlineTransientMessages.map((message) => (
+                          <TransientUserMessage
+                            key={message.id}
+                            message={message}
+                            onReadAttachmentBytes={props.onReadAttachmentBytes}
+                          />
+                        ))
+                      : null}
                     <TurnView
                       turn={turn}
                       userLabel={props.userLabel}
@@ -713,7 +726,7 @@ export function ChatView(props: {
                 />
               )}
               {transientMessages.filter(
-                (message) => message.id !== inlineTransientMessage?.id,
+                (message) => !inlineTransientMessageIds.has(message.id),
               ).map((message) => (
                 <TransientUserMessage
                   key={message.id}

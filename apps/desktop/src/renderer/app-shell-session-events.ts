@@ -30,6 +30,7 @@ import {
   settleLiveTurnStep,
   type LiveTurnProjection,
   type InteractionQueues,
+  type TransientUserMessageProjection,
 } from '@maka/ui';
 import type { RefreshMessagesOptions } from './app-shell-chat-actions.js';
 import type { MessageQueueUiState } from './app-shell-session-ui-state.js';
@@ -84,9 +85,9 @@ export function createAppShellSessionEventHandlers(options: {
   setLiveTurnBySession: StateUpdater<Record<string, LiveTurnProjection>>;
   setInteractionBySession: StateUpdater<InteractionQueues>;
   setMessageQueueBySession?: StateUpdater<Record<string, MessageQueueUiState>>;
-  projectTransientMessage?: (
+  projectQueuedTransientMessages?: (
     sessionId: string,
-    message: Extract<StoredMessage, { type: 'user' }>,
+    messages: readonly TransientUserMessageProjection[],
   ) => void;
   removeTransientMessage?: (sessionId: string, messageId: string) => void;
   onInteractionChanged?: (sessionId: string) => void;
@@ -116,7 +117,7 @@ export function createAppShellSessionEventHandlers(options: {
     setLiveTurnBySession,
     setInteractionBySession,
     setMessageQueueBySession,
-    projectTransientMessage,
+    projectQueuedTransientMessages,
     removeTransientMessage,
     onInteractionChanged,
     onExecutionBoundaryChanged,
@@ -290,21 +291,24 @@ export function createAppShellSessionEventHandlers(options: {
 
     switch (event.type) {
       case 'queue_update':
-        for (const entry of [...(event.steeringEntries ?? []), ...(event.followupEntries ?? [])]) {
-          if (entry.state !== 'queued') continue;
-          projectTransientMessage?.(sessionId, {
-            type: 'user',
-            id: entry.messageId,
-            turnId: entry.messageId,
-            ts: event.ts,
-            text: entry.content.displayText ?? entry.content.text,
-            ...(entry.content.attachments ? { attachments: [...entry.content.attachments] } : {}),
-            ...(entry.content.quotes ? { quotes: [...entry.content.quotes] } : {}),
-            ...(entry.content.inlineReferences
-              ? { inlineReferences: [...entry.content.inlineReferences] }
-              : {}),
-          });
-        }
+        projectQueuedTransientMessages?.(
+          sessionId,
+          [...(event.steeringEntries ?? []), ...(event.followupEntries ?? [])]
+            .filter((entry) => entry.state === 'queued')
+            .map((entry) => ({
+              type: 'user',
+              id: entry.messageId,
+              turnId: entry.placement === 'current_turn' ? event.turnId : entry.messageId,
+              transientPlacement: entry.placement,
+              ts: event.ts,
+              text: entry.content.displayText ?? entry.content.text,
+              ...(entry.content.attachments ? { attachments: [...entry.content.attachments] } : {}),
+              ...(entry.content.quotes ? { quotes: [...entry.content.quotes] } : {}),
+              ...(entry.content.inlineReferences
+                ? { inlineReferences: [...entry.content.inlineReferences] }
+                : {}),
+            })),
+        );
         setMessageQueueBySession?.((current) => {
           if (event.steering.length === 0 && event.followup.length === 0) {
             if (!(sessionId in current)) return current;

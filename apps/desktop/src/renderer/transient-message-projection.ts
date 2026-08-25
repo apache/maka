@@ -18,8 +18,38 @@
  */
 
 import type { StoredMessage } from '@maka/core/session';
+import type { TransientUserMessageProjection } from '@maka/ui';
 
-type TransientUserMessage = Extract<StoredMessage, { type: 'user' }>;
+type TransientUserMessage = TransientUserMessageProjection;
+
+/**
+ * Replace the queue-backed subset in the exact order supplied by the Host.
+ * Other local intents keep their relative position because queue absence is
+ * not cancellation or delivery proof.
+ */
+export function projectQueuedTransientMessages(
+  transient: Map<string, TransientUserMessage>,
+  queued: readonly TransientUserMessage[],
+): void {
+  if (queued.length === 0) return;
+  const queuedIds = new Set(queued.map((message) => message.id));
+  const retained = [...transient.entries()].filter(([id]) => !queuedIds.has(id));
+  transient.clear();
+  for (const [id, message] of retained) transient.set(id, message);
+  for (const message of queued) transient.set(message.id, message);
+}
+
+export function mergeTransientMessageProjection(
+  current: TransientUserMessage,
+  update: TransientUserMessage,
+): TransientUserMessage {
+  const hostBoundCurrentTurn =
+    current.transientPlacement === 'current_turn'
+    && update.transientPlacement === 'current_turn'
+    && current.turnId !== current.id
+    && update.turnId === update.id;
+  return hostBoundCurrentTurn ? { ...update, turnId: current.turnId } : update;
+}
 
 /**
  * Project renderer-only messages beside the canonical transcript until the
@@ -34,5 +64,5 @@ export function reconcileTransientMessages(
 ): TransientUserMessage[] {
   for (const message of durable) transient.delete(message.id);
   if (transient.size === 0 || options.includeTransient === false) return [];
-  return [...transient.values()].sort((left, right) => left.ts - right.ts);
+  return [...transient.values()];
 }

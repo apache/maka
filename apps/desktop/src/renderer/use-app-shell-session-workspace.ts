@@ -19,6 +19,7 @@
 
 import { useRef, useState } from 'react';
 import type { StoredMessage } from '@maka/core/session';
+import type { TransientUserMessageProjection } from '@maka/ui';
 import { useAppShellSessionUiState } from './app-shell-session-ui-state';
 import { useAppShellSessionList } from './use-app-shell-session-list';
 import { createBootstrapSelectionLease } from './bootstrap-selection-lease';
@@ -28,7 +29,11 @@ import {
   markNewTaskReloadIntent,
 } from './new-task-reload-intent';
 import type { DesktopTranscriptRangeController } from './desktop-transcript-range-store.js';
-import { reconcileTransientMessages } from './transient-message-projection.js';
+import {
+  mergeTransientMessageProjection,
+  projectQueuedTransientMessages as applyQueuedTransientProjection,
+  reconcileTransientMessages,
+} from './transient-message-projection.js';
 
 type ToastApi = {
   error(title: string, description?: string): void;
@@ -38,7 +43,7 @@ type MessageListUpdater = (
   next: StoredMessage[] | ((current: StoredMessage[]) => StoredMessage[]),
 ) => void;
 
-type TransientUserMessage = Extract<StoredMessage, { type: 'user' }>;
+type TransientUserMessage = TransientUserMessageProjection;
 
 export function useAppShellSessionWorkspace(toastApi: ToastApi) {
   const [activeId, setActiveIdState] = useState<string | undefined>();
@@ -104,8 +109,24 @@ export function useAppShellSessionWorkspace(toastApi: ToastApi) {
 
   function updateTransientMessage(sessionId: string, message: TransientUserMessage): void {
     const pending = transientMessagesBySessionRef.current.get(sessionId);
-    if (!pending?.has(message.id)) return;
-    pending.set(message.id, message);
+    const current = pending?.get(message.id);
+    if (!pending || !current) return;
+    pending.set(message.id, mergeTransientMessageProjection(current, message));
+    if (activeIdRef.current === sessionId) {
+      setTransientMessages(projectTransientMessages(sessionId, messagesRef.current));
+    }
+  }
+
+  function projectQueuedTransientMessages(
+    sessionId: string,
+    messages: readonly TransientUserMessage[],
+  ): void {
+    let pending = transientMessagesBySessionRef.current.get(sessionId);
+    if (!pending) {
+      pending = new Map();
+      transientMessagesBySessionRef.current.set(sessionId, pending);
+    }
+    applyQueuedTransientProjection(pending, messages);
     if (activeIdRef.current === sessionId) {
       setTransientMessages(projectTransientMessages(sessionId, messagesRef.current));
     }
@@ -175,6 +196,7 @@ export function useAppShellSessionWorkspace(toastApi: ToastApi) {
     setMessages: setMessagesForActiveSession,
     addTransientMessage,
     updateTransientMessage,
+    projectQueuedTransientMessages,
     removeTransientMessage,
     transcriptRangeRef,
     messageLoadPending,

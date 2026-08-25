@@ -36,6 +36,7 @@ import {
   type InteractionQueues,
   type LiveTurnProjection,
   type NavSelection,
+  type TransientUserMessageProjection,
 } from '@maka/ui';
 import { messageRefreshErrorMessage } from './app-shell-copy.js';
 import { getShellCopy, localizedShellErrorMessage } from './locales/shell-copy.js';
@@ -156,11 +157,11 @@ export function createAppShellChatActions(deps: {
   setMessages: MessageListUpdater;
   addTransientMessage: (
     sessionId: string,
-    message: Extract<StoredMessage, { type: 'user' }>,
+    message: TransientUserMessageProjection,
   ) => void;
   updateTransientMessage?: (
     sessionId: string,
-    message: Extract<StoredMessage, { type: 'user' }>,
+    message: TransientUserMessageProjection,
   ) => void;
   removeTransientMessage: (sessionId: string, messageId: string) => void;
   transcriptRangeRef: RefBox<DesktopTranscriptRangeController | undefined>;
@@ -239,7 +240,8 @@ export function createAppShellChatActions(deps: {
     attachments: readonly import('@maka/core/events').AttachmentRef[] = [],
     quotes: readonly QuoteRef[] = [],
     inlineReferences: readonly InlineReference[] = [],
-  ): Extract<StoredMessage, { type: 'user' }> {
+    transientPlacement?: TransientUserMessageProjection['transientPlacement'],
+  ): TransientUserMessageProjection {
     return {
       type: 'user',
       id: messageId,
@@ -252,6 +254,7 @@ export function createAppShellChatActions(deps: {
       ...(attachments.length > 0 ? { attachments: [...attachments] } : {}),
       ...(quotes.length > 0 ? { quotes: [...quotes] } : {}),
       inlineReferences: [...inlineReferences],
+      ...(transientPlacement ? { transientPlacement } : {}),
     };
   }
 
@@ -263,6 +266,7 @@ export function createAppShellChatActions(deps: {
     options: {
       turnId?: string;
       updateOnly?: boolean;
+      transientPlacement?: TransientUserMessageProjection['transientPlacement'];
       quotes?: readonly QuoteRef[];
       inlineReferences?: readonly InlineReference[];
     } = {},
@@ -274,6 +278,7 @@ export function createAppShellChatActions(deps: {
       attachments,
       options.quotes,
       options.inlineReferences,
+      options.transientPlacement,
     );
     if (options.updateOnly) {
       (updateTransientMessage ?? addTransientMessage)(sessionId, next);
@@ -391,6 +396,7 @@ export function createAppShellChatActions(deps: {
           options.displayText ?? text,
           [],
           {
+            transientPlacement: 'turn_source',
             ...(quotes && quotes.length > 0 ? { quotes } : {}),
             inlineReferences: [],
           },
@@ -473,6 +479,7 @@ export function createAppShellChatActions(deps: {
             {
               turnId: sendResult.turnId ?? messageId,
               updateOnly: true,
+              transientPlacement: 'turn_source',
               ...(quotes && quotes.length > 0 ? { quotes } : {}),
               inlineReferences: sendResult.inlineReferences ?? [],
             },
@@ -507,6 +514,7 @@ export function createAppShellChatActions(deps: {
         options.displayText ?? text,
         [],
         {
+          transientPlacement: 'turn_source',
           ...(quotes && quotes.length > 0 ? { quotes } : {}),
           inlineReferences: [],
         },
@@ -575,6 +583,7 @@ export function createAppShellChatActions(deps: {
         {
           turnId: sendResult.turnId ?? messageId,
           updateOnly: true,
+          transientPlacement: 'turn_source',
           ...(quotes && quotes.length > 0 ? { quotes } : {}),
           inlineReferences: sendResult.inlineReferences ?? [],
         },
@@ -652,6 +661,7 @@ export function createAppShellChatActions(deps: {
     const messageId = crypto.randomUUID();
     const quotes = options.quotes ?? [];
     showOptimisticUserMessage(sessionId, messageId, text, retainedAttachmentRefs(pending ?? []), {
+      transientPlacement: placement,
       ...(quotes.length > 0 ? { quotes } : {}),
       inlineReferences: [],
     });
@@ -671,6 +681,7 @@ export function createAppShellChatActions(deps: {
       if (result.kind === 'outcome_unknown') return;
       showOptimisticUserMessage(sessionId, messageId, text, result.attachments, {
         updateOnly: true,
+        transientPlacement: placement,
         ...(quotes.length > 0 ? { quotes } : {}),
         inlineReferences: result.inlineReferences,
       });
