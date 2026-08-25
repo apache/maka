@@ -41,20 +41,23 @@ afterEach(async () => {
 });
 
 describe('McpClientManager stdio protocol negotiation', { concurrency: false }, () => {
-  test('an omitted preference starts exactly one legacy child', async () => {
-    const fixture = await fixtureConfig('legacy');
-    const manager = createManager();
+  test('omitted and explicit legacy preferences each start exactly one child', async () => {
+    for (const protocol of [undefined, 'legacy'] as const) {
+      const fixture = await fixtureConfig('legacy', protocol);
+      const manager = createManager();
 
-    await manager.sync(fixture.config);
+      await manager.sync(fixture.config);
 
-    assert.deepEqual(manager.status('fixture')?.negotiatedProtocol, {
-      era: 'legacy',
-      revision: '2025-11-25',
-    });
-    assert.equal(
-      uniquePids(await waitForEvents(fixture.log, (events) => events.length > 0)).length,
-      1,
-    );
+      assert.deepEqual(manager.status('fixture')?.negotiatedProtocol, {
+        era: 'legacy',
+        revision: '2025-11-25',
+      });
+      assert.equal(
+        uniquePids(await waitForEvents(fixture.log, (events) => events.length > 0)).length,
+        1,
+      );
+      await manager.close();
+    }
   });
 
   test('auto probes a legacy server with a reaped sibling before the actual child', async () => {
@@ -125,11 +128,10 @@ describe('McpClientManager stdio protocol negotiation', { concurrency: false }, 
       era: 'modern',
       revision: '2026-07-28',
     });
-    assert.equal(
-      uniquePids(await waitForEvents(fixture.log, (events) => uniquePids(events).length === 2))
-        .length,
-      2,
-    );
+    const events = await waitForEvents(fixture.log, (current) => uniquePids(current).length === 2);
+    const [probePid, actualPid] = assertProbeBeforeActual(events);
+    assert.equal(isPidAlive(probePid), false);
+    assert.equal(isPidAlive(actualPid), true);
   });
 
   test('an exact modern pin leaves no actual child after a legacy-only rejection', async () => {
