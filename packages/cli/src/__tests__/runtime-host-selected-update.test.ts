@@ -21,6 +21,7 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import { decodeRuntimeHostServiceManagementFrame } from '@maka/runtime-host/operator';
 import {
+  runManagedRuntimeHostUpdateCli,
   runManagedRuntimeHostSelectedUpdateCli,
   type RuntimeHostSelectedUpdateCliOptions,
   type RuntimeHostUpdateCliOptions,
@@ -45,6 +46,41 @@ const OPTIONS: RuntimeHostSelectedUpdateCliOptions = {
 };
 
 describe('managed Runtime Host selected update', () => {
+  it('revalidates selection inside the deployment lock before reading service state', async () => {
+    let lockHeld = false;
+    let output = '';
+    assert.equal(
+      await runManagedRuntimeHostUpdateCli(
+        {
+          ...OPTIONS,
+          sourcePackageRoot: '/verified/package',
+          version: '2.0.0',
+        },
+        {
+          withDeploymentLock: async (_root, operation) => {
+            lockHeld = true;
+            try {
+              return await operation();
+            } finally {
+              lockHeld = false;
+            }
+          },
+          revalidateSelection: async () => {
+            assert.equal(lockHeld, true);
+            return { code: 'update_policy_changed', message: 'The policy changed' };
+          },
+          manage: async () => assert.fail('service state must not be read'),
+          writeOutput: (value) => {
+            output += value;
+          },
+        },
+      ),
+      1,
+    );
+    const frame = decodeRuntimeHostServiceManagementFrame(output.trim());
+    assert.equal(frame?.kind === 'error' ? frame.error.code : undefined, 'update_policy_changed');
+  });
+
   it('parses an optional target without changing the exact-package command', () => {
     assert.deepEqual(
       parseRuntimeHostCommand([

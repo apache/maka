@@ -94,6 +94,7 @@ export interface RuntimeHostSelectedUpdateCliOptions
 }
 
 interface RuntimeHostUpdateCliDeps {
+  readonly revalidateSelection: () => Promise<RuntimeHostUpdateSelectionRejection | undefined>;
   readonly manage: typeof manageRuntimeHostService;
   readonly replace: typeof replaceRuntimeHostManagedService;
   readonly openDeployment: typeof openRuntimeHostManagedPackageDeployment;
@@ -113,6 +114,7 @@ interface RuntimeHostUpdateCliDeps {
 }
 
 interface RuntimeHostResolvedUpdateCliDeps {
+  readonly revalidateSelection: () => Promise<RuntimeHostUpdateSelectionRejection | undefined>;
   readonly withPackage: typeof withRuntimeHostRegistryUpdatePackage;
   readonly update: typeof runManagedRuntimeHostUpdateCli;
   readonly writeOutput: (value: string) => unknown;
@@ -135,12 +137,28 @@ interface RuntimeHostOperatorInvocation {
   readonly capabilityRequest?: RuntimeHostOperatorCapability;
 }
 
+interface RuntimeHostUpdateSelectionRejection {
+  readonly code: string;
+  readonly message: string;
+}
+
+class RuntimeHostUpdateSelectionError extends Error {
+  constructor(
+    readonly code: string,
+    message: string,
+  ) {
+    super(message);
+    this.name = 'RuntimeHostUpdateSelectionError';
+  }
+}
+
 export async function runManagedRuntimeHostUpdateCli(
   options: RuntimeHostUpdateCliOptions,
   overrides: Partial<RuntimeHostUpdateCliDeps> = {},
   frameSink?: RuntimeHostUpdateFrameSink,
 ): Promise<number> {
   const deps: RuntimeHostUpdateCliDeps = {
+    revalidateSelection: async () => undefined,
     manage: manageRuntimeHostService,
     replace: replaceRuntimeHostManagedService,
     openDeployment: openRuntimeHostManagedPackageDeployment,
@@ -164,6 +182,10 @@ export async function runManagedRuntimeHostUpdateCli(
   try {
     return await deps.withDeploymentLock(options.clientDataRoot, async () => {
       try {
+        const rejection = await deps.revalidateSelection();
+        if (rejection) {
+          throw new RuntimeHostUpdateSelectionError(rejection.code, rejection.message);
+        }
         const serviceId = resolveRuntimeHostManagedServiceId(options.clientDataRoot);
         if (serviceId !== options.expectedTarget.serviceId) {
           throw new RuntimeHostServiceManagerError(
@@ -461,7 +483,8 @@ export async function runManagedRuntimeHostUpdateCli(
       : error;
     const code =
       reportedError instanceof RuntimeHostServiceManagerError ||
-      reportedError instanceof RuntimeHostManagedDeploymentError
+      reportedError instanceof RuntimeHostManagedDeploymentError ||
+      reportedError instanceof RuntimeHostUpdateSelectionError
         ? reportedError.code
         : 'internal_service_error';
     const message = reportedError instanceof Error ? reportedError.message : String(reportedError);
@@ -487,6 +510,7 @@ export async function runManagedRuntimeHostSelectedUpdateCli(
   frameSink?: RuntimeHostUpdateFrameSink,
 ): Promise<number> {
   const deps: RuntimeHostSelectedUpdateCliDeps = {
+    revalidateSelection: async () => undefined,
     resolveSelection: resolveManagedRuntimeHostUpdateSelection,
     withPackage: withRuntimeHostRegistryUpdatePackage,
     update: runManagedRuntimeHostUpdateCli,
@@ -537,6 +561,7 @@ export async function runManagedRuntimeHostResolvedUpdateCli(
   frameSink?: RuntimeHostUpdateFrameSink,
 ): Promise<number> {
   const deps: RuntimeHostResolvedUpdateCliDeps = {
+    revalidateSelection: async () => undefined,
     withPackage: withRuntimeHostRegistryUpdatePackage,
     update: runManagedRuntimeHostUpdateCli,
     writeOutput: (value) => process.stdout.write(value),
@@ -578,7 +603,7 @@ export async function runManagedRuntimeHostResolvedUpdateCli(
             },
           },
         },
-        {},
+        { revalidateSelection: deps.revalidateSelection },
         emit,
       );
     };

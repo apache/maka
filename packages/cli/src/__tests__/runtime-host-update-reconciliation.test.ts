@@ -207,7 +207,8 @@ describe('managed Runtime Host update reconciliation', () => {
             service: SERVICE,
           };
         },
-        applySelection: async (_options, _selection, _overrides, emit) => {
+        applySelection: async (_options, _selection, overrides, emit) => {
+          assert.equal(await overrides?.revalidateSelection?.(), undefined);
           applied = true;
           emit?.({
             schemaVersion: 1,
@@ -245,6 +246,51 @@ describe('managed Runtime Host update reconciliation', () => {
         : undefined,
       { kind: 'updated', previousVersion: '1.0.0', targetVersion: '2.0.0' },
     );
+  });
+
+  it('revokes a stale reconcile when automatic policy changes to manual', async (t) => {
+    const clientDataRoot = await mkdtemp(join(tmpdir(), 'maka-update-policy-race-'));
+    t.after(() => rm(clientDataRoot, { recursive: true, force: true }));
+    await writeRuntimeHostManagedUpdatePolicy(clientDataRoot, {
+      schemaVersion: 1,
+      policy: { kind: 'channel', channel: 'latest' },
+      target: TARGET,
+    });
+    let output = '';
+    assert.equal(
+      await runManagedRuntimeHostUpdateReconcileCli(
+        { json: true, framed: false, clientDataRoot, defaultRootPath: '/workspace' },
+        {
+          resolveSelection: async (options) => {
+            await writeRuntimeHostManagedUpdatePolicy(clientDataRoot, null);
+            return {
+              selector: options.selector,
+              candidate: { version: '2.0.0', integrity: INTEGRITY, compatibility: 1 },
+              outcome: { kind: 'unattended_update', compatibility: 1 },
+              currentCliPath: '/managed/current/cli.js',
+              service: SERVICE,
+            };
+          },
+          applySelection: async (_options, _selection, overrides, emit) => {
+            const rejection = await overrides?.revalidateSelection?.();
+            assert.equal(rejection?.code, 'update_policy_changed');
+            emit?.({
+              schemaVersion: 1,
+              kind: 'error',
+              action: 'update',
+              error: rejection ?? assert.fail('policy revalidation is required'),
+            });
+            return 1;
+          },
+          writeOutput: (value) => {
+            output += value;
+          },
+        },
+      ),
+      1,
+    );
+    assert.equal(JSON.parse(output).error.code, 'update_policy_changed');
+    assert.equal(await readRuntimeHostManagedUpdatePolicy(clientDataRoot), null);
   });
 
   it('fails closed on corrupt policy and returns manual-action candidates without mutation', async (t) => {

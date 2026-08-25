@@ -205,11 +205,33 @@ export async function runManagedRuntimeHostUpdateReconcileCli(
       selector: selection.selector,
       expectedTarget: record.target,
     };
-    const exitCode = await deps.applySelection(selectedOptions, selection, {}, (frame) => {
-      const mapped = reconcileFrame(frame, updatePolicy);
-      writeFrame(mapped, options, deps);
-      if (mapped.kind !== 'progress') terminal = mapped;
-    });
+    const exitCode = await deps.applySelection(
+      selectedOptions,
+      selection,
+      {
+        revalidateSelection: async () => {
+          let current: RuntimeHostManagedUpdatePolicyRecord | null;
+          try {
+            current = await deps.readPolicy(options.clientDataRoot);
+          } catch (error) {
+            return boundedError(error, 'Unable to revalidate the managed update policy');
+          }
+          if (!sameUpdatePolicyRecord(current, record)) {
+            return {
+              code: 'update_policy_changed',
+              message:
+                'The managed Runtime Host update policy changed while its candidate was prepared; reconciliation made no changes',
+            };
+          }
+          return undefined;
+        },
+      },
+      (frame) => {
+        const mapped = reconcileFrame(frame, updatePolicy);
+        writeFrame(mapped, options, deps);
+        if (mapped.kind !== 'progress') terminal = mapped;
+      },
+    );
     if (!terminal) {
       throw new Error('The managed Runtime Host update did not return a terminal result');
     }
@@ -260,6 +282,27 @@ function policySelector(
   return policy.kind === 'fixed'
     ? { kind: 'exact', version: policy.version }
     : { kind: 'channel', channel: policy.channel };
+}
+
+function sameUpdatePolicyRecord(
+  left: RuntimeHostManagedUpdatePolicyRecord | null,
+  right: RuntimeHostManagedUpdatePolicyRecord | null,
+): boolean {
+  if (!left || !right) return left === right;
+  if (
+    left.schemaVersion !== right.schemaVersion ||
+    left.target.serviceId !== right.target.serviceId ||
+    left.target.rootPath !== right.target.rootPath ||
+    left.target.rootId !== right.target.rootId ||
+    left.policy.kind !== right.policy.kind
+  ) {
+    return false;
+  }
+  return left.policy.kind === 'fixed' && right.policy.kind === 'fixed'
+    ? left.policy.version === right.policy.version
+    : left.policy.kind === 'channel' &&
+        right.policy.kind === 'channel' &&
+        left.policy.channel === right.policy.channel;
 }
 
 function reconcileFrame(
