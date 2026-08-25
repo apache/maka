@@ -18,7 +18,7 @@
  */
 
 import assert from 'node:assert/strict';
-import { mkdir, mkdtemp, realpath, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, realpath, rm, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -39,6 +39,7 @@ import {
   type SessionContinuitySnapshot,
   type SubscriptionFrame,
 } from '@maka/runtime-host/protocol';
+import { projectSessionCatalogSummary } from '@maka/runtime-host/client';
 import {
   createRuntimeHostMakaSessionDriver,
   type RuntimeHostMakaSessionDriverInput,
@@ -47,6 +48,34 @@ import { SkillInvocationBlockedError, type MakaAttachedSessionTurn } from '../se
 import { WAIT_BUDGET_MS } from './tui-terminal-mock.js';
 
 describe('Runtime Host Maka Session driver', () => {
+  test('maps authoritative Catalog activity into Session summaries', () => {
+    assert.equal(
+      projectSessionCatalogSummary(sessionProjection({ activityAt: 42 })).activityAt,
+      42,
+    );
+  });
+
+  test('maps authoritative live Turn ids into Session summaries', () => {
+    assert.deepEqual(
+      projectSessionCatalogSummary(
+        sessionProjection({
+          status: 'running',
+          liveRunState: { schemaVersion: 1, runningTurnIds: ['turn-1', 'turn-2'] },
+        }),
+      ).runningTurnIds,
+      ['turn-1', 'turn-2'],
+    );
+    const knownEmpty = projectSessionCatalogSummary(
+      sessionProjection({ liveRunState: { schemaVersion: 1, runningTurnIds: [] } }),
+    );
+    assert.equal(Object.hasOwn(knownEmpty, 'runningTurnIds'), true);
+    assert.deepEqual(knownEmpty.runningTurnIds, []);
+    assert.equal(
+      Object.hasOwn(projectSessionCatalogSummary(sessionProjection()), 'runningTurnIds'),
+      false,
+    );
+  });
+
   test('keeps remote Session paths out of Client filesystem policy', async () => {
     const driver = createRuntimeHostMakaSessionDriver({
       connection: new FakeConnection([]).value,
@@ -357,7 +386,6 @@ describe('Runtime Host Maka Session driver', () => {
             metadataRevision: 1,
             status: 'running',
             createdAt: 1,
-            lastUsedAt: 1,
             isArchived: false,
           },
           rootTurn: null,
@@ -1198,6 +1226,99 @@ describe('Runtime Host Maka Session driver', () => {
     );
   });
 
+  test('opens a hidden side copy at the latest completed Turn and removes it on close', async (t) => {
+    const cleanupRoot = await mkdtemp(join(tmpdir(), 'maka-tui-side-'));
+    t.after(() => rm(cleanupRoot, { recursive: true, force: true }));
+    const sourceMessages: StoredMessage[] = [
+      userMessage('turn-completed', 'Settled question'),
+      assistantMessage('turn-completed', 'Settled answer'),
+      turnStateMessage('turn-completed', 'completed'),
+      userMessage('turn-failed', 'Failed question'),
+      turnStateMessage('turn-failed', 'failed'),
+    ];
+    const subscriptions = [
+      new FakeSubscription(continuitySnapshot({ rootTurn: null }), Promise.resolve(sourceMessages)),
+      new FakeSubscription(
+        continuitySnapshot({ rootTurn: null }),
+        Promise.resolve(sourceMessages),
+        'subscription-copy-source',
+      ),
+      new FakeSubscription(
+        continuitySnapshot({ rootTurn: null }),
+        Promise.resolve(sourceMessages.slice(0, 3)),
+        'subscription-side',
+      ),
+      new FakeSubscription(
+        continuitySnapshot({ rootTurn: null }),
+        Promise.resolve([
+          ...sourceMessages.slice(0, 3),
+          userMessage('turn-side', 'Side question'),
+          assistantMessage('turn-side', 'Side answer'),
+        ]),
+        'subscription-side-read',
+      ),
+      new FakeSubscription(
+        continuitySnapshot({ rootTurn: null }),
+        Promise.resolve(sourceMessages),
+        'subscription-parent-return',
+      ),
+    ];
+    const connection = new FakeConnection(subscriptions);
+    connection.sessionQueries.push(
+      sessionProjection({ id: 'session-1' }),
+      sessionProjection({ id: 'session-1', revision: 4 }),
+      sessionProjection({
+        id: 'side-1',
+        labels: ['mode:side_conversation'],
+        parentSessionId: 'session-1',
+        branchOfTurnId: 'turn-completed',
+      }),
+      sessionProjection({ id: 'session-1' }),
+      sessionProjection({ id: 'side-1', labels: ['mode:side_conversation'] }),
+    );
+    const driver = createRuntimeHostMakaSessionDriver({
+      connection: connection.value,
+      cwd: '/tmp',
+      llmConnectionSlug: 'openai-main',
+      model: 'gpt-5',
+      newId: () => 'side-1',
+      sessionCopyCleanupRoot: cleanupRoot,
+    });
+    await driver.switchSession('session-1');
+
+    const opened = await driver.openSideConversation!();
+
+    assert.equal((await stat(join(cleanupRoot, 'a'.repeat(64), 'runtime.sqlite'))).isFile(), true);
+
+    assert.equal(opened.parentSessionId, 'session-1');
+    assert.equal(opened.sideSessionId, 'side-1');
+    assert.deepEqual(opened.messages, []);
+    assert.deepEqual(
+      (await driver.readMessages()).map((message) =>
+        'turnId' in message ? `${message.type}:${message.turnId}` : message.type,
+      ),
+      ['user:turn-side', 'assistant:turn-side'],
+    );
+    assert.deepEqual(
+      connection.requests.find(({ operation }) => operation === 'session.branch.create')?.input,
+      {
+        sourceSessionId: 'session-1',
+        targetSessionId: 'side-1',
+        sourceTurnId: 'turn-completed',
+        expectedSourceRevision: 4,
+        intent: 'side_conversation',
+      },
+    );
+
+    const closed = await driver.closeSideConversation!('side-1', 'session-1');
+    assert.equal(closed.summary.id, 'session-1');
+    assert.equal(closed.cleanup, 'removed');
+    assert.deepEqual(
+      connection.requests.find(({ operation }) => operation === 'session.remove')?.input,
+      { sessionId: 'side-1', expectedRevision: 1 },
+    );
+  });
+
   test('reopens a failed Session channel before starting the next turn', async () => {
     const first = new FakeSubscription(continuitySnapshot({ rootTurn: null }), Promise.resolve([]));
     const second = new FakeSubscription(
@@ -1575,10 +1696,10 @@ class FakeConnection {
   ) {
     this.value = {
       ...(reconnecting ? { reconnecting: true as const } : {}),
+      rootId: 'a'.repeat(64),
       hostEpoch: 'host-1',
       request: <K extends DirectRequestOperationKey>(operation: K, input: OperationInput<K>) =>
         this.request(operation, input),
-      startTurn: (input) => this.request('turn.start', input),
       openSessionSubscription: async () => {
         const subscription = this.subscriptions[this.openedSubscriptions];
         this.openedSubscriptions += 1;
@@ -1613,6 +1734,24 @@ class FakeConnection {
           hostCwd: create.workspace.kind === 'host_path' ? create.workspace.path : '/project',
         },
       }) as OperationOutput<K>;
+    }
+    if (operation === 'session.branch.create') {
+      const copy = input as OperationInput<'session.branch.create'>;
+      return {
+        kind: 'committed',
+        session: sessionProjection({
+          id: copy.targetSessionId,
+          labels: copy.intent === 'side_conversation' ? ['mode:side_conversation'] : [],
+          parentSessionId: copy.sourceSessionId,
+          branchOfTurnId: copy.sourceTurnId,
+        }),
+      } as OperationOutput<K>;
+    }
+    if (operation === 'session.remove') {
+      return {
+        kind: 'removed',
+        sessionId: (input as OperationInput<'session.remove'>).sessionId,
+      } as OperationOutput<K>;
     }
     if (operation === 'goal.control') {
       const outcome = this.goalControlOutcomes.shift();
@@ -1788,7 +1927,6 @@ function continuitySnapshot(
       metadataRevision: 1,
       status: 'running',
       createdAt: 1,
-      lastUsedAt: 1,
       isArchived: false,
     },
     projectionRevision: 1,
@@ -1847,7 +1985,7 @@ function sessionProjection(
       hostCwd: '/tmp',
     },
     createdAt: 1,
-    lastUsedAt: 2,
+    activityAt: 2,
     name: 'Session',
     isFlagged: false,
     isArchived: false,

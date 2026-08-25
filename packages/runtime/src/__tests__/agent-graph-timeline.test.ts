@@ -23,7 +23,7 @@ import { AGENT_GRAPH_SUPERVISOR_WAKE_SCHEMA_VERSION } from '@maka/core/agent-gra
 import { type AgentGraphTimelineMetadataSnapshot } from '@maka/core/agent-graph-timeline';
 import { type AgentRunHeader } from '@maka/core/agent-run';
 import { type RuntimeEvent } from '@maka/core/runtime-event';
-import { createSqliteSessionMetadataStore } from '@maka/storage';
+import { createSqliteSessionMetadataStore } from '@maka/storage/sqlite-session-metadata-store';
 import {
   buildAgentGraphTimeline,
   buildAgentGraphTimelineCurrentState,

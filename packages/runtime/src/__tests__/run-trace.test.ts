@@ -66,6 +66,32 @@ describe('RunTrace error diagnostics', () => {
     assert.equal(snapshot?.profile?.name, 'workspace-write');
   });
 
+  test('records a redacted sandbox context degradation without calling it a model failure', () => {
+    const events: RunTraceEvent[] = [];
+    const trace = new RunTrace({
+      sessionId: 'session-1',
+      turnId: 'turn-1',
+      connectionSlug: 'deepseek',
+      providerId: 'openai-compatible',
+      modelId: 'deepseek-v4-pro',
+      newId: () => `trace-${events.length + 1}`,
+      now: () => 123,
+      record: (event) => events.push(event),
+    });
+
+    trace.sandboxContextFailed(
+      'resolve',
+      new Error('workspace probe failed token=sk-live-secret-token-value'),
+    );
+
+    assert.equal(events.length, 1);
+    assert.equal(events[0]?.type, 'sandbox_context_failed');
+    assert.equal(events[0]?.phase, 'sandbox');
+    assert.equal(events[0]?.data?.stage, 'resolve');
+    assert.match(String(events[0]?.data?.redactedErrorMessage), /token=\[redacted\]/u);
+    assert.equal(JSON.stringify(events[0]).includes('sk-live-secret-token-value'), false);
+  });
+
   test('model stream failures keep generic copy plus redacted raw diagnostics', () => {
     const events: RunTraceEvent[] = [];
     const trace = new RunTrace({

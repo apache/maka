@@ -607,15 +607,24 @@ export function reconcileTerminalLiveTurn(
   const transcriptReachedTerminal = turnMessages.some(
     (message) => message.type === 'turn_state' && message.status !== 'running',
   );
+  let projection = current;
+  if (transcriptReachedTerminal && current.terminal !== true) {
+    const { providerRetry: _providerRetry, ...withoutRetry } = confirmed(current);
+    projection = {
+      ...withoutRetry,
+      terminal: true,
+      steps: terminalizeLiveSteps(current.steps),
+    };
+  }
   if (
-    current.terminal === true
-    && liveSteeringMessages(current).length > 0
+    projection.terminal === true
+    && liveSteeringMessages(projection).length > 0
     && !transcriptReachedTerminal
-  ) return current;
+  ) return projection;
   const assistantIds = new Set(turnMessages.flatMap((message) => message.type === 'assistant' ? [message.id] : []));
   const toolCallIds = new Set(turnMessages.flatMap((message) => message.type === 'tool_call' ? [message.id] : []));
   const toolResultIds = new Set(turnMessages.flatMap((message) => message.type === 'tool_result' ? [message.toolUseId] : []));
-  let steps = current.steps.filter((step) => {
+  let steps = projection.steps.filter((step) => {
     if (step.text?.text.length) return true;
     if (step.thinking && !assistantIds.has(step.stepId)) return true;
     const toolsCovered = step.tools.every((tool) => {
@@ -633,9 +642,9 @@ export function reconcileTerminalLiveTurn(
   // Once persisted turn_state records the terminal handoff, the transcript is
   // authoritative for accepted steering; retaining the live copy would leave
   // a duplicate or a nacked ghost instruction on screen.
-  const steeringSettled = current.terminal === true
+  const steeringSettled = projection.terminal === true
     && transcriptReachedTerminal
-    && liveSteeringMessages(current).length > 0;
+    && liveSteeringMessages(projection).length > 0;
   if (steeringSettled) {
     steps = steps.map((step) => {
       if (!step.leadingSteering) return step;
@@ -643,9 +652,9 @@ export function reconcileTerminalLiveTurn(
       return withoutSteering;
     });
   }
-  if (steps.length === current.steps.length && !steeringSettled) return current;
-  if (steps.length === 0 && current.terminal) return undefined;
-  if (!steeringSettled) return { ...current, steps };
-  const { pendingSteering: _pendingSteering, ...withoutSteering } = current;
+  if (steps.length === projection.steps.length && !steeringSettled) return projection;
+  if (steps.length === 0 && projection.terminal) return undefined;
+  if (!steeringSettled) return { ...projection, steps };
+  const { pendingSteering: _pendingSteering, ...withoutSteering } = projection;
   return { ...withoutSteering, steps };
 }

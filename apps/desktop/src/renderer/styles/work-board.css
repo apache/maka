@@ -1,0 +1,100 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
+.maka-work-board-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-height: 0;
+  padding: 12px;
+}
+
+.maka-work-board-filters {
+  display: flex;
+  gap: 8px;
+}
+
+.maka-work-board-create {
+  display: flex;
+  gap: 8px;
+}
+
+.maka-work-board-create-input {
+  flex: 1;
+  min-width: 0;
+}
+
+.maka-work-board-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  overflow-y: auto;
+}
+
+.maka-work-board-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px;
+  border-radius: 6px;
+}
+
+.maka-work-board-row:hover {
+  background: var(--state-hover-bg);
+}
+
+.maka-work-board-row[data-archived] {
+  opacity: 0.65;
+}
+
+.maka-work-board-row-main {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.maka-work-board-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.maka-work-board-archived-tag {
+  font-size: 12px;
+  opacity: 0.7;
+}
+
+.maka-work-board-row-actions {
+  display: flex;
+  gap: 4px;
+  flex-shrink: 0;
+}
+
+.maka-work-board-message {
+  padding: 8px;
+}
+
+.maka-work-board-empty {
+  padding: 16px 8px;
+}

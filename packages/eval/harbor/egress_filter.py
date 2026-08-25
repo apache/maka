@@ -120,12 +120,50 @@ except ImportError:
 
 try:
     from mitmproxy.proxy import commands as proxy_commands
+    from mitmproxy.proxy.layer import Layer
+    from mitmproxy.proxy.layers import ClientTLSLayer, ServerTLSLayer
+    from mitmproxy.proxy.layers.tcp import TCPLayer
 except ImportError:
     proxy_commands = None
+    Layer = object
+    ClientTLSLayer = None
+    ServerTLSLayer = None
+    TCPLayer = None
+
+try:
+    from mitmproxy.net.tls import starts_like_tls_record
+except ImportError:
+    def starts_like_tls_record(data: bytes) -> bool:
+        return len(data) >= 3 and data[0] == 0x16 and data[1] == 0x03
+
+
+def configure(updated: object) -> None:
+    # HTTP 101 upgrades construct TCPLayer inside the HTTP layer without
+    # another next_layer hook. rawtcp=false makes that path CloseConnection
+    # itself; WebSocket upgrades stay on the websocket layer.
+    try:
+        from mitmproxy import ctx
+    except ImportError:
+        return
+    if getattr(ctx.options, "rawtcp", False):
+        ctx.options.rawtcp = False
 
 
 def request(flow: object) -> None:
     apply_http_policy(flow, flow.request.pretty_url)
+
+
+def response(flow: object) -> None:
+    response = getattr(flow, "response", None)
+    if getattr(response, "status_code", None) != 101:
+        return
+    # mitmproxy 12.2.3 sets flow.websocket before HttpResponseHook only when
+    # the 101 is a real WebSocket upgrade (Upgrade + version 13 + option on).
+    # A websocket Upgrade header alone still falls through to CloseConnection
+    # under rawtcp=false and must be audited.
+    if getattr(flow, "websocket", None) is not None:
+        return
+    record_raw_tunnel(flow)
 
 
 def http_connect(flow: object) -> None:
@@ -137,6 +175,9 @@ def http_connect(flow: object) -> None:
 
 
 def tcp_start(flow: object) -> None:
+    # Last resort if a TCPLayer is still admitted (tcp_hosts / ignore).
+    # CONNECT raw is closed by next_layer → CloseRawLayer; HTTP 101 raw is
+    # closed by rawtcp=false. Neither of those paths starts a TCPLayer.
     record_raw_tunnel(flow)
     kill_flow(flow)
 
@@ -149,12 +190,31 @@ def tcp_message(flow: object) -> None:
 
 
 def next_layer(nextlayer: object) -> None:
+    # Script addons run before the built-in classifier assigns layer. If we
+    # set CloseRawLayer here, NextLayer leaves it in place. Waiting for
+    # isinstance(..., TCPLayer) never fires on the production CONNECT path.
     current = getattr(nextlayer, "layer", None)
-    if current is None or type(current).__name__ != "TCPLayer":
-        return
     context = getattr(nextlayer, "context", None)
+    if current is None:
+        data_client = _next_layer_bytes(nextlayer, "data_client")
+        if _is_fragmented_tls_record_prefix(data_client):
+            if ClientTLSLayer is None or ServerTLSLayer is None:
+                return
+            server_tls = ServerTLSLayer(context)
+            server_tls.child_layer = ClientTLSLayer(context)
+            nextlayer.layer = server_tls
+            return
+        if not looks_like_raw_tcp(nextlayer):
+            return
+        record_raw_tunnel(context)
+        nextlayer.layer = CloseRawLayer(context)
+        return
+    if TCPLayer is None or not isinstance(current, TCPLayer):
+        return
     record_raw_tunnel(context)
-    nextlayer.layer = CloseRawLayer(context)
+    closer = CloseRawLayer(context)
+    replace_layer(context, current, closer)
+    nextlayer.layer = closer
 
 
 def apply_http_policy(flow: object, raw_url: str) -> None:
@@ -197,6 +257,58 @@ def connect_target_url(flow: object) -> str:
     return f"https://{host}:{port}/"
 
 
+def looks_like_raw_tcp(nextlayer: object) -> bool:
+    """Close only when the bytes cannot still become HTTP or TLS.
+
+    Script next_layer runs before mitmproxy 12.2.3's classifier. Copying its
+    `probably_no_http` test here would treat `GET` / `GET ` as raw and assign
+    CloseRawLayer while the request line is still arriving. With rawtcp=false
+    the built-in path would have kept waiting for HttpLayer.
+    """
+    data_client = _next_layer_bytes(nextlayer, "data_client")
+    data_server = _next_layer_bytes(nextlayer, "data_server")
+    if _could_start_tls_record(data_client):
+        return False
+    if not data_client and not data_server:
+        return False
+    if data_server or data_client.startswith(b"SSH"):
+        return True
+    return not _still_could_be_http(data_client)
+
+
+def _could_start_tls_record(data: bytes) -> bool:
+    """Keep a fragmented ClientHello undecided until its 3-byte prefix exists."""
+    if starts_like_tls_record(data):
+        return True
+    return _is_fragmented_tls_record_prefix(data)
+
+
+def _is_fragmented_tls_record_prefix(data: bytes) -> bool:
+    return 0 < len(data) < 3 and b"\x16\x03".startswith(data)
+
+
+def _still_could_be_http(data: bytes) -> bool:
+    first_line, newline, _rest = data.partition(b"\n")
+    line = first_line.rstrip(b"\r")
+    method, space, _remainder = line.partition(b" ")
+    if not method.isascii() or not method.isalpha():
+        return False
+    if newline and not space:
+        return False
+    return True
+
+
+def _next_layer_bytes(nextlayer: object, name: str) -> bytes:
+    getter = getattr(nextlayer, name, None)
+    if not callable(getter):
+        return b""
+    try:
+        data = getter()
+    except Exception:
+        return b""
+    return bytes(data) if isinstance(data, (bytes, bytearray)) else b""
+
+
 def tcp_peer(flow: object) -> tuple[str, str]:
     server = getattr(flow, "server_conn", None) or getattr(flow, "server", None)
     address = getattr(server, "address", None) if server is not None else None
@@ -224,9 +336,31 @@ def kill_flow(flow: object) -> None:
             pass
 
 
-class CloseRawLayer:
+def replace_layer(context: object, current: object, closer: object) -> None:
+    layers = getattr(context, "layers", None)
+    if not isinstance(layers, list):
+        return
+    try:
+        index = layers.index(current)
+    except ValueError:
+        index = len(layers)
+    if closer in layers:
+        layers.remove(closer)
+    if current in layers:
+        layers.remove(current)
+    layers.insert(min(index, len(layers)), closer)
+
+
+class CloseRawLayer(Layer):
     def __init__(self, context: object) -> None:
-        self.context = context
+        if Layer is object:
+            self.context = context
+            return
+        if getattr(context, "layers", None) is None:
+            context.layers = []
+        if getattr(context, "options", None) is None:
+            context.options = type("Options", (), {"proxy_debug": False})()
+        super().__init__(context)
 
     def handle_event(self, event: object):
         if proxy_commands is None:

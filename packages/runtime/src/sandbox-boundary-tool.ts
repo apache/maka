@@ -40,14 +40,29 @@ export const SANDBOX_BOUNDARY_UNAVAILABLE =
   'Retrying will fail the same way — redo the work inside the paths already allowed, or tell the ' +
   'user which path needs access.';
 
+export const REQUEST_SANDBOX_BOUNDARY_TOOL_NAME = 'request_sandbox_boundary';
+
+export const SANDBOX_BOUNDARY_DENIED_FOR_TURN =
+  'The user denied a sandbox boundary expansion for this Turn. Do not request another expansion. ' +
+  'Continue only with the authority already available, or explain the remaining blocker.';
+
+export const SANDBOX_BOUNDARY_FINALIZATION_PROMPT = [
+  '<sandbox_boundary_finalization>',
+  'Sandbox boundary negotiation cannot continue in this Turn.',
+  'Do not call tools. Give the user a concise final status from the evidence already available.',
+  'State what remains blocked and which existing-authority alternatives, if any, were tried.',
+  '</sandbox_boundary_finalization>',
+].join('\n');
+
 export function buildRequestSandboxBoundaryTool(): MakaTool<
   { expansion: SandboxBoundaryExpansion; justification: string },
   SandboxBoundarySettlement
 > {
   return {
-    name: 'request_sandbox_boundary',
+    name: REQUEST_SANDBOX_BOUNDARY_TOOL_NAME,
+    executionSemantics: 'exclusive_step',
     description:
-      'Request the smallest session sandbox boundary expansion needed to retry a local tool that returned sandbox_boundary_required.',
+      'Request the smallest session sandbox boundary expansion needed to retry a local tool that returned sandbox_boundary_required. If the user denies it, do not request another expansion in this Turn.',
     parameters: z
       .object({
         expansion: sandboxBoundaryExpansionSchema,

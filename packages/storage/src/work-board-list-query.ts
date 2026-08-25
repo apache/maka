@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { createHash } from 'node:crypto';
 import {
   isSafeWorkBoardId,
   type WorkBoardItem,
@@ -49,7 +50,7 @@ export function buildWorkBoardListStatement(
     sql += ' AND archived = 0';
   }
   if (value.scope) {
-    sql = appendScopePredicate(sql, params, value.scope);
+    sql = appendScopePredicate(sql, params, value.scope, value.projectIds);
   }
   if (value.cursor) {
     const cursor = decodeWorkBoardCursor(value.cursor);
@@ -69,9 +70,13 @@ export function workBoardFilterFingerprint(value: WorkBoardListQuery): string {
     value.scope === undefined
       ? 'any'
       : value.scope.kind === 'project'
-        ? `project:${value.scope.projectId}`
+        ? `project:${[...(value.projectIds ?? [value.scope.projectId])].sort().join('|')}`
         : 'inbox';
-  return `${value.includeArchived ? 'archived-included' : 'active-only'}:${scope}`;
+  // Cursors bind to the complete normalized filter without copying an unbounded
+  // project alias set into the public cursor payload.
+  return createHash('sha256')
+    .update(`${value.includeArchived ? 'archived-included' : 'active-only'}:${scope}`)
+    .digest('base64url');
 }
 
 export function encodeWorkBoardCursor(item: WorkBoardItem, filterFingerprint: string): string {
@@ -110,10 +115,16 @@ function appendScopePredicate(
   sql: string,
   params: Array<string | number>,
   scope: WorkBoardScope,
+  projectIds?: readonly string[],
 ): string {
   if (scope.kind === 'inbox') {
     sql += ' AND scope_kind = ? AND project_id IS NULL';
     params.push('inbox');
+    return sql;
+  }
+  if (projectIds && projectIds.length > 0) {
+    sql += ` AND scope_kind = ? AND project_id IN (${projectIds.map(() => '?').join(', ')})`;
+    params.push('project', ...projectIds);
     return sql;
   }
   sql += ' AND scope_kind = ? AND project_id = ?';

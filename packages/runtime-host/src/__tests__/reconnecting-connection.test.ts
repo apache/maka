@@ -35,6 +35,7 @@ import {
   RUNTIME_HOST_COMPATIBILITY_EPOCH,
   RUNTIME_HOST_PROTOCOL_VERSION,
   type HostIncompatible,
+  type HostStatusResult,
   type OperationInput,
   type OperationKey,
   type OperationOutput,
@@ -73,6 +74,47 @@ test('a reconnecting Client retries an interrupted query on the replacement conn
   assert.deepEqual(first.operations, ['goal.query']);
   assert.deepEqual(unstable.operations, ['goal.query']);
   assert.deepEqual(replacement.operations, ['goal.query']);
+  await connection.close();
+});
+
+test('a reconnecting Client retries status through the validated status surface', async () => {
+  let firstStatusCalls = 0;
+  let replacementStatusCalls = 0;
+  const first = connectionHarness(
+    'first',
+    () => {
+      throw new Error('status must not use request()');
+    },
+    undefined,
+    undefined,
+    async () => {
+      firstStatusCalls += 1;
+      first.disconnect();
+      throw interrupted('host.status', 'query', 'dispatched');
+    },
+  );
+  const replacement = connectionHarness(
+    'replacement',
+    () => {
+      throw new Error('status must not use request()');
+    },
+    undefined,
+    undefined,
+    async () => {
+      replacementStatusCalls += 1;
+      return hostStatus('replacement');
+    },
+  );
+  const connection = await createRuntimeHostReconnectingConnection({
+    initialConnection: first.connection,
+    connect: async () => replacement.connection,
+  });
+
+  assert.deepEqual(await connection.status(), hostStatus('replacement'));
+  assert.equal(firstStatusCalls, 1);
+  assert.equal(replacementStatusCalls, 1);
+  assert.deepEqual(first.operations, []);
+  assert.deepEqual(replacement.operations, []);
   await connection.close();
 });
 
@@ -469,6 +511,7 @@ function connectionHarness(
     id: 'maka.interactive',
     revision: '1',
   },
+  status: () => Promise<HostStatusResult> = async () => hostStatus(id, composition),
 ) {
   let resolveClosed!: () => void;
   const closed = new Promise<void>((resolve) => {
@@ -484,6 +527,7 @@ function connectionHarness(
     compositionId: composition.id,
     compositionRevision: composition.revision,
     closed,
+    status,
     request: async (operation: DirectRequestOperationKey, input: unknown) => {
       operations.push(operation);
       return request(operation, input);
@@ -505,6 +549,24 @@ function connectionHarness(
     get openedSubscriptions() {
       return openedSubscriptions;
     },
+  };
+}
+
+function hostStatus(
+  id: string,
+  composition: { readonly id: string; readonly revision: string } = {
+    id: 'maka.interactive',
+    revision: '1',
+  },
+): HostStatusResult {
+  return {
+    hostEpoch: `host-${id}`,
+    compositionId: composition.id,
+    compositionRevision: composition.revision,
+    state: 'ready',
+    connections: 1,
+    activeOperations: 0,
+    activeResidencies: 0,
   };
 }
 

@@ -37,10 +37,12 @@ import {
 } from '@maka/runtime/session-manager';
 import { buildToolsForAgentDefinition } from '@maka/runtime/agent-catalog';
 import { buildHostCapabilitiesFromBinding } from '@maka/runtime/tool-catalog-derive';
+import { buildHistoryTools } from '@maka/runtime/history-tools';
 import { createLocalContinuationSafetyInspector } from '@maka/runtime/continuation-safety';
 import { createConfiguredSubagentCatalog } from '@maka/runtime/configured-subagent-catalog';
 import {
   createBuiltinSandboxManager,
+  createSandboxDiagnosticsProvider,
   isBuiltinFilesystemWorkerSandboxAvailable,
 } from '@maka/runtime/sandbox';
 import {
@@ -76,7 +78,7 @@ import { isSessionNotFoundError } from '@maka/storage/execution-stores';
 import { createExternalSessionAdapterRegistry } from '@maka/storage/external-sessions';
 import { createGitWorktreeChildExecutor } from '@maka/storage/git-worktree-child-executor';
 import { runWithStorageRootLease } from '@maka/storage/root-authority';
-import { openStorageWriterComposition } from '@maka/storage';
+import { openStorageWriterComposition } from '@maka/storage/storage-writer-composition';
 import { resolveWorkspaceIdentity } from '@maka/storage/workspace-identity';
 import { type ManagedWorkspaceFilesystemWorker } from '@maka/storage/managed-workspace-owner';
 import { CanonicalSessionProjectionReader } from './canonical-session-projection.js';
@@ -163,6 +165,7 @@ import { HostTaskLedgerCoordinator } from './task-ledger-coordinator.js';
 import { HostTurnControlCoordinator } from './turn-control-coordinator.js';
 import { HostUsagePricingCoordinator } from './usage-pricing-coordinator.js';
 import { HostWebSearchCoordinator } from './web-search-coordinator.js';
+import { HostWorkHubCoordinationCoordinator } from './workhub-coordination-coordinator.js';
 import {
   createHostWebSearchService,
   createHostWebSearchToolFromService,
@@ -248,7 +251,6 @@ export async function createExecutionRuntimeHostComposition(
     const worktreeChildExecutor = createGitWorktreeChildExecutor({
       storageRoot: context.owner.capability.canonicalPath,
     });
-    await stores.messageReceiptStore.beginHostEpoch(context.hostEpoch);
     const backends = new BackendRegistry();
     // `fake` is a retired backend kind: this build never writes it, but a
     // session or Automation persisted by an older one still can, and activation
@@ -301,6 +303,12 @@ export async function createExecutionRuntimeHostComposition(
             resourceLocation: { kind: 'runtime' },
           })
         : undefined;
+    const sandboxDiagnostics = createSandboxDiagnosticsProvider({
+      ...(sandboxManager ? { sandboxManager } : {}),
+      ...(filesystemWorkerLaunchSpecProvider
+        ? { getFilesystemWorkerLaunchSpec: filesystemWorkerLaunchSpecProvider }
+        : {}),
+    });
     const filesystemWorker =
       sandboxManager && filesystemWorkerLaunchSpecProvider
         ? new FilesystemWorkerClient({
@@ -358,15 +366,30 @@ export async function createExecutionRuntimeHostComposition(
     const webFetchService = createHostWebFetchService({
       policy: runtimePolicyStores.operations,
     });
-    const hostTools = [
+    const historyTools = buildHistoryTools({
+      listSessions: () => requireSessionManager(manager).listSessions(),
+      readMessages: async (sessionId, abortSignal) => {
+        if (abortSignal?.aborted) return null;
+        const messages = await requireSessionManager(manager)
+          .getMessages(sessionId)
+          .catch(() => null);
+        return abortSignal?.aborted ? null : messages;
+      },
+      getPrivacyContext: async () => ({
+        incognitoActive: (await runtimePolicyStores.runtimePolicy.getSnapshot()).policy.privacy
+          .incognitoActive,
+      }),
+    });
+    const childHostTools = [
       createHostWebSearchToolFromService(webSearchService),
       createHostWebFetchToolFromService(webFetchService),
       ...runtimePolicy.modelTools,
     ];
+    const hostTools = [...childHostTools, ...historyTools];
     const childAgentTools = createHostChildAgentToolComposition({
       taskLedger,
       builtinTools,
-      hostTools,
+      hostTools: childHostTools,
       worktreePatchWriteBackAvailable: true,
     });
     const openedGraphControlStore = createAgentGraphControlStore(
@@ -450,8 +473,10 @@ export async function createExecutionRuntimeHostComposition(
         requireRootCoordinator(rootCoordinator).readRootState(sessionId),
       claimStopFence: (input, commitQueueFence, admission) =>
         requireRootCoordinator(rootCoordinator).claimStopFence(input, commitQueueFence, admission),
-      startFromMessage: (input, admission) =>
-        requireRootCoordinator(rootCoordinator).startFromMessage(input, admission),
+      startFromMessage: (input, admission, commitAdmission) =>
+        requireRootCoordinator(rootCoordinator).startFromMessage(input, admission, commitAdmission),
+      startRecoveredMessages: (input, admission) =>
+        requireRootCoordinator(rootCoordinator).startRecoveredMessages(input, admission),
       prepareMessage: (input) => requireRootCoordinator(rootCoordinator).prepareMessage(input),
       claimStop: (input, commitQueueFence, admission) =>
         requireRootCoordinator(rootCoordinator).claimStop(input, commitQueueFence, admission),
@@ -465,7 +490,7 @@ export async function createExecutionRuntimeHostComposition(
         readImmutableSteeringMessageProof: (sessionId, messageId) =>
           stores.runtimeEventStore.readImmutableSteeringMessageProof(sessionId, messageId),
       },
-      receipts: stores.messageReceiptStore,
+      admissions: stores.sessionStore,
       sessionAdmission,
       acquireResidency: () => context.acquireResidency('message-queue'),
       requestDrain: context.requestDrain,
@@ -608,6 +633,7 @@ export async function createExecutionRuntimeHostComposition(
             context: backendContext,
             runtimePolicy: runtimePolicyStores,
             oauthCredentials,
+            sandboxDiagnostics,
             createRunComposer: createInteractiveRunComposerFactory({
               skills,
               memory: requireMemory(memory),
@@ -742,12 +768,7 @@ export async function createExecutionRuntimeHostComposition(
           skills,
           memory: requireMemory(memory),
           taskLedger,
-          ...(runProfile
-            ? {
-                boundToolNames: runProfile.toolNames,
-                toolProfile: header.toolProfile,
-              }
-            : {}),
+          ...(runProfile ? { toolProfile: header.toolProfile } : {}),
           ...(capabilitySnapshot ? { clientCapabilities: capabilitySnapshot } : {}),
           builtinTools,
           hostTools: surface.hostTools,
@@ -1199,6 +1220,19 @@ export async function createExecutionRuntimeHostComposition(
       workspaceResolver,
       requestDrain: context.requestDrain,
     });
+    const workHubCoordination = new HostWorkHubCoordinationCoordinator({
+      stateRoot: context.owner.capability.canonicalPath,
+      stores: stores.sessionStore,
+      admission: sessionAdmission,
+      continuity: continuityCoordinator,
+      executions: coordinator,
+      resolveCreateTarget: async () => {
+        const { projectId: _projectId, ...target } =
+          await sessionCatalog.resolveExternalSessionImportTarget();
+        return { ...target, permissionMode: 'explore' };
+      },
+      requestDrain: context.requestDrain,
+    });
     scheduledTasks = new HostScheduledTaskCoordinator({
       store: openedScheduledTaskStore,
       sessions: stores.sessionStore,
@@ -1372,6 +1406,10 @@ export async function createExecutionRuntimeHostComposition(
         },
       }),
       createRuntimeHostDomainModule({
+        id: 'workhub',
+        handlers: [workHubCoordination.handlers],
+      }),
+      createRuntimeHostDomainModule({
         id: 'configuration',
         handlers: [
           runtimePolicy.handlers,
@@ -1474,6 +1512,9 @@ export async function createExecutionRuntimeHostComposition(
               ),
             );
             await coordinator.recover();
+            await messages.recoverPendingAfterHostRestart(
+              recoverySessions.map((session) => session.id),
+            );
             rootRecoveryCompleted = true;
           },
         },

@@ -669,7 +669,6 @@ export async function verifyMacosArm64Cli(
     const environment = {
       HOME: isolatedHome,
       LANG: 'en_US.UTF-8',
-      MAKA_DISABLE_DEFERRED_TOOLS: '1',
       PATH: '/usr/bin:/bin:/usr/sbin:/sbin',
       SHELL: '/bin/zsh',
       TMPDIR: extractionRoot,

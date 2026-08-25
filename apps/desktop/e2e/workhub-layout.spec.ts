@@ -62,3 +62,27 @@ test('WorkHub target metadata does not overlap the submitted Session result', as
   expect(geometry.buttonContainsProject).toBe(true);
   expect(geometry.overlapHeight).toBeLessThanOrEqual(0);
 });
+
+test('WorkHub explains Coordination startup failure and recovers after a default model is set', async ({
+  window: page,
+}) => {
+  await page.evaluate(async () => {
+    await window.maka.connections.setDefaultModel(null);
+    await window.maka.settings.updateClient({ workHub: { enabled: true } });
+  });
+
+  const failure = page.getByRole('alert');
+  await expect(failure).toContainText('WorkHub 暂时无法启动');
+  await expect(failure).toContainText('请检查当前 Runtime Host 的默认模型配置');
+
+  await page.evaluate(async () => {
+    await window.maka.connections.setDefaultModel({
+      slug: 'e2e',
+      model: 'claude-sonnet-4-5-20250929',
+    });
+  });
+
+  await expect(page.getByRole('main', { name: 'WorkHub' })).toBeVisible();
+  await expect(page.locator('.workhub-empty')).toContainText('从这里继续所有工作');
+  await expect(page.locator('.workhub-surface .maka-composer-editor')).toBeVisible();
+});

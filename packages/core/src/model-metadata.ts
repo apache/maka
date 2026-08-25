@@ -137,6 +137,7 @@ export function openAiAdapterApiProtocol(
 ): 'openai-responses' | 'openai-chat' {
   const id = modelId.trim();
   return (providerType === 'deepseek' && deepSeekModelSupportsResponses(id)) ||
+    (providerType === 'opencode-go' && id === 'muse-spark-1.2-contributor') ||
     /^gpt-5/i.test(id) ||
     ((providerType === 'xai' || providerType === 'xai-oauth') && id === 'grok-4.5')
     ? 'openai-responses'
@@ -431,7 +432,8 @@ const STATIC_MODEL_METADATA: Partial<Record<ProviderType, Record<string, ModelMe
   deepseek: {
     'deepseek-v4-flash': {
       capabilities: { ...REASONING_FUNCTION_CALLING, webSearch: true },
-      thinkingOptions: { efforts: ['high', 'max'], toggle: true },
+      lastUpdated: '2026-08-24',
+      thinkingOptions: { efforts: ['low', 'high', 'max'], toggle: true },
     },
     'deepseek-v4-pro': {
       capabilities: { ...REASONING_FUNCTION_CALLING, webSearch: true },

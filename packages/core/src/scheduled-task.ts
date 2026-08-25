@@ -34,6 +34,7 @@ import {
   type PermissionMode,
 } from './permission.js';
 import { isBotDeliveryProvider, type BotProvider } from './bot-chat-settings.js';
+import type { PersistedValue } from './persisted-value.js';
 
 export const SCHEDULED_TASK_TITLE_MAX_CHARS = 120;
 export const SCHEDULED_TASK_INTENT_MAX_CHARS = 8_000;
@@ -665,14 +666,33 @@ function fail(message: string): { ok: false; message: string } {
  * `normalizeCreateScheduledTaskInput`, which validates *new* input and is
  * deliberately strict. Without this fold a task written before a value was
  * retired would carry that value straight into execution, where nothing
- * recognizes it any more. This is not a schema validator: a record that is
- * malformed in any other way stays as stored.
+ * recognizes it any more. This decoder also rejects unknown effect kinds and
+ * invalid execution permission modes instead of admitting them as domain data;
+ * validation of new task input remains the normalizers' responsibility.
  */
-export function decodePersistedScheduledTask(task: ScheduledTask): ScheduledTask {
+export function decodePersistedScheduledTask(
+  persisted: PersistedValue<ScheduledTask>,
+): ScheduledTask {
+  const value = persisted as unknown;
+  if (!isObject(value) || !isObject(value.effect) || typeof value.effect.kind !== 'string') {
+    throw new Error('Invalid persisted ScheduledTask effect');
+  }
+  const task = value as ScheduledTask;
   const { effect } = task;
-  if (effect.kind !== 'agent_run') return task;
+  if (effect.kind === 'notify' || effect.kind === 'session_resume') {
+    return task;
+  }
+  if (effect.kind !== 'agent_run') {
+    throw new Error('Invalid persisted ScheduledTask effect');
+  }
+  if (!isObject(effect.execution)) {
+    throw new Error('Invalid persisted ScheduledTask execution template');
+  }
   const permissionMode = decodePersistedPermissionMode(effect.execution.permissionMode);
-  if (permissionMode === undefined || permissionMode === effect.execution.permissionMode) {
+  if (permissionMode === undefined) {
+    throw new Error('Invalid persisted ScheduledTask permission mode');
+  }
+  if (permissionMode === effect.execution.permissionMode) {
     return task;
   }
   return {

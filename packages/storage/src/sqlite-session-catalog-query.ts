@@ -18,6 +18,7 @@
  */
 
 import type { SessionListFilter } from '@maka/core/runtime-inputs';
+import { sqliteOrdinarySessionRolePredicate } from './sqlite-session-role-scope.js';
 
 export interface SqliteSessionCatalogCursor {
   readonly activityAt: number;
@@ -35,9 +36,12 @@ export function buildSqliteSessionCatalogPageQuery(
 ): SqliteSessionCatalogPageQuery {
   const where: string[] = [];
   const parameters: Array<string | number> = [];
+  const role = sqliteOrdinarySessionRolePredicate();
   where.push(
     "COALESCE(json_extract(metadata.payload_json, '$.conversationCopy.state'), '') <> 'preparing'",
   );
+  where.push(role.sql);
+  parameters.push(...role.parameters);
   where.push("COALESCE(json_extract(metadata.payload_json, '$.transcriptLedgerVersion'), 1) <> 0");
   if (filter.subagentParentSessionId !== undefined) {
     where.push('projection.subagent_parent_session_id = ?');
@@ -63,6 +67,7 @@ export function buildSqliteSessionCatalogPageQuery(
         metadata.payload_json,
         metadata.metadata_version,
         metadata.committed_at,
+        projection.activity_at,
         projection.last_message_preview
       FROM session_catalog_projection projection
       JOIN session_metadata metadata

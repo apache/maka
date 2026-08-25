@@ -24,7 +24,7 @@ import type {
 } from '@maka/core/external-session';
 import type { CreateSessionInput } from '@maka/core/runtime-inputs';
 import type { SessionExternalOrigin, SessionHeader, StoredMessage } from '@maka/core/session';
-import type { ExternalSessionImportLookupResult } from '@maka/storage';
+import type { ExternalSessionImportLookupResult } from '@maka/storage/session-store';
 import type { SessionCatalogRecord } from '@maka/storage/execution-stores';
 import { ExternalSessionImporter } from '@maka/storage/external-sessions';
 import {

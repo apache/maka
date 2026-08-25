@@ -21,11 +21,13 @@ import { createHash, randomUUID } from "node:crypto";
 import type { AttachmentRef, ShellRunUpdate } from "@maka/core/events";
 import type { PlanSessionState, PlanUserControlInput } from "@maka/core/plan";
 import {
-  decodeStoredMessage,
+  decodeStoredMessage as decodePersistedStoredMessage,
   type StoredMessage,
   type TurnRecord,
 } from "@maka/core/session";
+import { markPersisted } from "@maka/core/persisted-value";
 import type { Task } from "@maka/core/task-ledger";
+
 import type {
   ConnectionCatalogSnapshot,
   ConnectionVersionBasis,
@@ -44,9 +46,12 @@ import {
   type DecodedSessionTranscriptPage,
   type DirectRequestOperationKey,
   type RuntimeHostConnection,
+  type RuntimeHostRetirementMode,
+  type RuntimeHostRetirementPreparation,
   type RuntimeHostSessionSubscription,
   RuntimeHostCatalogReadError,
   RuntimeHostOperationError,
+  prepareConnectedRuntimeHostRetirement,
   readRuntimeHostAgentGraphEpochs,
   readRuntimeHostConnectionCatalog,
   readRuntimeHostInvocableSkills,
@@ -92,6 +97,7 @@ import {
   type QueueEntriesReorderInput,
   type QueueEntryPromoteInput,
   type QueueEntryRetractInput,
+  type QueueEntryUpdateInput,
   type QueueMutationResult,
   SESSION_TRANSCRIPT_BOOTSTRAP_MAX_BYTES,
   type SessionCatalogChangedFrame,
@@ -131,6 +137,8 @@ import {
   type WorkspaceProjection,
 } from "@maka/runtime-host/protocol";
 
+const decodeStoredMessage = (value: unknown): StoredMessage =>
+  decodePersistedStoredMessage(markPersisted<StoredMessage>(value));
 const MAX_OPTIMISTIC_ATTEMPTS = 3;
 const MAX_SESSION_REVISION_ATTEMPTS = 8;
 const MAX_PRICING_SNAPSHOT_ATTEMPTS = 3;
@@ -822,6 +830,22 @@ export class DesktopRuntimeHostClient {
     );
   }
 
+  resolveWorkHubCoordinationSession() {
+    return this.request("workhub.coordination.resolve", {});
+  }
+
+  answerWorkHubCoordination(
+    input: OperationInput<"workhub.coordination.answer">,
+  ): Promise<OperationOutput<"workhub.coordination.answer">> {
+    return this.request("workhub.coordination.answer", input);
+  }
+
+  recordWorkHubCoordination(
+    input: OperationInput<"workhub.coordination.record">,
+  ): Promise<OperationOutput<"workhub.coordination.record">> {
+    return this.request("workhub.coordination.record", input);
+  }
+
   listExternalSessionSources(): Promise<ExternalSessionSourceQueryResult> {
     return this.request("external-session.source.query", {});
   }
@@ -1078,6 +1102,15 @@ export class DesktopRuntimeHostClient {
     });
   }
 
+  updateQueueEntry(
+    input: Omit<QueueEntryUpdateInput, "originHostEpoch">,
+  ): Promise<QueueMutationResult> {
+    return this.request("queue.entry.update", {
+      ...input,
+      originHostEpoch: this.connection.hostEpoch,
+    });
+  }
+
   reorderQueueEntries(
     input: Omit<QueueEntriesReorderInput, "originHostEpoch">,
   ): Promise<QueueMutationResult> {
@@ -1133,16 +1166,13 @@ export class DesktopRuntimeHostClient {
   }
 
   queryHostDiagnostics(): Promise<OperationOutput<"host.diagnostics.query">> {
-    return this.connection.queryHostDiagnostics(2_000);
+    return this.connection.request('host.diagnostics.query', {}, 2_000);
   }
 
-  prepareHostUpgrade(
-    allowInterruptActiveTasks: boolean,
-  ): Promise<OperationOutput<"host.upgrade.prepare">> {
-    return this.request("host.upgrade.prepare", {
-      expectedHostEpoch: this.connection.hostEpoch,
-      allowInterruptActiveTasks,
-    });
+  prepareHostRetirement(
+    mode: RuntimeHostRetirementMode,
+  ): Promise<RuntimeHostRetirementPreparation> {
+    return prepareConnectedRuntimeHostRetirement(this.connection, mode);
   }
 
   stopTurn(

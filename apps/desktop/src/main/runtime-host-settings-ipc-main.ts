@@ -30,10 +30,10 @@ import type {
 } from "@maka/core/runtime-policy";
 import { SENSITIVE_PLACEHOLDER } from "@maka/core/settings/network-settings";
 import type {
-  ProxySettings,
   TestProxyInput,
+  TestProxySettings,
 } from "@maka/core/settings/network-settings";
-import type { SettingsStore } from "@maka/storage";
+import type { SettingsStore } from "@maka/storage/settings-store";
 import {
   buildSettingsUpdateResult,
   maskAppSettings,
@@ -149,11 +149,12 @@ export async function updateRuntimeHostSettings(
 }
 
 function toRuntimeHostProxyPolicy(
-  proxy: ProxySettings,
+  proxy: TestProxySettings,
   autoBypassDomains: readonly string[],
 ): RuntimePolicy["networkProxy"] {
   const username = proxy.username?.trim() ?? "";
-  const authEnabled = Boolean(username || proxy.password);
+  const authEnabled =
+    proxy.authEnabled ?? Boolean(username || proxy.password);
   return {
     enabled: proxy.enabled,
     protocol: proxy.type,

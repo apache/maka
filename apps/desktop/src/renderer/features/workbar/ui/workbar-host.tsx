@@ -21,7 +21,8 @@ import { lazy, Suspense, type ComponentProps, type CSSProperties } from 'react';
 import { Card } from '@astryxdesign/core/Card';
 import { ResizeHandle, type ResizableProps } from '@astryxdesign/core/Resizable';
 import { Spinner } from '@astryxdesign/core/Spinner';
-import { useUiLocale, type Composer } from '@maka/ui';
+import { Composer, useUiLocale } from '@maka/ui';
+import type { ComposerProps } from '../../../../../../../packages/ui/dist/composer.d.ts';
 import type { ChatModelChoice } from '@maka/core/chat-model-choice';
 import type { SessionSummary } from '@maka/core/session';
 import { getShellCopy } from '../../../locales/shell-copy';
@@ -69,6 +70,8 @@ function SessionWorkbarFallback() {
 
 export interface WorkbarHostModel {
   activeId?: string;
+  projectId?: string | null;
+  projectAliases?: readonly string[];
   rightCollapsed: boolean;
   bottomOpen: boolean;
   hidden: boolean;
@@ -114,10 +117,10 @@ export interface WorkbarHostModel {
   activeSideChatPanelIds?: ReadonlySet<string>;
   sourceSession?: SessionSummary;
   modelChoices?: readonly ChatModelChoice[];
-  mentionSkills?: ComponentProps<typeof Composer>['mentionSkills'];
-  mentionSkillsUnavailable?: ComponentProps<typeof Composer>['mentionSkillsUnavailable'];
-  mentionSkillsLoading?: ComponentProps<typeof Composer>['mentionSkillsLoading'];
-  onSearchMentionFiles?: ComponentProps<typeof Composer>['onSearchMentionFiles'];
+  mentionSkills?: ComposerProps['mentionSkills'];
+  mentionSkillsUnavailable?: ComposerProps['mentionSkillsUnavailable'];
+  mentionSkillsLoading?: ComposerProps['mentionSkillsLoading'];
+  onSearchMentionFiles?: ComposerProps['onSearchMentionFiles'];
   closeConfirmation: {
     key: string;
     open: boolean;
@@ -164,6 +167,8 @@ export function WorkbarHost({ model: props }: { model: WorkbarHostModel }) {
             <WorkbarSurface
               key={props.activeId}
               sessionId={props.activeId}
+              projectId={props.projectId}
+              projectAliases={props.projectAliases}
               hidden={props.hidden}
               onDismissPanel={props.onDismissPanel}
               panelsState={props.panelsState}

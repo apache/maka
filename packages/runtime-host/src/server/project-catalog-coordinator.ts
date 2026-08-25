@@ -26,7 +26,7 @@ import {
   ProjectPathConflictError,
   ProjectPathMismatchError,
   ProjectUnavailableError,
-} from '@maka/storage';
+} from '@maka/storage/project-catalog';
 import {
   decodeProjectCatalogProject,
   PROJECT_CATALOG_PAGE_MAX_BYTES,
@@ -157,7 +157,9 @@ export class HostProjectCatalogCoordinator {
   ): Promise<ProjectCatalogMutateResult> {
     switch (input.kind) {
       case 'register':
-        return projectResult(await this.catalog.register(input.path));
+        return projectResult(
+          await this.catalog.register(input.path, { prefer: input.prefer ?? true }),
+        );
       case 'register_directory': {
         if (!directoryRegistration) throw new TypeError('Project directory was not resolved');
         return projectResult(

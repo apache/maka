@@ -22,10 +22,10 @@ import { dirname, join } from 'node:path';
 import type { SessionHeader, StoredMessage } from '@maka/core/session';
 import {
   acquireOperationalStateDatabase,
-  createSqliteSessionMetadataStore,
   OPERATIONAL_STATE_DATABASE_NAME,
-  projectSessionCatalogMessages,
-} from '@maka/storage';
+} from '@maka/storage/operational-state-store';
+import { projectSessionCatalogMessages } from '@maka/storage/session-store';
+import { createSqliteSessionMetadataStore } from '@maka/storage/sqlite-session-metadata-store';
 
 // Fixed clock for the e2e-fixture. All seeded timestamps and
 // transient fixture state derive from this value unless tests explicitly
@@ -56,7 +56,6 @@ export function header(input: {
     workspaceRoot: 'e2e-fixture',
     cwd: '/workspace/maka',
     createdAt: input.now - 3_600_000,
-    lastUsedAt: input.lastMessageAt,
     lastMessageAt: input.lastMessageAt,
     name: input.name,
     titleIsManual: true,

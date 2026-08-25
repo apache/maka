@@ -19,25 +19,24 @@
 
 import { memo, useRef, useState } from 'react';
 import type { MessageQueueEntryProjection } from '@maka/core/events';
-import { IconButton } from '@astryxdesign/core';
+import { Button, IconButton } from '@astryxdesign/core';
 import { List, ListItem } from '@astryxdesign/core/List';
 import type { ConversationCopy } from './conversation-copy.js';
-import { CornerDownRight, GripVertical, ICON_SIZE, Undo2 } from './icons.js';
+import { Check, GripVertical, ICON_SIZE, Trash2, X } from './icons.js';
 import { useMountedRef } from './use-mounted-ref.js';
 
 /**
- * The pending plate above the composer card: the follow-up queue in send
- * order (first at the top). Steering entries never appear here — 立即发送 and
- * Shift+Enter hand a message to the active Turn, and it leaves the plate at
- * that moment (it surfaces in the transcript when the Turn consumes it).
- * Every action round-trips through the Runtime Host — the plate mirrors the
- * authoritative queue projection, never a local copy.
+ * The pending plate above the composer card. It mirrors both pending steering
+ * and follow-up entries so a submitted message never disappears while waiting
+ * for the active Turn to reach a steering boundary.
  */
 export interface ComposerMessageQueueProps {
   queuedMessages: readonly MessageQueueEntryProjection[];
+  queueRevision?: number;
   copy: ConversationCopy['composer'];
   onPromoteEntry?(entryId: string): void | Promise<void>;
-  onRetractEntry?(entry: MessageQueueEntryProjection): void | Promise<void>;
+  onUpdateEntry?(entryId: string, expectedQueueRevision: number, text: string): void | Promise<void>;
+  onDeleteEntry?(entryId: string): void | Promise<void>;
   onReorderEntries?(entryIds: readonly string[]): void | Promise<void>;
 }
 
@@ -45,24 +44,30 @@ export const ComposerMessageQueue = memo(function ComposerMessageQueue(
   props: ComposerMessageQueueProps,
 ) {
   const [pendingEntryId, setPendingEntryId] = useState<string | null>(null);
+  const [editingEntryId, setEditingEntryId] = useState<string | null>(null);
+  const [editingQueueRevision, setEditingQueueRevision] = useState(0);
+  const [editingText, setEditingText] = useState('');
   const dragEntryId = useRef<string | null>(null);
   const mountedRef = useMountedRef();
   const copy = props.copy;
 
-  const followup = props.queuedMessages;
+  const entries = props.queuedMessages;
+  const followup = entries.filter((entry) => entry.placement === 'next_turn');
 
   async function runEntryAction(
     entryId: string,
     action: (() => void | Promise<void>) | undefined,
-  ) {
-    if (!action || pendingEntryId) return;
+  ): Promise<boolean> {
+    if (!action || pendingEntryId) return false;
     setPendingEntryId(entryId);
     try {
       // The caller (app shell) surfaces failures itself; the projection is
       // unchanged on failure, so there is nothing to settle here.
       await action();
+      return true;
     } catch {
       // surfaced by the caller
+      return false;
     } finally {
       if (mountedRef.current) setPendingEntryId(null);
     }
@@ -83,46 +88,85 @@ export const ComposerMessageQueue = memo(function ComposerMessageQueue(
     void runEntryAction(fromId, () => props.onReorderEntries?.(ids));
   }
 
-  function retractButton(entry: MessageQueueEntryProjection) {
-    return (
-      <IconButton
-        variant="ghost"
-        size="sm"
-        type="button"
-        isDisabled={pendingEntryId !== null}
-        label={copy.retractQueuedEntry}
-        tooltip={copy.retractQueuedEntry}
-        onClick={() => void runEntryAction(
-          entry.entryId,
-          props.onRetractEntry ? () => props.onRetractEntry?.(entry) : undefined,
-        )}
-        icon={<Undo2 size={ICON_SIZE.control} aria-hidden="true" />}
-      />
+  function beginEdit(entry: MessageQueueEntryProjection) {
+    if (pendingEntryId || !props.onUpdateEntry || props.queueRevision === undefined) return;
+    setEditingEntryId(entry.entryId);
+    const text = entry.content.displayText ?? entry.content.text;
+    setEditingQueueRevision(props.queueRevision);
+    setEditingText(text);
+  }
+
+  async function commitEdit(entryId: string) {
+    const text = editingText.trim();
+    if (!text) return;
+    const updated = await runEntryAction(entryId, () =>
+      props.onUpdateEntry?.(entryId, editingQueueRevision, text)
     );
+    if (updated && mountedRef.current) {
+      setEditingEntryId(null);
+      setEditingQueueRevision(0);
+      setEditingText('');
+    }
+  }
+
+  function cancelEdit() {
+    setEditingEntryId(null);
+    setEditingQueueRevision(0);
+    setEditingText('');
   }
 
   return (
     <div
       className="maka-composer-queue"
       role="region"
-      aria-label={copy.queuedMessagesAriaLabel(followup.length)}
+      aria-label={copy.queuedMessagesAriaLabel(entries.length)}
     >
       <List className="maka-composer-queue-list" density="compact">
-        {followup.map((entry) => (
-          <div
-            key={entry.entryId}
-            onDragOver={(event) => {
-              if (dragEntryId.current) event.preventDefault();
-            }}
-            onDrop={() => dropOn(entry.entryId)}
-          >
-            <ListItem
-              label={entry.content.displayText ?? entry.content.text}
+        {entries.map((entry) => {
+          const editing = editingEntryId === entry.entryId;
+          const reorderable =
+            entry.placement === 'next_turn'
+            && entry.state === 'queued'
+            && !editing
+            && Boolean(props.onReorderEntries)
+            && pendingEntryId === null;
+          return (
+            <div
+              key={entry.entryId}
+              onDragOver={(event) => {
+                if (reorderable && dragEntryId.current) event.preventDefault();
+              }}
+              onDrop={reorderable ? () => dropOn(entry.entryId) : undefined}
+            >
+              <ListItem
+              label={editing ? (
+                <textarea
+                  autoFocus
+                  className="maka-composer-queue-edit"
+                  aria-label={copy.editQueuedEntry}
+                  rows={1}
+                  value={editingText}
+                  onInput={(event) => setEditingText(event.currentTarget.value)}
+                  onKeyDown={(event) => {
+                    if (
+                      event.key === 'Enter'
+                      && !event.shiftKey
+                      && !event.nativeEvent.isComposing
+                    ) {
+                      event.preventDefault();
+                      void commitEdit(entry.entryId);
+                    } else if (event.key === 'Escape') {
+                      event.preventDefault();
+                      cancelEdit();
+                    }
+                  }}
+                />
+              ) : entry.content.displayText ?? entry.content.text}
               style={{ minHeight: 28, paddingBlock: 0 }}
-              startContent={(
+              startContent={entry.placement === 'next_turn' ? (
                 <span
                   className="maka-composer-queue-grip"
-                  draggable={Boolean(props.onReorderEntries) && pendingEntryId === null}
+                  draggable={reorderable}
                   aria-label={copy.reorderQueuedEntry}
                   onDragStart={(event) => {
                     dragEntryId.current = entry.entryId;
@@ -135,30 +179,84 @@ export const ComposerMessageQueue = memo(function ComposerMessageQueue(
                 >
                   <GripVertical size={ICON_SIZE.control} aria-hidden="true" />
                 </span>
-              )}
+              ) : undefined}
               endContent={(
-                <>
-                  <IconButton
-                    variant="ghost"
-                    size="sm"
-                    type="button"
-                    isDisabled={pendingEntryId !== null}
-                    label={copy.promoteQueuedEntry}
-                    tooltip={copy.promoteQueuedEntry}
-                    onClick={() => void runEntryAction(
-                      entry.entryId,
-                      props.onPromoteEntry
-                        ? () => props.onPromoteEntry?.(entry.entryId)
-                        : undefined,
-                    )}
-                    icon={<CornerDownRight size={ICON_SIZE.control} aria-hidden="true" />}
-                  />
-                  {retractButton(entry)}
-                </>
+                <span className="maka-composer-queue-actions">
+                  {editing ? (
+                    <>
+                      <IconButton
+                        variant="ghost"
+                        size="sm"
+                        type="button"
+                        isDisabled={pendingEntryId !== null || editingText.trim().length === 0}
+                        label={copy.saveQueuedEntry}
+                        tooltip={copy.saveQueuedEntry}
+                        onClick={() => void commitEdit(entry.entryId)}
+                        icon={<Check size={ICON_SIZE.control} aria-hidden="true" />}
+                      />
+                      <IconButton
+                        variant="ghost"
+                        size="sm"
+                        type="button"
+                        isDisabled={pendingEntryId !== null}
+                        label={copy.cancelQueuedEntryEdit}
+                        tooltip={copy.cancelQueuedEntryEdit}
+                        onClick={cancelEdit}
+                        icon={<X size={ICON_SIZE.control} aria-hidden="true" />}
+                      />
+                    </>
+                  ) : (
+                    <>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        type="button"
+                        isDisabled={
+                          pendingEntryId !== null
+                          || entry.state !== 'queued'
+                          || props.queueRevision === undefined
+                        }
+                        label={copy.editQueuedEntry}
+                        onClick={() => beginEdit(entry)}
+                      />
+                      {entry.placement === 'next_turn' ? (
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          type="button"
+                          isDisabled={pendingEntryId !== null || entry.state !== 'queued'}
+                          label={copy.promoteQueuedEntry}
+                          onClick={() => void runEntryAction(
+                            entry.entryId,
+                            props.onPromoteEntry
+                              ? () => props.onPromoteEntry?.(entry.entryId)
+                              : undefined,
+                          )}
+                        />
+                      ) : null}
+                      <IconButton
+                        variant="ghost"
+                        size="sm"
+                        type="button"
+                        isDisabled={pendingEntryId !== null || entry.state !== 'queued'}
+                        label={copy.deleteQueuedEntry}
+                        tooltip={copy.deleteQueuedEntry}
+                        onClick={() => void runEntryAction(
+                          entry.entryId,
+                          props.onDeleteEntry
+                            ? () => props.onDeleteEntry?.(entry.entryId)
+                            : undefined,
+                        )}
+                        icon={<Trash2 size={ICON_SIZE.control} aria-hidden="true" />}
+                      />
+                    </>
+                  )}
+                </span>
               )}
             />
-          </div>
-        ))}
+            </div>
+          );
+        })}
       </List>
     </div>
   );

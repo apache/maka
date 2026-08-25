@@ -777,6 +777,45 @@ describe('SqliteRuntimeStore', () => {
     });
   });
 
+  it('decodes a persisted continuation target without widening new claims', async () => {
+    await withStore(async (store, dbPath) => {
+      const claim = continuationClaim();
+      await persistImmutablePrefix(store, continuationSourcePrefix());
+      await assert.rejects(
+        () =>
+          store.claimContinuation({
+            claim: {
+              ...claim,
+              targetRunHeader: {
+                ...claim.targetRunHeader,
+                permissionMode: 'execute',
+              } as unknown as ContinuationClaimV1['targetRunHeader'],
+            },
+          }),
+        /Invalid AgentRun header schema/,
+      );
+      assert.equal((await store.claimContinuation({ claim })).kind, 'acquired');
+
+      const database = new DatabaseSync(dbPath);
+      try {
+        database.exec(`
+          UPDATE runtime_continuation_claims
+          SET target_run_header_json = json_set(
+            target_run_header_json,
+            '$.permissionMode',
+            'execute'
+          )
+          WHERE claim_id = 'claim-1';
+        `);
+      } finally {
+        database.close();
+      }
+
+      const persisted = await store.readContinuationClaimByBoundary(claim.boundaryDigest);
+      assert.equal(persisted?.targetRunHeader.permissionMode, 'ask');
+    });
+  });
+
   it('rejects a continuation claim whose immediate source boundary is not durable', async () => {
     await withStore(async (store) => {
       const claim = continuationClaim();

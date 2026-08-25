@@ -13,6 +13,8 @@ apps/desktop/src/renderer/error-boundary.tsx
 apps/desktop/src/renderer/features/goals/services-context.tsx
 apps/desktop/src/renderer/features/goals/ui/goal-dialog.tsx
 apps/desktop/src/renderer/features/goals/ui/goal-host.tsx
+apps/desktop/src/renderer/features/module-hub/services-context.tsx
+apps/desktop/src/renderer/features/module-hub/ui/module-hub-host.tsx
 apps/desktop/src/renderer/features/workbar/services-context.tsx
 apps/desktop/src/renderer/features/workbar/tools/artifacts/artifact-pane.tsx
 apps/desktop/src/renderer/features/workbar/tools/artifacts/artifact-preview-registry-shell.tsx
@@ -66,6 +68,7 @@ apps/desktop/src/renderer/settings/provider-enabled-model-manager.tsx
 apps/desktop/src/renderer/settings/provider-oauth-section.tsx
 apps/desktop/src/renderer/settings/providers-panel.tsx
 apps/desktop/src/renderer/settings/request-customization-editor.tsx
+apps/desktop/src/renderer/settings/runtime-host-interaction-boundary.tsx
 apps/desktop/src/renderer/settings/runtime-host-management-dialog.tsx
 apps/desktop/src/renderer/settings/runtime-host-onboarding-dialog.tsx
 apps/desktop/src/renderer/settings/runtime-host-profiles-section.tsx
@@ -138,6 +141,7 @@ apps/desktop/src/renderer/styles/shell-layout.css
 apps/desktop/src/renderer/styles/sidebar.css
 apps/desktop/src/renderer/styles/task-ledger.css
 apps/desktop/src/renderer/styles/theme-glass.css
+apps/desktop/src/renderer/styles/work-board.css
 apps/desktop/src/renderer/styles/workbar/artifacts.css
 apps/desktop/src/renderer/styles/workbar/browser.css
 apps/desktop/src/renderer/styles/workbar/inspector.css
@@ -146,6 +150,7 @@ apps/desktop/src/renderer/styles/workbar/shell.css
 apps/desktop/src/renderer/styles/workbar/side-chat.css
 apps/desktop/src/renderer/styles/workbar/terminal.css
 apps/desktop/src/renderer/styles/workhub.css
+apps/desktop/src/renderer/work-board-panel.tsx
 apps/desktop/src/renderer/workhub-surface.tsx
 packages/ui/src/astryx-chat-reasoning.tsx
 packages/ui/src/astryx-i18n.tsx

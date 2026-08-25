@@ -25,7 +25,7 @@ import {
   type ToolRecoveryMode,
 } from '@maka/core/runtime-event';
 import { canonicalToolArgsHash } from '@maka/core/tool-args-identity';
-import { createSqliteRuntimeStore } from '@maka/storage';
+import { createSqliteRuntimeStore } from '@maka/storage/sqlite-runtime-store';
 import { recoverClientCapabilityOutcomes } from '../server/client-capability-recovery.js';
 
 test('successor recovery durably settles dispatched Client Capabilities as outcome_unknown', async () => {

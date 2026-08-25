@@ -19,7 +19,6 @@
 
 import {
   installRuntimeHostLogCapture,
-  RUNTIME_HOST_RETIREMENT_EXIT_CODE,
   runRuntimeHostProcessLifecycle,
   startExecutionRuntimeHostService,
 } from '@maka/runtime-host/server';
@@ -74,8 +73,9 @@ export async function runRuntimeHostServiceCli(
       : {}),
     ...(websocket ? { websocket } : {}),
   });
+  let lifecycleEnd: Awaited<ReturnType<typeof runRuntimeHostProcessLifecycle>> | undefined;
   try {
-    await runRuntimeHostProcessLifecycle(host, {
+    lifecycleEnd = await runRuntimeHostProcessLifecycle(host, {
       onReady: () => {
         if (options.json) {
           process.stdout.write(`${JSON.stringify(createRuntimeHostServiceReadyEvent(host))}\n`);
@@ -91,7 +91,7 @@ export async function runRuntimeHostServiceCli(
     if (host.shutdownReason !== 'retirement') throw error;
     console.error('[runtime-host] retirement shutdown did not complete cleanly:', error);
   }
-  return host.shutdownReason === 'retirement' ? RUNTIME_HOST_RETIREMENT_EXIT_CODE : 0;
+  return lifecycleEnd === 'host_closed' && host.shutdownReason !== 'retirement' ? 1 : 0;
 }
 
 export interface RuntimeHostServiceReadyEvent {

@@ -23,7 +23,7 @@ export type McpCopy = {
   errors: {
     load: string; install(name: string): string; cancelInstall(name: string): string; save: string; import: string;
     update: string; test: string; remove: string; unavailableStatus: string; mapLine(line: number): string;
-    importObject: string; importVersion(version: string): string; importServersObject: string; importProtocolVersion: string;
+    importJson: string; importObject: string; importVersion(version: string): string; importServersObject: string; importProtocolVersion: string;
   };
   toast: {
     templateInstalled(name: string): string; templateInstalledDetail: string; installed(name: string): string;
@@ -66,7 +66,7 @@ export type McpCopy = {
     required: string; invalidUrl: string; unbalancedQuote: string;
     transportLabel: string; transportAuto: string; transportStreamableHttp: string; transportLegacySse: string;
     protocolLabel: string; protocolLegacy: string; protocolAuto: string; protocolModern: string;
-    protocolHelp: string; sseProtocolHelp: string;
+    protocolHelp: string; sseProtocolHelp: string; expandAdvanced: string; collapseAdvanced: string; stdioProtocolHelp: string;
   };
 };
 
@@ -75,9 +75,9 @@ const MCP_COPY = {
     errors: {
       load: '载入 MCP 失败', install: (name) => `安装 ${name} 失败`, cancelInstall: (name) => `取消安装 ${name} 失败`, save: '保存 MCP 失败',
       import: '导入 MCP 失败', update: '更新 MCP 失败', test: 'MCP 测试失败', remove: '删除 MCP 失败', unavailableStatus: 'Server 没有返回可用状态。',
-      mapLine: (line) => `第 ${line} 行应为 KEY=value`, importObject: 'MCP JSON 必须是 object',
-      importVersion: (version) => `不支持 MCP 配置版本 ${version}，当前支持 version 1 和 2`, importServersObject: 'mcpServers 必须是 object',
-      importProtocolVersion: '含 protocol 的 MCP 配置必须显式使用 version 2',
+      mapLine: (line) => `第 ${line} 行应为 KEY=value`, importJson: 'MCP 配置必须是有效的 JSON', importObject: 'MCP JSON 必须是 object',
+      importVersion: (version) => `不支持 MCP 配置版本 ${version}，当前支持 version 1、2 和 3`, importServersObject: 'mcpServers 必须是 object',
+      importProtocolVersion: 'remote 的 protocol 需要 version 2 或 3；stdio 的 protocol 需要 version 3',
     },
     toast: {
       templateInstalled: (name) => `${name} 模板已安装`, templateInstalledDetail: '请在「已安装」中完成凭据配置，再启用连接。',
@@ -126,16 +126,17 @@ const MCP_COPY = {
       required: '此字段为必填项。', invalidUrl: '请输入有效的 HTTP 或 HTTPS URL。', unbalancedQuote: '引号未闭合。',
       transportLabel: '传输协议', transportAuto: '自动回退', transportStreamableHttp: 'Streamable HTTP', transportLegacySse: '旧版 SSE',
       protocolLabel: '协议偏好', protocolLegacy: '传统', protocolAuto: '自动协商', protocolModern: '仅 2026-07-28',
-      protocolHelp: '旧配置默认使用传统协议；自动协商会根据 server 能力选择协议。', sseProtocolHelp: '旧版 SSE 仅支持传统协议。',
+      protocolHelp: '旧配置默认使用传统协议；自动协商会根据 server 能力选择协议。', sseProtocolHelp: '旧版 SSE 仅支持传统协议。', expandAdvanced: '显示高级设置', collapseAdvanced: '隐藏高级设置',
+      stdioProtocolHelp: '自动协商和“仅 2026-07-28”会先启动一个使用相同命令、参数、目录和环境的短期探测进程；探测结束后才启动实际连接。旧配置默认使用传统协议，只启动一个进程。',
     },
   },
   en: {
     errors: {
       load: 'Failed to load MCP', install: (name) => `Failed to install ${name}`, cancelInstall: (name) => `Failed to cancel installation of ${name}`, save: 'Failed to save MCP',
       import: 'Failed to import MCP', update: 'Failed to update MCP', test: 'MCP test failed', remove: 'Failed to delete MCP', unavailableStatus: 'The server did not return an available status.',
-      mapLine: (line) => `Line ${line} must use KEY=value`, importObject: 'MCP JSON must be an object',
-      importVersion: (version) => `Unsupported MCP config version ${version}; versions 1 and 2 are supported`, importServersObject: 'mcpServers must be an object',
-      importProtocolVersion: 'MCP configurations containing protocol must explicitly use version 2',
+      mapLine: (line) => `Line ${line} must use KEY=value`, importJson: 'MCP configuration must be valid JSON', importObject: 'MCP JSON must be an object',
+      importVersion: (version) => `Unsupported MCP config version ${version}; versions 1, 2, and 3 are supported`, importServersObject: 'mcpServers must be an object',
+      importProtocolVersion: 'Remote protocol preferences require version 2 or 3; stdio protocol preferences require version 3',
     },
     toast: {
       templateInstalled: (name) => `${name} template installed`, templateInstalledDetail: 'Finish configuring credentials under Installed before enabling the connection.',
@@ -184,7 +185,8 @@ const MCP_COPY = {
       required: 'This field is required.', invalidUrl: 'Enter a valid HTTP or HTTPS URL.', unbalancedQuote: 'Unclosed quote.',
       transportLabel: 'Transport', transportAuto: 'Auto fallback', transportStreamableHttp: 'Streamable HTTP', transportLegacySse: 'Legacy SSE',
       protocolLabel: 'Protocol preference', protocolLegacy: 'Legacy', protocolAuto: 'Auto-negotiate', protocolModern: '2026-07-28 only',
-      protocolHelp: 'Existing configurations default to legacy; auto-negotiation selects an era from the server response.', sseProtocolHelp: 'Legacy SSE supports only the legacy protocol era.',
+      protocolHelp: 'Existing configurations default to legacy; auto-negotiation selects an era from the server response.', sseProtocolHelp: 'Legacy SSE supports only the legacy protocol era.', expandAdvanced: 'Show advanced settings', collapseAdvanced: 'Hide advanced settings',
+      stdioProtocolHelp: 'Auto-negotiate and “2026-07-28 only” first start a short-lived probe with the same command, arguments, working directory, and environment. The session process starts only after the probe exits. Existing configurations default to Legacy and start one process.',
     },
   },
 } satisfies UiCatalog<McpCopy>;

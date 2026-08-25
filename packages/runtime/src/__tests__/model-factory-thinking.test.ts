@@ -301,18 +301,21 @@ describe('buildProviderOptions: thinking level', () => {
     );
     assert.deepEqual(
       [...thinkingVariantsForModel('deepseek', 'deepseek-v4-flash')],
-      ['high', 'max'],
+      ['low', 'high', 'max'],
     );
     // DeepSeek V4 uses the generic Open Responses adapter, which passes a
     // provider-native reasoningEffort through verbatim: `max` stays `max`
     // (DeepSeek's documented mapping sends `xhigh` to high, not max).
+    assert.deepEqual(buildProviderOptions(conn('deepseek'), 'deepseek-v4-flash', 'low'), {
+      deepseek: { reasoningEffort: 'low' },
+    });
     assert.deepEqual(buildProviderOptions(conn('deepseek'), 'deepseek-v4-flash', 'high'), {
       deepseek: { reasoningEffort: 'high' },
     });
     assert.deepEqual(buildProviderOptions(conn('deepseek'), 'deepseek-v4-flash', 'max'), {
       deepseek: { reasoningEffort: 'max' },
     });
-    for (const unsupported of ['off', 'low', 'medium', 'minimal'] as const) {
+    for (const unsupported of ['off', 'medium', 'minimal'] as const) {
       assert.deepEqual(
         buildProviderOptions(conn('deepseek'), 'deepseek-v4-flash', unsupported),
         {},

@@ -18,17 +18,14 @@
  */
 
 import { useMemo, useRef } from "react";
-import type { DailyReviewSummary } from '@maka/core/daily-review';
 import type { LlmConnection } from '@maka/core/llm-connections';
 import type { PermissionMode } from '@maka/core/permission';
 import type { SessionStartMode } from '@maka/core/explore-agent';
 import type { SessionSummary, StoredMessage } from '@maka/core/session';
 import type { SettingsSection, ThemePreference } from '@maka/core/settings';
 import type { UiLocale } from '@maka/core/ui-locale';
-import { formatDailyReviewMarkdown } from "@maka/ui";
-import type { DailyReviewMarkdownActionInput, NavSelection } from "@maka/ui";
+import type { NavSelection } from "@maka/ui";
 import type { DesktopManualDiagnosticTarget } from '../preload/diagnostics-contract.js';
-import type { DesktopRuntimeHostRef } from '../preload/bridge-contract.js';
 import {
   defaultRuntimeHostDiagnosticTarget,
   runOnDefaultRuntimeHost,
@@ -39,7 +36,6 @@ import {
 } from "./command-palette-commands.js";
 import type { Command } from "./command-palette-types.js";
 import { renderConversationMarkdown } from "./conversation-markdown.js";
-import { dailyReviewActionErrorMessage } from "./daily-review-actions.js";
 import {
   commandPaletteActionErrorMessage,
   commandPaletteConnectionTestFailureMessage,
@@ -66,18 +62,6 @@ type ComposerImportOwner = {
 
 type RefBox<T> = { current: T };
 
-type ComposerAppendHandle = {
-  appendText(text: string): void;
-};
-
-type DailyReviewBridge = {
-  fetchDay(
-    offsetDays: number,
-    daySpan?: number,
-    host?: DesktopRuntimeHostRef,
-  ): Promise<DailyReviewSummary>;
-};
-
 export interface AppShellCommandListOptions {
   uiLocale: UiLocale;
   activeId: string | undefined;
@@ -86,7 +70,6 @@ export interface AppShellCommandListOptions {
   clientPathsAccessible: boolean;
   connections: LlmConnection[];
   defaultConnection: string | null;
-  dailyReviewBridge: DailyReviewBridge;
   messages: StoredMessage[];
   newTaskProfileId: string | undefined;
   settingsOpen: boolean;
@@ -95,13 +78,11 @@ export interface AppShellCommandListOptions {
   themePref: ThemePreference;
   visibleSessions: SessionSummary[];
   captureComposerImportOwner: () => ComposerImportOwner;
-  composerRef: RefBox<ComposerAppendHandle | null>;
   createSession: () => void;
   openSideConversation: () => void;
   startModeSession: (mode: SessionStartMode) => Promise<boolean>;
-  isComposerImportOwnerActive: (owner: ComposerImportOwner) => boolean;
   openHelp: () => void;
-  openScheduledTaskForm: () => void;
+  openScheduledTaskCreate: () => void;
   openProjectFolder: () => Promise<void>;
   openSessionInChat: (sessionId: string) => void;
   openSettings: () => void;
@@ -109,9 +90,9 @@ export interface AppShellCommandListOptions {
   openSkillsFolder: () => Promise<void>;
   openWorkspaceFolder: () => Promise<void>;
   refreshConnections: () => Promise<void>;
-  saveDailyReviewMarkdown: (
-    input: DailyReviewMarkdownActionInput,
-  ) => Promise<void>;
+  copyTodayDailyReview: () => Promise<void>;
+  pasteTodayDailyReview: () => Promise<void>;
+  saveTodayDailyReview: () => Promise<void>;
   setNavSelection: (selection: NavSelection) => void;
   setPermissionMode: (mode: PermissionMode) => Promise<boolean>;
   setThemePref: (themePref: ThemePreference) => void;
@@ -160,7 +141,7 @@ export function buildAppShellCommandList(
       const { startModeSession } = optionsRef.current;
       await startModeSession("deep_research");
     },
-    onStartScheduledTask: () => optionsRef.current.openScheduledTaskForm(),
+    onStartScheduledTask: () => optionsRef.current.openScheduledTaskCreate(),
     onOpenSettings: () => optionsRef.current.openSettings(),
     onOpenSettingsSection: (section) =>
       optionsRef.current.openSettingsSection(section),
@@ -339,145 +320,9 @@ export function buildAppShellCommandList(
         }
       : undefined,
     activePermissionMode: options.activePermissionMode,
-    onCopyTodayDailyReview: async () => {
-      const { dailyReviewBridge, toastApi } = optionsRef.current;
-      let summary: DailyReviewSummary;
-      try {
-        summary = (
-          await runOnDefaultRuntimeHost((host) =>
-            dailyReviewBridge.fetchDay(0, 1, host),
-          )
-        ).value;
-      } catch (err) {
-        toastApi.error(
-          copy.copyFailedTitle,
-          dailyReviewActionErrorMessage(
-            err,
-            copy.reviewCopyFallback,
-            options.uiLocale,
-          ),
-          undefined,
-          defaultRuntimeHostDiagnosticTarget(err),
-        );
-        return;
-      }
-      try {
-        const markdown = formatDailyReviewMarkdown(
-          summary,
-          copy.today,
-          options.uiLocale,
-        );
-        await navigator.clipboard.writeText(markdown);
-        toastApi.success(
-          copy.reviewCopiedTitle,
-          copy.reviewSummary(
-            summary.totals.sessionCount,
-            summary.totals.requestCount,
-          ),
-        );
-      } catch (err) {
-        toastApi.error(
-          copy.copyFailedTitle,
-          dailyReviewActionErrorMessage(
-            err,
-            copy.clipboardDenied,
-            options.uiLocale,
-          ),
-        );
-      }
-    },
-    onPasteTodayDailyReviewIntoComposer: async () => {
-      const {
-        captureComposerImportOwner,
-        composerRef,
-        dailyReviewBridge,
-        isComposerImportOwnerActive,
-        toastApi,
-      } = optionsRef.current;
-      const owner = captureComposerImportOwner();
-      if (!owner.sessionId) return;
-      try {
-        const summary = (
-          await runOnDefaultRuntimeHost((host) =>
-            dailyReviewBridge.fetchDay(0, 1, host),
-          )
-        ).value;
-        const markdown = formatDailyReviewMarkdown(
-          summary,
-          copy.today,
-          options.uiLocale,
-        );
-        if (!isComposerImportOwnerActive(owner)) return;
-        composerRef.current?.appendText(markdown);
-        toastApi.success(
-          copy.reviewPastedTitle,
-          copy.reviewSummary(
-            summary.totals.sessionCount,
-            summary.totals.requestCount,
-          ),
-        );
-      } catch (err) {
-        if (isComposerImportOwnerActive(owner)) {
-          toastApi.error(
-            copy.pasteFailedTitle,
-            dailyReviewActionErrorMessage(
-              err,
-              copy.reviewUnavailable,
-              options.uiLocale,
-            ),
-            undefined,
-            defaultRuntimeHostDiagnosticTarget(err),
-          );
-        }
-      }
-    },
-    onSaveTodayDailyReviewToFile: async () => {
-      const { dailyReviewBridge, saveDailyReviewMarkdown, toastApi } =
-        optionsRef.current;
-      let summary: DailyReviewSummary;
-      try {
-        summary = (
-          await runOnDefaultRuntimeHost((host) =>
-            dailyReviewBridge.fetchDay(0, 1, host),
-          )
-        ).value;
-      } catch (err) {
-        toastApi.error(
-          copy.saveFailedTitle,
-          dailyReviewActionErrorMessage(
-            err,
-            copy.reviewUnavailable,
-            options.uiLocale,
-          ),
-          undefined,
-          defaultRuntimeHostDiagnosticTarget(err),
-        );
-        return;
-      }
-      try {
-        const markdown = formatDailyReviewMarkdown(
-          summary,
-          copy.today,
-          options.uiLocale,
-        );
-        await saveDailyReviewMarkdown({
-          day: summary.day,
-          range: 1,
-          totals: summary.totals,
-          markdown,
-          label: copy.today,
-        });
-      } catch (err) {
-        toastApi.error(
-          copy.saveFailedTitle,
-          dailyReviewActionErrorMessage(
-            err,
-            copy.reviewUnavailable,
-            options.uiLocale,
-          ),
-        );
-      }
-    },
+    onCopyTodayDailyReview: () => optionsRef.current.copyTodayDailyReview(),
+    onPasteTodayDailyReviewIntoComposer: () => optionsRef.current.pasteTodayDailyReview(),
+    onSaveTodayDailyReviewToFile: () => optionsRef.current.saveTodayDailyReview(),
     onCopyDiagnostics: async () => {
       const {
         captureComposerImportOwner,

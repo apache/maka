@@ -524,6 +524,7 @@ test('does not release or report a Revision the Host retained during cleanup', a
       removeSessionCopy = removeSession;
       return {
         ownCreation: (_creation, operation) => operation(),
+        rejectCreation: async () => undefined,
         cleanup: async () => undefined,
         schedule: async () => undefined,
         abandonOwner: async () => undefined,
@@ -864,6 +865,7 @@ function deps(
     completeComputerUseTurn() {},
     createSessionCopyCleanup: () => ({
       ownCreation: (_creation, operation) => operation(),
+      rejectCreation: async () => undefined,
       cleanup: async () => undefined,
       schedule: async () => undefined,
       abandonOwner: async () => undefined,
@@ -1100,7 +1102,6 @@ function continuitySnapshot(
       metadataRevision: 1,
       status: 'running',
       createdAt: 1,
-      lastUsedAt: 1,
       isArchived: false,
     },
     projectionRevision: 1,
@@ -1230,7 +1231,7 @@ function session(id: string): SessionCatalogProjection {
       hostCwd: '/workspace',
     },
     createdAt: 1,
-    lastUsedAt: 1,
+    activityAt: 1,
     name: id,
     isFlagged: false,
     isArchived: false,

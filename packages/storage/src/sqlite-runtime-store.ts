@@ -59,6 +59,8 @@ import {
 import { type ToolRecoveryDecisionFact } from '@maka/core/tool-recovery-fact';
 import { canonicalToolArgsHash, stableJsonStringify } from '@maka/core/tool-args-identity';
 import { encodeCanonicalRuntimeEvent } from '@maka/core/canonical-runtime-event';
+import { decodePersistedAgentRunHeader, type AgentRunHeader } from '@maka/core/agent-run';
+import { markPersisted } from '@maka/core/persisted-value';
 import {
   scanToolLedger,
   ToolLedgerCorruptionError,
@@ -3718,6 +3720,9 @@ function decodeContinuationClaimRow(row: ContinuationClaimStorageRow): Continuat
     throw new Error(`Unsupported continuation claim protocol ${row.protocol_version}`);
   }
   const boundary = JSON.parse(row.boundary_json) as unknown;
+  const targetRunHeader = decodePersistedAgentRunHeader(
+    markPersisted<AgentRunHeader>(JSON.parse(row.target_run_header_json)),
+  );
   const claim = decodeContinuationClaim({
     protocol: 'continuation_claim_v1',
     claimId: row.claim_id,
@@ -3731,7 +3736,7 @@ function decodeContinuationClaimRow(row: ContinuationClaimStorageRow): Continuat
       runId: row.target_run_id,
       turnId: row.target_turn_id,
     },
-    targetRunHeader: JSON.parse(row.target_run_header_json) as unknown,
+    targetRunHeader,
     claimedAt: row.claimed_at,
   });
   const source = claim.boundary.segments.at(-1)!;

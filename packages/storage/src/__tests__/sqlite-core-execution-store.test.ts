@@ -37,7 +37,6 @@ import {
   openSqliteInteractiveInteractionStoreForWrite,
   type StoredInteractionRequest,
 } from '../interaction-store.js';
-import { createSqliteMessageReceiptStore } from '../message-receipt-store.js';
 import { resolveStorageRoot, tryAcquireInteractiveRootOwner } from '../root-authority.js';
 import { createSqliteShellRunStore } from '../shell-run-store.js';
 import {
@@ -61,6 +60,49 @@ describe('SQLite core execution stores', () => {
       try {
         assert.equal((await reopened.readRun('session-1', 'run-1')).runId, 'run-1');
         assert.equal((await reopened.readEvents('session-1', 'run-1'))[0]?.id, 'event-1');
+      } finally {
+        reopened.close?.();
+      }
+    });
+  });
+
+  test('folds retired AgentRun values only when reading persisted rows', async () => {
+    await withRoot(async (root) => {
+      const store = createSqliteAgentRunStore(root);
+      await store.createRun(runHeader());
+      await assert.rejects(
+        () =>
+          store.createRun({
+            ...runHeader({ runId: 'run-retired', turnId: 'turn-retired' }),
+            permissionMode: 'execute',
+          } as unknown as AgentRunHeader),
+        /Invalid AgentRun header schema/,
+      );
+      store.close?.();
+
+      const database = new DatabaseSync(join(root, 'runtime.sqlite'));
+      try {
+        const row = database
+          .prepare("SELECT record_json AS recordJson FROM core_agent_runs WHERE run_id = 'run-1'")
+          .get() as { recordJson: string };
+        const retired = JSON.parse(row.recordJson) as Record<string, unknown>;
+        retired.status = 'waiting_permission';
+        retired.permissionMode = 'execute';
+        retired.automationId = 'automation-1';
+        database
+          .prepare("UPDATE core_agent_runs SET record_json = ? WHERE run_id = 'run-1'")
+          .run(JSON.stringify(retired));
+      } finally {
+        database.close();
+      }
+
+      const reopened = createSqliteAgentRunStore(root);
+      try {
+        const decoded = await reopened.readRun('session-1', 'run-1');
+        assert.equal(decoded.status, 'waiting_for_user');
+        assert.equal(decoded.permissionMode, 'ask');
+        assert.equal(decoded.legacyAutomationId, 'automation-1');
+        assert.equal(Object.hasOwn(decoded, 'automationId'), false);
       } finally {
         reopened.close?.();
       }
@@ -137,6 +179,43 @@ describe('SQLite core execution stores', () => {
         }
       } finally {
         migrated.close?.();
+      }
+    });
+  });
+
+  test('drops obsolete Host-Epoch message receipt tables on upgrade', async () => {
+    await withRoot(async (root) => {
+      createSqliteAgentRunStore(root).close?.();
+      const path = join(root, 'runtime.sqlite');
+      const legacy = new DatabaseSync(path);
+      legacy.exec(`
+        CREATE TABLE core_message_host_epochs (host_epoch TEXT PRIMARY KEY);
+        CREATE TABLE core_message_receipts (
+          host_epoch TEXT NOT NULL,
+          operation TEXT NOT NULL,
+          session_id TEXT NOT NULL,
+          operation_id TEXT NOT NULL,
+          payload_json TEXT NOT NULL,
+          result_json TEXT NOT NULL,
+          PRIMARY KEY (host_epoch, operation, session_id, operation_id)
+        );
+        UPDATE operational_schema_migrations SET version = 4 WHERE scope = 'core_execution';
+      `);
+      legacy.close();
+
+      createSqliteAgentRunStore(root).close?.();
+      const migrated = new DatabaseSync(path, { readOnly: true });
+      try {
+        assert.deepEqual(
+          migrated
+            .prepare(
+              "SELECT name FROM sqlite_master WHERE type = 'table' AND name LIKE 'core_message_%'",
+            )
+            .all(),
+          [],
+        );
+      } finally {
+        migrated.close();
       }
     });
   });
@@ -323,28 +402,6 @@ describe('SQLite core execution stores', () => {
         await assert.rejects(store.readShellRun('session-1', 'missing-shell'), { code: 'ENOENT' });
       } finally {
         store.close();
-      }
-    });
-  });
-
-  test('persists message receipts', async () => {
-    await withRoot(async (root) => {
-      const store = createSqliteMessageReceiptStore(root);
-      await store.beginHostEpoch('epoch-1');
-      await store.commit('epoch-1', 'submit', 'session-1', 'operation-1', {
-        payload: { text: 'hello' },
-        result: { disposition: 'turn_started', turnId: 'turn-1' },
-      });
-      store.close();
-
-      const reopened = createSqliteMessageReceiptStore(root);
-      try {
-        assert.deepEqual(
-          (await reopened.read('epoch-1', 'submit', 'session-1', 'operation-1'))?.payload,
-          { text: 'hello' },
-        );
-      } finally {
-        reopened.close();
       }
     });
   });

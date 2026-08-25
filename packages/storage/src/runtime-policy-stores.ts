@@ -58,9 +58,12 @@ export type {
   CompareAndSetOAuthCredentialResult,
   ConnectionEffectChangedDomain,
   ConnectionEffectCompletionResult,
+  BeginConnectionOnboardingInput,
+  BeginConnectionOnboardingResult,
   CommitConnectionOnboardingInput,
   CommitConnectionOnboardingResult,
   ConnectionEffectPreparationFailure,
+  ConnectionOnboardingTicket,
   ConnectionTestTicket,
   InteractiveOAuthLoginCompletionResult,
   InteractiveOAuthLoginProvider,
@@ -248,7 +251,9 @@ function createWriterFacade(coordinator: RuntimePolicyCoordinator): RuntimePolic
         coordinator.completeInteractiveOAuthLogin(ticket, secret),
       beginModelFetch: (connectionId) => coordinator.beginModelFetch(connectionId),
       completeModelFetch: (ticket, result) => coordinator.completeModelFetch(ticket, result),
-      commitConnectionOnboarding: (input) => coordinator.commitConnectionOnboarding(input),
+      beginConnectionOnboarding: (input) => coordinator.beginConnectionOnboarding(input),
+      completeConnectionOnboarding: (ticket, input) =>
+        coordinator.completeConnectionOnboarding(ticket, input),
       beginConnectionTest: (connectionId, modelId) =>
         coordinator.beginConnectionTest(connectionId, modelId),
       completeConnectionTest: (ticket, result) =>

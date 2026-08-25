@@ -62,6 +62,71 @@ describe('Provider error classification', () => {
     assert.doesNotMatch(serialized, /secret|private|authorization|request body/i);
   });
 
+  test('structured usage-limit codes project to billing regardless of status', () => {
+    const quotaOn401 = Object.assign(new Error('request failed'), {
+      name: 'AI_APICallError',
+      statusCode: 401,
+      data: { error: { code: 'insufficient_quota' } },
+    });
+    assert.equal(classifyError(quotaOn401), 'ProviderBilling');
+
+    const balanceOn403 = Object.assign(new Error('request failed'), {
+      name: 'AI_APICallError',
+      statusCode: 403,
+      data: { error: { code: 'insufficient_balance' } },
+    });
+    assert.equal(classifyError(balanceOn403), 'ProviderBilling');
+
+    // Explicit provider evidence outranks the numeric HTTP fallback: an
+    // exhausted quota is a closed window, not a transient throttle to retry.
+    const quotaOn429 = Object.assign(new Error('request failed'), {
+      name: 'AI_APICallError',
+      statusCode: 429,
+      data: { error: { code: 'insufficient_quota' } },
+    });
+    assert.equal(classifyError(quotaOn429), 'ProviderBilling');
+    assert.equal(providerRetryMetadata(quotaOn429).retryable, false);
+  });
+
+  test('plan-window wording on a credential-shaped status projects to billing', () => {
+    // Providers that gate subscription windows behind 401/403 for validly
+    // signed-in users (#2516): their own wording outranks the bare status,
+    // whether the SDK surfaces it as the error message or keeps it only in
+    // the raw response body after a schema-parse failure.
+    const planWindow = Object.assign(new Error('Your account plan usage limit has been reached.'), {
+      name: 'AI_APICallError',
+      statusCode: 401,
+      data: { error: { type: 'authentication_error' } },
+    });
+    assert.equal(classifyError(planWindow), 'ProviderBilling');
+    assert.equal(providerRetryMetadata(planWindow).retryable, false);
+
+    const exhaustedCredits = Object.assign(new Error('Request failed with status code 403'), {
+      name: 'AI_APICallError',
+      statusCode: 403,
+      responseBody: JSON.stringify({
+        error: { message: 'Your credits have been exhausted for this billing period.' },
+      }),
+    });
+    assert.equal(classifyError(exhaustedCredits), 'ProviderBilling');
+  });
+
+  test('genuine credential and permission failures stay auth on 401/403', () => {
+    const invalidKey = Object.assign(new Error('Invalid API key provided'), {
+      name: 'AI_APICallError',
+      statusCode: 401,
+      data: { error: { message: 'Invalid API key. Check your credentials and try again.' } },
+    });
+    assert.equal(classifyError(invalidKey), 'Auth');
+
+    const forbiddenModel = Object.assign(new Error('request failed'), {
+      name: 'AI_APICallError',
+      statusCode: 403,
+      data: { error: { message: 'You do not have access to this model.' } },
+    });
+    assert.equal(classifyError(forbiddenModel), 'Auth');
+  });
+
   test('recovers structured Codex HTTP facts through an SDK wrapper and truncates identifiers', () => {
     const cause = Object.assign(new Error('Codex OAuth request failed'), {
       name: 'OpenAiCodexHttpError',
@@ -172,6 +237,46 @@ describe('Provider error classification', () => {
       providerCode: 'server_error',
       retryable: true,
     });
+  });
+
+  test('retries an AI SDK transport failure without an HTTP response', () => {
+    const failure = Object.assign(
+      new Error(
+        'Cannot connect to API: 80E1BDF601000000:error:0A000119:SSL routines:tls_get_more_records:decryption failed or bad record mac:../deps/openssl/openssl/ssl/record/methods/tls_common.c:869:',
+      ),
+      {
+        name: 'AI_APICallError',
+        isRetryable: true,
+        cause: Object.assign(new TypeError('fetch failed'), {
+          cause: Object.assign(new Error('decryption failed or bad record mac'), {
+            code: 'ERR_SSL_DECRYPTION_FAILED_OR_BAD_RECORD_MAC',
+          }),
+        }),
+      },
+    );
+
+    assert.equal(classifyError(failure), 'Network');
+    assert.deepEqual(providerRetryMetadata(failure), { retryable: true });
+    assert.equal(providerFailureDiagnostic(failure).retryable, true);
+  });
+
+  test('retries a transport failure identified only by a cause code', () => {
+    const failure = Object.assign(new Error('request failed'), {
+      cause: { code: 'ECONNRESET' },
+    });
+
+    assert.equal(classifyError(failure), 'Network');
+    assert.deepEqual(providerRetryMetadata(failure), { retryable: true });
+  });
+
+  test('does not retry a bare rate limit marked retryable by the AI SDK', () => {
+    const rateLimit = Object.assign(new Error('Rate limit exceeded'), {
+      name: 'AI_APICallError',
+      isRetryable: true,
+      statusCode: 429,
+    });
+
+    assert.deepEqual(providerRetryMetadata(rateLimit), { retryable: false });
   });
 
   test('retries a rate limit only when the provider names a retry delay', () => {

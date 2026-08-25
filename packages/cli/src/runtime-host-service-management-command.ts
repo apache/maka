@@ -42,6 +42,7 @@ import {
   type RuntimeHostManagedServiceTarget,
   type RuntimeHostServiceBackend,
 } from './runtime-host-service-manager.js';
+import { createLaunchAgentRuntimeHostService } from './runtime-host-launch-agent-service.js';
 import { createSystemdUserRuntimeHostService } from './runtime-host-systemd-service.js';
 
 export interface RuntimeHostServiceManagementCliOptions
@@ -77,14 +78,16 @@ export async function runManagedRuntimeHostServiceCli(
     const { json: _json, framed: _framed, ...input } = options;
     const serviceId = resolveRuntimeHostManagedServiceId(options.clientDataRoot);
     const manage = () => deps.manage(input, deps.createBackend(serviceId));
+    const mutate = () =>
+      deps.withDeploymentLock(options.clientDataRoot, () =>
+        deps.withLifecycleLock(options.clientDataRoot, manage),
+      );
     const result =
       options.action === 'status' || options.action === 'logs'
         ? await manage()
         : options.action === 'retire'
           ? await deps.withLifecycleLock(options.clientDataRoot, manage)
-          : await deps.withDeploymentLock(options.clientDataRoot, () =>
-              deps.withLifecycleLock(options.clientDataRoot, manage),
-            );
+          : await mutate();
     const blocked = result.action === 'retire' && result.retirement.kind === 'active_tasks';
     if (options.framed) {
       deps.writeOutput(encodeRuntimeHostServiceManagementFrame(successFrame(result)));
@@ -214,11 +217,13 @@ export function runtimeHostServiceSummary(
 
 export function createPlatformRuntimeHostServiceBackend(
   serviceId: string,
+  platform: NodeJS.Platform = process.platform,
 ): RuntimeHostServiceBackend {
-  if (process.platform === 'linux') return createSystemdUserRuntimeHostService(serviceId);
+  if (platform === 'linux') return createSystemdUserRuntimeHostService(serviceId);
+  if (platform === 'darwin') return createLaunchAgentRuntimeHostService(serviceId);
   throw new RuntimeHostServiceManagerError(
     'unsupported_platform',
-    'Managed Runtime Host services currently require Linux',
+    'Managed Runtime Host services currently require Linux or macOS',
   );
 }
 

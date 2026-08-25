@@ -102,12 +102,16 @@ export interface SandboxRunTraceProjection {
   readonly capabilities: SandboxDiagnosticsSnapshot['capabilities'];
 }
 
-export interface ResolveSandboxDiagnosticsInput {
-  mode: PermissionMode;
-  cwd: string;
-  workspaceRoots?: readonly string[];
-  permissionProfile?: PermissionProfile;
+interface ResolveSandboxDiagnosticsBaseInput {
+  readonly cwd: string;
+  readonly workspaceRoots?: readonly string[];
 }
+
+export type ResolveSandboxDiagnosticsInput = ResolveSandboxDiagnosticsBaseInput &
+  (
+    | { readonly permissionProfile: PermissionProfile; readonly mode?: undefined }
+    | { readonly permissionProfile?: undefined; readonly mode: PermissionMode }
+  );
 
 export interface SandboxDiagnosticsProvider {
   resolve(input: ResolveSandboxDiagnosticsInput): Promise<SandboxDiagnosticsSnapshot>;
@@ -225,9 +229,16 @@ async function probeCommandCapability(
       selectionReason: selection.reason,
     };
   }
+  // The Windows broker runs the purpose-built filesystem worker, but cannot
+  // launch an arbitrary shell inside its capability-less AppContainer. Match
+  // the real Bash execution contract instead of reporting the broker itself as
+  // evidence that command sandboxing is available.
+  if (input.platform === 'win32') {
+    return unavailable('windows', 'capability', 'backend_not_implemented', selection.reason);
+  }
 
   try {
-    const transformed = manager.transform({
+    const probed = manager.probe({
       platform: input.platform,
       command: {
         program: '/bin/sh',
@@ -242,18 +253,18 @@ async function probeCommandCapability(
         },
       },
     });
-    if (!transformed.ok) {
+    if (!probed.ok) {
       return unavailable(
-        transformed.sandboxType ?? selection.sandboxType,
+        probed.sandboxType ?? selection.sandboxType,
         'transform',
-        transformed.reason,
+        probed.reason,
         selection.reason,
       );
     }
-    const executable = transformed.exec.argv[0];
+    const executable = probed.executable;
     if (!executable || !(await safelyCheckExecutable(executable, input.isExecutable))) {
       return unavailable(
-        transformed.sandboxType,
+        probed.sandboxType,
         'capability',
         'executable_unavailable',
         selection.reason,
@@ -261,7 +272,7 @@ async function probeCommandCapability(
     }
     return {
       status: 'available',
-      backend: transformed.sandboxType,
+      backend: probed.sandboxType,
       selectionReason: selection.reason,
     };
   } catch {
@@ -319,7 +330,7 @@ async function probeFilesystemCapability(
   }
 
   try {
-    const transformed = input.sandboxManager.transform({
+    const probed = input.sandboxManager.probe({
       platform: input.platform,
       command: {
         program: launch.spec.program,
@@ -330,24 +341,24 @@ async function probeFilesystemCapability(
         pathContext: {
           workspaceRoots: input.workspaceRoots,
           tmpdir: await canonicalPath(tmpdir()),
-          slashTmp: await canonicalPath('/tmp'),
+          ...(input.platform === 'win32' ? {} : { slashTmp: await canonicalPath('/tmp') }),
           runtimeReadableRoots: launch.spec.runtimeReadableRoots,
           executableRoots: launch.spec.executableRoots,
         },
       },
     });
-    if (!transformed.ok) {
+    if (!probed.ok) {
       return unavailable(
-        transformed.sandboxType ?? selection.sandboxType,
+        probed.sandboxType ?? selection.sandboxType,
         'transform',
-        transformed.reason,
+        probed.reason,
         selection.reason,
       );
     }
-    const executable = transformed.exec.argv[0];
+    const executable = probed.executable;
     if (!executable || !(await safelyCheckExecutable(executable, input.isExecutable))) {
       return unavailable(
-        transformed.sandboxType,
+        probed.sandboxType,
         'capability',
         'executable_unavailable',
         selection.reason,
@@ -355,7 +366,7 @@ async function probeFilesystemCapability(
     }
     return {
       status: 'available',
-      backend: transformed.sandboxType,
+      backend: probed.sandboxType,
       selectionReason: selection.reason,
     };
   } catch {

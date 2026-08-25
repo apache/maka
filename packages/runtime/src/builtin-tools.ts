@@ -85,8 +85,13 @@ import type { ChildFdInput } from './child-fd-input.js';
 import { normalizeSandboxBoundaryPath } from './sandbox-boundary-path.js';
 import type { FilesystemWorkerClient } from './filesystem-worker/client.js';
 import {
+  BASH_REQUIRED_BOUNDARY_DESCRIPTION,
+  bashBoundaryIntentSchema,
   preflightDeclaredSandboxBoundary,
+  preprocessBashBoundaryDeclaration,
+  refineBashBoundaryDeclaration,
   sandboxBoundaryExpansionSchema,
+  selectedBashBoundaryExpansion,
 } from './sandbox-boundary-declaration.js';
 
 // Generous wall-clock cap for the ripgrep-backed Grep tool. A search should be
@@ -627,23 +632,26 @@ function buildExecutorBashTool(
     description:
       withTurnShellGuidance('Run a shell command in the session cwd.', shell) +
       ' Enforced by the current session sandbox boundary.',
-    parameters: z
-      .object({
-        command: z.string().describe('The shell command to execute'),
-        timeout_ms: z.number().int().positive().max(600_000).optional(),
-        required_boundary: sandboxBoundaryExpansionSchema
-          .optional()
-          .describe(
-            'Declare the exact filesystem or network sandbox authority this command requires. Do not infer it from command text.',
-          ),
-      })
-      .strict(),
+    parameters: preprocessBashBoundaryDeclaration(
+      z
+        .object({
+          command: z.string().describe('The shell command to execute'),
+          timeout_ms: z.number().int().positive().max(600_000).optional(),
+          boundary_intent: bashBoundaryIntentSchema,
+          required_boundary: sandboxBoundaryExpansionSchema
+            .optional()
+            .describe(BASH_REQUIRED_BOUNDARY_DESCRIPTION),
+        })
+        .strict()
+        .superRefine(refineBashBoundaryDeclaration),
+    ),
     toModelOutput: ({ output }) => bashToolResultToModelOutput(output),
     executionFacts: executor.facts,
-    impl: async ({ command, timeout_ms, required_boundary }, ctx) => {
+    impl: async (input, ctx) => {
+      const { command, timeout_ms } = input;
       throwIfShellSetupFailed(shell);
       const normalizedRequiredBoundary = await preflightDeclaredSandboxBoundary(
-        required_boundary,
+        selectedBashBoundaryExpansion(input),
         ctx,
       );
       const { cwd, abortSignal, emitOutput } = ctx;

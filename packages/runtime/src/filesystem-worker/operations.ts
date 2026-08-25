@@ -31,7 +31,7 @@ import {
 } from '../apply-patch-file.js';
 
 import { computeEditedSource } from '../edit-replace.js';
-import { createUnifiedDiff } from '../unified-diff.js';
+import { createEditUnifiedDiff, createUnifiedDiff } from '../unified-diff.js';
 import {
   compareAndDeleteEntry,
   hostVisibilityAfterWrite,
@@ -293,7 +293,7 @@ export async function executeFilesystemOperation(
         await writeThroughHandle(handle, source.content);
         const visibility = await hostVisibilityAfterWrite(path, handle);
         if (visibility) throw visibility;
-        const diff = createUnifiedDiff(path, content, source.content);
+        const diff = createEditUnifiedDiff(path, content, source.content, source);
         return {
           kind: 'edit',
           ok: true,

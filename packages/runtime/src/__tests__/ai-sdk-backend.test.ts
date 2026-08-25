@@ -20,6 +20,7 @@
 import assert from 'node:assert/strict';
 import { Buffer } from 'node:buffer';
 import { createHash } from 'node:crypto';
+import { resolve } from 'node:path';
 import { describe, test } from 'node:test';
 import type { ModelMessage, ModelStreamResult } from '../model-protocol.js';
 import { MockLanguageModelV4, simulateReadableStream } from 'ai/test';
@@ -28,14 +29,22 @@ import type { AgentRunHeader } from '@maka/core/agent-run';
 import type { AttachmentByteReader } from '@maka/core/attachments';
 import type { BackendSendInput } from '@maka/core/backend-types';
 import type { LlmConnection } from '@maka/core/llm-connections';
+import { createWorkspaceWritePermissionProfile } from '@maka/core/permission-profile';
+import {
+  createManagedExecutionBoundary,
+  type ExecutionBoundary,
+} from '@maka/core/sandbox-boundary';
 import type { SessionHeader } from '@maka/core/session';
 import type { StorageRef } from '@maka/core/events';
 import { encodeCanonicalRuntimeEvent } from '@maka/core/canonical-runtime-event';
 import type { SessionEvent } from '@maka/core/events';
 import type { RuntimeEvent } from '@maka/core/runtime-event';
-import { createSessionEventMapMemory, mapSessionEventToRuntimeEvent } from '../ai-sdk-flow.js';
+import {
+  createSessionEventMapMemory,
+  mapSessionEventToRuntimeEvent,
+} from '../session-event-runtime-mapper.js';
 import { projectRuntimeEventsToStoredMessages } from '../runtime-event-read-model.js';
-import type { InvocationContext } from '../invocation-context.js';
+import type { RuntimeEventMapContext } from '../session-event-runtime-mapper.js';
 import type { AssistantMessage, StoredMessage, ToolResultMessage } from '@maka/core/session';
 import { z } from 'zod';
 import {
@@ -50,7 +59,7 @@ import {
   type RunTraceEvent,
 } from '../ai-sdk-backend.js';
 import type { DurableSessionEventSink, MakaTool, ToolRuntime } from '../tool-runtime.js';
-import { LOAD_TOOLS_NAME } from '../tool-availability.js';
+import { TOOL_SEARCH_NAME } from '../tool-availability.js';
 import { buildNativeWebSearchTool } from '../native-web-search-tool.js';
 import {
   canonicalizeToolSet,
@@ -69,8 +78,16 @@ import {
 import { buildDefaultContextBudgetPolicy } from '../context-budget-policy.js';
 import { buildRuntimeEventModelReplayPlan, buildSteeringEnvelope } from '../model-history.js';
 import { HistoryCompactSummarizerError } from '../history-compact-summarizer.js';
-import type { SandboxDiagnosticsSnapshot } from '../sandbox/diagnostics.js';
+import type {
+  SandboxDiagnosticsProvider,
+  SandboxDiagnosticsSnapshot,
+} from '../sandbox/diagnostics.js';
 import { SandboxCommandError } from '../sandbox/errors.js';
+import { buildRequestSandboxBoundaryTool } from '../sandbox-boundary-tool.js';
+import {
+  preflightDeclaredSandboxBoundary,
+  sandboxBoundaryExpansionSchema,
+} from '../sandbox-boundary-declaration.js';
 import { FilesystemWorkerClientError } from '../filesystem-worker/client.js';
 import { RunTrace } from '../run-trace.js';
 import type {
@@ -1120,6 +1137,394 @@ describe('AiSdkBackend Memory Extraction triggers', () => {
     assert.ok(durable.ledger.some(({ id }) => id === extractionSnapshot?.terminalEventId));
   });
 });
+
+describe('AiSdkBackend sandbox boundary convergence', () => {
+  test('bounds an expansion retry after denial with one tool-free final step', async () => {
+    const cwd = process.cwd();
+    const calls = [
+      {
+        toolCallId: 'boundary-request',
+        toolName: 'request_sandbox_boundary',
+        input: {
+          expansion: { network: { enabled: true } },
+          justification: 'Use the network.',
+        },
+      },
+      {
+        toolCallId: 'approved-boundary-use',
+        toolName: 'Bash',
+        input: {
+          command: 'read an already allowed workspace file',
+          boundary_intent: 'expand',
+          required_boundary: {
+            filesystem: {
+              entries: [{ path: cwd, access: 'read', scope: 'subtree' }],
+            },
+          },
+        },
+      },
+      {
+        toolCallId: 'boundary-retry',
+        toolName: 'Bash',
+        input: {
+          command: 'read outside the workspace',
+          boundary_intent: 'expand',
+          required_boundary: {
+            filesystem: {
+              entries: [{ path: resolve(cwd, '..'), access: 'read', scope: 'subtree' }],
+            },
+          },
+        },
+      },
+      {
+        toolCallId: 'forbidden-final-tool',
+        toolName: 'Bash',
+        input: { command: 'echo should-not-run', boundary_intent: 'current' },
+      },
+    ] as const;
+    let streamCalls = 0;
+    const model = new MockLanguageModelV4({
+      doStream: async () => {
+        streamCalls += 1;
+        const call = calls[streamCalls - 1];
+        assert.ok(call);
+        return {
+          stream: simulateReadableStream({
+            chunks: [
+              { type: 'stream-start', warnings: [] },
+              { ...call, type: 'tool-call', input: JSON.stringify(call.input) },
+              {
+                type: 'finish',
+                finishReason: { unified: 'tool-calls', raw: 'tool_calls' },
+                usage: emptyUsage(),
+              },
+            ] as LanguageModelV4StreamPart[],
+            initialDelayInMs: null,
+            chunkDelayInMs: null,
+          }),
+        };
+      },
+    });
+    const durable = durableTurnHarness('turn-denial-bound', 'Request access only if required.');
+    const managed = createManagedExecutionBoundary(createWorkspaceWritePermissionProfile(), 0);
+    let pendingRequest:
+      | Awaited<ReturnType<NonNullable<AiSdkBackendInput['createSandboxBoundaryRequest']>>>
+      | undefined;
+    let createCalls = 0;
+    let bashImplCalls = 0;
+    const backend = createTestAiSdkBackend({
+      sessionId: 'session-1',
+      header: { ...header(), cwd, workspaceRoot: cwd },
+      appendMessage: async () => {},
+      connection: connection(),
+      apiKey: 'sk-test',
+      modelId: 'mock-model-id',
+      modelFactory: () => model,
+      tools: [
+        buildRequestSandboxBoundaryTool(),
+        {
+          name: 'Bash',
+          description: 'Run one command.',
+          parameters: z.object({
+            command: z.string(),
+            boundary_intent: z.enum(['current', 'expand']),
+            required_boundary: sandboxBoundaryExpansionSchema.optional(),
+          }),
+          impl: async (input, context) => {
+            await preflightDeclaredSandboxBoundary(input.required_boundary, context);
+            bashImplCalls += 1;
+            return 'used existing authority';
+          },
+        },
+      ],
+      readExecutionBoundary: async () => managed,
+      createSandboxBoundaryRequest: async (input) => {
+        createCalls += 1;
+        pendingRequest = {
+          ...input,
+          status: 'pending',
+          baseRevision: 0,
+          createdAt: 1,
+        };
+        return pendingRequest;
+      },
+      settleSandboxBoundaryRequest: async () => {
+        assert.ok(pendingRequest);
+        pendingRequest = { ...pendingRequest, status: 'denied', settledAt: 2 };
+        return { request: pendingRequest, boundary: managed, changed: false };
+      },
+      maxSteps: 5,
+      loadTurnRuntimeEvents: durable.loadTurnRuntimeEvents,
+      newId: idGenerator(),
+      now: monotonicClock(),
+    });
+    const events: SessionEvent[] = [];
+    const consuming = collectEvents(backend.send(durable.input()), events, durable.record);
+
+    await waitFor(() => events.some((event) => event.type === 'sandbox_boundary_request'));
+    const request = events.find((event) => event.type === 'sandbox_boundary_request');
+    assert.ok(request?.type === 'sandbox_boundary_request');
+    await backend.respondToSandboxBoundary({ requestId: request.requestId, decision: 'deny' });
+    await consuming;
+
+    assert.equal(streamCalls, 4);
+    assert.equal(createCalls, 1);
+    assert.equal(bashImplCalls, 1);
+    assert.equal(events.filter((event) => event.type === 'sandbox_boundary_request').length, 1);
+    assert.doesNotMatch(
+      JSON.stringify(model.doStreamCalls[1]?.tools ?? []),
+      /request_sandbox_boundary/u,
+    );
+    assert.match(JSON.stringify(model.doStreamCalls[1]?.tools ?? []), /Bash/u);
+    assert.deepEqual(model.doStreamCalls[3]?.tools ?? [], []);
+    assert.deepEqual(model.doStreamCalls[3]?.toolChoice, { type: 'none' });
+    assert.match(JSON.stringify(model.doStreamCalls[3]?.prompt), /sandbox_boundary_finalization/u);
+    assert.equal(
+      events.find((event) => event.type === 'complete')?.stopReason,
+      'permission_handoff',
+    );
+    await backend.dispose();
+  });
+
+  test('routes a denied Code Mode boundary retry through the same finalization latch', async () => {
+    let streamCalls = 0;
+    const model = new MockLanguageModelV4({
+      doStream: async () => {
+        streamCalls += 1;
+        const chunks: LanguageModelV4StreamPart[] =
+          streamCalls === 1
+            ? [
+                { type: 'stream-start', warnings: [] },
+                {
+                  type: 'tool-call',
+                  toolCallId: 'code-boundary-request',
+                  toolName: 'request_sandbox_boundary',
+                  input: JSON.stringify({
+                    expansion: { network: { enabled: true } },
+                    justification: 'Use the network.',
+                  }),
+                },
+                {
+                  type: 'finish',
+                  finishReason: { unified: 'tool-calls', raw: 'tool_calls' },
+                  usage: emptyUsage(),
+                },
+              ]
+            : streamCalls === 2
+              ? [
+                  { type: 'stream-start', warnings: [] },
+                  {
+                    type: 'tool-call',
+                    toolCallId: 'code-boundary-retry',
+                    toolName: 'exec',
+                    input: JSON.stringify({
+                      code: [
+                        'return await tools.request_sandbox_boundary({',
+                        '  expansion: { network: { enabled: true } },',
+                        '  justification: "Try another expansion."',
+                        '})',
+                      ].join('\n'),
+                    }),
+                  },
+                  {
+                    type: 'finish',
+                    finishReason: { unified: 'tool-calls', raw: 'tool_calls' },
+                    usage: emptyUsage(),
+                  },
+                ]
+              : [
+                  { type: 'stream-start', warnings: [] },
+                  { type: 'text-start', id: 'code-boundary-final' },
+                  {
+                    type: 'text-delta',
+                    id: 'code-boundary-final',
+                    delta: 'The denied boundary remains unchanged.',
+                  },
+                  { type: 'text-end', id: 'code-boundary-final' },
+                  {
+                    type: 'finish',
+                    finishReason: { unified: 'stop', raw: 'stop' },
+                    usage: emptyUsage(),
+                  },
+                ];
+        return {
+          stream: simulateReadableStream({
+            chunks,
+            initialDelayInMs: null,
+            chunkDelayInMs: null,
+          }),
+        };
+      },
+    });
+    const durable = durableTurnHarness('turn-code-boundary-denial', 'Use Code Mode safely.');
+    const managed = createManagedExecutionBoundary(createWorkspaceWritePermissionProfile(), 0);
+    let pendingRequest:
+      | Awaited<ReturnType<NonNullable<AiSdkBackendInput['createSandboxBoundaryRequest']>>>
+      | undefined;
+    let createCalls = 0;
+    const backend = createTestAiSdkBackend({
+      sessionId: 'session-1',
+      header: header(),
+      appendMessage: async () => {},
+      connection: connection(),
+      apiKey: 'sk-test',
+      modelId: 'mock-model-id',
+      modelFactory: () => model,
+      tools: [buildRequestSandboxBoundaryTool()],
+      readExecutionBoundary: async () => managed,
+      createSandboxBoundaryRequest: async (input) => {
+        createCalls += 1;
+        pendingRequest = {
+          ...input,
+          status: 'pending',
+          baseRevision: 0,
+          createdAt: 1,
+        };
+        return pendingRequest;
+      },
+      settleSandboxBoundaryRequest: async () => {
+        assert.ok(pendingRequest);
+        pendingRequest = { ...pendingRequest, status: 'denied', settledAt: 2 };
+        return { request: pendingRequest, boundary: managed, changed: false };
+      },
+      maxSteps: 5,
+      loadTurnRuntimeEvents: durable.loadTurnRuntimeEvents,
+      newId: idGenerator(),
+      now: monotonicClock(),
+    });
+    const events: SessionEvent[] = [];
+    const consuming = collectEvents(
+      backend.send(durable.input({ toolMode: 'code_mode' })),
+      events,
+      durable.record,
+    );
+
+    await waitFor(() => events.some((event) => event.type === 'sandbox_boundary_request'));
+    const request = events.find((event) => event.type === 'sandbox_boundary_request');
+    assert.ok(request?.type === 'sandbox_boundary_request');
+    await backend.respondToSandboxBoundary({ requestId: request.requestId, decision: 'deny' });
+    await consuming;
+
+    assert.equal(streamCalls, 3);
+    assert.equal(createCalls, 1);
+    assert.equal(events.filter((event) => event.type === 'sandbox_boundary_request').length, 1);
+    assert.equal(
+      events.filter(
+        (event) => event.type === 'tool_start' && event.toolName === 'request_sandbox_boundary',
+      ).length,
+      2,
+    );
+    assert.doesNotMatch(
+      JSON.stringify(model.doStreamCalls[1]?.tools ?? []),
+      /request_sandbox_boundary/u,
+    );
+    assert.match(JSON.stringify(model.doStreamCalls[1]?.tools ?? []), /exec/u);
+    assert.deepEqual(model.doStreamCalls[2]?.tools ?? [], []);
+    assert.match(JSON.stringify(model.doStreamCalls[2]?.prompt), /sandbox_boundary_finalization/u);
+    assert.equal(
+      events.find((event) => event.type === 'complete')?.stopReason,
+      'permission_handoff',
+    );
+    await backend.dispose();
+  });
+
+  test('bounds varied invalid declarations before creating a boundary request', async () => {
+    const invalidCalls = [
+      { expansion: {}, justification: 'Missing permission.' },
+      {
+        expansion: {
+          filesystem: { entries: [{ path: '.', access: 'read', scope: 'exact' }] },
+        },
+        justification: 'Read this path.',
+      },
+      { expansion: { network: { enabled: true } }, justification: '   ' },
+    ] as const;
+    let streamCalls = 0;
+    const model = new MockLanguageModelV4({
+      doStream: async () => {
+        const input = invalidCalls[streamCalls];
+        streamCalls += 1;
+        const chunks: LanguageModelV4StreamPart[] = input
+          ? [
+              { type: 'stream-start', warnings: [] },
+              {
+                type: 'tool-call',
+                toolCallId: `invalid-boundary-${streamCalls}`,
+                toolName: 'request_sandbox_boundary',
+                input: JSON.stringify(input),
+              },
+              {
+                type: 'finish',
+                finishReason: { unified: 'tool-calls', raw: 'tool_calls' },
+                usage: emptyUsage(),
+              },
+            ]
+          : [
+              { type: 'stream-start', warnings: [] },
+              { type: 'text-start', id: 'boundary-final' },
+              {
+                type: 'text-delta',
+                id: 'boundary-final',
+                delta: 'The boundary declaration could not be corrected in this turn.',
+              },
+              { type: 'text-end', id: 'boundary-final' },
+              {
+                type: 'finish',
+                finishReason: { unified: 'stop', raw: 'stop' },
+                usage: emptyUsage(),
+              },
+            ];
+        return {
+          stream: simulateReadableStream({
+            chunks,
+            initialDelayInMs: null,
+            chunkDelayInMs: null,
+          }),
+        };
+      },
+    });
+    const durable = durableTurnHarness('turn-invalid-boundary', 'Use the current boundary.');
+    let createCalls = 0;
+    const backend = createTestAiSdkBackend({
+      sessionId: 'session-1',
+      header: header(),
+      appendMessage: async () => {},
+      connection: connection(),
+      apiKey: 'sk-test',
+      modelId: 'mock-model-id',
+      modelFactory: () => model,
+      tools: [buildRequestSandboxBoundaryTool()],
+      readExecutionBoundary: async () =>
+        createManagedExecutionBoundary(createWorkspaceWritePermissionProfile(), 0),
+      createSandboxBoundaryRequest: async () => {
+        createCalls += 1;
+        throw new Error('invalid calls must not create a boundary request');
+      },
+      settleSandboxBoundaryRequest: async () => {
+        throw new Error('invalid calls must not settle a boundary request');
+      },
+      maxSteps: 4,
+      loadTurnRuntimeEvents: durable.loadTurnRuntimeEvents,
+      newId: idGenerator(),
+      now: monotonicClock(),
+    });
+    const events: SessionEvent[] = [];
+    await collectEvents(backend.send(durable.input()), events, durable.record);
+
+    assert.equal(streamCalls, 4);
+    assert.equal(createCalls, 0);
+    assert.equal(events.filter((event) => event.type === 'sandbox_boundary_request').length, 0);
+    assert.deepEqual(model.doStreamCalls[3]?.tools ?? [], []);
+    assert.deepEqual(model.doStreamCalls[3]?.toolChoice, { type: 'none' });
+    assert.match(JSON.stringify(model.doStreamCalls[3]?.prompt), /sandbox_boundary_finalization/u);
+    assert.equal(
+      events.find((event) => event.type === 'complete')?.stopReason,
+      'permission_handoff',
+    );
+    await backend.dispose();
+  });
+});
+
 describe('AiSdkBackend model history', () => {
   test('exposes one active sandbox snapshot to the model and durable run trace', async () => {
     const model = completionModel();
@@ -1133,7 +1538,8 @@ describe('AiSdkBackend model history', () => {
       modelId: 'mock-model-id',
       modelFactory: () => model,
       tools: [],
-      sandboxDiagnosticsSnapshot: sandboxSnapshot(),
+      readExecutionBoundary: readManagedSandboxBoundary,
+      sandboxDiagnostics: fixedSandboxDiagnostics(),
       recordRunTrace: (event) => traces.push(event),
       newId: idGenerator(),
       now: monotonicClock(),
@@ -1149,6 +1555,173 @@ describe('AiSdkBackend model history', () => {
       | undefined;
     assert.equal(traceSnapshot?.profile?.name, 'workspace-write');
     assert.equal(JSON.stringify(contextEvent).includes('/tmp/maka'), false);
+  });
+
+  test('refreshes same-revision capability facts per Turn and omits external context', async () => {
+    const model = completionModel();
+    let boundary: ExecutionBoundary = createManagedExecutionBoundary(
+      createWorkspaceWritePermissionProfile(),
+      7,
+    );
+    let resolutions = 0;
+    const backend = createTestAiSdkBackend({
+      sessionId: 'session-1',
+      header: header(),
+      appendMessage: async () => {},
+      connection: connection(),
+      apiKey: 'sk-test',
+      modelId: 'mock-model-id',
+      modelFactory: () => model,
+      tools: [],
+      readExecutionBoundary: async () => boundary,
+      sandboxDiagnostics: {
+        resolve: async () => {
+          const snapshot = sandboxSnapshot();
+          resolutions += 1;
+          return {
+            ...snapshot,
+            capabilities: {
+              ...snapshot.capabilities,
+              command: {
+                ...snapshot.capabilities.command,
+                status: resolutions === 1 ? 'available' : 'unavailable',
+              },
+            },
+          };
+        },
+      },
+      newId: idGenerator(),
+      now: monotonicClock(),
+    });
+
+    await drain(backend.send({ turnId: 'turn-fresh-1', text: 'first', context: [] }));
+    await drain(backend.send({ turnId: 'turn-fresh-2', text: 'second', context: [] }));
+    boundary = { kind: 'external', revision: 8 };
+    await drain(backend.send({ turnId: 'turn-external', text: 'third', context: [] }));
+
+    assert.equal(resolutions, 2);
+    assert.match(JSON.stringify(model.doStreamCalls[0]?.prompt), /Command sandbox: available/u);
+    assert.match(JSON.stringify(model.doStreamCalls[1]?.prompt), /Command sandbox: unavailable/u);
+    assert.doesNotMatch(JSON.stringify(model.doStreamCalls[2]?.prompt), /<sandbox_context>/u);
+    await backend.dispose();
+  });
+
+  test('continues without sandbox prompt context when the snapshot cannot be rendered', async () => {
+    const model = completionModel();
+    const traces: RunTraceEvent[] = [];
+    const snapshot = sandboxSnapshot();
+    const backend = createTestAiSdkBackend({
+      sessionId: 'session-1',
+      header: header(),
+      appendMessage: async () => {},
+      connection: connection(),
+      apiKey: 'sk-test',
+      modelId: 'mock-model-id',
+      modelFactory: () => model,
+      tools: [],
+      readExecutionBoundary: readManagedSandboxBoundary,
+      sandboxDiagnostics: fixedSandboxDiagnostics({
+        ...snapshot,
+        profile: { ...snapshot.profile, cwd: '/tmp/invalid\nworkspace' },
+      }),
+      recordRunTrace: (event) => traces.push(event),
+      newId: idGenerator(),
+      now: monotonicClock(),
+    });
+    const events: SessionEvent[] = [];
+
+    await collectEvents(
+      backend.send({ turnId: 'turn-invalid-sandbox-context', text: 'current user', context: [] }),
+      events,
+    );
+
+    assert.equal(model.doStreamCalls.length, 1);
+    assert.equal(
+      events.some((event) => event.type === 'error'),
+      false,
+    );
+    assert.equal(events.find((event) => event.type === 'complete')?.stopReason, 'end_turn');
+    assert.doesNotMatch(JSON.stringify(compactPrompt(model)), /<sandbox_context>/u);
+    assert.equal(
+      traces.some((event) => event.type === 'sandbox_context_resolved'),
+      false,
+    );
+    const failure = traces.find((event) => event.type === 'sandbox_context_failed');
+    assert.equal(failure?.phase, 'sandbox');
+    assert.equal(failure?.data?.stage, 'render');
+    assert.equal(
+      traces.some(
+        (event) =>
+          event.type === 'model_stream_failed' &&
+          event.data?.errorClass === 'SandboxDiagnosticsResolutionError',
+      ),
+      false,
+    );
+    await backend.dispose();
+  });
+
+  test('Stop interrupts a stalled per-turn sandbox diagnostics resolver', async () => {
+    const model = completionModel();
+    const traces: RunTraceEvent[] = [];
+    let markResolverEntered!: () => void;
+    const resolverEntered = new Promise<void>((resolve) => {
+      markResolverEntered = resolve;
+    });
+    let releaseResolver!: () => void;
+    const stalledResolver = new Promise<SandboxDiagnosticsSnapshot>((resolve) => {
+      releaseResolver = () => resolve(sandboxSnapshot());
+    });
+    const backend = createTestAiSdkBackend({
+      sessionId: 'session-1',
+      header: header(),
+      appendMessage: async () => {},
+      connection: connection(),
+      apiKey: 'sk-test',
+      modelId: 'mock-model-id',
+      modelFactory: () => model,
+      tools: [],
+      readExecutionBoundary: readManagedSandboxBoundary,
+      sandboxDiagnostics: {
+        resolve: async () => {
+          markResolverEntered();
+          return await stalledResolver;
+        },
+      },
+      recordRunTrace: (event) => traces.push(event),
+      newId: idGenerator(),
+      now: monotonicClock(),
+    });
+    const events: SessionEvent[] = [];
+    const consuming = collectEvents(
+      backend.send({ turnId: 'turn-stalled-sandbox', text: 'current user', context: [] }),
+      events,
+    );
+
+    await resolverEntered;
+    await backend.stop('user_stop');
+    await consuming;
+    releaseResolver();
+
+    assert.equal(model.doStreamCalls.length, 0);
+    assert.equal(
+      events.some((event) => event.type === 'error'),
+      false,
+    );
+    assert.equal(events.find((event) => event.type === 'abort')?.reason, 'user_stop');
+    assert.equal(events.find((event) => event.type === 'complete')?.stopReason, 'user_stop');
+    assert.equal(
+      traces.some(
+        (event) =>
+          event.type === 'model_stream_failed' &&
+          event.data?.errorClass === 'SandboxDiagnosticsResolutionError',
+      ),
+      false,
+    );
+    assert.equal(
+      traces.some((event) => event.type === 'sandbox_context_failed'),
+      false,
+    );
+    await backend.dispose();
   });
 
   test('records structured sandbox failure metadata on tool failure traces', async () => {
@@ -1487,6 +2060,8 @@ describe('AiSdkBackend model history', () => {
       modelId: 'mock-model-id',
       modelFactory: () => model,
       tools: [],
+      readExecutionBoundary: readManagedSandboxBoundary,
+      sandboxDiagnostics: fixedSandboxDiagnostics(),
       newId: idGenerator(),
       now: monotonicClock(),
     });
@@ -1514,9 +2089,13 @@ describe('AiSdkBackend model history', () => {
       }),
     );
 
-    assert.deepEqual(compactPrompt(model), [
+    const prompt = compactPrompt(model) as Array<{ role: string; content: unknown }>;
+    assert.match(JSON.stringify(prompt[0]), /<sandbox_context>/u);
+    assert.match(JSON.stringify(prompt[0]), /Profile: workspace-write/u);
+    assert.deepEqual(prompt.slice(1), [
       { role: 'user', content: [{ type: 'text', text: 'original user' }] },
     ]);
+    assert.equal(JSON.stringify(prompt).match(/original user/gu)?.length, 1);
   });
 
   test('continuation replays the original user after diagnostic terminal errors with no StoredMessage context', async () => {
@@ -3307,21 +3886,11 @@ describe('AiSdkBackend model history', () => {
     });
     const ledger: RuntimeEvent[] = [anchor];
     const mappingMemory = createSessionEventMapMemory();
-    const mappingContext: InvocationContext = {
+    const mappingContext: RuntimeEventMapContext = {
       sessionId: 'session-1',
       invocationId: 'invocation-1',
       runId: 'run-1',
       turnId: 'turn-1',
-      source: 'desktop',
-      startedAt: 1,
-      request: {
-        sessionId: 'session-1',
-        turnId: 'turn-1',
-        text: 'read chart.png',
-        source: 'desktop',
-        initialRuntimeEvent: anchor,
-      },
-      newId: idGenerator(),
       now: monotonicClock(),
     };
     const model = new MockLanguageModelV4({
@@ -3416,21 +3985,11 @@ describe('AiSdkBackend model history', () => {
     });
     const ledger: RuntimeEvent[] = [anchor];
     const mappingMemory = createSessionEventMapMemory();
-    const mappingContext: InvocationContext = {
+    const mappingContext: RuntimeEventMapContext = {
       sessionId: 'session-1',
       invocationId: 'invocation-1',
       runId: 'run-1',
       turnId: 'turn-1',
-      source: 'desktop',
-      startedAt: 1,
-      request: {
-        sessionId: 'session-1',
-        turnId: 'turn-1',
-        text: 'run both tools',
-        source: 'desktop',
-        initialRuntimeEvent: anchor,
-      },
-      newId: idGenerator(),
       now: monotonicClock(),
     };
     const executions: string[] = [];
@@ -7990,7 +8549,7 @@ describe('AiSdkBackend request-shape diagnostics', () => {
     const initialTools = canonicalizeToolSet(
       [
         testTool('Read', z.object({ path: z.string() })),
-        testTool(LOAD_TOOLS_NAME, z.object({ group: z.string() })),
+        testTool(TOOL_SEARCH_NAME, z.object({ query: z.string() })),
       ],
       invalid,
     );
@@ -7998,7 +8557,7 @@ describe('AiSdkBackend request-shape diagnostics', () => {
       [
         testTool('Read', z.object({ path: z.string() })),
         testTool('WebFetch', z.object({ url: z.string() })),
-        testTool(LOAD_TOOLS_NAME, z.object({ group: z.string() })),
+        testTool(TOOL_SEARCH_NAME, z.object({ query: z.string() })),
       ],
       invalid,
     );
@@ -8011,10 +8570,10 @@ describe('AiSdkBackend request-shape diagnostics', () => {
         activeTools: initialTools.activeTools,
         priorMessages: [],
         toolAvailability: {
-          mode: 'economy',
+          mode: 'search',
           enabledSourceIds: [],
           availableSourceIds: ['web'],
-          connectorToolName: LOAD_TOOLS_NAME,
+          connectorToolName: TOOL_SEARCH_NAME,
           visibleToolNamesBySource: groupCatalog,
         },
       },
@@ -8028,10 +8587,10 @@ describe('AiSdkBackend request-shape diagnostics', () => {
         activeTools: expandedTools.activeTools,
         priorMessages: [],
         toolAvailability: {
-          mode: 'economy',
+          mode: 'search',
           enabledSourceIds: ['web'],
           availableSourceIds: [],
-          connectorToolName: LOAD_TOOLS_NAME,
+          connectorToolName: TOOL_SEARCH_NAME,
           visibleToolNamesBySource: groupCatalog,
         },
       },
@@ -8069,7 +8628,7 @@ describe('AiSdkBackend request-shape diagnostics', () => {
     }
 
     assert.deepEqual(modelToolNames(model), sortedModelToolNames(['Read', 'WebFetch']));
-    assert.equal(modelToolNames(model).includes(LOAD_TOOLS_NAME), false);
+    assert.equal(modelToolNames(model).includes(TOOL_SEARCH_NAME), false);
     // toolCount tracks the model-visible (active) tools — the two real tools.
     // The invalid fallback lives in providerTools but is never advertised, so
     // it is not counted (toolCount is the wire-visible subset).
@@ -10649,7 +11208,7 @@ describe('AiSdkBackend thinking persistence', () => {
       turnId: 'turn-1',
       now: () => 42,
       newId: idGenerator(),
-    } as unknown as InvocationContext;
+    } as unknown as RuntimeEventMapContext;
     const memory = createSessionEventMapMemory();
     const runtimeEvents = events.map((event) => mapSessionEventToRuntimeEvent(event, ctx, memory));
     const runHeader: AgentRunHeader = {
@@ -10743,7 +11302,7 @@ describe('AiSdkBackend thinking persistence', () => {
       turnId: 'turn-1',
       now: () => 42,
       newId: idGenerator(),
-    } as unknown as InvocationContext;
+    } as unknown as RuntimeEventMapContext;
     const memory = createSessionEventMapMemory();
     const runtimeEvents = events.map((event) => mapSessionEventToRuntimeEvent(event, ctx, memory));
     const runHeader: AgentRunHeader = {
@@ -10850,7 +11409,7 @@ describe('AiSdkBackend thinking persistence', () => {
       turnId: 'turn-prev',
       now: () => 7,
       newId: idGenerator(),
-    } as unknown as InvocationContext;
+    } as unknown as RuntimeEventMapContext;
     const memory = createSessionEventMapMemory();
     const runtimeContext = firstEvents.map((event) =>
       mapSessionEventToRuntimeEvent(event, ctx, memory),
@@ -10913,7 +11472,7 @@ describe('AiSdkBackend thinking persistence', () => {
       turnId: 'turn-prev',
       now: () => 7,
       newId: idGenerator(),
-    } as unknown as InvocationContext;
+    } as unknown as RuntimeEventMapContext;
     const memory = createSessionEventMapMemory();
     const priorEvents: SessionEvent[] = [
       {
@@ -11170,7 +11729,7 @@ describe('AiSdkBackend thinking persistence', () => {
       turnId: 'turn-prev',
       now: () => 7,
       newId: idGenerator(),
-    } as unknown as InvocationContext;
+    } as unknown as RuntimeEventMapContext;
     const memory = createSessionEventMapMemory();
     const priorEvents: SessionEvent[] = [
       {
@@ -11287,7 +11846,7 @@ describe('AiSdkBackend thinking persistence', () => {
       turnId: 'turn-prev',
       now: () => 7,
       newId: idGenerator(),
-    } as unknown as InvocationContext;
+    } as unknown as RuntimeEventMapContext;
     const memory = createSessionEventMapMemory();
     const priorEvents: SessionEvent[] = [
       {
@@ -11567,7 +12126,7 @@ describe('AiSdkBackend thinking persistence', () => {
       turnId: 'turn-prev',
       now: () => 7,
       newId: idGenerator(),
-    } as unknown as InvocationContext;
+    } as unknown as RuntimeEventMapContext;
     const memory = createSessionEventMapMemory();
     const runtimeContext = events.map((event) => mapSessionEventToRuntimeEvent(event, ctx, memory));
     const projection = projectRuntimeEventsToStoredMessages(runtimeContext, {
@@ -11666,7 +12225,7 @@ describe('AiSdkBackend thinking persistence', () => {
       turnId: 'turn-prev',
       now: () => 7,
       newId: idGenerator(),
-    } as unknown as InvocationContext;
+    } as unknown as RuntimeEventMapContext;
     const memory = createSessionEventMapMemory();
     const priorEvents: SessionEvent[] = [
       {
@@ -11758,7 +12317,7 @@ describe('AiSdkBackend thinking persistence', () => {
       turnId: 'turn-prev',
       now: () => 7,
       newId: idGenerator(),
-    } as unknown as InvocationContext;
+    } as unknown as RuntimeEventMapContext;
     const memory = createSessionEventMapMemory();
     const priorEvents: SessionEvent[] = [
       // Orphan: result with no prior tool_start (its call was sliced away).
@@ -11926,7 +12485,7 @@ describe('AiSdkBackend thinking persistence', () => {
       turnId: 'turn-prev',
       now: () => 7,
       newId: idGenerator(),
-    } as unknown as InvocationContext;
+    } as unknown as RuntimeEventMapContext;
     const memory = createSessionEventMapMemory();
     const runtimeContext = firstEvents.map((event) =>
       mapSessionEventToRuntimeEvent(event, ctx, memory),
@@ -12922,21 +13481,11 @@ describe('AiSdkBackend steering durability and identity', () => {
     });
     const ledger: RuntimeEvent[] = [anchor];
     const mappingMemory = createSessionEventMapMemory();
-    const mappingContext: InvocationContext = {
+    const mappingContext: RuntimeEventMapContext = {
       sessionId: 'session-1',
       invocationId: 'invocation-1',
       runId: 'run-1',
       turnId: 'turn-1',
-      source: 'desktop',
-      startedAt: 1,
-      request: {
-        sessionId: 'session-1',
-        turnId: 'turn-1',
-        text: 'call the tool',
-        source: 'desktop',
-        initialRuntimeEvent: anchor,
-      },
-      newId: idGenerator(),
       now: monotonicClock(),
     };
     let calls = 0;
@@ -13039,21 +13588,11 @@ describe('AiSdkBackend steering durability and identity', () => {
     });
     const ledger: RuntimeEvent[] = [anchor];
     const mappingMemory = createSessionEventMapMemory();
-    const mappingContext: InvocationContext = {
+    const mappingContext: RuntimeEventMapContext = {
       sessionId: 'session-1',
       invocationId: 'invocation-1',
       runId: 'run-1',
       turnId: 'turn-1',
-      source: 'desktop',
-      startedAt: 1,
-      request: {
-        sessionId: 'session-1',
-        turnId: 'turn-1',
-        text: 'think about it',
-        source: 'desktop',
-        initialRuntimeEvent: anchor,
-      },
-      newId: idGenerator(),
       now: monotonicClock(),
     };
     const model = new MockLanguageModelV4({
@@ -13322,21 +13861,11 @@ describe('AiSdkBackend steering durability and identity', () => {
       author: 'user',
       text: 'search',
     });
-    const mappingContext: InvocationContext = {
+    const mappingContext: RuntimeEventMapContext = {
       sessionId: 'session-1',
       invocationId: 'invocation-search',
       runId: 'run-search',
       turnId: 'turn-1',
-      source: 'desktop',
-      startedAt: 1,
-      request: {
-        sessionId: 'session-1',
-        turnId: 'turn-1',
-        text: 'search',
-        source: 'desktop',
-        initialRuntimeEvent: anchor,
-      },
-      newId: idGenerator(),
       now: monotonicClock(),
     };
     for (const event of events) {
@@ -13788,21 +14317,11 @@ function durableTurnHarness(
   };
   const ledger: RuntimeEvent[] = [anchor];
   const memory = createSessionEventMapMemory();
-  const ctx: InvocationContext = {
+  const ctx: RuntimeEventMapContext = {
     sessionId: 'session-1',
     invocationId,
     runId,
     turnId,
-    source: 'desktop',
-    startedAt: 1,
-    request: {
-      sessionId: 'session-1',
-      turnId,
-      text,
-      source: 'desktop',
-      initialRuntimeEvent: anchor,
-    },
-    newId: idGenerator(),
     now: monotonicClock(),
   };
   return {
@@ -13897,7 +14416,6 @@ function header(permissionMode: SessionHeader['permissionMode'] = 'ask'): Sessio
     workspaceRoot: '/tmp/maka',
     cwd: '/tmp/maka',
     createdAt: 1,
-    lastUsedAt: 1,
     name: 'Test',
     titleIsManual: true,
     isFlagged: false,
@@ -13941,6 +14459,15 @@ function sandboxSnapshot(): SandboxDiagnosticsSnapshot {
       },
     },
   };
+}
+
+const readManagedSandboxBoundary: AiSdkBackendInput['readExecutionBoundary'] = async () =>
+  createManagedExecutionBoundary(createWorkspaceWritePermissionProfile(), 7);
+
+function fixedSandboxDiagnostics(
+  snapshot: SandboxDiagnosticsSnapshot = sandboxSnapshot(),
+): SandboxDiagnosticsProvider {
+  return { resolve: async () => snapshot };
 }
 
 function connection(): LlmConnection {

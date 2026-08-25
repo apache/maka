@@ -839,6 +839,59 @@ describe('reconcileTerminalLiveTurn', () => {
     ]), textTurn);
   });
 
+  it('terminalizes live text when persisted history proves a missed terminal event', () => {
+    const live: LiveTurnProjection = {
+      turnId: 'turn-1',
+      phase: 'streamed',
+      providerRetry: {
+        type: 'provider_retry',
+        id: 'retry-1',
+        turnId: 'turn-1',
+        ts: 2,
+        phase: 'started',
+        attempt: 2,
+        maxAttempts: 3,
+        reason: 'network',
+      },
+      steps: [{
+        stepId: 'assistant-1',
+        thinking: { text: 'reasoning', truncated: false, complete: false },
+        text: { text: 'answer', truncated: false, complete: false },
+        tools: [],
+      }],
+    };
+
+    assert.deepEqual(reconcileTerminalLiveTurn(live, [
+      {
+        type: 'assistant',
+        id: 'assistant-1',
+        turnId: 'turn-1',
+        ts: 3,
+        text: 'answer',
+        thinking: { text: 'reasoning' },
+        modelId: 'm',
+      },
+      {
+        type: 'turn_state',
+        id: 'state-1',
+        turnId: 'turn-1',
+        ts: 4,
+        status: 'completed',
+        partialOutputRetained: false,
+      },
+    ]), {
+      turnId: 'turn-1',
+      phase: 'streamed',
+      terminal: true,
+      steps: [{
+        stepId: 'assistant-1',
+        thinking: { text: 'reasoning', truncated: false, complete: true },
+        text: { text: 'answer', truncated: false, complete: true },
+        tools: [],
+      }],
+    });
+  });
+
   it('settles a persisted thinking-only step whose text slot is empty', () => {
     const thinkingOnly: LiveTurnProjection = {
       turnId: 'turn-1',

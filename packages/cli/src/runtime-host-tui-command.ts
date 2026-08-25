@@ -22,7 +22,7 @@ import type { UiLocale } from '@maka/core/ui-locale';
 import { createInterface } from 'node:readline/promises';
 import { SessionActivityRegistry } from '@maka/runtime/goal-turn-lifecycle';
 import { readRuntimeHostConnectionCatalog } from '@maka/runtime-host/client';
-import { createForeignSessionStore } from '@maka/storage';
+import { createForeignSessionStore } from '@maka/storage/foreign-session-store';
 import { formatMakaResumeHint } from './cli-invocation.js';
 import {
   connectRuntimeHostCli,
@@ -117,6 +117,7 @@ export async function runRuntimeHostTui(input: RunRuntimeHostTuiInput): Promise<
     if (hint) process.stdout.write(`${hint}\n`);
     return 0;
   } finally {
+    await context.driver.cleanupOwnedSideConversations().catch(() => undefined);
     await context.close();
   }
 }

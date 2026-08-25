@@ -23,6 +23,7 @@ import type { SessionSummary, TurnRecord } from '@maka/core/session';
 import {
   abandonPendingCompanionCopy,
   createFakeWorkbarServices,
+  ensureCompanionFork,
   performCompanionTurn,
   type PerformCompanionTurnDeps,
   type WorkbarServices,
@@ -78,7 +79,6 @@ function turnDeps(
     quotes: undefined,
     onForkCommitted: () => undefined,
     onBeforeSend: () => undefined,
-    onQuotesConsumed: () => undefined,
     ...overrides,
   };
 }
@@ -92,6 +92,26 @@ afterEach(async () => {
 });
 
 describe('quote companion disposal fencing', () => {
+  it('preserves a retryable busy reason from Side Conversation creation', async () => {
+    const defaults = createFakeWorkbarServices();
+    const sideChat = {
+      ...defaults.sideChat,
+      listTurns: async () => [settledTurn('source-turn')],
+      branchFromTurn: async () => ({ ok: false as const, reason: 'session_busy' as const }),
+    };
+
+    assert.deepEqual(
+      await ensureCompanionFork({
+        api: sideChat,
+        sourceSession,
+        panelId,
+        name: 'Side chat',
+        isDisposed: () => false,
+      }),
+      { status: 'error', code: 'fork_source_busy' },
+    );
+  });
+
   it('does not start a send when the panel was disposed after fork setup', async () => {
     let sends = 0;
     let armed = 0;
@@ -100,7 +120,7 @@ describe('quote companion disposal fencing', () => {
       ...defaults.sideChat,
       send: async () => {
         sends += 1;
-        return { ok: true as const };
+        return { ok: true as const, turnId: 'side-chat-turn' };
       },
     };
 
@@ -118,10 +138,9 @@ describe('quote companion disposal fencing', () => {
     assert.equal(sends, 0);
   });
 
-  it('does not consume quotes or report success when disposal wins the send race', async () => {
-    const pendingSend = deferred<{ ok: true }>();
+  it('does not report success when disposal wins the send race', async () => {
+    const pendingSend = deferred<{ ok: true; turnId: string }>();
     let disposed = false;
-    let consumed = 0;
     const defaults = createFakeWorkbarServices();
     const sideChat = {
       ...defaults.sideChat,
@@ -130,17 +149,13 @@ describe('quote companion disposal fencing', () => {
     const turn = performCompanionTurn(
       turnDeps(sideChat, {
         isDisposed: () => disposed,
-        onQuotesConsumed: () => {
-          consumed += 1;
-        },
       }),
     );
 
     disposed = true;
-    pendingSend.resolve({ ok: true });
+    pendingSend.resolve({ ok: true, turnId: 'side-chat-turn' });
 
     assert.deepEqual(await turn, { status: 'disposed' });
-    assert.equal(consumed, 0);
   });
 
   it('cleans a fork that resolves after its panel was disposed and never sends', async () => {
@@ -152,13 +167,13 @@ describe('quote companion disposal fencing', () => {
     const sideChat = {
       ...defaults.sideChat,
       listTurns: async () => [settledTurn('source-turn')],
-      branchFromTurn: () => pendingFork.promise,
+      branchFromTurn: async () => ({ ok: true as const, session: await pendingFork.promise }),
       cleanupSessionCopy: async (sessionId: string) => {
         cleaned.push(sessionId);
       },
       send: async () => {
         sends += 1;
-        return { ok: true as const };
+        return { ok: true as const, turnId: 'side-chat-turn' };
       },
     };
     const turn = performCompanionTurn(

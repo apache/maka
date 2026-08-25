@@ -21,7 +21,7 @@ import { performance } from 'node:perf_hooks';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { createSessionStore } from '@maka/storage';
+import { createSessionStore } from '@maka/storage/session-store';
 import { ClientSessionSubscription } from '../dist/client/session-subscription.js';
 import { SESSION_CONTINUITY_SCHEMA_VERSION } from '../dist/protocol/index.js';
 import {
@@ -88,7 +88,6 @@ async function runFixture(fixture) {
             metadataRevision: 1,
             status: 'active',
             createdAt: 1,
-            lastUsedAt: 1,
             isArchived: false,
           },
           projectionRevision: 1,

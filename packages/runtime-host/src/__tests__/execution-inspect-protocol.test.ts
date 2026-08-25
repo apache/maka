@@ -362,7 +362,6 @@ function sessionDocument(sessionId: string): SessionInspectDocument {
       name: 'Session',
       status: 'active',
       createdAt: 1,
-      lastUsedAt: 2,
       isArchived: false,
     },
     agentRuns: [],

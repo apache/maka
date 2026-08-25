@@ -20,8 +20,11 @@
 import { contextBridge, ipcRenderer } from 'electron';
 import { encodeIngestItems } from './attachment-ingest-payload.js';
 import { collectThreadSearchResponses } from './multi-host-thread-search.js';
-import { notifyWhenSeeded } from './seed-completion.js';
 import { releaseSessionObservation } from './session-observation-release.js';
+import {
+  resolveDesktopWorkHubCoordinationCreateScope,
+  resolveDesktopWorkHubCoordinationSession,
+} from './workhub-coordination-session.js';
 import type {
   MakaBridge,
   OnboardingSnapshot,
@@ -30,12 +33,15 @@ import type {
   PermissionOverlayStartResult,
   RendererIngestInput,
   DesktopBranchFromTurnInput,
+  DesktopSideConversationBranchResult,
+  DesktopSessionStopResult,
   DesktopReviseBeforeTurnInput,
   AppUpdateInstallRequest,
   AppUpdateInstallResult,
   AppUpdateStatus,
   WindowCommand,
   PetPackChangedEvent,
+  WorkBoardChangedEvent,
   DesktopRuntimeHostProfileAddInput,
   DesktopRuntimeHostProfileChangedEvent,
   DesktopRuntimeHostProfileSnapshot,
@@ -103,6 +109,10 @@ import type {
 import type { BotProvider } from '@maka/core/bot-chat-settings';
 import type { BotOnboardingSnapshot, BotOnboardingStartInput } from '@maka/core/bot-onboarding';
 import type { HealthSnapshot } from '@maka/core/health';
+import {
+  collectRuntimeHostSessionCatalogs,
+  collectRuntimeHostSessionCatalogsWithCoverage,
+} from './runtime-host-session-catalog.js';
 import type { ExecutionBoundaryReadModel, SandboxBoundaryResponse } from '@maka/core/sandbox-boundary';
 import type {
   ActiveInteractionRequestEvent,
@@ -110,7 +120,6 @@ import type {
   SessionCommand,
   SessionEvent,
   ShellRunUpdate,
-  QueueEnqueueOutcome,
 } from '@maka/core/events';
 import type { UserQuestionResponse } from '@maka/core/user-question';
 import type { PermissionMode } from '@maka/core/permission';
@@ -120,7 +129,12 @@ import type { OrchestrationMode } from '@maka/core/orchestration';
 import type { TurnOrchestration, SessionListFilter, RegenerateTurnInput } from '@maka/core/runtime-inputs';
 import type { PlanSessionState } from '@maka/core/plan';
 import type { SearchErrorReason, SearchRequest, SearchResult } from '@maka/core/search';
-import type { SessionChangedEvent, SessionSummary, TurnRecord } from '@maka/core/session';
+import type {
+  SessionCatalogSummary,
+  SessionChangedEvent,
+  SessionSummary,
+  TurnRecord,
+} from '@maka/core/session';
 import type { ThinkingLevel } from '@maka/core/model-thinking';
 import type { E2eFixtureState } from '@maka/core/e2e-fixture';
 import type {
@@ -177,7 +191,7 @@ import type { BotStatus, WechatBridgeQrCodeResult } from '@maka/runtime/bots';
 import type { ShellRunPtyDataEvent, ShellRunPtySnapshot } from '@maka/runtime/shell-run-contract';
 import type { GoalState } from '@maka/runtime/goal-state';
 import type { BundledSkillCatalogEntry, ManagedSkillSourceEntry, ManagedSkillUpdatePreview, SkillEntry } from '@maka/ui';
-import type { ConfigCategory } from '@maka/storage';
+import type { ConfigCategory } from '@maka/storage/config-transfer';
 import {
   SENSITIVE_PLACEHOLDER,
   type TestProxyInput,
@@ -186,6 +200,7 @@ import type { Result } from '@maka/core/result';
 import type { CreateSessionRequestInput } from '@maka/core/runtime-inputs';
 import type {
   McpConfigAddResult,
+  McpConfigImportResult,
   McpConfigFile,
   McpServerConfig,
   McpServerStatus,
@@ -227,7 +242,6 @@ const runtimeHostMetadata = new Map<
   string,
   { readonly profileId: string; readonly profileName: string; readonly profileKind: 'local' | 'remote' }
 >();
-const runtimeHostSessionCache = new Map<string, DesktopSessionSummary[]>();
 const newTaskChangeListeners = new Set<() => void>();
 
 type RuntimeHostProfileWireEvent = DesktopRuntimeHostProfileChangedEvent;
@@ -243,7 +257,6 @@ ipcRenderer.on(
       runtimeHostScopes.delete(previousHostId);
       if (change.removed) {
         runtimeHostMetadata.delete(previousHostId);
-        runtimeHostSessionCache.delete(previousHostId);
         runtimeHostProfiles.delete(change.profileId);
       }
     }
@@ -319,10 +332,6 @@ async function runtimeHostScopeList(): Promise<readonly DesktopTargetScope[]> {
     for (const hostId of runtimeHostScopes.keys()) {
       if (authoritativeHostIds.has(hostId)) continue;
       runtimeHostScopes.delete(hostId);
-    }
-    for (const hostId of runtimeHostSessionCache.keys()) {
-      if (authoritativeHostIds.has(hostId)) continue;
-      runtimeHostSessionCache.delete(hostId);
     }
     return readyScopes;
   }
@@ -608,6 +617,34 @@ async function invokeSessionSummary(
   return projectSessionSummary(session.scope, summary);
 }
 
+async function invokeBranchFromTurn(
+  sessionId: string,
+  input: DesktopBranchFromTurnInput & { sideConversation: true },
+): Promise<DesktopSideConversationBranchResult>;
+async function invokeBranchFromTurn(
+  sessionId: string,
+  input: DesktopBranchFromTurnInput & { sideConversation?: false },
+): Promise<DesktopSessionSummary>;
+async function invokeBranchFromTurn(
+  sessionId: string,
+  input: DesktopBranchFromTurnInput,
+): Promise<DesktopSessionSummary | DesktopSideConversationBranchResult> {
+  const ref = await runtimeHostSessionRef(sessionId);
+  const result = await ipcRenderer.invoke(
+    'sessions:branchFromTurn',
+    ref.scope,
+    ref.sessionId,
+    input,
+  ) as SessionSummary | { ok: true; session: SessionSummary } | { ok: false; reason: string };
+  if (input.sideConversation) {
+    if (!('ok' in result) || result.ok === false) {
+      return result as DesktopSideConversationBranchResult;
+    }
+    return { ok: true, session: projectSessionSummary(ref.scope, result.session) };
+  }
+  return projectSessionSummary(ref.scope, result as SessionSummary);
+}
+
 async function invokeSessionInput<T, I extends { readonly sessionId: string }>(
   channel: string,
   input: I,
@@ -773,29 +810,43 @@ async function listDesktopSessions(
       'sessions:list',
       parent.scope,
       { ...filter, subagentParentSessionId: parent.sessionId },
-    ) as SessionSummary[];
+    ) as SessionCatalogSummary[];
     return sessions.map((session) => projectSessionSummary(parent.scope, session));
   }
   const scopes = await runtimeHostScopeList();
-  const settled = await Promise.allSettled(
+  return collectRuntimeHostSessionCatalogs(
     scopes.map(async (scope) => {
-      const sessions = await ipcRenderer.invoke('sessions:list', scope, filter) as SessionSummary[];
-      const projected = sessions.map((session) => projectSessionSummary(scope, session));
-      if (!filter) runtimeHostSessionCache.set(scope.hostId, projected);
-      return projected;
+      const sessions = await ipcRenderer.invoke(
+        'sessions:list',
+        scope,
+        filter,
+      ) as SessionCatalogSummary[];
+      return sessions.map((session) => projectSessionSummary(scope, session));
     }),
   );
-  const groups = settled.flatMap((result) => result.status === 'fulfilled' ? [result.value] : []);
-  if (groups.length === 0) {
-    throw settled.find((result) => result.status === 'rejected')?.reason ??
-      new Error('No Runtime Host is available');
-  }
-  const sessions = filter
-    ? groups.flat()
-    : [...runtimeHostSessionCache.values()].flat();
-  return sessions.sort(
-    (left, right) => (right.lastMessageAt ?? 0) - (left.lastMessageAt ?? 0),
+}
+
+async function listDesktopSessionsWithCoverage(): Promise<{
+  sessions: DesktopSessionSummary[];
+  completeHostIds: string[];
+}> {
+  const scopes = await runtimeHostScopeList();
+  return collectRuntimeHostSessionCatalogsWithCoverage(
+    scopes.map((scope) => ({
+      hostId: scope.hostId,
+      sessions: ipcRenderer.invoke('sessions:list', scope)
+        .then((sessions: SessionCatalogSummary[]) =>
+          sessions.map((session) => projectSessionSummary(scope, session))),
+    })),
   );
+}
+
+async function createDesktopSessionOnScope(
+  scope: DesktopTargetScope,
+  input?: CreateSessionRequestInput,
+): Promise<DesktopSessionSummary> {
+  const session = await ipcRenderer.invoke('sessions:create', scope, input) as SessionSummary;
+  return projectSessionSummary(scope, session);
 }
 
 function sendActiveRuntimeHost(channel: string, ...args: unknown[]): void {
@@ -1218,6 +1269,18 @@ const makaBridge = {
       ipcRenderer.on('runtime-host-management:progress', listener);
       return () => ipcRenderer.off('runtime-host-management:progress', listener);
     },
+    getUpdatePolicy(profileId: string) {
+      return ipcRenderer.invoke('runtime-host-management:get-update-policy', profileId);
+    },
+    setUpdatePolicy(
+      profileId: string,
+      policy: import('@maka/runtime-host/operator').RuntimeHostManagedUpdatePolicy,
+    ) {
+      return ipcRenderer.invoke('runtime-host-management:set-update-policy', profileId, policy);
+    },
+    reconcileUpdate(profileId: string) {
+      return ipcRenderer.invoke('runtime-host-management:reconcile-update', profileId);
+    },
     listCredentials(profileId: string): Promise<DesktopRuntimeHostAccessSnapshot> {
       return ipcRenderer.invoke('runtime-host-management:list-credentials', profileId);
     },
@@ -1317,11 +1380,10 @@ const makaBridge = {
       input?: CreateSessionRequestInput,
     ): Promise<DesktopSessionSummary> {
       const scope = await runtimeHostScope(target);
-      const session = await ipcRenderer.invoke('sessions:create', scope, {
+      return createDesktopSessionOnScope(scope, {
         ...input,
         projectId: target.projectId,
-      }) as SessionSummary;
-      return projectSessionSummary(scope, session);
+      });
     },
   },
   pets: {
@@ -1348,6 +1410,32 @@ const makaBridge = {
         handler(payload);
       ipcRenderer.on('pets:changed', listener);
       return () => ipcRenderer.off('pets:changed', listener);
+    },
+  },
+  workBoard: {
+    list(query) {
+      return ipcRenderer.invoke('workBoard:list', query);
+    },
+    create(item) {
+      return ipcRenderer.invoke('workBoard:create', item);
+    },
+    update(id, patch, options) {
+      return ipcRenderer.invoke('workBoard:update', id, patch, options);
+    },
+    archive(id, options) {
+      return ipcRenderer.invoke('workBoard:archive', id, options);
+    },
+    unarchive(id, options) {
+      return ipcRenderer.invoke('workBoard:unarchive', id, options);
+    },
+    remove(id, options) {
+      return ipcRenderer.invoke('workBoard:remove', id, options);
+    },
+    subscribeChanges(handler: (event: WorkBoardChangedEvent) => void): () => void {
+      const listener = (_event: Electron.IpcRendererEvent, payload: WorkBoardChangedEvent) =>
+        handler(payload);
+      ipcRenderer.on('workBoard:changed', listener);
+      return () => ipcRenderer.off('workBoard:changed', listener);
     },
   },
   tasks: {
@@ -1441,9 +1529,50 @@ const makaBridge = {
       };
     },
   },
+  workHub: {
+    resolveCoordinationSession(): Promise<string> {
+      return resolveDesktopWorkHubCoordinationSession(
+        activeRuntimeHostRef,
+        (scope) => ipcRenderer.invoke('workhub:resolveCoordinationSession', scope),
+      );
+    },
+    async answer(
+      coordinationSessionId: string,
+      input: { turnId: string; text: string },
+    ): Promise<{ turnId: string }> {
+      const scope = await resolveDesktopWorkHubCoordinationCreateScope(
+        coordinationSessionId,
+        runtimeHostSessionRef,
+      );
+      return ipcRenderer.invoke('workhub:answer', scope, input) as Promise<{ turnId: string }>;
+    },
+    async record(
+      coordinationSessionId: string,
+      input: { turnId: string; userText: string; assistantText: string },
+    ): Promise<{ turnId: string }> {
+      const scope = await resolveDesktopWorkHubCoordinationCreateScope(
+        coordinationSessionId,
+        runtimeHostSessionRef,
+      );
+      return ipcRenderer.invoke('workhub:record', scope, input) as Promise<{ turnId: string }>;
+    },
+    async createSession(
+      coordinationSessionId: string,
+      input: { name: string },
+    ): Promise<DesktopSessionSummary> {
+      const scope = await resolveDesktopWorkHubCoordinationCreateScope(
+        coordinationSessionId,
+        runtimeHostSessionRef,
+      );
+      return createDesktopSessionOnScope(scope, input);
+    },
+  },
   sessions: {
     list(filter?: SessionListFilter): Promise<DesktopSessionSummary[]> {
       return listDesktopSessions(filter);
+    },
+    listWithCoverage() {
+      return listDesktopSessionsWithCoverage();
     },
     /**
      * The single session-creation channel (#1433). `mode` names a
@@ -1453,14 +1582,13 @@ const makaBridge = {
      */
     async create(input?: CreateSessionRequestInput): Promise<DesktopSessionSummary> {
       const scope = await activeRuntimeHostRef();
-      const session = await ipcRenderer.invoke('sessions:create', scope, input) as SessionSummary;
-      return projectSessionSummary(scope, session);
+      return createDesktopSessionOnScope(scope, input);
     },
     async send(
       sessionId: string,
       command:
         | SessionCommand
-        | {
+          | {
             type: 'send';
             turnId: string;
             text: string;
@@ -1483,6 +1611,12 @@ const makaBridge = {
       | {
           ok: false;
           reason: 'skill_invocation_failed';
+          skillInvocation: import('@maka/runtime/skill-invocation').SkillInvocationResult;
+        }
+      | {
+          ok: false;
+          reason: 'outcome_unknown';
+          messageId: string;
           skillInvocation: import('@maka/runtime/skill-invocation').SkillInvocationResult;
         }
     > {
@@ -1521,12 +1655,24 @@ const makaBridge = {
     },
     stop(
       sessionId: string,
-      input?: { source?: 'stop_button'; expectedTurnId?: string },
-    ): Promise<void> {
+      input?: {
+        source?: 'stop_button';
+        expectedTurnId?: string;
+        expectedAdmissionId?: string;
+      },
+    ): Promise<DesktopSessionStopResult> {
       return invokeSessionRuntimeHost('sessions:stop', sessionId, input);
     },
-    steer(sessionId: string, text: string): Promise<QueueEnqueueOutcome> {
-      return invokeSessionRuntimeHost('sessions:steer', sessionId, text);
+    steer(
+      sessionId: string,
+      text: string,
+      admissionId?: string,
+    ): Promise<
+      | { kind: 'queued'; messageId: string }
+      | { kind: 'outcome_unknown'; messageId: string }
+      | { kind: 'started'; turnId: string }
+    > {
+      return invokeSessionRuntimeHost('sessions:steer', sessionId, text, admissionId);
     },
     async enqueue(
       sessionId: string,
@@ -1575,6 +1721,20 @@ const makaBridge = {
     promoteQueueEntry(sessionId: string, entryId: string): Promise<void> {
       return invokeSessionRuntimeHost('sessions:promoteQueueEntry', sessionId, entryId);
     },
+    updateQueueEntry(
+      sessionId: string,
+      entryId: string,
+      expectedQueueRevision: number,
+      text: string,
+    ): Promise<void> {
+      return invokeSessionRuntimeHost(
+        'sessions:updateQueueEntry',
+        sessionId,
+        entryId,
+        expectedQueueRevision,
+        text,
+      );
+    },
     reorderQueueEntries(sessionId: string, entryIds: readonly string[]): Promise<void> {
       return invokeSessionRuntimeHost('sessions:reorderQueueEntries', sessionId, [...entryIds]);
     },
@@ -1614,13 +1774,7 @@ const makaBridge = {
     regenerateTurn(sessionId: string, input: RegenerateTurnInput): Promise<void> {
       return invokeSessionRuntimeHost('sessions:regenerateTurn', sessionId, input);
     },
-    async branchFromTurn(sessionId: string, input: DesktopBranchFromTurnInput): Promise<DesktopSessionSummary> {
-      const ref = await runtimeHostSessionRef(sessionId);
-      const summary = await ipcRenderer.invoke(
-        'sessions:branchFromTurn', ref.scope, ref.sessionId, input,
-      ) as SessionSummary;
-      return projectSessionSummary(ref.scope, summary);
-    },
+    branchFromTurn: invokeBranchFromTurn,
     async reviseBeforeTurn(sessionId: string, input: DesktopReviseBeforeTurnInput): Promise<DesktopSessionSummary> {
       const ref = await runtimeHostSessionRef(sessionId);
       const summary = await ipcRenderer.invoke(
@@ -1653,6 +1807,7 @@ const makaBridge = {
       handler: (event: SessionEvent) => void,
       onSeeded?: () => void,
       onObservationSeed?: (phase: 'pending' | 'ready') => void,
+      onSeedError?: (error: unknown) => void,
     ): () => void {
       const observerId = crypto.randomUUID();
       let disposed = false;
@@ -1660,15 +1815,23 @@ const makaBridge = {
       let unsubscribeObservationSeed = () => {};
       const observeDispatch = runtimeHostSessionRef(sessionId).then((session) => {
         if (disposed) return { completion: Promise.resolve() };
-        unsubscribeEvents = subscribeRuntimeHostEvent(
+        const profileId = runtimeHostMetadata.get(session.scope.hostId)?.profileId;
+        if (!profileId) throw new Error('The Runtime Host profile for this task is unavailable');
+        // Keep the renderer listener across Host target epochs. The observer
+        // registry restores this observer on the replacement target. Profile
+        // identity admits that replacement without accepting another Host's
+        // same-named Session channel.
+        unsubscribeEvents = subscribeEveryRuntimeHostEvent(
           `sessions:event:${session.sessionId}`,
-          session.scope,
-          (event: SessionEvent) => handler(projectDesktopSessionEvent(session.scope, event)),
+          (scope, event: SessionEvent) => {
+            if (runtimeHostMetadata.get(scope.hostId)?.profileId !== profileId) return;
+            handler(projectDesktopSessionEvent(scope, event));
+          },
         );
-        unsubscribeObservationSeed = subscribeRuntimeHostEvent(
+        unsubscribeObservationSeed = subscribeEveryRuntimeHostEvent(
           'sessions:observation-seed',
-          session.scope,
-          (payload: { sessionId?: string; phase?: string }) => {
+          (scope, payload: { sessionId?: string; phase?: string }) => {
+            if (runtimeHostMetadata.get(scope.hostId)?.profileId !== profileId) return;
             if (payload.sessionId !== session.sessionId) return;
             if (payload.phase === 'pending' || payload.phase === 'ready') {
               onObservationSeed?.(payload.phase);
@@ -1685,10 +1848,16 @@ const makaBridge = {
         };
       });
       const observing = observeDispatch.then(({ completion }) => completion);
-      const disposeSeedNotification = notifyWhenSeeded(observing, onSeeded);
+      void observing.then(
+        () => {
+          if (!disposed) onSeeded?.();
+        },
+        (error: unknown) => {
+          if (!disposed) onSeedError?.(error);
+        },
+      );
       return () => {
         disposed = true;
-        disposeSeedNotification();
         unsubscribeObservationSeed();
         unsubscribeEvents();
         void releaseSessionObservation(observeDispatch, () =>
@@ -2203,8 +2372,8 @@ const makaBridge = {
     listStatuses(host?: DesktopRuntimeHostRef): Promise<McpServerStatus[]> {
       return invokeSelectedRuntimeHost(host, 'mcp:listStatuses');
     },
-    setConfig(config: McpConfigFile, host?: DesktopRuntimeHostRef): Promise<McpConfigFile> {
-      return invokeSelectedRuntimeHost(host, 'mcp:setConfig', config);
+    importConfig(source: string, host?: DesktopRuntimeHostRef): Promise<McpConfigImportResult> {
+      return invokeSelectedRuntimeHost(host, 'mcp:importConfig', source);
     },
     add(serverId: string, config: McpServerConfig, host?: DesktopRuntimeHostRef): Promise<McpConfigAddResult> {
       return invokeSelectedRuntimeHost(host, 'mcp:add', serverId, config);
@@ -3089,27 +3258,31 @@ const makaBridge = {
   },
 } satisfies MakaBridge;
 
-// E2E-only IPC latches. Real users never get these: the preload mirrors the
+// E2E-only async controls. Real users never get these: the preload mirrors the
 // main process's isolated-E2E gate (startup-context.ts) — MAKA_E2E alone is
 // not enough without the throwaway profile dir. An armed latch holds the next
-// call (or every call) to one bridge method until the test releases it, so
-// Playwright gets a deterministic in-flight window instead of racing the fake
-// backend's near-instant replies. The wrappers must be installed BEFORE
+// bridge call or an explicitly gated renderer boundary until the test releases
+// it, while a settled-call waiter exposes a deterministic completion boundary
+// for work whose visible result may intentionally keep the same DOM identity.
+// The wrappers must be installed BEFORE
 // exposeInMainWorld: the bridge is cloned into the main world at expose time,
 // and the exposed clone is sealed against later patching.
 if (process.env.MAKA_E2E === '1' && process.env.MAKA_E2E_USER_DATA_DIR) {
-  type LatchKey = 'newTasks.listInvocableSkills' | 'sessions.list';
+  type LatchKey = 'newTasks.listInvocableSkills' | 'sessions.list' | 'settings.chunk';
   const gates = new Map<LatchKey, { promise: Promise<void>; oneShot: boolean }>();
-  const releases = new Map<LatchKey, () => void>();
+  const releases = new Map<LatchKey, { resolve: () => void; reject: (error: Error) => void }>();
+  const invocableSkillsWaiters = new Map<string, Array<() => void>>();
+  const waitForLatch = async (key: LatchKey): Promise<void> => {
+    const gate = gates.get(key);
+    if (!gate) return;
+    if (gate.oneShot) gates.delete(key);
+    await gate.promise;
+  };
   const wrapLatched = <Args extends unknown[], Result>(
     call: (...args: Args) => Promise<Result>,
     key: LatchKey,
   ) => async (...args: Args): Promise<Result> => {
-    const gate = gates.get(key);
-    if (gate) {
-      if (gate.oneShot) gates.delete(key);
-      await gate.promise;
-    }
+    await waitForLatch(key);
     return call(...args);
   };
   makaBridge.newTasks.listInvocableSkills = wrapLatched(
@@ -3120,17 +3293,52 @@ if (process.env.MAKA_E2E === '1' && process.env.MAKA_E2E_USER_DATA_DIR) {
     makaBridge.sessions.list.bind(makaBridge.sessions),
     'sessions.list',
   );
+  const listInvocableSkills = makaBridge.skills.listInvocable.bind(makaBridge.skills);
+  makaBridge.skills.listInvocable = async (...args) => {
+    try {
+      return await listInvocableSkills(...args);
+    } finally {
+      const sessionId = args[0];
+      if (sessionId) {
+        const waiters = invocableSkillsWaiters.get(sessionId);
+        const resolve = waiters?.shift();
+        if (waiters?.length === 0) invocableSkillsWaiters.delete(sessionId);
+        if (resolve) {
+          // Let consumers of the bridge promise run their state updates before
+          // the test continues from the observed completion.
+          setTimeout(resolve, 0);
+        }
+      }
+    }
+  };
   contextBridge.exposeInMainWorld('makaE2eLatch', {
     arm(key: LatchKey, options?: { oneShot?: boolean }) {
-      let release: () => void = () => {};
-      const promise = new Promise<void>((resolve) => {
-        release = resolve;
+      let resolve: () => void = () => {};
+      let reject: (error: Error) => void = () => {};
+      const promise = new Promise<void>((resolvePromise, rejectPromise) => {
+        resolve = resolvePromise;
+        reject = rejectPromise;
       });
       gates.set(key, { promise, oneShot: options?.oneShot === true });
-      releases.set(key, release);
+      releases.set(key, { resolve, reject });
+    },
+    wait(key: 'settings.chunk') {
+      return waitForLatch(key);
+    },
+    waitForInvocableSkillsCall(sessionId: string) {
+      return new Promise<void>((resolve) => {
+        const waiters = invocableSkillsWaiters.get(sessionId) ?? [];
+        waiters.push(resolve);
+        invocableSkillsWaiters.set(sessionId, waiters);
+      });
     },
     release(key: LatchKey) {
-      releases.get(key)?.();
+      releases.get(key)?.resolve();
+      releases.delete(key);
+      gates.delete(key);
+    },
+    reject(key: LatchKey, message: string) {
+      releases.get(key)?.reject(new Error(message));
       releases.delete(key);
       gates.delete(key);
     },

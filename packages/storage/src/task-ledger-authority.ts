@@ -145,6 +145,7 @@ function createInteractiveWriterFacade(
         ...input,
         turnIds: Object.freeze([...input.turnIds]),
         runIdMap: Object.freeze(input.runIdMap.map((entry) => Object.freeze({ ...entry }))),
+        ...(input.linkedChildren ? { linkedChildren: input.linkedChildren } : {}),
       });
       return run(() => store.copyConversationTaskLedger(acceptedInput));
     },

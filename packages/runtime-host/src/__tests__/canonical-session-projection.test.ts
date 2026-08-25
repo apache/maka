@@ -29,11 +29,11 @@ import {
   type ExecutionStoresWriter,
 } from '@maka/storage/execution-stores';
 import type { StoredInteractionRequest } from '@maka/storage/interaction-store';
-import { acquireOperationalStateDatabase } from '@maka/storage';
+import { acquireOperationalStateDatabase } from '@maka/storage/operational-state-store';
 import {
   createSessionEventMapMemory,
   mapSessionEventToRuntimeEvent,
-} from '@maka/runtime/ai-sdk-flow';
+} from '@maka/runtime/session-event-runtime-mapper';
 import { resolveStorageRoot, tryAcquireInteractiveRootOwner } from '@maka/storage/root-authority';
 import {
   TURN_MESSAGE_TEXT_MAX_BYTES,
@@ -68,7 +68,6 @@ test('projects the canonical root lifecycle and the attachment queue from real S
         metadataRevision: 1,
         status: session.status,
         createdAt: session.createdAt,
-        lastUsedAt: session.lastUsedAt,
         isArchived: false,
       },
       rootTurn: null,
@@ -545,7 +544,7 @@ function createMessages(
       readImmutableSteeringMessageProof: (requestedSessionId, messageId) =>
         stores.runtimeEventStore.readImmutableSteeringMessageProof(requestedSessionId, messageId),
     },
-    receipts: stores.messageReceiptStore,
+    admissions: stores.sessionStore,
     sessionAdmission: new SessionAdmissionGate(),
     acquireResidency: () => ({ release: () => undefined }),
     preflightSessionSnapshot: () => true,
@@ -651,7 +650,6 @@ async function withStores(
   if (!owner) throw new Error('Unable to acquire test root');
   try {
     const stores = await openInteractiveExecutionStoresForWrite(owner.lease);
-    await stores.messageReceiptStore.beginHostEpoch('epoch-1');
     await run(capability.canonicalPath, stores);
   } finally {
     await owner.close();

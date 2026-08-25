@@ -186,7 +186,6 @@ import {
   type AgentRunRecoveryDecision,
 } from './agent-run-recovery.js';
 import { buildInterruptedCodeModeOutcomeCommits } from './recovery-resolver.js';
-import type { InvocationResult, InvocationSource } from './invocation-context.js';
 import {
   isRuntimeHostedRootAuthority,
   RuntimeMessageAuthorityInvariantError,
@@ -841,8 +840,6 @@ interface SessionManagerBaseDeps {
   }) => Promise<ArtifactRecord>;
   /** Reject patch publication while the child still owns live Runtime Resources. */
   assertChildWorkspaceQuiescent?: (sessionId: string) => Promise<void>;
-  runtimeSource?: InvocationSource;
-  runtimeInvocationObserver?: (result: InvocationResult) => void | Promise<void>;
   runtimeKernel?: RuntimeKernelLike;
   /** Optional host-owned parent run authority for runtimes that execute the parent externally. */
   isParentRunActive?: (sessionId: string, runId: string, turnId: string) => boolean;
@@ -2049,7 +2046,7 @@ export class SessionManager {
    * the IPC bridge.
    *
    * Runtime v2 bridge: SessionManager remains the public facade; RuntimeKernel
-   * owns AgentRun/AiSdkFlow/RuntimeRunner orchestration and ledger recording.
+   * owns AgentRun orchestration, backend execution, and ledger recording.
    */
   async *sendMessage(
     sessionId: string,
@@ -4373,7 +4370,7 @@ export class SessionManager {
           status: run?.status ?? (child.status === 'aborted' ? 'cancelled' : 'created'),
           permissionMode: run?.permissionMode ?? child.permissionMode,
           createdAt: run?.createdAt ?? child.createdAt,
-          updatedAt: run?.updatedAt ?? child.lastUsedAt,
+          updatedAt: run?.updatedAt ?? child.lastMessageAt ?? child.createdAt,
           ...(run?.completedAt !== undefined ? { completedAt: run.completedAt } : {}),
           ...(run?.completedAt !== undefined
             ? { durationMs: Math.max(0, run.completedAt - run.createdAt) }
@@ -4626,7 +4623,10 @@ export class SessionManager {
         wakeId: input.execution.wakeId,
         attemptId: input.execution.attemptId,
       };
-    } else if (input.execution.kind !== 'external_message') {
+    } else if (
+      input.execution.kind !== 'external_message' &&
+      input.execution.kind !== 'workhub_coordination'
+    ) {
       if (
         session.subagentParent?.kind !== 'subagent' ||
         session.subagentRuntime?.agentId !== input.execution.agentId ||
@@ -4810,7 +4810,6 @@ export class SessionManager {
       ? authority.stopRoot(identity, input)
       : this.runtimeKernel.stopSession(identity.sessionId, input);
   }
-
 
   async *regenerateTurn(
     sessionId: string,

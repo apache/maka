@@ -296,16 +296,12 @@ digest、replay manifest、provider projection version 和 provider replay diges
 `continuationSource` 必须与首条 continuation-start 完全一致。若当前执行使用
 `t1_after_preflight_v1`，该 marker 也写在同一 event-seq 1；repair start 不得携带它。
 
-`RuntimeRunner` 的 public `run({ continuation })` 与 `resume()` 都 fail closed；只有
-`RuntimeKernel` 能走 package-private admission 路径。AgentRun 只有在 live start 返回
-`{created:true,startEventId}` 后才签发 opaque one-shot proof；Runner 再精确校验并绑定
-startEventId、claim、boundary、target identity、provider projection/replay digest，签发
-runner-bound one-shot receipt。receipt 在首次 `await` 前消费；runtime context、host context 与
-orchestration 在签发时 clone/freeze，调用者事后修改不能改变执行语义。repair start、existing
-start、伪造 proof、重复消费或换 Runner 消费均不能获得 provider authority。
-proof 中的 tool-boundary protocol 还必须与目标 Runner 完全一致，避免账本声明 T1 而实际执行器
-没有相同边界。
-`./runtime-runner` 不再是公开 subpath，避免其他包绕开 B2 authority。
+只有 `RuntimeKernel` 能 dispatch durable continuation。AgentRun 仅在 live start 返回
+`{created:true,startEventId}` 后签发 opaque one-shot proof；Kernel 在 Backend dispatch 前消费 proof，
+并精确校验 startEventId、claim、boundary、target identity、provider projection/replay digest 与
+tool-boundary protocol。runtime context 的 provider replay digest 会再次计算，因此调用者事后修改
+不能改变执行语义。repair start、existing start、伪造 proof 或重复消费均不能获得 provider
+authority。Runtime 包不再公开独立 Runner/Invocation subpath，避免其他包绕开 B2 authority。
 
 如果 start 写失败，Run 不会被伪装成普通 failed terminal：它保持 `created`，claim 保持 durable，
 provider 调用次数为 0，后续进入 repair。existing claim 永远不会重新获得 provider authority。
@@ -429,7 +425,7 @@ prompt 未漂移。
 
 #### 后续边界验证与 host composition 收敛
 
-planner、Kernel、SQLite store、Runner 和 SessionManager 当前分别承担不同阶段的重验证。下一步
+planner、Kernel、SQLite store 和 SessionManager 当前分别承担不同阶段的重验证。下一步
 应提取纯函数 `ContinuationBoundaryVerifier`，统一验证 canonical boundary、lineage edge、target
 header、start、terminal 与 provider replay；store 只负责事务内 physical ledger/CAS，避免规则在
 五处逐渐漂移。

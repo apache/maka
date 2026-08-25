@@ -159,6 +159,70 @@ test('the catalog and the readiness gate agree that no catalog is a veto', () =>
   assert.equal(buildModelCatalogEntries(catalog('fallback'))[0]?.unavailableReason, 'none');
 });
 
+test('failed or pending discovery keeps the static fallback catalog visible', () => {
+  const entries = buildModelCatalogEntries({
+    providerType: 'openai' as const,
+    defaultModel: 'gpt-5.4',
+    models: [],
+    fallbackModels: ['gpt-5.4', 'gpt-5-mini'],
+  });
+
+  assert.deepEqual(
+    entries.map(({ id, source, unavailableReason }) => [id, source, unavailableReason]),
+    [
+      ['gpt-5.4', 'static_catalog', 'none'],
+      ['gpt-5-mini', 'static_catalog', 'none'],
+    ],
+  );
+});
+
+test('an explicitly fetched empty inventory remains authoritative', () => {
+  const entries = buildModelCatalogEntries({
+    providerType: 'openai' as const,
+    defaultModel: 'gpt-5.4',
+    models: [],
+    modelSource: 'fetched',
+    fallbackModels: ['gpt-5.4', 'gpt-5-mini'],
+  });
+
+  assert.deepEqual(
+    entries.map(({ id, unavailableReason }) => [id, unavailableReason]),
+    [['gpt-5.4', 'not_in_live_list']],
+  );
+});
+
+test('a persisted empty discovery result preserves the connection fallback through the public catalog path', () => {
+  const connection: LlmConnection = {
+    slug: 'custom-relay',
+    name: 'Custom relay',
+    providerType: 'openai',
+    defaultModel: 'gpt-5.4',
+    enabled: true,
+    models: [],
+    createdAt: 1,
+    updatedAt: 1,
+  };
+
+  const entries = buildConnectionModelCatalogEntries({
+    connection,
+    fallbackModels: ['gpt-5.4', 'gpt-5-mini'],
+    providerAvailable: true,
+    authOk: true,
+  });
+
+  assert.deepEqual(
+    entries.map(({ id, unavailableReason, provenance }) => [
+      id,
+      unavailableReason,
+      provenance.modelSource,
+    ]),
+    [
+      ['gpt-5.4', 'none', 'fallback'],
+      ['gpt-5-mini', 'none', 'fallback'],
+    ],
+  );
+});
+
 test('connection catalogs preserve user-choice provenance without inventing availability', () => {
   const connection: LlmConnection = {
     slug: 'zai-live',

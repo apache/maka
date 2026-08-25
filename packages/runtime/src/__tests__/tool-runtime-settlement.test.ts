@@ -205,7 +205,7 @@ describe('ToolRuntime settlement', () => {
         turnId: 'turn-1',
         stepId: 'step-1',
         toolCallId: `call-${index}`,
-        input: { command: terminal.cmd },
+        input: { command: terminal.cmd, boundary_intent: 'current' },
         abortSignal: new AbortController().signal,
         eventSink: {
           push: () => {},
@@ -561,7 +561,6 @@ function header(): SessionHeader {
     workspaceRoot: '/workspace/repo',
     cwd: '/workspace/repo',
     createdAt: 1,
-    lastUsedAt: 1,
     name: 'test',
     titleIsManual: false,
     isFlagged: false,

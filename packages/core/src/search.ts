@@ -28,6 +28,15 @@ const TRACKING_PARAM_NAMES = new Set(['fbclid', 'gclid', 'yclid', 'mc_cid', 'mc_
 
 export type SearchSourceKind = 'web' | 'web_fetch' | 'thread' | 'memory' | 'activity' | 'tool';
 
+export const THREAD_SEARCH_MATCH_KINDS = [
+  'session_title',
+  'user_message',
+  'assistant_message',
+  'tool_intent',
+  'tool_result',
+] as const;
+export type ThreadSearchMatchKind = (typeof THREAD_SEARCH_MATCH_KINDS)[number];
+
 export type SearchProviderKind = 'disabled' | 'api' | 'browser_scrape' | 'local';
 
 export type SearchErrorReason =
@@ -64,6 +73,8 @@ export interface SearchRequest {
   source: SearchSourceKind;
   query: string;
   limit: number;
+  /** Opaque continuation returned by a previous bounded search page. */
+  cursor?: string;
   allowedDomains?: string[];
   blockedDomains?: string[];
   includeMarkdown?: boolean;
@@ -78,12 +89,35 @@ export interface WebFetchRequest {
   refresh?: boolean;
 }
 
-/** Non-URL navigation target; web results continue to use `url`. */
+/**
+ * Optional navigation target for a `SearchResult`.
+ *
+ * PR-SEARCH-1.5 (@xuan msg `772d8198`): a closed discriminated union so
+ * source-kind-specific identifiers (thread sessionId / turnId, future
+ * memory entry id, future activity timestamp range, etc.) stay typed and
+ * isolated. Adding a new variant is an explicit contract change.
+ *
+ * Today only `'thread'` exists. `web` / `web_fetch` results continue to
+ * use `SearchResult.url` for navigation; they do NOT need a `target`.
+ *
+ * Note: thread navigation deliberately does NOT use `maka://session/<id>`
+ * URIs — `packages/ui/src/maka-uri.ts:24` defers that scheme until a real
+ * session navigation contract exists. Consumers of `SearchResultTarget`
+ * route via the existing renderer-side session-pane state (sessionId →
+ * load session, turnId → scroll-into-view), NOT via a URL router.
+ */
 export type SearchResultTarget = {
   kind: 'thread';
   sessionId: string;
   turnId?: string;
+  /** Existing transcript pagination/navigation coordinate used by Desktop. */
   sequence?: number;
+  /** Stable message anchor for Agent reads; absent for session-title matches. */
+  messageId?: string;
+  /** Stable machine-readable classification of the matched transcript surface. */
+  matchKind?: ThreadSearchMatchKind;
+  /** Timestamp of the matched stored message; absent for session-title matches. */
+  messageTimestamp?: number;
 };
 
 export interface SearchResult {

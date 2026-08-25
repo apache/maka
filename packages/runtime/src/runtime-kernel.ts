@@ -18,19 +18,26 @@
  */
 
 import type { AgentRunHeader, AgentRunStore } from '@maka/core/agent-run';
-import type { ContinuationClaimV1, ImmutableRuntimePrefixV1 } from '@maka/core/runtime-boundary';
-import type { RuntimeEvent, ToolBoundaryProtocol } from '@maka/core/runtime-event';
+import {
+  decodeRuntimeBoundaryCursor,
+  type ContinuationClaimV1,
+  type ImmutableRuntimePrefixV1,
+} from '@maka/core/runtime-boundary';
+import {
+  isTerminalRuntimeEvent,
+  type RuntimeEvent,
+  type ToolBoundaryProtocol,
+} from '@maka/core/runtime-event';
 import type {
   RuntimeContinuationAuthorityStore,
   RuntimeEventStore,
 } from '@maka/core/runtime-event-store';
 import { isSessionInlineRun } from '@maka/core/agent-run';
-import type {
-  ActiveInteractionRequestEvent,
-  CompleteEvent,
-  QueueUpdateEvent,
-  SessionEvent,
-  TokenUsageEvent,
+import {
+  type ActiveInteractionRequestEvent,
+  type CompleteEvent,
+  type SessionEvent,
+  type TokenUsageEvent,
 } from '@maka/core/events';
 import type {
   SessionBlockedReason,
@@ -60,19 +67,21 @@ import {
   type AgentRunLineage,
   type RuntimeContinuationFailpoint,
 } from './agent-run.js';
-import { AiSdkFlow, mapSessionEventToRuntimeEvent } from './ai-sdk-flow.js';
-import type { AgentBackend, SteeringLease } from '@maka/core/backend-types';
-import type { MakaTool } from './tool-runtime.js';
-import type {
-  InvocationContext,
-  InvocationResult,
-  InvocationSource,
-} from './invocation-context.js';
 import {
-  issueRuntimeContinuationAdmissionReceipt,
-  RuntimeRunner,
-  runAdmittedRuntimeContinuation,
-} from './runtime-runner.js';
+  createSessionEventMapMemory,
+  isLiveBackendSessionEvent,
+  mapSessionEventToRuntimeEvent,
+  type RuntimeEventMapContext,
+} from './session-event-runtime-mapper.js';
+import { cloneAndFreezeRuntimeSnapshot } from './runtime-snapshot.js';
+import type {
+  AgentBackend,
+  BackendSendInput,
+  HostedInteractionBridge,
+  RuntimeContinuationMetadata,
+  SteeringLease,
+} from '@maka/core/backend-types';
+import type { MakaTool } from './tool-runtime.js';
 import type {
   BackendFactoryContext,
   BackendRegistry,
@@ -110,8 +119,15 @@ import {
   type RuntimeContinuation,
   type RuntimeContinuationSafetyObservation,
 } from './runtime-resume.js';
-import { buildContinuationReplayPlan } from './continuation-replay.js';
-import { PROVIDER_REPLAY_PROJECTION_VERSION } from './model-history.js';
+import { buildContinuationReplayPlan, digestProviderReplay } from './continuation-replay.js';
+import {
+  buildRuntimeEventModelReplayPlan,
+  PROVIDER_REPLAY_PROJECTION_VERSION,
+} from './model-history.js';
+import {
+  consumeRuntimeContinuationStartAdmissionProof,
+  type RuntimeContinuationStartAdmissionProof,
+} from './runtime-continuation-admission.js';
 import {
   matchingTerminalRuntimeEvents,
   terminalRunStatusFromRuntimeEvent,
@@ -167,6 +183,7 @@ export interface RuntimeKernelLike {
   respondToSandboxBoundary(sessionId: string, response: SandboxBoundaryResponse): Promise<void>;
   listActiveInteractions?(sessionId: string): ActiveInteractionRequestEvent[];
   respondToUserQuestion?(sessionId: string, response: UserQuestionResponse): Promise<void>;
+  /** Compatibility surface; durable message admission belongs to Runtime Host. */
   hasActiveRuns(sessionId: string): boolean;
   /**
    * The turns of the runs in flight for this session. The same fact
@@ -206,7 +223,7 @@ export class RuntimeContextCompactError extends Error {
 
 export interface TurnStartOptions {
   runId?: string;
-  userMessageId?: string;
+  userMessageId?: string | null;
   durability?: AgentRunDurability;
   /**
    * Resolve turn admission after this Session has registered a pending start
@@ -245,44 +262,6 @@ export interface ChildAgentRetryInput {
   onRunStarted?: () => void | Promise<void>;
 }
 
-/**
- * An embedded session's authoritative pending-message queues plus its event
- * sink. Hosted composition never creates this state; its Host owns admission,
- * snapshots, leases, and follow-up drain.
- */
-interface PendingSteeringMessage extends SteeringLease {}
-
-/**
- * A pulled lease is bound to the turn that pulled it: only the issuing turn's
- * backend can settle it (ack/nack stay valid even after ownership moved to an
- * overlapping turn — invalidating a delivered lease would leave it in-flight
- * and redeliver an already-executed message), and no other turn's retract/
- * clear/release may reclaim it while its delivery is still undetermined.
- */
-interface LeasedSteeringMessage extends PendingSteeringMessage {
-  issuingTurnId: string;
-}
-
-interface SessionSteeringState {
-  /** Messages waiting to be injected into the running turn at a step boundary. */
-  steering: PendingSteeringMessage[];
-  /**
-   * Leased to the running turn's backend but not yet settled. pull() is the
-   * single atomic commit point: an in-flight lease is committed to that
-   * turn's delivery — retract/clear reclaim only QUEUED messages — and it
-   * settles exactly once, decided solely by the persistence fact: ack when
-   * the steering event is durably consumed (even under abort), nack when it
-   * provably never persisted. Snapshots count in-flight as still pending so
-   * the UI keeps showing the message until it lands in the transcript.
-   */
-  inFlight: LeasedSteeringMessage[];
-  /** Messages waiting to open the next turn. */
-  followup: string[];
-  /** Pushes a `queue_update` into the active turn's stream; unset when idle. */
-  sink?: (event: QueueUpdateEvent) => void;
-  activeTurnId?: string;
-}
-
 export type BackendActivationBoundary = <T>(operation: () => Promise<T> | T) => Promise<T>;
 
 interface ChildToolActivation {
@@ -308,8 +287,6 @@ export interface RuntimeKernelDeps {
   now: () => number;
   childTools?: readonly MakaTool[];
   resolveChildTools?: (sessionId: string) => Promise<ResolvedChildToolActivation>;
-  runtimeSource?: InvocationSource;
-  runtimeInvocationObserver?: (result: InvocationResult) => void | Promise<void>;
   repairRunRuntimeLedger?: (sessionId: string, runId: string) => Promise<boolean>;
   shellRuns?: ShellRunProcessManager;
   cleanupHistoryCompactArtifacts?: (input: HistoryCompactCleanupRequest) => Promise<void>;
@@ -434,7 +411,6 @@ export class RuntimeKernel implements RuntimeKernelLike {
   private readonly historyCompactCoordinator: HistoryCompactCheckpointCoordinator;
   private readonly pendingContinuationClaims = new Set<string>();
   private readonly pendingContinuationSessions = new Set<string>();
-  private readonly steeringBySession = new Map<string, SessionSteeringState>();
   private readonly backendInvalidations = new Map<string, BackendInvalidationState>();
   private readonly interactionRequestOwners = new Map<string, InteractionRequestOwner>();
   private nextBackendGeneration = 0;
@@ -732,7 +708,7 @@ export class RuntimeKernel implements RuntimeKernelLike {
         throw new Error('Turn start was cancelled before runtime admission');
       }
       this.attachExecutionClaim(execution, run);
-      yield* this.runAgentTurn(sessionId, input, run, execution, {
+      yield* this.runAgentTurn(sessionId, run, execution, {
         steering: true,
         onRunStarted: options.onRunStarted,
         initialHeader: header,
@@ -1082,15 +1058,15 @@ export class RuntimeKernel implements RuntimeKernelLike {
         stopReason: 'end_turn',
         contextCompactionOutcome: result.outcome,
       };
-      const invocation = this.compactInvocationContext({
+      const eventContext = this.runtimeEventMapContext({
         sessionId,
+        invocationId: run.runId,
         runId: run.runId,
         turnId: run.turnId,
-        startedAt: begin.startedAt,
       });
       await run.acceptMappedEvent(
         tokenUsageEvent,
-        mapSessionEventToRuntimeEvent(tokenUsageEvent, invocation),
+        mapSessionEventToRuntimeEvent(tokenUsageEvent, eventContext),
         { requireTerminalWrite: true },
       );
       if (run.isStopped()) return;
@@ -1110,7 +1086,7 @@ export class RuntimeKernel implements RuntimeKernelLike {
       if (run.isStopped()) return;
       await run.acceptMappedEvent(
         completeEvent,
-        mapSessionEventToRuntimeEvent(completeEvent, invocation),
+        mapSessionEventToRuntimeEvent(completeEvent, eventContext),
         { requireTerminalWrite: true },
       );
       if (run.isStopped()) return;
@@ -1218,7 +1194,7 @@ export class RuntimeKernel implements RuntimeKernelLike {
     });
 
     this.attachExecutionClaim(execution, run);
-    yield* this.runAgentTurn(sessionId, userInput, run, execution, {
+    yield* this.runAgentTurn(sessionId, run, execution, {
       prepareBackendActivation: async () => {
         const available = await this.childToolActivationForSession(sessionId);
         assertAgentDefinitionRunnable({ definition, tools: available.tools });
@@ -1492,7 +1468,6 @@ export class RuntimeKernel implements RuntimeKernelLike {
 
   private async *runAgentTurn(
     sessionId: string,
-    input: UserMessageInput,
     run: AgentRun,
     execution: PendingExecutionClaim,
     options: {
@@ -1537,11 +1512,6 @@ export class RuntimeKernel implements RuntimeKernelLike {
     const interactionRun = owners.interactionRun;
     const messageOwner = owners.messageOwner;
 
-    // Steering is a top-level-turn affordance only; child agent turns run
-    // without a queue. Hosted ownership is bound before begin so a pre-start
-    // cancellation can release the exact admitted owner. The pull hook still
-    // re-checks this run's turnId so stale or overlapping runs cannot drain
-    // messages queued for the current owner.
     let pullSteering: (() => readonly SteeringLease[]) | undefined;
     let ackSteering: ((leaseIds: readonly string[]) => void) | undefined;
     let nackSteering: ((leaseIds: readonly string[]) => void) | undefined;
@@ -1549,79 +1519,32 @@ export class RuntimeKernel implements RuntimeKernelLike {
       pullSteering = () => messageOwner?.pull() ?? [];
       ackSteering = (leaseIds) => messageOwner?.ack(leaseIds);
       nackSteering = (leaseIds) => messageOwner?.nack(leaseIds);
-    } else if (steering) {
-      const state = this.ensureSteering(sessionId);
-      state.sink = (event) => {
-        void sessionEvents.push(event).catch(() => {});
-      };
-      state.activeTurnId = run.turnId;
-      // Lease, don't consume: pulled messages move to in-flight and only an
-      // ack (durable + injected) removes them; a nack or a retract/clear/
-      // release reclaims them, so an abort window can never drop text.
-      pullSteering = () => {
-        const current = this.steeringBySession.get(sessionId);
-        if (!current || current.activeTurnId !== run.turnId) return [];
-        if (current.steering.length === 0) return [];
-        const leased = current.steering.splice(0);
-        current.inFlight.push(
-          ...leased.map((message) => ({ ...message, issuingTurnId: run.turnId })),
-        );
-        return leased.map((message) => ({ ...message }));
-      };
-      // Settlement is keyed by lease id + issuing turn, NOT by current
-      // ownership: an overlapping turn that takes the owner slot must not
-      // invalidate the issuer's ack (the message was delivered to ITS
-      // provider) or intercept its nack. A late settle for a reclaimed lease
-      // finds no match and is a no-op.
-      ackSteering = (leaseIds) => {
-        const current = this.steeringBySession.get(sessionId);
-        if (!current) return;
-        const ids = new Set(leaseIds);
-        const before = current.inFlight.length;
-        current.inFlight = current.inFlight.filter(
-          (message) => !(ids.has(message.id) && message.issuingTurnId === run.turnId),
-        );
-        if (current.inFlight.length !== before) this.emitQueueUpdate(sessionId, current);
-      };
-      nackSteering = (leaseIds) => {
-        const current = this.steeringBySession.get(sessionId);
-        if (!current) return;
-        const ids = new Set(leaseIds);
-        const returned = current.inFlight.filter(
-          (message) => ids.has(message.id) && message.issuingTurnId === run.turnId,
-        );
-        if (returned.length === 0) return;
-        current.inFlight = current.inFlight.filter(
-          (message) => !(ids.has(message.id) && message.issuingTurnId === run.turnId),
-        );
-        if (current.activeTurnId === run.turnId) {
-          // Back to the FRONT of the queue: a re-pull at the next step
-          // boundary preserves the user's original ordering.
-          current.steering = [
-            ...returned.map(({ id, messageId, content }) => ({ id, messageId, content })),
-            ...current.steering,
-          ];
-        } else {
-          // The issuer no longer owns the queue (an overlapping turn took
-          // over and possibly released): it will never pull again, so the
-          // steering queue would strand the text ownerless. The followup
-          // queue is its only safe home — the same direction a release-time
-          // fold takes.
-          current.followup = [
-            ...returned.map((message) => message.content.text),
-            ...current.followup,
-          ];
-        }
-        this.emitQueueUpdate(sessionId, current);
-      };
     }
 
-    const aiSdkFlow = new AiSdkFlow({
+    const stopBackend = this.stopBackendFor(begin.backend);
+    const eventContext = this.runtimeEventMapContext({
+      sessionId,
+      invocationId: begin.initialRuntimeEvent.invocationId,
+      runId: run.runId,
+      turnId: run.turnId,
+    });
+    if (run.isStopped()) abortController.abort();
+    const streamResult = this.runBackendEventStream({
       backend: begin.backend,
-      stopBackend: this.stopBackendFor(begin.backend),
+      stopBackend,
       beforeDispatch: () => this.assertRunCanDispatch(run, begin.backend),
       ...(interactionRun ? { hostedInteraction: interactionRun } : {}),
-      drainAfterTerminal: true,
+      abortSignal: abortController.signal,
+      eventContext,
+      backendInput: {
+        invocationId: begin.initialRuntimeEvent.invocationId,
+        runId: run.runId,
+        ...begin.backendInput,
+        headAnchorRuntimeEvent: begin.initialRuntimeEvent,
+        ...(pullSteering ? { pullSteering } : {}),
+        ...(ackSteering ? { ackSteering } : {}),
+        ...(nackSteering ? { nackSteering } : {}),
+      },
       onSessionEvent: async (sessionEvent, runtimeEvent) => {
         this.assertInteractionPublication(interactionRun, sessionEvent);
         await run.acceptMappedEvent(sessionEvent, runtimeEvent, {
@@ -1647,90 +1570,51 @@ export class RuntimeKernel implements RuntimeKernelLike {
           // under its Session admission gate. The outer finally remains an
           // idempotent backstop for paths that never reach this hook.
           if (messageOwner) owners.releaseMessage();
-          else if (steering) this.releaseSteeringTurn(sessionId, run.turnId);
           sessionEvents.close();
         } catch (error) {
           sessionEvents.fail(error);
           throw error;
         }
       },
-    });
-    const runner = new RuntimeRunner({
-      flow: aiSdkFlow,
-      providers: { newId: this.deps.newId, now: this.deps.now },
-      stopOnTerminal: false,
-      ...(run.toolBoundaryProtocol ? { toolBoundaryProtocol: run.toolBoundaryProtocol } : {}),
-    });
-    if (run.isStopped()) abortController.abort();
-    const runnerResult = runner
-      .run({
-        sessionId,
-        invocationId: begin.initialRuntimeEvent.invocationId,
-        runId: run.runId,
-        turnId: run.turnId,
-        ...(begin.backendInput.orchestration
-          ? { orchestration: begin.backendInput.orchestration }
-          : {}),
-        ...(begin.backendInput.toolMode ? { toolMode: begin.backendInput.toolMode } : {}),
-        ...(begin.backendInput.maxSteps !== undefined
-          ? { maxSteps: begin.backendInput.maxSteps }
-          : {}),
-        text: input.text,
-        ...(begin.backendInput.attachments ? { attachments: begin.backendInput.attachments } : {}),
-        ...(begin.backendInput.quotes ? { quotes: begin.backendInput.quotes } : {}),
-        context: begin.backendInput.context,
-        ...(begin.backendInput.runtimeContext !== undefined
-          ? { runtimeContext: begin.backendInput.runtimeContext }
-          : {}),
-        initialRuntimeEvent: begin.initialRuntimeEvent,
-        source: this.deps.runtimeSource ?? 'desktop',
-        lineage: run.lineage,
-        ...(pullSteering ? { pullSteering } : {}),
-        ...(ackSteering ? { ackSteering } : {}),
-        ...(nackSteering ? { nackSteering } : {}),
-        abortSignal: abortController.signal,
-      })
-      .then(
-        async (result) => {
-          if (!flowDone) {
-            try {
-              flowDone = true;
-              await owners.finalize();
-              owners.releaseMessage();
-              sessionEvents.close();
-            } catch (error) {
-              sessionEvents.fail(error);
-              throw error;
-            }
+    }).then(
+      async (result) => {
+        if (!flowDone) {
+          try {
+            flowDone = true;
+            await owners.finalize();
+            owners.releaseMessage();
+            sessionEvents.close();
+          } catch (error) {
+            sessionEvents.fail(error);
+            throw error;
           }
-          await this.deps.runtimeInvocationObserver?.(result);
-          return result;
-        },
-        (error) => {
-          sessionEvents.fail(error);
-          throw error;
-        },
-      );
+        }
+        return result;
+      },
+      (error) => {
+        sessionEvents.fail(error);
+        throw error;
+      },
+    );
 
     try {
       for await (const event of sessionEvents) {
         yield event;
       }
-      await runnerResult;
+      await streamResult;
     } finally {
       try {
         await this.cleanupRunExecution({
           run,
-          flow: aiSdkFlow,
+          stopBackend,
           flowDone,
           abortController,
           sessionEvents,
-          runnerResult,
+          streamResult,
           interactionRun,
           finalizeRun: () => owners.finalize(),
           releaseOwner: () => {
             if (messageOwner) owners.releaseMessage();
-            else if (steering) this.releaseSteeringTurn(sessionId, run.turnId);
           },
         });
       } finally {
@@ -1782,12 +1666,50 @@ export class RuntimeKernel implements RuntimeKernelLike {
 
     const interactionRun = owners.interactionRun;
 
-    const aiSdkFlow = new AiSdkFlow({
+    let continuationMetadata: RuntimeContinuationMetadata;
+    try {
+      continuationMetadata = consumeAdmittedRuntimeContinuation({
+        continuation,
+        startAdmission:
+          'continuationStartAdmission' in begin
+            ? begin.continuationStartAdmission
+            : (() => {
+                throw new Error('Durable continuation is missing its start admission');
+              })(),
+        ...(run.toolBoundaryProtocol ? { toolBoundaryProtocol: run.toolBoundaryProtocol } : {}),
+      });
+    } catch (error) {
+      releaseExecutionAbort();
+      await this.finalizeFailedRunStart(owners, run, execution, error);
+      return;
+    }
+    const stopBackend = this.stopBackendFor(begin.backend);
+    const eventContext = this.runtimeEventMapContext({
+      sessionId: continuation.sessionId,
+      invocationId: continuation.invocationId,
+      runId: continuation.runId,
+      turnId: continuation.turnId,
+    });
+    if (run.isStopped()) abortController.abort();
+    let streamFailure: unknown;
+    const streamResult = this.runBackendEventStream({
       backend: begin.backend,
-      stopBackend: this.stopBackendFor(begin.backend),
+      stopBackend,
       beforeDispatch: () => this.assertRunCanDispatch(run, begin.backend),
       ...(interactionRun ? { hostedInteraction: interactionRun } : {}),
-      drainAfterTerminal: true,
+      abortSignal: abortController.signal,
+      eventContext,
+      backendInput: {
+        invocationId: continuation.invocationId,
+        runId: continuation.runId,
+        turnId: continuation.turnId,
+        orchestration: run.effectiveOrchestration,
+        toolMode: run.toolMode,
+        text: '',
+        context: [],
+        runtimeContext: continuation.runtimeContext,
+        continuation: continuationMetadata,
+      },
       onSessionEvent: async (sessionEvent, runtimeEvent) => {
         this.assertInteractionPublication(interactionRun, sessionEvent);
         await run.acceptMappedEvent(sessionEvent, runtimeEvent, {
@@ -1814,32 +1736,7 @@ export class RuntimeKernel implements RuntimeKernelLike {
           throw error;
         }
       },
-    });
-    const runner = new RuntimeRunner({
-      flow: aiSdkFlow,
-      providers: { newId: this.deps.newId, now: this.deps.now },
-      stopOnTerminal: false,
-      ...(run.toolBoundaryProtocol ? { toolBoundaryProtocol: run.toolBoundaryProtocol } : {}),
-    });
-    if (run.isStopped()) abortController.abort();
-    let runnerFailure: unknown;
-    const runnerResult = runAdmittedRuntimeContinuation(
-      runner,
-      issueRuntimeContinuationAdmissionReceipt(
-        runner,
-        continuation,
-        'continuationStartAdmission' in begin
-          ? begin.continuationStartAdmission
-          : (() => {
-              throw new Error('Durable continuation is missing its start admission');
-            })(),
-        { orchestration: run.effectiveOrchestration, toolMode: run.toolMode },
-      ),
-      {
-        source: this.deps.runtimeSource ?? 'desktop',
-        abortSignal: abortController.signal,
-      },
-    ).then(
+    }).then(
       async (result) => {
         if (!flowDone) {
           try {
@@ -1848,16 +1745,15 @@ export class RuntimeKernel implements RuntimeKernelLike {
             owners.releaseMessage();
             sessionEvents.close();
           } catch (error) {
-            runnerFailure = error;
+            streamFailure = error;
             sessionEvents.fail(error);
             throw error;
           }
         }
-        await this.deps.runtimeInvocationObserver?.(result);
         return result;
       },
       (error) => {
-        runnerFailure = error;
+        streamFailure = error;
         sessionEvents.fail(error);
         throw error;
       },
@@ -1867,18 +1763,18 @@ export class RuntimeKernel implements RuntimeKernelLike {
       for await (const event of sessionEvents) {
         yield event;
       }
-      await runnerResult;
+      await streamResult;
     } finally {
       try {
         await this.cleanupRunExecution({
           run,
-          flow: aiSdkFlow,
+          stopBackend,
           flowDone,
           abortController,
           sessionEvents,
-          runnerResult,
+          streamResult,
           interactionRun,
-          ...(runnerFailure !== undefined ? { runnerFailure } : {}),
+          ...(streamFailure !== undefined ? { streamFailure } : {}),
           finalizeRun: () => owners.finalize(),
           releaseOwner: () => owners.releaseMessage(),
         });
@@ -1946,13 +1842,13 @@ export class RuntimeKernel implements RuntimeKernelLike {
 
   private async cleanupRunExecution(input: {
     run: AgentRun;
-    flow: AiSdkFlow;
+    stopBackend: AgentBackend['stop'];
     flowDone: boolean;
     abortController: AbortController;
     sessionEvents: DeliveryAckQueue<SessionEvent>;
-    runnerResult: Promise<InvocationResult>;
+    streamResult: Promise<void>;
     interactionRun: RuntimeInteractionRunBinding | undefined;
-    runnerFailure?: unknown;
+    streamFailure?: unknown;
     finalizeRun: () => Promise<void>;
     releaseOwner: () => void;
   }): Promise<void> {
@@ -1966,19 +1862,19 @@ export class RuntimeKernel implements RuntimeKernelLike {
       } catch (error) {
         failures.add(error);
       }
-      const backendStop = input.flow.stop('user_stop');
+      const backendStop = input.stopBackend('user_stop');
       input.abortController.abort();
       input.sessionEvents.close();
       await Promise.all([
         failures.capture(() => interactionClose),
         failures.capture(() => backendStop),
       ]);
-      if (input.runnerFailure !== undefined) {
-        await failures.capture(() => input.run.recordFailure(input.runnerFailure));
+      if (input.streamFailure !== undefined) {
+        await failures.capture(() => input.run.recordFailure(input.streamFailure));
       }
     }
 
-    await input.runnerResult.catch(() => undefined);
+    await input.streamResult.catch(() => undefined);
     await failures.capture(input.finalizeRun);
     await failures.capture(input.releaseOwner);
     const message = `Run cleanup failed for ${input.run.runId}`;
@@ -2031,32 +1927,119 @@ export class RuntimeKernel implements RuntimeKernelLike {
     }
   }
 
-  private compactInvocationContext(input: {
+  private runtimeEventMapContext(input: {
     sessionId: string;
+    invocationId: string;
     runId: string;
     turnId: string;
-    startedAt: number;
-  }): InvocationContext {
-    const request = {
-      sessionId: input.sessionId,
-      invocationId: input.runId,
-      runId: input.runId,
-      turnId: input.turnId,
-      text: '',
-      context: [],
-      source: this.deps.runtimeSource ?? 'desktop',
-    } satisfies InvocationContext['request'];
+  }): RuntimeEventMapContext {
     return {
       sessionId: input.sessionId,
-      invocationId: input.runId,
+      invocationId: input.invocationId,
       runId: input.runId,
       turnId: input.turnId,
-      source: this.deps.runtimeSource ?? 'desktop',
-      startedAt: input.startedAt,
-      request,
-      newId: this.deps.newId,
       now: this.deps.now,
     };
+  }
+
+  private async runBackendEventStream(input: {
+    backend: AgentBackend;
+    stopBackend: AgentBackend['stop'];
+    backendInput: BackendSendInput;
+    hostedInteraction?: HostedInteractionBridge;
+    abortSignal: AbortSignal;
+    eventContext: RuntimeEventMapContext;
+    beforeDispatch: () => void;
+    onSessionEvent: (sessionEvent: SessionEvent, runtimeEvent: RuntimeEvent) => Promise<void>;
+    onError: (error: unknown) => Promise<void>;
+    onFinally: () => Promise<void>;
+  }): Promise<void> {
+    const backendInput = cloneAndFreezeRuntimeSnapshot(input.backendInput);
+    if (input.eventContext.sessionId !== input.backend.sessionId) {
+      throw new Error(
+        `RuntimeKernel backend session mismatch: ${input.eventContext.sessionId} != ${input.backend.sessionId}`,
+      );
+    }
+    if (input.abortSignal.aborted) {
+      await input.onFinally();
+      return;
+    }
+
+    const onAbort = (): void => {
+      void input.stopBackend('user_stop').catch(() => {});
+    };
+    input.abortSignal.addEventListener('abort', onAbort, { once: true });
+
+    const memory = createSessionEventMapMemory();
+    let terminalSeen = false;
+    let terminalAccepted = false;
+    let errorSeen = false;
+    try {
+      input.beforeDispatch();
+      for await (const sessionEvent of input.backend.send({
+        ...backendInput,
+        ...(input.hostedInteraction ? { hostedInteraction: input.hostedInteraction } : {}),
+      })) {
+        if (terminalSeen || !isLiveBackendSessionEvent(sessionEvent)) continue;
+        const runtimeEvent = mapSessionEventToRuntimeEvent(
+          sessionEvent,
+          input.eventContext,
+          memory,
+        );
+        if (sessionEvent.type === 'error') errorSeen = true;
+        terminalSeen = isTerminalRuntimeEvent(runtimeEvent);
+        await input.onSessionEvent(sessionEvent, runtimeEvent);
+        if (terminalSeen) terminalAccepted = true;
+      }
+      if (!terminalSeen) {
+        for (const sessionEvent of this.missingTerminalSessionEvents(
+          input.eventContext.turnId,
+          !errorSeen,
+        )) {
+          const runtimeEvent = mapSessionEventToRuntimeEvent(
+            sessionEvent,
+            input.eventContext,
+            memory,
+          );
+          await input.onSessionEvent(sessionEvent, runtimeEvent);
+          if (isTerminalRuntimeEvent(runtimeEvent)) terminalSeen = true;
+        }
+      }
+    } catch (error) {
+      if (terminalAccepted) return;
+      await input.onError(error);
+      throw error;
+    } finally {
+      input.abortSignal.removeEventListener('abort', onAbort);
+      await input.onFinally();
+    }
+  }
+
+  private missingTerminalSessionEvents(turnId: string, includeError: boolean): SessionEvent[] {
+    const ts = this.deps.now();
+    return [
+      ...(includeError
+        ? [
+            {
+              type: 'error' as const,
+              id: this.deps.newId(),
+              turnId,
+              ts,
+              recoverable: false,
+              code: 'missing_terminal_event',
+              reason: 'missing_terminal_event',
+              message: 'backend exhausted without a terminal RuntimeEvent',
+            },
+          ]
+        : []),
+      {
+        type: 'complete',
+        id: this.deps.newId(),
+        turnId,
+        ts,
+        stopReason: 'error',
+      },
+    ];
   }
 
   stopSession(sessionId: string, input: StopSessionInput = {}): Promise<void> {
@@ -2086,10 +2069,6 @@ export class RuntimeKernel implements RuntimeKernelLike {
   }
 
   private async stopSessionAttempt(sessionId: string, intent: SessionStopIntent): Promise<void> {
-    // Interrupt clears both queues before the abort lands; the emitted empty
-    // snapshot lets the UI collapse its pending bar, and callers refill their
-    // editor from the mirror captured before the clear.
-    this.clearSteering(sessionId);
     const failures: unknown[] = [];
     let operation = this.stopOperations.get(sessionId);
     try {
@@ -2384,80 +2363,6 @@ export class RuntimeKernel implements RuntimeKernelLike {
     );
   }
 
-  // --------------------------------------------------------------------------
-  // Steering / followup queues (authoritative source of truth)
-  // --------------------------------------------------------------------------
-
-  private ensureSteering(sessionId: string): SessionSteeringState {
-    const existing = this.steeringBySession.get(sessionId);
-    if (existing) return existing;
-    const created: SessionSteeringState = { steering: [], inFlight: [], followup: [] };
-    this.steeringBySession.set(sessionId, created);
-    return created;
-  }
-
-  private emitQueueUpdate(sessionId: string, state: SessionSteeringState): void {
-    state.sink?.({
-      type: 'queue_update',
-      id: this.deps.newId(),
-      turnId: state.activeTurnId ?? '',
-      ts: this.deps.now(),
-      steering: [
-        ...state.inFlight.map((message) => message.content.text),
-        ...state.steering.map((message) => message.content.text),
-      ],
-      followup: [...state.followup],
-    });
-  }
-
-  private clearSteering(sessionId: string): void {
-    const state = this.steeringBySession.get(sessionId);
-    if (!state) return;
-    // Same commit-point rule as retractQueue: only QUEUED messages are
-    // clearable. An in-flight lease is already committed to the running
-    // turn's delivery and settles only by the persistence fact.
-    if (state.steering.length === 0 && state.followup.length === 0) return;
-    state.steering = [];
-    state.followup = [];
-    this.emitQueueUpdate(sessionId, state);
-  }
-
-  private releaseSteeringTurn(sessionId: string, turnId: string): void {
-    const state = this.steeringBySession.get(sessionId);
-    if (!state) return;
-    // A release folds only the leases THIS turn issued; an overlapping turn's
-    // in-flight lease stays for its issuer to settle (acked = delivered, so
-    // folding it into followup would redeliver an already-executed message).
-    const own = state.inFlight.filter((message) => message.issuingTurnId === turnId);
-    if (state.activeTurnId !== turnId) {
-      // Not (or no longer) the owner. The issuer's backend settles every
-      // lease before its turn ends, so `own` is normally empty; this is a
-      // backstop that keeps a never-settled lease from stranding invisibly.
-      if (own.length === 0) return;
-      state.inFlight = state.inFlight.filter((message) => message.issuingTurnId !== turnId);
-      state.followup = [...own.map((message) => message.content.text), ...state.followup];
-      this.emitQueueUpdate(sessionId, state);
-      return;
-    }
-    // Stranded steering (arrived after the final step boundary, so no step is
-    // left to consume it) becomes the head of the followup queue instead of
-    // vanishing — the next turn opens with it first (grok-build safety). The
-    // migration is a queue change, so emit the final snapshot BEFORE the sink
-    // is cleared; otherwise observers stay on the stale pre-fold snapshot.
-    if (state.steering.length > 0 || own.length > 0) {
-      state.followup = [
-        ...own.map((message) => message.content.text),
-        ...state.steering.map((message) => message.content.text),
-        ...state.followup,
-      ];
-      state.inFlight = state.inFlight.filter((message) => message.issuingTurnId !== turnId);
-      state.steering = [];
-      this.emitQueueUpdate(sessionId, state);
-    }
-    state.sink = undefined;
-    state.activeTurnId = undefined;
-  }
-
   hasActiveRuns(sessionId: string): boolean {
     return this.backendGenerationsFor(sessionId).some((active) => active.activeRuns.size > 0);
   }
@@ -2520,7 +2425,6 @@ export class RuntimeKernel implements RuntimeKernelLike {
 
   private async disposeBackendNow(sessionId: string): Promise<BackendDisposalOutcome> {
     const generations = this.backendGenerationsFor(sessionId);
-    this.steeringBySession.delete(sessionId);
     this.historyCompactCoordinator.clear(sessionId);
     let disposalError: unknown;
     for (const active of generations) {
@@ -3435,6 +3339,103 @@ function continuationTargetRunHeaderForExecution(input: {
       replayManifestDigest: continuation.boundary.manifestDigest,
     },
   };
+}
+
+function consumeAdmittedRuntimeContinuation(input: {
+  continuation: RuntimeContinuation;
+  startAdmission: RuntimeContinuationStartAdmissionProof;
+  toolBoundaryProtocol?: ToolBoundaryProtocol;
+}): RuntimeContinuationMetadata {
+  const { continuation } = input;
+  assertRuntimeContinuationEnvelope(continuation);
+  const startAdmissionIdentity = consumeRuntimeContinuationStartAdmissionProof(
+    input.startAdmission,
+  );
+  const boundary = continuation.boundary
+    ? decodeRuntimeBoundaryCursor(continuation.boundary)
+    : undefined;
+  if (
+    !continuation.claimId ||
+    !boundary ||
+    continuation.providerProjectionVersion !== PROVIDER_REPLAY_PROJECTION_VERSION ||
+    !continuation.providerReplayDigest ||
+    !/^sha256:[0-9a-f]{64}$/.test(continuation.providerReplayDigest) ||
+    !isDeepStrictEqual(startAdmissionIdentity, {
+      startEventId: startAdmissionIdentity.startEventId,
+      claimId: continuation.claimId,
+      boundaryDigest: boundary.manifestDigest,
+      providerProjectionVersion: continuation.providerProjectionVersion,
+      providerReplayDigest: continuation.providerReplayDigest,
+      ...(input.toolBoundaryProtocol ? { toolBoundaryProtocol: input.toolBoundaryProtocol } : {}),
+      target: {
+        sessionId: continuation.sessionId,
+        invocationId: continuation.invocationId,
+        runId: continuation.runId,
+        turnId: continuation.turnId,
+      },
+    })
+  ) {
+    throw new Error('Runtime continuation durable admission identity is incomplete');
+  }
+  const immediateSource = boundary.segments.at(-1)!;
+  if (
+    boundary.manifestDigest !== continuation.boundary?.manifestDigest ||
+    immediateSource.identity.sessionId !== continuation.sessionId ||
+    immediateSource.identity.invocationId !== continuation.sourceInvocationId ||
+    immediateSource.identity.runId !== continuation.sourceRunId ||
+    immediateSource.identity.turnId !== continuation.sourceTurnId ||
+    immediateSource.position.lastEventSeq !== continuation.sourceRuntimeEventHighWater
+  ) {
+    throw new Error('Runtime continuation durable admission boundary is inconsistent');
+  }
+  const replay = buildRuntimeEventModelReplayPlan(continuation.runtimeContext);
+  if (
+    digestProviderReplay(continuation.providerProjectionVersion, replay.items) !==
+    continuation.providerReplayDigest
+  ) {
+    throw new Error('Runtime continuation provider replay identity changed after admission');
+  }
+  return {
+    sourceInvocationId: continuation.sourceInvocationId,
+    sourceRunId: continuation.sourceRunId,
+    sourceTurnId: continuation.sourceTurnId,
+    sourceRuntimeEventHighWater: continuation.sourceRuntimeEventHighWater,
+  };
+}
+
+function assertRuntimeContinuationEnvelope(continuation: RuntimeContinuation): void {
+  const sourceRuntimeContext = continuation.sourceRuntimeContext ?? continuation.runtimeContext;
+  if (continuation.sourceRuntimeEventHighWater < sourceRuntimeContext.length) {
+    throw new Error('Runtime continuation high-water is behind its replay context');
+  }
+  if (continuation.runtimeContext.length === 0) {
+    throw new Error('Runtime continuation replay context must not be empty');
+  }
+  const mismatched = sourceRuntimeContext.find(
+    (event) =>
+      event.sessionId !== continuation.sessionId ||
+      event.invocationId !== continuation.sourceInvocationId ||
+      event.runId !== continuation.sourceRunId ||
+      event.turnId !== continuation.sourceTurnId,
+  );
+  if (mismatched) {
+    throw new Error(`Runtime continuation replay identity mismatch at event ${mismatched.id}`);
+  }
+  if (
+    !isDeepStrictEqual(
+      continuation.runtimeContext.slice(-sourceRuntimeContext.length),
+      sourceRuntimeContext,
+    )
+  ) {
+    throw new Error('Runtime continuation source replay is not the tail of provider history');
+  }
+  if (
+    continuation.invocationId === continuation.sourceInvocationId ||
+    continuation.runId === continuation.sourceRunId ||
+    continuation.turnId === continuation.sourceTurnId
+  ) {
+    throw new Error('Runtime continuation must use fresh invocation, run, and turn identities');
+  }
 }
 
 function assertContinuationSourceUnchanged(

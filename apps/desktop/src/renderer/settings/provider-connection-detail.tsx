@@ -51,12 +51,14 @@ import {
 } from '@maka/ui';
 import { PasswordInput } from './password-input';
 import { SettingsExpandableRow } from './settings-expandable-row';
+import { SettingsRow } from './settings-section';
 import { getProviderSettingsCopy } from '../locales/settings-provider-copy';
 import { providerDisplay } from './provider-display';
 import { AddModelDialog } from './provider-add-model-dialog';
 import { EnabledModelManager } from './provider-enabled-model-manager';
 import { useActionGuard } from './use-action-guard';
 import {
+  RuntimeHostSettingsGenerationBoundary,
   useRuntimeHostSettingsErrorReporter,
   useRuntimeHostSettingsTarget,
 } from './runtime-host-settings-target.js';
@@ -81,6 +83,7 @@ import {
   type RequestHeaderDraft,
 } from './request-customization-editor';
 import { bulkThinkingLevelStates } from './relay-thinking-bulk';
+import { endpointCarriesCredentials, providerEndpointPresentation } from './provider-endpoint-presentation';
 
 export function ConnectionDetail(props: ConnectionDetailProps) {
   const defaults = PROVIDER_DEFAULTS[props.connection.providerType];
@@ -153,6 +156,8 @@ function ConnectionDetailInner(props: ConnectionDetailProps) {
     apiKey,
     setApiKey,
     hasSecret,
+    name,
+    setName,
     baseUrl,
     setBaseUrl,
     enabledModelIds,
@@ -173,6 +178,8 @@ function ConnectionDetailInner(props: ConnectionDetailProps) {
     apiKeyStatusHint,
     hasApiKeyChange,
     hasBaseUrlChange,
+    hasNameChange,
+    savedName,
     issue,
     lastTestMessage,
     lastTestAtMs,
@@ -223,7 +230,9 @@ function ConnectionDetailInner(props: ConnectionDetailProps) {
   // Opening a row discards the other's draft: leaving an abandoned draft in
   // state meant it reappeared when the user came back to that row, and — until
   // `save` became per-field — rode along with the next save.
-  const [editingRow, setEditingRow] = useState<'key' | 'endpoint' | 'headers' | 'body' | null>(null);
+  const [editingRow, setEditingRow] = useState<
+    'name' | 'key' | 'endpoint' | 'headers' | 'body' | null
+  >(null);
   const [addModelOpen, setAddModelOpen] = useState(false);
   const [savedHeaderNames, setSavedHeaderNames] = useState<readonly string[]>([]);
   const [headerDrafts, setHeaderDrafts] = useState<RequestHeaderDraft[]>([]);
@@ -266,11 +275,19 @@ function ConnectionDetailInner(props: ConnectionDetailProps) {
     };
   }, [connection.slug, props.bridge, toast]);
 
-  function openRow(row: 'key' | 'endpoint' | 'headers' | 'body') {
+  function openRow(row: 'name' | 'key' | 'endpoint' | 'headers' | 'body') {
+    // Opening one row abandons whatever another row was holding: only one is
+    // editable at a time, so a draft left behind would be saved by a later
+    // action the user never connected to it.
+    if (row !== 'name') setName(savedName);
     if (row === 'key') setBaseUrl(savedBaseUrl);
     else if (row === 'endpoint') setApiKey('');
     else if (row === 'headers') setHeaderDrafts(savedRequestHeaderDrafts(savedHeaderNames));
-    else setBodyDraft(savedBodyText);
+    else if (row === 'body') setBodyDraft(savedBodyText);
+    else {
+      setApiKey('');
+      setBaseUrl(savedBaseUrl);
+    }
     setEditingRow(row);
   }
 
@@ -328,15 +345,26 @@ function ConnectionDetailInner(props: ConnectionDetailProps) {
       if (mounted.current) setRequestCustomizationBusy(false);
     }
   }
-  // Most of the 60 providers publish a fixed endpoint; editing it there can
-  // only break the connection, and a proxy belongs in 设置 · 通用 · 网络, not in
-  // a per-connection URL. So the row exists only where the address is genuinely
-  // the user's: a service with no published endpoint (the *-compatible ones), or
-  // a local runtime whose port is a convention rather than a fact. A derived
-  // endpoint (Cloudflare builds one from the account id) is nobody's to type.
-  const showsEndpoint = !needsOAuth
-    && !defaults.baseUrlTemplate
-    && (!defaults.baseUrl || defaults.category === 'local');
+  // Every known connection reports where requests go. Editability remains the
+  // narrower authority: built-in and derived endpoints are visible but fixed,
+  // while custom relays and local runtimes keep their existing editor.
+  const endpoint = providerEndpointPresentation(connection);
+  const endpointValue = endpoint.value
+    ? <code className="settingsReadOnlyValue providerEndpointValue" data-mono="true">{endpoint.value}</code>
+    : endpoint.emptyState === 'managed'
+      ? copy.endpointManaged
+      : copy.endpointMissing;
+  // Model-level endpoint overrides mean the connection-level base is not the
+  // whole truth for every model; say so under the value rather than implying
+  // one address serves all models.
+  const endpointNote = endpoint.modelOverrides
+    ? <span className="providerEndpointNote">{copy.endpointModelOverridesNote}</span>
+    : null;
+  const endpointDisplay = endpointNote ? <>{endpointValue}{endpointNote}</> : endpointValue;
+  // A credential-bearing saved endpoint must not prefill a plain text input:
+  // the editor falls back to the masked-by-default PasswordInput, which the
+  // user can deliberately reveal.
+  const endpointHasCredentials = endpointCarriesCredentials(savedBaseUrl);
 
   return (
     /* Three sections, each a heading with a sentence beside its controls, one
@@ -410,8 +438,39 @@ function ConnectionDetailInner(props: ConnectionDetailProps) {
               : copy.credentialUnknownDetail}
           />
         )}
-        {(supportsApiKey || showsEndpoint) && (
+        {/* The name row is outside the key/endpoint guard below: a connection
+            with neither — an OAuth subscription, say — still has a name, and
+            hiding the only editable field it has would leave the section
+            empty. It comes first because it is the field the user chose. */}
+        {!retired && (
           <VStack gap={0}>
+            <Divider />
+            <SettingsExpandableRow
+              label={copy.connectionName}
+              value={savedName || connection.slug}
+              actionLabel={copy.edit}
+              actionAriaLabel={`${copy.edit}: ${copy.connectionName}`}
+              isEditing={editingRow === 'name'}
+              isDisabled={allActionsBusy}
+              canSave={hasNameChange}
+              saveLabel={copy.save}
+              cancelLabel={copy.cancel}
+              onEdit={() => openRow('name')}
+              onCancel={() => { setName(savedName); setEditingRow(null); }}
+              onSave={async () => { if (await save('name')) setEditingRow(null); }}
+            >
+              <TextInput
+                label={copy.connectionName}
+                isLabelHidden
+                value={name}
+                onChange={setName}
+                placeholder={copy.connectionNamePlaceholder}
+                isDisabled={allActionsBusy}
+              />
+            </SettingsExpandableRow>
+          </VStack>
+        )}
+        <VStack gap={0}>
             <Divider />
             {supportsApiKey && (
               <>
@@ -450,12 +509,13 @@ function ConnectionDetailInner(props: ConnectionDetailProps) {
               <Divider />
               </>
             )}
-            {showsEndpoint && (
+            {endpoint.editable ? (
               <>
               <SettingsExpandableRow
                 label={copy.endpoint}
-                value={savedBaseUrl || copy.endpointDefault}
+                value={endpointDisplay}
                 actionLabel={copy.edit}
+                actionAriaLabel={`${copy.edit}: ${copy.endpoint}`}
                 isEditing={editingRow === 'endpoint'}
                 isDisabled={allActionsBusy}
                 canSave={hasBaseUrlChange}
@@ -465,25 +525,41 @@ function ConnectionDetailInner(props: ConnectionDetailProps) {
                 onCancel={() => { setBaseUrl(savedBaseUrl); setEditingRow(null); }}
                 onSave={async () => { if (await save('endpoint')) setEditingRow(null); }}
               >
-                <TextInput
-                  label={copy.endpoint}
-                  isLabelHidden
-                  value={baseUrl}
-                  onChange={setBaseUrl}
-                  placeholder={defaults.baseUrl}
-                  isDisabled={allActionsBusy}
-                />
+                {endpointHasCredentials ? (
+                  <PasswordInput
+                    value={baseUrl}
+                    onChange={setBaseUrl}
+                    placeholder={defaults.baseUrl}
+                    label={copy.endpoint}
+                    isLabelHidden
+                    description={copy.endpointCredentialsMasked}
+                    isDisabled={allActionsBusy}
+                  />
+                ) : (
+                  <TextInput
+                    label={copy.endpoint}
+                    isLabelHidden
+                    value={baseUrl}
+                    onChange={setBaseUrl}
+                    placeholder={defaults.baseUrl}
+                    isDisabled={allActionsBusy}
+                  />
+                )}
               </SettingsExpandableRow>
               <Divider />
               </>
+            ) : (
+              <>
+                <SettingsRow
+                  label={copy.endpoint}
+                  description={endpointDisplay}
+                  align="start"
+                />
+                <Divider />
+              </>
             )}
-          </VStack>
-        )}
+        </VStack>
       </DetailSection>
-      {/* The rows draw the closing rule themselves; without them the section
-          still needs one. Two rules with a gap between them read as an empty
-          row, so only ever one. */}
-      {!supportsApiKey && !showsEndpoint && !retired && <Divider />}
       {/* Everything below writes to the connection, and a retired one accepts
           no writes: the catalog refuses a model or request-body change, and the
           credential vault refuses a request header. Rendering the editors would
@@ -942,6 +1018,17 @@ function GitHubCopilotReloginNotice(props: {
   hasSecret: CredentialPresenceStatus;
   onRelogin(): Promise<void>;
 }) {
+  return (
+    <RuntimeHostSettingsGenerationBoundary>
+      <GitHubCopilotReloginNoticeForCurrentGeneration {...props} />
+    </RuntimeHostSettingsGenerationBoundary>
+  );
+}
+
+function GitHubCopilotReloginNoticeForCurrentGeneration(props: {
+  hasSecret: CredentialPresenceStatus;
+  onRelogin(): Promise<void>;
+}) {
   const host = useRuntimeHostSettingsTarget();
   const locale = useUiLocale();
   const copy = getProviderSettingsCopy(locale).detail;
@@ -959,6 +1046,10 @@ function GitHubCopilotReloginNotice(props: {
     if (!connectGuard.begin('connect')) return;
     try {
       const result = await window.maka.githubCopilotSubscription.connectExistingLogin(host);
+      // A same-key Runtime Host replacement remounts this controller through
+      // the generation boundary above. The old import cannot report into, or
+      // refresh, the connection detail now owned by the replacement Host.
+      if (!mountedRef.current) return;
       if (!result.ok) {
         reportHostError(copy.copilotImportFailed, result.message);
         return;
@@ -994,6 +1085,18 @@ function GitHubCopilotReloginNotice(props: {
 // token still reads hasSecret===true, so it must not hide behind
 // hasSecret===false.
 function OAuthReloginNotice(props: {
+  service: OAuthLoginService;
+  hasSecret: CredentialPresenceStatus;
+  onRelogin(): Promise<void>;
+}) {
+  return (
+    <RuntimeHostSettingsGenerationBoundary>
+      <OAuthReloginNoticeForCurrentGeneration {...props} />
+    </RuntimeHostSettingsGenerationBoundary>
+  );
+}
+
+function OAuthReloginNoticeForCurrentGeneration(props: {
   service: OAuthLoginService;
   hasSecret: CredentialPresenceStatus;
   onRelogin(): Promise<void>;

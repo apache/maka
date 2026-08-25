@@ -19,14 +19,21 @@
 
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { createElement } from 'react';
+import { renderToStaticMarkup } from 'react-dom/server';
+import { AstryxLocaleProvider, LocaleProvider } from '@maka/ui';
 import {
+  WorkHubCoordinationStatus,
+  WorkHubProjectionRefreshGate,
   WorkHubSurfaceRouteGate,
   submitWorkHubSurfaceInput,
+  visibleWorkHubConversation,
   workHubSubmissionCanCorrect,
   workHubSubmissionClearsDraft,
 } from '../../renderer/workhub-surface.js';
 import {
   createWorkHubController,
+  WORKHUB_ROUTING_STRATEGY_ID,
   type WorkHubController,
   type WorkHubSubmitInput,
 } from '../../renderer/workhub-controller.js';
@@ -53,18 +60,52 @@ test('surface route gate rejects same-frame duplicate operations and reopens aft
   assert.equal(await gate.run(async () => 'next'), 'next');
 });
 
+test('Coordination lifecycle keeps a visible loading state and exposes failure recovery', () => {
+  const renderStatus = (state: 'resolving' | 'failed') => renderToStaticMarkup(
+    createElement(LocaleProvider, {
+      locale: 'en',
+      children: createElement(AstryxLocaleProvider, {
+        children: createElement(WorkHubCoordinationStatus, {
+          locale: 'en',
+          state,
+          onRetry: () => undefined,
+        }),
+      }),
+    }),
+  );
+  const resolving = renderStatus('resolving');
+  const failed = renderStatus('failed');
+
+  assert.match(resolving, /Preparing WorkHub/);
+  assert.match(resolving, /aria-busy="true"/);
+  assert.match(failed, /role="alert"/);
+  assert.match(failed, /Check the default model/);
+  assert.match(failed, />Retry</);
+});
+
+test('surface projection refresh gate rejects older reads after a newer refresh starts', () => {
+  const gate = new WorkHubProjectionRefreshGate();
+  const first = gate.begin();
+  const second = gate.begin();
+
+  assert.equal(first(), false);
+  assert.equal(second(), true);
+  gate.invalidate();
+  assert.equal(second(), false);
+});
+
 test('surface keeps the Composer draft when routing fails or the target is waiting', () => {
   assert.equal(workHubSubmissionClearsDraft(undefined), false);
   assert.equal(workHubSubmissionClearsDraft({
     kind: 'waiting',
-    strategyId: 'wh-r2.3-session-core-evidence',
+    strategyId: WORKHUB_ROUTING_STRATEGY_ID,
     requestId: 'waiting',
     text: '继续处理',
     target: { sessionId: 'payment' },
   }), false);
   assert.equal(workHubSubmissionClearsDraft({
     kind: 'discussion',
-    strategyId: 'wh-r2.3-session-core-evidence',
+    strategyId: WORKHUB_ROUTING_STRATEGY_ID,
     requestId: 'discussion',
     text: '先讨论方向',
   }), true);
@@ -73,7 +114,7 @@ test('surface keeps the Composer draft when routing fails or the target is waiti
 test('surface disables correction after a request was steered into existing work', () => {
   const submission = {
     kind: 'submitted' as const,
-    strategyId: 'wh-r2.3-session-core-evidence' as const,
+    strategyId: WORKHUB_ROUTING_STRATEGY_ID,
     requestId: 'steered',
     target: { sessionId: 'payment' },
     turnId: 'turn-existing',
@@ -84,17 +125,50 @@ test('surface disables correction after a request was steered into existing work
   assert.equal(workHubSubmissionCanCorrect({ ...submission, steered: true }), false);
 });
 
+test('surface replaces a local discussion placeholder with its durable model answer', () => {
+  const local = [{
+    requestId: 'discussion-turn',
+    text: 'What is next?',
+    state: 'settled' as const,
+    outcome: {
+      kind: 'discussion' as const,
+      strategyId: WORKHUB_ROUTING_STRATEGY_ID,
+      requestId: 'discussion-turn',
+      text: 'What is next?',
+    },
+  }];
+  const durable = [{
+    messageId: 'user-message',
+    turnId: 'discussion-turn',
+    text: 'What is next?',
+    result: 'Slice 3 is next.',
+    state: 'completed' as const,
+    updatedAt: 10,
+  }];
+
+  assert.deepEqual(visibleWorkHubConversation(durable, local), {
+    coordination: durable,
+    local: [],
+  });
+});
+
 test('surface keeps clarification and successful routing in WorkHub', async () => {
   const submissions: WorkHubSubmitInput[] = [];
   const controller: WorkHubController = {
-    read: async () => ({ sessions: [] }),
+    read: async () => ({ sessions: [], turns: [] }),
+    openConversation: async (handler) => {
+      handler([]);
+      return { close: async () => undefined };
+    },
+    recordConversationTurn: async ({ turnId }) => ({ turnId }),
+    resetVisitContext: () => {},
     subscribe: () => () => {},
     submit: async (input) => {
       submissions.push(input);
       if (!input.explicitTarget) {
         return {
           kind: 'clarification',
-          strategyId: 'wh-r2.3-session-core-evidence',
+          strategyId: WORKHUB_ROUTING_STRATEGY_ID,
           requestId: input.requestId,
           text: input.text,
           options: [{
@@ -106,7 +180,7 @@ test('surface keeps clarification and successful routing in WorkHub', async () =
       }
       return {
         kind: 'submitted',
-        strategyId: 'wh-r2.3-session-core-evidence',
+        strategyId: WORKHUB_ROUTING_STRATEGY_ID,
         requestId: input.requestId,
         target: input.explicitTarget,
         turnId: 'turn-payment',
@@ -135,11 +209,17 @@ test('surface keeps clarification and successful routing in WorkHub', async () =
 
 test('surface leaves discussion in WorkHub instead of creating a task view', async () => {
   const controller: WorkHubController = {
-    read: async () => ({ sessions: [] }),
+    read: async () => ({ sessions: [], turns: [] }),
+    openConversation: async (handler) => {
+      handler([]);
+      return { close: async () => undefined };
+    },
+    recordConversationTurn: async ({ turnId }) => ({ turnId }),
+    resetVisitContext: () => {},
     subscribe: () => () => {},
     submit: async (input) => ({
       kind: 'discussion',
-      strategyId: 'wh-r2.3-session-core-evidence',
+      strategyId: WORKHUB_ROUTING_STRATEGY_ID,
       requestId: input.requestId,
       text: input.text,
     }),
@@ -171,6 +251,11 @@ test('real Session projection creates new guide topics and preserves origin ambi
   ]]);
   const created: string[] = [];
   const port = createDesktopWorkHubSessionPort({
+    transcripts: {
+      open: async () => {
+        throw new Error('transcript is not used by this routing test');
+      },
+    },
     sessions: {
       list: async () => sessions,
       listTurns: async (sessionId) => (prompts.get(sessionId) ?? [])

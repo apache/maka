@@ -95,6 +95,45 @@ test('restarts a paginated catalog read instead of mixing revisions', async () =
   ]);
 });
 
+test('resolves WorkHub coordination through the dedicated Host operation', async () => {
+  const { client, requests } = clientWithResponses([
+    { sessionId: 'maka_workhub_coordination' },
+    { turnId: 'answer-turn' },
+    { turnId: 'summary-turn' },
+  ]);
+
+  assert.deepEqual(await client.resolveWorkHubCoordinationSession(), {
+    sessionId: 'maka_workhub_coordination',
+  });
+  assert.deepEqual(
+    await client.answerWorkHubCoordination({ turnId: 'answer-turn', text: 'Question' }),
+    { turnId: 'answer-turn' },
+  );
+  assert.deepEqual(
+    await client.recordWorkHubCoordination({
+      turnId: 'summary-turn',
+      userText: 'Request',
+      assistantText: 'Summary',
+    }),
+    { turnId: 'summary-turn' },
+  );
+  assert.deepEqual(requests, [
+    { operation: 'workhub.coordination.resolve', input: {} },
+    {
+      operation: 'workhub.coordination.answer',
+      input: { turnId: 'answer-turn', text: 'Question' },
+    },
+    {
+      operation: 'workhub.coordination.record',
+      input: {
+        turnId: 'summary-turn',
+        userText: 'Request',
+        assistantText: 'Summary',
+      },
+    },
+  ]);
+});
+
 test('re-reads the Session revision before retrying a product update', async () => {
   const { client, requests } = clientWithResponses([
     { kind: 'session', session: session('session-1', 4) },
@@ -394,8 +433,9 @@ test('binds message controls to the current Host Epoch', async () => {
   const { client, requests } = clientWithResponses([
     { disposition: 'steering', queueRevision: 2 },
     { queueRevision: 3 },
+    { queueRevision: 4 },
     {
-      queueRevision: 4,
+      queueRevision: 5,
       retracted: [],
       turn: {
         sessionId: 'session-1',
@@ -418,6 +458,13 @@ test('binds message controls to the current Host Epoch', async () => {
     sessionId: 'session-1',
     entryId: 'entry-1',
     retractId: 'retract-1',
+  });
+  await client.updateQueueEntry({
+    sessionId: 'session-1',
+    entryId: 'entry-1',
+    updateId: 'update-1',
+    expectedQueueRevision: 3,
+    text: 'Updated steer',
   });
   await client.interruptTurn({
     sessionId: 'session-1',
@@ -443,6 +490,17 @@ test('binds message controls to the current Host Epoch', async () => {
         sessionId: 'session-1',
         entryId: 'entry-1',
         retractId: 'retract-1',
+        originHostEpoch: 'host-current',
+      },
+    },
+    {
+      operation: 'queue.entry.update',
+      input: {
+        sessionId: 'session-1',
+        entryId: 'entry-1',
+        updateId: 'update-1',
+        expectedQueueRevision: 3,
+        text: 'Updated steer',
         originHostEpoch: 'host-current',
       },
     },
@@ -912,7 +970,7 @@ function session(
       hostCwd: '/workspace',
     },
     createdAt: 1,
-    lastUsedAt: 1,
+    activityAt: 1,
     name: id,
     isFlagged: false,
     isArchived: false,

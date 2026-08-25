@@ -28,7 +28,6 @@ import {
   type MessageBoxReturnValue,
 } from "electron";
 import { randomUUID } from "node:crypto";
-import { readFileSync } from "node:fs";
 import { basename, join } from "node:path";
 import { type ConnectionEvent } from '@maka/core/connections';
 import type { UsageRange } from '@maka/core/settings';
@@ -54,11 +53,10 @@ import {
 } from "@maka/runtime-host/client";
 import type { WorkspaceTarget } from "@maka/runtime-host/protocol";
 import { createCredentialMcpOAuthStorage, McpClientManager } from "@maka/mcp";
-import {
-  createSettingsStore,
-  createMcpConfigStore,
-  createFileCredentialStore,
-} from "@maka/storage";
+import { createWorkBoardStore } from "@maka/storage/work-board-store";
+import { createFileCredentialStore } from "@maka/storage/credential-store";
+import { createMcpConfigStore } from "@maka/storage/mcp-config-store";
+import { createSettingsStore } from "@maka/storage/settings-store";
 import { resolveStorageRoot } from "@maka/storage/root-authority";
 
 import { createMcpOAuthController } from "./mcp-oauth-controller.js";
@@ -121,6 +119,7 @@ import {
 import { registerNotificationsIpc } from "./notifications-ipc-main.js";
 import { registerMarkdownSaveIpc } from "./markdown-save-ipc-main.js";
 import { registerPetPackIpc } from "./pet-pack-import.js";
+import { registerWorkBoardIpc } from "./work-board-ipc-main.js";
 import {
   createPermissionOverlayMain,
   registerPermissionOverlayIpc,
@@ -134,7 +133,7 @@ import {
   createProjectRootController,
   type ProjectRootController,
 } from "./project-root-controller.js";
-import { createSessionCopyCleanupAuthority } from "./quote-companion-cleanup.js";
+import { createSessionCopyCleanupAuthority } from "@maka/storage/session-copy-cleanup";
 import {
   projectHostConnections,
   registerRuntimeHostConnectionsIpc,
@@ -157,6 +156,7 @@ import {
   startRuntimeHostDesktopManager,
   type RuntimeHostDesktopManager,
 } from "./runtime-host-desktop-manager.js";
+import { buildRuntimeHostQuitFailureDialog } from "./runtime-host-quit-copy.js";
 import { createRuntimeHostUpgradePrompts } from "./runtime-host-upgrade-dialog.js";
 import { registerRuntimeHostMemoryIpc } from "./runtime-host-memory-ipc-main.js";
 import {
@@ -166,9 +166,8 @@ import {
 } from "./runtime-host-profile-service.js";
 import {
   createDesktopRuntimeHostSshTerminal,
-  isExactRuntimeHostSetupPackageSpecifier,
-  type DesktopRuntimeHostSetupPackage,
 } from "./runtime-host-ssh-terminal.js";
+import { createRuntimeHostSetupPackageResolver } from "./runtime-host-setup-package.js";
 import { createDesktopRuntimeHostOnboarding } from "./runtime-host-onboarding.js";
 import { createDesktopRuntimeHostManagement } from "./runtime-host-management.js";
 import { registerRuntimeHostOAuthIpc } from "./runtime-host-oauth-ipc-main.js";
@@ -308,6 +307,7 @@ const desktopLocale = createDesktopLocaleAuthority({
   preferredSystemLanguages: () => app.getPreferredSystemLanguages(),
 });
 const mcpConfigStore = createMcpConfigStore(workspaceRoot);
+const workBoardStore = createWorkBoardStore(workspaceRoot);
 const mcpManager = new McpClientManager({
   clientName: "maka-desktop",
   clientVersion: app.getVersion(),
@@ -372,6 +372,11 @@ const mainWindowController = createMainWindowController({
 const runtimeHostSshTerminal = createDesktopRuntimeHostSshTerminal({
   ipcMain,
   send: (channel, event) => mainWindowController.send(channel, event),
+});
+const runtimeHostSetupPackage = createRuntimeHostSetupPackageResolver({
+  isPackaged: app.isPackaged,
+  appPath: app.getAppPath(),
+  environment: process.env,
 });
 const native = assembleDesktopNativeCapabilities({
   isComputerUseRealModelE2e,
@@ -438,7 +443,7 @@ const runtimeHostOnboarding = createDesktopRuntimeHostOnboarding({
   clientInstanceId: runtimeHostClientInstanceId,
   profiles: runtimeHostProfileService,
   runSetup: runtimeHostSshTerminal.runSetup,
-  resolveSetupPackage: runtimeHostSetupPackage,
+  resolveSetupPackage: runtimeHostSetupPackage.resolve,
   send: (snapshot) =>
     mainWindowController.send("runtime-host-onboarding:changed", snapshot),
 });
@@ -447,7 +452,9 @@ const runtimeHostManagement = createDesktopRuntimeHostManagement({
   profiles: runtimeHostProfileService,
   runServiceManagement: runtimeHostSshTerminal.runServiceManagement,
   runUpdate: runtimeHostSshTerminal.runUpdate,
-  resolveUpdatePackage: runtimeHostSetupPackage,
+  runUpdatePolicy: runtimeHostSshTerminal.runUpdatePolicy,
+  runUpdateReconciliation: runtimeHostSshTerminal.runUpdateReconciliation,
+  resolveUpdatePackage: runtimeHostSetupPackage.resolve,
   currentHostEpoch: (profileId) =>
     runtimeHostManager?.current(profileId)?.candidate?.client.hostEpoch,
   awaitUpdatedConnection: async (
@@ -492,29 +499,6 @@ const runtimeHostManagement = createDesktopRuntimeHostManagement({
   runAccessManagement: runtimeHostSshTerminal.runAccessManagement,
   cleanupManagedDeployment: runtimeHostSshTerminal.cleanupManagedDeployment,
 });
-
-function runtimeHostSetupPackage(): DesktopRuntimeHostSetupPackage {
-  if (!app.isPackaged && process.env.MAKA_RUNTIME_HOST_SETUP_ARCHIVE) {
-    return { kind: "development_archive", path: process.env.MAKA_RUNTIME_HOST_SETUP_ARCHIVE };
-  }
-  const manifestPath = app.isPackaged
-    ? join(app.getAppPath(), "package.json")
-    : join(app.getAppPath(), "..", "..", "packages", "cli", "package.json");
-  const manifest = JSON.parse(readFileSync(manifestPath, "utf8")) as {
-    name?: unknown;
-    version?: unknown;
-    runtimeHostSetupPackage?: unknown;
-  };
-  const specifier = app.isPackaged
-    ? manifest.runtimeHostSetupPackage
-    : manifest.name === "maka-agent" && typeof manifest.version === "string"
-      ? `maka-agent@${manifest.version}`
-      : undefined;
-  if (!isExactRuntimeHostSetupPackageSpecifier(specifier)) {
-    throw new Error("Desktop does not declare an exact Runtime Host setup package");
-  }
-  return { kind: "npm", specifier };
-}
 const defaultRuntimeHostRecovery = createRuntimeHostDefaultRecovery({
   defaultProfileId: () =>
     runtimeHostManager?.defaultProfileId() ??
@@ -653,7 +637,14 @@ const updateService = createAppUpdateService({
     mainWindowController.send("app:updateStatusChanged", status),
   prepareInstall: async (input) => {
     if (!runtimeHostManager) throw new Error("Runtime Host manager is unavailable");
-    return runtimeHostManager.prepareForUpdate(input.allowInterruptActiveTasks);
+    const retirement = await runtimeHostManager.retireOwnedLocalHost(
+      input.allowInterruptActiveTasks ? "interrupt_active_work" : "refuse_active_work",
+    );
+    if (retirement.kind === "active_tasks") return retirement;
+    return {
+      kind: "prepared",
+      rollback: retirement.kind === "retired" ? retirement.resume : () => {},
+    };
   },
 });
 mcpManager.onChange(() => {
@@ -665,6 +656,12 @@ mcpManager.onChange(() => {
 
 registerPersistentClientIpc();
 registerPetPackIpc({ ipcMain, workspaceRoot, mainWindowController, settingsStore });
+const workBoardIpc = registerWorkBoardIpc({
+  ipcMain,
+  workspaceRoot,
+  mainWindowController,
+  store: workBoardStore,
+});
 const browserIpc = registerBrowserIpc({
   mainWindowController,
   isHostActive: (scope) => runtimeHostManager?.ownsScope(scope) === true,
@@ -1521,10 +1518,17 @@ function emitSessionsChanged(
 
 function wireLifecycle(): void {
   const quitCoordinator = createAppQuitCoordinator({
+    prepareToQuit: prepareRuntimeHostDesktopQuit,
     cleanup: closeRuntimeHostDesktop,
     focusOrCreateWindow: (signal) => {
       if (mainWindowController.hasOpenWindows()) mainWindowController.focus();
       else return mainWindowController.createWindow(signal);
+    },
+    onPreparationError: (error) => {
+      console.error("[runtime-host] quit retirement failed:", error);
+      void showRuntimeHostQuitFailure(error).catch((dialogError) =>
+        console.error("[runtime-host] quit failure dialog failed:", dialogError),
+      );
     },
     onCleanupError: (error) =>
       console.error("[runtime-host] shutdown failed:", error),
@@ -1553,6 +1557,20 @@ function wireLifecycle(): void {
   quitCoordinator.focusOrCreateWindow();
 }
 
+async function prepareRuntimeHostDesktopQuit(): Promise<void> {
+  const retirement = await runtimeHostManager?.retireOwnedLocalHost(
+    "interrupt_active_work",
+  );
+  if (retirement?.kind === "active_tasks") {
+    throw new Error("Runtime Host refused authorized quit retirement");
+  }
+}
+
+async function showRuntimeHostQuitFailure(error: unknown): Promise<void> {
+  const locale = await desktopLocale.resolve();
+  await dialog.showMessageBox(buildRuntimeHostQuitFailureDialog(error, locale));
+}
+
 async function closeRuntimeHostDesktop(): Promise<void> {
   clientSettingsWatcher.stop();
   updateService.dispose();
@@ -1562,6 +1580,8 @@ async function closeRuntimeHostDesktop(): Promise<void> {
     Promise.resolve().then(() => runtimeHostManagement.close()),
     runtimeHostManager?.close(),
     runtimeHostOnboarding.close(),
+    runtimeHostSetupPackage.close(),
+    Promise.resolve().then(() => workBoardIpc.close()),
     runtimeHostSshTerminal.close(),
     botRegistry.stopAll(),
     mcpManager.close(),

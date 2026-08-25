@@ -156,6 +156,8 @@ test('release authority changes select their dedicated contract gate', () => {
     'scripts/verify-packaged-app.mjs',
     'scripts/verify-windows-x64.mjs',
     'scripts/windows-upgrade-baseline.json',
+    'scripts/windows-package-source-closure.mjs',
+    'scripts/windows-package-source-closure.test.mjs',
   ]) {
     assert.equal(planTests([path], { graph }).releaseContract, true, path);
   }
@@ -287,6 +289,23 @@ test('contract checks run before dependency setup and can fail the job', () => {
   }
 });
 
+test('core CI checks the Astryx inventory for every code change before building', () => {
+  const workflow = readWorkflow('ci.yml');
+  const inventoryStart = workflow.indexOf('      - name: Astryx surface inventory\n');
+  const inventoryEnd = workflow.indexOf('\n      - ', inventoryStart + 1);
+  const buildStart = workflow.indexOf('      - name: Build\n');
+
+  assert.ok(inventoryStart >= 0);
+  assert.ok(inventoryStart < buildStart);
+
+  const inventoryStep = workflow.slice(inventoryStart, inventoryEnd);
+  assert.match(
+    inventoryStep,
+    /if: steps\.plan\.outputs\.code == 'true' \|\| steps\.plan\.outputs\.astryx_surface == 'true'/u,
+  );
+  assert.doesNotMatch(inventoryStep, /continue-on-error/u);
+});
+
 test('core CI validates affected installed CLI packages on its existing runner', () => {
   const workflow = readWorkflow('ci.yml');
   const toolchain = workflow.indexOf(
@@ -325,6 +344,7 @@ test('pull request triggers stay on an explicit allowlist', () => {
     'copilot-auto-review.yml',
     'dependency-audit.yml',
     'release-windows-check.yml',
+    'runtime-host-owner-platform.yml',
     'windows-sandbox-w0.yml',
   ]);
 });
@@ -346,6 +366,52 @@ test('the packaged Windows gate owns Runtime Host candidate election changes', (
   assert.match(workflow, /'packages\/runtime-host\/src\/client\/launcher\.ts'/u);
 });
 
+test('the packaged Windows gate triggers on release orchestration changes', () => {
+  const workflow = readWorkflow('release-windows-check.yml');
+
+  assert.match(workflow, /'\.github\/workflows\/release\.yml'/u);
+});
+
+test('the packaged Windows gate workflow is itself a release-contract input', () => {
+  assert.equal(
+    planTests(['.github/workflows/release-windows-check.yml'], { graph }).releaseContract,
+    true,
+  );
+  assert.match(
+    readWorkflow('release-windows-check.yml'),
+    /'\.github\/workflows\/release-windows-check\.yml'/u,
+  );
+});
+
+test('the packaged Windows gate triggers on packaged sandbox inputs', () => {
+  const workflow = readWorkflow('release-windows-check.yml');
+
+  for (const path of [
+    'apps/desktop/scripts/copy-runtime-filesystem-worker.mjs',
+    'packages/runtime/scripts/build-filesystem-worker.mjs',
+    'packages/runtime/src/filesystem-worker/**',
+    'packages/runtime/src/sandbox/**',
+    'packages/runtime/src/path-containment.ts',
+    'packages/runtime/src/sandbox-boundary-path.ts',
+    'packages/core/src/permission-profile.ts',
+    'packages/core/src/permission-profile-compiler.ts',
+  ]) {
+    assert.ok(workflow.includes(`      - '${path}'`), path);
+  }
+});
+
+test('pull-request and release lanes share the packaged sandbox lifecycle verifier', () => {
+  for (const name of ['release-windows-check.yml', 'release.yml']) {
+    assert.match(readWorkflow(name), /npm run verify:windows-x64/u, name);
+  }
+
+  const verifier = readFileSync(new URL('verify-windows-x64.mjs', import.meta.url), 'utf8');
+  assert.match(
+    verifier,
+    /await verifyPackagedWindowsSandboxLifecycle\(sandboxExecutable, \{ run \}\)/u,
+  );
+});
+
 test('specialized platform workflows stay reachable without pull requests', () => {
   const cli = readWorkflow('cli-package-validation.yml');
   const baseline = readWorkflow('windows-baseline.yml');
@@ -364,6 +430,26 @@ test('workflows never persist the job credential into the checkout', () => {
       assert.match(step, /persist-credentials: false/u, `${name}: ${step.trim()}`);
     }
   }
+});
+
+test('core CI runs the live Eval proxy lifecycle when Eval is selected', () => {
+  const workflow = readWorkflow('ci.yml');
+  const evalPackage = JSON.parse(
+    readFileSync(new URL('../packages/eval/package.json', import.meta.url), 'utf8'),
+  );
+
+  assert.match(
+    workflow,
+    /if: contains\(steps\.plan\.outputs\.standard_workspaces, 'packages\/eval'\)/u,
+  );
+  assert.match(workflow, /MAKA_EVAL_EGRESS_PROXY_TEST: '1'/u);
+  assert.match(workflow, /docker build[\s\S]*maka-eval-egress-proxy:12\.2\.3/u);
+  assert.match(workflow, /npm --workspace @maka\/eval run test:egress-proxy:live/u);
+  assert.equal(
+    evalPackage.scripts['test:egress-proxy:live'],
+    'python3 harbor/test_egress_filter_live.py',
+  );
+  assert.doesNotMatch(evalPackage.scripts['test:dist'], /test_egress_filter_live\.py/u);
 });
 
 const WORKFLOW_DIR = new URL('../.github/workflows/', import.meta.url);

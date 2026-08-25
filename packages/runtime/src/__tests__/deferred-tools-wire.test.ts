@@ -68,7 +68,7 @@ function newAdapter(): ModelAdapter {
  * wire after the AI SDK applies `activeTools`.
  */
 async function toolNamesSeenByProvider(activeNames: ReadonlySet<string>): Promise<string[]> {
-  const tools: MakaTool[] = [tool('Read'), tool('load_tools'), tool('Rive')];
+  const tools: MakaTool[] = [tool('Read'), tool('tool_search'), tool('Rive')];
   const invalid = tool('invalid');
   const canonical = canonicalizeToolSet(tools, invalid, activeNames);
 
@@ -104,15 +104,15 @@ async function toolNamesSeenByProvider(activeNames: ReadonlySet<string>): Promis
 
 describe('hidden tools are trimmed from the provider request (wire-level)', () => {
   test('a tool outside the active set never reaches the model; invalid is never advertised', async () => {
-    const seen = await toolNamesSeenByProvider(new Set(['Read', 'load_tools']));
+    const seen = await toolNamesSeenByProvider(new Set(['Read', 'tool_search']));
     assert.ok(seen.includes('Read'), 'active Read should reach the provider');
-    assert.ok(seen.includes('load_tools'), 'load_tools should reach the provider');
+    assert.ok(seen.includes('tool_search'), 'tool_search should reach the provider');
     assert.ok(!seen.includes('Rive'), 'unloaded Rive must NOT reach the provider');
     assert.ok(!seen.includes('invalid'), 'invalid is providerTools-only, never advertised');
   });
 
   test('a tool added to the active set does reach the model (ratchet activates it)', async () => {
-    const seen = await toolNamesSeenByProvider(new Set(['Read', 'load_tools', 'Rive']));
+    const seen = await toolNamesSeenByProvider(new Set(['Read', 'tool_search', 'Rive']));
     assert.ok(seen.includes('Rive'), 'activated Rive should reach the provider');
     assert.ok(seen.includes('Read'), 'active tools stay present after a load');
   });

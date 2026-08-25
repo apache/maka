@@ -36,6 +36,19 @@ const PROVIDER_UNAVAILABLE_PROVIDER_CODES: ReadonlySet<string> = new Set([
   'server_error', // OpenAI-compatible stream errors can omit the HTTP status.
 ]);
 
+// Node, TLS, and undici codes that identify transport failures before an HTTP response.
+const TRANSPORT_FAILURE_CODES: ReadonlySet<string> = new Set([
+  'ECONNRESET',
+  'ECONNREFUSED',
+  'ETIMEDOUT',
+  'EPIPE',
+  'ENOTFOUND',
+  'EAI_AGAIN',
+  'ECONNABORTED',
+  'EHOSTUNREACH',
+  'ENETUNREACH',
+]);
+
 /**
  * xAI emits this code for transient model capacity failures, including when
  * the same payload is relayed through an OpenAI-compatible gateway. Do not
@@ -43,6 +56,36 @@ const PROVIDER_UNAVAILABLE_PROVIDER_CODES: ReadonlySet<string> = new Set([
  * represents quota exhaustion and needs different user guidance.
  */
 const PROVIDER_CAPACITY_CODES: ReadonlySet<string> = new Set(['resource-exhausted']);
+
+/**
+ * Structured provider error identifiers that mean an ACCOUNT-level usage or
+ * billing condition — exhausted credits or a closed plan/quota window —
+ * rather than an invalid credential. Providers disagree on which HTTP status
+ * travels with them (402, 401/403, even 429); the structured code is the
+ * stable evidence, so it outranks every numeric fallback below.
+ */
+const PROVIDER_BILLING_PROVIDER_CODES: ReadonlySet<string> = new Set([
+  'insufficient_quota', // OpenAI & OpenAI-compatible: error.code
+  'insufficient_balance', // DeepSeek: error.code
+  'quota_exceeded', // OpenAI-compatible variants: error.code
+]);
+
+/**
+ * Free-text usage/billing wording that overrides a credential-shaped HTTP
+ * status (401/403): some providers report exhausted plan windows, credits,
+ * or subscriptions through auth-style statuses for validly signed-in users,
+ * and "Authentication failed" would send them to re-authenticate (#2516).
+ * Matched only on that status branch, so genuine throttles keep their
+ * RateLimit path and plain invalid-key / permission messages — which carry
+ * none of this vocabulary — still project to Auth.
+ */
+const USAGE_LIMIT_TEXT_PATTERNS: readonly RegExp[] = [
+  /\bquota\b/i,
+  /usage limit/i,
+  /plan (?:limit|allowance)/i,
+  /(?:credit|balance|allowance)[^.]{0,40}(?:exhaust|reached)|exhaust[^.]{0,20}(?:credit|balance)/i,
+  /subscription/i,
+];
 
 /**
  * A provider failure normalized into classification evidence. classifyError's
@@ -64,6 +107,8 @@ interface ProviderErrorEvidence {
   code: string;
   /** Structured provider identifiers (code/type), lowercased. */
   structuredCodes: string[];
+  /** Structured pre-response transport evidence from SDK metadata or cause codes. */
+  transportFailure: boolean;
 }
 
 interface ProviderErrorFacts {
@@ -107,6 +152,39 @@ function providerErrorTarget(error: unknown): unknown {
   return RetryError.isInstance(error) && error.lastError !== undefined && error.lastError !== error
     ? error.lastError
     : error;
+}
+
+function isTransportFailure(target: unknown, statusCode: string): boolean {
+  if (statusCode) return false;
+  const record = objectRecord(target);
+  if (!record) return false;
+  if (
+    target instanceof Error &&
+    target.name === 'AI_APICallError' &&
+    safeField(record, 'isRetryable') === true
+  ) {
+    return true;
+  }
+
+  let current: unknown = target;
+  const seen = new Set<unknown>();
+  for (let depth = 0; depth < 5 && current !== undefined && !seen.has(current); depth += 1) {
+    seen.add(current);
+    const currentRecord = objectRecord(current);
+    if (!currentRecord) return false;
+    const code = safeField(currentRecord, 'code');
+    if (
+      typeof code === 'string' &&
+      (TRANSPORT_FAILURE_CODES.has(code) ||
+        code.startsWith('ERR_SSL_') ||
+        code.startsWith('ERR_TLS_') ||
+        code.startsWith('UND_ERR_'))
+    ) {
+      return true;
+    }
+    current = safeField(currentRecord, 'cause');
+  }
+  return false;
 }
 
 function responseHeadersFromError(error: unknown): Record<string, string> | undefined {
@@ -194,13 +272,13 @@ function normalizeProviderError(error: unknown): ProviderErrorFacts | undefined 
   const target = providerErrorTarget(error);
   if (target instanceof Error) {
     const responseHeaders = responseHeadersFromError(target);
-    const code = 'code' in target ? String((target as { code?: unknown }).code) : '';
-    const statusCode =
-      'statusCode' in target
-        ? String((target as { statusCode?: unknown }).statusCode)
-        : 'status' in target
-          ? String((target as { status?: unknown }).status)
-          : '';
+    const record = target as unknown as Record<string, unknown>;
+    const field = (key: string): string => {
+      const value = safeField(record, key);
+      return typeof value === 'string' || typeof value === 'number' ? String(value) : '';
+    };
+    const code = field('code');
+    const statusCode = field('statusCode') || field('status');
     const rawBody = (target as { responseBody?: unknown }).responseBody;
     const body = typeof rawBody === 'string' ? rawBody : '';
     const structuredCodes: string[] = [];
@@ -226,6 +304,7 @@ function normalizeProviderError(error: unknown): ProviderErrorFacts | undefined 
         statusCode,
         code,
         structuredCodes,
+        transportFailure: isTransportFailure(target, statusCode),
       },
       summarySources: providerFailureSources(target),
       ...(responseHeaders ? { responseHeaders } : {}),
@@ -237,7 +316,13 @@ function normalizeProviderError(error: unknown): ProviderErrorFacts | undefined 
     if (parsed !== undefined) collectStructuredCodes(parsed, structuredCodes);
     return {
       target,
-      evidence: { text: target.toLowerCase(), statusCode: '', code: '', structuredCodes },
+      evidence: {
+        text: target.toLowerCase(),
+        statusCode: '',
+        code: '',
+        structuredCodes,
+        transportFailure: false,
+      },
       summarySources: providerFailureSources(parsed),
       ...(parsed === undefined
         ? { bareMessage: target }
@@ -255,6 +340,7 @@ function normalizeProviderError(error: unknown): ProviderErrorFacts | undefined 
     };
     const structuredCodes: string[] = [];
     collectStructuredCodes(record, structuredCodes);
+    const statusCode = field('statusCode') || field('status');
     let text: string;
     try {
       // Serialize the whole value so message/code text is evidence no matter
@@ -267,9 +353,10 @@ function normalizeProviderError(error: unknown): ProviderErrorFacts | undefined 
       target,
       evidence: {
         text,
-        statusCode: field('statusCode') || field('status'),
+        statusCode,
         code: field('code'),
         structuredCodes,
+        transportFailure: isTransportFailure(target, statusCode),
       },
       summarySources: providerFailureSources(target),
       ...(responseHeaders ? { responseHeaders } : {}),
@@ -632,17 +719,31 @@ function classifyProviderFacts(facts: ProviderErrorFacts): string {
   // Structured provider evidence: the parsed error JSON's code/type is the
   // only unconditional signal for a context overflow.
   if (structuredCodes.some((c) => CONTEXT_OVERFLOW_PROVIDER_CODES.has(c))) return 'ContextLength';
+  if (
+    PROVIDER_BILLING_PROVIDER_CODES.has(normalizedCode) ||
+    structuredCodes.some((c) => PROVIDER_BILLING_PROVIDER_CODES.has(c))
+  ) {
+    return 'ProviderBilling';
+  }
   if (text.includes('abort')) return 'Abort';
   if (statusCode === '402' || code === '402') return 'ProviderBilling';
   if (statusCode === '429' || code === '429') return 'RateLimit';
-  if (statusCode === '401' || statusCode === '403' || code === '401' || code === '403')
+  if (statusCode === '401' || statusCode === '403' || code === '401' || code === '403') {
+    // Credential-shaped statuses can still carry account-level usage
+    // evidence: an exhausted plan/credit window for a validly signed-in
+    // user must not tell them to re-authenticate (#2516).
+    if (USAGE_LIMIT_TEXT_PATTERNS.some((pattern) => pattern.test(text))) {
+      return 'ProviderBilling';
+    }
     return 'Auth';
+  }
   if (statusCode === '413' || code === '413') return 'ContextLength';
   // Free-text overflow relations on the composite text, veto-first inside.
   if (isContextOverflowErrorText(text)) return 'ContextLength';
   if (structuredCodes.some((c) => PROVIDER_UNAVAILABLE_PROVIDER_CODES.has(c)))
     return 'ProviderUnavailable';
   if (/^5\d\d$/.test(statusCode) || /^5\d\d$/.test(code)) return 'ProviderUnavailable';
+  if (evidence.transportFailure) return 'Network';
   // Weak word heuristics, last: they only catch errors that carried no
   // stronger evidence for any other class. `rate` must be word-shaped
   // ("generate"/"separate" are not rate limits) while still matching the

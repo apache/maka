@@ -19,7 +19,7 @@
 
 import type { DatabaseSync } from 'node:sqlite';
 
-export const SQLITE_SESSION_METADATA_SCHEMA_VERSION = 28;
+export const SQLITE_SESSION_METADATA_SCHEMA_VERSION = 31;
 export const SQLITE_SESSION_MESSAGE_CHUNK_BYTES = 64 * 1024;
 export const SQLITE_SESSION_MESSAGE_CHUNK_MARKER = '{"$maka":"session-message-chunks-v1"}';
 
@@ -821,6 +821,41 @@ const MIGRATIONS: ReadonlyMap<number, string> = new Map([
   `,
   ],
   [
+    30,
+    `
+    CREATE TABLE IF NOT EXISTS message_admissions (
+      sequence INTEGER PRIMARY KEY AUTOINCREMENT,
+      session_id TEXT NOT NULL,
+      turn_id TEXT NOT NULL,
+      run_id TEXT NOT NULL,
+      message_id TEXT NOT NULL,
+      content_json TEXT NOT NULL,
+      submitted_content_digest TEXT NOT NULL,
+      submitted_placement TEXT NOT NULL
+        CHECK (submitted_placement IN ('current_turn', 'next_turn')),
+      placement TEXT NOT NULL CHECK (placement IN ('current_turn', 'next_turn')),
+      disposition TEXT NOT NULL CHECK (disposition IN ('steering', 'followup')),
+      queue_order INTEGER NOT NULL CHECK (queue_order >= 0),
+      admitted_at INTEGER NOT NULL CHECK (admitted_at >= 0),
+      UNIQUE (session_id, message_id),
+      FOREIGN KEY(session_id) REFERENCES session_metadata(session_id) ON DELETE CASCADE
+    );
+
+    CREATE INDEX IF NOT EXISTS message_admissions_by_session_order
+      ON message_admissions(session_id, queue_order, sequence);
+
+    CREATE TABLE IF NOT EXISTS cancelled_message_admissions (
+      session_id TEXT NOT NULL,
+      message_id TEXT NOT NULL,
+      submitted_content_digest TEXT NOT NULL,
+      submitted_placement TEXT NOT NULL
+        CHECK (submitted_placement IN ('current_turn', 'next_turn')),
+      PRIMARY KEY (session_id, message_id),
+      FOREIGN KEY(session_id) REFERENCES session_metadata(session_id) ON DELETE CASCADE
+    );
+  `,
+  ],
+  [
     21,
     `
     CREATE TABLE projects (
@@ -1055,7 +1090,120 @@ const MIGRATIONS: ReadonlyMap<number, string> = new Map([
         AND external_source_session_id IS NOT NULL;
   `,
   ],
+  [
+    29,
+    `
+    DROP TRIGGER session_catalog_after_insert;
+    DROP TRIGGER session_catalog_after_update;
+    DROP INDEX IF EXISTS session_metadata_by_recency;
+
+    UPDATE session_metadata
+    SET
+      payload_json = json_remove(payload_json, '$.lastUsedAt'),
+      metadata_version = metadata_version + 1,
+      committed_at = MAX(
+        committed_at,
+        CAST(unixepoch('now', 'subsec') * 1000 AS INTEGER)
+      )
+    WHERE json_type(payload_json, '$.lastUsedAt') IS NOT NULL;
+
+    CREATE TRIGGER session_catalog_after_insert
+    AFTER INSERT ON session_metadata
+    BEGIN
+      INSERT INTO session_catalog_projection(
+        session_id,
+        activity_at,
+        last_message_at,
+        last_message_preview,
+        is_archived,
+        is_flagged,
+        subagent_parent_session_id
+      ) VALUES (
+        NEW.session_id,
+        COALESCE(NEW.last_message_at, NEW.created_at),
+        NEW.last_message_at,
+        NULL,
+        NEW.is_archived,
+        NEW.is_flagged,
+        NEW.subagent_parent_session_id
+      );
+
+      UPDATE session_catalog_state
+      SET generation = generation + 1
+      WHERE scope = 'catalog';
+    END;
+
+    CREATE TRIGGER session_catalog_after_update
+    AFTER UPDATE ON session_metadata
+    BEGIN
+      UPDATE session_catalog_projection
+      SET
+        activity_at = CASE
+          WHEN NEW.last_message_at IS NOT OLD.last_message_at
+            THEN COALESCE(NEW.last_message_at, OLD.created_at)
+          ELSE activity_at
+        END,
+        last_message_at = NEW.last_message_at,
+        is_archived = NEW.is_archived,
+        is_flagged = NEW.is_flagged,
+        subagent_parent_session_id = NEW.subagent_parent_session_id
+      WHERE session_id = NEW.session_id;
+
+      UPDATE session_catalog_state
+      SET generation = generation + 1
+      WHERE scope = 'catalog';
+    END;
+  `,
+  ],
+  [
+    31,
+    `
+    CREATE TABLE IF NOT EXISTS message_admissions (
+      sequence INTEGER PRIMARY KEY AUTOINCREMENT,
+      session_id TEXT NOT NULL,
+      turn_id TEXT NOT NULL,
+      run_id TEXT NOT NULL,
+      message_id TEXT NOT NULL,
+      content_json TEXT NOT NULL,
+      submitted_content_digest TEXT NOT NULL,
+      submitted_placement TEXT NOT NULL
+        CHECK (submitted_placement IN ('current_turn', 'next_turn')),
+      placement TEXT NOT NULL CHECK (placement IN ('current_turn', 'next_turn')),
+      disposition TEXT NOT NULL CHECK (disposition IN ('steering', 'followup')),
+      queue_order INTEGER NOT NULL CHECK (queue_order >= 0),
+      admitted_at INTEGER NOT NULL CHECK (admitted_at >= 0),
+      UNIQUE (session_id, message_id),
+      FOREIGN KEY(session_id) REFERENCES session_metadata(session_id) ON DELETE CASCADE
+    );
+
+    CREATE INDEX IF NOT EXISTS message_admissions_by_session_order
+      ON message_admissions(session_id, queue_order, sequence);
+
+    CREATE TABLE IF NOT EXISTS cancelled_message_admissions (
+      session_id TEXT NOT NULL,
+      message_id TEXT NOT NULL,
+      submitted_content_digest TEXT NOT NULL,
+      submitted_placement TEXT NOT NULL
+        CHECK (submitted_placement IN ('current_turn', 'next_turn')),
+      PRIMARY KEY (session_id, message_id),
+      FOREIGN KEY(session_id) REFERENCES session_metadata(session_id) ON DELETE CASCADE
+    );
+
+    CREATE UNIQUE INDEX IF NOT EXISTS session_metadata_one_workhub_coordination_session
+      ON session_metadata(json_extract(payload_json, '$.role'))
+      WHERE json_extract(payload_json, '$.role') = 'workhub_coordination';
+  `,
+  ],
 ]);
+
+if (MIGRATIONS.size !== SQLITE_SESSION_METADATA_SCHEMA_VERSION) {
+  throw new Error('SQLite session metadata migrations contain a duplicate or missing version');
+}
+for (let version = 1; version <= SQLITE_SESSION_METADATA_SCHEMA_VERSION; version += 1) {
+  if (!MIGRATIONS.has(version)) {
+    throw new Error(`Missing SQLite session metadata migration ${version}`);
+  }
+}
 
 export function configureSqliteSessionMetadataDatabase(db: DatabaseSync): void {
   db.exec('PRAGMA busy_timeout = 5000');
@@ -1078,6 +1226,19 @@ export function migrateSqliteSessionMetadataDatabase(
   if (ownsTransaction) db.exec('BEGIN IMMEDIATE');
   try {
     const current = readSqliteSessionMetadataSchemaVersion(db);
+    if (
+      current > 0 &&
+      current < 29 &&
+      hasColumn(db, 'session_metadata', 'session_id') &&
+      !hasColumn(db, 'session_metadata', 'last_used_at')
+    ) {
+      db.exec(`
+        ALTER TABLE session_metadata
+          ADD COLUMN last_used_at INTEGER NOT NULL DEFAULT 0;
+        UPDATE session_metadata
+        SET last_used_at = COALESCE(last_message_at, created_at);
+      `);
+    }
     if (current > SQLITE_SESSION_METADATA_SCHEMA_VERSION) {
       throw new Error(
         `SQLite session metadata schema ${current} is newer than supported version ${SQLITE_SESSION_METADATA_SCHEMA_VERSION}`,
@@ -1091,6 +1252,9 @@ export function migrateSqliteSessionMetadataDatabase(
       const sql = MIGRATIONS.get(version);
       if (!sql) throw new Error(`Missing SQLite session metadata migration ${version}`);
       db.exec(sql);
+      if (version === 29 && hasColumn(db, 'session_metadata', 'last_used_at')) {
+        db.exec('ALTER TABLE session_metadata DROP COLUMN last_used_at');
+      }
       db.prepare(`
         INSERT INTO session_metadata_schema(scope, version)
         VALUES ('session_metadata', ?)
@@ -1102,6 +1266,11 @@ export function migrateSqliteSessionMetadataDatabase(
     if (ownsTransaction) rollback(db);
     throw error;
   }
+}
+
+function hasColumn(db: DatabaseSync, table: string, column: string): boolean {
+  const rows = db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name?: unknown }>;
+  return rows.some((row) => row.name === column);
 }
 
 export function readSqliteSessionMetadataSchemaVersion(db: DatabaseSync): number {

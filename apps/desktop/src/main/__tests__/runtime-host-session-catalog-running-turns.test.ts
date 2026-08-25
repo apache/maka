@@ -36,6 +36,7 @@ test('projects observed running Turn identities into renderer Session lists', as
       emitSessionsChanged() {},
       releaseSessionResources() {},
       sessionCopyCleanup: {
+        async rejectCreation() {},
         recover: async () => ({ failed: [] }),
       } as never,
     },
@@ -76,6 +77,7 @@ test('merges catalog and observed running Turn identities in stable order', asyn
       emitSessionsChanged() {},
       releaseSessionResources() {},
       sessionCopyCleanup: {
+        async rejectCreation() {},
         recover: async () => ({ failed: [] }),
       } as never,
     },
@@ -105,7 +107,7 @@ function session(id: string): SessionCatalogProjection {
       hostCwd: '/workspace',
     },
     createdAt: 1,
-    lastUsedAt: 1,
+    activityAt: 1,
     name: id,
     isFlagged: false,
     isArchived: false,

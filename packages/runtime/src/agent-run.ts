@@ -58,7 +58,7 @@ import {
   resolveEffectiveOrchestration,
   type EffectiveOrchestration,
 } from '@maka/core/orchestration';
-import type { SessionEvent } from '@maka/core/events';
+import { messageContentsEqual, type SessionEvent } from '@maka/core/events';
 import type { AgentBackend, BackendSendInput } from '@maka/core/backend-types';
 import type { RunTraceEvent } from './run-trace.js';
 import type { StopSessionInput } from './session-manager.js';
@@ -79,7 +79,6 @@ import {
   buildSyntheticTerminalRuntimeEvent,
   commitOrCreateTerminalRunFact,
 } from './terminal-run-commit.js';
-import { buildInitialUserRuntimeEvent } from './runtime-runner.js';
 import type { RuntimeContinuation } from './runtime-resume.js';
 import {
   createRuntimeContinuationStartAdmissionProof,
@@ -91,6 +90,7 @@ import type {
   ProviderRequestCaptureLedgerRecord,
 } from './provider-request-telemetry.js';
 import { materializeRuntimeEventTranscriptProjection } from './runtime-ledger-repair.js';
+import { cloneAndFreezeRuntimeSnapshot } from './runtime-snapshot.js';
 
 export interface AgentRunActiveSession {
   sessionId: string;
@@ -145,7 +145,7 @@ export interface AgentRunInput {
   userInput: UserMessageInput;
   rootExecutionKind?: AgentRunHeader['rootExecutionKind'];
   runId?: string;
-  userMessageId?: string;
+  userMessageId?: string | null;
   durability?: AgentRunDurability;
   store: AgentRunSessionStore;
   runStore?: AgentRunStore;
@@ -225,6 +225,7 @@ export class AgentRun {
   readonly effectiveOrchestration: EffectiveOrchestration;
   readonly toolMode: ToolMode;
 
+  private readonly input: AgentRunInput;
   private header: SessionHeader;
   private active: AgentRunActiveSession | undefined;
   private stopped = false;
@@ -259,49 +260,66 @@ export class AgentRun {
       }
     | undefined;
 
-  constructor(private readonly input: AgentRunInput) {
-    if (input.runStore && !input.runtimeEventStore) {
+  constructor(input: AgentRunInput) {
+    const acceptedInput: AgentRunInput = {
+      ...input,
+      userInput: cloneAndFreezeRuntimeSnapshot(input.userInput),
+      ...(input.effectiveOrchestration
+        ? { effectiveOrchestration: cloneAndFreezeRuntimeSnapshot(input.effectiveOrchestration) }
+        : {}),
+    };
+    this.input = acceptedInput;
+    if (acceptedInput.runStore && !acceptedInput.runtimeEventStore) {
       throw new Error('RuntimeEventStore is required when AgentRunStore is configured');
     }
-    if (input.durability === 'required' && (!input.runStore || !input.runtimeEventStore)) {
+    if (
+      acceptedInput.durability === 'required' &&
+      (!acceptedInput.runStore || !acceptedInput.runtimeEventStore)
+    ) {
       throw new Error('Required AgentRun durability needs AgentRunStore and RuntimeEventStore');
     }
-    this.runId = input.runId ?? input.newId();
-    this.invocationId = input.invocationId ?? this.runId;
-    this.sessionId = input.sessionId;
-    this.turnId = input.userInput.turnId;
-    this.toolBoundaryProtocol = input.toolBoundaryProtocol;
-    this.header = input.header;
+    this.runId = acceptedInput.runId ?? acceptedInput.newId();
+    this.invocationId = acceptedInput.invocationId ?? this.runId;
+    this.sessionId = acceptedInput.sessionId;
+    this.turnId = acceptedInput.userInput.turnId;
+    this.toolBoundaryProtocol = acceptedInput.toolBoundaryProtocol;
+    this.header = acceptedInput.header;
     this.effectiveOrchestration =
-      input.effectiveOrchestration ??
+      acceptedInput.effectiveOrchestration ??
       resolveEffectiveOrchestration(
-        input.header.orchestrationMode,
-        input.userInput.turnOrchestration,
+        acceptedInput.header.orchestrationMode,
+        acceptedInput.userInput.turnOrchestration,
       );
     const requestedToolMode =
-      input.effectiveToolMode ?? input.userInput.toolMode ?? DEFAULT_TOOL_MODE;
+      acceptedInput.effectiveToolMode ?? acceptedInput.userInput.toolMode ?? DEFAULT_TOOL_MODE;
     if (!isToolMode(requestedToolMode)) {
       throw new Error(`Invalid tool mode: ${String(requestedToolMode)}`);
     }
     this.toolMode = requestedToolMode;
     this.lineage = {
-      ...(input.userInput.parentRunId ? { parentRunId: input.userInput.parentRunId } : {}),
-      ...(input.userInput.resumedFromRunId
-        ? { resumedFromRunId: input.userInput.resumedFromRunId }
+      ...(acceptedInput.userInput.parentRunId
+        ? { parentRunId: acceptedInput.userInput.parentRunId }
         : {}),
-      ...(input.userInput.retriedFromRunId
-        ? { retriedFromRunId: input.userInput.retriedFromRunId }
+      ...(acceptedInput.userInput.resumedFromRunId
+        ? { resumedFromRunId: acceptedInput.userInput.resumedFromRunId }
         : {}),
-      ...(input.userInput.parentTurnId ? { parentTurnId: input.userInput.parentTurnId } : {}),
-      ...(input.userInput.retriedFromTurnId
-        ? { retriedFromTurnId: input.userInput.retriedFromTurnId }
+      ...(acceptedInput.userInput.retriedFromRunId
+        ? { retriedFromRunId: acceptedInput.userInput.retriedFromRunId }
         : {}),
-      ...(input.userInput.regeneratedFromTurnId
-        ? { regeneratedFromTurnId: input.userInput.regeneratedFromTurnId }
+      ...(acceptedInput.userInput.parentTurnId
+        ? { parentTurnId: acceptedInput.userInput.parentTurnId }
         : {}),
-      ...(input.userInput.branchOfTurnId ? { branchOfTurnId: input.userInput.branchOfTurnId } : {}),
-      ...(input.userInput.parentSessionId
-        ? { parentSessionId: input.userInput.parentSessionId }
+      ...(acceptedInput.userInput.retriedFromTurnId
+        ? { retriedFromTurnId: acceptedInput.userInput.retriedFromTurnId }
+        : {}),
+      ...(acceptedInput.userInput.regeneratedFromTurnId
+        ? { regeneratedFromTurnId: acceptedInput.userInput.regeneratedFromTurnId }
+        : {}),
+      ...(acceptedInput.userInput.branchOfTurnId
+        ? { branchOfTurnId: acceptedInput.userInput.branchOfTurnId }
+        : {}),
+      ...(acceptedInput.userInput.parentSessionId
+        ? { parentSessionId: acceptedInput.userInput.parentSessionId }
         : {}),
     };
   }
@@ -628,28 +646,32 @@ export class AgentRun {
 
     let initialRuntimeEventId: string;
     if (this.recordsSessionMessages()) {
-      const userMessageId = this.input.userMessageId ?? this.input.newId();
       const userMessageTs = this.input.now();
-      initialRuntimeEventId = userMessageId;
-      const userMsg: UserMessage = {
-        type: 'user',
-        id: userMessageId,
-        turnId: this.turnId,
-        ts: userMessageTs,
-        text: this.input.userInput.text,
-        ...(this.input.userInput.displayText !== undefined
-          ? { displayText: this.input.userInput.displayText }
-          : {}),
-        ...(this.input.userInput.attachments
-          ? { attachments: this.input.userInput.attachments }
-          : {}),
-        ...(this.input.userInput.quotes ? { quotes: this.input.userInput.quotes } : {}),
-        ...(this.input.userInput.inlineReferences
-          ? { inlineReferences: this.input.userInput.inlineReferences }
-          : {}),
-        ...(this.input.userInput.origin ? { origin: this.input.userInput.origin } : {}),
-      };
-      await this.input.store.appendMessage(this.sessionId, userMsg);
+      if (this.input.userMessageId === null) {
+        initialRuntimeEventId = this.input.newId();
+      } else {
+        const userMessageId = this.input.userMessageId ?? this.input.newId();
+        initialRuntimeEventId = userMessageId;
+        const userMsg = cloneAndFreezeRuntimeSnapshot<UserMessage>({
+          type: 'user',
+          id: userMessageId,
+          turnId: this.turnId,
+          ts: userMessageTs,
+          text: this.input.userInput.text,
+          ...(this.input.userInput.displayText !== undefined
+            ? { displayText: this.input.userInput.displayText }
+            : {}),
+          ...(this.input.userInput.attachments
+            ? { attachments: this.input.userInput.attachments }
+            : {}),
+          ...(this.input.userInput.quotes ? { quotes: this.input.userInput.quotes } : {}),
+          ...(this.input.userInput.inlineReferences
+            ? { inlineReferences: this.input.userInput.inlineReferences }
+            : {}),
+          ...(this.input.userInput.origin ? { origin: this.input.userInput.origin } : {}),
+        });
+        await appendUserMessageOnce(this.input.store, this.sessionId, userMsg);
+      }
       await this.input.hooks.appendTurnState(this.sessionId, this.turnId, 'running', this.lineage);
       this.lastTs = userMessageTs;
     } else {
@@ -657,7 +679,9 @@ export class AgentRun {
       this.lastTs = this.input.now();
     }
 
-    const initialRuntimeEvent = this.buildInitialRuntimeEvent(initialRuntimeEventId, this.lastTs);
+    const initialRuntimeEvent = cloneAndFreezeRuntimeSnapshot(
+      this.buildInitialRuntimeEvent(initialRuntimeEventId, this.lastTs),
+    );
     await this.recordRuntimeEvents([initialRuntimeEvent], {
       requireDurableWrite: this.requiresDurablePersistence(),
     });
@@ -680,7 +704,7 @@ export class AgentRun {
 
     return {
       backend: this.active.backend,
-      backendInput: {
+      backendInput: cloneAndFreezeRuntimeSnapshot({
         turnId: this.turnId,
         orchestration: this.effectiveOrchestration,
         toolMode: this.toolMode,
@@ -694,7 +718,7 @@ export class AgentRun {
         ...(this.input.userInput.quotes ? { quotes: this.input.userInput.quotes } : {}),
         context: projectionContext,
         ...(priorRuntimeContext ? { runtimeContext: priorRuntimeContext.events } : {}),
-      },
+      }),
       initialRuntimeEvent,
     };
   }
@@ -788,27 +812,34 @@ export class AgentRun {
   }
 
   private buildInitialRuntimeEvent(id: string, ts: number): RuntimeEvent {
-    return buildInitialUserRuntimeEvent({
+    const input = this.input.userInput;
+    return {
       id,
       invocationId: this.invocationId,
       runId: this.runId,
       sessionId: this.sessionId,
       turnId: this.turnId,
       ts,
-      text: this.input.userInput.text,
-      ...(this.input.userInput.displayText !== undefined
-        ? { displayText: this.input.userInput.displayText }
+      partial: false,
+      role: 'user',
+      author: input.origin ? 'host' : 'user',
+      content: {
+        kind: 'text',
+        text: input.text,
+        ...(input.displayText !== undefined ? { displayText: input.displayText } : {}),
+        ...(input.origin !== undefined ? { origin: input.origin } : {}),
+        ...(input.attachments !== undefined && input.attachments.length > 0
+          ? { attachments: input.attachments }
+          : {}),
+        ...(input.quotes !== undefined && input.quotes.length > 0 ? { quotes: input.quotes } : {}),
+        ...(input.inlineReferences !== undefined
+          ? { inlineReferences: input.inlineReferences }
+          : {}),
+      },
+      ...(this.toolBoundaryProtocol
+        ? { actions: { runtimeProtocol: { toolBoundary: this.toolBoundaryProtocol } } }
         : {}),
-      ...(this.input.userInput.origin !== undefined ? { origin: this.input.userInput.origin } : {}),
-      ...(this.input.userInput.attachments !== undefined
-        ? { attachments: this.input.userInput.attachments }
-        : {}),
-      ...(this.input.userInput.quotes !== undefined ? { quotes: this.input.userInput.quotes } : {}),
-      ...(this.input.userInput.inlineReferences !== undefined
-        ? { inlineReferences: this.input.userInput.inlineReferences }
-        : {}),
-      ...(this.toolBoundaryProtocol ? { toolBoundaryProtocol: this.toolBoundaryProtocol } : {}),
-    });
+    };
   }
 
   async recordStoredSessionEvent(ev: SessionEvent): Promise<void> {
@@ -1057,7 +1088,6 @@ export class AgentRun {
         : (this.finalStatus ?? { status: 'active' as const });
     try {
       await this.input.hooks.updateHeader(this.sessionId, {
-        lastUsedAt: lastTs,
         lastMessageAt: lastTs,
         hasUnread: true,
         ...buildStatusPatch(nextStatus.status, lastTs, nextStatus.blockedReason),
@@ -1870,6 +1900,28 @@ function redactTraceString(value: string): string {
 function errorMessage(error: unknown): string {
   return redactTraceString(error instanceof Error ? error.message : String(error));
 }
+
+async function appendUserMessageOnce(
+  store: AgentRunSessionStore,
+  sessionId: string,
+  message: UserMessage,
+): Promise<void> {
+  const existing = (await store.readMessages(sessionId)).find(
+    (candidate) => candidate.id === message.id,
+  );
+  if (!existing) {
+    await store.appendMessage(sessionId, message);
+    return;
+  }
+  if (
+    existing.type !== 'user' ||
+    existing.turnId !== message.turnId ||
+    !messageContentsEqual(existing, message)
+  ) {
+    throw new Error(`Durable UserMessage identity ${message.id} has conflicting content`);
+  }
+}
+
 function isInteractionResumeAck(event: SessionEvent): boolean {
   return (
     event.type === 'sandbox_boundary_decision_ack' || event.type === 'user_question_answer_ack'

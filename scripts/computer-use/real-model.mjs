@@ -29,7 +29,7 @@ import { fileURLToPath } from 'node:url';
 import { evaluateCuE2eScenarioState, getCuE2eScenario } from './e2e-scenarios.mjs';
 import { validateRealReport } from './provider-matrix.mjs';
 import { sanitizeCuActionRecord, sanitizeCuReport, sanitizeCuTrace } from './report-sanitize.mjs';
-import { createSqliteAgentRunStore } from '../../packages/storage/dist/index.js';
+import { createSqliteAgentRunStore } from '../../packages/storage/dist/agent-run-store.js';
 import {
   resolveStorageRoot,
   tryAcquireInteractiveRootOwner,
@@ -408,7 +408,7 @@ async function discoverLauncherFixtureIdentity(fixturePid, windowSpecs) {
 function safeEvent(event) {
   if (event.type === 'tool_start') {
     const safeToolName =
-      event.toolName === 'load_tools' || event.toolName === 'maka_computer'
+      event.toolName === 'tool_search' || event.toolName === 'maka_computer'
         ? event.toolName
         : 'other';
     return {

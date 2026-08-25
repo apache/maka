@@ -17,7 +17,8 @@
  * under the License.
  */
 
-import { createSessionBundleFileService, type SessionBundleLimits } from '../../index.js';
+import { createSessionBundleFileService } from '../../session-bundle-file-service.js';
+import type { SessionBundleLimits } from '../../session-bundle-contract.js';
 
 const [archivePath, archiveDigest, limitsJson, destinationRoot] = process.argv.slice(2);
 if (!archivePath || !archiveDigest || !limitsJson) process.exit(2);

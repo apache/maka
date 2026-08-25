@@ -2507,7 +2507,6 @@ function header(): SessionHeader {
     workspaceRoot: '/workspace/maka',
     cwd: '/workspace/maka',
     createdAt: 1,
-    lastUsedAt: 1,
     name: 'Memory test',
     titleIsManual: false,
     isFlagged: false,

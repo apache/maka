@@ -943,6 +943,12 @@
      fallbacks are redundant. */
   --maka-chat-measure: 680px;
 
+  /* Astryx's AI Chat conversation uses an 800px message area while Markdown
+     keeps prose at 680px and lets code/tables fill the wider container. Keep
+     that exception transcript-scoped so the shared Maka surfaces above do not
+     change width as a side effect of making source evidence readable. */
+  --maka-transcript-measure: 800px;
+
   /* === settings ==========================================================
      One right-edge cap for a settings row's end slot — the read-only value
      and the control cluster share it, so the two kinds of row end stop at
@@ -1507,7 +1513,7 @@
        between-turn gap (.maka-chatContent) — one density, no between/within
        split. */
     gap: var(--space-3);
-    max-width: var(--maka-chat-measure);
+    max-width: var(--maka-transcript-measure);
     margin: 0 auto;
     width: 100%;
     box-sizing: border-box;

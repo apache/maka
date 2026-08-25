@@ -35,6 +35,7 @@ import {
   isCuObservingAction,
   type CuAction,
   type CuPoint,
+  type CuToolActionType,
   type ComputerUseErrorCode,
   type ComputerUseWindowIdentity,
 } from '@maka/core/computer-use';
@@ -330,8 +331,9 @@ export const computerWireParams = z
  * Raw result of the `computer` tool. `text` is the S16-safe summary the runtime
  * records to session history (via coerceResultContent's text-only projection:
  * this object has no `kind`, so only `text` survives). `screenshot`, when
- * present, rides along ONLY to feed `toModelOutput` — it never enters `text`, so
- * the bounded frame base64 stays out of session history.
+ * present, feeds the local presentation layer and, only for explicitly visual
+ * actions, `toModelOutput`. It never enters `text`, so the bounded frame base64
+ * stays out of session history.
  */
 interface ComputerToolResult {
   text: string;
@@ -339,6 +341,46 @@ interface ComputerToolResult {
   error?: ComputerUseErrorCode;
   failureClass?: 'ambiguous_target';
   screenshot?: { base64: string; mimeType: string };
+  includeScreenshotInModelOutput?: boolean;
+}
+
+export const COMPUTER_USE_MODEL_SCREENSHOT_POLICY = {
+  list_apps: 'never',
+  launch_app: 'never',
+  observe: 'explicit',
+  click_element: 'never',
+  set_value: 'never',
+  select_text: 'never',
+  secondary_action: 'never',
+  scroll_element: 'never',
+  window_action: 'never',
+  element_sequence: 'never',
+  press_key: 'never',
+  screenshot: 'always',
+  cursor_position: 'never',
+  mouse_move: 'always',
+  left_click: 'always',
+  right_click: 'always',
+  middle_click: 'always',
+  double_click: 'always',
+  triple_click: 'always',
+  left_mouse_down: 'always',
+  left_mouse_up: 'always',
+  left_click_drag: 'always',
+  type: 'always',
+  key: 'always',
+  hold_key: 'always',
+  scroll: 'always',
+  wait: 'never',
+  zoom: 'always',
+} as const satisfies Record<CuToolActionType, 'always' | 'explicit' | 'never'>;
+
+function shouldSendScreenshotToModel(input: ComputerParams): boolean {
+  const policy = COMPUTER_USE_MODEL_SCREENSHOT_POLICY[input.action];
+  return (
+    policy === 'always' ||
+    (policy === 'explicit' && input.action === 'observe' && input.include_screenshot === true)
+  );
 }
 
 export interface ComputerUseToolSet extends Array<MakaTool> {
@@ -984,6 +1026,7 @@ export function buildComputerUseTools(deps: {
   function deliveredWithoutFreshObservation(
     action: ComputerSummaryAction,
     result: CuRunResult,
+    includeScreenshotInModelOutput = false,
   ): ComputerToolResult {
     const evidence = summarizeEvidence(result.outcome.evidence);
     const hostEvidence = summarizeEvidence(result.outcome.evidence, 'host');
@@ -1008,6 +1051,7 @@ export function buildComputerUseTools(deps: {
               base64: screenshot.base64,
               mimeType: screenshot.mimeType,
             },
+            includeScreenshotInModelOutput,
           }
         : {}),
     };
@@ -1596,6 +1640,7 @@ export function buildComputerUseTools(deps: {
     ): Promise<ComputerToolResult> => {
       if (abortSignal.aborted) return { text: 'computer aborted before start' };
       const input = snapshotComputerParams(computerParams.parse(args));
+      const includeScreenshotInModelOutput = shouldSendScreenshotToModel(input);
       // Before anything is claimed against a frame or dispatched: an argument
       // holding one of this host's own withheld-value placeholders is a replay
       // of the record, not a value, and every path below would have typed it.
@@ -1604,7 +1649,7 @@ export function buildComputerUseTools(deps: {
       const invocationGeneration = presentationGenerations.get(sessionId) ?? 0;
       const releasePendingInvocation = trackPendingInvocation(sessionId, turnId);
       try {
-        return await withInvocationQueue(sessionId, abortSignal, async () => {
+        return await withInvocationQueue<ComputerToolResult>(sessionId, abortSignal, async () => {
           if ((presentationGenerations.get(sessionId) ?? 0) !== invocationGeneration) {
             return sessionFailure('user_stopped');
           }
@@ -2275,6 +2320,7 @@ export function buildComputerUseTools(deps: {
                   text: persistedObservationText(observation),
                   modelText: observationText({ ...observation, screenshot }),
                   screenshot: { base64: screenshot.base64, mimeType: screenshot.mimeType },
+                  includeScreenshotInModelOutput,
                 }
               : {
                   text: persistedObservationText(observation),
@@ -2340,6 +2386,7 @@ export function buildComputerUseTools(deps: {
                 base64: screenshotObservation.screenshot.base64,
                 mimeType: screenshotObservation.screenshot.mimeType,
               },
+              includeScreenshotInModelOutput,
             };
           }
           if (
@@ -2711,11 +2758,11 @@ export function buildComputerUseTools(deps: {
                 state.reobserveRequired();
               }
             }
-            // Carry the screenshot base64 on the raw result (which becomes the ai-sdk
-            // tool `output`) so `toModelOutput` below can hand the vision model an image
-            // block. Kept OFF `text`: coerceResultContent projects this object to a
-            // text-only session-log entry (no `kind` ⇒ only `text` survives), so the
-            // bounded frame never bloats history.
+            // Carry the screenshot base64 on the raw result for the local mirror.
+            // `toModelOutput` below sends it to the provider only for actions that
+            // explicitly need pixels. Kept OFF `text`: coerceResultContent projects
+            // this object to a text-only session-log entry (no `kind` => only `text`
+            // survives), so the bounded frame never bloats durable history.
             let bindingResult: BindingFailureReason | undefined;
             if (boundAction) bindingResult = consumeBoundAction(record, boundAction);
             if (bindingResult && !hasUncertainDeliveredOutcome(result)) {
@@ -2741,11 +2788,19 @@ export function buildComputerUseTools(deps: {
                   : undefined;
             } catch {
               presentation?.finish(result);
-              return deliveredWithoutFreshObservation(modelAction, result);
+              return deliveredWithoutFreshObservation(
+                modelAction,
+                result,
+                includeScreenshotInModelOutput,
+              );
             }
             if (actionLease && result.outcome.ok && !freshObservation) {
               presentation?.finish(result);
-              return deliveredWithoutFreshObservation(modelAction, result);
+              return deliveredWithoutFreshObservation(
+                modelAction,
+                result,
+                includeScreenshotInModelOutput,
+              );
             }
             presentation?.finish(withMirrorFrame(result, freshObservation));
             const modelRefresh = freshObservation
@@ -2772,6 +2827,7 @@ export function buildComputerUseTools(deps: {
                   ...(!result.outcome.ok ? { error: result.outcome.error } : {}),
                   ...(failureClass ? { failureClass } : {}),
                   screenshot: { base64: screenshot.base64, mimeType: screenshot.mimeType },
+                  includeScreenshotInModelOutput,
                 }
               : {
                   text,
@@ -2785,10 +2841,10 @@ export function buildComputerUseTools(deps: {
         releasePendingInvocation();
       }
     },
-    // Map the raw result into model-visible content: the summary as text, plus the
-    // screenshot as a native file block when present. Robust to the runtime's synthetic
-    // failure return shape ({ error }) from permission/loop-gate blocks, which
-    // reaches here as `output` too.
+    // Map the raw result into model-visible content. Semantic actions already
+    // return a fresh accessibility observation, so their automatically captured
+    // PiP frame stays local. Explicit visual requests and legacy coordinate
+    // actions still receive the native image block.
     toModelOutput: ({ output }) => {
       const o = (output ?? {}) as Partial<ComputerToolResult> & { error?: unknown };
       const text =
@@ -2803,7 +2859,7 @@ export function buildComputerUseTools(deps: {
         type: 'content',
         value: [
           { type: 'text', text },
-          ...(o.screenshot
+          ...(o.screenshot && o.includeScreenshotInModelOutput === true
             ? [
                 {
                   type: 'file' as const,

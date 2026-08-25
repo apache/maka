@@ -18,5 +18,5 @@
 blank_issues_enabled: true
 contact_links:
   - name: Report a security vulnerability
-    url: https://github.com/maka-agent/maka-agent/security/policy
+    url: https://github.com/apache/maka/security/policy
     about: Do not open a public issue for vulnerabilities. The security policy explains private reporting via security@maka.app.

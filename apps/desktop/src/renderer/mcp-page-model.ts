@@ -23,7 +23,7 @@ import type {
   McpServerConfig,
   McpServerStatus,
 } from '@maka/core/mcp';
-import { isMcpStdioConfig, resolveMcpRemoteProtocolPreference } from '@maka/core/mcp';
+import { isMcpStdioConfig, resolveMcpProtocolPreference } from '@maka/core/mcp';
 import type { McpCopy } from './locales/mcp-copy.js';
 import { formatCommandLine, parseCommandLine } from './mcp-command-line.js';
 
@@ -36,7 +36,9 @@ export type McpEditorDraft = {
   env: string;
   url: string;
   transport: 'auto' | 'streamable-http' | 'sse';
-  protocol: McpProtocolPreference;
+  /** Undefined means the authoring default for the current kind. Stored
+   * configs are projected to an explicit value before editing. */
+  protocol?: McpProtocolPreference;
   headers: string;
   /** Opaque round-trip state: the editor has no OAuth fields, but an
    * edit → save of an OAuth-configured server must not delete the block
@@ -54,7 +56,6 @@ export function createEmptyMcpDraft(): McpEditorDraft {
     env: '',
     url: '',
     transport: 'auto',
-    protocol: 'auto',
     headers: '',
   };
 }
@@ -68,6 +69,7 @@ export function mcpDraftFromConfig(id: string, config: McpServerConfig): McpEdit
       commandLine: formatCommandLine(config.command, config.args ?? []),
       cwd: config.cwd ?? '',
       env: formatMap(config.env),
+      protocol: resolveMcpProtocolPreference(config),
     };
   }
   return {
@@ -79,24 +81,15 @@ export function mcpDraftFromConfig(id: string, config: McpServerConfig): McpEdit
     transport: config.transport ?? 'auto',
     // An omitted preference is the compatibility-preserving legacy posture,
     // not the default for a newly-authored remote entry.
-    protocol: resolveMcpRemoteProtocolPreference(config),
+    protocol: resolveMcpProtocolPreference(config),
     headers: formatMap(config.headers),
     ...(config.oauth ? { oauth: config.oauth } : {}),
   };
 }
 
-export function withMcpDraftTransport(
-  draft: McpEditorDraft,
-  transport: McpEditorDraft['transport'],
-): McpEditorDraft {
-  return {
-    ...draft,
-    transport,
-    // Legacy HTTP+SSE is not a modern negotiation transport. Converge the
-    // draft as soon as the transport changes so the disabled protocol picker
-    // always describes the value that will be persisted.
-    ...(transport === 'sse' ? { protocol: 'legacy' as const } : {}),
-  };
+export function mcpDraftProtocolPreference(draft: McpEditorDraft): McpProtocolPreference {
+  if (draft.kind === 'remote' && draft.transport === 'sse') return 'legacy';
+  return draft.protocol ?? (draft.kind === 'remote' ? 'auto' : 'legacy');
 }
 
 export function mcpConfigFromDraft(draft: McpEditorDraft, copy: McpCopy): McpServerConfig {
@@ -111,13 +104,14 @@ export function mcpConfigFromDraft(draft: McpEditorDraft, copy: McpCopy): McpSer
       args: parsed.args,
       ...(draft.cwd.trim() ? { cwd: draft.cwd.trim() } : {}),
       env: parseMap(draft.env, copy),
+      protocol: mcpDraftProtocolPreference(draft),
     };
   }
   return {
     enabled: draft.enabled,
     url: draft.url.trim(),
     transport: draft.transport,
-    protocol: draft.transport === 'sse' ? 'legacy' : draft.protocol,
+    protocol: mcpDraftProtocolPreference(draft),
     headers: parseMap(draft.headers, copy),
     ...(draft.oauth ? { oauth: draft.oauth } : {}),
   };

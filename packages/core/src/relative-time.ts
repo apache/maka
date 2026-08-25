@@ -32,6 +32,20 @@ const RELATIVE_HORIZON_MS = 7 * 24 * 60 * 60 * 1000;
 
 /** Age below this stays on one just-now label instead of counting seconds. */
 const JUST_NOW_MS = 60_000;
+const MINUTE_MS = 60_000;
+const HOUR_MS = 60 * MINUTE_MS;
+const DAY_MS = 24 * HOUR_MS;
+const MONTH_MS = 30 * DAY_MS;
+const YEAR_MS = 12 * MONTH_MS;
+/** Stays below the browser timer ceiling while avoiding needless daily wakes. */
+const MAX_SIDEBAR_REFRESH_MS = 24 * DAY_MS;
+const SIDEBAR_TIME_BUCKETS = [
+  { unitMs: MINUTE_MS, maxValue: 60, suffix: 'min' },
+  { unitMs: HOUR_MS, maxValue: 24, suffix: 'h' },
+  { unitMs: DAY_MS, maxValue: 30, suffix: 'd' },
+  { unitMs: MONTH_MS, maxValue: 12, suffix: 'mo' },
+  { unitMs: YEAR_MS, maxValue: Number.POSITIVE_INFINITY, suffix: 'y' },
+] as const;
 
 const JUST_NOW: UiCatalog<string> = {
   zh: '刚刚',
@@ -125,10 +139,8 @@ function getCompactFormats(uiLocale: UiLocale): {
 }
 
 /**
- * Compact variant for space-starved rows (sidebar session list): same relative
- * buckets inside the horizon, then a date-only label ("6月20日" within the
- * current year, "2025年6月20日" across years) instead of the wide
- * medium-date-plus-time fallback.
+ * Compact variant for wider list rows: relative inside the seven-day horizon,
+ * then a localized date-only label.
  */
 export function formatCompactTimestamp(
   ts: number,
@@ -143,6 +155,22 @@ export function formatCompactTimestamp(
   return date.getFullYear() === nowDate.getFullYear()
     ? sameYear.format(date)
     : otherYear.format(date);
+}
+
+/**
+ * Scan-friendly relative label for space-starved rows (sidebar session list).
+ * Unit tokens stay deliberately locale-neutral so the trailing column remains
+ * stable across UI languages: "46min", "13h", "17d", "1mo", "1y".
+ */
+export function formatSidebarTimestamp(
+  ts: number,
+  now: number = Date.now(),
+  locale: UiLocale = 'zh',
+): string {
+  const diffMs = relativeAgeMs(ts, now);
+  if (diffMs < JUST_NOW_MS) return JUST_NOW[locale];
+  const bucket = sidebarTimeBucket(diffMs);
+  return `${bucket.value}${bucket.suffix}`;
 }
 
 /**
@@ -169,4 +197,32 @@ export function nextRelativeRefreshDelay(ts: number, now: number = Date.now()): 
   if (ageMs < JUST_NOW_MS) return JUST_NOW_MS - ageMs;
   if (ageMs < 60 * 60_000) return 60_000;
   return 10 * 60_000;
+}
+
+function nextRoundedBoundaryDelay(ageMs: number, unitMs: number, value: number): number {
+  return Math.max(1, Math.ceil((value + 0.5) * unitMs - ageMs));
+}
+
+function sidebarTimeBucket(ageMs: number): {
+  value: number;
+  unitMs: number;
+  suffix: (typeof SIDEBAR_TIME_BUCKETS)[number]['suffix'];
+} {
+  for (const bucket of SIDEBAR_TIME_BUCKETS) {
+    const value = Math.round(ageMs / bucket.unitMs);
+    if (value < bucket.maxValue) return { value, unitMs: bucket.unitMs, suffix: bucket.suffix };
+  }
+  throw new Error('Sidebar time buckets must end with an unbounded bucket');
+}
+
+/** Refreshes at the next visible sidebar bucket, capped below the timer ceiling. */
+export function nextSidebarRefreshDelay(ts: number, now: number = Date.now()): number | null {
+  const ageMs = relativeAgeMs(ts, now);
+  if (!Number.isFinite(ageMs)) return null;
+  if (ageMs < JUST_NOW_MS) return JUST_NOW_MS - ageMs;
+  const bucket = sidebarTimeBucket(ageMs);
+  return Math.min(
+    nextRoundedBoundaryDelay(ageMs, bucket.unitMs, bucket.value),
+    MAX_SIDEBAR_REFRESH_MS,
+  );
 }

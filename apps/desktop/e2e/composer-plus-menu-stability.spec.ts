@@ -27,6 +27,7 @@ declare global {
     makaE2eLatch?: {
       arm(key: LatchKey, options?: { oneShot?: boolean }): void;
       release(key: LatchKey): void;
+      reject(key: LatchKey, message: string): void;
     };
   }
 }
@@ -56,6 +57,16 @@ async function releaseBridgeLatch(
   key: LatchKey,
 ): Promise<void> {
   await page.evaluate((latchKey) => window.makaE2eLatch?.release(latchKey), key);
+}
+
+async function rejectBridgeLatch(
+  page: import('@playwright/test').Page,
+  key: LatchKey,
+): Promise<void> {
+  await page.evaluate(
+    (latchKey) => window.makaE2eLatch?.reject(latchKey, 'forced E2E bridge failure'),
+    key,
+  );
 }
 
 /**
@@ -279,6 +290,54 @@ test('two rapid Plan toggles land on the last requested state', async ({
 
   // The queued intent drains after the in-flight commit settles: OFF wins.
   await releaseBridgeLatch(page, 'sessions.list');
+  await expect(planRow).toHaveAttribute('aria-checked', 'false');
+});
+
+test('a failed catalog refresh keeps the committed Plan state visible', async ({
+  invocableSkillsWindow: page,
+}) => {
+  const composer = page.locator(COMPOSER_INPUT);
+  await composer.fill('alpha-marker');
+  await composer.press('Enter');
+  await expect(page.getByText(/Fake backend received: alpha-marker/)).toBeVisible();
+
+  await page.getByRole('button', { name: '添加上下文' }).click();
+  const menu = page.getByRole('menu', { name: '添加上下文' });
+  const planRow = menu.getByRole('menuitemcheckbox', { name: 'Plan' });
+  await expect(planRow).toHaveAttribute('aria-checked', 'false');
+  await expect(planRow).not.toHaveAttribute('aria-disabled', 'true');
+
+  await armBridgeLatch(page, 'sessions.list', { oneShot: true });
+  await planRow.click();
+  await expect(planRow).toHaveAttribute('aria-checked', 'true');
+
+  await rejectBridgeLatch(page, 'sessions.list');
+  await expect(planRow).toHaveAttribute('aria-checked', 'true');
+});
+
+test('latest Plan intent still reaches the Host after a catalog refresh fails', async ({
+  invocableSkillsWindow: page,
+}) => {
+  const composer = page.locator(COMPOSER_INPUT);
+  await composer.fill('alpha-marker');
+  await composer.press('Enter');
+  await expect(page.getByText(/Fake backend received: alpha-marker/)).toBeVisible();
+
+  await page.getByRole('button', { name: '添加上下文' }).click();
+  const planRow = page.getByRole('menu', { name: '添加上下文' })
+    .getByRole('menuitemcheckbox', { name: 'Plan' });
+  await expect(planRow).not.toHaveAttribute('aria-disabled', 'true');
+
+  await armBridgeLatch(page, 'sessions.list', { oneShot: true });
+  await planRow.click();
+  await expect(planRow).toHaveAttribute('aria-checked', 'true');
+  await planRow.click();
+  await rejectBridgeLatch(page, 'sessions.list');
+
+  await expect.poll(async () => page.evaluate(async () => {
+    const sessions = await window.maka.sessions.list();
+    return sessions[0]?.collaborationMode;
+  })).toBe('agent');
   await expect(planRow).toHaveAttribute('aria-checked', 'false');
 });
 

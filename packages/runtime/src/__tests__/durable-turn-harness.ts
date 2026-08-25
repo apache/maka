@@ -20,8 +20,11 @@
 import type { BackendSendInput } from '@maka/core/backend-types';
 import type { SessionEvent } from '@maka/core/events';
 import type { RuntimeEvent } from '@maka/core/runtime-event';
-import { createSessionEventMapMemory, mapSessionEventToRuntimeEvent } from '../ai-sdk-flow.js';
-import type { InvocationContext } from '../invocation-context.js';
+import {
+  createSessionEventMapMemory,
+  mapSessionEventToRuntimeEvent,
+} from '../session-event-runtime-mapper.js';
+import type { RuntimeEventMapContext } from '../session-event-runtime-mapper.js';
 
 export function createDurableTurnHarness(input: {
   turnId: string;
@@ -49,21 +52,11 @@ export function createDurableTurnHarness(input: {
   };
   const ledger: RuntimeEvent[] = [anchor];
   const memory = createSessionEventMapMemory();
-  const context: InvocationContext = {
+  const context: RuntimeEventMapContext = {
     sessionId,
     invocationId,
     runId,
     turnId: input.turnId,
-    source: 'desktop',
-    startedAt: anchor.ts,
-    request: {
-      sessionId,
-      turnId: input.turnId,
-      text: input.text,
-      source: 'desktop',
-      initialRuntimeEvent: anchor,
-    },
-    newId: () => `runtime-harness-${++id}`,
     now: () => now++,
   };
 

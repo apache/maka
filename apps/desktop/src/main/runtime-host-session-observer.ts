@@ -118,13 +118,13 @@ interface ObservedSessionState {
   snapshot?: SessionContinuitySnapshot;
   projector?: RuntimeHostSessionProjector;
   transcriptAccess: number;
+  messageAdmissions: boolean;
   closing: boolean;
 }
 
 interface TranscriptConsumer {
   readonly consumerId: string;
   readonly target: RuntimeHostTranscriptTarget;
-  readonly destroyedListener: () => void;
   generation: string;
   deliverySequence: number;
   deliveryBytes: number;
@@ -281,13 +281,9 @@ export class RuntimeHostSessionObserver {
         void this.#closeIfIdle(state);
       }
     }
-    const destroyedListener = () => {
-      void this.closeTranscript(consumerId);
-    };
     const consumer: TranscriptConsumer = {
       consumerId,
       target,
-      destroyedListener,
       generation: replica.generation,
       deliverySequence: 0,
       deliveryBytes: 0,
@@ -296,7 +292,6 @@ export class RuntimeHostSessionObserver {
     };
     state.transcriptConsumers.set(consumerId, consumer);
     this.#transcriptConsumers.set(consumerId, state);
-    target.once('destroyed', destroyedListener);
     try {
       consumer.resetRequested = true;
       await this.#scheduleTranscriptDelivery(state, consumer);
@@ -431,6 +426,7 @@ export class RuntimeHostSessionObserver {
     sessionId: string,
     observerId: string,
     target: RuntimeHostSessionObserverTarget,
+    messageAdmissions = false,
   ): Promise<void> {
     this.#assertOpen();
     const previous = this.#observers.get(observerId);
@@ -444,6 +440,10 @@ export class RuntimeHostSessionObserver {
       return;
     }
     const state = this.#state(sessionId);
+    if (messageAdmissions && !state.messageAdmissions) {
+      state.messageAdmissions = true;
+      state.projector?.enableMessageAdmissions();
+    }
     let group = state.targets.get(target.id);
     if (!group) {
       const destroyedListener = () => {
@@ -628,6 +628,7 @@ export class RuntimeHostSessionObserver {
       subscriptionOwner,
       pendingTranscriptConsumers: 0,
       transcriptAccess: 0,
+      messageAdmissions: false,
       closing: false,
     };
     this.#states.set(sessionId, state);
@@ -806,6 +807,7 @@ export class RuntimeHostSessionObserver {
       subscription.replica.projectionSeed,
       this.#now,
       subscription.activeAssistantStreams,
+      state.messageAdmissions,
     );
     const terminalTurnIds = new Set<string>();
     for (const turnId of state.watchedTurnIds) {
@@ -1061,9 +1063,12 @@ export class RuntimeHostSessionObserver {
     change: DesktopTranscriptReplicaChange,
   ): void {
     if (state.replica !== replica || state.closing) return;
-    state.projector?.noteTranscriptMessageIds(
-      change.durableUpserts.map((entry) => entry.message.id),
-    );
+    for (const event of
+      state.projector?.noteDurableTranscriptMessages(
+        change.durableUpserts.map((entry) => entry.message),
+      ) ?? []) {
+      this.#broadcast(state.sessionId, event);
+    }
     this.#sendTranscriptChange(state, replica, change);
     if (!change.hasNewer && change.durableUpserts.length > 0) {
       this.#markTranscriptRead(state, replica);
@@ -1081,8 +1086,7 @@ export class RuntimeHostSessionObserver {
       if (consumer.generation !== replica.generation) {
         this.#requestTranscriptReset(state, consumer);
       } else if (!this.#mergeTranscriptChange(consumer, change)) {
-        this.#detachTranscriptConsumer(state, consumer);
-        void this.#closeIfIdle(state);
+        this.#requestTranscriptReset(state, consumer);
       } else {
         void this.#scheduleTranscriptDelivery(state, consumer).catch(() => undefined);
       }
@@ -1156,8 +1160,9 @@ export class RuntimeHostSessionObserver {
           }
         }
       } catch (error) {
-        this.#detachTranscriptConsumer(state, consumer);
-        void this.#closeIfIdle(state);
+        if (state.transcriptConsumers.get(consumer.consumerId) === consumer) {
+          consumer.resetRequested = true;
+        }
         throw error;
       }
     })().finally(() => {
@@ -1362,7 +1367,6 @@ export class RuntimeHostSessionObserver {
       pending.reject(new Error('Desktop transcript consumer was closed'));
     }
     consumer.pendingDeliveries.clear();
-    consumer.target.off('destroyed', consumer.destroyedListener);
   }
 
   #touchReplica(state: ObservedSessionState, protectedState?: ObservedSessionState): boolean {

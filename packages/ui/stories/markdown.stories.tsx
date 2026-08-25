@@ -101,6 +101,33 @@ export const TranscriptTurn: Story = {
   ),
 };
 
+// Real path: chat → an assistant turn containing source code. The wide frame
+// keeps the desktop chat measure, rather than the Storybook viewport, as the
+// visible limit so code-line regressions are easy to compare.
+export const TranscriptCodeBlock: Story = {
+  render: () => (
+    <ProseFrame width={1040}>
+      <div className="maka-turn">
+        <ChatMessageBubble variant="ghost" className="maka-chat-message-bubble maka-chat-message-bubble-assistant">
+          <Markdown
+            density="compact"
+            text={[
+              '## Runtime connection',
+              '',
+              'The desktop keeps the full request readable without wrapping source code into short visual fragments.',
+              '',
+              '```ts',
+              'const connection = await runtimeHost.connect({ workspaceRoot, expectedRootId, initialConnectionTimeoutMs: 45_000 });',
+              'await connection.send({ type: \'session.message\', sessionId, content, attachments });',
+              '```',
+            ].join('\n')}
+          />
+        </ChatMessageBubble>
+      </div>
+    </ProseFrame>
+  ),
+};
+
 // Real path: 每日回顾 → a generated report that mixes headings, emphasis, a list,
 // a quote and a table. This is the document density — the Daily Review panel is
 // the caller that leaves `density` unset. (It was annotated as a chat answer,

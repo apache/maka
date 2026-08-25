@@ -81,7 +81,33 @@ test('the headless coding profile freezes prompt, tools, memory, and foreground 
     }),
     impl: async () => 'ok',
   };
-  const [bash] = projectHostedExecutionTools([original], 'headless-coding-v1');
+  const profileTools = projectHostedExecutionTools(
+    [
+      original,
+      ...profile.toolNames
+        .filter((name) => name !== 'Bash')
+        .map(
+          (name): MakaTool => ({
+            name,
+            description: name,
+            parameters: z.object({}),
+            impl: async () => 'ok',
+          }),
+        ),
+      {
+        name: 'ScheduledTask',
+        description: 'Must stay outside the profile ceiling',
+        parameters: z.object({}),
+        impl: async () => 'scheduled',
+      },
+    ],
+    'headless-coding-v1',
+  );
+  assert.deepEqual(
+    profileTools.map(({ name }) => name),
+    profile.toolNames,
+  );
+  const bash = profileTools[0];
   assert.ok(bash);
   const schema = bash.parameters as z.ZodType;
   assert.equal((await schema.safeParseAsync({ command: 'true' })).success, true);
@@ -90,4 +116,21 @@ test('the headless coding profile freezes prompt, tools, memory, and foreground 
     false,
   );
   assert.equal((await schema.safeParseAsync({ command: 'true', pty: true })).success, false);
+});
+
+test('the WorkHub coordination profile has conversational authority but zero tools', () => {
+  const profile = hostedExecutionRunProfile('workhub-coordination-v1');
+  assert.ok(profile);
+  assert.deepEqual(profile.toolNames, []);
+  assert.equal(profile.memoryExtraction, false);
+  assert.match(profile.systemPrompt, /conversational coordinator for WorkHub/u);
+  assert.match(profile.systemPrompt, /no tools, filesystem authority/u);
+
+  const productTool: MakaTool = {
+    name: 'Read',
+    description: 'Read files',
+    parameters: z.object({}),
+    impl: async () => 'not reachable',
+  };
+  assert.deepEqual(projectHostedExecutionTools([productTool], 'workhub-coordination-v1'), []);
 });

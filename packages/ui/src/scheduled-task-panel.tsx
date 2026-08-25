@@ -190,11 +190,14 @@ export function ScheduledTaskPanel(props: {
 
   // Re-sync the switch to the persisted snapshot when it changes (external
   // edit, relaunch), unless a local write is mid-flight — the optimistic
-  // value wins until the write settles.
+  // value wins until the write settles. Pending is also a dependency: an
+  // external refresh can deliberately retain the same persisted Boolean and
+  // supersede a slow write, so the prop itself may not change when the write
+  // finishes.
   useEffect(() => {
-    if (keepSystemAwakePendingRef.current) return;
+    if (keepSystemAwakePending) return;
     if (props.keepSystemAwake !== undefined) setKeepSystemAwakeChecked(props.keepSystemAwake);
-  }, [props.keepSystemAwake]);
+  }, [keepSystemAwakePending, props.keepSystemAwake]);
 
   useEffect(() => {
     if (!props.createRequestNonce) return;

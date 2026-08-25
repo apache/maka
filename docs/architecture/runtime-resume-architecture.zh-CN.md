@@ -473,7 +473,7 @@ sequenceDiagram
   participant Planner as RuntimeContinuationPlanner
   participant Kernel as RuntimeKernel
   participant Run as New AgentRun
-  participant Runner as RuntimeRunner
+  participant Kernel as RuntimeKernel
   participant Provider as Model provider
 
   User->>UI: 点击 Safe resume
@@ -490,9 +490,9 @@ sequenceDiagram
     SM->>Kernel: resumeSafeBoundaryContinuation
     Kernel->>Kernel: 重新读取并 revalidate 全部边界
     Kernel->>Run: 创建新 Run，写 continuationSource
-    Run->>Runner: begin continuation
-    Runner->>Run: durable continuation-start RuntimeEvent
-    Runner->>Provider: replay history，不追加重复 user message
+    Run->>Kernel: 返回 durable continuation-start proof
+    Kernel->>Kernel: 消费一次性 start proof
+    Kernel->>Provider: replay history，不追加重复 user message
     Provider-->>UI: 新 Turn 的流式事件
   end
 ```
@@ -719,7 +719,7 @@ flowchart LR
     RP["RuntimeContinuationPlanner"]
     CS["Continuation safety inspector"]
     RK["RuntimeKernel"]
-    AR["AgentRun / RuntimeRunner"]
+    AR["AgentRun"]
     TR["ToolRuntime"]
   end
 
@@ -953,8 +953,7 @@ Process crash、SQLite transaction atomicity 和应用级 `fsync` 不能自动�
 4. `packages/runtime/src/continuation-safety.ts`：host safety observation。
 5. `packages/runtime/src/session-manager.ts`：startup repair、authoritative plan 和 continuation API。
 6. `packages/runtime/src/runtime-kernel.ts`：claim、execution revalidation 和新 Run 创建。
-7. `packages/runtime/src/runtime-runner.ts`：continuation-start 与无重复 user message 的 provider dispatch。
-8. `packages/runtime/src/agent-run.ts`：Run lineage、terminal persistence 与 crash failpoints。
+7. `packages/runtime/src/agent-run.ts`：Run lineage、continuation-start、terminal persistence 与 crash failpoints。
 
 ### Product wiring
 

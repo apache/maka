@@ -18,7 +18,7 @@
  */
 
 import type { UiCatalog, UiLocale } from '@maka/core/ui-locale';
-import type { ConfigCategory } from '@maka/storage';
+import type { ConfigCategory } from '@maka/storage/config-transfer';
 
 export type DataSettingsCopy = {
   categories: Record<ConfigCategory, { label: string; detail: string; sensitive?: boolean }>;

@@ -26,11 +26,12 @@ import {
   readFile,
   readdir,
   realpath,
+  rename,
   rm,
   writeFile,
 } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { basename, dirname, join } from 'node:path';
 import { test } from 'node:test';
 import { promisify } from 'node:util';
 import {
@@ -52,6 +53,7 @@ import {
 } from '../runtime-host-service-manager.js';
 
 const execFile = promisify(execFileCallback);
+const PACKAGE_INTEGRITY = `sha512-${Buffer.alloc(64, 7).toString('base64')}`;
 
 test('managed setup converges on one exact package and verified Client pairing', async (t) => {
   const base = await mkdtemp(join(tmpdir(), 'maka-runtime-host-setup-'));
@@ -281,7 +283,114 @@ test('managed setup replaces one exact development package with another', async 
   assert.deepEqual(await readdir(join(previousDeployment.root, 'versions')), [nextVersion]);
 });
 
-test('managed setup removes a newly copied package when service installation fails', async (t) => {
+test('registry package identity avoids local content and recovers an interrupted removal', async (t) => {
+  const base = await mkdtemp(join(tmpdir(), 'maka-runtime-host-registry-package-'));
+  t.after(() => rm(base, { recursive: true, force: true }));
+  const version = '0.2.0';
+  const localPackage = await createReleasePackage(join(base, 'local'), version);
+  const registryPackage = await createReleasePackage(join(base, 'registry'), version);
+  await writeFile(join(localPackage, 'dist', 'cli.js'), 'local package\n');
+  await writeFile(join(registryPackage, 'dist', 'cli.js'), 'registry package\n');
+  const clientDataRoot = join(base, 'config', 'Maka');
+  const serviceId = resolveRuntimeHostManagedServiceId(clientDataRoot);
+  const pathOptions = {
+    env: { XDG_DATA_HOME: join(base, 'data') },
+    homeDir: join(base, 'home'),
+    platform: 'linux' as const,
+  };
+  const local = await prepareRuntimeHostManagedPackageDeployment(
+    { serviceId, clientDataRoot, sourcePackageRoot: localPackage, version },
+    pathOptions,
+  );
+  const registry = await prepareRuntimeHostManagedPackageDeployment(
+    {
+      serviceId,
+      clientDataRoot,
+      sourcePackageRoot: registryPackage,
+      version,
+      packageIntegrity: PACKAGE_INTEGRITY,
+    },
+    pathOptions,
+  );
+
+  assert.notEqual(local.cliPath, registry.cliPath);
+  assert.match(registry.cliPath, /\/versions\/registry-[a-f0-9]{64}\/dist\/cli\.js$/u);
+  assert.equal(await readFile(registry.cliPath, 'utf8'), 'registry package\n');
+  await registry.cleanup();
+  assert.deepEqual(await readdir(dirname(dirname(dirname(registry.cliPath)))), [
+    basename(dirname(dirname(registry.cliPath))),
+  ]);
+
+  const registryRoot = dirname(dirname(registry.cliPath));
+  const versionsRoot = dirname(registryRoot);
+  await rename(registryRoot, join(versionsRoot, `.${basename(registryRoot)}.interrupted.deleted`));
+  const recovered = await prepareRuntimeHostManagedPackageDeployment(
+    {
+      serviceId,
+      clientDataRoot,
+      sourcePackageRoot: registryPackage,
+      version,
+      packageIntegrity: PACKAGE_INTEGRITY,
+    },
+    pathOptions,
+  );
+  assert.equal(await readFile(recovered.cliPath, 'utf8'), 'registry package\n');
+  assert.deepEqual(await readdir(versionsRoot), [basename(registryRoot)]);
+  await mkdir(join(versionsRoot, 'stale-package'));
+
+  const stateRoot = join(clientDataRoot, 'workspaces', 'default');
+  const config: RuntimeHostManagedServiceConfig = {
+    schemaVersion: 1,
+    managedDeploymentRoot: recovered.root,
+    rootPath: stateRoot,
+    projectDirectoryRoots: [],
+    websocket: { host: '127.0.0.1', port: 42_111, path: '/runtime-host' },
+    launch: { nodePath: process.execPath, cliPath: recovered.cliPath },
+  };
+  let installedCliPath = '';
+  assert.equal(
+    await runRuntimeHostSetupCli(
+      {
+        json: true,
+        clientDataRoot,
+        defaultRootPath: stateRoot,
+        sourcePackageRoot: localPackage,
+        version,
+        principalId: 'desktop.client-1',
+        preset: 'desktop-client',
+      },
+      {
+        createBackend: () => unusedBackend(),
+        manageService: async (input: { readonly action: string; readonly cliPath: string }) => {
+          if (input.action === 'status') return serviceResult('status', config, version);
+          installedCliPath = input.cliPath;
+          return serviceResult('install', config, version);
+        },
+        prepareDeployment: async () => assert.fail('same-version setup must reuse the deployment'),
+        replaceCredential: async () => ({
+          rootId: 'a'.repeat(64),
+          credential: 'new-secret',
+          credentialId: 'new-credential',
+          principalKind: 'remote_owner',
+          principalId: 'desktop.client-1',
+          operationGrants: ['host.status'],
+          canPublishClientCapabilities: true,
+          canUseHostPaths: false,
+        }),
+        verifyCredential: async () => undefined,
+        writeOutput: () => undefined,
+      },
+    ),
+    0,
+  );
+  assert.equal(installedCliPath, recovered.cliPath);
+  const repairedOperator = await readFile(join(recovered.root, 'operator'), 'utf8');
+  assert.equal(repairedOperator.includes(recovered.cliPath), true);
+  assert.equal(repairedOperator.includes(clientDataRoot), true);
+  assert.deepEqual(await readdir(versionsRoot), [basename(registryRoot)]);
+});
+
+test('managed setup leaves no inactive package when service installation fails', async (t) => {
   const base = await mkdtemp(join(tmpdir(), 'maka-runtime-host-setup-failure-'));
   t.after(() => rm(base, { recursive: true, force: true }));
   const sourcePackageRoot = await createReleasePackage(base, '0.2.0');
@@ -293,30 +402,45 @@ test('managed setup removes a newly copied package when service installation fai
     platform: 'linux' as const,
   };
   const outputs: string[] = [];
-  const exitCode = await runRuntimeHostSetupCli(
-    {
-      json: true,
-      clientDataRoot,
-      defaultRootPath: join(clientDataRoot, 'workspaces', 'default'),
-      sourcePackageRoot,
-      version: '0.2.0',
-      principalId: 'desktop.client-1',
-      preset: 'desktop-client',
+  let rollbackFails = false;
+  const options = {
+    json: true,
+    clientDataRoot,
+    defaultRootPath: join(clientDataRoot, 'workspaces', 'default'),
+    sourcePackageRoot,
+    version: '0.2.0',
+    principalId: 'desktop.client-1',
+    preset: 'desktop-client',
+  } as const;
+  const overrides = {
+    createBackend: () => unusedBackend(),
+    manageService: async (input: { readonly action: string }) => {
+      if (input.action === 'status') return serviceResult('status', null, null);
+      throw new RuntimeHostServiceManagerError(
+        'service_manager_operation_failed',
+        `Injected service failure ${'x'.repeat(2_000)}`,
+      );
     },
-    {
-      createBackend: () => unusedBackend(),
-      manageService: async (input: { readonly action: string }) => {
-        if (input.action === 'status') return serviceResult('status', null, null);
-        throw new RuntimeHostServiceManagerError(
-          'service_manager_operation_failed',
-          `Injected service failure ${'x'.repeat(2_000)}`,
-        );
-      },
-      prepareDeployment: (input) =>
-        prepareRuntimeHostManagedPackageDeployment(input, deploymentPathOptions),
-      writeOutput: (value) => outputs.push(value),
+    prepareDeployment: async (
+      input: Parameters<typeof prepareRuntimeHostManagedPackageDeployment>[0],
+    ) => {
+      const deployment = await prepareRuntimeHostManagedPackageDeployment(
+        input,
+        deploymentPathOptions,
+      );
+      return rollbackFails
+        ? {
+            ...deployment,
+            rollback: async () => {
+              await deployment.rollback();
+              throw new Error('Injected rollback failure');
+            },
+          }
+        : deployment;
     },
-  );
+    writeOutput: (value: string) => outputs.push(value),
+  };
+  const exitCode = await runRuntimeHostSetupCli(options, overrides);
   assert.equal(exitCode, 1);
   const failure = decodeRuntimeHostSetupFrame(outputs.at(-1) ?? '');
   assert.equal(failure?.kind, 'error');
@@ -333,6 +457,15 @@ test('managed setup removes a newly copied package when service installation fai
       ),
     ),
   );
+
+  rollbackFails = true;
+  outputs.length = 0;
+  assert.equal(await runRuntimeHostSetupCli(options, overrides), 1);
+  const rollbackFailure = decodeRuntimeHostSetupFrame(outputs.at(-1) ?? '');
+  assert.deepEqual(rollbackFailure?.kind === 'error' ? rollbackFailure.error : undefined, {
+    code: 'deployment_failed',
+    message: 'Runtime Host setup failed and its staged package could not be removed',
+  });
 });
 
 test('managed operator binds its Client Data Root and routes deployment cleanup', {
@@ -466,11 +599,13 @@ function unusedBackend(): RuntimeHostServiceBackend {
     preflightInstall: async () => undefined,
     install: async () => assert.fail('Backend is not expected'),
     replace: async () => assert.fail('Backend is not expected'),
+    verifyReplacementPreconditions: async () => assert.fail('Backend is not expected'),
     verifyDeployment: async () => assert.fail('Backend is not expected'),
     status: async () => assert.fail('Backend is not expected'),
     start: async () => assert.fail('Backend is not expected'),
     stop: async () => assert.fail('Backend is not expected'),
     restart: async () => assert.fail('Backend is not expected'),
+    retire: async () => assert.fail('Backend is not expected'),
     logs: async () => assert.fail('Backend is not expected'),
     uninstall: async () => assert.fail('Backend is not expected'),
   };

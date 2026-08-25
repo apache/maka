@@ -76,6 +76,21 @@ export function assertWindowsProductVersion(productVersion, expectedVersion) {
   }
 }
 
+export async function verifyPackagedWindowsSandboxLifecycle(
+  sandboxExecutable,
+  { run = runCommandFromRepo } = {},
+) {
+  for (const script of ['appcontainer-smoke.ps1', 'acl-recovery-smoke.ps1']) {
+    await run('pwsh', [
+      '-NoProfile',
+      '-File',
+      join(repoRoot, 'experiments', 'windows-sandbox', script),
+      '-LauncherPath',
+      sandboxExecutable,
+    ]);
+  }
+}
+
 // The Windows build is unsigned, so the only architecture evidence in the
 // artifact is the PE header of the executable itself.
 export async function readPeMachine(path) {
@@ -203,6 +218,9 @@ export async function verifyPackagedWindowsApp(
       '-LauncherPath',
       sandboxExecutable,
     ]);
+
+    step('verifying packaged sandbox lifecycle recovery');
+    await verifyPackagedWindowsSandboxLifecycle(sandboxExecutable, { run });
 
     step('running real filesystem-worker operations through the packaged app');
     // The evidence executes the packaged artifacts themselves: the packaged

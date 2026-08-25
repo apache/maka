@@ -110,8 +110,9 @@ export function useShellChatModel(options: {
   // Renderer-only — it never mutates the persisted Settings · 模型 default.
   // Three states, because two cannot say this: `undefined` is an untouched
   // picker, so Settings → 通用 → 默认思考级别 applies; `null` is the user
-  // explicitly choosing 模型默认 for this one chat, which must beat the
-  // configured default or the per-chat picker could not undo it.
+  // explicitly choosing the per-chat `默认` option (use the model default),
+  // which must beat the configured Settings default or the picker could not
+  // undo it.
   //
   // The pick carries its target key so a Host or Project switch cannot apply it
   // to a different execution authority, even for an identically named model.

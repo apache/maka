@@ -27,6 +27,11 @@ export {
   type DirectRequestOperationKey,
 } from './connection.js';
 export {
+  prepareConnectedRuntimeHostRetirement,
+  type RuntimeHostRetirementMode,
+  type RuntimeHostRetirementPreparation,
+} from './host-retirement.js';
+export {
   LOCAL_RUNTIME_HOST_PROFILE,
   RUNTIME_HOST_ACCESS_CREDENTIAL_MAX_BYTES,
   createClientRuntimeHostCredentialStore,
@@ -110,6 +115,7 @@ export {
   type RuntimeHostCapabilityProviderService,
 } from './capability-provider-service.js';
 export { loadOrCreateRuntimeHostClientInstanceId } from './client-instance-identity.js';
+export { projectSessionCatalogSummary } from './session-catalog-summary.js';
 export { consumeAccessCredentialDelivery } from '../control/access-credential-delivery.js';
 export {
   createOAuthPresentationClientProvider,

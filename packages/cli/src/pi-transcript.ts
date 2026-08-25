@@ -59,6 +59,7 @@ import {
 import { goalStatusLineText, isLiveGoalStatus } from './pi-goal.js';
 import { renderToolBlock } from './pi-transcript-tools.js';
 import { getTuiPrimaryGuidance } from './tui-primary-guidance.js';
+import { renderTuiShortcutCopy } from './tui-shortcut-copy.js';
 import type { GoalProjection } from '@maka/runtime-host/protocol';
 
 export interface MakaPiUsageSummary {
@@ -1411,12 +1412,26 @@ export function renderMakaPiActivityStrip(
     const retry = metadata.providerRetry;
     const text =
       retry.phase === 'scheduled'
-        ? `Retrying in ${Math.max(1, Math.ceil(retry.delayMs / 1_000))}s (${retry.attempt}/${retry.maxAttempts})`
+        ? `Retrying in ${formatRetryDuration(retry.delayMs)} (${retry.attempt}/${retry.maxAttempts})`
         : `Retrying (${retry.attempt}/${retry.maxAttempts})`;
     return fitLine(ansi.dim(text), safeWidth);
   }
   if (metadata.turnElapsedMs === undefined) return '';
   return fitLine(ansi.dim(`Working… ${formatElapsedDuration(metadata.turnElapsedMs)}`), safeWidth);
+}
+
+function formatRetryDuration(delayMs: number): string {
+  let s = Math.max(1, Math.ceil(delayMs / 1_000));
+  const d = Math.floor(s / 86_400);
+  const h = Math.floor((s % 86_400) / 3_600);
+  const m = Math.floor((s % 3_600) / 60);
+  const sec = s % 60;
+  const parts: string[] = [];
+  if (d > 0) parts.push(`${d}d`);
+  if (h > 0) parts.push(`${h}h`);
+  if (m > 0) parts.push(`${m}m`);
+  if (sec > 0 || parts.length === 0) parts.push(`${sec}s`);
+  return parts.join(' ');
 }
 
 function formatElapsedDuration(elapsedMs: number): string {
@@ -1447,7 +1462,11 @@ function formatElapsedDuration(elapsedMs: number): string {
  * turn). A trailing hint reminds the user that alt+↑ takes them back to edit.
  * Renders nothing when both queues are empty.
  */
-export function renderMakaPiPendingQueue(state: MakaPiTranscriptState, width: number): string[] {
+export function renderMakaPiPendingQueue(
+  state: MakaPiTranscriptState,
+  width: number,
+  platform: NodeJS.Platform = process.platform,
+): string[] {
   if (
     state.steering.length === 0 &&
     state.followup.length === 0 &&
@@ -1477,7 +1496,9 @@ export function renderMakaPiPendingQueue(state: MakaPiTranscriptState, width: nu
   for (const text of followup) {
     lines.push(fitLine(`${ansi.dim('Queued:')} ${ansi.dim(firstLinePreview(text))}`, safeWidth));
   }
-  lines.push(fitLine(ansi.dim('alt+↑ 取回队列以重新编辑'), safeWidth));
+  lines.push(
+    fitLine(ansi.dim(renderTuiShortcutCopy('Alt+↑ 取回队列以重新编辑', platform)), safeWidth),
+  );
   return lines;
 }
 
@@ -1745,15 +1766,16 @@ function renderNotice(entry: MakaPiNoticeEntry, width: number): string[] {
 // Shown on a fresh, empty session. Greets with the branded maka wordmark and a
 // short tagline, then points at the command-center entry points (direct input,
 // /session, /model, /setup) — enough to start without reading docs.
-// Four-line lowercase ASCII maka wordmark in Maka blue (#1098). Pure ASCII so it
+// Five-line lowercase ASCII maka wordmark in Maka blue (#1098, #3661). Pure ASCII so it
 // renders under any locale; stored without trailing spaces so the welcome lines
 // and their tests agree after rtrim. A terminal too narrow to fit it falls back
 // to a single `maka` line — see renderWelcomeBlock.
 const MAKA_WORDMARK_LINES = [
-  ' _ __    __ _  _  __   __ _',
-  "| '_ \\  / _` | | |/ / / _` |",
-  '| |_) | | (_| | |   <  | (_| |',
-  '|_.__/  \\__,_| |_|\\_\\  \\__,_|',
+  '                  _',
+  '  _ __ ___   __ _| | ____ _',
+  " | '_ ` _ \\ / _` | |/ / _` |",
+  ' | | | | | | (_| |   < (_| |',
+  ' |_| |_| |_|\\__,_|_|\\_\\__,_|',
 ];
 const MAKA_WORDMARK_WIDTH = Math.max(...MAKA_WORDMARK_LINES.map((line) => line.length));
 

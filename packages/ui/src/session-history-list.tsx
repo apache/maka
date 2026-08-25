@@ -466,7 +466,7 @@ const SessionNavRow = memo(function SessionNavRow(props: {
               {props.session.lastMessageAt ? (
                 <RelativeTime
                   ts={props.session.lastMessageAt}
-                  variant="compact"
+                  variant="sidebar"
                   className="maka-session-row-time-label"
                   suppressTitle
                 />

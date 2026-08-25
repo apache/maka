@@ -21,11 +21,10 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import {
   assertProductBindingCatalogClean,
-  buildDeferredToolGroupsFromCatalog,
+  buildSearchableToolGroupsFromCatalog,
   projectEffectiveProductToolSurface,
 } from '../tool-catalog-derive.js';
 import type { MakaTool } from '../tool-runtime.js';
-import { LOAD_TOOLS_NAME, ToolAvailabilityRuntime } from '../tool-availability.js';
 
 function tool(name: string): MakaTool {
   return {
@@ -37,35 +36,10 @@ function tool(name: string): MakaTool {
 }
 
 describe('projectEffectiveProductToolSurface', () => {
-  it('removes a disabled surface before deriving the effective binding', () => {
-    const surface = projectEffectiveProductToolSurface({
-      host: 'cli',
-      tools: [
-        tool('Bash'),
-        tool('Read'),
-        tool('agent_spawn'),
-        tool('agent_list'),
-        tool('agent_output'),
-        tool('benchmark_progress'),
-        tool('mcp__server__tool'),
-      ],
-      policy: {
-        economy: true,
-        disabledSurfaceIds: ['agent'],
-      },
-    });
-
-    assert.deepEqual(
-      surface.tools.map((candidate) => candidate.name),
-      ['Bash', 'Read', 'benchmark_progress', 'mcp__server__tool'],
-    );
-  });
-
   it('removes a catalog surface that is unsupported on the selected host', () => {
     const surface = projectEffectiveProductToolSurface({
       host: 'cli',
       tools: [tool('Read'), tool('browser_navigate'), tool('mcp__server__tool')],
-      policy: { economy: true },
     });
 
     assert.deepEqual(
@@ -78,7 +52,6 @@ describe('projectEffectiveProductToolSurface', () => {
     const surface = projectEffectiveProductToolSurface({
       host: 'desktop',
       tools: [tool('Read'), tool('Grep')],
-      policy: { economy: true },
     });
 
     assert.deepEqual(
@@ -89,26 +62,11 @@ describe('projectEffectiveProductToolSurface', () => {
     assert.deepEqual(surface.toolAvailability.groups, []);
     assert.deepEqual(surface.identity.productToolNames, ['Grep', 'Read']);
   });
-
-  it('rejects unknown surface policy instead of silently weakening it', () => {
-    assert.throws(
-      () =>
-        projectEffectiveProductToolSurface({
-          host: 'cli',
-          tools: [tool('Read')],
-          policy: {
-            economy: true,
-            disabledSurfaceIds: ['agnet'],
-          },
-        }),
-      /Unknown product-tool surface "agnet"/,
-    );
-  });
 });
 
-describe('buildDeferredToolGroupsFromCatalog', () => {
+describe('buildSearchableToolGroupsFromCatalog', () => {
   it('includes only supported deferred surfaces that have bound members', () => {
-    const groups = buildDeferredToolGroupsFromCatalog('desktop', [
+    const groups = buildSearchableToolGroupsFromCatalog('desktop', [
       'Read',
       'maka_computer',
       'agent_spawn',
@@ -132,7 +90,7 @@ describe('buildDeferredToolGroupsFromCatalog', () => {
       'agent_list',
       'agent_output',
     ];
-    const groups = buildDeferredToolGroupsFromCatalog('cli', bound);
+    const groups = buildSearchableToolGroupsFromCatalog('cli', bound);
     assert.deepEqual(
       groups.map((group) => group.id),
       ['agent'],

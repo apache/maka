@@ -28,12 +28,10 @@ import {
   type Dispatch,
   type SetStateAction,
 } from 'react';
-import type { ScheduledTask } from '@maka/core/scheduled-task';
 import type { ProjectRecord } from '@maka/core/project';
 import type {
   FollowUpMode,
   InlineReference,
-  MessageQueueEntryProjection,
   QuoteRef,
 } from '@maka/core/events';
 import type { SessionSummary } from '@maka/core/session';
@@ -47,8 +45,6 @@ import { resolveUiLocale } from '@maka/core/ui-locale';
 import { slashCommandsForSurface } from '@maka/core/slash-command-catalog';
 import { hasSettledInitialOnboarding } from '@maka/core/onboarding-milestone';
 import {
-  ScheduledTasksPage,
-  DailyReviewPage,
   ChatSurfaceLayout,
   type ComposerHandle,
   type ComposerSendMetadata,
@@ -57,14 +53,12 @@ import {
   MakaUriContext,
   AstryxLocaleProvider,
   LocaleProvider,
-  ModuleHubSelector,
   ToastProvider,
   type ToastDiagnosticTarget,
   type ToastErrorAction,
   type NavSelection,
   SessionListPanel,
   type SessionHistoryGroup,
-  SkillsPage,
   type SessionViewMode,
   TitlebarSessionIdentity,
   type TurnFooterActionMeta,
@@ -74,7 +68,6 @@ import {
   deriveTitlebarProjectName,
   enqueueInteraction,
   getConversationCopy,
-  getSharedUiCopy,
   reconcileInteractions,
 } from '@maka/ui';
 import type { ConnectionEvent } from '@maka/core/connections';
@@ -100,6 +93,7 @@ import {
   useWorkbarController,
 } from './features/workbar';
 import { GoalHost, useGoalController } from './features/goals';
+import { ModuleHubHost, useModuleHubController } from './features/module-hub';
 import { UNRESOLVED_NEW_TASK_DRAFT_KEY } from './new-task-reload-intent';
 import { useNewTaskChoice } from './use-new-task-choice';
 import { NEW_TASK_PENDING_KEY } from './pending-items';
@@ -109,13 +103,11 @@ import {
   mergeWorkspaceReferences,
   resolveFollowUpModeAtSubmit,
 } from './follow-up-submit-routing';
-import { retractQueueEntryToDraft } from './app-shell-queue-entry-actions';
 import {
   PlanExecutionPanel,
   PlanProposalCard,
   usePlanModeState,
 } from './plan-mode-panel';
-import { McpPage } from './mcp-page';
 import { getOnboardingActivationCandidate, useOnboardingSnapshot } from './use-onboarding-snapshot';
 import type {
   AppUpdateStatus,
@@ -131,13 +123,17 @@ import { ProviderLogo } from './settings/provider-display';
 import { ProviderBrandMark } from './settings/provider-brand-marks';
 import { RuntimeHostSshTerminalDialog } from './settings/runtime-host-ssh-terminal-dialog.js';
 import { createWorkHubController } from './workhub-controller.js';
+import { startWorkHubCoordinationLifecycle } from './workhub-coordination-lifecycle.js';
+import { scopeWorkHubSessionsToCoordinationHost } from './workhub-coordination-host-scope.js';
 import { createDesktopWorkHubSessionPort } from './workhub-session-port.js';
-import { WorkHubSurface } from './workhub-surface.js';
+import { createDesktopWorkHubCoordinationPort } from './workhub-coordination-port.js';
+import { WorkHubCoordinationStatus, WorkHubSurface } from './workhub-surface.js';
 import { getShellCopy, localizedShellErrorMessage } from './locales/shell-copy';
 import { getDesktopConversationCopy } from './locales/conversation-copy';
 import { ErrorBoundary } from './error-boundary';
 import { useShellAppearance } from './use-shell-appearance';
 import { useShellSearch } from './use-shell-search';
+import { useSessionSettingIntent } from './use-session-setting-intent';
 import { deriveStaleSessionIds } from './stale-sessions';
 import { pendingSessionView } from './pending-session-view';
 import { deriveProjectGroups, deriveWorktreeSessionIds } from './session-project-grouping';
@@ -169,13 +165,10 @@ import { AppShellOverlays } from './app-shell-overlays';
 import type { ArchivedTasksBridge } from './settings/tasks-settings-page';
 import { CustomPetCompanion } from './custom-pet-companion';
 import { derivePetActivityState } from './custom-pet-companion-model';
-import { createAppShellDailyReviewBridge } from './app-shell-daily-review-bridge';
 import {
   defaultRuntimeHostDiagnosticTarget,
   runOnDefaultRuntimeHost,
 } from './default-runtime-host-operation.js';
-import { useAppShellModuleData } from './use-module-data';
-import { useKeepSystemAwake } from './use-keep-system-awake';
 import { useAppShellProjectContext } from './use-project-context';
 import {
   createAppShellSessionDisplayBatch,
@@ -198,7 +191,6 @@ import {
   type TurnRevisionDraft,
 } from './app-shell-revision-actions';
 import { createAppShellSessionStartActions } from './app-shell-session-start-actions';
-import { createAppShellDailyReviewActions } from './app-shell-daily-review-actions';
 import { createAppShellSessionRowActions } from './app-shell-session-row-actions';
 import { createAppShellSessionSettingsActions } from './app-shell-session-settings-actions';
 import { createAppShellStopAction } from './app-shell-stop-action';
@@ -356,13 +348,11 @@ function AppShellContent({
   const notifiedInstallErrorRef = useRef<string | null>(null);
   const {
     sessions,
+    catalogRevision,
     authoritativeSessionIds,
     sessionsRef,
-    setSessions,
     refreshSessions,
     seedSessions,
-    upsertSessionSummary,
-    markSessionReadLocally,
     activeId,
     activeIdRef,
     bootstrapSelectionLease,
@@ -429,16 +419,6 @@ function AppShellContent({
   // Plan toggle and one orchestration value, not one fused choice.
   const [newChatPlanModeActive, setNewChatPlanModeActive] = useState(false);
   const [newChatOrchestrationMode, setNewChatOrchestrationMode] = useState<OrchestrationMode>('default');
-  const [scheduledTaskCreateRequestNonce, setScheduledTaskCreateRequestNonce] = useState(0);
-  // The rows stay interactive while a commit runs, so a click landing in that
-  // window is the user updating their mind — not noise to drop. Each map holds
-  // only the LATEST ask per session; the in-flight commit's finally block
-  // applies it if the settled state does not already satisfy it. Nothing
-  // renders from a mode commit's round trip — painting it (disable/dim, then
-  // restore) is exactly the ＋ menu blink MatrixA/fix-plan-click-flicker
-  // removed — so there is no pending state here, only the registry refs.
-  const queuedCollaborationModeBySession = useRef(new Map<string, boolean>());
-  const queuedOrchestrationModeBySession = useRef(new Map<string, OrchestrationMode>());
   const [newTaskPermissionChoice, setNewTaskPermissionChoice, clearNewTaskPermissionChoice] =
     useNewTaskChoice<ChatDefaultPermissionMode>(currentNewTaskDraftKey);
   const [historyLoadPendingSessionId, setHistoryLoadPendingSessionId] = useState<string>();
@@ -459,7 +439,43 @@ function AppShellContent({
   const navSelectionRef = useRef<NavSelection>(navSelection);
   const [workHubEnabled, setWorkHubEnabled] = useState(false);
   const [workHubActive, setWorkHubActive] = useState(false);
+  const [workHubCoordinationSessionId, setWorkHubCoordinationSessionId] = useState<string>();
+  const [workHubCoordinationState, setWorkHubCoordinationState] = useState<
+    'resolving' | 'failed'
+  >('resolving');
+  const workHubCoordinationRetryRef = useRef<() => void>(() => undefined);
+  const workHubCoordinationGenerationRef = useRef(0);
+  const workHubCoordinationSessionIdRef = useRef(workHubCoordinationSessionId);
+  workHubCoordinationSessionIdRef.current = workHubCoordinationSessionId;
   const workHubEnabledRef = useRef(false);
+  useEffect(() => {
+    if (!workHubEnabled || !workHubActive) return;
+    return startWorkHubCoordinationLifecycle({
+      resolve: () => window.maka.workHub.resolveCoordinationSession(),
+      subscribeHostChanges: (handler) =>
+        window.maka.runtimeHostProfiles.subscribeChanges(handler),
+      subscribeAvailabilityChanges: (handler) =>
+        window.maka.connections.subscribeEvents((event) => {
+          if (event.type === 'connection_list_changed') handler();
+        }),
+      onResolving: () => {
+        workHubCoordinationGenerationRef.current += 1;
+        workHubCoordinationSessionIdRef.current = undefined;
+        setWorkHubCoordinationSessionId(undefined);
+        setWorkHubCoordinationState('resolving');
+      },
+      onResolved: (sessionId) => {
+        workHubCoordinationSessionIdRef.current = sessionId;
+        setWorkHubCoordinationSessionId(sessionId);
+        setWorkHubCoordinationState('resolving');
+      },
+      reportFailure: (error, retry) => {
+        workHubCoordinationRetryRef.current = retry;
+        setWorkHubCoordinationState('failed');
+        console.error('[workhub] failed to resolve Coordination Session:', error);
+      },
+    });
+  }, [workHubActive, workHubEnabled]);
   useEffect(() => {
     let disposed = false;
     const refresh = async () => {
@@ -469,7 +485,12 @@ function AppShellContent({
         const becameEnabled = enabled && !workHubEnabledRef.current;
         workHubEnabledRef.current = enabled;
         setWorkHubEnabled(enabled);
-        if (!enabled) setWorkHubActive(false);
+        if (!enabled) {
+          workHubCoordinationGenerationRef.current += 1;
+          workHubCoordinationSessionIdRef.current = undefined;
+          setWorkHubActive(false);
+          setWorkHubCoordinationSessionId(undefined);
+        }
         if (becameEnabled) {
           setWorkHubActive(true);
           setNavSelection({ section: 'sessions' });
@@ -702,29 +723,6 @@ function AppShellContent({
         );
       });
   }, [updateReminder, shellCopy, toastApi, uiLocale]);
-  const moduleHubCopy = getSharedUiCopy(uiLocale).moduleHubs;
-  const extensionsHubHeader = {
-    title: moduleHubCopy.extensions.title,
-    subtitle: moduleHubCopy.extensions.description,
-    badge: (
-      <ModuleHubSelector
-        hub="extensions"
-        value={navSelection.section === 'extensions' ? navSelection.module : navigationState.moduleMemory.extensions}
-        onChange={(module) => setNavSelection({ section: 'extensions', module })}
-      />
-    ),
-  };
-  const automationsHubHeader = {
-    title: moduleHubCopy.automations.title,
-    subtitle: moduleHubCopy.automations.description,
-    badge: (
-      <ModuleHubSelector
-        hub="automations"
-        value={navSelection.section === 'automations' ? navSelection.module : navigationState.moduleMemory.automations}
-        onChange={(module) => setNavSelection({ section: 'automations', module })}
-      />
-    ),
-  };
   // Persisted composer defaults seed the empty-state model, project path, and
   // recent workspace history so the home view is populated before the async
   // `app:info` round-trip completes on mount.
@@ -734,16 +732,6 @@ function AppShellContent({
   const [viewMode, setViewMode] = useState<SessionViewMode>(() => readSessionListViewMode());
   const composerRef = useRef<ComposerHandle>(null);
   const retractedWorkspaceReferencesRef = useRef<Record<string, InlineReference[]>>({});
-  const queueEntryDraftDeps = {
-    activeIdRef,
-    composerRef,
-    restoreAttachments,
-    restoreQuotes,
-    setRestoredWorkspaceReferences: (sessionId, references) => {
-      retractedWorkspaceReferencesRef.current[sessionId] = [...references];
-    },
-    requestFocus: (callback) => window.requestAnimationFrame(callback),
-  } satisfies Parameters<typeof retractQueueEntryToDraft>[0];
   // The rail's toggle has to reach Astryx's resizable state, not just this
   // boolean — see the prop's note on SessionListPanel. The sidenav is mounted
   // for the whole shell, so the handle is always live by the time it is called.
@@ -791,19 +779,6 @@ function AppShellContent({
       }),
     [sessions, onboarding.snapshot?.sessionSendOutcomes],
   );
-  // PR-DAILY-REVIEW-MVP-0: bridge for the main Daily Review module.
-  // Memoized so the panel's `useEffect` cleanup keys
-  // off a stable reference instead of refetching on every render.
-  const dailyReviewBridge = useMemo(() => createAppShellDailyReviewBridge(uiLocale), [uiLocale]);
-  const {
-    appendDailyReviewMarkdown,
-    copyDailyReviewMarkdown,
-    saveDailyReviewMarkdown,
-  } = useStableActions(createAppShellDailyReviewActions, {
-    uiLocale,
-    composerRef,
-    toastApi,
-  });
   const activeInteraction = activeInteractionFor(interactionBySession, activeId);
   const activeSandboxBoundary =
     activeInteraction?.type === 'sandbox_boundary_request' ? activeInteraction : undefined;
@@ -908,10 +883,6 @@ function AppShellContent({
   const pendingTurnActions = turnActionRegistry.keys;
   const sessionRowActionRegistry = useKeyedPendingRegistry();
   const permissionModeChangeRegistry = useKeyedPendingRegistry();
-  // One registry per persisted field. The two controls are independent, so a
-  // Plan transition in flight is no reason to hold the orchestration choice.
-  const collaborationModeChangeRegistry = useKeyedPendingRegistry();
-  const orchestrationModeChangeRegistry = useKeyedPendingRegistry();
   const sessionModelChangeRegistry = useKeyedPendingRegistry();
   const pendingKeyOf = (sessionId: string, turnId: string, actionId: string) =>
     `${sessionId}:${turnId}:${actionId}`;
@@ -922,11 +893,6 @@ function AppShellContent({
     return next;
   }
 
-  // The registry ref is the re-entrancy authority; the setter is only for
-  // actions whose pending state something actually renders (permission, model,
-  // message retry). Mode toggles pass none — their round trip is deliberately
-  // not painted, and a write-only state would still schedule a render per
-  // add/clear.
   function addPendingSessionAction(
     sessionId: string,
     pendingRef: { current: Set<string> },
@@ -952,13 +918,8 @@ function AppShellContent({
     clearOwnedSessionState(sessionId);
     turnActionRegistry.clearForSession(sessionId);
     permissionModeChangeRegistry.keysRef.current.delete(sessionId);
-    collaborationModeChangeRegistry.keysRef.current.delete(sessionId);
-    orchestrationModeChangeRegistry.keysRef.current.delete(sessionId);
-    // Queued mode intents die with the Session's renderer lifecycle: an
-    // in-flight commit's finally would otherwise replay an old ask against a
-    // Session this cleanup has already let go of.
-    queuedCollaborationModeBySession.current.delete(sessionId);
-    queuedOrchestrationModeBySession.current.delete(sessionId);
+    planModeIntent.clear(sessionId);
+    orchestrationModeIntent.clear(sessionId);
     sessionModelChangeRegistry.keysRef.current.delete(sessionId);
   }
 
@@ -1001,8 +962,41 @@ function AppShellContent({
     setNewTaskPermissionMode,
     setPendingPermissionModeBySession,
     setPendingSessionModelBySession,
-    setSessions,
     toastApi,
+  });
+
+  // Mode writes and catalog reads run on different clocks. These controllers
+  // own that gap: latest intent wins, and a Host-committed value remains the
+  // presentation overlay until a causally later successful catalog snapshot
+  // takes over — whether it confirms that value or shows a newer Host change.
+  const planModeIntent = useSessionSettingIntent<boolean>({
+    catalogRevision,
+    write: commitPlanMode,
+    refreshCatalog: refreshSessions,
+    onWriteError: (sessionId, error) => {
+      if (activeIdRef.current !== sessionId) return;
+      showSessionError(
+        sessionId,
+        shellCopy.planModeFailedTitle,
+        localizedShellErrorMessage(error, shellCopy.planModeFallback, uiLocale),
+      );
+    },
+  });
+  const orchestrationModeIntent = useSessionSettingIntent<OrchestrationMode>({
+    catalogRevision,
+    write: async (sessionId, mode) => {
+      await window.maka.sessions.setOrchestrationMode(sessionId, mode);
+      return true;
+    },
+    refreshCatalog: refreshSessions,
+    onWriteError: (sessionId, error) => {
+      if (activeIdRef.current !== sessionId) return;
+      showSessionError(
+        sessionId,
+        shellCopy.orchestrationModeFailedTitle,
+        localizedShellErrorMessage(error, shellCopy.orchestrationModeFallback, uiLocale),
+      );
+    },
   });
 
   /**
@@ -1023,137 +1017,38 @@ function AppShellContent({
    * approved or abandoned, so clearing the default on the way in would lose
    * it for the execution the plan was written for.
    */
-  async function applyPlanMode(active: boolean, sessionId: string): Promise<boolean> {
-    if (!addPendingSessionAction(
-      sessionId,
-      collaborationModeChangeRegistry.keysRef,
-    )) {
-      // A commit is in flight and the rows stay interactive (no pending
-      // repaint), so this click is the user updating their mind, not noise.
-      // Latest intent wins: remember only the newest value and let the
-      // in-flight commit's finally block apply it, so a quick "on, then off"
-      // finishes as "off".
-      queuedCollaborationModeBySession.current.set(sessionId, active);
-      return true;
-    }
-
-    try {
-      const planState = await window.maka.sessions.getPlanState(sessionId);
-      if (active && planState.activeExecutionId) {
-        showSessionError(
-          sessionId,
-          shellCopy.planModeExecutionActiveTitle,
-          shellCopy.planModeExecutionActiveDescription,
-        );
-        return false;
-      }
-      const latestProposal = planState.proposals.find(
-        (proposal) => proposal.proposalId === planState.latestProposalId,
-      );
-      if (!active && latestProposal?.status === 'pending_approval') {
-        const confirmed = await toastApi.confirm({
-          title: shellCopy.planModeExitPendingTitle,
-          description: shellCopy.planModeExitPendingDescription(latestProposal.title),
-          confirmLabel: shellCopy.planModeExitConfirm,
-          cancelLabel: shellCopy.planModeExitCancel,
-          destructive: true,
-        });
-        if (!confirmed) return false;
-        // Abandoning the proposal is what leaves Plan: Runtime writes the
-        // Session back to `agent` itself as part of it.
-        await window.maka.sessions.abandonPlanProposal(sessionId, latestProposal.proposalId);
-        setSessions((current) => current.map((session) => (
-          session.id === sessionId ? { ...session, collaborationMode: 'agent' } : session
-        )));
-      } else {
-        const next = await window.maka.sessions.setCollaborationMode(
-          sessionId,
-          active ? 'plan' : 'agent',
-        );
-        setSessions((current) => current.map((session) => session.id === next.id ? next : session));
-      }
-      await refreshSessions();
-      return true;
-    } catch (error) {
-      if (activeIdRef.current === sessionId) {
-        showSessionError(
-          sessionId,
-          shellCopy.planModeFailedTitle,
-          localizedShellErrorMessage(error, shellCopy.planModeFallback, uiLocale),
-        );
-      }
-      return false;
-    } finally {
-      clearPendingSessionAction(
+  async function commitPlanMode(sessionId: string, active: boolean): Promise<boolean> {
+    const planState = await window.maka.sessions.getPlanState(sessionId);
+    if (active && planState.activeExecutionId) {
+      showSessionError(
         sessionId,
-        collaborationModeChangeRegistry.keysRef,
+        shellCopy.planModeExecutionActiveTitle,
+        shellCopy.planModeExecutionActiveDescription,
       );
-      // Whatever the user last asked for while this commit ran is the state
-      // they expect to land on. Read the settled mode through the ref — the
-      // closure's projection predates this commit — and only re-apply when
-      // the intent is not already satisfied.
-      const queued = queuedCollaborationModeBySession.current.get(sessionId);
-      queuedCollaborationModeBySession.current.delete(sessionId);
-      if (queued !== undefined) {
-        const settledActive = (
-          sessionsRef.current.find((session) => session.id === sessionId)?.collaborationMode
-          ?? 'agent'
-        ) === 'plan';
-        if (queued !== settledActive) void applyPlanMode(queued, sessionId);
-      }
-    }
-  }
-
-  /**
-   * Set the Session's standing orchestration default — the only path that
-   * writes `orchestrationMode`, and it writes nothing else.
-   *
-   * One field with three values, so there is nothing to sequence and nothing
-   * to leave half-applied: Swarm, Graph and off are one write each.
-   */
-  async function applyOrchestrationMode(
-    mode: OrchestrationMode,
-    sessionId: string,
-  ): Promise<boolean> {
-    if (!addPendingSessionAction(
-      sessionId,
-      orchestrationModeChangeRegistry.keysRef,
-    )) {
-      // Same latest-intent contract as applyPlanMode: the rows stay
-      // interactive while a commit runs, so keep the newest ask and apply it
-      // from the in-flight commit's finally block.
-      queuedOrchestrationModeBySession.current.set(sessionId, mode);
-      return true;
-    }
-
-    try {
-      const next = await window.maka.sessions.setOrchestrationMode(sessionId, mode);
-      setSessions((current) => current.map((session) => session.id === next.id ? next : session));
-      await refreshSessions();
-      return true;
-    } catch (error) {
-      if (activeIdRef.current === sessionId) {
-        showSessionError(
-          sessionId,
-          shellCopy.orchestrationModeFailedTitle,
-          localizedShellErrorMessage(error, shellCopy.orchestrationModeFallback, uiLocale),
-        );
-      }
       return false;
-    } finally {
-      clearPendingSessionAction(
-        sessionId,
-        orchestrationModeChangeRegistry.keysRef,
-      );
-      const queued = queuedOrchestrationModeBySession.current.get(sessionId);
-      queuedOrchestrationModeBySession.current.delete(sessionId);
-      if (queued !== undefined) {
-        const settled = sessionsRef.current.find(
-          (session) => session.id === sessionId,
-        )?.orchestrationMode ?? 'default';
-        if (queued !== settled) void applyOrchestrationMode(queued, sessionId);
-      }
     }
+    const latestProposal = planState.proposals.find(
+      (proposal) => proposal.proposalId === planState.latestProposalId,
+    );
+    if (!active && latestProposal?.status === 'pending_approval') {
+      const confirmed = await toastApi.confirm({
+        title: shellCopy.planModeExitPendingTitle,
+        description: shellCopy.planModeExitPendingDescription(latestProposal.title),
+        confirmLabel: shellCopy.planModeExitConfirm,
+        cancelLabel: shellCopy.planModeExitCancel,
+        destructive: true,
+      });
+      if (!confirmed) return false;
+      // Abandoning the proposal is what leaves Plan: Runtime writes the
+      // Session back to `agent` itself as part of it.
+      await window.maka.sessions.abandonPlanProposal(sessionId, latestProposal.proposalId);
+    } else {
+      await window.maka.sessions.setCollaborationMode(
+        sessionId,
+        active ? 'plan' : 'agent',
+      );
+    }
+    return true;
   }
 
   function setPlanMode(active: boolean): Promise<boolean> {
@@ -1163,7 +1058,7 @@ function AppShellContent({
       return Promise.resolve(true);
     }
     if (active === activePlanMode) return Promise.resolve(true);
-    return applyPlanMode(active, sessionId);
+    return planModeIntent.request(sessionId, active);
   }
 
   /**
@@ -1180,7 +1075,7 @@ function AppShellContent({
       return Promise.resolve(true);
     }
     if (mode === activeOrchestrationMode) return Promise.resolve(true);
-    return applyOrchestrationMode(mode, sessionId);
+    return orchestrationModeIntent.request(sessionId, mode);
   }
 
   function setOrchestrationModeActive(
@@ -1328,10 +1223,13 @@ function AppShellContent({
   // to keep in sync: a Session in Plan with Swarm as its orchestration default
   // says both, because it is both.
   const activePlanMode = activeId
-    ? (activeSessionForView?.collaborationMode ?? 'agent') === 'plan'
+    ? planModeIntent.overlayBySession[activeId]
+      ?? ((activeSessionForView?.collaborationMode ?? 'agent') === 'plan')
     : newChatPlanModeActive;
   const activeOrchestrationMode: OrchestrationMode = activeId
-    ? activeSessionForView?.orchestrationMode ?? 'default'
+    ? orchestrationModeIntent.overlayBySession[activeId]
+      ?? activeSessionForView?.orchestrationMode
+      ?? 'default'
     : newChatOrchestrationMode;
   /**
    * Why neither mode can be changed right now, if either cannot. Both controls
@@ -1464,8 +1362,7 @@ function AppShellContent({
     }
     if (!snapshot) return;
     // Seed sessions. Display normalization MUST run here too — this is
-    // a third renderer state entry alongside commitSessions /
-    // upsertSessionSummary (#452): without it, legacy blocked/unknown
+    // Display normalization prevents legacy blocked/unknown
     // sessions flash an 已阻塞 group on first paint until the first
     // refreshSessions() overwrites the seed.
     const next = seedSessions(snapshot.sessions);
@@ -1563,55 +1460,7 @@ function AppShellContent({
     },
     [activeId, activeStreamingLive, shellCopy.slashCommands, turnActive],
   );
-  function isScheduledTasksSurfaceActive(): boolean {
-    return navSelectionRef.current.section === 'automations' && navSelectionRef.current.module === 'scheduled-tasks';
-  }
-
-  function isSkillsSurfaceActive(): boolean {
-    return navSelectionRef.current.section === 'extensions' && navSelectionRef.current.module === 'skills';
-  }
-
-  function isDailyReviewSurfaceActive(): boolean {
-    return navSelectionRef.current.section === 'automations' && navSelectionRef.current.module === 'daily-review';
-  }
-
-  const {
-    skills,
-    managedSkillSources,
-    bundledSkillCatalog,
-    scheduledTasks,
-    refreshScheduledTasks,
-    createScheduledTask,
-    updateScheduledTask,
-    toggleScheduledTask,
-    triggerScheduledTaskNow,
-    snoozeScheduledTask,
-    clearScheduledTaskRunHistory,
-    deleteScheduledTask,
-    refreshSkills,
-    refreshManagedSkillSources,
-    refreshBundledSkillCatalog,
-    importManagedSkillSource,
-    installManagedSkill,
-    installBundledSkill,
-    previewManagedSkillUpdate,
-    updateManagedSkill,
-    setSkillEnabled,
-    setSkillPinned,
-    deleteSkill,
-    openSkill,
-  } = useAppShellModuleData({
-    uiLocale,
-    isSkillsSurfaceActive,
-    isScheduledTasksSurfaceActive,
-    toastApi,
-  });
-
-  // 保持系统唤醒 capability for the 定时任务 page: reads/writes
-  // settings.system.keepSystemAwake over the existing settings bridge. When
-  // the bridge is absent the panel hides the row (fail-soft).
-  const keepSystemAwakeController = useKeepSystemAwake();
-
+  const refreshProjectSkillsRef = useRef<() => Promise<void>>(async () => {});
   const {
     projectInfo,
     projects,
@@ -1638,20 +1487,72 @@ function AppShellContent({
     sessionProjectId: activeSession?.projectId,
     sessionProfileKind: activeDesktopSession?.profileKind,
     onProjectSelected: (ownerSessionId) => {
-      void refreshSkills();
-      void refreshManagedSkillSources();
-      void refreshBundledSkillCatalog();
+      void refreshProjectSkillsRef.current();
       if (ownerSessionId && activeIdRef.current === ownerSessionId) openNewTaskSurface();
     },
     toastApi,
   });
-  const workHubController = useMemo(() => createWorkHubController({
-    sessions: createDesktopWorkHubSessionPort({
-      sessions: window.maka.sessions,
-      projectName: (projectId) => projects.find((project) => project.id === projectId)?.name,
-      newTurnId: () => crypto.randomUUID(),
+  const captureActiveComposerClaim = useCallback(() => {
+    const sessionId = activeIdRef.current;
+    const composer = composerRef.current;
+    if (
+      !sessionId ||
+      !composer ||
+      navSelectionRef.current.section !== 'sessions'
+    ) {
+      return undefined;
+    }
+    return {
+      isCurrent: () =>
+        activeIdRef.current === sessionId &&
+        navSelectionRef.current.section === 'sessions' &&
+        composerRef.current === composer,
+      append: (text: string) => composer.appendText(text),
+    };
+  }, []);
+  const moduleHub = useModuleHubController({
+    selection: navSelection,
+    selectModule: setNavSelection,
+    ...(projectCapabilities.viewClientPath ? { openSkillsFolder } : {}),
+    useSkillInChat,
+    openSession: (sessionId) => openSessionInChatRef.current(sessionId),
+    appendComposerText: (text) => composerRef.current?.appendText(text),
+    captureActiveComposerClaim,
+  });
+  refreshProjectSkillsRef.current = moduleHub.commands.refreshProjectSkills;
+  const workHubProjectsRef = useRef(projects);
+  workHubProjectsRef.current = projects;
+  const workHubCoordinationGeneration = workHubCoordinationGenerationRef.current;
+  const workHubController = useMemo(
+    () => createWorkHubController({
+      coordination: createDesktopWorkHubCoordinationPort({
+        sessionId: workHubCoordinationSessionId ?? 'workhub-coordination-unresolved',
+        transcripts: window.maka.transcripts,
+        answer: (input) =>
+          window.maka.workHub.answer(workHubCoordinationSessionId!, input),
+        record: (input) =>
+          window.maka.workHub.record(workHubCoordinationSessionId!, input),
+      }),
+      sessions: createDesktopWorkHubSessionPort({
+        sessions: scopeWorkHubSessionsToCoordinationHost(
+          window.maka.sessions,
+          {
+            sessionId: workHubCoordinationSessionId,
+            isCurrent: () =>
+              workHubCoordinationGenerationRef.current === workHubCoordinationGeneration &&
+              workHubCoordinationSessionIdRef.current === workHubCoordinationSessionId,
+          },
+          (coordinationSessionId, input) =>
+            window.maka.workHub.createSession(coordinationSessionId, input),
+        ),
+        transcripts: window.maka.transcripts,
+        projectName: (projectId) =>
+          workHubProjectsRef.current.find((project) => project.id === projectId)?.name,
+        newTurnId: () => crypto.randomUUID(),
+      }),
     }),
-  }), [projects]);
+    [workHubCoordinationGeneration, workHubCoordinationSessionId],
+  );
   // Where a NEW chat starts. Built unconditionally and handed to the composer,
   // which renders it only while no session owns it — the project is fixed once
   // the first message creates one, so there is nothing to pick after that.
@@ -1782,7 +1683,7 @@ function AppShellContent({
   // host-compatible projection; `@` uses workspace file search. Keep the
   // resolved project path as a refresh key for new-chat project changes.
   const { mentionSkills, mentionSkillsUnavailable, mentionSkillsLoading, searchMentionFiles } = useComposerMentions({
-    skills,
+    skillCatalogRevision: moduleHub.selectors.skillCatalogRevision,
     sessionId: activeId,
     projectPath: activeId ? projectInfo?.projectPath : newTask.projectPath,
     newTaskTarget: activeId ? undefined : newTask.target,
@@ -1819,6 +1720,8 @@ function AppShellContent({
   const workbar = useWorkbarController({
     available: workbarAvailable,
     activeSession: activeSessionForView,
+    projectId: currentProjectId,
+    projectAliases: currentProject?.aliases ?? [],
     authoritativeSessionIds: authoritativeSessionIds ?? undefined,
     shellObscured,
     modelChoices: chatModelChoices,
@@ -1910,7 +1813,6 @@ function AppShellContent({
     clearPendingSessionAction,
     isNewChatSendSurfaceActive,
     isShellSurfaceOwnerActive,
-    markSessionReadLocally,
     messageRetryPendingRef,
     refreshSessions,
     setActiveId,
@@ -1925,7 +1827,6 @@ function AppShellContent({
     onExecutionBoundaryChanged: reloadActiveExecutionBoundary,
     showModelSetupToast,
     toastApi,
-    upsertSessionSummary,
     newChatModel: newChatModel ?? null,
     pendingNewChatThinkingLevel: newChatThinkingLevel ?? null,
     newChatPermissionChoice: newTaskPermissionChoice,
@@ -1946,7 +1847,6 @@ function AppShellContent({
     refreshSessions,
     setMessages,
     toastApi,
-    upsertSessionSummary,
   });
   const handleSwitchToBypassAndRetry = useCallback(
     async (turnId: string) => {
@@ -1976,7 +1876,6 @@ function AppShellContent({
     commitRevisionDraft,
     revisionDraftRef,
     toastApi,
-    upsertSessionSummary,
   });
 
   async function taskSubmissionReadyAtSend(): Promise<boolean> {
@@ -2275,9 +2174,19 @@ function AppShellContent({
     return ok;
   }
 
-  async function retractQueuedEntry(entry: MessageQueueEntryProjection): Promise<void> {
+  async function updateQueuedEntry(
+    entryId: string,
+    expectedQueueRevision: number,
+    text: string,
+  ): Promise<void> {
     await runQueueEntryAction((sessionId) =>
-      retractQueueEntryToDraft(queueEntryDraftDeps, sessionId, entry)
+      window.maka.sessions.updateQueueEntry(sessionId, entryId, expectedQueueRevision, text)
+    );
+  }
+
+  async function deleteQueuedEntry(entryId: string): Promise<void> {
+    await runQueueEntryAction((sessionId) =>
+      window.maka.sessions.retractQueueEntry(sessionId, entryId).then(() => undefined)
     );
   }
 
@@ -2400,17 +2309,12 @@ function AppShellContent({
     refreshConnections: refreshConnectionProjections,
     refreshMemoryActive,
     refreshMessages,
-    refreshScheduledTasks,
     refreshProjects,
     refreshShellSettings,
-    refreshSkills,
-    refreshManagedSkillSources,
-    refreshBundledSkillCatalog,
     refreshSessions,
     rendererMountedRef,
     setActiveId,
     setMessages,
-    setNavSelection,
     setSessionEventHealthBySession,
     toastApi,
   });
@@ -2447,7 +2351,6 @@ function AppShellContent({
     activeId,
     activeIdRef,
     handleEvent,
-    markSessionReadLocally,
     beginObservationSeed,
     completeObservationSeed,
     setMessageLoadErrorBySession,
@@ -2605,12 +2508,6 @@ function AppShellContent({
     openNewTaskSurface();
   }
 
-  function openScheduledTaskForm() {
-    setNavSelection({ section: 'automations', module: 'scheduled-tasks' });
-    closePalette();
-    setScheduledTaskCreateRequestNonce((nonce) => nonce + 1);
-  }
-
   /**
    * PR-UI-RENDER-2 - single chokepoint for the Markdown internal-URI
    * router. Receives a typed `MakaUriDest` from the link override in
@@ -2758,7 +2655,6 @@ function AppShellContent({
         : projectCapabilities.viewClientPath,
     connections: defaultHostConnections.snapshot.connections,
     defaultConnection: defaultHostConnections.snapshot.defaultConnection,
-    dailyReviewBridge,
     messages,
     newTaskProfileId: newTask.selectedProfileId,
     settingsOpen,
@@ -2767,12 +2663,13 @@ function AppShellContent({
     themePref,
     visibleSessions,
     captureComposerImportOwner,
-    composerRef,
     createSession,
     startModeSession,
-    isComposerImportOwnerActive,
     openHelp,
-    openScheduledTaskForm,
+    openScheduledTaskCreate: () => {
+      closePalette();
+      moduleHub.commands.openScheduledTaskCreate();
+    },
     openProjectFolder,
     openSessionInChat,
     openSideConversation: () => workbar.commands.openTool('side-chat'),
@@ -2781,7 +2678,9 @@ function AppShellContent({
     openSkillsFolder,
     openWorkspaceFolder,
     refreshConnections: defaultHostConnections.refreshConnections,
-    saveDailyReviewMarkdown,
+    copyTodayDailyReview: moduleHub.commands.copyTodayDailyReview,
+    pasteTodayDailyReview: moduleHub.commands.pasteTodayDailyReview,
+    saveTodayDailyReview: moduleHub.commands.saveTodayDailyReview,
     setNavSelection,
     setPermissionMode,
     setThemePref,
@@ -2923,7 +2822,7 @@ function AppShellContent({
             selection={navSelection}
             sessions={visibleSessions}
             activeId={workHubActive ? undefined : sidebarActiveId}
-            scheduledTasks={scheduledTasks}
+            scheduledTasks={moduleHub.selectors.scheduledTasks}
             streamingSessionIds={streamingSessionIds}
             staleSessionIds={staleSessionIds}
             viewMode={viewMode}
@@ -2967,81 +2866,23 @@ function AppShellContent({
           <MakaUriContext.Provider value={dispatchMakaUri}>
           <div className="maka-detail-with-artifacts">
             <div className="mainColumn" data-home-surface={homeSurfaceActive ? 'true' : undefined}>
-              {navSelection.section === 'extensions' && navSelection.module === 'skills' ? (
-                <SkillsPage
-                  hubHeader={extensionsHubHeader}
-                  skills={skills}
-                  scheduledTasks={scheduledTasks}
-                  onRefreshSkills={() => refreshSkills()}
-                  onRefreshManagedSkillSources={() => refreshManagedSkillSources()}
-                  onOpenSkill={projectCapabilities.viewClientPath
-                    ? (skillId) => openSkill(skillId)
-                    : undefined}
-                  onUseSkill={useSkillInChat}
-                  onOpenSkillsFolder={projectCapabilities.viewClientPath
-                    ? () => openSkillsFolder()
-                    : undefined}
-                  managedSkillSources={managedSkillSources}
-                  onImportManagedSkillSource={projectCapabilities.viewClientPath
-                    ? () => importManagedSkillSource()
-                    : undefined}
-                  onInstallManagedSkill={(sourceId) => installManagedSkill(sourceId)}
-                  bundledSkillCatalog={bundledSkillCatalog}
-                  onRefreshBundledSkillCatalog={() => refreshBundledSkillCatalog()}
-                  onInstallBundledSkill={(id) => installBundledSkill(id)}
-                  onPreviewManagedSkillUpdate={(skillId) => previewManagedSkillUpdate(skillId)}
-                  onUpdateManagedSkill={(skillId, options) => updateManagedSkill(skillId, options)}
-                  onSetSkillEnabled={(skillId, enabled) => setSkillEnabled(skillId, enabled)}
-                  onSetSkillPinned={(skillRef, pinned) => setSkillPinned(skillRef, pinned)}
-                  onDeleteSkill={(skillRef) => deleteSkill(skillRef)}
-                />
-              ) : navSelection.section === 'extensions' && navSelection.module === 'mcp' ? (
-                <McpPage hubHeader={extensionsHubHeader} />
-              ) : navSelection.section === 'automations' && navSelection.module === 'scheduled-tasks' ? (
-                <ScheduledTasksPage
-                  hubHeader={automationsHubHeader}
-                  tasks={scheduledTasks}
-                  createRequestNonce={scheduledTaskCreateRequestNonce}
-                  onCreateRequestHandled={() => setScheduledTaskCreateRequestNonce(0)}
-                  keepSystemAwake={
-                    keepSystemAwakeController.supported
-                      ? keepSystemAwakeController.keepSystemAwake
-                      : undefined
-                  }
-                  onKeepSystemAwakeChange={
-                    keepSystemAwakeController.supported
-                      ? keepSystemAwakeController.setKeepSystemAwake
-                      : undefined
-                  }
-                    onRefresh={() =>
-                      refreshScheduledTasks({
-                        shouldShowError: isScheduledTasksSurfaceActive,
-                      })
-                    }
-                  onCreate={(input) => createScheduledTask(input)}
-                  onUpdate={(id, patch) => updateScheduledTask(id, patch)}
-                  onToggle={(id, enabled) => toggleScheduledTask(id, enabled)}
-                  onTriggerNow={(id) => triggerScheduledTaskNow(id)}
-                  onSnooze={(id) => snoozeScheduledTask(id)}
-                  onClearRunHistory={(id) => clearScheduledTaskRunHistory(id)}
-                  onDelete={(id) => deleteScheduledTask(id)}
-                />
-              ) : navSelection.section === 'automations' && navSelection.module === 'daily-review' ? (
-                <DailyReviewPage
-                  hubHeader={automationsHubHeader}
-                  bridge={dailyReviewBridge}
-                  onSelectSession={openSessionInChat}
-                  onCopyMarkdown={(input) => copyDailyReviewMarkdown(input, { shouldShowFeedback: isDailyReviewSurfaceActive })}
-                  onAppendMarkdown={appendDailyReviewMarkdown}
-                  onSaveMarkdown={(input) => saveDailyReviewMarkdown(input, { shouldShowFeedback: isDailyReviewSurfaceActive })}
-                />
-              ) : null}
+              <ModuleHubHost model={moduleHub.host} />
               {workHubEnabled && workHubActive && navSelection.section === 'sessions' ? (
-                <WorkHubSurface
-                  controller={workHubController}
-                  locale={uiLocale}
-                  onOpenSession={openSessionInChat}
-                />
+                workHubCoordinationSessionId ? (
+                  <WorkHubSurface
+                    key={workHubCoordinationSessionId}
+                    controller={workHubController}
+                    locale={uiLocale}
+                    {...(activeId ? { initialFocusSessionId: activeId } : {})}
+                    onOpenSession={openSessionInChat}
+                  />
+                ) : (
+                  <WorkHubCoordinationStatus
+                    locale={uiLocale}
+                    state={workHubCoordinationState}
+                    onRetry={() => workHubCoordinationRetryRef.current()}
+                  />
+                )
               ) : (
               <ChatSurfaceLayout
                 // Reset conversation-owned scroll state without remounting the
@@ -3108,9 +2949,11 @@ function AppShellContent({
                   continuing={showContinuingIndicator && !activeStreamingLive}
                   onSend={sendOwningItsTarget}
                   onStop={stop}
-                  queuedMessages={activeMessageQueue}
+                  queuedMessages={activeMessageQueue?.entries}
+                  queuedMessageRevision={activeMessageQueue?.queueRevision}
                   onPromoteQueuedEntry={activeId ? promoteQueuedEntry : undefined}
-                  onRetractQueuedEntry={activeId ? retractQueuedEntry : undefined}
+                  onUpdateQueuedEntry={activeId ? updateQueuedEntry : undefined}
+                  onDeleteQueuedEntry={activeId ? deleteQueuedEntry : undefined}
                   onReorderQueuedEntries={activeId ? reorderQueuedEntries : undefined}
                   revisionNotice={
                     revisionDraft && activeId === revisionDraft.draftSessionId
@@ -3454,13 +3297,7 @@ function AppShellContent({
         paletteOpen={paletteOpen}
         closePalette={closePalette}
         commandOptions={commandOptions}
-        /* Seeding is for the navigation, not for correctness: the import IPC
-           already emits `sessions:changed`, so the task reaches the rail on its
-           own even if the user closes Settings mid-import. Seeding it here just
-           means `openSessionInChat` has something to open without waiting for
-           the refresh to land. */
         onExternalSessionImported={(session) => {
-          upsertSessionSummary(session);
           closeSettings();
           openSessionInChat(session.id);
         }}

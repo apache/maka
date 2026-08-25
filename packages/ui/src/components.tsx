@@ -57,6 +57,7 @@ export type {
 export { ScheduledTasksPage, DailyReviewPage, SkillsPage } from './module-pages.js';
 export { Composer } from './composer.js';
 export type {
+  ComposerProps,
   ComposerHandle,
   ComposerSendMetadata,
   ComposerSlashCommandOption,
