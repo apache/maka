@@ -18,7 +18,7 @@
  */
 
 import { spawn, type ChildProcess } from 'node:child_process';
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { isAbsolute, join, relative, resolve } from 'node:path';
 import {
   DEFAULT_PROCESS_TERMINATION_GRACE_MS,
@@ -85,7 +85,6 @@ export function createRuntimeHostSetupPackageResolver(input: {
   };
 
   const stopBuild = async (build: NonNullable<typeof developmentBuild>) => {
-    if (build.settled) return;
     build.closing ??= build.task.close().finally(() => {
       if (developmentBuild === build) developmentBuild = undefined;
     });
@@ -138,10 +137,13 @@ function startDevelopmentArchiveBuild(
 ): DevelopmentArchiveBuild {
   const script = join(repoRoot, 'scripts', 'release-cli-package.mjs');
   const nodeExecutable = environment.npm_node_execpath?.trim() || 'node';
+  const outputBase = join(repoRoot, 'packages', 'cli', '.development');
+  mkdirSync(outputBase, { recursive: true, mode: 0o755 });
+  const outputRoot = mkdtempSync(join(outputBase, 'desktop-'));
   const child = spawn(nodeExecutable, [script, '--development'], {
     cwd: repoRoot,
     detached: process.platform !== 'win32',
-    env: environment,
+    env: { ...environment, MAKA_CLI_DEVELOPMENT_OUTPUT_ROOT: outputRoot },
     stdio: ['ignore', 'pipe', 'pipe'],
     windowsHide: true,
   });
@@ -184,8 +186,7 @@ function startDevelopmentArchiveBuild(
     const archive = Array.from(stdout.matchAll(/^\[release-cli\] tarball: (.+)$/gmu)).at(-1)?.[1];
     if (!archive) throw new Error('The local Runtime Host CLI build did not report an archive');
     const resolvedArchive = resolve(archive.trim());
-    const releaseRoot = join(repoRoot, 'packages', 'cli', 'release');
-    const relativeArchive = relative(releaseRoot, resolvedArchive);
+    const relativeArchive = relative(outputRoot, resolvedArchive);
     if (
       !relativeArchive ||
       relativeArchive.startsWith('..') ||
@@ -197,12 +198,18 @@ function startDevelopmentArchiveBuild(
     }
     return resolvedArchive;
   });
+  void result.catch(() => rmSync(outputRoot, { recursive: true, force: true }));
   let closing: Promise<void> | undefined;
   return {
     result,
     close() {
-      if (settled) return Promise.resolve();
-      closing ??= terminateBuildProcess(child, result);
+      closing ??= (async () => {
+        try {
+          if (!settled) await terminateBuildProcess(child, result);
+        } finally {
+          rmSync(outputRoot, { recursive: true, force: true });
+        }
+      })();
       return closing;
     },
   };

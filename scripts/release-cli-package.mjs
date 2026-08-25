@@ -51,11 +51,12 @@ import {
 
 const repoRoot = resolve(import.meta.dirname, '..');
 const cliSource = join(repoRoot, 'packages/cli');
-const releaseRoot = join(cliSource, 'release');
-const stageRoot = join(releaseRoot, 'package');
 const allowDirty = process.argv.includes('--allow-dirty');
 const developmentBuild = process.argv.includes('--development');
 const preparedTree = process.env.MAKA_CLI_RELEASE_PREPARED_TREE === '1';
+const releaseRoot = join(cliSource, 'release');
+const artifactRoot = developmentBuild ? createDevelopmentArtifactRoot() : releaseRoot;
+const stageRoot = join(artifactRoot, 'package');
 const unsupportedArguments = process.argv
   .slice(2)
   .filter((argument) => !['--allow-dirty', '--development'].includes(argument));
@@ -79,7 +80,12 @@ const strippedInstallScripts = new Map([
   ['protobufjs@7.6.5', new Set(['postinstall'])],
 ]);
 
-main();
+try {
+  main();
+} catch (error) {
+  if (developmentBuild) rmSync(artifactRoot, { recursive: true, force: true });
+  throw error;
+}
 
 function main() {
   validateToolchain();
@@ -120,7 +126,7 @@ function packageCli(publishable) {
   const cli = dependencyTree.dependencies?.['maka-agent'];
   if (!cli) throw new Error('npm ls did not return the maka-agent workspace');
 
-  rmSync(releaseRoot, { recursive: true, force: true });
+  rmSync(artifactRoot, { recursive: true, force: true });
   mkdirSync(stageRoot, { recursive: true, mode: 0o755 });
   copyCliRuntime();
   const expectedDependencyManifests = copyDependencyClosure(cli);
@@ -130,7 +136,7 @@ function packageCli(publishable) {
   validateStaging();
 
   const [pack] = JSON.parse(
-    runNpm(['pack', stageRoot, '--json', '--pack-destination', releaseRoot], {
+    runNpm(['pack', stageRoot, '--json', '--pack-destination', artifactRoot], {
       encoding: 'utf8',
       maxBuffer: 64 * 1024 * 1024,
     }),
@@ -143,12 +149,12 @@ function packageCli(publishable) {
     unpackedBytes: pack.unpackedSize,
     entryCount: pack.entryCount,
   });
-  const tarballPath = join(releaseRoot, pack.filename);
+  const tarballPath = join(artifactRoot, pack.filename);
   validatePackedFiles(pack.files, expectedDependencyManifests);
   const sha256 = digestFile(tarballPath);
   writeFileSync(`${tarballPath}.sha256`, `${sha256}  ${pack.filename}\n`, 'utf8');
   writeFileSync(
-    join(releaseRoot, `${pack.filename}.files.json`),
+    join(artifactRoot, `${pack.filename}.files.json`),
     `${JSON.stringify(pack.files, null, 2)}\n`,
     'utf8',
   );
@@ -158,6 +164,24 @@ function packageCli(publishable) {
   console.log(
     `[release-cli] size: ${formatBytes(pack.size)} compressed, ${formatBytes(pack.unpackedSize)} unpacked, ${pack.entryCount} files`,
   );
+}
+
+function createDevelopmentArtifactRoot() {
+  const developmentRoot = join(cliSource, '.development');
+  mkdirSync(developmentRoot, { recursive: true, mode: 0o755 });
+  const parent = process.env.MAKA_CLI_DEVELOPMENT_OUTPUT_ROOT?.trim();
+  if (!parent) return mkdtempSync(join(developmentRoot, 'artifact-'));
+  const resolvedParent = realpathSync(parent);
+  const relativeParent = relative(realpathSync(developmentRoot), resolvedParent);
+  if (
+    !relativeParent ||
+    relativeParent.startsWith('..') ||
+    isAbsolute(relativeParent) ||
+    !statSync(resolvedParent).isDirectory()
+  ) {
+    throw new Error('The CLI development output root must be a directory');
+  }
+  return join(resolvedParent, 'artifact');
 }
 
 function buildFromCleanDependencyTree() {

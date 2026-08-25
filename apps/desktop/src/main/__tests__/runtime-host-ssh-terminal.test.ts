@@ -218,6 +218,10 @@ test('force-stops a cancelled setup when SSH ignores graceful termination', asyn
 
   await assert.rejects(setup, /aborted/u);
   assert.deepEqual(harness.pty.killSignals, ['SIGTERM', 'SIGKILL']);
+  assert.deepEqual(harness.terminatedProcesses, [
+    { pid: 42, signal: 'SIGTERM' },
+    { pid: 42, signal: 'SIGKILL' },
+  ]);
   assert.deepEqual(harness.eventKinds(), ['opened', 'data', 'dismissed']);
   assert.deepEqual(await harness.getSnapshot(), { kind: 'idle', revision: 3 });
   await harness.terminal.close();
@@ -646,6 +650,7 @@ function createHarness(
 ) {
   const handlers = new Map<string, (...args: unknown[]) => unknown>();
   const events: Array<{ kind: string }> = [];
+  const terminatedProcesses: Array<{ pid: number; signal: string }> = [];
   const pty = new FakePty();
   const launchArgs: string[][] = [];
   let releaseTunnel!: () => void;
@@ -666,6 +671,11 @@ function createHarness(
     revealDelayMs: 0,
     ...options,
     processStopGraceMs: 1,
+    terminateProcessTree: async ({ pid, signal, fallback }) => {
+      terminatedProcesses.push({ pid, signal });
+      fallback?.();
+      return true;
+    },
     openSshTunnel: async (input, overrides) => {
       const spawnProcess = overrides?.spawnProcess as RuntimeHostSshProcessFactory;
       const process = spawnProcess({ executable: 'ssh', args: [], interaction: input.interaction });
@@ -690,6 +700,7 @@ function createHarness(
     releaseTunnel,
     eventKinds: () => events.map(({ kind }) => kind),
     events,
+    terminatedProcesses,
     getSnapshot: () => invoke('runtime-host-ssh-terminal:getSnapshot'),
     cancel: (sessionId: string) => invoke('runtime-host-ssh-terminal:cancel', sessionId),
   };

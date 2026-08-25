@@ -24,6 +24,7 @@ import { posix as pathPosix } from 'node:path';
 import type { IpcMain } from 'electron';
 import type { IPty } from 'node-pty';
 import { spawn as spawnPty } from 'node-pty';
+import { terminateProcessTree } from '@maka/runtime/process-tree-terminator';
 import {
   normalizeRuntimeHostSshDestination,
   openRuntimeHostSshTunnel,
@@ -191,6 +192,7 @@ export function createDesktopRuntimeHostSshTerminal(input: {
   readonly revealDelayMs?: number;
   readonly managementTimeoutMs?: number;
   readonly processStopGraceMs?: number;
+  readonly terminateProcessTree?: typeof terminateProcessTree;
 }): {
   openSshTunnel(input: RuntimeHostSshTunnelInput): Promise<RuntimeHostSshTunnel>;
   runSetup(
@@ -430,7 +432,11 @@ export function createDesktopRuntimeHostSshTerminal(input: {
       return;
     }
     dismissPresentation(terminal);
-    await terminateActiveTerminal(terminal, input.processStopGraceMs);
+    await terminateActiveTerminal(
+      terminal,
+      input.processStopGraceMs,
+      input.terminateProcessTree,
+    );
   });
 
   const runFramedManagement = async <Frame>(options: {
@@ -498,7 +504,7 @@ export function createDesktopRuntimeHostSshTerminal(input: {
       timeoutMs: options.timeoutMs ?? input.managementTimeoutMs ?? MANAGEMENT_TIMEOUT_MS,
       stopGraceMs: input.processStopGraceMs,
       onAbort: () => dismissPresentation(terminal),
-    });
+    }, input.terminateProcessTree);
     filter.finish();
     if (failure) throw failure;
     if (!frame) {
@@ -545,6 +551,7 @@ export function createDesktopRuntimeHostSshTerminal(input: {
           cancellation.signal,
           input.processStopGraceMs,
           dismissPresentation,
+          input.terminateProcessTree,
         );
         const remoteCommand = runtimeHostSetupRemoteCommand(setupPackage, setupInput);
         let complete: RuntimeHostSetupCompleteFrame | undefined;
@@ -580,7 +587,7 @@ export function createDesktopRuntimeHostSshTerminal(input: {
           timeoutMs: SETUP_TIMEOUT_MS,
           stopGraceMs: input.processStopGraceMs,
           onAbort: () => dismissPresentation(terminal),
-        });
+        }, input.terminateProcessTree);
         filter.finish();
         if (setupFailure) throw setupFailure;
         if (!complete) {
@@ -632,6 +639,7 @@ export function createDesktopRuntimeHostSshTerminal(input: {
         updateInput.signal,
         input.processStopGraceMs,
         dismissPresentation,
+        input.terminateProcessTree,
       );
       const frame = await runFramedManagement({
         ...updateInput,
@@ -724,7 +732,7 @@ export function createDesktopRuntimeHostSshTerminal(input: {
         timeoutMs: input.managementTimeoutMs ?? MANAGEMENT_TIMEOUT_MS,
         stopGraceMs: input.processStopGraceMs,
         onAbort: () => dismissPresentation(terminal),
-      });
+      }, input.terminateProcessTree);
       if (wait.timedOut) {
         throw new Error('Remote Runtime Host deployment cleanup timed out');
       }
@@ -744,7 +752,11 @@ export function createDesktopRuntimeHostSshTerminal(input: {
       presentation = undefined;
       terminal.dismissed = true;
       if (terminal.revealTimer !== undefined) clearTimeout(terminal.revealTimer);
-      await terminateActiveTerminal(terminal, input.processStopGraceMs).catch(() => undefined);
+      await terminateActiveTerminal(
+        terminal,
+        input.processStopGraceMs,
+        input.terminateProcessTree,
+      ).catch(() => undefined);
     },
   };
 }
@@ -870,6 +882,7 @@ async function prepareSetupPackage(
   signal: AbortSignal | undefined,
   stopGraceMs: number | undefined,
   dismissPresentation: (terminal: ActiveTerminal) => void,
+  terminateTree: typeof terminateProcessTree | undefined,
 ): Promise<PreparedSetupPackage> {
   if (setupPackage.kind === 'npm') {
     if (!isExactRuntimeHostSetupPackageSpecifier(setupPackage.specifier)) {
@@ -903,7 +916,7 @@ async function prepareSetupPackage(
     timeoutMs: SETUP_TIMEOUT_MS,
     stopGraceMs,
     onAbort: () => dismissPresentation(terminal),
-  });
+  }, terminateTree);
   if (wait.timedOut) {
     throw new Error('Uploading the Runtime Host development package timed out');
   }
@@ -929,6 +942,7 @@ async function waitForTerminalProcess(
     readonly stopGraceMs?: number;
     readonly onAbort?: () => void;
   },
+  terminateTree: typeof terminateProcessTree = terminateProcessTree,
 ): Promise<{
   readonly exit: Awaited<RuntimeHostSshProcess['exited']>;
   readonly timedOut: boolean;
@@ -951,7 +965,7 @@ async function waitForTerminalProcess(
       process.exited,
       stopRequested.then(async (reason) => {
         if (reason === 'aborted') input.onAbort?.();
-        await terminateTerminalProcess(process, input.stopGraceMs);
+        await terminateTerminalProcess(process, input.stopGraceMs, terminateTree);
         return process.exited;
       }),
     ]);
@@ -964,14 +978,28 @@ async function waitForTerminalProcess(
 }
 
 async function terminateTerminalProcess(
-  process: Pick<RuntimeHostSshProcess, 'exited' | 'kill'>,
+  process: Pick<RuntimeHostSshProcess, 'pid' | 'exited' | 'kill'>,
   graceMs = PROCESS_STOP_GRACE_MS,
+  terminateTree: typeof terminateProcessTree = terminateProcessTree,
 ): Promise<void> {
-  process.kill('SIGTERM');
+  await signalTerminalProcess(process, 'SIGTERM', terminateTree);
   if (await settlesWithin(process.exited, graceMs)) return;
-  process.kill('SIGKILL');
+  await signalTerminalProcess(process, 'SIGKILL', terminateTree);
   if (await settlesWithin(process.exited, graceMs)) return;
   throw new Error('SSH process did not exit after forced termination');
+}
+
+async function signalTerminalProcess(
+  process: Pick<RuntimeHostSshProcess, 'pid' | 'kill'>,
+  signal: 'SIGTERM' | 'SIGKILL',
+  terminateTree: typeof terminateProcessTree,
+): Promise<void> {
+  const fallback = () => process.kill(signal);
+  if (process.pid === undefined) {
+    fallback();
+    return;
+  }
+  await terminateTree({ pid: process.pid, signal, fallback });
 }
 
 async function settlesWithin(promise: Promise<unknown>, timeoutMs: number): Promise<boolean> {
@@ -1217,9 +1245,11 @@ function findActive(
 function terminateActiveTerminal(
   terminal: ActiveTerminal,
   graceMs: number | undefined,
+  terminateTree: typeof terminateProcessTree | undefined,
 ): Promise<void> {
   return terminateTerminalProcess(
     {
+      pid: terminal.pty.pid,
       exited: terminal.exited.then(() => ({ code: null, signal: null })),
       kill: (signal) => {
         try {
@@ -1230,6 +1260,7 @@ function terminateActiveTerminal(
       },
     },
     graceMs,
+    terminateTree,
   );
 }
 

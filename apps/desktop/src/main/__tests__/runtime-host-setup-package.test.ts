@@ -27,6 +27,7 @@ test('development setup lazily builds one local CLI archive unless explicitly ov
   const repoRoot = resolve('/workspace');
   const archive = join(repoRoot, 'packages', 'cli', 'release', 'maka-agent-dev.tgz');
   let builds = 0;
+  let closes = 0;
   const resolvePackage = createRuntimeHostSetupPackageResolver({
     isPackaged: false,
     appPath: join(repoRoot, 'apps', 'desktop'),
@@ -34,7 +35,12 @@ test('development setup lazily builds one local CLI archive unless explicitly ov
     startDevelopmentArchiveBuild: (resolvedRoot) => {
       builds += 1;
       assert.equal(resolvedRoot, repoRoot);
-      return { result: Promise.resolve(archive), close: async () => undefined };
+      return {
+        result: Promise.resolve(archive),
+        close: async () => {
+          closes += 1;
+        },
+      };
     },
   });
 
@@ -62,6 +68,7 @@ test('development setup lazily builds one local CLI archive unless explicitly ov
     path: override,
   });
   await Promise.all([resolvePackage.close(), resolveOverride.close()]);
+  assert.equal(closes, 1);
 });
 
 test('cancelling the last setup-package waiter stops its shared build', async () => {
