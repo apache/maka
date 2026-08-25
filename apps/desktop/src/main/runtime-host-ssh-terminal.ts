@@ -39,9 +39,11 @@ import {
   RUNTIME_HOST_ACCESS_MANAGEMENT_FRAME_PREFIX,
   RUNTIME_HOST_OPERATOR_ACCESS_MANAGEMENT_CAPABILITY,
   RUNTIME_HOST_OPERATOR_CAPABILITY_REQUEST_ENV,
+  RUNTIME_HOST_OPERATOR_UPDATE_SCHEDULER_CAPABILITY,
   RUNTIME_HOST_SERVICE_MANAGEMENT_FRAME_PREFIX,
   RUNTIME_HOST_SETUP_FRAME_PREFIX,
   type RuntimeHostAccessManagementFrame,
+  type RuntimeHostManagedUpdatePolicy,
   type RuntimeHostServiceManagementAction,
   type RuntimeHostServiceManagementFrame,
   type RuntimeHostServiceUpdatePhase,
@@ -110,6 +112,23 @@ export interface DesktopRuntimeHostSshUpdateInput {
   readonly signal?: AbortSignal;
 }
 
+export interface DesktopRuntimeHostSshUpdatePolicyInput {
+  readonly destination: string;
+  readonly sshPort?: number;
+  readonly operatorPath: string;
+  readonly policy?: RuntimeHostManagedUpdatePolicy;
+  readonly expectedTarget?: DesktopRuntimeHostSshManagementInput['expectedTarget'];
+  readonly signal?: AbortSignal;
+}
+
+export interface DesktopRuntimeHostSshUpdateReconciliationInput {
+  readonly destination: string;
+  readonly sshPort?: number;
+  readonly operatorPath: string;
+  readonly expectedTarget: DesktopRuntimeHostSshManagementInput['expectedTarget'];
+  readonly signal?: AbortSignal;
+}
+
 export interface DesktopRuntimeHostSshCleanupInput {
   readonly destination: string;
   readonly sshPort?: number;
@@ -148,6 +167,16 @@ export type RuntimeHostServiceUpdateTerminalFrame =
       readonly action: 'update';
     });
 
+export type RuntimeHostServiceUpdatePolicyTerminalFrame = Extract<
+  RuntimeHostServiceManagementFrame,
+  { kind: 'result' | 'error'; action: 'update_policy' }
+>;
+
+export type RuntimeHostServiceUpdateReconciliationTerminalFrame = Extract<
+  RuntimeHostServiceManagementFrame,
+  { kind: 'result' | 'error'; action: 'reconcile_update' }
+>;
+
 export function isExactRuntimeHostSetupPackageSpecifier(value: unknown): value is string {
   return typeof value === 'string' && /^maka-agent@[0-9][0-9A-Za-z.+-]*$/u.test(value);
 }
@@ -176,6 +205,13 @@ export function createDesktopRuntimeHostSshTerminal(input: {
     input: DesktopRuntimeHostSshUpdateInput,
     onProgress: (phase: RuntimeHostServiceUpdatePhase) => void,
   ): Promise<RuntimeHostServiceUpdateTerminalFrame>;
+  runUpdatePolicy(
+    input: DesktopRuntimeHostSshUpdatePolicyInput,
+  ): Promise<RuntimeHostServiceUpdatePolicyTerminalFrame>;
+  runUpdateReconciliation(
+    input: DesktopRuntimeHostSshUpdateReconciliationInput,
+    onProgress: (phase: RuntimeHostServiceUpdatePhase) => void,
+  ): Promise<RuntimeHostServiceUpdateReconciliationTerminalFrame>;
   runAccessManagement(
     input: DesktopRuntimeHostSshAccessInput,
   ): Promise<RuntimeHostAccessManagementFrame>;
@@ -620,6 +656,41 @@ export function createDesktopRuntimeHostSshTerminal(input: {
       }
       throw new Error('Remote Runtime Host update returned an invalid result');
     },
+    runUpdatePolicy: async (policyInput) => {
+      const frame = await runFramedManagement({
+        ...policyInput,
+        remoteCommand: runtimeHostUpdatePolicyRemoteCommand(policyInput),
+        prefix: RUNTIME_HOST_SERVICE_MANAGEMENT_FRAME_PREFIX,
+        pendingMaxBytes: MANAGEMENT_FRAME_PENDING_MAX,
+        decode: decodeRuntimeHostServiceManagementFrame,
+        action: 'update_policy',
+        frameAction: (candidate) => candidate.action,
+        label: 'Remote Runtime Host update policy',
+      });
+      if (frame.kind === 'result' && frame.action === 'update_policy') return frame;
+      if (frame.kind === 'error' && frame.action === 'update_policy') return frame;
+      throw new Error('Remote Runtime Host update policy returned an invalid result');
+    },
+    runUpdateReconciliation: async (reconciliationInput, onProgress) => {
+      const frame = await runFramedManagement({
+        ...reconciliationInput,
+        remoteCommand: runtimeHostUpdateReconciliationRemoteCommand(reconciliationInput),
+        prefix: RUNTIME_HOST_SERVICE_MANAGEMENT_FRAME_PREFIX,
+        pendingMaxBytes: MANAGEMENT_FRAME_PENDING_MAX,
+        decode: decodeRuntimeHostServiceManagementFrame,
+        action: 'reconcile_update',
+        frameAction: (candidate) => candidate.action,
+        isTerminalFrame: (candidate) => candidate.kind !== 'progress',
+        onProgress: (candidate) => {
+          if (candidate.kind === 'progress') onProgress(candidate.phase);
+        },
+        label: 'Remote Runtime Host update reconciliation',
+        timeoutMs: SETUP_TIMEOUT_MS,
+      });
+      if (frame.kind === 'result' && frame.action === 'reconcile_update') return frame;
+      if (frame.kind === 'error' && frame.action === 'reconcile_update') return frame;
+      throw new Error('Remote Runtime Host update reconciliation returned an invalid result');
+    },
     runAccessManagement: (accessInput) =>
       runFramedManagement({
         ...accessInput,
@@ -979,6 +1050,43 @@ function runtimeHostUpdateRemoteCommand(
         RUNTIME_HOST_OPERATOR_ACCESS_MANAGEMENT_CAPABILITY,
     },
   );
+}
+
+function runtimeHostUpdatePolicyRemoteCommand(
+  input: DesktopRuntimeHostSshUpdatePolicyInput,
+): string {
+  const policy = input.policy;
+  const target = policy === undefined
+    ? []
+    : ['--target', policy.kind === 'channel' ? policy.channel : policy.kind === 'fixed' ? policy.version : 'manual'];
+  const command = [
+    input.operatorPath,
+    'update-policy',
+    '--framed',
+    ...target,
+    ...(input.expectedTarget ? managedServiceTargetArgs(input.expectedTarget) : []),
+  ].map(quotePosix).join(' ');
+  const invocation =
+    `${RUNTIME_HOST_OPERATOR_CAPABILITY_REQUEST_ENV}=` +
+    `${quotePosix(RUNTIME_HOST_OPERATOR_UPDATE_SCHEDULER_CAPABILITY)} exec ${command}`;
+  return `exec "\${SHELL:-/bin/sh}" -lic ${quotePosix(invocation)}`;
+}
+
+function runtimeHostUpdateReconciliationRemoteCommand(
+  input: DesktopRuntimeHostSshUpdateReconciliationInput,
+): string {
+  const command = [
+    input.operatorPath,
+    'reconcile-update',
+    '--framed',
+    ...managedServiceTargetArgs(input.expectedTarget),
+  ]
+    .map(quotePosix)
+    .join(' ');
+  const invocation =
+    `${RUNTIME_HOST_OPERATOR_CAPABILITY_REQUEST_ENV}=` +
+    `${quotePosix(RUNTIME_HOST_OPERATOR_UPDATE_SCHEDULER_CAPABILITY)} exec ${command}`;
+  return `exec "\${SHELL:-/bin/sh}" -lic ${quotePosix(invocation)}`;
 }
 
 function runtimeHostAccessManagementRemoteCommand(

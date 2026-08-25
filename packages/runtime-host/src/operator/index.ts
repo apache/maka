@@ -32,6 +32,7 @@ export {
   RUNTIME_HOST_OPERATOR_ACCESS_MANAGEMENT_CAPABILITY,
   RUNTIME_HOST_OPERATOR_CAPABILITY_REQUEST_ENV,
   RUNTIME_HOST_OPERATOR_PROCESS_LIFETIME_LOCK_CAPABILITY,
+  RUNTIME_HOST_OPERATOR_UPDATE_SCHEDULER_CAPABILITY,
   RUNTIME_HOST_SERVICE_ERROR_CODE_MAX_BYTES,
   RUNTIME_HOST_SERVICE_ERROR_MESSAGE_MAX_BYTES,
   RUNTIME_HOST_SERVICE_LOG_MAX_BYTES,
@@ -42,6 +43,7 @@ export {
   type RuntimeHostServiceManagementFrame,
   type RuntimeHostManagedUpdatePolicy,
   type RuntimeHostServiceUpdatePhase,
+  type RuntimeHostUpdateSchedulerState,
   type RuntimeHostOperatorCapability,
   type RuntimeHostServiceSummary,
 } from './service-management-frame.js';

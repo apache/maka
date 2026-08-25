@@ -1257,6 +1257,18 @@ const makaBridge = {
       ipcRenderer.on('runtime-host-management:progress', listener);
       return () => ipcRenderer.off('runtime-host-management:progress', listener);
     },
+    getUpdatePolicy(profileId: string) {
+      return ipcRenderer.invoke('runtime-host-management:get-update-policy', profileId);
+    },
+    setUpdatePolicy(
+      profileId: string,
+      policy: import('@maka/runtime-host/operator').RuntimeHostManagedUpdatePolicy,
+    ) {
+      return ipcRenderer.invoke('runtime-host-management:set-update-policy', profileId, policy);
+    },
+    reconcileUpdate(profileId: string) {
+      return ipcRenderer.invoke('runtime-host-management:reconcile-update', profileId);
+    },
     listCredentials(profileId: string): Promise<DesktopRuntimeHostAccessSnapshot> {
       return ipcRenderer.invoke('runtime-host-management:list-credentials', profileId);
     },

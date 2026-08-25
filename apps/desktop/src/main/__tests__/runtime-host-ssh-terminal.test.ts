@@ -31,6 +31,7 @@ import {
   encodeRuntimeHostServiceManagementFrame,
   encodeRuntimeHostSetupFrame,
   runtimeHostAccessCredentialFingerprint,
+  RUNTIME_HOST_OPERATOR_UPDATE_SCHEDULER_CAPABILITY,
   RUNTIME_HOST_SETUP_FRAME_PREFIX,
 } from '@maka/runtime-host/operator';
 import { createDesktopRuntimeHostSshTerminal } from '../runtime-host-ssh-terminal.js';
@@ -372,6 +373,90 @@ test('runs an exact update package and reports progress before an active-work re
   assert.deepEqual(harness.events.map(({ kind }) => kind), ['opened', 'data', 'connected']);
   assert.doesNotMatch(JSON.stringify(harness.events), /MAKA_RUNTIME_HOST_SERVICE/u);
   await harness.terminal.close();
+});
+
+test('uses the managed operator for update policy and one-shot reconciliation', async () => {
+  const target = {
+    serviceId: 'b'.repeat(64),
+    rootPath: '/srv/maka',
+    rootId: 'a'.repeat(64),
+  };
+  const policyHarness = createHarness('pending');
+  const policy = policyHarness.terminal.runUpdatePolicy({
+    destination: 'operator@example.com',
+    operatorPath: '/home/operator/.local/share/maka/operator',
+    policy: { kind: 'channel', channel: 'latest' },
+    expectedTarget: target,
+  });
+  await waitFor(() => policyHarness.pty.hasDataListener());
+  const policyCommand = policyHarness.launchArgs.at(-1)?.at(-1) ?? '';
+  assert.match(policyCommand, /operator.*update-policy.*--target.*latest/u);
+  assert.match(policyCommand, /--expected-service-id/u);
+  assert.match(policyCommand, /update-scheduler-v1/u);
+  policyHarness.pty.emitData(encodeRuntimeHostServiceManagementFrame({
+    schemaVersion: 1,
+    kind: 'result',
+    action: 'update_policy',
+    operatorCapabilities: [RUNTIME_HOST_OPERATOR_UPDATE_SCHEDULER_CAPABILITY],
+    updateSchedulerState: 'ready',
+    updatePolicy: {
+      policy: { kind: 'channel', channel: 'latest' },
+      target,
+    },
+  }));
+  policyHarness.pty.exit(0);
+  assert.equal((await policy).kind, 'result');
+  await policyHarness.terminal.close();
+
+  const reconcileHarness = createHarness('pending');
+  const phases: string[] = [];
+  const reconciliation = reconcileHarness.terminal.runUpdateReconciliation(
+    {
+      destination: 'operator@example.com',
+      operatorPath: '/home/operator/.local/share/maka/operator',
+      expectedTarget: target,
+    },
+    (phase) => phases.push(phase),
+  );
+  await waitFor(() => reconcileHarness.pty.hasDataListener());
+  const reconcileCommand = reconcileHarness.launchArgs.at(-1)?.at(-1) ?? '';
+  assert.match(reconcileCommand, /operator.*reconcile-update.*--framed/u);
+  assert.match(reconcileCommand, /--expected-service-id/u);
+  assert.match(reconcileCommand, /update-scheduler-v1/u);
+  reconcileHarness.pty.emitData(encodeRuntimeHostServiceManagementFrame({
+    schemaVersion: 1,
+    kind: 'progress',
+    action: 'reconcile_update',
+    phase: 'checking',
+    currentVersion: '1.2.3',
+    targetVersion: '1.3.0',
+  }));
+  reconcileHarness.pty.emitData(encodeRuntimeHostServiceManagementFrame({
+    schemaVersion: 1,
+    kind: 'result',
+    action: 'reconcile_update',
+    operatorCapabilities: [RUNTIME_HOST_OPERATOR_UPDATE_SCHEDULER_CAPABILITY],
+    updateSchedulerState: 'ready',
+    updatePolicy: {
+      policy: { kind: 'channel', channel: 'latest' },
+      target,
+    },
+    service: {
+      platform: 'linux',
+      arch: 'x64',
+      osRelease: '6.8.0',
+      state: 'running',
+      pid: 42,
+      lastExitCode: 0,
+      installedVersion: '1.2.3',
+      projectDirectoryRoots: [],
+    },
+    reconciliation: { kind: 'already_current', version: '1.2.3' },
+  }));
+  reconcileHarness.pty.exit(0);
+  assert.equal((await reconciliation).kind, 'result');
+  assert.deepEqual(phases, ['checking']);
+  await reconcileHarness.terminal.close();
 });
 
 test('keeps a prepared access credential out of the SSH terminal projection', async () => {

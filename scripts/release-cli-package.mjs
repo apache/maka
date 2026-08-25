@@ -53,10 +53,11 @@ const cliSource = join(repoRoot, 'packages/cli');
 const releaseRoot = join(cliSource, 'release');
 const stageRoot = join(releaseRoot, 'package');
 const allowDirty = process.argv.includes('--allow-dirty');
+const developmentBuild = process.argv.includes('--development');
 const preparedTree = process.env.MAKA_CLI_RELEASE_PREPARED_TREE === '1';
 const unsupportedArguments = process.argv
   .slice(2)
-  .filter((argument) => argument !== '--allow-dirty');
+  .filter((argument) => !['--allow-dirty', '--development'].includes(argument));
 if (unsupportedArguments.length > 0) {
   throw new Error(`Unsupported release argument: ${unsupportedArguments.join(', ')}`);
 }
@@ -78,6 +79,15 @@ main();
 
 function main() {
   validateToolchain();
+  if (developmentBuild) {
+    if (allowDirty || preparedTree) {
+      throw new Error('--development cannot be combined with release build options');
+    }
+    console.warn('[release-cli] producing a private development tarball');
+    buildRuntimeWorkspaces({ clean: false });
+    packageCli(false);
+    return;
+  }
   if (!preparedTree && !allowDirty) {
     validateCleanWorktree();
     buildFromCleanDependencyTree();
@@ -94,10 +104,14 @@ function main() {
       '[release-cli] WARNING: producing a private development tarball with publishing disabled',
     );
   }
-  buildRuntimeWorkspaces();
+  buildRuntimeWorkspaces({ clean: true });
   checkProductionAudit();
   runNpm(['run', 'check:cli-third-party-notices']);
 
+  packageCli(preparedTree);
+}
+
+function packageCli(publishable) {
   const dependencyTree = readCliDependencyTree();
   const cli = dependencyTree.dependencies?.['maka-agent'];
   if (!cli) throw new Error('npm ls did not return the maka-agent workspace');
@@ -108,7 +122,7 @@ function main() {
   const expectedDependencyManifests = copyDependencyClosure(cli);
   copyEvalMirror();
   copyReleaseDocuments();
-  writeReleaseManifest(cli, preparedTree);
+  writeReleaseManifest(cli, publishable);
   validateStaging();
 
   const [pack] = JSON.parse(
@@ -206,8 +220,10 @@ function validateCleanWorktree() {
   }
 }
 
-function buildRuntimeWorkspaces() {
-  for (const workspace of buildOrder) runNpm(['--workspace', workspace, 'run', 'clean']);
+function buildRuntimeWorkspaces(options) {
+  if (options.clean) {
+    for (const workspace of buildOrder) runNpm(['--workspace', workspace, 'run', 'clean']);
+  }
   for (const workspace of buildOrder) runNpm(['--workspace', workspace, 'run', 'build']);
 }
 

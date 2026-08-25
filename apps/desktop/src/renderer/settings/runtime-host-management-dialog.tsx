@@ -21,7 +21,17 @@ import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { Dialog, DialogHeader } from '@astryxdesign/core/Dialog';
 import { Layout, LayoutContent, LayoutFooter } from '@astryxdesign/core/Layout';
 import { Text } from '@astryxdesign/core/Text';
-import { Badge, Banner, Button, Spinner, useToast, useUiLocale } from '@maka/ui';
+import {
+  Badge,
+  Banner,
+  Button,
+  MoreMenu,
+  Selector,
+  Spinner,
+  TextInput,
+  useToast,
+  useUiLocale,
+} from '@maka/ui';
 import { uiLocaleToIntlLocale, type UiLocale } from '@maka/core/ui-locale';
 import type { RemoteRuntimeHostProfile } from '@maka/runtime-host/client';
 import type {
@@ -30,6 +40,9 @@ import type {
   DesktopRuntimeHostManagementProgress,
   DesktopRuntimeHostAccessCredential,
   DesktopRuntimeHostAccessSnapshot,
+  DesktopRuntimeHostUpdatePolicySnapshot,
+  DesktopRuntimeHostUpdateReconciliationOutcome,
+  DesktopRuntimeHostUpdateReconciliationResponse,
 } from '../../preload/bridge-contract.js';
 import { getSettingsProjectsCopy } from '../locales/settings-projects-copy.js';
 import { settingsActionErrorMessage } from './settings-error-copy.js';
@@ -42,6 +55,8 @@ type RuntimeHostManagementConfirmation =
       readonly kind: 'revoke';
       readonly credential: DesktopRuntimeHostAccessCredential;
     };
+
+type UpdatePolicyChoice = 'manual' | 'fixed' | 'latest' | 'next';
 
 export function RuntimeHostManagementDialog(props: {
   readonly profile: RemoteRuntimeHostProfile | undefined;
@@ -57,6 +72,12 @@ export function RuntimeHostManagementDialog(props: {
   const [access, setAccess] = useState<DesktopRuntimeHostAccessSnapshot>();
   const [confirmation, setConfirmation] = useState<RuntimeHostManagementConfirmation>();
   const [updatePhase, setUpdatePhase] = useState<DesktopRuntimeHostManagementProgress['phase']>();
+  const [updatePolicy, setUpdatePolicy] = useState<DesktopRuntimeHostUpdatePolicySnapshot>();
+  const [updatePolicyChoice, setUpdatePolicyChoice] = useState<UpdatePolicyChoice>('manual');
+  const [fixedVersion, setFixedVersion] = useState('');
+  const [updatePolicyError, setUpdatePolicyError] = useState<string>();
+  const [reconciliation, setReconciliation] =
+    useState<DesktopRuntimeHostUpdateReconciliationOutcome>();
   const logsRef = useRef<HTMLPreElement>(null);
 
   const profile = props.profile;
@@ -69,20 +90,30 @@ export function RuntimeHostManagementDialog(props: {
     setAccess(undefined);
     setConfirmation(undefined);
     setUpdatePhase(undefined);
+    setUpdatePolicy(undefined);
+    setUpdatePolicyChoice('manual');
+    setFixedVersion('');
+    setUpdatePolicyError(undefined);
+    setReconciliation(undefined);
     setLoading(true);
-    void window.maka.runtimeHostManagement.run(profile.id, 'status').then(
-      (response) => {
+    void (async () => {
+      try {
+        const response = await window.maka.runtimeHostManagement.run(profile.id, 'status');
         if (disposed) return;
         if (response.kind === 'result') setResult(response);
         else if (response.kind === 'error') setError(response.error.message);
         else setUninstalledRoot(response.retainedStateRoot);
-      },
-      (failure) => {
+      } catch (failure) {
         if (!disposed) setError(settingsActionErrorMessage(failure, locale));
-      },
-    ).finally(() => {
+      }
+      try {
+        const policy = await window.maka.runtimeHostManagement.getUpdatePolicy(profile.id);
+        if (!disposed) applyUpdatePolicy(policy);
+      } catch (failure) {
+        if (!disposed) setUpdatePolicyError(settingsActionErrorMessage(failure, locale));
+      }
       if (!disposed) setLoading(false);
-    });
+    })();
     return () => {
       disposed = true;
     };
@@ -115,6 +146,7 @@ export function RuntimeHostManagementDialog(props: {
         return;
       }
       setResult(response);
+      if (action !== 'logs') await reloadUpdatePolicy(profile.id);
     } catch (failure) {
       const message = settingsActionErrorMessage(failure, locale);
       setError(message);
@@ -163,9 +195,90 @@ export function RuntimeHostManagementDialog(props: {
           ? { kind: 'update' }
           : undefined,
       );
+      if (response.action === 'update' && response.update.kind !== 'active_tasks') {
+        await reloadUpdatePolicy(profile.id);
+      }
     } catch (failure) {
       const message = settingsActionErrorMessage(failure, locale);
       setError(message);
+      toast.error(copy.managementActionFailed, message);
+    } finally {
+      setLoading(false);
+      setUpdatePhase(undefined);
+    }
+  }
+
+  function applyUpdatePolicy(snapshot: DesktopRuntimeHostUpdatePolicySnapshot): void {
+    setUpdatePolicy(snapshot);
+    const policy = snapshot.policy;
+    if (policy.kind === 'manual') {
+      setUpdatePolicyChoice('manual');
+    } else if (policy.kind === 'fixed') {
+      setUpdatePolicyChoice('fixed');
+      setFixedVersion(policy.version);
+    } else {
+      setUpdatePolicyChoice(policy.channel);
+    }
+    setUpdatePolicyError(undefined);
+  }
+
+  async function reloadUpdatePolicy(profileId: string): Promise<void> {
+    try {
+      applyUpdatePolicy(await window.maka.runtimeHostManagement.getUpdatePolicy(profileId));
+    } catch (failure) {
+      setUpdatePolicyError(settingsActionErrorMessage(failure, locale));
+    }
+  }
+
+  async function saveUpdatePolicy(): Promise<void> {
+    if (!profile) return;
+    setLoading(true);
+    setError(undefined);
+    setUpdatePolicyError(undefined);
+    try {
+      const policy = updatePolicyChoice === 'manual'
+        ? { kind: 'manual' as const }
+        : updatePolicyChoice === 'fixed'
+          ? { kind: 'fixed' as const, version: fixedVersion.trim() }
+          : { kind: 'channel' as const, channel: updatePolicyChoice };
+      applyUpdatePolicy(
+        await window.maka.runtimeHostManagement.setUpdatePolicy(profile.id, policy),
+      );
+      setReconciliation(undefined);
+    } catch (failure) {
+      const message = settingsActionErrorMessage(failure, locale);
+      setUpdatePolicyError(message);
+      toast.error(copy.managementActionFailed, message);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function reconcileUpdate(): Promise<void> {
+    if (!profile) return;
+    setLoading(true);
+    setError(undefined);
+    setUpdatePolicyError(undefined);
+    setUpdatePhase('checking');
+    try {
+      const response = await window.maka.runtimeHostManagement.reconcileUpdate(profile.id);
+      if (response.kind === 'error') {
+        setUpdatePolicyError(response.error.message);
+        toast.error(copy.managementActionFailed, response.error.message);
+        return;
+      }
+      setReconciliation(response.reconciliation);
+      applyUpdatePolicy(response.updatePolicy);
+      if (
+        response.reconciliation.kind === 'updated' ||
+        response.reconciliation.kind === 'repaired'
+      ) {
+        const status = await window.maka.runtimeHostManagement.run(profile.id, 'status');
+        if (status.kind === 'result') setResult(status);
+      }
+    } catch (failure) {
+      const message = settingsActionErrorMessage(failure, locale);
+      setUpdatePolicyError(message);
       toast.error(copy.managementActionFailed, message);
     } finally {
       setLoading(false);
@@ -216,6 +329,14 @@ export function RuntimeHostManagementDialog(props: {
   const uninstalled = uninstalledRoot !== undefined;
   const serviceInstalled = service !== undefined && service.state !== 'not_installed';
   const serviceActive = service?.state === 'running';
+  const savedPolicyChoice = updatePolicy ? updatePolicyChoiceOf(updatePolicy) : undefined;
+  const updatePolicyDirty = savedPolicyChoice !== updatePolicyChoice ||
+    (updatePolicyChoice === 'fixed' &&
+      updatePolicy?.policy.kind === 'fixed' &&
+      updatePolicy.policy.version !== fixedVersion.trim());
+  const automaticPolicySelected = updatePolicyChoice !== 'manual';
+  const automaticUpdatesAvailable = updatePolicy?.schedulingState === 'ready';
+  const reconciliationResult = reconciliation;
   return (
     <Dialog
       isOpen={profile !== undefined}
@@ -291,6 +412,38 @@ export function RuntimeHostManagementDialog(props: {
               {result?.action === 'update' && result.update.kind === 'repaired' ? (
                 <Banner status="success" title={copy.updateRepaired(result.update.version)} />
               ) : null}
+              {reconciliationResult?.kind === 'disabled' ? (
+                <Banner status="info" title={copy.updatePolicyDisabled} />
+              ) : null}
+              {reconciliationResult?.kind === 'manual_action' ? (
+                <Banner
+                  status="warning"
+                  title={(reconciliationResult.reason === 'target_not_newer'
+                    ? copy.updatePolicyNotNewer
+                    : copy.updatePolicyManualAction)(reconciliationResult.candidate.version)}
+                  description={reconciliationResult.reason === 'target_not_newer'
+                    ? undefined
+                    : copy.updatePolicyManualReason[reconciliationResult.reason]}
+                />
+              ) : null}
+              {reconciliationResult?.kind === 'active_tasks' ? (
+                <Banner status="warning" title={copy.updatePolicyActiveTasks} />
+              ) : null}
+              {reconciliationResult?.kind === 'already_current' ? (
+                <Banner status="info" title={copy.updateAlreadyCurrent(reconciliationResult.version)} />
+              ) : null}
+              {reconciliationResult?.kind === 'repaired' ? (
+                <Banner status="success" title={copy.updateRepaired(reconciliationResult.version)} />
+              ) : null}
+              {reconciliationResult?.kind === 'updated' ? (
+                <Banner
+                  status="success"
+                  title={copy.updateComplete(
+                    reconciliationResult.previousVersion,
+                    reconciliationResult.targetVersion,
+                  )}
+                />
+              ) : null}
               {!access && service ? (
                 <>
                   <dl className="settingsRuntimeHostManagementFacts">
@@ -309,6 +462,114 @@ export function RuntimeHostManagementDialog(props: {
                       <Fact label={copy.stateRoot} value={service.stateRoot} wide />
                     ) : null}
                   </dl>
+                  {serviceInstalled ? (
+                    <section className="settingsRuntimeHostUpdatePolicy">
+                      <div className="settingsRuntimeHostUpdatePolicyHeading">
+                        <div>
+                          <Text type="body" weight="semibold">{copy.updatePolicy}</Text>
+                          <Text type="supporting" color="secondary">
+                            {copy.updatePolicyDescription}
+                          </Text>
+                        </div>
+                        {updatePolicy ? (
+                          <Badge
+                            variant={updatePolicy.policy.kind === 'manual'
+                              ? 'neutral'
+                              : automaticUpdatesAvailable
+                                ? 'success'
+                                : 'warning'}
+                            label={updatePolicy.policy.kind === 'manual'
+                              ? copy.updatePolicyManual
+                              : updatePolicy.schedulingState === 'ready'
+                                ? copy.updatePolicyAutomatic
+                              : updatePolicy.schedulingState === 'needs_repair'
+                                ? copy.updateSchedulerNeedsRepair
+                                : updatePolicy.schedulingState === 'inactive'
+                                  ? copy.updateSchedulerInactive
+                                  : copy.updateSchedulerUnsupported}
+                          />
+                        ) : null}
+                      </div>
+                      {updatePolicyError ? (
+                        <Banner
+                          status="warning"
+                          title={copy.updatePolicyUnavailable}
+                          description={updatePolicyError}
+                        />
+                      ) : null}
+                      {updatePolicy?.schedulingState === 'unsupported' ? (
+                        <Banner
+                          status="warning"
+                          title={copy.updateSchedulerUnavailable}
+                          description={copy.updateSchedulerUnavailableBody}
+                        />
+                      ) : null}
+                      {updatePolicy?.schedulingState === 'needs_repair' ? (
+                        <Banner
+                          status="warning"
+                          title={copy.updateSchedulerNeedsRepair}
+                          description={copy.updateSchedulerNeedsRepairBody}
+                        />
+                      ) : null}
+                      {updatePolicy?.schedulingState === 'inactive' ? (
+                        <Banner
+                          status="warning"
+                          title={copy.updateSchedulerInactive}
+                          description={copy.updateSchedulerInactiveBody}
+                        />
+                      ) : null}
+                      {updatePolicy ? (
+                        <div className="settingsRuntimeHostUpdatePolicyControls">
+                          <Selector
+                            label={copy.updatePolicy}
+                            isLabelHidden
+                            value={updatePolicyChoice}
+                            isDisabled={loading}
+                            options={[
+                              { value: 'manual', label: copy.updatePolicyOptions.manual },
+                              { value: 'fixed', label: copy.updatePolicyOptions.fixed },
+                              { value: 'latest', label: copy.updatePolicyOptions.latest },
+                              { value: 'next', label: copy.updatePolicyOptions.next },
+                            ]}
+                            onChange={(value) => setUpdatePolicyChoice(value as UpdatePolicyChoice)}
+                          />
+                          {updatePolicyChoice === 'fixed' ? (
+                            <TextInput
+                              label={copy.updatePolicyFixedVersion}
+                              value={fixedVersion}
+                              isDisabled={loading}
+                              onChange={setFixedVersion}
+                            />
+                          ) : null}
+                          <div className="settingsRuntimeHostUpdatePolicyActions">
+                            <Button
+                              variant="secondary"
+                              size="sm"
+                              label={copy.updatePolicySave}
+                              isDisabled={
+                                loading ||
+                                !updatePolicyDirty ||
+                                (automaticPolicySelected && !automaticUpdatesAvailable) ||
+                                (updatePolicyChoice === 'fixed' && fixedVersion.trim().length === 0)
+                              }
+                              onClick={() => void saveUpdatePolicy()}
+                            />
+                            {updatePolicy.policy.kind !== 'manual' &&
+                            automaticUpdatesAvailable &&
+                            !updatePolicyDirty ? (
+                              <Button
+                                variant="primary"
+                                size="sm"
+                                label={copy.updatePolicyCheckNow}
+                                isDisabled={loading}
+                                onClick={() => void reconcileUpdate()}
+                              />
+                            ) : null}
+                          </div>
+                        </div>
+                      ) : null}
+                    </section>
+                  ) : null}
                   <div className="settingsRuntimeHostManagementDirectoryRoots">
                     <Text type="body" weight="semibold">{copy.directoryRoots}</Text>
                     {service.projectDirectoryRoots.length > 0 ? (
@@ -506,20 +767,29 @@ export function RuntimeHostManagementDialog(props: {
                     isDisabled={loading}
                     onClick={props.onClose}
                   />
-                  {profile?.transport.kind === 'ssh' && !uninstalled ? (
-                    <Button
-                      variant="secondary"
-                      label={copy.repairService}
+                  {profile && !uninstalled ? (
+                    <MoreMenu
+                      label={copy.moreActions(profile.name)}
+                      size="sm"
                       isDisabled={loading}
-                      onClick={() => void run('install')}
-                    />
-                  ) : null}
-                  {profile && serviceInstalled && result?.accessManagementAvailable && !uninstalled ? (
-                    <Button
-                      variant="secondary"
-                      label={copy.manageAccess}
-                      isDisabled={loading}
-                      onClick={() => void loadAccess()}
+                      items={[
+                        ...(profile.transport.kind === 'ssh'
+                          ? [{ label: copy.repairService, onClick: () => void run('install') }]
+                          : []),
+                        ...(serviceInstalled && result?.accessManagementAvailable
+                          ? [{ label: copy.manageAccess, onClick: () => void loadAccess() }]
+                          : []),
+                        ...(serviceInstalled
+                          ? [
+                              { label: copy.updateService, onClick: () => void update(false) },
+                              { label: copy.showLogs, onClick: () => void run('logs') },
+                            ]
+                          : []),
+                        {
+                          label: copy.uninstallService,
+                          onClick: () => setConfirmation({ kind: 'uninstall' }),
+                        },
+                      ]}
                     />
                   ) : null}
                   {result && profile && !uninstalled ? (
@@ -530,22 +800,6 @@ export function RuntimeHostManagementDialog(props: {
                         isDisabled={loading}
                         onClick={() => void run('status')}
                       />
-                      {serviceInstalled ? (
-                        <Button
-                          variant="secondary"
-                          label={copy.updateService}
-                          isDisabled={loading}
-                          onClick={() => void update(false)}
-                        />
-                      ) : null}
-                      {serviceInstalled ? (
-                        <Button
-                          variant="secondary"
-                          label={copy.showLogs}
-                          isDisabled={loading}
-                          onClick={() => void run('logs')}
-                        />
-                      ) : null}
                       {serviceInstalled && serviceActive ? (
                         <Button
                           variant="primary"
@@ -563,14 +817,6 @@ export function RuntimeHostManagementDialog(props: {
                       ) : null}
                     </>
                   ) : null}
-                  {profile && !uninstalled ? (
-                    <Button
-                      variant="secondary"
-                      label={copy.uninstallService}
-                      isDisabled={loading}
-                      onClick={() => setConfirmation({ kind: 'uninstall' })}
-                    />
-                  ) : null}
                 </>
               )}
             </div>
@@ -579,6 +825,12 @@ export function RuntimeHostManagementDialog(props: {
       />
     </Dialog>
   );
+}
+
+function updatePolicyChoiceOf(snapshot: DesktopRuntimeHostUpdatePolicySnapshot): UpdatePolicyChoice {
+  const policy = snapshot.policy;
+  if (policy.kind === 'manual' || policy.kind === 'fixed') return policy.kind;
+  return policy.channel;
 }
 
 function Fact(props: {
