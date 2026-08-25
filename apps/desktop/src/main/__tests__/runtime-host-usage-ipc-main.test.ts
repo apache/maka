@@ -142,6 +142,10 @@ test("settings usage stats use the canonical model-call total and load every act
       outputPerMTokUsd: 2,
     },
   ]);
+  // The canonical summary provenance is carried through so the page can qualify
+  // a cost that reads low; the full range fit under the cap, so not truncated.
+  assert.deepEqual(stats.provenance, provenance());
+  assert.equal(stats.logsTruncated, undefined);
 });
 
 test("settings usage stats reject a non-advancing activity page", async () => {
@@ -211,7 +215,7 @@ test("settings usage stats reject a non-advancing activity page", async () => {
   await assert.rejects(() => handler({} as never, "24h"), /invalid Usage projection/);
 });
 
-test("settings usage stats reject model logs that disagree with the canonical summary", async () => {
+test("settings usage stats degrade instead of erroring when logs disagree with the canonical summary", async () => {
   const handlers = new Map<string, IpcHandler>();
   registerRuntimeHostUsageIpc({
     ipcMain: {
@@ -275,7 +279,164 @@ test("settings usage stats reject model logs that disagree with the canonical su
 
   const handler = handlers.get("settings:usageStats");
   assert.ok(handler);
-  await assert.rejects(() => handler({} as never, "all"), /invalid Usage projection/);
+  // A catch-up race (summary read before a repair commits, logs read after) must
+  // not error the whole page. The canonical summary total stays authoritative,
+  // the activity list holds what actually loaded, and provenance still rides along.
+  const stats = await handler({} as never, "all") as UsageStats;
+  assert.equal(stats.summary.totalRequests, 2);
+  assert.equal(stats.logs.filter((row) => row.kind === "model").length, 1);
+  assert.deepEqual(stats.provenance, provenance());
+});
+
+test("settings usage stats group the provider breakdown by connection", async () => {
+  const handlers = new Map<string, IpcHandler>();
+  registerRuntimeHostUsageIpc({
+    ipcMain: {
+      handle: (channel, listener) => handlers.set(channel, listener),
+      handleReconnectableRead: (channel, listener) => handlers.set(channel, listener),
+    },
+    client: {
+      queryUsage: async (input: UsageQueryInput) => {
+        if (input.kind === "summary") {
+          return {
+            kind: "summary",
+            summary: {
+              range: { from: 1, to: 2 },
+              totalRequests: 2,
+              totalCostUsd: 0,
+              totalTokens: {
+                input: 0,
+                output: 0,
+                cacheMiss: 0,
+                cacheRead: 0,
+                cacheWrite: 0,
+                reasoning: 0,
+                total: 0,
+              },
+              cacheHitRequests: 0,
+              cacheCreateRequests: 0,
+              errorRequests: 0,
+            },
+            provenance: provenance(),
+          } satisfies UsageQueryResult;
+        }
+        if (input.kind !== "logs") throw new Error("unexpected usage query");
+        // Two connections to the SAME provider type must stay two rows.
+        return input.source === "llm"
+          ? ({
+              kind: "logs",
+              source: "llm",
+              rows: [
+                { ...llmRow(0), connectionSlug: "conn-a", providerId: "provider-x" },
+                { ...llmRow(1), connectionSlug: "conn-b", providerId: "provider-x" },
+              ],
+              offset: 0,
+              total: 2,
+              nextOffset: null,
+              provenance: provenance(),
+            } satisfies UsageQueryResult)
+          : ({
+              kind: "logs",
+              source: "tool",
+              rows: [],
+              offset: 0,
+              total: 0,
+              nextOffset: null,
+            } satisfies UsageQueryResult);
+      },
+      loadPricingSnapshot: async () => ({
+        hostEpoch: "host-epoch",
+        connectionId: "connection-id",
+        revision: 0,
+        entries: [],
+      }),
+    } as unknown as DesktopRuntimeHostClient,
+    sendToRenderer: () => undefined,
+  });
+
+  const handler = handlers.get("settings:usageStats");
+  assert.ok(handler);
+  const stats = await handler({} as never, "all") as UsageStats;
+  assert.deepEqual(
+    stats.byProvider.map((row) => row.provider).sort(),
+    ["conn-a", "conn-b"],
+  );
+});
+
+test("settings usage stats truncate the activity log at the cap instead of erroring", async () => {
+  const handlers = new Map<string, IpcHandler>();
+  const PAGE = 100;
+  // Above MAX_ACTIVITY_RECORDS (50_000) so paging must stop and flag truncation.
+  const TOTAL = 50_150;
+  registerRuntimeHostUsageIpc({
+    ipcMain: {
+      handle: (channel, listener) => handlers.set(channel, listener),
+      handleReconnectableRead: (channel, listener) => handlers.set(channel, listener),
+    },
+    client: {
+      queryUsage: async (input: UsageQueryInput) => {
+        if (input.kind === "summary") {
+          return {
+            kind: "summary",
+            summary: {
+              range: { from: 1, to: 2 },
+              totalRequests: TOTAL,
+              totalCostUsd: 0,
+              totalTokens: {
+                input: 0,
+                output: 0,
+                cacheMiss: 0,
+                cacheRead: 0,
+                cacheWrite: 0,
+                reasoning: 0,
+                total: 0,
+              },
+              cacheHitRequests: 0,
+              cacheCreateRequests: 0,
+              errorRequests: 0,
+            },
+            provenance: provenance(),
+          } satisfies UsageQueryResult;
+        }
+        if (input.kind !== "logs") throw new Error("unexpected usage query");
+        if (input.source === "llm") {
+          const offset = input.offset ?? 0;
+          const count = Math.min(PAGE, TOTAL - offset);
+          const nextOffset = offset + count < TOTAL ? offset + count : null;
+          return {
+            kind: "logs",
+            source: "llm",
+            rows: Array.from({ length: count }, (_, index) => llmRow(offset + index)),
+            offset,
+            total: TOTAL,
+            nextOffset,
+            provenance: provenance(),
+          } satisfies UsageQueryResult;
+        }
+        return {
+          kind: "logs",
+          source: "tool",
+          rows: [],
+          offset: 0,
+          total: 0,
+          nextOffset: null,
+        } satisfies UsageQueryResult;
+      },
+      loadPricingSnapshot: async () => ({
+        hostEpoch: "host-epoch",
+        connectionId: "connection-id",
+        revision: 0,
+        entries: [],
+      }),
+    } as unknown as DesktopRuntimeHostClient,
+    sendToRenderer: () => undefined,
+  });
+
+  const handler = handlers.get("settings:usageStats");
+  assert.ok(handler);
+  const stats = await handler({} as never, "all") as UsageStats;
+  assert.equal(stats.logsTruncated, true);
+  assert.equal(stats.logs.filter((row) => row.kind === "model").length, 50_000);
 });
 
 function llmRow(index: number) {

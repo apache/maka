@@ -22,6 +22,7 @@ import test from 'node:test';
 import type { SessionEvent } from '@maka/core/events';
 import type { SessionSummary } from '@maka/core/session';
 import type { UsageStats } from '@maka/core/settings';
+import { EMPTY_USAGE_PROVENANCE } from '@maka/core/usage-ledger-merge';
 import {
   projectDesktopSessionEvent,
   projectDesktopSessionSummary,
@@ -189,6 +190,7 @@ test('projects only present Usage Session ids into the Desktop host namespace', 
     byModel: [],
     byTool: [],
     pricing: [],
+    provenance: EMPTY_USAGE_PROVENANCE,
   };
 
   const projected = projectDesktopUsageStats({ hostId: 'remote-root' }, stats);

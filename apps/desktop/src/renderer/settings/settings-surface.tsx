@@ -296,6 +296,7 @@ export function SettingsSurface(props: {
   );
   const [usageStats, setUsageStats] = useState<{
     hostKey: string;
+    epoch: string | undefined;
     range: UsageRange;
     value: UsageStats;
   } | null>(null);
@@ -350,6 +351,14 @@ export function SettingsSurface(props: {
     : undefined;
   const selectedRuntimeHostKeyRef = useRef(selectedRuntimeHostKey);
   selectedRuntimeHostKeyRef.current = selectedRuntimeHostKey;
+  // A same-key Host can be replaced in place (hostId stable, epoch bumped) on
+  // reconnect. `runtimeHostSettingsKey` is epoch-free, so usage must key on the
+  // epoch too — otherwise a reconnect clears the page but never refetches.
+  const selectedRuntimeHostEpoch = selectedProfileId
+    ? runtimeHostLifecycleByProfile.get(selectedProfileId)?.epoch
+    : undefined;
+  const selectedRuntimeHostEpochRef = useRef(selectedRuntimeHostEpoch);
+  selectedRuntimeHostEpochRef.current = selectedRuntimeHostEpoch;
   function commitSelectedRuntimeHostProfile(
     profileId: string,
     snapshot = runtimeHosts,
@@ -620,6 +629,7 @@ export function SettingsSurface(props: {
       return;
     }
     const hostKey = runtimeHostSettingsKey(host);
+    const epoch = selectedRuntimeHostEpochRef.current;
     const ticket = usageReloadTicketRef.current + 1;
     usageReloadTicketRef.current = ticket;
     try {
@@ -627,15 +637,17 @@ export function SettingsSurface(props: {
       if (
         settingsModalMountedRef.current &&
         ticket === usageReloadTicketRef.current &&
-        selectedRuntimeHostKeyRef.current === hostKey
+        selectedRuntimeHostKeyRef.current === hostKey &&
+        selectedRuntimeHostEpochRef.current === epoch
       ) {
-        setUsageStats({ hostKey, range, value: next });
+        setUsageStats({ hostKey, epoch, range, value: next });
       }
     } catch (error) {
       if (
         settingsModalMountedRef.current &&
         ticket === usageReloadTicketRef.current &&
-        selectedRuntimeHostKeyRef.current === hostKey
+        selectedRuntimeHostKeyRef.current === hostKey &&
+        selectedRuntimeHostEpochRef.current === epoch
       ) {
         toast.error(copy.usageLoadFailed, settingsActionErrorMessage(error, locale));
       }
@@ -775,10 +787,11 @@ export function SettingsSurface(props: {
 
   useEffect(() => {
     // Usage records are Host-owned while the display preferences remain
-    // client-owned. Refetch when either the persisted range arrives or the
-    // selected Host changes so labels and numbers always describe one Host.
+    // client-owned. Refetch when the persisted range arrives, the selected Host
+    // changes, or the selected Host is replaced in place (epoch bump) so labels
+    // and numbers always describe one live Host generation.
     if (section === 'usage') void reloadUsage(settings.usage.range);
-  }, [section, settings.usage.range, selectedRuntimeHostKey]);
+  }, [section, settings.usage.range, selectedRuntimeHostKey, selectedRuntimeHostEpoch]);
 
   // PR-SETTINGS-HEADER-COPY-MAP-0 (U1): the page header derives its title
   // and description from the section→copy map keyed by the active section,
@@ -987,6 +1000,7 @@ export function SettingsSurface(props: {
                             usageStats={
                               usageStats &&
                               usageStats.hostKey === selectedRuntimeHostKey &&
+                              usageStats.epoch === selectedRuntimeHostEpoch &&
                               usageStats.range === settings.usage.range
                                 ? usageStats.value
                                 : null

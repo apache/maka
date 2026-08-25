@@ -20,7 +20,9 @@
 import { mkdir, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { E2eFixtureScenario, E2eFixtureState } from '@maka/core/e2e-fixture';
+import { MODEL_CALL_ATTEMPT_EVENT_TYPE } from '@maka/core/model-call-attempt';
 import type { UiLocale } from '@maka/core/ui-locale';
+import { createSqliteAgentRunStore } from '@maka/storage/agent-run-store';
 import { createProjectCatalog } from '@maka/storage/project-catalog';
 import {
   resolveStorageRoot,
@@ -249,10 +251,34 @@ export async function seedE2eFixture(input: {
     const owner = await tryAcquireInteractiveRootOwner(storageRoot);
     if (!owner) throw new Error('Unable to acquire the E2E fixture storage root');
     const usage = await openInteractiveUsageStoresForWrite(owner.lease);
+    // The AgentRun store and the interactive usage stores share one refcounted
+    // operational-state DB keyed by the lease's resolved path, so the canonical
+    // model-call events written here are visible to `catchUpModelCallProjection`
+    // below. It MUST be the lease's canonicalPath, not the raw workspaceRoot —
+    // a /var vs /private/var realpath difference would open a different DB.
+    const runStore = createSqliteAgentRunStore(owner.lease.canonicalPath);
     try {
       const records = usageStatsRecords(now);
-      for (const record of records.llm) await usage.telemetry.recordLlmCall(record);
+      // Model calls seed the CANONICAL ledger through the AgentRun event stream;
+      // tools stay on the legacy telemetry table (there is no canonical tool
+      // ledger). This is what actually exercises the canonical merge branch.
+      for (const { header: runHeader, attempt } of records.modelCalls) {
+        await runStore.createRun(runHeader);
+        await runStore.appendEvent(attempt.sessionId, attempt.runId, {
+          id: attempt.attemptId,
+          type: MODEL_CALL_ATTEMPT_EVENT_TYPE,
+          ts: attempt.completedAt,
+          sessionId: attempt.sessionId,
+          runId: attempt.runId,
+          turnId: attempt.turnId,
+          data: { ...attempt },
+        });
+      }
       for (const record of records.tools) await usage.telemetry.recordToolInvocation(record);
+      await runStore.close?.();
+      // Fold the appended attempts into the read model so the page's first read
+      // sees canonical usage (production's readCanonicalUsage also repairs).
+      await usage.modelCalls.catchUpModelCallProjection();
       await usage.flush();
     } finally {
       await usage.close();

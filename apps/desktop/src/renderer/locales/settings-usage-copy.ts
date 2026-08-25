@@ -26,6 +26,7 @@ export type UsageSettingsCopy = {
   viewAria: string; tabs: readonly [string, string, string, string, string]; filtersAria: string; filterPlaceholder: string; filterAria: string;
   statusAria: string; statuses: readonly [string, string, string, string]; details: string; detailsAria: string; recordCount(count: number): string; clearFilters: string;
   summaryOnly: string; showDetails: string; filteredEmpty: string; filteredEmptyHelp: string; requestEmpty: string;
+  costUnavailable: string; incompleteTitle: string; incompleteBody: string;
   tables: {
     providersAria: string; modelsAria: string; toolsAria: string; pricingAria: string; requestsAria: string;
     providerHeaders: string[]; modelHeaders: string[]; toolHeaders: string[]; pricingHeaders: string[]; requestHeaders: string[];
@@ -45,6 +46,8 @@ const SETTINGS_USAGE_COPY = {
     statuses: ['全部状态', '成功', '错误', '已中止'], details: '详情记录', detailsAria: '显示使用统计详情记录', recordCount: (count) => `共 ${count} 条记录`, clearFilters: '清除筛选',
     summaryOnly: '当前仅显示汇总指标。打开详情记录后，可以查看逐条模型调用和工具调用，按模型、工具或状态筛选，并用于排查费用与失败调用。',
     showDetails: '显示明细', filteredEmpty: '没有符合筛选条件的活动记录', filteredEmptyHelp: '调整或清除筛选条件后可查看全部活动记录。', requestEmpty: '暂无活动记录',
+    costUnavailable: '费用未知', incompleteTitle: '统计可能不完整',
+    incompleteBody: '部分记录未能读取、尚未纳入统计或超出展示上限，实际用量可能高于此处显示。',
     tables: {
       providersAria: '使用统计供应商统计表', modelsAria: '使用统计模型统计表', toolsAria: '使用统计工具统计表', pricingAria: '使用统计定价配置表', requestsAria: '使用统计活动记录表',
       providerHeaders: ['供应商', '调用', 'Token', '费用'], modelHeaders: ['模型', '调用', 'Token', '费用'], toolHeaders: ['工具', '调用', '成功', '错误', '平均耗时'],
@@ -65,6 +68,8 @@ const SETTINGS_USAGE_COPY = {
     statuses: ['All statuses', 'Success', 'Error', 'Aborted'], details: 'Detailed records', detailsAria: 'Show detailed usage records', recordCount: (count) => `${count} ${count === 1 ? 'record' : 'records'}`, clearFilters: 'Clear filters',
     summaryOnly: 'Only summary metrics are shown. Enable detailed records to inspect individual model calls and tool calls, filter by model, tool, or status, and investigate costs or failures.',
     showDetails: 'Show details', filteredEmpty: 'No activity matches these filters', filteredEmptyHelp: 'Adjust or clear the filters to see all activity records.', requestEmpty: 'No activity records',
+    costUnavailable: 'Cost unavailable', incompleteTitle: 'These numbers may be incomplete',
+    incompleteBody: 'Some records could not be read, are not folded in yet, or exceed the display limit, so real usage may be higher than shown.',
     tables: {
       providersAria: 'Usage by provider', modelsAria: 'Usage by model', toolsAria: 'Usage by tool', pricingAria: 'Usage pricing configuration', requestsAria: 'Usage activity log',
       providerHeaders: ['Provider', 'Calls', 'Tokens', 'Cost'], modelHeaders: ['Model', 'Calls', 'Tokens', 'Cost'], toolHeaders: ['Tool', 'Calls', 'Success', 'Errors', 'Average duration'],

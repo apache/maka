@@ -30,6 +30,7 @@ import type {
   UsageRange,
   UsageStats,
 } from '@maka/core/settings';
+import { EMPTY_USAGE_PROVENANCE } from '@maka/core/usage-ledger-merge';
 import type {
   CapabilitySnapshot,
   CapabilitySnapshotCollection,
@@ -253,6 +254,18 @@ const usageLogs: UsageStats['logs'] = [
   },
 ];
 
+// Priced provenance so the fixtures' costs read as authoritative
+// (pricedAttempts > 0); the empty fixture keeps the all-zero provenance.
+const STORY_USAGE_PROVENANCE = {
+  ...EMPTY_USAGE_PROVENANCE,
+  coverage: {
+    ...EMPTY_USAGE_PROVENANCE.coverage,
+    attempts: 1,
+    pricedAttempts: 1,
+    usageReportedAttempts: 1,
+  },
+};
+
 const usageStats: UsageStats = {
   summary: {
     totalRequests: 420,
@@ -288,6 +301,7 @@ const usageStats: UsageStats = {
     { tool: 'Bash', calls: 120, success: 118, errors: 2, avgDurationMs: 840 },
   ],
   pricing: [{ provider: 'zai-coding-plan', model: 'glm-4.7', inputPerMTokUsd: 0, outputPerMTokUsd: 0 }],
+  provenance: STORY_USAGE_PROVENANCE,
 };
 
 const emptyUsageStats: UsageStats = {
@@ -308,6 +322,7 @@ const emptyUsageStats: UsageStats = {
   byModel: [],
   byTool: [],
   pricing: [],
+  provenance: EMPTY_USAGE_PROVENANCE,
 };
 
 const singleProviderUsageStats: UsageStats = {
@@ -321,6 +336,7 @@ const singleProviderUsageStats: UsageStats = {
     outputTokens: 5_200,
   },
   byProvider: [{ provider: 'zai-coding-plan', requests: 37, tokens: 24_800, costUsd: 0.18 }],
+  provenance: STORY_USAGE_PROVENANCE,
 };
 
 const multiModelUsageStats: UsageStats = {
@@ -342,6 +358,7 @@ const multiModelUsageStats: UsageStats = {
     { model: 'gemini-2.5-pro', requests: 48, tokens: 96_000, costUsd: 0.52 },
     { model: 'qwen3-coder-480b-a35b-instruct', requests: 20, tokens: 32_000, costUsd: 0.1 },
   ],
+  provenance: STORY_USAGE_PROVENANCE,
 };
 
 function makeMemoryEntry(input: {

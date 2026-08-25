@@ -36,6 +36,7 @@ import {
 import { defaultLocalMemorySettings, normalizeLocalMemorySettings } from './local-memory.js';
 import type { PermissionMode } from './permission.js';
 import { decodePersistedPermissionMode } from './permission.js';
+import type { UsageProvenance } from './usage-ledger-merge.js';
 import {
   UI_LOCALE_PREFERENCES,
   isUiLocalePreference,
@@ -569,6 +570,19 @@ export interface UsageStats {
     inputPerMTokUsd: number;
     outputPerMTokUsd: number;
   }>;
+  /**
+   * Coverage/legacy/unreadable/pending accounting behind these totals, so the
+   * page can qualify a cost that reads low (unpriced/unreadable/pending) rather
+   * than presenting it as authoritative. Same provenance the summary IPC and
+   * Session Inspector already carry.
+   */
+  provenance: UsageProvenance;
+  /**
+   * True when the activity log was capped at MAX_ACTIVITY_RECORDS, so the page
+   * can say the list (and the log-derived breakdowns) are incomplete instead of
+   * silently showing a short list.
+   */
+  logsTruncated?: boolean;
 }
 
 export interface SettingsTestResult {
