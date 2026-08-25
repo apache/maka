@@ -748,6 +748,56 @@ describe('buildLlmHistorySummarizer', () => {
     assert.equal(calls, 2);
   });
 
+  test('preserves the initial malformed defect when the repair request fails', async () => {
+    let calls = 0;
+    const summarize = buildLlmHistorySummarizer({
+      resolveModel: () => 'fake-model',
+      generateText: async () => {
+        calls += 1;
+        if (calls === 1) return { text: 'free-form incomplete summary', finishReason: 'stop' };
+        throw new Error('model down during repair');
+      },
+    });
+
+    await assert.rejects(
+      summarize(
+        inputWith([ev({ role: 'user', author: 'user', content: { kind: 'text', text: 'hi' } })]),
+      ),
+      (error) =>
+        error instanceof HistoryCompactSummarizerError &&
+        error.reason === 'malformed_summary_missing_section' &&
+        error.cause instanceof HistoryCompactSummarizerError &&
+        error.cause.reason === 'provider_error' &&
+        error.cause.cause instanceof Error &&
+        error.cause.cause.message === 'model down during repair',
+    );
+    assert.equal(calls, 2);
+  });
+
+  test('preserves the initial malformed defect when the repair is empty', async () => {
+    let calls = 0;
+    const summarize = buildLlmHistorySummarizer({
+      resolveModel: () => 'fake-model',
+      generateText: async () => {
+        calls += 1;
+        return {
+          text: calls === 1 ? 'free-form incomplete summary' : '',
+          finishReason: 'stop',
+        };
+      },
+    });
+
+    await assert.rejects(
+      summarize(
+        inputWith([ev({ role: 'user', author: 'user', content: { kind: 'text', text: 'hi' } })]),
+      ),
+      (error) =>
+        error instanceof HistoryCompactSummarizerError &&
+        error.reason === 'malformed_summary_missing_section',
+    );
+    assert.equal(calls, 2);
+  });
+
   test('a deeper heading level cannot stand in for a mandated section', async () => {
     const summarize = buildLlmHistorySummarizer({
       resolveModel: () => 'fake-model',

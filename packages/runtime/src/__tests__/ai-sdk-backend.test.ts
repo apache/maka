@@ -5416,6 +5416,75 @@ describe('AiSdkBackend model history', () => {
     assert.equal(calls, 2, 'changed source fingerprint is eligible again');
   });
 
+  test('does not redispatch when malformed-summary repair fails with another reason', async () => {
+    let providerCalls = 0;
+    const summarize = buildLlmHistorySummarizer({
+      resolveModel: () => 'fake-model',
+      generateText: async () => {
+        providerCalls += 1;
+        return providerCalls % 2 === 1
+          ? { text: 'free-form incomplete summary', finishReason: 'stop' }
+          : { text: '## Goal\npartial summary', finishReason: 'length' };
+      },
+    });
+    const backend = createTestAiSdkBackend({
+      sessionId: 'session-1',
+      header: header(),
+      appendMessage: async () => {},
+      connection: connection(),
+      apiKey: 'sk-test',
+      modelId: 'mock-model-id',
+      modelFactory: () => completionModel(),
+      tools: [],
+      newId: idGenerator(),
+      now: monotonicClock(),
+      contextBudget: {
+        name: 'malformed-summary-repair-circuit-test',
+        maxHistoryEstimatedTokens: 10_000,
+        charsPerToken: 1,
+        historyCompact: { enabled: true },
+      },
+      summarizeHistoryCompact: (input) => summarize(input),
+      recordHistoryCompactCheckpoint: () => {
+        throw new Error('must not persist');
+      },
+    });
+    const history = [
+      runtimeTextEvent({
+        id: 'repair-circuit-old',
+        turnId: 'old',
+        role: 'user',
+        author: 'user',
+        text: 'old '.repeat(100),
+      }),
+      runtimeTextEvent({
+        id: 'repair-circuit-recent',
+        turnId: 'recent',
+        role: 'model',
+        author: 'agent',
+        text: 'recent',
+      }),
+    ];
+
+    const first = await backend.compactHistory({
+      turnId: 'turn-repair-compact-1',
+      runId: 'run-1',
+      runtimeContext: history,
+    });
+    const repeated = await backend.compactHistory({
+      turnId: 'turn-repair-compact-2',
+      runId: 'run-2',
+      runtimeContext: history,
+    });
+
+    assert.equal(providerCalls, 2);
+    assert.deepEqual(first.outcome, {
+      kind: 'failed',
+      reason: 'malformed_summary_missing_section',
+    });
+    assert.deepEqual(repeated.outcome, first.outcome);
+  });
+
   test('invalidates the malformed compaction circuit when configuration changes', async (t) => {
     type FingerprintCase = {
       name: string;

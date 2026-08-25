@@ -174,8 +174,27 @@ export function buildLlmHistorySummarizer(options: BuildLlmHistorySummarizerOpti
         charsPerToken: input.inputBudget?.charsPerToken,
         fixedInputChars: repairInstructions.length,
       });
-      const repaired = await generateSummary(1, repairInstructions, repairMessages);
-      if (repaired.defect) throw new HistoryCompactSummarizerError(repaired.defect);
+      let repaired: Awaited<ReturnType<typeof generateSummary>>;
+      try {
+        repaired = await generateSummary(1, repairInstructions, repairMessages);
+      } catch (error) {
+        throw new HistoryCompactSummarizerError(initial.defect, {
+          cause:
+            error instanceof HistoryCompactSummarizerError
+              ? error
+              : new HistoryCompactSummarizerError('provider_error', { cause: error }),
+        });
+      }
+      if (repaired.text.trim().length === 0) {
+        throw new HistoryCompactSummarizerError(initial.defect, {
+          cause: new Error('History compact repair returned an empty summary'),
+        });
+      }
+      if (repaired.defect) {
+        throw new HistoryCompactSummarizerError(initial.defect, {
+          cause: new HistoryCompactSummarizerError(repaired.defect),
+        });
+      }
       return repaired.text;
     } catch (error) {
       if (error instanceof HistoryCompactSummarizerError) throw error;
