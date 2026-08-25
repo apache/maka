@@ -230,9 +230,7 @@ export async function createExecutionRuntimeHostComposition(
   });
   const stores = storage.execution;
   let graphControlStore: ReturnType<typeof createAgentGraphControlStore> | undefined;
-  let externalConversationAuthority:
-    | InteractiveExternalConversationAuthorityWriter
-    | undefined;
+  let externalConversationAuthority: InteractiveExternalConversationAuthorityWriter | undefined;
   let graphClient: HostAgentGraphCoordinator | undefined;
   let sessionEffects: HostSessionEffectCoordinator | undefined;
   let memoryExtraction: HostMemoryExtractionCoordinator | undefined;
@@ -1438,9 +1436,7 @@ export async function createExecutionRuntimeHostComposition(
             }
           },
         },
-        close: [
-          () => externalConversationAuthority?.close(),
-        ],
+        close: [() => externalConversationAuthority?.close()],
       }),
       createRuntimeHostDomainModule({
         id: 'workhub',
