@@ -34,9 +34,12 @@ and usage:
    npm --workspace @maka/desktop run storybook -- --no-open
    ```
 
-2. Connect to the MCP endpoint at `http://localhost:6006/mcp` (registered for
-   agents in the root `.mcp.json`). The endpoint only responds while Storybook
-   is running; if it is unreachable, start it as above.
+2. Connect to the MCP endpoint at `http://localhost:6006/mcp` (loopback
+   only, by design). Agent clients that read the root `.mcp.json` discover
+   it automatically; other clients (e.g. Codex, Cursor) need a one-time
+   registration in their own MCP config pointing at the same URL. The
+   endpoint only responds while Storybook is running; if it is unreachable,
+   start it as above.
 
 3. Query, then write:
 

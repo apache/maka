@@ -40,8 +40,11 @@ const config: StorybookConfig = {
       name: '@storybook/addon-mcp',
       options: {
         // Issue #3527: agents get a queryable component-docs interface.
-        // Docs toolset only; dev/test toolsets are deliberate follow-ups
-        // (test additionally needs @storybook/addon-vitest).
+        // Docs is the default toolset selection, not an allowlist: the addon
+        // lets callers override it per request via the X-MCP-Toolsets
+        // header, so the security boundary is the dev server's loopback
+        // binding (see the storybook script in package.json). dev/test stay
+        // off by default; test additionally needs @storybook/addon-vitest.
         toolsets: {
           dev: false,
           test: false,
