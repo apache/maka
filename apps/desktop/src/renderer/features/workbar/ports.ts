@@ -18,7 +18,6 @@
  */
 
 import type {
-  QueueEnqueueOutcome,
   QuoteRef,
   SessionEvent,
   ShellRunUpdate,
@@ -197,8 +196,19 @@ export interface WorkbarAttachmentsService {
 }
 
 export type SideChatSendResult =
-  | { ok: true }
-  | { ok: false; reason?: string };
+  | { ok: true; turnId: string; steered?: false }
+  | { ok: true; turnId: string; steered: true; messageId: string }
+  | { ok: false; reason: 'outcome_unknown'; messageId: string }
+  | { ok: false; reason?: string; messageId?: never };
+
+export type SideChatSteerResult =
+  | { kind: 'queued'; messageId: string }
+  | { kind: 'outcome_unknown'; messageId: string }
+  | { kind: 'started'; turnId: string };
+
+export type SideChatStopTarget =
+  | { readonly kind: 'admission'; readonly messageId: string }
+  | { readonly kind: 'turn'; readonly turnId: string };
 
 export interface SideChatSessionPort {
   listSessions(): Promise<SessionSummary[]>;
@@ -231,8 +241,11 @@ export interface SideChatSessionPort {
       attachmentItems?: WorkbarIngestInput[];
     },
   ): Promise<SideChatSendResult>;
-  stop(sessionId: string): Promise<void>;
-  steer(sessionId: string, text: string): Promise<QueueEnqueueOutcome>;
+  stop(
+    sessionId: string,
+    target?: SideChatStopTarget,
+  ): Promise<{ kind: 'retracted'; messageId: string } | undefined>;
+  steer(sessionId: string, text: string, admissionId?: string): Promise<SideChatSteerResult>;
   setPermissionMode(
     sessionId: string,
     mode: PermissionMode,
@@ -249,6 +262,8 @@ export interface SideChatSessionPort {
   subscribeEvents(
     sessionId: string,
     handler: (event: SessionEvent) => void,
+    onSeeded?: () => void,
+    onSeedError?: (error: unknown) => void,
   ): WorkbarUnsubscribe;
   subscribeSessionChanges(handler: (event: SessionChangedEvent) => void): WorkbarUnsubscribe;
 }

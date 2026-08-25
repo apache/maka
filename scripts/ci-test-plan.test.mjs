@@ -344,6 +344,7 @@ test('pull request triggers stay on an explicit allowlist', () => {
     'copilot-auto-review.yml',
     'dependency-audit.yml',
     'release-windows-check.yml',
+    'runtime-host-owner-platform.yml',
     'windows-sandbox-w0.yml',
   ]);
 });

@@ -23,13 +23,16 @@ import {
   isMcpStdioConfig,
   type McpConfigAddResult,
   type McpConfigFile,
+  type McpConfigImportResult,
   type McpServerConfig,
   type McpServerStatus,
 } from '@maka/core/mcp';
 import type { McpClientManager } from '@maka/mcp';
 import {
   McpServerExistsError,
+  McpConfigSourceError,
   normalizeMcpConfig,
+  normalizeMcpImport,
   type McpConfigStore,
 } from '@maka/storage/mcp-config-store';
 import type { McpOAuthController } from './mcp-oauth-controller.js';
@@ -149,19 +152,38 @@ export function registerMcpIpcMain(deps: McpIpcMainDeps): void {
     await deps.ensureReady();
     return deps.manager.statuses();
   });
-  deps.ipcMain.handle('mcp:setConfig', async (_event, config: McpConfigFile) =>
-    inMutationLane(async () => {
-      // Sentinels restore BEFORE the gate compares anything: the renderer's
-      // copy of an untouched secret-bearing server still carries sentinels,
-      // and comparing those against the stored real values would make every
-      // such server look modified — vetoing a bulk edit that only touches
-      // an unrelated server while some other login runs. commitConfig's
-      // in-lane gate does the semantic comparison on the restored config.
-      const next = await commitConfig((current) => restoreMcpConfigSecrets(config, current));
-      await deps.manager.sync(next);
-      changed(deps);
-      return redactMcpConfigSecrets(next);
-    }),
+  deps.ipcMain.handle(
+    'mcp:importConfig',
+    async (_event, source: string): Promise<McpConfigImportResult> => {
+      let imported: McpConfigFile;
+      try {
+        imported = normalizeMcpImport(source);
+      } catch (error) {
+        if (error instanceof McpConfigSourceError) {
+          return {
+            status: 'invalid',
+            reason: error.reason,
+            ...(error.version === undefined ? {} : { version: error.version }),
+          };
+        }
+        throw error;
+      }
+      const importedCount = Object.keys(imported.mcpServers).length;
+      return inMutationLane(async () => {
+        const next = await commitConfig((current) =>
+          restoreMcpConfigSecrets(
+            {
+              version: MCP_CONFIG_VERSION,
+              mcpServers: { ...current.mcpServers, ...imported.mcpServers },
+            },
+            current,
+          ),
+        );
+        await deps.manager.sync(next);
+        changed(deps);
+        return { status: 'imported', config: redactMcpConfigSecrets(next), importedCount };
+      });
+    },
   );
   deps.ipcMain.handle(
     'mcp:add',

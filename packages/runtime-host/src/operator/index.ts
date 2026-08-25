@@ -66,3 +66,16 @@ export {
   type RuntimeHostDeploymentIdentity,
   type RuntimeHostNpmDeploymentIdentity,
 } from './update-package-evidence.js';
+export {
+  applyLocalHostDeploymentTransition,
+  LocalHostDeploymentAuthorityError,
+  readLocalHostDeploymentRecord,
+  resolveLocalHostDeploymentAuthorityRoot,
+  type LocalHostDeploymentAuthorityOptions,
+  type LocalHostDeploymentRecord,
+  type LocalHostDeploymentState,
+  type LocalHostDeploymentTransition,
+  type LocalHostDeploymentTransitionRejection,
+  type LocalHostDeploymentTransitionResult,
+  type RuntimeHostInstallationOwner,
+} from './local-deployment-owner.js';

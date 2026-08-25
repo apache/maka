@@ -65,6 +65,7 @@ interface NormalizedSendSessionCommand {
 type NormalizedStopSessionInput = {
   source?: 'stop_button';
   expectedTurnId?: string;
+  expectedAdmissionId?: string;
 };
 
 export function normalizeSandboxBoundaryResponse(input: unknown): SandboxBoundaryResponse {
@@ -324,9 +325,17 @@ export function normalizeStopSessionInput(input: unknown): NormalizedStopSession
         'Invalid stop session expectedTurnId',
         MAX_TURN_ID_LENGTH,
       );
+  const expectedAdmissionId = value.expectedAdmissionId === undefined
+    ? undefined
+    : normalizeRequiredString(
+        value.expectedAdmissionId,
+        'Invalid stop session expectedAdmissionId',
+        MAX_TURN_ID_LENGTH,
+      );
   return {
     ...(value.source ? { source: 'stop_button' as const } : {}),
     ...(expectedTurnId ? { expectedTurnId } : {}),
+    ...(expectedAdmissionId ? { expectedAdmissionId } : {}),
   };
 }
 

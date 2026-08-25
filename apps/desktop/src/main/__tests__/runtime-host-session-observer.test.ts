@@ -698,16 +698,16 @@ test('cancels a transcript consumer while its replica is still preparing', async
   await observer.close();
 });
 
-test('broadcasts transcript changes to every consumer and advances the read marker', async () => {
+test('broadcasts durable admission and transcript changes from the same message', async () => {
   const events = new AsyncFrameQueue();
   const markers: string[] = [];
   const message: StoredMessage = {
-    type: 'assistant',
-    id: 'assistant-1',
+    type: 'user',
+    id: 'ticket-1',
     turnId: 'turn-1',
     ts: 2,
-    text: 'Hi',
-    modelId: 'test-model',
+    text: 'Continue here',
+    steeringEventId: 'steering-event-1',
   };
   const observer = new RuntimeHostSessionObserver({
     client: {
@@ -741,6 +741,8 @@ test('broadcasts transcript changes to every consumer and advances the read mark
     },
     emitSessionsChanged() {},
   });
+  const eventConsumer = eventTarget(21);
+  await observer.observe('session-1', 'observer-1', eventConsumer, true);
   const transcriptBatches: DesktopTranscriptBatch[][] = [[], []];
   for (const [index, batches] of transcriptBatches.entries()) {
     const consumerId = `consumer-${index}`;
@@ -775,8 +777,14 @@ test('broadcasts transcript changes to every consumer and advances the read mark
     markers.length === 1 && transcriptBatches.every((batches) => batches.length > 0),
   );
 
-  assert.deepEqual(markers, ['assistant-1']);
+  assert.deepEqual(markers, ['ticket-1']);
   assert.deepEqual(transcriptBatches[1], transcriptBatches[0]);
+  assert.deepEqual(
+    eventConsumer.events
+      .filter((event) => event.type === 'message_admission')
+      .map((event) => ({ turnId: event.turnId, messageId: event.messageId })),
+    [{ turnId: 'turn-1', messageId: 'ticket-1' }],
+  );
   await observer.close();
 });
 

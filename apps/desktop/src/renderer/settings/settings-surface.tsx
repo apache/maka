@@ -910,7 +910,7 @@ export function SettingsSurface(props: {
                         <p className="settingsPageHeaderDescription">{headerCopy.description}</p>
                       )}
                     </div>
-                    {showsRuntimeHost && runtimeHostOptions.length > 0 ? (
+                    {showsRuntimeHost && runtimeHostOptions.length > 1 ? (
                       <div className="settingsRuntimeHostSelector">
                         <Selector
                           label={copy.runtimeHost}
