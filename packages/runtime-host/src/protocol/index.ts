@@ -105,12 +105,6 @@ export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 50 as const;
 // last-used timestamp. Older peers reject those strict projection shapes.
 // 43: Session tool-start events correlate hidden shell polls with `shellRunRef`.
 // Older peers reject that added closed-union field.
-<<<<<<< HEAD
-// peers reject that strict error-class value, so mixed versions must fail
-// handshake before the class can surface.
-=======
->>>>>>> 5f62d300e (fix(runtime,cli): derive retry decisions from the normalized failure class)
-// 42: Turn provider retry progress adds `provider_capacity`. Older peers reject
 // that strict retry-reason enum value, so mixed versions must fail handshake.
 // 41: Context compaction returns a typed terminal outcome on both Turn
 // snapshots and context.compact results. Epoch-40 peers reject these closed

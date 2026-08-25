@@ -401,8 +401,8 @@ function normalizeProviderError(error: unknown): ProviderErrorFacts | undefined 
       target,
       evidence: {
         text,
-        statusCode: field('statusCode') || field('status') || nestedStatusCode,
-        code: field('code') || nestedCode,
+        statusCode: field('statusCode') || field('status') || nestedStatusCode || '',
+        code: field('code') || nestedCode || '',
         structuredCodes: [...new Set([...structuredCodes, ...nestedStructuredCodes])],
       },
       summarySources: sources,

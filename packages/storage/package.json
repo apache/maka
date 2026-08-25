@@ -28,7 +28,7 @@
     "./mcp-config-store": "./dist/mcp-config-store.js",
     "./memory-bundle-store": "./dist/memory-bundle-store.js",
     "./model-call-ledger": "./dist/model-call-ledger.js",
-    "./operational-state-store": "./dist/operational-state-store-public.js",
+    "./operational-state-store": "./dist/operational-state-store.js",
     "./pet-pack-store": "./dist/pet-pack-store.js",
     "./plan-authority": "./dist/plan-authority.js",
     "./process-lifetime-file-update-lock": "./dist/process-lifetime-file-update-lock.js",

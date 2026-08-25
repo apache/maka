@@ -532,9 +532,6 @@ function projectConnectionTest(
     latencyMs: outcome.latencyMs ?? null,
     statusCode: outcome.error.statusCode ?? null,
     errorClass: outcome.error.kind,
-    ...(outcome.error.providerFailure === undefined
-      ? {}
-      : { providerFailure: outcome.error.providerFailure }),
   };
 }
 
