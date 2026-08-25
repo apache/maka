@@ -18,7 +18,6 @@
  */
 
 import fs from 'node:fs';
-import { syncBuiltinESMExports } from 'node:module';
 import { join } from 'node:path';
 
 const [rootArgument, markerFile] = process.argv.slice(2);
@@ -44,7 +43,6 @@ fs.promises.open = (async (path, flags, mode) => {
   }
   return originalOpen(path, flags, mode);
 }) as typeof fs.promises.open;
-syncBuiltinESMExports();
 
 const { resolveStorageRoot, StorageRootAuthorityError } = await import('../../root-authority.js');
 

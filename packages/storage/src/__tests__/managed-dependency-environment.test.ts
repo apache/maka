@@ -363,7 +363,12 @@ test('rejects an NTFS alternate stream created inside a dependency artifact', {
     storageRoot,
     producer,
   });
-  await assert.rejects(authority.acquire(identity, source), /alternate data stream/u);
+  await assert.rejects(
+    authority.acquire(identity, source),
+    (error: unknown) =>
+      error instanceof Error &&
+      error.message === 'Managed dependency environment contains an alternate data stream',
+  );
   await authority.close();
 });
 

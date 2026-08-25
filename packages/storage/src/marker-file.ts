@@ -18,8 +18,8 @@
  */
 
 import { randomUUID } from 'node:crypto';
-import { constants as fsConstants, type BigIntStats } from 'node:fs';
-import { link, lstat, open, rename, unlink } from 'node:fs/promises';
+import fs, { constants as fsConstants, type BigIntStats } from 'node:fs';
+import { link, lstat, rename, unlink } from 'node:fs/promises';
 import { join } from 'node:path';
 
 export interface MarkerFileHandle {
@@ -36,7 +36,9 @@ export interface MarkerFileDependencies {
 }
 
 const defaultDependencies: MarkerFileDependencies = {
-  open: async (path, flags, mode) => open(path, flags, mode),
+  // Read the live process implementation so process-level race fixtures can
+  // interpose before importing this module on every supported Node platform.
+  open: async (path, flags, mode) => fs.promises.open(path, flags, mode),
   randomUUID,
 };
 
