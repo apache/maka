@@ -401,16 +401,24 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
     this.#assertCurrentSession(sessionId, sessionGeneration);
     this.#adoptLoadedConfiguration(configuration);
     const modelText = options.modelText ?? text;
-    const result = await this.#request('turn.message.submit', {
-      originHostEpoch: this.#connection.hostEpoch,
-      sessionId,
-      messageId: options.messageId,
-      content: {
-        text: modelText,
-        ...(modelText === text ? {} : { displayText: text }),
-      },
-      placement: options.placement,
-    });
+    let result;
+    try {
+      result = await this.#request('turn.message.submit', {
+        originHostEpoch: this.#connection.hostEpoch,
+        sessionId,
+        messageId: options.messageId,
+        content: {
+          text: modelText,
+          ...(modelText === text ? {} : { displayText: text }),
+        },
+        placement: options.placement,
+      });
+    } catch (error) {
+      if (error instanceof RuntimeHostOperationError && error.code === 'outcome_unknown') {
+        return { messageId: options.messageId, disposition: 'outcome_unknown' };
+      }
+      throw error;
+    }
     return { messageId: options.messageId, disposition: result.disposition };
   }
 

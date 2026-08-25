@@ -1174,6 +1174,33 @@ describe('Runtime Host Maka Session driver', () => {
     });
   });
 
+  test('keeps an unknown message admission available for transcript reconciliation', async () => {
+    const subscription = new FakeSubscription(continuitySnapshot(), Promise.resolve([]));
+    const connection = new FakeConnection([subscription]);
+    connection.messageSubmitOutcomes.push(
+      new RuntimeHostOperationError(
+        'turn.message.submit',
+        'outcome_unknown',
+        'Message disposition cannot be proven in this Host Epoch',
+      ),
+    );
+    const driver = createRuntimeHostMakaSessionDriver({
+      connection: connection.value,
+      cwd: '/tmp',
+      llmConnectionSlug: 'openai-main',
+      model: 'gpt-5',
+    });
+    await driver.switchSession('session-1');
+
+    assert.deepEqual(
+      await driver.submitMessage!('Keep this visible', {
+        messageId: 'message-unknown',
+        placement: 'current_turn',
+      }),
+      { messageId: 'message-unknown', disposition: 'outcome_unknown' },
+    );
+  });
+
   test('projects the acknowledgement that releases a question answered through the Host', async () => {
     const subscription = new FakeSubscription(
       continuitySnapshot({ interactions: { pending: [pendingQuestion()] } }),
@@ -1795,6 +1822,7 @@ class FakeConnection {
   readonly goalControlOutcomes: Array<GoalProjection | Error> = [];
   /** Scripted goal.query results, shifted per call; defaults to null (no goal). */
   readonly goalQueryResults: Array<GoalProjection | null> = [];
+  readonly messageSubmitOutcomes: Array<OperationOutput<'turn.message.submit'> | Error> = [];
   readonly value: RuntimeHostMakaSessionDriverInput['connection'];
 
   constructor(
@@ -1899,13 +1927,19 @@ class FakeConnection {
         : operation === 'session.execution_boundary.query'
           ? this.executionBoundary
           : operation === 'turn.message.submit'
-            ? {
-                disposition:
-                  (input as OperationInput<'turn.message.submit'>).placement === 'next_turn'
-                    ? 'followup'
-                    : 'steering',
-                queueRevision: 2,
-              }
+            ? (() => {
+                const outcome = this.messageSubmitOutcomes.shift();
+                if (outcome instanceof Error) throw outcome;
+                return (
+                  outcome ?? {
+                    disposition:
+                      (input as OperationInput<'turn.message.submit'>).placement === 'next_turn'
+                        ? 'followup'
+                        : 'steering',
+                    queueRevision: 2,
+                  }
+                );
+              })()
             : operation === 'queue.retract'
               ? {
                   hostEpoch: 'host-1',

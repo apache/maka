@@ -186,7 +186,7 @@ describe('busy-raced send settlement', () => {
     });
     const restoreWindow = installWindow({
       sessions: {
-        send: async (_sessionId: string, command: { messageId: string }) => {
+        submitMessage: async (_sessionId: string, command: { messageId: string }) => {
           submittedMessageId = command.messageId;
           observeSubmit();
           await admission;
@@ -233,7 +233,7 @@ describe('busy-raced send settlement', () => {
     const messageState = createMessageState();
     const restoreWindow = installWindow({
       sessions: {
-        send: async (_sessionId: string, command: { messageId: string }) => ({
+        submitMessage: async (_sessionId: string, command: { messageId: string }) => ({
           ok: true,
           disposition: 'steering',
           messageId: command.messageId,
@@ -270,7 +270,7 @@ describe('busy-raced send settlement', () => {
     const messageState = createMessageState();
     const restoreWindow = installWindow({
       sessions: {
-        send: async (_sessionId: string, command: { messageId: string }) => ({
+        submitMessage: async (_sessionId: string, command: { messageId: string }) => ({
           ok: true,
           disposition: 'turn_started',
           messageId: command.messageId,
@@ -308,7 +308,7 @@ describe('busy-raced send settlement', () => {
     const messageState = createMessageState();
     const restoreWindow = installWindow({
       sessions: {
-        send: async (_sessionId: string, command: { messageId: string }) => {
+        submitMessage: async (_sessionId: string, command: { messageId: string }) => {
           // The Host streamed under its own turn id before the IPC response.
           turnState.setLiveTurnBySession((current) => ({
             ...current,
@@ -361,7 +361,7 @@ describe('busy-raced send settlement', () => {
         remove: async (sessionId: string) => {
           removed.push(sessionId);
         },
-        send: async (_sessionId: string, command: { messageId: string }) => ({
+        submitMessage: async (_sessionId: string, command: { messageId: string }) => ({
           ok: true,
           disposition: 'steering',
           messageId: command.messageId,
@@ -405,7 +405,7 @@ describe('busy-raced send settlement', () => {
         create: async () => ({ id: 'session-new' }),
       },
       sessions: {
-        send: async (_sessionId: string, command: { messageId: string }) => ({
+        submitMessage: async (_sessionId: string, command: { messageId: string }) => ({
           ok: true,
           disposition: 'turn_started',
           messageId: command.messageId,

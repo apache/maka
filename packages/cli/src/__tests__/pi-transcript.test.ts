@@ -517,6 +517,38 @@ describe('Maka Pi TUI transcript', () => {
     ]);
   });
 
+  test('keeps a transient user row before later durable output in a sparse replacement', () => {
+    const state = createMakaPiTranscriptState();
+    replaceTranscriptWithStoredMessages(state, [
+      { type: 'user', id: 'old-user', turnId: 'old-turn', ts: 1, text: 'before' },
+    ]);
+    appendUserPrompt(state, 'send now', 'message-1', true);
+    state.entries.push({ kind: 'assistant', messageId: 'later-assistant', text: 'after' });
+
+    replaceTranscriptWithStoredMessages(
+      state,
+      [
+        { type: 'user', id: 'old-user', turnId: 'old-turn', ts: 1, text: 'before' },
+        {
+          type: 'assistant',
+          id: 'later-assistant',
+          turnId: 'turn-1',
+          ts: 3,
+          text: 'after',
+          modelId: 'model-1',
+        },
+      ],
+      { preserveTransientMessages: true },
+    );
+
+    assert.deepEqual(
+      state.entries.map((entry) =>
+        entry.kind === 'user' || entry.kind === 'assistant' ? entry.messageId : entry.kind,
+      ),
+      ['old-user', 'message-1', 'later-assistant'],
+    );
+  });
+
   test('reconciles a transient user row by messageId when durable history arrives', () => {
     const state = createMakaPiTranscriptState();
     appendUserPrompt(state, 'send now', 'message-1', true);
@@ -528,6 +560,25 @@ describe('Maka Pi TUI transcript', () => {
     );
 
     assert.deepEqual(state.entries, [{ kind: 'user', messageId: 'message-1', text: 'send now' }]);
+  });
+
+  test('removes only the transient row named by a retracted admission', () => {
+    const state = createMakaPiTranscriptState();
+    appendUserPrompt(state, 'keep this', 'message-kept', true);
+    appendUserPrompt(state, 'take this back', 'message-retracted', true);
+
+    applyMakaSessionEventToTranscript(
+      state,
+      event({
+        type: 'message_admission',
+        messageId: 'message-retracted',
+        outcome: 'retracted',
+      }),
+    );
+
+    assert.deepEqual(state.entries, [
+      { kind: 'user', messageId: 'message-kept', text: 'keep this', transient: true },
+    ]);
   });
 
   test('reconciles a live steering event into its transient message position', () => {

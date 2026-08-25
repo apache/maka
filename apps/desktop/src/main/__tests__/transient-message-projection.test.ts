@@ -67,6 +67,29 @@ test('canonicalizing one send does not hide a later transient send', () => {
   assert.deepEqual([...pending.keys()], ['message-2']);
 });
 
+test('keeps a transient message in submission order inside a sparse durable tail', () => {
+  const pending = new Map([[transient.id, transient]]);
+  const durable: StoredMessage[] = [
+    { type: 'user', id: 'old-user', turnId: 'old-turn', ts: 1, text: 'before' },
+    {
+      type: 'assistant',
+      id: 'later-assistant',
+      turnId: 'turn-1',
+      ts: 3,
+      text: 'after',
+      modelId: 'model-1',
+    },
+  ];
+
+  const projected = reconcileTransientMessages(pending, durable);
+
+  assert.deepEqual(projected.map((message) => message.id), [
+    'old-user',
+    'message-1',
+    'later-assistant',
+  ]);
+});
+
 test('keeps a transient message out of a sparse historical range', () => {
   const live = { ...transient, id: 'message-live', turnId: 'message-live', text: 'latest prompt' };
   const old = { ...transient, id: 'message-old', turnId: 'turn-old', ts: 1, text: 'old prompt' };

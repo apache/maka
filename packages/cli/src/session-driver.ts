@@ -106,7 +106,7 @@ export interface MakaSubmitMessageOptions {
 
 export interface MakaMessageAdmission {
   messageId: string;
-  disposition: 'steering' | 'followup' | 'turn_started';
+  disposition: 'steering' | 'followup' | 'turn_started' | 'outcome_unknown';
 }
 
 export class SkillInvocationBlockedError extends Error {

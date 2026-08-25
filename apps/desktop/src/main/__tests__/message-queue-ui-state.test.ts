@@ -25,6 +25,7 @@ import { createAppShellSessionUiStateController } from '../../renderer/app-shell
 test('queue_update events drive the independent desktop queue projection', () => {
   const controller = createAppShellSessionUiStateController();
   const transientMessages: unknown[] = [];
+  const removedTransientMessageIds: string[] = [];
   const handlers = createAppShellSessionEventHandlers({
     uiLocale: 'zh',
     activeIdRef: { current: 'session-1' },
@@ -35,6 +36,8 @@ test('queue_update events drive the independent desktop queue projection', () =>
     setInteractionBySession: controller.setInteractionBySession,
     setMessageQueueBySession: controller.setMessageQueueBySession,
     projectTransientMessage: (_sessionId, message) => transientMessages.push(message),
+    removeTransientMessage: (_sessionId, messageId) =>
+      removedTransientMessageIds.push(messageId),
     showModelSetupToast() {},
     toastApi: { error() {} },
   });
@@ -118,6 +121,17 @@ test('queue_update events drive the independent desktop queue projection', () =>
     followup: [],
   });
   assert.equal(controller.getState().messageQueueBySession['session-1'], undefined);
+  assert.deepEqual(removedTransientMessageIds, []);
+
+  handlers.handleEvent('session-1', {
+    type: 'message_admission',
+    id: 'retracted-message-next',
+    turnId: 'turn-1',
+    ts: 3,
+    messageId: 'message-next',
+    outcome: 'retracted',
+  });
+  assert.deepEqual(removedTransientMessageIds, ['message-next']);
 });
 
 test('complete events deliver the durable context compaction outcome to Desktop', () => {

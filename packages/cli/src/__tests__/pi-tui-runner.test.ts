@@ -2009,6 +2009,73 @@ describe('Maka Pi TUI runner', () => {
     await run;
   });
 
+  test('removes an idle transient message after a definite Host rejection', async () => {
+    const terminal = new FakeTerminal();
+    const driver = new SteeringTurnDriver();
+    driver.nextSubmitError = new Error('Session is archived');
+    const run = runMakaPiTui({
+      title: 'Maka',
+      driver,
+      cwd: '/repo',
+      model: 'm',
+      connectionSlug: 'c',
+      permissionMode: 'bypass',
+      terminal,
+    });
+
+    terminal.input('do not leave a ghost row');
+    terminal.input('\r');
+    await waitFor(() =>
+      plainTerminalOutput(terminal.screenOutput()).includes('Session is archived'),
+    );
+    assert.equal(
+      plainTerminalOutput(terminal.screenOutput()).includes('do not leave a ghost row'),
+      false,
+    );
+
+    terminal.input('/exit');
+    terminal.input('\r');
+    await run;
+  });
+
+  test('keeps an admitted message when a Host-started turn attaches from a sparse tail', async () => {
+    const terminal = new FakeTerminal();
+    const driver = new SteeringTurnDriver();
+    driver.startedTurnMessages = [
+      {
+        type: 'assistant',
+        id: 'later-assistant',
+        turnId: 'turn-started',
+        ts: 2,
+        text: 'Later durable output',
+        modelId: 'model-1',
+      },
+    ];
+    const run = runMakaPiTui({
+      title: 'Maka',
+      driver,
+      cwd: '/repo',
+      model: 'm',
+      connectionSlug: 'c',
+      permissionMode: 'bypass',
+      terminal,
+    });
+
+    terminal.input('keep the accepted identity');
+    terminal.input('\r');
+    await waitFor(() =>
+      plainTerminalOutput(terminal.screenOutput()).includes('Later durable output'),
+    );
+    assert.match(plainTerminalOutput(terminal.screenOutput()), /keep the accepted identity/);
+
+    terminal.input('\x1b');
+    terminal.input('\x1b');
+    await waitFor(() => terminal.progressStates.at(-1) === false);
+    terminal.input('/exit');
+    terminal.input('\r');
+    await run;
+  });
+
   test('opens /transcript during a running turn instead of steering it', async () => {
     const terminal = new FakeTerminal();
     const driver = new SteeringTurnDriver();
@@ -2292,8 +2359,8 @@ describe('Maka Pi TUI runner', () => {
     terminal.input('\x1b'); // interrupt
     await waitFor(() => terminal.progressStates.at(-1) === false);
     // The authoritative queue is cleared and only the followup comes back as
-    // a draft. Both already-sent message rows keep their stable identities;
-    // interrupting delivery must not make either presentation disappear.
+    // a draft. The consumed steering row remains for canonical reconciliation;
+    // the retracted followup row is removed while its text moves to the editor.
     await waitFor(() => {
       const screen = plainTerminalOutput(terminal.screenOutput());
       return (
@@ -6760,10 +6827,12 @@ class SteeringTurnDriver implements MakaSessionDriver {
   readonly steered: string[] = [];
   readonly queuedMessages: string[] = [];
   readonly turnOrchestrations: Array<MakaPreparePromptOptions['turnOrchestration']> = [];
+  nextSubmitError: Error | undefined;
+  startedTurnMessages: StoredMessage[] = [];
   retractCalls = 0;
   rewindTargets: RewindTarget[] = [];
-  private steering: string[] = [];
-  private followup: string[] = [];
+  private steering: Array<{ messageId: string; text: string }> = [];
+  private followup: Array<{ messageId: string; text: string }> = [];
   private pendingEvents: SessionEvent[] = [];
   private wakeTurn: (() => void) | null = null;
   private turnOpen = false;
@@ -6804,8 +6873,8 @@ class SteeringTurnDriver implements MakaSessionDriver {
       id: `queue-update-${this.eventSeq}`,
       turnId: 'turn-1',
       ts: this.eventSeq,
-      steering: [...this.steering],
-      followup: [...this.followup],
+      steering: this.steering.map((entry) => entry.text),
+      followup: this.followup.map((entry) => entry.text),
     });
     this.wakeTurn?.();
     this.wakeTurn = null;
@@ -6827,12 +6896,17 @@ class SteeringTurnDriver implements MakaSessionDriver {
   }
 
   async submitMessage(text: string, options: MakaSubmitMessageOptions) {
+    if (this.nextSubmitError) {
+      const error = this.nextSubmitError;
+      this.nextSubmitError = undefined;
+      throw error;
+    }
     if (!this.turnOpen) {
       const turn = await this.preparePrompt(text);
       queueMicrotask(() =>
         this.startedTurnListener?.({
           ...turn,
-          messages: [],
+          messages: this.startedTurnMessages,
           summary: fakeSessionSummary(turn.sessionId),
         }),
       );
@@ -6840,10 +6914,10 @@ class SteeringTurnDriver implements MakaSessionDriver {
     }
     if (options.placement === 'current_turn') {
       this.steered.push(text);
-      this.steering.push(text);
+      this.steering.push({ messageId: options.messageId, text });
     } else {
       this.queuedMessages.push(text);
-      this.followup.push(text);
+      this.followup.push({ messageId: options.messageId, text });
     }
     this.emitQueueUpdate();
     return {
@@ -6862,10 +6936,24 @@ class SteeringTurnDriver implements MakaSessionDriver {
 
   async retractQueued(): Promise<string> {
     this.retractCalls += 1;
-    const joined = [...this.steering, ...this.followup].join('\n\n');
+    const retracted = [...this.steering, ...this.followup];
+    const joined = retracted.map((entry) => entry.text).join('\n\n');
     this.steering = [];
     this.followup = [];
     this.emitQueueUpdate();
+    for (const entry of retracted) {
+      this.eventSeq += 1;
+      this.pendingEvents.push({
+        type: 'message_admission',
+        id: `message-retracted-${this.eventSeq}`,
+        turnId: 'turn-1',
+        ts: this.eventSeq,
+        messageId: entry.messageId,
+        outcome: 'retracted',
+      });
+    }
+    this.wakeTurn?.();
+    this.wakeTurn = null;
     return joined;
   }
 

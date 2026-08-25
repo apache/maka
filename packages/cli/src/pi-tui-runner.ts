@@ -1190,7 +1190,9 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
         if (superseded()) return;
         if (authoritativeAttachedTurn) {
           adoptSessionMetadata(authoritativeAttachedTurn.summary);
-          replaceTranscript(authoritativeAttachedTurn.messages);
+          replaceTranscript(authoritativeAttachedTurn.messages, {
+            preserveTransientMessages: true,
+          });
           shellRunHydration.reset();
           if (input.listShellRunUpdates) {
             await shellRunHydration.hydrate(authoritativeAttachedTurn.sessionId);
@@ -1258,6 +1260,15 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
         // here as "ended without completion" — never report that against the
         // adopted Session.
         if (superseded()) return;
+        if (
+          request.kind === 'external' &&
+          request.turnOrchestration === undefined &&
+          input.driver.submitMessage &&
+          optimisticUserEntry?.kind === 'user'
+        ) {
+          removeTransientUserMessage(optimisticUserEntry.messageId);
+          optimisticUserEntry = undefined;
+        }
         appendTurnFailureToTranscript(state, error);
         attention.attentionNeeded();
         shellRunElapsedTicker.sync();

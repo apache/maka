@@ -344,18 +344,33 @@ export function replaceTranscriptWithStoredMessages(
   options: { preserveTransientMessages?: boolean } = {},
 ): void {
   const durableMessageIds = new Set(messages.map((message) => message.id));
+  const durableEntries = foldStoredShellRunChildren(storedMessagesToTranscriptEntries(messages));
+  const durableEntryIds = new Set(durableEntries.map(transcriptEntryId).filter(Boolean));
   const transientEntries = options.preserveTransientMessages
-    ? state.entries.filter(
-        (entry): entry is Extract<MakaPiTranscriptEntry, { kind: 'user' }> =>
-          entry.kind === 'user' &&
-          entry.transient === true &&
-          !durableMessageIds.has(entry.messageId),
-      )
+    ? state.entries.flatMap((entry, index) => {
+        if (
+          entry.kind !== 'user' ||
+          entry.transient !== true ||
+          durableMessageIds.has(entry.messageId)
+        ) {
+          return [];
+        }
+        const nextDurableId = state.entries
+          .slice(index + 1)
+          .map(transcriptEntryId)
+          .find((messageId) => messageId !== undefined && durableEntryIds.has(messageId));
+        return [{ entry, nextDurableId }];
+      })
     : [];
-  state.entries = [
-    ...foldStoredShellRunChildren(storedMessagesToTranscriptEntries(messages)),
-    ...transientEntries,
-  ];
+  const unanchoredTransientEntries: MakaPiTranscriptEntry[] = [];
+  for (const transient of transientEntries) {
+    const nextIndex = transient.nextDurableId
+      ? durableEntries.findIndex((entry) => transcriptEntryId(entry) === transient.nextDurableId)
+      : -1;
+    if (nextIndex < 0) unanchoredTransientEntries.push(transient.entry);
+    else durableEntries.splice(nextIndex, 0, transient.entry);
+  }
+  state.entries = [...unanchoredTransientEntries, ...durableEntries];
   clearPendingInteractions(state);
   state.expandAllTools = false;
   state.expandAllThinking = false;
@@ -373,6 +388,19 @@ export function replaceTranscriptWithStoredMessages(
   state.followup = [];
   for (const msg of messages) {
     if (msg.type === 'token_usage') accumulateUsage(state.usage, msg);
+  }
+}
+
+function transcriptEntryId(entry: MakaPiTranscriptEntry): string | undefined {
+  switch (entry.kind) {
+    case 'user':
+    case 'assistant':
+    case 'thinking':
+      return entry.messageId;
+    case 'tool':
+      return entry.toolUseId;
+    default:
+      return undefined;
   }
 }
 
@@ -737,6 +765,17 @@ export function applyMakaSessionEventToTranscript(
     case 'steering_message':
       // A user interjection injected mid-turn; render it in place as a user turn.
       appendUserPrompt(state, event.content.displayText ?? event.content.text, event.messageId);
+      break;
+
+    case 'message_admission':
+      if (event.outcome === 'retracted') {
+        state.entries = state.entries.filter(
+          (entry) =>
+            entry.kind !== 'user' ||
+            entry.transient !== true ||
+            entry.messageId !== event.messageId,
+        );
+      }
       break;
 
     case 'queue_update':

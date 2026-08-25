@@ -85,6 +85,7 @@ export function createAppShellSessionEventHandlers(options: {
   setInteractionBySession: StateUpdater<InteractionQueues>;
   setMessageQueueBySession?: StateUpdater<Record<string, MessageQueueUiState>>;
   projectTransientMessage?: (sessionId: string, message: StoredMessage) => void;
+  removeTransientMessage?: (sessionId: string, messageId: string) => void;
   onInteractionChanged?: (sessionId: string) => void;
   /** A boundary decision settled: the session's execution boundary may have moved. */
   onExecutionBoundaryChanged?: (sessionId: string) => void;
@@ -113,6 +114,7 @@ export function createAppShellSessionEventHandlers(options: {
     setInteractionBySession,
     setMessageQueueBySession,
     projectTransientMessage,
+    removeTransientMessage,
     onInteractionChanged,
     onExecutionBoundaryChanged,
     onContextCompactionOutcome,
@@ -317,6 +319,11 @@ export function createAppShellSessionEventHandlers(options: {
             },
           };
         });
+        break;
+      case 'message_admission':
+        if (event.outcome === 'retracted') {
+          removeTransientMessage?.(sessionId, event.messageId);
+        }
         break;
       case 'text_complete':
         void refreshMessages(sessionId, { requiredAssistantMessageId: event.messageId }).catch(() => false);

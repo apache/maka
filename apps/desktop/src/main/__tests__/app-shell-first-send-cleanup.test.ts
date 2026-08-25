@@ -123,7 +123,7 @@ describe('composer first-send cleanup', () => {
     let sends = 0;
     const restoreWindow = installWindow({
       sessions: {
-        send: async () => {
+        submitMessage: async () => {
           sends += 1;
           return { ok: true, attachments: [], skillInvocation: { loaded: [], failed: [] } };
         },
@@ -162,7 +162,7 @@ describe('composer first-send cleanup', () => {
         },
       },
       sessions: {
-        send: async () => ({
+        submitMessage: async () => ({
           ok: true,
           attachments: [],
           skillInvocation: { loaded: [], failed: [] },
@@ -212,7 +212,7 @@ describe('composer first-send cleanup', () => {
         },
       },
       sessions: {
-        send: async () => ({
+        submitMessage: async () => ({
           ok: true,
           attachments: [],
           skillInvocation: { loaded: [], failed: [] },
@@ -248,7 +248,7 @@ describe('composer first-send cleanup', () => {
         },
       },
       sessions: {
-        send: async () => ({
+        submitMessage: async () => ({
           ok: true,
           attachments: [],
           skillInvocation: { loaded: [], failed: [] },
@@ -293,7 +293,7 @@ describe('composer first-send cleanup', () => {
         },
       },
       sessions: {
-        send: async () => ({
+        submitMessage: async () => ({
           ok: true,
           attachments: [],
           skillInvocation: { loaded: [], failed: [] },
@@ -329,7 +329,7 @@ describe('composer first-send cleanup', () => {
       newTasks: { create: async () => ({ id: 'session-1' }) },
       sessions: {
         // What `prepareSkillInvocation` does when Skill discovery fails.
-        send: async () => Promise.reject(new Error('Skill discovery failed')),
+        submitMessage: async () => Promise.reject(new Error('Skill discovery failed')),
         remove: async (sessionId: string) => {
           removed.push(sessionId);
         },
@@ -350,7 +350,7 @@ describe('composer first-send cleanup', () => {
     const restoreWindow = installWindow({
       newTasks: { create: async () => ({ id: 'session-1' }) },
       sessions: {
-        send: async () => ({
+        submitMessage: async () => ({
           ok: true,
           attachments: [],
           skillInvocation: { loaded: [], failed: [] },
@@ -378,7 +378,7 @@ describe('composer first-send cleanup', () => {
     const removed: string[] = [];
     const restoreWindow = installWindow({
       sessions: {
-        send: async () => Promise.reject(new Error('Skill discovery failed')),
+        submitMessage: async () => Promise.reject(new Error('Skill discovery failed')),
         remove: async (sessionId: string) => {
           removed.push(sessionId);
         },
@@ -415,7 +415,7 @@ describe('composer first-send cleanup', () => {
     const transcriptRangeRef = { current: transcript as DesktopTranscriptRangeController | undefined };
     const restoreWindow = installWindow({
       sessions: {
-        send: async () => {
+        submitMessage: async () => {
           order.push('send');
           return { ok: true, attachments: [], skillInvocation: { loaded: [], failed: [] } };
         },
@@ -462,7 +462,7 @@ function deferred<T>() {
 describe('composer send failure feedback', () => {
   const readinessFailure = () => ({
     sessions: {
-      send: async () =>
+      submitMessage: async () =>
         Promise.reject(new Error('NO_REAL_CONNECTION:missing_api_key: no ready connection')),
       remove: async () => undefined,
     },

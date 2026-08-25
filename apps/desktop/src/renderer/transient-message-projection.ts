@@ -31,8 +31,11 @@ export function reconcileTransientMessages(
 ): StoredMessage[] {
   for (const message of durable) transient.delete(message.id);
   if (transient.size === 0 || options.includeTransient === false) return [...durable];
-  return [
-    ...durable,
-    ...[...transient.values()].sort((left, right) => left.ts - right.ts),
-  ];
+  const projected = [...durable];
+  for (const message of [...transient.values()].sort((left, right) => left.ts - right.ts)) {
+    const nextIndex = projected.findIndex((candidate) => candidate.ts > message.ts);
+    if (nextIndex < 0) projected.push(message);
+    else projected.splice(nextIndex, 0, message);
+  }
+  return projected;
 }

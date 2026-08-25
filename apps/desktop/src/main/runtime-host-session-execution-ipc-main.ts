@@ -327,13 +327,21 @@ export function registerRuntimeHostSessionExecutionIpc(
         (command.skillIds?.length ?? 0) === 0 &&
         command.turnOrchestration === undefined
       ) {
-        const submitted = await deps.client.submitMessage({
+        const submitted = await submitMessageWithReconnect(deps.client, {
           sessionId,
           messageId: command.messageId,
           content: startInput.content,
           placement: 'current_turn',
         });
         const skillInvocation = { loaded: [], failed: [], receipts: [] };
+        if (!submitted) {
+          return {
+            ok: false as const,
+            reason: 'outcome_unknown' as const,
+            messageId: command.messageId,
+            skillInvocation,
+          };
+        }
         if (submitted.disposition === 'turn_started') {
           deps.emitSessionsChanged('status-change', sessionId, {
             turnId: submitted.turnId,

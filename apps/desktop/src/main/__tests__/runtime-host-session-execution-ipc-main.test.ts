@@ -871,14 +871,18 @@ test("retries a dispatched busy fallback with its original message identity", as
     inlineReferences: [],
     skillInvocation: { loaded: [], failed: [], receipts: [] },
   });
-  await assert.rejects(
-    ipc.invoke("sessions:send", "session-1", {
+  assert.deepEqual(
+    await ipc.invoke("sessions:send", "session-1", {
       type: "send",
-      turnId: "turn-unknown",
+      messageId: "turn-unknown",
       text: "ordinary chat keeps the existing failure contract",
     }),
-    (error: unknown) =>
-      error instanceof RuntimeHostOperationError && error.code === 'outcome_unknown',
+    {
+      ok: false,
+      reason: "outcome_unknown",
+      messageId: "turn-unknown",
+      skillInvocation: { loaded: [], failed: [], receipts: [] },
+    },
   );
   assert.deepEqual(
     await ipc.invoke("sessions:send", "side-session", {
