@@ -113,6 +113,29 @@ describe('ToolAvailabilityRuntime — search activation', () => {
     assert.doesNotMatch(connector.description, /Edit a document/);
   });
 
+  test('search indexes group meaning without exposing it in the initial inventory', async () => {
+    const plan = new ToolAvailabilityRuntime(
+      [tool('remote_invoke', 'Invoke a provider-defined operation')],
+      {
+        groups: [
+          {
+            id: 'calendar_provider',
+            label: 'Team calendar',
+            description: 'Schedule a calendar meeting and manage events.',
+            toolNames: ['remote_invoke'],
+          },
+        ],
+      },
+      invalid,
+    ).prepare(new Map());
+    const connector = searchTool(plan);
+
+    assert.doesNotMatch(connector.description, /Team calendar|Schedule a calendar meeting/);
+    assert.deepEqual(await connector.impl({ query: 'schedule calendar meeting' }, ctx), {
+      activated: ['remote_invoke'],
+    });
+  });
+
   test('a successful search activates bounded matches for the next projection', async () => {
     const active = new Map<string, MakaTool>();
     const traces: ToolSearchTrace[] = [];

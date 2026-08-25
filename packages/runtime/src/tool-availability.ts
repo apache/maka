@@ -169,6 +169,9 @@ export class ToolAvailabilityRuntime {
     this.directNames = new Set([...known].filter((name) => !claimed.has(name)));
 
     if (claimed.size > 0) {
+      const groupByToolName = new Map(
+        groups.flatMap((group) => group.toolNames.map((name) => [name, group] as const)),
+      );
       const index = new MiniSearch<SearchDocument>({
         fields: ['name', 'searchText'],
         storeFields: ['name'],
@@ -183,10 +186,19 @@ export class ToolAvailabilityRuntime {
       index.addAll(
         [...claimed].map((name) => {
           const tool = this.toolsByName.get(name)!;
+          const group = groupByToolName.get(name);
           return {
             id: name,
             name,
-            searchText: `${name.replaceAll('_', ' ')} ${tool.description}`,
+            searchText: [
+              name.replaceAll('_', ' '),
+              tool.description,
+              group?.id,
+              group?.label,
+              group?.description,
+            ]
+              .filter((value): value is string => value !== undefined && value.length > 0)
+              .join(' '),
           };
         }),
       );

@@ -133,7 +133,7 @@ test('unknown Client Capability loads, invokes, and rebinds after UDS reconnect'
           affinity: 'session',
           hostPathAccess: 'cwd',
           label: 'Unknown fixture',
-          description: 'A capability the Host source does not enumerate.',
+          description: 'Schedule a calendar meeting through the fixture provider.',
           tools: [
             {
               serverId: 'fixture_unknown',
@@ -215,7 +215,7 @@ test('unknown Client Capability loads, invokes, and rebinds after UDS reconnect'
     );
     assert.ok(toolSearch);
     const searched = await toolSearch.impl(
-      { query: 'unknown payload reject', limit: 20 },
+      { query: 'schedule calendar meeting', limit: 20 },
       toolContext,
     );
     const capabilityToolNames = [tool.name, rejectedTool.name].sort((left, right) =>
