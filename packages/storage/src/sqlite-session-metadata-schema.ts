@@ -1118,6 +1118,7 @@ const MIGRATIONS: ReadonlyMap<number, string> = new Map([
       SET generation = generation + 1
       WHERE scope = 'catalog';
     END;
+  `,
   ],
   [
     30,
