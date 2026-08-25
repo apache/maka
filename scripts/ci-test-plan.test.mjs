@@ -346,8 +346,19 @@ test('pull request triggers stay on an explicit allowlist', () => {
     'gitoxide-helper-admission.yml',
     'release-windows-check.yml',
     'runtime-host-owner-platform.yml',
+    'windows-recovery.yml',
     'windows-sandbox-w0.yml',
   ]);
+});
+
+test('Windows recovery publishes one stable PR and main check for ruleset enforcement', () => {
+  const workflow = readWorkflow('windows-recovery.yml');
+
+  assert.match(workflow, /\n {2}pull_request:\n {4}branches: \[main\]/u);
+  assert.match(workflow, /\n {2}push:\n {4}branches: \[main\]/u);
+  assert.match(workflow, /\n {2}workflow_dispatch:/u);
+  assert.match(workflow, /\n {4}name: windows_recovery/u);
+  assert.match(workflow, /cancel-in-progress: \$\{\{ github\.event_name == 'pull_request' \}\}/u);
 });
 
 test('the sandbox lane pairs its path filter with a nightly run', () => {

@@ -724,6 +724,10 @@ test('one product workflow gates one draft release on every required artifact', 
 
 test('repository control plane admits only reviewed immutable release tags', async () => {
   const config = parseYaml(await readFile(new URL('../.asf.yaml', import.meta.url), 'utf8'));
+  assert.deepEqual(config.github.protected_branches.main.required_status_checks.contexts, [
+    'test',
+    'windows_recovery',
+  ]);
   const environments = config.github.environments;
   for (const [name, tagPattern] of [
     ['release', 'v*-incubating-rc*'],
