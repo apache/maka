@@ -267,7 +267,7 @@ describe('managed Runtime Host service', () => {
   });
 
   it('installs, reports, and cleanly uninstalls while retaining the State Root', async (t) => {
-    const base = await mkdtemp(join(tmpdir(), 'maka-runtime-host-service-'));
+    const base = await realpath(await mkdtemp(join(tmpdir(), 'maka-runtime-host-service-')));
     t.after(() => rm(base, { recursive: true, force: true }));
     const homeDir = join(base, 'home');
     const clientDataRoot = join(base, 'config', 'Maka');
@@ -275,11 +275,14 @@ describe('managed Runtime Host service', () => {
     const projectPath = join(base, 'projects');
     await writeFile(join(base, 'placeholder'), '', 'utf8');
     await mkdir(projectPath, { recursive: true });
-    const env = { XDG_CONFIG_HOME: join(base, 'xdg-config') };
+    const env = {
+      XDG_CONFIG_HOME: join(base, 'xdg-config'),
+      XDG_DATA_HOME: join(base, 'xdg-data'),
+    };
     const configPath = resolveRuntimeHostManagedServiceConfigPath(clientDataRoot);
     const serviceId = resolveRuntimeHostManagedServiceId(clientDataRoot);
     const deploymentRoot = resolveRuntimeHostManagedDeploymentRoot(serviceId, {
-      env: { XDG_DATA_HOME: join(base, 'xdg-data') },
+      env,
       homeDir,
       platform: 'linux',
     });
@@ -306,6 +309,9 @@ describe('managed Runtime Host service', () => {
     const managerDeps = {
       allocateLoopbackPort: async () => 49_999,
       waitForReady: async () => undefined,
+      environment: env,
+      homeDir,
+      platform: 'linux' as const,
     } as const;
 
     const installed = await manageRuntimeHostService(
@@ -403,6 +409,24 @@ describe('managed Runtime Host service', () => {
       policy: { kind: 'channel' as const, channel: 'latest' as const },
       target: expectedTarget,
     };
+    await writeRuntimeHostManagedUpdatePolicy(deploymentRoot, updatePolicy);
+    await writeFile(configPath, '{not-json', 'utf8');
+    await manageRuntimeHostService(
+      {
+        ...common,
+        cliPath: globalCliPath,
+        action: 'uninstall',
+        retainManagedDeployment: true,
+        expectedTarget,
+      },
+      backend(),
+      managerDeps,
+    );
+    assert.equal(await readRuntimeHostManagedUpdatePolicy(deploymentRoot), null);
+    await access(deploymentRoot);
+
+    await manageRuntimeHostService({ ...common, action: 'install' }, backend(), managerDeps);
+    assert.equal(await readRuntimeHostManagedUpdatePolicy(deploymentRoot), null);
     await writeRuntimeHostManagedUpdatePolicy(deploymentRoot, updatePolicy);
     await assert.rejects(
       manageRuntimeHostService(
