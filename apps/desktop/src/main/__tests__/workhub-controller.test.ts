@@ -39,10 +39,14 @@ test('binds the controller to the immutable WH-R2.4 strategy ID', () => {
   assert.equal(WORKHUB_ROUTING_STRATEGY_ID, 'wh-r2.4-session-context-continuity');
 });
 
-test('binds the WorkHub controller to the app runtime rather than project refreshes', () => {
+test('binds the WorkHub controller to one Coordination identity rather than project refreshes', () => {
   const source = readFileSync(appShellUrl, 'utf8');
 
-  assert.match(source, /workHubControllerRef\s*=\s*useRef/u);
+  assert.doesNotMatch(source, /workHubControllerRef\s*=\s*useRef/u);
+  assert.match(
+    source,
+    /const workHubController\s*=\s*useMemo\([\s\S]*?\[workHubCoordinationGeneration, workHubCoordinationSessionId\],\s*\)/u,
+  );
   assert.match(source, /workHubProjectsRef\.current\s*=\s*projects/u);
   assert.doesNotMatch(
     source,

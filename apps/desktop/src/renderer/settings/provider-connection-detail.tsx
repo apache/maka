@@ -51,6 +51,7 @@ import {
 } from '@maka/ui';
 import { PasswordInput } from './password-input';
 import { SettingsExpandableRow } from './settings-expandable-row';
+import { SettingsRow } from './settings-section';
 import { getProviderSettingsCopy } from '../locales/settings-provider-copy';
 import { providerDisplay } from './provider-display';
 import { AddModelDialog } from './provider-add-model-dialog';
@@ -82,6 +83,7 @@ import {
   type RequestHeaderDraft,
 } from './request-customization-editor';
 import { bulkThinkingLevelStates } from './relay-thinking-bulk';
+import { endpointCarriesCredentials, providerEndpointPresentation } from './provider-endpoint-presentation';
 
 export function ConnectionDetail(props: ConnectionDetailProps) {
   const defaults = PROVIDER_DEFAULTS[props.connection.providerType];
@@ -343,15 +345,26 @@ function ConnectionDetailInner(props: ConnectionDetailProps) {
       if (mounted.current) setRequestCustomizationBusy(false);
     }
   }
-  // Most of the 60 providers publish a fixed endpoint; editing it there can
-  // only break the connection, and a proxy belongs in 设置 · 通用 · 网络, not in
-  // a per-connection URL. So the row exists only where the address is genuinely
-  // the user's: a service with no published endpoint (the *-compatible ones), or
-  // a local runtime whose port is a convention rather than a fact. A derived
-  // endpoint (Cloudflare builds one from the account id) is nobody's to type.
-  const showsEndpoint = !needsOAuth
-    && !defaults.baseUrlTemplate
-    && (!defaults.baseUrl || defaults.category === 'local');
+  // Every known connection reports where requests go. Editability remains the
+  // narrower authority: built-in and derived endpoints are visible but fixed,
+  // while custom relays and local runtimes keep their existing editor.
+  const endpoint = providerEndpointPresentation(connection);
+  const endpointValue = endpoint.value
+    ? <code className="settingsReadOnlyValue providerEndpointValue" data-mono="true">{endpoint.value}</code>
+    : endpoint.emptyState === 'managed'
+      ? copy.endpointManaged
+      : copy.endpointMissing;
+  // Model-level endpoint overrides mean the connection-level base is not the
+  // whole truth for every model; say so under the value rather than implying
+  // one address serves all models.
+  const endpointNote = endpoint.modelOverrides
+    ? <span className="providerEndpointNote">{copy.endpointModelOverridesNote}</span>
+    : null;
+  const endpointDisplay = endpointNote ? <>{endpointValue}{endpointNote}</> : endpointValue;
+  // A credential-bearing saved endpoint must not prefill a plain text input:
+  // the editor falls back to the masked-by-default PasswordInput, which the
+  // user can deliberately reveal.
+  const endpointHasCredentials = endpointCarriesCredentials(savedBaseUrl);
 
   return (
     /* Three sections, each a heading with a sentence beside its controls, one
@@ -457,8 +470,7 @@ function ConnectionDetailInner(props: ConnectionDetailProps) {
             </SettingsExpandableRow>
           </VStack>
         )}
-        {(supportsApiKey || showsEndpoint) && (
-          <VStack gap={0}>
+        <VStack gap={0}>
             <Divider />
             {supportsApiKey && (
               <>
@@ -497,11 +509,11 @@ function ConnectionDetailInner(props: ConnectionDetailProps) {
               <Divider />
               </>
             )}
-            {showsEndpoint && (
+            {endpoint.editable ? (
               <>
               <SettingsExpandableRow
                 label={copy.endpoint}
-                value={savedBaseUrl || copy.endpointDefault}
+                value={endpointDisplay}
                 actionLabel={copy.edit}
                 actionAriaLabel={`${copy.edit}: ${copy.endpoint}`}
                 isEditing={editingRow === 'endpoint'}
@@ -513,25 +525,41 @@ function ConnectionDetailInner(props: ConnectionDetailProps) {
                 onCancel={() => { setBaseUrl(savedBaseUrl); setEditingRow(null); }}
                 onSave={async () => { if (await save('endpoint')) setEditingRow(null); }}
               >
-                <TextInput
-                  label={copy.endpoint}
-                  isLabelHidden
-                  value={baseUrl}
-                  onChange={setBaseUrl}
-                  placeholder={defaults.baseUrl}
-                  isDisabled={allActionsBusy}
-                />
+                {endpointHasCredentials ? (
+                  <PasswordInput
+                    value={baseUrl}
+                    onChange={setBaseUrl}
+                    placeholder={defaults.baseUrl}
+                    label={copy.endpoint}
+                    isLabelHidden
+                    description={copy.endpointCredentialsMasked}
+                    isDisabled={allActionsBusy}
+                  />
+                ) : (
+                  <TextInput
+                    label={copy.endpoint}
+                    isLabelHidden
+                    value={baseUrl}
+                    onChange={setBaseUrl}
+                    placeholder={defaults.baseUrl}
+                    isDisabled={allActionsBusy}
+                  />
+                )}
               </SettingsExpandableRow>
               <Divider />
               </>
+            ) : (
+              <>
+                <SettingsRow
+                  label={copy.endpoint}
+                  description={endpointDisplay}
+                  align="start"
+                />
+                <Divider />
+              </>
             )}
-          </VStack>
-        )}
+        </VStack>
       </DetailSection>
-      {/* The rows draw the closing rule themselves; without them the section
-          still needs one. Two rules with a gap between them read as an empty
-          row, so only ever one. */}
-      {!supportsApiKey && !showsEndpoint && !retired && <Divider />}
       {/* Everything below writes to the connection, and a retired one accepts
           no writes: the catalog refuses a model or request-body change, and the
           credential vault refuses a request header. Rendering the editors would

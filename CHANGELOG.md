@@ -30,6 +30,9 @@
 
 ### Changed
 
+- Made typed `request()` the sole direct Runtime Host operation API; removed the 17 forwarding
+  aliases from direct and reconnecting connections while preserving status validation,
+  subscriptions, capabilities, listeners, lifecycle, and close behavior.
 - Collapsed the RuntimeRunner/Flow/Invocation shell into `RuntimeKernel`; backend dispatch,
   terminal coalescing, stop/drain, and durable continuation admission now have one production
   owner, immutable request snapshots remain enforced at AgentRun acceptance and backend dispatch,

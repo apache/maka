@@ -148,7 +148,9 @@ async function readStoredSessions(
   );
   try {
     const sessions: Array<{ header: UsageSessionHeader; messages: UsageMessage[] }> = [];
-    for (const { header } of await metadata.list()) {
+    // Usage is a durable cost aggregate, so it counts every Session that spent
+    // tokens, including reserved roles and rows a catalog would hide.
+    for (const { header } of await metadata.list(undefined, 'all')) {
       const messages = (await metadata.readMessages(header.id)).flatMap((value) => {
         const message = normalizeUsageMessage(value);
         return message ? [message] : [];

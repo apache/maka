@@ -138,6 +138,7 @@ export type DailyReviewOperationKey = Extract<OperationKey, `daily-review.${stri
 export type WebSearchOperationKey = Extract<OperationKey, `web-search.${string}`>;
 export type NetworkProxyOperationKey = Extract<OperationKey, `network-proxy.${string}`>;
 export type ConfigurationOperationKey = Extract<OperationKey, `configuration.${string}`>;
+export type WorkHubCoordinationOperationKey = Extract<OperationKey, `workhub.${string}`>;
 export type DomainOperationHandlerMap = Pick<OperationHandlerMap, DomainOperationKey>;
 export type TurnOperationHandlerMap = Pick<OperationHandlerMap, TurnOperationKey>;
 export type ContextOperationHandlerMap = Pick<OperationHandlerMap, ContextOperationKey>;
@@ -204,6 +205,10 @@ export type DailyReviewOperationHandlerMap = Pick<OperationHandlerMap, DailyRevi
 export type WebSearchOperationHandlerMap = Pick<OperationHandlerMap, WebSearchOperationKey>;
 export type NetworkProxyOperationHandlerMap = Pick<OperationHandlerMap, NetworkProxyOperationKey>;
 export type ConfigurationOperationHandlerMap = Pick<OperationHandlerMap, ConfigurationOperationKey>;
+export type WorkHubCoordinationOperationHandlerMap = Pick<
+  OperationHandlerMap,
+  WorkHubCoordinationOperationKey
+>;
 export type AccessAuthorityOperationHandlerMap = Pick<
   OperationHandlerMap,
   keyof typeof ACCESS_AUTHORITY_OPERATION_SPECS

@@ -25,7 +25,11 @@ import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { describe, test } from 'node:test';
 import type { CreateSessionInput } from '@maka/core/runtime-inputs';
-import type { StoredMessage } from '@maka/core/session';
+import {
+  WORKHUB_COORDINATION_SESSION_ID,
+  WORKHUB_COORDINATION_SESSION_ROLE,
+  type StoredMessage,
+} from '@maka/core/session';
 import {
   EXTERNAL_SESSION_IMPORT_LOOKUP_MAX_RECENT_SESSION_IDS,
   EXTERNAL_SESSION_IMPORT_LOOKUP_MAX_SOURCE_IDS,
@@ -36,6 +40,156 @@ import { OPERATIONAL_STATE_DATABASE_NAME } from '../operational-state-store.js';
 import { createSqliteSessionMetadataStore } from '../sqlite-session-metadata-store.js';
 
 describe('SQLite SessionStore', () => {
+  test('requires the reserved WorkHub Coordination identity and role together', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'maka-workhub-coordination-identity-role-'));
+    const store = createSessionStore(root);
+    try {
+      await assert.rejects(
+        store.createStableSession({
+          sessionId: WORKHUB_COORDINATION_SESSION_ID,
+          requestFingerprint: `sha256:${'a'.repeat(64)}`,
+          input: makeInput({ cwd: root, projectId: null, name: 'Reserved without role' }),
+        }),
+        /identity and role must be claimed together/,
+      );
+      await assert.rejects(
+        store.createStableSession({
+          sessionId: 'ordinary-with-coordination-role',
+          requestFingerprint: `sha256:${'b'.repeat(64)}`,
+          input: {
+            ...makeInput({ cwd: root, projectId: null, name: 'Role without identity' }),
+            role: WORKHUB_COORDINATION_SESSION_ROLE,
+          },
+        }),
+        /identity and role must be claimed together/,
+      );
+      assert.deepEqual(await store.listHeaders(), []);
+
+      // The invariant lives in the header builder, so the creators that share
+      // it inherit it even though their inputs carry no role today.
+      await assert.rejects(
+        store.createSubagent({
+          ...makeInput({ cwd: root, name: 'Subagent claiming the role' }),
+          role: WORKHUB_COORDINATION_SESSION_ROLE,
+        } as Parameters<typeof store.createSubagent>[0]),
+        /identity and role must be claimed together/,
+      );
+      await assert.rejects(
+        store.createAgentGraphOperator(
+          {
+            ...makeInput({ cwd: root, name: 'Operator claiming the role' }),
+            role: WORKHUB_COORDINATION_SESSION_ROLE,
+          } as Parameters<typeof store.createAgentGraphOperator>[0],
+          {
+            schemaVersion: 1,
+            provisionId: `graph_provision_${'4'.repeat(32)}`,
+            provisionFingerprint: `sha256:${'5'.repeat(64)}`,
+            graphId: 'graph-1',
+            workId: `graph_work_${'3'.repeat(32)}`,
+            agentId: 'local-read',
+            operatorId: `graph_operator_${'6'.repeat(32)}`,
+            initialTurnId: 'graph-turn',
+            initialRunId: 'graph-run',
+            edges: [],
+          },
+          0,
+        ),
+        /identity and role must be claimed together/,
+      );
+      assert.deepEqual(await store.listHeaders(), []);
+    } finally {
+      await store.close?.();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test('keeps the WorkHub Coordination Session durable but outside ordinary catalogs and route candidates', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'maka-workhub-coordination-session-'));
+    const store = createSessionStore(root);
+    try {
+      const created = await store.createStableSession({
+        sessionId: WORKHUB_COORDINATION_SESSION_ID,
+        requestFingerprint: `sha256:${'a'.repeat(64)}`,
+        input: {
+          ...makeInput({ cwd: root, projectId: null, name: 'WorkHub' }),
+          role: WORKHUB_COORDINATION_SESSION_ROLE,
+        },
+      });
+      assert.equal(created.kind, 'created');
+
+      assert.deepEqual(await store.list(), []);
+      const page = await store.listCatalogPage(undefined, undefined, 10);
+      assert.equal(page.kind, 'page');
+      if (page.kind !== 'page') assert.fail('expected a catalog page');
+      assert.deepEqual(page.records, []);
+      await assert.rejects(store.readCatalogRecord(WORKHUB_COORDINATION_SESSION_ID), (error) =>
+        isSessionNotFoundError(error),
+      );
+
+      const recovery = await store.listForRecovery();
+      assert.equal(recovery.length, 1);
+      assert.equal(recovery[0]?.id, WORKHUB_COORDINATION_SESSION_ID);
+      assert.equal(recovery[0]?.role, WORKHUB_COORDINATION_SESSION_ROLE);
+    } finally {
+      await store.close?.();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test('quarantines the reserved Coordination identity when its role is missing', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'maka-workhub-coordination-missing-role-'));
+    const store = createSessionStore(root);
+    try {
+      const ordinary = await store.create(makeInput({ name: 'Keep me' }));
+      await store.createStableSession({
+        sessionId: WORKHUB_COORDINATION_SESSION_ID,
+        requestFingerprint: `sha256:${'a'.repeat(64)}`,
+        input: {
+          ...makeInput({ cwd: root, projectId: null, name: 'WorkHub' }),
+          role: WORKHUB_COORDINATION_SESSION_ROLE,
+        },
+      });
+      const database = new DatabaseSync(join(root, OPERATIONAL_STATE_DATABASE_NAME));
+      try {
+        database
+          .prepare(
+            `UPDATE session_metadata
+             SET payload_json = json_remove(payload_json, '$.role')
+             WHERE session_id = ?`,
+          )
+          .run(WORKHUB_COORDINATION_SESSION_ID);
+      } finally {
+        database.close();
+      }
+
+      assert.deepEqual(
+        (await store.list()).map((session) => session.id),
+        [ordinary.id],
+      );
+      const page = await store.listCatalogPage(undefined, undefined, 10);
+      assert.equal(page.kind, 'page');
+      if (page.kind !== 'page') assert.fail('expected a catalog page');
+      assert.deepEqual(
+        page.records.map((record) => record.header.id),
+        [ordinary.id],
+      );
+      await assert.rejects(store.readCatalogRecord(WORKHUB_COORDINATION_SESSION_ID), (error) =>
+        isSessionNotFoundError(error),
+      );
+      assert.deepEqual(
+        (await store.listForRecovery()).map((session) => session.id),
+        [ordinary.id],
+      );
+      assert.equal(
+        (await store.readHeaderSnapshot(WORKHUB_COORDINATION_SESSION_ID)).name,
+        'WorkHub',
+      );
+    } finally {
+      await store.close?.();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   test('ordinary Sessions have no external origin and provenance metadata is immutable', async () => {
     const root = await mkdtemp(join(tmpdir(), 'maka-session-external-origin-'));
     const store = createSessionStore(root);
@@ -573,6 +727,7 @@ describe('SQLite SessionStore', () => {
       )
       .run(legacyRecord, sessionId);
     legacy.exec(`
+      DROP INDEX session_metadata_one_workhub_coordination_session;
       DROP TABLE agent_graph_epochs;
       DROP TABLE session_message_chunks;
       DROP TABLE session_message_payloads;

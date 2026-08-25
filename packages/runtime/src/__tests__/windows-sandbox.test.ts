@@ -70,6 +70,52 @@ test('writes broker manifests to exclusive per-process temporary files', async (
   }
 });
 
+test('probes the Windows broker without materializing a one-shot manifest', () => {
+  let requestIds = 0;
+  let nonces = 0;
+  let manifestWrites = 0;
+  const clientPath = String.raw`C:\Program Files\Maka\maka-windows-sandbox.exe`;
+  const backend = new WindowsBrokerSandboxBackend({
+    clientPath,
+    isAvailable: () => true,
+    requestId: () => {
+      requestIds += 1;
+      return 'request-1';
+    },
+    nonce: () => {
+      nonces += 1;
+      return 'a'.repeat(32);
+    },
+    writeManifest: () => {
+      manifestWrites += 1;
+      return String.raw`C:\Users\user\AppData\Local\Temp\request.json`;
+    },
+  });
+
+  const result = backend.probe({
+    platform: 'win32',
+    command: {
+      program: String.raw`C:\Windows\System32\cmd.exe`,
+      args: ['/d', '/c', 'exit 0'],
+      cwd: String.raw`C:\work\repo`,
+      env: { SystemRoot: String.raw`C:\Windows` },
+      profile: createWorkspaceWritePermissionProfile(),
+      pathContext: { workspaceRoots: [String.raw`C:\work\repo`] },
+    },
+  });
+
+  assert.deepEqual(result, {
+    ok: true,
+    executable: clientPath,
+    sandboxType: 'windows',
+    requiresSandbox: true,
+    preference: 'auto',
+  });
+  assert.equal(requestIds, 0);
+  assert.equal(nonces, 0);
+  assert.equal(manifestWrites, 0);
+});
+
 test('transforms a Windows managed profile into a broker-client invocation', () => {
   let written: WindowsBrokerManifest | undefined;
   const backend = new WindowsBrokerSandboxBackend({
@@ -177,6 +223,58 @@ test('rejects a request id whose derived launch id exceeds the native protocol b
   if (!result.ok) assert.match(result.message ?? '', /request id/i);
 });
 
+test('rejects an invalid per-invocation client nonce', () => {
+  const backend = new WindowsBrokerSandboxBackend({
+    clientPath: String.raw`C:\Program Files\Maka\maka-windows-sandbox.exe`,
+    nonce: () => 'not-a-valid-nonce',
+    writeManifest: () => String.raw`C:\Users\user\AppData\Local\Temp\request.json`,
+  });
+  const result = backend.transform({
+    platform: 'win32',
+    command: {
+      program: String.raw`C:\Windows\System32\cmd.exe`,
+      args: [],
+      cwd: String.raw`C:\work\repo`,
+      env: {},
+      profile: createWorkspaceWritePermissionProfile(),
+      pathContext: { workspaceRoots: [String.raw`C:\work\repo`] },
+    },
+  });
+
+  assert.equal(result.ok, false);
+  if (!result.ok) {
+    assert.equal(result.reason, 'invalid_request');
+    assert.match(result.message ?? '', /client nonce/i);
+  }
+});
+
+test('rejects a noncanonical materialized manifest path', () => {
+  const backend = new WindowsBrokerSandboxBackend({
+    clientPath: String.raw`C:\Program Files\Maka\maka-windows-sandbox.exe`,
+    writeManifest: () => 'request.json',
+  });
+  const result = backend.transform({
+    platform: 'win32',
+    command: {
+      program: String.raw`C:\Windows\System32\cmd.exe`,
+      args: [],
+      cwd: String.raw`C:\work\repo`,
+      env: {},
+      profile: createWorkspaceWritePermissionProfile(),
+      pathContext: { workspaceRoots: [String.raw`C:\work\repo`] },
+    },
+  });
+
+  assert.equal(result.ok, false);
+  if (!result.ok) {
+    assert.equal(result.reason, 'backend_not_available');
+    assert.match(
+      result.message ?? '',
+      /materialize.*manifest path must be canonical and absolute/i,
+    );
+  }
+});
+
 test('honors a configured broker timeout and rejects out-of-range values', () => {
   let written: WindowsBrokerManifest | undefined;
   const backend = new WindowsBrokerSandboxBackend({
@@ -230,8 +328,8 @@ test('fails closed when broker client is unavailable or policy cannot be compile
   if (!missing.ok) assert.equal(missing.reason, 'backend_not_available');
 
   const invalid = new WindowsBrokerSandboxBackend({
-    clientPath: 'client.exe',
-    writeManifest: () => 'request.json',
+    clientPath: String.raw`C:\Program Files\Maka\maka-windows-sandbox.exe`,
+    writeManifest: () => String.raw`C:\Users\user\AppData\Local\Temp\request.json`,
   }).transform({
     ...input,
     command: { ...input.command, pathContext: { workspaceRoots: ['C:/work/repo'] } },

@@ -89,11 +89,14 @@ export class RuntimeLedgerRepair {
         this.deps.readMessages(sessionId),
         this.deps.runStore.listSessionRuns(sessionId),
       ]);
+      const ledgerMessages = messages.filter(
+        (message) => message.type !== 'user' || message.steeringEventId === undefined,
+      );
       const inlineRunsByTurn = new Map(
         runs.filter(isSessionInlineRun).map((run) => [run.turnId, run] as const),
       );
-      const messagesByTurn = groupMessagesByTurn(messages);
-      const turns = deriveTurnRecords(messages).filter((turn) =>
+      const messagesByTurn = groupMessagesByTurn(ledgerMessages);
+      const turns = deriveTurnRecords(ledgerMessages).filter((turn) =>
         (messagesByTurn.get(turn.turnId) ?? []).some((message) => message.type === 'user'),
       );
       if (turns.length === 0) return;

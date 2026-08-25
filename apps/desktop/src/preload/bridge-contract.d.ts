@@ -48,7 +48,6 @@ import type {
   SessionCommand,
   SessionEvent,
   ShellRunUpdate,
-  QueueEnqueueOutcome,
 } from '@maka/core/events';
 import type { UserQuestionResponse } from '@maka/core/user-question';
 import type { PermissionMode } from '@maka/core/permission';
@@ -206,6 +205,10 @@ export type DesktopBranchFromTurnInput = BranchFromTurnInput & {
 export type DesktopSideConversationBranchResult =
   | { ok: true; session: DesktopSessionSummary }
   | { ok: false; reason: 'session_busy' | 'operation_unavailable' };
+
+export type DesktopSessionStopResult =
+  | { kind: 'retracted'; messageId: string }
+  | undefined;
 
 export type DesktopReviseBeforeTurnInput = ReviseBeforeTurnInput & {
   /** Stable target identity for retrying one Desktop copy action. */
@@ -397,6 +400,7 @@ export interface DesktopRuntimeHostOnboardingInput {
 }
 
 export type DesktopRuntimeHostOnboardingPhase =
+  | 'preparing_cli'
   | 'connecting_ssh'
   | RuntimeHostSetupPhase
   | 'connecting_host';
@@ -447,8 +451,44 @@ export type DesktopRuntimeHostManagementResponse =
 
 export interface DesktopRuntimeHostManagementProgress {
   readonly profileId: string;
-  readonly phase: import('@maka/runtime-host/operator').RuntimeHostServiceUpdatePhase;
+  readonly phase:
+    | 'preparing_cli'
+    | import('@maka/runtime-host/operator').RuntimeHostServiceUpdatePhase;
 }
+
+type RuntimeHostUpdatePolicyResult = Extract<
+  RuntimeHostServiceManagementFrame,
+  { kind: 'result'; action: 'update_policy' }
+>;
+
+type RuntimeHostUpdateReconciliationResult = Extract<
+  RuntimeHostServiceManagementFrame,
+  { kind: 'result'; action: 'reconcile_update' }
+>;
+
+export type DesktopRuntimeHostUpdateSchedulingState =
+  | 'unsupported'
+  | import('@maka/runtime-host/operator').RuntimeHostUpdateSchedulerState;
+
+export type DesktopRuntimeHostUpdatePolicySnapshot =
+  RuntimeHostUpdatePolicyResult['updatePolicy'] & {
+    readonly schedulingState: DesktopRuntimeHostUpdateSchedulingState;
+  };
+
+export type DesktopRuntimeHostUpdateReconciliationOutcome =
+  RuntimeHostUpdateReconciliationResult['reconciliation'];
+
+export type DesktopRuntimeHostUpdateReconciliationResponse =
+  | {
+      readonly kind: 'error';
+      readonly error: { readonly code: string; readonly message: string };
+    }
+  | {
+      readonly kind: 'result';
+      readonly updatePolicy: DesktopRuntimeHostUpdatePolicySnapshot;
+      readonly reconciliation: DesktopRuntimeHostUpdateReconciliationOutcome;
+      readonly service?: NonNullable<RuntimeHostUpdateReconciliationResult['service']>;
+    };
 
 export interface DesktopRuntimeHostAccessCredential {
   readonly credentialId: string;
@@ -582,6 +622,12 @@ export interface MakaBridge {
     subscribeProgress(
       handler: (progress: DesktopRuntimeHostManagementProgress) => void,
     ): () => void;
+    getUpdatePolicy(profileId: string): Promise<DesktopRuntimeHostUpdatePolicySnapshot>;
+    setUpdatePolicy(
+      profileId: string,
+      policy: import('@maka/runtime-host/operator').RuntimeHostManagedUpdatePolicy,
+    ): Promise<DesktopRuntimeHostUpdatePolicySnapshot>;
+    reconcileUpdate(profileId: string): Promise<DesktopRuntimeHostUpdateReconciliationResponse>;
     listCredentials(profileId: string): Promise<DesktopRuntimeHostAccessSnapshot>;
     rotateCredential(profileId: string): Promise<DesktopRuntimeHostAccessSnapshot>;
     revokeCredential(
@@ -710,6 +756,15 @@ export interface MakaBridge {
       handler: () => void,
     ): () => void;
   };
+  workHub: {
+    /** Resolve the active Runtime Host's stable coordination conversation. */
+    resolveCoordinationSession(): Promise<string>;
+    /** Create an ordinary Session on the exact Host owning the resolved conversation. */
+    createSession(
+      coordinationSessionId: string,
+      input: { name: string },
+    ): Promise<DesktopSessionSummary>;
+  };
   sessions: {
     list(filter?: SessionListFilter): Promise<DesktopSessionSummary[]>;
     listWithCoverage(): Promise<{
@@ -721,7 +776,7 @@ export interface MakaBridge {
       sessionId: string,
       command:
         | SessionCommand
-        | {
+          | {
             type: 'send';
             turnId: string;
             text: string;
@@ -743,7 +798,18 @@ export interface MakaBridge {
            * The send raced a root Turn another client opened first and was
            * queued into it as steering instead of starting `turnId`.
            */
-          steered?: true;
+          steered?: never;
+          messageId?: never;
+          attachments: import('@maka/core/events').AttachmentRef[];
+          inlineReferences: import('@maka/core/events').InlineReference[];
+          skillInvocation: import('@maka/runtime/skill-invocation').SkillInvocationResult;
+        }
+      | {
+          ok: true;
+          turnId: string;
+          steered: true;
+          /** Host admission identity for the message queued as steering. */
+          messageId: string;
           attachments: import('@maka/core/events').AttachmentRef[];
           inlineReferences: import('@maka/core/events').InlineReference[];
           skillInvocation: import('@maka/runtime/skill-invocation').SkillInvocationResult;
@@ -753,12 +819,30 @@ export interface MakaBridge {
           reason: 'skill_invocation_failed';
           skillInvocation: import('@maka/runtime/skill-invocation').SkillInvocationResult;
         }
+      | {
+          ok: false;
+          reason: 'outcome_unknown';
+          messageId: string;
+          skillInvocation: import('@maka/runtime/skill-invocation').SkillInvocationResult;
+        }
     >;
     stop(
       sessionId: string,
-      input?: { source?: 'stop_button'; expectedTurnId?: string },
-    ): Promise<void>;
-    steer(sessionId: string, text: string): Promise<QueueEnqueueOutcome>;
+      input?: {
+        source?: 'stop_button';
+        expectedTurnId?: string;
+        expectedAdmissionId?: string;
+      },
+    ): Promise<DesktopSessionStopResult>;
+    steer(
+      sessionId: string,
+      text: string,
+      admissionId?: string,
+    ): Promise<
+      | { kind: 'queued'; messageId: string }
+      | { kind: 'outcome_unknown'; messageId: string }
+      | { kind: 'started'; turnId: string }
+    >;
     enqueue(
       sessionId: string,
       placement: 'current_turn' | 'next_turn',
@@ -825,6 +909,7 @@ export interface MakaBridge {
       handler: (event: SessionEvent) => void,
       onSeeded?: () => void,
       onObservationSeed?: (phase: 'pending' | 'ready') => void,
+      onSeedError?: (error: unknown) => void,
     ): () => void;
     subscribeChanges(handler: (event: SessionChangedEvent) => void): () => void;
     archive(sessionId: string, options?: { revisionFamily?: boolean }): Promise<void>;

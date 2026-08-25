@@ -25,7 +25,7 @@ import type { ModelMessage } from '../model-protocol.js';
 import { rewriteActiveToolResultsInMessages } from '../active-tool-result-prune.js';
 import { planActiveToolResultSupersession } from '../active-tool-result-working-set.js';
 import { composeRequestProjection } from '../request-projection.js';
-import { ToolAvailabilityRuntime, LOAD_TOOLS_NAME } from '../tool-availability.js';
+import { ToolAvailabilityRuntime, TOOL_SEARCH_NAME } from '../tool-availability.js';
 import type { MakaTool } from '../tool-runtime.js';
 
 describe('active current-turn tool-result pruning', () => {
@@ -64,7 +64,7 @@ describe('active current-turn tool-result pruning', () => {
       return rewritten.rewritten > 0 ? { messages: rewritten.messages } : undefined;
     };
     const composed = composeRequestProjection(
-      () => ({ activeTools: ['Read', LOAD_TOOLS_NAME] }),
+      () => ({ activeTools: ['Read', TOOL_SEARCH_NAME] }),
       undefined,
       activePrune,
     );
@@ -77,7 +77,7 @@ describe('active current-turn tool-result pruning', () => {
       messages: originalMessages,
     });
 
-    assert.deepEqual(result?.activeTools, ['Read', LOAD_TOOLS_NAME]);
+    assert.deepEqual(result?.activeTools, ['Read', TOOL_SEARCH_NAME]);
     assert.ok(result?.messages);
     assert.match(JSON.stringify(result.messages), /maka\.active_archived_tool_result/);
   });
@@ -326,10 +326,15 @@ describe('active current-turn tool-result pruning', () => {
   test('tool activation still works when active pruning shares the projection pipeline', async () => {
     const runtime = new ToolAvailabilityRuntime(
       [makaTool('Read'), makaTool('RiveWorkflow')],
-      { economy: true, groups: [{ id: 'rive', toolNames: ['RiveWorkflow'] }] },
+      { groups: [{ id: 'rive', toolNames: ['RiveWorkflow'] }] },
       makaTool('invalid'),
     );
-    const plan = runtime.prepare([]);
+    const active = new Map<string, MakaTool>();
+    const plan = runtime.prepare(active);
+    active.set(
+      'RiveWorkflow',
+      plan.providerTools.find((candidate) => candidate.name === 'RiveWorkflow')!,
+    );
     const activePrune = async (options: { messages: ModelMessage[]; stepNumber: number }) => {
       const rewritten = await rewriteActiveToolResultsInMessages({
         messages: options.messages,
@@ -342,7 +347,7 @@ describe('active current-turn tool-result pruning', () => {
     };
 
     const projection = composeRequestProjection(
-      ({ completedSteps }) => plan.projectActiveTools!({ completedSteps }),
+      () => plan.projectActiveTools!(),
       undefined,
       activePrune,
     );
@@ -353,8 +358,8 @@ describe('active current-turn tool-result pruning', () => {
             {
               type: 'tool-call',
               toolCallId: 'load-1',
-              toolName: LOAD_TOOLS_NAME,
-              input: { group: 'rive' },
+              toolName: TOOL_SEARCH_NAME,
+              input: { query: 'RiveWorkflow' },
             },
           ],
         },

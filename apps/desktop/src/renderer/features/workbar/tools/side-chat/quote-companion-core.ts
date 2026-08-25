@@ -31,6 +31,7 @@ import type { SessionSummary, TurnRecord } from '@maka/core/session';
 import type { UiLocale } from '@maka/core/ui-locale';
 import type {
   SideChatSessionPort,
+  SideChatSendResult,
   WorkbarIngestInput,
 } from '../../ports.js';
 import {
@@ -167,19 +168,22 @@ export async function dismissCompanionCopy(
 }
 
 /**
- * The shared Composer's `streaming` input means "a turn is interruptible", not
- * merely "a text delta has arrived". Keep the companion interruptible from the
- * optimistic waiting projection through live output; `processing` only chooses
- * the quieter pre-first-token presentation inside that same in-flight window.
+ * The shared Composer's `streaming` input means Host work is interruptible, not
+ * merely that a text delta has arrived. A pending admission remains stoppable
+ * before it owns a Turn; an admitted Turn remains stoppable through live output.
  */
 export function deriveCompanionComposerState(
-  turnInFlight: boolean,
+  hasPendingAdmission: boolean,
+  activeTurnId: string | null,
   liveTurn: LiveTurnProjection | undefined,
 ): { streaming: boolean; processing: boolean } {
-  const streaming = turnInFlight && liveTurn?.terminal !== true;
+  const activeTurnStreaming = activeTurnId !== null && liveTurn?.terminal !== true;
+  const streaming = hasPendingAdmission || activeTurnStreaming;
   return {
     streaming,
-    processing: streaming && (!liveTurn || liveTurn.phase === 'waiting'),
+    processing:
+      streaming &&
+      (!activeTurnStreaming || !liveTurn || liveTurn.phase === 'waiting'),
   };
 }
 
@@ -283,7 +287,9 @@ export async function ensureCompanionFork(
 }
 
 export type CompanionTurnResult =
-  | { status: 'sent'; forkId: string }
+  | { status: 'sent'; forkId: string; turnId: string; steered?: false }
+  | { status: 'sent'; forkId: string; turnId: string; steered: true; messageId: string }
+  | { status: 'pending'; forkId: string; messageId: string }
   | { status: 'disposed' }
   | { status: 'error'; code: CompanionErrorCode };
 
@@ -298,16 +304,12 @@ export interface PerformCompanionTurnDeps extends EnsureCompanionForkDeps {
   onForkCommitted: (session: SessionSummary) => void;
   /** Fired right before the send — the caller arms the optimistic live turn here. */
   onBeforeSend: (forkId: string) => void;
-  /** Fired ONLY after `send` is accepted, so a failed send keeps the staged
-   *  quotes (and draft) in place for a retry. */
-  onQuotesConsumed: () => void;
 }
 
 /**
  * Ensure a fork exists (fail-closed, dispose-aware) then send the turn. The
- * staged quotes are consumed only after `send` resolves, and the result tells
- * the caller whether the send was accepted (so a failure can leave the draft +
- * chips for retry).
+ * result tells the caller whether the send was accepted so admission-owned
+ * resources can follow the exact Host outcome.
  */
 export async function performCompanionTurn(
   deps: PerformCompanionTurnDeps,
@@ -335,7 +337,7 @@ export async function performCompanionTurn(
     if (createdForkId) scheduleCompanionCleanup(deps, createdForkId);
     return { status: 'disposed' };
   }
-  let result: { ok: true } | { ok: false; reason?: string };
+  let result: SideChatSendResult;
   try {
     result = await deps.api.send(forkId, {
       type: 'send',
@@ -353,10 +355,14 @@ export async function performCompanionTurn(
   // run was started, so surface the error and keep the quotes for retry rather
   // than reporting success and hanging in the processing state.
   if (!result.ok) {
+    if (result.reason === 'outcome_unknown' && result.messageId) {
+      return { status: 'pending', forkId, messageId: result.messageId };
+    }
     return { status: 'error', code: 'send_rejected' };
   }
-  deps.onQuotesConsumed();
-  return { status: 'sent', forkId };
+  return result.steered
+    ? { status: 'sent', forkId, turnId: result.turnId, steered: true, messageId: result.messageId }
+    : { status: 'sent', forkId, turnId: result.turnId };
 }
 
 export function isCompanionTurnTerminal(event: SessionEvent): boolean {

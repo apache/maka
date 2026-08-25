@@ -202,7 +202,13 @@ Subsequent refactors moved `apps/desktop/src/renderer/browser-panel.tsx` to `app
 
 ### Bundled Skills
 
-Pull request #2695 removed the 29 bundled Skills whose individual origins could not be confirmed. The retained `computer-use` Skill has a contributor-confirmed, independently reviewed origin record in `packages/runtime/resources/bundled-skills/provenance.json`. The final human approval on pull request #2676 reviewed commit `3c7683b9793e97cba7d8536f6864da0e38f24c30`. That review covers the Skill origin record; it does not make a legal or ASF release determination about implementation inputs.
+Pull request #2695 removed the 29 bundled Skills whose individual origins could not be confirmed. The one retained bundled Skill, `computer-use`, carries its origin and review evidence here rather than in `SKILL.md` so that provenance edits do not change installed Skill content hashes.
+
+- **Status:** contributor-confirmed, `origin: independently-authored`, Apache-2.0.
+- **Author:** Haoqing Wang (@hqhq1025), with drafting and implementation assistance from OpenAI Codex.
+- **Inputs:** Maka Computer Use source code, the `maka.cu/2` schema and model-facing tool contract, and Maka Computer Use tests. No third-party Skill bodies were used.
+- **Introduced by:** pull request #2147, commit `2fb83e20b71124bc4a4f2fd4e40f971e415d0ea5`; contributor confirmed on 2026-08-11.
+- **Review:** independently reviewed by Astro-Han in pull request #2676 at commit `3c7683b9793e97cba7d8536f6864da0e38f24c30` on 2026-08-12. That review covers the accuracy of this origin record; it does not make a legal or ASF release determination about implementation inputs (see [Computer Use implementation inputs](#computer-use-implementation-inputs)).
 
 ### Computer Use implementation inputs
 

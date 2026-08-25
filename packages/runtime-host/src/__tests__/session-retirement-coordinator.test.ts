@@ -25,8 +25,13 @@ import { DatabaseSync } from 'node:sqlite';
 import { describe, test } from 'node:test';
 import type { AgentGraphOperatorProvisionRequest } from '@maka/core/agent-graph-topology';
 import type { CreateSessionInput } from '@maka/core/runtime-inputs';
+import {
+  WORKHUB_COORDINATION_SESSION_ID,
+  WORKHUB_COORDINATION_SESSION_ROLE,
+} from '@maka/core/session';
 import { agentGraphIdForRootSession } from '@maka/runtime/stream-graph-coordinator';
 import { createSessionStore } from '@maka/storage/session-store';
+import { OPERATIONAL_STATE_DATABASE_NAME } from '@maka/storage/operational-state-store';
 import { createAgentGraphControlStore } from '@maka/storage/agent-graph-control-store';
 import {
   HostScheduledTaskSessionBusyError,
@@ -45,6 +50,65 @@ const CONNECTION_CONTEXT: ConnectionContext = {
 };
 
 describe('Host Session retirement coordinator', () => {
+  test('rejects ordinary archive and remove operations for the Coordination Session', async () => {
+    await withHarness(async (harness) => {
+      const created = await harness.store.createStableSession({
+        sessionId: WORKHUB_COORDINATION_SESSION_ID,
+        requestFingerprint: `sha256:${'a'.repeat(64)}`,
+        input: {
+          ...sessionInput('WorkHub', { cwd: '/tmp/workhub', projectId: null }),
+          role: WORKHUB_COORDINATION_SESSION_ROLE,
+        },
+      });
+      assert.equal(created.kind, 'created');
+      const database = new DatabaseSync(
+        join(harness.workspaceRoot, OPERATIONAL_STATE_DATABASE_NAME),
+      );
+      try {
+        database
+          .prepare(
+            `UPDATE session_metadata
+             SET payload_json = json_remove(payload_json, '$.role')
+             WHERE session_id = ?`,
+          )
+          .run(WORKHUB_COORDINATION_SESSION_ID);
+      } finally {
+        database.close();
+      }
+
+      const archive = await harness.coordinator.handlers['session.lifecycle.set'](
+        { sessionId: WORKHUB_COORDINATION_SESSION_ID, state: 'archived' },
+        CONNECTION_CONTEXT,
+      );
+      assert.deepEqual(archive, {
+        ok: false,
+        error: {
+          code: 'operation_conflict',
+          message: 'WorkHub Coordination Session lifecycle is owned by WorkHub',
+        },
+      });
+
+      const remove = await harness.coordinator.handlers['session.remove'](
+        {
+          sessionId: WORKHUB_COORDINATION_SESSION_ID,
+          expectedRevision: created.record.revision,
+        },
+        CONNECTION_CONTEXT,
+      );
+      assert.deepEqual(remove, {
+        ok: false,
+        error: {
+          code: 'operation_conflict',
+          message: 'WorkHub Coordination Session lifecycle is owned by WorkHub',
+        },
+      });
+      assert.equal(
+        (await harness.store.readHeaderSnapshot(WORKHUB_COORDINATION_SESSION_ID)).isArchived,
+        false,
+      );
+    });
+  });
+
   test('archives, restores, and removes one whole edit-and-resend family', async () => {
     await withHarness(async (harness) => {
       const archived = await harness.coordinator.handlers['session.lifecycle.set'](

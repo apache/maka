@@ -120,7 +120,10 @@ const zhCopy = {
     // Row affordances (settings-sidebar 的 InfoRow / ExpandableRow 语言)：一行
     // 只报状态，改的时候才展开成输入框。
     change: '更换', set: '设置', edit: '编辑', save: '保存',
-    endpointDefault: '服务商默认地址',
+    endpointManaged: '由账号登录或服务商管理',
+    endpointMissing: '尚未配置服务地址',
+    endpointModelOverridesNote: '部分模型会通过其他服务端点发送请求',
+    endpointCredentialsMasked: '已保存的地址内嵌凭据,编辑时默认隐藏',
     modelManagement: '模型',
     disconnectAndDelete: '退出账号并删除',
     copilotImportFailed: '导入 GitHub Copilot 登录失败', copilotLoggedIn: 'GitHub Copilot 已登录', copilotWaiting: '等待兼容 GitHub 凭据',
@@ -267,7 +270,10 @@ const enCopy: ProviderSettingsCopy = {
     ...enCapabilitiesCopy,
     capabilitiesHelp: 'Declares thinking levels, vision, and context window per enabled model; applies on save.',
     change: 'Change', set: 'Set', edit: 'Edit', save: 'Save',
-    endpointDefault: 'The provider default',
+    endpointManaged: 'Managed by account sign-in or the provider',
+    endpointMissing: 'No service URL configured',
+    endpointModelOverridesNote: 'Some models send requests through a different endpoint',
+    endpointCredentialsMasked: 'The saved URL embeds credentials and stays masked while editing',
     modelManagement: 'Models',
     disconnectAndDelete: 'Sign out and delete',
     copilotImportFailed: 'Failed to import GitHub Copilot sign-in', copilotLoggedIn: 'GitHub Copilot signed in', copilotWaiting: 'Waiting for compatible GitHub credentials',

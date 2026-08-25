@@ -145,7 +145,7 @@ interface MidTurnFixtureOptions {
   finalAtSecondCall?: boolean;
   /** Add a third tool step whose result outgrows even a rolled-forward fold (finding A). */
   rollingOverflow?: boolean;
-  /** Economy tool availability with a huge-schema group behind load_tools (finding D). */
+  /** Tool-search availability with a huge deferred schema (finding D). */
   bigToolGroup?: boolean;
   /** The first step emits assistant text before its tool call (finding B). */
   assistantTextInFirstStep?: boolean;
@@ -222,7 +222,7 @@ function buildFixture(options: MidTurnFixtureOptions = {}): MidTurnFixture {
   ];
   const chunksForCall = (call: number): LanguageModelV4StreamPart[] => {
     if (options.bigToolGroup) {
-      return call === 1 ? toolCallChunks('tool-1', 'load_tools', { group: 'big' }) : doneChunks();
+      return call === 1 ? toolCallChunks('tool-1', 'tool_search', { query: 'Big' }) : doneChunks();
     }
     if (call === 1) {
       const first = toolCallChunks('tool-1', 'Read', { path: 'one.md' });
@@ -453,7 +453,7 @@ function buildFixture(options: MidTurnFixtureOptions = {}): MidTurnFixture {
         ? [
             {
               name: 'Big',
-              // A same-turn load_tools activation adds this schema to every later
+              // A same-turn tool_search activation adds this schema to every later
               // request; the trigger must count it (finding D).
               description: `BIG_SCHEMA ${'D'.repeat(12_000)}`,
               parameters: z.object({ q: z.string() }),
@@ -463,7 +463,7 @@ function buildFixture(options: MidTurnFixtureOptions = {}): MidTurnFixture {
         : []),
     ],
     ...(options.bigToolGroup
-      ? { toolAvailability: { economy: true, groups: [{ id: 'big', toolNames: ['Big'] }] } }
+      ? { toolAvailability: { groups: [{ id: 'big', toolNames: ['Big'] }] } }
       : {}),
     ...(options.volatileTurnTail
       ? { turnTailPrompt: 'VOLATILE_TAIL_SENTINEL cwd=/tmp/maka task=keep-going' }
@@ -1143,7 +1143,7 @@ function defineMidTurnSuite(consumer: ConsumerMode): void {
     assert.equal(failedOpen?.failOpenReason, 'no_safe_completed_span');
   });
 
-  test('the trigger counts same-turn tool-schema growth from load_tools (review finding D)', async () => {
+  test('the trigger counts same-turn tool-schema growth from tool_search (review finding D)', async () => {
     // Review round-3 finding D repro: the model activates a ~12.7k-char tool
     // group mid-turn. The schema lands in every later request, so the payload
     // estimate must count it: the next request cannot fit the 500-token window

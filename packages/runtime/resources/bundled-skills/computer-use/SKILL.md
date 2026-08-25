@@ -3,7 +3,7 @@ name: Computer Use
 description: Use when the user asks to inspect or operate a local desktop application UI, including reading windows, clicking controls, filling forms, using menus, scrolling lists, moving windows, or waiting for dialogs. Trigger for requests such as "operate this app", "do this in TextEdit/Calculator/Settings", "look at the current window", or "click/type/scroll"; prefer Browser tools for web pages and non-GUI tools for files or terminal work.
 category: 效率工具
 allowed-tools:
-  - load_tools
+  - tool_search
   - maka_computer
 required-tools:
   - maka_computer
@@ -15,7 +15,7 @@ Use `maka_computer` for a user-requested local application UI. Maka is backgroun
 
 ## Activate and operate
 
-1. If `maka_computer` is unavailable, call `load_tools` with `group: "computer_use"` as a standalone step. Wait for its result and call the new tool on the next model step, never in the same parallel batch.
+1. If `maka_computer` is unavailable, call `tool_search` with a query such as `maka_computer operate local application` as a standalone step. Wait for its result and call the activated tool on the next model step, never in the same parallel batch.
 2. `observe` the explicit application or window before acting.
 3. Choose controls only from the latest `observation_id`.
 4. Prefer a shipping semantic action.

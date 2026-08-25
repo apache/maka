@@ -329,6 +329,67 @@ export function WorkHubSurface(props: {
   );
 }
 
+/** Visible lifecycle state while the active Host's Coordination Session is unavailable. */
+export function WorkHubCoordinationStatus(props: {
+  locale: UiLocale;
+  state: 'resolving' | 'failed';
+  onRetry(): void;
+}) {
+  const copy = workHubCopy(props.locale);
+  const resolving = props.state === 'resolving';
+  return (
+    <ChatSurfaceLayout
+      className="workhub-surface"
+      conversationKey="workhub-coordination-status"
+      composer={(
+        <Composer
+          draftKey="workhub"
+          onSend={async () => false}
+          onStop={() => {}}
+          sendBlocked
+          modelLabel="WorkHub"
+        />
+      )}
+    >
+      <main
+        className="maka-main agents-chat-panel agents-chat-view-root workhub-timeline"
+        aria-label="WorkHub"
+      >
+        <header className="workhub-header">
+          <div>
+            <h1>WorkHub</h1>
+            <p>{copy.subtitle}</p>
+          </div>
+          <span>{resolving ? copy.preparing : copy.unavailable}</span>
+        </header>
+        <div className="maka-chat-shell">
+          <ChatMessageList
+            className="maka-chat-message-list maka-chatContent workhub-message-list"
+            density="compact"
+            gap={4}
+            isStreaming={resolving}
+          >
+            {resolving ? (
+              <WorkHubLoadingState label={copy.preparing} />
+            ) : (
+              <div className="workhub-empty" role="alert">
+                <h2>{copy.coordinationFailedTitle}</h2>
+                <p>{copy.coordinationFailedBody}</p>
+                <Button
+                  className="workhub-coordination-retry"
+                  variant="primary"
+                  label={copy.retry}
+                  onClick={props.onRetry}
+                />
+              </div>
+            )}
+          </ChatMessageList>
+        </div>
+      </main>
+    </ChatSurfaceLayout>
+  );
+}
+
 function WorkHubLoadingState(props: { label: string }) {
   return (
     <div
@@ -574,6 +635,10 @@ function workHubCopy(locale: UiLocale) {
       requestNotSent: '新请求尚未发送；处理原 Session 中的交互后可以再次发送。',
       routing: '正在判断应该交给哪个 Session…', loadFailed: '无法读取已有工作。',
       loading: '正在读取已有工作…',
+      preparing: '正在准备 WorkHub…', unavailable: '暂不可用',
+      coordinationFailedTitle: 'WorkHub 暂时无法启动',
+      coordinationFailedBody: '请检查当前 Runtime Host 的默认模型配置，然后重试。',
+      retry: '重试',
       submitFailed: '输入未能送达，请重试。', scrollToBottom: '滚动到底部', archived: '已归档',
       states: { active: '活跃', running: '进行中', waiting_for_user: '等待你', blocked: '受阻', aborted: '已中止' },
       turnStates: { running: '进行中', completed: '已完成', aborted: '已中止', failed: '失败' },
@@ -599,6 +664,10 @@ function workHubCopy(locale: UiLocale) {
     requestNotSent: 'The new request was not sent. Resolve the interaction in its Session, then send again.',
     routing: 'Choosing the right Session…', loadFailed: 'Could not read existing work.',
     loading: 'Loading existing work…',
+    preparing: 'Preparing WorkHub…', unavailable: 'Unavailable',
+    coordinationFailedTitle: 'WorkHub could not start',
+    coordinationFailedBody: 'Check the default model for the current Runtime Host, then retry.',
+    retry: 'Retry',
     submitFailed: 'The input could not be delivered. Try again.', scrollToBottom: 'Scroll to bottom', archived: 'Archived',
     states: { active: 'Active', running: 'Running', waiting_for_user: 'Waiting for you', blocked: 'Blocked', aborted: 'Aborted' },
     turnStates: { running: 'Running', completed: 'Completed', aborted: 'Aborted', failed: 'Failed' },

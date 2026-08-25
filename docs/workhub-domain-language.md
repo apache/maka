@@ -23,9 +23,12 @@ WorkHub gives users one persistent conversational place to ask, clarify, continu
 create, and inspect work. It is backed by one stable Coordination Session per
 Runtime Host while concrete execution remains authoritative in ordinary Sessions.
 
-This document names the approved target architecture. The current R2.4
-implementation is a transitional deterministic router and does not yet create the
-Coordination Session described below.
+This document names the approved target architecture. Each Runtime Host now
+provisions and reuses the stable Coordination Session role described below. The
+current R2.4 routing behavior remains a transitional deterministic baseline or
+target resolver; it does not define the final WorkHub coordination semantics. The
+decision and authority boundaries are recorded in the
+[WorkHub Coordination Session ADR](./architecture/workhub-coordination-session-adr.md).
 
 ## Terms
 
@@ -33,12 +36,16 @@ Coordination Session described below.
 and recovery substrate. A Session owns only the conversation or execution admitted
 to that Session.
 
-**Coordination Session**: A special Session role used by WorkHub. Each Runtime Host
-has at most one stable Coordination Session. It owns WorkHub user messages, ordinary
-Q&A, clarification, coordination decisions, delegation references, and coordination
-summaries. It is hidden from the ordinary Session list and never routes to itself.
+**Coordination Session**: The stable special Session role owned independently by
+each Runtime Host for its WorkHub conversation. It owns WorkHub user messages,
+ordinary Q&A, clarification, coordination decisions, bounded delegation references,
+and coordination summaries, but no ordinary Session execution or lifecycle facts.
+It is not a separate database, event store, transcript substrate, or lifecycle
+authority. It is hidden from the ordinary Session list and excluded from every
+routing-candidate set, so it never routes to itself. Cross-Host coordination is not
+supported in the first milestone.
 
-**Ordinary Session**: A Session that owns concrete work execution, including its
+**ordinary Session**: A Session that owns concrete work execution, including its
 project/filesystem scope, model and permissions, root-Turn admission, tools,
 artifacts, recovery, lifecycle, and authoritative execution transcript.
 
@@ -49,18 +56,30 @@ artifacts, recovery, lifecycle, and authoritative execution transcript.
 the active Runtime Host's Coordination Session. It may answer locally, clarify,
 delegate to an existing ordinary Session, or create a new ordinary Session.
 
-**Session projection**: A rebuildable view derived from Session facts for display and routing. It can be discarded and recreated without losing work.
+**projection**: A rebuildable, read-only view derived from Coordination Session and
+ordinary Session facts. WorkHub cards, filters, status summaries, and navigation
+aids are projections; they own no durable facts and can be discarded without losing
+work.
 
-**Disposition**: The coordination outcome for one WorkHub input:
-`answer_here`, `delegate_existing`, `create_new`, or `clarify`.
+**disposition**: The single proposed coordination outcome for one WorkHub input:
+`answer_here` answers in the Coordination Session; `delegate_existing` targets one
+bounded, valid ordinary Session; `create_new` creates an ordinary Session before
+delegating; and `clarify` continues in the Coordination Session without guessing or
+creating.
 
-**Delegation**: A reference from a Coordination Turn to a target ordinary Session
-and Turn. Delegation links the two authoritative transcripts; it does not copy the
-target execution transcript into WorkHub.
+**delegation**: A bounded reference from a Coordination Turn to one target ordinary
+Session and Turn, including only its identity, disposition, and coordination-owned
+link status (`active` or `superseded`). Delegation links the separately authoritative
+transcripts; it does not copy the target's complete execution transcript into
+WorkHub. Target acceptance, running, waiting, completion, failure, abort, and
+recovery state remain ordinary Session facts and appear in WorkHub only as read-only
+projections.
 
 **Action Gate**: The deterministic Runtime boundary that validates a proposed
-disposition, target, creation, Stop, confirmation, tools, and permissions. A model
-or routing policy may propose an action but cannot authorize it.
+disposition and operation before any write, including target/Host validity,
+archive and waiting state, self-routing, explicit creation, expected-Turn Stop
+ownership, confirmation, tools, and permissions. All model and routing output is
+advisory and cannot authorize a write.
 
 **Route correction**: A user's decision that an input belongs to a different
 existing Session. R2.4 retains only bounded inference memory for later target

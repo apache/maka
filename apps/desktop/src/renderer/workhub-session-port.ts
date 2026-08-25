@@ -68,9 +68,14 @@ export interface WorkHubDesktopSessionBridge {
   stop(
     sessionId: string,
     input?: { source?: 'stop_button'; expectedTurnId?: string },
-  ): Promise<void>;
+  ): Promise<unknown>;
   subscribeChanges(handler: () => void): () => void;
 }
+
+export type WorkHubCoordinationHostSessionCreator = (
+  coordinationSessionId: string,
+  input: { name: string },
+) => Promise<WorkHubDesktopSession>;
 
 export interface WorkHubDesktopTranscriptBridge {
   open(

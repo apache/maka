@@ -19,7 +19,11 @@
 
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { createElement } from 'react';
+import { renderToStaticMarkup } from 'react-dom/server';
+import { AstryxLocaleProvider, LocaleProvider } from '@maka/ui';
 import {
+  WorkHubCoordinationStatus,
   WorkHubProjectionRefreshGate,
   WorkHubSurfaceRouteGate,
   projectedWorkHubTurnPresentation,
@@ -56,6 +60,29 @@ test('surface route gate rejects same-frame duplicate operations and reopens aft
   assert.equal(await first, 'first');
   assert.equal(gate.pending, false);
   assert.equal(await gate.run(async () => 'next'), 'next');
+});
+
+test('Coordination lifecycle keeps a visible loading state and exposes failure recovery', () => {
+  const renderStatus = (state: 'resolving' | 'failed') => renderToStaticMarkup(
+    createElement(LocaleProvider, {
+      locale: 'en',
+      children: createElement(AstryxLocaleProvider, {
+        children: createElement(WorkHubCoordinationStatus, {
+          locale: 'en',
+          state,
+          onRetry: () => undefined,
+        }),
+      }),
+    }),
+  );
+  const resolving = renderStatus('resolving');
+  const failed = renderStatus('failed');
+
+  assert.match(resolving, /Preparing WorkHub/);
+  assert.match(resolving, /aria-busy="true"/);
+  assert.match(failed, /role="alert"/);
+  assert.match(failed, /Check the default model/);
+  assert.match(failed, />Retry</);
 });
 
 test('surface projection refresh gate rejects older reads after a newer refresh starts', () => {

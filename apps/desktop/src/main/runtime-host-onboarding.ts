@@ -56,7 +56,9 @@ export function createDesktopRuntimeHostOnboarding(input: {
     readonly credential: string;
   }>;
   readonly send: (snapshot: DesktopRuntimeHostOnboardingSnapshot) => void;
-  readonly resolveSetupPackage: () => DesktopRuntimeHostSetupPackage;
+  readonly resolveSetupPackage: (
+    signal?: AbortSignal,
+  ) => DesktopRuntimeHostSetupPackage | Promise<DesktopRuntimeHostSetupPackage>;
 }): { close(): Promise<void> } {
   let revision = 0;
   let snapshot: DesktopRuntimeHostOnboardingSnapshot = { kind: 'idle', revision };
@@ -89,7 +91,7 @@ export function createDesktopRuntimeHostOnboarding(input: {
       }));
     }
     const abort = new AbortController();
-    publish({ kind: 'running', phase: 'connecting_ssh' });
+    publish({ kind: 'running', phase: 'preparing_cli' });
     const task = Promise.resolve().then(() => run(request, abort.signal)).finally(() => {
       if (active?.task === task) active = undefined;
     });
@@ -102,6 +104,9 @@ export function createDesktopRuntimeHostOnboarding(input: {
     signal: AbortSignal,
   ): Promise<DesktopRuntimeHostOnboardingSnapshot> => {
     try {
+      const setupPackage = await input.resolveSetupPackage(signal);
+      signal.throwIfAborted();
+      publish({ kind: 'running', phase: 'connecting_ssh' });
       let commitStarted = false;
       const beginCommit = () => {
         if (commitStarted) return;
@@ -116,7 +121,7 @@ export function createDesktopRuntimeHostOnboarding(input: {
         {
           destination: request.destination,
           ...(request.sshPort === undefined ? {} : { sshPort: request.sshPort }),
-          setupPackage: input.resolveSetupPackage(),
+          setupPackage,
           principalId: `desktop:${input.clientInstanceId}`,
           signal,
         },

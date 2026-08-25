@@ -46,10 +46,6 @@ import {
   createConversationOperationalStateStore,
   type ConversationOperationalStateStore,
 } from './conversation-operational-state.js';
-import {
-  createSqliteMessageReceiptStore,
-  type MessageReceiptStore,
-} from './message-receipt-store.js';
 import { createSessionStore, type SessionAuthorityStore } from './session-store.js';
 import {
   assertStorageRootLease,
@@ -115,10 +111,9 @@ export type {
   RuntimeEventScanResult,
 } from './agent-run-store.js';
 export type {
-  MessageOperationReceipt,
-  MessageReceiptOperation,
-  MessageReceiptStore,
-} from './message-receipt-store.js';
+  MessageAdmissionStore,
+  PendingMessageAdmission,
+} from './message-admission-store.js';
 export type {
   ProbeSessionRemovalResult,
   ExternalSessionImportLookupResult,
@@ -147,8 +142,6 @@ export type ExecutionRuntimeEventWriter = DurableRuntimeEventStore &
     ): Promise<void>;
     readSessionRuntimeEventEntries(sessionId: string): Promise<SessionRuntimeEventEntry[]>;
   };
-export type ExecutionMessageReceiptWriter = MessageReceiptStore;
-
 interface ExecutionStoresWriterBase<K extends StorageRootKind> {
   readonly kind: K;
   readonly [executionStoresWriterBrand]: K;
@@ -156,7 +149,6 @@ interface ExecutionStoresWriterBase<K extends StorageRootKind> {
   readonly sessionStore: Readonly<ExecutionSessionWriter>;
   readonly agentRunStore: Readonly<ExecutionAgentRunWriter>;
   readonly runtimeEventStore: Readonly<ExecutionRuntimeEventWriter>;
-  readonly messageReceiptStore: Readonly<ExecutionMessageReceiptWriter>;
 }
 
 export interface InteractiveExecutionStoresWriter extends ExecutionStoresWriterBase<'interactive'> {
@@ -324,12 +316,10 @@ async function createExecutionStoresForWrite<K extends StorageRootKind, E extend
     }).catch(() => {});
     throw error;
   }
-  const messageReceiptStore = createSqliteMessageReceiptStore(lease.canonicalPath);
-  await Promise.all([agentRunStore.ready?.(), messageReceiptStore.ready()]).catch(async (error) => {
+  await agentRunStore.ready?.().catch(async (error) => {
     await closeExecutionStorePersistence(sessionStore, runtimePersistence, {
       agentRunStore,
       conversationOperationalStateStore,
-      messageReceiptStore,
       interactionStore,
     }).catch(() => {});
     throw error;
@@ -421,6 +411,19 @@ async function createExecutionStoresForWrite<K extends StorageRootKind, E extend
         run(() => sessionStore.appendMessage(sessionId, message)),
       appendMessages: (sessionId, messages) =>
         run(() => sessionStore.appendMessages(sessionId, messages)),
+      commitMessageAdmission: (admission) =>
+        run(() => sessionStore.commitMessageAdmission(admission)),
+      readMessageAdmission: (sessionId, messageId) =>
+        run(() => sessionStore.readMessageAdmission(sessionId, messageId)),
+      listMessageAdmissions: (sessionId) =>
+        run(() => sessionStore.listMessageAdmissions(sessionId)),
+      markMessagesHandedOff: (input) => run(() => sessionStore.markMessagesHandedOff(input)),
+      updateMessageAdmission: (admission) =>
+        run(() => sessionStore.updateMessageAdmission(admission)),
+      reorderMessageAdmissions: (sessionId, messageIds) =>
+        run(() => sessionStore.reorderMessageAdmissions(sessionId, messageIds)),
+      cancelMessageAdmissions: (sessionId, messageIds) =>
+        run(() => sessionStore.cancelMessageAdmissions(sessionId, messageIds)),
       subscribeTranscriptChanges: (listener) => sessionStore.subscribeTranscriptChanges(listener),
       updateHeader: (sessionId, patch) => run(() => sessionStore.updateHeader(sessionId, patch)),
       updateHeaderVersioned: (sessionId, patch, expectedRevision) =>
@@ -453,7 +456,6 @@ async function createExecutionStoresForWrite<K extends StorageRootKind, E extend
           await closeExecutionStorePersistence(sessionStore, runtimePersistence, {
             agentRunStore,
             conversationOperationalStateStore,
-            messageReceiptStore,
             interactionStore,
           });
         })()),
@@ -546,15 +548,6 @@ async function createExecutionStoresForWrite<K extends StorageRootKind, E extend
         run(() => runtimePersistence.runtimeCommitStore.commitToolOutcome(input)),
       listUnsettledToolOperations: (sessionId) =>
         run(() => runtimePersistence.runtimeCommitStore.listUnsettledToolOperations(sessionId)),
-    },
-    messageReceiptStore: {
-      beginHostEpoch: (hostEpoch) => run(() => messageReceiptStore.beginHostEpoch(hostEpoch)),
-      read: (hostEpoch, operation, sessionId, operationId) =>
-        run(() => messageReceiptStore.read(hostEpoch, operation, sessionId, operationId)),
-      commit: (hostEpoch, operation, sessionId, operationId, receipt) =>
-        run(() =>
-          messageReceiptStore.commit(hostEpoch, operation, sessionId, operationId, receipt),
-        ),
     },
   };
   freezeExecutionStoresFacade(stores);
@@ -655,12 +648,10 @@ function freezeExecutionStoresFacade(stores: {
   readonly sessionStore: object;
   readonly agentRunStore: object;
   readonly runtimeEventStore: object;
-  readonly messageReceiptStore?: object;
 }): void {
   Object.freeze(stores.sessionStore);
   Object.freeze(stores.agentRunStore);
   Object.freeze(stores.runtimeEventStore);
-  if (stores.messageReceiptStore) Object.freeze(stores.messageReceiptStore);
   Object.freeze(stores);
 }
 
@@ -670,7 +661,6 @@ async function closeExecutionStorePersistence(
   extras: {
     agentRunStore?: Pick<DurableAgentRunStore, 'close'>;
     conversationOperationalStateStore?: Pick<ConversationOperationalStateStore, 'close'>;
-    messageReceiptStore?: { close(): void };
     interactionStore?:
       | InteractiveInteractionStoreReaderFacade
       | InteractiveInteractionStoreWriterFacade;
@@ -694,11 +684,6 @@ async function closeExecutionStorePersistence(
   }
   try {
     extras.conversationOperationalStateStore?.close();
-  } catch (error) {
-    errors.push(error);
-  }
-  try {
-    extras.messageReceiptStore?.close();
   } catch (error) {
     errors.push(error);
   }

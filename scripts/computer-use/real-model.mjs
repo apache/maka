@@ -408,7 +408,7 @@ async function discoverLauncherFixtureIdentity(fixturePid, windowSpecs) {
 function safeEvent(event) {
   if (event.type === 'tool_start') {
     const safeToolName =
-      event.toolName === 'load_tools' || event.toolName === 'maka_computer'
+      event.toolName === 'tool_search' || event.toolName === 'maka_computer'
         ? event.toolName
         : 'other';
     return {

@@ -156,6 +156,8 @@ test('release authority changes select their dedicated contract gate', () => {
     'scripts/verify-packaged-app.mjs',
     'scripts/verify-windows-x64.mjs',
     'scripts/windows-upgrade-baseline.json',
+    'scripts/windows-package-source-closure.mjs',
+    'scripts/windows-package-source-closure.test.mjs',
   ]) {
     assert.equal(planTests([path], { graph }).releaseContract, true, path);
   }
@@ -342,6 +344,7 @@ test('pull request triggers stay on an explicit allowlist', () => {
     'copilot-auto-review.yml',
     'dependency-audit.yml',
     'release-windows-check.yml',
+    'runtime-host-owner-platform.yml',
     'windows-sandbox-w0.yml',
   ]);
 });
@@ -361,6 +364,52 @@ test('the packaged Windows gate owns Runtime Host candidate election changes', (
 
   assert.match(workflow, /'packages\/runtime-host\/src\/client\/connect-or-spawn\.ts'/u);
   assert.match(workflow, /'packages\/runtime-host\/src\/client\/launcher\.ts'/u);
+});
+
+test('the packaged Windows gate triggers on release orchestration changes', () => {
+  const workflow = readWorkflow('release-windows-check.yml');
+
+  assert.match(workflow, /'\.github\/workflows\/release\.yml'/u);
+});
+
+test('the packaged Windows gate workflow is itself a release-contract input', () => {
+  assert.equal(
+    planTests(['.github/workflows/release-windows-check.yml'], { graph }).releaseContract,
+    true,
+  );
+  assert.match(
+    readWorkflow('release-windows-check.yml'),
+    /'\.github\/workflows\/release-windows-check\.yml'/u,
+  );
+});
+
+test('the packaged Windows gate triggers on packaged sandbox inputs', () => {
+  const workflow = readWorkflow('release-windows-check.yml');
+
+  for (const path of [
+    'apps/desktop/scripts/copy-runtime-filesystem-worker.mjs',
+    'packages/runtime/scripts/build-filesystem-worker.mjs',
+    'packages/runtime/src/filesystem-worker/**',
+    'packages/runtime/src/sandbox/**',
+    'packages/runtime/src/path-containment.ts',
+    'packages/runtime/src/sandbox-boundary-path.ts',
+    'packages/core/src/permission-profile.ts',
+    'packages/core/src/permission-profile-compiler.ts',
+  ]) {
+    assert.ok(workflow.includes(`      - '${path}'`), path);
+  }
+});
+
+test('pull-request and release lanes share the packaged sandbox lifecycle verifier', () => {
+  for (const name of ['release-windows-check.yml', 'release.yml']) {
+    assert.match(readWorkflow(name), /npm run verify:windows-x64/u, name);
+  }
+
+  const verifier = readFileSync(new URL('verify-windows-x64.mjs', import.meta.url), 'utf8');
+  assert.match(
+    verifier,
+    /await verifyPackagedWindowsSandboxLifecycle\(sandboxExecutable, \{ run \}\)/u,
+  );
 });
 
 test('specialized platform workflows stay reachable without pull requests', () => {

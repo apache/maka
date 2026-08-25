@@ -19,7 +19,7 @@
 
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
-import { access, mkdir, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises';
+import { access, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -37,6 +37,11 @@ import {
   waitForUsableRenderer,
 } from './verify-packaged-app.mjs';
 import { waitForInstalledProductVersion } from './verify-windows-autoupdate.mjs';
+import { verifyPackagedWindowsSandboxLifecycle } from './verify-windows-x64.mjs';
+import {
+  WINDOWS_SANDBOX_DEFERRED_HARDENING,
+  WINDOWS_SANDBOX_PHASE4_MATRIX,
+} from './verify-windows-sandbox-e2e.mjs';
 import {
   deleteUninstallRegistrationForInstall,
   readUninstallDisplayVersionsForInstall,
@@ -58,6 +63,85 @@ import {
 const temporaryRoots = [];
 const delay = (milliseconds) =>
   new Promise((resolvePromise) => setTimeout(resolvePromise, milliseconds));
+
+it('pins every Phase 4 adversarial category to executable evidence', async () => {
+  assert.deepEqual(WINDOWS_SANDBOX_PHASE4_MATRIX.map(({ category }) => category).sort(), [
+    'credentials',
+    'descendants',
+    'environment',
+    'filesystem_aliases',
+    'ipc',
+    'lifecycle_failures',
+    'network_channels',
+    'registry',
+  ]);
+  for (const row of WINDOWS_SANDBOX_PHASE4_MATRIX) {
+    assert.ok(row.evidence.length > 0, `${row.category} has no executable evidence`);
+    assert.equal(new Set(row.evidence).size, row.evidence.length, `${row.category} is duplicated`);
+  }
+  assert.deepEqual(WINDOWS_SANDBOX_DEFERRED_HARDENING, [
+    'Authenticode identity verification',
+    'direct Credential Manager and DPAPI probes',
+    'inbound listener enforcement',
+    'UDP channel enforcement',
+    'no-Win32k mitigation',
+    'dedicated window-station and clipboard isolation',
+    'power-loss automatic recovery',
+  ]);
+
+  const verifier = await readFile(
+    new URL('./verify-windows-sandbox-e2e.mjs', import.meta.url),
+    'utf8',
+  );
+  for (const stage of [
+    'verifyPackagedClientCancellation',
+    'verifyPackagedRuntimeHostParentDeath',
+    'verifyPackagedConcurrencySoak',
+    'verifyPackagedAdversarialMatrix',
+  ]) {
+    assert.match(verifier, new RegExp(`await ${stage}\\(`));
+  }
+
+  const adversarialProbe = await readFile(
+    new URL('../experiments/windows-sandbox/adversarial-matrix-smoke.ps1', import.meta.url),
+    'utf8',
+  );
+  for (const field of [
+    'fileDenied',
+    'tcpDenied',
+    'namedPipeDenied',
+    'environmentDenied',
+    'registryDenied',
+    'parentTokenDenied',
+    'descendantAppContainer',
+    'descendantInJob',
+    'descendantSpawnDenied',
+  ]) {
+    assert.match(adversarialProbe, new RegExp(`"${field}":true`));
+  }
+  assert.match(adversarialProbe, /phase4-junction/u);
+  assert.match(adversarialProbe, /phase4-hardlink/u);
+  assert.match(adversarialProbe, /\.json\.quarantined/u);
+  assert.match(adversarialProbe, /cleanupErrors\.Count -gt 0/u);
+  assert.doesNotMatch(adversarialProbe, /SilentlyContinue/u);
+  assert.match(adversarialProbe, /work root still exists/u);
+
+  const localBroker = await readFile(
+    new URL('../experiments/windows-sandbox/launcher/src/broker_client.rs', import.meta.url),
+    'utf8',
+  );
+  assert.match(localBroker, /let owner_pid = parent_process_id\(\)\?/u);
+  assert.match(localBroker, /validate_owner_process\(owner, owner_pid\)/u);
+  assert.match(localBroker, /GetProcessTimes/u);
+  assert.match(localBroker, /launch_appcontainer_owned\(&request\.launch, owner\)/u);
+
+  const launcher = await readFile(
+    new URL('../experiments/windows-sandbox/launcher/src/windows_launcher.rs', import.meta.url),
+    'utf8',
+  );
+  assert.match(launcher, /WaitForMultipleObjects/u);
+  assert.match(launcher, /Runtime Host owner exited during sandbox launch/u);
+});
 
 it('scopes rollback registration reads and deletion to the fixture uninstaller', async () => {
   const calls = [];
@@ -147,6 +231,41 @@ describe('rendererLayoutMatchesViewport', () => {
       false,
     );
   });
+});
+
+it('runs packaged sandbox lifecycle evidence against the exact shipped broker', async () => {
+  const calls = [];
+  const sandboxExecutable = 'C:\\release\\resources\\windows-sandbox\\maka-windows-sandbox.exe';
+
+  await verifyPackagedWindowsSandboxLifecycle(sandboxExecutable, {
+    run: async (command, args) => {
+      calls.push({ command, args });
+      return { stdout: '', stderr: '' };
+    },
+  });
+
+  assert.deepEqual(
+    calls.map(({ command, args }) => ({
+      command,
+      script: args[2].replaceAll('\\', '/').split('/').at(-1),
+      launcherFlag: args[3],
+      launcher: args[4],
+    })),
+    [
+      {
+        command: 'pwsh',
+        script: 'appcontainer-smoke.ps1',
+        launcherFlag: '-LauncherPath',
+        launcher: sandboxExecutable,
+      },
+      {
+        command: 'pwsh',
+        script: 'acl-recovery-smoke.ps1',
+        launcherFlag: '-LauncherPath',
+        launcher: sandboxExecutable,
+      },
+    ],
+  );
 });
 
 it('uses the product SemVer contract throughout Windows release verification', () => {

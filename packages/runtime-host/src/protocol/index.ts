@@ -85,17 +85,19 @@ export * from './session-transcript.js';
 export * from './session-turns.js';
 export * from './task-ledger.js';
 export * from './workspace.js';
+export * from './workhub-coordination.js';
 export * from './websocket-path.js';
 
 export const RUNTIME_HOST_REGISTRATION_SCHEMA_VERSION = 1 as const;
 export const RUNTIME_HOST_PROTOCOL_VERSION = 0 as const;
 // Increment when the same protocol version no longer guarantees safe Client-Host
 // interoperability. Mismatches are rejected before domain commands are admitted.
-export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 49 as const;
-// 49: Session continuity snapshots advance to schema 5 with the durable
-// steering message echo. Older peers reject the unknown schemaVersion at
-// admission, so mixed peers must fail the handshake before either side
-// renders a steering message.
+export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 50 as const;
+// 50: Session subscriptions can forward durable steering-message echoes and
+// preserve their identity across queue and transcript projection.
+// Older peers cannot safely de-duplicate the two authoritative paths.
+// 49: WorkHub resolves one durable Coordination Session per Runtime Host.
+// Older peers do not know the operation or the hidden Session role.
 // 48: Session branch creation accepts an explicit Side Conversation intent.
 // Older peers reject the strict input shape or cannot apply its snapshot semantics.
 // 47: Project registration can carry an explicit location preference. Epoch-46

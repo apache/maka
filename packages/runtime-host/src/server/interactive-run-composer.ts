@@ -186,9 +186,6 @@ export function createInteractiveRunComposer(input: InteractiveRunComposerInput)
   const productSurface = projectEffectiveProductToolSurface({
     host: 'runtime-host',
     tools: selectedTools,
-    policy: {
-      economy: hasToolCeiling ? false : !process.env.MAKA_DISABLE_DEFERRED_TOOLS,
-    },
   });
   // A bound tool list is an exact child/local activation ceiling. Dynamic
   // capabilities must be included by the authority that constructs that list.
@@ -507,7 +504,6 @@ function mergeToolAvailability(
     groupIds.add(group.id);
   }
   return {
-    economy: product.economy,
     groups: [...(product.groups ?? []), ...clientGroups],
   };
 }

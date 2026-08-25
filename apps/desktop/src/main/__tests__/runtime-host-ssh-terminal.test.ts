@@ -218,8 +218,35 @@ test('force-stops a cancelled setup when SSH ignores graceful termination', asyn
 
   await assert.rejects(setup, /aborted/u);
   assert.deepEqual(harness.pty.killSignals, ['SIGTERM', 'SIGKILL']);
+  assert.deepEqual(harness.terminatedProcesses, [
+    { pid: 42, signal: 'SIGTERM' },
+    { pid: 42, signal: 'SIGKILL' },
+  ]);
   assert.deepEqual(harness.eventKinds(), ['opened', 'data', 'dismissed']);
   assert.deepEqual(await harness.getSnapshot(), { kind: 'idle', revision: 3 });
+  await harness.terminal.close();
+});
+
+test('does not signal a reused process identity when cancellation races SSH exit', async () => {
+  const harness = createHarness('pending');
+  const controller = new AbortController();
+  const setup = harness.terminal.runSetup(
+    {
+      destination: 'operator@example.com',
+      setupPackage: { kind: 'npm', specifier: 'maka-agent@1.2.3' },
+      principalId: 'desktop:stable-client',
+      signal: controller.signal,
+    },
+    () => undefined,
+  );
+  await waitFor(() => harness.pty.hasDataListener());
+
+  controller.abort();
+  harness.pty.exit(0);
+
+  await assert.rejects(setup, /aborted/u);
+  await Promise.resolve();
+  assert.deepEqual(harness.pty.killSignals, []);
   await harness.terminal.close();
 });
 
@@ -264,7 +291,9 @@ test('reads a framed service result without projecting it into the SSH terminal'
 
   const result = await management;
   assert.equal(result.kind, 'result');
-  if (result.kind !== 'result') assert.fail('expected service management result');
+  if (result.kind !== 'result' || result.action !== 'status') {
+    assert.fail('expected service status result');
+  }
   assert.equal(result.service.installedVersion, '1.2.3');
   assert.doesNotMatch(JSON.stringify(harness.events), /MAKA_RUNTIME_HOST_SERVICE/u);
   assert.match(JSON.stringify(harness.events), /Password/u);
@@ -370,6 +399,88 @@ test('runs an exact update package and reports progress before an active-work re
   assert.deepEqual(harness.events.map(({ kind }) => kind), ['opened', 'data', 'connected']);
   assert.doesNotMatch(JSON.stringify(harness.events), /MAKA_RUNTIME_HOST_SERVICE/u);
   await harness.terminal.close();
+});
+
+test('uses the managed operator for update policy and one-shot reconciliation', async () => {
+  const target = {
+    serviceId: 'b'.repeat(64),
+    rootPath: '/srv/maka',
+    rootId: 'a'.repeat(64),
+  };
+  const policyHarness = createHarness('pending');
+  const policy = policyHarness.terminal.runUpdatePolicy({
+    destination: 'operator@example.com',
+    operatorPath: '/home/operator/.local/share/maka/operator',
+    policy: { kind: 'channel', channel: 'latest' },
+    expectedTarget: target,
+  });
+  await waitFor(() => policyHarness.pty.hasDataListener());
+  const policyCommand = policyHarness.launchArgs.at(-1)?.at(-1) ?? '';
+  assert.match(policyCommand, /operator.*update-policy.*--target.*latest/u);
+  assert.match(policyCommand, /--expected-service-id/u);
+  assert.match(policyCommand, /update-scheduler-v1/u);
+  policyHarness.pty.emitData(encodeRuntimeHostServiceManagementFrame({
+    schemaVersion: 1,
+    kind: 'result',
+    action: 'update_policy',
+    updateSchedulerState: 'ready',
+    updatePolicy: {
+      policy: { kind: 'channel', channel: 'latest' },
+      target,
+    },
+  }));
+  policyHarness.pty.exit(0);
+  assert.equal((await policy).kind, 'result');
+  await policyHarness.terminal.close();
+
+  const reconcileHarness = createHarness('pending');
+  const phases: string[] = [];
+  const reconciliation = reconcileHarness.terminal.runUpdateReconciliation(
+    {
+      destination: 'operator@example.com',
+      operatorPath: '/home/operator/.local/share/maka/operator',
+      expectedTarget: target,
+    },
+    (phase) => phases.push(phase),
+  );
+  await waitFor(() => reconcileHarness.pty.hasDataListener());
+  const reconcileCommand = reconcileHarness.launchArgs.at(-1)?.at(-1) ?? '';
+  assert.match(reconcileCommand, /operator.*reconcile-update.*--framed/u);
+  assert.match(reconcileCommand, /--expected-service-id/u);
+  assert.match(reconcileCommand, /update-scheduler-v1/u);
+  reconcileHarness.pty.emitData(encodeRuntimeHostServiceManagementFrame({
+    schemaVersion: 1,
+    kind: 'progress',
+    action: 'reconcile_update',
+    phase: 'checking',
+    currentVersion: '1.2.3',
+    targetVersion: '1.3.0',
+  }));
+  reconcileHarness.pty.emitData(encodeRuntimeHostServiceManagementFrame({
+    schemaVersion: 1,
+    kind: 'result',
+    action: 'reconcile_update',
+    updateSchedulerState: 'ready',
+    updatePolicy: {
+      policy: { kind: 'channel', channel: 'latest' },
+      target,
+    },
+    service: {
+      platform: 'linux',
+      arch: 'x64',
+      osRelease: '6.8.0',
+      state: 'running',
+      pid: 42,
+      lastExitCode: 0,
+      installedVersion: '1.2.3',
+      projectDirectoryRoots: [],
+    },
+    reconciliation: { kind: 'already_current', version: '1.2.3' },
+  }));
+  reconcileHarness.pty.exit(0);
+  assert.equal((await reconciliation).kind, 'result');
+  assert.deepEqual(phases, ['checking']);
+  await reconcileHarness.terminal.close();
 });
 
 test('keeps a prepared access credential out of the SSH terminal projection', async () => {
@@ -562,6 +673,7 @@ function createHarness(
 ) {
   const handlers = new Map<string, (...args: unknown[]) => unknown>();
   const events: Array<{ kind: string }> = [];
+  const terminatedProcesses: Array<{ pid: number; signal: string }> = [];
   const pty = new FakePty();
   const launchArgs: string[][] = [];
   let releaseTunnel!: () => void;
@@ -582,6 +694,13 @@ function createHarness(
     revealDelayMs: 0,
     ...options,
     processStopGraceMs: 1,
+    terminateProcessTree: async ({ pid, signal, fallback, hasExited, beforeSignal }) => {
+      terminatedProcesses.push({ pid, signal });
+      await Promise.resolve();
+      if (hasExited?.() || beforeSignal?.() === false) return false;
+      fallback?.();
+      return true;
+    },
     openSshTunnel: async (input, overrides) => {
       const spawnProcess = overrides?.spawnProcess as RuntimeHostSshProcessFactory;
       const process = spawnProcess({ executable: 'ssh', args: [], interaction: input.interaction });
@@ -606,6 +725,7 @@ function createHarness(
     releaseTunnel,
     eventKinds: () => events.map(({ kind }) => kind),
     events,
+    terminatedProcesses,
     getSnapshot: () => invoke('runtime-host-ssh-terminal:getSnapshot'),
     cancel: (sessionId: string) => invoke('runtime-host-ssh-terminal:cancel', sessionId),
   };

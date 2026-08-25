@@ -50,6 +50,7 @@ export default meta;
 type Story = StoryObj<typeof meta>;
 type AutoOpenTarget =
   | 'detail'
+  | 'detail-alibaba'
   | 'detail-static'
   | 'detail-relay'
   | 'add'
@@ -124,6 +125,21 @@ const configuredConnections = [
     providerType: 'ollama',
     defaultModel: 'qwen2.5-coder',
     lastTestStatus: 'verified',
+  }),
+];
+
+const alibabaTokenPlanConnections = [
+  makeConnection({
+    slug: 'alibaba-token-plan-cn',
+    name: 'Alibaba Token Plan（团队版）',
+    providerType: 'alibaba-token-plan-cn',
+    defaultModel: 'qwen3.8-max',
+    lastTestStatus: 'verified',
+    models: [
+      { id: 'qwen3.8-max', displayName: 'Qwen3.8 Max' },
+      { id: 'qwen3.7-max', displayName: 'Qwen3.7 Max' },
+    ],
+    modelSource: 'fetched',
   }),
 ];
 
@@ -426,11 +442,22 @@ function reachCatalog(root: HTMLElement): HTMLElement | null {
 }
 
 function clickAutoOpenTarget(root: HTMLElement, target: AutoOpenTarget): boolean {
-  if (target === 'detail' || target === 'detail-static' || target === 'detail-relay') {
+  if (
+    target === 'detail'
+    || target === 'detail-alibaba'
+    || target === 'detail-static'
+    || target === 'detail-relay'
+  ) {
     // ListItem's clickable surface is an invisible button inside the row, so
     // the row is located by its slug hook and the button taken from within it.
     const slug =
-      target === 'detail' ? 'zai-live' : target === 'detail-static' ? 'ark-plan' : 'relay-house';
+      target === 'detail'
+        ? 'zai-live'
+        : target === 'detail-alibaba'
+          ? 'alibaba-token-plan-cn'
+          : target === 'detail-static'
+            ? 'ark-plan'
+            : 'relay-house';
     const row = root.querySelector<HTMLElement>(`[data-connection-slug="${slug}"]`);
     const detailButton = row?.querySelector('button') ?? null;
     detailButton?.click();
@@ -492,6 +519,21 @@ export const ConnectionDetailPage: Story = {
     <ProviderStory
       bridge={createBridge({ connections: configuredConnections, defaultSlug: 'zai-live' })}
       autoOpen="detail"
+    />
+  ),
+};
+
+// Fixed endpoints are inspectable but not editable. Alibaba is the high-signal
+// case because several catalog entries share one brand while routing to
+// different products and regions (#3636).
+export const AlibabaConnectionDetailPage: Story = {
+  render: () => (
+    <ProviderStory
+      bridge={createBridge({
+        connections: alibabaTokenPlanConnections,
+        defaultSlug: 'alibaba-token-plan-cn',
+      })}
+      autoOpen="detail-alibaba"
     />
   ),
 };

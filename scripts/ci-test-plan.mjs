@@ -45,6 +45,7 @@ const RELEASE_CONTRACT_FILES = new Set([
   '.github/workflows/release-cli-finalize.yml',
   '.github/workflows/release-cli-stage.yml',
   '.github/workflows/release.yml',
+  '.github/workflows/release-windows-check.yml',
   'scripts/package-macos-arm64.mjs',
   'scripts/package-macos-arm64-cli.mjs',
   'scripts/package-windows-autoupdate-next.mjs',
@@ -62,6 +63,8 @@ const RELEASE_CONTRACT_FILES = new Set([
   'scripts/verify-windows-installer-lifecycle.mjs',
   'scripts/verify-windows-x64.mjs',
   'scripts/windows-upgrade-baseline.json',
+  'scripts/windows-package-source-closure.mjs',
+  'scripts/windows-package-source-closure.test.mjs',
 ]);
 
 const TYPECHECK_ONLY_FILES = new Set([

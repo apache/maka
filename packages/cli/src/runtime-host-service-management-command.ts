@@ -78,14 +78,16 @@ export async function runManagedRuntimeHostServiceCli(
     const { json: _json, framed: _framed, ...input } = options;
     const serviceId = resolveRuntimeHostManagedServiceId(options.clientDataRoot);
     const manage = () => deps.manage(input, deps.createBackend(serviceId));
+    const mutate = () =>
+      deps.withDeploymentLock(options.clientDataRoot, () =>
+        deps.withLifecycleLock(options.clientDataRoot, manage),
+      );
     const result =
       options.action === 'status' || options.action === 'logs'
         ? await manage()
         : options.action === 'retire'
           ? await deps.withLifecycleLock(options.clientDataRoot, manage)
-          : await deps.withDeploymentLock(options.clientDataRoot, () =>
-              deps.withLifecycleLock(options.clientDataRoot, manage),
-            );
+          : await mutate();
     const blocked = result.action === 'retire' && result.retirement.kind === 'active_tasks';
     if (options.framed) {
       deps.writeOutput(encodeRuntimeHostServiceManagementFrame(successFrame(result)));

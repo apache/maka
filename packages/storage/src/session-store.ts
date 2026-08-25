@@ -45,7 +45,9 @@ import {
   isSubagentSessionRuntime,
   isSubagentSessionSpawn,
   isSessionStatus,
+  isWorkHubCoordinationSessionId,
   subagentSessionRuntimeSummary,
+  WORKHUB_COORDINATION_SESSION_ROLE,
 } from '@maka/core/session';
 import { isCollaborationMode } from '@maka/core/collaboration';
 import { isOrchestrationMode } from '@maka/core/orchestration';
@@ -75,11 +77,20 @@ import {
   type SessionConversationCopy,
   type SessionExternalOrigin,
   type SessionSummary,
+  type SessionRole,
   type StoredMessage,
   type TurnRecord,
   type TurnStateMessage,
   type UserMessage,
 } from '@maka/core/session';
+import type { MessageAdmissionStore, PendingMessageAdmission } from './message-admission-store.js';
+import {
+  isVisibleSessionMessage,
+  lastMessagePreviewForMessages,
+  latestVisibleMessageAt,
+  projectSessionCatalogMessages,
+} from './session-message-projection.js';
+export { projectSessionCatalogMessages };
 
 const SESSION_ID_PATTERN = /^[A-Za-z0-9_-]{1,128}$/;
 
@@ -166,6 +177,7 @@ export interface CreateStableSessionRequest {
 
 export type StableSessionCreateInput = CreateSessionInput & {
   readonly conversationCopy?: SessionConversationCopy;
+  readonly role?: SessionRole;
 };
 
 export type CreateStableSessionResult =
@@ -299,7 +311,7 @@ export interface SessionStore {
   close?(): Promise<void>;
 }
 
-export interface SessionAuthorityStore extends SessionStore {
+export interface SessionAuthorityStore extends SessionStore, MessageAdmissionStore {
   /** Read a bounded set of durable messages at an inclusive transcript watermark. */
   readTranscriptMessagesSnapshot(
     sessionId: string,
@@ -527,6 +539,10 @@ class SqliteSessionStore implements SessionAuthorityStore {
     initialBoundary?: ExecutionBoundary,
   ): Promise<CreateStableSessionResult> {
     await this.ensureReady();
+    // Asserted here as well as in the header builder so a malformed request is
+    // refused before claimStableSessionCreate() writes a durable claim for the
+    // identity it names.
+    assertCoordinationIdentityPairing(request.sessionId, request.input.role);
     if (
       request.input.conversationCopy &&
       request.input.conversationCopy.requestFingerprint !== request.requestFingerprint
@@ -669,7 +685,7 @@ class SqliteSessionStore implements SessionAuthorityStore {
 
   async list(filter?: SessionListFilter): Promise<SessionSummary[]> {
     await this.ensureReady();
-    const records = (await this.metadata.list(filter)).filter(
+    const records = (await this.metadata.list(filter, 'ordinary')).filter(
       (record) => record.header.conversationCopy?.state !== 'preparing',
     );
     const withPreviews: Array<{
@@ -745,7 +761,7 @@ class SqliteSessionStore implements SessionAuthorityStore {
 
   async listHeaders(): Promise<SessionHeader[]> {
     await this.ensureReady();
-    return (await this.metadata.list())
+    return (await this.metadata.list(undefined, 'recoverable'))
       .map((record) => record.header)
       .sort((a, b) => a.id.localeCompare(b.id));
   }
@@ -855,6 +871,51 @@ class SqliteSessionStore implements SessionAuthorityStore {
       projectSessionCatalogMessages(messages),
     );
     for (const listener of this.transcriptChangeListeners) listener(sessionId);
+  }
+
+  async commitMessageAdmission(
+    admission: PendingMessageAdmission,
+  ): Promise<PendingMessageAdmission> {
+    await this.ensureReady();
+    return this.metadata.commitMessageAdmission(admission);
+  }
+
+  async readMessageAdmission(
+    sessionId: string,
+    messageId: string,
+  ): Promise<PendingMessageAdmission | undefined> {
+    await this.ensureReady();
+    return this.metadata.readMessageAdmission(sessionId, messageId);
+  }
+
+  async listMessageAdmissions(sessionId: string): Promise<readonly PendingMessageAdmission[]> {
+    await this.ensureReady();
+    return this.metadata.listMessageAdmissions(sessionId);
+  }
+
+  async markMessagesHandedOff(input: {
+    sessionId: string;
+    messageIds: readonly string[];
+    turnId: string;
+  }): Promise<void> {
+    await this.ensureReady();
+    await this.metadata.markMessagesHandedOff(input);
+    for (const listener of this.transcriptChangeListeners) listener(input.sessionId);
+  }
+
+  async updateMessageAdmission(admission: PendingMessageAdmission): Promise<void> {
+    await this.ensureReady();
+    await this.metadata.updateMessageAdmission(admission);
+  }
+
+  async reorderMessageAdmissions(sessionId: string, messageIds: readonly string[]): Promise<void> {
+    await this.ensureReady();
+    await this.metadata.reorderMessageAdmissions(sessionId, messageIds);
+  }
+
+  async cancelMessageAdmissions(sessionId: string, messageIds: readonly string[]): Promise<void> {
+    await this.ensureReady();
+    await this.metadata.cancelMessageAdmissions(sessionId, messageIds);
   }
 
   subscribeTranscriptChanges(listener: (sessionId: string) => void): () => void {
@@ -1012,9 +1073,20 @@ class SqliteSessionStore implements SessionAuthorityStore {
   }
 }
 
+/**
+ * The reserved identity and the reserved role are one fact, and the invariant
+ * belongs to every creator that builds a header — subagents and Agent Graph
+ * operators included, whose inputs carry no role today.
+ */
+function assertCoordinationIdentityPairing(sessionId: string, role: SessionRole | undefined): void {
+  if (isWorkHubCoordinationSessionId(sessionId) !== (role === WORKHUB_COORDINATION_SESSION_ROLE)) {
+    throw new Error('WorkHub Coordination Session identity and role must be claimed together');
+  }
+}
+
 function buildSessionHeader(
   workspaceRoot: string,
-  input: CreateSessionInput,
+  input: CreateSessionInput & { readonly role?: SessionRole },
   sessionId: string = randomUUID(),
   conversationCopy?: SessionConversationCopy,
 ): SessionHeader {
@@ -1027,10 +1099,12 @@ function buildSessionHeader(
   }
   const now = Date.now();
   assertSafeSessionId(sessionId);
+  assertCoordinationIdentityPairing(sessionId, input.role);
   const name =
     input.name === undefined ? DEFAULT_SESSION_NAME : normalizeRequiredSessionName(input.name);
   const header: SessionHeader = {
     id: sessionId,
+    ...(input.role === undefined ? {} : { role: input.role }),
     workspaceRoot,
     cwd: input.cwd,
     ...(input.projectId !== undefined ? { projectId: input.projectId } : {}),
@@ -1086,6 +1160,7 @@ export function normalizeSessionHeader(
 ): SessionHeader {
   const valid =
     header.id === sessionId &&
+    (header.role === undefined || header.role === WORKHUB_COORDINATION_SESSION_ROLE) &&
     typeof header.workspaceRoot === 'string' &&
     typeof header.cwd === 'string' &&
     (header.projectId === undefined ||
@@ -1360,32 +1435,6 @@ function toCatalogSummary(
   };
 }
 
-export function projectSessionCatalogMessages(messages: readonly StoredMessage[]): {
-  readonly lastMessageAt?: number;
-  readonly lastMessagePreview?: string;
-} {
-  const lastMessageAt = latestVisibleMessageAt(messages);
-  const lastMessagePreview = lastMessagePreviewForMessages(messages);
-  return {
-    ...(lastMessageAt === undefined ? {} : { lastMessageAt }),
-    ...(lastMessagePreview === undefined ? {} : { lastMessagePreview }),
-  };
-}
-
-function latestVisibleMessageAt(messages: readonly StoredMessage[]): number | undefined {
-  for (let index = messages.length - 1; index >= 0; index -= 1) {
-    const message = messages[index]!;
-    if (isVisibleSessionMessage(message)) return message.ts;
-  }
-  return undefined;
-}
-
-function isVisibleSessionMessage(
-  message: StoredMessage,
-): message is Extract<StoredMessage, { type: 'user' | 'assistant' }> {
-  return message.type === 'user' || message.type === 'assistant';
-}
-
 function maxTimestamp(left: number | undefined, right: number | undefined): number | undefined {
   if (left === undefined) return right;
   if (right === undefined) return left;
@@ -1394,34 +1443,6 @@ function maxTimestamp(left: number | undefined, right: number | undefined): numb
 
 function normalizeSessionName(name: string): string {
   return name === 'New Session' ? DEFAULT_SESSION_NAME : name;
-}
-
-function lastMessagePreviewForMessages(messages: readonly StoredMessage[]): string | undefined {
-  for (let index = messages.length - 1; index >= 0; index -= 1) {
-    const message = messages[index]!;
-    if (message.type === 'user') {
-      // Prefer the human-facing view when the stored model text is a composed
-      // envelope (e.g. explicit skill invocation).
-      const text = normalizePreviewText(message.displayText ?? message.text);
-      if (text) return truncatePreview(text);
-      if (message.attachments && message.attachments.length > 0) return '附件';
-    }
-    if (message.type === 'assistant') {
-      const text = normalizePreviewText(message.text);
-      if (text) return truncatePreview(text);
-    }
-  }
-  return undefined;
-}
-
-function normalizePreviewText(text: string): string {
-  return text.replace(/\s+/g, ' ').trim();
-}
-
-function truncatePreview(text: string, maxLength = 96): string {
-  const chars = Array.from(text);
-  if (chars.length <= maxLength) return text;
-  return `${chars.slice(0, maxLength - 1).join('')}…`;
 }
 
 export function createUserMessage(input: {

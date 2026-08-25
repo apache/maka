@@ -102,7 +102,7 @@ describe('ToolRuntime session sandbox boundary', () => {
     );
   });
 
-  test('parks the dedicated request tool until the exact durable expansion is settled', async () => {
+  test('parks the dedicated tool and admits only one boundary request at a time', async () => {
     const events: SessionEvent[] = [];
     const managed: ExecutionBoundary = {
       kind: 'managed',
@@ -172,6 +172,24 @@ describe('ToolRuntime session sandbox boundary', () => {
     // published, so a crash in between still leaves the request attributable.
     assert.equal(created?.turnId, 'turn-1');
     assert.equal(created?.runId, 'run-1');
+    const overlapping = await runtime.settleToolCall({
+      tool,
+      turnId: 'turn-1',
+      toolCallId: 'tool-boundary-overlapping',
+      input: {
+        expansion: { network: { enabled: true } },
+        justification: 'Try a concurrent request.',
+      },
+      abortSignal: new AbortController().signal,
+      eventSink: {
+        push: (event) => events.push(event),
+        pushAndWaitUntilConsumed: async (event) => {
+          events.push(event);
+        },
+      },
+    });
+    assert.match(JSON.stringify(overlapping.result), /already pending/u);
+    assert.equal(events.filter((event) => event.type === 'sandbox_boundary_request').length, 1);
     await runtime.respondToSandboxBoundaryRequest('turn-1', {
       requestId: requestEvent.requestId,
       decision: 'allow',
@@ -179,6 +197,7 @@ describe('ToolRuntime session sandbox boundary', () => {
     const result = (await pending).result as SandboxBoundarySettlement;
     assert.equal(result.request.status, 'approved');
     assert.equal(result.boundary.revision, 1);
+    assert.equal(runtime.shouldFinalizeSandboxBoundary(), false);
   });
 
   test('publishes a hosted boundary only after admission and settles only through its continuation', async () => {
@@ -687,6 +706,78 @@ describe('ToolRuntime session sandbox boundary', () => {
         },
       },
     });
+  });
+
+  test('counts one boundary correction per model step and keeps failure kinds independent', async () => {
+    const runtime = new ToolRuntime({
+      turnId: 'turn-1',
+      sessionId: 'session-1',
+      header: header(),
+      connection: { providerType: 'openai', slug: 'test' } as never,
+      modelId: 'test',
+      appendMessage: async () => {},
+      readExecutionBoundary: async () => ({
+        kind: 'managed',
+        profile: createWorkspaceWritePermissionProfile(),
+        revision: 0,
+      }),
+      newId: nextId(),
+      now: () => 1,
+      getPermissionPauseTarget: () => null,
+    });
+    const invalid: MakaTool = {
+      name: 'Bash',
+      description: 'invalid boundary declaration',
+      parameters: {},
+      impl: () => {
+        throw new SandboxCommandError({
+          domain: 'command',
+          stage: 'validation',
+          reason: 'invalid_boundary_declaration',
+          recoverable: true,
+        });
+      },
+    };
+    const unresolved: MakaTool = {
+      name: 'Bash',
+      description: 'unresolved boundary declaration',
+      parameters: {},
+      impl: () => {
+        throw new FilesystemWorkerClientError({
+          reason: 'sandbox_boundary_required',
+          stage: 'validation',
+          recoverable: true,
+          requiredExpansion: { network: { enabled: true } },
+        });
+      },
+    };
+    const eventSink = {
+      push: () => {},
+      pushAndWaitUntilConsumed: async () => {},
+    };
+    let callNumber = 0;
+    const fail = async (tool: MakaTool, stepId: string): Promise<void> => {
+      callNumber += 1;
+      await runtime.settleToolCall({
+        tool,
+        turnId: 'turn-1',
+        stepId,
+        toolCallId: `boundary-${callNumber}`,
+        input: { boundary_intent: 'expand', variant: callNumber },
+        abortSignal: new AbortController().signal,
+        eventSink,
+      });
+    };
+
+    await fail(invalid, 'step-1');
+    await fail(invalid, 'step-1');
+    await fail(invalid, 'step-2');
+    await fail(unresolved, 'step-3');
+    await fail(unresolved, 'step-4');
+    assert.equal(runtime.shouldFinalizeSandboxBoundary(), false);
+
+    await fail(unresolved, 'step-5');
+    assert.equal(runtime.shouldFinalizeSandboxBoundary(), true);
   });
 
   test('cancels a suspended nested boundary wait when its cell aborts', async () => {

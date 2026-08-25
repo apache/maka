@@ -245,14 +245,14 @@ export function resolveRuntimeHostManagedDeploymentForCli(
   return isRuntimeHostManagedDeploymentCli(root, serviceId, cliPath) ? root : undefined;
 }
 
-export async function removeRuntimeHostManagedDeployment(
+export async function resolveExistingRuntimeHostManagedDeploymentRoot(
   root: string,
   serviceId: string,
-): Promise<void> {
+): Promise<string | undefined> {
   if (!isRuntimeHostManagedDeploymentRoot(root, serviceId)) {
     throw new RuntimeHostManagedDeploymentError(
       'deployment_failed',
-      'Refusing to remove an invalid managed Runtime Host deployment path',
+      'Refusing to inspect an invalid managed Runtime Host deployment path',
     );
   }
   const requestedRoot = resolve(root);
@@ -260,10 +260,10 @@ export async function removeRuntimeHostManagedDeployment(
   try {
     inspected = await Promise.all([realpath(requestedRoot), lstat(requestedRoot)]);
   } catch (error) {
-    if (isNodeError(error, 'ENOENT')) return;
+    if (isNodeError(error, 'ENOENT')) return undefined;
     throw new RuntimeHostManagedDeploymentError(
       'deployment_failed',
-      'Unable to inspect the managed Runtime Host deployment before removal',
+      'Unable to inspect the managed Runtime Host deployment',
       { cause: error },
     );
   }
@@ -271,9 +271,18 @@ export async function removeRuntimeHostManagedDeployment(
   if (canonicalRoot !== requestedRoot || !target.isDirectory() || target.isSymbolicLink()) {
     throw new RuntimeHostManagedDeploymentError(
       'deployment_failed',
-      'Refusing to remove a redirected managed Runtime Host deployment path',
+      'Refusing to use a redirected managed Runtime Host deployment path',
     );
   }
+  return canonicalRoot;
+}
+
+export async function removeRuntimeHostManagedDeployment(
+  root: string,
+  serviceId: string,
+): Promise<void> {
+  const requestedRoot = await resolveExistingRuntimeHostManagedDeploymentRoot(root, serviceId);
+  if (!requestedRoot) return;
   const operatorPath = join(requestedRoot, 'operator');
   for (const entry of await readdir(requestedRoot)) {
     if (entry === 'operator') continue;
