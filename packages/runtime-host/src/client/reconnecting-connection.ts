@@ -158,8 +158,19 @@ class RuntimeHostReconnectingConnectionImpl implements RuntimeHostReconnectingCo
     return this.#request(operation, input, timeoutMs);
   }
 
-  status(timeoutMs?: number): Promise<HostStatusResult> {
-    return this.#request('host.status', {}, timeoutMs);
+  async status(timeoutMs?: number): Promise<HostStatusResult> {
+    const deadline = requestDeadline(timeoutMs);
+    let previous: RuntimeHostConnection | undefined;
+    while (true) {
+      const connection = await this.#waitForConnection('host.status', previous, deadline);
+      const remaining = deadline === undefined ? undefined : Math.max(1, deadline - Date.now());
+      try {
+        return await connection.status(remaining);
+      } catch (error) {
+        if (!isRetryableQueryInterruption(error)) throw error;
+        previous = connection;
+      }
+    }
   }
 
   async openSessionSubscription(

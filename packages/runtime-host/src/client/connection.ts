@@ -243,6 +243,7 @@ export interface RuntimeHostConnection {
 
 export type DirectRequestOperationKey = Exclude<
   OperationKey,
+  | 'host.status'
   | 'subscription.open'
   | 'subscription.close'
   | 'client.capability.replace'
@@ -405,18 +406,15 @@ class RuntimeHostConnectionImpl implements RuntimeHostConnection {
     input: OperationInput<K>,
     timeoutMs?: number,
   ): Promise<OperationOutput<K>> {
+    if (isHostStatusOperation(operation)) {
+      return Promise.reject(new Error('Runtime Host status requires the validated status() API'));
+    }
     if (isClientCapabilityMutation(operation)) {
       return Promise.reject(
         new Error('Client Capability mutations require the dedicated capability channel'),
       );
     }
-    return this.#requestOperation(
-      operation,
-      input,
-      timeoutMs ?? (operation === 'host.status' ? DEFAULT_LIVENESS_TIMEOUT_MS : undefined),
-      (result) => result,
-      operation === 'host.status' ? 'connection' : 'request',
-    );
+    return this.#requestOperation(operation, input, timeoutMs, (result) => result, 'request');
   }
 
   #requestOperation<K extends OperationKey, Result>(
@@ -510,7 +508,16 @@ class RuntimeHostConnectionImpl implements RuntimeHostConnection {
   }
 
   async status(timeoutMs?: number): Promise<HostStatusResult> {
-    const status = await this.request('host.status', {}, timeoutMs);
+    return this.#requestOperation(
+      'host.status',
+      {},
+      timeoutMs ?? DEFAULT_LIVENESS_TIMEOUT_MS,
+      (status) => this.#validateHostStatusIdentity(status),
+      'connection',
+    );
+  }
+
+  #validateHostStatusIdentity(status: HostStatusResult): HostStatusResult {
     if (
       status.hostEpoch !== this.hostEpoch ||
       status.compositionId !== this.compositionId ||
@@ -809,9 +816,7 @@ class RuntimeHostConnectionImpl implements RuntimeHostConnection {
       {},
       DEFAULT_LIVENESS_TIMEOUT_MS,
       (status) => {
-        if (status.hostEpoch !== this.hostEpoch) {
-          throw new Error('Runtime Host returned status for a different Host Epoch');
-        }
+        this.#validateHostStatusIdentity(status);
         try {
           this.#onLivenessProbe?.();
         } catch {
@@ -928,6 +933,10 @@ class RuntimeHostConnectionImpl implements RuntimeHostConnection {
 
 function isClientCapabilityMutation(operation: unknown): boolean {
   return operation === 'client.capability.replace' || operation === 'client.capability.unregister';
+}
+
+function isHostStatusOperation(operation: unknown): boolean {
+  return operation === 'host.status';
 }
 
 export async function connectRuntimeHost(
