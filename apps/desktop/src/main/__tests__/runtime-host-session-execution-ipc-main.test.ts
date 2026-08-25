@@ -1021,6 +1021,7 @@ test("queues explicit Desktop follow-ups", async () => {
     }),
     {
       kind: "queued",
+      messageId: "id-2",
       attachments: [
         {
           kind: "other",
