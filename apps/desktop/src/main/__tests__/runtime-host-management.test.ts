@@ -579,6 +579,10 @@ test('manages one Host update policy and reconciles it through the bound operato
     (response as { updatePolicy?: { schedulingState: string } }).updatePolicy?.schedulingState,
     'ready',
   );
+  assert.deepEqual(
+    (response as { service?: unknown }).service,
+    serviceSummary('1.3.0'),
+  );
   assert.deepEqual(reconciliationInputs, [{
     destination: profile.transport.destination,
     operatorPath: service.operatorPath,

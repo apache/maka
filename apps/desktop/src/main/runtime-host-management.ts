@@ -405,6 +405,7 @@ export function createDesktopRuntimeHostManagement(input: {
           kind: 'result',
           updatePolicy: projectUpdatePolicy(response),
           reconciliation: response.reconciliation,
+          ...(response.service ? { service: response.service } : {}),
         }
       : { kind: 'error', error: response.error };
   };

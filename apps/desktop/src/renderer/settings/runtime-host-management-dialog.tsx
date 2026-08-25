@@ -76,7 +76,7 @@ export function RuntimeHostManagementDialog(props: {
   const [updatePolicyChoice, setUpdatePolicyChoice] = useState<UpdatePolicyChoice>('manual');
   const [fixedVersion, setFixedVersion] = useState('');
   const [updatePolicyError, setUpdatePolicyError] = useState<string>();
-  const [reconciliation, setReconciliation] =
+  const [lastUpdateOutcome, setLastUpdateOutcome] =
     useState<DesktopRuntimeHostUpdateReconciliationOutcome>();
   const logsRef = useRef<HTMLPreElement>(null);
 
@@ -94,23 +94,32 @@ export function RuntimeHostManagementDialog(props: {
     setUpdatePolicyChoice('manual');
     setFixedVersion('');
     setUpdatePolicyError(undefined);
-    setReconciliation(undefined);
+    setLastUpdateOutcome(undefined);
     setLoading(true);
     void (async () => {
+      let shouldLoadUpdatePolicy = false;
       try {
         const response = await window.maka.runtimeHostManagement.run(profile.id, 'status');
         if (disposed) return;
-        if (response.kind === 'result') setResult(response);
+        if (response.kind === 'result') {
+          setResult(response);
+          shouldLoadUpdatePolicy = response.service.state !== 'not_installed';
+        }
         else if (response.kind === 'error') setError(response.error.message);
         else setUninstalledRoot(response.retainedStateRoot);
       } catch (failure) {
         if (!disposed) setError(settingsActionErrorMessage(failure, locale));
       }
-      try {
-        const policy = await window.maka.runtimeHostManagement.getUpdatePolicy(profile.id);
-        if (!disposed) applyUpdatePolicy(policy);
-      } catch (failure) {
-        if (!disposed) setUpdatePolicyError(settingsActionErrorMessage(failure, locale));
+      if (shouldLoadUpdatePolicy) {
+        try {
+          const policy = await window.maka.runtimeHostManagement.getUpdatePolicy(profile.id);
+          if (!disposed) applyUpdatePolicy(policy);
+        } catch (failure) {
+          if (!disposed) {
+            setUpdatePolicy(undefined);
+            setUpdatePolicyError(settingsActionErrorMessage(failure, locale));
+          }
+        }
       }
       if (!disposed) setLoading(false);
     })();
@@ -133,22 +142,27 @@ export function RuntimeHostManagementDialog(props: {
     if (!profile) return;
     setLoading(true);
     setError(undefined);
+    setLastUpdateOutcome(undefined);
     try {
       const response = await window.maka.runtimeHostManagement.run(profile.id, action);
       if (response.kind === 'error') {
+        setUpdatePolicy(undefined);
         setError(response.error.message);
         toast.error(copy.managementActionFailed, response.error.message);
         return;
       }
       if (response.kind === 'uninstalled') {
         setResult(undefined);
+        setUpdatePolicy(undefined);
         setUninstalledRoot(response.retainedStateRoot);
         return;
       }
       setResult(response);
-      if (action !== 'logs') await reloadUpdatePolicy(profile.id);
+      if (response.service.state === 'not_installed') setUpdatePolicy(undefined);
+      else if (action !== 'logs') await reloadUpdatePolicy(profile.id);
     } catch (failure) {
       const message = settingsActionErrorMessage(failure, locale);
+      setUpdatePolicy(undefined);
       setError(message);
       toast.error(copy.managementActionFailed, message);
     } finally {
@@ -176,12 +190,14 @@ export function RuntimeHostManagementDialog(props: {
     setLoading(true);
     setError(undefined);
     setUpdatePhase('checking');
+    setLastUpdateOutcome(undefined);
     try {
       const response = await window.maka.runtimeHostManagement.update(
         profile.id,
         allowInterruptActiveTasks,
       );
       if (response.kind === 'error') {
+        setUpdatePolicy(undefined);
         setError(response.error.message);
         toast.error(copy.managementActionFailed, response.error.message);
         return;
@@ -190,6 +206,7 @@ export function RuntimeHostManagementDialog(props: {
         throw new Error('Runtime Host update returned an uninstall result');
       }
       setResult(response);
+      if (response.action === 'update') setLastUpdateOutcome(response.update);
       setConfirmation(
         response.action === 'update' && response.update.kind === 'active_tasks'
           ? { kind: 'update' }
@@ -200,6 +217,7 @@ export function RuntimeHostManagementDialog(props: {
       }
     } catch (failure) {
       const message = settingsActionErrorMessage(failure, locale);
+      setUpdatePolicy(undefined);
       setError(message);
       toast.error(copy.managementActionFailed, message);
     } finally {
@@ -226,6 +244,7 @@ export function RuntimeHostManagementDialog(props: {
     try {
       applyUpdatePolicy(await window.maka.runtimeHostManagement.getUpdatePolicy(profileId));
     } catch (failure) {
+      setUpdatePolicy(undefined);
       setUpdatePolicyError(settingsActionErrorMessage(failure, locale));
     }
   }
@@ -235,6 +254,7 @@ export function RuntimeHostManagementDialog(props: {
     setLoading(true);
     setError(undefined);
     setUpdatePolicyError(undefined);
+    setLastUpdateOutcome(undefined);
     try {
       const policy = updatePolicyChoice === 'manual'
         ? { kind: 'manual' as const }
@@ -244,9 +264,9 @@ export function RuntimeHostManagementDialog(props: {
       applyUpdatePolicy(
         await window.maka.runtimeHostManagement.setUpdatePolicy(profile.id, policy),
       );
-      setReconciliation(undefined);
     } catch (failure) {
       const message = settingsActionErrorMessage(failure, locale);
+      setUpdatePolicy(undefined);
       setUpdatePolicyError(message);
       toast.error(copy.managementActionFailed, message);
     } finally {
@@ -260,24 +280,24 @@ export function RuntimeHostManagementDialog(props: {
     setError(undefined);
     setUpdatePolicyError(undefined);
     setUpdatePhase('checking');
+    setLastUpdateOutcome(undefined);
     try {
       const response = await window.maka.runtimeHostManagement.reconcileUpdate(profile.id);
       if (response.kind === 'error') {
+        setUpdatePolicy(undefined);
         setUpdatePolicyError(response.error.message);
         toast.error(copy.managementActionFailed, response.error.message);
         return;
       }
-      setReconciliation(response.reconciliation);
+      setLastUpdateOutcome(response.reconciliation);
       applyUpdatePolicy(response.updatePolicy);
-      if (
-        response.reconciliation.kind === 'updated' ||
-        response.reconciliation.kind === 'repaired'
-      ) {
-        const status = await window.maka.runtimeHostManagement.run(profile.id, 'status');
-        if (status.kind === 'result') setResult(status);
+      const reconciledService = response.service;
+      if (reconciledService) {
+        setResult((current) => current ? { ...current, service: reconciledService } : current);
       }
     } catch (failure) {
       const message = settingsActionErrorMessage(failure, locale);
+      setUpdatePolicy(undefined);
       setUpdatePolicyError(message);
       toast.error(copy.managementActionFailed, message);
     } finally {
@@ -336,7 +356,7 @@ export function RuntimeHostManagementDialog(props: {
       updatePolicy.policy.version !== fixedVersion.trim());
   const automaticPolicySelected = updatePolicyChoice !== 'manual';
   const automaticUpdatesAvailable = updatePolicy?.schedulingState === 'ready';
-  const reconciliationResult = reconciliation;
+  const updateOutcome = lastUpdateOutcome;
   return (
     <Dialog
       isOpen={profile !== undefined}
@@ -394,55 +414,40 @@ export function RuntimeHostManagementDialog(props: {
                   title={copy.uninstallRetained(uninstalledRoot)}
                 />
               ) : null}
-              {result?.action === 'update' && result.update.kind === 'updated' ? (
+              {updateOutcome?.kind === 'updated' ? (
                 <Banner
                   status="success"
                   title={copy.updateComplete(
-                    result.update.previousVersion,
-                    result.update.targetVersion,
+                    updateOutcome.previousVersion,
+                    updateOutcome.targetVersion,
                   )}
                 />
               ) : null}
-              {result?.action === 'update' && result.update.kind === 'already_current' ? (
+              {updateOutcome?.kind === 'already_current' ? (
                 <Banner
                   status="info"
-                  title={copy.updateAlreadyCurrent(result.update.version)}
+                  title={copy.updateAlreadyCurrent(updateOutcome.version)}
                 />
               ) : null}
-              {result?.action === 'update' && result.update.kind === 'repaired' ? (
-                <Banner status="success" title={copy.updateRepaired(result.update.version)} />
+              {updateOutcome?.kind === 'repaired' ? (
+                <Banner status="success" title={copy.updateRepaired(updateOutcome.version)} />
               ) : null}
-              {reconciliationResult?.kind === 'disabled' ? (
+              {updateOutcome?.kind === 'disabled' ? (
                 <Banner status="info" title={copy.updatePolicyDisabled} />
               ) : null}
-              {reconciliationResult?.kind === 'manual_action' ? (
+              {updateOutcome?.kind === 'manual_action' ? (
                 <Banner
                   status="warning"
-                  title={(reconciliationResult.reason === 'target_not_newer'
+                  title={(updateOutcome.reason === 'target_not_newer'
                     ? copy.updatePolicyNotNewer
-                    : copy.updatePolicyManualAction)(reconciliationResult.candidate.version)}
-                  description={reconciliationResult.reason === 'target_not_newer'
+                    : copy.updatePolicyManualAction)(updateOutcome.candidate.version)}
+                  description={updateOutcome.reason === 'target_not_newer'
                     ? undefined
-                    : copy.updatePolicyManualReason[reconciliationResult.reason]}
+                    : copy.updatePolicyManualReason[updateOutcome.reason]}
                 />
               ) : null}
-              {reconciliationResult?.kind === 'active_tasks' ? (
+              {updateOutcome?.kind === 'active_tasks' && confirmation?.kind !== 'update' ? (
                 <Banner status="warning" title={copy.updatePolicyActiveTasks} />
-              ) : null}
-              {reconciliationResult?.kind === 'already_current' ? (
-                <Banner status="info" title={copy.updateAlreadyCurrent(reconciliationResult.version)} />
-              ) : null}
-              {reconciliationResult?.kind === 'repaired' ? (
-                <Banner status="success" title={copy.updateRepaired(reconciliationResult.version)} />
-              ) : null}
-              {reconciliationResult?.kind === 'updated' ? (
-                <Banner
-                  status="success"
-                  title={copy.updateComplete(
-                    reconciliationResult.previousVersion,
-                    reconciliationResult.targetVersion,
-                  )}
-                />
               ) : null}
               {!access && service ? (
                 <>

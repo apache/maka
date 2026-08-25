@@ -484,6 +484,7 @@ export type DesktopRuntimeHostUpdateReconciliationResponse =
       readonly kind: 'result';
       readonly updatePolicy: DesktopRuntimeHostUpdatePolicySnapshot;
       readonly reconciliation: DesktopRuntimeHostUpdateReconciliationOutcome;
+      readonly service?: NonNullable<RuntimeHostUpdateReconciliationResult['service']>;
     };
 
 export interface DesktopRuntimeHostAccessCredential {
