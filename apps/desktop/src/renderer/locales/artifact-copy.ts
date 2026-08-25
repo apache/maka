@@ -89,6 +89,25 @@ export type ArtifactCopy = {
     openInFinder: string;
     loadingImage: string;
   };
+  workspace: {
+    panelAria(name: string): string;
+    loading: string;
+    back: string;
+    openLocally: string;
+    revealInFolder: string;
+    openFailed: string;
+    noActiveSession: string;
+    failures: {
+      invalid_reference: ReasonCopy;
+      not_found: ReasonCopy;
+      outside_workspace: ReasonCopy;
+      unsupported_type: ReasonCopy;
+      too_large: ReasonCopy;
+      read_failed: ReasonCopy;
+      workspace_unavailable: ReasonCopy;
+      'open-failed': ReasonCopy;
+    };
+  };
 };
 
 const ARTIFACT_COPY = {
@@ -127,6 +146,25 @@ const ARTIFACT_COPY = {
       readFailed: { title: '加载预览失败', description: '无法读取文件内容（可能已被删除、移动或权限不足）。请通过「在 Finder 中打开」检查文件。' },
       unsupported: '暂不支持的预览', name: '名称', unnamed: '(未命名)', type: '类型', size: '大小', openInFinder: '在 Finder 中打开', loadingImage: '加载图片预览…',
     },
+    workspace: {
+      panelAria: (name) => `工作区文件预览 · ${name}`,
+      loading: '加载文件预览…',
+      back: '返回生成文件列表',
+      openLocally: '本地打开',
+      revealInFolder: '在文件夹中显示',
+      openFailed: '无法打开文件，请稍后重试。',
+      noActiveSession: '当前没有活动会话，无法解析文件引用。',
+      failures: {
+        invalid_reference: { title: '无法识别的文件引用', description: '该引用不是可解析的项目内 Markdown 文件。会话未受影响。' },
+        not_found: { title: '文件不存在', description: '引用的文件在项目中不存在或已被移动。会话未受影响。' },
+        outside_workspace: { title: '超出工作区边界', description: '该引用指向项目工作区之外（或通过符号链接逃逸），已拒绝访问。会话未受影响。' },
+        unsupported_type: { title: '不支持的文件类型', description: '目前仅支持预览项目内的 Markdown（.md）文件。' },
+        too_large: { title: '文件超出预览大小', description: '文件超过文本预览上限，可使用「本地打开」查看完整内容。' },
+        read_failed: { title: '读取失败', description: '无法读取文件内容，可能已被删除、移动或权限不足。会话未受影响。' },
+        workspace_unavailable: { title: '工作区不可用', description: '当前会话的工作区不支持本地文件预览。' },
+        'open-failed': { title: '无法打开文件', description: '操作系统未能打开该文件，请稍后重试。' },
+      },
+    },
   },
   en: {
     pane: {
@@ -162,6 +200,25 @@ const ARTIFACT_COPY = {
       oversize: { title: 'File too large to preview', description: 'Files over 2 MB are not expanded here to avoid loading large images into memory.' },
       readFailed: { title: 'Failed to load preview', description: 'The file could not be read. It may have been deleted, moved, or blocked by permissions. Use “Show in Finder” to inspect it.' },
       unsupported: 'Unsupported preview', name: 'Name', unnamed: '(unnamed)', type: 'Type', size: 'Size', openInFinder: 'Show in Finder', loadingImage: 'Loading image preview…',
+    },
+    workspace: {
+      panelAria: (name) => `Workspace file preview · ${name}`,
+      loading: 'Loading file preview…',
+      back: 'Back to generated files',
+      openLocally: 'Open locally',
+      revealInFolder: 'Reveal in folder',
+      openFailed: 'Could not open the file. Try again later.',
+      noActiveSession: 'No active session to resolve this file reference against.',
+      failures: {
+        invalid_reference: { title: 'Unrecognized file reference', description: 'This reference is not a resolvable in-project Markdown file. The session was not affected.' },
+        not_found: { title: 'File not found', description: 'The referenced file does not exist in the project or has moved. The session was not affected.' },
+        outside_workspace: { title: 'Outside the workspace boundary', description: 'The reference points outside the project workspace (or escapes via a symlink) and was refused. The session was not affected.' },
+        unsupported_type: { title: 'Unsupported file type', description: 'Only Markdown (.md) files inside the project can be previewed for now.' },
+        too_large: { title: 'File exceeds preview size', description: 'The file exceeds the text preview limit. Use “Open locally” to view the full content.' },
+        read_failed: { title: 'Read failed', description: 'The file could not be read. It may have been deleted, moved, or blocked by permissions. The session was not affected.' },
+        workspace_unavailable: { title: 'Workspace unavailable', description: 'This session’s workspace does not support local file previews.' },
+        'open-failed': { title: 'Could not open the file', description: 'The operating system failed to open the file. Try again later.' },
+      },
     },
   },
 } satisfies UiCatalog<ArtifactCopy>;
