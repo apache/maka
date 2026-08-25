@@ -28,7 +28,6 @@ import { isSessionInlineRun } from '@maka/core/agent-run';
 import type {
   ActiveInteractionRequestEvent,
   CompleteEvent,
-  QueueEnqueueOutcome,
   QueueUpdateEvent,
   SessionEvent,
   TokenUsageEvent,
@@ -168,14 +167,6 @@ export interface RuntimeKernelLike {
   respondToSandboxBoundary(sessionId: string, response: SandboxBoundaryResponse): Promise<void>;
   listActiveInteractions?(sessionId: string): ActiveInteractionRequestEvent[];
   respondToUserQuestion?(sessionId: string, response: UserQuestionResponse): Promise<void>;
-  /** Queue a user message for mid-turn injection at the next step boundary. */
-  steer(sessionId: string, text: string): QueueEnqueueOutcome;
-  /** Queue a user message to open the turn after the current one finishes. */
-  queueMessage(sessionId: string, text: string): QueueEnqueueOutcome;
-  /** Drain the followup queue into one `\n\n`-joined prompt, or null if empty. */
-  drainFollowup(sessionId: string): string | null;
-  /** Take back every queued message (both queues) as one `\n\n`-joined string. */
-  retractQueue(sessionId: string): string;
   hasActiveRuns(sessionId: string): boolean;
   /**
    * The turns of the runs in flight for this session. The same fact
@@ -2397,86 +2388,12 @@ export class RuntimeKernel implements RuntimeKernelLike {
   // Steering / followup queues (authoritative source of truth)
   // --------------------------------------------------------------------------
 
-  steer(sessionId: string, text: string): QueueEnqueueOutcome {
-    this.assertEmbeddedMessageQueue('steer');
-    // Steering's delivery contract is anchored to the runtime event ledger
-    // (fail-closed persist + durable-consume ack). Without a RuntimeEventStore
-    // that anchor does not exist — same condition as requireTerminalWrite —
-    // so fall back to a fresh turn, whose user message the SessionStore
-    // persists with the ordinary turn-open guarantee.
-    if (!this.deps.runtimeEventStore) return { kind: 'fallback' };
-    // Double responsibility (codex): with no live steering owner to inject
-    // into — the turn just ended, begin() failed, or only child/compact runs
-    // are active (they never consume this queue) — tell the caller to open a
-    // fresh turn instead so the message is never dropped.
-    const state = this.liveSteeringState(sessionId);
-    if (!state) return { kind: 'fallback' };
-    const messageId = this.deps.newId();
-    state.steering.push({ id: messageId, messageId, content: { text } });
-    this.emitQueueUpdate(sessionId, state);
-    return { kind: 'queued' };
-  }
-
-  queueMessage(sessionId: string, text: string): QueueEnqueueOutcome {
-    this.assertEmbeddedMessageQueue('queueMessage');
-    const state = this.liveSteeringState(sessionId);
-    if (!state) return { kind: 'fallback' };
-    state.followup.push(text);
-    this.emitQueueUpdate(sessionId, state);
-    return { kind: 'queued' };
-  }
-
-  drainFollowup(sessionId: string): string | null {
-    this.assertEmbeddedMessageQueue('drainFollowup');
-    const state = this.steeringBySession.get(sessionId);
-    if (!state || state.followup.length === 0) return null;
-    const drained = state.followup.splice(0);
-    this.emitQueueUpdate(sessionId, state);
-    return drained.join('\n\n');
-  }
-
-  retractQueue(sessionId: string): string {
-    this.assertEmbeddedMessageQueue('retractQueue');
-    const state = this.steeringBySession.get(sessionId);
-    if (!state) return '';
-    // Retract reclaims QUEUED messages only. pull() is the single atomic
-    // commit point of delivery: an in-flight lease is already committed to
-    // the running turn — its durable append may land at any moment, so
-    // handing its text back to the user here would refill AND execute the
-    // same directive. An in-flight lease settles only by the persistence
-    // fact (ack when the ledger owns it, nack back to a queue otherwise).
-    const all = [...state.steering.map((message) => message.content.text), ...state.followup];
-    state.steering = [];
-    state.followup = [];
-    this.emitQueueUpdate(sessionId, state);
-    return all.join('\n\n');
-  }
-
   private ensureSteering(sessionId: string): SessionSteeringState {
     const existing = this.steeringBySession.get(sessionId);
     if (existing) return existing;
     const created: SessionSteeringState = { steering: [], inFlight: [], followup: [] };
     this.steeringBySession.set(sessionId, created);
     return created;
-  }
-
-  private assertEmbeddedMessageQueue(operation: string): void {
-    if (this.deps.messageAuthority) {
-      throw new RuntimeMessageAuthorityInvariantError(
-        `Hosted Runtime cannot ${operation}; the Runtime Host owns message admission and queues`,
-      );
-    }
-  }
-
-  /**
-   * The session's steering state only while a steering-capable top-level run
-   * owns it (sink registered after begin() succeeded and not yet released).
-   * Child agent and compact runs never establish ownership, so their activity
-   * alone yields undefined — enqueue must fall back rather than strand text.
-   */
-  private liveSteeringState(sessionId: string): SessionSteeringState | undefined {
-    const state = this.steeringBySession.get(sessionId);
-    return state?.sink ? state : undefined;
   }
 
   private emitQueueUpdate(sessionId: string, state: SessionSteeringState): void {
