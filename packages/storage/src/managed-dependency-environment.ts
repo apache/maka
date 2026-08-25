@@ -71,15 +71,88 @@ const WINDOWS_STREAM_QUERY_MAX_OUTPUT_BYTES = 1024 * 1024;
 const WINDOWS_STREAM_QUERY_SCRIPT = String.raw`
 $ErrorActionPreference = 'Stop'
 $OutputEncoding = [Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)
+Add-Type -TypeDefinition @'
+using System;
+using System.ComponentModel;
+using System.Runtime.InteropServices;
+
+public static class MakaWindowsStreamQuery
+{
+    private const int ErrorHandleEof = 38;
+    private static readonly IntPtr InvalidHandleValue = new IntPtr(-1);
+
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+    private struct FindStreamData
+    {
+        public long StreamSize;
+
+        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 296)]
+        public string StreamName;
+    }
+
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    private static extern IntPtr FindFirstStreamW(
+        string fileName,
+        int infoLevel,
+        out FindStreamData findStreamData,
+        int flags);
+
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    private static extern bool FindNextStreamW(
+        IntPtr findStream,
+        out FindStreamData findStreamData);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool FindClose(IntPtr findHandle);
+
+    public static bool HasAlternateDataStream(string path)
+    {
+        FindStreamData data;
+        IntPtr handle = FindFirstStreamW(path, 0, out data, 0);
+        if (handle == InvalidHandleValue)
+        {
+            int error = Marshal.GetLastWin32Error();
+            if (error == ErrorHandleEof)
+            {
+                return false;
+            }
+            throw new Win32Exception(error);
+        }
+
+        try
+        {
+            do
+            {
+                if (!String.Equals(data.StreamName, "::$DATA", StringComparison.OrdinalIgnoreCase))
+                {
+                    return true;
+                }
+            }
+            while (FindNextStreamW(handle, out data));
+
+            int error = Marshal.GetLastWin32Error();
+            if (error != ErrorHandleEof)
+            {
+                throw new Win32Exception(error);
+            }
+            return false;
+        }
+        finally
+        {
+            if (!FindClose(handle))
+            {
+                throw new Win32Exception(Marshal.GetLastWin32Error());
+            }
+        }
+    }
+}
+'@
 $raw = [Console]::In.ReadToEnd()
 $paths = if ([string]::IsNullOrWhiteSpace($raw)) { @() } else { @($raw | ConvertFrom-Json) }
 $alternate = [System.Collections.Generic.List[string]]::new()
 foreach ($path in $paths) {
-  foreach ($stream in @(Get-Item -LiteralPath $path -Stream * -ErrorAction Stop)) {
-    if ($stream.Stream -notin @(':$DATA', '::$DATA')) {
-      $alternate.Add([string]$path)
-      break
-    }
+  if ([MakaWindowsStreamQuery]::HasAlternateDataStream([string]$path)) {
+    $alternate.Add([string]$path)
   }
 }
 [Console]::Out.Write((ConvertTo-Json -InputObject @($alternate.ToArray()) -Compress))
@@ -1015,7 +1088,7 @@ async function hashDirectory(
  * routinely hung until the 30s `execFile` timeout, which misreported every
  * timeout as "contains an alternate data stream" and burned ~5 minutes across
  * managed-dependency crash recovery tests. Walk the tree in Node (no reparse
- * follow), then send the bounded file list through stdin to one non-recursive
+ * follow), then send the bounded object list through stdin to one non-recursive
  * Windows PowerShell stream query. `fsutil file queryStreams` is not a supported
  * command on the Windows builds used by developers or hosted runners.
  */
@@ -1025,7 +1098,7 @@ async function assertNoWindowsAlternateStreams(root: string): Promise<void> {
     throw new Error('Cannot verify Windows alternate streams without SystemRoot');
   }
   const powershell = join(systemRoot, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
-  const files: string[] = [];
+  const paths = [toNamespacedPath(root)];
   const stack = [root];
   while (stack.length > 0) {
     const directory = stack.pop()!;
@@ -1039,16 +1112,17 @@ async function assertNoWindowsAlternateStreams(root: string): Promise<void> {
         throw new Error('Managed dependency environment contains a Windows reparse point');
       }
       if (entry.isDirectory()) {
+        paths.push(toNamespacedPath(absolutePath));
         stack.push(absolutePath);
         continue;
       }
       if (!entry.isFile()) continue;
       // Windows PowerShell 5.1 cannot open long provider paths unless the
       // caller supplies the Win32 namespaced spelling.
-      files.push(toNamespacedPath(absolutePath));
+      paths.push(toNamespacedPath(absolutePath));
     }
   }
-  const alternate = await queryWindowsAlternateStreams(powershell, files);
+  const alternate = await queryWindowsAlternateStreams(powershell, paths);
   if (alternate.length > 0) {
     throw new Error('Managed dependency environment contains an alternate data stream');
   }
@@ -1056,9 +1130,9 @@ async function assertNoWindowsAlternateStreams(root: string): Promise<void> {
 
 function queryWindowsAlternateStreams(
   powershell: string,
-  filePaths: readonly string[],
+  paths: readonly string[],
 ): Promise<readonly string[]> {
-  if (filePaths.length === 0) return Promise.resolve([]);
+  if (paths.length === 0) return Promise.resolve([]);
   return new Promise((resolvePromise, rejectPromise) => {
     const child = spawn(
       powershell,
@@ -1128,7 +1202,7 @@ function queryWindowsAlternateStreams(
         );
       }
     });
-    child.stdin.end(JSON.stringify(filePaths));
+    child.stdin.end(JSON.stringify(paths));
   });
 }
 
