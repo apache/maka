@@ -18,7 +18,7 @@
  */
 
 import { spawn } from 'node:child_process';
-import { access, cp, mkdtemp, readdir, rm, writeFile } from 'node:fs/promises';
+import { access, cp, mkdir, mkdtemp, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -174,6 +174,7 @@ export async function verifyRestoredWindowsInstallation(
   expectedVersion,
   { verifyApp = verifyPackagedWindowsApp, run } = {},
 ) {
+  await mkdir(workingDirectory, { recursive: true });
   const options = {
     // The rollback verifier restores the candidate installer, not the pinned
     // upgrade baseline. The candidate is built from the current tree and must
