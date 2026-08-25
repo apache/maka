@@ -84,6 +84,7 @@ export function createAppShellSessionEventHandlers(options: {
   setLiveTurnBySession: StateUpdater<Record<string, LiveTurnProjection>>;
   setInteractionBySession: StateUpdater<InteractionQueues>;
   setMessageQueueBySession?: StateUpdater<Record<string, MessageQueueUiState>>;
+  projectTransientMessage?: (sessionId: string, message: StoredMessage) => void;
   onInteractionChanged?: (sessionId: string) => void;
   /** A boundary decision settled: the session's execution boundary may have moved. */
   onExecutionBoundaryChanged?: (sessionId: string) => void;
@@ -111,6 +112,7 @@ export function createAppShellSessionEventHandlers(options: {
     setLiveTurnBySession,
     setInteractionBySession,
     setMessageQueueBySession,
+    projectTransientMessage,
     onInteractionChanged,
     onExecutionBoundaryChanged,
     onContextCompactionOutcome,
@@ -283,6 +285,20 @@ export function createAppShellSessionEventHandlers(options: {
 
     switch (event.type) {
       case 'queue_update':
+        for (const entry of [...(event.steeringEntries ?? []), ...(event.followupEntries ?? [])]) {
+          projectTransientMessage?.(sessionId, {
+            type: 'user',
+            id: entry.messageId,
+            turnId: entry.messageId,
+            ts: event.ts,
+            text: entry.content.displayText ?? entry.content.text,
+            ...(entry.content.attachments ? { attachments: [...entry.content.attachments] } : {}),
+            ...(entry.content.quotes ? { quotes: [...entry.content.quotes] } : {}),
+            ...(entry.content.inlineReferences
+              ? { inlineReferences: [...entry.content.inlineReferences] }
+              : {}),
+          });
+        }
         setMessageQueueBySession?.((current) => {
           if (event.steering.length === 0 && event.followup.length === 0) {
             if (!(sessionId in current)) return current;

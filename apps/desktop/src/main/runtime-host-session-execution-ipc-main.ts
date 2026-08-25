@@ -321,6 +321,43 @@ export function registerRuntimeHostSessionExecutionIpc(
           ? { turnOrchestration: command.turnOrchestration }
           : {}),
       };
+      if (
+        command.messageId !== undefined &&
+        !sideConversation &&
+        (command.skillIds?.length ?? 0) === 0 &&
+        command.turnOrchestration === undefined
+      ) {
+        const submitted = await deps.client.submitMessage({
+          sessionId,
+          messageId: command.messageId,
+          content: startInput.content,
+          placement: 'current_turn',
+        });
+        const skillInvocation = { loaded: [], failed: [], receipts: [] };
+        if (submitted.disposition === 'turn_started') {
+          deps.emitSessionsChanged('status-change', sessionId, {
+            turnId: submitted.turnId,
+          });
+          return {
+            ok: true as const,
+            disposition: submitted.disposition,
+            messageId: command.messageId,
+            turnId: submitted.turnId,
+            attachments,
+            inlineReferences,
+            skillInvocation,
+          };
+        }
+        deps.emitSessionsChanged('status-change', sessionId);
+        return {
+          ok: true as const,
+          disposition: submitted.disposition,
+          messageId: command.messageId,
+          attachments,
+          inlineReferences,
+          skillInvocation,
+        };
+      }
       let startResult;
       try {
         startResult = sideConversation
@@ -443,7 +480,6 @@ export function registerRuntimeHostSessionExecutionIpc(
       const command = normalizeSessionSendCommand({
         ...(value && typeof value === "object" ? value : {}),
         type: "send",
-        turnId: newId(),
       });
       if (!command) throw new Error("Invalid queued message");
       if ((command.skillIds?.length ?? 0) > 0 || command.turnOrchestration) {
@@ -487,7 +523,7 @@ export function registerRuntimeHostSessionExecutionIpc(
         displayText,
         workspaceFileReferences: command.workspaceFileReferences,
       });
-      const messageId = newId();
+      const messageId = command.messageId ?? newId();
       const result = await deps.client.submitMessage({
         sessionId,
         messageId,

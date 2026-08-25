@@ -24,6 +24,7 @@ import { createAppShellSessionUiStateController } from '../../renderer/app-shell
 
 test('queue_update events drive the independent desktop queue projection', () => {
   const controller = createAppShellSessionUiStateController();
+  const transientMessages: unknown[] = [];
   const handlers = createAppShellSessionEventHandlers({
     uiLocale: 'zh',
     activeIdRef: { current: 'session-1' },
@@ -33,6 +34,7 @@ test('queue_update events drive the independent desktop queue projection', () =>
     setLiveTurnBySession: controller.setLiveTurnBySession,
     setInteractionBySession: controller.setInteractionBySession,
     setMessageQueueBySession: controller.setMessageQueueBySession,
+    projectTransientMessage: (_sessionId, message) => transientMessages.push(message),
     showModelSetupToast() {},
     toastApi: { error() {} },
   });
@@ -82,6 +84,29 @@ test('queue_update events drive the independent desktop queue projection', () =>
       },
     ],
   });
+  assert.deepEqual(transientMessages, [
+    {
+      type: 'user',
+      id: 'message-steer',
+      turnId: 'message-steer',
+      ts: 1,
+      text: 'adjust this run',
+    },
+    {
+      type: 'user',
+      id: 'message-delivering',
+      turnId: 'message-delivering',
+      ts: 1,
+      text: 'already delivering',
+    },
+    {
+      type: 'user',
+      id: 'message-next',
+      turnId: 'message-next',
+      ts: 1,
+      text: 'do this next',
+    },
+  ]);
 
   handlers.handleEvent('session-1', {
     type: 'queue_update',

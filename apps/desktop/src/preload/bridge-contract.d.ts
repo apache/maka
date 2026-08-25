@@ -807,7 +807,8 @@ export interface MakaBridge {
         | SessionCommand
           | {
             type: 'send';
-            turnId: string;
+            messageId?: string;
+            turnId?: string;
             text: string;
             displayText?: string;
             skillIds?: string[];
@@ -820,6 +821,15 @@ export interface MakaBridge {
             >;
           },
     ): Promise<
+      | {
+          ok: true;
+          disposition: 'turn_started' | 'steering' | 'followup';
+          messageId: string;
+          turnId?: string;
+          attachments: import('@maka/core/events').AttachmentRef[];
+          inlineReferences: import('@maka/core/events').InlineReference[];
+          skillInvocation: import('@maka/runtime/skill-invocation').SkillInvocationResult;
+        }
       | {
           ok: true;
           turnId: string;
@@ -876,6 +886,7 @@ export interface MakaBridge {
       sessionId: string,
       placement: 'current_turn' | 'next_turn',
       command: {
+        messageId: string;
         text: string;
         displayText?: string;
         attachmentItems?: RendererIngestInput[];

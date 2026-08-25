@@ -46,3 +46,37 @@ test('replaces a transient message by canonical message id exactly once', () => 
   assert.deepEqual(projected, [canonical]);
   assert.equal(pending.size, 0);
 });
+
+test('canonicalizing one send does not hide a later transient send', () => {
+  const second = {
+    ...transient,
+    id: 'message-2',
+    turnId: 'message-2',
+    ts: 4,
+    text: 'send next',
+  };
+  const pending = new Map([
+    [transient.id, transient],
+    [second.id, second],
+  ]);
+  const canonical = { ...transient, ts: 3, text: 'canonical send' };
+
+  const projected = reconcileTransientMessages(pending, [canonical]);
+
+  assert.deepEqual(projected, [canonical, second]);
+  assert.deepEqual([...pending.keys()], ['message-2']);
+});
+
+test('keeps a transient message out of a sparse historical range', () => {
+  const live = { ...transient, id: 'message-live', turnId: 'message-live', text: 'latest prompt' };
+  const old = { ...transient, id: 'message-old', turnId: 'turn-old', ts: 1, text: 'old prompt' };
+  const pending = new Map([[live.id, live]]);
+  const historical = [old];
+
+  const projected = reconcileTransientMessages(pending, historical, {
+    includeTransient: false,
+  });
+
+  assert.deepEqual(projected.map((message) => message.id), ['message-old']);
+  assert.equal(pending.has('message-live'), true);
+});

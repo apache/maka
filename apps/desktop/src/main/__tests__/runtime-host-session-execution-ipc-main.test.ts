@@ -578,6 +578,60 @@ test("forwards explicit Skill invocation to the Host-owned Turn admission", asyn
   });
 });
 
+test("submits an ordinary composer message once under its stable message identity", async () => {
+  const submits: unknown[] = [];
+  const ipc = ipcHarness();
+  registerExecutionIpc(
+    {
+      client: executionClient({
+        getSession: async () => session(),
+        startTurn: async () => {
+          throw new Error("ordinary composer send must not choose Turn admission");
+        },
+        submitMessage: async (input) => {
+          submits.push(input);
+          return { disposition: "turn_started", turnId: "host-turn" };
+        },
+      }),
+      observer: unusedObserver(),
+      attachmentApprovals: createAttachmentApprovalRegistry(),
+      emitSessionsChanged() {},
+      stat: async () => ({ size: 0 }),
+      resizeImage: async (bytes) => bytes,
+      beforeStop() {},
+      newId: () => "unexpected-generated-id",
+    },
+    ipc,
+  );
+
+  const result = await ipc.invoke("sessions:send", "session-1", {
+    type: "send",
+    messageId: "message-1",
+    text: "/skill:review check the projection",
+  });
+
+  assert.deepEqual(submits, [
+    {
+      sessionId: "session-1",
+      messageId: "message-1",
+      content: {
+        text: "/skill:review check the projection",
+        inlineReferences: [],
+      },
+      placement: "current_turn",
+    },
+  ]);
+  assert.deepEqual(result, {
+    ok: true,
+    disposition: "turn_started",
+    messageId: "message-1",
+    turnId: "host-turn",
+    attachments: [],
+    inlineReferences: [],
+    skillInvocation: { loaded: [], failed: [], receipts: [] },
+  });
+});
+
 test("queues a mid-turn send as steering when the Host reports the session busy", async () => {
   const submits: unknown[] = [];
   const changes: unknown[] = [];
@@ -1003,6 +1057,7 @@ test("queues explicit Desktop follow-ups", async () => {
 
   assert.deepEqual(
     await ipc.invoke("sessions:enqueue", "session-1", "next_turn", {
+      messageId: "followup-message",
       text: "do this next",
       quotes: [{ text: "quoted context" }],
       retainedAttachments: [
@@ -1021,7 +1076,7 @@ test("queues explicit Desktop follow-ups", async () => {
     }),
     {
       kind: "queued",
-      messageId: "id-2",
+      messageId: "followup-message",
       attachments: [
         {
           kind: "other",
@@ -1041,7 +1096,7 @@ test("queues explicit Desktop follow-ups", async () => {
   assert.deepEqual(submits, [
     {
       sessionId: "session-1",
-      messageId: "id-2",
+      messageId: "followup-message",
       content: {
         text: "do this next",
         attachments: [

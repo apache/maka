@@ -59,7 +59,14 @@ export function useAppShellSessionWorkspace(toastApi: ToastApi) {
   function mergeTransientMessages(sessionId: string, durable: readonly StoredMessage[]): StoredMessage[] {
     const pending = transientMessagesBySessionRef.current.get(sessionId);
     if (!pending || pending.size === 0) return [...durable];
-    const projected = reconcileTransientMessages(pending, durable);
+    let includeTransient = true;
+    try {
+      const range = transcriptRangeRef.current?.store.range();
+      includeTransient = range?.sessionId !== sessionId || !range.hasNewer;
+    } catch {
+      // An unopened transcript has no historical range to hide the live tail from.
+    }
+    const projected = reconcileTransientMessages(pending, durable, { includeTransient });
     if (pending.size === 0) {
       transientMessagesBySessionRef.current.delete(sessionId);
     }
@@ -94,6 +101,10 @@ export function useAppShellSessionWorkspace(toastApi: ToastApi) {
     if (activeIdRef.current === sessionId) {
       setMessages((current) => current.filter((message) => message.id !== messageId));
     }
+  }
+
+  function hasTransientMessages(sessionId: string): boolean {
+    return (transientMessagesBySessionRef.current.get(sessionId)?.size ?? 0) > 0;
   }
 
   function setActiveId(next: string | undefined): void {
@@ -145,6 +156,7 @@ export function useAppShellSessionWorkspace(toastApi: ToastApi) {
     setMessages: setMessagesForActiveSession,
     addTransientMessage,
     removeTransientMessage,
+    hasTransientMessages,
     mergeTransientMessages,
     transcriptRangeRef,
     messageLoadPending,

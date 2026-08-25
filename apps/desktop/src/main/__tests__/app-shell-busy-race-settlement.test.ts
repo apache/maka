@@ -100,6 +100,8 @@ function createActionsDeps() {
     setMessageLoadErrorBySession: () => undefined,
     setMessageRetryPendingBySession: () => undefined,
     setMessages: () => undefined,
+    addTransientMessage: () => undefined,
+    removeTransientMessage: () => undefined,
     transcriptRangeRef: { current: undefined },
     setNavSelection: () => undefined,
     setLiveTurnBySession: () => undefined,
@@ -119,16 +121,122 @@ function createActionsDeps() {
 const EMPTY_SKILL_INVOCATION = { loaded: [], failed: [], receipts: [] };
 
 describe('busy-raced send settlement', () => {
-  it('a steered send on an existing session disarms its turn and shows no optimistic message', async () => {
+  it('shows a Follow Up immediately and keeps its caller-owned identity', async () => {
+    const activeIdRef = { current: 'session-a' as string | undefined };
+    const transient = new Map<string, StoredMessage>();
+    let submittedMessageId: string | undefined;
+    let releaseAdmission!: () => void;
+    const admission = new Promise<void>((resolve) => {
+      releaseAdmission = resolve;
+    });
+    let observeSubmit!: () => void;
+    const submitted = new Promise<void>((resolve) => {
+      observeSubmit = resolve;
+    });
+    const restoreWindow = installWindow({
+      sessions: {
+        enqueue: async (_sessionId: string, _placement: string, command: { messageId: string }) => {
+          submittedMessageId = command.messageId;
+          observeSubmit();
+          await admission;
+          return {
+            kind: 'queued',
+            messageId: command.messageId,
+            attachments: [],
+            inlineReferences: [],
+          };
+        },
+      },
+    });
+    try {
+      const actions = createAppShellChatActions({
+        ...createActionsDeps(),
+        activeIdRef,
+        addTransientMessage: (_sessionId, message) => transient.set(message.id, message),
+        removeTransientMessage: (_sessionId, messageId) => transient.delete(messageId),
+      });
+      const sending = actions.enqueueMessage(
+        'session-a',
+        'do this next',
+        'next_turn',
+      );
+      await submitted;
+
+      assert.ok(submittedMessageId);
+      assert.equal(transient.get(submittedMessageId)?.id, submittedMessageId);
+      releaseAdmission();
+      await sending;
+      assert.deepEqual([...transient.keys()], [submittedMessageId]);
+    } finally {
+      restoreWindow();
+    }
+  });
+
+  it('shows one stable local message before Host admission settles', async () => {
+    const activeIdRef = { current: 'session-a' as string | undefined };
+    const transient = new Map<string, StoredMessage>();
+    let submittedMessageId: string | undefined;
+    let releaseAdmission!: () => void;
+    const admission = new Promise<void>((resolve) => {
+      releaseAdmission = resolve;
+    });
+    let observeSubmit!: () => void;
+    const submitted = new Promise<void>((resolve) => {
+      observeSubmit = resolve;
+    });
+    const restoreWindow = installWindow({
+      sessions: {
+        send: async (_sessionId: string, command: { messageId: string }) => {
+          submittedMessageId = command.messageId;
+          observeSubmit();
+          await admission;
+          return {
+            ok: true,
+            disposition: 'turn_started',
+            messageId: command.messageId,
+            turnId: 'host-turn',
+            attachments: [],
+            inlineReferences: [],
+            skillInvocation: EMPTY_SKILL_INVOCATION,
+          };
+        },
+      },
+    });
+    try {
+      const actions = createAppShellChatActions({
+        ...createActionsDeps(),
+        activeIdRef,
+        addTransientMessage: (_sessionId, message) => transient.set(message.id, message),
+        removeTransientMessage: (_sessionId, messageId) => transient.delete(messageId),
+      });
+      const sending = actions.send('also check the tests');
+      await submitted;
+
+      assert.ok(submittedMessageId);
+      const localMessage = transient.get(submittedMessageId);
+      assert.equal(localMessage?.type, 'user');
+      assert.equal(localMessage?.type === 'user' ? localMessage.text : undefined, 'also check the tests');
+
+      releaseAdmission();
+      assert.equal(await sending, true);
+      assert.equal(transient.size, 1);
+      assert.equal(transient.has(submittedMessageId), true);
+      assert.equal(transient.has('host-turn'), false);
+    } finally {
+      restoreWindow();
+    }
+  });
+
+  it('keeps one local row when Host admits the message as steering', async () => {
     const activeIdRef = { current: 'session-a' as string | undefined };
     const turnState = createTurnState();
     const messageState = createMessageState();
     const restoreWindow = installWindow({
       sessions: {
-        send: async (_sessionId: string, command: { turnId: string }) => ({
+        send: async (_sessionId: string, command: { messageId: string }) => ({
           ok: true,
-          steered: true,
-          turnId: command.turnId,
+          disposition: 'steering',
+          messageId: command.messageId,
           attachments: [],
           inlineReferences: [],
           skillInvocation: EMPTY_SKILL_INVOCATION,
@@ -141,23 +249,31 @@ describe('busy-raced send settlement', () => {
         activeIdRef,
         setLiveTurnBySession: turnState.setLiveTurnBySession,
         setMessages: messageState.setMessages,
+        addTransientMessage: (_sessionId, message) =>
+          messageState.setMessages((current) => [...current.filter((item) => item.id !== message.id), message]),
+        removeTransientMessage: (_sessionId, messageId) =>
+          messageState.setMessages((current) => current.filter((message) => message.id !== messageId)),
       });
       assert.equal(await actions.send('also check the tests'), true);
       assert.equal(turnState.liveTurnBySession['session-a'], undefined);
-      assert.deepEqual(messageState.messages, []);
+      const local = messageState.messages.filter((message) => message.type === 'user');
+      assert.equal(local.length, 1);
+      assert.equal(local[0]?.id, local[0]?.turnId);
     } finally {
       restoreWindow();
     }
   });
 
-  it('rebinds the unconfirmed arm onto a Host-chosen turn id', async () => {
+  it('does not turn a Host-started admission into a renderer-owned LiveTurn', async () => {
     const activeIdRef = { current: 'session-a' as string | undefined };
     const turnState = createTurnState();
     const messageState = createMessageState();
     const restoreWindow = installWindow({
       sessions: {
-        send: async () => ({
+        send: async (_sessionId: string, command: { messageId: string }) => ({
           ok: true,
+          disposition: 'turn_started',
+          messageId: command.messageId,
           turnId: 'host-turn',
           attachments: [],
           inlineReferences: [],
@@ -171,15 +287,16 @@ describe('busy-raced send settlement', () => {
         activeIdRef,
         setLiveTurnBySession: turnState.setLiveTurnBySession,
         setMessages: messageState.setMessages,
+        addTransientMessage: (_sessionId, message) =>
+          messageState.setMessages((current) => [...current.filter((item) => item.id !== message.id), message]),
+        removeTransientMessage: (_sessionId, messageId) =>
+          messageState.setMessages((current) => current.filter((message) => message.id !== messageId)),
       });
       assert.equal(await actions.send('also check the tests'), true);
-      const live = turnState.liveTurnBySession['session-a'];
-      assert.equal(live?.turnId, 'host-turn');
-      assert.equal(live?.unconfirmed, true);
+      assert.equal(turnState.liveTurnBySession['session-a'], undefined);
       const optimistic = messageState.messages.filter((message) => message.type === 'user');
       assert.equal(optimistic.length, 1);
-      assert.equal(optimistic[0]?.turnId, 'host-turn');
-      assert.equal(optimistic[0]?.id, 'host-turn');
+      assert.notEqual(optimistic[0]?.id, 'host-turn');
     } finally {
       restoreWindow();
     }
@@ -191,7 +308,7 @@ describe('busy-raced send settlement', () => {
     const messageState = createMessageState();
     const restoreWindow = installWindow({
       sessions: {
-        send: async () => {
+        send: async (_sessionId: string, command: { messageId: string }) => {
           // The Host streamed under its own turn id before the IPC response.
           turnState.setLiveTurnBySession((current) => ({
             ...current,
@@ -199,6 +316,8 @@ describe('busy-raced send settlement', () => {
           }));
           return {
             ok: true,
+            disposition: 'turn_started',
+            messageId: command.messageId,
             turnId: 'host-turn',
             attachments: [],
             inlineReferences: [],
@@ -213,6 +332,10 @@ describe('busy-raced send settlement', () => {
         activeIdRef,
         setLiveTurnBySession: turnState.setLiveTurnBySession,
         setMessages: messageState.setMessages,
+        addTransientMessage: (_sessionId, message) =>
+          messageState.setMessages((current) => [...current.filter((item) => item.id !== message.id), message]),
+        removeTransientMessage: (_sessionId, messageId) =>
+          messageState.setMessages((current) => current.filter((message) => message.id !== messageId)),
       });
       assert.equal(await actions.send('also check the tests'), true);
       const live = turnState.liveTurnBySession['session-a'];
@@ -224,7 +347,7 @@ describe('busy-raced send settlement', () => {
     }
   });
 
-  it('a steered send on the new-chat path navigates without a ghost optimistic turn', async () => {
+  it('keeps the new-chat message through navigation when Host admits it as steering', async () => {
     const activeIdRef = { current: undefined as string | undefined };
     const turnState = createTurnState();
     const messageState = createMessageState();
@@ -238,10 +361,10 @@ describe('busy-raced send settlement', () => {
         remove: async (sessionId: string) => {
           removed.push(sessionId);
         },
-        send: async (_sessionId: string, command: { turnId: string }) => ({
+        send: async (_sessionId: string, command: { messageId: string }) => ({
           ok: true,
-          steered: true,
-          turnId: command.turnId,
+          disposition: 'steering',
+          messageId: command.messageId,
           attachments: [],
           inlineReferences: [],
           skillInvocation: EMPTY_SKILL_INVOCATION,
@@ -258,18 +381,22 @@ describe('busy-raced send settlement', () => {
         },
         setLiveTurnBySession: turnState.setLiveTurnBySession,
         setMessages: messageState.setMessages,
+        addTransientMessage: (_sessionId, message) =>
+          messageState.setMessages((current) => [...current.filter((item) => item.id !== message.id), message]),
+        removeTransientMessage: (_sessionId, messageId) =>
+          messageState.setMessages((current) => current.filter((message) => message.id !== messageId)),
       });
       assert.equal(await actions.send('also check the tests'), true);
       assert.deepEqual(activated, ['session-new']);
       assert.equal(turnState.liveTurnBySession['session-new'], undefined);
-      assert.deepEqual(messageState.messages, []);
+      assert.equal(messageState.messages.filter((message) => message.type === 'user').length, 1);
       assert.deepEqual(removed, []);
     } finally {
       restoreWindow();
     }
   });
 
-  it('a Host-chosen turn id on the new-chat path keys the optimistic state to it', async () => {
+  it('keeps the new-chat messageId when Host chooses another turnId', async () => {
     const activeIdRef = { current: undefined as string | undefined };
     const turnState = createTurnState();
     const messageState = createMessageState();
@@ -278,8 +405,10 @@ describe('busy-raced send settlement', () => {
         create: async () => ({ id: 'session-new' }),
       },
       sessions: {
-        send: async () => ({
+        send: async (_sessionId: string, command: { messageId: string }) => ({
           ok: true,
+          disposition: 'turn_started',
+          messageId: command.messageId,
           turnId: 'host-turn',
           attachments: [],
           inlineReferences: [],
@@ -296,12 +425,16 @@ describe('busy-raced send settlement', () => {
         },
         setLiveTurnBySession: turnState.setLiveTurnBySession,
         setMessages: messageState.setMessages,
+        addTransientMessage: (_sessionId, message) =>
+          messageState.setMessages((current) => [...current.filter((item) => item.id !== message.id), message]),
+        removeTransientMessage: (_sessionId, messageId) =>
+          messageState.setMessages((current) => current.filter((message) => message.id !== messageId)),
       });
       assert.equal(await actions.send('also check the tests'), true);
-      assert.equal(turnState.liveTurnBySession['session-new']?.turnId, 'host-turn');
+      assert.equal(turnState.liveTurnBySession['session-new'], undefined);
       const optimistic = messageState.messages.filter((message) => message.type === 'user');
       assert.equal(optimistic.length, 1);
-      assert.equal(optimistic[0]?.turnId, 'host-turn');
+      assert.notEqual(optimistic[0]?.id, 'host-turn');
     } finally {
       restoreWindow();
     }

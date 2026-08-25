@@ -27,9 +27,10 @@ import type { StoredMessage } from '@maka/core/session';
 export function reconcileTransientMessages(
   transient: Map<string, StoredMessage>,
   durable: readonly StoredMessage[],
+  options: { includeTransient?: boolean } = {},
 ): StoredMessage[] {
   for (const message of durable) transient.delete(message.id);
-  if (transient.size === 0) return [...durable];
+  if (transient.size === 0 || options.includeTransient === false) return [...durable];
   return [
     ...durable,
     ...[...transient.values()].sort((left, right) => left.ts - right.ts),

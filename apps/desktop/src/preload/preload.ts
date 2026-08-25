@@ -1650,7 +1650,8 @@ const makaBridge = {
         | SessionCommand
           | {
             type: 'send';
-            turnId: string;
+            messageId?: string;
+            turnId?: string;
             text: string;
             displayText?: string;
             skillIds?: string[];
@@ -1661,6 +1662,15 @@ const makaBridge = {
             workspaceFileReferences?: Array<Pick<InlineReference, 'value' | 'start'>>;
           },
     ): Promise<
+      | {
+          ok: true;
+          disposition: 'turn_started' | 'steering' | 'followup';
+          messageId: string;
+          turnId?: string;
+          attachments: AttachmentRef[];
+          inlineReferences: InlineReference[];
+          skillInvocation: import('@maka/runtime/skill-invocation').SkillInvocationResult;
+        }
       | {
           ok: true;
           turnId: string;
@@ -1738,6 +1748,7 @@ const makaBridge = {
       sessionId: string,
       placement: 'current_turn' | 'next_turn',
       command: {
+        messageId: string;
         text: string;
         displayText?: string;
         attachmentItems?: RendererIngestInput[];
