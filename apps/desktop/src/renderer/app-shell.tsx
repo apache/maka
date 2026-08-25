@@ -351,7 +351,6 @@ function AppShellContent({
     setMessages,
     addTransientMessage,
     removeTransientMessage,
-    hasTransientMessages,
     transcriptRangeRef,
     messageLoadPending,
     setMessageLoadPending,
@@ -801,7 +800,7 @@ function AppShellContent({
   const activeQuestion = activeInteraction?.type === 'user_question_request' ? activeInteraction : undefined;
   const activeSession = sessions.find((session) => session.id === activeId);
   const activeMessageQueue = activeId ? messageQueueBySession[activeId] : undefined;
-  const activeMessageSubmitting = activeId ? hasTransientMessages(activeId) : false;
+  const activeMessageSubmitting = transientMessages.length > 0;
   const activeDesktopSession = activeSession;
   // The shell's reading of the active live turn: streaming/settled flags, the
   // in-flight tool signal, and the #646 turn-wait cues, all derived from the
@@ -2190,6 +2189,7 @@ function AppShellContent({
     clearPendingSessionAction,
     setStopPendingBySession,
     stopPendingRef,
+    removeTransientMessage,
     toastApi,
   });
 

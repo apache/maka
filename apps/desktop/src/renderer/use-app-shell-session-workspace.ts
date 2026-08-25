@@ -111,10 +111,6 @@ export function useAppShellSessionWorkspace(toastApi: ToastApi) {
     }
   }
 
-  function hasTransientMessages(sessionId: string): boolean {
-    return (transientMessagesBySessionRef.current.get(sessionId)?.size ?? 0) > 0;
-  }
-
   function setActiveId(next: string | undefined): void {
     selectionRevisionRef.current += 1;
     // Clear here, not in the read effect: a layout-effect clear would wipe an
@@ -170,7 +166,6 @@ export function useAppShellSessionWorkspace(toastApi: ToastApi) {
     setMessages: setMessagesForActiveSession,
     addTransientMessage,
     removeTransientMessage,
-    hasTransientMessages,
     transcriptRangeRef,
     messageLoadPending,
     setMessageLoadPending,

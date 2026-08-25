@@ -26,6 +26,7 @@ import {
 } from '@maka/runtime-host/client';
 import { SKILL_INVOCATION_TOKEN_SOURCE } from '@maka/core/skill-invocation-token';
 import { isSideConversationSession } from '@maka/core/side-conversation';
+import { parseSkillInvocationTokens } from '@maka/runtime/skill-invocation';
 import {
   type SessionChangedEvent,
   type SessionChangedReason,
@@ -263,7 +264,7 @@ export function registerRuntimeHostSessionExecutionIpc(
       if (!session)
         throw new Error(`Runtime Host Session not found: ${sessionId}`);
       const sideConversation = isSideConversationSession(session.labels);
-      const turnId = command.turnId ?? newId();
+      const turnId = command.turnId ?? command.messageId ?? newId();
       let attachments = retainedAttachmentsForSession(
         sessionId,
         command.retainedAttachments ?? [],
@@ -325,6 +326,7 @@ export function registerRuntimeHostSessionExecutionIpc(
         command.messageId !== undefined &&
         !sideConversation &&
         (command.skillIds?.length ?? 0) === 0 &&
+        parseSkillInvocationTokens(command.text).length === 0 &&
         command.turnOrchestration === undefined
       ) {
         const submitted = await submitMessageWithReconnect(deps.client, {
@@ -917,7 +919,7 @@ function createRuntimeHostSessionStop(
       }
       return;
     }
-    await deps.client.interruptTurn({
+    const interrupted = await deps.client.interruptTurn({
       sessionId,
       interruptId: newId(),
       turnId: turn.turnId,
@@ -926,6 +928,10 @@ function createRuntimeHostSessionStop(
     deps.emitSessionsChanged("turn-status-change", sessionId, {
       turnId: turn.turnId,
     });
+    return {
+      kind: 'interrupted',
+      retractedMessageIds: interrupted.retracted.map((message) => message.messageId),
+    };
   };
 }
 

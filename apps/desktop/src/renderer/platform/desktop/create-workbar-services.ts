@@ -120,15 +120,17 @@ export function createDesktopWorkbarServices(
       abandonSessionCopy: (sourceSessionId, copyId) =>
         bridge.sessions.abandonSessionCopy(sourceSessionId, copyId),
       send: (sessionId, command) => bridge.sessions.send(sessionId, command),
-      stop: (sessionId, target) =>
-        bridge.sessions.stop(
+      stop: async (sessionId, target) => {
+        const result = await bridge.sessions.stop(
           sessionId,
           target?.kind === 'admission'
             ? { source: 'stop_button', expectedAdmissionId: target.messageId }
             : target?.kind === 'turn'
               ? { source: 'stop_button', expectedTurnId: target.turnId }
               : undefined,
-        ),
+        );
+        return result?.kind === 'retracted' ? result : undefined;
+      },
       steer: (sessionId, text, admissionId) => bridge.sessions.steer(sessionId, text, admissionId),
       setPermissionMode: (sessionId, mode) =>
         bridge.sessions.setPermissionMode(sessionId, mode),

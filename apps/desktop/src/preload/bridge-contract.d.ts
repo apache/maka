@@ -209,6 +209,7 @@ export type DesktopSideConversationBranchResult =
 
 export type DesktopSessionStopResult =
   | { kind: 'retracted'; messageId: string }
+  | { kind: 'interrupted'; retractedMessageIds: string[] }
   | undefined;
 
 export type DesktopReviseBeforeTurnInput = ReviseBeforeTurnInput & {

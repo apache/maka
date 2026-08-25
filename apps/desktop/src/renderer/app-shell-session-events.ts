@@ -328,6 +328,12 @@ export function createAppShellSessionEventHandlers(options: {
           removeTransientMessage?.(sessionId, event.messageId);
         }
         break;
+      case 'steering_message':
+        // The live Turn projection now renders this same messageId in place.
+        // Retire only the renderer-owned tail row; a later nack queue_update
+        // will project it again if the Host returns the message to the queue.
+        removeTransientMessage?.(sessionId, event.messageId);
+        break;
       case 'text_complete':
         void refreshMessages(sessionId, { requiredAssistantMessageId: event.messageId }).catch(() => false);
         break;

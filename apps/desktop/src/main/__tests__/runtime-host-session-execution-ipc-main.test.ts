@@ -607,7 +607,7 @@ test("submits an ordinary composer message once under its stable message identit
   const result = await ipc.invoke("sessions:send", "session-1", {
     type: "send",
     messageId: "message-1",
-    text: "/skill:review check the projection",
+    text: "check the projection",
   });
 
   assert.deepEqual(submits, [
@@ -615,7 +615,7 @@ test("submits an ordinary composer message once under its stable message identit
       sessionId: "session-1",
       messageId: "message-1",
       content: {
-        text: "/skill:review check the projection",
+        text: "check the projection",
         inlineReferences: [],
       },
       placement: "current_turn",
@@ -629,6 +629,63 @@ test("submits an ordinary composer message once under its stable message identit
     attachments: [],
     inlineReferences: [],
     skillInvocation: { loaded: [], failed: [], receipts: [] },
+  });
+});
+
+test('keeps slash Skill sends on the exact-Turn path with their stable message identity', async () => {
+  const starts: unknown[] = [];
+  const ipc = ipcHarness();
+  registerExecutionIpc(
+    {
+      client: executionClient({
+        getSession: async () => session(),
+        submitMessage: async () => {
+          throw new Error('slash Skill send must preserve Skill invocation feedback');
+        },
+        startTurn: async (input) => {
+          starts.push(input);
+          return {
+            kind: 'started',
+            turn: {
+              sessionId: input.sessionId,
+              turnId: input.turnId,
+              runId: 'run-skill',
+              status: 'running',
+            },
+            skillInvocation: {
+              loaded: [],
+              failed: [{ request: 'missing', reason: 'not_found' }],
+              receipts: [],
+            },
+          };
+        },
+      }),
+      newId: () => 'unexpected-generated-id',
+    },
+    ipc,
+  );
+
+  const result = await ipc.invoke('sessions:send', 'session-1', {
+    type: 'send',
+    messageId: 'message-skill',
+    text: '/skill:missing inspect this',
+  });
+
+  assert.deepEqual(starts, [{
+    sessionId: 'session-1',
+    turnId: 'message-skill',
+    content: { text: '/skill:missing inspect this', inlineReferences: [] },
+  }]);
+  assert.deepEqual(result, {
+    ok: true,
+    turnId: 'message-skill',
+    attachments: [],
+    inlineReferences: [],
+    skillInvocation: {
+      loaded: [],
+      failed: [{ request: 'missing', reason: 'not_found' }],
+      receipts: [],
+    },
   });
 });
 
@@ -731,6 +788,7 @@ test("retries a dispatched normal send with its original Turn identity", async (
 
   const result = await ipc.invoke("sessions:send", "session-1", {
     type: "send",
+    messageId: 'message-1',
     text: "keep this Turn identity",
   });
 
@@ -738,18 +796,18 @@ test("retries a dispatched normal send with its original Turn identity", async (
   assert.deepEqual(starts, [
     {
       sessionId: "session-1",
-      turnId: "turn-1",
+      turnId: "message-1",
       content: { text: "keep this Turn identity", inlineReferences: [] },
     },
     {
       sessionId: "session-1",
-      turnId: "turn-1",
+      turnId: "message-1",
       content: { text: "keep this Turn identity", inlineReferences: [] },
     },
   ]);
   assert.deepEqual(result, {
     ok: true,
-    turnId: "turn-1",
+    turnId: "message-1",
     attachments: [],
     inlineReferences: [],
     skillInvocation: { loaded: [], failed: [], receipts: [] },
@@ -1270,7 +1328,13 @@ test("binds steer and stop to Host-owned queue and active Turn identities", asyn
       interrupts.push(input);
       return {
         queueRevision: 3,
-        retracted: [],
+        retracted: [{
+          entryId: 'entry-followup',
+          messageId: 'message-followup',
+          content: { text: 'Do this next' },
+          placement: 'next_turn',
+          state: 'retracted',
+        }],
         turn: {
           sessionId: input.sessionId,
           turnId: input.turnId,
@@ -1375,10 +1439,10 @@ test("binds steer and stop to Host-owned queue and active Turn identities", asyn
     expectedTurnId: "turn-unrelated",
   });
   assert.deepEqual(stopLifecycle, []);
-  await ipc.invoke("sessions:stop", "session-1", {
+  assert.deepEqual(await ipc.invoke("sessions:stop", "session-1", {
     source: "stop_button",
     expectedTurnId: "turn-1",
-  });
+  }), { kind: 'interrupted', retractedMessageIds: ['message-followup'] });
   assert.deepEqual(stopLifecycle, [
     'teardown',
     'interrupt',

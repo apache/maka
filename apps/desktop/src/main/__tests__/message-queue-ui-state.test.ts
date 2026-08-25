@@ -112,26 +112,36 @@ test('queue_update events drive the independent desktop queue projection', () =>
   ]);
 
   handlers.handleEvent('session-1', {
+    type: 'steering_message',
+    id: 'steering-message-delivering',
+    turnId: 'turn-1',
+    messageId: 'message-delivering',
+    ts: 2,
+    content: { text: 'already delivering' },
+  });
+  assert.deepEqual(removedTransientMessageIds, ['message-delivering']);
+
+  handlers.handleEvent('session-1', {
     type: 'queue_update',
     id: 'queue-2',
     turnId: 'turn-1',
-    ts: 2,
+    ts: 3,
     queueRevision: 4,
     steering: [],
     followup: [],
   });
   assert.equal(controller.getState().messageQueueBySession['session-1'], undefined);
-  assert.deepEqual(removedTransientMessageIds, []);
+  assert.deepEqual(removedTransientMessageIds, ['message-delivering']);
 
   handlers.handleEvent('session-1', {
     type: 'message_admission',
     id: 'retracted-message-next',
     turnId: 'turn-1',
-    ts: 3,
+    ts: 4,
     messageId: 'message-next',
     outcome: 'retracted',
   });
-  assert.deepEqual(removedTransientMessageIds, ['message-next']);
+  assert.deepEqual(removedTransientMessageIds, ['message-delivering', 'message-next']);
 });
 
 test('complete events deliver the durable context compaction outcome to Desktop', () => {
