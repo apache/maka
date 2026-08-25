@@ -91,7 +91,7 @@ test('issues an opaque owner-bound admission capability from the exact helper ob
       headCommitOid: expectedCommit,
       headTreeOid: expectedTree,
       helperArtifactSha256: helper.helperArtifactSha256,
-      managedTreePolicyVersion: 1,
+      managedTreePolicyVersion: 2,
     },
   );
 });

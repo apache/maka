@@ -40,10 +40,10 @@ export interface GitoxideRepositoryAdmissionStateInternal {
   readonly headCommitOid: string;
   readonly headTreeOid: string;
   readonly helperArtifactSha256: `sha256:${string}`;
-  readonly managedTreePolicyVersion: 1;
+  readonly managedTreePolicyVersion: 2;
 }
 
-const MANAGED_TREE_POLICY_VERSION = 1 as const;
+const MANAGED_TREE_POLICY_VERSION = 2 as const;
 
 export type GitoxideRepositoryAdmissionResultV1 =
   | {

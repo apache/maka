@@ -287,7 +287,7 @@ fn rejects_full_unicode_casefold_collisions_before_claiming_the_destination() {
 }
 
 #[test]
-fn rejects_protected_names_using_the_policy_v1_unicode_fold() {
+fn rejects_protected_names_using_the_policy_v2_unicode_fold() {
     let (fixture, source_head) = RepositoryFixture::sha1_with_raw_tree(&[RawTreeEntry {
         mode: "100644",
         name: ".gitattributeſ",
@@ -342,7 +342,7 @@ fn imports_an_exact_source_head_into_a_fresh_managed_repository() {
         "expectedSourceHeadCommitOid": source_head,
         "destinationRepositoryPath": destination,
         "baselineRef": "refs/maka/baseline",
-        "managedTreePolicyVersion": 1,
+        "managedTreePolicyVersion": 2,
     }));
 
     assert!(
@@ -356,7 +356,7 @@ fn imports_an_exact_source_head_into_a_fresh_managed_repository() {
     assert_eq!(response["sourceHeadCommitOid"], source_head);
     assert_eq!(response["sourceTreeOid"], source_tree);
     assert_eq!(response["baselineTreeOid"], source_tree);
-    assert_eq!(response["managedTreePolicyVersion"], 1);
+    assert_eq!(response["managedTreePolicyVersion"], 2);
     assert_eq!(response["filesImported"], 2);
     assert_eq!(response["bytesImported"], 29);
     let baseline_commit = response["baselineCommitOid"].as_str().unwrap();
@@ -386,7 +386,7 @@ fn imports_an_exact_source_head_into_a_fresh_managed_repository() {
         "expectedSourceHeadCommitOid": source_head,
         "destinationRepositoryPath": second_destination,
         "baselineRef": "refs/maka/baseline",
-        "managedTreePolicyVersion": 1,
+        "managedTreePolicyVersion": 2,
     }));
     assert!(
         second_output.status.success(),
@@ -412,7 +412,7 @@ fn imports_an_exact_source_head_into_a_fresh_managed_repository() {
         baseline_commit_text
             .contains("committer Maka Workspace Service <workspace@maka.invalid> 946684800 +0000")
     );
-    assert!(baseline_commit_text.ends_with("maka managed workspace baseline v1"));
+    assert!(baseline_commit_text.ends_with("maka managed workspace baseline v2"));
 
     let retry = invoke_request(serde_json::json!({
         "protocolVersion": 1,
@@ -421,9 +421,120 @@ fn imports_an_exact_source_head_into_a_fresh_managed_repository() {
         "expectedSourceHeadCommitOid": source_head,
         "destinationRepositoryPath": destination,
         "baselineRef": "refs/maka/baseline",
-        "managedTreePolicyVersion": 1,
+        "managedTreePolicyVersion": 2,
     }));
     assert_helper_error(&retry, "import_destination_not_fresh");
+}
+
+#[test]
+fn imports_maka_attributes_under_managed_tree_policy_v2() {
+    let fixture = RepositoryFixture::sha1_with_commit();
+    fs::write(
+        fixture.root.join(".gitattributes"),
+        b"* text=auto eol=lf\n/.claude export-ignore\n/.maka-shots export-ignore\n/maka-proposal-zh-review.txt export-ignore\n",
+    )
+    .unwrap();
+    fixture.git(["add", ".gitattributes"]);
+    fixture.git([
+        "-c",
+        "user.name=Maka Test",
+        "-c",
+        "user.email=maka@example.invalid",
+        "commit",
+        "-m",
+        "attributes fixture",
+    ]);
+    let source_head = fixture.git_output(["rev-parse", "HEAD"]);
+    let source_tree = fixture.git_output(["rev-parse", "HEAD^{tree}"]);
+    let destination = fixture.root.join("managed-attributes-v2.git");
+
+    let output = invoke_request(serde_json::json!({
+        "protocolVersion": 1,
+        "operation": "import_source_head",
+        "sourceRepositoryPath": fixture.root,
+        "expectedSourceHeadCommitOid": source_head,
+        "destinationRepositoryPath": destination,
+        "baselineRef": "refs/maka/baseline",
+        "managedTreePolicyVersion": 2,
+    }));
+
+    assert!(
+        output.status.success(),
+        "helper failed: stdout={} stderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let response: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(response["kind"], "source_imported");
+    assert_eq!(response["sourceTreeOid"], source_tree);
+    assert_eq!(response["baselineTreeOid"], source_tree);
+    assert_eq!(response["managedTreePolicyVersion"], 2);
+}
+
+#[test]
+fn rejects_external_filter_attributes_before_claiming_the_destination() {
+    let fixture = RepositoryFixture::sha1_with_commit();
+    fs::write(fixture.root.join(".gitattributes"), b"*.bin filter=lfs\n").unwrap();
+    fixture.git(["add", ".gitattributes"]);
+    fixture.git([
+        "-c",
+        "user.name=Maka Test",
+        "-c",
+        "user.email=maka@example.invalid",
+        "commit",
+        "-m",
+        "unsupported attributes fixture",
+    ]);
+    let source_head = fixture.git_output(["rev-parse", "HEAD"]);
+    let destination = fixture.root.join("unsupported-attributes.git");
+
+    let output = invoke_request(serde_json::json!({
+        "protocolVersion": 1,
+        "operation": "import_source_head",
+        "sourceRepositoryPath": fixture.root,
+        "expectedSourceHeadCommitOid": source_head,
+        "destinationRepositoryPath": destination,
+        "baselineRef": "refs/maka/baseline",
+        "managedTreePolicyVersion": 2,
+    }));
+
+    assert_helper_error(&output, "unsupported_source_attributes");
+    assert!(!destination.exists());
+}
+
+#[test]
+fn rejects_oversized_attributes_before_claiming_the_destination() {
+    let fixture = RepositoryFixture::sha1_with_commit();
+    fs::write(
+        fixture.root.join(".gitattributes"),
+        vec![b'#'; 64 * 1024 + 1],
+    )
+    .unwrap();
+    fixture.git(["add", ".gitattributes"]);
+    fixture.git([
+        "-c",
+        "user.name=Maka Test",
+        "-c",
+        "user.email=maka@example.invalid",
+        "commit",
+        "-m",
+        "oversized attributes fixture",
+    ]);
+    let source_head = fixture.git_output(["rev-parse", "HEAD"]);
+    let destination = fixture.root.join("oversized-attributes.git");
+
+    let output = invoke_request(serde_json::json!({
+        "protocolVersion": 1,
+        "operation": "import_source_head",
+        "sourceRepositoryPath": fixture.root,
+        "expectedSourceHeadCommitOid": source_head,
+        "destinationRepositoryPath": destination,
+        "baselineRef": "refs/maka/baseline",
+        "managedTreePolicyVersion": 2,
+    }));
+
+    assert_helper_error(&output, "source_attributes_limit_exceeded");
+    assert!(!destination.exists());
 }
 
 #[test]
@@ -447,7 +558,7 @@ fn rejects_a_foreign_bare_destination_without_modifying_it() {
         "expectedSourceHeadCommitOid": source_head,
         "destinationRepositoryPath": destination,
         "baselineRef": "refs/maka/accepted",
-        "managedTreePolicyVersion": 1,
+        "managedTreePolicyVersion": 2,
     }));
 
     assert_helper_error(&output, "import_destination_not_fresh");
@@ -474,7 +585,7 @@ fn rejects_a_foreign_non_bare_destination_without_modifying_it() {
         "expectedSourceHeadCommitOid": source_head,
         "destinationRepositoryPath": destination,
         "baselineRef": "refs/maka/accepted",
-        "managedTreePolicyVersion": 1,
+        "managedTreePolicyVersion": 2,
     }));
 
     assert_helper_error(&output, "import_destination_not_fresh");
@@ -496,7 +607,7 @@ fn rejects_the_source_repository_as_its_own_destination_without_modifying_it() {
         "expectedSourceHeadCommitOid": source_head,
         "destinationRepositoryPath": fixture.root,
         "baselineRef": "refs/maka/baseline",
-        "managedTreePolicyVersion": 1,
+        "managedTreePolicyVersion": 2,
     }));
 
     assert_helper_error(&output, "import_destination_not_fresh");
@@ -504,7 +615,7 @@ fn rejects_the_source_repository_as_its_own_destination_without_modifying_it() {
 }
 
 #[test]
-fn rejects_an_unknown_managed_tree_policy_before_creating_the_destination() {
+fn rejects_the_retired_managed_tree_policy_v1_before_creating_the_destination() {
     let fixture = RepositoryFixture::sha1_with_commit();
     let source_head = fixture.git_output(["rev-parse", "HEAD"]);
     let destination = fixture.root.join("unsupported-policy.git");
@@ -516,7 +627,7 @@ fn rejects_an_unknown_managed_tree_policy_before_creating_the_destination() {
         "expectedSourceHeadCommitOid": source_head,
         "destinationRepositoryPath": destination,
         "baselineRef": "refs/maka/baseline",
-        "managedTreePolicyVersion": 2,
+        "managedTreePolicyVersion": 1,
     }));
 
     assert_helper_error(&output, "unsupported_managed_tree_policy");
@@ -536,7 +647,7 @@ fn rejects_an_invalid_baseline_ref_before_creating_the_destination() {
         "expectedSourceHeadCommitOid": source_head,
         "destinationRepositoryPath": destination,
         "baselineRef": "refs/maka/a..b",
-        "managedTreePolicyVersion": 1,
+        "managedTreePolicyVersion": 2,
     }));
 
     assert_helper_error(&output, "invalid_baseline_ref");
@@ -560,7 +671,7 @@ fn exactly_one_process_claims_a_fresh_import_destination() {
         "expectedSourceHeadCommitOid": first_head,
         "destinationRepositoryPath": destination,
         "baselineRef": "refs/maka/baseline",
-        "managedTreePolicyVersion": 1,
+        "managedTreePolicyVersion": 2,
     });
     let second_request = serde_json::json!({
         "protocolVersion": 1,
@@ -569,7 +680,7 @@ fn exactly_one_process_claims_a_fresh_import_destination() {
         "expectedSourceHeadCommitOid": second_head,
         "destinationRepositoryPath": destination,
         "baselineRef": "refs/maka/baseline",
-        "managedTreePolicyVersion": 1,
+        "managedTreePolicyVersion": 2,
     });
 
     let first = spawn_request(first_request);
@@ -662,7 +773,7 @@ fn rejects_a_destination_below_an_aliased_parent() {
         "expectedSourceHeadCommitOid": source_head,
         "destinationRepositoryPath": destination,
         "baselineRef": "refs/maka/baseline",
-        "managedTreePolicyVersion": 1,
+        "managedTreePolicyVersion": 2,
     }));
 
     assert_helper_error(&output, "import_destination_parent_untrusted");
@@ -709,7 +820,7 @@ fn invoke_import(source: &Path, source_head: &str, destination: &Path) -> Output
         "expectedSourceHeadCommitOid": source_head,
         "destinationRepositoryPath": destination,
         "baselineRef": "refs/maka/baseline",
-        "managedTreePolicyVersion": 1,
+        "managedTreePolicyVersion": 2,
     }))
 }
 

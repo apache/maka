@@ -65,17 +65,22 @@ storage-root owner 与 destination capability，不能把 fresh `create_dir()` �
 | helper 进程中断或响应丢失 | 不推断成功；未来 storage owner 必须先验证/隔离 partial artifact，再签发新的 fresh destination |
 | SHA-256/未知 object format | policy reject；不 fallback 到系统 Git |
 
-v1 不复制 source commit/history，不创建 alternates，不执行 hook/filter/submodule/LFS，也不接入 T1/T2。
+当前唯一的 managed tree policy 是 version 2。未发布的 version 1 请求会在 destination 创建前以
+`unsupported_managed_tree_policy` 拒绝。import 不复制 source commit/history，不创建 alternates，不执行
+hook/filter/submodule/LFS，也不接入 T1/T2。
 
 ## 4. 平台与资源边界
 
 - commit object 最多 1 MiB；单个 tree object 最多 8 MiB；全部 reachable tree object 总计最多 64 MiB；
 - 单文件最多 64 MiB；总计最多 2 GiB；最多 200,000 个普通文件；
 - 只接受 canonical Git tree ordering，以及 raw mode token `40000`、`100644`、`100755`；
-- 拒绝 symlink、submodule、`.git`、`.gitattributes`、非 UTF-8，以及
+- 拒绝 symlink、submodule、`.git`、非 UTF-8，以及
   `Unicode 17.0 NFC → Unicode 16.0 Default Full Case Folding（Non-Turkic）→ Unicode 17.0 NFC`
   collision；原路径与 folded key
   分别有单路径和累计 byte budget；
+- `.gitattributes` 必须使用规范小写路径、每个 blob 不超过 64 KiB，并且只包含空行/注释、
+  `* text=auto eol=lf` 或 `/<portable-literal-path> export-ignore`；filter、encoding、ident、未知规则和
+  escaped/wildcard path 全部在 destination claim 前 fail closed；
 - repository inspection deadline 为 5 秒；source import deadline 为 10 分钟。deadline 从 public 入口
   开始覆盖 artifact/path preflight 与 helper 执行；2 GiB/200,000 files 是输入上限，不是十分钟内一定
   成功的 SLA；超时后由共享 child lifecycle 有界终止并 fail closed；
@@ -85,9 +90,11 @@ v1 不复制 source commit/history，不创建 alternates，不执行 hook/filte
   process-crash 自动恢复或断电恢复；
 - Windows 保留 Git tree 中的 executable bit，不把它映射成 ACL 权威。
 
-上述规则只是 portable lexical materialization policy v1。它不证明 Windows path-length、8.3 alias 或
+上述规则是 portable lexical materialization policy v2。它不证明 Windows path-length、8.3 alias 或
 目标 volume 的大小写行为；这些能力必须由未来 projection owner 的
-`FilesystemMaterializationProfileV1` 在 fresh destination 上独立验证。
+`FilesystemMaterializationProfileV1` 在 fresh destination 上独立验证。v2 import 只验证 attributes
+语义并复制 immutable objects；真正 materialize 和 candidate 写回必须消费同一 policy，并对受支持文本
+执行确定性的 LF 规则。
 
 ## 5. 后续依赖
 

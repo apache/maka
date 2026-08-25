@@ -30,19 +30,20 @@ use serde::{Deserialize, Serialize};
 use unicode_normalization::UnicodeNormalization;
 
 const PROTOCOL_VERSION: u8 = 1;
-const MANAGED_TREE_POLICY_VERSION: u8 = 1;
+const MANAGED_TREE_POLICY_VERSION: u8 = 2;
 const MAX_REQUEST_BYTES: u64 = 64 * 1024;
 const MAX_REPOSITORY_METADATA_BYTES: u64 = 1024 * 1024;
 const MAX_REPOSITORY_METADATA_ENTRIES: u64 = 16_384;
 const MAX_REPOSITORY_METADATA_DEPTH: u64 = 64;
 const MAX_IMPORT_FILE_BYTES: u64 = 64 * 1024 * 1024;
+const MAX_ATTRIBUTES_FILE_BYTES: u64 = 64 * 1024;
 const MAX_IMPORT_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 const MAX_IMPORT_FILES: u64 = 200_000;
 const MAX_COMMIT_OBJECT_BYTES: u64 = 1024 * 1024;
 const MAX_SINGLE_TREE_OBJECT_BYTES: u64 = 8 * 1024 * 1024;
 const MAX_TOTAL_TREE_OBJECT_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_GITOXIDE_OBJECT_ALLOCATION_BYTES: &str = "gitoxide.objects.allocLimit=67108864";
-const MANAGED_TREE_POLICY_V1: ManagedTreePolicy = ManagedTreePolicy {
+const MANAGED_TREE_POLICY_V2: ManagedTreePolicy = ManagedTreePolicy {
     max_depth: 64,
     max_tree_visits: 250_000,
     max_entries: 400_000,
@@ -83,6 +84,7 @@ const HELPER_ERROR_REASONS_V1: &[&str] = &[
     "source_blob_identity_mismatch",
     "source_blob_invalid",
     "source_blob_unavailable",
+    "source_attributes_limit_exceeded",
     "source_byte_limit_exceeded",
     "source_file_limit_exceeded",
     "source_folded_path_byte_limit_exceeded",
@@ -107,6 +109,7 @@ const HELPER_ERROR_REASONS_V1: &[&str] = &[
     "source_tree_unavailable",
     "source_tree_visit_limit_exceeded",
     "unsupported_source_entry_kind",
+    "unsupported_source_attributes",
     "unsupported_source_path",
     "unsupported_object_format",
     "unsupported_managed_tree_policy",
@@ -474,7 +477,7 @@ fn import_source_head(
         &source,
         expected_source_head,
         gix::objs::Kind::Commit,
-        MANAGED_TREE_POLICY_V1.max_commit_object_bytes,
+        MANAGED_TREE_POLICY_V2.max_commit_object_bytes,
         "source_head_commit_unavailable",
         "source_head_commit_unavailable",
         "commit_object_limit_exceeded",
@@ -494,7 +497,7 @@ fn import_source_head(
         source_tree,
         "",
         0,
-        MANAGED_TREE_POLICY_V1,
+        MANAGED_TREE_POLICY_V2,
         &mut stats,
     )?;
     let expected_files = stats.files;
@@ -514,7 +517,7 @@ fn import_source_head(
         source_tree,
         "",
         0,
-        MANAGED_TREE_POLICY_V1,
+        MANAGED_TREE_POLICY_V2,
         &mut copy_stats,
     )?;
     if copy_stats.files != expected_files || copy_stats.bytes != expected_bytes {
@@ -530,7 +533,7 @@ fn import_source_head(
         .new_commit_as(
             signature,
             signature,
-            "maka managed workspace baseline v1",
+            "maka managed workspace baseline v2",
             source_tree,
             std::iter::empty::<gix::hash::ObjectId>(),
         )
@@ -713,18 +716,30 @@ fn walk_verified_source_tree(
             }
             gix::objs::tree::EntryKind::Blob | gix::objs::tree::EntryKind::BlobExecutable => {
                 let blob_oid = entry.object_id();
+                let is_attributes = component == ".gitattributes";
                 let blob = load_verified_object(
                     source,
                     blob_oid,
                     gix::objs::Kind::Blob,
-                    policy.max_file_bytes,
+                    if is_attributes {
+                        MAX_ATTRIBUTES_FILE_BYTES
+                    } else {
+                        policy.max_file_bytes
+                    },
                     "source_blob_unavailable",
                     "source_blob_invalid",
-                    "source_file_limit_exceeded",
+                    if is_attributes {
+                        "source_attributes_limit_exceeded"
+                    } else {
+                        "source_file_limit_exceeded"
+                    },
                     "source_blob_identity_mismatch",
                 )?
                 .try_into_blob()
                 .map_err(|_| "source_blob_invalid")?;
+                if is_attributes {
+                    validate_managed_attributes_v2(&blob.data)?;
+                }
                 stats.observe_blob(blob.data.len() as u64, policy)?;
                 if let Some(destination) = destination {
                     let copied_blob = destination
@@ -803,7 +818,7 @@ fn assert_canonical_tree_modes(mut data: &[u8]) -> Result<(), &'static str> {
 }
 
 fn is_supported_source_component(component: &str) -> bool {
-    let folded_component = fold_managed_path_v1(component);
+    let folded_component = fold_managed_path_v2(component);
     !component.is_empty()
         && component != "."
         && component != ".."
@@ -817,11 +832,48 @@ fn is_supported_source_component(component: &str) -> bool {
         && !component.ends_with(' ')
         && !is_windows_reserved_device_name(component)
         && folded_component != ".git"
-        && folded_component != ".gitattributes"
+        && (component == ".gitattributes" || folded_component != ".gitattributes")
 }
 
-fn fold_managed_path_v1(value: &str) -> String {
+fn fold_managed_path_v2(value: &str) -> String {
     value.nfc().default_case_fold().nfc().collect()
+}
+
+fn validate_managed_attributes_v2(data: &[u8]) -> Result<(), &'static str> {
+    let content = std::str::from_utf8(data).map_err(|_| "unsupported_source_attributes")?;
+    for raw_line in content.split('\n') {
+        let line = raw_line.strip_suffix('\r').unwrap_or(raw_line).trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        if line.contains('\\') || line.contains('\0') {
+            return Err("unsupported_source_attributes");
+        }
+        let mut fields = line.split_ascii_whitespace();
+        let pattern = fields.next().ok_or("unsupported_source_attributes")?;
+        let attributes = fields.collect::<Vec<_>>();
+        let supported = if pattern == "*" {
+            attributes.len() == 2
+                && attributes.contains(&"text=auto")
+                && attributes.contains(&"eol=lf")
+        } else {
+            is_portable_export_ignore_pattern_v2(pattern)
+                && attributes.as_slice() == ["export-ignore"]
+        };
+        if !supported {
+            return Err("unsupported_source_attributes");
+        }
+    }
+    Ok(())
+}
+
+fn is_portable_export_ignore_pattern_v2(pattern: &str) -> bool {
+    if !pattern.starts_with('/') || pattern.len() <= 1 || pattern.len() > 4096 {
+        return false;
+    }
+    pattern[1..]
+        .split('/')
+        .all(|component| !component.is_empty() && is_supported_source_component(component))
 }
 
 fn is_windows_reserved_device_name(component: &str) -> bool {
@@ -914,7 +966,7 @@ impl ManagedTreeStats {
             .checked_add(path_bytes)
             .filter(|bytes| *bytes <= policy.max_total_path_bytes)
             .ok_or("source_path_byte_limit_exceeded")?;
-        let folded_path = fold_managed_path_v1(relative_path);
+        let folded_path = fold_managed_path_v2(relative_path);
         let folded_path_bytes = folded_path.len() as u64;
         if folded_path_bytes > policy.max_folded_relative_path_bytes {
             return Err("source_folded_path_length_exceeded");
@@ -1057,7 +1109,7 @@ mod tests {
 
     #[test]
     fn managed_tree_policy_uses_full_unicode_casefold_after_nfc() {
-        let policy = MANAGED_TREE_POLICY_V1;
+        let policy = MANAGED_TREE_POLICY_V2;
         for (first, second) in [
             ("Σ.txt", "ς.txt"),
             ("STRASSE.txt", "Straße.txt"),
@@ -1078,7 +1130,7 @@ mod tests {
         let policy = ManagedTreePolicy {
             max_relative_path_bytes: 2,
             max_folded_relative_path_bytes: 2,
-            ..MANAGED_TREE_POLICY_V1
+            ..MANAGED_TREE_POLICY_V2
         };
         let mut stats = ManagedTreeStats::default();
         assert_eq!(
@@ -1089,7 +1141,7 @@ mod tests {
         let policy = ManagedTreePolicy {
             max_total_path_bytes: 3,
             max_total_folded_path_bytes: 3,
-            ..MANAGED_TREE_POLICY_V1
+            ..MANAGED_TREE_POLICY_V2
         };
         let mut stats = ManagedTreeStats::default();
         assert_eq!(stats.observe_entry("İ", policy), Ok(()));
@@ -1097,6 +1149,30 @@ mod tests {
             stats.observe_entry("A", policy),
             Err("source_folded_path_byte_limit_exceeded")
         );
+    }
+
+    #[test]
+    fn managed_attributes_v2_accepts_only_the_deterministic_subset() {
+        assert_eq!(
+            validate_managed_attributes_v2(
+                b"# portable Maka attributes\n\n* eol=lf text=auto\n/docs export-ignore\n"
+            ),
+            Ok(())
+        );
+        for unsupported in [
+            b"*.bin filter=lfs\n".as_slice(),
+            b"* working-tree-encoding=UTF-16\n".as_slice(),
+            b"* ident\n".as_slice(),
+            b"* text=auto eol=crlf\n".as_slice(),
+            b"/*.log export-ignore\n".as_slice(),
+            b"* text=auto eol=lf unknown\n".as_slice(),
+            &[0xff, b'\n'],
+        ] {
+            assert_eq!(
+                validate_managed_attributes_v2(unsupported),
+                Err("unsupported_source_attributes")
+            );
+        }
     }
 
     #[test]

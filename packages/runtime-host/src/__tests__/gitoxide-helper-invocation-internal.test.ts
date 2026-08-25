@@ -116,7 +116,7 @@ test('applies the import deadline and terminates the helper process tree', {
     expectedSourceHeadCommitOid,
     destinationRepositoryPath: join(root, 'destination.git'),
     baselineRef: 'refs/maka/baseline',
-    managedTreePolicyVersion: 1,
+    managedTreePolicyVersion: 2,
   });
   void operation.then(
     () => {
@@ -358,7 +358,7 @@ async function assertMismatchedImportResponseRejected(
     baselineCommitOid: 'a'.repeat(40),
     baselineTreeOid: sourceTreeOid,
     baselineRef: 'refs/maka/expected-ref',
-    managedTreePolicyVersion: 1,
+    managedTreePolicyVersion: 2,
     filesImported: 1,
     bytesImported: 29,
     ...override,
@@ -374,7 +374,7 @@ async function assertMismatchedImportResponseRejected(
       expectedSourceHeadCommitOid,
       destinationRepositoryPath: join(root, 'destination.git'),
       baselineRef: 'refs/maka/expected-ref',
-      managedTreePolicyVersion: 1,
+      managedTreePolicyVersion: 2,
     }),
     (error) =>
       error instanceof GitoxideHelperInvocationError &&

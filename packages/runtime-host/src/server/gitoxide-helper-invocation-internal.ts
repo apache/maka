@@ -60,6 +60,7 @@ export const GITOXIDE_HELPER_ERROR_REASONS_V1 = Object.freeze([
   'source_blob_identity_mismatch',
   'source_blob_invalid',
   'source_blob_unavailable',
+  'source_attributes_limit_exceeded',
   'source_byte_limit_exceeded',
   'source_file_limit_exceeded',
   'source_folded_path_byte_limit_exceeded',
@@ -84,6 +85,7 @@ export const GITOXIDE_HELPER_ERROR_REASONS_V1 = Object.freeze([
   'source_tree_unavailable',
   'source_tree_visit_limit_exceeded',
   'unsupported_source_entry_kind',
+  'unsupported_source_attributes',
   'unsupported_source_path',
   'unsupported_object_format',
   'unsupported_managed_tree_policy',
@@ -119,7 +121,7 @@ export interface GitoxideSourceImportObservationV1 {
   readonly baselineCommitOid: string;
   readonly baselineTreeOid: string;
   readonly baselineRef: string;
-  readonly managedTreePolicyVersion: 1;
+  readonly managedTreePolicyVersion: 2;
   readonly filesImported: number;
   readonly bytesImported: number;
 }
@@ -259,7 +261,7 @@ export async function importSourceHeadWithGitoxideHelperInternal(input: {
   readonly expectedSourceHeadCommitOid: string;
   readonly destinationRepositoryPath: string;
   readonly baselineRef: string;
-  readonly managedTreePolicyVersion: 1;
+  readonly managedTreePolicyVersion: 2;
   readonly abortSignal?: AbortSignal;
 }): Promise<GitoxideSourceImportObservationV1> {
   const deadlineAt =
@@ -539,7 +541,7 @@ function decodeSourceImportOutcome(
   expected: {
     readonly expectedSourceHeadCommitOid: string;
     readonly baselineRef: string;
-    readonly managedTreePolicyVersion: 1;
+    readonly managedTreePolicyVersion: 2;
   },
 ): GitoxideSourceImportObservationV1 {
   if (outcome.signal !== null) {
@@ -575,7 +577,7 @@ function isSourceImportObservation(
   expected: {
     readonly expectedSourceHeadCommitOid: string;
     readonly baselineRef: string;
-    readonly managedTreePolicyVersion: 1;
+    readonly managedTreePolicyVersion: 2;
   },
 ): value is GitoxideSourceImportObservationV1 {
   return (
