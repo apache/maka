@@ -36,6 +36,7 @@ import {
   bindWorkspaceBaselineAuthorityStoreRootInternal,
   commitWorkspaceBaselineInternal,
   commitWorkspaceSuccessorInternal,
+  readActiveManagedMutationInternal,
   type WorkspaceSuccessorCommitInput,
 } from '../workspace-version-authority-internal.js';
 
@@ -153,6 +154,25 @@ if (childMode) {
           (await store.readWorkspaceHead(`workspace_${'2'.repeat(32)}`, `epoch_${'3'.repeat(32)}`))
             ?.workspaceVersionId,
           `version_${'5'.repeat(32)}`,
+        );
+      });
+    });
+
+    it('retains exclusive managed mutation ownership when killed after T1', {
+      timeout: 30_000,
+    }, async () => {
+      await withKilledChild('after_workspace_mutation_t1', async (store) => {
+        bindWorkspaceBaselineAuthorityStoreRootInternal(store, 'a'.repeat(64));
+        assert.equal(
+          (await readActiveManagedMutationInternal(store, `instance_${'4'.repeat(32)}`))
+            ?.operationId,
+          'workspace-successor-operation',
+        );
+        await assert.rejects(
+          store.commitToolPrepared(
+            workspaceSuccessorPreparedCommit('workspace-conflicting-operation'),
+          ),
+          /managed mutation reservation conflict/i,
         );
       });
     });
@@ -280,12 +300,17 @@ async function runCrashChild(mode: string): Promise<void> {
   if (
     mode === 'inside_workspace_baseline' ||
     mode === 'after_workspace_baseline_commit' ||
+    mode === 'after_workspace_mutation_t1' ||
     mode === 'inside_workspace_successor' ||
     mode === 'after_workspace_successor_commit'
   ) {
     bindWorkspaceBaselineAuthorityStoreRootInternal(store, 'a'.repeat(64));
     await commitWorkspaceBaselineInternal(store, workspaceBaselineInput());
     if (mode === 'after_workspace_baseline_commit') blockUntilKilled();
+    if (mode === 'after_workspace_mutation_t1') {
+      await store.commitToolPrepared(workspaceSuccessorPreparedCommit());
+      blockUntilKilled();
+    }
     if (mode === 'inside_workspace_successor' || mode === 'after_workspace_successor_commit') {
       await store.commitToolPrepared(workspaceSuccessorPreparedCommit());
       await commitWorkspaceSuccessorInternal(store, workspaceSuccessorCommit());
@@ -363,14 +388,20 @@ function workspaceBaselineInput(): WorkspaceBaselineAuthorityInput {
   };
 }
 
-function workspaceSuccessorPreparedCommit() {
+function workspaceSuccessorPreparedCommit(operationId = 'workspace-successor-operation') {
   const args = { path: 'notes.txt', content: 'successor' };
   const canonicalArgsHash = canonicalToolArgsHash('Write', args);
+  const isCanonicalFixture = operationId === 'workspace-successor-operation';
+  const toolCallId = isCanonicalFixture ? 'workspace-successor-call-id' : `${operationId}-call-id`;
+  const callEventId = isCanonicalFixture ? 'workspace-successor-call' : `${operationId}-call`;
+  const dispatchEventId = isCanonicalFixture
+    ? 'workspace-successor-dispatch'
+    : `${operationId}-dispatch`;
   return {
-    operationId: 'workspace-successor-operation',
-    journalEventId: 'workspace-successor-operation_prepared',
+    operationId,
+    journalEventId: `${operationId}_prepared`,
     runtimeEvent: {
-      id: 'workspace-successor-call',
+      id: callEventId,
       invocationId: 'workspace-successor-invocation',
       runId: 'workspace-successor-run',
       sessionId: 'workspace-successor-session',
@@ -381,17 +412,17 @@ function workspaceSuccessorPreparedCommit() {
       author: 'agent' as const,
       content: {
         kind: 'function_call' as const,
-        id: 'workspace-successor-call-id',
+        id: toolCallId,
         name: 'Write',
         args,
       },
       refs: {
-        operationId: 'workspace-successor-operation',
-        toolCallId: 'workspace-successor-call-id',
+        operationId,
+        toolCallId,
       },
     },
     dispatchRuntimeEvent: {
-      id: 'workspace-successor-dispatch',
+      id: dispatchEventId,
       invocationId: 'workspace-successor-invocation',
       runId: 'workspace-successor-run',
       sessionId: 'workspace-successor-session',
@@ -403,19 +434,34 @@ function workspaceSuccessorPreparedCommit() {
       actions: {
         toolDispatch: {
           protocol: 't1_after_preflight_v1' as const,
-          operationId: 'workspace-successor-operation',
-          providerToolCallId: 'workspace-successor-call-id',
+          operationId,
+          providerToolCallId: toolCallId,
           toolName: 'Write',
           canonicalArgsHash,
           recoveryMode: 'reconcile' as const,
+          managedMutation: {
+            protocol: 'managed_mutation_v1' as const,
+            repositoryId: `repository_${'1'.repeat(32)}`,
+            workspaceId: `workspace_${'2'.repeat(32)}`,
+            workspaceEpochId: `epoch_${'3'.repeat(32)}`,
+            workspaceInstanceId: `instance_${'4'.repeat(32)}`,
+            objectFormat: 'sha1' as const,
+            baseWorkspaceVersionId: `version_${'5'.repeat(32)}`,
+            baseAcceptedEventId: 'workspace-version-event-1',
+            baseHeadRevision: 1,
+            baseCommitOid: '5'.repeat(40),
+            baseTreeOid: '2'.repeat(40),
+            expectedPaths: ['notes.txt'],
+            executionProfileDigest: `sha256:${'a'.repeat(64)}` as const,
+          },
         },
       },
       refs: {
-        operationId: 'workspace-successor-operation',
-        toolCallId: 'workspace-successor-call-id',
+        operationId,
+        toolCallId,
       },
     },
-    providerToolCallId: 'workspace-successor-call-id',
+    providerToolCallId: toolCallId,
     toolName: 'Write',
     canonicalArgsHash,
     recoveryMode: 'reconcile' as const,

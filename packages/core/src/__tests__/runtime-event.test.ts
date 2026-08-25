@@ -457,6 +457,60 @@ describe('RuntimeEvent content variants', () => {
 });
 
 describe('RuntimeEvent actions', () => {
+  test('decodes only a platform-independent T1-frozen managed mutation identity', () => {
+    const managedMutation = {
+      protocol: 'managed_mutation_v1',
+      repositoryId: 'repository_11111111111111111111111111111111',
+      workspaceId: 'workspace_22222222222222222222222222222222',
+      workspaceEpochId: 'epoch_33333333333333333333333333333333',
+      workspaceInstanceId: 'instance_44444444444444444444444444444444',
+      objectFormat: 'sha1',
+      baseWorkspaceVersionId: 'version_55555555555555555555555555555555',
+      baseAcceptedEventId: 'baseline-event-1',
+      baseHeadRevision: 1,
+      baseCommitOid: '1'.repeat(40),
+      baseTreeOid: '2'.repeat(40),
+      expectedPaths: ['src/a.ts'],
+      executionProfileDigest: `sha256:${'a'.repeat(64)}`,
+    } as const;
+    const toolDispatch = {
+      protocol: 't1_after_preflight_v1',
+      operationId: 'operation-1',
+      providerToolCallId: 'call-1',
+      toolName: 'Write',
+      canonicalArgsHash: `sha256:${'b'.repeat(64)}`,
+      recoveryMode: 'reconcile',
+      managedMutation,
+    } as const;
+
+    assert.deepEqual(
+      decodeRuntimeEvent(baseEvent({ role: 'system', author: 'system', actions: { toolDispatch } }))
+        .actions?.toolDispatch?.managedMutation,
+      managedMutation,
+    );
+    for (const invalid of [
+      { ...managedMutation, expectedPaths: ['src/../secrets.txt'] },
+      { ...managedMutation, expectedPaths: ['NoDe_MoDuLeS/pkg/index.js'] },
+      { ...managedMutation, expectedPaths: ['.GiT/config'] },
+      { ...managedMutation, expectedPaths: ['z.txt', 'a.txt'] },
+      { ...managedMutation, expectedPaths: ['x'.repeat(4097)] },
+      { ...managedMutation, baseAcceptedEventId: 'event id with spaces' },
+      { ...managedMutation, baseHeadRevision: 0 },
+      { ...managedMutation, baseTreeOid: 'not-an-oid' },
+      { ...managedMutation, extra: true },
+    ]) {
+      assert.throws(() =>
+        decodeRuntimeEvent(
+          baseEvent({
+            role: 'system',
+            author: 'system',
+            actions: { toolDispatch: { ...toolDispatch, managedMutation: invalid } as never },
+          }),
+        ),
+      );
+    }
+  });
+
   test('permission and user-question interactions are first-class actions', () => {
     const actions: RuntimeEventActions = {
       permissionRequest: {

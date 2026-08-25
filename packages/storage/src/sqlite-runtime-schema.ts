@@ -19,7 +19,7 @@
 
 import type { DatabaseSync } from 'node:sqlite';
 
-export const SQLITE_RUNTIME_SCHEMA_VERSION = 13;
+export const SQLITE_RUNTIME_SCHEMA_VERSION = 14;
 export const RUNTIME_RECOVERY_AUTHORITY_CAPABILITY = 'runtime_recovery_authority';
 export const RUNTIME_RECOVERY_AUTHORITY_CAPABILITY_VERSION = 1;
 export const RUNTIME_CONTINUATION_AUTHORITY_CAPABILITY = 'runtime_continuation_authority';
@@ -414,6 +414,33 @@ const MIGRATIONS: ReadonlyMap<number, string> = new Map([
 
     DROP TABLE runtime_workspace_heads_v12;
     DROP TABLE runtime_workspace_versions_v12;
+    `,
+  ],
+  [
+    14,
+    `
+    ALTER TABLE runtime_workspace_versions
+      ADD COLUMN changed_paths_json TEXT NOT NULL DEFAULT '[]';
+
+    CREATE TABLE runtime_managed_mutation_reservations (
+      workspace_instance_id TEXT PRIMARY KEY,
+      repository_id TEXT NOT NULL,
+      workspace_id TEXT NOT NULL,
+      workspace_epoch_id TEXT NOT NULL,
+      operation_id TEXT NOT NULL UNIQUE REFERENCES tool_operations(operation_id),
+      dispatch_event_id TEXT NOT NULL UNIQUE REFERENCES runtime_events(event_id),
+      base_workspace_version_id TEXT NOT NULL,
+      base_accepted_event_id TEXT NOT NULL,
+      base_head_revision INTEGER NOT NULL CHECK (base_head_revision > 0),
+      base_commit_oid TEXT NOT NULL,
+      base_tree_oid TEXT NOT NULL,
+      expected_paths_json TEXT NOT NULL,
+      execution_profile_digest TEXT NOT NULL,
+      protocol_version INTEGER NOT NULL CHECK (protocol_version = 1),
+      reserved_at INTEGER NOT NULL,
+      FOREIGN KEY (workspace_id, workspace_epoch_id)
+        REFERENCES runtime_workspace_epochs(workspace_id, workspace_epoch_id)
+    );
     `,
   ],
 ]);

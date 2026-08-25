@@ -37,6 +37,7 @@ import {
   type WorkspaceEpochRecordV1,
   type WorkspaceHeadRecordV1,
   type WorkspaceProjectionRebuildResult,
+  type WorkspaceVersionAcceptedV1,
   type WorkspaceVersionRecordV1,
 } from '@maka/core/workspace-version-authority';
 import {
@@ -45,6 +46,7 @@ import {
   isTerminalRuntimeEvent,
   TOOL_BOUNDARY_PROTOCOL_V1,
   type RuntimeEvent,
+  type RuntimeEventManagedWorkspaceMutationV1,
   type ToolRecoveryMode,
 } from '@maka/core/runtime-event';
 import {
@@ -1341,8 +1343,62 @@ export class SqliteRuntimeStore
       ) {
         throw new Error('Workspace successor requires one prepared Write/Edit reconcile operation');
       }
+      if (!operation.dispatchEventId) {
+        throw new Error('Workspace successor operation is missing its dispatch event');
+      }
+      const dispatchJson = this.readRuntimeEventJson(operation.dispatchEventId);
+      const dispatchEvent = dispatchJson
+        ? decodeRuntimeEvent(JSON.parse(dispatchJson) as unknown)
+        : undefined;
+      const mutation = dispatchEvent?.actions?.toolDispatch?.managedMutation;
+      const reservation = this.db
+        .prepare(`
+          SELECT
+            workspace_instance_id, repository_id, workspace_id, workspace_epoch_id,
+            operation_id, dispatch_event_id, base_workspace_version_id,
+            base_accepted_event_id, base_head_revision, base_commit_oid, base_tree_oid,
+            expected_paths_json, execution_profile_digest, protocol_version, reserved_at
+          FROM runtime_managed_mutation_reservations
+          WHERE operation_id = ?
+        `)
+        .get(operation.operationId) as ManagedMutationReservationProjectionRow | undefined;
+      if (
+        !mutation ||
+        !reservation ||
+        reservation.workspace_instance_id !== mutation.workspaceInstanceId ||
+        reservation.repository_id !== mutation.repositoryId ||
+        reservation.workspace_id !== mutation.workspaceId ||
+        reservation.workspace_epoch_id !== mutation.workspaceEpochId ||
+        reservation.operation_id !== operation.operationId ||
+        reservation.dispatch_event_id !== operation.dispatchEventId ||
+        reservation.base_workspace_version_id !== mutation.baseWorkspaceVersionId ||
+        reservation.base_accepted_event_id !== mutation.baseAcceptedEventId ||
+        reservation.base_head_revision !== mutation.baseHeadRevision ||
+        reservation.base_commit_oid !== mutation.baseCommitOid ||
+        reservation.base_tree_oid !== mutation.baseTreeOid ||
+        reservation.execution_profile_digest !== mutation.executionProfileDigest ||
+        mutation.repositoryId !== successor.repositoryId ||
+        mutation.workspaceId !== successor.workspaceId ||
+        mutation.workspaceEpochId !== successor.workspaceEpochId ||
+        mutation.objectFormat !== successor.objectFormat ||
+        mutation.baseWorkspaceVersionId !== successor.parentWorkspaceVersionId ||
+        mutation.baseAcceptedEventId !== successor.baseAcceptedEventId ||
+        mutation.baseHeadRevision !== successor.baseHeadRevision ||
+        mutation.baseCommitOid !== currentHead.commitOid ||
+        mutation.baseTreeOid !== currentHead.treeOid ||
+        mutation.executionProfileDigest !== successor.executionProfileDigest
+      ) {
+        throw new Error('Workspace successor requires its exact durable mutation reservation');
+      }
+      const reservedPaths = JSON.parse(reservation.expected_paths_json) as unknown;
+      if (
+        !isDeepStrictEqual(reservedPaths, mutation.expectedPaths) ||
+        !isDeepStrictEqual(successor.changedPaths, mutation.expectedPaths)
+      ) {
+        throw new Error('Managed mutation path authorization conflict');
+      }
 
-      const outcomeResult = this.commitToolOutcomeSync(toolOutcome);
+      const outcomeResult = this.commitToolOutcomeSync(toolOutcome, 'workspace_successor');
       const successorSeq = this.insertRuntimeEvent(
         successorEvent,
         input.successor.committedAt,
@@ -1391,6 +1447,15 @@ export class SqliteRuntimeStore
         throw new Error('Workspace successor head compare-and-set failed');
       }
       this.options.failpoint?.('after_workspace_successor_head_update');
+      const released = this.db
+        .prepare(`
+          DELETE FROM runtime_managed_mutation_reservations
+          WHERE workspace_instance_id = ? AND operation_id = ? AND dispatch_event_id = ?
+        `)
+        .run(mutation.workspaceInstanceId, operation.operationId, operation.dispatchEventId);
+      if (released.changes !== 1) {
+        throw new Error('Managed mutation reservation release compare-and-set failed');
+      }
       this.assertWorkspaceProjectionsMatchSync(after);
       return {
         created: true,
@@ -1408,7 +1473,44 @@ export class SqliteRuntimeStore
       (input, rootId) => this.#commitWorkspaceSuccessor(input, rootId),
       (rootId) => this.#bindWorkspaceStorageRoot(rootId),
       readWorkspaceHead,
+      (workspaceInstanceId) => this.#readActiveManagedMutation(workspaceInstanceId),
     );
+  }
+
+  async #readActiveManagedMutation(
+    workspaceInstanceId: string,
+  ): Promise<
+    | import('./workspace-version-authority-internal.js').ManagedMutationReservationRecordV1
+    | undefined
+  > {
+    return this.readTransaction(() => {
+      const authority = this.readCanonicalWorkspaceAuthoritySync();
+      this.assertWorkspaceProjectionsMatchSync(authority);
+      const reservation = authority.activeManagedMutations.find(
+        (candidate) => candidate.workspace_instance_id === workspaceInstanceId,
+      );
+      if (!reservation) return undefined;
+      const expectedPaths = JSON.parse(reservation.expected_paths_json) as unknown;
+      if (!Array.isArray(expectedPaths) || expectedPaths.some((path) => typeof path !== 'string')) {
+        throw new Error('Managed mutation reservation has invalid expected paths');
+      }
+      return {
+        workspaceInstanceId: reservation.workspace_instance_id,
+        repositoryId: reservation.repository_id,
+        workspaceId: reservation.workspace_id,
+        workspaceEpochId: reservation.workspace_epoch_id,
+        operationId: reservation.operation_id,
+        dispatchEventId: reservation.dispatch_event_id,
+        baseWorkspaceVersionId: reservation.base_workspace_version_id,
+        baseAcceptedEventId: reservation.base_accepted_event_id,
+        baseHeadRevision: reservation.base_head_revision,
+        baseCommitOid: reservation.base_commit_oid,
+        baseTreeOid: reservation.base_tree_oid,
+        expectedPaths,
+        executionProfileDigest: reservation.execution_profile_digest,
+        reservedAt: reservation.reserved_at,
+      };
+    });
   }
 
   #bindWorkspaceStorageRoot(rootId: string): void {
@@ -1523,6 +1625,7 @@ export class SqliteRuntimeStore
   async rebuildWorkspaceVersionProjections(): Promise<WorkspaceProjectionRebuildResult> {
     return this.transaction(() => {
       const authority = this.readCanonicalWorkspaceAuthoritySync();
+      this.db.prepare('DELETE FROM runtime_managed_mutation_reservations').run();
       this.db.prepare('DELETE FROM runtime_workspace_heads').run();
       this.db.prepare('DELETE FROM runtime_workspace_versions').run();
       this.db.prepare('DELETE FROM runtime_workspace_epochs').run();
@@ -1541,6 +1644,9 @@ export class SqliteRuntimeStore
         );
       }
       for (const head of authority.heads) this.insertWorkspaceHeadProjection(head);
+      for (const reservation of authority.activeManagedMutations) {
+        this.insertManagedMutationReservationProjectionSync(reservation);
+      }
       this.assertWorkspaceProjectionsMatchSync(authority);
       return {
         epochs: authority.baselines.length,
@@ -1550,7 +1656,7 @@ export class SqliteRuntimeStore
     });
   }
 
-  private readCanonicalWorkspaceAuthoritySync() {
+  private readCanonicalWorkspaceAuthoritySync(): CanonicalWorkspaceAuthority {
     const partial = this.db
       .prepare(`
         SELECT stream_key FROM runtime_partial_snapshots
@@ -1590,6 +1696,12 @@ export class SqliteRuntimeStore
       );
       const dispatch = operation?.dispatchEvent?.actions?.toolDispatch;
       const response = operation?.responseEvent;
+      const epoch = scan.baselines.find(
+        (candidate) =>
+          candidate.epoch.workspaceId === accepted.successor.workspaceId &&
+          candidate.epoch.workspaceEpochId === accepted.successor.workspaceEpochId,
+      )?.epoch;
+      const baseHead = workspaceHeadBeforeSuccessor(scan, accepted.successor);
       if (
         !operation ||
         operation.issues.length > 0 ||
@@ -1598,6 +1710,14 @@ export class SqliteRuntimeStore
         dispatch.operationId !== origin.operationId ||
         dispatch.recoveryMode !== 'reconcile' ||
         (dispatch.toolName !== 'Write' && dispatch.toolName !== 'Edit') ||
+        !epoch ||
+        !baseHead ||
+        !managedMutationMatchesAcceptedSuccessor(
+          dispatch.managedMutation,
+          accepted.successor,
+          baseHead,
+          epoch.workspaceInstanceId,
+        ) ||
         !response ||
         response.id !== origin.outcomeEventId ||
         response.content?.kind !== 'function_response' ||
@@ -1608,8 +1728,94 @@ export class SqliteRuntimeStore
         );
       }
     }
+    const activeManagedMutations = this.scanCanonicalManagedMutationReservationsSync(
+      toolScan,
+      scan,
+    );
     this.options.failpoint?.('after_workspace_canonical_scan');
-    return scan;
+    return { ...scan, activeManagedMutations };
+  }
+
+  private scanCanonicalManagedMutationReservationsSync(
+    toolScan: ReturnType<typeof scanToolLedger>,
+    authority: ReturnType<typeof scanWorkspaceBaselineAuthority>,
+  ): ManagedMutationReservationProjectionRow[] {
+    const acceptedOperations = new Set(
+      authority.successors.map((candidate) => candidate.successor.origin.operationId),
+    );
+    const reservations: ManagedMutationReservationProjectionRow[] = [];
+    const occupied = new Set<string>();
+    for (const operation of toolScan.operations) {
+      const dispatchEvent = operation.dispatchEvent;
+      const dispatch = dispatchEvent?.actions?.toolDispatch;
+      const mutation = dispatch?.managedMutation;
+      if (!mutation) continue;
+      if (
+        operation.issues.length > 0 ||
+        !dispatchEvent ||
+        dispatch.operationId !== operation.operationId ||
+        dispatch.recoveryMode !== 'reconcile' ||
+        (dispatch.toolName !== 'Write' && dispatch.toolName !== 'Edit')
+      ) {
+        throw new Error(
+          `Corrupt managed mutation reservation: identity_conflict at ${dispatchEvent?.id ?? operation.operationId}`,
+        );
+      }
+      if (acceptedOperations.has(operation.operationId)) continue;
+      if (operation.responseEvent) {
+        throw new Error(
+          `Corrupt managed mutation reservation: generic_outcome at ${operation.responseEvent.id}`,
+        );
+      }
+      const epoch = authority.baselines.find(
+        (candidate) =>
+          candidate.epoch.workspaceId === mutation.workspaceId &&
+          candidate.epoch.workspaceEpochId === mutation.workspaceEpochId,
+      )?.epoch;
+      const head = authority.heads.find(
+        (candidate) =>
+          candidate.workspaceId === mutation.workspaceId &&
+          candidate.workspaceEpochId === mutation.workspaceEpochId,
+      );
+      if (
+        !epoch ||
+        !head ||
+        epoch.repositoryId !== mutation.repositoryId ||
+        epoch.workspaceInstanceId !== mutation.workspaceInstanceId ||
+        epoch.objectFormat !== mutation.objectFormat ||
+        head.workspaceVersionId !== mutation.baseWorkspaceVersionId ||
+        head.acceptedEventId !== mutation.baseAcceptedEventId ||
+        head.revision !== mutation.baseHeadRevision ||
+        head.commitOid !== mutation.baseCommitOid ||
+        head.treeOid !== mutation.baseTreeOid ||
+        occupied.has(mutation.workspaceInstanceId)
+      ) {
+        throw new Error(
+          `Corrupt managed mutation reservation: workspace_conflict at ${dispatchEvent.id}`,
+        );
+      }
+      occupied.add(mutation.workspaceInstanceId);
+      reservations.push({
+        workspace_instance_id: mutation.workspaceInstanceId,
+        repository_id: mutation.repositoryId,
+        workspace_id: mutation.workspaceId,
+        workspace_epoch_id: mutation.workspaceEpochId,
+        operation_id: operation.operationId,
+        dispatch_event_id: dispatchEvent.id,
+        base_workspace_version_id: mutation.baseWorkspaceVersionId,
+        base_accepted_event_id: mutation.baseAcceptedEventId,
+        base_head_revision: mutation.baseHeadRevision,
+        base_commit_oid: mutation.baseCommitOid,
+        base_tree_oid: mutation.baseTreeOid,
+        expected_paths_json: JSON.stringify(mutation.expectedPaths),
+        execution_profile_digest: mutation.executionProfileDigest,
+        protocol_version: 1,
+        reserved_at: this.runtimeEventCommittedAt(dispatchEvent.id),
+      });
+    }
+    return reservations.sort((left, right) =>
+      left.workspace_instance_id.localeCompare(right.workspace_instance_id),
+    );
   }
 
   private assertWorkspaceAuthorityStreamIsEmpty(event: RuntimeEvent): void {
@@ -1703,13 +1909,14 @@ export class SqliteRuntimeStore
           tree_oid,
           policy_hash,
           tree_delta_digest,
+          changed_paths_json,
           changed_file_count,
           deleted_file_count,
           accepted_event_id,
           protocol_version,
           committed_at
         ) VALUES (?, ?, ?, ?, ?, 'baseline', ?, '[]', NULL, NULL, NULL, NULL, NULL,
-          ?, ?, ?, ?, ?, ?, ?, 1, ?)
+          ?, ?, ?, ?, ?, ?, ?, ?, 1, ?)
       `)
       .run(
         baseline.workspaceVersionId,
@@ -1722,6 +1929,7 @@ export class SqliteRuntimeStore
         baseline.treeOid,
         baseline.policyHash,
         baseline.treeDeltaDigest,
+        '[]',
         baseline.changedFileCount,
         baseline.deletedFileCount,
         accepted.baselineAcceptedEventId,
@@ -1754,12 +1962,13 @@ export class SqliteRuntimeStore
           tree_oid,
           policy_hash,
           tree_delta_digest,
+          changed_paths_json,
           changed_file_count,
           deleted_file_count,
           accepted_event_id,
           protocol_version,
           committed_at
-        ) VALUES (?, ?, ?, ?, ?, 'tool_mutation', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?)
+        ) VALUES (?, ?, ?, ?, ?, 'tool_mutation', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?)
       `)
       .run(
         successor.workspaceVersionId,
@@ -1778,6 +1987,7 @@ export class SqliteRuntimeStore
         successor.treeOid,
         successor.policyHash,
         successor.treeDeltaDigest,
+        JSON.stringify(successor.changedPaths),
         successor.changedFileCount,
         successor.deletedFileCount,
         accepted.acceptedEventId,
@@ -1811,9 +2021,7 @@ export class SqliteRuntimeStore
       );
   }
 
-  private assertWorkspaceProjectionsMatchSync(
-    authority: ReturnType<typeof scanWorkspaceBaselineAuthority>,
-  ): void {
+  private assertWorkspaceProjectionsMatchSync(authority: CanonicalWorkspaceAuthority): void {
     const expectedEpochs = authority.baselines
       .map(workspaceEpochProjectionRow)
       .sort(compareWorkspaceEpochRow);
@@ -1875,6 +2083,7 @@ export class SqliteRuntimeStore
           tree_oid,
           policy_hash,
           tree_delta_digest,
+          changed_paths_json,
           changed_file_count,
           deleted_file_count,
           accepted_event_id,
@@ -1906,12 +2115,28 @@ export class SqliteRuntimeStore
     )
       .map((row) => ({ ...row }))
       .sort(compareWorkspaceHeadRow);
+    const activeManagedMutations = (
+      this.db
+        .prepare(`
+          SELECT
+            workspace_instance_id, repository_id, workspace_id, workspace_epoch_id,
+            operation_id, dispatch_event_id, base_workspace_version_id,
+            base_accepted_event_id, base_head_revision, base_commit_oid, base_tree_oid,
+            expected_paths_json, execution_profile_digest, protocol_version, reserved_at
+          FROM runtime_managed_mutation_reservations
+          ORDER BY workspace_instance_id ASC
+        `)
+        .all() as unknown as ManagedMutationReservationProjectionRow[]
+    ).map((row) => ({ ...row }));
     if (
       !isDeepStrictEqual(epochs, expectedEpochs) ||
       !isDeepStrictEqual(versions, expectedVersions) ||
       !isDeepStrictEqual(heads, expectedHeads)
     ) {
       throw new Error('Workspace version projection is incomplete or inconsistent');
+    }
+    if (!isDeepStrictEqual(activeManagedMutations, authority.activeManagedMutations)) {
+      throw new Error('Managed mutation reservation projection is incomplete or inconsistent');
     }
   }
 
@@ -1921,7 +2146,8 @@ export class SqliteRuntimeStore
         SELECT
           (SELECT COUNT(*) FROM runtime_workspace_epochs) +
           (SELECT COUNT(*) FROM runtime_workspace_versions) +
-          (SELECT COUNT(*) FROM runtime_workspace_heads) AS count
+          (SELECT COUNT(*) FROM runtime_workspace_heads) +
+          (SELECT COUNT(*) FROM runtime_managed_mutation_reservations) AS count
       `)
       .get() as { count: number };
     return row.count;
@@ -1960,11 +2186,16 @@ export class SqliteRuntimeStore
           canonicalInput.dispatchRuntimeEvent,
           this.readRuntimeEventJson(canonicalInput.dispatchRuntimeEvent.id),
         );
+        if (canonicalInput.dispatchRuntimeEvent.actions?.toolDispatch?.managedMutation) {
+          const authority = this.readCanonicalWorkspaceAuthoritySync();
+          this.assertWorkspaceProjectionsMatchSync(authority);
+        }
         return {
           created: false,
           runtimeEventSeq: this.runtimeEventSeq(canonicalInput.dispatchRuntimeEvent.id),
         };
       }
+      this.assertManagedMutationReservationAvailableSync(canonicalInput);
       this.insertRuntimeEvent(canonicalInput.runtimeEvent, canonicalInput.committedAt, true);
       const runtimeEventSeq = this.insertRuntimeEvent(
         canonicalInput.dispatchRuntimeEvent,
@@ -2011,8 +2242,114 @@ export class SqliteRuntimeStore
           canonicalInput.runtimeEvent.id,
           canonicalInput.dispatchRuntimeEvent.id,
         );
+      this.insertManagedMutationReservationSync(canonicalInput);
       return { created: true, runtimeEventSeq };
     });
+  }
+
+  private assertManagedMutationReservationAvailableSync(input: CommitToolPreparedInput): void {
+    const mutation = input.dispatchRuntimeEvent.actions?.toolDispatch?.managedMutation;
+    if (!mutation) return;
+    if (
+      (input.toolName !== 'Write' && input.toolName !== 'Edit') ||
+      input.recoveryMode !== 'reconcile' ||
+      input.dispatchRuntimeEvent.actions?.toolDispatch?.toolName !== input.toolName
+    ) {
+      throw new Error('Managed mutation reservation requires a reconcile Write operation');
+    }
+    if (!this.#readWorkspaceStorageRootBinding()) {
+      throw new Error('Managed mutation reservation requires a durable storage-root binding');
+    }
+    const authority = this.readCanonicalWorkspaceAuthoritySync();
+    this.assertWorkspaceProjectionsMatchSync(authority);
+    const epoch = authority.baselines.find(
+      (candidate) =>
+        candidate.epoch.workspaceId === mutation.workspaceId &&
+        candidate.epoch.workspaceEpochId === mutation.workspaceEpochId,
+    )?.epoch;
+    const head = authority.heads.find(
+      (candidate) =>
+        candidate.workspaceId === mutation.workspaceId &&
+        candidate.workspaceEpochId === mutation.workspaceEpochId,
+    );
+    if (
+      !epoch ||
+      !head ||
+      epoch.repositoryId !== mutation.repositoryId ||
+      epoch.workspaceInstanceId !== mutation.workspaceInstanceId ||
+      epoch.objectFormat !== mutation.objectFormat ||
+      head.workspaceVersionId !== mutation.baseWorkspaceVersionId ||
+      head.acceptedEventId !== mutation.baseAcceptedEventId ||
+      head.revision !== mutation.baseHeadRevision ||
+      head.commitOid !== mutation.baseCommitOid ||
+      head.treeOid !== mutation.baseTreeOid
+    ) {
+      throw new Error('Managed mutation reservation does not match the canonical workspace head');
+    }
+    const active = this.db
+      .prepare(`
+        SELECT operation_id FROM runtime_managed_mutation_reservations
+        WHERE workspace_instance_id = ?
+      `)
+      .get(mutation.workspaceInstanceId) as { operation_id: string } | undefined;
+    if (active) {
+      throw new Error(
+        `Managed mutation reservation conflict with operation ${active.operation_id}`,
+      );
+    }
+  }
+
+  private insertManagedMutationReservationSync(input: CommitToolPreparedInput): void {
+    const dispatch = input.dispatchRuntimeEvent.actions?.toolDispatch;
+    const mutation = dispatch?.managedMutation;
+    if (!dispatch || !mutation) return;
+    this.insertManagedMutationReservationProjectionSync({
+      workspace_instance_id: mutation.workspaceInstanceId,
+      repository_id: mutation.repositoryId,
+      workspace_id: mutation.workspaceId,
+      workspace_epoch_id: mutation.workspaceEpochId,
+      operation_id: input.operationId,
+      dispatch_event_id: input.dispatchRuntimeEvent.id,
+      base_workspace_version_id: mutation.baseWorkspaceVersionId,
+      base_accepted_event_id: mutation.baseAcceptedEventId,
+      base_head_revision: mutation.baseHeadRevision,
+      base_commit_oid: mutation.baseCommitOid,
+      base_tree_oid: mutation.baseTreeOid,
+      expected_paths_json: JSON.stringify(mutation.expectedPaths),
+      execution_profile_digest: mutation.executionProfileDigest,
+      protocol_version: 1,
+      reserved_at: input.committedAt,
+    });
+  }
+
+  private insertManagedMutationReservationProjectionSync(
+    reservation: ManagedMutationReservationProjectionRow,
+  ): void {
+    this.db
+      .prepare(`
+        INSERT INTO runtime_managed_mutation_reservations (
+          workspace_instance_id, repository_id, workspace_id, workspace_epoch_id,
+          operation_id, dispatch_event_id, base_workspace_version_id,
+          base_accepted_event_id, base_head_revision, base_commit_oid, base_tree_oid,
+          expected_paths_json, execution_profile_digest, protocol_version, reserved_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?)
+      `)
+      .run(
+        reservation.workspace_instance_id,
+        reservation.repository_id,
+        reservation.workspace_id,
+        reservation.workspace_epoch_id,
+        reservation.operation_id,
+        reservation.dispatch_event_id,
+        reservation.base_workspace_version_id,
+        reservation.base_accepted_event_id,
+        reservation.base_head_revision,
+        reservation.base_commit_oid,
+        reservation.base_tree_oid,
+        reservation.expected_paths_json,
+        reservation.execution_profile_digest,
+        reservation.reserved_at,
+      );
   }
 
   async commitToolOutcome(input: CommitToolOutcomeInput): Promise<ToolCommitResult> {
@@ -2330,7 +2667,10 @@ export class SqliteRuntimeStore
     return { operations: projected.length, journalEvents };
   }
 
-  private commitToolOutcomeSync(input: CommitToolOutcomeInput): ToolCommitResult {
+  private commitToolOutcomeSync(
+    input: CommitToolOutcomeInput,
+    settlementOwner: 'generic' | 'workspace_successor' = 'generic',
+  ): ToolCommitResult {
     const operation = this.readToolOperationSync(input.operationId);
     if (!operation) throw new Error(`Unknown tool operation ${input.operationId}`);
     assertOutcomeIdentity(operation, input.runtimeEvent);
@@ -2344,6 +2684,27 @@ export class SqliteRuntimeStore
         this.readRuntimeEventJson(input.runtimeEvent.id),
       );
       return { created: false, runtimeEventSeq: this.runtimeEventSeq(input.runtimeEvent.id) };
+    }
+    if (!operation.dispatchEventId) {
+      throw new Error(`Tool operation ${input.operationId} is missing its dispatch event`);
+    }
+    const dispatchJson = this.readRuntimeEventJson(operation.dispatchEventId);
+    const dispatchEvent = dispatchJson
+      ? decodeRuntimeEvent(JSON.parse(dispatchJson) as unknown)
+      : undefined;
+    if (dispatchEvent?.actions?.toolDispatch?.managedMutation) {
+      const reservation = this.db
+        .prepare(`
+          SELECT operation_id FROM runtime_managed_mutation_reservations
+          WHERE operation_id = ?
+        `)
+        .get(input.operationId) as { operation_id: string } | undefined;
+      if (!reservation) {
+        throw new Error('Managed mutation T1 is missing its durable reservation');
+      }
+      if (settlementOwner !== 'workspace_successor') {
+        throw new Error('Managed mutation outcome requires the workspace successor writer');
+      }
     }
     const runtimeEventSeq = this.insertRuntimeEvent(input.runtimeEvent, input.committedAt, false);
     this.options.failpoint?.('after_runtime_event_insert');
@@ -3592,6 +3953,28 @@ interface RuntimeEventStorageRow {
   payload_json: string;
 }
 
+interface ManagedMutationReservationProjectionRow {
+  workspace_instance_id: string;
+  repository_id: string;
+  workspace_id: string;
+  workspace_epoch_id: string;
+  operation_id: string;
+  dispatch_event_id: string;
+  base_workspace_version_id: string;
+  base_accepted_event_id: string;
+  base_head_revision: number;
+  base_commit_oid: string;
+  base_tree_oid: string;
+  expected_paths_json: string;
+  execution_profile_digest: string;
+  protocol_version: number;
+  reserved_at: number;
+}
+
+type CanonicalWorkspaceAuthority = ReturnType<typeof scanWorkspaceBaselineAuthority> & {
+  activeManagedMutations: ManagedMutationReservationProjectionRow[];
+};
+
 function assertWorkspaceVersionAuthorityCapability(db: DatabaseSync): void {
   const row = db
     .prepare('SELECT version FROM runtime_capabilities WHERE capability = ?')
@@ -3643,6 +4026,7 @@ interface WorkspaceVersionProjectionRow {
   tree_oid: string;
   policy_hash: string;
   tree_delta_digest: string;
+  changed_paths_json: string;
   changed_file_count: number;
   deleted_file_count: number;
   accepted_event_id: string;
@@ -3686,6 +4070,65 @@ function workspaceSuccessorVersionRecord(authority: ScannedWorkspaceSuccessorAut
     acceptedEventId: authority.acceptedEventId,
     committedAt: authority.acceptedAt,
   };
+}
+
+function workspaceHeadBeforeSuccessor(
+  authority: ReturnType<typeof scanWorkspaceBaselineAuthority>,
+  successor: WorkspaceVersionAcceptedV1,
+): WorkspaceHeadRecordV1 | undefined {
+  const parentId = successor.parents[0];
+  const baseline = authority.baselines.find(
+    (candidate) => candidate.baseline.workspaceVersionId === parentId,
+  );
+  if (baseline) {
+    return {
+      repositoryId: baseline.baseline.repositoryId,
+      workspaceId: baseline.baseline.workspaceId,
+      workspaceEpochId: baseline.baseline.workspaceEpochId,
+      workspaceVersionId: baseline.baseline.workspaceVersionId,
+      acceptedEventId: baseline.baselineAcceptedEventId,
+      commitOid: baseline.baseline.commitOid,
+      treeOid: baseline.baseline.treeOid,
+      revision: successor.baseHeadRevision,
+    };
+  }
+  const prior = authority.successors.find(
+    (candidate) => candidate.successor.workspaceVersionId === parentId,
+  );
+  if (!prior) return undefined;
+  return {
+    repositoryId: prior.successor.repositoryId,
+    workspaceId: prior.successor.workspaceId,
+    workspaceEpochId: prior.successor.workspaceEpochId,
+    workspaceVersionId: prior.successor.workspaceVersionId,
+    acceptedEventId: prior.acceptedEventId,
+    commitOid: prior.successor.commitOid,
+    treeOid: prior.successor.treeOid,
+    revision: successor.baseHeadRevision,
+  };
+}
+
+function managedMutationMatchesAcceptedSuccessor(
+  mutation: RuntimeEventManagedWorkspaceMutationV1 | undefined,
+  successor: WorkspaceVersionAcceptedV1,
+  baseHead: WorkspaceHeadRecordV1,
+  workspaceInstanceId: string,
+): boolean {
+  return (
+    mutation?.protocol === 'managed_mutation_v1' &&
+    mutation.repositoryId === successor.repositoryId &&
+    mutation.workspaceId === successor.workspaceId &&
+    mutation.workspaceEpochId === successor.workspaceEpochId &&
+    mutation.workspaceInstanceId === workspaceInstanceId &&
+    mutation.objectFormat === successor.objectFormat &&
+    mutation.baseWorkspaceVersionId === successor.parents[0] &&
+    mutation.baseAcceptedEventId === successor.baseAcceptedEventId &&
+    mutation.baseHeadRevision === successor.baseHeadRevision &&
+    mutation.baseCommitOid === baseHead.commitOid &&
+    mutation.baseTreeOid === baseHead.treeOid &&
+    mutation.executionProfileDigest === successor.executionProfileDigest &&
+    isDeepStrictEqual(mutation.expectedPaths, successor.changedPaths)
+  );
 }
 
 function workspaceEpochProjectionRow(
@@ -3737,6 +4180,7 @@ function workspaceBaselineVersionProjectionRow(
     tree_oid: record.treeOid,
     policy_hash: record.policyHash,
     tree_delta_digest: record.treeDeltaDigest,
+    changed_paths_json: '[]',
     changed_file_count: record.changedFileCount,
     deleted_file_count: record.deletedFileCount,
     accepted_event_id: record.acceptedEventId,
@@ -3767,6 +4211,7 @@ function workspaceSuccessorVersionProjectionRow(
     tree_oid: record.treeOid,
     policy_hash: record.policyHash,
     tree_delta_digest: record.treeDeltaDigest,
+    changed_paths_json: JSON.stringify(record.changedPaths),
     changed_file_count: record.changedFileCount,
     deleted_file_count: record.deletedFileCount,
     accepted_event_id: record.acceptedEventId,

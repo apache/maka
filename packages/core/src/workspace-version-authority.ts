@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import type { RuntimeEvent } from './runtime-event.js';
+import { isCanonicalManagedMutationPathV1, type RuntimeEvent } from './runtime-event.js';
 
 export const WORKSPACE_EPOCH_OPENED_FACT_KIND = 'maka.workspace.epoch_opened' as const;
 export const WORKSPACE_BASELINE_ACCEPTED_FACT_KIND = 'maka.workspace.baseline_accepted' as const;
@@ -895,27 +895,6 @@ function isCanonicalManagedMutationPathSet(value: unknown): value is readonly st
   if (!Array.isArray(value) || value.length === 0 || value.length > 32) return false;
   if (!value.every(isCanonicalManagedMutationPathV1)) return false;
   return value.every((path, index) => index === 0 || value[index - 1]! < path);
-}
-
-function isCanonicalManagedMutationPathV1(path: unknown): path is string {
-  if (
-    typeof path !== 'string' ||
-    path.length === 0 ||
-    path.length > 4096 ||
-    path.includes('\\') ||
-    path.includes('\0') ||
-    path.includes(':') ||
-    path.startsWith('/') ||
-    path.endsWith('/')
-  ) {
-    return false;
-  }
-  const segments = path.split('/');
-  if (segments.some((segment) => segment === '' || segment === '.' || segment === '..')) {
-    return false;
-  }
-  const firstSegment = segments[0]!.toLowerCase();
-  return firstSegment !== '.git' && firstSegment !== 'node_modules';
 }
 
 function isWorkspaceMutationOrigin(value: unknown): value is WorkspaceMutationOriginV1 {

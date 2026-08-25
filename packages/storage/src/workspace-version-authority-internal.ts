@@ -52,11 +52,31 @@ type WorkspaceHeadReader = (
   workspaceId: string,
   workspaceEpochId: string,
 ) => Promise<WorkspaceHeadRecordV1 | undefined>;
+export interface ManagedMutationReservationRecordV1 {
+  readonly workspaceInstanceId: string;
+  readonly repositoryId: string;
+  readonly workspaceId: string;
+  readonly workspaceEpochId: string;
+  readonly operationId: string;
+  readonly dispatchEventId: string;
+  readonly baseWorkspaceVersionId: string;
+  readonly baseAcceptedEventId: string;
+  readonly baseHeadRevision: number;
+  readonly baseCommitOid: string;
+  readonly baseTreeOid: string;
+  readonly expectedPaths: readonly string[];
+  readonly executionProfileDigest: string;
+  readonly reservedAt: number;
+}
+type ManagedMutationReservationReader = (
+  workspaceInstanceId: string,
+) => Promise<ManagedMutationReservationRecordV1 | undefined>;
 
 interface WorkspaceBaselineAuthorityRegistration {
   readonly writer: WorkspaceBaselineAuthorityWriter;
   readonly successorWriter: WorkspaceSuccessorAuthorityWriter;
   readonly readHead: WorkspaceHeadReader;
+  readonly readActiveManagedMutation: ManagedMutationReservationReader;
   readonly bindStorageRoot: WorkspaceStorageRootBinder;
   boundRootId?: string;
 }
@@ -72,6 +92,7 @@ export function registerWorkspaceBaselineAuthorityWriterInternal(
   successorWriter: WorkspaceSuccessorAuthorityWriter,
   bindStorageRoot: WorkspaceStorageRootBinder,
   readHead: WorkspaceHeadReader,
+  readActiveManagedMutation: ManagedMutationReservationReader,
 ): void {
   if (workspaceBaselineAuthorityWriters.has(store)) {
     throw new Error('Workspace baseline authority writer is already registered');
@@ -80,8 +101,18 @@ export function registerWorkspaceBaselineAuthorityWriterInternal(
     writer,
     successorWriter,
     readHead,
+    readActiveManagedMutation,
     bindStorageRoot,
   });
+}
+
+export function readActiveManagedMutationInternal(
+  store: object,
+  workspaceInstanceId: string,
+): Promise<ManagedMutationReservationRecordV1 | undefined> {
+  const registration = workspaceBaselineAuthorityWriters.get(store);
+  if (!registration) throw new Error('Managed mutation reservation reader is unavailable');
+  return registration.readActiveManagedMutation(workspaceInstanceId);
 }
 
 export function readWorkspaceHeadInternal(
