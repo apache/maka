@@ -20,8 +20,10 @@
 import { strict as assert } from 'node:assert';
 import { describe, it } from 'node:test';
 import {
+  curatedCatalogFallbackModelsForProvider,
   lookupModelMetadata,
   openAiAdapterApiProtocol,
+  resolveModelInputModalities,
   resolveModelVisionSupport,
 } from '../model-metadata.js';
 import type { ModelInfo, ProviderType } from '../llm-connections.js';
@@ -103,5 +105,30 @@ describe('openAiAdapterApiProtocol', () => {
     );
     assert.equal(openAiAdapterApiProtocol('muse-spark-1.2-contributor', 'opencode'), 'openai-chat');
     assert.equal(openAiAdapterApiProtocol('minimax-m3', 'opencode-go'), 'openai-chat');
+  });
+});
+
+describe('deepseek v4 flash vision exp metadata regression', () => {
+  it('resolves the bare model id with vision support', () => {
+    assert.equal(
+      resolveModelVisionSupport('deepseek', undefined, 'deepseek-v4-flash-vision-exp'),
+      true,
+    );
+  });
+
+  it('accepts both text and image input modalities', () => {
+    const input = resolveModelInputModalities(
+      'deepseek',
+      undefined,
+      'deepseek-v4-flash-vision-exp',
+    );
+    assert.ok(input.includes('text'));
+    assert.ok(input.includes('image'));
+  });
+
+  it('keeps the model present in the deepseek fallback catalog', () => {
+    assert.ok(
+      curatedCatalogFallbackModelsForProvider('deepseek')?.includes('deepseek-v4-flash-vision-exp'),
+    );
   });
 });

@@ -438,6 +438,7 @@ const STATIC_MODEL_METADATA: Partial<Record<ProviderType, Record<string, ModelMe
     'deepseek-v4-flash-vision-exp': {
       capabilities: { vision: true, ...REASONING_FUNCTION_CALLING, webSearch: true },
       thinkingOptions: { efforts: ['low', 'high', 'max'], toggle: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
     },
     'deepseek-v4-pro': {
       capabilities: { ...REASONING_FUNCTION_CALLING, webSearch: true },
