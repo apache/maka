@@ -33,6 +33,16 @@ const ZERO_USAGE: LanguageModelV4Usage = {
   outputTokens: { total: 0, text: 0, reasoning: 0 },
 };
 
+const UNAVAILABLE_USAGE: LanguageModelV4Usage = {
+  inputTokens: {
+    total: undefined,
+    noCache: undefined,
+    cacheRead: undefined,
+    cacheWrite: undefined,
+  },
+  outputTokens: { total: undefined, text: undefined, reasoning: undefined },
+};
+
 function newAdapter(): ModelAdapter {
   return new ModelAdapter({
     connection: { providerType: 'openai' } as never,
@@ -59,11 +69,28 @@ describe('settleModelStepOutcome', () => {
       sawFinish: true,
       finishReason: 'content-filter',
       request: {},
+      hasResponseEvidence: false,
+      hasUsableStepUsage: false,
     });
 
     assert.equal(outcome.kind, 'retryable-failure');
     if (outcome.kind !== 'retryable-failure') return;
     assert.equal(outcome.failure, failure);
+  });
+
+  test('preserves the missing terminal finish diagnostic after authoritative step evidence', () => {
+    const outcome = settleModelStepOutcome({
+      aborted: false,
+      sawFinish: false,
+      finishReason: 'stop',
+      request: {},
+      hasResponseEvidence: true,
+      hasUsableStepUsage: true,
+    });
+
+    assert.equal(outcome.kind, 'truncated');
+    if (outcome.kind !== 'truncated') return;
+    assert.equal(outcome.failure.message, 'Provider stream ended without finishing (stop)');
   });
 });
 
@@ -205,6 +232,84 @@ describe('ModelAdapter.startStream onError', () => {
     assert.equal(outcome.kind, 'truncated');
     if (outcome.kind !== 'truncated') return;
     assert.equal(outcome.failure.message, 'Provider stream ended without finishing (other)');
+    assert.equal(outcome.continuation, 'none');
+  });
+
+  test('settles an empty stop without usable usage as truncated', async () => {
+    const outcome = await settle([
+      { type: 'stream-start', warnings: [] },
+      {
+        type: 'finish',
+        finishReason: { unified: 'stop', raw: 'stop' },
+        usage: UNAVAILABLE_USAGE,
+      },
+    ]);
+
+    assert.equal(outcome.kind, 'truncated');
+    if (outcome.kind !== 'truncated') return;
+    assert.deepEqual(outcome.failure, {
+      type: 'model_failure',
+      kind: 'provider_unavailable',
+      message: 'Provider returned an empty stop without output or usable usage',
+      retryable: false,
+    });
+    assert.equal(outcome.continuation, 'none');
+  });
+
+  test('keeps an empty stop with authoritative zero usage completed', async () => {
+    const outcome = await settle([
+      { type: 'stream-start', warnings: [] },
+      {
+        type: 'finish',
+        finishReason: { unified: 'stop', raw: 'stop' },
+        usage: ZERO_USAGE,
+      },
+    ]);
+
+    assert.equal(outcome.kind, 'completed');
+    if (outcome.kind !== 'completed') return;
+    assert.equal(outcome.finishReason, 'stop');
+    assert.equal(outcome.usage?.totalTokens, 0);
+  });
+
+  test('keeps nonempty text completed when provider usage is unavailable', async () => {
+    const outcome = await settle([
+      { type: 'stream-start', warnings: [] },
+      { type: 'text-start', id: 'text-1' },
+      { type: 'text-delta', id: 'text-1', delta: 'Done.' },
+      { type: 'text-end', id: 'text-1' },
+      {
+        type: 'finish',
+        finishReason: { unified: 'stop', raw: 'stop' },
+        usage: UNAVAILABLE_USAGE,
+      },
+    ]);
+
+    assert.equal(outcome.kind, 'completed');
+    if (outcome.kind !== 'completed') return;
+    assert.equal(outcome.finishReason, 'stop');
+    assert.equal(outcome.usage, undefined);
+  });
+
+  test('settles an explicit provider network_error finish as retryable', async () => {
+    const outcome = await settle([
+      { type: 'stream-start', warnings: [] },
+      {
+        type: 'finish',
+        finishReason: { unified: 'other', raw: 'network_error' },
+        usage: UNAVAILABLE_USAGE,
+      },
+    ]);
+
+    assert.equal(outcome.kind, 'retryable-failure');
+    if (outcome.kind !== 'retryable-failure') return;
+    assert.deepEqual(outcome.failure, {
+      type: 'model_failure',
+      kind: 'network',
+      code: 'network_error',
+      message: 'Network error',
+      retryable: true,
+    });
     assert.equal(outcome.continuation, 'none');
   });
 

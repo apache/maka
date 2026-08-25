@@ -336,13 +336,19 @@ export class ModelAdapter {
       async *[Symbol.asyncIterator]() {
         let failure: ModelFailure | undefined;
         let sawFinish = false;
+        let hasResponseEvidence = false;
+        let latestStepFinishHadUsableUsage: boolean | undefined;
         let streamedFinishReason: string | undefined;
         try {
           for await (const chunk of sdk.stream as AsyncIterable<AiSdkStreamChunk>) {
             onStreamActivity();
             for (const event of translateChunk(chunk, openAiChatReasoningTransportState)) {
+              if (isModelResponseEvidence(event)) hasResponseEvidence = true;
               if (event.kind === 'error') failure = event.failure;
               if (event.kind === 'finish') sawFinish = true;
+              if (event.kind === 'step-finish') {
+                latestStepFinishHadUsableUsage = event.usage !== undefined;
+              }
               if (event.kind === 'finish' || event.kind === 'step-finish') {
                 streamedFinishReason = event.finishReason ?? streamedFinishReason;
               }
@@ -367,6 +373,8 @@ export class ModelAdapter {
             finishReason,
             usage,
             request,
+            hasResponseEvidence,
+            hasUsableStepUsage: latestStepFinishHadUsableUsage ?? usage !== undefined,
           });
 
           try {
@@ -475,10 +483,62 @@ interface ModelStepSettlementEvidence {
   finishReason: ModelFinishReason;
   usage?: NormalizedUsage;
   request: ModelRequestMetadata;
+  hasResponseEvidence: boolean;
+  hasUsableStepUsage: boolean;
+}
+
+/** @internal Shared response-evidence contract for settlement and retry safety. */
+export function isModelResponseEvidence(event: ModelStreamEvent): boolean {
+  switch (event.kind) {
+    case 'text':
+      return event.text.length > 0;
+    case 'text-metadata':
+    case 'thinking-signature':
+    case 'provider-tool-input':
+    case 'tool-call':
+    case 'provider-tool-result':
+      return true;
+    case 'thinking':
+      return (
+        event.text.length > 0 ||
+        (event.providerOptions !== undefined && event.providerOptionsOrigin !== 'maka_transport')
+      );
+    default:
+      return false;
+  }
+}
+
+/** @internal Classify a live finish boundary before step side effects are committed. */
+export function classifyModelFinishBoundary(input: {
+  finishReason: ModelFinishReason | undefined;
+  hasResponseEvidence: boolean;
+  hasUsableStepUsage: boolean;
+}): 'authoritative' | 'incomplete' | 'retryable-network-failure' {
+  if (input.finishReason === 'network_error') return 'retryable-network-failure';
+  if (
+    input.finishReason === undefined ||
+    input.finishReason === 'other' ||
+    input.finishReason === 'unknown'
+  ) {
+    return 'incomplete';
+  }
+  if (input.finishReason === 'stop' && !input.hasResponseEvidence && !input.hasUsableStepUsage) {
+    return 'incomplete';
+  }
+  return 'authoritative';
 }
 
 export function settleModelStepOutcome(evidence: ModelStepSettlementEvidence): ModelStepOutcome {
-  const { aborted, failure, sawFinish, finishReason, usage, request } = evidence;
+  const {
+    aborted,
+    failure,
+    sawFinish,
+    finishReason,
+    usage,
+    request,
+    hasResponseEvidence,
+    hasUsableStepUsage,
+  } = evidence;
   if (aborted || failure?.kind === 'abort') {
     return failedStepOutcome(
       'aborted',
@@ -495,12 +555,33 @@ export function settleModelStepOutcome(evidence: ModelStepSettlementEvidence): M
       usage,
     );
   }
-  if (!sawFinish || finishReason === 'other' || finishReason === 'unknown') {
+  const finishDisposition = classifyModelFinishBoundary({
+    finishReason,
+    hasResponseEvidence,
+    hasUsableStepUsage,
+  });
+  if (finishDisposition === 'retryable-network-failure') {
+    return failedStepOutcome(
+      'retryable-failure',
+      {
+        type: 'model_failure',
+        kind: 'network',
+        code: 'network_error',
+        message: 'Network error',
+        retryable: true,
+      },
+      request,
+      usage,
+    );
+  }
+  if (!sawFinish || finishDisposition === 'incomplete') {
     return failedStepOutcome(
       'truncated',
       modelStepFailure(
         'provider_unavailable',
-        `Provider stream ended without finishing (${finishReason})`,
+        sawFinish && finishReason === 'stop'
+          ? 'Provider returned an empty stop without output or usable usage'
+          : `Provider stream ended without finishing (${finishReason})`,
       ),
       request,
       usage,
