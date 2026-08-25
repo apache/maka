@@ -24,6 +24,7 @@ export const PROVIDER_FAILURE_CLASSES = [
   'Network',
   'Other',
   'ProviderBilling',
+  'ProviderCapacity',
   'ProviderPermission',
   'ProviderUnavailable',
   'RateLimit',

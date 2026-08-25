@@ -58,13 +58,10 @@ const PROVIDER_UNAVAILABLE_CODES: ReadonlySet<string> = new Set([
   'provider_overloaded',
   'provider_unavailable',
 ]);
-
-/**
- * xAI emits this code for transient model capacity failures, including when
- * the same payload is relayed through an OpenAI-compatible gateway. Do not
- * add the generic gRPC/Google `resource_exhausted` spelling here: that code
- * represents quota exhaustion and needs different user guidance.
- */
+// xAI emits this code for transient model capacity failures, including when
+// the same payload is relayed through an OpenAI-compatible gateway. Do not
+// add the generic gRPC/Google `resource_exhausted` spelling here: that code
+// represents quota exhaustion and needs different user guidance.
 const PROVIDER_CAPACITY_CODES: ReadonlySet<string> = new Set(['resource-exhausted']);
 
 /**
@@ -98,7 +95,6 @@ export function taxonomySafeProviderCode(code: string | undefined): string | und
   }
   return undefined;
 }
->>>>>>> dfd600cf7 (fix(runtime): tighten provider failure provenance and taxonomy inputs)
 
 /**
  * A provider failure normalized into classification evidence. classifyError's
@@ -208,13 +204,45 @@ export function providerRetryMetadata(error: unknown): ProviderRetryMetadata {
   return providerRetryMetadataFromFacts(facts);
 }
 
+/**
+ * The classification that retry and failure projections must agree on: a
+ * weak text-derived `Auth` class is demoted when the envelope's own numeric
+ * status contradicts it (an "authentication" wording behind a 500 is a
+ * provider-unavailable event, not an account state), so the Runtime retry
+ * owner never skips a transient 5xx because of the original wording.
+ */
+function normalizedClassifiedClass(facts: ProviderErrorFacts): string {
+  const classified = classifyProviderFacts(facts);
+  if (
+    classified === 'Auth' &&
+    !facts.evidence.structuredCodes.some((value) => PROVIDER_AUTH_CODES.has(value))
+  ) {
+    const rawStatus =
+      facts.evidence.statusCode ||
+      firstProviderField(facts.summarySources, ['statusCode', 'status']);
+    const numericStatus = Number(rawStatus);
+    const httpStatus =
+      Number.isInteger(numericStatus) && numericStatus >= 100 && numericStatus <= 599
+        ? numericStatus
+        : undefined;
+    if (httpStatus !== undefined && httpStatus !== 401) return 'Other';
+  }
+  return classified;
+}
+
 function providerRetryMetadataFromFacts(facts: ProviderErrorFacts): ProviderRetryMetadata {
   const { evidence } = facts;
 
   if (RUNTIME_RETRYABLE_ERROR_CODES.has(evidence.code)) return { retryable: true };
 
-  const status = Number(evidence.statusCode || evidence.code);
-  const errorClass = classifyProviderFacts(facts);
+  // Same numeric-status resolution as the failure projection, so a nested
+  // envelope status participates in the retry decision identically.
+  const rawStatus =
+    evidence.statusCode ||
+    evidence.code ||
+    firstProviderField(facts.summarySources, ['statusCode', 'status']);
+  const status = Number(rawStatus);
+  const errorClass = normalizedClassifiedClass(facts);
   // Account state cannot be repaired by immediately repeating the same
   // physical request, even when a provider reports it through HTTP 429. An
   // Abort is by definition not repairable by repeating the request either —
@@ -359,15 +387,25 @@ function normalizeProviderError(error: unknown): ProviderErrorFacts | undefined 
     } catch {
       text = String(target).toLowerCase();
     }
+    // Classification evidence must see the same nested envelope the failure
+    // projection reads: a JSON-shaped error carries its code/status inside
+    // `data.error`, not on the target itself. Without this merge, structured
+    // account-state and capacity codes hide behind a transport status and the
+    // weak word heuristics misread them (#2521).
+    const sources = providerFailureSources(target);
+    const nestedStatusCode = firstProviderField(sources, ['statusCode', 'status']);
+    const nestedCode = firstProviderField(sources, ['code']);
+    const nestedStructuredCodes: string[] = [];
+    for (const record of sources.records) collectStructuredCodes(record, nestedStructuredCodes);
     return {
       target,
       evidence: {
         text,
-        statusCode: field('statusCode') || field('status'),
-        code: field('code'),
-        structuredCodes,
+        statusCode: field('statusCode') || field('status') || nestedStatusCode,
+        code: field('code') || nestedCode,
+        structuredCodes: [...new Set([...structuredCodes, ...nestedStructuredCodes])],
       },
-      summarySources: providerFailureSources(target),
+      summarySources: sources,
       ...(responseHeaders ? { responseHeaders } : {}),
     };
   }
@@ -457,16 +495,8 @@ export function providerFailureResult(error: unknown): ProviderFailureResult {
     Number.isInteger(numericStatus) && numericStatus >= 100 && numericStatus <= 599
       ? numericStatus
       : undefined;
-  const classified = classifyProviderFacts(facts);
-  const errorClass = normalizedProviderFailureClass(
-    classified === 'Auth' &&
-      httpStatus !== undefined &&
-      httpStatus !== 401 &&
-      !facts.evidence.structuredCodes.some((value) => PROVIDER_AUTH_CODES.has(value))
-      ? 'Other'
-      : classified,
-    httpStatus,
-  );
+  const classified = normalizedClassifiedClass(facts);
+  const errorClass = normalizedProviderFailureClass(classified, httpStatus);
   // When a provider message is projected, its code must come from the same
   // chain link — never an outer link's code paired with an inner link's
   // message (#2521).
@@ -514,12 +544,10 @@ function normalizedProviderFailureClass(
   classified: string,
   httpStatus: number | undefined,
 ): ProviderFailureResult['errorClass'] {
-  // The semantic class already includes structured provider identifiers
-  // (capacity and context-overflow included) and therefore outranks the
-  // transport status used only as a fallback — structured capacity evidence
-  // can legitimately arrive behind a generic 4xx/5xx proxy response.
+  // The semantic class already includes structured provider identifiers and
+  // therefore outranks the transport status used only as a fallback.
   if (isProviderFailureClass(classified) && classified !== 'Other') return classified;
-  if (httpStatus === 401 || httpStatus === 403) return 'Auth';
+  if (httpStatus === 401) return 'Auth';
   if (httpStatus === 402) return 'ProviderBilling';
   if (httpStatus === 408) return 'Timeout';
   if (httpStatus === 413) return 'ContextLength';
@@ -816,18 +844,6 @@ export function isContextOverflowErrorText(text: string): boolean {
 /**
  * Classifies a provider error by DESCENDING evidence strength over the
  * normalized evidence (Error, string, or plain stream-error-part object):
-<<<<<<< HEAD
- * abort wrapper → structured account state (capacity, overflow, auth,
- * billing, permission, usage/rate limits) → numeric HTTP fallbacks (402, 429,
- * 401; numeric fields, never substrings) → bare 413
- * (HTTP: request entity too large — itself input-side evidence, Cerebras sends
- * it with no body) → vetoable free-text relations → generic 5xx → weak word
- * heuristics. Exact provider evidence outranks generic HTTP/text evidence
- * because gateways can wrap a provider failure in a misleading status or
- * message; specific overflow evidence outranks a generic 5xx because proxies
- * (LiteLLM) wrap provider overflows in 503s; the weak heuristics rank last so
- * "generate" can never become a rate limit.
-=======
  * abort wrapper → structured account state → the provider's structured
  * overflow code → numeric status fallbacks (402, 429, 401; numeric fields,
  * never substrings) → bare 413
@@ -838,7 +854,6 @@ export function isContextOverflowErrorText(text: string): boolean {
  * rank last so "generate" can never become a rate limit. Numeric status
  * outranks free text because the text spans the whole chain, JSON key names
  * included.
->>>>>>> dfd600cf7 (fix(runtime): tighten provider failure provenance and taxonomy inputs)
  */
 export function classifyError(error: unknown): string {
   if (RetryError.isInstance(error) && error.reason === 'abort') return 'Abort';
@@ -851,20 +866,14 @@ function classifyProviderFacts(facts: ProviderErrorFacts): string {
   const { text, statusCode, code, structuredCodes } = evidence;
   const normalizedCode = code.toLowerCase();
   if (code === OPENAI_RESPONSES_WEBSOCKET_TRANSPORT_ERROR) return 'Network';
+  // Structured capacity evidence outranks account-state codes: a gateway can
+  // surface capacity as a quota-shaped error, and the retry guidance differs.
   if (
     PROVIDER_CAPACITY_CODES.has(normalizedCode) ||
     structuredCodes.some((c) => PROVIDER_CAPACITY_CODES.has(c))
   ) {
     return 'ProviderCapacity';
   }
-  // Structured provider evidence: the parsed error JSON's code/type is the
-  // only unconditional signal for a context overflow.
-  if (structuredCodes.some((c) => CONTEXT_OVERFLOW_PROVIDER_CODES.has(c))) return 'ContextLength';
-  if (text.includes('abort')) return 'Abort';
-  if (statusCode === '402' || code === '402') return 'ProviderBilling';
-  if (statusCode === '429' || code === '429') return 'RateLimit';
-  if (statusCode === '401' || statusCode === '403' || code === '401' || code === '403')
-    return 'Auth';
   if (structuredCodes.some((value) => PROVIDER_AUTH_CODES.has(value))) return 'Auth';
   if (structuredCodes.some((value) => PROVIDER_BILLING_CODES.has(value))) return 'ProviderBilling';
   if (structuredCodes.some((value) => PROVIDER_PERMISSION_CODES.has(value)))
@@ -921,8 +930,6 @@ export function errorPresentationFromClass(errorClass: string): {
       return { reason: 'auth', message: 'Authentication failed' };
     case 'ProviderBilling':
       return { reason: 'provider_billing', message: 'Provider billing required' };
-    case 'ProviderCapacity':
-      return { reason: 'provider_capacity', message: 'Model service is temporarily at capacity' };
     case 'ProviderPermission':
       return { reason: 'provider_permission', message: 'Provider access denied' };
     case 'ProviderUnavailable':

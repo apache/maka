@@ -298,6 +298,38 @@ describe('Maka Pi TUI transcript', () => {
     assert.doesNotMatch(chinese, /Context window exceeded/);
   });
 
+  test('renders the capacity guidance when an empty-text notice carries provider_capacity', () => {
+    for (const uiLocale of ['en', 'zh'] as const) {
+      const state = createMakaPiTranscriptState();
+
+      applyMakaSessionEventToTranscript(
+        state,
+        event({
+          type: 'error',
+          recoverable: false,
+          reason: 'provider_capacity',
+          message: '',
+        }),
+      );
+
+      assert.deepEqual(state.entries.at(-1), {
+        kind: 'notice',
+        level: 'error',
+        text: '',
+        runtimeError: { reason: 'provider_capacity' },
+      });
+      const rendered = renderMakaPiTranscript(state, { ...meta(), uiLocale }, 100)
+        .map(stripAnsi)
+        .join('\n');
+      if (uiLocale === 'zh') {
+        assert.match(rendered, /模型服务暂时满载/);
+      } else {
+        assert.match(rendered, /temporarily at capacity/);
+      }
+      assert.doesNotMatch(rendered, /Try again later\./);
+    }
+  });
+
   test('renders a marked provider summary without inventing a code requirement', () => {
     const state = createMakaPiTranscriptState();
 

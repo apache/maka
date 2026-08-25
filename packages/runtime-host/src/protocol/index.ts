@@ -91,8 +91,8 @@ export const RUNTIME_HOST_REGISTRATION_SCHEMA_VERSION = 1 as const;
 export const RUNTIME_HOST_PROTOCOL_VERSION = 0 as const;
 // Increment when the same protocol version no longer guarantees safe Client-Host
 // interoperability. Mismatches are rejected before domain commands are admitted.
-export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 49 as const;
-// 49: Usage snapshots require explicit revision and durable provider failures may classify as `ProviderPermission`; older peers reject the incompatible shapes so mixed peers must fail the handshake.
+export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 50 as const;
+// 50: Usage snapshots require explicit revision and durable provider failures may classify as `ProviderPermission`; older peers reject the incompatible shapes so mixed peers must fail the handshake.
 // 48: Session branch creation accepts an explicit Side Conversation intent.
 // Older peers reject the strict input shape or cannot apply its snapshot semantics.
 // 47: Project registration can carry an explicit location preference. Epoch-46
@@ -105,8 +105,11 @@ export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 49 as const;
 // last-used timestamp. Older peers reject those strict projection shapes.
 // 43: Session tool-start events correlate hidden shell polls with `shellRunRef`.
 // Older peers reject that added closed-union field.
+<<<<<<< HEAD
 // peers reject that strict error-class value, so mixed versions must fail
 // handshake before the class can surface.
+=======
+>>>>>>> 5f62d300e (fix(runtime,cli): derive retry decisions from the normalized failure class)
 // 42: Turn provider retry progress adds `provider_capacity`. Older peers reject
 // that strict retry-reason enum value, so mixed versions must fail handshake.
 // 41: Context compaction returns a typed terminal outcome on both Turn
