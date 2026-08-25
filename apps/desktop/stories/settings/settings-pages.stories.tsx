@@ -1972,7 +1972,13 @@ export const UsageLongTail: Story = {
         selector: '[data-slot="stat-tile-label"]',
       }),
     ).toBeInTheDocument();
-    expect(await canvas.findByRole('tab', { name: usageCopy.tabs[0] })).toBeInTheDocument();
+    // The tab carries a count badge in its `endContent`, which Astryx folds
+    // into the accessible name (e.g. '活动记录 5'), so match the label as a
+    // prefix rather than the whole name — same reason accessibility-coverage
+    // queries workbar tabs with a RegExp.
+    expect(
+      await canvas.findByRole('tab', { name: new RegExp(`^${usageCopy.tabs[0]}`) }),
+    ).toBeInTheDocument();
     await waitForStoryCondition(
       () => canvas.queryByRole('table', { name: usageCopy.tables.requestsAria }) !== null
         || canvas.queryByRole('button', { name: usageCopy.showDetails }) !== null,
