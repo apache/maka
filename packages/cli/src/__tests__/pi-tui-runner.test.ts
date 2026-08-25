@@ -2666,6 +2666,31 @@ describe('Maka Pi TUI runner', () => {
     await run;
   });
 
+  test('removes a one-shot Swarm transient when turn admission fails', async () => {
+    const terminal = new FakeTerminal();
+    const driver = new FailingOrchestrationDriver();
+    const run = runMakaPiTui({
+      title: 'Maka',
+      driver,
+      cwd: '/repo',
+      model: 'deepseek-v4-flash',
+      connectionSlug: 'deepseek',
+      permissionMode: 'ask',
+      terminal,
+    });
+
+    terminal.input('/swarm inspect the projection');
+    terminal.input('\r');
+    await waitFor(() => plainTerminalOutput(terminal.screenOutput()).includes('admission failed'));
+    assert.equal(
+      plainTerminalOutput(terminal.screenOutput()).includes('inspect the projection'),
+      false,
+    );
+
+    exitMaka(terminal);
+    await run;
+  });
+
   test('inspects a historical Agent Graph run without starting a turn', async () => {
     const terminal = new FakeTerminal();
     const driver = new SlashCommandDriver();
@@ -7054,6 +7079,12 @@ class SteeringTurnDriver implements MakaSessionDriver {
   startNewSession(): void {}
   getSessionId(): string {
     return 'session-1';
+  }
+}
+
+class FailingOrchestrationDriver extends SteeringTurnDriver {
+  override preparePrompt(): Promise<MakaPreparedSessionTurn> {
+    return Promise.reject(new Error('admission failed'));
   }
 }
 

@@ -630,6 +630,30 @@ describe('Maka Pi TUI transcript', () => {
     assert.deepEqual(state.entries, [{ kind: 'user', messageId: 'message-1', text: 'send now' }]);
   });
 
+  test('keeps a projected in-flight steering echo transient until durable reconciliation', () => {
+    const state = createMakaPiTranscriptState();
+    appendUserPrompt(state, 'send now', 'message-1', true);
+
+    applyMakaSessionEventToTranscript(
+      state,
+      event({
+        type: 'steering_message',
+        messageId: 'message-1',
+        content: { text: 'send now' },
+      }),
+    );
+    applyMakaSessionEventToTranscript(
+      state,
+      event({
+        type: 'message_admission',
+        messageId: 'message-1',
+        outcome: 'retracted',
+      }),
+    );
+
+    assert.deepEqual(state.entries, []);
+  });
+
   test('removes only the transient row named by a retracted admission', () => {
     const state = createMakaPiTranscriptState();
     appendUserPrompt(state, 'keep this', 'message-kept', true);
@@ -649,7 +673,7 @@ describe('Maka Pi TUI transcript', () => {
     ]);
   });
 
-  test('reconciles a live steering event into its transient message position', () => {
+  test('updates a projected steering echo in its transient message position', () => {
     const state = createMakaPiTranscriptState();
     appendUserPrompt(state, 'send now', 'message-1', true);
     state.entries.push({ kind: 'notice', level: 'error', text: 'later row' });
@@ -664,7 +688,7 @@ describe('Maka Pi TUI transcript', () => {
     );
 
     assert.deepEqual(state.entries, [
-      { kind: 'user', messageId: 'message-1', text: 'canonical text' },
+      { kind: 'user', messageId: 'message-1', text: 'canonical text', transient: true },
       { kind: 'notice', level: 'error', text: 'later row' },
     ]);
   });
