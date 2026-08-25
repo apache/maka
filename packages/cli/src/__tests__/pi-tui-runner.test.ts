@@ -1941,6 +1941,61 @@ describe('Maka Pi TUI runner', () => {
     await run;
   });
 
+  test('a driver without the optional queue methods holds mid-turn input instead of dropping it', async () => {
+    const terminal = new FakeTerminal();
+    // `steer`/`queueMessage` are optional on `MakaSessionDriver`: a custom
+    // driver may omit them entirely, so mid-turn input must land in the
+    // durable handoff rather than vanish.
+    const driver = new NoQueueMethodsDriver();
+    const run = runMakaPiTui({
+      title: 'Maka',
+      driver,
+      cwd: '/repo',
+      model: 'm',
+      connectionSlug: 'c',
+      permissionMode: 'bypass',
+      terminal,
+    });
+
+    terminal.input('start');
+    terminal.input('\r');
+    await waitFor(() => terminal.progressStates.at(-1) === true);
+
+    // Enter and Alt+Enter with no driver methods to call: both are held and
+    // shown in the pending bar, not silently dropped.
+    terminal.input('held by enter');
+    terminal.input('\r');
+    terminal.input('held by alt-enter');
+    terminal.input('\x1b\r');
+    await waitFor(() => {
+      const screen = plainTerminalOutput(terminal.screenOutput());
+      return (
+        screen.includes('Steering: held by enter') && screen.includes('Queued: held by alt-enter')
+      );
+    });
+    // The first prepare is still parked on release(), so nothing has been
+    // recorded yet; the held texts are visible only in the pending bar.
+    assert.deepEqual(driver.prompts, []);
+
+    // The first turn completes; the boundary cannot deliver through missing
+    // methods, so both held texts come back as one editable draft.
+    driver.release();
+    await waitFor(() => {
+      const screen = plainTerminalOutput(terminal.screenOutput());
+      return (
+        terminal.progressStates.at(-1) === false &&
+        screen.includes('held by enter') &&
+        screen.includes('held by alt-enter') &&
+        !screen.includes('Steering: held by enter')
+      );
+    });
+
+    terminal.input('\x03');
+    terminal.input('/exit');
+    terminal.input('\r');
+    await run;
+  });
+
   test('opens /transcript during a running turn instead of steering it', async () => {
     const terminal = new FakeTerminal();
     const driver = new SteeringTurnDriver();
@@ -6620,6 +6675,82 @@ class AdmissionWindowDriver implements MakaSessionDriver {
   startNewSession(): void {}
   getSessionId(): string | null {
     return this.admitted ? 'session-1' : null;
+  }
+}
+
+/**
+ * A custom driver exercising the optional shape of `MakaSessionDriver`: no
+ * `steer`, `queueMessage`, or `retractQueued` methods at all. The first turn's
+ * prepare parks until `release()`, so mid-turn input happens while a Turn is
+ * running and the runner must hold it in the durable handoff instead of
+ * dropping it; the boundary returns undeliverable entries to the editor.
+ */
+class NoQueueMethodsDriver implements MakaSessionDriver {
+  stopCalls = 0;
+  readonly prompts: string[] = [];
+  private releaseAdmission: (() => void) | null = null;
+  private readonly admission: Promise<void> = new Promise((resolve) => {
+    this.releaseAdmission = resolve;
+  });
+
+  async listSessions(): Promise<SessionSummary[]> {
+    return [];
+  }
+
+  async preparePrompt(
+    prompt: string,
+    options: MakaPreparePromptOptions = {},
+  ): Promise<MakaPreparedSessionTurn> {
+    // The first turn parks until release(), keeping it running for the
+    // mid-turn submissions under test.
+    if (this.prompts.length === 0) await this.admission;
+    this.prompts.push(options.modelText ?? prompt);
+    return {
+      sessionId: this.getSessionId() ?? 'session-1',
+      turnId: options.turnId ?? `turn-${this.prompts.length}`,
+      events: this.promptEvents(),
+    };
+  }
+
+  async *promptEvents(): AsyncIterable<SessionEvent> {
+    yield {
+      type: 'complete',
+      id: 'complete-1',
+      turnId: `turn-${this.prompts.length}`,
+      ts: 1,
+      stopReason: 'end_turn',
+    };
+  }
+
+  async *compactSession(): AsyncIterable<never> {}
+
+  /** Let the parked first turn proceed. */
+  release(): void {
+    this.releaseAdmission?.();
+    this.releaseAdmission = null;
+  }
+
+  async stop(): Promise<void> {
+    this.stopCalls += 1;
+  }
+
+  async respondToSandboxBoundary(_response: SandboxBoundaryResponse): Promise<void> {}
+  async renameSession(): Promise<void> {}
+  async setModel(): Promise<void> {}
+  async setPermissionMode(): Promise<void> {}
+  async setThinkingLevel(): Promise<void> {}
+  async switchSession(sessionId: string): Promise<MakaSessionSwitchResult> {
+    return switchResult(fakeSessionSummary(sessionId));
+  }
+  async listRewindTargets(): Promise<RewindTarget[]> {
+    return [];
+  }
+  async rewindToTurn(): Promise<MakaSessionRewindResult> {
+    throw new Error('rewind not supported in this fake');
+  }
+  startNewSession(): void {}
+  getSessionId(): string | null {
+    return 'session-1';
   }
 }
 

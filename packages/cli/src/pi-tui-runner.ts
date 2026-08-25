@@ -922,7 +922,14 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     }
     editor.addToHistory(text);
     const enqueue = input.driver.steer;
-    if (!enqueue) return;
+    if (!enqueue) {
+      // Optional on the public driver type: a custom driver without it must
+      // not lose the submitted text (review finding on silent drops). The
+      // durable admission handoff renders it in the pending bar and the turn
+      // boundary returns undeliverable entries to the editor.
+      holdForAdmission(text, 'steer');
+      return;
+    }
     const task = enqueue
       .call(input.driver, text)
       .then((outcome) => {
@@ -960,7 +967,11 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     }
     editor.addToHistory(text);
     const enqueue = input.driver.queueMessage;
-    if (!enqueue) return;
+    if (!enqueue) {
+      // Same optional-method handoff as Enter above: hold instead of drop.
+      holdForAdmission(text, 'queue');
+      return;
+    }
     const task = enqueue
       .call(input.driver, text)
       .then((outcome) => {
