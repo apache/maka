@@ -26,7 +26,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use windows_sys::Win32::Foundation::{
-    CloseHandle, GENERIC_READ, GENERIC_WRITE, HANDLE, INVALID_HANDLE_VALUE,
+    CloseHandle, FILETIME, GENERIC_READ, GENERIC_WRITE, HANDLE, INVALID_HANDLE_VALUE,
 };
 use windows_sys::Win32::Storage::FileSystem::{
     CreateFileW, OPEN_EXISTING, ReadFile, SYNCHRONIZE, WriteFile,
@@ -35,7 +35,8 @@ use windows_sys::Win32::System::Diagnostics::ToolHelp::{
     CreateToolhelp32Snapshot, PROCESSENTRY32W, Process32FirstW, Process32NextW, TH32CS_SNAPPROCESS,
 };
 use windows_sys::Win32::System::Threading::{
-    GetCurrentProcessId, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
+    GetCurrentProcess, GetCurrentProcessId, GetProcessId, GetProcessTimes, OpenProcess,
+    PROCESS_QUERY_LIMITED_INFORMATION,
 };
 
 use crate::broker_authorization::BrokerAuthorizer;
@@ -53,24 +54,13 @@ pub fn run_local(manifest_path: &str) -> Result<u8, String> {
         .map_err(|error| format!("invalid local broker manifest: {error}"))?;
     // The packaged broker is a direct child of Runtime Host. Bind the
     // manifest to that kernel-observed parent and keep a wait handle open for
-    // the whole launch. If Runtime Host dies, the broker terminates and drains
-    // the AppContainer Job instead of leaving the worker alive until timeout.
+    // the whole launch. The process creation-time check rejects a PID that was
+    // reused after this broker was created. If Runtime Host dies, the broker
+    // terminates and drains the AppContainer Job instead of leaving the worker
+    // alive until timeout.
     let owner_pid = parent_process_id()?;
     request.client_pid = owner_pid;
     request.validate()?;
-    // The packaged path is a same-process one-shot launch. Authorize and hand
-    // off directly instead of routing through a synchronous named-pipe thread;
-    // the standalone pipe modes remain only as transport experiments.
-    let mut authorizer = BrokerAuthorizer::new([request.profile_digest.clone()]);
-    authorizer
-        .authorize(&request, request.client_pid)
-        .map_err(|error| {
-            format!(
-                "broker rejected request ({}): {}",
-                error.code(),
-                error.message()
-            )
-        })?;
     let owner = unsafe {
         OpenProcess(
             SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION,
@@ -81,9 +71,68 @@ pub fn run_local(manifest_path: &str) -> Result<u8, String> {
     if owner.is_null() {
         return Err(last_error("OpenProcess(local broker owner)"));
     }
-    let result = windows_launcher::launch_appcontainer_owned(&request.launch, owner);
+    if let Err(error) = validate_owner_process(owner, owner_pid) {
+        unsafe { CloseHandle(owner) };
+        return Err(error);
+    }
+    // The packaged path is a same-process one-shot launch. Authorize and hand
+    // off directly instead of routing through a synchronous named-pipe thread;
+    // the standalone pipe modes remain only as transport experiments.
+    let result = (|| {
+        let mut authorizer = BrokerAuthorizer::new([request.profile_digest.clone()]);
+        authorizer
+            .authorize(&request, request.client_pid)
+            .map_err(|error| {
+                format!(
+                    "broker rejected request ({}): {}",
+                    error.code(),
+                    error.message()
+                )
+            })?;
+        windows_launcher::launch_appcontainer_owned(&request.launch, owner)
+    })();
     unsafe { CloseHandle(owner) };
     result
+}
+
+fn validate_owner_process(owner: HANDLE, owner_pid: u32) -> Result<(), String> {
+    let opened_pid = unsafe { GetProcessId(owner) };
+    if opened_pid != owner_pid {
+        return Err(format!(
+            "local broker owner identity changed while opening process: expected pid {owner_pid}, got {opened_pid}"
+        ));
+    }
+    let owner_started = process_creation_time(owner, "local broker owner")?;
+    let broker_started = process_creation_time(unsafe { GetCurrentProcess() }, "local broker")?;
+    if owner_started >= broker_started {
+        return Err(
+            "local broker parent process identity was reused after broker creation".to_owned(),
+        );
+    }
+    Ok(())
+}
+
+fn process_creation_time(process: HANDLE, label: &str) -> Result<u64, String> {
+    let mut creation = FILETIME {
+        dwLowDateTime: 0,
+        dwHighDateTime: 0,
+    };
+    let mut exit = FILETIME {
+        dwLowDateTime: 0,
+        dwHighDateTime: 0,
+    };
+    let mut kernel = FILETIME {
+        dwLowDateTime: 0,
+        dwHighDateTime: 0,
+    };
+    let mut user = FILETIME {
+        dwLowDateTime: 0,
+        dwHighDateTime: 0,
+    };
+    if unsafe { GetProcessTimes(process, &mut creation, &mut exit, &mut kernel, &mut user) } == 0 {
+        return Err(last_error(&format!("GetProcessTimes({label})")));
+    }
+    Ok((u64::from(creation.dwHighDateTime) << 32) | u64::from(creation.dwLowDateTime))
 }
 
 fn parent_process_id() -> Result<u32, String> {
@@ -143,8 +192,12 @@ pub fn run(pipe_name: &str, manifest_path: &str) -> Result<u8, String> {
 
 #[cfg(test)]
 mod tests {
-    use super::parent_process_id;
-    use windows_sys::Win32::System::Threading::GetCurrentProcessId;
+    use super::{parent_process_id, validate_owner_process};
+    use windows_sys::Win32::Foundation::CloseHandle;
+    use windows_sys::Win32::Storage::FileSystem::SYNCHRONIZE;
+    use windows_sys::Win32::System::Threading::{
+        GetCurrentProcessId, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
+    };
 
     #[test]
     fn resolves_a_real_parent_process_without_self_binding() {
@@ -152,6 +205,17 @@ mod tests {
         let current = unsafe { GetCurrentProcessId() };
         assert_ne!(parent, 0);
         assert_ne!(parent, current);
+    }
+
+    #[test]
+    fn validates_a_real_parent_process_before_waiting_on_it() {
+        let parent = parent_process_id().expect("test harness parent process");
+        let handle =
+            unsafe { OpenProcess(SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION, 0, parent) };
+        assert!(!handle.is_null(), "OpenProcess(test harness parent)");
+        let result = validate_owner_process(handle, parent);
+        unsafe { CloseHandle(handle) };
+        result.expect("parent process identity must be pinned before waiting");
     }
 }
 

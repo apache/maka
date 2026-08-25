@@ -274,17 +274,68 @@ try {
 
   Write-Host "Phase 4 adversarial matrix verified: $rendered"
 } finally {
-  if ($listener) { $listener.Stop() }
-  if ($pipe) { $pipe.Dispose() }
-  [Environment]::SetEnvironmentVariable($hostSecretName, $null, 'Process')
-  Remove-Item -LiteralPath $registryPath -Recurse -Force -ErrorAction SilentlyContinue
+  $cleanupErrors = [System.Collections.Generic.List[string]]::new()
+  if ($listener) {
+    try { $listener.Stop() } catch { $cleanupErrors.Add("listener stop: $($_.Exception.Message)") }
+  }
+  if ($pipe) {
+    try { $pipe.Dispose() } catch { $cleanupErrors.Add("pipe dispose: $($_.Exception.Message)") }
+  }
+  try {
+    [Environment]::SetEnvironmentVariable($hostSecretName, $null, 'Process')
+  } catch {
+    $cleanupErrors.Add("environment cleanup: $($_.Exception.Message)")
+  }
+  if (Test-Path -LiteralPath $registryPath) {
+    try {
+      Remove-Item -LiteralPath $registryPath -Recurse -Force -ErrorAction Stop
+    } catch {
+      $cleanupErrors.Add("registry cleanup: $($_.Exception.Message)")
+    }
+  }
   if ($quarantineRoot -and $quarantinedSid) {
-    & icacls.exe $quarantineRoot /remove "*$quarantinedSid" /T /L /Q 2>$null | Out-Null
+    $aclCleanupOutput = & icacls.exe $quarantineRoot /remove "*$quarantinedSid" /T /L /Q 2>&1
+    $aclCleanupExitCode = $LASTEXITCODE
+    if ($aclCleanupExitCode -ne 0) {
+      $cleanupErrors.Add(
+        "quarantined ACE cleanup failed: exit=$aclCleanupExitCode output=$($aclCleanupOutput -join ' ')"
+      )
+    }
   }
   if ($quarantinePath) {
-    Remove-Item -LiteralPath $quarantinePath -Force -ErrorAction SilentlyContinue
+    if (Test-Path -LiteralPath $quarantinePath) {
+      try {
+        Remove-Item -LiteralPath $quarantinePath -Force -ErrorAction Stop
+      } catch {
+        $cleanupErrors.Add("quarantine ledger cleanup: $($_.Exception.Message)")
+      }
+    }
+    if (Test-Path -LiteralPath $quarantinePath) {
+      $cleanupErrors.Add("quarantine ledger still exists: $quarantinePath")
+    }
   }
-  Remove-Item -LiteralPath $workRoot -Recurse -Force -ErrorAction SilentlyContinue
+  if ($quarantineRoot -and (Test-Path -LiteralPath $quarantineRoot)) {
+    try {
+      if ((Get-AclText $quarantineRoot) -match [regex]::Escape($quarantinedSid)) {
+        $cleanupErrors.Add("quarantined ACE still exists: $quarantinedSid")
+      }
+    } catch {
+      $cleanupErrors.Add("quarantined ACE verification: $($_.Exception.Message)")
+    }
+  }
+  if (Test-Path -LiteralPath $workRoot) {
+    try {
+      Remove-Item -LiteralPath $workRoot -Recurse -Force -ErrorAction Stop
+    } catch {
+      $cleanupErrors.Add("work root cleanup: $($_.Exception.Message)")
+    }
+  }
+  if (Test-Path -LiteralPath $workRoot) {
+    $cleanupErrors.Add("work root still exists: $workRoot")
+  }
+  if ($cleanupErrors.Count -gt 0) {
+    throw "Phase 4 adversarial matrix cleanup failed: $($cleanupErrors -join '; ')"
+  }
 }
 
 $global:LASTEXITCODE = 0

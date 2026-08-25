@@ -121,12 +121,17 @@ it('pins every Phase 4 adversarial category to executable evidence', async () =>
   assert.match(adversarialProbe, /phase4-junction/u);
   assert.match(adversarialProbe, /phase4-hardlink/u);
   assert.match(adversarialProbe, /\.json\.quarantined/u);
+  assert.match(adversarialProbe, /cleanupErrors\.Count -gt 0/u);
+  assert.doesNotMatch(adversarialProbe, /SilentlyContinue/u);
+  assert.match(adversarialProbe, /work root still exists/u);
 
   const localBroker = await readFile(
     new URL('../experiments/windows-sandbox/launcher/src/broker_client.rs', import.meta.url),
     'utf8',
   );
   assert.match(localBroker, /let owner_pid = parent_process_id\(\)\?/u);
+  assert.match(localBroker, /validate_owner_process\(owner, owner_pid\)/u);
+  assert.match(localBroker, /GetProcessTimes/u);
   assert.match(localBroker, /launch_appcontainer_owned\(&request\.launch, owner\)/u);
 
   const launcher = await readFile(
