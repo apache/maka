@@ -24,7 +24,11 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { agentGraphIdForRootSession } from '@maka/runtime/stream-graph-coordinator';
-import { BackendRegistry, SessionManager } from '@maka/runtime/session-manager';
+import {
+  BackendRegistry,
+  SessionConfigurationTransitionError,
+  SessionManager,
+} from '@maka/runtime/session-manager';
 import {
   buildRecoveredTerminalRuntimeEvent,
   classifyTerminalRuntimeLedger,
@@ -147,6 +151,38 @@ test('prepares a fresh Agent Graph epoch before durable external Turn admission'
     assertStartedTurn(outcome);
     assert.equal(cutovers, 1);
     await fixture.coordinator.whenIdle(fixture.sessionId);
+  } finally {
+    await fixture.coordinator.close();
+    await fixture.messages.close();
+    await fixture.dispose();
+  }
+});
+
+test('returns a typed outcome when pending configuration cannot be applied', async () => {
+  const fixture = await createFailureFixture({
+    registerBackend: (backends) => {
+      backends.register('ai-sdk', (context) => new FakeBackend(context));
+    },
+  });
+  const message = 'Selected model is no longer available';
+  fixture.manager.applyPendingSessionConfiguration = async () => {
+    throw new SessionConfigurationTransitionError('operation_unavailable', message);
+  };
+
+  try {
+    const outcome = await fixture.interactiveTurns.handlers['turn.start'](
+      {
+        sessionId: fixture.sessionId,
+        turnId: 'turn-pending-configuration-failure',
+        content: { text: 'Start after a staged configuration change.' },
+      },
+      operationContext(fixture.hostEpoch, fixture.acquireResidency),
+    );
+
+    assert.deepEqual(outcome, {
+      ok: false,
+      error: { code: 'operation_unavailable', message },
+    });
   } finally {
     await fixture.coordinator.close();
     await fixture.messages.close();

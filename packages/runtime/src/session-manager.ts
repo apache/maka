@@ -6302,6 +6302,9 @@ export function headerToSummary(h: SessionHeader): SessionSummary {
     connectionLocked: h.connectionLocked,
     model: h.model,
     permissionMode: h.permissionMode ?? 'ask',
+    ...(h.pendingConfiguration === undefined
+      ? {}
+      : { pendingConfiguration: h.pendingConfiguration }),
     collaborationMode: h.collaborationMode ?? 'agent',
     orchestrationMode: h.orchestrationMode ?? 'default',
   };

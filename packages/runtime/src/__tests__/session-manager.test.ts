@@ -4449,6 +4449,9 @@ describe('SessionManager manual compaction and quiescent session changes', () =>
     expect(staged.revision).toBe(2);
     expect(staged.header.model).toBe('model-a');
     expect(staged.header.pendingConfiguration).toMatchObject({ model: 'model-b' });
+    expect(headerToSummary(staged.header).pendingConfiguration).toEqual(
+      staged.header.pendingConfiguration,
+    );
     expect(kernel.disposed).toEqual([]);
 
     kernel.activeRuns = false;

@@ -47,7 +47,11 @@ import {
   RuntimeInteractionFailStopError,
   RuntimeInteractionInvariantError,
 } from '@maka/runtime/interaction-authority';
-import { RuntimeRegenerateTurnError, type SessionManager } from '@maka/runtime/session-manager';
+import {
+  RuntimeRegenerateTurnError,
+  SessionConfigurationTransitionError,
+  type SessionManager,
+} from '@maka/runtime/session-manager';
 import { RuntimeOwnerCleanupError } from '@maka/runtime/runtime-kernel';
 import {
   parseSkillInvocationTokens,
@@ -1939,7 +1943,17 @@ export class RootTurnCoordinator implements HostedExecutionAuthority {
       admission.execution.kind === 'external_message' ||
       admission.execution.kind === 'regenerate'
     ) {
-      await this.manager.applyPendingSessionConfiguration(input.sessionId);
+      try {
+        await this.manager.applyPendingSessionConfiguration(input.sessionId);
+      } catch (error) {
+        if (error instanceof SessionConfigurationTransitionError) {
+          return completedStart({
+            ok: false,
+            error: { code: error.code, message: error.message },
+          });
+        }
+        throw error;
+      }
     }
 
     const active = this.#executions.get(input.sessionId);
