@@ -18,7 +18,7 @@
     "dev": "node scripts/dev.mjs",
     "dev:peer": "npm run prepare:runtime-host-peer && node scripts/dev.mjs --runtime-host-peer",
     "dev:hmr": "node scripts/dev.mjs",
-    "storybook": "storybook dev -p 6006 -c .storybook",
+    "storybook": "storybook dev -p 6006 -c .storybook --host 127.0.0.1 --exact-port",
     "build-storybook": "storybook build -c .storybook --output-dir storybook-static",
     "presmoke:storybook": "npm --workspace @maka/core run build",
     "smoke:storybook": "node ../../scripts/storybook-visual-smoke.mjs",
