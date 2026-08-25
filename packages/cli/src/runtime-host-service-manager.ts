@@ -104,8 +104,11 @@ export interface RuntimeHostServiceBackend {
   replace(config: RuntimeHostManagedServiceConfig): Promise<void>;
   /** Reject partial or drifted scheduler state before replacement begins. */
   verifyReplacementPreconditions(config: RuntimeHostManagedServiceConfig): Promise<void>;
-  /** Verify the persisted deployment definition independently of its running state. */
-  verifyDeployment(config: RuntimeHostManagedServiceConfig): Promise<void>;
+  /** Verify the deployment definition and, when requested, its scheduler readiness. */
+  verifyDeployment(
+    config: RuntimeHostManagedServiceConfig,
+    options?: { readonly requireSchedulerReady?: boolean },
+  ): Promise<void>;
   status(): Promise<RuntimeHostServiceBackendStatus>;
   start(): Promise<void>;
   stop(): Promise<void>;
@@ -1046,7 +1049,7 @@ export async function verifyRuntimeHostManagedServiceReady(
   config: RuntimeHostManagedServiceConfig,
   backend: RuntimeHostServiceBackend,
 ): Promise<void> {
-  await backend.verifyDeployment(config);
+  await backend.verifyDeployment(config, { requireSchedulerReady: true });
   const deadline = Date.now() + SERVICE_READY_TIMEOUT_MS;
   let lastFailure = 'not available';
   while (Date.now() < deadline) {

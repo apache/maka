@@ -395,10 +395,16 @@ describe('managed Runtime Host service', () => {
       ),
     );
     await repairBackend.verifyDeployment(managedConfig);
+    await assert.rejects(
+      repairBackend.verifyDeployment(managedConfig, { requireSchedulerReady: true }),
+      (error: unknown) =>
+        error instanceof RuntimeHostServiceManagerError && error.code === 'target_mismatch',
+    );
     await repairBackend.replace(managedConfig);
     assert.ok(
       systemd.calls.some(([command, target]) => command === 'start' && target === updateTimerName),
     );
+    await repairBackend.verifyDeployment(managedConfig, { requireSchedulerReady: true });
 
     const diagnosticBackend = createSystemdUserRuntimeHostService(serviceId, {
       env,

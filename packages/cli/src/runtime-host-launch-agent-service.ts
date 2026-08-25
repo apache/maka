@@ -175,7 +175,7 @@ export function createLaunchAgentRuntimeHostService(
     },
     verifyReplacementPreconditions: (config) =>
       verifyLaunchAgentUpdateSchedulerReplacementState(scheduler, config),
-    verifyDeployment: async (config) => {
+    verifyDeployment: async (config, options) => {
       await validateRuntimeHostServiceLaunch(config);
       const [status, plist] = await Promise.all([
         readDetailedStatus(),
@@ -190,7 +190,11 @@ export function createLaunchAgentRuntimeHostService(
           'The installed Runtime Host LaunchAgent does not match its managed deployment',
         );
       }
-      await verifyLaunchAgentUpdateSchedulerDesiredState(scheduler, config, false);
+      await verifyLaunchAgentUpdateSchedulerDesiredState(
+        scheduler,
+        config,
+        options?.requireSchedulerReady ?? false,
+      );
     },
     status: readStatus,
     start: async () => {

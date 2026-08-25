@@ -141,8 +141,14 @@ test('installs and removes the update scheduler with a managed LaunchAgent', asy
     await backend.stop();
     assert.equal(launchctl.updateLoaded, false);
     await backend.verifyDeployment(config);
+    await assert.rejects(
+      backend.verifyDeployment(config, { requireSchedulerReady: true }),
+      (error: unknown) =>
+        error instanceof Error && 'code' in error && error.code === 'target_mismatch',
+    );
     await backend.replace(config);
     assert.equal(launchctl.updateLoaded, true);
+    await backend.verifyDeployment(config, { requireSchedulerReady: true });
 
     const { managedDeploymentRoot: _managedDeploymentRoot, ...unmanagedConfig } = config;
     await backend.install(unmanagedConfig);

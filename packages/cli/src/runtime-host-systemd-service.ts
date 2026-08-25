@@ -169,7 +169,7 @@ export function createSystemdUserRuntimeHostService(
     },
     verifyReplacementPreconditions: (config) =>
       verifySystemdUpdateSchedulerReplacementState(scheduler, config),
-    verifyDeployment: async (config) => {
+    verifyDeployment: async (config, options) => {
       await validateRuntimeHostServiceLaunch(config);
       const [status, unit] = await Promise.all([
         readSystemdStatus(context),
@@ -190,7 +190,11 @@ export function createSystemdUserRuntimeHostService(
           'The loaded Runtime Host service does not match its managed deployment',
         );
       }
-      await verifySystemdUpdateSchedulerDesiredState(scheduler, config, false);
+      await verifySystemdUpdateSchedulerDesiredState(
+        scheduler,
+        config,
+        options?.requireSchedulerReady ?? false,
+      );
     },
     status: readStatus,
     start: async () => {
