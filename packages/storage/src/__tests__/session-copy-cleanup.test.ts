@@ -24,6 +24,10 @@ import { join } from 'node:path';
 import { afterEach, describe, it } from 'node:test';
 import { DatabaseSync } from 'node:sqlite';
 import { createSessionCopyCleanupAuthority } from '../session-copy-cleanup.js';
+import type {
+  ProcessLifetimeOwner,
+  ProcessLifetimeRecoveryClaim,
+} from '../process-lifetime-owner.js';
 
 const roots: string[] = [];
 
@@ -227,6 +231,92 @@ describe('session copy cleanup authority', () => {
     assert.deepEqual(await readPendingIds(workspaceRoot), ['fork-live-owner']);
   });
 
+  it('claims one released process incarnation across all of its copies', async () => {
+    const workspaceRoot = await createWorkspace();
+    const original = fakeLifetimeOwner('lock-v1:11111111-1111-4111-8111-111111111111');
+    const owner = createSessionCopyCleanupAuthority({
+      workspaceRoot,
+      processId: 'tui:101',
+      processLifetimeOwner: original.owner,
+      removeSession: async () => {},
+    });
+    for (const sessionId of ['fork-lifetime-a', 'fork-lifetime-b']) {
+      await owner.ownCreation(
+        {
+          sessionId,
+          kind: 'branch',
+          sourceSessionId: 'source-session',
+          sourceTurnId: 'source-turn',
+          ownerId: 'tui-side',
+        },
+        async () => 'created',
+      );
+    }
+
+    const successor = fakeLifetimeOwner('lock-v1:22222222-2222-4222-8222-222222222222');
+    const removed: string[] = [];
+    const authority = createSessionCopyCleanupAuthority({
+      workspaceRoot,
+      processId: 'tui:202',
+      processLifetimeOwner: successor.owner,
+      removeSession: async (sessionId) => {
+        assert.equal(successor.claimClosed, false);
+        removed.push(sessionId);
+      },
+    });
+
+    assert.deepEqual(await authority.recover(), {
+      removed: ['fork-lifetime-a', 'fork-lifetime-b'],
+      failed: [],
+    });
+    assert.deepEqual(removed, ['fork-lifetime-a', 'fork-lifetime-b']);
+    assert.equal(successor.claimAttempts, 1);
+    assert.equal(successor.claimRetired, true);
+    assert.deepEqual(await readPendingIds(workspaceRoot), []);
+  });
+
+  it('fails closed when process-incarnation ownership cannot be inspected', async () => {
+    const workspaceRoot = await createWorkspace();
+    const original = fakeLifetimeOwner('lock-v1:33333333-3333-4333-8333-333333333333');
+    const owner = createSessionCopyCleanupAuthority({
+      workspaceRoot,
+      processId: 'tui:303',
+      processLifetimeOwner: original.owner,
+      removeSession: async () => {},
+    });
+    await owner.ownCreation(
+      {
+        sessionId: 'fork-unknown-owner',
+        kind: 'branch',
+        sourceSessionId: 'source-session',
+        sourceTurnId: 'source-turn',
+        ownerId: 'tui-side',
+      },
+      async () => 'created',
+    );
+
+    const failure = new Error('native lock unavailable');
+    const authority = createSessionCopyCleanupAuthority({
+      workspaceRoot,
+      processId: 'tui:404',
+      processLifetimeOwner: {
+        reference: 'lock-v1:44444444-4444-4444-8444-444444444444',
+        tryClaimReleased: async () => {
+          throw failure;
+        },
+        close: async () => {},
+      },
+      removeSession: async () => {
+        throw new Error('must not remove an indeterminate owner');
+      },
+    });
+
+    const recovery = await authority.recover();
+    assert.deepEqual(recovery.removed, []);
+    assert.deepEqual(recovery.failed, [{ sessionId: 'fork-unknown-owner', error: failure }]);
+    assert.deepEqual(await readPendingIds(workspaceRoot), ['fork-unknown-owner']);
+  });
+
   it('abandons every live copy owned by a renderer that exits', async () => {
     const workspaceRoot = await createWorkspace();
     const removed: string[] = [];
@@ -253,6 +343,48 @@ describe('session copy cleanup authority', () => {
 
     assert.deepEqual(removed, ['fork-owned-renderer']);
     assert.deepEqual(await readPendingIds(workspaceRoot), []);
+  });
+
+  it('abandons only copies owned by the current process incarnation', async () => {
+    const workspaceRoot = await createWorkspace();
+    const firstLifetime = fakeLifetimeOwner('lock-v1:55555555-5555-4555-8555-555555555555');
+    const secondLifetime = fakeLifetimeOwner('lock-v1:66666666-6666-4666-8666-666666666666');
+    const first = createSessionCopyCleanupAuthority({
+      workspaceRoot,
+      processId: 'tui:505',
+      processLifetimeOwner: firstLifetime.owner,
+      removeSession: async () => {},
+    });
+    const removed: string[] = [];
+    const second = createSessionCopyCleanupAuthority({
+      workspaceRoot,
+      processId: 'tui:505',
+      processLifetimeOwner: secondLifetime.owner,
+      removeSession: async (sessionId) => {
+        removed.push(sessionId);
+      },
+    });
+    for (const [authority, sessionId] of [
+      [first, 'fork-first-incarnation'],
+      [second, 'fork-second-incarnation'],
+    ] as const) {
+      await authority.ownCreation(
+        {
+          sessionId,
+          kind: 'branch',
+          sourceSessionId: 'source-session',
+          sourceTurnId: 'source-turn',
+          ownerId: 'tui-side',
+        },
+        async () => 'created',
+      );
+    }
+
+    await second.abandonOwner('tui-side');
+    await second.cleanup('fork-second-incarnation');
+
+    assert.deepEqual(removed, ['fork-second-incarnation']);
+    assert.deepEqual(await readPendingIds(workspaceRoot), ['fork-first-incarnation']);
   });
 
   it('acknowledges abandon after the intent is durable without waiting for removal', async () => {
@@ -376,4 +508,43 @@ async function readPendingIds(workspaceRoot: string): Promise<string[]> {
   } finally {
     database.close();
   }
+}
+
+function fakeLifetimeOwner(reference: string): {
+  owner: ProcessLifetimeOwner;
+  readonly claimAttempts: number;
+  readonly claimClosed: boolean;
+  readonly claimRetired: boolean;
+} {
+  let claimAttempts = 0;
+  let claimClosed = false;
+  let claimRetired = false;
+  const claim: ProcessLifetimeRecoveryClaim = {
+    retire: async () => {
+      claimRetired = true;
+      claimClosed = true;
+    },
+    close: async () => {
+      claimClosed = true;
+    },
+  };
+  return {
+    owner: {
+      reference,
+      tryClaimReleased: async () => {
+        claimAttempts += 1;
+        return claim;
+      },
+      close: async () => {},
+    },
+    get claimAttempts() {
+      return claimAttempts;
+    },
+    get claimClosed() {
+      return claimClosed;
+    },
+    get claimRetired() {
+      return claimRetired;
+    },
+  };
 }

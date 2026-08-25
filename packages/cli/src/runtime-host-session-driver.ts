@@ -40,6 +40,7 @@ import {
   createSessionCopyCleanupAuthority,
   type SessionCopyCleanupAuthority,
 } from '@maka/storage/session-copy-cleanup';
+import type { ProcessLifetimeOwner } from '@maka/storage/process-lifetime-owner';
 
 import type { OrchestrationMode } from '@maka/core/orchestration';
 import type { PermissionMode } from '@maka/core/permission';
@@ -128,6 +129,8 @@ export interface RuntimeHostMakaSessionDriverInput {
   executionLocation?: { readonly kind: 'client_path' } | { readonly kind: 'host' };
   /** Client-local durable lease parent for temporary TUI conversation copies. */
   sessionCopyCleanupRoot?: string;
+  /** Process-incarnation owner for temporary TUI conversation copies. */
+  sessionCopyCleanupOwner?: ProcessLifetimeOwner;
 }
 
 type RuntimeHostSessionDriverConnection = Pick<
@@ -229,6 +232,7 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
           resumeSessionCopy: (creation) => this.#resumeSessionCopy(creation),
           processId: `tui:${process.pid}`,
           isOwnerProcessActive: isTuiProcessActive,
+          processLifetimeOwner: input.sessionCopyCleanupOwner,
         })
       : undefined;
     this.moveSession =

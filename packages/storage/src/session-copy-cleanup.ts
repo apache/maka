@@ -19,6 +19,10 @@
 
 import { randomUUID } from 'node:crypto';
 import { acquireOperationalStateDatabase } from './operational-state-store.js';
+import type {
+  ProcessLifetimeOwner,
+  ProcessLifetimeRecoveryClaim,
+} from './process-lifetime-owner.js';
 
 export interface SessionCopyCreationLease {
   sessionId: string;
@@ -34,6 +38,7 @@ interface PersistedSessionCopyLease {
   sessionId: string;
   trackedAt: number;
   ownerProcessId?: string;
+  ownerLifetimeRef?: string;
   ownerId?: string;
   phase: 'creating' | 'live' | 'cleanup';
   cancelRequested: boolean;
@@ -46,6 +51,7 @@ interface SessionCopyCleanupStore {
   beginCreation(
     creation: SessionCopyCreationLease,
     ownerProcessId: string,
+    ownerLifetimeRef?: string,
   ): Promise<PersistedSessionCopyLease>;
   markLive(sessionId: string): Promise<PersistedSessionCopyLease | undefined>;
   requestCleanup(sessionId: string): Promise<PersistedSessionCopyLease>;
@@ -75,6 +81,7 @@ export function createSessionCopyCleanupAuthority(input: {
   resumeSessionCopy?: (creation: Omit<SessionCopyCreationLease, 'ownerId'>) => Promise<void>;
   processId?: string;
   isOwnerProcessActive?: (ownerProcessId: string) => boolean | Promise<boolean>;
+  processLifetimeOwner?: ProcessLifetimeOwner;
 }): SessionCopyCleanupAuthority {
   return new SessionCopyCleanupAuthorityImpl(
     new SqliteSessionCopyCleanupStore(input.workspaceRoot),
@@ -82,6 +89,7 @@ export function createSessionCopyCleanupAuthority(input: {
     input.resumeSessionCopy,
     input.processId ?? randomUUID(),
     input.isOwnerProcessActive,
+    input.processLifetimeOwner,
   );
 }
 
@@ -104,6 +112,7 @@ class SessionCopyCleanupAuthorityImpl implements SessionCopyCleanupAuthority {
     private readonly isOwnerProcessActive:
       | ((ownerProcessId: string) => boolean | Promise<boolean>)
       | undefined,
+    private readonly processLifetimeOwner: ProcessLifetimeOwner | undefined,
   ) {}
 
   ownCreation<T>(creation: SessionCopyCreationLease, operation: () => Promise<T>): Promise<T> {
@@ -117,7 +126,11 @@ class SessionCopyCleanupAuthorityImpl implements SessionCopyCleanupAuthority {
     }
     const task = (async () => {
       try {
-        await this.store.beginCreation(normalized, this.processId);
+        await this.store.beginCreation(
+          normalized,
+          this.processId,
+          this.processLifetimeOwner?.reference,
+        );
         const result = await operation();
         const record = await this.store.markLive(normalized.sessionId);
         if (record?.cancelRequested) void this.settleCleanup(normalized.sessionId);
@@ -161,30 +174,76 @@ class SessionCopyCleanupAuthorityImpl implements SessionCopyCleanupAuthority {
 
   async abandonOwner(ownerId: string): Promise<void> {
     const normalizedOwnerId = normalizeOwnerId(ownerId);
-    const owned = (await this.store.list()).filter(
-      (record) => record.ownerProcessId === this.processId && record.ownerId === normalizedOwnerId,
-    );
+    const owned = (await this.store.list()).filter((record) => {
+      const currentIncarnation = this.processLifetimeOwner
+        ? record.ownerLifetimeRef === this.processLifetimeOwner.reference
+        : record.ownerProcessId === this.processId;
+      return currentIncarnation && record.ownerId === normalizedOwnerId;
+    });
     await Promise.all(owned.map((record) => this.schedule(record.sessionId)));
   }
 
   async recover(): Promise<SessionCopyCleanupRecovery> {
     const removed: string[] = [];
     const failed: SessionCopyCleanupRecovery['failed'] = [];
+    const lifetimeGroups = new Map<string, PersistedSessionCopyLease[]>();
     for (const record of await this.store.list()) {
-      const staleOwner =
-        record.ownerProcessId !== undefined &&
-        record.ownerProcessId !== this.processId &&
-        !(await this.isOwnerProcessActive?.(record.ownerProcessId));
-      if (record.phase !== 'cleanup' && !record.cancelRequested && !staleOwner) continue;
+      if (record.phase === 'cleanup' || record.cancelRequested) {
+        await this.recoverRecord(record, removed, failed);
+        continue;
+      }
+      if (record.ownerLifetimeRef && this.processLifetimeOwner) {
+        if (record.ownerLifetimeRef === this.processLifetimeOwner.reference) continue;
+        const group = lifetimeGroups.get(record.ownerLifetimeRef) ?? [];
+        group.push(record);
+        lifetimeGroups.set(record.ownerLifetimeRef, group);
+        continue;
+      }
       try {
-        await this.store.requestCleanup(record.sessionId);
-        const disposition = await this.settleCleanup(record.sessionId);
-        if (disposition === 'removed') removed.push(record.sessionId);
+        const staleOwner =
+          record.ownerProcessId !== undefined &&
+          record.ownerProcessId !== this.processId &&
+          !(await this.isOwnerProcessActive?.(record.ownerProcessId));
+        if (staleOwner) await this.recoverRecord(record, removed, failed);
       } catch (error) {
         failed.push({ sessionId: record.sessionId, error });
       }
     }
+    for (const [reference, records] of lifetimeGroups) {
+      let claim: ProcessLifetimeRecoveryClaim | undefined;
+      try {
+        claim = await this.processLifetimeOwner?.tryClaimReleased(reference);
+      } catch (error) {
+        for (const record of records) failed.push({ sessionId: record.sessionId, error });
+        continue;
+      }
+      if (!claim) continue;
+      try {
+        for (const record of records) await this.recoverRecord(record, removed, failed);
+        const ownerStillReferenced = await this.store
+          .list()
+          .then((current) => current.some((record) => record.ownerLifetimeRef === reference))
+          .catch(() => true);
+        if (!ownerStillReferenced) await claim.retire().catch(() => undefined);
+      } finally {
+        await claim.close().catch(() => undefined);
+      }
+    }
     return { removed, failed };
+  }
+
+  private async recoverRecord(
+    record: PersistedSessionCopyLease,
+    removed: string[],
+    failed: SessionCopyCleanupRecovery['failed'],
+  ): Promise<void> {
+    try {
+      await this.store.requestCleanup(record.sessionId);
+      const disposition = await this.settleCleanup(record.sessionId);
+      if (disposition === 'removed') removed.push(record.sessionId);
+    } catch (error) {
+      failed.push({ sessionId: record.sessionId, error });
+    }
   }
 
   private settleCleanup(sessionId: string): Promise<SessionCopyCleanupDisposition> {
@@ -250,6 +309,7 @@ class SqliteSessionCopyCleanupStore implements SessionCopyCleanupStore {
   async beginCreation(
     creation: SessionCopyCreationLease,
     ownerProcessId: string,
+    ownerLifetimeRef?: string,
   ): Promise<PersistedSessionCopyLease> {
     return this.mutate(creation.sessionId, (current) => {
       if (current?.creation && !samePersistedCreation(current.creation, creation)) {
@@ -263,6 +323,7 @@ class SqliteSessionCopyCleanupStore implements SessionCopyCleanupStore {
         sessionId: creation.sessionId,
         trackedAt: current?.trackedAt ?? Date.now(),
         ownerProcessId,
+        ...(ownerLifetimeRef ? { ownerLifetimeRef } : {}),
         ownerId: creation.ownerId,
         phase: current?.phase ?? 'creating',
         cancelRequested: false,
@@ -392,7 +453,8 @@ function decodeLeaseRow(row: {
     value.version !== 1 ||
     value.sessionId !== row.sessionId ||
     (value.phase !== 'creating' && value.phase !== 'live' && value.phase !== 'cleanup') ||
-    typeof value.cancelRequested !== 'boolean'
+    typeof value.cancelRequested !== 'boolean' ||
+    (value.ownerLifetimeRef !== undefined && typeof value.ownerLifetimeRef !== 'string')
   ) {
     throw new Error(`Invalid Session copy lease: ${row.sessionId}`);
   }
