@@ -429,9 +429,15 @@ export class SqliteSessionMetadataStore {
       return;
     }
     const { DatabaseSync } = loadSqliteModule();
-    this.db = new DatabaseSync(path);
-    configureSqliteSessionMetadataDatabase(this.db);
-    migrateSqliteSessionMetadataDatabase(this.db);
+    const database = new DatabaseSync(path);
+    try {
+      configureSqliteSessionMetadataDatabase(database);
+      migrateSqliteSessionMetadataDatabase(database);
+    } catch (error) {
+      database.close();
+      throw error;
+    }
+    this.db = database;
     this.now = options.now ?? Date.now;
   }
 
