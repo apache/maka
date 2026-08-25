@@ -1226,6 +1226,97 @@ describe('Runtime Host Maka Session driver', () => {
     );
   });
 
+  test('opens a hidden side copy at the latest completed Turn and removes it on close', async (t) => {
+    const cleanupRoot = await mkdtemp(join(tmpdir(), 'maka-tui-side-'));
+    t.after(() => rm(cleanupRoot, { recursive: true, force: true }));
+    const sourceMessages: StoredMessage[] = [
+      userMessage('turn-completed', 'Settled question'),
+      assistantMessage('turn-completed', 'Settled answer'),
+      turnStateMessage('turn-completed', 'completed'),
+      userMessage('turn-failed', 'Failed question'),
+      turnStateMessage('turn-failed', 'failed'),
+    ];
+    const subscriptions = [
+      new FakeSubscription(continuitySnapshot({ rootTurn: null }), Promise.resolve(sourceMessages)),
+      new FakeSubscription(
+        continuitySnapshot({ rootTurn: null }),
+        Promise.resolve(sourceMessages),
+        'subscription-copy-source',
+      ),
+      new FakeSubscription(
+        continuitySnapshot({ rootTurn: null }),
+        Promise.resolve(sourceMessages.slice(0, 3)),
+        'subscription-side',
+      ),
+      new FakeSubscription(
+        continuitySnapshot({ rootTurn: null }),
+        Promise.resolve([
+          ...sourceMessages.slice(0, 3),
+          userMessage('turn-side', 'Side question'),
+          assistantMessage('turn-side', 'Side answer'),
+        ]),
+        'subscription-side-read',
+      ),
+      new FakeSubscription(
+        continuitySnapshot({ rootTurn: null }),
+        Promise.resolve(sourceMessages),
+        'subscription-parent-return',
+      ),
+    ];
+    const connection = new FakeConnection(subscriptions);
+    connection.sessionQueries.push(
+      sessionProjection({ id: 'session-1' }),
+      sessionProjection({ id: 'session-1', revision: 4 }),
+      sessionProjection({
+        id: 'side-1',
+        labels: ['mode:side_conversation'],
+        parentSessionId: 'session-1',
+        branchOfTurnId: 'turn-completed',
+      }),
+      sessionProjection({ id: 'session-1' }),
+      sessionProjection({ id: 'side-1', labels: ['mode:side_conversation'] }),
+    );
+    const driver = createRuntimeHostMakaSessionDriver({
+      connection: connection.value,
+      cwd: '/tmp',
+      llmConnectionSlug: 'openai-main',
+      model: 'gpt-5',
+      newId: () => 'side-1',
+      sessionCopyCleanupRoot: cleanupRoot,
+    });
+    await driver.switchSession('session-1');
+
+    const opened = await driver.openSideConversation!();
+
+    assert.equal(opened.parentSessionId, 'session-1');
+    assert.equal(opened.sideSessionId, 'side-1');
+    assert.deepEqual(opened.messages, []);
+    assert.deepEqual(
+      (await driver.readMessages()).map((message) =>
+        'turnId' in message ? `${message.type}:${message.turnId}` : message.type,
+      ),
+      ['user:turn-side', 'assistant:turn-side'],
+    );
+    assert.deepEqual(
+      connection.requests.find(({ operation }) => operation === 'session.branch.create')?.input,
+      {
+        sourceSessionId: 'session-1',
+        targetSessionId: 'side-1',
+        sourceTurnId: 'turn-completed',
+        expectedSourceRevision: 4,
+        intent: 'side_conversation',
+      },
+    );
+
+    const closed = await driver.closeSideConversation!('side-1', 'session-1');
+    assert.equal(closed.summary.id, 'session-1');
+    assert.equal(closed.cleanup, 'removed');
+    assert.deepEqual(
+      connection.requests.find(({ operation }) => operation === 'session.remove')?.input,
+      { sessionId: 'side-1', expectedRevision: 1 },
+    );
+  });
+
   test('reopens a failed Session channel before starting the next turn', async () => {
     const first = new FakeSubscription(continuitySnapshot({ rootTurn: null }), Promise.resolve([]));
     const second = new FakeSubscription(
@@ -1641,6 +1732,24 @@ class FakeConnection {
           hostCwd: create.workspace.kind === 'host_path' ? create.workspace.path : '/project',
         },
       }) as OperationOutput<K>;
+    }
+    if (operation === 'session.branch.create') {
+      const copy = input as OperationInput<'session.branch.create'>;
+      return {
+        kind: 'committed',
+        session: sessionProjection({
+          id: copy.targetSessionId,
+          labels: copy.intent === 'side_conversation' ? ['mode:side_conversation'] : [],
+          parentSessionId: copy.sourceSessionId,
+          branchOfTurnId: copy.sourceTurnId,
+        }),
+      } as OperationOutput<K>;
+    }
+    if (operation === 'session.remove') {
+      return {
+        kind: 'removed',
+        sessionId: (input as OperationInput<'session.remove'>).sessionId,
+      } as OperationOutput<K>;
     }
     if (operation === 'goal.control') {
       const outcome = this.goalControlOutcomes.shift();

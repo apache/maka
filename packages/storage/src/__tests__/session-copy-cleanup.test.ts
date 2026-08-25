@@ -23,12 +23,12 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, it } from 'node:test';
 import { DatabaseSync } from 'node:sqlite';
-import { createSessionCopyCleanupAuthority } from '../quote-companion-cleanup.js';
+import { createSessionCopyCleanupAuthority } from '../session-copy-cleanup.js';
 
 const roots: string[] = [];
 
 async function createWorkspace(): Promise<string> {
-  const root = await mkdtemp(join(tmpdir(), 'maka-quote-companion-cleanup-'));
+  const root = await mkdtemp(join(tmpdir(), 'maka-session-copy-cleanup-'));
   roots.push(root);
   return root;
 }
@@ -37,7 +37,7 @@ afterEach(async () => {
   await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
 });
 
-describe('quote companion cleanup authority', () => {
+describe('session copy cleanup authority', () => {
   it('forgets a known rejected creation without trying to resume or remove it', async () => {
     const workspaceRoot = await createWorkspace();
     let resumes = 0;
@@ -193,6 +193,38 @@ describe('quote companion cleanup authority', () => {
       'remove:fork-unknown-create',
     ]);
     assert.deepEqual(await readPendingIds(workspaceRoot), []);
+  });
+
+  it('does not recover a live copy whose owning process is still active', async () => {
+    const workspaceRoot = await createWorkspace();
+    const owner = createSessionCopyCleanupAuthority({
+      workspaceRoot,
+      processId: 'tui:101',
+      removeSession: async () => {},
+    });
+    await owner.ownCreation(
+      {
+        sessionId: 'fork-live-owner',
+        kind: 'branch',
+        sourceSessionId: 'source-session',
+        sourceTurnId: 'source-turn',
+        ownerId: 'tui-side',
+      },
+      async () => 'created',
+    );
+    const removed: string[] = [];
+    const concurrent = createSessionCopyCleanupAuthority({
+      workspaceRoot,
+      processId: 'tui:202',
+      isOwnerProcessActive: (ownerProcessId) => ownerProcessId === 'tui:101',
+      removeSession: async (sessionId) => {
+        removed.push(sessionId);
+      },
+    });
+
+    assert.deepEqual(await concurrent.recover(), { removed: [], failed: [] });
+    assert.deepEqual(removed, []);
+    assert.deepEqual(await readPendingIds(workspaceRoot), ['fork-live-owner']);
   });
 
   it('abandons every live copy owned by a renderer that exits', async () => {
