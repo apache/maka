@@ -102,6 +102,15 @@ export function useAppShellSessionWorkspace(toastApi: ToastApi) {
     }
   }
 
+  function updateTransientMessage(sessionId: string, message: TransientUserMessage): void {
+    const pending = transientMessagesBySessionRef.current.get(sessionId);
+    if (!pending?.has(message.id)) return;
+    pending.set(message.id, message);
+    if (activeIdRef.current === sessionId) {
+      setTransientMessages(projectTransientMessages(sessionId, messagesRef.current));
+    }
+  }
+
   function removeTransientMessage(sessionId: string, messageId: string): void {
     const pending = transientMessagesBySessionRef.current.get(sessionId);
     if (!pending?.delete(messageId)) return;
@@ -165,6 +174,7 @@ export function useAppShellSessionWorkspace(toastApi: ToastApi) {
     transientMessages,
     setMessages: setMessagesForActiveSession,
     addTransientMessage,
+    updateTransientMessage,
     removeTransientMessage,
     transcriptRangeRef,
     messageLoadPending,

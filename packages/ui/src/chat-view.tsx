@@ -457,6 +457,17 @@ export function ChatView(props: {
     }
   }, [revealTurn]);
   const mountedTurns = turns.slice(mountStart, mountEnd);
+  const inlineTransientMessage = tailTurnId
+    ? transientMessages.find((message) => {
+        if (message.turnId !== tailTurnId) return false;
+        const turn = mountedTurns.find((candidate) => candidate.turnId === tailTurnId);
+        return turn !== undefined
+          && turn.user === undefined
+          && !turn.timeline.some(
+            (item) => item.kind === 'user' && item.messageId === message.id,
+          );
+      })
+    : undefined;
   const { highlightedTurnId } = useChatScroll({
     scrollRef,
     sessionId: props.activeSession?.id,
@@ -532,8 +543,10 @@ export function ChatView(props: {
   const hasVisibleConversationItem =
     conversationItemPlacement.byTurn.size > 0 || conversationItemPlacement.orphan !== undefined;
   const showEmptyState =
-    (chat.length === 0 && transientMessages.length === 0 && !streamingActive && !hasVisibleConversationItem)
-    || Boolean(props.messageLoading && chat.length === 0 && !hasVisibleConversationItem);
+    chat.length === 0
+    && transientMessages.length === 0
+    && !streamingActive
+    && !hasVisibleConversationItem;
   const emptyContent = props.messageLoading
     ? (
         <div className="maka-chat-message-loading">
@@ -639,6 +652,12 @@ export function ChatView(props: {
                     className="maka-turn-virtual-item"
                     data-virtual-turn-id={turn.turnId}
                   >
+                    {inlineTransientMessage?.turnId === turn.turnId ? (
+                      <TransientUserMessage
+                        message={inlineTransientMessage}
+                        onReadAttachmentBytes={props.onReadAttachmentBytes}
+                      />
+                    ) : null}
                     <TurnView
                       turn={turn}
                       userLabel={props.userLabel}
@@ -693,7 +712,9 @@ export function ChatView(props: {
                   style={{ height: afterHeight, flex: '0 0 auto', transition: 'none' }}
                 />
               )}
-              {transientMessages.map((message) => (
+              {transientMessages.filter(
+                (message) => message.id !== inlineTransientMessage?.id,
+              ).map((message) => (
                 <TransientUserMessage
                   key={message.id}
                   message={message}

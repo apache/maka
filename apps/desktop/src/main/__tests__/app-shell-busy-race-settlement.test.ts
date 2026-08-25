@@ -199,6 +199,56 @@ describe('busy-raced send settlement', () => {
     }
   });
 
+  it('does not resurrect a Follow Up retracted before its IPC reply settles', async () => {
+    const transient = new Map<string, StoredMessage>();
+    let submittedMessageId: string | undefined;
+    let releaseAdmission!: () => void;
+    const admission = new Promise<void>((resolve) => {
+      releaseAdmission = resolve;
+    });
+    let observeSubmit!: () => void;
+    const submitted = new Promise<void>((resolve) => {
+      observeSubmit = resolve;
+    });
+    const restoreWindow = installWindow({
+      sessions: {
+        enqueue: async (_sessionId: string, _placement: string, command: { messageId: string }) => {
+          submittedMessageId = command.messageId;
+          observeSubmit();
+          await admission;
+          return {
+            kind: 'queued' as const,
+            messageId: command.messageId,
+            attachments: [],
+            inlineReferences: [],
+          };
+        },
+      },
+    });
+    try {
+      const actions = createAppShellChatActions({
+        ...createActionsDeps(),
+        activeIdRef: { current: 'session-a' },
+        addTransientMessage: (_sessionId, message) => transient.set(message.id, message),
+        updateTransientMessage: (_sessionId, message) => {
+          if (transient.has(message.id)) transient.set(message.id, message);
+        },
+        removeTransientMessage: (_sessionId, messageId) => transient.delete(messageId),
+      });
+      const sending = actions.enqueueMessage('session-a', 'do this next', 'next_turn');
+      await submitted;
+
+      assert.ok(submittedMessageId);
+      transient.delete(submittedMessageId);
+      releaseAdmission();
+      await sending;
+
+      assert.deepEqual([...transient.keys()], []);
+    } finally {
+      restoreWindow();
+    }
+  });
+
   it('shows one stable local message before Host admission settles', async () => {
     const activeIdRef = { current: 'session-a' as string | undefined };
     const transient = new Map<string, StoredMessage>();

@@ -291,6 +291,7 @@ export function createAppShellSessionEventHandlers(options: {
     switch (event.type) {
       case 'queue_update':
         for (const entry of [...(event.steeringEntries ?? []), ...(event.followupEntries ?? [])]) {
+          if (entry.state !== 'queued') continue;
           projectTransientMessage?.(sessionId, {
             type: 'user',
             id: entry.messageId,

@@ -158,6 +158,10 @@ export function createAppShellChatActions(deps: {
     sessionId: string,
     message: Extract<StoredMessage, { type: 'user' }>,
   ) => void;
+  updateTransientMessage?: (
+    sessionId: string,
+    message: Extract<StoredMessage, { type: 'user' }>,
+  ) => void;
   removeTransientMessage: (sessionId: string, messageId: string) => void;
   transcriptRangeRef: RefBox<DesktopTranscriptRangeController | undefined>;
   setNavSelection: (selection: NavSelection) => void;
@@ -208,6 +212,7 @@ export function createAppShellChatActions(deps: {
     setMessageRetryPendingBySession,
     setMessages,
     addTransientMessage,
+    updateTransientMessage,
     removeTransientMessage,
     transcriptRangeRef,
     setNavSelection,
@@ -229,6 +234,7 @@ export function createAppShellChatActions(deps: {
 
   function optimisticUserMessage(
     messageId: string,
+    turnId: string,
     text: string,
     attachments: readonly import('@maka/core/events').AttachmentRef[] = [],
     quotes: readonly QuoteRef[] = [],
@@ -240,7 +246,7 @@ export function createAppShellChatActions(deps: {
       // StoredMessage requires a grouping key, but transient messages are
       // rendered beside the Turn projection. Canonical transcript data later
       // supplies the Host-owned grouping for this same message id.
-      turnId: messageId,
+      turnId,
       ts: Date.now(),
       text,
       ...(attachments.length > 0 ? { attachments: [...attachments] } : {}),
@@ -255,18 +261,25 @@ export function createAppShellChatActions(deps: {
     text: string,
     attachments: readonly import('@maka/core/events').AttachmentRef[] = [],
     options: {
+      turnId?: string;
+      updateOnly?: boolean;
       quotes?: readonly QuoteRef[];
       inlineReferences?: readonly InlineReference[];
     } = {},
   ): void {
     const next = optimisticUserMessage(
       messageId,
+      options.turnId ?? messageId,
       text,
       attachments,
       options.quotes,
       options.inlineReferences,
     );
-    addTransientMessage(sessionId, next);
+    if (options.updateOnly) {
+      (updateTransientMessage ?? addTransientMessage)(sessionId, next);
+    } else {
+      addTransientMessage(sessionId, next);
+    }
     if (activeIdRef.current !== sessionId) return;
     setMessageLoadErrorBySession((current) => {
       if (!current[sessionId]) return current;
@@ -458,6 +471,8 @@ export function createAppShellChatActions(deps: {
               skillInvocationDisplayText(text, sendResult.skillInvocation),
             sendResult.attachments,
             {
+              turnId: sendResult.turnId ?? messageId,
+              updateOnly: true,
               ...(quotes && quotes.length > 0 ? { quotes } : {}),
               inlineReferences: sendResult.inlineReferences ?? [],
             },
@@ -558,6 +573,8 @@ export function createAppShellChatActions(deps: {
           skillInvocationDisplayText(text, sendResult.skillInvocation),
         sendResult.attachments,
         {
+          turnId: sendResult.turnId ?? messageId,
+          updateOnly: true,
           ...(quotes && quotes.length > 0 ? { quotes } : {}),
           inlineReferences: sendResult.inlineReferences ?? [],
         },
@@ -653,6 +670,7 @@ export function createAppShellChatActions(deps: {
       });
       if (result.kind === 'outcome_unknown') return;
       showOptimisticUserMessage(sessionId, messageId, text, result.attachments, {
+        updateOnly: true,
         ...(quotes.length > 0 ? { quotes } : {}),
         inlineReferences: result.inlineReferences,
       });

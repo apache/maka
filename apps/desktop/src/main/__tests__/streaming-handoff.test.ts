@@ -112,6 +112,37 @@ describe('single live-turn handoff', () => {
     assert.match(markup, />send now</);
   });
 
+  it('shows a loading transient before its real live Turn answer', () => {
+    const markup = renderWithLocale(createElement(ChatView, {
+      activeSession: {
+        id: 'session-1', name: 'pending', lastMessageAt: 1, status: 'running', backend: 'ai-sdk',
+        labels: [], isFlagged: false, isArchived: false, hasUnread: false,
+        llmConnectionSlug: 'conn', connectionLocked: false, model: 'model', permissionMode: 'ask',
+      },
+      messages: [],
+      transientMessages: [
+        { type: 'user', id: 'turn-1', turnId: 'turn-1', ts: 1, text: 'send now' },
+      ],
+      messageLoading: true,
+      scrollBehavior: 'smooth',
+      liveTurn: {
+        turnId: 'turn-1',
+        phase: 'streamed',
+        steps: [{
+          stepId: 'assistant-1',
+          text: { text: 'live answer', truncated: false, complete: false },
+          tools: [],
+        }],
+      },
+      onNew() {},
+    } satisfies Parameters<typeof ChatView>[0]));
+
+    assert.doesNotMatch(markup, /maka-chat-message-loading/);
+    assert.ok(markup.indexOf('send now') < markup.indexOf('data-turn-id="turn-1"'));
+    assert.equal((markup.match(/data-transient-message-id="turn-1"/g) ?? []).length, 1);
+    assert.equal((markup.match(/data-virtual-turn-id="turn-1"/g) ?? []).length, 1);
+  });
+
   it('renders one ordered timeline: thinking before its tool and answer', () => {
     const markup = renderLiveTurn({
       turnId: 'turn-1',
