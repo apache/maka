@@ -63,6 +63,7 @@ type UsageActiveTab = AppSettings['usage']['activeTab'];
 export function UsageSettingsPage(props: {
   settings: AppSettings;
   stats: UsageStats | null;
+  error?: string | null;
   onUpdate(patch: Parameters<typeof window.maka.settings.update>[0]): Promise<UpdateAppSettingsResult>;
   onReload(range?: UsageRange): Promise<void>;
   onOpenSession?(sessionId: string): void;
@@ -141,6 +142,9 @@ export function UsageSettingsPage(props: {
 
   return (
     <SettingsPage className="settingsUsagePage">
+      {props.error ? (
+        <Banner status="error" title="Usage unavailable" description={props.error} />
+      ) : null}
       <div className="settingsUsageOverview">
         <div className="settingsUsageToolbar" role="group" aria-label={copy.toolbarAria}>
           <SegmentedControl

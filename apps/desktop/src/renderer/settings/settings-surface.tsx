@@ -295,6 +295,8 @@ export function SettingsSurface(props: {
     initialRuntimeHostCatalog?.defaultProfileId,
   );
   const [usageStats, setUsageStats] = useState<UsageStats | null>(null);
+  const [usageError, setUsageError] = useState<string | null>(null);
+  const usageKeyRef = useRef<string | null>(null);
   const [clientLoading, setClientLoading] = useState(initialClientSettings === undefined);
   const settingsModalMountedRef = useMountedRef();
   const clientSettingsTicketRef = useRef(0);
@@ -608,6 +610,12 @@ export function SettingsSurface(props: {
   ) {
     if (!host) return;
     const hostKey = runtimeHostKey(host);
+    const key = `${hostKey}:${range}`;
+    if (usageKeyRef.current !== key) {
+      usageKeyRef.current = key;
+      setUsageStats(null);
+      setUsageError(null);
+    }
     const ticket = usageReloadTicketRef.current + 1;
     usageReloadTicketRef.current = ticket;
     try {
@@ -617,6 +625,7 @@ export function SettingsSurface(props: {
         ticket === usageReloadTicketRef.current &&
         selectedRuntimeHostKeyRef.current === hostKey
       ) {
+        setUsageError(null);
         setUsageStats(next);
       }
     } catch (error) {
@@ -625,7 +634,10 @@ export function SettingsSurface(props: {
         ticket === usageReloadTicketRef.current &&
         selectedRuntimeHostKeyRef.current === hostKey
       ) {
-        toast.error(copy.usageLoadFailed, settingsActionErrorMessage(error, locale));
+        const message = settingsActionErrorMessage(error, locale);
+        setUsageStats(null);
+        setUsageError(message);
+        toast.error(copy.usageLoadFailed, message);
       }
     }
   }
@@ -980,6 +992,7 @@ export function SettingsSurface(props: {
                             section={section}
                             settings={settings}
                             usageStats={usageStats}
+                            usageError={usageError}
                             connections={connections}
                             connectionsBridge={connectionsBridge}
                             defaultSlug={defaultSlug}
@@ -1035,6 +1048,7 @@ function SettingsPageBody(props: {
   section: SettingsSection;
   settings: AppSettings;
   usageStats: UsageStats | null;
+  usageError: string | null;
   connections: LlmConnection[];
   connectionsBridge: RuntimeHostSettingsConnectionsBridge | undefined;
   defaultSlug: string | null;
@@ -1104,6 +1118,7 @@ function SettingsPageBody(props: {
         <UsageSettingsPage
           settings={props.settings}
           stats={props.usageStats}
+          error={props.usageError}
           onUpdate={props.onUpdateSettings}
           onReload={props.onReloadUsage}
           onOpenSession={props.onOpenSession}

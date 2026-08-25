@@ -67,9 +67,10 @@ import {
   type CanonicalUsageRepairStats,
 } from './canonical-usage-reader.js';
 
-/** One bounded repair pass plus the snapshot ticket that owns it. */
+/** One bounded repair pass plus the snapshot ticket and Session that own it. */
 interface UsageRepairEntry {
   readonly snapshot: string | undefined;
+  readonly sessionId: string | undefined;
   settled: boolean;
   readonly task: Promise<CanonicalUsageRepairStats>;
 }
@@ -177,16 +178,29 @@ export class HostUsagePricingCoordinator {
   ): Promise<CanonicalUsageRepairStats> {
     const current = this.#usageRepairTask;
     if (current !== undefined) {
-      if (!current.settled) return current.task;
-      if (snapshot !== undefined && current.snapshot === snapshot) return current.task;
-      if (snapshot === undefined && this.#activeUsageQueries > 1) return current.task;
+      if (!current.settled && current.snapshot === snapshot && current.sessionId === sessionId)
+        return current.task;
+      if (
+        current.settled &&
+        snapshot !== undefined &&
+        current.snapshot === snapshot &&
+        current.sessionId === sessionId
+      )
+        return current.task;
+      if (
+        current.settled &&
+        snapshot === undefined &&
+        this.#activeUsageQueries > 1 &&
+        current.sessionId === sessionId
+      )
+        return current.task;
     }
     // One pass per snapshot ticket, scoped to the queried Session: repair
     // writes must never leak another Session's qualification into this
     // answer, and a paginating reader must see one consistent qualification
     // across its pages.
     const task = repairCanonicalUsageProjection(this.#stores, sessionId);
-    const entry: UsageRepairEntry = { snapshot, settled: false, task };
+    const entry: UsageRepairEntry = { snapshot, sessionId, settled: false, task };
     void task.then(
       () => {
         entry.settled = true;
