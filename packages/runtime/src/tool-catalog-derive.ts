@@ -25,7 +25,6 @@
 
 import {
   MAKA_CATALOG_SURFACES,
-  catalogSurfaceById,
   catalogToolByName,
   unknownBoundToolNames,
   type ToolHostId,
@@ -34,16 +33,7 @@ import type { HostCapabilities } from './skills-context.js';
 import type { ToolGroup } from './tool-availability.js';
 import type { MakaTool } from './tool-runtime.js';
 
-export interface ProductToolSurfacePolicy {
-  readonly disabledSurfaceIds?: Iterable<string>;
-}
-
-export interface NormalizedProductToolSurfacePolicy {
-  readonly disabledSurfaceIds: readonly string[];
-}
-
 export interface ProductToolSurfaceIdentity {
-  readonly policy: NormalizedProductToolSurfacePolicy;
   readonly productToolNames: readonly string[];
 }
 
@@ -105,15 +95,8 @@ function readonlySetSnapshot<T>(values: Iterable<T>): ReadonlySet<T> {
 export function projectEffectiveProductToolSurface(input: {
   host: ToolHostId;
   tools: readonly MakaTool[];
-  policy: ProductToolSurfacePolicy;
 }): EffectiveProductToolSurface {
-  const disabledSurfaceIds = [...new Set(input.policy.disabledSurfaceIds ?? [])].sort();
   const excludedToolNames = new Set<string>();
-  for (const surfaceId of disabledSurfaceIds) {
-    const surface = catalogSurfaceById(surfaceId);
-    if (!surface) throw new Error(`Unknown product-tool surface "${surfaceId}"`);
-    for (const name of surface.toolNames) excludedToolNames.add(name);
-  }
   for (const surface of MAKA_CATALOG_SURFACES) {
     if (surface.hosts[input.host] === 'supported') continue;
     for (const name of surface.toolNames) excludedToolNames.add(name);
@@ -129,9 +112,6 @@ export function projectEffectiveProductToolSurface(input: {
     }),
   );
   const hostCapabilities = buildHostCapabilitiesFromBinding(boundToolNames);
-  const policy = Object.freeze({
-    disabledSurfaceIds: Object.freeze(disabledSurfaceIds),
-  });
   return Object.freeze({
     tools: Object.freeze(tools),
     toolNames,
@@ -142,7 +122,6 @@ export function projectEffectiveProductToolSurface(input: {
     }),
     boundSurfaceIds: Object.freeze(groups.map((group) => group.id)),
     identity: Object.freeze({
-      policy,
       productToolNames: Object.freeze([...productToolNames]),
     }),
   });
@@ -180,7 +159,6 @@ export function buildSearchableToolGroupsFromCatalog(
   const bound = boundToolNames instanceof Set ? boundToolNames : new Set(boundToolNames);
   const groups: ToolGroup[] = [];
   for (const surface of MAKA_CATALOG_SURFACES) {
-    if (surface.availability !== 'searchable') continue;
     if (surface.hosts[host] !== 'supported') continue;
     const toolNames = surface.toolNames.filter((name) => bound.has(name));
     if (toolNames.length === 0) continue;

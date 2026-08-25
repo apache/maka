@@ -36,34 +36,10 @@ function tool(name: string): MakaTool {
 }
 
 describe('projectEffectiveProductToolSurface', () => {
-  it('removes a disabled surface before deriving the effective binding', () => {
-    const surface = projectEffectiveProductToolSurface({
-      host: 'cli',
-      tools: [
-        tool('Bash'),
-        tool('Read'),
-        tool('agent_spawn'),
-        tool('agent_list'),
-        tool('agent_output'),
-        tool('benchmark_progress'),
-        tool('mcp__server__tool'),
-      ],
-      policy: {
-        disabledSurfaceIds: ['agent'],
-      },
-    });
-
-    assert.deepEqual(
-      surface.tools.map((candidate) => candidate.name),
-      ['Bash', 'Read', 'benchmark_progress', 'mcp__server__tool'],
-    );
-  });
-
   it('removes a catalog surface that is unsupported on the selected host', () => {
     const surface = projectEffectiveProductToolSurface({
       host: 'cli',
       tools: [tool('Read'), tool('browser_navigate'), tool('mcp__server__tool')],
-      policy: {},
     });
 
     assert.deepEqual(
@@ -76,7 +52,6 @@ describe('projectEffectiveProductToolSurface', () => {
     const surface = projectEffectiveProductToolSurface({
       host: 'desktop',
       tools: [tool('Read'), tool('Grep')],
-      policy: {},
     });
 
     assert.deepEqual(
@@ -86,20 +61,6 @@ describe('projectEffectiveProductToolSurface', () => {
     assert.deepEqual(surface.boundSurfaceIds, []);
     assert.deepEqual(surface.toolAvailability.groups, []);
     assert.deepEqual(surface.identity.productToolNames, ['Grep', 'Read']);
-  });
-
-  it('rejects unknown surface policy instead of silently weakening it', () => {
-    assert.throws(
-      () =>
-        projectEffectiveProductToolSurface({
-          host: 'cli',
-          tools: [tool('Read')],
-          policy: {
-            disabledSurfaceIds: ['agnet'],
-          },
-        }),
-      /Unknown product-tool surface "agnet"/,
-    );
   });
 });
 

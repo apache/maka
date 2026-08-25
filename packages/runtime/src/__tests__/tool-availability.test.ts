@@ -22,10 +22,11 @@ import { describe, test } from 'node:test';
 import { z } from 'zod';
 
 import {
+  TOOL_SEARCH_MAX_SCHEMA_CHARS,
   TOOL_SEARCH_NAME,
   ToolAvailabilityRuntime,
   toolAvailabilityHash,
-  type ToolSearchTrace,
+  type ToolSearchResult,
 } from '../tool-availability.js';
 import type { MakaTool, MakaToolContext } from '../tool-runtime.js';
 
@@ -138,11 +139,17 @@ describe('ToolAvailabilityRuntime — search activation', () => {
 
   test('a successful search activates bounded matches for the next projection', async () => {
     const active = new Map<string, MakaTool>();
-    const traces: ToolSearchTrace[] = [];
-    const plan = runtime().prepare(active, new Set(), (trace) => traces.push(trace));
+    const traces: Record<string, unknown>[] = [];
+    const plan = runtime().prepare(active);
     const connector = searchTool(plan);
+    const tracedContext: MakaToolContext = {
+      ...ctx,
+      emitRunTrace: (type, _message, data) => {
+        if (type === 'tool_searched') traces.push(data ?? {});
+      },
+    };
 
-    assert.deepEqual(await connector.impl({ query: 'edit document', limit: 1 }, ctx), {
+    assert.deepEqual(await connector.impl({ query: 'edit document', limit: 1 }, tracedContext), {
       activated: ['docs_edit'],
     });
     assert.ok(active.has('docs_edit'), 'turn-owned activation map changed');
@@ -178,6 +185,92 @@ describe('ToolAvailabilityRuntime — search activation', () => {
       connector.impl({ query: 'browser click', limit: 1 }, ctx),
     ]);
     assert.deepEqual([...active.keys()].sort(), ['browser_click', 'docs_read']);
+  });
+
+  test('already-active matches do not consume a later search limit or schema budget', async () => {
+    const active = new Map<string, MakaTool>();
+    const largeDescription = `Perform a calendar action ${'x'.repeat(40 * 1024)}`;
+    const plan = new ToolAvailabilityRuntime(
+      [tool('calendar_primary', largeDescription), tool('calendar_secondary', largeDescription)],
+      {
+        groups: [
+          {
+            id: 'calendar',
+            toolNames: ['calendar_primary', 'calendar_secondary'],
+          },
+        ],
+      },
+      invalid,
+    ).prepare(active);
+    const connector = searchTool(plan);
+
+    const first = (await connector.impl(
+      { query: 'calendar action', limit: 1 },
+      ctx,
+    )) as ToolSearchResult;
+    const second = (await connector.impl(
+      { query: 'calendar action', limit: 2 },
+      ctx,
+    )) as ToolSearchResult;
+
+    assert.equal(first.activated.length, 1);
+    assert.equal(second.activated.length, 1);
+    assert.notEqual(second.activated[0], first.activated[0]);
+    assert.equal(active.size, 2);
+  });
+
+  test('reports a top-ranked tool whose schema exceeds the per-search ceiling', async () => {
+    const plan = new ToolAvailabilityRuntime(
+      [tool('oversized_target', `Oversized target ${'x'.repeat(TOOL_SEARCH_MAX_SCHEMA_CHARS)}`)],
+      { groups: [{ id: 'oversized', toolNames: ['oversized_target'] }] },
+      invalid,
+    ).prepare(new Map());
+
+    const connector = searchTool(plan);
+    const result = (await connector.impl({ query: 'oversized target' }, ctx)) as ToolSearchResult;
+
+    assert.deepEqual(result.activated, []);
+    assert.equal(result.blocked?.name, 'oversized_target');
+    assert.equal(result.blocked?.reason, 'schema_too_large');
+    assert.ok((result.blocked?.schemaChars ?? 0) > TOOL_SEARCH_MAX_SCHEMA_CHARS);
+    assert.deepEqual(
+      await connector.toModelOutput?.({ toolCallId: 'tc', input: {}, output: result }),
+      {
+        type: 'json',
+        value: { activated: [], blocked: result.blocked },
+      },
+    );
+  });
+
+  test('stops at the schema ceiling instead of silently changing relevance order', async () => {
+    const largeDescription = `Budget branch ${'x'.repeat(40 * 1024)}`;
+    const active = new Map<string, MakaTool>();
+    const plan = new ToolAvailabilityRuntime(
+      [
+        tool('budget_branch_primary', largeDescription),
+        tool('budget_branch_secondary', largeDescription),
+        tool('lower_ranked_tool', 'A lower ranked budget branch tool'),
+      ],
+      {
+        groups: [
+          {
+            id: 'budget',
+            toolNames: ['budget_branch_primary', 'budget_branch_secondary', 'lower_ranked_tool'],
+          },
+        ],
+      },
+      invalid,
+    ).prepare(active);
+
+    const result = (await searchTool(plan).impl(
+      { query: 'budget branch', limit: 3 },
+      ctx,
+    )) as ToolSearchResult;
+
+    assert.equal(result.activated.length, 1);
+    assert.equal(result.blocked?.reason, 'schema_budget_exhausted');
+    assert.equal(active.size, 1);
+    assert.equal(active.has('lower_ranked_tool'), false);
   });
 
   test('required orchestration tools are visible without changing activation state', () => {

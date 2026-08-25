@@ -53,8 +53,6 @@ export interface CatalogSurfaceDef {
   readonly id: string;
   readonly label: string;
   readonly description: string;
-  /** v1 grouped packs participate in provider-independent tool search. */
-  readonly availability: 'searchable';
   readonly toolNames: readonly string[];
   readonly hosts: Readonly<Record<ToolHostId, ToolHostSupport>>;
 }
@@ -88,7 +86,6 @@ function freezeSurface(surface: CatalogSurfaceDef): CatalogSurfaceDef {
     id: surface.id,
     label: surface.label,
     description: surface.description,
-    availability: surface.availability,
     toolNames: Object.freeze([...surface.toolNames]),
     hosts: Object.freeze({ ...surface.hosts }),
   });
@@ -168,7 +165,6 @@ export const MAKA_CATALOG_SURFACES: readonly CatalogSurfaceDef[] = Object.freeze
       label: 'Rive',
       description:
         'Durable multi-agent Rive workflows: validate/import/run/status, scheduler, retries.',
-      availability: 'searchable' as const,
       toolNames: ['RiveWorkflow'],
       hosts: desktopOnlyHosts(),
     },
@@ -176,7 +172,6 @@ export const MAKA_CATALOG_SURFACES: readonly CatalogSurfaceDef[] = Object.freeze
       id: 'browser',
       label: 'Browser',
       description: 'Drive the embedded browser: navigate, snapshot, click, type, wait, extract.',
-      availability: 'searchable' as const,
       toolNames: [
         'browser_navigate',
         'browser_snapshot',
@@ -191,7 +186,6 @@ export const MAKA_CATALOG_SURFACES: readonly CatalogSurfaceDef[] = Object.freeze
       id: 'computer_use',
       label: 'Computer',
       description: 'Observe and operate an explicitly approved local application.',
-      availability: 'searchable' as const,
       toolNames: ['maka_computer'],
       hosts: desktopOnlyHosts(),
     },
@@ -199,7 +193,6 @@ export const MAKA_CATALOG_SURFACES: readonly CatalogSurfaceDef[] = Object.freeze
       id: 'agent',
       label: 'Agent',
       description: 'Spawn, fan out, and inspect foreground child agents.',
-      availability: 'searchable' as const,
       toolNames: [
         'agent_spawn',
         'agent_list',

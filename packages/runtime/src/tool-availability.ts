@@ -60,15 +60,11 @@ export interface ToolAvailabilityConfig {
 
 export interface ToolSearchResult {
   readonly activated: string[];
-}
-
-export interface ToolSearchTrace {
-  readonly query: string;
-  readonly requestedLimit: number;
-  readonly ranked: readonly string[];
-  readonly activated: readonly string[];
-  readonly newlyActivated: readonly string[];
-  readonly schemaChars: number;
+  readonly blocked?: {
+    readonly name: string;
+    readonly reason: 'schema_too_large' | 'schema_budget_exhausted';
+    readonly schemaChars: number;
+  };
 }
 
 export function toolAvailabilityHash(config: ToolAvailabilityConfig): `sha256:${string}` {
@@ -209,7 +205,6 @@ export class ToolAvailabilityRuntime {
   prepare(
     activeTools: Map<string, MakaTool>,
     requiredToolNames: ReadonlySet<string> = new Set(),
-    onSearch?: (trace: ToolSearchTrace) => void,
   ): ToolAvailabilityPlan {
     if (!this.searchIndex) {
       const canonical = canonicalizeToolSet(this.tools, this.invalidTool);
@@ -221,7 +216,7 @@ export class ToolAvailabilityRuntime {
       };
     }
 
-    const connector = this.buildSearchConnector(activeTools, onSearch);
+    const connector = this.buildSearchConnector(activeTools);
     const allTools = [...this.tools, connector];
     const canonical = canonicalizeToolSet(allTools, this.invalidTool);
     const knownNames = new Set(canonical.providerTools.map((tool) => tool.name));
@@ -251,7 +246,6 @@ export class ToolAvailabilityRuntime {
 
   private buildSearchConnector(
     activeTools: Map<string, MakaTool>,
-    onSearch: ((trace: ToolSearchTrace) => void) | undefined,
   ): MakaTool<{ query: string; limit?: number }, ToolSearchResult> {
     return {
       name: TOOL_SEARCH_NAME,
@@ -270,37 +264,55 @@ export class ToolAvailabilityRuntime {
       impl: ({ query, limit = TOOL_SEARCH_DEFAULT_LIMIT }, context) => {
         const normalizedQuery = query.trim();
         const ranked = this.searchIndex!.search(normalizedQuery)
+          .map((result) => String(result.id))
+          .filter((name) => !activeTools.has(name))
           .slice(0, TOOL_SEARCH_MAX_LIMIT)
-          .map((result) => String(result.id));
+          .filter((name) => this.searchableNames.has(name));
         const activated: string[] = [];
+        let blocked: ToolSearchResult['blocked'];
         let schemaChars = 0;
         for (const name of ranked) {
           if (activated.length >= limit) break;
           const tool = this.toolsByName.get(name);
-          if (!tool || !this.searchableNames.has(name)) continue;
+          if (!tool) continue;
           const chars = toolSchemaCharsForDiagnostics([tool], [tool.name]);
-          if (schemaChars + chars > TOOL_SEARCH_MAX_SCHEMA_CHARS) continue;
+          if (chars > TOOL_SEARCH_MAX_SCHEMA_CHARS) {
+            blocked = { name, reason: 'schema_too_large', schemaChars: chars };
+            break;
+          }
+          if (schemaChars + chars > TOOL_SEARCH_MAX_SCHEMA_CHARS) {
+            blocked = { name, reason: 'schema_budget_exhausted', schemaChars: chars };
+            break;
+          }
           activated.push(name);
           schemaChars += chars;
         }
-        const newlyActivated = activated.filter((name) => !activeTools.has(name));
         for (const name of activated) activeTools.set(name, this.toolsByName.get(name)!);
-        const trace = {
+        const result: ToolSearchResult = {
+          activated,
+          ...(blocked ? { blocked } : {}),
+        };
+        context.emitRunTrace?.('tool_searched', 'Deferred tools searched', {
           query: normalizedQuery,
           requestedLimit: limit,
           ranked,
           activated,
-          newlyActivated,
+          newlyActivated: activated,
           schemaChars,
-        } satisfies ToolSearchTrace;
-        onSearch?.(trace);
-        context.emitRunTrace?.('tool_searched', 'Deferred tools searched', { ...trace });
-        return { activated };
+          ...(blocked ? { blocked } : {}),
+        });
+        return result;
       },
-      toModelOutput: ({ output }) => ({
-        type: 'json',
-        value: { activated: [...(output as ToolSearchResult).activated] },
-      }),
+      toModelOutput: ({ output }) => {
+        const result = output as ToolSearchResult;
+        return {
+          type: 'json',
+          value: {
+            activated: [...result.activated],
+            ...(result.blocked ? { blocked: { ...result.blocked } } : {}),
+          },
+        };
+      },
     };
   }
 
@@ -347,7 +359,8 @@ function renderInventory(groups: readonly CatalogGroup[]): string {
   return [
     'Search the deferred tools bound to this run. A successful search activates the',
     'bounded top matches; their complete callable definitions become visible on the',
-    'next provider step. Search again to expand the active set.',
+    'next provider step. Search again to expand the active set. A blocked result means',
+    'the highest remaining match did not fit this search schema budget.',
     '',
     'Searchable tool inventory (group and canonical name only):',
     ...lines,

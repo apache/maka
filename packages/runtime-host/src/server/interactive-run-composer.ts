@@ -186,7 +186,6 @@ export function createInteractiveRunComposer(input: InteractiveRunComposerInput)
   const productSurface = projectEffectiveProductToolSurface({
     host: 'runtime-host',
     tools: selectedTools,
-    policy: {},
   });
   // A bound tool list is an exact child/local activation ceiling. Dynamic
   // capabilities must be included by the authority that constructs that list.
