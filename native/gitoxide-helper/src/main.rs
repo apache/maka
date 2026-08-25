@@ -37,6 +37,7 @@ const MAX_REPOSITORY_METADATA_ENTRIES: u64 = 16_384;
 const MAX_REPOSITORY_METADATA_DEPTH: u64 = 64;
 const MAX_IMPORT_FILE_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_ATTRIBUTES_FILE_BYTES: u64 = 64 * 1024;
+const MAX_GIT_ATTRIBUTES_LINE_BYTES_V2: usize = 2048;
 const MAX_IMPORT_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 const MAX_IMPORT_FILES: u64 = 200_000;
 const MAX_COMMIT_OBJECT_BYTES: u64 = 1024 * 1024;
@@ -842,41 +843,30 @@ fn fold_managed_path_v2(value: &str) -> String {
 fn validate_managed_attributes_v2(data: &[u8]) -> Result<(), &'static str> {
     let content = std::str::from_utf8(data).map_err(|_| "unsupported_source_attributes")?;
     for raw_line in content.split('\n') {
-        if raw_line
-            .chars()
-            .any(|character| character.is_whitespace() && !is_git_attributes_blank_v2(character))
-        {
+        if raw_line.len() >= MAX_GIT_ATTRIBUTES_LINE_BYTES_V2 {
             return Err("unsupported_source_attributes");
         }
-        let line = raw_line.trim_matches(is_git_attributes_blank_v2);
-        if line.is_empty() || line.starts_with('#') {
+        if raw_line.is_empty() {
             continue;
         }
-        if line.contains('\\') || line.contains('\0') {
-            return Err("unsupported_source_attributes");
+        if let Some(comment) = raw_line.strip_prefix('#') {
+            if comment.chars().any(char::is_control) {
+                return Err("unsupported_source_attributes");
+            }
+            continue;
         }
-        let mut fields = line
-            .split(is_git_attributes_blank_v2)
-            .filter(|field| !field.is_empty());
-        let pattern = fields.next().ok_or("unsupported_source_attributes")?;
-        let attributes = fields.collect::<Vec<_>>();
-        let supported = if pattern == "*" {
-            attributes.len() == 2
-                && attributes.contains(&"text=auto")
-                && attributes.contains(&"eol=lf")
-        } else {
-            is_portable_export_ignore_pattern_v2(pattern)
-                && attributes.as_slice() == ["export-ignore"]
-        };
-        if !supported {
-            return Err("unsupported_source_attributes");
+        if raw_line == "* text=auto eol=lf" {
+            continue;
         }
+        if raw_line
+            .strip_suffix(" export-ignore")
+            .is_some_and(is_portable_export_ignore_pattern_v2)
+        {
+            continue;
+        }
+        return Err("unsupported_source_attributes");
     }
     Ok(())
-}
-
-fn is_git_attributes_blank_v2(character: char) -> bool {
-    matches!(character, ' ' | '\t' | '\r')
 }
 
 fn is_portable_export_ignore_pattern_v2(pattern: &str) -> bool {
@@ -892,6 +882,9 @@ fn is_literal_attributes_component_v2(component: &str) -> bool {
     !component.is_empty()
         && is_supported_source_component(component)
         && !component.contains(['[', ']'])
+        && !component
+            .chars()
+            .any(|character| character.is_whitespace() || character.is_control())
 }
 
 fn is_windows_reserved_device_name(component: &str) -> bool {
@@ -1173,7 +1166,7 @@ mod tests {
     fn managed_attributes_v2_accepts_only_the_deterministic_subset() {
         assert_eq!(
             validate_managed_attributes_v2(
-                b"# portable Maka attributes\n\n* eol=lf text=auto\n/docs export-ignore\n"
+                b"# portable Maka attributes\n\n* text=auto eol=lf\n/docs export-ignore\n"
             ),
             Ok(())
         );
@@ -1212,6 +1205,38 @@ mod tests {
             "\u{00a0}* text=auto eol=lf\n".as_bytes(),
             b"\x0b* text=auto eol=lf\n".as_slice(),
             b"\x0c* text=auto eol=lf\n".as_slice(),
+        ] {
+            assert_eq!(
+                validate_managed_attributes_v2(unsupported),
+                Err("unsupported_source_attributes")
+            );
+        }
+    }
+
+    #[test]
+    fn managed_attributes_v2_matches_gits_line_byte_limit() {
+        let accepted = format!("/{} export-ignore", "a".repeat(2032));
+        assert_eq!(accepted.len(), 2047);
+        assert_eq!(validate_managed_attributes_v2(accepted.as_bytes()), Ok(()));
+
+        let rejected = format!("/{} export-ignore", "a".repeat(2033));
+        assert_eq!(rejected.len(), 2048);
+        assert_eq!(
+            validate_managed_attributes_v2(rejected.as_bytes()),
+            Err("unsupported_source_attributes")
+        );
+    }
+
+    #[test]
+    fn managed_attributes_v2_rejects_noncanonical_serializations() {
+        for unsupported in [
+            b"* eol=lf text=auto\n".as_slice(),
+            b" * text=auto eol=lf\n".as_slice(),
+            b"*  text=auto eol=lf\n".as_slice(),
+            b"* text=auto eol=lf \n".as_slice(),
+            b"* text=auto eol=lf\r\n".as_slice(),
+            b"/docs  export-ignore\n".as_slice(),
+            b" /docs export-ignore\n".as_slice(),
         ] {
             assert_eq!(
                 validate_managed_attributes_v2(unsupported),

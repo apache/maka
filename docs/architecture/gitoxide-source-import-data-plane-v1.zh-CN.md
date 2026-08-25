@@ -78,9 +78,10 @@ hook/filter/submodule/LFS，也不接入 T1/T2。
   `Unicode 17.0 NFC → Unicode 16.0 Default Full Case Folding（Non-Turkic）→ Unicode 17.0 NFC`
   collision；原路径与 folded key
   分别有单路径和累计 byte budget；
-- `.gitattributes` 必须使用规范小写路径、每个 blob 不超过 64 KiB，并且只包含空行/注释、
-  `* text=auto eol=lf` 或 `/<portable-literal-path> export-ignore`；filter、encoding、ident、未知规则和
-  escaped/wildcard path 全部在 destination claim 前 fail closed；
+- `.gitattributes` 必须使用规范小写路径、每个 blob 不超过 64 KiB、每一原始行短于 2048 bytes，并且
+  只包含空行/无控制字符注释、精确的 `* text=auto eol=lf` 或
+  `/<portable-literal-path> export-ignore`；attribute 换序、前后空白、额外分隔空格、CRLF、tab、filter、
+  encoding、ident、未知规则和 escaped/wildcard path 全部在 destination claim 前 fail closed；
 - repository inspection deadline 为 5 秒；source import deadline 为 10 分钟。deadline 从 public 入口
   开始覆盖 artifact/path preflight 与 helper 执行；2 GiB/200,000 files 是输入上限，不是十分钟内一定
   成功的 SLA；若 helper 已启动，超时后由共享 child lifecycle 有界终止并 fail closed；若仍在不可取消

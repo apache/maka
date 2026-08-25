@@ -525,6 +525,13 @@ fn rejects_non_git_blank_characters_before_claiming_the_destination() {
 }
 
 #[test]
+fn rejects_a_git_ignored_2048_byte_attribute_line_before_claiming_the_destination() {
+    let attributes = format!("/{} export-ignore", "a".repeat(2033));
+    assert_eq!(attributes.len(), 2048);
+    assert_attributes_import_rejected(attributes.as_bytes(), "overlong-attribute-line.git");
+}
+
+#[test]
 fn rejects_oversized_attributes_before_claiming_the_destination() {
     let fixture = RepositoryFixture::sha1_with_commit();
     fs::write(

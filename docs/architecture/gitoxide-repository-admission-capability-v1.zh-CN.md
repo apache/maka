@@ -102,15 +102,17 @@ v2 只接受 canonical Git tree ordering 以及 raw mode token `40000`、`100644
 八进制别名和未排序 tree 都在 destination claim 前拒绝。路径统一拒绝 Windows reserved/control
 characters、device names（含 extension 与小写 superscript 形式）、trailing dot/space 与 `.git`。
 `.gitattributes` 只允许规范小写拼写；大小写、Unicode case-fold 或尾部别名继续拒绝。每个 attributes
-blob 最多 64 KiB、必须是 UTF-8，且只接受以下行：
+blob 最多 64 KiB、必须是 UTF-8；每一原始行必须短于 Git 的 2048-byte 上限，并且只接受以下精确
+byte grammar：
 
 ```gitattributes
 * text=auto eol=lf
 /<portable-literal-path> export-ignore
 ```
 
-空行和注释允许；attribute 顺序可交换。外部 `filter`、`working-tree-encoding`、`ident`、未知 attribute、
-escaped/wildcard path 及其他未证明语义都在 destination claim 前以
+空行和以 `#` 开头且不含控制字符的注释允许。规则不接受 attribute 换序、前后空白、额外分隔空格、
+CRLF 或 tab；literal path 不接受任何 whitespace/control。外部 `filter`、`working-tree-encoding`、
+`ident`、未知 attribute、escaped/wildcard path 及其他未证明语义都在 destination claim 前以
 `unsupported_source_attributes` fail closed。collision key 的版本化算法固定为：
 
 ```text
