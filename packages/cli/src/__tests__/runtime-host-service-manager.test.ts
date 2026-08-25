@@ -37,6 +37,7 @@ import {
   RUNTIME_HOST_OPERATOR_ACCESS_MANAGEMENT_CAPABILITY,
   RUNTIME_HOST_OPERATOR_CAPABILITY_REQUEST_ENV,
   RUNTIME_HOST_OPERATOR_PROCESS_LIFETIME_LOCK_CAPABILITY,
+  RUNTIME_HOST_SERVICE_LOG_MAX_BYTES,
   type RuntimeHostOperatorCapability,
   type RuntimeHostServiceManagementFrame,
 } from '@maka/runtime-host/operator';
@@ -370,6 +371,11 @@ describe('managed Runtime Host service', () => {
     systemd.setUnitDropInPaths(updateTimerName, []);
     await writeFile(updateTimerPath, '[Timer]\n# stale\n', 'utf8');
     await assert.rejects(
+      repairBackend.verifyReplacementPreconditions(managedConfig),
+      (error: unknown) =>
+        error instanceof RuntimeHostServiceManagerError && error.code === 'target_mismatch',
+    );
+    await assert.rejects(
       repairBackend.verifyDeployment(managedConfig),
       (error: unknown) =>
         error instanceof RuntimeHostServiceManagerError && error.code === 'target_mismatch',
@@ -389,16 +395,36 @@ describe('managed Runtime Host service', () => {
       ),
     );
     await repairBackend.verifyDeployment(managedConfig);
-    await repairBackend.start();
+    await repairBackend.replace(managedConfig);
     assert.ok(
       systemd.calls.some(([command, target]) => command === 'start' && target === updateTimerName),
     );
+
+    const diagnosticBackend = createSystemdUserRuntimeHostService(serviceId, {
+      env,
+      homeDir,
+      uid: 1000,
+      runSystemctl: systemd.run,
+      runLoginctl: async () => success('yes\n'),
+      runJournalctl: async (args) =>
+        success(
+          args.includes(updateServiceName)
+            ? 'scheduler reconciliation failed'
+            : 'h'.repeat(RUNTIME_HOST_SERVICE_LOG_MAX_BYTES),
+        ),
+    });
+    const logs = await diagnosticBackend.logs();
+    assert.match(logs, /scheduler reconciliation failed/u);
+    assert.ok(Buffer.byteLength(logs) <= RUNTIME_HOST_SERVICE_LOG_MAX_BYTES);
 
     const { managedDeploymentRoot: _managedDeploymentRoot, ...unmanagedConfig } = managedConfig;
     await repairBackend.install(unmanagedConfig);
     await repairBackend.verifyDeployment(unmanagedConfig);
     await assert.rejects(readFile(updateServicePath, 'utf8'), { code: 'ENOENT' });
     await assert.rejects(readFile(updateTimerPath, 'utf8'), { code: 'ENOENT' });
+    await repairBackend.verifyReplacementPreconditions(managedConfig);
+    await repairBackend.replace(managedConfig);
+    await repairBackend.verifyDeployment(managedConfig);
 
     const root = await resolveStorageRoot({ path: rootPath, kind: 'interactive' });
     await writeFile(configPath, '{not-json', 'utf8');
@@ -1602,6 +1628,10 @@ describe('managed Runtime Host service', () => {
             );
           }
         },
+        retire: async () => {
+          assert.equal(insideLifecycle, true);
+          order.push('force-retire');
+        },
       }),
       withLifecycleLock: async <T>(_root: string, operation: () => Promise<T>) => {
         assert.equal(insideLifecycle, false);
@@ -1878,7 +1908,7 @@ describe('managed Runtime Host service', () => {
     output = '';
     operatorStatusFailure = true;
     assert.equal(await runManagedRuntimeHostUpdateCli(options, overrides), 0);
-    assert.deepEqual(order, ['stop', 'activate', 'replace', 'cleanup']);
+    assert.deepEqual(order, ['force-retire', 'activate', 'replace', 'cleanup']);
     operatorStatusFailure = false;
 
     order.length = 0;
@@ -1909,7 +1939,7 @@ describe('managed Runtime Host service', () => {
     output = '';
     expectAllowInterruptActiveTasks = true;
     assert.equal(await runManagedRuntimeHostUpdateCli(options, overrides), 0);
-    assert.deepEqual(order, ['retire', 'stop', 'activate', 'replace', 'cleanup']);
+    assert.deepEqual(order, ['retire', 'force-retire', 'activate', 'replace', 'cleanup']);
     assert.equal(legacyLeaseCalls, 1);
 
     statusReads = 0;

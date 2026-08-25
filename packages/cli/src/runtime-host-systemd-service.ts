@@ -22,6 +22,7 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { resolveXdgConfigHome } from '@maka/storage/workspace-root';
 import {
+  formatRuntimeHostServiceLogs,
   removeRuntimeHostServiceFile,
   RuntimeHostServiceManagerError,
   type RuntimeHostManagedServiceConfig,
@@ -145,14 +146,20 @@ export function createSystemdUserRuntimeHostService(
     },
     replace: async (config) => {
       await validateRuntimeHostServiceLaunch(config);
-      const previous = await captureSystemdDeployment(context.unitPath, readStatus);
+      const [previous, previousScheduler] = await Promise.all([
+        captureSystemdDeployment(context.unitPath, readStatus),
+        captureSystemdUpdateScheduler(scheduler),
+      ]);
+      let schedulerMutationStarted = false;
       try {
-        // The stable scheduler may be the caller; only explicit install/repair may reload it.
         await applySystemdDeployment(context, config);
+        await convergeSystemdUpdateSchedulerForReplacement(scheduler, config, () => {
+          schedulerMutationStarted = true;
+        });
       } catch (error) {
         await restoreFailedSystemdDeployment(
           previous,
-          undefined,
+          schedulerMutationStarted ? previousScheduler : undefined,
           context,
           scheduler,
           error,
@@ -161,7 +168,7 @@ export function createSystemdUserRuntimeHostService(
       }
     },
     verifyReplacementPreconditions: (config) =>
-      verifySystemdUpdateSchedulerDesiredState(scheduler, config, false),
+      verifySystemdUpdateSchedulerReplacementState(scheduler, config),
     verifyDeployment: async (config) => {
       await validateRuntimeHostServiceLaunch(config);
       const [status, unit] = await Promise.all([
@@ -197,25 +204,33 @@ export function createSystemdUserRuntimeHostService(
     },
     retire: () => runLifecycleAction(context, 'stop'),
     logs: async () => {
-      const result = await runJournalctl([
-        '--user-unit',
-        context.unitName,
-        '--user-unit',
-        scheduler.service.unitName,
-        '--no-pager',
-        '--lines=200',
-        '--output=short-iso',
-      ]).catch((error) => {
-        throw new RuntimeHostServiceManagerError(
-          'service_manager_unavailable',
-          'Unable to read Runtime Host service logs',
-          { cause: error },
-        );
-      });
-      if (result.exitCode !== 0) {
-        throw managerError('Reading Runtime Host service logs failed', result);
-      }
-      return result.stdout;
+      const readJournal = async (unitName: string): Promise<string> => {
+        const result = await runJournalctl([
+          '--user-unit',
+          unitName,
+          '--no-pager',
+          '--lines=200',
+          '--output=short-iso',
+        ]).catch((error) => {
+          throw new RuntimeHostServiceManagerError(
+            'service_manager_unavailable',
+            'Unable to read Runtime Host service logs',
+            { cause: error },
+          );
+        });
+        if (result.exitCode !== 0) {
+          throw managerError('Reading Runtime Host service logs failed', result);
+        }
+        return result.stdout;
+      };
+      const [hostLogs, updateLogs] = await Promise.all([
+        readJournal(context.unitName),
+        readJournal(scheduler.service.unitName),
+      ]);
+      return formatRuntimeHostServiceLogs([
+        { label: 'host', logs: hostLogs },
+        { label: 'update', logs: updateLogs },
+      ]);
     },
     uninstall: async () => {
       await removeSystemdUpdateScheduler(scheduler);
@@ -495,6 +510,43 @@ async function verifySystemdUpdateSchedulerDesiredState(
     return;
   }
   await verifySystemdUpdateSchedulerAbsent(context);
+}
+
+async function verifySystemdUpdateSchedulerReplacementState(
+  context: SystemdUpdateSchedulerContext,
+  config: RuntimeHostManagedServiceConfig,
+): Promise<void> {
+  if (!runtimeHostUpdateReconcileLaunchArguments(config)) {
+    await verifySystemdUpdateSchedulerAbsent(context);
+    return;
+  }
+  try {
+    await verifySystemdUpdateScheduler(context, config, false);
+  } catch (error) {
+    if (!isTargetMismatch(error)) throw error;
+    await verifySystemdUpdateSchedulerAbsent(context);
+  }
+}
+
+async function convergeSystemdUpdateSchedulerForReplacement(
+  context: SystemdUpdateSchedulerContext,
+  config: RuntimeHostManagedServiceConfig,
+  onMutation: () => void,
+): Promise<void> {
+  try {
+    await verifySystemdUpdateScheduler(context, config, false);
+    const status = await readSystemdStatus(context.timer);
+    // The active scheduler may be running this replacement.
+    if (status.activeState === 'active') return;
+    onMutation();
+    await ensureSystemdUpdateSchedulerStartedIfInstalled(context);
+  } catch (error) {
+    if (!isTargetMismatch(error)) throw error;
+    await verifySystemdUpdateSchedulerAbsent(context);
+    onMutation();
+    await applySystemdUpdateSchedulerDesiredState(context, config, () => undefined);
+  }
+  await verifySystemdUpdateScheduler(context, config, true);
 }
 
 async function verifySystemdUpdateScheduler(

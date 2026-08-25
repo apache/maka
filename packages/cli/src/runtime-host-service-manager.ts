@@ -102,7 +102,7 @@ export interface RuntimeHostServiceBackend {
   install(config: RuntimeHostManagedServiceConfig): Promise<RuntimeHostServiceDeployment>;
   /** A rejected replacement must restore the previous deployment or report update_incomplete. */
   replace(config: RuntimeHostManagedServiceConfig): Promise<void>;
-  /** Verify derived resources that replacement deliberately leaves untouched. */
+  /** Reject partial or drifted scheduler state before replacement begins. */
   verifyReplacementPreconditions(config: RuntimeHostManagedServiceConfig): Promise<void>;
   /** Verify the persisted deployment definition independently of its running state. */
   verifyDeployment(config: RuntimeHostManagedServiceConfig): Promise<void>;
@@ -729,6 +729,31 @@ export async function removeRuntimeHostServiceFile(path: string, label: string):
       { cause: error },
     );
   }
+}
+
+export function formatRuntimeHostServiceLogs(
+  sources: readonly { readonly label: string; readonly logs: string }[],
+): string {
+  const present = sources.filter(({ logs }) => logs.length > 0);
+  if (present.length === 0) return '';
+  const separatorBytes = present.length - 1;
+  const sourceBudget = Math.floor(
+    (RUNTIME_HOST_SERVICE_LOG_MAX_BYTES - separatorBytes) / present.length,
+  );
+  return present
+    .map(({ label, logs }) => {
+      const heading = `${label}:\n`;
+      return `${heading}${takeUtf8Tail(logs, sourceBudget - Buffer.byteLength(heading))}`;
+    })
+    .join('\n');
+}
+
+function takeUtf8Tail(value: string, maximumBytes: number): string {
+  const encoded = Buffer.from(value);
+  if (encoded.byteLength <= maximumBytes) return value;
+  let start = encoded.byteLength - maximumBytes;
+  while (start < encoded.byteLength && (encoded[start]! & 0xc0) === 0x80) start += 1;
+  return encoded.subarray(start).toString('utf8');
 }
 
 async function prepareServiceConfig(

@@ -22,6 +22,7 @@ import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
+import { RUNTIME_HOST_SERVICE_LOG_MAX_BYTES } from '@maka/runtime-host/operator';
 import {
   createLaunchAgentRuntimeHostService,
   renderLaunchAgentPlist,
@@ -94,6 +95,19 @@ test('installs and removes the update scheduler with a managed LaunchAgent', asy
     await backend.verifyDeployment(config);
     const updatePath = resolveLaunchAgentUpdatePath(SERVICE_ID, homeDir);
     assert.match(await readFile(updatePath, 'utf8'), /reconcile-update/u);
+    const logDirectory = join(homeDir, 'Library', 'Logs', 'Maka', 'runtime-host-services');
+    await Promise.all([
+      writeFile(join(logDirectory, `${LABEL}.stdout.log`), 'h'.repeat(64 * 1024)),
+      writeFile(join(logDirectory, `${LABEL}.stderr.log`), 'host stderr'),
+      writeFile(join(logDirectory, `${UPDATE_LABEL}.stdout.log`), 'update stdout'),
+      writeFile(
+        join(logDirectory, `${UPDATE_LABEL}.stderr.log`),
+        'scheduler reconciliation failed',
+      ),
+    ]);
+    const logs = await backend.logs();
+    assert.match(logs, /scheduler reconciliation failed/u);
+    assert.ok(Buffer.byteLength(logs) <= RUNTIME_HOST_SERVICE_LOG_MAX_BYTES);
 
     const updateBootouts = () =>
       launchctl.calls.filter(
@@ -112,6 +126,11 @@ test('installs and removes the update scheduler with a managed LaunchAgent', asy
 
     await writeFile(updatePath, '<plist>stale</plist>\n', { mode: 0o600 });
     await assert.rejects(
+      backend.verifyReplacementPreconditions(config),
+      (error: unknown) =>
+        error instanceof Error && 'code' in error && error.code === 'target_mismatch',
+    );
+    await assert.rejects(
       backend.verifyDeployment(config),
       (error: unknown) =>
         error instanceof Error && 'code' in error && error.code === 'target_mismatch',
@@ -122,7 +141,7 @@ test('installs and removes the update scheduler with a managed LaunchAgent', asy
     await backend.stop();
     assert.equal(launchctl.updateLoaded, false);
     await backend.verifyDeployment(config);
-    await backend.start();
+    await backend.replace(config);
     assert.equal(launchctl.updateLoaded, true);
 
     const { managedDeploymentRoot: _managedDeploymentRoot, ...unmanagedConfig } = config;
@@ -130,6 +149,10 @@ test('installs and removes the update scheduler with a managed LaunchAgent', asy
     await backend.verifyDeployment(unmanagedConfig);
     assert.equal(await fileExists(updatePath), false);
     assert.equal(launchctl.updateLoaded, false);
+    await backend.verifyReplacementPreconditions(config);
+    await backend.replace(config);
+    await backend.verifyDeployment(config);
+    assert.equal(launchctl.updateLoaded, true);
 
     await backend.uninstall();
     assert.equal(await fileExists(updatePath), false);

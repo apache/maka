@@ -22,6 +22,7 @@ import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { RUNTIME_HOST_SERVICE_LOG_MAX_BYTES } from '@maka/runtime-host/operator';
 import {
+  formatRuntimeHostServiceLogs,
   removeRuntimeHostServiceFile,
   RuntimeHostServiceManagerError,
   type RuntimeHostManagedServiceConfig,
@@ -151,14 +152,20 @@ export function createLaunchAgentRuntimeHostService(
     },
     replace: async (config) => {
       await validateRuntimeHostServiceLaunch(config);
-      const previous = await captureLaunchAgentDeployment(context);
+      const [previous, previousScheduler] = await Promise.all([
+        captureLaunchAgentDeployment(context),
+        captureLaunchAgentDeployment(scheduler),
+      ]);
+      let schedulerMutationStarted = false;
       try {
-        // The stable scheduler may be the caller; only explicit install/repair may reload it.
         await applyLaunchAgentDeployment(context, config);
+        await convergeLaunchAgentUpdateSchedulerForReplacement(scheduler, config, () => {
+          schedulerMutationStarted = true;
+        });
       } catch (error) {
         await restoreFailedLaunchAgentDeployment(
           previous,
-          undefined,
+          schedulerMutationStarted ? previousScheduler : undefined,
           context,
           scheduler,
           error,
@@ -167,7 +174,7 @@ export function createLaunchAgentRuntimeHostService(
       }
     },
     verifyReplacementPreconditions: (config) =>
-      verifyLaunchAgentUpdateSchedulerDesiredState(scheduler, config, false),
+      verifyLaunchAgentUpdateSchedulerReplacementState(scheduler, config),
     verifyDeployment: async (config) => {
       await validateRuntimeHostServiceLaunch(config);
       const [status, plist] = await Promise.all([
@@ -203,14 +210,12 @@ export function createLaunchAgentRuntimeHostService(
         readLogTail(scheduler.stdoutPath),
         readLogTail(scheduler.stderrPath),
       ]);
-      return [
-        stdout && `stdout:\n${stdout}`,
-        stderr && `stderr:\n${stderr}`,
-        updateStdout && `update stdout:\n${updateStdout}`,
-        updateStderr && `update stderr:\n${updateStderr}`,
-      ]
-        .filter(Boolean)
-        .join('\n');
+      return formatRuntimeHostServiceLogs([
+        { label: 'stdout', logs: stdout },
+        { label: 'stderr', logs: stderr },
+        { label: 'update stdout', logs: updateStdout },
+        { label: 'update stderr', logs: updateStderr },
+      ]);
     },
     uninstall: async () => {
       await removeLaunchAgentUpdateScheduler(scheduler);
@@ -434,6 +439,43 @@ async function verifyLaunchAgentUpdateSchedulerDesiredState(
     return;
   }
   await verifyLaunchAgentUpdateSchedulerAbsent(context);
+}
+
+async function verifyLaunchAgentUpdateSchedulerReplacementState(
+  context: LaunchAgentContext,
+  config: RuntimeHostManagedServiceConfig,
+): Promise<void> {
+  if (!runtimeHostUpdateReconcileLaunchArguments(config)) {
+    await verifyLaunchAgentUpdateSchedulerAbsent(context);
+    return;
+  }
+  try {
+    await verifyLaunchAgentUpdateScheduler(context, config, false);
+  } catch (error) {
+    if (!isTargetMismatch(error)) throw error;
+    await verifyLaunchAgentUpdateSchedulerAbsent(context);
+  }
+}
+
+async function convergeLaunchAgentUpdateSchedulerForReplacement(
+  context: LaunchAgentContext,
+  config: RuntimeHostManagedServiceConfig,
+  onMutation: () => void,
+): Promise<void> {
+  try {
+    await verifyLaunchAgentUpdateScheduler(context, config, false);
+    const status = await readLaunchAgentStatus(context);
+    // The loaded scheduler may be running this replacement.
+    if (status.loaded) return;
+    onMutation();
+    await ensureLaunchAgentLoadedIfInstalled(context);
+  } catch (error) {
+    if (!isTargetMismatch(error)) throw error;
+    await verifyLaunchAgentUpdateSchedulerAbsent(context);
+    onMutation();
+    await applyLaunchAgentUpdateSchedulerDesiredState(context, config, () => undefined);
+  }
+  await verifyLaunchAgentUpdateScheduler(context, config, true);
 }
 
 async function verifyLaunchAgentUpdateScheduler(

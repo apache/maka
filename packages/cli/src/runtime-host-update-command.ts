@@ -345,9 +345,10 @@ export async function runManagedRuntimeHostUpdateCli(
             if (!options.allowInterruptActiveTasks) {
               retirement = activeTasksRetirementFrame(status);
             } else {
-              const forced = await deps.withLifecycleLock(options.clientDataRoot, () =>
-                deps.manage({ ...common, action: 'stop' }, backend),
-              );
+              const forced = await deps.withLifecycleLock(options.clientDataRoot, async () => {
+                await backend.retire();
+                return deps.manage({ ...common, action: 'status' }, backend);
+              });
               if (
                 forced.service.active ||
                 forced.service.pid !== null ||
