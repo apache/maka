@@ -28,7 +28,12 @@ import type { CreateSessionInput, TurnOrchestration } from '@maka/core/runtime-i
 import type { UserQuestionResponse } from '@maka/core/user-question';
 import type { ContextDiagnostics } from '@maka/runtime/context-diagnostics';
 import type { SkillInvocationResult } from '@maka/core/skill-invocation';
-import type { GoalControlAction, GoalProjection } from '@maka/runtime-host/protocol';
+import type {
+  GoalControlAction,
+  GoalProjection,
+  SessionMailboxSendResult,
+  SessionMailboxTarget,
+} from '@maka/runtime-host/protocol';
 
 export interface MakaSessionMoveResult {
   previousCwd: string;
@@ -90,6 +95,8 @@ export class SkillInvocationBlockedError extends Error {
 
 export interface MakaSessionDriver {
   listSessions(): Promise<SessionSummary[]>;
+  listMailboxTargets?(): Promise<readonly SessionMailboxTarget[]>;
+  sendMailboxMessage?(targetSessionId: string, text: string): Promise<SessionMailboxSendResult>;
   getSessionResumeAvailability?(session: SessionSummary): Promise<SessionResumeAvailability>;
   preparePrompt(
     prompt: string,

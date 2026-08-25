@@ -74,6 +74,7 @@ export * from './project-catalog.js';
 export * from './project-catalog-change.js';
 export * from './execution-inspect.js';
 export * from './external-session.js';
+export * from './session-mailbox.js';
 export * from './message.js';
 export * from './operations.js';
 export * from './runtime-resource.js';
@@ -91,7 +92,9 @@ export const RUNTIME_HOST_REGISTRATION_SCHEMA_VERSION = 1 as const;
 export const RUNTIME_HOST_PROTOCOL_VERSION = 0 as const;
 // Increment when the same protocol version no longer guarantees safe Client-Host
 // interoperability. Mismatches are rejected before domain commands are admitted.
-export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 48 as const;
+export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 49 as const;
+// 49: Session mailbox target discovery and durable cross-Session delivery.
+// Epoch-48 peers do not know these closed operation keys.
 // 48: Session branch creation accepts an explicit Side Conversation intent.
 // Older peers reject the strict input shape or cannot apply its snapshot semantics.
 // 47: Project registration can carry an explicit location preference. Epoch-46

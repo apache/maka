@@ -107,6 +107,7 @@
     "./usage-stats/bucket-key": "./dist/usage-stats/bucket-key.js",
     "./usage-record-schema": "./dist/usage-record-schema.js",
     "./session-send-projection": "./dist/session-send-projection.js",
+    "./session-mailbox": "./dist/session-mailbox.js",
     "./session-name": "./dist/session-name.js",
     "./tool-catalog": "./dist/tool-catalog.js",
     "./thread-search": "./dist/thread-search.js",

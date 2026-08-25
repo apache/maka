@@ -19,7 +19,7 @@
 
 import { memo, useEffect, useMemo, useRef, useState, type ComponentPropsWithoutRef, type ReactNode } from 'react';
 import { useMountedRef } from './use-mounted-ref.js';
-import { ICON_SIZE, AlertOctagon, Ban, Check, Copy, GitBranch, Info, Pencil, RefreshCcw, Timer } from './icons.js';
+import { ICON_SIZE, AlertOctagon, ArrowDown, ArrowUp, Ban, Check, Copy, GitBranch, Info, Pencil, RefreshCcw, Timer } from './icons.js';
 import { type ClipboardCopyPhase, useClipboardCopyFeedback } from './clipboard-feedback.js';
 import { Markdown } from './markdown.js';
 import {
@@ -59,6 +59,7 @@ import {
 } from '@maka/core/events';
 import {
   finalAssistantReplyText,
+  type ChatItem,
   type TurnTimelineItem,
   type TurnViewModel,
 } from './materialize.js';
@@ -172,6 +173,7 @@ const UserMessageBody = memo(function UserMessageBody(props: {
   attachments?: readonly AttachmentRef[];
   quotes?: readonly QuoteRef[];
   inlineReferences?: readonly InlineReference[];
+  sessionMailbox?: ChatItem['sessionMailbox'];
   onReadAttachmentBytes?: ReadAttachmentBytes;
   /** When set on a user message, show an edit affordance that starts a revision draft. */
   onEditUserMessage?: () => void;
@@ -185,6 +187,13 @@ const UserMessageBody = memo(function UserMessageBody(props: {
   const editActionLabel = props.editDisabled
     ? (props.editDisabledReason ?? copyText.editMessageDisabledRunning)
     : copyText.editMessage;
+  const renderedText = props.inlineReferences ? (
+    <InlineReferenceText text={props.text} references={props.inlineReferences} />
+  ) : (
+    <ChatTokenizedText tokens={legacySentSkillTokens(props.text)}>
+      {props.text}
+    </ChatTokenizedText>
+  );
   const userMetadata = (
     <ChatMessageMetadata
       className="maka-message-meta"
@@ -261,16 +270,34 @@ const UserMessageBody = memo(function UserMessageBody(props: {
         </HStack>
       ) : null}
       <ChatMessageBubble
-        className="maka-chat-message-bubble maka-chat-message-bubble-user"
+        className={`maka-chat-message-bubble maka-chat-message-bubble-user${props.sessionMailbox ? ' maka-session-mailbox-bubble' : ''}`}
         metadata={userMetadata}
       >
-        {props.inlineReferences ? (
-          <InlineReferenceText text={props.text} references={props.inlineReferences} />
-        ) : (
-          <ChatTokenizedText tokens={legacySentSkillTokens(props.text)}>
-            {props.text}
-          </ChatTokenizedText>
-        )}
+        {props.sessionMailbox ? (
+          <div className="maka-session-mailbox-header" data-direction={props.sessionMailbox.direction}>
+            {props.sessionMailbox.direction === 'incoming'
+              ? <ArrowDown size={ICON_SIZE.meta} aria-hidden="true" />
+              : <ArrowUp size={ICON_SIZE.meta} aria-hidden="true" />}
+            <span className="maka-session-mailbox-eyebrow">
+              {props.sessionMailbox.direction === 'incoming'
+                ? copyText.mailboxIncoming
+                : copyText.mailboxOutgoing}
+            </span>
+            <strong className="maka-session-mailbox-session-name">
+              {props.sessionMailbox.sessionName}
+            </strong>
+            {props.sessionMailbox.direction === 'outgoing' ? (
+              <span className="maka-session-mailbox-disposition">
+                {props.sessionMailbox.disposition === 'queued'
+                  ? copyText.mailboxQueued
+                  : copyText.mailboxDelivered}
+              </span>
+            ) : null}
+          </div>
+        ) : null}
+        {props.sessionMailbox ? (
+          <div className="maka-session-mailbox-body">{renderedText}</div>
+        ) : renderedText}
       </ChatMessageBubble>
     </>
   );
@@ -534,12 +561,14 @@ export const TurnView = memo(function TurnView(props: {
       {turn.user && (
         <LocalizedChatMessage
           accessibleLabel={
-            turn.user.hostOrigin?.kind === 'legacy_automation'
+            turn.user.sessionMailbox?.direction === 'incoming'
+              ? copy.mailboxIncomingAriaLabel(turn.user.sessionMailbox.sessionName)
+              : turn.user.hostOrigin?.kind === 'legacy_automation'
               ? copy.legacyAutomationTriggered
               : copy.userAriaLabel
           }
           sender="user"
-          className="maka-chat-message maka-user-message"
+          className={`maka-chat-message maka-user-message${turn.user.sessionMailbox ? ' maka-session-mailbox-message' : ''}`}
         >
           <UserMessageBody
             messageId={turn.user.id}
@@ -548,6 +577,7 @@ export const TurnView = memo(function TurnView(props: {
             attachments={turn.user.attachments}
             quotes={turn.user.quotes}
             inlineReferences={turn.user.inlineReferences}
+            sessionMailbox={turn.user.sessionMailbox}
             onReadAttachmentBytes={props.onReadAttachmentBytes}
             onEditUserMessage={
               props.onEditUserMessage && !turn.user.hostOrigin
@@ -578,7 +608,7 @@ export const TurnView = memo(function TurnView(props: {
 
         </LocalizedChatMessage>
       )}
-      {turn.notes.map((note) => (
+      {turn.notes.filter((note) => !note.sessionMailbox).map((note) => (
         <ChatSystemMessage
           key={note.id}
           className="maka-chat-system-message"
@@ -604,6 +634,7 @@ export const TurnView = memo(function TurnView(props: {
                 attachments={message.attachments}
                 quotes={message.quotes}
                 inlineReferences={message.inlineReferences}
+                sessionMailbox={message.sessionMailbox}
                 onReadAttachmentBytes={props.onReadAttachmentBytes}
               />
             </LocalizedChatMessage>
@@ -753,6 +784,21 @@ export const TurnView = memo(function TurnView(props: {
           </LocalizedChatMessage>
         );
       })}
+      {turn.notes.filter((note) => note.sessionMailbox?.direction === 'outgoing').map((note) => (
+        <LocalizedChatMessage
+          key={note.id}
+          accessibleLabel={copy.mailboxOutgoingAriaLabel(note.sessionMailbox!.sessionName)}
+          sender="user"
+          className="maka-chat-message maka-user-message maka-session-mailbox-message maka-session-mailbox-message-outgoing"
+        >
+          <UserMessageBody
+            messageId={note.id}
+            text={note.text}
+            ts={note.ts}
+            sessionMailbox={note.sessionMailbox}
+          />
+        </LocalizedChatMessage>
+      ))}
     </section>
   );
 });

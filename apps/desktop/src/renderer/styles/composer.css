@@ -487,6 +487,37 @@
   opacity: var(--opacity-disabled);
 }
 
+/* Cross-Session routing is a durable delivery state, not a transient editor
+   hint. Give it card geometry so "sending / delivered / queued / failed" stays
+   legible after the input itself has cleared. */
+.maka-composer-mailbox-notice {
+  min-height: var(--h-control-lg);
+  height: auto;
+  padding: var(--space-2) var(--space-2-5);
+  border-radius: var(--radius-control);
+  background: var(--info-wash);
+  border-color: var(--info-wash-border);
+  color: var(--foreground);
+}
+
+.maka-composer-mailbox-notice[data-delivery-status='delivered'] {
+  background: var(--success-wash);
+  border-color: var(--success-wash-border);
+}
+
+.maka-composer-mailbox-notice[data-delivery-status='delivered'] > svg {
+  color: var(--success-text);
+}
+
+.maka-composer-mailbox-notice[data-delivery-status='failed'] {
+  background: var(--destructive-wash);
+  border-color: var(--destructive-wash-border);
+}
+
+.maka-composer-mailbox-notice[data-delivery-status='failed'] > svg {
+  color: var(--destructive-text);
+}
+
 /* The project picker, last in the composer footer's send-context group. It is
    rendered only while no session owns the composer — the project is a
    session-creation parameter. See packages/ui/src/workspace-picker.tsx. */

@@ -73,7 +73,11 @@ import type {
 } from './pi-tui-contracts.js';
 import { AUTO_RECAP_DISPLAY_LIMIT_BYTES, shouldAutoRecap } from './session-recap.js';
 import type { InvocableSkillEntry } from '@maka/runtime/skill-invocation';
-import type { AgentGraphClientSnapshot, AgentGraphEpochSummary } from '@maka/runtime-host/protocol';
+import type {
+  AgentGraphClientSnapshot,
+  AgentGraphEpochSummary,
+  SessionMailboxTarget,
+} from '@maka/runtime-host/protocol';
 import type { AgentGraphEpochDirectory } from '@maka/runtime-host/client';
 import { MakaSkillHighlightEditor } from './skill-highlight-editor.js';
 import { parseGraphCommand, type ParsedGraphCommand } from '@maka/core/graph-command';
@@ -365,6 +369,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
   // True while the /session picker is open mid-turn: Escape must close the
   // overlay, not arm the double-Escape interrupt for the running Turn (#3380).
   let sessionPickerOverlayOpen = false;
+  let pendingMailboxTarget: SessionMailboxTarget | undefined;
   let lastTurnEscapeAt = 0;
   let lastIdleEscapeAt = 0;
   let lastIdleCtrlCAt = 0;
@@ -1098,6 +1103,32 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
   let wizardAttempt = 0;
 
   editor.onSubmit = (prompt) => {
+    const mailboxTarget = pendingMailboxTarget;
+    if (mailboxTarget && prompt.trim()) {
+      pendingMailboxTarget = undefined;
+      editor.addToHistory(prompt);
+      state.entries.push({
+        kind: 'notice',
+        level: 'info',
+        text: `Sending message to ${mailboxTarget.name}…`,
+      });
+      requestRender();
+      void input.driver
+        .sendMailboxMessage?.(mailboxTarget.sessionId, prompt.trim())
+        .then((result) => {
+          state.entries.push({
+            kind: 'notice',
+            level: 'info',
+            text:
+              result.disposition === 'queued'
+                ? `Message queued for ${mailboxTarget.name}.`
+                : `Message delivered to ${mailboxTarget.name}.`,
+          });
+          requestRender();
+        })
+        .catch(reportError);
+      return;
+    }
     if (turnRunning) {
       // A quit/exit form typed while a turn is running must close the TUI, not
       // steer it into the model as prompt text (review finding on turnRunning
@@ -3239,6 +3270,75 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
         void goToSession(sessionId);
       },
     },
+    send: {
+      description: primaryGuidance.commands.send,
+      // This targets another Session and never mutates or steers the active
+      // Turn in the current Session, so it remains safe while that Turn runs.
+      midTurn: 'local',
+      run: (parts: string[]) => {
+        if (parts.length !== 1) {
+          state.entries.push({
+            kind: 'notice',
+            level: 'error',
+            text: 'Usage: /send',
+          });
+          requestRender();
+          return;
+        }
+        if (!input.driver.listMailboxTargets || !input.driver.sendMailboxMessage) {
+          state.entries.push({
+            kind: 'notice',
+            level: 'error',
+            text: 'Session messaging is unavailable on this runtime.',
+          });
+          requestRender();
+          return;
+        }
+        void input.driver
+          .listMailboxTargets()
+          .then((targets) => {
+            if (targets.length === 0) {
+              state.entries.push({
+                kind: 'notice',
+                level: 'info',
+                text: 'No other reachable Sessions in this project.',
+              });
+              requestRender();
+              return;
+            }
+            showSelectPicker(
+              'Send to Session',
+              'Choose Session',
+              targets.map((target) => ({
+                value: target.sessionId,
+                label: target.name,
+                description:
+                  target.status === 'idle'
+                    ? 'idle · deliver now'
+                    : `${target.status.replaceAll('_', ' ')} · queue for next turn`,
+              })),
+              (item) => {
+                const target = targets.find((candidate) => candidate.sessionId === item.value);
+                if (!target) return;
+                pendingMailboxTarget = target;
+                editor.setText('');
+                state.entries.push({
+                  kind: 'notice',
+                  level: 'info',
+                  text: `Sending the next message to ${target.name}. Type it and press Enter.`,
+                });
+                requestRender();
+              },
+              {
+                minPrimaryColumnWidth: 24,
+                maxPrimaryColumnWidth: 56,
+                hint: '↑↓ move · Enter choose · Esc cancel',
+              },
+            );
+          })
+          .catch(reportError);
+      },
+    },
     graph: {
       description: primaryGuidance.commands.graph,
       // parseGraphCommand answers status and refuses changes ahead of generic
@@ -3336,6 +3436,21 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
       return { consume: true };
     }
     if (tui.hasOverlay()) return undefined;
+    if (
+      pendingMailboxTarget
+      && matchesKey(data, Key.escape)
+      && editor.getText().length === 0
+    ) {
+      const targetName = pendingMailboxTarget.name;
+      pendingMailboxTarget = undefined;
+      state.entries.push({
+        kind: 'notice',
+        level: 'info',
+        text: `Cancelled message to ${targetName}.`,
+      });
+      requestRender();
+      return { consume: true };
+    }
     const pendingSandboxBoundary = activeSandboxBoundaryRequest(state);
     if (pendingSandboxBoundary && !matchesKey(data, Key.ctrl('c'))) {
       if (

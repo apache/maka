@@ -23,13 +23,23 @@ import { parseSideChatCommand, type SideChatCommand } from './side-chat-command.
 
 export type DesktopSlashCommand =
   | { kind: 'compact' }
+  | { kind: 'rename'; name: string }
+  | { kind: 'rename_invalid' }
+  | { kind: 'send' }
+  | { kind: 'send_invalid' }
   | { kind: 'side'; command: SideChatCommand }
   | { kind: 'graph'; command: ParsedGraphCommand }
   | { kind: 'swarm'; command: ParsedSwarmCommand };
 
 /** Classify input with the same parsers that own Desktop command execution. */
 export function parseDesktopSlashCommand(input: string): DesktopSlashCommand | null {
-  if (input.trim() === '/compact') return { kind: 'compact' };
+  const trimmed = input.trim();
+  if (trimmed === '/compact') return { kind: 'compact' };
+  const rename = trimmed.match(/^\/rename\s+([\s\S]+)$/);
+  if (rename?.[1]?.trim()) return { kind: 'rename', name: rename[1].trim() };
+  if (/^\/rename(?:\s|$)/.test(trimmed)) return { kind: 'rename_invalid' };
+  if (trimmed === '/send') return { kind: 'send' };
+  if (/^\/send(?:\s|$)/.test(trimmed)) return { kind: 'send_invalid' };
   const side = parseSideChatCommand(input);
   if (side) return { kind: 'side', command: side };
   const graph = parseGraphCommand(input);

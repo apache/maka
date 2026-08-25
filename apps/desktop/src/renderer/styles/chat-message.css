@@ -101,6 +101,67 @@
   white-space: pre-wrap;
 }
 
+/* Cross-task messages are transcript objects, not decorated prompt text. The
+   source/destination is persistent card chrome while the body stays the only
+   copyable message content. */
+.maka-session-mailbox-bubble {
+  min-width: min(360px, 72vw);
+  max-width: min(620px, 78vw);
+  overflow: hidden;
+  padding: 0;
+  border: 1px solid color-mix(in srgb, var(--border) 78%, transparent);
+  background: color-mix(in srgb, var(--chat-user-bg) 74%, var(--background));
+  box-shadow: var(--shadow-low);
+}
+
+.maka-session-mailbox-header {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: var(--space-1-5);
+  padding: var(--space-2) var(--space-3);
+  border-bottom: 1px solid color-mix(in srgb, var(--border) 62%, transparent);
+  color: var(--muted-foreground);
+  background: color-mix(in srgb, var(--accent) 9%, transparent);
+  white-space: nowrap;
+}
+
+.maka-session-mailbox-header[data-direction='outgoing'] {
+  background: color-mix(in srgb, var(--success) 8%, transparent);
+}
+
+.maka-session-mailbox-eyebrow {
+  flex: 0 0 auto;
+  font: var(--maka-text-meta);
+}
+
+.maka-session-mailbox-session-name {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--foreground);
+  font: var(--maka-text-supporting);
+  font-weight: var(--font-weight-semibold);
+  text-overflow: ellipsis;
+}
+
+.maka-session-mailbox-disposition {
+  flex: 0 0 auto;
+  margin-left: auto;
+  color: var(--muted-foreground);
+  font: var(--maka-text-meta);
+}
+
+.maka-session-mailbox-body {
+  padding: var(--space-2-5) var(--space-3) var(--space-2);
+  color: var(--foreground);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.maka-session-mailbox-bubble .maka-message-meta {
+  padding: 0 var(--space-3) var(--space-2);
+}
+
 .maka-chat-message-bubble-assistant {
   width: 100%;
   max-width: none;

@@ -21,6 +21,7 @@ import { randomUUID } from "node:crypto";
 import type { IpcMainInvokeEvent } from "electron";
 import { MAX_ATTACHMENT_COUNT } from '@maka/core/attachments';
 import { RuntimeHostOperationError } from '@maka/runtime-host/client';
+import { HOST_OPERATION_SPECS } from '@maka/runtime-host/protocol';
 import { SKILL_INVOCATION_TOKEN_SOURCE } from '@maka/core/skill-invocation-token';
 import {
   type SessionChangedEvent,
@@ -86,7 +87,9 @@ type RuntimeHostSessionExecutionClient = Pick<
   | "submitMessage"
   | "updateSessionMetadata"
   | "updateSessionConfiguration"
->;
+> & {
+  request?: DesktopRuntimeHostClient['request'];
+};
 
 export interface RuntimeHostSessionExecutionIpcDeps {
   client: RuntimeHostSessionExecutionClient;
@@ -206,6 +209,38 @@ export function registerRuntimeHostSessionExecutionIpc(
       ...(deps.e2eInteractions?.list(sessionId) ?? []),
       ...(await deps.observer.readActiveInteractions(sessionId)),
     ],
+  );
+
+  handleReconnectableRead(
+    ipcMain,
+    'sessions:mailboxTargets',
+    async (_event, sourceSessionId: unknown) => {
+      if (!deps.client.request) {
+        throw new Error('Session messaging is unavailable on this Runtime Host client');
+      }
+      return deps.client.request('session.mailbox.targets', {
+        sourceSessionId: requiredId(sourceSessionId, 'Source Session'),
+      });
+    },
+  );
+
+  ipcMain.handle(
+    'sessions:mailboxSend',
+    async (_event, sourceSessionId: unknown, targetSessionId: unknown, text: unknown) => {
+      if (!deps.client.request) {
+        throw new Error('Session messaging is unavailable on this Runtime Host client');
+      }
+      return deps.client.request(
+        'session.mailbox.send',
+        HOST_OPERATION_SPECS['session.mailbox.send'].decodeInput({
+          sourceSessionId: requiredId(sourceSessionId, 'Source Session'),
+          targetSessionId: requiredId(targetSessionId, 'Target Session'),
+          messageId: newId(),
+          kind: 'request',
+          text,
+        }),
+      );
+    },
   );
 
   ipcMain.handle(

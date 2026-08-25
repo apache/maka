@@ -717,6 +717,14 @@ export interface MakaBridge {
       completeHostIds: string[];
     }>;
     create(input?: CreateSessionRequestInput): Promise<DesktopSessionSummary>;
+    listMailboxTargets(
+      sourceSessionId: string,
+    ): Promise<readonly import('@maka/runtime-host/protocol').SessionMailboxTarget[]>;
+    sendMailboxMessage(
+      sourceSessionId: string,
+      targetSessionId: string,
+      text: string,
+    ): Promise<import('@maka/runtime-host/protocol').SessionMailboxSendResult>;
     send(
       sessionId: string,
       command:

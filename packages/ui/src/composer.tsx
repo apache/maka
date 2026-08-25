@@ -136,6 +136,8 @@ export interface ComposerSlashCommandOption {
   description?: string;
   keywords?: readonly string[];
   Icon?: LucideIcon;
+  /** Run immediately when the command is chosen from the `/` menu. */
+  onChoose?(): void;
 }
 
 type ComposerSlashSuggestion =
@@ -358,6 +360,14 @@ export const Composer = forwardRef<
       /** Optional quieter secondary line under the title. */
       detail?: string;
       cancelLabel: string;
+      onCancel(): void;
+    };
+    /** Optional routing banner for a message addressed to another Session. */
+    sendTargetNotice?: {
+      title: string;
+      detail?: string;
+      cancelLabel: string;
+      status?: 'ready' | 'sending' | 'delivered' | 'queued' | 'failed';
       onCancel(): void;
     };
     /**
@@ -1000,6 +1010,10 @@ export const Composer = forwardRef<
         onSelect: (item): string | ChatComposerToken => {
           const suggestion = item.auxiliaryData as ComposerSlashSuggestion;
           if (suggestion.kind === 'command') {
+            if (suggestion.command.onChoose) {
+              suggestion.command.onChoose();
+              return '';
+            }
             return `/${suggestion.command.id} `;
           }
           return inlineReferenceToken({
@@ -1225,6 +1239,12 @@ export const Composer = forwardRef<
     // blurred the window or completed a real drop somewhere.
     if (event.key === 'Escape' && dragActive) {
       setDragActive(false);
+    }
+    if (event.key === 'Escape' && props.sendTargetNotice) {
+      event.preventDefault();
+      if (props.sendTargetNotice.status === 'sending') return;
+      props.sendTargetNotice.onCancel();
+      return;
     }
     // Esc during streaming interrupts the model. We don't preventDefault
     // unconditionally so Esc still works to close modals when the composer
@@ -1536,6 +1556,28 @@ export const Composer = forwardRef<
             label={props.revisionNotice.cancelLabel}
             isDisabled={sendPending}
             onClick={() => props.revisionNotice?.onCancel()}
+          />
+        </div>
+      )}
+      {!props.hidden && props.sendTargetNotice && (
+        <div
+          className="maka-composer-revision-notice maka-composer-mailbox-notice"
+          role="status"
+          data-send-target-notice="true"
+          data-delivery-status={props.sendTargetNotice.status ?? 'ready'}
+        >
+          <ArrowUp size={ICON_SIZE.meta} aria-hidden="true" />
+          <span className="maka-composer-revision-notice-text">
+            {props.sendTargetNotice.title}
+            {props.sendTargetNotice.detail ? <span className="maka-composer-revision-notice-detail">{props.sendTargetNotice.detail}</span> : null}
+          </span>
+          <UiButton
+            variant="ghost"
+            size="sm"
+            className="maka-composer-revision-notice-cancel"
+            label={props.sendTargetNotice.cancelLabel}
+            isDisabled={sendPending}
+            onClick={() => props.sendTargetNotice?.onCancel()}
           />
         </div>
       )}

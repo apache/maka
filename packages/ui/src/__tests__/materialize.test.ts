@@ -20,6 +20,7 @@
 import assert from "node:assert/strict";
 import { describe, test } from "node:test";
 import type { StoredMessage } from '@maka/core/session';
+import { sessionMailboxMessageContent } from '@maka/core/session-mailbox';
 import {
   materializeChat,
   materializeTools,
@@ -253,6 +254,59 @@ describe("materializeChat message metadata", () => {
       kind: "goal",
       goalId: "goal-1",
     });
+  });
+
+  test('projects incoming and outgoing mailbox messages as structured cards with body-only text', () => {
+    const incoming = sessionMailboxMessageContent({
+      messageId: 'mail-in',
+      fromSessionId: 'source',
+      fromSessionName: '来源任务: A',
+      toSessionId: 'target',
+      kind: 'request',
+      text: '正文里也可以有 From:，但不会被误解析。',
+    });
+    const messages: StoredMessage[] = [
+      {
+        type: 'user',
+        id: 'mail-in',
+        turnId: 'target-turn',
+        ts: 1,
+        ...incoming,
+      },
+      {
+        type: 'system_note',
+        id: 'mail-out',
+        turnId: 'target-turn',
+        ts: 2,
+        kind: 'session_mailbox_sent',
+        data: {
+          messageId: 'sent-1',
+          targetSessionId: 'other',
+          targetSessionName: '目标任务',
+          kind: 'request',
+          text: '发出的正文',
+          disposition: 'queued',
+        },
+      },
+    ];
+
+    const chat = materializeChat(messages, 'zh');
+    assert.equal(chat[0]?.text, '正文里也可以有 From:，但不会被误解析。');
+    assert.deepEqual(chat[0]?.sessionMailbox, {
+      direction: 'incoming',
+      sessionId: 'source',
+      sessionName: '来源任务: A',
+      kind: 'request',
+    });
+    assert.equal(chat[1]?.text, '发出的正文');
+    assert.deepEqual(chat[1]?.sessionMailbox, {
+      direction: 'outgoing',
+      sessionId: 'other',
+      sessionName: '目标任务',
+      kind: 'request',
+      disposition: 'queued',
+    });
+    assert.deepEqual(materializeTurns(messages, 'zh')[0]?.notes[0], chat[1]);
   });
 });
 

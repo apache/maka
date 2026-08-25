@@ -189,6 +189,12 @@ describe('Runtime Host bootstrap protocol', () => {
     assert.ok(RUNTIME_HOST_COMPATIBILITY_EPOCH > 47);
   });
 
+  test('publishes a new compatibility epoch for Session mailbox operations', () => {
+    // Epoch 48 peers reject the two new closed operation keys, so they must
+    // fail the handshake before either side attempts Session messaging.
+    assert.ok(RUNTIME_HOST_COMPATIBILITY_EPOCH > 48);
+  });
+
   test('adds credential rotation without changing existing credential inputs', () => {
     const issueInput = {
       principalKind: 'remote_owner',
@@ -1099,6 +1105,46 @@ describe('Runtime Host bootstrap protocol', () => {
         decodeClientFrame({
           ...interrupt,
           input: { ...interrupt.input, interruptId: 'not/a/semantic/id' },
+        }),
+      isInvalidFrame,
+    );
+  });
+
+  test('keeps Session mailbox discovery and delivery closed and bounded', () => {
+    const targets = {
+      requestId: 'mailbox-targets-1',
+      operation: 'session.mailbox.targets' as const,
+      input: { sourceSessionId: 'session-1' },
+    };
+    const send = {
+      requestId: 'mailbox-send-1',
+      operation: 'session.mailbox.send' as const,
+      input: {
+        sourceSessionId: 'session-1',
+        targetSessionId: 'session-2',
+        messageId: 'message-1',
+        kind: 'request' as const,
+        text: 'Please inspect this',
+      },
+    };
+    assert.deepEqual(decodeClientFrame(targets), targets);
+    assert.deepEqual(decodeClientFrame(send), send);
+    assert.throws(
+      () => decodeClientFrame({ ...send, input: { ...send.input, placement: 'current_turn' } }),
+      isInvalidFrame,
+    );
+    assert.throws(
+      () =>
+        decodeHostFrame({
+          requestId: send.requestId,
+          operation: send.operation,
+          ok: true,
+          result: {
+            messageId: 'message-1',
+            targetSessionId: 'session-2',
+            disposition: 'queued',
+            turnId: 'turn-invalid',
+          },
         }),
       isInvalidFrame,
     );

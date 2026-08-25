@@ -39,6 +39,11 @@ import type {
 import type { ToolActivityStatus } from '@maka/core/tool-result-status';
 import type { ShellRunToolResult } from '@maka/core/shell-run-result';
 import type { StoredMessage, TurnRecord, TurnStatus, UserMessage } from '@maka/core/session';
+import {
+  parseSessionMailboxMessageContent,
+  parseSessionMailboxSentNoteData,
+  type SessionMailboxKind,
+} from '@maka/core/session-mailbox';
 import type { UiLocale } from '@maka/core/ui-locale';
 import type {
   LiveSteeringProjection,
@@ -62,6 +67,21 @@ export interface ChatItem {
   inlineReferences?: InlineReference[];
   /** Present when the Host authored this message instead of the user. */
   hostOrigin?: NonNullable<UserMessage["origin"]>;
+  /** Structured cross-task message chrome; `text` remains body-only. */
+  sessionMailbox?:
+    | {
+        direction: 'incoming';
+        sessionId: string;
+        sessionName: string;
+        kind: SessionMailboxKind;
+      }
+    | {
+        direction: 'outgoing';
+        sessionId: string;
+        sessionName: string;
+        kind: SessionMailboxKind;
+        disposition: 'turn_started' | 'queued';
+      };
 }
 
 /**
@@ -157,22 +177,7 @@ export function materializeChat(
   const items: ChatItem[] = [];
   for (const message of messages) {
     if (message.type === "user") {
-      items.push({
-        id: message.id,
-        role: "user",
-        text: message.displayText ?? message.text,
-        ts: message.ts,
-        ...(message.attachments && message.attachments.length > 0
-          ? { attachments: message.attachments }
-          : {}),
-        ...(message.quotes && message.quotes.length > 0
-          ? { quotes: message.quotes }
-          : {}),
-        ...(message.inlineReferences !== undefined
-          ? { inlineReferences: message.inlineReferences }
-          : {}),
-        ...(message.origin ? { hostOrigin: message.origin } : {}),
-      });
+      items.push(chatItemFromUserMessage(message));
     }
     if (message.type === "assistant")
       items.push({
@@ -181,7 +186,10 @@ export function materializeChat(
         text: message.text,
         ts: message.ts,
       });
-    if (
+    if (message.type === 'system_note' && message.kind === 'session_mailbox_sent') {
+      const item = chatItemFromMailboxSentNote(message);
+      if (item) items.push(item);
+    } else if (
       message.type === "system_note" &&
       VISIBLE_SYSTEM_NOTES.has(message.kind)
     ) {
@@ -755,6 +763,9 @@ export function materializeTurns(
       if (message.ts !== undefined && message.ts >= turn.startedAt) {
         turn.durationMs = message.ts - turn.startedAt;
       }
+    } else if (message.type === 'system_note' && message.kind === 'session_mailbox_sent') {
+      const note = chatItemFromMailboxSentNote(message);
+      if (note) turn.notes.push(note);
     } else if (
       message.type === "system_note" &&
       VISIBLE_SYSTEM_NOTES.has(message.kind)
@@ -1073,10 +1084,11 @@ function chatItemFromContent(
   content: MessageContent,
   hostOrigin?: NonNullable<UserMessage["origin"]>,
 ): ChatItem {
+  const mailbox = parseSessionMailboxMessageContent(content);
   return {
     id,
     role: "user",
-    text: content.displayText ?? content.text,
+    text: mailbox?.text ?? content.displayText ?? content.text,
     ts,
     ...(content.attachments && content.attachments.length > 0
       ? { attachments: content.attachments }
@@ -1088,6 +1100,36 @@ function chatItemFromContent(
       ? { inlineReferences: content.inlineReferences }
       : {}),
     ...(hostOrigin ? { hostOrigin } : {}),
+    ...(mailbox
+      ? {
+          sessionMailbox: {
+            direction: 'incoming' as const,
+            sessionId: mailbox.fromSessionId,
+            sessionName: mailbox.fromSessionName,
+            kind: mailbox.kind,
+          },
+        }
+      : {}),
+  };
+}
+
+function chatItemFromMailboxSentNote(
+  message: Extract<StoredMessage, { type: 'system_note' }>,
+): ChatItem | undefined {
+  const receipt = parseSessionMailboxSentNoteData(message.data);
+  if (!receipt) return undefined;
+  return {
+    id: message.id,
+    role: 'system',
+    text: receipt.text,
+    ts: message.ts,
+    sessionMailbox: {
+      direction: 'outgoing',
+      sessionId: receipt.targetSessionId,
+      sessionName: receipt.targetSessionName,
+      kind: receipt.kind,
+      disposition: receipt.disposition,
+    },
   };
 }
 

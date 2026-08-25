@@ -256,6 +256,22 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
       .map(({ session }) => session);
   }
 
+  async listMailboxTargets() {
+    const sourceSessionId = this.#requireSession('list Session message targets');
+    return (await this.#request('session.mailbox.targets', { sourceSessionId })).targets;
+  }
+
+  async sendMailboxMessage(targetSessionId: string, text: string) {
+    const sourceSessionId = this.#requireSession('send a Session message');
+    return this.#request('session.mailbox.send', {
+      sourceSessionId,
+      targetSessionId,
+      messageId: this.#newId(),
+      kind: 'request',
+      text,
+    });
+  }
+
   getSessionResumeAvailability(session: SessionSummary): Promise<SessionResumeAvailability> {
     return inspectRuntimeHostSessionResumeAvailability(session, this.#executionLocation);
   }

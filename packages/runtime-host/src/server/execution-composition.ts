@@ -38,6 +38,7 @@ import {
 import { buildToolsForAgentDefinition } from '@maka/runtime/agent-catalog';
 import { buildHostCapabilitiesFromBinding } from '@maka/runtime/tool-catalog-derive';
 import { buildHistoryTools } from '@maka/runtime/history-tools';
+import { buildSessionMailboxTools } from '@maka/runtime/session-mailbox-tools';
 import { createLocalContinuationSafetyInspector } from '@maka/runtime/continuation-safety';
 import { createConfiguredSubagentCatalog } from '@maka/runtime/configured-subagent-catalog';
 import {
@@ -128,6 +129,7 @@ import {
 } from './host-composition.js';
 import { HostInteractionCoordinator } from './interaction-coordinator.js';
 import { HostInteractiveTurnCoordinator } from './interactive-turn-coordinator.js';
+import { HostSessionMailboxCoordinator } from './session-mailbox-coordinator.js';
 import { ensureBootstrapRuntimePolicy } from './bootstrap-runtime-policy.js';
 import { hostedExecutionRunProfile } from './hosted-execution-tool-profile.js';
 import { HostMemoryCoordinator } from './memory-coordinator.js';
@@ -279,6 +281,7 @@ export async function createExecutionRuntimeHostComposition(
     let runtimeResources: HostRuntimeResourceCoordinator | undefined;
     let continuity: SessionContinuityCoordinator | undefined;
     let manager: SessionManager | undefined;
+    let sessionMailbox: HostSessionMailboxCoordinator | undefined;
     let graphCoordinator: AgentGraphCoordinator | undefined;
     let graphSupervisorWake: AgentGraphSupervisorWakeCoordinator | undefined;
     const graphWakeActivities = new SessionActivityRegistry();
@@ -378,7 +381,11 @@ export async function createExecutionRuntimeHostComposition(
       createHostWebFetchToolFromService(webFetchService),
       ...runtimePolicy.modelTools,
     ];
-    const hostTools = [...childHostTools, ...historyTools];
+    const sessionMailboxTools = buildSessionMailboxTools({
+      list: (sourceSessionId) => requireSessionMailbox(sessionMailbox).listTargets(sourceSessionId),
+      send: (input) => requireSessionMailbox(sessionMailbox).sendFromSession(input),
+    });
+    const hostTools = [...childHostTools, ...historyTools, ...sessionMailboxTools];
     const childAgentTools = createHostChildAgentToolComposition({
       taskLedger,
       builtinTools,
@@ -444,7 +451,9 @@ export async function createExecutionRuntimeHostComposition(
     const projects = new HostProjectCatalogCoordinator(
       openedProjectCatalog,
       { publish: () => hostChanges.publishProjectCatalog() },
-      { publish: (sessionId: string) => hostChanges.publishSessionCatalog(sessionId) },
+      {
+        publish: (sessionId: string) => hostChanges.publishSessionCatalog(sessionId),
+      },
       projectMembership,
       context.requestDrain,
       new HostProjectDirectoryAuthority(options.projectDirectoryRoots),
@@ -489,6 +498,12 @@ export async function createExecutionRuntimeHostComposition(
         requireCanonicalProjection(canonicalProjection).fitsCandidate(sessionId, candidate),
       onProjectionChanged: (sessionId) =>
         requireContinuity(continuity).enqueueCanonicalRefresh(sessionId),
+    });
+    sessionMailbox = new HostSessionMailboxCoordinator({
+      hostEpoch: context.hostEpoch,
+      messages,
+      listSessions: () => requireSessionManager(manager).listSessions(),
+      sessionStore: stores.sessionStore,
     });
     const rootAdmissionOwner = new RootAdmissionOwner(stores.agentRunStore);
     const canonicalProjectionReader = new CanonicalSessionProjectionReader({
@@ -1465,6 +1480,7 @@ export async function createExecutionRuntimeHostComposition(
         handlers: [
           executionInspect.handlers,
           messages.handlers,
+          requireSessionMailbox(sessionMailbox).handlers,
           interactions.handlers,
           sessionEffectCoordinator.handlers,
           continuityCoordinator.handlers,
@@ -1663,7 +1679,10 @@ function adaptManagedWorkspaceFilesystemWorker(
     async execute(input) {
       // Read-only operations never participate in CAS; the adapter says so
       // explicitly (#3484) instead of relying on an absent optional field.
-      const result = await worker.execute({ ...input, expectedIdentity: 'unchecked' });
+      const result = await worker.execute({
+        ...input,
+        expectedIdentity: 'unchecked',
+      });
       switch (result.kind) {
         case 'read':
         case 'read_image':
@@ -1767,6 +1786,13 @@ function requireDailyReview(
 function requireSessionManager(manager: SessionManager | undefined): SessionManager {
   if (!manager) throw new Error('Runtime Host SessionManager is not composed');
   return manager;
+}
+
+function requireSessionMailbox(
+  coordinator: HostSessionMailboxCoordinator | undefined,
+): HostSessionMailboxCoordinator {
+  if (!coordinator) throw new Error('Runtime Host Session mailbox coordinator is not composed');
+  return coordinator;
 }
 
 function requireGraphCoordinator(

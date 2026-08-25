@@ -35,6 +35,8 @@ import type {
   QuoteRef,
 } from '@maka/core/events';
 import type { SessionSummary } from '@maka/core/session';
+import { sessionMailboxSentReceiptId } from '@maka/core/session-mailbox';
+import type { SessionMailboxTarget } from '@maka/runtime-host/protocol';
 import type { OrchestrationMode } from '@maka/core/orchestration';
 import type { ChatDefaultPermissionMode } from '@maka/core/settings';
 import type { SlashCommandIdForSurface } from '@maka/core/slash-command-catalog';
@@ -71,7 +73,7 @@ import {
   reconcileInteractions,
 } from '@maka/ui';
 import type { ConnectionEvent } from '@maka/core/connections';
-import { GitBranch, MessageCircleQuestion, Minimize2, Network } from '@maka/ui/icons';
+import { GitBranch, MessageCircleQuestion, Minimize2, Network, Pencil } from '@maka/ui/icons';
 import { Button } from '@astryxdesign/core/Button';
 import { useKeyboardHelp } from './keyboard-help';
 import { useCommandPalette } from './command-palette';
@@ -98,6 +100,7 @@ import { UNRESOLVED_NEW_TASK_DRAFT_KEY } from './new-task-reload-intent';
 import { useNewTaskChoice } from './use-new-task-choice';
 import { NEW_TASK_PENDING_KEY } from './pending-items';
 import { parseDesktopSlashCommand } from './desktop-slash-command';
+import { SessionMailboxPicker } from './session-mailbox-picker';
 import {
   hasActiveTurnAtSubmit,
   mergeWorkspaceReferences,
@@ -685,6 +688,34 @@ function AppShellContent({
   const persistedComposerDefaults = loadComposerDefaults();
   const [helpOpen, closeHelp, openHelp] = useKeyboardHelp();
   const [paletteOpen, openPalette, closePalette] = useCommandPalette();
+  const [mailboxFlow, setMailboxFlow] = useState<{
+    sourceSessionId: string;
+    targets: readonly SessionMailboxTarget[];
+  } | null>(null);
+  const [pendingMailboxTarget, setPendingMailboxTarget] = useState<{
+    sourceSessionId: string;
+    target: SessionMailboxTarget;
+  } | null>(null);
+  const [mailboxDeliveryFeedback, setMailboxDeliveryFeedback] = useState<{
+    sourceSessionId: string;
+    target: SessionMailboxTarget;
+    status: 'sending' | 'failed';
+  } | null>(null);
+  useEffect(() => {
+    if (
+      pendingMailboxTarget
+      && pendingMailboxTarget.sourceSessionId !== activeId
+    ) {
+      setPendingMailboxTarget(null);
+      setMailboxDeliveryFeedback(null);
+    }
+    if (
+      mailboxDeliveryFeedback
+      && mailboxDeliveryFeedback.sourceSessionId !== activeId
+    ) {
+      setMailboxDeliveryFeedback(null);
+    }
+  }, [activeId, mailboxDeliveryFeedback, pendingMailboxTarget]);
   const [viewMode, setViewMode] = useState<SessionViewMode>(() => readSessionListViewMode());
   const composerRef = useRef<ComposerHandle>(null);
   const retractedWorkspaceReferencesRef = useRef<Record<string, InlineReference[]>>({});
@@ -1379,6 +1410,36 @@ function AppShellContent({
     sessionListCollapsed,
     setSessionListCollapsed,
   } = useShellLayout();
+  const openMailboxTargetPicker = useCallback(async () => {
+    const sourceSessionId = activeIdRef.current;
+    if (!sourceSessionId) return false;
+    if (revisionDraftRef.current) {
+      const actionCopy = getDesktopConversationCopy(uiLocale).actions;
+      toastApi.info(actionCopy.revisionUnavailableTitle, actionCopy.revisionCommandUnsupported);
+      return false;
+    }
+    if (pendingAttachments.length > 0 || pendingQuotes.length > 0) {
+      toastApi.info(
+        shellCopy.sideChatContextPendingTitle,
+        shellCopy.sideChatContextPendingDescription,
+      );
+      return false;
+    }
+    try {
+      const targets = await window.maka.sessions.listMailboxTargets(sourceSessionId);
+      setPendingMailboxTarget(null);
+      setMailboxDeliveryFeedback(null);
+      setMailboxFlow({ sourceSessionId, targets });
+      return true;
+    } catch (error) {
+      showSessionError(
+        sourceSessionId,
+        shellCopy.mailboxFailedTitle,
+        localizedShellErrorMessage(error, shellCopy.mailboxFailedFallback, uiLocale),
+      );
+      return false;
+    }
+  }, [pendingAttachments.length, pendingQuotes.length, shellCopy, toastApi, uiLocale]);
   const desktopSlashCommands = useMemo<readonly ComposerSlashCommandOption[]>(
     () => {
       const streaming = turnActive || activeStreamingLive;
@@ -1395,6 +1456,17 @@ function AppShellContent({
           ...shellCopy.slashCommands.compact,
           keywords: ['compact', 'context', '压缩', '上下文'],
           Icon: Minimize2,
+        },
+        rename: {
+          ...shellCopy.slashCommands.rename,
+          keywords: ['rename', 'name', 'title', '重命名', '名称'],
+          Icon: Pencil,
+        },
+        send: {
+          ...shellCopy.slashCommands.send,
+          keywords: ['send', 'session', 'message', '发送', '任务', '会话'],
+          Icon: MessageCircleQuestion,
+          onChoose: () => { void openMailboxTargetPicker(); },
         },
         side: {
           ...shellCopy.slashCommands.side,
@@ -1414,7 +1486,7 @@ function AppShellContent({
       };
       return availableCommands.map(({ id }) => ({ id, ...presentation[id] }));
     },
-    [activeId, activeStreamingLive, shellCopy.slashCommands, turnActive],
+    [activeId, activeStreamingLive, openMailboxTargetPicker, shellCopy.slashCommands, turnActive],
   );
   const refreshProjectSkillsRef = useRef<() => Promise<void>>(async () => {});
   const {
@@ -1632,7 +1704,7 @@ function AppShellContent({
     newSessionPermissionMode: newTaskPermissionMode,
   });
 
-  const hasModalOpen = helpOpen || paletteOpen || searchModalOpen;
+  const hasModalOpen = helpOpen || paletteOpen || searchModalOpen || mailboxFlow !== null;
   const shellObscured = hasModalOpen || settingsOpen;
   const contextCompactionPresentation = useMemo(
     () =>
@@ -1835,6 +1907,74 @@ function AppShellContent({
     text: string,
     metadata?: ComposerSendMetadata,
   ): Promise<boolean | void> {
+    const mailboxTarget = pendingMailboxTarget;
+    if (mailboxTarget) {
+      if (activeIdRef.current !== mailboxTarget.sourceSessionId) {
+        setPendingMailboxTarget(null);
+        setMailboxDeliveryFeedback(null);
+        return false;
+      }
+      if (
+        pendingAttachments.length > 0
+        || pendingQuotes.length > 0
+        || (metadata?.workspaceFileReferences?.length ?? 0) > 0
+      ) {
+        toastApi.info(
+          shellCopy.sideChatContextPendingTitle,
+          shellCopy.sideChatContextPendingDescription,
+        );
+        return false;
+      }
+      setMailboxDeliveryFeedback({ ...mailboxTarget, status: 'sending' });
+      try {
+        const result = await window.maka.sessions.sendMailboxMessage(
+          mailboxTarget.sourceSessionId,
+          mailboxTarget.target.sessionId,
+          text,
+        );
+        setPendingMailboxTarget(null);
+        setMailboxDeliveryFeedback(null);
+        const receiptId = sessionMailboxSentReceiptId(result.messageId);
+        if (activeIdRef.current === mailboxTarget.sourceSessionId) {
+          setMessages((current) => {
+            if (current.some((message) => message.id === receiptId)) return current;
+            let anchorTurnId: string | undefined;
+            for (let index = current.length - 1; index >= 0; index -= 1) {
+              anchorTurnId = current[index]?.turnId;
+              if (anchorTurnId) break;
+            }
+            return [
+              ...current,
+              {
+                type: 'system_note',
+                id: receiptId,
+                ...(anchorTurnId ? { turnId: anchorTurnId } : {}),
+                ts: Date.now(),
+                kind: 'session_mailbox_sent',
+                data: {
+                  messageId: result.messageId,
+                  targetSessionId: mailboxTarget.target.sessionId,
+                  targetSessionName: mailboxTarget.target.name,
+                  kind: 'request',
+                  text,
+                  disposition: result.disposition,
+                },
+              },
+            ];
+          });
+        }
+        void refreshMessages(mailboxTarget.sourceSessionId);
+        return true;
+      } catch (error) {
+        setMailboxDeliveryFeedback({ ...mailboxTarget, status: 'failed' });
+        showSessionError(
+          mailboxTarget.sourceSessionId,
+          shellCopy.mailboxFailedTitle,
+          localizedShellErrorMessage(error, shellCopy.mailboxFailedFallback, uiLocale),
+        );
+        return false;
+      }
+    }
     setNewTaskSendPending(true);
     try {
       return await sendWithAttachments(text, metadata);
@@ -1970,6 +2110,65 @@ function AppShellContent({
         }
         return false;
       }
+    }
+    if (slashCommand?.kind === 'rename') {
+      const sessionId = activeIdRef.current;
+      if (!sessionId) return false;
+      try {
+        await window.maka.sessions.rename(sessionId, slashCommand.name, {
+          revisionFamily: true,
+        });
+        await refreshSessions();
+        toastApi.success(
+          shellCopy.renameSuccessTitle,
+          shellCopy.renameSuccessDescription(slashCommand.name),
+        );
+        return true;
+      } catch (error) {
+        showSessionError(
+          sessionId,
+          getShellCopy(uiLocale).sessionRowActions.renameFailedTitle,
+          localizedShellErrorMessage(error, shellCopy.tryAgainLater, uiLocale),
+        );
+        return false;
+      }
+    }
+    if (slashCommand?.kind === 'rename_invalid') {
+      toastApi.info(shellCopy.renameUsageTitle, shellCopy.renameUsageDescription);
+      return false;
+    }
+    if (slashCommand?.kind === 'send') {
+      const sourceSessionId = activeIdRef.current;
+      if (!sourceSessionId) return false;
+      if (
+        pendingAttachments.length > 0 ||
+        pendingQuotes.length > 0 ||
+        (metadata?.workspaceFileReferences?.length ?? 0) > 0
+      ) {
+        toastApi.info(
+          shellCopy.sideChatContextPendingTitle,
+          shellCopy.sideChatContextPendingDescription,
+        );
+        return false;
+      }
+      try {
+        const targets = await window.maka.sessions.listMailboxTargets(sourceSessionId);
+        setPendingMailboxTarget(null);
+        setMailboxDeliveryFeedback(null);
+        setMailboxFlow({ sourceSessionId, targets });
+        return true;
+      } catch (error) {
+        showSessionError(
+          sourceSessionId,
+          shellCopy.mailboxFailedTitle,
+          localizedShellErrorMessage(error, shellCopy.mailboxFailedFallback, uiLocale),
+        );
+        return false;
+      }
+    }
+    if (slashCommand?.kind === 'send_invalid') {
+      toastApi.info(shellCopy.mailboxUsageTitle, shellCopy.mailboxUsageDescription);
+      return false;
     }
     if (slashCommand?.kind === 'side') {
       if (!activeIdRef.current) {
@@ -2634,6 +2833,45 @@ function AppShellContent({
         ? navSelection.module
         : 'im_hub';
 
+  const mailboxSendTargetNotice = (() => {
+    const feedback = mailboxDeliveryFeedback;
+    if (feedback && feedback.sourceSessionId === activeId) {
+      const name = feedback.target.name;
+      const dismiss = () => {
+        setMailboxDeliveryFeedback(null);
+        if (feedback.status === 'failed') setPendingMailboxTarget(null);
+      };
+      switch (feedback.status) {
+        case 'sending':
+          return {
+            title: shellCopy.mailboxSendingTitle(name),
+            detail: shellCopy.mailboxSendingDescription,
+            cancelLabel: shellCopy.mailboxComposerCancel,
+            status: feedback.status,
+            onCancel: dismiss,
+          } as const;
+        case 'failed':
+          return {
+            title: shellCopy.mailboxFailedReceiptTitle(name),
+            detail: shellCopy.mailboxFailedReceiptDescription,
+            cancelLabel: shellCopy.mailboxComposerCancel,
+            status: feedback.status,
+            onCancel: dismiss,
+          } as const;
+      }
+    }
+    if (!pendingMailboxTarget || pendingMailboxTarget.sourceSessionId !== activeId) {
+      return undefined;
+    }
+    return {
+      title: shellCopy.mailboxComposerTitle(pendingMailboxTarget.target.name),
+      detail: shellCopy.mailboxComposerDescription,
+      cancelLabel: shellCopy.mailboxComposerCancel,
+      status: 'ready',
+      onCancel: () => setPendingMailboxTarget(null),
+    } as const;
+  })();
+
   return (
     <div
       className="appFrame agents-layout-root"
@@ -2894,6 +3132,7 @@ function AppShellContent({
                         }
                       : undefined
                   }
+                  sendTargetNotice={mailboxSendTargetNotice}
                   mentionSkills={mentionSkills}
                   mentionSkillsUnavailable={mentionSkillsUnavailable}
                   mentionSkillsLoading={mentionSkillsLoading}
@@ -3165,6 +3404,24 @@ function AppShellContent({
       )}
       <GoalHost model={goals.host} />
       <RuntimeHostSshTerminalDialog />
+
+      {mailboxFlow ? (
+        <SessionMailboxPicker
+          targets={mailboxFlow.targets}
+          onOpenChange={(open) => {
+            if (!open) setMailboxFlow(null);
+          }}
+          onSelect={(target) => {
+            setMailboxDeliveryFeedback(null);
+            setPendingMailboxTarget({
+              sourceSessionId: mailboxFlow.sourceSessionId,
+              target,
+            });
+            setMailboxFlow(null);
+            window.requestAnimationFrame(() => composerRef.current?.focus());
+          }}
+        />
+      ) : null}
 
       <RemoteProjectDirectoryDialog
         host={newTask.directoryHost ? {
