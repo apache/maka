@@ -95,6 +95,29 @@
   min-width: 0;
 }
 
+/* 任务 column: the session-name link truncates inside its fixed column width and
+   surfaces the full name via the button tooltip. StyleX owns the button's own
+   layout; these rules only cap its width and ellipsis the label text (descendant
+   specificity outranks StyleX's single-class atoms), so row height and the
+   neighbouring columns stay aligned no matter how long a session name is. */
+.settingsUsageSessionCell {
+  max-width: 100%;
+  min-width: 0;
+  justify-content: flex-start;
+  /* Align the session-name link flush with the 任务 header and the other
+     left-aligned text columns by neutralising the ghost button's leading inline
+     padding. !important because Astryx's StyleX size padding is unlayered and
+     otherwise wins on source order (same escape hatch as sidebar.css). */
+  padding-inline-start: 0 !important;
+}
+
+.settingsUsageSessionCell span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 /* Empty tab: the shared EmptyState card, nudged to the density of the
    stats surface rather than the full page hero. */
 .settingsUsageEmpty {
