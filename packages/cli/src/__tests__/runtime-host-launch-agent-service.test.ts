@@ -95,13 +95,20 @@ test('installs and removes the update scheduler with a managed LaunchAgent', asy
     const updatePath = resolveLaunchAgentUpdatePath(SERVICE_ID, homeDir);
     assert.match(await readFile(updatePath, 'utf8'), /reconcile-update/u);
 
-    await backend.replace(config);
-    assert.equal(
+    const updateBootouts = () =>
       launchctl.calls.filter(
         ([command, target]) => command === 'bootout' && target === UPDATE_TARGET,
-      ).length,
-      0,
-    );
+      ).length;
+    const bootoutsBeforeReplace = updateBootouts();
+    await backend.replace(config);
+    assert.equal(updateBootouts(), bootoutsBeforeReplace);
+
+    launchctl.updateRunning = true;
+    launchctl.failNextBootstrap = true;
+    await assert.rejects(backend.replace(config), /Starting the Runtime Host LaunchAgent failed/u);
+    assert.equal(updateBootouts(), bootoutsBeforeReplace);
+    assert.equal(launchctl.updateRunning, true);
+    launchctl.updateRunning = false;
 
     await writeFile(updatePath, '<plist>stale</plist>\n', { mode: 0o600 });
     await assert.rejects(
@@ -109,8 +116,13 @@ test('installs and removes the update scheduler with a managed LaunchAgent', asy
       (error: unknown) =>
         error instanceof Error && 'code' in error && error.code === 'target_mismatch',
     );
-    await backend.replace(config);
+    await backend.install(config);
     await backend.verifyDeployment(config);
+
+    await backend.stop();
+    assert.equal(launchctl.updateLoaded, false);
+    await backend.start();
+    assert.equal(launchctl.updateLoaded, true);
 
     await backend.uninstall();
     assert.equal(await fileExists(updatePath), false);
@@ -207,6 +219,8 @@ test('restores the previous loaded LaunchAgent when deployment bootstrap fails',
 interface FakeLaunchctl {
   loaded: boolean;
   running: boolean;
+  updateLoaded: boolean;
+  updateRunning: boolean;
   failNextBootstrap: boolean;
   readonly calls: string[][];
   readonly run: (args: readonly string[]) => Promise<{
@@ -218,11 +232,11 @@ interface FakeLaunchctl {
 
 function createFakeLaunchctl(): FakeLaunchctl {
   let pid = 4100;
-  let updateLoaded = false;
-  let updateRunning = false;
   const fake: FakeLaunchctl = {
     loaded: false,
     running: false,
+    updateLoaded: false,
+    updateRunning: false,
     failNextBootstrap: false,
     calls: [],
     run: async (args) => {
@@ -232,8 +246,8 @@ function createFakeLaunchctl(): FakeLaunchctl {
       }
       if (args[0] === 'print' && (args[1] === TARGET || args[1] === UPDATE_TARGET)) {
         const update = args[1] === UPDATE_TARGET;
-        const loaded = update ? updateLoaded : fake.loaded;
-        const running = update ? updateRunning : fake.running;
+        const loaded = update ? fake.updateLoaded : fake.loaded;
+        const running = update ? fake.updateRunning : fake.running;
         return loaded
           ? {
               exitCode: 0,
@@ -251,8 +265,8 @@ function createFakeLaunchctl(): FakeLaunchctl {
         }
         const update = args[2]?.endsWith('.update.plist') ?? false;
         if (update) {
-          updateLoaded = true;
-          updateRunning = false;
+          fake.updateLoaded = true;
+          fake.updateRunning = false;
         } else {
           fake.loaded = true;
           fake.running = true;
@@ -262,8 +276,8 @@ function createFakeLaunchctl(): FakeLaunchctl {
       }
       if (args[0] === 'bootout') {
         if (args[1] === UPDATE_TARGET) {
-          updateRunning = false;
-          updateLoaded = false;
+          fake.updateRunning = false;
+          fake.updateLoaded = false;
         } else {
           fake.running = false;
           fake.loaded = false;

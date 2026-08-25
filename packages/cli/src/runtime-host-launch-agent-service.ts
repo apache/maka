@@ -121,13 +121,18 @@ export function createLaunchAgentRuntimeHostService(
         captureLaunchAgentDeployment(context),
         managesScheduler ? captureLaunchAgentDeployment(scheduler) : undefined,
       ]);
+      let schedulerMutationStarted = false;
       try {
         await applyLaunchAgentDeployment(context, config);
-        if (managesScheduler) await applyLaunchAgentUpdateScheduler(scheduler, config);
+        if (managesScheduler) {
+          await applyLaunchAgentUpdateScheduler(scheduler, config, () => {
+            schedulerMutationStarted = true;
+          });
+        }
       } catch (error) {
         await restoreFailedLaunchAgentDeployment(
           previous,
-          previousScheduler,
+          schedulerMutationStarted ? previousScheduler : undefined,
           context,
           scheduler,
           error,
@@ -140,7 +145,7 @@ export function createLaunchAgentRuntimeHostService(
           rolledBack = true;
           await restoreLaunchAgentManagedDeployment(
             previous,
-            previousScheduler,
+            schedulerMutationStarted ? previousScheduler : undefined,
             context,
             scheduler,
           );
@@ -149,18 +154,14 @@ export function createLaunchAgentRuntimeHostService(
     },
     replace: async (config) => {
       await validateRuntimeHostServiceLaunch(config);
-      const managesScheduler = runtimeHostUpdateReconcileLaunchArguments(config) !== null;
-      const [previous, previousScheduler] = await Promise.all([
-        captureLaunchAgentDeployment(context),
-        managesScheduler ? captureLaunchAgentDeployment(scheduler) : undefined,
-      ]);
+      const previous = await captureLaunchAgentDeployment(context);
       try {
+        // The stable scheduler may be the caller; only explicit install/repair may reload it.
         await applyLaunchAgentDeployment(context, config);
-        if (managesScheduler) await applyLaunchAgentUpdateScheduler(scheduler, config);
       } catch (error) {
         await restoreFailedLaunchAgentDeployment(
           previous,
-          previousScheduler,
+          undefined,
           context,
           scheduler,
           error,
@@ -189,44 +190,15 @@ export function createLaunchAgentRuntimeHostService(
     },
     status: readStatus,
     start: async () => {
-      const status = await readDetailedStatus();
-      if (!status.installed) {
-        throw new RuntimeHostServiceManagerError(
-          'not_installed',
-          'Runtime Host LaunchAgent is not installed',
-        );
-      }
-      if (status.loaded) {
-        if (!status.active) {
-          await requireLaunchctl(
-            context,
-            ['kickstart', context.serviceTarget],
-            'Starting the Runtime Host LaunchAgent failed',
-          );
-        }
-        return;
-      }
-      await bootstrapLaunchAgent(context);
+      await startLaunchAgent(context);
+      await ensureLaunchAgentLoadedIfInstalled(scheduler);
     },
-    stop: () => bootoutLaunchAgent(context),
+    stop: () => stopLaunchAgentManagedDeployment(context, scheduler),
     restart: async () => {
-      const status = await readDetailedStatus();
-      if (!status.installed) {
-        throw new RuntimeHostServiceManagerError(
-          'not_installed',
-          'Runtime Host LaunchAgent is not installed',
-        );
-      }
-      if (!status.loaded) {
-        await bootstrapLaunchAgent(context);
-        return;
-      }
-      await requireLaunchctl(
-        context,
-        ['kickstart', '-k', context.serviceTarget],
-        'Restarting the Runtime Host LaunchAgent failed',
-      );
+      await restartLaunchAgent(context);
+      await ensureLaunchAgentLoadedIfInstalled(scheduler);
     },
+    retire: () => bootoutLaunchAgent(context),
     logs: async () => {
       const [stdout, stderr, updateStdout, updateStderr] = await Promise.all([
         readLogTail(context.stdoutPath),
@@ -423,17 +395,15 @@ async function captureLaunchAgentDeployment(
 async function applyLaunchAgentUpdateScheduler(
   context: LaunchAgentContext,
   config: RuntimeHostManagedServiceConfig,
+  onMutation: () => void,
 ): Promise<void> {
-  if (!runtimeHostUpdateReconcileLaunchArguments(config)) {
-    await removeLaunchAgentUpdateScheduler(context);
-    return;
-  }
   try {
     await verifyLaunchAgentUpdateScheduler(context, config);
     return;
   } catch (error) {
     if (!isTargetMismatch(error)) throw error;
   }
+  onMutation();
   await bootoutLaunchAgent(context);
   await prepareLaunchAgentLogs(context);
   await writeRuntimeHostServiceFile(
@@ -448,7 +418,6 @@ async function verifyLaunchAgentUpdateScheduler(
   context: LaunchAgentContext,
   config: RuntimeHostManagedServiceConfig,
 ): Promise<void> {
-  const args = runtimeHostUpdateReconcileLaunchArguments(config);
   const [status, plist] = await Promise.all([
     readLaunchAgentStatus(context),
     readFile(context.plistPath, 'utf8').catch((error: unknown) => {
@@ -456,10 +425,6 @@ async function verifyLaunchAgentUpdateScheduler(
       throw error;
     }),
   ]);
-  if (!args) {
-    if (status.installed || status.loaded || plist !== null) throw launchAgentSchedulerMismatch();
-    return;
-  }
   if (!status.loaded || plist !== renderLaunchAgentUpdatePlist(config, context)) {
     throw launchAgentSchedulerMismatch();
   }
@@ -499,6 +464,72 @@ async function applyLaunchAgentDeployment(
   await bootstrapLaunchAgent(context);
 }
 
+async function startLaunchAgent(context: LaunchAgentContext): Promise<void> {
+  const status = await readLaunchAgentStatus(context);
+  if (!status.installed) {
+    throw new RuntimeHostServiceManagerError(
+      'not_installed',
+      'Runtime Host LaunchAgent is not installed',
+    );
+  }
+  if (!status.loaded) {
+    await bootstrapLaunchAgent(context);
+    return;
+  }
+  if (!status.active) {
+    await requireLaunchctl(
+      context,
+      ['kickstart', context.serviceTarget],
+      'Starting the Runtime Host LaunchAgent failed',
+    );
+  }
+}
+
+async function restartLaunchAgent(context: LaunchAgentContext): Promise<void> {
+  const status = await readLaunchAgentStatus(context);
+  if (!status.installed) {
+    throw new RuntimeHostServiceManagerError(
+      'not_installed',
+      'Runtime Host LaunchAgent is not installed',
+    );
+  }
+  if (!status.loaded) {
+    await bootstrapLaunchAgent(context);
+    return;
+  }
+  await requireLaunchctl(
+    context,
+    ['kickstart', '-k', context.serviceTarget],
+    'Restarting the Runtime Host LaunchAgent failed',
+  );
+}
+
+async function ensureLaunchAgentLoadedIfInstalled(context: LaunchAgentContext): Promise<void> {
+  const status = await readLaunchAgentStatus(context);
+  if (status.installed && !status.loaded) await bootstrapLaunchAgent(context);
+}
+
+async function stopLaunchAgentManagedDeployment(
+  context: LaunchAgentContext,
+  scheduler: LaunchAgentContext,
+): Promise<void> {
+  const errors: unknown[] = [];
+  for (const target of [scheduler, context]) {
+    try {
+      await bootoutLaunchAgent(target);
+    } catch (error) {
+      errors.push(error);
+    }
+  }
+  if (errors.length > 0) {
+    throw new RuntimeHostServiceManagerError(
+      'service_manager_operation_failed',
+      'Unable to stop the Runtime Host managed deployment',
+      { cause: new AggregateError(errors) },
+    );
+  }
+}
+
 async function restoreFailedLaunchAgentDeployment(
   snapshot: LaunchAgentDeploymentSnapshot,
   schedulerSnapshot: LaunchAgentDeploymentSnapshot | undefined,
@@ -533,17 +564,17 @@ async function restoreLaunchAgentManagedDeployment(
   schedulerContext: LaunchAgentContext,
 ): Promise<void> {
   const errors: unknown[] = [];
+  try {
+    await restoreLaunchAgentDeployment(snapshot, context);
+  } catch (error) {
+    errors.push(error);
+  }
   if (schedulerSnapshot) {
     try {
       await restoreLaunchAgentDeployment(schedulerSnapshot, schedulerContext);
     } catch (error) {
       errors.push(error);
     }
-  }
-  try {
-    await restoreLaunchAgentDeployment(snapshot, context);
-  } catch (error) {
-    errors.push(error);
   }
   if (errors.length > 0) {
     throw new AggregateError(errors, 'Unable to restore the previous LaunchAgent deployment');

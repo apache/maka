@@ -416,6 +416,7 @@ function unusedBackend() {
     start: async () => undefined,
     stop: async () => undefined,
     restart: async () => undefined,
+    retire: async () => undefined,
     logs: async () => '',
     uninstall: async () => undefined,
   };

@@ -107,6 +107,8 @@ export interface RuntimeHostServiceBackend {
   start(): Promise<void>;
   stop(): Promise<void>;
   restart(): Promise<void>;
+  /** Stop only the Runtime Host process while preserving deployment scheduling. */
+  retire(): Promise<void>;
   logs(): Promise<string>;
   uninstall(): Promise<void>;
 }
@@ -501,7 +503,7 @@ async function manageRuntimeHostServiceLocked(
       rootFence = await acquireRuntimeHostRootRetirementFence(root);
     }
     try {
-      await backend.stop();
+      await backend.retire();
       const stopped = await readServiceStatus(configPath, backend);
       if (stopped.active || stopped.state !== 'stopped' || stopped.pid !== null) {
         throw new RuntimeHostServiceManagerError(
@@ -588,7 +590,7 @@ async function replaceRuntimeHostManagedServiceLocked(
     await backend.replace(config);
   } catch (error) {
     if (error instanceof RuntimeHostServiceManagerError && error.code === 'update_incomplete') {
-      await backend.stop().catch(() => undefined);
+      await backend.retire().catch(() => undefined);
       throw error;
     }
     try {
@@ -598,7 +600,7 @@ async function replaceRuntimeHostManagedServiceLocked(
         0o600,
       );
     } catch (restoreError) {
-      await backend.stop().catch(() => undefined);
+      await backend.retire().catch(() => undefined);
       throw new RuntimeHostServiceManagerError(
         'update_incomplete',
         'Replacing the Runtime Host service failed and its previous configuration could not be restored',
@@ -615,7 +617,7 @@ async function replaceRuntimeHostManagedServiceLocked(
     await deps.waitForReady(config, backend);
   } catch (error) {
     try {
-      await backend.stop();
+      await backend.retire();
     } catch (stopError) {
       throw new RuntimeHostServiceManagerError(
         'update_incomplete',

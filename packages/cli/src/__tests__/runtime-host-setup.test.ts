@@ -604,6 +604,7 @@ function unusedBackend(): RuntimeHostServiceBackend {
     start: async () => assert.fail('Backend is not expected'),
     stop: async () => assert.fail('Backend is not expected'),
     restart: async () => assert.fail('Backend is not expected'),
+    retire: async () => assert.fail('Backend is not expected'),
     logs: async () => assert.fail('Backend is not expected'),
     uninstall: async () => assert.fail('Backend is not expected'),
   };

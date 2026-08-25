@@ -363,15 +363,33 @@ describe('managed Runtime Host service', () => {
     );
     const managedConfig = reinstalled.service.config;
     assert.ok(managedConfig);
-    await writeFile(updateTimerPath, '[Timer]\n# stale\n', 'utf8');
     const repairBackend = backend();
+    const updateTimerName = basename(updateTimerPath);
+    systemd.setUnitDropInPaths(updateTimerName, ['/tmp/update-timer-override.conf']);
+    await assert.rejects(repairBackend.install(managedConfig), /systemd drop-in overrides/u);
+    systemd.setUnitDropInPaths(updateTimerName, []);
+    await writeFile(updateTimerPath, '[Timer]\n# stale\n', 'utf8');
     await assert.rejects(
       repairBackend.verifyDeployment(managedConfig),
       (error: unknown) =>
         error instanceof RuntimeHostServiceManagerError && error.code === 'target_mismatch',
     );
-    await repairBackend.replace(managedConfig);
+    await repairBackend.install(managedConfig);
     await repairBackend.verifyDeployment(managedConfig);
+
+    const updateServiceName = basename(updateServicePath);
+    await systemd.run(['start', updateServiceName]);
+    await repairBackend.stop();
+    assert.ok(
+      systemd.calls.some(([command, target]) => command === 'stop' && target === updateTimerName),
+    );
+    assert.ok(
+      systemd.calls.some(([command, target]) => command === 'stop' && target === updateServiceName),
+    );
+    await repairBackend.start();
+    assert.ok(
+      systemd.calls.some(([command, target]) => command === 'start' && target === updateTimerName),
+    );
 
     const root = await resolveStorageRoot({ path: rootPath, kind: 'interactive' });
     await writeFile(configPath, '{not-json', 'utf8');
@@ -1052,7 +1070,7 @@ describe('managed Runtime Host service', () => {
         pid: serviceState === 'running' ? 42 : serviceState === 'starting' ? startingPid : null,
         lastExitCode: 0,
       }),
-      stop: async () => {
+      retire: async () => {
         stops += 1;
         if (serviceState === 'starting' && startingPid === null) {
           const contender = await tryAcquireInteractiveRootOwner(root);
@@ -1219,7 +1237,7 @@ describe('managed Runtime Host service', () => {
         pid: serviceState === 'running' ? servicePid : null,
         lastExitCode: 0,
       }),
-      stop: async () => {
+      retire: async () => {
         stops += 1;
         serviceState = 'stopped';
         servicePid = null;
@@ -1374,7 +1392,7 @@ describe('managed Runtime Host service', () => {
         if (replaceFails) throw new Error('replacement was not committed');
         state = 'running';
       },
-      stop: async () => {
+      retire: async () => {
         if (stopFails) throw new Error('replacement could not be stopped');
         state = 'stopped';
       },
@@ -2014,6 +2032,7 @@ describe('managed Runtime Host service', () => {
 function createFakeSystemd(unitPath: string): {
   readonly failNext: (command: string) => void;
   readonly setDropInPaths: (paths: readonly string[]) => void;
+  readonly setUnitDropInPaths: (unitName: string, paths: readonly string[]) => void;
   readonly calls: readonly (readonly string[])[];
   readonly run: (args: readonly string[]) => Promise<{
     exitCode: number;
@@ -2023,7 +2042,7 @@ function createFakeSystemd(unitPath: string): {
 } {
   const states = new Map<string, { enabled: boolean; active: boolean }>();
   let failureCommand: string | undefined;
-  let dropInPaths: readonly string[] = [];
+  const dropInPaths = new Map<string, readonly string[]>();
   const calls: string[][] = [];
   return {
     calls,
@@ -2031,7 +2050,10 @@ function createFakeSystemd(unitPath: string): {
       failureCommand = command;
     },
     setDropInPaths: (paths) => {
-      dropInPaths = paths;
+      dropInPaths.set(basename(unitPath), paths);
+    },
+    setUnitDropInPaths: (unitName, paths) => {
+      dropInPaths.set(unitName, paths);
     },
     run: async (args) => {
       calls.push([...args]);
@@ -2084,7 +2106,7 @@ function createFakeSystemd(unitPath: string): {
             `UnitFileState=${unitState.enabled ? 'enabled' : 'disabled'}`,
             `FragmentPath=${loaded ? path : ''}`,
             'NeedDaemonReload=no',
-            `DropInPaths=${isMainService ? dropInPaths.join(' ') : ''}`,
+            `DropInPaths=${dropInPaths.get(unitName)?.join(' ') ?? ''}`,
             `MainPID=${unitState.active && isMainService ? '4242' : '0'}`,
             'ExecMainStatus=0',
             '',
@@ -2110,6 +2132,7 @@ function createUnusedBackend(): RuntimeHostServiceBackend {
     start: unexpected,
     stop: unexpected,
     restart: unexpected,
+    retire: unexpected,
     logs: unexpected,
     uninstall: unexpected,
   };
@@ -2141,6 +2164,7 @@ function createReadyBackend(): RuntimeHostServiceBackend {
     start: async () => undefined,
     stop: async () => undefined,
     restart: async () => undefined,
+    retire: async () => undefined,
     logs: async () => '',
     uninstall: async () => undefined,
   };
