@@ -397,6 +397,7 @@ export interface DesktopRuntimeHostOnboardingInput {
 }
 
 export type DesktopRuntimeHostOnboardingPhase =
+  | 'preparing_cli'
   | 'connecting_ssh'
   | RuntimeHostSetupPhase
   | 'connecting_host';
@@ -447,8 +448,44 @@ export type DesktopRuntimeHostManagementResponse =
 
 export interface DesktopRuntimeHostManagementProgress {
   readonly profileId: string;
-  readonly phase: import('@maka/runtime-host/operator').RuntimeHostServiceUpdatePhase;
+  readonly phase:
+    | 'preparing_cli'
+    | import('@maka/runtime-host/operator').RuntimeHostServiceUpdatePhase;
 }
+
+type RuntimeHostUpdatePolicyResult = Extract<
+  RuntimeHostServiceManagementFrame,
+  { kind: 'result'; action: 'update_policy' }
+>;
+
+type RuntimeHostUpdateReconciliationResult = Extract<
+  RuntimeHostServiceManagementFrame,
+  { kind: 'result'; action: 'reconcile_update' }
+>;
+
+export type DesktopRuntimeHostUpdateSchedulingState =
+  | 'unsupported'
+  | import('@maka/runtime-host/operator').RuntimeHostUpdateSchedulerState;
+
+export type DesktopRuntimeHostUpdatePolicySnapshot =
+  RuntimeHostUpdatePolicyResult['updatePolicy'] & {
+    readonly schedulingState: DesktopRuntimeHostUpdateSchedulingState;
+  };
+
+export type DesktopRuntimeHostUpdateReconciliationOutcome =
+  RuntimeHostUpdateReconciliationResult['reconciliation'];
+
+export type DesktopRuntimeHostUpdateReconciliationResponse =
+  | {
+      readonly kind: 'error';
+      readonly error: { readonly code: string; readonly message: string };
+    }
+  | {
+      readonly kind: 'result';
+      readonly updatePolicy: DesktopRuntimeHostUpdatePolicySnapshot;
+      readonly reconciliation: DesktopRuntimeHostUpdateReconciliationOutcome;
+      readonly service?: NonNullable<RuntimeHostUpdateReconciliationResult['service']>;
+    };
 
 export interface DesktopRuntimeHostAccessCredential {
   readonly credentialId: string;
@@ -582,6 +619,12 @@ export interface MakaBridge {
     subscribeProgress(
       handler: (progress: DesktopRuntimeHostManagementProgress) => void,
     ): () => void;
+    getUpdatePolicy(profileId: string): Promise<DesktopRuntimeHostUpdatePolicySnapshot>;
+    setUpdatePolicy(
+      profileId: string,
+      policy: import('@maka/runtime-host/operator').RuntimeHostManagedUpdatePolicy,
+    ): Promise<DesktopRuntimeHostUpdatePolicySnapshot>;
+    reconcileUpdate(profileId: string): Promise<DesktopRuntimeHostUpdateReconciliationResponse>;
     listCredentials(profileId: string): Promise<DesktopRuntimeHostAccessSnapshot>;
     rotateCredential(profileId: string): Promise<DesktopRuntimeHostAccessSnapshot>;
     revokeCredential(
@@ -709,6 +752,15 @@ export interface MakaBridge {
       rootSessionId: string,
       handler: () => void,
     ): () => void;
+  };
+  workHub: {
+    /** Resolve the active Runtime Host's stable coordination conversation. */
+    resolveCoordinationSession(): Promise<string>;
+    /** Create an ordinary Session on the exact Host owning the resolved conversation. */
+    createSession(
+      coordinationSessionId: string,
+      input: { name: string },
+    ): Promise<DesktopSessionSummary>;
   };
   sessions: {
     list(filter?: SessionListFilter): Promise<DesktopSessionSummary[]>;

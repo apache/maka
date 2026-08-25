@@ -19,11 +19,11 @@
 
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import type { MessageContent } from '@maka/core/events';
+import { messageContentDigest, type MessageContent } from '@maka/core/events';
 import type { RuntimeEvent } from '@maka/core/runtime-event';
 import type {
-  MessageOperationReceipt,
-  MessageReceiptStore,
+  MessageAdmissionStore,
+  PendingMessageAdmission,
   RootTurnSourceMessageReceipt,
 } from '@maka/storage/execution-stores';
 import {
@@ -39,7 +39,6 @@ import {
   type HostMessageRootPort,
   type HostMessageRootState,
 } from '../server/message-coordinator.js';
-import { messageContentDigest } from '../server/message-content-digest.js';
 import { SessionAdmissionGate } from '../server/session-admission-gate.js';
 
 const ROOT = { sessionId: 'session-1', turnId: 'turn-1', runId: 'run-1' } as const;
@@ -119,7 +118,7 @@ test('submit re-runs admission when the queue revision moves during preflight', 
   owner.release();
 });
 
-test('keeps submitted Skill text durable while handing prepared content to steering and follow-up roots', async () => {
+test('persists prepared Skill content while projecting the submitted text', async () => {
   const fixture = createFixture();
   fixture.setMessagePreparation(async (input) => ({
     kind: 'ready',
@@ -188,7 +187,7 @@ test('invalidates the canonical projection after each observable queue mutation'
   await fixture.coordinator.close();
 });
 
-test('partitions a mixed-Client follow-up queue across root handoffs', async () => {
+test('hands a mixed-Client queue to one Session successor', async () => {
   const fixture = createFixture();
   fixture.coordinator.reserveRootTurn(ROOT);
   const owner = fixture.coordinator.bindRun(ROOT);
@@ -215,52 +214,132 @@ test('partitions a mixed-Client follow-up queue across root handoffs', async () 
   const batch = fixture.coordinator.beginTerminalTransition(ROOT);
   assert.deepEqual(
     batch.sources.map((source) => source.messageId),
-    ['steering-from-b'],
+    ['steering-from-b', 'followup-from-c'],
   );
-  assert.equal(batch.initiatingConnectionId, 'connection-b');
 
   fixture.coordinator.commitNextRoot(batch, {
     sessionId: ROOT.sessionId,
     turnId: 'turn-2',
     runId: 'run-2',
   });
-  assert.equal(fixture.liveResidencies(), 1);
+  assert.equal(fixture.liveResidencies(), 0);
   const nextOwner = fixture.coordinator.bindRun({
     sessionId: ROOT.sessionId,
     turnId: 'turn-2',
     runId: 'run-2',
   });
   nextOwner.release();
-  const secondBatch = fixture.coordinator.beginTerminalTransition({
-    sessionId: ROOT.sessionId,
-    turnId: 'turn-2',
-    runId: 'run-2',
-  });
-  assert.deepEqual(
-    secondBatch.sources.map((source) => source.messageId),
-    ['followup-from-c'],
-  );
-  assert.equal(secondBatch.initiatingConnectionId, 'connection-c');
-  fixture.coordinator.commitNextRoot(secondBatch, {
-    sessionId: ROOT.sessionId,
-    turnId: 'turn-3',
-    runId: 'run-3',
-  });
-  assert.equal(fixture.liveResidencies(), 0);
-  const finalOwner = fixture.coordinator.bindRun({
-    sessionId: ROOT.sessionId,
-    turnId: 'turn-3',
-    runId: 'run-3',
-  });
-  finalOwner.release();
   fixture.coordinator.completeIdle(
     fixture.coordinator.beginTerminalTransition({
       sessionId: ROOT.sessionId,
-      turnId: 'turn-3',
-      runId: 'run-3',
+      turnId: 'turn-2',
+      runId: 'run-2',
     }),
   );
   await fixture.coordinator.close();
+});
+
+test('recovered followups without a connection owner still form one successor batch', async () => {
+  const fixture = createFixture();
+  await fixture.admissions.commitMessageAdmission({
+    sessionId: ROOT.sessionId,
+    turnId: ROOT.turnId,
+    runId: ROOT.runId,
+    messageId: 'recovered-followup',
+    content: { text: 'recover without a connection owner' },
+    submittedContentDigest: messageContentDigest({
+      text: 'recover without a connection owner',
+    }),
+    submittedPlacement: 'next_turn',
+    placement: 'next_turn',
+    disposition: 'followup',
+    admittedAt: 1,
+  });
+
+  await fixture.coordinator.recoverPendingAfterHostRestart([ROOT.sessionId]);
+  const owner = fixture.coordinator.bindRun(ROOT);
+  owner.release();
+  const batch = fixture.coordinator.beginTerminalTransition(ROOT);
+  assert.deepEqual(
+    batch.sources.map((source) => source.messageId),
+    ['recovered-followup'],
+  );
+  fixture.coordinator.commitNextRoot(batch, {
+    sessionId: ROOT.sessionId,
+    turnId: 'turn-recovered-successor',
+    runId: 'run-recovered-successor',
+  });
+  const successor = fixture.coordinator.bindRun({
+    sessionId: ROOT.sessionId,
+    turnId: 'turn-recovered-successor',
+    runId: 'run-recovered-successor',
+  });
+  successor.release();
+  fixture.coordinator.completeIdle(
+    fixture.coordinator.beginTerminalTransition({
+      sessionId: ROOT.sessionId,
+      turnId: 'turn-recovered-successor',
+      runId: 'run-recovered-successor',
+    }),
+  );
+});
+
+test('recovery treats a durable steering event as the handoff proof', async () => {
+  const fixture = createFixture();
+  await fixture.admissions.commitMessageAdmission({
+    sessionId: ROOT.sessionId,
+    turnId: ROOT.turnId,
+    runId: ROOT.runId,
+    messageId: 'recovered-steering',
+    content: { text: 'recover this steering event' },
+    submittedContentDigest: messageContentDigest({ text: 'recover this steering event' }),
+    submittedPlacement: 'current_turn',
+    placement: 'current_turn',
+    disposition: 'steering',
+    admittedAt: 1,
+  });
+  fixture.events.push(steeringEvent('recovered-steering', 'recover this steering event'));
+
+  await fixture.coordinator.recoverPendingAfterHostRestart([ROOT.sessionId]);
+
+  assert.equal(fixture.readMessageAdmission('recovered-steering'), undefined);
+  assert.deepEqual(fixture.coordinator.projection(ROOT.sessionId), {
+    hostEpoch: 'epoch-1',
+    queueRevision: 0,
+    steering: [],
+    followup: [],
+  });
+  await fixture.coordinator.close();
+});
+
+test('active recovery rebuilds only admissions without a durable proof', async () => {
+  const fixture = createFixture();
+  for (const [messageId, text] of [
+    ['proved-steering', 'already delivered'],
+    ['still-pending', 'deliver after recovery'],
+  ] as const) {
+    await fixture.admissions.commitMessageAdmission({
+      sessionId: ROOT.sessionId,
+      turnId: ROOT.turnId,
+      runId: ROOT.runId,
+      messageId,
+      content: { text },
+      submittedContentDigest: messageContentDigest({ text }),
+      submittedPlacement: 'current_turn',
+      placement: 'current_turn',
+      disposition: 'steering',
+      admittedAt: 1,
+    });
+  }
+  fixture.events.push(steeringEvent('proved-steering', 'already delivered'));
+
+  await fixture.coordinator.recoverPendingAfterHostRestart([ROOT.sessionId]);
+
+  assert.equal(fixture.readMessageAdmission('proved-steering'), undefined);
+  assert.deepEqual(
+    fixture.coordinator.projection(ROOT.sessionId).steering.map((entry) => entry.messageId),
+    ['still-pending'],
+  );
 });
 
 test('binds the exact reserved Run after a pre-bind stop fence', async () => {
@@ -296,7 +375,7 @@ test('queue projection capacity is rejected before mutation or residency acquisi
   await fixture.coordinator.close();
 });
 
-test('full snapshot preflight rejection leaves queue, receipt, residency, and publication unchanged', async () => {
+test('full snapshot preflight rejection leaves queue, replay outcome, residency, and publication unchanged', async () => {
   let fits = false;
   let observedQueue: SessionMessageQueueProjection | undefined;
   const changedSessions: string[] = [];
@@ -406,7 +485,7 @@ test('pull crosses the retract commit cut and only queued entries are retracted'
   assert.equal(fixture.liveResidencies(), 0);
 });
 
-test('entry retract removes one queued entry, replays its receipt, and rejects stale targets', async () => {
+test('entry retract removes one queued entry, replays its outcome, and rejects stale targets', async () => {
   const fixture = createFixture();
   fixture.coordinator.reserveRootTurn(ROOT);
 
@@ -519,7 +598,7 @@ test('entry retract of an in-flight steering lease conflicts', async () => {
   assert.equal(fixture.liveResidencies(), 0);
 });
 
-test('entry update preserves queue identity, order, and placement and replays its receipt', async () => {
+test('entry update preserves queue identity, order, and placement and replays its outcome', async () => {
   const fixture = createFixture();
   fixture.coordinator.reserveRootTurn(ROOT);
 
@@ -795,6 +874,46 @@ test('entry promote moves a follow-up into the steering queue', async () => {
   assert.equal(fixture.liveResidencies(), 0);
 });
 
+test('editing a promoted entry preserves its original submitted placement', async () => {
+  const fixture = createFixture();
+  fixture.coordinator.reserveRootTurn(ROOT);
+
+  await submit(fixture, 'follow-1', 'first', 'next_turn');
+  const promoted = await fixture.coordinator.handlers['queue.entry.promote'](
+    {
+      originHostEpoch: 'epoch-1',
+      sessionId: ROOT.sessionId,
+      entryId: 'id-1',
+      promoteId: 'promote-edit',
+    },
+    operationContext(),
+  );
+  assert.equal(promoted.ok, true);
+
+  const updated = await fixture.coordinator.handlers['queue.entry.update'](
+    {
+      originHostEpoch: 'epoch-1',
+      sessionId: ROOT.sessionId,
+      entryId: 'id-1',
+      updateId: 'update-promoted',
+      expectedQueueRevision: 2,
+      text: 'edited after promotion',
+    },
+    operationContext(),
+  );
+  assert.equal(updated.ok, true);
+  const admission = fixture.readMessageAdmission('follow-1');
+  assert.ok(admission);
+  assert.equal(admission.submittedPlacement, 'next_turn');
+  assert.equal(admission.placement, 'current_turn');
+  assert.equal(admission.disposition, 'steering');
+  assert.deepEqual(admission.content, { text: 'edited after promotion' });
+  assert.equal(
+    admission.submittedContentDigest,
+    messageContentDigest({ text: 'edited after promotion' }),
+  );
+});
+
 test('entry promote requires an active Turn', async () => {
   const fixture = createFixture();
   fixture.coordinator.reserveRootTurn(ROOT);
@@ -941,12 +1060,10 @@ test('queued mutations reject a queue that is draining into the next Turn', asyn
   await fixture.coordinator.close();
 });
 
-test('submit mutation is visible before its receipt and concurrent retries share the cut', async () => {
+test('concurrent and completed submit retries share one Host-Epoch outcome', async () => {
   const fixture = createFixture();
   fixture.coordinator.reserveRootTurn(ROOT);
   const owner = fixture.coordinator.bindRun(ROOT);
-  const receipt = fixture.delayReceipt('submit', 'delayed-submit');
-
   const submitted = submit(fixture, 'delayed-submit', 'steer now', 'current_turn');
   const retry = submit(fixture, 'delayed-submit', 'steer now', 'current_turn');
   assert.equal(retry, submitted);
@@ -954,16 +1071,6 @@ test('submit mutation is visible before its receipt and concurrent retries share
   assert.equal(conflict.ok, false);
   if (!conflict.ok) assert.equal(conflict.error.code, 'operation_conflict');
 
-  await receipt.started.promise;
-  assert.deepEqual(
-    fixture.coordinator.projection(ROOT.sessionId).steering.map((entry) => entry.messageId),
-    ['delayed-submit'],
-  );
-  const [lease] = owner.pull();
-  assert.ok(lease);
-  owner.nack([lease.id]);
-
-  receipt.release.resolve(undefined);
   const outcome = await submitted;
   assert.deepEqual(outcome, {
     ok: true,
@@ -972,7 +1079,7 @@ test('submit mutation is visible before its receipt and concurrent retries share
   assert.deepEqual(await submit(fixture, 'delayed-submit', 'steer now', 'current_turn'), outcome);
   assert.deepEqual(fixture.coordinator.projection(ROOT.sessionId), {
     hostEpoch: 'epoch-1',
-    queueRevision: 3,
+    queueRevision: 1,
     steering: [
       {
         entryId: 'id-1',
@@ -994,7 +1101,7 @@ test('submit mutation is visible before its receipt and concurrent retries share
   fixture.coordinator.completeIdle(batch);
 });
 
-test('retract mutation is visible while its receipt waits and preserves its exact cut', async () => {
+test('concurrent and completed retract retries preserve one exact cut', async () => {
   const fixture = createFixture();
   fixture.coordinator.reserveRootTurn(ROOT);
   const owner = fixture.coordinator.bindRun(ROOT);
@@ -1003,8 +1110,6 @@ test('retract mutation is visible while its receipt waits and preserves its exac
   await submit(fixture, 'follow-1', 'later', 'next_turn');
   const leases = owner.pull();
   assert.equal(leases.length, 2);
-  const receipt = fixture.delayReceipt('retract', 'delayed-retract');
-
   const retracted = fixture.coordinator.handlers['queue.retract'](
     {
       originHostEpoch: 'epoch-1',
@@ -1023,17 +1128,6 @@ test('retract mutation is visible while its receipt waits and preserves its exac
   );
   assert.equal(retry, retracted);
 
-  await receipt.started.promise;
-  assert.deepEqual(owner.pull(), []);
-  owner.ack([leases[0]!.id]);
-  owner.nack([leases[1]!.id]);
-  assert.deepEqual(
-    fixture.coordinator.projection(ROOT.sessionId).steering.map((entry) => entry.messageId),
-    ['steer-2'],
-  );
-  assert.deepEqual(fixture.coordinator.projection(ROOT.sessionId).followup, []);
-
-  receipt.release.resolve(undefined);
   const outcome = await retracted;
   assert.deepEqual(outcome, {
     ok: true,
@@ -1051,6 +1145,8 @@ test('retract mutation is visible while its receipt waits and preserves its exac
     },
   });
   assert.deepEqual(await retry, outcome);
+  owner.ack([leases[0]!.id]);
+  owner.nack([leases[1]!.id]);
 
   await fixture.coordinator.handlers['queue.retract'](
     { originHostEpoch: 'epoch-1', sessionId: ROOT.sessionId, retractId: 'cleanup-retract-cut' },
@@ -1059,96 +1155,6 @@ test('retract mutation is visible while its receipt waits and preserves its exac
   owner.release();
   const batch = fixture.coordinator.beginTerminalTransition(ROOT);
   fixture.coordinator.completeIdle(batch);
-});
-
-test('post-effect receipt failure fail-stops the Host Epoch and drains retained residency', async () => {
-  const fixture = createFixture();
-  fixture.coordinator.reserveRootTurn(ROOT);
-  const owner = fixture.coordinator.bindRun(ROOT);
-  const receipt = fixture.delayReceipt('submit', 'receipt-failure', new Error('disk failed'));
-
-  const submitted = submit(fixture, 'receipt-failure', 'accepted effect', 'current_turn');
-  await receipt.started.promise;
-  assert.equal(fixture.liveResidencies(), 1);
-  receipt.release.resolve(undefined);
-  await assert.rejects(submitted, /disk failed/);
-
-  assert.equal(fixture.drainRequests(), 1);
-  const rejected = await submit(fixture, 'after-failure', 'must not serve', 'current_turn');
-  assert.equal(rejected.ok, false);
-  if (!rejected.ok) assert.equal(rejected.error.code, 'host_draining');
-  const rejectedRetract = await fixture.coordinator.handlers['queue.retract'](
-    { originHostEpoch: 'epoch-1', sessionId: ROOT.sessionId, retractId: 'after-failure' },
-    operationContext(),
-  );
-  assert.equal(rejectedRetract.ok, false);
-  if (!rejectedRetract.ok) assert.equal(rejectedRetract.error.code, 'host_draining');
-  const rejectedInterrupt = await fixture.coordinator.handlers['turn.interrupt'](
-    {
-      originHostEpoch: 'epoch-1',
-      sessionId: ROOT.sessionId,
-      interruptId: 'after-failure',
-      turnId: ROOT.turnId,
-      runId: ROOT.runId,
-    },
-    operationContext(),
-  );
-  assert.equal(rejectedInterrupt.ok, false);
-  if (!rejectedInterrupt.ok) assert.equal(rejectedInterrupt.error.code, 'host_draining');
-
-  owner.release();
-  const batch = fixture.coordinator.beginTerminalTransition(ROOT);
-  assert.deepEqual(batch.sources, []);
-  assert.equal(fixture.liveResidencies(), 0);
-  fixture.coordinator.completeIdle(batch);
-  await fixture.coordinator.close();
-});
-
-test('operations queued behind a receipt failure recheck fail-stop before reads or mutation', async () => {
-  const fixture = createFixture();
-  fixture.coordinator.reserveRootTurn(ROOT);
-  const owner = fixture.coordinator.bindRun(ROOT);
-  const receipt = fixture.delayReceipt('submit', 'poison-authority', new Error('disk failed'));
-
-  const poisoning = submit(fixture, 'poison-authority', 'accepted effect', 'current_turn');
-  await receipt.started.promise;
-  const queuedSubmit = submit(fixture, 'queued-submit', 'must not land', 'current_turn');
-  const queuedRetract = fixture.coordinator.handlers['queue.retract'](
-    { originHostEpoch: 'epoch-1', sessionId: ROOT.sessionId, retractId: 'queued-retract' },
-    operationContext(),
-  );
-  const queuedInterrupt = fixture.coordinator.handlers['turn.interrupt'](
-    {
-      originHostEpoch: 'epoch-1',
-      sessionId: ROOT.sessionId,
-      interruptId: 'queued-interrupt',
-      turnId: ROOT.turnId,
-      runId: ROOT.runId,
-    },
-    operationContext(),
-  );
-  await Promise.resolve();
-  const readsBeforeFailure = fixture.receiptReads();
-  const rootReadsBeforeFailure = fixture.rootReads();
-  const projectionBeforeFailure = structuredClone(fixture.coordinator.projection(ROOT.sessionId));
-
-  receipt.release.resolve(undefined);
-  await assert.rejects(poisoning, /disk failed/);
-  const outcomes = await Promise.all([queuedSubmit, queuedRetract, queuedInterrupt]);
-
-  for (const outcome of outcomes) {
-    assert.equal(outcome.ok, false);
-    if (!outcome.ok) assert.equal(outcome.error.code, 'host_draining');
-  }
-  assert.equal(fixture.receiptReads(), readsBeforeFailure);
-  assert.equal(fixture.rootReads(), rootReadsBeforeFailure);
-  assert.deepEqual(fixture.coordinator.projection(ROOT.sessionId), projectionBeforeFailure);
-  assert.equal(fixture.drainRequests(), 1);
-
-  owner.release();
-  const batch = fixture.coordinator.beginTerminalTransition(ROOT);
-  fixture.coordinator.completeIdle(batch);
-  await fixture.coordinator.close();
 });
 
 test('stop delivery failure after the queue fence fail-stops and retry is prompt', async () => {
@@ -1273,47 +1279,6 @@ test('an interrupt generation fence makes a late nack discard its in-flight entr
   owner.release();
   const batch = fixture.coordinator.beginTerminalTransition(ROOT);
   fixture.coordinator.completeIdle(batch);
-});
-
-test('interrupt receipt deletion reclaims state after terminal completion wins the race', async () => {
-  const fixture = createFixture();
-  fixture.coordinator.reserveRootTurn(ROOT);
-  const owner = fixture.coordinator.bindRun(ROOT);
-  await submit(fixture, 'queued-before-interrupt', 'later', 'next_turn');
-  const receipt = fixture.delayReceipt('interrupt', 'interrupt-terminal-first');
-
-  const interrupted = fixture.coordinator.handlers['turn.interrupt'](
-    {
-      originHostEpoch: 'epoch-1',
-      sessionId: ROOT.sessionId,
-      interruptId: 'interrupt-terminal-first',
-      turnId: ROOT.turnId,
-      runId: ROOT.runId,
-    },
-    operationContext(),
-  );
-  await fixture.stopClaimed.promise;
-  fixture.resolveTerminal({
-    ...ROOT,
-    status: 'cancelled',
-    terminalEventId: 'terminal-first',
-    abortSource: 'user_interrupt',
-  });
-  await receipt.started.promise;
-
-  owner.release();
-  const batch = fixture.coordinator.beginTerminalTransition(ROOT);
-  fixture.coordinator.completeIdle(batch);
-  assert.notEqual(fixture.coordinator.projection(ROOT.sessionId).queueRevision, 0);
-
-  receipt.release.resolve(undefined);
-  assert.equal((await interrupted).ok, true);
-  assert.deepEqual(fixture.coordinator.projection(ROOT.sessionId), {
-    hostEpoch: 'epoch-1',
-    queueRevision: 0,
-    steering: [],
-    followup: [],
-  });
 });
 
 test('stale interrupt deletion reclaims state after terminal transition completes first', async () => {
@@ -1562,6 +1527,62 @@ test('terminal transition atomically folds messages submitted after run release'
   fixture.coordinator.completeIdle(empty);
 });
 
+test('run settlement hands off only steering admissions with immutable proof', async () => {
+  const fixture = createFixture();
+  fixture.coordinator.reserveRootTurn(ROOT);
+  const owner = fixture.coordinator.bindRun(ROOT);
+  await submit(fixture, 'steer-proved', 'provider must see this', 'current_turn');
+  const [lease] = owner.pull();
+  assert.ok(lease);
+  owner.ack([lease.id]);
+  owner.release();
+  fixture.events.push(steeringEvent('steer-proved', 'provider must see this'));
+
+  await fixture.coordinator.materializeMessageHandoffsForRun({
+    sessionId: ROOT.sessionId,
+    turnId: ROOT.turnId,
+    runId: ROOT.runId,
+    messageIds: [],
+  });
+
+  assert.equal(fixture.readMessageAdmission('steer-proved'), undefined);
+  const batch = fixture.coordinator.beginTerminalTransition(ROOT);
+  fixture.coordinator.completeIdle(batch);
+});
+
+test('a failed terminal root leaves no handed-off payload for restart recovery', async () => {
+  const fixture = createFixture();
+  await fixture.admissions.commitMessageAdmission({
+    sessionId: ROOT.sessionId,
+    turnId: ROOT.turnId,
+    runId: ROOT.runId,
+    messageId: 'failed-before-provider',
+    content: { text: 'handed off before the provider failed' },
+    submittedContentDigest: messageContentDigest({
+      text: 'handed off before the provider failed',
+    }),
+    submittedPlacement: 'current_turn',
+    placement: 'current_turn',
+    disposition: 'steering',
+    admittedAt: 1,
+  });
+  fixture.events.push(
+    steeringEvent('failed-before-provider', 'handed off before the provider failed'),
+  );
+
+  await fixture.coordinator.materializeMessageHandoffsForRun({
+    sessionId: ROOT.sessionId,
+    turnId: ROOT.turnId,
+    runId: ROOT.runId,
+    messageIds: [],
+  });
+  await fixture.coordinator.recoverPendingAfterHostRestart([ROOT.sessionId]);
+
+  assert.equal(fixture.readMessageAdmission('failed-before-provider'), undefined);
+  assert.equal(fixture.startCalls(), 0);
+  await fixture.coordinator.close();
+});
+
 test('administrative drain preserves accepted entries until the terminal stop fence', async () => {
   const fixture = createFixture();
   fixture.coordinator.reserveRootTurn(ROOT);
@@ -1609,7 +1630,7 @@ test('semantic retry history does not become a permanent Session admission cap',
   }
 });
 
-test('submit retries use keyed receipts and durable proof while old-Epoch rich conflicts fail', async () => {
+test('submit retries use keyed Host-Epoch outcomes and durable proof while old-Epoch rich conflicts fail', async () => {
   const fixture = createFixture();
   fixture.coordinator.reserveRootTurn(ROOT);
   const owner = fixture.coordinator.bindRun(ROOT);
@@ -2090,8 +2111,6 @@ function createFixture(
   let liveResidencies = 0;
   let startCalls = 0;
   let drainRequests = 0;
-  let receiptReads = 0;
-  let rootReads = 0;
   let stopDeliveryError: Error | undefined;
   let prepareMessage: NonNullable<HostMessageRootPort['prepareMessage']> = async (input) => ({
     kind: 'ready',
@@ -2106,25 +2125,22 @@ function createFixture(
     | undefined;
   const receipts = new Map<string, RootTurnSourceMessageReceipt>();
   const events: RuntimeEvent[] = [];
-  const operationReceipts = new Map<string, MessageOperationReceipt>();
-  const receiptDelays = new Map<
+  const messageAdmissions = new Map<
     string,
     {
-      readonly started: ReturnType<typeof deferred<void>>;
-      readonly release: ReturnType<typeof deferred<void>>;
-      readonly error?: Error;
+      admission: PendingMessageAdmission;
+      state: 'accepted' | 'handed_off' | 'executed' | 'cancelled';
     }
   >();
+  const admissions = memoryMessageAdmissionStore(messageAdmissions);
   const stopClaimed = deferred<void>();
   const terminal = deferred<TurnSnapshot>();
   let coordinator: HostMessageCoordinator;
   const root: HostMessageRootPort = {
     readSessionHeader: async () => {
-      rootReads += 1;
       return { isArchived: false };
     },
     readRootState: async () => {
-      rootReads += 1;
       const delay = rootStateDelay;
       if (delay) {
         rootStateDelay = undefined;
@@ -2185,20 +2201,7 @@ function createFixture(
         return event ? { event } : undefined;
       },
     },
-    receipts: memoryReceiptStore(
-      operationReceipts,
-      async (operation, operationId) => {
-        const delay = receiptDelays.get(`${operation}:${operationId}`);
-        if (!delay) return;
-        receiptDelays.delete(`${operation}:${operationId}`);
-        delay.started.resolve(undefined);
-        await delay.release.promise;
-        if (delay.error) throw delay.error;
-      },
-      () => {
-        receiptReads += 1;
-      },
-    ),
+    admissions,
     sessionAdmission: new SessionAdmissionGate(),
     acquireResidency: () => {
       liveResidencies += 1;
@@ -2221,6 +2224,7 @@ function createFixture(
   coordinator = new HostMessageCoordinator(options);
   return {
     coordinator,
+    admissions,
     setRootState: (state: HostMessageRootState) => {
       rootState = state;
     },
@@ -2230,23 +2234,13 @@ function createFixture(
     startCalls: () => startCalls,
     events,
     receipts,
+    readMessageAdmission: (messageId: string) => messageAdmissions.get(messageId)?.admission,
     stopClaimed,
     resolveTerminal: terminal.resolve,
     liveResidencies: () => liveResidencies,
     drainRequests: () => drainRequests,
-    receiptReads: () => receiptReads,
-    rootReads: () => rootReads,
     failStopDelivery: (error: Error) => {
       stopDeliveryError = error;
-    },
-    delayReceipt: (
-      operation: 'submit' | 'retract' | 'interrupt',
-      operationId: string,
-      error?: Error,
-    ) => {
-      const delay = { started: deferred<void>(), release: deferred<void>(), error };
-      receiptDelays.set(`${operation}:${operationId}`, delay);
-      return delay;
     },
     delayRootState: () => {
       const delay = { started: deferred<void>(), release: deferred<void>() };
@@ -2256,27 +2250,43 @@ function createFixture(
   };
 }
 
-function memoryReceiptStore(
-  receipts: Map<string, MessageOperationReceipt>,
-  beforeCommit?: (operation: string, operationId: string) => Promise<void>,
-  onRead?: () => void,
-): MessageReceiptStore {
-  const key = (hostEpoch: string, operation: string, sessionId: string, operationId: string) =>
-    `${hostEpoch}:${operation}:${sessionId}:${operationId}`;
+function memoryMessageAdmissionStore(
+  admissions: Map<
+    string,
+    {
+      admission: PendingMessageAdmission;
+      state: 'accepted' | 'handed_off' | 'executed' | 'cancelled';
+    }
+  >,
+): MessageAdmissionStore {
   return {
-    beginHostEpoch: async () => undefined,
-    read: async (hostEpoch, operation, sessionId, operationId) => {
-      onRead?.();
-      return receipts.get(key(hostEpoch, operation, sessionId, operationId));
+    commitMessageAdmission: async (admission) => {
+      const existing = admissions.get(admission.messageId);
+      if (existing) return existing.admission;
+      admissions.set(admission.messageId, { admission, state: 'accepted' });
+      return admission;
     },
-    commit: async (hostEpoch, operation, sessionId, operationId, receipt) => {
-      await beforeCommit?.(operation, operationId);
-      const receiptKey = key(hostEpoch, operation, sessionId, operationId);
-      const existing = receipts.get(receiptKey);
-      if (existing) return existing;
-      const snapshot = structuredClone(receipt);
-      receipts.set(receiptKey, snapshot);
-      return snapshot;
+    readMessageAdmission: async (_sessionId, messageId) => admissions.get(messageId)?.admission,
+    listMessageAdmissions: async (sessionId) =>
+      [...admissions.values()]
+        .filter(({ admission, state }) => admission.sessionId === sessionId && state === 'accepted')
+        .map(({ admission }) => admission),
+    updateMessageAdmission: async (admission) => {
+      const existing = admissions.get(admission.messageId);
+      if (!existing) throw new Error(`Missing admission ${admission.messageId}`);
+      existing.admission = admission;
+    },
+    reorderMessageAdmissions: async () => undefined,
+    cancelMessageAdmissions: async (_sessionId, messageIds) => {
+      for (const messageId of messageIds) {
+        const existing = admissions.get(messageId);
+        if (existing && (existing.state === 'accepted' || existing.state === 'handed_off')) {
+          existing.state = 'cancelled';
+        }
+      }
+    },
+    markMessagesHandedOff: async ({ messageIds }) => {
+      for (const messageId of messageIds) admissions.delete(messageId);
     },
   };
 }

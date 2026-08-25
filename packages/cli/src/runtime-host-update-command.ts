@@ -210,6 +210,7 @@ export async function runManagedRuntimeHostUpdateCli(
             'The Runtime Host service is not owned by a Maka managed deployment',
           );
         }
+        await backend.verifyReplacementPreconditions(serviceConfig);
         const deploymentRoot = serviceConfig.managedDeploymentRoot;
         const currentCliPath = resolve(serviceConfig.launch.cliPath);
         const targetCliPath = resolveRuntimeHostManagedPackageCliPath(
@@ -344,9 +345,10 @@ export async function runManagedRuntimeHostUpdateCli(
             if (!options.allowInterruptActiveTasks) {
               retirement = activeTasksRetirementFrame(status);
             } else {
-              const forced = await deps.withLifecycleLock(options.clientDataRoot, () =>
-                deps.manage({ ...common, action: 'stop' }, backend),
-              );
+              const forced = await deps.withLifecycleLock(options.clientDataRoot, async () => {
+                await backend.retire();
+                return deps.manage({ ...common, action: 'status' }, backend);
+              });
               if (
                 forced.service.active ||
                 forced.service.pid !== null ||

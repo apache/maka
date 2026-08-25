@@ -27,6 +27,7 @@ import type { RuntimeEvent } from '@maka/core/runtime-event';
 import type { RuntimeEventStore } from '@maka/core/runtime-event-store';
 import type { StoredMessage } from '@maka/core/session';
 import { decodeCanonicalToolResultContent } from '@maka/core/tool-result-record-schema';
+import { decodeModelCallAttempt } from '@maka/core/model-call-attempt';
 import { isSessionInlineRun } from '@maka/core/agent-run';
 import { canonicalToolArgsHash } from '@maka/core/tool-args-identity';
 import { createSqliteAgentRunStore } from '@maka/storage/agent-run-store';
@@ -1261,6 +1262,215 @@ test('conversation copy validates operational events before persisting target le
       /Cannot copy invalid provider request capture capture-source/,
     );
     assert.deepEqual(await runStore.listSessionRuns('session-target'), []);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('conversation copy rewrites the nested identity of a model call attempt', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-conversation-model-call-copy-'));
+  try {
+    const runStore = createSqliteAgentRunStore(root);
+    const runtimeEventStore = createWorkspaceRuntimeStore(root);
+    await runStore.createRun(
+      agentRunHeader({
+        runId: 'run-source',
+        invocationId: 'invocation-source',
+        turnId: 'turn-1',
+        cwd: root,
+      }),
+    );
+    for (const event of [
+      runtimeEvent({
+        id: 'event-user',
+        role: 'user',
+        author: 'user',
+        content: { kind: 'text', text: 'copy this turn' },
+      }),
+      runtimeEvent({ id: 'event-terminal', ts: 2, status: 'completed' }),
+    ]) {
+      await runtimeEventStore.appendRuntimeEvent('session-source', 'run-source', event);
+    }
+    // The envelope identity (session/run/id) and the nested ModelCallAttempt
+    // identity start out equal, exactly as the writer emits them.
+    await runStore.appendEvent('session-source', 'run-source', {
+      type: 'model_call_attempt_recorded',
+      id: 'attempt-source',
+      runId: 'run-source',
+      sessionId: 'session-source',
+      turnId: 'turn-1',
+      ts: 2,
+      data: {
+        schemaVersion: 1,
+        logicalCallId: 'logical-source',
+        attemptId: 'attempt-source',
+        traceId: 'trace-source',
+        sessionId: 'session-source',
+        runId: 'run-source',
+        turnId: 'turn-1',
+        step: 0,
+        attempt: 0,
+        callKind: 'main',
+        providerId: 'provider',
+        modelId: 'model',
+        captureArtifactId: 'artifact-source',
+        startedAt: 1,
+        completedAt: 2,
+        latencyMs: 1,
+        status: 'completed',
+        usageBasis: 'reported',
+        inputTokens: 10,
+        outputTokens: 5,
+        costBasis: 'priced',
+        costUsd: 0.01,
+      },
+    });
+    const source = await new RuntimeReadModel({
+      runStore,
+      runtimeEventStore,
+    }).getSessionView('session-source');
+    await cloneConversationRuntimeLedger({
+      plan: await prepareTestCopyPlan(source, source.messages, runStore, runtimeEventStore),
+      copiedMessages: source.messages,
+      referenceMap: {
+        mode: 'exact',
+        linkedChildren: { mode: 'reject' },
+        sourceSessionId: 'session-source',
+        targetSessionId: 'session-target',
+        artifactIds: new Map([['artifact-source', 'artifact-target']]),
+        relativePaths: new Map(),
+      },
+      runStore,
+      runtimeEventStore,
+      newId: () => crypto.randomUUID(),
+    });
+    const [targetRun] = await runStore.listSessionRuns('session-target');
+    assert.ok(targetRun);
+    const targetEvents = await runStore.readEvents('session-target', targetRun.runId);
+    const attempt = targetEvents.find((event) => event.type === 'model_call_attempt_recorded');
+    assert.ok(attempt);
+    // The envelope moved to the target session/run.
+    assert.equal(attempt.sessionId, 'session-target');
+    assert.equal(attempt.runId, targetRun.runId);
+    // The nested payload identity now agrees with the rewritten envelope instead
+    // of retaining the source identity — the model-call projection guard rejects
+    // any attempt whose payload disagrees with its envelope as unreadable.
+    assert.equal(attempt.data?.sessionId, 'session-target');
+    assert.equal(attempt.data?.runId, targetRun.runId);
+    assert.equal(attempt.data?.attemptId, attempt.id);
+    assert.equal(attempt.data?.turnId, 'turn-1');
+    // Owned trace/logical-call/artifact identity is remapped, not carried over.
+    assert.notEqual(attempt.data?.logicalCallId, 'logical-source');
+    assert.notEqual(attempt.data?.traceId, 'trace-source');
+    assert.equal(attempt.data?.captureArtifactId, 'artifact-target');
+    // The rewritten record is still a valid accounting authority whose identity
+    // matches the envelope the ledger projects it under.
+    const decoded = decodeModelCallAttempt(attempt.data);
+    assert.equal(decoded.sessionId, attempt.sessionId);
+    assert.equal(decoded.runId, attempt.runId);
+    assert.equal(decoded.attemptId, attempt.id);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('conversation copy repairs a model call attempt stranded by a pre-fix copy', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-conversation-model-call-legacy-'));
+  try {
+    const runStore = createSqliteAgentRunStore(root);
+    const runtimeEventStore = createWorkspaceRuntimeStore(root);
+    await runStore.createRun(
+      agentRunHeader({
+        runId: 'run-source',
+        invocationId: 'invocation-source',
+        turnId: 'turn-1',
+        cwd: root,
+      }),
+    );
+    for (const event of [
+      runtimeEvent({
+        id: 'event-user',
+        role: 'user',
+        author: 'user',
+        content: { kind: 'text', text: 'copy this turn again' },
+      }),
+      runtimeEvent({ id: 'event-terminal', ts: 2, status: 'completed' }),
+    ]) {
+      await runtimeEventStore.appendRuntimeEvent('session-source', 'run-source', event);
+    }
+    // Simulate a session that was itself copied before this fix existed: the
+    // pre-fix copy path rewrote the envelope id but left the nested payload at
+    // the *grandparent* identity, so the envelope id and the nested attemptId /
+    // session / run disagree. Such a session must still be copyable.
+    await runStore.appendEvent('session-source', 'run-source', {
+      type: 'model_call_attempt_recorded',
+      id: 'attempt-envelope',
+      runId: 'run-source',
+      sessionId: 'session-source',
+      turnId: 'turn-1',
+      ts: 2,
+      data: {
+        schemaVersion: 1,
+        logicalCallId: 'logical-grandparent',
+        attemptId: 'attempt-grandparent',
+        traceId: 'trace-grandparent',
+        sessionId: 'session-grandparent',
+        runId: 'run-grandparent',
+        turnId: 'turn-1',
+        step: 0,
+        attempt: 0,
+        callKind: 'main',
+        providerId: 'provider',
+        modelId: 'model',
+        startedAt: 1,
+        completedAt: 2,
+        latencyMs: 1,
+        status: 'completed',
+        usageBasis: 'reported',
+        inputTokens: 10,
+        outputTokens: 5,
+        costBasis: 'priced',
+        costUsd: 0.01,
+      },
+    });
+    const source = await new RuntimeReadModel({
+      runStore,
+      runtimeEventStore,
+    }).getSessionView('session-source');
+    // The whole copy must not throw `Cannot copy invalid model call attempt`.
+    await cloneConversationRuntimeLedger({
+      plan: await prepareTestCopyPlan(source, source.messages, runStore, runtimeEventStore),
+      copiedMessages: source.messages,
+      referenceMap: {
+        mode: 'exact',
+        linkedChildren: { mode: 'reject' },
+        sourceSessionId: 'session-source',
+        targetSessionId: 'session-target',
+        artifactIds: new Map(),
+        relativePaths: new Map(),
+      },
+      runStore,
+      runtimeEventStore,
+      newId: () => crypto.randomUUID(),
+    });
+    const [targetRun] = await runStore.listSessionRuns('session-target');
+    assert.ok(targetRun);
+    const targetEvents = await runStore.readEvents('session-target', targetRun.runId);
+    const attempt = targetEvents.find((event) => event.type === 'model_call_attempt_recorded');
+    assert.ok(attempt);
+    // The stranded nested identity is repaired to the target, not carried over.
+    assert.equal(attempt.data?.sessionId, 'session-target');
+    assert.equal(attempt.data?.runId, targetRun.runId);
+    assert.equal(attempt.data?.attemptId, attempt.id);
+    assert.notEqual(attempt.data?.attemptId, 'attempt-grandparent');
+    assert.notEqual(attempt.data?.logicalCallId, 'logical-grandparent');
+    assert.notEqual(attempt.data?.traceId, 'trace-grandparent');
+    // The repaired record decodes and its identity matches the envelope the
+    // ledger projects it under.
+    const legacyDecoded = decodeModelCallAttempt(attempt.data);
+    assert.equal(legacyDecoded.sessionId, attempt.sessionId);
+    assert.equal(legacyDecoded.runId, attempt.runId);
+    assert.equal(legacyDecoded.attemptId, attempt.id);
   } finally {
     await rm(root, { recursive: true, force: true });
   }

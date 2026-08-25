@@ -127,7 +127,7 @@ test('retry after a discarded turn.start response reuses the durable semantic ad
     dropped.abort();
 
     const retried = requireStartedTurn(
-      await observer.startTurn({
+      await observer.request('turn.start', {
         sessionId: fixture.sessionId,
         turnId,
         content: { text },
@@ -136,7 +136,7 @@ test('retry after a discarded turn.start response reuses the durable semantic ad
     assert.equal(retried.runId, committed.runId);
     await assert.rejects(
       () =>
-        observer.startTurn({
+        observer.request('turn.start', {
           sessionId: fixture.sessionId,
           turnId,
           content: { text: `${text} changed` },
@@ -152,7 +152,7 @@ test('retry after a discarded turn.start response reuses the durable semantic ad
     const successorClient = await connectClient(fixture.root);
     assert.deepEqual(
       requireStartedTurn(
-        await successorClient.startTurn({
+        await successorClient.request('turn.start', {
           sessionId: fixture.sessionId,
           turnId,
           content: { text },
@@ -161,7 +161,7 @@ test('retry after a discarded turn.start response reuses the durable semantic ad
       terminal,
     );
     const successorTurnId = randomUUID();
-    await successorClient.startTurn({
+    await successorClient.request('turn.start', {
       sessionId: fixture.sessionId,
       turnId: successorTurnId,
       content: { text: 'successor must extend the recovered durable tip' },
@@ -189,7 +189,7 @@ test('startup recovery replays an admitted regenerate with its source lineage', 
     const first = await connectClient(fixture.root);
     const sourceTurnId = randomUUID();
     const regeneratedTurnId = randomUUID();
-    await first.startTurn({
+    await first.request('turn.start', {
       sessionId: fixture.sessionId,
       turnId: sourceTurnId,
       content: quotedContent('recover this regeneration'),
@@ -224,7 +224,7 @@ test('a fresh quoted Turn preserves durable and Runtime handoff content', async 
     const turnId = randomUUID();
     const content = quotedContent('fresh quoted turn');
 
-    await client.startTurn({ sessionId: fixture.sessionId, turnId, content });
+    await client.request('turn.start', { sessionId: fixture.sessionId, turnId, content });
     await waitForTerminalTurn(client, fixture.sessionId, turnId);
     await client.close();
     await fixture.stopHost(host);
@@ -299,6 +299,103 @@ test('same idle Message submit is connection-independent and starts one canonica
   });
 });
 
+test('a rejected idle Message submit leaves no durable transcript entry', async () => {
+  await withExecutionRoot(async (fixture) => {
+    const host = await fixture.startHost();
+    const client = await connectClient(fixture.root);
+    const messageId = randomUUID();
+    try {
+      await assert.rejects(
+        () =>
+          client.request('turn.message.submit', {
+            originHostEpoch: host.hostEpoch,
+            sessionId: fixture.sessionId,
+            messageId,
+            content: { text: '/skill:missing reject this submit' },
+            placement: 'current_turn',
+          }),
+        operationError('operation_conflict'),
+      );
+    } finally {
+      await client.close();
+      await fixture.stopHost(host);
+    }
+
+    assert.deepEqual(
+      (await fixture.readSessionUserMessages())
+        .filter((message) => message.id === messageId)
+        .map((message) => message.id),
+      [],
+    );
+  });
+});
+
+for (const kibibytes of [31, 32]) {
+  test(`an allowed ${kibibytes} KiB idle Message crosses the durable admission boundary`, async () => {
+    await withExecutionRoot(async (fixture) => {
+      const host = await fixture.startHost();
+      const client = await connectClient(fixture.root);
+      const messageId = randomUUID();
+      const text = 'x'.repeat(kibibytes * 1024);
+      try {
+        const started = await client.request('turn.message.submit', {
+          originHostEpoch: host.hostEpoch,
+          sessionId: fixture.sessionId,
+          messageId,
+          content: { text },
+          placement: 'current_turn',
+        });
+        assert.equal(started.disposition, 'turn_started');
+      } finally {
+        await client.close();
+        await fixture.stopHost(host);
+      }
+      assert.deepEqual(
+        (await fixture.readSessionUserMessages())
+          .filter((message) => message.id === messageId)
+          .map((message) => message.text),
+        [text],
+      );
+    });
+  });
+}
+
+for (const kibibytes of [49, 50]) {
+  test(`a ${kibibytes} KiB idle Message is rejected before durable admission`, async () => {
+    await withExecutionRoot(async (fixture) => {
+      const host = await fixture.startHost();
+      const client = await connectClient(fixture.root);
+      const messageId = randomUUID();
+      try {
+        await assert.rejects(
+          () =>
+            client.request('turn.message.submit', {
+              originHostEpoch: host.hostEpoch,
+              sessionId: fixture.sessionId,
+              messageId,
+              content: { text: 'x'.repeat(kibibytes * 1024) },
+              placement: 'current_turn',
+            }),
+          (error: unknown) =>
+            error instanceof Error &&
+            'code' in error &&
+            error.code === 'invalid_frame' &&
+            error.message === 'Invalid Message text',
+        );
+      } finally {
+        await client.close();
+        await fixture.stopHost(host);
+      }
+      assert.deepEqual(
+        (await fixture.readSessionUserMessages())
+          .filter((message) => message.id === messageId)
+          .map((message) => message.id),
+        [],
+      );
+    });
+  });
+}
+
 test('stale Session operations return not_found across the SQLite-backed UDS Host boundary', async () => {
   await withExecutionRoot(async (fixture) => {
     const host = await fixture.startHost();
@@ -329,7 +426,7 @@ test('stale Session operations return not_found across the SQLite-backed UDS Hos
       );
       await assert.rejects(
         () =>
-          client.startTurn({
+          client.request('turn.start', {
             sessionId: staleSessionId,
             turnId: randomUUID(),
             content: { text: 'stale start' },

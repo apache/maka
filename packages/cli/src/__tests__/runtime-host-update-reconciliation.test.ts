@@ -24,6 +24,8 @@ import { join } from 'node:path';
 import { describe, it } from 'node:test';
 import {
   decodeRuntimeHostServiceManagementFrame,
+  RUNTIME_HOST_OPERATOR_CAPABILITY_REQUEST_ENV,
+  RUNTIME_HOST_OPERATOR_UPDATE_SCHEDULER_CAPABILITY,
   type RuntimeHostServiceManagementFrame,
 } from '@maka/runtime-host/operator';
 import { parseRuntimeHostCommand } from '../runtime-host-cli.js';
@@ -31,6 +33,7 @@ import {
   runManagedRuntimeHostUpdatePolicyCli,
   runManagedRuntimeHostUpdateReconcileCli,
 } from '../runtime-host-update-reconciliation.js';
+import { RuntimeHostServiceManagerError } from '../runtime-host-service-manager.js';
 import {
   readRuntimeHostManagedUpdatePolicy,
   resolveRuntimeHostManagedUpdatePolicyPath,
@@ -58,7 +61,7 @@ const SERVICE = {
 };
 
 describe('managed Runtime Host update reconciliation', () => {
-  it('parses one mutually exclusive policy and a target-free reconcile command', () => {
+  it('parses update policy and reconciliation commands against an optional expected target', () => {
     assert.deepEqual(
       parseRuntimeHostCommand([
         'service',
@@ -79,10 +82,44 @@ describe('managed Runtime Host update reconciliation', () => {
         expectedTarget: TARGET,
       },
     );
-    assert.deepEqual(parseRuntimeHostCommand(['service', 'reconcile-update', '--json']), {
-      kind: 'runtime-host-service-reconcile-update',
-      json: true,
-    });
+    assert.deepEqual(
+      parseRuntimeHostCommand([
+        'service',
+        'reconcile-update',
+        '--json',
+        '--expected-service-id',
+        TARGET.serviceId,
+        '--expected-root-path',
+        TARGET.rootPath,
+        '--expected-root-id',
+        TARGET.rootId,
+      ]),
+      {
+        kind: 'runtime-host-service-reconcile-update',
+        json: true,
+        expectedTarget: TARGET,
+      },
+    );
+    assert.deepEqual(
+      parseRuntimeHostCommand([
+        'service',
+        'update-policy',
+        '--target',
+        'manual',
+        '--expected-service-id',
+        TARGET.serviceId,
+        '--expected-root-path',
+        TARGET.rootPath,
+        '--expected-root-id',
+        TARGET.rootId,
+      ]),
+      {
+        kind: 'runtime-host-service-update-policy',
+        json: false,
+        policy: { kind: 'manual' },
+        expectedTarget: TARGET,
+      },
+    );
     assert.equal(
       parseRuntimeHostCommand(['service', 'update-policy', '--target', 'latest']).kind,
       'error',
@@ -128,7 +165,7 @@ describe('managed Runtime Host update reconciliation', () => {
 
     assert.equal(
       await runManagedRuntimeHostUpdatePolicyCli(
-        { ...common, policy: { kind: 'manual' } },
+        { ...common, policy: { kind: 'manual' }, expectedTarget: TARGET },
         {
           withDeploymentLock: async (_root, operation) => operation(),
           manage,
@@ -139,6 +176,16 @@ describe('managed Runtime Host update reconciliation', () => {
       0,
     );
     assert.equal(await readRuntimeHostManagedUpdatePolicy(deploymentRoot), null);
+    const previousCapabilityRequest = process.env[RUNTIME_HOST_OPERATOR_CAPABILITY_REQUEST_ENV];
+    process.env[RUNTIME_HOST_OPERATOR_CAPABILITY_REQUEST_ENV] =
+      RUNTIME_HOST_OPERATOR_UPDATE_SCHEDULER_CAPABILITY;
+    t.after(() => {
+      if (previousCapabilityRequest === undefined) {
+        delete process.env[RUNTIME_HOST_OPERATOR_CAPABILITY_REQUEST_ENV];
+      } else {
+        process.env[RUNTIME_HOST_OPERATOR_CAPABILITY_REQUEST_ENV] = previousCapabilityRequest;
+      }
+    });
     let manualOutput = '';
     assert.equal(
       await runManagedRuntimeHostUpdateReconcileCli(
@@ -161,6 +208,68 @@ describe('managed Runtime Host update reconciliation', () => {
         : undefined,
       'disabled',
     );
+    assert.equal(
+      manualFrame?.kind === 'result' && manualFrame.action === 'reconcile_update'
+        ? manualFrame.updateSchedulerState
+        : undefined,
+      'ready',
+    );
+  });
+
+  it('fences policy reads and reports a drifted update scheduler', async (t) => {
+    const previousCapabilityRequest = process.env[RUNTIME_HOST_OPERATOR_CAPABILITY_REQUEST_ENV];
+    process.env[RUNTIME_HOST_OPERATOR_CAPABILITY_REQUEST_ENV] =
+      RUNTIME_HOST_OPERATOR_UPDATE_SCHEDULER_CAPABILITY;
+    t.after(() => {
+      if (previousCapabilityRequest === undefined) {
+        delete process.env[RUNTIME_HOST_OPERATOR_CAPABILITY_REQUEST_ENV];
+      } else {
+        process.env[RUNTIME_HOST_OPERATOR_CAPABILITY_REQUEST_ENV] = previousCapabilityRequest;
+      }
+    });
+    let locked = false;
+    let output = '';
+    assert.equal(
+      await runManagedRuntimeHostUpdatePolicyCli(
+        {
+          json: true,
+          framed: false,
+          clientDataRoot: '/client',
+          defaultRootPath: '/workspace',
+          expectedTarget: TARGET,
+        },
+        {
+          withDeploymentLock: async (_root, operation) => {
+            locked = true;
+            try {
+              return await operation();
+            } finally {
+              locked = false;
+            }
+          },
+          manage: async (input) => {
+            assert.equal(locked, true);
+            assert.deepEqual(input.expectedTarget, TARGET);
+            return managedStatus('/managed');
+          },
+          readPolicy: async () => null,
+          createBackend: () => ({
+            ...unusedBackend(),
+            verifyDeployment: async () => {
+              throw new RuntimeHostServiceManagerError(
+                'target_mismatch',
+                'Update scheduler is not loaded',
+              );
+            },
+          }),
+          writeOutput: (value) => {
+            output += value;
+          },
+        },
+      ),
+      0,
+    );
+    assert.equal(JSON.parse(output).updateSchedulerState, 'needs_repair');
   });
 
   it('distinguishes an uncertain policy commit and makes an absent-policy retry durable', async (t) => {
@@ -225,7 +334,12 @@ describe('managed Runtime Host update reconciliation', () => {
           assert.deepEqual(options.expectedTarget, TARGET);
           return {
             selector: options.selector,
-            candidate: { version: '2.0.0', integrity: INTEGRITY, compatibility: 1 },
+            candidate: {
+              kind: 'npm_registry',
+              version: '2.0.0',
+              integrity: INTEGRITY,
+              compatibility: 1,
+            },
             outcome: { kind: 'unattended_update', compatibility: 1 },
             currentCliPath: '/managed/current/cli.js',
             service: SERVICE,
@@ -292,7 +406,12 @@ describe('managed Runtime Host update reconciliation', () => {
             await writeRuntimeHostManagedUpdatePolicy(deploymentRoot, null);
             return {
               selector: options.selector,
-              candidate: { version: '2.0.0', integrity: INTEGRITY, compatibility: 1 },
+              candidate: {
+                kind: 'npm_registry',
+                version: '2.0.0',
+                integrity: INTEGRITY,
+                compatibility: 1,
+              },
               outcome: { kind: 'unattended_update', compatibility: 1 },
               currentCliPath: '/managed/current/cli.js',
               service: SERVICE,
@@ -356,7 +475,7 @@ describe('managed Runtime Host update reconciliation', () => {
           createBackend: () => unusedBackend(),
           resolveSelection: async (options) => ({
             selector: options.selector,
-            candidate: { version: '2.0.0', integrity: INTEGRITY },
+            candidate: { kind: 'npm_registry', version: '2.0.0', integrity: INTEGRITY },
             outcome: { kind: 'manual_action', reason: 'target_compatibility_unknown' },
             currentCliPath: '/managed/current/cli.js',
             service: SERVICE,
@@ -403,6 +522,7 @@ function unusedBackend() {
     preflightInstall: async () => undefined,
     install: async () => ({ rollback: async () => undefined }),
     replace: async () => undefined,
+    verifyReplacementPreconditions: async () => undefined,
     verifyDeployment: async () => undefined,
     status: async () => ({
       manager: 'systemd_user' as const,
@@ -416,6 +536,7 @@ function unusedBackend() {
     start: async () => undefined,
     stop: async () => undefined,
     restart: async () => undefined,
+    retire: async () => undefined,
     logs: async () => '',
     uninstall: async () => undefined,
   };

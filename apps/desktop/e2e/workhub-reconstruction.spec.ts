@@ -68,12 +68,18 @@ test('WorkHub rebuilds Session conversation after navigating away and back', asy
 test('WorkHub handles a first natural-language correction', async ({
   window: page,
 }) => {
+  const sourceSessionName = '检查支付回调重复投递时的幂等性';
   const composer = page.locator(COMPOSER_INPUT);
-  await composer.fill('检查支付回调重复投递时的幂等性');
+  await composer.fill(sourceSessionName);
   await composer.press('Enter');
   await expect(page.getByRole('button', { name: '重新生成' })).toHaveCount(1, {
     timeout: 20_000,
   });
+  await page.evaluate(async (name) => {
+    const sourceSession = (await window.maka.sessions.list())[0];
+    if (!sourceSession) throw new Error('Source Session was not found');
+    await window.maka.sessions.rename(sourceSession.id, name);
+  }, sourceSessionName);
   await page.evaluate(async () => {
     await window.maka.settings.updateClient({ workHub: { enabled: true } });
   });
@@ -93,7 +99,7 @@ test('WorkHub handles a first natural-language correction', async ({
   });
   await expect(
     continuedTurn.locator('.workhub-submitted-session strong'),
-  ).toHaveText('检查支付回调重复投递时的幂等性');
+  ).toHaveText(sourceSessionName);
 
   await workHubComposer.fill('不是这个，换成登录稳定性，补充刷新令牌失败判定。');
   await expect(

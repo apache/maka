@@ -23,7 +23,7 @@ import { createReadStream } from 'node:fs';
 import { lstat, mkdir, mkdtemp, readFile, readdir, realpath, rm, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { isProductReleaseVersion, isSha512PackageIntegrity } from '@maka/runtime-host/operator';
+import { isRuntimeHostNpmDeploymentIdentity } from '@maka/runtime-host/operator';
 import type { RuntimeHostUpdateCandidate } from './runtime-host-update-discovery.js';
 
 const PACKAGE_NAME = 'maka-agent';
@@ -53,8 +53,7 @@ export async function withRuntimeHostRegistryUpdatePackage<T>(
   runNpm: RunNpm = runNpmCommand,
 ): Promise<T> {
   if (
-    !isProductReleaseVersion(candidate.version) ||
-    !isSha512PackageIntegrity(candidate.integrity) ||
+    !isRuntimeHostNpmDeploymentIdentity(candidate) ||
     (candidate.compatibility !== undefined &&
       (!Number.isInteger(candidate.compatibility) || candidate.compatibility <= 0))
   ) {

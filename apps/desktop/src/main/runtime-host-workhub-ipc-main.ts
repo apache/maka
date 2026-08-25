@@ -17,22 +17,20 @@
  * under the License.
  */
 
-import { createHash } from 'node:crypto';
-import { normalizeMessageContent, type MessageContent } from '@maka/core/events';
+import type { DesktopRuntimeHostClient } from './runtime-host-client.js';
+import type { ReconnectableReadIpcMain } from './ipc-reconnect-policy.js';
 
-export function messageContentDigest(content: MessageContent): `sha256:${string}` {
-  return `sha256:${createHash('sha256')
-    .update(JSON.stringify(canonicalize(normalizeMessageContent(content))))
-    .digest('hex')}`;
-}
+type RuntimeHostWorkHubClient = Pick<
+  DesktopRuntimeHostClient,
+  'resolveWorkHubCoordinationSession'
+>;
 
-function canonicalize(value: unknown): unknown {
-  if (Array.isArray(value)) return value.map(canonicalize);
-  if (value === null || typeof value !== 'object') return value;
-  return Object.fromEntries(
-    Object.entries(value)
-      .filter(([, entry]) => entry !== undefined)
-      .sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0))
-      .map(([key, entry]) => [key, canonicalize(entry)]),
+/** Projects the Runtime Host WorkHub domain onto renderer IPC. */
+export function registerRuntimeHostWorkHubIpc(
+  client: RuntimeHostWorkHubClient,
+  ipcMain: Pick<ReconnectableReadIpcMain, 'handle'>,
+): void {
+  ipcMain.handle('workhub:resolveCoordinationSession', () =>
+    client.resolveWorkHubCoordinationSession(),
   );
 }

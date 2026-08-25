@@ -31,6 +31,7 @@ export const RUNTIME_HOST_SERVICE_ERROR_CODE_MAX_BYTES = 128;
 export const RUNTIME_HOST_SERVICE_ERROR_MESSAGE_MAX_BYTES = 2 * 1024;
 export const RUNTIME_HOST_OPERATOR_ACCESS_MANAGEMENT_CAPABILITY = 'access-management-v1';
 export const RUNTIME_HOST_OPERATOR_PROCESS_LIFETIME_LOCK_CAPABILITY = 'process-lifetime-lock-v1';
+export const RUNTIME_HOST_OPERATOR_UPDATE_SCHEDULER_CAPABILITY = 'update-scheduler-v1';
 export const RUNTIME_HOST_OPERATOR_CAPABILITY_REQUEST_ENV =
   'MAKA_RUNTIME_HOST_OPERATOR_CAPABILITY_REQUEST';
 
@@ -73,6 +74,7 @@ const NON_UPDATE_SERVICE_ACTIONS = [
 ] as const;
 const UPDATE_PHASES = ['checking', 'staging', 'retiring', 'replacing'] as const;
 const UPDATE_CHANNELS = ['latest', 'next'] as const;
+const UPDATE_SCHEDULER_STATES = ['ready', 'inactive', 'needs_repair'] as const;
 const MANUAL_ACTION_REASONS = [
   'target_not_newer',
   'current_compatibility_unknown',
@@ -84,6 +86,7 @@ const SERVICE_STATES = ['not_installed', ...INSTALLED_SERVICE_STATES] as const;
 const OPERATOR_CAPABILITIES = [
   RUNTIME_HOST_OPERATOR_ACCESS_MANAGEMENT_CAPABILITY,
   RUNTIME_HOST_OPERATOR_PROCESS_LIFETIME_LOCK_CAPABILITY,
+  RUNTIME_HOST_OPERATOR_UPDATE_SCHEDULER_CAPABILITY,
 ] as const;
 
 const boundedString = (maxBytes: number) =>
@@ -320,6 +323,7 @@ const SERVICE_MANAGEMENT_FRAME_SCHEMA = z.union([
       kind: z.literal('result'),
       action: z.literal('update_policy'),
       updatePolicy: UPDATE_POLICY_RESULT_SCHEMA,
+      updateSchedulerState: z.enum(UPDATE_SCHEDULER_STATES).optional(),
     })
     .strict(),
   z
@@ -328,6 +332,7 @@ const SERVICE_MANAGEMENT_FRAME_SCHEMA = z.union([
       kind: z.literal('result'),
       action: z.literal('reconcile_update'),
       updatePolicy: UPDATE_POLICY_RESULT_SCHEMA,
+      updateSchedulerState: z.enum(UPDATE_SCHEDULER_STATES).optional(),
       service: SERVICE_SUMMARY_SCHEMA.optional(),
       reconciliation: z.discriminatedUnion('kind', [
         z.object({ kind: z.literal('disabled') }).strict(),
@@ -408,6 +413,7 @@ export type RuntimeHostServiceManagementFrame = z.infer<typeof SERVICE_MANAGEMEN
 export type RuntimeHostServiceUpdatePhase = (typeof UPDATE_PHASES)[number];
 export type RuntimeHostManagedUpdatePolicy = z.infer<typeof UPDATE_POLICY_SCHEMA>;
 export type RuntimeHostOperatorCapability = (typeof OPERATOR_CAPABILITIES)[number];
+export type RuntimeHostUpdateSchedulerState = (typeof UPDATE_SCHEDULER_STATES)[number];
 export type RuntimeHostServiceSummary = z.infer<typeof SERVICE_SUMMARY_SCHEMA>;
 
 export function encodeRuntimeHostServiceManagementFrame(

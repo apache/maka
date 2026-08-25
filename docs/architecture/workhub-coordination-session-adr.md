@@ -46,8 +46,9 @@ transcript, model, recovery, and event infrastructure. Session remains the only
 durable conversation and execution substrate.
 
 The role is provisioned lazily when WorkHub first needs it and resolves to the same
-Session after Runtime Host or application restarts. The representation, lookup, and
-recovery mechanisms that enforce this contract are deferred to Slice 2.
+Session after Runtime Host or application restarts. The Session role representation,
+lookup, recovery, and per-Host UI resolution enforce this lifecycle contract. The
+coordination transcript and disposition semantics remain separate later work.
 
 The per-Host boundary is intentional. A Coordination Session coordinates only the
 ordinary Sessions belonging to the same Runtime Host. Switching Runtime Hosts
@@ -127,9 +128,10 @@ transcript into the Coordination Session.
 - Whether Work is 1:1 with Session, 1:N over Sessions, or an independent durable
   entity remains unresolved.
 - Cross-Runtime-Host coordination remains deferred.
-- Coordination Session kind/role representation, lazy creation, durable lookup,
-  recovery, UI treatment, and routing implementation belong to Slice 2 and later;
-  this ADR does not design or implement them.
+- Coordination Session role representation, lazy creation, durable lookup,
+  recovery, and per-Host UI resolution are implemented. Coordination transcript,
+  disposition, delegation-link, and Action Gate behavior remain later work; this
+  ADR defines their authority boundaries without implementing them.
 
 Reevaluate the per-Host decision if supported workflows require one WorkHub
 conversation to coordinate ordinary Sessions on multiple Runtime Hosts, or if Host

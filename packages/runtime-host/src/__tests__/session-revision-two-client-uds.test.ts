@@ -28,6 +28,7 @@ import { decodeCanonicalToolResultContent } from '@maka/core/tool-result-record-
 import { type AgentGraphOperatorProvisionRequest } from '@maka/core/agent-graph-topology';
 import { type AgentRunHeader } from '@maka/core/agent-run';
 import { type RuntimeEvent } from '@maka/core/runtime-event';
+import { WORKHUB_COORDINATION_SESSION_ID } from '@maka/core/session';
 import { agentGraphIdForRootSession } from '@maka/runtime/stream-graph-coordinator';
 import { FAKE_ASK_USER_QUESTION_PROMPT } from '@maka/runtime/test-only/fake-backend';
 import { createAgentGraphControlStore } from '@maka/storage/agent-graph-control-store';
@@ -151,6 +152,35 @@ async function verifyConcurrentRevisionAuthority(
   const tui = await connectClient(root);
   try {
     const source = await querySession(desktop, sourceSessionId);
+    for (const operation of ['session.branch.create', 'session.revision.create'] as const) {
+      await assert.rejects(
+        desktop.request(operation, {
+          sourceSessionId,
+          targetSessionId: WORKHUB_COORDINATION_SESSION_ID,
+          sourceTurnId: 'turn-1',
+          expectedSourceRevision: source.revision,
+        }),
+        operationError('operation_conflict'),
+      );
+      // The reservation holds on both sides: the Coordination transcript cannot
+      // be lifted out into an ordinary Session that would then be executable.
+      await assert.rejects(
+        desktop.request(operation, {
+          sourceSessionId: WORKHUB_COORDINATION_SESSION_ID,
+          targetSessionId: 'coordination-copy-target',
+          sourceTurnId: 'turn-1',
+          expectedSourceRevision: source.revision,
+        }),
+        operationError('operation_conflict'),
+      );
+    }
+    assert.deepEqual(
+      await tui.request('session.catalog.query', {
+        kind: 'get',
+        sessionId: 'coordination-copy-target',
+      }),
+      { kind: 'session', session: null },
+    );
     const continuationSource = await querySession(desktop, continuationSourceSessionId);
     await assert.rejects(
       desktop.request('session.branch.create', {
@@ -247,7 +277,7 @@ async function verifyConcurrentRevisionAuthority(
     });
     assert.equal(sourceGraph.status, 'completed');
     assert.equal(sourceGraph.operators[0]?.childSessionId, graphChildSessionId);
-    await desktop.startTurn({
+    await desktop.request('turn.start', {
       sessionId: GRAPH_REVISION_TARGET_ID,
       turnId: 'graph-revision-new-turn',
       content: { text: 'continue independently' },
@@ -422,7 +452,7 @@ async function verifyConcurrentRevisionAuthority(
     );
 
     const busyTurn = requireStartedTurn(
-      await desktop.startTurn({
+      await desktop.request('turn.start', {
         sessionId: busySessionId,
         turnId: 'busy-turn',
         content: { text: FAKE_ASK_USER_QUESTION_PROMPT },
@@ -449,7 +479,8 @@ async function verifyConcurrentRevisionAuthority(
       assertionError = error;
     }
     try {
-      const stopped = await desktop.stopTurn(
+      const stopped = await desktop.request(
+        'turn.stop',
         {
           sessionId: busySessionId,
           turnId: 'busy-turn',
@@ -470,7 +501,7 @@ async function verifyConcurrentRevisionAuthority(
     if (assertionError !== undefined) throw assertionError;
 
     const activeSourceTurn = requireStartedTurn(
-      await desktop.startTurn({
+      await desktop.request('turn.start', {
         sessionId: sourceSessionId,
         turnId: 'active-source-turn',
         content: { text: FAKE_ASK_USER_QUESTION_PROMPT },
@@ -509,7 +540,8 @@ async function verifyConcurrentRevisionAuthority(
       assertionError = error;
     }
     try {
-      const stopped = await desktop.stopTurn(
+      const stopped = await desktop.request(
+        'turn.stop',
         {
           sessionId: sourceSessionId,
           turnId: 'active-source-turn',
@@ -566,7 +598,7 @@ async function verifyRestartRecoveryAndAdmission(
     assert.equal(admitted.kind, 'committed');
     if (admitted.kind !== 'committed') assert.fail('Admitted revision must commit');
     assert.equal(requireSessionProjection(admitted.session).revisionIndex, 3);
-    await restarted.startTurn({
+    await restarted.request('turn.start', {
       sessionId: ADMITTED_REVISION_TARGET_ID,
       turnId: 'turn-3',
       content: { text: 'commit this revision' },

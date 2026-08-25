@@ -599,11 +599,13 @@ function unusedBackend(): RuntimeHostServiceBackend {
     preflightInstall: async () => undefined,
     install: async () => assert.fail('Backend is not expected'),
     replace: async () => assert.fail('Backend is not expected'),
+    verifyReplacementPreconditions: async () => assert.fail('Backend is not expected'),
     verifyDeployment: async () => assert.fail('Backend is not expected'),
     status: async () => assert.fail('Backend is not expected'),
     start: async () => assert.fail('Backend is not expected'),
     stop: async () => assert.fail('Backend is not expected'),
     restart: async () => assert.fail('Backend is not expected'),
+    retire: async () => assert.fail('Backend is not expected'),
     logs: async () => assert.fail('Backend is not expected'),
     uninstall: async () => assert.fail('Backend is not expected'),
   };

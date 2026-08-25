@@ -23,7 +23,7 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
-import { LOAD_TOOLS_NAME, ToolAvailabilityRuntime } from '@maka/runtime/tool-availability';
+import { TOOL_SEARCH_NAME, ToolAvailabilityRuntime } from '@maka/runtime/tool-availability';
 import { type MakaTool } from '@maka/runtime/tool-runtime';
 import { mcpProxyToolName } from '@maka/runtime/mcp-tools';
 import { resolveStorageRoot, tryAcquireInteractiveRootOwner } from '@maka/storage/root-authority';
@@ -133,7 +133,7 @@ test('unknown Client Capability loads, invokes, and rebinds after UDS reconnect'
           affinity: 'session',
           hostPathAccess: 'cwd',
           label: 'Unknown fixture',
-          description: 'A capability the Host source does not enumerate.',
+          description: 'Schedule a calendar meeting through the fixture provider.',
           tools: [
             {
               serverId: 'fixture_unknown',
@@ -203,37 +203,33 @@ test('unknown Client Capability loads, invokes, and rebinds after UDS reconnect'
       abortSignal: new AbortController().signal,
       emitOutput: () => undefined,
     };
+    const activeTools = new Map<string, MakaTool>();
     const availability = new ToolAvailabilityRuntime(
       snapshot.tools,
-      { economy: true, groups: snapshot.groups },
+      { groups: snapshot.groups },
       invalidTool(),
-    ).prepare([]);
-    assert.deepEqual(availability.activeTools, [LOAD_TOOLS_NAME]);
-    const loadTools = availability.providerTools.find(
-      (candidate) => candidate.name === LOAD_TOOLS_NAME,
+    ).prepare(activeTools);
+    assert.deepEqual(availability.activeTools, [TOOL_SEARCH_NAME]);
+    const toolSearch = availability.providerTools.find(
+      (candidate) => candidate.name === TOOL_SEARCH_NAME,
     );
-    assert.ok(loadTools);
-    const loaded = await loadTools.impl({ group: group.id }, toolContext);
+    assert.ok(toolSearch);
+    const searched = await toolSearch.impl(
+      { query: 'schedule calendar meeting', limit: 20 },
+      toolContext,
+    );
     const capabilityToolNames = [tool.name, rejectedTool.name].sort((left, right) =>
       left.localeCompare(right),
     );
-    assert.deepEqual(loaded, {
-      loaded: capabilityToolNames,
-      group: {
-        id: group.id,
-        label: 'Unknown fixture',
-        description: 'A capability the Host source does not enumerate.',
-      },
-    });
     assert.deepEqual(
-      availability.projectActiveTools?.({
-        completedSteps: [
-          {
-            toolCalls: [{ toolName: LOAD_TOOLS_NAME, input: { group: group.id } }],
-          },
-        ],
-      }).activeTools,
-      [LOAD_TOOLS_NAME, ...capabilityToolNames],
+      [...(searched as { activated: string[] }).activated].sort((left, right) =>
+        left.localeCompare(right),
+      ),
+      capabilityToolNames,
+    );
+    assert.deepEqual(
+      availability.projectActiveTools?.().activeTools,
+      [TOOL_SEARCH_NAME, ...capabilityToolNames].sort((left, right) => left.localeCompare(right)),
     );
 
     const result = await tool.impl({ prefix: 'from-uds' }, toolContext);

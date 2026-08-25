@@ -123,8 +123,10 @@ import { ProviderLogo } from './settings/provider-display';
 import { ProviderBrandMark } from './settings/provider-brand-marks';
 import { RuntimeHostSshTerminalDialog } from './settings/runtime-host-ssh-terminal-dialog.js';
 import { createWorkHubController } from './workhub-controller.js';
+import { startWorkHubCoordinationLifecycle } from './workhub-coordination-lifecycle.js';
+import { scopeWorkHubSessionsToCoordinationHost } from './workhub-coordination-host-scope.js';
 import { createDesktopWorkHubSessionPort } from './workhub-session-port.js';
-import { WorkHubSurface } from './workhub-surface.js';
+import { WorkHubCoordinationStatus, WorkHubSurface } from './workhub-surface.js';
 import { getShellCopy, localizedShellErrorMessage } from './locales/shell-copy';
 import { getDesktopConversationCopy } from './locales/conversation-copy';
 import { ErrorBoundary } from './error-boundary';
@@ -436,7 +438,43 @@ function AppShellContent({
   const navSelectionRef = useRef<NavSelection>(navSelection);
   const [workHubEnabled, setWorkHubEnabled] = useState(false);
   const [workHubActive, setWorkHubActive] = useState(false);
+  const [workHubCoordinationSessionId, setWorkHubCoordinationSessionId] = useState<string>();
+  const [workHubCoordinationState, setWorkHubCoordinationState] = useState<
+    'resolving' | 'failed'
+  >('resolving');
+  const workHubCoordinationRetryRef = useRef<() => void>(() => undefined);
+  const workHubCoordinationGenerationRef = useRef(0);
+  const workHubCoordinationSessionIdRef = useRef(workHubCoordinationSessionId);
+  workHubCoordinationSessionIdRef.current = workHubCoordinationSessionId;
   const workHubEnabledRef = useRef(false);
+  useEffect(() => {
+    if (!workHubEnabled || !workHubActive) return;
+    return startWorkHubCoordinationLifecycle({
+      resolve: () => window.maka.workHub.resolveCoordinationSession(),
+      subscribeHostChanges: (handler) =>
+        window.maka.runtimeHostProfiles.subscribeChanges(handler),
+      subscribeAvailabilityChanges: (handler) =>
+        window.maka.connections.subscribeEvents((event) => {
+          if (event.type === 'connection_list_changed') handler();
+        }),
+      onResolving: () => {
+        workHubCoordinationGenerationRef.current += 1;
+        workHubCoordinationSessionIdRef.current = undefined;
+        setWorkHubCoordinationSessionId(undefined);
+        setWorkHubCoordinationState('resolving');
+      },
+      onResolved: (sessionId) => {
+        workHubCoordinationSessionIdRef.current = sessionId;
+        setWorkHubCoordinationSessionId(sessionId);
+        setWorkHubCoordinationState('resolving');
+      },
+      reportFailure: (error, retry) => {
+        workHubCoordinationRetryRef.current = retry;
+        setWorkHubCoordinationState('failed');
+        console.error('[workhub] failed to resolve Coordination Session:', error);
+      },
+    });
+  }, [workHubActive, workHubEnabled]);
   useEffect(() => {
     let disposed = false;
     const refresh = async () => {
@@ -446,7 +484,12 @@ function AppShellContent({
         const becameEnabled = enabled && !workHubEnabledRef.current;
         workHubEnabledRef.current = enabled;
         setWorkHubEnabled(enabled);
-        if (!enabled) setWorkHubActive(false);
+        if (!enabled) {
+          workHubCoordinationGenerationRef.current += 1;
+          workHubCoordinationSessionIdRef.current = undefined;
+          setWorkHubActive(false);
+          setWorkHubCoordinationSessionId(undefined);
+        }
         if (becameEnabled) {
           setWorkHubActive(true);
           setNavSelection({ section: 'sessions' });
@@ -1478,19 +1521,29 @@ function AppShellContent({
   refreshProjectSkillsRef.current = moduleHub.commands.refreshProjectSkills;
   const workHubProjectsRef = useRef(projects);
   workHubProjectsRef.current = projects;
-  const workHubControllerRef = useRef<ReturnType<typeof createWorkHubController> | null>(null);
-  if (!workHubControllerRef.current) {
-    workHubControllerRef.current = createWorkHubController({
+  const workHubCoordinationGeneration = workHubCoordinationGenerationRef.current;
+  const workHubController = useMemo(
+    () => createWorkHubController({
       sessions: createDesktopWorkHubSessionPort({
-        sessions: window.maka.sessions,
+        sessions: scopeWorkHubSessionsToCoordinationHost(
+          window.maka.sessions,
+          {
+            sessionId: workHubCoordinationSessionId,
+            isCurrent: () =>
+              workHubCoordinationGenerationRef.current === workHubCoordinationGeneration &&
+              workHubCoordinationSessionIdRef.current === workHubCoordinationSessionId,
+          },
+          (coordinationSessionId, input) =>
+            window.maka.workHub.createSession(coordinationSessionId, input),
+        ),
         transcripts: window.maka.transcripts,
         projectName: (projectId) =>
           workHubProjectsRef.current.find((project) => project.id === projectId)?.name,
         newTurnId: () => crypto.randomUUID(),
       }),
-    });
-  }
-  const workHubController = workHubControllerRef.current;
+    }),
+    [workHubCoordinationGeneration, workHubCoordinationSessionId],
+  );
   // Where a NEW chat starts. Built unconditionally and handed to the composer,
   // which renders it only while no session owns it — the project is fixed once
   // the first message creates one, so there is nothing to pick after that.
@@ -2806,12 +2859,21 @@ function AppShellContent({
             <div className="mainColumn" data-home-surface={homeSurfaceActive ? 'true' : undefined}>
               <ModuleHubHost model={moduleHub.host} />
               {workHubEnabled && workHubActive && navSelection.section === 'sessions' ? (
-                <WorkHubSurface
-                  controller={workHubController}
-                  locale={uiLocale}
-                  {...(activeId ? { initialFocusSessionId: activeId } : {})}
-                  onOpenSession={openSessionInChat}
-                />
+                workHubCoordinationSessionId ? (
+                  <WorkHubSurface
+                    key={workHubCoordinationSessionId}
+                    controller={workHubController}
+                    locale={uiLocale}
+                    {...(activeId ? { initialFocusSessionId: activeId } : {})}
+                    onOpenSession={openSessionInChat}
+                  />
+                ) : (
+                  <WorkHubCoordinationStatus
+                    locale={uiLocale}
+                    state={workHubCoordinationState}
+                    onRetry={() => workHubCoordinationRetryRef.current()}
+                  />
+                )
               ) : (
               <ChatSurfaceLayout
                 // Reset conversation-owned scroll state without remounting the

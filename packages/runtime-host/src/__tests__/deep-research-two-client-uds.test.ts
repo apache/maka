@@ -88,8 +88,8 @@ test('two Clients and a restarted production Host share one Deep Research projec
     [desktop, tui] = await Promise.all([connect(root), connect(root)]);
 
     const [desktopProjection, tuiProjection] = await Promise.all([
-      desktop.queryDeepResearch({ sessionId: session.id }),
-      tui.queryDeepResearch({ sessionId: session.id }),
+      desktop.request('deep-research.query', { sessionId: session.id }),
+      tui.request('deep-research.query', { sessionId: session.id }),
     ]);
     assert.deepEqual(tuiProjection, desktopProjection);
     assert.equal(desktopProjection.kind, 'snapshot');
@@ -128,7 +128,10 @@ test('two Clients and a restarted production Host share one Deep Research projec
     owner = undefined;
     tui = await connect(root);
 
-    assert.deepEqual(await tui.queryDeepResearch({ sessionId: session.id }), desktopProjection);
+    assert.deepEqual(
+      await tui.request('deep-research.query', { sessionId: session.id }),
+      desktopProjection,
+    );
   } finally {
     await Promise.allSettled([desktop?.close(), tui?.close()]);
     await host?.close().catch(() => undefined);

@@ -28,7 +28,6 @@ import {
   type MessageBoxReturnValue,
 } from "electron";
 import { randomUUID } from "node:crypto";
-import { readFileSync } from "node:fs";
 import { basename, join } from "node:path";
 import { type ConnectionEvent } from '@maka/core/connections';
 import type { UsageRange } from '@maka/core/settings';
@@ -167,9 +166,8 @@ import {
 } from "./runtime-host-profile-service.js";
 import {
   createDesktopRuntimeHostSshTerminal,
-  isExactRuntimeHostSetupPackageSpecifier,
-  type DesktopRuntimeHostSetupPackage,
 } from "./runtime-host-ssh-terminal.js";
+import { createRuntimeHostSetupPackageResolver } from "./runtime-host-setup-package.js";
 import { createDesktopRuntimeHostOnboarding } from "./runtime-host-onboarding.js";
 import { createDesktopRuntimeHostManagement } from "./runtime-host-management.js";
 import { registerRuntimeHostOAuthIpc } from "./runtime-host-oauth-ipc-main.js";
@@ -375,6 +373,11 @@ const runtimeHostSshTerminal = createDesktopRuntimeHostSshTerminal({
   ipcMain,
   send: (channel, event) => mainWindowController.send(channel, event),
 });
+const runtimeHostSetupPackage = createRuntimeHostSetupPackageResolver({
+  isPackaged: app.isPackaged,
+  appPath: app.getAppPath(),
+  environment: process.env,
+});
 const native = assembleDesktopNativeCapabilities({
   isComputerUseRealModelE2e,
   locale: desktopLocale,
@@ -440,7 +443,7 @@ const runtimeHostOnboarding = createDesktopRuntimeHostOnboarding({
   clientInstanceId: runtimeHostClientInstanceId,
   profiles: runtimeHostProfileService,
   runSetup: runtimeHostSshTerminal.runSetup,
-  resolveSetupPackage: runtimeHostSetupPackage,
+  resolveSetupPackage: runtimeHostSetupPackage.resolve,
   send: (snapshot) =>
     mainWindowController.send("runtime-host-onboarding:changed", snapshot),
 });
@@ -449,7 +452,9 @@ const runtimeHostManagement = createDesktopRuntimeHostManagement({
   profiles: runtimeHostProfileService,
   runServiceManagement: runtimeHostSshTerminal.runServiceManagement,
   runUpdate: runtimeHostSshTerminal.runUpdate,
-  resolveUpdatePackage: runtimeHostSetupPackage,
+  runUpdatePolicy: runtimeHostSshTerminal.runUpdatePolicy,
+  runUpdateReconciliation: runtimeHostSshTerminal.runUpdateReconciliation,
+  resolveUpdatePackage: runtimeHostSetupPackage.resolve,
   currentHostEpoch: (profileId) =>
     runtimeHostManager?.current(profileId)?.candidate?.client.hostEpoch,
   awaitUpdatedConnection: async (
@@ -494,29 +499,6 @@ const runtimeHostManagement = createDesktopRuntimeHostManagement({
   runAccessManagement: runtimeHostSshTerminal.runAccessManagement,
   cleanupManagedDeployment: runtimeHostSshTerminal.cleanupManagedDeployment,
 });
-
-function runtimeHostSetupPackage(): DesktopRuntimeHostSetupPackage {
-  if (!app.isPackaged && process.env.MAKA_RUNTIME_HOST_SETUP_ARCHIVE) {
-    return { kind: "development_archive", path: process.env.MAKA_RUNTIME_HOST_SETUP_ARCHIVE };
-  }
-  const manifestPath = app.isPackaged
-    ? join(app.getAppPath(), "package.json")
-    : join(app.getAppPath(), "..", "..", "packages", "cli", "package.json");
-  const manifest = JSON.parse(readFileSync(manifestPath, "utf8")) as {
-    name?: unknown;
-    version?: unknown;
-    runtimeHostSetupPackage?: unknown;
-  };
-  const specifier = app.isPackaged
-    ? manifest.runtimeHostSetupPackage
-    : manifest.name === "maka-agent" && typeof manifest.version === "string"
-      ? `maka-agent@${manifest.version}`
-      : undefined;
-  if (!isExactRuntimeHostSetupPackageSpecifier(specifier)) {
-    throw new Error("Desktop does not declare an exact Runtime Host setup package");
-  }
-  return { kind: "npm", specifier };
-}
 const defaultRuntimeHostRecovery = createRuntimeHostDefaultRecovery({
   defaultProfileId: () =>
     runtimeHostManager?.defaultProfileId() ??
@@ -1598,6 +1580,7 @@ async function closeRuntimeHostDesktop(): Promise<void> {
     Promise.resolve().then(() => runtimeHostManagement.close()),
     runtimeHostManager?.close(),
     runtimeHostOnboarding.close(),
+    runtimeHostSetupPackage.close(),
     Promise.resolve().then(() => workBoardIpc.close()),
     runtimeHostSshTerminal.close(),
     botRegistry.stopAll(),

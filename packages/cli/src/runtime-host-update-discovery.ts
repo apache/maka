@@ -30,6 +30,7 @@ import {
   RUNTIME_HOST_SERVICE_ERROR_CODE_MAX_BYTES,
   RUNTIME_HOST_SERVICE_ERROR_MESSAGE_MAX_BYTES,
   type RuntimeHostServiceManagementFrame,
+  type RuntimeHostNpmDeploymentIdentity,
 } from '@maka/runtime-host/operator';
 import {
   manageRuntimeHostService,
@@ -51,9 +52,7 @@ const REGISTRY_TIMEOUT_MS = 30_000;
 const REGISTRY_OUTPUT_MAX_BYTES = 64 * 1024;
 const MANIFEST_MAX_BYTES = 64 * 1024;
 
-export interface RuntimeHostUpdateCandidate {
-  readonly version: string;
-  readonly integrity: string;
+export interface RuntimeHostUpdateCandidate extends RuntimeHostNpmDeploymentIdentity {
   readonly compatibility?: number;
 }
 
@@ -275,6 +274,7 @@ export async function resolveRuntimeHostRegistryUpdateCandidate(
   }
   const compatibility = positiveInteger(metadata[COMPATIBILITY_FIELD]);
   return {
+    kind: 'npm_registry',
     version,
     integrity,
     ...(compatibility === undefined ? {} : { compatibility }),

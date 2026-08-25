@@ -26,6 +26,7 @@
  * Connection-setup events live in ./connections.ts (separate channel).
  */
 
+import * as nodeCrypto from 'node:crypto';
 import type {
   AdditionalPermissionRequest,
   PermissionMode,
@@ -395,6 +396,24 @@ export function messageContentsEqual(left: MessageContent, right: MessageContent
         leftInlineReferences.every((reference, index) =>
           inlineReferencesEqual(reference, rightInlineReferences[index]!),
         )))
+  );
+}
+
+export function messageContentDigest(content: MessageContent): `sha256:${string}` {
+  return `sha256:${nodeCrypto
+    .createHash('sha256')
+    .update(JSON.stringify(canonicalizeMessageContent(normalizeMessageContent(content))))
+    .digest('hex')}`;
+}
+
+function canonicalizeMessageContent(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(canonicalizeMessageContent);
+  if (value === null || typeof value !== 'object') return value;
+  return Object.fromEntries(
+    Object.entries(value)
+      .filter(([, entry]) => entry !== undefined)
+      .sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0))
+      .map(([key, entry]) => [key, canonicalizeMessageContent(entry)]),
   );
 }
 

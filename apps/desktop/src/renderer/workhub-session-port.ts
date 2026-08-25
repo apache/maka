@@ -72,6 +72,11 @@ export interface WorkHubDesktopSessionBridge {
   subscribeChanges(handler: () => void): () => void;
 }
 
+export type WorkHubCoordinationHostSessionCreator = (
+  coordinationSessionId: string,
+  input: { name: string },
+) => Promise<WorkHubDesktopSession>;
+
 export interface WorkHubDesktopTranscriptBridge {
   open(
     sessionId: string,

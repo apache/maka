@@ -23,6 +23,8 @@ import { SIDE_CONVERSATION_SESSION_LABEL } from '@maka/core/side-conversation';
 import type { RuntimeEvent } from '@maka/core/runtime-event';
 import type { CreateSessionInput } from '@maka/core/runtime-inputs';
 import {
+  isWorkHubCoordinationSessionId,
+  isWorkHubCoordinationSessionTarget,
   sessionRevisionFamilyId,
   type SessionConversationCopy,
   type SessionHeader,
@@ -175,6 +177,18 @@ export class HostSessionRevisionCoordinator {
     kind: ConversationCopyKind,
     input: SessionConversationCopyInput,
   ): Promise<ConversationCopyOutcome> {
+    if (isWorkHubCoordinationSessionId(input.targetSessionId)) {
+      return copyFailure(
+        'operation_conflict',
+        'Target Session identity is reserved for WorkHub coordination',
+      );
+    }
+    if (isWorkHubCoordinationSessionId(input.sourceSessionId)) {
+      return copyFailure(
+        'operation_conflict',
+        'WorkHub Coordination Session cannot be copied as an ordinary conversation',
+      );
+    }
     const semanticKind = conversationCopySemanticKind(kind, input);
     const requestFingerprint = conversationCopyFingerprint(semanticKind, input);
     const retry = await this.options.admission.run(input.targetSessionId, async () =>
@@ -283,6 +297,12 @@ export class HostSessionRevisionCoordinator {
       return copyFailure(
         'operation_conflict',
         'Archived Session revision families cannot create active revisions',
+      );
+    }
+    if (isWorkHubCoordinationSessionTarget(sourceHeader)) {
+      return copyFailure(
+        'operation_conflict',
+        'WorkHub Coordination Session cannot be copied as an ordinary conversation',
       );
     }
     if (sourceHeader.subagentParent) {

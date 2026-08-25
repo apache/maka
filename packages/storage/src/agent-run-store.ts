@@ -1731,7 +1731,8 @@ function assertRootTurnAdmissionContract(admission: RootTurnAdmission): void {
   const providerRetry = execution.kind === 'linked_child_provider_retry';
   const inputlessExecution =
     execution.kind === 'safe_boundary_continuation' || execution.kind === 'context_compact';
-  const messageLessExecution = inputlessExecution || providerRetry;
+  const sourceBatch = execution.kind === 'external_message' && admission.sourceMessages.length > 1;
+  const messageLessExecution = inputlessExecution || providerRetry || sourceBatch;
   if (execution.kind === 'agent_graph_supervisor_wake') {
     if (
       admission.turnOrchestration?.mode !== 'graph' ||

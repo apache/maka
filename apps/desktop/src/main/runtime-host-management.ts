@@ -20,7 +20,9 @@
 import type { IpcMain } from 'electron';
 import {
   RUNTIME_HOST_OPERATOR_ACCESS_MANAGEMENT_CAPABILITY,
+  isProductReleaseVersion,
   runtimeHostAccessCredentialFingerprint,
+  type RuntimeHostManagedUpdatePolicy,
   type RuntimeHostAccessManagementFrame,
   type RuntimeHostServiceManagementFrame,
 } from '@maka/runtime-host/operator';
@@ -29,6 +31,8 @@ import type {
   DesktopRuntimeHostManagementAction,
   DesktopRuntimeHostManagementResponse,
   DesktopRuntimeHostManagementProgress,
+  DesktopRuntimeHostUpdatePolicySnapshot,
+  DesktopRuntimeHostUpdateReconciliationResponse,
 } from '../preload/bridge-contract.js';
 import type { DesktopRuntimeHostProfileService } from './runtime-host-profile-service.js';
 import { sameDesktopRuntimeHostManagedServiceBinding } from './runtime-host-managed-services.js';
@@ -37,7 +41,11 @@ import type {
   DesktopRuntimeHostSshAccessInput,
   DesktopRuntimeHostSshManagementInput,
   DesktopRuntimeHostSshUpdateInput,
+  DesktopRuntimeHostSshUpdatePolicyInput,
+  DesktopRuntimeHostSshUpdateReconciliationInput,
   DesktopRuntimeHostSetupPackage,
+  RuntimeHostServiceUpdatePolicyTerminalFrame,
+  RuntimeHostServiceUpdateReconciliationTerminalFrame,
   RuntimeHostServiceUpdateTerminalFrame,
 } from './runtime-host-ssh-terminal.js';
 
@@ -76,7 +84,16 @@ export function createDesktopRuntimeHostManagement(input: {
     input: DesktopRuntimeHostSshUpdateInput,
     onProgress: (phase: DesktopRuntimeHostManagementProgress['phase']) => void,
   ) => Promise<RuntimeHostServiceUpdateTerminalFrame>;
-  readonly resolveUpdatePackage: () => DesktopRuntimeHostSetupPackage;
+  readonly runUpdatePolicy: (
+    input: DesktopRuntimeHostSshUpdatePolicyInput,
+  ) => Promise<RuntimeHostServiceUpdatePolicyTerminalFrame>;
+  readonly runUpdateReconciliation: (
+    input: DesktopRuntimeHostSshUpdateReconciliationInput,
+    onProgress: (phase: DesktopRuntimeHostManagementProgress['phase']) => void,
+  ) => Promise<RuntimeHostServiceUpdateReconciliationTerminalFrame>;
+  readonly resolveUpdatePackage: () =>
+    | DesktopRuntimeHostSetupPackage
+    | Promise<DesktopRuntimeHostSetupPackage>;
   readonly currentHostEpoch: (profileId: string) => string | undefined;
   readonly awaitUpdatedConnection: (
     profileId: string,
@@ -223,6 +240,25 @@ export function createDesktopRuntimeHostManagement(input: {
     };
   };
 
+  const updateTarget = async (profileIdValue: unknown) => {
+    const profileId = requireProfileId(profileIdValue);
+    const managed = await resolveManagedService(profileId);
+    const transport = managed.profile.transport;
+    if (managed.state !== 'active' || transport.kind !== 'ssh') {
+      throw new Error('This Runtime Host profile is not available for managed updates');
+    }
+    return {
+      profileId,
+      managed,
+      transport,
+      expectedTarget: {
+        serviceId: managed.service.id,
+        rootPath: managed.service.rootPath,
+        rootId: managed.profile.rootId,
+      },
+    };
+  };
+
   const update = async (
     profileIdValue: unknown,
     allowInterruptActiveTasksValue: unknown,
@@ -230,54 +266,33 @@ export function createDesktopRuntimeHostManagement(input: {
     if (typeof allowInterruptActiveTasksValue !== 'boolean') {
       throw new Error('Runtime Host update interruption authority is invalid');
     }
-    const profileId = requireProfileId(profileIdValue);
-    const managed = await resolveManagedService(profileId);
-    if (managed.state !== 'active' || managed.profile.transport.kind !== 'ssh') {
-      throw new Error('This Runtime Host profile is not available for managed updates');
-    }
+    const { profileId, managed, transport, expectedTarget } = await updateTarget(profileIdValue);
     const previousHostEpoch = input.currentHostEpoch(profileId);
+    input.sendProgress({ profileId, phase: 'preparing_cli' });
+    const setupPackage = await input.resolveUpdatePackage();
     const response = await input.runUpdate(
       {
-        destination: managed.profile.transport.destination,
-        ...(managed.profile.transport.sshPort === undefined
-          ? {}
-          : { sshPort: managed.profile.transport.sshPort }),
-        setupPackage: input.resolveUpdatePackage(),
-        expectedTarget: {
-          serviceId: managed.service.id,
-          rootPath: managed.service.rootPath,
-          rootId: managed.profile.rootId,
-        },
+        destination: transport.destination,
+        ...(transport.sshPort === undefined ? {} : { sshPort: transport.sshPort }),
+        setupPackage,
+        expectedTarget,
         ...(allowInterruptActiveTasksValue ? { allowInterruptActiveTasks: true } : {}),
       },
       (phase) => input.sendProgress({ profileId, phase }),
     );
-    if (
-      response.kind === 'result' &&
-      response.update.kind !== 'active_tasks'
-    ) {
-      try {
-        const current = await input.profiles.resolveManagedService(profileId);
-        if (!current || !sameDesktopRuntimeHostManagedServiceBinding(current, managed)) {
-          throw new Error('Runtime Host profile changed while its service was updating');
-        }
-        await input.awaitUpdatedConnection(
-          profileId,
-          managed.profile.rootId,
-          previousHostEpoch,
-          response.update.kind !== 'already_current',
-        );
-      } catch (error) {
+    if (response.kind === 'result' && response.update.kind !== 'active_tasks') {
+      const reconnectError = await reconnectUpdatedTarget(
+        profileId,
+        managed,
+        previousHostEpoch,
+        response.update.kind !== 'already_current',
+      );
+      if (reconnectError) {
         return {
           schemaVersion: 1,
           kind: 'error',
           action: 'update',
-          error: {
-            code: 'desktop_reconnect_failed',
-            message:
-              'The Runtime Host update completed, but Desktop could not reconnect: ' +
-              (error instanceof Error ? error.message : String(error)),
-          },
+          error: reconnectError,
         };
       }
     }
@@ -290,6 +305,109 @@ export function createDesktopRuntimeHostManagement(input: {
             ) ?? false,
         }
       : response;
+  };
+
+  const reconnectUpdatedTarget = async (
+    profileId: string,
+    managed: Awaited<ReturnType<typeof resolveManagedService>>,
+    previousHostEpoch: string | undefined,
+    replacementExpected: boolean,
+  ): Promise<{ readonly code: string; readonly message: string } | undefined> => {
+    try {
+      const current = await input.profiles.resolveManagedService(profileId);
+      if (!current || !sameDesktopRuntimeHostManagedServiceBinding(current, managed)) {
+        throw new Error('Runtime Host profile changed while its service was updating');
+      }
+      await input.awaitUpdatedConnection(
+        profileId,
+        managed.profile.rootId,
+        previousHostEpoch,
+        replacementExpected,
+      );
+      return undefined;
+    } catch (error) {
+      return {
+        code: 'desktop_reconnect_failed',
+        message:
+          'The Runtime Host update completed, but Desktop could not reconnect: ' +
+          (error instanceof Error ? error.message : String(error)),
+      };
+    }
+  };
+
+  const updatePolicy = async (
+    profileIdValue: unknown,
+    policyValue?: unknown,
+  ): Promise<DesktopRuntimeHostUpdatePolicySnapshot> => {
+    const { managed, transport, expectedTarget } = await updateTarget(profileIdValue);
+    const policy = policyValue === undefined ? undefined : requireUpdatePolicy(policyValue);
+    const common = {
+      destination: transport.destination,
+      ...(transport.sshPort === undefined
+        ? {}
+        : { sshPort: transport.sshPort }),
+      operatorPath: managed.service.operatorPath,
+      expectedTarget,
+    };
+    if (policy && policy.kind !== 'manual') {
+      const current = await input.runUpdatePolicy(common);
+      if (current.kind === 'error') throw new Error(current.error.message);
+      if (current.updateSchedulerState === undefined) {
+        throw new Error(
+          'Update or repair this Runtime Host before enabling automatic updates',
+        );
+      }
+    }
+    const response = await input.runUpdatePolicy({
+      ...common,
+      ...(policy ? { policy } : {}),
+    });
+    if (response.kind === 'error') throw new Error(response.error.message);
+    return projectUpdatePolicy(response);
+  };
+
+  const reconcileUpdate = async (
+    profileIdValue: unknown,
+  ): Promise<DesktopRuntimeHostUpdateReconciliationResponse> => {
+    const { profileId, managed, transport, expectedTarget } = await updateTarget(profileIdValue);
+    const previousHostEpoch = input.currentHostEpoch(profileId);
+    const response = await input.runUpdateReconciliation(
+      {
+        destination: transport.destination,
+        ...(transport.sshPort === undefined
+          ? {}
+        : { sshPort: transport.sshPort }),
+        operatorPath: managed.service.operatorPath,
+        expectedTarget,
+      },
+      (phase) => input.sendProgress({ profileId, phase }),
+    );
+    if (
+      response.kind === 'result' &&
+      (response.reconciliation.kind === 'updated' ||
+        response.reconciliation.kind === 'repaired')
+    ) {
+      const reconnectError = await reconnectUpdatedTarget(
+        profileId,
+        managed,
+        previousHostEpoch,
+        true,
+      );
+      if (reconnectError) {
+        return {
+          kind: 'error',
+          error: reconnectError,
+        };
+      }
+    }
+    return response.kind === 'result'
+      ? {
+          kind: 'result',
+          updatePolicy: projectUpdatePolicy(response),
+          reconciliation: response.reconciliation,
+          ...(response.service ? { service: response.service } : {}),
+        }
+      : { kind: 'error', error: response.error };
   };
 
   const accessSnapshot = (
@@ -413,6 +531,9 @@ export function createDesktopRuntimeHostManagement(input: {
     'runtime-host-management:list-credentials',
     'runtime-host-management:rotate-credential',
     'runtime-host-management:revoke-credential',
+    'runtime-host-management:get-update-policy',
+    'runtime-host-management:set-update-policy',
+    'runtime-host-management:reconcile-update',
   ] as const;
   input.ipcMain.handle(channels[0], (_event, profileId: unknown, action: unknown) =>
     run(profileId, action));
@@ -430,12 +551,56 @@ export function createDesktopRuntimeHostManagement(input: {
     (_event, profileId: unknown, credentialId: unknown) =>
       revokeCredential(profileId, credentialId),
   );
+  input.ipcMain.handle(channels[5], (_event, profileId: unknown) =>
+    updatePolicy(profileId));
+  input.ipcMain.handle(channels[6], (_event, profileId: unknown, policy: unknown) =>
+    updatePolicy(profileId, policy));
+  input.ipcMain.handle(channels[7], (_event, profileId: unknown) =>
+    reconcileUpdate(profileId));
 
   return {
     close() {
       for (const channel of channels) input.ipcMain.removeHandler(channel);
     },
   };
+}
+
+function projectUpdatePolicy(
+  frame: Extract<RuntimeHostServiceManagementFrame, {
+    readonly kind: 'result';
+    readonly action: 'update_policy' | 'reconcile_update';
+  }>,
+): DesktopRuntimeHostUpdatePolicySnapshot {
+  if (frame.updateSchedulerState === undefined) {
+    return { ...frame.updatePolicy, schedulingState: 'unsupported' };
+  }
+  return { ...frame.updatePolicy, schedulingState: frame.updateSchedulerState };
+}
+
+function requireUpdatePolicy(value: unknown): RuntimeHostManagedUpdatePolicy {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new Error('Runtime Host update policy is invalid');
+  }
+  const policy = value as Record<string, unknown>;
+  if (policy.kind === 'manual' && Object.keys(policy).length === 1) {
+    return { kind: 'manual' };
+  }
+  if (
+    policy.kind === 'fixed' &&
+    Object.keys(policy).length === 2 &&
+    typeof policy.version === 'string' &&
+    isProductReleaseVersion(policy.version)
+  ) {
+    return { kind: 'fixed', version: policy.version };
+  }
+  if (
+    policy.kind === 'channel' &&
+    Object.keys(policy).length === 2 &&
+    (policy.channel === 'latest' || policy.channel === 'next')
+  ) {
+    return { kind: 'channel', channel: policy.channel };
+  }
+  throw new Error('Runtime Host update policy is invalid');
 }
 
 function sameCredentialAuthority(

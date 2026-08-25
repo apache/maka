@@ -22,6 +22,28 @@ interface ProductReleaseVersion {
   readonly prerelease: readonly string[];
 }
 
+export interface RuntimeHostNpmDeploymentIdentity {
+  readonly kind: 'npm_registry';
+  readonly version: string;
+  readonly integrity: string;
+}
+
+/** Exact artifact evidence the Runtime Host can currently verify. */
+export type RuntimeHostDeploymentIdentity = RuntimeHostNpmDeploymentIdentity;
+
+export function isRuntimeHostNpmDeploymentIdentity(
+  value: unknown,
+): value is RuntimeHostNpmDeploymentIdentity {
+  return (
+    isRecord(value) &&
+    value.kind === 'npm_registry' &&
+    typeof value.version === 'string' &&
+    isProductReleaseVersion(value.version) &&
+    typeof value.integrity === 'string' &&
+    isSha512PackageIntegrity(value.integrity)
+  );
+}
+
 export function isProductReleaseVersion(value: string): boolean {
   return parseProductReleaseVersion(value) !== undefined;
 }
@@ -77,4 +99,8 @@ function parseProductReleaseVersion(value: string): ProductReleaseVersion | unde
     core: [BigInt(match[1]), BigInt(match[2]), BigInt(match[3])],
     prerelease,
   };
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
 }

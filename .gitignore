@@ -35,4 +35,5 @@ apps/desktop/resources/tools/
 apps/desktop/release/
 apps/desktop/release-sources/
 packages/cli/release/
+packages/cli/.development/
 release/asf/

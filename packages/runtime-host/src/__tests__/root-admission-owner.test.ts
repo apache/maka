@@ -325,7 +325,7 @@ function multiSourceAdmitInput(sessionId: string, turnId: string, admittedAt: nu
     sessionId,
     turnId,
     proposedRunId: `run-${turnId}`,
-    proposedUserMessageId: `message-${turnId}`,
+    proposedUserMessageId: null,
     execution: { kind: 'external_message' as const },
     normalizedInput: {
       text: 'model text\n\nfollowup text',
