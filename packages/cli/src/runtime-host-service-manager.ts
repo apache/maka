@@ -102,6 +102,9 @@ export interface RuntimeHostServiceBackend {
   install(config: RuntimeHostManagedServiceConfig): Promise<RuntimeHostServiceDeployment>;
   /** A rejected replacement must restore the previous deployment or report update_incomplete. */
   replace(config: RuntimeHostManagedServiceConfig): Promise<void>;
+  /** Verify derived resources that replacement deliberately leaves untouched. */
+  verifyReplacementPreconditions(config: RuntimeHostManagedServiceConfig): Promise<void>;
+  /** Verify the persisted deployment definition independently of its running state. */
   verifyDeployment(config: RuntimeHostManagedServiceConfig): Promise<void>;
   status(): Promise<RuntimeHostServiceBackendStatus>;
   start(): Promise<void>;
@@ -537,14 +540,24 @@ async function manageRuntimeHostServiceLocked(
     );
   }
   await resolveExpectedServiceRoot(config, input);
-  await backend[input.action]();
   if (input.action === 'start' || input.action === 'restart') {
     try {
+      await backend[input.action]();
       await deps.waitForReady(config, backend);
     } catch (error) {
-      await backend.stop().catch(() => undefined);
+      try {
+        await backend.stop();
+      } catch (stopError) {
+        throw new RuntimeHostServiceManagerError(
+          'service_manager_operation_failed',
+          'Starting the Runtime Host managed deployment failed and its partial state could not be stopped',
+          { cause: new AggregateError([error, stopError]) },
+        );
+      }
       throw error;
     }
+  } else {
+    await backend[input.action]();
   }
   return result(input.action, await readServiceStatus(configPath, backend));
 }

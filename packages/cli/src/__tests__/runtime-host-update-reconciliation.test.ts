@@ -403,6 +403,7 @@ function unusedBackend() {
     preflightInstall: async () => undefined,
     install: async () => ({ rollback: async () => undefined }),
     replace: async () => undefined,
+    verifyReplacementPreconditions: async () => undefined,
     verifyDeployment: async () => undefined,
     status: async () => ({
       manager: 'systemd_user' as const,

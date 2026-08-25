@@ -116,19 +116,16 @@ export function createLaunchAgentRuntimeHostService(
     preflightInstall: () => assertLaunchAgentDomain(context),
     install: async (config) => {
       await validateRuntimeHostServiceLaunch(config);
-      const managesScheduler = runtimeHostUpdateReconcileLaunchArguments(config) !== null;
       const [previous, previousScheduler] = await Promise.all([
         captureLaunchAgentDeployment(context),
-        managesScheduler ? captureLaunchAgentDeployment(scheduler) : undefined,
+        captureLaunchAgentDeployment(scheduler),
       ]);
       let schedulerMutationStarted = false;
       try {
         await applyLaunchAgentDeployment(context, config);
-        if (managesScheduler) {
-          await applyLaunchAgentUpdateScheduler(scheduler, config, () => {
-            schedulerMutationStarted = true;
-          });
-        }
+        await applyLaunchAgentUpdateSchedulerDesiredState(scheduler, config, () => {
+          schedulerMutationStarted = true;
+        });
       } catch (error) {
         await restoreFailedLaunchAgentDeployment(
           previous,
@@ -169,6 +166,8 @@ export function createLaunchAgentRuntimeHostService(
         );
       }
     },
+    verifyReplacementPreconditions: (config) =>
+      verifyLaunchAgentUpdateSchedulerDesiredState(scheduler, config, false),
     verifyDeployment: async (config) => {
       await validateRuntimeHostServiceLaunch(config);
       const [status, plist] = await Promise.all([
@@ -184,9 +183,7 @@ export function createLaunchAgentRuntimeHostService(
           'The installed Runtime Host LaunchAgent does not match its managed deployment',
         );
       }
-      if (runtimeHostUpdateReconcileLaunchArguments(config)) {
-        await verifyLaunchAgentUpdateScheduler(scheduler, config);
-      }
+      await verifyLaunchAgentUpdateSchedulerDesiredState(scheduler, config, false);
     },
     status: readStatus,
     start: async () => {
@@ -392,13 +389,25 @@ async function captureLaunchAgentDeployment(
   return { plist, loaded: status.loaded };
 }
 
-async function applyLaunchAgentUpdateScheduler(
+async function applyLaunchAgentUpdateSchedulerDesiredState(
   context: LaunchAgentContext,
   config: RuntimeHostManagedServiceConfig,
   onMutation: () => void,
 ): Promise<void> {
+  if (!runtimeHostUpdateReconcileLaunchArguments(config)) {
+    try {
+      await verifyLaunchAgentUpdateSchedulerAbsent(context);
+      return;
+    } catch (error) {
+      if (!isTargetMismatch(error)) throw error;
+    }
+    onMutation();
+    await removeLaunchAgentUpdateScheduler(context);
+    await verifyLaunchAgentUpdateSchedulerAbsent(context);
+    return;
+  }
   try {
-    await verifyLaunchAgentUpdateScheduler(context, config);
+    await verifyLaunchAgentUpdateScheduler(context, config, true);
     return;
   } catch (error) {
     if (!isTargetMismatch(error)) throw error;
@@ -412,11 +421,25 @@ async function applyLaunchAgentUpdateScheduler(
     0o600,
   );
   await bootstrapLaunchAgent(context);
+  await verifyLaunchAgentUpdateScheduler(context, config, true);
+}
+
+async function verifyLaunchAgentUpdateSchedulerDesiredState(
+  context: LaunchAgentContext,
+  config: RuntimeHostManagedServiceConfig,
+  requireLoaded: boolean,
+): Promise<void> {
+  if (runtimeHostUpdateReconcileLaunchArguments(config)) {
+    await verifyLaunchAgentUpdateScheduler(context, config, requireLoaded);
+    return;
+  }
+  await verifyLaunchAgentUpdateSchedulerAbsent(context);
 }
 
 async function verifyLaunchAgentUpdateScheduler(
   context: LaunchAgentContext,
   config: RuntimeHostManagedServiceConfig,
+  requireLoaded: boolean,
 ): Promise<void> {
   const [status, plist] = await Promise.all([
     readLaunchAgentStatus(context),
@@ -425,9 +448,23 @@ async function verifyLaunchAgentUpdateScheduler(
       throw error;
     }),
   ]);
-  if (!status.loaded || plist !== renderLaunchAgentUpdatePlist(config, context)) {
+  if (
+    (requireLoaded && !status.loaded) ||
+    plist !== renderLaunchAgentUpdatePlist(config, context)
+  ) {
     throw launchAgentSchedulerMismatch();
   }
+}
+
+async function verifyLaunchAgentUpdateSchedulerAbsent(context: LaunchAgentContext): Promise<void> {
+  const [status, plist] = await Promise.all([
+    readLaunchAgentStatus(context),
+    readFile(context.plistPath, 'utf8').catch((error: unknown) => {
+      if (isNodeError(error, 'ENOENT')) return null;
+      throw error;
+    }),
+  ]);
+  if (status.loaded || plist !== null) throw launchAgentSchedulerMismatch();
 }
 
 async function removeLaunchAgentUpdateScheduler(context: LaunchAgentContext): Promise<void> {

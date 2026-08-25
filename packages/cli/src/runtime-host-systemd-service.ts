@@ -109,20 +109,17 @@ export function createSystemdUserRuntimeHostService(
     },
     install: async (config) => {
       await validateRuntimeHostServiceLaunch(config);
-      const managesScheduler = runtimeHostUpdateReconcileLaunchArguments(config) !== null;
       const [previous, previousScheduler] = await Promise.all([
         captureSystemdDeployment(context.unitPath, readStatus),
-        managesScheduler ? captureSystemdUpdateScheduler(scheduler) : undefined,
+        captureSystemdUpdateScheduler(scheduler),
       ]);
-      if (managesScheduler) await assertNoSystemdUpdateSchedulerDropIns(scheduler);
+      await assertNoSystemdUpdateSchedulerDropIns(scheduler);
       let schedulerMutationStarted = false;
       try {
         await applySystemdDeployment(context, config);
-        if (managesScheduler) {
-          await applySystemdUpdateScheduler(scheduler, config, () => {
-            schedulerMutationStarted = true;
-          });
-        }
+        await applySystemdUpdateSchedulerDesiredState(scheduler, config, () => {
+          schedulerMutationStarted = true;
+        });
       } catch (error) {
         await restoreFailedSystemdDeployment(
           previous,
@@ -163,6 +160,8 @@ export function createSystemdUserRuntimeHostService(
         );
       }
     },
+    verifyReplacementPreconditions: (config) =>
+      verifySystemdUpdateSchedulerDesiredState(scheduler, config, false),
     verifyDeployment: async (config) => {
       await validateRuntimeHostServiceLaunch(config);
       const [status, unit] = await Promise.all([
@@ -184,9 +183,7 @@ export function createSystemdUserRuntimeHostService(
           'The loaded Runtime Host service does not match its managed deployment',
         );
       }
-      if (runtimeHostUpdateReconcileLaunchArguments(config)) {
-        await verifySystemdUpdateScheduler(scheduler, config);
-      }
+      await verifySystemdUpdateSchedulerDesiredState(scheduler, config, false);
     },
     status: readStatus,
     start: async () => {
@@ -421,13 +418,25 @@ async function captureSystemdUpdateScheduler(
   return { serviceUnit, timerUnit, timerStatus };
 }
 
-async function applySystemdUpdateScheduler(
+async function applySystemdUpdateSchedulerDesiredState(
   context: SystemdUpdateSchedulerContext,
   config: RuntimeHostManagedServiceConfig,
   onMutation: () => void,
 ): Promise<void> {
+  if (!runtimeHostUpdateReconcileLaunchArguments(config)) {
+    try {
+      await verifySystemdUpdateSchedulerAbsent(context);
+      return;
+    } catch (error) {
+      if (!isTargetMismatch(error)) throw error;
+    }
+    onMutation();
+    await removeSystemdUpdateScheduler(context);
+    await verifySystemdUpdateSchedulerAbsent(context);
+    return;
+  }
   try {
-    await verifySystemdUpdateScheduler(context, config);
+    await verifySystemdUpdateScheduler(context, config, true);
     return;
   } catch (error) {
     if (!isTargetMismatch(error)) throw error;
@@ -458,7 +467,7 @@ async function applySystemdUpdateScheduler(
     ['restart', context.timer.unitName],
     'Scheduling Runtime Host update reconciliation failed',
   );
-  await verifySystemdUpdateScheduler(context, config);
+  await verifySystemdUpdateScheduler(context, config, true);
 }
 
 async function assertNoSystemdUpdateSchedulerDropIns(
@@ -476,9 +485,22 @@ async function assertNoSystemdUpdateSchedulerDropIns(
   }
 }
 
+async function verifySystemdUpdateSchedulerDesiredState(
+  context: SystemdUpdateSchedulerContext,
+  config: RuntimeHostManagedServiceConfig,
+  requireActive: boolean,
+): Promise<void> {
+  if (runtimeHostUpdateReconcileLaunchArguments(config)) {
+    await verifySystemdUpdateScheduler(context, config, requireActive);
+    return;
+  }
+  await verifySystemdUpdateSchedulerAbsent(context);
+}
+
 async function verifySystemdUpdateScheduler(
   context: SystemdUpdateSchedulerContext,
   config: RuntimeHostManagedServiceConfig,
+  requireActive: boolean,
 ): Promise<void> {
   const [serviceUnit, timerUnit, serviceStatus, timerStatus] = await Promise.all([
     readOptionalFile(context.service.unitPath),
@@ -492,7 +514,30 @@ async function verifySystemdUpdateScheduler(
     !isLoadedManagedSystemdUnit(serviceStatus, context.service.unitPath) ||
     !isLoadedManagedSystemdUnit(timerStatus, context.timer.unitPath) ||
     (timerStatus.unitFileState !== 'enabled' && timerStatus.unitFileState !== 'enabled-runtime') ||
-    timerStatus.activeState !== 'active'
+    (requireActive && timerStatus.activeState !== 'active')
+  ) {
+    throw schedulerMismatch();
+  }
+}
+
+async function verifySystemdUpdateSchedulerAbsent(
+  context: SystemdUpdateSchedulerContext,
+): Promise<void> {
+  const [serviceUnit, timerUnit, serviceStatus, timerStatus] = await Promise.all([
+    readOptionalFile(context.service.unitPath),
+    readOptionalFile(context.timer.unitPath),
+    readSystemdStatus(context.service),
+    readSystemdStatus(context.timer),
+  ]);
+  if (
+    serviceUnit !== null ||
+    timerUnit !== null ||
+    serviceStatus.loadState !== 'not-found' ||
+    timerStatus.loadState !== 'not-found' ||
+    timerStatus.unitFileState === 'enabled' ||
+    timerStatus.unitFileState === 'enabled-runtime' ||
+    serviceStatus.dropInPaths?.trim() ||
+    timerStatus.dropInPaths?.trim()
   ) {
     throw schedulerMismatch();
   }
@@ -516,31 +561,10 @@ async function stopSystemdManagedDeployment(
   scheduler: SystemdUpdateSchedulerContext,
 ): Promise<void> {
   const errors: unknown[] = [];
-  const [serviceStatus, timerStatus] = await Promise.all([
-    readSystemdStatus(scheduler.service),
-    readSystemdStatus(scheduler.timer),
-  ]);
-  if (isSystemdUnitRunning(timerStatus)) {
-    try {
-      await requireSystemctl(
-        scheduler.timer.runSystemctl,
-        ['stop', scheduler.timer.unitName],
-        'Stopping Runtime Host update scheduling failed',
-      );
-    } catch (error) {
-      errors.push(error);
-    }
-  }
-  if (isSystemdUnitRunning(serviceStatus)) {
-    try {
-      await requireSystemctl(
-        scheduler.service.runSystemctl,
-        ['stop', scheduler.service.unitName],
-        'Stopping Runtime Host update reconciliation failed',
-      );
-    } catch (error) {
-      errors.push(error);
-    }
+  try {
+    await stopSystemdUpdateScheduler(scheduler);
+  } catch (error) {
+    errors.push(error);
   }
   try {
     await runLifecycleAction(service, 'stop');
@@ -557,17 +581,8 @@ async function stopSystemdManagedDeployment(
 }
 
 async function removeSystemdUpdateScheduler(context: SystemdUpdateSchedulerContext): Promise<void> {
-  const [serviceStatus, timerStatus] = await Promise.all([
-    readSystemdStatus(context.service),
-    readSystemdStatus(context.timer),
-  ]);
-  if (isSystemdUnitRunning(timerStatus)) {
-    await requireSystemctl(
-      context.timer.runSystemctl,
-      ['stop', context.timer.unitName],
-      'Stopping Runtime Host update scheduling failed',
-    );
-  }
+  const timerStatus = await readSystemdStatus(context.timer);
+  await stopSystemdUpdateScheduler(context);
   if (
     timerStatus.loadState !== 'not-found' ||
     timerStatus.unitFileState === 'enabled' ||
@@ -579,13 +594,6 @@ async function removeSystemdUpdateScheduler(context: SystemdUpdateSchedulerConte
       'Disabling Runtime Host update scheduling failed',
     );
   }
-  if (isSystemdUnitRunning(serviceStatus)) {
-    await requireSystemctl(
-      context.service.runSystemctl,
-      ['stop', context.service.unitName],
-      'Stopping Runtime Host update reconciliation failed',
-    );
-  }
   await Promise.all([
     removeRuntimeHostServiceFile(context.service.unitPath, 'systemd update service'),
     removeRuntimeHostServiceFile(context.timer.unitPath, 'systemd update timer'),
@@ -593,6 +601,29 @@ async function removeSystemdUpdateScheduler(context: SystemdUpdateSchedulerConte
   await requireSystemctl(context.timer.runSystemctl, ['daemon-reload'], 'Reloading systemd failed');
   await context.timer.runSystemctl(['reset-failed', context.service.unitName]);
   await context.timer.runSystemctl(['reset-failed', context.timer.unitName]);
+}
+
+async function stopSystemdUpdateScheduler(context: SystemdUpdateSchedulerContext): Promise<void> {
+  const [serviceUnit, timerUnit, serviceStatus, timerStatus] = await Promise.all([
+    readOptionalFile(context.service.unitPath),
+    readOptionalFile(context.timer.unitPath),
+    readSystemdStatus(context.service),
+    readSystemdStatus(context.timer),
+  ]);
+  const units = [
+    ...(timerUnit !== null || timerStatus.loadState !== 'not-found'
+      ? [context.timer.unitName]
+      : []),
+    ...(serviceUnit !== null || serviceStatus.loadState !== 'not-found'
+      ? [context.service.unitName]
+      : []),
+  ];
+  if (units.length === 0) return;
+  await requireSystemctl(
+    context.timer.runSystemctl,
+    ['stop', ...units],
+    'Stopping Runtime Host update scheduling failed',
+  );
 }
 
 async function restoreSystemdUpdateScheduler(

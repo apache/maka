@@ -210,6 +210,7 @@ export async function runManagedRuntimeHostUpdateCli(
             'The Runtime Host service is not owned by a Maka managed deployment',
           );
         }
+        await backend.verifyReplacementPreconditions(serviceConfig);
         const deploymentRoot = serviceConfig.managedDeploymentRoot;
         const currentCliPath = resolve(serviceConfig.launch.cliPath);
         const targetCliPath = resolveRuntimeHostManagedPackageCliPath(

@@ -121,8 +121,15 @@ test('installs and removes the update scheduler with a managed LaunchAgent', asy
 
     await backend.stop();
     assert.equal(launchctl.updateLoaded, false);
+    await backend.verifyDeployment(config);
     await backend.start();
     assert.equal(launchctl.updateLoaded, true);
+
+    const { managedDeploymentRoot: _managedDeploymentRoot, ...unmanagedConfig } = config;
+    await backend.install(unmanagedConfig);
+    await backend.verifyDeployment(unmanagedConfig);
+    assert.equal(await fileExists(updatePath), false);
+    assert.equal(launchctl.updateLoaded, false);
 
     await backend.uninstall();
     assert.equal(await fileExists(updatePath), false);

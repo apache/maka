@@ -378,18 +378,27 @@ describe('managed Runtime Host service', () => {
     await repairBackend.verifyDeployment(managedConfig);
 
     const updateServiceName = basename(updateServicePath);
-    await systemd.run(['start', updateServiceName]);
+    systemd.activateUnitWhenStopping(updateTimerName, updateServiceName);
     await repairBackend.stop();
     assert.ok(
-      systemd.calls.some(([command, target]) => command === 'stop' && target === updateTimerName),
+      systemd.calls.some(
+        ([command, ...targets]) =>
+          command === 'stop' &&
+          targets.includes(updateTimerName) &&
+          targets.includes(updateServiceName),
+      ),
     );
-    assert.ok(
-      systemd.calls.some(([command, target]) => command === 'stop' && target === updateServiceName),
-    );
+    await repairBackend.verifyDeployment(managedConfig);
     await repairBackend.start();
     assert.ok(
       systemd.calls.some(([command, target]) => command === 'start' && target === updateTimerName),
     );
+
+    const { managedDeploymentRoot: _managedDeploymentRoot, ...unmanagedConfig } = managedConfig;
+    await repairBackend.install(unmanagedConfig);
+    await repairBackend.verifyDeployment(unmanagedConfig);
+    await assert.rejects(readFile(updateServicePath, 'utf8'), { code: 'ENOENT' });
+    await assert.rejects(readFile(updateTimerPath, 'utf8'), { code: 'ENOENT' });
 
     const root = await resolveStorageRoot({ path: rootPath, kind: 'interactive' });
     await writeFile(configPath, '{not-json', 'utf8');
@@ -1047,6 +1056,53 @@ describe('managed Runtime Host service', () => {
     assert.equal(repaired.service.config?.rootPath, root.canonicalPath);
   });
 
+  it('stops partial deployment state when start or restart fails', async (t) => {
+    const base = await mkdtemp(join(tmpdir(), 'maka-runtime-host-service-start-failure-'));
+    t.after(() => rm(base, { recursive: true, force: true }));
+    const cliPath = join(base, 'cli.js');
+    await writeFile(cliPath, '#!/usr/bin/env node\n', 'utf8');
+    let stops = 0;
+    let stopFails = false;
+    const failedAction = async () => {
+      throw new Error('scheduler start failed');
+    };
+    const backend: RuntimeHostServiceBackend = {
+      ...createReadyBackend(),
+      start: failedAction,
+      restart: failedAction,
+      stop: async () => {
+        stops += 1;
+        if (stopFails) throw new Error('partial deployment stop failed');
+      },
+    };
+    const common = {
+      clientDataRoot: join(base, 'config'),
+      defaultRootPath: join(base, 'state'),
+      nodePath: process.execPath,
+      cliPath,
+    } as const;
+    await manageRuntimeHostService({ ...common, action: 'install' }, backend, {
+      waitForReady: async () => undefined,
+    });
+
+    await assert.rejects(
+      manageRuntimeHostService({ ...common, action: 'start' }, backend),
+      /scheduler start failed/u,
+    );
+    assert.equal(stops, 1);
+
+    stopFails = true;
+    await assert.rejects(
+      manageRuntimeHostService({ ...common, action: 'restart' }, backend),
+      (error: unknown) =>
+        error instanceof RuntimeHostServiceManagerError &&
+        error.code === 'service_manager_operation_failed' &&
+        error.cause instanceof AggregateError &&
+        error.cause.errors.length === 2,
+    );
+    assert.equal(stops, 2);
+  });
+
   it('retires the exact managed Host only after active work is authorized', async (t) => {
     const base = await mkdtemp(join(tmpdir(), 'maka-runtime-host-retirement-'));
     t.after(() => rm(base, { recursive: true, force: true }));
@@ -1501,6 +1557,7 @@ describe('managed Runtime Host service', () => {
     let legacyLeaseCalls = 0;
     let operatorStatusFailure = false;
     let operatorFailure: Extract<RuntimeHostServiceManagementFrame, { kind: 'error' }> | undefined;
+    let replacementPreconditionFailure = false;
     let replaceFailure = false;
     let cleanupFailure = false;
     let expectAllowInterruptActiveTasks = true;
@@ -1535,7 +1592,17 @@ describe('managed Runtime Host service', () => {
       },
     });
     const overrides = {
-      createBackend: createUnusedBackend,
+      createBackend: () => ({
+        ...createUnusedBackend(),
+        verifyReplacementPreconditions: async () => {
+          if (replacementPreconditionFailure) {
+            throw new RuntimeHostServiceManagerError(
+              'target_mismatch',
+              'The update scheduler is not ready for replacement',
+            );
+          }
+        },
+      }),
       withLifecycleLock: async <T>(_root: string, operation: () => Promise<T>) => {
         assert.equal(insideLifecycle, false);
         insideLifecycle = true;
@@ -1680,6 +1747,19 @@ describe('managed Runtime Host service', () => {
       result?.kind === 'result' && result.action === 'update' ? result.update.kind : undefined,
       'updated',
     );
+
+    replacementPreconditionFailure = true;
+    order.length = 0;
+    statusReads = 0;
+    output = '';
+    assert.equal(await runManagedRuntimeHostUpdateCli(options, overrides), 1);
+    assert.deepEqual(order, []);
+    const preconditionFailure = decodeRuntimeHostServiceManagementFrame(output.trim());
+    assert.equal(
+      preconditionFailure?.kind === 'error' ? preconditionFailure.error.code : undefined,
+      'target_mismatch',
+    );
+    replacementPreconditionFailure = false;
 
     order.length = 0;
     statusReads = 0;
@@ -2031,6 +2111,7 @@ describe('managed Runtime Host service', () => {
 
 function createFakeSystemd(unitPath: string): {
   readonly failNext: (command: string) => void;
+  readonly activateUnitWhenStopping: (triggerUnit: string, unitToActivate: string) => void;
   readonly setDropInPaths: (paths: readonly string[]) => void;
   readonly setUnitDropInPaths: (unitName: string, paths: readonly string[]) => void;
   readonly calls: readonly (readonly string[])[];
@@ -2043,11 +2124,15 @@ function createFakeSystemd(unitPath: string): {
   const states = new Map<string, { enabled: boolean; active: boolean }>();
   let failureCommand: string | undefined;
   const dropInPaths = new Map<string, readonly string[]>();
+  let stopActivation: { triggerUnit: string; unitToActivate: string } | undefined;
   const calls: string[][] = [];
   return {
     calls,
     failNext: (command) => {
       failureCommand = command;
+    },
+    activateUnitWhenStopping: (triggerUnit, unitToActivate) => {
+      stopActivation = { triggerUnit, unitToActivate };
     },
     setDropInPaths: (paths) => {
       dropInPaths.set(basename(unitPath), paths);
@@ -2084,8 +2169,21 @@ function createFakeSystemd(unitPath: string): {
         return success();
       }
       if (args[0] === 'stop') {
-        assert.ok(unitState);
-        unitState.active = false;
+        const targets = args.slice(1);
+        if (stopActivation && targets.includes(stopActivation.triggerUnit)) {
+          const activated = states.get(stopActivation.unitToActivate) ?? {
+            enabled: false,
+            active: false,
+          };
+          activated.active = true;
+          states.set(stopActivation.unitToActivate, activated);
+          stopActivation = undefined;
+        }
+        for (const target of targets) {
+          const targetState = states.get(target) ?? { enabled: false, active: false };
+          targetState.active = false;
+          states.set(target, targetState);
+        }
         return success();
       }
       if (args[0] === 'reset-failed') return success();
@@ -2127,6 +2225,7 @@ function createUnusedBackend(): RuntimeHostServiceBackend {
     preflightInstall: unexpected,
     install: unexpected,
     replace: unexpected,
+    verifyReplacementPreconditions: unexpected,
     verifyDeployment: unexpected,
     status: unexpected,
     start: unexpected,
@@ -2159,6 +2258,7 @@ function createReadyBackend(): RuntimeHostServiceBackend {
     preflightInstall: async () => undefined,
     install: async () => ({ rollback: async () => undefined }),
     replace: async () => undefined,
+    verifyReplacementPreconditions: async () => undefined,
     verifyDeployment: async () => undefined,
     status,
     start: async () => undefined,
