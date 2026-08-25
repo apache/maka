@@ -236,7 +236,7 @@ License: MIT
 
 Maka includes an ejected adaptation of Astryx ChatReasoning v0.1.9 and generated
 theme artifacts based on Astryx theme-neutral v0.4.5. Maka also redistributes
-`patches/@astryxdesign+core+0.4.5.patch`, which modifies the MIT-licensed Astryx
+`patches/@astryxdesign+core+0.5.0.patch`, which modifies the MIT-licensed Astryx
 core package. The following MIT License applies to that material:
 
 MIT License
