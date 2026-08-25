@@ -76,7 +76,7 @@ const TUI_PRIMARY_GUIDANCE = {
       keybindingsHeading: '快捷键',
       keybindings: [
         '  Ctrl+O — 展开或折叠所有工具输出',
-        '  Ctrl+T — 展开或折叠最近的思考块',
+        '  Ctrl+T — 展开或折叠视图中的所有思考块',
         '  使用终端或触控板滚动对话记录',
         '  Enter（任务运行中）— 将消息注入当前任务',
         '  Alt+Enter（任务运行中）— 将消息排入下一轮',
@@ -124,7 +124,7 @@ const TUI_PRIMARY_GUIDANCE = {
       keybindingsHeading: 'Keybindings',
       keybindings: [
         '  Ctrl+O — expand or collapse all tool output',
-        '  Ctrl+T — expand or collapse the latest thinking block',
+        '  Ctrl+T — expand or collapse all thinking in view',
         '  Scroll the transcript with your terminal or trackpad',
         '  Enter (during a turn) — steer: inject a message into the running turn',
         '  Alt+Enter (during a turn) — queue a message for the next turn',
