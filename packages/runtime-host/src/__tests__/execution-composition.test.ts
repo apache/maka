@@ -51,7 +51,7 @@ import {
 import { openInteractiveUsageStoresForWrite } from '@maka/storage/usage-stores';
 import { openInteractiveShellRunStoreForWrite } from '@maka/storage/shell-run-authority';
 import { openInteractiveRuntimePolicyStoresForWrite } from '@maka/storage/runtime-policy-stores';
-import { createSessionStore } from '@maka/storage';
+import { createSessionStore } from '@maka/storage/session-store';
 import { HostResidencyRegistry } from '../server/host-residency-registry.js';
 import {
   createExecutionRuntimeHostComposition,

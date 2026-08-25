@@ -299,7 +299,7 @@ function session(id: string, archived: boolean): SessionCatalogProjection {
       hostCwd: '/workspace',
     },
     createdAt: 1,
-    lastUsedAt: 1,
+    activityAt: 1,
     name: 'Bot conversation',
     isFlagged: false,
     isArchived: archived,
