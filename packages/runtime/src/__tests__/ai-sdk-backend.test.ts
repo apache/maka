@@ -99,6 +99,7 @@ import { buildLlmHistorySummarizer } from '../history-compact-summarizer.js';
 import { createToolResultArchiveCapability } from '../tool-result-archive-capability.js';
 import {
   createTestAiSdkBackend,
+  readExternalExecutionBoundary,
   testToolResultArchive,
 } from './execution-boundary-test-helpers.js';
 import type { MemoryExtractionSourceSnapshot } from '../memory-extraction.js';
@@ -5413,6 +5414,126 @@ describe('AiSdkBackend model history', () => {
       ],
     });
     assert.equal(calls, 2, 'changed source fingerprint is eligible again');
+  });
+
+  test('invalidates the malformed compaction circuit when configuration changes', async (t) => {
+    type FingerprintCase = {
+      name: string;
+      expectedCalls: number;
+      prepare?: (input: AiSdkBackendInput, backend: AiSdkBackend) => void;
+      change?: (input: AiSdkBackendInput, backend: AiSdkBackend) => void;
+    };
+    const setRequestShapeHash = (backend: AiSdkBackend, requestShapeHash: string): void => {
+      const internals = backend as unknown as {
+        priorRequestShape: { requestShapeHash: string } | undefined;
+      };
+      internals.priorRequestShape = { requestShapeHash };
+    };
+    const cases = [
+      {
+        name: 'unchanged input stays blocked',
+        expectedCalls: 1,
+      },
+      {
+        name: 'model change retries',
+        expectedCalls: 2,
+        change: (input) => {
+          input.modelId = 'changed-model-id';
+        },
+      },
+      {
+        name: 'connection change retries',
+        expectedCalls: 2,
+        change: (input) => {
+          input.connection = { ...input.connection, slug: 'anthropic-secondary' };
+        },
+      },
+      {
+        name: 'context-window budget change retries',
+        expectedCalls: 2,
+        change: (input) => {
+          input.contextBudget = {
+            ...input.contextBudget,
+            maxHistoryEstimatedTokens: 12_000,
+          };
+        },
+      },
+      {
+        name: 'request shape change retries',
+        expectedCalls: 2,
+        prepare: (_input, backend) => setRequestShapeHash(backend, 'request-shape-before'),
+        change: (_input, backend) => setRequestShapeHash(backend, 'request-shape-after'),
+      },
+    ] satisfies readonly FingerprintCase[];
+
+    for (const fingerprintCase of cases) {
+      await t.test(fingerprintCase.name, async () => {
+        let calls = 0;
+        const backendInput: AiSdkBackendInput = {
+          sessionId: 'session-1',
+          header: header(),
+          appendMessage: async () => {},
+          connection: connection(),
+          apiKey: 'sk-test',
+          modelId: 'mock-model-id',
+          modelFactory: () => completionModel(),
+          tools: [],
+          newId: idGenerator(),
+          now: monotonicClock(),
+          readExecutionBoundary: readExternalExecutionBoundary,
+          contextBudget: {
+            name: 'malformed-summary-config-circuit-test',
+            maxHistoryEstimatedTokens: 10_000,
+            charsPerToken: 1,
+            historyCompact: { enabled: true },
+          },
+          summarizeHistoryCompact: async () => {
+            calls += 1;
+            throw new HistoryCompactSummarizerError('malformed_summary_missing_section');
+          },
+          recordHistoryCompactCheckpoint: () => {
+            throw new Error('must not persist');
+          },
+        };
+        const backend = new AiSdkBackend(backendInput);
+        const history = [
+          runtimeTextEvent({
+            id: 'config-circuit-old',
+            turnId: 'old',
+            role: 'user',
+            author: 'user',
+            text: 'old '.repeat(100),
+          }),
+          runtimeTextEvent({
+            id: 'config-circuit-recent',
+            turnId: 'recent',
+            role: 'model',
+            author: 'agent',
+            text: 'recent',
+          }),
+        ];
+        fingerprintCase.prepare?.(backendInput, backend);
+
+        const first = await backend.compactHistory({
+          turnId: 'turn-config-compact-1',
+          runId: 'run-1',
+          runtimeContext: history,
+        });
+        fingerprintCase.change?.(backendInput, backend);
+        const repeated = await backend.compactHistory({
+          turnId: 'turn-config-compact-2',
+          runId: 'run-2',
+          runtimeContext: history,
+        });
+
+        assert.equal(calls, fingerprintCase.expectedCalls);
+        assert.deepEqual(first.outcome, {
+          kind: 'failed',
+          reason: 'malformed_summary_missing_section',
+        });
+        assert.deepEqual(repeated.outcome, first.outcome);
+      });
+    }
   });
 
   test('manual compactHistory is a no-op when context budget is disabled', async () => {
