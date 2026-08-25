@@ -59,6 +59,7 @@ interface ActiveTerminal {
   readonly sessionId: string;
   readonly pty: IPty;
   readonly exited: Promise<void>;
+  readonly hasExited: () => boolean;
   revealTimer: ReturnType<typeof setTimeout> | undefined;
   phase: 'connecting' | 'connected';
   revealed: boolean;
@@ -66,6 +67,10 @@ interface ActiveTerminal {
   presentationSuppressed: boolean;
   output: string;
 }
+
+type DesktopRuntimeHostSshProcess = RuntimeHostSshProcess & {
+  readonly hasExited: () => boolean;
+};
 
 const TERMINAL_REVEAL_DELAY_MS = 500;
 const TERMINAL_OUTPUT_MAX = 64 * 1024;
@@ -279,7 +284,7 @@ export function createDesktopRuntimeHostSshTerminal(input: {
     args: readonly string[],
     transformOutput: (data: string) => string = (data) => data,
     successfulExitCompletes = false,
-  ): { readonly process: RuntimeHostSshProcess; readonly terminal: ActiveTerminal } => {
+  ): { readonly process: DesktopRuntimeHostSshProcess; readonly terminal: ActiveTerminal } => {
     if (closed) throw new Error('Runtime Host SSH terminal is closed');
     if (active) throw new Error('Another Runtime Host SSH terminal is already active');
     const sessionId = randomUUID();
@@ -300,10 +305,13 @@ export function createDesktopRuntimeHostSshTerminal(input: {
     }>((resolve) => {
       resolveExit = resolve;
     });
+    let processExited = false;
+    const hasExited = () => processExited;
     const terminal: ActiveTerminal = {
       sessionId,
       pty,
       exited: exited.then(() => undefined),
+      hasExited,
       revealTimer: undefined,
       phase: 'connecting',
       revealed: false,
@@ -346,6 +354,7 @@ export function createDesktopRuntimeHostSshTerminal(input: {
       });
     });
     pty.onExit(({ exitCode, signal }) => {
+      processExited = true;
       if (terminal.revealTimer !== undefined) clearTimeout(terminal.revealTimer);
       if (successfulExitCompletes && exitCode === 0) completePresentation(terminal);
       if (active === terminal) active = undefined;
@@ -379,7 +388,8 @@ export function createDesktopRuntimeHostSshTerminal(input: {
           // The exit event is the authority; a concurrent exit makes kill a no-op.
         }
       },
-    } satisfies RuntimeHostSshProcess;
+      hasExited,
+    } satisfies DesktopRuntimeHostSshProcess;
     return { process, terminal };
   };
   const spawnProcess: RuntimeHostSshProcessFactory = ({ executable, args, interaction }) => {
@@ -878,7 +888,7 @@ async function prepareSetupPackage(
     args: readonly string[],
     transformOutput?: (data: string) => string,
     successfulExitCompletes?: boolean,
-  ) => { readonly process: RuntimeHostSshProcess; readonly terminal: ActiveTerminal },
+  ) => { readonly process: DesktopRuntimeHostSshProcess; readonly terminal: ActiveTerminal },
   signal: AbortSignal | undefined,
   stopGraceMs: number | undefined,
   dismissPresentation: (terminal: ActiveTerminal) => void,
@@ -935,7 +945,7 @@ function remoteDevelopmentArchivePath(principalId: string): string {
 }
 
 async function waitForTerminalProcess(
-  process: RuntimeHostSshProcess,
+  process: DesktopRuntimeHostSshProcess,
   input: {
     readonly signal?: AbortSignal;
     readonly timeoutMs: number;
@@ -978,7 +988,7 @@ async function waitForTerminalProcess(
 }
 
 async function terminateTerminalProcess(
-  process: Pick<RuntimeHostSshProcess, 'pid' | 'exited' | 'kill'>,
+  process: Pick<DesktopRuntimeHostSshProcess, 'pid' | 'exited' | 'kill' | 'hasExited'>,
   graceMs = PROCESS_STOP_GRACE_MS,
   terminateTree: typeof terminateProcessTree = terminateProcessTree,
 ): Promise<void> {
@@ -990,7 +1000,7 @@ async function terminateTerminalProcess(
 }
 
 async function signalTerminalProcess(
-  process: Pick<RuntimeHostSshProcess, 'pid' | 'kill'>,
+  process: Pick<DesktopRuntimeHostSshProcess, 'pid' | 'kill' | 'hasExited'>,
   signal: 'SIGTERM' | 'SIGKILL',
   terminateTree: typeof terminateProcessTree,
 ): Promise<void> {
@@ -999,7 +1009,13 @@ async function signalTerminalProcess(
     fallback();
     return;
   }
-  await terminateTree({ pid: process.pid, signal, fallback });
+  await terminateTree({
+    pid: process.pid,
+    signal,
+    fallback,
+    hasExited: process.hasExited,
+    beforeSignal: () => !process.hasExited(),
+  });
 }
 
 async function settlesWithin(promise: Promise<unknown>, timeoutMs: number): Promise<boolean> {
@@ -1251,6 +1267,7 @@ function terminateActiveTerminal(
     {
       pid: terminal.pty.pid,
       exited: terminal.exited.then(() => ({ code: null, signal: null })),
+      hasExited: terminal.hasExited,
       kill: (signal) => {
         try {
           terminal.pty.kill(signal);

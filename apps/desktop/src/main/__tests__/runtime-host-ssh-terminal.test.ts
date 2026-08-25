@@ -227,6 +227,29 @@ test('force-stops a cancelled setup when SSH ignores graceful termination', asyn
   await harness.terminal.close();
 });
 
+test('does not signal a reused process identity when cancellation races SSH exit', async () => {
+  const harness = createHarness('pending');
+  const controller = new AbortController();
+  const setup = harness.terminal.runSetup(
+    {
+      destination: 'operator@example.com',
+      setupPackage: { kind: 'npm', specifier: 'maka-agent@1.2.3' },
+      principalId: 'desktop:stable-client',
+      signal: controller.signal,
+    },
+    () => undefined,
+  );
+  await waitFor(() => harness.pty.hasDataListener());
+
+  controller.abort();
+  harness.pty.exit(0);
+
+  await assert.rejects(setup, /aborted/u);
+  await Promise.resolve();
+  assert.deepEqual(harness.pty.killSignals, []);
+  await harness.terminal.close();
+});
+
 test('reads a framed service result without projecting it into the SSH terminal', async () => {
   const harness = createHarness('pending');
   const management = harness.terminal.runServiceManagement({
@@ -671,8 +694,10 @@ function createHarness(
     revealDelayMs: 0,
     ...options,
     processStopGraceMs: 1,
-    terminateProcessTree: async ({ pid, signal, fallback }) => {
+    terminateProcessTree: async ({ pid, signal, fallback, hasExited, beforeSignal }) => {
       terminatedProcesses.push({ pid, signal });
+      await Promise.resolve();
+      if (hasExited?.() || beforeSignal?.() === false) return false;
       fallback?.();
       return true;
     },

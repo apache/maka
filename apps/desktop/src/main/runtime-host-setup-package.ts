@@ -92,6 +92,16 @@ export function createRuntimeHostSetupPackageResolver(input: {
     await build.result.catch(() => undefined);
   };
 
+  const acquireBuild = async (signal?: AbortSignal) => {
+    while (true) {
+      if (closed) throw new Error('Runtime Host setup package resolver is closed');
+      const build = developmentBuild;
+      if (!build) return startBuild();
+      if (!build.closing) return build;
+      await waitForPackage(build.closing, signal);
+    }
+  };
+
   return {
     async resolve(signal) {
       if (closed) throw new Error('Runtime Host setup package resolver is closed');
@@ -100,7 +110,7 @@ export function createRuntimeHostSetupPackageResolver(input: {
       const override = input.environment[DEVELOPMENT_ARCHIVE_ENV];
       if (override) return { kind: 'development_archive', path: override };
 
-      const build = developmentBuild ?? startBuild();
+      const build = await acquireBuild(signal);
       build.waiters += 1;
       try {
         return await waitForPackage(build.result, signal);

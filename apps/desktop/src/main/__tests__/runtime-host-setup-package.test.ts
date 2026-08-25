@@ -71,28 +71,56 @@ test('development setup lazily builds one local CLI archive unless explicitly ov
   assert.equal(closes, 1);
 });
 
-test('cancelling the last setup-package waiter stops its shared build', async () => {
+test('cancelling the last waiter closes its build before a new setup starts', async () => {
   const cancelled = new AbortController();
+  let builds = 0;
   let rejectBuild!: (error: Error) => void;
+  let releaseClose!: () => void;
+  let signalClose!: () => void;
   let closes = 0;
+  const closeStarted = new Promise<void>((resolveClose) => {
+    signalClose = resolveClose;
+  });
+  const closeBarrier = new Promise<void>((resolveClose) => {
+    releaseClose = resolveClose;
+  });
   const resolver = createRuntimeHostSetupPackageResolver({
     isPackaged: false,
     appPath: '/workspace/apps/desktop',
     environment: {},
-    startDevelopmentArchiveBuild: () => ({
-      result: new Promise((_resolve, reject) => {
-        rejectBuild = reject;
-      }),
-      close: async () => {
-        closes += 1;
-        rejectBuild(new Error('build stopped'));
-      },
-    }),
+    startDevelopmentArchiveBuild: () => {
+      builds += 1;
+      if (builds > 1) {
+        return { result: Promise.resolve('/workspace/fresh.tgz'), close: async () => undefined };
+      }
+      return {
+        result: new Promise((_resolve, reject) => {
+          rejectBuild = reject;
+        }),
+        close: async () => {
+          closes += 1;
+          signalClose();
+          await closeBarrier;
+          rejectBuild(new Error('build stopped'));
+        },
+      };
+    },
   });
 
-  const pending = resolver.resolve(cancelled.signal);
+  const first = resolver.resolve(cancelled.signal);
   cancelled.abort(new Error('setup cancelled'));
-  await assert.rejects(pending, /setup cancelled/u);
+  await closeStarted;
+  const second = resolver.resolve();
+  await Promise.resolve();
+  assert.equal(builds, 1);
+
+  releaseClose();
+  await assert.rejects(first, /setup cancelled/u);
+  assert.deepEqual(await second, {
+    kind: 'development_archive',
+    path: '/workspace/fresh.tgz',
+  });
+  assert.equal(builds, 2);
   assert.equal(closes, 1);
   await resolver.close();
 });
