@@ -609,7 +609,7 @@ export function SettingsSurface(props: {
     host = selectedRuntimeHost,
   ) {
     if (!host) return;
-    const hostKey = runtimeHostKey(host);
+    const hostKey = runtimeHostSettingsKey(host);
     const key = `${hostKey}:${range}`;
     if (usageKeyRef.current !== key) {
       usageKeyRef.current = key;
@@ -620,20 +620,12 @@ export function SettingsSurface(props: {
     usageReloadTicketRef.current = ticket;
     try {
       const next = await window.maka.settings.usageStats(range, host);
-      if (
-        settingsModalMountedRef.current &&
-        ticket === usageReloadTicketRef.current &&
-        selectedRuntimeHostKeyRef.current === hostKey
-      ) {
+      if (settingsModalMountedRef.current && ticket === usageReloadTicketRef.current) {
         setUsageError(null);
         setUsageStats(next);
       }
     } catch (error) {
-      if (
-        settingsModalMountedRef.current &&
-        ticket === usageReloadTicketRef.current &&
-        selectedRuntimeHostKeyRef.current === hostKey
-      ) {
+      if (settingsModalMountedRef.current && ticket === usageReloadTicketRef.current) {
         const message = settingsActionErrorMessage(error, locale);
         setUsageStats(null);
         setUsageError(message);

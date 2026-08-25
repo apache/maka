@@ -3292,7 +3292,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
   };
   refreshEditorCwd(cwd);
 
-  tui.addInputListener((data) => {
+  tui.addInputListener((data: string) => {
     // Track bracketed pastes before any consuming branch: this must observe
     // every chunk the editor could buffer, regardless of what the rest of the
     // listener decides (#3475 review).

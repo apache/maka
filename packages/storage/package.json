@@ -49,6 +49,7 @@
     "./state-root-composition": "./dist/state-root-composition.js",
     "./storage-writer-composition": "./dist/storage-writer-composition.js",
     "./task-ledger-authority": "./dist/task-ledger-authority.js",
+    "./telemetry-file-schema": "./dist/telemetry-file-schema.js",
     "./usage-stores": "./dist/usage-stores.js",
     "./work-board-store": "./dist/work-board-store.js",
     "./workspace-identity": "./dist/workspace-identity.js",
