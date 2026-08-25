@@ -64,6 +64,7 @@ test('selects a searchable /send target and settles delivery into the transcript
   await selectMailboxTarget(page, '恢复检查', '支付回调恢复检查');
 
   await expect(page.getByText('发送给“支付回调恢复检查”')).toBeVisible();
+  await page.screenshot({ path: testInfo.outputPath('session-mailbox-before-send.png') });
   await composer.fill('请检查回执恢复链路');
   await composer.press('Enter');
 
