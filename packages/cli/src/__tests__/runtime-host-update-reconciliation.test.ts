@@ -208,10 +208,6 @@ describe('managed Runtime Host update reconciliation', () => {
         : undefined,
       'disabled',
     );
-    assert.deepEqual(
-      manualFrame?.kind === 'result' ? manualFrame.operatorCapabilities : undefined,
-      [RUNTIME_HOST_OPERATOR_UPDATE_SCHEDULER_CAPABILITY],
-    );
     assert.equal(
       manualFrame?.kind === 'result' && manualFrame.action === 'reconcile_update'
         ? manualFrame.updateSchedulerState

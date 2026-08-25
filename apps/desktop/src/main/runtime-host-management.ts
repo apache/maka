@@ -20,7 +20,6 @@
 import type { IpcMain } from 'electron';
 import {
   RUNTIME_HOST_OPERATOR_ACCESS_MANAGEMENT_CAPABILITY,
-  RUNTIME_HOST_OPERATOR_UPDATE_SCHEDULER_CAPABILITY,
   isProductReleaseVersion,
   runtimeHostAccessCredentialFingerprint,
   type RuntimeHostManagedUpdatePolicy,
@@ -241,6 +240,25 @@ export function createDesktopRuntimeHostManagement(input: {
     };
   };
 
+  const updateTarget = async (profileIdValue: unknown) => {
+    const profileId = requireProfileId(profileIdValue);
+    const managed = await resolveManagedService(profileId);
+    const transport = managed.profile.transport;
+    if (managed.state !== 'active' || transport.kind !== 'ssh') {
+      throw new Error('This Runtime Host profile is not available for managed updates');
+    }
+    return {
+      profileId,
+      managed,
+      transport,
+      expectedTarget: {
+        serviceId: managed.service.id,
+        rootPath: managed.service.rootPath,
+        rootId: managed.profile.rootId,
+      },
+    };
+  };
+
   const update = async (
     profileIdValue: unknown,
     allowInterruptActiveTasksValue: unknown,
@@ -248,26 +266,16 @@ export function createDesktopRuntimeHostManagement(input: {
     if (typeof allowInterruptActiveTasksValue !== 'boolean') {
       throw new Error('Runtime Host update interruption authority is invalid');
     }
-    const profileId = requireProfileId(profileIdValue);
-    const managed = await resolveManagedService(profileId);
-    if (managed.state !== 'active' || managed.profile.transport.kind !== 'ssh') {
-      throw new Error('This Runtime Host profile is not available for managed updates');
-    }
+    const { profileId, managed, transport, expectedTarget } = await updateTarget(profileIdValue);
     const previousHostEpoch = input.currentHostEpoch(profileId);
     input.sendProgress({ profileId, phase: 'preparing_cli' });
     const setupPackage = await input.resolveUpdatePackage();
     const response = await input.runUpdate(
       {
-        destination: managed.profile.transport.destination,
-        ...(managed.profile.transport.sshPort === undefined
-          ? {}
-          : { sshPort: managed.profile.transport.sshPort }),
+        destination: transport.destination,
+        ...(transport.sshPort === undefined ? {} : { sshPort: transport.sshPort }),
         setupPackage,
-        expectedTarget: {
-          serviceId: managed.service.id,
-          rootPath: managed.service.rootPath,
-          rootId: managed.profile.rootId,
-        },
+        expectedTarget,
         ...(allowInterruptActiveTasksValue ? { allowInterruptActiveTasks: true } : {}),
       },
       (phase) => input.sendProgress({ profileId, phase }),
@@ -297,25 +305,6 @@ export function createDesktopRuntimeHostManagement(input: {
             ) ?? false,
         }
       : response;
-  };
-
-  const updateTarget = async (profileIdValue: unknown) => {
-    const profileId = requireProfileId(profileIdValue);
-    const managed = await resolveManagedService(profileId);
-    const transport = managed.profile.transport;
-    if (managed.state !== 'active' || transport.kind !== 'ssh') {
-      throw new Error('This Runtime Host profile is not available for managed updates');
-    }
-    return {
-      profileId,
-      managed,
-      transport,
-      expectedTarget: {
-        serviceId: managed.service.id,
-        rootPath: managed.service.rootPath,
-        rootId: managed.profile.rootId,
-      },
-    };
   };
 
   const reconnectUpdatedTarget = async (
@@ -363,7 +352,7 @@ export function createDesktopRuntimeHostManagement(input: {
     if (policy && policy.kind !== 'manual') {
       const current = await input.runUpdatePolicy(common);
       if (current.kind === 'error') throw new Error(current.error.message);
-      if (!supportsUpdateScheduler(current)) {
+      if (current.updateSchedulerState === undefined) {
         throw new Error(
           'Update or repair this Runtime Host before enabling automatic updates',
         );
@@ -575,25 +564,14 @@ export function createDesktopRuntimeHostManagement(input: {
   };
 }
 
-function supportsUpdateScheduler(frame: {
-  readonly operatorCapabilities?: readonly string[];
-}): boolean {
-  return frame.operatorCapabilities?.includes(
-    RUNTIME_HOST_OPERATOR_UPDATE_SCHEDULER_CAPABILITY,
-  ) === true;
-}
-
 function projectUpdatePolicy(
   frame: Extract<RuntimeHostServiceManagementFrame, {
     readonly kind: 'result';
     readonly action: 'update_policy' | 'reconcile_update';
   }>,
 ): DesktopRuntimeHostUpdatePolicySnapshot {
-  if (!supportsUpdateScheduler(frame)) {
+  if (frame.updateSchedulerState === undefined) {
     return { ...frame.updatePolicy, schedulingState: 'unsupported' };
-  }
-  if (!frame.updateSchedulerState) {
-    throw new Error('Remote Runtime Host omitted its update scheduler state');
   }
   return { ...frame.updatePolicy, schedulingState: frame.updateSchedulerState };
 }

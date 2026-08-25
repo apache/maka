@@ -31,7 +31,6 @@ import {
   encodeRuntimeHostServiceManagementFrame,
   encodeRuntimeHostSetupFrame,
   runtimeHostAccessCredentialFingerprint,
-  RUNTIME_HOST_OPERATOR_UPDATE_SCHEDULER_CAPABILITY,
   RUNTIME_HOST_SETUP_FRAME_PREFIX,
 } from '@maka/runtime-host/operator';
 import { createDesktopRuntimeHostSshTerminal } from '../runtime-host-ssh-terminal.js';
@@ -397,7 +396,6 @@ test('uses the managed operator for update policy and one-shot reconciliation', 
     schemaVersion: 1,
     kind: 'result',
     action: 'update_policy',
-    operatorCapabilities: [RUNTIME_HOST_OPERATOR_UPDATE_SCHEDULER_CAPABILITY],
     updateSchedulerState: 'ready',
     updatePolicy: {
       policy: { kind: 'channel', channel: 'latest' },
@@ -435,7 +433,6 @@ test('uses the managed operator for update policy and one-shot reconciliation', 
     schemaVersion: 1,
     kind: 'result',
     action: 'reconcile_update',
-    operatorCapabilities: [RUNTIME_HOST_OPERATOR_UPDATE_SCHEDULER_CAPABILITY],
     updateSchedulerState: 'ready',
     updatePolicy: {
       policy: { kind: 'channel', channel: 'latest' },

@@ -31,14 +31,14 @@ test('development setup lazily builds one local CLI archive unless explicitly ov
     isPackaged: false,
     appPath: join(repoRoot, 'apps', 'desktop'),
     environment: {},
-    buildDevelopmentArchive: async (resolvedRoot) => {
+    startDevelopmentArchiveBuild: (resolvedRoot) => {
       builds += 1;
       assert.equal(resolvedRoot, repoRoot);
-      return archive;
+      return { result: Promise.resolve(archive), close: async () => undefined };
     },
   });
 
-  assert.deepEqual(await Promise.all([resolvePackage(), resolvePackage()]), [
+  assert.deepEqual(await Promise.all([resolvePackage.resolve(), resolvePackage.resolve()]), [
     {
       kind: 'development_archive',
       path: archive,
@@ -55,10 +55,37 @@ test('development setup lazily builds one local CLI archive unless explicitly ov
     isPackaged: false,
     appPath: join(repoRoot, 'apps', 'desktop'),
     environment: { MAKA_RUNTIME_HOST_SETUP_ARCHIVE: override },
-    buildDevelopmentArchive: async () => assert.fail('override must bypass the local build'),
+    startDevelopmentArchiveBuild: () => assert.fail('override must bypass the local build'),
   });
-  assert.deepEqual(await resolveOverride(), {
+  assert.deepEqual(await resolveOverride.resolve(), {
     kind: 'development_archive',
     path: override,
   });
+  await Promise.all([resolvePackage.close(), resolveOverride.close()]);
+});
+
+test('cancelling the last setup-package waiter stops its shared build', async () => {
+  const cancelled = new AbortController();
+  let rejectBuild!: (error: Error) => void;
+  let closes = 0;
+  const resolver = createRuntimeHostSetupPackageResolver({
+    isPackaged: false,
+    appPath: '/workspace/apps/desktop',
+    environment: {},
+    startDevelopmentArchiveBuild: () => ({
+      result: new Promise((_resolve, reject) => {
+        rejectBuild = reject;
+      }),
+      close: async () => {
+        closes += 1;
+        rejectBuild(new Error('build stopped'));
+      },
+    }),
+  });
+
+  const pending = resolver.resolve(cancelled.signal);
+  cancelled.abort(new Error('setup cancelled'));
+  await assert.rejects(pending, /setup cancelled/u);
+  assert.equal(closes, 1);
+  await resolver.close();
 });

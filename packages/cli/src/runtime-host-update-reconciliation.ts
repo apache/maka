@@ -25,7 +25,6 @@ import {
   RUNTIME_HOST_OPERATOR_UPDATE_SCHEDULER_CAPABILITY,
   RUNTIME_HOST_SERVICE_ERROR_CODE_MAX_BYTES,
   RUNTIME_HOST_SERVICE_ERROR_MESSAGE_MAX_BYTES,
-  type RuntimeHostOperatorCapability,
   type RuntimeHostManagedUpdatePolicy,
   type RuntimeHostServiceManagementFrame,
   type RuntimeHostUpdateSchedulerState,
@@ -183,7 +182,7 @@ export async function runManagedRuntimeHostUpdateReconcileCli(
           schemaVersion: 1,
           kind: 'result',
           action: 'reconcile_update',
-          ...requestedUpdateSchedulerCapability(updateSchedulerState),
+          ...requestedUpdateSchedulerState(updateSchedulerState),
           updatePolicy: { policy: { kind: 'manual' } },
           reconciliation: { kind: 'disabled' },
         },
@@ -206,7 +205,7 @@ export async function runManagedRuntimeHostUpdateReconcileCli(
           schemaVersion: 1,
           kind: 'result',
           action: 'reconcile_update',
-          ...requestedUpdateSchedulerCapability(updateSchedulerState),
+          ...requestedUpdateSchedulerState(updateSchedulerState),
           updatePolicy,
           service: selection.service,
           reconciliation: {
@@ -347,7 +346,7 @@ function updatePolicyResult(
     schemaVersion: 1,
     kind: 'result',
     action: 'update_policy',
-    ...requestedUpdateSchedulerCapability(updateSchedulerState),
+    ...requestedUpdateSchedulerState(updateSchedulerState),
     updatePolicy: policyResult(record),
   };
 }
@@ -381,7 +380,7 @@ function reconcileFrame(
     schemaVersion: 1,
     kind: 'result',
     action: 'reconcile_update',
-    ...requestedUpdateSchedulerCapability(
+    ...requestedUpdateSchedulerState(
       frame.update.kind === 'updated' ||
         frame.update.kind === 'repaired' ||
         frame.update.kind === 'already_current'
@@ -394,16 +393,12 @@ function reconcileFrame(
   };
 }
 
-function requestedUpdateSchedulerCapability(
-  updateSchedulerState: RuntimeHostUpdateSchedulerState,
-): {
-  readonly operatorCapabilities?: RuntimeHostOperatorCapability[];
+function requestedUpdateSchedulerState(updateSchedulerState: RuntimeHostUpdateSchedulerState): {
   readonly updateSchedulerState?: RuntimeHostUpdateSchedulerState;
 } {
   return process.env[RUNTIME_HOST_OPERATOR_CAPABILITY_REQUEST_ENV] ===
     RUNTIME_HOST_OPERATOR_UPDATE_SCHEDULER_CAPABILITY
     ? {
-        operatorCapabilities: [RUNTIME_HOST_OPERATOR_UPDATE_SCHEDULER_CAPABILITY],
         updateSchedulerState,
       }
     : {};

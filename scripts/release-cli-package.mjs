@@ -39,6 +39,7 @@ import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'nod
 import { npmSpawnOptions } from './npm-spawn.mjs';
 import { validateCliReleaseArtifactMetrics } from './release-cli-artifact-policy.mjs';
 import {
+  isCurrentDevelopmentJavaScript,
   isMakaDevelopmentArtifact,
   isThirdPartyDevelopmentArtifact,
   orderWorkspaceBuilds,
@@ -67,6 +68,9 @@ const internalPackageNames = workspacePackages
   .filter((name) => name !== 'maka-agent');
 const internalPackageSet = new Set(internalPackageNames);
 const buildOrder = orderWorkspaceBuilds(workspacePackages);
+const developmentGeneratedFiles = new Map([
+  ['@maka/runtime', new Set(['workers/filesystem-worker.js'])],
+]);
 const strippedInstallScripts = new Map([
   // The clean repository install has already produced every generated file and
   // platform prebuild copied below. Do not run advisory postinstalls on an end
@@ -380,16 +384,24 @@ function copyInternalPackage(source, destination) {
   );
   writeFileSync(join(destination, 'package.json'), `${JSON.stringify(releaseManifest, null, 2)}\n`);
   for (const releaseFile of resolveWorkspaceReleaseFiles(source, manifest)) {
-    if (releaseFile === 'dist') copyRuntimeDist(source, destination);
+    if (releaseFile === 'dist') copyRuntimeDist(source, destination, manifest.name);
     else copyDeclaredFile(source, destination, releaseFile);
   }
 }
 
-function copyRuntimeDist(source, destination) {
+function copyRuntimeDist(source, destination, packageName = 'maka-agent') {
   const sourceDist = join(source, 'dist');
   if (!existsSync(sourceDist)) throw new Error(`Missing build output: ${sourceDist}`);
   copyTreeFiles(sourceDist, join(destination, 'dist'), (relativePath) => {
-    return !isMakaDevelopmentArtifact(join('dist', relativePath));
+    if (isMakaDevelopmentArtifact(join('dist', relativePath))) return false;
+    return (
+      !developmentBuild ||
+      isCurrentDevelopmentJavaScript(
+        source,
+        relativePath,
+        developmentGeneratedFiles.get(packageName),
+      )
+    );
   });
 }
 

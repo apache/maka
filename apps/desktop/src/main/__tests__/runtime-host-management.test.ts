@@ -20,7 +20,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import {
-  RUNTIME_HOST_OPERATOR_UPDATE_SCHEDULER_CAPABILITY,
   runtimeHostAccessCredentialFingerprint,
   type RuntimeHostServiceManagementFrame,
 } from '@maka/runtime-host/operator';
@@ -497,7 +496,6 @@ test('manages one Host update policy and reconciles it through the bound operato
         schemaVersion: 1,
         kind: 'result',
         action: 'update_policy',
-        operatorCapabilities: [RUNTIME_HOST_OPERATOR_UPDATE_SCHEDULER_CAPABILITY],
         updateSchedulerState: 'ready',
         updatePolicy: {
           policy,
@@ -512,7 +510,6 @@ test('manages one Host update policy and reconciles it through the bound operato
         schemaVersion: 1,
         kind: 'result',
         action: 'reconcile_update',
-        operatorCapabilities: [RUNTIME_HOST_OPERATOR_UPDATE_SCHEDULER_CAPABILITY],
         updateSchedulerState: 'ready',
         updatePolicy: {
           policy: { kind: 'channel', channel: 'latest' },

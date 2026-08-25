@@ -259,25 +259,6 @@ const SERVICE_ERROR_SCHEMA = z
   })
   .strict();
 
-function requireSchedulerStateWithCapability(
-  frame: {
-    readonly operatorCapabilities?: readonly RuntimeHostOperatorCapability[];
-    readonly updateSchedulerState?: RuntimeHostUpdateSchedulerState;
-  },
-  context: z.RefinementCtx,
-): void {
-  const exposesScheduler =
-    frame.operatorCapabilities?.includes(RUNTIME_HOST_OPERATOR_UPDATE_SCHEDULER_CAPABILITY) ===
-    true;
-  if (exposesScheduler !== (frame.updateSchedulerState !== undefined)) {
-    context.addIssue({
-      code: 'custom',
-      path: ['updateSchedulerState'],
-      message: 'Update scheduler capability and state must be projected together',
-    });
-  }
-}
-
 const SERVICE_MANAGEMENT_FRAME_SCHEMA = z.union([
   z
     .object({
@@ -342,18 +323,15 @@ const SERVICE_MANAGEMENT_FRAME_SCHEMA = z.union([
       kind: z.literal('result'),
       action: z.literal('update_policy'),
       updatePolicy: UPDATE_POLICY_RESULT_SCHEMA,
-      operatorCapabilities: z.array(z.enum(OPERATOR_CAPABILITIES)).max(16).optional(),
       updateSchedulerState: z.enum(UPDATE_SCHEDULER_STATES).optional(),
     })
-    .strict()
-    .superRefine(requireSchedulerStateWithCapability),
+    .strict(),
   z
     .object({
       schemaVersion: z.literal(1),
       kind: z.literal('result'),
       action: z.literal('reconcile_update'),
       updatePolicy: UPDATE_POLICY_RESULT_SCHEMA,
-      operatorCapabilities: z.array(z.enum(OPERATOR_CAPABILITIES)).max(16).optional(),
       updateSchedulerState: z.enum(UPDATE_SCHEDULER_STATES).optional(),
       service: SERVICE_SUMMARY_SCHEMA.optional(),
       reconciliation: z.discriminatedUnion('kind', [
@@ -375,7 +353,6 @@ const SERVICE_MANAGEMENT_FRAME_SCHEMA = z.union([
     })
     .strict()
     .superRefine((frame, context) => {
-      requireSchedulerStateWithCapability(frame, context);
       if ((frame.reconciliation.kind === 'disabled') !== (frame.service === undefined)) {
         context.addIssue({
           code: 'custom',

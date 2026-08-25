@@ -117,7 +117,7 @@ export interface DesktopRuntimeHostSshUpdatePolicyInput {
   readonly sshPort?: number;
   readonly operatorPath: string;
   readonly policy?: RuntimeHostManagedUpdatePolicy;
-  readonly expectedTarget?: DesktopRuntimeHostSshManagementInput['expectedTarget'];
+  readonly expectedTarget: DesktopRuntimeHostSshManagementInput['expectedTarget'];
   readonly signal?: AbortSignal;
 }
 
@@ -1064,7 +1064,7 @@ function runtimeHostUpdatePolicyRemoteCommand(
     'update-policy',
     '--framed',
     ...target,
-    ...(input.expectedTarget ? managedServiceTargetArgs(input.expectedTarget) : []),
+    ...managedServiceTargetArgs(input.expectedTarget),
   ].map(quotePosix).join(' ');
   const invocation =
     `${RUNTIME_HOST_OPERATOR_CAPABILITY_REQUEST_ENV}=` +

@@ -373,6 +373,11 @@ const runtimeHostSshTerminal = createDesktopRuntimeHostSshTerminal({
   ipcMain,
   send: (channel, event) => mainWindowController.send(channel, event),
 });
+const runtimeHostSetupPackage = createRuntimeHostSetupPackageResolver({
+  isPackaged: app.isPackaged,
+  appPath: app.getAppPath(),
+  environment: process.env,
+});
 const native = assembleDesktopNativeCapabilities({
   isComputerUseRealModelE2e,
   locale: desktopLocale,
@@ -438,7 +443,7 @@ const runtimeHostOnboarding = createDesktopRuntimeHostOnboarding({
   clientInstanceId: runtimeHostClientInstanceId,
   profiles: runtimeHostProfileService,
   runSetup: runtimeHostSshTerminal.runSetup,
-  resolveSetupPackage: runtimeHostSetupPackage,
+  resolveSetupPackage: runtimeHostSetupPackage.resolve,
   send: (snapshot) =>
     mainWindowController.send("runtime-host-onboarding:changed", snapshot),
 });
@@ -449,7 +454,7 @@ const runtimeHostManagement = createDesktopRuntimeHostManagement({
   runUpdate: runtimeHostSshTerminal.runUpdate,
   runUpdatePolicy: runtimeHostSshTerminal.runUpdatePolicy,
   runUpdateReconciliation: runtimeHostSshTerminal.runUpdateReconciliation,
-  resolveUpdatePackage: runtimeHostSetupPackage,
+  resolveUpdatePackage: runtimeHostSetupPackage.resolve,
   currentHostEpoch: (profileId) =>
     runtimeHostManager?.current(profileId)?.candidate?.client.hostEpoch,
   awaitUpdatedConnection: async (
@@ -494,17 +499,6 @@ const runtimeHostManagement = createDesktopRuntimeHostManagement({
   runAccessManagement: runtimeHostSshTerminal.runAccessManagement,
   cleanupManagedDeployment: runtimeHostSshTerminal.cleanupManagedDeployment,
 });
-
-let setupPackageResolver: ReturnType<typeof createRuntimeHostSetupPackageResolver> | undefined;
-
-function runtimeHostSetupPackage(signal?: AbortSignal) {
-  setupPackageResolver ??= createRuntimeHostSetupPackageResolver({
-    isPackaged: app.isPackaged,
-    appPath: app.getAppPath(),
-    environment: process.env,
-  });
-  return setupPackageResolver(signal);
-}
 const defaultRuntimeHostRecovery = createRuntimeHostDefaultRecovery({
   defaultProfileId: () =>
     runtimeHostManager?.defaultProfileId() ??
@@ -1586,6 +1580,7 @@ async function closeRuntimeHostDesktop(): Promise<void> {
     Promise.resolve().then(() => runtimeHostManagement.close()),
     runtimeHostManager?.close(),
     runtimeHostOnboarding.close(),
+    runtimeHostSetupPackage.close(),
     Promise.resolve().then(() => workBoardIpc.close()),
     runtimeHostSshTerminal.close(),
     botRegistry.stopAll(),
