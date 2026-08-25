@@ -29,16 +29,9 @@ export interface WorkHubCoordinationHostAuthority {
   readonly isCurrent: () => boolean;
 }
 
-type WorkHubDesktopSessionSourceBridge = Omit<WorkHubDesktopSessionBridge, 'send'> & {
-  send(
-    sessionId: string,
-    command: { type: 'send'; turnId: string; text: string },
-  ): Promise<unknown>;
-};
-
 /** Restricts the transitional WorkHub router to the Coordination Session's Host. */
 export function scopeWorkHubSessionsToCoordinationHost(
-  sessions: WorkHubDesktopSessionSourceBridge,
+  sessions: WorkHubDesktopSessionBridge,
   coordination: WorkHubCoordinationHostAuthority,
   createOnCoordinationHost: WorkHubCoordinationHostSessionCreator,
 ): WorkHubDesktopSessionBridge {
@@ -87,27 +80,7 @@ export function scopeWorkHubSessionsToCoordinationHost(
     },
     async send(sessionId: string, command: { type: 'send'; turnId: string; text: string }) {
       requireTargetHost(sessionId);
-      const result = await sessions.send(sessionId, command);
-      if (!result || typeof result !== 'object' || !('ok' in result)) {
-        throw new Error('WorkHub exact Turn send returned an invalid result');
-      }
-      if (result.ok === false && 'reason' in result && typeof result.reason === 'string') {
-        return { ok: false as const, reason: result.reason };
-      }
-      if (
-        result.ok === true &&
-        !('disposition' in result) &&
-        'turnId' in result &&
-        typeof result.turnId === 'string' &&
-        (!('steered' in result) || result.steered === true)
-      ) {
-        return {
-          ok: true as const,
-          turnId: result.turnId,
-          ...('steered' in result ? { steered: true as const } : {}),
-        };
-      }
-      throw new Error('WorkHub exact Turn send returned an ordinary message admission');
+      return sessions.send(sessionId, command);
     },
     async stop(
       sessionId: string,

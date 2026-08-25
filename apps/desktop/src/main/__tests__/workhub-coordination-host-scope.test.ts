@@ -122,31 +122,6 @@ test('WorkHub candidates follow the resolved Coordination Session Host only', as
   stop();
 });
 
-test('WorkHub rejects an ordinary message admission at its exact Turn adapter', async () => {
-  const sessionId = desktopSessionKey({ hostId: 'host-a', sessionId: 'ordinary-a' });
-  const sessions = scopeWorkHubSessionsToCoordinationHost(
-    {
-      list: async () => [ordinarySession(sessionId)],
-      listTurns: async () => [],
-      create: async () => ordinarySession(sessionId),
-      send: async () => ({
-        ok: true,
-        disposition: 'steering',
-        messageId: 'message-1',
-      }),
-      stop: async () => undefined,
-      subscribeChanges: () => () => undefined,
-    },
-    { sessionId, isCurrent: () => true },
-    async () => ordinarySession(sessionId),
-  );
-
-  await assert.rejects(
-    sessions.send(sessionId, { type: 'send', turnId: 'turn-1', text: 'coordinate' }),
-    /ordinary message admission/,
-  );
-});
-
 function ordinarySession(id: string): Awaited<ReturnType<WorkHubDesktopSessionBridge['list']>>[number] {
   return {
     id,

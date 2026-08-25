@@ -119,13 +119,7 @@ export function createDesktopWorkbarServices(
         bridge.sessions.cleanupSessionCopy(sessionId),
       abandonSessionCopy: (sourceSessionId, copyId) =>
         bridge.sessions.abandonSessionCopy(sourceSessionId, copyId),
-      send: async (sessionId, command) => {
-        const result = await bridge.sessions.send(sessionId, command);
-        if (result.ok && 'disposition' in result) {
-          throw new Error('Side Conversation send crossed the ordinary message adapter');
-        }
-        return result;
-      },
+      send: (sessionId, command) => bridge.sessions.send(sessionId, command),
       stop: (sessionId, target) =>
         bridge.sessions.stop(
           sessionId,

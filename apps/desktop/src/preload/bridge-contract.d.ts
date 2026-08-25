@@ -801,25 +801,22 @@ export interface MakaBridge {
       completeHostIds: string[];
     }>;
     create(input?: CreateSessionRequestInput): Promise<DesktopSessionSummary>;
-    send(
+    submitMessage(
       sessionId: string,
-      command:
-        | SessionCommand
-          | {
-            type: 'send';
-            messageId?: string;
-            turnId?: string;
-            text: string;
-            displayText?: string;
-            skillIds?: string[];
-            attachmentItems?: RendererIngestInput[];
-            retainedAttachments?: import('@maka/core/events').AttachmentRef[];
-            turnOrchestration?: TurnOrchestration;
-            quotes?: import('@maka/core/events').QuoteRef[];
-            workspaceFileReferences?: Array<
-              Pick<import('@maka/core/events').InlineReference, 'value' | 'start'>
-            >;
-          },
+      command: {
+        type: 'send';
+        messageId: string;
+        text: string;
+        displayText?: string;
+        skillIds?: string[];
+        attachmentItems?: RendererIngestInput[];
+        retainedAttachments?: import('@maka/core/events').AttachmentRef[];
+        turnOrchestration?: never;
+        quotes?: import('@maka/core/events').QuoteRef[];
+        workspaceFileReferences?: Array<
+          Pick<import('@maka/core/events').InlineReference, 'value' | 'start'>
+        >;
+      },
     ): Promise<
       | {
           ok: true;
@@ -830,6 +827,35 @@ export interface MakaBridge {
           inlineReferences: import('@maka/core/events').InlineReference[];
           skillInvocation: import('@maka/runtime/skill-invocation').SkillInvocationResult;
         }
+      | {
+          ok: false;
+          reason: 'skill_invocation_failed';
+          skillInvocation: import('@maka/runtime/skill-invocation').SkillInvocationResult;
+        }
+      | {
+          ok: false;
+          reason: 'outcome_unknown';
+          messageId: string;
+          skillInvocation: import('@maka/runtime/skill-invocation').SkillInvocationResult;
+        }
+    >;
+    send(
+      sessionId: string,
+      command: {
+        type: 'send';
+        turnId: string;
+        text: string;
+        displayText?: string;
+        skillIds?: string[];
+        attachmentItems?: RendererIngestInput[];
+        retainedAttachments?: import('@maka/core/events').AttachmentRef[];
+        turnOrchestration?: TurnOrchestration;
+        quotes?: import('@maka/core/events').QuoteRef[];
+        workspaceFileReferences?: Array<
+          Pick<import('@maka/core/events').InlineReference, 'value' | 'start'>
+        >;
+      },
+    ): Promise<
       | {
           ok: true;
           turnId: string;

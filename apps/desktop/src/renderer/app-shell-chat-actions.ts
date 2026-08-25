@@ -388,12 +388,10 @@ export function createAppShellChatActions(deps: {
           pending && pending.length > 0
             ? retainedAttachmentRefs(pending)
             : undefined;
-        const sendResult = await window.maka.sessions.send(session.id, {
-          type: 'send',
-          ...(options.turnOrchestration ? { turnId: messageId } : { messageId }),
+        const sendCommand = {
+          type: 'send' as const,
           text,
           ...(options.displayText ? { displayText: options.displayText } : {}),
-          ...(options.turnOrchestration ? { turnOrchestration: options.turnOrchestration } : {}),
           ...(attachmentItems && attachmentItems.length > 0 ? { attachmentItems } : {}),
           ...(retainedAttachments && retainedAttachments.length > 0
             ? { retainedAttachments }
@@ -402,7 +400,17 @@ export function createAppShellChatActions(deps: {
           ...(options.workspaceFileReferences && options.workspaceFileReferences.length > 0
             ? { workspaceFileReferences: [...options.workspaceFileReferences] }
             : {}),
-        });
+        };
+        const sendResult = options.turnOrchestration
+          ? await window.maka.sessions.send(session.id, {
+              ...sendCommand,
+              turnId: messageId,
+              turnOrchestration: options.turnOrchestration,
+            })
+          : await window.maka.sessions.submitMessage(session.id, {
+              ...sendCommand,
+              messageId,
+            });
         if (!sendResult.ok) {
           if (sendResult.reason === 'outcome_unknown') {
             unsentSessionId = undefined;
@@ -494,12 +502,10 @@ export function createAppShellChatActions(deps: {
         pending && pending.length > 0
           ? retainedAttachmentRefs(pending)
           : undefined;
-      const sendResult = await window.maka.sessions.send(sessionId, {
-        type: 'send',
-        ...(options.turnOrchestration ? { turnId: messageId } : { messageId }),
+      const sendCommand = {
+        type: 'send' as const,
         text,
         ...(options.displayText ? { displayText: options.displayText } : {}),
-        ...(options.turnOrchestration ? { turnOrchestration: options.turnOrchestration } : {}),
         ...(attachmentItems && attachmentItems.length > 0 ? { attachmentItems } : {}),
         ...(retainedAttachments && retainedAttachments.length > 0
           ? { retainedAttachments }
@@ -508,7 +514,17 @@ export function createAppShellChatActions(deps: {
         ...(options.workspaceFileReferences && options.workspaceFileReferences.length > 0
           ? { workspaceFileReferences: [...options.workspaceFileReferences] }
           : {}),
-      });
+      };
+      const sendResult = options.turnOrchestration
+        ? await window.maka.sessions.send(sessionId, {
+            ...sendCommand,
+            turnId: messageId,
+            turnOrchestration: options.turnOrchestration,
+          })
+        : await window.maka.sessions.submitMessage(sessionId, {
+            ...sendCommand,
+            messageId,
+          });
       if (!sendResult.ok) {
         if (sendResult.reason === 'outcome_unknown') return true;
         removeOptimisticUserMessage(sessionId, messageId);

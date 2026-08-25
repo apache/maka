@@ -854,6 +854,47 @@ async function createDesktopSessionOnScope(
   return projectSessionSummary(scope, session);
 }
 
+function sendDesktopSessionCommand(
+  sessionId: string,
+  command: Parameters<MakaBridge['sessions']['submitMessage']>[1],
+): ReturnType<MakaBridge['sessions']['submitMessage']>;
+function sendDesktopSessionCommand(
+  sessionId: string,
+  command: Parameters<MakaBridge['sessions']['send']>[1],
+): ReturnType<MakaBridge['sessions']['send']>;
+async function sendDesktopSessionCommand(
+  sessionId: string,
+  command:
+    | Parameters<MakaBridge['sessions']['submitMessage']>[1]
+    | Parameters<MakaBridge['sessions']['send']>[1],
+): Promise<
+  | Awaited<ReturnType<MakaBridge['sessions']['submitMessage']>>
+  | Awaited<ReturnType<MakaBridge['sessions']['send']>>
+> {
+  const session = await runtimeHostSessionRef(sessionId);
+  const send = async (input: SessionCommand | Record<string, unknown>) => {
+    const result = (await ipcRenderer.invoke(
+      'sessions:send',
+      session.scope,
+      session.sessionId,
+      input,
+    )) as
+      | Awaited<ReturnType<MakaBridge['sessions']['submitMessage']>>
+      | Awaited<ReturnType<MakaBridge['sessions']['send']>>;
+    return result.ok
+      ? {
+          ...result,
+          attachments: projectDesktopAttachmentRefs(session.scope, result.attachments),
+        }
+      : result;
+  };
+  if (command.type === 'send' && 'attachmentItems' in command && command.attachmentItems) {
+    const encoded = await encodeIngestItems(command.attachmentItems as RendererIngestInput[]);
+    return send({ ...command, attachmentItems: encoded });
+  }
+  return send(command);
+}
+
 function sendActiveRuntimeHost(channel: string, ...args: unknown[]): void {
   void activeRuntimeHostRef()
     .then((scope) => ipcRenderer.send(channel, scope, ...args))
@@ -1644,75 +1685,11 @@ const makaBridge = {
       const scope = await activeRuntimeHostRef();
       return createDesktopSessionOnScope(scope, input);
     },
-    async send(
-      sessionId: string,
-      command:
-        | SessionCommand
-          | {
-            type: 'send';
-            messageId?: string;
-            turnId?: string;
-            text: string;
-            displayText?: string;
-            skillIds?: string[];
-            attachmentItems?: RendererIngestInput[];
-            retainedAttachments?: AttachmentRef[];
-            turnOrchestration?: TurnOrchestration;
-            quotes?: QuoteRef[];
-            workspaceFileReferences?: Array<Pick<InlineReference, 'value' | 'start'>>;
-          },
-    ): Promise<
-      | {
-          ok: true;
-          disposition: 'turn_started' | 'steering' | 'followup';
-          messageId: string;
-          turnId?: string;
-          attachments: AttachmentRef[];
-          inlineReferences: InlineReference[];
-          skillInvocation: import('@maka/runtime/skill-invocation').SkillInvocationResult;
-        }
-      | {
-          ok: true;
-          turnId: string;
-          attachments: AttachmentRef[];
-          inlineReferences: InlineReference[];
-          skillInvocation: import('@maka/runtime/skill-invocation').SkillInvocationResult;
-        }
-      | {
-          ok: false;
-          reason: 'skill_invocation_failed';
-          skillInvocation: import('@maka/runtime/skill-invocation').SkillInvocationResult;
-        }
-      | {
-          ok: false;
-          reason: 'outcome_unknown';
-          messageId: string;
-          skillInvocation: import('@maka/runtime/skill-invocation').SkillInvocationResult;
-        }
-    > {
-      const session = await runtimeHostSessionRef(sessionId);
-      const send = async (input: SessionCommand | Record<string, unknown>) => {
-        const result = await ipcRenderer.invoke(
-          'sessions:send',
-          session.scope,
-          session.sessionId,
-          input,
-        ) as Awaited<ReturnType<MakaBridge['sessions']['send']>>;
-        return result.ok
-          ? {
-              ...result,
-              attachments: projectDesktopAttachmentRefs(session.scope, result.attachments),
-            }
-          : result;
-      };
-      if (command.type === 'send' && 'attachmentItems' in command && command.attachmentItems) {
-        const encoded = await encodeIngestItems(command.attachmentItems as RendererIngestInput[]);
-        return send({
-          ...command,
-          attachmentItems: encoded,
-        });
-      }
-      return send(command);
+    submitMessage(sessionId, command) {
+      return sendDesktopSessionCommand(sessionId, command);
+    },
+    send(sessionId, command) {
+      return sendDesktopSessionCommand(sessionId, command);
     },
     compact(sessionId: string): Promise<OperationOutput<'context.compact'>> {
       return invokeSessionRuntimeHost('sessions:compact', sessionId);
