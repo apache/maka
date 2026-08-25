@@ -23,7 +23,7 @@ import type {
   McpServerConfig,
   McpServerStatus,
 } from '@maka/core/mcp';
-import { isMcpStdioConfig, resolveMcpRemoteProtocolPreference } from '@maka/core/mcp';
+import { isMcpStdioConfig, resolveMcpProtocolPreference } from '@maka/core/mcp';
 import type { McpCopy } from './locales/mcp-copy.js';
 import { formatCommandLine, parseCommandLine } from './mcp-command-line.js';
 
@@ -79,7 +79,7 @@ export function mcpDraftFromConfig(id: string, config: McpServerConfig): McpEdit
     transport: config.transport ?? 'auto',
     // An omitted preference is the compatibility-preserving legacy posture,
     // not the default for a newly-authored remote entry.
-    protocol: resolveMcpRemoteProtocolPreference(config),
+    protocol: resolveMcpProtocolPreference(config),
     headers: formatMap(config.headers),
     ...(config.oauth ? { oauth: config.oauth } : {}),
   };

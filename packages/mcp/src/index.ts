@@ -46,7 +46,7 @@ import {
 import {
   isMcpStdioConfig,
   isNonLoopbackCleartextHttp,
-  resolveMcpRemoteProtocolPreference,
+  resolveMcpProtocolPreference,
   type McpBoundTool,
   type McpCallResult,
   type McpConfigFile,
@@ -1148,7 +1148,7 @@ export class McpClientManager {
     }
     const remoteConfig: McpRemoteServerConfig = entry.config;
     const requested = remoteConfig.transport ?? 'auto';
-    const preference = resolveMcpRemoteProtocolPreference(remoteConfig);
+    const preference = resolveMcpProtocolPreference(remoteConfig);
     if (requested === 'sse' && preference !== 'legacy') {
       throw new Error(`MCP legacy SSE transport does not support protocol ${preference}`);
     }
@@ -2154,7 +2154,7 @@ function shouldFallbackToLegacySse(options: {
   const { remoteConfig, error, signal, producedProtocolEvidence } = options;
   return (
     (remoteConfig.transport ?? 'auto') === 'auto' &&
-    resolveMcpRemoteProtocolPreference(remoteConfig) !== '2026-07-28' &&
+    resolveMcpProtocolPreference(remoteConfig) !== '2026-07-28' &&
     !producedProtocolEvidence &&
     !signal.aborted &&
     SdkHttpError.isInstance(error) &&

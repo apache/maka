@@ -36,7 +36,12 @@
 // scroll — the same contract as the Skills page (#2236).
 
 import { useEffect, useMemo, useRef, useState } from 'react';
-import type { McpConfigFile, McpServerConfig, McpServerStatus } from '@maka/core/mcp';
+import type {
+  McpConfigFile,
+  McpConfigImportResult,
+  McpServerConfig,
+  McpServerStatus,
+} from '@maka/core/mcp';
 import { MCP_CONFIG_VERSION, isMcpStdioConfig } from '@maka/core/mcp';
 import {
   Banner,
@@ -94,7 +99,6 @@ import {
 } from '@maka/ui/icons';
 import { getMcpCatalog, catalogEntryMatches, type McpCatalogEntry } from './mcp-catalog';
 import { McpBrandMark, hasMcpBrandMark } from './mcp-brand-marks';
-import { parseMcpImport } from './mcp-import';
 import {
   createEmptyMcpDraft,
   mcpConfigFromDraft,
@@ -368,29 +372,20 @@ export function McpPage(props: { hubHeader?: ModuleHubHeader }) {
   async function importJson(event: React.FormEvent) {
     event.preventDefault();
     if (!editor || editor.mode !== 'json') return;
-    let imported: McpConfigFile;
-    try {
-      imported = parseMcpImport(editor.source, locale);
-    } catch (error) {
-      if (mounted.current) toast.error(copy.errors.import, settingsActionErrorMessage(error, locale));
-      return;
-    }
     setBusy('import');
     try {
       const next = await runOnDefaultRuntimeHost((host) =>
-        window.maka.mcp.setConfig(
-          {
-            version: MCP_CONFIG_VERSION,
-            mcpServers: { ...config.mcpServers, ...imported.mcpServers },
-          },
-          host,
-        ),
+        window.maka.mcp.importConfig(editor.source, host),
       );
       if (!mounted.current) return;
-      setConfig(next.value);
+      if (next.value.status === 'invalid') {
+        toast.error(copy.errors.import, mcpImportFailureMessage(next.value, copy));
+        return;
+      }
+      setConfig(next.value.config);
       closeEditor();
       switchTab('installed');
-      toast.success(copy.toast.imported, copy.toast.importedDetail(Object.keys(imported.mcpServers).length));
+      toast.success(copy.toast.imported, copy.toast.importedDetail(next.value.importedCount));
     } catch (error) {
       if (mounted.current) {
         reportRuntimeHostError(
@@ -776,6 +771,24 @@ export function McpPage(props: { hubHeader?: ModuleHubHeader }) {
       )}
     </section>
   );
+}
+
+function mcpImportFailureMessage(
+  result: Extract<McpConfigImportResult, { status: 'invalid' }>,
+  copy: McpCopy,
+): string {
+  switch (result.reason) {
+    case 'invalid-json':
+      return copy.errors.importJson;
+    case 'not-object':
+      return copy.errors.importObject;
+    case 'unsupported-version':
+      return copy.errors.importVersion(result.version ?? '?');
+    case 'missing-servers':
+      return copy.errors.importServersObject;
+    case 'protocol-version':
+      return copy.errors.importProtocolVersion;
+  }
 }
 
 function McpInstallButton(props: {

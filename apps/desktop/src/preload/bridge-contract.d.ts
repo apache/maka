@@ -158,6 +158,7 @@ import type { Result } from '@maka/core/result';
 import type { CreateSessionRequestInput } from '@maka/core/runtime-inputs';
 import type {
   McpConfigAddResult,
+  McpConfigImportResult,
   McpConfigFile,
   McpServerConfig,
   McpServerStatus,
@@ -1084,7 +1085,7 @@ export interface MakaBridge {
   mcp: {
     getConfig(host?: DesktopRuntimeHostRef): Promise<McpConfigFile>;
     listStatuses(host?: DesktopRuntimeHostRef): Promise<McpServerStatus[]>;
-    setConfig(config: McpConfigFile, host?: DesktopRuntimeHostRef): Promise<McpConfigFile>;
+    importConfig(source: string, host?: DesktopRuntimeHostRef): Promise<McpConfigImportResult>;
     /** Adds a new server; a taken id comes back as `{ status: 'exists' }`
      * instead of an error, so the dialog can put it on the id field. */
     add(serverId: string, config: McpServerConfig, host?: DesktopRuntimeHostRef): Promise<McpConfigAddResult>;

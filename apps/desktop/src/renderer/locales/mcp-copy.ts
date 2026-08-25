@@ -23,7 +23,7 @@ export type McpCopy = {
   errors: {
     load: string; install(name: string): string; cancelInstall(name: string): string; save: string; import: string;
     update: string; test: string; remove: string; unavailableStatus: string; mapLine(line: number): string;
-    importObject: string; importVersion(version: string): string; importServersObject: string; importProtocolVersion: string;
+    importJson: string; importObject: string; importVersion(version: string): string; importServersObject: string; importProtocolVersion: string;
   };
   toast: {
     templateInstalled(name: string): string; templateInstalledDetail: string; installed(name: string): string;
@@ -75,9 +75,9 @@ const MCP_COPY = {
     errors: {
       load: '载入 MCP 失败', install: (name) => `安装 ${name} 失败`, cancelInstall: (name) => `取消安装 ${name} 失败`, save: '保存 MCP 失败',
       import: '导入 MCP 失败', update: '更新 MCP 失败', test: 'MCP 测试失败', remove: '删除 MCP 失败', unavailableStatus: 'Server 没有返回可用状态。',
-      mapLine: (line) => `第 ${line} 行应为 KEY=value`, importObject: 'MCP JSON 必须是 object',
-      importVersion: (version) => `不支持 MCP 配置版本 ${version}，当前支持 version 1 和 2`, importServersObject: 'mcpServers 必须是 object',
-      importProtocolVersion: '含 protocol 的 MCP 配置必须显式使用 version 2',
+      mapLine: (line) => `第 ${line} 行应为 KEY=value`, importJson: 'MCP 配置必须是有效的 JSON', importObject: 'MCP JSON 必须是 object',
+      importVersion: (version) => `不支持 MCP 配置版本 ${version}，当前支持 version 1、2 和 3`, importServersObject: 'mcpServers 必须是 object',
+      importProtocolVersion: 'remote 的 protocol 需要 version 2 或 3；stdio 的 protocol 需要 version 3',
     },
     toast: {
       templateInstalled: (name) => `${name} 模板已安装`, templateInstalledDetail: '请在「已安装」中完成凭据配置，再启用连接。',
@@ -133,9 +133,9 @@ const MCP_COPY = {
     errors: {
       load: 'Failed to load MCP', install: (name) => `Failed to install ${name}`, cancelInstall: (name) => `Failed to cancel installation of ${name}`, save: 'Failed to save MCP',
       import: 'Failed to import MCP', update: 'Failed to update MCP', test: 'MCP test failed', remove: 'Failed to delete MCP', unavailableStatus: 'The server did not return an available status.',
-      mapLine: (line) => `Line ${line} must use KEY=value`, importObject: 'MCP JSON must be an object',
-      importVersion: (version) => `Unsupported MCP config version ${version}; versions 1 and 2 are supported`, importServersObject: 'mcpServers must be an object',
-      importProtocolVersion: 'MCP configurations containing protocol must explicitly use version 2',
+      mapLine: (line) => `Line ${line} must use KEY=value`, importJson: 'MCP configuration must be valid JSON', importObject: 'MCP JSON must be an object',
+      importVersion: (version) => `Unsupported MCP config version ${version}; versions 1, 2, and 3 are supported`, importServersObject: 'mcpServers must be an object',
+      importProtocolVersion: 'Remote protocol preferences require version 2 or 3; stdio protocol preferences require version 3',
     },
     toast: {
       templateInstalled: (name) => `${name} template installed`, templateInstalledDetail: 'Finish configuring credentials under Installed before enabling the connection.',
