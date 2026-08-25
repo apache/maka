@@ -814,7 +814,8 @@ export function applyMakaSessionEventToTranscript(
       const suppressed =
         (event.toolName === 'Read' || event.toolName === 'StopBackgroundTask') &&
         !!ref &&
-        !!findShellRunParent(state, ref, event.toolUseId);      state.entries.push({
+        !!findShellRunParent(state, ref, event.toolUseId);
+      state.entries.push({
         kind: 'tool',
         turnId: event.turnId,
         toolUseId: event.toolUseId,

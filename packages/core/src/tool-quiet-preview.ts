@@ -397,12 +397,16 @@ function previewListSubjects(
   listKey: 'tasks' | 'questions',
   itemKey: 'subject' | 'question',
 ): { items: Record<string, unknown>[]; total: number } | undefined {
+  if (isSensitiveKey(listKey) || isSensitiveKey(itemKey)) return undefined;
   const list = record[listKey];
   if (!Array.isArray(list) || list.length === 0) return undefined;
   const items: Record<string, unknown>[] = [];
   for (const entry of list.slice(0, ARGS_PREVIEW_LIST_MAX_ITEMS)) {
     const text = previewStringField(asRecord(entry) ?? {}, itemKey);
-    if (text !== undefined) items.push({ [itemKey]: text });
+    if (text === undefined) continue;
+    const redacted = redactSecrets(text);
+    if (redacted.trim().length === 0) continue;
+    items.push({ [itemKey]: redacted });
   }
   return items.length > 0 ? { items, total: list.length } : undefined;
 }

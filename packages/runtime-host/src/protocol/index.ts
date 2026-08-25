@@ -158,6 +158,8 @@ export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 65 as const;
 // 41: Context compaction returns a typed terminal outcome on both Turn
 // snapshots and context.compact results. Epoch-40 peers reject these closed
 // shapes after admission, so mixed peers must fail during the handshake.
+// 40: The message queue gains per-entry mutation operations
+// (queue.entry.promote, queue.entry.retract, queue.entries.reorder).
 // 39: Client Capability tool descriptors carry trusted activity semantics and
 // invocations can stream bounded progress frames.
 // 38: `execute` is no longer a permission mode. Frame decoders reject it, so a
@@ -179,9 +181,6 @@ export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 65 as const;
 // needed its client identity. An older peer still offers both.
 // 30: Access credential pairing adds prepare/finalize operations. Older Hosts
 // cannot complete the staged credential handoff used by managed onboarding.
-// 30: live `tool_start` frames may carry optional `intent` / `argsPreview`
-// keys. Older Clients decode the event with a strict allowed-key list and tear
-// the connection down on unknown keys, so the pair must be refused up front.
 // 29: `goal.arm` is a new wire operation. An older Host decodes it as unknown
 // and tears the connection down, so the pair must be refused up front.
 // 28: Relay model profiles carry the Fast service-tier declaration. Older
