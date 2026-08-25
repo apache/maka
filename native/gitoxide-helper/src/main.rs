@@ -842,14 +842,22 @@ fn fold_managed_path_v2(value: &str) -> String {
 fn validate_managed_attributes_v2(data: &[u8]) -> Result<(), &'static str> {
     let content = std::str::from_utf8(data).map_err(|_| "unsupported_source_attributes")?;
     for raw_line in content.split('\n') {
-        let line = raw_line.strip_suffix('\r').unwrap_or(raw_line).trim();
+        if raw_line
+            .chars()
+            .any(|character| character.is_whitespace() && !is_git_attributes_blank_v2(character))
+        {
+            return Err("unsupported_source_attributes");
+        }
+        let line = raw_line.trim_matches(is_git_attributes_blank_v2);
         if line.is_empty() || line.starts_with('#') {
             continue;
         }
         if line.contains('\\') || line.contains('\0') {
             return Err("unsupported_source_attributes");
         }
-        let mut fields = line.split_ascii_whitespace();
+        let mut fields = line
+            .split(is_git_attributes_blank_v2)
+            .filter(|field| !field.is_empty());
         let pattern = fields.next().ok_or("unsupported_source_attributes")?;
         let attributes = fields.collect::<Vec<_>>();
         let supported = if pattern == "*" {
@@ -867,13 +875,23 @@ fn validate_managed_attributes_v2(data: &[u8]) -> Result<(), &'static str> {
     Ok(())
 }
 
+fn is_git_attributes_blank_v2(character: char) -> bool {
+    matches!(character, ' ' | '\t' | '\r')
+}
+
 fn is_portable_export_ignore_pattern_v2(pattern: &str) -> bool {
     if !pattern.starts_with('/') || pattern.len() <= 1 || pattern.len() > 4096 {
         return false;
     }
     pattern[1..]
         .split('/')
-        .all(|component| !component.is_empty() && is_supported_source_component(component))
+        .all(is_literal_attributes_component_v2)
+}
+
+fn is_literal_attributes_component_v2(component: &str) -> bool {
+    !component.is_empty()
+        && is_supported_source_component(component)
+        && !component.contains(['[', ']'])
 }
 
 fn is_windows_reserved_device_name(component: &str) -> bool {
@@ -1167,6 +1185,33 @@ mod tests {
             b"/*.log export-ignore\n".as_slice(),
             b"* text=auto eol=lf unknown\n".as_slice(),
             &[0xff, b'\n'],
+        ] {
+            assert_eq!(
+                validate_managed_attributes_v2(unsupported),
+                Err("unsupported_source_attributes")
+            );
+        }
+    }
+
+    #[test]
+    fn managed_attributes_v2_rejects_bracket_globs() {
+        for unsupported in [
+            b"/[ab].txt export-ignore\n".as_slice(),
+            b"/file[0-9].txt export-ignore\n".as_slice(),
+        ] {
+            assert_eq!(
+                validate_managed_attributes_v2(unsupported),
+                Err("unsupported_source_attributes")
+            );
+        }
+    }
+
+    #[test]
+    fn managed_attributes_v2_rejects_non_git_blank_characters() {
+        for unsupported in [
+            "\u{00a0}* text=auto eol=lf\n".as_bytes(),
+            b"\x0b* text=auto eol=lf\n".as_slice(),
+            b"\x0c* text=auto eol=lf\n".as_slice(),
         ] {
             assert_eq!(
                 validate_managed_attributes_v2(unsupported),

@@ -17,14 +17,14 @@
  * under the License.
  */
 
-import { realpath } from 'node:fs/promises';
 import {
   type GitoxideHelperInvocationCapability,
   requireGitoxideHelperArtifactIdentityInternal,
 } from './gitoxide-helper-artifact-authority-internal.js';
 import {
+  GITOXIDE_HELPER_OPERATION_TIMEOUTS_INTERNAL,
   importSourceHeadWithGitoxideHelperInternal,
-  inspectRepositoryWithGitoxideHelperInternal,
+  inspectCanonicalRepositoryWithGitoxideHelperInternal,
   type GitoxideSourceImportObservationV1,
   type GitoxideRepositoryRejectionV1,
 } from './gitoxide-helper-invocation-internal.js';
@@ -75,18 +75,21 @@ export async function admitGitoxideRepositoryInternal(input: {
   readonly repositoryPath: string;
   readonly abortSignal?: AbortSignal;
 }): Promise<GitoxideRepositoryAdmissionResultV1> {
-  const repositoryPath = await realpath(input.repositoryPath);
+  const deadlineAt =
+    performance.now() + GITOXIDE_HELPER_OPERATION_TIMEOUTS_INTERNAL.inspectRepositoryMs;
+  const { observation, repositoryPath } =
+    await inspectCanonicalRepositoryWithGitoxideHelperInternal({
+      invocationOwnerToken: input.invocationOwnerToken,
+      capability: input.helperCapability,
+      repositoryPath: input.repositoryPath,
+      deadlineAt,
+      abortSignal: input.abortSignal,
+    });
+  if (observation.kind === 'repository_rejected') return observation;
   const helperArtifactIdentity = requireGitoxideHelperArtifactIdentityInternal(
     input.invocationOwnerToken,
     input.helperCapability,
   );
-  const observation = await inspectRepositoryWithGitoxideHelperInternal({
-    invocationOwnerToken: input.invocationOwnerToken,
-    capability: input.helperCapability,
-    repositoryPath,
-    abortSignal: input.abortSignal,
-  });
-  if (observation.kind === 'repository_rejected') return observation;
 
   const capability = Object.freeze({
     kind: 'gitoxide_repository_admission_capability_v1' as const,

@@ -83,7 +83,9 @@ hook/filter/submodule/LFS，也不接入 T1/T2。
   escaped/wildcard path 全部在 destination claim 前 fail closed；
 - repository inspection deadline 为 5 秒；source import deadline 为 10 分钟。deadline 从 public 入口
   开始覆盖 artifact/path preflight 与 helper 执行；2 GiB/200,000 files 是输入上限，不是十分钟内一定
-  成功的 SLA；超时后由共享 child lifecycle 有界终止并 fail closed；
+  成功的 SLA；若 helper 已启动，超时后由共享 child lifecycle 有界终止并 fail closed；若仍在不可取消
+  的 Node 文件系统 preflight，调用方按 deadline fail closed，迟到结果不得继续启动 helper 或签发
+  capability；
 - commit/tree/blob 在完整 decode 前先读取 object header 并执行对应预算；isolated Gitoxide open 另固定
   `gitoxide.objects.allocLimit=64 MiB`，避免 policy counter 生效前发生无界单次 object allocation；
 - Linux/macOS/Windows 运行同一 locked Cargo suite；当前只证明 fresh-only fail-closed，不承诺 import

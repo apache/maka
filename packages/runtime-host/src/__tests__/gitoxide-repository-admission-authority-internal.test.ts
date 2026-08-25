@@ -35,6 +35,7 @@ import {
   importAdmittedGitoxideRepositoryInternal,
   requireGitoxideRepositoryAdmissionInternal,
 } from '../server/gitoxide-repository-admission-authority-internal.js';
+import { GitoxideHelperInvocationError } from '../server/gitoxide-helper-invocation-internal.js';
 
 interface AdmittedHelper {
   readonly invocationOwnerToken: object;
@@ -43,6 +44,24 @@ interface AdmittedHelper {
 }
 
 let admittedHelperPromise: Promise<AdmittedHelper | undefined> | undefined;
+
+test('applies admission cancellation before repository path preflight', async () => {
+  const controller = new AbortController();
+  controller.abort();
+
+  await assert.rejects(
+    admitGitoxideRepositoryInternal({
+      invocationOwnerToken: {},
+      helperCapability: {} as GitoxideHelperInvocationCapability,
+      admissionOwnerToken: {},
+      repositoryPath: join(tmpdir(), 'missing-gitoxide-admission-repository'),
+      abortSignal: controller.signal,
+    }),
+    (error) =>
+      error instanceof GitoxideHelperInvocationError &&
+      error.code === 'gitoxide_helper_invocation_aborted',
+  );
+});
 
 test('issues an opaque owner-bound admission capability from the exact helper observation', async (t) => {
   const helper = await admittedHelper();

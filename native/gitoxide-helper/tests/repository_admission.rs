@@ -503,6 +503,28 @@ fn rejects_external_filter_attributes_before_claiming_the_destination() {
 }
 
 #[test]
+fn rejects_bracket_glob_attributes_before_claiming_the_destination() {
+    assert_attributes_import_rejected(
+        b"/[ab].txt export-ignore\n/file[0-9].txt export-ignore\n",
+        "bracket-glob-attributes.git",
+    );
+}
+
+#[test]
+fn rejects_non_git_blank_characters_before_claiming_the_destination() {
+    for (attributes, destination_name) in [
+        (
+            "\u{00a0}* text=auto eol=lf\n".as_bytes(),
+            "nbsp-attributes.git",
+        ),
+        (b"\x0b* text=auto eol=lf\n".as_slice(), "vt-attributes.git"),
+        (b"\x0c* text=auto eol=lf\n".as_slice(), "ff-attributes.git"),
+    ] {
+        assert_attributes_import_rejected(attributes, destination_name);
+    }
+}
+
+#[test]
 fn rejects_oversized_attributes_before_claiming_the_destination() {
     let fixture = RepositoryFixture::sha1_with_commit();
     fs::write(
@@ -534,6 +556,36 @@ fn rejects_oversized_attributes_before_claiming_the_destination() {
     }));
 
     assert_helper_error(&output, "source_attributes_limit_exceeded");
+    assert!(!destination.exists());
+}
+
+fn assert_attributes_import_rejected(attributes: &[u8], destination_name: &str) {
+    let fixture = RepositoryFixture::sha1_with_commit();
+    fs::write(fixture.root.join(".gitattributes"), attributes).unwrap();
+    fixture.git(["add", ".gitattributes"]);
+    fixture.git([
+        "-c",
+        "user.name=Maka Test",
+        "-c",
+        "user.email=maka@example.invalid",
+        "commit",
+        "-m",
+        "unsupported attributes grammar fixture",
+    ]);
+    let source_head = fixture.git_output(["rev-parse", "HEAD"]);
+    let destination = fixture.root.join(destination_name);
+
+    let output = invoke_request(serde_json::json!({
+        "protocolVersion": 1,
+        "operation": "import_source_head",
+        "sourceRepositoryPath": fixture.root,
+        "expectedSourceHeadCommitOid": source_head,
+        "destinationRepositoryPath": destination,
+        "baselineRef": "refs/maka/baseline",
+        "managedTreePolicyVersion": 2,
+    }));
+
+    assert_helper_error(&output, "unsupported_source_attributes");
     assert!(!destination.exists());
 }
 

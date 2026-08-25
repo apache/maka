@@ -59,7 +59,7 @@ caller 不能提供 executable path、argv、environment、protocol version、ti
 | 成功 | exit 0 + exact SHA-1 `repository_inspected` |
 | policy rejection | exit 2 + exact `unsupported_object_format` |
 | repository/helper failure | exit 1 + allowlisted stable helper reason |
-| timeout | inspect 为 5 秒、source import 为 10 分钟；同一个绝对 deadline 从 public 入口覆盖 preflight 与执行，到期后由共享 lifecycle force-kill process tree，再以有界 exit acknowledgement/output drain 收口 |
+| timeout | inspect 为 5 秒、source import 为 10 分钟；同一个绝对 deadline 从 public 入口覆盖 preflight 与执行。若 helper 已启动，共享 lifecycle force-kill process tree，并以有界 exit acknowledgement/output drain 收口；若仍在 Node 文件系统 preflight，调用方按 deadline fail closed，迟到结果被丢弃且不得签发 capability |
 | cancellation | preflight 或运行中 fail closed，`gitoxide_helper_invocation_aborted` |
 | resource failure | repository open 前的本地 metadata 总量 1 MiB、Gitoxide object allocation 64 MiB、stdout 64 KiB、stderr 16 KiB；超限 fail closed 或 force-kill |
 | malformed protocol | exit code、JSON shape、OID 或字段不一致均拒绝 |
@@ -67,6 +67,10 @@ caller 不能提供 executable path、argv、environment、protocol version、ti
 
 Rust helper v1 不启动 descendants；Runtime 仍使用共享 process-tree terminator 处理 timeout、abort 和
 output overflow，不允许常驻或 detached helper。
+
+Node 的 `realpath`/artifact 文件读取没有可移植的 syscall cancellation。v1 因此只承诺 public operation
+在绝对 deadline 内返回或 fail closed，不声称 timeout 能终止已经交给操作系统的 preflight I/O；该 I/O
+的迟到完成不能启动 helper、签发 repository capability 或发布 artifact。
 
 ## 4. 配置与数据边界
 

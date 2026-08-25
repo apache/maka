@@ -154,8 +154,26 @@ export async function inspectRepositoryWithGitoxideHelperInternal(input: {
 }): Promise<GitoxideRepositoryInspectionResultV1> {
   const deadlineAt =
     performance.now() + GITOXIDE_HELPER_OPERATION_TIMEOUTS_INTERNAL.inspectRepositoryMs;
+  return (
+    await inspectCanonicalRepositoryWithGitoxideHelperInternal({
+      ...input,
+      deadlineAt,
+    })
+  ).observation;
+}
+
+export async function inspectCanonicalRepositoryWithGitoxideHelperInternal(input: {
+  readonly invocationOwnerToken: object;
+  readonly capability: GitoxideHelperInvocationCapability;
+  readonly repositoryPath: string;
+  readonly deadlineAt: number;
+  readonly abortSignal?: AbortSignal;
+}): Promise<{
+  readonly repositoryPath: string;
+  readonly observation: GitoxideRepositoryInspectionResultV1;
+}> {
   const { artifact, repositoryPath } = await runGitoxideOperationWithinDeadlineInternal({
-    deadlineAt,
+    deadlineAt: input.deadlineAt,
     abortSignal: input.abortSignal,
     operation: async () => {
       if (!isAbsolute(input.repositoryPath)) {
@@ -198,9 +216,9 @@ export async function inspectRepositoryWithGitoxideHelperInternal(input: {
     executablePath: artifact.executablePath,
     request,
     abortSignal: input.abortSignal,
-    deadlineAt,
+    deadlineAt: input.deadlineAt,
   });
-  return decodeOutcome(outcome);
+  return Object.freeze({ repositoryPath, observation: decodeOutcome(outcome) });
 }
 
 export async function runGitoxideOperationWithinDeadlineInternal<T>(input: {
