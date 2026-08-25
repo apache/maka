@@ -195,6 +195,49 @@ describe('Maka Pi TUI transcript', () => {
     assert.doesNotMatch(stripAnsi(renderMakaPiStatusLine({ ...meta(), goal: null }, 120)), /goal/);
   });
 
+  test('renders side conversation status in English for every UI locale', () => {
+    assert.equal(
+      stripAnsi(
+        renderMakaPiStatusLine(
+          { ...meta(), uiLocale: 'zh', sideConversation: { view: 'side' } },
+          200,
+        ),
+      ),
+      'Side from main thread · Ctrl+/ to switch · Ctrl+C to close',
+    );
+    for (const [parentStatus, label] of [
+      ['needs_input', 'main needs input'],
+      ['needs_approval', 'main needs approval'],
+      ['failed', 'main failed'],
+      ['interrupted', 'main interrupted'],
+      ['closed', 'main closed'],
+      ['finished', 'main finished'],
+    ] as const) {
+      assert.equal(
+        stripAnsi(
+          renderMakaPiStatusLine(
+            {
+              ...meta(),
+              uiLocale: 'zh',
+              sideConversation: { view: 'side', parentStatus },
+            },
+            200,
+          ),
+        ),
+        `Side from main thread · ${label} · Ctrl+/ to switch · Ctrl+C to close`,
+      );
+    }
+    assert.match(
+      stripAnsi(
+        renderMakaPiStatusLine(
+          { ...meta(), uiLocale: 'zh', sideConversation: { view: 'parent' } },
+          200,
+        ),
+      ),
+      /Ctrl\+\/ for side/,
+    );
+  });
+
   test('status line degrades to ctx ?/window when the window is known but usage is not (#3371)', () => {
     // No usage object at all: the window is known, so degrade explicitly.
     assert.match(
