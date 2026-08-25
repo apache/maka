@@ -362,6 +362,9 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
   // that window would target the freshly attached Session instead of the Turn
   // being left behind.
   let detaching = false;
+  let sideConversation:
+    | { readonly parentSessionId: string; readonly sideSessionId: string }
+    | undefined;
   // True while the /session picker is open mid-turn: Escape must close the
   // overlay, not arm the double-Escape interrupt for the running Turn (#3380).
   let sessionPickerOverlayOpen = false;
@@ -462,8 +465,8 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
   const activityStrip = new MakaActivityStripComponent(metadata);
   const pendingQueue = new MakaPendingQueueComponent(state);
   const statusLine = new MakaStatusLineComponent(metadata);
-  // Show the whole slash-command set at once — discoverability is the point of
-  // the menu. Keep a little headroom above the current command count.
+  // Use the vendor editor's full 20-item autocomplete capacity. Larger command
+  // catalogs remain scrollable and keep an exact position/total counter.
   const editor = new MakaSkillHighlightEditor(tui, editorTheme(), {
     paddingX: 0,
     autocompleteMaxVisible: EDITOR_AUTOCOMPLETE_MAX_VISIBLE,
@@ -1651,11 +1654,23 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     }
   };
 
+  const blockIdentityChangeWhileSideOpen = (action: string): boolean => {
+    if (!sideConversation) return false;
+    state.entries.push({
+      kind: 'notice',
+      level: 'error',
+      text: `Close the side conversation before ${action}.`,
+    });
+    requestRender();
+    return true;
+  };
+
   // `/session` is view navigation (#3380). Idle, it runs under runControl's
   // serial lock like any control action; mid-turn that lock is held by the
   // running Turn, so the switch goes through the detach path instead of
   // silently no-oping on the busy gate.
   const goToSession = async (sessionId: string): Promise<void> => {
+    if (blockIdentityChangeWhileSideOpen('switching Sessions')) return;
     if (!turnRunning) {
       await runControl(() => switchSession(sessionId));
       return;
@@ -1665,6 +1680,87 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     // the interrupt window, and double-apply the adoption.
     if (detaching) return;
     await switchAwayMidTurn(sessionId).catch(reportError);
+  };
+
+  const openSideConversation = async (prompt: string): Promise<void> => {
+    if (sideConversation) {
+      state.entries.push({
+        kind: 'notice',
+        level: 'error',
+        text: 'Close the current side conversation before opening another.',
+      });
+      requestRender();
+      return;
+    }
+    if (!input.driver.openSideConversation) {
+      state.entries.push({
+        kind: 'notice',
+        level: 'error',
+        text: 'Side conversations are unavailable on this runtime.',
+      });
+      requestRender();
+      return;
+    }
+    const previousActivity = currentActivityCompletion;
+    let opened = false;
+    const adopt = async () => {
+      const result = await input.driver.openSideConversation!();
+      if (turnRunning) turnEpoch += 1;
+      await applySwitchResult(result);
+      sideConversation = {
+        parentSessionId: result.parentSessionId,
+        sideSessionId: result.sideSessionId,
+      };
+      opened = true;
+      state.entries.push({
+        kind: 'notice',
+        level: 'info',
+        text: 'Side conversation opened.',
+      });
+      requestRender();
+    };
+    if (turnRunning) {
+      if (detaching) return;
+      detaching = true;
+      try {
+        await adopt();
+      } catch (error) {
+        reportError(error);
+      } finally {
+        detaching = false;
+        startPendingAttachedTurn();
+      }
+    } else {
+      await runControl(adopt);
+    }
+    if (!opened || !prompt) return;
+    await previousActivity?.catch(() => undefined);
+    submitPrompt(prompt);
+  };
+
+  const closeSideConversation = async (): Promise<void> => {
+    const pair = sideConversation;
+    if (!pair || !input.driver.closeSideConversation) return;
+    const result = await input.driver.closeSideConversation(
+      pair.sideSessionId,
+      pair.parentSessionId,
+    );
+    await applySwitchResult(result);
+    sideConversation = undefined;
+    if (result.cleanup === 'pending') {
+      state.entries.push({
+        kind: 'notice',
+        level: 'error',
+        text: 'Side conversation closed; cleanup will be retried on the next launch.',
+      });
+    }
+    requestRender();
+  };
+  const interruptAndCloseSideConversation = (): void => {
+    if (interruptRequested) return;
+    const completion = currentActivityCompletion;
+    requestTurnInterrupt();
+    void completion?.then(() => runControl(closeSideConversation));
   };
   const openSessionPicker = (): Promise<void> => {
     if (!turnRunning) return runControl(showSessionList);
@@ -2305,6 +2401,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
   };
 
   const showRewindPicker = async () => {
+    if (blockIdentityChangeWhileSideOpen('rewinding')) return;
     const targets = await input.driver.listRewindTargets();
     if (targets.length === 0) {
       state.entries.push({
@@ -2348,6 +2445,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
   };
 
   const newSession = () => {
+    if (blockIdentityChangeWhileSideOpen('starting a new Session')) return;
     input.driver.startNewSession();
     // A fresh session is not bound by the previous one's boundary. Falling back
     // to the *current* label would keep the previous Session's mode, including
@@ -2377,6 +2475,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
   // short line shows in the transcript.
   const importForeignSession = async (summary: ForeignSessionSummary): Promise<void> => {
     if (busy || input.foreignSessions === undefined) return;
+    if (blockIdentityChangeWhileSideOpen('importing another Session')) return;
     busy = true;
     const activity = beginActivity();
     editor.disableSubmit = true;
@@ -3239,6 +3338,13 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
         void goToSession(sessionId);
       },
     },
+    side: {
+      description: primaryGuidance.commands.side,
+      midTurn: 'switch',
+      run: (_parts: string[], rawTail?: string) => {
+        void openSideConversation(rawTail?.trim() ?? '');
+      },
+    },
     graph: {
       description: primaryGuidance.commands.graph,
       // parseGraphCommand answers status and refuses changes ahead of generic
@@ -3325,6 +3431,18 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     // press+release pair could count as a double Escape. We never act on
     // releases here; returning undefined lets the TUI apply its own filtering.
     if (isKeyRelease(data)) return undefined;
+    if (
+      sideConversation &&
+      matchesKey(data, Key.ctrl('c')) &&
+      !isKeyRepeat(data) &&
+      editor.getText().length === 0 &&
+      !editorPastePending
+    ) {
+      lastIdleCtrlCAt = 0;
+      if (turnRunning) interruptAndCloseSideConversation();
+      else if (!busy) void runControl(closeSideConversation);
+      return { consume: true };
+    }
     if (
       activeUserQuestionRequest(state) &&
       turnRunning &&
@@ -3526,10 +3644,9 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
 
 const BOTTOM_PICKER_MARGIN_ROWS = 4;
 
-// The editor's autocomplete window height. Keep it at least as large as the
-// full slash-command menu, so a bare `/` shows every command rather than
-// silently clipping the last command.
-const EDITOR_AUTOCOMPLETE_MAX_VISIBLE = 24;
+// The vendor editor clamps this window to 20 rows. Additional commands remain
+// reachable by scrolling and are identified by its exact position counter.
+const EDITOR_AUTOCOMPLETE_MAX_VISIBLE = 20;
 
 export function formatContextDiagnostics(diagnostics: ContextDiagnostics): string {
   if (diagnostics.status === 'unavailable') {

@@ -53,7 +53,7 @@ import { DesktopRuntimeHostClient } from "./runtime-host-client.js";
 import type {
   SessionCopyCleanupAuthority,
   SessionCopyCleanupDisposition,
-} from "./quote-companion-cleanup.js";
+} from "@maka/storage/session-copy-cleanup";
 import {
   createDesktopNativeCapabilityProvider,
   type DesktopNativeCapabilityProvider,

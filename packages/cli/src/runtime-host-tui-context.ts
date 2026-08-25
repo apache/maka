@@ -18,6 +18,7 @@
  */
 
 import { randomUUID } from 'node:crypto';
+import { join } from 'node:path';
 import type { PermissionMode } from '@maka/core/permission';
 import {
   createGenesisExecutionBoundary,
@@ -123,11 +124,13 @@ export async function createRuntimeHostTuiContext(
       llmConnectionSlug: target.connection.slug,
       model: target.model,
       prospectivePermissionMode,
+      sessionCopyCleanupRoot: join(input.clientDataRoot, 'tui-session-copies'),
       executionLocation:
         connected.profile.kind === 'local' ? { kind: 'client_path' } : { kind: 'host' },
       ...(workspace ? { workspace } : {}),
     };
     const driver = createRuntimeHostMakaSessionDriver(driverInput);
+    await driver.recoverSideConversations();
     return {
       connection,
       driver,

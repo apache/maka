@@ -43,7 +43,6 @@ test('MCP IPC commits config before publishing capabilities and emitting status'
         config = apply(config);
         return config;
       },
-      set: async (next) => { calls.push('store'); config = next; return next; },
       upsert: async (serverId, server) => {
         calls.push('store');
         config = { version: MCP_CONFIG_VERSION, mcpServers: { ...config.mcpServers, [serverId]: server } };
@@ -82,18 +81,28 @@ test('MCP IPC commits config before publishing capabilities and emitting status'
   assert.deepEqual(calls, ['store', 'sync', 'emit', 'publish']);
 
   calls.length = 0;
-  const setConfig = handlers.get('mcp:setConfig');
-  assert.ok(setConfig);
-  const imported = await setConfig({}, {
-    version: MCP_CONFIG_VERSION,
-    mcpServers: { remote: { url: 'https://example.com/mcp', enabled: false } },
+  const importConfig = handlers.get('mcp:importConfig');
+  assert.ok(importConfig);
+  const imported = await importConfig(
+    {},
+    '{"remote":{"url":"https://example.com/mcp","enabled":false}}',
+  );
+  assert.equal(imported.status, 'imported');
+  assert.deepEqual(imported.config.mcpServers, {
+    fixture: { command: 'node' },
+    remote: { url: 'https://example.com/mcp', enabled: false, transport: 'auto' },
   });
-  assert.deepEqual(imported.mcpServers, {
-    remote: { url: 'https://example.com/mcp', enabled: false },
-  });
-  // The bulk edit removed `fixture`: its credentials retire BEFORE the
-  // config write, so a restart in between cannot orphan them.
-  assert.deepEqual(calls, ['forget', 'store', 'sync', 'emit', 'publish']);
+  assert.deepEqual(calls, ['store', 'sync', 'emit', 'publish']);
+
+  calls.length = 0;
+  assert.deepEqual(
+    await importConfig(
+      {},
+      '{"version":2,"mcpServers":{"local":{"command":"node","protocol":"auto"}}}',
+    ),
+    { status: 'invalid', reason: 'protocol-version' },
+  );
+  assert.deepEqual(calls, []);
 
   calls.length = 0;
   const add = handlers.get('mcp:add');
@@ -136,7 +145,6 @@ test('MCP remove aborts before touching the config when credential deletion fail
         config = apply(config);
         return config;
       },
-      set: async (next) => { config = next; return next; },
       upsert: async (serverId, server) => {
         config = { version: MCP_CONFIG_VERSION, mcpServers: { ...config.mcpServers, [serverId]: server } };
         return config;
@@ -204,7 +212,6 @@ test('MCP IPC redacts clientSecret toward the renderer and restores the sentinel
         config = apply(config);
         return config;
       },
-      set: async (next) => { config = next; return next; },
       upsert: async (serverId, server) => {
         config = { version: MCP_CONFIG_VERSION, mcpServers: { ...config.mcpServers, [serverId]: server } };
         return config;
@@ -315,7 +322,6 @@ test('MCP market cancellation waits for an in-flight config write before rolling
         calls.push('write:end');
         return config;
       },
-      set: async (next) => { config = next; return next; },
       upsert: async (serverId, server) => {
         config = { version: MCP_CONFIG_VERSION, mcpServers: { ...config.mcpServers, [serverId]: server } };
         return config;
@@ -389,7 +395,6 @@ test('an active login on a secret-bearing server does not veto edits to another 
     store: {
       get: async () => config,
       transform: async (apply) => { config = apply(config); return config; },
-      set: async (next) => { config = next; return next; },
       upsert: async (_serverId, _server) => config,
       remove: async () => config,
     },
@@ -414,32 +419,22 @@ test('an active login on a secret-bearing server does not veto edits to another 
     emitChanged: () => {},
   });
 
-  const getConfig = handlers.get('mcp:getConfig');
-  const setConfig = handlers.get('mcp:setConfig');
-  assert.ok(getConfig);
-  assert.ok(setConfig);
-  // The renderer edits the REDACTED config: notion comes back carrying the
-  // clientSecret sentinel. A sentinel-versus-real-value comparison would
-  // call that a change; the semantic (restored) comparison must not.
-  const redacted = await getConfig({});
-  const next = await setConfig({}, {
-    ...redacted,
-    mcpServers: {
-      ...redacted.mcpServers,
-      other: { command: 'node', args: ['--verbose'] },
-    },
-  });
-  const other = next.mcpServers.other;
+  const importConfig = handlers.get('mcp:importConfig');
+  assert.ok(importConfig);
+  // Import merges against the authoritative main-process config. Existing
+  // secrets never cross to the renderer merely to preserve an untouched entry.
+  const next = await importConfig({}, '{"other":{"command":"node","args":["--verbose"]}}');
+  assert.equal(next.status, 'imported');
+  const other = next.config.mcpServers.other;
   assert.ok(other && 'command' in other);
   assert.deepEqual(other.args, ['--verbose']);
   const storedNotion = config.mcpServers.notion;
   assert.ok(storedNotion && 'url' in storedNotion);
   assert.equal(storedNotion.oauth?.clientSecret, 'real-secret');
 
-  // Actually touching (here: removing) the login-owned server still fails.
-  const { notion: _gone, ...withoutNotion } = redacted.mcpServers;
+  // Actually touching the login-owned server still fails.
   await assert.rejects(
-    setConfig({}, { ...redacted, mcpServers: withoutNotion }),
+    importConfig({}, '{"notion":{"url":"https://other.example.com/mcp"}}'),
     /login in progress/u,
   );
   assert.ok(config.mcpServers.notion);
@@ -458,7 +453,6 @@ test('a URL change retires the old endpoint credentials before the write, and an
     store: {
       get: async () => config,
       transform: async (apply) => { calls.push('write'); config = apply(config); return config; },
-      set: async (next) => { config = next; return next; },
       upsert: async (_serverId, _server) => config,
       remove: async () => config,
     },
@@ -520,7 +514,6 @@ test('cancelling an install rolls back only its own write, never a newer same-id
     store: {
       get: async () => config,
       transform: async (apply) => { config = apply(config); return config; },
-      set: async (next) => { config = next; return next; },
       upsert: async (_serverId, _server) => config,
       remove: async () => config,
     },
@@ -596,7 +589,6 @@ test('a login claim travels the shared lane and cannot land inside an open trans
         config = apply(config);
         return config;
       },
-      set: async (next) => { config = next; return next; },
       upsert: async (_serverId, _server) => config,
       remove: async () => config,
     },
@@ -725,7 +717,6 @@ test('the config write fails closed when the snapshot drifts under the transacti
         wrote = true;
         return next;
       },
-      set: async (next) => next,
       upsert: async (_serverId, _server) => config,
       remove: async () => config,
     },
@@ -770,10 +761,6 @@ test('MCP config commit is not rolled back by a capability publication failure',
       transform: async (apply) => {
         config = apply(config);
         return config;
-      },
-      set: async (next) => {
-        config = next;
-        return next;
       },
       upsert: async (serverId, server) => {
         config = { version: MCP_CONFIG_VERSION, mcpServers: { ...config.mcpServers, [serverId]: server } };

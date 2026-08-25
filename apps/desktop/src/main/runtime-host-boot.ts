@@ -133,7 +133,7 @@ import {
   createProjectRootController,
   type ProjectRootController,
 } from "./project-root-controller.js";
-import { createSessionCopyCleanupAuthority } from "./quote-companion-cleanup.js";
+import { createSessionCopyCleanupAuthority } from "@maka/storage/session-copy-cleanup";
 import {
   projectHostConnections,
   registerRuntimeHostConnectionsIpc,

@@ -18,7 +18,7 @@
  */
 
 import { randomUUID } from 'node:crypto';
-import { acquireOperationalStateDatabase } from '@maka/storage/operational-state-store';
+import { acquireOperationalStateDatabase } from './operational-state-store.js';
 
 export interface SessionCopyCreationLease {
   sessionId: string;
@@ -72,16 +72,16 @@ export interface SessionCopyCleanupAuthority {
 export function createSessionCopyCleanupAuthority(input: {
   workspaceRoot: string;
   removeSession: (sessionId: string) => Promise<SessionCopyCleanupDisposition | void>;
-  resumeSessionCopy?: (
-    creation: Omit<SessionCopyCreationLease, 'ownerId'>,
-  ) => Promise<void>;
+  resumeSessionCopy?: (creation: Omit<SessionCopyCreationLease, 'ownerId'>) => Promise<void>;
   processId?: string;
+  isOwnerProcessActive?: (ownerProcessId: string) => boolean | Promise<boolean>;
 }): SessionCopyCleanupAuthority {
   return new SessionCopyCleanupAuthorityImpl(
     new SqliteSessionCopyCleanupStore(input.workspaceRoot),
     input.removeSession,
     input.resumeSessionCopy,
     input.processId ?? randomUUID(),
+    input.isOwnerProcessActive,
   );
 }
 
@@ -97,10 +97,13 @@ class SessionCopyCleanupAuthorityImpl implements SessionCopyCleanupAuthority {
     private readonly removeSession: (
       sessionId: string,
     ) => Promise<SessionCopyCleanupDisposition | void>,
-    private readonly resumeSessionCopy: ((
-      creation: Omit<SessionCopyCreationLease, 'ownerId'>,
-    ) => Promise<void>) | undefined,
+    private readonly resumeSessionCopy:
+      | ((creation: Omit<SessionCopyCreationLease, 'ownerId'>) => Promise<void>)
+      | undefined,
     private readonly processId: string,
+    private readonly isOwnerProcessActive:
+      | ((ownerProcessId: string) => boolean | Promise<boolean>)
+      | undefined,
   ) {}
 
   ownCreation<T>(creation: SessionCopyCreationLease, operation: () => Promise<T>): Promise<T> {
@@ -159,8 +162,7 @@ class SessionCopyCleanupAuthorityImpl implements SessionCopyCleanupAuthority {
   async abandonOwner(ownerId: string): Promise<void> {
     const normalizedOwnerId = normalizeOwnerId(ownerId);
     const owned = (await this.store.list()).filter(
-      (record) =>
-        record.ownerProcessId === this.processId && record.ownerId === normalizedOwnerId,
+      (record) => record.ownerProcessId === this.processId && record.ownerId === normalizedOwnerId,
     );
     await Promise.all(owned.map((record) => this.schedule(record.sessionId)));
   }
@@ -170,7 +172,9 @@ class SessionCopyCleanupAuthorityImpl implements SessionCopyCleanupAuthority {
     const failed: SessionCopyCleanupRecovery['failed'] = [];
     for (const record of await this.store.list()) {
       const staleOwner =
-        record.ownerProcessId !== undefined && record.ownerProcessId !== this.processId;
+        record.ownerProcessId !== undefined &&
+        record.ownerProcessId !== this.processId &&
+        !(await this.isOwnerProcessActive?.(record.ownerProcessId));
       if (record.phase !== 'cleanup' && !record.cancelRequested && !staleOwner) continue;
       try {
         await this.store.requestCleanup(record.sessionId);
@@ -238,9 +242,7 @@ class SqliteSessionCopyCleanupStore implements SessionCopyCleanupStore {
           FROM workflow_quote_companion_cleanup
           WHERE session_id = ?
         `)
-        .get(sessionId) as
-        | { sessionId: string; trackedAt: number; recordJson: string }
-        | undefined;
+        .get(sessionId) as { sessionId: string; trackedAt: number; recordJson: string } | undefined;
       return row ? decodeLeaseRow(row) : undefined;
     });
   }
@@ -250,10 +252,7 @@ class SqliteSessionCopyCleanupStore implements SessionCopyCleanupStore {
     ownerProcessId: string,
   ): Promise<PersistedSessionCopyLease> {
     return this.mutate(creation.sessionId, (current) => {
-      if (
-        current?.creation &&
-        !samePersistedCreation(current.creation, creation)
-      ) {
+      if (current?.creation && !samePersistedCreation(current.creation, creation)) {
         throw new Error('Session copy target is already bound to another creation');
       }
       if (current?.phase === 'cleanup' || current?.cancelRequested) {
@@ -318,9 +317,7 @@ class SqliteSessionCopyCleanupStore implements SessionCopyCleanupStore {
 
   private mutate(
     sessionId: string,
-    update: (
-      current: PersistedSessionCopyLease | undefined,
-    ) => PersistedSessionCopyLease,
+    update: (current: PersistedSessionCopyLease | undefined) => PersistedSessionCopyLease,
   ): PersistedSessionCopyLease {
     return this.withDatabase('write', (database) => {
       const current = readLease(database, sessionId);
@@ -366,9 +363,7 @@ function readLease(
       FROM workflow_quote_companion_cleanup
       WHERE session_id = ?
     `)
-    .get(sessionId) as
-    | { sessionId: string; trackedAt: number; recordJson: string }
-    | undefined;
+    .get(sessionId) as { sessionId: string; trackedAt: number; recordJson: string } | undefined;
   return row ? decodeLeaseRow(row) : undefined;
 }
 
@@ -415,10 +410,7 @@ function normalizeCreationLease(creation: SessionCopyCreationLease): SessionCopy
   };
 }
 
-function sameCreation(
-  left: SessionCopyCreationLease,
-  right: SessionCopyCreationLease,
-): boolean {
+function sameCreation(left: SessionCopyCreationLease, right: SessionCopyCreationLease): boolean {
   return (
     left.sessionId === right.sessionId &&
     left.kind === right.kind &&

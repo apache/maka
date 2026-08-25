@@ -20,6 +20,9 @@
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
+import { installStdioFixtureEvents } from './stdio-fixture-events.js';
+
+installStdioFixtureEvents('legacy');
 
 if (process.argv.includes('--crash')) {
   process.stderr.write('fixture startup failed: deliberate diagnostic\n');

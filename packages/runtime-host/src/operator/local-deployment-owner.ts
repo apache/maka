@@ -251,6 +251,11 @@ export type LocalHostDeploymentDirectorySyncPurpose =
   | 'unchanged_confirmation'
   | 'workspace_cleanup';
 
+export interface LocalHostDeploymentAuthority {
+  read(): Promise<LocalHostDeploymentRecord | undefined>;
+  apply(transition: LocalHostDeploymentTransition): Promise<LocalHostDeploymentTransitionResult>;
+}
+
 export class LocalHostDeploymentAuthorityError extends Error {
   constructor(
     readonly code: 'invalid_input' | 'invalid_record' | 'authority_io_failed' | 'commit_unknown',
@@ -322,8 +327,25 @@ export async function applyLocalHostDeploymentTransition(
   transition: LocalHostDeploymentTransition,
   options: LocalHostDeploymentAuthorityOptions = {},
 ): Promise<LocalHostDeploymentTransitionResult> {
-  assertRootId(rootId);
   const canonicalTransition = parseTransition(transition);
+  return withLocalHostDeploymentAuthority(
+    rootId,
+    (authority) => authority.apply(canonicalTransition),
+    options,
+  );
+}
+
+/**
+ * Holds the one deployment-authority lock while a caller coordinates a complete
+ * owner transition. The callback receives the only mutation capability so it
+ * cannot accidentally acquire a second lock for the same record.
+ */
+export async function withLocalHostDeploymentAuthority<T>(
+  rootId: string,
+  operation: (authority: LocalHostDeploymentAuthority) => Promise<T>,
+  options: LocalHostDeploymentAuthorityOptions = {},
+): Promise<T> {
+  assertRootId(rootId);
   const { authorityRoot, durabilityBoundary } =
     resolveLocalHostDeploymentAuthorityLocation(options);
   await preparePrivateDirectory(authorityRoot, durabilityBoundary, options);
@@ -333,16 +355,23 @@ export async function applyLocalHostDeploymentTransition(
       path,
       async () => {
         await removeAbandonedRecordWorkspaces(authorityRoot, rootId, options);
-        const current = await readRecord(path, rootId);
-        const result = reduceTransition(rootId, current, canonicalTransition);
-        if (result.kind === 'unchanged') {
-          await confirmUnchangedDurability(authorityRoot, options);
-          return result;
-        }
-        if (result.kind === 'rejected') return result;
-        if (result.record) await writeRecord(path, result.record, options);
-        else await removeRecord(path, options);
-        return result;
+        const authority: LocalHostDeploymentAuthority = {
+          read: () => readRecord(path, rootId),
+          apply: async (nextTransition) => {
+            const canonicalTransition = parseTransition(nextTransition);
+            const current = await readRecord(path, rootId);
+            const result = reduceTransition(rootId, current, canonicalTransition);
+            if (result.kind === 'unchanged') {
+              await confirmUnchangedDurability(authorityRoot, options);
+              return result;
+            }
+            if (result.kind === 'rejected') return result;
+            if (result.record) await writeRecord(path, result.record, options);
+            else await removeRecord(path, options);
+            return result;
+          },
+        };
+        return operation(authority);
       },
       AUTHORITY_LOCK_TIMEOUT_MS,
     );

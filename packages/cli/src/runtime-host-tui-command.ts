@@ -117,6 +117,7 @@ export async function runRuntimeHostTui(input: RunRuntimeHostTuiInput): Promise<
     if (hint) process.stdout.write(`${hint}\n`);
     return 0;
   } finally {
+    await context.driver.cleanupOwnedSideConversations().catch(() => undefined);
     await context.close();
   }
 }

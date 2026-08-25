@@ -52,7 +52,7 @@ import {
   type ReconnectableReadIpcMain,
 } from "./ipc-reconnect-policy.js";
 import type { DesktopRuntimeHostClient } from "./runtime-host-client.js";
-import type { SessionCopyCleanupAuthority } from './quote-companion-cleanup.js';
+import type { SessionCopyCleanupAuthority } from '@maka/storage/session-copy-cleanup';
 import type { RuntimeHostSessionObservationRegistry } from "./runtime-host-session-observation-registry.js";
 import {
   RuntimeHostSessionObserver,

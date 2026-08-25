@@ -153,6 +153,10 @@
   gap: var(--space-3);
 }
 
+.maka-mcp-advanced-fields {
+  padding-block-start: var(--space-3);
+}
+
 .maka-mcp-json-field {
   overflow: auto;
   padding-inline: var(--space-4);
