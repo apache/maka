@@ -65,7 +65,6 @@ const SQLITE_BACKED_ENTRYPOINTS = [
   './scheduled-task-store',
   './session-bundle-policy',
   './session-store',
-  './settings-store',
   './shell-run-authority',
   './shell-run-store',
   './sqlite-runtime-store',
