@@ -22,11 +22,14 @@ import { SETTINGS_SECTIONS, type SettingsSection } from '@maka/core/settings';
 const ALLOWED_SETTINGS_SECTIONS = new Set<SettingsSection>(SETTINGS_SECTIONS);
 const RAW_HREF_MAX_LENGTH = 4096;
 const COMPOSE_TEXT_MAX_LENGTH = 4096;
+const FILE_REFERENCE_MAX_LENGTH = 2048;
 
 /** Closed internal navigation surface; it never executes actions. */
 export type MakaUriDest =
   | { kind: 'settings'; section: SettingsSection }
-  | { kind: 'compose'; text: string };
+  | { kind: 'compose'; text: string }
+  /** Raw workspace file reference exactly as written (never resolved here). */
+  | { kind: 'file-ref'; reference: string };
 
 /**
  * Parse an exact lowercase internal URI. Unsupported namespaces and malformed
@@ -66,6 +69,42 @@ export function parseMakaUri(href: string): MakaUriDest | null {
     default:
       return null;
   }
+}
+
+/** Markdown file suffixes a transcript reference must carry to be actionable. */
+const FILE_REFERENCE_SUFFIX = /\.(?:md|markdown)$/i;
+/** Any URI scheme (`file:`, `http:`, `custom:`) disqualifies a raw file reference. */
+const URI_SCHEME = /^[a-z][a-z0-9+.-]*:/i;
+const PERCENT_ESCAPE = /%[0-9a-f]{2}/i;
+
+/**
+ * Recognize a workspace file reference in a Markdown link destination and
+ * return it **raw** (exactly as written, no decoding, no resolution).
+ *
+ * Only relative or absolute filesystem paths ending in a Markdown suffix are
+ * recognized; every URI scheme (including `file://`) stays out so the external
+ * navigation guard remains the sole authority for those. Percent-escapes are
+ * decoded for recognition only — spaces, CJK, and other non-ASCII references
+ * must resolve identically to their percent-encoded spellings. The consumer
+ * decides whether a handler exists; callers must treat `null` as "leave the
+ * link inert".
+ */
+export function parseFileReference(href: string): string | null {
+  if (typeof href !== 'string') return null;
+  if (href.length === 0 || href.length > FILE_REFERENCE_MAX_LENGTH) return null;
+  if (URI_SCHEME.test(href)) return null;
+  if (/[\u0000-\u001f\u007f]/.test(href)) return null;
+
+  let candidate = href;
+  if (PERCENT_ESCAPE.test(candidate)) {
+    try {
+      candidate = decodeURIComponent(candidate);
+    } catch {
+      // Malformed escapes stay raw; the suffix check below still applies.
+    }
+  }
+  if (!FILE_REFERENCE_SUFFIX.test(candidate)) return null;
+  return href;
 }
 
 /**
