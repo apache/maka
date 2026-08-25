@@ -448,7 +448,7 @@ describe('Maka Pi TUI transcript', () => {
 
   test('keeps assistant text after a tool call visible after the tool block', () => {
     const state = createMakaPiTranscriptState();
-    appendUserPrompt(state, 'inspect the package');
+    appendUserPrompt(state, 'inspect the package', 'message-1', true);
 
     applyMakaSessionEventToTranscript(
       state,
@@ -504,6 +504,30 @@ describe('Maka Pi TUI transcript', () => {
       state.entries[3]?.kind === 'assistant' ? state.entries[3].text : '',
       'The package is named maka-agent.',
     );
+  });
+
+  test('preserves a transient user row across a sparse transcript replacement', () => {
+    const state = createMakaPiTranscriptState();
+    appendUserPrompt(state, 'send now', 'message-1', true);
+
+    replaceTranscriptWithStoredMessages(state, [], { preserveTransientMessages: true });
+
+    assert.deepEqual(state.entries, [
+      { kind: 'user', messageId: 'message-1', text: 'send now', transient: true },
+    ]);
+  });
+
+  test('reconciles a transient user row by messageId when durable history arrives', () => {
+    const state = createMakaPiTranscriptState();
+    appendUserPrompt(state, 'send now', 'message-1', true);
+
+    replaceTranscriptWithStoredMessages(
+      state,
+      [{ type: 'user', id: 'message-1', turnId: 'turn-1', ts: 1, text: 'send now' }],
+      { preserveTransientMessages: true },
+    );
+
+    assert.deepEqual(state.entries, [{ kind: 'user', messageId: 'message-1', text: 'send now' }]);
   });
 
   test('uses a shared message gutter and trims trailing block rows', () => {
@@ -575,7 +599,6 @@ describe('Maka Pi TUI transcript', () => {
     );
     state.entries.push({ kind: 'notice', level: 'error', text: 'Turn failed: provider_error' });
     state.steering = ['Keep going'];
-    state.pendingFallback = [{ text: 'Try again', enqueue: 'steer' }];
 
     assert.equal(
       hydrateToolsWithStoredMessages(state, 'turn-1', [
@@ -607,7 +630,6 @@ describe('Maka Pi TUI transcript', () => {
     assert.deepEqual(tool?.input, { path: 'README.md' });
     assert.deepEqual(tool?.result, { kind: 'text', text: 'README contents' });
     assert.deepEqual(state.steering, ['Keep going']);
-    assert.deepEqual(state.pendingFallback, [{ text: 'Try again', enqueue: 'steer' }]);
     assert.equal(state.entries.at(-1)?.kind, 'notice');
   });
 
@@ -1065,8 +1087,8 @@ describe('Maka Pi TUI transcript', () => {
     );
 
     assert.deepEqual(state.entries, [
-      { kind: 'user', text: 'Show the result' },
-      { kind: 'user', text: 'Also include the tests' },
+      { kind: 'user', messageId: 'steering-display', text: 'Show the result' },
+      { kind: 'user', messageId: 'steering-plain', text: 'Also include the tests' },
     ]);
     const rendered = renderMakaPiTranscript(state, meta(), 100).map(stripAnsi).join('\n');
     assert.match(rendered, /Show the result/);

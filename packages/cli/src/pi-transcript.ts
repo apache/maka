@@ -106,14 +106,6 @@ export interface MakaPiTranscriptState {
    */
   steering: string[];
   followup: string[];
-  /**
-   * Messages whose enqueue hit the no-live-owner fallback while a turn was
-   * running (the begin window). CLI-owned, NOT a runtime mirror: the runner
-   * retries the original enqueue until it lands and flushes any remainder
-   * into the next turn at the turn boundary, so the text is never dropped.
-   * Rendered in the pending bar alongside the mirror.
-   */
-  pendingFallback: Array<{ text: string; enqueue: 'steer' | 'queue' }>;
   /** Current non-durable provider retry progress for the activity strip. */
   providerRetry?: ProviderRetryEvent;
 }
@@ -150,7 +142,7 @@ const LIVE_TOOL_BUFFER_MAX_CHARS = 64 * 1024;
 const LIVE_TOOL_BUFFER_MAX_CHUNKS = 512;
 
 export type MakaPiTranscriptEntry =
-  | { kind: 'user'; text: string }
+  | { kind: 'user'; messageId: string; text: string; transient?: boolean }
   | { kind: 'legacy_automation'; text: string }
   | { kind: 'goal_continuation'; text: string }
   | { kind: 'assistant'; messageId: string; text: string }
@@ -222,7 +214,6 @@ export function createMakaPiTranscriptState(): MakaPiTranscriptState {
     usage: { costUsd: 0, cacheHitInput: 0, cacheMissInput: 0 },
     steering: [],
     followup: [],
-    pendingFallback: [],
   };
 }
 
@@ -247,8 +238,13 @@ function accumulateUsage(
   usage.contextRemaining = msg.contextRemaining;
 }
 
-export function appendUserPrompt(state: MakaPiTranscriptState, text: string): void {
-  state.entries.push({ kind: 'user', text });
+export function appendUserPrompt(
+  state: MakaPiTranscriptState,
+  text: string,
+  messageId: string,
+  transient = false,
+): void {
+  state.entries.push({ kind: 'user', messageId, text, ...(transient ? { transient: true } : {}) });
 }
 
 export function appendTurnFailureToTranscript(state: MakaPiTranscriptState, error: unknown): void {
@@ -332,8 +328,21 @@ export function applyShellRunUpdateToTranscript(
 export function replaceTranscriptWithStoredMessages(
   state: MakaPiTranscriptState,
   messages: readonly StoredMessage[],
+  options: { preserveTransientMessages?: boolean } = {},
 ): void {
-  state.entries = foldStoredShellRunChildren(storedMessagesToTranscriptEntries(messages));
+  const durableMessageIds = new Set(messages.map((message) => message.id));
+  const transientEntries = options.preserveTransientMessages
+    ? state.entries.filter(
+        (entry): entry is Extract<MakaPiTranscriptEntry, { kind: 'user' }> =>
+          entry.kind === 'user' &&
+          entry.transient === true &&
+          !durableMessageIds.has(entry.messageId),
+      )
+    : [];
+  state.entries = [
+    ...foldStoredShellRunChildren(storedMessagesToTranscriptEntries(messages)),
+    ...transientEntries,
+  ];
   clearPendingInteractions(state);
   state.expandAllTools = false;
   state.expandAllThinking = false;
@@ -349,7 +358,6 @@ export function replaceTranscriptWithStoredMessages(
   // Queues are per-active-run; a switched/reset session has none pending.
   state.steering = [];
   state.followup = [];
-  state.pendingFallback = [];
   for (const msg of messages) {
     if (msg.type === 'token_usage') accumulateUsage(state.usage, msg);
   }
@@ -715,7 +723,7 @@ export function applyMakaSessionEventToTranscript(
 
     case 'steering_message':
       // A user interjection injected mid-turn; render it in place as a user turn.
-      appendUserPrompt(state, event.content.displayText ?? event.content.text);
+      appendUserPrompt(state, event.content.displayText ?? event.content.text, event.messageId);
       break;
 
     case 'queue_update':
@@ -798,15 +806,17 @@ function storedMessagesToTranscriptEntries(
   for (const message of messages) {
     switch (message.type) {
       case 'user':
-        entries.push({
-          kind:
-            message.origin?.kind === 'legacy_automation'
-              ? 'legacy_automation'
-              : message.origin?.kind === 'goal'
-                ? 'goal_continuation'
-                : 'user',
-          text: message.displayText ?? message.text,
-        });
+        if (message.origin?.kind === 'legacy_automation') {
+          entries.push({ kind: 'legacy_automation', text: message.displayText ?? message.text });
+        } else if (message.origin?.kind === 'goal') {
+          entries.push({ kind: 'goal_continuation', text: message.displayText ?? message.text });
+        } else {
+          entries.push({
+            kind: 'user',
+            messageId: message.id,
+            text: message.displayText ?? message.text,
+          });
+        }
         break;
       case 'assistant': {
         // Stored thinking happened before the reply text, so it resumes above it.
@@ -1608,26 +1618,12 @@ export function renderMakaPiPendingQueue(
   width: number,
   platform: NodeJS.Platform = process.platform,
 ): string[] {
-  if (
-    state.steering.length === 0 &&
-    state.followup.length === 0 &&
-    state.pendingFallback.length === 0
-  ) {
+  if (state.steering.length === 0 && state.followup.length === 0) {
     return [];
   }
   const safeWidth = Math.max(1, width);
-  const steering = [
-    ...state.steering,
-    ...state.pendingFallback
-      .filter((entry) => entry.enqueue === 'steer')
-      .map((entry) => entry.text),
-  ];
-  const followup = [
-    ...state.followup,
-    ...state.pendingFallback
-      .filter((entry) => entry.enqueue === 'queue')
-      .map((entry) => entry.text),
-  ];
+  const steering = state.steering;
+  const followup = state.followup;
   const lines: string[] = [];
   for (const text of steering) {
     lines.push(

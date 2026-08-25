@@ -28,10 +28,15 @@ import {
   markNewTaskReloadIntent,
 } from './new-task-reload-intent';
 import type { DesktopTranscriptRangeController } from './desktop-transcript-range-store.js';
+import { reconcileTransientMessages } from './transient-message-projection.js';
 
 type ToastApi = {
   error(title: string, description?: string): void;
 };
+
+type MessageListUpdater = (
+  next: StoredMessage[] | ((current: StoredMessage[]) => StoredMessage[]),
+) => void;
 
 export function useAppShellSessionWorkspace(toastApi: ToastApi) {
   const [activeId, setActiveIdState] = useState<string | undefined>();
@@ -45,10 +50,51 @@ export function useAppShellSessionWorkspace(toastApi: ToastApi) {
   const selectionRevisionRef = useRef(0);
   const bootstrapSelectionLeaseRef = useRef<ReturnType<typeof createBootstrapSelectionLease> | null>(null);
   const [messages, setMessages] = useState<StoredMessage[]>([]);
+  const transientMessagesBySessionRef = useRef(new Map<string, Map<string, StoredMessage>>());
   const transcriptRangeRef = useRef<DesktopTranscriptRangeController | undefined>(undefined);
   const [messageLoadPending, setMessageLoadPending] = useState(false);
   const messageRetryPendingRef = useRef<Set<string>>(new Set());
   const stopPendingRef = useRef<Set<string>>(new Set());
+
+  function mergeTransientMessages(sessionId: string, durable: readonly StoredMessage[]): StoredMessage[] {
+    const pending = transientMessagesBySessionRef.current.get(sessionId);
+    if (!pending || pending.size === 0) return [...durable];
+    const projected = reconcileTransientMessages(pending, durable);
+    if (pending.size === 0) {
+      transientMessagesBySessionRef.current.delete(sessionId);
+    }
+    return projected;
+  }
+
+  const setMessagesForActiveSession: MessageListUpdater = (next) => {
+    setMessages((current) => {
+      const projected = typeof next === 'function' ? next([...current]) : next;
+      const sessionId = activeIdRef.current;
+      return sessionId ? mergeTransientMessages(sessionId, projected) : projected;
+    });
+  };
+
+  function addTransientMessage(sessionId: string, message: StoredMessage): void {
+    let pending = transientMessagesBySessionRef.current.get(sessionId);
+    if (!pending) {
+      pending = new Map();
+      transientMessagesBySessionRef.current.set(sessionId, pending);
+    }
+    pending.set(message.id, message);
+    if (activeIdRef.current === sessionId) {
+      setMessages((current) => mergeTransientMessages(sessionId, current));
+    }
+  }
+
+  function removeTransientMessage(sessionId: string, messageId: string): void {
+    const pending = transientMessagesBySessionRef.current.get(sessionId);
+    if (pending?.delete(messageId) && pending.size === 0) {
+      transientMessagesBySessionRef.current.delete(sessionId);
+    }
+    if (activeIdRef.current === sessionId) {
+      setMessages((current) => current.filter((message) => message.id !== messageId));
+    }
+  }
 
   function setActiveId(next: string | undefined): void {
     selectionRevisionRef.current += 1;
@@ -83,6 +129,7 @@ export function useAppShellSessionWorkspace(toastApi: ToastApi) {
   function clearOwnedSessionState(sessionId: string): void {
     messageRetryPendingRef.current.delete(sessionId);
     stopPendingRef.current.delete(sessionId);
+    transientMessagesBySessionRef.current.delete(sessionId);
     sessionUi.clearSessionUiState(sessionId);
   }
 
@@ -95,7 +142,10 @@ export function useAppShellSessionWorkspace(toastApi: ToastApi) {
     startNewSession,
     clearOwnedSessionState,
     messages,
-    setMessages,
+    setMessages: setMessagesForActiveSession,
+    addTransientMessage,
+    removeTransientMessage,
+    mergeTransientMessages,
     transcriptRangeRef,
     messageLoadPending,
     setMessageLoadPending,

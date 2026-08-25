@@ -27,6 +27,7 @@ describe('Maka Pi TUI turn', () => {
   test('prepares and drains an external turn under one Session activity lease', async () => {
     const activities = new SessionActivityRegistry();
     const sequence: string[] = [];
+    let startedTurnId: string | undefined;
 
     const outcome = await runMakaPiTuiTurn({
       driver: {
@@ -34,6 +35,7 @@ describe('Maka Pi TUI turn', () => {
           sequence.push('prepare');
           assert.equal(prompt, 'visible prompt');
           assert.deepEqual(options, {
+            turnId: 'turn-1',
             modelText: 'expanded prompt',
             turnOrchestration: { mode: 'swarm', source: 'slash_command' },
           });
@@ -51,12 +53,14 @@ describe('Maka Pi TUI turn', () => {
       request: {
         kind: 'external',
         prompt: 'visible prompt',
+        turnId: 'turn-1',
         sendText: 'expanded prompt',
         sessionId: null,
         turnOrchestration: { mode: 'swarm', source: 'slash_command' },
       },
       shouldAbort: () => false,
-      onStart: () => {
+      onStart: (turnId) => {
+        startedTurnId = turnId;
         sequence.push('start');
       },
       onEvent: (sessionEvent) => {
@@ -65,6 +69,7 @@ describe('Maka Pi TUI turn', () => {
     });
 
     assert.deepEqual(outcome, { kind: 'completed', turnId: 'turn-1' });
+    assert.equal(startedTurnId, 'turn-1');
     assert.deepEqual(sequence, ['start', 'prepare', 'event:text_delta', 'event:complete']);
     assert.equal(activities.whenIdle('session-1'), undefined);
   });
@@ -80,7 +85,7 @@ describe('Maka Pi TUI turn', () => {
         },
       },
       turnActivity: { activities },
-      request: { kind: 'external', prompt: 'hello', sessionId: null },
+      request: { kind: 'external', prompt: 'hello', turnId: 'turn-1', sessionId: null },
       shouldAbort: () => false,
       onFailure: (error) => {
         failures.push(errorMessage(error));
@@ -108,14 +113,14 @@ describe('Maka Pi TUI turn', () => {
         },
       },
       turnActivity: { activities },
-      request: { kind: 'external', prompt: 'hello', sessionId: 'session-1' },
+      request: { kind: 'external', prompt: 'hello', turnId: 'turn-1', sessionId: 'session-1' },
       shouldAbort: () => false,
       onFailure: (error) => {
         failures.push(errorMessage(error));
       },
     });
 
-    assert.deepEqual(outcome, { kind: 'errored', reason: 'prepare failed' });
+    assert.deepEqual(outcome, { kind: 'errored', turnId: 'turn-1', reason: 'prepare failed' });
     assert.deepEqual(failures, ['prepare failed']);
     assert.equal(activities.whenIdle('session-1'), undefined);
   });

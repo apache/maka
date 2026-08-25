@@ -144,6 +144,8 @@ export function createAppShellChatActions(deps: {
   setMessageLoadErrorBySession: MessageLoadErrorUpdater;
   setMessageRetryPendingBySession: BooleanRecordUpdater;
   setMessages: MessageListUpdater;
+  addTransientMessage?: (sessionId: string, message: StoredMessage) => void;
+  removeTransientMessage?: (sessionId: string, messageId: string) => void;
   transcriptRangeRef: RefBox<DesktopTranscriptRangeController | undefined>;
   setNavSelection: (selection: NavSelection) => void;
   /** #646: arm the "正在处理…" indicator locally at send() — the model-wait
@@ -192,6 +194,8 @@ export function createAppShellChatActions(deps: {
     setMessageLoadErrorBySession,
     setMessageRetryPendingBySession,
     setMessages,
+    addTransientMessage,
+    removeTransientMessage,
     transcriptRangeRef,
     setNavSelection,
     setLiveTurnBySession,
@@ -219,7 +223,10 @@ export function createAppShellChatActions(deps: {
   ): StoredMessage {
     return {
       type: 'user',
-      id: `optimistic-user-${turnId}`,
+      // `turnId` is the Host's canonical message identity for direct sends.
+      // Keeping it on the transient row lets the durable transcript replace
+      // the same row instead of appending a second user message.
+      id: turnId,
       turnId,
       ts: Date.now(),
       text,
@@ -247,22 +254,30 @@ export function createAppShellChatActions(deps: {
       delete next[sessionId];
       return next;
     });
+    const next = optimisticUserMessage(
+      turnId,
+      text,
+      attachments,
+      options.quotes,
+      options.inlineReferences,
+    );
+    if (addTransientMessage) {
+      addTransientMessage(sessionId, next);
+      return;
+    }
     setMessages((current) => {
       if (current.some((message) => message.type === 'user' && message.turnId === turnId)) return current;
-      const next = optimisticUserMessage(
-        turnId,
-        text,
-        attachments,
-        options.quotes,
-        options.inlineReferences,
-      );
       return options.replaceCurrentMessages ? [next] : [...current, next];
     });
   }
 
   function removeOptimisticUserMessage(sessionId: string, turnId: string): void {
     if (activeIdRef.current !== sessionId) return;
-    setMessages((current) => current.filter((message) => message.id !== `optimistic-user-${turnId}`));
+    if (removeTransientMessage) {
+      removeTransientMessage(sessionId, turnId);
+      return;
+    }
+    setMessages((current) => current.filter((message) => message.id !== turnId));
   }
 
   // #646: open the turn's model-wait window for a session. Armed the moment

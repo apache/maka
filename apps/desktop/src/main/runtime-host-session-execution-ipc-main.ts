@@ -487,9 +487,10 @@ export function registerRuntimeHostSessionExecutionIpc(
         displayText,
         workspaceFileReferences: command.workspaceFileReferences,
       });
+      const messageId = newId();
       const result = await deps.client.submitMessage({
         sessionId,
-        messageId: newId(),
+        messageId,
         placement,
         content: {
           text: command.text,
@@ -508,12 +509,14 @@ export function registerRuntimeHostSessionExecutionIpc(
         return {
           kind: "started" as const,
           turnId: result.turnId,
+          messageId,
           attachments,
           inlineReferences,
         };
       }
       return {
         kind: "queued" as const,
+        messageId,
         attachments,
         inlineReferences,
       };

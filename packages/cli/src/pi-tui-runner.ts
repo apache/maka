@@ -46,7 +46,7 @@ import {
   slashCommandsForSurface,
   type SlashCommandIdForSurface,
 } from '@maka/core/slash-command-catalog';
-import { type QueueEnqueueOutcome, type ShellRunUpdate } from '@maka/core/events';
+import { type ShellRunUpdate } from '@maka/core/events';
 import {
   latestAssistantModelId,
   type SessionSummary,
@@ -289,9 +289,12 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
   const rememberTranscriptModel = (messages: readonly StoredMessage[]): void => {
     transcriptLastUsedModel = latestAssistantModelId(messages);
   };
-  const replaceTranscript = (messages: readonly StoredMessage[]): void => {
+  const replaceTranscript = (
+    messages: readonly StoredMessage[],
+    options: { preserveTransientMessages?: boolean } = {},
+  ): void => {
     rememberTranscriptModel(messages);
-    replaceTranscriptWithStoredMessages(state, messages);
+    replaceTranscriptWithStoredMessages(state, messages, options);
   };
   let cwd = input.cwd;
   let model = input.model;
@@ -561,7 +564,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     input.driver.subscribeTranscriptReplacements?.((sessionId, turnId, messages, reason) => {
       if (closed || input.driver.getSessionId() !== sessionId) return;
       if (reason === 'reconnect') {
-        replaceTranscript(messages);
+        replaceTranscript(messages, { preserveTransientMessages: true });
         shellRunElapsedTicker.sync();
         requestRender();
         return;
@@ -746,7 +749,6 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     shellRunHydration.dispose();
     shellRunElapsedTicker.dispose();
     stopTurnElapsedTicker();
-    stopFallbackRetry();
     setTaskbarProgress(false);
     // Drop the busy / attention title marker so the tab is not handed back to
     // the shell still marked busy when the session exits.
@@ -866,8 +868,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     void (async () => {
       await settlePendingEnqueues();
       const retracted = (await input.driver.retractQueued?.()) ?? '';
-      const fallback = await takePendingFallbackSettled();
-      refillEditorFromQueues([fallback, retracted].filter(Boolean).join('\n\n'));
+      refillEditorFromQueues(retracted);
       requestRender();
       await input.driver.stop();
     })().catch((error) => {
@@ -918,102 +919,6 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     });
   };
 
-  // Fallback handoff owner. A `fallback` outcome while the turn is running
-  // means the runtime has no live steering owner YET (the begin window) or
-  // just lost it; the runtime keeps no record of the text, so the CLI owns
-  // delivery: retry the SAME enqueue until the owner appears, and flush any
-  // remainder into the next turn at the turn boundary. Never a bounded wait —
-  // a normal turn outlives any fixed budget and the text must not vanish.
-  const FALLBACK_RETRY_MS = 100;
-  let fallbackRetryTimer: ReturnType<typeof setTimeout> | null = null;
-  let fallbackRetryInFlight = false;
-  let fallbackRetryTask: Promise<void> | null = null;
-  let fallbackRetryGeneration = 0;
-
-  const stopFallbackRetry = () => {
-    fallbackRetryGeneration += 1;
-    if (fallbackRetryTimer !== null) clearTimeout(fallbackRetryTimer);
-    fallbackRetryTimer = null;
-  };
-
-  const scheduleFallbackRetry = () => {
-    if (fallbackRetryTimer !== null || fallbackRetryInFlight) return;
-    fallbackRetryTimer = setTimeout(() => {
-      fallbackRetryTimer = null;
-      const task = retryPendingFallback();
-      fallbackRetryTask = task;
-      void task.finally(() => {
-        if (fallbackRetryTask === task) fallbackRetryTask = null;
-      });
-    }, FALLBACK_RETRY_MS);
-  };
-
-  const retryPendingFallback = async () => {
-    if (closed || !turnRunning || state.pendingFallback.length === 0) {
-      stopFallbackRetry();
-      return;
-    }
-    const generation = fallbackRetryGeneration;
-    const attempted = [...state.pendingFallback];
-    fallbackRetryInFlight = true;
-    const remaining: typeof state.pendingFallback = [];
-    let failed = false;
-    try {
-      for (const entry of attempted) {
-        const enqueue = entry.enqueue === 'steer' ? input.driver.steer : input.driver.queueMessage;
-        let outcome: QueueEnqueueOutcome | undefined;
-        try {
-          outcome = enqueue ? await enqueue.call(input.driver, entry.text) : undefined;
-        } catch (error) {
-          failed = true;
-          reportError(error);
-        }
-        if (outcome?.kind !== 'queued') remaining.push(entry);
-      }
-    } finally {
-      fallbackRetryInFlight = false;
-    }
-    if (generation !== fallbackRetryGeneration) return;
-    const attemptedEntries = new Set(attempted);
-    const appended = state.pendingFallback.filter((entry) => !attemptedEntries.has(entry));
-    const changed = remaining.length !== attempted.length;
-    state.pendingFallback = [...remaining, ...appended];
-    if (remaining.length === 0) stopFallbackRetry();
-    else if (!failed) scheduleFallbackRetry();
-    if (!changed) return;
-    // The queue mirror updates only from `queue_update` events (single path);
-    // this render just drops the delivered entries from the fallback list.
-    requestRender();
-  };
-
-  const deferFallback = (text: string, enqueue: 'steer' | 'queue') => {
-    state.pendingFallback.push({ text, enqueue });
-    scheduleFallbackRetry();
-    requestRender();
-  };
-
-  /** Drain the CLI-held fallback texts (delivery order), stopping the retry loop. */
-  const takePendingFallbackEntries = (): Array<{ text: string; enqueue: 'steer' | 'queue' }> => {
-    stopFallbackRetry();
-    const entries = state.pendingFallback;
-    state.pendingFallback = [];
-    return entries;
-  };
-
-  const takePendingFallbackEntriesSettled = async (): Promise<
-    Array<{ text: string; enqueue: 'steer' | 'queue' }>
-  > => {
-    if (fallbackRetryTimer !== null) {
-      clearTimeout(fallbackRetryTimer);
-      fallbackRetryTimer = null;
-    }
-    await fallbackRetryTask;
-    return takePendingFallbackEntries();
-  };
-
-  const takePendingFallbackSettled = async (): Promise<string> =>
-    (await takePendingFallbackEntriesSettled()).map((entry) => entry.text).join('\n\n');
-
   // Enter during a turn steers it (inject at the next step boundary); the
   // runtime falls back to a fresh turn if the run already ended.
   const steerRunningTurn = (text: string) => {
@@ -1024,14 +929,14 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     editor.addToHistory(text);
     const enqueue = input.driver.steer;
     if (!enqueue) {
-      deferFallback(text, 'steer');
+      refillEditorFromQueues(text);
       return;
     }
     const task = enqueue
       .call(input.driver, text)
       .then((outcome) => {
         if (outcome.kind === 'fallback') {
-          if (turnRunning || busy) deferFallback(text, 'steer');
+          if (turnRunning || busy) refillEditorFromQueues(text);
           else submitPrompt(text);
           return;
         }
@@ -1065,14 +970,14 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     editor.addToHistory(text);
     const enqueue = input.driver.queueMessage;
     if (!enqueue) {
-      deferFallback(text, 'queue');
+      refillEditorFromQueues(text);
       return;
     }
     const task = enqueue
       .call(input.driver, text)
       .then((outcome) => {
         if (outcome.kind === 'fallback') {
-          if (turnRunning || busy) deferFallback(text, 'queue');
+          if (turnRunning || busy) refillEditorFromQueues(text);
           else submitPrompt(text);
           return;
         }
@@ -1086,14 +991,13 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     trackEnqueue(task);
   };
 
-  // Alt+↑: take back every queued message (both queues plus CLI-held fallback
-  // texts), joined and prepended to the current draft for re-editing.
+  // Alt+↑: take back every queued message from the Runtime Host, joined and
+  // prepended to the current draft for re-editing.
   const retractQueuedMessages = () => {
     void (async () => {
       await settlePendingEnqueues();
       const retracted = (await input.driver.retractQueued?.()) ?? '';
-      const fallback = await takePendingFallbackSettled();
-      refillEditorFromQueues([fallback, retracted].filter(Boolean).join('\n\n'));
+      refillEditorFromQueues(retracted);
       requestRender();
     })().catch(reportError);
   };
@@ -1255,9 +1159,10 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
       // Cutting the iterator short here would make the UI appear idle before
       // the runtime has emitted its terminal event and accepted the stop.
       shouldAbort: () => closed,
-      onStart: () => {
+      onStart: (turnId) => {
         if (request.kind !== 'attached') {
-          appendUserPrompt(state, request.prompt);
+          if (!turnId) throw new Error('External TUI turn did not receive a stable identity');
+          appendUserPrompt(state, request.prompt, turnId, true);
           optimisticUserEntry = state.entries.at(-1);
         }
         requestRender();
@@ -1354,9 +1259,9 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
         if (superseded()) {
           // Orphaned by a mid-turn detach (#3380): the Session this turn ran
           // on is no longer adopted. Skip every continuation that belongs to
-          // it — queue flushes would steer the NEW Session, fallback texts
-          // would refill the editor with abandoned-session context, and a
-          // failure notice would misreport the still-running Host Turn. Only
+          // it — continuation work must not steer the NEW Session or refill
+          // the editor with abandoned-session context, and a failure notice
+          // must not misreport the still-running Host Turn. Only
           // release the slot and hand the freshly attached Turn its start;
           // startPendingAttachedTurn no-ops until applySwitchResult has
           // installed it and we are idle, and the detach path re-arms it, so
@@ -1368,69 +1273,14 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
           return outcome;
         }
 
-        // Turn boundary flush: CLI-held fallback texts that never reached the
-        // runtime (the enqueue retry never found a live owner) are delivered
-        // FIRST, then queued followups (alt+Enter) — both open the next turn
-        // before any goal auto-continuation. Consumed here outside the turn
-        // stream, so clear the local mirror explicitly.
         await settlePendingEnqueues();
-        const fallbackEntries = await takePendingFallbackEntriesSettled();
-        const followup = await input.driver.takePendingFollowup?.();
         if (outcome.kind === 'completed' && pendingAttachedTurn) {
           const attached = pendingAttachedTurn;
           pendingAttachedTurn = undefined;
-          const undelivered: string[] = [];
-          for (const entry of fallbackEntries) {
-            const enqueue =
-              entry.enqueue === 'steer' ? input.driver.steer : input.driver.queueMessage;
-            try {
-              if (!enqueue || (await enqueue.call(input.driver, entry.text)).kind === 'fallback') {
-                undelivered.push(entry.text);
-              }
-            } catch {
-              undelivered.push(entry.text);
-            }
-          }
-          if (followup) {
-            try {
-              if (
-                !input.driver.queueMessage ||
-                (await input.driver.queueMessage(followup)).kind === 'fallback'
-              ) {
-                undelivered.push(followup);
-              }
-            } catch {
-              undelivered.push(followup);
-            }
-          }
           busy = false;
           activity.finish();
           startAttachedTurn?.(attached);
-          if (undelivered.length > 0) refillEditorFromQueues(undelivered.join('\n\n'));
           return outcome;
-        }
-        const fallbackText = fallbackEntries.map((entry) => entry.text).join('\n\n');
-        const nextPrompt = [fallbackText, followup ?? ''].filter(Boolean).join('\n\n');
-        if (nextPrompt) {
-          state.steering = [];
-          state.followup = [];
-          if (outcome.kind !== 'completed') {
-            // The turn was aborted or errored: auto-opening a turn would defeat
-            // the interrupt (or hammer a failure). Keep the undelivered text as
-            // an editable draft instead, merged ahead of any current draft.
-            refillEditorFromQueues(nextPrompt);
-          } else {
-            // Install the next local activity before resolving the previous one.
-            // A Goal admission woken by the old activity therefore observes the
-            // user follow-up as busy instead of racing it for the session.
-            void runAgentTurn({
-              kind: 'external',
-              prompt: nextPrompt,
-              sessionId: input.driver.getSessionId(),
-            });
-            activity.finish();
-            return outcome;
-          }
         }
 
         busy = false;

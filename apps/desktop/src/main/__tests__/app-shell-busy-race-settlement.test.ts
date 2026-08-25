@@ -179,6 +179,7 @@ describe('busy-raced send settlement', () => {
       const optimistic = messageState.messages.filter((message) => message.type === 'user');
       assert.equal(optimistic.length, 1);
       assert.equal(optimistic[0]?.turnId, 'host-turn');
+      assert.equal(optimistic[0]?.id, 'host-turn');
     } finally {
       restoreWindow();
     }

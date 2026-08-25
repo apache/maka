@@ -18,6 +18,7 @@
  */
 
 import type { SessionEvent } from '@maka/core/events';
+import { randomUUID } from 'node:crypto';
 import type { SkillInvocationResult } from '@maka/core/skill-invocation';
 import type { TurnOrchestration } from '@maka/core/runtime-inputs';
 import {
@@ -40,6 +41,8 @@ export type MakaPiTuiTurnRequest =
   | {
       kind: 'external';
       prompt: string;
+      /** Stable operation/message identity shared by the transient row and Host admission. */
+      turnId?: string;
       /** Model-facing text after explicit skill expansion, when different. */
       sendText?: string;
       /** Session observed before preparation; null is valid for the first turn. */
@@ -58,7 +61,7 @@ export interface RunMakaPiTuiTurnInput {
   turnActivity: MakaPiTuiTurnActivity;
   request: MakaPiTuiTurnRequest;
   shouldAbort: () => boolean;
-  onStart?: () => void;
+  onStart?: (turnId: string | undefined) => void;
   onPrepared?: (turn: MakaPreparedSessionTurn) => void | Promise<void>;
   onSkillInvocation?: (result: SkillInvocationResult) => void | Promise<void>;
   onEvent?: (event: SessionEvent) => void | Promise<void>;
@@ -72,7 +75,8 @@ export interface RunMakaPiTuiTurnInput {
 export async function runMakaPiTuiTurn(input: RunMakaPiTuiTurnInput): Promise<GoalTurnOutcome> {
   const { request } = input;
   let activity: SessionActivityLease | undefined;
-  let preparedTurnId = request.kind === 'attached' ? request.turn.turnId : undefined;
+  const externalTurnId = request.kind === 'external' ? (request.turnId ?? randomUUID()) : undefined;
+  let preparedTurnId = request.kind === 'attached' ? request.turn.turnId : externalTurnId;
 
   const finishBeforeDrain = (outcome: GoalTurnOutcome): GoalTurnOutcome => {
     activity?.release();
@@ -81,7 +85,7 @@ export async function runMakaPiTuiTurn(input: RunMakaPiTuiTurnInput): Promise<Go
   };
 
   try {
-    input.onStart?.();
+    input.onStart?.(preparedTurnId);
     if (input.shouldAbort()) {
       return finishBeforeDrain(abortedOutcome(preparedTurnId));
     }
@@ -99,6 +103,7 @@ export async function runMakaPiTuiTurn(input: RunMakaPiTuiTurnInput): Promise<Go
       request.kind === 'attached'
         ? request.turn
         : await input.driver.preparePrompt(request.prompt, {
+            ...(externalTurnId ? { turnId: externalTurnId } : {}),
             ...(request.sendText !== undefined ? { modelText: request.sendText } : {}),
             ...(request.turnOrchestration ? { turnOrchestration: request.turnOrchestration } : {}),
           });

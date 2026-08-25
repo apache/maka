@@ -888,6 +888,7 @@ export interface MakaBridge {
     ): Promise<{
       kind: 'queued' | 'started';
       turnId?: string;
+      messageId: string;
       attachments: import('@maka/core/events').AttachmentRef[];
       inlineReferences: import('@maka/core/events').InlineReference[];
     }>;

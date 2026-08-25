@@ -1507,7 +1507,13 @@ export class RootTurnCoordinator implements HostedExecutionAuthority {
           sessionId: request.sessionId,
           turnId: request.turnId,
           proposedRunId: randomUUID(),
-          proposedUserMessageId: randomUUID(),
+          // The interactive send's operation identity is also its canonical
+          // user-message identity. Clients can therefore render immediately
+          // and let the durable transcript replace that row in place. Other
+          // Turn kinds do not carry a user message and retain their own
+          // generated admission identity.
+          proposedUserMessageId:
+            request.execution.kind === 'external_message' ? request.turnId : randomUUID(),
           execution: request.execution,
           normalizedInput: canonicalContent.content,
           ...(request.turnOrchestration ? { turnOrchestration: request.turnOrchestration } : {}),
