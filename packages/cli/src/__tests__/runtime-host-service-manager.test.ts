@@ -69,7 +69,11 @@ import {
 import {
   createSystemdUserRuntimeHostService,
   renderSystemdUnit,
+  renderSystemdUpdateService,
+  renderSystemdUpdateTimer,
   resolveSystemdUserRuntimeHostServicePath,
+  resolveSystemdUserRuntimeHostUpdateServicePath,
+  resolveSystemdUserRuntimeHostUpdateTimerPath,
 } from '../runtime-host-systemd-service.js';
 
 describe('managed Runtime Host service', () => {
@@ -329,6 +333,14 @@ describe('managed Runtime Host service', () => {
     assert.equal(installed.service.enabled, true);
     assert.equal(installed.service.config?.websocket.port, 47_777);
     assert.match(await readFile(unitPath, 'utf8'), /ExecStart=.*runtime-host.*serve/u);
+    const updateServicePath = resolveSystemdUserRuntimeHostUpdateServicePath(
+      serviceId,
+      env,
+      homeDir,
+    );
+    const updateTimerPath = resolveSystemdUserRuntimeHostUpdateTimerPath(serviceId, env, homeDir);
+    assert.match(await readFile(updateServicePath, 'utf8'), /operator.*reconcile-update/u);
+    assert.match(await readFile(updateTimerPath, 'utf8'), /^OnUnitInactiveSec=86400s$/mu);
     const resetFailed = systemd.calls.findIndex(([command]) => command === 'reset-failed');
     const restart = systemd.calls.findIndex(([command]) => command === 'restart');
     assert.ok(resetFailed >= 0 && resetFailed < restart);
@@ -343,6 +355,23 @@ describe('managed Runtime Host service', () => {
       { label: 'Projects', path: await realpath(projectPath) },
     ]);
     assert.equal(reinstalled.service.lastExitCode, 0);
+    assert.equal(
+      systemd.calls.filter(
+        ([command, target]) => command === 'restart' && target === basename(updateTimerPath),
+      ).length,
+      1,
+    );
+    const managedConfig = reinstalled.service.config;
+    assert.ok(managedConfig);
+    await writeFile(updateTimerPath, '[Timer]\n# stale\n', 'utf8');
+    const repairBackend = backend();
+    await assert.rejects(
+      repairBackend.verifyDeployment(managedConfig),
+      (error: unknown) =>
+        error instanceof RuntimeHostServiceManagerError && error.code === 'target_mismatch',
+    );
+    await repairBackend.replace(managedConfig);
+    await repairBackend.verifyDeployment(managedConfig);
 
     const root = await resolveStorageRoot({ path: rootPath, kind: 'interactive' });
     await writeFile(configPath, '{not-json', 'utf8');
@@ -503,6 +532,8 @@ describe('managed Runtime Host service', () => {
     await access(movedRootPath);
     await assert.rejects(access(configPath));
     await assert.rejects(access(unitPath));
+    await assert.rejects(access(updateServicePath));
+    await assert.rejects(access(updateTimerPath));
     await assert.rejects(access(deploymentRoot));
 
     const repeated = await manageRuntimeHostService({ ...common, action: 'uninstall' }, backend());
@@ -654,6 +685,15 @@ describe('managed Runtime Host service', () => {
     assert.match(unit, /^Restart=on-failure$/mu);
     assert.match(unit, /^StartLimitIntervalSec=60s$/mu);
     assert.match(unit, /^StartLimitBurst=5$/mu);
+
+    const managed = { ...config, managedDeploymentRoot: '/opt/Maka/$managed root' };
+    const updateService = renderSystemdUpdateService(managed);
+    const updateTimer = renderSystemdUpdateTimer('a'.repeat(64));
+    assert.match(updateService, /"\/opt\/Maka\/\$\$managed root\/operator"/u);
+    assert.match(updateService, /"reconcile-update" "--framed"/u);
+    assert.match(updateTimer, /^OnActiveSec=900s$/mu);
+    assert.match(updateTimer, /^OnUnitInactiveSec=86400s$/mu);
+    assert.match(updateTimer, /^RandomizedDelaySec=3600s$/mu);
   });
 
   it('emits one stable machine error for an unmet service prerequisite', async () => {
@@ -1981,9 +2021,7 @@ function createFakeSystemd(unitPath: string): {
     stderr: string;
   }>;
 } {
-  let loaded = false;
-  let enabled = false;
-  let active = false;
+  const states = new Map<string, { enabled: boolean; active: boolean }>();
   let failureCommand: string | undefined;
   let dropInPaths: readonly string[] = [];
   const calls: string[][] = [];
@@ -1997,55 +2035,57 @@ function createFakeSystemd(unitPath: string): {
     },
     run: async (args) => {
       calls.push([...args]);
-      if (
-        ['show', 'enable', 'disable', 'start', 'restart', 'stop', 'reset-failed'].includes(
-          args[0] ?? '',
-        )
-      ) {
-        assert.equal(args[1], basename(unitPath));
-      }
+      const unitName = args[1];
+      const unitState = unitName
+        ? (states.get(unitName) ?? { enabled: false, active: false })
+        : undefined;
+      if (unitName && unitState) states.set(unitName, unitState);
       if (args[0] === failureCommand) {
         failureCommand = undefined;
         return { exitCode: 1, stdout: '', stderr: `${args[0]} failed` };
       }
       if (args[0] === 'show-environment') return success('PATH=/usr/bin\n');
-      if (args[0] === 'daemon-reload') {
-        loaded = await access(unitPath).then(
-          () => true,
-          () => false,
-        );
-        return success();
-      }
+      if (args[0] === 'daemon-reload') return success();
       if (args[0] === 'enable') {
-        enabled = true;
+        assert.ok(unitState);
+        unitState.enabled = true;
         return success();
       }
       if (args[0] === 'disable') {
-        enabled = false;
+        assert.ok(unitState);
+        unitState.enabled = false;
         return success();
       }
       if (args[0] === 'start' || args[0] === 'restart') {
-        active = true;
-        loaded = true;
+        assert.ok(unitState);
+        unitState.active = true;
         return success();
       }
       if (args[0] === 'stop') {
-        active = false;
+        assert.ok(unitState);
+        unitState.active = false;
         return success();
       }
       if (args[0] === 'reset-failed') return success();
       if (args[0] === 'show') {
+        assert.ok(unitName && unitState);
+        const path = join(dirname(unitPath), unitName);
+        const loaded = await access(path).then(
+          () => true,
+          () => false,
+        );
+        const isMainService = unitName === basename(unitPath);
         return {
           exitCode: loaded ? 0 : 4,
           stdout: [
             `LoadState=${loaded ? 'loaded' : 'not-found'}`,
-            `ActiveState=${active ? 'active' : 'inactive'}`,
-            `SubState=${active ? 'running' : 'dead'}`,
-            `UnitFileState=${enabled ? 'enabled' : 'disabled'}`,
-            `FragmentPath=${loaded ? unitPath : ''}`,
+            `ActiveState=${unitState.active ? 'active' : 'inactive'}`,
+            `SubState=${unitState.active ? 'running' : 'dead'}`,
+            `UnitFileState=${unitState.enabled ? 'enabled' : 'disabled'}`,
+            `FragmentPath=${loaded ? path : ''}`,
             'NeedDaemonReload=no',
-            `DropInPaths=${dropInPaths.join(' ')}`,
-            `MainPID=${active ? '4242' : '0'}`,
+            `DropInPaths=${isMainService ? dropInPaths.join(' ') : ''}`,
+            `MainPID=${unitState.active && isMainService ? '4242' : '0'}`,
             'ExecMainStatus=0',
             '',
           ].join('\n'),

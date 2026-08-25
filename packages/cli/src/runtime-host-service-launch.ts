@@ -19,6 +19,7 @@
 
 import { constants } from 'node:fs';
 import { access, realpath, stat } from 'node:fs/promises';
+import { join } from 'node:path';
 import {
   RuntimeHostServiceManagerError,
   type RuntimeHostManagedServiceConfig,
@@ -46,6 +47,18 @@ export function runtimeHostServiceLaunchArguments(
     config.websocket.path,
     '--json',
   ];
+}
+
+export const RUNTIME_HOST_UPDATE_INTERVAL_SECONDS = 24 * 60 * 60;
+export const RUNTIME_HOST_UPDATE_INITIAL_DELAY_SECONDS = 15 * 60;
+export const RUNTIME_HOST_UPDATE_RANDOM_DELAY_SECONDS = 60 * 60;
+
+export function runtimeHostUpdateReconcileLaunchArguments(
+  config: RuntimeHostManagedServiceConfig,
+): readonly string[] | null {
+  return config.managedDeploymentRoot
+    ? [join(config.managedDeploymentRoot, 'operator'), 'reconcile-update', '--framed']
+    : null;
 }
 
 export async function validateRuntimeHostServiceLaunch(

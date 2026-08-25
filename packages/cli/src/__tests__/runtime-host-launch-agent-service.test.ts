@@ -25,7 +25,9 @@ import { test } from 'node:test';
 import {
   createLaunchAgentRuntimeHostService,
   renderLaunchAgentPlist,
+  renderLaunchAgentUpdatePlist,
   resolveLaunchAgentPath,
+  resolveLaunchAgentUpdatePath,
 } from '../runtime-host-launch-agent-service.js';
 import type { RuntimeHostManagedServiceConfig } from '../runtime-host-service-manager.js';
 
@@ -34,6 +36,8 @@ const UID = 501;
 const LABEL = `com.maka.runtime-host.${SERVICE_ID}`;
 const DOMAIN = `gui/${String(UID)}`;
 const TARGET = `${DOMAIN}/${LABEL}`;
+const UPDATE_LABEL = `${LABEL}.update`;
+const UPDATE_TARGET = `${DOMAIN}/${UPDATE_LABEL}`;
 
 test('renders the canonical Runtime Host command as a private persistent LaunchAgent', () => {
   const config = fixtureConfig('/tmp/node & tool', '/tmp/maka <cli>', '/tmp/state > root');
@@ -53,6 +57,64 @@ test('renders the canonical Runtime Host command as a private persistent LaunchA
   assert.match(plist, /<string>\/tmp\/maka &lt;cli&gt;<\/string>/u);
   assert.match(plist, /<string>\/tmp\/state &gt; root<\/string>/u);
   assert.match(plist, /<string>workspace=\/tmp\/projects<\/string>/u);
+});
+
+test('renders managed update reconciliation as a periodic one-shot LaunchAgent', () => {
+  const config = {
+    ...fixtureConfig('/tmp/node', '/tmp/maka', '/tmp/state'),
+    managedDeploymentRoot: '/tmp/managed deployment',
+  };
+  const plist = renderLaunchAgentUpdatePlist(config, {
+    label: UPDATE_LABEL,
+    stdoutPath: '/tmp/update.stdout.log',
+    stderrPath: '/tmp/update.stderr.log',
+  });
+
+  assert.match(plist, /<string>\/tmp\/managed deployment\/operator<\/string>/u);
+  assert.match(plist, /<string>reconcile-update<\/string>/u);
+  assert.match(plist, /<string>--framed<\/string>/u);
+  assert.match(plist, /<key>StartInterval<\/key>\n  <integer>86400<\/integer>/u);
+  assert.doesNotMatch(plist, /<key>KeepAlive<\/key>/u);
+});
+
+test('installs and removes the update scheduler with a managed LaunchAgent', async () => {
+  await withFixture(async ({ homeDir, cliPath, launchctl }) => {
+    const backend = createLaunchAgentRuntimeHostService(SERVICE_ID, {
+      homeDir,
+      uid: UID,
+      runLaunchctl: launchctl.run,
+      isProcessAlive: () => false,
+    });
+    const config = {
+      ...fixtureConfig(process.execPath, cliPath, join(homeDir, 'state')),
+      managedDeploymentRoot: join(homeDir, 'managed'),
+    };
+
+    await backend.install(config);
+    await backend.verifyDeployment(config);
+    const updatePath = resolveLaunchAgentUpdatePath(SERVICE_ID, homeDir);
+    assert.match(await readFile(updatePath, 'utf8'), /reconcile-update/u);
+
+    await backend.replace(config);
+    assert.equal(
+      launchctl.calls.filter(
+        ([command, target]) => command === 'bootout' && target === UPDATE_TARGET,
+      ).length,
+      0,
+    );
+
+    await writeFile(updatePath, '<plist>stale</plist>\n', { mode: 0o600 });
+    await assert.rejects(
+      backend.verifyDeployment(config),
+      (error: unknown) =>
+        error instanceof Error && 'code' in error && error.code === 'target_mismatch',
+    );
+    await backend.replace(config);
+    await backend.verifyDeployment(config);
+
+    await backend.uninstall();
+    assert.equal(await fileExists(updatePath), false);
+  });
 });
 
 test('maps install, stop, start, restart, and uninstall onto one LaunchAgent service', async () => {
@@ -156,6 +218,8 @@ interface FakeLaunchctl {
 
 function createFakeLaunchctl(): FakeLaunchctl {
   let pid = 4100;
+  let updateLoaded = false;
+  let updateRunning = false;
   const fake: FakeLaunchctl = {
     loaded: false,
     running: false,
@@ -166,11 +230,14 @@ function createFakeLaunchctl(): FakeLaunchctl {
       if (args[0] === 'print' && args[1] === DOMAIN) {
         return { exitCode: 0, stdout: 'domain = gui\n', stderr: '' };
       }
-      if (args[0] === 'print' && args[1] === TARGET) {
-        return fake.loaded
+      if (args[0] === 'print' && (args[1] === TARGET || args[1] === UPDATE_TARGET)) {
+        const update = args[1] === UPDATE_TARGET;
+        const loaded = update ? updateLoaded : fake.loaded;
+        const running = update ? updateRunning : fake.running;
+        return loaded
           ? {
               exitCode: 0,
-              stdout: fake.running
+              stdout: running
                 ? `state = running\npid = ${String(pid)}\nlast exit code = 0\n`
                 : 'state = not running\nlast exit code = 0\n',
               stderr: '',
@@ -182,14 +249,25 @@ function createFakeLaunchctl(): FakeLaunchctl {
           fake.failNextBootstrap = false;
           return { exitCode: 5, stdout: '', stderr: 'Input/output error' };
         }
-        fake.loaded = true;
-        fake.running = true;
+        const update = args[2]?.endsWith('.update.plist') ?? false;
+        if (update) {
+          updateLoaded = true;
+          updateRunning = false;
+        } else {
+          fake.loaded = true;
+          fake.running = true;
+        }
         pid += 1;
         return { exitCode: 0, stdout: '', stderr: '' };
       }
       if (args[0] === 'bootout') {
-        fake.running = false;
-        fake.loaded = false;
+        if (args[1] === UPDATE_TARGET) {
+          updateRunning = false;
+          updateLoaded = false;
+        } else {
+          fake.running = false;
+          fake.loaded = false;
+        }
         return { exitCode: 0, stdout: '', stderr: '' };
       }
       if (args[0] === 'kickstart') {
