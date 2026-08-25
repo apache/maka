@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { ICON_SIZE, Check, Copy, Eye, EyeOff } from '@maka/ui/icons';
 import {
   IconButton,
@@ -53,7 +53,12 @@ export function PasswordInput(props: {
   placeholder?: string;
   label: string;
   isLabelHidden?: boolean;
-  description?: string;
+  // ReactNode, not string: a description may carry an inline link (e.g. the web
+  // search "申请地址：tavily.com" apply link). Astryx FieldLabel already renders
+  // a ReactNode description and its click-forwarding skips nested interactive
+  // content; only the InputGroup/Field prop types under-declare it as `string`,
+  // which the single cast at the InputGroup call site below papers over.
+  description?: ReactNode;
   status?: InputGroupProps['status'];
   isRequired?: boolean;
   isOptional?: boolean;
@@ -112,7 +117,9 @@ export function PasswordInput(props: {
     // written on, and the group's `aria-labelledby` is what names it.
     <InputGroup
       label={props.label}
-      description={props.description}
+      // Cast: InputGroup/Field type `description` as `string`, but the
+      // underlying FieldLabel renders any ReactNode (see the prop's note).
+      description={props.description as string | undefined}
       isLabelHidden={props.isLabelHidden}
       isDisabled={props.isDisabled}
       isRequired={props.isRequired}
