@@ -2023,7 +2023,7 @@ function boundedUtf8(value: string, maxBytes: number): string {
 }
 
 function toolStartShellRunRef(
-  event: Extract<RuntimeSessionTransientEvent, { type: 'tool_start' }>,
+  event: Extract<RuntimeSessionForwardedEvent, { type: 'tool_start' }>,
 ): string | undefined {
   if (event.toolName !== 'Read' && event.toolName !== 'StopBackgroundTask') return undefined;
   const ref =

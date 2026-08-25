@@ -20,6 +20,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import type { StoredMessage } from '@maka/core/session';
+import type { SteeringMessageSnapshot } from '../protocol/message.js';
 import {
   createRuntimeHostSessionProjectionSeed,
   RuntimeHostSessionProjector,
