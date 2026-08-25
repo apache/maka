@@ -125,11 +125,13 @@ test('subscribed Clients receive the durable steering echo as a session event', 
     const probe = new SubscriptionProbe(subscription);
 
     const turnId = randomUUID();
-    await client.startTurn({
-      sessionId: fixture.sessionId,
-      turnId,
-      content: { text: FAKE_WAIT_FOR_STEERING_PROMPT },
-    });
+    requireStartedTurn(
+      await client.request('turn.start', {
+        sessionId: fixture.sessionId,
+        turnId,
+        content: { text: FAKE_WAIT_FOR_STEERING_PROMPT },
+      }),
+    );
     const steeringId = randomUUID();
     const steeringContent = {
       text: '<steer>steer mid-turn</steer>',
