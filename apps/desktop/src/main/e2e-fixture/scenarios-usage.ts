@@ -24,7 +24,7 @@ import {
   type ModelCallAttempt,
 } from '@maka/core/model-call-attempt';
 import { acquireOperationalStateDatabase } from '@maka/storage/operational-state-store';
-import type { PersistedToolInvocationRecord } from '@maka/storage/telemetry-file-schema';
+import type { PersistedToolInvocationRecord } from '@maka/storage/usage-stores';
 import {
   resolveStorageRoot,
   tryAcquireInteractiveRootOwner,

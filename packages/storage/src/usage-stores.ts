@@ -65,6 +65,8 @@ import {
 } from './telemetry-repo.js';
 import { createSqlitePricingStore, createSqliteTelemetryRepo } from './sqlite-usage-store.js';
 
+export type { PersistedToolInvocationRecord } from './telemetry-repo.js';
+
 const readerBrand: unique symbol = Symbol('InteractiveUsageStoresReader');
 const writerBrand: unique symbol = Symbol('InteractiveUsageStoresWriter');
 const readers = new WeakSet<object>();
