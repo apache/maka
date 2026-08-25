@@ -390,6 +390,7 @@ export const AGENT_RUN_EVENT_TYPES = [
   'model_stream_failed',
   'send_diagnostics_recorded',
   'tool_started',
+  'tool_searched',
   'tool_completed',
   'tool_failed',
   'skill_catalog_built',

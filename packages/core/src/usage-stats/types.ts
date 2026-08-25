@@ -205,16 +205,15 @@ export type ToolSchemaChangeReason =
 
 /**
  * Diagnostic shell describing the provider-visible (active) tool subset for a
- * turn, produced by the unified `ToolAvailabilityRuntime`. A "source" id here is
- * a catalog *group* id — the shell retains the historical `*SourceIds` field
- * names while the config-side vocabulary is `groups`.
+ * turn, produced by `ToolAvailabilityRuntime`. A "source" id here is a catalog
+ * group id; the historical field names remain stable for telemetry readers.
  */
 export interface ToolAvailabilityDiagnostic {
   /**
-   * Always `'economy'`: a diagnostic is only produced when economy gates the
-   * tool surface. The full-surface case emits no diagnostic at all.
+   * `'search'` is the current provider-independent lazy-loading policy.
+   * `'economy'` remains readable for historical telemetry.
    */
-  mode: 'economy';
+  mode: 'economy' | 'search';
   enabledSourceIds: ToolSourceId[];
   availableSourceIds?: ToolSourceId[];
   connectorToolName?: string;

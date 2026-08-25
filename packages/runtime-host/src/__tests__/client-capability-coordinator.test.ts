@@ -825,7 +825,7 @@ describe('Host Client Capability coordinator', () => {
     await coordinator.close();
   });
 
-  test('keeps load_tools group identity provider-independent and contract-sensitive', async () => {
+  test('keeps tool-search source identity provider-independent and contract-sensitive', async () => {
     const coordinator = createCoordinator();
     const first = coordinator.attachConnection(clientCapabilityConnectionIdentity('connection-a'), {
       send: async () => {},

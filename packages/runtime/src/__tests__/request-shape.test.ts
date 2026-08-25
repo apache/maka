@@ -42,12 +42,12 @@ const invalid = tool('invalid');
 describe('canonicalizeToolSet active allow-list', () => {
   test('a tool absent from the active set is withheld; the set drives visibility', () => {
     const { activeTools } = canonicalizeToolSet(
-      [tool('Read'), tool('Rive'), tool('load_tools')],
+      [tool('Read'), tool('Rive'), tool('tool_search')],
       invalid,
-      new Set(['Read', 'load_tools']),
+      new Set(['Read', 'tool_search']),
     );
     assert.ok(activeTools.includes('Read'), 'Read is in the active set');
-    assert.ok(activeTools.includes('load_tools'), 'load_tools is in the active set');
+    assert.ok(activeTools.includes('tool_search'), 'tool_search is in the active set');
     assert.ok(!activeTools.includes('Rive'), 'Rive is absent from the active set, so hidden');
   });
 

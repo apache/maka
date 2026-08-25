@@ -53,7 +53,7 @@ import {
   type RunTraceEvent,
 } from '../ai-sdk-backend.js';
 import type { DurableSessionEventSink, MakaTool, ToolRuntime } from '../tool-runtime.js';
-import { LOAD_TOOLS_NAME } from '../tool-availability.js';
+import { TOOL_SEARCH_NAME } from '../tool-availability.js';
 import { buildNativeWebSearchTool } from '../native-web-search-tool.js';
 import {
   canonicalizeToolSet,
@@ -7973,7 +7973,7 @@ describe('AiSdkBackend request-shape diagnostics', () => {
     const initialTools = canonicalizeToolSet(
       [
         testTool('Read', z.object({ path: z.string() })),
-        testTool(LOAD_TOOLS_NAME, z.object({ group: z.string() })),
+        testTool(TOOL_SEARCH_NAME, z.object({ query: z.string() })),
       ],
       invalid,
     );
@@ -7981,7 +7981,7 @@ describe('AiSdkBackend request-shape diagnostics', () => {
       [
         testTool('Read', z.object({ path: z.string() })),
         testTool('WebFetch', z.object({ url: z.string() })),
-        testTool(LOAD_TOOLS_NAME, z.object({ group: z.string() })),
+        testTool(TOOL_SEARCH_NAME, z.object({ query: z.string() })),
       ],
       invalid,
     );
@@ -7994,10 +7994,10 @@ describe('AiSdkBackend request-shape diagnostics', () => {
         activeTools: initialTools.activeTools,
         priorMessages: [],
         toolAvailability: {
-          mode: 'economy',
+          mode: 'search',
           enabledSourceIds: [],
           availableSourceIds: ['web'],
-          connectorToolName: LOAD_TOOLS_NAME,
+          connectorToolName: TOOL_SEARCH_NAME,
           visibleToolNamesBySource: groupCatalog,
         },
       },
@@ -8011,10 +8011,10 @@ describe('AiSdkBackend request-shape diagnostics', () => {
         activeTools: expandedTools.activeTools,
         priorMessages: [],
         toolAvailability: {
-          mode: 'economy',
+          mode: 'search',
           enabledSourceIds: ['web'],
           availableSourceIds: [],
-          connectorToolName: LOAD_TOOLS_NAME,
+          connectorToolName: TOOL_SEARCH_NAME,
           visibleToolNamesBySource: groupCatalog,
         },
       },
@@ -8052,7 +8052,7 @@ describe('AiSdkBackend request-shape diagnostics', () => {
     }
 
     assert.deepEqual(modelToolNames(model), sortedModelToolNames(['Read', 'WebFetch']));
-    assert.equal(modelToolNames(model).includes(LOAD_TOOLS_NAME), false);
+    assert.equal(modelToolNames(model).includes(TOOL_SEARCH_NAME), false);
     // toolCount tracks the model-visible (active) tools — the two real tools.
     // The invalid fallback lives in providerTools but is never advertised, so
     // it is not counted (toolCount is the wire-visible subset).

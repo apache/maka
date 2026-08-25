@@ -713,15 +713,7 @@ export interface AiSdkBackendInput extends AiSdkCompactionCapabilities {
     proposalId?: string;
     executionId?: string;
   };
-  /**
-   * Optional unified tool-availability config (issue #37). With `economy: true`,
-   * only core + ungrouped tools are advertised each turn; each group's tools are
-   * withheld until the model activates the group via `load_tools`, which takes
-   * effect in the next Runtime request projection and persists across turns via the
-   * RuntimeEvent ledger. Omitted or `economy: false` advertises every tool every
-   * turn (full surface). The runtime owns the catalog, connector, activation,
-   * gating, and diagnostics.
-   */
+  /** Search-space groups derived from the currently bound tool ceiling. */
   toolAvailability?: ToolAvailabilityConfig;
 
   // ── Optional knobs (defaults shown) ────────────────────────────────────
@@ -982,6 +974,8 @@ function sleepForProviderRetry(delayMs: number, signal: AbortSignal): Promise<vo
  */
 class TurnScope {
   readonly abortController = new AbortController();
+  /** Monotonic provider-visible activations owned by this one send(). */
+  readonly activeTools = new Map<string, MakaTool>();
   aborted = false;
   loopStopRequested = false;
   loopStopReason: CompleteEvent['stopReason'] | undefined;
@@ -1638,11 +1632,8 @@ export class AiSdkBackend implements AgentBackend {
     }
 
     // --- Build the provider-visible schema set. Tool execution stays in Runtime. ---
-    // One runtime owns provider-visible tool availability (issue #37): the
-    // catalog, the `load_tools` connector, same-turn activation between requests,
-    // the execute-boundary gating, and the diagnostics. Seed prior-turn group
-    // activations from the durable ledger (the current turn is excluded — it has
-    // not committed yet) so a group loaded earlier stays advertised.
+    // One immutable runtime owns the bound search catalog and cached index.
+    // Mutable activation belongs to this send's TurnScope.
     const requiredOrchestrationTools =
       scope.orchestration.mode === 'swarm'
         ? new Set([
@@ -1672,10 +1663,7 @@ export class AiSdkBackend implements AgentBackend {
       throw new Error('Tool name "exec" is reserved for Code Mode.');
     }
     const plan = projectToolModePlan(
-      this.toolAvailabilityRuntime.prepare(
-        (input.runtimeContext ?? []).filter((event) => event.turnId !== turnId),
-        requiredOrchestrationTools,
-      ),
+      this.toolAvailabilityRuntime.prepare(scope.activeTools, requiredOrchestrationTools),
       toolMode,
       codeModeExecTool,
     );
@@ -1683,7 +1671,7 @@ export class AiSdkBackend implements AgentBackend {
     let activeToolResultPruneDiagnosticPatch: ActiveToolResultPruneDiagnosticPatch = {};
     let midTurnCompactDiagnosticPatch: Partial<ContextBudgetDiagnostic> | undefined;
     // Tool names the repair path matches a mis-cased call against — follows the
-    // current step's snapshot so a group loaded mid-turn is repairable on the
+    // current step's snapshot so a tool activated mid-turn is repairable on the
     // step it becomes active, not routed to `invalid`.
     const currentRepairToolNames = plan.currentRepairToolNames;
     if (plan.gating) {

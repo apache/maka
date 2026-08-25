@@ -18,7 +18,7 @@
  */
 
 /**
- * Derive HostCapabilities and deferred ToolAvailability groups from the shared
+ * Derive HostCapabilities and searchable ToolAvailability groups from the shared
  * tool catalog ∩ host binding (#1099). Hosts still construct MakaTool
  * instances; this module only projects names and surface metadata.
  */
@@ -35,12 +35,10 @@ import type { ToolGroup } from './tool-availability.js';
 import type { MakaTool } from './tool-runtime.js';
 
 export interface ProductToolSurfacePolicy {
-  readonly economy: boolean;
   readonly disabledSurfaceIds?: Iterable<string>;
 }
 
 export interface NormalizedProductToolSurfacePolicy {
-  readonly economy: boolean;
   readonly disabledSurfaceIds: readonly string[];
 }
 
@@ -55,7 +53,6 @@ export interface EffectiveProductToolSurface {
   readonly productToolNames: readonly string[];
   readonly hostCapabilities: HostCapabilities;
   readonly toolAvailability: {
-    readonly economy: boolean;
     readonly groups: readonly ToolGroup[];
   };
   readonly boundSurfaceIds: readonly string[];
@@ -125,7 +122,7 @@ export function projectEffectiveProductToolSurface(input: {
   const boundToolNames = new Set(tools.map((tool) => tool.name));
   const toolNames = readonlySetSnapshot(boundToolNames);
   const productToolNames = [...boundToolNames].filter((name) => catalogToolByName(name)).sort();
-  const groups = buildDeferredToolGroupsFromCatalog(input.host, boundToolNames).map((group) =>
+  const groups = buildSearchableToolGroupsFromCatalog(input.host, boundToolNames).map((group) =>
     Object.freeze({
       ...group,
       toolNames: Object.freeze([...group.toolNames]),
@@ -133,7 +130,6 @@ export function projectEffectiveProductToolSurface(input: {
   );
   const hostCapabilities = buildHostCapabilitiesFromBinding(boundToolNames);
   const policy = Object.freeze({
-    economy: input.policy.economy,
     disabledSurfaceIds: Object.freeze(disabledSurfaceIds),
   });
   return Object.freeze({
@@ -142,7 +138,6 @@ export function projectEffectiveProductToolSurface(input: {
     productToolNames: Object.freeze(productToolNames),
     hostCapabilities,
     toolAvailability: Object.freeze({
-      economy: input.policy.economy,
       groups: Object.freeze(groups),
     }),
     boundSurfaceIds: Object.freeze(groups.map((group) => group.id)),
@@ -174,18 +169,18 @@ export function buildHostCapabilitiesFromBinding(
 }
 
 /**
- * Deferred `load_tools` groups for a host: catalog surfaces that are supported
- * on the host, deferred, and have at least one bound member. Unsupported
+ * Searchable tool groups for a host: catalog surfaces that are supported on
+ * the host and have at least one bound member. Unsupported
  * affinity never appears, even if a name were somehow bound.
  */
-export function buildDeferredToolGroupsFromCatalog(
+export function buildSearchableToolGroupsFromCatalog(
   host: ToolHostId,
   boundToolNames: Iterable<string>,
 ): ToolGroup[] {
   const bound = boundToolNames instanceof Set ? boundToolNames : new Set(boundToolNames);
   const groups: ToolGroup[] = [];
   for (const surface of MAKA_CATALOG_SURFACES) {
-    if (surface.economy !== 'deferred') continue;
+    if (surface.availability !== 'searchable') continue;
     if (surface.hosts[host] !== 'supported') continue;
     const toolNames = surface.toolNames.filter((name) => bound.has(name));
     if (toolNames.length === 0) continue;

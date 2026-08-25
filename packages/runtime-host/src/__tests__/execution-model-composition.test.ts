@@ -644,7 +644,7 @@ test('production backend creation continues after a Session Client Capability is
   }
 });
 
-test('production backend preserves coordinator Client Capability semantics across load_tools and T1', async () => {
+test('production backend preserves coordinator Client Capability semantics across tool_search and T1', async () => {
   const sessionId = 'backend-creation-session';
   const turnId = 'client-capability-turn';
   const runId = 'client-capability-run';
@@ -814,9 +814,9 @@ test('production backend preserves coordinator Client Capability semantics acros
       .filter((request) => request.body.stream === true)
       .map((request) => toolNames(request.body));
     assert.equal(providerToolSets.length, 3);
-    assert.ok(providerToolSets[0]?.includes('load_tools'));
+    assert.ok(providerToolSets[0]?.includes('tool_search'));
     assert.equal(providerToolSets[0]?.includes(tool.name), false);
-    assert.ok(providerToolSets[1]?.includes('load_tools'));
+    assert.ok(providerToolSets[1]?.includes('tool_search'));
     assert.ok(providerToolSets[1]?.includes(tool.name));
     assert.ok(providerToolSets[2]?.includes(tool.name));
   } finally {
@@ -1218,7 +1218,6 @@ test('production Host executes a canonical ai-sdk Session against a real provide
       'WebFetch',
       'Write',
       'WriteStdin',
-      'load_tools',
       'memory_extract',
       'memory_remember',
       'request_sandbox_boundary',
@@ -1226,6 +1225,7 @@ test('production Host executes a canonical ai-sdk Session against a real provide
       'task_get',
       'task_list',
       'task_update',
+      'tool_search',
     ]);
     assert.match(JSON.stringify(compactRequests[0]?.body), /context summarization assistant/);
 
@@ -1641,7 +1641,7 @@ test('production Host executes a durable runnable child with an exact tool ceili
 
     const requests = provider.requests.filter((request) => request.body.stream === true);
     assert.equal(requests.length, 4);
-    assert.ok(toolNames(requests[0]?.body).includes('load_tools'));
+    assert.ok(toolNames(requests[0]?.body).includes('tool_search'));
     assert.equal(toolNames(requests[0]?.body).includes('agent_spawn'), false);
     assert.ok(toolNames(requests[1]?.body).includes('agent_spawn'));
     // The same routed child surface removes web_research when Tavily cannot run.
@@ -1842,7 +1842,7 @@ test('production Host publishes and retires an implementation child patch', asyn
         requests.length <= MAX_IMPLEMENTATION_CHILD_REQUESTS + 3,
       JSON.stringify(providerRequestTrace(requests)),
     );
-    assert.ok(toolNames(requests[0]?.body).includes('load_tools'));
+    assert.ok(toolNames(requests[0]?.body).includes('tool_search'));
     assert.equal(toolNames(requests[0]?.body).includes('agent_spawn'), false);
     assert.ok(toolNames(requests[1]?.body).includes('agent_spawn'));
     assert.deepEqual(toolParameterEnum(requests[1]?.body, 'agent_spawn', 'profile'), [
@@ -3706,9 +3706,11 @@ async function handleProviderRequest(
     (flow.kind === 'child_agent' || flow.kind === 'implementation_child_agent') &&
     streamRequestIndex === 1
   ) {
-    assert.ok(toolNames(body).includes('load_tools'));
+    assert.ok(toolNames(body).includes('tool_search'));
     assert.equal(toolNames(body).includes('agent_spawn'), false);
-    respondProviderToolCall(response, streamRequestIndex, 'load_tools', { group: 'agent' });
+    respondProviderToolCall(response, streamRequestIndex, 'tool_search', {
+      query: 'agent_spawn',
+    });
     return;
   }
   if (
@@ -3811,9 +3813,9 @@ async function handleProviderRequest(
     return;
   }
   if (flow.kind === 'client_capability' && streamRequestIndex === 1) {
-    assert.ok(toolNames(body).includes('load_tools'));
-    respondProviderToolCall(response, streamRequestIndex, 'load_tools', {
-      group: flow.groupId,
+    assert.ok(toolNames(body).includes('tool_search'));
+    respondProviderToolCall(response, streamRequestIndex, 'tool_search', {
+      query: flow.toolName,
     });
     return;
   }

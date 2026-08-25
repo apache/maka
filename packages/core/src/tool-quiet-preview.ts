@@ -323,7 +323,7 @@ export function formatQuietJsonValue(value: unknown, locale: UiLocale = 'zh'): Q
     return { body: redactSecrets(String(value)) };
   }
 
-  // Known list payloads (Grep/Glob/load_tools/…).
+  // Known list payloads (Grep/Glob/tool_search/…).
   for (const key of LIST_KEYS) {
     if (!Array.isArray(record[key])) continue;
     const consumed = new Set<string>([key]);

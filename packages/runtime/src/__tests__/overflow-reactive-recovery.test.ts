@@ -70,7 +70,7 @@ const OVERFLOW_MESSAGE = 'prompt is too long: 213462 tokens > 200000 maximum';
  *  - 'bigread'  → a pure Read with a huge result and NO step text, so the
  *                 durable pair is the trailing span a recovery fold must keep
  *                 verbatim in the tail (the prune-resurrection shape)
- *  - 'load'     → a `load_tools` call activating the gated 'big' group
+ *  - 'load'     → a `tool_search` call activating the deferred Big tool
  *  - 'gated'    → a call to the gated `Big` tool
  *  - 'done'     → final assistant text, finish stop
  *  - 'overflow' → the provider rejects with a context-length 400 (doStream
@@ -147,7 +147,7 @@ interface ReactiveFixtureOptions {
   maxSteps?: number;
   /** The FIRST tool step reports an unusable usage object (no token counts). */
   firstStepUsageMissing?: boolean;
-  /** Economy tool availability with the gated `Big` tool behind `load_tools`. */
+  /** Tool-search availability with the deferred `Big` tool. */
   gatedToolGroup?: boolean;
   /**
    * appendMessage yields several macrotasks before resolving, so the durable
@@ -389,7 +389,7 @@ function buildReactiveFixture(options: ReactiveFixtureOptions): ReactiveFixture 
           : kind === 'bigread'
             ? toolCallChunks(call, 'Read', { path: 'big.md' })
             : kind === 'load'
-              ? toolCallChunks(call, 'load_tools', { group: 'big' })
+              ? toolCallChunks(call, 'tool_search', { query: 'Big' })
               : kind === 'gated'
                 ? toolCallChunks(call, 'Big', { q: 'run' })
                 : doneChunks();
@@ -596,7 +596,7 @@ function buildReactiveFixture(options: ReactiveFixtureOptions): ReactiveFixture 
         : []),
     ],
     ...(options.gatedToolGroup
-      ? { toolAvailability: { economy: true, groups: [{ id: 'big', toolNames: ['Big'] }] } }
+      ? { toolAvailability: { groups: [{ id: 'big', toolNames: ['Big'] }] } }
       : {}),
     contextBudget: {
       name: 'reactive-test',
@@ -1492,7 +1492,7 @@ describe('reactive overflow recovery in the streaming backend', () => {
     assert.equal(inTail || inCoveredSpan, true);
   });
 
-  test('a same-turn load_tools activation survives the retry (review P1-B)', async () => {
+  test('a same-turn tool_search activation survives the retry (review P1-B)', async () => {
     // Review round-2 P1-B repro: active tools were re-derived per streamText
     // call from seed groups + that call's own steps. The retry's steps start
     // empty, so a group loaded before the overflow was silently revoked — the

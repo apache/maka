@@ -274,7 +274,7 @@ const REFUSAL_PATHS: Array<{
   },
   {
     name: 'deferred tool used before its load',
-    expect: /load_tools/,
+    expect: /tool_search/,
     drive: async (h) => {
       const runtime = runtimeFor(h);
       runtime.setGating({ gatedNames: new Set(['Deferred']), activeNames: () => new Set() });

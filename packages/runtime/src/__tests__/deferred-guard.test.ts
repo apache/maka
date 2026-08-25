@@ -178,11 +178,11 @@ describe('tool-availability execute-boundary guard', () => {
   test('rejects a gated tool absent from the step snapshot before implementation', async () => {
     const h = makeHarness();
     const implCalls: string[] = [];
-    // The same-step trap: the browser group was just requested via load_tools
+    // The same-step trap: browser_click was just returned by tool_search
     // but is not yet active this step, so browser_click must be rejected.
     h.runtime.setGating({
       gatedNames: new Set(['browser_click']),
-      activeNames: () => new Set(['Read', 'load_tools']),
+      activeNames: () => new Set(['Read', 'tool_search']),
     });
 
     const result = await run(h, tool('browser_click', implCalls));
@@ -205,7 +205,7 @@ describe('tool-availability execute-boundary guard', () => {
     const implCalls: string[] = [];
     h.runtime.setGating({
       gatedNames: new Set(['browser_click']),
-      activeNames: () => new Set(['Read', 'load_tools', 'browser_click']),
+      activeNames: () => new Set(['Read', 'tool_search', 'browser_click']),
     });
 
     const t = tool('browser_click', implCalls);
@@ -218,7 +218,7 @@ describe('tool-availability execute-boundary guard', () => {
     );
   });
 
-  test('is inert when no gating is installed (economy off)', async () => {
+  test('is inert when no gating is installed', async () => {
     const h = makeHarness();
     const implCalls: string[] = [];
     // No setGating call: any tool must execute as before.

@@ -21,11 +21,10 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import {
   assertProductBindingCatalogClean,
-  buildDeferredToolGroupsFromCatalog,
+  buildSearchableToolGroupsFromCatalog,
   projectEffectiveProductToolSurface,
 } from '../tool-catalog-derive.js';
 import type { MakaTool } from '../tool-runtime.js';
-import { LOAD_TOOLS_NAME, ToolAvailabilityRuntime } from '../tool-availability.js';
 
 function tool(name: string): MakaTool {
   return {
@@ -50,7 +49,6 @@ describe('projectEffectiveProductToolSurface', () => {
         tool('mcp__server__tool'),
       ],
       policy: {
-        economy: true,
         disabledSurfaceIds: ['agent'],
       },
     });
@@ -65,7 +63,7 @@ describe('projectEffectiveProductToolSurface', () => {
     const surface = projectEffectiveProductToolSurface({
       host: 'cli',
       tools: [tool('Read'), tool('browser_navigate'), tool('mcp__server__tool')],
-      policy: { economy: true },
+      policy: {},
     });
 
     assert.deepEqual(
@@ -78,7 +76,7 @@ describe('projectEffectiveProductToolSurface', () => {
     const surface = projectEffectiveProductToolSurface({
       host: 'desktop',
       tools: [tool('Read'), tool('Grep')],
-      policy: { economy: true },
+      policy: {},
     });
 
     assert.deepEqual(
@@ -97,7 +95,6 @@ describe('projectEffectiveProductToolSurface', () => {
           host: 'cli',
           tools: [tool('Read')],
           policy: {
-            economy: true,
             disabledSurfaceIds: ['agnet'],
           },
         }),
@@ -106,9 +103,9 @@ describe('projectEffectiveProductToolSurface', () => {
   });
 });
 
-describe('buildDeferredToolGroupsFromCatalog', () => {
+describe('buildSearchableToolGroupsFromCatalog', () => {
   it('includes only supported deferred surfaces that have bound members', () => {
-    const groups = buildDeferredToolGroupsFromCatalog('desktop', [
+    const groups = buildSearchableToolGroupsFromCatalog('desktop', [
       'Read',
       'maka_computer',
       'agent_spawn',
@@ -132,7 +129,7 @@ describe('buildDeferredToolGroupsFromCatalog', () => {
       'agent_list',
       'agent_output',
     ];
-    const groups = buildDeferredToolGroupsFromCatalog('cli', bound);
+    const groups = buildSearchableToolGroupsFromCatalog('cli', bound);
     assert.deepEqual(
       groups.map((group) => group.id),
       ['agent'],

@@ -61,6 +61,7 @@ export type RunTraceEventType =
   | 'model_stream_failed'
   | 'send_diagnostics_recorded'
   | 'tool_started'
+  | 'tool_searched'
   | 'tool_completed'
   | 'tool_failed'
   | 'skill_catalog_built'

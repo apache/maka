@@ -198,6 +198,7 @@ export interface MakaToolContext {
   emitRunTrace?: (
     type:
       | 'tool_started'
+      | 'tool_searched'
       | 'tool_completed'
       | 'tool_failed'
       | 'skill_searched'
@@ -294,12 +295,9 @@ export type AppendMessageFn = (m: ToolCallMessage | ToolResultMessage) => Promis
 export type ToolTelemetryRecorder = (record: ToolInvocationRecord) => void;
 
 /**
- * Per-step tool-availability gating for the execute boundary. `ToolAvailabilityRuntime`
- * installs it each turn: `gatedNames` is the static set of tools that may be
- * hidden this turn (group members when economy is on); `activeNames` returns the
- * model-visible set for the step currently executing, recomputed before each
- * step. The guard rejects a *gated* tool that is not yet active — core tools and
- * the repair fallback are never in `gatedNames`, so they are never gated.
+ * Per-step tool-availability gating for the execute boundary. `gatedNames` is
+ * the immutable searchable set and `activeNames` returns the model-visible
+ * snapshot for the step currently executing.
  */
 export interface ToolGating {
   gatedNames: ReadonlySet<string>;
@@ -507,8 +505,7 @@ export class ToolRuntime {
   private childAgentRunLimiter = new AdmissionLimiter(MAX_ACTIVE_CHILD_AGENT_RUNS_PER_TURN);
   /**
    * Tool-availability gating for the execute boundary. Set by the backend each
-   * turn from `ToolAvailabilityRuntime`. Undefined when gating is off (economy
-   * off / no hidden groups) — the guard is then fully inert.
+   * turn from `ToolAvailabilityRuntime`. Undefined when nothing is searchable.
    */
   private gating?: ToolGating;
   /**
@@ -1217,13 +1214,9 @@ export class ToolRuntime {
       return this.errorReturn(reason);
     }
 
-    // Tool-availability execute-boundary guard (Codex Δ5). Uses the step-start
-    // snapshot, NOT a cumulative loaded-set: if one step emits `load_tools(g)`
-    // and a tool from group `g` in parallel, that tool is not yet active (it
-    // activates only in the next request projection), so it is rejected here —
-    // before permission eval and before the real impl. This also closes the AI
-    // SDK `activeTools` leak (vercel/ai#8653). The rejection is recoverable: the
-    // model loads via `load_tools`, then retries next step.
+    // Tool-availability execute-boundary guard. Uses the step-start snapshot,
+    // NOT the turn's live activation map: a tool_search result becomes callable
+    // only on the next provider step.
     if (deferredToolNotLoaded) {
       const reason = formatDeferredNotLoadedText(tool.name);
       await refuseBeforeDispatch(reason);
@@ -1363,6 +1356,7 @@ export class ToolRuntime {
                 emitRunTrace: (
                   type:
                     | 'tool_started'
+                    | 'tool_searched'
                     | 'tool_completed'
                     | 'tool_failed'
                     | 'skill_searched'
@@ -2614,14 +2608,13 @@ function racePromiseWithAbort<T>(promise: Promise<T>, signal: AbortSignal): Prom
 }
 
 /**
- * Recoverable message returned when a gated tool is invoked before its group is
- * loaded. Tells the model exactly how to self-correct: load via `load_tools`,
- * then retry on a later step.
+ * Recoverable message returned when a searchable tool is invoked before it is
+ * active in the current step snapshot.
  */
 export function formatDeferredNotLoadedText(toolName: string): string {
   return (
     `Tool "${toolName}" is available but not loaded yet. ` +
-    `Call load_tools to load its group first, then call "${toolName}" on a later step.`
+    `Call tool_search to activate it first, then call "${toolName}" on a later step.`
   );
 }
 
