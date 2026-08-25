@@ -1173,7 +1173,8 @@ export function renderMakaPiTranscript(
     lines.push(
       ...renderTranscriptEntryMemoized(entry, safeWidth, fullyOffScreen, metadata.uiLocale ?? 'en'),
     );
-    previousVisibleEntry = entry;  }
+    previousVisibleEntry = entry;
+  }
   state.renderGeometry.entryFirstLine = entryFirstLine;
 
   if (state.pendingInteraction?.type === 'sandbox_boundary_request') {
@@ -1844,7 +1845,8 @@ function transcriptErrorMessage(entry: MakaPiNoticeEntry, locale: UiLocale): str
           timeout: 'Request timed out',
           auth: 'Authentication failed',
           provider_billing: 'Provider billing required',
-          provider_capacity: 'The model service is temporarily at capacity. Wait and retry, or switch models.',
+          provider_capacity:
+            'The model service is temporarily at capacity. Wait and retry, or switch models.',
           provider_permission: 'Provider access denied',
           provider_unavailable: 'Provider returned an error',
           rate_limit: 'Rate limit exceeded',
