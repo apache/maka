@@ -184,7 +184,7 @@ describe('ModelAdapter stream and error normalization', () => {
       { type: 'unknown-provider-chunk' },
     ];
 
-    const events: ModelStreamEvent[] = chunks.flatMap((chunk) => adapter.translateChunk(chunk));
+    const events = chunks.flatMap((chunk) => adapter.translateChunk(chunk));
 
     // Tool results and unknown chunks are inert; returned tool calls and errors
     // cross the adapter as Maka-owned events.
@@ -482,7 +482,7 @@ describe('ModelAdapter stream and error normalization', () => {
       { type: 'text-delta', text: 'two' },
       { type: 'finish-step', finishReason: { unified: 'stop', raw: 'stop' } },
     ];
-    const events: ModelStreamEvent[] = chunks.flatMap((chunk) => adapter.translateChunk(chunk));
+    const events = chunks.flatMap((chunk) => adapter.translateChunk(chunk));
 
     assert.deepEqual(
       events.map((event) => event.kind),
@@ -494,9 +494,7 @@ describe('ModelAdapter stream and error normalization', () => {
         .map((event) => (event as { text: string }).text),
       ['one', 'two'],
     );
-    const stepFinishes = events.filter((event) => event.kind === 'step-finish') as Array<
-      Extract<ModelStreamEvent, { kind: 'step-finish' }>
-    >;
+    const stepFinishes = events.filter((event) => event.kind === 'step-finish');
     assert.deepEqual(
       stepFinishes.map((event) => event.finishReason),
       ['tool_calls', 'stop'],
@@ -522,7 +520,7 @@ describe('ModelAdapter stream and error normalization', () => {
       },
       { type: 'reasoning-end' },
     ];
-    const events: ModelStreamEvent[] = chunks.flatMap((chunk) => adapter.translateChunk(chunk));
+    const events = chunks.flatMap((chunk) => adapter.translateChunk(chunk));
 
     assert.deepEqual(
       events.map((event) => event.kind),

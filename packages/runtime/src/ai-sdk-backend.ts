@@ -157,8 +157,6 @@ import {
 import type { RuntimeCommitSink } from './runtime-commit-sink.js';
 import type { SubagentExecutionRef } from './subagent-execution.js';
 import {
-  classifyModelFinishBoundary,
-  isModelResponseEvidence,
   ModelAdapter,
   type ModelFactoryInput,
   type NormalizedAiSdkUsage,
@@ -2250,12 +2248,8 @@ export class AiSdkBackend implements AgentBackend {
             let attemptSawText = false;
             let attemptSawToolActivity = false;
             let attemptSawContinuationMetadata = false;
-            let attemptSawResponseEvidence = false;
             let attemptReachedStepBoundary = false;
-            let latestStepFinishHadUsableUsage: boolean | undefined;
             let attemptRecordedSettledUsage = false;
-            const attemptHasNoObservableOutput = () =>
-              !attemptSawResponseEvidence && !attemptReachedStepBoundary;
             const attemptCanRecoverFromIdleTimeout = () =>
               !attemptSawText &&
               !attemptSawToolActivity &&
@@ -2325,20 +2319,9 @@ export class AiSdkBackend implements AgentBackend {
                 // trailer and consume the one authoritative outcome below.
                 break;
               }
-              if (isModelResponseEvidence(event)) attemptSawResponseEvidence = true;
-              if (event.kind === 'step-finish') {
-                latestStepFinishHadUsableUsage = event.usage !== undefined;
-              }
               const finishDisposition =
                 event.kind === 'finish' || event.kind === 'step-finish'
-                  ? classifyModelFinishBoundary({
-                      finishReason: event.finishReason,
-                      hasResponseEvidence: attemptSawResponseEvidence,
-                      hasUsableStepUsage:
-                        event.kind === 'step-finish'
-                          ? event.usage !== undefined
-                          : (latestStepFinishHadUsableUsage ?? true),
-                    })
+                  ? event.disposition
                   : undefined;
               const authoritativeFinish = finishDisposition === 'authoritative';
               if (authoritativeFinish) {
@@ -2547,7 +2530,9 @@ export class AiSdkBackend implements AgentBackend {
             }
             const incompleteStreamTerminal = providerOutcome.kind === 'truncated';
             const incompleteStreamHasNoObservableOutput =
-              incompleteStreamTerminal && !attemptSawResponseEvidence;
+              incompleteStreamTerminal && !providerOutcome.hasResponseEvidence;
+            const attemptHasNoObservableOutput =
+              !providerOutcome.hasResponseEvidence && !attemptReachedStepBoundary;
             const attemptFailure =
               settledWatchdogTimeout?.error ??
               (providerOutcome.kind === 'completed' ? undefined : providerOutcome.failure);
@@ -2566,7 +2551,7 @@ export class AiSdkBackend implements AgentBackend {
               // nothing left to grant it, so the error is terminal.
               const stepBudgetRemains = maxSteps === undefined || runtimeSteps < maxSteps;
               const recovered =
-                stepBudgetRemains && attemptHasNoObservableOutput()
+                stepBudgetRemains && attemptHasNoObservableOutput
                   ? await this.compaction.recoverFromOverflowError({
                       error: attemptFailure,
                       retryAlreadyUsed: overflowRetryUsed,
@@ -2623,7 +2608,7 @@ export class AiSdkBackend implements AgentBackend {
                 failure.kind !== 'context_overflow' &&
                 providerAttempt < MAX_PROVIDER_ATTEMPTS_PER_STEP &&
                 stepBudgetRemains &&
-                (attemptHasNoObservableOutput() || idleWatchdogRecovery || incompleteStreamRecovery)
+                (attemptHasNoObservableOutput || idleWatchdogRecovery || incompleteStreamRecovery)
               ) {
                 if (idleWatchdogRecovery) {
                   idleWatchdogRetryCount += 1;

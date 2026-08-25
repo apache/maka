@@ -35,6 +35,7 @@ import type {
   ModelStreamEvent,
   ModelStreamResult,
   ModelStepOutcome,
+  ModelFinishDisposition,
   ModelFinishReason,
   ModelFailure,
   ModelFailureKind,
@@ -48,12 +49,19 @@ export type {
   ModelStreamEvent,
   ModelStreamResult,
   ModelStepOutcome,
+  ModelFinishDisposition,
   ModelFinishReason,
   ModelFailure,
   ModelFailureKind,
   ModelRequestMetadata,
   ModelToolSet,
 } from './model-protocol.js';
+
+type ModelFinishBoundaryEvent = Extract<ModelStreamEvent, { kind: 'step-finish' | 'finish' }>;
+type UnclassifiedModelStreamEvent =
+  | Exclude<ModelStreamEvent, ModelFinishBoundaryEvent>
+  | Omit<Extract<ModelStreamEvent, { kind: 'step-finish' }>, 'disposition'>
+  | Omit<Extract<ModelStreamEvent, { kind: 'finish' }>, 'disposition'>;
 
 import { resolveModelRuntime, type ResolvedModelRuntime } from './model-runtime.js';
 import {
@@ -336,22 +344,48 @@ export class ModelAdapter {
       async *[Symbol.asyncIterator]() {
         let failure: ModelFailure | undefined;
         let sawFinish = false;
-        let hasResponseEvidence = false;
+        let requestHasResponseEvidence = false;
+        let stepHasResponseEvidence = false;
         let latestStepFinishHadUsableUsage: boolean | undefined;
         let streamedFinishReason: string | undefined;
+        let streamedFinishDisposition: ModelFinishDisposition | undefined;
         try {
           for await (const chunk of sdk.stream as AsyncIterable<AiSdkStreamChunk>) {
             onStreamActivity();
-            for (const event of translateChunk(chunk, openAiChatReasoningTransportState)) {
-              if (isModelResponseEvidence(event)) hasResponseEvidence = true;
-              if (event.kind === 'error') failure = event.failure;
+            // AI SDK emits start-step before each provider step. Keep the
+            // request-level fact monotonic for retry safety, but do not let a
+            // previous step's evidence or usage authorize a later empty stop.
+            if (chunk.type === 'start-step') {
+              stepHasResponseEvidence = false;
+              latestStepFinishHadUsableUsage = undefined;
+            }
+            for (const translated of translateChunk(chunk, openAiChatReasoningTransportState)) {
+              if (isModelResponseEvidence(translated)) {
+                requestHasResponseEvidence = true;
+                stepHasResponseEvidence = true;
+              }
+              if (translated.kind === 'error') failure = translated.failure;
+              if (translated.kind !== 'finish' && translated.kind !== 'step-finish') {
+                yield translated;
+                continue;
+              }
+
+              const hasUsableStepUsage =
+                translated.kind === 'step-finish'
+                  ? translated.usage !== undefined
+                  : (latestStepFinishHadUsableUsage ?? translated.usage !== undefined);
+              const disposition = classifyModelFinishBoundary({
+                finishReason: translated.finishReason,
+                hasResponseEvidence: stepHasResponseEvidence,
+                hasUsableStepUsage,
+              });
+              const event: ModelFinishBoundaryEvent = { ...translated, disposition };
               if (event.kind === 'finish') sawFinish = true;
               if (event.kind === 'step-finish') {
                 latestStepFinishHadUsableUsage = event.usage !== undefined;
               }
-              if (event.kind === 'finish' || event.kind === 'step-finish') {
-                streamedFinishReason = event.finishReason ?? streamedFinishReason;
-              }
+              streamedFinishReason = event.finishReason ?? streamedFinishReason;
+              streamedFinishDisposition = disposition;
               yield event;
             }
           }
@@ -371,10 +405,10 @@ export class ModelAdapter {
             failure,
             sawFinish,
             finishReason,
+            finishDisposition: streamedFinishDisposition ?? 'incomplete',
             usage,
             request,
-            hasResponseEvidence,
-            hasUsableStepUsage: latestStepFinishHadUsableUsage ?? usage !== undefined,
+            hasResponseEvidence: requestHasResponseEvidence,
           });
 
           try {
@@ -424,12 +458,11 @@ export class ModelAdapter {
 
   /**
    * Translate one raw AI SDK stream chunk into zero or more Maka-owned
-   * `ModelStreamEvent`s. This is the sole place that parses SDK chunk names
-   * (`text-delta` / `reasoning-delta` / `finish-step` / `finish` / `error` / …);
-   * the backend never sees them. Pure and side-effect-free so it is directly
-   * testable through the Maka-owned event contract.
+   * event candidates. Finish-boundary disposition depends on stream-level
+   * evidence and is stamped by `toModelStreamResult`; this pure hook only
+   * exposes raw-chunk lowering for focused adapter tests.
    */
-  translateChunk(chunk: AiSdkStreamChunk): ModelStreamEvent[] {
+  translateChunk(chunk: AiSdkStreamChunk): UnclassifiedModelStreamEvent[] {
     return translateChunk(
       chunk,
       this.runtime.reasoningReplay.kind === 'openai-chat-plaintext'
@@ -481,14 +514,13 @@ interface ModelStepSettlementEvidence {
   failure?: ModelFailure;
   sawFinish: boolean;
   finishReason: ModelFinishReason;
+  finishDisposition: ModelFinishDisposition;
   usage?: NormalizedUsage;
   request: ModelRequestMetadata;
   hasResponseEvidence: boolean;
-  hasUsableStepUsage: boolean;
 }
 
-/** @internal Shared response-evidence contract for settlement and retry safety. */
-export function isModelResponseEvidence(event: ModelStreamEvent): boolean {
+function isModelResponseEvidence(event: UnclassifiedModelStreamEvent): boolean {
   switch (event.kind) {
     case 'text':
       return event.text.length > 0;
@@ -508,13 +540,12 @@ export function isModelResponseEvidence(event: ModelStreamEvent): boolean {
   }
 }
 
-/** @internal Classify a live finish boundary before step side effects are committed. */
-export function classifyModelFinishBoundary(input: {
+function classifyModelFinishBoundary(input: {
   finishReason: ModelFinishReason | undefined;
   hasResponseEvidence: boolean;
   hasUsableStepUsage: boolean;
 }): 'authoritative' | 'incomplete' | 'retryable-network-failure' {
-  if (input.finishReason === 'network_error') return 'retryable-network-failure';
+  if (input.finishReason === NETWORK_ERROR_FINISH_REASON) return 'retryable-network-failure';
   if (
     input.finishReason === undefined ||
     input.finishReason === 'other' ||
@@ -534,10 +565,10 @@ export function settleModelStepOutcome(evidence: ModelStepSettlementEvidence): M
     failure,
     sawFinish,
     finishReason,
+    finishDisposition,
     usage,
     request,
     hasResponseEvidence,
-    hasUsableStepUsage,
   } = evidence;
   if (aborted || failure?.kind === 'abort') {
     return failedStepOutcome(
@@ -545,6 +576,7 @@ export function settleModelStepOutcome(evidence: ModelStepSettlementEvidence): M
       failure ?? normalizeModelFailure(Object.assign(new Error('aborted'), { name: 'AbortError' })),
       request,
       usage,
+      hasResponseEvidence,
     );
   }
   if (failure) {
@@ -553,13 +585,9 @@ export function settleModelStepOutcome(evidence: ModelStepSettlementEvidence): M
       failure,
       request,
       usage,
+      hasResponseEvidence,
     );
   }
-  const finishDisposition = classifyModelFinishBoundary({
-    finishReason,
-    hasResponseEvidence,
-    hasUsableStepUsage,
-  });
   if (finishDisposition === 'retryable-network-failure') {
     return failedStepOutcome(
       'retryable-failure',
@@ -572,6 +600,7 @@ export function settleModelStepOutcome(evidence: ModelStepSettlementEvidence): M
       },
       request,
       usage,
+      hasResponseEvidence,
     );
   }
   if (!sawFinish || finishDisposition === 'incomplete') {
@@ -585,6 +614,7 @@ export function settleModelStepOutcome(evidence: ModelStepSettlementEvidence): M
       ),
       request,
       usage,
+      hasResponseEvidence,
     );
   }
   if (finishReason === 'content-filter' || finishReason === 'error') {
@@ -598,6 +628,7 @@ export function settleModelStepOutcome(evidence: ModelStepSettlementEvidence): M
       ),
       request,
       usage,
+      hasResponseEvidence,
     );
   }
   return {
@@ -606,6 +637,7 @@ export function settleModelStepOutcome(evidence: ModelStepSettlementEvidence): M
     ...(usage ? { usage } : {}),
     request,
     continuation: 'none',
+    hasResponseEvidence,
   };
 }
 
@@ -617,7 +649,8 @@ function failedStepOutcome(
   kind: Exclude<ModelStepOutcome['kind'], 'completed'>,
   failure: ModelFailure,
   request: ModelRequestMetadata,
-  usage?: NormalizedUsage,
+  usage: NormalizedUsage | undefined,
+  hasResponseEvidence: boolean,
 ): Exclude<ModelStepOutcome, { kind: 'completed' }> {
   return {
     kind,
@@ -625,6 +658,7 @@ function failedStepOutcome(
     ...(usage ? { usage } : {}),
     request,
     continuation: 'none',
+    hasResponseEvidence,
   };
 }
 
@@ -694,6 +728,7 @@ interface AiSdkStreamChunk {
   output?: unknown;
   isError?: boolean;
   usage?: AiSdkUsageLike;
+  totalUsage?: AiSdkUsageLike;
   finishReason?: unknown;
   /** What the provider itself called it, before the SDK bucketed it. */
   rawFinishReason?: unknown;
@@ -723,15 +758,24 @@ interface SdkStreamResult {
  * own spelling. Unified is the right thing to forward — `RuntimeKernel` and
  * the backend compare against `'tool-calls'`, which is a name only the SDK
  * uses. Except when unified is `other`, which is not a reason but the SDK
- * declining to name one; there it hides the only distinction that matters
- * downstream. `other` with a provider spelling is a model that stopped for a
- * reason we have no case for — an ordinary finished turn. `other` with nothing
- * behind it is a stream that died without anyone saying so.
+ * declining to name one. Known provider spellings with established semantics
+ * are mapped to Maka's canonical vocabulary here; unknown raw spellings still
+ * pass through for tolerant forward compatibility. `other` with nothing
+ * behind it remains an unnamed, incomplete stream.
  */
+const NETWORK_ERROR_FINISH_REASON = 'network-error';
+const RAW_FINISH_REASON_ALIASES = new Map<string, ModelFinishReason>([
+  ['network_error', NETWORK_ERROR_FINISH_REASON],
+  ['sensitive', 'content-filter'],
+]);
+
 function chunkFinishReason(chunk: AiSdkStreamChunk): string | undefined {
   const unified = rawFinishReasonString(chunk.finishReason);
-  if (unified !== 'other' && unified !== 'unknown') return unified;
-  return rawFinishReasonString(chunk.rawFinishReason) ?? unified;
+  if (unified !== 'other' && unified !== 'unknown') {
+    return unified === undefined ? undefined : (RAW_FINISH_REASON_ALIASES.get(unified) ?? unified);
+  }
+  const raw = rawFinishReasonString(chunk.rawFinishReason);
+  return raw === undefined ? unified : (RAW_FINISH_REASON_ALIASES.get(raw) ?? raw);
 }
 
 /**
@@ -778,7 +822,7 @@ function openAiResponsesReasoningProviderOptionsFromChunk(
 function translateChunk(
   chunk: AiSdkStreamChunk,
   openAiChatReasoningTransportState?: OpenAiChatReasoningTransportState,
-): ModelStreamEvent[] {
+): UnclassifiedModelStreamEvent[] {
   switch (chunk.type) {
     case 'text-start':
       return [{ kind: 'text-start' }];
@@ -865,7 +909,16 @@ function translateChunk(
     }
     case 'finish': {
       const finishReason = chunkFinishReason(chunk);
-      return [{ kind: 'finish', ...(finishReason ? { finishReason } : {}) }];
+      const usage = normalizeAiSdkUsage(chunk.totalUsage ?? chunk.usage, {
+        rawFinishReason: finishReason,
+      });
+      return [
+        {
+          kind: 'finish',
+          ...(usage ? { usage } : {}),
+          ...(finishReason ? { finishReason } : {}),
+        },
+      ];
     }
     case 'reasoning-start':
     case 'start-step':

@@ -9860,7 +9860,11 @@ describe('AiSdkBackend RunTrace', () => {
       return {
         events: (async function* () {
           input.onStreamActivity();
-          yield { kind: 'finish' as const, finishReason: 'stop' };
+          yield {
+            kind: 'finish' as const,
+            finishReason: 'stop',
+            disposition: 'authoritative' as const,
+          };
           finishConsumed.release();
           await new Promise<void>((_resolve, reject) => {
             const abort = () => reject(input.abortSignal.reason ?? new Error('aborted'));
@@ -9873,6 +9877,7 @@ describe('AiSdkBackend RunTrace', () => {
           finishReason: 'stop',
           request: { messages: [] },
           continuation: 'none',
+          hasResponseEvidence: false,
         }),
       };
     };
@@ -12564,6 +12569,7 @@ describe('AiSdkBackend thinking persistence', () => {
         },
         request: { messages: [] },
         continuation: 'none',
+        hasResponseEvidence: true,
       }),
     });
 
