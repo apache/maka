@@ -184,17 +184,31 @@
   transition: width var(--duration-large) var(--ease-out-strong);
 }
 
-/* Same source as Astryx's own `rootCollapsed` width, so the rail cannot drift
-   from the value SideNav lands on when the ease finishes. Keyed off the shell's
-   own collapsed flag — the wrapper carried a second copy of it until this rule
-   read the one `.appFrame` already publishes and the hairlines already use.
+/* Collapsed means absent, not a second 48px icon-only navigation mode. Keeping
+   Astryx's collapsed rail visible left the native macOS traffic-light group
+   straddling the rail and content surfaces, while the remaining icon buttons
+   were too narrow to carry their meaning without tooltips. The titlebar keeps
+   the explicit expand action, so the navigation column can close all the way.
+
+   Keyed off the shell's own collapsed flag — the wrapper carried a second copy
+   of it until this rule read the one `.appFrame` already publishes and the
+   hairlines already use.
 
    It overrides the VARIABLE, not the wrapper's width, because the wrapper is no
    longer the only reader: the titlebar starts its session breadcrumb at this
    column's right edge. Setting the width here instead would leave the titlebar
    reading the expanded value while the column sat collapsed. */
 .appFrame[data-sidebar-state='collapsed'] {
-  --maka-sidenav-width: var(--spacing-12);
+  --maka-sidenav-width: 0px;
+}
+
+/* `visibility`, rather than opacity, removes the hidden rail's buttons from
+   focus navigation and accessibility hit testing. SideNav stays mounted so its
+   imperative collapse handle can restore both the boolean and the resizable
+   width when the titlebar's expand button is pressed. */
+.appFrame[data-sidebar-state='collapsed'] .maka-sidenav-motion {
+  visibility: hidden;
+  pointer-events: none;
 }
 
 .maka-shell-astryx .maka-sidenav-motion:has([data-resizing]) {
@@ -281,9 +295,9 @@
      start.
 
      `minmax(..., auto)` rather than a fixed width for the collapsed state,
-     where the two icons are wider than the 48px rail: the column grows to the
-     icons and the gap then holds the breadcrumb off them, which is the same
-     clearance by a different measure.
+     where the navigation column is absent but the two titlebar actions remain:
+     the track grows to those actions and the gap then holds the breadcrumb off
+     them, which is the same clearance by a different measure.
 
      Every child names its own column. Two of the three are conditional — the
      breadcrumb only in a session, the workspace actions only in views that have
