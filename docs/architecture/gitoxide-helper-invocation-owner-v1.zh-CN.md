@@ -19,8 +19,8 @@
 
 # Gitoxide short-lived invocation owner v1
 
-状态：stacked Draft；真实 Rust helper 的三平台 contract 进入 CI，但仍无正式 release issuer、
-Desktop/CLI/managed-workspace 生产消费者。
+状态：可独立合并的 enabling infrastructure；真实 Rust helper 的三平台 contract 进入 CI，但正式
+release issuer 与 Desktop/CLI managed-workspace 产品接线仍未完成。
 
 ## 1. 主要不变量
 
@@ -55,11 +55,11 @@ caller 不能提供 executable path、argv、environment、protocol version、ti
 | 项目 | v1 合同 |
 | --- | --- |
 | owner | 单次 Runtime Host invocation owner |
-| 原子性边界 | artifact revalidation 后启动的一个 helper process 与其 exact response |
+| 原子性边界 | 从 public operation 入口开始的一次绝对 deadline、artifact/path preflight、一个 helper process 及其 exact response |
 | 成功 | exit 0 + exact SHA-1 `repository_inspected` |
 | policy rejection | exit 2 + exact `unsupported_object_format` |
 | repository/helper failure | exit 1 + allowlisted stable helper reason |
-| timeout | inspect 为 5 秒、source import 为 10 分钟；到期后 force-kill process tree，`gitoxide_helper_invocation_timed_out` |
+| timeout | inspect 为 5 秒、source import 为 10 分钟；同一个绝对 deadline 从 public 入口覆盖 preflight 与执行，到期后由共享 lifecycle force-kill process tree，再以有界 exit acknowledgement/output drain 收口 |
 | cancellation | preflight 或运行中 fail closed，`gitoxide_helper_invocation_aborted` |
 | resource failure | repository open 前的本地 metadata 总量 1 MiB、Gitoxide object allocation 64 MiB、stdout 64 KiB、stderr 16 KiB；超限 fail closed 或 force-kill |
 | malformed protocol | exit code、JSON shape、OID 或字段不一致均拒绝 |
@@ -73,8 +73,9 @@ output overflow，不允许常驻或 detached helper。
 - argv 固定为空，禁止 caller 注入 helper option；
 - `shell: false`，不会经过 shell parsing；
 - child `PATH` 为空，只保留 Windows loader 与临时目录所需的最少环境变量；
-- Rust 侧在 `gix::open()` 前先有界解析 `.git`/`commondir` 路径文件并统计实际会读取的
-  `config`/`config.worktree`，总量超过 1 MiB 时返回
+- Rust 侧在 `gix::open()` 前按 pinned Gitoxide discovery 顺序检查 worktree 与 bare candidate，并有界
+  解析 `.git`/`commondir` 路径文件、`HEAD`、config、packed refs、shallow、alternates 与 refs tree；
+  metadata 总量超过 1 MiB、条目超过 16,384 或深度超过 64 时返回
   `repository_metadata_limit_exceeded`；随后使用 `gix::open::Options::isolated()`、
   `lossy_config(true)` 与 `strict_config(true)`；
 - request 最大 64 KiB；stdout 最大 64 KiB；stderr 最大 16 KiB；
@@ -92,7 +93,7 @@ output overflow，不允许常驻或 detached helper。
 该证据只覆盖 helper 协议、进程终止与 fresh-only import，不包含平台安装签名或恶意同用户替换。
 当前实现会在 spawn 前完成 bytes/identity observation，但 Node 的 path-based spawn 不能把已打开并验证的
 handle 直接作为 executable，因此 observation 与 exec 之间仍有 TOCTOU。正式 packaged-release owner
-必须依赖平台签名和受保护安装目录；本 Draft 不声称抵抗拥有同用户写权限的攻击者。
+必须依赖平台签名和受保护安装目录；v1 不声称抵抗拥有同用户写权限的攻击者。
 
 ## 6. 下一切片
 

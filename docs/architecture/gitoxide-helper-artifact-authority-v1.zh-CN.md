@@ -19,8 +19,8 @@
 
 # Gitoxide helper artifact authority v1
 
-状态：stacked 验证切片；尚无正式 release issuer、Desktop/CLI/Runtime Host 生产消费者，必须保持
-Draft。
+状态：可独立合并的 enabling infrastructure；尚未形成 product-ready 的 release trust root，也未接入
+Desktop/CLI managed-workspace 产品路径。
 
 ## 1. 主要不变量
 
@@ -54,7 +54,8 @@ artifact authority
 - 旧的 caller-provided `{ executablePath, expectedSha256 }` 不能成为这条链的 authority。
 
 当前没有 production release owner。`issueGitoxideHelperReleaseArtifactClaimInternal()` 只是未来受信
-packaging owner 的接缝，不是签名信任根；在该 owner 落地前，本切片不能转 Ready。
+packaging owner 的接缝，不是签名信任根；这限制产品启用条件，但不阻止该窄 authority 作为后续切片的
+可审查基础设施合并。
 
 ## 3. 校验边界
 
@@ -93,7 +94,7 @@ admission 与每次 invocation resolve 都执行这套校验。它可以识别�
 - 它尚未验证 macOS code signature、Windows Authenticode 或 Linux 发布清单的受信签名；
 - 它尚未把 helper 放进由正式安装器保护的只读目录；
 - invocation 已接入 path-based spawn，但不能消除“最后一次 handle 校验完成后、exec 开始前”的替换
-  窗口；重复 rehash 只能缩小窗口，不能形成 executable CAS，因此本 Draft 明确保留该限制。
+  窗口；重复 rehash 只能缩小窗口，不能形成 executable CAS，因此 v1 明确保留该限制。
 
 正式生产接入前，必须由 packaged-release owner 提供信任根，并明确三平台安装目录与签名能力。不能
 通过给本 API 再传一个裸 expected digest 来绕过这一门槛。
@@ -111,8 +112,8 @@ admission 与每次 invocation resolve 都执行这套校验。它可以识别�
 后续只能按下面顺序推进：
 
 1. 发布/安装 owner 把受信 helper identity 绑定到 signed product artifact；
-2. 短生命周期 invocation owner 消费 opaque capability 并运行 strict helper protocol；该 stacked
-   Draft 的合同见 `gitoxide-helper-invocation-owner-v1.zh-CN.md`；
+2. 短生命周期 invocation owner 消费 opaque capability 并运行 strict helper protocol；合同见
+   `gitoxide-helper-invocation-owner-v1.zh-CN.md`；
 3. repository observation 再转换为 T1 前的 opaque admission capability。
 
 在第 1 项完成以前，不接 Desktop/CLI，也不恢复旧 Git CLI adapter。

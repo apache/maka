@@ -152,7 +152,6 @@ test('imports only the exact repository identity bound to the admission capabili
   const destinationRepositoryPath = join(repositoryPath, 'managed.git');
 
   const imported = await importAdmittedGitoxideRepositoryInternal({
-    ...helper,
     admissionOwnerToken,
     repositoryCapability: admitted.capability,
     destinationRepositoryPath,
@@ -168,7 +167,6 @@ test('imports only the exact repository identity bound to the admission capabili
   );
   await assert.rejects(
     importAdmittedGitoxideRepositoryInternal({
-      ...helper,
       admissionOwnerToken: {},
       repositoryCapability: admitted.capability,
       destinationRepositoryPath: join(repositoryPath, 'forged.git'),
@@ -180,7 +178,7 @@ test('imports only the exact repository identity bound to the admission capabili
   );
 });
 
-test('rejects import through a different helper artifact than repository admission', async (t) => {
+test('reuses the exact helper capability captured by repository admission', async (t) => {
   const helper = await admittedHelper();
   if (!helper) {
     t.skip('MAKA_GITOXIDE_HELPER_PATH is required for the real helper contract test');
@@ -208,40 +206,13 @@ test('rejects import through a different helper artifact than repository admissi
   assert.equal(admitted.kind, 'accepted');
   if (admitted.kind !== 'accepted') return;
 
-  const foreignRoot = await realpath(await mkdtemp(join(tmpdir(), 'maka-foreign-helper-')));
-  t.after(() => rm(foreignRoot, { recursive: true, force: true }));
-  const foreignExecutable = join(foreignRoot, 'foreign-helper.bin');
-  const foreignBytes = Buffer.from('not the admitted helper');
-  await writeFile(foreignExecutable, foreignBytes);
-  const foreignReleaseOwnerToken = {};
-  const foreignInvocationOwnerToken = {};
-  const foreignClaim = issueGitoxideHelperReleaseArtifactClaimInternal(foreignReleaseOwnerToken, {
-    executablePath: foreignExecutable,
-    expectedSha256: `sha256:${createHash('sha256').update(foreignBytes).digest('hex')}`,
-    expectedBytes: foreignBytes.length,
-    platform: process.platform,
-    arch: process.arch,
-    protocolVersion: 1,
+  const imported = await importAdmittedGitoxideRepositoryInternal({
+    admissionOwnerToken,
+    repositoryCapability: admitted.capability,
+    destinationRepositoryPath: join(repositoryPath, 'captured-helper-import.git'),
+    baselineRef: 'refs/maka/baseline',
   });
-  const foreignCapability = await admitGitoxideHelperArtifactInternal({
-    releaseOwnerToken: foreignReleaseOwnerToken,
-    invocationOwnerToken: foreignInvocationOwnerToken,
-    claim: foreignClaim,
-  });
-
-  await assert.rejects(
-    importAdmittedGitoxideRepositoryInternal({
-      invocationOwnerToken: foreignInvocationOwnerToken,
-      helperCapability: foreignCapability,
-      admissionOwnerToken,
-      repositoryCapability: admitted.capability,
-      destinationRepositoryPath: join(repositoryPath, 'foreign-import.git'),
-      baselineRef: 'refs/maka/baseline',
-    }),
-    (error) =>
-      error instanceof GitoxideRepositoryAdmissionAuthorityError &&
-      error.code === 'gitoxide_repository_admission_capability_invalid',
-  );
+  assert.equal(imported.sourceHeadCommitOid, git(repositoryPath, ['rev-parse', 'HEAD']));
 });
 
 async function admittedHelper(): Promise<AdmittedHelper | undefined> {

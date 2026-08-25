@@ -20,7 +20,7 @@
 import { spawn } from 'node:child_process';
 import { realpath } from 'node:fs/promises';
 import { dirname, isAbsolute } from 'node:path';
-import { terminateChildProcessTree } from '@maka/runtime/process-tree-terminator';
+import { manageChildProcessLifecycle } from '@maka/runtime/child-process-lifecycle';
 import {
   type GitoxideHelperInvocationCapability,
   verifyGitoxideHelperArtifactForInvocationInternal,
@@ -55,8 +55,6 @@ export const GITOXIDE_HELPER_ERROR_REASONS_V1 = Object.freeze([
   'import_destination_not_fresh',
   'import_destination_object_format_mismatch',
   'import_destination_parent_untrusted',
-  'import_destination_unreadable',
-  'import_hooks_cleanup_failed',
   'invalid_source_head_commit_oid',
   'source_blob_copy_failed',
   'source_blob_identity_mismatch',
@@ -152,23 +150,33 @@ export async function inspectRepositoryWithGitoxideHelperInternal(input: {
   readonly repositoryPath: string;
   readonly abortSignal?: AbortSignal;
 }): Promise<GitoxideRepositoryInspectionResultV1> {
-  throwIfAborted(input.abortSignal);
-  if (!isAbsolute(input.repositoryPath)) {
-    throw new GitoxideHelperInvocationError(
-      'gitoxide_helper_invocation_invalid',
-      'Gitoxide repository path must be absolute',
-    );
-  }
-  const [artifact, repositoryPath] = await Promise.all([
-    verifyGitoxideHelperArtifactForInvocationInternal(input.invocationOwnerToken, input.capability),
-    realpath(input.repositoryPath).catch((error) => {
-      throw new GitoxideHelperInvocationError(
-        'gitoxide_helper_invocation_invalid',
-        `Gitoxide repository path could not be resolved: ${error instanceof Error ? error.message : String(error)}`,
-      );
-    }),
-  ]);
-  throwIfAborted(input.abortSignal);
+  const deadlineAt =
+    performance.now() + GITOXIDE_HELPER_OPERATION_TIMEOUTS_INTERNAL.inspectRepositoryMs;
+  const { artifact, repositoryPath } = await runGitoxideOperationWithinDeadlineInternal({
+    deadlineAt,
+    abortSignal: input.abortSignal,
+    operation: async () => {
+      if (!isAbsolute(input.repositoryPath)) {
+        throw new GitoxideHelperInvocationError(
+          'gitoxide_helper_invocation_invalid',
+          'Gitoxide repository path must be absolute',
+        );
+      }
+      const [artifact, repositoryPath] = await Promise.all([
+        verifyGitoxideHelperArtifactForInvocationInternal(
+          input.invocationOwnerToken,
+          input.capability,
+        ),
+        realpath(input.repositoryPath).catch((error) => {
+          throw new GitoxideHelperInvocationError(
+            'gitoxide_helper_invocation_invalid',
+            `Gitoxide repository path could not be resolved: ${error instanceof Error ? error.message : String(error)}`,
+          );
+        }),
+      ]);
+      return { artifact, repositoryPath };
+    },
+  });
 
   const request = Buffer.from(
     JSON.stringify({
@@ -188,9 +196,60 @@ export async function inspectRepositoryWithGitoxideHelperInternal(input: {
     executablePath: artifact.executablePath,
     request,
     abortSignal: input.abortSignal,
-    timeoutMs: GITOXIDE_HELPER_OPERATION_TIMEOUTS_INTERNAL.inspectRepositoryMs,
+    deadlineAt,
   });
   return decodeOutcome(outcome);
+}
+
+export async function runGitoxideOperationWithinDeadlineInternal<T>(input: {
+  readonly deadlineAt: number;
+  readonly operation: () => Promise<T>;
+  readonly abortSignal?: AbortSignal;
+}): Promise<T> {
+  throwIfAborted(input.abortSignal);
+  const remainingMs = input.deadlineAt - performance.now();
+  if (remainingMs <= 0) throw invocationTimedOut();
+
+  return new Promise<T>((resolve, reject) => {
+    let settled = false;
+    const timeout = setTimeout(() => finishReject(invocationTimedOut()), remainingMs);
+    const abort = () =>
+      finishReject(
+        new GitoxideHelperInvocationError(
+          'gitoxide_helper_invocation_aborted',
+          terminationMessage('gitoxide_helper_invocation_aborted'),
+        ),
+      );
+    input.abortSignal?.addEventListener('abort', abort, { once: true });
+
+    void Promise.resolve().then(input.operation).then(finishResolve, finishReject);
+
+    function finishResolve(value: T): void {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      resolve(value);
+    }
+
+    function finishReject(error: unknown): void {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      reject(error);
+    }
+
+    function cleanup(): void {
+      clearTimeout(timeout);
+      input.abortSignal?.removeEventListener('abort', abort);
+    }
+  });
+}
+
+function invocationTimedOut(): GitoxideHelperInvocationError {
+  return new GitoxideHelperInvocationError(
+    'gitoxide_helper_invocation_timed_out',
+    terminationMessage('gitoxide_helper_invocation_timed_out'),
+  );
 }
 
 export async function importSourceHeadWithGitoxideHelperInternal(input: {
@@ -203,28 +262,39 @@ export async function importSourceHeadWithGitoxideHelperInternal(input: {
   readonly managedTreePolicyVersion: 1;
   readonly abortSignal?: AbortSignal;
 }): Promise<GitoxideSourceImportObservationV1> {
-  throwIfAborted(input.abortSignal);
-  if (
-    !isAbsolute(input.sourceRepositoryPath) ||
-    !isAbsolute(input.destinationRepositoryPath) ||
-    !SHA1_OID_PATTERN.test(input.expectedSourceHeadCommitOid) ||
-    !MAKA_REF_PATTERN.test(input.baselineRef)
-  ) {
-    throw new GitoxideHelperInvocationError(
-      'gitoxide_helper_invocation_invalid',
-      'Gitoxide source import request is invalid',
-    );
-  }
-  const [artifact, sourceRepositoryPath] = await Promise.all([
-    verifyGitoxideHelperArtifactForInvocationInternal(input.invocationOwnerToken, input.capability),
-    realpath(input.sourceRepositoryPath).catch((error) => {
-      throw new GitoxideHelperInvocationError(
-        'gitoxide_helper_invocation_invalid',
-        `Gitoxide source repository path could not be resolved: ${error instanceof Error ? error.message : String(error)}`,
-      );
-    }),
-  ]);
-  throwIfAborted(input.abortSignal);
+  const deadlineAt =
+    performance.now() + GITOXIDE_HELPER_OPERATION_TIMEOUTS_INTERNAL.importSourceHeadMs;
+  const { artifact, sourceRepositoryPath } = await runGitoxideOperationWithinDeadlineInternal({
+    deadlineAt,
+    abortSignal: input.abortSignal,
+    operation: async () => {
+      if (
+        !isAbsolute(input.sourceRepositoryPath) ||
+        !isAbsolute(input.destinationRepositoryPath) ||
+        !SHA1_OID_PATTERN.test(input.expectedSourceHeadCommitOid) ||
+        !MAKA_REF_PATTERN.test(input.baselineRef)
+      ) {
+        throw new GitoxideHelperInvocationError(
+          'gitoxide_helper_invocation_invalid',
+          'Gitoxide source import request is invalid',
+        );
+      }
+      const [artifact, sourceRepositoryPath] = await Promise.all([
+        verifyGitoxideHelperArtifactForInvocationInternal(
+          input.invocationOwnerToken,
+          input.capability,
+        ),
+        realpath(input.sourceRepositoryPath).catch((error) => {
+          throw new GitoxideHelperInvocationError(
+            'gitoxide_helper_invocation_invalid',
+            `Gitoxide source repository path could not be resolved: ${error instanceof Error ? error.message : String(error)}`,
+          );
+        }),
+      ]);
+      return { artifact, sourceRepositoryPath };
+    },
+  });
+
   const request = Buffer.from(
     JSON.stringify({
       protocolVersion: artifact.protocolVersion,
@@ -246,7 +316,7 @@ export async function importSourceHeadWithGitoxideHelperInternal(input: {
     executablePath: artifact.executablePath,
     request,
     abortSignal: input.abortSignal,
-    timeoutMs: GITOXIDE_HELPER_OPERATION_TIMEOUTS_INTERNAL.importSourceHeadMs,
+    deadlineAt,
   });
   return decodeSourceImportOutcome(outcome, {
     expectedSourceHeadCommitOid: input.expectedSourceHeadCommitOid,
@@ -255,19 +325,29 @@ export async function importSourceHeadWithGitoxideHelperInternal(input: {
   });
 }
 
-interface HelperProcessOutcome {
-  readonly exitCode: number | null;
-  readonly signal: NodeJS.Signals | null;
-  readonly stdout: Buffer;
-  readonly stderr: Buffer;
-}
-
+/*
+ * The absolute operation deadline starts at the public entry point. Once it
+ * expires, the shared lifecycle owner force-kills the process tree and applies
+ * bounded exit-acknowledgement and output-drain deadlines before this promise
+ * settles.
+ */
 function invokeHelper(input: {
   readonly executablePath: string;
   readonly request: Buffer;
   readonly abortSignal?: AbortSignal;
-  readonly timeoutMs: number;
+  readonly deadlineAt: number;
 }): Promise<HelperProcessOutcome> {
+  if (input.abortSignal?.aborted) {
+    return Promise.reject(
+      new GitoxideHelperInvocationError(
+        'gitoxide_helper_invocation_aborted',
+        terminationMessage('gitoxide_helper_invocation_aborted'),
+      ),
+    );
+  }
+  const remainingMs = input.deadlineAt - performance.now();
+  if (remainingMs <= 0) return Promise.reject(invocationTimedOut());
+
   return new Promise((resolve, reject) => {
     let child: ReturnType<typeof spawn>;
     try {
@@ -280,11 +360,9 @@ function invokeHelper(input: {
         stdio: ['pipe', 'pipe', 'pipe'],
       });
     } catch (error) {
-      reject(
-        new GitoxideHelperInvocationError(
-          'gitoxide_helper_invocation_spawn_failed',
-          `Gitoxide helper could not be started: ${error instanceof Error ? error.message : String(error)}`,
-        ),
+      throw new GitoxideHelperInvocationError(
+        'gitoxide_helper_invocation_spawn_failed',
+        `Gitoxide helper could not be started: ${error instanceof Error ? error.message : String(error)}`,
       );
       return;
     }
@@ -300,9 +378,21 @@ function invokeHelper(input: {
       | 'gitoxide_helper_invocation_output_too_large'
       | undefined;
     let processFailure: GitoxideHelperInvocationError | undefined;
+    const lifecycle = manageChildProcessLifecycle(
+      child,
+      [
+        { key: 'stdout', stream: child.stdout! },
+        { key: 'stderr', stream: child.stderr! },
+      ],
+      {
+        killGraceMs: 0,
+        ioDrainTimeoutMs: 2_000,
+        exitAcknowledgementMs: 2_000,
+      },
+    );
     const timeout = setTimeout(
       () => terminate('gitoxide_helper_invocation_timed_out'),
-      input.timeoutMs,
+      remainingMs,
     );
     const abort = () => terminate('gitoxide_helper_invocation_aborted');
     input.abortSignal?.addEventListener('abort', abort, { once: true });
@@ -326,46 +416,63 @@ function invokeHelper(input: {
       }
       stderr.push(chunk);
     });
-    child.once('error', (error) => {
-      finishReject(
-        new GitoxideHelperInvocationError(
-          'gitoxide_helper_invocation_spawn_failed',
-          `Gitoxide helper process failed: ${error.message}`,
-        ),
-      );
-    });
-    child.once('close', (exitCode, signal) => {
-      if (processFailure) {
-        finishReject(processFailure);
-        return;
-      }
-      if (termination) {
+    void lifecycle.completion.then(
+      (outcome) => {
+        if (processFailure) {
+          finishReject(processFailure);
+          return;
+        }
+        if (termination) {
+          finishReject(
+            new GitoxideHelperInvocationError(termination, terminationMessage(termination)),
+          );
+          return;
+        }
+        if (!outcome.ioDrained) {
+          finishReject(
+            new GitoxideHelperInvocationError(
+              'gitoxide_helper_invocation_protocol_invalid',
+              'Gitoxide helper output did not drain before its lifecycle deadline',
+            ),
+          );
+          return;
+        }
+        finishResolve({
+          exitCode: outcome.exitCode,
+          signal: outcome.signal,
+          stdout: Buffer.concat(stdout, stdoutBytes),
+          stderr: Buffer.concat(stderr, stderrBytes),
+        });
+      },
+      (error: unknown) => {
+        if (termination) {
+          finishReject(
+            new GitoxideHelperInvocationError(termination, terminationMessage(termination)),
+          );
+          return;
+        }
         finishReject(
-          new GitoxideHelperInvocationError(termination, terminationMessage(termination)),
+          new GitoxideHelperInvocationError(
+            'gitoxide_helper_invocation_spawn_failed',
+            `Gitoxide helper process failed: ${error instanceof Error ? error.message : String(error)}`,
+          ),
         );
-        return;
-      }
-      finishResolve({
-        exitCode,
-        signal,
-        stdout: Buffer.concat(stdout, stdoutBytes),
-        stderr: Buffer.concat(stderr, stderrBytes),
-      });
-    });
+      },
+    );
     child.stdin!.on('error', (error) => {
       if (settled || processFailure) return;
       processFailure = new GitoxideHelperInvocationError(
         'gitoxide_helper_invocation_spawn_failed',
         `Gitoxide helper request could not be written: ${error.message}`,
       );
-      void terminateChildProcessTree(child, 'SIGKILL');
+      lifecycle.forceKill();
     });
     child.stdin!.end(input.request);
 
     function terminate(reason: NonNullable<typeof termination>): void {
       if (settled || termination) return;
       termination = reason;
-      void terminateChildProcessTree(child, 'SIGKILL');
+      lifecycle.forceKill();
     }
 
     function finishResolve(outcome: HelperProcessOutcome): void {
@@ -387,6 +494,13 @@ function invokeHelper(input: {
       input.abortSignal?.removeEventListener('abort', abort);
     }
   });
+}
+
+interface HelperProcessOutcome {
+  readonly exitCode: number | null;
+  readonly signal: NodeJS.Signals | null;
+  readonly stdout: Buffer;
+  readonly stderr: Buffer;
 }
 
 function decodeOutcome(outcome: HelperProcessOutcome): GitoxideRepositoryInspectionResultV1 {

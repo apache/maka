@@ -33,6 +33,8 @@ const PROTOCOL_VERSION: u8 = 1;
 const MANAGED_TREE_POLICY_VERSION: u8 = 1;
 const MAX_REQUEST_BYTES: u64 = 64 * 1024;
 const MAX_REPOSITORY_METADATA_BYTES: u64 = 1024 * 1024;
+const MAX_REPOSITORY_METADATA_ENTRIES: u64 = 16_384;
+const MAX_REPOSITORY_METADATA_DEPTH: u64 = 64;
 const MAX_IMPORT_FILE_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_IMPORT_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 const MAX_IMPORT_FILES: u64 = 200_000;
@@ -76,8 +78,6 @@ const HELPER_ERROR_REASONS_V1: &[&str] = &[
     "import_destination_not_fresh",
     "import_destination_object_format_mismatch",
     "import_destination_parent_untrusted",
-    "import_destination_unreadable",
-    "import_hooks_cleanup_failed",
     "invalid_source_head_commit_oid",
     "source_blob_copy_failed",
     "source_blob_identity_mismatch",
@@ -227,7 +227,7 @@ fn assert_protocol_version(protocol_version: u8) -> Result<(), &'static str> {
 }
 
 fn inspect_repository(repository_path: PathBuf) -> Result<ExitCode, &'static str> {
-    assert_repository_metadata_budget(&repository_path)?;
+    let mut metadata_budget = admit_repository_metadata(&repository_path)?;
     let repository = match managed_open_options().open(repository_path) {
         Ok(repository) => repository.to_thread_local(),
         Err(gix::open::Error::Config(gix::config::Error::ConfigTypedString(error)))
@@ -240,6 +240,7 @@ fn inspect_repository(repository_path: PathBuf) -> Result<ExitCode, &'static str
         }
         Err(_) => return Err("repository_open_failed"),
     };
+    metadata_budget.observe_opened_repository(&repository)?;
 
     match repository.object_hash() {
         gix::hash::Kind::Sha1 => {
@@ -279,11 +280,13 @@ fn inspect_repository(repository_path: PathBuf) -> Result<ExitCode, &'static str
 }
 
 fn open_repository(repository_path: PathBuf) -> Result<gix::Repository, &'static str> {
-    assert_repository_metadata_budget(&repository_path)?;
-    Ok(managed_open_options()
+    let mut metadata_budget = admit_repository_metadata(&repository_path)?;
+    let repository = managed_open_options()
         .open(repository_path)
         .map_err(|_| "repository_open_failed")?
-        .to_thread_local())
+        .to_thread_local();
+    metadata_budget.observe_opened_repository(&repository)?;
+    Ok(repository)
 }
 
 fn managed_open_options() -> gix::open::Options {
@@ -293,70 +296,146 @@ fn managed_open_options() -> gix::open::Options {
         .config_overrides([MAX_GITOXIDE_OBJECT_ALLOCATION_BYTES])
 }
 
-fn assert_repository_metadata_budget(repository_path: &Path) -> Result<(), &'static str> {
-    let mut observed_bytes = 0_u64;
-    let dot_git_path = repository_path.join(".git");
-    let git_dir = match fs::metadata(&dot_git_path) {
-        Ok(metadata) if metadata.is_dir() => dot_git_path,
-        Ok(metadata) if metadata.is_file() => {
-            add_repository_metadata_bytes(metadata.len(), &mut observed_bytes)?;
-            gix::discover::path::from_gitdir_file(&dot_git_path)
-                .map_err(|_| "repository_open_failed")?
+fn admit_repository_metadata(
+    repository_path: &Path,
+) -> Result<RepositoryMetadataBudget, &'static str> {
+    let mut budget = RepositoryMetadataBudget::default();
+    if repository_path
+        .file_name()
+        .is_none_or(|name| name != ".git")
+    {
+        let worktree_candidate = repository_path.join(".git");
+        budget.observe_repository_candidate(&worktree_candidate)?;
+        if gix::discover::is_git(&worktree_candidate).is_ok() {
+            return Ok(budget);
         }
-        Ok(_) => return Err("repository_open_failed"),
-        Err(error) if error.kind() == io::ErrorKind::NotFound => {
-            match fs::metadata(repository_path) {
-                Ok(metadata) if metadata.is_file() => {
-                    add_repository_metadata_bytes(metadata.len(), &mut observed_bytes)?;
-                    gix::discover::path::from_gitdir_file(repository_path)
-                        .map_err(|_| "repository_open_failed")?
-                }
-                Ok(metadata) if metadata.is_dir() => repository_path.to_path_buf(),
-                Ok(_) => return Err("repository_open_failed"),
-                Err(_) => return Err("repository_open_failed"),
+    }
+    budget.observe_repository_candidate(repository_path)?;
+    Ok(budget)
+}
+
+#[derive(Default)]
+struct RepositoryMetadataBudget {
+    observed_bytes: u64,
+    observed_entries: u64,
+    observed_paths: HashSet<PathBuf>,
+}
+
+impl RepositoryMetadataBudget {
+    fn observe_repository_candidate(&mut self, candidate: &Path) -> Result<(), &'static str> {
+        match fs::symlink_metadata(candidate) {
+            Ok(metadata) if metadata.file_type().is_symlink() => Err("repository_open_failed"),
+            Ok(metadata) if metadata.is_file() => {
+                self.observe_file_with_metadata(candidate, &metadata)?;
+                let git_dir = gix::discover::path::from_gitdir_file(candidate)
+                    .map_err(|_| "repository_open_failed")?;
+                self.observe_git_dir(&git_dir)
+            }
+            Ok(metadata) if metadata.is_dir() => self.observe_git_dir(candidate),
+            Ok(_) => Err("repository_open_failed"),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+            Err(_) => Err("repository_open_failed"),
+        }
+    }
+
+    fn observe_opened_repository(
+        &mut self,
+        repository: &gix::Repository,
+    ) -> Result<(), &'static str> {
+        self.observe_git_dir(repository.git_dir())?;
+        self.observe_common_dir(repository.common_dir())
+    }
+
+    fn observe_git_dir(&mut self, git_dir: &Path) -> Result<(), &'static str> {
+        self.observe_optional_file(&git_dir.join("HEAD"))?;
+        self.observe_optional_file(&git_dir.join("gitdir"))?;
+        self.observe_optional_file(&git_dir.join("config.worktree"))?;
+        self.observe_optional_file(&git_dir.join("packed-refs"))?;
+        self.observe_optional_file(&git_dir.join("shallow"))?;
+        self.observe_optional_file(&git_dir.join("objects/info/alternates"))?;
+        self.observe_optional_file(&git_dir.join("objects/info/http-alternates"))?;
+        self.observe_tree(&git_dir.join("refs"), 0)?;
+
+        let common_dir_path_file = git_dir.join("commondir");
+        self.observe_optional_file(&common_dir_path_file)?;
+        let common_dir = match gix::discover::path::from_plain_file(&common_dir_path_file) {
+            Some(Ok(relative_or_absolute)) => git_dir.join(relative_or_absolute),
+            Some(Err(_)) => return Err("repository_open_failed"),
+            None => git_dir.to_path_buf(),
+        };
+        self.observe_common_dir(&common_dir)
+    }
+
+    fn observe_common_dir(&mut self, common_dir: &Path) -> Result<(), &'static str> {
+        self.observe_optional_file(&common_dir.join("config"))?;
+        self.observe_optional_file(&common_dir.join("packed-refs"))?;
+        self.observe_optional_file(&common_dir.join("shallow"))?;
+        self.observe_tree(&common_dir.join("refs"), 0)
+    }
+
+    fn observe_tree(&mut self, path: &Path, depth: u64) -> Result<(), &'static str> {
+        if depth > MAX_REPOSITORY_METADATA_DEPTH {
+            return Err("repository_metadata_limit_exceeded");
+        }
+        let entries = match fs::read_dir(path) {
+            Ok(entries) => entries,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
+            Err(_) => return Err("repository_open_failed"),
+        };
+        for entry in entries {
+            let entry = entry.map_err(|_| "repository_open_failed")?;
+            let entry_path = entry.path();
+            let metadata =
+                fs::symlink_metadata(&entry_path).map_err(|_| "repository_open_failed")?;
+            if metadata.file_type().is_symlink() {
+                return Err("repository_open_failed");
+            }
+            if metadata.is_dir() {
+                self.observe_entry(&entry_path, 0)?;
+                self.observe_tree(&entry_path, depth + 1)?;
+            } else if metadata.is_file() {
+                self.observe_file_with_metadata(&entry_path, &metadata)?;
+            } else {
+                return Err("repository_open_failed");
             }
         }
-        Err(_) => return Err("repository_open_failed"),
-    };
-
-    let common_dir_path_file = git_dir.join("commondir");
-    let common_dir = match fs::metadata(&common_dir_path_file) {
-        Ok(metadata) if metadata.is_file() => {
-            add_repository_metadata_bytes(metadata.len(), &mut observed_bytes)?;
-            let relative_or_absolute = gix::discover::path::from_plain_file(&common_dir_path_file)
-                .ok_or("repository_open_failed")?
-                .map_err(|_| "repository_open_failed")?;
-            git_dir.join(relative_or_absolute)
-        }
-        Ok(_) => return Err("repository_open_failed"),
-        Err(error) if error.kind() == io::ErrorKind::NotFound => git_dir.clone(),
-        Err(_) => return Err("repository_open_failed"),
-    };
-
-    add_repository_metadata_file(&common_dir.join("config"), &mut observed_bytes)?;
-    add_repository_metadata_file(&git_dir.join("config.worktree"), &mut observed_bytes)?;
-    Ok(())
-}
-
-fn add_repository_metadata_file(path: &Path, observed_bytes: &mut u64) -> Result<(), &'static str> {
-    match fs::metadata(path) {
-        Ok(metadata) if metadata.is_file() => {
-            add_repository_metadata_bytes(metadata.len(), observed_bytes)
-        }
-        Ok(_) => Err("repository_open_failed"),
-        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
-        Err(_) => Err("repository_open_failed"),
+        Ok(())
     }
-}
 
-fn add_repository_metadata_bytes(bytes: u64, observed_bytes: &mut u64) -> Result<(), &'static str> {
-    *observed_bytes = observed_bytes
-        .checked_add(bytes)
-        .ok_or("repository_metadata_limit_exceeded")?;
-    if *observed_bytes > MAX_REPOSITORY_METADATA_BYTES {
-        return Err("repository_metadata_limit_exceeded");
+    fn observe_optional_file(&mut self, path: &Path) -> Result<(), &'static str> {
+        match fs::symlink_metadata(path) {
+            Ok(metadata) if metadata.file_type().is_symlink() => Err("repository_open_failed"),
+            Ok(metadata) if metadata.is_file() => self.observe_file_with_metadata(path, &metadata),
+            Ok(_) => Err("repository_open_failed"),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+            Err(_) => Err("repository_open_failed"),
+        }
     }
-    Ok(())
+
+    fn observe_file_with_metadata(
+        &mut self,
+        path: &Path,
+        metadata: &fs::Metadata,
+    ) -> Result<(), &'static str> {
+        self.observe_entry(path, metadata.len())
+    }
+
+    fn observe_entry(&mut self, path: &Path, bytes: u64) -> Result<(), &'static str> {
+        if !self.observed_paths.insert(path.to_path_buf()) {
+            return Ok(());
+        }
+        self.observed_entries = self
+            .observed_entries
+            .checked_add(1)
+            .filter(|entries| *entries <= MAX_REPOSITORY_METADATA_ENTRIES)
+            .ok_or("repository_metadata_limit_exceeded")?;
+        self.observed_bytes = self
+            .observed_bytes
+            .checked_add(bytes)
+            .filter(|observed| *observed <= MAX_REPOSITORY_METADATA_BYTES)
+            .ok_or("repository_metadata_limit_exceeded")?;
+        Ok(())
+    }
 }
 
 fn import_source_head(
@@ -427,11 +506,6 @@ fn import_source_head(
     if destination.object_hash() != gix::hash::Kind::Sha1 {
         return Err("import_destination_object_format_mismatch");
     }
-
-    fs::remove_dir_all(destination_repository_path.join("hooks"))
-        .map_err(|_| "import_hooks_cleanup_failed")?;
-    fs::create_dir(destination_repository_path.join("hooks"))
-        .map_err(|_| "import_hooks_cleanup_failed")?;
 
     let mut copy_stats = ManagedTreeStats::default();
     walk_verified_source_tree(
@@ -729,6 +803,7 @@ fn assert_canonical_tree_modes(mut data: &[u8]) -> Result<(), &'static str> {
 }
 
 fn is_supported_source_component(component: &str) -> bool {
+    let folded_component = fold_managed_path_v1(component);
     !component.is_empty()
         && component != "."
         && component != ".."
@@ -741,8 +816,12 @@ fn is_supported_source_component(component: &str) -> bool {
         && !component.ends_with('.')
         && !component.ends_with(' ')
         && !is_windows_reserved_device_name(component)
-        && !component.eq_ignore_ascii_case(".git")
-        && !component.eq_ignore_ascii_case(".gitattributes")
+        && folded_component != ".git"
+        && folded_component != ".gitattributes"
+}
+
+fn fold_managed_path_v1(value: &str) -> String {
+    value.nfc().default_case_fold().nfc().collect()
 }
 
 fn is_windows_reserved_device_name(component: &str) -> bool {
@@ -835,7 +914,7 @@ impl ManagedTreeStats {
             .checked_add(path_bytes)
             .filter(|bytes| *bytes <= policy.max_total_path_bytes)
             .ok_or("source_path_byte_limit_exceeded")?;
-        let folded_path: String = relative_path.nfc().default_case_fold().nfc().collect();
+        let folded_path = fold_managed_path_v1(relative_path);
         let folded_path_bytes = folded_path.len() as u64;
         if folded_path_bytes > policy.max_folded_relative_path_bytes {
             return Err("source_folded_path_length_exceeded");

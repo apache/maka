@@ -26,6 +26,7 @@ on:
       - 'packages/runtime-host/src/__tests__/gitoxide-helper-*.test.ts'
       - 'packages/runtime-host/src/server/gitoxide-repository-admission-authority-internal.ts'
       - 'packages/runtime-host/src/__tests__/gitoxide-repository-admission-authority-internal.test.ts'
+      - 'packages/runtime/package.json'
       - 'docs/architecture/gitoxide-*.md'
   push:
     branches:
@@ -37,6 +38,7 @@ on:
       - 'packages/runtime-host/src/__tests__/gitoxide-helper-*.test.ts'
       - 'packages/runtime-host/src/server/gitoxide-repository-admission-authority-internal.ts'
       - 'packages/runtime-host/src/__tests__/gitoxide-repository-admission-authority-internal.test.ts'
+      - 'packages/runtime/package.json'
       - 'docs/architecture/gitoxide-*.md'
 
 permissions:

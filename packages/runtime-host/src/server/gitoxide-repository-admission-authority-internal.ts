@@ -19,7 +19,6 @@
 
 import { realpath } from 'node:fs/promises';
 import {
-  type GitoxideHelperArtifactIdentityInternal,
   type GitoxideHelperInvocationCapability,
   requireGitoxideHelperArtifactIdentityInternal,
 } from './gitoxide-helper-artifact-authority-internal.js';
@@ -62,7 +61,8 @@ export class GitoxideRepositoryAdmissionAuthorityError extends Error {
 
 interface AdmissionCapabilityRecord {
   readonly admissionOwnerToken: object;
-  readonly helperArtifactIdentity: GitoxideHelperArtifactIdentityInternal;
+  readonly invocationOwnerToken: object;
+  readonly helperCapability: GitoxideHelperInvocationCapability;
   readonly state: GitoxideRepositoryAdmissionStateInternal;
 }
 
@@ -95,7 +95,8 @@ export async function admitGitoxideRepositoryInternal(input: {
     capability,
     Object.freeze({
       admissionOwnerToken: input.admissionOwnerToken,
-      helperArtifactIdentity,
+      invocationOwnerToken: input.invocationOwnerToken,
+      helperCapability: input.helperCapability,
       state: Object.freeze({
         protocolVersion: observation.protocolVersion,
         repositoryPath,
@@ -118,8 +119,6 @@ export function requireGitoxideRepositoryAdmissionInternal(
 }
 
 export async function importAdmittedGitoxideRepositoryInternal(input: {
-  readonly invocationOwnerToken: object;
-  readonly helperCapability: GitoxideHelperInvocationCapability;
   readonly admissionOwnerToken: object;
   readonly repositoryCapability: GitoxideRepositoryAdmissionCapability;
   readonly destinationRepositoryPath: string;
@@ -128,18 +127,9 @@ export async function importAdmittedGitoxideRepositoryInternal(input: {
 }): Promise<GitoxideSourceImportObservationV1> {
   const admission = requireAdmissionRecord(input.admissionOwnerToken, input.repositoryCapability);
   const source = admission.state;
-  const helperArtifactIdentity = requireGitoxideHelperArtifactIdentityInternal(
-    input.invocationOwnerToken,
-    input.helperCapability,
-  );
-  if (!sameHelperArtifactIdentity(helperArtifactIdentity, admission.helperArtifactIdentity)) {
-    throw new GitoxideRepositoryAdmissionAuthorityError(
-      'gitoxide_repository_admission_capability_invalid',
-    );
-  }
   const result = await importSourceHeadWithGitoxideHelperInternal({
-    invocationOwnerToken: input.invocationOwnerToken,
-    capability: input.helperCapability,
+    invocationOwnerToken: admission.invocationOwnerToken,
+    capability: admission.helperCapability,
     sourceRepositoryPath: source.repositoryPath,
     expectedSourceHeadCommitOid: source.headCommitOid,
     destinationRepositoryPath: input.destinationRepositoryPath,
@@ -169,15 +159,4 @@ function requireAdmissionRecord(
     );
   }
   return record;
-}
-
-function sameHelperArtifactIdentity(
-  left: GitoxideHelperArtifactIdentityInternal,
-  right: GitoxideHelperArtifactIdentityInternal,
-): boolean {
-  return (
-    left.sha256 === right.sha256 &&
-    left.bytes === right.bytes &&
-    left.protocolVersion === right.protocolVersion
-  );
 }

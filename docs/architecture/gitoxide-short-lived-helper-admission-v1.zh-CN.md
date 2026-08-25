@@ -19,7 +19,7 @@
 
 # Gitoxide short-lived helper：repository admission v1
 
-状态：验证切片；尚无 Desktop、CLI、Runtime Host 或 M2 生产消费者，只能保持 Draft。
+状态：可独立合并的 enabling infrastructure；尚未接入 Desktop/CLI managed-workspace 产品路径。
 
 ## 1. 主要不变量
 
@@ -95,7 +95,7 @@ v1 的 `supportedObjectFormats` 固定为 `["sha1"]`。未来支持必须显式�
 
 ## 7. 下一切片
 
-后续 stacked Draft 先建立 helper artifact claim → opaque invocation capability 的内部边界，并明确
+后续 authority layer 先建立 helper artifact claim → opaque invocation capability 的内部边界，并明确
 正式 packaged-release trust root 尚未接入；详见
 `gitoxide-helper-artifact-authority-v1.zh-CN.md`。再后续才把一次 repository observation 转换成
 T1 前可消费的 opaque admission capability。source import、fresh projection 与 candidate ref CAS

@@ -19,7 +19,8 @@
 
 # Gitoxide source import data plane v1
 
-状态：堆叠在 repository admission capability 之后的 API-only Draft；没有 Desktop/CLI 消费者。
+状态：堆叠在 repository admission capability 之后、可独立合并的 API-only enabling infrastructure；
+没有 Desktop/CLI 产品消费者。
 
 ## 1. 主要不变量
 
@@ -30,7 +31,7 @@
 > 此前不存在的 fresh bare repository，并以确定性零父 baseline commit 发布 `refs/maka/*`。caller 不能
 > 重新提交 source path、HEAD、tree identity、helper identity 或 tree policy。
 
-本 Draft 尚未接入 state-root lease，因此不能证明 destination 属于 Maka。正式消费者必须在调用 helper
+v1 尚未接入 state-root lease，因此不能证明 destination 属于 Maka。正式消费者必须在调用 helper
 以前由 Storage owner 签发 destination capability；在此之前，API 只接受 fresh path，并拒绝接管或修复
 任何已有 repository。
 
@@ -47,6 +48,10 @@
 fresh ownership 的线性化点是原子叶子目录创建；import 成功的线性化点是该独占 destination 内
 `refs/maka/*` 以 `MustNotExist` 从不存在发布到 baseline commit。ref 发布前的 objects 不具有 canonical
 意义；完整 response 返回前，destination 不能被上层接受。已存在 ref 没有“内容相同即成功”的旁路。
+
+该 claim 只约束 helper 在检查通过的 parent 下原子创建当时不存在的叶子目录。它不抵抗拥有同一 OS
+用户权限的进程在随后 rename、junction/reparse replacement 或删除该路径；正式组合仍需稳定的
+storage-root owner 与 destination capability，不能把 fresh `create_dir()` 描述成同用户安全边界。
 
 ## 3. 失败与回滚
 
@@ -71,8 +76,9 @@ v1 不复制 source commit/history，不创建 alternates，不执行 hook/filte
   `Unicode 17.0 NFC → Unicode 16.0 Default Full Case Folding（Non-Turkic）→ Unicode 17.0 NFC`
   collision；原路径与 folded key
   分别有单路径和累计 byte budget；
-- repository inspection deadline 为 5 秒；source import deadline 为 10 分钟。2 GiB/200,000 files 是输入
-  上限，不是十分钟内一定成功的 SLA；超时后 fail closed；
+- repository inspection deadline 为 5 秒；source import deadline 为 10 分钟。deadline 从 public 入口
+  开始覆盖 artifact/path preflight 与 helper 执行；2 GiB/200,000 files 是输入上限，不是十分钟内一定
+  成功的 SLA；超时后由共享 child lifecycle 有界终止并 fail closed；
 - commit/tree/blob 在完整 decode 前先读取 object header 并执行对应预算；isolated Gitoxide open 另固定
   `gitoxide.objects.allocLimit=64 MiB`，避免 policy counter 生效前发生无界单次 object allocation；
 - Linux/macOS/Windows 运行同一 locked Cargo suite；当前只证明 fresh-only fail-closed，不承诺 import

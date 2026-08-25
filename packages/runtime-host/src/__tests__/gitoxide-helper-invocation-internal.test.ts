@@ -35,6 +35,7 @@ import {
   GitoxideHelperInvocationError,
   importSourceHeadWithGitoxideHelperInternal,
   inspectRepositoryWithGitoxideHelperInternal,
+  runGitoxideOperationWithinDeadlineInternal,
 } from '../server/gitoxide-helper-invocation-internal.js';
 
 interface AdmittedHelper {
@@ -49,6 +50,20 @@ test('uses a bounded import deadline distinct from repository inspection', () =>
     inspectRepositoryMs: 5_000,
     importSourceHeadMs: 10 * 60_000,
   });
+});
+
+test('bounds preflight work with the same absolute operation deadline', async () => {
+  const startedAt = performance.now();
+  await assert.rejects(
+    runGitoxideOperationWithinDeadlineInternal({
+      deadlineAt: startedAt + 25,
+      operation: () => new Promise<never>(() => {}),
+    }),
+    (error) =>
+      error instanceof GitoxideHelperInvocationError &&
+      error.code === 'gitoxide_helper_invocation_timed_out',
+  );
+  assert.ok(performance.now() - startedAt < 1_000);
 });
 
 test('waits for helper process identity by elapsed time instead of scheduler turns', async (t) => {
@@ -138,6 +153,38 @@ test('applies the import deadline and terminates the helper process tree', {
   );
   assert.equal(isProcessAlive(helperPid), false);
   assert.equal(isProcessAlive(descendantPid), false);
+});
+
+test('bounds Windows forced termination through the shared lifecycle owner', {
+  skip: process.platform !== 'win32',
+  timeout: 15_000,
+}, async (t) => {
+  const systemRoot = process.env.SystemRoot;
+  if (!systemRoot) {
+    t.skip('SystemRoot is required for the Windows lifecycle contract test');
+    return;
+  }
+  const hangingExecutable = join(systemRoot, 'System32', 'charmap.exe');
+  try {
+    await stat(hangingExecutable);
+  } catch {
+    t.skip('charmap.exe is unavailable on this Windows runner');
+    return;
+  }
+  const helper = await admitHelperPath(hangingExecutable);
+  const repositoryPath = await createRepository(t, 'sha1');
+  const startedAt = performance.now();
+
+  await assert.rejects(
+    inspectRepositoryWithGitoxideHelperInternal({ ...helper, repositoryPath }),
+    (error) =>
+      error instanceof GitoxideHelperInvocationError &&
+      error.code === 'gitoxide_helper_invocation_timed_out',
+  );
+  assert.ok(
+    performance.now() - startedAt < 12_000,
+    'Windows process termination must acknowledge or fail within its lifecycle bound',
+  );
 });
 
 test('rejects an import response that does not match the requested baseline ref', {
@@ -316,7 +363,7 @@ async function assertMismatchedImportResponseRejected(
     bytesImported: 29,
     ...override,
   });
-  await writeFile(helperPath, `#!/bin/sh\nprintf '%s\\n' '${response}'\n`);
+  await writeFile(helperPath, `#!/bin/sh\n/bin/cat >/dev/null\nprintf '%s\\n' '${response}'\n`);
   await chmod(helperPath, 0o755);
   const helper = await admitHelperPath(helperPath);
 

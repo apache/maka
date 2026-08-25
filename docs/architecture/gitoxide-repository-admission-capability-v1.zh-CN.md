@@ -19,8 +19,8 @@
 
 # Gitoxide repository admission capability v1
 
-状态：Gitoxide repository admission / source-import consolidated Draft；source import data plane 作为同一
-PR 内的独立 authority layer 消费该 capability。
+状态：Gitoxide repository admission / source-import 的可合并 enabling infrastructure；source import data
+plane 作为同一 PR 内的独立 authority layer 消费该 capability，产品接线仍未完成。
 
 ## 1. 主要不变量
 
@@ -118,5 +118,5 @@ version；真实 projection 还必须由独立的 `FilesystemMaterializationProf
 - T1 durable admission、projection、candidate 与 ref CAS；
 - state-root-bound destination capability、partial artifact receipt/quarantine/recovery owner。
 
-因此这些 PR 可以作为 Gitoxide backend 的验证栈审查，但在正式 release owner 和生产消费者接入前
-继续保持 Draft。
+因此本层可以作为 Gitoxide backend 的窄基础设施独立合并；正式 release owner、storage-root-bound
+destination owner 和 Desktop/CLI 消费者仍是启用产品能力前的硬门槛。

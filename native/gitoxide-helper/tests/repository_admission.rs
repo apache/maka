@@ -81,6 +81,58 @@ fn rejects_oversized_repository_metadata_before_opening_or_importing() {
 }
 
 #[test]
+fn rejects_oversized_bare_repository_metadata_when_an_invalid_dot_git_child_exists() {
+    let fixture = RepositoryFixture::sha1_with_commit();
+    let bare_repository = fixture.root.join("source.git");
+    let clone = Command::new("git")
+        .args(["clone", "--quiet", "--bare"])
+        .arg(&fixture.root)
+        .arg(&bare_repository)
+        .output()
+        .unwrap();
+    assert!(
+        clone.status.success(),
+        "bare fixture clone failed: {}",
+        String::from_utf8_lossy(&clone.stderr)
+    );
+    fs::create_dir(bare_repository.join(".git")).unwrap();
+    let mut config = fs::OpenOptions::new()
+        .append(true)
+        .open(bare_repository.join("config"))
+        .unwrap();
+    config.write_all(b"\n#").unwrap();
+    config
+        .write_all(&vec![b'x'; MAX_REPOSITORY_METADATA_BYTES])
+        .unwrap();
+    drop(config);
+
+    let inspection = invoke_helper(&bare_repository);
+
+    assert_helper_error(&inspection, "repository_metadata_limit_exceeded");
+}
+
+#[test]
+fn does_not_count_worktree_user_data_as_bare_repository_metadata() {
+    let fixture = RepositoryFixture::sha1_with_commit();
+    let user_refs = fixture.root.join("refs");
+    fs::create_dir(&user_refs).unwrap();
+    fs::write(
+        user_refs.join("application-data.txt"),
+        vec![b'x'; MAX_REPOSITORY_METADATA_BYTES + 1],
+    )
+    .unwrap();
+
+    let inspection = invoke_helper(&fixture.root);
+
+    assert!(
+        inspection.status.success(),
+        "helper failed: stdout={} stderr={}",
+        String::from_utf8_lossy(&inspection.stdout),
+        String::from_utf8_lossy(&inspection.stderr)
+    );
+}
+
+#[test]
 fn rejects_sha256_before_returning_repository_identity() {
     let fixture = RepositoryFixture::sha256_unborn();
 
@@ -235,6 +287,21 @@ fn rejects_full_unicode_casefold_collisions_before_claiming_the_destination() {
 }
 
 #[test]
+fn rejects_protected_names_using_the_policy_v1_unicode_fold() {
+    let (fixture, source_head) = RepositoryFixture::sha1_with_raw_tree(&[RawTreeEntry {
+        mode: "100644",
+        name: ".gitattributeſ",
+        object_kind: RawObjectKind::Blob,
+    }]);
+    let destination = fixture.root.join("unicode-protected-name.git");
+
+    let import = invoke_import(&fixture.root, &source_head, &destination);
+
+    assert_helper_error(&import, "unsupported_source_path");
+    assert!(!destination.exists());
+}
+
+#[test]
 fn rejects_a_nonportable_raw_git_path_before_claiming_the_destination() {
     let (fixture, source_head) = RepositoryFixture::sha1_with_raw_tree(&[RawTreeEntry {
         mode: "100644",
@@ -310,6 +377,42 @@ fn imports_an_exact_source_head_into_a_fresh_managed_repository() {
         ["cat-file", "-e", source_head.as_str()]
     ));
     assert!(!destination.join("objects/info/alternates").exists());
+
+    let second_destination = fixture.root.join("managed-second.git");
+    let second_output = invoke_request(serde_json::json!({
+        "protocolVersion": 1,
+        "operation": "import_source_head",
+        "sourceRepositoryPath": fixture.root,
+        "expectedSourceHeadCommitOid": source_head,
+        "destinationRepositoryPath": second_destination,
+        "baselineRef": "refs/maka/baseline",
+        "managedTreePolicyVersion": 1,
+    }));
+    assert!(
+        second_output.status.success(),
+        "second helper import failed: stdout={} stderr={}",
+        String::from_utf8_lossy(&second_output.stdout),
+        String::from_utf8_lossy(&second_output.stderr)
+    );
+    let second_response: serde_json::Value = serde_json::from_slice(&second_output.stdout).unwrap();
+    assert_eq!(second_response["baselineCommitOid"], baseline_commit);
+    let baseline_commit_text = git_bare_output(&destination, ["cat-file", "-p", baseline_commit]);
+    assert_eq!(
+        baseline_commit_text
+            .lines()
+            .filter(|line| line.starts_with("parent "))
+            .count(),
+        0
+    );
+    assert!(
+        baseline_commit_text
+            .contains("author Maka Workspace Service <workspace@maka.invalid> 946684800 +0000")
+    );
+    assert!(
+        baseline_commit_text
+            .contains("committer Maka Workspace Service <workspace@maka.invalid> 946684800 +0000")
+    );
+    assert!(baseline_commit_text.ends_with("maka managed workspace baseline v1"));
 
     let retry = invoke_request(serde_json::json!({
         "protocolVersion": 1,
