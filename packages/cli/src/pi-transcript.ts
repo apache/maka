@@ -20,6 +20,7 @@
 import { Markdown, visibleWidth } from '@earendil-works/pi-tui';
 import type {
   ProviderRetryEvent,
+  ProviderRetryScheduledEvent,
   SandboxBoundaryRequestEvent,
   UserQuestionRequestEvent,
   SessionEvent,
@@ -33,6 +34,7 @@ import {
   type SystemNoteMessage,
 } from '@maka/core/session';
 import type { ContextBudgetDiagnostic } from '@maka/core/usage-stats/types';
+import { providerRetryRemainingMs } from '@maka/core/provider-retry-countdown';
 import type { ThinkingLevel } from '@maka/core/model-thinking';
 import type { UiLocale } from '@maka/core/ui-locale';
 import { isActiveShellRunStatus } from '@maka/core/shell-run';
@@ -108,10 +110,22 @@ export interface MakaPiTranscriptState {
   steering: string[];
   followup: string[];
   /** Current non-durable provider retry progress for the activity strip. */
-  providerRetry?: ProviderRetryEvent;
+  providerRetry?: ProviderRetryCountdown;
 }
 
 export type MakaPiPendingInteraction = SandboxBoundaryRequestEvent | UserQuestionRequestEvent;
+
+/**
+ * A provider retry event plus the CLIENT-local time it was applied. Counting
+ * down from `receivedAtMs` keeps the whole countdown in one clock domain —
+ * the event's own `ts` is stamped on the (possibly remote) Runtime Host
+ * clock, so subtracting it from a client clock would skew the display by the
+ * clock offset between the two machines.
+ */
+export interface ProviderRetryCountdown {
+  event: ProviderRetryEvent;
+  receivedAtMs: number;
+}
 
 export interface MakaPiRenderGeometry {
   /**
@@ -190,7 +204,7 @@ export interface MakaPiTranscriptMetadata {
   modelContextWindow?: number;
   /** Elapsed milliseconds of the running agent turn, for the activity strip. */
   turnElapsedMs?: number;
-  providerRetry?: ProviderRetryEvent;
+  providerRetry?: ProviderRetryCountdown;
   /** Resolved locale for primary TUI guidance. Defaults to English for direct embeddings. */
   uiLocale?: UiLocale;
   /**
@@ -819,7 +833,7 @@ export function applyMakaSessionEventToTranscript(
       break;
 
     case 'provider_retry':
-      state.providerRetry = event;
+      state.providerRetry = { event, receivedAtMs: Date.now() };
       break;
 
     case 'token_usage': {
@@ -1646,10 +1660,10 @@ export function renderMakaPiActivityStrip(
 ): string {
   const safeWidth = Math.max(1, width);
   if (metadata.providerRetry) {
-    const retry = metadata.providerRetry;
+    const { event: retry, receivedAtMs } = metadata.providerRetry;
     const text =
       retry.phase === 'scheduled'
-        ? `Retrying in ${formatRetryDuration(retry.delayMs)} (${retry.attempt}/${retry.maxAttempts})`
+        ? `Retrying in ${formatRetryCountdown(retry, receivedAtMs)} (${retry.attempt}/${retry.maxAttempts})`
         : `Retrying (${retry.attempt}/${retry.maxAttempts})`;
     return fitLine(ansi.dim(text), safeWidth);
   }
@@ -1657,18 +1671,17 @@ export function renderMakaPiActivityStrip(
   return fitLine(ansi.dim(`Working… ${formatElapsedDuration(metadata.turnElapsedMs)}`), safeWidth);
 }
 
-function formatRetryDuration(delayMs: number): string {
-  let s = Math.max(1, Math.ceil(delayMs / 1_000));
-  const d = Math.floor(s / 86_400);
-  const h = Math.floor((s % 86_400) / 3_600);
-  const m = Math.floor((s % 3_600) / 60);
-  const sec = s % 60;
-  const parts: string[] = [];
-  if (d > 0) parts.push(`${d}d`);
-  if (h > 0) parts.push(`${h}h`);
-  if (m > 0) parts.push(`${m}m`);
-  if (sec > 0 || parts.length === 0) parts.push(`${sec}s`);
-  return parts.join(' ');
+/**
+ * Remaining wait for a scheduled provider retry, ticked against the client's
+ * own receipt time so the strip counts down on the 1s heartbeat instead of
+ * pinning the original delay for the whole sleep. The computation itself is
+ * shared with the desktop banner in `@maka/core/provider-retry-countdown`.
+ * Long provider-mandated waits (a subscription quota window can be hours)
+ * render as `4h 28m 3s` via the shared duration formatter rather than a raw
+ * five-digit second count.
+ */
+function formatRetryCountdown(retry: ProviderRetryScheduledEvent, receivedAtMs: number): string {
+  return formatElapsedDuration(providerRetryRemainingMs(retry, Date.now() - receivedAtMs));
 }
 
 function formatElapsedDuration(elapsedMs: number): string {

@@ -1146,6 +1146,16 @@ export interface ProviderRetryScheduledEvent extends BaseEvent {
   attempt: number;
   maxAttempts: number;
   delayMs: number;
+  /**
+   * Authoritative remaining wait at emission, as a DURATION — unlike `ts`,
+   * it carries no clock domain, so a client on another machine (remote
+   * Runtime Host) can count it down from its own receipt time without being
+   * skewed against the host clock. Runtime sets it to `delayMs` at
+   * scheduling; a host re-projection mid-wait recomputes it from the stored
+   * schedule time. Absent from older emitters; clients fall back to
+   * `delayMs`.
+   */
+  remainingMs?: number;
   reason: ProviderRetryReason;
 }
 
