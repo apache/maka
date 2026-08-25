@@ -1425,6 +1425,8 @@ export interface MakaBridge {
   };
   diagnostics: {
     copyReport(input: DesktopDiagnosticInput): Promise<void>;
+    takePreviousMainProcessInterruption(): Promise<boolean>;
+    copyPreviousMainProcessInterruption(): Promise<void>;
   };
   workspace: {
     searchFiles(

@@ -31,7 +31,6 @@ import {
   MAIN_PROCESS_RECOVERY_FLUSH_INTERVAL_MS,
   MAIN_PROCESS_RECOVERY_LOG_MAX_BYTES,
   MAIN_PROCESS_RECOVERY_MAX_AGE_MS,
-  presentPendingMainProcessRecovery,
 } from '../main-process-recovery-journal.js';
 
 test('recovers one bounded redacted snapshot after an unclean exit', async () => {
@@ -217,60 +216,6 @@ test('ignores corrupt pending records without amplifying invalid log arrays', as
     assert.equal(errors.length, 2);
     assert.equal((errors[1] as Error).message, 'Main-process recovery logs are invalid');
     afterInvalidLogs.markClean();
-  } finally {
-    await rm(directory, { recursive: true, force: true });
-  }
-});
-
-test('discards pending evidence only after its recovery presentation succeeds', async () => {
-  const directory = await mkdtemp(join(tmpdir(), 'maka-main-recovery-presentation-'));
-  const errors: unknown[] = [];
-  try {
-    const interrupted = createJournal(
-      directory,
-      new DiagnosticLogBuffer(),
-      new Date('2026-08-20T00:00:00Z'),
-    );
-    interrupted.markDirty();
-    interrupted.flushNow();
-
-    const failedPresentation = createJournal(
-      directory,
-      new DiagnosticLogBuffer(),
-      new Date('2026-08-20T01:00:00Z'),
-    );
-    await presentPendingMainProcessRecovery(
-      failedPresentation,
-      async () => {
-        throw new Error('dialog unavailable');
-      },
-      (error) => errors.push(error),
-    );
-    assert.equal(errors.length, 1);
-    failedPresentation.markClean();
-
-    const retriedPresentation = createJournal(
-      directory,
-      new DiagnosticLogBuffer(),
-      new Date('2026-08-20T02:00:00Z'),
-    );
-    await presentPendingMainProcessRecovery(
-      retriedPresentation,
-      async (evidence) => {
-        assert.equal(evidence.run.startedAt, '2026-08-20T00:00:00.000Z');
-      },
-      (error) => errors.push(error),
-    );
-    retriedPresentation.markClean();
-
-    const afterSuccess = createJournal(
-      directory,
-      new DiagnosticLogBuffer(),
-      new Date('2026-08-20T03:00:00Z'),
-    );
-    assert.equal(afterSuccess.pending, undefined);
-    assert.equal(errors.length, 1);
-    afterSuccess.markClean();
   } finally {
     await rm(directory, { recursive: true, force: true });
   }

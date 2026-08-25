@@ -242,6 +242,7 @@ const runtimeHostMetadata = new Map<
   { readonly profileId: string; readonly profileName: string; readonly profileKind: 'local' | 'remote' }
 >();
 const newTaskChangeListeners = new Set<() => void>();
+let previousMainProcessInterruptionRead: Promise<boolean> | undefined;
 
 type RuntimeHostProfileWireEvent = DesktopRuntimeHostProfileChangedEvent;
 
@@ -2989,6 +2990,15 @@ const makaBridge = {
     },
   },
   diagnostics: {
+    takePreviousMainProcessInterruption(): Promise<boolean> {
+      previousMainProcessInterruptionRead ??= ipcRenderer.invoke(
+        'diagnostics:takePreviousMainProcessInterruption',
+      ) as Promise<boolean>;
+      return previousMainProcessInterruptionRead;
+    },
+    copyPreviousMainProcessInterruption(): Promise<void> {
+      return ipcRenderer.invoke('diagnostics:copyPreviousMainProcessInterruption');
+    },
     async copyReport(input: DesktopDiagnosticInput): Promise<void> {
       const rendererContext = {
         rendererUserAgent: navigator.userAgent,

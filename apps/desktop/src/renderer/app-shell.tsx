@@ -128,6 +128,7 @@ import { scopeWorkHubSessionsToCoordinationHost } from './workhub-coordination-h
 import { createDesktopWorkHubSessionPort } from './workhub-session-port.js';
 import { WorkHubCoordinationStatus, WorkHubSurface } from './workhub-surface.js';
 import { getShellCopy, localizedShellErrorMessage } from './locales/shell-copy';
+import { getShellRemainingCopy } from './locales/shell-remaining-copy.js';
 import { getDesktopConversationCopy } from './locales/conversation-copy';
 import { ErrorBoundary } from './error-boundary';
 import { useShellAppearance } from './use-shell-appearance';
@@ -345,6 +346,7 @@ function AppShellContent({
   const [appUpdateStatus, setAppUpdateStatus] = useState<AppUpdateStatus | null>(null);
   const updateInstallInFlightRef = useRef(false);
   const notifiedInstallErrorRef = useRef<string | null>(null);
+  const previousInterruptionShownRef = useRef(false);
   const {
     sessions,
     catalogRevision,
@@ -610,6 +612,7 @@ function AppShellContent({
     themePalette,
     setThemePalette,
     uiLocaleUpdateGate,
+    appearanceHydrated,
     userLabel,
     setUserLabel,
 
@@ -622,6 +625,8 @@ function AppShellContent({
     setUiLocalePreference,
   });
   const shellCopy = getShellCopy(uiLocale).app;
+  const previousInterruptionCopy =
+    getShellRemainingCopy(uiLocale).previousMainProcessInterruption;
   const projectActionsCopy = getShellCopy(uiLocale).projectActions;
   const desktopConversationCopy = getDesktopConversationCopy(uiLocale);
   /**
@@ -635,6 +640,33 @@ function AppShellContent({
   const newTaskPermissionMode =
     newTaskPermissionChoice ?? newTask.selectedHost?.chatDefaults.permissionMode ?? 'ask';
   const setNewTaskPermissionMode = setNewTaskPermissionChoice;
+  useEffect(() => {
+    if (!appearanceHydrated) return;
+    let cancelled = false;
+    void window.maka.diagnostics
+      .takePreviousMainProcessInterruption()
+      .then((interrupted) => {
+        if (cancelled || !interrupted || previousInterruptionShownRef.current) return;
+        previousInterruptionShownRef.current = true;
+        toastApi.toast({
+          variant: 'warning',
+          title: previousInterruptionCopy.title,
+          description: previousInterruptionCopy.description,
+          duration: 10_000,
+          action: {
+            label: previousInterruptionCopy.copyDiagnostics,
+            onClick: () =>
+              window.maka.diagnostics.copyPreviousMainProcessInterruption(),
+          },
+        });
+      })
+      .catch((error) =>
+        console.error('[diagnostics] previous-session notice failed:', error),
+      );
+    return () => {
+      cancelled = true;
+    };
+  }, [appearanceHydrated, previousInterruptionCopy, toastApi]);
   useEffect(() => {
     if (!isAppUpdateInstallFailure(appUpdateStatus)) {
       notifiedInstallErrorRef.current = null;
