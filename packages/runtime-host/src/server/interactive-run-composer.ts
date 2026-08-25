@@ -208,7 +208,7 @@ export function createInteractiveRunComposer(input: InteractiveRunComposerInput)
     permissionMode: input.permissionMode,
     toolNames: tools.map(({ name }) => name),
     ...(input.toolProfile ? { toolProfile: input.toolProfile } : {}),
-    shellAvailable: input.shell?.setupError === undefined,
+    shellAvailable: input.shell !== undefined && input.shell.setupError === undefined,
     restrictedToolSurface:
       input.boundTools !== undefined ||
       input.deepResearch !== undefined ||

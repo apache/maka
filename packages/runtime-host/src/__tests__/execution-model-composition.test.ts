@@ -3240,6 +3240,7 @@ test('injects Auto tool guidance only into an eligible main-session prompt', asy
     } as unknown as HostMemoryCoordinator,
     taskLedger: {} as TaskLedgerStore,
     hostTools: [composerTool('Bash'), composerTool('Read'), composerTool('Edit')],
+    shell: { plan: { kind: 'posix', displayName: '/bin/sh' } } as const,
   });
 
   const prompt = (
@@ -3258,7 +3259,7 @@ test('injects Auto tool guidance only into an eligible main-session prompt', asy
   assert.match(prompt ?? '', /Prefer Edit when path validation/u);
 });
 
-test('does not inject Auto guidance into child, restricted, or unavailable-shell prompts', async () => {
+test('does not inject Auto guidance into child, restricted, unavailable, or missing-shell prompts', async () => {
   const promptDependencies = {
     runtimePolicy: { revision: 0, policy: createDefaultRuntimePolicy() },
     permissionMode: 'ask' as const,
@@ -3274,6 +3275,7 @@ test('does not inject Auto guidance into child, restricted, or unavailable-shell
     } as unknown as HostMemoryCoordinator,
     taskLedger: {} as TaskLedgerStore,
     hostTools: [composerTool('Bash'), composerTool('Read')],
+    shell: { plan: { kind: 'posix', displayName: '/bin/sh' } } as const,
   };
 
   const child = createInteractiveRunComposer({
@@ -3320,6 +3322,17 @@ test('does not inject Auto guidance into child, restricted, or unavailable-shell
     })
   ).text;
   assert.doesNotMatch(unavailablePrompt ?? '', /Auto-mode tool guidance/u);
+
+  const missingShell = createInteractiveRunComposer({ ...promptDependencies, shell: undefined });
+  const missingShellPrompt = (
+    await missingShell.resolveSystemPrompt({
+      sessionId: 'missing-shell-session',
+      turnId: 'missing-shell-turn',
+      cwd: '/workspace',
+      workspaceRoot: '/workspace',
+    })
+  ).text;
+  assert.doesNotMatch(missingShellPrompt ?? '', /Auto-mode tool guidance/u);
 });
 
 test('does not append Auto guidance after the side-conversation boundary', async () => {
@@ -3369,6 +3382,7 @@ test('uses the Host permission snapshot instead of plan permission state', async
     } as unknown as HostMemoryCoordinator,
     taskLedger: {} as TaskLedgerStore,
     hostTools: [composerTool('Bash'), composerTool('Read')],
+    shell: { plan: { kind: 'posix', displayName: '/bin/sh' } },
     plan: {
       store: {} as PlanStore,
       state: {
