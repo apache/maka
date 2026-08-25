@@ -113,19 +113,19 @@ describe('managed Runtime Host selected update', () => {
 
   it('lets the exact transaction decide whether a current candidate needs repair', async () => {
     const selection = updateSelection({ kind: 'current' });
-    let updates = 0;
+    let updateInput: RuntimeHostUpdateCliOptions | undefined;
     assert.equal(
       await runManagedRuntimeHostSelectedUpdateCli(OPTIONS, {
         resolveSelection: async () => selection,
-        withPackage: async (_candidate, use) => use('/verified/package'),
-        update: async () => {
-          updates += 1;
+        withPackage: async () => assert.fail('the current deployment must not be downloaded'),
+        update: async (input) => {
+          updateInput = input;
           return 0;
         },
       }),
       0,
     );
-    assert.equal(updates, 1);
+    assert.equal(updateInput?.sourcePackageRoot, '/managed/versions/2.0.0');
   });
 
   it('keeps non-admitted candidates outside package acquisition and mutation', async () => {

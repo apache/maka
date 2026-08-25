@@ -18,7 +18,7 @@
  */
 
 import { spawn } from 'node:child_process';
-import { join, resolve } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import { truncateUtf8 } from '@maka/core/diagnostic-log';
 import {
   decodeRuntimeHostServiceManagementFrame,
@@ -243,15 +243,22 @@ export async function runManagedRuntimeHostUpdateCli(
         }
 
         const currentOperatorPath = join(serviceConfig.managedDeploymentRoot, 'operator');
-        const currentOperatorUsesProcessLifetimeLock = status.service.active
-          ? operatorUsesProcessLifetimeLock(
+        let currentOperatorUsesProcessLifetimeLock = false;
+        let currentOperatorUnavailable = false;
+        if (status.service.active) {
+          try {
+            currentOperatorUsesProcessLifetimeLock = operatorUsesProcessLifetimeLock(
               await deps.runOperator(
                 currentOperatorPath,
                 ['status', '--framed', ...expectedTargetArgs(options.expectedTarget)],
                 { capabilityRequest: RUNTIME_HOST_OPERATOR_PROCESS_LIFETIME_LOCK_CAPABILITY },
               ),
-            )
-          : false;
+            );
+          } catch (error) {
+            if (!activeTargetNeedsRepair) throw error;
+            currentOperatorUnavailable = true;
+          }
+        }
 
         emit(progress('staging', currentVersion, options.version));
         deployment = await deps.withLifecycleLock(options.clientDataRoot, () =>
@@ -294,12 +301,22 @@ export async function runManagedRuntimeHostUpdateCli(
               : deps.withLegacyOperatorLeases(options.clientDataRoot, (inheritedFds) =>
                   deps.runOperator(currentOperatorPath, args, { inheritedFds }),
                 );
-          let retirement = await runCurrentOperator([
-            'retire',
-            '--framed',
-            ...expectedTargetArgs(options.expectedTarget),
-            ...(options.allowInterruptActiveTasks ? ['--allow-interrupt-active-tasks'] : []),
-          ]);
+          let retirement: RuntimeHostServiceManagementFrame = currentOperatorUnavailable
+            ? {
+                schemaVersion: 1,
+                kind: 'error',
+                action: 'retire',
+                error: {
+                  code: 'retirement_failed',
+                  message: 'The active Runtime Host operator is unavailable',
+                },
+              }
+            : await runCurrentOperator([
+                'retire',
+                '--framed',
+                ...expectedTargetArgs(options.expectedTarget),
+                ...(options.allowInterruptActiveTasks ? ['--allow-interrupt-active-tasks'] : []),
+              ]);
           if (
             activeTargetNeedsRepair &&
             retirement.kind === 'error' &&
@@ -518,7 +535,7 @@ export async function runManagedRuntimeHostSelectedUpdateCli(
       return 1;
     }
 
-    return await deps.withPackage(selection.candidate, async (packageRoot) => {
+    const apply = async (packageRoot: string) => {
       const { selector: _selector, ...updateOptions } = options;
       return await deps.update({
         ...updateOptions,
@@ -532,7 +549,10 @@ export async function runManagedRuntimeHostSelectedUpdateCli(
           },
         },
       });
-    });
+    };
+    return selection.outcome.kind === 'current'
+      ? await apply(dirname(dirname(selection.currentCliPath)))
+      : await deps.withPackage(selection.candidate, apply);
   } catch (error) {
     const code =
       error instanceof RuntimeHostUpdateDiscoveryError ||

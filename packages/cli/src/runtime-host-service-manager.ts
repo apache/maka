@@ -578,7 +578,15 @@ async function replaceRuntimeHostManagedServiceLocked(
   try {
     await deps.waitForReady(config, backend);
   } catch (error) {
-    await backend.stop().catch(() => undefined);
+    try {
+      await backend.stop();
+    } catch (stopError) {
+      throw new RuntimeHostServiceManagerError(
+        'update_incomplete',
+        'The replacement Runtime Host did not become ready and could not be stopped; inspect the service state before retrying',
+        { cause: new AggregateError([error, stopError]) },
+      );
+    }
     throw new RuntimeHostServiceManagerError(
       'update_incomplete',
       'The replacement Runtime Host did not become ready; the selected deployment was retained but stopped because rolling back across an unknown storage boundary is unsafe',

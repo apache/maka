@@ -1262,6 +1262,7 @@ describe('managed Runtime Host service', () => {
     let state: 'running' | 'stopped' = 'running';
     let replaceCalls = 0;
     let replaceFails = true;
+    let stopFails = false;
     const backend: RuntimeHostServiceBackend = {
       ...createReadyBackend(),
       status: async () => ({
@@ -1276,8 +1277,10 @@ describe('managed Runtime Host service', () => {
       replace: async () => {
         replaceCalls += 1;
         if (replaceFails) throw new Error('replacement was not committed');
+        state = 'running';
       },
       stop: async () => {
+        if (stopFails) throw new Error('replacement could not be stopped');
         state = 'stopped';
       },
     };
@@ -1321,6 +1324,19 @@ describe('managed Runtime Host service', () => {
       await readFile(resolveRuntimeHostManagedServiceConfigPath(clientDataRoot), 'utf8'),
     ) as RuntimeHostManagedServiceConfig;
     assert.equal(retained.launch.cliPath, await realpath(targetCli));
+
+    stopFails = true;
+    await assert.rejects(
+      replaceRuntimeHostManagedService({ ...common, cliPath: targetCli, expectedTarget }, backend, {
+        waitForReady: async () => Promise.reject(new Error('target readiness is unknown')),
+      }),
+      (error: unknown) =>
+        error instanceof RuntimeHostServiceManagerError &&
+        error.code === 'update_incomplete' &&
+        error.cause instanceof AggregateError &&
+        /could not be stopped/u.test(error.message),
+    );
+    assert.equal(state, 'running');
   });
 
   it('updates through the current operator and preserves exact update outcomes', async () => {
@@ -1370,6 +1386,7 @@ describe('managed Runtime Host service', () => {
     let readyFailure = false;
     let operatorSupportsProcessLifetimeLock = false;
     let legacyLeaseCalls = 0;
+    let operatorStatusFailure = false;
     let operatorFailure: Extract<RuntimeHostServiceManagementFrame, { kind: 'error' }> | undefined;
     let replaceFailure = false;
     let cleanupFailure = false;
@@ -1448,6 +1465,7 @@ describe('managed Runtime Host service', () => {
         const action = args[0];
         assert.ok(action === 'status' || action === 'retire');
         if (action === 'status') {
+          if (operatorStatusFailure) throw new Error('The active operator is unavailable');
           assert.equal(
             invocation?.capabilityRequest,
             RUNTIME_HOST_OPERATOR_PROCESS_LIFETIME_LOCK_CAPABILITY,
@@ -1661,6 +1679,14 @@ describe('managed Runtime Host service', () => {
         : undefined,
       'repaired',
     );
+
+    order.length = 0;
+    statusReads = 0;
+    output = '';
+    operatorStatusFailure = true;
+    assert.equal(await runManagedRuntimeHostUpdateCli(options, overrides), 0);
+    assert.deepEqual(order, ['stop', 'activate', 'replace', 'cleanup']);
+    operatorStatusFailure = false;
 
     order.length = 0;
     statusReads = 0;
