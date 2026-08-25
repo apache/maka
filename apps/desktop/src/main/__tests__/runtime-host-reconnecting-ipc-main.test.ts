@@ -30,6 +30,7 @@ import {
 } from "../ipc-reconnect-policy.js";
 import * as ipcReconnectPolicy from "../ipc-reconnect-policy.js";
 import {
+  RuntimeHostHandlerUnavailableError,
   RuntimeHostReconnectingIpcMain,
   RuntimeHostTargetChangedError,
 } from "../runtime-host-reconnecting-ipc-main.js";
@@ -336,6 +337,56 @@ test("holds an invocation across a Runtime Host candidate replacement", async ()
 
   router.close();
   assert.equal(ipc.size, 0);
+});
+
+test("bounds invocation while an active Runtime Host has no handler", async () => {
+  const ipc = ipcHarness();
+  const router = new RuntimeHostReconnectingIpcMain(ipc, {
+    handlerWaitTimeoutMs: 5,
+  });
+  const target = router.createTarget("target-a");
+  target.handle("sessions:send", async () => "sent");
+  router.activate("target-a");
+  target.removeHandler("sessions:send");
+
+  await assert.rejects(
+    () => ipc.invoke("sessions:send", scope("target-a")),
+    RuntimeHostHandlerUnavailableError,
+  );
+  target.handle("sessions:send", async () => "retried");
+  assert.equal(
+    await ipc.invoke("sessions:send", scope("target-a")),
+    "retried",
+  );
+  router.close();
+});
+
+test("bounds reconnectable reads when no replacement handler becomes available", async () => {
+  const ipc = ipcHarness();
+  const router = new RuntimeHostReconnectingIpcMain(ipc, {
+    handlerWaitTimeoutMs: 5,
+  });
+  const target = router.createTarget("target-a");
+  const failRead = deferred();
+  target.handleReconnectableRead?.("taskReadiness:getSnapshot", async () => {
+    await failRead.promise;
+    throw new RuntimeHostOperationError(
+      "session.catalog.query",
+      "host_draining",
+      "Runtime Host is draining",
+    );
+  });
+  router.activate("target-a");
+
+  const reading = ipc.invoke("taskReadiness:getSnapshot", scope("target-a"));
+  target.removeHandler("taskReadiness:getSnapshot");
+  failRead.resolve();
+
+  await assert.rejects(
+    () => reading,
+    RuntimeHostHandlerUnavailableError,
+  );
+  router.close();
 });
 
 test("does not return a late read from a replaced Runtime Host candidate", async () => {

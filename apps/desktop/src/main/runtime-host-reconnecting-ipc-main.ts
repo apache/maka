@@ -34,9 +34,11 @@ type ReconcileIpcHandler = (
 type ReconciliationUnavailableIpcHandler = ReconcileIpcHandler;
 
 const DEFAULT_RECONCILIATION_WAIT_TIMEOUT_MS = 15_000;
+const DEFAULT_HANDLER_WAIT_TIMEOUT_MS = 5_000;
 
 export interface RuntimeHostReconnectingIpcMainOptions {
   readonly reconciliationWaitTimeoutMs?: number;
+  readonly handlerWaitTimeoutMs?: number;
 }
 
 class ReconciliationWaitExpiredError extends Error {
@@ -81,6 +83,13 @@ export class RuntimeHostTargetChangedError extends Error {
   }
 }
 
+export class RuntimeHostHandlerUnavailableError extends Error {
+  constructor() {
+    super("Runtime Host handler remained unavailable after the reconnection window");
+    this.name = "RuntimeHostHandlerUnavailableError";
+  }
+}
+
 /**
  * Keeps Electron IPC registration stable across reconnects while fencing each
  * target generation. Reconnectable reads may move to a replacement candidate,
@@ -91,6 +100,7 @@ export class RuntimeHostReconnectingIpcMain {
   readonly #slots = new Map<string, HandlerSlot>();
   readonly #activeEpochs = new Set<string>();
   readonly #reconciliationWaitTimeoutMs: number;
+  readonly #handlerWaitTimeoutMs: number;
   #closed = false;
 
   constructor(
@@ -104,6 +114,12 @@ export class RuntimeHostReconnectingIpcMain {
       throw new TypeError("Runtime Host reconciliation wait timeout must be positive");
     }
     this.#reconciliationWaitTimeoutMs = reconciliationWaitTimeoutMs;
+    const handlerWaitTimeoutMs =
+      options.handlerWaitTimeoutMs ?? DEFAULT_HANDLER_WAIT_TIMEOUT_MS;
+    if (!Number.isSafeInteger(handlerWaitTimeoutMs) || handlerWaitTimeoutMs <= 0) {
+      throw new TypeError("Runtime Host handler wait timeout must be positive");
+    }
+    this.#handlerWaitTimeoutMs = handlerWaitTimeoutMs;
   }
 
   createTarget(epoch: string): RuntimeHostTargetIpcMain {
@@ -233,14 +249,29 @@ export class RuntimeHostReconnectingIpcMain {
   ): Promise<unknown> {
     const epoch = this.#requireTargetEpoch(args[0]);
     let handler: BoundHandler =
-      slot.handlers.get(epoch) ?? await this.#waitForHandler(slot, epoch);
+      slot.handlers.get(epoch) ??
+      await this.#waitForHandler(
+        slot,
+        epoch,
+        undefined,
+        this.#handlerWaitTimeoutMs,
+        () => new RuntimeHostHandlerUnavailableError(),
+      );
     let reconciliationContext: unknown;
     let reconciling = false;
     let reconciliationDeadline: number | undefined;
     const waitForReplacement = async (
       previous: BoundHandler,
     ): Promise<BoundHandler | undefined> => {
-      if (!reconciling) return this.#waitForHandler(slot, epoch, previous);
+      if (!reconciling) {
+        return this.#waitForHandler(
+          slot,
+          epoch,
+          previous,
+          this.#handlerWaitTimeoutMs,
+          () => new RuntimeHostHandlerUnavailableError(),
+        );
+      }
       const remainingMs = Math.max(
         0,
         (reconciliationDeadline ?? Date.now()) - Date.now(),
@@ -314,6 +345,7 @@ export class RuntimeHostReconnectingIpcMain {
     epoch: string,
     previous?: BoundHandler,
     timeoutMs?: number,
+    timeoutError: () => Error = () => new ReconciliationWaitExpiredError(),
   ): Promise<BoundHandler> {
     try {
       this.#assertActive(epoch);
@@ -325,7 +357,7 @@ export class RuntimeHostReconnectingIpcMain {
       return Promise.resolve(current);
     }
     if (timeoutMs !== undefined && timeoutMs <= 0) {
-      return Promise.reject(new ReconciliationWaitExpiredError());
+      return Promise.reject(timeoutError());
     }
     return new Promise((resolve, reject) => {
       let timeout: ReturnType<typeof setTimeout> | undefined;
@@ -344,7 +376,7 @@ export class RuntimeHostReconnectingIpcMain {
       if (timeoutMs !== undefined) {
         timeout = setTimeout(() => {
           if (!slot.waiters.delete(waiter)) return;
-          waiter.reject(new ReconciliationWaitExpiredError());
+          waiter.reject(timeoutError());
         }, timeoutMs);
       }
     });
