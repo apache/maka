@@ -43,6 +43,7 @@ import {
   LocalizedChatMessage,
   TurnRunningStatus,
   TurnView,
+  TransientUserMessage,
   type ReadAttachmentBytes,
   type TurnFooterActionMeta,
   type TurnPresentationDeriver,
@@ -61,6 +62,7 @@ export interface LiveContentActivationSnapshot {
 
 export function ChatView(props: {
   messages: StoredMessage[];
+  transientMessages?: readonly Extract<StoredMessage, { type: 'user' }>[];
   messageLoading?: boolean;
   liveTurn?: LiveTurnProjection;
   /** Live display content already present when the host activated this conversation surface. */
@@ -272,6 +274,7 @@ export function ChatView(props: {
     [drainingMessageIds, props.messages],
   );
   const chat = useMemo(() => materializeChat(visibleMessages, locale), [visibleMessages, locale]);
+  const transientMessages = props.transientMessages ?? [];
   // The projection owns the derived turns, so a turn nothing said anything
   // about keeps its object identity and its memoized TurnView skips — across
   // deltas AND across the message refreshes that fire at every step/tool
@@ -529,7 +532,7 @@ export function ChatView(props: {
   const hasVisibleConversationItem =
     conversationItemPlacement.byTurn.size > 0 || conversationItemPlacement.orphan !== undefined;
   const showEmptyState =
-    (chat.length === 0 && !streamingActive && !hasVisibleConversationItem)
+    (chat.length === 0 && transientMessages.length === 0 && !streamingActive && !hasVisibleConversationItem)
     || Boolean(props.messageLoading && chat.length === 0 && !hasVisibleConversationItem);
   const emptyContent = props.messageLoading
     ? (
@@ -690,6 +693,13 @@ export function ChatView(props: {
                   style={{ height: afterHeight, flex: '0 0 auto', transition: 'none' }}
                 />
               )}
+              {transientMessages.map((message) => (
+                <TransientUserMessage
+                  key={message.id}
+                  message={message}
+                  onReadAttachmentBytes={props.onReadAttachmentBytes}
+                />
+              ))}
               {/* #642 fallback: streaming began before the optimistic user turn
                   materialized (rare — e.g. an event replay while messages are still
                   loading), so there is no tail turn to inject into. Render the live

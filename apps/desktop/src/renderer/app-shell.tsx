@@ -347,6 +347,7 @@ function AppShellContent({
     startNewSession,
     clearOwnedSessionState,
     messages,
+    transientMessages,
     setMessages,
     addTransientMessage,
     removeTransientMessage,
@@ -2140,18 +2141,23 @@ function AppShellContent({
   }
 
   async function deleteQueuedEntry(entryId: string): Promise<void> {
-    await runQueueEntryAction((sessionId) =>
+    const messageId = activeMessageQueue?.entries.find((entry) => entry.entryId === entryId)?.messageId;
+    const sessionId = await runQueueEntryAction((sessionId) =>
       window.maka.sessions.retractQueueEntry(sessionId, entryId).then(() => undefined)
     );
+    if (sessionId && messageId) removeTransientMessage(sessionId, messageId);
   }
 
   // Surfaces the failure, then rethrows so the pending plate can settle its
   // in-flight action state without guessing with a timer.
-  async function runQueueEntryAction(action: (sessionId: string) => Promise<void>): Promise<void> {
+  async function runQueueEntryAction(
+    action: (sessionId: string) => Promise<void>,
+  ): Promise<string | undefined> {
     const sessionId = activeIdRef.current;
     if (!sessionId) return;
     try {
       await action(sessionId);
+      return sessionId;
     } catch (error) {
       if (activeIdRef.current === sessionId) {
         const copy = getDesktopConversationCopy(uiLocale).actions;
@@ -3020,6 +3026,7 @@ function AppShellContent({
                 onReturnToLatestHistory={() => loadTranscriptHistory('latest')}
                 liveContentSeedRevision={liveContentSeedRevision(activeEventSeed, activeId)}
                 messages={messages}
+                transientMessages={transientMessages}
                 messageLoading={activeMessageLoading}
                 runningStatus={showRunningStatus}
                     onStreamingSettled={

@@ -19,23 +19,20 @@
 
 import type { StoredMessage } from '@maka/core/session';
 
+type TransientUserMessage = Extract<StoredMessage, { type: 'user' }>;
+
 /**
- * Merge a renderer-only message into the current transcript until the
- * canonical transcript carries the same message id. The map is presentation
- * state only; it never decides delivery or retry.
+ * Project renderer-only messages beside the canonical transcript until the
+ * canonical transcript carries the same message id. Keeping the two arrays
+ * distinct prevents a prior transient render from masquerading as durable
+ * evidence on the next projection.
  */
 export function reconcileTransientMessages(
-  transient: Map<string, StoredMessage>,
+  transient: Map<string, TransientUserMessage>,
   durable: readonly StoredMessage[],
   options: { includeTransient?: boolean } = {},
-): StoredMessage[] {
+): TransientUserMessage[] {
   for (const message of durable) transient.delete(message.id);
-  if (transient.size === 0 || options.includeTransient === false) return [...durable];
-  const projected = [...durable];
-  for (const message of [...transient.values()].sort((left, right) => left.ts - right.ts)) {
-    const nextIndex = projected.findIndex((candidate) => candidate.ts > message.ts);
-    if (nextIndex < 0) projected.push(message);
-    else projected.splice(nextIndex, 0, message);
-  }
-  return projected;
+  if (transient.size === 0 || options.includeTransient === false) return [];
+  return [...transient.values()].sort((left, right) => left.ts - right.ts);
 }

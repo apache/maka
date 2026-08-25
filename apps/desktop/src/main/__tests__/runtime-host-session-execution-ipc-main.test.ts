@@ -1124,6 +1124,39 @@ test("queues explicit Desktop follow-ups", async () => {
   ]);
 });
 
+test('keeps an unknown Desktop follow-up admission available for reconciliation', async () => {
+  const ipc = ipcHarness();
+  registerExecutionIpc(
+    {
+      client: executionClient({
+        getSession: async () => session(),
+        submitMessage: async () => {
+          throw new RuntimeHostOperationError(
+            'turn.message.submit',
+            'outcome_unknown',
+            'Message disposition cannot be proven in this Host Epoch',
+          );
+        },
+      }),
+      observer: unusedObserver(),
+      attachmentApprovals: createAttachmentApprovalRegistry(),
+      emitSessionsChanged() {},
+      stat: async () => ({ size: 0 }),
+      resizeImage: async (bytes) => bytes,
+      beforeStop() {},
+    },
+    ipc,
+  );
+
+  assert.deepEqual(
+    await ipc.invoke('sessions:enqueue', 'session-1', 'next_turn', {
+      messageId: 'followup-unknown',
+      text: 'keep this visible',
+    }),
+    { kind: 'outcome_unknown', messageId: 'followup-unknown' },
+  );
+});
+
 test("routes per-entry queue mutations to the Runtime Host", async () => {
   const calls: unknown[] = [];
   let sequence = 0;

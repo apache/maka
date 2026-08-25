@@ -922,13 +922,16 @@ export interface MakaBridge {
           Pick<import('@maka/core/events').InlineReference, 'value' | 'start'>
         >;
       },
-    ): Promise<{
-      kind: 'queued' | 'started';
-      turnId?: string;
-      messageId: string;
-      attachments: import('@maka/core/events').AttachmentRef[];
-      inlineReferences: import('@maka/core/events').InlineReference[];
-    }>;
+    ): Promise<
+      | {
+          kind: 'queued' | 'started';
+          turnId?: string;
+          messageId: string;
+          attachments: import('@maka/core/events').AttachmentRef[];
+          inlineReferences: import('@maka/core/events').InlineReference[];
+        }
+      | { kind: 'outcome_unknown'; messageId: string }
+    >;
     retractQueueEntry(sessionId: string, entryId: string): Promise<void>;
     promoteQueueEntry(sessionId: string, entryId: string): Promise<void>;
     updateQueueEntry(

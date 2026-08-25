@@ -38,6 +38,8 @@ type MessageListUpdater = (
   next: StoredMessage[] | ((current: StoredMessage[]) => StoredMessage[]),
 ) => void;
 
+type TransientUserMessage = Extract<StoredMessage, { type: 'user' }>;
+
 export function useAppShellSessionWorkspace(toastApi: ToastApi) {
   const [activeId, setActiveIdState] = useState<string | undefined>();
   const activeIdRef = useRef<string | undefined>(undefined);
@@ -50,15 +52,22 @@ export function useAppShellSessionWorkspace(toastApi: ToastApi) {
   const selectionRevisionRef = useRef(0);
   const bootstrapSelectionLeaseRef = useRef<ReturnType<typeof createBootstrapSelectionLease> | null>(null);
   const [messages, setMessages] = useState<StoredMessage[]>([]);
-  const transientMessagesBySessionRef = useRef(new Map<string, Map<string, StoredMessage>>());
+  const messagesRef = useRef<StoredMessage[]>([]);
+  const [transientMessages, setTransientMessages] = useState<TransientUserMessage[]>([]);
+  const transientMessagesBySessionRef = useRef(
+    new Map<string, Map<string, TransientUserMessage>>(),
+  );
   const transcriptRangeRef = useRef<DesktopTranscriptRangeController | undefined>(undefined);
   const [messageLoadPending, setMessageLoadPending] = useState(false);
   const messageRetryPendingRef = useRef<Set<string>>(new Set());
   const stopPendingRef = useRef<Set<string>>(new Set());
 
-  function mergeTransientMessages(sessionId: string, durable: readonly StoredMessage[]): StoredMessage[] {
+  function projectTransientMessages(
+    sessionId: string,
+    durable: readonly StoredMessage[],
+  ): TransientUserMessage[] {
     const pending = transientMessagesBySessionRef.current.get(sessionId);
-    if (!pending || pending.size === 0) return [...durable];
+    if (!pending || pending.size === 0) return [];
     let includeTransient = true;
     try {
       const range = transcriptRangeRef.current?.store.range();
@@ -74,14 +83,14 @@ export function useAppShellSessionWorkspace(toastApi: ToastApi) {
   }
 
   const setMessagesForActiveSession: MessageListUpdater = (next) => {
-    setMessages((current) => {
-      const projected = typeof next === 'function' ? next([...current]) : next;
-      const sessionId = activeIdRef.current;
-      return sessionId ? mergeTransientMessages(sessionId, projected) : projected;
-    });
+    const projected = typeof next === 'function' ? next([...messagesRef.current]) : next;
+    messagesRef.current = projected;
+    setMessages(projected);
+    const sessionId = activeIdRef.current;
+    setTransientMessages(sessionId ? projectTransientMessages(sessionId, projected) : []);
   };
 
-  function addTransientMessage(sessionId: string, message: StoredMessage): void {
+  function addTransientMessage(sessionId: string, message: TransientUserMessage): void {
     let pending = transientMessagesBySessionRef.current.get(sessionId);
     if (!pending) {
       pending = new Map();
@@ -89,17 +98,16 @@ export function useAppShellSessionWorkspace(toastApi: ToastApi) {
     }
     pending.set(message.id, message);
     if (activeIdRef.current === sessionId) {
-      setMessages((current) => mergeTransientMessages(sessionId, current));
+      setTransientMessages(projectTransientMessages(sessionId, messagesRef.current));
     }
   }
 
   function removeTransientMessage(sessionId: string, messageId: string): void {
     const pending = transientMessagesBySessionRef.current.get(sessionId);
-    if (pending?.delete(messageId) && pending.size === 0) {
-      transientMessagesBySessionRef.current.delete(sessionId);
-    }
+    if (!pending?.delete(messageId)) return;
+    if (pending.size === 0) transientMessagesBySessionRef.current.delete(sessionId);
     if (activeIdRef.current === sessionId) {
-      setMessages((current) => current.filter((message) => message.id !== messageId));
+      setTransientMessages(projectTransientMessages(sessionId, messagesRef.current));
     }
   }
 
@@ -114,7 +122,9 @@ export function useAppShellSessionWorkspace(toastApi: ToastApi) {
     if (!next) {
       setMessageLoadPending(false);
     } else if (next !== activeIdRef.current) {
+      messagesRef.current = [];
       setMessages([]);
+      setTransientMessages(projectTransientMessages(next, []));
       setMessageLoadPending(true);
     }
     activeIdRef.current = next;
@@ -134,13 +144,16 @@ export function useAppShellSessionWorkspace(toastApi: ToastApi) {
   function startNewSession(): void {
     markNewTaskReloadIntent();
     setActiveId(undefined);
+    messagesRef.current = [];
     setMessages([]);
+    setTransientMessages([]);
   }
 
   function clearOwnedSessionState(sessionId: string): void {
     messageRetryPendingRef.current.delete(sessionId);
     stopPendingRef.current.delete(sessionId);
     transientMessagesBySessionRef.current.delete(sessionId);
+    if (activeIdRef.current === sessionId) setTransientMessages([]);
     sessionUi.clearSessionUiState(sessionId);
   }
 
@@ -153,11 +166,11 @@ export function useAppShellSessionWorkspace(toastApi: ToastApi) {
     startNewSession,
     clearOwnedSessionState,
     messages,
+    transientMessages,
     setMessages: setMessagesForActiveSession,
     addTransientMessage,
     removeTransientMessage,
     hasTransientMessages,
-    mergeTransientMessages,
     transcriptRangeRef,
     messageLoadPending,
     setMessageLoadPending,

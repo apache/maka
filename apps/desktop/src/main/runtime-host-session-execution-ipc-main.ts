@@ -532,7 +532,7 @@ export function registerRuntimeHostSessionExecutionIpc(
         workspaceFileReferences: command.workspaceFileReferences,
       });
       const messageId = command.messageId ?? newId();
-      const result = await deps.client.submitMessage({
+      const result = await submitMessageWithReconnect(deps.client, {
         sessionId,
         messageId,
         placement,
@@ -546,6 +546,7 @@ export function registerRuntimeHostSessionExecutionIpc(
           inlineReferences,
         },
       });
+      if (!result) return { kind: 'outcome_unknown' as const, messageId };
       if (result.disposition === "turn_started") {
         deps.emitSessionsChanged("status-change", sessionId, {
           turnId: result.turnId,

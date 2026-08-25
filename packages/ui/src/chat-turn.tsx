@@ -57,6 +57,7 @@ import {
   type ProviderRetryEvent,
   type QuoteRef,
 } from '@maka/core/events';
+import type { StoredMessage } from '@maka/core/session';
 import {
   finalAssistantReplyText,
   type TurnTimelineItem,
@@ -275,6 +276,33 @@ const UserMessageBody = memo(function UserMessageBody(props: {
     </>
   );
 });
+
+export function TransientUserMessage(props: {
+  message: Extract<StoredMessage, { type: 'user' }>;
+  onReadAttachmentBytes?: ReadAttachmentBytes;
+}) {
+  const copy = getConversationCopy(useUiLocale()).messages;
+  const message = props.message;
+  return (
+    <div data-transient-message-id={message.id}>
+      <LocalizedChatMessage
+        accessibleLabel={copy.userAriaLabel}
+        sender="user"
+        className="maka-chat-message maka-user-message"
+      >
+        <UserMessageBody
+          messageId={message.id}
+          text={message.text}
+          ts={message.ts}
+          attachments={message.attachments}
+          quotes={message.quotes}
+          inlineReferences={message.inlineReferences}
+          onReadAttachmentBytes={props.onReadAttachmentBytes}
+        />
+      </LocalizedChatMessage>
+    </div>
+  );
+}
 
 
 function accessibleTextExcerpt(text: string): string {

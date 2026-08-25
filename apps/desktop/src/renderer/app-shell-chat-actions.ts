@@ -154,7 +154,10 @@ export function createAppShellChatActions(deps: {
   setMessageLoadErrorBySession: MessageLoadErrorUpdater;
   setMessageRetryPendingBySession: BooleanRecordUpdater;
   setMessages: MessageListUpdater;
-  addTransientMessage: (sessionId: string, message: StoredMessage) => void;
+  addTransientMessage: (
+    sessionId: string,
+    message: Extract<StoredMessage, { type: 'user' }>,
+  ) => void;
   removeTransientMessage: (sessionId: string, messageId: string) => void;
   transcriptRangeRef: RefBox<DesktopTranscriptRangeController | undefined>;
   setNavSelection: (selection: NavSelection) => void;
@@ -230,13 +233,13 @@ export function createAppShellChatActions(deps: {
     attachments: readonly import('@maka/core/events').AttachmentRef[] = [],
     quotes: readonly QuoteRef[] = [],
     inlineReferences: readonly InlineReference[] = [],
-  ): StoredMessage {
+  ): Extract<StoredMessage, { type: 'user' }> {
     return {
       type: 'user',
       id: messageId,
-      // StoredMessage requires a grouping key, but materializeChat does not
-      // create a Turn from this renderer-only anchor. The Host turnId replaces
-      // presentation grouping through canonical transcript/live projection.
+      // StoredMessage requires a grouping key, but transient messages are
+      // rendered beside the Turn projection. Canonical transcript data later
+      // supplies the Host-owned grouping for this same message id.
       turnId: messageId,
       ts: Date.now(),
       text,
@@ -648,6 +651,7 @@ export function createAppShellChatActions(deps: {
           ? { workspaceFileReferences: [...options.workspaceFileReferences] }
           : {}),
       });
+      if (result.kind === 'outcome_unknown') return;
       showOptimisticUserMessage(sessionId, messageId, text, result.attachments, {
         ...(quotes.length > 0 ? { quotes } : {}),
         inlineReferences: result.inlineReferences,

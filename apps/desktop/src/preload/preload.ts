@@ -1733,13 +1733,16 @@ const makaBridge = {
         quotes?: QuoteRef[];
         workspaceFileReferences?: Array<Pick<InlineReference, 'value' | 'start'>>;
       },
-    ): Promise<{
-      kind: 'queued' | 'started';
-      turnId?: string;
-      messageId: string;
-      attachments: AttachmentRef[];
-      inlineReferences: InlineReference[];
-    }> {
+    ): Promise<
+      | {
+          kind: 'queued' | 'started';
+          turnId?: string;
+          messageId: string;
+          attachments: AttachmentRef[];
+          inlineReferences: InlineReference[];
+        }
+      | { kind: 'outcome_unknown'; messageId: string }
+    > {
       const session = await runtimeHostSessionRef(sessionId);
       const attachmentItems = command.attachmentItems
         ? await encodeIngestItems(command.attachmentItems)
@@ -1753,13 +1756,16 @@ const makaBridge = {
           ...command,
           ...(attachmentItems ? { attachmentItems } : {}),
         },
-      ) as {
-        kind: 'queued' | 'started';
-        turnId?: string;
-        messageId: string;
-        attachments: AttachmentRef[];
-        inlineReferences: InlineReference[];
-      };
+      ) as
+        | {
+            kind: 'queued' | 'started';
+            turnId?: string;
+            messageId: string;
+            attachments: AttachmentRef[];
+            inlineReferences: InlineReference[];
+          }
+        | { kind: 'outcome_unknown'; messageId: string };
+      if (result.kind === 'outcome_unknown') return result;
       return {
         ...result,
         attachments: projectDesktopAttachmentRefs(session.scope, result.attachments),

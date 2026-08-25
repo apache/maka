@@ -84,7 +84,10 @@ export function createAppShellSessionEventHandlers(options: {
   setLiveTurnBySession: StateUpdater<Record<string, LiveTurnProjection>>;
   setInteractionBySession: StateUpdater<InteractionQueues>;
   setMessageQueueBySession?: StateUpdater<Record<string, MessageQueueUiState>>;
-  projectTransientMessage?: (sessionId: string, message: StoredMessage) => void;
+  projectTransientMessage?: (
+    sessionId: string,
+    message: Extract<StoredMessage, { type: 'user' }>,
+  ) => void;
   removeTransientMessage?: (sessionId: string, messageId: string) => void;
   onInteractionChanged?: (sessionId: string) => void;
   /** A boundary decision settled: the session's execution boundary may have moved. */

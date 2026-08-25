@@ -22,7 +22,7 @@ import test from 'node:test';
 import type { StoredMessage } from '@maka/core/session';
 import { reconcileTransientMessages } from '../../renderer/transient-message-projection.js';
 
-const transient: StoredMessage = {
+const transient: Extract<StoredMessage, { type: 'user' }> = {
   type: 'user',
   id: 'message-1',
   turnId: 'turn-1',
@@ -38,12 +38,28 @@ test('keeps a transient message through sparse transcript replacement', () => {
   assert.equal(pending.has(transient.id), true);
 });
 
+test('updates a transient message without treating its previous render as canonical', () => {
+  const pending = new Map([[transient.id, transient]]);
+  const firstProjection = reconcileTransientMessages(pending, []);
+  const updated = {
+    ...transient,
+    quotes: [{ text: 'quoted context' }],
+  };
+  pending.set(updated.id, updated);
+
+  const secondProjection = reconcileTransientMessages(pending, []);
+
+  assert.deepEqual(firstProjection, [transient]);
+  assert.deepEqual(secondProjection, [updated]);
+  assert.equal(pending.has(updated.id), true);
+});
+
 test('replaces a transient message by canonical message id exactly once', () => {
   const pending = new Map([[transient.id, transient]]);
   const canonical = { ...transient, ts: 3, text: 'canonical send' };
   const projected = reconcileTransientMessages(pending, [canonical]);
 
-  assert.deepEqual(projected, [canonical]);
+  assert.deepEqual(projected, []);
   assert.equal(pending.size, 0);
 });
 
@@ -63,11 +79,11 @@ test('canonicalizing one send does not hide a later transient send', () => {
 
   const projected = reconcileTransientMessages(pending, [canonical]);
 
-  assert.deepEqual(projected, [canonical, second]);
+  assert.deepEqual(projected, [second]);
   assert.deepEqual([...pending.keys()], ['message-2']);
 });
 
-test('keeps a transient message in submission order inside a sparse durable tail', () => {
+test('keeps transient messages ordered independently from a sparse durable tail', () => {
   const pending = new Map([[transient.id, transient]]);
   const durable: StoredMessage[] = [
     { type: 'user', id: 'old-user', turnId: 'old-turn', ts: 1, text: 'before' },
@@ -83,11 +99,7 @@ test('keeps a transient message in submission order inside a sparse durable tail
 
   const projected = reconcileTransientMessages(pending, durable);
 
-  assert.deepEqual(projected.map((message) => message.id), [
-    'old-user',
-    'message-1',
-    'later-assistant',
-  ]);
+  assert.deepEqual(projected.map((message) => message.id), ['message-1']);
 });
 
 test('keeps a transient message out of a sparse historical range', () => {
@@ -100,6 +112,6 @@ test('keeps a transient message out of a sparse historical range', () => {
     includeTransient: false,
   });
 
-  assert.deepEqual(projected.map((message) => message.id), ['message-old']);
+  assert.deepEqual(projected, []);
   assert.equal(pending.has('message-live'), true);
 });

@@ -172,6 +172,33 @@ describe('busy-raced send settlement', () => {
     }
   });
 
+  it('keeps a Follow Up visible when Host admission outcome is unknown', async () => {
+    const transient = new Map<string, StoredMessage>();
+    const restoreWindow = installWindow({
+      sessions: {
+        enqueue: async (_sessionId: string, _placement: string, command: { messageId: string }) => ({
+          kind: 'outcome_unknown' as const,
+          messageId: command.messageId,
+        }),
+      },
+    });
+    try {
+      const actions = createAppShellChatActions({
+        ...createActionsDeps(),
+        activeIdRef: { current: 'session-a' },
+        addTransientMessage: (_sessionId, message) => transient.set(message.id, message),
+        removeTransientMessage: (_sessionId, messageId) => transient.delete(messageId),
+      });
+
+      await actions.enqueueMessage('session-a', 'do this next', 'next_turn');
+
+      assert.equal(transient.size, 1);
+      assert.equal([...transient.values()][0]?.type, 'user');
+    } finally {
+      restoreWindow();
+    }
+  });
+
   it('shows one stable local message before Host admission settles', async () => {
     const activeIdRef = { current: 'session-a' as string | undefined };
     const transient = new Map<string, StoredMessage>();

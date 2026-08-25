@@ -90,6 +90,28 @@ function renderLiveTurn(liveTurn: LiveTurnProjection): string {
 }
 
 describe('single live-turn handoff', () => {
+  it('renders a transient user message without manufacturing a Turn', () => {
+    const markup = renderWithLocale(createElement(ChatView, {
+      activeSession: {
+        id: 'session-1', name: 'pending', lastMessageAt: 1, status: 'active', backend: 'ai-sdk',
+        labels: [], isFlagged: false, isArchived: false, hasUnread: false,
+        llmConnectionSlug: 'conn', connectionLocked: false, model: 'model', permissionMode: 'ask',
+      },
+      messages: [
+        { type: 'user', id: 'old-user', turnId: 'old-turn', ts: 1, text: 'before' },
+      ],
+      transientMessages: [
+        { type: 'user', id: 'message-pending', turnId: 'message-pending', ts: 2, text: 'send now' },
+      ],
+      scrollBehavior: 'smooth',
+      onNew() {},
+    } satisfies Parameters<typeof ChatView>[0]));
+
+    assert.equal((markup.match(/data-virtual-turn-id=/g) ?? []).length, 1);
+    assert.match(markup, /data-transient-message-id="message-pending"/);
+    assert.match(markup, />send now</);
+  });
+
   it('renders one ordered timeline: thinking before its tool and answer', () => {
     const markup = renderLiveTurn({
       turnId: 'turn-1',
