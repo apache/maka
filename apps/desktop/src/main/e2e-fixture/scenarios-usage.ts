@@ -243,7 +243,7 @@ export async function seedUsageStatsFixture(workspaceRoot: string, now: number):
         lease.database
           .prepare(
             `
-            INSERT INTO core_agent_runs(session_id, run_id, created_at, record_json)
+            INSERT OR IGNORE INTO core_agent_runs(session_id, run_id, created_at, record_json)
             VALUES (?, ?, ?, '{}')
           `,
           )
@@ -251,7 +251,7 @@ export async function seedUsageStatsFixture(workspaceRoot: string, now: number):
         lease.database
           .prepare(
             `
-            INSERT INTO core_agent_run_events(
+            INSERT OR IGNORE INTO core_agent_run_events(
               session_id, run_id, sequence, event_id, event_type, event_ts, record_json
             ) VALUES (?, ?, ?, ?, 'model_call_attempt_recorded', ?, ?)
           `,
