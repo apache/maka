@@ -6326,6 +6326,53 @@ describe('Maka Pi TUI runner', () => {
     await run;
   });
 
+  test('blocks Session identity changes until the side conversation closes', async () => {
+    const terminal = new FakeTerminal();
+    const driver = new SideConversationDriver();
+    const run = runMakaPiTui({
+      title: 'Maka',
+      driver,
+      cwd: '/repo',
+      model: 'claude-sonnet-4-5',
+      connectionSlug: 'claude-subscription',
+      permissionMode: 'ask',
+      terminal,
+    });
+
+    terminal.input('/side');
+    terminal.input('\r');
+    await waitFor(() => driver.getSessionId() === 'side-1');
+
+    terminal.input('/session session-2');
+    terminal.input('\r');
+    await waitFor(() =>
+      plainTerminalOutput(terminal.output()).includes(
+        'Close the side conversation before switching Sessions.',
+      ),
+    );
+    terminal.input('/new');
+    terminal.input('\r');
+    await waitFor(() =>
+      plainTerminalOutput(terminal.output()).includes(
+        'Close the side conversation before starting a new Session.',
+      ),
+    );
+    terminal.input('/rewind');
+    terminal.input('\r');
+    await waitFor(() =>
+      plainTerminalOutput(terminal.output()).includes(
+        'Close the side conversation before rewinding.',
+      ),
+    );
+
+    assert.equal(driver.getSessionId(), 'side-1');
+    assert.deepEqual(driver.sessionIds, []);
+    assert.equal(driver.startNewSessionCalls, 0);
+
+    exitMaka(terminal);
+    await run;
+  });
+
   test('relocates a moved session before resuming it at startup', async () => {
     const terminal = new FakeTerminal();
     const driver = new SlashCommandDriver([

@@ -1654,11 +1654,23 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     }
   };
 
+  const blockIdentityChangeWhileSideOpen = (action: string): boolean => {
+    if (!sideConversation) return false;
+    state.entries.push({
+      kind: 'notice',
+      level: 'error',
+      text: `Close the side conversation before ${action}.`,
+    });
+    requestRender();
+    return true;
+  };
+
   // `/session` is view navigation (#3380). Idle, it runs under runControl's
   // serial lock like any control action; mid-turn that lock is held by the
   // running Turn, so the switch goes through the detach path instead of
   // silently no-oping on the busy gate.
   const goToSession = async (sessionId: string): Promise<void> => {
+    if (blockIdentityChangeWhileSideOpen('switching Sessions')) return;
     if (!turnRunning) {
       await runControl(() => switchSession(sessionId));
       return;
@@ -2389,6 +2401,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
   };
 
   const showRewindPicker = async () => {
+    if (blockIdentityChangeWhileSideOpen('rewinding')) return;
     const targets = await input.driver.listRewindTargets();
     if (targets.length === 0) {
       state.entries.push({
@@ -2432,6 +2445,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
   };
 
   const newSession = () => {
+    if (blockIdentityChangeWhileSideOpen('starting a new Session')) return;
     input.driver.startNewSession();
     // A fresh session is not bound by the previous one's boundary. Falling back
     // to the *current* label would keep the previous Session's mode, including
@@ -2461,6 +2475,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
   // short line shows in the transcript.
   const importForeignSession = async (summary: ForeignSessionSummary): Promise<void> => {
     if (busy || input.foreignSessions === undefined) return;
+    if (blockIdentityChangeWhileSideOpen('importing another Session')) return;
     busy = true;
     const activity = beginActivity();
     editor.disableSubmit = true;

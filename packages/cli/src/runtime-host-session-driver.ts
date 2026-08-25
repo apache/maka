@@ -18,6 +18,7 @@
  */
 
 import { randomUUID } from 'node:crypto';
+import { join } from 'node:path';
 import type { CreateSessionInput } from '@maka/core/runtime-inputs';
 import { DEFAULT_SESSION_NAME } from '@maka/core/session-name';
 import {
@@ -123,13 +124,13 @@ export interface RuntimeHostMakaSessionDriverInput {
   now?: () => number;
   inspectCwdChanges?: InspectCwdChanges;
   executionLocation?: { readonly kind: 'client_path' } | { readonly kind: 'host' };
-  /** Client-local durable lease root for temporary TUI conversation copies. */
+  /** Client-local durable lease parent for temporary TUI conversation copies. */
   sessionCopyCleanupRoot?: string;
 }
 
 type RuntimeHostSessionDriverConnection = Pick<
   RuntimeHostConnection,
-  'hostEpoch' | 'openSessionSubscription' | 'request' | 'startTurn'
+  'rootId' | 'hostEpoch' | 'openSessionSubscription' | 'request' | 'startTurn'
 >;
 
 export interface RuntimeHostMakaSessionDriver extends MakaSessionDriver {
@@ -218,7 +219,10 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
     this.#executionLocation = input.executionLocation ?? { kind: 'client_path' };
     this.#sessionCopyCleanup = input.sessionCopyCleanupRoot
       ? createSessionCopyCleanupAuthority({
-          workspaceRoot: input.sessionCopyCleanupRoot,
+          // rootId is the durable Host authority identity. HostEpoch would
+          // strand cleanup across an ordinary Host restart, while one shared
+          // Client root lets a different Host erase this Host's recovery lease.
+          workspaceRoot: join(input.sessionCopyCleanupRoot, this.#connection.rootId),
           removeSession: (sessionId) => this.#removeSessionCopy(sessionId),
           resumeSessionCopy: (creation) => this.#resumeSessionCopy(creation),
           processId: `tui:${process.pid}`,

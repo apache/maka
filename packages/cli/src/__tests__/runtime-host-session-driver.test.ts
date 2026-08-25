@@ -18,7 +18,7 @@
  */
 
 import assert from 'node:assert/strict';
-import { mkdir, mkdtemp, realpath, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, realpath, rm, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -1288,6 +1288,8 @@ describe('Runtime Host Maka Session driver', () => {
 
     const opened = await driver.openSideConversation!();
 
+    assert.equal((await stat(join(cleanupRoot, 'a'.repeat(64), 'runtime.sqlite'))).isFile(), true);
+
     assert.equal(opened.parentSessionId, 'session-1');
     assert.equal(opened.sideSessionId, 'side-1');
     assert.deepEqual(opened.messages, []);
@@ -1694,6 +1696,7 @@ class FakeConnection {
   ) {
     this.value = {
       ...(reconnecting ? { reconnecting: true as const } : {}),
+      rootId: 'a'.repeat(64),
       hostEpoch: 'host-1',
       request: <K extends DirectRequestOperationKey>(operation: K, input: OperationInput<K>) =>
         this.request(operation, input),
