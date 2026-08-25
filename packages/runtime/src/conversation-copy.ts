@@ -793,10 +793,18 @@ function rewriteModelCallAttempt(
   // the source `attemptId` — the ledger's global primary key — lets the copy
   // overwrite the source session's own row. Rewrite the owned identity the same
   // way the sibling provider-request rewriters do.
+  //
+  // Unlike those siblings, do NOT require `attempt.attemptId === event.id`. A
+  // well-formed writer emits them equal, but the pre-fix copy path had no
+  // rewriter for this event, so it rewrote the envelope id while leaving the
+  // nested payload at the source identity. Sessions copied before that fix carry
+  // attempts whose nested `attemptId` disagrees with their envelope; asserting
+  // the writer contract on the *source* would strand them — they could never be
+  // copied again. The rewrite below reassigns the identity wholesale, so a stale
+  // nested identity is repaired rather than trusted and the *output* still
+  // satisfies the `event.id === attemptId` contract. `decodeModelCallAttempt`
+  // still rejects a schema-invalid payload.
   const attempt = decodeModelCallAttempt(event.data);
-  if (attempt.attemptId !== event.id) {
-    throw new Error(`Cannot copy invalid model call attempt ${event.id}`);
-  }
   return {
     ...attempt,
     sessionId: ids.sessionId,

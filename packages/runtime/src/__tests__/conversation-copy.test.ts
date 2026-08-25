@@ -1374,6 +1374,108 @@ test('conversation copy rewrites the nested identity of a model call attempt', a
   }
 });
 
+test('conversation copy repairs a model call attempt stranded by a pre-fix copy', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-conversation-model-call-legacy-'));
+  try {
+    const runStore = createSqliteAgentRunStore(root);
+    const runtimeEventStore = createWorkspaceRuntimeStore(root);
+    await runStore.createRun(
+      agentRunHeader({
+        runId: 'run-source',
+        invocationId: 'invocation-source',
+        turnId: 'turn-1',
+        cwd: root,
+      }),
+    );
+    for (const event of [
+      runtimeEvent({
+        id: 'event-user',
+        role: 'user',
+        author: 'user',
+        content: { kind: 'text', text: 'copy this turn again' },
+      }),
+      runtimeEvent({ id: 'event-terminal', ts: 2, status: 'completed' }),
+    ]) {
+      await runtimeEventStore.appendRuntimeEvent('session-source', 'run-source', event);
+    }
+    // Simulate a session that was itself copied before this fix existed: the
+    // pre-fix copy path rewrote the envelope id but left the nested payload at
+    // the *grandparent* identity, so the envelope id and the nested attemptId /
+    // session / run disagree. Such a session must still be copyable.
+    await runStore.appendEvent('session-source', 'run-source', {
+      type: 'model_call_attempt_recorded',
+      id: 'attempt-envelope',
+      runId: 'run-source',
+      sessionId: 'session-source',
+      turnId: 'turn-1',
+      ts: 2,
+      data: {
+        schemaVersion: 1,
+        logicalCallId: 'logical-grandparent',
+        attemptId: 'attempt-grandparent',
+        traceId: 'trace-grandparent',
+        sessionId: 'session-grandparent',
+        runId: 'run-grandparent',
+        turnId: 'turn-1',
+        step: 0,
+        attempt: 0,
+        callKind: 'main',
+        providerId: 'provider',
+        modelId: 'model',
+        startedAt: 1,
+        completedAt: 2,
+        latencyMs: 1,
+        status: 'completed',
+        usageBasis: 'reported',
+        inputTokens: 10,
+        outputTokens: 5,
+        costBasis: 'priced',
+        costUsd: 0.01,
+      },
+    });
+    const source = await new RuntimeReadModel({
+      runStore,
+      runtimeEventStore,
+    }).getSessionView('session-source');
+    // The whole copy must not throw `Cannot copy invalid model call attempt`.
+    await cloneConversationRuntimeLedger({
+      plan: await prepareTestCopyPlan(source, source.messages, runStore, runtimeEventStore),
+      copiedMessages: source.messages,
+      referenceMap: {
+        mode: 'exact',
+        linkedChildren: { mode: 'reject' },
+        sourceSessionId: 'session-source',
+        targetSessionId: 'session-target',
+        artifactIds: new Map(),
+        relativePaths: new Map(),
+      },
+      runStore,
+      runtimeEventStore,
+      newId: () => crypto.randomUUID(),
+    });
+    const [targetRun] = await runStore.listSessionRuns('session-target');
+    assert.ok(targetRun);
+    const targetEvents = await runStore.readEvents('session-target', targetRun.runId);
+    const attempt = targetEvents.find((event) => event.type === 'model_call_attempt_recorded');
+    assert.ok(attempt);
+    // The stranded nested identity is repaired to the target, not carried over.
+    assert.equal(attempt.data?.sessionId, 'session-target');
+    assert.equal(attempt.data?.runId, targetRun.runId);
+    assert.equal(attempt.data?.attemptId, attempt.id);
+    assert.notEqual(attempt.data?.attemptId, 'attempt-grandparent');
+    assert.notEqual(attempt.data?.logicalCallId, 'logical-grandparent');
+    assert.notEqual(attempt.data?.traceId, 'trace-grandparent');
+    // The repaired record decodes and its identity matches the envelope the
+    // ledger projects it under.
+    const legacyDecoded = decodeModelCallAttempt(attempt.data);
+    assert.equal(legacyDecoded.sessionId, attempt.sessionId);
+    assert.equal(legacyDecoded.runId, attempt.runId);
+    assert.equal(legacyDecoded.attemptId, attempt.id);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test('conversation copy clones one terminal Runtime ledger with new owned identities', async () => {
   const root = await mkdtemp(join(tmpdir(), 'maka-conversation-runtime-copy-'));
   try {
