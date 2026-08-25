@@ -219,25 +219,37 @@ describe('ToolAvailabilityRuntime — search activation', () => {
     assert.equal(active.size, 2);
   });
 
-  test('reports a top-ranked tool whose schema exceeds the per-search ceiling', async () => {
+  test('reports and skips an oversized tool without hiding a smaller later match', async () => {
+    const active = new Map<string, MakaTool>();
     const plan = new ToolAvailabilityRuntime(
-      [tool('oversized_target', `Oversized target ${'x'.repeat(TOOL_SEARCH_MAX_SCHEMA_CHARS)}`)],
-      { groups: [{ id: 'oversized', toolNames: ['oversized_target'] }] },
+      [
+        tool('oversized_target', `Oversized target ${'x'.repeat(TOOL_SEARCH_MAX_SCHEMA_CHARS)}`),
+        tool('smaller_fallback', 'An oversized target fallback'),
+      ],
+      {
+        groups: [
+          {
+            id: 'oversized',
+            toolNames: ['oversized_target', 'smaller_fallback'],
+          },
+        ],
+      },
       invalid,
-    ).prepare(new Map());
+    ).prepare(active);
 
     const connector = searchTool(plan);
     const result = (await connector.impl({ query: 'oversized target' }, ctx)) as ToolSearchResult;
 
-    assert.deepEqual(result.activated, []);
+    assert.deepEqual(result.activated, ['smaller_fallback']);
     assert.equal(result.blocked?.name, 'oversized_target');
     assert.equal(result.blocked?.reason, 'schema_too_large');
     assert.ok((result.blocked?.schemaChars ?? 0) > TOOL_SEARCH_MAX_SCHEMA_CHARS);
+    assert.equal(active.has('smaller_fallback'), true);
     assert.deepEqual(
       await connector.toModelOutput?.({ toolCallId: 'tc', input: {}, output: result }),
       {
         type: 'json',
-        value: { activated: [], blocked: result.blocked },
+        value: { activated: ['smaller_fallback'], blocked: result.blocked },
       },
     );
   });

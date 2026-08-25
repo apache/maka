@@ -277,8 +277,8 @@ export class ToolAvailabilityRuntime {
           if (!tool) continue;
           const chars = toolSchemaCharsForDiagnostics([tool], [tool.name]);
           if (chars > TOOL_SEARCH_MAX_SCHEMA_CHARS) {
-            blocked = { name, reason: 'schema_too_large', schemaChars: chars };
-            break;
+            blocked ??= { name, reason: 'schema_too_large', schemaChars: chars };
+            continue;
           }
           if (schemaChars + chars > TOOL_SEARCH_MAX_SCHEMA_CHARS) {
             blocked = { name, reason: 'schema_budget_exhausted', schemaChars: chars };
