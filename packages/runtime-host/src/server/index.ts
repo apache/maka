@@ -35,3 +35,45 @@ export {
   readRuntimeHostAccessCredentialMetadata,
   type RuntimeHostAccessCredentialMetadata,
 } from './access-credential-metadata.js';
+export {
+  ExtensionBundleError,
+  exportExtensionBundle,
+  materializeExtensionPackage,
+} from './extension-bundle.js';
+export {
+  EXTENSION_PACKAGE_MANIFEST_FILE,
+  ExtensionPackageManifestError,
+  decodeExtensionPackageManifest,
+  loadExtensionPackageManifest,
+  validateExtensionConfiguration,
+  type ExtensionConfigurationProperty,
+  type ExtensionConfigurationScalar,
+  type ExtensionConfigurationSchema,
+  type ExtensionPackageDependency,
+  type ExtensionPackageComposition,
+  type ExtensionPackageManifest,
+  type ExtensionPackageRuntime,
+} from './extension-package-manifest.js';
+export {
+  PluginCompositionPatchError,
+  loadPluginCompositionPatch,
+} from './plugin-composition-patch.js';
+export {
+  HostPluginCompositionStore,
+  HostPluginCompositionStoreError,
+  type PersistedPluginComposition,
+} from './plugin-composition-store.js';
+export { PluginPackageLoaderError, TrustedPluginPackageLoader } from './plugin-package-loader.js';
+export {
+  PluginPackageStore,
+  PluginPackageStoreError,
+  type InstalledPluginPackage,
+  type PreparedPluginPackageInstall,
+} from './plugin-package-store.js';
+export {
+  HostPluginPlatform,
+  HostPluginPlatformError,
+  type HostPluginPlatformFailure,
+  type HostPluginPlatformOptions,
+} from './plugin-platform.js';
+export { HostPluginPlatformCoordinator } from './plugin-platform-coordinator.js';

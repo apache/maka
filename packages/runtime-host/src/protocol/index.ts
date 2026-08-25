@@ -95,7 +95,9 @@ export const RUNTIME_HOST_REGISTRATION_SCHEMA_VERSION = 1 as const;
 export const RUNTIME_HOST_PROTOCOL_VERSION = 0 as const;
 // Increment when the same protocol version no longer guarantees safe Client-Host
 // interoperability. Mismatches are rejected before domain commands are admitted.
-export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 84 as const;
+export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 85 as const;
+// 85: Plugin package and Entry composition operations become Host-owned protocol
+// surfaces. Older peers cannot safely exchange these strict operation shapes.
 // 84: Message content carries Host-bound directory references. Older peers
 // reject this field and cannot preserve its identity through admission/replay.
 // 83: WorkHub Coordination actions add linked replacement proposals,
