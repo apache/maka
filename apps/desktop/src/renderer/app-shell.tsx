@@ -133,6 +133,8 @@ import { WorkHubCoordinationStatus, WorkHubSurface } from './workhub-surface.js'
 import { getShellCopy, localizedShellErrorMessage } from './locales/shell-copy';
 import { getShellRemainingCopy } from './locales/shell-remaining-copy.js';
 import { getDesktopConversationCopy } from './locales/conversation-copy';
+import { getArtifactCopy } from './locales/artifact-copy';
+import { requestWorkspaceFilePreview } from './features/workbar';
 import { ErrorBoundary } from './error-boundary';
 import { useShellAppearance } from './use-shell-appearance';
 import { useShellSearch } from './use-shell-search';
@@ -2473,9 +2475,15 @@ function AppShellContent({
    *     auto-submit the prompt; the user still presses Enter. That
    *     keeps an injected `maka://compose?text=ransfer my keys...`
    *     from sending without a human in the loop.
+   *   - `kind: 'file-ref'` → stage a workspace-file preview request and open
+   *     the workbar `files` tab, where the EXISTING ArtifactPane viewer shows
+   *     a read-only preview (or an inline refusal for out-of-boundary refs).
+   *     Resolution/boundary checks happen in desktop main; this branch only
+   *     forwards the raw reference. Opening the workbar never unmounts the
+   *     transcript, so conversation scroll survives.
    *
    * No other cases exist today by design — the parser only emits
-   * these two discriminants. If a new variant is added in `MakaUriDest`,
+   * these discriminants. If a new variant is added in `MakaUriDest`,
    * TypeScript's exhaustiveness check below trips and a new branch
    * must be wired here with corresponding fixture and journey coverage.
    */
@@ -2488,6 +2496,15 @@ function AppShellContent({
         composerRef.current?.setText(dest.text);
         composerRef.current?.focus();
         return;
+      case 'file-ref': {
+        if (!activeId) {
+          toastApi.info(getArtifactCopy(uiLocale).workspace.noActiveSession);
+          return;
+        }
+        requestWorkspaceFilePreview({ sessionId: activeId, reference: dest.reference });
+        workbar.commands.openTool('files');
+        return;
+      }
       default: {
         const _exhaustive: never = dest;
         return _exhaustive;

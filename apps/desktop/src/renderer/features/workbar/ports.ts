@@ -128,6 +128,43 @@ export type WorkbarOpenArtifactResult =
         | 'open-failed';
     };
 
+export type WorkspaceFileRefFailureReason =
+  | 'invalid_reference'
+  | 'not_found'
+  | 'outside_workspace'
+  | 'unsupported_type'
+  | 'too_large'
+  | 'read_failed'
+  | 'workspace_unavailable';
+
+export type WorkspaceFileTextReadResult =
+  | { ok: true; name: string; text: string }
+  | { ok: false; reason: WorkspaceFileRefFailureReason };
+
+export type WorkspaceFileOpenResult =
+  | { ok: true; opened: string }
+  | { ok: false; reason: WorkspaceFileRefFailureReason | 'open-failed' };
+
+/** Read-only access to workspace files referenced from transcript Markdown
+ * (`#2664`). All resolution and sandbox-boundary enforcement lives in desktop
+ * main; this port only forwards raw references and typed results. The shape
+ * mirrors the Desktop bridge's `workspace-files` contract and is adapted in
+ * `create-workbar-services`. */
+export interface WorkbarWorkspaceFilesService {
+  readText(
+    sessionId: string,
+    reference: string,
+  ): Promise<WorkspaceFileTextReadResult>;
+  openLocally(
+    sessionId: string,
+    reference: string,
+  ): Promise<WorkspaceFileOpenResult>;
+  revealInFolder(
+    sessionId: string,
+    reference: string,
+  ): Promise<WorkspaceFileOpenResult>;
+}
+
 export interface WorkbarArtifactsService {
   list(
     sessionId: string,
@@ -274,6 +311,7 @@ export interface WorkbarServices {
   readonly tasks: WorkbarTasksService;
   readonly browser: WorkbarBrowserService;
   readonly artifacts: WorkbarArtifactsService;
+  readonly workspaceFiles: WorkbarWorkspaceFilesService;
   readonly inspector: WorkbarInspectorService;
   readonly attachments: WorkbarAttachmentsService;
   readonly sideChat: SideChatSessionPort;

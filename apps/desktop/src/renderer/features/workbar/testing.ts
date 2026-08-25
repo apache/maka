@@ -99,6 +99,11 @@ export function createFakeWorkbarServices(
       openPath: async () => ({ ok: false, reason: 'missing' }),
       saveAs: async () => ({ ok: false, reason: 'canceled' }),
     },
+    workspaceFiles: {
+      readText: async () => ({ ok: false, reason: 'not_found' }),
+      openLocally: async () => ({ ok: false, reason: 'not_found' }),
+      revealInFolder: async () => ({ ok: false, reason: 'not_found' }),
+    },
     inspector: {
       trace: async () => {
         throw new Error('Fake inspector.trace is not configured');

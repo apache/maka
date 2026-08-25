@@ -21,6 +21,7 @@ apps/desktop/src/renderer/features/workbar/services-context.tsx
 apps/desktop/src/renderer/features/workbar/tools/artifacts/artifact-pane.tsx
 apps/desktop/src/renderer/features/workbar/tools/artifacts/artifact-preview-registry-shell.tsx
 apps/desktop/src/renderer/features/workbar/tools/artifacts/artifact-preview.tsx
+apps/desktop/src/renderer/features/workbar/tools/artifacts/workspace-file-preview.tsx
 apps/desktop/src/renderer/features/workbar/tools/browser/browser-panel.tsx
 apps/desktop/src/renderer/features/workbar/tools/inspector/session-inspector-panel.tsx
 apps/desktop/src/renderer/features/workbar/tools/review/session-review-panel.tsx

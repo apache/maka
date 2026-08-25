@@ -111,7 +111,9 @@ function FilePreview(props: { record: ArtifactDescriptor; copy: ArtifactCopy }) 
   return <TextFilePreview name={props.record.name} text={text} copy={props.copy} />;
 }
 
-function TextFilePreview(props: { name: string; text: string; copy: ArtifactCopy }) {
+/** Shared by the artifact preview and the workspace file reference preview
+ * (`#2664`): one rendered/source Markdown viewer, never a second one. */
+export function TextFilePreview(props: { name: string; text: string; copy: ArtifactCopy }) {
   const markdown = /\.(?:md|markdown)$/i.test(props.name);
   const [mode, setMode] = useState<'rendered' | 'source'>(markdown ? 'rendered' : 'source');
   const bounded = boundPreviewText(props.text);
