@@ -1972,12 +1972,13 @@ export const UsageLongTail: Story = {
         selector: '[data-slot="stat-tile-label"]',
       }),
     ).toBeInTheDocument();
-    // The tab carries a count badge in its `endContent`, which Astryx folds
-    // into the accessible name (e.g. '活动记录 5'), so match the label as a
-    // prefix rather than the whole name — same reason accessibility-coverage
-    // queries workbar tabs with a RegExp.
+    // Astryx `TabList` is a <nav> of <button> tabs — there is no ARIA `tab`
+    // role, so query the tab by `button` (that is how @astryxdesign's own
+    // TabList tests reach them). The tab also carries a count badge in its
+    // `endContent`, which folds into the accessible name after the label
+    // (e.g. '活动记录 5'), so match the label as a prefix rather than whole.
     expect(
-      await canvas.findByRole('tab', { name: new RegExp(`^${usageCopy.tabs[0]}`) }),
+      await canvas.findByRole('button', { name: new RegExp(`^${usageCopy.tabs[0]}`) }),
     ).toBeInTheDocument();
     await waitForStoryCondition(
       () => canvas.queryByRole('table', { name: usageCopy.tables.requestsAria }) !== null
