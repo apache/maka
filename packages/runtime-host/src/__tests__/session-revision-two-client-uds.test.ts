@@ -247,7 +247,7 @@ async function verifyConcurrentRevisionAuthority(
     });
     assert.equal(sourceGraph.status, 'completed');
     assert.equal(sourceGraph.operators[0]?.childSessionId, graphChildSessionId);
-    await desktop.startTurn({
+    await desktop.request('turn.start', {
       sessionId: GRAPH_REVISION_TARGET_ID,
       turnId: 'graph-revision-new-turn',
       content: { text: 'continue independently' },
@@ -422,7 +422,7 @@ async function verifyConcurrentRevisionAuthority(
     );
 
     const busyTurn = requireStartedTurn(
-      await desktop.startTurn({
+      await desktop.request('turn.start', {
         sessionId: busySessionId,
         turnId: 'busy-turn',
         content: { text: FAKE_ASK_USER_QUESTION_PROMPT },
@@ -449,7 +449,8 @@ async function verifyConcurrentRevisionAuthority(
       assertionError = error;
     }
     try {
-      const stopped = await desktop.stopTurn(
+      const stopped = await desktop.request(
+        'turn.stop',
         {
           sessionId: busySessionId,
           turnId: 'busy-turn',
@@ -470,7 +471,7 @@ async function verifyConcurrentRevisionAuthority(
     if (assertionError !== undefined) throw assertionError;
 
     const activeSourceTurn = requireStartedTurn(
-      await desktop.startTurn({
+      await desktop.request('turn.start', {
         sessionId: sourceSessionId,
         turnId: 'active-source-turn',
         content: { text: FAKE_ASK_USER_QUESTION_PROMPT },
@@ -509,7 +510,8 @@ async function verifyConcurrentRevisionAuthority(
       assertionError = error;
     }
     try {
-      const stopped = await desktop.stopTurn(
+      const stopped = await desktop.request(
+        'turn.stop',
         {
           sessionId: sourceSessionId,
           turnId: 'active-source-turn',
@@ -566,7 +568,7 @@ async function verifyRestartRecoveryAndAdmission(
     assert.equal(admitted.kind, 'committed');
     if (admitted.kind !== 'committed') assert.fail('Admitted revision must commit');
     assert.equal(requireSessionProjection(admitted.session).revisionIndex, 3);
-    await restarted.startTurn({
+    await restarted.request('turn.start', {
       sessionId: ADMITTED_REVISION_TARGET_ID,
       turnId: 'turn-3',
       content: { text: 'commit this revision' },

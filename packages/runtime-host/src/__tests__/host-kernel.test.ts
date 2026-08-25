@@ -801,7 +801,7 @@ describe('non-serving Runtime Host kernel', () => {
         assert.equal(status.state, 'ready');
         assert.equal(status.connections, 1);
       }
-      const diagnostics = await connected.connection.queryHostDiagnostics();
+      const diagnostics = await connected.connection.request('host.diagnostics.query', {});
       assert.equal(diagnostics.hostEpoch, winner.host.hostEpoch);
       assert.equal(diagnostics.state, 'ready');
       assert.equal(diagnostics.pid, process.pid);

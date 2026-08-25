@@ -245,7 +245,10 @@ export async function connectOwnedRuntimeHostWithDependencies(
     }
     const ownedConnection = result.connection;
     connection = ownedConnection;
-    const diagnostics = await abortable(() => ownedConnection.queryHostDiagnostics(), input.signal);
+    const diagnostics = await abortable(
+      () => ownedConnection.request('host.diagnostics.query', {}),
+      input.signal,
+    );
     if (diagnostics.pid !== host.pid) {
       await connection.close();
       connection = undefined;

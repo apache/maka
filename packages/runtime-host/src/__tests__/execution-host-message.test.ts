@@ -120,7 +120,7 @@ test('steering becomes durable and ordered followups automatically start the nex
     const first = await connectClient(fixture.root);
     const second = await connectClient(fixture.root);
     const firstTurnId = randomUUID();
-    await first.startTurn({
+    await first.request('turn.start', {
       sessionId: fixture.sessionId,
       turnId: firstTurnId,
       content: { text: FAKE_WAIT_FOR_STEERING_PROMPT },
@@ -249,7 +249,7 @@ test('explicit retract is durable across connections and prevents successor admi
     const second = await connectClient(fixture.root);
     const turnId = randomUUID();
     const started = requireStartedTurn(
-      await first.startTurn({
+      await first.request('turn.start', {
         sessionId: fixture.sessionId,
         turnId,
         content: { text: FAKE_ASK_USER_QUESTION_PROMPT },
@@ -280,7 +280,7 @@ test('explicit retract is durable across connections and prevents successor admi
     const retrying = await connectClient(fixture.root);
     assert.deepEqual(await retrying.request('queue.retract', retractInput), retracted);
 
-    const terminal = await first.stopTurn({
+    const terminal = await first.request('turn.stop', {
       sessionId: fixture.sessionId,
       turnId,
       runId: started.runId,
@@ -305,7 +305,7 @@ test('interrupt atomically retracts queued followup, stops the exact run, and is
     const second = await connectClient(fixture.root);
     const turnId = randomUUID();
     const started = requireStartedTurn(
-      await first.startTurn({
+      await first.request('turn.start', {
         sessionId: fixture.sessionId,
         turnId,
         content: { text: FAKE_ASK_USER_QUESTION_PROMPT },

@@ -1184,7 +1184,7 @@ export async function waitForTurn(
   const deadline = Date.now() + PROCESS_TIMEOUT_MS;
   while (true) {
     try {
-      return await connection.queryTurn({ sessionId, turnId });
+      return await connection.request('turn.query', { sessionId, turnId });
     } catch (error) {
       if (!(error instanceof RuntimeHostOperationError) || error.code !== 'not_found') throw error;
       if (Date.now() >= deadline) throw new Error('Turn admission was not observed');
@@ -1275,7 +1275,7 @@ export async function waitForTerminalTurn(
   try {
     return await withTimeout(
       (async () => {
-        const current = await connection.queryTurn({ sessionId, turnId });
+        const current = await connection.request('turn.query', { sessionId, turnId });
         if (isTerminalTurnSnapshot(current)) return current;
         for await (const frame of subscription) {
           if (frame.kind !== 'subscription.session_projection') continue;
@@ -1307,7 +1307,7 @@ export async function waitForRunningTurn(
 ): Promise<TurnSnapshot> {
   const deadline = Date.now() + PROCESS_TIMEOUT_MS;
   while (true) {
-    const snapshot = await connection.queryTurn({ sessionId, turnId });
+    const snapshot = await connection.request('turn.query', { sessionId, turnId });
     if (snapshot.status === 'running' || snapshot.status === 'waiting_for_user') return snapshot;
     if (Date.now() >= deadline) throw new Error('Turn did not become active');
     await sleep(20);

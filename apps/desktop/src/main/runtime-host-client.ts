@@ -1150,7 +1150,7 @@ export class DesktopRuntimeHostClient {
   }
 
   queryHostDiagnostics(): Promise<OperationOutput<"host.diagnostics.query">> {
-    return this.connection.queryHostDiagnostics(2_000);
+    return this.connection.request('host.diagnostics.query', {}, 2_000);
   }
 
   prepareHostRetirement(

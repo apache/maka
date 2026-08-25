@@ -1606,7 +1606,6 @@ class FakeConnection {
       hostEpoch: 'host-1',
       request: <K extends DirectRequestOperationKey>(operation: K, input: OperationInput<K>) =>
         this.request(operation, input),
-      startTurn: (input) => this.request('turn.start', input),
       openSessionSubscription: async () => {
         const subscription = this.subscriptions[this.openedSubscriptions];
         this.openedSubscriptions += 1;

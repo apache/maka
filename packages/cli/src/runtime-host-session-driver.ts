@@ -119,7 +119,7 @@ export interface RuntimeHostMakaSessionDriverInput {
 
 type RuntimeHostSessionDriverConnection = Pick<
   RuntimeHostConnection,
-  'hostEpoch' | 'openSessionSubscription' | 'request' | 'startTurn'
+  'hostEpoch' | 'openSessionSubscription' | 'request'
 >;
 
 export interface RuntimeHostMakaSessionDriver extends MakaSessionDriver {
@@ -286,7 +286,7 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
         ...(options.turnOrchestration ? { turnOrchestration: options.turnOrchestration } : {}),
         ...(options.maxSteps !== undefined ? { maxSteps: options.maxSteps } : {}),
       };
-      const result = await this.#connection.startTurn(startInput);
+      const result = await this.#connection.request('turn.start', startInput);
       if (result.kind === 'blocked') {
         throw new SkillInvocationBlockedError(result.skillInvocation);
       }
