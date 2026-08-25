@@ -1100,11 +1100,17 @@ describe('Runtime Host Maka Session driver', () => {
       cwd: '/tmp',
       llmConnectionSlug: 'openai-main',
       model: 'gpt-5',
-      newId: sequenceIds('message-1', 'retract-1'),
+      newId: sequenceIds('retract-1'),
     });
     await driver.switchSession('session-1');
 
-    assert.deepEqual(await driver.queueMessage!('Later'), { kind: 'queued' });
+    assert.deepEqual(
+      await driver.submitMessage!('Later', {
+        messageId: 'message-1',
+        placement: 'next_turn',
+      }),
+      { messageId: 'message-1', disposition: 'followup' },
+    );
     assert.equal(await driver.retractQueued!(), 'Later');
     assert.deepEqual(
       connection.requests.filter(
@@ -1132,6 +1138,40 @@ describe('Runtime Host Maka Session driver', () => {
         },
       ],
     );
+  });
+
+  test('submits an idle message under the caller-owned stable identity', async () => {
+    const subscription = new FakeSubscription(continuitySnapshot(), Promise.resolve([]));
+    const connection = new FakeConnection([subscription]);
+    const driver = createRuntimeHostMakaSessionDriver({
+      connection: connection.value,
+      cwd: '/tmp',
+      llmConnectionSlug: 'openai-main',
+      model: 'gpt-5',
+      newId: sequenceIds('unused-generated-id'),
+    });
+    await driver.switchSession('session-1');
+
+    const admission = await driver.submitMessage!('Visible prompt', {
+      messageId: 'message-1',
+      placement: 'current_turn',
+      modelText: 'Expanded prompt',
+    });
+
+    assert.deepEqual(admission, {
+      messageId: 'message-1',
+      disposition: 'steering',
+    });
+    assert.deepEqual(connection.requests.at(-1), {
+      operation: 'turn.message.submit',
+      input: {
+        originHostEpoch: 'host-1',
+        sessionId: 'session-1',
+        messageId: 'message-1',
+        content: { text: 'Expanded prompt', displayText: 'Visible prompt' },
+        placement: 'current_turn',
+      },
+    });
   });
 
   test('projects the acknowledgement that releases a question answered through the Host', async () => {
@@ -1859,7 +1899,13 @@ class FakeConnection {
         : operation === 'session.execution_boundary.query'
           ? this.executionBoundary
           : operation === 'turn.message.submit'
-            ? { disposition: 'queued', queueRevision: 2 }
+            ? {
+                disposition:
+                  (input as OperationInput<'turn.message.submit'>).placement === 'next_turn'
+                    ? 'followup'
+                    : 'steering',
+                queueRevision: 2,
+              }
             : operation === 'queue.retract'
               ? {
                   hostEpoch: 'host-1',

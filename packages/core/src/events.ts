@@ -1096,14 +1096,7 @@ export interface MessageAdmissionEvent extends BaseEvent {
   outcome: 'admitted' | 'retracted';
 }
 
-/**
- * Result of enqueuing a steering / followup message. `fallback` means there was
- * no active run to attach to (the turn just ended) and the caller should open a
- * fresh turn with the text instead, so a message is never silently dropped.
- * Queue contents travel on ONE path only: the `queue_update` event.
- */
-export type QueueEnqueueOutcome = { kind: 'queued' } | { kind: 'fallback' };
-
+/** Host-owned placement for a submitted message projected through `queue_update`. */
 export type MessageQueuePlacement = 'current_turn' | 'next_turn';
 export type MessageQueueEntryState = 'queued' | 'in_flight';
 export type FollowUpMode = 'queue' | 'steer';

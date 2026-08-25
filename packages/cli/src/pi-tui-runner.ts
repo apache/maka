@@ -60,7 +60,6 @@ import {
   type ForeignSessionSummary,
 } from '@maka/core/foreign-session';
 import type { ContextDiagnostics } from '@maka/runtime/context-diagnostics';
-import type { GoalTurnOutcome } from '@maka/runtime/goal-continuation';
 import type { SessionActivityLease } from '@maka/runtime/goal-turn-lifecycle';
 import { listApiKeyOnboardableProviders } from './onboarding-catalog.js';
 import type {
@@ -103,7 +102,11 @@ import {
   toggleAllToolExpansion,
   type MakaPiTranscriptMetadata,
 } from './pi-transcript.js';
-import { runMakaPiTuiTurn, type MakaPiTuiTurnRequest } from './pi-tui-turn.js';
+import {
+  runMakaPiTuiTurn,
+  type MakaPiTuiTurnOutcome,
+  type MakaPiTuiTurnRequest,
+} from './pi-tui-turn.js';
 import { editorTheme, selectListTheme } from './tui-ansi.js';
 import { MakaAutocompleteAboveEditorComponent } from './tui-autocomplete-layout.js';
 import { TranscriptViewerOverlay } from './pi-tui-transcript-viewer.js';
@@ -919,31 +922,39 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     });
   };
 
-  // Enter during a turn steers it (inject at the next step boundary); the
-  // runtime falls back to a fresh turn if the run already ended.
+  const removeTransientUserMessage = (messageId: string) => {
+    const index = state.entries.findIndex(
+      (entry) => entry.kind === 'user' && entry.transient === true && entry.messageId === messageId,
+    );
+    if (index >= 0) state.entries.splice(index, 1);
+  };
+
+  // Enter during a turn asks the Host to place the message at the current
+  // step boundary. The Host alone decides whether it steers or starts a
+  // successor Turn if the previous Turn settled during admission.
   const steerRunningTurn = (text: string) => {
     if (!text.trim()) {
       requestRender();
       return;
     }
     editor.addToHistory(text);
-    const enqueue = input.driver.steer;
-    if (!enqueue) {
+    const submitMessage = input.driver.submitMessage;
+    if (!submitMessage) {
       refillEditorFromQueues(text);
       return;
     }
-    const task = enqueue
-      .call(input.driver, text)
-      .then((outcome) => {
-        if (outcome.kind === 'fallback') {
-          if (turnRunning || busy) refillEditorFromQueues(text);
-          else submitPrompt(text);
-          return;
-        }
-        // Queued: the runtime's `queue_update` event refreshes the mirror.
+    const messageId = randomUUID();
+    appendUserPrompt(state, text, messageId, true);
+    requestRender();
+    const task = submitMessage
+      .call(input.driver, text, { messageId, placement: 'current_turn' })
+      .then(() => {
+        // The subscription projects queue and Turn state; admission only
+        // confirms that this stable message identity belongs to the Host.
         requestRender();
       })
       .catch((error) => {
+        removeTransientUserMessage(messageId);
         refillEditorFromQueues(text);
         reportError(error);
       });
@@ -968,23 +979,21 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
       return;
     }
     editor.addToHistory(text);
-    const enqueue = input.driver.queueMessage;
-    if (!enqueue) {
+    const submitMessage = input.driver.submitMessage;
+    if (!submitMessage) {
       refillEditorFromQueues(text);
       return;
     }
-    const task = enqueue
-      .call(input.driver, text)
-      .then((outcome) => {
-        if (outcome.kind === 'fallback') {
-          if (turnRunning || busy) refillEditorFromQueues(text);
-          else submitPrompt(text);
-          return;
-        }
-        // Queued: the runtime's `queue_update` event refreshes the mirror.
+    const messageId = randomUUID();
+    appendUserPrompt(state, text, messageId, true);
+    requestRender();
+    const task = submitMessage
+      .call(input.driver, text, { messageId, placement: 'next_turn' })
+      .then(() => {
         requestRender();
       })
       .catch((error) => {
+        removeTransientUserMessage(messageId);
         refillEditorFromQueues(text);
         reportError(error);
       });
@@ -1118,7 +1127,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
   function runAgentTurn(
     request: MakaPiTuiTurnRequest,
     authoritativeAttachedTurn?: MakaAttachedSessionTurn,
-  ): Promise<GoalTurnOutcome> {
+  ): Promise<MakaPiTuiTurnOutcome> {
     busy = true;
     const epoch = ++turnEpoch;
     // A mid-turn /session switch-away (#3380) bumps turnEpoch and orphans this
@@ -1126,19 +1135,26 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     // runner state — the adopted Session owns it now.
     const superseded = () => epoch !== turnEpoch;
     const activity = beginActivity();
-    turnRunning = true;
-    turnStartedAt = Date.now();
-    startTurnElapsedTicker();
-    interruptRequested = false;
-    lastTurnEscapeAt = 0;
-    editor.disableSubmit = false;
-    setTaskbarProgress(true);
-    attention.promptTurnStarted();
+    const ownsTurnUi =
+      request.kind === 'attached' ||
+      request.turnOrchestration !== undefined ||
+      input.driver.submitMessage === undefined;
+    if (ownsTurnUi) {
+      turnRunning = true;
+      turnStartedAt = Date.now();
+      startTurnElapsedTicker();
+      interruptRequested = false;
+      lastTurnEscapeAt = 0;
+      editor.disableSubmit = false;
+      setTaskbarProgress(true);
+      attention.promptTurnStarted();
+    }
     requestRender();
 
     let permissionAlerted = false;
     let optimisticUserEntry: (typeof state.entries)[number] | undefined;
     const finishTurnUi = () => {
+      if (!ownsTurnUi) return;
       turnRunning = false;
       turnStartedAt = undefined;
       stopTurnElapsedTicker();

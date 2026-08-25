@@ -30,6 +30,7 @@ import { type GoalTurnOutcome } from '@maka/runtime/goal-continuation';
 import {
   SkillInvocationBlockedError,
   type MakaPreparedSessionTurn,
+  type MakaMessageAdmission,
   type MakaSessionDriver,
 } from './session-driver.js';
 
@@ -57,7 +58,7 @@ export type MakaPiTuiTurnRequest =
     };
 
 export interface RunMakaPiTuiTurnInput {
-  driver: Pick<MakaSessionDriver, 'preparePrompt'>;
+  driver: Pick<MakaSessionDriver, 'preparePrompt' | 'submitMessage'>;
   turnActivity: MakaPiTuiTurnActivity;
   request: MakaPiTuiTurnRequest;
   shouldAbort: () => boolean;
@@ -68,17 +69,21 @@ export interface RunMakaPiTuiTurnInput {
   onFailure?: (error: unknown) => void | Promise<void>;
 }
 
+export type MakaPiTuiTurnOutcome = GoalTurnOutcome | ({ kind: 'admitted' } & MakaMessageAdmission);
+
 /**
  * Owns one visible TUI turn from activity reservation through full stream drain.
  * Goal continuation and ScheduledTask admission remain Runtime Host responsibilities.
  */
-export async function runMakaPiTuiTurn(input: RunMakaPiTuiTurnInput): Promise<GoalTurnOutcome> {
+export async function runMakaPiTuiTurn(
+  input: RunMakaPiTuiTurnInput,
+): Promise<MakaPiTuiTurnOutcome> {
   const { request } = input;
   let activity: SessionActivityLease | undefined;
   const externalTurnId = request.kind === 'external' ? (request.turnId ?? randomUUID()) : undefined;
   let preparedTurnId = request.kind === 'attached' ? request.turn.turnId : externalTurnId;
 
-  const finishBeforeDrain = (outcome: GoalTurnOutcome): GoalTurnOutcome => {
+  const finishBeforeDrain = <T extends MakaPiTuiTurnOutcome>(outcome: T): T => {
     activity?.release();
     activity = undefined;
     return outcome;
@@ -97,6 +102,19 @@ export async function runMakaPiTuiTurn(input: RunMakaPiTuiTurnInput): Promise<Go
       if (input.shouldAbort()) {
         return finishBeforeDrain(abortedOutcome(preparedTurnId));
       }
+    }
+
+    if (
+      request.kind === 'external' &&
+      request.turnOrchestration === undefined &&
+      input.driver.submitMessage
+    ) {
+      const admission = await input.driver.submitMessage(request.prompt, {
+        messageId: externalTurnId!,
+        placement: 'current_turn',
+        ...(request.sendText !== undefined ? { modelText: request.sendText } : {}),
+      });
+      return finishBeforeDrain({ kind: 'admitted', ...admission });
     }
 
     const turn =

@@ -24,6 +24,47 @@ import { SessionActivityRegistry } from '@maka/runtime/goal-turn-lifecycle';
 import { runMakaPiTuiTurn } from '../pi-tui-turn.js';
 
 describe('Maka Pi TUI turn', () => {
+  test('submits an ordinary message once and leaves Turn projection to the Host subscription', async () => {
+    const sequence: string[] = [];
+    const outcome = await runMakaPiTuiTurn({
+      driver: {
+        async preparePrompt() {
+          throw new Error('ordinary admission must not start a renderer-owned Turn');
+        },
+        async submitMessage(prompt, options) {
+          sequence.push('submit');
+          assert.equal(prompt, 'visible prompt');
+          assert.deepEqual(options, {
+            messageId: 'message-1',
+            placement: 'current_turn',
+            modelText: 'expanded prompt',
+          });
+          return { messageId: options.messageId, disposition: 'turn_started' };
+        },
+      },
+      turnActivity: { activities: new SessionActivityRegistry() },
+      request: {
+        kind: 'external',
+        prompt: 'visible prompt',
+        turnId: 'message-1',
+        sendText: 'expanded prompt',
+        sessionId: null,
+      },
+      shouldAbort: () => false,
+      onStart: () => sequence.push('start'),
+      onPrepared: () => {
+        sequence.push('prepared');
+      },
+    });
+
+    assert.deepEqual(outcome, {
+      kind: 'admitted',
+      messageId: 'message-1',
+      disposition: 'turn_started',
+    });
+    assert.deepEqual(sequence, ['start', 'submit']);
+  });
+
   test('prepares and drains an external turn under one Session activity lease', async () => {
     const activities = new SessionActivityRegistry();
     const sequence: string[] = [];

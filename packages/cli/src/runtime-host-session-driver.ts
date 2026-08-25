@@ -31,7 +31,6 @@ import {
 import { markPersisted } from '@maka/core/persisted-value';
 import {
   type ActiveInteractionRequestEvent,
-  type QueueEnqueueOutcome,
   type SessionEvent,
   type ShellRunUpdate,
 } from '@maka/core/events';
@@ -82,6 +81,7 @@ import type {
   MakaSideConversationCloseResult,
   MakaSideConversationOpenResult,
   MakaSideConversationParentStatus,
+  MakaMessageAdmission,
   MakaPreparePromptOptions,
   MakaPreparedSessionTurn,
   MakaSessionDriver,
@@ -90,6 +90,7 @@ import type {
   MakaSessionSwitchOptions,
   MakaSessionSwitchResult,
   MakaTranscriptReplacementReason,
+  MakaSubmitMessageOptions,
   CreateSessionRequest,
   RewindTarget,
   SessionResumeAvailability,
@@ -388,12 +389,29 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
     yield* events;
   }
 
-  async steer(text: string): Promise<QueueEnqueueOutcome> {
-    return this.#enqueue(text, 'current_turn');
-  }
-
-  async queueMessage(text: string): Promise<QueueEnqueueOutcome> {
-    return this.#enqueue(text, 'next_turn');
+  async submitMessage(
+    text: string,
+    options: MakaSubmitMessageOptions,
+  ): Promise<MakaMessageAdmission> {
+    const sessionId = await this.#ensureSession();
+    const sessionGeneration = this.#sessionGeneration;
+    const configuration = await this.#loadConfiguration(sessionId);
+    this.#assertCurrentSession(sessionId, sessionGeneration);
+    await this.#ensureChannel(sessionId);
+    this.#assertCurrentSession(sessionId, sessionGeneration);
+    this.#adoptLoadedConfiguration(configuration);
+    const modelText = options.modelText ?? text;
+    const result = await this.#request('turn.message.submit', {
+      originHostEpoch: this.#connection.hostEpoch,
+      sessionId,
+      messageId: options.messageId,
+      content: {
+        text: modelText,
+        ...(modelText === text ? {} : { displayText: text }),
+      },
+      placement: options.placement,
+    });
+    return { messageId: options.messageId, disposition: result.disposition };
   }
 
   async retractQueued(): Promise<string> {
@@ -1020,26 +1038,6 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
     const goal = next?.snapshot.goal ?? null;
     for (const listener of this.#goalListeners) listener(goal);
     await previous?.close().catch(() => undefined);
-  }
-
-  async #enqueue(
-    text: string,
-    placement: 'current_turn' | 'next_turn',
-  ): Promise<QueueEnqueueOutcome> {
-    const sessionId = this.#sessionId;
-    if (!sessionId) return { kind: 'fallback' };
-    const result = await this.#request('turn.message.submit', {
-      originHostEpoch: this.#connection.hostEpoch,
-      sessionId,
-      messageId: this.#newId(),
-      content: { text },
-      placement,
-    });
-    // A root Turn can settle between the local projection check and Host
-    // admission. The Host has already started the message in that case, so it
-    // must not be submitted again. Treat it as accepted; the subscription owns
-    // projection of the successor Turn.
-    return { kind: 'queued' };
   }
 
   async #updateConfiguration(

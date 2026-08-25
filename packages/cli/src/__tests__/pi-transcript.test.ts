@@ -530,6 +530,26 @@ describe('Maka Pi TUI transcript', () => {
     assert.deepEqual(state.entries, [{ kind: 'user', messageId: 'message-1', text: 'send now' }]);
   });
 
+  test('reconciles a live steering event into its transient message position', () => {
+    const state = createMakaPiTranscriptState();
+    appendUserPrompt(state, 'send now', 'message-1', true);
+    state.entries.push({ kind: 'notice', level: 'error', text: 'later row' });
+
+    applyMakaSessionEventToTranscript(
+      state,
+      event({
+        type: 'steering_message',
+        messageId: 'message-1',
+        content: { text: 'canonical text' },
+      }),
+    );
+
+    assert.deepEqual(state.entries, [
+      { kind: 'user', messageId: 'message-1', text: 'canonical text' },
+      { kind: 'notice', level: 'error', text: 'later row' },
+    ]);
+  });
+
   test('uses a shared message gutter and trims trailing block rows', () => {
     const state = createMakaPiTranscriptState();
     applyMakaSessionEventToTranscript(

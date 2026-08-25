@@ -18,7 +18,7 @@
  */
 
 import { realpath } from 'node:fs/promises';
-import type { QueueEnqueueOutcome, SessionEvent } from '@maka/core/events';
+import type { SessionEvent } from '@maka/core/events';
 import type { OrchestrationMode } from '@maka/core/orchestration';
 import type { PermissionMode } from '@maka/core/permission';
 import type { SandboxBoundaryResponse } from '@maka/core/sandbox-boundary';
@@ -98,6 +98,17 @@ export interface MakaPreparePromptOptions {
   maxSteps?: number;
 }
 
+export interface MakaSubmitMessageOptions {
+  messageId: string;
+  placement: 'current_turn' | 'next_turn';
+  modelText?: string;
+}
+
+export interface MakaMessageAdmission {
+  messageId: string;
+  disposition: 'steering' | 'followup' | 'turn_started';
+}
+
 export class SkillInvocationBlockedError extends Error {
   constructor(readonly skillInvocation: SkillInvocationResult) {
     super('Explicit Skill invocation could not be resolved');
@@ -112,10 +123,9 @@ export interface MakaSessionDriver {
     prompt: string,
     options?: MakaPreparePromptOptions,
   ): Promise<MakaPreparedSessionTurn>;
+  submitMessage?(text: string, options: MakaSubmitMessageOptions): Promise<MakaMessageAdmission>;
   compactSession(): AsyncIterable<SessionEvent>;
   resumeLatest?(): AsyncIterable<SessionEvent>;
-  steer?(text: string): Promise<QueueEnqueueOutcome>;
-  queueMessage?(text: string): Promise<QueueEnqueueOutcome>;
   retractQueued?(): Promise<string>;
   respondToSandboxBoundary(response: SandboxBoundaryResponse): Promise<void>;
   respondToUserQuestion?(response: UserQuestionResponse): Promise<void>;

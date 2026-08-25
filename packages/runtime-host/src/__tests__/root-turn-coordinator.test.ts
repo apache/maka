@@ -3528,6 +3528,12 @@ test('mixed-Client queued follow-ups use one Session successor without connectio
       admissions.map((admission) => admission.sourceMessages.map((source) => source.messageId)),
       [[], ['followup-from-provider-b', 'followup-from-provider-a']],
     );
+    assert.deepEqual(
+      (await fixture.stores.sessionStore.readMessages(fixture.sessionId))
+        .filter((message) => message.type === 'user' && message.id.startsWith('followup-from-'))
+        .map((message) => message.id),
+      ['followup-from-provider-b', 'followup-from-provider-a'],
+    );
   } finally {
     first.close();
     second.close();

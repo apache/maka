@@ -244,7 +244,20 @@ export function appendUserPrompt(
   messageId: string,
   transient = false,
 ): void {
-  state.entries.push({ kind: 'user', messageId, text, ...(transient ? { transient: true } : {}) });
+  const entry = {
+    kind: 'user',
+    messageId,
+    text,
+    ...(transient ? { transient: true } : {}),
+  } as const;
+  const existingIndex = state.entries.findIndex(
+    (candidate) => candidate.kind === 'user' && candidate.messageId === messageId,
+  );
+  if (existingIndex >= 0) {
+    state.entries[existingIndex] = entry;
+    return;
+  }
+  state.entries.push(entry);
 }
 
 export function appendTurnFailureToTranscript(state: MakaPiTranscriptState, error: unknown): void {
