@@ -25,10 +25,12 @@ import type { DatabaseSync, SQLInputValue } from 'node:sqlite';
 import { isDeepStrictEqual } from 'node:util';
 import {
   buildWorkspaceBaselineAuthorityEvents,
+  buildWorkspaceSuccessorAuthorityEvent,
   scanWorkspaceBaselineAuthority,
   WORKSPACE_AUTHORITY_SESSION_ID,
   WORKSPACE_VERSION_AUTHORITY_CAPABILITY_V1,
   type ScannedWorkspaceBaselineAuthority,
+  type ScannedWorkspaceSuccessorAuthority,
   type WorkspaceAuthorityLedgerRow,
   type WorkspaceBaselineAuthorityInput,
   type WorkspaceBaselineCommitResult,
@@ -92,7 +94,11 @@ import {
   RUNTIME_WORKSPACE_VERSION_AUTHORITY_CAPABILITY_VERSION,
   SQLITE_RUNTIME_SCHEMA_VERSION,
 } from './sqlite-runtime-schema.js';
-import { registerWorkspaceBaselineAuthorityWriterInternal } from './workspace-version-authority-internal.js';
+import {
+  registerWorkspaceBaselineAuthorityWriterInternal,
+  type WorkspaceSuccessorCommitInput,
+  type WorkspaceSuccessorCommitResult,
+} from './workspace-version-authority-internal.js';
 import type {
   ConversationCopyRuntimeEventBatch,
   ImmutableSteeringMessageProof,
@@ -163,6 +169,9 @@ export type SqliteRuntimeStoreFailpoint =
   | 'after_workspace_epoch_projection_insert'
   | 'after_workspace_version_projection_insert'
   | 'after_workspace_head_projection_insert'
+  | 'after_workspace_successor_event_insert'
+  | 'after_workspace_successor_projection_insert'
+  | 'after_workspace_successor_head_update'
   | 'after_workspace_canonical_scan';
 
 export interface SqliteRuntimeStoreOptions {
@@ -1168,14 +1177,15 @@ export class SqliteRuntimeStore
     const events = buildWorkspaceBaselineAuthorityEvents(input);
     return this.transaction(() => {
       this.#assertWorkspaceStorageRootBinding(rootId);
-      const existingBaselines = this.readCanonicalWorkspaceBaselinesSync();
+      const existingAuthority = this.readCanonicalWorkspaceAuthoritySync();
+      const existingBaselines = existingAuthority.baselines;
       const existing = existingBaselines.find(
         (candidate) =>
           candidate.epoch.workspaceId === input.epoch.workspaceId &&
           candidate.epoch.workspaceEpochId === input.epoch.workspaceEpochId,
       );
       if (existing) {
-        this.assertWorkspaceProjectionsMatchSync(existingBaselines);
+        this.assertWorkspaceProjectionsMatchSync(existingAuthority);
         if (
           !isDeepStrictEqual(
             [
@@ -1187,11 +1197,15 @@ export class SqliteRuntimeStore
         ) {
           throw new Error('Workspace baseline authority conflict');
         }
-        return { created: false, head: workspaceHeadRecord(existing) };
+        const head = existingAuthority.heads.find(
+          (candidate) => candidate.workspaceEpochId === input.epoch.workspaceEpochId,
+        );
+        if (!head) throw new Error('Workspace baseline authority head is unavailable');
+        return { created: false, head };
       }
 
       if (this.workspaceProjectionCountSync() !== 0 || existingBaselines.length !== 0) {
-        this.assertWorkspaceProjectionsMatchSync(existingBaselines);
+        this.assertWorkspaceProjectionsMatchSync(existingAuthority);
       }
       this.assertWorkspaceAuthorityStreamIsEmpty(events.epochOpenedEvent);
       this.assertInvocationIdentity([events.epochOpenedEvent, events.baselineAcceptedEvent]);
@@ -1214,19 +1228,175 @@ export class SqliteRuntimeStore
       }
       this.options.failpoint?.('after_workspace_version_event_insert');
 
-      const scanned = this.readCanonicalWorkspaceBaselinesSync();
-      const accepted = scanned.find(
+      const scanned = this.readCanonicalWorkspaceAuthoritySync();
+      const accepted = scanned.baselines.find(
         (candidate) => candidate.epoch.workspaceEpochId === input.epoch.workspaceEpochId,
       );
       if (!accepted) throw new Error('Workspace baseline authority scan lost the committed epoch');
       this.insertWorkspaceEpochProjection(accepted, input.committedAt);
       this.options.failpoint?.('after_workspace_epoch_projection_insert');
-      this.insertWorkspaceVersionProjection(accepted, input.committedAt);
+      this.insertWorkspaceBaselineVersionProjection(accepted, input.committedAt);
       this.options.failpoint?.('after_workspace_version_projection_insert');
-      this.insertWorkspaceHeadProjection(accepted);
+      const acceptedHead = scanned.heads.find(
+        (candidate) => candidate.workspaceEpochId === input.epoch.workspaceEpochId,
+      );
+      if (!acceptedHead) throw new Error('Workspace baseline authority scan lost its head');
+      this.insertWorkspaceHeadProjection(acceptedHead);
       this.options.failpoint?.('after_workspace_head_projection_insert');
       this.assertWorkspaceProjectionsMatchSync(scanned);
-      return { created: true, head: workspaceHeadRecord(accepted) };
+      const head = scanned.heads.find(
+        (candidate) => candidate.workspaceEpochId === input.epoch.workspaceEpochId,
+      );
+      if (!head) throw new Error('Workspace baseline authority scan lost the committed head');
+      return { created: true, head };
+    });
+  }
+
+  async #commitWorkspaceSuccessor(
+    input: WorkspaceSuccessorCommitInput,
+    rootId: string,
+  ): Promise<WorkspaceSuccessorCommitResult> {
+    const toolOutcome: CommitToolOutcomeInput = {
+      ...input.toolOutcome,
+      runtimeEvent: canonicalizeRuntimeEventForStorage(input.toolOutcome.runtimeEvent),
+    };
+    assertNoReservedWorkspaceAuthorityAppend(toolOutcome.runtimeEvent);
+    assertOutcomeInput(toolOutcome);
+    const successorEvent = buildWorkspaceSuccessorAuthorityEvent(input.successor);
+    if (
+      input.successor.origin.operationId !== toolOutcome.operationId ||
+      input.successor.origin.outcomeEventId !== toolOutcome.runtimeEvent.id
+    ) {
+      throw new Error('Workspace successor does not match its tool outcome identity');
+    }
+    if (
+      toolOutcome.runtimeEvent.content?.kind !== 'function_response' ||
+      toolOutcome.runtimeEvent.content.isError === true
+    ) {
+      throw new Error('Workspace successor requires a successful tool outcome');
+    }
+
+    return this.transaction(() => {
+      this.#assertWorkspaceStorageRootBinding(rootId);
+      const before = this.readCanonicalWorkspaceAuthoritySync();
+      this.assertWorkspaceProjectionsMatchSync(before);
+      const currentHead = before.heads.find(
+        (candidate) =>
+          candidate.workspaceId === input.successor.successor.workspaceId &&
+          candidate.workspaceEpochId === input.successor.successor.workspaceEpochId,
+      );
+      if (!currentHead) throw new Error('Workspace successor base head is unavailable');
+
+      const existing = before.successors.find(
+        (candidate) =>
+          candidate.acceptedEventId === input.successor.acceptedEventId ||
+          candidate.successor.workspaceVersionId === input.successor.successor.workspaceVersionId,
+      );
+      if (existing) {
+        assertStoredRuntimeEventEquals(
+          successorEvent,
+          this.readRuntimeEventJson(successorEvent.id),
+        );
+        const operation = this.readToolOperationSync(toolOutcome.operationId);
+        if (!operation?.resultEventId) {
+          throw new Error('Workspace successor exists without its tool outcome');
+        }
+        assertStoredRuntimeEventEquals(
+          toolOutcome.runtimeEvent,
+          this.readRuntimeEventJson(operation.resultEventId),
+        );
+        return {
+          created: false,
+          head: {
+            repositoryId: existing.successor.repositoryId,
+            workspaceId: existing.successor.workspaceId,
+            workspaceEpochId: existing.successor.workspaceEpochId,
+            workspaceVersionId: existing.successor.workspaceVersionId,
+            acceptedEventId: existing.acceptedEventId,
+            commitOid: existing.successor.commitOid,
+            treeOid: existing.successor.treeOid,
+            revision: existing.successor.baseHeadRevision + 1,
+          },
+          outcomeRuntimeEventSeq: this.runtimeEventSeq(operation.resultEventId),
+        };
+      }
+
+      const successor = input.successor.successor;
+      if (
+        successor.repositoryId !== currentHead.repositoryId ||
+        successor.parentWorkspaceVersionId !== currentHead.workspaceVersionId ||
+        successor.baseAcceptedEventId !== currentHead.acceptedEventId ||
+        successor.baseHeadRevision !== currentHead.revision
+      ) {
+        throw new Error('Workspace successor compare-and-set base head conflict');
+      }
+      const operation = this.readToolOperationSync(toolOutcome.operationId);
+      if (
+        !operation ||
+        operation.currentState !== 'prepared' ||
+        operation.resultEventId !== undefined ||
+        operation.dispatchEventId !== input.successor.origin.dispatchEventId ||
+        operation.recoveryMode !== 'reconcile' ||
+        (operation.toolName !== 'Write' && operation.toolName !== 'Edit')
+      ) {
+        throw new Error('Workspace successor requires one prepared Write/Edit reconcile operation');
+      }
+
+      const outcomeResult = this.commitToolOutcomeSync(toolOutcome);
+      const successorSeq = this.insertRuntimeEvent(
+        successorEvent,
+        input.successor.committedAt,
+        false,
+      );
+      if (successorSeq !== currentHead.revision + 2) {
+        throw new Error('Workspace successor fact is not the next authority event');
+      }
+      this.options.failpoint?.('after_workspace_successor_event_insert');
+
+      const after = this.readCanonicalWorkspaceAuthoritySync();
+      const accepted = after.successors.find(
+        (candidate) => candidate.acceptedEventId === input.successor.acceptedEventId,
+      );
+      const nextHead = after.heads.find(
+        (candidate) =>
+          candidate.workspaceId === successor.workspaceId &&
+          candidate.workspaceEpochId === successor.workspaceEpochId,
+      );
+      if (!accepted || !nextHead) {
+        throw new Error('Workspace successor authority scan lost the committed version');
+      }
+      this.insertWorkspaceSuccessorVersionProjection(accepted, input.successor.committedAt);
+      this.options.failpoint?.('after_workspace_successor_projection_insert');
+      const updated = this.db
+        .prepare(`
+          UPDATE runtime_workspace_heads
+          SET workspace_version_id = ?, accepted_event_id = ?, commit_oid = ?, tree_oid = ?,
+              revision = ?
+          WHERE workspace_id = ? AND workspace_epoch_id = ?
+            AND workspace_version_id = ? AND accepted_event_id = ? AND revision = ?
+        `)
+        .run(
+          nextHead.workspaceVersionId,
+          nextHead.acceptedEventId,
+          nextHead.commitOid,
+          nextHead.treeOid,
+          nextHead.revision,
+          currentHead.workspaceId,
+          currentHead.workspaceEpochId,
+          currentHead.workspaceVersionId,
+          currentHead.acceptedEventId,
+          currentHead.revision,
+        );
+      if (updated.changes !== 1) {
+        throw new Error('Workspace successor head compare-and-set failed');
+      }
+      this.options.failpoint?.('after_workspace_successor_head_update');
+      this.assertWorkspaceProjectionsMatchSync(after);
+      return {
+        created: true,
+        head: nextHead,
+        outcomeRuntimeEventSeq: outcomeResult.runtimeEventSeq,
+      };
     });
   }
 
@@ -1235,6 +1405,7 @@ export class SqliteRuntimeStore
     registerWorkspaceBaselineAuthorityWriterInternal(
       this,
       (input, rootId) => this.#commitWorkspaceBaseline(input, rootId),
+      (input, rootId) => this.#commitWorkspaceSuccessor(input, rootId),
       (rootId) => this.#bindWorkspaceStorageRoot(rootId),
       readWorkspaceHead,
     );
@@ -1307,9 +1478,9 @@ export class SqliteRuntimeStore
     workspaceEpochId: string,
   ): Promise<WorkspaceEpochRecordV1 | undefined> {
     return this.readTransaction(() => {
-      const baselines = this.readCanonicalWorkspaceBaselinesSync();
-      this.assertWorkspaceProjectionsMatchSync(baselines);
-      const baseline = baselines.find(
+      const authority = this.readCanonicalWorkspaceAuthoritySync();
+      this.assertWorkspaceProjectionsMatchSync(authority);
+      const baseline = authority.baselines.find(
         (candidate) =>
           candidate.epoch.workspaceId === workspaceId &&
           candidate.epoch.workspaceEpochId === workspaceEpochId,
@@ -1322,12 +1493,16 @@ export class SqliteRuntimeStore
     workspaceVersionId: string,
   ): Promise<WorkspaceVersionRecordV1 | undefined> {
     return this.readTransaction(() => {
-      const baselines = this.readCanonicalWorkspaceBaselinesSync();
-      this.assertWorkspaceProjectionsMatchSync(baselines);
-      const baseline = baselines.find(
+      const authority = this.readCanonicalWorkspaceAuthoritySync();
+      this.assertWorkspaceProjectionsMatchSync(authority);
+      const baseline = authority.baselines.find(
         (candidate) => candidate.baseline.workspaceVersionId === workspaceVersionId,
       );
-      return baseline ? workspaceVersionRecord(baseline) : undefined;
+      if (baseline) return workspaceBaselineVersionRecord(baseline);
+      const successor = authority.successors.find(
+        (candidate) => candidate.successor.workspaceVersionId === workspaceVersionId,
+      );
+      return successor ? workspaceSuccessorVersionRecord(successor) : undefined;
     });
   }
 
@@ -1336,42 +1511,46 @@ export class SqliteRuntimeStore
     workspaceEpochId: string,
   ): Promise<WorkspaceHeadRecordV1 | undefined> {
     return this.readTransaction(() => {
-      const baselines = this.readCanonicalWorkspaceBaselinesSync();
-      this.assertWorkspaceProjectionsMatchSync(baselines);
-      const baseline = baselines.find(
+      const authority = this.readCanonicalWorkspaceAuthoritySync();
+      this.assertWorkspaceProjectionsMatchSync(authority);
+      return authority.heads.find(
         (candidate) =>
-          candidate.epoch.workspaceId === workspaceId &&
-          candidate.epoch.workspaceEpochId === workspaceEpochId,
+          candidate.workspaceId === workspaceId && candidate.workspaceEpochId === workspaceEpochId,
       );
-      return baseline ? workspaceHeadRecord(baseline) : undefined;
     });
   }
 
   async rebuildWorkspaceVersionProjections(): Promise<WorkspaceProjectionRebuildResult> {
     return this.transaction(() => {
-      const baselines = this.readCanonicalWorkspaceBaselinesSync();
+      const authority = this.readCanonicalWorkspaceAuthoritySync();
       this.db.prepare('DELETE FROM runtime_workspace_heads').run();
       this.db.prepare('DELETE FROM runtime_workspace_versions').run();
       this.db.prepare('DELETE FROM runtime_workspace_epochs').run();
-      for (const baseline of baselines) {
+      for (const baseline of authority.baselines) {
         const committedAt = Math.max(
           this.runtimeEventCommittedAt(baseline.epochOpenedEventId),
           this.runtimeEventCommittedAt(baseline.baselineAcceptedEventId),
         );
         this.insertWorkspaceEpochProjection(baseline, committedAt);
-        this.insertWorkspaceVersionProjection(baseline, committedAt);
-        this.insertWorkspaceHeadProjection(baseline);
+        this.insertWorkspaceBaselineVersionProjection(baseline, committedAt);
       }
-      this.assertWorkspaceProjectionsMatchSync(baselines);
+      for (const successor of authority.successors) {
+        this.insertWorkspaceSuccessorVersionProjection(
+          successor,
+          this.runtimeEventCommittedAt(successor.acceptedEventId),
+        );
+      }
+      for (const head of authority.heads) this.insertWorkspaceHeadProjection(head);
+      this.assertWorkspaceProjectionsMatchSync(authority);
       return {
-        epochs: baselines.length,
-        versions: baselines.length,
-        heads: baselines.length,
+        epochs: authority.baselines.length,
+        versions: authority.baselines.length + authority.successors.length,
+        heads: authority.heads.length,
       };
     });
   }
 
-  private readCanonicalWorkspaceBaselinesSync() {
+  private readCanonicalWorkspaceAuthoritySync() {
     const partial = this.db
       .prepare(`
         SELECT stream_key FROM runtime_partial_snapshots
@@ -1391,8 +1570,9 @@ export class SqliteRuntimeStore
         ORDER BY invocation_id ASC, event_seq ASC, event_id ASC
       `)
       .all() as unknown as RuntimeEventPrefixStorageRow[];
-    const authorityRows: WorkspaceAuthorityLedgerRow[] = rows.map((row) => ({
-      event: decodeRuntimeEventStorageRow(row),
+    const events = rows.map(decodeRuntimeEventStorageRow);
+    const authorityRows: WorkspaceAuthorityLedgerRow[] = rows.map((row, index) => ({
+      event: events[index]!,
       eventSeq: row.event_seq,
     }));
     const scan = scanWorkspaceBaselineAuthority(authorityRows);
@@ -1402,8 +1582,34 @@ export class SqliteRuntimeStore
         `Corrupt workspace RuntimeEvent authority: ${issue.code} at ${issue.eventId}`,
       );
     }
+    const toolScan = scanToolLedger(events);
+    for (const accepted of scan.successors) {
+      const origin = accepted.successor.origin;
+      const operation = toolScan.operations.find(
+        (candidate) => candidate.operationId === origin.operationId,
+      );
+      const dispatch = operation?.dispatchEvent?.actions?.toolDispatch;
+      const response = operation?.responseEvent;
+      if (
+        !operation ||
+        operation.issues.length > 0 ||
+        operation.dispatchEvent?.id !== origin.dispatchEventId ||
+        !dispatch ||
+        dispatch.operationId !== origin.operationId ||
+        dispatch.recoveryMode !== 'reconcile' ||
+        (dispatch.toolName !== 'Write' && dispatch.toolName !== 'Edit') ||
+        !response ||
+        response.id !== origin.outcomeEventId ||
+        response.content?.kind !== 'function_response' ||
+        response.content.isError === true
+      ) {
+        throw new Error(
+          `Corrupt workspace successor tool evidence: identity_conflict at ${accepted.acceptedEventId}`,
+        );
+      }
+    }
     this.options.failpoint?.('after_workspace_canonical_scan');
-    return scan.baselines;
+    return scan;
   }
 
   private assertWorkspaceAuthorityStreamIsEmpty(event: RuntimeEvent): void {
@@ -1472,7 +1678,7 @@ export class SqliteRuntimeStore
       );
   }
 
-  private insertWorkspaceVersionProjection(
+  private insertWorkspaceBaselineVersionProjection(
     accepted: ReturnType<typeof scanWorkspaceBaselineAuthority>['baselines'][number],
     committedAt: number,
   ): void {
@@ -1488,6 +1694,11 @@ export class SqliteRuntimeStore
           origin_kind,
           origin_event_id,
           parents_json,
+          operation_id,
+          dispatch_event_id,
+          outcome_event_id,
+          base_head_revision,
+          execution_profile_digest,
           commit_oid,
           tree_oid,
           policy_hash,
@@ -1497,7 +1708,8 @@ export class SqliteRuntimeStore
           accepted_event_id,
           protocol_version,
           committed_at
-        ) VALUES (?, ?, ?, ?, ?, 'baseline', ?, '[]', ?, ?, ?, ?, ?, ?, ?, 1, ?)
+        ) VALUES (?, ?, ?, ?, ?, 'baseline', ?, '[]', NULL, NULL, NULL, NULL, NULL,
+          ?, ?, ?, ?, ?, ?, ?, 1, ?)
       `)
       .run(
         baseline.workspaceVersionId,
@@ -1517,10 +1729,63 @@ export class SqliteRuntimeStore
       );
   }
 
-  private insertWorkspaceHeadProjection(
-    accepted: ReturnType<typeof scanWorkspaceBaselineAuthority>['baselines'][number],
+  private insertWorkspaceSuccessorVersionProjection(
+    accepted: ScannedWorkspaceSuccessorAuthority,
+    committedAt: number,
   ): void {
-    const head = workspaceHeadRecord(accepted);
+    const { successor } = accepted;
+    this.db
+      .prepare(`
+        INSERT INTO runtime_workspace_versions (
+          workspace_version_id,
+          repository_id,
+          workspace_id,
+          workspace_epoch_id,
+          object_format,
+          origin_kind,
+          origin_event_id,
+          parents_json,
+          operation_id,
+          dispatch_event_id,
+          outcome_event_id,
+          base_head_revision,
+          execution_profile_digest,
+          commit_oid,
+          tree_oid,
+          policy_hash,
+          tree_delta_digest,
+          changed_file_count,
+          deleted_file_count,
+          accepted_event_id,
+          protocol_version,
+          committed_at
+        ) VALUES (?, ?, ?, ?, ?, 'tool_mutation', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?)
+      `)
+      .run(
+        successor.workspaceVersionId,
+        successor.repositoryId,
+        successor.workspaceId,
+        successor.workspaceEpochId,
+        successor.objectFormat,
+        successor.origin.outcomeEventId,
+        JSON.stringify(successor.parents),
+        successor.origin.operationId,
+        successor.origin.dispatchEventId,
+        successor.origin.outcomeEventId,
+        successor.baseHeadRevision,
+        successor.executionProfileDigest,
+        successor.commitOid,
+        successor.treeOid,
+        successor.policyHash,
+        successor.treeDeltaDigest,
+        successor.changedFileCount,
+        successor.deletedFileCount,
+        accepted.acceptedEventId,
+        committedAt,
+      );
+  }
+
+  private insertWorkspaceHeadProjection(head: WorkspaceHeadRecordV1): void {
     this.db
       .prepare(`
         INSERT INTO runtime_workspace_heads (
@@ -1547,15 +1812,18 @@ export class SqliteRuntimeStore
   }
 
   private assertWorkspaceProjectionsMatchSync(
-    baselines: ReturnType<typeof scanWorkspaceBaselineAuthority>['baselines'],
+    authority: ReturnType<typeof scanWorkspaceBaselineAuthority>,
   ): void {
-    const expectedEpochs = baselines
+    const expectedEpochs = authority.baselines
       .map(workspaceEpochProjectionRow)
       .sort(compareWorkspaceEpochRow);
-    const expectedVersions = baselines
-      .map(workspaceVersionProjectionRow)
-      .sort(compareWorkspaceVersionRow);
-    const expectedHeads = baselines.map(workspaceHeadProjectionRow).sort(compareWorkspaceHeadRow);
+    const expectedVersions = [
+      ...authority.baselines.map(workspaceBaselineVersionProjectionRow),
+      ...authority.successors.map(workspaceSuccessorVersionProjectionRow),
+    ].sort(compareWorkspaceVersionRow);
+    const expectedHeads = authority.heads
+      .map(workspaceHeadProjectionRow)
+      .sort(compareWorkspaceHeadRow);
     const epochs = (
       this.db
         .prepare(`
@@ -1598,6 +1866,11 @@ export class SqliteRuntimeStore
           origin_kind,
           origin_event_id,
           parents_json,
+          operation_id,
+          dispatch_event_id,
+          outcome_event_id,
+          base_head_revision,
+          execution_profile_digest,
           commit_oid,
           tree_oid,
           policy_hash,
@@ -3361,6 +3634,11 @@ interface WorkspaceVersionProjectionRow {
   origin_kind: string;
   origin_event_id: string;
   parents_json: string;
+  operation_id: string | null;
+  dispatch_event_id: string | null;
+  outcome_event_id: string | null;
+  base_head_revision: number | null;
+  execution_profile_digest: string | null;
   commit_oid: string;
   tree_oid: string;
   policy_hash: string;
@@ -3394,26 +3672,19 @@ function workspaceEpochRecord(
   };
 }
 
-function workspaceVersionRecord(
-  authority: ScannedWorkspaceBaselineAuthority,
-): WorkspaceVersionRecordV1 {
+function workspaceBaselineVersionRecord(authority: ScannedWorkspaceBaselineAuthority) {
   return {
     ...authority.baseline,
-    baselineAcceptedEventId: authority.baselineAcceptedEventId,
+    acceptedEventId: authority.baselineAcceptedEventId,
     committedAt: authority.baselineAcceptedAt,
   };
 }
 
-function workspaceHeadRecord(authority: ScannedWorkspaceBaselineAuthority): WorkspaceHeadRecordV1 {
+function workspaceSuccessorVersionRecord(authority: ScannedWorkspaceSuccessorAuthority) {
   return {
-    repositoryId: authority.epoch.repositoryId,
-    workspaceId: authority.epoch.workspaceId,
-    workspaceEpochId: authority.epoch.workspaceEpochId,
-    workspaceVersionId: authority.baseline.workspaceVersionId,
-    acceptedEventId: authority.baselineAcceptedEventId,
-    commitOid: authority.baseline.commitOid,
-    treeOid: authority.baseline.treeOid,
-    revision: 1,
+    ...authority.successor,
+    acceptedEventId: authority.acceptedEventId,
+    committedAt: authority.acceptedAt,
   };
 }
 
@@ -3444,10 +3715,10 @@ function workspaceEpochProjectionRow(
   };
 }
 
-function workspaceVersionProjectionRow(
+function workspaceBaselineVersionProjectionRow(
   authority: ScannedWorkspaceBaselineAuthority,
 ): WorkspaceVersionProjectionRow {
-  const record = workspaceVersionRecord(authority);
+  const record = workspaceBaselineVersionRecord(authority);
   return {
     workspace_version_id: record.workspaceVersionId,
     repository_id: record.repositoryId,
@@ -3457,22 +3728,54 @@ function workspaceVersionProjectionRow(
     origin_kind: record.origin.kind,
     origin_event_id: record.origin.epochOpenedEventId,
     parents_json: '[]',
+    operation_id: null,
+    dispatch_event_id: null,
+    outcome_event_id: null,
+    base_head_revision: null,
+    execution_profile_digest: null,
     commit_oid: record.commitOid,
     tree_oid: record.treeOid,
     policy_hash: record.policyHash,
     tree_delta_digest: record.treeDeltaDigest,
     changed_file_count: record.changedFileCount,
     deleted_file_count: record.deletedFileCount,
-    accepted_event_id: record.baselineAcceptedEventId,
+    accepted_event_id: record.acceptedEventId,
     protocol_version: 1,
     committed_at: record.committedAt,
   };
 }
 
-function workspaceHeadProjectionRow(
-  authority: ScannedWorkspaceBaselineAuthority,
-): WorkspaceHeadProjectionRow {
-  const record = workspaceHeadRecord(authority);
+function workspaceSuccessorVersionProjectionRow(
+  authority: ScannedWorkspaceSuccessorAuthority,
+): WorkspaceVersionProjectionRow {
+  const record = workspaceSuccessorVersionRecord(authority);
+  return {
+    workspace_version_id: record.workspaceVersionId,
+    repository_id: record.repositoryId,
+    workspace_id: record.workspaceId,
+    workspace_epoch_id: record.workspaceEpochId,
+    object_format: record.objectFormat,
+    origin_kind: record.origin.kind,
+    origin_event_id: record.origin.outcomeEventId,
+    parents_json: JSON.stringify(record.parents),
+    operation_id: record.origin.operationId,
+    dispatch_event_id: record.origin.dispatchEventId,
+    outcome_event_id: record.origin.outcomeEventId,
+    base_head_revision: record.baseHeadRevision,
+    execution_profile_digest: record.executionProfileDigest,
+    commit_oid: record.commitOid,
+    tree_oid: record.treeOid,
+    policy_hash: record.policyHash,
+    tree_delta_digest: record.treeDeltaDigest,
+    changed_file_count: record.changedFileCount,
+    deleted_file_count: record.deletedFileCount,
+    accepted_event_id: record.acceptedEventId,
+    protocol_version: 1,
+    committed_at: record.committedAt,
+  };
+}
+
+function workspaceHeadProjectionRow(record: WorkspaceHeadRecordV1): WorkspaceHeadProjectionRow {
   return {
     workspace_id: record.workspaceId,
     workspace_epoch_id: record.workspaceEpochId,

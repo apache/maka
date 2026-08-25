@@ -35,6 +35,8 @@ import {
 import {
   bindWorkspaceBaselineAuthorityStoreRootInternal,
   commitWorkspaceBaselineInternal,
+  commitWorkspaceSuccessorInternal,
+  type WorkspaceSuccessorCommitInput,
 } from '../workspace-version-authority-internal.js';
 
 const CRASH_READ_ARGS_HASH = canonicalToolArgsHash('Read', {
@@ -154,6 +156,38 @@ if (childMode) {
         );
       });
     });
+
+    it('rolls back a workspace successor when killed inside its authority transaction', {
+      timeout: 30_000,
+    }, async () => {
+      await withKilledChild('inside_workspace_successor', async (store) => {
+        assert.equal(
+          (await store.readWorkspaceHead(`workspace_${'2'.repeat(32)}`, `epoch_${'3'.repeat(32)}`))
+            ?.workspaceVersionId,
+          `version_${'5'.repeat(32)}`,
+        );
+        assert.equal(
+          (await store.readToolOperation('workspace-successor-operation'))?.currentState,
+          'prepared',
+        );
+        assert.equal(await store.readWorkspaceVersion(`version_${'7'.repeat(32)}`), undefined);
+      });
+    });
+
+    it('returns the accepted workspace successor after a process is killed post-commit', {
+      timeout: 30_000,
+    }, async () => {
+      await withKilledChild('after_workspace_successor_commit', async (store) => {
+        bindWorkspaceBaselineAuthorityStoreRootInternal(store, 'a'.repeat(64));
+        const retry = await commitWorkspaceSuccessorInternal(store, workspaceSuccessorCommit());
+        assert.equal(retry.created, false);
+        assert.equal(retry.head.workspaceVersionId, `version_${'7'.repeat(32)}`);
+        assert.equal(
+          (await store.readToolOperation('workspace-successor-operation'))?.currentState,
+          'outcome_committed',
+        );
+      });
+    });
   });
 }
 
@@ -235,12 +269,28 @@ async function runCrashChild(mode: string): Promise<void> {
     if (point === 'after_workspace_version_event_insert' && mode === 'inside_workspace_baseline') {
       blockUntilKilled();
     }
+    if (
+      point === 'after_workspace_successor_event_insert' &&
+      mode === 'inside_workspace_successor'
+    ) {
+      blockUntilKilled();
+    }
   };
   const store = createSqliteRuntimeStore(dbPath, { failpoint });
-  if (mode === 'inside_workspace_baseline' || mode === 'after_workspace_baseline_commit') {
+  if (
+    mode === 'inside_workspace_baseline' ||
+    mode === 'after_workspace_baseline_commit' ||
+    mode === 'inside_workspace_successor' ||
+    mode === 'after_workspace_successor_commit'
+  ) {
     bindWorkspaceBaselineAuthorityStoreRootInternal(store, 'a'.repeat(64));
     await commitWorkspaceBaselineInternal(store, workspaceBaselineInput());
     if (mode === 'after_workspace_baseline_commit') blockUntilKilled();
+    if (mode === 'inside_workspace_successor' || mode === 'after_workspace_successor_commit') {
+      await store.commitToolPrepared(workspaceSuccessorPreparedCommit());
+      await commitWorkspaceSuccessorInternal(store, workspaceSuccessorCommit());
+      if (mode === 'after_workspace_successor_commit') blockUntilKilled();
+    }
     throw new Error(`Workspace baseline crash mode ${mode} missed its failpoint`);
   }
   await store.commitToolPrepared(preparedCommit());
@@ -309,6 +359,124 @@ function workspaceBaselineInput(): WorkspaceBaselineAuthorityInput {
       treeDeltaDigest: `sha256:${'6'.repeat(64)}`,
       changedFileCount: 7,
       deletedFileCount: 0,
+    },
+  };
+}
+
+function workspaceSuccessorPreparedCommit() {
+  const args = { path: 'notes.txt', content: 'successor' };
+  const canonicalArgsHash = canonicalToolArgsHash('Write', args);
+  return {
+    operationId: 'workspace-successor-operation',
+    journalEventId: 'workspace-successor-operation_prepared',
+    runtimeEvent: {
+      id: 'workspace-successor-call',
+      invocationId: 'workspace-successor-invocation',
+      runId: 'workspace-successor-run',
+      sessionId: 'workspace-successor-session',
+      turnId: 'workspace-successor-turn',
+      ts: 1_700_000_000_001,
+      partial: false,
+      role: 'model' as const,
+      author: 'agent' as const,
+      content: {
+        kind: 'function_call' as const,
+        id: 'workspace-successor-call-id',
+        name: 'Write',
+        args,
+      },
+      refs: {
+        operationId: 'workspace-successor-operation',
+        toolCallId: 'workspace-successor-call-id',
+      },
+    },
+    dispatchRuntimeEvent: {
+      id: 'workspace-successor-dispatch',
+      invocationId: 'workspace-successor-invocation',
+      runId: 'workspace-successor-run',
+      sessionId: 'workspace-successor-session',
+      turnId: 'workspace-successor-turn',
+      ts: 1_700_000_000_001,
+      partial: false,
+      role: 'system' as const,
+      author: 'system' as const,
+      actions: {
+        toolDispatch: {
+          protocol: 't1_after_preflight_v1' as const,
+          operationId: 'workspace-successor-operation',
+          providerToolCallId: 'workspace-successor-call-id',
+          toolName: 'Write',
+          canonicalArgsHash,
+          recoveryMode: 'reconcile' as const,
+        },
+      },
+      refs: {
+        operationId: 'workspace-successor-operation',
+        toolCallId: 'workspace-successor-call-id',
+      },
+    },
+    providerToolCallId: 'workspace-successor-call-id',
+    toolName: 'Write',
+    canonicalArgsHash,
+    recoveryMode: 'reconcile' as const,
+    committedAt: 1_700_000_000_001,
+  };
+}
+
+function workspaceSuccessorCommit(): WorkspaceSuccessorCommitInput {
+  return {
+    successor: {
+      acceptedEventId: 'workspace-successor-accepted',
+      committedAt: 1_700_000_000_002,
+      successor: {
+        repositoryId: `repository_${'1'.repeat(32)}`,
+        workspaceId: `workspace_${'2'.repeat(32)}`,
+        workspaceEpochId: `epoch_${'3'.repeat(32)}`,
+        workspaceVersionId: `version_${'7'.repeat(32)}`,
+        objectFormat: 'sha1',
+        parentWorkspaceVersionId: `version_${'5'.repeat(32)}`,
+        baseAcceptedEventId: 'workspace-version-event-1',
+        baseHeadRevision: 1,
+        commitOid: '7'.repeat(40),
+        treeOid: '8'.repeat(40),
+        policyHash: `sha256:${'4'.repeat(64)}`,
+        treeDeltaDigest: `sha256:${'9'.repeat(64)}`,
+        changedPaths: ['notes.txt'],
+        changedFileCount: 1,
+        deletedFileCount: 0,
+        executionProfileDigest: `sha256:${'a'.repeat(64)}`,
+      },
+      origin: {
+        operationId: 'workspace-successor-operation',
+        dispatchEventId: 'workspace-successor-dispatch',
+        outcomeEventId: 'workspace-successor-outcome',
+      },
+    },
+    toolOutcome: {
+      operationId: 'workspace-successor-operation',
+      journalEventId: 'workspace-successor-operation_outcome',
+      committedAt: 1_700_000_000_002,
+      runtimeEvent: {
+        id: 'workspace-successor-outcome',
+        invocationId: 'workspace-successor-invocation',
+        runId: 'workspace-successor-run',
+        sessionId: 'workspace-successor-session',
+        turnId: 'workspace-successor-turn',
+        ts: 1_700_000_000_002,
+        partial: false,
+        role: 'tool',
+        author: 'tool',
+        content: {
+          kind: 'function_response',
+          id: 'workspace-successor-call-id',
+          name: 'Write',
+          result: 'Wrote notes.txt',
+        },
+        refs: {
+          operationId: 'workspace-successor-operation',
+          toolCallId: 'workspace-successor-call-id',
+        },
+      },
     },
   };
 }

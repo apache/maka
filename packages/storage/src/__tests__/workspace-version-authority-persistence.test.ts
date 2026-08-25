@@ -39,6 +39,8 @@ import {
 import {
   bindWorkspaceBaselineAuthorityStoreRootInternal,
   commitWorkspaceBaselineInternal,
+  commitWorkspaceSuccessorInternal,
+  type WorkspaceSuccessorCommitInput,
 } from '../workspace-version-authority-internal.js';
 
 const TEST_STORAGE_ROOT_ID = 'a'.repeat(64);
@@ -153,6 +155,231 @@ describe('workspace version persistence authority', () => {
         raw.close();
       }
     });
+  });
+
+  it('atomically commits one tool outcome with its successor workspace head', async () => {
+    await withDatabase(async ({ dbPath, store }) => {
+      const { baseline, input } = await prepareSuccessorCommit(store);
+      const result = await commitWorkspaceSuccessorInternal(store, input);
+
+      assert.equal(result.created, true);
+      assert.equal(result.head.revision, 2);
+      assert.equal(
+        (await store.readToolOperation(input.toolOutcome.operationId))?.currentState,
+        'outcome_committed',
+      );
+      assert.deepEqual(
+        await store.readWorkspaceHead(baseline.epoch.workspaceId, baseline.epoch.workspaceEpochId),
+        result.head,
+      );
+      assert.equal(
+        (await store.readWorkspaceVersion(result.head.workspaceVersionId))?.origin.kind,
+        'tool_mutation',
+      );
+
+      const retry = await commitWorkspaceSuccessorInternal(store, input);
+      assert.deepEqual(retry, { ...result, created: false });
+      const raw = new DatabaseSync(dbPath);
+      try {
+        assert.equal(count(raw, 'runtime_workspace_versions'), 2);
+        assert.equal(count(raw, 'runtime_workspace_heads'), 1);
+        assert.equal(
+          countWhere(raw, 'runtime_events', 'session_id = ?', WORKSPACE_AUTHORITY_SESSION_ID),
+          3,
+        );
+      } finally {
+        raw.close();
+      }
+
+      const corrupt = new DatabaseSync(dbPath);
+      try {
+        const row = corrupt
+          .prepare('SELECT payload_json FROM runtime_events WHERE event_id = ?')
+          .get(input.successor.acceptedEventId) as { payload_json: string };
+        const event = JSON.parse(row.payload_json) as RuntimeEvent;
+        const fact = event.actions?.workspaceFact;
+        assert.equal(fact?.kind, 'maka.workspace.version_accepted');
+        if (fact?.kind === 'maka.workspace.version_accepted') {
+          fact.payload.origin.outcomeEventId = 'other-outcome-event';
+        }
+        corrupt
+          .prepare('UPDATE runtime_events SET payload_json = ? WHERE event_id = ?')
+          .run(JSON.stringify(event), input.successor.acceptedEventId);
+      } finally {
+        corrupt.close();
+      }
+      await assert.rejects(
+        store.readWorkspaceHead(baseline.epoch.workspaceId, baseline.epoch.workspaceEpochId),
+        /workspace successor tool evidence: identity_conflict/i,
+      );
+    });
+  });
+
+  it('rejects a failed Write outcome without advancing the workspace head', async () => {
+    await withDatabase(async ({ store }) => {
+      const { baseline, input } = await prepareSuccessorCommit(store);
+      assert.equal(input.toolOutcome.runtimeEvent.content?.kind, 'function_response');
+      if (input.toolOutcome.runtimeEvent.content?.kind !== 'function_response') {
+        throw new Error('Expected a function response fixture');
+      }
+      input.toolOutcome.runtimeEvent.content.isError = true;
+
+      await assert.rejects(
+        commitWorkspaceSuccessorInternal(store, input),
+        /workspace successor requires a successful tool outcome/i,
+      );
+      assert.equal(
+        (await store.readToolOperation(input.toolOutcome.operationId))?.currentState,
+        'prepared',
+      );
+      assert.equal(
+        (await store.readWorkspaceHead(baseline.epoch.workspaceId, baseline.epoch.workspaceEpochId))
+          ?.workspaceVersionId,
+        baseline.baseline.workspaceVersionId,
+      );
+    });
+  });
+
+  it('rolls back tool outcome, successor fact, projection, and head together', async () => {
+    await withDatabase(async ({ dbPath, store, setFailpoint }) => {
+      const { baseline, input } = await prepareSuccessorCommit(store);
+      setFailpoint('after_workspace_successor_event_insert');
+      await assert.rejects(commitWorkspaceSuccessorInternal(store, input), /failpoint/);
+      setFailpoint(undefined);
+      store.close();
+
+      const reopened = createSqliteRuntimeStore(dbPath);
+      try {
+        assert.equal(
+          (await reopened.readToolOperation(input.toolOutcome.operationId))?.currentState,
+          'prepared',
+        );
+        assert.equal(
+          (
+            await reopened.readWorkspaceHead(
+              baseline.epoch.workspaceId,
+              baseline.epoch.workspaceEpochId,
+            )
+          )?.workspaceVersionId,
+          baseline.baseline.workspaceVersionId,
+        );
+        assert.equal(
+          await reopened.readWorkspaceVersion(input.successor.successor.workspaceVersionId),
+          undefined,
+        );
+      } finally {
+        reopened.close();
+      }
+    });
+  });
+
+  it('rejects a stale successor without settling its prepared tool operation', async () => {
+    await withDatabase(async ({ store }) => {
+      const first = await prepareSuccessorCommit(store, 1);
+      const stale = await prepareSuccessorCommit(store, 2);
+
+      await commitWorkspaceSuccessorInternal(store, first.input);
+      await assert.rejects(
+        commitWorkspaceSuccessorInternal(store, stale.input),
+        /compare-and-set base head conflict/i,
+      );
+      assert.equal(
+        (await store.readToolOperation(stale.input.toolOutcome.operationId))?.currentState,
+        'prepared',
+      );
+    });
+  });
+
+  it('returns an earlier exact successor retry after the canonical head advances', async () => {
+    await withDatabase(async ({ store }) => {
+      const first = await prepareSuccessorCommit(store, 1);
+      const firstResult = await commitWorkspaceSuccessorInternal(store, first.input);
+      const second = await prepareSuccessorCommit(store, 2);
+      const secondResult = await commitWorkspaceSuccessorInternal(store, second.input);
+      assert.equal(secondResult.head.revision, firstResult.head.revision + 1);
+
+      const retry = await commitWorkspaceSuccessorInternal(store, first.input);
+      assert.deepEqual(retry, { ...firstResult, created: false });
+      assert.deepEqual(
+        await store.readWorkspaceHead(
+          first.baseline.epoch.workspaceId,
+          first.baseline.epoch.workspaceEpochId,
+        ),
+        secondResult.head,
+      );
+    });
+  });
+
+  it('rejects a failed outcome referenced by immutable successor authority', async () => {
+    await withDatabase(async ({ dbPath, store }) => {
+      const { input } = await prepareSuccessorCommit(store);
+      await commitWorkspaceSuccessorInternal(store, input);
+
+      const raw = new DatabaseSync(dbPath);
+      try {
+        const row = raw
+          .prepare('SELECT payload_json FROM runtime_events WHERE event_id = ?')
+          .get(input.toolOutcome.runtimeEvent.id) as { payload_json: string };
+        const outcome = JSON.parse(row.payload_json) as RuntimeEvent;
+        assert.equal(outcome.content?.kind, 'function_response');
+        if (outcome.content?.kind !== 'function_response') {
+          throw new Error('Expected a function response fixture');
+        }
+        outcome.content.isError = true;
+        raw
+          .prepare('UPDATE runtime_events SET payload_json = ? WHERE event_id = ?')
+          .run(JSON.stringify(outcome), input.toolOutcome.runtimeEvent.id);
+      } finally {
+        raw.close();
+      }
+
+      await assert.rejects(
+        store.rebuildWorkspaceVersionProjections(),
+        /workspace successor tool evidence: identity_conflict/i,
+      );
+    });
+  });
+
+  it('upgrades a populated schema 12 baseline before accepting its successor', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'maka-workspace-schema-12-'));
+    const dbPath = join(root, 'runtime.sqlite');
+    const baseline = baselineInput();
+    const original = createSqliteRuntimeStore(dbPath);
+    bindWorkspaceBaselineAuthorityStoreRootInternal(original, TEST_STORAGE_ROOT_ID);
+    await commitWorkspaceBaselineInternal(original, baseline);
+    original.close();
+
+    try {
+      const legacy = new DatabaseSync(dbPath);
+      try {
+        recreateWorkspaceTablesAsSchema12(legacy);
+      } finally {
+        legacy.close();
+      }
+
+      const upgraded = createSqliteRuntimeStore(dbPath);
+      bindWorkspaceBaselineAuthorityStoreRootInternal(upgraded, TEST_STORAGE_ROOT_ID);
+      try {
+        assert.equal(upgraded.schemaVersion(), 13);
+        assert.equal(
+          (
+            await upgraded.readWorkspaceHead(
+              baseline.epoch.workspaceId,
+              baseline.epoch.workspaceEpochId,
+            )
+          )?.workspaceVersionId,
+          baseline.baseline.workspaceVersionId,
+        );
+
+        const prepared = await prepareSuccessorCommit(upgraded);
+        const accepted = await commitWorkspaceSuccessorInternal(upgraded, prepared.input);
+        assert.equal(accepted.head.revision, 2);
+      } finally {
+        upgraded.close();
+      }
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
   });
 
   it('refuses to silently claim unbound workspace authority facts for another root', async () => {
@@ -500,6 +727,198 @@ async function withDatabase(
     store.close();
     await rm(root, { recursive: true, force: true });
   }
+}
+
+async function prepareSuccessorCommit(
+  store: ReturnType<typeof createSqliteRuntimeStore>,
+  variant = 1,
+): Promise<{
+  baseline: WorkspaceBaselineAuthorityInput;
+  input: WorkspaceSuccessorCommitInput;
+}> {
+  const baseline = baselineInput();
+  const opened = await commitWorkspaceBaselineInternal(store, baseline);
+  const args = { path: 'notes.txt', content: 'successor' };
+  const argsHash = canonicalToolArgsHash('Write', args);
+  const operationId = `operation-successor-${variant}`;
+  const toolCallId = `call-successor-${variant}`;
+  const commitDigit = variant === 1 ? '7' : '6';
+  const treeDigit = variant === 1 ? '8' : '5';
+  await store.commitToolPrepared({
+    operationId,
+    journalEventId: `${operationId}_prepared`,
+    runtimeEvent: {
+      id: `call-successor-event-${variant}`,
+      sessionId: 'session-successor',
+      invocationId: 'invocation-successor',
+      runId: 'run-successor',
+      turnId: 'turn-successor',
+      ts: baseline.committedAt + 1,
+      partial: false,
+      role: 'model',
+      author: 'agent',
+      content: { kind: 'function_call', id: toolCallId, name: 'Write', args },
+      refs: { operationId, toolCallId },
+    },
+    dispatchRuntimeEvent: {
+      id: `dispatch-successor-event-${variant}`,
+      sessionId: 'session-successor',
+      invocationId: 'invocation-successor',
+      runId: 'run-successor',
+      turnId: 'turn-successor',
+      ts: baseline.committedAt + 1,
+      partial: false,
+      role: 'system',
+      author: 'system',
+      actions: {
+        toolDispatch: {
+          protocol: 't1_after_preflight_v1',
+          operationId,
+          providerToolCallId: toolCallId,
+          toolName: 'Write',
+          canonicalArgsHash: argsHash,
+          recoveryMode: 'reconcile',
+        },
+      },
+      refs: { operationId, toolCallId },
+    },
+    providerToolCallId: toolCallId,
+    toolName: 'Write',
+    canonicalArgsHash: argsHash,
+    recoveryMode: 'reconcile',
+    committedAt: baseline.committedAt + 1,
+  });
+
+  return {
+    baseline,
+    input: {
+      successor: {
+        acceptedEventId: `workspace-successor-event-${variant}`,
+        committedAt: baseline.committedAt + 2,
+        successor: {
+          repositoryId: baseline.epoch.repositoryId,
+          workspaceId: baseline.epoch.workspaceId,
+          workspaceEpochId: baseline.epoch.workspaceEpochId,
+          workspaceVersionId: `version_${commitDigit.repeat(32)}`,
+          objectFormat: baseline.epoch.objectFormat,
+          parentWorkspaceVersionId: opened.head.workspaceVersionId,
+          baseAcceptedEventId: opened.head.acceptedEventId,
+          baseHeadRevision: opened.head.revision,
+          commitOid: commitDigit.repeat(40),
+          treeOid: treeDigit.repeat(40),
+          policyHash: baseline.epoch.policyHash,
+          treeDeltaDigest: `sha256:${'9'.repeat(64)}`,
+          changedPaths: ['notes.txt'],
+          changedFileCount: 1,
+          deletedFileCount: 0,
+          executionProfileDigest: `sha256:${'a'.repeat(64)}`,
+        },
+        origin: {
+          operationId,
+          dispatchEventId: `dispatch-successor-event-${variant}`,
+          outcomeEventId: `outcome-successor-event-${variant}`,
+        },
+      },
+      toolOutcome: {
+        operationId,
+        journalEventId: `${operationId}_outcome`,
+        committedAt: baseline.committedAt + 2,
+        runtimeEvent: {
+          id: `outcome-successor-event-${variant}`,
+          sessionId: 'session-successor',
+          invocationId: 'invocation-successor',
+          runId: 'run-successor',
+          turnId: 'turn-successor',
+          ts: baseline.committedAt + 2,
+          partial: false,
+          role: 'tool',
+          author: 'tool',
+          content: {
+            kind: 'function_response',
+            id: toolCallId,
+            name: 'Write',
+            result: 'Wrote notes.txt',
+          },
+          refs: { operationId, toolCallId },
+        },
+      },
+    },
+  };
+}
+
+function recreateWorkspaceTablesAsSchema12(database: DatabaseSync): void {
+  database.exec(`
+    PRAGMA foreign_keys = OFF;
+    BEGIN IMMEDIATE;
+
+    ALTER TABLE runtime_workspace_heads RENAME TO runtime_workspace_heads_schema_13;
+    ALTER TABLE runtime_workspace_versions RENAME TO runtime_workspace_versions_schema_13;
+
+    CREATE TABLE runtime_workspace_versions (
+      workspace_version_id TEXT PRIMARY KEY,
+      repository_id TEXT NOT NULL,
+      workspace_id TEXT NOT NULL,
+      workspace_epoch_id TEXT NOT NULL,
+      object_format TEXT NOT NULL CHECK (object_format IN ('sha1', 'sha256')),
+      origin_kind TEXT NOT NULL CHECK (origin_kind = 'baseline'),
+      origin_event_id TEXT NOT NULL,
+      parents_json TEXT NOT NULL CHECK (parents_json = '[]'),
+      commit_oid TEXT NOT NULL,
+      tree_oid TEXT NOT NULL,
+      policy_hash TEXT NOT NULL,
+      tree_delta_digest TEXT NOT NULL,
+      changed_file_count INTEGER NOT NULL CHECK (changed_file_count >= 0),
+      deleted_file_count INTEGER NOT NULL CHECK (deleted_file_count = 0),
+      accepted_event_id TEXT NOT NULL UNIQUE REFERENCES runtime_events(event_id),
+      protocol_version INTEGER NOT NULL CHECK (protocol_version = 1),
+      committed_at INTEGER NOT NULL,
+      FOREIGN KEY (workspace_id, workspace_epoch_id)
+        REFERENCES runtime_workspace_epochs(workspace_id, workspace_epoch_id),
+      UNIQUE (workspace_id, workspace_epoch_id, workspace_version_id, accepted_event_id)
+    );
+
+    INSERT INTO runtime_workspace_versions (
+      workspace_version_id, repository_id, workspace_id, workspace_epoch_id,
+      object_format, origin_kind, origin_event_id, parents_json,
+      commit_oid, tree_oid, policy_hash, tree_delta_digest,
+      changed_file_count, deleted_file_count, accepted_event_id,
+      protocol_version, committed_at
+    )
+    SELECT
+      workspace_version_id, repository_id, workspace_id, workspace_epoch_id,
+      object_format, origin_kind, origin_event_id, parents_json,
+      commit_oid, tree_oid, policy_hash, tree_delta_digest,
+      changed_file_count, deleted_file_count, accepted_event_id,
+      protocol_version, committed_at
+    FROM runtime_workspace_versions_schema_13;
+
+    CREATE TABLE runtime_workspace_heads (
+      workspace_id TEXT NOT NULL,
+      workspace_epoch_id TEXT NOT NULL,
+      repository_id TEXT NOT NULL,
+      workspace_version_id TEXT NOT NULL,
+      accepted_event_id TEXT NOT NULL,
+      commit_oid TEXT NOT NULL,
+      tree_oid TEXT NOT NULL,
+      revision INTEGER NOT NULL CHECK (revision > 0),
+      PRIMARY KEY (workspace_id, workspace_epoch_id),
+      FOREIGN KEY (workspace_id, workspace_epoch_id)
+        REFERENCES runtime_workspace_epochs(workspace_id, workspace_epoch_id),
+      FOREIGN KEY (workspace_id, workspace_epoch_id, workspace_version_id, accepted_event_id)
+        REFERENCES runtime_workspace_versions(
+          workspace_id, workspace_epoch_id, workspace_version_id, accepted_event_id
+        )
+    );
+
+    INSERT INTO runtime_workspace_heads
+    SELECT * FROM runtime_workspace_heads_schema_13;
+
+    DROP TABLE runtime_workspace_heads_schema_13;
+    DROP TABLE runtime_workspace_versions_schema_13;
+    PRAGMA user_version = 12;
+    COMMIT;
+    PRAGMA foreign_keys = ON;
+  `);
 }
 
 function baselineInput(
