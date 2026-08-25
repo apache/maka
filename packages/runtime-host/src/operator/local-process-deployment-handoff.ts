@@ -26,19 +26,19 @@ import {
   type RuntimeHostInstallationOwner,
 } from './local-deployment-owner.js';
 
-export type LocalHostTransferActiveWorkPolicy = 'refuse_active_work' | 'interrupt_active_work';
+export type LocalHostHandoffActiveWorkPolicy = 'refuse_active_work' | 'interrupt_active_work';
 
-export interface LocalHostProcessOwnerTransferRequest {
+export interface LocalHostProcessDeploymentHandoffRequest {
   readonly rootId: string;
   readonly expectedRevision: string;
   readonly transactionId: string;
   readonly from: RuntimeHostInstallationOwner;
   readonly to: RuntimeHostInstallationOwner;
   readonly target: RuntimeHostDeploymentIdentity;
-  readonly activeWorkPolicy: LocalHostTransferActiveWorkPolicy;
+  readonly activeWorkPolicy: LocalHostHandoffActiveWorkPolicy;
 }
 
-export interface LocalHostProcessOwnerTransferAdapter<StagedTarget> {
+export interface LocalHostProcessDeploymentHandoffAdapter<StagedTarget> {
   /**
    * Stages and verifies the exact runnable closure without changing Host authority.
    * A retry must reconstruct the same transaction-scoped launch fence in the staged handle.
@@ -48,20 +48,20 @@ export interface LocalHostProcessOwnerTransferAdapter<StagedTarget> {
    * Re-observes the actual local Host and retires it only when it is the previous deployment.
    * `target_present` means the exact transaction-scoped staged target is already running.
    * Source-specific supervisors must be quiesced before cutover. `active_work` guarantees that
-   * retirement did not begin and the previous owner remains runnable, so restoring it is safe.
+   * retirement did not begin and the previous deployment remains runnable, so restoring it is safe.
    */
   prepareHostCutover(
     rootId: string,
     selected: RuntimeHostDeploymentIdentity,
     target: RuntimeHostDeploymentIdentity,
     staged: StagedTarget,
-    policy: LocalHostTransferActiveWorkPolicy,
+    policy: LocalHostHandoffActiveWorkPolicy,
   ): Promise<{
     readonly kind: 'target_absent' | 'target_present' | 'active_work';
   }>;
   /** Resolves only after the State Root writer fence proves that the old writer is gone. */
   observeWriterRelease(rootId: string): Promise<void>;
-  /** Starts the already staged target without selecting it as durable owner yet. */
+  /** Starts the already staged target without selecting it in durable authority yet. */
   activateTarget(rootId: string, staged: StagedTarget): Promise<void>;
   /** Verifies Ready, root identity, and the exact deployment selected by the request. */
   verifyTargetReady(
@@ -71,15 +71,15 @@ export interface LocalHostProcessOwnerTransferAdapter<StagedTarget> {
   ): Promise<void>;
 }
 
-export type LocalHostProcessOwnerTransferPhase =
+export type LocalHostProcessDeploymentHandoffPhase =
   | 'prepare_host_cutover'
   | 'observe_writer_release'
   | 'activate_target'
   | 'verify_target_ready'
-  | 'commit_owner'
+  | 'commit_handoff'
   | 'rollback_active_work';
 
-export type LocalHostProcessOwnerTransferResult =
+export type LocalHostProcessDeploymentHandoffResult =
   | {
       readonly kind: 'completed';
       readonly record: LocalHostDeploymentRecord;
@@ -95,22 +95,22 @@ export type LocalHostProcessOwnerTransferResult =
     }
   | {
       readonly kind: 'recovery_required';
-      readonly phase: LocalHostProcessOwnerTransferPhase;
+      readonly phase: LocalHostProcessDeploymentHandoffPhase;
       readonly record: LocalHostDeploymentRecord;
       readonly cause: unknown;
     };
 
 /**
- * Transfers one local-process deployment slot between persistent installation
- * owners. Staging is deliberately outside the authority lock; all operations
- * after durable transfer intent remain serialized until commit or a safe
- * active-work rollback.
+ * Hands one local-process deployment slot to an exact target. The installation
+ * owner may stay the same or change. Staging is deliberately outside the
+ * authority lock; all operations after durable handoff intent remain serialized
+ * until commit or a safe active-work rollback.
  */
-export async function transferLocalHostProcessOwner<StagedTarget>(
-  request: LocalHostProcessOwnerTransferRequest,
-  adapter: LocalHostProcessOwnerTransferAdapter<StagedTarget>,
+export async function handoffLocalHostProcessDeployment<StagedTarget>(
+  request: LocalHostProcessDeploymentHandoffRequest,
+  adapter: LocalHostProcessDeploymentHandoffAdapter<StagedTarget>,
   authorityOptions: LocalHostDeploymentAuthorityOptions = {},
-): Promise<LocalHostProcessOwnerTransferResult> {
+): Promise<LocalHostProcessDeploymentHandoffResult> {
   const staged = await adapter.stageTarget(request.target, request.transactionId);
   return withLocalHostDeploymentAuthority(
     request.rootId,
@@ -123,7 +123,7 @@ export async function transferLocalHostProcessOwner<StagedTarget>(
       ) {
         try {
           const confirmed = await authority.apply({
-            kind: 'commit_transfer',
+            kind: 'commit_handoff',
             expectedRevision: request.expectedRevision,
             transactionId: request.transactionId,
             to: request.to,
@@ -131,20 +131,20 @@ export async function transferLocalHostProcessOwner<StagedTarget>(
           });
           if (confirmed.kind === 'rejected' || !confirmed.record) {
             return recoveryRequired(
-              'commit_owner',
+              'commit_handoff',
               current,
-              new Error('Committed local Host owner durability could not be confirmed'),
+              new Error('Committed local Host handoff durability could not be confirmed'),
             );
           }
           return { kind: 'completed', record: confirmed.record };
         } catch (cause) {
-          return recoveryRequired('commit_owner', current, cause);
+          return recoveryRequired('commit_handoff', current, cause);
         }
       }
 
       let begun: Awaited<ReturnType<typeof authority.apply>>;
       const beginTransition = {
-        kind: 'begin_transfer',
+        kind: 'begin_handoff',
         expectedRevision: request.expectedRevision,
         transactionId: request.transactionId,
         from: request.from,
@@ -157,64 +157,64 @@ export async function transferLocalHostProcessOwner<StagedTarget>(
         begun = await authority.apply(beginTransition);
       }
       if (begun.kind === 'rejected') return begun;
-      const transferRecord = begun.record;
-      if (!transferRecord || transferRecord.state.kind !== 'transferring') {
-        throw new Error('Local Host owner transfer did not persist transfer intent');
+      const handoffRecord = begun.record;
+      if (!handoffRecord || handoffRecord.state.kind !== 'handoff') {
+        throw new Error('Local Host deployment handoff did not persist its intent');
       }
 
       let host: Awaited<ReturnType<typeof adapter.prepareHostCutover>>;
       try {
         host = await adapter.prepareHostCutover(
           request.rootId,
-          transferRecord.state.selected,
+          handoffRecord.state.selected,
           request.target,
           staged,
           request.activeWorkPolicy,
         );
       } catch (cause) {
-        return recoveryRequired('prepare_host_cutover', transferRecord, cause);
+        return recoveryRequired('prepare_host_cutover', handoffRecord, cause);
       }
       if (host.kind === 'active_work') {
         try {
           const rolledBack = await authority.apply({
-            kind: 'rollback_transfer',
-            expectedRevision: transferRecord.revision,
+            kind: 'rollback_handoff',
+            expectedRevision: handoffRecord.revision,
             transactionId: request.transactionId,
             from: request.from,
-            selected: transferRecord.state.selected,
+            selected: handoffRecord.state.selected,
           });
           if (rolledBack.kind === 'rejected' || !rolledBack.record) {
             return recoveryRequired(
               'rollback_active_work',
-              transferRecord,
+              handoffRecord,
               new Error('Active-work rollback was rejected'),
             );
           }
           return { kind: 'active_work', record: rolledBack.record };
         } catch (cause) {
-          return recoveryRequired('rollback_active_work', transferRecord, cause);
+          return recoveryRequired('rollback_active_work', handoffRecord, cause);
         }
       }
 
       if (host.kind !== 'target_present') {
-        const writerRelease = await runPhase('observe_writer_release', transferRecord, () =>
+        const writerRelease = await runPhase('observe_writer_release', handoffRecord, () =>
           adapter.observeWriterRelease(request.rootId),
         );
         if (writerRelease) return writerRelease;
-        const activation = await runPhase('activate_target', transferRecord, () =>
+        const activation = await runPhase('activate_target', handoffRecord, () =>
           adapter.activateTarget(request.rootId, staged),
         );
         if (activation) return activation;
       }
-      const verification = await runPhase('verify_target_ready', transferRecord, () =>
+      const verification = await runPhase('verify_target_ready', handoffRecord, () =>
         adapter.verifyTargetReady(request.rootId, request.target, staged),
       );
       if (verification) return verification;
 
       let committed: Awaited<ReturnType<typeof authority.apply>>;
       const commitTransition = {
-        kind: 'commit_transfer',
-        expectedRevision: transferRecord.revision,
+        kind: 'commit_handoff',
+        expectedRevision: handoffRecord.revision,
         transactionId: request.transactionId,
         to: request.to,
         target: request.target,
@@ -225,14 +225,14 @@ export async function transferLocalHostProcessOwner<StagedTarget>(
         try {
           committed = await authority.apply(commitTransition);
         } catch (cause) {
-          return recoveryRequired('commit_owner', transferRecord, cause);
+          return recoveryRequired('commit_handoff', handoffRecord, cause);
         }
       }
       if (committed.kind === 'rejected' || !committed.record) {
         return recoveryRequired(
-          'commit_owner',
-          transferRecord,
-          new Error('Verified local Host owner transfer could not be committed'),
+          'commit_handoff',
+          handoffRecord,
+          new Error('Verified local Host deployment handoff could not be committed'),
         );
       }
       return { kind: 'completed', record: committed.record };
@@ -243,13 +243,13 @@ export async function transferLocalHostProcessOwner<StagedTarget>(
 
 async function runPhase(
   phase: Exclude<
-    LocalHostProcessOwnerTransferPhase,
-    'prepare_host_cutover' | 'commit_owner' | 'rollback_active_work'
+    LocalHostProcessDeploymentHandoffPhase,
+    'prepare_host_cutover' | 'commit_handoff' | 'rollback_active_work'
   >,
   record: LocalHostDeploymentRecord,
   operation: () => Promise<void>,
 ): Promise<
-  Extract<LocalHostProcessOwnerTransferResult, { kind: 'recovery_required' }> | undefined
+  Extract<LocalHostProcessDeploymentHandoffResult, { kind: 'recovery_required' }> | undefined
 > {
   try {
     await operation();
@@ -260,10 +260,10 @@ async function runPhase(
 }
 
 function recoveryRequired(
-  phase: LocalHostProcessOwnerTransferPhase,
+  phase: LocalHostProcessDeploymentHandoffPhase,
   record: LocalHostDeploymentRecord,
   cause: unknown,
-): Extract<LocalHostProcessOwnerTransferResult, { kind: 'recovery_required' }> {
+): Extract<LocalHostProcessDeploymentHandoffResult, { kind: 'recovery_required' }> {
   return { kind: 'recovery_required', phase, record, cause };
 }
 
