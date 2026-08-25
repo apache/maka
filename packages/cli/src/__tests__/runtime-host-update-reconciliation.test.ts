@@ -225,7 +225,12 @@ describe('managed Runtime Host update reconciliation', () => {
           assert.deepEqual(options.expectedTarget, TARGET);
           return {
             selector: options.selector,
-            candidate: { version: '2.0.0', integrity: INTEGRITY, compatibility: 1 },
+            candidate: {
+              kind: 'npm_registry',
+              version: '2.0.0',
+              integrity: INTEGRITY,
+              compatibility: 1,
+            },
             outcome: { kind: 'unattended_update', compatibility: 1 },
             currentCliPath: '/managed/current/cli.js',
             service: SERVICE,
@@ -292,7 +297,12 @@ describe('managed Runtime Host update reconciliation', () => {
             await writeRuntimeHostManagedUpdatePolicy(deploymentRoot, null);
             return {
               selector: options.selector,
-              candidate: { version: '2.0.0', integrity: INTEGRITY, compatibility: 1 },
+              candidate: {
+                kind: 'npm_registry',
+                version: '2.0.0',
+                integrity: INTEGRITY,
+                compatibility: 1,
+              },
               outcome: { kind: 'unattended_update', compatibility: 1 },
               currentCliPath: '/managed/current/cli.js',
               service: SERVICE,
@@ -356,7 +366,7 @@ describe('managed Runtime Host update reconciliation', () => {
           createBackend: () => unusedBackend(),
           resolveSelection: async (options) => ({
             selector: options.selector,
-            candidate: { version: '2.0.0', integrity: INTEGRITY },
+            candidate: { kind: 'npm_registry', version: '2.0.0', integrity: INTEGRITY },
             outcome: { kind: 'manual_action', reason: 'target_compatibility_unknown' },
             currentCliPath: '/managed/current/cli.js',
             service: SERVICE,

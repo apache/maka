@@ -59,5 +59,8 @@ export {
 export {
   compareProductReleaseVersions,
   isProductReleaseVersion,
+  isRuntimeHostNpmDeploymentIdentity,
   isSha512PackageIntegrity,
+  type RuntimeHostDeploymentIdentity,
+  type RuntimeHostNpmDeploymentIdentity,
 } from './update-package-evidence.js';

@@ -188,6 +188,7 @@ function updateSelection(
   outcome: RuntimeHostUpdateSelection['outcome'],
 ): RuntimeHostUpdateSelection {
   const candidate = {
+    kind: 'npm_registry' as const,
     version: '2.0.0',
     integrity: INTEGRITY,
     compatibility: 7,

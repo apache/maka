@@ -106,6 +106,7 @@ describe('managed Runtime Host update discovery', () => {
       'https://registry.npmjs.org/',
     ]);
     assert.deepEqual(candidate, {
+      kind: 'npm_registry',
       version: '2.0.0-beta.1',
       integrity: INTEGRITY,
       compatibility: 7,
@@ -142,6 +143,7 @@ describe('managed Runtime Host update discovery', () => {
 
   it('admits only exact current or compatible target identities', () => {
     const candidate = (version: string, compatibility?: number) => ({
+      kind: 'npm_registry' as const,
       version,
       integrity: INTEGRITY,
       ...(compatibility === undefined ? {} : { compatibility }),

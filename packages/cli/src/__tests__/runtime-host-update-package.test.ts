@@ -34,6 +34,7 @@ describe('managed Runtime Host update package acquisition', () => {
   it('binds the official archive to its extracted release evidence', async () => {
     const calls: string[][] = [];
     const candidate = {
+      kind: 'npm_registry' as const,
       version: '2.0.0',
       integrity: INTEGRITY,
       compatibility: 7,
@@ -96,6 +97,7 @@ describe('managed Runtime Host update package acquisition', () => {
     await assert.rejects(
       withRuntimeHostRegistryUpdatePackage(
         {
+          kind: 'npm_registry',
           version: '2.0.0',
           integrity: `sha512-${Buffer.alloc(64).toString('base64')}`,
         },
@@ -118,7 +120,12 @@ describe('managed Runtime Host update package acquisition', () => {
 
     await assert.rejects(
       withRuntimeHostRegistryUpdatePackage(
-        { version: '2.0.0', integrity: INTEGRITY, compatibility: 7 },
+        {
+          kind: 'npm_registry',
+          version: '2.0.0',
+          integrity: INTEGRITY,
+          compatibility: 7,
+        },
         async () => assert.fail('invalid manifest must not expose a package'),
         async (args) => {
           if (args[0] === 'pack') {
