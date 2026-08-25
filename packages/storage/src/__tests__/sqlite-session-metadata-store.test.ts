@@ -54,6 +54,73 @@ import {
 import { SQLITE_AGENT_GRAPH_CONTROL_TABLES } from '../sqlite-session-metadata-schema.js';
 
 describe('SqliteSessionMetadataStore', () => {
+  test('repairs both v30 schema variants after a migration version collision', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'maka-session-metadata-v30-collision-'));
+    try {
+      for (const missing of ['message-admissions', 'coordination-index'] as const) {
+        const path = join(root, `${missing}.sqlite`);
+        const setup = createSqliteSessionMetadataStore(path);
+        setup.close();
+
+        const legacy = new DatabaseSync(path);
+        try {
+          if (missing === 'message-admissions') {
+            legacy.exec(`
+              DROP TABLE IF EXISTS message_admissions;
+              DROP TABLE IF EXISTS cancelled_message_admissions;
+            `);
+          } else {
+            legacy.exec('DROP INDEX IF EXISTS session_metadata_one_workhub_coordination_session');
+          }
+          legacy
+            .prepare(
+              "UPDATE session_metadata_schema SET version = 30 WHERE scope = 'session_metadata'",
+            )
+            .run();
+        } finally {
+          legacy.close();
+        }
+
+        const migrated = createSqliteSessionMetadataStore(path);
+        try {
+          assert.equal(migrated.schemaVersion(), SQLITE_SESSION_METADATA_SCHEMA_VERSION);
+        } finally {
+          migrated.close();
+        }
+
+        const schema = new DatabaseSync(path, { readOnly: true });
+        try {
+          assert.deepEqual(
+            schema
+              .prepare(`
+                SELECT name, type
+                FROM sqlite_schema
+                WHERE name IN (
+                  'message_admissions',
+                  'cancelled_message_admissions',
+                  'message_admissions_by_session_order',
+                  'session_metadata_one_workhub_coordination_session'
+                )
+                ORDER BY name
+              `)
+              .all()
+              .map((row) => ({ ...row })),
+            [
+              { name: 'cancelled_message_admissions', type: 'table' },
+              { name: 'message_admissions', type: 'table' },
+              { name: 'message_admissions_by_session_order', type: 'index' },
+              { name: 'session_metadata_one_workhub_coordination_session', type: 'index' },
+            ],
+          );
+        } finally {
+          schema.close();
+        }
+      }
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   test('migrates v27 metadata to the current schema without backfilling external origin', async () => {
     const root = await mkdtemp(join(tmpdir(), 'maka-session-metadata-v27-'));
     const path = join(root, 'state.sqlite');

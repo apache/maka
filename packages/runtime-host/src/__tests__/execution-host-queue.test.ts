@@ -245,8 +245,11 @@ test('production UDS admission commits one transcript before the root handoff', 
     });
     assert.equal(started.disposition, 'turn_started');
     if (started.disposition !== 'turn_started') return;
-    const active = await client.queryTurn({ sessionId: fixture.sessionId, turnId: started.turnId });
-    await client.stopTurn({
+    const active = await client.request('turn.query', {
+      sessionId: fixture.sessionId,
+      turnId: started.turnId,
+    });
+    await client.request('turn.stop', {
       sessionId: fixture.sessionId,
       turnId: started.turnId,
       runId: active.runId,
@@ -268,7 +271,7 @@ test('a Host crash after queue admission recovers the durable successor once', a
     const firstHost = await fixture.startHost();
     const first = await connectClient(fixture.root);
     const started = requireStartedTurn(
-      await first.startTurn({
+      await first.request('turn.start', {
         sessionId: fixture.sessionId,
         turnId: randomUUID(),
         content: { text: FAKE_ASK_USER_QUESTION_PROMPT },
