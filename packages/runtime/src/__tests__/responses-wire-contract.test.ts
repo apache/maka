@@ -301,6 +301,40 @@ describe('responses wire contract', () => {
     assert.deepEqual(urls, ['https://relay.example/v1/responses']);
   });
 
+  test('keeps a Responses relay host root on its configured API base', async () => {
+    assert.equal(
+      resolveModelRuntime(
+        { providerType: 'openai-responses-compatible', baseUrl: 'http://relay.example:3000' },
+        'relay-model',
+      ).baseUrl,
+      'http://relay.example:3000',
+    );
+
+    const urls: string[] = [];
+    const fetch = (async (url: string | URL | Request) => {
+      urls.push(String(url));
+      return Response.json({
+        id: 'r',
+        object: 'response',
+        status: 'completed',
+        output: [],
+        usage: { input_tokens: 1, output_tokens: 1 },
+      });
+    }) as typeof globalThis.fetch;
+    const model = getAIModel({
+      connection: { ...conn('openai-responses-compatible'), baseUrl: 'http://relay.example:3000' },
+      apiKey: '[redacted]',
+      modelId: 'relay-model',
+      fetch,
+    });
+
+    await model.doGenerate({
+      prompt: [{ role: 'user', content: [{ type: 'text', text: 'ping' }] }],
+    });
+
+    assert.deepEqual(urls, ['http://relay.example:3000/responses']);
+  });
+
   test('resolves only supported Responses adapter and replay pairings', () => {
     const deepseek = resolveModelRuntime({ providerType: 'deepseek' }, 'deepseek-v4-flash');
     assert.deepEqual(deepseek.reasoningReplay, {

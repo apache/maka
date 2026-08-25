@@ -1111,6 +1111,199 @@ describe('models.dev provider conformance', () => {
     assert.equal(probedPath, '/v1/responses');
   });
 
+  test('a root-mounted Responses relay keeps discovery and probes at the configured root', async () => {
+    const requests: Array<{ method: string; url: string }> = [];
+    const server = await startJsonServer((request, response) => {
+      requests.push({ method: request.method ?? '', url: request.url ?? '' });
+      if (request.method === 'GET' && request.url === '/models') {
+        respondJson(response, 200, { data: [{ id: 'relay-reasoner' }] });
+        return;
+      }
+      if (request.method === 'POST' && request.url === '/responses') {
+        respondJson(response, 200, {});
+        return;
+      }
+      respondJson(response, 404, { error: { message: 'not found' } });
+    });
+    const connection: LlmConnection = {
+      slug: 'responses-relay',
+      name: 'Responses Relay',
+      providerType: 'openai-responses-compatible',
+      baseUrl: server.url,
+      defaultModel: 'relay-reasoner',
+      enabled: true,
+      createdAt: 1,
+      updatedAt: 1,
+    };
+
+    assert.deepEqual(
+      (await fetchProviderModels(connection, 'relay-key')).map(({ id }) => id),
+      ['relay-reasoner'],
+    );
+    assert.equal((await testConnection(connection, 'relay-key')).ok, true);
+    assert.deepEqual(requests, [
+      { method: 'GET', url: '/models' },
+      { method: 'POST', url: '/responses' },
+    ]);
+  });
+
+  test('a Responses relay falls back to /v1/models when its root model route is absent', async () => {
+    const requests: Array<{ method: string; url: string }> = [];
+    const server = await startJsonServer((request, response) => {
+      requests.push({ method: request.method ?? '', url: request.url ?? '' });
+      if (request.method === 'GET' && request.url === '/models') {
+        respondJson(response, 404, { error: { message: 'not found' } });
+        return;
+      }
+      if (request.method === 'GET' && request.url === '/v1/models') {
+        respondJson(response, 200, { data: [{ id: 'relay-reasoner' }] });
+        return;
+      }
+      if (request.method === 'POST' && request.url === '/responses') {
+        respondJson(response, 200, {});
+        return;
+      }
+      respondJson(response, 404, { error: { message: 'not found' } });
+    });
+    const connection: LlmConnection = {
+      slug: 'responses-relay',
+      name: 'Responses Relay',
+      providerType: 'openai-responses-compatible',
+      baseUrl: server.url,
+      defaultModel: 'relay-reasoner',
+      enabled: true,
+      createdAt: 1,
+      updatedAt: 1,
+    };
+
+    assert.deepEqual(
+      (await fetchProviderModels(connection, 'relay-key')).map(({ id }) => id),
+      ['relay-reasoner'],
+    );
+    assert.equal((await testConnection(connection, 'relay-key')).ok, true);
+    assert.deepEqual(requests, [
+      { method: 'GET', url: '/models' },
+      { method: 'GET', url: '/v1/models' },
+      { method: 'POST', url: '/responses' },
+    ]);
+  });
+
+  test('a plain OpenAI-compatible relay never retries discovery at /v1/models', async () => {
+    // The 404 fallback is scoped to the Responses relay by provider type; both
+    // OpenAI-shaped adapters share this discovery branch.
+    const requestedPaths: string[] = [];
+    const server = await startJsonServer((request, response) => {
+      requestedPaths.push(request.url ?? '');
+      respondJson(response, 404, { error: { message: 'not found' } });
+    });
+    const connection: LlmConnection = {
+      slug: 'chat-relay',
+      name: 'Chat Relay',
+      providerType: 'openai-compatible',
+      baseUrl: server.url,
+      defaultModel: 'relay-model',
+      enabled: true,
+      createdAt: 1,
+      updatedAt: 1,
+    };
+
+    await assert.rejects(fetchProviderModels(connection, 'relay-key'));
+    assert.deepEqual(requestedPaths, ['/models']);
+  });
+
+  test('a path-mounted Responses relay never appends /v1 to its own prefix', async () => {
+    const requestedPaths: string[] = [];
+    const server = await startJsonServer((request, response) => {
+      requestedPaths.push(request.url ?? '');
+      respondJson(response, 404, { error: { message: 'not found' } });
+    });
+    const connection: LlmConnection = {
+      slug: 'responses-relay',
+      name: 'Responses Relay',
+      providerType: 'openai-responses-compatible',
+      baseUrl: `${server.url}/gateway`,
+      defaultModel: 'relay-reasoner',
+      enabled: true,
+      createdAt: 1,
+      updatedAt: 1,
+    };
+
+    await assert.rejects(fetchProviderModels(connection, 'relay-key'));
+    assert.deepEqual(requestedPaths, ['/gateway/models']);
+  });
+
+  test('an endpoint-form Responses relay discovers through its own API base', async () => {
+    const requestedPaths: string[] = [];
+    const server = await startJsonServer((request, response) => {
+      requestedPaths.push(request.url ?? '');
+      if (request.url === '/v1/models') {
+        respondJson(response, 200, { data: [{ id: 'relay-reasoner' }] });
+        return;
+      }
+      respondJson(response, 404, { error: { message: 'not found' } });
+    });
+    const connection: LlmConnection = {
+      slug: 'responses-relay',
+      name: 'Responses Relay',
+      providerType: 'openai-responses-compatible',
+      baseUrl: `${server.url}/v1/responses`,
+      defaultModel: 'relay-reasoner',
+      enabled: true,
+      createdAt: 1,
+      updatedAt: 1,
+    };
+
+    assert.deepEqual(
+      (await fetchProviderModels(connection, 'relay-key')).map(({ id }) => id),
+      ['relay-reasoner'],
+    );
+    assert.deepEqual(requestedPaths, ['/v1/models']);
+  });
+
+  test('a Responses relay does not mask root authorization failures with a /v1 fallback', async () => {
+    const requestedPaths: string[] = [];
+    const server = await startJsonServer((request, response) => {
+      requestedPaths.push(request.url ?? '');
+      respondJson(response, 401, { error: { message: 'unauthorized' } });
+    });
+    const connection: LlmConnection = {
+      slug: 'responses-relay',
+      name: 'Responses Relay',
+      providerType: 'openai-responses-compatible',
+      baseUrl: server.url,
+      defaultModel: 'relay-reasoner',
+      enabled: true,
+      createdAt: 1,
+      updatedAt: 1,
+    };
+
+    await assert.rejects(fetchProviderModels(connection, 'bad-key'));
+    assert.deepEqual(requestedPaths, ['/models']);
+  });
+
+  test('a DeepSeek root base keeps serving Responses at the root it publishes', async () => {
+    let probedPath: string | undefined;
+    const server = await startJsonServer((request, response) => {
+      probedPath = request.url;
+      respondJson(response, 200, {});
+    });
+    const connection: LlmConnection = {
+      slug: 'deepseek',
+      name: 'DeepSeek',
+      providerType: 'deepseek',
+      baseUrl: server.url,
+      defaultModel: 'deepseek-v4-pro',
+      enabled: true,
+      createdAt: 1,
+      updatedAt: 1,
+    };
+
+    // The compatibility fallback is scoped to custom relay discovery; a
+    // built-in root probe must remain unversioned.
+    assert.equal((await testConnection(connection, 'deepseek-token')).ok, true);
+    assert.equal(probedPath, '/responses');
+  });
+
   for (const [label, providerType] of [
     ['a plain OpenAI-compatible relay', 'openai-compatible'],
     ['local Ollama', 'ollama'],

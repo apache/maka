@@ -33,7 +33,7 @@ import {
   CONNECTION_MODEL_ID_MAX_LENGTH,
   normalizeConnectionModelDiscoveryResult,
 } from '@maka/core/runtime-policy';
-import { anthropicV1Url, googleApiUrl } from './provider-urls.js';
+import { anthropicV1Url, googleApiUrl, openAiResponsesBaseUrl } from './provider-urls.js';
 import { openAiCodexHeaders } from './subscription-auth.js';
 import {
   GITHUB_COPILOT_API_VERSION,
@@ -182,7 +182,14 @@ async function fetchProviderModelsStrict(
   apiKey: string,
   fetchFn: ConnectionEffectFetch | undefined,
 ): Promise<ModelInfo[]> {
-  const baseUrl = effectiveBaseUrl(connection);
+  // Endpoint-form overrides are valid for Responses send and probe. Reduce
+  // them to the API base before deriving `/models`; bare roots stay
+  // authoritative and get only the route-not-found fallback below (#3320).
+  const configuredBaseUrl = effectiveBaseUrl(connection);
+  const baseUrl =
+    connection.providerType === 'openai-responses-compatible'
+      ? openAiResponsesBaseUrl(configuredBaseUrl)
+      : configuredBaseUrl;
   const definition = PROVIDER_REGISTRY[connection.providerType];
   // Unknown providerType → no discovery path. Throw a clear error (caught and
   // generalized by the caller) rather than crashing on `.modelDiscovery`.
@@ -245,21 +252,33 @@ async function fetchProviderModelsStrict(
     }
     case 'openai':
     case 'openai-compatible': {
-      const r = await fetchForConnectionEffect(
+      const requestInit = {
+        headers: {
+          'content-type': 'application/json',
+          ...(apiKey &&
+          (discovery.auth === 'oauth-bearer' ||
+            (discovery.auth !== 'none' && providerAuthSupportsApiKey(connection.providerType)))
+            ? { authorization: `Bearer ${apiKey}` }
+            : {}),
+        },
+        timeoutMs: MODEL_FETCH_TIMEOUT_MS,
+      };
+      let r = await fetchForConnectionEffect(
         fetchFn,
         modelListUrl(baseUrl, discovery.path, discovery.query),
-        {
-          headers: {
-            'content-type': 'application/json',
-            ...(apiKey &&
-            (discovery.auth === 'oauth-bearer' ||
-              (discovery.auth !== 'none' && providerAuthSupportsApiKey(connection.providerType)))
-              ? { authorization: `Bearer ${apiKey}` }
-              : {}),
-          },
-          timeoutMs: MODEL_FETCH_TIMEOUT_MS,
-        },
+        requestInit,
       );
+      if (!r.ok && r.status === 404 && connection.providerType === 'openai-responses-compatible') {
+        const fallbackBaseUrl = responsesRelayV1FallbackBaseUrl(baseUrl);
+        if (fallbackBaseUrl) {
+          await r.cancel();
+          r = await fetchForConnectionEffect(
+            fetchFn,
+            modelListUrl(fallbackBaseUrl, discovery.path, discovery.query),
+            requestInit,
+          );
+        }
+      }
       if (!r.ok) {
         await r.cancel();
         if (connection.providerType === 'xai-oauth') {
@@ -667,6 +686,23 @@ function modelListUrl(
     : `${stripTrailing(baseUrl)}/models`;
   const search = query ? new URLSearchParams(query).toString() : '';
   return search ? `${url}?${search}` : url;
+}
+
+/**
+ * A pathless Responses relay keeps its configured root as the primary
+ * contract. If that exact `/models` route is absent, discovery can safely
+ * retry the conventional versioned list once; send and probe are not replayed.
+ */
+function responsesRelayV1FallbackBaseUrl(baseUrl: string): string | undefined {
+  let url: URL;
+  try {
+    url = new URL(baseUrl);
+  } catch {
+    return undefined;
+  }
+  if (stripTrailing(url.pathname) !== '') return undefined;
+  url.pathname = '/v1';
+  return url.toString();
 }
 
 async function fetchFireworksModels(
