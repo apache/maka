@@ -1501,6 +1501,7 @@ export async function createExecutionRuntimeHostComposition(
               ),
             );
             await coordinator.recover();
+            await requireSessionMailbox(sessionMailbox).recover();
             rootRecoveryCompleted = true;
           },
         },

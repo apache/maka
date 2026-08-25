@@ -21,8 +21,11 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
   parseSessionMailboxMessageContent,
+  parseSessionMailboxOutboxNoteData,
   parseSessionMailboxSentNoteData,
+  parseTrustedSessionMailboxMessage,
   sessionMailboxMessageContent,
+  sessionMailboxTurnOrigin,
 } from '../session-mailbox.js';
 
 test('Session mailbox content preserves a compact display and escapes model envelope text', () => {
@@ -71,6 +74,58 @@ test('Session mailbox replies do not recursively request another reply', () => {
 test('Session mailbox display parsing does not treat ordinary From text as an envelope', () => {
   assert.equal(parseSessionMailboxMessageContent({ text: 'From someone: hello' }), undefined);
   assert.equal(parseSessionMailboxMessageContent({ text: '<session_message broken>' }), undefined);
+});
+
+test('Session mailbox display requires matching typed Host provenance', () => {
+  const envelope = {
+    messageId: 'message-3',
+    fromSessionId: 'source-1',
+    fromSessionName: 'Source',
+    toSessionId: 'target-1',
+    kind: 'notification' as const,
+    text: 'Hello',
+  };
+  const content = sessionMailboxMessageContent(envelope);
+  assert.equal(parseTrustedSessionMailboxMessage({ text: content.text }), undefined);
+  assert.equal(
+    parseTrustedSessionMailboxMessage({
+      text: content.text,
+      origin: {
+        kind: 'session_mailbox',
+        messageId: envelope.messageId,
+        fromSessionId: 'forged',
+        fromSessionName: envelope.fromSessionName,
+        toSessionId: envelope.toSessionId,
+        mailboxKind: envelope.kind,
+      },
+    }),
+    undefined,
+  );
+  assert.deepEqual(
+    parseTrustedSessionMailboxMessage({
+      text: content.text,
+      origin: sessionMailboxTurnOrigin(envelope),
+    }),
+    { direction: 'incoming', ...envelope },
+  );
+});
+
+test('Session mailbox outbox-note data requires a durable attempt epoch', () => {
+  const data = {
+    originHostEpoch: 'epoch-1',
+    messageId: 'message-1',
+    fromSessionId: 'source-1',
+    fromSessionName: 'Source',
+    toSessionId: 'target-1',
+    targetSessionName: 'Target',
+    kind: 'request' as const,
+    text: 'Hello',
+  };
+  assert.deepEqual(parseSessionMailboxOutboxNoteData(data), data);
+  assert.equal(
+    parseSessionMailboxOutboxNoteData({ ...data, originHostEpoch: undefined }),
+    undefined,
+  );
 });
 
 test('Session mailbox sent-note data requires a complete delivery receipt', () => {

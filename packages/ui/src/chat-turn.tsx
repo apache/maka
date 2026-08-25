@@ -288,9 +288,11 @@ const UserMessageBody = memo(function UserMessageBody(props: {
             </strong>
             {props.sessionMailbox.direction === 'outgoing' ? (
               <span className="maka-session-mailbox-disposition">
-                {props.sessionMailbox.disposition === 'queued'
-                  ? copyText.mailboxQueued
-                  : copyText.mailboxDelivered}
+                {props.sessionMailbox.disposition === 'pending'
+                  ? copyText.mailboxPending
+                  : props.sessionMailbox.disposition === 'queued'
+                    ? copyText.mailboxQueued
+                    : copyText.mailboxDelivered}
               </span>
             ) : null}
           </div>

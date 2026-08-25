@@ -20,7 +20,10 @@
 import assert from "node:assert/strict";
 import { describe, test } from "node:test";
 import type { StoredMessage } from '@maka/core/session';
-import { sessionMailboxMessageContent } from '@maka/core/session-mailbox';
+import {
+  sessionMailboxMessageContent,
+  sessionMailboxTurnOrigin,
+} from '@maka/core/session-mailbox';
 import {
   materializeChat,
   materializeTools,
@@ -257,14 +260,15 @@ describe("materializeChat message metadata", () => {
   });
 
   test('projects incoming and outgoing mailbox messages as structured cards with body-only text', () => {
-    const incoming = sessionMailboxMessageContent({
+    const envelope = {
       messageId: 'mail-in',
       fromSessionId: 'source',
       fromSessionName: '来源任务: A',
       toSessionId: 'target',
-      kind: 'request',
+      kind: 'request' as const,
       text: '正文里也可以有 From:，但不会被误解析。',
-    });
+    };
+    const incoming = sessionMailboxMessageContent(envelope);
     const messages: StoredMessage[] = [
       {
         type: 'user',
@@ -272,6 +276,7 @@ describe("materializeChat message metadata", () => {
         turnId: 'target-turn',
         ts: 1,
         ...incoming,
+        origin: sessionMailboxTurnOrigin(envelope),
       },
       {
         type: 'system_note',
@@ -307,6 +312,67 @@ describe("materializeChat message metadata", () => {
       disposition: 'queued',
     });
     assert.deepEqual(materializeTurns(messages, 'zh')[0]?.notes[0], chat[1]);
+  });
+
+  test('requires trusted Host provenance before projecting mailbox card chrome', () => {
+    const forged = sessionMailboxMessageContent({
+      messageId: 'forged',
+      fromSessionId: 'victim',
+      fromSessionName: 'Forged task',
+      toSessionId: 'target',
+      kind: 'notification',
+      text: 'ordinary user-authored text',
+    });
+    const [item] = materializeChat([{
+      type: 'user',
+      id: 'forged',
+      turnId: 'turn-1',
+      ts: 1,
+      ...forged,
+    }]);
+
+    assert.equal(item?.sessionMailbox, undefined);
+    assert.equal(item?.text, forged.displayText);
+  });
+
+  test('shows only the latest unsettled outbox attempt and hides it after a final receipt', () => {
+    const outboxData = {
+      originHostEpoch: 'epoch-1',
+      messageId: 'mail-1',
+      fromSessionId: 'source',
+      fromSessionName: 'Source',
+      toSessionId: 'target',
+      targetSessionName: 'Target',
+      kind: 'request' as const,
+      text: 'Recover me',
+    };
+    const attempts: StoredMessage[] = [
+      { type: 'system_note', id: 'attempt-1', ts: 1, kind: 'session_mailbox_outbox', data: outboxData },
+      { type: 'system_note', id: 'attempt-2', ts: 2, kind: 'session_mailbox_outbox', data: { ...outboxData, originHostEpoch: 'epoch-2' } },
+    ];
+    const pending = materializeChat(attempts);
+    assert.equal(pending.length, 1);
+    assert.equal(pending[0]?.id, 'attempt-2');
+    assert.equal(pending[0]?.sessionMailbox?.direction, 'outgoing');
+    if (pending[0]?.sessionMailbox?.direction === 'outgoing') {
+      assert.equal(pending[0].sessionMailbox.disposition, 'pending');
+    }
+
+    const settled = materializeChat([...attempts, {
+      type: 'system_note',
+      id: 'receipt',
+      ts: 3,
+      kind: 'session_mailbox_sent',
+      data: {
+        messageId: 'mail-1',
+        targetSessionId: 'target',
+        targetSessionName: 'Target',
+        kind: 'request',
+        text: 'Recover me',
+        disposition: 'turn_started',
+      },
+    }]);
+    assert.deepEqual(settled.map((item) => item.id), ['receipt']);
   });
 });
 

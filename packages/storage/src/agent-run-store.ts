@@ -77,6 +77,8 @@ import {
   isTurnOrchestrationSource,
   type TurnOrchestration,
 } from '@maka/core/orchestration';
+import { decodeTurnOrigin } from '@maka/core/turn-origin';
+import type { TurnOrigin } from '@maka/core/turn-origin';
 import {
   scanToolLedger,
   validateGenericToolLedgerAppend,
@@ -94,6 +96,8 @@ const ROOT_TURN_ADMISSION_MAX_AGGREGATED_ATTACHMENTS =
 export interface RootTurnSourceMessage {
   messageId: string;
   content: MessageContent;
+  /** Trusted Host-authored provenance; never accepted from message protocol input. */
+  origin?: TurnOrigin;
   submittedContentDigest?: `sha256:${string}`;
   placement: 'current_turn' | 'next_turn';
   disposition: 'steering' | 'followup' | 'turn_started';
@@ -1652,12 +1656,21 @@ function normalizeRootTurnSourceMessages(value: unknown): readonly RootTurnSourc
         'content',
         'placement',
         'disposition',
+        ...(Object.hasOwn(item, 'origin') ? ['origin'] : []),
         ...(Object.hasOwn(item, 'submittedContentDigest') ? ['submittedContentDigest'] : []),
       ])
     ) {
       throw new Error(`Invalid root turn source message at index ${index}`);
     }
-    const { messageId, content, submittedContentDigest, placement, disposition } = item;
+    const {
+      messageId,
+      content,
+      origin: rawOrigin,
+      submittedContentDigest,
+      placement,
+      disposition,
+    } = item;
+    const origin = rawOrigin === undefined ? undefined : decodeTurnOrigin(rawOrigin);
     if (
       typeof messageId !== 'string' ||
       !isSafeId(messageId) ||
@@ -1667,6 +1680,7 @@ function normalizeRootTurnSourceMessages(value: unknown): readonly RootTurnSourc
         disposition !== 'turn_started') ||
       (disposition === 'steering' && placement !== 'current_turn') ||
       (disposition === 'followup' && placement !== 'next_turn') ||
+      (rawOrigin !== undefined && origin === undefined) ||
       (submittedContentDigest !== undefined && !isSha256Digest(submittedContentDigest))
     ) {
       throw new Error(`Invalid root turn source message at index ${index}`);
@@ -1682,6 +1696,7 @@ function normalizeRootTurnSourceMessages(value: unknown): readonly RootTurnSourc
         `root turn source message content at index ${index}`,
         MAX_ATTACHMENT_COUNT,
       ),
+      ...(origin !== undefined ? { origin: Object.freeze(origin) } : {}),
       ...(submittedContentDigest !== undefined ? { submittedContentDigest } : {}),
       placement,
       disposition,
@@ -1709,6 +1724,7 @@ function rootTurnAdmissionPayloadsEqual(
         source.messageId === other.messageId &&
         source.placement === other.placement &&
         source.disposition === other.disposition &&
+        isDeepStrictEqual(source.origin, other.origin) &&
         source.submittedContentDigest === other.submittedContentDigest &&
         messageContentsEqual(source.content, other.content)
       );
@@ -1873,7 +1889,7 @@ function normalizeRootExecutionDescriptor(value: unknown): RootExecutionDescript
     throw new Error('Invalid root execution descriptor');
   }
   if (value.kind === 'external_message') {
-    const allowedKeys = ['kind', 'inputDigest', 'maxSteps'];
+    const allowedKeys = ['kind', 'inputDigest', 'maxSteps', 'origin'];
     if (!Object.keys(value).every((key) => allowedKeys.includes(key))) {
       throw new Error('Invalid root execution descriptor');
     }
@@ -1888,10 +1904,15 @@ function normalizeRootExecutionDescriptor(value: unknown): RootExecutionDescript
     ) {
       throw new Error('Invalid root execution descriptor');
     }
+    const origin = value.origin === undefined ? undefined : decodeTurnOrigin(value.origin);
+    if (value.origin !== undefined && origin === undefined) {
+      throw new Error('Invalid root execution descriptor');
+    }
     return Object.freeze({
       kind: 'external_message',
       ...(value.inputDigest !== undefined ? { inputDigest: value.inputDigest } : {}),
       ...(value.maxSteps !== undefined ? { maxSteps: value.maxSteps } : {}),
+      ...(origin !== undefined ? { origin: Object.freeze(origin) } : {}),
     });
   }
   if (value.kind === 'regenerate') {

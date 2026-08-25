@@ -73,6 +73,48 @@ test('idle submit starts exactly one root Turn and retry identity is connection-
   assert.equal(fixture.liveResidencies(), 0);
 });
 
+test('trusted submit receipts bind mailbox provenance across reconciliation', async () => {
+  const fixture = createFixture();
+  fixture.coordinator.reserveRootTurn(ROOT);
+  const owner = fixture.coordinator.bindRun(ROOT);
+  const input = {
+    originHostEpoch: 'epoch-1',
+    sessionId: ROOT.sessionId,
+    messageId: 'mailbox-message',
+    content: { text: 'trusted mailbox payload' },
+    placement: 'next_turn',
+  } as const;
+  const origin = {
+    kind: 'session_mailbox',
+    messageId: 'mailbox-message',
+    fromSessionId: 'source',
+    fromSessionName: 'Source',
+    toSessionId: ROOT.sessionId,
+    mailboxKind: 'request',
+  } as const;
+
+  const submitted = await fixture.coordinator.submitTrusted(input, operationContext(), origin);
+  assert.equal(submitted.ok, true);
+  assert.deepEqual(await fixture.coordinator.reconcileTrustedSubmit(input, origin), submitted);
+  const conflict = await fixture.coordinator.reconcileTrustedSubmit(input, {
+    ...origin,
+    fromSessionId: 'forged',
+  });
+  assert.equal(conflict?.ok, false);
+  const publicRetry = await fixture.coordinator.handlers['turn.message.submit'](
+    input,
+    operationContext(),
+  );
+  assert.equal(publicRetry.ok, false);
+
+  owner.release();
+  const batch = fixture.coordinator.beginTerminalTransition(ROOT);
+  assert.deepEqual(batch.sources[0]?.origin, origin);
+  const nextRoot = { sessionId: ROOT.sessionId, turnId: 'mailbox-turn', runId: 'mailbox-run' };
+  fixture.coordinator.commitNextRoot(batch, nextRoot);
+  fixture.coordinator.abandonRootReservation(nextRoot);
+});
+
 test('submit re-runs admission when the queue revision moves during preflight', async () => {
   let preflightCalls = 0;
   const fixture = createFixture(undefined, async () => {

@@ -18,6 +18,7 @@
  */
 
 import type { MessageContent } from './events.js';
+import type { TurnOrigin } from './turn-origin.js';
 
 export const SESSION_MAILBOX_TEXT_MAX_BYTES = 16_000;
 export const SESSION_MAILBOX_KINDS = ['request', 'reply', 'notification'] as const;
@@ -51,10 +52,33 @@ export interface SessionMailboxSentNoteData {
   readonly kind: SessionMailboxKind;
   readonly text: string;
   readonly disposition: 'turn_started' | 'queued';
+  readonly turnId?: string;
+}
+
+/** Durable sender-side intent written before target admission begins. */
+export interface SessionMailboxOutboxNoteData extends SessionMailboxEnvelope {
+  readonly originHostEpoch: string;
+  readonly targetSessionName: string;
 }
 
 export function sessionMailboxSentReceiptId(messageId: string): string {
   return `session-mailbox-sent:${messageId}`;
+}
+
+export function sessionMailboxOutboxAttemptId(messageId: string, originHostEpoch: string): string {
+  return `session-mailbox-outbox:${messageId}:${originHostEpoch}`;
+}
+
+export function sessionMailboxTurnOrigin(envelope: SessionMailboxEnvelope): TurnOrigin {
+  return {
+    kind: 'session_mailbox',
+    messageId: envelope.messageId,
+    fromSessionId: envelope.fromSessionId,
+    fromSessionName: envelope.fromSessionName,
+    toSessionId: envelope.toSessionId,
+    mailboxKind: envelope.kind,
+    ...(envelope.correlationId ? { correlationId: envelope.correlationId } : {}),
+  };
 }
 
 /**
@@ -129,6 +153,9 @@ export function parseSessionMailboxMessageContent(
       `in_reply_to="${messageId}", text=...).`;
     if (!body.endsWith(replyInstruction)) return undefined;
     body = body.slice(0, -replyInstruction.length);
+  } else {
+    if (!body.endsWith('\n')) return undefined;
+    body = body.slice(0, -1);
   }
 
   return {
@@ -145,6 +172,57 @@ export function parseSessionMailboxMessageContent(
   };
 }
 
+/**
+ * Projects a mailbox envelope only when the durable UserMessage carries the
+ * matching Runtime Host-authored origin. Text syntax alone is never provenance.
+ */
+export function parseTrustedSessionMailboxMessage(input: {
+  readonly text: string;
+  readonly origin?: TurnOrigin;
+}): SessionMailboxIncomingDisplay | undefined {
+  if (input.origin?.kind !== 'session_mailbox') return undefined;
+  const parsed = parseSessionMailboxMessageContent(input);
+  if (!parsed) return undefined;
+  return parsed.messageId === input.origin.messageId &&
+    parsed.fromSessionId === input.origin.fromSessionId &&
+    parsed.fromSessionName === input.origin.fromSessionName &&
+    parsed.toSessionId === input.origin.toSessionId &&
+    parsed.kind === input.origin.mailboxKind &&
+    parsed.correlationId === input.origin.correlationId
+    ? parsed
+    : undefined;
+}
+
+export function parseSessionMailboxOutboxNoteData(
+  value: unknown,
+): SessionMailboxOutboxNoteData | undefined {
+  if (!isRecord(value)) return undefined;
+  if (
+    typeof value.originHostEpoch !== 'string' ||
+    typeof value.messageId !== 'string' ||
+    typeof value.fromSessionId !== 'string' ||
+    typeof value.fromSessionName !== 'string' ||
+    typeof value.toSessionId !== 'string' ||
+    typeof value.targetSessionName !== 'string' ||
+    typeof value.text !== 'string' ||
+    !SESSION_MAILBOX_KINDS.includes(value.kind as SessionMailboxKind) ||
+    (value.correlationId !== undefined && typeof value.correlationId !== 'string')
+  ) {
+    return undefined;
+  }
+  return {
+    originHostEpoch: value.originHostEpoch,
+    messageId: value.messageId,
+    fromSessionId: value.fromSessionId,
+    fromSessionName: value.fromSessionName,
+    toSessionId: value.toSessionId,
+    targetSessionName: value.targetSessionName,
+    kind: value.kind as SessionMailboxKind,
+    text: value.text,
+    ...(value.correlationId !== undefined ? { correlationId: value.correlationId } : {}),
+  };
+}
+
 export function parseSessionMailboxSentNoteData(
   value: unknown,
 ): SessionMailboxSentNoteData | undefined {
@@ -155,7 +233,8 @@ export function parseSessionMailboxSentNoteData(
     typeof value.targetSessionName !== 'string' ||
     typeof value.text !== 'string' ||
     !SESSION_MAILBOX_KINDS.includes(value.kind as SessionMailboxKind) ||
-    (value.disposition !== 'turn_started' && value.disposition !== 'queued')
+    (value.disposition !== 'turn_started' && value.disposition !== 'queued') ||
+    (value.turnId !== undefined && typeof value.turnId !== 'string')
   ) {
     return undefined;
   }
@@ -166,6 +245,7 @@ export function parseSessionMailboxSentNoteData(
     kind: value.kind as SessionMailboxKind,
     text: value.text,
     disposition: value.disposition,
+    ...(value.turnId !== undefined ? { turnId: value.turnId } : {}),
   };
 }
 

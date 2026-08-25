@@ -750,6 +750,108 @@ export class ModelSearchOverlay implements Component {
   }
 }
 
+export interface SearchableSelectOverlayInput {
+  readonly title: string;
+  readonly rightLabel: string;
+  readonly items: readonly SelectItem[];
+  readonly hint?: string;
+  readonly searchLabel?: string;
+  readonly emptyLabel?: string;
+  readonly onSelect: (item: SelectItem) => void;
+  readonly onCancel: () => void;
+}
+
+/** A compact searchable single-select used by command pickers such as `/send`. */
+export class SearchableSelectOverlay implements Component {
+  private readonly searchEditor: Editor;
+  private filtered: readonly SelectItem[];
+  private list: SelectList;
+
+  constructor(
+    tui: TUI,
+    private readonly input: SearchableSelectOverlayInput,
+  ) {
+    this.filtered = input.items;
+    this.list = this.buildList();
+    this.searchEditor = new Editor(tui, editorTheme(), { paddingX: 0 });
+    this.searchEditor.onChange = (text) => this.applyQuery(text);
+  }
+
+  private buildList(): SelectList {
+    const list = new SelectList([...this.filtered], 10, selectListTheme(), {
+      minPrimaryColumnWidth: 24,
+      maxPrimaryColumnWidth: 56,
+    });
+    list.onSelect = (selected) => this.input.onSelect(selected);
+    list.onCancel = () => this.input.onCancel();
+    return list;
+  }
+
+  private applyQuery(text: string): void {
+    const query = text.trim().toLocaleLowerCase();
+    this.filtered = query
+      ? this.input.items.filter((item) =>
+          [item.label, item.description, item.value]
+            .filter((value): value is string => typeof value === 'string')
+            .some((value) => value.toLocaleLowerCase().includes(query)),
+        )
+      : this.input.items;
+    this.list = this.buildList();
+  }
+
+  invalidate(): void {
+    this.searchEditor.invalidate();
+    this.list.invalidate();
+  }
+
+  handleInput(data: string): void {
+    if (matchesKey(data, Key.escape) || matchesKey(data, Key.ctrl('c'))) {
+      this.input.onCancel();
+      return;
+    }
+    if (matchesKey(data, Key.up) || matchesKey(data, Key.down)) {
+      this.list.handleInput(data);
+      return;
+    }
+    if (matchesKey(data, Key.enter) || matchesKey(data, Key.return)) {
+      if (!isKeyRepeat(data) && this.filtered.length > 0) this.list.handleInput(data);
+      return;
+    }
+    this.searchEditor.handleInput(data);
+  }
+
+  render(width: number): string[] {
+    const safeWidth = Math.max(1, width);
+    const searchLabel = this.input.searchLabel ?? '搜索';
+    this.searchEditor.focused = true;
+    return [
+      padLine(
+        `${this.input.title} ${ansi.accent(this.input.rightLabel)} ${ansi.dim(String(this.filtered.length))}`,
+        safeWidth,
+      ),
+      padLine(this.input.hint ?? '输入搜索 · ↑↓ 选择 · Enter 确认 · Esc 取消', safeWidth),
+      padLine('', safeWidth),
+      ...this.renderFieldRow(this.searchEditor, searchLabel, safeWidth),
+      padLine('', safeWidth),
+      ...(this.filtered.length === 0
+        ? [padLine(ansi.dim(this.input.emptyLabel ?? '没有匹配的会话'), safeWidth)]
+        : this.list.render(safeWidth).map((line) => formatPickerItemLine(line, safeWidth))),
+      padLine(ansi.accent('-'.repeat(safeWidth)), safeWidth),
+    ];
+  }
+
+  private renderFieldRow(editor: Editor, label: string, width: number): string[] {
+    const prefix = `${label} `;
+    const prefixWidth = visibleWidth(prefix);
+    const editorLines = editor.render(Math.max(1, width - prefixWidth)).slice(1, -1);
+    return editorLines.length === 0
+      ? [padLine(prefix, width)]
+      : editorLines.map((line, index) =>
+          padLine(`${index === 0 ? prefix : ' '.repeat(prefixWidth)}${line}`, width),
+        );
+  }
+}
+
 /**
  * #1611: `current` marks an option that is genuinely in force, so choosing it
  * is a no-op. A read-only session is neither of these options, and marking

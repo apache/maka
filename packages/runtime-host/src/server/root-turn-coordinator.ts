@@ -1045,6 +1045,7 @@ export class RootTurnCoordinator implements HostedExecutionAuthority {
           execution: {
             kind: 'external_message',
             inputDigest: messageContentDigest(content),
+            ...(input.sourceMessage.origin ? { origin: input.sourceMessage.origin } : {}),
           },
           normalizedInput: canonicalContent.content,
           sourceMessages: [
@@ -2297,6 +2298,9 @@ export class RootTurnCoordinator implements HostedExecutionAuthority {
       execution: {
         kind: 'external_message',
         inputDigest: messageContentDigest(batch.submittedContent),
+        ...(batch.sources.length === 1 && batch.sources[0]?.origin
+          ? { origin: batch.sources[0].origin }
+          : {}),
       },
       normalizedInput: batch.content,
       sourceMessages: batch.sources,

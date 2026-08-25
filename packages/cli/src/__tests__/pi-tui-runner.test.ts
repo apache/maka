@@ -39,7 +39,11 @@ import { type SessionSummary, type StoredMessage } from '@maka/core/session';
 import { type ThinkingLevel } from '@maka/core/model-thinking';
 import { type UserQuestionResponse } from '@maka/core/user-question';
 import type { SkillInvocationResult } from '@maka/core/skill-invocation';
-import type { AgentGraphClientSnapshot } from '@maka/runtime-host/protocol';
+import type {
+  AgentGraphClientSnapshot,
+  SessionMailboxSendResult,
+  SessionMailboxTarget,
+} from '@maka/runtime-host/protocol';
 import { SessionActivityRegistry } from '@maka/runtime/goal-turn-lifecycle';
 import { type ContextDiagnostics } from '@maka/runtime/context-diagnostics';
 import type { GoalProjection } from '@maka/runtime-host/protocol';
@@ -3024,6 +3028,57 @@ describe('Maka Pi TUI runner', () => {
         );
       });
     }
+
+    exitMaka(terminal);
+    await Promise.race([
+      run,
+      delay(CLOSE_BUDGET_MS).then(() => {
+        throw new Error('TUI did not close during test cleanup');
+      }),
+    ]);
+  });
+
+  test('/send opens a searchable Session picker and sends the next composed message', async () => {
+    const terminal = new FakeTerminal();
+    const driver = new SlashCommandDriver();
+    driver.mailboxTargets.push(
+      { sessionId: 'session-alpha', name: 'Alpha task', status: 'idle' },
+      { sessionId: 'session-needle', name: 'Needle review task', status: 'running' },
+    );
+    const run = runMakaPiTui({
+      title: 'Maka',
+      driver,
+      cwd: '/repo',
+      model: 'gpt-5.5',
+      connectionSlug: 'openai',
+      permissionMode: 'ask',
+      terminal,
+    });
+
+    await waitForTuiPaint(terminal);
+    terminal.input('/send');
+    terminal.input('\r');
+    await waitFor(() => plainTerminalOutput(terminal.screenOutput()).includes('Send to Session'));
+    await waitFor(() => {
+      const out = plainTerminalOutput(terminal.screenOutput());
+      return out.includes('Alpha task') && out.includes('Needle review task');
+    });
+
+    terminal.input('needle');
+    await waitFor(() => {
+      const out = plainTerminalOutput(terminal.screenOutput());
+      return out.includes('Needle review task') && !out.includes('Alpha task');
+    });
+    terminal.input('\r');
+    terminal.input('Please inspect the recovery path');
+    terminal.input('\r');
+    await waitFor(() => driver.mailboxSends.length === 1);
+    assert.deepEqual(driver.mailboxSends, [
+      {
+        targetSessionId: 'session-needle',
+        text: 'Please inspect the recovery path',
+      },
+    ]);
 
     exitMaka(terminal);
     await Promise.race([
@@ -7324,6 +7379,8 @@ class SlashCommandDriver implements MakaSessionDriver {
   readonly sessionSwitchOptions: Array<MakaSessionSwitchOptions | undefined> = [];
   readonly renames: string[] = [];
   readonly moves: string[] = [];
+  readonly mailboxTargets: SessionMailboxTarget[] = [];
+  readonly mailboxSends: Array<{ targetSessionId: string; text: string }> = [];
   startNewSessionCalls = 0;
   resumeCalls = 0;
   contextDiagnosticsRequests = 0;
@@ -7478,6 +7535,21 @@ class SlashCommandDriver implements MakaSessionDriver {
       cwd,
       changed: true,
       oldCwdDirty: true,
+    };
+  }
+  async listMailboxTargets(): Promise<readonly SessionMailboxTarget[]> {
+    return this.mailboxTargets;
+  }
+  async sendMailboxMessage(
+    targetSessionId: string,
+    text: string,
+  ): Promise<SessionMailboxSendResult> {
+    this.mailboxSends.push({ targetSessionId, text });
+    return {
+      messageId: `mailbox-${this.mailboxSends.length}`,
+      targetSessionId,
+      disposition: 'turn_started',
+      turnId: `mailbox-turn-${this.mailboxSends.length}`,
     };
   }
   async setPermissionMode(mode: PermissionMode): Promise<void> {

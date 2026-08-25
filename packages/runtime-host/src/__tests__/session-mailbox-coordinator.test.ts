@@ -24,7 +24,7 @@ import type { HostMessageCoordinator } from '../server/message-coordinator.js';
 import type { ConnectionContext } from '../server/operation-dispatcher.js';
 import { HostSessionMailboxCoordinator } from '../server/session-mailbox-coordinator.js';
 
-test('Session mailbox exposes only ordinary Sessions in the source workspace', async () => {
+test('Session mailbox exposes only ordinary Sessions in the source project', async () => {
   const coordinator = mailbox([
     session('source', '/one', { projectId: 'project-1' }),
     session('target', '/one', { projectId: 'project-1', runningTurnIds: ['turn-live'] }),
@@ -56,17 +56,21 @@ test('Session mailbox exposes only ordinary Sessions in the source workspace', a
 
 test('Session mailbox submits a next-turn message with Host provenance', async () => {
   let submitted: unknown;
-  const stored: StoredMessage[] = [{
-    type: 'system_note',
-    id: 'start',
-    turnId: 'source-turn',
-    ts: 1,
-    kind: 'session_start',
-  }];
+  let submittedOrigin: unknown;
+  const stored: StoredMessage[] = [
+    {
+      type: 'system_note',
+      id: 'start',
+      turnId: 'source-turn',
+      ts: 1,
+      kind: 'session_start',
+    },
+  ];
   const coordinator = mailbox(
     [session('source', '/one'), session('target', '/one')],
-    async (input) => {
+    async (input, origin) => {
       submitted = input;
+      submittedOrigin = origin;
       return { ok: true, result: { disposition: 'turn_started', turnId: 'turn-2' } };
     },
     stored,
@@ -110,6 +114,18 @@ test('Session mailbox submits a next-turn message with Host provenance', async (
     },
     placement: 'next_turn',
   });
+  assert.deepEqual(submittedOrigin, {
+    kind: 'session_mailbox',
+    messageId: 'message-1',
+    fromSessionId: 'source',
+    fromSessionName: 'source',
+    toSessionId: 'target',
+    mailboxKind: 'request',
+  });
+  assert.equal(stored[1]?.type, 'system_note');
+  if (stored[1]?.type === 'system_note') {
+    assert.equal(stored[1].kind, 'session_mailbox_outbox');
+  }
   assert.deepEqual(stored.at(-1), {
     type: 'system_note',
     id: 'session-mailbox-sent:message-1',
@@ -123,11 +139,12 @@ test('Session mailbox submits a next-turn message with Host provenance', async (
       kind: 'request',
       text: 'Please inspect this',
       disposition: 'turn_started',
+      turnId: 'turn-2',
     },
   });
 });
 
-test('Session mailbox rejects self-send and cross-workspace targets', async () => {
+test('Session mailbox rejects self-send and cross-project targets', async () => {
   const coordinator = mailbox([session('source', '/one'), session('target', '/two')]);
   const self = await coordinator.handlers['session.mailbox.send'](
     {
@@ -139,7 +156,7 @@ test('Session mailbox rejects self-send and cross-workspace targets', async () =
     },
     connection(),
   );
-  const crossWorkspace = await coordinator.handlers['session.mailbox.send'](
+  const crossProject = await coordinator.handlers['session.mailbox.send'](
     {
       sourceSessionId: 'source',
       targetSessionId: 'target',
@@ -152,21 +169,144 @@ test('Session mailbox rejects self-send and cross-workspace targets', async () =
 
   assert.equal(self.ok, false);
   if (!self.ok) assert.equal(self.error.code, 'invalid_request');
-  assert.equal(crossWorkspace.ok, false);
-  if (!crossWorkspace.ok) assert.equal(crossWorkspace.error.code, 'not_found');
+  assert.equal(crossProject.ok, false);
+  if (!crossProject.ok) assert.equal(crossProject.error.code, 'not_found');
+});
+
+test('Session mailbox never admits a target message before the sender outbox is durable', async () => {
+  let submitCount = 0;
+  const coordinator = new HostSessionMailboxCoordinator({
+    hostEpoch: 'epoch-1',
+    messages: {
+      submitTrusted: async () => {
+        submitCount += 1;
+        return { ok: true, result: { disposition: 'followup', queueRevision: 1 } };
+      },
+      reconcileTrustedSubmit: async () => undefined,
+    } as unknown as Pick<HostMessageCoordinator, 'submitTrusted' | 'reconcileTrustedSubmit'>,
+    listSessions: async () => [session('source', '/one'), session('target', '/one')],
+    sessionStore: {
+      readMessagesSnapshot: async () => [],
+      appendMessage: async () => {
+        throw new Error('disk unavailable');
+      },
+    },
+  });
+
+  await assert.rejects(
+    coordinator.handlers['session.mailbox.send'](
+      {
+        sourceSessionId: 'source',
+        targetSessionId: 'target',
+        messageId: 'message-1',
+        kind: 'request',
+        text: 'Do not lose me',
+      },
+      connection(),
+    ),
+    /disk unavailable/,
+  );
+  assert.equal(submitCount, 0);
+});
+
+test('Session mailbox recovery settles a durable outbox from target proof without redelivery', async () => {
+  const sessions = [session('source', '/one'), session('target', '/one')];
+  const stored = new Map<string, StoredMessage[]>([
+    ['source', []],
+    ['target', []],
+  ]);
+  let receiptAppendFails = true;
+  let initialSubmitCount = 0;
+  const store = {
+    readMessagesSnapshot: async (sessionId: string) => stored.get(sessionId) ?? [],
+    appendMessage: async (sessionId: string, message: StoredMessage) => {
+      if (
+        receiptAppendFails &&
+        message.type === 'system_note' &&
+        message.kind === 'session_mailbox_sent'
+      ) {
+        throw new Error('receipt write failed');
+      }
+      stored.get(sessionId)?.push(message);
+    },
+  };
+  const initial = new HostSessionMailboxCoordinator({
+    hostEpoch: 'epoch-1',
+    messages: {
+      submitTrusted: async () => {
+        initialSubmitCount += 1;
+        return { ok: true, result: { disposition: 'turn_started', turnId: 'target-turn' } };
+      },
+      reconcileTrustedSubmit: async () => undefined,
+    } as unknown as Pick<HostMessageCoordinator, 'submitTrusted' | 'reconcileTrustedSubmit'>,
+    listSessions: async () => sessions,
+    sessionStore: store,
+    now: () => 10,
+  });
+
+  const sent = await initial.handlers['session.mailbox.send'](
+    {
+      sourceSessionId: 'source',
+      targetSessionId: 'target',
+      messageId: 'message-1',
+      kind: 'request',
+      text: 'Recover the receipt',
+    },
+    connection(),
+  );
+  assert.equal(sent.ok, true);
+  assert.equal(initialSubmitCount, 1);
+  assert.deepEqual(
+    stored
+      .get('source')
+      ?.map((message) => (message.type === 'system_note' ? message.kind : message.type)),
+    ['session_mailbox_outbox'],
+  );
+
+  receiptAppendFails = false;
+  let recoverySubmitCount = 0;
+  let reconcileCount = 0;
+  const recovered = new HostSessionMailboxCoordinator({
+    hostEpoch: 'epoch-2',
+    messages: {
+      submitTrusted: async () => {
+        recoverySubmitCount += 1;
+        return { ok: true, result: { disposition: 'turn_started', turnId: 'duplicate' } };
+      },
+      reconcileTrustedSubmit: async () => {
+        reconcileCount += 1;
+        return { ok: true, result: { disposition: 'turn_started', turnId: 'target-turn' } };
+      },
+    } as unknown as Pick<HostMessageCoordinator, 'submitTrusted' | 'reconcileTrustedSubmit'>,
+    listSessions: async () => sessions,
+    sessionStore: store,
+    now: () => 20,
+  });
+  await recovered.recover();
+
+  assert.equal(reconcileCount, 1);
+  assert.equal(recoverySubmitCount, 0);
+  assert.deepEqual(
+    stored
+      .get('source')
+      ?.map((message) => (message.type === 'system_note' ? message.kind : message.type)),
+    ['session_mailbox_outbox', 'session_mailbox_sent'],
+  );
 });
 
 function mailbox(
   sessions: SessionSummary[],
-  submit: (input: unknown) => Promise<unknown> = async () => ({
+  submit: (input: unknown, origin?: unknown) => Promise<unknown> = async () => ({
     ok: true,
     result: { disposition: 'followup', queueRevision: 1 },
   }),
   stored: StoredMessage[] = [],
 ): HostSessionMailboxCoordinator {
   const messages = {
-    handlers: { 'turn.message.submit': submit },
-  } as unknown as Pick<HostMessageCoordinator, 'handlers'>;
+    submitTrusted: async (input: unknown, _context: unknown, origin: unknown) =>
+      submit(input, origin),
+    reconcileTrustedSubmit: async () => undefined,
+  } as unknown as Pick<HostMessageCoordinator, 'submitTrusted' | 'reconcileTrustedSubmit'>;
   return new HostSessionMailboxCoordinator({
     hostEpoch: 'epoch-1',
     messages,

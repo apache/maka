@@ -367,7 +367,7 @@ export const Composer = forwardRef<
       title: string;
       detail?: string;
       cancelLabel: string;
-      status?: 'ready' | 'sending' | 'delivered' | 'queued' | 'failed';
+      status?: 'ready' | 'sending' | 'failed';
       onCancel(): void;
     };
     /**

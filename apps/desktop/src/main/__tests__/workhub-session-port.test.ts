@@ -390,6 +390,41 @@ test('desktop adapter projects Session catalog facts without owning copies', asy
   ]);
 });
 
+test('desktop adapter invalidates and re-reads a renamed Session even when activity time is unchanged', async () => {
+  let sessionName = 'Original name';
+  let onChanged: (() => void) | undefined;
+  const adapter = createDesktopWorkHubSessionPort({
+    transcripts: unusedTranscripts,
+    sessions: {
+      list: async () => [desktopSession('ordinary', {
+        name: sessionName,
+        lastMessageAt: 30,
+      })],
+      listTurns: async () => [],
+      create: async () => { throw new Error('not used'); },
+      send: async () => { throw new Error('not used'); },
+      stop: async () => {},
+      subscribeChanges: (handler) => {
+        onChanged = handler;
+        return () => {};
+      },
+    },
+    projectName: () => 'Maka',
+    newTurnId: () => 'unused',
+  });
+
+  assert.equal((await adapter.list())[0]?.sessionName, 'Original name');
+  let invalidations = 0;
+  adapter.subscribe(() => {
+    invalidations += 1;
+  });
+  sessionName = 'Renamed without a new message';
+  onChanged?.();
+
+  assert.equal(invalidations, 1);
+  assert.equal((await adapter.list())[0]?.sessionName, 'Renamed without a new message');
+});
+
 test('desktop adapter preserves per-Host catalog coverage for ownership reconciliation', async () => {
   const localSessionId = desktopSessionKey({ hostId: 'local-host', sessionId: 'local' });
   const adapter = createDesktopWorkHubSessionPort({

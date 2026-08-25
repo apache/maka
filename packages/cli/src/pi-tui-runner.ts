@@ -134,6 +134,7 @@ import {
   ModelSearchOverlay,
   OnboardingWizard,
   PickerOverlay,
+  SearchableSelectOverlay,
   UserQuestionOverlay,
   modelPickerItems,
   permissionModePickerItems,
@@ -3306,35 +3307,31 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
               requestRender();
               return;
             }
-            showSelectPicker(
-              'Send to Session',
-              'Choose Session',
-              targets.map((target) => ({
-                value: target.sessionId,
-                label: target.name,
-                description:
-                  target.status === 'idle'
-                    ? 'idle · deliver now'
-                    : `${target.status.replaceAll('_', ' ')} · queue for next turn`,
-              })),
-              (item) => {
+            const items = targets.map((target) => ({
+              value: target.sessionId,
+              label: target.name,
+              description:
+                target.status === 'idle'
+                  ? 'idle · deliver now'
+                  : `${target.status.replaceAll('_', ' ')} · queue for next turn`,
+            }));
+            let overlay: OverlayHandle | undefined;
+            const picker = new SearchableSelectOverlay(tui, {
+              title: 'Send to Session',
+              rightLabel: 'Choose Session',
+              items,
+              hint: 'type to search · ↑↓ move · Enter choose · Esc cancel',
+              onSelect: (item) => {
+                overlay?.hide();
                 const target = targets.find((candidate) => candidate.sessionId === item.value);
                 if (!target) return;
                 pendingMailboxTarget = target;
                 editor.setText('');
-                state.entries.push({
-                  kind: 'notice',
-                  level: 'info',
-                  text: `Sending the next message to ${target.name}. Type it and press Enter.`,
-                });
                 requestRender();
               },
-              {
-                minPrimaryColumnWidth: 24,
-                maxPrimaryColumnWidth: 56,
-                hint: '↑↓ move · Enter choose · Esc cancel',
-              },
-            );
+              onCancel: () => overlay?.hide(),
+            });
+            overlay = showBottomPicker(picker);
           })
           .catch(reportError);
       },
@@ -3436,11 +3433,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
       return { consume: true };
     }
     if (tui.hasOverlay()) return undefined;
-    if (
-      pendingMailboxTarget
-      && matchesKey(data, Key.escape)
-      && editor.getText().length === 0
-    ) {
+    if (pendingMailboxTarget && matchesKey(data, Key.escape) && editor.getText().length === 0) {
       const targetName = pendingMailboxTarget.name;
       pendingMailboxTarget = undefined;
       state.entries.push({

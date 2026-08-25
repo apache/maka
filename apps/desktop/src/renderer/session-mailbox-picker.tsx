@@ -38,7 +38,7 @@ export function SessionMailboxPicker(props: {
   onSelect(target: SessionMailboxTarget): void;
 }) {
   const copy = getShellCopy(useUiLocale()).app;
-  const pendingTargetRef = useRef<SessionMailboxTarget>();
+  const pendingTargetRef = useRef<SessionMailboxTarget | undefined>(undefined);
   const items = useMemo<TargetItem[]>(
     () =>
       props.targets.map((target) => ({

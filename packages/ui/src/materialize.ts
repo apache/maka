@@ -40,8 +40,9 @@ import type { ToolActivityStatus } from '@maka/core/tool-result-status';
 import type { ShellRunToolResult } from '@maka/core/shell-run-result';
 import type { StoredMessage, TurnRecord, TurnStatus, UserMessage } from '@maka/core/session';
 import {
-  parseSessionMailboxMessageContent,
+  parseSessionMailboxOutboxNoteData,
   parseSessionMailboxSentNoteData,
+  parseTrustedSessionMailboxMessage,
   type SessionMailboxKind,
 } from '@maka/core/session-mailbox';
 import type { UiLocale } from '@maka/core/ui-locale';
@@ -80,7 +81,7 @@ export interface ChatItem {
         sessionId: string;
         sessionName: string;
         kind: SessionMailboxKind;
-        disposition: 'turn_started' | 'queued';
+        disposition: 'pending' | 'turn_started' | 'queued';
       };
 }
 
@@ -175,6 +176,7 @@ export function materializeChat(
   locale: UiLocale = "en",
 ): ChatItem[] {
   const items: ChatItem[] = [];
+  const visibleOutboxIds = visibleSessionMailboxOutboxNoteIds(messages);
   for (const message of messages) {
     if (message.type === "user") {
       items.push(chatItemFromUserMessage(message));
@@ -188,6 +190,13 @@ export function materializeChat(
       });
     if (message.type === 'system_note' && message.kind === 'session_mailbox_sent') {
       const item = chatItemFromMailboxSentNote(message);
+      if (item) items.push(item);
+    } else if (
+      message.type === 'system_note' &&
+      message.kind === 'session_mailbox_outbox' &&
+      visibleOutboxIds.has(message.id)
+    ) {
+      const item = chatItemFromMailboxOutboxNote(message);
       if (item) items.push(item);
     } else if (
       message.type === "system_note" &&
@@ -665,6 +674,7 @@ export function materializeTurns(
   locale: UiLocale = "en",
 ): TurnViewModel[] {
   const turnRecords = deriveTurnRecords(messages);
+  const visibleOutboxIds = visibleSessionMailboxOutboxNoteIds(messages);
   const turnRecordById = new Map(
     turnRecords.map((turn) => [turn.turnId, turn]),
   );
@@ -765,6 +775,13 @@ export function materializeTurns(
       }
     } else if (message.type === 'system_note' && message.kind === 'session_mailbox_sent') {
       const note = chatItemFromMailboxSentNote(message);
+      if (note) turn.notes.push(note);
+    } else if (
+      message.type === 'system_note' &&
+      message.kind === 'session_mailbox_outbox' &&
+      visibleOutboxIds.has(message.id)
+    ) {
+      const note = chatItemFromMailboxOutboxNote(message);
       if (note) turn.notes.push(note);
     } else if (
       message.type === "system_note" &&
@@ -1084,7 +1101,10 @@ function chatItemFromContent(
   content: MessageContent,
   hostOrigin?: NonNullable<UserMessage["origin"]>,
 ): ChatItem {
-  const mailbox = parseSessionMailboxMessageContent(content);
+  const mailbox = parseTrustedSessionMailboxMessage({
+    text: content.text,
+    origin: hostOrigin,
+  });
   return {
     id,
     role: "user",
@@ -1111,6 +1131,59 @@ function chatItemFromContent(
         }
       : {}),
   };
+}
+
+function chatItemFromMailboxOutboxNote(
+  message: Extract<StoredMessage, { type: 'system_note' }>,
+): ChatItem | undefined {
+  const outbox = parseSessionMailboxOutboxNoteData(message.data);
+  if (!outbox) return undefined;
+  return {
+    id: message.id,
+    role: 'system',
+    text: outbox.text,
+    ts: message.ts,
+    sessionMailbox: {
+      direction: 'outgoing',
+      sessionId: outbox.toSessionId,
+      sessionName: outbox.targetSessionName,
+      kind: outbox.kind,
+      disposition: 'pending',
+    },
+  };
+}
+
+/** Show only the latest unsettled delivery attempt for each mailbox message. */
+function visibleSessionMailboxOutboxNoteIds(
+  messages: readonly StoredMessage[],
+): ReadonlySet<string> {
+  const terminalMessageIds = new Set<string>();
+  const seenOutboxMessageIds = new Set<string>();
+  const visibleNoteIds = new Set<string>();
+  // Receipts follow their outboxes durably. Walking backward therefore finds
+  // a terminal receipt before any of its attempts and the newest unsettled
+  // attempt before older retries, without adding two full transcript passes.
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index];
+    if (message?.type !== 'system_note') continue;
+    if (message.kind === 'session_mailbox_sent') {
+      const receipt = parseSessionMailboxSentNoteData(message.data);
+      if (receipt) terminalMessageIds.add(receipt.messageId);
+      continue;
+    }
+    if (message.kind !== 'session_mailbox_outbox') continue;
+    const outbox = parseSessionMailboxOutboxNoteData(message.data);
+    if (
+      !outbox ||
+      terminalMessageIds.has(outbox.messageId) ||
+      seenOutboxMessageIds.has(outbox.messageId)
+    ) {
+      continue;
+    }
+    seenOutboxMessageIds.add(outbox.messageId);
+    visibleNoteIds.add(message.id);
+  }
+  return visibleNoteIds;
 }
 
 function chatItemFromMailboxSentNote(

@@ -494,19 +494,10 @@
   min-height: var(--h-control-lg);
   height: auto;
   padding: var(--space-2) var(--space-2-5);
-  border-radius: var(--radius-control);
+  border-radius: var(--radius-surface);
   background: var(--info-wash);
   border-color: var(--info-wash-border);
   color: var(--foreground);
-}
-
-.maka-composer-mailbox-notice[data-delivery-status='delivered'] {
-  background: var(--success-wash);
-  border-color: var(--success-wash-border);
-}
-
-.maka-composer-mailbox-notice[data-delivery-status='delivered'] > svg {
-  color: var(--success-text);
 }
 
 .maka-composer-mailbox-notice[data-delivery-status='failed'] {

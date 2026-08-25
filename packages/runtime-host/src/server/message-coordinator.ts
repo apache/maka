@@ -27,6 +27,7 @@ import {
   type MessageContent,
 } from '@maka/core/events';
 import type { RuntimeEvent } from '@maka/core/runtime-event';
+import { decodeTurnOrigin, type TurnOrigin } from '@maka/core/turn-origin';
 import {
   RuntimeMessageAuthorityInvariantError,
   type RuntimeMessageAuthority,
@@ -186,6 +187,7 @@ export type CandidateSnapshotPreflight = (
 interface LiveEntry {
   readonly entryId: string;
   readonly messageId: string;
+  readonly origin?: TurnOrigin;
   content: MessageContent;
   modelContent: MessageContent;
   readonly initiatingConnectionId: string;
@@ -209,6 +211,7 @@ interface InterruptReceipt {
 
 interface PendingSubmit {
   readonly payload: CanonicalSubmitPayload;
+  readonly origin?: TurnOrigin;
   readonly result: Promise<MessageOutcome<TurnMessageSubmitResult>>;
 }
 
@@ -336,6 +339,47 @@ export class HostMessageCoordinator implements RuntimeMessageAuthority {
     this.#onProjectionChanged = options.onProjectionChanged ?? (() => undefined);
     this.#createId = options.createId ?? randomUUID;
     this.#preflightSessionSnapshot = options.preflightSessionSnapshot;
+  }
+
+  /** Internal Host-only admission path carrying provenance unavailable on the wire. */
+  submitTrusted(
+    input: TurnMessageSubmitInput,
+    context: ConnectionContext,
+    origin: TurnOrigin,
+  ): Promise<MessageOutcome<TurnMessageSubmitResult>> {
+    return this.submit(input, context, origin);
+  }
+
+  /**
+   * Rebuild a previously returned submit outcome from durable Host facts.
+   * `undefined` means no admission was ever committed and a retry is safe.
+   */
+  async reconcileTrustedSubmit(
+    input: TurnMessageSubmitInput,
+    origin: TurnOrigin,
+  ): Promise<MessageOutcome<TurnMessageSubmitResult> | undefined> {
+    const payload = canonicalSubmitPayload(input, origin);
+    const receipt = await this.#readSubmitReceipt(
+      input.sessionId,
+      input.messageId,
+      input.originHostEpoch,
+    );
+    if (receipt) {
+      return samePayload(receipt.payload, payload)
+        ? success(receipt.result)
+        : failure('operation_conflict', 'Message identity has a different payload');
+    }
+    const durable = await this.#durableProof.readRootTurnSourceMessageReceipt(
+      input.sessionId,
+      input.messageId,
+    );
+    if (!durable) return undefined;
+    if (!sameSourcePayload(durable, payload)) {
+      return failure('operation_conflict', 'Durable message identity has different provenance');
+    }
+    return durable.sourceMessage.disposition === 'turn_started'
+      ? success({ disposition: 'turn_started', turnId: durable.admission.turnId })
+      : success({ disposition: 'followup', queueRevision: 0 });
   }
 
   projection(sessionId: string): SessionMessageQueueProjection {
@@ -527,13 +571,14 @@ export class HostMessageCoordinator implements RuntimeMessageAuthority {
   private submit(
     input: TurnMessageSubmitInput,
     context: ConnectionContext,
+    origin?: TurnOrigin,
   ): Promise<MessageOutcome<TurnMessageSubmitResult>> {
-    const payload = canonicalSubmitPayload(input);
+    const payload = canonicalSubmitPayload(input, origin);
     const isCurrentEpoch = input.originHostEpoch === this.#hostEpoch;
     if (isCurrentEpoch) {
       const pending = this.#pendingSubmits.get(operationKey(input.sessionId, input.messageId));
       if (pending) {
-        return samePayload(pending.payload, payload)
+        return samePayload(pending.payload, payload) && isDeepStrictEqual(pending.origin, origin)
           ? pending.result
           : Promise.resolve(
               failure('operation_conflict', 'Message identity has a different payload'),
@@ -543,10 +588,10 @@ export class HostMessageCoordinator implements RuntimeMessageAuthority {
     if (this.#failStopped) {
       return Promise.resolve(failure('host_draining', 'Runtime Host message authority has failed'));
     }
-    if (!isCurrentEpoch) return this.#submitAdmitted(input, payload, context.connectionId);
+    if (!isCurrentEpoch) return this.#submitAdmitted(input, payload, context.connectionId, origin);
     const key = operationKey(input.sessionId, input.messageId);
-    const result = this.#submitAdmitted(input, payload, context.connectionId);
-    this.#pendingSubmits.set(key, { payload, result });
+    const result = this.#submitAdmitted(input, payload, context.connectionId, origin);
+    this.#pendingSubmits.set(key, { payload, ...(origin ? { origin } : {}), result });
     void result.then(
       () => this.#deletePendingSubmit(key, result),
       () => this.#deletePendingSubmit(key, result),
@@ -558,6 +603,7 @@ export class HostMessageCoordinator implements RuntimeMessageAuthority {
     input: TurnMessageSubmitInput,
     payload: CanonicalSubmitPayload,
     initiatingConnectionId: string,
+    origin?: TurnOrigin,
   ): Promise<MessageOutcome<TurnMessageSubmitResult>> {
     return this.#sessionAdmission.run(input.sessionId, async (admission) => {
       if (this.#failStopped) {
@@ -616,6 +662,7 @@ export class HostMessageCoordinator implements RuntimeMessageAuthority {
           }
           const sourceMessage: RootTurnSourceMessage = {
             messageId: input.messageId,
+            ...(origin ? { origin } : {}),
             content: payload.content,
             submittedContentDigest: messageContentDigest(payload.content),
             placement: input.placement,
@@ -712,6 +759,7 @@ export class HostMessageCoordinator implements RuntimeMessageAuthority {
           ),
           {
             messageId: input.messageId,
+            ...(origin ? { origin } : {}),
             content: prepared.content,
             submittedContentDigest: messageContentDigest(payload.content),
             placement: input.placement,
@@ -738,6 +786,7 @@ export class HostMessageCoordinator implements RuntimeMessageAuthority {
         const entry: LiveEntry = {
           entryId,
           messageId: input.messageId,
+          ...(origin ? { origin } : {}),
           content: payload.content,
           modelContent: prepared.content,
           initiatingConnectionId,
@@ -1381,13 +1430,27 @@ export class HostMessageCoordinator implements RuntimeMessageAuthority {
   async #readSubmitReceipt(
     sessionId: string,
     messageId: string,
+    hostEpoch = this.#hostEpoch,
   ): Promise<{ payload: CanonicalSubmitPayload; result: TurnMessageSubmitResult } | undefined> {
-    const receipt = await this.#receipts.read(this.#hostEpoch, 'submit', sessionId, messageId);
+    const receipt = await this.#receipts.read(hostEpoch, 'submit', sessionId, messageId);
     if (!receipt) return undefined;
     try {
+      if (
+        !receipt.payload ||
+        typeof receipt.payload !== 'object' ||
+        Array.isArray(receipt.payload)
+      ) {
+        throw new Error('payload must be an object');
+      }
+      const { origin: rawOrigin, ...wirePayload } = receipt.payload as Record<string, unknown>;
+      const origin = rawOrigin === undefined ? undefined : decodeTurnOrigin(rawOrigin);
+      if (rawOrigin !== undefined && origin === undefined) {
+        throw new Error('payload origin is malformed');
+      }
       return {
         payload: canonicalSubmitPayload(
-          MESSAGE_OPERATION_SPECS['turn.message.submit'].decodeInput(receipt.payload),
+          MESSAGE_OPERATION_SPECS['turn.message.submit'].decodeInput(wirePayload),
+          origin,
         ),
         result: MESSAGE_OPERATION_SPECS['turn.message.submit'].decodeOutput(receipt.result),
       };
@@ -1825,13 +1888,15 @@ function sameSourcePayload(
     (durableDigest
       ? durableDigest === messageContentDigest(input.content)
       : messageContentsEqual(source.content, input.content)) &&
-    source.placement === input.placement
+    source.placement === input.placement &&
+    isDeepStrictEqual(source.origin, input.origin)
   );
 }
 
 function sourceFromEntry(entry: LiveEntry): RootFollowupSource {
   return {
     messageId: entry.messageId,
+    ...(entry.origin ? { origin: entry.origin } : {}),
     content: normalizeMessageContent(entry.modelContent),
     submittedContentDigest: messageContentDigest(entry.content),
     placement: entry.placement,
@@ -1940,15 +2005,20 @@ interface CanonicalSubmitPayload {
   readonly messageId: string;
   readonly content: MessageContent;
   readonly placement: MessagePlacement;
+  readonly origin?: TurnOrigin;
 }
 
-function canonicalSubmitPayload(input: TurnMessageSubmitInput): CanonicalSubmitPayload {
+function canonicalSubmitPayload(
+  input: TurnMessageSubmitInput,
+  origin?: TurnOrigin,
+): CanonicalSubmitPayload {
   return {
     originHostEpoch: input.originHostEpoch,
     sessionId: input.sessionId,
     messageId: input.messageId,
     content: normalizeMessageContent(input.content),
     placement: input.placement,
+    ...(origin ? { origin } : {}),
   };
 }
 
