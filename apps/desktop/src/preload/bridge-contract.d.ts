@@ -1458,6 +1458,20 @@ export interface MakaBridge {
     delete(sessionId: string, artifactId: string): Promise<void>;
     subscribeChanges(handler: (event: ArtifactChangedEvent) => void): () => void;
   };
+  workspaceFiles: {
+    readText(
+      sessionId: string,
+      reference: string,
+    ): Promise<import('./workspace-files-contract.js').WorkspaceFileTextReadResult>;
+    openLocally(
+      sessionId: string,
+      reference: string,
+    ): Promise<import('./workspace-files-contract.js').WorkspaceFileOpenResult>;
+    revealInFolder(
+      sessionId: string,
+      reference: string,
+    ): Promise<import('./workspace-files-contract.js').WorkspaceFileOpenResult>;
+  };
   skills: {
     list(host?: DesktopRuntimeHostRef): Promise<SkillEntry[]>;
     listInvocable(
