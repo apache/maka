@@ -2311,7 +2311,10 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
         sessions.map(async (session) => {
           try {
             if (!session.cwd) {
-              return [session.id, { available: false, reason: 'Missing working directory' }] as const;
+              return [
+                session.id,
+                { available: false, reason: 'Missing working directory' },
+              ] as const;
             }
             const availability = options.onlyResumable
               ? ((await input.driver.getSessionResumeCandidateAvailability?.(session)) ??
