@@ -205,6 +205,37 @@ describe('Provider error classification', () => {
     );
   });
 
+  test('retries transport failures wrapped as "Cannot connect to API" when isRetryable is set', () => {
+    // The AI SDK wraps TLS/transport failures as APICallError with isRetryable:
+    // true and a message like "Cannot connect to API: <cause>". Maka's classifier
+    // must honor the isRetryable flag even when the wrapped message contains no
+    // recognized network keywords (#3756).
+    const tlsFailure = Object.assign(
+      new Error(
+        'Cannot connect to API: 80E1BDF601000000:error:0A000119:SSL routines:tls_get_more_records:decryption failed or bad record mac:../deps/openssl/openssl/ssl/record/methods/tls_common.c:869:',
+      ),
+      {
+        name: 'AI_APICallError',
+        isRetryable: true,
+      },
+    );
+
+    assert.equal(classifyError(tlsFailure), 'AI_APICallError');
+    assert.deepEqual(providerRetryMetadata(tlsFailure), { retryable: true });
+    assert.equal(providerFailureDiagnostic(tlsFailure).retryable, true);
+  });
+
+  test('honors isRetryable on a cause error when the top-level error has no structured evidence', () => {
+    const cause = Object.assign(new Error('ECONNRESET'), { isRetryable: true });
+    const wrapped = Object.assign(new Error('Cannot connect to API: ECONNRESET'), {
+      name: 'AI_APICallError',
+      cause,
+    });
+
+    assert.equal(classifyError(wrapped), 'AI_APICallError');
+    assert.deepEqual(providerRetryMetadata(wrapped), { retryable: true });
+  });
+
   test('retries incremental Responses transport failures with stable classification', () => {
     const websocketFailure = Object.assign(new Error('closed before completion'), {
       name: 'OpenAiResponsesTransportError',

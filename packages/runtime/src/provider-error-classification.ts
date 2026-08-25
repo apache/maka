@@ -220,7 +220,13 @@ function parseRetryAfterMs(headers: Record<string, string>): number | null | und
  */
 export function providerRetryMetadata(error: unknown): ProviderRetryMetadata {
   const facts = normalizeProviderError(error);
-  if (!facts) return { retryable: false };
+  if (!facts) {
+    // Even when normalizeProviderError cannot extract structured evidence,
+    // the AI SDK may have set isRetryable on the error or on a cause in the
+    // chain — honor that as a last-resort retry signal.
+    if (isRetryableInChain(error)) return { retryable: true };
+    return { retryable: false };
+  }
   const { evidence } = facts;
 
   if (RUNTIME_RETRYABLE_ERROR_CODES.has(evidence.code)) return { retryable: true };
@@ -246,12 +252,40 @@ export function providerRetryMetadata(error: unknown): ProviderRetryMetadata {
     status === 408 ||
     status === 409 ||
     (status >= 500 && status <= 599);
-  if (!retryable) return { retryable: false };
+  if (!retryable) {
+    // The classifier did not surface a retryable class, but the AI SDK may
+    // have marked the error or a wrapped cause as retryable — honor that.
+    if (isRetryableInChain(error)) return { retryable: true };
+    return { retryable: false };
+  }
   if (retryAfterMs === null) return { retryable: false };
   return {
     retryable: true,
     ...(retryAfterMs !== undefined ? { retryAfterMs } : {}),
   };
+}
+
+/**
+ * Walks the `cause` chain of an error looking for the AI SDK's `isRetryable`
+ * flag. The AI SDK sets `APICallError.isRetryable = true` for transport
+ * failures (TLS errors, connection resets, etc.) that it wraps as
+ * `Cannot connect to API: ${cause.message}`. Without this, Maka's classifier
+ * sees only the wrapped message and classifies it as non-retryable.
+ */
+function isRetryableInChain(error: unknown): boolean {
+  let current = error;
+  const seen = new Set<unknown>();
+  for (let depth = 0; depth < 8 && current !== undefined && !seen.has(current); depth += 1) {
+    seen.add(current);
+    if (typeof current === 'object' && current !== null) {
+      const record = current as Record<string, unknown>;
+      if (record.isRetryable === true) return true;
+      current = record.cause;
+    } else {
+      break;
+    }
+  }
+  return false;
 }
 
 /** Collects `code`/`type` strings from a payload and from its `error` wrapper. */
