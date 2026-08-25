@@ -371,6 +371,17 @@ test('the packaged Windows gate triggers on release orchestration changes', () =
   assert.match(workflow, /'\.github\/workflows\/release\.yml'/u);
 });
 
+test('the packaged Windows gate workflow is itself a release-contract input', () => {
+  assert.equal(
+    planTests(['.github/workflows/release-windows-check.yml'], { graph }).releaseContract,
+    true,
+  );
+  assert.match(
+    readWorkflow('release-windows-check.yml'),
+    /'\.github\/workflows\/release-windows-check\.yml'/u,
+  );
+});
+
 test('the packaged Windows gate triggers on packaged sandbox inputs', () => {
   const workflow = readWorkflow('release-windows-check.yml');
 
