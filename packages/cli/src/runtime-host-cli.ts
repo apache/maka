@@ -18,7 +18,12 @@
  */
 
 import { isAbsolute } from 'node:path';
-import { isProductReleaseVersion } from '@maka/runtime-host/operator';
+import {
+  isProductReleaseVersion,
+  RUNTIME_HOST_UPDATE_CHECK_INTERVAL_HOURS_DEFAULT,
+  RUNTIME_HOST_UPDATE_CHECK_INTERVAL_HOURS_MAX,
+  RUNTIME_HOST_UPDATE_CHECK_INTERVAL_HOURS_MIN,
+} from '@maka/runtime-host/operator';
 import type { RuntimeHostManagedUpdatePolicy } from '@maka/runtime-host/operator';
 import {
   isCanonicalRuntimeHostWebSocketPath,
@@ -105,6 +110,7 @@ export type RuntimeHostCliCommand =
       json: boolean;
       framed?: true;
       clientDataRoot?: string;
+      scheduled?: true;
     }
   | {
       kind: 'runtime-host-managed-deployment-cleanup';
@@ -282,6 +288,8 @@ function parseServiceManagementCommand(argv: string[]): RuntimeHostCliCommand {
   let allowInterruptActiveTasks = false;
   let clientDataRoot: string | undefined;
   let updateTarget: string | undefined;
+  let updateCheckIntervalHours: number | undefined;
+  let scheduled = false;
   const flagOptions: Readonly<Record<string, () => void | RuntimeHostCliError>> =
     action === 'uninstall'
       ? {
@@ -299,7 +307,14 @@ function parseServiceManagementCommand(argv: string[]): RuntimeHostCliCommand {
               allowInterruptActiveTasks = true;
             },
           }
-        : {};
+        : action === 'reconcile-update'
+          ? {
+              '--scheduled': () => {
+                if (scheduled) return error('Duplicate --scheduled');
+                scheduled = true;
+              },
+            }
+          : {};
   const options = parseManagedServiceOptions(argv.slice(1), {
     allowConfiguration: action === 'install',
     allowFramed: true,
@@ -317,6 +332,18 @@ function parseServiceManagementCommand(argv: string[]): RuntimeHostCliCommand {
             },
           }
         : {}),
+      ...(action === 'update-policy'
+        ? {
+            '--check-interval': (value: string) => {
+              if (updateCheckIntervalHours !== undefined) {
+                return error('Duplicate --check-interval');
+              }
+              const parsed = parseUpdateCheckIntervalHours(value);
+              if ('exitCode' in parsed) return parsed;
+              updateCheckIntervalHours = parsed.hours;
+            },
+          }
+        : {}),
     },
     flagOptions,
   });
@@ -325,8 +352,14 @@ function parseServiceManagementCommand(argv: string[]): RuntimeHostCliCommand {
     return error(`runtime-host service ${action} requires an expected target`);
   }
   if (action === 'update-policy') {
-    const policy = updateTarget === undefined ? undefined : parseUpdatePolicy(updateTarget);
+    const policy =
+      updateTarget === undefined
+        ? undefined
+        : parseUpdatePolicy(updateTarget, updateCheckIntervalHours);
     if (policy && 'exitCode' in policy) return policy;
+    if (policy?.kind === 'manual' && updateCheckIntervalHours !== undefined) {
+      return error('runtime-host service update-policy manual does not accept --check-interval');
+    }
     if (policy?.kind === 'manual' && options.expectedTarget) {
       return error('runtime-host service update-policy manual does not accept an expected target');
     }
@@ -335,6 +368,9 @@ function parseServiceManagementCommand(argv: string[]): RuntimeHostCliCommand {
     }
     if (!policy && options.expectedTarget) {
       return error('runtime-host service update-policy requires --target when setting a target');
+    }
+    if (!policy && updateCheckIntervalHours !== undefined) {
+      return error('runtime-host service update-policy requires --target when setting an interval');
     }
     return {
       kind: 'runtime-host-service-update-policy',
@@ -354,6 +390,7 @@ function parseServiceManagementCommand(argv: string[]): RuntimeHostCliCommand {
       json: options.json,
       ...(options.framed ? { framed: true } : {}),
       ...(clientDataRoot ? { clientDataRoot } : {}),
+      ...(scheduled ? { scheduled: true } : {}),
     };
   }
   if (action === 'check-update') {
@@ -392,11 +429,33 @@ function parseServiceManagementCommand(argv: string[]): RuntimeHostCliCommand {
   };
 }
 
-function parseUpdatePolicy(value: string): RuntimeHostManagedUpdatePolicy | RuntimeHostCliError {
+function parseUpdatePolicy(
+  value: string,
+  checkIntervalHours = RUNTIME_HOST_UPDATE_CHECK_INTERVAL_HOURS_DEFAULT,
+): RuntimeHostManagedUpdatePolicy | RuntimeHostCliError {
   if (value === 'manual') return { kind: 'manual' };
   const selector = parseUpdateSelector(value, 'update-policy');
   if ('exitCode' in selector) return selector;
-  return selector.kind === 'exact' ? { kind: 'fixed', version: selector.version } : selector;
+  return selector.kind === 'exact'
+    ? { kind: 'fixed', version: selector.version, checkIntervalHours }
+    : { ...selector, checkIntervalHours };
+}
+
+function parseUpdateCheckIntervalHours(
+  value: string,
+): { readonly hours: number } | RuntimeHostCliError {
+  const match = /^(\d{1,3})h$/u.exec(value);
+  const hours = match ? Number(match[1]) : Number.NaN;
+  if (
+    !Number.isSafeInteger(hours) ||
+    hours < RUNTIME_HOST_UPDATE_CHECK_INTERVAL_HOURS_MIN ||
+    hours > RUNTIME_HOST_UPDATE_CHECK_INTERVAL_HOURS_MAX
+  ) {
+    return error(
+      `--check-interval must be an integer from ${String(RUNTIME_HOST_UPDATE_CHECK_INTERVAL_HOURS_MIN)}h to ${String(RUNTIME_HOST_UPDATE_CHECK_INTERVAL_HOURS_MAX)}h`,
+    );
+  }
+  return { hours };
 }
 
 function parseUpdateSelector(

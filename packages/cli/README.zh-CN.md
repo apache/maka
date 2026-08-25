@@ -132,15 +132,20 @@ selector 传给 `service update --target`。该路径会先校验 archive 与解
 Installation owner 可以持久化一个更新目标，并通过同一套已验证事务执行 reconciliation：
 
 ```sh
-maka runtime-host service update-policy --target latest \
+maka runtime-host service update-policy --target latest --check-interval 4h \
   --expected-service-id <service-id> \
   --expected-root-path <state-root> \
   --expected-root-id <root-id>
 maka runtime-host service reconcile-update --json
 ```
 
-使用 `update-policy --target manual` 关闭自动 reconciliation。Reconciliation 是有界的单次命令：
-它不会中断 active work，也不会安装 scheduler。
+使用 `update-policy --target manual` 关闭自动 reconciliation。自动策略接受 `1h` 至 `168h` 的
+整数 `--check-interval`，默认 `6h`。Maka 托管的 Linux 或 macOS deployment 会在每个 installation
+专属的 minute 安装由操作系统持有的 hourly tick；在发起任何 registry 请求前，由 policy 判断本次
+tick 是否到期。显式执行 `reconcile-update` 始终立即检查。manual 模式仍保留 tick，但它会直接
+返回，不执行网络 discovery 或 mutation，也不会中断 active work。Service repair 会校验
+schedule，service logs 会包含其输出，uninstall 会先移除 schedule，再删除 managed deployment。
+由独立持久全局 CLI 启动的 service 不会安装该 schedule。
 
 ## 卸载
 

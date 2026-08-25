@@ -469,7 +469,7 @@ function managerError(
   );
 }
 
-async function readLogTail(path: string): Promise<string> {
+export async function readLogTail(path: string): Promise<string> {
   let file;
   try {
     file = await open(path, 'r');
@@ -521,7 +521,7 @@ function nonNegativeInteger(value: string | undefined): number | null {
   return Number.isSafeInteger(parsed) && parsed >= 0 ? parsed : null;
 }
 
-function escapeXml(value: string): string {
+export function escapeXml(value: string): string {
   if (/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/u.test(value)) {
     throw new TypeError('LaunchAgent strings cannot contain XML control characters');
   }

@@ -124,7 +124,7 @@ function helpText(cliCommand: string): string {
     `  ${cliCommand} runtime-host service retire --expected-service-id <id> --expected-root-path <path> --expected-root-id <id> [--allow-interrupt-active-tasks]`,
     `  ${cliCommand} runtime-host service check-update --target <latest|next|version> [--json]`,
     `  ${cliCommand} runtime-host service update [--target <latest|next|version>] --expected-service-id <id> --expected-root-path <path> --expected-root-id <id> [--allow-interrupt-active-tasks]`,
-    `  ${cliCommand} runtime-host service update-policy [--target <manual|latest|next|version>] [--json]`,
+    `  ${cliCommand} runtime-host service update-policy [--target <manual|latest|next|version>] [--check-interval <1h..168h>] [--json]`,
     `  ${cliCommand} runtime-host service reconcile-update [--json]`,
     `  ${cliCommand} runtime-host access issue --principal <id> --grant <operation>`,
     `  ${cliCommand} runtime-host access issue --principal <id> --preset <desktop-client|terminal-client>`,
@@ -343,6 +343,7 @@ export async function runMakaCli(
       return runManagedRuntimeHostUpdateReconcileCli({
         json: command.json,
         framed: command.framed ?? false,
+        scheduled: command.scheduled ?? false,
         clientDataRoot: serviceDataRoots.clientDataRoot,
         defaultRootPath: serviceDataRoots.workspaceRoot,
       });

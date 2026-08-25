@@ -65,6 +65,8 @@ describe('managed Runtime Host update reconciliation', () => {
         'update-policy',
         '--target',
         'next',
+        '--check-interval',
+        '4h',
         '--expected-service-id',
         TARGET.serviceId,
         '--expected-root-path',
@@ -75,7 +77,7 @@ describe('managed Runtime Host update reconciliation', () => {
       {
         kind: 'runtime-host-service-update-policy',
         json: false,
-        policy: { kind: 'channel', channel: 'next' },
+        policy: { kind: 'channel', channel: 'next', checkIntervalHours: 4 },
         expectedTarget: TARGET,
       },
     );
@@ -83,8 +85,49 @@ describe('managed Runtime Host update reconciliation', () => {
       kind: 'runtime-host-service-reconcile-update',
       json: true,
     });
+    assert.deepEqual(
+      parseRuntimeHostCommand(['service', 'reconcile-update', '--scheduled', '--json']),
+      {
+        kind: 'runtime-host-service-reconcile-update',
+        json: true,
+        scheduled: true,
+      },
+    );
     assert.equal(
       parseRuntimeHostCommand(['service', 'update-policy', '--target', 'latest']).kind,
+      'error',
+    );
+    assert.equal(
+      parseRuntimeHostCommand([
+        'service',
+        'update-policy',
+        '--target',
+        'manual',
+        '--check-interval',
+        '4h',
+      ]).kind,
+      'error',
+    );
+    assert.equal(
+      parseRuntimeHostCommand([
+        'service',
+        'update-policy',
+        '--target',
+        'latest',
+        '--check-interval',
+        '0h',
+      ]).kind,
+      'error',
+    );
+    assert.equal(
+      parseRuntimeHostCommand([
+        'service',
+        'update-policy',
+        '--target',
+        'latest',
+        '--check-interval',
+        '169h',
+      ]).kind,
       'error',
     );
   });
@@ -105,7 +148,7 @@ describe('managed Runtime Host update reconciliation', () => {
       await runManagedRuntimeHostUpdatePolicyCli(
         {
           ...common,
-          policy: { kind: 'fixed', version: '2.0.0' },
+          policy: { kind: 'fixed', version: '2.0.0', checkIntervalHours: 6 },
           expectedTarget: TARGET,
         },
         {
@@ -121,7 +164,7 @@ describe('managed Runtime Host update reconciliation', () => {
     );
     assert.deepEqual(await readRuntimeHostManagedUpdatePolicy(deploymentRoot), {
       schemaVersion: 1,
-      policy: { kind: 'fixed', version: '2.0.0' },
+      policy: { kind: 'fixed', version: '2.0.0', checkIntervalHours: 6 },
       target: { ...TARGET, rootPath: '/srv/maka' },
     });
     assert.equal(JSON.parse(output).updatePolicy.policy.kind, 'fixed');
@@ -163,12 +206,32 @@ describe('managed Runtime Host update reconciliation', () => {
     );
   });
 
+  it('defaults a pre-cadence automatic policy to a six-hour interval', async (t) => {
+    const deploymentRoot = await mkdtemp(join(tmpdir(), 'maka-update-policy-legacy-'));
+    t.after(() => rm(deploymentRoot, { recursive: true, force: true }));
+    await writeFile(
+      resolveRuntimeHostManagedUpdatePolicyPath(deploymentRoot),
+      JSON.stringify({
+        schemaVersion: 1,
+        policy: { kind: 'channel', channel: 'latest' },
+        target: TARGET,
+      }),
+      'utf8',
+    );
+
+    assert.deepEqual(await readRuntimeHostManagedUpdatePolicy(deploymentRoot), {
+      schemaVersion: 1,
+      policy: { kind: 'channel', channel: 'latest', checkIntervalHours: 6 },
+      target: TARGET,
+    });
+  });
+
   it('distinguishes an uncertain policy commit and makes an absent-policy retry durable', async (t) => {
     const deploymentRoot = await mkdtemp(join(tmpdir(), 'maka-update-policy-commit-'));
     t.after(() => rm(deploymentRoot, { recursive: true, force: true }));
     const record = {
       schemaVersion: 1 as const,
-      policy: { kind: 'fixed' as const, version: '2.0.0' },
+      policy: { kind: 'fixed' as const, version: '2.0.0', checkIntervalHours: 6 },
       target: TARGET,
     };
     const failSync = async () => {
@@ -199,13 +262,88 @@ describe('managed Runtime Host update reconciliation', () => {
     assert.equal(syncs, 1);
   });
 
+  it('checks an automatic target only when its scheduled interval is due', async (t) => {
+    const clientDataRoot = await mkdtemp(join(tmpdir(), 'maka-update-schedule-'));
+    t.after(() => rm(clientDataRoot, { recursive: true, force: true }));
+    const deploymentRoot = join(clientDataRoot, 'managed');
+    await writeRuntimeHostManagedUpdatePolicy(deploymentRoot, {
+      schemaVersion: 1,
+      policy: { kind: 'channel', channel: 'latest', checkIntervalHours: 4 },
+      target: TARGET,
+    });
+    let output = '';
+    assert.equal(
+      await runManagedRuntimeHostUpdateReconcileCli(
+        {
+          json: true,
+          framed: false,
+          scheduled: true,
+          clientDataRoot,
+          defaultRootPath: '/workspace',
+        },
+        {
+          now: () => 2 * 60 * 60 * 1_000,
+          manage: async () => managedStatus(deploymentRoot),
+          createBackend: () => unusedBackend(),
+          resolveSelection: async () => assert.fail('a not-due tick must not query the registry'),
+          writeOutput: (value) => {
+            output += value;
+          },
+        },
+      ),
+      0,
+    );
+    assert.deepEqual(JSON.parse(output).reconciliation, {
+      kind: 'not_due',
+      checkIntervalHours: 4,
+    });
+
+    let resolved = false;
+    await runManagedRuntimeHostUpdateReconcileCli(
+      {
+        json: true,
+        framed: false,
+        scheduled: true,
+        clientDataRoot,
+        defaultRootPath: '/workspace',
+      },
+      {
+        now: () => 3 * 60 * 60 * 1_000,
+        manage: async () => managedStatus(deploymentRoot),
+        createBackend: () => unusedBackend(),
+        resolveSelection: async (options) => {
+          resolved = true;
+          return {
+            selector: options.selector,
+            candidate: { version: '1.0.0', integrity: INTEGRITY, compatibility: 1 },
+            outcome: { kind: 'unattended_update', compatibility: 1 },
+            currentCliPath: '/managed/current/cli.js',
+            service: SERVICE,
+          };
+        },
+        applySelection: async (_options, _selection, _overrides, emit) => {
+          emit?.({
+            schemaVersion: 1,
+            kind: 'result',
+            action: 'update',
+            service: SERVICE,
+            update: { kind: 'already_current', version: '1.0.0' },
+          });
+          return 0;
+        },
+        writeOutput: () => undefined,
+      },
+    );
+    assert.equal(resolved, true);
+  });
+
   it('resolves one policy snapshot and delegates an admitted exact target to the update transaction', async (t) => {
     const clientDataRoot = await mkdtemp(join(tmpdir(), 'maka-update-reconcile-'));
     t.after(() => rm(clientDataRoot, { recursive: true, force: true }));
     const deploymentRoot = join(clientDataRoot, 'managed');
     await writeRuntimeHostManagedUpdatePolicy(deploymentRoot, {
       schemaVersion: 1,
-      policy: { kind: 'fixed', version: '2.0.0' },
+      policy: { kind: 'fixed', version: '2.0.0', checkIntervalHours: 6 },
       target: TARGET,
     });
     let output = '';
@@ -278,7 +416,7 @@ describe('managed Runtime Host update reconciliation', () => {
     const deploymentRoot = join(clientDataRoot, 'managed');
     await writeRuntimeHostManagedUpdatePolicy(deploymentRoot, {
       schemaVersion: 1,
-      policy: { kind: 'channel', channel: 'latest' },
+      policy: { kind: 'channel', channel: 'latest', checkIntervalHours: 6 },
       target: TARGET,
     });
     let output = '';
@@ -344,7 +482,7 @@ describe('managed Runtime Host update reconciliation', () => {
 
     await writeRuntimeHostManagedUpdatePolicy(deploymentRoot, {
       schemaVersion: 1,
-      policy: { kind: 'channel', channel: 'latest' },
+      policy: { kind: 'channel', channel: 'latest', checkIntervalHours: 6 },
       target: TARGET,
     });
     let output = '';

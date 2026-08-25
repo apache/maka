@@ -22,6 +22,9 @@ import { mkdir, open, readFile, rename, rm, unlink } from 'node:fs/promises';
 import { dirname, isAbsolute, join } from 'node:path';
 import {
   isProductReleaseVersion,
+  RUNTIME_HOST_UPDATE_CHECK_INTERVAL_HOURS_DEFAULT,
+  RUNTIME_HOST_UPDATE_CHECK_INTERVAL_HOURS_MAX,
+  RUNTIME_HOST_UPDATE_CHECK_INTERVAL_HOURS_MIN,
   type RuntimeHostManagedUpdatePolicy,
 } from '@maka/runtime-host/operator';
 import type { RuntimeHostManagedServiceTarget } from './runtime-host-service-manager.js';
@@ -78,9 +81,7 @@ export async function readRuntimeHostManagedUpdatePolicy(
     if (Buffer.byteLength(raw, 'utf8') > UPDATE_POLICY_MAX_BYTES) {
       throw new TypeError('Update policy exceeds its size limit');
     }
-    const parsed: unknown = JSON.parse(raw);
-    assertUpdatePolicyRecord(parsed);
-    return parsed;
+    return parseUpdatePolicyRecord(JSON.parse(raw));
   } catch (error) {
     throw new RuntimeHostUpdatePolicyError(
       'invalid_update_policy',
@@ -128,7 +129,7 @@ export async function writeRuntimeHostManagedUpdatePolicy(
       );
     }
   }
-  assertUpdatePolicyRecord(record);
+  const validatedRecord = parseUpdatePolicyRecord(record);
   const directory = dirname(path);
   const temporaryPath = `${path}.${randomUUID()}.tmp`;
   let published = false;
@@ -136,7 +137,7 @@ export async function writeRuntimeHostManagedUpdatePolicy(
     await mkdir(directory, { recursive: true, mode: 0o700 });
     const file = await open(temporaryPath, 'wx', 0o600);
     try {
-      await file.writeFile(`${JSON.stringify(record, null, 2)}\n`, 'utf8');
+      await file.writeFile(`${JSON.stringify(validatedRecord, null, 2)}\n`, 'utf8');
       await file.sync();
     } finally {
       await file.close();
@@ -166,33 +167,57 @@ async function syncDirectory(path: string): Promise<void> {
   }
 }
 
-function assertUpdatePolicyRecord(
-  value: unknown,
-): asserts value is RuntimeHostManagedUpdatePolicyRecord {
+function parseUpdatePolicyRecord(value: unknown): RuntimeHostManagedUpdatePolicyRecord {
   if (
     !isRecord(value) ||
     value.schemaVersion !== 1 ||
     !hasOnlyKeys(value, ['schemaVersion', 'policy', 'target']) ||
-    !isAutomaticUpdatePolicy(value.policy) ||
     !isManagedServiceTarget(value.target)
   ) {
     throw new TypeError('Invalid managed Runtime Host update policy record');
   }
+  return {
+    schemaVersion: 1,
+    policy: parseAutomaticUpdatePolicy(value.policy),
+    target: value.target,
+  };
 }
 
-function isAutomaticUpdatePolicy(value: unknown): value is AutomaticUpdatePolicy {
-  if (!isRecord(value)) return false;
+function parseAutomaticUpdatePolicy(value: unknown): AutomaticUpdatePolicy {
+  if (!isRecord(value)) throw new TypeError('Invalid managed Runtime Host update policy');
+  const checkIntervalHours =
+    value.checkIntervalHours === undefined
+      ? RUNTIME_HOST_UPDATE_CHECK_INTERVAL_HOURS_DEFAULT
+      : value.checkIntervalHours;
   if (value.kind === 'channel') {
-    return (
-      hasOnlyKeys(value, ['kind', 'channel']) &&
-      (value.channel === 'latest' || value.channel === 'next')
-    );
+    if (
+      (hasOnlyKeys(value, ['kind', 'channel']) ||
+        hasOnlyKeys(value, ['kind', 'channel', 'checkIntervalHours'])) &&
+      (value.channel === 'latest' || value.channel === 'next') &&
+      isCheckIntervalHours(checkIntervalHours)
+    ) {
+      return { kind: 'channel', channel: value.channel, checkIntervalHours };
+    }
+    throw new TypeError('Invalid managed Runtime Host update policy');
   }
-  return (
+  if (
     value.kind === 'fixed' &&
-    hasOnlyKeys(value, ['kind', 'version']) &&
+    (hasOnlyKeys(value, ['kind', 'version']) ||
+      hasOnlyKeys(value, ['kind', 'version', 'checkIntervalHours'])) &&
     typeof value.version === 'string' &&
-    isProductReleaseVersion(value.version)
+    isProductReleaseVersion(value.version) &&
+    isCheckIntervalHours(checkIntervalHours)
+  ) {
+    return { kind: 'fixed', version: value.version, checkIntervalHours };
+  }
+  throw new TypeError('Invalid managed Runtime Host update policy');
+}
+
+function isCheckIntervalHours(value: unknown): value is number {
+  return (
+    Number.isSafeInteger(value) &&
+    Number(value) >= RUNTIME_HOST_UPDATE_CHECK_INTERVAL_HOURS_MIN &&
+    Number(value) <= RUNTIME_HOST_UPDATE_CHECK_INTERVAL_HOURS_MAX
   );
 }
 

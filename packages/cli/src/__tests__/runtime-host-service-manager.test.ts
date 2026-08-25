@@ -406,7 +406,7 @@ describe('managed Runtime Host service', () => {
     } as const;
     const updatePolicy = {
       schemaVersion: 1 as const,
-      policy: { kind: 'channel' as const, channel: 'latest' as const },
+      policy: { kind: 'channel' as const, channel: 'latest' as const, checkIntervalHours: 6 },
       target: expectedTarget,
     };
     await writeRuntimeHostManagedUpdatePolicy(deploymentRoot, updatePolicy);

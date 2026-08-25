@@ -143,15 +143,21 @@ The installation owner can persist one update target and reconcile it with the s
 transaction:
 
 ```sh
-maka runtime-host service update-policy --target latest \
+maka runtime-host service update-policy --target latest --check-interval 4h \
   --expected-service-id <service-id> \
   --expected-root-path <state-root> \
   --expected-root-id <root-id>
 maka runtime-host service reconcile-update --json
 ```
 
-Use `update-policy --target manual` to disable automatic reconciliation. Reconciliation is a
-bounded one-shot command: it never interrupts active work and does not install a scheduler.
+Use `update-policy --target manual` to disable automatic reconciliation. Automatic policies accept
+an integer `--check-interval` from `1h` through `168h` and default to `6h`. A Maka-managed Linux or
+macOS deployment installs an OS-owned hourly tick at an installation-specific minute. The policy
+decides whether that tick is due before any registry request; an explicit `reconcile-update` always
+checks immediately. The tick remains installed in manual mode, where it returns without network
+discovery or mutation. It never interrupts active work. Service repair verifies the schedule,
+service logs include its output, and uninstall removes it before deleting the managed deployment.
+Services launched from a separate persistent global CLI do not receive this schedule.
 
 ## Uninstall
 

@@ -95,15 +95,31 @@ const boundedNonEmptyString = (maxBytes: number) =>
     .refine((value) => Buffer.byteLength(value, 'utf8') <= maxBytes);
 const PRODUCT_RELEASE_VERSION_SCHEMA = z.string().refine(isProductReleaseVersion);
 const PACKAGE_INTEGRITY_SCHEMA = z.string().refine(isSha512PackageIntegrity);
+export const RUNTIME_HOST_UPDATE_CHECK_INTERVAL_HOURS_MIN = 1;
+export const RUNTIME_HOST_UPDATE_CHECK_INTERVAL_HOURS_MAX = 7 * 24;
+export const RUNTIME_HOST_UPDATE_CHECK_INTERVAL_HOURS_DEFAULT = 6;
+const UPDATE_CHECK_INTERVAL_HOURS_SCHEMA = z
+  .number()
+  .int()
+  .min(RUNTIME_HOST_UPDATE_CHECK_INTERVAL_HOURS_MIN)
+  .max(RUNTIME_HOST_UPDATE_CHECK_INTERVAL_HOURS_MAX)
+  .default(RUNTIME_HOST_UPDATE_CHECK_INTERVAL_HOURS_DEFAULT);
 const UPDATE_POLICY_SCHEMA = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('manual') }).strict(),
   z
     .object({
       kind: z.literal('fixed'),
       version: PRODUCT_RELEASE_VERSION_SCHEMA,
+      checkIntervalHours: UPDATE_CHECK_INTERVAL_HOURS_SCHEMA,
     })
     .strict(),
-  z.object({ kind: z.literal('channel'), channel: z.enum(UPDATE_CHANNELS) }).strict(),
+  z
+    .object({
+      kind: z.literal('channel'),
+      channel: z.enum(UPDATE_CHANNELS),
+      checkIntervalHours: UPDATE_CHECK_INTERVAL_HOURS_SCHEMA,
+    })
+    .strict(),
 ]);
 const MANAGED_SERVICE_TARGET_SCHEMA = z
   .object({
@@ -331,6 +347,12 @@ const SERVICE_MANAGEMENT_FRAME_SCHEMA = z.union([
       service: SERVICE_SUMMARY_SCHEMA.optional(),
       reconciliation: z.discriminatedUnion('kind', [
         z.object({ kind: z.literal('disabled') }).strict(),
+        z
+          .object({
+            kind: z.literal('not_due'),
+            checkIntervalHours: UPDATE_CHECK_INTERVAL_HOURS_SCHEMA,
+          })
+          .strict(),
         z
           .object({
             kind: z.literal('manual_action'),

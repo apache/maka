@@ -541,7 +541,7 @@ function nonNegativeInteger(value: string | undefined): number | null {
   return Number.isSafeInteger(parsed) && parsed >= 0 ? parsed : null;
 }
 
-function quoteSystemdArgument(value: string): string {
+export function quoteSystemdArgument(value: string): string {
   if (/[\u0000-\u001f\u007f]/u.test(value)) {
     throw new TypeError('systemd arguments cannot contain control characters');
   }

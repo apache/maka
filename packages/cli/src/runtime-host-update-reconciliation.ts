@@ -54,6 +54,7 @@ import {
   RuntimeHostUpdateDiscoveryError,
 } from './runtime-host-update-discovery.js';
 import type { RuntimeHostUpdateSelector } from './runtime-host-cli.js';
+import { isRuntimeHostScheduledUpdateDue } from './runtime-host-update-scheduler.js';
 
 type UpdatePolicyFrame = Extract<RuntimeHostServiceManagementFrame, { action: 'update_policy' }>;
 type ReconcileUpdateFrame = Extract<
@@ -75,6 +76,7 @@ interface RuntimeHostUpdateReconcileCliOptions {
   readonly framed: boolean;
   readonly clientDataRoot: string;
   readonly defaultRootPath: string;
+  readonly scheduled?: boolean;
 }
 
 interface RuntimeHostUpdateReconciliationDeps {
@@ -87,6 +89,7 @@ interface RuntimeHostUpdateReconciliationDeps {
   readonly applySelection: typeof runManagedRuntimeHostResolvedUpdateCli;
   readonly writeOutput: (value: string) => unknown;
   readonly writeError: (value: string) => unknown;
+  readonly now: () => number;
 }
 
 export async function runManagedRuntimeHostUpdatePolicyCli(
@@ -171,6 +174,31 @@ export async function runManagedRuntimeHostUpdateReconcileCli(
       return 0;
     }
     const { root: policyRoot, record } = policy;
+    if (
+      options.scheduled &&
+      !isRuntimeHostScheduledUpdateDue(
+        record.target.serviceId,
+        record.policy.checkIntervalHours,
+        deps.now(),
+      )
+    ) {
+      writeFrame(
+        {
+          schemaVersion: 1,
+          kind: 'result',
+          action: 'reconcile_update',
+          updatePolicy: policyResult(record),
+          service: runtimeHostServiceSummary(status),
+          reconciliation: {
+            kind: 'not_due',
+            checkIntervalHours: record.policy.checkIntervalHours,
+          },
+        },
+        options,
+        deps,
+      );
+      return 0;
+    }
     const selection = await deps.resolveSelection({
       clientDataRoot: options.clientDataRoot,
       defaultRootPath: options.defaultRootPath,
@@ -293,6 +321,7 @@ function reconciliationDeps(
     applySelection: runManagedRuntimeHostResolvedUpdateCli,
     writeOutput: (value) => process.stdout.write(value),
     writeError: (value) => process.stderr.write(value),
+    now: Date.now,
     ...overrides,
   };
 }
@@ -412,11 +441,14 @@ function humanResult(frame: Extract<UpdatePolicyFrame | ReconcileUpdateFrame, { 
     return policy.kind === 'manual'
       ? 'Managed Runtime Host updates are manual.'
       : policy.kind === 'fixed'
-        ? `Managed Runtime Host updates are fixed at ${policy.version}.`
-        : `Managed Runtime Host updates follow the ${policy.channel} channel.`;
+        ? `Managed Runtime Host updates are fixed at ${policy.version} and checked every ${String(policy.checkIntervalHours)} hours.`
+        : `Managed Runtime Host updates follow the ${policy.channel} channel and are checked every ${String(policy.checkIntervalHours)} hours.`;
   }
   const result = frame.reconciliation;
   if (result.kind === 'disabled') return 'Managed Runtime Host automatic updates are disabled.';
+  if (result.kind === 'not_due') {
+    return `The managed Runtime Host update check is not due (every ${String(result.checkIntervalHours)} hours).`;
+  }
   if (result.kind === 'manual_action') {
     return `Maka ${result.candidate.version} requires manual update action (${result.reason}).`;
   }
