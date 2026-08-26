@@ -525,8 +525,6 @@ async function smokeRuntimeHostService({ packageRoot, cliEntrypoint, ptySpawn, r
       launch: { nodePath: process.execPath, cliPath: cliEntrypoint },
       peer: {
         enabled: true,
-        nativePath,
-        keyPath,
         peerId,
         listenAddresses: [`/ip4/127.0.0.1/udp/${await allocateLoopbackUdpPort()}/quic-v1`],
         coordinationRelays: [],

@@ -53,6 +53,7 @@ import {
   resolveRuntimeHostManagedPackageCliPath,
 } from '../runtime-host-managed-deployment.js';
 import { runManagedRuntimeHostServiceCli } from '../runtime-host-service-management-command.js';
+import { runRuntimeHostPeerManagementCli } from '../runtime-host-peer-management-command.js';
 import { runManagedRuntimeHostUpdateCli } from '../runtime-host-update-command.js';
 import {
   cleanupRuntimeHostManagedDeployment,
@@ -1365,17 +1366,33 @@ describe('managed Runtime Host service', () => {
       rootId: root.rootId,
     };
     assert.equal(installedService.service.config?.peer, undefined);
+    const peerOutput: string[] = [];
+    const runPeer = async (
+      action: 'enable' | 'disable' | 'status' | 'rotate' | 'descriptor',
+      coordinationRelays?: readonly string[],
+    ) => {
+      peerOutput.length = 0;
+      const exitCode = await runRuntimeHostPeerManagementCli(
+        {
+          action,
+          json: true,
+          ...common,
+          listenAddresses: action === 'enable' ? ['/ip4/127.0.0.1/udp/43002/quic-v1'] : [],
+          ...(coordinationRelays ? { coordinationRelays } : {}),
+          expectedTarget,
+        },
+        {
+          createBackend: () => backend,
+          managerOverrides: deps,
+          writeStdout: (text) => peerOutput.push(text),
+          writeStderr: (text) => peerOutput.push(text),
+        },
+      );
+      assert.equal(exitCode, 0);
+      return JSON.parse(peerOutput.join('')) as Record<string, unknown>;
+    };
 
-    const enabled = await configureRuntimeHostManagedPeer(
-      {
-        ...common,
-        expectedTarget,
-        peer: { coordinationRelays: ['/dns4/relay.example/tcp/443'] },
-      },
-      backend,
-      deps,
-    );
-    assert.equal(enabled.kind, 'configured');
+    assert.equal((await runPeer('enable', ['/dns4/relay.example/tcp/443'])).state, 'enabled');
     const enabledStatus = await manageRuntimeHostService(
       { ...common, action: 'status', expectedTarget },
       backend,
@@ -1383,12 +1400,13 @@ describe('managed Runtime Host service', () => {
     );
     assert.deepEqual(enabledStatus.service.config?.peer, {
       enabled: true,
-      nativePath: await realpath(nativePath),
-      keyPath: resolveRuntimeHostManagedPeerKeyPath(clientDataRoot),
       peerId: 'owned-peer-identity',
-      listenAddresses: ['/ip4/0.0.0.0/udp/43002/quic-v1'],
+      listenAddresses: ['/ip4/127.0.0.1/udp/43002/quic-v1'],
       coordinationRelays: ['/dns4/relay.example/tcp/443'],
     });
+    const descriptor = await runPeer('descriptor');
+    assert.equal(descriptor.peerId, 'owned-peer-identity');
+    assert.deepEqual(descriptor.routeHints, ['/ip4/127.0.0.1/udp/43002/quic-v1']);
     const enabledAgain = await configureRuntimeHostManagedPeer(
       { ...common, expectedTarget, peer: {} },
       backend,
@@ -1398,12 +1416,7 @@ describe('managed Runtime Host service', () => {
     assert.equal(retireCalls, 1);
 
     await rm(nativePath);
-    const disabled = await configureRuntimeHostManagedPeer(
-      { ...common, expectedTarget, peer: null },
-      backend,
-      deps,
-    );
-    assert.equal(disabled.kind, 'configured');
+    assert.equal((await runPeer('disable')).state, 'disabled');
     const disabledStatus = await manageRuntimeHostService(
       { ...common, action: 'status', expectedTarget },
       backend,
@@ -1414,7 +1427,7 @@ describe('managed Runtime Host service', () => {
       enabled: false,
     });
     await writeFile(nativePath, '', 'utf8');
-    await configureRuntimeHostManagedPeer({ ...common, expectedTarget, peer: {} }, backend, deps);
+    assert.equal((await runPeer('enable')).state, 'enabled');
     const reenabledStatus = await manageRuntimeHostService(
       { ...common, action: 'status', expectedTarget },
       backend,
@@ -1434,6 +1447,38 @@ describe('managed Runtime Host service', () => {
       deps,
     );
     assert.deepEqual(clearedRelayStatus.service.config?.peer?.coordinationRelays, []);
+    const workingRetire = backend.retire;
+    backend.retire = async () => {
+      active = false;
+      throw new Error('simulated process exit after retirement');
+    };
+    await assert.rejects(
+      configureRuntimeHostManagedPeer(
+        {
+          ...common,
+          expectedTarget,
+          peer: { coordinationRelays: ['/dns4/recovered.example/tcp/443'] },
+        },
+        backend,
+        deps,
+      ),
+      /simulated process exit after retirement/u,
+    );
+    assert.equal(active, false);
+    backend.retire = workingRetire;
+    assert.deepEqual(
+      await configureRuntimeHostManagedPeer(
+        {
+          ...common,
+          expectedTarget,
+          peer: { coordinationRelays: ['/dns4/recovered.example/tcp/443'] },
+        },
+        backend,
+        deps,
+      ),
+      { kind: 'configured' },
+    );
+    assert.equal(active, true);
     await manageRuntimeHostService({ ...common, action: 'stop', expectedTarget }, backend, deps);
     await configureRuntimeHostManagedPeer(
       {
@@ -1481,8 +1526,7 @@ describe('managed Runtime Host service', () => {
         rotationDeps,
       ),
       (error: unknown) =>
-        error instanceof RuntimeHostServiceManagerError &&
-        error.code === 'peer_rotation_incomplete',
+        error instanceof RuntimeHostServiceManagerError && error.code === 'peer_change_incomplete',
     );
     const rotation = await rotateRuntimeHostManagedPeerIdentity(
       { ...common, expectedTarget },
@@ -1529,7 +1573,7 @@ describe('managed Runtime Host service', () => {
           peer: { coordinationRelays: ['/dns4/uncertain.example/tcp/443'] },
         },
         backend,
-        deps,
+        rotationDeps,
       ),
       /uncertain configuration/u,
     );

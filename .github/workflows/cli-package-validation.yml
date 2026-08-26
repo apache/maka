@@ -18,6 +18,23 @@
 name: CLI package validation
 
 on:
+  pull_request:
+    paths:
+      - '.github/workflows/cli-package-validation.yml'
+      - '.github/workflows/runtime-host-peer-admission.yml'
+      - 'deny.toml'
+      - 'native/runtime-host-peer/**'
+      - 'package-lock.json'
+      - 'packages/cli/RUNTIME_HOST_PEER_*'
+      - 'packages/cli/src/cli-core.ts'
+      - 'packages/cli/src/runtime-host-cli.ts'
+      - 'packages/cli/src/runtime-host-peer-*'
+      - 'packages/cli/src/runtime-host-service-*'
+      - 'packages/runtime-host/src/server/peer-listener.ts'
+      - 'packages/runtime-host/src/transport/peer-native.ts'
+      - 'scripts/generate-runtime-host-peer-*'
+      - 'scripts/release-cli-package.mjs'
+      - 'scripts/smoke-release-cli-package.mjs'
   workflow_call:
     inputs:
       source_commit:
@@ -51,12 +68,16 @@ jobs:
         include:
           - runner: macos-15
             target: darwin-arm64
+            rust_target: ''
           - runner: ubuntu-24.04-arm
             target: linux-arm64
+            rust_target: aarch64-unknown-linux-gnu.2.28
           - runner: ubuntu-24.04
             target: linux-x64
+            rust_target: x86_64-unknown-linux-gnu.2.28
           - runner: windows-2025
             target: win32-x64
+            rust_target: ''
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -64,8 +85,37 @@ jobs:
           persist-credentials: false
       - name: Update stable Rust
         run: rustup update stable --no-self-update
+      - name: Install the Linux baseline linker
+        if: startsWith(matrix.target, 'linux-')
+        uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2
+        with:
+          version: 0.16.0
+      - name: Install cargo-zigbuild
+        if: startsWith(matrix.target, 'linux-')
+        uses: taiki-e/install-action@fcf5432d9f50d67e37ee6e29bdb7a224ff67b4a7 # v2
+        with:
+          tool: cargo-zigbuild@0.23.2
       - name: Build the release addon
+        env:
+          MAKA_RUNTIME_HOST_PEER_CARGO_SUBCOMMAND: ${{ matrix.rust_target && 'zigbuild' || '' }}
+          MAKA_RUNTIME_HOST_PEER_CARGO_TARGET: ${{ matrix.rust_target }}
         run: node native/runtime-host-peer/build.mjs
+      - name: Enforce the Linux glibc baseline
+        if: startsWith(matrix.target, 'linux-')
+        run: |
+          node - <<'NODE'
+          const { execFileSync } = require('node:child_process');
+          const output = execFileSync('readelf', [
+            '--version-info',
+            'native/runtime-host-peer/target/release/maka_runtime_host_peer.node',
+          ], { encoding: 'utf8' });
+          const versions = [...output.matchAll(/GLIBC_(\d+)\.(\d+)/g)].map((match) => [
+            Number(match[1]),
+            Number(match[2]),
+          ]);
+          const newer = versions.find(([major, minor]) => major > 2 || (major === 2 && minor > 28));
+          if (newer) throw new Error(`Direct-peer addon requires GLIBC_${newer.join('.')}`);
+          NODE
       - name: Stage the platform addon
         env:
           PEER_TARGET: ${{ matrix.target }}
@@ -183,6 +233,7 @@ jobs:
 
   eval:
     name: Validate installed CLI Eval
+    if: github.event_name != 'pull_request'
     needs: build
     runs-on: ubuntu-24.04
     timeout-minutes: 30

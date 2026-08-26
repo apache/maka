@@ -30,25 +30,44 @@ const encodedRustflags = [
 ]
   .filter(Boolean)
   .join('\x1f');
-await run('cargo', ['build', '--release', '--locked'], root, {
-  ...process.env,
-  CARGO_ENCODED_RUSTFLAGS: encodedRustflags,
-});
+const cargoSubcommand = process.env.MAKA_RUNTIME_HOST_PEER_CARGO_SUBCOMMAND?.trim() || 'build';
+const cargoTarget = process.env.MAKA_RUNTIME_HOST_PEER_CARGO_TARGET?.trim();
+await run(
+  'cargo',
+  [cargoSubcommand, '--release', '--locked', ...(cargoTarget ? ['--target', cargoTarget] : [])],
+  root,
+  {
+    ...process.env,
+    CARGO_ENCODED_RUSTFLAGS: encodedRustflags,
+  },
+);
+
+const cargoArtifactTarget = cargoTarget?.replace(/\.\d+\.\d+$/u, '');
+const releaseDirectory = cargoArtifactTarget
+  ? join(root, 'target', cargoArtifactTarget, 'release')
+  : join(root, 'target', 'release');
+const targetPlatform = cargoTarget
+  ? cargoTarget.includes('windows')
+    ? 'win32'
+    : cargoTarget.includes('apple')
+      ? 'darwin'
+      : 'linux'
+  : process.platform;
 
 const library =
-  process.platform === 'win32'
+  targetPlatform === 'win32'
     ? 'maka_runtime_host_peer.dll'
-    : process.platform === 'darwin'
+    : targetPlatform === 'darwin'
       ? 'libmaka_runtime_host_peer.dylib'
       : 'libmaka_runtime_host_peer.so';
 const destination = join(root, 'target', 'release', 'maka_runtime_host_peer.node');
-await copyFile(join(root, 'target', 'release', library), destination);
-if (process.platform === 'darwin') {
+await copyFile(join(releaseDirectory, library), destination);
+if (targetPlatform === 'darwin' && process.platform === 'darwin') {
   await run('install_name_tool', ['-id', '@rpath/maka_runtime_host_peer.node', destination], root, {
     ...process.env,
   });
   await run('strip', ['-x', destination], root, { ...process.env });
-} else if (process.platform === 'linux') {
+} else if (targetPlatform === 'linux' && process.platform === 'linux') {
   await run('strip', ['--strip-unneeded', destination], root, { ...process.env });
 }
 if ((await readFile(destination)).includes(Buffer.from(root))) {

@@ -24,6 +24,7 @@ import {
   RuntimeHostServiceManagerError,
   type RuntimeHostManagedServiceConfig,
 } from './runtime-host-service-manager.js';
+import { resolveRuntimeHostPeerNativePath } from './runtime-host-peer-artifact.js';
 
 export function runtimeHostServiceLaunchArguments(
   config: RuntimeHostManagedServiceConfig,
@@ -61,21 +62,6 @@ export function legacyRuntimeHostServiceLaunchArguments(
     String(config.websocket.port),
     '--websocket-path',
     config.websocket.path,
-    ...(config.peer?.enabled
-      ? [
-          '--peer-native-path',
-          config.peer.nativePath,
-          '--peer-key',
-          config.peer.keyPath,
-          '--peer-id',
-          config.peer.peerId,
-          ...config.peer.listenAddresses.flatMap((address) => ['--peer-listen', address]),
-          ...config.peer.coordinationRelays.flatMap((address) => [
-            '--peer-coordination-relay',
-            address,
-          ]),
-        ]
-      : []),
     '--json',
   ];
 }
@@ -96,11 +82,13 @@ export async function validateRuntimeHostServiceLaunch(
   config: RuntimeHostManagedServiceConfig,
 ): Promise<void> {
   try {
-    const [nodePath, cliPath, peerNativePath] = await Promise.all([
+    const [nodePath, cliPath] = await Promise.all([
       realpath(config.launch.nodePath),
       realpath(config.launch.cliPath),
-      config.peer?.enabled ? realpath(config.peer.nativePath) : undefined,
     ]);
+    const peerNativePath = config.peer?.enabled
+      ? await resolveRuntimeHostPeerNativePath(cliPath)
+      : undefined;
     const [node, cli, peerNative] = await Promise.all([
       stat(nodePath),
       stat(cliPath),

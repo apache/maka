@@ -18,10 +18,14 @@
  */
 
 import { readFile } from 'node:fs/promises';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { deriveMakaDataRoots, resolveMakaDataRoots } from './workspace-root.js';
-import { configureRuntimeHostPeerClient } from './runtime-host-peer-artifact.js';
+import {
+  configureRuntimeHostPeerClient,
+  resolveRuntimeHostManagedPeerKeyPath,
+  resolveRuntimeHostPeerNativePath,
+} from './runtime-host-peer-artifact.js';
 import { parseRuntimeHostCommand, type RuntimeHostCliCommand } from './runtime-host-cli.js';
 import { resolveCliUiLocale } from './cli-ui-locale.js';
 
@@ -260,22 +264,23 @@ export async function runMakaCli(
         const { effectiveRuntimeHostProjectDirectoryRoots, readRuntimeHostManagedServiceConfig } =
           await import('./runtime-host-service-manager.js');
         const config = await readRuntimeHostManagedServiceConfig(command.managedServiceConfigPath);
+        const peer = config.peer?.enabled
+          ? {
+              nativePath: await resolveRuntimeHostPeerNativePath(config.launch.cliPath),
+              keyPath: resolveRuntimeHostManagedPeerKeyPath(
+                dirname(command.managedServiceConfigPath),
+              ),
+              expectedPeerId: config.peer.peerId,
+              listenAddresses: config.peer.listenAddresses,
+              coordinationRelays: config.peer.coordinationRelays,
+            }
+          : undefined;
         return runRuntimeHostServiceCli({
           rootPath: config.rootPath,
           json: command.json,
           projectDirectoryRoots: effectiveRuntimeHostProjectDirectoryRoots(config),
           websocket: config.websocket,
-          ...(config.peer?.enabled
-            ? {
-                peer: {
-                  nativePath: config.peer.nativePath,
-                  keyPath: config.peer.keyPath,
-                  expectedPeerId: config.peer.peerId,
-                  listenAddresses: config.peer.listenAddresses,
-                  coordinationRelays: config.peer.coordinationRelays,
-                },
-              }
-            : {}),
+          ...(peer ? { peer } : {}),
         });
       }
       return runRuntimeHostServiceCli({

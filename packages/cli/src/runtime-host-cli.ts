@@ -1141,7 +1141,10 @@ function parseServeCommand(argv: string[]): RuntimeHostCliCommand {
   }
   if (
     managedServiceConfigPath !== undefined &&
-    (rootPath !== undefined || projectDirectoryPolicySpecified || websocketConfigured)
+    (rootPath !== undefined ||
+      projectDirectoryPolicySpecified ||
+      websocketConfigured ||
+      peerNativePath !== undefined)
   ) {
     return error('--managed-service-config cannot be combined with Runtime Host settings');
   }

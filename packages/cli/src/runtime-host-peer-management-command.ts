@@ -17,18 +17,17 @@
  * under the License.
  */
 
-import { access } from 'node:fs/promises';
 import { networkInterfaces } from 'node:os';
-import { ensureRuntimeHostPeerIdentity } from '@maka/runtime-host/client';
 import {
   configureRuntimeHostManagedPeer,
   manageRuntimeHostService,
-  assertRuntimeHostManagedPeerRotationComplete,
+  assertRuntimeHostManagedPeerMutationComplete,
   resolveRuntimeHostManagedServiceId,
   rotateRuntimeHostManagedPeerIdentity,
   RuntimeHostServiceManagerError,
   withRuntimeHostManagedServiceDeploymentLock,
   withRuntimeHostManagedServiceLifecycleLock,
+  type RuntimeHostServiceManagerOverrides,
   type RuntimeHostManagedServiceTarget,
 } from './runtime-host-service-manager.js';
 import { createPlatformRuntimeHostServiceBackend } from './runtime-host-service-management-command.js';
@@ -55,19 +54,34 @@ interface RuntimeHostPeerStatus {
   readonly coordinationRelays: readonly string[];
 }
 
+interface RuntimeHostPeerManagementCliDeps {
+  readonly createBackend: typeof createPlatformRuntimeHostServiceBackend;
+  readonly managerOverrides: RuntimeHostServiceManagerOverrides;
+  readonly writeStdout: (text: string) => void;
+  readonly writeStderr: (text: string) => void;
+}
+
 export async function runRuntimeHostPeerManagementCli(
   options: RuntimeHostPeerManagementCliOptions,
+  overrides: Partial<RuntimeHostPeerManagementCliDeps> = {},
 ): Promise<number> {
+  const deps: RuntimeHostPeerManagementCliDeps = {
+    createBackend: createPlatformRuntimeHostServiceBackend,
+    managerOverrides: {},
+    writeStdout: (text) => process.stdout.write(text),
+    writeStderr: (text) => process.stderr.write(text),
+    ...overrides,
+  };
   try {
     const serviceId = resolveRuntimeHostManagedServiceId(options.clientDataRoot);
-    const backend = createPlatformRuntimeHostServiceBackend(serviceId, options.clientDataRoot);
+    const backend = deps.createBackend(serviceId, options.clientDataRoot);
     return await withRuntimeHostManagedServiceDeploymentLock(options.clientDataRoot, () =>
       withRuntimeHostManagedServiceLifecycleLock(options.clientDataRoot, () =>
-        runRuntimeHostPeerManagementLocked(options, backend),
+        runRuntimeHostPeerManagementLocked(options, backend, deps),
       ),
     );
   } catch (error) {
-    writePeerError(options, error);
+    writePeerError(options, error, deps);
     return 1;
   }
 }
@@ -75,6 +89,7 @@ export async function runRuntimeHostPeerManagementCli(
 async function runRuntimeHostPeerManagementLocked(
   options: RuntimeHostPeerManagementCliOptions,
   backend: ReturnType<typeof createPlatformRuntimeHostServiceBackend>,
+  deps: RuntimeHostPeerManagementCliDeps,
 ): Promise<number> {
   if (options.action === 'enable' || options.action === 'disable') {
     const result = await configureRuntimeHostManagedPeer(
@@ -97,11 +112,13 @@ async function runRuntimeHostPeerManagementLocked(
               },
       },
       backend,
+      deps.managerOverrides,
     );
     if (result.kind === 'active_tasks') {
       return writePeerActiveTasks(
         options,
         'Runtime Host still owns active work; direct-peer configuration was not changed.',
+        deps,
       );
     }
   } else if (options.action === 'rotate') {
@@ -114,15 +131,17 @@ async function runRuntimeHostPeerManagementLocked(
         expectedTarget: options.expectedTarget!,
       },
       backend,
+      deps.managerOverrides,
     );
     if (result.kind === 'active_tasks') {
       return writePeerActiveTasks(
         options,
         'Runtime Host still owns active work; its peer identity was not rotated.',
+        deps,
       );
     }
     if (options.json) {
-      process.stdout.write(
+      deps.writeStdout(
         `${JSON.stringify({
           schemaVersion: 1,
           ok: true,
@@ -132,14 +151,14 @@ async function runRuntimeHostPeerManagementLocked(
         })}\n`,
       );
     } else {
-      process.stdout.write(
+      deps.writeStdout(
         `Direct peer identity changed: ${result.previousPeerId} -> ${result.peerId}.\n`,
       );
     }
     return 0;
   }
 
-  const status = await readPeerStatus(options, backend);
+  const status = await readPeerStatus(options, backend, deps.managerOverrides);
   if (options.action === 'descriptor' && status.state !== 'enabled') {
     throw new RuntimeHostServiceManagerError(
       'not_installed',
@@ -147,34 +166,43 @@ async function runRuntimeHostPeerManagementLocked(
     );
   }
   if (options.json) {
-    process.stdout.write(`${JSON.stringify({ ...status, ok: true, action: options.action })}\n`);
+    deps.writeStdout(`${JSON.stringify({ ...status, ok: true, action: options.action })}\n`);
   } else if (options.action === 'descriptor') {
-    process.stdout.write(`${JSON.stringify(status)}\n`);
+    deps.writeStdout(`${JSON.stringify(status)}\n`);
   } else {
-    process.stdout.write(formatPeerStatus(status));
+    deps.writeStdout(formatPeerStatus(status));
   }
   return 0;
 }
 
-function writePeerActiveTasks(options: RuntimeHostPeerManagementCliOptions, message: string): 1 {
-  writePeerFailure(options, 'active_tasks', message);
+function writePeerActiveTasks(
+  options: RuntimeHostPeerManagementCliOptions,
+  message: string,
+  deps: RuntimeHostPeerManagementCliDeps,
+): 1 {
+  writePeerFailure(options, 'active_tasks', message, deps);
   return 1;
 }
 
-function writePeerError(options: RuntimeHostPeerManagementCliOptions, error: unknown): void {
+function writePeerError(
+  options: RuntimeHostPeerManagementCliOptions,
+  error: unknown,
+  deps: RuntimeHostPeerManagementCliDeps,
+): void {
   const code =
     error instanceof RuntimeHostServiceManagerError ? error.code : 'internal_service_error';
   const message = error instanceof Error ? error.message : String(error);
-  writePeerFailure(options, code, message);
+  writePeerFailure(options, code, message, deps);
 }
 
 function writePeerFailure(
   options: RuntimeHostPeerManagementCliOptions,
   code: string,
   message: string,
+  deps: RuntimeHostPeerManagementCliDeps,
 ): void {
   if (options.json) {
-    process.stdout.write(
+    deps.writeStdout(
       `${JSON.stringify({
         schemaVersion: 1,
         ok: false,
@@ -184,14 +212,15 @@ function writePeerFailure(
     );
     return;
   }
-  process.stderr.write(`${message}\n`);
+  deps.writeStderr(`${message}\n`);
 }
 
 async function readPeerStatus(
   options: RuntimeHostPeerManagementCliOptions,
   backend: ReturnType<typeof createPlatformRuntimeHostServiceBackend>,
+  managerOverrides: RuntimeHostServiceManagerOverrides,
 ): Promise<RuntimeHostPeerStatus> {
-  await assertRuntimeHostManagedPeerRotationComplete(options.clientDataRoot);
+  await assertRuntimeHostManagedPeerMutationComplete(options.clientDataRoot);
   const result = await manageRuntimeHostService(
     {
       action: 'status',
@@ -202,6 +231,7 @@ async function readPeerStatus(
       ...(options.expectedTarget ? { expectedTarget: options.expectedTarget } : {}),
     },
     backend,
+    managerOverrides,
   );
   const peer = result.service.config?.peer;
   if (!peer) {
@@ -213,28 +243,11 @@ async function readPeerStatus(
       coordinationRelays: [],
     };
   }
-  let peerId: string | undefined;
-  try {
-    await access(peer.keyPath);
-    peerId = await ensureRuntimeHostPeerIdentity({
-      nativePath: peer.nativePath,
-      keyPath: peer.keyPath,
-    });
-    if (peerId !== peer.peerId) {
-      throw new RuntimeHostServiceManagerError(
-        'invalid_config',
-        'The managed Runtime Host peer identity does not match its configuration',
-      );
-    }
-  } catch (error) {
-    peerId = undefined;
-    if (peer.enabled) throw error;
-  }
   return {
     schemaVersion: 1,
     state: peer.enabled ? 'enabled' : 'disabled',
     serviceState: result.service.state,
-    ...(peerId ? { peerId } : {}),
+    peerId: peer.peerId,
     ...(options.expectedTarget ? { rootId: options.expectedTarget.rootId } : {}),
     routeHints: expandWildcardListenAddresses(peer.listenAddresses),
     coordinationRelays: peer.coordinationRelays,
