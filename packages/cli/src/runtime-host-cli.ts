@@ -486,6 +486,9 @@ function parseServicePeerCommand(argv: string[]): RuntimeHostCliCommand {
     },
   });
   if ('kind' in options) return options;
+  if (listenAddresses.some((address) => /\/udp\/0(?:\/|$)/u.test(address))) {
+    return error('--listen requires a stable non-zero UDP port');
+  }
   if (action !== 'enable' && (listenAddresses.length > 0 || coordinationRelays.length > 0)) {
     return error('--listen and --coordination-relay are only valid with peer enable');
   }

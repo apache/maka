@@ -21,7 +21,7 @@
 
 [English](./runtime-host-remote-access.md)
 
-Maka Desktop、TUI 和 CLI 可以通过 TLS、SSH、实验性的 direct peer transport，或明确启用的明文 WebSocket 连接 Runtime Host。
+Maka Desktop、TUI 和 CLI 可以通过 TLS、SSH 或明确启用的明文 WebSocket 连接 Runtime Host。CLI 和 TUI 还支持下文所述的实验性 direct peer transport。
 
 ## 设置 Linux 或 macOS Host
 
@@ -92,8 +92,8 @@ service；未指定 WebSocket port 时会保留现有端口。卸载 npm 包前�
 
 ### 实验性 direct peer
 
-发布版 CLI 已包含 direct peer native transport，Host 无需安装 Rust 或保留源码。完成 managed setup
-后，使用 setup 输出的精确 service target 启用：
+发布版 CLI 已包含供 CLI 和 TUI 使用的 direct peer native transport，Host 无需安装 Rust 或保留源码；
+Desktop 支持不在本里程碑范围内。完成 managed setup 后，使用 setup 输出的精确 service target 启用：
 
 ```sh
 maka runtime-host service peer enable \

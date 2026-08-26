@@ -181,6 +181,22 @@ describe('managed Runtime Host service', () => {
       },
     );
     assert.equal(parseRuntimeHostCommand(['service', 'peer', 'disable']).kind, 'error');
+    assert.equal(
+      parseRuntimeHostCommand([
+        'service',
+        'peer',
+        'enable',
+        '--listen',
+        '/ip4/0.0.0.0/udp/0/quic-v1',
+        '--expected-service-id',
+        'b'.repeat(64),
+        '--expected-root-path',
+        '/srv/maka',
+        '--expected-root-id',
+        'a'.repeat(64),
+      ]).kind,
+      'error',
+    );
     assert.deepEqual(
       parseRuntimeHostCommand([
         'service',
@@ -1290,18 +1306,26 @@ describe('managed Runtime Host service', () => {
     assert.equal(installedService.service.config?.peer, undefined);
 
     const enabled = await configureRuntimeHostManagedPeer(
-      { ...common, expectedTarget, peer: {} },
+      {
+        ...common,
+        expectedTarget,
+        peer: { coordinationRelays: ['/dns4/relay.example/tcp/443'] },
+      },
       backend,
       deps,
     );
     assert.equal(enabled.kind, 'configured');
-    if (enabled.kind !== 'configured') return;
-    assert.deepEqual(enabled.service.config?.peer, {
+    const enabledStatus = await manageRuntimeHostService(
+      { ...common, action: 'status', expectedTarget },
+      backend,
+      deps,
+    );
+    assert.deepEqual(enabledStatus.service.config?.peer, {
       enabled: true,
       nativePath: await realpath(nativePath),
       keyPath: resolveRuntimeHostManagedPeerKeyPath(clientDataRoot),
       listenAddresses: ['/ip4/0.0.0.0/udp/43002/quic-v1'],
-      coordinationRelays: [],
+      coordinationRelays: ['/dns4/relay.example/tcp/443'],
     });
 
     await rm(nativePath);
@@ -1311,11 +1335,25 @@ describe('managed Runtime Host service', () => {
       deps,
     );
     assert.equal(disabled.kind, 'configured');
-    if (disabled.kind !== 'configured') return;
-    assert.deepEqual(disabled.service.config?.peer, {
-      ...enabled.service.config?.peer,
+    const disabledStatus = await manageRuntimeHostService(
+      { ...common, action: 'status', expectedTarget },
+      backend,
+      deps,
+    );
+    assert.deepEqual(disabledStatus.service.config?.peer, {
+      ...enabledStatus.service.config?.peer,
       enabled: false,
     });
+    await writeFile(nativePath, '', 'utf8');
+    await configureRuntimeHostManagedPeer({ ...common, expectedTarget, peer: {} }, backend, deps);
+    const reenabledStatus = await manageRuntimeHostService(
+      { ...common, action: 'status', expectedTarget },
+      backend,
+      deps,
+    );
+    assert.deepEqual(reenabledStatus.service.config?.peer?.coordinationRelays, [
+      '/dns4/relay.example/tcp/443',
+    ]);
     const keyPath = resolveRuntimeHostManagedPeerKeyPath(clientDataRoot);
     await writeFile(keyPath, 'owned peer identity', 'utf8');
     await manageRuntimeHostService(

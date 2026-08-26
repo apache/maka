@@ -249,8 +249,8 @@ jobs:
 
       - name: Build CLI release candidate
         if: steps.plan.outputs.cli_package == 'true'
-        run: npm run release:cli:pack
+        run: npm run release:cli:pack -- --allow-dirty
 
       - name: Validate installed CLI release candidate
         if: steps.plan.outputs.cli_package == 'true'
-        run: npm run release:cli:smoke
+        run: node scripts/smoke-release-cli-package.mjs packages/cli/release/*.tgz

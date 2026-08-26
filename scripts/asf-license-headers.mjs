@@ -328,6 +328,10 @@ const reviewedProvenance = new Map([
     'Maka-authored generator that emits upstream copyright lines into THIRD_PARTY_NOTICES.txt. The copyright it names is its output, not its own.',
   ],
   [
+    'scripts/generate-runtime-host-peer-cargo-notices.mjs',
+    'Maka-authored generator that resolves declared Cargo license attribution into its generated notice. The copyright it names is its output, not its own.',
+  ],
+  [
     'scripts/sync-model-metadata.mjs',
     'Maka-authored generator that writes the models.dev attribution into the header of the catalog it generates. The copyright it names is its output, not its own.',
   ],

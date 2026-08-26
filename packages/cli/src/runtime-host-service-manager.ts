@@ -230,12 +230,11 @@ export type RuntimeHostManagedPeerRotationResult =
       readonly kind: 'rotated';
       readonly previousPeerId: string;
       readonly peerId: string;
-      readonly service: RuntimeHostManagedServiceStatus;
     };
 
 export type RuntimeHostManagedPeerConfigurationResult =
   | { readonly kind: 'active_tasks' }
-  | { readonly kind: 'configured'; readonly service: RuntimeHostManagedServiceStatus };
+  | { readonly kind: 'configured' };
 
 export interface RuntimeHostManagedServiceReplacementInput
   extends Omit<RuntimeHostManagedServiceInput, 'action' | 'expectedTarget'> {
@@ -877,18 +876,13 @@ async function rotateRuntimeHostManagedPeerIdentityLocked(
     );
   }
   try {
-    const started = await manageRuntimeHostServiceLocked(
-      { ...input, action: 'start' },
-      backend,
-      deps,
-      configPath,
-    );
+    await manageRuntimeHostServiceLocked({ ...input, action: 'start' }, backend, deps, configPath);
     const peerId = await ensureRuntimeHostPeerIdentity({
       nativePath: peer.nativePath,
       keyPath: peer.keyPath,
     });
     await rm(backupPath, { force: true });
-    return { kind: 'rotated', previousPeerId, peerId, service: started.service };
+    return { kind: 'rotated', previousPeerId, peerId };
   } catch (error) {
     const rollbackErrors: unknown[] = [];
     await backend.stop().catch((rollbackError: unknown) => rollbackErrors.push(rollbackError));
@@ -937,7 +931,7 @@ async function configureRuntimeHostManagedPeerLocked(
     );
   }
   if (input.peer === null && before.config.peer?.enabled !== true) {
-    return { kind: 'configured', service: before };
+    return { kind: 'configured' };
   }
   const retired = await manageRuntimeHostServiceLocked(
     { ...input, action: 'retire' },
@@ -949,7 +943,7 @@ async function configureRuntimeHostManagedPeerLocked(
     return { kind: 'active_tasks' };
   }
   try {
-    const configured = await manageRuntimeHostServiceLocked(
+    await manageRuntimeHostServiceLocked(
       {
         ...input,
         action: 'install',
@@ -960,7 +954,7 @@ async function configureRuntimeHostManagedPeerLocked(
       deps,
       configPath,
     );
-    return { kind: 'configured', service: configured.service };
+    return { kind: 'configured' };
   } catch (error) {
     try {
       await manageRuntimeHostServiceLocked(
@@ -1378,6 +1372,7 @@ function validatePeerConfig(value: unknown, clientDataRoot: string): void {
     value.keyPath !== resolveRuntimeHostManagedPeerKeyPath(clientDataRoot) ||
     !isStringArray(value.listenAddresses, 16) ||
     value.listenAddresses.length === 0 ||
+    value.listenAddresses.some((address) => /\/udp\/0(?:\/|$)/u.test(address)) ||
     !isStringArray(value.coordinationRelays, 16)
   ) {
     throw new TypeError('Invalid peer config');

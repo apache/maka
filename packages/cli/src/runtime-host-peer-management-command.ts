@@ -47,8 +47,7 @@ export interface RuntimeHostPeerManagementCliOptions {
 
 interface RuntimeHostPeerStatus {
   readonly schemaVersion: 1;
-  readonly configured: boolean;
-  readonly enabled: boolean;
+  readonly state: 'not_configured' | 'disabled' | 'enabled';
   readonly serviceState: string;
   readonly peerId?: string;
   readonly rootId?: string;
@@ -79,7 +78,9 @@ export async function runRuntimeHostPeerManagementCli(
                       ...(options.listenAddresses.length > 0
                         ? { listenAddresses: options.listenAddresses }
                         : {}),
-                      coordinationRelays: options.coordinationRelays,
+                      ...(options.coordinationRelays.length > 0
+                        ? { coordinationRelays: options.coordinationRelays }
+                        : {}),
                     },
             },
             backend,
@@ -130,7 +131,7 @@ export async function runRuntimeHostPeerManagementCli(
     }
 
     const status = await readPeerStatus(options, backend);
-    if (options.action === 'descriptor' && !status.enabled) {
+    if (options.action === 'descriptor' && status.state !== 'enabled') {
       throw new RuntimeHostServiceManagerError(
         'not_installed',
         'Direct peer is not enabled for the managed Runtime Host service',
@@ -167,8 +168,7 @@ async function readPeerStatus(
   if (!peer) {
     return {
       schemaVersion: 1,
-      configured: false,
-      enabled: false,
+      state: 'not_configured',
       serviceState: result.service.state,
       routeHints: [],
       coordinationRelays: [],
@@ -193,8 +193,7 @@ async function readPeerStatus(
     : undefined;
   return {
     schemaVersion: 1,
-    configured: true,
-    enabled: peer.enabled,
+    state: peer.enabled ? 'enabled' : 'disabled',
     serviceState: result.service.state,
     ...(peerId ? { peerId } : {}),
     ...(root ? { rootId: root.rootId } : {}),
@@ -225,8 +224,8 @@ function expandWildcardListenAddresses(addresses: readonly string[]): string[] {
 }
 
 function formatPeerStatus(status: RuntimeHostPeerStatus): string {
-  if (!status.configured) return 'Direct peer has not been configured.\n';
-  if (!status.enabled) {
+  if (status.state === 'not_configured') return 'Direct peer has not been configured.\n';
+  if (status.state === 'disabled') {
     return status.peerId
       ? `Direct peer ${status.peerId} is disabled.\n`
       : 'Direct peer is disabled.\n';

@@ -21,7 +21,7 @@
 
 [简体中文](./runtime-host-remote-access.zh-CN.md)
 
-Maka Desktop, TUI, and CLI can connect to a Runtime Host through TLS, SSH, an experimental direct-peer transport, or explicitly enabled plaintext WebSocket.
+Maka Desktop, TUI, and CLI can connect to a Runtime Host through TLS, SSH, or explicitly enabled plaintext WebSocket. The CLI and TUI also support the experimental direct-peer transport described below.
 
 ## Set up a Linux or macOS Host
 
@@ -104,8 +104,9 @@ ready; failure restores the previous service.
 
 ### Experimental direct peer
 
-The released CLI includes the native direct-peer transport; the Host does not need Rust or a
-source checkout. After managed setup, enable it against the exact service target printed by setup:
+The released CLI includes the native direct-peer transport for CLI and TUI use; the Host does not
+need Rust or a source checkout. Desktop support is not part of this milestone. After managed setup,
+enable it against the exact service target printed by setup:
 
 ```sh
 maka runtime-host service peer enable \

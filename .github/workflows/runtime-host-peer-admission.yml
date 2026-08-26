@@ -21,6 +21,7 @@ on:
   pull_request:
     paths:
       - '.github/workflows/runtime-host-peer-admission.yml'
+      - 'deny.toml'
       - 'native/runtime-host-peer/**'
       - 'packages/cli/RUNTIME_HOST_PEER_THIRD_PARTY_NOTICES.txt'
       - 'scripts/cargo-notices.mjs'
@@ -32,6 +33,7 @@ on:
       - main
     paths:
       - '.github/workflows/runtime-host-peer-admission.yml'
+      - 'deny.toml'
       - 'native/runtime-host-peer/**'
       - 'packages/cli/RUNTIME_HOST_PEER_THIRD_PARTY_NOTICES.txt'
       - 'scripts/cargo-notices.mjs'
@@ -76,6 +78,14 @@ jobs:
       - name: Check Cargo dependency notices
         if: matrix.os == 'ubuntu-latest'
         run: npm run check:runtime-host-peer-cargo-notices
+      - name: Check Cargo dependency licenses
+        if: matrix.os == 'ubuntu-latest'
+        uses: EmbarkStudios/cargo-deny-action@9c67a826e39827395bfa619cd85cb2aaeb43cfaa # v2.1.1
+        with:
+          command: check licenses
+          arguments: --locked --exclude-dev
+          manifest-path: native/runtime-host-peer/Cargo.toml
+          rust-version: stable
       - name: Test the native peer
         working-directory: native/runtime-host-peer
         run: cargo test --locked
