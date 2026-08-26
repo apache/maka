@@ -22,27 +22,18 @@ import { fileURLToPath } from 'node:url';
 import { generateCargoNotices } from './cargo-notices.mjs';
 
 const repoRoot = dirname(dirname(fileURLToPath(import.meta.url)));
-const manifestPath = join(repoRoot, 'experiments', 'windows-sandbox', 'launcher', 'Cargo.toml');
-const lockPath = join(repoRoot, 'experiments', 'windows-sandbox', 'launcher', 'Cargo.lock');
-const outputPath = join(
-  repoRoot,
-  'apps',
-  'desktop',
-  'resources',
-  'licenses',
-  'cargo',
-  'THIRD_PARTY_NOTICES.txt',
-);
+const nativeRoot = join(repoRoot, 'native/runtime-host-peer');
 generateCargoNotices({
   repoRoot,
   generatorPath: fileURLToPath(import.meta.url),
-  manifestPath,
-  lockPath,
-  outputPath,
-  title: 'Maka Windows sandbox Cargo dependency notices',
-  titleUnderlineLength: 48,
-  excludedPackages: new Set(['maka-windows-sandbox-spike']),
+  manifestPath: join(nativeRoot, 'Cargo.toml'),
+  lockPath: join(nativeRoot, 'Cargo.lock'),
+  outputPath: join(repoRoot, 'packages/cli/RUNTIME_HOST_PEER_THIRD_PARTY_NOTICES.txt'),
+  title: 'Maka Runtime Host direct-peer Cargo dependency notices',
+  excludedPackages: new Set(['maka-runtime-host-peer']),
+  requireLicenseFiles: false,
+  deduplicateLicenseTexts: true,
   check: process.argv.includes('--check'),
   staleMessage:
-    'Windows Cargo dependency notices are stale. Run npm run generate:windows-cargo-notices.',
+    'Runtime Host peer Cargo dependency notices are stale. Run npm run generate:runtime-host-peer-cargo-notices.',
 });

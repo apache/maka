@@ -21,6 +21,7 @@ import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { deriveMakaDataRoots, resolveMakaDataRoots } from './workspace-root.js';
+import { configureRuntimeHostPeerClient } from './runtime-host-peer-artifact.js';
 import { parseRuntimeHostCommand, type RuntimeHostCliCommand } from './runtime-host-cli.js';
 import { resolveCliUiLocale } from './cli-ui-locale.js';
 
@@ -134,6 +135,7 @@ function helpText(cliCommand: string): string {
     `  ${cliCommand} runtime-host service install [options]`,
     `  ${cliCommand} runtime-host service configure (--project-root <label>=<path> ... | --no-project-roots) --expected-config-fingerprint <sha256:...> --expected-service-id <id> --expected-root-path <path> --expected-root-id <id> [--allow-interrupt-active-tasks]`,
     `  ${cliCommand} runtime-host service status|start|stop|restart|logs|uninstall [--json]`,
+    `  ${cliCommand} runtime-host service peer enable|disable|status|rotate|descriptor [options]`,
     `  ${cliCommand} runtime-host service retire --expected-service-id <id> --expected-root-path <path> --expected-root-id <id> [--allow-interrupt-active-tasks]`,
     `  ${cliCommand} runtime-host service check-update --target <latest|next|version> [--json]`,
     `  ${cliCommand} runtime-host service update [--target <latest|next|version>] --expected-service-id <id> --expected-root-path <path> --expected-root-id <id> [--allow-interrupt-active-tasks]`,
@@ -223,6 +225,10 @@ export async function runMakaCli(
   const version = await readPackageVersion();
   const command = parseMakaCliArgs(argv, version, options.cliCommand);
   const dataRoots = resolveMakaDataRoots({ profileName: options.dataProfileName });
+  await configureRuntimeHostPeerClient({
+    cliPath: process.argv[1] ?? '',
+    clientDataRoot: dataRoots.clientDataRoot,
+  });
   switch (command.kind) {
     case 'run': {
       const { runRuntimeHostTextCli } = await import('./runtime-host-run-command.js');
@@ -317,6 +323,25 @@ export async function runMakaCli(
           : {}),
         ...(command.retainManagedDeployment ? { retainManagedDeployment: true } : {}),
         ...(command.allowInterruptActiveTasks ? { allowInterruptActiveTasks: true } : {}),
+      });
+    }
+    case 'runtime-host-service-peer': {
+      const { runRuntimeHostPeerManagementCli } = await import(
+        './runtime-host-peer-management-command.js'
+      );
+      const serviceDataRoots = command.clientDataRoot
+        ? deriveMakaDataRoots(command.clientDataRoot)
+        : dataRoots;
+      return runRuntimeHostPeerManagementCli({
+        action: command.action,
+        json: command.json,
+        clientDataRoot: serviceDataRoots.clientDataRoot,
+        defaultRootPath: serviceDataRoots.workspaceRoot,
+        nodePath: process.execPath,
+        cliPath: process.argv[1] ?? '',
+        listenAddresses: command.listenAddresses,
+        coordinationRelays: command.coordinationRelays,
+        ...(command.expectedTarget ? { expectedTarget: command.expectedTarget } : {}),
       });
     }
     case 'runtime-host-service-update': {

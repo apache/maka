@@ -20,6 +20,7 @@
 import { execFileSync, spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { createServer } from 'node:http';
+import { createRequire } from 'node:module';
 import {
   closeSync,
   existsSync,
@@ -52,6 +53,7 @@ const API_KEY = 'maka-release-smoke-key';
 const FILE_SENTINEL = 'MAKA_RELEASE_FILESYSTEM_WORKER_OK';
 const RESPONSE_SENTINEL = 'MAKA_RELEASE_SMOKE_OK';
 const INSTALLED_ROOT_ENV = 'MAKA_CLI_RELEASE_INSTALLED_ROOT';
+const require = createRequire(import.meta.url);
 
 const repoRoot = resolve(import.meta.dirname, '..');
 const cliVersion = JSON.parse(
@@ -170,6 +172,7 @@ async function validateInstalledProduct(root) {
   if (typeof ptySpawn !== 'function') throw new Error('Installed node-pty has no spawn function');
   await smokePty(ptySpawn, baseEnvironment, root);
   await smokeNativeFileLock(packageRoot, root);
+  await smokeRuntimeHostPeerAddon(packageRoot, root);
 
   logStep('checking the interactive TUI setup path');
   await smokeInteractiveTui({
@@ -197,6 +200,26 @@ async function validateInstalledProduct(root) {
   console.log(
     `[release-cli-validation] OK — installed ${basename(tarballPath)} offline as ${version}`,
   );
+}
+
+async function smokeRuntimeHostPeerAddon(packageRoot, root) {
+  const target = `${process.platform}-${process.arch}`;
+  const addonPath = join(
+    packageRoot,
+    'native/runtime-host-peer/prebuilds',
+    target,
+    'maka_runtime_host_peer.node',
+  );
+  const addon = require(addonPath);
+  if (typeof addon.ensurePeerIdentity !== 'function') {
+    throw new Error('Installed Runtime Host peer addon has an incompatible API');
+  }
+  const keyPath = join(root, 'peer-smoke.key');
+  const first = await addon.ensurePeerIdentity(keyPath);
+  const second = await addon.ensurePeerIdentity(keyPath);
+  if (typeof first !== 'string' || first.length === 0 || second !== first) {
+    throw new Error('Installed Runtime Host peer addon did not preserve its identity');
+  }
 }
 
 function validateReleaseArtifact(path) {

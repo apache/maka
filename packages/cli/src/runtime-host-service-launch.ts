@@ -61,6 +61,19 @@ export function legacyRuntimeHostServiceLaunchArguments(
     String(config.websocket.port),
     '--websocket-path',
     config.websocket.path,
+    ...(config.peer?.enabled
+      ? [
+          '--peer-native-path',
+          config.peer.nativePath,
+          '--peer-key',
+          config.peer.keyPath,
+          ...config.peer.listenAddresses.flatMap((address) => ['--peer-listen', address]),
+          ...config.peer.coordinationRelays.flatMap((address) => [
+            '--peer-coordination-relay',
+            address,
+          ]),
+        ]
+      : []),
     '--json',
   ];
 }
@@ -81,17 +94,28 @@ export async function validateRuntimeHostServiceLaunch(
   config: RuntimeHostManagedServiceConfig,
 ): Promise<void> {
   try {
-    const [nodePath, cliPath] = await Promise.all([
+    const [nodePath, cliPath, peerNativePath] = await Promise.all([
       realpath(config.launch.nodePath),
       realpath(config.launch.cliPath),
+      config.peer?.enabled ? realpath(config.peer.nativePath) : undefined,
     ]);
-    const [node, cli] = await Promise.all([stat(nodePath), stat(cliPath)]);
-    if (!node.isFile() || !cli.isFile()) throw new Error('Launch path is not a file');
-    await Promise.all([access(nodePath, constants.X_OK), access(cliPath, constants.R_OK)]);
+    const [node, cli, peerNative] = await Promise.all([
+      stat(nodePath),
+      stat(cliPath),
+      peerNativePath ? stat(peerNativePath) : undefined,
+    ]);
+    if (!node.isFile() || !cli.isFile() || (peerNative && !peerNative.isFile())) {
+      throw new Error('Launch path is not a file');
+    }
+    await Promise.all([
+      access(nodePath, constants.X_OK),
+      access(cliPath, constants.R_OK),
+      ...(peerNativePath ? [access(peerNativePath, constants.R_OK)] : []),
+    ]);
   } catch (error) {
     throw new RuntimeHostServiceManagerError(
       'invalid_launch',
-      'The configured Node.js or Maka CLI installation is unavailable',
+      'A configured Runtime Host launch file is unavailable',
       { cause: error },
     );
   }

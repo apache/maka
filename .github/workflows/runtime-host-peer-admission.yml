@@ -22,6 +22,9 @@ on:
     paths:
       - '.github/workflows/runtime-host-peer-admission.yml'
       - 'native/runtime-host-peer/**'
+      - 'packages/cli/RUNTIME_HOST_PEER_THIRD_PARTY_NOTICES.txt'
+      - 'scripts/cargo-notices.mjs'
+      - 'scripts/generate-runtime-host-peer-cargo-notices.mjs'
       - 'packages/runtime-host/src/transport/peer-native.ts'
       - 'packages/runtime-host/src/server/peer-listener.ts'
   push:
@@ -30,6 +33,9 @@ on:
     paths:
       - '.github/workflows/runtime-host-peer-admission.yml'
       - 'native/runtime-host-peer/**'
+      - 'packages/cli/RUNTIME_HOST_PEER_THIRD_PARTY_NOTICES.txt'
+      - 'scripts/cargo-notices.mjs'
+      - 'scripts/generate-runtime-host-peer-cargo-notices.mjs'
       - 'packages/runtime-host/src/transport/peer-native.ts'
       - 'packages/runtime-host/src/server/peer-listener.ts'
 
@@ -67,6 +73,9 @@ jobs:
       - name: Lint the native peer
         working-directory: native/runtime-host-peer
         run: cargo clippy --locked --all-targets -- -D warnings
+      - name: Check Cargo dependency notices
+        if: matrix.os == 'ubuntu-latest'
+        run: npm run check:runtime-host-peer-cargo-notices
       - name: Test the native peer
         working-directory: native/runtime-host-peer
         run: cargo test --locked
@@ -79,7 +88,7 @@ jobs:
           const { mkdtempSync, rmSync } = require('node:fs');
           const { tmpdir } = require('node:os');
           const { join, resolve } = require('node:path');
-          const addon = require(resolve('native/runtime-host-peer/target/debug/maka_runtime_host_peer.node'));
+          const addon = require(resolve('native/runtime-host-peer/target/release/maka_runtime_host_peer.node'));
           void (async () => {
             const directory = mkdtempSync(join(tmpdir(), 'maka-peer-'));
             const server = addon.startPeerEndpoint({

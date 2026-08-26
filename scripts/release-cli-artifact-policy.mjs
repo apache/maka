@@ -17,13 +17,13 @@
  * under the License.
  */
 
-// The first installable proof tarball was 15,005,877 compressed bytes,
-// 77,684,229 unpacked bytes, and 7,511 entries. These ceilings preserve
-// deliberate headroom while making an accidental dependency/content spike a
-// reviewed release change instead of silently shipping it.
+// The installable CLI includes four reviewed direct-peer native addons so one
+// immutable tarball works on every supported target without install scripts.
+// These ceilings retain deliberate headroom while keeping later content spikes
+// reviewable.
 export const CLI_RELEASE_ARTIFACT_LIMITS = Object.freeze({
-  compressedBytes: 18 * 1024 * 1024,
-  unpackedBytes: 90 * 1024 * 1024,
+  compressedBytes: 32 * 1024 * 1024,
+  unpackedBytes: 128 * 1024 * 1024,
   entryCount: 9_000,
 });
 

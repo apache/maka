@@ -18,6 +18,7 @@
  */
 
 import { createHash, randomUUID } from 'node:crypto';
+import { createSocket } from 'node:dgram';
 import { createServer } from 'node:net';
 import { realpathSync } from 'node:fs';
 import { mkdir, open, readFile, realpath, rename, rm, stat } from 'node:fs/promises';
@@ -33,6 +34,7 @@ import {
 } from '@maka/runtime-host/protocol';
 import {
   connectExistingRuntimeHost,
+  ensureRuntimeHostPeerIdentity,
   prepareConnectedRuntimeHostRetirement,
 } from '@maka/runtime-host/client';
 import { RUNTIME_HOST_SERVICE_LOG_MAX_BYTES } from '@maka/runtime-host/operator';
@@ -55,6 +57,10 @@ import {
 } from './runtime-host-managed-deployment.js';
 import { writeRuntimeHostManagedUpdatePolicy } from './runtime-host-update-policy-store.js';
 import { isTemporaryNpxInstallation } from './runtime-host-cli-installation.js';
+import {
+  resolveRuntimeHostManagedPeerKeyPath,
+  resolveRuntimeHostPeerNativePath,
+} from './runtime-host-peer-artifact.js';
 
 const SERVICE_CONFIG_FILE = 'runtime-host-service.json';
 const SERVICE_LIFECYCLE_LOCK_FILE = 'runtime-host-setup';
@@ -80,6 +86,13 @@ export interface RuntimeHostManagedServiceConfig {
   readonly launch: {
     readonly nodePath: string;
     readonly cliPath: string;
+  };
+  readonly peer?: {
+    readonly enabled: boolean;
+    readonly nativePath: string;
+    readonly keyPath: string;
+    readonly listenAddresses: readonly string[];
+    readonly coordinationRelays: readonly string[];
   };
 }
 
@@ -186,6 +199,11 @@ export interface RuntimeHostManagedServiceInput {
   readonly projectDirectoryRoots?: readonly { readonly label: string; readonly path: string }[];
   readonly websocketPort?: number;
   readonly websocketPath?: string;
+  /** Undefined preserves the current setting, null disables it. */
+  readonly peer?: {
+    readonly listenAddresses?: readonly string[];
+    readonly coordinationRelays?: readonly string[];
+  } | null;
   readonly retainManagedDeployment?: boolean;
   readonly nodePath: string;
   readonly cliPath: string;
@@ -206,6 +224,19 @@ export interface RuntimeHostManagedDeploymentCleanupInput {
   readonly expectedTarget: RuntimeHostManagedServiceTarget;
 }
 
+export type RuntimeHostManagedPeerRotationResult =
+  | { readonly kind: 'active_tasks' }
+  | {
+      readonly kind: 'rotated';
+      readonly previousPeerId: string;
+      readonly peerId: string;
+      readonly service: RuntimeHostManagedServiceStatus;
+    };
+
+export type RuntimeHostManagedPeerConfigurationResult =
+  | { readonly kind: 'active_tasks' }
+  | { readonly kind: 'configured'; readonly service: RuntimeHostManagedServiceStatus };
+
 export interface RuntimeHostManagedServiceReplacementInput
   extends Omit<RuntimeHostManagedServiceInput, 'action' | 'expectedTarget'> {
   readonly expectedTarget: RuntimeHostManagedServiceTarget;
@@ -213,6 +244,7 @@ export interface RuntimeHostManagedServiceReplacementInput
 
 interface RuntimeHostServiceManagerDeps {
   readonly allocateLoopbackPort: () => Promise<number>;
+  readonly allocatePeerPort: () => Promise<number>;
   readonly waitForReady: (
     config: RuntimeHostManagedServiceConfig,
     backend: RuntimeHostServiceBackend,
@@ -262,6 +294,7 @@ export async function manageRuntimeHostService(
 ): Promise<RuntimeHostManagedServiceResult> {
   const deps: RuntimeHostServiceManagerDeps = {
     allocateLoopbackPort,
+    allocatePeerPort,
     waitForReady: verifyRuntimeHostManagedServiceReady,
     prepareRetirement: prepareRuntimeHostRetirement,
     environment: process.env,
@@ -335,6 +368,7 @@ export async function replaceRuntimeHostManagedService(
 ): Promise<RuntimeHostManagedServiceStatus> {
   const deps: RuntimeHostServiceManagerDeps = {
     allocateLoopbackPort,
+    allocatePeerPort,
     waitForReady: verifyRuntimeHostManagedServiceReady,
     prepareRetirement: prepareRuntimeHostRetirement,
     environment: process.env,
@@ -347,6 +381,59 @@ export async function replaceRuntimeHostManagedService(
   return withProcessLifetimeFileUpdateLock(
     configPath,
     () => replaceRuntimeHostManagedServiceLocked(input, backend, deps, configPath),
+    SERVICE_OPERATION_LOCK_TIMEOUT_MS,
+  );
+}
+
+export async function rotateRuntimeHostManagedPeerIdentity(
+  input: Omit<RuntimeHostManagedServiceInput, 'action'> & {
+    readonly expectedTarget: RuntimeHostManagedServiceTarget;
+  },
+  backend: RuntimeHostServiceBackend,
+  overrides: Partial<RuntimeHostServiceManagerDeps> = {},
+): Promise<RuntimeHostManagedPeerRotationResult> {
+  const deps: RuntimeHostServiceManagerDeps = {
+    allocateLoopbackPort,
+    allocatePeerPort,
+    waitForReady: verifyRuntimeHostManagedServiceReady,
+    prepareRetirement: prepareRuntimeHostRetirement,
+    environment: process.env,
+    homeDir: homedir(),
+    platform: process.platform,
+    ...overrides,
+  };
+  const configPath = resolveRuntimeHostManagedServiceConfigPath(input.clientDataRoot);
+  await mkdir(dirname(configPath), { recursive: true, mode: 0o700 });
+  return withProcessLifetimeFileUpdateLock(
+    configPath,
+    () => rotateRuntimeHostManagedPeerIdentityLocked(input, backend, deps, configPath),
+    SERVICE_OPERATION_LOCK_TIMEOUT_MS,
+  );
+}
+
+export async function configureRuntimeHostManagedPeer(
+  input: Omit<RuntimeHostManagedServiceInput, 'action' | 'peer'> & {
+    readonly expectedTarget: RuntimeHostManagedServiceTarget;
+    readonly peer: NonNullable<RuntimeHostManagedServiceInput['peer']> | null;
+  },
+  backend: RuntimeHostServiceBackend,
+  overrides: Partial<RuntimeHostServiceManagerDeps> = {},
+): Promise<RuntimeHostManagedPeerConfigurationResult> {
+  const deps: RuntimeHostServiceManagerDeps = {
+    allocateLoopbackPort,
+    allocatePeerPort,
+    waitForReady: verifyRuntimeHostManagedServiceReady,
+    prepareRetirement: prepareRuntimeHostRetirement,
+    environment: process.env,
+    homeDir: homedir(),
+    platform: process.platform,
+    ...overrides,
+  };
+  const configPath = resolveRuntimeHostManagedServiceConfigPath(input.clientDataRoot);
+  await mkdir(dirname(configPath), { recursive: true, mode: 0o700 });
+  return withProcessLifetimeFileUpdateLock(
+    configPath,
+    () => configureRuntimeHostManagedPeerLocked(input, backend, deps, configPath),
     SERVICE_OPERATION_LOCK_TIMEOUT_MS,
   );
 }
@@ -487,6 +574,15 @@ async function manageRuntimeHostServiceLocked(
       await writeRuntimeHostManagedUpdatePolicy(policyDeploymentRoot, null);
     }
     await backend.uninstall();
+    try {
+      await rm(resolveRuntimeHostManagedPeerKeyPath(input.clientDataRoot), { force: true });
+    } catch (error) {
+      throw new RuntimeHostServiceManagerError(
+        'uninstall_incomplete',
+        'Unable to remove the managed Runtime Host peer identity',
+        { cause: error },
+      );
+    }
     await removeRuntimeHostServiceFile(configPath, 'service config');
     if (managedDeploymentRoot && !input.retainManagedDeployment) {
       try {
@@ -727,6 +823,163 @@ async function replaceRuntimeHostManagedServiceLocked(
   return readServiceStatus(configPath, backend);
 }
 
+async function rotateRuntimeHostManagedPeerIdentityLocked(
+  input: Omit<RuntimeHostManagedServiceInput, 'action'> & {
+    readonly expectedTarget: RuntimeHostManagedServiceTarget;
+  },
+  backend: RuntimeHostServiceBackend,
+  deps: RuntimeHostServiceManagerDeps,
+  configPath: string,
+): Promise<RuntimeHostManagedPeerRotationResult> {
+  const serviceId = resolveRuntimeHostManagedServiceId(input.clientDataRoot);
+  assertExpectedServiceIdentity(serviceId, input.expectedTarget);
+  const before = await readServiceStatus(configPath, backend);
+  await resolveExpectedServiceRoot(before.config, input);
+  const peer = before.config?.peer;
+  if (!before.installed || !before.config || !peer?.enabled) {
+    throw new RuntimeHostServiceManagerError(
+      'not_installed',
+      'Direct peer is not enabled for the managed Runtime Host service',
+    );
+  }
+  let previousPeerId: string;
+  try {
+    await stat(peer.keyPath);
+    previousPeerId = await ensureRuntimeHostPeerIdentity({
+      nativePath: peer.nativePath,
+      keyPath: peer.keyPath,
+    });
+  } catch (error) {
+    throw new RuntimeHostServiceManagerError(
+      'invalid_config',
+      'The managed Runtime Host peer identity is unavailable',
+      { cause: error },
+    );
+  }
+  const retired = await manageRuntimeHostServiceLocked(
+    { ...input, action: 'retire' },
+    backend,
+    deps,
+    configPath,
+  );
+  if (retired.action === 'retire' && retired.retirement.kind === 'active_tasks') {
+    return { kind: 'active_tasks' };
+  }
+
+  const backupPath = `${peer.keyPath}.rotation-${randomUUID()}`;
+  try {
+    await rename(peer.keyPath, backupPath);
+  } catch (error) {
+    throw new RuntimeHostServiceManagerError(
+      'invalid_config',
+      'The managed Runtime Host peer identity is unavailable',
+      { cause: error },
+    );
+  }
+  try {
+    const started = await manageRuntimeHostServiceLocked(
+      { ...input, action: 'start' },
+      backend,
+      deps,
+      configPath,
+    );
+    const peerId = await ensureRuntimeHostPeerIdentity({
+      nativePath: peer.nativePath,
+      keyPath: peer.keyPath,
+    });
+    await rm(backupPath, { force: true });
+    return { kind: 'rotated', previousPeerId, peerId, service: started.service };
+  } catch (error) {
+    const rollbackErrors: unknown[] = [];
+    await backend.stop().catch((rollbackError: unknown) => rollbackErrors.push(rollbackError));
+    await rm(peer.keyPath, { force: true }).catch((rollbackError: unknown) =>
+      rollbackErrors.push(rollbackError),
+    );
+    await rename(backupPath, peer.keyPath).catch((rollbackError: unknown) =>
+      rollbackErrors.push(rollbackError),
+    );
+    if (rollbackErrors.length === 0) {
+      await manageRuntimeHostServiceLocked(
+        { ...input, action: 'start' },
+        backend,
+        deps,
+        configPath,
+      ).catch((rollbackError: unknown) => rollbackErrors.push(rollbackError));
+    }
+    if (rollbackErrors.length > 0) {
+      throw new RuntimeHostServiceManagerError(
+        'service_manager_operation_failed',
+        'Rotating the Runtime Host peer identity failed and the previous identity could not be restored',
+        { cause: new AggregateError([error, ...rollbackErrors]) },
+      );
+    }
+    throw error;
+  }
+}
+
+async function configureRuntimeHostManagedPeerLocked(
+  input: Omit<RuntimeHostManagedServiceInput, 'action' | 'peer'> & {
+    readonly expectedTarget: RuntimeHostManagedServiceTarget;
+    readonly peer: NonNullable<RuntimeHostManagedServiceInput['peer']> | null;
+  },
+  backend: RuntimeHostServiceBackend,
+  deps: RuntimeHostServiceManagerDeps,
+  configPath: string,
+): Promise<RuntimeHostManagedPeerConfigurationResult> {
+  const serviceId = resolveRuntimeHostManagedServiceId(input.clientDataRoot);
+  assertExpectedServiceIdentity(serviceId, input.expectedTarget);
+  const before = await readServiceStatus(configPath, backend);
+  await resolveExpectedServiceRoot(before.config, input);
+  if (!before.installed || !before.config) {
+    throw new RuntimeHostServiceManagerError(
+      'not_installed',
+      'Runtime Host service is not installed',
+    );
+  }
+  if (input.peer === null && before.config.peer?.enabled !== true) {
+    return { kind: 'configured', service: before };
+  }
+  const retired = await manageRuntimeHostServiceLocked(
+    { ...input, action: 'retire' },
+    backend,
+    deps,
+    configPath,
+  );
+  if (retired.action === 'retire' && retired.retirement.kind === 'active_tasks') {
+    return { kind: 'active_tasks' };
+  }
+  try {
+    const configured = await manageRuntimeHostServiceLocked(
+      {
+        ...input,
+        action: 'install',
+        nodePath: before.config.launch.nodePath,
+        cliPath: before.config.launch.cliPath,
+      },
+      backend,
+      deps,
+      configPath,
+    );
+    return { kind: 'configured', service: configured.service };
+  } catch (error) {
+    try {
+      await manageRuntimeHostServiceLocked(
+        { ...input, action: 'start' },
+        backend,
+        deps,
+        configPath,
+      );
+    } catch (restoreError) {
+      throw new RuntimeHostServiceManagerError(
+        'service_manager_operation_failed',
+        'Changing the Runtime Host peer configuration failed and the previous service could not be restarted',
+        { cause: new AggregateError([error, restoreError]) },
+      );
+    }
+    throw error;
+  }
+}
+
 function assertExpectedServiceIdentity(
   serviceId: string,
   expectedTarget: RuntimeHostManagedServiceTarget,
@@ -908,9 +1161,48 @@ async function prepareServiceConfig(
     projectDirectoryRoots,
     websocket: { host: '127.0.0.1', port, path: websocketPath },
     launch: { nodePath, cliPath },
+    ...(await preparePeerConfig(input, previous, cliPath, deps)),
   };
-  validateServiceConfig(config, serviceId);
+  validateServiceConfig(config, serviceId, input.clientDataRoot);
   return config;
+}
+
+async function preparePeerConfig(
+  input: Omit<RuntimeHostManagedServiceInput, 'action'>,
+  previous: RuntimeHostManagedServiceConfig | null,
+  cliPath: string,
+  deps: RuntimeHostServiceManagerDeps,
+): Promise<Pick<RuntimeHostManagedServiceConfig, 'peer'>> {
+  if (input.peer === undefined && previous?.peer === undefined) return {};
+  if (input.peer === null && previous?.peer === undefined) return {};
+
+  const nativePath =
+    input.peer === null
+      ? previous!.peer!.nativePath
+      : await resolveRuntimeHostPeerNativePath(cliPath).catch((error) => {
+          throw new RuntimeHostServiceManagerError(
+            'invalid_launch',
+            'This Maka installation does not include the direct-peer native artifact',
+            { cause: error },
+          );
+        });
+  const requested = input.peer ?? previous!.peer!;
+  const listenAddresses = requested.listenAddresses ??
+    previous?.peer?.listenAddresses ?? [
+      `/ip4/0.0.0.0/udp/${await deps.allocatePeerPort()}/quic-v1`,
+    ];
+  return {
+    peer: {
+      enabled: input.peer !== null && (input.peer !== undefined || previous!.peer!.enabled),
+      nativePath,
+      keyPath:
+        previous?.peer?.keyPath ?? resolveRuntimeHostManagedPeerKeyPath(input.clientDataRoot),
+      listenAddresses: uniqueStrings(listenAddresses),
+      coordinationRelays: uniqueStrings(
+        requested.coordinationRelays ?? previous?.peer?.coordinationRelays ?? [],
+      ),
+    },
+  };
 }
 
 async function readServiceStatus(
@@ -957,7 +1249,12 @@ async function readServiceConfig(path: string): Promise<RuntimeHostManagedServic
   }
   try {
     const parsed: unknown = JSON.parse(raw);
-    validateServiceConfig(parsed, resolveRuntimeHostManagedServiceId(dirname(path)));
+    const clientDataRoot = dirname(path);
+    validateServiceConfig(
+      parsed,
+      resolveRuntimeHostManagedServiceId(clientDataRoot),
+      clientDataRoot,
+    );
     return parsed;
   } catch (error) {
     throw new RuntimeHostServiceManagerError(
@@ -1011,6 +1308,7 @@ async function readServiceConfigForUninstall(path: string): Promise<{
 function validateServiceConfig(
   value: unknown,
   serviceId: string,
+  clientDataRoot: string,
 ): asserts value is RuntimeHostManagedServiceConfig {
   if (!isRecord(value) || (value.schemaVersion !== 1 && value.schemaVersion !== 2)) {
     throw new TypeError('Invalid schemaVersion');
@@ -1054,6 +1352,7 @@ function validateServiceConfig(
   ) {
     throw new TypeError('Invalid websocket config');
   }
+  if (value.peer !== undefined) validatePeerConfig(value.peer, clientDataRoot);
   const launch = value.launch;
   if (
     !isRecord(launch) ||
@@ -1069,6 +1368,39 @@ function validateServiceConfig(
   ) {
     throw new TypeError('Invalid managed deployment root');
   }
+}
+
+function validatePeerConfig(value: unknown, clientDataRoot: string): void {
+  if (
+    !isRecord(value) ||
+    typeof value.enabled !== 'boolean' ||
+    !isSafeAbsolutePath(value.nativePath) ||
+    value.keyPath !== resolveRuntimeHostManagedPeerKeyPath(clientDataRoot) ||
+    !isStringArray(value.listenAddresses, 16) ||
+    value.listenAddresses.length === 0 ||
+    !isStringArray(value.coordinationRelays, 16)
+  ) {
+    throw new TypeError('Invalid peer config');
+  }
+}
+
+function isStringArray(value: unknown, maximumLength: number): value is string[] {
+  return (
+    Array.isArray(value) &&
+    value.length <= maximumLength &&
+    value.every(
+      (entry) =>
+        typeof entry === 'string' &&
+        entry.length > 0 &&
+        Buffer.byteLength(entry, 'utf8') <= 2_048 &&
+        !hasControlCharacters(entry),
+    ) &&
+    new Set(value).size === value.length
+  );
+}
+
+function uniqueStrings(values: readonly string[]): string[] {
+  return [...new Set(values)];
 }
 
 async function normalizeStateRoot(requestedRoot: string): Promise<string> {
@@ -1574,6 +1906,19 @@ async function allocateLoopbackPort(): Promise<number> {
         return;
       }
       server.close((error) => (error ? reject(error) : resolvePort(address.port)));
+    });
+  });
+}
+
+async function allocatePeerPort(): Promise<number> {
+  return new Promise((resolvePort, reject) => {
+    const socket = createSocket('udp4');
+    socket.unref();
+    socket.once('error', reject);
+    socket.bind({ address: '0.0.0.0', port: 0, exclusive: true }, () => {
+      const address = socket.address();
+      socket.close();
+      resolvePort(address.port);
     });
   });
 }

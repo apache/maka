@@ -21,7 +21,7 @@
 
 [简体中文](./runtime-host-remote-access.zh-CN.md)
 
-Maka Desktop, TUI, and CLI can connect to a Runtime Host through TLS, SSH, or explicitly enabled plaintext WebSocket.
+Maka Desktop, TUI, and CLI can connect to a Runtime Host through TLS, SSH, an experimental direct-peer transport, or explicitly enabled plaintext WebSocket.
 
 ## Set up a Linux or macOS Host
 
@@ -101,6 +101,33 @@ global Maka installation, not `npx`. A replacement is committed only after the n
 ready; failure restores the previous service.
 
 ## Choose a connection method
+
+### Experimental direct peer
+
+The released CLI includes the native direct-peer transport; the Host does not need Rust or a
+source checkout. After managed setup, enable it against the exact service target printed by setup:
+
+```sh
+maka runtime-host service peer enable \
+  --expected-service-id '<serviceId>' \
+  --expected-root-path '<rootPath>' \
+  --expected-root-id '<rootId>'
+
+maka runtime-host service peer descriptor \
+  --expected-service-id '<serviceId>' \
+  --expected-root-path '<rootPath>' \
+  --expected-root-id '<rootId>'
+```
+
+The descriptor contains the PeerId, Root ID, and candidate routes, but never an access credential.
+Use those values with `runtime-host profile set --peer-id ... --peer-route ...`; supply the
+credential created by setup through `MAKA_RUNTIME_HOST_ACCESS_CREDENTIAL`. Disable and re-enable
+preserve the PeerId and listener settings; `peer rotate` intentionally changes the PeerId, and
+service uninstall removes its key while retaining the State Root.
+
+This direct-only path is experimental and may fail on restrictive NAT or UDP-blocked networks. It
+does not replace an existing TLS, SSH, or overlay-network fallback and does not use a public relay
+unless one is explicitly configured with `peer enable --coordination-relay`.
 
 ### Direct TLS
 

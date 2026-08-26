@@ -187,6 +187,7 @@ export const exclusionRules = [
       'apps/desktop/resources/licenses/renderer/SIMPLE_ICONS_LICENSE.md',
       'apps/desktop/resources/licenses/renderer/TDESIGN_ICONS_LICENSE.txt',
       'apps/desktop/src/renderer/public/THIRD_PARTY_LICENSES.txt',
+      'packages/cli/RUNTIME_HOST_PEER_THIRD_PARTY_NOTICES.txt',
       'packages/cli/THIRD_PARTY_NOTICES.txt',
     ),
   },

@@ -95,6 +95,15 @@ export type RuntimeHostCliCommand =
       allowInterruptActiveTasks?: true;
     }
   | {
+      kind: 'runtime-host-service-peer';
+      action: 'enable' | 'disable' | 'status' | 'rotate' | 'descriptor';
+      json: boolean;
+      clientDataRoot?: string;
+      listenAddresses: string[];
+      coordinationRelays: string[];
+      expectedTarget?: RuntimeHostManagedServiceTarget;
+    }
+  | {
       kind: 'runtime-host-service-check-update';
       json: boolean;
       framed?: true;
@@ -259,6 +268,7 @@ function parseSetupCommand(argv: string[]): RuntimeHostCliCommand {
 
 function parseServiceManagementCommand(argv: string[]): RuntimeHostCliCommand {
   const action = argv[0];
+  if (action === 'peer') return parseServicePeerCommand(argv.slice(1));
   if (action === 'cleanup-deployment') {
     let clientDataRoot: string | undefined;
     const options = parseManagedServiceOptions(argv.slice(1), {
@@ -439,6 +449,63 @@ function parseServiceManagementCommand(argv: string[]): RuntimeHostCliCommand {
           projectDirectoryRoots: options.projectDirectoryRoots!,
         }
       : {}),
+  };
+}
+
+function parseServicePeerCommand(argv: string[]): RuntimeHostCliCommand {
+  const action = argv[0];
+  if (
+    action !== 'enable' &&
+    action !== 'disable' &&
+    action !== 'status' &&
+    action !== 'rotate' &&
+    action !== 'descriptor'
+  ) {
+    return error(
+      action
+        ? `Unexpected runtime-host service peer command: ${action}`
+        : 'runtime-host service peer requires enable, disable, status, rotate, or descriptor',
+    );
+  }
+  let clientDataRoot: string | undefined;
+  const listenAddresses: string[] = [];
+  const coordinationRelays: string[] = [];
+  const options = parseManagedServiceOptions(argv.slice(1), {
+    valueOptions: {
+      '--client-data-root': (value) => {
+        if (clientDataRoot !== undefined) return error('Duplicate --client-data-root');
+        if (!isSafeAbsolutePath(value)) return error('--client-data-root must be an absolute path');
+        clientDataRoot = value;
+      },
+      '--listen': (value) => {
+        listenAddresses.push(value);
+      },
+      '--coordination-relay': (value) => {
+        coordinationRelays.push(value);
+      },
+    },
+  });
+  if ('kind' in options) return options;
+  if (action !== 'enable' && (listenAddresses.length > 0 || coordinationRelays.length > 0)) {
+    return error('--listen and --coordination-relay are only valid with peer enable');
+  }
+  if (
+    (action === 'enable' ||
+      action === 'disable' ||
+      action === 'rotate' ||
+      action === 'descriptor') &&
+    !options.expectedTarget
+  ) {
+    return error(`runtime-host service peer ${action} requires an expected target`);
+  }
+  return {
+    kind: 'runtime-host-service-peer',
+    action,
+    json: options.json,
+    ...(clientDataRoot ? { clientDataRoot } : {}),
+    listenAddresses,
+    coordinationRelays,
+    ...(options.expectedTarget ? { expectedTarget: options.expectedTarget } : {}),
   };
 }
 

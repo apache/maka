@@ -56,6 +56,7 @@ import { runManagedRuntimeHostServiceCli } from '../runtime-host-service-managem
 import { runManagedRuntimeHostUpdateCli } from '../runtime-host-update-command.js';
 import {
   cleanupRuntimeHostManagedDeployment,
+  configureRuntimeHostManagedPeer,
   effectiveRuntimeHostProjectDirectoryRoots,
   manageRuntimeHostService,
   replaceRuntimeHostManagedService,
@@ -67,6 +68,10 @@ import {
   type RuntimeHostManagedServiceResult,
   type RuntimeHostServiceBackend,
 } from '../runtime-host-service-manager.js';
+import {
+  resolveRuntimeHostManagedPeerKeyPath,
+  runtimeHostPeerTarget,
+} from '../runtime-host-peer-artifact.js';
 import {
   readRuntimeHostManagedUpdatePolicy,
   writeRuntimeHostManagedUpdatePolicy,
@@ -148,6 +153,34 @@ describe('managed Runtime Host service', () => {
       json: false,
       framed: true,
     });
+    assert.deepEqual(
+      parseRuntimeHostCommand([
+        'service',
+        'peer',
+        'enable',
+        '--listen',
+        '/ip4/0.0.0.0/udp/44001/quic-v1',
+        '--expected-service-id',
+        'b'.repeat(64),
+        '--expected-root-path',
+        '/srv/maka',
+        '--expected-root-id',
+        'a'.repeat(64),
+      ]),
+      {
+        kind: 'runtime-host-service-peer',
+        action: 'enable',
+        json: false,
+        listenAddresses: ['/ip4/0.0.0.0/udp/44001/quic-v1'],
+        coordinationRelays: [],
+        expectedTarget: {
+          serviceId: 'b'.repeat(64),
+          rootPath: '/srv/maka',
+          rootId: 'a'.repeat(64),
+        },
+      },
+    );
+    assert.equal(parseRuntimeHostCommand(['service', 'peer', 'disable']).kind, 'error');
     assert.deepEqual(
       parseRuntimeHostCommand([
         'service',
@@ -1185,6 +1218,113 @@ describe('managed Runtime Host service', () => {
 
     const repeated = await manageRuntimeHostService({ ...common, action: 'uninstall' }, backend());
     assert.equal(repeated.service.installed, false);
+  });
+
+  it('preserves direct-peer identity and listener settings while disabled', async (t) => {
+    const base = await realpath(await mkdtemp(join(tmpdir(), 'maka-runtime-host-peer-service-')));
+    t.after(() => rm(base, { recursive: true, force: true }));
+    const clientDataRoot = join(base, 'client');
+    const rootPath = join(base, 'state');
+    const packageRoot = join(base, 'package');
+    const cliPath = join(packageRoot, 'dist', 'cli.js');
+    const nativePath = join(
+      packageRoot,
+      'native/runtime-host-peer/prebuilds',
+      runtimeHostPeerTarget(),
+      'maka_runtime_host_peer.node',
+    );
+    await mkdir(dirname(cliPath), { recursive: true });
+    await mkdir(dirname(nativePath), { recursive: true });
+    await writeFile(cliPath, '', 'utf8');
+    await writeFile(nativePath, '', 'utf8');
+
+    let installed = false;
+    let active = false;
+    const backend: RuntimeHostServiceBackend = {
+      ...createReadyBackend(),
+      install: async () => {
+        installed = true;
+        active = true;
+        return { rollback: async () => undefined };
+      },
+      retire: async () => {
+        active = false;
+      },
+      status: async () => ({
+        manager: 'systemd_user',
+        installed,
+        enabled: installed,
+        active,
+        state: active ? 'running' : installed ? 'stopped' : 'not_installed',
+        pid: active ? 42 : null,
+        lastExitCode: 0,
+      }),
+      uninstall: async () => {
+        installed = false;
+        active = false;
+      },
+    };
+    const common = {
+      clientDataRoot,
+      defaultRootPath: rootPath,
+      nodePath: process.execPath,
+      cliPath,
+    } as const;
+    const deps = {
+      allocateLoopbackPort: async () => 43_001,
+      allocatePeerPort: async () => 43_002,
+      waitForReady: async () => undefined,
+      prepareRetirement: async () => ({ kind: 'prepared' as const, hostEpoch: 'epoch', pid: 42 }),
+    };
+    const installedService = await manageRuntimeHostService(
+      { ...common, action: 'install' },
+      backend,
+      deps,
+    );
+    const root = await resolveStorageRoot({ path: rootPath, kind: 'interactive' });
+    const expectedTarget = {
+      serviceId: resolveRuntimeHostManagedServiceId(clientDataRoot),
+      rootPath: root.canonicalPath,
+      rootId: root.rootId,
+    };
+    assert.equal(installedService.service.config?.peer, undefined);
+
+    const enabled = await configureRuntimeHostManagedPeer(
+      { ...common, expectedTarget, peer: {} },
+      backend,
+      deps,
+    );
+    assert.equal(enabled.kind, 'configured');
+    if (enabled.kind !== 'configured') return;
+    assert.deepEqual(enabled.service.config?.peer, {
+      enabled: true,
+      nativePath: await realpath(nativePath),
+      keyPath: resolveRuntimeHostManagedPeerKeyPath(clientDataRoot),
+      listenAddresses: ['/ip4/0.0.0.0/udp/43002/quic-v1'],
+      coordinationRelays: [],
+    });
+
+    await rm(nativePath);
+    const disabled = await configureRuntimeHostManagedPeer(
+      { ...common, expectedTarget, peer: null },
+      backend,
+      deps,
+    );
+    assert.equal(disabled.kind, 'configured');
+    if (disabled.kind !== 'configured') return;
+    assert.deepEqual(disabled.service.config?.peer, {
+      ...enabled.service.config?.peer,
+      enabled: false,
+    });
+    const keyPath = resolveRuntimeHostManagedPeerKeyPath(clientDataRoot);
+    await writeFile(keyPath, 'owned peer identity', 'utf8');
+    await manageRuntimeHostService(
+      { ...common, action: 'uninstall', expectedTarget },
+      backend,
+      deps,
+    );
+    await assert.rejects(access(keyPath));
+    await access(rootPath);
   });
 
   it('refuses to remove a managed deployment through a redirected ancestor', async (t) => {

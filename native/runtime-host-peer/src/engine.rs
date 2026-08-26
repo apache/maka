@@ -173,6 +173,13 @@ struct OpenedStream {
     result: Result<libp2p::swarm::Stream, String>,
 }
 
+pub async fn ensure_identity(key_path: PathBuf) -> Result<PeerId, PeerError> {
+    Ok(identity_store::load_or_create_key(&key_path)
+        .await?
+        .public()
+        .to_peer_id())
+}
+
 pub fn start(options: StartOptions) -> Result<StartedEndpoint, PeerError> {
     let (ready_tx, ready_rx) = std::sync::mpsc::sync_channel(1);
     let (command_tx, command_rx) = mpsc::channel(COMMAND_CAPACITY);

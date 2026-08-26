@@ -238,6 +238,14 @@ pub fn start_peer_endpoint(options: StartPeerEndpointOptions) -> Result<PeerEndp
     })
 }
 
+#[napi]
+pub async fn ensure_peer_identity(key_path: String) -> Result<String> {
+    engine::ensure_identity(PathBuf::from(key_path))
+        .await
+        .map(|peer_id| peer_id.to_string())
+        .map_err(peer_error)
+}
+
 fn wrap_stream(stream: engine::PeerStream) -> Result<PeerStream> {
     Ok(PeerStream {
         incoming: Arc::new(AsyncMutex::new(stream.incoming)),
