@@ -1517,32 +1517,60 @@ function firstLinePreview(text: string): string {
  * `/Users/alice/workspace/project` → `~/workspace/project`,
  * `C:\Users\alice\Videos\clip` → `~\Videos\clip`.
  *
- * Containment is decided on separator-normalized copies. Windows reports the
- * profile as `C:\Users\<name>` and accepts either separator inside one path, so
- * a literal `home + '/'` prefix test matched nothing there and the statusline
- * showed every profile subdirectory in full (#3825). `path.relative` is not
- * used for the same reason in reverse: it follows the host platform, so a
- * Windows path would be misread on a POSIX runner. The tail is sliced out of
- * the original `cwd` rather than the normalized copy, keeping whichever
- * separators the platform actually produced.
+ * Windows and POSIX get different containment rules, because `\` and letter
+ * case mean different things on each. A win32 path — the host platform, a `C:`
+ * drive root, or a `\\` UNC root — treats `\` and `/` as interchangeable
+ * separators and compares without regard to case, so `c:\users\ALICE\work`
+ * abbreviates under `C:\Users\Alice` the way the shell and Explorer read it.
+ * A POSIX path compares case-sensitively and treats `\` as the ordinary
+ * filename character it is, so a sibling entry literally named `alice\evil`
+ * is not mistaken for something inside `/home/alice`.
  *
- * Falls back to the original path when it is not under home. A `..` segment
- * falls back too — it can walk back out, and only the unabbreviated path is
- * guaranteed to still name the same directory. Comparison stays
- * case-sensitive, like the other path helpers in the tree.
+ * The original `home + '/'` prefix test was false for every subdirectory of a
+ * Windows profile, so the statusline showed the full absolute path there
+ * (#3825). `path.relative` is not the fix: it follows the host platform, so a
+ * Windows path would be misread on a POSIX runner and the tests would only
+ * mean anything on Windows. The tail is sliced out of the original `cwd`, so
+ * it keeps the separators and the casing the platform actually produced.
+ *
+ * Falls back to the original path when it is not under home, when home is
+ * empty or a bare root (every absolute path would otherwise collapse to `~`),
+ * or when a `..` segment walks back out — only the unabbreviated path is
+ * guaranteed to still name the same directory.
  */
-export function shortenCwd(cwd: string, homeDir?: string): string {
+export function shortenCwd(
+  cwd: string,
+  homeDir?: string,
+  platform: NodeJS.Platform = process.platform,
+): string {
   const home = homeDir ?? homedir();
+  const windows = platform === 'win32' || hasWin32Root(home) || hasWin32Root(cwd);
   // A trailing separator on home would push the slice offset past the prefix.
-  const normalizedHome = home.replace(/[\\/]+$/, '').replaceAll('\\', '/');
-  if (!normalizedHome) return cwd;
-  const normalizedCwd = cwd.replaceAll('\\', '/');
-  if (normalizedCwd === normalizedHome) return '~';
-  if (!normalizedCwd.startsWith(`${normalizedHome}/`)) return cwd;
-  const tail = normalizedCwd.slice(normalizedHome.length + 1);
-  if (!tail) return '~';
+  const trimmedHome = home.replace(windows ? /[\\/]+$/ : /\/+$/, '');
+  if (!trimmedHome) return cwd;
+  const normalizedHome = windows ? trimmedHome.replaceAll('\\', '/') : trimmedHome;
+  const normalizedCwd = windows ? cwd.replaceAll('\\', '/') : cwd;
+  // Equal-length slices, folded only for the comparison: case folding can
+  // change a string's length, which would shift the offset the tail is cut at.
+  const prefix = normalizedCwd.slice(0, normalizedHome.length);
+  const contained = windows
+    ? prefix.toLowerCase() === normalizedHome.toLowerCase()
+    : prefix === normalizedHome;
+  if (!contained) return cwd;
+  const tail = normalizedCwd.slice(normalizedHome.length);
+  if (tail === '' || tail === '/') return '~';
+  if (!tail.startsWith('/')) return cwd;
   if (tail.split('/').includes('..')) return cwd;
   return `~${cwd.slice(normalizedHome.length)}`;
+}
+
+/**
+ * A path rooted the win32 way: a `C:` drive or a `\\` UNC share. Only those
+ * two shapes count. A lone `\` anywhere else is a legal POSIX filename
+ * character, so sniffing on it would make POSIX paths change meaning.
+ */
+function hasWin32Root(path: string): boolean {
+  return /^[a-zA-Z]:([\\/]|$)/.test(path) || path.startsWith('\\\\');
 }
 
 function formatCost(costUsd: number): string {

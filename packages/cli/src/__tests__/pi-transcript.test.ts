@@ -248,32 +248,55 @@ describe('Maka Pi TUI transcript', () => {
   });
 
   test('abbreviates a home-relative cwd on every platform (#3825)', () => {
-    // Windows reports the profile with backslashes, so the abbreviation has to
-    // be decided on separator-normalized paths rather than on a `home + '/'`
-    // prefix, which matched nothing there. Home and cwd are injected as plain
-    // strings so every expectation holds on any runner.
-    const cases: [cwd: string, home: string, expected: string][] = [
-      ['/Users/alice/workspace/project', '/Users/alice', '~/workspace/project'],
-      ['/Users/alice', '/Users/alice', '~'],
-      ['C:\\Users\\alice\\Videos\\clip', 'C:\\Users\\alice', '~\\Videos\\clip'],
-      ['C:\\Users\\alice', 'C:\\Users\\alice', '~'],
-      ['C:\\Users\\alice\\', 'C:\\Users\\alice', '~'],
+    // Home, cwd and platform are all injected, so each row asserts the same
+    // thing on a POSIX and a Windows runner. The `linux` rows carrying a drive
+    // letter or a UNC root are the point of the win32 sniffing: a Windows path
+    // must abbreviate correctly even when the process is not on Windows.
+    const cases: [cwd: string, home: string, platform: NodeJS.Platform, expected: string][] = [
+      ['/Users/alice/workspace/project', '/Users/alice', 'linux', '~/workspace/project'],
+      ['/Users/alice', '/Users/alice', 'linux', '~'],
+      ['C:\\Users\\alice\\Videos\\clip', 'C:\\Users\\alice', 'linux', '~\\Videos\\clip'],
+      ['C:\\Users\\alice', 'C:\\Users\\alice', 'linux', '~'],
+      ['C:\\Users\\alice\\', 'C:\\Users\\alice', 'linux', '~'],
+      ['\\\\server\\home\\alice\\Videos', '\\\\server\\home\\alice', 'linux', '~\\Videos'],
+      ['C:\\Users', 'C:\\', 'linux', '~\\Users'],
       // Windows accepts either separator inside one path.
-      ['C:/Users/alice/Videos', 'C:\\Users\\alice', '~/Videos'],
-      ['C:\\Users\\alice\\Videos', 'C:/Users/alice', '~\\Videos'],
+      ['C:/Users/alice/Videos', 'C:\\Users\\alice', 'linux', '~/Videos'],
+      ['C:\\Users\\alice\\Videos', 'C:/Users/alice', 'linux', '~\\Videos'],
+      // Windows names are case-insensitive, so a differently-cased profile
+      // path still abbreviates, and the tail keeps the casing it came with.
+      ['c:\\users\\ALICE\\work', 'C:\\Users\\Alice', 'linux', '~\\work'],
+      ['C:\\USERS\\Alice\\Videos', 'c:\\users\\alice', 'linux', '~\\Videos'],
+      ['C:\\Users\\ALICE', 'C:\\Users\\alice', 'linux', '~'],
+      // POSIX names are not: same-spelling-different-case is a different path.
+      ['/Users/ALICE/work', '/Users/alice', 'linux', '/Users/ALICE/work'],
+      // ...unless the process itself is on Windows, where the whole filesystem
+      // is case-insensitive regardless of how the path is spelled.
+      ['/Users/ALICE/work', '/Users/alice', 'win32', '~/work'],
+      // `\` is a legal POSIX filename character, not a separator: `alice\evil`
+      // is a sibling of `alice`, and `a\b` is one directory name.
+      ['/Users/alice\\evil', '/Users/alice', 'linux', '/Users/alice\\evil'],
+      ['/Users/alice/a\\b', '/Users/alice', 'linux', '~/a\\b'],
       // Outside home, or only sharing a name prefix with it: unchanged.
-      ['/opt/maka', '/Users/alice', '/opt/maka'],
-      ['/Users/alicebob/x', '/Users/alice', '/Users/alicebob/x'],
-      ['D:\\Projects\\maka', 'C:\\Users\\alice', 'D:\\Projects\\maka'],
-      ['C:\\Users\\alicebob\\x', 'C:\\Users\\alice', 'C:\\Users\\alicebob\\x'],
+      ['/opt/maka', '/Users/alice', 'linux', '/opt/maka'],
+      ['/Users/alicebob/x', '/Users/alice', 'linux', '/Users/alicebob/x'],
+      ['D:\\Projects\\maka', 'C:\\Users\\alice', 'linux', 'D:\\Projects\\maka'],
+      ['C:\\Users\\alicebob\\x', 'C:\\Users\\alice', 'linux', 'C:\\Users\\alicebob\\x'],
       // A `..` segment can walk back out of home, so the full path is kept.
-      ['/Users/alice/../bob', '/Users/alice', '/Users/alice/../bob'],
-      ['C:\\Users\\alice\\..\\bob', 'C:\\Users\\alice', 'C:\\Users\\alice\\..\\bob'],
-      // No usable home: nothing to abbreviate against.
-      ['/Users/alice/project', '', '/Users/alice/project'],
+      ['/Users/alice/../bob', '/Users/alice', 'linux', '/Users/alice/../bob'],
+      ['C:\\Users\\alice\\..\\bob', 'C:\\Users\\alice', 'linux', 'C:\\Users\\alice\\..\\bob'],
+      // An empty or bare-root home would otherwise swallow every absolute path.
+      ['/Users/alice/project', '', 'linux', '/Users/alice/project'],
+      ['/usr/bin', '/', 'linux', '/usr/bin'],
+      ['/usr/bin', '//', 'linux', '/usr/bin'],
+      ['C:\\Users\\alice', '\\', 'win32', 'C:\\Users\\alice'],
     ];
-    for (const [cwd, home, expected] of cases) {
-      assert.equal(shortenCwd(cwd, home), expected, `${cwd} under ${home}`);
+    for (const [cwd, home, platform, expected] of cases) {
+      assert.equal(
+        shortenCwd(cwd, home, platform),
+        expected,
+        `${cwd} under ${home} on ${platform}`,
+      );
     }
   });
 
