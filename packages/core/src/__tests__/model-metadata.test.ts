@@ -104,4 +104,12 @@ describe('openAiAdapterApiProtocol', () => {
     assert.equal(openAiAdapterApiProtocol('muse-spark-1.2-contributor', 'opencode'), 'openai-chat');
     assert.equal(openAiAdapterApiProtocol('minimax-m3', 'opencode-go'), 'openai-chat');
   });
+
+  it('routes only Qwen3.8 Max through Alibaba Token Plan Responses', () => {
+    for (const providerType of ['alibaba-token-plan-cn', 'alibaba-token-plan'] as const) {
+      assert.equal(openAiAdapterApiProtocol('qwen3.8-max', providerType), 'openai-responses');
+      assert.equal(openAiAdapterApiProtocol('qwen3.7-max', providerType), 'openai-chat');
+    }
+    assert.equal(openAiAdapterApiProtocol('qwen3.8-max', 'alibaba-cn'), 'openai-chat');
+  });
 });

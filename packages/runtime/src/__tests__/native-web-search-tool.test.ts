@@ -55,7 +55,13 @@ test('turn-start routing falls back explicitly when native search is unavailable
     slug: 'deepseek',
     providerType: 'deepseek' as const,
     defaultModel: 'deepseek-v4-flash',
-    models: [{ id: 'deepseek-v4-flash', capabilities: { webSearch: true } }],
+    models: [
+      {
+        id: 'deepseek-v4-flash',
+        apiProtocol: 'openai-chat' as const,
+        capabilities: { webSearch: true },
+      },
+    ],
   };
 
   const native = routeWebSearchTools({
@@ -145,7 +151,29 @@ test('turn-start routing compiles Claude models to the CC-compatible Anthropic t
   });
 });
 
-test('root surfaces do not advertise unsupported DeepSeek native search', () => {
+test('turn-start routing compiles Qwen3.8 Max Token Plan to Responses web search', () => {
+  const routed = routeWebSearchTools({
+    tools: [],
+    settings: { enabled: true, defaultProvider: 'model' },
+    connection: {
+      slug: 'alibaba-token-plan-cn',
+      providerType: 'alibaba-token-plan-cn',
+      defaultModel: 'qwen3.8-max',
+    },
+    model: 'qwen3.8-max',
+    tavilyReady: false,
+    allowAddNative: true,
+  });
+
+  assert.equal(routed.length, 1);
+  assert.equal(routed[0]?.name, NATIVE_WEB_SEARCH_TOOL_NAME);
+  assert.deepEqual(routed[0]?.providerTool, {
+    kind: 'openai-web-search',
+    searchContextSize: 'medium',
+  });
+});
+
+test('root surfaces advertise DeepSeek native search without widening child tools', () => {
   const connection = {
     slug: 'deepseek',
     providerType: 'deepseek' as const,
@@ -159,7 +187,12 @@ test('root surfaces do not advertise unsupported DeepSeek native search', () => 
     tavilyReady: false,
     allowAddNative: true,
   });
-  assert.deepEqual(root, []);
+  assert.equal(root.length, 1);
+  assert.equal(root[0]?.name, NATIVE_WEB_SEARCH_TOOL_NAME);
+  assert.deepEqual(root[0]?.providerTool, {
+    kind: 'openai-web-search',
+    searchContextSize: 'medium',
+  });
 
   const child = routeWebSearchTools({
     tools: [],

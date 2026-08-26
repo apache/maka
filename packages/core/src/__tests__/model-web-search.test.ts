@@ -26,11 +26,11 @@ describe('hosted web search capability', () => {
   it('enables the implemented Responses path only for declared model families', () => {
     assert.deepEqual(resolveHostedWebSearchCapability('deepseek', undefined, 'deepseek-v4-flash'), {
       adapter: 'openai-responses',
-      implemented: false,
+      implemented: true,
     });
     assert.deepEqual(resolveHostedWebSearchCapability('deepseek', undefined, 'deepseek-v4-pro'), {
       adapter: 'openai-responses',
-      implemented: false,
+      implemented: true,
     });
     assert.equal(resolveHostedWebSearchCapability('deepseek', undefined, 'deepseek-chat'), null);
     assert.deepEqual(resolveHostedWebSearchCapability('openai', undefined, 'gpt-5.5'), {
@@ -49,6 +49,19 @@ describe('hosted web search capability', () => {
       adapter: 'openai-responses',
       implemented: false,
     });
+    for (const providerType of ['alibaba-token-plan-cn', 'alibaba-token-plan'] as const) {
+      assert.deepEqual(resolveHostedWebSearchCapability(providerType, undefined, 'qwen3.8-max'), {
+        adapter: 'openai-responses',
+        implemented: true,
+      });
+      assert.equal(resolveHostedWebSearchCapability(providerType, undefined, 'qwen3.7-max'), null);
+      assert.equal(resolveHostedWebSearchCapability(providerType, undefined, 'qwen3.7-plus'), null);
+      assert.equal(
+        resolveHostedWebSearchCapability(providerType, undefined, 'qwen3.8-max-preview'),
+        null,
+      );
+      assert.equal(resolveHostedWebSearchCapability(providerType, undefined, 'qwen3.6-plus'), null);
+    }
     assert.equal(resolveHostedWebSearchCapability('openai', undefined, 'gpt-4.1'), null);
   });
 
@@ -124,7 +137,7 @@ describe('hosted web search capability', () => {
   it('keeps dual-wire providers on the configured connection protocol', () => {
     assert.deepEqual(resolveHostedWebSearchCapability('deepseek', undefined, 'deepseek-v4-flash'), {
       adapter: 'openai-responses',
-      implemented: false,
+      implemented: true,
     });
     assert.deepEqual(
       resolveHostedWebSearchCapability(
@@ -152,6 +165,14 @@ describe('hosted web search capability', () => {
         'openai',
         [{ id: 'gpt-5.5', apiProtocol: 'openai-chat' }],
         'gpt-5.5',
+      ),
+      null,
+    );
+    assert.equal(
+      resolveHostedWebSearchCapability(
+        'alibaba-token-plan-cn',
+        [{ id: 'qwen3.8-max', apiProtocol: 'openai-chat' }],
+        'qwen3.8-max',
       ),
       null,
     );

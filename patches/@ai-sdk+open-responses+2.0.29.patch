@@ -1,0 +1,383 @@
+diff --git a/node_modules/@ai-sdk/open-responses/dist/index.js b/node_modules/@ai-sdk/open-responses/dist/index.js
+index 72fe7a1..caa2b72 100644
+--- a/node_modules/@ai-sdk/open-responses/dist/index.js
++++ b/node_modules/@ai-sdk/open-responses/dist/index.js
+@@ -454,15 +454,19 @@ var OpenResponsesLanguageModel = class _OpenResponsesLanguageModel {
+       providerOptionsName: this.config.providerOptionsName
+     });
+     warnings.push(...inputWarnings);
+-    const functionTools = [];
++    const responseTools = [];
+     for (const tool of tools != null ? tools : []) {
+       if (tool.type === "provider") {
+-        warnings.push({
+-          type: "unsupported",
+-          feature: `provider-defined tool ${tool.id}`
+-        });
++        if (tool.id === "openai.web_search") {
++          responseTools.push({ type: "web_search" });
++        } else {
++          warnings.push({
++            type: "unsupported",
++            feature: `provider-defined tool ${tool.id}`
++          });
++        }
+       } else {
+-        functionTools.push({
++        responseTools.push({
+           type: "function",
+           name: tool.name,
+           description: tool.description,
+@@ -515,7 +519,7 @@ var OpenResponsesLanguageModel = class _OpenResponsesLanguageModel {
+             summary: openResponsesOptions.reasoningSummary
+           }
+         } : void 0,
+-        tools: functionTools.length ? functionTools : void 0,
++        tools: responseTools.length ? responseTools : void 0,
+         tool_choice: convertedToolChoice,
+         ...textFormat != null && { text: { format: textFormat } }
+       },
+@@ -571,6 +575,7 @@ var OpenResponsesLanguageModel = class _OpenResponsesLanguageModel {
+     }
+     const content = [];
+     let hasToolCalls = false;
++    const webSearchToolName = providerWebSearchToolName(options.tools);
+     for (const part of response.output) {
+       switch (part.type) {
+         // TODO AI SDK 7 adjust reasoning in the specification to better support the reasoning structure from open responses.
+@@ -628,6 +633,22 @@ var OpenResponsesLanguageModel = class _OpenResponsesLanguageModel {
+           });
+           break;
+         }
++        case "web_search_call": {
++          content.push({
++            type: "tool-call",
++            toolCallId: part.id,
++            toolName: webSearchToolName != null ? webSearchToolName : "web_search",
++            input: JSON.stringify({}),
++            providerExecuted: true
++          });
++          content.push({
++            type: "tool-result",
++            toolCallId: part.id,
++            toolName: webSearchToolName != null ? webSearchToolName : "web_search",
++            result: mapWebSearchOutput(part.action)
++          });
++          break;
++        }
+       }
+     }
+     const usage = response.usage;
+@@ -731,6 +752,7 @@ var OpenResponsesLanguageModel = class _OpenResponsesLanguageModel {
+     };
+     const toolCallsByItemId = /* @__PURE__ */ new Map();
+     const providerOptionsName = this.config.providerOptionsName;
++    const webSearchToolName = providerWebSearchToolName(options.tools);
+     return {
+       stream: response.pipeThrough(
+         new TransformStream({
+@@ -794,6 +816,31 @@ var OpenResponsesLanguageModel = class _OpenResponsesLanguageModel {
+               });
+               hasToolCalls = true;
+               toolCallsByItemId.delete(chunk.item.id);
++            } else if (chunk.type === "response.output_item.added" && chunk.item.type === "web_search_call") {
++              controller.enqueue({
++                type: "tool-input-start",
++                id: chunk.item.id,
++                toolName: webSearchToolName != null ? webSearchToolName : "web_search",
++                providerExecuted: true
++              });
++              controller.enqueue({
++                type: "tool-input-end",
++                id: chunk.item.id
++              });
++              controller.enqueue({
++                type: "tool-call",
++                toolCallId: chunk.item.id,
++                toolName: webSearchToolName != null ? webSearchToolName : "web_search",
++                input: JSON.stringify({}),
++                providerExecuted: true
++              });
++            } else if (chunk.type === "response.output_item.done" && chunk.item.type === "web_search_call") {
++              controller.enqueue({
++                type: "tool-result",
++                toolCallId: chunk.item.id,
++                toolName: webSearchToolName != null ? webSearchToolName : "web_search",
++                result: mapWebSearchOutput(chunk.item.action)
++              });
+             } else if (chunk.type === "response.output_item.added" && chunk.item.type === "reasoning") {
+               controller.enqueue({
+                 type: "reasoning-start",
+@@ -880,6 +927,36 @@ var OpenResponsesLanguageModel = class _OpenResponsesLanguageModel {
+     };
+   }
+ };
++function providerWebSearchToolName(tools) {
++  var _a;
++  return (_a = tools == null ? void 0 : tools.find(
++    (tool) => tool.type === "provider" && tool.id === "openai.web_search"
++  )) == null ? void 0 : _a.name;
++}
++function mapWebSearchOutput(action) {
++  if (action == null) return {};
++  switch (action.type) {
++    case "search":
++      return {
++        action: {
++          type: "search",
++          ...action.query != null && { query: action.query },
++          ...action.queries != null && { queries: action.queries }
++        },
++        ...action.sources != null && { sources: action.sources }
++      };
++    case "open_page":
++      return { action: { type: "openPage", url: action.url } };
++    case "find_in_page":
++      return {
++        action: {
++          type: "findInPage",
++          url: action.url,
++          pattern: action.pattern
++        }
++      };
++  }
++}
+ function createReasoningProviderMetadata({
+   part,
+   providerOptionsName,
+diff --git a/node_modules/@ai-sdk/open-responses/src/responses/open-responses-api.ts b/node_modules/@ai-sdk/open-responses/src/responses/open-responses-api.ts
+index 8bc1e20..4c1ca42 100644
+--- a/node_modules/@ai-sdk/open-responses/src/responses/open-responses-api.ts
++++ b/node_modules/@ai-sdk/open-responses/src/responses/open-responses-api.ts
+@@ -240,6 +240,13 @@ export type FunctionToolParam = {
+   type: 'function';
+ };
+ 
++/**
++ * A provider-executed web search tool parameter.
++ */
++export type WebSearchToolParam = {
++  type: 'web_search';
++};
++
+ /**
+  * A specific function tool choice.
+  */
+@@ -476,6 +483,29 @@ export type ReasoningBody = {
+   encrypted_content?: string;
+ };
+ 
++/**
++ * A provider-executed web search action.
++ */
++export type WebSearchAction =
++  | {
++      type: 'search';
++      query?: string;
++      queries?: string[];
++      sources?: Array<{ type: 'url'; url: string }>;
++    }
++  | { type: 'open_page'; url?: string | null }
++  | { type: 'find_in_page'; url?: string | null; pattern?: string | null };
++
++/**
++ * A provider-executed web search call.
++ */
++export type WebSearchCall = {
++  type: 'web_search_call';
++  id: string;
++  status: FunctionCallStatus;
++  action?: WebSearchAction;
++};
++
+ /**
+  * Output item field union type.
+  */
+@@ -483,7 +513,8 @@ export type OutputItem =
+   | FunctionCall
+   | FunctionCallOutput
+   | Message
+-  | ReasoningBody;
++  | ReasoningBody
++  | WebSearchCall;
+ 
+ /**
+  * Details about why the response was incomplete.
+@@ -643,7 +674,7 @@ export type OpenResponsesRequestBody = {
+   /**
+    * A list of tools that the model may call while generating the response.
+    */
+-  tools?: FunctionToolParam[];
++  tools?: Array<FunctionToolParam | WebSearchToolParam>;
+ 
+   /**
+    * Controls which tool the model should use, if any.
+diff --git a/node_modules/@ai-sdk/open-responses/src/responses/open-responses-language-model.ts b/node_modules/@ai-sdk/open-responses/src/responses/open-responses-language-model.ts
+index 1146ec7..c35ed1e 100644
+--- a/node_modules/@ai-sdk/open-responses/src/responses/open-responses-language-model.ts
++++ b/node_modules/@ai-sdk/open-responses/src/responses/open-responses-language-model.ts
+@@ -37,6 +37,7 @@ import {
+   type OpenResponsesChunk,
+   type ReasoningBody,
+   type ToolChoiceParam,
++  type WebSearchAction,
+ } from './open-responses-api';
+ import { mapOpenResponsesFinishReason } from './map-open-responses-finish-reason';
+ import type { OpenResponsesConfig } from './open-responses-config';
+@@ -120,17 +121,22 @@ export class OpenResponsesLanguageModel implements LanguageModelV4 {
+ 
+     warnings.push(...inputWarnings);
+ 
+-    // Convert function tools to the Open Responses format
+-    const functionTools: FunctionToolParam[] = [];
++    // Convert function and the Responses-native web search tool to the Open
++    // Responses format. Other provider-defined tools stay fail-closed.
++    const responseTools: Array<FunctionToolParam | { type: 'web_search' }> = [];
+ 
+     for (const tool of tools ?? []) {
+       if (tool.type === 'provider') {
+-        warnings.push({
+-          type: 'unsupported',
+-          feature: `provider-defined tool ${tool.id}`,
+-        });
++        if (tool.id === 'openai.web_search') {
++          responseTools.push({ type: 'web_search' });
++        } else {
++          warnings.push({
++            type: 'unsupported',
++            feature: `provider-defined tool ${tool.id}`,
++          });
++        }
+       } else {
+-        functionTools.push({
++        responseTools.push({
+           type: 'function',
+           name: tool.name,
+           description: tool.description,
+@@ -209,7 +215,7 @@ export class OpenResponsesLanguageModel implements LanguageModelV4 {
+                 }),
+               }
+             : undefined,
+-        tools: functionTools.length ? functionTools : undefined,
++        tools: responseTools.length ? responseTools : undefined,
+         tool_choice: convertedToolChoice,
+         ...(textFormat != null && { text: { format: textFormat } }),
+       },
+@@ -273,6 +279,7 @@ export class OpenResponsesLanguageModel implements LanguageModelV4 {
+ 
+     const content: Array<LanguageModelV4Content> = [];
+     let hasToolCalls = false;
++    const webSearchToolName = providerWebSearchToolName(options.tools);
+ 
+     for (const part of response.output) {
+       switch (part.type) {
+@@ -335,6 +342,23 @@ export class OpenResponsesLanguageModel implements LanguageModelV4 {
+           });
+           break;
+         }
++
++        case 'web_search_call': {
++          content.push({
++            type: 'tool-call',
++            toolCallId: part.id,
++            toolName: webSearchToolName ?? 'web_search',
++            input: JSON.stringify({}),
++            providerExecuted: true,
++          });
++          content.push({
++            type: 'tool-result',
++            toolCallId: part.id,
++            toolName: webSearchToolName ?? 'web_search',
++            result: mapWebSearchOutput(part.action),
++          });
++          break;
++        }
+       }
+     }
+ 
+@@ -454,6 +478,7 @@ export class OpenResponsesLanguageModel implements LanguageModelV4 {
+       { toolName?: string; toolCallId?: string; arguments?: string }
+     >();
+     const providerOptionsName = this.config.providerOptionsName;
++    const webSearchToolName = providerWebSearchToolName(options.tools);
+ 
+     return {
+       stream: response.pipeThrough(
+@@ -540,6 +565,37 @@ export class OpenResponsesLanguageModel implements LanguageModelV4 {
+               hasToolCalls = true;
+ 
+               toolCallsByItemId.delete(chunk.item.id);
++            } else if (
++              chunk.type === 'response.output_item.added' &&
++              chunk.item.type === 'web_search_call'
++            ) {
++              controller.enqueue({
++                type: 'tool-input-start',
++                id: chunk.item.id,
++                toolName: webSearchToolName ?? 'web_search',
++                providerExecuted: true,
++              });
++              controller.enqueue({
++                type: 'tool-input-end',
++                id: chunk.item.id,
++              });
++              controller.enqueue({
++                type: 'tool-call',
++                toolCallId: chunk.item.id,
++                toolName: webSearchToolName ?? 'web_search',
++                input: JSON.stringify({}),
++                providerExecuted: true,
++              });
++            } else if (
++              chunk.type === 'response.output_item.done' &&
++              chunk.item.type === 'web_search_call'
++            ) {
++              controller.enqueue({
++                type: 'tool-result',
++                toolCallId: chunk.item.id,
++                toolName: webSearchToolName ?? 'web_search',
++                result: mapWebSearchOutput(chunk.item.action),
++              });
+             }
+ 
+             // Reasoning events (note: response.reasoning_text.delta is an LM Studio extension, not in official spec)
+@@ -657,6 +713,39 @@ export class OpenResponsesLanguageModel implements LanguageModelV4 {
+   }
+ }
+ 
++function providerWebSearchToolName(
++  tools: LanguageModelV4CallOptions['tools'],
++): string | undefined {
++  return tools?.find(
++    tool => tool.type === 'provider' && tool.id === 'openai.web_search',
++  )?.name;
++}
++
++function mapWebSearchOutput(action: WebSearchAction | undefined) {
++  if (action == null) return {};
++  switch (action.type) {
++    case 'search':
++      return {
++        action: {
++          type: 'search' as const,
++          ...(action.query != null && { query: action.query }),
++          ...(action.queries != null && { queries: action.queries }),
++        },
++        ...(action.sources != null && { sources: action.sources }),
++      };
++    case 'open_page':
++      return { action: { type: 'openPage' as const, url: action.url } };
++    case 'find_in_page':
++      return {
++        action: {
++          type: 'findInPage' as const,
++          url: action.url,
++          pattern: action.pattern,
++        },
++      };
++  }
++}
++
+ function createReasoningProviderMetadata({
+   part,
+   providerOptionsName,

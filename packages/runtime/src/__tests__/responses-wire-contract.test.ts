@@ -19,6 +19,7 @@
 
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
+import { streamText, type ToolSet } from 'ai';
 import type { LlmConnection } from '@maka/core/llm-connections';
 import type { RuntimeEvent } from '@maka/core/runtime-event';
 import { modelMetadataIdsForProvider } from '@maka/core/model-metadata';
@@ -26,6 +27,10 @@ import { PROVIDER_REGISTRY } from '@maka/core/llm-connections';
 import { thinkingVariantsForModel } from '@maka/core/model-thinking';
 import { buildProviderOptions, getAIModel } from '../model-factory.js';
 import { resolveModelRuntime } from '../model-runtime.js';
+import {
+  RUNTIME_PROVIDER_PROFILE_IDS,
+  resolveRuntimeProviderAdapter,
+} from '../provider-runtime-policy.js';
 import { lowerModelTools } from '../model-adapter.js';
 import { openAiCodexCompactionMessages } from '../openai-codex-history-compactor.js';
 import { openAiResponsesBaseUrl, openResponsesUrl } from '../provider-urls.js';
@@ -51,12 +56,20 @@ function openAiNamespace(options: Record<string, unknown>): Record<string, unkno
 }
 
 describe('responses wire contract', () => {
-  test('keeps Qwen3.8 Max on Token Plan Chat until the provider adapter supports Responses', () => {
+  test('routes only Qwen3.8 Max through Token Plan Responses', () => {
     for (const providerType of ['alibaba-token-plan-cn', 'alibaba-token-plan'] as const) {
       assert.equal(
         resolveModelRuntime({ providerType }, 'qwen3.8-max').wire,
-        'openai-chat',
+        'openai-responses',
         providerType,
+      );
+      assert.equal(resolveModelRuntime({ providerType }, 'qwen3.7-max').wire, 'openai-chat');
+      assert.equal(
+        resolveModelRuntime(
+          { providerType, models: [{ id: 'qwen3.8-max', apiProtocol: 'openai-chat' }] },
+          'qwen3.8-max',
+        ).wire,
+        'openai-chat',
       );
     }
   });
@@ -147,6 +160,26 @@ describe('responses wire contract', () => {
       kind: 'responses',
       contract: { adapter: 'open-responses', reasoningReplay: 'plaintext-content' },
     });
+    assert.equal(deepseek.responsesProviderOptionsKey, undefined);
+    assert.equal(deepseek.responsesReplayProfile, undefined);
+
+    const alibaba = resolveModelRuntime({ providerType: 'alibaba-token-plan-cn' }, 'qwen3.8-max');
+    assert.deepEqual(alibaba.reasoningReplay, {
+      kind: 'responses',
+      contract: {
+        adapter: 'open-responses',
+        reasoningReplay: 'plaintext-summary',
+        compatibility: 'alibaba-token-plan',
+      },
+    });
+    assert.equal(alibaba.responsesProviderOptionsKey, 'alibaba-token-plan-cn');
+    assert.equal(alibaba.responsesReplayProfile, 'alibaba-token-plan-cn');
+    const accountScopedAlibaba = resolveModelRuntime(
+      { providerType: 'alibaba-token-plan-cn', slug: 'token-plan-account-a' },
+      'qwen3.8-max',
+    );
+    assert.equal(accountScopedAlibaba.responsesProviderOptionsKey, 'alibaba-token-plan-cn');
+    assert.equal(accountScopedAlibaba.responsesReplayProfile, 'token-plan-account-a');
 
     const xai = resolveModelRuntime({ providerType: 'xai' }, 'grok-4.5');
     assert.deepEqual(xai.reasoningReplay, {
@@ -195,9 +228,19 @@ describe('responses wire contract', () => {
     );
   });
 
+  test('Core Runtime-profile references exactly match Runtime implementations', () => {
+    const referenced = Object.values(PROVIDER_REGISTRY).flatMap((definition) => {
+      const adapter = definition.runtimeAdapter;
+      return adapter.kind === 'openai-compatible' && adapter.runtimeProfile
+        ? [adapter.runtimeProfile]
+        : [];
+    });
+    assert.deepEqual([...new Set(referenced)].sort(), [...RUNTIME_PROVIDER_PROFILE_IDS].sort());
+  });
+
   test('enables Responses only through an explicit supported contract', () => {
     const configured = Object.entries(PROVIDER_REGISTRY).flatMap(([providerType, definition]) => {
-      const adapter = definition.runtimeAdapter;
+      const adapter = resolveRuntimeProviderAdapter(definition.runtimeAdapter);
       return adapter.kind === 'openai-compatible' && adapter.responses
         ? [{ providerType, contract: adapter.responses }]
         : [];
@@ -215,6 +258,22 @@ describe('responses wire contract', () => {
       {
         providerType: 'xai-oauth',
         contract: { adapter: 'openai', reasoningReplay: 'encrypted-content' },
+      },
+      {
+        providerType: 'alibaba-token-plan-cn',
+        contract: {
+          adapter: 'open-responses',
+          reasoningReplay: 'plaintext-summary',
+          compatibility: 'alibaba-token-plan',
+        },
+      },
+      {
+        providerType: 'alibaba-token-plan',
+        contract: {
+          adapter: 'open-responses',
+          reasoningReplay: 'plaintext-summary',
+          compatibility: 'alibaba-token-plan',
+        },
       },
     ]);
 
@@ -246,7 +305,7 @@ describe('responses wire contract', () => {
         if (
           runtime.wire !== 'openai-responses' ||
           (runtime.reasoningReplay.kind === 'responses' &&
-            runtime.reasoningReplay.contract.reasoningReplay === 'plaintext-content')
+            runtime.reasoningReplay.contract.adapter === 'open-responses')
         ) {
           continue;
         }
@@ -270,6 +329,340 @@ describe('responses wire contract', () => {
 });
 
 describe('responses wire request body', () => {
+  test('Alibaba compatibility owns store:false after request overlays', async () => {
+    const bodies: Array<Record<string, unknown>> = [];
+    const urls: string[] = [];
+    const fetch = (async (url: string | URL | Request, init?: RequestInit) => {
+      urls.push(String(url));
+      bodies.push(JSON.parse(String(init?.body)));
+      return Response.json({
+        id: 'response-1',
+        object: 'response',
+        created_at: 1,
+        model: 'qwen3.8-max',
+        status: 'completed',
+        output: [],
+        usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 },
+      });
+    }) as unknown as typeof globalThis.fetch;
+    const connection = {
+      ...conn('alibaba-token-plan-cn'),
+      baseUrl: 'https://token-plan.example/compatible-mode/v1',
+      requestBodyOverlay: { store: true },
+    };
+    const model = getAIModel({
+      connection,
+      apiKey: 'token-plan-key',
+      modelId: 'qwen3.8-max',
+      fetch,
+    });
+
+    await model.doGenerate({
+      prompt: [{ role: 'user', content: [{ type: 'text', text: 'ping' }] }],
+      providerOptions: buildProviderOptions(connection, 'qwen3.8-max', 'medium'),
+    });
+
+    assert.deepEqual(urls, ['https://token-plan.example/compatible-mode/v1/responses']);
+    assert.equal(bodies[0]?.store, false);
+    assert.deepEqual(bodies[0]?.reasoning, { effort: 'medium' });
+  });
+
+  test('Alibaba compatibility survives header-only request customization', async () => {
+    let body: Record<string, unknown> | undefined;
+    let headers: Headers | undefined;
+    const fetch = (async (_url: string | URL | Request, init?: RequestInit) => {
+      body = JSON.parse(String(init?.body));
+      headers = new Headers(init?.headers);
+      return Response.json({
+        id: 'response-header-customization',
+        object: 'response',
+        created_at: 1,
+        model: 'qwen3.8-max',
+        status: 'completed',
+        output: [],
+        usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 },
+      });
+    }) as unknown as typeof globalThis.fetch;
+    const connection = {
+      ...conn('alibaba-token-plan-cn'),
+      baseUrl: 'https://token-plan.example/compatible-mode/v1',
+    };
+    const model = getAIModel({
+      connection,
+      apiKey: 'token-plan-key',
+      modelId: 'qwen3.8-max',
+      requestHeaders: { 'x-token-plan-routing': 'custom' },
+      fetch,
+    });
+
+    await model.doGenerate({
+      prompt: [{ role: 'user', content: [{ type: 'text', text: 'ping' }] }],
+    });
+
+    assert.equal(body?.store, false);
+    assert.equal(headers?.get('x-token-plan-routing'), 'custom');
+  });
+
+  test('Alibaba Token Plan lowers and decodes provider-executed web search', async () => {
+    let body: Record<string, unknown> | undefined;
+    const webSearchCall = {
+      type: 'web_search_call',
+      id: 'web-search-1',
+      status: 'completed',
+      action: {
+        type: 'search',
+        query: 'latest Maka',
+        sources: [{ type: 'url', url: 'https://maka.example/releases' }],
+      },
+    };
+    const message = {
+      type: 'message',
+      id: 'message-1',
+      status: 'completed',
+      role: 'assistant',
+      content: [{ type: 'output_text', text: 'Maka shipped.', annotations: [] }],
+    };
+    const completed = {
+      id: 'response-web-search',
+      object: 'response',
+      created_at: 1,
+      model: 'qwen3.8-max',
+      status: 'completed',
+      output: [webSearchCall, message],
+      usage: {
+        input_tokens: 10,
+        output_tokens: 4,
+        total_tokens: 14,
+        x_tools: { web_search: { count: 1 } },
+      },
+    };
+    const events = [
+      { type: 'response.created', response: { id: completed.id } },
+      {
+        type: 'response.output_item.added',
+        output_index: 0,
+        item: { ...webSearchCall, status: 'in_progress', action: undefined },
+      },
+      { type: 'response.output_item.done', output_index: 0, item: webSearchCall },
+      { type: 'response.output_item.added', output_index: 1, item: message },
+      {
+        type: 'response.output_text.delta',
+        item_id: message.id,
+        output_index: 1,
+        content_index: 0,
+        delta: 'Maka shipped.',
+      },
+      { type: 'response.output_item.done', output_index: 1, item: message },
+      { type: 'response.completed', response: completed },
+    ];
+    const fetch = (async (_url: string | URL | Request, init?: RequestInit) => {
+      body = JSON.parse(String(init?.body));
+      return new Response(
+        `${events.map((event) => `data: ${JSON.stringify(event)}`).join('\n\n')}\n\ndata: [DONE]\n\n`,
+        { status: 200, headers: { 'content-type': 'text/event-stream' } },
+      );
+    }) as unknown as typeof globalThis.fetch;
+    const connection = {
+      ...conn('alibaba-token-plan-cn'),
+      baseUrl: 'https://token-plan.example/compatible-mode/v1',
+    };
+    const model = getAIModel({
+      connection,
+      apiKey: 'token-plan-key',
+      modelId: 'qwen3.8-max',
+      fetch,
+    });
+    const tools = lowerModelTools({
+      WebSearch: {
+        kind: 'provider',
+        providerTool: { kind: 'openai-web-search', searchContextSize: 'medium' },
+      },
+    });
+    const result = streamText({
+      model,
+      messages: [{ role: 'user', content: 'What shipped?' }],
+      tools: tools as ToolSet,
+      maxRetries: 0,
+    });
+    const parts = [];
+    for await (const part of result.fullStream) parts.push(part);
+
+    assert.deepEqual(body?.tools, [{ type: 'web_search' }]);
+    assert.equal(body?.store, false);
+    const call = parts.find((part) => part.type === 'tool-call');
+    assert.ok(call && call.type === 'tool-call');
+    assert.equal(call.toolCallId, 'web-search-1');
+    assert.equal(call.toolName, 'WebSearch');
+    assert.equal(call.providerExecuted, true);
+    const toolResult = parts.find((part) => part.type === 'tool-result');
+    assert.ok(toolResult && toolResult.type === 'tool-result');
+    assert.equal(toolResult.providerExecuted, true);
+    assert.deepEqual(toolResult.output, {
+      action: { type: 'search', query: 'latest Maka' },
+      sources: [{ type: 'url', url: 'https://maka.example/releases' }],
+    });
+    assert.equal(await result.text, 'Maka shipped.');
+    const finishStep = parts.find((part) => part.type === 'finish-step');
+    assert.ok(finishStep && finishStep.type === 'finish-step');
+    assert.deepEqual(finishStep.usage.raw?.x_tools, { web_search: { count: 1 } });
+  });
+
+  test('Open Responses preserves search, open-page, and find-in-page actions', async () => {
+    let body: Record<string, unknown> | undefined;
+    const calls = [
+      {
+        type: 'web_search_call',
+        id: 'search-1',
+        status: 'completed',
+        action: { type: 'search', queries: ['latest Maka'] },
+      },
+      {
+        type: 'web_search_call',
+        id: 'open-1',
+        status: 'completed',
+        action: { type: 'open_page', url: 'https://maka.example/releases' },
+      },
+      {
+        type: 'web_search_call',
+        id: 'find-1',
+        status: 'completed',
+        action: {
+          type: 'find_in_page',
+          url: 'https://maka.example/releases',
+          pattern: 'WebSearch',
+        },
+      },
+    ];
+    const completed = {
+      id: 'response-page-actions',
+      object: 'response',
+      created_at: 1,
+      model: 'deepseek-v4-flash',
+      status: 'completed',
+      output: calls,
+      usage: { input_tokens: 5, output_tokens: 2, total_tokens: 7 },
+    };
+    const events = [
+      { type: 'response.created', response: { id: completed.id } },
+      ...calls.flatMap((call, output_index) => [
+        {
+          type: 'response.output_item.added',
+          output_index,
+          item: { ...call, status: 'in_progress', action: undefined },
+        },
+        { type: 'response.output_item.done', output_index, item: call },
+      ]),
+      { type: 'response.completed', response: completed },
+    ];
+    const fetch = (async (_url: string | URL | Request, init?: RequestInit) => {
+      body = JSON.parse(String(init?.body));
+      return new Response(
+        `${events.map((event) => `data: ${JSON.stringify(event)}`).join('\n\n')}\n\ndata: [DONE]\n\n`,
+        { status: 200, headers: { 'content-type': 'text/event-stream' } },
+      );
+    }) as unknown as typeof globalThis.fetch;
+    const model = getAIModel({
+      connection: { ...conn('deepseek'), baseUrl: 'https://deepseek.example' },
+      apiKey: 'deepseek-key',
+      modelId: 'deepseek-v4-flash',
+      fetch,
+    });
+    const tools = lowerModelTools({
+      WebSearch: {
+        kind: 'provider',
+        providerTool: { kind: 'openai-web-search', searchContextSize: 'medium' },
+      },
+    });
+    const result = streamText({
+      model,
+      messages: [{ role: 'user', content: 'Search, open, and find.' }],
+      tools: tools as ToolSet,
+      maxRetries: 0,
+    });
+    const parts = [];
+    for await (const part of result.fullStream) parts.push(part);
+
+    assert.deepEqual(body?.tools, [{ type: 'web_search' }]);
+    assert.deepEqual(
+      parts
+        .filter((part) => part.type === 'tool-result')
+        .map((part) => (part.type === 'tool-result' ? part.output : undefined)),
+      [
+        { action: { type: 'search', queries: ['latest Maka'] } },
+        { action: { type: 'openPage', url: 'https://maka.example/releases' } },
+        {
+          action: {
+            type: 'findInPage',
+            url: 'https://maka.example/releases',
+            pattern: 'WebSearch',
+          },
+        },
+      ],
+    );
+  });
+
+  test('Alibaba stateless request carries the reconstructed summary item', async () => {
+    let body: Record<string, unknown> | undefined;
+    const fetch = (async (_url: string | URL | Request, init?: RequestInit) => {
+      body = JSON.parse(String(init?.body));
+      return Response.json({
+        id: 'response-2',
+        object: 'response',
+        created_at: 2,
+        model: 'qwen3.8-max',
+        status: 'completed',
+        output: [],
+        usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 },
+      });
+    }) as unknown as typeof globalThis.fetch;
+    const connection = {
+      ...conn('alibaba-token-plan-cn'),
+      baseUrl: 'https://token-plan.example/compatible-mode/v1',
+    };
+    const model = getAIModel({
+      connection,
+      apiKey: 'token-plan-key',
+      modelId: 'qwen3.8-max',
+      fetch,
+    });
+
+    await model.doGenerate({
+      prompt: [
+        { role: 'user', content: [{ type: 'text', text: 'first question' }] },
+        {
+          role: 'assistant',
+          content: [
+            {
+              type: 'reasoning',
+              text: 'durable reasoning summary',
+              providerOptions: {
+                'alibaba-token-plan-cn': {
+                  itemId: 'reasoning-item-1',
+                  reasoningSummary: [{ type: 'summary_text', text: 'durable reasoning summary' }],
+                  reasoningContent: null,
+                },
+              },
+            },
+            { type: 'text', text: 'first answer' },
+          ],
+        },
+        { role: 'user', content: [{ type: 'text', text: 'follow up' }] },
+      ],
+    });
+
+    assert.equal(body?.store, false);
+    assert.deepEqual(
+      (body?.input as Array<Record<string, unknown>> | undefined)?.find(
+        (item) => item.type === 'reasoning',
+      ),
+      {
+        type: 'reasoning',
+        id: 'reasoning-item-1',
+        summary: [{ type: 'summary_text', text: 'durable reasoning summary' }],
+      },
+    );
+  });
+
   test('adds the V2 trigger only through the explicit OpenAI provider option', async () => {
     const bodies: Array<Record<string, unknown>> = [];
     const fetch = (async (_url: string | URL | Request, init?: RequestInit) => {

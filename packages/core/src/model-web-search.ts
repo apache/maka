@@ -77,10 +77,7 @@ function providerHostedWebSearchAdapter(
 ): HostedWebSearchCapability | null {
   switch (providerType) {
     case 'deepseek':
-      // @ai-sdk/open-responses currently serializes function tools only.
-      // Mark native search unavailable so routing never hands it a provider
-      // tool that would be silently filtered from the request.
-      return { adapter: 'openai-responses', implemented: false };
+      return { adapter: 'openai-responses', implemented: true };
     case 'openai':
     case 'openai-responses-compatible':
     case 'xai':
@@ -89,6 +86,9 @@ function providerHostedWebSearchAdapter(
     case 'alibaba':
     case 'alibaba-cn':
       return { adapter: 'openai-responses', implemented: false };
+    case 'alibaba-token-plan-cn':
+    case 'alibaba-token-plan':
+      return { adapter: 'openai-responses', implemented: true };
     case 'anthropic':
     case 'MiniMax':
     case 'MiniMax-cn':
@@ -127,6 +127,11 @@ function providerDefaultHostedWebSearchCapability(
     case 'alibaba':
     case 'alibaba-cn':
       return /^qwen3\.5-(?:plus|flash)(?:[.-]|$)/i.test(modelId) ? capability : null;
+    case 'alibaba-token-plan-cn':
+    case 'alibaba-token-plan':
+      // Keep the hosted tool on the exact model that the Token Plan runtime
+      // routes through Responses. Aliases and Qwen 3.7 still use Chat here.
+      return modelId === 'qwen3.8-max' ? capability : null;
     case 'anthropic':
       return /^claude-(?:[\d.]+-)*(?:opus|sonnet|haiku|fable)\b/i.test(modelId) ? capability : null;
     case 'MiniMax':

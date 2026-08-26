@@ -50,7 +50,12 @@ const ANSWER = 'No — 91 is 7 x 13.';
  * translator that dropped the message entirely would be the worst failure this
  * code can have, and only an assertion on the reply can see it.
  */
-function deepseekReasoningStream(deltas: string[], answer = ANSWER): string {
+function plaintextReasoningStream(
+  deltas: string[],
+  answer = ANSWER,
+  finalSummary: Array<{ type: 'summary_text'; text: string }> = [],
+  model = 'deepseek-v4-flash',
+): string {
   const events: Array<Record<string, unknown>> = [
     { type: 'response.created', response: { id: 'r' } },
     {
@@ -81,7 +86,7 @@ function deepseekReasoningStream(deltas: string[], answer = ANSWER): string {
         id: ITEM_ID,
         status: 'completed',
         content: [{ type: 'reasoning_text', text: deltas.join('') }],
-        summary: [],
+        summary: finalSummary,
       },
     },
     {
@@ -119,7 +124,7 @@ function deepseekReasoningStream(deltas: string[], answer = ANSWER): string {
         id: 'r',
         object: 'response',
         created_at: 0,
-        model: 'deepseek-v4-flash',
+        model,
         status: 'completed',
         output: [],
         usage: { input_tokens: 1, output_tokens: 1 },
@@ -177,6 +182,55 @@ function standardFunctionCallStream(): string {
   return `${events.map((event) => `data: ${JSON.stringify(event)}`).join('\n\n')}\n\ndata: [DONE]\n\n`;
 }
 
+function unfinalizedReasoningStream(terminal: 'completed' | 'failed'): string {
+  const response = {
+    id: 'r',
+    object: 'response',
+    created_at: 0,
+    model: 'qwen3.8-max',
+    status: terminal,
+    output: [],
+    usage: { input_tokens: 1, output_tokens: 1 },
+    ...(terminal === 'failed'
+      ? { error: { code: 'rate_limit_exceeded', message: 'rate limited' } }
+      : {}),
+  };
+  const events = [
+    { type: 'response.created', response: { id: 'r' } },
+    {
+      type: 'response.output_item.added',
+      output_index: 0,
+      item: { type: 'reasoning', id: ITEM_ID, status: 'in_progress', content: [], summary: [] },
+    },
+    {
+      type: 'response.reasoning_text.delta',
+      content_index: 0,
+      delta: 'unfinished reasoning',
+      item_id: ITEM_ID,
+      output_index: 0,
+    },
+    { type: `response.${terminal}`, response },
+  ];
+  return `${events.map((event) => `data: ${JSON.stringify(event)}`).join('\n\n')}\n\ndata: [DONE]\n\n`;
+}
+
+async function alibabaStreamParts(body: string) {
+  const connection = conn('alibaba-token-plan-cn');
+  const model = getAIModel({
+    connection,
+    apiKey: 'test-key',
+    modelId: 'qwen3.8-max',
+    fetch: sseFetch(body),
+  });
+  const { stream } = await model.doStream({
+    prompt: [{ role: 'user', content: [{ type: 'text', text: 'hi' }] }],
+    providerOptions: buildProviderOptions(connection, 'qwen3.8-max', 'high'),
+  });
+  const parts = [];
+  for await (const part of stream) parts.push(part);
+  return parts;
+}
+
 /**
  * Chunks are cut from the encoded bytes, not from the string: slicing the
  * string would hand every chunk a whole character and quietly make multi-byte
@@ -226,9 +280,51 @@ async function streamParts(
 }
 
 describe('open responses plaintext reasoning', () => {
+  test('Alibaba raw SSE content deltas match the final summary metadata', async () => {
+    const deltas = ['Inspect the request. ', 'Call the Maka tool.'];
+    const summary = [{ type: 'summary_text' as const, text: deltas.join('') }];
+    const parts = await alibabaStreamParts(
+      plaintextReasoningStream(deltas, ANSWER, summary, 'qwen3.8-max'),
+    );
+    const streamed = parts
+      .filter((part) => part.type === 'reasoning-delta')
+      .map((part) => part.delta)
+      .join('');
+    const reasoningEnd = parts.find((part) => part.type === 'reasoning-end');
+    assert.ok(reasoningEnd && reasoningEnd.type === 'reasoning-end');
+    const provider = reasoningEnd.providerMetadata?.['alibaba-token-plan-cn'] as
+      | { reasoningSummary?: Array<{ type: string; text: string }> }
+      | undefined;
+    assert.deepEqual(provider?.reasoningSummary, [
+      { type: 'summary_text', text: 'Inspect the request. Call the Maka tool.' },
+    ]);
+    assert.equal(streamed, provider?.reasoningSummary?.map((part) => part.text).join(''));
+  });
+
+  test('the pinned SDK flushes an unfinalized item without provider metadata', async () => {
+    const parts = await alibabaStreamParts(unfinalizedReasoningStream('completed'));
+    const reasoningEnd = parts.find((part) => part.type === 'reasoning-end');
+    const finish = parts.find((part) => part.type === 'finish');
+
+    assert.ok(reasoningEnd);
+    assert.equal(reasoningEnd.providerMetadata, undefined);
+    assert.equal(finish?.finishReason.unified, 'stop');
+  });
+
+  test('the pinned SDK keeps response.failed ahead of its unfinalized trailer', async () => {
+    const parts = await alibabaStreamParts(unfinalizedReasoningStream('failed'));
+    const reasoningEnd = parts.find((part) => part.type === 'reasoning-end');
+    const finish = parts.find((part) => part.type === 'finish');
+
+    assert.ok(reasoningEnd);
+    assert.equal(reasoningEnd.providerMetadata, undefined);
+    assert.equal(finish?.finishReason.unified, 'error');
+    assert.equal(finish?.finishReason.raw, 'rate_limit_exceeded');
+  });
+
   test('streamed reasoning text reaches the model stream', async () => {
     const deltas = ['The user asks if 91 is prime. ', '91 = 7 x 13, ', 'so it is composite.'];
-    const parts = await streamParts('deepseek', sseFetch(deepseekReasoningStream(deltas)));
+    const parts = await streamParts('deepseek', sseFetch(plaintextReasoningStream(deltas)));
     assert.equal(parts.reasoning, deltas.join(''));
     assert.equal(parts.text, ANSWER);
   });
@@ -239,7 +335,7 @@ describe('open responses plaintext reasoning', () => {
     // dropping message frames wholesale would otherwise leave the suite green.
     const parts = await streamParts(
       'deepseek',
-      sseFetch(deepseekReasoningStream(['thinking'], 'The answer is 42.')),
+      sseFetch(plaintextReasoningStream(['thinking'], 'The answer is 42.')),
     );
     assert.equal(parts.text, 'The answer is 42.');
   });
@@ -251,7 +347,7 @@ describe('open responses plaintext reasoning', () => {
     // was asked in, and a 7-byte chunk cuts these characters mid-sequence, so
     // this also pins the decoder's cross-chunk state.
     const deltas = ['用户问 91 是不是质数。', '91 = 7 × 13，', '所以它是合数。'];
-    const parts = await streamParts('deepseek', sseFetch(deepseekReasoningStream(deltas), 7));
+    const parts = await streamParts('deepseek', sseFetch(plaintextReasoningStream(deltas), 7));
     assert.equal(parts.reasoning, deltas.join(''));
     assert.equal(parts.text, ANSWER);
   });
@@ -260,7 +356,7 @@ describe('open responses plaintext reasoning', () => {
     // The transport is mounted per provider, not per wire. xAI reaches the same
     // Responses wire but its reasoning shape has not been measured, so nothing
     // should rewrite its stream on the strength of the wire alone.
-    const parts = await streamParts('xai', sseFetch(deepseekReasoningStream(['ignored'])));
+    const parts = await streamParts('xai', sseFetch(plaintextReasoningStream(['ignored'])));
     assert.equal(parts.reasoning, '');
     assert.equal(parts.text, ANSWER);
   });
