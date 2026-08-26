@@ -60,7 +60,10 @@ describe('configured subagent catalog', () => {
     ];
     const catalog = createConfiguredSubagentCatalog({
       getPresets: async () => settings.subagents.presets,
-      getConnection: async (slug) => (slug === connection.slug ? connection : null),
+      getConnection: async (slug) =>
+        slug === connection.slug
+          ? { ...connection, connectionId: '11111111-1111-4111-8111-111111111111' }
+          : null,
     });
 
     expect(
@@ -75,7 +78,10 @@ describe('configured subagent catalog', () => {
         availability: { status: 'unavailable', reason: 'model_disabled' },
       },
     ]);
-    expect(await catalog.resolve('fast-reader')).toEqual(settings.subagents.presets[0]);
+    expect(await catalog.resolve('fast-reader')).toEqual({
+      ...settings.subagents.presets[0],
+      connectionId: '11111111-1111-4111-8111-111111111111',
+    });
     await assert.rejects(catalog.resolve('missing-model'), /model_disabled/);
     await assert.rejects(catalog.resolve('invented'), /Call agent_list/);
   });
@@ -107,7 +113,10 @@ describe('configured subagent catalog', () => {
     ];
     const catalog = createConfiguredSubagentCatalog({
       getPresets: async () => settings.subagents.presets,
-      getConnection: async (slug) => (slug === retired.slug ? retired : null),
+      getConnection: async (slug) =>
+        slug === retired.slug
+          ? { ...retired, connectionId: '22222222-2222-4222-8222-222222222222' }
+          : null,
     });
 
     expect((await catalog.list())[0]?.availability).toEqual({

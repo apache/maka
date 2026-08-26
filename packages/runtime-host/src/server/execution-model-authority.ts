@@ -401,7 +401,10 @@ type AuxiliaryModelRequest =
 interface HostAuxiliaryModelCallInput {
   readonly transportContextId: string;
   readonly telemetrySessionId?: string;
-  readonly header: Pick<SessionHeader, 'llmConnectionSlug' | 'model' | 'thinkingLevel'>;
+  readonly header: Pick<
+    SessionHeader,
+    'llmConnectionId' | 'llmConnectionSlug' | 'model' | 'thinkingLevel'
+  >;
   readonly callKind: Exclude<ModelCallKind, 'main'>;
   readonly callId: string;
   readonly abortSignal: AbortSignal;
@@ -739,7 +742,9 @@ interface ResolvedExecutionTarget {
 async function resolveDailyReviewHeader(
   runtimePolicy: RuntimePolicyStoresWriter,
   modelKey: string,
-): Promise<Pick<SessionHeader, 'llmConnectionSlug' | 'model' | 'thinkingLevel'>> {
+): Promise<
+  Pick<SessionHeader, 'llmConnectionId' | 'llmConnectionSlug' | 'model' | 'thinkingLevel'>
+> {
   const explicit = parseDailyReviewModelKey(modelKey);
   if (modelKey.trim() && !explicit) {
     throw new AuxiliaryModelCallConfigurationError('Daily Review model key is invalid');
@@ -762,6 +767,7 @@ async function resolveDailyReviewHeader(
     );
   }
   return {
+    llmConnectionId: connection.connectionId,
     llmConnectionSlug: connection.slug,
     model: target.modelId,
     thinkingLevel: 'off',
@@ -781,7 +787,10 @@ function parseDailyReviewModelKey(
 }
 
 export async function resolveExecutionTarget(
-  header: Pick<BackendFactoryContext['header'], 'llmConnectionSlug' | 'model' | 'thinkingLevel'>,
+  header: Pick<
+    BackendFactoryContext['header'],
+    'llmConnectionId' | 'llmConnectionSlug' | 'model' | 'thinkingLevel'
+  >,
   runtimePolicy: {
     readonly operations: Pick<
       RuntimePolicyStoresWriter['operations'],
@@ -792,7 +801,13 @@ export async function resolveExecutionTarget(
   createFetchTransport: (proxy: ProxiedFetchProxy | null) => ProxiedFetchTransport,
 ): Promise<ResolvedExecutionTarget> {
   const resolved = await runtimePolicy.operations.resolveExecutionConnection(
-    header.llmConnectionSlug,
+    header.llmConnectionId === undefined
+      ? { kind: 'catalog_slug', connectionSlug: header.llmConnectionSlug }
+      : {
+          kind: 'bound',
+          connectionId: header.llmConnectionId,
+          connectionSlug: header.llmConnectionSlug,
+        },
   );
   if (resolved.kind !== 'ready') {
     throw new AuxiliaryModelCallConfigurationError(
@@ -855,6 +870,7 @@ export async function resolveExecutionTarget(
       requestHeaders,
       oauthBinding: oauthCredentials.bind({
         providerType: resolved.connection.providerType,
+        connectionId: resolved.connection.connectionId,
         connectionSlug: resolved.connection.slug,
         material,
         createRefreshTransport: () => createFetchTransport(refreshProxy),

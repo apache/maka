@@ -82,6 +82,8 @@ import {
   type RuntimeHostConnection,
   type RuntimeHostSessionSubscription,
 } from '../../client/index.js';
+
+const FAKE_CONNECTION_ID = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
 import {
   decodeHostFrame,
   encodeProtocolMessage,
@@ -148,6 +150,7 @@ export class ExecutionFixture {
       stores = await openInteractiveExecutionStoresForWrite(owner.lease);
       const session = await stores.sessionStore.create({
         cwd: this.root,
+        llmConnectionId: FAKE_CONNECTION_ID,
         llmConnectionSlug: 'fake',
         model: 'fake-model',
         permissionMode: 'ask',
@@ -183,6 +186,7 @@ export class ExecutionFixture {
         turnId: sourceTurnId,
         status: 'created',
         backendKind: 'fake',
+        llmConnectionId: FAKE_CONNECTION_ID,
         llmConnectionSlug: 'fake',
         modelId: 'fake-model',
         cwd: this.root,
@@ -495,6 +499,7 @@ export class ExecutionFixture {
       const child = await stores.sessionStore.createSubagent({
         cwd: this.root,
         name: `${agentName} ${kind}`,
+        llmConnectionId: FAKE_CONNECTION_ID,
         llmConnectionSlug: 'fake',
         model: 'fake-model',
         permissionMode: 'explore',
@@ -550,6 +555,7 @@ export class ExecutionFixture {
           turnId: `source-turn-${kind}`,
           status: 'created',
           backendKind: 'fake',
+          llmConnectionId: FAKE_CONNECTION_ID,
           llmConnectionSlug: 'fake',
           modelId: 'fake-model',
           cwd: this.root,
@@ -650,6 +656,7 @@ export class ExecutionFixture {
           turnId: graph.turnId,
           status: 'created',
           backendKind: 'fake',
+          llmConnectionId: FAKE_CONNECTION_ID,
           llmConnectionSlug: 'fake',
           modelId: 'fake-model',
           cwd: this.root,
@@ -879,6 +886,7 @@ export class ExecutionFixture {
           turnId,
           status: 'created',
           backendKind: 'fake',
+          llmConnectionId: FAKE_CONNECTION_ID,
           llmConnectionSlug: 'fake',
           modelId: 'fake-model',
           cwd: this.root,
@@ -1110,6 +1118,7 @@ export async function withExecutionRoot(
     stores = await openInteractiveExecutionStoresForWrite(owner.lease);
     const session = await stores.sessionStore.create({
       cwd: root,
+      llmConnectionId: FAKE_CONNECTION_ID,
       llmConnectionSlug: 'fake',
       model: 'fake-model',
       permissionMode: 'ask',

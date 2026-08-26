@@ -556,6 +556,7 @@ function sessionInput(root: string) {
   return {
     cwd: root,
     backend: 'fake' as const,
+    llmConnectionId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
     llmConnectionSlug: 'fake',
     model: 'fake-model',
     permissionMode: 'ask' as const,
@@ -570,6 +571,7 @@ function runHeader(sessionId: string): AgentRunHeader {
     turnId: 'turn-1',
     status: 'created',
     backendKind: 'fake',
+    llmConnectionId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
     llmConnectionSlug: 'fake',
     modelId: 'fake-model',
     cwd: '/private/runtime-cwd',

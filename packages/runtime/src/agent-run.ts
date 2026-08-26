@@ -1129,6 +1129,9 @@ export class AgentRun {
       turnId: this.turnId,
       status: 'created',
       backendKind: this.header.backend,
+      ...(this.header.llmConnectionId === undefined
+        ? {}
+        : { llmConnectionId: this.header.llmConnectionId }),
       llmConnectionSlug: this.header.llmConnectionSlug,
       modelId: this.header.model,
       cwd: this.header.cwd,

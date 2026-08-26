@@ -560,6 +560,7 @@ test('creation on a relay connection honours declared levels via the catalog pro
   // passes is exactly what execution rebuilds the runtime connection from.
   let createAttempts = 0;
   let persistedThinkingLevel: unknown;
+  let persistedConnectionId: unknown;
   const fixture = createFixture({
     connection: {
       providerType: 'openai-compatible',
@@ -571,6 +572,7 @@ test('creation on a relay connection honours declared levels via the catalog pro
       createStableSession: async (args) => {
         createAttempts += 1;
         persistedThinkingLevel = args.input.thinkingLevel;
+        persistedConnectionId = args.input.llmConnectionId;
         return {
           kind: 'existing' as const,
           record: headerSnapshot(sessionHeader(args.sessionId, ['user-label']), 1),
@@ -592,6 +594,7 @@ test('creation on a relay connection honours declared levels via the catalog pro
   assert.equal(outcome.ok, true);
   assert.equal(createAttempts, 1);
   assert.equal(persistedThinkingLevel, 'low');
+  assert.equal(persistedConnectionId, 'connection-1');
 });
 
 test('creation admits the enabled bootstrap DeepSeek model before discovery', async () => {
@@ -910,8 +913,58 @@ test('configuration update admits Plan mode through Runtime authority', async ()
     assert.fail('Plan mode configuration returned an unsupported Session projection');
   }
   assert.equal(outcome.result.session.collaborationMode, 'plan');
+  assert.equal(fixture.header().llmConnectionId, 'connection-1');
   assert.equal(fixture.header().collaborationMode, 'plan');
   assert.equal(fixture.drainRequests(), 0);
+});
+
+test('configuration update never rebinds a bound Session through a reused slug', async () => {
+  let observedRef: unknown;
+  const fixture = createFixture({
+    connection: {
+      executionResolution: { kind: 'not_found' },
+      onResolve: (ref) => {
+        observedRef = ref;
+      },
+    },
+  });
+
+  const outcome = await fixture.coordinator.handlers['session.configuration.update'](
+    configurationInput(fixture.sessionId, fixture.revision()),
+    context,
+  );
+
+  assert.deepEqual(outcome, {
+    ok: false,
+    error: {
+      code: 'operation_conflict',
+      message: 'Session model identity changed during selection',
+    },
+  });
+  assert.deepEqual(observedRef, {
+    kind: 'bound',
+    connectionId: 'connection-1',
+    connectionSlug: 'test',
+  });
+  assert.equal(fixture.header().llmConnectionId, 'connection-1');
+});
+
+test('configuration update does not adopt an account for a legacy Session', async () => {
+  const fixture = createFixture({ legacyConnectionIdentity: true });
+
+  const outcome = await fixture.coordinator.handlers['session.configuration.update'](
+    configurationInput(fixture.sessionId, fixture.revision()),
+    context,
+  );
+
+  assert.deepEqual(outcome, {
+    ok: false,
+    error: {
+      code: 'operation_conflict',
+      message: 'Legacy Session configuration requires an explicit account selection',
+    },
+  });
+  assert.equal(fixture.header().llmConnectionId, undefined);
 });
 
 test('creation persists a canonical cwd while fingerprints retain exact target intent', async () => {
@@ -1268,11 +1321,16 @@ function createFixture(
     readonly connection?: FixtureConnection;
     readonly projectCatalog?: ProjectCatalog;
     readonly onProjectChanged?: () => void;
+    readonly legacyConnectionIdentity?: boolean;
   } = {},
 ) {
   const sessionId = 'session-1';
   let revision = 3;
   let header = sessionHeader(sessionId, options.labels ?? ['user-label']);
+  if (options.legacyConnectionIdentity) {
+    const { llmConnectionId: _legacyConnectionId, ...legacyHeader } = header;
+    header = legacyHeader;
+  }
   if (options.cwd) header = { ...header, cwd: options.cwd };
   let drains = 0;
 
@@ -1367,6 +1425,9 @@ type FixtureConnection = {
     | 'volcengine-agent-plan';
   /** Lets a case exercise a resolver verdict other than `ready`. */
   readonly executionResolution?: ResolveExecutionConnectionResult;
+  readonly onResolve?: (
+    ref: Parameters<RuntimePolicy['operations']['resolveExecutionConnection']>[0],
+  ) => void;
   readonly enabledModelIds?: readonly string[];
   readonly models?: readonly { id: string }[];
   // Mirrors what the codec allows: a non-empty inventory must carry a source,
@@ -1411,13 +1472,17 @@ function runtimePolicyFixture(overrides: FixtureConnection): RuntimePolicy {
       getSnapshot: async () => ({ revision: 1, policy }),
     },
     operations: {
-      resolveExecutionConnection: async () =>
-        overrides.executionResolution ?? {
-          kind: 'ready',
-          connection,
-          secretMaterial: {},
-          networkProxy: policy.networkProxy,
-        },
+      resolveExecutionConnection: async (ref) => {
+        overrides.onResolve?.(ref);
+        return (
+          overrides.executionResolution ?? {
+            kind: 'ready',
+            connection,
+            secretMaterial: {},
+            networkProxy: policy.networkProxy,
+          }
+        );
+      },
     },
   };
 }
@@ -1458,6 +1523,7 @@ function sessionHeader(sessionId: string, labels: readonly string[]): SessionHea
     statusUpdatedAt: 1,
     hasUnread: false,
     backend: 'ai-sdk',
+    llmConnectionId: 'connection-1',
     llmConnectionSlug: 'test',
     connectionLocked: true,
     model: 'model-1',

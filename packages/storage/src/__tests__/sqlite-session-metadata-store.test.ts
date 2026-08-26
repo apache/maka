@@ -2538,6 +2538,7 @@ describe('SqliteSessionMetadataStore', () => {
       expectedVersion: 1,
       configuration: {
         backend: 'ai-sdk' as const,
+        llmConnectionId: '11111111-1111-4111-8111-111111111111',
         llmConnectionSlug: 'openrouter',
         connectionLocked: true,
         model: 'openrouter/free',
@@ -2575,6 +2576,7 @@ describe('SqliteSessionMetadataStore', () => {
 
       const updated = await store.updateSessionConfiguration('configured-session', configuration);
       assert.equal(updated.metadataVersion, 2);
+      assert.equal(updated.header.llmConnectionId, '11111111-1111-4111-8111-111111111111');
       assert.equal(updated.header.model, 'openrouter/free');
       assert.equal(updated.header.collaborationMode, 'plan');
       assert.equal(updated.header.orchestrationMode, 'graph');
@@ -2620,6 +2622,7 @@ describe('SqliteSessionMetadataStore', () => {
         expectedVersion: 1,
         configuration: {
           backend: 'ai-sdk',
+          llmConnectionId: '11111111-1111-4111-8111-111111111111',
           llmConnectionSlug: 'openrouter',
           connectionLocked: true,
           model: 'openrouter/free',

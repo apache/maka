@@ -71,6 +71,21 @@ test('folds all retired AgentRun values only at the persistence boundary', () =>
   );
 });
 
+test('accepts both bound and legacy AgentRun connection identity', () => {
+  const legacy = decodePersistedAgentRunHeader(markPersisted<AgentRunHeader>(runHeader()));
+  assert.equal(legacy.llmConnectionId, undefined);
+
+  const bound = decodeAgentRunHeader({
+    ...runHeader(),
+    llmConnectionId: '11111111-1111-4111-8111-111111111111',
+  });
+  assert.equal(bound.llmConnectionId, '11111111-1111-4111-8111-111111111111');
+  assert.throws(
+    () => decodeAgentRunHeader({ ...runHeader(), llmConnectionId: '' }),
+    /Invalid AgentRun header schema/,
+  );
+});
+
 function runHeader(): AgentRunHeader {
   return {
     runId: 'run-1',

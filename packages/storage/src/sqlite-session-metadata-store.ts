@@ -343,6 +343,7 @@ export interface SessionConfigurationMetadataUpdate {
   readonly expectedVersion: number;
   readonly configuration: {
     readonly backend: SessionHeader['backend'];
+    readonly llmConnectionId: string;
     readonly llmConnectionSlug: string;
     readonly connectionLocked: boolean;
     readonly model: string;

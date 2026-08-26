@@ -3303,6 +3303,9 @@ function continuationTargetRunHeaderForExecution(input: {
     turnId: continuation.turnId,
     status: 'created',
     backendKind: sessionHeader.backend,
+    ...(sessionHeader.llmConnectionId === undefined
+      ? {}
+      : { llmConnectionId: sessionHeader.llmConnectionId }),
     llmConnectionSlug: sessionHeader.llmConnectionSlug,
     modelId: sessionHeader.model,
     cwd: sessionHeader.cwd,
