@@ -1172,6 +1172,88 @@ describe('Runtime Host Maka Session driver', () => {
     });
   });
 
+  test('admits concurrent first messages into one Session in submission order', async () => {
+    // Two subscriptions so a driver that creates two Sessions fails on the
+    // claim rather than on missing fake infrastructure.
+    const connection = new FakeConnection([
+      new FakeSubscription(continuitySnapshot(), Promise.resolve([])),
+      new FakeSubscription(continuitySnapshot(), Promise.resolve([])),
+    ]);
+    const create = deferred<void>();
+    connection.heldOperations.set('session.create', create.promise);
+    let nextId = 0;
+    const driver = createRuntimeHostMakaSessionDriver({
+      connection: connection.value,
+      cwd: '/repo',
+      llmConnectionSlug: 'openai-main',
+      model: 'gpt-5',
+      newId: () => `session-${++nextId}`,
+    });
+
+    // Two Enters before the first round trip resolves. Nothing about the TUI
+    // holds the second one back, so the driver is what has to keep them from
+    // racing into two Sessions or reaching the Host out of order.
+    const first = driver.submitMessage!('first', {
+      messageId: 'message-1',
+      placement: 'current_turn',
+    });
+    const second = driver.submitMessage!('second', {
+      messageId: 'message-2',
+      placement: 'current_turn',
+    });
+    create.resolve();
+    await Promise.all([first, second]);
+
+    const creates = connection.requests.filter(({ operation }) => operation === 'session.create');
+    assert.equal(creates.length, 1);
+    const submits = connection.requests.filter(
+      ({ operation }) => operation === 'turn.message.submit',
+    );
+    assert.deepEqual(
+      submits.map(({ input }) => (input as OperationInput<'turn.message.submit'>).messageId),
+      ['message-1', 'message-2'],
+    );
+    assert.deepEqual(
+      new Set(
+        submits.map(({ input }) => (input as OperationInput<'turn.message.submit'>).sessionId),
+      ),
+      new Set(['session-1']),
+    );
+  });
+
+  test('keeps a configuration change from crossing a pending admission', async () => {
+    const subscription = new FakeSubscription(continuitySnapshot(), Promise.resolve([]));
+    const connection = new FakeConnection([subscription]);
+    const driver = createRuntimeHostMakaSessionDriver({
+      connection: connection.value,
+      cwd: '/tmp',
+      llmConnectionSlug: 'openai-main',
+      model: 'gpt-5',
+    });
+    await driver.switchSession('session-1');
+
+    const submit = deferred<void>();
+    connection.heldOperations.set('turn.message.submit', submit.promise);
+    const admitted = driver.submitMessage!('before the model change', {
+      messageId: 'message-1',
+      placement: 'current_turn',
+    });
+    // `/model` typed while the Message is still in flight. The Host must see
+    // it after the Message it was typed after, or the Turn that Message opens
+    // runs under a model the user had not chosen yet.
+    const changed = driver.setModel('gpt-5-codex');
+    submit.resolve();
+    await Promise.all([admitted, changed]);
+
+    const ordered = connection.requests
+      .map(({ operation }) => operation)
+      .filter(
+        (operation) =>
+          operation === 'turn.message.submit' || operation === 'session.configuration.update',
+      );
+    assert.deepEqual(ordered, ['turn.message.submit', 'session.configuration.update']);
+  });
+
   test('keeps an unknown message admission available for transcript reconciliation', async () => {
     const subscription = new FakeSubscription(continuitySnapshot(), Promise.resolve([]));
     const connection = new FakeConnection([subscription]);
@@ -1848,6 +1930,12 @@ class FakeConnection {
   /** Scripted goal.query results, shifted per call; defaults to null (no goal). */
   readonly goalQueryResults: Array<GoalProjection | null> = [];
   readonly messageSubmitOutcomes: Array<OperationOutput<'turn.message.submit'> | Error> = [];
+  /**
+   * Operations held open by a test. The request is recorded on entry and then
+   * waits, so a test can hold one round trip and observe what the driver does
+   * with a second call while the first is still in flight.
+   */
+  readonly heldOperations = new Map<string, Promise<void>>();
   readonly value: RuntimeHostMakaSessionDriverInput['connection'];
 
   constructor(
@@ -1874,6 +1962,8 @@ class FakeConnection {
     input: OperationInput<K>,
   ): Promise<OperationOutput<K>> {
     this.requests.push({ operation, input });
+    const held = this.heldOperations.get(operation);
+    if (held) await held;
     if (operation === 'session.workspace.relocate') {
       const workspace = (input as OperationInput<'session.workspace.relocate'>).workspace;
       if (workspace.kind !== 'host_path') throw new Error('Expected Host-path workspace');

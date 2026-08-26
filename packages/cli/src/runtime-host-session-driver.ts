@@ -393,7 +393,14 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
     yield* events;
   }
 
-  async submitMessage(
+  submitMessage(
+    text: string,
+    options: MakaSubmitMessageOptions,
+  ): Promise<OperationOutput<'turn.message.submit'> | undefined> {
+    return this.#admit(() => this.#submitMessage(text, options));
+  }
+
+  async #submitMessage(
     text: string,
     options: MakaSubmitMessageOptions,
   ): Promise<OperationOutput<'turn.message.submit'> | undefined> {
@@ -470,7 +477,11 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
     if (pending) this.#channel?.publishInteractionAnswer(answered, pending);
   }
 
-  async setModel(model: string, connectionSlug?: string): Promise<void> {
+  setModel(model: string, connectionSlug?: string): Promise<void> {
+    return this.#admit(() => this.#setModel(model, connectionSlug));
+  }
+
+  async #setModel(model: string, connectionSlug?: string): Promise<void> {
     const nextConnection = connectionSlug ?? this.#llmConnectionSlug;
     if (this.#sessionId) {
       const session = await this.#updateConfiguration(this.#sessionId, {
@@ -485,7 +496,11 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
     this.#thinkingLevel = undefined;
   }
 
-  async setThinkingLevel(level: ThinkingLevel | undefined): Promise<void> {
+  setThinkingLevel(level: ThinkingLevel | undefined): Promise<void> {
+    return this.#admit(() => this.#setThinkingLevel(level));
+  }
+
+  async #setThinkingLevel(level: ThinkingLevel | undefined): Promise<void> {
     if (this.#sessionId) {
       this.#adoptConfiguration(
         await this.#updateConfiguration(this.#sessionId, { thinkingLevel: level ?? null }),
@@ -495,7 +510,11 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
     this.#thinkingLevel = level;
   }
 
-  async setPermissionMode(mode: PermissionMode): Promise<void> {
+  setPermissionMode(mode: PermissionMode): Promise<void> {
+    return this.#admit(() => this.#setPermissionMode(mode));
+  }
+
+  async #setPermissionMode(mode: PermissionMode): Promise<void> {
     if (this.#sessionId) {
       const session = await this.#updateConfiguration(this.#sessionId, { permissionMode: mode });
       this.#permissionMode = session.permissionMode;
@@ -508,7 +527,11 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
     this.#permissionMode = mode;
   }
 
-  async setOrchestrationMode(mode: OrchestrationMode): Promise<void> {
+  setOrchestrationMode(mode: OrchestrationMode): Promise<void> {
+    return this.#admit(() => this.#setOrchestrationMode(mode));
+  }
+
+  async #setOrchestrationMode(mode: OrchestrationMode): Promise<void> {
     if (this.#sessionId) {
       this.#adoptConfiguration(
         await this.#updateConfiguration(this.#sessionId, { orchestrationMode: mode }),
@@ -990,9 +1013,51 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
     }
   }
 
+  /**
+   * The ordered client → Host operation stream.
+   *
+   * Runtime Host decides what a Message becomes, and it decides from the state
+   * it holds when the Message arrives. That makes arrival order part of the
+   * meaning: two Enters typed before the first round trip resolves must not
+   * race into two Sessions, and a `/model` typed after a Message must not
+   * overtake it and change the Turn that Message opens.
+   *
+   * Session identity changes deliberately stay off this tail. `/session` and
+   * `/new` are how a user leaves a Session whose admission is stuck, so
+   * queueing them behind it would remove the only exit; `#assertCurrentSession`
+   * fences them instead, by failing an admission whose Session moved under it.
+   */
+  #admissionTail: Promise<unknown> = Promise.resolve();
+
+  #admit<T>(operation: () => Promise<T>): Promise<T> {
+    const admitted = this.#admissionTail.then(operation, operation);
+    // A failed operation must not poison the tail: the next Message is a new
+    // intent, not a retry of the one that failed.
+    this.#admissionTail = admitted.then(
+      () => undefined,
+      () => undefined,
+    );
+    return admitted;
+  }
+
+  #sessionCreation: Promise<string> | undefined;
+
+  /**
+   * One in-flight creation, shared. Reads outside the admission tail
+   * (`queryCancelledMessages`) can reach this concurrently with an admission,
+   * and a second `session.create` would leave the first Message in a Session
+   * the TUI has already stopped displaying.
+   */
   async #ensureSession(): Promise<string> {
     if (this.#sessionId) return this.#sessionId;
-    return (await this.#createSession(DEFAULT_SESSION_NAME)).id;
+    if (this.#sessionCreation) return this.#sessionCreation;
+    const creation = this.#createSession(DEFAULT_SESSION_NAME).then((session) => session.id);
+    this.#sessionCreation = creation;
+    try {
+      return await creation;
+    } finally {
+      if (this.#sessionCreation === creation) this.#sessionCreation = undefined;
+    }
   }
 
   async #createSession(name: string): Promise<SessionCatalogProjection> {
