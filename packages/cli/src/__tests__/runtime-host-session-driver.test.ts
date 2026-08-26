@@ -723,6 +723,93 @@ describe('Runtime Host Maka Session driver', () => {
     assert.equal((await nextEvent(attached.events)).type, 'text_delta');
   });
 
+  test('hides the copied parent transcript when a Host starts the side successor turn', async () => {
+    const parentTranscript = [
+      userMessage('turn-parent', 'Parent question'),
+      assistantMessage('turn-parent', 'Parent answer'),
+    ];
+    const first = new FakeSubscription(
+      continuitySnapshot(),
+      Promise.resolve([...parentTranscript]),
+    );
+    const refresh = new FakeSubscription(
+      continuitySnapshot({ rootTurn: completedTurn('turn-1', 'run-1') }),
+      Promise.resolve([...parentTranscript]),
+      'subscription-refresh',
+    );
+    const second = new FakeSubscription(
+      continuitySnapshot({
+        projectionRevision: 3,
+        rootTurn: runningTurn('turn-2', 'run-2'),
+      }),
+      Promise.resolve([
+        ...parentTranscript,
+        userMessage('turn-2', 'Side follow up'),
+        assistantMessage('turn-2', 'Side answer'),
+      ]),
+      'subscription-2',
+    );
+    const connection = new FakeConnection([first, refresh, second]);
+    // A side Session is a copy that carries the parent transcript; both the
+    // initial switch and the reattach's configuration load must see the side
+    // labels so the driver keeps hiding everything through `turn-parent`.
+    const sideProjection = () =>
+      sessionProjection({
+        labels: ['mode:side_conversation'],
+        parentSessionId: 'parent-1',
+        branchOfTurnId: 'turn-parent',
+      });
+    connection.sessionQueries.push(sideProjection(), sideProjection());
+    const driver = createRuntimeHostMakaSessionDriver({
+      connection: connection.value,
+      cwd: '/tmp',
+      llmConnectionSlug: 'openai-main',
+      model: 'gpt-5',
+      now: () => 60,
+    });
+    const initial = await driver.switchSession('session-1');
+    assert.ok(initial.activeTurn);
+    // The visible side transcript starts empty even though the copy carried
+    // the parent's messages.
+    assert.deepEqual(initial.messages, []);
+    const started = deferred<MakaAttachedSessionTurn>();
+    driver.subscribeStartedTurns!((turn) => started.resolve(turn));
+
+    first.push({
+      kind: 'subscription.session_projection',
+      hostEpoch: 'host-1',
+      subscriptionId: 'subscription-1',
+      sequence: 1,
+      snapshot: continuitySnapshot({
+        projectionRevision: 2,
+        rootTurn: completedTurn('turn-1', 'run-1'),
+      }),
+    });
+    assert.equal((await nextEvent(initial.activeTurn.events)).type, 'complete');
+    assert.equal((await initial.activeTurn.events[Symbol.asyncIterator]().next()).done, true);
+    await waitFor(() => refresh.nextCalls > 0);
+    first.push({
+      kind: 'subscription.session_projection',
+      hostEpoch: 'host-1',
+      subscriptionId: 'subscription-1',
+      sequence: 2,
+      snapshot: continuitySnapshot({
+        projectionRevision: 3,
+        rootTurn: runningTurn('turn-2', 'run-2'),
+      }),
+    });
+    const attached = await Promise.race([
+      started.promise,
+      delay(WAIT_BUDGET_MS).then(() => assert.fail('Timed out waiting for successor turn')),
+    ]);
+    // Without the filter this replaced the visible transcript with the copied
+    // parent conversation the user opened `/side` to leave (#3881).
+    assert.deepEqual(attached.messages, [
+      userMessage('turn-2', 'Side follow up'),
+      assistantMessage('turn-2', 'Side answer'),
+    ]);
+  });
+
   test('adopts a successor that finishes before its atomic reattach completes', async () => {
     const first = new FakeSubscription(continuitySnapshot(), Promise.resolve([]));
     const refresh = new FakeSubscription(

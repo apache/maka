@@ -1152,7 +1152,7 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
         ? { runId: opened.channel.snapshot.rootTurn.runId }
         : {}),
       events: opened.channel.eventsForTurn(turnId),
-      messages: opened.messages,
+      messages: visibleTranscriptMessages(opened.messages, this.#hiddenTranscriptThroughTurnId),
       summary: projectSessionCatalogSummary(configuration.session),
     } satisfies MakaAttachedSessionTurn;
     for (const listener of this.#startedTurnListeners) listener(turn);
