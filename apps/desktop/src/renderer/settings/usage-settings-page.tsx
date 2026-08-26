@@ -544,13 +544,14 @@ function usageRequestTarget(row: UsageStats['logs'][number]) {
 
 function usageRequestSessionCell(row: UsageStats['logs'][number], copy: UsageSettingsCopy, onOpenSession?: (sessionId: string) => void) {
   const label = usageSessionDisplayLabel(row, copy);
-  if (!onOpenSession || !row.sessionId) return label;
+  const sessionId = row.sessionId;
+  if (!onOpenSession || !sessionId) return label;
   return (
     <Button
       className="settingsUsageSessionCell"
       variant="ghost"
       size="sm"
-      onClick={() => onOpenSession(row.sessionId)}
+      onClick={() => onOpenSession(sessionId)}
       label={label}
       tooltip={copy.tables.openSession(label)}
     />
