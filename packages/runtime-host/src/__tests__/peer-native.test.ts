@@ -18,12 +18,84 @@
  */
 
 import assert from 'node:assert/strict';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join, relative } from 'node:path';
+import { setImmediate as waitForImmediate } from 'node:timers/promises';
 import { test } from 'node:test';
+import { connectPeerRuntimeHost } from '../client/host-profile.js';
 import {
   readRuntimeHostPeerAuthentication,
   RuntimeHostPeerError,
+  startRuntimeHostPeerEndpoint,
   type RuntimeHostPeerNativeStream,
 } from '../transport/peer-native.js';
+
+test('closes an in-flight peer endpoint when connection is cancelled', {
+  timeout: 2_000,
+}, async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'maka-peer-abort-'));
+  const nativePath = join(directory, 'peer.cjs');
+  const previousNativePath = process.env.MAKA_RUNTIME_HOST_PEER_NATIVE_PATH;
+  const previousKeyPath = process.env.MAKA_RUNTIME_HOST_PEER_KEY_PATH;
+  try {
+    await writeFile(
+      nativePath,
+      `let rejectConnect;
+module.exports = {
+  startPeerEndpoint: () => ({
+    peerId: 'client',
+    listenAddresses: [],
+    connect: () => new Promise((_resolve, reject) => { rejectConnect = reject; }),
+    close: async () => rejectConnect?.(new Error('closed by abort')),
+  }),
+};
+`,
+    );
+    process.env.MAKA_RUNTIME_HOST_PEER_NATIVE_PATH = nativePath;
+    process.env.MAKA_RUNTIME_HOST_PEER_KEY_PATH = join(directory, 'peer.key');
+    const abort = new AbortController();
+    const connection = connectPeerRuntimeHost({
+      profileId: 'peer-test',
+      transport: {
+        kind: 'libp2p-direct',
+        peerId: 'target',
+        routeHints: ['/memory/1'],
+        coordinationRelays: [],
+      },
+      credential: 'credential',
+      expectedRootId: '00000000-0000-4000-8000-000000000001',
+      clientInstanceId: 'client-test',
+      signal: abort.signal,
+      connectTimeoutMs: 120_000,
+    });
+    await waitForImmediate();
+    abort.abort();
+    await assert.rejects(connection, /closed by abort/u);
+  } finally {
+    restoreEnvironment('MAKA_RUNTIME_HOST_PEER_NATIVE_PATH', previousNativePath);
+    restoreEnvironment('MAKA_RUNTIME_HOST_PEER_KEY_PATH', previousKeyPath);
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test('loads a relative native module path from the process working directory', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'maka-peer-native-'));
+  try {
+    const modulePath = join(directory, 'peer.cjs');
+    await writeFile(
+      modulePath,
+      'module.exports = { startPeerEndpoint: () => ({ peerId: "peer", listenAddresses: [] }) };\n',
+    );
+    const endpoint = startRuntimeHostPeerEndpoint({
+      nativePath: relative(process.cwd(), modulePath),
+      keyPath: 'unused',
+    });
+    assert.equal(endpoint.peerId, 'peer');
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
 
 test('bounds and separates the peer credential preface from Runtime Host frames', async () => {
   const frame = Buffer.from('{"kind":"hello"}\n');
@@ -55,4 +127,9 @@ function streamWith(chunk: Buffer): RuntimeHostPeerNativeStream {
     close: async () => undefined,
     abort: () => undefined,
   };
+}
+
+function restoreEnvironment(name: string, value: string | undefined): void {
+  if (value === undefined) delete process.env[name];
+  else process.env[name] = value;
 }

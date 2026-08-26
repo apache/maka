@@ -236,6 +236,7 @@ export async function connectRemoteRuntimeHostProfile(
       expectedRootId: input.profile.rootId,
       clientInstanceId: input.clientInstanceId,
       ...(input.signal === undefined ? {} : { signal: input.signal }),
+      ...(input.connectTimeoutMs === undefined ? {} : { connectTimeoutMs: input.connectTimeoutMs }),
       ...(input.handshakeTimeoutMs === undefined
         ? {}
         : { handshakeTimeoutMs: input.handshakeTimeoutMs }),
@@ -322,6 +323,7 @@ export async function connectPeerRuntimeHost(input: {
   readonly expectedRootId: string;
   readonly clientInstanceId: string;
   readonly signal?: AbortSignal;
+  readonly connectTimeoutMs?: number;
   readonly handshakeTimeoutMs?: number;
 }): Promise<RuntimeHostConnection> {
   input.signal?.throwIfAborted();
@@ -345,13 +347,16 @@ export async function connectPeerRuntimeHost(input: {
       return closeTask;
     },
   };
+  const abort = () => void resource.close().catch(() => undefined);
+  input.signal?.addEventListener('abort', abort, { once: true });
+  if (input.signal?.aborted) abort();
   let transferred = false;
   try {
     const stream = await endpoint.connect({
       peerId: input.transport.peerId,
       routeHints: input.transport.routeHints,
       coordinationRelays: input.transport.coordinationRelays,
-      directDeadlineMs: 40_000,
+      directDeadlineMs: Math.min(input.connectTimeoutMs ?? 40_000, 120_000),
     });
     input.signal?.throwIfAborted();
     await writeRuntimeHostPeerAuthentication(stream, input.credential);
@@ -379,6 +384,7 @@ export async function connectPeerRuntimeHost(input: {
     transferred = true;
     return result.connection;
   } finally {
+    input.signal?.removeEventListener('abort', abort);
     if (!transferred) await resource.close().catch(() => undefined);
   }
 }

@@ -31,6 +31,9 @@ import type {
   RuntimeHostPeerListener as RuntimeHostPeerListenerContract,
 } from './listener-set.js';
 
+const MAX_PENDING_AUTHENTICATIONS = 16;
+const AUTHENTICATION_TIMEOUT_MS = 5_000;
+
 export interface StartRuntimeHostPeerListenerOptions {
   readonly nativePath: string;
   readonly keyPath: string;
@@ -44,7 +47,15 @@ export function startRuntimeHostPeerListener(
   options: StartRuntimeHostPeerListenerOptions,
 ): RuntimeHostPeerListenerContract {
   const endpoint = startRuntimeHostPeerEndpoint(options);
-  return new RuntimeHostPeerListener(endpoint, options.accessAuthority, options.accept);
+  return createRuntimeHostPeerListener(endpoint, options.accessAuthority, options.accept);
+}
+
+export function createRuntimeHostPeerListener(
+  endpoint: RuntimeHostPeerNativeEndpoint,
+  accessAuthority: RuntimeHostAccessAuthority,
+  accept: (connection: RuntimeHostListenerConnection) => void,
+): RuntimeHostPeerListenerContract {
+  return new RuntimeHostPeerListener(endpoint, accessAuthority, accept);
 }
 
 class RuntimeHostPeerListener implements RuntimeHostPeerListenerContract {
@@ -56,9 +67,12 @@ class RuntimeHostPeerListener implements RuntimeHostPeerListenerContract {
   readonly #accessAuthority: RuntimeHostAccessAuthority;
   readonly #accept: (connection: RuntimeHostListenerConnection) => void;
   readonly #transports = new Set<FramedByteStreamTransport>();
+  readonly #authenticating = new Set<RuntimeHostPeerNativeStream>();
+  readonly #authenticationTasks = new Set<Promise<void>>();
   readonly #acceptTask: Promise<void>;
   #acceptFailure: unknown;
   #admitting = true;
+  #closeAdmissionTask: Promise<void> | undefined;
   #cleanupTask: Promise<void> | undefined;
 
   constructor(
@@ -78,13 +92,17 @@ class RuntimeHostPeerListener implements RuntimeHostPeerListenerContract {
   }
 
   closeAdmission(): Promise<void> {
-    this.#admitting = false;
-    return Promise.resolve();
+    this.#closeAdmissionTask ??= (async () => {
+      this.#admitting = false;
+      for (const stream of this.#authenticating) stream.abort();
+      await Promise.allSettled([...this.#authenticationTasks]);
+    })();
+    return this.#closeAdmissionTask;
   }
 
   cleanup(): Promise<void> {
     this.#cleanupTask ??= (async () => {
-      this.#admitting = false;
+      await this.closeAdmission();
       for (const transport of this.#transports) transport.abort();
       await this.#endpoint.close();
       await this.#acceptTask;
@@ -107,13 +125,27 @@ class RuntimeHostPeerListener implements RuntimeHostPeerListenerContract {
         stream.abort();
         continue;
       }
-      void this.#authenticateAndAccept(stream);
+      if (this.#authenticating.size >= MAX_PENDING_AUTHENTICATIONS) {
+        stream.abort();
+        continue;
+      }
+      this.#authenticating.add(stream);
+      const task = this.#authenticateAndAccept(stream).finally(() => {
+        this.#authenticating.delete(stream);
+        this.#authenticationTasks.delete(task);
+      });
+      this.#authenticationTasks.add(task);
+      void task;
     }
   }
 
   async #authenticateAndAccept(stream: RuntimeHostPeerNativeStream): Promise<void> {
     try {
-      const authenticated = await readRuntimeHostPeerAuthentication(stream);
+      const authenticated = await withDeadline(
+        readRuntimeHostPeerAuthentication(stream),
+        AUTHENTICATION_TIMEOUT_MS,
+        () => stream.abort(),
+      );
       const authority = this.#accessAuthority.authenticate(authenticated.credential);
       if (!authority || !this.#admitting) {
         stream.abort();
@@ -137,4 +169,25 @@ class RuntimeHostPeerListener implements RuntimeHostPeerListenerContract {
 
 function asError(error: unknown): Error {
   return error instanceof Error ? error : new Error(String(error));
+}
+
+async function withDeadline<T>(
+  operation: Promise<T>,
+  timeoutMs: number,
+  onTimeout: () => void,
+): Promise<T> {
+  let timer: NodeJS.Timeout | undefined;
+  try {
+    return await Promise.race([
+      operation,
+      new Promise<never>((_resolve, reject) => {
+        timer = setTimeout(() => {
+          onTimeout();
+          reject(new Error('Peer authentication timed out'));
+        }, timeoutMs);
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
 }

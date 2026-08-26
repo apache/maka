@@ -18,6 +18,7 @@
  */
 
 import { createRequire } from 'node:module';
+import { resolve } from 'node:path';
 import type { RuntimeHostByteStream } from './framed-byte-stream-transport.js';
 
 const AUTHENTICATION_MAX_BYTES = 12 * 1024;
@@ -78,12 +79,13 @@ export function startRuntimeHostPeerEndpoint(input: {
   readonly coordinationRelays?: readonly string[];
 }): RuntimeHostPeerNativeEndpoint {
   let loaded: unknown;
+  const nativePath = resolve(input.nativePath);
   try {
-    loaded = require(input.nativePath);
+    loaded = require(nativePath);
   } catch (error) {
     throw new RuntimeHostPeerError(
       'peer_native_unavailable',
-      `Runtime Host peer native module could not be loaded: ${input.nativePath}`,
+      `Runtime Host peer native module could not be loaded: ${nativePath}`,
       { cause: asError(error) },
     );
   }
@@ -262,10 +264,9 @@ export class RuntimeHostPeerByteStream implements RuntimeHostByteStream {
 export function normalizePeerError(error: unknown): RuntimeHostPeerError {
   if (error instanceof RuntimeHostPeerError) return error;
   const cause = asError(error);
-  const match =
-    /^(peer_[a-z_]+|direct_path_unavailable|coordination_unavailable|udp_unavailable):\s*(.*)$/su.exec(
-      cause.message,
-    );
+  const match = /^(peer_[a-z_]+|direct_path_unavailable|coordination_unavailable):\s*(.*)$/su.exec(
+    cause.message,
+  );
   if (match && isPeerErrorCode(match[1])) {
     return new RuntimeHostPeerError(match[1], match[2] || match[1], { cause });
   }
@@ -301,7 +302,6 @@ function isPeerErrorCode(value: string | undefined): value is RuntimeHostPeerErr
     value === 'peer_identity_mismatch' ||
     value === 'direct_path_unavailable' ||
     value === 'coordination_unavailable' ||
-    value === 'udp_unavailable' ||
     value === 'peer_native_unavailable' ||
     value === 'peer_native_failed' ||
     value === 'peer_connect_in_progress'

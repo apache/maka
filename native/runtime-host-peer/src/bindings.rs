@@ -77,10 +77,10 @@ impl PeerEndpoint {
             options.coordination_relays.unwrap_or_default(),
             "coordination relay",
         )?;
-        if !(100..=120_000).contains(&options.direct_deadline_ms) {
+        if !(1..=120_000).contains(&options.direct_deadline_ms) {
             return Err(Error::new(
                 Status::InvalidArg,
-                "direct deadline must be between 100 and 120000 milliseconds",
+                "direct deadline must be between 1 and 120000 milliseconds",
             ));
         }
         let (result_tx, result_rx) = oneshot::channel();
@@ -207,10 +207,10 @@ impl PeerStream {
         {
             return Ok(());
         }
-        result_rx
-            .await
-            .map_err(|_| native_closed_error())?
-            .map_err(peer_error)
+        match result_rx.await {
+            Ok(result) => result.map_err(peer_error),
+            Err(_) => Ok(()),
+        }
     }
 
     #[napi]

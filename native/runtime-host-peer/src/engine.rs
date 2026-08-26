@@ -26,16 +26,17 @@ use std::{
 
 use futures::StreamExt;
 use libp2p::{
-    Multiaddr, PeerId, StreamProtocol, Swarm, SwarmBuilder, dcutr, identify, identity,
+    Multiaddr, PeerId, StreamProtocol, Swarm, SwarmBuilder, connection_limits, dcutr, identify,
+    identity,
     multiaddr::Protocol,
     noise, ping, relay,
     swarm::{ConnectionId, NetworkBehaviour, SwarmEvent},
     tcp, yamux,
 };
-use libp2p_stream as stream;
 use tokio::sync::{mpsc, oneshot};
 
 mod address;
+mod application_stream;
 mod identity_store;
 mod peer_stream;
 
@@ -50,6 +51,9 @@ const APPLICATION_PROTOCOL: &str = "/maka/runtime-host/peer/1";
 const IDENTIFY_PROTOCOL: &str = "/maka/runtime-host/peer-identify/1";
 const COMMAND_CAPACITY: usize = 32;
 const INCOMING_STREAM_CAPACITY: usize = 16;
+const MAX_PENDING_CONNECTIONS: u32 = 32;
+const MAX_ESTABLISHED_CONNECTIONS: u32 = 64;
+const MAX_CONNECTIONS_PER_PEER: u32 = 4;
 const LISTENER_ADDRESS_QUIET_PERIOD: Duration = Duration::from_millis(250);
 const COORDINATION_RETRY_INTERVAL: Duration = Duration::from_secs(1);
 
@@ -103,11 +107,12 @@ impl PeerError {
 
 #[derive(NetworkBehaviour)]
 struct Behaviour {
+    connection_limits: connection_limits::Behaviour,
     relay_client: relay::client::Behaviour,
     dcutr: dcutr::Behaviour,
     identify: identify::Behaviour,
     ping: ping::Behaviour,
-    stream: stream::Behaviour,
+    application_stream: application_stream::Behaviour,
 }
 
 struct PendingConnect {
@@ -182,11 +187,7 @@ async fn run_endpoint_async(
 ) -> Result<(), PeerError> {
     let key = load_or_create_key(&options.key_path).await?;
     let local_peer_id = PeerId::from(key.public());
-    let mut swarm = build_swarm(key)?;
-    let mut stream_control = swarm.behaviour().stream.new_control();
-    let mut incoming_streams = stream_control
-        .accept(StreamProtocol::new(APPLICATION_PROTOCOL))
-        .map_err(|_| PeerError::new("peer_native_failed", "application protocol is registered"))?;
+    let (mut swarm, stream_control, mut incoming_streams) = build_swarm(key)?;
 
     let listen_addresses = if options.listen_addresses.is_empty() {
         vec![
@@ -294,7 +295,6 @@ async fn run_endpoint_async(
                         options.peer_id,
                         &mut pending,
                         &direct,
-                        &relayed,
                         stream_control.clone(),
                         opened_tx.clone(),
                     );
@@ -305,14 +305,10 @@ async fn run_endpoint_async(
                 }
                 None => return Ok(()),
             },
-            Some((peer_id, stream)) = incoming_streams.next() => {
-                let is_direct = direct.get(&peer_id).is_some_and(|ids| !ids.is_empty());
-                let has_relay = relayed.get(&peer_id).is_some_and(|ids| !ids.is_empty());
-                if is_direct && !has_relay {
-                    let peer_stream = spawn_stream(peer_id, stream);
-                    if incoming_tx.try_send(peer_stream).is_err() {
-                        // Dropping the stream closes it. A slow Host cannot create an unbounded queue.
-                    }
+            Some((peer_id, stream)) = incoming_streams.recv() => {
+                let peer_stream = spawn_stream(peer_id, stream);
+                if incoming_tx.try_send(peer_stream).is_err() {
+                    // Dropping the stream closes it. A slow Host cannot create an unbounded queue.
                 }
             }
             Some(opened) = opened_rx.recv() => {
@@ -338,7 +334,6 @@ async fn run_endpoint_async(
                         peer_id,
                         &mut pending,
                         &direct,
-                        &relayed,
                         stream_control.clone(),
                         opened_tx.clone(),
                     );
@@ -350,6 +345,7 @@ async fn run_endpoint_async(
                     &mut swarm,
                     &mut pending,
                     &coordination_relays,
+                    &direct,
                     &relayed,
                     external_candidate_ready,
                     now,
@@ -370,8 +366,18 @@ async fn run_endpoint_async(
     }
 }
 
-fn build_swarm(key: identity::Keypair) -> Result<Swarm<Behaviour>, PeerError> {
-    SwarmBuilder::with_existing_identity(key)
+type BuiltSwarm = (
+    Swarm<Behaviour>,
+    application_stream::Control,
+    mpsc::Receiver<(PeerId, libp2p::swarm::Stream)>,
+);
+
+fn build_swarm(key: identity::Keypair) -> Result<BuiltSwarm, PeerError> {
+    let (application_stream, control, incoming) = application_stream::Behaviour::new(
+        StreamProtocol::new(APPLICATION_PROTOCOL),
+        INCOMING_STREAM_CAPACITY,
+    );
+    let swarm = SwarmBuilder::with_existing_identity(key)
         .with_tokio()
         .with_tcp(
             tcp::Config::default().nodelay(true),
@@ -384,7 +390,16 @@ fn build_swarm(key: identity::Keypair) -> Result<Swarm<Behaviour>, PeerError> {
         .map_err(native_error)?
         .with_relay_client(noise::Config::new, yamux::Config::default)
         .map_err(native_error)?
-        .with_behaviour(|key, relay_client| Behaviour {
+        .with_behaviour(move |key, relay_client| Behaviour {
+            connection_limits: connection_limits::Behaviour::new(
+                connection_limits::ConnectionLimits::default()
+                    .with_max_pending_incoming(Some(MAX_PENDING_CONNECTIONS))
+                    .with_max_pending_outgoing(Some(MAX_PENDING_CONNECTIONS))
+                    .with_max_established_incoming(Some(MAX_ESTABLISHED_CONNECTIONS))
+                    .with_max_established_outgoing(Some(MAX_ESTABLISHED_CONNECTIONS))
+                    .with_max_established(Some(MAX_ESTABLISHED_CONNECTIONS))
+                    .with_max_established_per_peer(Some(MAX_CONNECTIONS_PER_PEER)),
+            ),
             relay_client,
             dcutr: dcutr::Behaviour::new(key.public().to_peer_id()),
             identify: identify::Behaviour::new(identify::Config::new(
@@ -392,10 +407,11 @@ fn build_swarm(key: identity::Keypair) -> Result<Swarm<Behaviour>, PeerError> {
                 key.public(),
             )),
             ping: ping::Behaviour::new(ping::Config::new()),
-            stream: stream::Behaviour::new(),
+            application_stream,
         })
         .map_err(native_error)
-        .map(|builder| builder.build())
+        .map(|builder| builder.build())?;
+    Ok((swarm, control, incoming))
 }
 
 fn start_connect(
@@ -442,23 +458,19 @@ fn maybe_open_direct_stream(
     peer_id: PeerId,
     pending: &mut HashMap<PeerId, PendingConnect>,
     direct: &HashMap<PeerId, HashSet<ConnectionId>>,
-    relayed: &HashMap<PeerId, HashSet<ConnectionId>>,
-    mut control: stream::Control,
+    mut control: application_stream::Control,
     opened_tx: mpsc::Sender<OpenedStream>,
 ) {
     let Some(waiter) = pending.get_mut(&peer_id) else {
         return;
     };
-    if waiter.opening
-        || direct.get(&peer_id).is_none_or(HashSet::is_empty)
-        || relayed.get(&peer_id).is_some_and(|ids| !ids.is_empty())
-    {
+    if waiter.opening || direct.get(&peer_id).is_none_or(HashSet::is_empty) {
         return;
     }
     waiter.opening = true;
     tokio::spawn(async move {
         let result = control
-            .open_stream(peer_id, StreamProtocol::new(APPLICATION_PROTOCOL))
+            .open_stream(peer_id)
             .await
             .map_err(|error| error.to_string());
         let _ = opened_tx.send(OpenedStream { peer_id, result }).await;
@@ -607,12 +619,16 @@ fn retry_coordination_routes(
     swarm: &mut Swarm<Behaviour>,
     pending: &mut HashMap<PeerId, PendingConnect>,
     coordination_relays: &HashMap<PeerId, CoordinationRelay>,
+    direct: &HashMap<PeerId, HashSet<ConnectionId>>,
     relayed: &HashMap<PeerId, HashSet<ConnectionId>>,
     external_candidate_ready: bool,
     now: Instant,
 ) {
     for (peer_id, connect) in pending {
         if connect.next_coordination_attempt > now {
+            continue;
+        }
+        if direct.get(peer_id).is_some_and(|ids| !ids.is_empty()) {
             continue;
         }
         if relayed.get(peer_id).is_some_and(|ids| !ids.is_empty()) {
