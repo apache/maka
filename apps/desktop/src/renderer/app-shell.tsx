@@ -193,9 +193,9 @@ import {
   useActiveSessionEvents,
   useAppShellBootstrapSubscriptions,
   useAppShellHostEffects,
-  useResolvedHostPlatform,
   useAppShellPersistenceEffects,
   useAppShellNavRefSync,
+  useResolvedHostPlatform,
   useSessionEventHealthPolling,
   useShellRunUpdates,
 } from './app-shell-effects';
