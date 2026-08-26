@@ -18,6 +18,7 @@
  */
 
 import { spawn } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { realpath } from 'node:fs/promises';
 import { dirname, isAbsolute } from 'node:path';
 import { manageChildProcessLifecycle } from '@maka/runtime/child-process-lifecycle';
@@ -168,6 +169,7 @@ export interface GitoxideCandidatePublishedV1 {
   readonly candidateCommitOid: string;
   readonly candidateTreeOid: string;
   readonly resultBlobOid: string;
+  readonly requestDigestSha256: string;
   readonly acceptedRef: string;
   readonly candidateRef: string;
   readonly path: string;
@@ -181,7 +183,11 @@ export interface GitoxideCandidateNoChangeV1 {
   readonly baseCommitOid: string;
   readonly baseTreeOid: string;
   readonly resultBlobOid: string;
+  readonly candidateCommitOid: string;
+  readonly candidateTreeOid: string;
+  readonly requestDigestSha256: string;
   readonly acceptedRef: string;
+  readonly candidateRef: string;
   readonly path: string;
   readonly managedTreePolicyVersion: 3;
 }
@@ -460,7 +466,7 @@ export async function createCandidateWithGitoxideHelperInternal(input: {
         !SHA1_OID_PATTERN.test(input.expectedBaseTreeOid) ||
         !MAKA_REF_PATTERN.test(input.acceptedRef) ||
         !/^refs\/maka\/candidates\/[0-9a-f]{64}$/.test(input.candidateRef) ||
-        !isCanonicalManagedPathV3(input.path) ||
+        !isBoundedPathTransport(input.path) ||
         Buffer.byteLength(input.content, 'utf8') > MAX_SUCCESSOR_CONTENT_BYTES ||
         input.managedTreePolicyVersion !== 3
       ) {
@@ -510,12 +516,22 @@ export async function createCandidateWithGitoxideHelperInternal(input: {
     abortSignal: input.abortSignal,
     deadlineAt,
   });
+  const requestDigestSha256 = candidateRequestDigestSha256({
+    acceptedRef: input.acceptedRef,
+    expectedBaseCommitOid: input.expectedBaseCommitOid,
+    expectedBaseTreeOid: input.expectedBaseTreeOid,
+    candidateRef: input.candidateRef,
+    path: input.path,
+    content: Buffer.from(input.content, 'utf8'),
+  });
   return decodeCandidateOutcome(outcome, {
     acceptedRef: input.acceptedRef,
     expectedBaseCommitOid: input.expectedBaseCommitOid,
     expectedBaseTreeOid: input.expectedBaseTreeOid,
     candidateRef: input.candidateRef,
     path: input.path,
+    resultBlobOid: gitBlobOid(Buffer.from(input.content, 'utf8')),
+    requestDigestSha256,
     managedTreePolicyVersion: input.managedTreePolicyVersion,
   });
 }
@@ -531,7 +547,7 @@ export async function readTreeFileWithGitoxideHelperInternal(input: {
 }): Promise<GitoxideTreeFileReadV1> {
   const deadlineAt =
     performance.now() + GITOXIDE_HELPER_OPERATION_TIMEOUTS_INTERNAL.acceptedTreeReadMs;
-  if (!isCanonicalManagedPathV3(input.path)) {
+  if (!isBoundedPathTransport(input.path)) {
     throw invocationInvalid('Gitoxide tree file path is invalid');
   }
   const prepared = await prepareAcceptedTreeInvocation({ ...input, deadlineAt });
@@ -847,6 +863,8 @@ function decodeCandidateOutcome(
     readonly expectedBaseTreeOid: string;
     readonly candidateRef: string;
     readonly path: string;
+    readonly resultBlobOid: string;
+    readonly requestDigestSha256: string;
     readonly managedTreePolicyVersion: 3;
   },
 ): GitoxideCandidateResultV1 {
@@ -892,6 +910,8 @@ function isCandidatePublished(
     readonly expectedBaseTreeOid: string;
     readonly candidateRef: string;
     readonly path: string;
+    readonly resultBlobOid: string;
+    readonly requestDigestSha256: string;
     readonly managedTreePolicyVersion: 3;
   },
 ): value is GitoxideCandidatePublishedV1 {
@@ -905,6 +925,7 @@ function isCandidatePublished(
       'candidateCommitOid',
       'candidateTreeOid',
       'resultBlobOid',
+      'requestDigestSha256',
       'acceptedRef',
       'candidateRef',
       'path',
@@ -920,7 +941,8 @@ function isCandidatePublished(
     typeof value.candidateTreeOid === 'string' &&
     SHA1_OID_PATTERN.test(value.candidateTreeOid) &&
     typeof value.resultBlobOid === 'string' &&
-    SHA1_OID_PATTERN.test(value.resultBlobOid) &&
+    value.resultBlobOid === expected.resultBlobOid &&
+    value.requestDigestSha256 === expected.requestDigestSha256 &&
     value.acceptedRef === expected.acceptedRef &&
     value.candidateRef === expected.candidateRef &&
     value.path === expected.path &&
@@ -935,6 +957,9 @@ function isCandidateNoChange(
     readonly expectedBaseCommitOid: string;
     readonly expectedBaseTreeOid: string;
     readonly path: string;
+    readonly resultBlobOid: string;
+    readonly candidateRef: string;
+    readonly requestDigestSha256: string;
     readonly managedTreePolicyVersion: 3;
   },
 ): value is GitoxideCandidateNoChangeV1 {
@@ -946,7 +971,11 @@ function isCandidateNoChange(
       'baseCommitOid',
       'baseTreeOid',
       'resultBlobOid',
+      'candidateCommitOid',
+      'candidateTreeOid',
+      'requestDigestSha256',
       'acceptedRef',
+      'candidateRef',
       'path',
       'managedTreePolicyVersion',
     ]) &&
@@ -955,8 +984,12 @@ function isCandidateNoChange(
     value.objectFormat === 'sha1' &&
     value.baseCommitOid === expected.expectedBaseCommitOid &&
     value.baseTreeOid === expected.expectedBaseTreeOid &&
-    isSha1(value.resultBlobOid) &&
+    value.resultBlobOid === expected.resultBlobOid &&
+    isSha1(value.candidateCommitOid) &&
+    value.candidateTreeOid === expected.expectedBaseTreeOid &&
+    value.requestDigestSha256 === expected.requestDigestSha256 &&
     value.acceptedRef === expected.acceptedRef &&
+    value.candidateRef === expected.candidateRef &&
     value.path === expected.path &&
     value.managedTreePolicyVersion === expected.managedTreePolicyVersion
   );
@@ -1010,6 +1043,7 @@ function decodeTreeFileOutcome(
     isTreeFileRead(value) &&
     value.acceptedCommitOid === expected.acceptedCommitOid &&
     value.path === expected.path &&
+    value.blobOid === gitBlobOid(Buffer.from(value.content, 'utf8')) &&
     value.managedTreePolicyVersion === expected.managedTreePolicyVersion
   ) {
     return Object.freeze(value);
@@ -1018,6 +1052,37 @@ function decodeTreeFileOutcome(
     throw operationFailed('read the accepted tree file', value.reason);
   }
   throw protocolInvalid('Gitoxide tree file response is invalid');
+}
+
+function gitBlobOid(content: Buffer): string {
+  return createHash('sha1')
+    .update(`blob ${content.length}\0`, 'utf8')
+    .update(content)
+    .digest('hex');
+}
+
+function candidateRequestDigestSha256(input: {
+  readonly acceptedRef: string;
+  readonly expectedBaseCommitOid: string;
+  readonly expectedBaseTreeOid: string;
+  readonly candidateRef: string;
+  readonly path: string;
+  readonly content: Buffer;
+}): string {
+  const hash = createHash('sha256').update('maka.gitoxide.candidate-request.v1\0', 'utf8');
+  for (const field of [
+    Buffer.from(input.acceptedRef, 'utf8'),
+    Buffer.from(input.expectedBaseCommitOid, 'utf8'),
+    Buffer.from(input.expectedBaseTreeOid, 'utf8'),
+    Buffer.from(input.candidateRef, 'utf8'),
+    Buffer.from(input.path, 'utf8'),
+    input.content,
+  ]) {
+    const length = Buffer.allocUnsafe(8);
+    length.writeBigUInt64BE(BigInt(field.length));
+    hash.update(length).update(field);
+  }
+  return hash.digest('hex');
 }
 
 function parseHelperOutcome(outcome: HelperProcessOutcome): unknown {
@@ -1060,7 +1125,7 @@ function isTreeFileRead(value: unknown): value is GitoxideTreeFileReadV1 {
     isSha1(value.acceptedTreeOid) &&
     isSha1(value.blobOid) &&
     typeof value.path === 'string' &&
-    isCanonicalManagedPathV3(value.path) &&
+    isBoundedPathTransport(value.path) &&
     typeof value.content === 'string' &&
     isNonNegativeSafeInteger(value.bytesRead) &&
     value.bytesRead <= MAX_TREE_FILE_BYTES &&
@@ -1175,32 +1240,8 @@ function isHelperError(value: unknown): value is {
   );
 }
 
-function isCanonicalManagedPathV3(path: string): boolean {
-  if (
-    path.length === 0 ||
-    path.startsWith('/') ||
-    path.includes('\\') ||
-    path.includes('\0') ||
-    Buffer.byteLength(path, 'utf8') > 4096
-  ) {
-    return false;
-  }
-  return path.split('/').every((component) => {
-    const bytes = Buffer.byteLength(component, 'utf8');
-    const hfsFolded = component
-      .replace(/[\u200c-\u200f\u202a-\u202e\u206a-\u206f\ufeff]/gu, '')
-      .normalize('NFC')
-      .toLowerCase()
-      .normalize('NFC');
-    return (
-      component !== '' &&
-      component !== '.' &&
-      component !== '..' &&
-      bytes <= 255 &&
-      hfsFolded !== '.git' &&
-      (component === '.gitattributes' || hfsFolded !== '.gitattributes')
-    );
-  });
+function isBoundedPathTransport(path: string): boolean {
+  return path.length > 0 && !path.includes('\0') && Buffer.byteLength(path, 'utf8') <= 4096;
 }
 
 function hasExactKeys(

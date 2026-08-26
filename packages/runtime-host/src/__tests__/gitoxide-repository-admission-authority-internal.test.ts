@@ -37,7 +37,7 @@ import {
   GitoxideRepositoryAdmissionAuthorityError,
   importAdmittedGitoxideRepositoryInternal,
   readGitoxideTreeFileInternal,
-  requireGitoxideCandidateInternal,
+  requireGitoxideCandidateOutcomeForAcceptedRepositoryInternal,
   requireGitoxideRepositoryAdmissionInternal,
 } from '../server/gitoxide-repository-admission-authority-internal.js';
 import { GitoxideHelperInvocationError } from '../server/gitoxide-helper-invocation-internal.js';
@@ -181,14 +181,13 @@ test('imports only the exact repository identity bound to the admission capabili
     repositoryCapability: admitted.capability,
     acceptedRepositoryOwnerToken,
     destinationRepositoryPath,
-    baselineRef: 'refs/maka/baseline',
   });
 
   assert.equal(imported.sourceHeadCommitOid, expectedCommit);
   assert.equal(imported.sourceTreeOid, expectedTree);
   assert.equal(imported.baselineTreeOid, expectedTree);
   assert.equal(
-    gitBare(destinationRepositoryPath, ['rev-parse', 'refs/maka/baseline']),
+    gitBare(destinationRepositoryPath, ['rev-parse', 'refs/maka/accepted']),
     imported.baselineCommitOid,
   );
   await assert.rejects(
@@ -197,7 +196,6 @@ test('imports only the exact repository identity bound to the admission capabili
       repositoryCapability: admitted.capability,
       acceptedRepositoryOwnerToken,
       destinationRepositoryPath: join(repositoryPath, 'forged.git'),
-      baselineRef: 'refs/maka/forged',
     }),
     (error) =>
       error instanceof GitoxideRepositoryAdmissionAuthorityError &&
@@ -240,7 +238,6 @@ test('rejects a helper without candidate/read attestation before claiming the im
       repositoryCapability: admitted.capability,
       acceptedRepositoryOwnerToken: {},
       destinationRepositoryPath,
-      baselineRef: 'refs/maka/baseline',
     }),
     (error) =>
       error instanceof GitoxideHelperArtifactAuthorityError &&
@@ -283,7 +280,6 @@ test('publishes an operation-bound candidate without advancing accepted authorit
     repositoryCapability: admitted.capability,
     acceptedRepositoryOwnerToken,
     destinationRepositoryPath,
-    baselineRef: 'refs/maka/accepted',
   });
 
   const candidateOwnerToken = {};
@@ -312,16 +308,51 @@ test('publishes an operation-bound candidate without advancing accepted authorit
     gitBare(destinationRepositoryPath, ['rev-parse', candidate.candidateRef]),
     candidate.candidateCommitOid,
   );
-  assert.deepEqual(candidate.candidateCapability, {
-    kind: 'gitoxide_candidate_capability_v1',
+  assert.deepEqual(candidate.candidateOutcomeCapability, {
+    kind: 'gitoxide_candidate_outcome_capability_v1',
   });
+  const candidateProof = requireGitoxideCandidateOutcomeForAcceptedRepositoryInternal({
+    acceptedRepositoryOwnerToken,
+    acceptedRepositoryCapability: imported.acceptedRepositoryCapability,
+    candidateOwnerToken,
+    candidateOutcomeCapability: candidate.candidateOutcomeCapability,
+  });
+  assert.equal(candidateProof.operationId, 'operation-1');
+  assert.equal(candidateProof.acceptedRef, 'refs/maka/accepted');
+  assert.equal(candidateProof.objectFormat, 'sha1');
+  assert.equal(candidateProof.managedTreePolicyVersion, 3);
+  assert.match(candidateProof.helperArtifactSha256, /^sha256:[0-9a-f]{64}$/);
+  assert.match(candidateProof.requestDigestSha256, /^[0-9a-f]{64}$/);
   assert.equal(
-    requireGitoxideCandidateInternal(candidateOwnerToken, candidate.candidateCapability)
-      .operationId,
-    'operation-1',
+    candidateProof.resultContentSha256,
+    `sha256:${createHash('sha256').update('candidate result\n').digest('hex')}`,
   );
   assert.throws(
-    () => requireGitoxideCandidateInternal({}, candidate.candidateCapability),
+    () =>
+      requireGitoxideCandidateOutcomeForAcceptedRepositoryInternal({
+        acceptedRepositoryOwnerToken,
+        acceptedRepositoryCapability: imported.acceptedRepositoryCapability,
+        candidateOwnerToken: {},
+        candidateOutcomeCapability: candidate.candidateOutcomeCapability,
+      }),
+    GitoxideRepositoryAdmissionAuthorityError,
+  );
+
+  const secondAcceptedRepositoryOwnerToken = {};
+  const sameContentOtherRepository = await importAdmittedGitoxideRepositoryInternal({
+    admissionOwnerToken,
+    repositoryCapability: admitted.capability,
+    acceptedRepositoryOwnerToken: secondAcceptedRepositoryOwnerToken,
+    destinationRepositoryPath: join(repositoryPath, 'managed-other.git'),
+  });
+  assert.throws(
+    () =>
+      requireGitoxideCandidateOutcomeForAcceptedRepositoryInternal({
+        acceptedRepositoryOwnerToken: secondAcceptedRepositoryOwnerToken,
+        acceptedRepositoryCapability: sameContentOtherRepository.acceptedRepositoryCapability,
+        candidateOwnerToken,
+        candidateOutcomeCapability: candidate.candidateOutcomeCapability,
+      }),
     GitoxideRepositoryAdmissionAuthorityError,
   );
 
@@ -342,11 +373,19 @@ test('publishes an operation-bound candidate without advancing accepted authorit
     content: 'hello from candidate authority\n',
   });
   assert.equal(noChange.kind, 'candidate_no_change');
-  assert.throws(() =>
-    gitBare(destinationRepositoryPath, [
-      'rev-parse',
-      `refs/maka/candidates/${createHash('sha256').update(noChangeOperationId).digest('hex')}`,
-    ]),
+  assert.equal(
+    gitBare(destinationRepositoryPath, ['rev-parse', noChange.candidateRef]),
+    noChange.candidateCommitOid,
+  );
+  assert.equal(noChange.candidateTreeOid, imported.baselineTreeOid);
+  assert.equal(
+    requireGitoxideCandidateOutcomeForAcceptedRepositoryInternal({
+      acceptedRepositoryOwnerToken,
+      acceptedRepositoryCapability: imported.acceptedRepositoryCapability,
+      candidateOwnerToken,
+      candidateOutcomeCapability: noChange.candidateOutcomeCapability,
+    }).disposition,
+    'no_change',
   );
 
   const exactRetry = await createGitoxideCandidateInternal({
@@ -422,7 +461,6 @@ test('reads an immutable accepted-tree file without consulting the projection fi
     repositoryCapability: admitted.capability,
     acceptedRepositoryOwnerToken,
     destinationRepositoryPath: join(repositoryPath, 'managed-tree-read.git'),
-    baselineRef: 'refs/maka/accepted',
   });
 
   const result = await readGitoxideTreeFileInternal({
@@ -476,7 +514,6 @@ test('reuses the exact helper capability captured by repository admission', asyn
     repositoryCapability: admitted.capability,
     acceptedRepositoryOwnerToken: {},
     destinationRepositoryPath: join(repositoryPath, 'captured-helper-import.git'),
-    baselineRef: 'refs/maka/baseline',
   });
   assert.equal(imported.sourceHeadCommitOid, git(repositoryPath, ['rev-parse', 'HEAD']));
 });

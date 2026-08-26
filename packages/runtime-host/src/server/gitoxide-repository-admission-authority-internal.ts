@@ -44,8 +44,8 @@ export interface GitoxideAcceptedRepositoryCapability {
   readonly kind: 'gitoxide_accepted_repository_capability_v1';
 }
 
-export interface GitoxideCandidateCapability {
-  readonly kind: 'gitoxide_candidate_capability_v1';
+export interface GitoxideCandidateOutcomeCapability {
+  readonly kind: 'gitoxide_candidate_outcome_capability_v1';
 }
 
 export interface GitoxideRepositoryAdmissionStateInternal {
@@ -59,6 +59,7 @@ export interface GitoxideRepositoryAdmissionStateInternal {
 }
 
 const MANAGED_TREE_POLICY_VERSION = 3 as const;
+const ACCEPTED_REPOSITORY_REF = 'refs/maka/accepted' as const;
 
 export type GitoxideRepositoryAdmissionResultV1 =
   | {
@@ -100,9 +101,18 @@ interface AcceptedRepositoryCapabilityRecord {
   readonly managedTreePolicyVersion: 3;
 }
 
-interface CandidateCapabilityRecord {
+interface CandidateOutcomeCapabilityRecord {
   readonly candidateOwnerToken: object;
+  readonly acceptedRepositoryCapability: GitoxideAcceptedRepositoryCapability;
+  readonly repositoryPath: string;
+  readonly acceptedRef: string;
+  readonly objectFormat: 'sha1';
+  readonly managedTreePolicyVersion: 3;
+  readonly helperArtifactSha256: `sha256:${string}`;
+  readonly disposition: 'published' | 'no_change';
   readonly operationId: string;
+  readonly requestDigestSha256: string;
+  readonly resultContentSha256: `sha256:${string}`;
   readonly baseCommitOid: string;
   readonly baseTreeOid: string;
   readonly candidateCommitOid: string;
@@ -114,7 +124,7 @@ interface CandidateCapabilityRecord {
 
 const admissions = new WeakMap<object, AdmissionCapabilityRecord>();
 const acceptedRepositories = new WeakMap<object, AcceptedRepositoryCapabilityRecord>();
-const candidates = new WeakMap<object, CandidateCapabilityRecord>();
+const candidateOutcomes = new WeakMap<object, CandidateOutcomeCapabilityRecord>();
 
 export async function admitGitoxideRepositoryInternal(input: {
   readonly invocationOwnerToken: object;
@@ -174,7 +184,6 @@ export async function importAdmittedGitoxideRepositoryInternal(input: {
   readonly repositoryCapability: GitoxideRepositoryAdmissionCapability;
   readonly acceptedRepositoryOwnerToken: object;
   readonly destinationRepositoryPath: string;
-  readonly baselineRef: string;
   readonly abortSignal?: AbortSignal;
 }): Promise<
   GitoxideSourceImportObservationV1 & {
@@ -194,7 +203,7 @@ export async function importAdmittedGitoxideRepositoryInternal(input: {
     sourceRepositoryPath: source.repositoryPath,
     expectedSourceHeadCommitOid: source.headCommitOid,
     destinationRepositoryPath: input.destinationRepositoryPath,
-    baselineRef: input.baselineRef,
+    baselineRef: ACCEPTED_REPOSITORY_REF,
     managedTreePolicyVersion: source.managedTreePolicyVersion,
     abortSignal: input.abortSignal,
   });
@@ -229,9 +238,11 @@ export async function createGitoxideCandidateInternal(input: {
   readonly abortSignal?: AbortSignal;
 }): Promise<
   | (GitoxideCandidatePublishedV1 & {
-      readonly candidateCapability: GitoxideCandidateCapability;
+      readonly candidateOutcomeCapability: GitoxideCandidateOutcomeCapability;
     })
-  | GitoxideCandidateNoChangeV1
+  | (GitoxideCandidateNoChangeV1 & {
+      readonly candidateOutcomeCapability: GitoxideCandidateOutcomeCapability;
+    })
 > {
   const managed = requireAcceptedRepositoryRecord(
     input.acceptedRepositoryOwnerToken,
@@ -265,15 +276,29 @@ export async function createGitoxideCandidateInternal(input: {
       'gitoxide_managed_repository_base_mismatch',
     );
   }
-  if (result.kind === 'candidate_no_change') return result;
-  const candidateCapability = Object.freeze({
-    kind: 'gitoxide_candidate_capability_v1' as const,
+  const helperArtifactIdentity = requireGitoxideHelperArtifactIdentityInternal(
+    managed.invocationOwnerToken,
+    managed.helperCapability,
+  );
+  const candidateOutcomeCapability = Object.freeze({
+    kind: 'gitoxide_candidate_outcome_capability_v1' as const,
   });
-  candidates.set(
-    candidateCapability,
+  candidateOutcomes.set(
+    candidateOutcomeCapability,
     Object.freeze({
       candidateOwnerToken: input.candidateOwnerToken,
+      acceptedRepositoryCapability: input.acceptedRepositoryCapability,
+      repositoryPath: managed.repositoryPath,
+      acceptedRef: managed.acceptedRef,
+      objectFormat: 'sha1' as const,
+      managedTreePolicyVersion: managed.managedTreePolicyVersion,
+      helperArtifactSha256: helperArtifactIdentity.sha256,
+      disposition:
+        result.kind === 'candidate_published' ? ('published' as const) : ('no_change' as const),
       operationId: input.operationId,
+      requestDigestSha256: result.requestDigestSha256,
+      resultContentSha256:
+        `sha256:${createHash('sha256').update(input.content, 'utf8').digest('hex')}` as const,
       baseCommitOid: result.baseCommitOid,
       baseTreeOid: result.baseTreeOid,
       candidateCommitOid: result.candidateCommitOid,
@@ -283,7 +308,7 @@ export async function createGitoxideCandidateInternal(input: {
       path: result.path,
     }),
   );
-  return Object.freeze({ ...result, candidateCapability });
+  return Object.freeze({ ...result, candidateOutcomeCapability });
 }
 
 export async function readGitoxideTreeFileInternal(input: {
@@ -316,17 +341,33 @@ export async function readGitoxideTreeFileInternal(input: {
   return result;
 }
 
-export function requireGitoxideCandidateInternal(
-  candidateOwnerToken: object,
-  capability: GitoxideCandidateCapability,
-): Readonly<Omit<CandidateCapabilityRecord, 'candidateOwnerToken'>> {
-  const record = candidates.get(capability);
-  if (!record || record.candidateOwnerToken !== candidateOwnerToken) {
+export function requireGitoxideCandidateOutcomeForAcceptedRepositoryInternal(input: {
+  readonly acceptedRepositoryOwnerToken: object;
+  readonly acceptedRepositoryCapability: GitoxideAcceptedRepositoryCapability;
+  readonly candidateOwnerToken: object;
+  readonly candidateOutcomeCapability: GitoxideCandidateOutcomeCapability;
+}): Readonly<
+  Omit<CandidateOutcomeCapabilityRecord, 'candidateOwnerToken' | 'acceptedRepositoryCapability'>
+> {
+  requireAcceptedRepositoryRecord(
+    input.acceptedRepositoryOwnerToken,
+    input.acceptedRepositoryCapability,
+  );
+  const record = candidateOutcomes.get(input.candidateOutcomeCapability);
+  if (
+    !record ||
+    record.candidateOwnerToken !== input.candidateOwnerToken ||
+    record.acceptedRepositoryCapability !== input.acceptedRepositoryCapability
+  ) {
     throw new GitoxideRepositoryAdmissionAuthorityError(
       'gitoxide_repository_admission_capability_invalid',
     );
   }
-  const { candidateOwnerToken: _owner, ...proof } = record;
+  const {
+    candidateOwnerToken: _candidateOwner,
+    acceptedRepositoryCapability: _acceptedCapability,
+    ...proof
+  } = record;
   return Object.freeze(proof);
 }
 

@@ -555,7 +555,11 @@ fn publishes_and_exactly_retries_an_operation_candidate_without_advancing_accept
     });
 
     let first = invoke_request(request.clone());
-    assert!(first.status.success());
+    assert!(
+        first.status.success(),
+        "{}",
+        String::from_utf8_lossy(&first.stdout)
+    );
     let first: serde_json::Value = serde_json::from_slice(&first.stdout).unwrap();
     assert_eq!(first["kind"], "candidate_published");
     assert_eq!(first["managedTreePolicyVersion"], 3);
@@ -591,7 +595,7 @@ fn publishes_and_exactly_retries_an_operation_candidate_without_advancing_accept
 }
 
 #[test]
-fn returns_typed_no_change_without_publishing_a_candidate_ref() {
+fn publishes_an_operation_bound_no_change_receipt() {
     let fixture = RepositoryFixture::sha1_with_commit();
     let source_head = fixture.git_output(["rev-parse", "HEAD"]);
     let destination = fixture.root.join("no-change.git");
@@ -602,7 +606,7 @@ fn returns_typed_no_change_without_publishing_a_candidate_ref() {
     let candidate_ref =
         "refs/maka/candidates/4444444444444444444444444444444444444444444444444444444444444444";
 
-    let response = invoke_request(serde_json::json!({
+    let request = serde_json::json!({
         "protocolVersion": 1,
         "operation": "create_candidate",
         "repositoryPath": destination,
@@ -613,20 +617,172 @@ fn returns_typed_no_change_without_publishing_a_candidate_ref() {
         "path": "hello.txt",
         "contentBase64": "aGVsbG8gZnJvbSBzaGExCg==",
         "managedTreePolicyVersion": 3,
-    }));
+    });
+    let response = invoke_request(request.clone());
     assert!(response.status.success());
     let response: serde_json::Value = serde_json::from_slice(&response.stdout).unwrap();
     assert_eq!(response["kind"], "candidate_no_change");
     assert_eq!(response["baseCommitOid"], baseline);
     assert_eq!(response["baseTreeOid"], baseline_tree);
-    assert!(!git_bare_succeeds(
-        &destination,
-        ["rev-parse", candidate_ref]
-    ));
+    assert_eq!(response["candidateRef"], candidate_ref);
+    assert_eq!(response["candidateTreeOid"], baseline_tree);
+    assert_eq!(
+        git_bare_output(&destination, ["rev-parse", candidate_ref]),
+        response["candidateCommitOid"].as_str().unwrap()
+    );
     assert_eq!(
         git_bare_output(&destination, ["rev-parse", "refs/maka/baseline"]),
         baseline
     );
+    let retry = invoke_request(request);
+    assert!(retry.status.success());
+    let retry: serde_json::Value = serde_json::from_slice(&retry.stdout).unwrap();
+    assert_eq!(retry, response);
+}
+
+#[test]
+fn rejects_a_second_terminal_interpretation_for_the_same_operation_ref() {
+    let fixture = RepositoryFixture::sha1_with_commit();
+    let source_head = fixture.git_output(["rev-parse", "HEAD"]);
+    let destination = fixture.root.join("operation-linearity.git");
+    let imported = invoke_import(&fixture.root, &source_head, &destination);
+    let imported: serde_json::Value = serde_json::from_slice(&imported.stdout).unwrap();
+    let baseline = imported["baselineCommitOid"].as_str().unwrap();
+    let baseline_tree = imported["baselineTreeOid"].as_str().unwrap();
+    let candidate_ref =
+        "refs/maka/candidates/7777777777777777777777777777777777777777777777777777777777777777";
+    let request = |path: &str, content_base64: &str| {
+        serde_json::json!({
+            "protocolVersion": 1,
+            "operation": "create_candidate",
+            "repositoryPath": destination,
+            "acceptedRef": "refs/maka/baseline",
+            "expectedBaseCommitOid": baseline,
+            "expectedBaseTreeOid": baseline_tree,
+            "candidateRef": candidate_ref,
+            "path": path,
+            "contentBase64": content_base64,
+            "managedTreePolicyVersion": 3,
+        })
+    };
+
+    let no_change = invoke_request(request("hello.txt", "aGVsbG8gZnJvbSBzaGExCg=="));
+    assert!(no_change.status.success());
+    let no_change: serde_json::Value = serde_json::from_slice(&no_change.stdout).unwrap();
+    assert_eq!(no_change["kind"], "candidate_no_change");
+
+    let conflicting = invoke_request(request("docs/result.txt", "Y2hhbmdlZAo="));
+    assert_helper_error(&conflicting, "successor_publish_failed");
+    assert_eq!(
+        git_bare_output(&destination, ["rev-parse", candidate_ref]),
+        no_change["candidateCommitOid"].as_str().unwrap()
+    );
+
+    let reverse_candidate_ref =
+        "refs/maka/candidates/9999999999999999999999999999999999999999999999999999999999999999";
+    let reverse_request = |path: &str, content_base64: &str| {
+        serde_json::json!({
+            "protocolVersion": 1,
+            "operation": "create_candidate",
+            "repositoryPath": destination,
+            "acceptedRef": "refs/maka/baseline",
+            "expectedBaseCommitOid": baseline,
+            "expectedBaseTreeOid": baseline_tree,
+            "candidateRef": reverse_candidate_ref,
+            "path": path,
+            "contentBase64": content_base64,
+            "managedTreePolicyVersion": 3,
+        })
+    };
+    let published = invoke_request(reverse_request("docs/result.txt", "Y2hhbmdlZAo="));
+    assert!(published.status.success());
+    let published: serde_json::Value = serde_json::from_slice(&published.stdout).unwrap();
+    assert_eq!(published["kind"], "candidate_published");
+    let reverse_conflict = invoke_request(reverse_request("hello.txt", "aGVsbG8gZnJvbSBzaGExCg=="));
+    assert_helper_error(&reverse_conflict, "successor_publish_failed");
+    assert_eq!(
+        git_bare_output(&destination, ["rev-parse", reverse_candidate_ref]),
+        published["candidateCommitOid"].as_str().unwrap()
+    );
+}
+
+#[test]
+fn concurrent_exact_candidate_retry_converges_to_one_commit() {
+    let fixture = RepositoryFixture::sha1_with_commit();
+    let source_head = fixture.git_output(["rev-parse", "HEAD"]);
+    let destination = fixture.root.join("concurrent-exact-retry.git");
+    let imported = invoke_import(&fixture.root, &source_head, &destination);
+    let imported: serde_json::Value = serde_json::from_slice(&imported.stdout).unwrap();
+    let request = serde_json::json!({
+        "protocolVersion": 1,
+        "operation": "create_candidate",
+        "repositoryPath": destination,
+        "acceptedRef": "refs/maka/baseline",
+        "expectedBaseCommitOid": imported["baselineCommitOid"],
+        "expectedBaseTreeOid": imported["baselineTreeOid"],
+        "candidateRef": "refs/maka/candidates/8888888888888888888888888888888888888888888888888888888888888888",
+        "path": "docs/result.txt",
+        "contentBase64": "Y29uY3VycmVudAo=",
+        "managedTreePolicyVersion": 3,
+    });
+    let first_request = request.clone();
+    let first = std::thread::spawn(move || invoke_request(first_request));
+    let second = std::thread::spawn(move || invoke_request(request));
+    let first = first.join().unwrap();
+    let second = second.join().unwrap();
+    assert!(
+        first.status.success(),
+        "{}",
+        String::from_utf8_lossy(&first.stdout)
+    );
+    assert!(
+        second.status.success(),
+        "{}",
+        String::from_utf8_lossy(&second.stdout)
+    );
+    let first: serde_json::Value = serde_json::from_slice(&first.stdout).unwrap();
+    let second: serde_json::Value = serde_json::from_slice(&second.stdout).unwrap();
+    assert_eq!(first, second);
+}
+
+#[test]
+fn concurrent_conflicting_candidate_requests_have_one_stable_winner() {
+    let fixture = RepositoryFixture::sha1_with_commit();
+    let source_head = fixture.git_output(["rev-parse", "HEAD"]);
+    let destination = fixture.root.join("concurrent-conflict.git");
+    let imported = invoke_import(&fixture.root, &source_head, &destination);
+    let imported: serde_json::Value = serde_json::from_slice(&imported.stdout).unwrap();
+    let request = |content_base64: &str| {
+        serde_json::json!({
+            "protocolVersion": 1,
+            "operation": "create_candidate",
+            "repositoryPath": destination,
+            "acceptedRef": "refs/maka/baseline",
+            "expectedBaseCommitOid": imported["baselineCommitOid"],
+            "expectedBaseTreeOid": imported["baselineTreeOid"],
+            "candidateRef": "refs/maka/candidates/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "path": "docs/result.txt",
+            "contentBase64": content_base64,
+            "managedTreePolicyVersion": 3,
+        })
+    };
+    let first = request("Zmlyc3QK");
+    let second = request("c2Vjb25kCg==");
+    let first = std::thread::spawn(move || invoke_request(first));
+    let second = std::thread::spawn(move || invoke_request(second));
+    let outcomes = [first.join().unwrap(), second.join().unwrap()];
+    assert_eq!(
+        outcomes
+            .iter()
+            .filter(|outcome| outcome.status.success())
+            .count(),
+        1
+    );
+    let rejected = outcomes
+        .iter()
+        .find(|outcome| !outcome.status.success())
+        .unwrap();
+    assert_helper_error(rejected, "successor_publish_failed");
 }
 
 #[test]

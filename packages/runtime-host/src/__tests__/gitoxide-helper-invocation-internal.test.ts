@@ -30,11 +30,13 @@ import {
   issueGitoxideHelperReleaseArtifactClaimInternal,
 } from '../server/gitoxide-helper-artifact-authority-internal.js';
 import {
+  createCandidateWithGitoxideHelperInternal,
   GITOXIDE_HELPER_ERROR_REASONS_V1,
   GITOXIDE_HELPER_OPERATION_TIMEOUTS_INTERNAL,
   GitoxideHelperInvocationError,
   importSourceHeadWithGitoxideHelperInternal,
   inspectRepositoryWithGitoxideHelperInternal,
+  readTreeFileWithGitoxideHelperInternal,
   runGitoxideOperationWithinDeadlineInternal,
 } from '../server/gitoxide-helper-invocation-internal.js';
 
@@ -204,6 +206,102 @@ test('rejects an import response that does not match the requested source HEAD',
   await assertMismatchedImportResponseRejected(t, {
     sourceHeadCommitOid: 'b'.repeat(40),
   });
+});
+
+test('rejects a candidate response whose blob identity does not match the requested bytes', {
+  skip: process.platform === 'win32',
+}, async (t) => {
+  const root = await realpath(
+    await mkdtemp(join(tmpdir(), 'maka-gitoxide-candidate-correlation-')),
+  );
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const repositoryPath = await createRepository(t, 'sha1');
+  const acceptedRef = 'refs/maka/accepted';
+  const candidateRef = `refs/maka/candidates/${'1'.repeat(64)}`;
+  const expectedBaseCommitOid = 'a'.repeat(40);
+  const expectedBaseTreeOid = 'b'.repeat(40);
+  const helperPath = join(root, 'mismatched-candidate-helper');
+  const response = JSON.stringify({
+    protocolVersion: 1,
+    kind: 'candidate_published',
+    objectFormat: 'sha1',
+    baseCommitOid: expectedBaseCommitOid,
+    baseTreeOid: expectedBaseTreeOid,
+    candidateCommitOid: 'c'.repeat(40),
+    candidateTreeOid: 'd'.repeat(40),
+    resultBlobOid: 'e'.repeat(40),
+    requestDigestSha256: candidateRequestDigestForTest({
+      acceptedRef,
+      expectedBaseCommitOid,
+      expectedBaseTreeOid,
+      candidateRef,
+      path: 'result.txt',
+      content: Buffer.from('expected bytes\n'),
+    }),
+    acceptedRef,
+    candidateRef,
+    path: 'result.txt',
+    managedTreePolicyVersion: 3,
+  });
+  await writeFile(helperPath, `#!/bin/sh\n/bin/cat >/dev/null\nprintf '%s\\n' '${response}'\n`);
+  await chmod(helperPath, 0o755);
+  const helper = await admitHelperPath(helperPath, ['create_candidate']);
+
+  await assert.rejects(
+    createCandidateWithGitoxideHelperInternal({
+      ...helper,
+      repositoryPath,
+      acceptedRef,
+      expectedBaseCommitOid,
+      expectedBaseTreeOid,
+      candidateRef,
+      path: 'result.txt',
+      content: 'expected bytes\n',
+      managedTreePolicyVersion: 3,
+    }),
+    (error) =>
+      error instanceof GitoxideHelperInvocationError &&
+      error.code === 'gitoxide_helper_invocation_protocol_invalid',
+  );
+});
+
+test('rejects a direct-read response whose blob identity does not match its content', {
+  skip: process.platform === 'win32',
+}, async (t) => {
+  const root = await realpath(await mkdtemp(join(tmpdir(), 'maka-gitoxide-read-correlation-')));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const repositoryPath = await createRepository(t, 'sha1');
+  const acceptedCommitOid = 'a'.repeat(40);
+  const content = 'returned bytes\n';
+  const helperPath = join(root, 'mismatched-read-helper');
+  const response = JSON.stringify({
+    protocolVersion: 1,
+    kind: 'tree_file_read',
+    objectFormat: 'sha1',
+    acceptedCommitOid,
+    acceptedTreeOid: 'b'.repeat(40),
+    blobOid: 'c'.repeat(40),
+    path: 'result.txt',
+    content,
+    bytesRead: Buffer.byteLength(content),
+    managedTreePolicyVersion: 3,
+  });
+  await writeFile(helperPath, `#!/bin/sh\n/bin/cat >/dev/null\nprintf '%s\\n' '${response}'\n`);
+  await chmod(helperPath, 0o755);
+  const helper = await admitHelperPath(helperPath, ['read_tree_file']);
+
+  await assert.rejects(
+    readTreeFileWithGitoxideHelperInternal({
+      ...helper,
+      repositoryPath,
+      acceptedCommitOid,
+      path: 'result.txt',
+      managedTreePolicyVersion: 3,
+    }),
+    (error) =>
+      error instanceof GitoxideHelperInvocationError &&
+      error.code === 'gitoxide_helper_invocation_protocol_invalid',
+  );
 });
 
 test('keeps the Rust and TypeScript helper error protocol exhaustive', async () => {
@@ -385,7 +483,15 @@ async function assertMismatchedImportResponseRejected(
   );
 }
 
-async function admitHelperPath(configuredHelperPath: string): Promise<AdmittedHelper> {
+async function admitHelperPath(
+  configuredHelperPath: string,
+  supportedOperations: readonly (
+    | 'inspect_repository'
+    | 'import_source_head'
+    | 'create_candidate'
+    | 'read_tree_file'
+  )[] = ['inspect_repository', 'import_source_head'],
+): Promise<AdmittedHelper> {
   const helperPath = await realpath(configuredHelperPath);
   const helperBytes = await readFile(helperPath);
   const helperInfo = await stat(helperPath);
@@ -398,7 +504,7 @@ async function admitHelperPath(configuredHelperPath: string): Promise<AdmittedHe
     platform: process.platform,
     arch: process.arch,
     protocolVersion: 1,
-    supportedOperations: ['inspect_repository', 'import_source_head'],
+    supportedOperations,
   });
   const capability = await admitGitoxideHelperArtifactInternal({
     releaseOwnerToken,
@@ -406,6 +512,30 @@ async function admitHelperPath(configuredHelperPath: string): Promise<AdmittedHe
     claim,
   });
   return { invocationOwnerToken, capability };
+}
+
+function candidateRequestDigestForTest(input: {
+  readonly acceptedRef: string;
+  readonly expectedBaseCommitOid: string;
+  readonly expectedBaseTreeOid: string;
+  readonly candidateRef: string;
+  readonly path: string;
+  readonly content: Buffer;
+}): string {
+  const hash = createHash('sha256').update('maka.gitoxide.candidate-request.v1\0');
+  for (const field of [
+    Buffer.from(input.acceptedRef),
+    Buffer.from(input.expectedBaseCommitOid),
+    Buffer.from(input.expectedBaseTreeOid),
+    Buffer.from(input.candidateRef),
+    Buffer.from(input.path),
+    input.content,
+  ]) {
+    const length = Buffer.alloc(8);
+    length.writeBigUInt64BE(BigInt(field.length));
+    hash.update(length).update(field);
+  }
+  return hash.digest('hex');
 }
 
 async function waitForProcessMarker(

@@ -35,12 +35,16 @@ SQLite accepted head 仍由后续 mutation authority 拥有。本切片不提供
 ## 2. Owner、原子边界与能力
 
 - import authority 在任何 destination side effect 前验证 helper 的 operation feature attestation；导入成功
-  后捕获 helper capability、managed repository path、accepted ref、commit、tree 与 policy v3，并签发
+  后只在固定 `refs/maka/accepted` namespace 捕获 helper capability、managed repository path、accepted
+  commit、tree 与 policy v3，并签发
   opaque accepted-repository capability；
 - candidate helper 同时绑定 exact base commit/tree、accepted ref、operation-specific candidate ref、path
-  与 result bytes；它在任何 object write 前验证 base tree 与 accepted ref，随后只 CAS 新 candidate ref；
-- candidate publication 返回 opaque candidate capability/proof，不返回 accepted capability；相同
-  operation/content 是 exact retry，no-change 返回 typed proof 且不创建 commit/ref；
+  与 result bytes；完整 verified walk 后，tree editor 仍只通过 checksum-verifying finder 加载 owned tree，
+  禁止重新信任未验证 ODB bytes；
+- published 与 no-change 都创建包含 request digest 的 deterministic candidate receipt commit，并以同一个
+  operation-specific ref 作为线性化点；两种成功都返回 owner-bound candidate-outcome capability；
+- candidate outcome 私下绑定 exact accepted capability identity、repository/ref、helper artifact、policy、
+  request digest、result SHA-256 与 Git identities；验证时必须同时出示原 accepted capability；
 - direct read 沿 accepted tree 的 exact path 加载并重验 tree/blob object identity，只返回最多 8 MiB 的
   UTF-8 内容；它不读取 projection filesystem；
 - 每个公开入口都复用 admission 时捕获的 helper capability，并在短生命周期 helper 启动前重新验证
@@ -54,18 +58,20 @@ SQLite accepted head 仍由后续 mutation authority 拥有。本切片不提供
 | base commit/tree identity 不一致 | 写 object 前 fail closed |
 | candidate 违反 policy v3 | candidate ref CAS 前 fail closed |
 | candidate ref 已存在且不等于 deterministic candidate | fail closed，不覆盖已有 candidate |
-| result 与 base tree 相同 | 返回 `candidate_no_change`，不写 commit/ref |
+| result 与 base tree 相同 | 写入 same-tree receipt commit 并 CAS operation ref，返回 `candidate_no_change` outcome capability |
+| 同一 operation 后续给出不同 path/content/disposition | deterministic commit 不同，稳定 conflict |
 | direct read 路径、类型、大小、UTF-8 或 object identity 不合法 | fail closed，不读取 filesystem |
 | helper 超时、中断或输出不匹配 | 不签发新 capability；由调用者重试 exact operation 或 park |
 
-candidate publication 的线性化点是 operation-specific candidate ref 的 `MustNotExist` CAS。accepted ref
-在本切片中只读。direct read 是 observation，不发布持久事实。
+candidate outcome 的线性化点是 operation-specific candidate ref 的 `MustNotExist` CAS。CAS 竞争失败后会
+重读 ref：相同 deterministic commit 视为 exact retry，不同 commit 视为 conflict。accepted ref 在本切片中
+只读，并与 `refs/maka/candidates/<operation-hash>` namespace 不重叠。direct read 是 observation，不发布持久事实。
 
 ## 4. 平台与资源边界
 
 - Linux/macOS/Windows 使用同一 Gitoxide protocol；本切片不写工作区 filesystem；
-- policy v3 的 path、Unicode fold、tree/blob、`.gitattributes` 和 object identity 规则与 source import
-  完全相同，并额外拒绝 Git HFS 语义下的 `.git`/`.gitattributes` aliases；
+- policy v3 的 path、Unicode fold、tree/blob、`.gitattributes` 和 object identity 规则只由 Rust helper
+  判定；TypeScript 只负责 transport byte bound，避免复制一份会漂移的 path policy；
 - candidate 和 direct read 的绝对 deadline 为 10 分钟；
 - candidate content 通过 bounded Base64 field 传输，64 MiB 业务上限与 JSON escaping 无关；
 - direct read 单文件最多 8 MiB，helper stdout 以 JSON worst-case escaping 设置固定上限。
@@ -75,3 +81,8 @@ candidate publication 的线性化点是 operation-specific candidate ref 的 `M
 后续 mutation lifecycle 把 accepted capability 与 SQLite T1 reservation 绑定；SQLite 原子接受 candidate
 后，单独的 promotion/reconcile owner 才能更新 accepted-ref projection 并签发新 accepted capability。
 Desktop/CLI 消费者不得绕过 capability 直接传 repository path、helper path 或 accepted commit。
+
+当前 accepted/candidate capability 是进程内 opaque authority。Git candidate ref/receipt commit 跨进程耐久，
+但 Host crash 后重新签发 capability 需要后续 durable workspace receipt owner：它必须重开 exact repository、
+重验 accepted ref/commit/tree，并按 operation ID 检查 candidate receipt。本切片的 exact retry 承诺覆盖同一
+进程及 helper process response loss；不把尚未接线的 cross-Host reopen 宣称为已完成能力。

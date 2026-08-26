@@ -28,6 +28,7 @@ use std::{
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64_STANDARD};
 use caseless::Caseless;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use unicode_normalization::UnicodeNormalization;
 
 const PROTOCOL_VERSION: u8 = 1;
@@ -228,6 +229,7 @@ enum Response<'a> {
         candidate_commit_oid: String,
         candidate_tree_oid: String,
         result_blob_oid: String,
+        request_digest_sha256: String,
         accepted_ref: String,
         candidate_ref: String,
         path: String,
@@ -240,7 +242,11 @@ enum Response<'a> {
         base_commit_oid: String,
         base_tree_oid: String,
         result_blob_oid: String,
+        candidate_commit_oid: String,
+        candidate_tree_oid: String,
+        request_digest_sha256: String,
         accepted_ref: String,
+        candidate_ref: String,
         path: String,
         managed_tree_policy_version: u8,
     },
@@ -783,6 +789,14 @@ fn create_candidate(
         return Err("successor_content_limit_exceeded");
     }
     std::str::from_utf8(&content).map_err(|_| "invalid_request")?;
+    let request_digest_sha256 = candidate_request_digest_sha256(
+        &accepted_ref,
+        &expected_base_commit_oid,
+        &expected_base_tree_oid,
+        &candidate_ref,
+        &path,
+        &content,
+    );
 
     let repository = open_repository(repository_path)?;
     if repository.object_hash() != gix::hash::Kind::Sha1 {
@@ -859,12 +873,7 @@ fn create_candidate(
     let result_blob =
         gix::objs::compute_hash(repository.object_hash(), gix::objs::Kind::Blob, &content)
             .map_err(|_| "blob_write_failed")?;
-    let existing_entry = repository
-        .find_tree(expected_base_tree)
-        .map_err(|_| "base_tree_unavailable")?
-        .lookup_entry_by_path(path.as_str())
-        .map_err(|_| "base_path_lookup_failed")?
-        .map(|entry| (entry.mode().kind(), entry.object_id()));
+    let existing_entry = lookup_verified_tree_entry(&repository, expected_base_tree, &path)?;
     let entry_kind = match existing_entry.as_ref().map(|(kind, _)| *kind) {
         Some(gix::objs::tree::EntryKind::BlobExecutable) => {
             gix::objs::tree::EntryKind::BlobExecutable
@@ -872,36 +881,27 @@ fn create_candidate(
         Some(gix::objs::tree::EntryKind::Blob) | None => gix::objs::tree::EntryKind::Blob,
         Some(_) => return Err("unsupported_base_path_kind"),
     };
-    if existing_entry
+    let no_change = existing_entry
         .as_ref()
-        .is_some_and(|(_, oid)| *oid == result_blob)
-    {
-        write_response(&Response::CandidateNoChange {
-            protocol_version: PROTOCOL_VERSION,
-            object_format: "sha1",
-            base_commit_oid: expected_base.to_string(),
-            base_tree_oid: expected_base_tree.to_string(),
-            result_blob_oid: result_blob.to_string(),
-            accepted_ref,
-            path,
-            managed_tree_policy_version: MANAGED_TREE_POLICY_VERSION,
-        });
-        return Ok(ExitCode::SUCCESS);
-    }
-    let written_blob = repository
-        .write_blob(&content)
-        .map_err(|_| "blob_write_failed")?
-        .detach();
-    if written_blob != result_blob {
-        return Err("blob_write_failed");
-    }
-    let mut editor = repository
-        .edit_tree(expected_base_tree)
-        .map_err(|_| "tree_edit_failed")?;
-    editor
-        .upsert(path.as_str(), entry_kind, result_blob)
-        .map_err(|_| "tree_edit_failed")?;
-    let successor_tree = editor.write().map_err(|_| "tree_write_failed")?.detach();
+        .is_some_and(|(_, oid)| *oid == result_blob);
+    let successor_tree = if no_change {
+        expected_base_tree
+    } else {
+        let written_blob = repository
+            .write_blob(&content)
+            .map_err(|_| "blob_write_failed")?
+            .detach();
+        if written_blob != result_blob {
+            return Err("blob_write_failed");
+        }
+        write_candidate_tree_from_verified_base(
+            &repository,
+            expected_base_tree,
+            &path,
+            entry_kind,
+            result_blob,
+        )?
+    };
     let mut stats = ManagedTreeStats::default();
     walk_verified_source_tree(
         &repository,
@@ -917,11 +917,13 @@ fn create_candidate(
         email: b"workspace@maka.invalid".as_bstr(),
         time: "946684800 +0000",
     };
+    let commit_message =
+        format!("maka managed workspace candidate v3\nrequest-sha256 {request_digest_sha256}");
     let successor_commit = repository
         .new_commit_as(
             signature,
             signature,
-            "maka managed workspace candidate v2",
+            commit_message,
             successor_tree,
             [expected_base],
         )
@@ -937,6 +939,15 @@ fn create_candidate(
         "commit_write_failed",
         "commit_object_limit_exceeded",
         "successor_commit_identity_mismatch",
+    )?;
+    verify_candidate_commit_and_result(
+        &repository,
+        successor_commit,
+        expected_base,
+        successor_tree,
+        &path,
+        result_blob,
+        &request_digest_sha256,
     )?;
 
     let accepted_current = repository
@@ -972,32 +983,220 @@ fn create_candidate(
                 return Err("successor_publish_failed");
             }
         }
-        None => {
-            repository
-                .reference(
-                    candidate_ref.as_str(),
-                    successor_commit,
-                    gix::refs::transaction::PreviousValue::MustNotExist,
-                    "maka managed workspace candidate",
-                )
-                .map_err(|_| "successor_publish_failed")?;
-        }
+        None => match repository.reference(
+            candidate_ref.as_str(),
+            successor_commit,
+            gix::refs::transaction::PreviousValue::MustNotExist,
+            "maka managed workspace candidate",
+        ) {
+            Ok(_) => {}
+            Err(_) => {
+                let concurrent = repository
+                    .try_find_reference(candidate_ref.as_str())
+                    .map_err(|_| "target_ref_unavailable")?
+                    .ok_or("successor_publish_failed")?
+                    .into_fully_peeled_id()
+                    .map_err(|_| "target_ref_unavailable")?
+                    .detach();
+                if concurrent != successor_commit {
+                    return Err("successor_publish_failed");
+                }
+            }
+        },
     }
 
-    write_response(&Response::CandidatePublished {
-        protocol_version: PROTOCOL_VERSION,
-        object_format: "sha1",
-        base_commit_oid: expected_base.to_string(),
-        base_tree_oid: expected_base_tree.to_string(),
-        candidate_commit_oid: successor_commit.to_string(),
-        candidate_tree_oid: successor_tree.to_string(),
-        result_blob_oid: result_blob.to_string(),
-        accepted_ref,
-        candidate_ref,
-        path,
-        managed_tree_policy_version: MANAGED_TREE_POLICY_VERSION,
-    });
+    if no_change {
+        write_response(&Response::CandidateNoChange {
+            protocol_version: PROTOCOL_VERSION,
+            object_format: "sha1",
+            base_commit_oid: expected_base.to_string(),
+            base_tree_oid: expected_base_tree.to_string(),
+            result_blob_oid: result_blob.to_string(),
+            candidate_commit_oid: successor_commit.to_string(),
+            candidate_tree_oid: successor_tree.to_string(),
+            request_digest_sha256,
+            accepted_ref,
+            candidate_ref,
+            path,
+            managed_tree_policy_version: MANAGED_TREE_POLICY_VERSION,
+        });
+    } else {
+        write_response(&Response::CandidatePublished {
+            protocol_version: PROTOCOL_VERSION,
+            object_format: "sha1",
+            base_commit_oid: expected_base.to_string(),
+            base_tree_oid: expected_base_tree.to_string(),
+            candidate_commit_oid: successor_commit.to_string(),
+            candidate_tree_oid: successor_tree.to_string(),
+            result_blob_oid: result_blob.to_string(),
+            request_digest_sha256,
+            accepted_ref,
+            candidate_ref,
+            path,
+            managed_tree_policy_version: MANAGED_TREE_POLICY_VERSION,
+        });
+    }
     Ok(ExitCode::SUCCESS)
+}
+
+struct VerifiedTreeFinder<'repo> {
+    repository: &'repo gix::Repository,
+}
+
+impl gix::objs::Find for VerifiedTreeFinder<'_> {
+    fn try_find<'a>(
+        &self,
+        id: &gix::hash::oid,
+        buffer: &'a mut Vec<u8>,
+    ) -> Result<Option<gix::objs::Data<'a>>, gix::objs::find::Error> {
+        let Some(data) = gix::objs::Find::try_find(self.repository, id, buffer)? else {
+            return Ok(None);
+        };
+        if data.kind != gix::objs::Kind::Tree {
+            return Err(format!("expected tree object at {id}").into());
+        }
+        data.verify_checksum(id)?;
+        Ok(Some(data))
+    }
+}
+
+fn write_candidate_tree_from_verified_base(
+    repository: &gix::Repository,
+    base_tree_oid: gix::hash::ObjectId,
+    path: &str,
+    entry_kind: gix::objs::tree::EntryKind,
+    result_blob_oid: gix::hash::ObjectId,
+) -> Result<gix::hash::ObjectId, &'static str> {
+    let root = load_verified_object(
+        repository,
+        base_tree_oid,
+        gix::objs::Kind::Tree,
+        MANAGED_TREE_POLICY_V3.max_single_tree_object_bytes,
+        "base_tree_unavailable",
+        "base_tree_unavailable",
+        "source_tree_object_limit_exceeded",
+        "base_tree_identity_mismatch",
+    )?
+    .try_into_tree()
+    .map_err(|_| "base_tree_unavailable")?
+    .decode()
+    .map_err(|_| "base_tree_unavailable")?
+    .into_owned();
+    let finder = VerifiedTreeFinder { repository };
+    let mut editor = gix::objs::tree::Editor::new(root, &finder, repository.object_hash());
+    editor
+        .upsert(path.split('/'), entry_kind, result_blob_oid)
+        .map_err(|_| "tree_edit_failed")?;
+    editor
+        .write(|tree| repository.write_object(tree).map(|id| id.detach()))
+        .map_err(|_| "tree_write_failed")
+}
+
+fn lookup_verified_tree_entry(
+    repository: &gix::Repository,
+    root_tree_oid: gix::hash::ObjectId,
+    path: &str,
+) -> Result<Option<(gix::objs::tree::EntryKind, gix::hash::ObjectId)>, &'static str> {
+    let components = path.split('/').collect::<Vec<_>>();
+    let mut tree_oid = root_tree_oid;
+    for (index, component) in components.iter().enumerate() {
+        let tree = load_verified_object(
+            repository,
+            tree_oid,
+            gix::objs::Kind::Tree,
+            MANAGED_TREE_POLICY_V3.max_single_tree_object_bytes,
+            "base_tree_unavailable",
+            "base_tree_unavailable",
+            "source_tree_object_limit_exceeded",
+            "base_tree_identity_mismatch",
+        )?
+        .try_into_tree()
+        .map_err(|_| "base_tree_unavailable")?;
+        let entry = tree
+            .iter()
+            .find_map(|entry| match entry {
+                Ok(entry) if entry.filename() == component.as_bytes() => Some(Ok(entry)),
+                Ok(_) => None,
+                Err(_) => Some(Err("base_tree_unavailable")),
+            })
+            .transpose()?;
+        let Some(entry) = entry else {
+            return Ok(None);
+        };
+        if index + 1 == components.len() {
+            return Ok(Some((entry.mode().kind(), entry.object_id())));
+        }
+        if entry.mode().kind() != gix::objs::tree::EntryKind::Tree {
+            return Err("base_path_lookup_failed");
+        }
+        tree_oid = entry.object_id();
+    }
+    Err("base_path_lookup_failed")
+}
+
+fn verify_candidate_commit_and_result(
+    repository: &gix::Repository,
+    candidate_commit_oid: gix::hash::ObjectId,
+    expected_base_commit_oid: gix::hash::ObjectId,
+    expected_candidate_tree_oid: gix::hash::ObjectId,
+    path: &str,
+    expected_result_blob_oid: gix::hash::ObjectId,
+    request_digest_sha256: &str,
+) -> Result<(), &'static str> {
+    let commit = load_verified_object(
+        repository,
+        candidate_commit_oid,
+        gix::objs::Kind::Commit,
+        MANAGED_TREE_POLICY_V3.max_commit_object_bytes,
+        "commit_write_failed",
+        "commit_write_failed",
+        "commit_object_limit_exceeded",
+        "successor_commit_identity_mismatch",
+    )?
+    .try_into_commit()
+    .map_err(|_| "commit_write_failed")?
+    .decode()
+    .map_err(|_| "commit_write_failed")?
+    .into_owned()
+    .map_err(|_| "commit_write_failed")?;
+    let expected_message =
+        format!("maka managed workspace candidate v3\nrequest-sha256 {request_digest_sha256}");
+    if commit.tree != expected_candidate_tree_oid
+        || commit.parents.as_slice() != [expected_base_commit_oid]
+        || commit.message.as_slice() != expected_message.as_bytes()
+    {
+        return Err("successor_commit_identity_mismatch");
+    }
+    let result_entry = lookup_verified_tree_entry(repository, expected_candidate_tree_oid, path)?
+        .ok_or("tree_write_failed")?;
+    if result_entry.1 != expected_result_blob_oid {
+        return Err("tree_write_failed");
+    }
+    Ok(())
+}
+
+fn candidate_request_digest_sha256(
+    accepted_ref: &str,
+    expected_base_commit_oid: &str,
+    expected_base_tree_oid: &str,
+    candidate_ref: &str,
+    path: &str,
+    content: &[u8],
+) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(b"maka.gitoxide.candidate-request.v1\0");
+    for field in [
+        accepted_ref.as_bytes(),
+        expected_base_commit_oid.as_bytes(),
+        expected_base_tree_oid.as_bytes(),
+        candidate_ref.as_bytes(),
+        path.as_bytes(),
+        content,
+    ] {
+        hasher.update((field.len() as u64).to_be_bytes());
+        hasher.update(field);
+    }
+    format!("{:x}", hasher.finalize())
 }
 
 fn is_canonical_successor_path_v3(path: &str) -> bool {
@@ -1585,6 +1784,7 @@ impl ManagedTreeStats {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::process::Command;
 
     fn tiny_policy() -> ManagedTreePolicy {
         ManagedTreePolicy {
@@ -1603,6 +1803,90 @@ mod tests {
             max_single_tree_object_bytes: 3,
             max_total_tree_object_bytes: 5,
         }
+    }
+
+    #[test]
+    fn candidate_editor_rejects_a_tree_replaced_after_the_verified_walk() {
+        let root = tempfile::tempdir().unwrap();
+        run_git(root.path(), ["init", "--quiet"]);
+        fs::create_dir(root.path().join("dir")).unwrap();
+        fs::write(root.path().join("dir/file.txt"), b"base\n").unwrap();
+        run_git(root.path(), ["add", "dir/file.txt"]);
+        let base_tree = run_git_output(root.path(), ["write-tree"]);
+        let nested_tree = run_git_output(root.path(), ["rev-parse", &format!("{base_tree}:dir")]);
+        fs::write(root.path().join("dir/file.txt"), b"replacement\n").unwrap();
+        run_git(root.path(), ["add", "dir/file.txt"]);
+        let replacement_root = run_git_output(root.path(), ["write-tree"]);
+        let replacement_tree = run_git_output(
+            root.path(),
+            ["rev-parse", &format!("{replacement_root}:dir")],
+        );
+        let repository = managed_open_options()
+            .open(root.path())
+            .unwrap()
+            .to_thread_local();
+        let base_tree_oid = gix::hash::ObjectId::from_hex(base_tree.as_bytes()).unwrap();
+        let mut stats = ManagedTreeStats::default();
+        walk_verified_source_tree(
+            &repository,
+            None,
+            base_tree_oid,
+            "",
+            0,
+            MANAGED_TREE_POLICY_V3,
+            &mut stats,
+        )
+        .unwrap();
+        fs::remove_file(loose_object_path(root.path(), &nested_tree)).unwrap();
+        fs::copy(
+            loose_object_path(root.path(), &replacement_tree),
+            loose_object_path(root.path(), &nested_tree),
+        )
+        .unwrap();
+        let result_blob = repository.write_blob(b"result\n").unwrap().detach();
+
+        assert_eq!(
+            write_candidate_tree_from_verified_base(
+                &repository,
+                base_tree_oid,
+                "dir/file.txt",
+                gix::objs::tree::EntryKind::Blob,
+                result_blob,
+            ),
+            Err("tree_edit_failed")
+        );
+    }
+
+    fn run_git<const N: usize>(root: &Path, args: [&str; N]) {
+        assert!(
+            Command::new("git")
+                .args(args)
+                .current_dir(root)
+                .status()
+                .unwrap()
+                .success()
+        );
+    }
+
+    fn run_git_output<const N: usize>(root: &Path, args: [&str; N]) -> String {
+        let output = Command::new("git")
+            .args(args)
+            .current_dir(root)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        String::from_utf8(output.stdout).unwrap().trim().to_owned()
+    }
+
+    fn loose_object_path(root: &Path, oid: &str) -> PathBuf {
+        root.join(".git")
+            .join("objects")
+            .join(&oid[..2])
+            .join(&oid[2..])
     }
 
     #[test]
