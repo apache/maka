@@ -1041,6 +1041,7 @@ version = "0.0.0"
 dependencies = [
  "caseless",
  "gix",
+ "libc",
  "serde",
  "serde_json",
  "unicode-normalization",

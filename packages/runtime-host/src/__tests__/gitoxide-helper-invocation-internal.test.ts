@@ -50,6 +50,7 @@ test('uses bounded mutation/import deadlines distinct from repository inspection
     inspectRepositoryMs: 5_000,
     importSourceHeadMs: 10 * 60_000,
     createSuccessorMs: 10 * 60_000,
+    projectionMs: 10 * 60_000,
   });
 });
 
