@@ -1185,6 +1185,7 @@ test('hosted execution freezes the headless coding provider wire contract', asyn
           workspace: { kind: 'host_path', path: root },
           modelTarget: {
             kind: 'explicit',
+            connectionId: connection.connectionId,
             connectionSlug: 'profile-deepseek',
             model: 'deepseek-v4-flash',
           },

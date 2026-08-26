@@ -24,19 +24,13 @@ import type { TaskSubmissionReadinessDimension, TaskSubmissionReadinessSnapshot 
 import type { UiLocale } from '@maka/core/ui-locale';
 
 /**
- * Selects the model target for the renderer's readiness probe. A `rebind`
- * projection supplies a compatible target for an empty legacy session; it
- * does not mutate the session or admit the submission. Runtime Host owns
- * those decisions.
+ * Selects the stored model target for the renderer's readiness probe.
  */
 export function resolveTaskReadinessModelTarget(
   session: { llmConnectionSlug: string; model: string } | undefined,
-  sendOutcome: SessionSendProjection | undefined,
+  _sendOutcome: SessionSendProjection | undefined,
   newTaskTarget: { llmConnectionSlug: string; model: string } | undefined,
 ): { connectionSlug?: string; model?: string } {
-  if (session && sendOutcome?.kind === 'rebind') {
-    return optionalModelTarget(sendOutcome.connectionSlug, sendOutcome.model);
-  }
   return optionalModelTarget(
     session?.llmConnectionSlug ?? newTaskTarget?.llmConnectionSlug,
     session?.model ?? newTaskTarget?.model,

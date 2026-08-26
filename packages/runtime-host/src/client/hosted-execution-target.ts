@@ -30,11 +30,17 @@ export interface HostedExecutionTargetInput {
   readonly baseUrl: string;
 }
 
+export interface ConfiguredHostedExecutionTarget {
+  readonly changed: boolean;
+  readonly connectionId: string;
+  readonly connectionSlug: string;
+}
+
 export async function configureHostedExecutionTarget(
   connection: TargetConnection,
   input: HostedExecutionTargetInput,
   signal?: AbortSignal,
-): Promise<boolean> {
+): Promise<ConfiguredHostedExecutionTarget> {
   const before = await abortable(() => readRuntimeHostConnectionCatalog(connection), signal);
   const target = before.connections.find((candidate) => candidate.slug === input.connectionSlug);
   if (!target) throw new Error('Runtime Host connection is unavailable');
@@ -91,7 +97,11 @@ export async function configureHostedExecutionTarget(
   ) {
     throw new Error('Runtime Host did not admit the requested model target');
   }
-  return changed;
+  return {
+    changed,
+    connectionId: configured.connectionId,
+    connectionSlug: configured.slug,
+  };
 }
 
 function canonicalBaseUrl(value: string): string | undefined {

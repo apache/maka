@@ -2945,10 +2945,12 @@ describe('Maka Pi TUI runner', () => {
       driver,
       cwd: '/repo',
       model: 'gpt-5.5',
+      connectionId: 'connection-openai',
       connectionSlug: 'openai',
       providerType: 'openai',
       modelChoices: [
         {
+          connectionId: 'connection-openai',
           connectionSlug: 'openai',
           connectionName: 'OpenAI',
           providerType: 'openai',
@@ -2957,6 +2959,7 @@ describe('Maka Pi TUI runner', () => {
           isDefaultConnection: true,
         },
         {
+          connectionId: 'connection-zai',
           connectionSlug: 'zai',
           connectionName: 'Z.ai',
           providerType: 'openai',
@@ -3113,10 +3116,12 @@ describe('Maka Pi TUI runner', () => {
       driver,
       cwd: '/repo',
       model: 'gpt-5.5',
+      connectionId: 'connection-openai',
       connectionSlug: 'openai',
       providerType: 'openai',
       modelChoices: [
         {
+          connectionId: 'connection-openai',
           connectionSlug: 'openai',
           connectionName: 'OpenAI',
           providerType: 'openai',
@@ -3124,6 +3129,7 @@ describe('Maka Pi TUI runner', () => {
           isDefaultConnection: true,
         },
         {
+          connectionId: 'connection-openai',
           connectionSlug: 'openai',
           connectionName: 'OpenAI',
           providerType: 'openai',
@@ -3168,10 +3174,12 @@ describe('Maka Pi TUI runner', () => {
       driver,
       cwd: '/repo',
       model: 'shared-model',
+      connectionId: 'connection-primary',
       connectionSlug: 'primary',
       providerType: 'openai',
       modelChoices: [
         {
+          connectionId: 'connection-primary',
           connectionSlug: 'primary',
           connectionName: 'Primary',
           providerType: 'openai',
@@ -3179,6 +3187,7 @@ describe('Maka Pi TUI runner', () => {
           isDefaultConnection: true,
         },
         {
+          connectionId: 'connection-relay',
           connectionSlug: 'relay',
           connectionName: 'Relay',
           providerType: 'openai',
@@ -6573,6 +6582,58 @@ describe('Maka Pi TUI runner', () => {
     await run;
   });
 
+  test('reports a deleted original account and recovers only through an exact model pick', async () => {
+    const terminal = new FakeTerminal();
+    const deleted = {
+      ...fakeSessionSummary('session-2'),
+      llmConnectionId: 'connection-a',
+      llmConnectionSlug: 'shared',
+      model: 'shared-model',
+    };
+    const driver = new SlashCommandDriver([deleted]);
+    const run = runMakaPiTui({
+      title: 'Maka',
+      locale: 'en',
+      driver,
+      cwd: '/repo',
+      model: deleted.model,
+      connectionId: deleted.llmConnectionId,
+      connectionSlug: deleted.llmConnectionSlug,
+      connectionIdentities: [
+        { connectionId: 'connection-b', connectionSlug: 'shared', enabled: true },
+      ],
+      modelChoices: [
+        {
+          connectionId: 'connection-b',
+          connectionSlug: 'shared',
+          connectionName: 'Replacement',
+          providerType: 'openai',
+          model: 'shared-model',
+          isDefaultConnection: true,
+        },
+      ],
+      permissionMode: 'ask',
+      terminal,
+      resumeSessionId: deleted.id,
+    });
+
+    await waitFor(() => driver.sessionIds.length === 1);
+    await waitForTuiPaint(terminal);
+    await waitFor(() =>
+      plainTerminalOutput(terminal.screenOutput()).includes('The original account was deleted'),
+    );
+    terminal.input('/model');
+    terminal.input('\r');
+    await waitFor(() => terminal.output().includes('Replacement'));
+    assert.doesNotMatch(plainTerminalOutput(terminal.screenOutput()), /Replacement · current/);
+    terminal.input('\r');
+    await waitFor(() => driver.modelConnectionIds.length === 1);
+    assert.deepEqual(driver.modelConnectionIds, ['connection-b']);
+
+    exitMaka(terminal);
+    await run;
+  });
+
   test('resumes an active Host turn from its atomic transcript and continues live output', async () => {
     const terminal = new FakeTerminal();
     const driver = new ActiveResumeDriver();
@@ -7631,6 +7692,7 @@ class SlashCommandDriver implements MakaSessionDriver {
   readonly displayPrompts: string[] = [];
   readonly models: string[] = [];
   readonly modelConnections: Array<string | undefined> = [];
+  readonly modelConnectionIds: Array<string | undefined> = [];
   readonly permissionModes: PermissionMode[] = [];
   readonly thinkingLevelUpdates: Array<ThinkingLevel | undefined> = [];
   readonly orchestrationModes: OrchestrationMode[] = [];
@@ -7778,9 +7840,10 @@ class SlashCommandDriver implements MakaSessionDriver {
 
   async stop(): Promise<void> {}
   async respondToSandboxBoundary(_response: SandboxBoundaryResponse): Promise<void> {}
-  async setModel(model: string, connectionSlug?: string): Promise<void> {
+  async setModel(model: string, connectionSlug?: string, connectionId?: string): Promise<void> {
     this.models.push(model);
     this.modelConnections.push(connectionSlug);
+    this.modelConnectionIds.push(connectionId);
   }
   async renameSession(name: string): Promise<string> {
     this.renames.push(name);

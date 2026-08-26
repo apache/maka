@@ -19,14 +19,16 @@
 
 import { strict as assert } from 'node:assert';
 import { describe, it } from 'node:test';
-import type { LlmConnection } from '@maka/core/llm-connections';
+import type { IdentifiedLlmConnection } from '@maka/core/llm-connections';
 import { buildChatModelChoices } from '@maka/core/chat-model-choice';
 import { pickNewChatModel } from '../../renderer/shell-chat-model-selection.js';
 
 function connection(
-  overrides: Partial<LlmConnection> & Pick<LlmConnection, 'slug' | 'providerType'>,
-): LlmConnection {
+  overrides: Partial<IdentifiedLlmConnection> &
+    Pick<IdentifiedLlmConnection, 'slug' | 'providerType'>,
+): IdentifiedLlmConnection {
   return {
+    connectionId: `connection-${overrides.slug}`,
     name: overrides.slug,
     defaultModel: '',
     enabled: true,
@@ -49,6 +51,7 @@ describe('model catalog picker helpers', () => {
         catalogDefault: undefined,
         choices: [
           {
+            connectionId: 'connection-missing',
             connectionSlug: 'missing-key-first',
             providerType: 'anthropic',
             providerLabel: 'Anthropic',
@@ -58,6 +61,7 @@ describe('model catalog picker helpers', () => {
             thinkingLevels: [],
           },
           {
+            connectionId: 'connection-ready',
             connectionSlug: 'ready-second',
             providerType: 'opencode-free',
             providerLabel: 'OpenCode Zen',
@@ -68,7 +72,11 @@ describe('model catalog picker helpers', () => {
           },
         ],
       }),
-      { llmConnectionSlug: 'ready-second', model: 'ready-model' },
+      {
+        llmConnectionId: 'connection-ready',
+        llmConnectionSlug: 'ready-second',
+        model: 'ready-model',
+      },
     );
   });
   it('keeps API connection labels while redacting OAuth account identities', () => {

@@ -84,6 +84,7 @@ type MessageLoadErrorUpdater = (updater: (current: Record<string, string>) => Re
 type InteractionQueueUpdater = (updater: (current: InteractionQueues) => InteractionQueues) => void;
 
 type PendingNewChatModel = {
+  llmConnectionId: string;
   llmConnectionSlug: string;
   model: string;
 } | null;
@@ -385,6 +386,7 @@ export function createAppShellChatActions(deps: {
           name: DEFAULT_SESSION_NAME,
           ...(newChatModel
             ? {
+                llmConnectionId: newChatModel.llmConnectionId,
                 llmConnectionSlug: newChatModel.llmConnectionSlug,
                 model: newChatModel.model,
               }

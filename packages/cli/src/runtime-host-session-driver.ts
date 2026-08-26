@@ -111,6 +111,7 @@ export interface RuntimeHostMakaSessionDriverInput {
   connection: RuntimeHostSessionDriverConnection;
   cwd: string;
   workspace?: WorkspaceTarget;
+  llmConnectionId?: string;
   llmConnectionSlug: string;
   model: string;
   /**
@@ -175,6 +176,7 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
   #sessionId: string | null = null;
   #workspace: { target?: WorkspaceTarget; hostCwd: string };
   #model: string;
+  #llmConnectionId: string | undefined;
   #llmConnectionSlug: string;
   #thinkingLevel: ThinkingLevel | undefined;
   // What a Session created right now would start in, for display only. Never
@@ -242,6 +244,7 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
       hostCwd: input.cwd,
     };
     this.#model = input.model;
+    this.#llmConnectionId = input.llmConnectionId;
     this.#llmConnectionSlug = input.llmConnectionSlug;
     this.#prospectivePermissionMode = input.prospectivePermissionMode;
     this.#orchestrationMode = input.orchestrationMode ?? 'default';
@@ -261,6 +264,7 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
       target: workspaceTargetForCreate(this.#workspace, input, this.#executionLocation),
       hostCwd: input.cwd,
     };
+    if (input.llmConnectionId) this.#llmConnectionId = input.llmConnectionId;
     this.#llmConnectionSlug = input.llmConnectionSlug;
     this.#model = input.model;
     this.#thinkingLevel = input.thinkingLevel;
@@ -430,18 +434,31 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
     if (pending) this.#channel?.publishInteractionAnswer(answered, pending);
   }
 
-  async setModel(model: string, connectionSlug?: string): Promise<void> {
-    const nextConnection = connectionSlug ?? this.#llmConnectionSlug;
+  async setModel(model: string, connectionSlug?: string, connectionId?: string): Promise<void> {
+    if (connectionSlug !== undefined && connectionId === undefined) {
+      throw new Error('Cross-account model selection requires an exact Connection identity');
+    }
+    const nextConnectionId = connectionId ?? this.#llmConnectionId;
+    const nextConnectionSlug = connectionSlug ?? this.#llmConnectionSlug;
+    if (!nextConnectionId) {
+      throw new Error('Model selection requires an exact Connection identity');
+    }
     if (this.#sessionId) {
       const session = await this.#updateConfiguration(this.#sessionId, {
-        modelTarget: { kind: 'explicit', connectionSlug: nextConnection, model },
+        modelTarget: {
+          kind: 'explicit',
+          connectionId: nextConnectionId,
+          connectionSlug: nextConnectionSlug,
+          model,
+        },
         thinkingLevel: null,
       });
       this.#adoptConfiguration(session);
       return;
     }
     this.#model = model;
-    this.#llmConnectionSlug = nextConnection;
+    this.#llmConnectionId = nextConnectionId;
+    this.#llmConnectionSlug = nextConnectionSlug;
     this.#thinkingLevel = undefined;
   }
 
@@ -961,6 +978,9 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
       throw new Error('A remote Runtime Host Session requires an explicit Project');
     }
     const sessionId = this.#newId();
+    if (!this.#llmConnectionId) {
+      throw new Error('Runtime Host Session creation requires an exact Connection identity');
+    }
     const session = requireSession(
       await this.#request('session.create', {
         sessionId,
@@ -968,6 +988,7 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
         name,
         modelTarget: {
           kind: 'explicit',
+          connectionId: this.#llmConnectionId,
           connectionSlug: this.#llmConnectionSlug,
           model: this.#model,
         },
@@ -1047,7 +1068,12 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
   async #updateConfiguration(
     sessionId: string,
     patch: {
-      modelTarget?: { kind: 'explicit'; connectionSlug: string; model: string };
+      modelTarget?: {
+        kind: 'explicit';
+        connectionId: string;
+        connectionSlug: string;
+        model: string;
+      };
       thinkingLevel?: ThinkingLevel | null;
       permissionMode?: PermissionMode;
       orchestrationMode?: OrchestrationMode;
@@ -1057,30 +1083,14 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
       this.#request('session.configuration.update', {
         sessionId,
         expectedRevision: current.revision,
-        configuration: {
-          modelTarget:
-            patch.modelTarget ??
-            (current.connectionLocked
-              ? {
-                  kind: 'explicit',
-                  connectionSlug: current.llmConnectionSlug,
-                  model: current.model,
-                }
-              : { kind: 'default' }),
-          thinkingLevel:
-            patch.thinkingLevel === undefined
-              ? (current.thinkingLevel ?? null)
-              : patch.thinkingLevel,
-          permissionMode: patch.permissionMode ?? current.permissionMode,
-          collaborationMode: current.collaborationMode,
-          orchestrationMode: patch.orchestrationMode ?? current.orchestrationMode,
-        },
+        patch,
       }),
     );
   }
 
   #adoptConfiguration(session: SessionCatalogProjection): void {
     this.#model = session.model;
+    this.#llmConnectionId = session.llmConnectionId ?? undefined;
     this.#llmConnectionSlug = session.llmConnectionSlug;
     this.#thinkingLevel = session.thinkingLevel;
     this.#permissionMode = session.permissionMode;

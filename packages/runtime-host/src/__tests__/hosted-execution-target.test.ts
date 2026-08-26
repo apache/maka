@@ -59,13 +59,13 @@ test('explicit hosted target preserves the default target and proves the request
     },
   } as unknown as Pick<RuntimeHostConnection, 'request'>;
 
-  assert.equal(
+  assert.deepEqual(
     await configureHostedExecutionTarget(connection, {
       connectionSlug: 'env-openai',
       model: 'deepseek-v4-flash',
       baseUrl: 'https://api.deepseek.com',
     }),
-    true,
+    { changed: true, connectionId: CONNECTION_ID, connectionSlug: 'env-openai' },
   );
 
   assert.deepEqual(
@@ -123,13 +123,13 @@ test('explicit hosted target reports an already admitted target as unchanged', a
     },
   } as unknown as Pick<RuntimeHostConnection, 'request'>;
 
-  assert.equal(
+  assert.deepEqual(
     await configureHostedExecutionTarget(connection, {
       connectionSlug: 'env-openai',
       model: 'deepseek-v4-flash',
       baseUrl: 'https://api.deepseek.com',
     }),
-    false,
+    { changed: false, connectionId: CONNECTION_ID, connectionSlug: 'env-openai' },
   );
 });
 
@@ -171,13 +171,13 @@ test('explicit hosted target replaces a missing effective endpoint', async () =>
     },
   } as unknown as Pick<RuntimeHostConnection, 'request'>;
 
-  assert.equal(
+  assert.deepEqual(
     await configureHostedExecutionTarget(connection, {
       connectionSlug: 'env-openai',
       model: 'deepseek-v4-flash',
       baseUrl: 'https://api.deepseek.com',
     }),
-    true,
+    { changed: true, connectionId: CONNECTION_ID, connectionSlug: 'env-openai' },
   );
   assert.deepEqual(operations, [
     'connection.catalog.query',

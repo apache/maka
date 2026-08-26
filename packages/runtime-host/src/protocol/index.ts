@@ -92,7 +92,10 @@ export const RUNTIME_HOST_REGISTRATION_SCHEMA_VERSION = 1 as const;
 export const RUNTIME_HOST_PROTOCOL_VERSION = 0 as const;
 // Increment when the same protocol version no longer guarantees safe Client-Host
 // interoperability. Mismatches are rejected before domain commands are admitted.
-export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 51 as const;
+export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 52 as const;
+// 52: Session explicit model targets carry immutable Connection identity,
+// configuration updates are Host-merged patches, and projections expose the
+// required nullable binding ID. Older peers cannot preserve these invariants.
 // 51: WorkHub exposes bounded coordination candidates and admits only typed
 // actions through the deterministic Runtime Host Action Gate.
 // 50: WorkHub can append durable coordination summaries and admit tool-free

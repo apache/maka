@@ -294,19 +294,23 @@ function normalizeSessionListFilter(value: unknown): SessionListFilter | undefin
 }
 
 function normalizeModelTarget(input: CreateSessionRequestInput | undefined): SessionModelTarget {
+  const connectionId = normalizeOptionalString(input?.llmConnectionId, 'model connection id');
   const slug = normalizeOptionalString(input?.llmConnectionSlug, 'model connection');
   const model = normalizeOptionalString(input?.model, 'model');
-  if (slug === undefined && model === undefined) return { kind: 'default' };
-  if (slug === undefined || model === undefined) {
-    throw new Error('Explicit model selection requires both connection and model');
+  if (connectionId === undefined && slug === undefined && model === undefined) {
+    return { kind: 'default' };
   }
-  return { kind: 'explicit', connectionSlug: slug, model };
+  if (connectionId === undefined || slug === undefined || model === undefined) {
+    throw new Error('Explicit model selection requires connection id, connection, and model');
+  }
+  return { kind: 'explicit', connectionId, connectionSlug: slug, model };
 }
 
 function normalizeExplicitModel(input: unknown): Extract<SessionModelTarget, { kind: 'explicit' }> {
   const selection = normalizeSessionModelSelection(input);
   return {
     kind: 'explicit',
+    connectionId: selection.llmConnectionId,
     connectionSlug: selection.llmConnectionSlug,
     model: selection.model,
   };

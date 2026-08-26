@@ -168,6 +168,12 @@ export interface MakaPiTuiInput {
    * when absent.
    */
   modelChoices?: readonly ModelChoice[];
+  connectionId?: string;
+  connectionIdentities?: readonly {
+    readonly connectionId: string;
+    readonly connectionSlug: string;
+    readonly enabled: boolean;
+  }[];
   connectionSlug: string;
   providerType?: ProviderType;
   permissionMode: PermissionMode;
@@ -275,6 +281,36 @@ export function resolveTaskbarProgress(
   return environment.platform !== 'win32' && environment.windowsTerminalSession === undefined;
 }
 
+function sessionConnectionIdentityNotice(
+  session: Pick<SessionSummary, 'llmConnectionId' | 'llmConnectionSlug'>,
+  identities: MakaPiTuiInput['connectionIdentities'],
+  locale: UiLocale,
+): string | undefined {
+  if (!identities) return undefined;
+  if (!session.llmConnectionId) {
+    return locale === 'zh'
+      ? '此任务尚未绑定具体账号，请显式选择账号后继续。'
+      : 'This task is not bound to an exact account. Explicitly choose an account to continue.';
+  }
+  const identified = identities.find((entry) => entry.connectionId === session.llmConnectionId);
+  if (!identified) {
+    return locale === 'zh'
+      ? '原账号已删除；请显式选择新账号后继续。'
+      : 'The original account was deleted. Explicitly choose a new account to continue.';
+  }
+  if (identified.connectionSlug !== session.llmConnectionSlug) {
+    return locale === 'zh'
+      ? '任务保存的账号身份与当前连接不一致，请显式重新选择账号。'
+      : 'The saved account identity no longer matches its connection. Explicitly choose an account.';
+  }
+  if (!identified.enabled) {
+    return locale === 'zh'
+      ? '原账号已停用；请启用该账号或显式选择新账号后继续。'
+      : 'The original account is disabled. Enable it or explicitly choose a new account.';
+  }
+  return undefined;
+}
+
 export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
   const locale = input.locale ?? 'en';
   const primaryGuidance = getTuiPrimaryGuidance(locale);
@@ -295,6 +331,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
   };
   let cwd = input.cwd;
   let model = input.model;
+  let connectionId = input.connectionId;
   let connectionSlug = input.connectionSlug;
   // Mutable: a cross-connection /model switch rebinds the provider, which changes
   // both the connection and the thinking variants the new model supports.
@@ -312,6 +349,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
       (choice) => choice.connectionSlug === connectionSlug && choice.model === model,
     )?.thinkingLevels ?? (providerType ? thinkingVariantsForModel(providerType, model) : []);
   let sessionListScope: 'current' | 'all' = input.sessionListScope ?? 'current';
+  let connectionIdentityNotice: string | undefined;
   let busy = false;
   let closed = false;
   let currentActivityCompletion: Promise<void> | undefined;
@@ -1450,26 +1488,45 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     );
   }
 
-  const adoptSessionMetadata = (summary: SessionSummary) => {
+  const adoptSessionMetadata = (summary: SessionSummary, announceIdentity = true) => {
     cwd = summary.cwd ?? cwd;
     setSessionTitle(summary.name);
     const previousModel = model;
+    const previousConnectionId = connectionId;
     const previousConnectionSlug = connectionSlug;
     model = summary.model;
+    connectionId = summary.llmConnectionId;
     connectionSlug = summary.llmConnectionSlug;
+    const identityNotice = sessionConnectionIdentityNotice(
+      summary,
+      input.connectionIdentities,
+      input.locale ?? 'en',
+    );
+    if (announceIdentity && identityNotice && identityNotice !== connectionIdentityNotice) {
+      state.entries.push({ kind: 'notice', level: 'error', text: identityNotice });
+    }
+    connectionIdentityNotice = identityNotice;
     const matchingChoice = modelChoices?.find(
-      (choice) => choice.connectionSlug === summary.llmConnectionSlug,
+      (choice) =>
+        choice.connectionId === summary.llmConnectionId &&
+        choice.connectionSlug === summary.llmConnectionSlug,
     );
     providerType =
       matchingChoice?.providerType ??
-      (previousConnectionSlug === summary.llmConnectionSlug ? providerType : undefined);
+      (previousConnectionId === summary.llmConnectionId &&
+      previousConnectionSlug === summary.llmConnectionSlug
+        ? providerType
+        : undefined);
     const contextWindowMatch = modelChoices?.find(
       (choice) =>
-        choice.connectionSlug === summary.llmConnectionSlug && choice.model === summary.model,
+        choice.connectionId === summary.llmConnectionId &&
+        choice.connectionSlug === summary.llmConnectionSlug &&
+        choice.model === summary.model,
     );
     if (contextWindowMatch) {
       modelContextWindow = contextWindowMatch.contextWindow;
     } else if (
+      previousConnectionId !== summary.llmConnectionId ||
       previousConnectionSlug !== summary.llmConnectionSlug ||
       previousModel !== summary.model
     ) {
@@ -1522,15 +1579,25 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
   // Cross-connection /model: rebind the session to the chosen connection + model.
   // Updates the provider (and thus the thinking variants) and the status line.
   const setModelChoice = async (choice: ModelChoice) => {
-    if (choice.model === model && choice.connectionSlug === connectionSlug) return;
+    if (
+      choice.model === model &&
+      choice.connectionSlug === connectionSlug &&
+      choice.connectionId === connectionId
+    ) {
+      return;
+    }
+    if (!choice.connectionId) {
+      throw new Error('Model choice is missing its exact Connection identity');
+    }
     const previousModel = transcriptLastUsedModel ?? model;
     const previousConnectionSlug = connectionSlug;
     const previousChoice = modelChoices?.find(
       (candidate) =>
         candidate.model === previousModel && candidate.connectionSlug === previousConnectionSlug,
     );
-    await input.driver.setModel(choice.model, choice.connectionSlug);
+    await input.driver.setModel(choice.model, choice.connectionSlug, choice.connectionId);
     model = choice.model;
+    connectionId = choice.connectionId;
     connectionSlug = choice.connectionSlug;
     providerType = choice.providerType;
     modelContextWindow = choice.contextWindow;
@@ -1567,8 +1634,11 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     messages,
     activeTurn,
   }: MakaSessionSwitchResult): Promise<void> => {
-    adoptSessionMetadata(summary);
+    adoptSessionMetadata(summary, false);
     replaceTranscript(messages);
+    if (connectionIdentityNotice) {
+      state.entries.push({ kind: 'notice', level: 'error', text: connectionIdentityNotice });
+    }
     shellRunHydration.reset();
     if (input.listShellRunUpdates) {
       await shellRunHydration.hydrate(summary.id);
@@ -2674,7 +2744,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
       let overlay: OverlayHandle | undefined;
       const picker = new ModelSearchOverlay(tui, {
         choices,
-        current: { model, connectionSlug },
+        current: { model, connectionId, connectionSlug },
         showCacheWarning: hasConversationHistory,
         onSelect: (choice) => {
           overlay?.hide();

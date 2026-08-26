@@ -44,7 +44,6 @@ import {
 } from '@maka/storage/execution-stores';
 import {
   SESSION_CATALOG_RESULT_MAX_BYTES,
-  SESSION_CATALOG_MODEL_MAX_BYTES,
   SESSION_CATALOG_RUNNING_TURN_MAX_ITEMS,
   SESSION_TURN_QUERY_RESULT_MAX_BYTES,
   type SessionConfigurationUpdateInput,
@@ -586,7 +585,12 @@ test('creation on a relay connection honours declared levels via the catalog pro
     {
       sessionId: fixture.sessionId,
       workspace: { kind: 'host_path', path: process.cwd() },
-      modelTarget: { kind: 'explicit', connectionSlug: 'test', model: 'relay-model' },
+      modelTarget: {
+        kind: 'explicit',
+        connectionId: 'connection-1',
+        connectionSlug: 'test',
+        model: 'relay-model',
+      },
       thinkingLevel: 'low',
     },
     context,
@@ -625,7 +629,12 @@ test('creation admits the enabled bootstrap DeepSeek model before discovery', as
     {
       sessionId: fixture.sessionId,
       workspace: { kind: 'host_path', path: process.cwd() },
-      modelTarget: { kind: 'explicit', connectionSlug: 'test', model: modelId },
+      modelTarget: {
+        kind: 'explicit',
+        connectionId: 'connection-1',
+        connectionSlug: 'test',
+        model: modelId,
+      },
     },
     context,
   );
@@ -691,7 +700,12 @@ test('creation refuses a retired provider named explicitly', async () => {
     {
       sessionId: fixture.sessionId,
       workspace: { kind: 'host_path', path: process.cwd() },
-      modelTarget: { kind: 'explicit', connectionSlug: 'test', model: 'model-1' },
+      modelTarget: {
+        kind: 'explicit',
+        connectionId: 'connection-1',
+        connectionSlug: 'test',
+        model: 'model-1',
+      },
     },
     context,
   );
@@ -739,7 +753,12 @@ test('creation admits an enabled model a snapshot provider never listed', async 
     {
       sessionId: fixture.sessionId,
       workspace: { kind: 'host_path', path: process.cwd() },
-      modelTarget: { kind: 'explicit', connectionSlug: 'test', model: modelId },
+      modelTarget: {
+        kind: 'explicit',
+        connectionId: 'connection-1',
+        connectionSlug: 'test',
+        model: modelId,
+      },
     },
     context,
   );
@@ -777,7 +796,12 @@ test('creation admits an enabled model a live list omits', async () => {
     {
       sessionId: fixture.sessionId,
       workspace: { kind: 'host_path', path: process.cwd() },
-      modelTarget: { kind: 'explicit', connectionSlug: 'test', model: modelId },
+      modelTarget: {
+        kind: 'explicit',
+        connectionId: 'connection-1',
+        connectionSlug: 'test',
+        model: modelId,
+      },
     },
     context,
   );
@@ -809,7 +833,12 @@ test('creation on a relay connection without declarations still fails closed on 
     {
       sessionId: fixture.sessionId,
       workspace: { kind: 'host_path', path: process.cwd() },
-      modelTarget: { kind: 'explicit', connectionSlug: 'test', model: 'relay-model' },
+      modelTarget: {
+        kind: 'explicit',
+        connectionId: 'connection-1',
+        connectionSlug: 'test',
+        model: 'relay-model',
+      },
       thinkingLevel: 'low',
     },
     context,
@@ -899,8 +928,7 @@ test('configuration update admits Plan mode through Runtime authority', async ()
   const outcome = await fixture.coordinator.handlers['session.configuration.update'](
     {
       ...input,
-      configuration: {
-        ...input.configuration,
+      patch: {
         collaborationMode: 'plan',
       },
     },
@@ -950,107 +978,15 @@ test('configuration update never rebinds a bound Session through a reused slug',
   assert.equal(fixture.header().llmConnectionId, 'connection-1');
 });
 
-test('configuration update resolves default to the current model on the bound account', async () => {
-  const fixture = createFixture({
-    connection: {
-      defaultModelId: 'model-2',
-      enabledModelIds: ['model-1', 'model-2'],
-      models: [{ id: 'model-1' }, { id: 'model-2' }],
-    },
-  });
-  const input = configurationInput(fixture.sessionId, fixture.revision());
-
-  const outcome = await fixture.coordinator.handlers['session.configuration.update'](
-    {
-      ...input,
-      configuration: {
-        ...input.configuration,
-        modelTarget: { kind: 'default' },
-      },
-    },
-    context,
-  );
-
-  assert.equal(outcome.ok, true);
-  if (!outcome.ok || outcome.result.kind !== 'committed') {
-    assert.fail('Default model update did not commit');
-  }
-  assert.equal(fixture.header().llmConnectionId, 'connection-1');
-  assert.equal(fixture.header().model, 'model-2');
-});
-
-test('configuration update rejects a default that moved to another Connection', async () => {
-  let resolutionAttempts = 0;
-  const fixture = createFixture({
-    connection: {
-      connectionId: 'connection-2',
-      onResolve: () => {
-        resolutionAttempts += 1;
-      },
-    },
-  });
-  const input = configurationInput(fixture.sessionId, fixture.revision());
-
-  const outcome = await fixture.coordinator.handlers['session.configuration.update'](
-    {
-      ...input,
-      configuration: {
-        ...input.configuration,
-        modelTarget: { kind: 'default' },
-      },
-    },
-    context,
-  );
-
-  assert.deepEqual(outcome, {
-    ok: false,
-    error: {
-      code: 'operation_conflict',
-      message: 'Session account changes require an exact Connection identity',
-    },
-  });
-  assert.equal(resolutionAttempts, 0);
-  assert.equal(fixture.header().llmConnectionId, 'connection-1');
-  assert.equal(fixture.header().model, 'model-1');
-});
-
-test('configuration update rejects an oversized current default instead of retaining the old model', async () => {
-  const oversizedModel = 'm'.repeat(SESSION_CATALOG_MODEL_MAX_BYTES + 1);
-  const fixture = createFixture({
-    connection: {
-      defaultModelId: oversizedModel,
-      enabledModelIds: ['model-1', oversizedModel],
-      models: [{ id: 'model-1' }, { id: oversizedModel }],
-    },
-  });
-  const input = configurationInput(fixture.sessionId, fixture.revision());
-
-  const outcome = await fixture.coordinator.handlers['session.configuration.update'](
-    {
-      ...input,
-      configuration: {
-        ...input.configuration,
-        modelTarget: { kind: 'default' },
-      },
-    },
-    context,
-  );
-
-  assert.deepEqual(outcome, {
-    ok: false,
-    error: {
-      code: 'invalid_request',
-      message: 'Session model identifier exceeds the wire limit',
-    },
-  });
-  assert.equal(fixture.header().model, 'model-1');
-});
-
-test('configuration update does not adopt an account for a legacy Session', async () => {
+test('identity-free configuration patch fails closed for a legacy Session', async () => {
   const fixture = createFixture({ legacyConnectionIdentity: true });
 
   const outcome = await fixture.coordinator.handlers['session.configuration.update'](
-    configurationInput(fixture.sessionId, fixture.revision()),
+    {
+      sessionId: fixture.sessionId,
+      expectedRevision: fixture.revision(),
+      patch: { permissionMode: 'bypass' },
+    },
     context,
   );
 
@@ -1062,6 +998,47 @@ test('configuration update does not adopt an account for a legacy Session', asyn
     },
   });
   assert.equal(fixture.header().llmConnectionId, undefined);
+  assert.notEqual(fixture.header().permissionMode, 'bypass');
+});
+
+test('only an explicit exact target recovers a legacy Session account binding', async () => {
+  let clearConnectionBlock: boolean | undefined;
+  const fixture = createFixture({
+    legacyConnectionIdentity: true,
+    header: { blockedReason: 'NO_REAL_CONNECTION' },
+    manager: {
+      transitionSessionConfiguration: async (_sessionId, input) => {
+        clearConnectionBlock = input.clearConnectionBlock;
+        return {
+          header: fixture.header(),
+          revision: fixture.revision(),
+          committedAt: 1,
+        };
+      },
+    },
+  });
+
+  const outcome = await fixture.coordinator.handlers['session.configuration.update'](
+    configurationInput(fixture.sessionId, fixture.revision()),
+    context,
+  );
+
+  assert.equal(outcome.ok, true);
+  assert.equal(clearConnectionBlock, true);
+});
+
+test('explicit recovery persists the selected Connection entity identity', async () => {
+  const fixture = createFixture({ legacyConnectionIdentity: true });
+
+  const outcome = await fixture.coordinator.handlers['session.configuration.update'](
+    configurationInput(fixture.sessionId, fixture.revision()),
+    context,
+  );
+
+  assert.equal(outcome.ok, true);
+  assert.equal(fixture.header().llmConnectionId, 'connection-1');
+  assert.equal(fixture.header().llmConnectionSlug, 'test');
+  assert.equal(fixture.header().model, 'model-1');
 });
 
 test('creation persists a canonical cwd while fingerprints retain exact target intent', async () => {
@@ -1419,11 +1396,13 @@ function createFixture(
     readonly projectCatalog?: ProjectCatalog;
     readonly onProjectChanged?: () => void;
     readonly legacyConnectionIdentity?: boolean;
+    readonly header?: Partial<SessionHeader>;
   } = {},
 ) {
   const sessionId = 'session-1';
   let revision = 3;
   let header = sessionHeader(sessionId, options.labels ?? ['user-label']);
+  header = { ...header, ...options.header };
   if (options.legacyConnectionIdentity) {
     const { llmConnectionId: _legacyConnectionId, ...legacyHeader } = header;
     header = legacyHeader;
@@ -1514,8 +1493,6 @@ function createFixture(
 }
 
 type FixtureConnection = {
-  readonly connectionId?: string;
-  readonly defaultModelId?: string;
   readonly providerType?:
     | 'claude-subscription'
     | 'deepseek'
@@ -1539,7 +1516,7 @@ type FixtureConnection = {
 function runtimePolicyFixture(overrides: FixtureConnection): RuntimePolicy {
   const policy = createDefaultRuntimePolicy();
   const connection = {
-    connectionId: overrides.connectionId ?? 'connection-1',
+    connectionId: 'connection-1',
     revision: 1,
     slug: 'test',
     name: 'Test',
@@ -1562,7 +1539,7 @@ function runtimePolicyFixture(overrides: FixtureConnection): RuntimePolicy {
         revision: 1,
         defaultTarget: {
           connectionId: connection.connectionId,
-          modelId: overrides.defaultModelId ?? 'model-1',
+          modelId: 'model-1',
         },
         connections: [connection],
       }),
@@ -1593,9 +1570,10 @@ function configurationInput(
   return {
     sessionId,
     expectedRevision,
-    configuration: {
+    patch: {
       modelTarget: {
         kind: 'explicit',
+        connectionId: 'connection-1',
         connectionSlug: 'test',
         model: 'model-1',
       },

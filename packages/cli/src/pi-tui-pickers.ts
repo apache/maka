@@ -593,11 +593,13 @@ export function modelPickerItems(
  */
 function modelChoicePickerItems(
   choices: readonly ModelChoice[],
-  current: { model: string; connectionSlug: string },
+  current: { model: string; connectionId?: string; connectionSlug: string },
 ): SelectItem[] {
   return choices.map((choice, index) => {
     const isCurrent =
-      choice.model === current.model && choice.connectionSlug === current.connectionSlug;
+      choice.model === current.model &&
+      choice.connectionId === current.connectionId &&
+      choice.connectionSlug === current.connectionSlug;
     const tags = [choice.connectionName || choice.connectionSlug];
     if (isCurrent) tags.push('current');
     else if (choice.isDefaultConnection) tags.push('default');
@@ -627,7 +629,7 @@ function matchesModelChoice(choice: ModelChoice, query: string): boolean {
 
 export interface ModelSearchOverlayInput {
   choices: readonly ModelChoice[];
-  current: { model: string; connectionSlug: string };
+  current: { model: string; connectionId?: string; connectionSlug: string };
   showCacheWarning?: boolean;
   onSelect: (choice: ModelChoice) => void;
   onCancel: () => void;
@@ -659,6 +661,7 @@ export class ModelSearchOverlay implements Component {
     this.initialIndex = input.choices.findIndex(
       (choice) =>
         choice.model === input.current.model &&
+        choice.connectionId === input.current.connectionId &&
         choice.connectionSlug === input.current.connectionSlug,
     );
     this.list = this.buildList();

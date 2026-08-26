@@ -575,7 +575,7 @@ export interface SessionConfigurationStoreUpdate {
   readonly expectedVersion: number;
   readonly configuration: {
     readonly backend: SessionHeader['backend'];
-    readonly llmConnectionId: string;
+    readonly llmConnectionId?: string;
     readonly llmConnectionSlug: string;
     readonly connectionLocked: boolean;
     readonly model: string;
@@ -592,6 +592,7 @@ export interface SessionConfigurationStoreUpdate {
 
 export interface SessionConfigurationTransitionRequest {
   readonly expectedRevision: number;
+  readonly clearConnectionBlock: boolean;
   readonly configuration: Omit<SessionConfigurationStoreUpdate['configuration'], 'labels'>;
 }
 
@@ -1185,7 +1186,7 @@ export class SessionManager {
               labels,
             },
             lifecycle:
-              current.header.blockedReason === 'NO_REAL_CONNECTION'
+              input.clearConnectionBlock && current.header.blockedReason === 'NO_REAL_CONNECTION'
                 ? {
                     kind: 'clear_connection_block',
                     statusUpdatedAt: this.deps.now(),
