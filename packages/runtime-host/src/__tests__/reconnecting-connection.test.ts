@@ -29,6 +29,7 @@ import {
   startRuntimeHostReconnectLifecycle,
   type DirectRequestOperationKey,
   type RuntimeHostConnection,
+  type RuntimeHostConnectionAvailability,
 } from '../client/index.js';
 import {
   INTERACTIVE_RUNTIME_HOST_COMPOSITION_ID,
@@ -74,6 +75,54 @@ test('a reconnecting Client retries an interrupted query on the replacement conn
   assert.deepEqual(first.operations, ['goal.query']);
   assert.deepEqual(unstable.operations, ['goal.query']);
   assert.deepEqual(replacement.operations, ['goal.query']);
+  await connection.close();
+});
+
+test('a reconnecting Client reports the connection generation used by direct operations', async () => {
+  const first = connectionHarness('first', () => undefined);
+  const replacement = connectionHarness('replacement', () => undefined);
+  const reconnecting = deferredValue<RuntimeHostConnection>();
+  const connection = await createRuntimeHostReconnectingConnection({
+    initialConnection: first.connection,
+    connect: async () => reconnecting.promise,
+  });
+  const availability: RuntimeHostConnectionAvailability[] = [];
+  const unsubscribe = connection.subscribeConnectionAvailability((current) => {
+    availability.push(current);
+  });
+
+  assert.deepEqual(availability, [
+    { kind: 'connected', hostEpoch: 'host-first', connectionId: 'first' },
+  ]);
+  first.disconnect();
+  await waitForCondition(() => availability.length === 2);
+  const unavailable: RuntimeHostConnectionAvailability[] = [];
+  const unsubscribeUnavailable = connection.subscribeConnectionAvailability((value) => {
+    unavailable.push(value);
+  });
+  assert.deepEqual(unavailable, [{ kind: 'unavailable' }]);
+  unsubscribeUnavailable();
+  reconnecting.resolve(replacement.connection);
+  await waitForCondition(() => availability.length === 3);
+  assert.deepEqual(availability, [
+    { kind: 'connected', hostEpoch: 'host-first', connectionId: 'first' },
+    { kind: 'unavailable' },
+    { kind: 'connected', hostEpoch: 'host-replacement', connectionId: 'replacement' },
+  ]);
+
+  const current: RuntimeHostConnectionAvailability[] = [];
+  const unsubscribeCurrent = connection.subscribeConnectionAvailability((value) => {
+    current.push(value);
+  });
+  assert.deepEqual(current, [
+    { kind: 'connected', hostEpoch: 'host-replacement', connectionId: 'replacement' },
+  ]);
+  unsubscribeCurrent();
+
+  unsubscribe();
+  replacement.disconnect();
+  await yieldToEventLoop();
+  assert.equal(availability.length, 3);
   await connection.close();
 });
 

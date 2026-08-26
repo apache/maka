@@ -53,6 +53,8 @@ export {
 export {
   createRuntimeHostReconnectingConnection,
   isRuntimeHostReconnectingConnection,
+  type RuntimeHostConnectionAvailability,
+  type RuntimeHostReconnectingConnection,
 } from './reconnecting-connection.js';
 export {
   normalizeRuntimeHostSshDestination,
