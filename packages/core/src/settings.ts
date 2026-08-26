@@ -18,6 +18,11 @@
  */
 
 import { isThinkingLevel, type ThinkingLevel } from './model-thinking.js';
+import {
+  DEFAULT_TOOL_MODE_PREFERENCE,
+  isToolModePreference,
+  type ToolModePreference,
+} from './tool-mode.js';
 import type { OnboardingMilestone } from './onboarding.js';
 import { sanitizeOnboardingMilestones } from './onboarding.js';
 import type { WebSearchSettingsPatch, WebSearchSettings } from './web-search.js';
@@ -310,6 +315,18 @@ export interface ChatDefaultsSettings {
    * composer already resolves it that way for the per-session picker.
    */
   thinkingLevel?: ThinkingLevel;
+  /**
+   * Seeds new runs' tool protocol (Settings → General → Default tool mode):
+   * `auto` — the default — resolves to Direct for every model today; `direct`
+   * and `code_mode` are explicit overrides resolved once at the product
+   * boundary into the Runtime's `ToolMode`. `auto` itself never crosses that
+   * boundary: Runtime execution and persisted run records only ever see
+   * `direct` or `code_mode`.
+   *
+   * Normalization is total: settings files written before this field existed
+   * (missing value) and corrupted values both normalize to `auto`, never fail.
+   */
+  toolModePreference?: ToolModePreference;
 }
 
 /**
@@ -799,7 +816,7 @@ function defaultProjectPreferencesSettings(): ProjectPreferencesSettings {
 }
 
 function defaultChatDefaultsSettings(): ChatDefaultsSettings {
-  return { permissionMode: 'ask' };
+  return { permissionMode: 'ask', toolModePreference: DEFAULT_TOOL_MODE_PREFERENCE };
 }
 
 // Closed-enum fail-closed, same reasoning as appearance.palette /
@@ -813,6 +830,13 @@ function normalizeChatDefaultsSettings(settings: ChatDefaultsSettings): ChatDefa
     // drops to "no preference" (the model's own default) rather than reaching
     // session creation as a rung no picker recognizes.
     thinkingLevel: isThinkingLevel(settings.thinkingLevel) ? settings.thinkingLevel : undefined,
+    // A missing value (settings files written before this field existed) and a
+    // garbage value both land on `auto`: normalization is total, so a legacy or
+    // corrupted settings.json can never fail validation here, and no file ever
+    // changes execution behavior by being read.
+    toolModePreference: isToolModePreference(settings.toolModePreference)
+      ? settings.toolModePreference
+      : DEFAULT_TOOL_MODE_PREFERENCE,
     // A retired mode is decoded (not rejected) so an existing settings file
     // keeps working; knowing which modes are retired lives in one place.
     // Anything that decodes to a mode outside the pickable set — including

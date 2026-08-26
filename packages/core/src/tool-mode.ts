@@ -19,8 +19,22 @@
 
 export type ToolMode = 'direct' | 'code_mode';
 
+/**
+ * The user-facing tool-mode preference: the two concrete Runtime modes plus
+ * `auto`, the absence of an override. `auto` is a settings-layer value only —
+ * it resolves (once, at the product boundary) into a concrete `ToolMode` or
+ * into field omission and never reaches Runtime execution or persistence.
+ */
+export type ToolModePreference = 'auto' | ToolMode;
+
 export const DEFAULT_TOOL_MODE: ToolMode = 'direct';
+
+export const DEFAULT_TOOL_MODE_PREFERENCE: ToolModePreference = 'auto';
 
 export function isToolMode(value: unknown): value is ToolMode {
   return value === 'direct' || value === 'code_mode';
+}
+
+export function isToolModePreference(value: unknown): value is ToolModePreference {
+  return value === 'auto' || isToolMode(value);
 }

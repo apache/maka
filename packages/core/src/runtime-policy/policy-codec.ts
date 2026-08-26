@@ -20,6 +20,7 @@
 import { isThinkingLevel } from '../model-thinking.js';
 import { CHAT_DEFAULT_PERMISSION_MODES } from '../settings.js';
 import { normalizeSubagentSettings } from '../subagent-settings.js';
+import { isToolMode } from '../tool-mode.js';
 import type {
   AgentRuntimeSettingsPatch,
   MutateRuntimePolicyInput,
@@ -302,7 +303,7 @@ function normalizeChatDefaults(value: unknown): RuntimePolicy['chatDefaults'] {
   const item = exactRecord(
     value,
     'chat defaults',
-    ['permissionMode', 'thinkingLevel'],
+    ['permissionMode', 'thinkingLevel', 'toolModePreference'],
     ['permissionMode'],
   );
   if (!(CHAT_DEFAULT_PERMISSION_MODES as readonly unknown[]).includes(item.permissionMode)) {
@@ -311,9 +312,21 @@ function normalizeChatDefaults(value: unknown): RuntimePolicy['chatDefaults'] {
   if (item.thinkingLevel !== undefined && !isThinkingLevel(item.thinkingLevel)) {
     throw domainError('chat default thinking level is invalid');
   }
+  // The policy layer stores only explicit overrides: `auto` — and any other
+  // non-mode value a client forwarded — means "no override" and is dropped so
+  // documents written before this field existed stay canonical. Runtime never
+  // observes the preference itself, only the resolved concrete mode.
+  if (
+    item.toolModePreference !== undefined &&
+    !isToolMode(item.toolModePreference) &&
+    item.toolModePreference !== 'auto'
+  ) {
+    throw domainError('chat default tool mode preference is invalid');
+  }
   return {
     permissionMode: item.permissionMode as RuntimePolicy['chatDefaults']['permissionMode'],
     ...(item.thinkingLevel === undefined ? {} : { thinkingLevel: item.thinkingLevel }),
+    ...(isToolMode(item.toolModePreference) ? { toolModePreference: item.toolModePreference } : {}),
   };
 }
 

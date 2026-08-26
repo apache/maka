@@ -80,6 +80,46 @@ test('preserves a valid default thinking level and rejects unknown levels', () =
   );
 });
 
+test('chat-defaults tool-mode preference persists explicit overrides and omits auto', () => {
+  // An explicit override round-trips canonically.
+  const overridden = {
+    ...createDefaultRuntimePolicy(),
+    chatDefaults: { permissionMode: 'ask' as const, toolModePreference: 'code_mode' as const },
+  };
+  assert.deepEqual(decodeCanonicalRuntimePolicy(overridden).chatDefaults, overridden.chatDefaults);
+
+  // `auto` is the absence of an override at the policy layer: accepted on the
+  // wire, stored as field omission so documents written before this field
+  // existed stay canonical without a schema bump. Runtime never sees it.
+  const normalized = normalizeRuntimePolicyMutation({
+    expectedRevision: 0,
+    operation: {
+      kind: 'set_chat_defaults',
+      value: { permissionMode: 'ask', toolModePreference: 'auto' },
+    },
+  });
+  assert.equal(normalized.operation.kind, 'set_chat_defaults');
+  if (normalized.operation.kind !== 'set_chat_defaults') return;
+  assert.deepEqual(normalized.operation.value, { permissionMode: 'ask' });
+
+  // A legacy document without the field decodes unchanged.
+  const legacy = createDefaultRuntimePolicy();
+  assert.deepEqual(decodeCanonicalRuntimePolicy(legacy).chatDefaults, legacy.chatDefaults);
+
+  // Anything else is rejected, never silently coerced into a mode.
+  assert.throws(
+    () =>
+      normalizeRuntimePolicyMutation({
+        expectedRevision: 0,
+        operation: {
+          kind: 'set_chat_defaults',
+          value: { permissionMode: 'ask', toolModePreference: 'claude_mode' },
+        },
+      }),
+    RuntimePolicyDomainDecodeError,
+  );
+});
+
 test('keeps user-approved subagent presets canonical in Runtime Policy', () => {
   const preset = {
     id: 'fast-reader',

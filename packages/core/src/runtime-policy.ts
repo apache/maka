@@ -27,6 +27,7 @@ import type { ThinkingLevel } from './model-thinking.js';
 import type { ProviderType } from './provider-registry.js';
 import type { RelayModelProfile } from './model-thinking.js';
 import type { ChatDefaultPermissionMode, ProxyProtocol, ShellSettings } from './settings.js';
+import type { ToolMode } from './tool-mode.js';
 import type { SubagentSettings } from './subagent-settings.js';
 import type { JsonObject } from './request-customization.js';
 import {
@@ -138,6 +139,12 @@ export interface RuntimePolicy {
   readonly chatDefaults: {
     readonly permissionMode: ChatDefaultPermissionMode;
     readonly thinkingLevel?: ThinkingLevel;
+    /**
+     * An explicit tool-mode override (`direct` | `code_mode`). `auto` — the
+     * absence of an override — is stored as field omission so policy documents
+     * written before this field existed stay canonical without a schema bump.
+     */
+    readonly toolModePreference?: ToolMode;
   };
   readonly webSearch: {
     readonly enabled: boolean;

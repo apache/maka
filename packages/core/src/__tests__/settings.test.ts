@@ -121,6 +121,41 @@ test('a chat-default thinking level the app does not recognize drops to no prefe
   expect(normalized.chatDefaults.thinkingLevel).toBe(undefined);
 });
 
+test('chat-default tool-mode preference normalizes totally and never fails validation', () => {
+  // Every explicit value round-trips.
+  for (const toolModePreference of ['auto', 'direct', 'code_mode'] as const) {
+    expect(
+      normalizeSettings({ chatDefaults: { permissionMode: 'ask', toolModePreference } })
+        .chatDefaults.toolModePreference,
+    ).toBe(toolModePreference);
+  }
+
+  // A settings file written before the field existed normalizes to `auto`.
+  const legacy = normalizeSettings({ chatDefaults: { permissionMode: 'bypass' } });
+  expect(legacy.chatDefaults.permissionMode).toBe('bypass');
+  expect(legacy.chatDefaults.toolModePreference).toBe('auto');
+
+  // Missing, null, and garbage values all land on `auto` — normalization is
+  // total, so a legacy or corrupted settings.json can never fail here.
+  for (const garbage of [undefined, null, 'auto ', 'CODE_MODE', 'claude_mode', 42, {}]) {
+    expect(
+      normalizeSettings({
+        chatDefaults: {
+          permissionMode: 'ask',
+          toolModePreference: garbage as never,
+        },
+      }).chatDefaults.toolModePreference,
+    ).toBe('auto');
+  }
+
+  // A partial patch keeps the rest of the section intact.
+  const merged = mergeSettings(createDefaultSettings(), {
+    chatDefaults: { toolModePreference: 'code_mode' },
+  });
+  expect(merged.chatDefaults.permissionMode).toBe('ask');
+  expect(merged.chatDefaults.toolModePreference).toBe('code_mode');
+});
+
 test('an app icon the build does not ship falls back without disturbing the theme', () => {
   expect(createDefaultSettings().appearance.appIcon).toBe('default');
 
