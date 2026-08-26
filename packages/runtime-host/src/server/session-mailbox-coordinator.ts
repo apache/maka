@@ -25,13 +25,16 @@ import {
   type StoredMessage,
 } from '@maka/core/session';
 import {
+  parseSessionMailboxFailedNoteData,
   sessionMailboxMessageContent,
+  sessionMailboxFailedReceiptId,
   sessionMailboxOutboxAttemptId,
   sessionMailboxSentReceiptId,
   sessionMailboxTurnOrigin,
   parseSessionMailboxOutboxNoteData,
   parseSessionMailboxSentNoteData,
   type SessionMailboxKind,
+  type SessionMailboxFailedNoteData,
   type SessionMailboxOutboxNoteData,
   type SessionMailboxSentNoteData,
 } from '@maka/core/session-mailbox';
@@ -59,6 +62,19 @@ type MailboxErrorCode =
   | 'invalid_request'
   | 'outcome_unknown'
   | 'internal_failure';
+
+const MAILBOX_ERROR_CODES = new Set<MailboxErrorCode>([
+  'host_not_ready',
+  'host_draining',
+  'operation_unavailable',
+  'not_found',
+  'session_archived',
+  'session_busy',
+  'operation_conflict',
+  'invalid_request',
+  'outcome_unknown',
+  'internal_failure',
+]);
 
 type MailboxOutcome<T> =
   | { readonly ok: true; readonly result: T }
@@ -135,15 +151,17 @@ export class HostSessionMailboxCoordinator {
       } catch {
         continue;
       }
-      const settled = new Set(
-        messages.flatMap((message) =>
-          message.type === 'system_note' && message.kind === 'session_mailbox_sent'
-            ? [parseSessionMailboxSentNoteData(message.data)?.messageId].filter(
-                (id): id is string => id !== undefined,
-              )
-            : [],
-        ),
-      );
+      const settled = new Set<string>();
+      for (const message of messages) {
+        if (message.type !== 'system_note') continue;
+        if (message.kind === 'session_mailbox_sent') {
+          const receipt = parseSessionMailboxSentNoteData(message.data);
+          if (receipt) settled.add(receipt.messageId);
+        } else if (message.kind === 'session_mailbox_failed') {
+          const rejection = parseSessionMailboxFailedNoteData(message.data);
+          if (rejection) settled.add(rejection.messageId);
+        }
+      }
       const pending = new Map<string, SessionMailboxOutboxNoteData>();
       for (const message of messages) {
         if (message.type !== 'system_note' || message.kind !== 'session_mailbox_outbox') continue;
@@ -239,6 +257,13 @@ export class HostSessionMailboxCoordinator {
       );
     }
     if (!submitted.ok) {
+      if (submitted.error.code !== 'outcome_unknown') {
+        await this.#recordFailedMessage(outbox.fromSessionId, {
+          ...outbox,
+          errorCode: submitted.error.code,
+          errorMessage: submitted.error.message,
+        });
+      }
       return failure(submitted.error.code, submitted.error.message);
     }
     const disposition = submitted.result.disposition === 'turn_started' ? 'turn_started' : 'queued';
@@ -248,6 +273,7 @@ export class HostSessionMailboxCoordinator {
       targetSessionName: outbox.targetSessionName,
       kind: outbox.kind,
       text: outbox.text,
+      ...(outbox.correlationId ? { correlationId: outbox.correlationId } : {}),
       disposition,
       ...(submitted.result.disposition === 'turn_started'
         ? { turnId: submitted.result.turnId }
@@ -277,20 +303,43 @@ export class HostSessionMailboxCoordinator {
     const receiptMessage = messages.find(
       (message) => message.id === sessionMailboxSentReceiptId(outbox.messageId),
     );
-    if (!receiptMessage) return undefined;
-    const receipt =
-      receiptMessage.type === 'system_note'
-        ? parseSessionMailboxSentNoteData(receiptMessage.data)
+    const failedMessage = messages.find(
+      (message) => message.id === sessionMailboxFailedReceiptId(outbox.messageId),
+    );
+    if (receiptMessage && failedMessage) {
+      return failure(
+        'operation_conflict',
+        'Mailbox message identity has multiple terminal results',
+      );
+    }
+    if (receiptMessage) {
+      const receipt =
+        receiptMessage.type === 'system_note'
+          ? parseSessionMailboxSentNoteData(receiptMessage.data)
+          : undefined;
+      if (!receipt || !receiptMatchesOutbox(receipt, outbox)) {
+        return failure('operation_conflict', 'Mailbox message identity has different durable data');
+      }
+      return success({
+        messageId: receipt.messageId,
+        targetSessionId: receipt.targetSessionId,
+        disposition: receipt.disposition,
+        ...(receipt.turnId ? { turnId: receipt.turnId } : {}),
+      });
+    }
+    if (!failedMessage) return undefined;
+    const rejection =
+      failedMessage.type === 'system_note'
+        ? parseSessionMailboxFailedNoteData(failedMessage.data)
         : undefined;
-    if (!receipt || !receiptMatchesOutbox(receipt, outbox)) {
+    if (
+      !rejection ||
+      !failureMatchesOutbox(rejection, outbox) ||
+      !isMailboxErrorCode(rejection.errorCode)
+    ) {
       return failure('operation_conflict', 'Mailbox message identity has different durable data');
     }
-    return success({
-      messageId: receipt.messageId,
-      targetSessionId: receipt.targetSessionId,
-      disposition: receipt.disposition,
-      ...(receipt.turnId ? { turnId: receipt.turnId } : {}),
-    });
+    return failure(rejection.errorCode, rejection.errorMessage);
   }
 
   async #persistOutboxAttempt(
@@ -348,6 +397,34 @@ export class HostSessionMailboxCoordinator {
       data,
     });
   }
+
+  async #recordFailedMessage(
+    sourceSessionId: string,
+    data: SessionMailboxFailedNoteData,
+  ): Promise<void> {
+    const receiptId = sessionMailboxFailedReceiptId(data.messageId);
+    const messages = await this.#sessionStore.readMessagesSnapshot(sourceSessionId);
+    const existing = messages.find((message) => message.id === receiptId);
+    if (existing) {
+      const persisted =
+        existing.type === 'system_note'
+          ? parseSessionMailboxFailedNoteData(existing.data)
+          : undefined;
+      if (!persisted || !failedDataEqual(persisted, data)) {
+        throw new Error('Mailbox failure identity has different durable data');
+      }
+      return;
+    }
+    const anchorTurnId = latestTurnId(messages);
+    await this.#sessionStore.appendMessage(sourceSessionId, {
+      type: 'system_note',
+      id: receiptId,
+      ...(anchorTurnId ? { turnId: anchorTurnId } : {}),
+      ts: this.#now(),
+      kind: 'session_mailbox_failed',
+      data,
+    });
+  }
 }
 
 function latestTurnId(messages: readonly StoredMessage[]): string | undefined {
@@ -386,7 +463,8 @@ function receiptMatchesOutbox(
     receipt.targetSessionId === outbox.toSessionId &&
     receipt.targetSessionName === outbox.targetSessionName &&
     receipt.kind === outbox.kind &&
-    receipt.text === outbox.text
+    receipt.text === outbox.text &&
+    receipt.correlationId === outbox.correlationId
   );
 }
 
@@ -404,10 +482,42 @@ function sentDataEqual(
       targetSessionName: right.targetSessionName,
       kind: right.kind,
       text: right.text,
+      ...(right.correlationId ? { correlationId: right.correlationId } : {}),
     }) &&
     left.disposition === right.disposition &&
     left.turnId === right.turnId
   );
+}
+
+function failureMatchesOutbox(
+  failureData: SessionMailboxFailedNoteData,
+  outbox: SessionMailboxOutboxNoteData,
+): boolean {
+  return (
+    failureData.messageId === outbox.messageId &&
+    failureData.fromSessionId === outbox.fromSessionId &&
+    failureData.fromSessionName === outbox.fromSessionName &&
+    failureData.toSessionId === outbox.toSessionId &&
+    failureData.targetSessionName === outbox.targetSessionName &&
+    failureData.kind === outbox.kind &&
+    failureData.text === outbox.text &&
+    failureData.correlationId === outbox.correlationId
+  );
+}
+
+function failedDataEqual(
+  left: SessionMailboxFailedNoteData,
+  right: SessionMailboxFailedNoteData,
+): boolean {
+  return (
+    outboxDataEqual(left, right) &&
+    left.errorCode === right.errorCode &&
+    left.errorMessage === right.errorMessage
+  );
+}
+
+function isMailboxErrorCode(value: string): value is MailboxErrorCode {
+  return MAILBOX_ERROR_CODES.has(value as MailboxErrorCode);
 }
 
 function outboxDataEqual(

@@ -19,7 +19,9 @@
 
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { decodeCanonicalMessage } from '../session.js';
 import {
+  parseSessionMailboxFailedNoteData,
   parseSessionMailboxMessageContent,
   parseSessionMailboxOutboxNoteData,
   parseSessionMailboxSentNoteData,
@@ -136,6 +138,7 @@ test('Session mailbox sent-note data requires a complete delivery receipt', () =
       targetSessionName: 'Target',
       kind: 'request',
       text: 'Hello',
+      correlationId: 'request-1',
       disposition: 'queued',
     }),
     {
@@ -144,8 +147,43 @@ test('Session mailbox sent-note data requires a complete delivery receipt', () =
       targetSessionName: 'Target',
       kind: 'request',
       text: 'Hello',
+      correlationId: 'request-1',
       disposition: 'queued',
     },
   );
   assert.equal(parseSessionMailboxSentNoteData({ messageId: 'message-1' }), undefined);
+});
+
+test('Session mailbox failed-note data retains the terminal delivery identity', () => {
+  const data = {
+    originHostEpoch: 'epoch-1',
+    messageId: 'reply-1',
+    fromSessionId: 'source-1',
+    fromSessionName: 'Source',
+    toSessionId: 'target-1',
+    targetSessionName: 'Target',
+    kind: 'reply' as const,
+    text: 'Done',
+    correlationId: 'request-1',
+    errorCode: 'session_busy',
+    errorMessage: 'Target is busy',
+  };
+  assert.deepEqual(parseSessionMailboxFailedNoteData(data), data);
+  assert.deepEqual(
+    decodeCanonicalMessage({
+      type: 'system_note',
+      id: 'session-mailbox-failed:reply-1',
+      ts: 1,
+      kind: 'session_mailbox_failed',
+      data,
+    }),
+    {
+      type: 'system_note',
+      id: 'session-mailbox-failed:reply-1',
+      ts: 1,
+      kind: 'session_mailbox_failed',
+      data,
+    },
+  );
+  assert.equal(parseSessionMailboxFailedNoteData({ ...data, errorCode: undefined }), undefined);
 });

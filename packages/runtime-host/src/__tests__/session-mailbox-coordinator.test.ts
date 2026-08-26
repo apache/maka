@@ -294,6 +294,143 @@ test('Session mailbox recovery settles a durable outbox from target proof withou
   );
 });
 
+test('Session mailbox terminal rejection settles the outbox without delayed recovery delivery', async () => {
+  const stored: StoredMessage[] = [];
+  let submitCount = 0;
+  const coordinator = mailbox(
+    [session('source', '/one'), session('target', '/one')],
+    async () => {
+      submitCount += 1;
+      return {
+        ok: false,
+        error: { code: 'session_busy', message: 'Target Session is busy' },
+      };
+    },
+    stored,
+  );
+  const input = {
+    sourceSessionId: 'source',
+    targetSessionId: 'target',
+    messageId: 'message-rejected',
+    kind: 'request' as const,
+    text: 'Try once',
+  };
+
+  const rejected = await coordinator.handlers['session.mailbox.send'](input, connection());
+  assert.equal(rejected.ok, false);
+  if (!rejected.ok) assert.equal(rejected.error.code, 'session_busy');
+  assert.equal(submitCount, 1);
+  assert.deepEqual(
+    stored.map((message) => (message.type === 'system_note' ? message.kind : message.type)),
+    ['session_mailbox_outbox', 'session_mailbox_failed'],
+  );
+
+  const exactRetry = await coordinator.handlers['session.mailbox.send'](input, connection());
+  assert.deepEqual(exactRetry, rejected);
+  await coordinator.recover();
+  assert.equal(submitCount, 1);
+});
+
+test('Session mailbox keeps outcome-unknown delivery pending for proof-first recovery', async () => {
+  const stored: StoredMessage[] = [];
+  const messagesBySession = new Map<string, StoredMessage[]>([
+    ['source', stored],
+    ['target', []],
+  ]);
+  let submitCount = 0;
+  let reconcileCount = 0;
+  const coordinator = new HostSessionMailboxCoordinator({
+    hostEpoch: 'epoch-1',
+    messages: {
+      submitTrusted: async () => {
+        submitCount += 1;
+        return {
+          ok: false,
+          error: { code: 'outcome_unknown', message: 'Delivery outcome is unknown' },
+        };
+      },
+      reconcileTrustedSubmit: async () => {
+        reconcileCount += 1;
+        return {
+          ok: false,
+          error: { code: 'outcome_unknown', message: 'Delivery outcome is still unknown' },
+        };
+      },
+    } as unknown as Pick<HostMessageCoordinator, 'submitTrusted' | 'reconcileTrustedSubmit'>,
+    listSessions: async () => [session('source', '/one'), session('target', '/one')],
+    sessionStore: {
+      readMessagesSnapshot: async (sessionId) => messagesBySession.get(sessionId) ?? [],
+      appendMessage: async (sessionId, message) => {
+        messagesBySession.get(sessionId)?.push(message);
+      },
+    },
+  });
+
+  const result = await coordinator.handlers['session.mailbox.send'](
+    {
+      sourceSessionId: 'source',
+      targetSessionId: 'target',
+      messageId: 'message-unknown',
+      kind: 'request',
+      text: 'Confirm before retrying',
+    },
+    connection(),
+  );
+  assert.equal(result.ok, false);
+  if (!result.ok) assert.equal(result.error.code, 'outcome_unknown');
+  assert.deepEqual(
+    stored.map((message) => (message.type === 'system_note' ? message.kind : message.type)),
+    ['session_mailbox_outbox'],
+  );
+
+  await coordinator.recover();
+  assert.equal(submitCount, 1);
+  assert.equal(reconcileCount, 1);
+  assert.equal(stored.length, 1);
+});
+
+test('Session mailbox success receipt fences reply correlation drift', async () => {
+  const stored: StoredMessage[] = [];
+  let submitCount = 0;
+  const coordinator = mailbox(
+    [session('source', '/one'), session('target', '/one')],
+    async () => {
+      submitCount += 1;
+      return { ok: true, result: { disposition: 'followup', queueRevision: 1 } };
+    },
+    stored,
+  );
+  const input = {
+    sourceSessionId: 'source',
+    targetSessionId: 'target',
+    messageId: 'reply-1',
+    kind: 'reply' as const,
+    text: 'Done',
+    correlationId: 'request-1',
+  };
+
+  const sent = await coordinator.handlers['session.mailbox.send'](input, connection());
+  assert.equal(sent.ok, true);
+  assert.equal(submitCount, 1);
+  const receipt = stored.find(
+    (message) => message.type === 'system_note' && message.kind === 'session_mailbox_sent',
+  );
+  assert.equal(receipt?.type, 'system_note');
+  if (receipt?.type === 'system_note') {
+    assert.equal((receipt.data as { correlationId?: string }).correlationId, 'request-1');
+  }
+
+  const exactRetry = await coordinator.handlers['session.mailbox.send'](input, connection());
+  assert.deepEqual(exactRetry, sent);
+  const drifted = await coordinator.handlers['session.mailbox.send'](
+    { ...input, correlationId: 'request-2' },
+    connection(),
+  );
+  assert.equal(drifted.ok, false);
+  if (!drifted.ok) assert.equal(drifted.error.code, 'operation_conflict');
+  assert.equal(submitCount, 1);
+});
+
 function mailbox(
   sessions: SessionSummary[],
   submit: (input: unknown, origin?: unknown) => Promise<unknown> = async () => ({

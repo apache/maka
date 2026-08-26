@@ -373,6 +373,19 @@ describe("materializeChat message metadata", () => {
       },
     }]);
     assert.deepEqual(settled.map((item) => item.id), ['receipt']);
+
+    const rejected = materializeChat([...attempts, {
+      type: 'system_note',
+      id: 'rejection',
+      ts: 3,
+      kind: 'session_mailbox_failed',
+      data: {
+        ...outboxData,
+        errorCode: 'session_busy',
+        errorMessage: 'Target Session is busy',
+      },
+    }]);
+    assert.deepEqual(rejected, []);
   });
 });
 

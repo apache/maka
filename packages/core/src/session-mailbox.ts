@@ -51,6 +51,7 @@ export interface SessionMailboxSentNoteData {
   readonly targetSessionName: string;
   readonly kind: SessionMailboxKind;
   readonly text: string;
+  readonly correlationId?: string;
   readonly disposition: 'turn_started' | 'queued';
   readonly turnId?: string;
 }
@@ -61,8 +62,18 @@ export interface SessionMailboxOutboxNoteData extends SessionMailboxEnvelope {
   readonly targetSessionName: string;
 }
 
+/** Durable terminal rejection for one sender-side delivery identity. */
+export interface SessionMailboxFailedNoteData extends SessionMailboxOutboxNoteData {
+  readonly errorCode: string;
+  readonly errorMessage: string;
+}
+
 export function sessionMailboxSentReceiptId(messageId: string): string {
   return `session-mailbox-sent:${messageId}`;
+}
+
+export function sessionMailboxFailedReceiptId(messageId: string): string {
+  return `session-mailbox-failed:${messageId}`;
 }
 
 export function sessionMailboxOutboxAttemptId(messageId: string, originHostEpoch: string): string {
@@ -233,6 +244,7 @@ export function parseSessionMailboxSentNoteData(
     typeof value.targetSessionName !== 'string' ||
     typeof value.text !== 'string' ||
     !SESSION_MAILBOX_KINDS.includes(value.kind as SessionMailboxKind) ||
+    (value.correlationId !== undefined && typeof value.correlationId !== 'string') ||
     (value.disposition !== 'turn_started' && value.disposition !== 'queued') ||
     (value.turnId !== undefined && typeof value.turnId !== 'string')
   ) {
@@ -244,8 +256,29 @@ export function parseSessionMailboxSentNoteData(
     targetSessionName: value.targetSessionName,
     kind: value.kind as SessionMailboxKind,
     text: value.text,
+    ...(value.correlationId !== undefined ? { correlationId: value.correlationId } : {}),
     disposition: value.disposition,
     ...(value.turnId !== undefined ? { turnId: value.turnId } : {}),
+  };
+}
+
+export function parseSessionMailboxFailedNoteData(
+  value: unknown,
+): SessionMailboxFailedNoteData | undefined {
+  const outbox = parseSessionMailboxOutboxNoteData(value);
+  if (
+    !outbox ||
+    !isRecord(value) ||
+    typeof value.errorCode !== 'string' ||
+    value.errorCode.length === 0 ||
+    typeof value.errorMessage !== 'string'
+  ) {
+    return undefined;
+  }
+  return {
+    ...outbox,
+    errorCode: value.errorCode,
+    errorMessage: value.errorMessage,
   };
 }
 

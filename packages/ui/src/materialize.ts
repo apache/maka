@@ -40,6 +40,7 @@ import type { ToolActivityStatus } from '@maka/core/tool-result-status';
 import type { ShellRunToolResult } from '@maka/core/shell-run-result';
 import type { StoredMessage, TurnRecord, TurnStatus, UserMessage } from '@maka/core/session';
 import {
+  parseSessionMailboxFailedNoteData,
   parseSessionMailboxOutboxNoteData,
   parseSessionMailboxSentNoteData,
   parseTrustedSessionMailboxMessage,
@@ -1169,6 +1170,11 @@ function visibleSessionMailboxOutboxNoteIds(
     if (message.kind === 'session_mailbox_sent') {
       const receipt = parseSessionMailboxSentNoteData(message.data);
       if (receipt) terminalMessageIds.add(receipt.messageId);
+      continue;
+    }
+    if (message.kind === 'session_mailbox_failed') {
+      const rejection = parseSessionMailboxFailedNoteData(message.data);
+      if (rejection) terminalMessageIds.add(rejection.messageId);
       continue;
     }
     if (message.kind !== 'session_mailbox_outbox') continue;
