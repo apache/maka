@@ -187,7 +187,7 @@ export const exclusionRules = [
       'apps/desktop/resources/licenses/renderer/SIMPLE_ICONS_LICENSE.md',
       'apps/desktop/resources/licenses/renderer/TDESIGN_ICONS_LICENSE.txt',
       'apps/desktop/src/renderer/public/THIRD_PARTY_LICENSES.txt',
-      'packages/cli/RUNTIME_HOST_PEER_THIRD_PARTY_NOTICES.txt',
+      'packages/cli/RUNTIME_HOST_PEER_DEPENDENCIES.rust.tsv',
       'packages/cli/THIRD_PARTY_NOTICES.txt',
     ),
   },
@@ -326,10 +326,6 @@ const reviewedProvenance = new Map([
   [
     'scripts/generate-third-party-notices.mjs',
     'Maka-authored generator that emits upstream copyright lines into THIRD_PARTY_NOTICES.txt. The copyright it names is its output, not its own.',
-  ],
-  [
-    'scripts/generate-runtime-host-peer-cargo-notices.mjs',
-    'Maka-authored generator that resolves declared Cargo license attribution into its generated notice. The copyright it names is its output, not its own.',
   ],
   [
     'scripts/sync-model-metadata.mjs',

@@ -60,6 +60,7 @@ import {
   effectiveRuntimeHostProjectDirectoryRoots,
   manageRuntimeHostService,
   replaceRuntimeHostManagedService,
+  rotateRuntimeHostManagedPeerIdentity,
   resolveRuntimeHostManagedServiceConfigPath,
   resolveRuntimeHostManagedServiceId,
   runtimeHostManagedServiceConfigFingerprint,
@@ -195,6 +196,10 @@ describe('managed Runtime Host service', () => {
         '--expected-root-id',
         'a'.repeat(64),
       ]).kind,
+      'error',
+    );
+    assert.equal(
+      parseRuntimeHostCommand(['service', 'peer', 'status', '--root', '/srv/maka']).kind,
       'error',
     );
     assert.deepEqual(
@@ -1266,6 +1271,12 @@ describe('managed Runtime Host service', () => {
       retire: async () => {
         active = false;
       },
+      start: async () => {
+        active = true;
+      },
+      stop: async () => {
+        active = false;
+      },
       status: async () => ({
         manager: 'systemd_user',
         installed,
@@ -1355,7 +1366,52 @@ describe('managed Runtime Host service', () => {
       '/dns4/relay.example/tcp/443',
     ]);
     const keyPath = resolveRuntimeHostManagedPeerKeyPath(clientDataRoot);
-    await writeFile(keyPath, 'owned peer identity', 'utf8');
+    const previousPeerId = 'owned-peer-identity';
+    const rotatedPeerId = 'rotated-peer-identity';
+    await writeFile(keyPath, previousPeerId, 'utf8');
+    let failRotationStart = true;
+    const rotationDeps = {
+      ...deps,
+      ensurePeerIdentity: async ({ keyPath: candidatePath }: { readonly keyPath: string }) => {
+        try {
+          return await readFile(candidatePath, 'utf8');
+        } catch {
+          await writeFile(candidatePath, rotatedPeerId, { mode: 0o600 });
+          return rotatedPeerId;
+        }
+      },
+      waitForReady: async () => {
+        if (failRotationStart) {
+          failRotationStart = false;
+          throw new Error('simulated interrupted start');
+        }
+      },
+    };
+    await assert.rejects(
+      rotateRuntimeHostManagedPeerIdentity({ ...common, expectedTarget }, backend, rotationDeps),
+      /simulated interrupted start/u,
+    );
+    assert.equal(await readFile(keyPath, 'utf8'), rotatedPeerId);
+    await assert.rejects(
+      manageRuntimeHostService(
+        { ...common, action: 'start', expectedTarget },
+        backend,
+        rotationDeps,
+      ),
+      (error: unknown) =>
+        error instanceof RuntimeHostServiceManagerError &&
+        error.code === 'peer_rotation_incomplete',
+    );
+    const rotation = await rotateRuntimeHostManagedPeerIdentity(
+      { ...common, expectedTarget },
+      backend,
+      rotationDeps,
+    );
+    assert.deepEqual(rotation, {
+      kind: 'rotated',
+      previousPeerId,
+      peerId: rotatedPeerId,
+    });
     await manageRuntimeHostService(
       { ...common, action: 'uninstall', expectedTarget },
       backend,

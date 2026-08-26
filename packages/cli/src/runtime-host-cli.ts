@@ -172,7 +172,12 @@ export type RuntimeHostCliCommand =
       framed: boolean;
     }
   | { kind: 'runtime-host-project-list'; rootPath?: string }
-  | { kind: 'runtime-host-project-add'; rootPath?: string; path: string; prefer: boolean }
+  | {
+      kind: 'runtime-host-project-add';
+      rootPath?: string;
+      path: string;
+      prefer: boolean;
+    }
   | {
       kind: 'runtime-host-capability-provider-serve';
       url: string;
@@ -471,6 +476,7 @@ function parseServicePeerCommand(argv: string[]): RuntimeHostCliCommand {
   const listenAddresses: string[] = [];
   const coordinationRelays: string[] = [];
   const options = parseManagedServiceOptions(argv.slice(1), {
+    allowConfiguration: false,
     valueOptions: {
       '--client-data-root': (value) => {
         if (clientDataRoot !== undefined) return error('Duplicate --client-data-root');
@@ -537,7 +543,10 @@ interface ManagedServiceOptions {
   readonly json: boolean;
   readonly framed?: true;
   readonly rootPath?: string;
-  readonly projectDirectoryRoots?: { readonly label: string; readonly path: string }[];
+  readonly projectDirectoryRoots?: {
+    readonly label: string;
+    readonly path: string;
+  }[];
   readonly websocketPort?: number;
   readonly websocketPath?: string;
   readonly expectedTarget?: RuntimeHostManagedServiceTarget;
@@ -732,7 +741,10 @@ function parseProjectCommand(argv: string[]): RuntimeHostCliCommand {
     return error(`Unexpected argument: ${argument ?? ''}`);
   }
   if (action === 'list') {
-    return { kind: 'runtime-host-project-list', ...(rootPath ? { rootPath } : {}) };
+    return {
+      kind: 'runtime-host-project-list',
+      ...(rootPath ? { rootPath } : {}),
+    };
   }
   if (!path) return error('runtime-host project add requires a path');
   return {

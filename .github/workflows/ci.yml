@@ -253,4 +253,4 @@ jobs:
 
       - name: Validate installed CLI release candidate
         if: steps.plan.outputs.cli_package == 'true'
-        run: node scripts/smoke-release-cli-package.mjs packages/cli/release/*.tgz
+        run: npm run release:cli:smoke -- packages/cli/release/*.tgz

@@ -211,7 +211,10 @@ async function smokeRuntimeHostPeerAddon(packageRoot, root) {
     'maka_runtime_host_peer.node',
   );
   const addon = require(addonPath);
-  if (typeof addon.ensurePeerIdentity !== 'function') {
+  if (
+    typeof addon.ensurePeerIdentity !== 'function' ||
+    typeof addon.startPeerEndpoint !== 'function'
+  ) {
     throw new Error('Installed Runtime Host peer addon has an incompatible API');
   }
   const keyPath = join(root, 'peer-smoke.key');
@@ -219,6 +222,42 @@ async function smokeRuntimeHostPeerAddon(packageRoot, root) {
   const second = await addon.ensurePeerIdentity(keyPath);
   if (typeof first !== 'string' || first.length === 0 || second !== first) {
     throw new Error('Installed Runtime Host peer addon did not preserve its identity');
+  }
+
+  const server = addon.startPeerEndpoint({
+    keyPath: join(root, 'peer-server.key'),
+    listenAddresses: ['/ip4/127.0.0.1/udp/0/quic-v1'],
+  });
+  const client = addon.startPeerEndpoint({
+    keyPath: join(root, 'peer-client.key'),
+    listenAddresses: ['/ip4/127.0.0.1/udp/0/quic-v1'],
+  });
+  let outbound;
+  let inbound;
+  try {
+    if (typeof server.peerId !== 'string' || server.listenAddresses.length === 0) {
+      throw new Error('Installed Runtime Host peer endpoint did not become ready');
+    }
+    const accepted = server.accept();
+    outbound = await client.connect({
+      peerId: server.peerId,
+      routeHints: server.listenAddresses,
+      directDeadlineMs: 5_000,
+    });
+    inbound = await accepted;
+    if (!inbound) throw new Error('Installed Runtime Host peer endpoint did not accept a stream');
+    await outbound.write(Buffer.from('ping'));
+    const request = await inbound.read();
+    if (!request || request.toString() !== 'ping') {
+      throw new Error('Installed Runtime Host peer endpoint received the wrong request');
+    }
+    await inbound.write(Buffer.from('pong'));
+    const response = await outbound.read();
+    if (!response || response.toString() !== 'pong') {
+      throw new Error('Installed Runtime Host peer endpoint received the wrong response');
+    }
+  } finally {
+    await Promise.allSettled([outbound?.close(), inbound?.close(), client.close(), server.close()]);
   }
 }
 
