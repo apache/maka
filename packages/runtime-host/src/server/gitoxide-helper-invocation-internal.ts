@@ -27,8 +27,9 @@ import {
 } from './gitoxide-helper-artifact-authority-internal.js';
 
 const MAX_SUCCESSOR_CONTENT_BYTES = 64 * 1024 * 1024;
+const MAX_TREE_FILE_BYTES = 8 * 1024 * 1024;
 const MAX_REQUEST_BYTES = MAX_SUCCESSOR_CONTENT_BYTES + 64 * 1024;
-const MAX_STDOUT_BYTES = 64 * 1024;
+const MAX_STDOUT_BYTES = MAX_TREE_FILE_BYTES * 6 + 64 * 1024;
 const MAX_STDERR_BYTES = 16 * 1024;
 export const GITOXIDE_HELPER_OPERATION_TIMEOUTS_INTERNAL = Object.freeze({
   inspectRepositoryMs: 5_000,
@@ -123,6 +124,13 @@ export const GITOXIDE_HELPER_ERROR_REASONS_V1 = Object.freeze([
   'projection_unreadable',
   'unsupported_projection_entry_kind',
   'unsupported_projection_path',
+  'invalid_tree_file_path',
+  'tree_file_identity_mismatch',
+  'tree_file_invalid',
+  'tree_file_lookup_failed',
+  'tree_file_not_utf8',
+  'tree_file_size_limit_exceeded',
+  'tree_file_unavailable',
   'unsupported_source_entry_kind',
   'unsupported_source_attributes',
   'unsupported_source_path',
@@ -232,6 +240,19 @@ export interface GitoxideProjectionDriftedV1 {
 export type GitoxideProjectionObservationV1 =
   | GitoxideProjectionObservedV1
   | GitoxideProjectionDriftedV1;
+
+export interface GitoxideTreeFileReadV1 {
+  readonly kind: 'tree_file_read';
+  readonly protocolVersion: 1;
+  readonly objectFormat: 'sha1';
+  readonly acceptedCommitOid: string;
+  readonly acceptedTreeOid: string;
+  readonly blobOid: string;
+  readonly path: string;
+  readonly content: string;
+  readonly bytesRead: number;
+  readonly managedTreePolicyVersion: 2;
+}
 
 export type GitoxideHelperInvocationErrorCode =
   | 'gitoxide_helper_invocation_invalid'
@@ -593,6 +614,44 @@ export async function observeProjectionWithGitoxideHelperInternal(input: {
     deadlineAt,
   });
   return decodeProjectionObservationOutcome(outcome, input);
+}
+
+export async function readTreeFileWithGitoxideHelperInternal(input: {
+  readonly invocationOwnerToken: object;
+  readonly capability: GitoxideHelperInvocationCapability;
+  readonly repositoryPath: string;
+  readonly acceptedCommitOid: string;
+  readonly path: string;
+  readonly managedTreePolicyVersion: 2;
+  readonly abortSignal?: AbortSignal;
+}): Promise<GitoxideTreeFileReadV1> {
+  const deadlineAt = performance.now() + GITOXIDE_HELPER_OPERATION_TIMEOUTS_INTERNAL.projectionMs;
+  if (!isCanonicalManagedPathV2(input.path)) {
+    throw invocationInvalid('Gitoxide tree file path is invalid');
+  }
+  const prepared = await prepareProjectionInvocation({
+    ...input,
+    destinationPath: input.repositoryPath,
+    deadlineAt,
+  });
+  const request = Buffer.from(
+    JSON.stringify({
+      protocolVersion: prepared.artifact.protocolVersion,
+      operation: 'read_tree_file',
+      repositoryPath: prepared.repositoryPath,
+      acceptedCommitOid: input.acceptedCommitOid,
+      path: input.path,
+      managedTreePolicyVersion: input.managedTreePolicyVersion,
+    }),
+  );
+  if (request.length > MAX_REQUEST_BYTES) throw invocationInvalid('Gitoxide request is too large');
+  const outcome = await invokeHelper({
+    executablePath: prepared.artifact.executablePath,
+    request,
+    abortSignal: input.abortSignal,
+    deadlineAt,
+  });
+  return decodeTreeFileOutcome(outcome, input);
 }
 
 async function prepareProjectionInvocation(input: {
@@ -1038,6 +1097,30 @@ function decodeProjectionObservationOutcome(
   throw protocolInvalid('Gitoxide projection observation response is invalid');
 }
 
+function decodeTreeFileOutcome(
+  outcome: HelperProcessOutcome,
+  expected: {
+    readonly acceptedCommitOid: string;
+    readonly path: string;
+    readonly managedTreePolicyVersion: 2;
+  },
+): GitoxideTreeFileReadV1 {
+  const value = parseHelperOutcome(outcome);
+  if (
+    outcome.exitCode === 0 &&
+    isTreeFileRead(value) &&
+    value.acceptedCommitOid === expected.acceptedCommitOid &&
+    value.path === expected.path &&
+    value.managedTreePolicyVersion === expected.managedTreePolicyVersion
+  ) {
+    return Object.freeze(value);
+  }
+  if (outcome.exitCode === 1 && isHelperError(value)) {
+    throw operationFailed('read the accepted tree file', value.reason);
+  }
+  throw protocolInvalid('Gitoxide tree file response is invalid');
+}
+
 function parseHelperOutcome(outcome: HelperProcessOutcome): unknown {
   if (outcome.signal !== null) {
     throw protocolInvalid(`Gitoxide helper exited from signal ${outcome.signal}`);
@@ -1079,6 +1162,36 @@ function isProjectionMaterialized(value: unknown): value is GitoxideProjectionMa
     isAbsolute(value.destinationPath) &&
     isNonNegativeSafeInteger(value.filesMaterialized) &&
     isNonNegativeSafeInteger(value.bytesWritten) &&
+    value.managedTreePolicyVersion === 2
+  );
+}
+
+function isTreeFileRead(value: unknown): value is GitoxideTreeFileReadV1 {
+  return (
+    hasExactKeys(value, [
+      'protocolVersion',
+      'kind',
+      'objectFormat',
+      'acceptedCommitOid',
+      'acceptedTreeOid',
+      'blobOid',
+      'path',
+      'content',
+      'bytesRead',
+      'managedTreePolicyVersion',
+    ]) &&
+    value.protocolVersion === 1 &&
+    value.kind === 'tree_file_read' &&
+    value.objectFormat === 'sha1' &&
+    isSha1(value.acceptedCommitOid) &&
+    isSha1(value.acceptedTreeOid) &&
+    isSha1(value.blobOid) &&
+    typeof value.path === 'string' &&
+    isCanonicalManagedPathV2(value.path) &&
+    typeof value.content === 'string' &&
+    isNonNegativeSafeInteger(value.bytesRead) &&
+    value.bytesRead <= MAX_TREE_FILE_BYTES &&
+    Buffer.byteLength(value.content, 'utf8') === value.bytesRead &&
     value.managedTreePolicyVersion === 2
   );
 }

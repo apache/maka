@@ -28,10 +28,12 @@ import {
   inspectCanonicalRepositoryWithGitoxideHelperInternal,
   materializeProjectionWithGitoxideHelperInternal,
   observeProjectionWithGitoxideHelperInternal,
+  readTreeFileWithGitoxideHelperInternal,
   type GitoxideProjectionMaterializedV1,
   type GitoxideProjectionObservationV1,
   type GitoxideSourceImportObservationV1,
   type GitoxideSuccessorPublishedV1,
+  type GitoxideTreeFileReadV1,
   type GitoxideRepositoryRejectionV1,
 } from './gitoxide-helper-invocation-internal.js';
 
@@ -326,6 +328,36 @@ export async function observeGitoxideProjectionInternal(input: {
     result.acceptedCommitOid !== projection.acceptedCommitOid ||
     result.acceptedTreeOid !== projection.acceptedTreeOid ||
     result.projectionPath !== projection.projectionPath
+  ) {
+    throw new GitoxideRepositoryAdmissionAuthorityError(
+      'gitoxide_repository_admission_capability_invalid',
+    );
+  }
+  return result;
+}
+
+export async function readGitoxideTreeFileInternal(input: {
+  readonly managedRepositoryOwnerToken: object;
+  readonly managedRepositoryCapability: GitoxideManagedRepositoryCapability;
+  readonly path: string;
+  readonly abortSignal?: AbortSignal;
+}): Promise<GitoxideTreeFileReadV1> {
+  const managed = requireManagedRepositoryRecord(
+    input.managedRepositoryOwnerToken,
+    input.managedRepositoryCapability,
+  );
+  const result = await readTreeFileWithGitoxideHelperInternal({
+    invocationOwnerToken: managed.invocationOwnerToken,
+    capability: managed.helperCapability,
+    repositoryPath: managed.repositoryPath,
+    acceptedCommitOid: managed.acceptedCommitOid,
+    path: input.path,
+    managedTreePolicyVersion: managed.managedTreePolicyVersion,
+    abortSignal: input.abortSignal,
+  });
+  if (
+    result.acceptedCommitOid !== managed.acceptedCommitOid ||
+    result.acceptedTreeOid !== managed.acceptedTreeOid
   ) {
     throw new GitoxideRepositoryAdmissionAuthorityError(
       'gitoxide_repository_admission_capability_invalid',

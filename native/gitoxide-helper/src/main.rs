@@ -40,6 +40,7 @@ const MAX_GITOXIDE_OBJECT_STORE_SLOTS: u16 = 1024;
 const MAX_IMPORT_FILE_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_ATTRIBUTES_FILE_BYTES: u64 = 64 * 1024;
 const MAX_GIT_ATTRIBUTES_LINE_BYTES_V2: usize = 2048;
+const MAX_TREE_FILE_BYTES: u64 = 8 * 1024 * 1024;
 const MAX_IMPORT_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 const MAX_IMPORT_FILES: u64 = 200_000;
 const MAX_COMMIT_OBJECT_BYTES: u64 = 1024 * 1024;
@@ -147,6 +148,13 @@ const HELPER_ERROR_REASONS_V1: &[&str] = &[
     "projection_unreadable",
     "unsupported_projection_entry_kind",
     "unsupported_projection_path",
+    "invalid_tree_file_path",
+    "tree_file_identity_mismatch",
+    "tree_file_invalid",
+    "tree_file_lookup_failed",
+    "tree_file_not_utf8",
+    "tree_file_size_limit_exceeded",
+    "tree_file_unavailable",
     "unsupported_source_entry_kind",
     "unsupported_source_attributes",
     "unsupported_source_path",
@@ -195,6 +203,13 @@ enum Request {
         repository_path: PathBuf,
         accepted_commit_oid: String,
         projection_path: PathBuf,
+        managed_tree_policy_version: u8,
+    },
+    ReadTreeFile {
+        protocol_version: u8,
+        repository_path: PathBuf,
+        accepted_commit_oid: String,
+        path: String,
         managed_tree_policy_version: u8,
     },
 }
@@ -284,6 +299,18 @@ enum Response<'a> {
         accepted_commit_oid: String,
         accepted_tree_oid: String,
         projection_path: PathBuf,
+        managed_tree_policy_version: u8,
+    },
+    #[serde(rename_all = "camelCase")]
+    TreeFileRead {
+        protocol_version: u8,
+        object_format: &'static str,
+        accepted_commit_oid: String,
+        accepted_tree_oid: String,
+        blob_oid: String,
+        path: String,
+        content: String,
+        bytes_read: u64,
         managed_tree_policy_version: u8,
     },
     #[serde(rename_all = "camelCase")]
@@ -384,6 +411,21 @@ fn run() -> Result<ExitCode, &'static str> {
                 repository_path,
                 accepted_commit_oid,
                 projection_path,
+                managed_tree_policy_version,
+            )
+        }
+        Request::ReadTreeFile {
+            protocol_version,
+            repository_path,
+            accepted_commit_oid,
+            path,
+            managed_tree_policy_version,
+        } => {
+            assert_protocol_version(protocol_version)?;
+            read_tree_file(
+                repository_path,
+                accepted_commit_oid,
+                path,
                 managed_tree_policy_version,
             )
         }
@@ -932,6 +974,89 @@ fn is_canonical_successor_path_v2(path: &str) -> bool {
             is_supported_source_component(component)
                 && component.len() as u64 <= policy.max_component_bytes
         })
+}
+
+fn read_tree_file(
+    repository_path: PathBuf,
+    accepted_commit_oid: String,
+    path: String,
+    managed_tree_policy_version: u8,
+) -> Result<ExitCode, &'static str> {
+    if managed_tree_policy_version != MANAGED_TREE_POLICY_VERSION {
+        return Err("unsupported_managed_tree_policy");
+    }
+    if !is_canonical_successor_path_v2(&path) {
+        return Err("invalid_tree_file_path");
+    }
+    let repository = open_repository(repository_path)?;
+    let (accepted_commit, accepted_tree) =
+        accepted_commit_identity(&repository, &accepted_commit_oid)?;
+    let components = path.split('/').collect::<Vec<_>>();
+    let mut tree_oid = accepted_tree;
+    let mut final_entry = None;
+    for (index, component) in components.iter().enumerate() {
+        let tree = load_verified_object(
+            &repository,
+            tree_oid,
+            gix::objs::Kind::Tree,
+            MANAGED_TREE_POLICY_V2.max_single_tree_object_bytes,
+            "tree_file_unavailable",
+            "tree_file_invalid",
+            "source_tree_object_limit_exceeded",
+            "source_tree_identity_mismatch",
+        )?
+        .try_into_tree()
+        .map_err(|_| "tree_file_invalid")?;
+        let entry = tree
+            .iter()
+            .find_map(|entry| match entry {
+                Ok(entry) if entry.filename() == component.as_bytes() => Some(Ok(entry)),
+                Ok(_) => None,
+                Err(_) => Some(Err("tree_file_lookup_failed")),
+            })
+            .ok_or("tree_file_unavailable")??;
+        if index + 1 == components.len() {
+            final_entry = Some((entry.mode().kind(), entry.object_id()));
+        } else if entry.mode().kind() == gix::objs::tree::EntryKind::Tree {
+            tree_oid = entry.object_id();
+        } else {
+            return Err("tree_file_invalid");
+        }
+    }
+    let (kind, blob_oid) = final_entry.ok_or("tree_file_unavailable")?;
+    if !matches!(
+        kind,
+        gix::objs::tree::EntryKind::Blob | gix::objs::tree::EntryKind::BlobExecutable
+    ) {
+        return Err("tree_file_invalid");
+    }
+    let blob = load_verified_object(
+        &repository,
+        blob_oid,
+        gix::objs::Kind::Blob,
+        MAX_TREE_FILE_BYTES,
+        "tree_file_unavailable",
+        "tree_file_invalid",
+        "tree_file_size_limit_exceeded",
+        "tree_file_identity_mismatch",
+    )?
+    .try_into_blob()
+    .map_err(|_| "tree_file_invalid")?;
+    let content = std::str::from_utf8(&blob.data)
+        .map_err(|_| "tree_file_not_utf8")?
+        .to_owned();
+    write_response(&Response::TreeFileRead {
+        protocol_version: PROTOCOL_VERSION,
+        object_format: "sha1",
+        accepted_commit_oid: accepted_commit.to_string(),
+        accepted_tree_oid: accepted_tree.to_string(),
+        blob_oid: blob_oid.to_string(),
+        path,
+        content,
+        bytes_read: blob.data.len() as u64,
+        managed_tree_policy_version: MANAGED_TREE_POLICY_VERSION,
+    });
+    Ok(ExitCode::SUCCESS)
 }
 
 #[derive(Default)]
