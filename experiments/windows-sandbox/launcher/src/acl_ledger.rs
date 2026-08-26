@@ -53,6 +53,7 @@ use crate::windows_launcher::{appcontainer_profile_name, current_user_sid_string
 
 pub(crate) const LEDGER_VERSION: u8 = 2;
 const ACL_MUTEX_TIMEOUT_MS: u32 = 30_000;
+const MAX_NON_FOLLOWING_READ_GRANTS: usize = 4_096;
 
 /// The ledger directory, the icacls grants and the AppContainer profiles are
 /// all shared across every session of the user, so the locks that arbitrate
@@ -398,11 +399,28 @@ impl Drop for LedgerLock {
 
 pub(crate) fn collect_roots(request: &LaunchRequest) -> Result<Vec<LedgerRoot>, String> {
     let mut roots = Vec::new();
-    for path in request.read_roots.iter().chain(&request.write_roots) {
-        if roots
-            .iter()
-            .any(|entry: &LedgerRoot| entry.path.eq_ignore_ascii_case(path))
+    if let Some(non_following_root) = request.non_following_read_root.as_deref() {
+        if !contains_path(&request.read_roots, non_following_root)
+            || contains_path(&request.exact_read_roots, non_following_root)
         {
+            return Err(
+                "nonFollowingReadRoot must name a declared recursive readRoot".to_owned(),
+            );
+        }
+        if !request.write_roots.is_empty() || !request.exact_write_roots.is_empty() {
+            return Err("nonFollowingReadRoot requires a read-only launch".to_owned());
+        }
+    }
+    for path in request.read_roots.iter().chain(&request.write_roots) {
+        if request
+            .non_following_read_root
+            .as_deref()
+            .is_some_and(|root| root.eq_ignore_ascii_case(path))
+        {
+            let partitioned = partition_non_following_read_root(Path::new(path))?;
+            for root in partitioned {
+                upsert_ledger_root(&mut roots, root);
+            }
             continue;
         }
         // A root that does not exist yet (e.g. the exact target of a write
@@ -439,7 +457,7 @@ pub(crate) fn collect_roots(request: &LaunchRequest) -> Result<Vec<LedgerRoot>, 
         if metadata.is_dir() && (recursive_read || recursive_write) {
             reject_aliased_entries(Path::new(path))?;
         }
-        roots.push(LedgerRoot {
+        upsert_ledger_root(&mut roots, LedgerRoot {
             path: path.clone(),
             read: contains_path(&request.read_roots, path),
             write: contains_path(&request.write_roots, path),
@@ -453,6 +471,159 @@ pub(crate) fn collect_roots(request: &LaunchRequest) -> Result<Vec<LedgerRoot>, 
 
 fn contains_path(paths: &[String], path: &str) -> bool {
     paths.iter().any(|entry| entry.eq_ignore_ascii_case(path))
+}
+
+fn upsert_ledger_root(roots: &mut Vec<LedgerRoot>, root: LedgerRoot) {
+    if let Some(existing) = roots
+        .iter_mut()
+        .find(|entry| entry.path.eq_ignore_ascii_case(&root.path))
+    {
+        existing.read |= root.read;
+        existing.write |= root.write;
+        existing.read_recursive |= root.read_recursive;
+        existing.write_recursive |= root.write_recursive;
+        return;
+    }
+    roots.push(root);
+}
+
+struct DirectoryReadPlan {
+    clean: bool,
+    roots: Vec<LedgerRoot>,
+}
+
+/// Decomposes one read-only recursive root into physical grants that let a
+/// non-following operation enumerate ordinary entries without granting or
+/// traversing nested Windows reparse points. The root itself remains strict:
+/// a reparse root is rejected instead of silently changing its meaning.
+fn partition_non_following_read_root(path: &Path) -> Result<Vec<LedgerRoot>, String> {
+    partition_non_following_read_root_with_limit(path, MAX_NON_FOLLOWING_READ_GRANTS)
+}
+
+pub(crate) fn partition_non_following_read_root_with_limit(
+    path: &Path,
+    max_grants: usize,
+) -> Result<Vec<LedgerRoot>, String> {
+    match fs::symlink_metadata(path) {
+        Ok(metadata) => {
+            if metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+                return Err(format!(
+                    "ACL root contains a reparse point: {}",
+                    path.display()
+                ));
+            }
+            if !metadata.is_dir() {
+                return Err(format!(
+                    "nonFollowingReadRoot must be a directory: {}",
+                    path.display()
+                ));
+            }
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) => {
+            return Err(format!(
+                "inspect ACL root {} failed: {error}",
+                path.display()
+            ));
+        }
+    }
+    Ok(plan_non_following_directory(path, max_grants)?.roots)
+}
+
+fn plan_non_following_directory(
+    path: &Path,
+    max_grants: usize,
+) -> Result<DirectoryReadPlan, String> {
+    let metadata = fs::symlink_metadata(path)
+        .map_err(|error| format!("inspect ACL root {} failed: {error}", path.display()))?;
+    if metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+        return Ok(DirectoryReadPlan {
+            clean: false,
+            roots: Vec::new(),
+        });
+    }
+    if !metadata.is_dir() {
+        return Err(format!(
+            "expected a directory while partitioning ACL root: {}",
+            path.display()
+        ));
+    }
+
+    let mut entries = fs::read_dir(path)
+        .map_err(|error| format!("scan ACL root {} failed: {error}", path.display()))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| format!("scan ACL root failed: {error}"))?;
+    entries.sort_by_key(|entry| entry.file_name());
+
+    let mut clean = true;
+    let mut directory_plans = Vec::new();
+    for entry in entries {
+        let child = entry.path();
+        let child_metadata = fs::symlink_metadata(&child)
+            .map_err(|error| format!("inspect ACL root {} failed: {error}", child.display()))?;
+        if child_metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+            clean = false;
+            continue;
+        }
+        if child_metadata.is_dir() {
+            let child_plan = plan_non_following_directory(&child, max_grants)?;
+            clean &= child_plan.clean;
+            directory_plans.push(child_plan);
+            continue;
+        }
+        if child_metadata.is_file() {
+            reject_multi_link_file(&child)?;
+            continue;
+        }
+        return Err(format!(
+            "ACL root contains an unsupported filesystem entry: {}",
+            child.display()
+        ));
+    }
+
+    if clean {
+        return Ok(DirectoryReadPlan {
+            clean: true,
+            roots: vec![read_root(path, true)?],
+        });
+    }
+
+    let mut roots = vec![read_root(path, false)?];
+    for child_plan in directory_plans {
+        append_partitioned_roots(&mut roots, child_plan.roots, max_grants)?;
+    }
+    Ok(DirectoryReadPlan {
+        clean: false,
+        roots,
+    })
+}
+
+fn append_partitioned_roots(
+    roots: &mut Vec<LedgerRoot>,
+    additions: Vec<LedgerRoot>,
+    max_grants: usize,
+) -> Result<(), String> {
+    if roots.len().saturating_add(additions.len()) > max_grants {
+        return Err(format!(
+            "nonFollowingReadRoot exceeds the safe limit of {max_grants} physical ACL grants"
+        ));
+    }
+    roots.extend(additions);
+    Ok(())
+}
+
+fn read_root(path: &Path, recursive: bool) -> Result<LedgerRoot, String> {
+    let path = path
+        .to_str()
+        .ok_or_else(|| format!("ACL root path is not valid Unicode: {}", path.display()))?;
+    Ok(LedgerRoot {
+        path: path.to_owned(),
+        read: true,
+        write: false,
+        read_recursive: recursive,
+        write_recursive: false,
+        backup_path: None,
+    })
 }
 
 /// Rejects reparse points and multi-link files anywhere in a recursively

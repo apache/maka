@@ -380,7 +380,7 @@ export async function executeFilesystemOperation(
       );
       const files: string[] = [];
       const limit = operation.limit ?? DEFAULT_GLOB_LIMIT;
-      for await (const file of nodeGlob(operation.pattern, { cwd: path })) {
+      for await (const file of nodeGlob(operation.pattern, { cwd: path, followSymlinks: false })) {
         files.push(typeof file === 'string' ? file : (file as { name: string }).name);
         if (files.length >= limit) break;
       }

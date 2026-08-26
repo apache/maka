@@ -89,14 +89,56 @@ mod tests {
         // existed — otherwise old manifests hit profile_digest_mismatch.
         let value = request();
         assert!(value.launch.timeout_ms.is_none());
+        assert!(value.launch.non_following_read_root.is_none());
         let serialized = serde_json::to_string(&value.launch).expect("serialize launch");
         assert!(!serialized.contains("timeoutMs"));
+        assert!(!serialized.contains("nonFollowingReadRoot"));
         let reparsed = serde_json::from_str::<super::super::protocol::LaunchRequest>(&serialized)
             .expect("reparse launch");
         assert_eq!(
             launch_digest(&value.launch).expect("digest"),
             launch_digest(&reparsed).expect("digest"),
         );
+    }
+
+    #[test]
+    fn validates_non_following_read_root_as_a_recursive_read_only_root() {
+        let root = "C:\\work\\repo".to_owned();
+        let mut value = request();
+        value.launch.read_roots = vec![root.clone()];
+        value.launch.non_following_read_root = Some(root.clone());
+        assert!(value.launch.validate().is_ok());
+
+        let mut missing = value.launch.clone();
+        missing.non_following_read_root = Some("C:\\outside".to_owned());
+        assert_eq!(
+            missing.validate().unwrap_err(),
+            "nonFollowingReadRoot must name a declared readRoot"
+        );
+
+        let mut exact = value.launch.clone();
+        exact.exact_read_roots = vec![root.clone()];
+        assert_eq!(
+            exact.validate().unwrap_err(),
+            "nonFollowingReadRoot must name a recursive readRoot"
+        );
+
+        let mut writable = value.launch.clone();
+        writable.write_roots = vec![root];
+        assert_eq!(
+            writable.validate().unwrap_err(),
+            "nonFollowingReadRoot requires a read-only launch"
+        );
+    }
+
+    #[test]
+    fn non_following_read_root_is_bound_into_the_launch_digest() {
+        let mut value = request();
+        value.launch.read_roots = vec!["C:\\work\\repo".to_owned()];
+        let original = launch_digest(&value.launch).expect("original digest");
+        value.launch.non_following_read_root = Some("C:\\work\\repo".to_owned());
+
+        assert_ne!(launch_digest(&value.launch).expect("marked digest"), original);
     }
 
     #[test]

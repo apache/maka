@@ -20,7 +20,17 @@
 import { execFile, spawn } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import { existsSync } from 'node:fs';
-import { mkdir, mkdtemp, readFile, readdir, realpath, rm, stat, writeFile } from 'node:fs/promises';
+import {
+  mkdir,
+  mkdtemp,
+  readFile,
+  readdir,
+  realpath,
+  rm,
+  stat,
+  symlink,
+  writeFile,
+} from 'node:fs/promises';
 import { homedir, tmpdir } from 'node:os';
 import { basename, dirname, join, resolve } from 'node:path';
 import { promisify } from 'node:util';
@@ -248,17 +258,25 @@ export async function verifyWindowsSandboxWorkerE2E(appDirectoryPath) {
     await verifyPackagedAdversarialMatrix(sandboxExecutable);
     console.log('[verify-windows-sandbox] packaged adversarial matrix verified');
 
-    const sourceDirectory = join(workspace, 'src');
+    const projectDirectory = join(workspace, 'junction-project');
+    const sourceDirectory = join(projectDirectory, 'src');
+    const junctionParent = join(projectDirectory, 'node_modules', '@sunrioa');
     await mkdir(sourceDirectory, { recursive: true });
+    await mkdir(junctionParent, { recursive: true });
+    await writeFile(join(projectDirectory, 'root.ts'), 'export const rootSignal = true;\n');
     await writeFile(join(sourceDirectory, 'health.ts'), 'export const healthSignal = true;\n');
+    await writeFile(join(outside, 'secret.ts'), 'export const secretSignal = true;\n');
+    await symlink(outside, join(junctionParent, 'rin-sdk'), 'junction');
     const globResult = await execute({
       kind: 'glob',
-      path: sourceDirectory,
+      path: projectDirectory,
       pattern: '**/*.ts',
     });
     assertCondition(
-      globResult.kind === 'glob' && globResult.files.length === 1,
-      'Sandboxed glob did not find the expected file.',
+      globResult.kind === 'glob' &&
+        JSON.stringify(globResult.files.map((file) => file.replaceAll('\\', '/')).sort()) ===
+          JSON.stringify(['root.ts', 'src/health.ts']),
+      'Sandboxed glob did not return exactly the safe project files beside a nested junction.',
     );
     // The sandbox preview does not expose Grep (no in-process substitute
     // preserves the ripgrep contract); the worker must fail closed.
