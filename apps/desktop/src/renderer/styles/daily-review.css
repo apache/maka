@@ -29,6 +29,13 @@
 
 .maka-daily-review-content {
   display: grid;
+  /* One column, never wider than the panel — same guard as
+     .maka-module-page-panel. Without it this grid's implicit track sizes to
+     max-content, and the active-conversations rows carry a `white-space:
+     nowrap` preview whose full width then stretched the track past the clamped
+     column, pushing each row's trailing timestamp off the plate. `minmax(0,
+     1fr)` makes the row shrink and truncate instead. */
+  grid-template-columns: minmax(0, 1fr);
   gap: var(--space-5);
 }
 

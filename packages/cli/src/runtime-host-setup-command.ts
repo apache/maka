@@ -76,7 +76,7 @@ export interface RuntimeHostSetupCliOptions {
 
 interface RuntimeHostSetupDeps {
   readonly manageService: typeof manageRuntimeHostService;
-  readonly createBackend: (serviceId: string) => RuntimeHostServiceBackend;
+  readonly createBackend: (serviceId: string, clientDataRoot: string) => RuntimeHostServiceBackend;
   readonly openDeployment: typeof openRuntimeHostManagedPackageDeployment;
   readonly prepareDeployment: typeof prepareRuntimeHostManagedPackageDeployment;
   readonly prepareCredential: typeof prepareRuntimeHostAccessCredential;
@@ -142,7 +142,7 @@ async function runRuntimeHostSetupLocked(
 ): Promise<void> {
   emit({ kind: 'progress', phase: 'checking_environment' });
   const serviceId = resolveRuntimeHostManagedServiceId(options.clientDataRoot);
-  const backend = deps.createBackend(serviceId);
+  const backend = deps.createBackend(serviceId, options.clientDataRoot);
   const common = {
     clientDataRoot: options.clientDataRoot,
     defaultRootPath: options.defaultRootPath,

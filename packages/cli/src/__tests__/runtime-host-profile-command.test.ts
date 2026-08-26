@@ -88,6 +88,34 @@ describe('Runtime Host profile CLI', () => {
         expectedRootId: ROOT_ID,
       },
     );
+    assert.deepEqual(
+      parseRuntimeHostCommand([
+        'profile',
+        'set',
+        '--id',
+        'peer-lab',
+        '--name',
+        'Peer Lab',
+        '--peer-id',
+        '12D3KooWPeer',
+        '--peer-route',
+        '/ip4/192.0.2.10/udp/4001/quic-v1',
+        '--expected-root',
+        ROOT_ID,
+      ]),
+      {
+        kind: 'runtime-host-profile-set',
+        id: 'peer-lab',
+        name: 'Peer Lab',
+        transport: {
+          kind: 'libp2p-direct',
+          peerId: '12D3KooWPeer',
+          routeHints: ['/ip4/192.0.2.10/udp/4001/quic-v1'],
+          coordinationRelays: [],
+        },
+        expectedRootId: ROOT_ID,
+      },
+    );
     assert.equal(
       parseRuntimeHostCommand([
         'profile',

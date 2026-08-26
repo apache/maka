@@ -18,6 +18,7 @@
  */
 
 import { z } from 'zod';
+import { PROJECT_DIRECTORY_MAX_ROOTS } from '../protocol/project-catalog.js';
 import {
   compareProductReleaseVersions,
   isProductReleaseVersion,
@@ -30,6 +31,8 @@ export const RUNTIME_HOST_SERVICE_LOG_MAX_BYTES = 48 * 1024;
 export const RUNTIME_HOST_SERVICE_ERROR_CODE_MAX_BYTES = 128;
 export const RUNTIME_HOST_SERVICE_ERROR_MESSAGE_MAX_BYTES = 2 * 1024;
 export const RUNTIME_HOST_OPERATOR_ACCESS_MANAGEMENT_CAPABILITY = 'access-management-v1';
+export const RUNTIME_HOST_OPERATOR_PROJECT_DIRECTORY_CONFIGURATION_REQUEST_ENV =
+  'MAKA_RUNTIME_HOST_OPERATOR_PROJECT_DIRECTORY_CONFIGURATION_REQUEST';
 export const RUNTIME_HOST_OPERATOR_PROCESS_LIFETIME_LOCK_CAPABILITY = 'process-lifetime-lock-v1';
 export const RUNTIME_HOST_OPERATOR_UPDATE_SCHEDULER_CAPABILITY = 'update-scheduler-v1';
 export const RUNTIME_HOST_OPERATOR_CAPABILITY_REQUEST_ENV =
@@ -40,6 +43,7 @@ const PATH_MAX_BYTES = 4 * 1024;
 const FIELD_MAX_BYTES = 512;
 const SERVICE_ACTIONS = [
   'install',
+  'configure',
   'status',
   'start',
   'stop',
@@ -63,6 +67,7 @@ const NON_RETIRE_SERVICE_ACTIONS = [
 ] as const;
 const NON_UPDATE_SERVICE_ACTIONS = [
   'install',
+  'configure',
   'status',
   'start',
   'stop',
@@ -227,6 +232,10 @@ const SERVICE_SUMMARY_SCHEMA = z
     lastExitCode: z.number().int().nonnegative().nullable(),
     installedVersion: boundedString(FIELD_MAX_BYTES).nullable(),
     stateRoot: boundedString(PATH_MAX_BYTES).optional(),
+    configurationFingerprint: z
+      .string()
+      .regex(/^sha256:[a-f0-9]{64}$/u)
+      .optional(),
     projectDirectoryRoots: z
       .array(
         z
@@ -236,7 +245,7 @@ const SERVICE_SUMMARY_SCHEMA = z
           })
           .strict(),
       )
-      .max(64),
+      .max(PROJECT_DIRECTORY_MAX_ROOTS),
   })
   .strict();
 const INSTALLED_SERVICE_SUMMARY_SCHEMA = SERVICE_SUMMARY_SCHEMA.extend({
@@ -361,6 +370,15 @@ const SERVICE_MANAGEMENT_FRAME_SCHEMA = z.union([
         });
       }
     }),
+  z
+    .object({
+      ...SERVICE_RESULT_COMMON,
+      action: z.literal('configure'),
+      configuration: z
+        .object({ kind: z.enum(['unchanged', 'configured', 'active_tasks']) })
+        .strict(),
+    })
+    .strict(),
   z
     .object({
       ...SERVICE_RESULT_COMMON,

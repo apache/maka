@@ -1895,6 +1895,15 @@ function normalizeRootExecutionDescriptor(value: unknown): RootExecutionDescript
       ...(value.maxSteps !== undefined ? { maxSteps: value.maxSteps } : {}),
     });
   }
+  if (value.kind === 'workhub_coordination') {
+    if (!hasExactKeys(value, ['kind', 'inputDigest']) || !isSha256Digest(value.inputDigest)) {
+      throw new Error('Invalid root execution descriptor');
+    }
+    return Object.freeze({
+      kind: 'workhub_coordination',
+      inputDigest: value.inputDigest,
+    });
+  }
   if (value.kind === 'regenerate') {
     if (
       !hasExactKeys(value, ['kind', 'sourceTurnId']) ||

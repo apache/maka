@@ -398,6 +398,7 @@ export interface DesktopRuntimeHostOnboardingInput {
   readonly name?: string;
   readonly destination: string;
   readonly sshPort?: number;
+  readonly projectDirectoryRoots?: readonly { readonly label: string; readonly path: string }[];
 }
 
 export type DesktopRuntimeHostOnboardingPhase =
@@ -436,14 +437,15 @@ export type DesktopRuntimeHostManagementResult = Extract<
   RuntimeHostServiceManagementFrame,
   { kind: 'result' }
 > & {
-  readonly action: DesktopRuntimeHostManagementAction | 'update';
+  readonly action: DesktopRuntimeHostManagementAction | 'configure' | 'update';
   readonly accessManagementAvailable: boolean;
+  readonly reconnectError?: { readonly code: string; readonly message: string };
 };
 
 export type DesktopRuntimeHostManagementResponse =
   | DesktopRuntimeHostManagementResult
   | (Extract<RuntimeHostServiceManagementFrame, { kind: 'error' }> & {
-      readonly action: DesktopRuntimeHostManagementAction | 'update';
+      readonly action: DesktopRuntimeHostManagementAction | 'configure' | 'update';
     })
   | {
       readonly kind: 'uninstalled';
@@ -489,6 +491,7 @@ export type DesktopRuntimeHostUpdateReconciliationResponse =
       readonly updatePolicy: DesktopRuntimeHostUpdatePolicySnapshot;
       readonly reconciliation: DesktopRuntimeHostUpdateReconciliationOutcome;
       readonly service?: NonNullable<RuntimeHostUpdateReconciliationResult['service']>;
+      readonly reconnectError?: { readonly code: string; readonly message: string };
     };
 
 export interface DesktopRuntimeHostAccessCredential {
@@ -618,6 +621,12 @@ export interface MakaBridge {
     ): Promise<DesktopRuntimeHostManagementResponse>;
     update(
       profileId: string,
+      allowInterruptActiveTasks: boolean,
+    ): Promise<DesktopRuntimeHostManagementResponse>;
+    configureProjectDirectories(
+      profileId: string,
+      roots: readonly { readonly label: string; readonly path: string }[],
+      expectedConfigFingerprint: string,
       allowInterruptActiveTasks: boolean,
     ): Promise<DesktopRuntimeHostManagementResponse>;
     subscribeProgress(
@@ -760,6 +769,25 @@ export interface MakaBridge {
   workHub: {
     /** Resolve the active Runtime Host's stable coordination conversation. */
     resolveCoordinationSession(): Promise<string>;
+    /** Answer an ordinary question inside the persistent Coordination Session. */
+    answer(
+      coordinationSessionId: string,
+      input: { turnId: string; text: string },
+    ): Promise<{ turnId: string }>;
+    /** Persist one deterministic clarification or routing summary. */
+    record(
+      coordinationSessionId: string,
+      input: { turnId: string; userText: string; assistantText: string },
+    ): Promise<{ turnId: string }>;
+    /** Read one bounded, Host-issued candidate set for a coordination action. */
+    candidates(
+      coordinationSessionId: string,
+    ): Promise<OperationOutput<'workhub.coordination.candidates'>>;
+    /** Submit a typed proposal; trusted creation context is added outside the renderer. */
+    act(
+      coordinationSessionId: string,
+      input: Omit<OperationInput<'workhub.coordination.act'>, 'create'>,
+    ): Promise<OperationOutput<'workhub.coordination.act'>>;
     /** Create an ordinary Session on the exact Host owning the resolved conversation. */
     createSession(
       coordinationSessionId: string,
@@ -1426,6 +1454,8 @@ export interface MakaBridge {
   };
   diagnostics: {
     copyReport(input: DesktopDiagnosticInput): Promise<void>;
+    takePreviousMainProcessInterruption(): Promise<boolean>;
+    copyPreviousMainProcessInterruption(): Promise<void>;
   };
   workspace: {
     searchFiles(

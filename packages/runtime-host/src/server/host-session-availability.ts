@@ -18,7 +18,13 @@
  */
 
 import type { RootExecutionDescriptor } from '@maka/core/agent-run';
-import { isWorkHubCoordinationSessionTarget, type SessionHeader } from '@maka/core/session';
+import {
+  isWorkHubCoordinationSession,
+  isWorkHubCoordinationSessionId,
+  isWorkHubCoordinationSessionTarget,
+  type SessionHeader,
+  type SessionToolProfile,
+} from '@maka/core/session';
 
 const WORKTREE_CHILD_UNAVAILABLE_REASON =
   'Worktree child Sessions must be continued through their parent agent.';
@@ -27,6 +33,8 @@ const CHILD_CONTINUATION_UNAVAILABLE_REASON =
 const IMPORT_STAGING_UNAVAILABLE_REASON = 'Imported Session history is still being prepared.';
 export const WORKHUB_COORDINATION_EXECUTION_UNAVAILABLE_REASON =
   'WorkHub Coordination Session execution requires WorkHub authority';
+export const WORKHUB_COORDINATION_TARGET_UNAVAILABLE_REASON =
+  'WorkHub Coordination execution requires the reserved Coordination Session';
 
 export function runtimeHostExternalTurnUnavailableReason(
   header: Pick<
@@ -53,11 +61,30 @@ export function runtimeHostExecutionUnavailableReason(
   header: Pick<
     SessionHeader,
     'id' | 'role' | 'collaborationMode' | 'subagentWorkspace' | 'transcriptLedgerVersion'
-  >,
+  > & {
+    readonly toolProfile?: SessionToolProfile;
+    readonly permissionMode?: SessionHeader['permissionMode'];
+    readonly orchestrationMode?: SessionHeader['orchestrationMode'];
+  },
   execution: RootExecutionDescriptor,
 ): string | undefined {
+  const coordinationTarget = isWorkHubCoordinationSessionTarget(header);
+  const coordinationIdentity =
+    isWorkHubCoordinationSessionId(header.id) && isWorkHubCoordinationSession(header);
   return (
-    (isWorkHubCoordinationSessionTarget(header)
+    (coordinationTarget && execution.kind !== 'workhub_coordination'
+      ? WORKHUB_COORDINATION_EXECUTION_UNAVAILABLE_REASON
+      : undefined) ??
+    (execution.kind === 'workhub_coordination' && !coordinationIdentity
+      ? WORKHUB_COORDINATION_TARGET_UNAVAILABLE_REASON
+      : undefined) ??
+    (execution.kind === 'workhub_coordination' && header.toolProfile !== 'workhub-coordination-v1'
+      ? WORKHUB_COORDINATION_EXECUTION_UNAVAILABLE_REASON
+      : undefined) ??
+    (execution.kind === 'workhub_coordination' &&
+    (header.permissionMode !== 'explore' ||
+      (header.collaborationMode ?? 'agent') !== 'agent' ||
+      (header.orchestrationMode ?? 'default') !== 'default')
       ? WORKHUB_COORDINATION_EXECUTION_UNAVAILABLE_REASON
       : undefined) ??
     (header.transcriptLedgerVersion === 0 ? IMPORT_STAGING_UNAVAILABLE_REASON : undefined) ??

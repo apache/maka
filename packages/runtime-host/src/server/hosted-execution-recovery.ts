@@ -353,6 +353,8 @@ function recoveryExecutionContract(execution: RootExecutionDescriptor): Recovery
   switch (execution.kind) {
     case 'external_message':
       return contract(true, true, 'root_replay');
+    case 'workhub_coordination':
+      return contract(false, true, 'root_replay');
     case 'regenerate':
       return contract(false, true, 'root_replay');
     case 'context_compact':

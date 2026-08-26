@@ -69,9 +69,9 @@ const OWNED_STATE_SCHEMA = z
   })
   .strict();
 
-const TRANSFERRING_STATE_SCHEMA = z
+const HANDOFF_STATE_SCHEMA = z
   .object({
-    kind: z.literal('transferring'),
+    kind: z.literal('handoff'),
     transactionId: boundedText(512),
     from: OWNER_SCHEMA,
     to: OWNER_SCHEMA,
@@ -86,7 +86,7 @@ const RECORD_SCHEMA = z
     schemaVersion: z.literal(RECORD_SCHEMA_VERSION),
     rootId: z.string().regex(ROOT_ID),
     revision: z.string().regex(REVISION),
-    state: z.discriminatedUnion('kind', [OWNED_STATE_SCHEMA, TRANSFERRING_STATE_SCHEMA]),
+    state: z.discriminatedUnion('kind', [OWNED_STATE_SCHEMA, HANDOFF_STATE_SCHEMA]),
   })
   .strict();
 
@@ -100,15 +100,7 @@ const TRANSITION_SCHEMA = z.discriminatedUnion('kind', [
     .strict(),
   z
     .object({
-      kind: z.literal('select'),
-      expectedRevision: z.string().regex(REVISION),
-      owner: OWNER_SCHEMA,
-      selected: DEPLOYMENT_IDENTITY_SCHEMA,
-    })
-    .strict(),
-  z
-    .object({
-      kind: z.literal('begin_transfer'),
+      kind: z.literal('begin_handoff'),
       expectedRevision: z.string().regex(REVISION),
       transactionId: boundedText(512),
       from: OWNER_SCHEMA,
@@ -118,7 +110,7 @@ const TRANSITION_SCHEMA = z.discriminatedUnion('kind', [
     .strict(),
   z
     .object({
-      kind: z.literal('commit_transfer'),
+      kind: z.literal('commit_handoff'),
       expectedRevision: z.string().regex(REVISION),
       transactionId: boundedText(512),
       to: OWNER_SCHEMA,
@@ -127,7 +119,7 @@ const TRANSITION_SCHEMA = z.discriminatedUnion('kind', [
     .strict(),
   z
     .object({
-      kind: z.literal('rollback_transfer'),
+      kind: z.literal('rollback_handoff'),
       expectedRevision: z.string().regex(REVISION),
       transactionId: boundedText(512),
       from: OWNER_SCHEMA,
@@ -156,7 +148,7 @@ export type LocalHostDeploymentState =
       readonly previous?: RuntimeHostDeploymentIdentity;
     }
   | {
-      readonly kind: 'transferring';
+      readonly kind: 'handoff';
       readonly transactionId: string;
       readonly from: RuntimeHostInstallationOwner;
       readonly to: RuntimeHostInstallationOwner;
@@ -180,13 +172,7 @@ export type LocalHostDeploymentTransition =
       readonly selected: RuntimeHostDeploymentIdentity;
     }
   | {
-      readonly kind: 'select';
-      readonly expectedRevision: string;
-      readonly owner: RuntimeHostInstallationOwner;
-      readonly selected: RuntimeHostDeploymentIdentity;
-    }
-  | {
-      readonly kind: 'begin_transfer';
+      readonly kind: 'begin_handoff';
       readonly expectedRevision: string;
       readonly transactionId: string;
       readonly from: RuntimeHostInstallationOwner;
@@ -194,14 +180,14 @@ export type LocalHostDeploymentTransition =
       readonly target: RuntimeHostDeploymentIdentity;
     }
   | {
-      readonly kind: 'commit_transfer';
+      readonly kind: 'commit_handoff';
       readonly expectedRevision: string;
       readonly transactionId: string;
       readonly to: RuntimeHostInstallationOwner;
       readonly target: RuntimeHostDeploymentIdentity;
     }
   | {
-      readonly kind: 'rollback_transfer';
+      readonly kind: 'rollback_handoff';
       readonly expectedRevision: string;
       readonly transactionId: string;
       readonly from: RuntimeHostInstallationOwner;
@@ -218,8 +204,8 @@ export type LocalHostDeploymentTransitionRejection =
   | 'not_owned'
   | 'owner_changed'
   | 'revision_changed'
-  | 'transfer_in_progress'
-  | 'transfer_changed';
+  | 'handoff_in_progress'
+  | 'handoff_changed';
 
 export type LocalHostDeploymentTransitionResult =
   | {
@@ -401,28 +387,16 @@ function reduceTransition(
         return unchanged(current);
       }
       return rejected(
-        current.state.kind === 'transferring' ? 'transfer_in_progress' : 'owner_exists',
+        current.state.kind === 'handoff' ? 'handoff_in_progress' : 'owner_exists',
         current,
       );
     }
-    case 'select': {
+    case 'begin_handoff': {
       if (!current) return rejected('not_owned', current);
-      if (current.state.kind === 'transferring') return rejected('transfer_in_progress', current);
-      if (!sameOwner(current.state.owner, transition.owner))
-        return rejected('owner_changed', current);
-      if (sameDeployment(current.state.selected, transition.selected)) return unchanged(current);
-      if (current.revision !== transition.expectedRevision)
-        return rejected('revision_changed', current);
-      return applied(
-        record(rootId, owned(transition.owner, transition.selected, current.state.selected)),
-      );
-    }
-    case 'begin_transfer': {
-      if (!current) return rejected('not_owned', current);
-      if (current.state.kind === 'transferring') {
-        return sameTransfer(current.state, transition)
+      if (current.state.kind === 'handoff') {
+        return sameHandoff(current.state, transition)
           ? unchanged(current)
-          : rejected('transfer_changed', current);
+          : rejected('handoff_changed', current);
       }
       if (!sameOwner(current.state.owner, transition.from))
         return rejected('owner_changed', current);
@@ -430,7 +404,7 @@ function reduceTransition(
         return rejected('revision_changed', current);
       return applied(
         record(rootId, {
-          kind: 'transferring',
+          kind: 'handoff',
           transactionId: transition.transactionId,
           from: transition.from,
           to: transition.to,
@@ -440,36 +414,36 @@ function reduceTransition(
         }),
       );
     }
-    case 'commit_transfer': {
+    case 'commit_handoff': {
       if (!current) return rejected('not_owned', current);
       if (current.state.kind === 'owned') {
         return sameOwner(current.state.owner, transition.to) &&
           sameDeployment(current.state.selected, transition.target)
           ? unchanged(current)
-          : rejected('transfer_changed', current);
+          : rejected('handoff_changed', current);
       }
-      if (!matchesTransferTarget(current.state, transition))
-        return rejected('transfer_changed', current);
+      if (!matchesHandoffTarget(current.state, transition))
+        return rejected('handoff_changed', current);
       if (current.revision !== transition.expectedRevision)
         return rejected('revision_changed', current);
       return applied(
         record(rootId, owned(transition.to, transition.target, current.state.selected)),
       );
     }
-    case 'rollback_transfer': {
+    case 'rollback_handoff': {
       if (!current) return rejected('not_owned', current);
       if (current.state.kind === 'owned') {
         return sameOwner(current.state.owner, transition.from) &&
           sameDeployment(current.state.selected, transition.selected)
           ? unchanged(current)
-          : rejected('transfer_changed', current);
+          : rejected('handoff_changed', current);
       }
       if (
         current.state.transactionId !== transition.transactionId ||
         !sameOwner(current.state.from, transition.from) ||
         !sameDeployment(current.state.selected, transition.selected)
       ) {
-        return rejected('transfer_changed', current);
+        return rejected('handoff_changed', current);
       }
       if (current.revision !== transition.expectedRevision)
         return rejected('revision_changed', current);
@@ -479,7 +453,7 @@ function reduceTransition(
     }
     case 'release': {
       if (!current) return unchanged(undefined);
-      if (current.state.kind === 'transferring') return rejected('transfer_in_progress', current);
+      if (current.state.kind === 'handoff') return rejected('handoff_in_progress', current);
       if (!sameOwner(current.state.owner, transition.owner))
         return rejected('owner_changed', current);
       if (current.revision !== transition.expectedRevision)
@@ -511,9 +485,9 @@ function owned(
   };
 }
 
-function sameTransfer(
-  current: Extract<LocalHostDeploymentState, { kind: 'transferring' }>,
-  transition: Extract<LocalHostDeploymentTransition, { kind: 'begin_transfer' }>,
+function sameHandoff(
+  current: Extract<LocalHostDeploymentState, { kind: 'handoff' }>,
+  transition: Extract<LocalHostDeploymentTransition, { kind: 'begin_handoff' }>,
 ): boolean {
   return (
     current.transactionId === transition.transactionId &&
@@ -523,9 +497,9 @@ function sameTransfer(
   );
 }
 
-function matchesTransferTarget(
-  current: Extract<LocalHostDeploymentState, { kind: 'transferring' }>,
-  transition: Extract<LocalHostDeploymentTransition, { kind: 'commit_transfer' }>,
+function matchesHandoffTarget(
+  current: Extract<LocalHostDeploymentState, { kind: 'handoff' }>,
+  transition: Extract<LocalHostDeploymentTransition, { kind: 'commit_handoff' }>,
 ): boolean {
   return (
     current.transactionId === transition.transactionId &&
@@ -580,11 +554,7 @@ function assertRootId(rootId: string): void {
 
 function parseTransition(transition: LocalHostDeploymentTransition): LocalHostDeploymentTransition {
   try {
-    const parsed = TRANSITION_SCHEMA.parse(transition) as LocalHostDeploymentTransition;
-    if (parsed.kind === 'begin_transfer' && sameOwner(parsed.from, parsed.to)) {
-      throw new Error('Transfer owners must differ');
-    }
-    return parsed;
+    return TRANSITION_SCHEMA.parse(transition) as LocalHostDeploymentTransition;
   } catch (error) {
     if (error instanceof LocalHostDeploymentAuthorityError) throw error;
     throw new LocalHostDeploymentAuthorityError(

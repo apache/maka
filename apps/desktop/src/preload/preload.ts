@@ -79,6 +79,10 @@ import {
   type DesktopTranscriptHandle,
   type DesktopTranscriptOpenResult,
 } from './transcript-contract.js';
+import {
+  adoptTranscriptIdentity,
+  type DesktopTranscriptIdentity,
+} from './transcript-identity.js';
 import type {
   DesktopDiagnosticInput,
   DesktopErrorDiagnosticWireInput,
@@ -243,6 +247,7 @@ const runtimeHostMetadata = new Map<
   { readonly profileId: string; readonly profileName: string; readonly profileKind: 'local' | 'remote' }
 >();
 const newTaskChangeListeners = new Set<() => void>();
+let previousMainProcessInterruptionRead: Promise<boolean> | undefined;
 
 type RuntimeHostProfileWireEvent = DesktopRuntimeHostProfileChangedEvent;
 
@@ -1261,6 +1266,20 @@ const makaBridge = {
         allowInterruptActiveTasks,
       );
     },
+    configureProjectDirectories(
+      profileId: string,
+      roots: readonly { readonly label: string; readonly path: string }[],
+      expectedConfigFingerprint: string,
+      allowInterruptActiveTasks: boolean,
+    ): Promise<DesktopRuntimeHostManagementResponse> {
+      return ipcRenderer.invoke(
+        'runtime-host-management:configure-project-directories',
+        profileId,
+        roots,
+        expectedConfigFingerprint,
+        allowInterruptActiveTasks,
+      );
+    },
     subscribeProgress(handler: (progress: DesktopRuntimeHostManagementProgress) => void) {
       const listener = (
         _event: Electron.IpcRendererEvent,
@@ -1535,6 +1554,67 @@ const makaBridge = {
         activeRuntimeHostRef,
         (scope) => ipcRenderer.invoke('workhub:resolveCoordinationSession', scope),
       );
+    },
+    async answer(
+      coordinationSessionId: string,
+      input: { turnId: string; text: string },
+    ): Promise<{ turnId: string }> {
+      const scope = await resolveDesktopWorkHubCoordinationCreateScope(
+        coordinationSessionId,
+        runtimeHostSessionRef,
+      );
+      return ipcRenderer.invoke('workhub:answer', scope, input) as Promise<{ turnId: string }>;
+    },
+    async record(
+      coordinationSessionId: string,
+      input: { turnId: string; userText: string; assistantText: string },
+    ): Promise<{ turnId: string }> {
+      const scope = await resolveDesktopWorkHubCoordinationCreateScope(
+        coordinationSessionId,
+        runtimeHostSessionRef,
+      );
+      return ipcRenderer.invoke('workhub:record', scope, input) as Promise<{ turnId: string }>;
+    },
+    async candidates(
+      coordinationSessionId: string,
+    ): Promise<OperationOutput<'workhub.coordination.candidates'>> {
+      const scope = await resolveDesktopWorkHubCoordinationCreateScope(
+        coordinationSessionId,
+        runtimeHostSessionRef,
+      );
+      const result = await ipcRenderer.invoke(
+        'workhub:candidates',
+        scope,
+      ) as OperationOutput<'workhub.coordination.candidates'>;
+      return {
+        ...result,
+        candidates: result.candidates.map((candidate) => ({
+          ...candidate,
+          sessionId: desktopSessionKey({ hostId: scope.hostId, sessionId: candidate.sessionId }),
+        })),
+      };
+    },
+    async act(
+      coordinationSessionId: string,
+      input: Omit<OperationInput<'workhub.coordination.act'>, 'create'>,
+    ): Promise<OperationOutput<'workhub.coordination.act'>> {
+      const scope = await resolveDesktopWorkHubCoordinationCreateScope(
+        coordinationSessionId,
+        runtimeHostSessionRef,
+      );
+      const result = await ipcRenderer.invoke(
+        'workhub:act',
+        scope,
+        input,
+      ) as OperationOutput<'workhub.coordination.act'>;
+      if (result.disposition === 'answer_here' || result.disposition === 'clarify') return result;
+      return {
+        ...result,
+        targetSessionId: desktopSessionKey({
+          hostId: scope.hostId,
+          sessionId: result.targetSessionId,
+        }),
+      };
     },
     async createSession(
       coordinationSessionId: string,
@@ -1960,7 +2040,7 @@ const makaBridge = {
     ): Promise<DesktopTranscriptHandle> {
       const consumerId = crypto.randomUUID();
       const channel = `sessions:transcript:${consumerId}`;
-      let generation: string | undefined;
+      let identity: DesktopTranscriptIdentity | undefined;
       let closed = false;
       let requestClose = () => {};
       let consumerScope: DesktopTargetScope | undefined;
@@ -1979,11 +2059,12 @@ const makaBridge = {
             host.targetEpoch !== consumerScope.targetEpoch
           ) return;
           batch = assertDesktopTranscriptBatch(value);
-          if (batch.reset || generation === undefined) {
-            generation = batch.generation;
+          const adopted = adoptTranscriptIdentity(identity, batch);
+          if (adopted !== identity) {
+            identity = adopted;
             consumerScope = host;
           }
-          if (batch.generation === generation) handler(batch);
+          if (identity !== undefined && batch.generation === identity.generation) handler(batch);
         } catch (error) {
           requestClose();
           throw error;
@@ -2030,18 +2111,24 @@ const makaBridge = {
         throw error;
       }
       if (closed) throw new Error('Desktop transcript open was cancelled');
-      generation ??= opened.generation;
+      identity ??= { generation: opened.generation, hostEpoch: opened.hostEpoch };
       const range = (
         operation: 'sessions:transcript:load-before' | 'sessions:transcript:load-around',
         anchorSequence: number | null,
         maxBytes = DESKTOP_TRANSCRIPT_FRAGMENT_MAX_BYTES,
-      ): Promise<void> =>
-        ipcRenderer.invoke(operation, consumerScope, {
+      ): Promise<void> => {
+        const currentIdentity = identity;
+        if (!currentIdentity) {
+          throw new Error('Desktop transcript identity is unavailable');
+        }
+        return ipcRenderer.invoke(operation, consumerScope, {
           consumerId,
-          generation,
+          sessionId: opened.sessionId,
+          hostEpoch: currentIdentity.hostEpoch,
           anchorSequence,
           maxBytes,
         }) as Promise<void>;
+      };
       return {
         ...opened,
         sessionId,
@@ -2990,6 +3077,15 @@ const makaBridge = {
     },
   },
   diagnostics: {
+    takePreviousMainProcessInterruption(): Promise<boolean> {
+      previousMainProcessInterruptionRead ??= ipcRenderer.invoke(
+        'diagnostics:takePreviousMainProcessInterruption',
+      ) as Promise<boolean>;
+      return previousMainProcessInterruptionRead;
+    },
+    copyPreviousMainProcessInterruption(): Promise<void> {
+      return ipcRenderer.invoke('diagnostics:copyPreviousMainProcessInterruption');
+    },
     async copyReport(input: DesktopDiagnosticInput): Promise<void> {
       const rendererContext = {
         rendererUserAgent: navigator.userAgent,

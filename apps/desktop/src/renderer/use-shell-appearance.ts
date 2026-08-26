@@ -59,6 +59,7 @@ export function useShellAppearance({
   const [themePalette, setThemePalette] = useState<ThemePalette>('default');
   const [uiLocaleUpdateGate] = useState(createUiLocaleUpdateGate);
   const [userLabel, setUserLabel] = useState<string>('');
+  const [appearanceHydrated, setAppearanceHydrated] = useState(false);
   // undefined = the user expressed no preference, so each model uses its own.
   const [defaultThinkingLevel, setDefaultThinkingLevel] = useState<ThinkingLevel | undefined>(undefined);
 
@@ -102,6 +103,7 @@ export function useShellAppearance({
         ),
       );
     }
+    setAppearanceHydrated(true);
 
     const runtimeHostResult = await runtimeHostHydration;
     if (runtimeHostResult.ok) {
@@ -117,6 +119,7 @@ export function useShellAppearance({
     themePalette,
     setThemePalette,
     uiLocaleUpdateGate,
+    appearanceHydrated,
     userLabel,
     setUserLabel,
     defaultThinkingLevel,

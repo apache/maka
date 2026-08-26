@@ -1087,7 +1087,12 @@ function rewriteRuntimeEventReferences(
         : event.content;
   const refs = event.refs
     ? (() => {
-        const { operationId: _operationId, traceEventId: _traceEventId, ...preserved } = event.refs;
+        const {
+          operationId: _operationId,
+          parentOperationId: _parentOperationId,
+          traceEventId: _traceEventId,
+          ...preserved
+        } = event.refs;
         const traceEventId = event.refs.traceEventId
           ? references.agentRunEventIds.get(event.refs.traceEventId)
           : undefined;
@@ -1098,6 +1103,15 @@ function rewriteRuntimeEventReferences(
             ? {
                 operationId: rewriteOwnedId(
                   event.refs.operationId,
+                  references.operationIds,
+                  'tool operation',
+                ),
+              }
+            : {}),
+          ...(event.refs.parentOperationId
+            ? {
+                parentOperationId: rewriteOwnedId(
+                  event.refs.parentOperationId,
                   references.operationIds,
                   'tool operation',
                 ),

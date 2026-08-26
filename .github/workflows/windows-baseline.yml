@@ -149,7 +149,7 @@ jobs:
 
       # Full packages/storage test:dist is ~10 minutes on windows-latest and
       # mostly duplicates the Linux unit lane. Baseline keeps process/path/
-      # lock-sensitive gates here. Release-blocking crash evidence belongs to
+      # lock-sensitive gates here. Crash and owner-death evidence belongs to
       # windows-recovery.yml, so this diagnostic lane does not duplicate it.
       # Bump concurrency carefully — several suites spawn child processes and
       # fight for disk under high fan-out.

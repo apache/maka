@@ -309,7 +309,7 @@ export const makaTheme = {
         "color": "#171717"
       },
       "variant:error": {
-        "backgroundColor": "light-dark(#e33f4a, #ff705d)",
+        "backgroundColor": "light-dark(#c9303a, #ff705d)",
         "color": "light-dark(#ffffff, #171717)"
       },
       "variant:red": {
@@ -361,7 +361,7 @@ export const makaTheme = {
         "backgroundColor": "#ffce2f"
       },
       "variant:error": {
-        "backgroundColor": "light-dark(#e33f4a, #ff705d)"
+        "backgroundColor": "light-dark(#c9303a, #ff705d)"
       },
       "variant:accent": {
         "backgroundColor": "light-dark(#0074e2, #6d9cfe)"
@@ -409,7 +409,7 @@ export const makaTheme = {
         "--color-warning": "#ffce2f"
       },
       "variant:error": {
-        "--color-error": "#e33f4a"
+        "--color-error": "#c9303a"
       }
     },
     "card": {

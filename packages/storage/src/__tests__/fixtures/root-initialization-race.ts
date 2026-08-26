@@ -18,8 +18,7 @@
  */
 
 import fs from 'node:fs';
-import { syncBuiltinESMExports } from 'node:module';
-import { join } from 'node:path';
+import { basename } from 'node:path';
 
 const [rootArgument, markerFile] = process.argv.slice(2);
 if (!rootArgument || !markerFile || !process.send) {
@@ -27,16 +26,18 @@ if (!rootArgument || !markerFile || !process.send) {
 }
 
 const root = fs.realpathSync(rootArgument);
-const markerTempPrefix = join(root, `${markerFile}.`);
+const markerTempPrefix = `${markerFile}.`;
 const originalOpen = fs.promises.open;
 let intercepted = false;
 
 fs.promises.open = (async (path, flags, mode) => {
+  // This child initializes one root. Match its unique marker basename so the
+  // cut does not depend on Windows long/short, namespaced, or case spelling.
   if (
     !intercepted &&
     typeof path === 'string' &&
-    path.startsWith(markerTempPrefix) &&
-    path.endsWith('.tmp')
+    basename(path).startsWith(markerTempPrefix) &&
+    basename(path).endsWith('.tmp')
   ) {
     intercepted = true;
     await send({ type: 'marker_open_pending' });
@@ -44,8 +45,9 @@ fs.promises.open = (async (path, flags, mode) => {
   }
   return originalOpen(path, flags, mode);
 }) as typeof fs.promises.open;
-syncBuiltinESMExports();
 
+// Import after the interposition: marker-file captures the intrinsic at module
+// evaluation, while production code must ignore later global mutations.
 const { resolveStorageRoot, StorageRootAuthorityError } = await import('../../root-authority.js');
 
 const parentDisconnected = new Promise<void>((resolvePromise) =>

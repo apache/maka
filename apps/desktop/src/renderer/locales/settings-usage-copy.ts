@@ -34,7 +34,7 @@ export type UsageSettingsCopy = {
   tables: {
     providersAria: string; modelsAria: string; toolsAria: string; pricingAria: string; requestsAria: string;
     providerHeaders: string[]; modelHeaders: string[]; toolHeaders: string[]; pricingHeaders: string[]; requestHeaders: string[];
-    noPricing: string; modelKind: string; toolKind: string; openSession(label: string): string; success: string; error: string; aborted: string;
+    noPricing: string; modelKind: string; toolKind: string; openSession(label: string): string; untitledSession: string; success: string; error: string; aborted: string;
     notReported: string; unpriced: string; notRecorded: string; notApplicable: string; partial(value: string | number): string;
     providerEmptyTitle: string; providerEmptyBody: string; modelEmptyTitle: string; modelEmptyBody: string;
     toolEmptyTitle: string; toolEmptyBody: string; pricingEmptyBody: string;
@@ -72,8 +72,8 @@ const SETTINGS_USAGE_COPY = {
     tables: {
       providersAria: '使用统计供应商统计表', modelsAria: '使用统计模型统计表', toolsAria: '使用统计工具统计表', pricingAria: '使用统计定价配置表', requestsAria: '使用统计请求日志表',
       providerHeaders: ['供应商', '请求', 'Token', '费用'], modelHeaders: ['模型', '请求', 'Token', '费用'], toolHeaders: ['工具', '调用', '成功', '错误', '已中断', '平均耗时'],
-      pricingHeaders: ['供应商', '模型', '输入 / 1M', '输出 / 1M'], requestHeaders: ['时间', '类型', '对象', '会话', 'Token', '费用', '延迟', '状态'],
-      noPricing: '暂无定价覆盖配置', modelKind: '模型', toolKind: '工具', openSession: (label) => `打开 ${label}`, success: '成功', error: '错误', aborted: '已中断',
+      pricingHeaders: ['供应商', '模型', '输入 / 1M', '输出 / 1M'], requestHeaders: ['时间', '类型', '对象', '任务', 'Token', '费用', '延迟', '状态'],
+      noPricing: '暂无定价覆盖配置', modelKind: '模型', toolKind: '工具', openSession: (label) => `打开会话「${label}」`, untitledSession: '未命名会话', success: '成功', error: '错误', aborted: '已中断',
       notReported: '未上报', unpriced: '未定价', notRecorded: '未记录', notApplicable: '—', partial: (value) => `${value}（部分）`,
       providerEmptyTitle: '暂无供应商用量', providerEmptyBody: '完成一次模型请求后，这里会按供应商聚合请求数、Token 与费用。',
       modelEmptyTitle: '暂无模型用量', modelEmptyBody: '完成一次模型请求后，这里会按模型聚合请求数、Token 与费用。',
@@ -111,8 +111,8 @@ const SETTINGS_USAGE_COPY = {
     tables: {
       providersAria: 'Usage by provider', modelsAria: 'Usage by model', toolsAria: 'Usage by tool', pricingAria: 'Usage pricing configuration', requestsAria: 'Usage request log',
       providerHeaders: ['Provider', 'Requests', 'Tokens', 'Cost'], modelHeaders: ['Model', 'Requests', 'Tokens', 'Cost'], toolHeaders: ['Tool', 'Calls', 'Success', 'Errors', 'Aborted', 'Average duration'],
-      pricingHeaders: ['Provider', 'Model', 'Input / 1M', 'Output / 1M'], requestHeaders: ['Time', 'Type', 'Target', 'Session', 'Tokens', 'Cost', 'Latency', 'Status'],
-      noPricing: 'No pricing overrides', modelKind: 'Model', toolKind: 'Tool', openSession: (label) => `Open ${label}`, success: 'Success', error: 'Error', aborted: 'Aborted',
+      pricingHeaders: ['Provider', 'Model', 'Input / 1M', 'Output / 1M'], requestHeaders: ['Time', 'Type', 'Target', 'Task', 'Tokens', 'Cost', 'Latency', 'Status'],
+      noPricing: 'No pricing overrides', modelKind: 'Model', toolKind: 'Tool', openSession: (label) => `Open session "${label}"`, untitledSession: 'Untitled session', success: 'Success', error: 'Error', aborted: 'Aborted',
       notReported: 'Not reported', unpriced: 'Unpriced', notRecorded: 'Not recorded', notApplicable: '—', partial: (value) => `${value} (partial)`,
       providerEmptyTitle: 'No provider usage', providerEmptyBody: 'After a model request, provider request counts, tokens, and costs appear here.',
       modelEmptyTitle: 'No model usage', modelEmptyBody: 'After a model request, request counts, tokens, and costs appear here by model.',

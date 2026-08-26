@@ -573,7 +573,7 @@ async function createReleasePackage(base: string, version: string): Promise<stri
 }
 
 function serviceResult(
-  action: Exclude<RuntimeHostManagedServiceResult['action'], 'retire'>,
+  action: Exclude<RuntimeHostManagedServiceResult['action'], 'retire' | 'configure'>,
   config: RuntimeHostManagedServiceConfig | null,
   installedVersion: string | null,
 ): RuntimeHostManagedServiceResult {
@@ -596,8 +596,8 @@ function serviceResult(
 
 function unusedBackend(): RuntimeHostServiceBackend {
   return {
-    preflightInstall: async () => undefined,
-    install: async () => assert.fail('Backend is not expected'),
+    preflightDeployment: async () => undefined,
+    stageDeployment: async () => assert.fail('Backend is not expected'),
     replace: async () => assert.fail('Backend is not expected'),
     verifyReplacementPreconditions: async () => assert.fail('Backend is not expected'),
     verifyDeployment: async () => assert.fail('Backend is not expected'),

@@ -511,7 +511,8 @@ test('fences transcript range failures to the current registration and Host sour
   });
   const request = (consumerId: string, generation: string) => ({
     consumerId,
-    generation,
+    sessionId: 'session-1',
+    hostEpoch: `host-${generation}`,
     anchorSequence: null,
     maxBytes: DESKTOP_TRANSCRIPT_FRAGMENT_MAX_BYTES,
   });
@@ -620,9 +621,10 @@ test('fences transcript range failures across same-source replica recovery', asy
   const observations = new RuntimeHostSessionObservationRegistry();
   const batches: DesktopTranscriptBatch[] = [];
   const consumerId = 'consumer-replica-recovery';
-  const request = (generation: string) => ({
+  const request = (hostEpoch: string) => ({
     consumerId,
-    generation,
+    sessionId: 'session-1',
+    hostEpoch,
     anchorSequence: 1,
     maxBytes: DESKTOP_TRANSCRIPT_FRAGMENT_MAX_BYTES,
   });
@@ -644,7 +646,7 @@ test('fences transcript range failures across same-source replica recovery', asy
   };
   await observations.attach(observer);
   const opened = await observations.openTranscript('session-1', consumerId, target);
-  const staleLoad = observations.loadTranscriptBefore(request(opened.generation), target.id);
+  const staleLoad = observations.loadTranscriptBefore(request(opened.hostEpoch), target.id);
   await waitFor(() => staleRangeStarted);
 
   firstEvents.push({
@@ -658,9 +660,8 @@ test('fences transcript range failures across same-source replica recovery', asy
   staleRange.reject(new Error('stale replica rejected its range'));
   await assert.doesNotReject(staleLoad);
 
-  const generation = batches.at(-1)!.generation;
   await assert.rejects(
-    observations.loadTranscriptBefore(request(generation), target.id),
+    observations.loadTranscriptBefore(request(opened.hostEpoch), target.id),
     (error) => error === currentFailure,
   );
   await observations.close();
@@ -861,7 +862,7 @@ test('keeps a bounded transcript batch window in flight until the renderer ackno
   await observer.close();
 });
 
-test('finishes transcript open against a replacement that arrives while reset delivery waits', async () => {
+test('finishes transcript open and replays a stale range request after replacement', async () => {
   const firstEvents = new AsyncFrameQueue();
   const secondEvents = new AsyncFrameQueue();
   const message: StoredMessage = {
@@ -873,6 +874,8 @@ test('finishes transcript open against a replacement that arrives while reset de
     modelId: 'test-model',
   };
   let opens = 0;
+  let rangeLoads = 0;
+  const requestedAnchors: Array<number | null> = [];
   const observer = new RuntimeHostSessionObserver({
     client: {
       openSession: async () => {
@@ -882,6 +885,49 @@ test('finishes transcript open against a replacement that arrives while reset de
           snapshot: continuitySnapshot(),
           transcript: Promise.resolve([message]),
           events,
+          transcriptBootstrap: {
+            throughSequence: 0,
+            overlayMessageCount: 0,
+            durable: {
+              kind: 'page',
+              sessionId: 'session-1',
+              source: 'durable',
+              direction: 'older',
+              throughSequence: 0,
+              rawBytes: 1,
+              fragments: [],
+              nextCursor: 'older',
+            },
+            overlay: {
+              kind: 'page',
+              sessionId: 'session-1',
+              source: 'overlay',
+              direction: 'older',
+              throughSequence: null,
+              rawBytes: 0,
+              fragments: [],
+              nextCursor: null,
+            },
+          },
+          loadTranscriptOverlay: async () => [],
+          decodeTranscriptPage: async (page) => ({
+            messages: page.rawBytes === 1 ? [{ identity: 0, message }] : [],
+            nextCursor: page.nextCursor,
+          }),
+          loadTranscriptPage: async (input) => {
+            rangeLoads += 1;
+            requestedAnchors.push(input.anchorSequence);
+            return {
+              kind: 'page',
+              sessionId: 'session-1',
+              source: input.source,
+              direction: input.direction,
+              throughSequence: input.throughSequence,
+              rawBytes: 0,
+              fragments: [],
+              nextCursor: null,
+            };
+          },
           async close() {
             events.end();
           },
@@ -891,10 +937,21 @@ test('finishes transcript open against a replacement that arrives while reset de
     emitSessionsChanged() {},
   });
   const batches: DesktopTranscriptBatch[] = [];
+  let autoAcknowledge = false;
   const opening = observer.openTranscript('session-1', 'consumer-recovery', {
     id: 22,
     send(_channel, batch) {
       batches.push(batch);
+      if (autoAcknowledge) {
+        queueMicrotask(() =>
+          observer.acknowledgeTranscript(
+            'consumer-recovery',
+            batch.generation,
+            batch.deliverySequence,
+            22,
+          ),
+        );
+      }
     },
     once() {},
     off() {},
@@ -905,6 +962,7 @@ test('finishes transcript open against a replacement that arrives while reset de
   );
 
   await waitFor(() => batches.length === 4);
+  const staleGeneration = batches[0]!.generation;
   firstEvents.push({
     kind: 'subscription.closed',
     hostEpoch: 'host-1',
@@ -937,6 +995,58 @@ test('finishes transcript open against a replacement that arrives while reset de
   const opened = await result;
   assert.equal(opened.error, undefined);
   assert.equal(opened.value?.generation, batches.at(-1)?.generation);
+  assert.notEqual(opened.value?.generation, staleGeneration);
+  rangeLoads = 0;
+  requestedAnchors.length = 0;
+  autoAcknowledge = true;
+  // The renderer dispatched this range request before the replacement replica
+  // was installed; the same Session and Host epoch continue the read against
+  // the current replica, and the requested slice is what the replica loads.
+  await assert.doesNotReject(() =>
+    observer.loadTranscriptBefore(
+      {
+        consumerId: 'consumer-recovery',
+        sessionId: 'session-1',
+        hostEpoch: 'host-1',
+        anchorSequence: 0,
+        maxBytes: DESKTOP_TRANSCRIPT_FRAGMENT_MAX_BYTES,
+      },
+      22,
+    ),
+  );
+  assert.equal(rangeLoads, 1);
+  assert.deepEqual(requestedAnchors, [0]);
+  // Durable sequence identity is Session- and Host-epoch-scoped: a request
+  // for a different Session or Host epoch must reject instead of silently
+  // reading a different slice of the transcript.
+  await assert.rejects(
+    () =>
+      observer.loadTranscriptBefore(
+        {
+          consumerId: 'consumer-recovery',
+          sessionId: 'session-1',
+          hostEpoch: 'other-host',
+          anchorSequence: 0,
+          maxBytes: DESKTOP_TRANSCRIPT_FRAGMENT_MAX_BYTES,
+        },
+        22,
+      ),
+    /Desktop transcript host epoch changed/,
+  );
+  await assert.rejects(
+    () =>
+      observer.loadTranscriptBefore(
+        {
+          consumerId: 'consumer-recovery',
+          sessionId: 'other-session',
+          hostEpoch: 'host-1',
+          anchorSequence: 0,
+          maxBytes: DESKTOP_TRANSCRIPT_FRAGMENT_MAX_BYTES,
+        },
+        22,
+      ),
+    /Desktop transcript consumer belongs to another session/,
+  );
   await observer.close();
 });
 
@@ -1227,7 +1337,8 @@ test('keeps a transcript consumer available after a delivery fails', async () =>
     observer.loadTranscriptAround(
       {
         consumerId,
-        generation: opened.generation,
+        sessionId: opened.sessionId,
+        hostEpoch: opened.hostEpoch,
         anchorSequence: 0,
         maxBytes: DESKTOP_TRANSCRIPT_FRAGMENT_MAX_BYTES,
       },

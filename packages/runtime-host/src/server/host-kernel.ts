@@ -287,6 +287,10 @@ export class RuntimeHostKernel {
     return this.#listeners?.websocketEndpoints ?? [];
   }
 
+  get peerListeners(): RuntimeHostListenerSet['peerListeners'] {
+    return this.#listeners?.peerListeners ?? [];
+  }
+
   get compositionDescriptor(): HostCompositionDescriptor {
     return this.#options.composition.descriptor;
   }

@@ -55,6 +55,7 @@ const TUI_PRIMARY_GUIDANCE = {
       goal: '查看自主目标状态',
       graph: '查看、启用、停用 Graph 模式，或执行一次 Graph 任务',
       help: '查看命令和快捷键',
+      mcp: '查看客户端 MCP 服务器和工具发布状态',
       model: '选择模型',
       move: '将当前会话移到其他目录',
       new: '新建会话',
@@ -76,7 +77,7 @@ const TUI_PRIMARY_GUIDANCE = {
       keybindingsHeading: '快捷键',
       keybindings: [
         '  Ctrl+O — 展开或折叠所有工具输出',
-        '  Ctrl+T — 展开或折叠最近的思考块',
+        '  Ctrl+T — 展开或折叠视图中的所有思考块',
         '  使用终端或触控板滚动对话记录',
         '  Enter（任务运行中）— 将消息注入当前任务',
         '  Alt+Enter（任务运行中）— 将消息排入下一轮',
@@ -103,6 +104,7 @@ const TUI_PRIMARY_GUIDANCE = {
       goal: 'Show autonomous goal status',
       graph: 'Show, enable, disable, or run one Graph turn',
       help: 'Show commands and keybindings',
+      mcp: 'Show client-owned MCP servers and tool publication status',
       model: 'Select model',
       move: 'Move current session to another directory',
       new: 'Start a new session',
@@ -124,7 +126,7 @@ const TUI_PRIMARY_GUIDANCE = {
       keybindingsHeading: 'Keybindings',
       keybindings: [
         '  Ctrl+O — expand or collapse all tool output',
-        '  Ctrl+T — expand or collapse the latest thinking block',
+        '  Ctrl+T — expand or collapse all thinking in view',
         '  Scroll the transcript with your terminal or trackpad',
         '  Enter (during a turn) — steer: inject a message into the running turn',
         '  Alt+Enter (during a turn) — queue a message for the next turn',

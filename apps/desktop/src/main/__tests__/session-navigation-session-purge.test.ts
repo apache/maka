@@ -20,7 +20,10 @@
 import { strict as assert } from 'node:assert';
 import { describe, it } from 'node:test';
 import type { SessionSummary } from '@maka/core/session';
-import { createAppShellSessionRowActions } from '../../renderer/app-shell-session-row-actions.js';
+import {
+  createSessionNavigationRowActions,
+  type SessionNavigationSessionService,
+} from '../../renderer/features/session-navigation/testing.js';
 
 function summary(id: string, overrides: Partial<SessionSummary> = {}): SessionSummary {
   return {
@@ -57,11 +60,11 @@ type SweepHarness = {
 };
 
 /**
- * Installs a `window.maka.sessions` whose `remove` fails for the named ids and
+ * Creates a Session service whose `remove` fails for the named ids and
  * whose `list` answers with `surviving` (or throws when it is `undefined`,
  * standing in for a catalog that cannot be read back).
  */
-function installWindow(
+function installService(
   harness: SweepHarness,
   options: {
     rejectIds?: readonly string[];
@@ -76,39 +79,29 @@ function installWindow(
      */
     catalog?: readonly SessionSummary[];
   } = {},
-): () => void {
-  const target = globalThis as unknown as { window?: unknown };
-  const previous = target.window;
-  Object.defineProperty(target, 'window', {
-    configurable: true,
-    writable: true,
-    value: {
-      maka: {
-        sessions: {
-          remove: async (id: string, removeOptions?: { requireArchived?: boolean }) => {
-            harness.removeOptions.push([id, removeOptions?.requireArchived === true]);
-            if (options.rejectWithUndefinedIds?.includes(id)) {
-              return Promise.reject(undefined);
-            }
-            if (options.rejectIds?.includes(id)) throw new Error(`busy:${id}`);
-            const target = options.catalog?.find((session) => session.id === id);
-            if (removeOptions?.requireArchived && target && !target.isArchived) return 'restored';
-            harness.removed.push(id);
-            options.onRemove?.(id);
-            return 'removed';
-          },
-          list: async () => {
-            harness.listCalls += 1;
-            if (!options.surviving) throw new Error('catalog unavailable');
-            return [...options.surviving];
-          },
-        },
-      },
+): SessionNavigationSessionService {
+  return {
+    setFlagged: async () => undefined,
+    archive: async () => undefined,
+    unarchive: async () => undefined,
+    rename: async () => undefined,
+    remove: async (id, removeOptions) => {
+      harness.removeOptions.push([id, removeOptions.requireArchived]);
+      if (options.rejectWithUndefinedIds?.includes(id)) {
+        return Promise.reject(undefined);
+      }
+      if (options.rejectIds?.includes(id)) throw new Error(`busy:${id}`);
+      const target = options.catalog?.find((session) => session.id === id);
+      if (removeOptions.requireArchived && target && !target.isArchived) return 'restored';
+      harness.removed.push(id);
+      options.onRemove?.(id);
+      return 'removed';
     },
-  });
-  return () => {
-    if (previous === undefined) delete target.window;
-    else Object.defineProperty(target, 'window', { configurable: true, writable: true, value: previous });
+    list: async () => {
+      harness.listCalls += 1;
+      if (!options.surviving) throw new Error('catalog unavailable');
+      return [...options.surviving];
+    },
   };
 }
 
@@ -118,21 +111,23 @@ function createActions(input: {
   activeIdRef: { current: string | undefined };
   pending?: Set<string>;
   refreshed?: SessionSummary[];
+  service: SessionNavigationSessionService;
 }) {
-  return createAppShellSessionRowActions({
+  return createSessionNavigationRowActions({
     uiLocale: 'en',
     activeIdRef: input.activeIdRef,
+    clearActiveMessages: () => undefined,
     clearSessionRendererState: (id) => {
       input.harness.cleared.push(id);
     },
     pendingSessionRowActionsRef: { current: input.pending ?? new Set<string>() },
     refreshSessions: async () => input.refreshed ?? [],
+    service: input.service,
     sessionsRef: { current: input.sessions },
     setActiveId: (id) => {
       input.harness.selections.push(id);
       input.activeIdRef.current = id;
     },
-    setMessages: () => undefined,
     toastApi: {
       success: (title: string) => {
         input.harness.toasts.push(title);
@@ -163,10 +158,10 @@ describe('purgeSessions', () => {
       summary('b'),
     ];
     const activeIdRef = { current: 'a-v2' as string | undefined };
-    const restore = installWindow(h);
-    const actions = createActions({ harness: h, sessions, activeIdRef });
+    const service = installService(h);
+    const actions = createActions({ harness: h, sessions, activeIdRef, service });
 
-    const outcome = await actions.purgeSessions(['a-v2', 'b']).finally(restore);
+    const outcome = await actions.purgeSessions(['a-v2', 'b']);
 
     assert.deepEqual(h.removed, ['a-v2', 'b']);
     assert.deepEqual(outcome, {
@@ -196,14 +191,15 @@ describe('purgeSessions', () => {
     // person agreed to two and one went, which needs saying.
     const h = harness();
     const catalog = [restored('kept'), summary('doomed')];
-    const restore = installWindow(h, { catalog });
+    const service = installService(h, { catalog });
     const actions = createActions({
       harness: h,
       sessions: [...catalog],
       activeIdRef: { current: undefined },
+      service,
     });
 
-    const outcome = await actions.purgeSessions(['kept', 'doomed']).finally(restore);
+    const outcome = await actions.purgeSessions(['kept', 'doomed']);
 
     assert.deepEqual(h.removed, ['doomed']);
     assert.equal(outcome.removed, 1);
@@ -219,7 +215,7 @@ describe('purgeSessions', () => {
     // reached this task.
     const h = harness();
     const catalog = [summary('first'), summary('second')];
-    const restore = installWindow(h, {
+    const service = installService(h, {
       catalog,
       onRemove: (id) => {
         if (id === 'first') catalog[1] = restored('second');
@@ -229,9 +225,10 @@ describe('purgeSessions', () => {
       harness: h,
       sessions: [...catalog],
       activeIdRef: { current: undefined },
+      service,
     });
 
-    const outcome = await actions.purgeSessions(['first', 'second']).finally(restore);
+    const outcome = await actions.purgeSessions(['first', 'second']);
 
     assert.deepEqual(h.removed, ['first']);
     assert.equal(outcome.removed, 1);
@@ -242,11 +239,11 @@ describe('purgeSessions', () => {
   it('keeps everything the renderer holds for a task the delete left alone', async () => {
     const h = harness();
     const catalog = [summary('first'), restored('rescued')];
-    const restore = installWindow(h, { catalog });
+    const service = installService(h, { catalog });
     const activeIdRef = { current: 'rescued' as string | undefined };
-    const actions = createActions({ harness: h, sessions: [...catalog], activeIdRef });
+    const actions = createActions({ harness: h, sessions: [...catalog], activeIdRef, service });
 
-    const outcome = await actions.purgeSessions(['first', 'rescued']).finally(restore);
+    const outcome = await actions.purgeSessions(['first', 'rescued']);
 
     assert.deepEqual(outcome.restored, ['rescued']);
     assert.equal(outcome.firstFailure, undefined);
@@ -266,14 +263,15 @@ describe('purgeSessions', () => {
     // would drop the id with no outcome at all, which is how a confirmed count
     // stops adding up.
     const h = harness();
-    const restore = installWindow(h, { catalog: [summary('stale'), summary('plain')] });
+    const service = installService(h, { catalog: [summary('stale'), summary('plain')] });
     const actions = createActions({
       harness: h,
       sessions: [restored('stale'), summary('plain')],
       activeIdRef: { current: undefined },
+      service,
     });
 
-    const outcome = await actions.purgeSessions(['stale', 'plain']).finally(restore);
+    const outcome = await actions.purgeSessions(['stale', 'plain']);
 
     assert.deepEqual(h.removeOptions, [
       ['stale', true],
@@ -287,15 +285,16 @@ describe('purgeSessions', () => {
   it('skips an id whose row action is already in flight instead of racing it', async () => {
     const h = harness();
     const sessions = [summary('busy'), summary('free')];
-    const restore = installWindow(h, { surviving: [summary('busy')] });
+    const service = installService(h, { surviving: [summary('busy')] });
     const actions = createActions({
       harness: h,
       sessions,
       activeIdRef: { current: undefined },
       pending: new Set(['busy:delete']),
+      service,
     });
 
-    const outcome = await actions.purgeSessions(['busy', 'free']).finally(restore);
+    const outcome = await actions.purgeSessions(['busy', 'free']);
 
     assert.deepEqual(h.removed, ['free']);
     assert.deepEqual(outcome.remaining, ['busy']);
@@ -308,13 +307,13 @@ describe('purgeSessions', () => {
     // catalog can settle it.
     const h = harness();
     const sessions = [summary('committed'), summary('survivor')];
-    const restore = installWindow(h, {
+    const service = installService(h, {
       rejectIds: ['committed', 'survivor'],
       surviving: [summary('survivor')],
     });
-    const actions = createActions({ harness: h, sessions, activeIdRef: { current: undefined } });
+    const actions = createActions({ harness: h, sessions, activeIdRef: { current: undefined }, service });
 
-    const outcome = await actions.purgeSessions(['committed', 'survivor']).finally(restore);
+    const outcome = await actions.purgeSessions(['committed', 'survivor']);
 
     assert.equal(h.listCalls, 1);
     assert.deepEqual(outcome.remaining, ['survivor']);
@@ -327,14 +326,14 @@ describe('purgeSessions', () => {
   it('retains the first failing Session even when the rejection value is undefined', async () => {
     const h = harness();
     const sessions = [summary('first'), summary('second')];
-    const restore = installWindow(h, {
+    const service = installService(h, {
       rejectWithUndefinedIds: ['first'],
       rejectIds: ['second'],
       surviving: sessions,
     });
-    const actions = createActions({ harness: h, sessions, activeIdRef: { current: undefined } });
+    const actions = createActions({ harness: h, sessions, activeIdRef: { current: undefined }, service });
 
-    const outcome = await actions.purgeSessions(['first', 'second']).finally(restore);
+    const outcome = await actions.purgeSessions(['first', 'second']);
 
     assert.ok(outcome.firstFailure);
     assert.equal(outcome.firstFailure.sessionId, 'first');
@@ -346,15 +345,16 @@ describe('purgeSessions', () => {
     // reporting on that would have called a completed sweep a total failure.
     const h = harness();
     const sessions = [summary('a')];
-    const restore = installWindow(h, { rejectIds: ['a'], surviving: undefined });
+    const service = installService(h, { rejectIds: ['a'], surviving: undefined });
     const actions = createActions({
       harness: h,
       sessions,
       activeIdRef: { current: undefined },
       refreshed: sessions,
+      service,
     });
 
-    const outcome = await actions.purgeSessions(['a']).finally(restore);
+    const outcome = await actions.purgeSessions(['a']);
 
     assert.equal(outcome.verified, false);
     assert.deepEqual(outcome.remaining, []);
@@ -368,12 +368,11 @@ describe('deleteSession', () => {
     // time, so a restore revokes it the same way.
     const h = harness();
     const sessions = [summary('archived-row'), restored('active-row')];
-    const restore = installWindow(h);
-    const actions = createActions({ harness: h, sessions, activeIdRef: { current: undefined } });
+    const service = installService(h);
+    const actions = createActions({ harness: h, sessions, activeIdRef: { current: undefined }, service });
 
     await actions.deleteSession('archived-row');
     await actions.deleteSession('active-row');
-    restore();
 
     // An active task never had an archived premise to lose, so requiring one
     // would refuse every delete from the rail.
@@ -388,12 +387,11 @@ describe('deleteSession', () => {
     // The row was archived when the confirm named it; the catalog the delete
     // commits against says otherwise by the time it lands.
     const sessions = [summary('rescued')];
-    const restore = installWindow(h, { catalog: [restored('rescued')] });
+    const service = installService(h, { catalog: [restored('rescued')] });
     const activeIdRef = { current: 'rescued' as string | undefined };
-    const actions = createActions({ harness: h, sessions, activeIdRef });
+    const actions = createActions({ harness: h, sessions, activeIdRef, service });
 
     await actions.deleteSession('rescued');
-    restore();
 
     assert.deepEqual(h.removed, []);
     assert.deepEqual(h.cleared, []);

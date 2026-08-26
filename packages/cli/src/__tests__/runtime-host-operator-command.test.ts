@@ -69,6 +69,11 @@ describe('Runtime Host operator commands', () => {
         prefer: true,
       },
     );
+    assert.deepEqual(parseRuntimeHostCommand(['serve', '--json', '--no-project-roots']), {
+      kind: 'runtime-host-serve',
+      json: true,
+      projectDirectoryRoots: [],
+    });
     assert.deepEqual(
       parseRuntimeHostCommand([
         'serve',
@@ -86,6 +91,41 @@ describe('Runtime Host operator commands', () => {
           { label: 'Data', path: projectRootB },
         ],
       },
+    );
+    assert.deepEqual(
+      parseRuntimeHostCommand([
+        'serve',
+        '--project-root-json',
+        JSON.stringify({ label: 'Work=Primary', path: projectRootA }),
+      ]),
+      {
+        kind: 'runtime-host-serve',
+        json: false,
+        projectDirectoryRoots: [{ label: 'Work=Primary', path: projectRootA }],
+      },
+    );
+    assert.deepEqual(
+      parseRuntimeHostCommand([
+        'serve',
+        '--managed-service-config',
+        '/config/Maka/runtime-host-service.json',
+        '--json',
+      ]),
+      {
+        kind: 'runtime-host-serve',
+        managedServiceConfigPath: '/config/Maka/runtime-host-service.json',
+        json: true,
+      },
+    );
+    assert.equal(
+      parseRuntimeHostCommand([
+        'serve',
+        '--managed-service-config',
+        '/config/Maka/runtime-host-service.json',
+        '--root',
+        '/srv/maka',
+      ]).kind,
+      'error',
     );
     assert.deepEqual(
       parseRuntimeHostCommand([
@@ -238,6 +278,12 @@ describe('Runtime Host operator commands', () => {
       hostEpoch: 'epoch-1',
       endpoint: '/tmp/maka.sock',
       websocketEndpoints: ['wss://runtime.example.com:443/runtime-host'],
+      peerListeners: [
+        {
+          peerId: '12D3KooWPeer',
+          listenAddresses: ['/ip4/192.0.2.10/udp/4001/quic-v1/p2p/12D3KooWPeer'],
+        },
+      ],
       compositionDescriptor: { id: 'maka.interactive', revision: '2' },
     });
 
@@ -259,6 +305,11 @@ describe('Runtime Host operator commands', () => {
           host: 'runtime.example.com',
           port: 443,
           path: '/runtime-host',
+        },
+        {
+          kind: 'libp2p_direct',
+          peerId: '12D3KooWPeer',
+          listenAddresses: ['/ip4/192.0.2.10/udp/4001/quic-v1/p2p/12D3KooWPeer'],
         },
       ],
     });

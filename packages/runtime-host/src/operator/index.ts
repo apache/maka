@@ -31,6 +31,7 @@ export { runtimeHostAccessCredentialFingerprint } from '../access-credential-ide
 export {
   RUNTIME_HOST_OPERATOR_ACCESS_MANAGEMENT_CAPABILITY,
   RUNTIME_HOST_OPERATOR_CAPABILITY_REQUEST_ENV,
+  RUNTIME_HOST_OPERATOR_PROJECT_DIRECTORY_CONFIGURATION_REQUEST_ENV,
   RUNTIME_HOST_OPERATOR_PROCESS_LIFETIME_LOCK_CAPABILITY,
   RUNTIME_HOST_OPERATOR_UPDATE_SCHEDULER_CAPABILITY,
   RUNTIME_HOST_SERVICE_ERROR_CODE_MAX_BYTES,
@@ -80,10 +81,15 @@ export {
   type RuntimeHostInstallationOwner,
 } from './local-deployment-owner.js';
 export {
-  transferLocalHostProcessOwner,
-  type LocalHostProcessOwnerTransferAdapter,
-  type LocalHostProcessOwnerTransferPhase,
-  type LocalHostProcessOwnerTransferRequest,
-  type LocalHostProcessOwnerTransferResult,
-  type LocalHostTransferActiveWorkPolicy,
-} from './local-process-owner-transfer.js';
+  claimLocalHostProcessDeployment,
+  handoffLocalHostProcessDeployment,
+  type LocalHostProcessDeploymentClaimAdapter,
+  type LocalHostProcessDeploymentClaimPhase,
+  type LocalHostProcessDeploymentClaimRequest,
+  type LocalHostProcessDeploymentClaimResult,
+  type LocalHostProcessDeploymentHandoffAdapter,
+  type LocalHostProcessDeploymentHandoffPhase,
+  type LocalHostProcessDeploymentHandoffRequest,
+  type LocalHostProcessDeploymentHandoffResult,
+  type LocalHostHandoffActiveWorkPolicy,
+} from './local-process-deployment-handoff.js';

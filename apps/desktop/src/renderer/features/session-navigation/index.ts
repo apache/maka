@@ -17,24 +17,9 @@
  * under the License.
  */
 
-import { useState } from 'react';
-import {
-  readSessionListCollapsed,
-  readSessionListWidth,
-} from './session-list-layout';
-
-/** Owns only the navigation rail portion of the application shell layout. */
-export function useShellLayout() {
-  const [sessionListWidth, setSessionListWidth] = useState(() =>
-    readSessionListWidth(),
-  );
-  const [sessionListCollapsed, setSessionListCollapsed] = useState(() =>
-    readSessionListCollapsed(),
-  );
-  return {
-    sessionListWidth,
-    setSessionListWidth,
-    sessionListCollapsed,
-    setSessionListCollapsed,
-  };
-}
+export { SessionNavigationServicesProvider } from './services-context.js';
+export { useSessionNavigationController } from './controller/use-session-navigation-controller.js';
+export { SessionNavigationHost } from './ui/session-navigation-host.js';
+export { deriveSessionRail } from './model/session-rail.js';
+export type { SessionPurgeOutcome } from './controller/session-row-actions.js';
+export type { SessionNavigationServices } from './ports.js';

@@ -69,6 +69,14 @@ export interface MakaSideConversationCloseResult extends MakaSessionSwitchResult
   cleanup: 'removed' | 'pending';
 }
 
+export type MakaSideConversationParentStatus =
+  | 'needs_input'
+  | 'needs_approval'
+  | 'failed'
+  | 'interrupted'
+  | 'closed'
+  | 'finished';
+
 export interface MakaPreparedSessionTurn {
   sessionId: string;
   turnId: string;
@@ -129,6 +137,11 @@ export interface MakaSessionDriver {
     sideSessionId: string,
     parentSessionId: string,
   ): Promise<MakaSideConversationCloseResult>;
+  observeSideConversationParent?(
+    parentSessionId: string,
+    listener: (status: MakaSideConversationParentStatus | undefined) => void,
+  ): Promise<() => Promise<void>>;
+  discardSideConversation?(sideSessionId: string): Promise<'removed' | 'pending'>;
   subscribeStartedTurns?(listener: (turn: MakaAttachedSessionTurn) => void): () => void;
   subscribeResolvedInteractions?(
     listener: (sessionId: string, requestId: string) => void,

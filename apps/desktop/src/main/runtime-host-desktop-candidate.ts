@@ -36,6 +36,7 @@ import {
   type RuntimeHostCandidateLaunchBarrier,
   type RuntimeHostSpawnedProcess,
   type RemoteRuntimeHostProfile,
+  type CandidateExitDetails,
 } from "@maka/runtime-host/client";
 import {
   INTERACTIVE_RUNTIME_HOST_COMPOSITION_ID,
@@ -167,6 +168,8 @@ export interface DesktopRuntimeHostCandidateStartInput
   readonly generation?: string;
   readonly takeoverHostEpoch?: string;
   readonly signal?: AbortSignal;
+  /** Candidate-exit sink forwarded to the launcher; the Desktop owns the sink. */
+  readonly onExit?: (details: CandidateExitDetails) => void;
   readonly candidateLaunchBarrier?: RuntimeHostCandidateLaunchBarrier;
   readonly remote?: {
     readonly profile: RemoteRuntimeHostProfile;
@@ -679,7 +682,10 @@ export async function createDesktopRuntimeHostCandidate(
       },
       ipc,
     );
-    registerRuntimeHostWorkHubIpc(client, ipc);
+    registerRuntimeHostWorkHubIpc(client, ipc, {
+      resolveCreateProject: () => deps.resolveSessionCreateProject({}, target),
+      emitSessionsChanged,
+    });
     registerRuntimeHostExternalSessionsIpc(
       {
         client,
@@ -781,6 +787,7 @@ function connectInput(
       ? {}
       : { handshakeTimeoutMs: input.handshakeTimeoutMs }),
     ...(input.signal === undefined ? {} : { signal: input.signal }),
+    ...(input.onExit === undefined ? {} : { onExit: input.onExit }),
   };
 }
 

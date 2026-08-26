@@ -20,7 +20,7 @@
 import { strict as assert } from 'node:assert';
 import { describe, it } from 'node:test';
 import type { SessionSummary } from '@maka/core/session';
-import { createAppShellSessionRowActions } from '../../renderer/app-shell-session-row-actions.js';
+import { createSessionNavigationRowActions } from '../../renderer/features/session-navigation/testing.js';
 
 function summary(id: string, overrides: Partial<SessionSummary> = {}): SessionSummary {
   return {
@@ -40,27 +40,28 @@ function summary(id: string, overrides: Partial<SessionSummary> = {}): SessionSu
   };
 }
 
-function installWindow(calls: string[]): () => void {
-  const target = globalThis as unknown as { window?: unknown };
-  const previous = target.window;
-  Object.defineProperty(target, 'window', {
-    configurable: true,
-    writable: true,
-    value: {
-      maka: {
-        sessions: {
-          setFlagged: async (id: string, value: boolean, options?: { revisionFamily?: boolean }) => { calls.push(`flag:${id}:${value}:${options?.revisionFamily === true}`); },
-          archive: async (id: string, options?: { revisionFamily?: boolean }) => { calls.push(`archive:${id}:${options?.revisionFamily === true}`); },
-          unarchive: async (id: string, options?: { revisionFamily?: boolean }) => { calls.push(`unarchive:${id}:${options?.revisionFamily === true}`); },
-          rename: async (id: string, name: string, options?: { revisionFamily?: boolean }) => { calls.push(`rename:${id}:${name}:${options?.revisionFamily === true}`); },
-          remove: async (id: string, options?: { revisionFamily?: boolean; requireArchived?: boolean }) => { calls.push(`remove:${id}:${options?.revisionFamily === true}:${options?.requireArchived === true}`); return 'removed' as const; },
-        },
-      },
+function createService(calls: string[]) {
+  return {
+    list: async () => [],
+    setFlagged: async (id: string, value: boolean, options: { revisionFamily: true }) => {
+      calls.push(`flag:${id}:${value}:${options.revisionFamily}`);
     },
-  });
-  return () => {
-    if (previous === undefined) delete target.window;
-    else Object.defineProperty(target, 'window', { configurable: true, writable: true, value: previous });
+    archive: async (id: string, options: { revisionFamily: true }) => {
+      calls.push(`archive:${id}:${options.revisionFamily}`);
+    },
+    unarchive: async (id: string, options: { revisionFamily: true }) => {
+      calls.push(`unarchive:${id}:${options.revisionFamily}`);
+    },
+    rename: async (id: string, name: string, options: { revisionFamily: true }) => {
+      calls.push(`rename:${id}:${name}:${options.revisionFamily}`);
+    },
+    remove: async (
+      id: string,
+      options: { revisionFamily: true; requireArchived: boolean },
+    ) => {
+      calls.push(`remove:${id}:${options.revisionFamily}:${options.requireArchived}`);
+      return 'removed' as const;
+    },
   };
 }
 
@@ -76,16 +77,16 @@ describe('revision-family session row actions', () => {
     });
     const branch = summary('branch', { parentSessionId: 'root', branchOfTurnId: 'turn-1' });
     const activeIdRef = { current: 'root' as string | undefined };
-    const restore = installWindow(calls);
-    const actions = createAppShellSessionRowActions({
+    const actions = createSessionNavigationRowActions({
       uiLocale: 'en',
       activeIdRef,
+      clearActiveMessages: () => undefined,
       clearSessionRendererState: (id) => { cleared.push(id); },
       pendingSessionRowActionsRef: { current: new Set<string>() },
       refreshSessions: async () => [root, version, branch],
+      service: createService(calls),
       sessionsRef: { current: [root, version, branch] },
       setActiveId: (id) => { selections.push(id); activeIdRef.current = id; },
-      setMessages: () => undefined,
       toastApi: {
         success: () => undefined,
         error: () => undefined,
@@ -93,15 +94,11 @@ describe('revision-family session row actions', () => {
       },
     });
 
-    try {
-      await actions.flagSession('version', true);
-      await actions.renameSession('branch', 'Independent branch');
-      await actions.archiveSession('version');
-      activeIdRef.current = 'version';
-      await actions.deleteSession('root');
-    } finally {
-      restore();
-    }
+    await actions.flagSession('version', true);
+    await actions.renameSession('branch', 'Independent branch');
+    await actions.archiveSession('version');
+    activeIdRef.current = 'version';
+    await actions.deleteSession('root');
 
     assert.deepEqual(calls, [
       'flag:version:true:true',

@@ -239,21 +239,6 @@ export function createMainProcessRecoveryJournal(
   };
 }
 
-export async function presentPendingMainProcessRecovery(
-  journal: Pick<MainProcessRecoveryJournal, 'pending' | 'discardPending'>,
-  present: (evidence: MainProcessRecoveryEvidence) => Promise<void>,
-  onError: (error: unknown) => void,
-): Promise<void> {
-  const evidence = journal.pending;
-  if (!evidence) return;
-  try {
-    await present(evidence);
-    journal.discardPending();
-  } catch (error) {
-    onError(error);
-  }
-}
-
 export function appendUncaughtMainProcessError(
   logs: { append(level: 'error', message: string, capturedAt?: Date): void },
   journal: Pick<MainProcessRecoveryJournal, 'markDirty' | 'flushNow'>,

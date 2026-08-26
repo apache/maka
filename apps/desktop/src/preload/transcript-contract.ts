@@ -60,7 +60,8 @@ export interface DesktopTranscriptOpenResult {
 
 export interface DesktopTranscriptRangeRequest {
   readonly consumerId: string;
-  readonly generation: string;
+  readonly sessionId: string;
+  readonly hostEpoch: string;
   readonly anchorSequence: number | null;
   readonly maxBytes: number;
 }
