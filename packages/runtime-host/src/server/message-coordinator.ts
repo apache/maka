@@ -2048,10 +2048,15 @@ function canonicalFollowupBatch(entries: readonly LiveEntry[]): {
 }
 
 function sameInitiatingClientPrefix(entries: readonly LiveEntry[]): LiveEntry[] {
-  const initiatingConnectionId = entries[0]?.initiatingConnectionId;
-  if (!initiatingConnectionId) return [];
+  const first = entries[0];
+  if (!first) return [];
+  // Host-authored messages carry provenance for exactly one payload. Keep
+  // them as individual roots so the persisted UserMessage retains that
+  // provenance and can be reconstructed as trusted UI after a restart.
+  if (first.origin) return [first];
   const boundary = entries.findIndex(
-    (entry) => entry.initiatingConnectionId !== initiatingConnectionId,
+    (entry) =>
+      entry.initiatingConnectionId !== first.initiatingConnectionId || entry.origin !== undefined,
   );
   return entries.slice(0, boundary === -1 ? entries.length : boundary);
 }

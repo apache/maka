@@ -115,6 +115,58 @@ test('trusted submit receipts bind mailbox provenance across reconciliation', as
   fixture.coordinator.abandonRootReservation(nextRoot);
 });
 
+test('trusted follow-ups cross root handoffs one at a time to retain provenance', async () => {
+  const fixture = createFixture();
+  fixture.coordinator.reserveRootTurn(ROOT);
+  const owner = fixture.coordinator.bindRun(ROOT);
+  const trusted = (messageId: string) => {
+    const origin = {
+      kind: 'session_mailbox' as const,
+      messageId,
+      fromSessionId: 'source',
+      fromSessionName: 'Source',
+      toSessionId: ROOT.sessionId,
+      mailboxKind: 'request' as const,
+    };
+    return fixture.coordinator.submitTrusted(
+      {
+        originHostEpoch: 'epoch-1',
+        sessionId: ROOT.sessionId,
+        messageId,
+        content: { text: `trusted mailbox payload ${messageId}` },
+        placement: 'next_turn',
+      },
+      operationContext(),
+      origin,
+    );
+  };
+
+  assert.equal((await trusted('mailbox-message-1')).ok, true);
+  assert.equal((await trusted('mailbox-message-2')).ok, true);
+  owner.release();
+
+  const firstBatch = fixture.coordinator.beginTerminalTransition(ROOT);
+  assert.deepEqual(
+    firstBatch.sources.map((source) => source.messageId),
+    ['mailbox-message-1'],
+  );
+  assert.equal(firstBatch.sources[0]?.origin?.kind, 'session_mailbox');
+  const secondRoot = { sessionId: ROOT.sessionId, turnId: 'turn-2', runId: 'run-2' };
+  fixture.coordinator.commitNextRoot(firstBatch, secondRoot);
+
+  const secondOwner = fixture.coordinator.bindRun(secondRoot);
+  secondOwner.release();
+  const secondBatch = fixture.coordinator.beginTerminalTransition(secondRoot);
+  assert.deepEqual(
+    secondBatch.sources.map((source) => source.messageId),
+    ['mailbox-message-2'],
+  );
+  assert.equal(secondBatch.sources[0]?.origin?.kind, 'session_mailbox');
+  const thirdRoot = { sessionId: ROOT.sessionId, turnId: 'turn-3', runId: 'run-3' };
+  fixture.coordinator.commitNextRoot(secondBatch, thirdRoot);
+  fixture.coordinator.abandonRootReservation(thirdRoot);
+});
+
 test('submit re-runs admission when the queue revision moves during preflight', async () => {
   let preflightCalls = 0;
   const fixture = createFixture(undefined, async () => {

@@ -55,6 +55,11 @@ import type {
   BackendSendInput,
 } from '@maka/core/backend-types';
 import type { SessionEvent } from '@maka/core/events';
+import {
+  parseTrustedSessionMailboxMessage,
+  sessionMailboxMessageContent,
+  sessionMailboxTurnOrigin,
+} from '@maka/core/session-mailbox';
 import type { MakaTool } from '@maka/runtime/tool-runtime';
 import { clientCapabilityConnectionIdentity } from './fixtures/client-capability.js';
 import {
@@ -3360,6 +3365,96 @@ test('mixed-Client queued follow-ups preserve each submitting connection through
     first.close();
     second.close();
     await clientCapabilities.close();
+    await fixture.dispose();
+  }
+});
+
+test('queued mailbox messages persist as separately trusted UserMessages', {
+  timeout: 20_000,
+}, async () => {
+  let backend: LinkedChildAuthorityBackend | undefined;
+  const fixture = await createFailureFixture({
+    registerBackend: (backends) => {
+      backends.register('ai-sdk', (context) => {
+        backend = new LinkedChildAuthorityBackend(context.sessionId);
+        return backend;
+      });
+    },
+  });
+
+  try {
+    const firstTurnId = 'turn-before-mailbox-followups';
+    const started = await fixture.interactiveTurns.handlers['turn.start'](
+      {
+        sessionId: fixture.sessionId,
+        turnId: firstTurnId,
+        content: { text: HOLD_EXTERNAL_PROMPT },
+      },
+      operationContext(fixture.hostEpoch, fixture.acquireResidency),
+    );
+    assertStartedTurn(started);
+
+    const envelopes = ['first queued message', 'second queued message'].map((text, index) => ({
+      messageId: `mailbox-followup-${index + 1}`,
+      fromSessionId: 'source-session',
+      fromSessionName: 'Source session',
+      toSessionId: fixture.sessionId,
+      kind: 'request' as const,
+      text,
+    }));
+    for (const envelope of envelopes) {
+      const submitted = await fixture.messages.submitTrusted(
+        {
+          originHostEpoch: fixture.hostEpoch,
+          sessionId: fixture.sessionId,
+          messageId: envelope.messageId,
+          content: sessionMailboxMessageContent(envelope),
+          placement: 'next_turn',
+        },
+        operationContext(fixture.hostEpoch, fixture.acquireResidency),
+        sessionMailboxTurnOrigin(envelope),
+      );
+      assert.equal(submitted.ok && submitted.result.disposition, 'followup');
+    }
+
+    backend?.release();
+    await waitUntil(
+      () => fixture.coordinator.readRootState(fixture.sessionId).kind === 'idle',
+      5_000,
+    );
+
+    const admissions = await fixture.stores.agentRunStore.listRootTurnAdmissionsForRecovery(
+      fixture.sessionId,
+    );
+    assert.deepEqual(
+      admissions.map((admission) => admission.sourceMessages.map((source) => source.messageId)),
+      [[], ['mailbox-followup-1'], ['mailbox-followup-2']],
+    );
+    assert.deepEqual(
+      admissions
+        .slice(1)
+        .map((admission) =>
+          admission.execution.kind === 'external_message' ? admission.execution.origin : undefined,
+        ),
+      envelopes.map(sessionMailboxTurnOrigin),
+    );
+
+    const messages = await fixture.stores.sessionStore.readMessages(fixture.sessionId);
+    const recoveredMailboxMessages = messages
+      .filter((message) => message.type === 'user' && message.origin?.kind === 'session_mailbox')
+      .map((message) => {
+        assert.equal(message.type, 'user');
+        if (message.type !== 'user') return undefined;
+        return parseTrustedSessionMailboxMessage(message);
+      });
+    assert.deepEqual(
+      recoveredMailboxMessages.map((message) => message?.text),
+      envelopes.map((envelope) => envelope.text),
+    );
+  } finally {
+    backend?.release();
+    await fixture.coordinator.close();
+    await fixture.messages.close();
     await fixture.dispose();
   }
 });
