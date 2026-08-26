@@ -93,7 +93,7 @@ capability 表示一次明确线性化点上的 immutable Git commit/tree snapsh
 6. exact commit/tree/blob checksum verification、atomic destination claim 与 deterministic zero-parent
    baseline publication。
 
-`managedTreePolicyVersion: 2` 是当前唯一的 **portable lexical materialization policy**，而不只是 Git
+`managedTreePolicyVersion: 3` 是当前唯一的 **portable lexical materialization policy**，而不只是 Git
 object import policy。未发布的 policy v1 已删除；helper、Host capability 和 import response 都拒绝把
 version 1 重新解释成当前语义。v2 只证明 Git tree 的词法身份和受支持 attributes 满足同一套保守规则，
 不宣称已证明某个真实 Windows volume 上的 path-length、8.3 alias、ACL 或大小写能力。

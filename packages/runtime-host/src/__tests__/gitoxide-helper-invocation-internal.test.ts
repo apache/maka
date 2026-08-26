@@ -49,8 +49,8 @@ test('uses bounded mutation/import deadlines distinct from repository inspection
   assert.deepEqual(GITOXIDE_HELPER_OPERATION_TIMEOUTS_INTERNAL, {
     inspectRepositoryMs: 5_000,
     importSourceHeadMs: 10 * 60_000,
-    createSuccessorMs: 10 * 60_000,
-    projectionMs: 10 * 60_000,
+    createCandidateMs: 10 * 60_000,
+    acceptedTreeReadMs: 10 * 60_000,
   });
 });
 
@@ -118,7 +118,7 @@ test('applies the import deadline and terminates the helper process tree', {
     expectedSourceHeadCommitOid,
     destinationRepositoryPath: join(root, 'destination.git'),
     baselineRef: 'refs/maka/baseline',
-    managedTreePolicyVersion: 2,
+    managedTreePolicyVersion: 3,
   });
   void operation.then(
     () => {
@@ -361,7 +361,7 @@ async function assertMismatchedImportResponseRejected(
     baselineCommitOid: 'a'.repeat(40),
     baselineTreeOid: sourceTreeOid,
     baselineRef: 'refs/maka/expected-ref',
-    managedTreePolicyVersion: 2,
+    managedTreePolicyVersion: 3,
     filesImported: 1,
     bytesImported: 29,
     ...override,
@@ -377,7 +377,7 @@ async function assertMismatchedImportResponseRejected(
       expectedSourceHeadCommitOid,
       destinationRepositoryPath: join(root, 'destination.git'),
       baselineRef: 'refs/maka/expected-ref',
-      managedTreePolicyVersion: 2,
+      managedTreePolicyVersion: 3,
     }),
     (error) =>
       error instanceof GitoxideHelperInvocationError &&
@@ -398,6 +398,7 @@ async function admitHelperPath(configuredHelperPath: string): Promise<AdmittedHe
     platform: process.platform,
     arch: process.arch,
     protocolVersion: 1,
+    supportedOperations: ['inspect_repository', 'import_source_head'],
   });
   const capability = await admitGitoxideHelperArtifactInternal({
     releaseOwnerToken,

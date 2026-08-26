@@ -26,17 +26,18 @@ import { join } from 'node:path';
 import test, { type TestContext } from 'node:test';
 import {
   admitGitoxideHelperArtifactInternal,
+  GitoxideHelperArtifactAuthorityError,
+  type GitoxideHelperOperationInternal,
   type GitoxideHelperInvocationCapability,
   issueGitoxideHelperReleaseArtifactClaimInternal,
 } from '../server/gitoxide-helper-artifact-authority-internal.js';
 import {
   admitGitoxideRepositoryInternal,
-  createGitoxideSuccessorInternal,
+  createGitoxideCandidateInternal,
   GitoxideRepositoryAdmissionAuthorityError,
   importAdmittedGitoxideRepositoryInternal,
-  materializeGitoxideProjectionInternal,
-  observeGitoxideProjectionInternal,
   readGitoxideTreeFileInternal,
+  requireGitoxideCandidateInternal,
   requireGitoxideRepositoryAdmissionInternal,
 } from '../server/gitoxide-repository-admission-authority-internal.js';
 import { GitoxideHelperInvocationError } from '../server/gitoxide-helper-invocation-internal.js';
@@ -114,7 +115,7 @@ test('issues an opaque owner-bound admission capability from the exact helper ob
       headCommitOid: expectedCommit,
       headTreeOid: expectedTree,
       helperArtifactSha256: helper.helperArtifactSha256,
-      managedTreePolicyVersion: 2,
+      managedTreePolicyVersion: 3,
     },
   );
 });
@@ -173,12 +174,12 @@ test('imports only the exact repository identity bound to the admission capabili
   assert.equal(admitted.kind, 'accepted');
   if (admitted.kind !== 'accepted') return;
   const destinationRepositoryPath = join(repositoryPath, 'managed.git');
-  const managedRepositoryOwnerToken = {};
+  const acceptedRepositoryOwnerToken = {};
 
   const imported = await importAdmittedGitoxideRepositoryInternal({
     admissionOwnerToken,
     repositoryCapability: admitted.capability,
-    managedRepositoryOwnerToken,
+    acceptedRepositoryOwnerToken,
     destinationRepositoryPath,
     baselineRef: 'refs/maka/baseline',
   });
@@ -194,7 +195,7 @@ test('imports only the exact repository identity bound to the admission capabili
     importAdmittedGitoxideRepositoryInternal({
       admissionOwnerToken: {},
       repositoryCapability: admitted.capability,
-      managedRepositoryOwnerToken,
+      acceptedRepositoryOwnerToken,
       destinationRepositoryPath: join(repositoryPath, 'forged.git'),
       baselineRef: 'refs/maka/forged',
     }),
@@ -204,7 +205,51 @@ test('imports only the exact repository identity bound to the admission capabili
   );
 });
 
-test('binds successor publication to the imported repository capability and exact base', async (t) => {
+test('rejects a helper without candidate/read attestation before claiming the import destination', async (t) => {
+  const helper = await admittedHelperWithOperations(['inspect_repository', 'import_source_head']);
+  if (!helper) {
+    t.skip('MAKA_GITOXIDE_HELPER_PATH is required for the real helper contract test');
+    return;
+  }
+  const repositoryPath = await createRepository(t, 'sha1');
+  await writeFile(join(repositoryPath, 'hello.txt'), 'feature attestation\n');
+  git(repositoryPath, ['add', 'hello.txt']);
+  git(repositoryPath, [
+    '-c',
+    'user.name=Maka Test',
+    '-c',
+    'user.email=maka@example.invalid',
+    'commit',
+    '--quiet',
+    '-m',
+    'fixture',
+  ]);
+  const admissionOwnerToken = {};
+  const admitted = await admitGitoxideRepositoryInternal({
+    ...helper,
+    admissionOwnerToken,
+    repositoryPath,
+  });
+  assert.equal(admitted.kind, 'accepted');
+  if (admitted.kind !== 'accepted') return;
+  const destinationRepositoryPath = join(repositoryPath, 'must-not-be-claimed.git');
+
+  await assert.rejects(
+    importAdmittedGitoxideRepositoryInternal({
+      admissionOwnerToken,
+      repositoryCapability: admitted.capability,
+      acceptedRepositoryOwnerToken: {},
+      destinationRepositoryPath,
+      baselineRef: 'refs/maka/baseline',
+    }),
+    (error) =>
+      error instanceof GitoxideHelperArtifactAuthorityError &&
+      error.code === 'gitoxide_helper_release_claim_unsupported',
+  );
+  await assert.rejects(stat(destinationRepositoryPath), { code: 'ENOENT' });
+});
+
+test('publishes an operation-bound candidate without advancing accepted authority', async (t) => {
   const helper = await admittedHelper();
   if (!helper) {
     t.skip('MAKA_GITOXIDE_HELPER_PATH is required for the real helper contract test');
@@ -224,7 +269,7 @@ test('binds successor publication to the imported repository capability and exac
     'fixture',
   ]);
   const admissionOwnerToken = {};
-  const managedRepositoryOwnerToken = {};
+  const acceptedRepositoryOwnerToken = {};
   const admitted = await admitGitoxideRepositoryInternal({
     ...helper,
     admissionOwnerToken,
@@ -236,126 +281,111 @@ test('binds successor publication to the imported repository capability and exac
   const imported = await importAdmittedGitoxideRepositoryInternal({
     admissionOwnerToken,
     repositoryCapability: admitted.capability,
-    managedRepositoryOwnerToken,
+    acceptedRepositoryOwnerToken,
     destinationRepositoryPath,
     baselineRef: 'refs/maka/accepted',
   });
 
-  const successor = await createGitoxideSuccessorInternal({
-    managedRepositoryOwnerToken,
-    managedRepositoryCapability: imported.managedRepositoryCapability,
+  const candidateOwnerToken = {};
+  const candidate = await createGitoxideCandidateInternal({
+    acceptedRepositoryOwnerToken,
+    acceptedRepositoryCapability: imported.acceptedRepositoryCapability,
+    candidateOwnerToken,
+    operationId: 'operation-1',
     path: 'docs/result.txt',
     content: 'candidate result\n',
   });
+  assert.equal(candidate.kind, 'candidate_published');
+  if (candidate.kind !== 'candidate_published') return;
 
-  assert.equal(successor.baseCommitOid, imported.baselineCommitOid);
-  assert.equal(successor.targetRef, 'refs/maka/accepted');
+  assert.equal(candidate.baseCommitOid, imported.baselineCommitOid);
+  assert.equal(candidate.baseTreeOid, imported.baselineTreeOid);
+  assert.equal(
+    candidate.candidateRef,
+    `refs/maka/candidates/${createHash('sha256').update('operation-1').digest('hex')}`,
+  );
   assert.equal(
     gitBare(destinationRepositoryPath, ['rev-parse', 'refs/maka/accepted']),
-    successor.successorCommitOid,
+    imported.baselineCommitOid,
   );
-  const exactRetry = await createGitoxideSuccessorInternal({
-    managedRepositoryOwnerToken,
-    managedRepositoryCapability: imported.managedRepositoryCapability,
+  assert.equal(
+    gitBare(destinationRepositoryPath, ['rev-parse', candidate.candidateRef]),
+    candidate.candidateCommitOid,
+  );
+  assert.deepEqual(candidate.candidateCapability, {
+    kind: 'gitoxide_candidate_capability_v1',
+  });
+  assert.equal(
+    requireGitoxideCandidateInternal(candidateOwnerToken, candidate.candidateCapability)
+      .operationId,
+    'operation-1',
+  );
+  assert.throws(
+    () => requireGitoxideCandidateInternal({}, candidate.candidateCapability),
+    GitoxideRepositoryAdmissionAuthorityError,
+  );
+
+  const acceptedRead = await readGitoxideTreeFileInternal({
+    acceptedRepositoryOwnerToken,
+    acceptedRepositoryCapability: imported.acceptedRepositoryCapability,
+    path: 'hello.txt',
+  });
+  assert.equal(acceptedRead.content, 'hello from candidate authority\n');
+
+  const noChangeOperationId = 'operation-no-change';
+  const noChange = await createGitoxideCandidateInternal({
+    acceptedRepositoryOwnerToken,
+    acceptedRepositoryCapability: imported.acceptedRepositoryCapability,
+    candidateOwnerToken,
+    operationId: noChangeOperationId,
+    path: 'hello.txt',
+    content: 'hello from candidate authority\n',
+  });
+  assert.equal(noChange.kind, 'candidate_no_change');
+  assert.throws(() =>
+    gitBare(destinationRepositoryPath, [
+      'rev-parse',
+      `refs/maka/candidates/${createHash('sha256').update(noChangeOperationId).digest('hex')}`,
+    ]),
+  );
+
+  const exactRetry = await createGitoxideCandidateInternal({
+    acceptedRepositoryOwnerToken,
+    acceptedRepositoryCapability: imported.acceptedRepositoryCapability,
+    candidateOwnerToken,
+    operationId: 'operation-1',
     path: 'docs/result.txt',
     content: 'candidate result\n',
   });
-  assert.equal(exactRetry.successorCommitOid, successor.successorCommitOid);
-  assert.equal(exactRetry.successorTreeOid, successor.successorTreeOid);
+  assert.equal(exactRetry.kind, 'candidate_published');
+  if (exactRetry.kind !== 'candidate_published') return;
+  assert.equal(exactRetry.candidateCommitOid, candidate.candidateCommitOid);
+  assert.equal(exactRetry.candidateTreeOid, candidate.candidateTreeOid);
 
-  const next = await createGitoxideSuccessorInternal({
-    managedRepositoryOwnerToken,
-    managedRepositoryCapability: successor.managedRepositoryCapability,
+  const second = await createGitoxideCandidateInternal({
+    acceptedRepositoryOwnerToken,
+    acceptedRepositoryCapability: imported.acceptedRepositoryCapability,
+    candidateOwnerToken,
+    operationId: 'operation-2',
     path: 'docs/next.txt',
     content: 'next candidate\n',
   });
-  assert.equal(next.baseCommitOid, successor.successorCommitOid);
+  assert.equal(second.kind, 'candidate_published');
+  if (second.kind !== 'candidate_published') return;
+  assert.equal(second.baseCommitOid, imported.baselineCommitOid);
+  assert.notEqual(second.candidateRef, candidate.candidateRef);
   await assert.rejects(
-    createGitoxideSuccessorInternal({
-      managedRepositoryOwnerToken: {},
-      managedRepositoryCapability: imported.managedRepositoryCapability,
+    createGitoxideCandidateInternal({
+      acceptedRepositoryOwnerToken: {},
+      acceptedRepositoryCapability: imported.acceptedRepositoryCapability,
+      candidateOwnerToken,
+      operationId: 'forged-operation',
       path: 'forged.txt',
       content: 'forged\n',
     }),
     (error) =>
       error instanceof GitoxideRepositoryAdmissionAuthorityError &&
       error.code === 'gitoxide_repository_admission_capability_invalid',
-  );
-});
-
-test('materializes and observes only the accepted tree bound to its projection capability', async (t) => {
-  const helper = await admittedHelper();
-  if (!helper) {
-    t.skip('MAKA_GITOXIDE_HELPER_PATH is required for the real helper contract test');
-    return;
-  }
-  const repositoryPath = await createRepository(t, 'sha1');
-  await writeFile(join(repositoryPath, 'hello.txt'), 'hello from projection authority\n');
-  git(repositoryPath, ['add', 'hello.txt']);
-  git(repositoryPath, [
-    '-c',
-    'user.name=Maka Test',
-    '-c',
-    'user.email=maka@example.invalid',
-    'commit',
-    '--quiet',
-    '-m',
-    'fixture',
-  ]);
-  const admissionOwnerToken = {};
-  const managedRepositoryOwnerToken = {};
-  const projectionOwnerToken = {};
-  const admitted = await admitGitoxideRepositoryInternal({
-    ...helper,
-    admissionOwnerToken,
-    repositoryPath,
-  });
-  assert.equal(admitted.kind, 'accepted');
-  if (admitted.kind !== 'accepted') return;
-  const imported = await importAdmittedGitoxideRepositoryInternal({
-    admissionOwnerToken,
-    repositoryCapability: admitted.capability,
-    managedRepositoryOwnerToken,
-    destinationRepositoryPath: join(repositoryPath, 'managed-projection.git'),
-    baselineRef: 'refs/maka/accepted',
-  });
-  const projectionPath = join(repositoryPath, 'projection');
-  const projection = await materializeGitoxideProjectionInternal({
-    managedRepositoryOwnerToken,
-    managedRepositoryCapability: imported.managedRepositoryCapability,
-    projectionOwnerToken,
-    destinationPath: projectionPath,
-  });
-
-  assert.equal(
-    await readFile(join(projectionPath, 'hello.txt'), 'utf8'),
-    'hello from projection authority\n',
-  );
-  assert.equal(
-    (
-      await observeGitoxideProjectionInternal({
-        projectionOwnerToken,
-        projectionCapability: projection.projectionCapability,
-      })
-    ).kind,
-    'projection_observed',
-  );
-  await writeFile(join(projectionPath, 'hello.txt'), 'projection was externally changed\n');
-  const drifted = await observeGitoxideProjectionInternal({
-    projectionOwnerToken,
-    projectionCapability: projection.projectionCapability,
-  });
-  assert.equal(drifted.kind, 'projection_drifted');
-  if (drifted.kind === 'projection_drifted') {
-    assert.equal(drifted.reason, 'expected_file_size_mismatch');
-    assert.equal(drifted.path, 'hello.txt');
-  }
-  await assert.rejects(
-    observeGitoxideProjectionInternal({
-      projectionOwnerToken: {},
-      projectionCapability: projection.projectionCapability,
-    }),
-    GitoxideRepositoryAdmissionAuthorityError,
   );
 });
 
@@ -379,7 +409,7 @@ test('reads an immutable accepted-tree file without consulting the projection fi
     'fixture',
   ]);
   const admissionOwnerToken = {};
-  const managedRepositoryOwnerToken = {};
+  const acceptedRepositoryOwnerToken = {};
   const admitted = await admitGitoxideRepositoryInternal({
     ...helper,
     admissionOwnerToken,
@@ -390,14 +420,14 @@ test('reads an immutable accepted-tree file without consulting the projection fi
   const imported = await importAdmittedGitoxideRepositoryInternal({
     admissionOwnerToken,
     repositoryCapability: admitted.capability,
-    managedRepositoryOwnerToken,
+    acceptedRepositoryOwnerToken,
     destinationRepositoryPath: join(repositoryPath, 'managed-tree-read.git'),
     baselineRef: 'refs/maka/accepted',
   });
 
   const result = await readGitoxideTreeFileInternal({
-    managedRepositoryOwnerToken,
-    managedRepositoryCapability: imported.managedRepositoryCapability,
+    acceptedRepositoryOwnerToken,
+    acceptedRepositoryCapability: imported.acceptedRepositoryCapability,
     path: 'package.json',
   });
   assert.equal(result.content, '{"name":"fixture","private":true}\n');
@@ -405,8 +435,8 @@ test('reads an immutable accepted-tree file without consulting the projection fi
   assert.equal(result.acceptedTreeOid, imported.baselineTreeOid);
   await assert.rejects(
     readGitoxideTreeFileInternal({
-      managedRepositoryOwnerToken: {},
-      managedRepositoryCapability: imported.managedRepositoryCapability,
+      acceptedRepositoryOwnerToken: {},
+      acceptedRepositoryCapability: imported.acceptedRepositoryCapability,
       path: 'package.json',
     }),
     GitoxideRepositoryAdmissionAuthorityError,
@@ -444,7 +474,7 @@ test('reuses the exact helper capability captured by repository admission', asyn
   const imported = await importAdmittedGitoxideRepositoryInternal({
     admissionOwnerToken,
     repositoryCapability: admitted.capability,
-    managedRepositoryOwnerToken: {},
+    acceptedRepositoryOwnerToken: {},
     destinationRepositoryPath: join(repositoryPath, 'captured-helper-import.git'),
     baselineRef: 'refs/maka/baseline',
   });
@@ -470,6 +500,12 @@ async function admittedHelper(): Promise<AdmittedHelper | undefined> {
       platform: process.platform,
       arch: process.arch,
       protocolVersion: 1,
+      supportedOperations: [
+        'inspect_repository',
+        'import_source_head',
+        'create_candidate',
+        'read_tree_file',
+      ],
     });
     const helperCapability = await admitGitoxideHelperArtifactInternal({
       releaseOwnerToken,
@@ -479,6 +515,35 @@ async function admittedHelper(): Promise<AdmittedHelper | undefined> {
     return { invocationOwnerToken, helperCapability, helperArtifactSha256 };
   })();
   return admittedHelperPromise;
+}
+
+async function admittedHelperWithOperations(
+  supportedOperations: readonly GitoxideHelperOperationInternal[],
+): Promise<AdmittedHelper | undefined> {
+  const configuredHelperPath = process.env.MAKA_GITOXIDE_HELPER_PATH;
+  if (!configuredHelperPath) return undefined;
+  const helperPath = await realpath(configuredHelperPath);
+  const helperBytes = await readFile(helperPath);
+  const helperInfo = await stat(helperPath);
+  const helperArtifactSha256 =
+    `sha256:${createHash('sha256').update(helperBytes).digest('hex')}` as const;
+  const releaseOwnerToken = {};
+  const invocationOwnerToken = {};
+  const claim = issueGitoxideHelperReleaseArtifactClaimInternal(releaseOwnerToken, {
+    executablePath: helperPath,
+    expectedSha256: helperArtifactSha256,
+    expectedBytes: helperInfo.size,
+    platform: process.platform,
+    arch: process.arch,
+    protocolVersion: 1,
+    supportedOperations,
+  });
+  const helperCapability = await admitGitoxideHelperArtifactInternal({
+    releaseOwnerToken,
+    invocationOwnerToken,
+    claim,
+  });
+  return { invocationOwnerToken, helperCapability, helperArtifactSha256 };
 }
 
 async function createRepository(t: TestContext, objectFormat: 'sha1' | 'sha256') {
