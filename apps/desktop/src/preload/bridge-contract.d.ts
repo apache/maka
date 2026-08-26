@@ -862,15 +862,6 @@ export interface MakaBridge {
         expectedAdmissionId?: string;
       },
     ): Promise<DesktopSessionStopResult>;
-    steer(
-      sessionId: string,
-      text: string,
-      admissionId?: string,
-    ): Promise<
-      | { kind: 'queued'; messageId: string }
-      | { kind: 'outcome_unknown'; messageId: string }
-      | { kind: 'started'; turnId: string }
-    >;
     /**
      * The single Message admission path. Skill and orchestration intent travel
      * with the Message; Runtime Host decides whether it opens its own Turn,

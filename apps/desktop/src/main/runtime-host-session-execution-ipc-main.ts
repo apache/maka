@@ -424,26 +424,6 @@ export function registerRuntimeHostSessionExecutionIpc(
   );
 
   ipcMain.handle(
-    "sessions:steer",
-    async (_event, sessionId: string, text: unknown, admissionId: unknown) => {
-      const content = steeringContent(text);
-      const messageId = admissionId === undefined ? newId() : requiredId(admissionId, "Admission");
-      const submitted = await submitMessageWithReconnect(deps.client, {
-        sessionId,
-        messageId,
-        content: { text: content },
-        placement: "current_turn",
-      });
-      if (!submitted) return { kind: 'outcome_unknown' as const, messageId };
-      return submitted.disposition === "turn_started"
-        ? { kind: "started" as const, turnId: submitted.turnId }
-        : {
-            kind: "queued" as const,
-            messageId,
-          };
-    },
-  );
-  ipcMain.handle(
     "sessions:submitMessage",
     async (event, sessionId: string, placement: unknown, value: unknown) => {
       if (placement !== "current_turn" && placement !== "next_turn") {
@@ -953,16 +933,6 @@ function requiredSequence(value: unknown, label: string): number {
   return value as number;
 }
 
-function steeringContent(value: unknown): string {
-  if (
-    typeof value !== "string" ||
-    value.trim().length === 0 ||
-    value.length > 128_000
-  ) {
-    throw new Error("Invalid steering text");
-  }
-  return value.trim();
-}
 
 function isTerminalStatus(status: string): boolean {
   return (

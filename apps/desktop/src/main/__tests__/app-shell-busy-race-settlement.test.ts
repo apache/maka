@@ -204,6 +204,42 @@ describe('busy-raced send settlement', () => {
     }
   });
 
+  it('retires a Follow Up the Host refused outright', async () => {
+    const transient = new Map<string, StoredMessage>();
+    // A Follow Up submitted just as the running Turn settles is admitted as a
+    // fresh Turn, so an unresolvable Skill token in it is refused outright.
+    // No Turn opened and no canonical message will ever replace the row, so
+    // leaving it visible would strand it there for the life of the Session.
+    const restoreWindow = installWindow({
+      sessions: {
+        submitMessage: async () => ({
+          ok: false,
+          reason: 'skill_invocation_failed' as const,
+          skillInvocation: {
+            loaded: [],
+            failed: [{ request: 'typo', reason: 'not_found' as const }],
+            receipts: [],
+          },
+        }),
+      },
+    });
+    try {
+      const actions = createAppShellChatActions({
+        ...createActionsDeps(),
+        activeIdRef: { current: 'session-a' },
+        addTransientMessage: (_sessionId, message) => transient.set(message.id, message),
+        updateTransientMessage: (_sessionId, message) => transient.set(message.id, message),
+        removeTransientMessage: (_sessionId, messageId) => transient.delete(messageId),
+      });
+
+      await actions.enqueueMessage('session-a', '/skill:typo do this next', 'next_turn');
+
+      assert.deepEqual([...transient.keys()], []);
+    } finally {
+      restoreWindow();
+    }
+  });
+
   it('does not resurrect a Follow Up retracted before its IPC reply settles', async () => {
     const transient = new Map<string, StoredMessage>();
     let submittedMessageId: string | undefined;

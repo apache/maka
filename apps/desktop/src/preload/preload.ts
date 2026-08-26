@@ -1679,17 +1679,6 @@ const makaBridge = {
     ): Promise<DesktopSessionStopResult> {
       return invokeSessionRuntimeHost('sessions:stop', sessionId, input);
     },
-    steer(
-      sessionId: string,
-      text: string,
-      admissionId?: string,
-    ): Promise<
-      | { kind: 'queued'; messageId: string }
-      | { kind: 'outcome_unknown'; messageId: string }
-      | { kind: 'started'; turnId: string }
-    > {
-      return invokeSessionRuntimeHost('sessions:steer', sessionId, text, admissionId);
-    },
     async submitMessage(sessionId, placement, command) {
       const session = await runtimeHostSessionRef(sessionId);
       const attachmentItems = command.attachmentItems

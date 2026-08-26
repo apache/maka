@@ -971,28 +971,6 @@ test("retries a dispatched busy fallback with its original message identity", as
   );
 });
 
-test("returns the Host-started Turn identity when a direct steer races idle", async () => {
-  const ipc = ipcHarness();
-  registerExecutionIpc(
-    {
-      client: executionClient({
-        getSession: async () => session(),
-        submitMessage: async () => ({
-          disposition: "turn_started",
-          turnId: "host-started-turn",
-        }),
-      }),
-      newId: () => "steer-message-id",
-    },
-    ipc,
-  );
-
-  assert.deepEqual(await ipc.invoke("sessions:steer", "session-1", "continue now"), {
-    kind: "started",
-    turnId: "host-started-turn",
-  });
-});
-
 test("starts the turn from the queued message when the busy race resolves idle", async () => {
   const changes: unknown[] = [];
   const submits: unknown[] = [];
@@ -1410,15 +1388,24 @@ test("binds steer and stop to Host-owned queue and active Turn identities", asyn
   );
 
   assert.deepEqual(
-    await ipc.invoke("sessions:steer", "session-1", "  Continue  ", "steer-ticket-1"),
-    {
-      kind: "queued",
+    await ipc.invoke("sessions:submitMessage", "session-1", "current_turn", {
       messageId: "steer-ticket-1",
+      text: "Continue",
+    }),
+    {
+      ok: true,
+      disposition: "steering",
+      attachments: [],
+      inlineReferences: [],
+      skillInvocation: { loaded: [], failed: [], receipts: [] },
     },
   );
   assert.deepEqual(
-    await ipc.invoke('sessions:steer', 'session-1', 'Continue', 'unknown-ticket'),
-    { kind: 'outcome_unknown', messageId: 'unknown-ticket' },
+    await ipc.invoke('sessions:submitMessage', 'session-1', 'current_turn', {
+      messageId: 'unknown-ticket',
+      text: 'Continue',
+    }),
+    { ok: false, reason: 'outcome_unknown' },
   );
   assert.deepEqual(
     await ipc.invoke("sessions:stop", "session-1", {
@@ -1467,13 +1454,13 @@ test("binds steer and stop to Host-owned queue and active Turn identities", asyn
     {
       sessionId: "session-1",
       messageId: "steer-ticket-1",
-      content: { text: "Continue" },
+      content: { text: "Continue", inlineReferences: [] },
       placement: "current_turn",
     },
     {
       sessionId: 'session-1',
       messageId: 'unknown-ticket',
-      content: { text: 'Continue' },
+      content: { text: 'Continue', inlineReferences: [] },
       placement: 'current_turn',
     },
   ]);

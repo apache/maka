@@ -23,6 +23,7 @@ import type { DesktopNewTaskTarget } from '../preload/bridge-contract.js';
 import type { InlineReference, QuoteRef } from '@maka/core/events';
 import type { OrchestrationMode } from '@maka/core/orchestration';
 import type { SandboxBoundaryResponse } from '@maka/core/sandbox-boundary';
+import type { SkillInvocationResult } from '@maka/runtime/skill-invocation';
 import type { StoredMessage } from '@maka/core/session';
 import type { ThinkingLevel } from '@maka/core/model-thinking';
 import type { TurnOrchestration } from '@maka/core/runtime-inputs';
@@ -298,6 +299,81 @@ export function createAppShellChatActions(deps: {
     });
   }
 
+  /**
+   * What a submitted Message became, as far as this client can tell.
+   *
+   * `unreconciled` is the only outcome that leaves the transient row in place:
+   * the answer was lost, so Runtime Host may well have acted on the Message and
+   * canonical transcript is what settles it. A `refused` Message opened no Turn
+   * and will never be replaced by a canonical one, so its row is already gone.
+   */
+  type SubmittedMessage =
+    | { kind: 'projected'; skillInvocation: SkillInvocationResult; turnId?: string }
+    | { kind: 'unreconciled' }
+    | { kind: 'refused'; skillInvocation: SkillInvocationResult };
+
+  /**
+   * The one place a submitted Message's outcome becomes UI. Every submission —
+   * first send, send into an existing Session, Follow Up — projects its row the
+   * same way, so the rules for retiring and updating it cannot drift apart.
+   */
+  async function submitAndProject(input: {
+    sessionId: string;
+    messageId: string;
+    placement: 'current_turn' | 'next_turn';
+    command: Omit<
+      Parameters<typeof window.maka.sessions.submitMessage>[2],
+      'messageId'
+    >;
+    displayText?: string;
+    quotes?: readonly QuoteRef[];
+    exactTurn?: boolean;
+    /** Whether this Session's surface is on screen to receive Skill feedback. */
+    isSurfaceVisible?: () => boolean;
+  }): Promise<SubmittedMessage> {
+    const { sessionId, messageId, placement } = input;
+    const quotes = input.quotes ?? [];
+    const result = await window.maka.sessions.submitMessage(sessionId, placement, {
+      ...input.command,
+      messageId,
+    });
+    const surfaceVisible = input.isSurfaceVisible?.() ?? true;
+    if (!result.ok) {
+      if (result.reason === 'outcome_unknown') return { kind: 'unreconciled' };
+      removeOptimisticUserMessage(sessionId, messageId);
+      if (input.exactTurn) disarmTurnActive(sessionId, messageId);
+      if (surfaceVisible) {
+        showSkillInvocationFeedback(uiLocale, toastApi, result.skillInvocation, sessionId);
+      }
+      return { kind: 'refused', skillInvocation: result.skillInvocation };
+    }
+    if (surfaceVisible) {
+      showSkillInvocationFeedback(uiLocale, toastApi, result.skillInvocation, sessionId);
+    }
+    // The row is updated whether or not the surface is on screen: attachments,
+    // inline references and the Host Turn grouping are what the user finds when
+    // they come back to it.
+    showTransientUserMessage(
+      sessionId,
+      messageId,
+      input.displayText ??
+        skillInvocationDisplayText(input.command.text, result.skillInvocation),
+      result.attachments,
+      {
+        updateOnly: true,
+        placement,
+        ...(result.turnId ? { hostTurnId: result.turnId } : {}),
+        ...(quotes.length > 0 ? { quotes } : {}),
+        inlineReferences: result.inlineReferences ?? [],
+      },
+    );
+    return {
+      kind: 'projected',
+      skillInvocation: result.skillInvocation,
+      ...(result.turnId ? { turnId: result.turnId } : {}),
+    };
+  }
+
   async function send(
     text: string,
     pending?: readonly PendingAttachment[],
@@ -400,67 +476,31 @@ export function createAppShellChatActions(deps: {
             ? { workspaceFileReferences: [...options.workspaceFileReferences] }
             : {}),
         };
-        const sendResult = await window.maka.sessions.submitMessage(
-          session.id,
-          'current_turn',
-          {
+        const submitted = await submitAndProject({
+          sessionId: session.id,
+          messageId,
+          placement: 'current_turn',
+          command: {
             ...sendCommand,
-            messageId,
             ...(options.turnOrchestration
               ? { turnOrchestration: options.turnOrchestration }
               : {}),
           },
-        );
-        if (!sendResult.ok) {
-          if (sendResult.reason === 'outcome_unknown') {
-            unsentSessionId = undefined;
-            options.onSessionResolved?.(session.id);
-            if (newChatOwner && isNewChatSendSurfaceActive(newChatOwner)) {
-              setNavSelection({ section: 'sessions' });
-              setActiveId(session.id);
-            }
-            await refreshSessions();
-            return true;
-          }
-          removeOptimisticUserMessage(session.id, messageId);
-          if (newChatOwner && isNewChatSendSurfaceActive(newChatOwner)) {
-            showSkillInvocationFeedback(
-              uiLocale,
-              toastApi,
-              sendResult.skillInvocation,
-              session.id,
-            );
-          }
-          if (exactTurn) disarmTurnActive(session.id, messageId);
+          ...(options.displayText ? { displayText: options.displayText } : {}),
+          ...(quotes && quotes.length > 0 ? { quotes } : {}),
+          exactTurn,
+          isSurfaceVisible: () =>
+            Boolean(newChatOwner && isNewChatSendSurfaceActive(newChatOwner)),
+        });
+        if (submitted.kind === 'refused') {
           await discardUnsentSession();
           return false;
         }
         unsentSessionId = undefined;
         options.onSessionResolved?.(session.id);
         if (newChatOwner && isNewChatSendSurfaceActive(newChatOwner)) {
-          showSkillInvocationFeedback(
-            uiLocale,
-            toastApi,
-            sendResult.skillInvocation,
-            session.id,
-          );
-        }
-        if (newChatOwner && isNewChatSendSurfaceActive(newChatOwner)) {
           setNavSelection({ section: 'sessions' });
           setActiveId(session.id);
-          showTransientUserMessage(
-            session.id,
-            messageId,
-            options.displayText ??
-              skillInvocationDisplayText(text, sendResult.skillInvocation),
-            sendResult.attachments,
-            {
-              ...(sendResult.turnId ? { hostTurnId: sendResult.turnId } : {}),
-              updateOnly: true,
-                ...(quotes && quotes.length > 0 ? { quotes } : {}),
-              inlineReferences: sendResult.inlineReferences ?? [],
-            },
-          );
         }
         await refreshSessions();
         return true;
@@ -516,47 +556,22 @@ export function createAppShellChatActions(deps: {
           ? { workspaceFileReferences: [...options.workspaceFileReferences] }
           : {}),
       };
-      const sendResult = await window.maka.sessions.submitMessage(sessionId, 'current_turn', {
-        ...sendCommand,
-        messageId,
-        ...(options.turnOrchestration ? { turnOrchestration: options.turnOrchestration } : {}),
-      });
-      if (!sendResult.ok) {
-        if (sendResult.reason === 'outcome_unknown') return true;
-        removeOptimisticUserMessage(sessionId, messageId);
-        if (activeIdRef.current === sessionId) {
-          showSkillInvocationFeedback(
-            uiLocale,
-            toastApi,
-            sendResult.skillInvocation,
-            sessionId,
-          );
-        }
-        if (exactTurn) disarmTurnActive(sessionId, messageId);
-        return false;
-      }
-      options.onSessionResolved?.(sessionId);
-      if (activeIdRef.current === sessionId) {
-        showSkillInvocationFeedback(
-          uiLocale,
-          toastApi,
-          sendResult.skillInvocation,
-          sessionId,
-        );
-      }
-      showTransientUserMessage(
+      const submitted = await submitAndProject({
         sessionId,
         messageId,
-        options.displayText ??
-          skillInvocationDisplayText(text, sendResult.skillInvocation),
-        sendResult.attachments,
-        {
-          ...(sendResult.turnId ? { hostTurnId: sendResult.turnId } : {}),
-          updateOnly: true,
-          ...(quotes && quotes.length > 0 ? { quotes } : {}),
-          inlineReferences: sendResult.inlineReferences ?? [],
+        placement: 'current_turn',
+        command: {
+          ...sendCommand,
+          ...(options.turnOrchestration ? { turnOrchestration: options.turnOrchestration } : {}),
         },
-      );
+        ...(options.displayText ? { displayText: options.displayText } : {}),
+        ...(quotes && quotes.length > 0 ? { quotes } : {}),
+        exactTurn,
+        isSurfaceVisible: () => activeIdRef.current === sessionId,
+      });
+      if (submitted.kind === 'refused') return false;
+      if (submitted.kind === 'unreconciled') return true;
+      options.onSessionResolved?.(sessionId);
       return true;
     } catch (error) {
       await discardUnsentSession();
@@ -637,22 +652,21 @@ export function createAppShellChatActions(deps: {
     try {
       const attachmentItems = pending?.length ? toComposerIngestItems(pending) : [];
       const retainedAttachments = pending?.length ? retainedAttachmentRefs(pending) : [];
-      const result = await window.maka.sessions.submitMessage(sessionId, placement, {
+      await submitAndProject({
+        sessionId,
         messageId,
-        text,
-        ...(attachmentItems.length > 0 ? { attachmentItems } : {}),
-        ...(retainedAttachments.length > 0 ? { retainedAttachments } : {}),
-        ...(quotes.length > 0 ? { quotes: [...quotes] } : {}),
-        ...(options.workspaceFileReferences?.length
-          ? { workspaceFileReferences: [...options.workspaceFileReferences] }
-          : {}),
-      });
-      if (!result.ok) return;
-      showTransientUserMessage(sessionId, messageId, text, result.attachments, {
-        updateOnly: true,
         placement,
+        command: {
+          text,
+          ...(attachmentItems.length > 0 ? { attachmentItems } : {}),
+          ...(retainedAttachments.length > 0 ? { retainedAttachments } : {}),
+          ...(quotes.length > 0 ? { quotes: [...quotes] } : {}),
+          ...(options.workspaceFileReferences?.length
+            ? { workspaceFileReferences: [...options.workspaceFileReferences] }
+            : {}),
+        },
         ...(quotes.length > 0 ? { quotes } : {}),
-        inlineReferences: result.inlineReferences,
+        isSurfaceVisible: () => activeIdRef.current === sessionId,
       });
     } catch (error) {
       removeOptimisticUserMessage(sessionId, messageId);
