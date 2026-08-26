@@ -341,6 +341,35 @@ test('does not advance a finished graph for an ordinary default Turn', async () 
   }
 });
 
+test('uses the submitted Turn identity for the canonical external user message', async () => {
+  const fixture = await createFailureFixture({
+    registerBackend: (backends) =>
+      backends.register('ai-sdk', (context) => new FakeBackend(context)),
+  });
+  try {
+    const turnId = 'turn-canonical-message';
+    const started = await fixture.interactiveTurns.handlers['turn.start'](
+      {
+        sessionId: fixture.sessionId,
+        turnId,
+        content: { text: 'Keep this identity stable.' },
+      },
+      operationContext(fixture.hostEpoch, fixture.acquireResidency),
+    );
+    assertStartedTurn(started);
+    await fixture.coordinator.whenIdle(fixture.sessionId);
+
+    const user = (await fixture.stores.sessionStore.readMessages(fixture.sessionId)).find(
+      (message) => message.type === 'user' && message.turnId === turnId,
+    );
+    assert.equal(user?.id, turnId);
+  } finally {
+    await fixture.coordinator.close();
+    await fixture.messages.close();
+    await fixture.dispose();
+  }
+});
+
 test('startup recovery replays one admitted safe-boundary continuation without a UserMessage', async () => {
   const workspaceIdentity = 'workspace-safe-boundary-recovery';
   const fixture = await createFailureFixture({
@@ -3498,6 +3527,12 @@ test('mixed-Client queued follow-ups use one Session successor without connectio
     assert.deepEqual(
       admissions.map((admission) => admission.sourceMessages.map((source) => source.messageId)),
       [[], ['followup-from-provider-b', 'followup-from-provider-a']],
+    );
+    assert.deepEqual(
+      (await fixture.stores.sessionStore.readMessages(fixture.sessionId))
+        .filter((message) => message.type === 'user' && message.id.startsWith('followup-from-'))
+        .map((message) => message.id),
+      ['followup-from-provider-b', 'followup-from-provider-a'],
     );
   } finally {
     first.close();

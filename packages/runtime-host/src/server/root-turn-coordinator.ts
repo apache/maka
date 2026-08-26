@@ -83,6 +83,7 @@ import {
   type HostMessageRecoveryBatch,
   type HostMessageSessionHeader,
   type HostMessageStartInput,
+  type HostMessageStartOutcome,
   type HostMessageStopClaim,
   type HostMessageStopFence,
   HostMessageCoordinator,
@@ -1021,7 +1022,7 @@ export class RootTurnCoordinator implements HostedExecutionAuthority {
     input: HostMessageStartInput,
     admissionLease: SessionAdmissionLease,
     commitAdmission: (canonicalContent: MessageContent) => Promise<void>,
-  ): Promise<{ readonly turnId: string } | { readonly error: string }> {
+  ): Promise<HostMessageStartOutcome> {
     if (isWorkHubCoordinationSessionId(input.sessionId)) {
       return Promise.resolve({ error: WORKHUB_COORDINATION_EXECUTION_UNAVAILABLE_REASON });
     }
@@ -1048,17 +1049,22 @@ export class RootTurnCoordinator implements HostedExecutionAuthority {
         if (unavailableReason) return { error: unavailableReason };
         const turnId = input.turnId ?? randomUUID();
         const runId = input.runId ?? randomUUID();
-        const hasSkillInvocation = parseSkillInvocationTokens(content.text).length > 0;
+        const skillIds = input.skillIds ?? [];
+        const hasSkillInvocation =
+          skillIds.length > 0 || parseSkillInvocationTokens(content.text).length > 0;
         const prepared = hasSkillInvocation
           ? await this.prepareHostedSkillInvocationContent(
               input.sessionId,
               turnId,
               content,
-              [],
+              skillIds,
               input.initiatingConnectionId,
             )
           : ({ kind: 'ready', content } as const);
         if (prepared.kind === 'rejected') {
+          // Skill resolution is the only rejection a client can act on, so it
+          // travels back as structured feedback instead of an opaque error.
+          if (prepared.skillInvocation) return { blocked: prepared.skillInvocation };
           return {
             error: prepared.outcome.ok
               ? 'Hosted Skill invocation was rejected'
@@ -1079,7 +1085,7 @@ export class RootTurnCoordinator implements HostedExecutionAuthority {
           return { error: 'Root Turn reservation is no longer current' };
         }
 
-        await this.prepareFreshAgentGraphEpoch(header);
+        await this.prepareFreshAgentGraphEpoch(header, input.turnOrchestration);
         await commitAdmission(canonicalContent.content);
 
         const admitted = await this.rootAdmissionOwner.admitRootTurn({
@@ -1092,6 +1098,8 @@ export class RootTurnCoordinator implements HostedExecutionAuthority {
             inputDigest: messageContentDigest(content),
           },
           normalizedInput: canonicalContent.content,
+          ...(input.turnOrchestration ? { turnOrchestration: input.turnOrchestration } : {}),
+          ...(prepared.skillInvocation ? { skillInvocation: prepared.skillInvocation } : {}),
           sourceMessages: [
             {
               ...input.sourceMessage,
@@ -1116,6 +1124,7 @@ export class RootTurnCoordinator implements HostedExecutionAuthority {
             sessionId: input.sessionId,
             turnId,
             content: canonicalContent.content,
+            ...(input.turnOrchestration ? { turnOrchestration: input.turnOrchestration } : {}),
           },
           admitted.admission,
           this.acquireRecoveryResidency,
@@ -1129,7 +1138,10 @@ export class RootTurnCoordinator implements HostedExecutionAuthority {
             'Fresh Message root Turn did not reserve execution',
           );
         }
-        return { turnId };
+        return {
+          turnId,
+          ...(prepared.skillInvocation ? { skillInvocation: prepared.skillInvocation } : {}),
+        };
       } finally {
         this.releaseRootReservation(reservation);
       }
@@ -1151,6 +1163,10 @@ export class RootTurnCoordinator implements HostedExecutionAuthority {
       if (!reservation) return { error: 'Another root Turn is being admitted' };
       try {
         const turnId = randomUUID();
+        // The recovered Message asked for this mode before the Host stopped;
+        // admitting without it would run a different Turn than was requested.
+        const turnOrchestration = input.submittedIntent?.turnOrchestration;
+        await this.prepareFreshAgentGraphEpoch(header, turnOrchestration);
         const admitted = await this.rootAdmissionOwner.admitRootTurn({
           sessionId: input.sessionId,
           turnId,
@@ -1161,6 +1177,7 @@ export class RootTurnCoordinator implements HostedExecutionAuthority {
             inputDigest: messageContentDigest(input.submittedContent),
           },
           normalizedInput: input.content,
+          ...(turnOrchestration ? { turnOrchestration } : {}),
           sourceMessages: input.sources,
           admittedAt: Date.now(),
         });
@@ -1507,7 +1524,13 @@ export class RootTurnCoordinator implements HostedExecutionAuthority {
           sessionId: request.sessionId,
           turnId: request.turnId,
           proposedRunId: randomUUID(),
-          proposedUserMessageId: randomUUID(),
+          // The interactive send's operation identity is also its canonical
+          // user-message identity. Clients can therefore render immediately
+          // and let the durable transcript replace that row in place. Other
+          // Turn kinds do not carry a user message and retain their own
+          // generated admission identity.
+          proposedUserMessageId:
+            request.execution.kind === 'external_message' ? request.turnId : randomUUID(),
           execution: request.execution,
           normalizedInput: canonicalContent.content,
           ...(request.turnOrchestration ? { turnOrchestration: request.turnOrchestration } : {}),

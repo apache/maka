@@ -114,6 +114,8 @@ export type {
   MessageAdmissionStore,
   PendingMessageAdmission,
 } from './message-admission-store.js';
+export { submittedTurnIntentsEqual } from './submitted-turn-intent.js';
+export type { SubmittedTurnIntent } from './submitted-turn-intent.js';
 export type {
   ProbeSessionRemovalResult,
   ExternalSessionImportLookupResult,
@@ -415,6 +417,8 @@ async function createExecutionStoresForWrite<K extends StorageRootKind, E extend
         run(() => sessionStore.commitMessageAdmission(admission)),
       readMessageAdmission: (sessionId, messageId) =>
         run(() => sessionStore.readMessageAdmission(sessionId, messageId)),
+      hasCancelledMessageAdmission: (sessionId, messageId) =>
+        run(() => sessionStore.hasCancelledMessageAdmission(sessionId, messageId)),
       listMessageAdmissions: (sessionId) =>
         run(() => sessionStore.listMessageAdmissions(sessionId)),
       markMessagesHandedOff: (input) => run(() => sessionStore.markMessagesHandedOff(input)),

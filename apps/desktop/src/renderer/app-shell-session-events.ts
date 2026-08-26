@@ -30,6 +30,7 @@ import {
   settleLiveTurnStep,
   type LiveTurnProjection,
   type InteractionQueues,
+  type TransientUserMessageProjection,
 } from '@maka/ui';
 import type { RefreshMessagesOptions } from './app-shell-chat-actions.js';
 import type { MessageQueueUiState } from './app-shell-session-ui-state.js';
@@ -84,6 +85,11 @@ export function createAppShellSessionEventHandlers(options: {
   setLiveTurnBySession: StateUpdater<Record<string, LiveTurnProjection>>;
   setInteractionBySession: StateUpdater<InteractionQueues>;
   setMessageQueueBySession?: StateUpdater<Record<string, MessageQueueUiState>>;
+  projectQueuedTransientMessages?: (
+    sessionId: string,
+    messages: readonly TransientUserMessageProjection[],
+  ) => void;
+  removeTransientMessage?: (sessionId: string, messageId: string) => void;
   onInteractionChanged?: (sessionId: string) => void;
   /** A boundary decision settled: the session's execution boundary may have moved. */
   onExecutionBoundaryChanged?: (sessionId: string) => void;
@@ -111,6 +117,8 @@ export function createAppShellSessionEventHandlers(options: {
     setLiveTurnBySession,
     setInteractionBySession,
     setMessageQueueBySession,
+    projectQueuedTransientMessages,
+    removeTransientMessage,
     onInteractionChanged,
     onExecutionBoundaryChanged,
     onContextCompactionOutcome,
@@ -283,6 +291,23 @@ export function createAppShellSessionEventHandlers(options: {
 
     switch (event.type) {
       case 'queue_update':
+        projectQueuedTransientMessages?.(
+          sessionId,
+          [...(event.steeringEntries ?? []), ...(event.followupEntries ?? [])]
+            .filter((entry) => entry.state === 'queued')
+            .map((entry) => ({
+              id: entry.messageId,
+              transientPlacement: entry.placement,
+              ...(entry.placement === 'current_turn' ? { hostTurnId: event.turnId } : {}),
+              ts: event.ts,
+              text: entry.content.displayText ?? entry.content.text,
+              ...(entry.content.attachments ? { attachments: [...entry.content.attachments] } : {}),
+              ...(entry.content.quotes ? { quotes: [...entry.content.quotes] } : {}),
+              ...(entry.content.inlineReferences
+                ? { inlineReferences: [...entry.content.inlineReferences] }
+                : {}),
+            })),
+        );
         setMessageQueueBySession?.((current) => {
           if (event.steering.length === 0 && event.followup.length === 0) {
             if (!(sessionId in current)) return current;
@@ -301,6 +326,17 @@ export function createAppShellSessionEventHandlers(options: {
             },
           };
         });
+        break;
+      case 'message_admission':
+        if (event.outcome === 'retracted') {
+          removeTransientMessage?.(sessionId, event.messageId);
+        }
+        break;
+      case 'steering_message':
+        // The live Turn projection now renders this same messageId in place.
+        // Retire only the renderer-owned tail row; a later nack queue_update
+        // will project it again if the Host returns the message to the queue.
+        removeTransientMessage?.(sessionId, event.messageId);
         break;
       case 'text_complete':
         void refreshMessages(sessionId, { requiredAssistantMessageId: event.messageId }).catch(() => false);

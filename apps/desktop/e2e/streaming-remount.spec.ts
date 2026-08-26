@@ -231,11 +231,25 @@ test('returning to a live conversation settles output accumulated while away', a
         unsubscribe();
         resolve();
       });
-      void window.maka.sessions.steer(sessionId, steering).catch((error) => {
-        window.clearTimeout(timeout);
-        unsubscribe();
-        reject(error);
-      });
+      // Runtime Host decides what this Message becomes; the test only needs it
+      // to reach the running Turn, so anything short of an accepted admission
+      // fails closed rather than waiting out the timeout.
+      void window.maka.sessions
+        .submitMessage(sessionId, 'current_turn', {
+          messageId: crypto.randomUUID(),
+          text: steering,
+        })
+        .then((result) => {
+          if (result.ok) return;
+          window.clearTimeout(timeout);
+          unsubscribe();
+          reject(new Error(`Runtime Host refused the steering Message: ${result.reason}`));
+        })
+        .catch((error) => {
+          window.clearTimeout(timeout);
+          unsubscribe();
+          reject(error);
+        });
     }),
     { sessionId: originalSessionId!, steering: backgroundSteering },
   );

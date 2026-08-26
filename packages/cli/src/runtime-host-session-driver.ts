@@ -31,7 +31,6 @@ import {
 import { markPersisted } from '@maka/core/persisted-value';
 import {
   type ActiveInteractionRequestEvent,
-  type QueueEnqueueOutcome,
   type SessionEvent,
   type ShellRunUpdate,
 } from '@maka/core/events';
@@ -58,6 +57,7 @@ import {
   readRuntimeHostResources,
   readRuntimeHostSessions,
   RuntimeHostOperationError,
+  RuntimeHostRequestInterruptedError,
 } from '@maka/runtime-host/client';
 import {
   InteractionPendingSnapshot,
@@ -82,6 +82,7 @@ import type {
   MakaSideConversationCloseResult,
   MakaSideConversationOpenResult,
   MakaSideConversationParentStatus,
+  MakaRetractedMessages,
   MakaPreparePromptOptions,
   MakaPreparedSessionTurn,
   MakaSessionDriver,
@@ -90,11 +91,15 @@ import type {
   MakaSessionSwitchOptions,
   MakaSessionSwitchResult,
   MakaTranscriptReplacementReason,
+  MakaSubmitMessageOptions,
   CreateSessionRequest,
   RewindTarget,
   SessionResumeAvailability,
 } from './session-driver.js';
-import { inspectSessionResumeAvailability, SkillInvocationBlockedError } from './session-driver.js';
+import {
+  inspectSessionResumeAvailability,
+  skillInvocationBlockedMessage,
+} from './session-driver.js';
 import {
   cwdRank,
   firstLine,
@@ -325,7 +330,7 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
       };
       const result = await this.#connection.request('turn.start', startInput);
       if (result.kind === 'blocked') {
-        throw new SkillInvocationBlockedError(result.skillInvocation);
+        throw new Error(skillInvocationBlockedMessage(result.skillInvocation));
       }
       const started = result.turn;
       const skillInvocation =
@@ -388,28 +393,66 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
     yield* events;
   }
 
-  async steer(text: string): Promise<QueueEnqueueOutcome> {
-    return this.#enqueue(text, 'current_turn');
+  submitMessage(
+    text: string,
+    options: MakaSubmitMessageOptions,
+  ): Promise<OperationOutput<'turn.message.submit'> | undefined> {
+    return this.#admit(() => this.#submitMessage(text, options));
   }
 
-  async queueMessage(text: string): Promise<QueueEnqueueOutcome> {
-    return this.#enqueue(text, 'next_turn');
+  async #submitMessage(
+    text: string,
+    options: MakaSubmitMessageOptions,
+  ): Promise<OperationOutput<'turn.message.submit'> | undefined> {
+    const sessionId = await this.#ensureSession();
+    const sessionGeneration = this.#sessionGeneration;
+    const configuration = await this.#loadConfiguration(sessionId);
+    this.#assertCurrentSession(sessionId, sessionGeneration);
+    await this.#ensureChannel(sessionId);
+    this.#assertCurrentSession(sessionId, sessionGeneration);
+    this.#adoptLoadedConfiguration(configuration);
+    const modelText = options.modelText ?? text;
+    try {
+      return await this.#request('turn.message.submit', {
+        originHostEpoch: this.#connection.hostEpoch,
+        sessionId,
+        messageId: options.messageId,
+        content: {
+          text: modelText,
+          ...(modelText === text ? {} : { displayText: text }),
+        },
+        placement: options.placement,
+        ...(options.turnOrchestration ? { turnOrchestration: options.turnOrchestration } : {}),
+      });
+    } catch (error) {
+      if (
+        (error instanceof RuntimeHostOperationError && error.code === 'outcome_unknown') ||
+        (error instanceof RuntimeHostRequestInterruptedError && error.dispatch === 'dispatched')
+      ) {
+        return undefined;
+      }
+      throw error;
+    }
   }
 
-  async takePendingFollowup(): Promise<string | null> {
-    // Runtime Host owns the terminal transition and starts the queued follow-up
-    // atomically. Returning its text here would make the TUI submit it twice.
-    return null;
+  async queryCancelledMessages(
+    messageIds: readonly string[],
+  ): Promise<OperationOutput<'turn.message.query'>> {
+    const sessionId = await this.#ensureSession();
+    return this.#request('turn.message.query', { sessionId, messageIds });
   }
 
-  async retractQueued(): Promise<string> {
-    if (!this.#sessionId) return '';
+  async retractQueued(): Promise<MakaRetractedMessages> {
+    if (!this.#sessionId) return { text: '', messageIds: [] };
     const result = await this.#request('queue.retract', {
       originHostEpoch: this.#connection.hostEpoch,
       sessionId: this.#sessionId,
       retractId: this.#newId(),
     });
-    return result.retracted.map((entry) => entry.content.text).join('\n\n');
+    return {
+      text: result.retracted.map((entry) => entry.content.text).join('\n\n'),
+      messageIds: result.retracted.map((entry) => entry.messageId),
+    };
   }
 
   async respondToSandboxBoundary(response: SandboxBoundaryResponse): Promise<void> {
@@ -434,7 +477,11 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
     if (pending) this.#channel?.publishInteractionAnswer(answered, pending);
   }
 
-  async setModel(model: string, connectionSlug?: string): Promise<void> {
+  setModel(model: string, connectionSlug?: string): Promise<void> {
+    return this.#admit(() => this.#setModel(model, connectionSlug));
+  }
+
+  async #setModel(model: string, connectionSlug?: string): Promise<void> {
     const nextConnection = connectionSlug ?? this.#llmConnectionSlug;
     if (this.#sessionId) {
       const session = await this.#updateConfiguration(this.#sessionId, {
@@ -449,7 +496,11 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
     this.#thinkingLevel = undefined;
   }
 
-  async setThinkingLevel(level: ThinkingLevel | undefined): Promise<void> {
+  setThinkingLevel(level: ThinkingLevel | undefined): Promise<void> {
+    return this.#admit(() => this.#setThinkingLevel(level));
+  }
+
+  async #setThinkingLevel(level: ThinkingLevel | undefined): Promise<void> {
     if (this.#sessionId) {
       this.#adoptConfiguration(
         await this.#updateConfiguration(this.#sessionId, { thinkingLevel: level ?? null }),
@@ -459,7 +510,11 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
     this.#thinkingLevel = level;
   }
 
-  async setPermissionMode(mode: PermissionMode): Promise<void> {
+  setPermissionMode(mode: PermissionMode): Promise<void> {
+    return this.#admit(() => this.#setPermissionMode(mode));
+  }
+
+  async #setPermissionMode(mode: PermissionMode): Promise<void> {
     if (this.#sessionId) {
       const session = await this.#updateConfiguration(this.#sessionId, { permissionMode: mode });
       this.#permissionMode = session.permissionMode;
@@ -472,7 +527,11 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
     this.#permissionMode = mode;
   }
 
-  async setOrchestrationMode(mode: OrchestrationMode): Promise<void> {
+  setOrchestrationMode(mode: OrchestrationMode): Promise<void> {
+    return this.#admit(() => this.#setOrchestrationMode(mode));
+  }
+
+  async #setOrchestrationMode(mode: OrchestrationMode): Promise<void> {
     if (this.#sessionId) {
       this.#adoptConfiguration(
         await this.#updateConfiguration(this.#sessionId, { orchestrationMode: mode }),
@@ -954,9 +1013,51 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
     }
   }
 
+  /**
+   * The ordered client → Host operation stream.
+   *
+   * Runtime Host decides what a Message becomes, and it decides from the state
+   * it holds when the Message arrives. That makes arrival order part of the
+   * meaning: two Enters typed before the first round trip resolves must not
+   * race into two Sessions, and a `/model` typed after a Message must not
+   * overtake it and change the Turn that Message opens.
+   *
+   * Session identity changes deliberately stay off this tail. `/session` and
+   * `/new` are how a user leaves a Session whose admission is stuck, so
+   * queueing them behind it would remove the only exit; `#assertCurrentSession`
+   * fences them instead, by failing an admission whose Session moved under it.
+   */
+  #admissionTail: Promise<unknown> = Promise.resolve();
+
+  #admit<T>(operation: () => Promise<T>): Promise<T> {
+    const admitted = this.#admissionTail.then(operation, operation);
+    // A failed operation must not poison the tail: the next Message is a new
+    // intent, not a retry of the one that failed.
+    this.#admissionTail = admitted.then(
+      () => undefined,
+      () => undefined,
+    );
+    return admitted;
+  }
+
+  #sessionCreation: Promise<string> | undefined;
+
+  /**
+   * One in-flight creation, shared. Reads outside the admission tail
+   * (`queryCancelledMessages`) can reach this concurrently with an admission,
+   * and a second `session.create` would leave the first Message in a Session
+   * the TUI has already stopped displaying.
+   */
   async #ensureSession(): Promise<string> {
     if (this.#sessionId) return this.#sessionId;
-    return (await this.#createSession(DEFAULT_SESSION_NAME)).id;
+    if (this.#sessionCreation) return this.#sessionCreation;
+    const creation = this.#createSession(DEFAULT_SESSION_NAME).then((session) => session.id);
+    this.#sessionCreation = creation;
+    try {
+      return await creation;
+    } finally {
+      if (this.#sessionCreation === creation) this.#sessionCreation = undefined;
+    }
   }
 
   async #createSession(name: string): Promise<SessionCatalogProjection> {
@@ -1026,26 +1127,6 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
     const goal = next?.snapshot.goal ?? null;
     for (const listener of this.#goalListeners) listener(goal);
     await previous?.close().catch(() => undefined);
-  }
-
-  async #enqueue(
-    text: string,
-    placement: 'current_turn' | 'next_turn',
-  ): Promise<QueueEnqueueOutcome> {
-    const sessionId = this.#sessionId;
-    if (!sessionId) return { kind: 'fallback' };
-    const result = await this.#request('turn.message.submit', {
-      originHostEpoch: this.#connection.hostEpoch,
-      sessionId,
-      messageId: this.#newId(),
-      content: { text },
-      placement,
-    });
-    // A root Turn can settle between the local projection check and Host
-    // admission. The Host has already started the message in that case, so it
-    // must not be submitted again. Treat it as accepted; the subscription owns
-    // projection of the successor Turn.
-    return { kind: 'queued' };
   }
 
   async #updateConfiguration(

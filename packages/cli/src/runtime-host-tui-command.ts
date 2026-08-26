@@ -234,6 +234,8 @@ function createFirstRunSessionDriver(): MakaSessionDriver {
     getSessionId: () => null,
     listSessions: async () => [],
     preparePrompt: unavailable,
+    submitMessage: unavailable,
+    queryCancelledMessages: async () => ({ cancelledMessageIds: [] }),
     compactSession: async function* () {},
     respondToSandboxBoundary: async () => {},
     setModel: async () => {},
