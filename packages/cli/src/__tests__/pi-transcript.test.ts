@@ -287,6 +287,165 @@ describe('Maka Pi TUI transcript', () => {
     );
   });
 
+  test('status line drops whole low-value segments on overflow, lowest rank first (#3421)', () => {
+    const richMeta = {
+      ...meta(),
+      modelContextWindow: 500_000,
+      usage: {
+        costUsd: 0.42,
+        cacheHitInput: 60,
+        cacheMissInput: 40,
+        contextRemaining: 480_000,
+      },
+    };
+    // Wide: everything renders.
+    const wide = stripAnsi(renderMakaPiStatusLine(richMeta, 120));
+    assert.match(wide, /ctx 20k\/500k 4%/);
+    assert.match(wide, /\$0\.42/);
+    assert.match(wide, /cache 60%/);
+    assert.match(wide, /deepseek · \/tmp\/project/);
+
+    // Below full width, cache drops before cost, and no segment is cut
+    // mid-token while any lower rank still survives.
+    const fullWidth = visibleWidth(wide);
+    const noCache = stripAnsi(renderMakaPiStatusLine(richMeta, fullWidth - 1));
+    assert.doesNotMatch(noCache, /cache/);
+    assert.match(noCache, /\$0\.42/);
+    const noCost = stripAnsi(
+      renderMakaPiStatusLine(richMeta, fullWidth - 'cache 60% · '.length - 1),
+    );
+    assert.doesNotMatch(noCost, /cache|\$0\.42/);
+    assert.match(noCost, /deepseek · \/tmp\/project/);
+  });
+
+  test('status line shortens cwd to its basename before dropping it (#3421)', () => {
+    const line = stripAnsi(
+      renderMakaPiStatusLine(
+        {
+          ...meta(),
+          cwd: '/very/long/nested/project-directory',
+          modelContextWindow: 500_000,
+          usage: {
+            costUsd: 0,
+            cacheHitInput: 1,
+            cacheMissInput: 1,
+            contextRemaining: 480_000,
+          },
+        },
+        // Room for title, mode, model, ctx and a short tail only.
+        'Maka · Auto · deepseek-v4-flash · ctx 20k/500k 4% · project-directory'.length,
+      ),
+    );
+    assert.doesNotMatch(line, /very\/long/);
+    assert.match(line, /project-directory/);
+  });
+
+  test('status line drops a drive-root cwd instead of rendering an empty basename (#3421)', () => {
+    const line = stripAnsi(
+      renderMakaPiStatusLine(
+        {
+          ...meta(),
+          cwd: 'C:\\',
+          modelContextWindow: 500_000,
+          usage: {
+            costUsd: 0.5,
+            cacheHitInput: 1,
+            cacheMissInput: 1,
+            contextRemaining: 480_000,
+          },
+        },
+        40,
+      ),
+    );
+    // C:\ has no useful basename; the segment drops cleanly rather than
+    // leaving an empty segment dangling after the separator.
+    assert.doesNotMatch(line, /C:\\/);
+    assert.doesNotMatch(line, /·\s*$/);
+  });
+
+  test('status line never drops mode, model, goal, or ctx at narrow widths (#3421)', () => {
+    const line = stripAnsi(
+      renderMakaPiStatusLine(
+        {
+          ...meta(),
+          permissionMode: 'bypass',
+          modelContextWindow: 500_000,
+          usage: {
+            costUsd: 9.99,
+            cacheHitInput: 1,
+            cacheMissInput: 1,
+            contextRemaining: 480_000,
+          },
+          goal: {
+            goalId: 'goal-1',
+            revision: 1,
+            sessionId: 'session-1',
+            condition: 'Ship it',
+            setAt: Date.now() - 60_000,
+            iterations: 1,
+            maxIterations: 50,
+            consecutiveNoProgress: 0,
+            blockCap: 8,
+            tokenBudget: null,
+            tokensSpent: 0,
+            lastReason: null,
+            achievedAt: null,
+            pausedAt: null,
+            status: 'active' as const,
+          },
+        },
+        75,
+      ),
+    );
+    assert.match(line, /Full access/);
+    assert.match(line, /deepseek-v4-flash/);
+    assert.match(line, /goal 1\/50/);
+    assert.match(line, /ctx 20k\/500k 4%/);
+    assert.doesNotMatch(line, /\$9\.99|cache|deepseek ·|tmp\/project/);
+  });
+
+  test('status line compacts every critical segment before the narrow-width fallback (#3421)', () => {
+    const metadata = {
+      ...meta(),
+      permissionMode: 'bypass',
+      model: 'anthropic/claude-opus-4-1-very-long',
+      modelContextWindow: 500_000,
+      usage: {
+        costUsd: 9.99,
+        cacheHitInput: 1,
+        cacheMissInput: 1,
+        contextRemaining: 20_000,
+      },
+      goal: {
+        goalId: 'goal-1',
+        revision: 1,
+        sessionId: 'session-1',
+        condition: 'Ship it',
+        setAt: Date.now() - 60_000,
+        iterations: 1,
+        maxIterations: 50,
+        consecutiveNoProgress: 0,
+        blockCap: 8,
+        tokenBudget: null,
+        tokensSpent: 0,
+        lastReason: null,
+        achievedAt: null,
+        pausedAt: null,
+        status: 'active' as const,
+      },
+    };
+
+    for (const width of [40, 70, 80]) {
+      const line = stripAnsi(renderMakaPiStatusLine(metadata, width));
+      assert.ok(visibleWidth(line) <= width);
+      assert.match(line, /Maka/);
+      assert.match(line, /Full/);
+      assert.match(line, /anthropic/);
+      assert.match(line, /(?:goal |g)1\/50/);
+      assert.match(line, /(?:ctx .*96%|c96%)/);
+    }
+  });
+
   test('keeps assistant text after a tool call visible after the tool block', () => {
     const state = createMakaPiTranscriptState();
     appendUserPrompt(state, 'inspect the package');
