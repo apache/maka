@@ -18,13 +18,18 @@
  */
 
 import { strict as assert } from 'node:assert';
+import { existsSync, readFileSync } from 'node:fs';
 import { afterEach, describe, it } from 'node:test';
 import { parseHTML } from 'linkedom';
 import { act, createElement } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import type { AgentGraphClientSnapshot } from '@maka/runtime/stream-graph-read-model';
 import type { AgentGraphEpochSummary } from '@maka/runtime-host/protocol';
-import { AgentGraphPanel } from '../../renderer/agent-graph-panel.js';
+import {
+  AgentGraphPanel,
+  formatAgentGraphRunClock,
+  getAgentGraphPanelCopy,
+} from '../../renderer/agent-graph-panel.js';
 
 type GraphListener = () => void;
 
@@ -694,5 +699,83 @@ describe('AgentGraphPanel dismiss', () => {
     await harness.renderSession('session-a');
     assert.equal(harness.container.querySelector('.maka-agent-graph-panel'), null);
     await act(async () => harness.root.unmount());
+  });
+});
+
+const agentGraphCssUrl = [
+  new URL('../../renderer/styles/agent-graph.css', import.meta.url),
+  new URL('../../../src/renderer/styles/agent-graph.css', import.meta.url),
+].find((candidate) => existsSync(candidate));
+
+if (!agentGraphCssUrl) throw new Error('Could not locate renderer/styles/agent-graph.css');
+
+const agentGraphCss = readFileSync(agentGraphCssUrl, 'utf8');
+
+describe('AgentGraphPanel liveness', () => {
+  it('animates the status dot only for operators that are still working', () => {
+    const runningDotRule = agentGraphCss.match(
+      /li\[data-status="running"\][^{]*li\[data-status="runnable"\][^{]*\{([^}]*)\}/,
+    );
+    assert.ok(runningDotRule, 'running and runnable dots must share one rule');
+    // A homogeneous fan-out settles all at once, so colour alone leaves the
+    // list looking frozen for the whole run.
+    assert.match(runningDotRule[1] ?? '', /background:\s*var\(--status-running\)/);
+    assert.match(runningDotRule[1] ?? '', /animation:\s*maka-agent-graph-status-pulse 1\.5s/);
+    assert.match(agentGraphCss, /@keyframes maka-agent-graph-status-pulse/);
+
+    for (const settled of ['completed', 'failed', 'aborted']) {
+      const rule = agentGraphCss.match(
+        new RegExp(`li\\[data-status="${settled}"\\][^{]*\\{([^}]*)\\}`),
+      );
+      assert.ok(rule, settled);
+      assert.doesNotMatch(rule[1] ?? '', /animation/, settled);
+    }
+  });
+
+  it('keeps a header heartbeat for every unsettled graph status', async () => {
+    for (const status of ['active', 'waiting', 'closing'] as const) {
+      const harness = await renderPanel(snapshot({ graphId: `graph-${status}`, status }));
+      assert.ok(harness.container.querySelector('.maka-agent-graph-heartbeat'), status);
+      await act(async () => harness.root.unmount());
+    }
+  });
+
+  it('drops the heartbeat and the clock once the graph settles', async () => {
+    const harness = await renderPanel(snapshot({ graphId: 'graph-1', status: 'active' }));
+    assert.ok(harness.container.querySelector('.maka-agent-graph-heartbeat'));
+    assert.match(harness.container.textContent ?? '', /Running · 0\/0 settled · Elapsed 00:00/);
+
+    await harness.setSnapshot(snapshot({ graphId: 'graph-1', status: 'completed' }));
+    assert.equal(harness.container.querySelector('.maka-agent-graph-heartbeat'), null);
+    assert.equal(harness.container.querySelector('.maka-agent-graph-elapsed'), null);
+    assert.doesNotMatch(harness.container.textContent ?? '', /Elapsed/);
+    await act(async () => harness.root.unmount());
+  });
+
+  it('restarts the clock when the graph rolls over to a new epoch', async () => {
+    const harness = await renderPanel(snapshot({ graphId: 'graph-1', status: 'active' }));
+    const firstClock = harness.container.querySelector('.maka-agent-graph-elapsed');
+    assert.ok(firstClock);
+
+    await harness.setSnapshot(snapshot({ graphId: 'graph-2', status: 'active' }));
+    const secondClock = harness.container.querySelector('.maka-agent-graph-elapsed');
+    assert.ok(secondClock);
+    // A new epoch is a new run: reusing the element would carry the previous
+    // run's start time into it.
+    assert.notEqual(secondClock, firstClock);
+    await act(async () => harness.root.unmount());
+  });
+
+  it('formats the run clock in both locales', () => {
+    assert.equal(formatAgentGraphRunClock(0), '00:00');
+    assert.equal(formatAgentGraphRunClock(23), '00:23');
+    assert.equal(formatAgentGraphRunClock(59.9), '00:59');
+    assert.equal(formatAgentGraphRunClock(600), '10:00');
+    assert.equal(formatAgentGraphRunClock(3_599), '59:59');
+    assert.equal(formatAgentGraphRunClock(3_661), '1:01:01');
+    assert.equal(formatAgentGraphRunClock(-5), '00:00');
+
+    assert.equal(getAgentGraphPanelCopy('en').elapsed('00:23'), 'Elapsed 00:23');
+    assert.equal(getAgentGraphPanelCopy('zh').elapsed('00:23'), '已运行 00:23');
   });
 });

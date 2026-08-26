@@ -71,6 +71,7 @@ type GraphPanelCopy = {
   noOperators: string;
   hiddenOperators(count: number): string;
   progress(settled: number, total: number, hasOmitted: boolean): string;
+  elapsed(clock: string): string;
   status(status: AgentGraphClientSnapshot['status']): string;
   operatorStatus(status: AgentGraphClientOperator['status']): string;
   wait(operator: AgentGraphClientOperator): string | undefined;
@@ -100,6 +101,7 @@ export function getAgentGraphPanelCopy(locale: UiLocale): GraphPanelCopy {
       hiddenOperators: (count) => `另有 ${count} 个 operator`,
       progress: (settled, total, hasOmitted) =>
         hasOmitted ? `可见 ${settled}/${total} 已结束` : `${settled}/${total} 已结束`,
+      elapsed: (clock) => `已运行 ${clock}`,
       status: (status) =>
         ({
           empty: '等待调度',
@@ -147,6 +149,7 @@ export function getAgentGraphPanelCopy(locale: UiLocale): GraphPanelCopy {
     hiddenOperators: (count) => `${count} more operator${count === 1 ? '' : 's'}`,
     progress: (settled, total, hasOmitted) =>
       hasOmitted ? `${settled}/${total} visible settled` : `${settled}/${total} settled`,
+    elapsed: (clock) => `Elapsed ${clock}`,
     status: (status) =>
       ({
         empty: 'Awaiting schedule',
@@ -345,12 +348,13 @@ export function AgentGraphPanel(props: {
       );
     }
   };
+  const graphRunning = snapshot !== undefined && isRunningGraphStatus(snapshot.status);
   const stopAvailable =
     selectedEpoch?.current === true &&
     !loading &&
     snapshot !== undefined &&
     snapshot.graphId === selectedGraphId &&
-    ['active', 'waiting', 'closing'].includes(snapshot.status);
+    graphRunning;
   const dismissAvailable =
     selectedEpoch?.current === true &&
     !loading &&
@@ -391,6 +395,14 @@ export function AgentGraphPanel(props: {
           {epochsTruncated ? (
             <span className="maka-agent-graph-epoch-capped">{copy.cappedEpochs(epochs.length)}</span>
           ) : null}
+          {graphRunning ? (
+            <Spinner
+              size="sm"
+              shade="subtle"
+              className="maka-agent-graph-heartbeat"
+              aria-hidden="true"
+            />
+          ) : null}
           {snapshot ? (
             <span className="maka-agent-graph-progress">
               {copy.status(snapshot.status)} ·{' '}
@@ -399,6 +411,12 @@ export function AgentGraphPanel(props: {
                 progress.total,
                 snapshot.omitted.operators > 0,
               )}
+              {graphRunning ? (
+                <>
+                  {' · '}
+                  <AgentGraphRunClock key={snapshot.graphId} format={copy.elapsed} />
+                </>
+              ) : null}
             </span>
           ) : null}
         </div>
@@ -522,6 +540,45 @@ export function AgentGraphPanel(props: {
       ) : null}
     </section>
   );
+}
+
+function isRunningGraphStatus(status: AgentGraphClientSnapshot['status']): boolean {
+  return status === 'active' || status === 'waiting' || status === 'closing';
+}
+
+/**
+ * Age of the panel's own observation of a running graph.
+ *
+ * The settled counter can hold at `0/7` for an entire fan-out, so the header
+ * needs one number that always moves. The count starts from the render that
+ * first showed this graph running rather than from the epoch binding's
+ * `createdAt`, which is `0` for sessions that no epoch store backs — an
+ * "elapsed" derived from that would read as decades. Remount on `graphId`
+ * restarts it, so an epoch rollover does not inherit the previous run's clock.
+ */
+function AgentGraphRunClock(props: { format(clock: string): string }): JSX.Element {
+  const [seconds, setSeconds] = useState(0);
+  useEffect(() => {
+    const startedAt = Date.now();
+    const tick = globalThis.setInterval(() => {
+      setSeconds(Math.floor((Date.now() - startedAt) / 1_000));
+    }, 1_000);
+    return () => globalThis.clearInterval(tick);
+  }, []);
+  return (
+    <span className="maka-agent-graph-elapsed">
+      {props.format(formatAgentGraphRunClock(seconds))}
+    </span>
+  );
+}
+
+export function formatAgentGraphRunClock(totalSeconds: number): string {
+  const seconds = Math.max(0, Math.floor(totalSeconds));
+  const minutes = Math.floor(seconds / 60);
+  const pad = (value: number) => String(value).padStart(2, '0');
+  return minutes < 60
+    ? `${pad(minutes)}:${pad(seconds % 60)}`
+    : `${Math.floor(minutes / 60)}:${pad(minutes % 60)}:${pad(seconds % 60)}`;
 }
 
 function sameEpochPage(
