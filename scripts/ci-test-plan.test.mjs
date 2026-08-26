@@ -416,6 +416,26 @@ test('the recovery lane filters pull requests by the workspaces its steps execut
   }
 });
 
+test('the recovery lane filter follows the postinstall launcher chain', () => {
+  const filtered = new Set(pullRequestPathFilter('windows-recovery.yml'));
+  const manifest = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
+  // Derived from postinstall itself, then one hop into whatever those entry
+  // points launch, because a launcher the filter cannot see still decides what
+  // `npm ci` produces on Windows. A restated list missed exactly that hop.
+  const entrypoints = [...manifest.scripts.postinstall.matchAll(/node (scripts\/[\w.-]+)/gu)].map(
+    (match) => match[1],
+  );
+  assert.ok(entrypoints.length > 0, 'postinstall runs no script');
+
+  for (const entrypoint of entrypoints) {
+    assert.ok(filtered.has(entrypoint), entrypoint);
+    const source = readFileSync(new URL(`../${entrypoint}`, import.meta.url), 'utf8');
+    for (const launched of source.matchAll(/new URL\('\.\/([\w.-]+)'/gu)) {
+      assert.ok(filtered.has(`scripts/${launched[1]}`), `${entrypoint} launches ${launched[1]}`);
+    }
+  }
+});
+
 test('the recovery lane filters pull requests by what its install and clean steps consume', () => {
   const filtered = new Set(pullRequestPathFilter('windows-recovery.yml'));
 

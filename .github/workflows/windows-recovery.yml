@@ -40,6 +40,7 @@ on:
       - 'patches/**'
       - 'scripts/apply-dependency-patches.mjs'
       - 'scripts/install-electron-with-retry.mjs'
+      - 'scripts/run-electron-installer.cjs'
       - 'scripts/clean-build.mjs'
       - 'scripts/clean-paths.mjs'
       - 'scripts/windows-runtime-host-local-ipc-trust.ps1'
