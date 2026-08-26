@@ -127,7 +127,12 @@ const HELPER_ERROR_REASONS_V1: &[&str] = &[
     "source_tree_visit_limit_exceeded",
     "successor_content_limit_exceeded",
     "successor_commit_identity_mismatch",
-    "successor_publish_failed",
+    "accepted_ref_not_direct",
+    "accepted_ref_target_invalid",
+    "candidate_ref_not_direct",
+    "candidate_ref_target_invalid",
+    "candidate_request_conflict",
+    "candidate_publication_indeterminate",
     "target_ref_outside_maka_namespace",
     "target_ref_unavailable",
     "tree_edit_failed",
@@ -839,23 +844,12 @@ fn create_candidate(
         "base_tree_identity_mismatch",
     )?;
 
-    let mut base_stats = ManagedTreeStats::default();
-    walk_verified_source_tree(
+    let current = read_direct_commit_ref(
         &repository,
-        None,
-        expected_base_tree,
-        "",
-        0,
-        MANAGED_TREE_POLICY_V3,
-        &mut base_stats,
+        &accepted_ref,
+        "accepted_ref_not_direct",
+        "accepted_ref_target_invalid",
     )?;
-
-    let current = repository
-        .find_reference(accepted_ref.as_str())
-        .map_err(|_| "target_ref_unavailable")?
-        .into_fully_peeled_id()
-        .map_err(|_| "target_ref_unavailable")?
-        .detach();
     if current != expected_base {
         write_response(&Response::CandidateRejected {
             protocol_version: PROTOCOL_VERSION,
@@ -884,6 +878,62 @@ fn create_candidate(
     let no_change = existing_entry
         .as_ref()
         .is_some_and(|(_, oid)| *oid == result_blob);
+
+    if let Some(reference) = repository
+        .try_find_reference(candidate_ref.as_str())
+        .map_err(|_| "target_ref_unavailable")?
+    {
+        let existing = read_direct_commit_reference(
+            &repository,
+            reference,
+            "candidate_ref_not_direct",
+            "candidate_ref_target_invalid",
+        )?;
+        let existing_tree = verify_existing_candidate_receipt(
+            &repository,
+            existing,
+            expected_base,
+            &path,
+            result_blob,
+            &request_digest_sha256,
+        )?;
+        let mut retry_stats = ManagedTreeStats::default();
+        walk_verified_source_tree(
+            &repository,
+            None,
+            existing_tree,
+            "",
+            0,
+            MANAGED_TREE_POLICY_V3,
+            &mut retry_stats,
+        )?;
+        write_candidate_response(
+            existing_tree == expected_base_tree,
+            expected_base,
+            expected_base_tree,
+            existing,
+            existing_tree,
+            result_blob,
+            &request_digest_sha256,
+            &accepted_ref,
+            &candidate_ref,
+            &path,
+        );
+        return Ok(ExitCode::SUCCESS);
+    }
+
+    let mut base_stats = ManagedTreeStats::default();
+    walk_verified_source_tree(
+        &repository,
+        None,
+        expected_base_tree,
+        "",
+        0,
+        MANAGED_TREE_POLICY_V3,
+        &mut base_stats,
+    )?;
+    drop(base_stats);
+
     let successor_tree = if no_change {
         expected_base_tree
     } else {
@@ -950,12 +1000,12 @@ fn create_candidate(
         &request_digest_sha256,
     )?;
 
-    let accepted_current = repository
-        .find_reference(accepted_ref.as_str())
-        .map_err(|_| "target_ref_unavailable")?
-        .into_fully_peeled_id()
-        .map_err(|_| "target_ref_unavailable")?
-        .detach();
+    let accepted_current = read_direct_commit_ref(
+        &repository,
+        &accepted_ref,
+        "accepted_ref_not_direct",
+        "accepted_ref_target_invalid",
+    )?;
     if accepted_current != expected_base {
         write_response(&Response::CandidateRejected {
             protocol_version: PROTOCOL_VERSION,
@@ -975,12 +1025,14 @@ fn create_candidate(
         .map_err(|_| "target_ref_unavailable")?
     {
         Some(reference) => {
-            let existing = reference
-                .into_fully_peeled_id()
-                .map_err(|_| "target_ref_unavailable")?
-                .detach();
+            let existing = read_direct_commit_reference(
+                &repository,
+                reference,
+                "candidate_ref_not_direct",
+                "candidate_ref_target_invalid",
+            )?;
             if existing != successor_commit {
-                return Err("successor_publish_failed");
+                return Err("candidate_request_conflict");
             }
         }
         None => match repository.reference(
@@ -993,50 +1045,175 @@ fn create_candidate(
             Err(_) => {
                 let concurrent = repository
                     .try_find_reference(candidate_ref.as_str())
-                    .map_err(|_| "target_ref_unavailable")?
-                    .ok_or("successor_publish_failed")?
-                    .into_fully_peeled_id()
-                    .map_err(|_| "target_ref_unavailable")?
-                    .detach();
+                    .map_err(|_| "candidate_publication_indeterminate")?
+                    .ok_or("candidate_publication_indeterminate")?;
+                let concurrent = read_direct_commit_reference(
+                    &repository,
+                    concurrent,
+                    "candidate_ref_not_direct",
+                    "candidate_ref_target_invalid",
+                )?;
                 if concurrent != successor_commit {
-                    return Err("successor_publish_failed");
+                    return Err("candidate_request_conflict");
                 }
             }
         },
     }
 
+    write_candidate_response(
+        no_change,
+        expected_base,
+        expected_base_tree,
+        successor_commit,
+        successor_tree,
+        result_blob,
+        &request_digest_sha256,
+        &accepted_ref,
+        &candidate_ref,
+        &path,
+    );
+    Ok(ExitCode::SUCCESS)
+}
+
+fn verify_existing_candidate_receipt(
+    repository: &gix::Repository,
+    candidate_commit_oid: gix::hash::ObjectId,
+    expected_base_commit_oid: gix::hash::ObjectId,
+    path: &str,
+    expected_result_blob_oid: gix::hash::ObjectId,
+    request_digest_sha256: &str,
+) -> Result<gix::hash::ObjectId, &'static str> {
+    let commit = load_verified_object(
+        repository,
+        candidate_commit_oid,
+        gix::objs::Kind::Commit,
+        MANAGED_TREE_POLICY_V3.max_commit_object_bytes,
+        "candidate_ref_target_invalid",
+        "candidate_ref_target_invalid",
+        "commit_object_limit_exceeded",
+        "candidate_ref_target_invalid",
+    )?
+    .try_into_commit()
+    .map_err(|_| "candidate_ref_target_invalid")?
+    .decode()
+    .map_err(|_| "candidate_ref_target_invalid")?
+    .into_owned()
+    .map_err(|_| "candidate_ref_target_invalid")?;
+    let expected_message =
+        format!("maka managed workspace candidate v3\nrequest-sha256 {request_digest_sha256}");
+    if commit.message.as_slice() != expected_message.as_bytes() {
+        return Err("candidate_request_conflict");
+    }
+    if commit.parents.as_slice() != [expected_base_commit_oid]
+        || !has_managed_candidate_signature(&commit)
+    {
+        return Err("candidate_ref_target_invalid");
+    }
+    let candidate_tree = commit.tree;
+    let result_entry = lookup_verified_tree_entry(repository, candidate_tree, path)?
+        .ok_or("candidate_ref_target_invalid")?;
+    if result_entry.1 != expected_result_blob_oid {
+        return Err("candidate_ref_target_invalid");
+    }
+    Ok(candidate_tree)
+}
+
+fn has_managed_candidate_signature(commit: &gix::objs::Commit) -> bool {
+    let expected_name = b"Maka Workspace Service";
+    let expected_email = b"workspace@maka.invalid";
+    commit.author.name.as_slice() == expected_name.as_slice()
+        && commit.author.email.as_slice() == expected_email.as_slice()
+        && commit.author.time.seconds == 946_684_800
+        && commit.author.time.offset == 0
+        && commit.committer.name.as_slice() == expected_name.as_slice()
+        && commit.committer.email.as_slice() == expected_email.as_slice()
+        && commit.committer.time.seconds == 946_684_800
+        && commit.committer.time.offset == 0
+        && commit.encoding.is_none()
+        && commit.extra_headers.is_empty()
+}
+
+#[allow(clippy::too_many_arguments)]
+fn write_candidate_response(
+    no_change: bool,
+    base_commit_oid: gix::hash::ObjectId,
+    base_tree_oid: gix::hash::ObjectId,
+    candidate_commit_oid: gix::hash::ObjectId,
+    candidate_tree_oid: gix::hash::ObjectId,
+    result_blob_oid: gix::hash::ObjectId,
+    request_digest_sha256: &str,
+    accepted_ref: &str,
+    candidate_ref: &str,
+    path: &str,
+) {
     if no_change {
         write_response(&Response::CandidateNoChange {
             protocol_version: PROTOCOL_VERSION,
             object_format: "sha1",
-            base_commit_oid: expected_base.to_string(),
-            base_tree_oid: expected_base_tree.to_string(),
-            result_blob_oid: result_blob.to_string(),
-            candidate_commit_oid: successor_commit.to_string(),
-            candidate_tree_oid: successor_tree.to_string(),
-            request_digest_sha256,
-            accepted_ref,
-            candidate_ref,
-            path,
+            base_commit_oid: base_commit_oid.to_string(),
+            base_tree_oid: base_tree_oid.to_string(),
+            result_blob_oid: result_blob_oid.to_string(),
+            candidate_commit_oid: candidate_commit_oid.to_string(),
+            candidate_tree_oid: candidate_tree_oid.to_string(),
+            request_digest_sha256: request_digest_sha256.to_owned(),
+            accepted_ref: accepted_ref.to_owned(),
+            candidate_ref: candidate_ref.to_owned(),
+            path: path.to_owned(),
             managed_tree_policy_version: MANAGED_TREE_POLICY_VERSION,
         });
     } else {
         write_response(&Response::CandidatePublished {
             protocol_version: PROTOCOL_VERSION,
             object_format: "sha1",
-            base_commit_oid: expected_base.to_string(),
-            base_tree_oid: expected_base_tree.to_string(),
-            candidate_commit_oid: successor_commit.to_string(),
-            candidate_tree_oid: successor_tree.to_string(),
-            result_blob_oid: result_blob.to_string(),
-            request_digest_sha256,
-            accepted_ref,
-            candidate_ref,
-            path,
+            base_commit_oid: base_commit_oid.to_string(),
+            base_tree_oid: base_tree_oid.to_string(),
+            candidate_commit_oid: candidate_commit_oid.to_string(),
+            candidate_tree_oid: candidate_tree_oid.to_string(),
+            result_blob_oid: result_blob_oid.to_string(),
+            request_digest_sha256: request_digest_sha256.to_owned(),
+            accepted_ref: accepted_ref.to_owned(),
+            candidate_ref: candidate_ref.to_owned(),
+            path: path.to_owned(),
             managed_tree_policy_version: MANAGED_TREE_POLICY_VERSION,
         });
     }
-    Ok(ExitCode::SUCCESS)
+}
+
+fn read_direct_commit_ref(
+    repository: &gix::Repository,
+    ref_name: &str,
+    not_direct_error: &'static str,
+    invalid_target_error: &'static str,
+) -> Result<gix::hash::ObjectId, &'static str> {
+    let reference = repository
+        .find_reference(ref_name)
+        .map_err(|_| "target_ref_unavailable")?;
+    read_direct_commit_reference(
+        repository,
+        reference,
+        not_direct_error,
+        invalid_target_error,
+    )
+}
+
+fn read_direct_commit_reference(
+    repository: &gix::Repository,
+    reference: gix::Reference<'_>,
+    not_direct_error: &'static str,
+    invalid_target_error: &'static str,
+) -> Result<gix::hash::ObjectId, &'static str> {
+    let target = reference.try_id().ok_or(not_direct_error)?.detach();
+    load_verified_object(
+        repository,
+        target,
+        gix::objs::Kind::Commit,
+        MANAGED_TREE_POLICY_V3.max_commit_object_bytes,
+        invalid_target_error,
+        invalid_target_error,
+        "commit_object_limit_exceeded",
+        invalid_target_error,
+    )?;
+    Ok(target)
 }
 
 struct VerifiedTreeFinder<'repo> {
@@ -1164,6 +1341,7 @@ fn verify_candidate_commit_and_result(
     if commit.tree != expected_candidate_tree_oid
         || commit.parents.as_slice() != [expected_base_commit_oid]
         || commit.message.as_slice() != expected_message.as_bytes()
+        || !has_managed_candidate_signature(&commit)
     {
         return Err("successor_commit_identity_mismatch");
     }

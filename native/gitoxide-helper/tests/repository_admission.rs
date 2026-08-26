@@ -595,6 +595,157 @@ fn publishes_and_exactly_retries_an_operation_candidate_without_advancing_accept
 }
 
 #[test]
+fn rejects_a_symbolic_candidate_ref_during_exact_retry() {
+    let fixture = RepositoryFixture::sha1_with_commit();
+    let source_head = fixture.git_output(["rev-parse", "HEAD"]);
+    let destination = fixture.root.join("symbolic-candidate-ref.git");
+    let imported = invoke_import(&fixture.root, &source_head, &destination);
+    let imported: serde_json::Value = serde_json::from_slice(&imported.stdout).unwrap();
+    let candidate_ref =
+        "refs/maka/candidates/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+    let request = serde_json::json!({
+        "protocolVersion": 1,
+        "operation": "create_candidate",
+        "repositoryPath": destination,
+        "acceptedRef": "refs/maka/baseline",
+        "expectedBaseCommitOid": imported["baselineCommitOid"],
+        "expectedBaseTreeOid": imported["baselineTreeOid"],
+        "candidateRef": candidate_ref,
+        "path": "docs/result.txt",
+        "contentBase64": "c3ltYm9saWMgcmV0cnkK",
+        "managedTreePolicyVersion": 3,
+    });
+    let published = invoke_request(request.clone());
+    assert!(published.status.success());
+    let published: serde_json::Value = serde_json::from_slice(&published.stdout).unwrap();
+    let candidate_commit = published["candidateCommitOid"].as_str().unwrap();
+    let alias_ref = "refs/maka/candidate-alias";
+    git_bare_output(&destination, ["update-ref", alias_ref, candidate_commit]);
+    git_bare_output(&destination, ["symbolic-ref", candidate_ref, alias_ref]);
+
+    let rejected = invoke_request(request);
+    assert_helper_error(&rejected, "candidate_ref_not_direct");
+}
+
+#[test]
+fn rejects_an_annotated_tag_candidate_ref_during_exact_retry() {
+    let fixture = RepositoryFixture::sha1_with_commit();
+    let source_head = fixture.git_output(["rev-parse", "HEAD"]);
+    let destination = fixture.root.join("tag-candidate-ref.git");
+    let imported = invoke_import(&fixture.root, &source_head, &destination);
+    let imported: serde_json::Value = serde_json::from_slice(&imported.stdout).unwrap();
+    let candidate_ref =
+        "refs/maka/candidates/cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc";
+    let request = serde_json::json!({
+        "protocolVersion": 1,
+        "operation": "create_candidate",
+        "repositoryPath": destination,
+        "acceptedRef": "refs/maka/baseline",
+        "expectedBaseCommitOid": imported["baselineCommitOid"],
+        "expectedBaseTreeOid": imported["baselineTreeOid"],
+        "candidateRef": candidate_ref,
+        "path": "docs/result.txt",
+        "contentBase64": "dGFnIHJldHJ5Cg==",
+        "managedTreePolicyVersion": 3,
+    });
+    let published = invoke_request(request.clone());
+    assert!(published.status.success());
+    let published: serde_json::Value = serde_json::from_slice(&published.stdout).unwrap();
+    let candidate_commit = published["candidateCommitOid"].as_str().unwrap();
+    git_bare_output(
+        &destination,
+        [
+            "-c",
+            "user.name=Maka Test",
+            "-c",
+            "user.email=maka@example.invalid",
+            "tag",
+            "-a",
+            "candidate-receipt",
+            candidate_commit,
+            "-m",
+            "candidate receipt",
+        ],
+    );
+    let tag_oid = git_bare_output(&destination, ["rev-parse", "refs/tags/candidate-receipt"]);
+    git_bare_output(&destination, ["update-ref", candidate_ref, &tag_oid]);
+
+    let rejected = invoke_request(request);
+    assert_helper_error(&rejected, "candidate_ref_target_invalid");
+}
+
+#[test]
+fn rejects_a_symbolic_accepted_ref_before_candidate_creation() {
+    let fixture = RepositoryFixture::sha1_with_commit();
+    let source_head = fixture.git_output(["rev-parse", "HEAD"]);
+    let destination = fixture.root.join("symbolic-accepted-ref.git");
+    let imported = invoke_import(&fixture.root, &source_head, &destination);
+    let imported: serde_json::Value = serde_json::from_slice(&imported.stdout).unwrap();
+    let baseline = imported["baselineCommitOid"].as_str().unwrap();
+    let alias_ref = "refs/maka/accepted-alias";
+    git_bare_output(&destination, ["update-ref", alias_ref, baseline]);
+    git_bare_output(
+        &destination,
+        ["symbolic-ref", "refs/maka/baseline", alias_ref],
+    );
+
+    let rejected = invoke_request(serde_json::json!({
+        "protocolVersion": 1,
+        "operation": "create_candidate",
+        "repositoryPath": destination,
+        "acceptedRef": "refs/maka/baseline",
+        "expectedBaseCommitOid": baseline,
+        "expectedBaseTreeOid": imported["baselineTreeOid"],
+        "candidateRef": "refs/maka/candidates/dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "path": "docs/result.txt",
+        "contentBase64": "c3ltYm9saWMgYWNjZXB0ZWQK",
+        "managedTreePolicyVersion": 3,
+    }));
+    assert_helper_error(&rejected, "accepted_ref_not_direct");
+}
+
+#[test]
+fn rejects_an_annotated_tag_accepted_ref_before_candidate_creation() {
+    let fixture = RepositoryFixture::sha1_with_commit();
+    let source_head = fixture.git_output(["rev-parse", "HEAD"]);
+    let destination = fixture.root.join("tag-accepted-ref.git");
+    let imported = invoke_import(&fixture.root, &source_head, &destination);
+    let imported: serde_json::Value = serde_json::from_slice(&imported.stdout).unwrap();
+    let baseline = imported["baselineCommitOid"].as_str().unwrap();
+    git_bare_output(
+        &destination,
+        [
+            "-c",
+            "user.name=Maka Test",
+            "-c",
+            "user.email=maka@example.invalid",
+            "tag",
+            "-a",
+            "accepted-receipt",
+            baseline,
+            "-m",
+            "accepted receipt",
+        ],
+    );
+    let tag_oid = git_bare_output(&destination, ["rev-parse", "refs/tags/accepted-receipt"]);
+    git_bare_output(&destination, ["update-ref", "refs/maka/baseline", &tag_oid]);
+
+    let rejected = invoke_request(serde_json::json!({
+        "protocolVersion": 1,
+        "operation": "create_candidate",
+        "repositoryPath": destination,
+        "acceptedRef": "refs/maka/baseline",
+        "expectedBaseCommitOid": baseline,
+        "expectedBaseTreeOid": imported["baselineTreeOid"],
+        "candidateRef": "refs/maka/candidates/eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+        "path": "docs/result.txt",
+        "contentBase64": "dGFnIGFjY2VwdGVkCg==",
+        "managedTreePolicyVersion": 3,
+    }));
+    assert_helper_error(&rejected, "accepted_ref_target_invalid");
+}
+
+#[test]
 fn publishes_an_operation_bound_no_change_receipt() {
     let fixture = RepositoryFixture::sha1_with_commit();
     let source_head = fixture.git_output(["rev-parse", "HEAD"]);
@@ -671,8 +822,13 @@ fn rejects_a_second_terminal_interpretation_for_the_same_operation_ref() {
     let no_change: serde_json::Value = serde_json::from_slice(&no_change.stdout).unwrap();
     assert_eq!(no_change["kind"], "candidate_no_change");
 
+    let objects_before_conflict = git_bare_output(&destination, ["count-objects", "-v"]);
     let conflicting = invoke_request(request("docs/result.txt", "Y2hhbmdlZAo="));
-    assert_helper_error(&conflicting, "successor_publish_failed");
+    assert_helper_error(&conflicting, "candidate_request_conflict");
+    assert_eq!(
+        git_bare_output(&destination, ["count-objects", "-v"]),
+        objects_before_conflict
+    );
     assert_eq!(
         git_bare_output(&destination, ["rev-parse", candidate_ref]),
         no_change["candidateCommitOid"].as_str().unwrap()
@@ -699,7 +855,7 @@ fn rejects_a_second_terminal_interpretation_for_the_same_operation_ref() {
     let published: serde_json::Value = serde_json::from_slice(&published.stdout).unwrap();
     assert_eq!(published["kind"], "candidate_published");
     let reverse_conflict = invoke_request(reverse_request("hello.txt", "aGVsbG8gZnJvbSBzaGExCg=="));
-    assert_helper_error(&reverse_conflict, "successor_publish_failed");
+    assert_helper_error(&reverse_conflict, "candidate_request_conflict");
     assert_eq!(
         git_bare_output(&destination, ["rev-parse", reverse_candidate_ref]),
         published["candidateCommitOid"].as_str().unwrap()
@@ -782,7 +938,7 @@ fn concurrent_conflicting_candidate_requests_have_one_stable_winner() {
         .iter()
         .find(|outcome| !outcome.status.success())
         .unwrap();
-    assert_helper_error(rejected, "successor_publish_failed");
+    assert_helper_error(rejected, "candidate_request_conflict");
 }
 
 #[test]
@@ -794,7 +950,21 @@ fn rejects_a_stale_candidate_before_publishing_its_ref() {
     let imported: serde_json::Value = serde_json::from_slice(&imported.stdout).unwrap();
     let baseline = imported["baselineCommitOid"].as_str().unwrap();
     let baseline_tree = imported["baselineTreeOid"].as_str().unwrap();
-    let advanced = baseline_tree.to_owned();
+    let advanced = git_bare_output(
+        &destination,
+        [
+            "-c",
+            "user.name=Maka Test",
+            "-c",
+            "user.email=maka@example.invalid",
+            "commit-tree",
+            baseline_tree,
+            "-p",
+            baseline,
+            "-m",
+            "advanced",
+        ],
+    );
     let _ = git_bare_output(
         &destination,
         ["update-ref", "refs/maka/baseline", &advanced],
