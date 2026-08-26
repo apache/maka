@@ -278,6 +278,35 @@ export async function verifyWindowsSandboxWorkerE2E(appDirectoryPath) {
           JSON.stringify(['root.ts', 'src/health.ts']),
       'Sandboxed glob did not return exactly the safe project files beside a nested junction.',
     );
+    const explicitJunctionGlob = await execute({
+      kind: 'glob',
+      path: projectDirectory,
+      pattern: 'node_modules/@sunrioa/rin-sdk/**/*',
+    });
+    assertCondition(
+      explicitJunctionGlob.kind === 'glob' && explicitJunctionGlob.files.length === 0,
+      'Sandboxed glob traversed an explicitly named nested junction.',
+    );
+    const broadJunctionGlob = await execute({
+      kind: 'glob',
+      path: projectDirectory,
+      pattern: '**/*',
+    });
+    const broadFiles =
+      broadJunctionGlob.kind === 'glob'
+        ? broadJunctionGlob.files.map((file) => file.replaceAll('\\', '/'))
+        : [];
+    assertCondition(
+      broadJunctionGlob.kind === 'glob' &&
+        broadFiles.includes('root.ts') &&
+        broadFiles.includes('src/health.ts') &&
+        !broadFiles.some(
+          (file) =>
+            file === 'node_modules/@sunrioa/rin-sdk' ||
+            file.startsWith('node_modules/@sunrioa/rin-sdk/'),
+        ),
+      'Sandboxed broad glob returned a nested junction or one of its descendants.',
+    );
     // The sandbox preview does not expose Grep (no in-process substitute
     // preserves the ripgrep contract); the worker must fail closed.
     let grepUnavailable = false;

@@ -228,7 +228,7 @@ sequenceDiagram
   M-->>H: native path + one-shot manifest
   H->>B: --broker-local manifest
   B->>B: delete manifest; bind PID, nonce, launch digest
-  B->>B: recover ledger; reject reparse tree; grant SID ACE
+  B->>B: recover ledger; reject or partition reparse tree; grant SID ACE
   B->>J: create kill-on-close Job
   B->>C: create AppContainer process with atomic Job attribute
   C-->>B: bounded exit result
@@ -242,8 +242,9 @@ sequenceDiagram
 native binary 只给当前 launch 允许的 root 授予其独立 SID。修改前默认递归拒绝
 `FILE_ATTRIBUTE_REPARSE_POINT`。只有只读 W1 Glob 生成的 manifest 可以把它唯一的递归 root 标记为
 不跟随：Broker 对含嵌套 reparse entry 的目录使用 exact grant，对干净子目录保留 recursive grant，
-并且不给 reparse entry 或其 target 授权。被标记的 root 自身以及任何多硬链接文件仍然 fail closed。随后用
-`create_new` 和 `sync_all` 持久化版本化 ledger，并在接收新请求前 reconcile 全部遗留 ledger。正常结束先移除 SID ACE，再
+并且不给 reparse entry 或其 target 授权。被标记的 root 自身以及任何多硬链接文件仍然 fail closed。
+该分解在超过 4,096 个物理授权、100,000 个文件系统条目或根目录以下 256 层嵌套目录时 fail closed。
+随后用 `create_new` 和 `sync_all` 持久化版本化 ledger，并在接收新请求前 reconcile 全部遗留 ledger。正常结束先移除 SID ACE，再
 删除 ledger。全局 kernel mutex 只覆盖 ledger/ACL 修改；每个 launch 在 child settlement 完成前持有独立的
 request-specific kernel lease，因此 recovery 会跳过仍在使用的 ledger，同时不同 launch 仍可并发执行。
 

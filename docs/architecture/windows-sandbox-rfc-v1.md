@@ -378,7 +378,7 @@ sequenceDiagram
   M-->>H: native path + one-shot manifest
   H->>B: --broker-local manifest
   B->>B: delete manifest; bind PID, nonce, and launch digest
-  B->>B: recover ledger; reject reparse trees; grant SID ACEs
+  B->>B: recover ledger; reject or partition reparse trees; grant SID ACEs
   B->>J: create kill-on-close Job
   B->>C: create AppContainer process with atomic Job attribute
   C-->>B: bounded exit result
@@ -395,8 +395,10 @@ default. A manifest produced specifically for the read-only W1 Glob operation ma
 recursive root as non-following: the broker then records an exact grant for directories containing a
 nested reparse entry, recursive grants for clean child directories, and no grant for the reparse
 entry or its target. The marked root itself and every multi-hard-link file still fail closed. The
-broker persists a versioned ledger with `create_new` and `sync_all`, and reconciles every stale ledger before accepting
-a new request. A global kernel mutex covers only ledger/ACL mutation; each launch holds a separate
+decomposition fails closed above 4,096 physical grants, 100,000 inspected filesystem entries, or 256
+nested directory levels below the root. The broker persists a versioned ledger with `create_new` and `sync_all`, and
+reconciles every stale ledger before accepting a new request. A global kernel mutex covers only
+ledger/ACL mutation; each launch holds a separate
 request-specific kernel lease through child settlement, so recovery skips live ledgers while disjoint
 launches execute concurrently. Normal settlement removes the SID ACE and then deletes the ledger.
 

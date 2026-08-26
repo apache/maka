@@ -54,6 +54,8 @@ use crate::windows_launcher::{appcontainer_profile_name, current_user_sid_string
 pub(crate) const LEDGER_VERSION: u8 = 2;
 const ACL_MUTEX_TIMEOUT_MS: u32 = 30_000;
 const MAX_NON_FOLLOWING_READ_GRANTS: usize = 4_096;
+const MAX_NON_FOLLOWING_READ_ENTRIES: usize = 100_000;
+const MAX_NON_FOLLOWING_READ_DEPTH: usize = 256;
 
 /// The ledger directory, the icacls grants and the AppContainer profiles are
 /// all shared across every session of the user, so the locks that arbitrate
@@ -492,6 +494,31 @@ struct DirectoryReadPlan {
     roots: Vec<LedgerRoot>,
 }
 
+struct NonFollowingScanBudget {
+    remaining: usize,
+    limit: usize,
+}
+
+impl NonFollowingScanBudget {
+    fn new(limit: usize) -> Self {
+        Self {
+            remaining: limit,
+            limit,
+        }
+    }
+
+    fn consume(&mut self) -> Result<(), String> {
+        if self.remaining == 0 {
+            return Err(format!(
+                "nonFollowingReadRoot exceeds the safe scan limit of {} filesystem entries",
+                self.limit
+            ));
+        }
+        self.remaining -= 1;
+        Ok(())
+    }
+}
+
 /// Decomposes one read-only recursive root into physical grants that let a
 /// non-following operation enumerate ordinary entries without granting or
 /// traversing nested Windows reparse points. The root itself remains strict:
@@ -503,6 +530,20 @@ fn partition_non_following_read_root(path: &Path) -> Result<Vec<LedgerRoot>, Str
 pub(crate) fn partition_non_following_read_root_with_limit(
     path: &Path,
     max_grants: usize,
+) -> Result<Vec<LedgerRoot>, String> {
+    partition_non_following_read_root_with_limits(
+        path,
+        max_grants,
+        MAX_NON_FOLLOWING_READ_ENTRIES,
+        MAX_NON_FOLLOWING_READ_DEPTH,
+    )
+}
+
+pub(crate) fn partition_non_following_read_root_with_limits(
+    path: &Path,
+    max_grants: usize,
+    max_entries: usize,
+    max_depth: usize,
 ) -> Result<Vec<LedgerRoot>, String> {
     match fs::symlink_metadata(path) {
         Ok(metadata) => {
@@ -527,13 +568,25 @@ pub(crate) fn partition_non_following_read_root_with_limit(
             ));
         }
     }
-    Ok(plan_non_following_directory(path, max_grants)?.roots)
+    let mut scan_budget = NonFollowingScanBudget::new(max_entries);
+    let roots =
+        plan_non_following_directory(path, max_grants, &mut scan_budget, 0, max_depth)?.roots;
+    ensure_non_following_grant_limit(roots.len(), max_grants)?;
+    Ok(roots)
 }
 
 fn plan_non_following_directory(
     path: &Path,
     max_grants: usize,
+    scan_budget: &mut NonFollowingScanBudget,
+    depth: usize,
+    max_depth: usize,
 ) -> Result<DirectoryReadPlan, String> {
+    if depth > max_depth {
+        return Err(format!(
+            "nonFollowingReadRoot exceeds the safe nested-directory limit of {max_depth} below the root"
+        ));
+    }
     let metadata = fs::symlink_metadata(path)
         .map_err(|error| format!("inspect ACL root {} failed: {error}", path.display()))?;
     if metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
@@ -549,10 +602,15 @@ fn plan_non_following_directory(
         ));
     }
 
-    let mut entries = fs::read_dir(path)
+    let mut entries = Vec::new();
+    for entry in fs::read_dir(path)
         .map_err(|error| format!("scan ACL root {} failed: {error}", path.display()))?
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|error| format!("scan ACL root failed: {error}"))?;
+    {
+        scan_budget.consume()?;
+        entries.push(
+            entry.map_err(|error| format!("scan ACL root {} failed: {error}", path.display()))?,
+        );
+    }
     entries.sort_by_key(|entry| entry.file_name());
 
     let mut clean = true;
@@ -563,12 +621,28 @@ fn plan_non_following_directory(
             .map_err(|error| format!("inspect ACL root {} failed: {error}", child.display()))?;
         if child_metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
             clean = false;
+            let child_grants = directory_plans
+                .iter()
+                .fold(0usize, |count, plan| count.saturating_add(plan.roots.len()));
+            ensure_non_following_grant_limit(1usize.saturating_add(child_grants), max_grants)?;
             continue;
         }
         if child_metadata.is_dir() {
-            let child_plan = plan_non_following_directory(&child, max_grants)?;
+            let child_plan = plan_non_following_directory(
+                &child,
+                max_grants,
+                scan_budget,
+                depth.saturating_add(1),
+                max_depth,
+            )?;
             clean &= child_plan.clean;
             directory_plans.push(child_plan);
+            if !clean {
+                let child_grants = directory_plans
+                    .iter()
+                    .fold(0usize, |count, plan| count.saturating_add(plan.roots.len()));
+                ensure_non_following_grant_limit(1usize.saturating_add(child_grants), max_grants)?;
+            }
             continue;
         }
         if child_metadata.is_file() {
@@ -609,6 +683,15 @@ fn append_partitioned_roots(
         ));
     }
     roots.extend(additions);
+    Ok(())
+}
+
+fn ensure_non_following_grant_limit(grants: usize, max_grants: usize) -> Result<(), String> {
+    if grants > max_grants {
+        return Err(format!(
+            "nonFollowingReadRoot exceeds the safe limit of {max_grants} physical ACL grants"
+        ));
+    }
     Ok(())
 }
 

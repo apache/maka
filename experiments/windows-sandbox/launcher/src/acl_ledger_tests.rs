@@ -28,7 +28,8 @@ mod tests {
 
     use crate::acl_ledger::{
         LEDGER_VERSION, LaunchFailure, Ledger, LedgerRoot, collect_roots, recover_stale,
-        partition_non_following_read_root_with_limit, with_acl_grants, write_ledger,
+        partition_non_following_read_root_with_limit,
+        partition_non_following_read_root_with_limits, with_acl_grants, write_ledger,
     };
     use crate::protocol::{LaunchRequest, NetworkMode};
 
@@ -549,6 +550,47 @@ mod tests {
             .expect_err("expanded grant plan must be bounded");
 
         assert!(error.contains("safe limit of 2"), "unexpected error: {error}");
+    }
+
+    #[test]
+    fn non_following_read_root_bounds_scan_work_before_planning_finishes() {
+        let fixture = Fixture::new("non-following-scan-limit");
+
+        let roots = partition_non_following_read_root_with_limits(&fixture.target, 4_096, 2, 256)
+            .expect("an exact scan-entry budget must admit the clean fixture");
+        assert_eq!(roots.len(), 1);
+
+        let error = partition_non_following_read_root_with_limits(&fixture.target, 4_096, 1, 256)
+            .expect_err("filesystem scan work must be bounded independently of final grants");
+
+        assert!(
+            error.contains("safe scan limit of 1 filesystem entries"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn non_following_read_root_enforces_zero_grant_limit() {
+        let fixture = Fixture::new("non-following-zero-grants");
+
+        let error = partition_non_following_read_root_with_limit(&fixture.target, 0)
+            .expect_err("even one clean recursive root must respect the grant limit");
+
+        assert!(error.contains("safe limit of 0"), "unexpected error: {error}");
+    }
+
+    #[test]
+    fn non_following_read_root_bounds_directory_depth() {
+        let fixture = Fixture::new("non-following-depth-limit");
+        fs::create_dir_all(fixture.target.join("nested")).expect("create nested directory");
+
+        let error = partition_non_following_read_root_with_limits(&fixture.target, 4_096, 100, 0)
+            .expect_err("nested directories must respect the independent depth limit");
+
+        assert!(
+            error.contains("safe nested-directory limit of 0 below the root"),
+            "unexpected error: {error}"
+        );
     }
 
     fn create_junction(path: &Path, target: &Path) {

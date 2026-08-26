@@ -222,6 +222,39 @@ describe('Windows filesystem worker smoke', { skip: !enabled }, () => {
         'src/main.ts',
       ]);
     }
+
+    const explicit = await client.execute({
+      operation: {
+        kind: 'glob',
+        path: project,
+        pattern: 'node_modules/@sunrioa/rin-sdk/**/*',
+      },
+      cwd: workspace,
+      mode: 'ask',
+      expectedIdentity: 'unchecked',
+    });
+    assert.deepEqual(explicit, { kind: 'glob', files: [] });
+
+    const broad = await client.execute({
+      operation: { kind: 'glob', path: project, pattern: '**/*' },
+      cwd: workspace,
+      mode: 'ask',
+      expectedIdentity: 'unchecked',
+    });
+    assert.equal(broad.kind, 'glob');
+    if (broad.kind === 'glob') {
+      const files = broad.files.map((file) => file.replaceAll('\\', '/'));
+      assert.ok(files.includes('root.ts'));
+      assert.ok(files.includes('src/main.ts'));
+      assert.equal(
+        files.some(
+          (file) =>
+            file === 'node_modules/@sunrioa/rin-sdk' ||
+            file.startsWith('node_modules/@sunrioa/rin-sdk/'),
+        ),
+        false,
+      );
+    }
     assert.equal(
       await readFile(join(outside, 'secret.ts'), 'utf8'),
       'export const secret = true;\n',
