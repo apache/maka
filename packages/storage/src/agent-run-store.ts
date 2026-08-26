@@ -95,6 +95,14 @@ export interface RootTurnSourceMessage {
   messageId: string;
   content: MessageContent;
   submittedContentDigest?: `sha256:${string}`;
+  /**
+   * Digest of the exact-Turn intent this Message was submitted with — the
+   * Skill ids and the orchestration override. Content and placement do not
+   * describe it, so without this a retry that asks for a different execution
+   * mode under the same Message identity aliases the earlier success. Absent
+   * on a record written for a submit that carried no exact intent.
+   */
+  submittedIntentDigest?: `sha256:${string}`;
   placement: 'current_turn' | 'next_turn';
   disposition: 'steering' | 'followup' | 'turn_started';
 }
@@ -1653,11 +1661,19 @@ function normalizeRootTurnSourceMessages(value: unknown): readonly RootTurnSourc
         'placement',
         'disposition',
         ...(Object.hasOwn(item, 'submittedContentDigest') ? ['submittedContentDigest'] : []),
+        ...(Object.hasOwn(item, 'submittedIntentDigest') ? ['submittedIntentDigest'] : []),
       ])
     ) {
       throw new Error(`Invalid root turn source message at index ${index}`);
     }
-    const { messageId, content, submittedContentDigest, placement, disposition } = item;
+    const {
+      messageId,
+      content,
+      submittedContentDigest,
+      submittedIntentDigest,
+      placement,
+      disposition,
+    } = item;
     if (
       typeof messageId !== 'string' ||
       !isSafeId(messageId) ||
@@ -1667,7 +1683,8 @@ function normalizeRootTurnSourceMessages(value: unknown): readonly RootTurnSourc
         disposition !== 'turn_started') ||
       (disposition === 'steering' && placement !== 'current_turn') ||
       (disposition === 'followup' && placement !== 'next_turn') ||
-      (submittedContentDigest !== undefined && !isSha256Digest(submittedContentDigest))
+      (submittedContentDigest !== undefined && !isSha256Digest(submittedContentDigest)) ||
+      (submittedIntentDigest !== undefined && !isSha256Digest(submittedIntentDigest))
     ) {
       throw new Error(`Invalid root turn source message at index ${index}`);
     }
@@ -1683,6 +1700,7 @@ function normalizeRootTurnSourceMessages(value: unknown): readonly RootTurnSourc
         MAX_ATTACHMENT_COUNT,
       ),
       ...(submittedContentDigest !== undefined ? { submittedContentDigest } : {}),
+      ...(submittedIntentDigest !== undefined ? { submittedIntentDigest } : {}),
       placement,
       disposition,
     });
@@ -1710,6 +1728,7 @@ function rootTurnAdmissionPayloadsEqual(
         source.placement === other.placement &&
         source.disposition === other.disposition &&
         source.submittedContentDigest === other.submittedContentDigest &&
+        source.submittedIntentDigest === other.submittedIntentDigest &&
         messageContentsEqual(source.content, other.content)
       );
     })

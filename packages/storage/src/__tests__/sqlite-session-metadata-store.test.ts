@@ -321,6 +321,9 @@ describe('SqliteSessionMetadataStore', () => {
         submittedPlacement: 'current_turn',
         placement: 'current_turn',
         disposition: 'steering',
+        // Exact-Turn intent is durable: recovery re-opens the Turn from this
+        // record, and content and placement say nothing about execution mode.
+        turnOrchestration: { mode: 'graph', source: 'slash_command' },
         admittedAt: 10,
       };
 

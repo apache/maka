@@ -1163,6 +1163,9 @@ export class RootTurnCoordinator implements HostedExecutionAuthority {
       if (!reservation) return { error: 'Another root Turn is being admitted' };
       try {
         const turnId = randomUUID();
+        // The recovered Message asked for this mode before the Host stopped;
+        // admitting without it would run a different Turn than was requested.
+        await this.prepareFreshAgentGraphEpoch(header, input.turnOrchestration);
         const admitted = await this.rootAdmissionOwner.admitRootTurn({
           sessionId: input.sessionId,
           turnId,
@@ -1173,6 +1176,7 @@ export class RootTurnCoordinator implements HostedExecutionAuthority {
             inputDigest: messageContentDigest(input.submittedContent),
           },
           normalizedInput: input.content,
+          ...(input.turnOrchestration ? { turnOrchestration: input.turnOrchestration } : {}),
           sourceMessages: input.sources,
           admittedAt: Date.now(),
         });
