@@ -30,8 +30,8 @@ import {
   type MarkerFileHandle,
 } from '../marker-file.js';
 
-test('uses the live process open implementation for initialization race fixtures', async () => {
-  const root = await mkdtemp(join(tmpdir(), 'maka-marker-file-live-open-'));
+test('keeps the open primitive captured at module initialization', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-marker-file-captured-open-'));
   const markerFile = '.marker.json';
   const originalOpen = fs.promises.open;
   let intercepted = false;
@@ -50,7 +50,7 @@ test('uses the live process open implementation for initialization race fixtures
       publication: 'create',
       invalidFile: () => new Error('invalid marker'),
     });
-    assert.equal(intercepted, true);
+    assert.equal(intercepted, false);
   } finally {
     fs.promises.open = originalOpen;
     await rm(root, { recursive: true, force: true });

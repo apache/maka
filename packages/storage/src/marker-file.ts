@@ -35,10 +35,12 @@ export interface MarkerFileDependencies {
   randomUUID(): string;
 }
 
+const openMarkerFile = fs.promises.open.bind(fs.promises);
 const defaultDependencies: MarkerFileDependencies = {
-  // Read the live process implementation so process-level race fixtures can
-  // interpose before importing this module on every supported Node platform.
-  open: async (path, flags, mode) => fs.promises.open(path, flags, mode),
+  // Capture once so later-loaded code cannot replace the marker authority's
+  // filesystem primitive. Race fixtures interpose before dynamically importing
+  // this module and are captured at the same boundary.
+  open: openMarkerFile,
   randomUUID,
 };
 
