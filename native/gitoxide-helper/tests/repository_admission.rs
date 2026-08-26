@@ -722,6 +722,63 @@ fn reports_projection_content_and_extra_path_drift() {
 }
 
 #[test]
+fn reads_one_exact_utf8_file_from_an_accepted_policy_v2_tree() {
+    let fixture = RepositoryFixture::sha1_with_commit();
+    fs::create_dir_all(fixture.root.join("config")).unwrap();
+    fs::write(
+        fixture.root.join("config/package-lock.json"),
+        b"{\"lockfileVersion\":3}\n",
+    )
+    .unwrap();
+    fixture.git(["add", "config/package-lock.json"]);
+    fixture.git([
+        "-c",
+        "user.name=Maka Test",
+        "-c",
+        "user.email=maka@example.invalid",
+        "commit",
+        "-m",
+        "tree file fixture",
+    ]);
+    let source_head = fixture.git_output(["rev-parse", "HEAD"]);
+    let destination = fixture.root.join("tree-file.git");
+    let imported = invoke_import(&fixture.root, &source_head, &destination);
+    let imported: serde_json::Value = serde_json::from_slice(&imported.stdout).unwrap();
+    let accepted = imported["baselineCommitOid"].as_str().unwrap();
+    let expected_tree = imported["baselineTreeOid"].as_str().unwrap();
+
+    let output = invoke_request(serde_json::json!({
+        "protocolVersion": 1,
+        "operation": "read_tree_file",
+        "repositoryPath": destination,
+        "acceptedCommitOid": accepted,
+        "path": "config/package-lock.json",
+        "managedTreePolicyVersion": 2,
+    }));
+    assert!(output.status.success());
+    let response: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(response["kind"], "tree_file_read");
+    assert_eq!(response["acceptedTreeOid"], expected_tree);
+    assert_eq!(response["content"], "{\"lockfileVersion\":3}\n");
+    assert_eq!(response["bytesRead"], 22);
+    assert_eq!(response["managedTreePolicyVersion"], 2);
+}
+
+#[test]
+fn refuses_to_read_a_tree_file_from_an_unavailable_commit_identity() {
+    let fixture = RepositoryFixture::sha1_with_commit();
+    let output = invoke_request(serde_json::json!({
+        "protocolVersion": 1,
+        "operation": "read_tree_file",
+        "repositoryPath": fixture.root,
+        "acceptedCommitOid": "0000000000000000000000000000000000000000",
+        "path": "hello.txt",
+        "managedTreePolicyVersion": 2,
+    }));
+    assert_helper_error(&output, "accepted_commit_unavailable");
+}
+
+#[test]
 fn imports_maka_attributes_under_managed_tree_policy_v2() {
     let fixture = RepositoryFixture::sha1_with_commit();
     fs::write(
