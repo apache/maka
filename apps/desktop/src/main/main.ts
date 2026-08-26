@@ -23,6 +23,10 @@ import {
   developmentLaunchResultFile,
   shouldShowLoserDialog,
 } from '@maka/core/dev-single-instance';
+import {
+  describeDevProfileOwner,
+  resolveLiveDevProfileOwner,
+} from '@maka/core/dev-single-instance-owner';
 import { app, clipboard, dialog, ipcMain } from 'electron';
 import { join } from 'node:path';
 import { resolveBuildInfo } from './build-info.js';
@@ -83,9 +87,13 @@ if (!app.requestSingleInstanceLock()) {
     // is a semantic boundary.
     const resultReported = reportDevelopmentLaunchResult(process.argv, { status: 'loser' });
     if (!resultReported && shouldShowLoserDialog(process.argv)) {
+      // Name the holder from Chromium's SingletonLock record when it resolves;
+      // any inconsistency degrades to the generic wording (see #3539).
+      const owner = resolveLiveDevProfileOwner(app.getPath('userData'));
+      const holder = owner ? ` The holder appears to be ${describeDevProfileOwner(owner)}.` : '';
       dialog.showErrorBox(
         'Maka Dev',
-        `Another instance holds the Maka Dev profile (${app.getPath('userData')}). Quit it and retry.`,
+        `Another instance holds the Maka Dev profile (${app.getPath('userData')}).${holder} Quit it and retry.`,
       );
     }
     app.exit(DEV_LOSER_EXIT_CODE);

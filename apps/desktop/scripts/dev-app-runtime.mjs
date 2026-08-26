@@ -214,6 +214,33 @@ export async function readDevelopmentLaunchResult(resultFile, loader) {
   }
 }
 
+/**
+ * Holder identity for a lost launch race, resolved from Chromium's own
+ * SingletonLock record (see #3539) — never from the process table. An explicit
+ * `--user-data-dir` wins over the shared default, matching launch behavior.
+ * Empty string when nothing trustworthy resolves, so callers fall back to the
+ * generic wording verbatim.
+ */
+export async function developmentProfileConflictDetail(options = {}) {
+  const explicitUserDataDir = splitDevelopmentCliArgs(options.argv ?? []).userDataDir;
+  const userDataDir = explicitUserDataDir ?? options.userDataDir ?? DEV_USER_DATA_DIR;
+  const loader =
+    options.loader ?? (() => import('@maka/core/dev-single-instance-owner'));
+  let mod;
+  try {
+    mod = await loader();
+  } catch {
+    return '';
+  }
+  if (typeof mod?.resolveLiveDevProfileOwner !== 'function') return '';
+  try {
+    const owner = mod.resolveLiveDevProfileOwner(userDataDir);
+    return owner ? ` The holder appears to be ${mod.describeDevProfileOwner(owner)}.` : '';
+  } catch {
+    return '';
+  }
+}
+
 /** Exit-code check for the plain child (child is the app process). */
 export async function plainLoserExitCode(code, loader) {
   const constants = await devSingleInstanceConstants(loader);
@@ -391,11 +418,12 @@ export async function startDevelopmentApp(options = {}) {
       env: viteUrl ? { ...process.env, VITE_DEV_SERVER_URL: viteUrl } : process.env,
     });
     child.once('exit', (code) => {
-      void plainLoserExitCode(code).then((loser) => {
+      void plainLoserExitCode(code).then(async (loser) => {
         if (!loser) return;
+        const holder = await developmentProfileConflictDetail({ argv });
         console.error(
           'Maka Dev could not start: another instance holds the shared profile lock ' +
-            `(loser exit code ${code}). Quit it (Cmd-Q) and retry.`,
+            `(loser exit code ${code}).${holder} Quit it (Cmd-Q) and retry.`,
         );
       });
     });
@@ -539,12 +567,15 @@ export async function waitForDevelopmentLaunchVerdict(options = {}) {
  */
 export function handleDevelopmentLaunchOutcome(outcome, effects = {}) {
   const log = effects.log ?? console.error;
+  const conflictDetail = effects.conflictDetail ?? '';
   const exit = effects.exit ?? ((code) => { process.exitCode = code; });
   switch (outcome) {
     case 'started':
       return;
     case 'absorbed':
-      log('Maka Dev was absorbed by another instance holding the profile lock; quitting.');
+      log(
+        `Maka Dev was absorbed by another instance holding the profile lock${conflictDetail}; quitting.`,
+      );
       exit(1);
       return;
     case 'never-started':

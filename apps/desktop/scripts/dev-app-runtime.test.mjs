@@ -313,6 +313,83 @@ test('other launch outcomes retain their exit codes', async () => {
   assert.equal(startedExitCode, undefined);
 });
 
+test('an absorbed launch names the holder when the conflict detail resolves', async () => {
+  const { handleDevelopmentLaunchOutcome } = await import('./dev-app-runtime.mjs');
+  const logs = [];
+  let exitCode;
+  handleDevelopmentLaunchOutcome('absorbed', {
+    log: (message) => logs.push(message),
+    exit: (code) => { exitCode = code; },
+    conflictDetail: ' The holder appears to be PID 739 on this machine.',
+  });
+  assert.equal(exitCode, 1);
+  assert.match(logs[0], /absorbed by another instance/);
+  assert.match(logs[0], /PID 739 on this machine/);
+});
+
+test('an absorbed launch without a resolvable holder keeps the generic wording', async () => {
+  const { handleDevelopmentLaunchOutcome } = await import('./dev-app-runtime.mjs');
+  const logs = [];
+  handleDevelopmentLaunchOutcome('absorbed', {
+    log: (message) => logs.push(message),
+    exit: () => {},
+  });
+  assert.equal(logs[0], 'Maka Dev was absorbed by another instance holding the profile lock; quitting.');
+});
+
+test('conflict detail resolves the holder through the core owner module', async () => {
+  const { developmentProfileConflictDetail } = await import('./dev-app-runtime.mjs');
+  const detail = await developmentProfileConflictDetail({
+    userDataDir: '/profile',
+    loader: async () => ({
+      resolveLiveDevProfileOwner: (dir) =>
+        dir === '/profile' ? { hostname: 'mac.local', pid: 739, isLocalHost: true } : undefined,
+      describeDevProfileOwner: (owner) => `PID ${owner.pid} on this machine`,
+    }),
+  });
+  assert.equal(detail, ' The holder appears to be PID 739 on this machine.');
+});
+
+test('an explicit --user-data-dir wins over the shared default profile', async () => {
+  const { developmentProfileConflictDetail } = await import('./dev-app-runtime.mjs');
+  const seen = [];
+  const detail = await developmentProfileConflictDetail({
+    argv: ['--user-data-dir=/explicit/dir', '--other'],
+    loader: async () => ({
+      resolveLiveDevProfileOwner: (dir) => {
+        seen.push(dir);
+        return { hostname: 'mac.local', pid: 739, isLocalHost: true };
+      },
+      describeDevProfileOwner: (owner) => `PID ${owner.pid}`,
+    }),
+  });
+  assert.deepEqual(seen, ['/explicit/dir']);
+  assert.equal(detail, ' The holder appears to be PID 739.');
+});
+
+test('conflict detail degrades to empty on any resolution failure', async () => {
+  const { developmentProfileConflictDetail } = await import('./dev-app-runtime.mjs');
+  const failingLoader = async () => {
+    throw new Error('not built');
+  };
+  assert.equal(await developmentProfileConflictDetail({ loader: failingLoader }), '');
+  // A module without the expected surface degrades the same way.
+  assert.equal(await developmentProfileConflictDetail({ loader: async () => ({}) }), '');
+  // So does a resolver that throws.
+  assert.equal(
+    await developmentProfileConflictDetail({
+      userDataDir: '/profile',
+      loader: async () => ({
+        resolveLiveDevProfileOwner: () => {
+          throw new Error('boom');
+        },
+        describeDevProfileOwner: () => '',
+      }),
+    }),
+    '',
+  );
+});
+
 test('shared-profile launches warn about legacy TCC data before choosing plain or bundle mode', async () => {
   const { DEV_USER_DATA_DIR, warnAboutLegacyTccDataRoot } = await import('./dev-app-runtime.mjs');
   const warnings = [];

@@ -92,7 +92,10 @@ single-instance lock is the only authority for the shared development profile.
 A second launch exits with an explicit conflict instead of scanning for or
 terminating an existing Electron process. Plain dev owns its direct child;
 the TCC launcher consumes only the one-shot lock verdict and never owns or
-signals the detached app process.
+signals the detached app process. When a launch loses the race, the conflict
+message names the holder from Chromium's own `SingletonLock` record (hostname
+and PID) while that PID is still alive; a stale symlink, another machine's
+record, or anything unresolvable falls back to the generic wording.
 
 Known limitation: Chromium may kill an unresponsive lock holder after its
 20-second acknowledgement timeout and let the new instance take the lock.
