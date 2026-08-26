@@ -29,6 +29,7 @@ import {
   startRuntimeHostReconnectLifecycle,
   type DirectRequestOperationKey,
   type RuntimeHostConnection,
+  type RuntimeHostConnectionAvailability,
 } from '../client/index.js';
 import {
   INTERACTIVE_RUNTIME_HOST_COMPOSITION_ID,
@@ -74,6 +75,54 @@ test('a reconnecting Client retries an interrupted query on the replacement conn
   assert.deepEqual(first.operations, ['goal.query']);
   assert.deepEqual(unstable.operations, ['goal.query']);
   assert.deepEqual(replacement.operations, ['goal.query']);
+  await connection.close();
+});
+
+test('a reconnecting Client reports the connection generation used by direct operations', async () => {
+  const first = connectionHarness('first', () => undefined);
+  const replacement = connectionHarness('replacement', () => undefined);
+  const reconnecting = deferredValue<RuntimeHostConnection>();
+  const connection = await createRuntimeHostReconnectingConnection({
+    initialConnection: first.connection,
+    connect: async () => reconnecting.promise,
+  });
+  const availability: RuntimeHostConnectionAvailability[] = [];
+  const unsubscribe = connection.subscribeConnectionAvailability((current) => {
+    availability.push(current);
+  });
+
+  assert.deepEqual(availability, [
+    { kind: 'connected', hostEpoch: 'host-first', connectionId: 'first' },
+  ]);
+  first.disconnect();
+  await waitForCondition(() => availability.length === 2);
+  const unavailable: RuntimeHostConnectionAvailability[] = [];
+  const unsubscribeUnavailable = connection.subscribeConnectionAvailability((value) => {
+    unavailable.push(value);
+  });
+  assert.deepEqual(unavailable, [{ kind: 'unavailable' }]);
+  unsubscribeUnavailable();
+  reconnecting.resolve(replacement.connection);
+  await waitForCondition(() => availability.length === 3);
+  assert.deepEqual(availability, [
+    { kind: 'connected', hostEpoch: 'host-first', connectionId: 'first' },
+    { kind: 'unavailable' },
+    { kind: 'connected', hostEpoch: 'host-replacement', connectionId: 'replacement' },
+  ]);
+
+  const current: RuntimeHostConnectionAvailability[] = [];
+  const unsubscribeCurrent = connection.subscribeConnectionAvailability((value) => {
+    current.push(value);
+  });
+  assert.deepEqual(current, [
+    { kind: 'connected', hostEpoch: 'host-replacement', connectionId: 'replacement' },
+  ]);
+  unsubscribeCurrent();
+
+  unsubscribe();
+  replacement.disconnect();
+  await yieldToEventLoop();
+  assert.equal(availability.length, 3);
   await connection.close();
 });
 
@@ -350,7 +399,7 @@ test('reconnect lifecycle quiescence suppresses replacement until it is resumed'
     },
   });
 
-  const quiescence = lifecycle.quiesce();
+  const quiescence = await lifecycle.quiesce();
   assert.equal(quiescence.current, first.connection);
   first.disconnect();
   await new Promise<void>((resolve) => setImmediate(resolve));
@@ -359,6 +408,35 @@ test('reconnect lifecycle quiescence suppresses replacement until it is resumed'
   quiescence.resume();
   await connected.promise;
   assert.equal(connectCalls, 1);
+  await lifecycle.close();
+});
+
+test('reconnect lifecycle quiescence waits through a connection gap before freezing', async () => {
+  const first = connectionHarness('first', () => undefined);
+  const replacement = connectionHarness('replacement', () => undefined);
+  const reconnecting = deferredValue<RuntimeHostConnection>();
+  const connectStarted = deferred();
+  let connectCalls = 0;
+  const lifecycle = await startRuntimeHostReconnectLifecycle({
+    initial: first.connection,
+    connect: async () => {
+      connectCalls += 1;
+      connectStarted.resolve();
+      return reconnecting.promise;
+    },
+  });
+
+  first.disconnect();
+  await connectStarted.promise;
+  const quiescenceTask = lifecycle.quiesce();
+  reconnecting.resolve(replacement.connection);
+  const quiescence = await quiescenceTask;
+  assert.equal(quiescence.current, replacement.connection);
+
+  replacement.disconnect();
+  await yieldToEventLoop();
+  assert.equal(connectCalls, 1);
+  quiescence.resume();
   await lifecycle.close();
 });
 

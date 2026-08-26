@@ -18,7 +18,7 @@
  */
 
 import type { SessionViewMode } from '@maka/ui';
-import { safeLocalStorageGet, safeLocalStorageSet } from './browser-storage.js';
+import { safeLocalStorageGet, safeLocalStorageSet } from '../../../browser-storage.js';
 
 export const SESSION_LIST_EXPANDED_DEFAULT_WIDTH = 260;
 export const SESSION_LIST_EXPANDED_MIN_WIDTH = 180;

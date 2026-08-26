@@ -760,6 +760,25 @@ export interface MakaBridge {
   workHub: {
     /** Resolve the active Runtime Host's stable coordination conversation. */
     resolveCoordinationSession(): Promise<string>;
+    /** Answer an ordinary question inside the persistent Coordination Session. */
+    answer(
+      coordinationSessionId: string,
+      input: { turnId: string; text: string },
+    ): Promise<{ turnId: string }>;
+    /** Persist one deterministic clarification or routing summary. */
+    record(
+      coordinationSessionId: string,
+      input: { turnId: string; userText: string; assistantText: string },
+    ): Promise<{ turnId: string }>;
+    /** Read one bounded, Host-issued candidate set for a coordination action. */
+    candidates(
+      coordinationSessionId: string,
+    ): Promise<OperationOutput<'workhub.coordination.candidates'>>;
+    /** Submit a typed proposal; trusted creation context is added outside the renderer. */
+    act(
+      coordinationSessionId: string,
+      input: Omit<OperationInput<'workhub.coordination.act'>, 'create'>,
+    ): Promise<OperationOutput<'workhub.coordination.act'>>;
     /** Create an ordinary Session on the exact Host owning the resolved conversation. */
     createSession(
       coordinationSessionId: string,
@@ -1426,6 +1445,8 @@ export interface MakaBridge {
   };
   diagnostics: {
     copyReport(input: DesktopDiagnosticInput): Promise<void>;
+    takePreviousMainProcessInterruption(): Promise<boolean>;
+    copyPreviousMainProcessInterruption(): Promise<void>;
   };
   workspace: {
     searchFiles(

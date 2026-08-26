@@ -32,7 +32,7 @@ test('Module Hub switches all four leaves and opens scheduled creation once', as
   await extensions.getByRole('button', { name: 'MCP', exact: true }).click();
   await expect(
     extensions.getByRole('button', { name: 'MCP', exact: true }),
-  ).toHaveAttribute('aria-current', 'page');
+  ).toHaveAttribute('aria-current', 'true');
 
   await sidebar.getByRole('button', { name: /定时任务/ }).click();
   await expect(page.locator('[data-module="scheduled-tasks"]')).toBeVisible();

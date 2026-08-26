@@ -1,0 +1,91 @@
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+
+name: Gitoxide helper admission
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/gitoxide-helper-admission.yml'
+      - 'native/gitoxide-helper/**'
+      - 'packages/runtime-host/src/server/gitoxide-helper-*.ts'
+      - 'packages/runtime-host/src/__tests__/gitoxide-helper-*.test.ts'
+      - 'packages/runtime-host/src/server/gitoxide-repository-admission-authority-internal.ts'
+      - 'packages/runtime-host/src/__tests__/gitoxide-repository-admission-authority-internal.test.ts'
+      - 'packages/runtime/package.json'
+      - 'docs/architecture/gitoxide-*.md'
+  push:
+    branches:
+      - main
+    paths:
+      - '.github/workflows/gitoxide-helper-admission.yml'
+      - 'native/gitoxide-helper/**'
+      - 'packages/runtime-host/src/server/gitoxide-helper-*.ts'
+      - 'packages/runtime-host/src/__tests__/gitoxide-helper-*.test.ts'
+      - 'packages/runtime-host/src/server/gitoxide-repository-admission-authority-internal.ts'
+      - 'packages/runtime-host/src/__tests__/gitoxide-repository-admission-authority-internal.test.ts'
+      - 'packages/runtime/package.json'
+      - 'docs/architecture/gitoxide-*.md'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: gitoxide-helper-admission-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-latest
+          - macos-latest
+          - windows-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24.18.1
+          cache: npm
+      - name: Check Rust formatting
+        working-directory: native/gitoxide-helper
+        run: cargo fmt --check
+      - name: Test the short-lived Gitoxide helper
+        working-directory: native/gitoxide-helper
+        run: cargo test --locked
+      - name: Install JavaScript dependencies without packaging hooks
+        run: npm ci --ignore-scripts
+      - name: Build the helper invocation owner
+        run: >-
+          npm --workspace @maka/core run build &&
+          npm --workspace @maka/storage run build &&
+          npm --workspace @maka/runtime run build &&
+          npm --workspace @maka/runtime-host run build
+      - name: Test the real helper invocation contract
+        env:
+          MAKA_GITOXIDE_HELPER_PATH: ${{ github.workspace }}/native/gitoxide-helper/target/debug/maka-gitoxide-helper${{ runner.os == 'Windows' && '.exe' || '' }}
+        run: >-
+          node --test
+          packages/runtime-host/dist/__tests__/gitoxide-helper-artifact-authority-internal.test.js
+          packages/runtime-host/dist/__tests__/gitoxide-helper-invocation-internal.test.js
+          packages/runtime-host/dist/__tests__/gitoxide-repository-admission-authority-internal.test.js

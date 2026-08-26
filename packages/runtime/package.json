@@ -48,6 +48,7 @@
     "./context-budget-policy": "./dist/context-budget-policy.js",
     "./context-diagnostics": "./dist/context-diagnostics.js",
     "./continuation-safety": "./dist/continuation-safety.js",
+    "./child-process-lifecycle": "./dist/child-process-lifecycle.js",
     "./conversation-copy": "./dist/conversation-copy.js",
     "./cua-frame-state": "./dist/cua-frame-state.js",
     "./execution-inspect": "./dist/execution-inspect.js",

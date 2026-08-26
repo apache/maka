@@ -21,7 +21,7 @@ import type { ProjectRecord } from '@maka/core/project';
 import type { SessionSummary } from '@maka/core/session';
 import type { UiLocale } from '@maka/core/ui-locale';
 import type { SessionHistoryGroup } from '@maka/ui';
-import { getShellRemainingCopy } from './locales/shell-remaining-copy.js';
+import { getShellRemainingCopy } from '../../../locales/shell-remaining-copy.js';
 
 const UNGROUPED_KEY = '__ungrouped__';
 

@@ -33,6 +33,7 @@ import {
   createRuntimeHostProfileCredentialStore,
   decodeRuntimeHostProfileDocument,
   RUNTIME_HOST_PLAINTEXT_ACKNOWLEDGEMENT,
+  sameRemoteRuntimeHostProfileTarget,
   type RemoteRuntimeHostProfile,
   type RuntimeHostProfileCredentialStore,
 } from '../client/host-profile.js';
@@ -323,6 +324,19 @@ describe('Runtime Host profiles', () => {
     assert.equal(await credentials.get(targetB), 'token-b');
     await credentials.delete(targetB);
     assert.equal(await credentials.get(targetA), 'token-a');
+  });
+
+  test('pins a direct-peer profile to its PeerId while allowing route discovery to change', () => {
+    const original = directPeerProfile('peer-a', ['/ip4/192.0.2.10/udp/4001/quic-v1']);
+    const moved = directPeerProfile('peer-a', ['/ip6/2001:db8::10/udp/4001/quic-v1']);
+    const replacement = directPeerProfile('peer-b', moved.transport.routeHints);
+
+    assert.equal(sameRemoteRuntimeHostProfileTarget(original, moved), true);
+    assert.equal(sameRemoteRuntimeHostProfileTarget(original, replacement), false);
+    assert.deepEqual(
+      decodeRuntimeHostProfileDocument({ schemaVersion: 1, profiles: [moved] }).profiles[0],
+      moved,
+    );
   });
 
   test('keeps profile metadata when credential removal fails', async () => {
@@ -746,6 +760,21 @@ async function profilePath(): Promise<string> {
 
 function remoteProfile(id: string, url: string, rootId: string): RemoteRuntimeHostProfile {
   return { id, name: id, kind: 'remote', transport: { kind: 'tls', url }, rootId };
+}
+
+function directPeerProfile(
+  peerId: string,
+  routeHints: readonly string[],
+): RemoteRuntimeHostProfile & {
+  readonly transport: Extract<RemoteRuntimeHostProfile['transport'], { kind: 'libp2p-direct' }>;
+} {
+  return {
+    id: 'peer',
+    name: 'Peer',
+    kind: 'remote',
+    rootId: ROOT_A,
+    transport: { kind: 'libp2p-direct', peerId, routeHints, coordinationRelays: [] },
+  };
 }
 
 function memoryCredentials(): RuntimeHostProfileCredentialStore {

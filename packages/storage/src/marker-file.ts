@@ -18,8 +18,8 @@
  */
 
 import { randomUUID } from 'node:crypto';
-import { constants as fsConstants, type BigIntStats } from 'node:fs';
-import { link, lstat, open, rename, unlink } from 'node:fs/promises';
+import fs, { constants as fsConstants, type BigIntStats } from 'node:fs';
+import { link, lstat, rename, unlink } from 'node:fs/promises';
 import { join } from 'node:path';
 
 export interface MarkerFileHandle {
@@ -35,8 +35,12 @@ export interface MarkerFileDependencies {
   randomUUID(): string;
 }
 
+const openMarkerFile = fs.promises.open.bind(fs.promises);
 const defaultDependencies: MarkerFileDependencies = {
-  open: async (path, flags, mode) => open(path, flags, mode),
+  // Capture once so later-loaded code cannot replace the marker authority's
+  // filesystem primitive. Race fixtures interpose before dynamically importing
+  // this module and are captured at the same boundary.
+  open: openMarkerFile,
   randomUUID,
 };
 

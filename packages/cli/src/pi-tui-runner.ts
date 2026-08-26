@@ -83,6 +83,7 @@ import {
   type MakaAttachedSessionTurn,
   type MakaPreparedSessionTurn,
   type MakaSessionDriver,
+  type MakaSideConversationParentStatus,
   type MakaSessionSwitchResult,
 } from './session-driver.js';
 import {
@@ -106,6 +107,8 @@ import { runMakaPiTuiTurn, type MakaPiTuiTurnRequest } from './pi-tui-turn.js';
 import { editorTheme, selectListTheme } from './tui-ansi.js';
 import { MakaAutocompleteAboveEditorComponent } from './tui-autocomplete-layout.js';
 import { TranscriptViewerOverlay } from './pi-tui-transcript-viewer.js';
+import { McpStatusOverlay } from './pi-tui-mcp-status.js';
+import type { TuiMcpSurface } from './tui-mcp-control.js';
 import { createShellRunElapsedTicker } from './shell-run-elapsed-ticker.js';
 import { createShellRunHydrationController } from './shell-run-hydration.js';
 import { sessionStatusBadge } from './tui-session-status.js';
@@ -212,6 +215,8 @@ export interface MakaPiTuiInput {
    *  whose listProviders/verify/save calls persist the connection + curated models
    *  via the host-owned stores. */
   onboarding?: MakaOnboardingSurface;
+  /** Client-owned MCP status and publication projection. Local TUI only in PR1. */
+  mcp?: TuiMcpSurface;
   /** First-run mode: auto-open the onboarding wizard on launch instead of
    *  waiting for /setup (used when the CLI starts with no configured connection). */
   firstRun?: boolean;
@@ -363,7 +368,14 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
   // being left behind.
   let detaching = false;
   let sideConversation:
-    | { readonly parentSessionId: string; readonly sideSessionId: string }
+    | {
+        readonly parentSessionId: string;
+        readonly sideSessionId: string;
+        parentDraft: string;
+        sideDraft: string;
+        parentStatus?: MakaSideConversationParentStatus;
+        stopParentObserver?: () => Promise<void>;
+      }
     | undefined;
   // True while the /session picker is open mid-turn: Escape must close the
   // overlay, not arm the double-Escape interrupt for the running Turn (#3380).
@@ -459,6 +471,17 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     providerRetry: state.providerRetry,
     uiLocale: locale,
     goal: input.driver.getGoal?.() ?? null,
+    ...(sideConversation
+      ? {
+          sideConversation: {
+            view:
+              input.driver.getSessionId() === sideConversation.sideSessionId ? 'side' : 'parent',
+            ...(sideConversation.parentStatus
+              ? { parentStatus: sideConversation.parentStatus }
+              : {}),
+          } as const,
+        }
+      : {}),
   });
 
   const transcript = new MakaTranscriptComponent(state, metadata);
@@ -716,6 +739,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     removeProcessHandlers();
     unsubscribeSessionTitleChanges();
     unsubscribeGoalChanges?.();
+    void sideConversation?.stopParentObserver?.();
     unsubscribeStartedTurns();
     unsubscribeResolvedInteractions();
     unsubscribeTranscriptReplacements();
@@ -1654,15 +1678,78 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     }
   };
 
-  const blockIdentityChangeWhileSideOpen = (action: string): boolean => {
-    if (!sideConversation) return false;
-    state.entries.push({
-      kind: 'notice',
-      level: 'error',
-      text: `Close the side conversation before ${action}.`,
-    });
+  const stopSideParentObserver = async (
+    pair: NonNullable<typeof sideConversation>,
+  ): Promise<void> => {
+    const stop = pair.stopParentObserver;
+    pair.stopParentObserver = undefined;
+    await stop?.();
+  };
+
+  const startSideParentObserver = async (
+    pair: NonNullable<typeof sideConversation>,
+  ): Promise<void> => {
+    if (!input.driver.observeSideConversationParent || pair.stopParentObserver) return;
+    let stop: () => Promise<void>;
+    try {
+      stop = await input.driver.observeSideConversationParent(pair.parentSessionId, (status) => {
+        if (sideConversation !== pair) return;
+        pair.parentStatus = status;
+        requestRender();
+      });
+    } catch {
+      if (sideConversation === pair) pair.parentStatus = undefined;
+      requestRender();
+      return;
+    }
+    if (sideConversation !== pair || input.driver.getSessionId() !== pair.sideSessionId) {
+      await stop();
+      return;
+    }
+    pair.stopParentObserver = stop;
+  };
+
+  const discardCurrentSidePair = async (): Promise<void> => {
+    const pair = sideConversation;
+    if (!pair) return;
+    await stopSideParentObserver(pair);
+    const cleanup = input.driver.discardSideConversation
+      ? await input.driver.discardSideConversation(pair.sideSessionId)
+      : 'pending';
+    if (sideConversation === pair) sideConversation = undefined;
+    if (cleanup === 'pending') {
+      state.entries.push({
+        kind: 'notice',
+        level: 'error',
+        text: 'Side conversation closed; cleanup will be retried on the next launch.',
+      });
+    }
     requestRender();
-    return true;
+  };
+
+  const toggleSideConversation = async (): Promise<void> => {
+    const pair = sideConversation;
+    if (!pair || detaching || (busy && !turnRunning)) return;
+    const fromSide = input.driver.getSessionId() === pair.sideSessionId;
+    const targetSessionId = fromSide ? pair.parentSessionId : pair.sideSessionId;
+    const currentDraft = editor.getText();
+    const switchView = async () => {
+      if (turnRunning) await switchAwayMidTurn(targetSessionId);
+      else await switchSession(targetSessionId);
+      if (sideConversation !== pair) return;
+      if (fromSide) {
+        pair.sideDraft = currentDraft;
+        editor.setText(pair.parentDraft);
+        await stopSideParentObserver(pair);
+      } else {
+        pair.parentDraft = currentDraft;
+        editor.setText(pair.sideDraft);
+        await startSideParentObserver(pair);
+      }
+      requestRender();
+    };
+    if (turnRunning) await switchView().catch(reportError);
+    else await runControl(switchView);
   };
 
   // `/session` is view navigation (#3380). Idle, it runs under runControl's
@@ -1670,16 +1757,31 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
   // running Turn, so the switch goes through the detach path instead of
   // silently no-oping on the busy gate.
   const goToSession = async (sessionId: string): Promise<void> => {
-    if (blockIdentityChangeWhileSideOpen('switching Sessions')) return;
+    const pair = sideConversation;
+    if (
+      pair &&
+      sessionId !== input.driver.getSessionId() &&
+      (sessionId === pair.parentSessionId || sessionId === pair.sideSessionId)
+    ) {
+      await toggleSideConversation();
+      return;
+    }
+    const leavesPair =
+      pair !== undefined && sessionId !== pair.parentSessionId && sessionId !== pair.sideSessionId;
     if (!turnRunning) {
-      await runControl(() => switchSession(sessionId));
+      await runControl(async () => {
+        await switchSession(sessionId);
+        if (leavesPair) await discardCurrentSidePair();
+      });
       return;
     }
     // One detach at a time (#3380): a second mid-turn switch while the first
     // is still handing the view over would clear `detaching` early, reopen
     // the interrupt window, and double-apply the adoption.
     if (detaching) return;
-    await switchAwayMidTurn(sessionId).catch(reportError);
+    await switchAwayMidTurn(sessionId)
+      .then(() => (leavesPair ? discardCurrentSidePair() : undefined))
+      .catch(reportError);
   };
 
   const openSideConversation = async (prompt: string): Promise<void> => {
@@ -1710,7 +1812,10 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
       sideConversation = {
         parentSessionId: result.parentSessionId,
         sideSessionId: result.sideSessionId,
+        parentDraft: editor.getText(),
+        sideDraft: '',
       };
+      await startSideParentObserver(sideConversation);
       opened = true;
       state.entries.push({
         kind: 'notice',
@@ -1746,6 +1851,8 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
       pair.parentSessionId,
     );
     await applySwitchResult(result);
+    editor.setText(pair.parentDraft);
+    await stopSideParentObserver(pair);
     sideConversation = undefined;
     if (result.cleanup === 'pending') {
       state.entries.push({
@@ -1789,6 +1896,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     try {
       const result = await input.driver.rewindToTurn(turnId);
       await applySwitchResult(result);
+      await discardCurrentSidePair();
       // Record the discarded turn's prompt in the editor history before
       // deciding on the refill: prompts submitted in this TUI process are
       // already there (addToHistory dedupes consecutive duplicates), but a
@@ -2401,7 +2509,6 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
   };
 
   const showRewindPicker = async () => {
-    if (blockIdentityChangeWhileSideOpen('rewinding')) return;
     const targets = await input.driver.listRewindTargets();
     if (targets.length === 0) {
       state.entries.push({
@@ -2444,8 +2551,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     );
   };
 
-  const newSession = () => {
-    if (blockIdentityChangeWhileSideOpen('starting a new Session')) return;
+  const newSession = async (): Promise<void> => {
     input.driver.startNewSession();
     // A fresh session is not bound by the previous one's boundary. Falling back
     // to the *current* label would keep the previous Session's mode, including
@@ -2462,6 +2568,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     // non-empty and suppress it.
     replaceTranscript([]);
     shellRunElapsedTicker.sync();
+    await discardCurrentSidePair();
     requestRender();
   };
 
@@ -2475,7 +2582,6 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
   // short line shows in the transcript.
   const importForeignSession = async (summary: ForeignSessionSummary): Promise<void> => {
     if (busy || input.foreignSessions === undefined) return;
-    if (blockIdentityChangeWhileSideOpen('importing another Session')) return;
     busy = true;
     const activity = beginActivity();
     editor.disableSubmit = true;
@@ -2483,7 +2589,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     try {
       const digest = await input.foreignSessions.readDigest(summary);
       if (closed) return;
-      newSession();
+      await newSession();
       void runAgentTurn({
         kind: 'external',
         prompt: foreignSessionHandoffDisplayText(digest),
@@ -2530,6 +2636,22 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     const renderTranscript = transcript.createDocumentRenderer();
     const viewer = new TranscriptViewerOverlay({
       renderTranscript,
+      viewportRows: () => terminal.rows,
+      onClose: () => overlay?.hide(),
+      onChange: () => tui.requestRender(),
+    });
+    overlay = tui.showOverlay(viewer, {
+      anchor: 'top-left',
+      width: '100%',
+      maxHeight: '100%',
+    });
+  };
+
+  const showMcpStatus = (): void => {
+    let overlay: OverlayHandle | undefined;
+    const viewer = new McpStatusOverlay({
+      locale,
+      ...(input.mcp ? { surface: input.mcp } : {}),
       viewportRows: () => terminal.rows,
       onClose: () => overlay?.hide(),
       onChange: () => tui.requestRender(),
@@ -3107,6 +3229,22 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
         void runControl(async () => showHelp());
       },
     },
+    mcp: {
+      description: primaryGuidance.commands.mcp,
+      midTurn: 'refuse',
+      run: (parts: string[]) => {
+        if (parts.length !== 1) {
+          state.entries.push({
+            kind: 'notice',
+            level: 'error',
+            text: 'Usage: /mcp',
+          });
+          requestRender();
+          return;
+        }
+        showMcpStatus();
+      },
+    },
     new: {
       description: primaryGuidance.commands.new,
       midTurn: 'refuse',
@@ -3433,6 +3571,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     if (isKeyRelease(data)) return undefined;
     if (
       sideConversation &&
+      input.driver.getSessionId() === sideConversation.sideSessionId &&
       matchesKey(data, Key.ctrl('c')) &&
       !isKeyRepeat(data) &&
       editor.getText().length === 0 &&
@@ -3454,6 +3593,10 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
       return { consume: true };
     }
     if (tui.hasOverlay()) return undefined;
+    if (matchesSideConversationToggle(data)) {
+      if (!isKeyRepeat(data)) void toggleSideConversation();
+      return { consume: true };
+    }
     const pendingSandboxBoundary = activeSandboxBoundaryRequest(state);
     if (pendingSandboxBoundary && !matchesKey(data, Key.ctrl('c'))) {
       if (
@@ -3824,6 +3967,12 @@ function shortSessionId(id: string): string {
 function isExitPrompt(prompt: string): boolean {
   const trimmed = prompt.trim();
   return trimmed === 'quit' || trimmed === 'exit' || trimmed === '/quit' || trimmed === '/exit';
+}
+
+function matchesSideConversationToggle(data: string): boolean {
+  // Legacy terminals encode Ctrl+/ as the C0 unit-separator byte (the same
+  // byte often named Ctrl+_); Kitty/modifyOtherKeys can preserve the slash.
+  return data === '\x1f' || matchesKey(data, Key.ctrl('/'));
 }
 
 // Two Escapes this close together read as one deliberate "stop the turn".

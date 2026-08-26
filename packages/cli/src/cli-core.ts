@@ -35,10 +35,11 @@ export type MakaCliCommand =
   | { kind: 'run'; args: string[] }
   | { kind: 'activate'; args: string[] }
   | { kind: 'eval'; args: string[] }
+  | { kind: 'acp' }
   | RuntimeHostCliCommand
   | { kind: 'help'; text: string }
   | { kind: 'version'; text: string }
-  | { kind: 'error'; message: string; exitCode: number };
+  | { kind: 'error'; message: string; exitCode: number; showHelp?: boolean };
 
 export interface MakaCliLaunchOptions {
   readonly dataProfileName: string;
@@ -61,6 +62,16 @@ export function parseMakaCliArgs(
   const [first] = argv;
   if (first === '--help' || first === '-h') return { kind: 'help', text: helpText(cliCommand) };
   if (first === '--version' || first === '-v') return { kind: 'version', text: version };
+  if (first === '--acp') {
+    return argv.length === 1
+      ? { kind: 'acp' }
+      : {
+          kind: 'error',
+          message: 'maka --acp does not accept arguments',
+          exitCode: 2,
+          showHelp: false,
+        };
+  }
   if (first?.startsWith('--')) return parseTuiArgs(argv);
   if (first === 'run' || first === '-p') return { kind: 'run', args: argv.slice(1) };
   if (first === 'activate') return { kind: 'activate', args: argv.slice(1) };
@@ -113,6 +124,7 @@ function helpText(cliCommand: string): string {
     '',
     'Commands:',
     `  ${cliCommand}              Start the TUI`,
+    `  ${cliCommand} --acp      Serve ACP v1 over stdio (initialize only; session support in progress)`,
     `  ${cliCommand} run ...      Run one non-interactive model turn`,
     `  ${cliCommand} activate ... Run one Cloud Session activation and emit JSONL`,
     `  ${cliCommand} -p ...       Alias for ${cliCommand} run`,
@@ -137,6 +149,7 @@ function helpText(cliCommand: string): string {
     `  ${cliCommand} runtime-host profile set --id <id> --name <name> --tls-url <wss-url> --expected-root <root-id> [--credential-env <name>]`,
     `  ${cliCommand} runtime-host profile set --id <id> --name <name> --ssh-destination <user@host> --ssh-remote-port <port> --expected-root <root-id> [--ssh-port <port>] [--credential-env <name>]`,
     `  ${cliCommand} runtime-host profile set --id <id> --name <name> --plaintext-url <ws-url> --acknowledge-plaintext --expected-root <root-id> [--credential-env <name>]`,
+    `  ${cliCommand} runtime-host profile set --id <id> --name <name> --peer-id <peer-id> --peer-route <multiaddr> --expected-root <root-id> [--credential-env <name>]`,
     `  ${cliCommand} runtime-host profile remove --id <id>`,
     `  ${cliCommand} runtime-host capability-provider serve --url <ws-url> --mcp-config <path> --expected-root <root-id>`,
     '',
@@ -159,6 +172,10 @@ function helpText(cliCommand: string): string {
     '  --tls-private-key <path>      TLS private key for WSS',
     '  --allow-insecure-remote       Allow plaintext WebSocket access beyond loopback',
     '  --allow-origin <origin>       Allow one browser Origin (repeatable)',
+    '  --peer-native-path <path>     Load the experimental direct-peer native module',
+    '  --peer-key <path>             Persist the direct-peer transport identity',
+    '  --peer-listen <multiaddr>     Listen on a direct-peer address (repeatable)',
+    '  --peer-coordination-relay <multiaddr>  Use a DCUtR coordination relay (repeatable)',
     '  --json                        Emit one machine-readable ready event',
     '',
     'Managed Runtime Host service install options (Linux or macOS):',
@@ -222,6 +239,10 @@ export async function runMakaCli(
       const { runMakaEvalCli } = await import('@maka/eval');
       return runMakaEvalCli(command.args);
     }
+    case 'acp': {
+      const { runMakaAcpStdioServer } = await import('./acp/stdio-server.js');
+      return runMakaAcpStdioServer({ version });
+    }
     case 'runtime-host-serve': {
       const { runRuntimeHostServiceCli } = await import('./runtime-host-service-command.js');
       return runRuntimeHostServiceCli({
@@ -231,6 +252,7 @@ export async function runMakaCli(
           ? { projectDirectoryRoots: command.projectDirectoryRoots }
           : {}),
         ...(command.websocket ? { websocket: command.websocket } : {}),
+        ...(command.peer ? { peer: command.peer } : {}),
       });
     }
     case 'runtime-host-setup': {
@@ -470,7 +492,11 @@ export async function runMakaCli(
       process.stdout.write(`${command.text}\n`);
       return 0;
     case 'error':
-      process.stderr.write(`${command.message}\n\n${helpText(options.cliCommand)}\n`);
+      process.stderr.write(
+        'showHelp' in command && command.showHelp === false
+          ? `${command.message}\n`
+          : `${command.message}\n\n${helpText(options.cliCommand)}\n`,
+      );
       return command.exitCode;
     case 'tui': {
       const locale = resolveCliUiLocale(process.env);

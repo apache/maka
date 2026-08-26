@@ -18,10 +18,15 @@
 name: Windows recovery
 
 on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
   workflow_dispatch:
 
 concurrency:
   group: windows-recovery-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
   contents: read
@@ -46,6 +51,21 @@ jobs:
 
       - name: Build test artifacts
         run: npm.cmd run build:test
+
+      - name: Verify managed dependency alternate streams
+        shell: pwsh
+        run: |
+          node.exe --test --test-reporter=tap --test-concurrency=1 `
+            --test-name-pattern="NTFS alternate stream" `
+            packages/storage/dist/__tests__/managed-dependency-environment.test.js `
+            2>&1 | Tee-Object -FilePath "$env:RUNNER_TEMP/managed-dependency-ads.tap"
+          $exitCode = $LASTEXITCODE
+          if ($exitCode -ne 0) { exit $exitCode }
+          $output = Get-Content "$env:RUNNER_TEMP/managed-dependency-ads.tap"
+          if ($output -notcontains '# tests 3' -or $output -notcontains '# pass 3' -or $output -notcontains '# skipped 0') {
+            Write-Error 'Managed dependency ADS gate did not run exactly three passing Windows tests'
+            exit 1
+          }
 
       - name: Verify Runtime Host Local IPC trust boundary
         shell: pwsh

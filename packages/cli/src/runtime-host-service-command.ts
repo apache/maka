@@ -41,6 +41,12 @@ export interface RuntimeHostServiceCliOptions {
     readonly allowInsecureRemote?: boolean;
     readonly allowedOrigins?: readonly string[];
   };
+  readonly peer?: {
+    readonly nativePath: string;
+    readonly keyPath: string;
+    readonly listenAddresses?: readonly string[];
+    readonly coordinationRelays?: readonly string[];
+  };
 }
 
 export async function runRuntimeHostServiceCli(
@@ -72,6 +78,7 @@ export async function runRuntimeHostServiceCli(
       ? { projectDirectoryRoots: options.projectDirectoryRoots }
       : {}),
     ...(websocket ? { websocket } : {}),
+    ...(options.peer ? { peer: options.peer } : {}),
   });
   let lifecycleEnd: Awaited<ReturnType<typeof runRuntimeHostProcessLifecycle>> | undefined;
   try {
@@ -84,6 +91,11 @@ export async function runRuntimeHostServiceCli(
         process.stdout.write(`Runtime Host service is ready at ${host.endpoint}\n`);
         for (const endpoint of host.websocketEndpoints) {
           process.stdout.write(`Runtime Host WebSocket is ready at ${endpoint}\n`);
+        }
+        for (const peer of host.peerListeners) {
+          process.stdout.write(
+            `Runtime Host direct peer is ready as ${peer.peerId} at ${peer.listenAddresses.join(', ')}\n`,
+          );
         }
       },
     });
@@ -116,6 +128,11 @@ export interface RuntimeHostServiceReadyEvent {
         readonly port: number;
         readonly path: string;
       }
+    | {
+        readonly kind: 'libp2p_direct';
+        readonly peerId: string;
+        readonly listenAddresses: readonly string[];
+      }
   )[];
 }
 
@@ -124,6 +141,10 @@ export function createRuntimeHostServiceReadyEvent(host: {
   readonly hostEpoch: string;
   readonly endpoint: string;
   readonly websocketEndpoints: readonly string[];
+  readonly peerListeners: readonly {
+    readonly peerId: string;
+    readonly listenAddresses: readonly string[];
+  }[];
   readonly compositionDescriptor: { readonly id: string; readonly revision: string };
 }): RuntimeHostServiceReadyEvent {
   return {
@@ -148,6 +169,11 @@ export function createRuntimeHostServiceReadyEvent(host: {
           path: url.pathname,
         };
       }),
+      ...host.peerListeners.map((peer) => ({
+        kind: 'libp2p_direct' as const,
+        peerId: peer.peerId,
+        listenAddresses: peer.listenAddresses,
+      })),
     ],
   };
 }

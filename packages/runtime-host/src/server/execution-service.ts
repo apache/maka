@@ -27,6 +27,7 @@ import { openRuntimeHostAccessAuthority } from './access-authority.js';
 import { startRuntimeHostServiceListenerSet } from './listener-set.js';
 import type { StartRuntimeHostWebSocketListenerOptions } from './websocket-listener.js';
 import type { PublishedProjectDirectoryRoot } from './project-directory-authority.js';
+import type { StartRuntimeHostPeerListenerOptions } from './peer-listener.js';
 
 export interface ExecutionRuntimeHostServiceOptions {
   readonly rootPath: string;
@@ -37,6 +38,7 @@ export interface ExecutionRuntimeHostServiceOptions {
     StartRuntimeHostWebSocketListenerOptions,
     'accessAuthority' | 'accept' | 'isReady'
   >;
+  readonly peer?: Omit<StartRuntimeHostPeerListenerOptions, 'accessAuthority' | 'accept'>;
 }
 
 export type ExecutionRuntimeHostServiceDependencies = ExecutionRuntimeHostCompositionDependencies;
@@ -67,12 +69,14 @@ export async function startExecutionRuntimeHostService(
       shutdownGraceMs: options.shutdownGraceMs,
       composition,
       accessAuthority,
-      ...(options.websocket
+      ...(options.websocket || options.peer
         ? {
             listenerSetFactory: (input) =>
               startRuntimeHostServiceListenerSet(input, {
-                ...options.websocket!,
-                accessAuthority,
+                ...(options.websocket
+                  ? { websocket: { ...options.websocket, accessAuthority } }
+                  : {}),
+                ...(options.peer ? { peer: { ...options.peer, accessAuthority } } : {}),
               }),
           }
         : {}),

@@ -4623,7 +4623,10 @@ export class SessionManager {
         wakeId: input.execution.wakeId,
         attemptId: input.execution.attemptId,
       };
-    } else if (input.execution.kind !== 'external_message') {
+    } else if (
+      input.execution.kind !== 'external_message' &&
+      input.execution.kind !== 'workhub_coordination'
+    ) {
       if (
         session.subagentParent?.kind !== 'subagent' ||
         session.subagentRuntime?.agentId !== input.execution.agentId ||

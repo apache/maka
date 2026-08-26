@@ -49,10 +49,16 @@
 
 /* 1. Generic interactive roles (Button, menu rows, options, labels, trees…).
  * Astryx FieldLabel / TreeListItem set StyleX cursor:pointer on <label> and
- * [role=treeitem] — cover them here so the product rule stays one sheet. */
+ * [role=treeitem] — cover them here so the product rule stays one sheet.
+ * FieldLabel also renders a bare `<span class="astryx-field-label">` for a
+ * group label (InputGroup: `isGroupLabel`), which names a group via
+ * `aria-labelledby` and forwards no click — the `label` selector misses it,
+ * so it kept StyleX's hand cursor. Match the stable themeProps class to catch
+ * that span too (real <label> field labels are already covered above). */
 :where(
   button,
   label,
+  .astryx-field-label,
   [role="button"],
   [role="menuitem"],
   [role="menuitemradio"],
@@ -68,6 +74,7 @@
 :where(
   button,
   label,
+  .astryx-field-label,
   [role="button"],
   [role="menuitem"],
   [role="menuitemradio"],

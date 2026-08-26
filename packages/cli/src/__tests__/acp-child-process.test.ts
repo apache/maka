@@ -1,0 +1,187 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
+import assert from 'node:assert/strict';
+import { once } from 'node:events';
+import { PassThrough } from 'node:stream';
+import { describe, test } from 'node:test';
+import { RequestError, methods } from '@agentclientprotocol/sdk';
+import {
+  pipeCapturedStdout,
+  StdoutCaptureBridge,
+  withAcpChildProcessHarness,
+} from './acp-child-process-harness.js';
+
+describe('Maka ACP child process', () => {
+  test('replays pre-subscription stdout once and continues capture after protocol cancellation', async () => {
+    const tap = new PassThrough();
+    const bridge = new StdoutCaptureBridge(tap);
+    tap.write('early\n');
+
+    const reader = bridge.protocolInput().getReader();
+    tap.write('late\n');
+    assert.equal(new TextDecoder().decode((await reader.read()).value), 'early\n');
+    assert.equal(new TextDecoder().decode((await reader.read()).value), 'late\n');
+    await reader.cancel();
+
+    const ended = once(tap, 'end');
+    tap.end('after-cancel\n');
+    await ended;
+    assert.equal(bridge.text, 'early\nlate\nafter-cancel\n');
+    assert.deepEqual(
+      bridge.snapshot.map((chunk) => new TextDecoder().decode(chunk)),
+      ['early\n', 'late\n', 'after-cancel\n'],
+    );
+    assert.equal(bridge.ended, true);
+    assert.equal(bridge.error, undefined);
+
+    const endedTap = new PassThrough();
+    const endedBridge = new StdoutCaptureBridge(endedTap);
+    const endedEvent = once(endedTap, 'end');
+    endedTap.end('already-ended\n');
+    await endedEvent;
+    const endedReader = endedBridge.protocolInput().getReader();
+    assert.equal(new TextDecoder().decode((await endedReader.read()).value), 'already-ended\n');
+    assert.deepEqual(await endedReader.read(), { value: undefined, done: true });
+  });
+
+  test('replays captured stdout before surfacing its stored error', async () => {
+    const tap = new PassThrough();
+    const bridge = new StdoutCaptureBridge(tap);
+    tap.write('before-error\n');
+    const error = new Error('stdout failed');
+    const errorEvent = once(tap, 'error');
+    tap.destroy(error);
+    await errorEvent;
+
+    const reader = bridge.protocolInput().getReader();
+    assert.equal(new TextDecoder().decode((await reader.read()).value), 'before-error\n');
+    await assert.rejects(reader.read(), (actual: unknown) => actual === error);
+    assert.equal(bridge.error, error);
+  });
+
+  test('forwards a child stdout error into the capture tap', async () => {
+    const childStdout = new PassThrough();
+    const tap = new PassThrough();
+    const bridge = new StdoutCaptureBridge(tap);
+    pipeCapturedStdout(childStdout, tap);
+
+    const error = new Error('child stdout failed');
+    const errorEvent = once(tap, 'error');
+    childStdout.destroy(error);
+    await errorEvent;
+    assert.equal(bridge.error, error);
+  });
+
+  test('accepts only exclusive JSON-RPC request, notification, and response forms', () => {
+    for (const message of [
+      { jsonrpc: '2.0', method: 'initialize', id: 1 },
+      { jsonrpc: '2.0', method: 'session/update' },
+      { jsonrpc: '2.0', method: 'session/update', params: { sessionId: 'session-1' } },
+      { jsonrpc: '2.0', id: 1, result: {} },
+      { jsonrpc: '2.0', id: 1, error: { code: -32601, message: 'Method not found' } },
+    ]) {
+      assertJsonRpcMessage(message);
+    }
+
+    for (const message of [
+      { jsonrpc: '2.0', result: {} },
+      { jsonrpc: '2.0', id: 1, result: {}, error: { code: -32603, message: 'Internal error' } },
+      { jsonrpc: '2.0', method: 'initialize', id: 1, result: {} },
+      { jsonrpc: '2.0', method: 'session/update', params: 'not-an-object' },
+      { jsonrpc: '2.0', id: 1, error: { code: 'bad', message: 'Method not found' } },
+    ]) {
+      assert.throws(() => assertJsonRpcMessage(message));
+    }
+  });
+
+  test('serves ACP without a Runtime Host and exits after stdin EOF', {
+    timeout: 30_000,
+  }, async () => {
+    await withAcpChildProcessHarness(async (harness) => {
+      await harness.withClient(async ({ context }) => {
+        assert.deepEqual(await context.request(methods.agent.initialize, { protocolVersion: 1 }), {
+          protocolVersion: 1,
+          agentCapabilities: {},
+          authMethods: [],
+          agentInfo: { name: 'maka', title: 'Maka', version: '0.2.0' },
+        });
+
+        await assert.rejects(
+          context.request('session/new', { cwd: harness.workspaceRoot }),
+          (error: unknown) => {
+            assert.ok(error instanceof RequestError);
+            assert.equal(error.code, -32601);
+            assert.deepEqual(error.data, { method: 'session/new' });
+            return true;
+          },
+        );
+      });
+
+      await harness.closeStdin();
+      assert.deepEqual(await harness.waitForExit(), { code: 0, signal: null });
+      assert.equal(harness.stderr, '');
+
+      const lines = harness.stdout.split(/\r?\n/u).filter((line) => line.trim().length > 0);
+      assert.ok(lines.length >= 2, 'expected initialize and method-not-found responses');
+      for (const line of lines) {
+        const message: unknown = JSON.parse(line);
+        assertJsonRpcMessage(message);
+      }
+    });
+  });
+});
+
+function assertJsonRpcMessage(message: unknown): void {
+  assert.ok(message && typeof message === 'object' && !Array.isArray(message));
+  const record = message as Record<string, unknown>;
+  assert.equal(record.jsonrpc, '2.0');
+  if (Object.hasOwn(record, 'method')) {
+    assert.equal(typeof record.method, 'string');
+    assert.equal(Object.hasOwn(record, 'result'), false);
+    assert.equal(Object.hasOwn(record, 'error'), false);
+    if (Object.hasOwn(record, 'id')) assertJsonRpcId(record.id);
+    if (Object.hasOwn(record, 'params')) {
+      assert.ok(
+        record.params !== null && typeof record.params === 'object',
+        'JSON-RPC method params are an object or array when present',
+      );
+    }
+    return;
+  }
+
+  assert.equal(Object.hasOwn(record, 'id'), true, 'a JSON-RPC response requires an id');
+  assertJsonRpcId(record.id);
+  const hasResult = Object.hasOwn(record, 'result');
+  const hasError = Object.hasOwn(record, 'error');
+  assert.notEqual(hasResult, hasError, 'a JSON-RPC response has exactly one of result or error');
+  if (!hasError) return;
+  assert.ok(record.error && typeof record.error === 'object' && !Array.isArray(record.error));
+  const error = record.error as Record<string, unknown>;
+  assert.equal(typeof error.code, 'number');
+  assert.equal(Number.isFinite(error.code), true);
+  assert.equal(typeof error.message, 'string');
+}
+
+function assertJsonRpcId(id: unknown): void {
+  assert.ok(
+    id === null || typeof id === 'string' || (typeof id === 'number' && Number.isFinite(id)),
+    'a JSON-RPC id is a string, finite number, or null',
+  );
+}

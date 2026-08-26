@@ -311,7 +311,7 @@ test('removes abandoned record workspaces before applying the next transition', 
   assert.equal(entries.includes(unrelated), true);
 });
 
-test('persists transfer intent before cutover and commits the exact target', async (t) => {
+test('persists handoff intent before cutover and commits the exact target', async (t) => {
   const options = await authority(t);
   const claimed = await applyLocalHostDeploymentTransition(
     ROOT_ID,
@@ -323,7 +323,7 @@ test('persists transfer intent before cutover and commits the exact target', asy
   const begun = await applyLocalHostDeploymentTransition(
     ROOT_ID,
     {
-      kind: 'begin_transfer',
+      kind: 'begin_handoff',
       expectedRevision: claimed.record!.revision,
       transactionId: 'desktop-to-cli',
       from: DESKTOP,
@@ -334,12 +334,12 @@ test('persists transfer intent before cutover and commits the exact target', asy
   );
   assert.equal(begun.kind, 'applied');
   assert.deepEqual(await readLocalHostDeploymentRecord(ROOT_ID, options), begun.record);
-  assert.equal(begun.record?.state.kind, 'transferring');
+  assert.equal(begun.record?.state.kind, 'handoff');
 
   const committed = await applyLocalHostDeploymentTransition(
     ROOT_ID,
     {
-      kind: 'commit_transfer',
+      kind: 'commit_handoff',
       expectedRevision: begun.record!.revision,
       transactionId: 'desktop-to-cli',
       to: CLI,
@@ -358,7 +358,7 @@ test('persists transfer intent before cutover and commits the exact target', asy
   const retried = await applyLocalHostDeploymentTransition(
     ROOT_ID,
     {
-      kind: 'commit_transfer',
+      kind: 'commit_handoff',
       expectedRevision: begun.record!.revision,
       transactionId: 'desktop-to-cli',
       to: CLI,
@@ -377,26 +377,27 @@ test('rejects stale confirmation after the owner revision changes', async (t) =>
     options,
   );
   assert.equal(claimed.kind, 'applied');
-  const selected = await applyLocalHostDeploymentTransition(
+  const released = await applyLocalHostDeploymentTransition(
     ROOT_ID,
     {
-      kind: 'select',
+      kind: 'release',
       expectedRevision: claimed.record!.revision,
       owner: DESKTOP,
-      selected: {
-        ...DESKTOP_DEPLOYMENT,
-        version: '1.1.0',
-        integrity: CLI_DEPLOYMENT.integrity,
-      },
     },
     options,
   );
-  assert.equal(selected.kind, 'applied');
+  assert.equal(released.kind, 'applied');
+  const reclaimed = await applyLocalHostDeploymentTransition(
+    ROOT_ID,
+    { kind: 'claim', owner: DESKTOP, selected: DESKTOP_DEPLOYMENT },
+    options,
+  );
+  assert.equal(reclaimed.kind, 'applied');
 
   const stale = await applyLocalHostDeploymentTransition(
     ROOT_ID,
     {
-      kind: 'begin_transfer',
+      kind: 'begin_handoff',
       expectedRevision: claimed.record!.revision,
       transactionId: 'stale-prompt',
       from: DESKTOP,
@@ -417,7 +418,7 @@ test('rejects stale confirmation after the owner revision changes', async (t) =>
   );
 });
 
-test('rolls an interrupted transfer back to the exact previous owner state', async (t) => {
+test('rolls an interrupted handoff back to the exact previous owner state', async (t) => {
   const options = await authority(t);
   const claimed = await applyLocalHostDeploymentTransition(
     ROOT_ID,
@@ -427,7 +428,7 @@ test('rolls an interrupted transfer back to the exact previous owner state', asy
   const begun = await applyLocalHostDeploymentTransition(
     ROOT_ID,
     {
-      kind: 'begin_transfer',
+      kind: 'begin_handoff',
       expectedRevision: claimed.record!.revision,
       transactionId: 'recover-me',
       from: DESKTOP,
@@ -439,7 +440,7 @@ test('rolls an interrupted transfer back to the exact previous owner state', asy
   const rolledBack = await applyLocalHostDeploymentTransition(
     ROOT_ID,
     {
-      kind: 'rollback_transfer',
+      kind: 'rollback_handoff',
       expectedRevision: begun.record!.revision,
       transactionId: 'recover-me',
       from: DESKTOP,
@@ -455,13 +456,15 @@ test('rolls an interrupted transfer back to the exact previous owner state', asy
     selected: DESKTOP_DEPLOYMENT,
   });
 
-  const changedSelection = await applyLocalHostDeploymentTransition(
+  const changedHandoff = await applyLocalHostDeploymentTransition(
     ROOT_ID,
     {
-      kind: 'select',
+      kind: 'begin_handoff',
       expectedRevision: rolledBack.record!.revision,
-      owner: DESKTOP,
-      selected: {
+      transactionId: 'replacement',
+      from: DESKTOP,
+      to: DESKTOP,
+      target: {
         ...DESKTOP_DEPLOYMENT,
         version: '1.1.0',
         integrity: CLI_DEPLOYMENT.integrity,
@@ -472,7 +475,7 @@ test('rolls an interrupted transfer back to the exact previous owner state', asy
   const staleRetry = await applyLocalHostDeploymentTransition(
     ROOT_ID,
     {
-      kind: 'rollback_transfer',
+      kind: 'rollback_handoff',
       expectedRevision: begun.record!.revision,
       transactionId: 'recover-me',
       from: DESKTOP,
@@ -480,9 +483,49 @@ test('rolls an interrupted transfer back to the exact previous owner state', asy
     },
     options,
   );
-  assert.equal(changedSelection.kind, 'applied');
+  assert.equal(changedHandoff.kind, 'applied');
   assert.equal(staleRetry.kind, 'rejected');
-  assert.equal(staleRetry.kind === 'rejected' ? staleRetry.reason : undefined, 'transfer_changed');
+  assert.equal(staleRetry.kind === 'rejected' ? staleRetry.reason : undefined, 'handoff_changed');
+});
+
+test('uses the same durable handoff for an owner-preserving deployment replacement', async (t) => {
+  const options = await authority(t);
+  const claimed = await applyLocalHostDeploymentTransition(
+    ROOT_ID,
+    { kind: 'claim', owner: CLI, selected: DESKTOP_DEPLOYMENT },
+    options,
+  );
+  const begun = await applyLocalHostDeploymentTransition(
+    ROOT_ID,
+    {
+      kind: 'begin_handoff',
+      expectedRevision: claimed.record!.revision,
+      transactionId: 'cli-upgrade',
+      from: CLI,
+      to: CLI,
+      target: CLI_DEPLOYMENT,
+    },
+    options,
+  );
+  const committed = await applyLocalHostDeploymentTransition(
+    ROOT_ID,
+    {
+      kind: 'commit_handoff',
+      expectedRevision: begun.record!.revision,
+      transactionId: 'cli-upgrade',
+      to: CLI,
+      target: CLI_DEPLOYMENT,
+    },
+    options,
+  );
+
+  assert.equal(committed.kind, 'applied');
+  assert.deepEqual(committed.record?.state, {
+    kind: 'owned',
+    owner: CLI,
+    selected: CLI_DEPLOYMENT,
+    previous: DESKTOP_DEPLOYMENT,
+  });
 });
 
 test('requires exact owner and revision before releasing durable authority', async (t) => {

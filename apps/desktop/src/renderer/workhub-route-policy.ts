@@ -120,10 +120,6 @@ function createWorkHubRoutePolicyVisit(
         return { kind: 'target', target: explicitTarget, evidence: 'explicit_target' };
       }
 
-      if (looksLikeExplicitNewSession(text)) {
-        return { kind: 'new_session' };
-      }
-
       const correctionText = naturalCorrectionTargetText(text);
       const correctedFrom = currentFocus && sessions.some((session) =>
         session.target.sessionId === currentFocus?.sessionId)
@@ -173,6 +169,10 @@ function createWorkHubRoutePolicyVisit(
           options: options.slice(0, MAX_UNCERTAINTY_OPTIONS),
           correctedFrom,
         };
+      }
+
+      if (looksLikeExplicitNewSession(text)) {
+        return { kind: 'new_session' };
       }
 
       const exact = rankExactSessions(text, sessions);
@@ -407,6 +407,14 @@ function looksLikePreviousFocus(value: string): boolean {
 }
 
 function naturalCorrectionTargetText(value: string): string | undefined {
+  const chineseCreation = value.match(
+    /^\s*(?:(?:不是|不要再继续)\s*(?:这个|那个|当前这个|刚才那个)(?:工作|任务|Session|会话)?|不对|错了|搞错了|弄错了)(?:[\s\p{P}\p{S}]+|$)(?:(?:请|麻烦|帮我)\s*)?(?:(?:创建|新建|新开)(?:一个)?|开一个)(?:全新的?|新的?)?(?:普通)?\s*(?:Session|会话|工作|任务)(?:叫|名为|命名为)?\s*(.{2,})$/iu,
+  )?.[1]?.trim();
+  if (chineseCreation) return chineseCreation;
+  const englishCreation = value.match(
+    /^\s*(?:no|not\s+(?:(?:this|that|the\s+current)(?:\s+(?:one|session|work|task))?)|wrong\s+(?:one|session|work|task))\b(?:[\s\p{P}\p{S}]+|$)(?:(?:please|kindly)\s+)?(?:create|start|open)\s+(?:a\s+)?(?:brand[- ]new|new)\s+(?:session|work|task)(?:\s+(?:called|named))?\s+(.{2,}?)(?:\s+instead)?[.!]?$/iu,
+  )?.[1]?.trim();
+  if (englishCreation) return englishCreation;
   const replacement = '(?:应该(?:是|用|改成|改为|切到|转到)?|而是|改成|改为|换成|换到|切到|转到|用|是)';
   const chinese = value.match(
     new RegExp(`(?:(?:不是|不要再继续)\\s*(?:(?:这个|那个|当前这个|刚才那个)(?:工作|任务|Session|会话)?|[^，,。；;\\n]{1,32}(?:那个|那项工作|Session|会话|工作|任务))|(?:(?:这个|那个|当前这个|刚才那个)(?:工作|任务|Session|会话)|[^，,。；;\\n]{1,32}(?:那个|那项工作|Session|会话|工作|任务))\\s*(?:不对|搞错了|弄错了))[，,。；;\\n]\\s*${replacement}\\s*(.{2,})$`, 'iu'),

@@ -80,10 +80,15 @@ export {
   type RuntimeHostInstallationOwner,
 } from './local-deployment-owner.js';
 export {
-  transferLocalHostProcessOwner,
-  type LocalHostProcessOwnerTransferAdapter,
-  type LocalHostProcessOwnerTransferPhase,
-  type LocalHostProcessOwnerTransferRequest,
-  type LocalHostProcessOwnerTransferResult,
-  type LocalHostTransferActiveWorkPolicy,
-} from './local-process-owner-transfer.js';
+  claimLocalHostProcessDeployment,
+  handoffLocalHostProcessDeployment,
+  type LocalHostProcessDeploymentClaimAdapter,
+  type LocalHostProcessDeploymentClaimPhase,
+  type LocalHostProcessDeploymentClaimRequest,
+  type LocalHostProcessDeploymentClaimResult,
+  type LocalHostProcessDeploymentHandoffAdapter,
+  type LocalHostProcessDeploymentHandoffPhase,
+  type LocalHostProcessDeploymentHandoffRequest,
+  type LocalHostProcessDeploymentHandoffResult,
+  type LocalHostHandoffActiveWorkPolicy,
+} from './local-process-deployment-handoff.js';

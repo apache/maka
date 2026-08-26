@@ -48,6 +48,12 @@ export type RuntimeHostCliCommand =
         allowedOrigins?: string[];
         allowInsecureRemote?: boolean;
       };
+      peer?: {
+        nativePath: string;
+        keyPath: string;
+        listenAddresses?: string[];
+        coordinationRelays?: string[];
+      };
     }
   | {
       kind: 'runtime-host-setup';
@@ -171,6 +177,12 @@ export type RuntimeHostCliCommand =
             sshPort?: number;
             remotePort: number;
             websocketPath: string;
+          }
+        | {
+            kind: 'libp2p-direct';
+            peerId: string;
+            routeHints: string[];
+            coordinationRelays: string[];
           };
       expectedRootId: string;
       credentialEnv?: string;
@@ -631,6 +643,9 @@ function parseProfileCommand(argv: string[]): RuntimeHostCliCommand {
   let sshRemotePort: number | undefined;
   let sshWebSocketPath = '/runtime-host';
   let sshWebSocketPathConfigured = false;
+  let peerId: string | undefined;
+  const peerRouteHints: string[] = [];
+  const peerCoordinationRelays: string[] = [];
   let expectedRootId: string | undefined;
   let credentialEnv: string | undefined;
   for (let index = 1; index < argv.length; index += 1) {
@@ -644,6 +659,9 @@ function parseProfileCommand(argv: string[]): RuntimeHostCliCommand {
       argument !== '--ssh-port' &&
       argument !== '--ssh-remote-port' &&
       argument !== '--ssh-websocket-path' &&
+      argument !== '--peer-id' &&
+      argument !== '--peer-route' &&
+      argument !== '--peer-coordination-relay' &&
       argument !== '--expected-root' &&
       argument !== '--credential-env' &&
       argument !== '--acknowledge-plaintext'
@@ -667,14 +685,22 @@ function parseProfileCommand(argv: string[]): RuntimeHostCliCommand {
       sshWebSocketPath = parsed;
       sshWebSocketPathConfigured = true;
     }
+    if (argument === '--peer-id') peerId = parsed;
+    if (argument === '--peer-route') peerRouteHints.push(parsed);
+    if (argument === '--peer-coordination-relay') peerCoordinationRelays.push(parsed);
     if (argument === '--expected-root') expectedRootId = parsed;
     if (argument === '--credential-env') credentialEnv = parsed;
     index += 1;
   }
   if (!id) return error('--id is required');
   if (!name) return error('--name is required');
-  if ((tlsUrl ? 1 : 0) + (plaintextUrl ? 1 : 0) + (sshDestination ? 1 : 0) !== 1) {
-    return error('exactly one of --tls-url, --plaintext-url, or --ssh-destination is required');
+  if (
+    (tlsUrl ? 1 : 0) + (plaintextUrl ? 1 : 0) + (sshDestination ? 1 : 0) + (peerId ? 1 : 0) !==
+    1
+  ) {
+    return error(
+      'exactly one of --tls-url, --plaintext-url, --ssh-destination, or --peer-id is required',
+    );
   }
   if (plaintextUrl && !acknowledgePlaintext) {
     return error('--plaintext-url requires --acknowledge-plaintext');
@@ -690,6 +716,12 @@ function parseProfileCommand(argv: string[]): RuntimeHostCliCommand {
   }
   if (sshDestination && !sshRemotePort) {
     return error('--ssh-destination requires --ssh-remote-port');
+  }
+  if (!peerId && (peerRouteHints.length > 0 || peerCoordinationRelays.length > 0)) {
+    return error('peer route options require --peer-id');
+  }
+  if (peerId && peerRouteHints.length === 0 && peerCoordinationRelays.length === 0) {
+    return error('--peer-id requires at least one --peer-route or --peer-coordination-relay');
   }
   if (sshPort !== undefined && (!Number.isInteger(sshPort) || sshPort < 1 || sshPort > 65_535)) {
     return error('--ssh-port must be an integer between 1 and 65535');
@@ -713,13 +745,20 @@ function parseProfileCommand(argv: string[]): RuntimeHostCliCommand {
             url: plaintextUrl,
             acknowledgement: 'plaintext-bearer-v1',
           }
-        : {
-            kind: 'ssh',
-            destination: sshDestination!,
-            ...(sshPort === undefined ? {} : { sshPort }),
-            remotePort: sshRemotePort!,
-            websocketPath: sshWebSocketPath,
-          },
+        : sshDestination
+          ? {
+              kind: 'ssh',
+              destination: sshDestination,
+              ...(sshPort === undefined ? {} : { sshPort }),
+              remotePort: sshRemotePort!,
+              websocketPath: sshWebSocketPath,
+            }
+          : {
+              kind: 'libp2p-direct',
+              peerId: peerId!,
+              routeHints: peerRouteHints,
+              coordinationRelays: peerCoordinationRelays,
+            },
     expectedRootId,
     ...(credentialEnv ? { credentialEnv } : {}),
   };
@@ -782,7 +821,11 @@ function parseServeCommand(argv: string[]): RuntimeHostCliCommand {
   let tlsCertificatePath: string | undefined;
   let tlsPrivateKeyPath: string | undefined;
   let allowInsecureRemote = false;
+  let peerNativePath: string | undefined;
+  let peerKeyPath: string | undefined;
   const allowedOrigins: string[] = [];
+  const peerListenAddresses: string[] = [];
+  const peerCoordinationRelays: string[] = [];
   const projectDirectoryRoots: { label: string; path: string }[] = [];
   for (let index = 0; index < argv.length; index += 1) {
     const argument = argv[index];
@@ -861,6 +904,21 @@ function parseServeCommand(argv: string[]): RuntimeHostCliCommand {
       index += 1;
       continue;
     }
+    if (
+      argument === '--peer-native-path' ||
+      argument === '--peer-key' ||
+      argument === '--peer-listen' ||
+      argument === '--peer-coordination-relay'
+    ) {
+      const parsed = optionValue(argv, index, argument);
+      if (typeof parsed !== 'string') return parsed;
+      if (argument === '--peer-native-path') peerNativePath = parsed;
+      if (argument === '--peer-key') peerKeyPath = parsed;
+      if (argument === '--peer-listen') peerListenAddresses.push(parsed);
+      if (argument === '--peer-coordination-relay') peerCoordinationRelays.push(parsed);
+      index += 1;
+      continue;
+    }
     return error(`Unexpected argument: ${argument ?? ''}`);
   }
   if ((tlsCertificatePath === undefined) !== (tlsPrivateKeyPath === undefined)) {
@@ -874,6 +932,15 @@ function parseServeCommand(argv: string[]): RuntimeHostCliCommand {
   }
   if (websocketPath !== undefined && !isCanonicalRuntimeHostWebSocketPath(websocketPath)) {
     return error('--websocket-path must be a canonical absolute URL path');
+  }
+  if ((peerNativePath === undefined) !== (peerKeyPath === undefined)) {
+    return error('--peer-native-path and --peer-key must be provided together');
+  }
+  if (
+    peerNativePath === undefined &&
+    (peerListenAddresses.length > 0 || peerCoordinationRelays.length > 0)
+  ) {
+    return error('peer listener options require --peer-native-path and --peer-key');
   }
   return {
     kind: 'runtime-host-serve',
@@ -891,6 +958,18 @@ function parseServeCommand(argv: string[]): RuntimeHostCliCommand {
             ...(tlsPrivateKeyPath ? { tlsPrivateKeyPath } : {}),
             ...(allowedOrigins.length > 0 ? { allowedOrigins } : {}),
             ...(allowInsecureRemote ? { allowInsecureRemote: true } : {}),
+          },
+        }),
+    ...(peerNativePath === undefined
+      ? {}
+      : {
+          peer: {
+            nativePath: peerNativePath,
+            keyPath: peerKeyPath!,
+            ...(peerListenAddresses.length > 0 ? { listenAddresses: peerListenAddresses } : {}),
+            ...(peerCoordinationRelays.length > 0
+              ? { coordinationRelays: peerCoordinationRelays }
+              : {}),
           },
         }),
   };

@@ -44,7 +44,11 @@ import {
   createRuntimeHostMakaSessionDriver,
   type RuntimeHostMakaSessionDriverInput,
 } from '../runtime-host-session-driver.js';
-import { SkillInvocationBlockedError, type MakaAttachedSessionTurn } from '../session-driver.js';
+import {
+  SkillInvocationBlockedError,
+  type MakaAttachedSessionTurn,
+  type MakaSideConversationParentStatus,
+} from '../session-driver.js';
 import { WAIT_BUDGET_MS } from './tui-terminal-mock.js';
 
 describe('Runtime Host Maka Session driver', () => {
@@ -1317,6 +1321,69 @@ describe('Runtime Host Maka Session driver', () => {
       connection.requests.find(({ operation }) => operation === 'session.remove')?.input,
       { sessionId: 'side-1', expectedRevision: 1 },
     );
+  });
+
+  test('observes actionable and terminal parent status from the Host projection', async () => {
+    const subscription = new FakeSubscription(
+      continuitySnapshot({ interactions: { pending: [pendingPermission()] } }),
+      Promise.resolve([]),
+    );
+    const driver = createRuntimeHostMakaSessionDriver({
+      connection: new FakeConnection([subscription]).value,
+      cwd: '/tmp',
+      llmConnectionSlug: 'openai-main',
+      model: 'gpt-5',
+    });
+    const statuses: Array<MakaSideConversationParentStatus | undefined> = [];
+
+    const stop = await driver.observeSideConversationParent!('session-1', (status) => {
+      statuses.push(status);
+    });
+    assert.equal(statuses.at(-1), 'needs_approval');
+
+    subscription.push(projectionFrame(1, runningTurn('turn-2', 'run-2'), 2));
+    await waitFor(() => statuses.at(-1) === undefined);
+    subscription.push(projectionFrame(2, completedTurn('turn-2', 'run-2'), 3));
+    await waitFor(() => statuses.at(-1) === 'finished');
+
+    await stop();
+  });
+
+  test('clears parent status when observer recovery is exhausted', async () => {
+    const snapshot = continuitySnapshot({ interactions: { pending: [pendingPermission()] } });
+    const initial = new FakeSubscription(snapshot, Promise.resolve([]));
+    const ended = Array.from({ length: 8 }, (_, index) => {
+      const subscription = new FakeSubscription(
+        { ...snapshot, projectionRevision: index + 2 },
+        Promise.resolve([]),
+        `subscription-${index + 2}`,
+      );
+      void subscription.close();
+      return subscription;
+    });
+    const connection = new FakeConnection([initial, ...ended], true);
+    const driver = createRuntimeHostMakaSessionDriver({
+      connection: connection.value,
+      cwd: '/tmp',
+      llmConnectionSlug: 'openai-main',
+      model: 'gpt-5',
+    });
+    const statuses: Array<MakaSideConversationParentStatus | undefined> = [];
+    const cleared = deferred<void>();
+
+    await driver.observeSideConversationParent!('session-1', (status) => {
+      statuses.push(status);
+      if (status === undefined) cleared.resolve();
+    });
+    assert.equal(statuses.at(-1), 'needs_approval');
+
+    await initial.close();
+    await Promise.race([
+      cleared.promise,
+      delay(3_000).then(() => assert.fail('Timed out waiting for observer recovery exhaustion')),
+    ]);
+    assert.equal(connection.openedSubscriptions, 9);
+    assert.equal(statuses.at(-1), undefined);
   });
 
   test('reopens a failed Session channel before starting the next turn', async () => {

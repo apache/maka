@@ -26,7 +26,7 @@ import {
 } from './operational-state-store.js';
 import { createSqliteSessionMetadataStore } from './sqlite-session-metadata-store.js';
 
-type UsageSessionHeader = Pick<SessionHeader, 'id' | 'llmConnectionSlug' | 'model'>;
+type UsageSessionHeader = Pick<SessionHeader, 'id' | 'name' | 'llmConnectionSlug' | 'model'>;
 
 type UsageAssistantMessage = {
   type: 'assistant';
@@ -92,6 +92,7 @@ export async function readUsageStats(
         ts: message.ts,
         kind: 'model' as const,
         sessionId: header.id,
+        sessionName: header.name,
         turnId: message.turnId,
         provider: header.llmConnectionSlug,
         model: assistantByTurn.get(message.turnId) ?? header.model,
@@ -158,6 +159,7 @@ async function readStoredSessions(
       sessions.push({
         header: {
           id: header.id,
+          name: header.name,
           llmConnectionSlug: header.llmConnectionSlug,
           model: header.model,
         },
@@ -175,10 +177,12 @@ async function readStoredSessions(
 function normalizeUsageSessionHeader(value: unknown, sessionId: string): UsageSessionHeader | null {
   if (!isRecord(value)) return null;
   if (value.id !== sessionId) return null;
+  if (typeof value.name !== 'string') return null;
   if (typeof value.llmConnectionSlug !== 'string') return null;
   if (typeof value.model !== 'string') return null;
   return {
     id: value.id,
+    name: value.name,
     llmConnectionSlug: value.llmConnectionSlug,
     model: value.model,
   };
@@ -365,6 +369,7 @@ function toolLogRowsFromMessages(
         ts,
         kind: 'tool' as const,
         sessionId: header.id,
+        sessionName: header.name,
         turnId: call.turnId,
         provider: header.llmConnectionSlug,
         model: header.model,
