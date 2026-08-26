@@ -18,6 +18,8 @@
  */
 
 import assert from 'node:assert/strict';
+import { homedir } from 'node:os';
+import { join, sep } from 'node:path';
 import { describe, test } from 'node:test';
 import { visibleWidth } from '@earendil-works/pi-tui';
 import type { PipeShellOutput, PtyShellOutput } from '@maka/core/shell-run';
@@ -38,6 +40,7 @@ import {
   hydrateToolsWithStoredMessages,
   makaPiToolPresentationStatus,
   replaceTranscriptWithStoredMessages,
+  shortenCwd,
   submitCompactToTranscript,
   toggleAllThinkingExpansion,
   toggleAllToolExpansion,
@@ -242,6 +245,46 @@ describe('Maka Pi TUI transcript', () => {
       ),
       /ctx 20k\/500k 4%/,
     );
+  });
+
+  test('abbreviates a home-relative cwd on every platform (#3825)', () => {
+    // Windows reports the profile with backslashes, so the abbreviation has to
+    // be decided on separator-normalized paths rather than on a `home + '/'`
+    // prefix, which matched nothing there. Home and cwd are injected as plain
+    // strings so every expectation holds on any runner.
+    const cases: [cwd: string, home: string, expected: string][] = [
+      ['/Users/alice/workspace/project', '/Users/alice', '~/workspace/project'],
+      ['/Users/alice', '/Users/alice', '~'],
+      ['C:\\Users\\alice\\Videos\\clip', 'C:\\Users\\alice', '~\\Videos\\clip'],
+      ['C:\\Users\\alice', 'C:\\Users\\alice', '~'],
+      ['C:\\Users\\alice\\', 'C:\\Users\\alice', '~'],
+      // Windows accepts either separator inside one path.
+      ['C:/Users/alice/Videos', 'C:\\Users\\alice', '~/Videos'],
+      ['C:\\Users\\alice\\Videos', 'C:/Users/alice', '~\\Videos'],
+      // Outside home, or only sharing a name prefix with it: unchanged.
+      ['/opt/maka', '/Users/alice', '/opt/maka'],
+      ['/Users/alicebob/x', '/Users/alice', '/Users/alicebob/x'],
+      ['D:\\Projects\\maka', 'C:\\Users\\alice', 'D:\\Projects\\maka'],
+      ['C:\\Users\\alicebob\\x', 'C:\\Users\\alice', 'C:\\Users\\alicebob\\x'],
+      // A `..` segment can walk back out of home, so the full path is kept.
+      ['/Users/alice/../bob', '/Users/alice', '/Users/alice/../bob'],
+      ['C:\\Users\\alice\\..\\bob', 'C:\\Users\\alice', 'C:\\Users\\alice\\..\\bob'],
+      // No usable home: nothing to abbreviate against.
+      ['/Users/alice/project', '', '/Users/alice/project'],
+    ];
+    for (const [cwd, home, expected] of cases) {
+      assert.equal(shortenCwd(cwd, home), expected, `${cwd} under ${home}`);
+    }
+  });
+
+  test('status line renders the cwd through the home abbreviation (#3825)', () => {
+    // The statusline resolves home itself, so drive the wiring through the
+    // real one and build the expectation with the platform's own separator.
+    const line = stripAnsi(
+      renderMakaPiStatusLine({ ...meta(), cwd: join(homedir(), 'workspace', 'project') }, 200),
+    );
+    assert.match(line, new RegExp(`~\\${sep}workspace\\${sep}project$`));
+    assert.equal(line.includes(homedir()), false);
   });
 
   test('keeps assistant text after a tool call visible after the tool block', () => {

@@ -1513,15 +1513,36 @@ function firstLinePreview(text: string): string {
 }
 
 /**
- * Shorten an absolute path to a `~`-relative form for the statusline.
- * `/Users/alice/workspace/project` → `~/workspace/project`.
- * Falls back to the original path if it is not under the home directory.
+ * Shorten an absolute path to a `~`-relative form for the statusline:
+ * `/Users/alice/workspace/project` → `~/workspace/project`,
+ * `C:\Users\alice\Videos\clip` → `~\Videos\clip`.
+ *
+ * Containment is decided on separator-normalized copies. Windows reports the
+ * profile as `C:\Users\<name>` and accepts either separator inside one path, so
+ * a literal `home + '/'` prefix test matched nothing there and the statusline
+ * showed every profile subdirectory in full (#3825). `path.relative` is not
+ * used for the same reason in reverse: it follows the host platform, so a
+ * Windows path would be misread on a POSIX runner. The tail is sliced out of
+ * the original `cwd` rather than the normalized copy, keeping whichever
+ * separators the platform actually produced.
+ *
+ * Falls back to the original path when it is not under home. A `..` segment
+ * falls back too — it can walk back out, and only the unabbreviated path is
+ * guaranteed to still name the same directory. Comparison stays
+ * case-sensitive, like the other path helpers in the tree.
  */
-function shortenCwd(cwd: string, homeDir?: string): string {
+export function shortenCwd(cwd: string, homeDir?: string): string {
   const home = homeDir ?? homedir();
-  if (home && cwd.startsWith(home + '/')) return `~${cwd.slice(home.length)}`;
-  if (home && cwd === home) return '~';
-  return cwd;
+  // A trailing separator on home would push the slice offset past the prefix.
+  const normalizedHome = home.replace(/[\\/]+$/, '').replaceAll('\\', '/');
+  if (!normalizedHome) return cwd;
+  const normalizedCwd = cwd.replaceAll('\\', '/');
+  if (normalizedCwd === normalizedHome) return '~';
+  if (!normalizedCwd.startsWith(`${normalizedHome}/`)) return cwd;
+  const tail = normalizedCwd.slice(normalizedHome.length + 1);
+  if (!tail) return '~';
+  if (tail.split('/').includes('..')) return cwd;
+  return `~${cwd.slice(normalizedHome.length)}`;
 }
 
 function formatCost(costUsd: number): string {
