@@ -6437,6 +6437,64 @@ describe('Maka Pi TUI runner', () => {
     await run;
   });
 
+  test('closing an empty side conversation restores the retained parent draft', async () => {
+    const terminal = new FakeTerminal();
+    const driver = new SideConversationDriver();
+    const run = runMakaPiTui({
+      title: 'Maka',
+      driver,
+      cwd: '/repo',
+      model: 'claude-sonnet-4-5',
+      connectionSlug: 'claude-subscription',
+      permissionMode: 'ask',
+      terminal,
+    });
+
+    terminal.input('/side');
+    terminal.input('\r');
+    await waitFor(() => driver.getSessionId() === 'side-1');
+    terminal.input('\x1f');
+    await waitFor(() => driver.getSessionId() === 'session-1');
+    terminal.input('parent draft');
+    terminal.input('\x1f');
+    await waitFor(() => driver.getSessionId() === 'side-1');
+    assert.equal(editorInputText(terminal), '');
+
+    terminal.input('\x03');
+    await waitFor(() => editorInputText(terminal) === 'parent draft');
+    assert.equal(driver.getSessionId(), 'session-1');
+
+    exitMaka(terminal);
+    await run;
+  });
+
+  test('does not report main closed when the parent observer cannot open', async () => {
+    const terminal = new FakeTerminal();
+    const driver = new FailingParentObserverSideConversationDriver();
+    const run = runMakaPiTui({
+      title: 'Maka',
+      driver,
+      cwd: '/repo',
+      model: 'claude-sonnet-4-5',
+      connectionSlug: 'claude-subscription',
+      permissionMode: 'ask',
+      terminal,
+    });
+
+    terminal.input('/side');
+    terminal.input('\r');
+    await waitFor(() => driver.getSessionId() === 'side-1');
+    await waitFor(() =>
+      plainTerminalOutput(terminal.screenOutput()).includes(
+        'Side from main thread · Ctrl+/ to switch · Ctrl+C to close',
+      ),
+    );
+    assert.doesNotMatch(plainTerminalOutput(terminal.screenOutput()), /main closed/u);
+
+    exitMaka(terminal);
+    await run;
+  });
+
   test('Ctrl+/ detaches from a running side Turn without stopping it', async () => {
     const terminal = new FakeTerminal();
     const driver = new RunningSideConversationDriver();
@@ -7860,6 +7918,15 @@ class SideConversationDriver extends SlashCommandDriver {
   async discardSideConversation(sideSessionId: string) {
     this.discardedSides.push(sideSessionId);
     return 'removed' as const;
+  }
+}
+
+class FailingParentObserverSideConversationDriver extends SideConversationDriver {
+  override async observeSideConversationParent(
+    _parentSessionId: string,
+    _listener: (status: MakaSideConversationParentStatus | undefined) => void,
+  ): Promise<() => Promise<void>> {
+    throw new Error('parent observer unavailable');
   }
 }
 

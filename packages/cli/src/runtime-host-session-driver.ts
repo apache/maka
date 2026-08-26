@@ -710,7 +710,7 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
             // projection live; the active Session remains the transcript owner.
           }
         } catch {
-          // onFailed publishes the user-visible closed state.
+          // onFailed clears the user-visible state once recovery is exhausted.
         }
       })().finally(() => drains.delete(task));
       drains.add(task);
@@ -728,7 +728,7 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
       onGoalChanged: () => undefined,
       onSnapshotChanged: publish,
       onFailed: () => {
-        if (!closed) listener('closed');
+        if (!closed) listener(undefined);
       },
       onRecovered: () => undefined,
     });

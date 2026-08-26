@@ -1698,7 +1698,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
         requestRender();
       });
     } catch {
-      if (sideConversation === pair) pair.parentStatus = 'closed';
+      if (sideConversation === pair) pair.parentStatus = undefined;
       requestRender();
       return;
     }
@@ -1851,6 +1851,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
       pair.parentSessionId,
     );
     await applySwitchResult(result);
+    editor.setText(pair.parentDraft);
     await stopSideParentObserver(pair);
     sideConversation = undefined;
     if (result.cleanup === 'pending') {
