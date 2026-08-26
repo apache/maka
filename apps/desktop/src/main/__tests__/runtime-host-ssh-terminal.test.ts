@@ -313,7 +313,7 @@ test('applies the complete remote Project root policy through the managed operat
       rootId: 'a'.repeat(64),
     },
     projectDirectoryRoots: [
-      { label: 'Work', path: '/srv/work trees' },
+      { label: 'Work=Primary', path: '/srv/work trees' },
       { label: 'Data', path: '/mnt/data' },
     ],
     expectedConfigFingerprint: fingerprint,
@@ -322,9 +322,11 @@ test('applies the complete remote Project root policy through the managed operat
   await waitFor(() => harness.pty.hasDataListener());
   const remoteCommand = harness.launchArgs.at(-1)?.at(-1) ?? '';
   assert.match(remoteCommand, /operator.*configure/u);
-  assert.match(remoteCommand, /--project-root/u);
-  assert.match(remoteCommand, /Work=\/srv\/work trees/u);
-  assert.match(remoteCommand, /Data=\/mnt\/data/u);
+  assert.match(remoteCommand, /--project-root-json/u);
+  assert.match(remoteCommand, /Work=Primary/u);
+  assert.match(remoteCommand, /srv\/work trees/u);
+  assert.match(remoteCommand, /Data/u);
+  assert.match(remoteCommand, /mnt\/data/u);
   assert.match(remoteCommand, /--expected-config-fingerprint/u);
   assert.match(remoteCommand, /--allow-interrupt-active-tasks/u);
   assert.match(
@@ -346,7 +348,7 @@ test('applies the complete remote Project root policy through the managed operat
         installedVersion: '1.2.3',
         configurationFingerprint: `sha256:${'d'.repeat(64)}`,
         projectDirectoryRoots: [
-          { label: 'Work', path: '/srv/work trees' },
+          { label: 'Work=Primary', path: '/srv/work trees' },
           { label: 'Data', path: '/mnt/data' },
         ],
       },

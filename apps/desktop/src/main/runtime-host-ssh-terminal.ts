@@ -1060,8 +1060,8 @@ function runtimeHostSetupRemoteCommand(
       : input.projectDirectoryRoots.length === 0
         ? ['--no-project-roots']
         : input.projectDirectoryRoots.flatMap(({ label, path }) => [
-            '--project-root',
-            `${label}=${path}`,
+            '--project-root-json',
+            JSON.stringify({ label, path }),
           ])),
     '--json',
   ]);
@@ -1084,8 +1084,8 @@ function runtimeHostServiceManagementRemoteCommand(
       : input.projectDirectoryRoots.length === 0
         ? ['--no-project-roots']
         : input.projectDirectoryRoots.flatMap(({ label, path }) => [
-            '--project-root',
-            `${label}=${path}`,
+            '--project-root-json',
+            JSON.stringify({ label, path }),
           ])),
     ...(input.expectedConfigFingerprint
       ? ['--expected-config-fingerprint', input.expectedConfigFingerprint]

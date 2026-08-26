@@ -42,11 +42,15 @@ const UPDATE_TARGET = `${DOMAIN}/${UPDATE_LABEL}`;
 
 test('renders the canonical Runtime Host command as a private persistent LaunchAgent', () => {
   const config = fixtureConfig('/tmp/node & tool', '/tmp/maka <cli>', '/tmp/state > root');
-  const plist = renderLaunchAgentPlist(config, {
-    label: LABEL,
-    stdoutPath: '/tmp/stdout & log',
-    stderrPath: '/tmp/stderr < log',
-  });
+  const plist = renderLaunchAgentPlist(
+    config,
+    {
+      label: LABEL,
+      stdoutPath: '/tmp/stdout & log',
+      stderrPath: '/tmp/stderr < log',
+    },
+    '/tmp/runtime-host-service.json',
+  );
 
   assert.match(
     plist,
@@ -56,8 +60,9 @@ test('renders the canonical Runtime Host command as a private persistent LaunchA
   assert.match(plist, /<key>Umask<\/key>\n  <integer>63<\/integer>/u);
   assert.match(plist, /<string>\/tmp\/node &amp; tool<\/string>/u);
   assert.match(plist, /<string>\/tmp\/maka &lt;cli&gt;<\/string>/u);
-  assert.match(plist, /<string>\/tmp\/state &gt; root<\/string>/u);
-  assert.match(plist, /<string>workspace=\/tmp\/projects<\/string>/u);
+  assert.match(plist, /<string>--managed-service-config<\/string>/u);
+  assert.match(plist, /<string>\/tmp\/runtime-host-service\.json<\/string>/u);
+  assert.doesNotMatch(plist, /state &gt; root|workspace=/u);
 });
 
 test('renders managed update reconciliation as a periodic one-shot LaunchAgent', () => {
@@ -81,6 +86,7 @@ test('renders managed update reconciliation as a periodic one-shot LaunchAgent',
 test('installs and removes the update scheduler with a managed LaunchAgent', async () => {
   await withFixture(async ({ homeDir, cliPath, launchctl }) => {
     const backend = createLaunchAgentRuntimeHostService(SERVICE_ID, {
+      serviceConfigPath: join(homeDir, 'runtime-host-service.json'),
       homeDir,
       uid: UID,
       runLaunchctl: launchctl.run,
@@ -169,6 +175,7 @@ test('maps install, stop, start, restart, and uninstall onto one LaunchAgent ser
   await withFixture(async ({ homeDir, cliPath, launchctl }) => {
     let processChecks = 0;
     const backend = createLaunchAgentRuntimeHostService(SERVICE_ID, {
+      serviceConfigPath: join(homeDir, 'runtime-host-service.json'),
       homeDir,
       uid: UID,
       runLaunchctl: launchctl.run,
@@ -236,6 +243,7 @@ test('restores the previous loaded LaunchAgent when deployment bootstrap fails',
       launchctl.loaded = true;
       launchctl.failNextBootstrap = true;
       const backend = createLaunchAgentRuntimeHostService(SERVICE_ID, {
+        serviceConfigPath: join(homeDir, 'runtime-host-service.json'),
         homeDir,
         uid: UID,
         runLaunchctl: launchctl.run,

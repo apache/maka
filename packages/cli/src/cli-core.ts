@@ -249,6 +249,17 @@ export async function runMakaCli(
     }
     case 'runtime-host-serve': {
       const { runRuntimeHostServiceCli } = await import('./runtime-host-service-command.js');
+      if (command.managedServiceConfigPath) {
+        const { effectiveRuntimeHostProjectDirectoryRoots, readRuntimeHostManagedServiceConfig } =
+          await import('./runtime-host-service-manager.js');
+        const config = await readRuntimeHostManagedServiceConfig(command.managedServiceConfigPath);
+        return runRuntimeHostServiceCli({
+          rootPath: config.rootPath,
+          json: command.json,
+          projectDirectoryRoots: effectiveRuntimeHostProjectDirectoryRoots(config),
+          websocket: config.websocket,
+        });
+      }
       return runRuntimeHostServiceCli({
         rootPath: command.rootPath ?? dataRoots.workspaceRoot,
         json: command.json,

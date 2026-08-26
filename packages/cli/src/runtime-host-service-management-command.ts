@@ -23,7 +23,6 @@ import {
   encodeRuntimeHostServiceManagementFrame,
   RUNTIME_HOST_OPERATOR_ACCESS_MANAGEMENT_CAPABILITY,
   RUNTIME_HOST_OPERATOR_CAPABILITY_REQUEST_ENV,
-  RUNTIME_HOST_OPERATOR_PROJECT_DIRECTORY_CONFIGURATION_CAPABILITY,
   RUNTIME_HOST_OPERATOR_PROJECT_DIRECTORY_CONFIGURATION_REQUEST_ENV,
   RUNTIME_HOST_OPERATOR_PROCESS_LIFETIME_LOCK_CAPABILITY,
   RUNTIME_HOST_SERVICE_ERROR_CODE_MAX_BYTES,
@@ -36,6 +35,7 @@ import {
   cleanupRuntimeHostManagedDeployment,
   effectiveRuntimeHostProjectDirectoryRoots,
   manageRuntimeHostService,
+  resolveRuntimeHostManagedServiceConfigPath,
   resolveRuntimeHostManagedServiceId,
   runtimeHostManagedServiceConfigFingerprint,
   RuntimeHostServiceManagerError,
@@ -60,7 +60,7 @@ export interface RuntimeHostServiceManagementCliDeps {
   readonly manage: typeof manageRuntimeHostService;
   readonly withDeploymentLock: typeof withRuntimeHostManagedServiceDeploymentLock;
   readonly withLifecycleLock: typeof withRuntimeHostManagedServiceLifecycleLock;
-  readonly createBackend: (serviceId: string) => RuntimeHostServiceBackend;
+  readonly createBackend: (serviceId: string, clientDataRoot: string) => RuntimeHostServiceBackend;
   readonly writeOutput: (value: string) => unknown;
   readonly writeError: (value: string) => unknown;
 }
@@ -81,7 +81,7 @@ export async function runManagedRuntimeHostServiceCli(
   try {
     const { json: _json, framed: _framed, ...input } = options;
     const serviceId = resolveRuntimeHostManagedServiceId(options.clientDataRoot);
-    const manage = () => deps.manage(input, deps.createBackend(serviceId));
+    const manage = () => deps.manage(input, deps.createBackend(serviceId, options.clientDataRoot));
     const mutate = () =>
       deps.withDeploymentLock(options.clientDataRoot, () =>
         deps.withLifecycleLock(options.clientDataRoot, manage),
@@ -145,7 +145,7 @@ export async function runManagedRuntimeHostDeploymentCleanupCli(options: {
     const serviceId = resolveRuntimeHostManagedServiceId(options.clientDataRoot);
     await cleanupRuntimeHostManagedDeployment(
       options,
-      createPlatformRuntimeHostServiceBackend(serviceId),
+      createPlatformRuntimeHostServiceBackend(serviceId, options.clientDataRoot),
     );
     return 0;
   } catch (error) {
@@ -216,9 +216,6 @@ function requestedOperatorCapabilities(): {
   ) {
     capabilities.push(requested);
   }
-  if (process.env[RUNTIME_HOST_OPERATOR_PROJECT_DIRECTORY_CONFIGURATION_REQUEST_ENV] === '1') {
-    capabilities.push(RUNTIME_HOST_OPERATOR_PROJECT_DIRECTORY_CONFIGURATION_CAPABILITY);
-  }
   return capabilities.length > 0 ? { operatorCapabilities: capabilities } : {};
 }
 
@@ -245,10 +242,16 @@ export function runtimeHostServiceSummary(
 
 export function createPlatformRuntimeHostServiceBackend(
   serviceId: string,
+  clientDataRoot: string,
   platform: NodeJS.Platform = process.platform,
 ): RuntimeHostServiceBackend {
-  if (platform === 'linux') return createSystemdUserRuntimeHostService(serviceId);
-  if (platform === 'darwin') return createLaunchAgentRuntimeHostService(serviceId);
+  const serviceConfigPath = resolveRuntimeHostManagedServiceConfigPath(clientDataRoot);
+  if (platform === 'linux') {
+    return createSystemdUserRuntimeHostService(serviceId, { serviceConfigPath });
+  }
+  if (platform === 'darwin') {
+    return createLaunchAgentRuntimeHostService(serviceId, { serviceConfigPath });
+  }
   throw new RuntimeHostServiceManagerError(
     'unsupported_platform',
     'Managed Runtime Host services currently require Linux or macOS',

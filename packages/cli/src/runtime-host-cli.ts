@@ -37,6 +37,7 @@ export type RuntimeHostCliCommand =
   | {
       kind: 'runtime-host-serve';
       rootPath?: string;
+      managedServiceConfigPath?: string;
       json: boolean;
       projectDirectoryRoots?: { label: string; path: string }[];
       websocket?: {
@@ -530,6 +531,7 @@ function parseManagedServiceOptions(
       argument === '--websocket-port' ||
       argument === '--websocket-path' ||
       argument === '--project-root' ||
+      argument === '--project-root-json' ||
       argument === '--expected-service-id' ||
       argument === '--expected-root-path' ||
       argument === '--expected-root-id' ||
@@ -543,12 +545,13 @@ function parseManagedServiceOptions(
       else if (argument === '--expected-service-id') expectedServiceId = parsed;
       else if (argument === '--expected-root-path') expectedRootPath = parsed;
       else if (argument === '--expected-root-id') expectedRootId = parsed;
-      else if (argument === '--project-root') {
+      else if (argument === '--project-root' || argument === '--project-root-json') {
         if (projectDirectoryPolicySpecified && projectDirectoryRoots.length === 0) {
           return error('--project-root cannot be combined with --no-project-roots');
         }
         projectDirectoryPolicySpecified = true;
-        const root = parseProjectRoot(parsed);
+        const root =
+          argument === '--project-root' ? parseProjectRoot(parsed) : parseProjectRootJson(parsed);
         if ('kind' in root) return root;
         if (projectDirectoryRoots.length >= PROJECT_DIRECTORY_MAX_ROOTS) {
           return error(
@@ -868,6 +871,7 @@ function parseCapabilityProviderCommand(argv: string[]): RuntimeHostCliCommand {
 
 function parseServeCommand(argv: string[]): RuntimeHostCliCommand {
   let rootPath: string | undefined;
+  let managedServiceConfigPath: string | undefined;
   let json = false;
   let websocketHost = '127.0.0.1';
   let websocketConfigured = false;
@@ -901,14 +905,28 @@ function parseServeCommand(argv: string[]): RuntimeHostCliCommand {
       index += 1;
       continue;
     }
-    if (argument === '--project-root') {
+    if (argument === '--managed-service-config') {
+      if (managedServiceConfigPath !== undefined) {
+        return error('Duplicate --managed-service-config');
+      }
+      const parsed = optionValue(argv, index, argument);
+      if (typeof parsed !== 'string') return parsed;
+      if (!isSafeAbsolutePath(parsed)) {
+        return error('--managed-service-config must be an absolute path');
+      }
+      managedServiceConfigPath = parsed;
+      index += 1;
+      continue;
+    }
+    if (argument === '--project-root' || argument === '--project-root-json') {
       if (projectDirectoryPolicySpecified && projectDirectoryRoots.length === 0) {
         return error('--project-root cannot be combined with --no-project-roots');
       }
       projectDirectoryPolicySpecified = true;
       const parsed = optionValue(argv, index, argument);
       if (typeof parsed !== 'string') return parsed;
-      const root = parseProjectRoot(parsed);
+      const root =
+        argument === '--project-root' ? parseProjectRoot(parsed) : parseProjectRootJson(parsed);
       if ('kind' in root) return root;
       if (projectDirectoryRoots.length >= PROJECT_DIRECTORY_MAX_ROOTS) {
         return error(`--project-root may be provided at most ${PROJECT_DIRECTORY_MAX_ROOTS} times`);
@@ -1009,9 +1027,16 @@ function parseServeCommand(argv: string[]): RuntimeHostCliCommand {
   ) {
     return error('peer listener options require --peer-native-path and --peer-key');
   }
+  if (
+    managedServiceConfigPath !== undefined &&
+    (rootPath !== undefined || projectDirectoryPolicySpecified || websocketConfigured)
+  ) {
+    return error('--managed-service-config cannot be combined with Runtime Host settings');
+  }
   return {
     kind: 'runtime-host-serve',
     json,
+    ...(managedServiceConfigPath ? { managedServiceConfigPath } : {}),
     ...(rootPath ? { rootPath } : {}),
     ...(projectDirectoryPolicySpecified ? { projectDirectoryRoots } : {}),
     ...(websocketPort === undefined
@@ -1058,6 +1083,38 @@ function parseProjectRoot(value: string): { label: string; path: string } | Runt
   }
   if (!isAbsolute(path)) return error('--project-root path must be absolute');
   return { label, path };
+}
+
+function parseProjectRootJson(
+  value: string,
+): { label: string; path: string } | RuntimeHostCliError {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(value);
+  } catch {
+    return error('--project-root-json must be a JSON object with label and path');
+  }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    return error('--project-root-json must be a JSON object with label and path');
+  }
+  const root = parsed as Record<string, unknown>;
+  if (
+    Object.keys(root).length !== 2 ||
+    typeof root.label !== 'string' ||
+    typeof root.path !== 'string'
+  ) {
+    return error('--project-root-json must be a JSON object with label and path');
+  }
+  const label = root.label.trim();
+  if (
+    label.length === 0 ||
+    Buffer.byteLength(label, 'utf8') > PROJECT_DIRECTORY_ROOT_LABEL_MAX_BYTES ||
+    /[\u0000-\u001f\u007f]/u.test(label)
+  ) {
+    return error('--project-root-json label is invalid');
+  }
+  if (!isAbsolute(root.path)) return error('--project-root-json path must be absolute');
+  return { label, path: root.path };
 }
 
 function parseAccessCommand(argv: string[]): RuntimeHostCliCommand {

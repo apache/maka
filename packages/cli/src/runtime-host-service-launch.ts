@@ -27,26 +27,15 @@ import {
 
 export function runtimeHostServiceLaunchArguments(
   config: RuntimeHostManagedServiceConfig,
+  serviceConfigPath: string,
 ): readonly string[] {
   return [
     config.launch.nodePath,
     config.launch.cliPath,
     'runtime-host',
     'serve',
-    '--root',
-    config.rootPath,
-    ...(config.schemaVersion === 2 && config.projectDirectoryRoots.length === 0
-      ? ['--no-project-roots']
-      : config.projectDirectoryRoots.flatMap(({ label, path }) => [
-          '--project-root',
-          `${label}=${path}`,
-        ])),
-    '--websocket-host',
-    config.websocket.host,
-    '--websocket-port',
-    String(config.websocket.port),
-    '--websocket-path',
-    config.websocket.path,
+    '--managed-service-config',
+    serviceConfigPath,
     '--json',
   ];
 }

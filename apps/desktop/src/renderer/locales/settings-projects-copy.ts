@@ -89,6 +89,9 @@ export type SettingsProjectsCopy = {
     directoryRoots: string;
     directoryRootsDescription: string;
     directoryRootsUnavailable: string;
+    directoryRootsChanged: string;
+    directoryRootsChangedDescription: string;
+    reloadDirectoryRoots: string;
     noDirectoryRoots: string;
     directoryRootLabel: string;
     directoryRootPath: string;
@@ -307,6 +310,9 @@ const SETTINGS_PROJECTS_COPY_BY_LOCALE = {
       directoryRoots: '可用于添加项目的目录',
       directoryRootsDescription: '远程 Client 只能从这些目录浏览并添加新项目。移除目录不会删除已经添加的项目。',
       directoryRootsUnavailable: '更新或修复这个 Host 后，即可在 Desktop 中管理这些目录。',
+      directoryRootsChanged: '这些目录已在其他位置更改',
+      directoryRootsChangedDescription: '你的编辑仍被保留。加载当前配置后再继续编辑。',
+      reloadDirectoryRoots: '加载当前配置',
       noDirectoryRoots: '目录浏览和项目添加已禁用',
       directoryRootLabel: '显示名称',
       directoryRootPath: '远端绝对路径',
@@ -525,6 +531,9 @@ const SETTINGS_PROJECTS_COPY_BY_LOCALE = {
       directoryRoots: 'Directories for adding projects',
       directoryRootsDescription: 'Remote Clients can browse and add new projects only from these directories. Removing one does not delete projects already added.',
       directoryRootsUnavailable: 'Update or repair this Host to manage these directories in Desktop.',
+      directoryRootsChanged: 'These directories changed elsewhere',
+      directoryRootsChangedDescription: 'Your draft is preserved. Load the current configuration before continuing.',
+      reloadDirectoryRoots: 'Load current configuration',
       noDirectoryRoots: 'Directory browsing and project registration are disabled',
       directoryRootLabel: 'Display name',
       directoryRootPath: 'Absolute path on remote computer',

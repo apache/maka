@@ -69,6 +69,7 @@ interface LaunchAgentDeploymentSnapshot {
 }
 
 export interface LaunchAgentServiceOptions {
+  readonly serviceConfigPath: string;
   readonly homeDir?: string;
   readonly uid?: number;
   readonly runLaunchctl?: LaunchctlRunner;
@@ -77,9 +78,10 @@ export interface LaunchAgentServiceOptions {
 
 export function createLaunchAgentRuntimeHostService(
   serviceId: string,
-  options: LaunchAgentServiceOptions = {},
+  options: LaunchAgentServiceOptions,
 ): RuntimeHostServiceBackend {
   const homeDir = options.homeDir ?? homedir();
+  const { serviceConfigPath } = options;
   const uid = options.uid ?? process.getuid?.();
   if (uid === undefined || !Number.isSafeInteger(uid) || uid < 0) {
     throw new RuntimeHostServiceManagerError(
@@ -123,7 +125,7 @@ export function createLaunchAgentRuntimeHostService(
       ]);
       let schedulerMutationStarted = false;
       try {
-        await applyLaunchAgentDeployment(context, config);
+        await applyLaunchAgentDeployment(context, config, serviceConfigPath);
         await applyLaunchAgentUpdateSchedulerDesiredState(scheduler, config, () => {
           schedulerMutationStarted = true;
         });
@@ -158,7 +160,7 @@ export function createLaunchAgentRuntimeHostService(
       ]);
       let schedulerMutationStarted = false;
       try {
-        await applyLaunchAgentDeployment(context, config);
+        await applyLaunchAgentDeployment(context, config, serviceConfigPath);
         await convergeLaunchAgentUpdateSchedulerForReplacement(scheduler, config, () => {
           schedulerMutationStarted = true;
         });
@@ -184,7 +186,10 @@ export function createLaunchAgentRuntimeHostService(
           throw error;
         }),
       ]);
-      if (!status.installed || plist !== renderLaunchAgentPlist(config, context)) {
+      if (
+        !status.installed ||
+        plist !== renderLaunchAgentPlist(config, context, serviceConfigPath)
+      ) {
         throw new RuntimeHostServiceManagerError(
           'target_mismatch',
           'The installed Runtime Host LaunchAgent does not match its managed deployment',
@@ -256,9 +261,12 @@ export function resolveLaunchAgentUpdatePath(serviceId: string, homeDir = homedi
 export function renderLaunchAgentPlist(
   config: RuntimeHostManagedServiceConfig,
   paths: Pick<LaunchAgentContext, 'label' | 'stdoutPath' | 'stderrPath'>,
+  serviceConfigPath: string,
 ): string {
   const stringEntry = (value: string) => `    <string>${escapeXml(value)}</string>`;
-  const argumentsXml = runtimeHostServiceLaunchArguments(config).map(stringEntry).join('\n');
+  const argumentsXml = runtimeHostServiceLaunchArguments(config, serviceConfigPath)
+    .map(stringEntry)
+    .join('\n');
   return [
     '<?xml version="1.0" encoding="UTF-8"?>',
     '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "https://www.apple.com/DTDs/PropertyList-1.0.dtd">',
@@ -536,12 +544,13 @@ function isTargetMismatch(error: unknown): boolean {
 async function applyLaunchAgentDeployment(
   context: LaunchAgentContext,
   config: RuntimeHostManagedServiceConfig,
+  serviceConfigPath: string,
 ): Promise<void> {
   await bootoutLaunchAgent(context);
   await prepareLaunchAgentLogs(context);
   await writeRuntimeHostServiceFile(
     context.plistPath,
-    renderLaunchAgentPlist(config, context),
+    renderLaunchAgentPlist(config, context, serviceConfigPath),
     0o600,
   );
   await bootstrapLaunchAgent(context);

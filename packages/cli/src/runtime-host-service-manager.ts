@@ -396,18 +396,44 @@ async function manageRuntimeHostServiceLocked(
       previous,
       deps,
     );
-    const deployment = await backend.install(config);
-    let configWriteStarted = false;
-    try {
-      await deps.waitForReady(config, backend);
-      configWriteStarted = true;
-      await writeRuntimeHostServiceFile(configPath, `${JSON.stringify(config, null, 2)}\n`, 0o600);
-    } catch (error) {
-      await rollbackDeployment(
-        deployment,
-        configWriteStarted ? { configPath, previous } : null,
-        error,
+    if (
+      previous &&
+      input.projectDirectoryRoots !== undefined &&
+      !sameProjectDirectoryRoots(previous, config)
+    ) {
+      throw new RuntimeHostServiceManagerError(
+        'configuration_changed',
+        'An existing Runtime Host Project root policy must be changed through the configuration workflow',
       );
+    }
+    let deployment: RuntimeHostServiceDeployment | undefined;
+    try {
+      await writeRuntimeHostServiceFile(configPath, `${JSON.stringify(config, null, 2)}\n`, 0o600);
+      deployment = await backend.install(config);
+      await deps.waitForReady(config, backend);
+    } catch (error) {
+      if (deployment) {
+        await rollbackDeployment(deployment, { configPath, previous }, error);
+      } else {
+        try {
+          if (previous) {
+            await writeRuntimeHostServiceFile(
+              configPath,
+              `${JSON.stringify(previous, null, 2)}\n`,
+              0o600,
+            );
+          } else {
+            await removeRuntimeHostServiceFile(configPath, 'service config');
+          }
+        } catch (rollbackError) {
+          throw new RuntimeHostServiceManagerError(
+            'service_manager_operation_failed',
+            'Runtime Host service installation failed and its configuration could not be restored',
+            { cause: new AggregateError([error, rollbackError]) },
+          );
+        }
+      }
+      throw error;
     }
     return result(input.action, await readServiceStatus(configPath, backend));
   }
@@ -415,6 +441,9 @@ async function manageRuntimeHostServiceLocked(
   if (input.action === 'status') {
     const service = await readServiceStatus(configPath, backend);
     await resolveExpectedServiceRoot(service.config, input);
+    if (service.installed && service.config?.schemaVersion === 2) {
+      await backend.verifyDeployment(service.config);
+    }
     return result(input.action, service);
   }
 
@@ -528,6 +557,7 @@ async function manageRuntimeHostServiceLocked(
       return configurationResult('unchanged', service);
     }
     await backend.preflightInstall();
+    await backend.verifyDeployment(currentConfig);
     const retired = await retireManagedRuntimeHostService(
       { ...service, config: currentConfig },
       root,
@@ -540,7 +570,7 @@ async function manageRuntimeHostServiceLocked(
     }
     try {
       await writeRuntimeHostServiceFile(configPath, `${JSON.stringify(desired, null, 2)}\n`, 0o600);
-      await backend.replace(desired);
+      await backend.start();
       await deps.waitForReady(desired, backend);
     } catch (error) {
       const rollbackErrors: unknown[] = [];
@@ -549,16 +579,24 @@ async function manageRuntimeHostServiceLocked(
       } catch (rollbackError) {
         rollbackErrors.push(rollbackError);
       }
+      let previousConfigRestored = false;
       try {
         await writeRuntimeHostServiceFile(
           configPath,
           `${JSON.stringify(currentConfig, null, 2)}\n`,
           0o600,
         );
-        await backend.replace(currentConfig);
-        await deps.waitForReady(currentConfig, backend);
+        previousConfigRestored = true;
       } catch (rollbackError) {
         rollbackErrors.push(rollbackError);
+      }
+      if (previousConfigRestored) {
+        try {
+          await backend.start();
+          await deps.waitForReady(currentConfig, backend);
+        } catch (rollbackError) {
+          rollbackErrors.push(rollbackError);
+        }
       }
       throw new RuntimeHostServiceManagerError(
         'configuration_incomplete',
@@ -608,6 +646,7 @@ async function manageRuntimeHostServiceLocked(
   await resolveExpectedServiceRoot(config, input);
   if (input.action === 'start' || input.action === 'restart') {
     try {
+      if (config.schemaVersion === 2) await backend.verifyDeployment(config);
       await backend[input.action]();
       await deps.waitForReady(config, backend);
     } catch (error) {
@@ -952,6 +991,19 @@ async function readServiceConfig(path: string): Promise<RuntimeHostManagedServic
       { cause: error },
     );
   }
+}
+
+export async function readRuntimeHostManagedServiceConfig(
+  path: string,
+): Promise<RuntimeHostManagedServiceConfig> {
+  const config = await readServiceConfig(path);
+  if (!config) {
+    throw new RuntimeHostServiceManagerError(
+      'not_installed',
+      'Runtime Host managed service configuration is unavailable',
+    );
+  }
+  return config;
 }
 
 async function readServiceConfigForRepair(
@@ -1343,7 +1395,7 @@ async function rollbackDeployment(
     readonly previous: RuntimeHostManagedServiceConfig | null;
   } | null,
   originalError: unknown,
-): Promise<never> {
+): Promise<void> {
   const rollbackErrors: unknown[] = [];
   try {
     await deployment.rollback();

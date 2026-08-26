@@ -69,6 +69,8 @@ When any `--project-root <label>=<absolute-path>` option is present, only those 
 
 Pass `--no-project-roots` to publish an explicit empty policy. This disables directory browsing and registration without removing Projects that are already registered. Desktop-managed SSH Hosts expose the same complete policy in Host settings. Applying it uses the SSH management plane, refuses to interrupt active tasks without confirmation, and restarts the service only when the effective policy changes.
 
+For a managed service, the Host-owned service configuration is the single authority for this policy. The system service starts from that configuration instead of retaining a second copy of the roots in its launch definition.
+
 Project paths stay on the Host. Issue a credential for each Client:
 
 ```sh

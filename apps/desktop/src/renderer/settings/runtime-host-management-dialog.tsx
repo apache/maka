@@ -64,6 +64,15 @@ type RuntimeHostManagementConfirmation =
     };
 
 type UpdatePolicyChoice = 'manual' | 'fixed' | 'latest' | 'next';
+type DirectoryPolicySnapshot = {
+  readonly roots: readonly { readonly label: string; readonly path: string }[];
+  readonly configurationFingerprint: string;
+};
+type DirectoryPolicyEdit = {
+  readonly baseline: DirectoryPolicySnapshot;
+  readonly draft: readonly ProjectDirectoryRootDraft[];
+  readonly conflict?: DirectoryPolicySnapshot;
+};
 export function RuntimeHostManagementDialog(props: {
   readonly profile: RemoteRuntimeHostProfile | undefined;
   readonly onClose: () => void;
@@ -84,10 +93,7 @@ export function RuntimeHostManagementDialog(props: {
   const [updatePolicyError, setUpdatePolicyError] = useState<string>();
   const [lastUpdateOutcome, setLastUpdateOutcome] =
     useState<DesktopRuntimeHostUpdateReconciliationOutcome>();
-  const [directoryRoots, setDirectoryRoots] = useState<readonly ProjectDirectoryRootDraft[]>([]);
-  const [savedDirectoryRoots, setSavedDirectoryRoots] = useState<
-    readonly { readonly label: string; readonly path: string }[]
-  >([]);
+  const [directoryPolicyEdit, setDirectoryPolicyEdit] = useState<DirectoryPolicyEdit>();
   const nextDirectoryRootId = useRef(1);
   const logsRef = useRef<HTMLPreElement>(null);
 
@@ -106,8 +112,7 @@ export function RuntimeHostManagementDialog(props: {
     setFixedVersion('');
     setUpdatePolicyError(undefined);
     setLastUpdateOutcome(undefined);
-    setDirectoryRoots([]);
-    setSavedDirectoryRoots([]);
+    setDirectoryPolicyEdit(undefined);
     setLoading(true);
     void (async () => {
       let shouldLoadUpdatePolicy = false;
@@ -116,7 +121,7 @@ export function RuntimeHostManagementDialog(props: {
         if (disposed) return;
         if (response.kind === 'result') {
           setResult(response);
-          applyDirectoryRoots(response.service.projectDirectoryRoots);
+          reconcileDirectoryPolicy(response.service);
           shouldLoadUpdatePolicy = response.service.state !== 'not_installed';
         }
         else if (response.kind === 'error') setError(response.error.message);
@@ -172,7 +177,7 @@ export function RuntimeHostManagementDialog(props: {
         return;
       }
       setResult(response);
-      applyDirectoryRoots(response.service.projectDirectoryRoots);
+      reconcileDirectoryPolicy(response.service);
       if (response.service.state === 'not_installed') setUpdatePolicy(undefined);
       else if (action !== 'logs') await reloadUpdatePolicy(profile.id);
     } catch (failure) {
@@ -221,7 +226,7 @@ export function RuntimeHostManagementDialog(props: {
         throw new Error('Runtime Host update returned an uninstall result');
       }
       setResult(response);
-      applyDirectoryRoots(response.service.projectDirectoryRoots);
+      reconcileDirectoryPolicy(response.service);
       if (response.action === 'update') setLastUpdateOutcome(response.update);
       setConfirmation(
         response.action === 'update' && response.update.kind === 'active_tasks'
@@ -242,25 +247,58 @@ export function RuntimeHostManagementDialog(props: {
     }
   }
 
-  function applyDirectoryRoots(
+  function draftDirectoryRoots(
     roots: readonly { readonly label: string; readonly path: string }[],
+  ): readonly ProjectDirectoryRootDraft[] {
+    return roots.map((root) => ({ id: nextDirectoryRootId.current++, ...root }));
+  }
+
+  function directoryPolicySnapshot(
+    service: DesktopRuntimeHostManagementResult['service'],
+  ): DirectoryPolicySnapshot | undefined {
+    const configurationFingerprint = service.configurationFingerprint;
+    if (!configurationFingerprint) return undefined;
+    return {
+      roots: service.projectDirectoryRoots.map((root) => ({ ...root })),
+      configurationFingerprint,
+    };
+  }
+
+  function resetDirectoryPolicy(
+    service: DesktopRuntimeHostManagementResult['service'],
   ): void {
-    setSavedDirectoryRoots(roots.map((root) => ({ ...root })));
-    setDirectoryRoots(
-      roots.map((root) => ({ id: nextDirectoryRootId.current++, ...root })),
+    const baseline = directoryPolicySnapshot(service);
+    setDirectoryPolicyEdit(
+      baseline ? { baseline, draft: draftDirectoryRoots(baseline.roots) } : undefined,
     );
   }
 
+  function reconcileDirectoryPolicy(
+    service: DesktopRuntimeHostManagementResult['service'],
+  ): void {
+    const observed = directoryPolicySnapshot(service);
+    setDirectoryPolicyEdit((current) => {
+      if (!observed) return undefined;
+      if (!current) return { baseline: observed, draft: draftDirectoryRoots(observed.roots) };
+      const draft = canonicalProjectDirectoryRoots(current.draft);
+      const dirty = JSON.stringify(draft) !== JSON.stringify(current.baseline.roots);
+      if (!dirty) return { baseline: observed, draft: draftDirectoryRoots(observed.roots) };
+      if (JSON.stringify(observed.roots) === JSON.stringify(current.baseline.roots)) {
+        return { baseline: observed, draft: current.draft };
+      }
+      return { ...current, conflict: observed };
+    });
+  }
+
   async function configureDirectories(allowInterruptActiveTasks: boolean): Promise<void> {
-    const fingerprint = result?.service.configurationFingerprint;
-    if (!profile || !fingerprint) return;
+    if (!profile || !directoryPolicyEdit || directoryPolicyEdit.conflict) return;
     setLoading(true);
     setError(undefined);
     try {
       const response = await window.maka.runtimeHostManagement.configureProjectDirectories(
         profile.id,
-        canonicalProjectDirectoryRoots(directoryRoots),
-        fingerprint,
+        canonicalProjectDirectoryRoots(directoryPolicyEdit.draft),
+        directoryPolicyEdit.baseline.configurationFingerprint,
         allowInterruptActiveTasks,
       );
       if (response.kind === 'error') {
@@ -276,7 +314,7 @@ export function RuntimeHostManagementDialog(props: {
         setConfirmation({ kind: 'configureDirectories' });
       } else {
         setConfirmation(undefined);
-        applyDirectoryRoots(response.service.projectDirectoryRoots);
+        resetDirectoryPolicy(response.service);
       }
     } catch (failure) {
       const message = settingsActionErrorMessage(failure, locale);
@@ -354,7 +392,7 @@ export function RuntimeHostManagementDialog(props: {
       applyUpdatePolicy(response.updatePolicy);
       const reconciledService = response.service;
       if (reconciledService) {
-        applyDirectoryRoots(reconciledService.projectDirectoryRoots);
+        reconcileDirectoryPolicy(reconciledService);
         setResult((current) => current ? { ...current, service: reconciledService } : current);
       }
     } catch (failure) {
@@ -418,10 +456,12 @@ export function RuntimeHostManagementDialog(props: {
       updatePolicy.policy.version !== fixedVersion.trim());
   const automaticPolicySelected = updatePolicyChoice !== 'manual';
   const automaticUpdatesAvailable = updatePolicy?.schedulingState === 'ready';
+  const directoryRoots = directoryPolicyEdit?.draft ?? [];
   const normalizedDirectoryRoots = canonicalProjectDirectoryRoots(directoryRoots);
   const directoryRootsAreValid = projectDirectoryRootsValid(directoryRoots);
   const directoryRootsDirty =
-    JSON.stringify(normalizedDirectoryRoots) !== JSON.stringify(savedDirectoryRoots);
+    directoryPolicyEdit !== undefined &&
+    JSON.stringify(normalizedDirectoryRoots) !== JSON.stringify(directoryPolicyEdit.baseline.roots);
   const updateOutcome = lastUpdateOutcome;
   return (
     <Dialog
@@ -653,8 +693,30 @@ export function RuntimeHostManagementDialog(props: {
                     <Text type="supporting" color="secondary">
                       {copy.directoryRootsDescription}
                     </Text>
-                    {service.configurationFingerprint ? (
+                    {directoryPolicyEdit ? (
                       <>
+                        {directoryPolicyEdit.conflict ? (
+                          <Banner
+                            status="warning"
+                            title={copy.directoryRootsChanged}
+                            description={copy.directoryRootsChangedDescription}
+                            endContent={
+                              <Button
+                                variant="secondary"
+                                size="sm"
+                                label={copy.reloadDirectoryRoots}
+                                onClick={() => {
+                                  const baseline = directoryPolicyEdit.conflict;
+                                  if (!baseline) return;
+                                  setDirectoryPolicyEdit({
+                                    baseline,
+                                    draft: draftDirectoryRoots(baseline.roots),
+                                  });
+                                }}
+                              />
+                            }
+                          />
+                        ) : null}
                         {directoryRoots.length === 0 ? (
                           <Text type="supporting" color="secondary">{copy.noDirectoryRoots}</Text>
                         ) : null}
@@ -663,7 +725,9 @@ export function RuntimeHostManagementDialog(props: {
                           isDisabled={loading}
                           nextId={() => nextDirectoryRootId.current++}
                           copy={copy}
-                          onChange={setDirectoryRoots}
+                          onChange={(draft) => setDirectoryPolicyEdit((current) =>
+                            current ? { ...current, draft } : current
+                          )}
                         />
                         <div className="settingsRuntimeHostManagementDirectoryRootActions">
                           <Button
@@ -671,7 +735,10 @@ export function RuntimeHostManagementDialog(props: {
                             size="sm"
                             label={copy.saveDirectoryRoots}
                             isDisabled={
-                              loading || !directoryRootsDirty || !directoryRootsAreValid
+                              loading ||
+                              directoryPolicyEdit.conflict !== undefined ||
+                              !directoryRootsDirty ||
+                              !directoryRootsAreValid
                             }
                             onClick={() => void configureDirectories(false)}
                           />
