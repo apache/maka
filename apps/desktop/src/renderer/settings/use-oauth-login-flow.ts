@@ -25,8 +25,8 @@ import {
   useToast,
   useUiLocale,
 } from '@maka/ui';
-import { createOneShotActionGuard, teardownPendingAuthorization } from './oauth-login-flow-guard';
-import { getProviderSettingsCopy } from '../locales/settings-provider-copy';
+import { createOneShotActionGuard, teardownPendingAuthorization } from './oauth-login-flow-guard.js';
+import { getProviderSettingsCopy } from '../locales/settings-provider-copy.js';
 import { useRuntimeHostSettingsErrorReporter } from './runtime-host-settings-target.js';
 
 // Shared browser-assisted OAuth login-flow controller (device-code polling).
@@ -81,6 +81,10 @@ export interface OAuthLoginFlowController {
   stateHint: string | null;
   errorMessage: string | null;
   actionBusy: boolean;
+  // True when the Host reports an authorization this surface does not own —
+  // a device grant left polling by an earlier mount. Surfaces that offer a
+  // second route to the same Connection consult it before acting.
+  hostAttemptPending: boolean;
   startLogin(): Promise<void>;
   logout(): Promise<void>;
   refresh(): Promise<boolean>;
@@ -246,6 +250,12 @@ export function useOAuthLoginFlow(params: {
   const runtimeState = state?.runtimeState ?? 'loading';
   const isLoggedIn = runtimeState === 'authenticated' || runtimeState === 'refreshing';
   const actionBusy = pendingAction !== null;
+  // A device grant lives in the Host process, not in this component: it keeps
+  // polling across a Settings close and reopen, and the account snapshot is the
+  // only thing a fresh mount can learn about it from. The attempt id is not in
+  // that snapshot, so this surface cannot rejoin the attempt — it can only
+  // report that one is running and let each surface decide what to withhold.
+  const hostAttemptPending = pendingGuard.current === null && state?.runtimeState === 'authorizing';
 
   return {
     state,
@@ -256,6 +266,7 @@ export function useOAuthLoginFlow(params: {
     stateHint,
     errorMessage,
     actionBusy,
+    hostAttemptPending,
     startLogin,
     logout,
     refresh,

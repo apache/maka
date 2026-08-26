@@ -298,6 +298,14 @@ function GitHubCopilotLoginPanel(props: { onLoginSuccess(): void | Promise<void>
   const [importing, setImporting] = useState(false);
   const loggedIn = flow.isLoggedIn;
   const actionBusy = flow.actionBusy || importing;
+  // The Host keeps polling a device grant across a Settings remount, and this
+  // panel cannot rejoin that attempt: the snapshot reports that one is running
+  // but not which one. Importing meanwhile would commit over the login the user
+  // is still completing — `setRuntimeHostAccountCredential` re-reads before its
+  // CAS, so it adopts the newer revision and overwrites rather than failing.
+  // Sign-in stays offered: a fresh grant supersedes the stale attempt, which is
+  // the only way out when the earlier surface never got to cancel it.
+  const importBusy = actionBusy || flow.hostAttemptPending;
 
   const importLocalCredential = async () => {
     if (actionBusy) return;
@@ -344,7 +352,7 @@ function GitHubCopilotLoginPanel(props: { onLoginSuccess(): void | Promise<void>
             <Button
               variant="secondary"
               onClick={() => void importLocalCredential()}
-              isDisabled={actionBusy}
+              isDisabled={importBusy}
               label={importing ? copy.importing : copy.importCredential}
             />
           </>
