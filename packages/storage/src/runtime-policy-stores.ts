@@ -249,8 +249,7 @@ function createWriterFacade(coordinator: RuntimePolicyCoordinator): RuntimePolic
       compareAndSetOAuthCredential: (input) => coordinator.compareAndSetOAuthCredential(input),
       importConnectionCredential: (input) => coordinator.importConnectionCredential(input),
       beginInteractiveOAuthLogin: (input) => coordinator.beginInteractiveOAuthLogin(input),
-      queryInteractiveOAuthLogin: (attemptId) =>
-        coordinator.queryInteractiveOAuthLogin(attemptId),
+      queryInteractiveOAuthLogin: (attemptId) => coordinator.queryInteractiveOAuthLogin(attemptId),
       completeInteractiveOAuthLogin: (ticket, secret) =>
         coordinator.completeInteractiveOAuthLogin(ticket, secret),
       beginModelFetch: (connectionId) => coordinator.beginModelFetch(connectionId),

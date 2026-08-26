@@ -493,7 +493,9 @@ export class RuntimePolicyCoordinator {
     });
   }
 
-  beginInteractiveOAuthLogin(rawInput: InteractiveOAuthLoginInput): Promise<BeginInteractiveOAuthLoginResult> {
+  beginInteractiveOAuthLogin(
+    rawInput: InteractiveOAuthLoginInput,
+  ): Promise<BeginInteractiveOAuthLoginResult> {
     return this.inLane(async (root) => {
       const input = normalizeInteractiveOAuthLoginInput(rawInput);
       const receipts = await readInteractiveOAuthLoginReceipts(root);
@@ -1748,7 +1750,10 @@ export class RuntimePolicyCoordinator {
         existingReceipt.connection.slug !== intendedIdentity.slug ||
         existingReceipt.connection.providerType !== intendedIdentity.providerType)
     ) {
-      throw codecError('invalid_document', 'OAuth login receipt conflicts with the enrollment intent');
+      throw codecError(
+        'invalid_document',
+        'OAuth login receipt conflicts with the enrollment intent',
+      );
     }
     const catalog = await this.catalog.read(root);
     // Validate the complete catalog transition before the vault-first write.
@@ -2131,9 +2136,7 @@ function normalizeInteractiveOAuthLoginInput(
       attemptId,
       target: {
         kind: 'existing',
-        connectionId: decodeConnectionInput(() =>
-          decodeRuntimePolicyEntityId(target.connectionId),
-        ),
+        connectionId: decodeConnectionInput(() => decodeRuntimePolicyEntityId(target.connectionId)),
       },
     };
   }
