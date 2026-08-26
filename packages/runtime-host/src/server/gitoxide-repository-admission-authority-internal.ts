@@ -22,15 +22,21 @@ import {
   requireGitoxideHelperArtifactIdentityInternal,
 } from './gitoxide-helper-artifact-authority-internal.js';
 import {
+  createSuccessorWithGitoxideHelperInternal,
   GITOXIDE_HELPER_OPERATION_TIMEOUTS_INTERNAL,
   importSourceHeadWithGitoxideHelperInternal,
   inspectCanonicalRepositoryWithGitoxideHelperInternal,
   type GitoxideSourceImportObservationV1,
+  type GitoxideSuccessorPublishedV1,
   type GitoxideRepositoryRejectionV1,
 } from './gitoxide-helper-invocation-internal.js';
 
 export interface GitoxideRepositoryAdmissionCapability {
   readonly kind: 'gitoxide_repository_admission_capability_v1';
+}
+
+export interface GitoxideManagedRepositoryCapability {
+  readonly kind: 'gitoxide_managed_repository_capability_v1';
 }
 
 export interface GitoxideRepositoryAdmissionStateInternal {
@@ -53,8 +59,16 @@ export type GitoxideRepositoryAdmissionResultV1 =
   | GitoxideRepositoryRejectionV1;
 
 export class GitoxideRepositoryAdmissionAuthorityError extends Error {
-  constructor(readonly code: 'gitoxide_repository_admission_capability_invalid') {
-    super('Gitoxide repository admission capability is invalid');
+  constructor(
+    readonly code:
+      | 'gitoxide_repository_admission_capability_invalid'
+      | 'gitoxide_managed_repository_base_mismatch',
+  ) {
+    super(
+      code === 'gitoxide_managed_repository_base_mismatch'
+        ? 'Gitoxide managed repository base does not match the accepted commit'
+        : 'Gitoxide repository admission capability is invalid',
+    );
     this.name = 'GitoxideRepositoryAdmissionAuthorityError';
   }
 }
@@ -66,7 +80,19 @@ interface AdmissionCapabilityRecord {
   readonly state: GitoxideRepositoryAdmissionStateInternal;
 }
 
+interface ManagedRepositoryCapabilityRecord {
+  readonly managedRepositoryOwnerToken: object;
+  readonly invocationOwnerToken: object;
+  readonly helperCapability: GitoxideHelperInvocationCapability;
+  readonly repositoryPath: string;
+  readonly acceptedRef: string;
+  readonly acceptedCommitOid: string;
+  readonly acceptedTreeOid: string;
+  readonly managedTreePolicyVersion: 2;
+}
+
 const admissions = new WeakMap<object, AdmissionCapabilityRecord>();
+const managedRepositories = new WeakMap<object, ManagedRepositoryCapabilityRecord>();
 
 export async function admitGitoxideRepositoryInternal(input: {
   readonly invocationOwnerToken: object;
@@ -124,10 +150,15 @@ export function requireGitoxideRepositoryAdmissionInternal(
 export async function importAdmittedGitoxideRepositoryInternal(input: {
   readonly admissionOwnerToken: object;
   readonly repositoryCapability: GitoxideRepositoryAdmissionCapability;
+  readonly managedRepositoryOwnerToken: object;
   readonly destinationRepositoryPath: string;
   readonly baselineRef: string;
   readonly abortSignal?: AbortSignal;
-}): Promise<GitoxideSourceImportObservationV1> {
+}): Promise<
+  GitoxideSourceImportObservationV1 & {
+    readonly managedRepositoryCapability: GitoxideManagedRepositoryCapability;
+  }
+> {
   const admission = requireAdmissionRecord(input.admissionOwnerToken, input.repositoryCapability);
   const source = admission.state;
   const result = await importSourceHeadWithGitoxideHelperInternal({
@@ -148,7 +179,79 @@ export async function importAdmittedGitoxideRepositoryInternal(input: {
       'gitoxide_repository_admission_capability_invalid',
     );
   }
-  return result;
+  const managedRepositoryCapability = issueManagedRepositoryCapability({
+    managedRepositoryOwnerToken: input.managedRepositoryOwnerToken,
+    invocationOwnerToken: admission.invocationOwnerToken,
+    helperCapability: admission.helperCapability,
+    repositoryPath: input.destinationRepositoryPath,
+    acceptedRef: result.baselineRef,
+    acceptedCommitOid: result.baselineCommitOid,
+    acceptedTreeOid: result.baselineTreeOid,
+    managedTreePolicyVersion: result.managedTreePolicyVersion,
+  });
+  return Object.freeze({ ...result, managedRepositoryCapability });
+}
+
+export async function createGitoxideSuccessorInternal(input: {
+  readonly managedRepositoryOwnerToken: object;
+  readonly managedRepositoryCapability: GitoxideManagedRepositoryCapability;
+  readonly path: string;
+  readonly content: string;
+  readonly abortSignal?: AbortSignal;
+}): Promise<
+  GitoxideSuccessorPublishedV1 & {
+    readonly managedRepositoryCapability: GitoxideManagedRepositoryCapability;
+  }
+> {
+  const managed = requireManagedRepositoryRecord(
+    input.managedRepositoryOwnerToken,
+    input.managedRepositoryCapability,
+  );
+  const result = await createSuccessorWithGitoxideHelperInternal({
+    invocationOwnerToken: managed.invocationOwnerToken,
+    capability: managed.helperCapability,
+    repositoryPath: managed.repositoryPath,
+    expectedBaseCommitOid: managed.acceptedCommitOid,
+    targetRef: managed.acceptedRef,
+    path: input.path,
+    content: input.content,
+    managedTreePolicyVersion: managed.managedTreePolicyVersion,
+    abortSignal: input.abortSignal,
+  });
+  if (result.kind === 'successor_rejected') {
+    throw new GitoxideRepositoryAdmissionAuthorityError(
+      'gitoxide_managed_repository_base_mismatch',
+    );
+  }
+  const managedRepositoryCapability = issueManagedRepositoryCapability({
+    ...managed,
+    acceptedCommitOid: result.successorCommitOid,
+    acceptedTreeOid: result.successorTreeOid,
+  });
+  return Object.freeze({ ...result, managedRepositoryCapability });
+}
+
+function issueManagedRepositoryCapability(
+  record: ManagedRepositoryCapabilityRecord,
+): GitoxideManagedRepositoryCapability {
+  const capability = Object.freeze({
+    kind: 'gitoxide_managed_repository_capability_v1' as const,
+  });
+  managedRepositories.set(capability, Object.freeze(record));
+  return capability;
+}
+
+function requireManagedRepositoryRecord(
+  ownerToken: object,
+  capability: GitoxideManagedRepositoryCapability,
+): ManagedRepositoryCapabilityRecord {
+  const record = managedRepositories.get(capability);
+  if (!record || record.managedRepositoryOwnerToken !== ownerToken) {
+    throw new GitoxideRepositoryAdmissionAuthorityError(
+      'gitoxide_repository_admission_capability_invalid',
+    );
+  }
+  return record;
 }
 
 function requireAdmissionRecord(

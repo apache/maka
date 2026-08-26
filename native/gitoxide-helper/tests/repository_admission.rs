@@ -507,6 +507,126 @@ fn imports_an_exact_source_head_into_a_fresh_managed_repository() {
 }
 
 #[test]
+fn publishes_and_exactly_retries_a_policy_v2_successor() {
+    let fixture = RepositoryFixture::sha1_with_commit();
+    let source_head = fixture.git_output(["rev-parse", "HEAD"]);
+    let destination = fixture.root.join("successor.git");
+    let imported = invoke_import(&fixture.root, &source_head, &destination);
+    assert!(imported.status.success());
+    let imported: serde_json::Value = serde_json::from_slice(&imported.stdout).unwrap();
+    let baseline = imported["baselineCommitOid"].as_str().unwrap();
+    let request = serde_json::json!({
+        "protocolVersion": 1,
+        "operation": "create_successor",
+        "repositoryPath": destination,
+        "expectedBaseCommitOid": baseline,
+        "targetRef": "refs/maka/baseline",
+        "path": "docs/result.txt",
+        "content": "successor content\n",
+        "managedTreePolicyVersion": 2,
+    });
+
+    let first = invoke_request(request.clone());
+    assert!(first.status.success());
+    let first: serde_json::Value = serde_json::from_slice(&first.stdout).unwrap();
+    assert_eq!(first["kind"], "successor_published");
+    assert_eq!(first["managedTreePolicyVersion"], 2);
+    assert_eq!(
+        git_bare_output(&destination, ["rev-parse", "refs/maka/baseline"]),
+        first["successorCommitOid"].as_str().unwrap()
+    );
+    assert_eq!(
+        git_bare_bytes(
+            &destination,
+            [
+                "show",
+                &format!(
+                    "{}:docs/result.txt",
+                    first["successorCommitOid"].as_str().unwrap()
+                ),
+            ],
+        ),
+        b"successor content\n"
+    );
+
+    let retry = invoke_request(request);
+    assert!(retry.status.success());
+    let retry: serde_json::Value = serde_json::from_slice(&retry.stdout).unwrap();
+    assert_eq!(retry, first);
+}
+
+#[test]
+fn rejects_a_stale_successor_without_moving_the_accepted_ref() {
+    let fixture = RepositoryFixture::sha1_with_commit();
+    let source_head = fixture.git_output(["rev-parse", "HEAD"]);
+    let destination = fixture.root.join("stale-successor.git");
+    let imported = invoke_import(&fixture.root, &source_head, &destination);
+    let imported: serde_json::Value = serde_json::from_slice(&imported.stdout).unwrap();
+    let baseline = imported["baselineCommitOid"].as_str().unwrap();
+    let advanced = invoke_request(serde_json::json!({
+        "protocolVersion": 1,
+        "operation": "create_successor",
+        "repositoryPath": destination,
+        "expectedBaseCommitOid": baseline,
+        "targetRef": "refs/maka/baseline",
+        "path": "advanced.txt",
+        "content": "advanced\n",
+        "managedTreePolicyVersion": 2,
+    }));
+    assert!(advanced.status.success());
+    let advanced: serde_json::Value = serde_json::from_slice(&advanced.stdout).unwrap();
+
+    let rejected = invoke_request(serde_json::json!({
+        "protocolVersion": 1,
+        "operation": "create_successor",
+        "repositoryPath": destination,
+        "expectedBaseCommitOid": baseline,
+        "targetRef": "refs/maka/baseline",
+        "path": "must-not-exist.txt",
+        "content": "must not publish\n",
+        "managedTreePolicyVersion": 2,
+    }));
+    assert_eq!(rejected.status.code(), Some(3));
+    let rejected: serde_json::Value = serde_json::from_slice(&rejected.stdout).unwrap();
+    assert_eq!(rejected["kind"], "successor_rejected");
+    assert_eq!(rejected["reason"], "base_commit_mismatch");
+    assert_eq!(
+        rejected["actualBaseCommitOid"],
+        advanced["successorCommitOid"]
+    );
+    assert_eq!(
+        git_bare_output(&destination, ["rev-parse", "refs/maka/baseline"]),
+        advanced["successorCommitOid"].as_str().unwrap()
+    );
+}
+
+#[test]
+fn validates_the_complete_successor_tree_under_policy_v2_before_ref_cas() {
+    let fixture = RepositoryFixture::sha1_with_commit();
+    let source_head = fixture.git_output(["rev-parse", "HEAD"]);
+    let destination = fixture.root.join("invalid-successor.git");
+    let imported = invoke_import(&fixture.root, &source_head, &destination);
+    let imported: serde_json::Value = serde_json::from_slice(&imported.stdout).unwrap();
+    let baseline = imported["baselineCommitOid"].as_str().unwrap();
+
+    let rejected = invoke_request(serde_json::json!({
+        "protocolVersion": 1,
+        "operation": "create_successor",
+        "repositoryPath": destination,
+        "expectedBaseCommitOid": baseline,
+        "targetRef": "refs/maka/baseline",
+        "path": ".gitattributes",
+        "content": "* filter=external\n",
+        "managedTreePolicyVersion": 2,
+    }));
+    assert_helper_error(&rejected, "unsupported_source_attributes");
+    assert_eq!(
+        git_bare_output(&destination, ["rev-parse", "refs/maka/baseline"]),
+        baseline
+    );
+}
+
+#[test]
 fn imports_maka_attributes_under_managed_tree_policy_v2() {
     let fixture = RepositoryFixture::sha1_with_commit();
     fs::write(
@@ -999,6 +1119,17 @@ fn git_bare_output<const N: usize>(repository: &Path, args: [&str; N]) -> String
         .unwrap();
     assert!(output.status.success());
     String::from_utf8(output.stdout).unwrap().trim().to_owned()
+}
+
+fn git_bare_bytes<const N: usize>(repository: &Path, args: [&str; N]) -> Vec<u8> {
+    let output = Command::new("git")
+        .arg("--git-dir")
+        .arg(repository)
+        .args(args)
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    output.stdout
 }
 
 fn git_bare_succeeds<const N: usize>(repository: &Path, args: [&str; N]) -> bool {
