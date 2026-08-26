@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { expect, test, COMPOSER_INPUT } from './fixtures';
+import { COMPOSER_INPUT, ensureSidebarExpanded, expect, test } from './fixtures';
 
 test('WorkHub rebuilds Session conversation after navigating away and back', async ({
   window: page,
@@ -56,6 +56,7 @@ test('WorkHub rebuilds Session conversation after navigating away and back', asy
     .click();
   await expect(page.getByRole('main', { name: 'WorkHub' })).toBeHidden();
 
+  await ensureSidebarExpanded(page);
   await page.getByRole('button', { name: 'WorkHub', exact: true }).click();
   await expect(page.getByRole('main', { name: 'WorkHub' })).toBeVisible();
   await expect(

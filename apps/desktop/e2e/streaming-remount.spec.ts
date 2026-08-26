@@ -23,7 +23,7 @@ import {
   FAKE_WAIT_FOR_STEERING_LARGE_RESPONSE_PROMPT,
 } from '@maka/runtime/test-only/fake-backend';
 import type { Locator } from '@playwright/test';
-import { expect, COMPOSER_INPUT, test } from './fixtures';
+import { COMPOSER_INPUT, ensureSidebarExpanded, expect, test } from './fixtures';
 
 function sessionRow(sidebar: Locator, sessionId: string): Locator {
   return sidebar.locator(`[data-session-id=${JSON.stringify(sessionId)}]`);
@@ -51,14 +51,13 @@ test('remounting a live surface leaves accumulated output settled', async ({
   await expect(liveBubble).toContainText(accumulatedOutput);
 
   const sidebar = page.getByRole('navigation', { name: '任务列表' });
+  await ensureSidebarExpanded(page);
   await sidebar.getByRole('button', { name: '扩展' }).click();
   await expect(page.locator('[data-module="skills"]')).toBeVisible();
   await expect(liveBubble).toHaveCount(0);
-  // Back the way the product actually offers: the rail is collapsed here, so
-  // the task rows are not rendered and there is no 任务 row to press (#2984).
-  // Widening it is the titlebar's job, and the task left behind is still
-  // `activeId`, so it comes back marked and one click away.
-  await page.getByRole('button', { name: '展开侧边栏' }).click();
+  // Return through the task row the product exposes. Module navigation can
+  // preserve either sidebar state, so restore it only when it is collapsed.
+  await ensureSidebarExpanded(page);
   const currentTaskRow = sidebar.locator(
     '[data-maka-contract="session-row"] [aria-current="page"]',
   );

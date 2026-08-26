@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { COMPOSER_INPUT, expect, test } from './fixtures';
+import { COMPOSER_INPUT, ensureSidebarExpanded, expect, test } from './fixtures';
 
 test('an explicit new task survives a renderer reload without reopening history', async ({
   window: page,
@@ -27,6 +27,7 @@ test('an explicit new task survives a renderer reload without reopening history'
   await composer.press('Enter');
   await expect(page.getByText(/Fake backend received: create history/)).toBeVisible();
 
+  await ensureSidebarExpanded(page);
   await page.getByRole('button', { name: '新任务', exact: true }).click();
   await expect(page.locator('.maka-turn')).toHaveCount(0);
   await composer.fill('draft survives renderer replacement');
