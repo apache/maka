@@ -352,11 +352,11 @@ test('recovered followups without a connection owner still form one successor ba
   );
 });
 
-test('recovery re-opens a Turn under the orchestration the Message asked for', async () => {
+// The Host stopped after the Message admission committed and before the root
+// admission that carries the exact-Turn intent was written.
+async function recoverExactTurnAcrossHostStop(): Promise<ReturnType<typeof createFixture>> {
   const fixture = createFixture();
   fixture.setRootState({ kind: 'idle' });
-  // The Host stopped after the Message admission committed and before the root
-  // admission that carries the execution mode was written.
   await fixture.admissions.commitMessageAdmission({
     sessionId: ROOT.sessionId,
     turnId: ROOT.turnId,
@@ -367,17 +367,65 @@ test('recovery re-opens a Turn under the orchestration the Message asked for', a
     submittedPlacement: 'current_turn',
     placement: 'current_turn',
     disposition: 'steering',
-    turnOrchestration: { mode: 'graph', source: 'slash_command' },
+    submittedIntent: {
+      skillIds: ['review'],
+      turnOrchestration: { mode: 'graph', source: 'slash_command' },
+    },
     admittedAt: 1,
   });
-
   await fixture.coordinator.recoverPendingAfterHostRestart([ROOT.sessionId]);
+  return fixture;
+}
+
+function resubmitRecoveredExact(
+  fixture: ReturnType<typeof createFixture>,
+  mode: 'graph' | 'swarm',
+) {
+  return fixture.coordinator.handlers['turn.message.submit'](
+    {
+      originHostEpoch: 'epoch-1',
+      sessionId: ROOT.sessionId,
+      messageId: 'recovered-exact',
+      content: { text: 'run this as a graph' },
+      placement: 'current_turn',
+      skillIds: ['review'],
+      turnOrchestration: { mode, source: 'slash_command' },
+    },
+    operationContext(),
+  );
+}
+
+test('recovery re-opens a Turn under the intent the Message asked for', async () => {
+  const fixture = await recoverExactTurnAcrossHostStop();
 
   assert.equal(fixture.recoveredBatches.length, 1);
-  assert.deepEqual(fixture.recoveredBatches[0]?.turnOrchestration, {
-    mode: 'graph',
-    source: 'slash_command',
+  assert.deepEqual(fixture.recoveredBatches[0]?.submittedIntent, {
+    skillIds: ['review'],
+    turnOrchestration: { mode: 'graph', source: 'slash_command' },
   });
+});
+
+test('a retry of a recovered exact-Turn Message is not a conflict', async () => {
+  const fixture = await recoverExactTurnAcrossHostStop();
+
+  const retried = await resubmitRecoveredExact(fixture, 'graph');
+
+  // The intent survived the crash cut whole, so the unchanged retry reads as
+  // the same submit. The recovered source keeps the queued disposition the
+  // pending record can express, so the Host answers `outcome_unknown` — the
+  // client keeps its row and reconciles from canonical transcript — instead of
+  // rejecting a request it is already executing.
+  assert.equal(retried.ok, false);
+  if (!retried.ok) assert.equal(retried.error.code, 'outcome_unknown');
+  assert.equal(fixture.startCalls(), 0);
+});
+
+test('a retry that changes intent after recovery is still a conflict', async () => {
+  const fixture = await recoverExactTurnAcrossHostStop();
+
+  const changed = await resubmitRecoveredExact(fixture, 'swarm');
+  assert.equal(changed.ok, false);
+  if (!changed.ok) assert.equal(changed.error.code, 'operation_conflict');
 });
 
 test('recovery treats a durable steering event as the handoff proof', async () => {
@@ -2284,6 +2332,28 @@ function createFixture(
     startRecoveredMessages: async (input) => {
       recoveredBatches.push(input);
       const turnId = 'recovered-turn';
+      // Recovery admits a root Turn from the reconstructed sources, so the
+      // durable receipt a later retry is compared against is written here too.
+      // Skipping it would leave the retry with nothing to disagree with.
+      for (const source of input.sources) {
+        const receipt = sourceReceipt(
+          source.messageId,
+          source.content,
+          source.placement,
+          source.disposition,
+          turnId,
+        );
+        receipts.set(source.messageId, {
+          admission: {
+            ...receipt.admission,
+            sourceMessages: [source],
+            ...(input.submittedIntent?.turnOrchestration
+              ? { turnOrchestration: input.submittedIntent.turnOrchestration }
+              : {}),
+          },
+          sourceMessage: source,
+        });
+      }
       rootState = { kind: 'active', sessionId: input.sessionId, turnId, runId: 'recovered-run' };
       coordinator.reserveRootTurn(rootState);
       return { turnId };

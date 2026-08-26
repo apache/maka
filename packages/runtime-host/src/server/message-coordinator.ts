@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { createHash, randomUUID } from 'node:crypto';
+import { randomUUID } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
 import type { SteeringLease } from '@maka/core/backend-types';
 import {
@@ -38,11 +38,13 @@ import {
 } from '@maka/runtime/message-authority';
 import {
   normalizeRootTurnAdmissionPayload,
+  submittedTurnIntentsEqual,
   type ImmutableSteeringMessageProof,
   type MessageAdmissionStore,
   type PendingMessageAdmission,
   type RootTurnSourceMessage,
   type RootTurnSourceMessageReceipt,
+  type SubmittedTurnIntent,
 } from '@maka/storage/execution-stores';
 import type { HostOperationErrorCode, OperationSpec } from '../protocol/operation-spec.js';
 import {
@@ -127,12 +129,12 @@ export interface HostMessageRecoveryBatch {
   readonly submittedContent: MessageContent;
   readonly sources: readonly RootTurnSourceMessage[];
   /**
-   * The execution mode the recovered Message asked for. Only a lone Message
-   * can carry one — exact-Turn intent needs an idle Session and opens its own
-   * root Turn — and without it the recovered Turn silently runs under the
-   * Session default instead of the graph or swarm that was requested.
+   * What the recovered Message asked of its Turn. Only a lone Message can
+   * carry one — exact-Turn intent needs an idle Session and opens its own root
+   * Turn — and without it the recovered Turn silently runs under the Session
+   * default instead of the graph or swarm that was requested.
    */
-  readonly turnOrchestration?: TurnOrchestration;
+  readonly submittedIntent?: SubmittedTurnIntent;
 }
 
 export interface HostMessagePreparationInput {
@@ -701,8 +703,8 @@ export class HostMessageCoordinator implements RuntimeMessageAuthority {
               content: aggregateMessageContents(pending.map((entry) => entry.content)),
               submittedContent: aggregateMessageContents(pending.map((entry) => entry.content)),
               sources: pending.map(pendingMessageSource),
-              ...(pending.length === 1 && pending[0]!.turnOrchestration
-                ? { turnOrchestration: pending[0]!.turnOrchestration }
+              ...(pending.length === 1 && pending[0]!.submittedIntent
+                ? { submittedIntent: pending[0]!.submittedIntent }
                 : {}),
             },
             admission,
@@ -856,12 +858,12 @@ export class HostMessageCoordinator implements RuntimeMessageAuthority {
               'Root reported idle while the message authority retained live state',
             );
           }
-          const intentDigest = submittedIntentDigest(payload);
+          const intent = submittedTurnIntent(payload);
           const sourceMessage: RootTurnSourceMessage = {
             messageId: input.messageId,
             content: payload.content,
             submittedContentDigest: messageContentDigest(payload.content),
-            ...(intentDigest ? { submittedIntentDigest: intentDigest } : {}),
+            ...(intent ? { submittedIntent: intent } : {}),
             placement: input.placement,
             disposition: 'turn_started',
           };
@@ -873,7 +875,7 @@ export class HostMessageCoordinator implements RuntimeMessageAuthority {
             pendingAdmission &&
             (pendingAdmission.submittedContentDigest !== messageContentDigest(payload.content) ||
               pendingAdmission.submittedPlacement !== input.placement ||
-              !isDeepStrictEqual(pendingAdmission.turnOrchestration, payload.turnOrchestration))
+              !submittedTurnIntentsEqual(pendingAdmission.submittedIntent, intent))
           ) {
             return failure('operation_conflict', 'Message admission has a different payload');
           }
@@ -904,9 +906,7 @@ export class HostMessageCoordinator implements RuntimeMessageAuthority {
                 submittedPlacement: input.placement,
                 placement: 'current_turn',
                 disposition: 'steering',
-                ...(payload.turnOrchestration
-                  ? { turnOrchestration: payload.turnOrchestration }
-                  : {}),
+                ...(intent ? { submittedIntent: intent } : {}),
                 admittedAt: pendingAdmission?.admittedAt ?? Date.now(),
               });
             },
@@ -2169,7 +2169,7 @@ function sameSourcePayload(
       ? durableDigest === messageContentDigest(input.content)
       : messageContentsEqual(source.content, input.content)) &&
     source.placement === input.placement &&
-    source.submittedIntentDigest === submittedIntentDigest(input)
+    submittedTurnIntentsEqual(source.submittedIntent, submittedTurnIntent(input))
   );
 }
 
@@ -2188,6 +2188,7 @@ function pendingMessageSource(admission: PendingMessageAdmission): RootTurnSourc
     messageId: admission.messageId,
     content: normalizeMessageContent(admission.content),
     submittedContentDigest: admission.submittedContentDigest,
+    ...(admission.submittedIntent ? { submittedIntent: admission.submittedIntent } : {}),
     placement: admission.placement,
     disposition: admission.disposition,
   };
@@ -2327,22 +2328,18 @@ function requiresExactTurn(payload: CanonicalSubmitPayload): boolean {
 }
 
 /**
- * The exact-Turn intent as a durable value, or undefined when the submit asked
- * for none. Content and placement say nothing about how a Turn runs, so this is
- * the rest of what makes a submit the same submit: without it, a retry under
- * one Message identity can change the execution mode and still be answered with
- * the earlier Turn's success.
+ * The exact-Turn intent as the durable value every record keeps, or undefined
+ * when the submit asked for none. Content and placement say nothing about how a
+ * Turn runs, so this is the rest of what makes a submit the same submit:
+ * without it, a retry under one Message identity can change the execution mode
+ * and still be answered with the earlier Turn's success.
  */
-function submittedIntentDigest(payload: CanonicalSubmitPayload): `sha256:${string}` | undefined {
+function submittedTurnIntent(payload: CanonicalSubmitPayload): SubmittedTurnIntent | undefined {
   if (!requiresExactTurn(payload)) return undefined;
-  return `sha256:${createHash('sha256')
-    .update(
-      JSON.stringify({
-        skillIds: payload.skillIds,
-        turnOrchestration: payload.turnOrchestration ?? null,
-      }),
-    )
-    .digest('hex')}`;
+  return {
+    skillIds: payload.skillIds,
+    ...(payload.turnOrchestration ? { turnOrchestration: payload.turnOrchestration } : {}),
+  };
 }
 
 function aggregateMessageContent(contents: readonly MessageContent[]): MessageContent {

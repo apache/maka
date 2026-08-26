@@ -1165,7 +1165,8 @@ export class RootTurnCoordinator implements HostedExecutionAuthority {
         const turnId = randomUUID();
         // The recovered Message asked for this mode before the Host stopped;
         // admitting without it would run a different Turn than was requested.
-        await this.prepareFreshAgentGraphEpoch(header, input.turnOrchestration);
+        const turnOrchestration = input.submittedIntent?.turnOrchestration;
+        await this.prepareFreshAgentGraphEpoch(header, turnOrchestration);
         const admitted = await this.rootAdmissionOwner.admitRootTurn({
           sessionId: input.sessionId,
           turnId,
@@ -1176,7 +1177,7 @@ export class RootTurnCoordinator implements HostedExecutionAuthority {
             inputDigest: messageContentDigest(input.submittedContent),
           },
           normalizedInput: input.content,
-          ...(input.turnOrchestration ? { turnOrchestration: input.turnOrchestration } : {}),
+          ...(turnOrchestration ? { turnOrchestration } : {}),
           sourceMessages: input.sources,
           admittedAt: Date.now(),
         });

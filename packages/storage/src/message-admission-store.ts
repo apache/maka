@@ -20,10 +20,10 @@
 import { isDeepStrictEqual } from 'node:util';
 import { normalizeMessageContent, type MessageContent } from '@maka/core/events';
 import {
-  isOrchestrationMode,
-  isTurnOrchestrationSource,
-  type TurnOrchestration,
-} from '@maka/core/orchestration';
+  normalizeSubmittedTurnIntent,
+  submittedTurnIntentsEqual,
+  type SubmittedTurnIntent,
+} from './submitted-turn-intent.js';
 
 const SAFE_ID_PATTERN = /^[A-Za-z0-9_-]{1,128}$/;
 
@@ -38,13 +38,14 @@ export interface PendingMessageAdmission {
   readonly placement: 'current_turn' | 'next_turn';
   readonly disposition: 'steering' | 'followup';
   /**
-   * The orchestration this Message asked its Turn to run under, when it asked
-   * for one. Recovery re-opens the Turn from this record, and content and
-   * placement say nothing about execution mode, so without it a crash between
-   * this commit and the root admission silently downgrades an explicit
-   * graph or swarm request to the Session default.
+   * What this Message asked of its Turn beyond the words, when it asked for
+   * anything. Recovery re-opens the Turn from this record and answers retries
+   * against it, so the whole intent lives here: without it a crash between
+   * this commit and the root admission silently downgrades an explicit graph
+   * or swarm request to the Session default, and a later retry of the very
+   * same submit reads as a different one.
    */
-  readonly turnOrchestration?: TurnOrchestration;
+  readonly submittedIntent?: SubmittedTurnIntent;
   readonly admittedAt: number;
 }
 
@@ -94,22 +95,11 @@ export function normalizePendingMessageAdmission(
   if (!Number.isSafeInteger(admission.admittedAt) || admission.admittedAt < 0) {
     throw new Error('Invalid message admission timestamp');
   }
-  if (admission.turnOrchestration !== undefined) {
-    const { mode, source } = admission.turnOrchestration;
-    if (!isOrchestrationMode(mode) || !isTurnOrchestrationSource(source)) {
-      throw new Error('Invalid pending Message orchestration');
-    }
-  }
   const normalized = Object.freeze({
     ...admission,
     content: normalizeMessageContent(admission.content),
-    ...(admission.turnOrchestration
-      ? {
-          turnOrchestration: Object.freeze({
-            mode: admission.turnOrchestration.mode,
-            source: admission.turnOrchestration.source,
-          }),
-        }
+    ...(admission.submittedIntent
+      ? { submittedIntent: normalizeSubmittedTurnIntent(admission.submittedIntent) }
       : {}),
   });
   if (!/^sha256:[a-f0-9]{64}$/u.test(normalized.submittedContentDigest)) {
@@ -134,7 +124,7 @@ export function samePendingMessageAdmission(
     a.placement === b.placement &&
     a.disposition === b.disposition &&
     a.admittedAt === b.admittedAt &&
-    isDeepStrictEqual(a.turnOrchestration, b.turnOrchestration) &&
+    submittedTurnIntentsEqual(a.submittedIntent, b.submittedIntent) &&
     isDeepStrictEqual(a.content, b.content)
   );
 }

@@ -114,6 +114,8 @@ export type {
   MessageAdmissionStore,
   PendingMessageAdmission,
 } from './message-admission-store.js';
+export { submittedTurnIntentsEqual } from './submitted-turn-intent.js';
+export type { SubmittedTurnIntent } from './submitted-turn-intent.js';
 export type {
   ProbeSessionRemovalResult,
   ExternalSessionImportLookupResult,

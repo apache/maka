@@ -28,6 +28,11 @@ import {
   decodeRuntimeEvent,
 } from './execution-record-codec.js';
 import { immutableSteeringMessageId } from './runtime-event-invariants.js';
+import {
+  normalizeSubmittedTurnIntent,
+  submittedTurnIntentsEqual,
+  type SubmittedTurnIntent,
+} from './submitted-turn-intent.js';
 import { assertNoReservedWorkspaceAuthorityAppend } from './runtime-event-authority.js';
 import {
   acquireOperationalStateDatabase,
@@ -96,13 +101,13 @@ export interface RootTurnSourceMessage {
   content: MessageContent;
   submittedContentDigest?: `sha256:${string}`;
   /**
-   * Digest of the exact-Turn intent this Message was submitted with — the
-   * Skill ids and the orchestration override. Content and placement do not
-   * describe it, so without this a retry that asks for a different execution
-   * mode under the same Message identity aliases the earlier success. Absent
-   * on a record written for a submit that carried no exact intent.
+   * The exact-Turn intent this Message was submitted with — the Skill ids and
+   * the orchestration override. Content and placement do not describe it, so
+   * without this a retry that asks for a different execution mode under the
+   * same Message identity aliases the earlier success. Absent on a record
+   * written for a submit that carried no exact intent.
    */
-  submittedIntentDigest?: `sha256:${string}`;
+  submittedIntent?: SubmittedTurnIntent;
   placement: 'current_turn' | 'next_turn';
   disposition: 'steering' | 'followup' | 'turn_started';
 }
@@ -1661,19 +1666,13 @@ function normalizeRootTurnSourceMessages(value: unknown): readonly RootTurnSourc
         'placement',
         'disposition',
         ...(Object.hasOwn(item, 'submittedContentDigest') ? ['submittedContentDigest'] : []),
-        ...(Object.hasOwn(item, 'submittedIntentDigest') ? ['submittedIntentDigest'] : []),
+        ...(Object.hasOwn(item, 'submittedIntent') ? ['submittedIntent'] : []),
       ])
     ) {
       throw new Error(`Invalid root turn source message at index ${index}`);
     }
-    const {
-      messageId,
-      content,
-      submittedContentDigest,
-      submittedIntentDigest,
-      placement,
-      disposition,
-    } = item;
+    const { messageId, content, submittedContentDigest, submittedIntent, placement, disposition } =
+      item;
     if (
       typeof messageId !== 'string' ||
       !isSafeId(messageId) ||
@@ -1683,8 +1682,7 @@ function normalizeRootTurnSourceMessages(value: unknown): readonly RootTurnSourc
         disposition !== 'turn_started') ||
       (disposition === 'steering' && placement !== 'current_turn') ||
       (disposition === 'followup' && placement !== 'next_turn') ||
-      (submittedContentDigest !== undefined && !isSha256Digest(submittedContentDigest)) ||
-      (submittedIntentDigest !== undefined && !isSha256Digest(submittedIntentDigest))
+      (submittedContentDigest !== undefined && !isSha256Digest(submittedContentDigest))
     ) {
       throw new Error(`Invalid root turn source message at index ${index}`);
     }
@@ -1700,7 +1698,9 @@ function normalizeRootTurnSourceMessages(value: unknown): readonly RootTurnSourc
         MAX_ATTACHMENT_COUNT,
       ),
       ...(submittedContentDigest !== undefined ? { submittedContentDigest } : {}),
-      ...(submittedIntentDigest !== undefined ? { submittedIntentDigest } : {}),
+      ...(submittedIntent !== undefined
+        ? { submittedIntent: normalizeSubmittedTurnIntent(submittedIntent) }
+        : {}),
       placement,
       disposition,
     });
@@ -1728,7 +1728,7 @@ function rootTurnAdmissionPayloadsEqual(
         source.placement === other.placement &&
         source.disposition === other.disposition &&
         source.submittedContentDigest === other.submittedContentDigest &&
-        source.submittedIntentDigest === other.submittedIntentDigest &&
+        submittedTurnIntentsEqual(source.submittedIntent, other.submittedIntent) &&
         messageContentsEqual(source.content, other.content)
       );
     })

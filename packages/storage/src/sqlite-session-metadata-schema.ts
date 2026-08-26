@@ -1197,7 +1197,7 @@ const MIGRATIONS: ReadonlyMap<number, string> = new Map([
   [
     32,
     `
-    ALTER TABLE message_admissions ADD COLUMN turn_orchestration_json TEXT;
+    ALTER TABLE message_admissions ADD COLUMN submitted_intent_json TEXT;
   `,
   ],
 ]);
@@ -1260,7 +1260,7 @@ export function migrateSqliteSessionMetadataDatabase(
       // Version 32 adds one column, and the post-merge convergence path replays
       // it onto a database that may already carry it. SQLite has no
       // `ADD COLUMN IF NOT EXISTS`, so the guard lives here.
-      if (version !== 32 || !hasColumn(db, 'message_admissions', 'turn_orchestration_json')) {
+      if (version !== 32 || !hasColumn(db, 'message_admissions', 'submitted_intent_json')) {
         db.exec(sql);
       }
       if (version === 29 && hasColumn(db, 'session_metadata', 'last_used_at')) {

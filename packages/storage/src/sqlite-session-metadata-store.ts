@@ -101,6 +101,7 @@ import {
   samePendingMessageAdmission,
   type PendingMessageAdmission,
 } from './message-admission-store.js';
+import { normalizeSubmittedTurnIntent } from './submitted-turn-intent.js';
 import { messageContentsEqual, normalizeMessageContent } from '@maka/core/events';
 import {
   type AgentGraphIntentAdmissionSnapshot,
@@ -247,7 +248,7 @@ interface MessageAdmissionRow {
   readonly disposition?: unknown;
   readonly queue_order?: unknown;
   readonly admitted_at?: unknown;
-  readonly turn_orchestration_json?: unknown;
+  readonly submitted_intent_json?: unknown;
 }
 
 function decodeMessageAdmissionRow(
@@ -281,12 +282,8 @@ function decodeMessageAdmissionRow(
     submittedPlacement: row.submitted_placement,
     placement: row.placement,
     disposition: row.disposition,
-    ...(typeof row.turn_orchestration_json === 'string'
-      ? {
-          turnOrchestration: JSON.parse(row.turn_orchestration_json) as NonNullable<
-            PendingMessageAdmission['turnOrchestration']
-          >,
-        }
+    ...(typeof row.submitted_intent_json === 'string'
+      ? { submittedIntent: normalizeSubmittedTurnIntent(JSON.parse(row.submitted_intent_json)) }
       : {}),
     admittedAt: row.admitted_at,
   });
@@ -1583,7 +1580,7 @@ export class SqliteSessionMetadataStore {
           `
           SELECT turn_id, run_id, message_id, content_json, submitted_content_digest,
             submitted_placement, placement, disposition, queue_order, admitted_at,
-            turn_orchestration_json
+            submitted_intent_json
           FROM message_admissions
           WHERE session_id = ? AND message_id = ?
         `,
@@ -1622,7 +1619,7 @@ export class SqliteSessionMetadataStore {
           INSERT INTO message_admissions(
             session_id, turn_id, run_id, message_id, content_json, submitted_content_digest,
             submitted_placement, placement, disposition, queue_order, admitted_at,
-            turn_orchestration_json
+            submitted_intent_json
           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `,
         )
@@ -1638,7 +1635,7 @@ export class SqliteSessionMetadataStore {
           stored.disposition,
           orderRow.next_order,
           stored.admittedAt,
-          stored.turnOrchestration ? JSON.stringify(stored.turnOrchestration) : null,
+          stored.submittedIntent ? JSON.stringify(stored.submittedIntent) : null,
         );
 
       return stored;
@@ -1658,7 +1655,7 @@ export class SqliteSessionMetadataStore {
           `
           SELECT turn_id, run_id, message_id, content_json, submitted_content_digest,
             submitted_placement, placement, disposition, queue_order, admitted_at,
-            turn_orchestration_json
+            submitted_intent_json
           FROM message_admissions
           WHERE session_id = ? AND message_id = ?
         `,
@@ -1691,7 +1688,7 @@ export class SqliteSessionMetadataStore {
           `
           SELECT turn_id, run_id, message_id, content_json, submitted_content_digest,
             submitted_placement, placement, disposition, queue_order, admitted_at,
-            turn_orchestration_json
+            submitted_intent_json
           FROM message_admissions
           WHERE session_id = ?
           ORDER BY queue_order, sequence
@@ -1732,7 +1729,7 @@ export class SqliteSessionMetadataStore {
             `
             SELECT turn_id, run_id, message_id, content_json, submitted_content_digest,
               submitted_placement, placement, disposition, queue_order, admitted_at,
-            turn_orchestration_json
+            submitted_intent_json
             FROM message_admissions
             WHERE session_id = ? AND message_id = ?
           `,
@@ -1842,7 +1839,7 @@ export class SqliteSessionMetadataStore {
           `
           SELECT turn_id, run_id, message_id, content_json, submitted_content_digest,
             submitted_placement, placement, disposition, queue_order, admitted_at,
-            turn_orchestration_json
+            submitted_intent_json
           FROM message_admissions
           WHERE session_id = ? AND message_id = ?
         `,
