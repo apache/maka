@@ -223,31 +223,36 @@ export function registerAppIconIpc(input: {
       // When the predicate no longer holds, the newer selection stands and the
       // file is still deleted: it is no longer the one in use, which is
       // exactly the state the caller asked for.
-      // Both slots have to be checked, and separately: either one, both, or
-      // neither may name the icon being removed, and `updateIf` takes a fixed
-      // patch so a single call cannot reset only the slots that matched. A
-      // removal that cleared just the light slot used to leave `appIconDark`
-      // pointing at a file it had already deleted — the dock fell back to the
-      // brand mark, but the setting kept naming artwork that was gone and the
-      // picker had nothing selected.
+      // Either slot, both, or neither may name the icon being removed, and
+      // all of it has to move in ONE queued write. Two conditional updates
+      // would let the second fail after the first committed: the light slot
+      // would already be on disk as the default while the dark slot still
+      // named deleted artwork, `applySettings` would never run, and the
+      // handler would report `reset_failed` over a state it had half changed.
+      // The derived patch resets exactly the slots that matched, atomically.
       let settings: AppSettings;
       let applied = false;
       try {
-        const light = await input.settingsStore.updateIf(
-          (current) => toAppIconChoice(current.appearance.appIcon) === icon,
-          { appearance: { appIcon: DEFAULT_APP_ICON } },
+        const outcome = await input.settingsStore.updateIf(
+          (current) =>
+            toAppIconChoice(current.appearance.appIcon) === icon ||
+            current.appearance.appIconDark === icon,
+          (current) => ({
+            appearance: {
+              ...(toAppIconChoice(current.appearance.appIcon) === icon
+                ? { appIcon: DEFAULT_APP_ICON }
+                : {}),
+              // Cleared rather than reset to the shipped dark id: the user
+              // removed the only dark icon they had chosen, and inheriting the
+              // light one is the state that needs no further decision.
+              ...(current.appearance.appIconDark === icon
+                ? { appIconDark: undefined }
+                : {}),
+            },
+          }),
         );
-        settings = light.settings;
-        applied = light.applied;
-        // Cleared rather than reset to the shipped dark id: the user removed
-        // the only dark icon they had chosen, and inheriting the light one is
-        // the state that needs no further decision from them.
-        const dark = await input.settingsStore.updateIf(
-          (current) => current.appearance.appIconDark === icon,
-          { appearance: { appIconDark: undefined } },
-        );
-        settings = dark.settings;
-        applied = applied || dark.applied;
+        settings = outcome.settings;
+        applied = outcome.applied;
         if (applied) await input.applySettings(settings);
       } catch {
         return { ok: false, reason: "reset_failed" };

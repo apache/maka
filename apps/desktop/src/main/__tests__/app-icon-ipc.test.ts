@@ -39,6 +39,8 @@ async function harness(selected: string, options: {
     onShowOpenDialog?: () => Promise<void>;
     /** Seeds `appearance.appIconDark`; absent means the split is off. */
     dark?: string;
+    /** Makes the conditional write throw, standing in for a disk failure. */
+    failWrite?: boolean;
   } = {}) {
   const root = await mkdtemp(join(tmpdir(), 'maka-icon-ipc-'));
   await mkdir(customAppIconDirectory(root), { recursive: true });
@@ -74,18 +76,22 @@ async function harness(selected: string, options: {
       },
       updateIf: async (
         predicate: (current: AppSettings) => boolean,
-        patch: UpdateAppSettingsInput,
+        patch: UpdateAppSettingsInput | ((current: AppSettings) => UpdateAppSettingsInput),
       ) => {
         // The real store evaluates the predicate and writes on one queue. The
         // hook stands in for whatever else reached that queue first.
         options.onCompareAndSet?.();
         if (!predicate(settings)) return { applied: false, settings };
+        // Thrown after the predicate, where the real store would fail: the
+        // decision to write has been made and the write is what breaks.
+        if (options.failWrite) throw new Error('disk is full');
         // Spread, like the real `mergeSettings`: an explicit `undefined` in a
         // patch overwrites rather than being skipped, which is how a slot is
         // cleared.
+        const resolved = typeof patch === 'function' ? patch(settings) : patch;
         settings = {
           ...settings,
-          appearance: { ...settings.appearance, ...patch.appearance },
+          appearance: { ...settings.appearance, ...resolved.appearance },
         } as AppSettings;
         return { applied: true, settings };
       },
@@ -210,12 +216,10 @@ test('a selection issued mid-removal cannot land between reset, apply and delete
   assert.equal(selected.reason, 'missing_artwork');
   assert.equal(h.current(), DEFAULT_APP_ICON);
   assert.deepEqual(await readdir(customAppIconDirectory(h.root)), []);
-  // Nothing ran between the reset and the delete. Two compare-and-sets, not
-  // one: the light slot and the dark slot are checked separately because
-  // `updateIf` takes a fixed patch and only the slots that actually name the
-  // removed icon may be reset. Both still sit inside the removal, ahead of the
-  // single apply and the delete — which is the property under test.
-  assert.deepEqual(observed, ['compare-and-set', 'compare-and-set', 'apply']);
+  // Nothing ran between the reset and the delete, and both slots move in a
+  // single compare-and-set: a second conditional write here would be a window
+  // where the light slot is already committed and the dark one is not.
+  assert.deepEqual(observed, ['compare-and-set', 'apply']);
 });
 
 /**
@@ -274,4 +278,25 @@ test('removing an unrelated icon leaves a dark choice alone', async () => {
 
   assert.equal(h.current(), 'sky');
   assert.equal(h.currentDark(), 'ink', 'an unrelated removal must not disturb the split');
+});
+
+test('a failed reset commits nothing and leaves the dock alone', async () => {
+  // The partial-commit case: both slots name the icon, so a two-step reset
+  // would have written the light slot before the second write could fail.
+  // One queued write means a failure leaves the persisted state untouched,
+  // which is what makes `reset_failed` an honest answer.
+  const h = await harness(ICON, { dark: ICON, failWrite: true });
+
+  const result = (await h.remove(ICON)) as { ok: boolean; reason?: string };
+
+  assert.equal(result.ok, false);
+  assert.equal(result.reason, 'reset_failed');
+  assert.equal(h.current(), ICON, 'the light slot was not half-reset');
+  assert.equal(h.currentDark(), ICON, 'the dark slot was not half-reset');
+  assert.equal(h.applied.length, 0, 'nothing was applied to the dock');
+  assert.deepEqual(
+    await readdir(customAppIconDirectory(h.root)),
+    [`${ID}.png`],
+    'the artwork survives a failed reset',
+  );
 });
