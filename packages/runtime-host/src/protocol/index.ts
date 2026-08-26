@@ -92,9 +92,12 @@ export const RUNTIME_HOST_REGISTRATION_SCHEMA_VERSION = 1 as const;
 export const RUNTIME_HOST_PROTOCOL_VERSION = 0 as const;
 // Increment when the same protocol version no longer guarantees safe Client-Host
 // interoperability. Mismatches are rejected before domain commands are admitted.
-export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 52 as const;
-// 52: Bot conversation continuity introduces external-conversation bindings.
+export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 53 as const;
+// 53: Bot conversation continuity introduces external-conversation bindings.
 // Older peers reject the added protocol shapes.
+// 52: Session subscriptions can forward durable steering-message echoes and
+// preserve their identity across queue and transcript projection.
+// Older peers cannot safely de-duplicate the two authoritative paths.
 // 51: WorkHub exposes bounded coordination candidates and admits only typed
 // actions through the deterministic Runtime Host Action Gate.
 // 50: WorkHub can append durable coordination summaries and admit tool-free

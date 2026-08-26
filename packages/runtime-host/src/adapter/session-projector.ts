@@ -26,6 +26,7 @@ import type {
   SessionAssistantDelta,
   SessionAssistantStreamIdentity,
   SessionMessageQueueProjection,
+  SessionSteeringEvent,
   SteeringMessageSnapshot,
   SubscriptionFrame,
   LiveTurnSnapshot,
@@ -87,6 +88,10 @@ export class RuntimeHostSessionProjector {
   #snapshot: SessionContinuitySnapshot;
   readonly #now: () => number;
   readonly #durableSteeringTurnByMessage: Map<string, string>;
+  // Only live/synthesized messages for the current root belong here. Durable
+  // transcript identity stays in the admission map above, so this render
+  // ledger cannot grow with the lifetime of the session.
+  readonly #renderedSteeringMessageIds = new Set<string>();
   readonly #accumulators = new Map<string, AssistantAccumulator>();
   #projectMessageAdmissions: boolean;
 
@@ -190,7 +195,12 @@ export class RuntimeHostSessionProjector {
       events.push(...projectRuntimeHostInteractionRequest(interaction, this.#now()));
     }
     for (const entry of rootQueueInFlight(this.#snapshot.queue)) {
-      if (this.#durableSteeringTurnByMessage.has(entry.messageId)) continue;
+      if (
+        this.#durableSteeringTurnByMessage.has(entry.messageId) ||
+        this.#renderedSteeringMessageIds.has(entry.messageId)
+      )
+        continue;
+      this.#renderedSteeringMessageIds.add(entry.messageId);
       events.push({
         type: 'steering_message',
         id: `host-queue:${this.#snapshot.queue.hostEpoch}:${this.#snapshot.queue.queueRevision}:${entry.entryId}`,
@@ -373,7 +383,17 @@ export class RuntimeHostSessionProjector {
       return emptyUpdate(events);
     }
     if (frame.kind === 'subscription.session_event') {
-      events.push(projectToolEvent(frame));
+      const event = projectSessionEvent(frame);
+      if (event.type === 'steering_message') {
+        if (
+          this.#durableSteeringTurnByMessage.has(event.messageId) ||
+          this.#renderedSteeringMessageIds.has(event.messageId)
+        ) {
+          return emptyUpdate(events);
+        }
+        this.#renderedSteeringMessageIds.add(event.messageId);
+      }
+      events.push(event);
       return emptyUpdate(events);
     }
     if (frame.kind !== 'subscription.session_projection') return emptyUpdate(events);
@@ -382,10 +402,14 @@ export class RuntimeHostSessionProjector {
     const next = frame.snapshot;
     this.#snapshot = structuredClone(next);
     const resolvedInteractions = removedPendingInteractions(previousSnapshot, next);
+    const previousRoot = previousSnapshot.rootTurn;
+    const root = next.rootTurn;
+    const startedTurn =
+      root && (!previousRoot || root.runId !== previousRoot.runId) ? root : undefined;
+    if (startedTurn) this.#renderedSteeringMessageIds.clear();
     for (const interaction of newlyPendingInteractions(previousSnapshot, next)) {
       events.push(...projectRuntimeHostInteractionRequest(interaction, this.#now()));
     }
-    const root = next.rootTurn;
     const enteredActiveTurn =
       root && queueChanged(previousSnapshot.queue, next.queue)
         ? newlyInFlight(previousSnapshot.queue, next.queue)
@@ -395,6 +419,12 @@ export class RuntimeHostSessionProjector {
     }
     if (root && queueChanged(previousSnapshot.queue, next.queue)) {
       for (const entry of enteredActiveTurn) {
+        if (
+          this.#durableSteeringTurnByMessage.has(entry.messageId) ||
+          this.#renderedSteeringMessageIds.has(entry.messageId)
+        )
+          continue;
+        this.#renderedSteeringMessageIds.add(entry.messageId);
         events.push({
           type: 'steering_message',
           id: `host-queue:${next.queue.hostEpoch}:${next.queue.queueRevision}:${entry.entryId}`,
@@ -406,9 +436,6 @@ export class RuntimeHostSessionProjector {
       }
       events.push(projectQueueUpdate(next.queue, root.turnId, this.#now()));
     }
-    const previousRoot = previousSnapshot.rootTurn;
-    const startedTurn =
-      root && (!previousRoot || root.runId !== previousRoot.runId) ? root : undefined;
     if (startedTurn) this.#accumulators.clear();
     const retry = liveProviderRetryEvent(previousRoot, root, this.#now());
     if (retry) events.push(retry);
@@ -550,10 +577,21 @@ export function projectRuntimeHostInteractionRequest(
   return [];
 }
 
-function projectToolEvent(
+function projectSessionEvent(
   frame: Extract<SubscriptionFrame, { kind: 'subscription.session_event' }>,
 ): SessionEvent {
   const event = frame.event;
+  if (event.type === 'steering_message') {
+    const steering: SessionSteeringEvent = {
+      type: 'steering_message',
+      id: event.id,
+      turnId: event.turnId,
+      ts: event.ts,
+      messageId: event.messageId,
+      content: structuredClone(event.content),
+    };
+    return steering;
+  }
   const base = {
     id: event.id,
     turnId: event.turnId,
