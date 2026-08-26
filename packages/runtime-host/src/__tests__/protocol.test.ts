@@ -190,7 +190,10 @@ describe('Runtime Host bootstrap protocol', () => {
   });
 
   test('publishes a new compatibility epoch for context-budget failure detail', () => {
-    assert.ok(RUNTIME_HOST_COMPATIBILITY_EPOCH > 48);
+    // Epoch 50 is already used by WorkHub coordination summaries on main.
+    // The context-budget detail therefore needs its own strictly newer
+    // handshake boundary so peers cannot accept the wrong closed shape.
+    assert.ok(RUNTIME_HOST_COMPATIBILITY_EPOCH > 50);
   });
 
   test('adds credential rotation without changing existing credential inputs', () => {
