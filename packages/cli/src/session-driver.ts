@@ -116,11 +116,21 @@ export interface MakaRetractedMessages {
   messageIds: readonly string[];
 }
 
-export class SkillInvocationBlockedError extends Error {
-  constructor(readonly skillInvocation: SkillInvocationResult) {
-    super('Explicit Skill invocation could not be resolved');
-    this.name = 'SkillInvocationBlockedError';
-  }
+/**
+ * Why Runtime Host refused to open a Turn for an explicit Skill invocation.
+ * `turn.start`'s only remaining caller is headless `maka run`, which reports
+ * this as an ordinary failure, so the reasons belong in the message rather
+ * than in a payload nothing reads.
+ */
+export function skillInvocationBlockedMessage(skillInvocation: SkillInvocationResult): string {
+  const reasons = skillInvocation.failed.map((failure) =>
+    failure.reason === 'too_many_requests'
+      ? `more than ${failure.requestLimit} Skill requests`
+      : `/skill:${failure.request} (${failure.reason.replaceAll('_', ' ')})`,
+  );
+  return reasons.length > 0
+    ? `Could not resolve the Skill this Turn asked for: ${reasons.join(', ')}`
+    : 'Explicit Skill invocation could not be resolved';
 }
 
 export interface MakaSessionDriver {

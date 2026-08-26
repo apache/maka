@@ -395,11 +395,9 @@ export class HostMessageCoordinator implements RuntimeMessageAuthority {
   }): Promise<MessageOutcome<{ cancelledMessageIds: string[] }>> {
     const cancelledMessageIds: string[] = [];
     for (const messageId of input.messageIds) {
-      const cancelled = await this.#admissions.readCancelledMessageAdmission(
-        input.sessionId,
-        messageId,
-      );
-      if (cancelled) cancelledMessageIds.push(messageId);
+      if (await this.#admissions.hasCancelledMessageAdmission(input.sessionId, messageId)) {
+        cancelledMessageIds.push(messageId);
+      }
     }
     return success({ cancelledMessageIds });
   }

@@ -35,22 +35,18 @@ export interface PendingMessageAdmission {
   readonly admittedAt: number;
 }
 
-export interface CancelledMessageAdmission {
-  readonly messageId: string;
-  readonly submittedContentDigest: `sha256:${string}`;
-  readonly submittedPlacement: 'current_turn' | 'next_turn';
-}
-
 export interface MessageAdmissionStore {
   commitMessageAdmission(admission: PendingMessageAdmission): Promise<PendingMessageAdmission>;
   readMessageAdmission(
     sessionId: string,
     messageId: string,
   ): Promise<PendingMessageAdmission | undefined>;
-  readCancelledMessageAdmission(
-    sessionId: string,
-    messageId: string,
-  ): Promise<CancelledMessageAdmission | undefined>;
+  /**
+   * Whether this Message identity carries a cancellation tombstone. That a
+   * Message was cancelled is the whole fact callers need — the tombstone's
+   * own columns never leave this layer.
+   */
+  hasCancelledMessageAdmission(sessionId: string, messageId: string): Promise<boolean>;
   listMessageAdmissions(sessionId: string): Promise<readonly PendingMessageAdmission[]>;
   markMessagesHandedOff(input: {
     sessionId: string;

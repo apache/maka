@@ -48,10 +48,9 @@ import {
   createRuntimeHostMakaSessionDriver,
   type RuntimeHostMakaSessionDriverInput,
 } from '../runtime-host-session-driver.js';
-import {
-  SkillInvocationBlockedError,
-  type MakaAttachedSessionTurn,
-  type MakaSideConversationParentStatus,
+import type {
+  MakaAttachedSessionTurn,
+  MakaSideConversationParentStatus,
 } from '../session-driver.js';
 import { WAIT_BUDGET_MS } from './tui-terminal-mock.js';
 
@@ -1529,10 +1528,11 @@ describe('Runtime Host Maka Session driver', () => {
     assert.equal(connection.requests.at(-1)?.operation, 'turn.start');
 
     connection.skillStartBlocked = true;
-    await assert.rejects(
-      driver.preparePrompt('/skill:missing', { turnId: 'turn-blocked' }),
-      SkillInvocationBlockedError,
-    );
+    // The failure names what could not be resolved: headless `maka run` reports
+    // this message and nothing reads a structured payload off it.
+    await assert.rejects(driver.preparePrompt('/skill:missing', { turnId: 'turn-blocked' }), {
+      message: /Could not resolve the Skill this Turn asked for: \/skill:missing \(not found\)/,
+    });
   });
 
   test('retires a pending question when another client answers it', async () => {

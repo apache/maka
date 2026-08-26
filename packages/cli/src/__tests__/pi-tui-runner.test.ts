@@ -56,7 +56,7 @@ import type {
   RewindTarget,
   SessionResumeAvailability,
 } from '../session-driver.js';
-import { SkillInvocationBlockedError } from '../session-driver.js';
+import { skillInvocationBlockedMessage } from '../session-driver.js';
 import { listApiKeyOnboardableProviders } from '../onboarding-catalog.js';
 import type {
   MakaOnboardingSurface,
@@ -7771,29 +7771,28 @@ class HostSkillDriver extends SlashCommandDriver {
     super();
   }
 
+  /** Nothing the Host could resolve, so it opens no Turn for this Message. */
+  #refuses(): boolean {
+    return this.skillInvocation.loaded.length === 0 && this.skillInvocation.failed.length > 0;
+  }
+
   // The Host answers a refused invocation with a `blocked` disposition rather
-  // than a Turn; the driver surfaces that as the submit result.
+  // than a Turn; the driver hands that back as the submit result.
   override async submitMessage(
     text: string,
     options: MakaSubmitMessageOptions,
   ): Promise<TurnMessageSubmitResult | undefined> {
-    try {
-      return await super.submitMessage(text, options);
-    } catch (error) {
-      if (error instanceof SkillInvocationBlockedError) {
-        return { disposition: 'blocked', skillInvocation: error.skillInvocation };
-      }
-      throw error;
+    if (this.#refuses()) {
+      return { disposition: 'blocked', skillInvocation: this.skillInvocation };
     }
+    return super.submitMessage(text, options);
   }
 
   override async preparePrompt(
     prompt: string,
     options: MakaPreparePromptOptions = {},
   ): Promise<MakaPreparedSessionTurn> {
-    if (this.skillInvocation.loaded.length === 0 && this.skillInvocation.failed.length > 0) {
-      throw new SkillInvocationBlockedError(this.skillInvocation);
-    }
+    if (this.#refuses()) throw new Error(skillInvocationBlockedMessage(this.skillInvocation));
     const turn = await super.preparePrompt(prompt, options);
     return { ...turn, skillInvocation: this.skillInvocation };
   }

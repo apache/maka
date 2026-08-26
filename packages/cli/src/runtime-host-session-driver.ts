@@ -96,7 +96,10 @@ import type {
   RewindTarget,
   SessionResumeAvailability,
 } from './session-driver.js';
-import { inspectSessionResumeAvailability, SkillInvocationBlockedError } from './session-driver.js';
+import {
+  inspectSessionResumeAvailability,
+  skillInvocationBlockedMessage,
+} from './session-driver.js';
 import {
   cwdRank,
   firstLine,
@@ -327,7 +330,7 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
       };
       const result = await this.#connection.request('turn.start', startInput);
       if (result.kind === 'blocked') {
-        throw new SkillInvocationBlockedError(result.skillInvocation);
+        throw new Error(skillInvocationBlockedMessage(result.skillInvocation));
       }
       const started = result.turn;
       const skillInvocation =

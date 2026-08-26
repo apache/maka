@@ -2297,16 +2297,8 @@ function memoryMessageAdmissionStore(
       return admission;
     },
     readMessageAdmission: async (_sessionId, messageId) => admissions.get(messageId)?.admission,
-    readCancelledMessageAdmission: async (_sessionId, messageId) => {
-      const entry = admissions.get(messageId);
-      return entry?.state === 'cancelled'
-        ? {
-            messageId,
-            submittedContentDigest: entry.admission.submittedContentDigest,
-            submittedPlacement: entry.admission.submittedPlacement,
-          }
-        : undefined;
-    },
+    hasCancelledMessageAdmission: async (_sessionId, messageId) =>
+      admissions.get(messageId)?.state === 'cancelled',
     listMessageAdmissions: async (sessionId) =>
       [...admissions.values()]
         .filter(({ admission, state }) => admission.sessionId === sessionId && state === 'accepted')
