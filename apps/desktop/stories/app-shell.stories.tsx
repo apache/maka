@@ -573,6 +573,107 @@ export const RunningStatusDuringToolRun: Story = {
   ),
 };
 
+// Real path: ask for a long-running job → a Bash tool starts → the user hits stop
+// before it returns. Aborting settles the call as a cancelled `terminal` result
+// (isError), and `toolResultActivityStatus` maps a cancelled terminal to
+// `interrupted`. There is no `interrupted` turn status (only running/completed/
+// aborted/failed) — the tool-level state is derived from the settled result, not
+// asserted. Because the turn kept that partial result, `partialOutputRetained` is
+// true.
+//
+// This is the interrupted counterpart to RunningStatusDuringToolRun, and the only
+// story that reaches the interrupted tool row. It goes through the real
+// ChatView → materializeTurns → ToolTrow path, so the row renders inside the
+// production `.maka-turn` frame. The session is `aborted` too, so the sidebar row
+// and composer agree with the transcript instead of still reading as active.
+export const InterruptedToolAfterTurnAbort: Story = {
+  render: () => (
+    <ComposedShell
+      session={{ status: 'aborted', lastMessageAt: NOW - 150_000 }}
+      chat={{
+        messages: [
+          user('msg-i-1', 'turn-i', 6, '把完整回归套件跑一遍，定位那几个偶发失败。'),
+          {
+            type: 'turn_state',
+            id: 'state-i-running',
+            turnId: 'turn-i',
+            ts: NOW - 358_000,
+            status: 'running',
+            partialOutputRetained: false,
+          },
+          {
+            type: 'assistant',
+            id: 'msg-assistant-i',
+            turnId: 'turn-i',
+            ts: NOW - 356_000,
+            text: '先跑一遍完整回归，确认那几个失败是不是同一个根因。',
+            modelId: 'claude-sonnet-4-5',
+          },
+          {
+            type: 'tool_call',
+            id: 'tool-i-1',
+            turnId: 'turn-i',
+            ts: NOW - 354_000,
+            toolName: 'Bash',
+            activityKind: 'command',
+            stepId: 'msg-assistant-i',
+            origin: 'provider',
+            modelVisibility: 'visible',
+            args: { command: 'npm test' },
+          },
+          {
+            type: 'tool_result',
+            id: 'tool-i-1-result',
+            turnId: 'turn-i',
+            ts: NOW - 150_000,
+            toolUseId: 'tool-i-1',
+            isError: true,
+            durationMs: 204_000,
+            origin: 'provider',
+            modelVisibility: 'visible',
+            content: {
+              kind: 'terminal',
+              cwd: '/workspace/maka-agent/.worktree/storybook',
+              cmd: 'npm test',
+              status: 'cancelled',
+              exitCode: 130,
+              failureMessage: 'Command cancelled',
+              output: {
+                mode: 'pipes',
+                stdout: [
+                  '> maka@0.2.0 test',
+                  '> npm run build:test && node scripts/run-workspace-tests-parallel.mjs --concurrency=3',
+                  '',
+                  '[core] start: npm run test:dist',
+                  '[core] passed',
+                  '[storage] start: npm run test:dist',
+                  '[mcp] start: npm run test:dist',
+                  '[storage] passed',
+                  '',
+                ].join('\n'),
+                stderr: '',
+                stdoutTruncated: false,
+                stderrTruncated: false,
+                redacted: false,
+              },
+            },
+          },
+          {
+            type: 'turn_state',
+            id: 'state-i-aborted',
+            turnId: 'turn-i',
+            ts: NOW - 150_000,
+            status: 'aborted',
+            abortedAt: NOW - 150_000,
+            abortSource: 'renderer.stop_button',
+            partialOutputRetained: true,
+          },
+        ],
+      }}
+    />
+  ),
+};
+
 // Real path: Desktop Computer Use is exposed through the Runtime Host Client
 // Capability bridge. The settled observation establishes the confirmed target;
 // the following sequence inherits it while live progress replaces the generic
