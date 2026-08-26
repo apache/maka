@@ -95,6 +95,7 @@ import {
   completePendingInteraction,
   applyShellRunViewUpdateToTranscript,
   permissionModeLabel,
+  reconcileTransientMessageLifecycle,
   replaceTranscriptWithStoredMessages,
   hydrateToolsWithStoredMessages,
   submitCompactToTranscript,
@@ -570,6 +571,19 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
         replaceTranscript(messages, { preserveTransientMessages: true });
         shellRunElapsedTicker.sync();
         requestRender();
+        const messageIds = state.entries.flatMap((entry) =>
+          entry.kind === 'user' && entry.transient === true ? [entry.messageId] : [],
+        );
+        if (messageIds.length > 0) {
+          void input.driver
+            .queryMessageStatuses?.(messageIds)
+            .then((result) => {
+              if (closed || input.driver.getSessionId() !== sessionId) return;
+              reconcileTransientMessageLifecycle(state, result.messages);
+              requestRender();
+            })
+            .catch(() => undefined);
+        }
         return;
       }
       rememberTranscriptModel(messages);
@@ -934,14 +948,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     refillEditorFromQueues(retracted.text);
   };
 
-  // Enter during a turn asks the Host to place the message at the current
-  // step boundary. The Host alone decides whether it steers or starts a
-  // successor Turn if the previous Turn settled during admission.
-  const steerRunningTurn = (text: string) => {
-    if (!text.trim()) {
-      requestRender();
-      return;
-    }
+  const submitRunningMessage = (text: string, placement: 'current_turn' | 'next_turn') => {
     editor.addToHistory(text);
     const submitMessage = input.driver.submitMessage;
     if (!submitMessage) {
@@ -952,18 +959,25 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     appendUserPrompt(state, text, messageId, true);
     requestRender();
     const task = submitMessage
-      .call(input.driver, text, { messageId, placement: 'current_turn' })
-      .then(() => {
-        // The subscription projects queue and Turn state; admission only
-        // confirms that this stable message identity belongs to the Host.
-        requestRender();
-      })
+      .call(input.driver, text, { messageId, placement })
+      .then(requestRender)
       .catch((error) => {
         removeTransientUserMessage(messageId);
         refillEditorFromQueues(text);
         reportError(error);
       });
     trackEnqueue(task);
+  };
+
+  // Enter during a turn asks the Host to place the message at the current
+  // step boundary. The Host alone decides whether it steers or starts a
+  // successor Turn if the previous Turn settled during admission.
+  const steerRunningTurn = (text: string) => {
+    if (!text.trim()) {
+      requestRender();
+      return;
+    }
+    submitRunningMessage(text, 'current_turn');
   };
 
   // Alt+Enter: during a turn, queue the text to open the next turn; when idle,
@@ -983,26 +997,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
       submitPrompt(text);
       return;
     }
-    editor.addToHistory(text);
-    const submitMessage = input.driver.submitMessage;
-    if (!submitMessage) {
-      refillEditorFromQueues(text);
-      return;
-    }
-    const messageId = randomUUID();
-    appendUserPrompt(state, text, messageId, true);
-    requestRender();
-    const task = submitMessage
-      .call(input.driver, text, { messageId, placement: 'next_turn' })
-      .then(() => {
-        requestRender();
-      })
-      .catch((error) => {
-        removeTransientUserMessage(messageId);
-        refillEditorFromQueues(text);
-        reportError(error);
-      });
-    trackEnqueue(task);
+    submitRunningMessage(text, 'next_turn');
   };
 
   // Alt+↑: take back every queued message from the Runtime Host, joined and

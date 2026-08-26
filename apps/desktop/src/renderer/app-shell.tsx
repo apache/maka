@@ -352,6 +352,7 @@ function AppShellContent({
     addTransientMessage,
     updateTransientMessage,
     projectQueuedTransientMessages,
+    reconcileTransientMessageStatuses,
     removeTransientMessage,
     transcriptRangeRef,
     messageLoadPending,
@@ -2308,6 +2309,7 @@ function AppShellContent({
     const next = completeLiveContentSeed(current, sessionId, expected);
     activeEventSeedRef.current = next;
     setActiveEventSeed(next);
+    void reconcileTransientMessageStatuses(sessionId);
   };
   useActiveSessionEvents({
     uiLocale,

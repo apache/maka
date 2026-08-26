@@ -32,6 +32,7 @@ import type { DesktopTranscriptRangeController } from './desktop-transcript-rang
 import {
   mergeTransientMessageProjection,
   projectQueuedTransientMessages as applyQueuedTransientProjection,
+  reconcileTransientMessageLifecycle,
   reconcileTransientMessages,
 } from './transient-message-projection.js';
 
@@ -122,6 +123,7 @@ export function useAppShellSessionWorkspace(toastApi: ToastApi) {
     messages: readonly TransientUserMessage[],
   ): void {
     let pending = transientMessagesBySessionRef.current.get(sessionId);
+    if (!pending && messages.length === 0) return;
     if (!pending) {
       pending = new Map();
       transientMessagesBySessionRef.current.set(sessionId, pending);
@@ -129,6 +131,26 @@ export function useAppShellSessionWorkspace(toastApi: ToastApi) {
     applyQueuedTransientProjection(pending, messages);
     if (activeIdRef.current === sessionId) {
       setTransientMessages(projectTransientMessages(sessionId, messagesRef.current));
+    }
+  }
+
+  async function reconcileTransientMessageStatuses(sessionId: string): Promise<void> {
+    const pending = transientMessagesBySessionRef.current.get(sessionId);
+    if (!pending || pending.size === 0) return;
+    try {
+      const result = await window.maka.sessions.queryMessageStatuses(
+        sessionId,
+        [...pending.keys()],
+      );
+      const current = transientMessagesBySessionRef.current.get(sessionId);
+      if (!current) return;
+      reconcileTransientMessageLifecycle(current, result.messages);
+      if (current.size === 0) transientMessagesBySessionRef.current.delete(sessionId);
+      if (activeIdRef.current === sessionId) {
+        setTransientMessages(projectTransientMessages(sessionId, messagesRef.current));
+      }
+    } catch {
+      // A failed proof query leaves presentation intact until canonical proof arrives.
     }
   }
 
@@ -197,6 +219,7 @@ export function useAppShellSessionWorkspace(toastApi: ToastApi) {
     addTransientMessage,
     updateTransientMessage,
     projectQueuedTransientMessages,
+    reconcileTransientMessageStatuses,
     removeTransientMessage,
     transcriptRangeRef,
     messageLoadPending,

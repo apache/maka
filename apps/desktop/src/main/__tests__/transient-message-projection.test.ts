@@ -23,6 +23,7 @@ import type { StoredMessage } from '@maka/core/session';
 import {
   mergeTransientMessageProjection,
   projectQueuedTransientMessages,
+  reconcileTransientMessageLifecycle,
   reconcileTransientMessages,
 } from '../../renderer/transient-message-projection.js';
 
@@ -65,6 +66,25 @@ test('replaces a transient message by canonical message id exactly once', () => 
 
   assert.deepEqual(projected, []);
   assert.equal(pending.size, 0);
+});
+
+test('removes only messages with durable cancellation proof after reconnect', () => {
+  const accepted = { ...transient, id: 'message-accepted' };
+  const handedOff = { ...transient, id: 'message-handed-off' };
+  const cancelled = { ...transient, id: 'message-cancelled' };
+  const unknown = { ...transient, id: 'message-unknown' };
+  const pending = new Map(
+    [accepted, handedOff, cancelled, unknown].map((message) => [message.id, message]),
+  );
+
+  reconcileTransientMessageLifecycle(pending, [
+    { messageId: accepted.id, status: 'accepted' },
+    { messageId: handedOff.id, status: 'handed_off' },
+    { messageId: cancelled.id, status: 'cancelled' },
+    { messageId: unknown.id, status: 'unknown' },
+  ]);
+
+  assert.deepEqual([...pending.keys()], [accepted.id, handedOff.id, unknown.id]);
 });
 
 test('canonicalizing one send does not hide a later transient send', () => {

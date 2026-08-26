@@ -39,7 +39,6 @@ describe('Maka Pi TUI turn', () => {
             placement: 'current_turn',
             modelText: 'expanded prompt',
           });
-          return { messageId: options.messageId, disposition: 'turn_started' };
         },
       },
       turnActivity: { activities: new SessionActivityRegistry() },
@@ -57,11 +56,7 @@ describe('Maka Pi TUI turn', () => {
       },
     });
 
-    assert.deepEqual(outcome, {
-      kind: 'admitted',
-      messageId: 'message-1',
-      disposition: 'turn_started',
-    });
+    assert.deepEqual(outcome, { kind: 'admitted' });
     assert.deepEqual(sequence, ['start', 'submit']);
   });
 

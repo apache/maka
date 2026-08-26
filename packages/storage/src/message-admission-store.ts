@@ -35,12 +35,22 @@ export interface PendingMessageAdmission {
   readonly admittedAt: number;
 }
 
+export interface CancelledMessageAdmission {
+  readonly messageId: string;
+  readonly submittedContentDigest: `sha256:${string}`;
+  readonly submittedPlacement: 'current_turn' | 'next_turn';
+}
+
 export interface MessageAdmissionStore {
   commitMessageAdmission(admission: PendingMessageAdmission): Promise<PendingMessageAdmission>;
   readMessageAdmission(
     sessionId: string,
     messageId: string,
   ): Promise<PendingMessageAdmission | undefined>;
+  readCancelledMessageAdmission(
+    sessionId: string,
+    messageId: string,
+  ): Promise<CancelledMessageAdmission | undefined>;
   listMessageAdmissions(sessionId: string): Promise<readonly PendingMessageAdmission[]>;
   markMessagesHandedOff(input: {
     sessionId: string;

@@ -445,6 +445,11 @@ describe('SqliteSessionMetadataStore', () => {
       await store.commitMessageAdmission(admission);
       await store.cancelMessageAdmissions('session-1', ['message-1']);
       assert.deepEqual(await store.listMessageAdmissions('session-1'), []);
+      assert.deepEqual(await store.readCancelledMessageAdmission('session-1', 'message-1'), {
+        messageId: 'message-1',
+        submittedContentDigest: messageContentDigest({ text: 'discard this draft' }),
+        submittedPlacement: 'next_turn',
+      });
       await assert.rejects(
         store.commitMessageAdmission(admission),
         /identity is already cancelled/,

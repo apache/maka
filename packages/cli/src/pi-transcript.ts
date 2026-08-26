@@ -61,7 +61,7 @@ import { goalStatusLineText, isLiveGoalStatus } from './pi-goal.js';
 import { renderToolBlock } from './pi-transcript-tools.js';
 import { getTuiPrimaryGuidance } from './tui-primary-guidance.js';
 import { renderTuiShortcutCopy } from './tui-shortcut-copy.js';
-import type { GoalProjection } from '@maka/runtime-host/protocol';
+import type { GoalProjection, MessageLifecycleStatus } from '@maka/runtime-host/protocol';
 
 export interface MakaPiUsageSummary {
   /** Cumulative cost in USD across the session. */
@@ -258,6 +258,19 @@ export function appendUserPrompt(
     return;
   }
   state.entries.push(entry);
+}
+
+export function reconcileTransientMessageLifecycle(
+  state: MakaPiTranscriptState,
+  messages: readonly { messageId: string; status: MessageLifecycleStatus }[],
+): void {
+  const cancelled = new Set(
+    messages.filter(({ status }) => status === 'cancelled').map(({ messageId }) => messageId),
+  );
+  if (cancelled.size === 0) return;
+  state.entries = state.entries.filter(
+    (entry) => entry.kind !== 'user' || entry.transient !== true || !cancelled.has(entry.messageId),
+  );
 }
 
 export function appendTurnFailureToTranscript(state: MakaPiTranscriptState, error: unknown): void {

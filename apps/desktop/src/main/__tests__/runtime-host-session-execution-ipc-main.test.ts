@@ -624,12 +624,41 @@ test("submits an ordinary composer message once under its stable message identit
   assert.deepEqual(result, {
     ok: true,
     disposition: "turn_started",
-    messageId: "message-1",
     turnId: "host-turn",
     attachments: [],
     inlineReferences: [],
     skillInvocation: { loaded: [], failed: [], receipts: [] },
   });
+});
+
+test('returns Host-owned Message lifecycle proof to the renderer', async () => {
+  const ipc = ipcHarness();
+  registerExecutionIpc(
+    {
+      client: executionClient({
+        queryMessages: async (input) => ({
+          messages: input.messageIds.map((messageId) => ({
+            messageId,
+            status: messageId === 'message-cancelled' ? 'cancelled' : 'accepted',
+          })),
+        }),
+      }),
+    },
+    ipc,
+  );
+
+  assert.deepEqual(
+    await ipc.invoke('sessions:queryMessageStatuses', 'session-1', [
+      'message-accepted',
+      'message-cancelled',
+    ]),
+    {
+      messages: [
+        { messageId: 'message-accepted', status: 'accepted' },
+        { messageId: 'message-cancelled', status: 'cancelled' },
+      ],
+    },
+  );
 });
 
 test('keeps slash Skill sends on the exact-Turn path with their stable message identity', async () => {
@@ -938,7 +967,6 @@ test("retries a dispatched busy fallback with its original message identity", as
     {
       ok: false,
       reason: "outcome_unknown",
-      messageId: "turn-unknown",
       skillInvocation: { loaded: [], failed: [], receipts: [] },
     },
   );
@@ -1138,7 +1166,6 @@ test("queues explicit Desktop follow-ups", async () => {
     }),
     {
       kind: "queued",
-      messageId: "followup-message",
       attachments: [
         {
           kind: "other",
@@ -1211,7 +1238,7 @@ test('keeps an unknown Desktop follow-up admission available for reconciliation'
       messageId: 'followup-unknown',
       text: 'keep this visible',
     }),
-    { kind: 'outcome_unknown', messageId: 'followup-unknown' },
+    { kind: 'outcome_unknown' },
   );
 });
 
@@ -1536,6 +1563,7 @@ function executionClient(overrides: Partial<ExecutionClient>): ExecutionClient {
     interruptTurn: unavailable,
     listSessionTurnLandmarks: unavailable,
     listSessionTurns: unavailable,
+    queryMessages: unavailable,
     queryTurnResume: unavailable,
     readExecutionBoundary: unavailable,
     regenerateTurn: unavailable,

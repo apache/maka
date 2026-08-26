@@ -97,6 +97,7 @@ type RuntimeHostSessionExecutionClient = Pick<
   | "interruptTurn"
   | 'listSessionTurns'
   | 'listSessionTurnLandmarks'
+  | 'queryMessages'
   | "queryTurnResume"
   | "readExecutionBoundary"
   | "regenerateTurn"
@@ -190,6 +191,14 @@ export function registerRuntimeHostSessionExecutionIpc(
   };
   const newId = deps.newId ?? randomUUID;
   const stopSession = createRuntimeHostSessionStop(deps, newId);
+
+  ipcMain.handle(
+    'sessions:queryMessageStatuses',
+    async (_event, sessionId: string, messageIds: unknown) => {
+      if (!Array.isArray(messageIds)) throw new Error('Invalid Message identities');
+      return deps.client.queryMessages({ sessionId, messageIds });
+    },
+  );
 
   handleReconnectableRead(
     ipcMain,
@@ -340,7 +349,6 @@ export function registerRuntimeHostSessionExecutionIpc(
           return {
             ok: false as const,
             reason: 'outcome_unknown' as const,
-            messageId: command.messageId,
             skillInvocation,
           };
         }
@@ -351,7 +359,6 @@ export function registerRuntimeHostSessionExecutionIpc(
           return {
             ok: true as const,
             disposition: submitted.disposition,
-            messageId: command.messageId,
             turnId: submitted.turnId,
             attachments,
             inlineReferences,
@@ -362,7 +369,6 @@ export function registerRuntimeHostSessionExecutionIpc(
         return {
           ok: true as const,
           disposition: submitted.disposition,
-          messageId: command.messageId,
           attachments,
           inlineReferences,
           skillInvocation,
@@ -548,7 +554,7 @@ export function registerRuntimeHostSessionExecutionIpc(
           inlineReferences,
         },
       });
-      if (!result) return { kind: 'outcome_unknown' as const, messageId };
+      if (!result) return { kind: 'outcome_unknown' as const };
       if (result.disposition === "turn_started") {
         deps.emitSessionsChanged("status-change", sessionId, {
           turnId: result.turnId,
@@ -556,14 +562,12 @@ export function registerRuntimeHostSessionExecutionIpc(
         return {
           kind: "started" as const,
           turnId: result.turnId,
-          messageId,
           attachments,
           inlineReferences,
         };
       }
       return {
         kind: "queued" as const,
-        messageId,
         attachments,
         inlineReferences,
       };

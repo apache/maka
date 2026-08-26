@@ -28,7 +28,11 @@ import type { CreateSessionInput, TurnOrchestration } from '@maka/core/runtime-i
 import type { UserQuestionResponse } from '@maka/core/user-question';
 import type { ContextDiagnostics } from '@maka/runtime/context-diagnostics';
 import type { SkillInvocationResult } from '@maka/core/skill-invocation';
-import type { GoalControlAction, GoalProjection } from '@maka/runtime-host/protocol';
+import type {
+  GoalControlAction,
+  GoalProjection,
+  TurnMessageQueryResult,
+} from '@maka/runtime-host/protocol';
 
 export interface MakaSessionMoveResult {
   previousCwd: string;
@@ -104,11 +108,6 @@ export interface MakaSubmitMessageOptions {
   modelText?: string;
 }
 
-export interface MakaMessageAdmission {
-  messageId: string;
-  disposition: 'steering' | 'followup' | 'turn_started' | 'outcome_unknown';
-}
-
 export interface MakaRetractedMessages {
   text: string;
   messageIds: readonly string[];
@@ -128,7 +127,8 @@ export interface MakaSessionDriver {
     prompt: string,
     options?: MakaPreparePromptOptions,
   ): Promise<MakaPreparedSessionTurn>;
-  submitMessage?(text: string, options: MakaSubmitMessageOptions): Promise<MakaMessageAdmission>;
+  submitMessage?(text: string, options: MakaSubmitMessageOptions): Promise<void>;
+  queryMessageStatuses?(messageIds: readonly string[]): Promise<TurnMessageQueryResult>;
   compactSession(): AsyncIterable<SessionEvent>;
   resumeLatest?(): AsyncIterable<SessionEvent>;
   retractQueued?(): Promise<MakaRetractedMessages>;

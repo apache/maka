@@ -1737,11 +1737,10 @@ const makaBridge = {
       | {
           kind: 'queued' | 'started';
           turnId?: string;
-          messageId: string;
           attachments: AttachmentRef[];
           inlineReferences: InlineReference[];
         }
-      | { kind: 'outcome_unknown'; messageId: string }
+      | { kind: 'outcome_unknown' }
     > {
       const session = await runtimeHostSessionRef(sessionId);
       const attachmentItems = command.attachmentItems
@@ -1760,16 +1759,25 @@ const makaBridge = {
         | {
             kind: 'queued' | 'started';
             turnId?: string;
-            messageId: string;
             attachments: AttachmentRef[];
             inlineReferences: InlineReference[];
           }
-        | { kind: 'outcome_unknown'; messageId: string };
+        | { kind: 'outcome_unknown' };
       if (result.kind === 'outcome_unknown') return result;
       return {
         ...result,
         attachments: projectDesktopAttachmentRefs(session.scope, result.attachments),
       };
+    },
+    queryMessageStatuses(
+      sessionId: string,
+      messageIds: readonly string[],
+    ): Promise<import('@maka/runtime-host/protocol').TurnMessageQueryResult> {
+      return invokeSessionRuntimeHost(
+        'sessions:queryMessageStatuses',
+        sessionId,
+        messageIds,
+      );
     },
     retractQueueEntry(sessionId: string, entryId: string): Promise<void> {
       return invokeSessionRuntimeHost('sessions:retractQueueEntry', sessionId, entryId);

@@ -18,6 +18,7 @@
  */
 
 import type { StoredMessage } from '@maka/core/session';
+import type { MessageLifecycleStatus } from '@maka/runtime-host/protocol';
 import type { TransientUserMessageProjection } from '@maka/ui';
 
 type TransientUserMessage = TransientUserMessageProjection;
@@ -49,6 +50,15 @@ export function mergeTransientMessageProjection(
     && current.turnId !== current.id
     && update.turnId === update.id;
   return hostBoundCurrentTurn ? { ...update, turnId: current.turnId } : update;
+}
+
+export function reconcileTransientMessageLifecycle(
+  transient: Map<string, TransientUserMessage>,
+  messages: readonly { messageId: string; status: MessageLifecycleStatus }[],
+): void {
+  for (const message of messages) {
+    if (message.status === 'cancelled') transient.delete(message.messageId);
+  }
 }
 
 /**

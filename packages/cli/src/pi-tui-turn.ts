@@ -30,7 +30,6 @@ import { type GoalTurnOutcome } from '@maka/runtime/goal-continuation';
 import {
   SkillInvocationBlockedError,
   type MakaPreparedSessionTurn,
-  type MakaMessageAdmission,
   type MakaSessionDriver,
 } from './session-driver.js';
 
@@ -69,7 +68,7 @@ export interface RunMakaPiTuiTurnInput {
   onFailure?: (error: unknown) => void | Promise<void>;
 }
 
-export type MakaPiTuiTurnOutcome = GoalTurnOutcome | ({ kind: 'admitted' } & MakaMessageAdmission);
+export type MakaPiTuiTurnOutcome = GoalTurnOutcome | { kind: 'admitted' };
 
 /**
  * Owns one visible TUI turn from activity reservation through full stream drain.
@@ -109,12 +108,12 @@ export async function runMakaPiTuiTurn(
       request.turnOrchestration === undefined &&
       input.driver.submitMessage
     ) {
-      const admission = await input.driver.submitMessage(request.prompt, {
+      await input.driver.submitMessage(request.prompt, {
         messageId: externalTurnId!,
         placement: 'current_turn',
         ...(request.sendText !== undefined ? { modelText: request.sendText } : {}),
       });
-      return finishBeforeDrain({ kind: 'admitted', ...admission });
+      return finishBeforeDrain({ kind: 'admitted' });
     }
 
     const turn =

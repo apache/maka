@@ -315,6 +315,7 @@ const HOST_EPOCH_PATTERN = /^[A-Za-z0-9_-]{1,128}$/u;
 /** The sole in-memory message authority for one Runtime Host Epoch. */
 export class HostMessageCoordinator implements RuntimeMessageAuthority {
   readonly handlers: MessageOperationHandlerMap = {
+    'turn.message.query': (input) => this.queryMessages(input),
     'turn.message.submit': (input, context) => this.submit(input, context),
     'queue.retract': (input) => this.retract(input),
     'queue.entry.retract': (input) => this.retractQueuedEntry(input),
@@ -368,6 +369,49 @@ export class HostMessageCoordinator implements RuntimeMessageAuthority {
   hasLiveSessionState(sessionId: string): boolean {
     const state = this.#sessions.get(sessionId);
     return state ? hasLiveMessageState(state) : false;
+  }
+
+  async queryMessages(input: { sessionId: string; messageIds: readonly string[] }): Promise<
+    MessageOutcome<{
+      messages: Array<{
+        messageId: string;
+        status: 'accepted' | 'handed_off' | 'cancelled' | 'unknown';
+      }>;
+    }>
+  > {
+    const messages = [] as Array<{
+      messageId: string;
+      status: 'accepted' | 'handed_off' | 'cancelled' | 'unknown';
+    }>;
+    for (const messageId of input.messageIds) {
+      const cancelled = await this.#admissions.readCancelledMessageAdmission(
+        input.sessionId,
+        messageId,
+      );
+      if (cancelled) {
+        messages.push({ messageId, status: 'cancelled' });
+        continue;
+      }
+      const accepted = await this.#admissions.readMessageAdmission(input.sessionId, messageId);
+      if (accepted) {
+        messages.push({ messageId, status: 'accepted' });
+        continue;
+      }
+      const root = await this.#durableProof.readRootTurnSourceMessageReceipt(
+        input.sessionId,
+        messageId,
+      );
+      if (root) {
+        messages.push({ messageId, status: 'handed_off' });
+        continue;
+      }
+      const steering = await this.#durableProof.readImmutableSteeringMessageProof(
+        input.sessionId,
+        messageId,
+      );
+      messages.push({ messageId, status: steering ? 'handed_off' : 'unknown' });
+    }
+    return success({ messages });
   }
 
   retireSessions(sessionIds: readonly string[]): void {

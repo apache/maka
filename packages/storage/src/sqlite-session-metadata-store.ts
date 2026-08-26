@@ -1656,6 +1656,48 @@ export class SqliteSessionMetadataStore {
     });
   }
 
+  async readCancelledMessageAdmission(
+    sessionId: string,
+    messageId: string,
+  ): Promise<
+    | {
+        messageId: string;
+        submittedContentDigest: `sha256:${string}`;
+        submittedPlacement: 'current_turn' | 'next_turn';
+      }
+    | undefined
+  > {
+    this.assertOpen();
+    assertSafeSessionId(sessionId);
+    assertSafeSessionId(messageId);
+    return this.readTransaction(() => {
+      const row = this.db
+        .prepare(
+          `
+          SELECT submitted_content_digest, submitted_placement
+          FROM cancelled_message_admissions
+          WHERE session_id = ? AND message_id = ?
+        `,
+        )
+        .get(sessionId, messageId) as
+        | { submitted_content_digest?: unknown; submitted_placement?: unknown }
+        | undefined;
+      if (!row) return undefined;
+      if (
+        typeof row.submitted_content_digest !== 'string' ||
+        !/^sha256:[a-f0-9]{64}$/u.test(row.submitted_content_digest) ||
+        (row.submitted_placement !== 'current_turn' && row.submitted_placement !== 'next_turn')
+      ) {
+        throw new SessionMetadataConflictError('Invalid cancelled Message admission identity');
+      }
+      return {
+        messageId,
+        submittedContentDigest: row.submitted_content_digest as `sha256:${string}`,
+        submittedPlacement: row.submitted_placement,
+      };
+    });
+  }
+
   async listMessageAdmissions(sessionId: string): Promise<readonly PendingMessageAdmission[]> {
     this.assertOpen();
     assertSafeSessionId(sessionId);

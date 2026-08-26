@@ -242,6 +242,10 @@ describe('Runtime Host bootstrap protocol', () => {
     assert.ok(RUNTIME_HOST_COMPATIBILITY_EPOCH > 43);
   });
 
+  test('publishes a new compatibility epoch for durable Message lifecycle queries', () => {
+    assert.ok(RUNTIME_HOST_COMPATIBILITY_EPOCH > 50);
+  });
+
   test('selects the highest mutually supported protocol and rejects a gap', () => {
     assert.equal(negotiateProtocol({ min: 0, max: 0 }, { min: 0, max: 0 }), 0);
     assert.equal(negotiateProtocol({ min: 1, max: 3 }, { min: 2, max: 4 }), 3);
@@ -1000,6 +1004,14 @@ describe('Runtime Host bootstrap protocol', () => {
   });
 
   test('requires stable Message command identities, origin Host Epoch, and exact inputs', () => {
+    const query = {
+      requestId: 'query-request-1',
+      operation: 'turn.message.query' as const,
+      input: {
+        sessionId: 'session-1',
+        messageIds: ['message-1', 'message-2'],
+      },
+    };
     const submit = {
       requestId: 'submit-request-1',
       operation: 'turn.message.submit' as const,
@@ -1027,6 +1039,7 @@ describe('Runtime Host bootstrap protocol', () => {
         runId: 'run-1',
       },
     };
+    assert.deepEqual(decodeClientFrame(query), query);
     assert.deepEqual(decodeClientFrame(submit), submit);
     assert.deepEqual(decodeClientFrame(retract), retract);
     assert.deepEqual(decodeClientFrame(interrupt), interrupt);

@@ -82,7 +82,6 @@ import type {
   MakaSideConversationCloseResult,
   MakaSideConversationOpenResult,
   MakaSideConversationParentStatus,
-  MakaMessageAdmission,
   MakaRetractedMessages,
   MakaPreparePromptOptions,
   MakaPreparedSessionTurn,
@@ -391,10 +390,7 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
     yield* events;
   }
 
-  async submitMessage(
-    text: string,
-    options: MakaSubmitMessageOptions,
-  ): Promise<MakaMessageAdmission> {
+  async submitMessage(text: string, options: MakaSubmitMessageOptions): Promise<void> {
     const sessionId = await this.#ensureSession();
     const sessionGeneration = this.#sessionGeneration;
     const configuration = await this.#loadConfiguration(sessionId);
@@ -403,9 +399,8 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
     this.#assertCurrentSession(sessionId, sessionGeneration);
     this.#adoptLoadedConfiguration(configuration);
     const modelText = options.modelText ?? text;
-    let result;
     try {
-      result = await this.#request('turn.message.submit', {
+      await this.#request('turn.message.submit', {
         originHostEpoch: this.#connection.hostEpoch,
         sessionId,
         messageId: options.messageId,
@@ -420,11 +415,17 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
         (error instanceof RuntimeHostOperationError && error.code === 'outcome_unknown') ||
         (error instanceof RuntimeHostRequestInterruptedError && error.dispatch === 'dispatched')
       ) {
-        return { messageId: options.messageId, disposition: 'outcome_unknown' };
+        return;
       }
       throw error;
     }
-    return { messageId: options.messageId, disposition: result.disposition };
+  }
+
+  async queryMessageStatuses(
+    messageIds: readonly string[],
+  ): Promise<OperationOutput<'turn.message.query'>> {
+    const sessionId = await this.#ensureSession();
+    return this.#request('turn.message.query', { sessionId, messageIds });
   }
 
   async retractQueued(): Promise<MakaRetractedMessages> {

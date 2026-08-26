@@ -37,6 +37,7 @@ import {
   refreshRunningShellRunElapsed,
   hydrateToolsWithStoredMessages,
   makaPiToolPresentationStatus,
+  reconcileTransientMessageLifecycle,
   replaceTranscriptWithStoredMessages,
   submitCompactToTranscript,
   toggleAllThinkingExpansion,
@@ -515,6 +516,24 @@ describe('Maka Pi TUI transcript', () => {
     assert.deepEqual(state.entries, [
       { kind: 'user', messageId: 'message-1', text: 'send now', transient: true },
     ]);
+  });
+
+  test('removes only transient rows with durable cancellation proof', () => {
+    const state = createMakaPiTranscriptState();
+    appendUserPrompt(state, 'accepted', 'message-accepted', true);
+    appendUserPrompt(state, 'handed off', 'message-handed-off', true);
+    appendUserPrompt(state, 'cancelled', 'message-cancelled', true);
+
+    reconcileTransientMessageLifecycle(state, [
+      { messageId: 'message-accepted', status: 'accepted' },
+      { messageId: 'message-handed-off', status: 'handed_off' },
+      { messageId: 'message-cancelled', status: 'cancelled' },
+    ]);
+
+    assert.deepEqual(
+      state.entries.map((entry) => ('messageId' in entry ? entry.messageId : undefined)),
+      ['message-accepted', 'message-handed-off'],
+    );
   });
 
   test('keeps a transient user row before later durable output in a sparse replacement', () => {

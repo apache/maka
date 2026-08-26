@@ -888,6 +888,11 @@ class SqliteSessionStore implements SessionAuthorityStore {
     return this.metadata.readMessageAdmission(sessionId, messageId);
   }
 
+  async readCancelledMessageAdmission(sessionId: string, messageId: string) {
+    await this.ensureReady();
+    return this.metadata.readCancelledMessageAdmission(sessionId, messageId);
+  }
+
   async listMessageAdmissions(sessionId: string): Promise<readonly PendingMessageAdmission[]> {
     await this.ensureReady();
     return this.metadata.listMessageAdmissions(sessionId);

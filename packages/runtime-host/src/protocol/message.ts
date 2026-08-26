@@ -91,6 +91,20 @@ export type TurnMessageSubmitResult =
   | { readonly disposition: 'followup'; readonly queueRevision: number }
   | { readonly disposition: 'turn_started'; readonly turnId: string };
 
+export type MessageLifecycleStatus = 'accepted' | 'handed_off' | 'cancelled' | 'unknown';
+
+export interface TurnMessageQueryInput {
+  readonly sessionId: string;
+  readonly messageIds: readonly string[];
+}
+
+export interface TurnMessageQueryResult {
+  readonly messages: readonly {
+    readonly messageId: string;
+    readonly status: MessageLifecycleStatus;
+  }[];
+}
+
 export interface QueueRetractInput {
   readonly originHostEpoch: string;
   readonly sessionId: string;
@@ -163,6 +177,13 @@ const MESSAGE_OPERATION_ERRORS = [
 ] as const;
 
 export const MESSAGE_OPERATION_SPECS = {
+  'turn.message.query': defineOperation({
+    mode: 'query',
+    availability: 'ready',
+    errors: MESSAGE_OPERATION_ERRORS,
+    decodeInput: decodeTurnMessageQueryInput,
+    decodeOutput: decodeTurnMessageQueryResult,
+  }),
   'turn.message.submit': defineOperation({
     mode: 'command',
     availability: 'ready',
@@ -256,6 +277,51 @@ function decodeTurnMessageSubmitInput(value: unknown): TurnMessageSubmitInput {
     content: decodeMessageContent(record.content),
     placement: requireMessagePlacement(record.placement),
   };
+}
+
+function decodeTurnMessageQueryInput(value: unknown): TurnMessageQueryInput {
+  const record = requireExactRecord(value, 'turn.message.query input', ['sessionId', 'messageIds']);
+  if (!Array.isArray(record.messageIds) || record.messageIds.length > MESSAGE_QUEUE_MAX_ENTRIES) {
+    throw invalidProtocolFrame('Invalid turn.message.query messageIds');
+  }
+  const messageIds = record.messageIds.map((messageId) => requireEntityId(messageId, 'messageId'));
+  if (new Set(messageIds).size !== messageIds.length) {
+    throw invalidProtocolFrame('Duplicate turn.message.query messageId');
+  }
+  return {
+    sessionId: requireEntityId(record.sessionId, 'sessionId'),
+    messageIds,
+  };
+}
+
+function decodeTurnMessageQueryResult(value: unknown): TurnMessageQueryResult {
+  const record = requireExactRecord(value, 'turn.message.query result', ['messages']);
+  if (!Array.isArray(record.messages) || record.messages.length > MESSAGE_QUEUE_MAX_ENTRIES) {
+    throw invalidProtocolFrame('Invalid turn.message.query messages');
+  }
+  const messages = record.messages.map((candidate) => {
+    const message = requireExactRecord(candidate, 'turn.message.query message', [
+      'messageId',
+      'status',
+    ]);
+    if (
+      message.status !== 'accepted' &&
+      message.status !== 'handed_off' &&
+      message.status !== 'cancelled' &&
+      message.status !== 'unknown'
+    ) {
+      throw invalidProtocolFrame('Invalid turn.message.query status');
+    }
+    const status = message.status as MessageLifecycleStatus;
+    return {
+      messageId: requireEntityId(message.messageId, 'messageId'),
+      status,
+    };
+  });
+  if (new Set(messages.map(({ messageId }) => messageId)).size !== messages.length) {
+    throw invalidProtocolFrame('Duplicate turn.message.query result messageId');
+  }
+  return { messages };
 }
 
 function decodeTurnMessageSubmitResult(value: unknown): TurnMessageSubmitResult {
