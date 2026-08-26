@@ -147,7 +147,16 @@ public static class MakaWindowsStreamQuery
     }
 }
 '@
-$raw = [Console]::In.ReadToEnd()
+$reader = [IO.StreamReader]::new(
+  [Console]::OpenStandardInput(),
+  [Text.UTF8Encoding]::new($false, $true),
+  $true
+)
+try {
+  $raw = $reader.ReadToEnd()
+} finally {
+  $reader.Dispose()
+}
 $paths = if ([string]::IsNullOrWhiteSpace($raw)) { @() } else { @($raw | ConvertFrom-Json) }
 $alternate = [System.Collections.Generic.List[string]]::new()
 foreach ($path in $paths) {

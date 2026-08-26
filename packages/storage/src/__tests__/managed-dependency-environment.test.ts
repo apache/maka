@@ -407,7 +407,7 @@ test('rejects an NTFS alternate stream attached to the published dependency root
 test('rejects an NTFS alternate stream attached to a published nested directory', {
   skip: process.platform !== 'win32',
 }, async (t) => {
-  const storageRoot = await mkdtemp(join(tmpdir(), 'maka-dependency-directory-ads-'));
+  const storageRoot = await mkdtemp(join(tmpdir(), 'maka-dependency-目录-ads-'));
   t.after(() => rm(storageRoot, { recursive: true, force: true }));
   const producer = {
     capability: FIXTURE_PRODUCER_CAPABILITY,
@@ -415,7 +415,7 @@ test('rejects an NTFS alternate stream attached to a published nested directory'
     packageManagerVersion: '11.12.1',
     nodeRuntime: fixtureNodeRuntime(),
     async provision(input: { outputRoot: string }) {
-      const packageRoot = join(input.outputRoot, 'fixture-package');
+      const packageRoot = join(input.outputRoot, 'fixture-包');
       await mkdir(packageRoot);
       await writeFile(join(packageRoot, 'index.js'), 'trusted\n', 'utf8');
     },
@@ -424,11 +424,7 @@ test('rejects an NTFS alternate stream attached to a published nested directory'
   const identity = computeManagedDependencyEnvironmentIdentity(source);
   const authority = await createManagedDependencyEnvironmentAuthority({ storageRoot, producer });
   const lease = await authority.acquire(identity, source);
-  await writeFile(
-    `${join(lease.dependencyRoot, 'fixture-package')}:unhashed`,
-    'malicious\n',
-    'utf8',
-  );
+  await writeFile(`${join(lease.dependencyRoot, 'fixture-包')}:unhashed`, 'malicious\n', 'utf8');
   await lease.release();
   await authority.close();
 
