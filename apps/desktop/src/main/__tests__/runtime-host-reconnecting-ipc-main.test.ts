@@ -128,7 +128,7 @@ test("reconciles a dispatched control on a replacement without replaying it", as
 test("bounds reconciliation when no replacement candidate becomes available", async () => {
   const ipc = ipcHarness();
   const router = new RuntimeHostReconnectingIpcMain(ipc, {
-    reconciliationWaitTimeoutMs: 5,
+    replacementWaitTimeoutMs: 5,
   });
   const firstTarget = router.createTarget("target-a") as ReconciledControlTarget;
   let dispatches = 0;
@@ -339,10 +339,10 @@ test("holds an invocation across a Runtime Host candidate replacement", async ()
   assert.equal(ipc.size, 0);
 });
 
-test("bounds invocation while an active Runtime Host has no handler", async () => {
+test("bounds an invocation while an active Runtime Host has no handler", async () => {
   const ipc = ipcHarness();
   const router = new RuntimeHostReconnectingIpcMain(ipc, {
-    handlerWaitTimeoutMs: 5,
+    replacementWaitTimeoutMs: 5,
   });
   const target = router.createTarget("target-a");
   target.handle("sessions:send", async () => "sent");
@@ -354,17 +354,14 @@ test("bounds invocation while an active Runtime Host has no handler", async () =
     RuntimeHostHandlerUnavailableError,
   );
   target.handle("sessions:send", async () => "retried");
-  assert.equal(
-    await ipc.invoke("sessions:send", scope("target-a")),
-    "retried",
-  );
+  assert.equal(await ipc.invoke("sessions:send", scope("target-a")), "retried");
   router.close();
 });
 
 test("bounds reconnectable reads when no replacement handler becomes available", async () => {
   const ipc = ipcHarness();
   const router = new RuntimeHostReconnectingIpcMain(ipc, {
-    handlerWaitTimeoutMs: 5,
+    replacementWaitTimeoutMs: 5,
   });
   const target = router.createTarget("target-a");
   const failRead = deferred();
@@ -387,6 +384,43 @@ test("bounds reconnectable reads when no replacement handler becomes available",
     RuntimeHostHandlerUnavailableError,
   );
   router.close();
+});
+
+test("does not reset one reconnectable read deadline across failed replacements", async (t) => {
+  const ipc = ipcHarness();
+  const router = new RuntimeHostReconnectingIpcMain(ipc, {
+    replacementWaitTimeoutMs: 15,
+  });
+  let monotonicNow = 0;
+  t.mock.method(performance, "now", () => monotonicNow);
+  router.activate("target-a");
+  let attempts = 0;
+  const maximumAttempts = 20;
+  const installFailingTarget = (): void => {
+    const target = router.createTarget("target-a");
+    target.handleReconnectableRead?.("projects:getSnapshot", async () => {
+      attempts += 1;
+      monotonicNow += 5;
+      target.removeHandler("projects:getSnapshot");
+      if (attempts < maximumAttempts) installFailingTarget();
+      throw new RuntimeHostOperationError(
+        "project.catalog.query",
+        "host_draining",
+        "Runtime Host is draining",
+      );
+    });
+  };
+  installFailingTarget();
+
+  try {
+    await assert.rejects(
+      () => ipc.invoke("projects:getSnapshot", scope("target-a")),
+      RuntimeHostHandlerUnavailableError,
+    );
+    assert.equal(attempts, 4);
+  } finally {
+    router.close();
+  }
 });
 
 test("does not return a late read from a replaced Runtime Host candidate", async () => {
