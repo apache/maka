@@ -1460,10 +1460,13 @@ describe('non-serving Runtime Host kernel', () => {
       );
 
       try {
-        await withTimeout(closeEntered, 1_000, 'composition close did not begin');
+        // The storage/owner/drain chain before the close hook can exceed 1s
+        // on loaded CI runners (see #3840); tolerate that without weakening
+        // shutdownGraceMs, which still exercises the active-deadline path.
+        await withTimeout(closeEntered, 5_000, 'composition close did not begin');
         const error = await withTimeout(
           startupFailure,
-          1_000,
+          5_000,
           'Runtime Host startup ignored its shutdown deadline',
         );
         assert.ok(error instanceof AggregateError);
