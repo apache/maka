@@ -40,17 +40,6 @@ import {
   type ClientCapabilityUnregisterResult,
   type ClientHello,
   type ConfigurationChangedFrame,
-  type ContextCompactInput,
-  type ContextCompactResult,
-  type ContextDiagnosticsQueryInput,
-  type ContextDiagnosticsResult,
-  type DeepResearchQueryInput,
-  type DeepResearchQueryResult,
-  type DailyReviewMutateInput,
-  type DailyReviewMutateResult,
-  type DailyReviewQueryInput,
-  type DailyReviewQueryResult,
-  type HostDiagnosticsResult,
   type HostOperationErrorCode,
   type HostIncompatible,
   type HostRegistration,
@@ -63,12 +52,6 @@ import {
   type OperationInput,
   type OperationKey,
   type OperationOutput,
-  type PlanControlInput,
-  type PlanControlResult,
-  type PlanQueryInput,
-  type PlanQueryResult,
-  type PlanTurnStartInput,
-  type PlanTurnStartResult,
   type ProjectCatalogChangedFrame,
   type ProtocolRange,
   type RequestFrame,
@@ -77,20 +60,6 @@ import {
   type ScheduledTaskChangedFrame,
   type SubscriptionFrame,
   type SubscriptionOpenInput,
-  type SessionWorkspaceRelocateInput,
-  type SessionRecapGenerateInput,
-  type SessionRecapGenerateResult,
-  type SessionUpdateResult,
-  type TurnQueryInput,
-  type TurnRegenerateInput,
-  type TurnResumePlan,
-  type TurnResumeQueryInput,
-  type TurnResumeStartInput,
-  type TurnResumeStartResult,
-  type TurnSnapshot,
-  type TurnStartInput,
-  type TurnStartResult,
-  type TurnStopInput,
   requireClientInstanceId,
   requireHostCompositionId,
   requireHostGeneration,
@@ -256,41 +225,6 @@ export interface RuntimeHostConnection {
     timeoutMs?: number,
   ): Promise<OperationOutput<K>>;
   status(timeoutMs?: number): Promise<HostStatusResult>;
-  queryHostDiagnostics(timeoutMs?: number): Promise<HostDiagnosticsResult>;
-  startTurn(input: TurnStartInput, timeoutMs?: number): Promise<TurnStartResult>;
-  queryTurn(input: TurnQueryInput, timeoutMs?: number): Promise<TurnSnapshot>;
-  stopTurn(input: TurnStopInput, timeoutMs?: number): Promise<TurnSnapshot>;
-  regenerateTurn(input: TurnRegenerateInput, timeoutMs?: number): Promise<TurnSnapshot>;
-  queryContextDiagnostics(
-    input: ContextDiagnosticsQueryInput,
-    timeoutMs?: number,
-  ): Promise<ContextDiagnosticsResult>;
-  compactContext(input: ContextCompactInput, timeoutMs?: number): Promise<ContextCompactResult>;
-  relocateSessionWorkspace(
-    input: SessionWorkspaceRelocateInput,
-    timeoutMs?: number,
-  ): Promise<SessionUpdateResult>;
-  generateSessionRecap(
-    input: SessionRecapGenerateInput,
-    timeoutMs?: number,
-  ): Promise<SessionRecapGenerateResult>;
-  queryPlan(input: PlanQueryInput, timeoutMs?: number): Promise<PlanQueryResult>;
-  controlPlan(input: PlanControlInput, timeoutMs?: number): Promise<PlanControlResult>;
-  startPlanTurn(input: PlanTurnStartInput, timeoutMs?: number): Promise<PlanTurnStartResult>;
-  queryDeepResearch(
-    input: DeepResearchQueryInput,
-    timeoutMs?: number,
-  ): Promise<DeepResearchQueryResult>;
-  queryDailyReview(
-    input: DailyReviewQueryInput,
-    timeoutMs?: number,
-  ): Promise<DailyReviewQueryResult>;
-  mutateDailyReview(
-    input: DailyReviewMutateInput,
-    timeoutMs?: number,
-  ): Promise<DailyReviewMutateResult>;
-  queryTurnResume(input: TurnResumeQueryInput, timeoutMs?: number): Promise<TurnResumePlan>;
-  startTurnResume(input: TurnResumeStartInput, timeoutMs?: number): Promise<TurnResumeStartResult>;
   openSessionSubscription(
     input: SubscriptionOpenInput,
     timeoutMs?: number,
@@ -309,6 +243,7 @@ export interface RuntimeHostConnection {
 
 export type DirectRequestOperationKey = Exclude<
   OperationKey,
+  | 'host.status'
   | 'subscription.open'
   | 'subscription.close'
   | 'client.capability.replace'
@@ -471,18 +406,15 @@ class RuntimeHostConnectionImpl implements RuntimeHostConnection {
     input: OperationInput<K>,
     timeoutMs?: number,
   ): Promise<OperationOutput<K>> {
+    if (isHostStatusOperation(operation)) {
+      return Promise.reject(new Error('Runtime Host status requires the validated status() API'));
+    }
     if (isClientCapabilityMutation(operation)) {
       return Promise.reject(
         new Error('Client Capability mutations require the dedicated capability channel'),
       );
     }
-    return this.#requestOperation(
-      operation,
-      input,
-      timeoutMs ?? (operation === 'host.status' ? DEFAULT_LIVENESS_TIMEOUT_MS : undefined),
-      (result) => result,
-      operation === 'host.status' ? 'connection' : 'request',
-    );
+    return this.#requestOperation(operation, input, timeoutMs, (result) => result, 'request');
   }
 
   #requestOperation<K extends OperationKey, Result>(
@@ -576,7 +508,16 @@ class RuntimeHostConnectionImpl implements RuntimeHostConnection {
   }
 
   async status(timeoutMs?: number): Promise<HostStatusResult> {
-    const status = await this.request('host.status', {}, timeoutMs);
+    return this.#requestOperation(
+      'host.status',
+      {},
+      timeoutMs ?? DEFAULT_LIVENESS_TIMEOUT_MS,
+      (status) => this.#validateHostStatusIdentity(status),
+      'connection',
+    );
+  }
+
+  #validateHostStatusIdentity(status: HostStatusResult): HostStatusResult {
     if (
       status.hostEpoch !== this.hostEpoch ||
       status.compositionId !== this.compositionId ||
@@ -587,92 +528,6 @@ class RuntimeHostConnectionImpl implements RuntimeHostConnection {
       throw error;
     }
     return status;
-  }
-
-  queryHostDiagnostics(timeoutMs?: number): Promise<HostDiagnosticsResult> {
-    return this.request('host.diagnostics.query', {}, timeoutMs);
-  }
-
-  startTurn(input: TurnStartInput, timeoutMs?: number): Promise<TurnStartResult> {
-    return this.request('turn.start', input, timeoutMs);
-  }
-
-  queryTurn(input: TurnQueryInput, timeoutMs?: number): Promise<TurnSnapshot> {
-    return this.request('turn.query', input, timeoutMs);
-  }
-
-  stopTurn(input: TurnStopInput, timeoutMs?: number): Promise<TurnSnapshot> {
-    return this.request('turn.stop', input, timeoutMs);
-  }
-
-  regenerateTurn(input: TurnRegenerateInput, timeoutMs?: number): Promise<TurnSnapshot> {
-    return this.request('turn.regenerate', input, timeoutMs);
-  }
-
-  queryContextDiagnostics(
-    input: ContextDiagnosticsQueryInput,
-    timeoutMs?: number,
-  ): Promise<ContextDiagnosticsResult> {
-    return this.request('context.diagnostics.query', input, timeoutMs);
-  }
-
-  compactContext(input: ContextCompactInput, timeoutMs?: number): Promise<ContextCompactResult> {
-    return this.request('context.compact', input, timeoutMs);
-  }
-
-  relocateSessionWorkspace(
-    input: SessionWorkspaceRelocateInput,
-    timeoutMs?: number,
-  ): Promise<SessionUpdateResult> {
-    return this.request('session.workspace.relocate', input, timeoutMs);
-  }
-
-  generateSessionRecap(
-    input: SessionRecapGenerateInput,
-    timeoutMs?: number,
-  ): Promise<SessionRecapGenerateResult> {
-    return this.request('session.recap.generate', input, timeoutMs);
-  }
-
-  queryPlan(input: PlanQueryInput, timeoutMs?: number): Promise<PlanQueryResult> {
-    return this.request('plan.query', input, timeoutMs);
-  }
-
-  controlPlan(input: PlanControlInput, timeoutMs?: number): Promise<PlanControlResult> {
-    return this.request('plan.control', input, timeoutMs);
-  }
-
-  startPlanTurn(input: PlanTurnStartInput, timeoutMs?: number): Promise<PlanTurnStartResult> {
-    return this.request('plan.turn.start', input, timeoutMs);
-  }
-
-  queryDeepResearch(
-    input: DeepResearchQueryInput,
-    timeoutMs?: number,
-  ): Promise<DeepResearchQueryResult> {
-    return this.request('deep-research.query', input, timeoutMs);
-  }
-
-  queryDailyReview(
-    input: DailyReviewQueryInput,
-    timeoutMs?: number,
-  ): Promise<DailyReviewQueryResult> {
-    return this.request('daily-review.query', input, timeoutMs);
-  }
-
-  mutateDailyReview(
-    input: DailyReviewMutateInput,
-    timeoutMs?: number,
-  ): Promise<DailyReviewMutateResult> {
-    return this.request('daily-review.mutate', input, timeoutMs);
-  }
-
-  queryTurnResume(input: TurnResumeQueryInput, timeoutMs?: number): Promise<TurnResumePlan> {
-    return this.request('turn.resume.query', input, timeoutMs);
-  }
-
-  startTurnResume(input: TurnResumeStartInput, timeoutMs?: number): Promise<TurnResumeStartResult> {
-    return this.request('turn.resume.start', input, timeoutMs);
   }
 
   openSessionSubscription(
@@ -961,9 +816,7 @@ class RuntimeHostConnectionImpl implements RuntimeHostConnection {
       {},
       DEFAULT_LIVENESS_TIMEOUT_MS,
       (status) => {
-        if (status.hostEpoch !== this.hostEpoch) {
-          throw new Error('Runtime Host returned status for a different Host Epoch');
-        }
+        this.#validateHostStatusIdentity(status);
         try {
           this.#onLivenessProbe?.();
         } catch {
@@ -1080,6 +933,10 @@ class RuntimeHostConnectionImpl implements RuntimeHostConnection {
 
 function isClientCapabilityMutation(operation: unknown): boolean {
   return operation === 'client.capability.replace' || operation === 'client.capability.unregister';
+}
+
+function isHostStatusOperation(operation: unknown): boolean {
+  return operation === 'host.status';
 }
 
 export async function connectRuntimeHost(

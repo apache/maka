@@ -19,7 +19,7 @@
 
 # Maka MCP runtime architecture
 
-状态：remote dual-era V2 implemented（2026-08-11）
+状态：remote 与 stdio dual-era V3 implemented（2026-08-25）
 
 跟踪：[MCP 2026-07-28 dual-era rollout #1650](https://github.com/apache/maka/issues/1650)
 
@@ -29,18 +29,19 @@ Maka 的 MCP 接入必须复用现有 `MakaTool` execution boundary，而不是�
 
 当前支持：
 
-- local `stdio` 仍固定 legacy；remote Streamable HTTP 可选择 legacy、自动协商或精确 pin `2026-07-28`；legacy SSE 只允许 legacy。
+- local `stdio` 与 remote Streamable HTTP 都可选择 legacy、自动协商或精确 pin `2026-07-28`；legacy SSE 只允许 legacy。
+- 旧配置省略 `stdio.protocol` 时仍只启动一个 legacy server。用户显式选择 stdio `auto` 或 `2026-07-28` 后，官方 SDK 才获准先启动同 command/args/cwd/env 的一次性探测进程，再在探测进程完全退出后启动实际 server。
 - 自动 transport 仅在 Streamable HTTP 尚未产生协议证据、SDK 返回精确 404/405 not-implemented 分类且调用未 abort 时，才 fallback 到 legacy SSE。
 - `tools/list` pagination、tool call timeout 和 abort；legacy 使用 unsolicited `notifications/tools/list_changed`，modern 使用经 server acknowledgement 的 `subscriptions/listen`。
 - modern server 未声明 tools capability 时不发送 `tools/list`；list-change 由 Maka 做 bounded/coalesced refresh，不把 SDK auto-refresh 作为第二份 snapshot authority。
 - modern Streamable HTTP 对 SEP-2243 `x-mcp-header` 做 bounded validation；非法定义只排除对应 Tool，unsafe integer argument 在发送前本地失败。
 - text、image、audio、embedded resource、resource link content；MCP `isError` 进入 Maka error path。
-- workspace-scoped `mcp.json` 使用 version 2；旧 wrapper 读取时保持 legacy 语义，只有显式 mutation 才迁移落盘。
+- workspace-scoped `mcp.json` 使用 version 3；version 1/2 wrapper 读取时保持各自 legacy 语义，只有显式 mutation 才迁移落盘。
 - 首页侧边栏「扩展 > MCP」模块，提供市场模板、搜索、JSON import、CRUD、test、status/tool list，以及配置变化后的 backend cache invalidation。
 - bundled catalog 对 executable package 固定已核验版本；需要 credential、OAuth 或路径选择的模板默认 `enabled: false`，setup 完成前不启动 server。
 - market install 是可取消 transaction：renderer 展示明确的 installing/cancelling 状态，main process abort 对应 connect、等待未完成的 config write settle，再 rollback config 并 reconcile tool snapshot。
 
-当前 remote rollout 不包含 modern stdio、OAuth browser flow、resources UI、resource subscription 和给 subprocess 使用的 loopback proxy。协议层保留 transport 和 content contracts，后续按独立 PR 扩展。
+当前 rollout 不包含 resources UI、resource subscription 和给 subprocess 使用的 loopback proxy。协议层保留 transport 和 content contracts，后续按独立 PR 扩展。
 
 ## 2. 调研结论
 
@@ -75,14 +76,15 @@ flowchart LR
 
 ```json
 {
-  "version": 2,
+  "version": 3,
   "mcpServers": {
     "filesystem": {
       "enabled": true,
       "command": "npx",
       "args": ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"],
       "env": {},
-      "cwd": "/tmp"
+      "cwd": "/tmp",
+      "protocol": "auto"
     },
     "remote-service": {
       "enabled": true,
@@ -95,9 +97,17 @@ flowchart LR
 }
 ```
 
-Server id 是稳定 identity。配置 reconciliation 使用完整 normalized config fingerprint；新增/删除/修改只影响对应连接。`protocol` 只允许出现在 remote config；省略表示兼容旧配置的 legacy，新建 Desktop remote 和 bundled remote catalog 显式写 `auto`。SSE 会收敛为 legacy，version 2 stdio 拒绝 `protocol`，避免给尚未实现的 modern stdio 制造虚假配置。
+Server id 是稳定 identity。配置 reconciliation 使用完整 normalized config fingerprint；新增/删除/修改只影响对应连接。`protocol` 可出现在 stdio 或 remote config，省略始终表示兼容旧配置的 legacy。新建 Desktop remote 显式写 `auto`，新建 Desktop stdio 显式写 `legacy`；SSE 则收敛为 legacy。
 
-version 1 或缺失 version 的 wrapper 可单向读取为 version 2 projection，但 `get()` 不静默改写文件；`set`、`upsert` 或 `remove` 才持久化 version 2。当前客户端遇到显式未知/未来 wrapper 必须拒绝，并且 full replacement 也不得覆盖其原始字节；malformed JSON 仍可通过用户主动的完整导入修复。remote headers 仍位于 `mcp.json`，文件和目录分别强制 `0600`/`0700`；后续迁移到 Keychain-backed credential store。
+version 1、缺失 version 或 version 2 的 wrapper 可单向读取为 version 3 projection，但 `get()` 不静默改写文件；`transform`、`upsert` 或 `remove` 才持久化 version 3。version 1 不接受任何 `protocol`，version 2 只接受 remote `protocol`，version 3 才允许 stdio `protocol`。当前客户端遇到显式未知/未来 wrapper 或 malformed JSON 必须拒绝，不能用一次导入绕过原文件的读取失败并覆盖其原始字节。Desktop renderer 只提交原始 JSON；main process 在 storage normalizer 内解释 wrapper/direct-map、与当前配置合并并持久化，因此导入和正常写入不会形成两套 schema authority。remote headers 仍位于 `mcp.json`，文件和目录分别强制 `0600`/`0700`；后续迁移到 Keychain-backed credential store。
+
+stdio `protocol` 不只是 wire-format 偏好，也是进程副作用授权：
+
+- `legacy`（包括旧配置省略字段）直接启动一个实际 server，不产生探测进程。
+- `auto` 先启动一次性 sibling probe；若 command 支持 modern，则等待 probe 退出后再启动 actual child；否则 SDK 按 legacy 连接。探测进程的 stderr 被忽略，不能污染 actual child 的诊断。
+- `2026-07-28` 同样使用 sibling probe，但只接受 modern；不匹配时失败，不启动 actual child。
+
+探测和实际连接的协议判断由官方 SDK client v2 独占。Maka manager 只传递偏好、持有当前 actual transport，并在 abort/timeout 时关闭 candidate；它不复制 probe 状态机、不维护 PID registry，也不缓存另一份 negotiated-protocol truth。
 
 Bundled catalog 不是第二份 runtime truth：点击安装只把选中的模板写入同一个 `mcpServers` map。需要 setup 的模板以 disabled snapshot 落盘，用户补齐配置并主动启用后才参与连接；不允许用“已写入配置”冒充“已授权”或“已连接”。
 
@@ -114,7 +124,7 @@ Bundled catalog 不是第二份 runtime truth：点击安装只把选中的模�
 
 ## 6. Lifecycle 与错误语义
 
-每个 server 只有一个 active connection promise，避免并发重复 spawn。manager 在 remote candidate 创建时就持有取消权：即使 SDK 的 `server/discover` probe 尚未消费 caller signal，abort 也会关闭 candidate transport，不允许迟到握手继续产生网络行为。connect 失败必须关闭半连接 client/transport；disconnect 并发启动 subscription、client 和 transport teardown，不能先等待一个可能永不返回的远端 cancellation response。
+每个 server 只有一个 active connection promise，避免并发重复 spawn。manager 在 candidate 创建时就持有取消权：即使 SDK 的 remote `server/discover` 或 stdio sibling probe 尚未消费 caller signal，abort 也会关闭 candidate transport，不允许迟到握手继续产生网络或进程行为。stdio probe 必须先完全退出，actual child 才能启动；connect 失败必须关闭半连接 client/transport；disconnect 并发启动 subscription、client 和 transport teardown，不能先等待一个可能永不返回的远端 cancellation response。
 
 modern tool-list subscription 只有在 server 声明 capability 且 acknowledgement honor 对应 filter 时才成为 live refresh source。missing、rejected、unhonored 或 non-local close 会进入独立 subscription diagnostic，但不会伪装成 transport disconnect，也不会丢弃上一份可调用 tool snapshot。普通 client/tool 错误不能冒充 subscription 错误；refresh 与 subscription diagnostics 使用独立生命周期槽，成功 refresh 只清除 refresh failure，reconnect 才重建两者。
 
@@ -139,10 +149,10 @@ timeout 默认值：remote connect 30s、stdio connect 60s、list 15s、call 10m
 9. remote legacy/auto/exact pin、modern missing-tools、structured JSON、`input_required`、窄 SSE fallback 和无响应 probe cancellation 有真实 HTTP fixture 覆盖。
 10. modern subscription acknowledgement、initial-list race、burst coalescing、独立 diagnostics、non-local close 和无响应 cancellation teardown 有真实 SDK/event-bus fixture 覆盖。
 11. SEP-2243 定义 partition、bounded warning、safe integer 和 wire 前失败有自动化覆盖；legacy 路径不误启用 modern header 语义。
+12. stdio 省略 protocol 只启动一个 legacy child；`auto`、legacy/modern exact pin、probe/actual 顺序、probe stderr 隔离，以及 probe 前或进行中的 abort 都有真实 child-process fixture 覆盖。
 
 ## 8. 后续 backlog
 
-- stdio modern `2026-07-28` negotiation；在实现前 stdio config 不接受 `protocol`。
 - OAuth 2.1 authorization server metadata、PKCE、dynamic client registration 和 Keychain token persistence。
 - resources/templates browse、read、subscribe/unsubscribe 及 host UI。
 - authenticated loopback MCP proxy，供受控 subprocess client 共享 pool。

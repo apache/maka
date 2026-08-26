@@ -102,7 +102,7 @@ test('concurrent responses remain framed and correlated in reverse completion or
     async ({ connectClient }) => {
       const client = await connectClient();
       const requests = Array.from({ length: requestCount }, (_, index) =>
-        client.queryTurn({ sessionId: 'session', turnId: `turn-${index}` }, 5_000),
+        client.request('turn.query', { sessionId: 'session', turnId: `turn-${index}` }, 5_000),
       );
       try {
         await withTimeout(
@@ -257,7 +257,7 @@ test('the Client backpressures a healthy request burst at the Host connection li
     async ({ connectClient }) => {
       const client = await connectClient();
       const requests = Array.from({ length: requestCount }, (_, index) =>
-        client.queryTurn({ sessionId: 'session', turnId: `burst-${index}` }, 5_000),
+        client.request('turn.query', { sessionId: 'session', turnId: `burst-${index}` }, 5_000),
       );
       try {
         await withTimeout(firstWaveEntered.promise, 1_000, 'first request wave was not admitted');
@@ -656,7 +656,7 @@ test('an admitted operation settles without connection or residency leakage afte
     async ({ connectClient }) => {
       const client = await connectClient();
       const requestFailure = client
-        .queryTurn({ sessionId: 'session', turnId: 'disconnect' }, 5_000)
+        .request('turn.query', { sessionId: 'session', turnId: 'disconnect' }, 5_000)
         .then(
           () => undefined,
           (error: unknown) => error,
@@ -698,7 +698,7 @@ test('an admitted command reports an unknown outcome when its connection closes'
     }),
     async ({ connectClient }) => {
       const client = await connectClient();
-      const command = client.startTurn({
+      const command = client.request('turn.start', {
         sessionId: 'session',
         turnId: 'interrupted-command',
         content: { text: 'start' },

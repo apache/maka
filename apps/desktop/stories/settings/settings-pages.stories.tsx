@@ -2205,7 +2205,7 @@ export const ModelsConnectionsHostGenerationRevalidation: Story = {
       isDefault: true,
     });
 
-    await userEvent.click(canvas.getByRole('combobox', { name: 'Runtime Host' }));
+    await userEvent.click(await canvas.findByRole('combobox', { name: 'Runtime Host' }));
     await within(document.body).findByRole('option', { name: 'Remote' });
     await userEvent.keyboard('{Escape}');
     await expect(boundary).toHaveAttribute('inert');

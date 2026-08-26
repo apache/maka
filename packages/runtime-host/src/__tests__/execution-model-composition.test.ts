@@ -31,6 +31,7 @@ import { clientCapabilityConnectionIdentity } from './fixtures/client-capability
 import {
   createBypassExecutionBoundary,
   createManagedExecutionBoundary,
+  type ExecutionBoundary,
 } from '@maka/core/sandbox-boundary';
 import { PROVIDER_DEFAULTS } from '@maka/core/llm-connections';
 import { createWorkspaceWritePermissionProfile } from '@maka/core/permission-profile';
@@ -48,6 +49,7 @@ import {
 import { type BackendFactoryContext } from '@maka/runtime/session-manager';
 import { type AiSdkBackendInput, type RunTraceEvent } from '@maka/runtime/ai-sdk-backend';
 import { type FilesystemWorkerExecuteInput } from '@maka/runtime/filesystem-worker';
+import { createSandboxDiagnosticsProvider } from '@maka/runtime/sandbox';
 import { type MakaTool, type MakaToolContext } from '@maka/runtime/tool-runtime';
 import {
   type ProxiedFetchProxy,
@@ -137,6 +139,10 @@ const HEADLESS_CODING_V1_PROMPT_HASH =
 const HEADLESS_CODING_V1_TOOLS_HASH =
   'sha256:c062194603f93b568da5ca59b865b316156b5f218ba854c291aa9582859b3de4';
 const execFileAsync = promisify(execFile);
+const TEST_SANDBOX_DIAGNOSTICS = createSandboxDiagnosticsProvider({
+  platform: 'darwin',
+  canonicalizePath: async (path) => path,
+});
 
 test('backend creation aborts a stalled canonical connection read', async () => {
   const abort = new AbortController();
@@ -180,6 +186,260 @@ test('backend creation aborts a stalled pricing snapshot read', async () => {
     name: 'AbortError',
     message: 'Pricing resolution was interrupted',
   });
+});
+
+test('sandbox diagnostics failure degrades to a traced prompt omission', async () => {
+  const provider = await startProvider();
+  try {
+    const traces: RunTraceEvent[] = [];
+    const backend = await createHostAiSdkBackend(
+      backendCreationFixture({
+        abortSignal: new AbortController().signal,
+        resolveExecutionConnection: async () => readyExecutionConnection(provider.baseUrl),
+        readPricing: async () => ({ revision: 0, overrides: [] }),
+        executionBoundary: createManagedExecutionBoundary(
+          createWorkspaceWritePermissionProfile(),
+          0,
+        ),
+        sandboxDiagnostics: {
+          resolve: async () => {
+            throw new Error('sandbox diagnostics unavailable');
+          },
+        },
+        recordRunTrace: (event) => traces.push(event),
+      }),
+    );
+
+    try {
+      const events = [];
+      for await (const event of backend.send({
+        turnId: 'sandbox-diagnostics-failure-turn',
+        text: 'Continue without optional sandbox diagnostics.',
+        context: [],
+      })) {
+        events.push(event);
+      }
+
+      const requests = provider.requests.filter((request) => request.body.stream === true);
+      assert.equal(requests.length, 1);
+      assert.doesNotMatch(JSON.stringify(requests[0]?.body), /<sandbox_context>/u);
+      assert.equal(
+        events.some((event) => event.type === 'error'),
+        false,
+      );
+      assert.equal(events.find((event) => event.type === 'complete')?.stopReason, 'end_turn');
+      assert.equal(
+        traces.some((event) => event.type === 'sandbox_context_resolved'),
+        false,
+      );
+      const failure = traces.find((event) => event.type === 'sandbox_context_failed');
+      assert.equal(failure?.phase, 'sandbox');
+      assert.equal(failure?.data?.stage, 'resolve');
+    } finally {
+      await backend.dispose();
+    }
+  } finally {
+    await provider.close();
+  }
+});
+
+test('production Host executes current-boundary Bash and refreshes live sandbox context', {
+  skip: process.platform === 'win32' ? 'Managed arbitrary-shell sandboxing is unavailable' : false,
+}, async () => {
+  const base = await mkdtemp(join(tmpdir(), 'maka-host-managed-bash-'));
+  const root = join(base, 'interactive');
+  const project = join(base, 'project');
+  const provider = await startProvider();
+  provider.configureManagedBashFlow();
+  const capability = await resolveStorageRoot({ path: root, kind: 'interactive' });
+  const owner = await tryAcquireInteractiveRootOwner(capability);
+  assert.ok(owner);
+  if (!owner) return;
+  const context: ConnectionContext = {
+    hostEpoch: 'managed-bash-test-epoch',
+    connectionId: 'managed-bash-test-client',
+    principal: 'local_os_user',
+    acquireResidency: () => ({ release() {} }),
+  };
+  let composition: Awaited<ReturnType<typeof createExecutionRuntimeHostComposition>> | undefined;
+  try {
+    await mkdir(project);
+    const policy = await openInteractiveRuntimePolicyStoresForWrite(owner.lease);
+    const created = await policy.connectionCatalog.create({
+      expectedCatalogRevision: 0,
+      connection: {
+        slug: 'hosted-managed-bash-provider',
+        name: 'Hosted managed Bash provider',
+        providerType: 'moonshot',
+        baseUrl: provider.baseUrl,
+        enabled: true,
+        enabledModelIds: [MODEL_ID],
+      },
+    });
+    assert.equal(created.kind, 'committed');
+    if (created.kind !== 'committed') return;
+    const connection = created.snapshot.connections[0];
+    assert.ok(connection);
+    if (!connection) return;
+    assert.equal(
+      (
+        await policy.credentialVault.set({
+          locator: {
+            scope: 'connection',
+            connectionId: connection.connectionId,
+            kind: 'api_key',
+          },
+          expected: null,
+          secret: API_KEY,
+        })
+      ).kind,
+      'committed',
+    );
+    await publishConnectionModel(policy, connection.connectionId, MODEL_ID, 32_768);
+
+    const execution = await openInteractiveExecutionStoresForWrite(owner.lease);
+    const session = await execution.sessionStore.create({
+      cwd: project,
+      llmConnectionSlug: 'hosted-managed-bash-provider',
+      model: MODEL_ID,
+      permissionMode: 'ask',
+    });
+    const initialBoundary = await execution.sessionStore.readExecutionBoundary(session.id);
+    assert.equal(initialBoundary.kind, 'managed');
+    assert.equal(initialBoundary.revision, 0);
+
+    composition = await createExecutionRuntimeHostComposition({
+      owner,
+      hostEpoch: context.hostEpoch,
+      acquireResidency: context.acquireResidency,
+      retainUntilProcessExit: () => undefined,
+      requestDrain: () => undefined,
+    });
+    await composition.recover();
+
+    const firstTurnId = 'hosted-managed-bash-turn-1';
+    const firstTerminal = await waitForTerminal(
+      composition,
+      session.id,
+      firstTurnId,
+      await startTurn(
+        composition,
+        session.id,
+        firstTurnId,
+        'Run one offline workspace command.',
+        context,
+      ),
+      context,
+    );
+    const firstRun = await execution.agentRunStore.readRun(session.id, firstTerminal.runId);
+    const firstRunEvents = await execution.agentRunStore.readEvents(
+      session.id,
+      firstTerminal.runId,
+    );
+    assert.equal(
+      firstTerminal.status,
+      'completed',
+      JSON.stringify({
+        firstTerminal,
+        firstRun,
+        firstRunEvents,
+        requests: providerRequestTrace(provider.requests),
+      }),
+    );
+    const mainRequests = provider.requests.filter((request) => request.body.stream === true);
+    assert.equal(mainRequests.length, 2);
+    const firstRequestText = JSON.stringify(mainRequests[0]?.body);
+    assert.match(firstRequestText, /<sandbox_context>/u);
+    assert.match(firstRequestText, /File system: workspace-write/u);
+    assert.match(firstRequestText, /Network: restricted/u);
+    assert.deepEqual(toolParameterEnum(mainRequests[0]?.body, 'Bash', 'boundary_intent'), [
+      'current',
+      'expand',
+    ]);
+    assert.equal((latestToolResultText(mainRequests[1]!.body) ?? '').includes(project), true);
+    assert.deepEqual(
+      await execution.sessionStore.listPendingSandboxBoundaryRequests(session.id),
+      [],
+    );
+    const unchangedBoundary = await execution.sessionStore.readExecutionBoundary(session.id);
+    assert.equal(unchangedBoundary.kind, 'managed');
+    assert.equal(unchangedBoundary.revision, 0);
+    const firstRuntimeEvents = await execution.runtimeEventStore.readRuntimeEvents(
+      session.id,
+      firstTerminal.runId,
+    );
+    const bashCall = firstRuntimeEvents.find(
+      (event) => event.content?.kind === 'function_call' && event.content.name === 'Bash',
+    );
+    assert.equal(
+      bashCall?.content?.kind === 'function_call'
+        ? (bashCall.content.args as { boundary_intent?: unknown }).boundary_intent
+        : undefined,
+      'current',
+    );
+    const bashResult = firstRuntimeEvents.find(
+      (event) => event.content?.kind === 'function_response' && event.content.name === 'Bash',
+    );
+    assert.equal(bashResult?.content?.kind, 'function_response');
+    if (bashResult?.content?.kind === 'function_response') {
+      assert.notEqual(bashResult.content.isError, true);
+    }
+    assert.equal(
+      firstRuntimeEvents.some(
+        (event) => event.actions?.stateDelta?.sandboxBoundaryRequest !== undefined,
+      ),
+      false,
+    );
+
+    const requestId = 'hosted-managed-bash-network-expansion';
+    await execution.sessionStore.createSandboxBoundaryRequest({
+      sessionId: session.id,
+      requestId,
+      turnId: firstTurnId,
+      runId: firstTerminal.runId,
+      expansion: { network: { enabled: true } },
+      justification: 'Exercise the live per-turn boundary projection.',
+    });
+    const expanded = await execution.sessionStore.settleSandboxBoundaryRequest({
+      sessionId: session.id,
+      requestId,
+      decision: 'allow',
+    });
+    assert.equal(expanded.changed, true);
+    assert.equal(expanded.boundary.revision, 1);
+
+    const secondTurnId = 'hosted-managed-bash-turn-2';
+    const secondTerminal = await waitForTerminal(
+      composition,
+      session.id,
+      secondTurnId,
+      await startTurn(
+        composition,
+        session.id,
+        secondTurnId,
+        'Confirm the expanded live boundary.',
+        context,
+      ),
+      context,
+    );
+    assert.equal(secondTerminal.status, 'completed');
+    const refreshedRequests = provider.requests.filter((request) => request.body.stream === true);
+    assert.equal(refreshedRequests.length, 3);
+    const refreshedRequestText = JSON.stringify(refreshedRequests[2]?.body);
+    assert.match(refreshedRequestText, /<sandbox_context>/u);
+    assert.match(refreshedRequestText, /Network: enabled/u);
+  } finally {
+    try {
+      await composition?.close();
+    } finally {
+      try {
+        await owner.close();
+      } finally {
+        await provider.close();
+        await rm(base, { recursive: true, force: true });
+      }
+    }
+  }
 });
 
 test('backend creation admits the enabled bootstrap DeepSeek model before discovery', async () => {
@@ -1879,6 +2139,17 @@ test('production Host publishes and retires an implementation child patch', asyn
     assert.equal(child?.subagentRuntime?.profile, 'implementation');
     assert.equal(child?.subagentParent?.parentSessionId, parent.id);
     if (!child) return;
+    // The persisted header is a configuration projection, not execution
+    // authority, and may be narrower than the inherited live boundary. Keep
+    // them deliberately different so this test proves the prompt follows it.
+    assert.notEqual(child.permissionMode, 'bypass');
+    const childBoundary = await execution.sessionStore.readExecutionBoundary(child.id);
+    assert.equal(childBoundary.kind, 'bypass');
+    const childRequestText = JSON.stringify(childRequests[0]?.body);
+    assert.match(childRequestText, /<sandbox_context>/u);
+    assert.match(childRequestText, /File system: unrestricted/u);
+    assert.match(childRequestText, /Network: enabled/u);
+    assert.doesNotMatch(childRequestText, /File system: workspace-write/u);
     assert.ok(child.subagentWorkspace);
     assert.equal(child.cwd, child.subagentWorkspace?.worktreePath);
     assert.equal(await fileExists(join(project, 'implementation.txt')), false);
@@ -3190,7 +3461,8 @@ function backendCreationFixture(input: {
   tools?: readonly MakaTool[];
   modelId?: string;
   snapshotClientCapabilities?: () => unknown;
-  executionBoundary?: unknown;
+  executionBoundary?: ExecutionBoundary;
+  sandboxDiagnostics?: HostAiSdkBackendInput['sandboxDiagnostics'];
   loadTurnRuntimeEvents?: () => Promise<RuntimeEvent[]>;
   recordRunTrace?: (event: RunTraceEvent) => unknown;
   runtimeCommitSink?: HostAiSdkBackendInput['runtimeCommitSink'];
@@ -3264,10 +3536,12 @@ function backendCreationFixture(input: {
         : {}),
       store: {
         appendMessage: async () => undefined,
-        readExecutionBoundary: async () => input.executionBoundary,
+        readExecutionBoundary: async () =>
+          input.executionBoundary ?? createBypassExecutionBoundary(0),
       },
     } as unknown as BackendFactoryContext,
     runtimePolicy,
+    sandboxDiagnostics: input.sandboxDiagnostics ?? TEST_SANDBOX_DIAGNOSTICS,
     ...(input.oauthCredentials ? { oauthCredentials: input.oauthCredentials } : {}),
     createRunComposer,
     artifacts: {},
@@ -3582,6 +3856,7 @@ interface ProviderRequest {
 
 type ProviderFlow =
   | { readonly kind: 'default' }
+  | { readonly kind: 'managed_bash' }
   | {
       readonly kind: 'client_capability';
       readonly groupId: string;
@@ -3598,6 +3873,7 @@ type ProviderFlow =
 async function startProvider(): Promise<{
   readonly baseUrl: string;
   readonly requests: ProviderRequest[];
+  configureManagedBashFlow(): void;
   configureClientCapability(input: { groupId: string; toolName: string }): void;
   configureChildAgentFlow(): void;
   configureImplementationChildAgentFlow(): void;
@@ -3617,6 +3893,10 @@ async function startProvider(): Promise<{
   return {
     baseUrl: `http://127.0.0.1:${address.port}/v1`,
     requests,
+    configureManagedBashFlow: () => {
+      if (flow.kind !== 'default') throw new Error('Provider flow is already configured');
+      flow = { kind: 'managed_bash' };
+    },
     configureClientCapability: (input) => {
       if (flow.kind !== 'default') throw new Error('Provider flow is already configured');
       flow = { kind: 'client_capability', ...input };
@@ -3697,6 +3977,23 @@ async function handleProviderRequest(
     return;
   }
   const streamRequestIndex = requests.filter((candidate) => candidate.body.stream === true).length;
+  if (flow.kind === 'managed_bash' && streamRequestIndex === 1) {
+    assert.ok(toolNames(body).includes('Bash'));
+    respondProviderToolCall(response, streamRequestIndex, 'Bash', {
+      command: '/bin/pwd',
+      required_boundary: {
+        filesystem: {
+          entries: [{ path: '.', access: 'read', scope: 'exact' }],
+        },
+        network: { enabled: true },
+      },
+    });
+    return;
+  }
+  if (flow.kind === 'managed_bash') {
+    respondProviderText(response, RESPONSE_TEXT);
+    return;
+  }
   if (flow.kind === 'agent_graph') {
     flow.scenario.respond(body, {
       text: (text) => respondProviderText(response, text),
@@ -3763,6 +4060,7 @@ async function handleProviderRequest(
   if (flow.kind === 'implementation_child_agent' && streamRequestIndex === 4) {
     respondProviderToolCall(response, streamRequestIndex, 'Bash', {
       command: 'node pty-child.mjs',
+      boundary_intent: 'current',
       run_in_background: true,
       pty: true,
     });

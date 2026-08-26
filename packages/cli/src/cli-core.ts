@@ -345,6 +345,7 @@ export async function runMakaCli(
         framed: command.framed ?? false,
         clientDataRoot: serviceDataRoots.clientDataRoot,
         defaultRootPath: serviceDataRoots.workspaceRoot,
+        ...(command.expectedTarget ? { expectedTarget: command.expectedTarget } : {}),
       });
     }
     case 'runtime-host-managed-deployment-cleanup': {

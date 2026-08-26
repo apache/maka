@@ -41,7 +41,7 @@ import {
   resolveSessionActionIds,
 } from './session-family-action.js';
 import { normalizeSessionModelSelection } from './session-model-input.js';
-import type { SessionCopyCleanupAuthority } from './quote-companion-cleanup.js';
+import type { SessionCopyCleanupAuthority } from '@maka/storage/session-copy-cleanup';
 import {
   handleReconnectableRead,
   type ReconnectableReadIpcMain,

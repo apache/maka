@@ -25,9 +25,9 @@ import { getMcpCopy } from '../../renderer/locales/mcp-copy.js';
 import {
   createEmptyMcpDraft,
   mcpConfigFromDraft,
+  mcpDraftProtocolPreference,
   mcpDraftFromConfig,
   presentMcpNegotiatedProtocol,
-  withMcpDraftTransport,
 } from '../../renderer/mcp-page-model.js';
 
 const copy = getMcpCopy('en');
@@ -81,16 +81,17 @@ test('editing a remote MCP round-trips auto and exact modern preferences', () =>
   }
 });
 
-test('selecting legacy SSE converges and persists the legacy preference', () => {
+test('legacy SSE projects legacy without erasing an explicit remote pin', () => {
   const modern = {
     ...createEmptyMcpDraft(),
     kind: 'remote' as const,
     url: 'https://example.com/sse',
     protocol: '2026-07-28' as const,
   };
-  const sse = withMcpDraftTransport(modern, 'sse');
+  const sse = { ...modern, transport: 'sse' as const };
 
-  assert.equal(sse.protocol, 'legacy');
+  assert.equal(sse.protocol, '2026-07-28');
+  assert.equal(mcpDraftProtocolPreference(sse), 'legacy');
   assert.deepEqual(mcpConfigFromDraft(sse, copy), {
     enabled: true,
     url: 'https://example.com/sse',
@@ -99,20 +100,44 @@ test('selecting legacy SSE converges and persists the legacy preference', () => 
     headers: {},
   });
 
-  // The serializer also protects against an inconsistent draft supplied by a
-  // stale renderer event.
-  const forged = mcpConfigFromDraft({ ...sse, protocol: 'auto' }, copy);
-  assert.equal(!isMcpStdioConfig(forged) && forged.protocol, 'legacy');
+  assert.equal(
+    mcpDraftProtocolPreference({ ...sse, transport: 'streamable-http' }),
+    '2026-07-28',
+  );
 });
 
-test('stdio editing never adds a protocol preference in config version 2', () => {
+test('a newly-authored stdio MCP persists the one-child legacy default', () => {
   const saved = mcpConfigFromDraft(
     { ...createEmptyMcpDraft(), id: 'local', commandLine: ' node ' },
     copy,
   );
 
   assert.equal(isMcpStdioConfig(saved), true);
-  assert.equal(Object.hasOwn(saved, 'protocol'), false);
+  assert.equal(isMcpStdioConfig(saved) && saved.protocol, 'legacy');
+});
+
+test('stdio editing presents omitted legacy and round-trips explicit modern preferences', () => {
+  const omitted = mcpDraftFromConfig('local', { command: 'node' });
+  assert.equal(mcpDraftProtocolPreference(omitted), 'legacy');
+  const savedOmitted = mcpConfigFromDraft(omitted, copy);
+  assert.ok(isMcpStdioConfig(savedOmitted));
+  assert.equal(savedOmitted.protocol, 'legacy');
+
+  for (const protocol of ['auto', '2026-07-28'] as const) {
+    const draft = mcpDraftFromConfig('local', { command: 'node', protocol });
+    const saved = mcpConfigFromDraft(draft, copy);
+    assert.equal(isMcpStdioConfig(saved) && saved.protocol, protocol);
+  }
+});
+
+test('kind changes preserve an explicit protocol choice and derive only unselected defaults', () => {
+  const empty = createEmptyMcpDraft();
+  assert.equal(mcpDraftProtocolPreference(empty), 'legacy');
+  assert.equal(mcpDraftProtocolPreference({ ...empty, kind: 'remote' }), 'auto');
+
+  const pinned = { ...empty, kind: 'remote' as const, protocol: '2026-07-28' as const };
+  assert.equal(mcpDraftProtocolPreference({ ...pinned, kind: 'stdio' }), '2026-07-28');
+  assert.equal(mcpDraftProtocolPreference(pinned), '2026-07-28');
 });
 
 test('the MCP catalog opts every bundled remote entry into auto negotiation', () => {
@@ -141,7 +166,7 @@ test('an edit that does not touch OAuth preserves the block through save', () =>
     },
   };
   const draft = mcpDraftFromConfig('notion', stored);
-  const saved = mcpConfigFromDraft(withMcpDraftTransport(draft, 'sse'), copy);
+  const saved = mcpConfigFromDraft({ ...draft, transport: 'sse' }, copy);
   assert.ok('url' in saved);
   assert.equal(saved.transport, 'sse');
   assert.deepEqual(saved.oauth, stored.oauth);
@@ -165,7 +190,7 @@ test('a stdio config round-trips through the command-line field', () => {
     env: { TOKEN: 'secret' },
   };
   const saved = mcpConfigFromDraft(mcpDraftFromConfig('local', stored), copy);
-  assert.deepEqual(saved, stored);
+  assert.deepEqual(saved, { ...stored, protocol: 'legacy' });
 });
 
 test('status copy presents only a live connected negotiated protocol', () => {

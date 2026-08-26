@@ -120,8 +120,16 @@ export function createDesktopWorkbarServices(
       abandonSessionCopy: (sourceSessionId, copyId) =>
         bridge.sessions.abandonSessionCopy(sourceSessionId, copyId),
       send: (sessionId, command) => bridge.sessions.send(sessionId, command),
-      stop: (sessionId) => bridge.sessions.stop(sessionId),
-      steer: (sessionId, text) => bridge.sessions.steer(sessionId, text),
+      stop: (sessionId, target) =>
+        bridge.sessions.stop(
+          sessionId,
+          target?.kind === 'admission'
+            ? { source: 'stop_button', expectedAdmissionId: target.messageId }
+            : target?.kind === 'turn'
+              ? { source: 'stop_button', expectedTurnId: target.turnId }
+              : undefined,
+        ),
+      steer: (sessionId, text, admissionId) => bridge.sessions.steer(sessionId, text, admissionId),
       setPermissionMode: (sessionId, mode) =>
         bridge.sessions.setPermissionMode(sessionId, mode),
       regenerateTurn: (sessionId, input) =>
@@ -130,8 +138,8 @@ export function createDesktopWorkbarServices(
         bridge.sessions.respondToSandboxBoundary(sessionId, response),
       respondToUserQuestion: (sessionId, response) =>
         bridge.sessions.respondToUserQuestion(sessionId, response),
-      subscribeEvents: (sessionId, handler) =>
-        bridge.sessions.subscribeEvents(sessionId, handler),
+      subscribeEvents: (sessionId, handler, onSeeded, onSeedError) =>
+        bridge.sessions.subscribeEvents(sessionId, handler, onSeeded, undefined, onSeedError),
       subscribeSessionChanges: (handler) => bridge.sessions.subscribeChanges(handler),
     },
   };

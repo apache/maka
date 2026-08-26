@@ -41,7 +41,6 @@ import type {
   AbortEvent,
   PermissionDecisionAckEvent,
   PermissionRequestEvent,
-  QueueEnqueueOutcome,
   ShellRunUpdate,
   MessageContent,
 } from '@maka/core/events';
@@ -4624,7 +4623,10 @@ export class SessionManager {
         wakeId: input.execution.wakeId,
         attemptId: input.execution.attemptId,
       };
-    } else if (input.execution.kind !== 'external_message') {
+    } else if (
+      input.execution.kind !== 'external_message' &&
+      input.execution.kind !== 'workhub_coordination'
+    ) {
       if (
         session.subagentParent?.kind !== 'subagent' ||
         session.subagentRuntime?.agentId !== input.execution.agentId ||
@@ -4807,26 +4809,6 @@ export class SessionManager {
     return authority
       ? authority.stopRoot(identity, input)
       : this.runtimeKernel.stopSession(identity.sessionId, input);
-  }
-
-  /** Queue a user message for mid-turn injection at the next step boundary. */
-  steer(sessionId: string, text: string): QueueEnqueueOutcome {
-    return this.runtimeKernel.steer(sessionId, text);
-  }
-
-  /** Queue a user message to open the turn after the current one finishes. */
-  queueMessage(sessionId: string, text: string): QueueEnqueueOutcome {
-    return this.runtimeKernel.queueMessage(sessionId, text);
-  }
-
-  /** Drain the followup queue into one `\n\n`-joined prompt, or null if empty. */
-  drainFollowup(sessionId: string): string | null {
-    return this.runtimeKernel.drainFollowup(sessionId);
-  }
-
-  /** Take back every queued message (both queues) as one `\n\n`-joined string. */
-  retractQueue(sessionId: string): string {
-    return this.runtimeKernel.retractQueue(sessionId);
   }
 
   async *regenerateTurn(

@@ -298,6 +298,61 @@ test('an imported snapshot cutoff survives materialization as aborted', async ()
   }
 });
 
+test('does not import Host-handed-off transcript messages as synthetic runs', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-host-transcript-ledger-'));
+  const sessions = createSessionStore(root);
+  const runs = createSqliteAgentRunStore(root);
+  const runtimeEvents = createSqliteRuntimeStore(join(root, 'runtime.sqlite'));
+  let sequence = 0;
+  try {
+    const session = await sessions.createImportedSession(
+      {
+        cwd: '/repo',
+        llmConnectionSlug: 'deepseek',
+        model: 'deepseek-v4-flash',
+        permissionMode: 'ask',
+      },
+      [
+        {
+          type: 'user',
+          id: 'host-message',
+          turnId: 'host-turn',
+          ts: 10,
+          text: 'already owned by a durable root',
+          steeringEventId: 'host-message',
+        },
+        {
+          type: 'turn_state',
+          id: 'host-terminal',
+          turnId: 'host-turn',
+          ts: 11,
+          status: 'completed',
+          partialOutputRetained: false,
+        },
+      ],
+      { adapterId: 'test', sourceSessionId: 'host-session' },
+    );
+    const repair = new RuntimeLedgerRepair({
+      runStore: runs,
+      runtimeEventStore: runtimeEvents,
+      readMessages: (sessionId) => sessions.readMessages(sessionId),
+      appendMessage: (sessionId, message) => sessions.appendMessage(sessionId, message),
+      appendTurnState: async () => undefined,
+      newId: () => `host-repair-${++sequence}`,
+      now: () => 100,
+    });
+
+    await repair.materializeTranscriptLedger(session);
+
+    assert.deepEqual(await runs.listSessionRuns(session.id), []);
+  } finally {
+    runtimeEvents.close();
+    runs.close?.();
+    await sessions.close?.();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test('an imported turn with no terminal state is repaired to failed', async () => {
   // The behaviour the adapter now avoids, pinned so the reason for emitting a
   // cutoff cannot quietly stop being true.

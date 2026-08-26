@@ -33,13 +33,11 @@ import type {
   RuntimeEventStore,
 } from '@maka/core/runtime-event-store';
 import { isSessionInlineRun } from '@maka/core/agent-run';
-import type {
-  ActiveInteractionRequestEvent,
-  CompleteEvent,
-  QueueEnqueueOutcome,
-  QueueUpdateEvent,
-  SessionEvent,
-  TokenUsageEvent,
+import {
+  type ActiveInteractionRequestEvent,
+  type CompleteEvent,
+  type SessionEvent,
+  type TokenUsageEvent,
 } from '@maka/core/events';
 import type {
   SessionBlockedReason,
@@ -185,14 +183,7 @@ export interface RuntimeKernelLike {
   respondToSandboxBoundary(sessionId: string, response: SandboxBoundaryResponse): Promise<void>;
   listActiveInteractions?(sessionId: string): ActiveInteractionRequestEvent[];
   respondToUserQuestion?(sessionId: string, response: UserQuestionResponse): Promise<void>;
-  /** Queue a user message for mid-turn injection at the next step boundary. */
-  steer(sessionId: string, text: string): QueueEnqueueOutcome;
-  /** Queue a user message to open the turn after the current one finishes. */
-  queueMessage(sessionId: string, text: string): QueueEnqueueOutcome;
-  /** Drain the followup queue into one `\n\n`-joined prompt, or null if empty. */
-  drainFollowup(sessionId: string): string | null;
-  /** Take back every queued message (both queues) as one `\n\n`-joined string. */
-  retractQueue(sessionId: string): string;
+  /** Compatibility surface; durable message admission belongs to Runtime Host. */
   hasActiveRuns(sessionId: string): boolean;
   /**
    * The turns of the runs in flight for this session. The same fact
@@ -232,7 +223,7 @@ export class RuntimeContextCompactError extends Error {
 
 export interface TurnStartOptions {
   runId?: string;
-  userMessageId?: string;
+  userMessageId?: string | null;
   durability?: AgentRunDurability;
   /**
    * Resolve turn admission after this Session has registered a pending start
@@ -269,44 +260,6 @@ export interface ChildAgentRetryInput {
   /** Retry an ordinary session-inline AgentRun inside a linked child Session. */
   linkedSession?: boolean;
   onRunStarted?: () => void | Promise<void>;
-}
-
-/**
- * An embedded session's authoritative pending-message queues plus its event
- * sink. Hosted composition never creates this state; its Host owns admission,
- * snapshots, leases, and follow-up drain.
- */
-interface PendingSteeringMessage extends SteeringLease {}
-
-/**
- * A pulled lease is bound to the turn that pulled it: only the issuing turn's
- * backend can settle it (ack/nack stay valid even after ownership moved to an
- * overlapping turn — invalidating a delivered lease would leave it in-flight
- * and redeliver an already-executed message), and no other turn's retract/
- * clear/release may reclaim it while its delivery is still undetermined.
- */
-interface LeasedSteeringMessage extends PendingSteeringMessage {
-  issuingTurnId: string;
-}
-
-interface SessionSteeringState {
-  /** Messages waiting to be injected into the running turn at a step boundary. */
-  steering: PendingSteeringMessage[];
-  /**
-   * Leased to the running turn's backend but not yet settled. pull() is the
-   * single atomic commit point: an in-flight lease is committed to that
-   * turn's delivery — retract/clear reclaim only QUEUED messages — and it
-   * settles exactly once, decided solely by the persistence fact: ack when
-   * the steering event is durably consumed (even under abort), nack when it
-   * provably never persisted. Snapshots count in-flight as still pending so
-   * the UI keeps showing the message until it lands in the transcript.
-   */
-  inFlight: LeasedSteeringMessage[];
-  /** Messages waiting to open the next turn. */
-  followup: PendingSteeringMessage[];
-  /** Pushes a `queue_update` into the active turn's stream; unset when idle. */
-  sink?: (event: QueueUpdateEvent) => void;
-  activeTurnId?: string;
 }
 
 export type BackendActivationBoundary = <T>(operation: () => Promise<T> | T) => Promise<T>;
@@ -458,7 +411,6 @@ export class RuntimeKernel implements RuntimeKernelLike {
   private readonly historyCompactCoordinator: HistoryCompactCheckpointCoordinator;
   private readonly pendingContinuationClaims = new Set<string>();
   private readonly pendingContinuationSessions = new Set<string>();
-  private readonly steeringBySession = new Map<string, SessionSteeringState>();
   private readonly backendInvalidations = new Map<string, BackendInvalidationState>();
   private readonly interactionRequestOwners = new Map<string, InteractionRequestOwner>();
   private nextBackendGeneration = 0;
@@ -1560,11 +1512,6 @@ export class RuntimeKernel implements RuntimeKernelLike {
     const interactionRun = owners.interactionRun;
     const messageOwner = owners.messageOwner;
 
-    // Steering is a top-level-turn affordance only; child agent turns run
-    // without a queue. Hosted ownership is bound before begin so a pre-start
-    // cancellation can release the exact admitted owner. The pull hook still
-    // re-checks this run's turnId so stale or overlapping runs cannot drain
-    // messages queued for the current owner.
     let pullSteering: (() => readonly SteeringLease[]) | undefined;
     let ackSteering: ((leaseIds: readonly string[]) => void) | undefined;
     let nackSteering: ((leaseIds: readonly string[]) => void) | undefined;
@@ -1572,71 +1519,6 @@ export class RuntimeKernel implements RuntimeKernelLike {
       pullSteering = () => messageOwner?.pull() ?? [];
       ackSteering = (leaseIds) => messageOwner?.ack(leaseIds);
       nackSteering = (leaseIds) => messageOwner?.nack(leaseIds);
-    } else if (steering) {
-      const state = this.ensureSteering(sessionId);
-      state.sink = (event) => {
-        void sessionEvents.push(event).catch(() => {});
-      };
-      state.activeTurnId = run.turnId;
-      // Lease, don't consume: pulled messages move to in-flight and only an
-      // ack (durable + injected) removes them; a nack or a retract/clear/
-      // release reclaims them, so an abort window can never drop text.
-      pullSteering = () => {
-        const current = this.steeringBySession.get(sessionId);
-        if (!current || current.activeTurnId !== run.turnId) return [];
-        if (current.steering.length === 0) return [];
-        const leased = current.steering.splice(0);
-        current.inFlight.push(
-          ...leased.map((message) => ({ ...message, issuingTurnId: run.turnId })),
-        );
-        return leased.map((message) => ({ ...message }));
-      };
-      // Settlement is keyed by lease id + issuing turn, NOT by current
-      // ownership: an overlapping turn that takes the owner slot must not
-      // invalidate the issuer's ack (the message was delivered to ITS
-      // provider) or intercept its nack. A late settle for a reclaimed lease
-      // finds no match and is a no-op.
-      ackSteering = (leaseIds) => {
-        const current = this.steeringBySession.get(sessionId);
-        if (!current) return;
-        const ids = new Set(leaseIds);
-        const before = current.inFlight.length;
-        current.inFlight = current.inFlight.filter(
-          (message) => !(ids.has(message.id) && message.issuingTurnId === run.turnId),
-        );
-        if (current.inFlight.length !== before) this.emitQueueUpdate(sessionId, current);
-      };
-      nackSteering = (leaseIds) => {
-        const current = this.steeringBySession.get(sessionId);
-        if (!current) return;
-        const ids = new Set(leaseIds);
-        const returned = current.inFlight.filter(
-          (message) => ids.has(message.id) && message.issuingTurnId === run.turnId,
-        );
-        if (returned.length === 0) return;
-        current.inFlight = current.inFlight.filter(
-          (message) => !(ids.has(message.id) && message.issuingTurnId === run.turnId),
-        );
-        if (current.activeTurnId === run.turnId) {
-          // Back to the FRONT of the queue: a re-pull at the next step
-          // boundary preserves the user's original ordering.
-          current.steering = [
-            ...returned.map(({ id, messageId, content }) => ({ id, messageId, content })),
-            ...current.steering,
-          ];
-        } else {
-          // The issuer no longer owns the queue (an overlapping turn took
-          // over and possibly released): it will never pull again, so the
-          // steering queue would strand the text ownerless. The followup
-          // queue is its only safe home — the same direction a release-time
-          // fold takes.
-          current.followup = [
-            ...returned.map(({ id, messageId, content }) => ({ id, messageId, content })),
-            ...current.followup,
-          ];
-        }
-        this.emitQueueUpdate(sessionId, current);
-      };
     }
 
     const stopBackend = this.stopBackendFor(begin.backend);
@@ -1688,7 +1570,6 @@ export class RuntimeKernel implements RuntimeKernelLike {
           // under its Session admission gate. The outer finally remains an
           // idempotent backstop for paths that never reach this hook.
           if (messageOwner) owners.releaseMessage();
-          else if (steering) this.releaseSteeringTurn(sessionId, run.turnId);
           sessionEvents.close();
         } catch (error) {
           sessionEvents.fail(error);
@@ -1734,7 +1615,6 @@ export class RuntimeKernel implements RuntimeKernelLike {
           finalizeRun: () => owners.finalize(),
           releaseOwner: () => {
             if (messageOwner) owners.releaseMessage();
-            else if (steering) this.releaseSteeringTurn(sessionId, run.turnId);
           },
         });
       } finally {
@@ -2189,10 +2069,6 @@ export class RuntimeKernel implements RuntimeKernelLike {
   }
 
   private async stopSessionAttempt(sessionId: string, intent: SessionStopIntent): Promise<void> {
-    // Interrupt clears both queues before the abort lands; the emitted empty
-    // snapshot lets the UI collapse its pending bar, and callers refill their
-    // editor from the mirror captured before the clear.
-    this.clearSteering(sessionId);
     const failures: unknown[] = [];
     let operation = this.stopOperations.get(sessionId);
     try {
@@ -2487,177 +2363,6 @@ export class RuntimeKernel implements RuntimeKernelLike {
     );
   }
 
-  // --------------------------------------------------------------------------
-  // Steering / followup queues (authoritative source of truth)
-  // --------------------------------------------------------------------------
-
-  steer(sessionId: string, text: string): QueueEnqueueOutcome {
-    this.assertEmbeddedMessageQueue('steer');
-    // Steering's delivery contract is anchored to the runtime event ledger
-    // (fail-closed persist + durable-consume ack). Without a RuntimeEventStore
-    // that anchor does not exist — same condition as requireTerminalWrite —
-    // so fall back to a fresh turn, whose user message the SessionStore
-    // persists with the ordinary turn-open guarantee.
-    if (!this.deps.runtimeEventStore) return { kind: 'fallback' };
-    // Double responsibility (codex): with no live steering owner to inject
-    // into — the turn just ended, begin() failed, or only child/compact runs
-    // are active (they never consume this queue) — tell the caller to open a
-    // fresh turn instead so the message is never dropped.
-    const state = this.liveSteeringState(sessionId);
-    if (!state) return { kind: 'fallback' };
-    const messageId = this.deps.newId();
-    state.steering.push({ id: messageId, messageId, content: { text } });
-    this.emitQueueUpdate(sessionId, state);
-    return { kind: 'queued' };
-  }
-
-  queueMessage(sessionId: string, text: string): QueueEnqueueOutcome {
-    this.assertEmbeddedMessageQueue('queueMessage');
-    const state = this.liveSteeringState(sessionId);
-    if (!state) return { kind: 'fallback' };
-    const messageId = this.deps.newId();
-    state.followup.push({ id: messageId, messageId, content: { text } });
-    this.emitQueueUpdate(sessionId, state);
-    return { kind: 'queued' };
-  }
-
-  drainFollowup(sessionId: string): string | null {
-    this.assertEmbeddedMessageQueue('drainFollowup');
-    const state = this.steeringBySession.get(sessionId);
-    if (!state || state.followup.length === 0) return null;
-    const drained = state.followup.splice(0);
-    this.emitQueueUpdate(sessionId, state);
-    return drained.map((message) => message.content.text).join('\n\n');
-  }
-
-  retractQueue(sessionId: string): string {
-    this.assertEmbeddedMessageQueue('retractQueue');
-    const state = this.steeringBySession.get(sessionId);
-    if (!state) return '';
-    // Retract reclaims QUEUED messages only. pull() is the single atomic
-    // commit point of delivery: an in-flight lease is already committed to
-    // the running turn — its durable append may land at any moment, so
-    // handing its text back to the user here would refill AND execute the
-    // same directive. An in-flight lease settles only by the persistence
-    // fact (ack when the ledger owns it, nack back to a queue otherwise).
-    const all = [
-      ...state.steering.map((message) => message.content.text),
-      ...state.followup.map((message) => message.content.text),
-    ];
-    state.steering = [];
-    state.followup = [];
-    this.emitQueueUpdate(sessionId, state);
-    return all.join('\n\n');
-  }
-
-  private ensureSteering(sessionId: string): SessionSteeringState {
-    const existing = this.steeringBySession.get(sessionId);
-    if (existing) return existing;
-    const created: SessionSteeringState = { steering: [], inFlight: [], followup: [] };
-    this.steeringBySession.set(sessionId, created);
-    return created;
-  }
-
-  private assertEmbeddedMessageQueue(operation: string): void {
-    if (this.deps.messageAuthority) {
-      throw new RuntimeMessageAuthorityInvariantError(
-        `Hosted Runtime cannot ${operation}; the Runtime Host owns message admission and queues`,
-      );
-    }
-  }
-
-  /**
-   * The session's steering state only while a steering-capable top-level run
-   * owns it (sink registered after begin() succeeded and not yet released).
-   * Child agent and compact runs never establish ownership, so their activity
-   * alone yields undefined — enqueue must fall back rather than strand text.
-   */
-  private liveSteeringState(sessionId: string): SessionSteeringState | undefined {
-    const state = this.steeringBySession.get(sessionId);
-    return state?.sink ? state : undefined;
-  }
-
-  private emitQueueUpdate(sessionId: string, state: SessionSteeringState): void {
-    state.sink?.({
-      type: 'queue_update',
-      id: this.deps.newId(),
-      turnId: state.activeTurnId ?? '',
-      ts: this.deps.now(),
-      steering: [
-        ...state.inFlight.map((message) => message.content.text),
-        ...state.steering.map((message) => message.content.text),
-      ],
-      followup: state.followup.map((message) => message.content.text),
-      steeringEntries: [
-        ...state.inFlight.map((message) => ({
-          entryId: message.id,
-          messageId: message.messageId,
-          content: message.content,
-          placement: 'current_turn' as const,
-          state: 'in_flight' as const,
-        })),
-        ...state.steering.map((message) => ({
-          entryId: message.id,
-          messageId: message.messageId,
-          content: message.content,
-          placement: 'current_turn' as const,
-          state: 'queued' as const,
-        })),
-      ],
-      followupEntries: state.followup.map((message) => ({
-        entryId: message.id,
-        messageId: message.messageId,
-        content: message.content,
-        placement: 'next_turn' as const,
-        state: 'queued' as const,
-      })),
-    });
-  }
-
-  private clearSteering(sessionId: string): void {
-    const state = this.steeringBySession.get(sessionId);
-    if (!state) return;
-    // Same commit-point rule as retractQueue: only QUEUED messages are
-    // clearable. An in-flight lease is already committed to the running
-    // turn's delivery and settles only by the persistence fact.
-    if (state.steering.length === 0 && state.followup.length === 0) return;
-    state.steering = [];
-    state.followup = [];
-    this.emitQueueUpdate(sessionId, state);
-  }
-
-  private releaseSteeringTurn(sessionId: string, turnId: string): void {
-    const state = this.steeringBySession.get(sessionId);
-    if (!state) return;
-    // A release folds only the leases THIS turn issued; an overlapping turn's
-    // in-flight lease stays for its issuer to settle (acked = delivered, so
-    // folding it into followup would redeliver an already-executed message).
-    const own = state.inFlight.filter((message) => message.issuingTurnId === turnId);
-    if (state.activeTurnId !== turnId) {
-      // Not (or no longer) the owner. The issuer's backend settles every
-      // lease before its turn ends, so `own` is normally empty; this is a
-      // backstop that keeps a never-settled lease from stranding invisibly.
-      if (own.length === 0) return;
-      state.inFlight = state.inFlight.filter((message) => message.issuingTurnId !== turnId);
-      state.followup = [...own, ...state.followup];
-      this.emitQueueUpdate(sessionId, state);
-      return;
-    }
-    // Stranded steering (arrived after the final step boundary, so no step is
-    // left to consume it) becomes the head of the followup queue instead of
-    // vanishing — the next turn opens with it first (grok-build safety). The
-    // migration is a queue change, so emit the final snapshot BEFORE the sink
-    // is cleared; otherwise observers stay on the stale pre-fold snapshot.
-    if (state.steering.length > 0 || own.length > 0) {
-      state.followup = [...own, ...state.steering, ...state.followup];
-      state.inFlight = state.inFlight.filter((message) => message.issuingTurnId !== turnId);
-      state.steering = [];
-      this.emitQueueUpdate(sessionId, state);
-    }
-    state.sink = undefined;
-    state.activeTurnId = undefined;
-  }
-
   hasActiveRuns(sessionId: string): boolean {
     return this.backendGenerationsFor(sessionId).some((active) => active.activeRuns.size > 0);
   }
@@ -2720,7 +2425,6 @@ export class RuntimeKernel implements RuntimeKernelLike {
 
   private async disposeBackendNow(sessionId: string): Promise<BackendDisposalOutcome> {
     const generations = this.backendGenerationsFor(sessionId);
-    this.steeringBySession.delete(sessionId);
     this.historyCompactCoordinator.clear(sessionId);
     let disposalError: unknown;
     for (const active of generations) {

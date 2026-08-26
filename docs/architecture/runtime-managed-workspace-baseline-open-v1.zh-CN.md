@@ -143,8 +143,10 @@ M0 baseline 的逻辑 parent 是 empty tree，因此：
 manifest 以 Buffer 读取 Git `ls-tree -r -z`，按 Git canonical 顺序记录每个 entry 的 `mode`、
 `objectType`、`oid` 和 `pathBytesBase64`。v1 为了保证 Git path 与 Node/host 路径语义一致，会严格
 拒绝不能无损解码并 round-trip 的非 UTF-8 path；不会把 replacement character 写进摘要。M0 只接受
-普通 blob mode `100644` / `100755`；symlink、submodule、special mode、
-`.gitattributes` 与 case collision 继续由 Git Workspace Service 在 receipt 生成前拒绝。
+普通 blob mode `100644` / `100755`；symlink、submodule、special mode 与 case collision 继续由 Git
+Workspace Service 在 receipt 生成前拒绝。现有 Git CLI adapter 仍拒绝 `.gitattributes`；替代它的
+Gitoxide data plane 只接受 managed tree policy v2 已验证的确定性 attributes 子集，不能把两条路径的
+receipt 或 materialization profile 混用。
 
 该摘要证明的是 Git object delta，不是 checkout 文件字节扫描，也不把 ignored/untracked 内容纳入
 canonical baseline。

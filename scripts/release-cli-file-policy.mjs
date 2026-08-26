@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { lstatSync, readFileSync, realpathSync } from 'node:fs';
+import { existsSync, lstatSync, readFileSync, realpathSync } from 'node:fs';
 import { isAbsolute, join, relative, resolve, sep } from 'node:path';
 
 const DEVELOPMENT_DIRECTORIES = new Set([
@@ -242,5 +242,19 @@ export function isMakaDevelopmentArtifact(relativePath) {
     /\.(?:spec|test)\.js$/.test(file) ||
     /\.d\.ts(?:\.map)?$/.test(file) ||
     /\.js\.map$/.test(file)
+  );
+}
+
+export function isCurrentDevelopmentJavaScript(
+  workspaceRoot,
+  relativePath,
+  generatedFiles = new Set(),
+) {
+  const portablePath = relativePath.split(/[\\/]/u).join('/');
+  if (generatedFiles.has(portablePath)) return true;
+  if (!portablePath.endsWith('.js')) return false;
+  const sourcePath = portablePath.slice(0, -'.js'.length);
+  return ['.ts', '.tsx', '.mts', '.cts'].some((extension) =>
+    existsSync(join(workspaceRoot, 'src', `${sourcePath}${extension}`)),
   );
 }

@@ -21,10 +21,13 @@ import { truncateUtf8 } from '@maka/core/diagnostic-log';
 import { isDeepStrictEqual } from 'node:util';
 import {
   encodeRuntimeHostServiceManagementFrame,
+  RUNTIME_HOST_OPERATOR_CAPABILITY_REQUEST_ENV,
+  RUNTIME_HOST_OPERATOR_UPDATE_SCHEDULER_CAPABILITY,
   RUNTIME_HOST_SERVICE_ERROR_CODE_MAX_BYTES,
   RUNTIME_HOST_SERVICE_ERROR_MESSAGE_MAX_BYTES,
   type RuntimeHostManagedUpdatePolicy,
   type RuntimeHostServiceManagementFrame,
+  type RuntimeHostUpdateSchedulerState,
 } from '@maka/runtime-host/operator';
 import {
   manageRuntimeHostService,
@@ -75,6 +78,7 @@ interface RuntimeHostUpdateReconcileCliOptions {
   readonly framed: boolean;
   readonly clientDataRoot: string;
   readonly defaultRootPath: string;
+  readonly expectedTarget?: RuntimeHostManagedServiceTarget;
 }
 
 interface RuntimeHostUpdateReconciliationDeps {
@@ -96,44 +100,54 @@ export async function runManagedRuntimeHostUpdatePolicyCli(
   const deps = reconciliationDeps(overrides);
   try {
     const requestedPolicy = options.policy;
-    const record = requestedPolicy
-      ? await deps.withDeploymentLock(options.clientDataRoot, async () => {
-          if (requestedPolicy.kind === 'manual') {
-            const status = await readManagedServiceStatus(options, deps);
-            const managedDeploymentRoot = status.service.config?.managedDeploymentRoot;
-            if (managedDeploymentRoot) {
-              await deps.writePolicy(managedDeploymentRoot, null);
-            }
-            return null;
-          }
-          const expectedTarget = options.expectedTarget;
-          if (!expectedTarget) {
-            throw new RuntimeHostUpdatePolicyError(
-              'invalid_update_policy',
-              'An automatic Runtime Host update policy requires the expected managed service target',
-            );
-          }
-          const status = await readManagedServiceStatus(options, deps, expectedTarget);
-          const managedDeploymentRoot = status.service.config?.managedDeploymentRoot;
-          if (!status.service.installed || !managedDeploymentRoot) {
-            throw new RuntimeHostServiceManagerError(
-              'not_installed',
-              'An automatic update policy requires a Maka-managed Runtime Host service',
-            );
-          }
-          const next: RuntimeHostManagedUpdatePolicyRecord = {
-            schemaVersion: 1,
-            policy: requestedPolicy,
-            target: {
-              ...expectedTarget,
-              rootPath: status.service.config.rootPath,
-            },
-          };
-          await deps.writePolicy(managedDeploymentRoot, next);
-          return next;
-        })
-      : await readCurrentUpdatePolicy(options, deps);
-    writeFrame(updatePolicyResult(record), options, deps);
+    const snapshot = await deps.withDeploymentLock(options.clientDataRoot, async () => {
+      const expectedTarget = options.expectedTarget;
+      const status = await readManagedServiceStatus(options, deps, expectedTarget);
+      const managedDeploymentRoot = status.service.config?.managedDeploymentRoot;
+      const updateSchedulerState = await inspectUpdateScheduler(options, status, deps);
+      if (!requestedPolicy) {
+        return {
+          record:
+            status.service.installed && managedDeploymentRoot
+              ? await deps.readPolicy(managedDeploymentRoot)
+              : null,
+          updateSchedulerState,
+        };
+      }
+      if (requestedPolicy.kind === 'manual') {
+        if (managedDeploymentRoot) await deps.writePolicy(managedDeploymentRoot, null);
+        return { record: null, updateSchedulerState };
+      }
+      if (!expectedTarget) {
+        throw new RuntimeHostUpdatePolicyError(
+          'invalid_update_policy',
+          'An automatic Runtime Host update policy requires the expected managed service target',
+        );
+      }
+      if (!status.service.installed || !managedDeploymentRoot) {
+        throw new RuntimeHostServiceManagerError(
+          'not_installed',
+          'An automatic update policy requires a Maka-managed Runtime Host service',
+        );
+      }
+      if (updateSchedulerState !== 'ready') {
+        throw new RuntimeHostServiceManagerError(
+          'target_mismatch',
+          'The Runtime Host update scheduler must be running before enabling automatic updates',
+        );
+      }
+      const record: RuntimeHostManagedUpdatePolicyRecord = {
+        schemaVersion: 1,
+        policy: requestedPolicy,
+        target: {
+          ...expectedTarget,
+          rootPath: status.service.config.rootPath,
+        },
+      };
+      await deps.writePolicy(managedDeploymentRoot, record);
+      return { record, updateSchedulerState };
+    });
+    writeFrame(updatePolicyResult(snapshot.record, snapshot.updateSchedulerState), options, deps);
     return 0;
   } catch (error) {
     writeFrame(updatePolicyError(error), options, deps);
@@ -147,21 +161,28 @@ export async function runManagedRuntimeHostUpdateReconcileCli(
 ): Promise<number> {
   const deps = reconciliationDeps(overrides);
   try {
-    const status = await readManagedServiceStatus(options, deps);
-    const managedDeploymentRoot = status.service.config?.managedDeploymentRoot;
-    const policy =
-      status.service.installed && managedDeploymentRoot
-        ? {
-            root: managedDeploymentRoot,
-            record: await deps.readPolicy(managedDeploymentRoot),
-          }
-        : undefined;
+    const snapshot = await deps.withDeploymentLock(options.clientDataRoot, async () => {
+      const status = await readManagedServiceStatus(options, deps, options.expectedTarget);
+      const managedDeploymentRoot = status.service.config?.managedDeploymentRoot;
+      return {
+        updateSchedulerState: await inspectUpdateScheduler(options, status, deps),
+        policy:
+          status.service.installed && managedDeploymentRoot
+            ? {
+                root: managedDeploymentRoot,
+                record: await deps.readPolicy(managedDeploymentRoot),
+              }
+            : undefined,
+      };
+    });
+    const { policy, updateSchedulerState } = snapshot;
     if (!policy?.record) {
       writeFrame(
         {
           schemaVersion: 1,
           kind: 'result',
           action: 'reconcile_update',
+          ...requestedUpdateSchedulerState(updateSchedulerState),
           updatePolicy: { policy: { kind: 'manual' } },
           reconciliation: { kind: 'disabled' },
         },
@@ -184,6 +205,7 @@ export async function runManagedRuntimeHostUpdateReconcileCli(
           schemaVersion: 1,
           kind: 'result',
           action: 'reconcile_update',
+          ...requestedUpdateSchedulerState(updateSchedulerState),
           updatePolicy,
           service: selection.service,
           reconciliation: {
@@ -232,7 +254,7 @@ export async function runManagedRuntimeHostUpdateReconcileCli(
         },
       },
       (frame) => {
-        const mapped = reconcileFrame(frame, updatePolicy);
+        const mapped = reconcileFrame(frame, updatePolicy, updateSchedulerState);
         writeFrame(mapped, options, deps);
         if (mapped.kind !== 'progress') terminal = mapped;
       },
@@ -245,17 +267,6 @@ export async function runManagedRuntimeHostUpdateReconcileCli(
     writeFrame(reconcileError(error), options, deps);
     return 1;
   }
-}
-
-async function readCurrentUpdatePolicy(
-  options: RuntimeHostUpdatePolicyCliOptions,
-  deps: RuntimeHostUpdateReconciliationDeps,
-): Promise<RuntimeHostManagedUpdatePolicyRecord | null> {
-  const status = await readManagedServiceStatus(options, deps);
-  const managedDeploymentRoot = status.service.config?.managedDeploymentRoot;
-  return status.service.installed && managedDeploymentRoot
-    ? await deps.readPolicy(managedDeploymentRoot)
-    : null;
 }
 
 function readManagedServiceStatus(
@@ -280,6 +291,36 @@ function readManagedServiceStatus(
   );
 }
 
+async function inspectUpdateScheduler(
+  options: Pick<RuntimeHostUpdatePolicyCliOptions, 'clientDataRoot'>,
+  status: Awaited<ReturnType<typeof readManagedServiceStatus>>,
+  deps: RuntimeHostUpdateReconciliationDeps,
+): Promise<RuntimeHostUpdateSchedulerState> {
+  const config = status.service.config;
+  if (!status.service.installed || !config?.managedDeploymentRoot) return 'needs_repair';
+  const backend = deps.createBackend(resolveRuntimeHostManagedServiceId(options.clientDataRoot));
+  try {
+    await backend.verifyDeployment(config, { requireSchedulerReady: true });
+    return 'ready';
+  } catch (error) {
+    if (!(error instanceof RuntimeHostServiceManagerError)) throw error;
+    if (error.code === 'invalid_launch') return 'needs_repair';
+    if (error.code !== 'target_mismatch') throw error;
+  }
+  try {
+    await backend.verifyDeployment(config);
+    return 'inactive';
+  } catch (error) {
+    if (
+      error instanceof RuntimeHostServiceManagerError &&
+      (error.code === 'target_mismatch' || error.code === 'invalid_launch')
+    ) {
+      return 'needs_repair';
+    }
+    throw error;
+  }
+}
+
 function reconciliationDeps(
   overrides: Partial<RuntimeHostUpdateReconciliationDeps>,
 ): RuntimeHostUpdateReconciliationDeps {
@@ -299,11 +340,13 @@ function reconciliationDeps(
 
 function updatePolicyResult(
   record: RuntimeHostManagedUpdatePolicyRecord | null,
+  updateSchedulerState: RuntimeHostUpdateSchedulerState,
 ): UpdatePolicyFrame {
   return {
     schemaVersion: 1,
     kind: 'result',
     action: 'update_policy',
+    ...requestedUpdateSchedulerState(updateSchedulerState),
     updatePolicy: policyResult(record),
   };
 }
@@ -325,6 +368,7 @@ function policySelector(
 function reconcileFrame(
   frame: RuntimeHostUpdateFrame,
   updatePolicy: ReturnType<typeof policyResult>,
+  observedSchedulerState: RuntimeHostUpdateSchedulerState,
 ): ReconcileUpdateFrame {
   if (frame.kind === 'progress') {
     return { ...frame, action: 'reconcile_update' };
@@ -336,10 +380,28 @@ function reconcileFrame(
     schemaVersion: 1,
     kind: 'result',
     action: 'reconcile_update',
+    ...requestedUpdateSchedulerState(
+      frame.update.kind === 'updated' ||
+        frame.update.kind === 'repaired' ||
+        frame.update.kind === 'already_current'
+        ? 'ready'
+        : observedSchedulerState,
+    ),
     updatePolicy,
     service: frame.service,
     reconciliation: frame.update,
   };
+}
+
+function requestedUpdateSchedulerState(updateSchedulerState: RuntimeHostUpdateSchedulerState): {
+  readonly updateSchedulerState?: RuntimeHostUpdateSchedulerState;
+} {
+  return process.env[RUNTIME_HOST_OPERATOR_CAPABILITY_REQUEST_ENV] ===
+    RUNTIME_HOST_OPERATOR_UPDATE_SCHEDULER_CAPABILITY
+    ? {
+        updateSchedulerState,
+      }
+    : {};
 }
 
 function updatePolicyError(error: unknown): UpdatePolicyFrame {

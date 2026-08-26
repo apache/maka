@@ -85,6 +85,11 @@ const zhCopy = {
     scheduledTask: "定时任务",
     viewScheduledTasks: "查看定时任务",
   },
+  previousMainProcessInterruption: {
+    title: "Maka 已恢复",
+    description: "上次退出未完成。",
+    copyDiagnostics: "复制报告",
+  },
   conversationExport: {
     exported: (date: string) => `由 Maka 于 ${date} 导出。`,
     you: "你",
@@ -160,6 +165,11 @@ const enCopy: ShellRemainingCopy = {
   notifications: {
     scheduledTask: "Scheduled task",
     viewScheduledTasks: "View scheduled tasks",
+  },
+  previousMainProcessInterruption: {
+    title: "Maka recovered",
+    description: "The previous shutdown was incomplete.",
+    copyDiagnostics: "Copy report",
   },
   conversationExport: {
     exported: (date) => `Exported ${date} from Maka.`,

@@ -53,13 +53,14 @@ import { DesktopRuntimeHostClient } from "./runtime-host-client.js";
 import type {
   SessionCopyCleanupAuthority,
   SessionCopyCleanupDisposition,
-} from "./quote-companion-cleanup.js";
+} from "@maka/storage/session-copy-cleanup";
 import {
   createDesktopNativeCapabilityProvider,
   type DesktopNativeCapabilityProvider,
   type DesktopNativeCapabilityProviderInput,
 } from "./runtime-host-native-capabilities.js";
 import { registerRuntimeHostSessionCatalogIpc } from "./runtime-host-session-catalog-ipc-main.js";
+import { registerRuntimeHostWorkHubIpc } from "./runtime-host-workhub-ipc-main.js";
 import { registerRuntimeHostExternalSessionsIpc } from "./runtime-host-external-sessions-ipc-main.js";
 import {
   registerRuntimeHostSessionDomainsIpc,
@@ -678,6 +679,7 @@ export async function createDesktopRuntimeHostCandidate(
       },
       ipc,
     );
+    registerRuntimeHostWorkHubIpc(client, ipc);
     registerRuntimeHostExternalSessionsIpc(
       {
         client,

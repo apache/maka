@@ -676,6 +676,26 @@ describe('Host Client Capability coordinator', () => {
     await coordinator.close();
   });
 
+  test('rebuilds a multi-source external root binding from its durable execution contract', async () => {
+    const coordinator = createCoordinator();
+    const connection = coordinator.attachConnection(
+      clientCapabilityConnectionIdentity('connection-a'),
+      { send: async () => {} },
+    );
+    await replace(coordinator, 'connection-a', 'registration-a', 'inspect');
+
+    await coordinator.bindDurableRoot({
+      sessionId: 'session-a',
+      execution: { kind: 'external_message' },
+    });
+
+    const snapshot = coordinator.snapshotForSession('session-a');
+    assert.deepEqual(snapshot?.registrationIds, ['registration-a']);
+    snapshot?.release();
+    await connection.close();
+    await coordinator.close();
+  });
+
   test('retires Session bindings after explicit replacement and unregister', async () => {
     const coordinator = createCoordinator();
     const connection = coordinator.attachConnection(

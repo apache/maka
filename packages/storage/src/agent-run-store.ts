@@ -1747,7 +1747,8 @@ function assertRootTurnAdmissionContract(admission: RootTurnAdmission): void {
   const providerRetry = execution.kind === 'linked_child_provider_retry';
   const inputlessExecution =
     execution.kind === 'safe_boundary_continuation' || execution.kind === 'context_compact';
-  const messageLessExecution = inputlessExecution || providerRetry;
+  const sourceBatch = execution.kind === 'external_message' && admission.sourceMessages.length > 1;
+  const messageLessExecution = inputlessExecution || providerRetry || sourceBatch;
   if (execution.kind === 'agent_graph_supervisor_wake') {
     if (
       admission.turnOrchestration?.mode !== 'graph' ||
@@ -1913,6 +1914,15 @@ function normalizeRootExecutionDescriptor(value: unknown): RootExecutionDescript
       ...(value.inputDigest !== undefined ? { inputDigest: value.inputDigest } : {}),
       ...(value.maxSteps !== undefined ? { maxSteps: value.maxSteps } : {}),
       ...(origin !== undefined ? { origin: Object.freeze(origin) } : {}),
+    });
+  }
+  if (value.kind === 'workhub_coordination') {
+    if (!hasExactKeys(value, ['kind', 'inputDigest']) || !isSha256Digest(value.inputDigest)) {
+      throw new Error('Invalid root execution descriptor');
+    }
+    return Object.freeze({
+      kind: 'workhub_coordination',
+      inputDigest: value.inputDigest,
     });
   }
   if (value.kind === 'regenerate') {

@@ -86,6 +86,10 @@
   text-align: center;
 }
 
+.workhub-coordination-retry {
+  margin-top: var(--space-4, 16px);
+}
+
 .workhub-turns {
   display: flex;
   flex-direction: column;

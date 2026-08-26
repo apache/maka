@@ -220,7 +220,7 @@ test('a late owned candidate stays alive after another client adopts it', {
       assert.equal(released, 1);
       assert.equal(settled, 0);
 
-      const diagnostics = await adopted.connection.queryHostDiagnostics();
+      const diagnostics = await adopted.connection.request('host.diagnostics.query', {});
       assert.equal(diagnostics.pid, host.pid);
       assert.doesNotThrow(() => process.kill(host.pid, 0));
     } finally {

@@ -86,15 +86,20 @@ export * from './session-transcript.js';
 export * from './session-turns.js';
 export * from './task-ledger.js';
 export * from './workspace.js';
+export * from './workhub-coordination.js';
 export * from './websocket-path.js';
 
 export const RUNTIME_HOST_REGISTRATION_SCHEMA_VERSION = 1 as const;
 export const RUNTIME_HOST_PROTOCOL_VERSION = 0 as const;
 // Increment when the same protocol version no longer guarantees safe Client-Host
 // interoperability. Mismatches are rejected before domain commands are admitted.
-export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 49 as const;
-// 49: Session mailbox target discovery and durable cross-Session delivery.
-// Epoch-48 peers do not know these closed operation keys.
+export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 51 as const;
+// 51: Session mailbox target discovery and durable cross-Session delivery.
+// Epoch-50 peers do not know these closed operation keys or trusted provenance.
+// 50: WorkHub can append durable coordination summaries and admit tool-free
+// answers through its reserved Coordination Session authority.
+// 49: WorkHub resolves one durable Coordination Session per Runtime Host.
+// Older peers do not know the operation or the hidden Session role.
 // 48: Session branch creation accepts an explicit Side Conversation intent.
 // Older peers reject the strict input shape or cannot apply its snapshot semantics.
 // 47: Project registration can carry an explicit location preference. Epoch-46

@@ -48,6 +48,14 @@ const HEADLESS_CODING_V1_BASH_PARAMETERS = z
   })
   .strict();
 
+const WORKHUB_COORDINATION_V1_SYSTEM_PROMPT = [
+  'You are the conversational coordinator for WorkHub.',
+  'Answer ordinary questions directly and help the user clarify intent.',
+  'Reply in the language used by the user unless they ask for another language.',
+  'This conversation has no tools, filesystem authority, or authority over ordinary Sessions.',
+  'Never claim to have inspected files, run commands, changed a Session, or completed concrete work.',
+].join(' ');
+
 export interface HostedExecutionRunProfile {
   readonly toolNames: readonly string[];
   readonly systemPrompt: string;
@@ -62,6 +70,13 @@ export function hostedExecutionRunProfile(
     return {
       toolNames: HEADLESS_CODING_V1_TOOL_NAMES,
       systemPrompt: HEADLESS_CODING_V1_SYSTEM_PROMPT,
+      memoryExtraction: false,
+    };
+  }
+  if (profile === 'workhub-coordination-v1') {
+    return {
+      toolNames: [],
+      systemPrompt: WORKHUB_COORDINATION_V1_SYSTEM_PROMPT,
       memoryExtraction: false,
     };
   }

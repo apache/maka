@@ -129,12 +129,10 @@ export function mapSessionEventToRuntimeEvent(
   ctx: RuntimeEventMapContext,
   memory: SessionEventMapMemory = createSessionEventMapMemory(),
 ): RuntimeEvent {
-  if (event.type === 'queue_update') {
-    // Not backend-mappable by design: the kernel is queue_update's only
-    // legal producer and pushes it directly into the turn stream. The flow
-    // drops a backend-yielded one at the ingress (see run()), so reaching
-    // this line means a caller bypassed that authority boundary.
-    throw new Error('queue_update is not a backend event: the kernel is its only legal producer');
+  if (event.type === 'queue_update' || event.type === 'message_admission') {
+    // These are Host/kernel projection facts, not backend events. The live
+    // ingress drops them, so reaching this line bypassed that authority boundary.
+    throw new Error(`${event.type} is not a backend event`);
   }
   if (isLegacyPermissionSessionEvent(event)) {
     throw new Error(`${event.type} is a legacy permission event and is not backend-mappable`);
@@ -144,7 +142,11 @@ export function mapSessionEventToRuntimeEvent(
 }
 
 export function isLiveBackendSessionEvent(event: SessionEvent): event is BackendSessionEvent {
-  return event.type !== 'queue_update' && !isLegacyPermissionSessionEvent(event);
+  return (
+    event.type !== 'queue_update' &&
+    event.type !== 'message_admission' &&
+    !isLegacyPermissionSessionEvent(event)
+  );
 }
 
 function isLegacyPermissionSessionEvent(event: SessionEvent): event is Extract<

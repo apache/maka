@@ -27,6 +27,10 @@ import {
   projectWorkHubSessionTurns,
   type WorkHubDesktopSession,
 } from '../../renderer/workhub-session-port.js';
+import {
+  createDesktopWorkHubCoordinationPort,
+  projectWorkHubCoordinationTurns,
+} from '../../renderer/workhub-coordination-port.js';
 import { WorkHubSessionSubmitError } from '../../renderer/workhub-controller.js';
 
 function desktopSession(
@@ -93,6 +97,79 @@ function transcriptsWith(messages: readonly StoredMessage[]) {
     },
   };
 }
+
+test('projects the durable Coordination transcript into the WorkHub conversation', () => {
+  assert.deepEqual(projectWorkHubCoordinationTurns([
+    { type: 'user', id: 'user-1', turnId: 'turn-1', ts: 10, text: 'What is next?' },
+    {
+      type: 'assistant',
+      id: 'assistant-1',
+      turnId: 'turn-1',
+      ts: 11,
+      text: 'Slice 3 is next.',
+      modelId: 'test-model',
+    },
+    {
+      type: 'turn_state',
+      id: 'state-1',
+      turnId: 'turn-1',
+      ts: 12,
+      status: 'completed',
+      partialOutputRetained: true,
+    },
+  ]), [{
+    messageId: 'user-1',
+    turnId: 'turn-1',
+    text: 'What is next?',
+    result: 'Slice 3 is next.',
+    state: 'completed',
+    updatedAt: 11,
+  }]);
+});
+
+test('Coordination transcript adapter emits an initial empty ready snapshot and closes cleanly', async () => {
+  const sessionId = desktopSessionKey({ hostId: 'local-host', sessionId: 'coordination' });
+  const snapshots: unknown[] = [];
+  let closes = 0;
+  const adapter = createDesktopWorkHubCoordinationPort({
+    sessionId,
+    transcripts: {
+      open: async (requestedSessionId, handler) => {
+        assert.equal(requestedSessionId, sessionId);
+        handler({
+          sessionId: 'coordination',
+          deliverySequence: 1,
+          generation: 'generation-1',
+          hostEpoch: 'epoch-1',
+          durableThrough: null,
+          fragments: [],
+          evictedDurableSequences: [],
+          completedOverlayMessageIds: [],
+          hasOlder: false,
+          hasNewer: false,
+          reset: true,
+          ready: true,
+        });
+        return {
+          sessionId,
+          generation: 'generation-1',
+          hostEpoch: 'epoch-1',
+          readThroughMessageId: null,
+          loadBefore: async () => {},
+          loadAround: async () => {},
+          close: async () => { closes += 1; },
+        };
+      },
+    },
+    answer: async (input) => ({ turnId: input.turnId }),
+    record: async (input) => ({ turnId: input.turnId }),
+  });
+
+  const handle = await adapter.open((turns) => snapshots.push(turns), () => {});
+  assert.deepEqual(snapshots, [[]]);
+  await handle.close();
+  assert.equal(closes, 1);
+});
 
 test('projects durable Session messages into an ordered WorkHub conversation', () => {
   const turns = projectWorkHubSessionTurns({

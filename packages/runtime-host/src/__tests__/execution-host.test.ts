@@ -560,7 +560,8 @@ test('two Clients share one execution after the starting Client disconnects', as
     const turnId = randomUUID();
 
     const started = requireStartedTurn(
-      await first.startTurn(
+      await first.request(
+        'turn.start',
         {
           sessionId: fixture.sessionId,
           turnId,
@@ -586,7 +587,8 @@ test('two Clients share one execution after the starting Client disconnects', as
     const secondProbe = new SubscriptionProbe(secondSubscription);
     await assert.rejects(
       () =>
-        second.startTurn(
+        second.request(
+          'turn.start',
           {
             sessionId: fixture.sessionId,
             turnId: randomUUID(),
@@ -611,13 +613,14 @@ test('two Clients share one execution after the starting Client disconnects', as
       }),
       pending,
     );
-    const observed = await second.queryTurn({
+    const observed = await second.request('turn.query', {
       sessionId: fixture.sessionId,
       turnId,
     });
     assert.equal(observed.runId, started.runId);
     assert.ok(observed.status === 'running' || observed.status === 'waiting_for_user');
-    const stopped = await second.stopTurn(
+    const stopped = await second.request(
+      'turn.stop',
       {
         sessionId: fixture.sessionId,
         turnId,
@@ -651,7 +654,8 @@ test('two Clients share one execution after the starting Client disconnects', as
 
     const nextTurnId = randomUUID();
     const next = requireStartedTurn(
-      await second.startTurn(
+      await second.request(
+        'turn.start',
         {
           sessionId: fixture.sessionId,
           turnId: nextTurnId,
@@ -662,7 +666,8 @@ test('two Clients share one execution after the starting Client disconnects', as
     );
     assert.deepEqual(
       requireStartedTurn(
-        await second.startTurn(
+        await second.request(
+          'turn.start',
           {
             sessionId: fixture.sessionId,
             turnId,
@@ -674,20 +679,21 @@ test('two Clients share one execution after the starting Client disconnects', as
       stopped,
     );
     assert.deepEqual(
-      await second.stopTurn({
+      await second.request('turn.stop', {
         sessionId: fixture.sessionId,
         turnId,
         runId: started.runId,
       }),
       stopped,
     );
-    const nextObserved = await second.queryTurn({
+    const nextObserved = await second.request('turn.query', {
       sessionId: fixture.sessionId,
       turnId: nextTurnId,
     });
     assert.equal(nextObserved.runId, next.runId);
     assert.ok(nextObserved.status === 'running' || nextObserved.status === 'waiting_for_user');
-    await second.stopTurn(
+    await second.request(
+      'turn.stop',
       {
         sessionId: fixture.sessionId,
         turnId: nextTurnId,
@@ -719,7 +725,8 @@ test('regenerate replays the durable source content with one recoverable root id
     const sourceTurnId = randomUUID();
     const regeneratedTurnId = randomUUID();
     try {
-      await client.startTurn(
+      await client.request(
+        'turn.start',
         {
           sessionId: fixture.sessionId,
           turnId: sourceTurnId,
@@ -729,7 +736,8 @@ test('regenerate replays the durable source content with one recoverable root id
       );
       await waitForTerminalTurn(client, fixture.sessionId, sourceTurnId);
 
-      const started = await client.regenerateTurn(
+      const started = await client.request(
+        'turn.regenerate',
         {
           sessionId: fixture.sessionId,
           sourceTurnId,
@@ -740,7 +748,7 @@ test('regenerate replays the durable source content with one recoverable root id
       const terminal = await waitForTerminalTurn(client, fixture.sessionId, regeneratedTurnId);
       assert.equal(terminal.runId, started.runId);
       assert.deepEqual(
-        await client.regenerateTurn({
+        await client.request('turn.regenerate', {
           sessionId: fixture.sessionId,
           sourceTurnId,
           turnId: regeneratedTurnId,
@@ -772,14 +780,14 @@ test('regenerate rejects self-source and legacy target collisions without draini
     const firstHost = await fixture.startHost();
     const first = await connectClient(fixture.root);
     const sourceTurnId = randomUUID();
-    await first.startTurn({
+    await first.request('turn.start', {
       sessionId: fixture.sessionId,
       turnId: sourceTurnId,
       content: { text: 'source request' },
     });
     await waitForTerminalTurn(first, fixture.sessionId, sourceTurnId);
     await assert.rejects(
-      first.regenerateTurn({
+      first.request('turn.regenerate', {
         sessionId: fixture.sessionId,
         sourceTurnId,
         turnId: sourceTurnId,
@@ -794,7 +802,7 @@ test('regenerate rejects self-source and legacy target collisions without draini
     const second = await connectClient(fixture.root);
     try {
       await assert.rejects(
-        second.regenerateTurn({
+        second.request('turn.regenerate', {
           sessionId: fixture.sessionId,
           sourceTurnId,
           turnId: legacy.sourceTurnId,
@@ -802,7 +810,7 @@ test('regenerate rejects self-source and legacy target collisions without draini
         operationError('operation_conflict'),
       );
       const followingTurnId = randomUUID();
-      await second.startTurn({
+      await second.request('turn.start', {
         sessionId: fixture.sessionId,
         turnId: followingTurnId,
         content: { text: 'Host remains available' },
@@ -831,12 +839,17 @@ test('context actions share root admission and expose backend capability honestl
     const turnId = randomUUID();
     const unavailableTurnId = randomUUID();
     try {
-      assert.deepEqual(await first.queryContextDiagnostics({ sessionId: fixture.sessionId }), {
-        status: 'unavailable',
-        reason: 'no_completed_request',
-      });
+      assert.deepEqual(
+        await first.request('context.diagnostics.query', {
+          sessionId: fixture.sessionId,
+        }),
+        {
+          status: 'unavailable',
+          reason: 'no_completed_request',
+        },
+      );
       const started = requireStartedTurn(
-        await first.startTurn({
+        await first.request('turn.start', {
           sessionId: fixture.sessionId,
           turnId,
           content: { text: FAKE_ASK_USER_QUESTION_PROMPT },
@@ -844,26 +857,26 @@ test('context actions share root admission and expose backend capability honestl
       );
       await waitForRunningTurn(second, fixture.sessionId, turnId);
       await assert.rejects(
-        second.compactContext({
+        second.request('context.compact', {
           sessionId: fixture.sessionId,
           turnId: randomUUID(),
         }),
         operationError('session_busy'),
       );
-      await second.stopTurn({
+      await second.request('turn.stop', {
         sessionId: fixture.sessionId,
         turnId,
         runId: started.runId,
       });
       await assert.rejects(
-        second.compactContext({
+        second.request('context.compact', {
           sessionId: fixture.sessionId,
           turnId: unavailableTurnId,
         }),
         operationError('operation_unavailable'),
       );
       await assert.rejects(
-        second.queryContextDiagnostics({ sessionId: 'missing-session' }),
+        second.request('context.diagnostics.query', { sessionId: 'missing-session' }),
         operationError('not_found'),
       );
     } finally {
@@ -884,7 +897,7 @@ test('a disconnected Client leaves a durable Interaction that another Client can
     const first = await connectClient(fixture.root);
     const turnId = randomUUID();
     const started = requireStartedTurn(
-      await first.startTurn({
+      await first.request('turn.start', {
         sessionId: fixture.sessionId,
         turnId,
         content: { text: FAKE_ASK_USER_QUESTION_PROMPT },
@@ -978,7 +991,10 @@ test('a disconnected Client leaves a durable Interaction that another Client can
       }),
       winner,
     );
-    assert.deepEqual(await observer.queryTurn({ sessionId: fixture.sessionId, turnId }), completed);
+    assert.deepEqual(
+      await observer.request('turn.query', { sessionId: fixture.sessionId, turnId }),
+      completed,
+    );
     await observer.close();
     await fixture.stopHost(secondHost);
   });
@@ -997,7 +1013,7 @@ test('two UDS Clients settle one hosted sandbox boundary and resume its exact Ru
     const probe = new SubscriptionProbe(subscription);
     const turnId = randomUUID();
     const started = requireStartedTurn(
-      await starter.startTurn({
+      await starter.request('turn.start', {
         sessionId: fixture.sessionId,
         turnId,
         content: { text: FAKE_ASK_SANDBOX_BOUNDARY_PROMPT },
@@ -1062,7 +1078,10 @@ test('two UDS Clients settle one hosted sandbox boundary and resume its exact Ru
       }),
       firstWinner,
     );
-    assert.deepEqual(await observer.queryTurn({ sessionId: fixture.sessionId, turnId }), completed);
+    assert.deepEqual(
+      await observer.request('turn.query', { sessionId: fixture.sessionId, turnId }),
+      completed,
+    );
     await observer.close();
     await fixture.stopHost(secondHost);
   });

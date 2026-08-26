@@ -830,6 +830,22 @@ export class DesktopRuntimeHostClient {
     );
   }
 
+  resolveWorkHubCoordinationSession() {
+    return this.request("workhub.coordination.resolve", {});
+  }
+
+  answerWorkHubCoordination(
+    input: OperationInput<"workhub.coordination.answer">,
+  ): Promise<OperationOutput<"workhub.coordination.answer">> {
+    return this.request("workhub.coordination.answer", input);
+  }
+
+  recordWorkHubCoordination(
+    input: OperationInput<"workhub.coordination.record">,
+  ): Promise<OperationOutput<"workhub.coordination.record">> {
+    return this.request("workhub.coordination.record", input);
+  }
+
   listExternalSessionSources(): Promise<ExternalSessionSourceQueryResult> {
     return this.request("external-session.source.query", {});
   }
@@ -1150,7 +1166,7 @@ export class DesktopRuntimeHostClient {
   }
 
   queryHostDiagnostics(): Promise<OperationOutput<"host.diagnostics.query">> {
-    return this.connection.queryHostDiagnostics(2_000);
+    return this.connection.request('host.diagnostics.query', {}, 2_000);
   }
 
   prepareHostRetirement(

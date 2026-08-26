@@ -100,9 +100,9 @@ test('two Clients share one durable Session recap effect', async () => {
     desktop = await connect(root);
     tui = await connect(root);
     const input = { sessionId: 'session-1', effectId: 'effect-1', reason: 'manual' as const };
-    const desktopResult = desktop.generateSessionRecap(input);
+    const desktopResult = desktop.request('session.recap.generate', input);
     await modelStarted.promise;
-    const tuiResult = tui.generateSessionRecap(input);
+    const tuiResult = tui.request('session.recap.generate', input);
     modelRelease.release();
     const [first, second] = await Promise.all([desktopResult, tuiResult]);
     assert.deepEqual(first, {

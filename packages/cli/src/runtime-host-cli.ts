@@ -105,6 +105,7 @@ export type RuntimeHostCliCommand =
       json: boolean;
       framed?: true;
       clientDataRoot?: string;
+      expectedTarget?: RuntimeHostManagedServiceTarget;
     }
   | {
       kind: 'runtime-host-managed-deployment-cleanup';
@@ -327,14 +328,8 @@ function parseServiceManagementCommand(argv: string[]): RuntimeHostCliCommand {
   if (action === 'update-policy') {
     const policy = updateTarget === undefined ? undefined : parseUpdatePolicy(updateTarget);
     if (policy && 'exitCode' in policy) return policy;
-    if (policy?.kind === 'manual' && options.expectedTarget) {
-      return error('runtime-host service update-policy manual does not accept an expected target');
-    }
     if (policy && policy.kind !== 'manual' && !options.expectedTarget) {
       return error('runtime-host service update-policy requires an expected target');
-    }
-    if (!policy && options.expectedTarget) {
-      return error('runtime-host service update-policy requires --target when setting a target');
     }
     return {
       kind: 'runtime-host-service-update-policy',
@@ -346,14 +341,12 @@ function parseServiceManagementCommand(argv: string[]): RuntimeHostCliCommand {
     };
   }
   if (action === 'reconcile-update') {
-    if (options.expectedTarget) {
-      return error('runtime-host service reconcile-update does not accept an expected target');
-    }
     return {
       kind: 'runtime-host-service-reconcile-update',
       json: options.json,
       ...(options.framed ? { framed: true } : {}),
       ...(clientDataRoot ? { clientDataRoot } : {}),
+      ...(options.expectedTarget ? { expectedTarget: options.expectedTarget } : {}),
     };
   }
   if (action === 'check-update') {

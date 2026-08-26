@@ -100,6 +100,7 @@ function assertRunMatchesExecution(
   }
   switch (execution.kind) {
     case 'external_message':
+    case 'workhub_coordination':
       return;
     case 'regenerate':
     case 'context_compact':
@@ -143,6 +144,7 @@ function assertTrustedAgentIdentity(
     {
       kind:
         | 'external_message'
+        | 'workhub_coordination'
         | 'regenerate'
         | 'context_compact'
         | 'scheduled_task'

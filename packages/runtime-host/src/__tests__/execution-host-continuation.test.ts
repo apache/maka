@@ -38,7 +38,7 @@ test('two Clients idempotently start one Host-owned safe-boundary continuation',
     let clientsClosed = false;
     let hostStopped = false;
     try {
-      const plan = await first.queryTurnResume({ sessionId: fixture.sessionId });
+      const plan = await first.request('turn.resume.query', { sessionId: fixture.sessionId });
       assert.deepEqual(plan, {
         sessionId: fixture.sessionId,
         disposition: 'ready',
@@ -54,8 +54,8 @@ test('two Clients idempotently start one Host-owned safe-boundary continuation',
         sourceRuntimeEventHighWater: source.sourceRuntimeEventHighWater,
       };
       const [firstStart, secondStart] = await Promise.all([
-        first.startTurnResume(input),
-        second.startTurnResume(input),
+        first.request('turn.resume.start', input),
+        second.request('turn.resume.start', input),
       ]);
       assert.equal(firstStart.kind, 'started');
       assert.equal(secondStart.kind, 'started');
@@ -64,10 +64,12 @@ test('two Clients idempotently start one Host-owned safe-boundary continuation',
 
       const terminal = await waitForTerminalTurn(first, fixture.sessionId, turnId);
       assert.equal(terminal.status, 'completed');
-      const retry = await second.startTurnResume(input);
+      const retry = await second.request('turn.resume.start', input);
       assert.deepEqual(retry, { kind: 'started', turn: terminal });
 
-      const settledPlan = await first.queryTurnResume({ sessionId: fixture.sessionId });
+      const settledPlan = await first.request('turn.resume.query', {
+        sessionId: fixture.sessionId,
+      });
       assert.deepEqual(settledPlan, {
         sessionId: fixture.sessionId,
         disposition: 'parked',
@@ -125,7 +127,7 @@ test('startup repairs a continuation Run created before its durable start', asyn
     const host = await fixture.startHost();
     const client = await connectClient(fixture.root);
     try {
-      const repaired = await client.queryTurn({
+      const repaired = await client.request('turn.query', {
         sessionId: fixture.sessionId,
         turnId: crash.targetTurnId,
       });
@@ -133,7 +135,7 @@ test('startup repairs a continuation Run created before its durable start', asyn
       assert.equal(repaired.status, 'failed');
       assert.equal(repaired.failureClass, 'continuation_abandoned_before_provider_dispatch');
       assert.deepEqual(
-        await client.queryTurnResume({
+        await client.request('turn.resume.query', {
           sessionId: fixture.sessionId,
           sourceRunId: crash.sourceRunId,
           expectedRuntimeEventHighWater: crash.sourceRuntimeEventHighWater,
@@ -161,7 +163,7 @@ test('startup repairs a continuation claim committed before its target Run', asy
     let clientClosed = false;
     let hostStopped = false;
     try {
-      const repaired = await client.queryTurn({
+      const repaired = await client.request('turn.query', {
         sessionId: fixture.sessionId,
         turnId: crash.targetTurnId,
       });
@@ -192,7 +194,7 @@ test('startup parks a provider-indeterminate continuation without blocking the H
     const host = await fixture.startHost();
     const client = await connectClient(fixture.root);
     try {
-      const indeterminate = await client.queryTurn({
+      const indeterminate = await client.request('turn.query', {
         sessionId: fixture.sessionId,
         turnId: crash.targetTurnId,
       });
@@ -204,7 +206,7 @@ test('startup parks a provider-indeterminate continuation without blocking the H
         reason: 'continuation_started_indeterminate' as const,
       };
       assert.deepEqual(
-        await client.queryTurnResume({
+        await client.request('turn.resume.query', {
           sessionId: fixture.sessionId,
           sourceRunId: crash.sourceRunId,
           expectedRuntimeEventHighWater: crash.sourceRuntimeEventHighWater,
@@ -212,7 +214,7 @@ test('startup parks a provider-indeterminate continuation without blocking the H
         plan,
       );
       assert.deepEqual(
-        await client.startTurnResume({
+        await client.request('turn.resume.start', {
           sessionId: fixture.sessionId,
           turnId: crash.targetTurnId,
           sourceRunId: crash.sourceRunId,
@@ -222,7 +224,7 @@ test('startup parks a provider-indeterminate continuation without blocking the H
       );
       await assert.rejects(
         () =>
-          client.stopTurn({
+          client.request('turn.stop', {
             sessionId: fixture.sessionId,
             turnId: crash.targetTurnId,
             runId: crash.targetRunId,
@@ -231,7 +233,7 @@ test('startup parks a provider-indeterminate continuation without blocking the H
           error instanceof RuntimeHostOperationError && error.code === 'operation_conflict',
       );
       assert.deepEqual(
-        await client.queryTurnResume({
+        await client.request('turn.resume.query', {
           sessionId: fixture.sessionId,
           sourceRunId: 'different-continuation-source',
           expectedRuntimeEventHighWater: crash.sourceRuntimeEventHighWater,
@@ -244,7 +246,7 @@ test('startup parks a provider-indeterminate continuation without blocking the H
       );
       await assert.rejects(
         () =>
-          client.startTurn({
+          client.request('turn.start', {
             sessionId: fixture.sessionId,
             turnId: 'turn-after-indeterminate-continuation',
             content: { text: 'Do not overtake the parked continuation.' },
@@ -253,7 +255,7 @@ test('startup parks a provider-indeterminate continuation without blocking the H
       );
 
       const sibling = requireStartedTurn(
-        await client.startTurn({
+        await client.request('turn.start', {
           sessionId: siblingSessionId,
           turnId: 'turn-unrelated-to-indeterminate-continuation',
           content: { text: 'Continue normally.' },
@@ -276,14 +278,14 @@ test('startup parks a provider-indeterminate continuation when resume is disable
     const host = await fixture.startHost(undefined, false);
     const client = await connectClient(fixture.root);
     try {
-      const indeterminate = await client.queryTurn({
+      const indeterminate = await client.request('turn.query', {
         sessionId: fixture.sessionId,
         turnId: crash.targetTurnId,
       });
       assert.equal(indeterminate.runId, crash.targetRunId);
       assert.equal(indeterminate.status === 'created' || indeterminate.status === 'running', true);
       assert.deepEqual(
-        await client.queryTurnResume({
+        await client.request('turn.resume.query', {
           sessionId: fixture.sessionId,
           sourceRunId: crash.sourceRunId,
           expectedRuntimeEventHighWater: crash.sourceRuntimeEventHighWater,
@@ -295,7 +297,7 @@ test('startup parks a provider-indeterminate continuation when resume is disable
         },
       );
       const sibling = requireStartedTurn(
-        await client.startTurn({
+        await client.request('turn.start', {
           sessionId: siblingSessionId,
           turnId: 'turn-unrelated-to-disabled-indeterminate-continuation',
           content: { text: 'Continue normally.' },
@@ -317,7 +319,7 @@ test('startup parks a pre-claim continuation whose Client Capability is absent',
     const client = await connectClient(fixture.root);
     try {
       assert.deepEqual(
-        await client.queryTurnResume({
+        await client.request('turn.resume.query', {
           sessionId: fixture.sessionId,
           sourceRunId: pending.sourceRunId,
           expectedRuntimeEventHighWater: pending.sourceRuntimeEventHighWater,
@@ -330,7 +332,7 @@ test('startup parks a pre-claim continuation whose Client Capability is absent',
       );
       await assert.rejects(
         () =>
-          client.startTurn({
+          client.request('turn.start', {
             sessionId: fixture.sessionId,
             turnId: 'turn-overtaking-client-capability-continuation',
             content: { text: 'Do not overtake the pending continuation.' },
@@ -338,7 +340,7 @@ test('startup parks a pre-claim continuation whose Client Capability is absent',
         (error) => error instanceof RuntimeHostOperationError && error.code === 'session_busy',
       );
       assert.deepEqual(
-        await client.queryTurn({
+        await client.request('turn.query', {
           sessionId: fixture.sessionId,
           turnId: pending.targetTurnId,
         }),
@@ -351,7 +353,7 @@ test('startup parks a pre-claim continuation whose Client Capability is absent',
       );
       await assert.rejects(
         () =>
-          client.stopTurn({
+          client.request('turn.stop', {
             sessionId: fixture.sessionId,
             turnId: pending.targetTurnId,
             runId: pending.targetRunId,
@@ -360,7 +362,7 @@ test('startup parks a pre-claim continuation whose Client Capability is absent',
           error instanceof RuntimeHostOperationError && error.code === 'operation_conflict',
       );
       assert.deepEqual(
-        await client.queryTurnResume({
+        await client.request('turn.resume.query', {
           sessionId: fixture.sessionId,
           sourceRunId: pending.sourceRunId,
           expectedRuntimeEventHighWater: pending.sourceRuntimeEventHighWater,
@@ -393,7 +395,7 @@ test('Runtime Host keeps safe-boundary continuation opt-in', async () => {
         reason: 'continuation_unavailable' as const,
       };
       assert.deepEqual(
-        await client.queryTurnResume({
+        await client.request('turn.resume.query', {
           sessionId: fixture.sessionId,
           sourceRunId: source.sourceRunId,
           expectedRuntimeEventHighWater: source.sourceRuntimeEventHighWater,
@@ -401,7 +403,7 @@ test('Runtime Host keeps safe-boundary continuation opt-in', async () => {
         plan,
       );
       assert.deepEqual(
-        await client.startTurnResume({
+        await client.request('turn.resume.start', {
           sessionId: fixture.sessionId,
           turnId: targetTurnId,
           sourceRunId: source.sourceRunId,
@@ -436,19 +438,29 @@ test('resume query previews the initiating Client Capability without binding it'
     const client = await connectClient(fixture.root);
     const provider = resumeFixtureProvider(serverId, [toolName]);
     try {
-      assert.deepEqual(await client.queryTurnResume({ sessionId: fixture.sessionId }), {
-        sessionId: fixture.sessionId,
-        disposition: 'parked',
-        reason: 'safety_check_failed',
-      });
+      assert.deepEqual(
+        await client.request('turn.resume.query', {
+          sessionId: fixture.sessionId,
+        }),
+        {
+          sessionId: fixture.sessionId,
+          disposition: 'parked',
+          reason: 'safety_check_failed',
+        },
+      );
       await client.replaceClientCapabilities(provider);
-      assert.deepEqual(await client.queryTurnResume({ sessionId: fixture.sessionId }), {
-        sessionId: fixture.sessionId,
-        disposition: 'ready',
-        sourceRunId: source.sourceRunId,
-        sourceTurnId: source.sourceTurnId,
-        sourceRuntimeEventHighWater: source.sourceRuntimeEventHighWater,
-      });
+      assert.deepEqual(
+        await client.request('turn.resume.query', {
+          sessionId: fixture.sessionId,
+        }),
+        {
+          sessionId: fixture.sessionId,
+          disposition: 'ready',
+          sourceRunId: source.sourceRunId,
+          sourceTurnId: source.sourceTurnId,
+          sourceRuntimeEventHighWater: source.sourceRuntimeEventHighWater,
+        },
+      );
     } finally {
       await client.close();
       await fixture.stopHost(host);

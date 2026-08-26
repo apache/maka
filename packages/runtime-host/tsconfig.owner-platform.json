@@ -1,0 +1,12 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "rootDir": "src",
+    "outDir": ".owner-platform-dist",
+    "incremental": false
+  },
+  "files": [
+    "src/__tests__/local-deployment-owner.test.ts",
+    "src/__tests__/fixtures/local-deployment-owner-claim.ts"
+  ]
+}

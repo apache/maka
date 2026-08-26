@@ -1068,7 +1068,7 @@ export async function verifyRuntimeHostManagedServiceReady(
         const status = await connected.connection.status(Math.max(1, remaining));
         if (status.state === 'ready') {
           const [diagnostics, service] = await Promise.all([
-            connected.connection.queryHostDiagnostics(),
+            connected.connection.request('host.diagnostics.query', {}),
             backend.status(),
           ]);
           if (service.active && service.pid !== null && diagnostics.pid === service.pid) return;
@@ -1118,7 +1118,7 @@ async function prepareRuntimeHostRetirement(
   }
   const hostEpoch = connected.connection.hostEpoch;
   try {
-    const diagnostics = await connected.connection.queryHostDiagnostics();
+    const diagnostics = await connected.connection.request('host.diagnostics.query', {});
     if (diagnostics.pid !== expectedPid) {
       throw new RuntimeHostServiceManagerError(
         'retirement_failed',

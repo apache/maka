@@ -23,10 +23,12 @@ WorkHub gives users one persistent conversational place to ask, clarify, continu
 create, and inspect work. It is backed by one stable Coordination Session per
 Runtime Host while concrete execution remains authoritative in ordinary Sessions.
 
-This document names the approved target architecture. The current R2.4
-implementation is a transitional deterministic router and does not yet create the
-Coordination Session described below. The decision and authority boundaries are
-recorded in the [WorkHub Coordination Session ADR](./architecture/workhub-coordination-session-adr.md).
+This document names the approved target architecture. Each Runtime Host now
+provisions and reuses the stable Coordination Session role described below. The
+current R2.4 routing behavior remains a transitional deterministic baseline or
+target resolver; it does not define the final WorkHub coordination semantics. The
+decision and authority boundaries are recorded in the
+[WorkHub Coordination Session ADR](./architecture/workhub-coordination-session-adr.md).
 
 ## Terms
 

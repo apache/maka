@@ -138,7 +138,7 @@ test('subscribed Clients share one canonical queue and ordered root handoff', as
 
     const firstTurnId = randomUUID();
     const started = requireStartedTurn(
-      await desktop.startTurn({
+      await desktop.request('turn.start', {
         sessionId: fixture.sessionId,
         turnId: firstTurnId,
         content: { text: `continuity root ${'x'.repeat(540)}` },
@@ -156,22 +156,33 @@ test('subscribed Clients share one canonical queue and ordered root handoff', as
       }
     }
 
-    const followupId = randomUUID();
-    const followupContent = { text: 'continue after the first root completes' };
-    const queued = await tui.request('turn.message.submit', {
+    const desktopFollowupId = randomUUID();
+    const desktopFollowupContent = { text: 'continue from the desktop' };
+    const desktopQueued = await desktop.request('turn.message.submit', {
       originHostEpoch: host.hostEpoch,
       sessionId: fixture.sessionId,
-      messageId: followupId,
-      content: followupContent,
+      messageId: desktopFollowupId,
+      content: desktopFollowupContent,
       placement: 'next_turn',
     });
-    assert.equal(queued.disposition, 'followup');
+    assert.equal(desktopQueued.disposition, 'followup');
+    const tuiFollowupId = randomUUID();
+    const tuiFollowupContent = { text: 'continue from the terminal' };
+    const tuiQueued = await tui.request('turn.message.submit', {
+      originHostEpoch: host.hostEpoch,
+      sessionId: fixture.sessionId,
+      messageId: tuiFollowupId,
+      content: tuiFollowupContent,
+      placement: 'next_turn',
+    });
+    assert.equal(tuiQueued.disposition, 'followup');
     for (const probe of [desktopProbe, tuiProbe]) {
       const queueProjection = await probe.waitFor(
         (frame) =>
           frame.kind === 'subscription.session_projection' &&
-          frame.snapshot.queue.followup.some((entry) => entry.messageId === followupId),
-        'continuity did not publish the accepted follow-up',
+          frame.snapshot.queue.followup.some((entry) => entry.messageId === desktopFollowupId) &&
+          frame.snapshot.queue.followup.some((entry) => entry.messageId === tuiFollowupId),
+        'continuity did not publish both accepted follow-ups',
       );
       assert.equal(queueProjection.kind, 'subscription.session_projection');
     }
@@ -205,13 +216,131 @@ test('subscribed Clients share one canonical queue and ordered root handoff', as
     await waitForTerminalTurn(tui, fixture.sessionId, successor.snapshot.rootTurn.turnId);
     await tui.close();
     await fixture.stopHost(host);
-
     const chain = await fixture.readAdmissionChain();
     assert.deepEqual(
       chain.map((admission) => admission.turnId),
       [firstTurnId, successor.snapshot.rootTurn.turnId],
     );
-    assert.deepEqual(chain[1]?.normalizedInput, followupContent);
+    assert.deepEqual(
+      chain[1]?.sourceMessages.map((source) => source.messageId),
+      [desktopFollowupId, tuiFollowupId],
+    );
+    assert.deepEqual(chain[1]?.normalizedInput, {
+      text: `${desktopFollowupContent.text}\n\n${tuiFollowupContent.text}`,
+    });
+  });
+});
+
+test('production UDS admission commits one transcript before the root handoff', async () => {
+  await withExecutionRoot(async (fixture) => {
+    const host = await fixture.startHost();
+    const client = await connectClient(fixture.root);
+    const messageId = randomUUID();
+    const started = await client.request('turn.message.submit', {
+      originHostEpoch: host.hostEpoch,
+      sessionId: fixture.sessionId,
+      messageId,
+      content: { text: FAKE_ASK_USER_QUESTION_PROMPT },
+      placement: 'current_turn',
+    });
+    assert.equal(started.disposition, 'turn_started');
+    if (started.disposition !== 'turn_started') return;
+    const active = await client.request('turn.query', {
+      sessionId: fixture.sessionId,
+      turnId: started.turnId,
+    });
+    await client.request('turn.stop', {
+      sessionId: fixture.sessionId,
+      turnId: started.turnId,
+      runId: active.runId,
+    });
+    await client.close();
+    await fixture.stopHost(host);
+    const ledger = await fixture.readTurn(started.turnId);
+    assert.deepEqual(
+      ledger.userMessages
+        .filter((message) => message.id === messageId)
+        .map((message) => message.id),
+      [messageId],
+    );
+  });
+});
+
+test('a Host crash after queue admission recovers the durable successor once', async () => {
+  await withExecutionRoot(async (fixture) => {
+    const firstHost = await fixture.startHost();
+    const first = await connectClient(fixture.root);
+    const started = requireStartedTurn(
+      await first.request('turn.start', {
+        sessionId: fixture.sessionId,
+        turnId: randomUUID(),
+        content: { text: FAKE_ASK_USER_QUESTION_PROMPT },
+      }),
+    );
+    const messageId = randomUUID();
+    const queued = await first.request('turn.message.submit', {
+      originHostEpoch: firstHost.hostEpoch,
+      sessionId: fixture.sessionId,
+      messageId,
+      content: { text: 'recover this accepted successor' },
+      placement: 'next_turn',
+    });
+    assert.equal(queued.disposition, 'followup');
+    await fixture.killHost(firstHost);
+    await first.closed;
+
+    const secondHost = await fixture.startHost();
+    const second = await connectClient(fixture.root);
+    const subscription = await second.openSessionSubscription({
+      sessionId: fixture.sessionId,
+      transcript: { kind: 'none' },
+    });
+    const probe = new SubscriptionProbe(subscription);
+    const successor = await probe.waitFor(
+      (frame) =>
+        frame.kind === 'subscription.session_projection' &&
+        frame.snapshot.rootTurn !== null &&
+        frame.snapshot.rootTurn.turnId !== started.turnId,
+      'durable successor was not recovered after the Host crash',
+    );
+    assert.equal(successor.kind, 'subscription.session_projection');
+    if (successor.kind !== 'subscription.session_projection' || !successor.snapshot.rootTurn)
+      return;
+    await waitForTerminalTurn(second, fixture.sessionId, successor.snapshot.rootTurn.turnId);
+    await subscription.close();
+    await probe.done;
+    await second.close();
+    await fixture.stopHost(secondHost);
+    assert.deepEqual(
+      (await fixture.readSessionUserMessages())
+        .filter((message) => message.id === messageId)
+        .map((message) => message.id),
+      [messageId],
+    );
+  });
+});
+
+test('restart replays an atomically admitted root without duplicating its transcript', async () => {
+  await withExecutionRoot(async (fixture) => {
+    const turnId = randomUUID();
+    const messageId = randomUUID();
+    const content = { text: 'recover the root after admission before Run creation' };
+    await fixture.seedAtomicRootAdmissionWithoutRun({ turnId, messageId, content });
+
+    const host = await fixture.startHost();
+    const client = await connectClient(fixture.root);
+    const terminal = await waitForTerminalTurn(client, fixture.sessionId, turnId);
+    assert.equal(terminal.status, 'completed');
+    await client.close();
+    await fixture.stopHost(host);
+
+    const ledger = await fixture.readTurn(turnId);
+    assert.deepEqual(
+      ledger.userMessages
+        .filter((message) => message.id === messageId)
+        .map((message) => message.id),
+      [messageId],
+    );
   });
 });
 
@@ -223,12 +352,12 @@ test('concurrent root admission for one Session has a single winner', async () =
     const turnIds = [randomUUID(), randomUUID()] as const;
 
     const outcomes = await Promise.allSettled([
-      first.startTurn({
+      first.request('turn.start', {
         sessionId: fixture.sessionId,
         turnId: turnIds[0],
         content: { text: FAKE_ASK_USER_QUESTION_PROMPT },
       }),
-      second.startTurn({
+      second.request('turn.start', {
         sessionId: fixture.sessionId,
         turnId: turnIds[1],
         content: { text: FAKE_ASK_USER_QUESTION_PROMPT },
@@ -249,7 +378,7 @@ test('concurrent root admission for one Session has a single winner', async () =
     const winnerResult = winners[0]?.value;
     assert.ok(winnerResult);
     const winner = requireStartedTurn(winnerResult);
-    await first.stopTurn({
+    await first.request('turn.stop', {
       sessionId: fixture.sessionId,
       turnId: winner.turnId,
       runId: winner.runId,
@@ -274,7 +403,7 @@ test('an archived Session rejects a new Turn before durable admission', async ()
 
     await assert.rejects(
       () =>
-        client.startTurn({
+        client.request('turn.start', {
           sessionId: fixture.sessionId,
           turnId,
           content: { text: 'must not execute' },
@@ -304,7 +433,7 @@ test('a killed Host is recovered exactly once before its successor becomes ready
     const firstProbe = new SubscriptionProbe(firstSubscription);
     const turnId = randomUUID();
     const started = requireStartedTurn(
-      await first.startTurn({
+      await first.request('turn.start', {
         sessionId: fixture.sessionId,
         turnId,
         content: { text: FAKE_ASK_USER_QUESTION_PROMPT },
@@ -333,7 +462,7 @@ test('a killed Host is recovered exactly once before its successor becomes ready
       sessionId: fixture.sessionId,
       transcript: { kind: 'none' },
     });
-    const recovered = await second.queryTurn({
+    const recovered = await second.request('turn.query', {
       sessionId: fixture.sessionId,
       turnId,
     });
@@ -373,7 +502,7 @@ test('a killed Host is recovered exactly once before its successor becomes ready
 
     const thirdHost = await fixture.startHost();
     const third = await connectClient(fixture.root);
-    const stable = await third.queryTurn({
+    const stable = await third.request('turn.query', {
       sessionId: fixture.sessionId,
       turnId,
     });
@@ -404,7 +533,7 @@ test('graceful Host shutdown stops and drains an active Turn before releasing ow
     const client = await connectClient(fixture.root);
     const turnId = randomUUID();
     const started = requireStartedTurn(
-      await client.startTurn({
+      await client.request('turn.start', {
         sessionId: fixture.sessionId,
         turnId,
         content: { text: FAKE_ASK_USER_QUESTION_PROMPT },
@@ -417,7 +546,7 @@ test('graceful Host shutdown stops and drains an active Turn before releasing ow
 
     const successor = await fixture.startHost();
     const observer = await connectClient(fixture.root);
-    const stable = await observer.queryTurn({
+    const stable = await observer.request('turn.query', {
       sessionId: fixture.sessionId,
       turnId,
     });
@@ -444,7 +573,7 @@ test('a durable admission without a Run resumes before the Host becomes ready', 
     const host = await fixture.startHost();
     const client = await connectClient(fixture.root);
 
-    const recovered = await client.queryTurn({
+    const recovered = await client.request('turn.query', {
       sessionId: fixture.sessionId,
       turnId,
     });
@@ -452,14 +581,15 @@ test('a durable admission without a Run resumes before the Host becomes ready', 
     assert.ok(recovered.status === 'running' || recovered.status === 'waiting_for_user');
     await assert.rejects(
       () =>
-        client.startTurn({
+        client.request('turn.start', {
           sessionId: fixture.sessionId,
           turnId: randomUUID(),
           content: { text: 'must remain behind the recovered admission' },
         }),
       operationError('session_busy'),
     );
-    const stopped = await client.stopTurn(
+    const stopped = await client.request(
+      'turn.stop',
       {
         sessionId: fixture.sessionId,
         turnId,
@@ -492,7 +622,7 @@ test('startup recovery compares an existing quoted UserMessage canonically', asy
     const host = await fixture.startHost();
     const client = await connectClient(fixture.root);
 
-    const recovered = await client.queryTurn({
+    const recovered = await client.request('turn.query', {
       sessionId: fixture.sessionId,
       turnId,
     });
@@ -519,7 +649,7 @@ test('startup recovery restores the admitted UserMessage before terminalizing it
     const host = await fixture.startHost();
     const client = await connectClient(fixture.root);
 
-    const recovered = await client.queryTurn({
+    const recovered = await client.request('turn.query', {
       sessionId: fixture.sessionId,
       turnId,
     });

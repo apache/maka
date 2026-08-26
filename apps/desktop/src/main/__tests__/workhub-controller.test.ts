@@ -39,10 +39,14 @@ test('binds the controller to the immutable WH-R2.4 strategy ID', () => {
   assert.equal(WORKHUB_ROUTING_STRATEGY_ID, 'wh-r2.4-session-context-continuity');
 });
 
-test('binds the WorkHub controller to the app runtime rather than project refreshes', () => {
+test('binds the WorkHub controller to one Coordination identity rather than project refreshes', () => {
   const source = readFileSync(appShellUrl, 'utf8');
 
-  assert.match(source, /workHubControllerRef\s*=\s*useRef/u);
+  assert.doesNotMatch(source, /workHubControllerRef\s*=\s*useRef/u);
+  assert.match(
+    source,
+    /const workHubController\s*=\s*useMemo\([\s\S]*?\[workHubCoordinationGeneration, workHubCoordinationSessionId\],\s*\)/u,
+  );
   assert.match(source, /workHubProjectsRef\.current\s*=\s*projects/u);
   assert.doesNotMatch(
     source,
@@ -131,7 +135,7 @@ test('read exposes existing ordinary Sessions as factual Work summaries', async 
   assert.deepEqual(projection.turns, []);
 });
 
-test('read rebuilds a bounded conversation projection from ordinary Session turns', async () => {
+test('read does not rebuild WorkHub conversation from ordinary Session turns', async () => {
   const sessions = port([
     session('login', { sessionName: '登录刷新令牌', updatedAt: 30 }),
     session('internal', { kind: 'internal', updatedAt: 40 }),
@@ -152,16 +156,8 @@ test('read rebuilds a bounded conversation projection from ordinary Session turn
 
   const projection = await createWorkHubController({ sessions }).read();
 
-  assert.deepEqual(requestedTargets, [['login']]);
-  assert.deepEqual(projection.turns, [{
-    messageId: 'user-1',
-    target: { sessionId: 'login' },
-    turnId: 'turn-login',
-    text: '检查刷新令牌竞争条件',
-    state: 'completed',
-    result: '已定位到并发刷新窗口',
-    updatedAt: 20,
-  }]);
+  assert.deepEqual(requestedTargets, []);
+  assert.deepEqual(projection.turns, []);
 });
 
 test('archived Sessions stay inspectable but are excluded from routing targets', async () => {
@@ -2366,12 +2362,23 @@ test('submit lets strong foreign core evidence override a vague focus word', asy
 
 test('submit keeps unmatched non-executable conversation in WorkHub', async () => {
   let created = false;
+  const answered: Array<{ turnId: string; text: string }> = [];
   const sessions = port([]);
   sessions.create = async () => {
     created = true;
     return session('unexpected');
   };
-  const controller = createWorkHubController({ sessions });
+  const controller = createWorkHubController({
+    sessions,
+    coordination: {
+      open: async () => ({ close: async () => undefined }),
+      answer: async (input) => {
+        answered.push(input);
+        return { turnId: input.turnId };
+      },
+      record: async (input) => ({ turnId: input.turnId }),
+    },
+  });
 
   const result = await controller.submit({
     requestId: 'request-discussion',
@@ -2385,6 +2392,9 @@ test('submit keeps unmatched non-executable conversation in WorkHub', async () =
     text: '你觉得统一入口最重要的价值是什么？',
   });
   assert.equal(created, false);
+  assert.deepEqual(answered, [
+    { turnId: 'request-discussion', text: '你觉得统一入口最重要的价值是什么？' },
+  ]);
 });
 
 test('submit treats a design question containing an action word as discussion', async () => {

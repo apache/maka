@@ -67,6 +67,15 @@ export interface WorkHubProjectedTurn {
   updatedAt: number;
 }
 
+export interface WorkHubCoordinationTurn {
+  messageId: string;
+  turnId: string;
+  text: string;
+  state: WorkHubProjectedTurnState;
+  result?: string;
+  updatedAt: number;
+}
+
 const WORKHUB_TIMELINE_TEXT_LIMIT = 600;
 
 export function boundedWorkHubTimelineText(value: string): string {
@@ -177,6 +186,19 @@ export interface WorkHubSessionPort {
   subscribe(handler: () => void): () => void;
 }
 
+export interface WorkHubCoordinationPort {
+  open(
+    handler: (turns: readonly WorkHubCoordinationTurn[]) => void,
+    onError: (error: unknown) => void,
+  ): Promise<{ close(): Promise<void> }>;
+  answer(input: { turnId: string; text: string }): Promise<{ turnId: string }>;
+  record(input: {
+    turnId: string;
+    userText: string;
+    assistantText: string;
+  }): Promise<{ turnId: string }>;
+}
+
 export class WorkHubSessionSubmitError extends Error {
   constructor(
     message: string,
@@ -191,6 +213,15 @@ export class WorkHubSessionSubmitError extends Error {
 export interface WorkHubController {
   read(input?: WorkHubReadInput): Promise<WorkHubProjection>;
   submit(input: WorkHubSubmitInput): Promise<WorkHubSubmission>;
+  openConversation(
+    handler: (turns: readonly WorkHubCoordinationTurn[]) => void,
+    onError: (error: unknown) => void,
+  ): Promise<{ close(): Promise<void> }>;
+  recordConversationTurn(input: {
+    turnId: string;
+    userText: string;
+    assistantText: string;
+  }): Promise<{ turnId: string }>;
   subscribe(handler: () => void): () => void;
   resetVisitContext(): void;
 }
@@ -213,7 +244,9 @@ interface WorkHubOwnershipTombstone {
 
 export function createWorkHubController(deps: {
   sessions: WorkHubSessionPort;
+  coordination?: WorkHubCoordinationPort;
 }): WorkHubController {
+  const coordination = deps.coordination ?? legacyTestCoordinationPort();
   let routePolicy = createWorkHubRoutePolicy();
   let focusReadVersion = 0;
   let pendingFocusReadVersion: number | undefined;
@@ -544,6 +577,12 @@ export function createWorkHubController(deps: {
     if (failures.length > 0) throw failures[0];
   };
   return {
+    openConversation(handler, onError) {
+      return coordination.open(handler, onError);
+    },
+    recordConversationTurn(input) {
+      return coordination.record(input);
+    },
     subscribe(handler) {
       return deps.sessions.subscribe(handler);
     },
@@ -577,7 +616,10 @@ export function createWorkHubController(deps: {
         return {
           sessions: ordinary
             .map(({ kind: _kind, runningTurnIds: _runningTurnIds, ...session }) => session),
-          turns: await deps.sessions.recentTurns(ordinary.map((session) => session.target)),
+          // Slice 3 renders conversation only from the Coordination Session.
+          // Ordinary Session transcripts remain routing evidence, never a
+          // second WorkHub conversation source.
+          turns: [],
         };
       } finally {
         if (input?.focus && pendingFocusReadVersion === readFocusVersion) {
@@ -634,6 +676,10 @@ export function createWorkHubController(deps: {
         };
       }
       if (decision.kind === 'discussion') {
+        await coordination.answer({
+          turnId: input.requestId,
+          text: input.text,
+        });
         return {
           kind: 'discussion',
           strategyId: WORKHUB_ROUTING_STRATEGY_ID,
@@ -718,6 +764,21 @@ export function createWorkHubController(deps: {
       focusReadVersion += 1;
       pendingFocusReadVersion = undefined;
       routePolicy = routePolicy.newVisit();
+    },
+  };
+}
+
+function legacyTestCoordinationPort(): WorkHubCoordinationPort {
+  return {
+    async open(handler) {
+      handler([]);
+      return { close: async () => undefined };
+    },
+    async answer(input) {
+      return { turnId: input.turnId };
+    },
+    async record(input) {
+      return { turnId: input.turnId };
     },
   };
 }

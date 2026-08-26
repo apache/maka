@@ -66,6 +66,7 @@ const TUI_PRIMARY_GUIDANCE = {
       session: '切换或恢复会话',
       send: '先选择同一项目中的接收会话，再输入消息',
       setup: '配置模型提供商（API Key）',
+      side: '打开临时 Side Conversation',
       skill: '调用 Skill（也可直接输入 /skill:<name>）',
       swarm: '查看、启用、停用 Swarm 模式，或执行一次 Swarm 任务',
       thinking: '设置思考级别',
@@ -76,7 +77,7 @@ const TUI_PRIMARY_GUIDANCE = {
       keybindingsHeading: '快捷键',
       keybindings: [
         '  Ctrl+O — 展开或折叠所有工具输出',
-        '  Ctrl+T — 展开或折叠最近的思考块',
+        '  Ctrl+T — 展开或折叠视图中的所有思考块',
         '  使用终端或触控板滚动对话记录',
         '  Enter（任务运行中）— 将消息注入当前任务',
         '  Alt+Enter（任务运行中）— 将消息排入下一轮',
@@ -114,6 +115,7 @@ const TUI_PRIMARY_GUIDANCE = {
       session: 'Resume session',
       send: 'Choose another Session in this project, then write the message',
       setup: 'Set up a model provider (API key)',
+      side: 'Open a temporary side conversation',
       skill: 'Invoke a skill (or type /skill:<name> inline)',
       swarm: 'Show, enable, disable, or run one Swarm turn',
       thinking: 'Set thinking level',
@@ -124,7 +126,7 @@ const TUI_PRIMARY_GUIDANCE = {
       keybindingsHeading: 'Keybindings',
       keybindings: [
         '  Ctrl+O — expand or collapse all tool output',
-        '  Ctrl+T — expand or collapse the latest thinking block',
+        '  Ctrl+T — expand or collapse all thinking in view',
         '  Scroll the transcript with your terminal or trackpad',
         '  Enter (during a turn) — steer: inject a message into the running turn',
         '  Alt+Enter (during a turn) — queue a message for the next turn',

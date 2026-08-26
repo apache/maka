@@ -83,6 +83,11 @@ export type RootExecutionDescriptor =
       /** Host-authored source for non-user messages admitted through the message authority. */
       origin?: TurnOrigin;
     }
+  | {
+      /** Tool-free conversational execution admitted only by WorkHub authority. */
+      kind: 'workhub_coordination';
+      inputDigest: `sha256:${string}`;
+    }
   | { kind: 'regenerate'; sourceTurnId: string }
   | { kind: 'context_compact' }
   | { kind: 'scheduled_task'; scheduledTaskId: string }
@@ -375,6 +380,7 @@ export const AGENT_RUN_EVENT_TYPES = [
   'run_started',
   'turn_started',
   'sandbox_context_resolved',
+  'sandbox_context_failed',
   'plan_context_resolved',
   'plan_submitted',
   'plan_execution_started',
