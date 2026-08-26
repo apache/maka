@@ -445,6 +445,10 @@ export function registerRuntimeHostSessionExecutionIpc(
         type: "send",
       });
       if (!command) throw new Error("Invalid submitted message");
+      // The submitting surface owns the Message identity: it is what reconciles
+      // the row it already rendered, and what makes a retry the same Message.
+      // Minting one here would hand back an identity the caller never showed.
+      if (!command.messageId) throw new Error("Submitted message has no identity");
       const session = await deps.client.getSession(sessionId);
       if (!session) {
         throw new Error(`Runtime Host Session not found: ${sessionId}`);
@@ -487,7 +491,7 @@ export function registerRuntimeHostSessionExecutionIpc(
         displayText,
         workspaceFileReferences: command.workspaceFileReferences,
       });
-      const messageId = command.messageId ?? newId();
+      const messageId = command.messageId;
       // Skill and orchestration intent travels with the Message. Runtime Host
       // decides whether it opens its own Turn, steers the running one, or
       // fails closed; the Desktop never routes on message content.
