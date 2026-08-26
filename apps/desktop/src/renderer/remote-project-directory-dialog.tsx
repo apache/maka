@@ -207,6 +207,7 @@ export function RemoteProjectDirectoryDialog(props: {
       onOpenChange={(open) => {
         if (!open) dismiss();
       }}
+      aria-label={copy.remoteDirectoryTitle(host?.name ?? 'Runtime Host')}
       purpose="form"
       width={560}
       maxHeight="calc(100dvh - 64px)"

@@ -29,9 +29,9 @@ import {
   type RuntimeHostInstallationOwner,
 } from '../operator/local-deployment-owner.js';
 import {
-  transferLocalHostProcessOwner,
-  type LocalHostProcessOwnerTransferAdapter,
-} from '../operator/local-process-owner-transfer.js';
+  handoffLocalHostProcessDeployment,
+  type LocalHostProcessDeploymentHandoffAdapter,
+} from '../operator/local-process-deployment-handoff.js';
 import type { RuntimeHostDeploymentIdentity } from '../operator/update-package-evidence.js';
 
 const ROOT_ID = 'b'.repeat(64);
@@ -73,7 +73,7 @@ async function claimed(options: LocalHostDeploymentAuthorityOptions) {
 function adapter(
   events: string[],
   host: 'target_absent' | 'target_present' | 'active_work' = 'target_absent',
-): LocalHostProcessOwnerTransferAdapter<{ readonly path: string }> {
+): LocalHostProcessDeploymentHandoffAdapter<{ readonly path: string }> {
   return {
     async stageTarget(target, transactionId) {
       events.push(`stage:${target.version}:${transactionId}`);
@@ -100,7 +100,7 @@ test('stages first and commits only after retirement, writer release, and exact 
   const initial = await claimed(options);
   const events: string[] = [];
 
-  const result = await transferLocalHostProcessOwner(
+  const result = await handoffLocalHostProcessDeployment(
     {
       rootId: ROOT_ID,
       expectedRevision: initial.revision,
@@ -114,7 +114,7 @@ test('stages first and commits only after retirement, writer release, and exact 
       ...adapter(events),
       async prepareHostCutover(rootId, _selected, _target, _staged, policy) {
         const intent = await readLocalHostDeploymentRecord(rootId, options);
-        assert.equal(intent?.state.kind, 'transferring');
+        assert.equal(intent?.state.kind, 'handoff');
         events.push(`retire:${policy}`);
         return { kind: 'target_absent' };
       },
@@ -138,7 +138,7 @@ test('stages first and commits only after retirement, writer release, and exact 
   });
 
   const retryEvents: string[] = [];
-  const retried = await transferLocalHostProcessOwner(
+  const retried = await handoffLocalHostProcessDeployment(
     {
       rootId: ROOT_ID,
       expectedRevision: initial.revision,
@@ -154,6 +154,41 @@ test('stages first and commits only after retirement, writer release, and exact 
   assert.equal(retried.kind, 'completed');
   assert.equal(retried.record.revision, result.record.revision);
   assert.deepEqual(retryEvents, ['stage:2.0.0:desktop-to-cli']);
+});
+
+test('replaces a deployment without inventing a second same-owner transaction', async (t) => {
+  const options = await authority(t);
+  const initial = await claimed(options);
+  const events: string[] = [];
+
+  const result = await handoffLocalHostProcessDeployment(
+    {
+      rootId: ROOT_ID,
+      expectedRevision: initial.revision,
+      transactionId: 'desktop-upgrade',
+      from: DESKTOP,
+      to: DESKTOP,
+      target: TARGET_DEPLOYMENT,
+      activeWorkPolicy: 'refuse_active_work',
+    },
+    adapter(events),
+    options,
+  );
+
+  assert.equal(result.kind, 'completed');
+  assert.deepEqual(result.record.state, {
+    kind: 'owned',
+    owner: DESKTOP,
+    selected: TARGET_DEPLOYMENT,
+    previous: OLD_DEPLOYMENT,
+  });
+  assert.deepEqual(events, [
+    'stage:2.0.0:desktop-upgrade',
+    'retire:refuse_active_work',
+    'writer_released',
+    'activate:/verified/maka',
+    'ready:2.0.0',
+  ]);
 });
 
 test('replays commit to confirm durability instead of trusting read-back state', async (t) => {
@@ -185,12 +220,16 @@ test('replays commit to confirm durability instead of trusting read-back state',
     activeWorkPolicy: 'refuse_active_work' as const,
   };
 
-  const first = await transferLocalHostProcessOwner(request, adapter([]), options);
+  const first = await handoffLocalHostProcessDeployment(request, adapter([]), options);
   assert.equal(first.kind, 'recovery_required');
-  assert.equal(first.kind === 'recovery_required' ? first.phase : undefined, 'commit_owner');
+  assert.equal(first.kind === 'recovery_required' ? first.phase : undefined, 'commit_handoff');
 
   const recoveryEvents: string[] = [];
-  const recovered = await transferLocalHostProcessOwner(request, adapter(recoveryEvents), options);
+  const recovered = await handoffLocalHostProcessDeployment(
+    request,
+    adapter(recoveryEvents),
+    options,
+  );
   assert.equal(recovered.kind, 'completed');
   assert.deepEqual(recoveryEvents, ['stage:2.0.0:durability-recovery']);
 });
@@ -198,20 +237,25 @@ test('replays commit to confirm durability instead of trusting read-back state',
 test('rejects a stale confirmation before retiring any Host', async (t) => {
   const options = await authority(t);
   const initial = await claimed(options);
-  const changed = await applyLocalHostDeploymentTransition(
+  const released = await applyLocalHostDeploymentTransition(
     ROOT_ID,
     {
-      kind: 'select',
+      kind: 'release',
       expectedRevision: initial.revision,
       owner: DESKTOP,
-      selected: { ...OLD_DEPLOYMENT, version: '1.1.0', integrity: TARGET_DEPLOYMENT.integrity },
     },
     options,
   );
-  assert.equal(changed.kind, 'applied');
+  assert.equal(released.kind, 'applied');
+  const reclaimed = await applyLocalHostDeploymentTransition(
+    ROOT_ID,
+    { kind: 'claim', owner: DESKTOP, selected: OLD_DEPLOYMENT },
+    options,
+  );
+  assert.equal(reclaimed.kind, 'applied');
   const events: string[] = [];
 
-  const result = await transferLocalHostProcessOwner(
+  const result = await handoffLocalHostProcessDeployment(
     {
       rootId: ROOT_ID,
       expectedRevision: initial.revision,
@@ -239,7 +283,7 @@ test('leaves the previous owner authoritative when target staging fails', async 
   };
 
   await assert.rejects(
-    transferLocalHostProcessOwner(
+    handoffLocalHostProcessDeployment(
       {
         rootId: ROOT_ID,
         expectedRevision: initial.revision,
@@ -266,7 +310,7 @@ test('rolls back durable intent when the exact Host refuses active work', async 
   const initial = await claimed(options);
   const events: string[] = [];
 
-  const result = await transferLocalHostProcessOwner(
+  const result = await handoffLocalHostProcessDeployment(
     {
       rootId: ROOT_ID,
       expectedRevision: initial.revision,
@@ -289,7 +333,7 @@ test('rolls back durable intent when the exact Host refuses active work', async 
   assert.deepEqual(events, ['stage:2.0.0:active-work', 'retire:refuse_active_work']);
 });
 
-test('keeps transferring truth after a post-retirement failure and resumes by re-observing', async (t) => {
+test('keeps handoff truth after a post-retirement failure and resumes by re-observing', async (t) => {
   const options = await authority(t);
   const initial = await claimed(options);
   const firstEvents: string[] = [];
@@ -308,14 +352,14 @@ test('keeps transferring truth after a post-retirement failure and resumes by re
     target: TARGET_DEPLOYMENT,
     activeWorkPolicy: 'interrupt_active_work' as const,
   };
-  const failed = await transferLocalHostProcessOwner(request, firstAdapter, options);
+  const failed = await handoffLocalHostProcessDeployment(request, firstAdapter, options);
 
   assert.equal(failed.kind, 'recovery_required');
   assert.equal(failed.kind === 'recovery_required' ? failed.phase : undefined, 'activate_target');
-  assert.equal((await readLocalHostDeploymentRecord(ROOT_ID, options))?.state.kind, 'transferring');
+  assert.equal((await readLocalHostDeploymentRecord(ROOT_ID, options))?.state.kind, 'handoff');
 
   const recoveryEvents: string[] = [];
-  const recovered = await transferLocalHostProcessOwner(
+  const recovered = await handoffLocalHostProcessDeployment(
     request,
     adapter(recoveryEvents, 'target_absent'),
     options,
@@ -349,12 +393,12 @@ test('recognizes an already-started exact target without retiring or launching i
     activeWorkPolicy: 'refuse_active_work' as const,
   };
   assert.equal(
-    (await transferLocalHostProcessOwner(request, firstAdapter, options)).kind,
+    (await handoffLocalHostProcessDeployment(request, firstAdapter, options)).kind,
     'recovery_required',
   );
 
   const recoveryEvents: string[] = [];
-  const recovered = await transferLocalHostProcessOwner(
+  const recovered = await handoffLocalHostProcessDeployment(
     request,
     adapter(recoveryEvents, 'target_present'),
     options,
@@ -368,7 +412,7 @@ test('recognizes an already-started exact target without retiring or launching i
   ]);
 });
 
-test('serializes the whole cutover so a competing owner mutation cannot enter mid-transfer', async (t) => {
+test('serializes the whole cutover so a competing owner mutation cannot enter mid-handoff', async (t) => {
   const options = await authority(t);
   const initial = await claimed(options);
   let releaseRetirement!: () => void;
@@ -387,11 +431,11 @@ test('serializes the whole cutover so a competing owner mutation cannot enter mi
     return { kind: 'target_absent' };
   };
 
-  const transfer = transferLocalHostProcessOwner(
+  const handoff = handoffLocalHostProcessDeployment(
     {
       rootId: ROOT_ID,
       expectedRevision: initial.revision,
-      transactionId: 'serialized-transfer',
+      transactionId: 'serialized-handoff',
       from: DESKTOP,
       to: CLI,
       target: TARGET_DEPLOYMENT,
@@ -417,7 +461,7 @@ test('serializes the whole cutover so a competing owner mutation cannot enter mi
   assert.equal(competitorSettled, false);
 
   releaseRetirement();
-  assert.equal((await transfer).kind, 'completed');
+  assert.equal((await handoff).kind, 'completed');
   const competingResult = await competitor;
   assert.equal(competingResult.kind, 'rejected');
   assert.equal(
