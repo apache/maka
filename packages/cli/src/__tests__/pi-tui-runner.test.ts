@@ -5471,7 +5471,7 @@ describe('Maka Pi TUI runner', () => {
     test('/resume parked by the host is informational, not a red error', async () => {
       const terminal = new FakeTerminal();
       const driver = new SlashCommandDriver();
-      driver.parkedResumeReason = 'continuation_unavailable';
+      driver.parkedResumeReason = 'resume_feature_disabled';
       const run = runMakaPiTui({
         title: 'Maka',
         driver,
@@ -5536,6 +5536,76 @@ describe('Maka Pi TUI runner', () => {
       await run;
     });
 
+    test('/resume keeps genuine parked recovery failures red', async () => {
+      const terminal = new FakeTerminal();
+      const driver = new SlashCommandDriver();
+      driver.parkedResumeReason = 'safety_check_failed';
+      const run = runMakaPiTui({
+        title: 'Maka',
+        driver,
+        cwd: '/repo',
+        model: 'm',
+        connectionSlug: 'c',
+        permissionMode: 'bypass',
+        terminal,
+      });
+
+      terminal.input('/session');
+      terminal.input('\r');
+      await waitFor(() => plainTerminalOutput(terminal.output()).includes('Resume Session'));
+      terminal.input('\r');
+      await waitFor(() => driver.sessionIds.length === 1);
+
+      terminal.input('/resume');
+      terminal.input('\r');
+      await waitFor(() =>
+        plainTerminalOutput(terminal.output()).includes(
+          'Error: Safe-boundary resume parked: safety_check_failed',
+        ),
+      );
+
+      terminal.input('/exit');
+      terminal.input('\r');
+      await run;
+    });
+
+    for (const reason of [
+      'continuation_authority_unavailable',
+      'safety_observation_unavailable',
+    ] as const) {
+      test(`/resume keeps ${reason} red`, async () => {
+        const terminal = new FakeTerminal();
+        const driver = new SlashCommandDriver();
+        driver.parkedResumeReason = reason;
+        const run = runMakaPiTui({
+          title: 'Maka',
+          driver,
+          cwd: '/repo',
+          model: 'm',
+          connectionSlug: 'c',
+          permissionMode: 'bypass',
+          terminal,
+        });
+
+        terminal.input('/session');
+        terminal.input('\r');
+        await waitFor(() => plainTerminalOutput(terminal.output()).includes('Resume Session'));
+        terminal.input('\r');
+        await waitFor(() => driver.sessionIds.length === 1);
+
+        terminal.input('/resume');
+        terminal.input('\r');
+        await waitFor(() =>
+          plainTerminalOutput(terminal.output()).includes(
+            `Error: Safe-boundary resume parked: ${reason}`,
+          ),
+        );
+
+        terminal.input('/exit');
+        terminal.input('\r');
+        await run;
+      });
+    }
     test('/model refuses instead of opening the picker behind the running turn', async () => {
       const terminal = new FakeTerminal();
       const driver = new SteeringTurnDriver();

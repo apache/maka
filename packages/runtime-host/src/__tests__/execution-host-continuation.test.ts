@@ -293,7 +293,7 @@ test('startup parks a provider-indeterminate continuation when resume is disable
         {
           sessionId: fixture.sessionId,
           disposition: 'parked',
-          reason: 'continuation_unavailable',
+          reason: 'resume_feature_disabled',
         },
       );
       const sibling = requireStartedTurn(
@@ -392,7 +392,7 @@ test('Runtime Host keeps safe-boundary continuation opt-in', async () => {
       const plan = {
         sessionId: fixture.sessionId,
         disposition: 'parked' as const,
-        reason: 'continuation_unavailable' as const,
+        reason: 'resume_feature_disabled' as const,
       };
       assert.deepEqual(
         await client.request('turn.resume.query', {

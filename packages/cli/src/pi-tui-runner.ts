@@ -288,16 +288,22 @@ export function resolveTaskbarProgress(
  * are informational, so they read as a plain sentence instead of a protocol
  * identifier.
  */
-export function safeBoundaryResumeParkedCopy(reason: TurnResumeParkReason): string {
+export function safeBoundaryResumeParkedCopy(reason: TurnResumeParkReason): {
+  level: 'info' | 'error';
+  text: string;
+} {
   switch (reason) {
-    case 'continuation_unavailable':
-      return 'Safe-boundary resume is not enabled on this runtime (set MAKA_RUNTIME_SAFE_BOUNDARY_RESUME=1 to enable).';
+    case 'resume_feature_disabled':
+      return {
+        level: 'info',
+        text: 'Safe-boundary resume is not enabled on this runtime (set MAKA_RUNTIME_SAFE_BOUNDARY_RESUME=1 to enable).',
+      };
     case 'resume_candidate_missing':
-      return 'Nothing to resume: no interrupted run exists in this session.';
+      return { level: 'info', text: 'Nothing to resume: no interrupted run exists in this session.' };
     case 'session_busy':
-      return 'Cannot resume: the session already has an active turn.';
+      return { level: 'info', text: 'Cannot resume: the session already has an active turn.' };
     default:
-      return `Safe-boundary resume parked: ${reason}`;
+      return { level: 'error', text: `Safe-boundary resume parked: ${reason}` };
   }
 }
 
@@ -2283,15 +2289,14 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
         requestRender();
       }
     } catch (error) {
-      // A parked plan is the host saying "there is nothing safe to resume",
-      // not a failure: the runtime feature may be disabled or no interrupted
-      // run exists. Show that as information, not as a red error that reads
-      // like session corruption.
+      // Preserve the Host's reason: expected user states are informational,
+      // while unavailable recovery authority and safety observations stay red.
       if (error instanceof SafeBoundaryResumeParkedError) {
+        const presentation = safeBoundaryResumeParkedCopy(error.reason);
         state.entries.push({
           kind: 'notice',
-          level: 'info',
-          text: safeBoundaryResumeParkedCopy(error.reason),
+          level: presentation.level,
+          text: presentation.text,
         });
         requestRender();
         return;
