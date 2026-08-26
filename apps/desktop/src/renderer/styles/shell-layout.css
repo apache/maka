@@ -82,7 +82,11 @@
    Keyed on the sidenav handle's own testid, not on the class: every Astryx
    ResizeHandle carries that class, and a page's own inspector handle is a
    `position: relative` flex item, so the same `top` shoved its divider 36px
-   down the page — it started below the header's rule instead of meeting it. */
+   down the page — it started below the header's rule instead of meeting it.
+
+   e2e/sidebar-geometry.spec.ts drags this handle from its vertical centre and
+   asserts the column width changes, so this rule and sidebar.css's grab-zone
+   fix both fail loudly if the handle stops being grabbable. */
 .maka-shell-astryx [data-testid="astryx-sidenav-resize-handle"] {
   top: var(--h-titlebar);
 }
