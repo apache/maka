@@ -27,6 +27,24 @@ import type { SessionCatalogProjection, SessionCreateInput } from '../protocol/i
 import { HostExternalConversationCoordinator } from '../server/external-conversation-coordinator.js';
 
 describe('HostExternalConversationCoordinator', () => {
+  test('replays a durable direct source-event claim', async () => {
+    const authority = new MemoryAuthority();
+    const host = coordinator(authority, new MemorySessions(), []);
+    const input = {
+      kind: 'claim_source_event' as const,
+      conversationId: 'telegram:chat-1',
+      operationId: 'bot_source_1',
+    };
+    assert.deepEqual(await host.reconcile(input), {
+      ok: true,
+      result: { kind: 'source_event_claimed', disposition: 'claimed' },
+    });
+    assert.deepEqual(await host.reconcile(input), {
+      ok: true,
+      result: { kind: 'source_event_claimed', disposition: 'existing' },
+    });
+  });
+
   test('reuses a durable claim when the first Host dies before Session creation', async () => {
     const authority = new MemoryAuthority();
     const sessions = new MemorySessions();
@@ -199,6 +217,15 @@ class MemoryAuthority implements ExternalConversationAuthority {
   readonly bindings = new Map<string, string>();
   readonly releases = new Map<string, boolean>();
   failAfterClaim = false;
+
+  async claimSourceEvent(conversationId: string, operationId: string) {
+    const receiptId = `${conversationId}:${operationId}`;
+    if (this.sourceEvents.has(receiptId)) return 'existing' as const;
+    this.sourceEvents.add(receiptId);
+    return 'claimed' as const;
+  }
+
+  readonly sourceEvents = new Set<string>();
 
   async lookup(conversationId: string) {
     const sessionId = this.bindings.get(conversationId);

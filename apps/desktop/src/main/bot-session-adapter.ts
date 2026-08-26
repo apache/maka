@@ -34,6 +34,10 @@ export type BotSessionTurnResult =
   | { readonly kind: 'admission_required' };
 
 export interface BotSessionAdapter {
+  claimSourceEvent(input: {
+    readonly conversationId: string;
+    readonly operationId: string;
+  }): Promise<boolean>;
   resolveSession(input: BotSessionResolveInput): Promise<BotSessionResolution>;
   releaseConversation(input: {
     readonly conversationId: string;

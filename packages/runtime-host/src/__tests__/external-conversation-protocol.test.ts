@@ -78,7 +78,7 @@ describe('external-conversation protocol', () => {
     );
   });
 
-  test('decodes resolve and release without accepting a Client-selected Session id', () => {
+  test('decodes resolve, release, and source-event claims without a Client-selected Session id', () => {
     assert.deepEqual(
       reconcile.decodeInput({
         kind: 'resolve',
@@ -87,6 +87,18 @@ describe('external-conversation protocol', () => {
       {
         kind: 'resolve',
         conversationId: 'slack:channel:C1:thread:123.456',
+      },
+    );
+    assert.deepEqual(
+      reconcile.decodeInput({
+        kind: 'claim_source_event',
+        conversationId: 'slack:channel:C1:thread:123.456',
+        operationId: 'bot_source_1',
+      }),
+      {
+        kind: 'claim_source_event',
+        conversationId: 'slack:channel:C1:thread:123.456',
+        operationId: 'bot_source_1',
       },
     );
     assert.deepEqual(

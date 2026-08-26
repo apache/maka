@@ -88,6 +88,39 @@ test('routes every source delivery to Host idempotency with the same stable mess
   await successor.close();
 });
 
+test('deduplicates direct help and non-text replies across service recreation', async () => {
+  const receipts = new Set<string>();
+  const sent: string[] = [];
+  const create = () =>
+    createBotIncomingMainService({
+      sessions: createTestBotSessionAdapter({
+        async claimSourceEvent(input) {
+          const key = `${input.conversationId}:${input.operationId}`;
+          if (receipts.has(key)) return false;
+          receipts.add(key);
+          return true;
+        },
+      }),
+      botRegistry: registry(sent),
+    });
+  const help = message({ sourceEventId: 'help-source', text: 'help' });
+  const photo = message({ sourceEventId: 'photo-source', text: '', attachmentKind: 'photo' });
+
+  const first = create();
+  await first.handleBotIncomingMessage(help);
+  await first.handleBotIncomingMessage(photo);
+  await first.close();
+
+  const successor = create();
+  await successor.handleBotIncomingMessage(help);
+  await successor.handleBotIncomingMessage(photo);
+  await successor.close();
+
+  assert.equal(sent.length, 2);
+  assert.match(sent[0] ?? '', /Maka/);
+  assert.match(sent[1] ?? '', /只能读文字/);
+});
+
 test('service recreation replays more than the transient burst before admitting new work', async () => {
   const admissions: Array<{ messageId: string; admissionMode: string }> = [];
   const sent: string[] = [];

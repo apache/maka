@@ -23,6 +23,9 @@ export function createTestBotSessionAdapter(
   overrides: Partial<BotSessionAdapter> = {},
 ): BotSessionAdapter {
   return {
+    async claimSourceEvent() {
+      return true;
+    },
     async resolveSession() {
       return { kind: 'ready', sessionId: 'bot-session-1' };
     },

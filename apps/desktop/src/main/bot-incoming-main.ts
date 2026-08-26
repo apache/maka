@@ -71,6 +71,7 @@ export function createBotIncomingMainService(deps: BotIncomingMainServiceDeps): 
 
   async function handleAcceptedBotIncomingMessage(message: BotIncomingMessage): Promise<void> {
     const text = message.text.trim();
+    const key = botConversationKey(message);
     // PR-BOT-NON-TEXT-MESSAGE-ACK-0: previously a photo / voice / sticker
     // with no caption was silently dropped — the user got zero response.
     // If the inbound carried a non-text payload and there is no usable
@@ -78,6 +79,7 @@ export function createBotIncomingMainService(deps: BotIncomingMainServiceDeps): 
     // something but cannot process it. 5-minute TTL matches the other
     // transient system notices.
     if (!text && message.attachmentKind) {
+      if (!(await claimDirectReplySourceEvent(key, message))) return;
       const replyOptions = {
         ...(message.replyTarget.replyToMessageId
           ? { replyToMessageId: message.replyTarget.replyToMessageId }
@@ -95,7 +97,6 @@ export function createBotIncomingMainService(deps: BotIncomingMainServiceDeps): 
       return;
     }
     if (!text) return;
-    const key = botConversationKey(message);
     const current = botConversationQueues.get(key) ?? Promise.resolve();
     const next = current
       .catch(() => {})
@@ -105,6 +106,19 @@ export function createBotIncomingMainService(deps: BotIncomingMainServiceDeps): 
     });
     botConversationQueues.set(key, tracked);
     await tracked;
+  }
+
+  function claimDirectReplySourceEvent(
+    conversationId: string,
+    message: BotIncomingMessage,
+  ): Promise<boolean> {
+    // Claim before sending so a Desktop restart cannot duplicate a direct
+    // notice. This boundary is intentionally at-most-once: IM delivery and
+    // Host persistence cannot share a transaction.
+    return deps.sessions.claimSourceEvent({
+      conversationId,
+      operationId: botSourceOperationId(message),
+    });
   }
 
   function close(): Promise<void> {
@@ -200,6 +214,7 @@ export function createBotIncomingMainService(deps: BotIncomingMainServiceDeps): 
     // hint. Lands BEFORE the reset path so a user typing "help" gets a
     // capability list, not a (silent) reset.
     if (isPlaintextHelpCommand({ text, isGroup: message.isGroup })) {
+      if (!(await claimDirectReplySourceEvent(conversationKey, message))) return;
       const replyOptions = {
         ...(message.replyTarget.replyToMessageId
           ? { replyToMessageId: message.replyTarget.replyToMessageId }

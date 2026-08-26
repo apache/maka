@@ -71,8 +71,26 @@ export class HostExternalConversationCoordinator {
     input: ExternalConversationReconcileInput,
   ): Promise<OperationOutcome<'external-conversation.reconcile'>> {
     return this.#runExclusive(input.conversationId, () =>
-      input.kind === 'release' ? this.#release(input) : this.#resolve(input),
+      input.kind === 'release'
+        ? this.#release(input)
+        : input.kind === 'claim_source_event'
+          ? this.#claimSourceEvent(input)
+          : this.#resolve(input),
     );
+  }
+
+  async #claimSourceEvent(
+    input: Extract<ExternalConversationReconcileInput, { readonly kind: 'claim_source_event' }>,
+  ): Promise<OperationOutcome<'external-conversation.reconcile'>> {
+    try {
+      const disposition = await this.#authority.claimSourceEvent(
+        input.conversationId,
+        input.operationId,
+      );
+      return { ok: true, result: { kind: 'source_event_claimed', disposition } };
+    } catch {
+      return failure('persistence_failed', 'External source event could not be claimed');
+    }
   }
 
   async #release(

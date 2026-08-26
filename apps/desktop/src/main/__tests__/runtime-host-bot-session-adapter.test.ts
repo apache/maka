@@ -139,6 +139,33 @@ test('releases continuity through an exact Host operation id', async () => {
   });
 });
 
+test('claims direct source events through the Host receipt authority', async () => {
+  let captured: unknown;
+  const adapter = createRuntimeHostBotSessionAdapter({
+    client: botClient({
+      reconcileExternalConversation: async (input) => {
+        captured = input;
+        return { kind: 'source_event_claimed', disposition: 'existing' };
+      },
+    }),
+    resolveCreateTarget: hostPathCreateTarget,
+    emitSessionsChanged() {},
+  });
+
+  assert.equal(
+    await adapter.claimSourceEvent({
+      conversationId: 'telegram:chat-1',
+      operationId: 'bot_source_1',
+    }),
+    false,
+  );
+  assert.deepEqual(captured, {
+    kind: 'claim_source_event',
+    conversationId: 'telegram:chat-1',
+    operationId: 'bot_source_1',
+  });
+});
+
 test('starts collecting before submitting the stable source message for the Host-selected Turn', async () => {
   const events = new AsyncFrameQueue();
   const changes: unknown[] = [];

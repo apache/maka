@@ -59,6 +59,11 @@ export type ExternalConversationReconcileInput =
       readonly kind: 'release';
       readonly conversationId: string;
       readonly operationId: string;
+    }
+  | {
+      readonly kind: 'claim_source_event';
+      readonly conversationId: string;
+      readonly operationId: string;
     };
 
 export type ExternalConversationReconcileResult =
@@ -68,7 +73,11 @@ export type ExternalConversationReconcileResult =
       readonly disposition: 'existing' | 'created';
       readonly session: SessionCatalogItem;
     }
-  | { readonly kind: 'released'; readonly hadBinding: boolean };
+  | { readonly kind: 'released'; readonly hadBinding: boolean }
+  | {
+      readonly kind: 'source_event_claimed';
+      readonly disposition: 'claimed' | 'existing';
+    };
 
 export const EXTERNAL_CONVERSATION_OPERATION_SPECS = {
   'external-conversation.reconcile': defineHostPathOperation<
@@ -116,6 +125,21 @@ export function decodeExternalConversationReconcileInput(
       operationId: requireEntityId(exact.operationId, 'external-conversation operationId'),
     };
   }
+  if (input.kind === 'claim_source_event') {
+    const exact = requireExactRecord(input, 'external-conversation source event claim input', [
+      'kind',
+      'conversationId',
+      'operationId',
+    ]);
+    return {
+      kind: 'claim_source_event',
+      conversationId: conversationId(exact.conversationId),
+      operationId: requireEntityId(
+        exact.operationId,
+        'external-conversation source event operationId',
+      ),
+    };
+  }
   throw invalidProtocolFrame('Invalid external-conversation reconcile kind');
 }
 
@@ -151,6 +175,16 @@ export function decodeExternalConversationReconcileResult(
       throw invalidProtocolFrame('Invalid external-conversation release disposition');
     }
     return { kind: 'released', hadBinding: exact.hadBinding };
+  }
+  if (result.kind === 'source_event_claimed') {
+    const exact = requireExactRecord(result, 'external-conversation source event claim result', [
+      'kind',
+      'disposition',
+    ]);
+    if (exact.disposition !== 'claimed' && exact.disposition !== 'existing') {
+      throw invalidProtocolFrame('Invalid external-conversation source event claim disposition');
+    }
+    return { kind: 'source_event_claimed', disposition: exact.disposition };
   }
   throw invalidProtocolFrame('Invalid external-conversation reconcile result kind');
 }

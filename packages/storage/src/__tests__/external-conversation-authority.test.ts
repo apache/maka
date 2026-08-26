@@ -36,6 +36,32 @@ import {
 } from '../root-authority.js';
 
 describe('interactive external-conversation authority', () => {
+  test('persists bounded source-event claims across authentic successor writers', async () => {
+    await withInteractiveRoot(async ({ capability }) => {
+      const firstOwner = await tryAcquireInteractiveRootOwner(capability);
+      assert.ok(firstOwner);
+      if (!firstOwner) return;
+      const first = await openInteractiveExternalConversationAuthorityForWrite(firstOwner.lease);
+      assert.equal(await first.claimSourceEvent('telegram:chat-1', 'bot_source_1'), 'claimed');
+      first.close();
+      await firstOwner.close();
+
+      const successorOwner = await tryAcquireInteractiveRootOwner(capability);
+      assert.ok(successorOwner);
+      if (!successorOwner) return;
+      const successor = await openInteractiveExternalConversationAuthorityForWrite(
+        successorOwner.lease,
+      );
+      try {
+        assert.equal(await successor.claimSourceEvent('telegram:chat-1', 'bot_source_1'), 'existing');
+        assert.equal(await successor.claimSourceEvent('telegram:chat-1', 'bot_source_2'), 'claimed');
+      } finally {
+        successor.close();
+        await successorOwner.close();
+      }
+    });
+  });
+
   test('persists one opaque binding across authentic successor writers', async () => {
     await withInteractiveRoot(async ({ root, capability }) => {
       const firstOwner = await tryAcquireInteractiveRootOwner(capability);

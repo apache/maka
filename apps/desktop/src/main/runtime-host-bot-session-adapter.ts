@@ -62,6 +62,18 @@ export function createRuntimeHostBotSessionAdapter(
   deps: RuntimeHostBotSessionAdapterDeps,
 ): BotSessionAdapter {
   return {
+    async claimSourceEvent(input) {
+      const outcome = await deps.client.reconcileExternalConversation({
+        kind: 'claim_source_event',
+        conversationId: input.conversationId,
+        operationId: input.operationId,
+      });
+      if (outcome.kind !== 'source_event_claimed') {
+        throw new Error('Runtime Host returned an invalid external source event claim');
+      }
+      return outcome.disposition === 'claimed';
+    },
+
     async resolveSession(input) {
       let outcome = await deps.client.reconcileExternalConversation({
         kind: 'resolve',

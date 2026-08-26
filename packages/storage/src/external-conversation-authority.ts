@@ -34,6 +34,8 @@ export const EXTERNAL_CONVERSATION_RELEASE_RECEIPT_LIMIT = 64;
 export const EXTERNAL_CONVERSATION_RELEASE_RECEIPT_TOTAL_LIMIT =
   EXTERNAL_CONVERSATION_BINDING_LIMIT * EXTERNAL_CONVERSATION_RELEASE_RECEIPT_LIMIT;
 export const EXTERNAL_CONVERSATION_RELEASE_RETRY_HORIZON_MS = 7 * 24 * 60 * 60 * 1_000;
+export const EXTERNAL_CONVERSATION_SOURCE_EVENT_RECEIPT_LIMIT = 1_000;
+export const EXTERNAL_CONVERSATION_SOURCE_EVENT_RETRY_HORIZON_MS = 60 * 60 * 1_000;
 
 const SAFE_ID_PATTERN = /^[A-Za-z0-9_-]{1,128}$/;
 const writerBrand: unique symbol = Symbol('InteractiveExternalConversationAuthorityWriter');
@@ -61,6 +63,10 @@ export interface ExternalConversationAuthority {
     proposedSessionId: string,
   ): Promise<ExternalConversationResolveResult>;
   release(conversationId: string, operationId: string): Promise<{ readonly hadBinding: boolean }>;
+  claimSourceEvent(
+    conversationId: string,
+    operationId: string,
+  ): Promise<'claimed' | 'existing'>;
   remove(conversationId: string, expectedSessionId: string): Promise<boolean>;
   purgeSession(sessionId: string): Promise<number>;
   /**
@@ -156,6 +162,8 @@ function createWriterFacade(
     resolve: (conversationId, proposedSessionId) =>
       run(() => store.resolve(conversationId, proposedSessionId)),
     release: (conversationId, operationId) => run(() => store.release(conversationId, operationId)),
+    claimSourceEvent: (conversationId, operationId) =>
+      run(() => store.claimSourceEvent(conversationId, operationId)),
     remove: (conversationId, expectedSessionId) =>
       run(() => store.remove(conversationId, expectedSessionId)),
     purgeSession: (sessionId) => run(() => store.purgeSession(sessionId)),
@@ -287,6 +295,57 @@ class SqliteExternalConversationAuthority implements ExternalConversationAuthori
         `)
         .run(conversationDigest, operationId, hadBinding ? 1 : 0, now);
       return Object.freeze({ hadBinding });
+    });
+  }
+
+  async claimSourceEvent(
+    conversationId: string,
+    operationId: string,
+  ): Promise<'claimed' | 'existing'> {
+    const conversationDigest = digestConversationId(conversationId);
+    assertSafeId(operationId, 'External-conversation source event operation id');
+    return this.#lease.transaction('write', () => {
+      const now = Date.now();
+      this.#lease.database
+        .prepare(`
+          DELETE FROM external_conversation_source_event_receipts
+          WHERE committed_at < ?
+        `)
+        .run(Math.max(0, now - EXTERNAL_CONVERSATION_SOURCE_EVENT_RETRY_HORIZON_MS));
+      const existing = this.#lease.database
+        .prepare(`
+          SELECT 1
+          FROM external_conversation_source_event_receipts
+          WHERE conversation_digest = ? AND operation_id = ?
+        `)
+        .get(conversationDigest, operationId);
+      if (existing) return 'existing';
+
+      const count = this.#lease.database
+        .prepare('SELECT COUNT(*) AS count FROM external_conversation_source_event_receipts')
+        .get() as { count?: unknown };
+      if (
+        decodeCount(count.count, 'external-conversation source event receipt count') >=
+        EXTERNAL_CONVERSATION_SOURCE_EVENT_RECEIPT_LIMIT
+      ) {
+        this.#lease.database.prepare(`
+          DELETE FROM external_conversation_source_event_receipts
+          WHERE (conversation_digest, operation_id) IN (
+            SELECT conversation_digest, operation_id
+            FROM external_conversation_source_event_receipts
+            ORDER BY committed_at, conversation_digest, operation_id
+            LIMIT 1
+          )
+        `).run();
+      }
+      this.#lease.database
+        .prepare(`
+          INSERT INTO external_conversation_source_event_receipts(
+            conversation_digest, operation_id, committed_at
+          ) VALUES (?, ?, ?)
+        `)
+        .run(conversationDigest, operationId, now);
+      return 'claimed';
     });
   }
 
