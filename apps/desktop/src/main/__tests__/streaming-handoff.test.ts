@@ -102,7 +102,7 @@ describe('single live-turn handoff', () => {
       ],
       transientMessages: [
         {
-          type: 'user', id: 'message-pending', turnId: 'message-pending', ts: 2,
+          id: 'message-pending', ts: 2,
           text: 'send now', transientPlacement: 'current_turn',
         },
       ],
@@ -125,7 +125,7 @@ describe('single live-turn handoff', () => {
       messages: [],
       transientMessages: [
         {
-          type: 'user', id: 'turn-1', turnId: 'turn-1', ts: 1, text: 'send now',
+          id: 'turn-1', ts: 1, text: 'send now',
           transientPlacement: 'current_turn',
         },
       ],
@@ -159,11 +159,11 @@ describe('single live-turn handoff', () => {
       messages: [],
       transientMessages: [
         {
-          type: 'user', id: 'message-1', turnId: 'message-1', ts: 1, text: 'send now',
+          id: 'message-1', ts: 1, text: 'send now',
           transientPlacement: 'current_turn',
         },
         {
-          type: 'user', id: 'message-next', turnId: 'message-next', ts: 2, text: 'do this next',
+          id: 'message-next', ts: 2, text: 'do this next',
           transientPlacement: 'next_turn',
         },
       ],

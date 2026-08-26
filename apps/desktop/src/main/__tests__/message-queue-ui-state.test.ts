@@ -86,18 +86,14 @@ test('queue_update events drive the independent desktop queue projection', () =>
   });
   assert.deepEqual(transientMessages, [
     {
-      type: 'user',
       id: 'message-steer',
-      turnId: 'message-steer',
       transientPlacement: 'current_turn',
       hostTurnId: 'turn-1',
       ts: 1,
       text: 'adjust this run',
     },
     {
-      type: 'user',
       id: 'message-next',
-      turnId: 'message-next',
       transientPlacement: 'next_turn',
       ts: 1,
       text: 'do this next',

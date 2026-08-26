@@ -296,9 +296,7 @@ export function createAppShellSessionEventHandlers(options: {
           [...(event.steeringEntries ?? []), ...(event.followupEntries ?? [])]
             .filter((entry) => entry.state === 'queued')
             .map((entry) => ({
-              type: 'user',
               id: entry.messageId,
-              turnId: entry.messageId,
               transientPlacement: entry.placement,
               ...(entry.placement === 'current_turn' ? { hostTurnId: event.turnId } : {}),
               ts: event.ts,

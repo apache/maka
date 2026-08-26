@@ -27,10 +27,13 @@ import {
   reconcileTransientMessages,
 } from '../../renderer/transient-message-projection.js';
 
+/** The durable Message that replaces the transient row above. */
+function canonicalSend(): StoredMessage {
+  return { type: 'user', id: 'message-1', turnId: 'turn-1', ts: 3, text: 'canonical send' };
+}
+
 const transient: TransientUserMessageProjection = {
-  type: 'user',
   id: 'message-1',
-  turnId: 'message-1',
   ts: 2,
   text: 'send now',
   transientPlacement: 'current_turn',
@@ -62,28 +65,19 @@ test('updates a transient message without treating its previous render as canoni
 
 test('replaces a transient message by canonical message id exactly once', () => {
   const pending = new Map([[transient.id, transient]]);
-  const canonical = { ...transient, ts: 3, text: 'canonical send' };
-  const projected = reconcileTransientMessages(pending, [canonical]);
+  const projected = reconcileTransientMessages(pending, [canonicalSend()]);
 
   assert.deepEqual(projected, []);
   assert.equal(pending.size, 0);
 });
 
 test('canonicalizing one send does not hide a later transient send', () => {
-  const second = {
-    ...transient,
-    id: 'message-2',
-    turnId: 'message-2',
-    ts: 4,
-    text: 'send next',
-  };
+  const second = { ...transient, id: 'message-2', ts: 4, text: 'send next' };
   const pending = new Map([
     [transient.id, transient],
     [second.id, second],
   ]);
-  const canonical = { ...transient, ts: 3, text: 'canonical send' };
-
-  const projected = reconcileTransientMessages(pending, [canonical]);
+  const projected = reconcileTransientMessages(pending, [canonicalSend()]);
 
   assert.deepEqual(projected, [second]);
   assert.deepEqual([...pending.keys()], ['message-2']);
@@ -109,10 +103,11 @@ test('keeps transient messages ordered independently from a sparse durable tail'
 });
 
 test('keeps a transient message out of a sparse historical range', () => {
-  const live = { ...transient, id: 'message-live', turnId: 'message-live', text: 'latest prompt' };
-  const old = { ...transient, id: 'message-old', turnId: 'turn-old', ts: 1, text: 'old prompt' };
+  const live = { ...transient, id: 'message-live', text: 'latest prompt' };
   const pending = new Map([[live.id, live]]);
-  const historical = [old];
+  const historical: StoredMessage[] = [
+    { type: 'user', id: 'message-old', turnId: 'turn-old', ts: 1, text: 'old prompt' },
+  ];
 
   const projected = reconcileTransientMessages(pending, historical, {
     includeTransient: false,

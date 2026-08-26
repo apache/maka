@@ -58,6 +58,7 @@ import {
   type QuoteRef,
 } from '@maka/core/events';
 import type { StoredMessage } from '@maka/core/session';
+import type { TransientUserMessageProjection } from './chat-view.js';
 import {
   finalAssistantReplyText,
   type TurnTimelineItem,
@@ -278,7 +279,7 @@ const UserMessageBody = memo(function UserMessageBody(props: {
 });
 
 export function TransientUserMessage(props: {
-  message: Extract<StoredMessage, { type: 'user' }>;
+  message: TransientUserMessageProjection;
   onReadAttachmentBytes?: ReadAttachmentBytes;
 }) {
   const copy = getConversationCopy(useUiLocale()).messages;

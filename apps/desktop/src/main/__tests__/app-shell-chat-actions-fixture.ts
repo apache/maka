@@ -25,7 +25,7 @@
  */
 
 import type { StoredMessage } from '@maka/core/session';
-import type { LiveTurnProjection } from '@maka/ui';
+import type { LiveTurnProjection, TransientUserMessageProjection } from '@maka/ui';
 
 /** Installs a `window.maka` bridge double; the returned function restores it. */
 export function installWindow(maka: unknown): () => void {
@@ -65,6 +65,29 @@ export function createTurnState() {
       const next = updater({ ...liveTurnBySession });
       for (const key of Object.keys(liveTurnBySession)) delete liveTurnBySession[key];
       Object.assign(liveTurnBySession, next);
+    },
+  };
+}
+
+/**
+ * The transient arm as a real map. Transient rows are not `StoredMessage`s —
+ * they have no Turn to belong to yet — so they are held apart from the
+ * canonical transcript here, exactly as the shell holds them.
+ */
+export function createTransientState() {
+  const rows = new Map<string, TransientUserMessageProjection>();
+  return {
+    rows,
+    deps: {
+      addTransientMessage: (_sessionId: string, message: TransientUserMessageProjection) => {
+        rows.set(message.id, message);
+      },
+      updateTransientMessage: (_sessionId: string, message: TransientUserMessageProjection) => {
+        rows.set(message.id, message);
+      },
+      removeTransientMessage: (_sessionId: string, messageId: string) => {
+        rows.delete(messageId);
+      },
     },
   };
 }

@@ -28,13 +28,12 @@
 import { strict as assert } from 'node:assert';
 import { describe, it } from 'node:test';
 
-import type { StoredMessage } from '@maka/core/session';
-import type { LiveTurnProjection } from '@maka/ui';
+import type { LiveTurnProjection, TransientUserMessageProjection } from '@maka/ui';
 import { createAppShellChatActions } from '../../renderer/app-shell-chat-actions.js';
 
 import {
   createActionsDeps,
-  createMessageState,
+  createTransientState,
   createTurnState,
   EMPTY_SKILL_INVOCATION,
   installWindow,
@@ -43,7 +42,7 @@ import {
 describe('busy-raced send settlement', () => {
   it('shows a Follow Up immediately and keeps its caller-owned identity', async () => {
     const activeIdRef = { current: 'session-a' as string | undefined };
-    const transient = new Map<string, StoredMessage>();
+    const transient = new Map<string, TransientUserMessageProjection>();
     let submittedMessageId: string | undefined;
     let releaseAdmission!: () => void;
     const admission = new Promise<void>((resolve) => {
@@ -99,7 +98,7 @@ describe('busy-raced send settlement', () => {
   });
 
   it('keeps a Follow Up visible when Host admission outcome is unknown', async () => {
-    const transient = new Map<string, StoredMessage>();
+    const transient = new Map<string, TransientUserMessageProjection>();
     const restoreWindow = installWindow({
       sessions: {
         submitMessage: async () => ({ ok: false, reason: 'outcome_unknown' as const }),
@@ -117,14 +116,14 @@ describe('busy-raced send settlement', () => {
       await actions.enqueueMessage('session-a', 'do this next', 'next_turn');
 
       assert.equal(transient.size, 1);
-      assert.equal([...transient.values()][0]?.type, 'user');
+      assert.equal([...transient.values()][0]?.text, 'do this next');
     } finally {
       restoreWindow();
     }
   });
 
   it('retires a Follow Up the Host refused outright', async () => {
-    const transient = new Map<string, StoredMessage>();
+    const transient = new Map<string, TransientUserMessageProjection>();
     // A Follow Up submitted just as the running Turn settles is admitted as a
     // fresh Turn, so an unresolvable Skill token in it is refused outright.
     // No Turn opened and no canonical message will ever replace the row, so
@@ -160,7 +159,7 @@ describe('busy-raced send settlement', () => {
   });
 
   it('does not resurrect a Follow Up retracted before its IPC reply settles', async () => {
-    const transient = new Map<string, StoredMessage>();
+    const transient = new Map<string, TransientUserMessageProjection>();
     let submittedMessageId: string | undefined;
     let releaseAdmission!: () => void;
     const admission = new Promise<void>((resolve) => {
@@ -216,7 +215,7 @@ describe('busy-raced send settlement', () => {
 
   it('shows one stable local message before Host admission settles', async () => {
     const activeIdRef = { current: 'session-a' as string | undefined };
-    const transient = new Map<string, StoredMessage>();
+    const transient = new Map<string, TransientUserMessageProjection>();
     let submittedMessageId: string | undefined;
     let releaseAdmission!: () => void;
     const admission = new Promise<void>((resolve) => {
@@ -260,9 +259,7 @@ describe('busy-raced send settlement', () => {
       await submitted;
 
       assert.ok(submittedMessageId);
-      const localMessage = transient.get(submittedMessageId);
-      assert.equal(localMessage?.type, 'user');
-      assert.equal(localMessage?.type === 'user' ? localMessage.text : undefined, 'also check the tests');
+      assert.equal(transient.get(submittedMessageId)?.text, 'also check the tests');
 
       releaseAdmission();
       assert.equal(await sending, true);
@@ -277,7 +274,7 @@ describe('busy-raced send settlement', () => {
   it('keeps one local row when Host admits the message as steering', async () => {
     const activeIdRef = { current: 'session-a' as string | undefined };
     const turnState = createTurnState();
-    const messageState = createMessageState();
+    const transientState = createTransientState();
     const restoreWindow = installWindow({
       sessions: {
         submitMessage: async (_sessionId: string, command: { messageId: string }) => ({
@@ -295,17 +292,13 @@ describe('busy-raced send settlement', () => {
         ...createActionsDeps(),
         activeIdRef,
         setLiveTurnBySession: turnState.setLiveTurnBySession,
-        setMessages: messageState.setMessages,
-        addTransientMessage: (_sessionId, message) =>
-          messageState.setMessages((current) => [...current.filter((item) => item.id !== message.id), message]),
-        removeTransientMessage: (_sessionId, messageId) =>
-          messageState.setMessages((current) => current.filter((message) => message.id !== messageId)),
+        ...transientState.deps,
       });
       assert.equal(await actions.send('also check the tests'), true);
       assert.equal(turnState.liveTurnBySession['session-a'], undefined);
-      const local = messageState.messages.filter((message) => message.type === 'user');
-      assert.equal(local.length, 1);
-      assert.equal(local[0]?.id, local[0]?.turnId);
+      // One row for one Message, still under the identity the client sent it
+      // with: steering admission names no Turn to re-key it to.
+      assert.equal(transientState.rows.size, 1);
     } finally {
       restoreWindow();
     }
@@ -314,7 +307,7 @@ describe('busy-raced send settlement', () => {
   it('does not turn a Host-started admission into a renderer-owned LiveTurn', async () => {
     const activeIdRef = { current: 'session-a' as string | undefined };
     const turnState = createTurnState();
-    const messageState = createMessageState();
+    const transientState = createTransientState();
     const restoreWindow = installWindow({
       sessions: {
         submitMessage: async (_sessionId: string, command: { messageId: string }) => ({
@@ -333,17 +326,13 @@ describe('busy-raced send settlement', () => {
         ...createActionsDeps(),
         activeIdRef,
         setLiveTurnBySession: turnState.setLiveTurnBySession,
-        setMessages: messageState.setMessages,
-        addTransientMessage: (_sessionId, message) =>
-          messageState.setMessages((current) => [...current.filter((item) => item.id !== message.id), message]),
-        removeTransientMessage: (_sessionId, messageId) =>
-          messageState.setMessages((current) => current.filter((message) => message.id !== messageId)),
+        ...transientState.deps,
       });
       assert.equal(await actions.send('also check the tests'), true);
       assert.equal(turnState.liveTurnBySession['session-a'], undefined);
-      const optimistic = messageState.messages.filter((message) => message.type === 'user');
-      assert.equal(optimistic.length, 1);
-      assert.notEqual(optimistic[0]?.id, 'host-turn');
+      assert.equal(transientState.rows.size, 1);
+      assert.equal(transientState.rows.has('host-turn'), false);
+      assert.equal([...transientState.rows.values()][0]?.hostTurnId, 'host-turn');
     } finally {
       restoreWindow();
     }
@@ -352,7 +341,7 @@ describe('busy-raced send settlement', () => {
   it('keeps an authoritative projection that arrived before the send response', async () => {
     const activeIdRef = { current: 'session-a' as string | undefined };
     const turnState = createTurnState();
-    const messageState = createMessageState();
+    const transientState = createTransientState();
     const restoreWindow = installWindow({
       sessions: {
         submitMessage: async (_sessionId: string, command: { messageId: string }) => {
@@ -378,11 +367,7 @@ describe('busy-raced send settlement', () => {
         ...createActionsDeps(),
         activeIdRef,
         setLiveTurnBySession: turnState.setLiveTurnBySession,
-        setMessages: messageState.setMessages,
-        addTransientMessage: (_sessionId, message) =>
-          messageState.setMessages((current) => [...current.filter((item) => item.id !== message.id), message]),
-        removeTransientMessage: (_sessionId, messageId) =>
-          messageState.setMessages((current) => current.filter((message) => message.id !== messageId)),
+        ...transientState.deps,
       });
       assert.equal(await actions.send('also check the tests'), true);
       const live = turnState.liveTurnBySession['session-a'];
@@ -397,7 +382,7 @@ describe('busy-raced send settlement', () => {
   it('keeps the new-chat message through navigation when Host admits it as steering', async () => {
     const activeIdRef = { current: undefined as string | undefined };
     const turnState = createTurnState();
-    const messageState = createMessageState();
+    const transientState = createTransientState();
     const activated: string[] = [];
     const removed: string[] = [];
     const restoreWindow = installWindow({
@@ -427,16 +412,12 @@ describe('busy-raced send settlement', () => {
           activeIdRef.current = sessionId;
         },
         setLiveTurnBySession: turnState.setLiveTurnBySession,
-        setMessages: messageState.setMessages,
-        addTransientMessage: (_sessionId, message) =>
-          messageState.setMessages((current) => [...current.filter((item) => item.id !== message.id), message]),
-        removeTransientMessage: (_sessionId, messageId) =>
-          messageState.setMessages((current) => current.filter((message) => message.id !== messageId)),
+        ...transientState.deps,
       });
       assert.equal(await actions.send('also check the tests'), true);
       assert.deepEqual(activated, ['session-new']);
       assert.equal(turnState.liveTurnBySession['session-new'], undefined);
-      assert.equal(messageState.messages.filter((message) => message.type === 'user').length, 1);
+      assert.equal(transientState.rows.size, 1);
       assert.deepEqual(removed, []);
     } finally {
       restoreWindow();
@@ -446,7 +427,7 @@ describe('busy-raced send settlement', () => {
   it('keeps the new-chat messageId when Host chooses another turnId', async () => {
     const activeIdRef = { current: undefined as string | undefined };
     const turnState = createTurnState();
-    const messageState = createMessageState();
+    const transientState = createTransientState();
     const restoreWindow = installWindow({
       newTasks: {
         create: async () => ({ id: 'session-new' }),
@@ -471,17 +452,12 @@ describe('busy-raced send settlement', () => {
           activeIdRef.current = sessionId;
         },
         setLiveTurnBySession: turnState.setLiveTurnBySession,
-        setMessages: messageState.setMessages,
-        addTransientMessage: (_sessionId, message) =>
-          messageState.setMessages((current) => [...current.filter((item) => item.id !== message.id), message]),
-        removeTransientMessage: (_sessionId, messageId) =>
-          messageState.setMessages((current) => current.filter((message) => message.id !== messageId)),
+        ...transientState.deps,
       });
       assert.equal(await actions.send('also check the tests'), true);
       assert.equal(turnState.liveTurnBySession['session-new'], undefined);
-      const optimistic = messageState.messages.filter((message) => message.type === 'user');
-      assert.equal(optimistic.length, 1);
-      assert.notEqual(optimistic[0]?.id, 'host-turn');
+      assert.equal(transientState.rows.size, 1);
+      assert.equal(transientState.rows.has('host-turn'), false);
     } finally {
       restoreWindow();
     }

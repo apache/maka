@@ -30,7 +30,12 @@ import { useMessageSelectionQuote } from './use-message-selection-quote.js';
 import type { DeepResearchClientProgress } from '@maka/core/deep-research-run';
 import type { ProviderType } from '@maka/core/llm-connections';
 import type { SessionSummary, StoredMessage } from '@maka/core/session';
-import type { ShellRunUpdate } from '@maka/core/events';
+import type {
+  AttachmentRef,
+  InlineReference,
+  QuoteRef,
+  ShellRunUpdate,
+} from '@maka/core/events';
 import { isDeepResearchSession } from '@maka/core/explore-agent';
 import { Button, ButtonGroup, ChatMessageList, EmptyState, Spinner } from '@astryxdesign/core';
 import { useChatLayoutContext } from '@astryxdesign/core/Chat';
@@ -60,7 +65,23 @@ export interface LiveContentActivationSnapshot {
   entries: ReadonlyMap<string, string>;
 }
 
-export type TransientUserMessageProjection = Extract<StoredMessage, { type: 'user' }> & {
+/**
+ * A user Message this client has shown but cannot yet prove is durable.
+ *
+ * Deliberately not a `StoredMessage`: a stored one belongs to a Turn, and the
+ * Turn identity is exactly what a client does not have while Runtime Host is
+ * still deciding what the Message becomes. Borrowing that shape forced a
+ * fabricated `turnId`, which then had to be kept from being read as the real
+ * grouping. These are the presentation fields the transcript actually renders,
+ * plus `hostTurnId` for the grouping once the Host names one.
+ */
+export interface TransientUserMessageProjection {
+  id: string;
+  text: string;
+  ts: number;
+  attachments?: readonly AttachmentRef[];
+  quotes?: readonly QuoteRef[];
+  inlineReferences?: readonly InlineReference[];
   /**
    * Presentation-only placement until canonical transcript grouping arrives:
    * `current_turn` renders beside the tail Turn, `next_turn` below it.
@@ -68,7 +89,7 @@ export type TransientUserMessageProjection = Extract<StoredMessage, { type: 'use
   transientPlacement: 'current_turn' | 'next_turn';
   /** The Host Turn this Message is already bound to, once the Host named one. */
   hostTurnId?: string;
-};
+}
 
 export function ChatView(props: {
   messages: StoredMessage[];
