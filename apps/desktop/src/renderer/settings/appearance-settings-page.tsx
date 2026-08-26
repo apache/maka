@@ -22,6 +22,7 @@ import { SettingsPage, SettingsSection } from './settings-section';
 import {
   isAppIcon,
   type AppIcon,
+  DEFAULT_APP_ICON_DARK,
   type AppIconChoice,
   type AppIconTarget,
   type ThemePalette,
@@ -290,14 +291,15 @@ export function AppearanceSettingsPage(props: {
     }
   }
 
-  // Turning the split on seeds the dark slot with what is already showing, so
-  // the dock does not change the instant the switch is flipped — the user
-  // opts into a second icon, then picks it. Turning it off writes the light
-  // choice with `both`, which clears the slot.
+  // Turning the split on seeds the dark slot with the shipped dark
+  // recommendation and moves the grid to it, so the user lands on a sensible
+  // dark tile already selected rather than on a copy of the light one they
+  // then have to change. Turning it off writes the light choice with `both`,
+  // which clears the slot.
   async function setAppIconSplit(enabled: boolean) {
     if (enabled) {
       setAppIconTarget('dark');
-      await setAppIcon(props.appIcon, 'dark');
+      await setAppIcon(DEFAULT_APP_ICON_DARK, 'dark');
     } else {
       setAppIconTarget('light');
       await setAppIcon(props.appIcon, 'both');

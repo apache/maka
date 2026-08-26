@@ -276,13 +276,6 @@ export function customAppIconId(choice: AppIconChoice): string | undefined {
 }
 
 /**
- * What a fresh install shows, per appearance.
- *
- * Two ids rather than one because a single tile cannot serve both docks: a
- * light-ground tile disappears against a light dock and vice versa. These are
- * the two the icon discussion converged on.
- */
-/**
  * Which appearance a selection is for.
  *
  * `both` is not "write the same id twice": it CLEARS the dark slot, which is
@@ -297,8 +290,22 @@ export function isAppIconTarget(value: unknown): value is AppIconTarget {
   return value === 'both' || value === 'light' || value === 'dark';
 }
 
+/**
+ * What a fresh install shows.
+ *
+ * The split starts OFF: `appIcon` alone serves both appearances, so an install
+ * nobody has touched shows one tile everywhere. `DEFAULT_APP_ICON_DARK` is
+ * what the dark slot is seeded with when someone turns the split ON — a
+ * recommendation offered at that moment, not something applied behind their
+ * back.
+ */
 export const DEFAULT_APP_ICON: AppIcon = 'sky';
 export const DEFAULT_APP_ICON_DARK: AppIcon = 'ink';
+
+/** The icon half of a fresh install's appearance, for resolving startup state. */
+const DEFAULT_APP_ICON_APPEARANCE: Pick<AppearanceSettings, 'appIcon' | 'appIconDark'> = {
+  appIcon: DEFAULT_APP_ICON,
+};
 
 /**
  * The dark slot as it should be stored, given what the settings file said.
@@ -329,8 +336,11 @@ function normalizedDarkAppIcon(
  * state with it. If they disagreed, every launch would either re-decode a
  * 1024px PNG for nothing or leave the seeded value showing.
  */
-export function startupAppIcon(systemPrefersDark: boolean): AppIcon {
-  return systemPrefersDark ? DEFAULT_APP_ICON_DARK : DEFAULT_APP_ICON;
+export function startupAppIcon(systemPrefersDark: boolean): AppIconChoice {
+  // Derived rather than restated: this must agree with what a fresh install
+  // resolves to, and writing the pair out again here is exactly how the two
+  // drift apart the next time a default changes.
+  return appIconForTheme(DEFAULT_APP_ICON_APPEARANCE, systemPrefersDark);
 }
 
 /**
@@ -652,7 +662,6 @@ export function createDefaultSettings(): AppSettings {
       theme: 'auto',
       palette: 'default',
       appIcon: DEFAULT_APP_ICON,
-      appIconDark: DEFAULT_APP_ICON_DARK,
     },
     personalization: {
       displayName: '',

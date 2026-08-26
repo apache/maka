@@ -229,10 +229,20 @@ describe('app icon per appearance', () => {
     expect(normalized.appearance.appIconDark).toBe(DEFAULT_APP_ICON_DARK);
   });
 
-  test('a fresh install differs by appearance', () => {
+  test('a fresh install uses one icon in both appearances', () => {
+    // The split ships OFF. DEFAULT_APP_ICON_DARK is what the dark slot is
+    // seeded with when the user turns it on, not something applied for them.
     const fresh = createDefaultSettings().appearance;
+    expect(fresh.appIconDark).toBe(undefined);
     expect(appIconForTheme(fresh, false)).toBe(DEFAULT_APP_ICON);
-    expect(appIconForTheme(fresh, true)).toBe(DEFAULT_APP_ICON_DARK);
+    expect(appIconForTheme(fresh, true)).toBe(DEFAULT_APP_ICON);
+  });
+
+  test('the shipped dark recommendation is a real icon that can be seeded', () => {
+    // It is not in the defaults, so nothing else would catch it going stale.
+    expect(
+      appIconForTheme({ appIcon: DEFAULT_APP_ICON, appIconDark: DEFAULT_APP_ICON_DARK }, true),
+    ).toBe(DEFAULT_APP_ICON_DARK);
   });
 
   test('the startup icon matches what a fresh install resolves to', () => {
