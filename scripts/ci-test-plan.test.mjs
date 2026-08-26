@@ -449,6 +449,20 @@ test('specialized platform workflows stay reachable without pull requests', () =
   assert.match(baseline, /\n  schedule:/u);
 });
 
+test('Windows recovery executes the exact managed dependency ADS regressions', () => {
+  const recovery = readWorkflow('windows-recovery.yml');
+
+  assert.match(recovery, /name: Verify managed dependency alternate streams/u);
+  assert.match(recovery, /--test-name-pattern="NTFS alternate stream"/u);
+  assert.match(
+    recovery,
+    /packages\/storage\/dist\/__tests__\/managed-dependency-environment\.test\.js/u,
+  );
+  assert.match(recovery, /# tests 3/u);
+  assert.match(recovery, /# pass 3/u);
+  assert.match(recovery, /# skipped 0/u);
+});
+
 test('workflows never persist the job credential into the checkout', () => {
   for (const name of readdirSync(WORKFLOW_DIR)) {
     for (const step of checkoutSteps(name)) {
