@@ -977,6 +977,15 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
         if (result?.disposition === 'blocked') {
           removeTransientUserMessage(messageId);
           showSkillInvocation(result.skillInvocation);
+          return;
+        }
+        // It admitted them instead. The receipt says what was loaded and what
+        // was dropped, and the submit answer is the only place it appears: the
+        // Turn arrives through the started-Turn subscription, which carries
+        // Session state rather than this Message's admission.
+        if (result?.disposition === 'turn_started' && result.skillInvocation) {
+          const { loaded, failed } = result.skillInvocation;
+          if (loaded.length > 0 || failed.length > 0) showSkillInvocation(result.skillInvocation);
         }
       })
       .catch((error) => {

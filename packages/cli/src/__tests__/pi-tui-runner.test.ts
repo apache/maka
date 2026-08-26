@@ -7554,16 +7554,22 @@ class HostSkillDriver extends SlashCommandDriver {
     if (this.#refuses()) {
       return { disposition: 'blocked', skillInvocation: this.skillInvocation };
     }
-    return super.submitMessage(text, options);
+    // Admitted: the receipt for what was resolved rides the answer, which is
+    // the client's only sight of it.
+    const admitted = await super.submitMessage(text, options);
+    return admitted?.disposition === 'turn_started'
+      ? { ...admitted, skillInvocation: this.skillInvocation }
+      : admitted;
   }
 
   override async preparePrompt(
     prompt: string,
     options: MakaPreparePromptOptions = {},
   ): Promise<MakaPreparedSessionTurn> {
+    // `turn.start` still refuses outright; its only caller is headless
+    // `maka run`, which reports the refusal as an ordinary failure.
     if (this.#refuses()) throw new Error(skillInvocationBlockedMessage(this.skillInvocation));
-    const turn = await super.preparePrompt(prompt, options);
-    return { ...turn, skillInvocation: this.skillInvocation };
+    return super.preparePrompt(prompt, options);
   }
 }
 
@@ -8263,12 +8269,19 @@ interface HostAdmittingDriver {
  * for that Session, so a test whose TUI runs on a non-default model points it
  * there instead of letting the default summary rewrite the status line.
  */
+/**
+ * The Host admitting a Message as a fresh Turn: it answers the submit with
+ * `turn_started`, and the Turn itself arrives separately through the
+ * started-Turn subscription. That push carries Session state, NOT this
+ * Message's admission — anything the client learns about the admission has to
+ * come back through the answer, which is why the receipt is stripped here.
+ */
 async function admitMessageAsTurn(
   driver: HostAdmittingDriver,
   text: string,
   options: MakaSubmitMessageOptions,
-): Promise<undefined> {
-  const turn = await driver.preparePrompt(text, {
+): Promise<TurnMessageSubmitResult> {
+  const { skillInvocation: _admissionReceipt, ...turn } = await driver.preparePrompt(text, {
     turnId: options.messageId,
     ...(options.modelText !== undefined ? { modelText: options.modelText } : {}),
     ...(options.turnOrchestration ? { turnOrchestration: options.turnOrchestration } : {}),
@@ -8280,7 +8293,7 @@ async function admitMessageAsTurn(
       summary: { ...fakeSessionSummary(turn.sessionId), ...driver.hostSummary },
     }),
   );
-  return undefined;
+  return { disposition: 'turn_started', turnId: turn.turnId };
 }
 
 function fakeSessionSummary(
