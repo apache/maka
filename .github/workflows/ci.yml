@@ -61,11 +61,11 @@ jobs:
       - name: Test CI planner
         run: node --test --test-concurrency=1 scripts/ci-test-plan.test.mjs scripts/verify-windows-harness.test.mjs
 
-      # Pure Node like the planner test, and the triage workflow imports this
-      # module directly, so a rule change is caught here rather than by
-      # mislabelling live pull requests.
-      - name: Test PR triage classification
-        run: node --test --test-concurrency=1 scripts/pr-triage.test.mjs
+      # Pure Node like the planner test, and the labelling workflow imports this
+      # module directly, so a tier or exclusion change is caught here rather
+      # than by mislabelling live pull requests.
+      - name: Test PR effort classification
+        run: node --test --test-concurrency=1 scripts/pr-effort.test.mjs
 
       # Same shape and the same needs: a regenerate-and-diff contract that runs
       # on Node alone, so it belongs beside the planner test rather than behind
