@@ -23,7 +23,7 @@
 // copy fresh. Pull request search has no size qualifier, which leaves reading
 // effort as the one axis a query cannot express.
 
-export const EFFORT_LABELS = ['effort/XS', 'effort/S', 'effort/M', 'effort/L', 'effort/XL'];
+const EFFORT_LABELS = ['effort/XS', 'effort/S', 'effort/M', 'effort/L', 'effort/XL'];
 
 // Counted changes should track what a human actually reads. Lockfiles,
 // regenerated artifacts and binaries are verified by their own contracts, so
@@ -49,7 +49,7 @@ const EFFORT_TIERS = [
   { label: 'effort/XL', maxLines: Number.POSITIVE_INFINITY },
 ];
 
-export function isUnreadPath(path) {
+function isUnreadPath(path) {
   const normalized = String(path).replace(/\\/g, '/');
   return UNREAD_PATTERNS.some((pattern) => pattern.test(normalized));
 }
@@ -57,7 +57,7 @@ export function isUnreadPath(path) {
 /**
  * @param {Array<{filename: string, additions?: number, deletions?: number}>} files
  */
-export function countReadableLines(files = []) {
+function countReadableLines(files = []) {
   return files.reduce((total, file) => {
     if (isUnreadPath(file.filename)) return total;
     return total + (file.additions ?? 0) + (file.deletions ?? 0);
@@ -67,7 +67,7 @@ export function countReadableLines(files = []) {
 /**
  * @param {Array<object>} files
  */
-export function classifyEffort(files = []) {
+function classifyEffort(files = []) {
   const lines = countReadableLines(files);
   const tier = EFFORT_TIERS.find((candidate) => lines <= candidate.maxLines);
   return { label: tier.label, lines };

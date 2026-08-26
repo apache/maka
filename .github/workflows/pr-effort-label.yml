@@ -29,6 +29,12 @@ on:
   schedule:
     - cron: "23 4 * * *"
   workflow_dispatch:
+    inputs:
+      dry_run:
+        description: Log the tier each open pull request would get without writing labels.
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: read
@@ -54,6 +60,8 @@ jobs:
           persist-credentials: false
 
       - uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        env:
+          DRY_RUN: ${{ inputs.dry_run || false }}
         with:
           script: |
             const path = require("node:path")
@@ -64,6 +72,10 @@ jobs:
             )
 
             const { owner, repo } = context.repo
+
+            // Reviewing a tier boundary or an exclusion means seeing it against
+            // real pull requests, which is this same sweep minus the writes.
+            const dryRun = process.env.DRY_RUN === "true"
 
             const targets = context.payload.pull_request
               ? [context.payload.pull_request.number]
@@ -91,6 +103,14 @@ jobs:
                 files,
                 current.map((label) => label.name),
               )
+
+              if (dryRun) {
+                core.info(
+                  `#${pull_number}: ${plan.label} (${plan.lines} readable lines)` +
+                    ` +[${plan.addLabels.join(", ")}] -[${plan.removeLabels.join(", ")}]`,
+                )
+                continue
+              }
 
               if (plan.addLabels.length > 0) {
                 await github.rest.issues.addLabels({

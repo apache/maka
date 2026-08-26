@@ -17,92 +17,95 @@
  * under the License.
  */
 
+// Exercised through planLabels, the module's only export, so the tests bind to
+// the contract the workflow calls rather than to helpers that would then exist
+// only to be tested.
+
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
-import { classifyEffort, countReadableLines, isUnreadPath, planLabels } from './pr-effort.mjs';
+import { planLabels } from './pr-effort.mjs';
 
 function file(filename, additions, deletions = 0) {
   return { filename, additions, deletions };
 }
 
-describe('isUnreadPath', () => {
-  it('covers every lockfile format in the tree', () => {
-    assert.equal(isUnreadPath('pnpm-lock.yaml'), true);
-    assert.equal(isUnreadPath('package-lock.json'), true);
-    assert.equal(isUnreadPath('native/runtime-host-peer/Cargo.lock'), true);
-    assert.equal(isUnreadPath('native/gitoxide-helper/Cargo.lock'), true);
+function tier(files) {
+  return planLabels(files).label;
+}
+
+function readable(files) {
+  return planLabels(files).lines;
+}
+
+describe('tier boundaries', () => {
+  it('places each tier on its inclusive upper bound', () => {
+    assert.equal(tier([file('a.ts', 10)]), 'effort/XS');
+    assert.equal(tier([file('a.ts', 11)]), 'effort/S');
+    assert.equal(tier([file('a.ts', 100)]), 'effort/S');
+    assert.equal(tier([file('a.ts', 101)]), 'effort/M');
+    assert.equal(tier([file('a.ts', 500)]), 'effort/M');
+    assert.equal(tier([file('a.ts', 501)]), 'effort/L');
+    assert.equal(tier([file('a.ts', 1000)]), 'effort/L');
+    assert.equal(tier([file('a.ts', 1001)]), 'effort/XL');
   });
 
-  it('covers both spellings the notice generator emits', () => {
-    assert.equal(isUnreadPath('apps/desktop/resources/licenses/npm/THIRD_PARTY_NOTICES.txt'), true);
-    assert.equal(isUnreadPath('apps/desktop/src/renderer/public/THIRD_PARTY_LICENSES.txt'), true);
+  it('counts additions and deletions together', () => {
+    assert.equal(readable([file('a.ts', 40, 2)]), 42);
   });
 
-  it('covers generated sources, snapshots and binaries', () => {
-    assert.equal(isUnreadPath('packages/core/src/model-metadata.generated.ts'), true);
-    assert.equal(isUnreadPath('scripts/model-metadata/models-dev-api.snapshot.json'), true);
-    assert.equal(isUnreadPath('packages/storage/test-fixtures/v0.1.6/runtime.sqlite'), true);
-    assert.equal(isUnreadPath('apps/desktop/build/background@2x.png'), true);
+  it('treats an empty pull request as the smallest tier', () => {
+    assert.equal(tier([]), 'effort/XS');
+  });
+});
+
+describe('unread paths', () => {
+  it('excludes every lockfile format in the tree', () => {
+    assert.equal(readable([file('pnpm-lock.yaml', 9000, 8000)]), 0);
+    assert.equal(readable([file('package-lock.json', 9000)]), 0);
+    assert.equal(readable([file('native/runtime-host-peer/Cargo.lock', 3524, 100)]), 0);
+    assert.equal(readable([file('uv.lock', 500)]), 0);
+  });
+
+  it('excludes both spellings the notice generator emits', () => {
+    assert.equal(
+      readable([file('apps/desktop/resources/licenses/npm/THIRD_PARTY_NOTICES.txt', 900)]),
+      0,
+    );
+    assert.equal(
+      readable([file('apps/desktop/src/renderer/public/THIRD_PARTY_LICENSES.txt', 900)]),
+      0,
+    );
+  });
+
+  it('excludes generated sources, snapshots and binaries', () => {
+    assert.equal(readable([file('packages/core/src/model-metadata.generated.ts', 5000)]), 0);
+    assert.equal(readable([file('scripts/model-metadata/models-dev-api.snapshot.json', 4000)]), 0);
+    assert.equal(readable([file('packages/storage/test-fixtures/v0.1.6/runtime.sqlite', 1)]), 0);
+    assert.equal(readable([file('apps/desktop/build/background@2x.png', 1)]), 0);
   });
 
   it('normalizes Windows separators', () => {
-    assert.equal(isUnreadPath('native\\runtime-host-peer\\Cargo.lock'), true);
+    assert.equal(readable([file('native\\runtime-host-peer\\Cargo.lock', 3524)]), 0);
   });
 
-  it('leaves hand-authored sources alone', () => {
-    assert.equal(isUnreadPath('packages/cli/src/main.ts'), false);
-    assert.equal(isUnreadPath('packages/core/test/session.test.ts'), false);
-    assert.equal(isUnreadPath('apps/desktop/src/renderer/locales/mcp-copy.ts'), false);
+  it('keeps hand-authored sources, including tests and locale copy', () => {
+    assert.equal(readable([file('packages/cli/src/main.ts', 20, 4)]), 24);
+    assert.equal(readable([file('packages/core/test/session.test.ts', 300)]), 300);
+    assert.equal(readable([file('apps/desktop/src/renderer/locales/mcp-copy.ts', 80)]), 80);
     // Named for the notices but hand-written policy prose.
-    assert.equal(isUnreadPath('docs/third-party-notices-policy.md'), false);
-  });
-});
-
-describe('countReadableLines', () => {
-  it('counts additions and deletions of reviewed files only', () => {
-    const files = [
-      file('packages/cli/src/main.ts', 20, 4),
-      file('pnpm-lock.yaml', 9000, 8000),
-      file('native/runtime-host-peer/Cargo.lock', 3524, 100),
-      file('packages/core/src/model-metadata.generated.ts', 5000, 0),
-      file('apps/desktop/src/renderer/public/THIRD_PARTY_LICENSES.txt', 900, 0),
-    ];
-    assert.equal(countReadableLines(files), 24);
-  });
-
-  it('does not discount test code, which is reviewed too', () => {
-    assert.equal(countReadableLines([file('packages/core/test/session.test.ts', 300)]), 300);
-  });
-
-  it('treats an empty pull request as zero', () => {
-    assert.equal(countReadableLines([]), 0);
-  });
-});
-
-describe('classifyEffort', () => {
-  it('places each tier on its inclusive upper bound', () => {
-    assert.equal(classifyEffort([file('a.ts', 10)]).label, 'effort/XS');
-    assert.equal(classifyEffort([file('a.ts', 11)]).label, 'effort/S');
-    assert.equal(classifyEffort([file('a.ts', 100)]).label, 'effort/S');
-    assert.equal(classifyEffort([file('a.ts', 101)]).label, 'effort/M');
-    assert.equal(classifyEffort([file('a.ts', 500)]).label, 'effort/M');
-    assert.equal(classifyEffort([file('a.ts', 501)]).label, 'effort/L');
-    assert.equal(classifyEffort([file('a.ts', 1000)]).label, 'effort/L');
-    assert.equal(classifyEffort([file('a.ts', 1001)]).label, 'effort/XL');
+    assert.equal(readable([file('docs/third-party-notices-policy.md', 40)]), 40);
   });
 
   it('keeps a dependency bump at the tier its readable diff earns', () => {
-    const bump = [file('pnpm-lock.yaml', 5000, 4000), file('package.json', 2, 2)];
-    assert.equal(classifyEffort(bump).label, 'effort/XS');
-  });
-
-  it('reports the readable count alongside the tier', () => {
-    assert.deepEqual(classifyEffort([file('a.ts', 40, 2)]), { label: 'effort/S', lines: 42 });
+    assert.equal(
+      tier([file('pnpm-lock.yaml', 5000, 4000), file('package.json', 2, 2)]),
+      'effort/XS',
+    );
   });
 });
 
-describe('planLabels', () => {
+describe('label planning', () => {
   it('adds the tier and leaves unrelated labels alone', () => {
     const plan = planLabels([file('a.ts', 5)], ['bug', 'area/cli']);
     assert.deepEqual(plan.addLabels, ['effort/XS']);
