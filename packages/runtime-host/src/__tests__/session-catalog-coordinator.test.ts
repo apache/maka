@@ -44,6 +44,7 @@ import {
 } from '@maka/storage/execution-stores';
 import {
   SESSION_CATALOG_RESULT_MAX_BYTES,
+  SESSION_CATALOG_MODEL_MAX_BYTES,
   SESSION_CATALOG_RUNNING_TURN_MAX_ITEMS,
   SESSION_TURN_QUERY_RESULT_MAX_BYTES,
   type SessionConfigurationUpdateInput,
@@ -949,6 +950,102 @@ test('configuration update never rebinds a bound Session through a reused slug',
   assert.equal(fixture.header().llmConnectionId, 'connection-1');
 });
 
+test('configuration update resolves default to the current model on the bound account', async () => {
+  const fixture = createFixture({
+    connection: {
+      defaultModelId: 'model-2',
+      enabledModelIds: ['model-1', 'model-2'],
+      models: [{ id: 'model-1' }, { id: 'model-2' }],
+    },
+  });
+  const input = configurationInput(fixture.sessionId, fixture.revision());
+
+  const outcome = await fixture.coordinator.handlers['session.configuration.update'](
+    {
+      ...input,
+      configuration: {
+        ...input.configuration,
+        modelTarget: { kind: 'default' },
+      },
+    },
+    context,
+  );
+
+  assert.equal(outcome.ok, true);
+  if (!outcome.ok || outcome.result.kind !== 'committed') {
+    assert.fail('Default model update did not commit');
+  }
+  assert.equal(fixture.header().llmConnectionId, 'connection-1');
+  assert.equal(fixture.header().model, 'model-2');
+});
+
+test('configuration update rejects a default that moved to another Connection', async () => {
+  let resolutionAttempts = 0;
+  const fixture = createFixture({
+    connection: {
+      connectionId: 'connection-2',
+      onResolve: () => {
+        resolutionAttempts += 1;
+      },
+    },
+  });
+  const input = configurationInput(fixture.sessionId, fixture.revision());
+
+  const outcome = await fixture.coordinator.handlers['session.configuration.update'](
+    {
+      ...input,
+      configuration: {
+        ...input.configuration,
+        modelTarget: { kind: 'default' },
+      },
+    },
+    context,
+  );
+
+  assert.deepEqual(outcome, {
+    ok: false,
+    error: {
+      code: 'operation_conflict',
+      message: 'Session account changes require an exact Connection identity',
+    },
+  });
+  assert.equal(resolutionAttempts, 0);
+  assert.equal(fixture.header().llmConnectionId, 'connection-1');
+  assert.equal(fixture.header().model, 'model-1');
+});
+
+test('configuration update rejects an oversized current default instead of retaining the old model', async () => {
+  const oversizedModel = 'm'.repeat(SESSION_CATALOG_MODEL_MAX_BYTES + 1);
+  const fixture = createFixture({
+    connection: {
+      defaultModelId: oversizedModel,
+      enabledModelIds: ['model-1', oversizedModel],
+      models: [{ id: 'model-1' }, { id: oversizedModel }],
+    },
+  });
+  const input = configurationInput(fixture.sessionId, fixture.revision());
+
+  const outcome = await fixture.coordinator.handlers['session.configuration.update'](
+    {
+      ...input,
+      configuration: {
+        ...input.configuration,
+        modelTarget: { kind: 'default' },
+      },
+    },
+    context,
+  );
+
+  assert.deepEqual(outcome, {
+    ok: false,
+    error: {
+      code: 'invalid_request',
+      message: 'Session model identifier exceeds the wire limit',
+    },
+  });
+  assert.equal(fixture.header().model, 'model-1');
+});
+
 test('configuration update does not adopt an account for a legacy Session', async () => {
   const fixture = createFixture({ legacyConnectionIdentity: true });
 
@@ -1417,6 +1514,8 @@ function createFixture(
 }
 
 type FixtureConnection = {
+  readonly connectionId?: string;
+  readonly defaultModelId?: string;
   readonly providerType?:
     | 'claude-subscription'
     | 'deepseek'
@@ -1440,7 +1539,7 @@ type FixtureConnection = {
 function runtimePolicyFixture(overrides: FixtureConnection): RuntimePolicy {
   const policy = createDefaultRuntimePolicy();
   const connection = {
-    connectionId: 'connection-1',
+    connectionId: overrides.connectionId ?? 'connection-1',
     revision: 1,
     slug: 'test',
     name: 'Test',
@@ -1463,7 +1562,7 @@ function runtimePolicyFixture(overrides: FixtureConnection): RuntimePolicy {
         revision: 1,
         defaultTarget: {
           connectionId: connection.connectionId,
-          modelId: 'model-1',
+          modelId: overrides.defaultModelId ?? 'model-1',
         },
         connections: [connection],
       }),

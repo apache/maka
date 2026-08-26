@@ -744,13 +744,23 @@ export class HostSessionCatalogCoordinator {
       );
     }
     const selected =
-      existing === undefined
+      existing === undefined || target.kind === 'default'
         ? await this.#selectModelTarget(target)
         : {
             connectionId: existing.llmConnectionId!,
             connectionSlug: existing.llmConnectionSlug,
-            modelId: target.kind === 'explicit' ? target.model : existing.model,
+            modelId: target.model,
           };
+    if (
+      existing !== undefined &&
+      (selected.connectionId !== existing.llmConnectionId ||
+        selected.connectionSlug !== existing.llmConnectionSlug)
+    ) {
+      throw new SessionOperationFailure(
+        'operation_conflict',
+        'Session account changes require an exact Connection identity',
+      );
+    }
     const readiness = await this.#runtimePolicy.operations.resolveExecutionConnection(
       selected.connectionId === undefined
         ? { kind: 'catalog_slug', connectionSlug: selected.connectionSlug }
