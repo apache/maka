@@ -232,6 +232,15 @@ describe('Runtime Host bootstrap protocol', () => {
     assert.ok(RUNTIME_HOST_COMPATIBILITY_EPOCH > 50);
   });
 
+  test('publishes a new compatibility epoch for the removed execution.inspect.resolve operation', () => {
+    // Epoch 63 peers still know execution.inspect.resolve and would send it
+    // only to fail mid-connection now that it is gone, so its removal must
+    // fail the handshake instead.
+    assert.ok(RUNTIME_HOST_COMPATIBILITY_EPOCH > 63);
+    assert.equal(Object.hasOwn(HOST_OPERATION_SPECS, 'execution.inspect.resolve'), false);
+    assert.equal(Object.hasOwn(HOST_OPERATION_SPECS, 'execution.inspect.query'), true);
+  });
+
   test('adds credential rotation without changing existing credential inputs', () => {
     const issueInput = {
       principalKind: 'remote_owner',

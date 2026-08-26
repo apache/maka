@@ -94,7 +94,10 @@ export const RUNTIME_HOST_REGISTRATION_SCHEMA_VERSION = 1 as const;
 export const RUNTIME_HOST_PROTOCOL_VERSION = 0 as const;
 // Increment when the same protocol version no longer guarantees safe Client-Host
 // interoperability. Mismatches are rejected before domain commands are admitted.
-export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 63 as const;
+export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 64 as const;
+// 64: execution.inspect drops the retired resolve operation. Older peers still
+// know execution.inspect.resolve and would send it only to fail mid-connection,
+// so removing it needs its own handshake boundary.
 // 63: Connection updates accept the full canonical enabled-model limit.
 // Older peers reject valid catalogs containing more than 64 enabled models.
 // 62: A Direct peer listener can expose owner-only Peer Mesh management
