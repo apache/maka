@@ -287,27 +287,40 @@ it('uses the product SemVer contract throughout Windows release verification', (
   );
 });
 
-it('delegates restored-installation checks to the current packaged-app verifier', async () => {
+it('reuses the packaged renderer smoke without widening rollback verification', async () => {
   const calls = [];
-  const run = async () => ({ stdout: '', stderr: '' });
-  const verifyApp = async (appDirectory, options) => {
-    calls.push({ appDirectory, options });
+  const installDirectory = 'C:\\fixture\\installed';
+  const workingDirectory = 'C:\\fixture\\smoke';
+  const executable = join(installDirectory, 'Maka.exe');
+  const run = async (command, args, options) => {
+    calls.push({ command, args, options });
+    return { stdout: '1.2.3.0', stderr: '' };
+  };
+  const smokeRenderer = async (executable, options) => {
+    calls.push({ executable, options });
   };
 
-  await verifyRestoredWindowsInstallation('C:\\fixture\\installed', 'C:\\fixture\\smoke', '1.2.3', {
+  await verifyRestoredWindowsInstallation(installDirectory, workingDirectory, '1.2.3', {
     run,
-    verifyApp,
+    smokeRenderer,
   });
 
   assert.deepEqual(calls, [
     {
-      appDirectory: 'C:\\fixture\\installed',
+      executable,
       options: {
-        artifactContract: 'current',
-        expectedVersion: '1.2.3',
-        run,
-        workingDirectory: 'C:\\fixture\\smoke',
+        workingDirectory,
       },
+    },
+    {
+      command: 'powershell',
+      args: [
+        '-NoProfile',
+        '-NonInteractive',
+        '-Command',
+        `(Get-Item '${executable}').VersionInfo.ProductVersion`,
+      ],
+      options: { timeoutMs: 30_000 },
     },
   ]);
 });

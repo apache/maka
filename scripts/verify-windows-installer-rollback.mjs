@@ -22,18 +22,19 @@ import { access, cp, mkdir, mkdtemp, readdir, rm, writeFile } from 'node:fs/prom
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { diffTreeManifests, directoryTreeManifest, runCommand } from './verify-packaged-app.mjs';
+import {
+  diffTreeManifests,
+  directoryTreeManifest,
+  runCommand,
+  smokePackagedRenderer,
+} from './verify-packaged-app.mjs';
 import {
   installerVersion,
   waitForInstalledProcessesToExit,
   waitForUninstallRegistrationToClear,
   waitUntilMissing,
 } from './verify-windows-installer-lifecycle.mjs';
-import {
-  assertWindowsProductVersion,
-  powerShellLiteral,
-  verifyPackagedWindowsApp,
-} from './verify-windows-x64.mjs';
+import { assertWindowsProductVersion, powerShellLiteral } from './verify-windows-x64.mjs';
 
 const uninstallExecutableName = 'Uninstall Maka.exe';
 const executableName = 'Maka.exe';
@@ -172,19 +173,17 @@ export async function verifyRestoredWindowsInstallation(
   installDirectory,
   workingDirectory,
   expectedVersion,
-  { verifyApp = verifyPackagedWindowsApp, run } = {},
+  { smokeRenderer = smokePackagedRenderer, run } = {},
 ) {
   await mkdir(workingDirectory, { recursive: true });
-  const options = {
-    // The rollback verifier restores the candidate installer, not the pinned
-    // upgrade baseline. The candidate is built from the current tree and must
-    // therefore satisfy the current packaged-artifact contract.
-    artifactContract: 'current',
-    expectedVersion,
-    workingDirectory,
-  };
-  if (run) options.run = run;
-  await verifyApp(installDirectory, options);
+  const installedExecutable = join(installDirectory, executableName);
+  // The caller has already proved the restored tree byte-identical. Keep this
+  // gate focused on rollback-specific evidence: the restored candidate still
+  // launches and reports the expected version, while the package step owns the
+  // full artifact/sandbox contract.
+  await smokeRenderer(installedExecutable, { workingDirectory });
+  const actualVersion = await readInstalledProductVersion(installedExecutable, { run });
+  assertWindowsProductVersion(actualVersion, expectedVersion);
 }
 
 /**
@@ -215,7 +214,7 @@ export async function verifyWindowsInstallerRollback(
     platform = process.platform,
     makeTemporaryDirectory = () => mkdtemp(join(tmpdir(), 'maka-rollback-')),
     run = runCommand,
-    verifyApp = verifyPackagedWindowsApp,
+    smokeRenderer = smokePackagedRenderer,
   } = {},
 ) {
   if (platform !== 'win32') {
@@ -344,7 +343,7 @@ export async function verifyWindowsInstallerRollback(
       installDirectory,
       join(temporaryDirectory, 'restored-smoke'),
       candidateVersion,
-      { run, verifyApp },
+      { run, smokeRenderer },
     );
     await waitForInstalledProcessesToExit(installDirectory);
 
