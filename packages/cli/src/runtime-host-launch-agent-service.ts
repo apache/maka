@@ -32,6 +32,7 @@ import {
   writeRuntimeHostServiceFile,
 } from './runtime-host-service-manager.js';
 import {
+  legacyRuntimeHostServiceLaunchArguments,
   RUNTIME_HOST_UPDATE_INTERVAL_SECONDS,
   runtimeHostServiceLaunchArguments,
   runtimeHostUpdateReconcileLaunchArguments,
@@ -69,6 +70,7 @@ interface LaunchAgentDeploymentSnapshot {
 }
 
 export interface LaunchAgentServiceOptions {
+  readonly serviceConfigPath: string;
   readonly homeDir?: string;
   readonly uid?: number;
   readonly runLaunchctl?: LaunchctlRunner;
@@ -77,9 +79,10 @@ export interface LaunchAgentServiceOptions {
 
 export function createLaunchAgentRuntimeHostService(
   serviceId: string,
-  options: LaunchAgentServiceOptions = {},
+  options: LaunchAgentServiceOptions,
 ): RuntimeHostServiceBackend {
   const homeDir = options.homeDir ?? homedir();
+  const { serviceConfigPath } = options;
   const uid = options.uid ?? process.getuid?.();
   if (uid === undefined || !Number.isSafeInteger(uid) || uid < 0) {
     throw new RuntimeHostServiceManagerError(
@@ -114,30 +117,22 @@ export function createLaunchAgentRuntimeHostService(
     return status;
   };
   return {
-    preflightInstall: () => assertLaunchAgentDomain(context),
-    install: async (config) => {
-      await validateRuntimeHostServiceLaunch(config);
+    preflightDeployment: () => assertLaunchAgentDomain(context),
+    stageDeployment: async () => {
       const [previous, previousScheduler] = await Promise.all([
         captureLaunchAgentDeployment(context),
         captureLaunchAgentDeployment(scheduler),
       ]);
       let schedulerMutationStarted = false;
-      try {
-        await applyLaunchAgentDeployment(context, config);
-        await applyLaunchAgentUpdateSchedulerDesiredState(scheduler, config, () => {
-          schedulerMutationStarted = true;
-        });
-      } catch (error) {
-        await restoreFailedLaunchAgentDeployment(
-          previous,
-          schedulerMutationStarted ? previousScheduler : undefined,
-          context,
-          scheduler,
-          error,
-        );
-      }
       let rolledBack = false;
       return {
+        apply: async (config) => {
+          await validateRuntimeHostServiceLaunch(config);
+          await applyLaunchAgentDeployment(context, config, serviceConfigPath);
+          await applyLaunchAgentUpdateSchedulerDesiredState(scheduler, config, () => {
+            schedulerMutationStarted = true;
+          });
+        },
         rollback: async () => {
           if (rolledBack) return;
           rolledBack = true;
@@ -158,7 +153,7 @@ export function createLaunchAgentRuntimeHostService(
       ]);
       let schedulerMutationStarted = false;
       try {
-        await applyLaunchAgentDeployment(context, config);
+        await applyLaunchAgentDeployment(context, config, serviceConfigPath);
         await convergeLaunchAgentUpdateSchedulerForReplacement(scheduler, config, () => {
           schedulerMutationStarted = true;
         });
@@ -184,7 +179,16 @@ export function createLaunchAgentRuntimeHostService(
           throw error;
         }),
       ]);
-      if (!status.installed || plist !== renderLaunchAgentPlist(config, context)) {
+      if (
+        !status.installed ||
+        !launchAgentPlistMatchesConfig(
+          plist,
+          config,
+          context,
+          serviceConfigPath,
+          options?.acceptLegacyConfigLaunch ?? false,
+        )
+      ) {
         throw new RuntimeHostServiceManagerError(
           'target_mismatch',
           'The installed Runtime Host LaunchAgent does not match its managed deployment',
@@ -256,9 +260,36 @@ export function resolveLaunchAgentUpdatePath(serviceId: string, homeDir = homedi
 export function renderLaunchAgentPlist(
   config: RuntimeHostManagedServiceConfig,
   paths: Pick<LaunchAgentContext, 'label' | 'stdoutPath' | 'stderrPath'>,
+  serviceConfigPath: string,
+): string {
+  return renderLaunchAgentPlistWithArguments(
+    runtimeHostServiceLaunchArguments(config, serviceConfigPath),
+    paths,
+  );
+}
+
+function launchAgentPlistMatchesConfig(
+  plist: string | null,
+  config: RuntimeHostManagedServiceConfig,
+  paths: Pick<LaunchAgentContext, 'label' | 'stdoutPath' | 'stderrPath'>,
+  serviceConfigPath: string,
+  acceptLegacyConfigLaunch: boolean,
+): boolean {
+  return (
+    plist === renderLaunchAgentPlist(config, paths, serviceConfigPath) ||
+    (acceptLegacyConfigLaunch &&
+      config.schemaVersion === 1 &&
+      plist ===
+        renderLaunchAgentPlistWithArguments(legacyRuntimeHostServiceLaunchArguments(config), paths))
+  );
+}
+
+function renderLaunchAgentPlistWithArguments(
+  args: readonly string[],
+  paths: Pick<LaunchAgentContext, 'label' | 'stdoutPath' | 'stderrPath'>,
 ): string {
   const stringEntry = (value: string) => `    <string>${escapeXml(value)}</string>`;
-  const argumentsXml = runtimeHostServiceLaunchArguments(config).map(stringEntry).join('\n');
+  const argumentsXml = args.map(stringEntry).join('\n');
   return [
     '<?xml version="1.0" encoding="UTF-8"?>',
     '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "https://www.apple.com/DTDs/PropertyList-1.0.dtd">',
@@ -536,12 +567,13 @@ function isTargetMismatch(error: unknown): boolean {
 async function applyLaunchAgentDeployment(
   context: LaunchAgentContext,
   config: RuntimeHostManagedServiceConfig,
+  serviceConfigPath: string,
 ): Promise<void> {
   await bootoutLaunchAgent(context);
   await prepareLaunchAgentLogs(context);
   await writeRuntimeHostServiceFile(
     context.plistPath,
-    renderLaunchAgentPlist(config, context),
+    renderLaunchAgentPlist(config, context, serviceConfigPath),
     0o600,
   );
   await bootstrapLaunchAgent(context);

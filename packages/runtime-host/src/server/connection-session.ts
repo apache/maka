@@ -233,9 +233,12 @@ export class RuntimeHostConnectionSession {
         response.ok && response.operation === 'subscription.open'
           ? response.result.subscriptionId
           : undefined;
-      if (openedSubscriptionId) continuity?.activate(openedSubscriptionId);
       try {
         await receipt.flushed;
+        // Subscriber-local queues retain pre-activation events. Expose them
+        // only after the open result leaves the connection-wide writer, or a
+        // restore fan-out can make legal responses and first frames overflow it.
+        if (openedSubscriptionId) continuity?.activate(openedSubscriptionId);
       } catch (error) {
         if (openedSubscriptionId) continuity?.abort(openedSubscriptionId);
         throw error;

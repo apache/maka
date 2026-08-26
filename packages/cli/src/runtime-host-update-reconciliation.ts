@@ -86,7 +86,7 @@ interface RuntimeHostUpdateReconciliationDeps {
   readonly readPolicy: typeof readRuntimeHostManagedUpdatePolicy;
   readonly writePolicy: typeof writeRuntimeHostManagedUpdatePolicy;
   readonly manage: typeof manageRuntimeHostService;
-  readonly createBackend: (serviceId: string) => RuntimeHostServiceBackend;
+  readonly createBackend: (serviceId: string, clientDataRoot: string) => RuntimeHostServiceBackend;
   readonly resolveSelection: typeof resolveManagedRuntimeHostUpdateSelection;
   readonly applySelection: typeof runManagedRuntimeHostResolvedUpdateCli;
   readonly writeOutput: (value: string) => unknown;
@@ -287,7 +287,7 @@ function readManagedServiceStatus(
       cliPath: process.argv[1] ?? '',
       ...(expectedTarget ? { expectedTarget } : {}),
     },
-    deps.createBackend(serviceId),
+    deps.createBackend(serviceId, options.clientDataRoot),
   );
 }
 
@@ -298,7 +298,10 @@ async function inspectUpdateScheduler(
 ): Promise<RuntimeHostUpdateSchedulerState> {
   const config = status.service.config;
   if (!status.service.installed || !config?.managedDeploymentRoot) return 'needs_repair';
-  const backend = deps.createBackend(resolveRuntimeHostManagedServiceId(options.clientDataRoot));
+  const backend = deps.createBackend(
+    resolveRuntimeHostManagedServiceId(options.clientDataRoot),
+    options.clientDataRoot,
+  );
   try {
     await backend.verifyDeployment(config, { requireSchedulerReady: true });
     return 'ready';

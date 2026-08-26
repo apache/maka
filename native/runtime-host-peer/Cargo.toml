@@ -1,0 +1,49 @@
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+
+[package]
+name = "maka-runtime-host-peer"
+version = "0.0.0"
+edition = "2024"
+license = "Apache-2.0"
+rust-version = "1.98"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+futures = "0.3"
+libp2p = { version = "0.56", features = [
+  "dcutr",
+  "dns",
+  "identify",
+  "macros",
+  "noise",
+  "ping",
+  "quic",
+  "relay",
+  "tcp",
+  "tokio",
+  "yamux",
+] }
+napi = { version = "3.12", features = ["napi8", "tokio_rt"] }
+napi-derive = "3.5"
+tokio = { version = "1.53", features = ["fs", "io-util", "rt-multi-thread", "sync", "time"] }
+
+[build-dependencies]
+napi-build = "2.4"

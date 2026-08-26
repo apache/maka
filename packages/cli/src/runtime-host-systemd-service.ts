@@ -32,6 +32,7 @@ import {
   writeRuntimeHostServiceFile,
 } from './runtime-host-service-manager.js';
 import {
+  legacyRuntimeHostServiceLaunchArguments,
   RUNTIME_HOST_UPDATE_INITIAL_DELAY_SECONDS,
   RUNTIME_HOST_UPDATE_INTERVAL_SECONDS,
   RUNTIME_HOST_UPDATE_RANDOM_DELAY_SECONDS,
@@ -59,6 +60,7 @@ interface SystemdUpdateSchedulerContext {
 }
 
 export interface SystemdUserServiceOptions {
+  readonly serviceConfigPath: string;
   readonly env?: NodeJS.ProcessEnv;
   readonly homeDir?: string;
   readonly uid?: number;
@@ -75,10 +77,11 @@ export interface SystemdUserServiceOptions {
 
 export function createSystemdUserRuntimeHostService(
   serviceId: string,
-  options: SystemdUserServiceOptions = {},
+  options: SystemdUserServiceOptions,
 ): RuntimeHostServiceBackend {
   const env = options.env ?? process.env;
   const homeDir = options.homeDir ?? homedir();
+  const { serviceConfigPath } = options;
   const runSystemctl = options.runSystemctl ?? defaultRunSystemctl;
   const context: SystemdUnitContext = {
     unitName: resolveSystemdUserRuntimeHostServiceName(serviceId),
@@ -104,34 +107,26 @@ export function createSystemdUserRuntimeHostService(
   };
 
   return {
-    preflightInstall: async () => {
+    preflightDeployment: async () => {
       await assertUserSystemd(runSystemctl);
       await assertUserLinger(uid, runLoginctl);
     },
-    install: async (config) => {
-      await validateRuntimeHostServiceLaunch(config);
+    stageDeployment: async () => {
       const [previous, previousScheduler] = await Promise.all([
         captureSystemdDeployment(context.unitPath, readStatus),
         captureSystemdUpdateScheduler(scheduler),
       ]);
       await assertNoSystemdUpdateSchedulerDropIns(scheduler);
       let schedulerMutationStarted = false;
-      try {
-        await applySystemdDeployment(context, config);
-        await applySystemdUpdateSchedulerDesiredState(scheduler, config, () => {
-          schedulerMutationStarted = true;
-        });
-      } catch (error) {
-        await restoreFailedSystemdDeployment(
-          previous,
-          schedulerMutationStarted ? previousScheduler : undefined,
-          context,
-          scheduler,
-          error,
-        );
-      }
       let rolledBack = false;
       return {
+        apply: async (config) => {
+          await validateRuntimeHostServiceLaunch(config);
+          await applySystemdDeployment(context, config, serviceConfigPath);
+          await applySystemdUpdateSchedulerDesiredState(scheduler, config, () => {
+            schedulerMutationStarted = true;
+          });
+        },
         rollback: async () => {
           if (rolledBack) return;
           rolledBack = true;
@@ -152,7 +147,7 @@ export function createSystemdUserRuntimeHostService(
       ]);
       let schedulerMutationStarted = false;
       try {
-        await applySystemdDeployment(context, config);
+        await applySystemdDeployment(context, config, serviceConfigPath);
         await convergeSystemdUpdateSchedulerForReplacement(scheduler, config, () => {
           schedulerMutationStarted = true;
         });
@@ -183,7 +178,12 @@ export function createSystemdUserRuntimeHostService(
         status.fragmentPath !== context.unitPath ||
         status.needDaemonReload !== 'no' ||
         Boolean(status.dropInPaths?.trim()) ||
-        unit !== renderSystemdUnit(config)
+        !systemdUnitMatchesConfig(
+          unit,
+          config,
+          serviceConfigPath,
+          options?.acceptLegacyConfigLaunch ?? false,
+        )
       ) {
         throw new RuntimeHostServiceManagerError(
           'target_mismatch',
@@ -326,8 +326,30 @@ function resolveSystemdUserRuntimeHostUpdateTimerName(serviceId: string): string
   return `maka-runtime-host-${serviceId}-update.timer`;
 }
 
-export function renderSystemdUnit(config: RuntimeHostManagedServiceConfig): string {
-  const args = runtimeHostServiceLaunchArguments(config);
+export function renderSystemdUnit(
+  config: RuntimeHostManagedServiceConfig,
+  serviceConfigPath: string,
+): string {
+  return renderSystemdUnitWithArguments(
+    runtimeHostServiceLaunchArguments(config, serviceConfigPath),
+  );
+}
+
+function systemdUnitMatchesConfig(
+  unit: string | null,
+  config: RuntimeHostManagedServiceConfig,
+  serviceConfigPath: string,
+  acceptLegacyConfigLaunch: boolean,
+): boolean {
+  return (
+    unit === renderSystemdUnit(config, serviceConfigPath) ||
+    (acceptLegacyConfigLaunch &&
+      config.schemaVersion === 1 &&
+      unit === renderSystemdUnitWithArguments(legacyRuntimeHostServiceLaunchArguments(config)))
+  );
+}
+
+function renderSystemdUnitWithArguments(args: readonly string[]): string {
   return [
     '[Unit]',
     'Description=Maka Runtime Host',
@@ -764,8 +786,13 @@ async function captureSystemdDeployment(
 async function applySystemdDeployment(
   context: SystemdUnitContext,
   config: RuntimeHostManagedServiceConfig,
+  serviceConfigPath: string,
 ): Promise<void> {
-  await writeRuntimeHostServiceFile(context.unitPath, renderSystemdUnit(config), 0o600);
+  await writeRuntimeHostServiceFile(
+    context.unitPath,
+    renderSystemdUnit(config, serviceConfigPath),
+    0o600,
+  );
   await requireSystemctl(context.runSystemctl, ['daemon-reload'], 'Reloading systemd failed');
   await requireSystemctl(
     context.runSystemctl,

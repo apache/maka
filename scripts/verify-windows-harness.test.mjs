@@ -45,6 +45,7 @@ import {
 import {
   deleteUninstallRegistrationForInstall,
   readUninstallDisplayVersionsForInstall,
+  verifyRestoredWindowsInstallation,
 } from './verify-windows-installer-rollback.mjs';
 import {
   completeInstalledApplicationUninstall,
@@ -284,6 +285,44 @@ it('uses the product SemVer contract throughout Windows release verification', (
     () => validateWindowsUpgradeBaseline(baseline, '1.2.3-alpha.1'),
     /must be older than the candidate/u,
   );
+});
+
+it('reuses the packaged renderer smoke without widening rollback verification', async () => {
+  const calls = [];
+  const installDirectory = 'C:\\fixture\\installed';
+  const workingDirectory = 'C:\\fixture\\smoke';
+  const executable = join(installDirectory, 'Maka.exe');
+  const run = async (command, args, options) => {
+    calls.push({ command, args, options });
+    return { stdout: '1.2.3.0', stderr: '' };
+  };
+  const smokeRenderer = async (executable, options) => {
+    calls.push({ executable, options });
+  };
+
+  await verifyRestoredWindowsInstallation(installDirectory, workingDirectory, '1.2.3', {
+    run,
+    smokeRenderer,
+  });
+
+  assert.deepEqual(calls, [
+    {
+      executable,
+      options: {
+        workingDirectory,
+      },
+    },
+    {
+      command: 'powershell',
+      args: [
+        '-NoProfile',
+        '-NonInteractive',
+        '-Command',
+        `(Get-Item '${executable}').VersionInfo.ProductVersion`,
+      ],
+      options: { timeoutMs: 30_000 },
+    },
+  ]);
 });
 
 async function makeTree(shape) {

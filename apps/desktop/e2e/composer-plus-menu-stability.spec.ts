@@ -69,6 +69,21 @@ async function rejectBridgeLatch(
   );
 }
 
+// The fake echo can paint before Runtime Host publishes terminal turn ownership.
+// Use the catalog's known-empty live set as the barrier before latching its next read.
+async function waitForSessionTurnToSettle(
+  page: import('@playwright/test').Page,
+): Promise<void> {
+  await expect
+    .poll(async () =>
+      page.evaluate(async () => {
+        const sessions = await window.maka.sessions.list();
+        return sessions[0]?.runningTurnIds ?? null;
+      }),
+    )
+    .toEqual([]);
+}
+
 /**
  * Toggling Plan from the ＋ menu must not move the menu.
  *
@@ -266,6 +281,7 @@ test('two rapid Plan toggles land on the last requested state', async ({
   await composer.fill('alpha-marker');
   await composer.press('Enter');
   await expect(page.getByText(/Fake backend received: alpha-marker/)).toBeVisible();
+  await waitForSessionTurnToSettle(page);
 
   await page.getByRole('button', { name: '添加上下文' }).click();
   const menu = page.getByRole('menu', { name: '添加上下文' });
@@ -300,6 +316,7 @@ test('a failed catalog refresh keeps the committed Plan state visible', async ({
   await composer.fill('alpha-marker');
   await composer.press('Enter');
   await expect(page.getByText(/Fake backend received: alpha-marker/)).toBeVisible();
+  await waitForSessionTurnToSettle(page);
 
   await page.getByRole('button', { name: '添加上下文' }).click();
   const menu = page.getByRole('menu', { name: '添加上下文' });
@@ -322,6 +339,7 @@ test('latest Plan intent still reaches the Host after a catalog refresh fails', 
   await composer.fill('alpha-marker');
   await composer.press('Enter');
   await expect(page.getByText(/Fake backend received: alpha-marker/)).toBeVisible();
+  await waitForSessionTurnToSettle(page);
 
   await page.getByRole('button', { name: '添加上下文' }).click();
   const planRow = page.getByRole('menu', { name: '添加上下文' })
@@ -352,6 +370,7 @@ test('deleting the session while a toggle is pending settles clean', async ({
   await composer.fill('alpha-marker');
   await composer.press('Enter');
   await expect(page.getByText(/Fake backend received: alpha-marker/)).toBeVisible();
+  await waitForSessionTurnToSettle(page);
 
   await page.getByRole('button', { name: '添加上下文' }).click();
   const menu = page.getByRole('menu', { name: '添加上下文' });

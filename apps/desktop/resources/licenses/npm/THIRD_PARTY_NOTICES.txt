@@ -478,7 +478,7 @@ SOFTWARE.
 
 ================================================================================
 
-Package: @astryxdesign/core@0.4.5
+Package: @astryxdesign/core@0.5.0
 Declared license: MIT
 Selected license: MIT
 Repository: git+https://github.com/facebook/astryx.git#packages/core
@@ -508,7 +508,7 @@ SOFTWARE.
 
 ================================================================================
 
-Package: @astryxdesign/theme-neutral@0.4.5
+Package: @astryxdesign/theme-neutral@0.5.0
 Declared license: MIT
 Selected license: MIT
 Repository: git+https://github.com/facebook/astryx.git#packages/themes/neutral

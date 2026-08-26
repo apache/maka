@@ -251,15 +251,24 @@ describe('permission response IPC boundary', () => {
       normalizeStopSessionInput({
         source: 'stop_button',
         expectedTurnId: 'turn-workhub',
+        expectedAdmissionId: 'side-admission',
         extra: true,
       }),
-      { source: 'stop_button', expectedTurnId: 'turn-workhub' },
+      {
+        source: 'stop_button',
+        expectedTurnId: 'turn-workhub',
+        expectedAdmissionId: 'side-admission',
+      },
     );
     assert.throws(() => normalizeStopSessionInput(null), /stop session input/);
     assert.throws(() => normalizeStopSessionInput({ source: 'toolbar' }), /stop session source/);
     assert.throws(
       () => normalizeStopSessionInput({ expectedTurnId: '' }),
       /expectedTurnId/,
+    );
+    assert.throws(
+      () => normalizeStopSessionInput({ expectedAdmissionId: '' }),
+      /expectedAdmissionId/,
     );
   });
 });

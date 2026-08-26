@@ -18,6 +18,7 @@
  */
 
 import { createHash, randomUUID } from 'node:crypto';
+import { normalizeMessageContent } from '@maka/core/events';
 import {
   describeChatConfigurationReason,
   NO_REAL_CONNECTION_CODE,
@@ -171,6 +172,7 @@ import { HostTurnControlCoordinator } from './turn-control-coordinator.js';
 import { HostUsagePricingCoordinator } from './usage-pricing-coordinator.js';
 import { HostWebSearchCoordinator } from './web-search-coordinator.js';
 import { HostWorkHubCoordinationCoordinator } from './workhub-coordination-coordinator.js';
+import { WorkHubActionEffectFailure } from './workhub-coordination-action-gate.js';
 import {
   createHostWebSearchService,
   createHostWebSearchToolFromService,
@@ -1234,6 +1236,48 @@ export async function createExecutionRuntimeHostComposition(
       stores: stores.sessionStore,
       admission: sessionAdmission,
       continuity: continuityCoordinator,
+      executions: coordinator,
+      sessionActions: {
+        create: async (input) => {
+          const outcome = await sessionCatalog.createForWorkHub({
+            sessionId: input.sessionId,
+            workspace: input.workspace,
+            name: input.title,
+            modelTarget: { kind: 'default' },
+            collaborationMode: 'agent',
+            orchestrationMode: 'default',
+          });
+          if (!outcome.ok) {
+            throw new WorkHubActionEffectFailure(
+              outcome.error.code === 'invalid_request' ? 'operation_conflict' : outcome.error.code,
+              outcome.error.message,
+            );
+          }
+        },
+        submit: async (input, connection) => {
+          const outcome = await messages.handlers['turn.message.submit'](
+            {
+              originHostEpoch: connection.hostEpoch,
+              sessionId: input.sessionId,
+              messageId: input.messageId,
+              content: normalizeMessageContent({ text: input.text }),
+              placement: 'current_turn',
+            },
+            connection,
+          );
+          if (!outcome.ok) {
+            throw new WorkHubActionEffectFailure(
+              outcome.error.code === 'outcome_unknown'
+                ? 'commit_outcome_unknown'
+                : outcome.error.code,
+              outcome.error.message,
+            );
+          }
+          return outcome.result.disposition === 'turn_started'
+            ? { turnId: outcome.result.turnId }
+            : { turnId: input.messageId, steered: true as const };
+        },
+      },
       resolveCreateTarget: async () => {
         const { projectId: _projectId, ...target } =
           await sessionCatalog.resolveExternalSessionImportTarget();

@@ -32,6 +32,7 @@ import {
   proportional,
 } from '@astryxdesign/core';
 import { uiLocaleToIntlLocale } from '@maka/core/ui-locale';
+import { parseDesktopSessionKey } from '../../shared/runtime-host-identity.js';
 import {
   type AppSettings,
   type UpdateAppSettingsResult,
@@ -324,10 +325,10 @@ function UsageRequestsPanel(props: {
       <UsageStatsTable
         ariaLabel={props.copy.tables.requestsAria}
         columns={[
-          { header: props.copy.tables.requestHeaders[0], width: 192 },
+          { header: props.copy.tables.requestHeaders[0], width: 168 },
           { header: props.copy.tables.requestHeaders[1], width: 72 },
           { header: props.copy.tables.requestHeaders[2], grow: true },
-          { header: props.copy.tables.requestHeaders[3] },
+          { header: props.copy.tables.requestHeaders[3], width: 168 },
           { header: props.copy.tables.requestHeaders[4], numeric: true },
           { header: props.copy.tables.requestHeaders[5], numeric: true },
           { header: props.copy.tables.requestHeaders[6], numeric: true },
@@ -442,11 +443,36 @@ function usageRequestTarget(row: UsageStats['logs'][number]) {
 }
 
 function usageRequestSessionCell(row: UsageStats['logs'][number], copy: UsageSettingsCopy, onOpenSession?: (sessionId: string) => void) {
-  const label = shortUsageSessionId(row.sessionId);
+  const label = usageSessionDisplayLabel(row, copy);
   if (!onOpenSession) return label;
   return (
-    <Button variant="ghost" size="sm" onClick={() => onOpenSession(row.sessionId)} label={copy.tables.openSession(label)} />
+    <Button
+      className="settingsUsageSessionCell"
+      variant="ghost"
+      size="sm"
+      onClick={() => onOpenSession(row.sessionId)}
+      label={label}
+      tooltip={copy.tables.openSession(label)}
+    />
   );
+}
+
+// The Task column names the session (conversation) each request belongs to.
+// The name is the real title; untitled sessions fall back to a short slice of
+// their *real* session id (parsed out of the desktop composite key) so rows
+// stay distinguishable instead of collapsing onto the shared host-id prefix.
+function usageSessionDisplayLabel(row: UsageStats['logs'][number], copy: UsageSettingsCopy) {
+  const name = row.sessionName?.trim();
+  if (name) return name;
+  return `${copy.tables.untitledSession} · ${shortRealSessionId(row.sessionId)}`;
+}
+
+function shortRealSessionId(sessionKey: string) {
+  try {
+    return shortUsageSessionId(parseDesktopSessionKey(sessionKey).sessionId);
+  } catch {
+    return shortUsageSessionId(sessionKey);
+  }
 }
 
 function shortUsageSessionId(sessionId: string) {

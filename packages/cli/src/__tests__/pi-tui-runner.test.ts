@@ -49,6 +49,7 @@ import type {
   MakaAttachedSessionTurn,
   MakaSessionMoveResult,
   MakaSessionDriver,
+  MakaSideConversationParentStatus,
   MakaSessionRewindResult,
   MakaSessionSwitchOptions,
   MakaSessionSwitchResult,
@@ -336,7 +337,8 @@ describe('Maka Pi TUI runner', () => {
     const firstCounter = /^\s*\((\d+)\/(\d+)\)\s*$/.exec(screen[topBorder - 1] ?? '');
     assert.ok(firstCounter);
     const totalCommands = Number(firstCounter[2]);
-    assert.ok(totalCommands > autocompleteSuggestionLines(screen).length);
+    const shortVisibleCommands = autocompleteSuggestionLines(screen).length;
+    assert.ok(totalCommands > shortVisibleCommands);
     assert.equal(bottomBorder, terminal.rows - 2);
     assert.ok(autocompleteSuggestionLines(screen).some((line) => line.includes('→ /compact')));
 
@@ -360,13 +362,10 @@ describe('Maka Pi TUI runner', () => {
     terminal.resize(80, 40);
     await waitFor(() => {
       const current = plainTerminalOutput(terminal.screenOutput()).split(/\r?\n/);
-      return autocompleteSuggestionLines(current).length === totalCommands;
+      return autocompleteSuggestionLines(current).length > shortVisibleCommands;
     });
     screen = plainTerminalOutput(terminal.screenOutput()).split(/\r?\n/);
-    assert.equal(
-      screen.some((line) => /^\s*\(\d+\/\d+\)\s*$/.test(line)),
-      false,
-    );
+    assert.ok(screen.some((line) => line.includes(`(${totalCommands}/${totalCommands})`)));
     assert.ok(autocompleteSuggestionLines(screen).some((line) => line.includes('→ /')));
 
     terminal.resize(40, 20);
@@ -1826,6 +1825,46 @@ describe('Maka Pi TUI runner', () => {
     ]);
   });
 
+  test('opens the read-only /mcp status on an idle local TUI', async () => {
+    const terminal = new FakeTerminal();
+    const driver = new SlashCommandDriver();
+    const run = runMakaPiTui({
+      title: 'Maka',
+      driver,
+      cwd: '/repo',
+      model: 'deepseek-v4-flash',
+      connectionSlug: 'deepseek',
+      permissionMode: 'ask',
+      terminal,
+      mcp: {
+        snapshot: () => ({
+          initialization: 'ready',
+          publication: 'published',
+          toolCount: 1,
+          servers: [
+            {
+              serverId: 'filesystem',
+              state: 'connected',
+              transport: 'stdio',
+              negotiatedProtocol: { era: 'modern', revision: '2026-07-28' },
+              toolCount: 1,
+            },
+          ],
+        }),
+        subscribe: () => () => undefined,
+      },
+    });
+
+    terminal.input('/mcp');
+    terminal.input('\r');
+    await waitFor(() => plainTerminalOutput(terminal.screenOutput()).includes('MCP SERVERS'));
+    assert.match(plainTerminalOutput(terminal.screenOutput()), /filesystem/u);
+    terminal.input('q');
+    await waitFor(() => !plainTerminalOutput(terminal.screenOutput()).includes('MCP SERVERS'));
+    exitMaka(terminal);
+    await run;
+  });
+
   test('clears an unsent draft on Ctrl-C without closing Maka', async () => {
     const terminal = new FakeTerminal();
     const driver = new SlashCommandDriver();
@@ -1999,6 +2038,38 @@ describe('Maka Pi TUI runner', () => {
     terminal.input('\x1b');
     terminal.input('\x1b');
     await waitFor(() => terminal.progressStates.at(-1) === false);
+    terminal.input('/exit');
+    terminal.input('\r');
+    await run;
+  });
+
+  test('refuses /mcp during a running turn instead of steering it', async () => {
+    const terminal = new FakeTerminal();
+    const driver = new SteeringTurnDriver();
+    const run = runMakaPiTui({
+      title: 'Maka',
+      driver,
+      cwd: '/repo',
+      model: 'm',
+      connectionSlug: 'c',
+      permissionMode: 'bypass',
+      terminal,
+    });
+
+    terminal.input('start the work');
+    terminal.input('\r');
+    await waitFor(() => terminal.progressStates.at(-1) === true);
+    terminal.input('/mcp');
+    terminal.input('\r');
+    await waitFor(() =>
+      plainTerminalOutput(terminal.output()).includes('Cannot run /mcp while a turn is running'),
+    );
+    assert.deepEqual(driver.steered, []);
+
+    terminal.input('\x1b');
+    terminal.input('\x1b');
+    await waitFor(() => terminal.progressStates.at(-1) === false);
+    terminal.input('\x03');
     terminal.input('/exit');
     terminal.input('\r');
     await run;
@@ -6233,6 +6304,250 @@ describe('Maka Pi TUI runner', () => {
     ]);
   });
 
+  test('/side submits in a temporary Session and one empty Ctrl-C closes it', async () => {
+    const terminal = new FakeTerminal();
+    const driver = new SideConversationDriver();
+    const run = runMakaPiTui({
+      title: 'Maka',
+      driver,
+      cwd: '/repo',
+      model: 'claude-sonnet-4-5',
+      connectionSlug: 'claude-subscription',
+      permissionMode: 'ask',
+      terminal,
+    });
+
+    terminal.input('/side explain this choice');
+    terminal.input('\r');
+    await waitFor(() => driver.prompts.length === 1);
+
+    assert.deepEqual(driver.openedFrom, ['session-1']);
+    assert.deepEqual(driver.promptSessionIds, ['side-1']);
+    assert.deepEqual(driver.prompts, ['explain this choice']);
+
+    await waitFor(() => terminal.progressStates.at(-1) === false);
+    terminal.input('\x03');
+    await waitFor(() => driver.closedSides.length === 1);
+    assert.deepEqual(driver.closedSides, [
+      { sideSessionId: 'side-1', parentSessionId: 'session-1' },
+    ]);
+    assert.equal(driver.getSessionId(), 'session-1');
+
+    terminal.input('continue main');
+    terminal.input('\r');
+    await waitFor(() => driver.prompts.length === 2);
+    assert.deepEqual(driver.promptSessionIds, ['side-1', 'session-1']);
+
+    exitMaka(terminal);
+    await run;
+  });
+
+  test('/side detaches from a running parent Turn without stopping it', async () => {
+    const terminal = new FakeTerminal();
+    const driver = new RunningParentSideConversationDriver();
+    const run = runMakaPiTui({
+      title: 'Maka',
+      driver,
+      cwd: '/repo',
+      model: 'claude-sonnet-4-5',
+      connectionSlug: 'claude-subscription',
+      permissionMode: 'ask',
+      terminal,
+    });
+
+    terminal.input('main work');
+    terminal.input('\r');
+    await driver.parentStarted.promise;
+    terminal.input('/side inspect while main runs');
+    terminal.input('\r');
+    await waitFor(() => driver.prompts.length === 2);
+
+    assert.deepEqual(driver.prompts, ['main work', 'inspect while main runs']);
+    assert.deepEqual(driver.promptSessionIds, ['session-1', 'side-1']);
+    assert.equal(driver.stopCalls, 0);
+
+    await waitFor(() => terminal.progressStates.at(-1) === false);
+    terminal.input('\x03');
+    await waitFor(() => driver.closedSides.length === 1);
+    exitMaka(terminal);
+    await run;
+  });
+
+  test('one empty Ctrl-C interrupts and closes a running side conversation', async () => {
+    const terminal = new FakeTerminal();
+    const driver = new RunningSideConversationDriver();
+    const run = runMakaPiTui({
+      title: 'Maka',
+      driver,
+      cwd: '/repo',
+      model: 'claude-sonnet-4-5',
+      connectionSlug: 'claude-subscription',
+      permissionMode: 'ask',
+      terminal,
+    });
+
+    terminal.input('/side keep checking');
+    terminal.input('\r');
+    await driver.sideStarted.promise;
+    terminal.input('\x03');
+
+    await waitFor(() => driver.closedSides.length === 1);
+    assert.equal(driver.stopCalls, 1);
+    assert.equal(driver.getSessionId(), 'session-1');
+
+    exitMaka(terminal);
+    await run;
+  });
+
+  test('Ctrl+/ toggles side views, preserves drafts, and projects parent status in English', async () => {
+    const terminal = new FakeTerminal();
+    const driver = new SideConversationDriver();
+    const run = runMakaPiTui({
+      title: 'Maka',
+      driver,
+      cwd: '/repo',
+      model: 'claude-sonnet-4-5',
+      connectionSlug: 'claude-subscription',
+      permissionMode: 'ask',
+      locale: 'zh',
+      terminal,
+    });
+
+    terminal.input('/side');
+    terminal.input('\r');
+    await waitFor(() => driver.getSessionId() === 'side-1');
+    terminal.input('side draft');
+    terminal.input('\x1f');
+    await waitFor(() => driver.getSessionId() === 'session-1');
+    assert.equal(editorInputText(terminal), '');
+
+    terminal.input('parent draft');
+    terminal.input('\x1b[47;5u');
+    await waitFor(() => driver.getSessionId() === 'side-1');
+    assert.equal(editorInputText(terminal), 'side draft');
+
+    driver.publishParentStatus('needs_approval');
+    await waitFor(() =>
+      plainTerminalOutput(terminal.screenOutput()).includes(
+        'Side from main thread · main needs approval · Ctrl+/ to switch · Ctrl+C to close',
+      ),
+    );
+
+    exitMaka(terminal);
+    await run;
+  });
+
+  test('closing an empty side conversation restores the retained parent draft', async () => {
+    const terminal = new FakeTerminal();
+    const driver = new SideConversationDriver();
+    const run = runMakaPiTui({
+      title: 'Maka',
+      driver,
+      cwd: '/repo',
+      model: 'claude-sonnet-4-5',
+      connectionSlug: 'claude-subscription',
+      permissionMode: 'ask',
+      terminal,
+    });
+
+    terminal.input('/side');
+    terminal.input('\r');
+    await waitFor(() => driver.getSessionId() === 'side-1');
+    terminal.input('\x1f');
+    await waitFor(() => driver.getSessionId() === 'session-1');
+    terminal.input('parent draft');
+    terminal.input('\x1f');
+    await waitFor(() => driver.getSessionId() === 'side-1');
+    assert.equal(editorInputText(terminal), '');
+
+    terminal.input('\x03');
+    await waitFor(() => editorInputText(terminal) === 'parent draft');
+    assert.equal(driver.getSessionId(), 'session-1');
+
+    exitMaka(terminal);
+    await run;
+  });
+
+  test('does not report main closed when the parent observer cannot open', async () => {
+    const terminal = new FakeTerminal();
+    const driver = new FailingParentObserverSideConversationDriver();
+    const run = runMakaPiTui({
+      title: 'Maka',
+      driver,
+      cwd: '/repo',
+      model: 'claude-sonnet-4-5',
+      connectionSlug: 'claude-subscription',
+      permissionMode: 'ask',
+      terminal,
+    });
+
+    terminal.input('/side');
+    terminal.input('\r');
+    await waitFor(() => driver.getSessionId() === 'side-1');
+    await waitFor(() =>
+      plainTerminalOutput(terminal.screenOutput()).includes(
+        'Side from main thread · Ctrl+/ to switch · Ctrl+C to close',
+      ),
+    );
+    assert.doesNotMatch(plainTerminalOutput(terminal.screenOutput()), /main closed/u);
+
+    exitMaka(terminal);
+    await run;
+  });
+
+  test('Ctrl+/ detaches from a running side Turn without stopping it', async () => {
+    const terminal = new FakeTerminal();
+    const driver = new RunningSideConversationDriver();
+    const run = runMakaPiTui({
+      title: 'Maka',
+      driver,
+      cwd: '/repo',
+      model: 'claude-sonnet-4-5',
+      connectionSlug: 'claude-subscription',
+      permissionMode: 'ask',
+      terminal,
+    });
+
+    terminal.input('/side keep checking');
+    terminal.input('\r');
+    await driver.sideStarted.promise;
+    terminal.input('\x1f');
+    await waitFor(() => driver.getSessionId() === 'session-1');
+
+    assert.equal(driver.stopCalls, 0);
+    exitMaka(terminal);
+    await run;
+  });
+
+  test('/session outside the pair discards its retained side conversation', async () => {
+    const terminal = new FakeTerminal();
+    const driver = new SideConversationDriver();
+    const run = runMakaPiTui({
+      title: 'Maka',
+      driver,
+      cwd: '/repo',
+      model: 'claude-sonnet-4-5',
+      connectionSlug: 'claude-subscription',
+      permissionMode: 'ask',
+      terminal,
+    });
+
+    terminal.input('/side');
+    terminal.input('\r');
+    await waitFor(() => driver.getSessionId() === 'side-1');
+    terminal.input('\x1f');
+    await waitFor(() => driver.getSessionId() === 'session-1');
+    terminal.input('/session session-2');
+    terminal.input('\r');
+    await waitFor(() => driver.discardedSides.length === 1);
+
+    assert.deepEqual(driver.discardedSides, ['side-1']);
+    assert.equal(driver.getSessionId(), 'session-2');
+
+    exitMaka(terminal);
+    await run;
+  });
+
   test('relocates a moved session before resuming it at startup', async () => {
     const terminal = new FakeTerminal();
     const driver = new SlashCommandDriver([
@@ -7543,6 +7858,129 @@ class HostSkillDriver extends SlashCommandDriver {
     }
     const turn = await super.preparePrompt(prompt, options);
     return { ...turn, skillInvocation: this.skillInvocation };
+  }
+}
+
+class SideConversationDriver extends SlashCommandDriver {
+  readonly openedFrom: string[] = [];
+  readonly closedSides: Array<{ sideSessionId: string; parentSessionId: string }> = [];
+  readonly promptSessionIds: string[] = [];
+  readonly discardedSides: string[] = [];
+  parentStatusListener:
+    | ((status: MakaSideConversationParentStatus | undefined) => void)
+    | undefined;
+
+  override preparePrompt(
+    prompt: string,
+    options: MakaPreparePromptOptions = {},
+  ): Promise<MakaPreparedSessionTurn> {
+    this.promptSessionIds.push(this.sessionId);
+    return super.preparePrompt(prompt, options);
+  }
+
+  async openSideConversation() {
+    const parentSessionId = this.sessionId;
+    this.openedFrom.push(parentSessionId);
+    this.sessionId = 'side-1';
+    return {
+      summary: {
+        ...fakeSessionSummary('side-1'),
+        labels: ['mode:side_conversation'],
+        parentSessionId,
+        branchOfTurnId: 'turn-settled',
+      },
+      messages: [],
+      parentSessionId,
+      sideSessionId: 'side-1',
+    };
+  }
+
+  async closeSideConversation(sideSessionId: string, parentSessionId: string) {
+    this.closedSides.push({ sideSessionId, parentSessionId });
+    this.sessionId = parentSessionId;
+    return { ...switchResult(fakeSessionSummary(parentSessionId)), cleanup: 'removed' as const };
+  }
+
+  async observeSideConversationParent(
+    _parentSessionId: string,
+    listener: (status: MakaSideConversationParentStatus | undefined) => void,
+  ) {
+    this.parentStatusListener = listener;
+    return async () => {
+      if (this.parentStatusListener === listener) this.parentStatusListener = undefined;
+    };
+  }
+
+  publishParentStatus(status: MakaSideConversationParentStatus | undefined): void {
+    this.parentStatusListener?.(status);
+  }
+
+  async discardSideConversation(sideSessionId: string) {
+    this.discardedSides.push(sideSessionId);
+    return 'removed' as const;
+  }
+}
+
+class FailingParentObserverSideConversationDriver extends SideConversationDriver {
+  override async observeSideConversationParent(
+    _parentSessionId: string,
+    _listener: (status: MakaSideConversationParentStatus | undefined) => void,
+  ): Promise<() => Promise<void>> {
+    throw new Error('parent observer unavailable');
+  }
+}
+
+class RunningParentSideConversationDriver extends SideConversationDriver {
+  readonly parentStarted = deferred<void>();
+  readonly #releaseParent = deferred<void>();
+  stopCalls = 0;
+
+  override async *promptEvents(prompt: string, turnId = 'turn-1'): AsyncIterable<SessionEvent> {
+    if (prompt === 'main work') {
+      this.parentStarted.resolve();
+      await this.#releaseParent.promise;
+    }
+    yield {
+      type: 'complete',
+      id: `event-complete-${turnId}`,
+      turnId,
+      ts: 1,
+      stopReason: 'end_turn',
+    };
+  }
+
+  override async openSideConversation() {
+    this.#releaseParent.resolve();
+    return super.openSideConversation();
+  }
+
+  override async stop(): Promise<void> {
+    this.stopCalls += 1;
+  }
+}
+
+class RunningSideConversationDriver extends SideConversationDriver {
+  readonly sideStarted = deferred<void>();
+  readonly #releaseSide = deferred<void>();
+  stopCalls = 0;
+
+  override async *promptEvents(prompt: string, turnId = 'turn-1'): AsyncIterable<SessionEvent> {
+    if (prompt === 'keep checking') {
+      this.sideStarted.resolve();
+      await this.#releaseSide.promise;
+    }
+    yield {
+      type: 'complete',
+      id: `event-complete-${turnId}`,
+      turnId,
+      ts: 1,
+      stopReason: 'end_turn',
+    };
+  }
+
+  override async stop(): Promise<void> {
+    this.stopCalls += 1;
+    this.#releaseSide.resolve();
   }
 }
 

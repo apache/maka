@@ -1056,18 +1056,23 @@ export const ScheduledTasksKeepAwakeExternalWins: Story = {
       await new Promise((resolve) => globalThis.setTimeout(resolve, 10));
       if (attempt === 49) throw new Error('Keep-awake optimistic value did not render');
     }
-    await new Promise((resolve) => globalThis.setTimeout(resolve, 100));
-    let persisted = body.querySelector<HTMLElement>('[role="menuitemcheckbox"]');
-    if (!persisted) {
-      settings.click();
-      persisted = await waitForStorySelector<HTMLElement>(
-        body,
-        '[role="menuitemcheckbox"]',
-      );
+    // The write resolves asynchronously and Astryx may close the menu while
+    // the panel re-syncs its optimistic value from the persisted prop. Poll
+    // for the confirmed value instead of assuming a fixed 100ms settle time;
+    // the latter is fast locally but flakes under Storybook CI load.
+    for (let attempt = 0; attempt < 100; attempt += 1) {
+      let persisted = body.querySelector<HTMLElement>('[role="menuitemcheckbox"]');
+      if (!persisted) {
+        settings.click();
+        persisted = await waitForStorySelector<HTMLElement>(
+          body,
+          '[role="menuitemcheckbox"]',
+        );
+      }
+      if (persisted.getAttribute('aria-checked') === 'true') return;
+      await new Promise((resolve) => globalThis.setTimeout(resolve, 10));
     }
-    if (persisted.getAttribute('aria-checked') !== 'true') {
-      throw new Error('Keep-awake checkbox diverged from the persisted setting');
-    }
+    throw new Error('Keep-awake checkbox diverged from the persisted setting');
   },
 };
 

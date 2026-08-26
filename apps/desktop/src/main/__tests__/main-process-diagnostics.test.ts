@@ -22,6 +22,7 @@ import { test } from 'node:test';
 import type { IpcMain } from 'electron';
 import {
   registerDesktopDiagnosticsIpc,
+  registerPreviousMainProcessDiagnosticsIpc,
   type DesktopDiagnosticsIpcDeps,
 } from '../desktop-diagnostics-ipc-main.js';
 import {
@@ -273,6 +274,66 @@ test('copies Desktop diagnostics while Runtime Host is unavailable', async () =>
     /Recent local Runtime Host process exits \(1\)[\s\S]*pid=42 code=23 signal=none/,
   );
   assert.match(clipboard, /Diagnostics unavailable: Runtime Host disconnected/);
+});
+
+test('acknowledges one previous-run notice while keeping its diagnostics copyable', async () => {
+  type IpcHandler = Parameters<Pick<IpcMain, 'handle'>['handle']>[1];
+  const handlers = new Map<string, IpcHandler>();
+  let acknowledgements = 0;
+  let clipboard = '';
+  registerPreviousMainProcessDiagnosticsIpc({
+    ipcMain: {
+      handle(channel, handler) {
+        handlers.set(channel, handler);
+      },
+    },
+    evidence: {
+      run: {
+        startedAt: '2026-08-20T00:00:00.000Z',
+        appVersion: '0.1.10',
+        buildMode: 'packaged',
+        buildCommit: 'b'.repeat(40),
+        electronVersion: '43.2.0',
+        nodeVersion: '24.0.0',
+        chromeVersion: '144.0.0',
+        platform: 'win32',
+        arch: 'x64',
+        osRelease: '10.0.26100',
+      },
+      snapshotAt: '2026-08-20T00:10:00.000Z',
+      logs: ['previous main log with api_key=very-secret-token'],
+    },
+    acknowledge: () => {
+      acknowledgements += 1;
+    },
+    environment: () => environment,
+    mainLogs: () => ['current main log'],
+    runtimeHostProcessLogs: () => ['current Runtime Host exit'],
+    resolveActiveRuntimeHost: () => {
+      throw new Error('Previous-run diagnostics must remain Desktop-only');
+    },
+    resolveRuntimeHost: () => {
+      throw new Error('Previous-run diagnostics must not resolve a task Host');
+    },
+    writeClipboard: (value) => {
+      clipboard = value;
+    },
+  });
+
+  const take = handlers.get('diagnostics:takePreviousMainProcessInterruption');
+  const copy = handlers.get('diagnostics:copyPreviousMainProcessInterruption');
+  assert.ok(take);
+  assert.ok(copy);
+  assert.equal(await take({} as never), true);
+  assert.equal(await take({} as never), false);
+  assert.equal(acknowledgements, 1);
+
+  await copy({} as never);
+  assert.match(clipboard, /Surface: previous_main_process_interruption/);
+  assert.match(clipboard, /clean shutdown was not observed/);
+  assert.match(clipboard, /Maka: 0\.1\.10/);
+  assert.match(clipboard, /Recent previous main-process logs \(1\)/);
+  assert.doesNotMatch(clipboard, /current main log|current Runtime Host exit|very-secret-token/);
 });
 
 test('copies Desktop diagnostics while the scoped Host is reconnecting', async () => {

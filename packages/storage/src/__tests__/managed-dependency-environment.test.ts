@@ -363,8 +363,79 @@ test('rejects an NTFS alternate stream created inside a dependency artifact', {
     storageRoot,
     producer,
   });
-  await assert.rejects(authority.acquire(identity, source), /alternate data stream/u);
+  await assert.rejects(
+    authority.acquire(identity, source),
+    (error: unknown) =>
+      error instanceof Error &&
+      error.message === 'Managed dependency environment contains an alternate data stream',
+  );
   await authority.close();
+});
+
+test('rejects an NTFS alternate stream attached to the published dependency root', {
+  skip: process.platform !== 'win32',
+}, async (t) => {
+  const storageRoot = await mkdtemp(join(tmpdir(), 'maka-dependency-root-ads-'));
+  t.after(() => rm(storageRoot, { recursive: true, force: true }));
+  const producer = {
+    capability: FIXTURE_PRODUCER_CAPABILITY,
+    packageManagerName: 'npm' as const,
+    packageManagerVersion: '11.12.1',
+    nodeRuntime: fixtureNodeRuntime(),
+    async provision(input: { outputRoot: string }) {
+      await writeFile(join(input.outputRoot, 'index.js'), 'trusted\n', 'utf8');
+    },
+  };
+  const source = dependencySourceForName('root-ads');
+  const identity = computeManagedDependencyEnvironmentIdentity(source);
+  const authority = await createManagedDependencyEnvironmentAuthority({ storageRoot, producer });
+  const lease = await authority.acquire(identity, source);
+  await writeFile(`${lease.dependencyRoot}:unhashed`, 'malicious\n', 'utf8');
+  await lease.release();
+  await authority.close();
+
+  const reopened = await createManagedDependencyEnvironmentAuthority({ storageRoot, producer });
+  await assert.rejects(
+    reopened.acquire(identity, source),
+    (error: unknown) =>
+      error instanceof Error &&
+      error.message === 'Managed dependency environment contains an alternate data stream',
+  );
+  await reopened.close();
+});
+
+test('rejects an NTFS alternate stream attached to a published nested directory', {
+  skip: process.platform !== 'win32',
+}, async (t) => {
+  const storageRoot = await mkdtemp(join(tmpdir(), 'maka-dependency-目录-ads-'));
+  t.after(() => rm(storageRoot, { recursive: true, force: true }));
+  const producer = {
+    capability: FIXTURE_PRODUCER_CAPABILITY,
+    packageManagerName: 'npm' as const,
+    packageManagerVersion: '11.12.1',
+    nodeRuntime: fixtureNodeRuntime(),
+    async provision(input: { outputRoot: string }) {
+      const packageRoot = join(input.outputRoot, 'fixture-包');
+      await mkdir(packageRoot);
+      await writeFile(join(packageRoot, 'index.js'), 'trusted\n', 'utf8');
+    },
+  };
+  const source = dependencySourceForName('nested-directory-ads');
+  const identity = computeManagedDependencyEnvironmentIdentity(source);
+  const authority = await createManagedDependencyEnvironmentAuthority({ storageRoot, producer });
+  const lease = await authority.acquire(identity, source);
+  await writeFile(`${join(lease.dependencyRoot, 'fixture-包')}:unhashed`, 'malicious\n', 'utf8');
+  await lease.release();
+  await authority.close();
+
+  const reopened = await createManagedDependencyEnvironmentAuthority({ storageRoot, producer });
+  await assert.rejects(
+    reopened.acquire(identity, source),
+    (error: unknown) =>
+      error instanceof Error &&
+      error.message === 'Managed dependency environment contains an alternate data stream',
+  );
+  await reopened.close();
 });
 
 test('accepts a POSIX package bin symlink whose target remains inside the dependency root', {

@@ -15,6 +15,8 @@ apps/desktop/src/renderer/features/goals/ui/goal-dialog.tsx
 apps/desktop/src/renderer/features/goals/ui/goal-host.tsx
 apps/desktop/src/renderer/features/module-hub/services-context.tsx
 apps/desktop/src/renderer/features/module-hub/ui/module-hub-host.tsx
+apps/desktop/src/renderer/features/session-navigation/services-context.tsx
+apps/desktop/src/renderer/features/session-navigation/ui/session-navigation-host.tsx
 apps/desktop/src/renderer/features/workbar/services-context.tsx
 apps/desktop/src/renderer/features/workbar/tools/artifacts/artifact-pane.tsx
 apps/desktop/src/renderer/features/workbar/tools/artifacts/artifact-preview-registry-shell.tsx
@@ -72,6 +74,7 @@ apps/desktop/src/renderer/settings/runtime-host-interaction-boundary.tsx
 apps/desktop/src/renderer/settings/runtime-host-management-dialog.tsx
 apps/desktop/src/renderer/settings/runtime-host-onboarding-dialog.tsx
 apps/desktop/src/renderer/settings/runtime-host-profiles-section.tsx
+apps/desktop/src/renderer/settings/runtime-host-project-directory-editor.tsx
 apps/desktop/src/renderer/settings/runtime-host-settings-target.tsx
 apps/desktop/src/renderer/settings/runtime-host-ssh-terminal-dialog.tsx
 apps/desktop/src/renderer/settings/settings-expandable-row.tsx

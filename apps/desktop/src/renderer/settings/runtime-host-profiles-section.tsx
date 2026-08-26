@@ -393,7 +393,9 @@ export function RuntimeHostProfilesSection(props: {
                 description={
                   profile.transport.kind === "ssh"
                     ? profile.transport.destination
-                    : profile.transport.url
+                    : profile.transport.kind === "libp2p-direct"
+                      ? profile.transport.peerId
+                      : profile.transport.url
                 }
                 startContent={<Cpu size={ICON_SIZE.control} aria-hidden="true" />}
                 endContent={

@@ -44,6 +44,7 @@ import {
   type HostRegistration,
   type HostIncompatible,
 } from '@maka/runtime-host/protocol';
+import { readLocalHostDeploymentRecord } from '@maka/runtime-host/operator';
 import { resolveMakaClientDataRoot } from '@maka/storage/workspace-root';
 
 /**
@@ -73,7 +74,7 @@ export class RuntimeHostCliConflictError extends RuntimeHostPermanentReconnectEr
 
   constructor(
     readonly handshake: HostIncompatible,
-    registration: HostRegistration,
+    readonly registration: HostRegistration,
   ) {
     super(formatRuntimeHostCliConflict(handshake, registration));
     this.name = 'RuntimeHostCliConflictError';
@@ -98,6 +99,7 @@ interface RuntimeHostCliContextDeps {
   readonly readConnectionCatalog: typeof readRuntimeHostConnectionCatalog;
   readonly loadClientInstanceId: typeof loadOrCreateRuntimeHostClientInstanceId;
   readonly executionCandidateEntrypoint: URL;
+  readonly readDeploymentRecord: typeof readLocalHostDeploymentRecord;
   readonly profileCatalog?: RuntimeHostProfileCatalog;
 }
 
@@ -118,6 +120,7 @@ export async function connectRuntimeHostCli(
     executionCandidateEntrypoint: new URL(
       import.meta.resolve('@maka/runtime-host/execution-candidate-main'),
     ),
+    readDeploymentRecord: readLocalHostDeploymentRecord,
     ...overrides,
   };
   const resolvedProfile = await resolveHostProfile(input, deps);
@@ -162,6 +165,15 @@ export async function connectRuntimeHostCli(
     }
     if (connected.kind === 'failed') {
       throw runtimeHostStartupError(connected.reason, connected.diagnostic);
+    }
+    if (connected.registration.generation?.startsWith('npm-global-handoff:')) {
+      const record = await deps.readDeploymentRecord(connected.registration.rootId);
+      if (record?.state.kind !== 'owned' || record.state.owner.kind !== 'cli') {
+        await connected.connection.close().catch(() => undefined);
+        throw new RuntimeHostPermanentReconnectError(
+          'RUNTIME_HOST_RECOVERY_REQUIRED: The staged local Runtime Host is Ready, but its installation ownership was not durably committed.',
+        );
+      }
     }
     return connected.connection;
   };
@@ -232,6 +244,18 @@ function formatRuntimeHostCliConflict(
 export function shouldRetryRuntimeHostConflict(answer: string): boolean {
   const normalized = answer.trim().toLowerCase();
   return normalized === 'w' || normalized === 'wait';
+}
+
+export type RuntimeHostCliConflictDecision = 'restart' | 'wait' | 'cancel';
+
+export function resolveRuntimeHostCliConflictDecision(
+  answer: string,
+  canRestart: boolean,
+): RuntimeHostCliConflictDecision {
+  const normalized = answer.trim().toLowerCase();
+  if (canRestart && (normalized === 'r' || normalized === 'restart')) return 'restart';
+  if (normalized === 'w' || normalized === 'wait') return 'wait';
+  return 'cancel';
 }
 
 export function resolveRuntimeHostCliTarget(

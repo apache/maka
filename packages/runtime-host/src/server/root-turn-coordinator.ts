@@ -167,7 +167,7 @@ type RootMessageStartOutcome =
 
 export type RootMessageExecution = Extract<
   RootExecutionDescriptor,
-  { kind: 'external_message' | 'regenerate' }
+  { kind: 'external_message' | 'workhub_coordination' | 'regenerate' }
 >;
 
 interface RootMessageStartRequestBase {
@@ -194,6 +194,11 @@ export type RootMessageStartRequest =
       readonly execution: Extract<RootMessageExecution, { kind: 'regenerate' }>;
       readonly turnOrchestration?: undefined;
       prepareContent(): Promise<MessageContent>;
+    })
+  | (RootMessageStartRequestBase & {
+      readonly execution: Extract<RootMessageExecution, { kind: 'workhub_coordination' }>;
+      readonly turnOrchestration?: undefined;
+      prepareFreshContent(lease: SessionAdmissionLease): Promise<RootMessageContentPreparation>;
     });
 
 export type RootMessageContentPreparation =
@@ -1339,6 +1344,40 @@ export class RootTurnCoordinator implements HostedExecutionAuthority {
         operationUnavailable(WORKHUB_COORDINATION_EXECUTION_UNAVAILABLE_REASON),
       );
     }
+    if (request.execution.kind === 'workhub_coordination') {
+      return Promise.resolve(
+        operationUnavailable(WORKHUB_COORDINATION_EXECUTION_UNAVAILABLE_REASON),
+      );
+    }
+    return this.startRootMessage(request, context);
+  }
+
+  /** Dedicated WorkHub authority; the ordinary interactive entry stays closed. */
+  startWorkHubCoordinationMessage(
+    request: Extract<RootMessageStartRequest, { execution: { kind: 'workhub_coordination' } }>,
+    context: ConnectionContext,
+  ): Promise<RootMessageStartOutcome> {
+    if (!isWorkHubCoordinationSessionId(request.sessionId)) {
+      return Promise.resolve(
+        operationUnavailable('WorkHub Coordination execution requires its reserved Session'),
+      );
+    }
+    return this.startRootMessage(request, context);
+  }
+
+  /**
+   * Whether a durable root Turn already owns this identity. WorkHub also writes
+   * Coordination Turns outside this coordinator, and must not append a second
+   * triplet into a Turn this admission ledger already owns.
+   */
+  async hasRootTurnAdmission(sessionId: string, turnId: string): Promise<boolean> {
+    return (await this.stores.agentRunStore.readRootTurnAdmission(sessionId, turnId)) !== undefined;
+  }
+
+  private startRootMessage(
+    request: RootMessageStartRequest,
+    context: ConnectionContext,
+  ): Promise<RootMessageStartOutcome> {
     return this.runCommand(async () => {
       await this.awaitTerminalRootCleanup(request.sessionId);
       const activeAtEntry = this.#executions.has(request.sessionId);
@@ -1418,7 +1457,7 @@ export class RootTurnCoordinator implements HostedExecutionAuthority {
         if (header.isArchived) {
           return completedStart(sessionArchived(request.archivedMessage));
         }
-        const unavailableReason = runtimeHostExternalTurnUnavailableReason(header);
+        const unavailableReason = runtimeHostExecutionUnavailableReason(header, request.execution);
         if (unavailableReason) return completedStart(operationUnavailable(unavailableReason));
         if (this.#executions.has(request.sessionId)) {
           return completedStart(sessionBusy('Session already has an active root Turn'));
@@ -1449,9 +1488,12 @@ export class RootTurnCoordinator implements HostedExecutionAuthority {
           attachments,
         );
         if (attachmentError) return completedStart(operationConflict(attachmentError));
-        const binding = prepared.commitCapabilityBinding
-          ? await prepared.commitCapabilityBinding()
-          : await this.clientCapabilities?.bindSession(request.sessionId, context.connectionId);
+        const binding =
+          request.execution.kind === 'workhub_coordination'
+            ? undefined
+            : prepared.commitCapabilityBinding
+              ? await prepared.commitCapabilityBinding()
+              : await this.clientCapabilities?.bindSession(request.sessionId, context.connectionId);
         if (binding && !binding.ok) {
           return completedStart(operationConflict(binding.message));
         }

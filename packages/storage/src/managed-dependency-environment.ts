@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { execFile } from 'node:child_process';
+import { spawn } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
 import { createReadStream } from 'node:fs';
 import { createRequire } from 'node:module';
@@ -36,7 +36,16 @@ import {
   stat,
   utimes,
 } from 'node:fs/promises';
-import { dirname, isAbsolute, join, normalize, posix, relative, resolve } from 'node:path';
+import {
+  dirname,
+  isAbsolute,
+  join,
+  normalize,
+  posix,
+  relative,
+  resolve,
+  toNamespacedPath,
+} from 'node:path';
 import type { DatabaseSync } from 'node:sqlite';
 import { tryLock, unlock } from 'fs-native-extensions';
 
@@ -57,6 +66,106 @@ const MANAGED_DEPENDENCY_PRODUCER_POLICY_V1 = Object.freeze({
   lifecycleScripts: 'disabled' as const,
 });
 const activeAuthorityOwners = new Map<string, object>();
+const WINDOWS_STREAM_QUERY_TIMEOUT_MS = 30_000;
+const WINDOWS_STREAM_QUERY_MAX_OUTPUT_BYTES = 1024 * 1024;
+const WINDOWS_STREAM_QUERY_SCRIPT = String.raw`
+$ErrorActionPreference = 'Stop'
+$OutputEncoding = [Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)
+Add-Type -TypeDefinition @'
+using System;
+using System.ComponentModel;
+using System.Runtime.InteropServices;
+
+public static class MakaWindowsStreamQuery
+{
+    private const int ErrorHandleEof = 38;
+    private static readonly IntPtr InvalidHandleValue = new IntPtr(-1);
+
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+    private struct FindStreamData
+    {
+        public long StreamSize;
+
+        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 296)]
+        public string StreamName;
+    }
+
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    private static extern IntPtr FindFirstStreamW(
+        string fileName,
+        int infoLevel,
+        out FindStreamData findStreamData,
+        int flags);
+
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    private static extern bool FindNextStreamW(
+        IntPtr findStream,
+        out FindStreamData findStreamData);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool FindClose(IntPtr findHandle);
+
+    public static bool HasAlternateDataStream(string path)
+    {
+        FindStreamData data;
+        IntPtr handle = FindFirstStreamW(path, 0, out data, 0);
+        if (handle == InvalidHandleValue)
+        {
+            int error = Marshal.GetLastWin32Error();
+            if (error == ErrorHandleEof)
+            {
+                return false;
+            }
+            throw new Win32Exception(error);
+        }
+
+        try
+        {
+            do
+            {
+                if (!String.Equals(data.StreamName, "::$DATA", StringComparison.OrdinalIgnoreCase))
+                {
+                    return true;
+                }
+            }
+            while (FindNextStreamW(handle, out data));
+
+            int error = Marshal.GetLastWin32Error();
+            if (error != ErrorHandleEof)
+            {
+                throw new Win32Exception(error);
+            }
+            return false;
+        }
+        finally
+        {
+            if (!FindClose(handle))
+            {
+                throw new Win32Exception(Marshal.GetLastWin32Error());
+            }
+        }
+    }
+}
+'@
+$reader = [IO.StreamReader]::new(
+  [Console]::OpenStandardInput(),
+  [Text.UTF8Encoding]::new($false, $true),
+  $true
+)
+try {
+  $raw = $reader.ReadToEnd()
+} finally {
+  $reader.Dispose()
+}
+$paths = if ([string]::IsNullOrWhiteSpace($raw)) { @() } else { @($raw | ConvertFrom-Json) }
+$alternate = [System.Collections.Generic.List[string]]::new()
+foreach ($path in $paths) {
+  if ([MakaWindowsStreamQuery]::HasAlternateDataStream([string]$path)) {
+    $alternate.Add([string]$path)
+  }
+}
+[Console]::Out.Write((ConvertTo-Json -InputObject @($alternate.ToArray()) -Compress))
+`;
 const RECEIPT_KEYS = [
   'protocolVersion',
   'environmentId',
@@ -983,20 +1092,22 @@ async function hashDirectory(
 /**
  * Reject NTFS alternate data streams under a dependency tree.
  *
- * Previously this shellled out to a recursive PowerShell `Get-ChildItem -Recurse`
+ * Previously this shelled out to a recursive PowerShell `Get-ChildItem -Recurse`
  * + `Get-Item -Stream *` walk. On GitHub-hosted Windows runners that path
  * routinely hung until the 30s `execFile` timeout, which misreported every
  * timeout as "contains an alternate data stream" and burned ~5 minutes across
  * managed-dependency crash recovery tests. Walk the tree in Node (no reparse
- * follow) and query streams per file with `fsutil`, which is bounded and
- * does not recurse through junctions.
+ * follow), then send the bounded object list through stdin to one non-recursive
+ * Windows PowerShell stream query. `fsutil file queryStreams` is not a supported
+ * command on the Windows builds used by developers or hosted runners.
  */
 async function assertNoWindowsAlternateStreams(root: string): Promise<void> {
   const systemRoot = process.env.SystemRoot ?? process.env.WINDIR;
   if (!systemRoot) {
     throw new Error('Cannot verify Windows alternate streams without SystemRoot');
   }
-  const fsutil = join(systemRoot, 'System32', 'fsutil.exe');
+  const powershell = join(systemRoot, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
+  const paths = [toNamespacedPath(root)];
   const stack = [root];
   while (stack.length > 0) {
     const directory = stack.pop()!;
@@ -1010,67 +1121,98 @@ async function assertNoWindowsAlternateStreams(root: string): Promise<void> {
         throw new Error('Managed dependency environment contains a Windows reparse point');
       }
       if (entry.isDirectory()) {
+        paths.push(toNamespacedPath(absolutePath));
         stack.push(absolutePath);
         continue;
       }
       if (!entry.isFile()) continue;
-      await assertWindowsFileHasOnlyDefaultStream(fsutil, absolutePath);
+      // Windows PowerShell 5.1 cannot open long provider paths unless the
+      // caller supplies the Win32 namespaced spelling.
+      paths.push(toNamespacedPath(absolutePath));
     }
+  }
+  const alternate = await queryWindowsAlternateStreams(powershell, paths);
+  if (alternate.length > 0) {
+    throw new Error('Managed dependency environment contains an alternate data stream');
   }
 }
 
-async function assertWindowsFileHasOnlyDefaultStream(
-  fsutil: string,
-  filePath: string,
-): Promise<void> {
-  const stdout = await new Promise<string>((resolvePromise, rejectPromise) => {
-    execFile(
-      fsutil,
-      ['file', 'queryStreams', filePath],
-      {
-        windowsHide: true,
-        timeout: 15_000,
-        maxBuffer: 1024 * 1024,
-      },
-      (error, out) => {
-        if (error) {
-          const execError = error as Error & { killed?: boolean; code?: string | number | null };
-          const timedOut =
-            execError.killed === true ||
-            execError.code === 'ETIMEDOUT' ||
-            /ETIMEDOUT|timeout/i.test(execError.message);
-          rejectPromise(
-            new Error(
-              timedOut
-                ? `Timed out querying alternate data streams for ${filePath}`
-                : `Unable to query alternate data streams for ${filePath}`,
-              { cause: error },
-            ),
-          );
-          return;
-        }
-        resolvePromise(typeof out === 'string' ? out : String(out ?? ''));
-      },
+function queryWindowsAlternateStreams(
+  powershell: string,
+  paths: readonly string[],
+): Promise<readonly string[]> {
+  if (paths.length === 0) return Promise.resolve([]);
+  return new Promise((resolvePromise, rejectPromise) => {
+    const child = spawn(
+      powershell,
+      ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', WINDOWS_STREAM_QUERY_SCRIPT],
+      { windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] },
     );
+    let stdout = '';
+    let stderr = '';
+    let timedOut = false;
+    let overflow = false;
+    let settled = false;
+    const timer = setTimeout(() => {
+      timedOut = true;
+      child.kill();
+    }, WINDOWS_STREAM_QUERY_TIMEOUT_MS);
+    const append = (current: string, chunk: Buffer): string => {
+      const next = current + chunk.toString('utf8');
+      if (Buffer.byteLength(next, 'utf8') <= WINDOWS_STREAM_QUERY_MAX_OUTPUT_BYTES) return next;
+      overflow = true;
+      child.kill();
+      return current;
+    };
+    child.stdout.on('data', (chunk: Buffer) => {
+      stdout = append(stdout, chunk);
+    });
+    child.stderr.on('data', (chunk: Buffer) => {
+      stderr = append(stderr, chunk);
+    });
+    child.stdin.on('error', () => {});
+    child.once('error', (error) => {
+      clearTimeout(timer);
+      if (settled) return;
+      settled = true;
+      rejectPromise(
+        new Error('Unable to start the Windows alternate-stream query', { cause: error }),
+      );
+    });
+    child.once('close', (code) => {
+      clearTimeout(timer);
+      if (settled) return;
+      settled = true;
+      if (timedOut) {
+        rejectPromise(new Error('Timed out querying Windows alternate data streams'));
+        return;
+      }
+      if (overflow) {
+        rejectPromise(new Error('Windows alternate-stream query output exceeded its limit'));
+        return;
+      }
+      if (code !== 0) {
+        rejectPromise(
+          new Error(
+            `Unable to query Windows alternate data streams: ${stderr.trim() || `exit ${code}`}`,
+          ),
+        );
+        return;
+      }
+      try {
+        const value: unknown = JSON.parse(stdout || '[]');
+        if (!Array.isArray(value) || !value.every((path) => typeof path === 'string')) {
+          throw new Error('query returned an invalid result');
+        }
+        resolvePromise(value);
+      } catch (error) {
+        rejectPromise(
+          new Error('Windows alternate-stream query returned invalid JSON', { cause: error }),
+        );
+      }
+    });
+    child.stdin.end(JSON.stringify(paths));
   });
-  for (const rawLine of stdout.split(/\r?\n/u)) {
-    const line = rawLine.trim();
-    if (!line) continue;
-    // Verbose form: "Name         : :$DATA" or "Name : :unhashed:$DATA"
-    const nameMatch = /^Name\s*:\s*(.+)$/iu.exec(line);
-    if (nameMatch) {
-      if (isDefaultWindowsDataStreamName(nameMatch[1]!.trim())) continue;
-      throw new Error('Managed dependency environment contains an alternate data stream');
-    }
-    // Compact form used by some fsutil builds: ":$DATA" / "Zone.Identifier:$DATA"
-    if (/:\$DATA\b/iu.test(line) && !isDefaultWindowsDataStreamName(line.split(/\s+/u)[0]!)) {
-      throw new Error('Managed dependency environment contains an alternate data stream');
-    }
-  }
-}
-
-function isDefaultWindowsDataStreamName(name: string): boolean {
-  return name === ':$DATA' || name === '::$DATA';
 }
 
 function isPathWithin(candidate: string, root: string): boolean {

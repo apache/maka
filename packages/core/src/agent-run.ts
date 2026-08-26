@@ -80,6 +80,11 @@ export type RootExecutionDescriptor =
       inputDigest?: `sha256:${string}`;
       maxSteps?: number;
     }
+  | {
+      /** Tool-free conversational execution admitted only by WorkHub authority. */
+      kind: 'workhub_coordination';
+      inputDigest: `sha256:${string}`;
+    }
   | { kind: 'regenerate'; sourceTurnId: string }
   | { kind: 'context_compact' }
   | { kind: 'scheduled_task'; scheduledTaskId: string }

@@ -52,7 +52,7 @@ import {
 } from '@maka/ui';
 import { ToolTrow } from '../../../packages/ui/src/tool-activity.js';
 import type { ToolActivityItem } from '../../../packages/ui/src/materialize.js';
-import { deriveSessionRail } from '../src/renderer/session-rail.js';
+import { deriveSessionRail } from '../src/renderer/features/session-navigation/testing';
 
 // ---------------------------------------------------------------------------
 // Fixtures — multi-subagent contiguous tool run

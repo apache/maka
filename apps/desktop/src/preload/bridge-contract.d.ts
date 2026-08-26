@@ -48,7 +48,6 @@ import type {
   SessionCommand,
   SessionEvent,
   ShellRunUpdate,
-  QueueEnqueueOutcome,
 } from '@maka/core/events';
 import type { UserQuestionResponse } from '@maka/core/user-question';
 import type { PermissionMode } from '@maka/core/permission';
@@ -159,6 +158,7 @@ import type { Result } from '@maka/core/result';
 import type { CreateSessionRequestInput } from '@maka/core/runtime-inputs';
 import type {
   McpConfigAddResult,
+  McpConfigImportResult,
   McpConfigFile,
   McpServerConfig,
   McpServerStatus,
@@ -206,6 +206,10 @@ export type DesktopBranchFromTurnInput = BranchFromTurnInput & {
 export type DesktopSideConversationBranchResult =
   | { ok: true; session: DesktopSessionSummary }
   | { ok: false; reason: 'session_busy' | 'operation_unavailable' };
+
+export type DesktopSessionStopResult =
+  | { kind: 'retracted'; messageId: string }
+  | undefined;
 
 export type DesktopReviseBeforeTurnInput = ReviseBeforeTurnInput & {
   /** Stable target identity for retrying one Desktop copy action. */
@@ -394,6 +398,7 @@ export interface DesktopRuntimeHostOnboardingInput {
   readonly name?: string;
   readonly destination: string;
   readonly sshPort?: number;
+  readonly projectDirectoryRoots?: readonly { readonly label: string; readonly path: string }[];
 }
 
 export type DesktopRuntimeHostOnboardingPhase =
@@ -432,14 +437,15 @@ export type DesktopRuntimeHostManagementResult = Extract<
   RuntimeHostServiceManagementFrame,
   { kind: 'result' }
 > & {
-  readonly action: DesktopRuntimeHostManagementAction | 'update';
+  readonly action: DesktopRuntimeHostManagementAction | 'configure' | 'update';
   readonly accessManagementAvailable: boolean;
+  readonly reconnectError?: { readonly code: string; readonly message: string };
 };
 
 export type DesktopRuntimeHostManagementResponse =
   | DesktopRuntimeHostManagementResult
   | (Extract<RuntimeHostServiceManagementFrame, { kind: 'error' }> & {
-      readonly action: DesktopRuntimeHostManagementAction | 'update';
+      readonly action: DesktopRuntimeHostManagementAction | 'configure' | 'update';
     })
   | {
       readonly kind: 'uninstalled';
@@ -485,6 +491,7 @@ export type DesktopRuntimeHostUpdateReconciliationResponse =
       readonly updatePolicy: DesktopRuntimeHostUpdatePolicySnapshot;
       readonly reconciliation: DesktopRuntimeHostUpdateReconciliationOutcome;
       readonly service?: NonNullable<RuntimeHostUpdateReconciliationResult['service']>;
+      readonly reconnectError?: { readonly code: string; readonly message: string };
     };
 
 export interface DesktopRuntimeHostAccessCredential {
@@ -614,6 +621,12 @@ export interface MakaBridge {
     ): Promise<DesktopRuntimeHostManagementResponse>;
     update(
       profileId: string,
+      allowInterruptActiveTasks: boolean,
+    ): Promise<DesktopRuntimeHostManagementResponse>;
+    configureProjectDirectories(
+      profileId: string,
+      roots: readonly { readonly label: string; readonly path: string }[],
+      expectedConfigFingerprint: string,
       allowInterruptActiveTasks: boolean,
     ): Promise<DesktopRuntimeHostManagementResponse>;
     subscribeProgress(
@@ -756,6 +769,25 @@ export interface MakaBridge {
   workHub: {
     /** Resolve the active Runtime Host's stable coordination conversation. */
     resolveCoordinationSession(): Promise<string>;
+    /** Answer an ordinary question inside the persistent Coordination Session. */
+    answer(
+      coordinationSessionId: string,
+      input: { turnId: string; text: string },
+    ): Promise<{ turnId: string }>;
+    /** Persist one deterministic clarification or routing summary. */
+    record(
+      coordinationSessionId: string,
+      input: { turnId: string; userText: string; assistantText: string },
+    ): Promise<{ turnId: string }>;
+    /** Read one bounded, Host-issued candidate set for a coordination action. */
+    candidates(
+      coordinationSessionId: string,
+    ): Promise<OperationOutput<'workhub.coordination.candidates'>>;
+    /** Submit a typed proposal; trusted creation context is added outside the renderer. */
+    act(
+      coordinationSessionId: string,
+      input: Omit<OperationInput<'workhub.coordination.act'>, 'create'>,
+    ): Promise<OperationOutput<'workhub.coordination.act'>>;
     /** Create an ordinary Session on the exact Host owning the resolved conversation. */
     createSession(
       coordinationSessionId: string,
@@ -773,7 +805,7 @@ export interface MakaBridge {
       sessionId: string,
       command:
         | SessionCommand
-        | {
+          | {
             type: 'send';
             turnId: string;
             text: string;
@@ -795,7 +827,18 @@ export interface MakaBridge {
            * The send raced a root Turn another client opened first and was
            * queued into it as steering instead of starting `turnId`.
            */
-          steered?: true;
+          steered?: never;
+          messageId?: never;
+          attachments: import('@maka/core/events').AttachmentRef[];
+          inlineReferences: import('@maka/core/events').InlineReference[];
+          skillInvocation: import('@maka/runtime/skill-invocation').SkillInvocationResult;
+        }
+      | {
+          ok: true;
+          turnId: string;
+          steered: true;
+          /** Host admission identity for the message queued as steering. */
+          messageId: string;
           attachments: import('@maka/core/events').AttachmentRef[];
           inlineReferences: import('@maka/core/events').InlineReference[];
           skillInvocation: import('@maka/runtime/skill-invocation').SkillInvocationResult;
@@ -805,12 +848,30 @@ export interface MakaBridge {
           reason: 'skill_invocation_failed';
           skillInvocation: import('@maka/runtime/skill-invocation').SkillInvocationResult;
         }
+      | {
+          ok: false;
+          reason: 'outcome_unknown';
+          messageId: string;
+          skillInvocation: import('@maka/runtime/skill-invocation').SkillInvocationResult;
+        }
     >;
     stop(
       sessionId: string,
-      input?: { source?: 'stop_button'; expectedTurnId?: string },
-    ): Promise<void>;
-    steer(sessionId: string, text: string): Promise<QueueEnqueueOutcome>;
+      input?: {
+        source?: 'stop_button';
+        expectedTurnId?: string;
+        expectedAdmissionId?: string;
+      },
+    ): Promise<DesktopSessionStopResult>;
+    steer(
+      sessionId: string,
+      text: string,
+      admissionId?: string,
+    ): Promise<
+      | { kind: 'queued'; messageId: string }
+      | { kind: 'outcome_unknown'; messageId: string }
+      | { kind: 'started'; turnId: string }
+    >;
     enqueue(
       sessionId: string,
       placement: 'current_turn' | 'next_turn',
@@ -877,6 +938,7 @@ export interface MakaBridge {
       handler: (event: SessionEvent) => void,
       onSeeded?: () => void,
       onObservationSeed?: (phase: 'pending' | 'ready') => void,
+      onSeedError?: (error: unknown) => void,
     ): () => void;
     subscribeChanges(handler: (event: SessionChangedEvent) => void): () => void;
     archive(sessionId: string, options?: { revisionFamily?: boolean }): Promise<void>;
@@ -1051,7 +1113,7 @@ export interface MakaBridge {
   mcp: {
     getConfig(host?: DesktopRuntimeHostRef): Promise<McpConfigFile>;
     listStatuses(host?: DesktopRuntimeHostRef): Promise<McpServerStatus[]>;
-    setConfig(config: McpConfigFile, host?: DesktopRuntimeHostRef): Promise<McpConfigFile>;
+    importConfig(source: string, host?: DesktopRuntimeHostRef): Promise<McpConfigImportResult>;
     /** Adds a new server; a taken id comes back as `{ status: 'exists' }`
      * instead of an error, so the dialog can put it on the id field. */
     add(serverId: string, config: McpServerConfig, host?: DesktopRuntimeHostRef): Promise<McpConfigAddResult>;
@@ -1392,6 +1454,8 @@ export interface MakaBridge {
   };
   diagnostics: {
     copyReport(input: DesktopDiagnosticInput): Promise<void>;
+    takePreviousMainProcessInterruption(): Promise<boolean>;
+    copyPreviousMainProcessInterruption(): Promise<void>;
   };
   workspace: {
     searchFiles(

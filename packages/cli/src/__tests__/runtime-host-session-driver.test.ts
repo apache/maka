@@ -18,7 +18,7 @@
  */
 
 import assert from 'node:assert/strict';
-import { mkdir, mkdtemp, realpath, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, realpath, rm, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -44,7 +44,11 @@ import {
   createRuntimeHostMakaSessionDriver,
   type RuntimeHostMakaSessionDriverInput,
 } from '../runtime-host-session-driver.js';
-import { SkillInvocationBlockedError, type MakaAttachedSessionTurn } from '../session-driver.js';
+import {
+  SkillInvocationBlockedError,
+  type MakaAttachedSessionTurn,
+  type MakaSideConversationParentStatus,
+} from '../session-driver.js';
 import { WAIT_BUDGET_MS } from './tui-terminal-mock.js';
 
 describe('Runtime Host Maka Session driver', () => {
@@ -1226,6 +1230,162 @@ describe('Runtime Host Maka Session driver', () => {
     );
   });
 
+  test('opens a hidden side copy at the latest completed Turn and removes it on close', async (t) => {
+    const cleanupRoot = await mkdtemp(join(tmpdir(), 'maka-tui-side-'));
+    t.after(() => rm(cleanupRoot, { recursive: true, force: true }));
+    const sourceMessages: StoredMessage[] = [
+      userMessage('turn-completed', 'Settled question'),
+      assistantMessage('turn-completed', 'Settled answer'),
+      turnStateMessage('turn-completed', 'completed'),
+      userMessage('turn-failed', 'Failed question'),
+      turnStateMessage('turn-failed', 'failed'),
+    ];
+    const subscriptions = [
+      new FakeSubscription(continuitySnapshot({ rootTurn: null }), Promise.resolve(sourceMessages)),
+      new FakeSubscription(
+        continuitySnapshot({ rootTurn: null }),
+        Promise.resolve(sourceMessages),
+        'subscription-copy-source',
+      ),
+      new FakeSubscription(
+        continuitySnapshot({ rootTurn: null }),
+        Promise.resolve(sourceMessages.slice(0, 3)),
+        'subscription-side',
+      ),
+      new FakeSubscription(
+        continuitySnapshot({ rootTurn: null }),
+        Promise.resolve([
+          ...sourceMessages.slice(0, 3),
+          userMessage('turn-side', 'Side question'),
+          assistantMessage('turn-side', 'Side answer'),
+        ]),
+        'subscription-side-read',
+      ),
+      new FakeSubscription(
+        continuitySnapshot({ rootTurn: null }),
+        Promise.resolve(sourceMessages),
+        'subscription-parent-return',
+      ),
+    ];
+    const connection = new FakeConnection(subscriptions);
+    connection.sessionQueries.push(
+      sessionProjection({ id: 'session-1' }),
+      sessionProjection({ id: 'session-1', revision: 4 }),
+      sessionProjection({
+        id: 'side-1',
+        labels: ['mode:side_conversation'],
+        parentSessionId: 'session-1',
+        branchOfTurnId: 'turn-completed',
+      }),
+      sessionProjection({ id: 'session-1' }),
+      sessionProjection({ id: 'side-1', labels: ['mode:side_conversation'] }),
+    );
+    const driver = createRuntimeHostMakaSessionDriver({
+      connection: connection.value,
+      cwd: '/tmp',
+      llmConnectionSlug: 'openai-main',
+      model: 'gpt-5',
+      newId: () => 'side-1',
+      sessionCopyCleanupRoot: cleanupRoot,
+    });
+    await driver.switchSession('session-1');
+
+    const opened = await driver.openSideConversation!();
+
+    assert.equal((await stat(join(cleanupRoot, 'a'.repeat(64), 'runtime.sqlite'))).isFile(), true);
+
+    assert.equal(opened.parentSessionId, 'session-1');
+    assert.equal(opened.sideSessionId, 'side-1');
+    assert.deepEqual(opened.messages, []);
+    assert.deepEqual(
+      (await driver.readMessages()).map((message) =>
+        'turnId' in message ? `${message.type}:${message.turnId}` : message.type,
+      ),
+      ['user:turn-side', 'assistant:turn-side'],
+    );
+    assert.deepEqual(
+      connection.requests.find(({ operation }) => operation === 'session.branch.create')?.input,
+      {
+        sourceSessionId: 'session-1',
+        targetSessionId: 'side-1',
+        sourceTurnId: 'turn-completed',
+        expectedSourceRevision: 4,
+        intent: 'side_conversation',
+      },
+    );
+
+    const closed = await driver.closeSideConversation!('side-1', 'session-1');
+    assert.equal(closed.summary.id, 'session-1');
+    assert.equal(closed.cleanup, 'removed');
+    assert.deepEqual(
+      connection.requests.find(({ operation }) => operation === 'session.remove')?.input,
+      { sessionId: 'side-1', expectedRevision: 1 },
+    );
+  });
+
+  test('observes actionable and terminal parent status from the Host projection', async () => {
+    const subscription = new FakeSubscription(
+      continuitySnapshot({ interactions: { pending: [pendingPermission()] } }),
+      Promise.resolve([]),
+    );
+    const driver = createRuntimeHostMakaSessionDriver({
+      connection: new FakeConnection([subscription]).value,
+      cwd: '/tmp',
+      llmConnectionSlug: 'openai-main',
+      model: 'gpt-5',
+    });
+    const statuses: Array<MakaSideConversationParentStatus | undefined> = [];
+
+    const stop = await driver.observeSideConversationParent!('session-1', (status) => {
+      statuses.push(status);
+    });
+    assert.equal(statuses.at(-1), 'needs_approval');
+
+    subscription.push(projectionFrame(1, runningTurn('turn-2', 'run-2'), 2));
+    await waitFor(() => statuses.at(-1) === undefined);
+    subscription.push(projectionFrame(2, completedTurn('turn-2', 'run-2'), 3));
+    await waitFor(() => statuses.at(-1) === 'finished');
+
+    await stop();
+  });
+
+  test('clears parent status when observer recovery is exhausted', async () => {
+    const snapshot = continuitySnapshot({ interactions: { pending: [pendingPermission()] } });
+    const initial = new FakeSubscription(snapshot, Promise.resolve([]));
+    const ended = Array.from({ length: 8 }, (_, index) => {
+      const subscription = new FakeSubscription(
+        { ...snapshot, projectionRevision: index + 2 },
+        Promise.resolve([]),
+        `subscription-${index + 2}`,
+      );
+      void subscription.close();
+      return subscription;
+    });
+    const connection = new FakeConnection([initial, ...ended], true);
+    const driver = createRuntimeHostMakaSessionDriver({
+      connection: connection.value,
+      cwd: '/tmp',
+      llmConnectionSlug: 'openai-main',
+      model: 'gpt-5',
+    });
+    const statuses: Array<MakaSideConversationParentStatus | undefined> = [];
+    const cleared = deferred<void>();
+
+    await driver.observeSideConversationParent!('session-1', (status) => {
+      statuses.push(status);
+      if (status === undefined) cleared.resolve();
+    });
+    assert.equal(statuses.at(-1), 'needs_approval');
+
+    await initial.close();
+    await Promise.race([
+      cleared.promise,
+      delay(3_000).then(() => assert.fail('Timed out waiting for observer recovery exhaustion')),
+    ]);
+    assert.equal(connection.openedSubscriptions, 9);
+    assert.equal(statuses.at(-1), undefined);
+  });
+
   test('reopens a failed Session channel before starting the next turn', async () => {
     const first = new FakeSubscription(continuitySnapshot({ rootTurn: null }), Promise.resolve([]));
     const second = new FakeSubscription(
@@ -1603,6 +1763,7 @@ class FakeConnection {
   ) {
     this.value = {
       ...(reconnecting ? { reconnecting: true as const } : {}),
+      rootId: 'a'.repeat(64),
       hostEpoch: 'host-1',
       request: <K extends DirectRequestOperationKey>(operation: K, input: OperationInput<K>) =>
         this.request(operation, input),
@@ -1640,6 +1801,24 @@ class FakeConnection {
           hostCwd: create.workspace.kind === 'host_path' ? create.workspace.path : '/project',
         },
       }) as OperationOutput<K>;
+    }
+    if (operation === 'session.branch.create') {
+      const copy = input as OperationInput<'session.branch.create'>;
+      return {
+        kind: 'committed',
+        session: sessionProjection({
+          id: copy.targetSessionId,
+          labels: copy.intent === 'side_conversation' ? ['mode:side_conversation'] : [],
+          parentSessionId: copy.sourceSessionId,
+          branchOfTurnId: copy.sourceTurnId,
+        }),
+      } as OperationOutput<K>;
+    }
+    if (operation === 'session.remove') {
+      return {
+        kind: 'removed',
+        sessionId: (input as OperationInput<'session.remove'>).sessionId,
+      } as OperationOutput<K>;
     }
     if (operation === 'goal.control') {
       const outcome = this.goalControlOutcomes.shift();

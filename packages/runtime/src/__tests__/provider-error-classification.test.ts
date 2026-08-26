@@ -239,6 +239,46 @@ describe('Provider error classification', () => {
     });
   });
 
+  test('retries an AI SDK transport failure without an HTTP response', () => {
+    const failure = Object.assign(
+      new Error(
+        'Cannot connect to API: 80E1BDF601000000:error:0A000119:SSL routines:tls_get_more_records:decryption failed or bad record mac:../deps/openssl/openssl/ssl/record/methods/tls_common.c:869:',
+      ),
+      {
+        name: 'AI_APICallError',
+        isRetryable: true,
+        cause: Object.assign(new TypeError('fetch failed'), {
+          cause: Object.assign(new Error('decryption failed or bad record mac'), {
+            code: 'ERR_SSL_DECRYPTION_FAILED_OR_BAD_RECORD_MAC',
+          }),
+        }),
+      },
+    );
+
+    assert.equal(classifyError(failure), 'Network');
+    assert.deepEqual(providerRetryMetadata(failure), { retryable: true });
+    assert.equal(providerFailureDiagnostic(failure).retryable, true);
+  });
+
+  test('retries a transport failure identified only by a cause code', () => {
+    const failure = Object.assign(new Error('request failed'), {
+      cause: { code: 'ECONNRESET' },
+    });
+
+    assert.equal(classifyError(failure), 'Network');
+    assert.deepEqual(providerRetryMetadata(failure), { retryable: true });
+  });
+
+  test('does not retry a bare rate limit marked retryable by the AI SDK', () => {
+    const rateLimit = Object.assign(new Error('Rate limit exceeded'), {
+      name: 'AI_APICallError',
+      isRetryable: true,
+      statusCode: 429,
+    });
+
+    assert.deepEqual(providerRetryMetadata(rateLimit), { retryable: false });
+  });
+
   test('retries a rate limit only when the provider names a retry delay', () => {
     const bareRateLimit = Object.assign(new Error('Rate limit exceeded'), {
       name: 'AI_APICallError',

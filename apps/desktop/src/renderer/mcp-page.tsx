@@ -36,11 +36,18 @@
 // scroll — the same contract as the Skills page (#2236).
 
 import { useEffect, useMemo, useRef, useState } from 'react';
-import type { McpConfigFile, McpServerConfig, McpServerStatus } from '@maka/core/mcp';
+import type {
+  McpConfigFile,
+  McpConfigImportResult,
+  McpProtocolPreference,
+  McpServerConfig,
+  McpServerStatus,
+} from '@maka/core/mcp';
 import { MCP_CONFIG_VERSION, isMcpStdioConfig } from '@maka/core/mcp';
 import {
   Banner,
   Button,
+  Collapsible,
   Divider,
   EmptyState,
   Heading,
@@ -94,13 +101,12 @@ import {
 } from '@maka/ui/icons';
 import { getMcpCatalog, catalogEntryMatches, type McpCatalogEntry } from './mcp-catalog';
 import { McpBrandMark, hasMcpBrandMark } from './mcp-brand-marks';
-import { parseMcpImport } from './mcp-import';
 import {
   createEmptyMcpDraft,
   mcpConfigFromDraft,
+  mcpDraftProtocolPreference,
   mcpDraftFromConfig,
   presentMcpNegotiatedProtocol,
-  withMcpDraftTransport,
   type McpEditorDraft,
 } from './mcp-page-model';
 import { settingsActionErrorMessage } from './settings/settings-error-copy';
@@ -368,29 +374,20 @@ export function McpPage(props: { hubHeader?: ModuleHubHeader }) {
   async function importJson(event: React.FormEvent) {
     event.preventDefault();
     if (!editor || editor.mode !== 'json') return;
-    let imported: McpConfigFile;
-    try {
-      imported = parseMcpImport(editor.source, locale);
-    } catch (error) {
-      if (mounted.current) toast.error(copy.errors.import, settingsActionErrorMessage(error, locale));
-      return;
-    }
     setBusy('import');
     try {
       const next = await runOnDefaultRuntimeHost((host) =>
-        window.maka.mcp.setConfig(
-          {
-            version: MCP_CONFIG_VERSION,
-            mcpServers: { ...config.mcpServers, ...imported.mcpServers },
-          },
-          host,
-        ),
+        window.maka.mcp.importConfig(editor.source, host),
       );
       if (!mounted.current) return;
-      setConfig(next.value);
+      if (next.value.status === 'invalid') {
+        toast.error(copy.errors.import, mcpImportFailureMessage(next.value, copy));
+        return;
+      }
+      setConfig(next.value.config);
       closeEditor();
       switchTab('installed');
-      toast.success(copy.toast.imported, copy.toast.importedDetail(Object.keys(imported.mcpServers).length));
+      toast.success(copy.toast.imported, copy.toast.importedDetail(next.value.importedCount));
     } catch (error) {
       if (mounted.current) {
         reportRuntimeHostError(
@@ -778,6 +775,24 @@ export function McpPage(props: { hubHeader?: ModuleHubHeader }) {
   );
 }
 
+function mcpImportFailureMessage(
+  result: Extract<McpConfigImportResult, { status: 'invalid' }>,
+  copy: McpCopy,
+): string {
+  switch (result.reason) {
+    case 'invalid-json':
+      return copy.errors.importJson;
+    case 'not-object':
+      return copy.errors.importObject;
+    case 'unsupported-version':
+      return copy.errors.importVersion(result.version ?? '?');
+    case 'missing-servers':
+      return copy.errors.importServersObject;
+    case 'protocol-version':
+      return copy.errors.importProtocolVersion;
+  }
+}
+
 function McpInstallButton(props: {
   entry: McpCatalogEntry;
   copy: McpCopy;
@@ -952,22 +967,21 @@ function McpEditorDialog(props: {
   onImport(event: React.FormEvent): void;
 }) {
   const editing = props.state.mode === 'manual' && Boolean(props.state.editingId);
+  const stdioNeedsAdvanced =
+    props.state.mode === 'manual' &&
+    props.state.draft.kind === 'stdio' &&
+    mcpDraftProtocolPreference(props.state.draft) !== 'legacy';
+  const [stdioAdvancedOpen, setStdioAdvancedOpen] = useState(stdioNeedsAdvanced);
+
+  useEffect(() => {
+    if (stdioNeedsAdvanced) setStdioAdvancedOpen(true);
+  }, [stdioNeedsAdvanced]);
 
   const updateDraft = <K extends keyof McpEditorDraft>(key: K, value: McpEditorDraft[K]) => {
     if (props.state.mode !== 'manual') return;
     props.onChange(
       { ...props.state, draft: { ...props.state.draft, [key]: value } },
       key,
-    );
-  };
-  const updateTransport = (transport: McpEditorDraft['transport']) => {
-    if (props.state.mode !== 'manual') return;
-    props.onChange(
-      {
-        ...props.state,
-        draft: withMcpDraftTransport(props.state.draft, transport),
-      },
-      'transport',
     );
   };
   return (
@@ -1066,6 +1080,26 @@ function McpEditorDialog(props: {
                 <>
                   <TextArea label={props.copy.editor.environment} description={props.copy.editor.environmentHelp} value={props.state.draft.env} onChange={(value) => updateDraft('env', value)} placeholder={'KEY=value\nTOKEN=secret'} />
                   <TextInput label={props.copy.editor.workingDirectory} value={props.state.draft.cwd} onChange={(value) => updateDraft('cwd', value)} placeholder={props.copy.editor.workingDirectoryPlaceholder} />
+                  <Collapsible
+                    trigger={stdioAdvancedOpen ? props.copy.editor.collapseAdvanced : props.copy.editor.expandAdvanced}
+                    isOpen={stdioAdvancedOpen}
+                    onOpenChange={setStdioAdvancedOpen}
+                  >
+                    <div className="maka-mcp-advanced-fields">
+                      <Selector
+                        value={mcpDraftProtocolPreference(props.state.draft)}
+                        options={[
+                          { value: 'legacy', label: props.copy.editor.protocolLegacy },
+                          { value: 'auto', label: props.copy.editor.protocolAuto },
+                          { value: '2026-07-28', label: props.copy.editor.protocolModern },
+                        ]}
+                        onChange={(value) => updateDraft('protocol', value as McpProtocolPreference)}
+                        label={props.copy.editor.protocolLabel}
+                        description={props.copy.editor.stdioProtocolHelp}
+                        width="100%"
+                      />
+                    </div>
+                  </Collapsible>
                 </>
               ) : (
                 <>
@@ -1076,18 +1110,18 @@ function McpEditorDialog(props: {
                       { value: 'streamable-http', label: props.copy.editor.transportStreamableHttp },
                       { value: 'sse', label: props.copy.editor.transportLegacySse },
                     ]}
-                    onChange={(value) => updateTransport(value as McpEditorDraft['transport'])}
+                    onChange={(value) => updateDraft('transport', value as McpEditorDraft['transport'])}
                     label={props.copy.editor.transportLabel}
                     width="100%"
                   />
                   <Selector
-                    value={props.state.draft.protocol}
+                    value={mcpDraftProtocolPreference(props.state.draft)}
                     options={[
                       { value: 'legacy', label: props.copy.editor.protocolLegacy },
                       { value: 'auto', label: props.copy.editor.protocolAuto },
                       { value: '2026-07-28', label: props.copy.editor.protocolModern },
                     ]}
-                    onChange={(value) => updateDraft('protocol', value as McpEditorDraft['protocol'])}
+                    onChange={(value) => updateDraft('protocol', value as McpProtocolPreference)}
                     label={props.copy.editor.protocolLabel}
                     description={props.state.draft.transport === 'sse'
                       ? props.copy.editor.sseProtocolHelp

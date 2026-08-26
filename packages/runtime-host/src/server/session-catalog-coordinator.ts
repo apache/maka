@@ -228,6 +228,11 @@ export class HostSessionCatalogCoordinator {
     return this.#create(input);
   }
 
+  /** WorkHub Action Gate path; callers cannot bypass the typed operation outcome. */
+  createForWorkHub(input: SessionCreateInput): Promise<OperationOutcome<'session.create'>> {
+    return this.#create(input);
+  }
+
   async #query(
     input: SessionCatalogQueryInput,
   ): Promise<OperationOutcome<'session.catalog.query'>> {

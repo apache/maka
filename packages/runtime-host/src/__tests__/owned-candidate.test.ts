@@ -31,7 +31,11 @@ import {
   connectOwnedRuntimeHostWithDependencies,
 } from '../client/connect-or-spawn.js';
 import { runHostedExecution } from '../client/hosted-execution.js';
-import { launchOwnedRuntimeHostCandidate, type OwnedCandidateAttempt } from '../client/launcher.js';
+import {
+  launchOwnedRuntimeHostCandidate,
+  type CandidateExitDetails,
+  type OwnedCandidateAttempt,
+} from '../client/launcher.js';
 
 test('owned connection keeps a fresh Host alive for its full election window', async () => {
   const rootPath = await mkdtemp(join(tmpdir(), 'maka-owned-first-connection-'));
@@ -335,6 +339,37 @@ test('owned candidate settlement requires a clean process exit', async () => {
   });
 });
 
+test('reports unexpected candidate exit through the caller-provided onExit sink', async () => {
+  const rootPath = await mkdtemp(join(tmpdir(), 'maka-owned-on-exit-'));
+  const exited = deferred<CandidateExitDetails>();
+  const launch = launchOwnedRuntimeHostCandidate({
+    rootPath,
+    expectedRootId: '00000000-0000-4000-8000-000000000001',
+    entrypoint: new URL('./fixtures/owned-candidate-exit.js', import.meta.url),
+    env: { MAKA_TEST_EXIT_CODE: '1' },
+    onExit: (details) => exited.resolve(details),
+  });
+
+  const candidate = await launch.spawned;
+  assert.equal(await candidate.settle(2_000), false);
+  assert.deepEqual(await exited.promise, { pid: candidate.pid, code: 1, signal: null });
+});
+
+test('reports clean candidate exit through the caller-provided onExit sink', async () => {
+  const rootPath = await mkdtemp(join(tmpdir(), 'maka-owned-on-exit-clean-'));
+  const exited = deferred<CandidateExitDetails>();
+  const launch = launchOwnedRuntimeHostCandidate({
+    rootPath,
+    expectedRootId: '00000000-0000-4000-8000-000000000001',
+    entrypoint: new URL('./fixtures/owned-candidate-exit.js', import.meta.url),
+    onExit: (details) => exited.resolve(details),
+  });
+
+  const candidate = await launch.spawned;
+  assert.equal(await candidate.settle(2_000), true);
+  assert.deepEqual(await exited.promise, { pid: candidate.pid, code: 0, signal: null });
+});
+
 test('owned candidate can be released to the enclosing environment without termination', async () => {
   const rootPath = await mkdtemp(join(tmpdir(), 'maka-owned-candidate-'));
   const launch = launchOwnedRuntimeHostCandidate({
@@ -417,4 +452,15 @@ async function waitForDefined<T>(
       setTimeout(resolve, 20);
     });
   }
+}
+
+function deferred<T>(): {
+  readonly promise: Promise<T>;
+  resolve(value: T): void;
+} {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((settle) => {
+    resolve = settle;
+  });
+  return { promise, resolve };
 }

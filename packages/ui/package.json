@@ -23,7 +23,7 @@
     "test:dist": "node --test \"dist/**/*.test.js\""
   },
   "dependencies": {
-    "@astryxdesign/core": "0.4.5",
+    "@astryxdesign/core": "0.5.0",
     "@maka/core": "0.1.0",
     "clsx": "^2.1.1",
     "lucide-react": "^1.33.0",

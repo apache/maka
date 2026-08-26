@@ -102,7 +102,7 @@ interface RuntimeHostUpdateCliDeps {
   readonly withLifecycleLock: typeof withRuntimeHostManagedServiceLifecycleLock;
   readonly withDeploymentLock: typeof withRuntimeHostManagedServiceDeploymentLock;
   readonly withLegacyOperatorLeases: typeof withRuntimeHostManagedServiceLegacyOperatorLeases;
-  readonly createBackend: (serviceId: string) => RuntimeHostServiceBackend;
+  readonly createBackend: (serviceId: string, clientDataRoot: string) => RuntimeHostServiceBackend;
   readonly verifyReady: typeof verifyRuntimeHostManagedServiceReady;
   readonly runOperator: (
     operatorPath: string,
@@ -193,7 +193,7 @@ export async function runManagedRuntimeHostUpdateCli(
             'The managed Runtime Host update does not match the expected service identity',
           );
         }
-        const backend = deps.createBackend(serviceId);
+        const backend = deps.createBackend(serviceId, options.clientDataRoot);
         const common = {
           clientDataRoot: options.clientDataRoot,
           defaultRootPath: options.defaultRootPath,

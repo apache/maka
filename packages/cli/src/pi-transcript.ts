@@ -45,7 +45,7 @@ import {
 } from '@maka/core/tool-result-status';
 import { type ShellRunUpdate } from '@maka/core/events';
 import { homedir } from 'node:os';
-import type { MakaSessionDriver } from './session-driver.js';
+import type { MakaSessionDriver, MakaSideConversationParentStatus } from './session-driver.js';
 import { BoundedChunkBuffer } from './bounded-chunk-buffer.js';
 import { ansi } from './tui-ansi.js';
 import {
@@ -205,6 +205,10 @@ export interface MakaPiTranscriptMetadata {
    * terminal goals leave no segment, matching the desktop chip.
    */
   goal?: GoalProjection | null;
+  sideConversation?: {
+    view: 'parent' | 'side';
+    parentStatus?: MakaSideConversationParentStatus;
+  };
 }
 
 export function createMakaPiTranscriptState(): MakaPiTranscriptState {
@@ -1328,12 +1332,18 @@ export function permissionModeLabel(mode: string): string {
 
 export function renderMakaPiStatusLine(metadata: MakaPiTranscriptMetadata, width: number): string {
   const safeWidth = Math.max(1, width);
+  if (metadata.sideConversation?.view === 'side') {
+    return fitLine(ansi.dim(sideConversationStatusLineText(metadata.sideConversation)), safeWidth);
+  }
   const sep = ansi.dim(' · ');
   const parts: string[] = [
     ansi.bold(metadata.title),
     ansi.dim(permissionModeLabel(metadata.permissionMode)),
     ansi.dim(metadata.model),
   ];
+  if (metadata.sideConversation?.view === 'parent') {
+    parts.push(ansi.dim(sideConversationStatusLineText(metadata.sideConversation)));
+  }
   // #1064: omit thinking:default — it is noise before the user explicitly
   // changes the level. Only a non-default, explicitly set level shows.
   if (metadata.thinkingLevel) {
@@ -1396,6 +1406,19 @@ export function renderMakaPiStatusLine(metadata: MakaPiTranscriptMetadata, width
   // #1064: shorten cwd to ~-relative path instead of the full path.
   parts.push(ansi.dim(shortenCwd(metadata.cwd)));
   return fitLine(parts.join(sep), safeWidth);
+}
+
+function sideConversationStatusLineText(
+  side: NonNullable<MakaPiTranscriptMetadata['sideConversation']>,
+): string {
+  if (side.view === 'parent') return 'Ctrl+/ for side';
+  const status = side.parentStatus?.replaceAll('_', ' ');
+  return [
+    'Side from main thread',
+    ...(status ? [`main ${status}`] : []),
+    'Ctrl+/ to switch',
+    'Ctrl+C to close',
+  ].join(' · ');
 }
 
 /**

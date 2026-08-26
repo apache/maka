@@ -30,10 +30,19 @@ import {
 } from '../protocol/index.js';
 import {
   connectRemoteRuntimeHost,
+  connectRuntimeHostMessageTransport,
   normalizeRemoteRuntimeHostUrl,
   type ConnectRemoteRuntimeHostResult,
   type RuntimeHostConnection,
 } from './connection.js';
+import { FramedByteStreamTransport } from '../transport/framed-byte-stream-transport.js';
+import {
+  RuntimeHostPeerByteStream,
+  RuntimeHostPeerError,
+  readRuntimeHostPeerAuthenticationResult,
+  startRuntimeHostPeerEndpoint,
+  writeRuntimeHostPeerAuthentication,
+} from '../transport/peer-native.js';
 import { RuntimeHostPermanentReconnectError } from './reconnect-lifecycle.js';
 import { RuntimeHostRemoteCompatibilityError } from './remote-compatibility-error.js';
 import {
@@ -48,6 +57,9 @@ const PROFILE_DOCUMENT_MAX_BYTES = 64 * 1024;
 const PROFILE_COUNT_MAX = 32;
 const PROFILE_NAME_MAX_BYTES = 128;
 const PROFILE_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
+const PEER_ID_MAX_BYTES = 160;
+const PEER_ADDRESS_MAX_BYTES = 2 * 1024;
+const PEER_ROUTE_MAX = 16;
 export const RUNTIME_HOST_ACCESS_CREDENTIAL_MAX_BYTES = 8 * 1024;
 export const RUNTIME_HOST_PLAINTEXT_ACKNOWLEDGEMENT = 'plaintext-bearer-v1' as const;
 
@@ -83,6 +95,12 @@ export type RuntimeHostRemoteTransport =
       readonly sshPort?: number;
       readonly remotePort: number;
       readonly websocketPath: string;
+    }
+  | {
+      readonly kind: 'libp2p-direct';
+      readonly peerId: string;
+      readonly routeHints: readonly string[];
+      readonly coordinationRelays: readonly string[];
     };
 
 export interface RuntimeHostProfileDocument {
@@ -204,71 +222,173 @@ export async function connectRemoteRuntimeHostProfile(
   },
   overrides: {
     connect?: typeof connectRemoteRuntimeHost;
+    connectPeer?: typeof connectPeerRuntimeHost;
     waitForReady?: typeof waitForRuntimeHostReady;
     openSshTunnel?: typeof openRuntimeHostSshTunnel;
   } = {},
 ): Promise<RuntimeHostConnection> {
   input.signal?.throwIfAborted();
   const transport = input.profile.transport;
-  const tunnel =
-    transport.kind === 'ssh'
-      ? await (overrides.openSshTunnel ?? openRuntimeHostSshTunnel)({
-          destination: transport.destination,
-          ...(transport.sshPort === undefined ? {} : { sshPort: transport.sshPort }),
-          remotePort: transport.remotePort,
-          websocketPath: transport.websocketPath,
-          interaction: input.sshInteraction ?? 'batch',
-          ...(input.signal === undefined ? {} : { signal: input.signal }),
-        })
-      : undefined;
-  const connected = await (overrides.connect ?? connectRemoteRuntimeHost)({
-    url: transport.kind === 'ssh' ? tunnel!.url : transport.url,
-    ...(transport.kind === 'plaintext' ? { allowInsecureRemote: true } : {}),
-    ...(tunnel ? { connectionResource: tunnel.resource } : {}),
-    credential: input.credential,
-    expectedRootId: input.profile.rootId,
-    compositionId: INTERACTIVE_RUNTIME_HOST_COMPOSITION_ID,
-    protocol: {
-      min: RUNTIME_HOST_PROTOCOL_VERSION,
-      max: RUNTIME_HOST_PROTOCOL_VERSION,
-    },
-    clientInstanceId: input.clientInstanceId,
-    ...(input.connectTimeoutMs === undefined ? {} : { connectTimeoutMs: input.connectTimeoutMs }),
-    ...(input.handshakeTimeoutMs === undefined
-      ? {}
-      : { handshakeTimeoutMs: input.handshakeTimeoutMs }),
-  });
-  try {
-    input.signal?.throwIfAborted();
-  } catch (error) {
-    if (connected.kind === 'connected') {
-      await connected.connection.close().catch(() => undefined);
+  let connection: RuntimeHostConnection;
+  if (transport.kind === 'libp2p-direct') {
+    connection = await (overrides.connectPeer ?? connectPeerRuntimeHost)({
+      profileId: input.profile.id,
+      transport,
+      credential: input.credential,
+      expectedRootId: input.profile.rootId,
+      clientInstanceId: input.clientInstanceId,
+      ...(input.signal === undefined ? {} : { signal: input.signal }),
+      ...(input.connectTimeoutMs === undefined ? {} : { connectTimeoutMs: input.connectTimeoutMs }),
+      ...(input.handshakeTimeoutMs === undefined
+        ? {}
+        : { handshakeTimeoutMs: input.handshakeTimeoutMs }),
+    });
+  } else {
+    const tunnel =
+      transport.kind === 'ssh'
+        ? await (overrides.openSshTunnel ?? openRuntimeHostSshTunnel)({
+            destination: transport.destination,
+            ...(transport.sshPort === undefined ? {} : { sshPort: transport.sshPort }),
+            remotePort: transport.remotePort,
+            websocketPath: transport.websocketPath,
+            interaction: input.sshInteraction ?? 'batch',
+            ...(input.signal === undefined ? {} : { signal: input.signal }),
+          })
+        : undefined;
+    const connected = await (overrides.connect ?? connectRemoteRuntimeHost)({
+      url: transport.kind === 'ssh' ? tunnel!.url : transport.url,
+      ...(transport.kind === 'plaintext' ? { allowInsecureRemote: true } : {}),
+      ...(tunnel ? { connectionResource: tunnel.resource } : {}),
+      credential: input.credential,
+      expectedRootId: input.profile.rootId,
+      compositionId: INTERACTIVE_RUNTIME_HOST_COMPOSITION_ID,
+      protocol: {
+        min: RUNTIME_HOST_PROTOCOL_VERSION,
+        max: RUNTIME_HOST_PROTOCOL_VERSION,
+      },
+      clientInstanceId: input.clientInstanceId,
+      ...(input.connectTimeoutMs === undefined ? {} : { connectTimeoutMs: input.connectTimeoutMs }),
+      ...(input.handshakeTimeoutMs === undefined
+        ? {}
+        : { handshakeTimeoutMs: input.handshakeTimeoutMs }),
+    });
+    try {
+      input.signal?.throwIfAborted();
+    } catch (error) {
+      if (connected.kind === 'connected') {
+        await connected.connection.close().catch(() => undefined);
+      }
+      throw error;
     }
-    throw error;
-  }
-  if (connected.kind === 'incompatible') {
-    throw new RuntimeHostRemoteCompatibilityError(input.profile.id, connected.handshake);
-  }
-  if (connected.kind !== 'connected') {
-    if (connected.kind === 'draining') {
-      throw new Error(`Runtime Host profile ${input.profile.id} is draining`);
+    if (connected.kind === 'incompatible') {
+      throw new RuntimeHostRemoteCompatibilityError(input.profile.id, connected.handshake);
     }
-    throw remoteRuntimeHostUnavailableError(
-      `Runtime Host profile ${input.profile.id}`,
-      connected.reason,
-    );
+    if (connected.kind !== 'connected') {
+      if (connected.kind === 'draining') {
+        throw new Error(`Runtime Host profile ${input.profile.id} is draining`);
+      }
+      throw remoteRuntimeHostUnavailableError(
+        `Runtime Host profile ${input.profile.id}`,
+        connected.reason,
+      );
+    }
+    connection = connected.connection;
   }
   try {
     input.signal?.throwIfAborted();
     await (overrides.waitForReady ?? waitForRuntimeHostReady)(
-      connected.connection,
+      connection,
       input.readyTimeoutMs ?? 45_000,
       input.signal,
     );
-    return connected.connection;
+    return connection;
   } catch (error) {
-    await connected.connection.close().catch(() => undefined);
+    await connection.close().catch(() => undefined);
     throw error;
+  }
+}
+
+export async function connectPeerRuntimeHost(input: {
+  readonly profileId: string;
+  readonly transport: Extract<RuntimeHostRemoteTransport, { kind: 'libp2p-direct' }>;
+  readonly credential: string;
+  readonly expectedRootId: string;
+  readonly clientInstanceId: string;
+  readonly signal?: AbortSignal;
+  readonly connectTimeoutMs?: number;
+  readonly handshakeTimeoutMs?: number;
+}): Promise<RuntimeHostConnection> {
+  input.signal?.throwIfAborted();
+  const nativePath = process.env.MAKA_RUNTIME_HOST_PEER_NATIVE_PATH;
+  const keyPath = process.env.MAKA_RUNTIME_HOST_PEER_KEY_PATH;
+  if (!nativePath || !keyPath) {
+    throw new RuntimeHostPeerError(
+      'peer_native_unavailable',
+      'Experimental direct peer requires MAKA_RUNTIME_HOST_PEER_NATIVE_PATH and MAKA_RUNTIME_HOST_PEER_KEY_PATH',
+    );
+  }
+  const endpoint = startRuntimeHostPeerEndpoint({ nativePath, keyPath });
+  let resolveResourceClosed!: () => void;
+  let closeTask: Promise<void> | undefined;
+  const resource = {
+    closed: new Promise<void>((resolve) => {
+      resolveResourceClosed = resolve;
+    }),
+    close: () => {
+      closeTask ??= endpoint.close().finally(resolveResourceClosed);
+      return closeTask;
+    },
+  };
+  const abort = () => void resource.close().catch(() => undefined);
+  input.signal?.addEventListener('abort', abort, { once: true });
+  if (input.signal?.aborted) abort();
+  let transferred = false;
+  try {
+    const stream = await endpoint.connect({
+      peerId: input.transport.peerId,
+      routeHints: input.transport.routeHints,
+      coordinationRelays: input.transport.coordinationRelays,
+      directDeadlineMs: Math.min(input.connectTimeoutMs ?? 40_000, 120_000),
+    });
+    input.signal?.throwIfAborted();
+    await writeRuntimeHostPeerAuthentication(stream, input.credential);
+    const authentication = await readRuntimeHostPeerAuthenticationResult(
+      stream,
+      input.handshakeTimeoutMs,
+    );
+    if (!authentication.accepted) {
+      throw new RuntimeHostPermanentReconnectError(
+        `Runtime Host profile ${input.profileId} rejected its access credential`,
+      );
+    }
+    const result = await connectRuntimeHostMessageTransport({
+      transport: new FramedByteStreamTransport(
+        new RuntimeHostPeerByteStream(stream, authentication.remainder),
+      ),
+      expectedRootId: input.expectedRootId,
+      compositionId: INTERACTIVE_RUNTIME_HOST_COMPOSITION_ID,
+      protocol: {
+        min: RUNTIME_HOST_PROTOCOL_VERSION,
+        max: RUNTIME_HOST_PROTOCOL_VERSION,
+      },
+      clientInstanceId: input.clientInstanceId,
+      ...(input.handshakeTimeoutMs === undefined
+        ? {}
+        : { handshakeTimeoutMs: input.handshakeTimeoutMs }),
+      connectionResource: resource,
+    });
+    if (result.kind === 'incompatible') {
+      throw new RuntimeHostRemoteCompatibilityError(input.profileId, result.handshake);
+    }
+    if (result.kind === 'draining') throw new Error('Runtime Host direct peer is draining');
+    if (result.kind === 'unavailable') {
+      throw remoteRuntimeHostUnavailableError('Runtime Host direct peer', result.reason);
+    }
+    transferred = true;
+    return result.connection;
+  } finally {
+    input.signal?.removeEventListener('abort', abort);
+    if (!transferred) await resource.close().catch(() => undefined);
   }
 }
 
@@ -636,6 +756,29 @@ function decodeRuntimeHostRemoteTransport(value: unknown): RuntimeHostRemoteTran
       websocketPath,
     });
   }
+  if (kind === 'libp2p-direct') {
+    const record = requireExactRecord(value, 'Runtime Host direct peer transport', [
+      'kind',
+      'peerId',
+      'routeHints',
+      'coordinationRelays',
+    ]);
+    const peerId = requireBoundedToken(record.peerId, 'Runtime Host peer id', PEER_ID_MAX_BYTES);
+    const routeHints = requirePeerAddresses(record.routeHints, 'Runtime Host peer route hints');
+    const coordinationRelays = requirePeerAddresses(
+      record.coordinationRelays,
+      'Runtime Host coordination relays',
+    );
+    if (routeHints.length === 0 && coordinationRelays.length === 0) {
+      throw new Error('Runtime Host direct peer transport requires at least one route');
+    }
+    return Object.freeze({
+      kind: 'libp2p-direct',
+      peerId,
+      routeHints,
+      coordinationRelays,
+    });
+  }
   throw new Error('Runtime Host transport kind is invalid');
 }
 
@@ -670,7 +813,42 @@ function transportCredentialBinding(transport: RuntimeHostRemoteTransport): stri
       return `${transport.url}\0${transport.acknowledgement}`;
     case 'ssh':
       return `${transport.destination}\0${transport.sshPort ?? ''}\0${transport.remotePort}\0${transport.websocketPath}`;
+    case 'libp2p-direct':
+      return transport.peerId;
   }
+}
+
+function requirePeerAddresses(value: unknown, label: string): readonly string[] {
+  if (!Array.isArray(value) || value.length > PEER_ROUTE_MAX) {
+    throw new Error(`${label} must be an array with at most ${PEER_ROUTE_MAX} entries`);
+  }
+  const addresses = value.map((entry) => {
+    const address = requireString(entry, label);
+    if (
+      !address.startsWith('/') ||
+      Buffer.byteLength(address, 'utf8') > PEER_ADDRESS_MAX_BYTES ||
+      /[\s\u0000-\u001f\u007f]/u.test(address)
+    ) {
+      throw new Error(`${label} contains an invalid multiaddr`);
+    }
+    return address;
+  });
+  if (new Set(addresses).size !== addresses.length) {
+    throw new Error(`${label} contains duplicates`);
+  }
+  return Object.freeze(addresses);
+}
+
+function requireBoundedToken(value: unknown, label: string, maxBytes: number): string {
+  const token = requireString(value, label);
+  if (
+    token.length === 0 ||
+    Buffer.byteLength(token, 'utf8') > maxBytes ||
+    /[\s\u0000-\u001f\u007f]/u.test(token)
+  ) {
+    throw new Error(`${label} is invalid`);
+  }
+  return token;
 }
 
 function sameRemoteRuntimeHostProfile(

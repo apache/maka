@@ -133,7 +133,7 @@ import {
   createProjectRootController,
   type ProjectRootController,
 } from "./project-root-controller.js";
-import { createSessionCopyCleanupAuthority } from "./quote-companion-cleanup.js";
+import { createSessionCopyCleanupAuthority } from "@maka/storage/session-copy-cleanup";
 import {
   projectHostConnections,
   registerRuntimeHostConnectionsIpc,
@@ -1558,6 +1558,7 @@ function wireLifecycle(): void {
 }
 
 async function prepareRuntimeHostDesktopQuit(): Promise<void> {
+  mainWindowController.browserWindow()?.destroy();
   const retirement = await runtimeHostManager?.retireOwnedLocalHost(
     "interrupt_active_work",
   );

@@ -18,10 +18,12 @@
  */
 
 import { randomUUID } from 'node:crypto';
+import { join } from 'node:path';
 import type { CreateSessionInput } from '@maka/core/runtime-inputs';
 import { DEFAULT_SESSION_NAME } from '@maka/core/session-name';
 import {
   decodeStoredMessage as decodePersistedStoredMessage,
+  deriveTurnRecords,
   userFacingText,
   type SessionSummary,
   type StoredMessage,
@@ -33,6 +35,12 @@ import {
   type SessionEvent,
   type ShellRunUpdate,
 } from '@maka/core/events';
+import { isSideConversationSession } from '@maka/core/side-conversation';
+import {
+  createSessionCopyCleanupAuthority,
+  type SessionCopyCleanupAuthority,
+} from '@maka/storage/session-copy-cleanup';
+import type { ProcessLifetimeOwner } from '@maka/storage/process-lifetime-owner';
 
 import type { OrchestrationMode } from '@maka/core/orchestration';
 import type { PermissionMode } from '@maka/core/permission';
@@ -62,6 +70,7 @@ import {
   WorkspaceTarget,
   type GoalControlAction,
   type GoalProjection,
+  type SessionContinuitySnapshot,
 } from '@maka/runtime-host/protocol';
 import {
   RuntimeHostSessionChannel,
@@ -70,6 +79,9 @@ import {
 import type {
   InspectCwdChanges,
   MakaAttachedSessionTurn,
+  MakaSideConversationCloseResult,
+  MakaSideConversationOpenResult,
+  MakaSideConversationParentStatus,
   MakaPreparePromptOptions,
   MakaPreparedSessionTurn,
   MakaSessionDriver,
@@ -115,11 +127,15 @@ export interface RuntimeHostMakaSessionDriverInput {
   now?: () => number;
   inspectCwdChanges?: InspectCwdChanges;
   executionLocation?: { readonly kind: 'client_path' } | { readonly kind: 'host' };
+  /** Client-local durable lease parent for temporary TUI conversation copies. */
+  sessionCopyCleanupRoot?: string;
+  /** Process-incarnation owner for temporary TUI conversation copies. */
+  sessionCopyCleanupOwner?: ProcessLifetimeOwner;
 }
 
 type RuntimeHostSessionDriverConnection = Pick<
   RuntimeHostConnection,
-  'hostEpoch' | 'openSessionSubscription' | 'request'
+  'rootId' | 'hostEpoch' | 'openSessionSubscription' | 'request'
 >;
 
 export interface RuntimeHostMakaSessionDriver extends MakaSessionDriver {
@@ -141,6 +157,8 @@ export interface RuntimeHostMakaSessionDriver extends MakaSessionDriver {
   ): () => void;
   listShellRunUpdates(sessionId: string): Promise<ShellRunUpdate[]>;
   subscribeShellRunUpdates(listener: (update: ShellRunUpdate) => void): () => void;
+  recoverSideConversations(): Promise<void>;
+  cleanupOwnedSideConversations(): Promise<void>;
 }
 
 export function createRuntimeHostMakaSessionDriver(
@@ -155,6 +173,7 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
   readonly #now: () => number;
   readonly #inspectCwdChanges: InspectCwdChanges;
   readonly #executionLocation: NonNullable<RuntimeHostMakaSessionDriverInput['executionLocation']>;
+  readonly #sessionCopyCleanup: SessionCopyCleanupAuthority | undefined;
   readonly moveSession: MakaSessionDriver['moveSession'];
   #sessionId: string | null = null;
   #workspace: { target?: WorkspaceTarget; hostCwd: string };
@@ -174,6 +193,7 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
   #activeBoundaryDisplayMode: PermissionMode | undefined;
   #orchestrationMode: OrchestrationMode;
   #channel: RuntimeHostSessionChannel | undefined;
+  #hiddenTranscriptThroughTurnId: string | undefined;
   #channelOpening: { sessionId: string; promise: Promise<RuntimeHostSessionChannel> } | undefined;
   readonly #startedTurnReattachTails = new Map<number, Promise<void>>();
   #sessionGeneration = 0;
@@ -202,6 +222,19 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
     this.#now = input.now ?? Date.now;
     this.#inspectCwdChanges = input.inspectCwdChanges ?? inspectGitCwdChanges;
     this.#executionLocation = input.executionLocation ?? { kind: 'client_path' };
+    this.#sessionCopyCleanup = input.sessionCopyCleanupRoot
+      ? createSessionCopyCleanupAuthority({
+          // rootId is the durable Host authority identity. HostEpoch would
+          // strand cleanup across an ordinary Host restart, while one shared
+          // Client root lets a different Host erase this Host's recovery lease.
+          workspaceRoot: join(input.sessionCopyCleanupRoot, this.#connection.rootId),
+          removeSession: (sessionId) => this.#removeSessionCopy(sessionId),
+          resumeSessionCopy: (creation) => this.#resumeSessionCopy(creation),
+          processId: `tui:${process.pid}`,
+          isOwnerProcessActive: isTuiProcessActive,
+          processLifetimeOwner: input.sessionCopyCleanupOwner,
+        })
+      : undefined;
     this.moveSession =
       this.#executionLocation.kind === 'host' ? undefined : (cwd) => this.#moveSession(cwd);
     this.#workspace = {
@@ -219,7 +252,10 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
   }
 
   readMessages(): Promise<StoredMessage[]> {
-    return loadCurrentMessages(this.#connection, this.#requireSession('read messages'));
+    const hiddenThroughTurnId = this.#hiddenTranscriptThroughTurnId;
+    return loadCurrentMessages(this.#connection, this.#requireSession('read messages')).then(
+      (messages) => visibleTranscriptMessages(messages, hiddenThroughTurnId),
+    );
   }
 
   async createSession(input: CreateSessionRequest): Promise<SessionSummary> {
@@ -243,6 +279,7 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
   async listSessions(): Promise<SessionSummary[]> {
     const sessions = (await readRuntimeHostSessions(this.#connection))
       .flatMap(representableSession)
+      .filter((session) => !isSideConversationSession(session.labels))
       .map(projectSessionCatalogSummary);
     if (this.#executionLocation.kind === 'host') return sessions;
     return sessions
@@ -521,12 +558,15 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
     await this.#replaceChannel(opened.channel);
     this.#workspace = session.workspace;
     this.#adoptConfiguration(session);
+    this.#hiddenTranscriptThroughTurnId = isSideConversationSession(session.labels)
+      ? session.branchOfTurnId
+      : undefined;
     this.#activeBoundaryDisplayMode = executionBoundaryDisplayMode(boundary);
     const attachedTurnId = opened.attachedTurnId ?? opened.channel.firstObservedTurnId;
     opened.channel.activate(attachedTurnId);
     return {
       summary,
-      messages: opened.messages,
+      messages: visibleTranscriptMessages(opened.messages, this.#hiddenTranscriptThroughTurnId),
       ...(relocation === undefined ? {} : { relocation }),
       ...(attachedTurnId
         ? {
@@ -555,7 +595,7 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
 
   async listRewindTargets(): Promise<RewindTarget[]> {
     if (!this.#sessionId) return [];
-    const messages = await loadCurrentMessages(this.#connection, this.#sessionId);
+    const messages = await this.readMessages();
     const seenTurnIds = new Set<string>();
     const targets: RewindTarget[] = [];
     for (const message of messages) {
@@ -569,7 +609,7 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
 
   async rewindToTurn(turnId: string): Promise<MakaSessionRewindResult> {
     const sourceSessionId = this.#requireSession('rewind');
-    const messages = await loadCurrentMessages(this.#connection, sourceSessionId);
+    const messages = await this.readMessages();
     const promptMessage = messages.find(
       (message): message is Extract<StoredMessage, { type: 'user' }> =>
         message.type === 'user' && message.turnId === turnId,
@@ -598,10 +638,147 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
     throw new Error(`Session kept changing while rewinding: ${sourceSessionId}`);
   }
 
+  async recoverSideConversations(): Promise<void> {
+    await this.#requireSessionCopyCleanup().recover();
+  }
+
+  async openSideConversation(): Promise<MakaSideConversationOpenResult> {
+    const parentSessionId = this.#requireSession('open a side conversation');
+    const messages = await loadCurrentMessages(this.#connection, parentSessionId);
+    const sourceTurnId = deriveTurnRecords(messages)
+      .reverse()
+      .find((turn) => turn.status === 'completed')?.turnId;
+    if (!sourceTurnId) {
+      throw new Error('A side conversation requires at least one completed Turn.');
+    }
+    const sideSessionId = this.#newId();
+    const cleanup = this.#requireSessionCopyCleanup();
+    await cleanup.ownCreation(
+      {
+        sessionId: sideSessionId,
+        kind: 'branch',
+        sourceSessionId: parentSessionId,
+        sourceTurnId,
+        intent: 'side_conversation',
+        ownerId: 'tui-side',
+      },
+      () =>
+        this.#resumeSessionCopy({
+          sessionId: sideSessionId,
+          kind: 'branch',
+          sourceSessionId: parentSessionId,
+          sourceTurnId,
+          intent: 'side_conversation',
+        }),
+    );
+    try {
+      return {
+        ...(await this.switchSession(sideSessionId)),
+        parentSessionId,
+        sideSessionId,
+      };
+    } catch (error) {
+      await cleanup.schedule(sideSessionId).catch(() => undefined);
+      throw error;
+    }
+  }
+
+  async closeSideConversation(
+    sideSessionId: string,
+    parentSessionId: string,
+  ): Promise<MakaSideConversationCloseResult> {
+    if (this.#sessionId !== sideSessionId) {
+      throw new Error('The active Session is not the side conversation being closed.');
+    }
+    const parent = await this.switchSession(parentSessionId);
+    const cleanup = await this.#cleanupSideConversation(sideSessionId);
+    return { ...parent, cleanup };
+  }
+
+  async observeSideConversationParent(
+    parentSessionId: string,
+    listener: (status: MakaSideConversationParentStatus | undefined) => void,
+  ): Promise<() => Promise<void>> {
+    let closed = false;
+    let observedLiveRunId: string | undefined;
+    const drains = new Set<Promise<void>>();
+    const publish = (snapshot: SessionContinuitySnapshot): void => {
+      if (isLiveSessionTurn(snapshot.rootTurn)) observedLiveRunId = snapshot.rootTurn.runId;
+      if (!closed) listener(sideConversationParentStatus(snapshot, observedLiveRunId));
+    };
+    const drain = (turn: MakaPreparedSessionTurn): void => {
+      const task = (async () => {
+        try {
+          for await (const _event of turn.events) {
+            // The observer consumes the channel queue only to keep its Host
+            // projection live; the active Session remains the transcript owner.
+          }
+        } catch {
+          // onFailed clears the user-visible state once recovery is exhausted.
+        }
+      })().finally(() => drains.delete(task));
+      drains.add(task);
+    };
+    const opened = await RuntimeHostSessionChannel.open({
+      connection: this.#connection,
+      sessionId: parentSessionId,
+      now: this.#now,
+      onTurnStarted: drain,
+      onRuntimeResourceChanged: () => undefined,
+      onInteractionPending: () => undefined,
+      onInteractionResolved: () => undefined,
+      onTranscriptSettlement: () => undefined,
+      onTranscriptReplaced: () => undefined,
+      onGoalChanged: () => undefined,
+      onSnapshotChanged: publish,
+      onFailed: () => {
+        if (!closed) listener(undefined);
+      },
+      onRecovered: () => undefined,
+    });
+    if (opened.attachedTurnId) {
+      drain({
+        sessionId: parentSessionId,
+        turnId: opened.attachedTurnId,
+        events: opened.channel.eventsForTurn(opened.attachedTurnId),
+      });
+      opened.channel.activate(opened.attachedTurnId);
+    } else {
+      opened.channel.activate();
+    }
+    return async () => {
+      if (closed) return;
+      closed = true;
+      await opened.channel.close();
+      await Promise.allSettled(drains);
+    };
+  }
+
+  async discardSideConversation(sideSessionId: string): Promise<'removed' | 'pending'> {
+    await this.#stopSessionTurn(sideSessionId).catch(() => undefined);
+    return this.#cleanupSideConversation(sideSessionId);
+  }
+
+  async #cleanupSideConversation(sideSessionId: string): Promise<'removed' | 'pending'> {
+    const cleanup = this.#requireSessionCopyCleanup();
+    try {
+      await cleanup.cleanup(sideSessionId);
+      return 'removed';
+    } catch {
+      await cleanup.schedule(sideSessionId).catch(() => undefined);
+      return 'pending';
+    }
+  }
+
+  async cleanupOwnedSideConversations(): Promise<void> {
+    await this.#requireSessionCopyCleanup().abandonOwner('tui-side');
+  }
+
   startNewSession(): void {
     this.#sessionGeneration += 1;
     this.#channelGeneration += 1;
     this.#sessionId = null;
+    this.#hiddenTranscriptThroughTurnId = undefined;
     // A fresh Session carries no client claim on its mode: leaving a previous
     // Session's elevation here would both misreport the mode and create the
     // next Session with it (#3020). Full access stays an explicit per-session
@@ -943,6 +1120,75 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
     return this.#sessionId;
   }
 
+  #requireSessionCopyCleanup(): SessionCopyCleanupAuthority {
+    if (!this.#sessionCopyCleanup) {
+      throw new Error('Side conversations are unavailable without durable cleanup storage.');
+    }
+    return this.#sessionCopyCleanup;
+  }
+
+  async #resumeSessionCopy(input: {
+    sessionId: string;
+    kind: 'branch' | 'revision';
+    sourceSessionId: string;
+    sourceTurnId: string;
+    intent?: 'side_conversation';
+  }): Promise<void> {
+    if (input.kind !== 'branch') {
+      throw new Error(`TUI side cleanup cannot resume a ${input.kind} copy.`);
+    }
+    for (let attempt = 0; attempt < MAX_CATALOG_ATTEMPTS; attempt += 1) {
+      const source = await getRuntimeHostSession(this.#connection, input.sourceSessionId);
+      if (!source) throw new Error(`Session not found: ${input.sourceSessionId}`);
+      const result = await this.#request('session.branch.create', {
+        sourceSessionId: input.sourceSessionId,
+        targetSessionId: input.sessionId,
+        sourceTurnId: input.sourceTurnId,
+        expectedSourceRevision: source.revision,
+        ...(input.intent ? { intent: input.intent } : {}),
+      });
+      if (result.kind === 'committed') return;
+    }
+    throw new Error(`Session kept changing while copying: ${input.sourceSessionId}`);
+  }
+
+  async #removeSessionCopy(sessionId: string): Promise<'removed'> {
+    for (let attempt = 0; attempt < MAX_CATALOG_ATTEMPTS; attempt += 1) {
+      const session = await getRuntimeHostSession(this.#connection, sessionId);
+      if (!session) return 'removed';
+      const result = await this.#request('session.remove', {
+        sessionId,
+        expectedRevision: session.revision,
+      });
+      if (result.kind === 'removed') return 'removed';
+    }
+    throw new Error(`Session kept changing while removing: ${sessionId}`);
+  }
+
+  async #stopSessionTurn(sessionId: string): Promise<void> {
+    const subscription = await this.#connection.openSessionSubscription({
+      sessionId,
+      transcript: { kind: 'none' },
+    });
+    const draining = (async () => {
+      for await (const _frame of subscription) {
+        // Keep the bounded subscription healthy until turn.stop settles.
+      }
+    })();
+    try {
+      const turn = subscription.snapshot.rootTurn;
+      if (!turn || isTerminalTurn(turn)) return;
+      await this.#request('turn.stop', {
+        sessionId,
+        turnId: turn.turnId,
+        runId: turn.runId,
+      });
+    } finally {
+      await subscription.close().catch(() => undefined);
+      await draining.catch(() => undefined);
+    }
+  }
+
   #publishStartedTurn(turn: MakaPreparedSessionTurn, sessionGeneration: number): void {
     if (this.#claimedTurnIds.delete(turn.turnId)) return;
     const sourceChannel = this.#channel;
@@ -1082,6 +1328,7 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
 
   #refreshTranscript(sessionId: string, sessionGeneration: number, turnId: string): void {
     const refreshSequence = ++this.#transcriptRefreshSequence;
+    const hiddenThroughTurnId = this.#hiddenTranscriptThroughTurnId;
     void loadCurrentMessages(this.#connection, sessionId)
       .then((messages) => {
         if (
@@ -1095,7 +1342,7 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
           sessionId,
           sessionGeneration,
           turnId,
-          messages,
+          visibleTranscriptMessages(messages, hiddenThroughTurnId),
           'reconcile',
         );
       })
@@ -1169,6 +1416,61 @@ async function getRuntimeHostSession(
 
 function representableSession(item: SessionCatalogItem): SessionCatalogProjection[] {
   return 'kind' in item ? [] : [item];
+}
+
+function sideConversationParentStatus(
+  snapshot: SessionContinuitySnapshot,
+  observedLiveRunId: string | undefined,
+): MakaSideConversationParentStatus | undefined {
+  if (snapshot.session.isArchived) return 'closed';
+  const pendingKinds = new Set(
+    snapshot.interactions.pending.map((interaction) => interaction.request.kind),
+  );
+  if (pendingKinds.has('permission') || pendingKinds.has('sandbox_boundary')) {
+    return 'needs_approval';
+  }
+  if (pendingKinds.has('question')) return 'needs_input';
+  if (!snapshot.rootTurn || snapshot.rootTurn.runId !== observedLiveRunId) return undefined;
+  if (snapshot.rootTurn.status === 'failed') return 'failed';
+  if (snapshot.rootTurn.status === 'cancelled') return 'interrupted';
+  if (snapshot.rootTurn.status === 'completed') return 'finished';
+  return undefined;
+}
+
+function isLiveSessionTurn(
+  turn: SessionContinuitySnapshot['rootTurn'],
+): turn is Exclude<
+  NonNullable<SessionContinuitySnapshot['rootTurn']>,
+  { status: 'completed' | 'failed' | 'cancelled' }
+> {
+  return turn !== null && !isTerminalTurn(turn);
+}
+
+function isTuiProcessActive(ownerProcessId: string): boolean {
+  const match = /^tui:(\d+)$/.exec(ownerProcessId);
+  if (!match) return false;
+  const processId = Number(match[1]);
+  if (!Number.isSafeInteger(processId) || processId <= 0) return false;
+  try {
+    process.kill(processId, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function visibleTranscriptMessages(
+  messages: StoredMessage[],
+  hiddenThroughTurnId: string | undefined,
+): StoredMessage[] {
+  if (!hiddenThroughTurnId) return messages;
+  let boundary = -1;
+  for (let index = 0; index < messages.length; index += 1) {
+    if ('turnId' in messages[index]! && messages[index]!.turnId === hiddenThroughTurnId) {
+      boundary = index;
+    }
+  }
+  return boundary < 0 ? messages : messages.slice(boundary + 1);
 }
 
 function requireSession(item: SessionCatalogItem): SessionCatalogProjection {
