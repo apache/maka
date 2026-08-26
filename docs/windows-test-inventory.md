@@ -15,11 +15,11 @@ Locations intentionally omit line numbers so unrelated edits do not invalidate t
 
 | Classification | Count |
 |---|---:|
-| windows-backend-gap | 24 |
+| windows-backend-gap | 25 |
 | portable-candidate | 10 |
 | platform-contract | 35 |
 
-Total Windows-excluded declarations: **69**
+Total Windows-excluded declarations: **70**
 
 ## Inventory
 
@@ -52,6 +52,7 @@ Total Windows-excluded declarations: **69**
 | windows-backend-gap | `packages/runtime-host/src/__tests__/runtime-resource-process.test.ts` real Host Runtime Resource process lifecycle | `process.platform === 'win32'` |
 | windows-backend-gap | `packages/runtime-host/src/__tests__/runtime-resource-two-client-uds.test.ts` a Host-owned PTY survives Desktop disconnect and transfers control to TUI | `process.platform === 'win32' ? 'POSIX UDS and shell integration' : false` |
 | windows-backend-gap | `packages/runtime-host/src/__tests__/session-catalog-two-client-uds.test.ts` two Clients share stable Session creation, CAS configuration, and catalog continuity | `process.platform === 'win32' ? 'Windows SQLite shutdown lifecycle' : false` |
+| windows-backend-gap | `packages/runtime-host/src/__tests__/session-catalog-two-client-uds.test.ts` deleted account identity survives same-slug reuse until explicit recovery | `process.platform === 'win32' ? 'Windows SQLite shutdown lifecycle' : false` |
 | windows-backend-gap | `packages/runtime-host/src/__tests__/session-catalog-two-client-uds.test.ts` stable Session creation survives response loss and Host restart | `process.platform === 'win32' ? 'Windows SQLite shutdown lifecycle' : false` |
 | windows-backend-gap | `packages/runtime-host/src/__tests__/session-revision-two-client-uds.test.ts` two Clients share exact retryable Session branch and revision authority | `process.platform === 'win32' ? 'Windows SQLite shutdown lifecycle' : false` |
 | windows-backend-gap | `packages/runtime-host/src/__tests__/usage-pricing-client-correlation.test.ts` fails the connection for a canonical response with mismatched ${mismatch.name} | `process.platform === 'win32'` |

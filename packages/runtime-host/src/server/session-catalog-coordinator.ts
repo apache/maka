@@ -118,6 +118,18 @@ type SessionConfigurationAuthority = Pick<
 >;
 type SessionContinuity = Pick<SessionContinuityCoordinator, 'refreshCanonical'>;
 
+interface ResolvedSessionConfiguration {
+  readonly backend: 'ai-sdk';
+  readonly llmConnectionId?: string;
+  readonly llmConnectionSlug: string;
+  readonly model: string;
+  readonly thinkingLevel: SessionHeader['thinkingLevel'];
+  readonly connectionLocked: boolean;
+  readonly permissionMode: SessionHeader['permissionMode'];
+  readonly collaborationMode: NonNullable<SessionHeader['collaborationMode']>;
+  readonly orchestrationMode: NonNullable<SessionHeader['orchestrationMode']>;
+}
+
 export type SessionOperationFailureCode =
   | 'operation_unavailable'
   | 'invalid_request'
@@ -525,16 +537,11 @@ export class HostSessionCatalogCoordinator {
           );
         }
 
-        const model = await this.#resolveModel(
-          input.configuration.modelTarget,
-          input.configuration.thinkingLevel ?? undefined,
-          current.header,
-        );
-        const clearsConnectionBlock = current.header.blockedReason === 'NO_REAL_CONNECTION';
-        if (
-          !clearsConnectionBlock &&
-          sessionConfigurationMatches(current.header, model, input.configuration)
-        ) {
+        const configuration = await this.#mergeConfigurationPatch(current.header, input.patch);
+        const clearsConnectionBlock =
+          input.patch.modelTarget !== undefined &&
+          current.header.blockedReason === 'NO_REAL_CONNECTION';
+        if (!clearsConnectionBlock && sessionConfigurationMatches(current.header, configuration)) {
           return configurationSuccess({
             kind: 'committed',
             session: projectSessionCatalogRecord(
@@ -545,17 +552,8 @@ export class HostSessionCatalogCoordinator {
         commitAttempted = true;
         await this.#manager.transitionSessionConfiguration(input.sessionId, {
           expectedRevision: input.expectedRevision,
-          configuration: {
-            backend: 'ai-sdk',
-            llmConnectionId: model.connectionId,
-            llmConnectionSlug: model.connectionSlug,
-            model: model.model,
-            thinkingLevel: input.configuration.thinkingLevel ?? undefined,
-            connectionLocked: true,
-            permissionMode: input.configuration.permissionMode,
-            collaborationMode: input.configuration.collaborationMode,
-            orchestrationMode: input.configuration.orchestrationMode,
-          },
+          clearConnectionBlock: input.patch.modelTarget !== undefined,
+          configuration,
         });
         return configurationSuccess(await this.#committedUpdate(input.sessionId, lease));
       } catch (error) {
@@ -754,51 +752,13 @@ export class HostSessionCatalogCoordinator {
   async #resolveModel(
     target: SessionModelTarget,
     thinkingLevel: SessionCreateInput['thinkingLevel'],
-    existing?: Pick<SessionHeader, 'llmConnectionId' | 'llmConnectionSlug' | 'model'>,
   ): Promise<ResolvedSessionModel> {
-    if (existing?.llmConnectionId === undefined && existing !== undefined) {
-      throw new SessionOperationFailure(
-        'operation_conflict',
-        'Legacy Session configuration requires an explicit account selection',
-      );
-    }
-    if (
-      existing !== undefined &&
-      target.kind === 'explicit' &&
-      target.connectionSlug !== existing.llmConnectionSlug
-    ) {
-      throw new SessionOperationFailure(
-        'operation_conflict',
-        'Session account changes require an exact Connection identity',
-      );
-    }
-    const selected =
-      existing === undefined || target.kind === 'default'
-        ? await this.#selectModelTarget(target)
-        : {
-            connectionId: existing.llmConnectionId!,
-            connectionSlug: existing.llmConnectionSlug,
-            modelId: target.model,
-          };
-    if (
-      existing !== undefined &&
-      (selected.connectionId !== existing.llmConnectionId ||
-        selected.connectionSlug !== existing.llmConnectionSlug)
-    ) {
-      throw new SessionOperationFailure(
-        'operation_conflict',
-        'Session account changes require an exact Connection identity',
-      );
-    }
-    const readiness = await this.#runtimePolicy.operations.resolveExecutionConnection(
-      selected.connectionId === undefined
-        ? { kind: 'catalog_slug', connectionSlug: selected.connectionSlug }
-        : {
-            kind: 'bound',
-            connectionId: selected.connectionId,
-            connectionSlug: selected.connectionSlug,
-          },
-    );
+    const selected = await this.#selectModelTarget(target);
+    const readiness = await this.#runtimePolicy.operations.resolveExecutionConnection({
+      kind: 'bound',
+      connectionId: selected.connectionId,
+      connectionSlug: selected.connectionSlug,
+    });
     if (
       selected.connectionId !== undefined &&
       (readiness.kind === 'not_found' || readiness.kind === 'identity_mismatch')
@@ -887,11 +847,12 @@ export class HostSessionCatalogCoordinator {
 
   async #selectModelTarget(target: SessionModelTarget): Promise<{
     readonly connectionSlug: string;
-    readonly connectionId?: string;
+    readonly connectionId: string;
     readonly modelId: string;
   }> {
     if (target.kind === 'explicit') {
       return {
+        connectionId: target.connectionId,
         connectionSlug: target.connectionSlug,
         modelId: target.model,
       };
@@ -924,6 +885,62 @@ export class HostSessionCatalogCoordinator {
     };
   }
 
+  async #mergeConfigurationPatch(
+    current: SessionHeader,
+    patch: SessionConfigurationUpdateInput['patch'],
+  ): Promise<ResolvedSessionConfiguration> {
+    if (current.llmConnectionId === undefined && patch.modelTarget === undefined) {
+      throw new SessionOperationFailure(
+        'operation_conflict',
+        'Legacy Session configuration requires an explicit account selection',
+      );
+    }
+    const thinkingLevel =
+      patch.thinkingLevel === undefined
+        ? current.thinkingLevel
+        : (patch.thinkingLevel ?? undefined);
+    let model: {
+      readonly connectionId?: string;
+      readonly connectionSlug: string;
+      readonly model: string;
+    } = {
+      ...(current.llmConnectionId === undefined ? {} : { connectionId: current.llmConnectionId }),
+      connectionSlug: current.llmConnectionSlug,
+      model: current.model,
+    };
+    if (patch.modelTarget !== undefined) {
+      model = await this.#resolveModel(patch.modelTarget, thinkingLevel);
+    } else if (patch.thinkingLevel !== undefined) {
+      const connectionId = current.llmConnectionId;
+      if (connectionId === undefined) {
+        throw new SessionOperationFailure(
+          'operation_conflict',
+          'Legacy Session configuration requires an explicit account selection',
+        );
+      }
+      model = await this.#resolveModel(
+        {
+          kind: 'explicit',
+          connectionId,
+          connectionSlug: current.llmConnectionSlug,
+          model: current.model,
+        },
+        thinkingLevel,
+      );
+    }
+    return {
+      backend: 'ai-sdk',
+      ...(model.connectionId === undefined ? {} : { llmConnectionId: model.connectionId }),
+      llmConnectionSlug: model.connectionSlug,
+      model: model.model,
+      thinkingLevel,
+      connectionLocked: patch.modelTarget === undefined ? current.connectionLocked : true,
+      permissionMode: patch.permissionMode ?? current.permissionMode,
+      collaborationMode: patch.collaborationMode ?? current.collaborationMode ?? 'agent',
+      orchestrationMode: patch.orchestrationMode ?? current.orchestrationMode ?? 'default',
+    };
+  }
+
   async #readRuntimePolicy(): Promise<
     Awaited<ReturnType<SessionRuntimePolicyStores['runtimePolicy']['getSnapshot']>>
   > {
@@ -937,16 +954,15 @@ export class HostSessionCatalogCoordinator {
 
 function sessionConfigurationMatches(
   header: SessionHeader,
-  model: ResolvedSessionModel,
-  configuration: SessionConfigurationUpdateInput['configuration'],
+  configuration: ResolvedSessionConfiguration,
 ): boolean {
   return (
     header.backend === 'ai-sdk' &&
-    header.llmConnectionId === model.connectionId &&
-    header.llmConnectionSlug === model.connectionSlug &&
-    header.model === model.model &&
-    header.thinkingLevel === (configuration.thinkingLevel ?? undefined) &&
-    header.connectionLocked &&
+    header.llmConnectionId === configuration.llmConnectionId &&
+    header.llmConnectionSlug === configuration.llmConnectionSlug &&
+    header.model === configuration.model &&
+    header.thinkingLevel === configuration.thinkingLevel &&
+    header.connectionLocked === configuration.connectionLocked &&
     header.permissionMode === configuration.permissionMode &&
     (header.collaborationMode ?? 'agent') === configuration.collaborationMode &&
     (header.orchestrationMode ?? 'default') === configuration.orchestrationMode
@@ -997,7 +1013,12 @@ function createRequestFingerprint(
     prepared.labels,
     input.modelTarget.kind === 'default'
       ? ['default']
-      : ['explicit', input.modelTarget.connectionSlug, input.modelTarget.model],
+      : [
+          'explicit',
+          input.modelTarget.connectionId,
+          input.modelTarget.connectionSlug,
+          input.modelTarget.model,
+        ],
     input.thinkingLevel ?? null,
     input.toolProfile ?? null,
     prepared.permissionMode ?? ['runtime_default'],
@@ -1070,6 +1091,7 @@ export function projectSessionCatalogRecord(
     ...(header.revisionIndex === undefined ? {} : { revisionIndex: header.revisionIndex }),
     ...(header.revisionState === undefined ? {} : { revisionState: header.revisionState }),
     backend: header.backend,
+    llmConnectionId: header.llmConnectionId ?? null,
     llmConnectionSlug: header.llmConnectionSlug,
     connectionLocked: header.connectionLocked,
     model: header.model,

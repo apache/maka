@@ -628,6 +628,13 @@ export class HostScheduledTaskCoordinator implements ScheduledTaskToolAuthority 
       if (!isSessionNotFoundError(error) && !isMissingRecord(error)) throw error;
     }
     const execution = task.effect.execution;
+    const catalog = await this.#runtimePolicy.connectionCatalog.getSnapshot();
+    const connection = catalog.connections.find(
+      (candidate) => candidate.slug === execution.llmConnectionSlug,
+    );
+    if (!connection) {
+      throw new Error('ScheduledTask model connection does not exist');
+    }
     await this.#createSession({
       sessionId: identity.sessionId,
       workspace:
@@ -638,6 +645,7 @@ export class HostScheduledTaskCoordinator implements ScheduledTaskToolAuthority 
       labels: ['scheduled-task'],
       modelTarget: {
         kind: 'explicit',
+        connectionId: connection.connectionId,
         connectionSlug: execution.llmConnectionSlug,
         model: execution.model,
       },

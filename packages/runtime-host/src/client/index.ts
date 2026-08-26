@@ -134,7 +134,7 @@ export {
   createRuntimeHostCandidateLaunchBarrier,
   type RuntimeHostCandidateLaunchBarrier,
 } from './candidate-launch-barrier.js';
-export { runHostedExecution } from './hosted-execution.js';
+export { runHostedExecution, type RunHostedExecutionInput } from './hosted-execution.js';
 export { type ClientCapabilityProvider } from './client-capability.js';
 export {
   readRuntimeHostAgentGraphEpochs,

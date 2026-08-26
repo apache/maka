@@ -87,10 +87,16 @@ export async function runRuntimeHostTui(input: RunRuntimeHostTuiInput): Promise<
       locale: input.locale,
       model: context.model,
       models: context.modelChoices
-        .filter((choice) => choice.connectionSlug === context.connectionSlug)
+        .filter(
+          (choice) =>
+            choice.connectionId === context.connectionId &&
+            choice.connectionSlug === context.connectionSlug,
+        )
         .map((choice) => choice.model),
       modelChoices: context.modelChoices,
       connectionSlug: context.connectionSlug,
+      connectionId: context.connectionId,
+      connectionIdentities: context.connectionIdentities,
       providerType: context.providerType,
       modelContextWindow: context.modelContextWindow,
       permissionMode: context.prospectivePermissionMode,

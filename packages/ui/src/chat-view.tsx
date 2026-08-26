@@ -127,7 +127,11 @@ export function ChatView(props: {
   renderProviderMark?(type: ProviderType): ReactNode;
   modelChoices?: ChatModelChoice[];
   modelChangePending?: boolean;
-  onModelChange?(input: { llmConnectionSlug: string; model: string }): void | Promise<void>;
+  onModelChange?(input: {
+    llmConnectionId: string;
+    llmConnectionSlug: string;
+    model: string;
+  }): void | Promise<void>;
   /** Personalized user label shown on user messages. Falls back to "你". */
   userLabel?: string;
   /**

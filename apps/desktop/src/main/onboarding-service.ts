@@ -60,7 +60,7 @@ import { projectSessionSendOutcome, type SessionSendProjection } from '@maka/cor
 
 import { type SessionSummary } from '@maka/core/session';
 import { buildChatModelChoices, type ChatModelChoice } from '@maka/core/chat-model-choice';
-import type { LlmConnection } from '@maka/core/llm-connections';
+import type { IdentifiedLlmConnection, LlmConnection } from '@maka/core/llm-connections';
 
 export interface OnboardingSnapshot {
   state: OnboardingState;
@@ -71,14 +71,14 @@ export interface OnboardingSnapshot {
    */
   sessions: SessionSummary[];
   /** Default Host connection projection used to seed the shell. */
-  connections: LlmConnection[];
+  connections: IdentifiedLlmConnection[];
   defaultSlug: string | null;
   chatModelChoices: ChatModelChoice[];
   sessionSendOutcomes: Record<string, SessionSendProjection>;
 }
 
 export interface OnboardingServiceDeps {
-  listConnections(): Promise<LlmConnection[]>;
+  listConnections(): Promise<IdentifiedLlmConnection[]>;
   getDefaultSlug(): Promise<string | null>;
   listSessions(): Promise<SessionSummary[]>;
   getMilestones(): Promise<OnboardingMilestone[]>;
@@ -196,7 +196,7 @@ function buildSnapshot(
   state: OnboardingState,
   milestones: OnboardingMilestone[],
   sessions: SessionSummary[],
-  connections: LlmConnection[],
+  connections: IdentifiedLlmConnection[],
   defaultSlug: string | null,
   secrets: Readonly<Record<string, boolean>>,
 ): OnboardingSnapshot {
@@ -213,7 +213,6 @@ function buildSnapshot(
         projectSessionSendOutcome({
           session,
           connections,
-          defaultSlug,
           hasSecret: (slug) => secrets[slug] ?? false,
         }),
       ]),

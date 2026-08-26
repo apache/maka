@@ -165,7 +165,7 @@ export interface MakaSessionDriver {
   retractQueued?(): Promise<MakaRetractedMessages>;
   respondToSandboxBoundary(response: SandboxBoundaryResponse): Promise<void>;
   respondToUserQuestion?(response: UserQuestionResponse): Promise<void>;
-  setModel(model: string, connectionSlug?: string): Promise<void>;
+  setModel(model: string, connectionSlug?: string, connectionId?: string): Promise<void>;
   setThinkingLevel(level: ThinkingLevel | undefined): Promise<void>;
   setPermissionMode(mode: PermissionMode): Promise<void>;
   setOrchestrationMode?(mode: OrchestrationMode): Promise<void>;

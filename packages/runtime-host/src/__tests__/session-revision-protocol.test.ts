@@ -210,6 +210,7 @@ function sessionProjection(id: string): SessionCatalogProjection {
     hasUnread: false,
     status: 'active',
     backend: 'fake',
+    llmConnectionId: null,
     llmConnectionSlug: 'fake',
     connectionLocked: false,
     model: 'fake-model',

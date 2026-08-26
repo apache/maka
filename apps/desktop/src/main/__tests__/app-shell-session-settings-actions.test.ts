@@ -44,6 +44,7 @@ function session(id: string): DesktopSessionSummary {
     hasUnread: false,
     status: 'active',
     backend: 'fake',
+    llmConnectionId: 'connection-1',
     llmConnectionSlug: 'e2e',
     connectionLocked: true,
     model: 'claude-sonnet',
@@ -216,6 +217,7 @@ describe('AppShell session settings actions', () => {
     const harness = createHarness();
 
     const modelChange = harness.actions.setSessionModel({
+      llmConnectionId: 'connection-1',
       llmConnectionSlug: 'e2e',
       model: 'claude-opus',
     });
@@ -242,6 +244,7 @@ describe('AppShell session settings actions', () => {
     });
 
     const modelChange = harness.actions.setSessionModel({
+      llmConnectionId: 'connection-1',
       llmConnectionSlug: 'e2e',
       model: 'claude-opus',
     });
@@ -260,6 +263,7 @@ describe('AppShell session settings actions', () => {
     const harness = createHarness();
 
     const modelChange = harness.actions.setSessionModel({
+      llmConnectionId: 'connection-1',
       llmConnectionSlug: 'e2e',
       model: 'claude-opus',
     });
@@ -278,11 +282,13 @@ describe('AppShell session settings actions', () => {
     });
 
     const modelChange = harness.actions.setSessionModel({
+      llmConnectionId: 'connection-1',
       llmConnectionSlug: 'relay',
       model: 'claude-sonnet',
     });
     harness.modelResult.resolve({
       ...session('session-a'),
+      llmConnectionId: 'connection-1',
       llmConnectionSlug: 'relay',
     });
     await modelChange;
@@ -297,6 +303,7 @@ describe('AppShell session settings actions', () => {
     const harness = createHarness();
 
     const modelChange = harness.actions.setSessionModel({
+      llmConnectionId: 'connection-1',
       llmConnectionSlug: 'e2e',
       model: 'claude-opus',
     });
@@ -318,6 +325,7 @@ describe('AppShell session settings actions', () => {
 
     const thinkingChange = harness.actions.setSessionThinkingLevel('high');
     await harness.actions.setSessionModel({
+      llmConnectionId: 'connection-1',
       llmConnectionSlug: 'e2e',
       model: 'claude-opus',
     });
@@ -344,6 +352,7 @@ describe('AppShell session settings actions', () => {
     assert.deepEqual(harness.errorTargets, [{ sessionId: 'session-a' }]);
 
     const modelChange = harness.actions.setSessionModel({
+      llmConnectionId: 'connection-1',
       llmConnectionSlug: 'e2e',
       model: 'claude-opus',
     });

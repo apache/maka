@@ -20,6 +20,7 @@
 import type {
   ConnectionTestResult,
   CreateConnectionInput,
+  IdentifiedLlmConnection,
   LlmConnection,
   SavedRequestHeaders,
   UpdateConnectionInput,
@@ -325,13 +326,16 @@ export function projectHostConnectionTest(result: ConnectionTestRunResult): Conn
   };
 }
 
-export function projectHostConnections(catalog: ConnectionCatalogSnapshot): LlmConnection[] {
+export function projectHostConnections(
+  catalog: ConnectionCatalogSnapshot,
+): IdentifiedLlmConnection[] {
   return catalog.connections.map((connection) => {
     const defaultModel =
       catalog.defaultTarget?.connectionId === connection.connectionId
         ? catalog.defaultTarget.modelId
         : '';
     return {
+      connectionId: connection.connectionId,
       slug: connection.slug,
       name: connection.name,
       providerType: connection.providerType,

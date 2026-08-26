@@ -40,9 +40,9 @@ test('derives stale rows from each Session Host readiness projection', () => {
           connectionLocked: true,
         },
         'remote-rebind': {
-          kind: 'rebind',
-          connectionSlug: 'replacement',
-          model: 'model',
+          kind: 'blocked',
+          reason: 'connection_missing',
+          connectionLocked: false,
         },
         // #3211: a retired backend reaches the rail as a projection reason like
         // any other. The row is no longer identified by reading its `backend`.
@@ -53,7 +53,7 @@ test('derives stale rows from each Session Host readiness projection', () => {
         },
       },
     })],
-    ['remote-missing', 'legacy-fake'],
+    ['remote-missing', 'remote-rebind', 'legacy-fake'],
   );
 });
 

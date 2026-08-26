@@ -168,6 +168,7 @@ export function createRuntimeHostRunContext(
   const driver = contextDeps.createDriver({
     connection,
     cwd: input.cwd,
+    llmConnectionId: target.connection.connectionId,
     llmConnectionSlug: target.connection.slug,
     model: target.model,
     executionLocation:

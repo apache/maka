@@ -437,6 +437,7 @@ describe('SessionManager Plan control boundaries', () => {
     await assert.rejects(
       manager.transitionSessionConfiguration(child.id, {
         expectedRevision: 1,
+        clearConnectionBlock: false,
         configuration: {
           backend: child.backend,
           llmConnectionId: 'test-connection-id',
@@ -586,6 +587,7 @@ describe('SessionManager graph operator provisioning', () => {
     const transition = manager
       .transitionSessionConfiguration(parent.id, {
         expectedRevision: 1,
+        clearConnectionBlock: false,
         configuration: {
           backend: parent.backend,
           llmConnectionId: 'test-connection-id',
@@ -4310,6 +4312,7 @@ describe('SessionManager manual compaction and quiescent session changes', () =>
     await assert.rejects(
       manager.transitionSessionConfiguration(session.id, {
         expectedRevision: 1,
+        clearConnectionBlock: false,
         configuration: baseConfiguration,
       }),
       (error: unknown) => {
@@ -4323,6 +4326,7 @@ describe('SessionManager manual compaction and quiescent session changes', () =>
     kernel.activeRuns = false;
     const committed = await manager.transitionSessionConfiguration(session.id, {
       expectedRevision: 1,
+      clearConnectionBlock: false,
       configuration: baseConfiguration,
     });
     assert.equal(committed.revision, 2);
@@ -4332,6 +4336,7 @@ describe('SessionManager manual compaction and quiescent session changes', () =>
     await assert.rejects(
       manager.transitionSessionConfiguration(session.id, {
         expectedRevision: 2,
+        clearConnectionBlock: false,
         configuration: {
           ...baseConfiguration,
           permissionMode: 'explore',
@@ -4344,6 +4349,48 @@ describe('SessionManager manual compaction and quiescent session changes', () =>
       },
     );
     assert.deepEqual(kernel.disposed, [session.id]);
+  });
+
+  test('configuration transitions clear a connection block only on explicit Host authority', async () => {
+    const store = new VersionedConfigurationMemorySessionStore();
+    const manager = new SessionManager({
+      store,
+      backends: new BackendRegistry(),
+      newId: nextId(),
+      now: nextNow(26_425),
+    });
+    const session = await manager.createSession(makeInput());
+    await store.updateHeader(session.id, {
+      status: 'blocked',
+      blockedReason: 'NO_REAL_CONNECTION',
+    });
+    const configuration = {
+      backend: session.backend,
+      llmConnectionId: 'test-connection-id',
+      llmConnectionSlug: session.llmConnectionSlug,
+      connectionLocked: true,
+      model: session.model,
+      thinkingLevel: session.thinkingLevel,
+      permissionMode: session.permissionMode,
+      collaborationMode: session.collaborationMode ?? 'agent',
+      orchestrationMode: session.orchestrationMode ?? 'default',
+    };
+
+    const preserved = await manager.transitionSessionConfiguration(session.id, {
+      expectedRevision: 1,
+      clearConnectionBlock: false,
+      configuration,
+    });
+    assert.equal(preserved.header.blockedReason, 'NO_REAL_CONNECTION');
+    assert.equal(preserved.header.status, 'blocked');
+
+    const recovered = await manager.transitionSessionConfiguration(session.id, {
+      expectedRevision: 2,
+      clearConnectionBlock: true,
+      configuration,
+    });
+    assert.equal(recovered.header.blockedReason, undefined);
+    assert.equal(recovered.header.status, 'active');
   });
 
   test('workspace relocation uses the same quiescent revision fence as execution configuration', async () => {
@@ -4433,6 +4480,7 @@ describe('SessionManager manual compaction and quiescent session changes', () =>
     const transitionResult = await manager
       .transitionSessionConfiguration(session.id, {
         expectedRevision: 1,
+        clearConnectionBlock: false,
         configuration: {
           backend: session.backend,
           llmConnectionId: 'test-connection-id',
@@ -4485,6 +4533,7 @@ describe('SessionManager manual compaction and quiescent session changes', () =>
     };
     const transition = manager.transitionSessionConfiguration(session.id, {
       expectedRevision: 1,
+      clearConnectionBlock: false,
       configuration: {
         backend: session.backend,
         llmConnectionId: 'test-connection-id',

@@ -55,7 +55,7 @@ import {
 } from './chat-model-switcher.js';
 import { useUiLocale } from './locale-context.js';
 import { getConversationCopy } from './conversation-copy.js';
-import { type ChatModelChoice, modelChoiceValue } from './chat-model-helpers.js';
+import { type ChatModelChoice, exactModelChoiceValue } from './chat-model-helpers.js';
 import { appendPromptContextDraft, isReferenceSizedPaste } from './composer-helpers.js';
 import { stripQuoteHeadingMarkers } from './quote-ref-chip.js';
 import { WorkspacePicker, type WorkspacePickerModel } from './workspace-picker.js';
@@ -314,7 +314,11 @@ export const Composer = forwardRef<
      *  injected by the desktop app to keep the provider SVG library out of @maka/ui. */
     renderProviderMark?(type: ProviderType): ReactNode;
     modelChangePending?: boolean;
-    onModelChange?(input: { llmConnectionSlug: string; model: string }): void | Promise<void>;
+    onModelChange?(input: {
+      llmConnectionId: string;
+      llmConnectionSlug: string;
+      model: string;
+    }): void | Promise<void>;
     /** Per-model thinking-level variants for the active model; empty/undefined hides the switcher. */
     activeThinkingLevels?: readonly import('@maka/core/model-thinking').ThinkingLevel[];
     activeThinkingLevel?: import('@maka/core/model-thinking').ThinkingLevel;
@@ -328,9 +332,13 @@ export const Composer = forwardRef<
      * the otherwise-static model chip becomes a real dropdown so the user can
      * choose the new-chat model inline instead of only via Settings · 模型.
      */
-    newChatModel?: { llmConnectionSlug: string; model: string };
+    newChatModel?: { llmConnectionId: string; llmConnectionSlug: string; model: string };
     newChatProviderType?: ProviderType;
-    onPickNewChatModel?(input: { llmConnectionSlug: string; model: string }): void | Promise<void>;
+    onPickNewChatModel?(input: {
+      llmConnectionId: string;
+      llmConnectionSlug: string;
+      model: string;
+    }): void | Promise<void>;
     /**
      * Empty-state only: no models are configured yet, so the model chip is a
      * non-interactive label. When provided, the chip becomes a button into
@@ -1967,7 +1975,11 @@ export const Composer = forwardRef<
                     choices={props.modelChoices ?? []}
                     currentValue={
                       props.newChatModel
-                        ? modelChoiceValue(props.newChatModel.llmConnectionSlug, props.newChatModel.model)
+                        ? exactModelChoiceValue(
+                            props.newChatModel.llmConnectionId,
+                            props.newChatModel.llmConnectionSlug,
+                            props.newChatModel.model,
+                          )
                         : undefined
                     }
                     currentProviderType={props.newChatProviderType}

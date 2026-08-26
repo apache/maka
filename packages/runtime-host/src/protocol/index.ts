@@ -93,7 +93,10 @@ export const RUNTIME_HOST_REGISTRATION_SCHEMA_VERSION = 1 as const;
 export const RUNTIME_HOST_PROTOCOL_VERSION = 0 as const;
 // Increment when the same protocol version no longer guarantees safe Client-Host
 // interoperability. Mismatches are rejected before domain commands are admitted.
-export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 60 as const;
+export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 61 as const;
+// 61: Session explicit model targets carry immutable Connection identity,
+// configuration updates are Host-merged patches, and projections expose the
+// required nullable binding ID. Older peers cannot preserve these invariants.
 // 60: WorkHub stores a canonical delegation assignment record. Older peers
 // cannot decode this message during transcript recovery.
 // 59: Scheduled Turn provider-retry frames may carry an optional host-clock
