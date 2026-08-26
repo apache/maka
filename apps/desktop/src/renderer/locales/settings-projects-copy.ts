@@ -33,6 +33,7 @@ export type SettingsProjectsCopy = {
     setupDescription: string;
     setupName: string;
     setupSshPort: string;
+    setupDirectoryRootsDescription: string;
     setupConnect: string;
     setupCancel: string;
     setupRetry: string;
@@ -86,7 +87,17 @@ export type SettingsProjectsCopy = {
     lastExitCode: string;
     stateRoot: string;
     directoryRoots: string;
+    directoryRootsDescription: string;
+    directoryRootsUnavailable: string;
     noDirectoryRoots: string;
+    directoryRootLabel: string;
+    directoryRootPath: string;
+    addDirectoryRoot: string;
+    removeDirectoryRoot: string;
+    saveDirectoryRoots: string;
+    directoryRootsActiveTasks: string;
+    directoryRootsActiveTasksDescription: string;
+    configureDirectoriesInterrupt: string;
     refresh: string;
     startService: string;
     restartService: string;
@@ -225,6 +236,7 @@ const SETTINGS_PROJECTS_COPY_BY_LOCALE = {
       setupDescription: '通过 SSH 安装并连接 Runtime Host',
       setupName: '显示名称（可选）',
       setupSshPort: 'SSH 端口（可选）',
+      setupDirectoryRootsDescription: '留空时使用远端 Home。添加目录后，只有这些目录可用于浏览并添加项目。',
       setupConnect: '连接',
       setupCancel: '取消',
       setupRetry: '重试',
@@ -292,8 +304,18 @@ const SETTINGS_PROJECTS_COPY_BY_LOCALE = {
       processId: '进程 ID',
       lastExitCode: '上次退出码',
       stateRoot: 'State Root',
-      directoryRoots: '可用目录',
-      noDirectoryRoots: '未配置额外目录',
+      directoryRoots: '可用于添加项目的目录',
+      directoryRootsDescription: '远程 Client 只能从这些目录浏览并添加新项目。移除目录不会删除已经添加的项目。',
+      directoryRootsUnavailable: '更新或修复这个 Host 后，即可在 Desktop 中管理这些目录。',
+      noDirectoryRoots: '目录浏览和项目添加已禁用',
+      directoryRootLabel: '显示名称',
+      directoryRootPath: '远端绝对路径',
+      addDirectoryRoot: '添加目录',
+      removeDirectoryRoot: '移除',
+      saveDirectoryRoots: '应用目录',
+      directoryRootsActiveTasks: '这个 Host 仍有正在运行的任务',
+      directoryRootsActiveTasksDescription: '应用目录需要安全重启远端服务。只有明确确认后才会中断这些任务。',
+      configureDirectoriesInterrupt: '中断任务并应用',
       refresh: '刷新',
       startService: '启动',
       restartService: '重启',
@@ -432,6 +454,7 @@ const SETTINGS_PROJECTS_COPY_BY_LOCALE = {
       setupDescription: 'Install and connect Runtime Host over SSH',
       setupName: 'Display name (optional)',
       setupSshPort: 'SSH port (optional)',
+      setupDirectoryRootsDescription: 'Leave empty to use the remote Home directory. When directories are added, only those locations can be browsed to add projects.',
       setupConnect: 'Connect',
       setupCancel: 'Cancel',
       setupRetry: 'Retry',
@@ -499,8 +522,18 @@ const SETTINGS_PROJECTS_COPY_BY_LOCALE = {
       processId: 'Process ID',
       lastExitCode: 'Last exit code',
       stateRoot: 'State Root',
-      directoryRoots: 'Available directories',
-      noDirectoryRoots: 'No additional directories configured',
+      directoryRoots: 'Directories for adding projects',
+      directoryRootsDescription: 'Remote Clients can browse and add new projects only from these directories. Removing one does not delete projects already added.',
+      directoryRootsUnavailable: 'Update or repair this Host to manage these directories in Desktop.',
+      noDirectoryRoots: 'Directory browsing and project registration are disabled',
+      directoryRootLabel: 'Display name',
+      directoryRootPath: 'Absolute path on remote computer',
+      addDirectoryRoot: 'Add directory',
+      removeDirectoryRoot: 'Remove',
+      saveDirectoryRoots: 'Apply directories',
+      directoryRootsActiveTasks: 'This Host still has running tasks',
+      directoryRootsActiveTasksDescription: 'Applying these directories requires a safe remote service restart. Tasks are interrupted only after explicit confirmation.',
+      configureDirectoriesInterrupt: 'Interrupt tasks and apply',
       refresh: 'Refresh',
       startService: 'Start',
       restartService: 'Restart',

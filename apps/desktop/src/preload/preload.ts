@@ -1266,6 +1266,20 @@ const makaBridge = {
         allowInterruptActiveTasks,
       );
     },
+    configureProjectDirectories(
+      profileId: string,
+      roots: readonly { readonly label: string; readonly path: string }[],
+      expectedConfigFingerprint: string,
+      allowInterruptActiveTasks: boolean,
+    ): Promise<DesktopRuntimeHostManagementResponse> {
+      return ipcRenderer.invoke(
+        'runtime-host-management:configure-project-directories',
+        profileId,
+        roots,
+        expectedConfigFingerprint,
+        allowInterruptActiveTasks,
+      );
+    },
     subscribeProgress(handler: (progress: DesktopRuntimeHostManagementProgress) => void) {
       const listener = (
         _event: Electron.IpcRendererEvent,

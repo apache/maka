@@ -19,6 +19,7 @@
 
 import { createHash, randomUUID } from 'node:crypto';
 import { createServer } from 'node:net';
+import { realpathSync } from 'node:fs';
 import { mkdir, open, readFile, realpath, rename, rm, stat } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { dirname, isAbsolute, join, resolve } from 'node:path';
@@ -63,7 +64,7 @@ const SERVICE_READY_TIMEOUT_MS = 45_000;
 const SERVICE_READY_POLL_MS = 50;
 
 export interface RuntimeHostManagedServiceConfig {
-  readonly schemaVersion: 1;
+  readonly schemaVersion: 1 | 2;
   readonly managedDeploymentRoot?: string;
   readonly rootPath: string;
   readonly projectDirectoryRoots: readonly {
@@ -131,6 +132,7 @@ export interface RuntimeHostManagedServiceStatus extends RuntimeHostServiceBacke
 
 export type RuntimeHostManagedServiceAction =
   | 'install'
+  | 'configure'
   | 'status'
   | 'start'
   | 'stop'
@@ -161,8 +163,14 @@ export type RuntimeHostManagedServiceResult =
       readonly retirement: RuntimeHostRetirementResult;
     })
   | (RuntimeHostManagedServiceResultBase & {
-      readonly action: Exclude<RuntimeHostManagedServiceAction, 'retire'>;
+      readonly action: 'configure';
+      readonly configuration: { readonly kind: 'unchanged' | 'configured' | 'active_tasks' };
       readonly retirement?: never;
+    })
+  | (RuntimeHostManagedServiceResultBase & {
+      readonly action: Exclude<RuntimeHostManagedServiceAction, 'retire' | 'configure'>;
+      readonly retirement?: never;
+      readonly configuration?: never;
     });
 
 export interface RuntimeHostManagedServiceInput {
@@ -177,6 +185,7 @@ export interface RuntimeHostManagedServiceInput {
   readonly nodePath: string;
   readonly cliPath: string;
   readonly expectedTarget?: RuntimeHostManagedServiceTarget;
+  readonly expectedConfigFingerprint?: string;
   readonly allowInterruptActiveTasks?: boolean;
 }
 
@@ -226,6 +235,8 @@ export class RuntimeHostServiceManagerError extends Error {
       | 'invalid_config'
       | 'invalid_launch'
       | 'target_mismatch'
+      | 'configuration_changed'
+      | 'configuration_incomplete'
       | 'retirement_failed'
       | 'update_requires_retirement'
       | 'update_incomplete'
@@ -473,6 +484,95 @@ async function manageRuntimeHostServiceLocked(
     const logs = truncateUtf8(await backend.logs(), RUNTIME_HOST_SERVICE_LOG_MAX_BYTES);
     return result(input.action, service, undefined, logs);
   }
+  if (input.action === 'configure') {
+    if (!input.expectedTarget || input.projectDirectoryRoots === undefined) {
+      throw new RuntimeHostServiceManagerError(
+        'target_mismatch',
+        'Runtime Host configuration requires the expected service identity and a complete Project root policy',
+      );
+    }
+    if (!input.expectedConfigFingerprint) {
+      throw new RuntimeHostServiceManagerError(
+        'configuration_changed',
+        'Runtime Host configuration requires the observed service configuration fingerprint',
+      );
+    }
+    const service = await readServiceStatus(configPath, backend);
+    const currentConfig = service.config;
+    const root = await resolveExpectedServiceRoot(currentConfig, input);
+    if (!service.installed || !currentConfig || !root) {
+      throw new RuntimeHostServiceManagerError(
+        'not_installed',
+        'Runtime Host service is not installed',
+      );
+    }
+    if (
+      runtimeHostManagedServiceConfigFingerprint(currentConfig) !== input.expectedConfigFingerprint
+    ) {
+      throw new RuntimeHostServiceManagerError(
+        'configuration_changed',
+        'The managed Runtime Host configuration changed; refresh it before applying this edit',
+      );
+    }
+    const desired = await prepareServiceConfig(
+      {
+        ...input,
+        rootPath: currentConfig.rootPath,
+        nodePath: currentConfig.launch.nodePath,
+        cliPath: currentConfig.launch.cliPath,
+      },
+      currentConfig,
+      deps,
+    );
+    if (sameProjectDirectoryRoots(currentConfig, desired)) {
+      return configurationResult('unchanged', service);
+    }
+    await backend.preflightInstall();
+    const retired = await retireManagedRuntimeHostService(
+      { ...service, config: currentConfig },
+      root,
+      backend,
+      deps,
+      input.allowInterruptActiveTasks ?? false,
+    );
+    if (retired.retirement.kind === 'active_tasks') {
+      return configurationResult('active_tasks', service);
+    }
+    try {
+      await writeRuntimeHostServiceFile(configPath, `${JSON.stringify(desired, null, 2)}\n`, 0o600);
+      await backend.replace(desired);
+      await deps.waitForReady(desired, backend);
+    } catch (error) {
+      const rollbackErrors: unknown[] = [];
+      try {
+        await backend.retire();
+      } catch (rollbackError) {
+        rollbackErrors.push(rollbackError);
+      }
+      try {
+        await writeRuntimeHostServiceFile(
+          configPath,
+          `${JSON.stringify(currentConfig, null, 2)}\n`,
+          0o600,
+        );
+        await backend.replace(currentConfig);
+        await deps.waitForReady(currentConfig, backend);
+      } catch (rollbackError) {
+        rollbackErrors.push(rollbackError);
+      }
+      throw new RuntimeHostServiceManagerError(
+        'configuration_incomplete',
+        rollbackErrors.length === 0
+          ? 'The Runtime Host configuration could not be applied; the previous configuration was restored'
+          : 'The Runtime Host configuration could not be applied or fully restored; inspect the service before retrying',
+        {
+          cause:
+            rollbackErrors.length === 0 ? error : new AggregateError([error, ...rollbackErrors]),
+        },
+      );
+    }
+    return configurationResult('configured', await readServiceStatus(configPath, backend));
+  }
   if (input.action === 'retire') {
     if (!input.expectedTarget) {
       throw new RuntimeHostServiceManagerError(
@@ -481,60 +581,22 @@ async function manageRuntimeHostServiceLocked(
       );
     }
     const service = await readServiceStatus(configPath, backend);
-    const root = await resolveExpectedServiceRoot(service.config, input);
-    if (!service.installed || !service.config || !root) {
+    const currentConfig = service.config;
+    const root = await resolveExpectedServiceRoot(currentConfig, input);
+    if (!service.installed || !currentConfig || !root) {
       throw new RuntimeHostServiceManagerError(
         'not_installed',
         'Runtime Host service is not installed',
       );
     }
-    let prepared: { readonly hostEpoch: string; readonly pid: number } | undefined;
-    let rootFence: InteractiveRootOwner | undefined;
-    if (service.pid !== null) {
-      const retirement = await deps.prepareRetirement(
-        service.config,
-        service.pid,
-        input.allowInterruptActiveTasks ?? false,
-      );
-      if (retirement.kind === 'active_tasks') {
-        return { schemaVersion: 1, action: input.action, service, retirement };
-      }
-      prepared = retirement;
-      rootFence = await acquirePreparedRuntimeHostRootRetirementFence(root, prepared.pid, backend);
-    } else if (service.active) {
-      throw new RuntimeHostServiceManagerError(
-        'retirement_failed',
-        'Managed Runtime Host service did not report its process identity',
-      );
-    } else if (service.state === 'starting') {
-      rootFence = await acquireRuntimeHostRootRetirementFence(root);
-    }
-    try {
-      await backend.retire();
-      const stopped = await readServiceStatus(configPath, backend);
-      if (stopped.active || stopped.state !== 'stopped' || stopped.pid !== null) {
-        throw new RuntimeHostServiceManagerError(
-          'retirement_failed',
-          'Runtime Host service did not reach a stable stopped state after retirement',
-        );
-      }
-      if (rootFence) {
-        await releaseRuntimeHostRootRetirementFence(rootFence);
-        rootFence = undefined;
-      } else {
-        await verifyRuntimeHostRootReleased(root);
-      }
-      return {
-        schemaVersion: 1,
-        action: input.action,
-        service: stopped,
-        retirement: prepared
-          ? { kind: 'retired', hostEpoch: prepared.hostEpoch, pid: prepared.pid }
-          : { kind: 'stopped' },
-      };
-    } finally {
-      await rootFence?.close().catch(() => undefined);
-    }
+    const retired = await retireManagedRuntimeHostService(
+      { ...service, config: currentConfig },
+      root,
+      backend,
+      deps,
+      input.allowInterruptActiveTasks ?? false,
+    );
+    return { schemaVersion: 1, action: input.action, ...retired };
   }
   const config = await readServiceConfig(configPath);
   if (!config) {
@@ -774,7 +836,10 @@ async function prepareServiceConfig(
   const serviceId = resolveRuntimeHostManagedServiceId(input.clientDataRoot);
   const requestedRoot = resolve(input.rootPath ?? previous?.rootPath ?? input.defaultRootPath);
   const projectDirectoryRoots = await normalizeProjectDirectoryRoots(
-    input.projectDirectoryRoots ?? previous?.projectDirectoryRoots ?? [],
+    input.projectDirectoryRoots ??
+      (previous
+        ? effectiveRuntimeHostProjectDirectoryRoots(previous, deps.homeDir)
+        : [{ label: '~', path: deps.homeDir }]),
   );
   const [nodePath, cliPath] = await Promise.all([
     realpath(input.nodePath),
@@ -823,7 +888,7 @@ async function prepareServiceConfig(
     );
   }
   const config: RuntimeHostManagedServiceConfig = {
-    schemaVersion: 1,
+    schemaVersion: 2,
     ...(managedDeploymentRoot ? { managedDeploymentRoot } : {}),
     rootPath,
     projectDirectoryRoots,
@@ -920,7 +985,9 @@ function validateServiceConfig(
   value: unknown,
   serviceId: string,
 ): asserts value is RuntimeHostManagedServiceConfig {
-  if (!isRecord(value) || value.schemaVersion !== 1) throw new TypeError('Invalid schemaVersion');
+  if (!isRecord(value) || (value.schemaVersion !== 1 && value.schemaVersion !== 2)) {
+    throw new TypeError('Invalid schemaVersion');
+  }
   if (!isSafeAbsolutePath(value.rootPath)) throw new TypeError('Invalid rootPath');
   if (
     !Array.isArray(value.projectDirectoryRoots) ||
@@ -1198,6 +1265,65 @@ async function acquirePreparedRuntimeHostRootRetirementFence(
   );
 }
 
+async function retireManagedRuntimeHostService(
+  service: RuntimeHostManagedServiceStatus & { readonly config: RuntimeHostManagedServiceConfig },
+  root: StorageRootCapability<'interactive'>,
+  backend: RuntimeHostServiceBackend,
+  deps: RuntimeHostServiceManagerDeps,
+  allowInterruptActiveTasks: boolean,
+): Promise<{
+  readonly service: RuntimeHostManagedServiceStatus;
+  readonly retirement: RuntimeHostRetirementResult;
+}> {
+  let prepared: { readonly hostEpoch: string; readonly pid: number } | undefined;
+  let rootFence: InteractiveRootOwner | undefined;
+  if (service.pid !== null) {
+    const retirement = await deps.prepareRetirement(
+      service.config,
+      service.pid,
+      allowInterruptActiveTasks,
+    );
+    if (retirement.kind === 'active_tasks') return { service, retirement };
+    prepared = retirement;
+    rootFence = await acquirePreparedRuntimeHostRootRetirementFence(root, prepared.pid, backend);
+  } else if (service.active) {
+    throw new RuntimeHostServiceManagerError(
+      'retirement_failed',
+      'Managed Runtime Host service did not report its process identity',
+    );
+  } else if (service.state === 'starting') {
+    rootFence = await acquireRuntimeHostRootRetirementFence(root);
+  }
+  try {
+    await backend.retire();
+    const stopped: RuntimeHostManagedServiceStatus = {
+      ...(await backend.status()),
+      config: service.config,
+      installedVersion: service.installedVersion,
+    };
+    if (stopped.active || stopped.state !== 'stopped' || stopped.pid !== null) {
+      throw new RuntimeHostServiceManagerError(
+        'retirement_failed',
+        'Runtime Host service did not reach a stable stopped state after retirement',
+      );
+    }
+    if (rootFence) {
+      await releaseRuntimeHostRootRetirementFence(rootFence);
+      rootFence = undefined;
+    } else {
+      await verifyRuntimeHostRootReleased(root);
+    }
+    return {
+      service: stopped,
+      retirement: prepared
+        ? { kind: 'retired', hostEpoch: prepared.hostEpoch, pid: prepared.pid }
+        : { kind: 'stopped' },
+    };
+  } finally {
+    await rootFence?.close().catch(() => undefined);
+  }
+}
+
 async function releaseRuntimeHostRootRetirementFence(owner: InteractiveRootOwner): Promise<void> {
   try {
     await owner.close();
@@ -1267,7 +1393,7 @@ async function allocateLoopbackPort(): Promise<number> {
 }
 
 function result(
-  action: Exclude<RuntimeHostManagedServiceAction, 'retire'>,
+  action: Exclude<RuntimeHostManagedServiceAction, 'retire' | 'configure'>,
   service: RuntimeHostManagedServiceStatus,
   retainedStateRoot?: string,
   logs?: string,
@@ -1279,6 +1405,50 @@ function result(
     ...(retainedStateRoot ? { retainedStateRoot } : {}),
     ...(logs !== undefined ? { logs } : {}),
   };
+}
+
+function configurationResult(
+  kind: 'unchanged' | 'configured' | 'active_tasks',
+  service: RuntimeHostManagedServiceStatus,
+): RuntimeHostManagedServiceResult {
+  return { schemaVersion: 1, action: 'configure', service, configuration: { kind } };
+}
+
+export function effectiveRuntimeHostProjectDirectoryRoots(
+  config: RuntimeHostManagedServiceConfig,
+  homeDir = homedir(),
+): readonly { readonly label: string; readonly path: string }[] {
+  if (config.schemaVersion !== 1 || config.projectDirectoryRoots.length > 0) {
+    return config.projectDirectoryRoots;
+  }
+  try {
+    return [{ label: '~', path: realpathSync(homeDir) }];
+  } catch {
+    return [];
+  }
+}
+
+export function runtimeHostManagedServiceConfigFingerprint(
+  config: RuntimeHostManagedServiceConfig,
+): string {
+  const canonical = JSON.stringify({
+    managedDeploymentRoot: config.managedDeploymentRoot ?? null,
+    rootPath: config.rootPath,
+    projectDirectoryRoots: effectiveRuntimeHostProjectDirectoryRoots(config),
+    websocket: config.websocket,
+    launch: config.launch,
+  });
+  return `sha256:${createHash('sha256').update(canonical).digest('hex')}`;
+}
+
+function sameProjectDirectoryRoots(
+  current: RuntimeHostManagedServiceConfig,
+  desired: RuntimeHostManagedServiceConfig,
+): boolean {
+  return (
+    JSON.stringify(effectiveRuntimeHostProjectDirectoryRoots(current)) ===
+    JSON.stringify(desired.projectDirectoryRoots)
+  );
 }
 
 function isSafeAbsolutePath(value: unknown): value is string {

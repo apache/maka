@@ -36,6 +36,7 @@ import type {
 } from '../preload/bridge-contract.js';
 import type { DesktopRuntimeHostProfileService } from './runtime-host-profile-service.js';
 import { sameDesktopRuntimeHostManagedServiceBinding } from './runtime-host-managed-services.js';
+import { requireProjectDirectoryRoots } from './runtime-host-project-directory-policy.js';
 import type {
   DesktopRuntimeHostSshCleanupInput,
   DesktopRuntimeHostSshAccessInput,
@@ -240,12 +241,12 @@ export function createDesktopRuntimeHostManagement(input: {
     };
   };
 
-  const updateTarget = async (profileIdValue: unknown) => {
+  const managedMutationTarget = async (profileIdValue: unknown) => {
     const profileId = requireProfileId(profileIdValue);
     const managed = await resolveManagedService(profileId);
     const transport = managed.profile.transport;
     if (managed.state !== 'active' || transport.kind !== 'ssh') {
-      throw new Error('This Runtime Host profile is not available for managed updates');
+      throw new Error('This Runtime Host profile is not available for managed service changes');
     }
     return {
       profileId,
@@ -266,7 +267,8 @@ export function createDesktopRuntimeHostManagement(input: {
     if (typeof allowInterruptActiveTasksValue !== 'boolean') {
       throw new Error('Runtime Host update interruption authority is invalid');
     }
-    const { profileId, managed, transport, expectedTarget } = await updateTarget(profileIdValue);
+    const { profileId, managed, transport, expectedTarget } =
+      await managedMutationTarget(profileIdValue);
     const previousHostEpoch = input.currentHostEpoch(profileId);
     input.sendProgress({ profileId, phase: 'preparing_cli' });
     const setupPackage = await input.resolveUpdatePackage();
@@ -307,6 +309,65 @@ export function createDesktopRuntimeHostManagement(input: {
       : response;
   };
 
+  const configureProjectDirectories = async (
+    profileIdValue: unknown,
+    rootsValue: unknown,
+    expectedConfigFingerprintValue: unknown,
+    allowInterruptActiveTasksValue: unknown,
+  ): Promise<DesktopRuntimeHostManagementResponse> => {
+    const roots = requireProjectDirectoryRoots(rootsValue);
+    if (
+      typeof expectedConfigFingerprintValue !== 'string' ||
+      !/^sha256:[a-f0-9]{64}$/u.test(expectedConfigFingerprintValue)
+    ) {
+      throw new Error('Runtime Host service configuration fingerprint is invalid');
+    }
+    if (typeof allowInterruptActiveTasksValue !== 'boolean') {
+      throw new Error('Runtime Host configuration interruption authority is invalid');
+    }
+    const { profileId, managed, transport, expectedTarget } =
+      await managedMutationTarget(profileIdValue);
+    const previousHostEpoch = input.currentHostEpoch(profileId);
+    const response = await input.runServiceManagement({
+      destination: transport.destination,
+      ...(transport.sshPort === undefined ? {} : { sshPort: transport.sshPort }),
+      operatorPath: managed.service.operatorPath,
+      action: 'configure',
+      expectedTarget,
+      projectDirectoryRoots: roots,
+      expectedConfigFingerprint: expectedConfigFingerprintValue,
+      ...(allowInterruptActiveTasksValue ? { allowInterruptActiveTasks: true } : {}),
+    });
+    if (response.action !== 'configure') {
+      throw new Error('Remote Runtime Host returned a different management action');
+    }
+    if (response.kind === 'result' && response.configuration.kind === 'configured') {
+      const reconnectError = await reconnectUpdatedTarget(
+        profileId,
+        managed,
+        previousHostEpoch,
+        true,
+      );
+      if (reconnectError) {
+        return {
+          schemaVersion: 1,
+          kind: 'error',
+          action: 'configure',
+          error: reconnectError,
+        };
+      }
+    }
+    return response.kind === 'result'
+      ? {
+          ...response,
+          accessManagementAvailable:
+            response.operatorCapabilities?.includes(
+              RUNTIME_HOST_OPERATOR_ACCESS_MANAGEMENT_CAPABILITY,
+            ) ?? false,
+        }
+      : { ...response, action: 'configure' };
+  };
+
   const reconnectUpdatedTarget = async (
     profileId: string,
     managed: Awaited<ReturnType<typeof resolveManagedService>>,
@@ -339,7 +400,7 @@ export function createDesktopRuntimeHostManagement(input: {
     profileIdValue: unknown,
     policyValue?: unknown,
   ): Promise<DesktopRuntimeHostUpdatePolicySnapshot> => {
-    const { managed, transport, expectedTarget } = await updateTarget(profileIdValue);
+    const { managed, transport, expectedTarget } = await managedMutationTarget(profileIdValue);
     const policy = policyValue === undefined ? undefined : requireUpdatePolicy(policyValue);
     const common = {
       destination: transport.destination,
@@ -369,7 +430,8 @@ export function createDesktopRuntimeHostManagement(input: {
   const reconcileUpdate = async (
     profileIdValue: unknown,
   ): Promise<DesktopRuntimeHostUpdateReconciliationResponse> => {
-    const { profileId, managed, transport, expectedTarget } = await updateTarget(profileIdValue);
+    const { profileId, managed, transport, expectedTarget } =
+      await managedMutationTarget(profileIdValue);
     const previousHostEpoch = input.currentHostEpoch(profileId);
     const response = await input.runUpdateReconciliation(
       {
@@ -525,42 +587,59 @@ export function createDesktopRuntimeHostManagement(input: {
     );
   };
 
-  const channels = [
-    'runtime-host-management:run',
-    'runtime-host-management:update',
-    'runtime-host-management:list-credentials',
-    'runtime-host-management:rotate-credential',
-    'runtime-host-management:revoke-credential',
-    'runtime-host-management:get-update-policy',
-    'runtime-host-management:set-update-policy',
-    'runtime-host-management:reconcile-update',
-  ] as const;
-  input.ipcMain.handle(channels[0], (_event, profileId: unknown, action: unknown) =>
+  const channels = {
+    run: 'runtime-host-management:run',
+    update: 'runtime-host-management:update',
+    configureProjectDirectories: 'runtime-host-management:configure-project-directories',
+    listCredentials: 'runtime-host-management:list-credentials',
+    rotateCredential: 'runtime-host-management:rotate-credential',
+    revokeCredential: 'runtime-host-management:revoke-credential',
+    getUpdatePolicy: 'runtime-host-management:get-update-policy',
+    setUpdatePolicy: 'runtime-host-management:set-update-policy',
+    reconcileUpdate: 'runtime-host-management:reconcile-update',
+  } as const;
+  input.ipcMain.handle(channels.run, (_event, profileId: unknown, action: unknown) =>
     run(profileId, action));
   input.ipcMain.handle(
-    channels[1],
+    channels.update,
     (_event, profileId: unknown, allowInterruptActiveTasks: unknown) =>
       update(profileId, allowInterruptActiveTasks),
   );
-  input.ipcMain.handle(channels[2], (_event, profileId: unknown) =>
+  input.ipcMain.handle(
+    channels.configureProjectDirectories,
+    (
+      _event,
+      profileId: unknown,
+      roots: unknown,
+      expectedConfigFingerprint: unknown,
+      allowInterruptActiveTasks: unknown,
+    ) =>
+      configureProjectDirectories(
+        profileId,
+        roots,
+        expectedConfigFingerprint,
+        allowInterruptActiveTasks,
+      ),
+  );
+  input.ipcMain.handle(channels.listCredentials, (_event, profileId: unknown) =>
     listCredentials(profileId));
-  input.ipcMain.handle(channels[3], (_event, profileId: unknown) =>
+  input.ipcMain.handle(channels.rotateCredential, (_event, profileId: unknown) =>
     rotateCredential(profileId));
   input.ipcMain.handle(
-    channels[4],
+    channels.revokeCredential,
     (_event, profileId: unknown, credentialId: unknown) =>
       revokeCredential(profileId, credentialId),
   );
-  input.ipcMain.handle(channels[5], (_event, profileId: unknown) =>
+  input.ipcMain.handle(channels.getUpdatePolicy, (_event, profileId: unknown) =>
     updatePolicy(profileId));
-  input.ipcMain.handle(channels[6], (_event, profileId: unknown, policy: unknown) =>
+  input.ipcMain.handle(channels.setUpdatePolicy, (_event, profileId: unknown, policy: unknown) =>
     updatePolicy(profileId, policy));
-  input.ipcMain.handle(channels[7], (_event, profileId: unknown) =>
+  input.ipcMain.handle(channels.reconcileUpdate, (_event, profileId: unknown) =>
     reconcileUpdate(profileId));
 
   return {
     close() {
-      for (const channel of channels) input.ipcMain.removeHandler(channel);
+      for (const channel of Object.values(channels)) input.ipcMain.removeHandler(channel);
     },
   };
 }

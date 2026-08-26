@@ -55,7 +55,7 @@ npm --workspace maka-agent exec -- maka runtime-host project add /srv/projects/e
 npm --workspace maka-agent exec -- maka runtime-host project list --root /srv/maka
 ```
 
-The Desktop directory picker publishes the service user's home directory by default. To publish a different allowlist, pass one or more named roots when starting the service:
+The Desktop directory picker publishes the service user's home directory by default. Managed services persist that default as an explicit Project root policy. To publish a different allowlist, pass one or more named roots when starting the service:
 
 ```sh
 npm --workspace maka-agent exec -- maka runtime-host serve \
@@ -66,6 +66,8 @@ npm --workspace maka-agent exec -- maka runtime-host serve \
 ```
 
 When any `--project-root <label>=<absolute-path>` option is present, only those roots are available to remote directory browsing. The option is repeatable up to eight times. Maka resolves every root at startup and keeps browsing and registration contained within the selected root.
+
+Pass `--no-project-roots` to publish an explicit empty policy. This disables directory browsing and registration without removing Projects that are already registered. Desktop-managed SSH Hosts expose the same complete policy in Host settings. Applying it uses the SSH management plane, refuses to interrupt active tasks without confirmation, and restarts the service only when the effective policy changes.
 
 Project paths stay on the Host. Issue a credential for each Client:
 

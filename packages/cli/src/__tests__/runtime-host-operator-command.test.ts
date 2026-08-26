@@ -69,6 +69,11 @@ describe('Runtime Host operator commands', () => {
         prefer: true,
       },
     );
+    assert.deepEqual(parseRuntimeHostCommand(['serve', '--json', '--no-project-roots']), {
+      kind: 'runtime-host-serve',
+      json: true,
+      projectDirectoryRoots: [],
+    });
     assert.deepEqual(
       parseRuntimeHostCommand([
         'serve',

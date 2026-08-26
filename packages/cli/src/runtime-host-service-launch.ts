@@ -35,10 +35,12 @@ export function runtimeHostServiceLaunchArguments(
     'serve',
     '--root',
     config.rootPath,
-    ...config.projectDirectoryRoots.flatMap(({ label, path }) => [
-      '--project-root',
-      `${label}=${path}`,
-    ]),
+    ...(config.schemaVersion === 2 && config.projectDirectoryRoots.length === 0
+      ? ['--no-project-roots']
+      : config.projectDirectoryRoots.flatMap(({ label, path }) => [
+          '--project-root',
+          `${label}=${path}`,
+        ])),
     '--websocket-host',
     config.websocket.host,
     '--websocket-port',

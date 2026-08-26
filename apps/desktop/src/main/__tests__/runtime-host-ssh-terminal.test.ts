@@ -300,6 +300,72 @@ test('reads a framed service result without projecting it into the SSH terminal'
   await harness.terminal.close();
 });
 
+test('applies the complete remote Project root policy through the managed operator', async () => {
+  const harness = createHarness('pending');
+  const fingerprint = `sha256:${'c'.repeat(64)}`;
+  const management = harness.terminal.runServiceManagement({
+    destination: 'operator@example.com',
+    operatorPath: '/home/operator/.local/share/maka/operator',
+    action: 'configure',
+    expectedTarget: {
+      serviceId: 'b'.repeat(64),
+      rootPath: '/srv/maka',
+      rootId: 'a'.repeat(64),
+    },
+    projectDirectoryRoots: [
+      { label: 'Work', path: '/srv/work trees' },
+      { label: 'Data', path: '/mnt/data' },
+    ],
+    expectedConfigFingerprint: fingerprint,
+    allowInterruptActiveTasks: true,
+  });
+  await waitFor(() => harness.pty.hasDataListener());
+  const remoteCommand = harness.launchArgs.at(-1)?.at(-1) ?? '';
+  assert.match(remoteCommand, /operator.*configure/u);
+  assert.match(remoteCommand, /--project-root/u);
+  assert.match(remoteCommand, /Work=\/srv\/work trees/u);
+  assert.match(remoteCommand, /Data=\/mnt\/data/u);
+  assert.match(remoteCommand, /--expected-config-fingerprint/u);
+  assert.match(remoteCommand, /--allow-interrupt-active-tasks/u);
+  assert.match(
+    remoteCommand,
+    /MAKA_RUNTIME_HOST_OPERATOR_PROJECT_DIRECTORY_CONFIGURATION_REQUEST=1/u,
+  );
+  harness.pty.emitData(
+    encodeRuntimeHostServiceManagementFrame({
+      schemaVersion: 1,
+      kind: 'result',
+      action: 'configure',
+      service: {
+        platform: 'linux',
+        arch: 'x64',
+        osRelease: '6.8.0',
+        state: 'running',
+        pid: 43,
+        lastExitCode: 0,
+        installedVersion: '1.2.3',
+        configurationFingerprint: `sha256:${'d'.repeat(64)}`,
+        projectDirectoryRoots: [
+          { label: 'Work', path: '/srv/work trees' },
+          { label: 'Data', path: '/mnt/data' },
+        ],
+      },
+      configuration: { kind: 'configured' },
+    }),
+  );
+  harness.pty.exit(0);
+
+  const result = await management;
+  assert.equal(result.kind, 'result');
+  assert.equal(
+    result.kind === 'result' && result.action === 'configure'
+      ? result.configuration.kind
+      : undefined,
+    'configured',
+  );
+  await harness.terminal.close();
+});
+
 test('keeps a received management result when SSH teardown times out', async () => {
   const harness = createHarness('pending', { managementTimeoutMs: 1 });
   harness.pty.deferKill = true;

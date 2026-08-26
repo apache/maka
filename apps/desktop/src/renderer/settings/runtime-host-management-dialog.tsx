@@ -46,10 +46,17 @@ import type {
 } from '../../preload/bridge-contract.js';
 import { getSettingsProjectsCopy } from '../locales/settings-projects-copy.js';
 import { settingsActionErrorMessage } from './settings-error-copy.js';
+import {
+  canonicalProjectDirectoryRoots,
+  projectDirectoryRootsValid,
+  RuntimeHostProjectDirectoryEditor,
+  type ProjectDirectoryRootDraft,
+} from './runtime-host-project-directory-editor.js';
 
 type RuntimeHostManagementConfirmation =
   | { readonly kind: 'uninstall' }
   | { readonly kind: 'update' }
+  | { readonly kind: 'configureDirectories' }
   | { readonly kind: 'rotate' }
   | {
       readonly kind: 'revoke';
@@ -57,7 +64,6 @@ type RuntimeHostManagementConfirmation =
     };
 
 type UpdatePolicyChoice = 'manual' | 'fixed' | 'latest' | 'next';
-
 export function RuntimeHostManagementDialog(props: {
   readonly profile: RemoteRuntimeHostProfile | undefined;
   readonly onClose: () => void;
@@ -78,6 +84,11 @@ export function RuntimeHostManagementDialog(props: {
   const [updatePolicyError, setUpdatePolicyError] = useState<string>();
   const [lastUpdateOutcome, setLastUpdateOutcome] =
     useState<DesktopRuntimeHostUpdateReconciliationOutcome>();
+  const [directoryRoots, setDirectoryRoots] = useState<readonly ProjectDirectoryRootDraft[]>([]);
+  const [savedDirectoryRoots, setSavedDirectoryRoots] = useState<
+    readonly { readonly label: string; readonly path: string }[]
+  >([]);
+  const nextDirectoryRootId = useRef(1);
   const logsRef = useRef<HTMLPreElement>(null);
 
   const profile = props.profile;
@@ -95,6 +106,8 @@ export function RuntimeHostManagementDialog(props: {
     setFixedVersion('');
     setUpdatePolicyError(undefined);
     setLastUpdateOutcome(undefined);
+    setDirectoryRoots([]);
+    setSavedDirectoryRoots([]);
     setLoading(true);
     void (async () => {
       let shouldLoadUpdatePolicy = false;
@@ -103,6 +116,7 @@ export function RuntimeHostManagementDialog(props: {
         if (disposed) return;
         if (response.kind === 'result') {
           setResult(response);
+          applyDirectoryRoots(response.service.projectDirectoryRoots);
           shouldLoadUpdatePolicy = response.service.state !== 'not_installed';
         }
         else if (response.kind === 'error') setError(response.error.message);
@@ -158,6 +172,7 @@ export function RuntimeHostManagementDialog(props: {
         return;
       }
       setResult(response);
+      applyDirectoryRoots(response.service.projectDirectoryRoots);
       if (response.service.state === 'not_installed') setUpdatePolicy(undefined);
       else if (action !== 'logs') await reloadUpdatePolicy(profile.id);
     } catch (failure) {
@@ -206,6 +221,7 @@ export function RuntimeHostManagementDialog(props: {
         throw new Error('Runtime Host update returned an uninstall result');
       }
       setResult(response);
+      applyDirectoryRoots(response.service.projectDirectoryRoots);
       if (response.action === 'update') setLastUpdateOutcome(response.update);
       setConfirmation(
         response.action === 'update' && response.update.kind === 'active_tasks'
@@ -223,6 +239,51 @@ export function RuntimeHostManagementDialog(props: {
     } finally {
       setLoading(false);
       setUpdatePhase(undefined);
+    }
+  }
+
+  function applyDirectoryRoots(
+    roots: readonly { readonly label: string; readonly path: string }[],
+  ): void {
+    setSavedDirectoryRoots(roots.map((root) => ({ ...root })));
+    setDirectoryRoots(
+      roots.map((root) => ({ id: nextDirectoryRootId.current++, ...root })),
+    );
+  }
+
+  async function configureDirectories(allowInterruptActiveTasks: boolean): Promise<void> {
+    const fingerprint = result?.service.configurationFingerprint;
+    if (!profile || !fingerprint) return;
+    setLoading(true);
+    setError(undefined);
+    try {
+      const response = await window.maka.runtimeHostManagement.configureProjectDirectories(
+        profile.id,
+        canonicalProjectDirectoryRoots(directoryRoots),
+        fingerprint,
+        allowInterruptActiveTasks,
+      );
+      if (response.kind === 'error') {
+        setError(response.error.message);
+        toast.error(copy.managementActionFailed, response.error.message);
+        return;
+      }
+      if (response.kind === 'uninstalled' || response.action !== 'configure') {
+        throw new Error('Runtime Host configuration returned an unrelated result');
+      }
+      setResult(response);
+      if (response.configuration.kind === 'active_tasks') {
+        setConfirmation({ kind: 'configureDirectories' });
+      } else {
+        setConfirmation(undefined);
+        applyDirectoryRoots(response.service.projectDirectoryRoots);
+      }
+    } catch (failure) {
+      const message = settingsActionErrorMessage(failure, locale);
+      setError(message);
+      toast.error(copy.managementActionFailed, message);
+    } finally {
+      setLoading(false);
     }
   }
 
@@ -293,6 +354,7 @@ export function RuntimeHostManagementDialog(props: {
       applyUpdatePolicy(response.updatePolicy);
       const reconciledService = response.service;
       if (reconciledService) {
+        applyDirectoryRoots(reconciledService.projectDirectoryRoots);
         setResult((current) => current ? { ...current, service: reconciledService } : current);
       }
     } catch (failure) {
@@ -356,6 +418,10 @@ export function RuntimeHostManagementDialog(props: {
       updatePolicy.policy.version !== fixedVersion.trim());
   const automaticPolicySelected = updatePolicyChoice !== 'manual';
   const automaticUpdatesAvailable = updatePolicy?.schedulingState === 'ready';
+  const normalizedDirectoryRoots = canonicalProjectDirectoryRoots(directoryRoots);
+  const directoryRootsAreValid = projectDirectoryRootsValid(directoryRoots);
+  const directoryRootsDirty =
+    JSON.stringify(normalizedDirectoryRoots) !== JSON.stringify(savedDirectoryRoots);
   const updateOutcome = lastUpdateOutcome;
   return (
     <Dialog
@@ -387,6 +453,13 @@ export function RuntimeHostManagementDialog(props: {
                 </div>
               ) : null}
               {error ? <Banner status="error" title={error} /> : null}
+              {confirmation?.kind === 'configureDirectories' ? (
+                <Banner
+                  status="warning"
+                  title={copy.directoryRootsActiveTasks}
+                  description={copy.directoryRootsActiveTasksDescription}
+                />
+              ) : null}
               {confirmation?.kind === 'uninstall' ? (
                 <Banner
                   status="warning"
@@ -577,17 +650,37 @@ export function RuntimeHostManagementDialog(props: {
                   ) : null}
                   <div className="settingsRuntimeHostManagementDirectoryRoots">
                     <Text type="body" weight="semibold">{copy.directoryRoots}</Text>
-                    {service.projectDirectoryRoots.length > 0 ? (
-                      <ul className="settingsRuntimeHostManagementRoots">
-                        {service.projectDirectoryRoots.map((root) => (
-                          <li key={`${root.label}:${root.path}`}>
-                            <span>{root.label}</span>
-                            <code>{root.path}</code>
-                          </li>
-                        ))}
-                      </ul>
+                    <Text type="supporting" color="secondary">
+                      {copy.directoryRootsDescription}
+                    </Text>
+                    {service.configurationFingerprint ? (
+                      <>
+                        {directoryRoots.length === 0 ? (
+                          <Text type="supporting" color="secondary">{copy.noDirectoryRoots}</Text>
+                        ) : null}
+                        <RuntimeHostProjectDirectoryEditor
+                          roots={directoryRoots}
+                          isDisabled={loading}
+                          nextId={() => nextDirectoryRootId.current++}
+                          copy={copy}
+                          onChange={setDirectoryRoots}
+                        />
+                        <div className="settingsRuntimeHostManagementDirectoryRootActions">
+                          <Button
+                            variant="primary"
+                            size="sm"
+                            label={copy.saveDirectoryRoots}
+                            isDisabled={
+                              loading || !directoryRootsDirty || !directoryRootsAreValid
+                            }
+                            onClick={() => void configureDirectories(false)}
+                          />
+                        </div>
+                      </>
                     ) : (
-                      <Text type="supporting" color="secondary">{copy.noDirectoryRoots}</Text>
+                      <Text type="supporting" color="secondary">
+                        {copy.directoryRootsUnavailable}
+                      </Text>
                     )}
                   </div>
                   {result.action === 'logs' ? (
@@ -713,6 +806,21 @@ export function RuntimeHostManagementDialog(props: {
                     label={copy.updateInterrupt}
                     isDisabled={loading}
                     onClick={() => void update(true)}
+                  />
+                </>
+              ) : confirmation?.kind === 'configureDirectories' ? (
+                <>
+                  <Button
+                    variant="secondary"
+                    label={copy.cancel}
+                    isDisabled={loading}
+                    onClick={() => setConfirmation(undefined)}
+                  />
+                  <Button
+                    variant="destructive"
+                    label={copy.configureDirectoriesInterrupt}
+                    isDisabled={loading}
+                    onClick={() => void configureDirectories(true)}
                   />
                 </>
               ) : confirmation?.kind === 'uninstall' ? (

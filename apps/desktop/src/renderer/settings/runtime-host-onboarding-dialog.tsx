@@ -24,6 +24,12 @@ import { Text } from '@astryxdesign/core/Text';
 import { Banner, Button, FormLayout, Spinner, TextInput, useUiLocale } from '@maka/ui';
 import type { DesktopRuntimeHostOnboardingSnapshot } from '../../preload/bridge-contract.js';
 import { getSettingsProjectsCopy } from '../locales/settings-projects-copy.js';
+import {
+  canonicalProjectDirectoryRoots,
+  projectDirectoryRootsValid,
+  RuntimeHostProjectDirectoryEditor,
+  type ProjectDirectoryRootDraft,
+} from './runtime-host-project-directory-editor.js';
 
 export function RuntimeHostOnboardingDialog(props: {
   readonly isOpen: boolean;
@@ -40,6 +46,10 @@ export function RuntimeHostOnboardingDialog(props: {
   const [name, setName] = useState('');
   const [destination, setDestination] = useState('');
   const [sshPort, setSshPort] = useState('');
+  const [projectDirectoryRoots, setProjectDirectoryRoots] = useState<
+    readonly ProjectDirectoryRootDraft[]
+  >([]);
+  const nextProjectDirectoryRootId = useRef(1);
 
   useEffect(() => {
     if (!props.isOpen) return;
@@ -58,13 +68,19 @@ export function RuntimeHostOnboardingDialog(props: {
   }, [props.isOpen]);
 
   const running = snapshot.kind === 'running';
-  const canStart = destination.trim().length > 0 && validOptionalPort(sshPort);
+  const canStart =
+    destination.trim().length > 0 &&
+    validOptionalPort(sshPort) &&
+    projectDirectoryRootsValid(projectDirectoryRoots);
 
   async function start(): Promise<void> {
     const next = await window.maka.runtimeHostOnboarding.start({
       destination: destination.trim(),
       ...(name.trim() ? { name: name.trim() } : {}),
       ...(sshPort.trim() ? { sshPort: Number(sshPort) } : {}),
+      ...(projectDirectoryRoots.length === 0
+        ? {}
+        : { projectDirectoryRoots: canonicalProjectDirectoryRoots(projectDirectoryRoots) }),
     });
     if (next.revision > revision.current) {
       revision.current = next.revision;
@@ -143,6 +159,19 @@ export function RuntimeHostOnboardingDialog(props: {
                     isDisabled={running}
                     onChange={setSshPort}
                   />
+                  <div className="settingsRuntimeHostManagementDirectoryRoots">
+                    <Text type="body" weight="semibold">{copy.directoryRoots}</Text>
+                    <Text type="supporting" color="secondary">
+                      {copy.setupDirectoryRootsDescription}
+                    </Text>
+                    <RuntimeHostProjectDirectoryEditor
+                      roots={projectDirectoryRoots}
+                      isDisabled={running}
+                      nextId={() => nextProjectDirectoryRootId.current++}
+                      copy={copy}
+                      onChange={setProjectDirectoryRoots}
+                    />
+                  </div>
                 </>
               ) : null}
             </FormLayout>

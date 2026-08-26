@@ -32,6 +32,7 @@ import type {
   DesktopRuntimeHostSetupPackage,
   DesktopRuntimeHostSshSetupInput,
 } from './runtime-host-ssh-terminal.js';
+import { requireProjectDirectoryRoots } from './runtime-host-project-directory-policy.js';
 
 type OnboardingState = DesktopRuntimeHostOnboardingSnapshot extends infer Snapshot
   ? Snapshot extends DesktopRuntimeHostOnboardingSnapshot
@@ -123,6 +124,9 @@ export function createDesktopRuntimeHostOnboarding(input: {
           ...(request.sshPort === undefined ? {} : { sshPort: request.sshPort }),
           setupPackage,
           principalId: `desktop:${input.clientInstanceId}`,
+          ...(request.projectDirectoryRoots
+            ? { projectDirectoryRoots: request.projectDirectoryRoots }
+            : {}),
           signal,
         },
         (progress) => {
@@ -227,5 +231,8 @@ function requireOnboardingInput(value: unknown): DesktopRuntimeHostOnboardingInp
     destination: input.destination,
     ...(input.name?.trim() ? { name: input.name.trim() } : {}),
     ...(input.sshPort === undefined ? {} : { sshPort: input.sshPort }),
+    ...(input.projectDirectoryRoots === undefined
+      ? {}
+      : { projectDirectoryRoots: requireProjectDirectoryRoots(input.projectDirectoryRoots) }),
   };
 }

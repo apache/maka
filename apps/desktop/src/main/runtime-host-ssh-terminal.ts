@@ -40,6 +40,7 @@ import {
   RUNTIME_HOST_ACCESS_MANAGEMENT_FRAME_PREFIX,
   RUNTIME_HOST_OPERATOR_ACCESS_MANAGEMENT_CAPABILITY,
   RUNTIME_HOST_OPERATOR_CAPABILITY_REQUEST_ENV,
+  RUNTIME_HOST_OPERATOR_PROJECT_DIRECTORY_CONFIGURATION_REQUEST_ENV,
   RUNTIME_HOST_OPERATOR_UPDATE_SCHEDULER_CAPABILITY,
   RUNTIME_HOST_SERVICE_MANAGEMENT_FRAME_PREFIX,
   RUNTIME_HOST_SETUP_FRAME_PREFIX,
@@ -86,6 +87,7 @@ export interface DesktopRuntimeHostSshSetupInput {
   readonly sshPort?: number;
   readonly setupPackage: DesktopRuntimeHostSetupPackage;
   readonly principalId: string;
+  readonly projectDirectoryRoots?: readonly { readonly label: string; readonly path: string }[];
   readonly signal?: AbortSignal;
 }
 
@@ -105,6 +107,9 @@ export interface DesktopRuntimeHostSshManagementInput {
   readonly rootPath?: string;
   readonly websocketPort?: number;
   readonly websocketPath?: string;
+  readonly projectDirectoryRoots?: readonly { readonly label: string; readonly path: string }[];
+  readonly expectedConfigFingerprint?: string;
+  readonly allowInterruptActiveTasks?: boolean;
   readonly retainManagedDeployment?: boolean;
   readonly signal?: AbortSignal;
 }
@@ -1037,7 +1042,7 @@ async function settlesWithin(promise: Promise<unknown>, timeoutMs: number): Prom
 
 function runtimeHostSetupRemoteCommand(
   setupPackage: PreparedSetupPackage,
-  input: Pick<DesktopRuntimeHostSshSetupInput, 'principalId'>,
+  input: Pick<DesktopRuntimeHostSshSetupInput, 'principalId' | 'projectDirectoryRoots'>,
 ): string {
   if (!/^[A-Za-z0-9_.:-]{1,128}$/u.test(input.principalId)) {
     throw new Error('Runtime Host setup principal is invalid');
@@ -1050,6 +1055,14 @@ function runtimeHostSetupRemoteCommand(
     '--preset',
     'desktop-client',
     '--defer-pairing-commit',
+    ...(input.projectDirectoryRoots === undefined
+      ? []
+      : input.projectDirectoryRoots.length === 0
+        ? ['--no-project-roots']
+        : input.projectDirectoryRoots.flatMap(({ label, path }) => [
+            '--project-root',
+            `${label}=${path}`,
+          ])),
     '--json',
   ]);
 }
@@ -1066,10 +1079,23 @@ function runtimeHostServiceManagementRemoteCommand(
       ? []
       : ['--websocket-port', String(input.websocketPort)]),
     ...(input.websocketPath ? ['--websocket-path', input.websocketPath] : []),
+    ...(input.projectDirectoryRoots === undefined
+      ? []
+      : input.projectDirectoryRoots.length === 0
+        ? ['--no-project-roots']
+        : input.projectDirectoryRoots.flatMap(({ label, path }) => [
+            '--project-root',
+            `${label}=${path}`,
+          ])),
+    ...(input.expectedConfigFingerprint
+      ? ['--expected-config-fingerprint', input.expectedConfigFingerprint]
+      : []),
+    ...(input.allowInterruptActiveTasks ? ['--allow-interrupt-active-tasks'] : []),
     ...(input.retainManagedDeployment ? ['--retain-managed-deployment'] : []),
     ...managedServiceTargetArgs(input.expectedTarget),
   ].map(quotePosix).join(' ');
   const invocation =
+    `${RUNTIME_HOST_OPERATOR_PROJECT_DIRECTORY_CONFIGURATION_REQUEST_ENV}=1 ` +
     `${RUNTIME_HOST_OPERATOR_CAPABILITY_REQUEST_ENV}=` +
     `${quotePosix(RUNTIME_HOST_OPERATOR_ACCESS_MANAGEMENT_CAPABILITY)} exec ${command}`;
   return `exec "\${SHELL:-/bin/sh}" -lic ${quotePosix(invocation)}`;
@@ -1092,6 +1118,7 @@ function runtimeHostUpdateRemoteCommand(
     {
       [RUNTIME_HOST_OPERATOR_CAPABILITY_REQUEST_ENV]:
         RUNTIME_HOST_OPERATOR_ACCESS_MANAGEMENT_CAPABILITY,
+      [RUNTIME_HOST_OPERATOR_PROJECT_DIRECTORY_CONFIGURATION_REQUEST_ENV]: '1',
     },
   );
 }
@@ -1128,6 +1155,7 @@ function runtimeHostUpdateReconciliationRemoteCommand(
     .map(quotePosix)
     .join(' ');
   const invocation =
+    `${RUNTIME_HOST_OPERATOR_PROJECT_DIRECTORY_CONFIGURATION_REQUEST_ENV}=1 ` +
     `${RUNTIME_HOST_OPERATOR_CAPABILITY_REQUEST_ENV}=` +
     `${quotePosix(RUNTIME_HOST_OPERATOR_UPDATE_SCHEDULER_CAPABILITY)} exec ${command}`;
   return `exec "\${SHELL:-/bin/sh}" -lic ${quotePosix(invocation)}`;

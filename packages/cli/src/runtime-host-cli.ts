@@ -69,7 +69,16 @@ export type RuntimeHostCliCommand =
     }
   | {
       kind: 'runtime-host-service-manage';
-      action: 'install' | 'status' | 'start' | 'stop' | 'restart' | 'retire' | 'logs' | 'uninstall';
+      action:
+        | 'install'
+        | 'configure'
+        | 'status'
+        | 'start'
+        | 'stop'
+        | 'restart'
+        | 'retire'
+        | 'logs'
+        | 'uninstall';
       json: boolean;
       framed?: true;
       clientDataRoot?: string;
@@ -78,6 +87,7 @@ export type RuntimeHostCliCommand =
       websocketPort?: number;
       websocketPath?: string;
       expectedTarget?: RuntimeHostManagedServiceTarget;
+      expectedConfigFingerprint?: string;
       retainManagedDeployment?: true;
       allowInterruptActiveTasks?: true;
     }
@@ -272,6 +282,7 @@ function parseServiceManagementCommand(argv: string[]): RuntimeHostCliCommand {
   }
   if (
     action !== 'install' &&
+    action !== 'configure' &&
     action !== 'status' &&
     action !== 'start' &&
     action !== 'stop' &&
@@ -287,7 +298,7 @@ function parseServiceManagementCommand(argv: string[]): RuntimeHostCliCommand {
     return error(
       action
         ? `Unexpected runtime-host service command: ${action}`
-        : 'runtime-host service requires install, status, start, stop, restart, retire, check-update, update, update-policy, reconcile-update, logs, or uninstall',
+        : 'runtime-host service requires install, configure, status, start, stop, restart, retire, check-update, update, update-policy, reconcile-update, logs, or uninstall',
     );
   }
 
@@ -295,6 +306,7 @@ function parseServiceManagementCommand(argv: string[]): RuntimeHostCliCommand {
   let allowInterruptActiveTasks = false;
   let clientDataRoot: string | undefined;
   let updateTarget: string | undefined;
+  let expectedConfigFingerprint: string | undefined;
   const flagOptions: Readonly<Record<string, () => void | RuntimeHostCliError>> =
     action === 'uninstall'
       ? {
@@ -303,7 +315,7 @@ function parseServiceManagementCommand(argv: string[]): RuntimeHostCliCommand {
             retainManagedDeployment = true;
           },
         }
-      : action === 'retire' || action === 'update'
+      : action === 'retire' || action === 'update' || action === 'configure'
         ? {
             '--allow-interrupt-active-tasks': () => {
               if (allowInterruptActiveTasks) {
@@ -314,7 +326,7 @@ function parseServiceManagementCommand(argv: string[]): RuntimeHostCliCommand {
           }
         : {};
   const options = parseManagedServiceOptions(argv.slice(1), {
-    allowConfiguration: action === 'install',
+    allowConfiguration: action === 'install' || action === 'configure',
     allowFramed: true,
     valueOptions: {
       '--client-data-root': (value) => {
@@ -330,12 +342,36 @@ function parseServiceManagementCommand(argv: string[]): RuntimeHostCliCommand {
             },
           }
         : {}),
+      ...(action === 'configure'
+        ? {
+            '--expected-config-fingerprint': (value: string) => {
+              if (expectedConfigFingerprint !== undefined) {
+                return error('Duplicate --expected-config-fingerprint');
+              }
+              if (!/^sha256:[a-f0-9]{64}$/u.test(value)) {
+                return error(
+                  '--expected-config-fingerprint must be a service configuration fingerprint',
+                );
+              }
+              expectedConfigFingerprint = value;
+            },
+          }
+        : {}),
     },
     flagOptions,
   });
   if ('kind' in options) return options;
-  if ((action === 'retire' || action === 'update') && !options.expectedTarget) {
+  if (
+    (action === 'retire' || action === 'update' || action === 'configure') &&
+    !options.expectedTarget
+  ) {
     return error(`runtime-host service ${action} requires an expected target`);
+  }
+  if (action === 'configure' && !expectedConfigFingerprint) {
+    return error('runtime-host service configure requires --expected-config-fingerprint');
+  }
+  if (action === 'configure' && options.projectDirectoryRoots === undefined) {
+    return error('runtime-host service configure requires --project-root or --no-project-roots');
   }
   if (action === 'update-policy') {
     const policy = updateTarget === undefined ? undefined : parseUpdatePolicy(updateTarget);
@@ -394,6 +430,12 @@ function parseServiceManagementCommand(argv: string[]): RuntimeHostCliCommand {
     ...(clientDataRoot ? { clientDataRoot } : {}),
     ...(retainManagedDeployment ? { retainManagedDeployment: true } : {}),
     ...(allowInterruptActiveTasks ? { allowInterruptActiveTasks: true } : {}),
+    ...(action === 'configure'
+      ? {
+          expectedConfigFingerprint: expectedConfigFingerprint!,
+          projectDirectoryRoots: options.projectDirectoryRoots!,
+        }
+      : {}),
   };
 }
 
@@ -445,6 +487,7 @@ function parseManagedServiceOptions(
   let expectedServiceId: string | undefined;
   let expectedRootPath: string | undefined;
   let expectedRootId: string | undefined;
+  let projectDirectoryPolicySpecified = false;
   const projectDirectoryRoots: { label: string; path: string }[] = [];
   for (let index = 0; index < argv.length; index += 1) {
     const argument = argv[index];
@@ -464,6 +507,14 @@ function parseManagedServiceOptions(
     if (Object.hasOwn(input.flagOptions ?? {}, argument ?? '')) {
       const optionError = input.flagOptions?.[argument ?? '']?.();
       if (optionError) return optionError;
+      continue;
+    }
+    if (argument === '--no-project-roots') {
+      if (input.allowConfiguration === false) return error(`Unexpected argument: ${argument}`);
+      if (projectDirectoryPolicySpecified) {
+        return error('--no-project-roots cannot be combined with --project-root');
+      }
+      projectDirectoryPolicySpecified = true;
       continue;
     }
     const isTargetOption =
@@ -493,6 +544,10 @@ function parseManagedServiceOptions(
       else if (argument === '--expected-root-path') expectedRootPath = parsed;
       else if (argument === '--expected-root-id') expectedRootId = parsed;
       else if (argument === '--project-root') {
+        if (projectDirectoryPolicySpecified && projectDirectoryRoots.length === 0) {
+          return error('--project-root cannot be combined with --no-project-roots');
+        }
+        projectDirectoryPolicySpecified = true;
         const root = parseProjectRoot(parsed);
         if ('kind' in root) return root;
         if (projectDirectoryRoots.length >= PROJECT_DIRECTORY_MAX_ROOTS) {
@@ -549,7 +604,7 @@ function parseManagedServiceOptions(
     json,
     ...(framed ? { framed: true as const } : {}),
     ...(rootPath ? { rootPath } : {}),
-    ...(projectDirectoryRoots.length > 0 ? { projectDirectoryRoots } : {}),
+    ...(projectDirectoryPolicySpecified ? { projectDirectoryRoots } : {}),
     ...(websocketPort === undefined ? {} : { websocketPort }),
     ...(websocketPath === undefined ? {} : { websocketPath }),
     ...(expectedServiceId === undefined
@@ -827,6 +882,7 @@ function parseServeCommand(argv: string[]): RuntimeHostCliCommand {
   const peerListenAddresses: string[] = [];
   const peerCoordinationRelays: string[] = [];
   const projectDirectoryRoots: { label: string; path: string }[] = [];
+  let projectDirectoryPolicySpecified = false;
   for (let index = 0; index < argv.length; index += 1) {
     const argument = argv[index];
     if (argument === '--json') {
@@ -846,6 +902,10 @@ function parseServeCommand(argv: string[]): RuntimeHostCliCommand {
       continue;
     }
     if (argument === '--project-root') {
+      if (projectDirectoryPolicySpecified && projectDirectoryRoots.length === 0) {
+        return error('--project-root cannot be combined with --no-project-roots');
+      }
+      projectDirectoryPolicySpecified = true;
       const parsed = optionValue(argv, index, argument);
       if (typeof parsed !== 'string') return parsed;
       const root = parseProjectRoot(parsed);
@@ -858,6 +918,13 @@ function parseServeCommand(argv: string[]): RuntimeHostCliCommand {
       }
       projectDirectoryRoots.push(root);
       index += 1;
+      continue;
+    }
+    if (argument === '--no-project-roots') {
+      if (projectDirectoryPolicySpecified) {
+        return error('--no-project-roots cannot be combined with --project-root');
+      }
+      projectDirectoryPolicySpecified = true;
       continue;
     }
     if (argument === '--websocket-host') {
@@ -946,7 +1013,7 @@ function parseServeCommand(argv: string[]): RuntimeHostCliCommand {
     kind: 'runtime-host-serve',
     json,
     ...(rootPath ? { rootPath } : {}),
-    ...(projectDirectoryRoots.length > 0 ? { projectDirectoryRoots } : {}),
+    ...(projectDirectoryPolicySpecified ? { projectDirectoryRoots } : {}),
     ...(websocketPort === undefined
       ? {}
       : {

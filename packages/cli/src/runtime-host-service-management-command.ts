@@ -23,6 +23,8 @@ import {
   encodeRuntimeHostServiceManagementFrame,
   RUNTIME_HOST_OPERATOR_ACCESS_MANAGEMENT_CAPABILITY,
   RUNTIME_HOST_OPERATOR_CAPABILITY_REQUEST_ENV,
+  RUNTIME_HOST_OPERATOR_PROJECT_DIRECTORY_CONFIGURATION_CAPABILITY,
+  RUNTIME_HOST_OPERATOR_PROJECT_DIRECTORY_CONFIGURATION_REQUEST_ENV,
   RUNTIME_HOST_OPERATOR_PROCESS_LIFETIME_LOCK_CAPABILITY,
   RUNTIME_HOST_SERVICE_ERROR_CODE_MAX_BYTES,
   RUNTIME_HOST_SERVICE_ERROR_MESSAGE_MAX_BYTES,
@@ -32,8 +34,10 @@ import {
 } from '@maka/runtime-host/operator';
 import {
   cleanupRuntimeHostManagedDeployment,
+  effectiveRuntimeHostProjectDirectoryRoots,
   manageRuntimeHostService,
   resolveRuntimeHostManagedServiceId,
+  runtimeHostManagedServiceConfigFingerprint,
   RuntimeHostServiceManagerError,
   withRuntimeHostManagedServiceDeploymentLock,
   withRuntimeHostManagedServiceLifecycleLock,
@@ -88,7 +92,9 @@ export async function runManagedRuntimeHostServiceCli(
         : options.action === 'retire'
           ? await deps.withLifecycleLock(options.clientDataRoot, manage)
           : await mutate();
-    const blocked = result.action === 'retire' && result.retirement.kind === 'active_tasks';
+    const blocked =
+      (result.action === 'retire' && result.retirement.kind === 'active_tasks') ||
+      (result.action === 'configure' && result.configuration.kind === 'active_tasks');
     if (options.framed) {
       deps.writeOutput(encodeRuntimeHostServiceManagementFrame(successFrame(result)));
     } else if (options.json) {
@@ -160,6 +166,13 @@ function formatHumanResult(result: RuntimeHostManagedServiceResult): string {
       ? `Runtime Host service is installed and running at ${websocketUrl(service)}\n`
       : 'Runtime Host service is installed but is not running. Check its status and journal.\n';
   }
+  if (result.action === 'configure') {
+    return result.configuration.kind === 'active_tasks'
+      ? 'Runtime Host service still owns active work. Retry with explicit interruption authority.\n'
+      : result.configuration.kind === 'unchanged'
+        ? 'Runtime Host Project roots are already configured.\n'
+        : 'Runtime Host Project roots were configured.\n';
+  }
   if (result.action === 'status') {
     if (!service.installed) return 'Runtime Host service is not installed.\n';
     return `Runtime Host service is ${service.state} at ${websocketUrl(service)}\n`;
@@ -183,19 +196,30 @@ function successFrame(result: RuntimeHostManagedServiceResult): RuntimeHostServi
     ...(result.retainedStateRoot ? { retainedStateRoot: result.retainedStateRoot } : {}),
     ...(result.logs !== undefined ? { logs: result.logs } : {}),
   } as const;
-  return result.action === 'retire'
-    ? { ...common, action: result.action, retirement: { ...result.retirement } }
-    : { ...common, action: result.action };
+  if (result.action === 'retire') {
+    return { ...common, action: result.action, retirement: { ...result.retirement } };
+  }
+  if (result.action === 'configure') {
+    return { ...common, action: result.action, configuration: { ...result.configuration } };
+  }
+  return { ...common, action: result.action };
 }
 
 function requestedOperatorCapabilities(): {
   readonly operatorCapabilities?: RuntimeHostOperatorCapability[];
 } {
+  const capabilities: RuntimeHostOperatorCapability[] = [];
   const requested = process.env[RUNTIME_HOST_OPERATOR_CAPABILITY_REQUEST_ENV];
-  return requested === RUNTIME_HOST_OPERATOR_ACCESS_MANAGEMENT_CAPABILITY ||
+  if (
+    requested === RUNTIME_HOST_OPERATOR_ACCESS_MANAGEMENT_CAPABILITY ||
     requested === RUNTIME_HOST_OPERATOR_PROCESS_LIFETIME_LOCK_CAPABILITY
-    ? { operatorCapabilities: [requested] }
-    : {};
+  ) {
+    capabilities.push(requested);
+  }
+  if (process.env[RUNTIME_HOST_OPERATOR_PROJECT_DIRECTORY_CONFIGURATION_REQUEST_ENV] === '1') {
+    capabilities.push(RUNTIME_HOST_OPERATOR_PROJECT_DIRECTORY_CONFIGURATION_CAPABILITY);
+  }
+  return capabilities.length > 0 ? { operatorCapabilities: capabilities } : {};
 }
 
 export function runtimeHostServiceSummary(
@@ -211,7 +235,11 @@ export function runtimeHostServiceSummary(
     lastExitCode: result.service.lastExitCode,
     installedVersion: result.service.installedVersion,
     ...(config ? { stateRoot: config.rootPath } : {}),
-    projectDirectoryRoots: [...(config?.projectDirectoryRoots ?? [])],
+    ...(config &&
+    process.env[RUNTIME_HOST_OPERATOR_PROJECT_DIRECTORY_CONFIGURATION_REQUEST_ENV] === '1'
+      ? { configurationFingerprint: runtimeHostManagedServiceConfigFingerprint(config) }
+      : {}),
+    projectDirectoryRoots: config ? [...effectiveRuntimeHostProjectDirectoryRoots(config)] : [],
   };
 }
 

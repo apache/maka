@@ -398,6 +398,7 @@ export interface DesktopRuntimeHostOnboardingInput {
   readonly name?: string;
   readonly destination: string;
   readonly sshPort?: number;
+  readonly projectDirectoryRoots?: readonly { readonly label: string; readonly path: string }[];
 }
 
 export type DesktopRuntimeHostOnboardingPhase =
@@ -436,14 +437,14 @@ export type DesktopRuntimeHostManagementResult = Extract<
   RuntimeHostServiceManagementFrame,
   { kind: 'result' }
 > & {
-  readonly action: DesktopRuntimeHostManagementAction | 'update';
+  readonly action: DesktopRuntimeHostManagementAction | 'configure' | 'update';
   readonly accessManagementAvailable: boolean;
 };
 
 export type DesktopRuntimeHostManagementResponse =
   | DesktopRuntimeHostManagementResult
   | (Extract<RuntimeHostServiceManagementFrame, { kind: 'error' }> & {
-      readonly action: DesktopRuntimeHostManagementAction | 'update';
+      readonly action: DesktopRuntimeHostManagementAction | 'configure' | 'update';
     })
   | {
       readonly kind: 'uninstalled';
@@ -618,6 +619,12 @@ export interface MakaBridge {
     ): Promise<DesktopRuntimeHostManagementResponse>;
     update(
       profileId: string,
+      allowInterruptActiveTasks: boolean,
+    ): Promise<DesktopRuntimeHostManagementResponse>;
+    configureProjectDirectories(
+      profileId: string,
+      roots: readonly { readonly label: string; readonly path: string }[],
+      expectedConfigFingerprint: string,
       allowInterruptActiveTasks: boolean,
     ): Promise<DesktopRuntimeHostManagementResponse>;
     subscribeProgress(

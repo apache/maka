@@ -24,6 +24,7 @@ import type { DesktopRuntimeHostManagedService } from '../runtime-host-managed-s
 import { createDesktopRuntimeHostOnboarding } from '../runtime-host-onboarding.js';
 
 test('persists a verified SSH profile without projecting its credential', async () => {
+  let setupInput: unknown;
   let saved:
     | (DesktopRuntimeHostProfileAddInput & {
         readonly managedService?: DesktopRuntimeHostManagedService;
@@ -36,7 +37,8 @@ test('persists a verified SSH profile without projecting its credential', async 
         return { profileId: input.profile.id };
       },
     },
-    runSetup: async (_input, onProgress) => {
+    runSetup: async (input, onProgress) => {
+      setupInput = input;
       onProgress({ phase: 'installing_service' });
       return {
         serviceId: 'b'.repeat(64),
@@ -52,6 +54,7 @@ test('persists a verified SSH profile without projecting its credential', async 
   const result = await harness.invoke('runtime-host-onboarding:start', {
     name: 'Lab',
     destination: 'operator@example.com',
+    projectDirectoryRoots: [{ label: 'Work', path: '/srv/work' }],
   });
 
   assert.equal((result as { kind?: string }).kind, 'complete');
@@ -68,6 +71,10 @@ test('persists a verified SSH profile without projecting its credential', async 
     operatorPath: '/home/operator/.local/share/maka/operator',
   });
   assert.equal(saved?.credential, 'secret-access-token');
+  assert.deepEqual(
+    (setupInput as { projectDirectoryRoots?: unknown }).projectDirectoryRoots,
+    [{ label: 'Work', path: '/srv/work' }],
+  );
   assert.doesNotMatch(JSON.stringify(harness.events), /secret-access-token/u);
   await harness.onboarding.close();
   assert.equal(harness.handlers.size, 0);
