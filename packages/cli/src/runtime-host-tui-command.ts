@@ -93,6 +93,7 @@ export async function runRuntimeHostTui(input: RunRuntimeHostTuiInput): Promise<
       listSkills: context.listSkills,
       agentGraphHistory: context.agentGraphHistory,
       onboarding: context.onboarding,
+      ...(context.mcp ? { mcp: context.mcp } : {}),
       recap: context.recap,
       ...(context.profile.kind === 'local'
         ? { foreignSessions }

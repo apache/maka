@@ -1824,6 +1824,46 @@ describe('Maka Pi TUI runner', () => {
     ]);
   });
 
+  test('opens the read-only /mcp status on an idle local TUI', async () => {
+    const terminal = new FakeTerminal();
+    const driver = new SlashCommandDriver();
+    const run = runMakaPiTui({
+      title: 'Maka',
+      driver,
+      cwd: '/repo',
+      model: 'deepseek-v4-flash',
+      connectionSlug: 'deepseek',
+      permissionMode: 'ask',
+      terminal,
+      mcp: {
+        snapshot: () => ({
+          initialization: 'ready',
+          publication: 'published',
+          toolCount: 1,
+          servers: [
+            {
+              serverId: 'filesystem',
+              state: 'connected',
+              transport: 'stdio',
+              negotiatedProtocol: { era: 'modern', revision: '2026-07-28' },
+              toolCount: 1,
+            },
+          ],
+        }),
+        subscribe: () => () => undefined,
+      },
+    });
+
+    terminal.input('/mcp');
+    terminal.input('\r');
+    await waitFor(() => plainTerminalOutput(terminal.screenOutput()).includes('MCP SERVERS'));
+    assert.match(plainTerminalOutput(terminal.screenOutput()), /filesystem/u);
+    terminal.input('q');
+    await waitFor(() => !plainTerminalOutput(terminal.screenOutput()).includes('MCP SERVERS'));
+    exitMaka(terminal);
+    await run;
+  });
+
   test('clears an unsent draft on Ctrl-C without closing Maka', async () => {
     const terminal = new FakeTerminal();
     const driver = new SlashCommandDriver();
@@ -1997,6 +2037,38 @@ describe('Maka Pi TUI runner', () => {
     terminal.input('\x1b');
     terminal.input('\x1b');
     await waitFor(() => terminal.progressStates.at(-1) === false);
+    terminal.input('/exit');
+    terminal.input('\r');
+    await run;
+  });
+
+  test('refuses /mcp during a running turn instead of steering it', async () => {
+    const terminal = new FakeTerminal();
+    const driver = new SteeringTurnDriver();
+    const run = runMakaPiTui({
+      title: 'Maka',
+      driver,
+      cwd: '/repo',
+      model: 'm',
+      connectionSlug: 'c',
+      permissionMode: 'bypass',
+      terminal,
+    });
+
+    terminal.input('start the work');
+    terminal.input('\r');
+    await waitFor(() => terminal.progressStates.at(-1) === true);
+    terminal.input('/mcp');
+    terminal.input('\r');
+    await waitFor(() =>
+      plainTerminalOutput(terminal.output()).includes('Cannot run /mcp while a turn is running'),
+    );
+    assert.deepEqual(driver.steered, []);
+
+    terminal.input('\x1b');
+    terminal.input('\x1b');
+    await waitFor(() => terminal.progressStates.at(-1) === false);
+    terminal.input('\x03');
     terminal.input('/exit');
     terminal.input('\r');
     await run;

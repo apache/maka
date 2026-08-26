@@ -106,6 +106,8 @@ import { runMakaPiTuiTurn, type MakaPiTuiTurnRequest } from './pi-tui-turn.js';
 import { editorTheme, selectListTheme } from './tui-ansi.js';
 import { MakaAutocompleteAboveEditorComponent } from './tui-autocomplete-layout.js';
 import { TranscriptViewerOverlay } from './pi-tui-transcript-viewer.js';
+import { McpStatusOverlay } from './pi-tui-mcp-status.js';
+import type { TuiMcpSurface } from './tui-mcp-control.js';
 import { createShellRunElapsedTicker } from './shell-run-elapsed-ticker.js';
 import { createShellRunHydrationController } from './shell-run-hydration.js';
 import { sessionStatusBadge } from './tui-session-status.js';
@@ -212,6 +214,8 @@ export interface MakaPiTuiInput {
    *  whose listProviders/verify/save calls persist the connection + curated models
    *  via the host-owned stores. */
   onboarding?: MakaOnboardingSurface;
+  /** Client-owned MCP status and publication projection. Local TUI only in PR1. */
+  mcp?: TuiMcpSurface;
   /** First-run mode: auto-open the onboarding wizard on launch instead of
    *  waiting for /setup (used when the CLI starts with no configured connection). */
   firstRun?: boolean;
@@ -2541,6 +2545,22 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     });
   };
 
+  const showMcpStatus = (): void => {
+    let overlay: OverlayHandle | undefined;
+    const viewer = new McpStatusOverlay({
+      locale,
+      ...(input.mcp ? { surface: input.mcp } : {}),
+      viewportRows: () => terminal.rows,
+      onClose: () => overlay?.hide(),
+      onChange: () => tui.requestRender(),
+    });
+    overlay = tui.showOverlay(viewer, {
+      anchor: 'top-left',
+      width: '100%',
+      maxHeight: '100%',
+    });
+  };
+
   const showModelList = () => {
     const choices = modelChoices;
     const hasConversationHistory = state.entries.some(
@@ -3105,6 +3125,22 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
       midTurn: 'refuse',
       run: () => {
         void runControl(async () => showHelp());
+      },
+    },
+    mcp: {
+      description: primaryGuidance.commands.mcp,
+      midTurn: 'refuse',
+      run: (parts: string[]) => {
+        if (parts.length !== 1) {
+          state.entries.push({
+            kind: 'notice',
+            level: 'error',
+            text: 'Usage: /mcp',
+          });
+          requestRender();
+          return;
+        }
+        showMcpStatus();
       },
     },
     new: {
