@@ -1558,6 +1558,7 @@ function wireLifecycle(): void {
 }
 
 async function prepareRuntimeHostDesktopQuit(): Promise<void> {
+  mainWindowController.browserWindow()?.destroy();
   const retirement = await runtimeHostManager?.retireOwnedLocalHost(
     "interrupt_active_work",
   );
