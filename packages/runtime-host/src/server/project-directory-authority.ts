@@ -22,11 +22,12 @@ import { opendir, realpath, stat } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { isAbsolute, join, relative, resolve, sep } from 'node:path';
 import {
+  canonicalProjectDirectoryRootSpec,
   PROJECT_DIRECTORY_MAX_ENTRIES,
   PROJECT_DIRECTORY_PAGE_MAX_BYTES,
   PROJECT_DIRECTORY_PAGE_MAX_ITEMS,
   PROJECT_DIRECTORY_MAX_ROOTS,
-  PROJECT_DIRECTORY_ROOT_LABEL_MAX_BYTES,
+  projectDirectoryRootSpecValid,
   type ProjectDirectoryQueryInput,
   type ProjectDirectoryQueryResult,
   type ProjectDirectoryRegisterInput,
@@ -168,21 +169,17 @@ function resolveRoot(
   input: PublishedProjectDirectoryRoot,
   index: number,
 ): ResolvedProjectDirectoryRoot {
-  const label = input.label.trim();
-  if (
-    label.length === 0 ||
-    Buffer.byteLength(label, 'utf8') > PROJECT_DIRECTORY_ROOT_LABEL_MAX_BYTES ||
-    /[\u0000-\u001f\u007f]/u.test(label)
-  ) {
-    throw new TypeError('Project directory root label is invalid');
+  const root = canonicalProjectDirectoryRootSpec(input);
+  if (!projectDirectoryRootSpecValid(root) || !isAbsolute(root.path)) {
+    throw new TypeError('Project directory root must use a valid label and absolute Host path');
   }
-  const path = realpathSync(resolve(input.path));
+  const path = realpathSync(root.path);
   if (!statSync(path).isDirectory()) {
     throw new TypeError('Project directory root is not a directory');
   }
   return {
     id: `root-${index + 1}`,
-    label,
+    label: root.label,
     path,
   };
 }

@@ -27,6 +27,22 @@ import {
 
 export function runtimeHostServiceLaunchArguments(
   config: RuntimeHostManagedServiceConfig,
+  serviceConfigPath: string,
+): readonly string[] {
+  return [
+    config.launch.nodePath,
+    config.launch.cliPath,
+    'runtime-host',
+    'serve',
+    '--managed-service-config',
+    serviceConfigPath,
+    '--json',
+  ];
+}
+
+/** Exact launch contract used before the managed configuration became authoritative. */
+export function legacyRuntimeHostServiceLaunchArguments(
+  config: RuntimeHostManagedServiceConfig,
 ): readonly string[] {
   return [
     config.launch.nodePath,

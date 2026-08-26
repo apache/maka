@@ -67,12 +67,12 @@ github:
         # Storybook. Renaming it there, or adding a paths filter that stops
         # ci.yml from running, freezes every pull request: the check never
         # reports and no committer can override it.
+        # A required context must report on every pull request, so a lane
+        # behind a paths filter cannot be listed here: the filter would keep
+        # the workflow from starting and the check would stay pending forever.
+        # windows_recovery is filtered and therefore deliberately absent.
         contexts:
           - test
-          # Windows recovery is a separate native crash/owner-death boundary.
-          # The workflow runs on every PR and main push so this context can be
-          # required without leaving unrelated pull requests pending forever.
-          - windows_recovery
 
   rulesets:
     - name: Immutable release tags

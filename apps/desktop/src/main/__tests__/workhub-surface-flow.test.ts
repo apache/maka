@@ -28,11 +28,11 @@ import {
   WorkHubSurfaceRouteGate,
   submitWorkHubSurfaceInput,
   visibleWorkHubConversation,
-  workHubSubmissionCanCorrect,
+  workHubSurfaceFailure,
   workHubSubmissionClearsDraft,
 } from '../../renderer/workhub-surface.js';
 import {
-  createWorkHubController,
+  createLegacyWorkHubControllerForTests as createWorkHubController,
   WORKHUB_ROUTING_STRATEGY_ID,
   type WorkHubController,
   type WorkHubSubmitInput,
@@ -41,6 +41,26 @@ import {
   createDesktopWorkHubSessionPort,
   type WorkHubDesktopSession,
 } from '../../renderer/workhub-session-port.js';
+
+test('surface turns Action Gate rejections into safe actionable failures', () => {
+  assert.equal(
+    workHubSurfaceFailure(
+      new Error('WorkHub Session candidates changed; refresh before delegating'),
+    ),
+    'candidates_changed',
+  );
+  assert.equal(
+    workHubSurfaceFailure(
+      new Error('WorkHub linked correction requires persistent delegation support'),
+    ),
+    'linked_correction_unavailable',
+  );
+  assert.equal(
+    workHubSurfaceFailure(new Error('Target Session is waiting for user input')),
+    'target_waiting',
+  );
+  assert.equal(workHubSurfaceFailure(new Error('private transport detail')), 'delivery_failed');
+});
 
 test('surface route gate rejects same-frame duplicate operations and reopens after settle', async () => {
   const gate = new WorkHubSurfaceRouteGate();
@@ -109,20 +129,6 @@ test('surface keeps the Composer draft when routing fails or the target is waiti
     requestId: 'discussion',
     text: '先讨论方向',
   }), true);
-});
-
-test('surface disables correction after a request was steered into existing work', () => {
-  const submission = {
-    kind: 'submitted' as const,
-    strategyId: WORKHUB_ROUTING_STRATEGY_ID,
-    requestId: 'steered',
-    target: { sessionId: 'payment' },
-    turnId: 'turn-existing',
-    evidence: 'explicit_target' as const,
-  };
-
-  assert.equal(workHubSubmissionCanCorrect(submission), true);
-  assert.equal(workHubSubmissionCanCorrect({ ...submission, steered: true }), false);
 });
 
 test('surface replaces a local discussion placeholder with its durable model answer', () => {

@@ -682,7 +682,10 @@ export async function createDesktopRuntimeHostCandidate(
       },
       ipc,
     );
-    registerRuntimeHostWorkHubIpc(client, ipc);
+    registerRuntimeHostWorkHubIpc(client, ipc, {
+      resolveCreateProject: () => deps.resolveSessionCreateProject({}, target),
+      emitSessionsChanged,
+    });
     registerRuntimeHostExternalSessionsIpc(
       {
         client,

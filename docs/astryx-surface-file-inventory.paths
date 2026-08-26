@@ -74,6 +74,7 @@ apps/desktop/src/renderer/settings/runtime-host-interaction-boundary.tsx
 apps/desktop/src/renderer/settings/runtime-host-management-dialog.tsx
 apps/desktop/src/renderer/settings/runtime-host-onboarding-dialog.tsx
 apps/desktop/src/renderer/settings/runtime-host-profiles-section.tsx
+apps/desktop/src/renderer/settings/runtime-host-project-directory-editor.tsx
 apps/desktop/src/renderer/settings/runtime-host-settings-target.tsx
 apps/desktop/src/renderer/settings/runtime-host-ssh-terminal-dialog.tsx
 apps/desktop/src/renderer/settings/settings-expandable-row.tsx

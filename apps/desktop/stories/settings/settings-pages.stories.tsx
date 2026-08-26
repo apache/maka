@@ -205,12 +205,14 @@ function makeUsageLog(input: {
   toolName?: string;
   status?: 'success' | 'error';
   minutesAgo: number;
+  sessionName?: string;
 }): UsageStats['logs'][number] {
   return {
     id: input.id,
     ts: NOW - input.minutesAgo * 60_000,
     kind: input.kind,
     sessionId: `b0efaaf9-9e58-46c1-bfea-${input.id.padStart(12, '0')}`,
+    sessionName: input.sessionName ?? '',
     turnId: `turn-${input.id}`,
     provider: 'zai-coding-plan',
     model: input.model,
@@ -228,6 +230,8 @@ const usageLogs: UsageStats['logs'] = [
     id: '1',
     kind: 'model',
     model: 'anthropic/claude-sonnet-4-5-20250929-preview-extended-thinking',
+    // A long session name exercises the 任务 column's truncate-plus-tooltip path.
+    sessionName: '重构使用统计页请求日志的任务列，改为显示会话名称并处理超长标题的截断',
     minutesAgo: 4,
   }),
   makeUsageLog({
@@ -235,10 +239,12 @@ const usageLogs: UsageStats['logs'] = [
     kind: 'tool',
     model: 'glm-4.7',
     toolName: 'mcp__cloud_workspace__list_repository_branch_protection_rules',
+    sessionName: '排查 MCP 分支保护规则拉取失败',
     minutesAgo: 9,
   }),
+  // No sessionName → renders the "未命名会话 · <short id>" fallback.
   makeUsageLog({ id: '3', kind: 'model', model: 'glm-4.7', status: 'error', minutesAgo: 16 }),
-  makeUsageLog({ id: '4', kind: 'tool', model: 'glm-4.7', toolName: 'Bash', minutesAgo: 25 }),
+  makeUsageLog({ id: '4', kind: 'tool', model: 'glm-4.7', toolName: 'Bash', sessionName: 'Bash 环境探查', minutesAgo: 25 }),
 ];
 
 const usageStats: UsageStats = {

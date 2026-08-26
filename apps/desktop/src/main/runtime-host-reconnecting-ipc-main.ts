@@ -33,16 +33,16 @@ type ReconcileIpcHandler = (
 
 type ReconciliationUnavailableIpcHandler = ReconcileIpcHandler;
 
-const DEFAULT_RECONCILIATION_WAIT_TIMEOUT_MS = 15_000;
+const DEFAULT_REPLACEMENT_WAIT_TIMEOUT_MS = 15_000;
 
 export interface RuntimeHostReconnectingIpcMainOptions {
-  readonly reconciliationWaitTimeoutMs?: number;
+  readonly replacementWaitTimeoutMs?: number;
 }
 
-class ReconciliationWaitExpiredError extends Error {
+class HandlerWaitExpiredError extends Error {
   constructor() {
-    super("Runtime Host reconciliation replacement wait expired");
-    this.name = "ReconciliationWaitExpiredError";
+    super("Runtime Host replacement wait expired");
+    this.name = "HandlerWaitExpiredError";
   }
 }
 
@@ -81,6 +81,13 @@ export class RuntimeHostTargetChangedError extends Error {
   }
 }
 
+export class RuntimeHostHandlerUnavailableError extends Error {
+  constructor() {
+    super("Runtime Host handler remained unavailable after the reconnection window");
+    this.name = "RuntimeHostHandlerUnavailableError";
+  }
+}
+
 /**
  * Keeps Electron IPC registration stable across reconnects while fencing each
  * target generation. Reconnectable reads may move to a replacement candidate,
@@ -90,7 +97,7 @@ export class RuntimeHostReconnectingIpcMain {
   readonly #ipcMain: Pick<IpcMain, "handle" | "removeHandler">;
   readonly #slots = new Map<string, HandlerSlot>();
   readonly #activeEpochs = new Set<string>();
-  readonly #reconciliationWaitTimeoutMs: number;
+  readonly #replacementWaitTimeoutMs: number;
   #closed = false;
 
   constructor(
@@ -98,12 +105,12 @@ export class RuntimeHostReconnectingIpcMain {
     options: RuntimeHostReconnectingIpcMainOptions = {},
   ) {
     this.#ipcMain = ipcMain;
-    const reconciliationWaitTimeoutMs =
-      options.reconciliationWaitTimeoutMs ?? DEFAULT_RECONCILIATION_WAIT_TIMEOUT_MS;
-    if (!Number.isSafeInteger(reconciliationWaitTimeoutMs) || reconciliationWaitTimeoutMs <= 0) {
-      throw new TypeError("Runtime Host reconciliation wait timeout must be positive");
+    const replacementWaitTimeoutMs =
+      options.replacementWaitTimeoutMs ?? DEFAULT_REPLACEMENT_WAIT_TIMEOUT_MS;
+    if (!Number.isSafeInteger(replacementWaitTimeoutMs) || replacementWaitTimeoutMs <= 0) {
+      throw new TypeError("Runtime Host replacement wait timeout must be positive");
     }
-    this.#reconciliationWaitTimeoutMs = reconciliationWaitTimeoutMs;
+    this.#replacementWaitTimeoutMs = replacementWaitTimeoutMs;
   }
 
   createTarget(epoch: string): RuntimeHostTargetIpcMain {
@@ -232,26 +239,28 @@ export class RuntimeHostReconnectingIpcMain {
     args: readonly unknown[],
   ): Promise<unknown> {
     const epoch = this.#requireTargetEpoch(args[0]);
-    let handler: BoundHandler =
-      slot.handlers.get(epoch) ?? await this.#waitForHandler(slot, epoch);
-    let reconciliationContext: unknown;
     let reconciling = false;
-    let reconciliationDeadline: number | undefined;
+    let replacementDeadline: number | undefined;
     const waitForReplacement = async (
-      previous: BoundHandler,
+      previous?: BoundHandler,
     ): Promise<BoundHandler | undefined> => {
-      if (!reconciling) return this.#waitForHandler(slot, epoch, previous);
-      const remainingMs = Math.max(
-        0,
-        (reconciliationDeadline ?? Date.now()) - Date.now(),
-      );
+      // One invocation gets one monotonic replacement window across every
+      // candidate it visits; flapping must not restart its lifetime.
+      replacementDeadline ??= performance.now() + this.#replacementWaitTimeoutMs;
+      const remainingMs = Math.max(0, replacementDeadline - performance.now());
       try {
+        if (remainingMs <= 0) throw new HandlerWaitExpiredError();
         return await this.#waitForHandler(slot, epoch, previous, remainingMs);
       } catch (error) {
-        if (error instanceof ReconciliationWaitExpiredError) return undefined;
-        throw error;
+        if (!(error instanceof HandlerWaitExpiredError)) throw error;
+        if (reconciling) return undefined;
+        throw new RuntimeHostHandlerUnavailableError();
       }
     };
+    const initialHandler = slot.handlers.get(epoch) ?? await waitForReplacement();
+    if (!initialHandler) throw new RuntimeHostHandlerUnavailableError();
+    let handler: BoundHandler = initialHandler;
+    let reconciliationContext: unknown;
     const unavailable = (): Promise<unknown> =>
       requireReconciliationUnavailableHandler(handler)(
         reconciliationContext,
@@ -278,7 +287,6 @@ export class RuntimeHostReconnectingIpcMain {
           if (step.kind === "completed") return step.value;
           reconciliationContext = step.context;
           reconciling = true;
-          reconciliationDeadline = Date.now() + this.#reconciliationWaitTimeoutMs;
           const replacement = await waitForReplacement(handler);
           if (!replacement) return unavailable();
           handler = replacement;
@@ -325,7 +333,7 @@ export class RuntimeHostReconnectingIpcMain {
       return Promise.resolve(current);
     }
     if (timeoutMs !== undefined && timeoutMs <= 0) {
-      return Promise.reject(new ReconciliationWaitExpiredError());
+      return Promise.reject(new HandlerWaitExpiredError());
     }
     return new Promise((resolve, reject) => {
       let timeout: ReturnType<typeof setTimeout> | undefined;
@@ -344,7 +352,7 @@ export class RuntimeHostReconnectingIpcMain {
       if (timeoutMs !== undefined) {
         timeout = setTimeout(() => {
           if (!slot.waiters.delete(waiter)) return;
-          waiter.reject(new ReconciliationWaitExpiredError());
+          waiter.reject(new HandlerWaitExpiredError());
         }, timeoutMs);
       }
     });

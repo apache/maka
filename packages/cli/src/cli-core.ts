@@ -132,6 +132,7 @@ function helpText(cliCommand: string): string {
     `  ${cliCommand} runtime-host serve [options]  Run a Runtime Host service`,
     `  ${cliCommand} runtime-host setup --principal <id> --preset <desktop-client|terminal-client> [options]`,
     `  ${cliCommand} runtime-host service install [options]`,
+    `  ${cliCommand} runtime-host service configure (--project-root <label>=<path> ... | --no-project-roots) --expected-config-fingerprint <sha256:...> --expected-service-id <id> --expected-root-path <path> --expected-root-id <id> [--allow-interrupt-active-tasks]`,
     `  ${cliCommand} runtime-host service status|start|stop|restart|logs|uninstall [--json]`,
     `  ${cliCommand} runtime-host service retire --expected-service-id <id> --expected-root-path <path> --expected-root-id <id> [--allow-interrupt-active-tasks]`,
     `  ${cliCommand} runtime-host service check-update --target <latest|next|version> [--json]`,
@@ -165,6 +166,7 @@ function helpText(cliCommand: string): string {
     'Runtime Host serve options:',
     '  --root <path>                 Select the canonical data root',
     '  --project-root <label>=<path> Publish an absolute project directory root (repeatable)',
+    '  --no-project-roots            Disable remote project browsing and registration',
     '  --websocket-port <port>       Enable an authenticated WebSocket listener',
     '  --websocket-host <host>       Bind host (default: 127.0.0.1)',
     '  --websocket-path <path>       Upgrade path (default: /runtime-host)',
@@ -181,6 +183,7 @@ function helpText(cliCommand: string): string {
     'Managed Runtime Host service install options (Linux or macOS):',
     '  --root <path>                 Select the canonical data root',
     '  --project-root <label>=<path> Publish an absolute directory root (repeatable)',
+    '  --no-project-roots            Disable remote project browsing and registration',
     '  --websocket-port <port>       Persist a loopback port (chosen automatically by default)',
     '  --websocket-path <path>       Persist the upgrade path (default: /runtime-host)',
     '  --json                        Emit a machine-readable result',
@@ -190,6 +193,7 @@ function helpText(cliCommand: string): string {
     '  --preset <name>               Pair a desktop-client or terminal-client',
     '  --root <path>                 Select the canonical data root',
     '  --project-root <label>=<path> Publish an absolute directory root (repeatable)',
+    '  --no-project-roots            Disable remote project browsing and registration',
     '  --websocket-port <port>       Persist a loopback port (chosen automatically by default)',
     '  --websocket-path <path>       Persist the upgrade path (default: /runtime-host)',
     '  --json                        Emit framed machine-readable progress and result records',
@@ -245,6 +249,17 @@ export async function runMakaCli(
     }
     case 'runtime-host-serve': {
       const { runRuntimeHostServiceCli } = await import('./runtime-host-service-command.js');
+      if (command.managedServiceConfigPath) {
+        const { effectiveRuntimeHostProjectDirectoryRoots, readRuntimeHostManagedServiceConfig } =
+          await import('./runtime-host-service-manager.js');
+        const config = await readRuntimeHostManagedServiceConfig(command.managedServiceConfigPath);
+        return runRuntimeHostServiceCli({
+          rootPath: config.rootPath,
+          json: command.json,
+          projectDirectoryRoots: effectiveRuntimeHostProjectDirectoryRoots(config),
+          websocket: config.websocket,
+        });
+      }
       return runRuntimeHostServiceCli({
         rootPath: command.rootPath ?? dataRoots.workspaceRoot,
         json: command.json,
@@ -297,6 +312,9 @@ export async function runMakaCli(
         ...(command.websocketPort === undefined ? {} : { websocketPort: command.websocketPort }),
         ...(command.websocketPath ? { websocketPath: command.websocketPath } : {}),
         ...(command.expectedTarget ? { expectedTarget: command.expectedTarget } : {}),
+        ...(command.expectedConfigFingerprint
+          ? { expectedConfigFingerprint: command.expectedConfigFingerprint }
+          : {}),
         ...(command.retainManagedDeployment ? { retainManagedDeployment: true } : {}),
         ...(command.allowInterruptActiveTasks ? { allowInterruptActiveTasks: true } : {}),
       });

@@ -46,24 +46,35 @@ const WorkbarSurface = lazy(() =>
   })),
 );
 
-function SessionWorkbarFallback() {
+function SessionWorkbarFallback(props: {
+  hidden: boolean;
+  rightCollapsed: boolean;
+  bottomOpen: boolean;
+}) {
   const copy = getShellCopy(useUiLocale()).app;
+  if (props.hidden || (props.rightCollapsed && !props.bottomOpen)) return null;
+  const placements: SessionWorkbarPlacement[] = [];
+  if (!props.rightCollapsed) placements.push('right');
+  if (props.bottomOpen) placements.push('bottom');
   return (
     <div className="maka-workbar-workspace-contents">
-      <Card
-        variant="transparent"
-        padding={0}
-        height="100%"
-        className="maka-session-workbar maka-session-workbar-frame"
-        data-placement="right"
-        role="status"
-        aria-busy="true"
-        aria-label={copy.loadingWorkbarLabel}
-      >
-        <div className="maka-lazy-fallback" data-surface="panel">
-          <Spinner size="sm" shade="subtle" label={copy.loadingWorkbar} />
-        </div>
-      </Card>
+      {placements.map((placement) => (
+        <Card
+          key={placement}
+          variant="transparent"
+          padding={0}
+          height="100%"
+          className="maka-session-workbar maka-session-workbar-frame"
+          data-placement={placement}
+          role="status"
+          aria-busy="true"
+          aria-label={copy.loadingWorkbarLabel}
+        >
+          <div className="maka-lazy-fallback" data-surface="panel">
+            <Spinner size="sm" shade="subtle" label={copy.loadingWorkbar} />
+          </div>
+        </Card>
+      ))}
     </div>
   );
 }
@@ -163,7 +174,15 @@ export function WorkbarHost({ model: props }: { model: WorkbarHostModel }) {
       )}
       {props.activeId && (
         <div className="maka-workbar-layout-vars" style={style}>
-          <Suspense fallback={<SessionWorkbarFallback />}>
+          <Suspense
+            fallback={
+              <SessionWorkbarFallback
+                hidden={props.hidden}
+                rightCollapsed={props.rightCollapsed}
+                bottomOpen={props.bottomOpen}
+              />
+            }
+          >
             <WorkbarSurface
               key={props.activeId}
               sessionId={props.activeId}

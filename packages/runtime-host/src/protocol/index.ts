@@ -92,11 +92,16 @@ export const RUNTIME_HOST_REGISTRATION_SCHEMA_VERSION = 1 as const;
 export const RUNTIME_HOST_PROTOCOL_VERSION = 0 as const;
 // Increment when the same protocol version no longer guarantees safe Client-Host
 // interoperability. Mismatches are rejected before domain commands are admitted.
-export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 51 as const;
-// 51: `github-copilot` joins `OAUTH_LOGIN_PROVIDERS`. An older Host rejects a
+export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 53 as const;
+// 53: `github-copilot` joins `OAUTH_LOGIN_PROVIDERS`. An older Host rejects a
 // login start for it, so the pair must be refused rather than fail mid-flow.
-// Re-derived on each rebase: 49 and 50 were claimed on `main` while this
+// Re-derived on each rebase: 49 through 52 were claimed on `main` while this
 // branch was open, so the number is read from `main` rather than reserved.
+// 52: Session subscriptions can forward durable steering-message echoes and
+// preserve their identity across queue and transcript projection.
+// Older peers cannot safely de-duplicate the two authoritative paths.
+// 51: WorkHub exposes bounded coordination candidates and admits only typed
+// actions through the deterministic Runtime Host Action Gate.
 // 50: WorkHub can append durable coordination summaries and admit tool-free
 // answers through its reserved Coordination Session authority.
 // 49: WorkHub resolves one durable Coordination Session per Runtime Host.

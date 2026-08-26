@@ -1266,6 +1266,20 @@ const makaBridge = {
         allowInterruptActiveTasks,
       );
     },
+    configureProjectDirectories(
+      profileId: string,
+      roots: readonly { readonly label: string; readonly path: string }[],
+      expectedConfigFingerprint: string,
+      allowInterruptActiveTasks: boolean,
+    ): Promise<DesktopRuntimeHostManagementResponse> {
+      return ipcRenderer.invoke(
+        'runtime-host-management:configure-project-directories',
+        profileId,
+        roots,
+        expectedConfigFingerprint,
+        allowInterruptActiveTasks,
+      );
+    },
     subscribeProgress(handler: (progress: DesktopRuntimeHostManagementProgress) => void) {
       const listener = (
         _event: Electron.IpcRendererEvent,
@@ -1560,6 +1574,47 @@ const makaBridge = {
         runtimeHostSessionRef,
       );
       return ipcRenderer.invoke('workhub:record', scope, input) as Promise<{ turnId: string }>;
+    },
+    async candidates(
+      coordinationSessionId: string,
+    ): Promise<OperationOutput<'workhub.coordination.candidates'>> {
+      const scope = await resolveDesktopWorkHubCoordinationCreateScope(
+        coordinationSessionId,
+        runtimeHostSessionRef,
+      );
+      const result = await ipcRenderer.invoke(
+        'workhub:candidates',
+        scope,
+      ) as OperationOutput<'workhub.coordination.candidates'>;
+      return {
+        ...result,
+        candidates: result.candidates.map((candidate) => ({
+          ...candidate,
+          sessionId: desktopSessionKey({ hostId: scope.hostId, sessionId: candidate.sessionId }),
+        })),
+      };
+    },
+    async act(
+      coordinationSessionId: string,
+      input: Omit<OperationInput<'workhub.coordination.act'>, 'create'>,
+    ): Promise<OperationOutput<'workhub.coordination.act'>> {
+      const scope = await resolveDesktopWorkHubCoordinationCreateScope(
+        coordinationSessionId,
+        runtimeHostSessionRef,
+      );
+      const result = await ipcRenderer.invoke(
+        'workhub:act',
+        scope,
+        input,
+      ) as OperationOutput<'workhub.coordination.act'>;
+      if (result.disposition === 'answer_here' || result.disposition === 'clarify') return result;
+      return {
+        ...result,
+        targetSessionId: desktopSessionKey({
+          hostId: scope.hostId,
+          sessionId: result.targetSessionId,
+        }),
+      };
     },
     async createSession(
       coordinationSessionId: string,

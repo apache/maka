@@ -30,6 +30,10 @@ import {
 } from '@maka/core/session';
 import { createSessionStore, type SessionAuthorityStore } from '@maka/storage/session-store';
 import { OPERATIONAL_STATE_DATABASE_NAME } from '@maka/storage/operational-state-store';
+import {
+  WORKHUB_COORDINATION_SUMMARY_MAX_BYTES,
+  WORKHUB_COORDINATION_TEXT_MAX_BYTES,
+} from '../protocol/index.js';
 import type { ConnectionContext } from '../server/operation-dispatcher.js';
 import type { RootTurnCoordinator } from '../server/root-turn-coordinator.js';
 import { SessionAdmissionGate } from '../server/session-admission-gate.js';
@@ -431,10 +435,26 @@ describe('Host WorkHub Coordination coordinator', () => {
         ok: true,
         result: { turnId: 'summary-turn' },
       });
-      const messages = await store.readMessagesSnapshot(WORKHUB_COORDINATION_SESSION_ID);
-      assert.equal(messages.length, 3);
+      const maximumInput = {
+        turnId: 'maximum-summary-turn',
+        // Each NUL is one UTF-8 input byte but six bytes once JSON-escaped in
+        // the durable transcript record. Retry lookup must budget for that
+        // worst case, not only the decoded text sizes.
+        userText: '\0'.repeat(WORKHUB_COORDINATION_TEXT_MAX_BYTES),
+        assistantText: '\0'.repeat(WORKHUB_COORDINATION_SUMMARY_MAX_BYTES),
+      };
       assert.deepEqual(
-        messages.map(({ type, turnId }) => ({ type, turnId })),
+        await workhub.handlers['workhub.coordination.record'](maximumInput, CONTEXT),
+        { ok: true, result: { turnId: 'maximum-summary-turn' } },
+      );
+      assert.deepEqual(
+        await workhub.handlers['workhub.coordination.record'](maximumInput, CONTEXT),
+        { ok: true, result: { turnId: 'maximum-summary-turn' } },
+      );
+      const messages = await store.readMessagesSnapshot(WORKHUB_COORDINATION_SESSION_ID);
+      assert.equal(messages.length, 6);
+      assert.deepEqual(
+        messages.slice(0, 3).map(({ type, turnId }) => ({ type, turnId })),
         [
           { type: 'user', turnId: 'summary-turn' },
           { type: 'assistant', turnId: 'summary-turn' },
@@ -447,7 +467,7 @@ describe('Host WorkHub Coordination coordinator', () => {
       );
       assert.equal(conflict.ok, false);
       if (!conflict.ok) assert.equal(conflict.error.code, 'operation_conflict');
-      assert.equal((await store.readMessagesSnapshot(WORKHUB_COORDINATION_SESSION_ID)).length, 3);
+      assert.equal((await store.readMessagesSnapshot(WORKHUB_COORDINATION_SESSION_ID)).length, 6);
       const empty = await workhub.handlers['workhub.coordination.record'](
         { ...input, turnId: 'empty-summary', assistantText: '   ' },
         CONTEXT,
@@ -601,6 +621,10 @@ function coordinator(
     admission,
     continuity: { refreshCanonical: async () => undefined },
     executions,
+    sessionActions: {
+      create: async () => undefined,
+      submit: async ({ sessionId }) => ({ turnId: `turn-${sessionId}` }),
+    },
     resolveCreateTarget:
       resolveCreateTarget ??
       (async () => ({

@@ -383,6 +383,8 @@ export interface UsageRequestLog {
   ts: number;
   kind: 'model' | 'tool';
   sessionId: string;
+  /** Human-readable session title (SessionHeader.name); may be empty for untitled sessions. */
+  sessionName: string;
   turnId: string;
   provider: string;
   model: string;

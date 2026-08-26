@@ -69,6 +69,11 @@ describe('Runtime Host operator commands', () => {
         prefer: true,
       },
     );
+    assert.deepEqual(parseRuntimeHostCommand(['serve', '--json', '--no-project-roots']), {
+      kind: 'runtime-host-serve',
+      json: true,
+      projectDirectoryRoots: [],
+    });
     assert.deepEqual(
       parseRuntimeHostCommand([
         'serve',
@@ -86,6 +91,41 @@ describe('Runtime Host operator commands', () => {
           { label: 'Data', path: projectRootB },
         ],
       },
+    );
+    assert.deepEqual(
+      parseRuntimeHostCommand([
+        'serve',
+        '--project-root-json',
+        JSON.stringify({ label: 'Work=Primary', path: projectRootA }),
+      ]),
+      {
+        kind: 'runtime-host-serve',
+        json: false,
+        projectDirectoryRoots: [{ label: 'Work=Primary', path: projectRootA }],
+      },
+    );
+    assert.deepEqual(
+      parseRuntimeHostCommand([
+        'serve',
+        '--managed-service-config',
+        '/config/Maka/runtime-host-service.json',
+        '--json',
+      ]),
+      {
+        kind: 'runtime-host-serve',
+        managedServiceConfigPath: '/config/Maka/runtime-host-service.json',
+        json: true,
+      },
+    );
+    assert.equal(
+      parseRuntimeHostCommand([
+        'serve',
+        '--managed-service-config',
+        '/config/Maka/runtime-host-service.json',
+        '--root',
+        '/srv/maka',
+      ]).kind,
+      'error',
     );
     assert.deepEqual(
       parseRuntimeHostCommand([

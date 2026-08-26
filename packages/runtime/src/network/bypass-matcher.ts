@@ -34,9 +34,12 @@ export function matchesBypassList(host: string, bypassList: string[]): boolean {
 }
 
 function matchesCidr(ip: string, cidr: string): boolean {
-  const [base, prefixRaw] = cidr.split('/');
+  const parts = cidr.split('/');
+  if (parts.length !== 2) return false;
+  const [base, prefixRaw] = parts;
+  if (isIP(base) !== 4 || !/^\d+$/.test(prefixRaw)) return false;
   const prefix = Number(prefixRaw);
-  if (!Number.isFinite(prefix) || prefix < 0 || prefix > 32) return false;
+  if (prefix > 32) return false;
   const ipInt = ipv4ToInt(ip);
   const baseInt = ipv4ToInt(base);
   if (ipInt === null || baseInt === null) return false;

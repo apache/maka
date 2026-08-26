@@ -218,49 +218,13 @@
   color: var(--color-text-secondary, var(--muted-foreground));
 }
 
-.workhub-waiting,
-.workhub-correction {
+.workhub-waiting {
   margin-top: 12px;
 }
 
-.workhub-waiting small,
-.workhub-correction-note,
-.workhub-correction summary {
+.workhub-waiting small {
   color: var(--color-text-secondary, var(--muted-foreground));
   font-size: var(--font-size-body-xs, 12px);
-}
-
-.workhub-correction summary {
-  width: max-content;
-  cursor: pointer;
-}
-
-.workhub-correction > div {
-  display: flex;
-  flex-direction: column;
-  margin-top: 8px;
-  border-top: 1px solid var(--color-border-subtle, var(--border));
-}
-
-.workhub-correction button {
-  display: flex;
-  justify-content: space-between;
-  padding: 8px 0;
-  gap: 16px;
-  border: 0;
-  border-bottom: 1px solid var(--color-border-subtle, var(--border));
-  background: transparent;
-  color: var(--color-text-primary, var(--foreground));
-  font: inherit;
-  text-align: left;
-}
-
-.workhub-correction button:hover {
-  color: var(--color-accent, var(--accent));
-}
-
-.workhub-correction button:disabled {
-  opacity: 0.55;
 }
 
 .workhub-return {
