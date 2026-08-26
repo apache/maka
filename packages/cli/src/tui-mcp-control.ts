@@ -108,7 +108,6 @@ class TuiMcpControllerImpl implements TuiMcpController {
   readonly #disposeConnectionAvailability: () => void;
   readonly #initialization: Promise<void>;
   #availability: RuntimeHostConnectionAvailability = { kind: 'unavailable' };
-  #managerReady = false;
   #closed = false;
   #publicationRequested = false;
   #publicationTask: Promise<void> | undefined;
@@ -132,7 +131,7 @@ class TuiMcpControllerImpl implements TuiMcpController {
     this.#disposeManagerChange = deps.manager.onChange(() => {
       try {
         this.#refreshManagerSnapshot();
-        if (this.#managerReady) this.#requestPublication();
+        if (this.#snapshot.initialization === 'ready') this.#requestPublication();
       } catch {
         // An observation must never break the MCP manager's state transition.
       }
@@ -145,7 +144,7 @@ class TuiMcpControllerImpl implements TuiMcpController {
           this.#updateSnapshot({ publication: 'host_unavailable' });
         } else {
           this.#updateSnapshot({ publication: 'waiting' });
-          if (this.#managerReady) this.#requestPublication();
+          if (this.#snapshot.initialization === 'ready') this.#requestPublication();
         }
       },
     );
@@ -168,7 +167,7 @@ class TuiMcpControllerImpl implements TuiMcpController {
     this.#disposeConnectionAvailability();
     this.#listeners.clear();
     await this.#publicationTask?.catch(() => undefined);
-    if (this.#published?.registered && this.#availability.kind === 'connected') {
+    if (this.#availability.kind === 'connected') {
       await this.#connection.unregisterClientCapabilities().catch(() => undefined);
     }
     this.#published = undefined;
@@ -182,12 +181,10 @@ class TuiMcpControllerImpl implements TuiMcpController {
       if (this.#closed) return;
       await this.#deps.manager.sync(config);
       if (this.#closed) return;
-      this.#managerReady = true;
       this.#refreshManagerSnapshot('ready');
       this.#requestPublication();
     } catch {
       if (this.#closed) return;
-      this.#managerReady = false;
       this.#updateSnapshot({ initialization: 'error', publication: 'not_published' });
     }
   }
@@ -204,7 +201,7 @@ class TuiMcpControllerImpl implements TuiMcpController {
   }
 
   #requestPublication(): void {
-    if (this.#closed || !this.#managerReady) return;
+    if (this.#closed || this.#snapshot.initialization !== 'ready') return;
     this.#publicationRequested = true;
     if (this.#publicationTask) return;
     this.#publicationTask = this.#runPublicationQueue().finally(() => {

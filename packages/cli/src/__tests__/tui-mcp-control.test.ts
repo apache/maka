@@ -157,6 +157,31 @@ test('TUI MCP fails closed when its saved config cannot be read', async () => {
   await controller.close();
 });
 
+test('TUI MCP unregisters a publication that settles while close is waiting', async () => {
+  const manager = managerHarness(1, [connectedStatus('local', 1)]);
+  const connection = connectionHarness();
+  const publication = deferred();
+  connection.replace = async () => {
+    connection.replacements.push('replace');
+    await publication.promise;
+  };
+  const controller = createTuiMcpController(
+    { workspaceRoot: '/unused', connection: connection.connection },
+    {
+      configStore: { get: async () => emptyConfig() },
+      manager: manager.manager,
+      createProvider: () => provider('provider'),
+    },
+  );
+
+  await waitFor(() => connection.replacements.length === 1);
+  const closing = controller.close();
+  publication.resolve();
+  await closing;
+  assert.equal(connection.unregisters, 1);
+  assert.equal(manager.closed, 1);
+});
+
 function managerHarness(revision: number, statuses: McpServerStatus[]) {
   let currentRevision = revision;
   let toolCount = revision === 0 ? 0 : 1;
@@ -206,6 +231,7 @@ function connectionHarness() {
   let listener: ((value: RuntimeHostConnectionAvailability) => void) | undefined;
   const replacements: string[] = [];
   let unregisters = 0;
+  let registered = false;
   const harness = {
     replacements,
     replace: async (_provider: ClientCapabilityProvider) => {
@@ -214,9 +240,12 @@ function connectionHarness() {
     connection: {
       replaceClientCapabilities: async (provider: ClientCapabilityProvider) => {
         await harness.replace(provider);
+        registered = true;
         return { registrationId: 'registration', revision: 1 };
       },
       unregisterClientCapabilities: async () => {
+        if (!registered) throw new Error('No Client Capability registration is active');
+        registered = false;
         unregisters += 1;
         return { registrationId: 'registration', revision: 1 };
       },
