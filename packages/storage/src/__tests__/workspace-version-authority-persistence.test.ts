@@ -37,7 +37,6 @@ import {
   createSqliteRuntimeStore,
   type SqliteRuntimeStoreFailpoint,
 } from '../sqlite-runtime-store.js';
-import { SQLITE_RUNTIME_SCHEMA_VERSION } from '../sqlite-runtime-schema.js';
 import {
   bindWorkspaceBaselineAuthorityStoreRootInternal,
   commitManagedMutationTerminalInternal,
@@ -610,7 +609,7 @@ describe('workspace version persistence authority', () => {
       bindWorkspaceBaselineAuthorityStoreRootInternal(upgraded, TEST_STORAGE_ROOT_ID);
       registerWorkspaceSuccessorCandidateVerifierInternal(upgraded, verifyTestCandidate);
       try {
-        assert.equal(upgraded.schemaVersion(), SQLITE_RUNTIME_SCHEMA_VERSION);
+        assert.equal(upgraded.schemaVersion(), 14);
         assert.equal(
           (
             await upgraded.readWorkspaceHead(
@@ -1293,7 +1292,6 @@ function recreateWorkspaceTablesAsSchema12(database: DatabaseSync): void {
 
     DROP TABLE runtime_workspace_heads_schema_13;
     DROP TABLE runtime_workspace_versions_schema_13;
-    DROP INDEX runtime_events_by_managed_mutation_protocol;
     DROP TABLE runtime_managed_mutation_reservations;
     PRAGMA user_version = 12;
     COMMIT;

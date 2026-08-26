@@ -1730,7 +1730,6 @@ export class SqliteRuntimeStore
   }
 
   private readCanonicalWorkspaceAuthoritySync(): CanonicalWorkspaceAuthority {
-    const maxAuthorityEvidenceRows = 100_000;
     const partial = this.db
       .prepare(`
         SELECT stream_key FROM runtime_partial_snapshots
@@ -1745,28 +1744,11 @@ export class SqliteRuntimeStore
     }
     const rows = this.db
       .prepare(`
-        WITH managed_invocations AS (
-          SELECT invocation_id
-          FROM runtime_events
-          WHERE json_extract(
-              payload_json,
-              '$.actions.toolDispatch.managedMutation.protocol'
-            ) = 'managed_mutation_v2'
-        )
         SELECT event_id, session_id, invocation_id, run_id, turn_id, event_seq, payload_json
         FROM runtime_events
-        WHERE session_id = ?
-          OR invocation_id IN (SELECT invocation_id FROM managed_invocations)
         ORDER BY invocation_id ASC, event_seq ASC, event_id ASC
-        LIMIT ?
       `)
-      .all(
-        WORKSPACE_AUTHORITY_SESSION_ID,
-        maxAuthorityEvidenceRows + 1,
-      ) as unknown as RuntimeEventPrefixStorageRow[];
-    if (rows.length > maxAuthorityEvidenceRows) {
-      throw new Error('Workspace authority evidence exceeds its bounded read budget');
-    }
+      .all() as unknown as RuntimeEventPrefixStorageRow[];
     const events = rows.map(decodeRuntimeEventStorageRow);
     const authorityRows: WorkspaceAuthorityLedgerRow[] = rows.map((row, index) => ({
       event: events[index]!,

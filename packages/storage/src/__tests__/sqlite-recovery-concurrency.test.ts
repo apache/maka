@@ -339,7 +339,6 @@ describe('SQLite recovery authority multi-process races', () => {
       const db = new DatabaseSync(dbPath);
       try {
         db.exec(`
-          DROP INDEX runtime_events_by_managed_mutation_protocol;
           DROP TABLE runtime_managed_mutation_reservations;
           DROP TABLE runtime_session_event_ordinals;
           PRAGMA user_version = 10;

@@ -44,10 +44,9 @@ worktree、不执行文件写入、不引入 Git 或 npm 数据面，也不向 D
 `RuntimeEvents` 是 durable truth；workspace head 与 reservation 表只是可删除、可重建的投影。internal writer
 通过未导出的 registration/capability seam 暴露，不能依靠注释约束调用者。
 
-在线 authority 校验通过 `runtime_events` 上的 managed-mutation 协议表达式索引定位相关 invocation，
-只读取这些 immutable events 与 reserved workspace stream；它不依赖可重建的 tool projection 决定事实，
-也不把无关 session 的 RuntimeEvents 物化进写事务。相关 evidence 另有 100,000 row fail-closed 上限。
-显式 rebuild 仍负责完整重建，但不位于普通 Write/Edit 的热路径。
+当前切片没有生产消费者，在线 authority 校验继续直接读取 immutable RuntimeEvents，避免为了尚未确定的
+生产查询形状提前增加 SQLite schema/index 合同。接入真实 Write/Edit consumer 前，必须基于实际访问模式
+引入不依赖可重建 projection 的有界索引读取；完整 rebuild 仍以 RuntimeEvents 为唯一事实源。
 
 ## 3. T1 冻结内容
 
