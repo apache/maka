@@ -352,27 +352,64 @@ test('pull request triggers stay on an explicit allowlist', () => {
   ]);
 });
 
-test('the recovery lane pairs its path filter with a nightly run', () => {
+test('the recovery lane pairs its path filter with a nightly run and a main push', () => {
   const workflow = readWorkflow('windows-recovery.yml');
 
   // Same contract as the sandbox lane: the filter is a pre-filter, not the
   // lane's import closure, so dropping the schedule would silently lose every
   // transitive edit it cannot match, and dropping the filter would put every
-  // Windows recovery run back on every pull request.
+  // Windows recovery run back on every pull request. The main push carries no
+  // filter because `strict: false` lets a stale-base pull request go green,
+  // and only the merged result proves two green halves still agree.
   assert.match(workflow, /\n {2}pull_request:\n {4}paths:/u);
+  assert.match(workflow, /\n {2}push:\n {4}branches: \[main\]/u);
   assert.match(workflow, /\n {2}schedule:/u);
   assert.match(workflow, /\n {2}workflow_dispatch:/u);
   assert.match(workflow, /\n {4}name: windows_recovery/u);
-  assert.match(workflow, /cancel-in-progress: \$\{\{ github\.event_name == 'pull_request' \}\}/u);
 });
 
-test('the recovery lane filter names the authorities its steps execute', () => {
+test('the recovery lane keeps scheduled and manual runs out of one shared group', () => {
   const workflow = readWorkflow('windows-recovery.yml');
 
+  // github.ref is refs/heads/main for the nightly, a dispatch and a main push
+  // alike, so a ref-keyed group made a dispatch queue behind the nightly for
+  // up to the job timeout and let the next dispatch discard it while pending.
+  assert.match(
+    workflow,
+    /group: windows-recovery-\$\{\{ github\.head_ref \|\| github\.run_id \}\}/u,
+  );
+  assert.match(workflow, /\n {2}cancel-in-progress: true/u);
+});
+
+test('the recovery lane filter covers every workspace its steps execute', () => {
+  const workflow = readWorkflow('windows-recovery.yml');
+  // Derived from the dist paths the steps actually run, so adding a workspace
+  // to this lane fails here until its sources and project file are filtered.
+  const executed = [
+    ...new Set([...workflow.matchAll(/packages\/([^/]+)\/dist\//gu)].map((match) => match[1])),
+  ].sort();
+
+  assert.deepEqual(executed, ['runtime', 'runtime-host', 'storage']);
+  for (const workspace of executed) {
+    assert.ok(workflow.includes(`      - 'packages/${workspace}/src/**'`), workspace);
+    assert.ok(workflow.includes(`      - 'packages/${workspace}/tsconfig.json'`), workspace);
+  }
+});
+
+test('the recovery lane filter names what its install and build steps consume', () => {
+  const workflow = readWorkflow('windows-recovery.yml');
+
+  // `npm.cmd ci` and `npm.cmd run build:test` run unconditionally, so their
+  // inputs are first-class inputs of this lane rather than transitive edits
+  // the nightly can be left to cover. A grouped dependabot bump touches only
+  // the manifests, and the crash gates below sit on a native file lock that
+  // the Linux `test` lane cannot observe at all.
   for (const path of [
-    'packages/storage/src/**',
-    'packages/runtime/src/**',
-    'packages/runtime-host/src/**',
+    'package.json',
+    'package-lock.json',
+    'patches/**',
+    'tsconfig.base.json',
+    'tsconfig.lib.json',
     'scripts/windows-runtime-host-local-ipc-trust.ps1',
     '.github/workflows/windows-recovery.yml',
   ]) {

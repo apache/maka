@@ -19,26 +19,48 @@ name: Windows recovery
 
 # The paths below are a pre-filter, not this lane's real input. The real input
 # is the import closure of the crash and owner-death recovery authorities in
-# storage, runtime, and Runtime Host, which reaches well past any list worth
-# hand-maintaining. So they name the directories that own those authorities,
-# which keeps a change there blocking before merge, and the nightly run is what
-# covers transitive edits once they land.
+# storage, runtime and Runtime Host, which reaches well past any list worth
+# hand-maintaining. So they name the directories owning those authorities, plus
+# the manifests, patches and project files the unconditional install and build
+# steps consume directly. That keeps a change there reported before merge, and
+# the nightly run is what covers transitive edits once they land.
 on:
   pull_request:
     paths:
+      - 'package.json'
+      - 'package-lock.json'
+      - 'patches/**'
+      - 'tsconfig.base.json'
+      - 'tsconfig.lib.json'
+      - 'packages/storage/tsconfig.json'
       - 'packages/storage/src/**'
+      - 'packages/runtime/tsconfig.json'
       - 'packages/runtime/src/**'
+      - 'packages/runtime/scripts/**'
+      - 'packages/runtime-host/tsconfig.json'
       - 'packages/runtime-host/src/**'
+      - 'scripts/clean-build.mjs'
+      - 'scripts/clean-paths.mjs'
       - 'scripts/windows-runtime-host-local-ipc-trust.ps1'
       - '.github/workflows/windows-recovery.yml'
+  # Unfiltered on purpose: required_status_checks is `strict: false`, so a pull
+  # request goes green against a stale base and only the merged result proves
+  # two independently green halves still agree. The nightly alone would find
+  # that a day later, against a batch of commits instead of one.
+  push:
+    branches: [main]
   schedule:
     # Offset from windows-sandbox-w0 so the Windows lanes do not overlap.
     - cron: '17 8 * * *'
   workflow_dispatch:
 
+# Pull request pushes supersede each other. Scheduled, manual and main-push
+# runs each get a unique group, because github.ref is refs/heads/main for all
+# three: a shared group made a dispatch queue behind the nightly and let the
+# next dispatch discard it while still pending.
 concurrency:
-  group: windows-recovery-${{ github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  group: windows-recovery-${{ github.head_ref || github.run_id }}
+  cancel-in-progress: true
 
 permissions:
   contents: read
