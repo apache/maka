@@ -266,7 +266,7 @@ test('recognizes and transactionally replaces the exact legacy LaunchAgent defin
 
     const deployment = await backend.stageDeployment();
     await backend.retire();
-    await deployment.apply({ ...config, schemaVersion: 2 });
+    await deployment.apply({ ...config, schemaVersion: 2 }, true);
     await backend.verifyDeployment({ ...config, schemaVersion: 2 });
     assert.match(await readFile(plistPath, 'utf8'), /--managed-service-config/u);
 
@@ -298,7 +298,7 @@ test('restores the previous loaded LaunchAgent when deployment bootstrap fails',
       if (action === 'install') {
         const deployment = await backend.stageDeployment();
         await assert.rejects(
-          deployment.apply(config),
+          deployment.apply(config, true),
           /Starting the Runtime Host LaunchAgent failed/u,
         );
         await deployment.rollback();
@@ -476,7 +476,7 @@ async function applyStagedDeployment(
   options?: { readonly activate?: boolean },
 ): Promise<RuntimeHostServiceDeployment> {
   const deployment = await backend.stageDeployment();
-  await deployment.apply(config, options);
+  await deployment.apply(config, options?.activate ?? true);
   return deployment;
 }
 

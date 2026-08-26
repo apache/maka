@@ -119,6 +119,7 @@ function main() {
   checkProductionAudit();
   runNpm(['run', 'check:cli-third-party-notices']);
   runNpm(['run', 'check:runtime-host-peer-dependencies']);
+  runNpm(['run', 'check:runtime-host-peer-notices']);
 
   packageCli(preparedTree);
 }
@@ -526,6 +527,10 @@ function copyReleaseDocuments() {
     join(cliSource, 'RUNTIME_HOST_PEER_DEPENDENCIES.rust.tsv'),
     join(stageRoot, 'RUNTIME_HOST_PEER_DEPENDENCIES.rust.tsv'),
   );
+  copyFileSync(
+    join(cliSource, 'RUNTIME_HOST_PEER_THIRD_PARTY_NOTICES.txt'),
+    join(stageRoot, 'RUNTIME_HOST_PEER_THIRD_PARTY_NOTICES.txt'),
+  );
 }
 
 function copyRuntimeHostPeerPrebuilds(publishable) {
@@ -625,6 +630,7 @@ function writeReleaseManifest(cli, publishable) {
       'DISCLAIMER-WIP',
       'THIRD_PARTY_NOTICES.txt',
       'RUNTIME_HOST_PEER_DEPENDENCIES.rust.tsv',
+      'RUNTIME_HOST_PEER_THIRD_PARTY_NOTICES.txt',
     ],
     dependencies,
     bundledDependencies: Object.keys(dependencies).sort(),
@@ -659,6 +665,7 @@ function validateStaging(publishable) {
     'README.zh-CN.md',
     'DISCLAIMER-WIP',
     'RUNTIME_HOST_PEER_DEPENDENCIES.rust.tsv',
+    'RUNTIME_HOST_PEER_THIRD_PARTY_NOTICES.txt',
     'node_modules/@maka/runtime/dist/workers/filesystem-worker.js',
     'node_modules/@maka/runtime-host/dist/execution-candidate-main.js',
     'packages/eval/dist/harbor-external-subject.js',

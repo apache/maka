@@ -1305,12 +1305,13 @@ describe('managed Runtime Host service', () => {
     let installed = false;
     let active = false;
     let retireCalls = 0;
+    let startCalls = 0;
     const backend: RuntimeHostServiceBackend = {
       ...createReadyBackend(),
       stageDeployment: async () => ({
-        apply: async (_config, options) => {
+        apply: async (_config, activate) => {
           installed = true;
-          active = options?.activate ?? true;
+          active = activate;
         },
         rollback: async () => undefined,
       }),
@@ -1319,6 +1320,7 @@ describe('managed Runtime Host service', () => {
         active = false;
       },
       start: async () => {
+        startCalls += 1;
         active = true;
       },
       stop: async () => {
@@ -1507,6 +1509,34 @@ describe('managed Runtime Host service', () => {
       },
     );
     assert.equal(active, false);
+    await manageRuntimeHostService({ ...common, action: 'start', expectedTarget }, backend, deps);
+    const configPath = resolveRuntimeHostManagedServiceConfigPath(clientDataRoot);
+    const validConfig = await readFile(configPath, 'utf8');
+    const stageDeployment = backend.stageDeployment;
+    const startsBeforeFailedChange = startCalls;
+    backend.stageDeployment = async () => ({
+      apply: async () => {
+        await writeFile(configPath, '{invalid', 'utf8');
+        throw new Error('simulated uncertain peer deployment');
+      },
+      rollback: async () => undefined,
+    });
+    await assert.rejects(
+      configureRuntimeHostManagedPeer(
+        {
+          ...common,
+          expectedTarget,
+          peer: { coordinationRelays: ['/dns4/uncertain.example/tcp/443'] },
+        },
+        backend,
+        deps,
+      ),
+      /uncertain configuration/u,
+    );
+    assert.equal(active, false);
+    assert.equal(startCalls, startsBeforeFailedChange);
+    await writeFile(configPath, validConfig, 'utf8');
+    backend.stageDeployment = stageDeployment;
     await manageRuntimeHostService(
       { ...common, action: 'uninstall', expectedTarget },
       backend,
@@ -3308,7 +3338,7 @@ async function applyStagedDeployment(
   options?: { readonly activate?: boolean },
 ): Promise<void> {
   const deployment = await backend.stageDeployment();
-  await deployment.apply(config, options);
+  await deployment.apply(config, options?.activate ?? true);
 }
 
 function success(stdout = ''): { exitCode: number; stdout: string; stderr: string } {

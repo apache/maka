@@ -143,10 +143,7 @@ export interface RuntimeHostServiceBackend {
 }
 
 export interface RuntimeHostServiceDeployment {
-  apply(
-    config: RuntimeHostManagedServiceConfig,
-    options?: { readonly activate?: boolean },
-  ): Promise<void>;
+  apply(config: RuntimeHostManagedServiceConfig, activate: boolean): Promise<void>;
   rollback(): Promise<void>;
 }
 
@@ -487,19 +484,14 @@ async function manageRuntimeHostServiceLocked(
   backend: RuntimeHostServiceBackend,
   deps: RuntimeHostServiceManagerDeps,
   configPath: string,
-  options: {
-    readonly allowPeerRotation?: boolean;
-    readonly activateInstallation?: boolean;
-  } = {},
 ): Promise<RuntimeHostManagedServiceResult> {
   const serviceId = resolveRuntimeHostManagedServiceId(input.clientDataRoot);
   if (input.expectedTarget) assertExpectedServiceIdentity(serviceId, input.expectedTarget);
   if (
-    !options.allowPeerRotation &&
-    (input.action === 'install' ||
-      input.action === 'start' ||
-      input.action === 'restart' ||
-      input.action === 'retire')
+    input.action === 'install' ||
+    input.action === 'start' ||
+    input.action === 'restart' ||
+    input.action === 'retire'
   ) {
     await assertPeerRotationComplete(input.clientDataRoot);
   }
@@ -522,14 +514,13 @@ async function manageRuntimeHostServiceLocked(
         'An existing Runtime Host Project root policy must be changed through the configuration workflow',
       );
     }
-    const activate = options.activateInstallation ?? true;
     await deployRuntimeHostServiceConfiguration({
       backend,
       deps,
       configPath,
       previous,
       desired: config,
-      activate,
+      activate: true,
     });
     return result(input.action, await readServiceStatus(configPath, backend));
   }
@@ -684,7 +675,7 @@ async function manageRuntimeHostServiceLocked(
     }
     try {
       await writeRuntimeHostServiceFile(configPath, `${JSON.stringify(desired, null, 2)}\n`, 0o600);
-      await deployment.apply(desired);
+      await deployment.apply(desired, true);
       await deps.waitForReady(desired, backend);
     } catch (error) {
       await rollbackRuntimeHostConfiguration(
@@ -849,9 +840,9 @@ async function rotateRuntimeHostManagedPeerIdentityLocked(
   const serviceId = resolveRuntimeHostManagedServiceId(input.clientDataRoot);
   assertExpectedServiceIdentity(serviceId, input.expectedTarget);
   const before = await readServiceStatus(configPath, backend);
-  await resolveExpectedServiceRoot(before.config, input);
+  const root = await resolveExpectedServiceRoot(before.config, input);
   const peer = before.config?.peer;
-  if (!before.installed || !before.config || !peer?.enabled) {
+  if (!before.installed || !before.config || !peer?.enabled || !root) {
     throw new RuntimeHostServiceManagerError(
       'not_installed',
       'Direct peer is not enabled for the managed Runtime Host service',
@@ -886,14 +877,14 @@ async function rotateRuntimeHostManagedPeerIdentityLocked(
       nativePath: peer.nativePath,
       keyPath: stagedKeyPath,
     });
-    const retired = await manageRuntimeHostServiceLocked(
-      { ...input, action: 'retire' },
+    const retired = await retireManagedRuntimeHostService(
+      { ...before, config: before.config },
+      root,
       backend,
       deps,
-      configPath,
-      { allowPeerRotation: true },
+      input.allowInterruptActiveTasks ?? false,
     );
-    if (retired.action === 'retire' && retired.retirement.kind === 'active_tasks') {
+    if (retired.retirement.kind === 'active_tasks') {
       await rm(stagedKeyPath, { force: true });
       return { kind: 'active_tasks' };
     }
@@ -912,14 +903,15 @@ async function rotateRuntimeHostManagedPeerIdentityLocked(
 
   const service = await readServiceStatus(configPath, backend);
   if (shouldActivateService(service)) {
-    const retired = await manageRuntimeHostServiceLocked(
-      { ...input, action: 'retire' },
+    if (!service.config) throw invalidPeerRotationState();
+    const retired = await retireManagedRuntimeHostService(
+      { ...service, config: service.config },
+      root,
       backend,
       deps,
-      configPath,
-      { allowPeerRotation: true },
+      input.allowInterruptActiveTasks ?? false,
     );
-    if (retired.action === 'retire' && retired.retirement.kind === 'active_tasks') {
+    if (retired.retirement.kind === 'active_tasks') {
       return { kind: 'active_tasks' };
     }
   }
@@ -985,8 +977,8 @@ async function configureRuntimeHostManagedPeerLocked(
   const serviceId = resolveRuntimeHostManagedServiceId(input.clientDataRoot);
   assertExpectedServiceIdentity(serviceId, input.expectedTarget);
   const before = await readServiceStatus(configPath, backend);
-  await resolveExpectedServiceRoot(before.config, input);
-  if (!before.installed || !before.config) {
+  const root = await resolveExpectedServiceRoot(before.config, input);
+  if (!before.installed || !before.config || !root) {
     throw new RuntimeHostServiceManagerError(
       'not_installed',
       'Runtime Host service is not installed',
@@ -999,38 +991,54 @@ async function configureRuntimeHostManagedPeerLocked(
     return { kind: 'configured' };
   }
   const activate = shouldActivateService(before);
-  const retired = await manageRuntimeHostServiceLocked(
-    { ...input, action: 'retire' },
+  const desired = await prepareServiceConfig(
+    {
+      ...input,
+      rootPath: before.config.rootPath,
+      nodePath: before.config.launch.nodePath,
+      cliPath: before.config.launch.cliPath,
+    },
+    before.config,
+    deps,
+  );
+  await backend.preflightDeployment();
+  await backend.verifyDeployment(before.config, { acceptLegacyConfigLaunch: true });
+  const retired = await retireManagedRuntimeHostService(
+    { ...before, config: before.config },
+    root,
     backend,
     deps,
-    configPath,
+    input.allowInterruptActiveTasks ?? false,
   );
-  if (retired.action === 'retire' && retired.retirement.kind === 'active_tasks') {
+  if (retired.retirement.kind === 'active_tasks') {
     return { kind: 'active_tasks' };
   }
   try {
-    await manageRuntimeHostServiceLocked(
-      {
-        ...input,
-        action: 'install',
-        nodePath: before.config.launch.nodePath,
-        cliPath: before.config.launch.cliPath,
-      },
+    await deployRuntimeHostServiceConfiguration({
       backend,
       deps,
       configPath,
-      { activateInstallation: activate },
-    );
+      previous: before.config,
+      desired,
+      activate,
+    });
     return { kind: 'configured' };
   } catch (error) {
     if (!activate) throw error;
+    const revision = await identifyRuntimeHostServiceConfigRevision(
+      configPath,
+      before.config,
+      desired,
+    );
+    if (revision !== 'current') throw error;
     try {
-      await manageRuntimeHostServiceLocked(
-        { ...input, action: 'start' },
-        backend,
-        deps,
-        configPath,
-      );
+      await backend.verifyDeployment(before.config, { acceptLegacyConfigLaunch: true });
+    } catch {
+      throw error;
+    }
+    try {
+      await backend.start();
+      await deps.waitForReady(before.config, backend);
     } catch (restoreError) {
       throw new RuntimeHostServiceManagerError(
         'service_manager_operation_failed',
@@ -1916,7 +1924,7 @@ async function deployRuntimeHostServiceConfiguration(input: {
       `${JSON.stringify(input.desired, null, 2)}\n`,
       0o600,
     );
-    await deployment.apply(input.desired, { activate: input.activate });
+    await deployment.apply(input.desired, input.activate);
     if (input.activate) await input.deps.waitForReady(input.desired, input.backend);
   } catch (error) {
     const revision = await identifyRuntimeHostServiceConfigRevision(

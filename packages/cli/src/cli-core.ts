@@ -265,6 +265,17 @@ export async function runMakaCli(
           json: command.json,
           projectDirectoryRoots: effectiveRuntimeHostProjectDirectoryRoots(config),
           websocket: config.websocket,
+          ...(config.peer?.enabled
+            ? {
+                peer: {
+                  nativePath: config.peer.nativePath,
+                  keyPath: config.peer.keyPath,
+                  expectedPeerId: config.peer.peerId,
+                  listenAddresses: config.peer.listenAddresses,
+                  coordinationRelays: config.peer.coordinationRelays,
+                },
+              }
+            : {}),
         });
       }
       return runRuntimeHostServiceCli({

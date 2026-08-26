@@ -126,8 +126,7 @@ export function createLaunchAgentRuntimeHostService(
       let schedulerMutationStarted = false;
       let rolledBack = false;
       return {
-        apply: async (config, options) => {
-          const activate = options?.activate ?? true;
+        apply: async (config, activate) => {
           await validateRuntimeHostServiceLaunch(config);
           await applyLaunchAgentDeployment(context, config, serviceConfigPath, activate);
           await applyLaunchAgentUpdateSchedulerDesiredState(scheduler, config, activate, () => {

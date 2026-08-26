@@ -120,8 +120,7 @@ export function createSystemdUserRuntimeHostService(
       let schedulerMutationStarted = false;
       let rolledBack = false;
       return {
-        apply: async (config, options) => {
-          const activate = options?.activate ?? true;
+        apply: async (config, activate) => {
           await validateRuntimeHostServiceLaunch(config);
           await applySystemdDeployment(context, config, serviceConfigPath, activate);
           await applySystemdUpdateSchedulerDesiredState(scheduler, config, activate, () => {

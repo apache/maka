@@ -24,7 +24,9 @@ on:
       - 'deny.toml'
       - 'native/runtime-host-peer/**'
       - 'packages/cli/RUNTIME_HOST_PEER_DEPENDENCIES.rust.tsv'
+      - 'packages/cli/RUNTIME_HOST_PEER_THIRD_PARTY_NOTICES.txt'
       - 'scripts/generate-runtime-host-peer-dependencies.mjs'
+      - 'scripts/generate-runtime-host-peer-notices.mjs'
       - 'packages/runtime-host/src/transport/peer-native.ts'
       - 'packages/runtime-host/src/server/peer-listener.ts'
   push:
@@ -35,7 +37,9 @@ on:
       - 'deny.toml'
       - 'native/runtime-host-peer/**'
       - 'packages/cli/RUNTIME_HOST_PEER_DEPENDENCIES.rust.tsv'
+      - 'packages/cli/RUNTIME_HOST_PEER_THIRD_PARTY_NOTICES.txt'
       - 'scripts/generate-runtime-host-peer-dependencies.mjs'
+      - 'scripts/generate-runtime-host-peer-notices.mjs'
       - 'packages/runtime-host/src/transport/peer-native.ts'
       - 'packages/runtime-host/src/server/peer-listener.ts'
 
@@ -56,6 +60,7 @@ jobs:
       matrix:
         os:
           - ubuntu-latest
+          - ubuntu-24.04-arm
           - macos-latest
           - windows-latest
     steps:
@@ -84,6 +89,9 @@ jobs:
       - name: Check Cargo dependency licenses
         if: matrix.os == 'ubuntu-latest'
         run: cargo deny --manifest-path native/runtime-host-peer/Cargo.toml --locked --exclude-dev check licenses
+      - name: Check Cargo dependency notices
+        if: matrix.os == 'ubuntu-latest'
+        run: npm run check:runtime-host-peer-notices
       - name: Test the native peer
         working-directory: native/runtime-host-peer
         run: cargo test --locked
