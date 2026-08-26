@@ -34,6 +34,8 @@ import {
   createGitoxideSuccessorInternal,
   GitoxideRepositoryAdmissionAuthorityError,
   importAdmittedGitoxideRepositoryInternal,
+  materializeGitoxideProjectionInternal,
+  observeGitoxideProjectionInternal,
   requireGitoxideRepositoryAdmissionInternal,
 } from '../server/gitoxide-repository-admission-authority-internal.js';
 import { GitoxideHelperInvocationError } from '../server/gitoxide-helper-invocation-internal.js';
@@ -277,6 +279,82 @@ test('binds successor publication to the imported repository capability and exac
     (error) =>
       error instanceof GitoxideRepositoryAdmissionAuthorityError &&
       error.code === 'gitoxide_repository_admission_capability_invalid',
+  );
+});
+
+test('materializes and observes only the accepted tree bound to its projection capability', async (t) => {
+  const helper = await admittedHelper();
+  if (!helper) {
+    t.skip('MAKA_GITOXIDE_HELPER_PATH is required for the real helper contract test');
+    return;
+  }
+  const repositoryPath = await createRepository(t, 'sha1');
+  await writeFile(join(repositoryPath, 'hello.txt'), 'hello from projection authority\n');
+  git(repositoryPath, ['add', 'hello.txt']);
+  git(repositoryPath, [
+    '-c',
+    'user.name=Maka Test',
+    '-c',
+    'user.email=maka@example.invalid',
+    'commit',
+    '--quiet',
+    '-m',
+    'fixture',
+  ]);
+  const admissionOwnerToken = {};
+  const managedRepositoryOwnerToken = {};
+  const projectionOwnerToken = {};
+  const admitted = await admitGitoxideRepositoryInternal({
+    ...helper,
+    admissionOwnerToken,
+    repositoryPath,
+  });
+  assert.equal(admitted.kind, 'accepted');
+  if (admitted.kind !== 'accepted') return;
+  const imported = await importAdmittedGitoxideRepositoryInternal({
+    admissionOwnerToken,
+    repositoryCapability: admitted.capability,
+    managedRepositoryOwnerToken,
+    destinationRepositoryPath: join(repositoryPath, 'managed-projection.git'),
+    baselineRef: 'refs/maka/accepted',
+  });
+  const projectionPath = join(repositoryPath, 'projection');
+  const projection = await materializeGitoxideProjectionInternal({
+    managedRepositoryOwnerToken,
+    managedRepositoryCapability: imported.managedRepositoryCapability,
+    projectionOwnerToken,
+    destinationPath: projectionPath,
+  });
+
+  assert.equal(
+    await readFile(join(projectionPath, 'hello.txt'), 'utf8'),
+    'hello from projection authority\n',
+  );
+  assert.equal(
+    (
+      await observeGitoxideProjectionInternal({
+        projectionOwnerToken,
+        projectionCapability: projection.projectionCapability,
+      })
+    ).kind,
+    'projection_observed',
+  );
+  await writeFile(join(projectionPath, 'hello.txt'), 'projection was externally changed\n');
+  const drifted = await observeGitoxideProjectionInternal({
+    projectionOwnerToken,
+    projectionCapability: projection.projectionCapability,
+  });
+  assert.equal(drifted.kind, 'projection_drifted');
+  if (drifted.kind === 'projection_drifted') {
+    assert.equal(drifted.reason, 'expected_file_size_mismatch');
+    assert.equal(drifted.path, 'hello.txt');
+  }
+  await assert.rejects(
+    observeGitoxideProjectionInternal({
+      projectionOwnerToken: {},
+      projectionCapability: projection.projectionCapability,
+    }),
+    GitoxideRepositoryAdmissionAuthorityError,
   );
 });
 
