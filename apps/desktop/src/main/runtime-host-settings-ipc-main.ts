@@ -290,7 +290,7 @@ async function applyHostPatch(
     await mergePolicy(
       client,
       "chatDefaults",
-      patch.chatDefaults,
+      projectChatDefaultsPatch(patch.chatDefaults),
       "set_chat_defaults",
     );
   }
@@ -396,4 +396,31 @@ function withoutSecret(
 ): Partial<RuntimePolicy["networkProxy"]> {
   const { password: _password, ...value } = patch;
   return value;
+}
+
+/**
+ * Project the renderer's chat-defaults patch onto the policy's stricter
+ * vocabulary. A present-but-undefined `thinkingLevel` is how "follow the
+ * model" clears a stored level; the tool-mode preference uses the same
+ * clearing idiom — when the key is present it carries a concrete override or
+ * `undefined`, and `undefined` (what the selector resolves Auto to) clears a
+ * stored override, so switching back to Auto is never a silent no-op. The
+ * policy keeps its omission-means-auto shape: the host-side codec drops the
+ * non-override spellings, so legacy documents stay canonical.
+ */
+function projectChatDefaultsPatch(
+  patch: NonNullable<UpdateAppSettingsInput["chatDefaults"]>,
+): Partial<RuntimePolicy["chatDefaults"]> {
+  return {
+    ...(patch.permissionMode === undefined ? {} : { permissionMode: patch.permissionMode }),
+    ...(Object.hasOwn(patch, "thinkingLevel") ? { thinkingLevel: patch.thinkingLevel } : {}),
+    ...(Object.hasOwn(patch, "toolModePreference")
+      ? {
+          toolModePreference:
+            patch.toolModePreference === "direct" || patch.toolModePreference === "code_mode"
+              ? patch.toolModePreference
+              : undefined,
+        }
+      : {}),
+  };
 }

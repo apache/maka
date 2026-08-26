@@ -27,6 +27,13 @@ import { registerRuntimeHostSettingsIpc } from "../runtime-host-settings-ipc-mai
 
 type TestCandidate = RuntimePolicy["networkProxy"];
 
+/** Minimal local-settings shape `loadRuntimeHostSettings` projects onto. */
+function localSettings() {
+  return {
+    webSearch: { providers: { tavily: { apiKey: "" } } },
+  } as never;
+}
+
 async function testCandidate(authEnabled: boolean): Promise<{
   candidate: TestCandidate;
   result: { ok: boolean; code: string };
@@ -94,4 +101,102 @@ test("proxy test preserves disabled authentication for a local proxy", async () 
   assert.equal(tested.candidate.authEnabled, false);
   assert.equal(tested.result.ok, true);
   assert.equal(tested.result.code, "proxy_reachable");
+});
+
+test("selecting Auto clears a stored tool-mode override instead of being dropped", async () => {
+  // #3850 review: the projection used to drop `auto` from the patch, so the
+  // spread merge kept a stored `code_mode` — the selector said Auto, nothing
+  // changed, and the only way back was editing settings by hand. The store
+  // starts with `code_mode` active; selecting Auto must reach the host as a
+  // non-override the codec normalizes away.
+  const policyWithOverride = () => {
+    const base = createDefaultRuntimePolicy();
+    return {
+      ...base,
+      chatDefaults: { ...base.chatDefaults, toolModePreference: "code_mode" as const },
+    };
+  };
+  const operations: unknown[] = [];
+
+  const { updateRuntimeHostSettings } = await import(
+    "../runtime-host-settings-ipc-main.js"
+  );
+  await updateRuntimeHostSettings(
+    {
+      ipcMain: { handle() {} },
+      client: {
+        async queryRuntimePolicy() {
+          return { revision: 1, policy: policyWithOverride() };
+        },
+        async queryCredential() {
+          return undefined;
+        },
+        async updateRuntimePolicy(build: (policy: RuntimePolicy) => unknown) {
+          const operation = build(policyWithOverride()) as { value: unknown };
+          operations.push(operation);
+          return { kind: "committed" } as never;
+        },
+      } as never,
+      settingsStore: {
+        async get() {
+          return localSettings();
+        },
+        async update() {
+          return localSettings();
+        },
+      } as never,
+      applyClientSettings: async () => {},
+    },
+    { chatDefaults: { toolModePreference: "auto" } } as never,
+  );
+
+  const operation = operations.at(-1) as {
+    kind: string;
+    value: { toolModePreference?: unknown };
+  };
+  assert.equal(operation.kind, "set_chat_defaults");
+  assert.equal(operation.value.toolModePreference, undefined);
+});
+
+test("a concrete tool-mode override still rides the patch through to the host", async () => {
+  const operations: unknown[] = [];
+
+  const { updateRuntimeHostSettings } = await import(
+    "../runtime-host-settings-ipc-main.js"
+  );
+  await updateRuntimeHostSettings(
+    {
+      ipcMain: { handle() {} },
+      client: {
+        async queryRuntimePolicy() {
+          return { revision: 1, policy: createDefaultRuntimePolicy() };
+        },
+        async queryCredential() {
+          return undefined;
+        },
+        async updateRuntimePolicy(build: (policy: RuntimePolicy) => unknown) {
+          const operation = build(createDefaultRuntimePolicy()) as { value: unknown };
+          operations.push(operation);
+          return { kind: "committed" } as never;
+        },
+      } as never,
+      settingsStore: {
+        async get() {
+          return localSettings();
+        },
+        async update() {
+          return localSettings();
+        },
+      } as never,
+      applyClientSettings: async () => {},
+    },
+    { chatDefaults: { toolModePreference: "direct" } } as never,
+  );
+
+  const operation = operations.at(-1) as {
+    kind: string;
+    value: { toolModePreference?: unknown };
+  };
+  assert.equal(operation.kind, "set_chat_defaults");
+  assert.equal(operation.value.toolModePreference, "direct");
 });

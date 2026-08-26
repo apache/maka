@@ -338,6 +338,116 @@ test('returns structured Side Conversation setup failures across IPC', async () 
   }
 });
 
+test("resolves the chat-defaults tool-mode preference at the send boundary", async () => {
+  const starts: unknown[] = [];
+  // #2578: `auto`/unset must omit the field entirely — the Host then defaults
+  // to Direct exactly as before — while an explicit override rides the turn
+  // into its persisted AgentRun. The renderer never names a mode.
+  for (const [preference, expected] of [
+    ['auto', 'omitted'],
+    ['direct', 'direct'],
+    ['code_mode', 'code_mode'],
+  ] as const) {
+    starts.length = 0;
+    const client = executionClient({
+      getSession: async () => session(),
+      startTurn: async (input) => {
+        starts.push(input);
+        return {
+          kind: "started",
+          turn: {
+            sessionId: input.sessionId,
+            turnId: input.turnId,
+            runId: "run-1",
+            status: "running",
+          },
+          skillInvocation: { loaded: [], failed: [], receipts: [] },
+        };
+      },
+    });
+    const ipc = ipcHarness();
+    registerExecutionIpc(
+      {
+        client,
+        observer: unusedObserver(),
+        attachmentApprovals: createAttachmentApprovalRegistry(),
+        emitSessionsChanged() {},
+        stat: async () => ({ size: 0 }),
+        resizeImage: async (bytes) => bytes,
+        beforeStop() {},
+        newId: () => "turn-1",
+        getDefaultToolMode: async () =>
+          preference === "auto" ? undefined : (preference as "direct" | "code_mode"),
+      },
+      ipc,
+    );
+    await ipc.invoke("sessions:send", "session-1", { type: "send", text: "hello" });
+    assert.equal(starts.length, 1);
+    if (expected === "omitted") {
+      assert.equal(Object.hasOwn(starts[0] as object, "toolMode"), false);
+    } else {
+      assert.equal((starts[0] as { toolMode?: string }).toolMode, expected);
+    }
+  }
+});
+
+test("pins the resolved tool mode per session so later settings changes leave running sessions alone", async () => {
+  // #3850 review: tool definitions sit ahead of the conversation in the
+  // request prefix, so re-resolving the global preference per send would
+  // rebuild the provider prompt cache of every live session the moment the
+  // setting changes. A session keeps the mode pinned at its first send;
+  // a session that starts later picks up the new value.
+  const starts: unknown[] = [];
+  let resolveCount = 0;
+  let preference: "direct" | "code_mode" | undefined = "code_mode";
+  const client = executionClient({
+    getSession: async () => session(),
+    startTurn: async (input) => {
+      starts.push(input);
+      return {
+        kind: "started",
+        turn: {
+          sessionId: input.sessionId,
+          turnId: input.turnId,
+          runId: "run-1",
+          status: "running",
+        },
+        skillInvocation: { loaded: [], failed: [], receipts: [] },
+      };
+    },
+  });
+  const ipc = ipcHarness();
+  registerExecutionIpc(
+    {
+      client,
+      observer: unusedObserver(),
+      attachmentApprovals: createAttachmentApprovalRegistry(),
+      emitSessionsChanged() {},
+      stat: async () => ({ size: 0 }),
+      resizeImage: async (bytes) => bytes,
+      beforeStop() {},
+      newId: () => "turn-1",
+      getDefaultToolMode: async () => {
+        resolveCount += 1;
+        return preference;
+      },
+    },
+    ipc,
+  );
+
+  await ipc.invoke("sessions:send", "session-1", { type: "send", text: "first" });
+  preference = "direct";
+  await ipc.invoke("sessions:send", "session-1", { type: "send", text: "second" });
+
+  assert.equal(resolveCount, 1);
+  assert.equal((starts[0] as { toolMode?: string }).toolMode, "code_mode");
+  assert.equal((starts[1] as { toolMode?: string }).toolMode, "code_mode");
+
+  await ipc.invoke("sessions:send", "session-2", { type: "send", text: "first" });
+  assert.equal(resolveCount, 2);
+  assert.equal((starts[2] as { toolMode?: string }).toolMode, "direct");
+});
+
 test("sends canonical content and uploads owned Attachment bytes through the Host", async () => {
   const starts: unknown[] = [];
   const uploads: unknown[] = [];

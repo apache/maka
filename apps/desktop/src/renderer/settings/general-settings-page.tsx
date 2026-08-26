@@ -34,6 +34,7 @@ import type {
   UpdateAppSettingsResult,
 } from '@maka/core/settings';
 import type { ThinkingLevel } from '@maka/core/model-thinking';
+import type { ToolModePreference } from '@maka/core/tool-mode';
 import type { LlmConnection } from '@maka/core/llm-connections';
 import type { TestProxyInput } from "@maka/core/settings/network-settings";
 import { buildChatModelChoices } from "@maka/core/chat-model-choice";
@@ -71,6 +72,13 @@ import {
 } from './runtime-host-settings-target.js';
 import type { SettingsResourceStatus } from './settings-resource-state.js';
 import { SettingsRowSkeleton } from './settings-skeleton.js';
+import {
+  DESKTOP_CODE_MODE_AVAILABLE,
+  AUTO_TOOL_MODE_VALUE,
+  projectToolModePreferenceOptions,
+  readToolModePreferenceValue,
+  toolModePreferenceFromValue,
+} from './tool-mode-preference.js';
 
 export function GeneralSettingsPage(props: {
   settings: AppSettings;
@@ -297,6 +305,7 @@ export function GeneralSettingsPage(props: {
           onRefresh={props.onRefreshConnections}
           permissionMode={props.settings.chatDefaults.permissionMode}
           thinkingLevel={props.settings.chatDefaults.thinkingLevel}
+          toolModePreference={props.settings.chatDefaults.toolModePreference}
           onUpdate={props.onUpdate}
         />
       ) : null}
@@ -494,6 +503,11 @@ function GeneralDefaultsCard(props: {
   onRefresh(): Promise<void>;
   permissionMode: ChatDefaultPermissionMode;
   thinkingLevel?: ThinkingLevel;
+  /**
+   * Persisted chat-defaults tool-mode preference. The host omits the field
+   * entirely for `auto`, so absence reads as the default.
+   */
+  toolModePreference?: ToolModePreference;
   onUpdate(
     patch: Parameters<typeof window.maka.settings.update>[0],
   ): Promise<UpdateAppSettingsResult>;
@@ -509,11 +523,12 @@ function GeneralDefaultsCard(props: {
   const toast = useToast();
   const mountedRef = useMountedRef();
   const persistGuard = useKeyedActionGuard<
-    "default-model" | "permission-mode" | "thinking-level"
+    "default-model" | "permission-mode" | "thinking-level" | "tool-mode"
   >();
   const [saving, setSaving] = useState(false);
   const [savingPermissionMode, setSavingPermissionMode] = useState(false);
   const [savingThinkingLevel, setSavingThinkingLevel] = useState(false);
+  const [savingToolMode, setSavingToolMode] = useState(false);
 
   const modelChoices = useMemo(
     () => buildChatModelChoices(props.connections),
@@ -617,6 +632,32 @@ function GeneralDefaultsCard(props: {
     } finally {
       releaseSave();
       if (mountedRef.current) setSavingPermissionMode(false);
+    }
+  }
+
+  async function persistToolMode(next: ToolModePreference) {
+    if (!props.settingsInteractive) return;
+    // Same re-entrancy guard as persistDefault above: the disabled trigger
+    // alone can't fully prevent overlapping saves (React disables it a tick
+    // after the click), and overlapping settings.update calls have no
+    // ordering guarantee.
+    const releaseSave = persistGuard.begin("tool-mode");
+    if (!releaseSave) return;
+    setSavingToolMode(true);
+    try {
+      await props.onUpdate({ chatDefaults: { toolModePreference: next } });
+    } catch (error) {
+      if (mountedRef.current) {
+        toast.error(
+          copy.saveDefaultToolModeFailed,
+          settingsActionErrorMessage(error, locale),
+          undefined,
+          host ? { profileId: host.profileId } : undefined,
+        );
+      }
+    } finally {
+      releaseSave();
+      if (mountedRef.current) setSavingToolMode(false);
     }
   }
 
@@ -728,6 +769,49 @@ function GeneralDefaultsCard(props: {
         <SettingsRowSkeleton
           label={copy.defaultThinking}
           description={copy.defaultThinkingHelp}
+          width="7rem"
+        />
+      ) : null}
+      {/* Closed auto|direct|code_mode preference. The host stores an explicit
+          override or omits the field (`auto`); resolution happens once at the
+          product boundary when a run starts, never in this picker. When the
+          active composition cannot execute CodeMode, that option renders its
+          unavailable state — an existing selection is shown as-is, never
+          silently rewritten to Direct. */}
+      {props.settingsAvailable ? (
+        <SettingsRow
+          label={copy.defaultToolMode}
+          description={copy.defaultToolModeHelp}
+          end={
+            <Selector
+              label={copy.defaultToolMode}
+              isLabelHidden
+              value={
+                readToolModePreferenceValue(props.toolModePreference) === "auto"
+                  ? AUTO_TOOL_MODE_VALUE
+                  : (props.toolModePreference as string)
+              }
+              onChange={(value) => {
+                const next = toolModePreferenceFromValue(value);
+                if (next !== undefined) void persistToolMode(next);
+              }}
+              options={projectToolModePreferenceOptions(
+                {
+                  auto: copy.toolModeAuto,
+                  direct: copy.toolModeDirect,
+                  codeMode: copy.toolModeCodeMode,
+                  codeModeUnavailable: copy.toolModeCodeModeUnavailable,
+                },
+                DESKTOP_CODE_MODE_AVAILABLE,
+              )}
+              isDisabled={savingToolMode || !props.settingsInteractive}
+            />
+          }
+        />
+      ) : props.showSettingsPlaceholder ? (
+        <SettingsRowSkeleton
+          label={copy.defaultToolMode}
+          description={copy.defaultToolModeHelp}
           width="7rem"
         />
       ) : null}

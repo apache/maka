@@ -63,6 +63,7 @@ import {
 import { registerRuntimeHostSessionCatalogIpc } from "./runtime-host-session-catalog-ipc-main.js";
 import { registerRuntimeHostWorkHubIpc } from "./runtime-host-workhub-ipc-main.js";
 import { registerRuntimeHostExternalSessionsIpc } from "./runtime-host-external-sessions-ipc-main.js";
+import { resolveDefaultToolMode } from "./turn-tool-mode.js";
 import {
   registerRuntimeHostSessionDomainsIpc,
   type RuntimeHostSessionDomainsIpcDeps,
@@ -705,6 +706,12 @@ export async function createDesktopRuntimeHostCandidate(
           ),
         sessionCopyCleanup,
         onBackgroundError: reportError,
+        getDefaultToolMode: () =>
+          resolveDefaultToolMode(() =>
+            client.queryRuntimePolicy().then((policy) => ({
+              chatDefaults: policy.policy.chatDefaults,
+            })),
+          ),
         ...(deps.e2eInteractions
           ? { e2eInteractions: deps.e2eInteractions }
           : {}),

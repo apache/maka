@@ -26,6 +26,7 @@ import {
 } from '@maka/runtime-host/client';
 import { SKILL_INVOCATION_TOKEN_SOURCE } from '@maka/core/skill-invocation-token';
 import { isSideConversationSession } from '@maka/core/side-conversation';
+import type { ToolMode } from '@maka/core/tool-mode';
 import {
   type SessionChangedEvent,
   type SessionChangedReason,
@@ -149,6 +150,15 @@ export interface RuntimeHostSessionExecutionIpcDeps {
   beforeStop(sessionId: string): void | Promise<void>;
   sessionCopyCleanup: SessionCopyCleanupAuthority;
   onBackgroundError(error: unknown): void;
+  /**
+   * Resolves the chat-defaults tool-mode preference. Called once per session
+   * (pinned at its first send), not per send: a later settings change must
+   * not rebuild the provider prompt cache of already-running sessions.
+   * Returns the explicit override, or undefined when the preference is
+   * `auto`/unset — in which case the turn payload omits `toolMode` entirely,
+   * byte-identical to before this preference existed.
+   */
+  getDefaultToolMode?(): Promise<ToolMode | undefined>;
   e2eInteractions?: {
     list(sessionId: string): readonly ActiveInteractionRequestEvent[];
     respondToSandboxBoundary(
@@ -189,6 +199,31 @@ export function registerRuntimeHostSessionExecutionIpc(
   };
   const newId = deps.newId ?? randomUUID;
   const stopSession = createRuntimeHostSessionStop(deps, newId);
+
+  // Tool definitions sit ahead of the conversation in the provider request
+  // prefix, so re-resolving the chat-defaults preference on every send would
+  // rebuild the prompt cache of every live session the moment the global
+  // setting changes. The resolved mode is therefore pinned per session at its
+  // first send — which is also the advertised behavior: only sessions that
+  // start after the change pick up the new mode. Session ids are never
+  // reused, so pins are only a memory concern; the cap bounds it, and a live
+  // session evicted at the cap simply re-resolves on its next send.
+  const TOOL_MODE_PIN_LIMIT = 512;
+  const pinnedToolModes = new Map<string, ToolMode | undefined>();
+  const pinSessionToolMode = async (
+    sessionId: string,
+  ): Promise<ToolMode | undefined> => {
+    if (pinnedToolModes.has(sessionId)) return pinnedToolModes.get(sessionId);
+    const resolved = deps.getDefaultToolMode
+      ? await deps.getDefaultToolMode()
+      : undefined;
+    if (pinnedToolModes.size >= TOOL_MODE_PIN_LIMIT) {
+      const oldest = pinnedToolModes.keys().next().value;
+      if (oldest !== undefined) pinnedToolModes.delete(oldest);
+    }
+    pinnedToolModes.set(sessionId, resolved);
+    return resolved;
+  };
 
   handleReconnectableRead(
     ipcMain,
@@ -264,6 +299,10 @@ export function registerRuntimeHostSessionExecutionIpc(
         throw new Error(`Runtime Host Session not found: ${sessionId}`);
       const sideConversation = isSideConversationSession(session.labels);
       const turnId = command.turnId ?? newId();
+      // Pinned at this session's first send (see pinSessionToolMode): an
+      // explicit preference rides the turn's execution descriptor into its
+      // AgentRun; `auto` stays omitted so unset behavior is exactly today's.
+      const defaultToolMode = await pinSessionToolMode(sessionId);
       let attachments = retainedAttachmentsForSession(
         sessionId,
         command.retainedAttachments ?? [],
@@ -320,6 +359,7 @@ export function registerRuntimeHostSessionExecutionIpc(
         ...(command.turnOrchestration
           ? { turnOrchestration: command.turnOrchestration }
           : {}),
+        ...(defaultToolMode === undefined ? {} : { toolMode: defaultToolMode }),
       };
       let startResult;
       try {
