@@ -155,7 +155,7 @@ export function formatShortcutKey(key: string, platform?: ShortcutPlatform | nul
 }
 
 /** One key, named for a screen reader. */
-export function shortcutKeyLabel(key: string, platform?: ShortcutPlatform | null): string {
+function shortcutKeyLabel(key: string, platform?: ShortcutPlatform | null): string {
   const token = key.trim().toLowerCase();
   if (usesAppleShortcutGlyphs(platform)) {
     const apple = APPLE_KEY_LABEL[token];
