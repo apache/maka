@@ -27,6 +27,8 @@ below, so the provenance of the artwork is the source you are reading.
 
 `--check` is what the test harness uses: it re-renders and compares bytes, so
 a change to the geometry that is not reflected in the committed PNGs fails.
+The harness passes no names, so every shipped tile is compared, and rendering
+is spread across all cores to keep that affordable.
 
 There is no SVG rasteriser available in CI, so the PNGs are rendered here by
 evaluating the same geometry as signed distance fields — including the miter
@@ -525,10 +527,9 @@ def _render_one(variant):
 
 def main(argv):
     check = "--check" in argv
-    # Positional names limit the run to a subset. Rendering all 38 at 1024px is
-    # ~60s of pure-Python rasterisation, which is too slow to sit in a unit
-    # test; the test names a handful that between them exercise flat fills,
-    # angled gradients and stroke gradients.
+    # Positional names limit the run to a subset. This is a convenience for
+    # working on one colourway by hand — the test deliberately passes none, so
+    # CI always compares the whole catalogue.
     wanted = {a for a in argv if not a.startswith("-")}
     selected = [v for v in VARIANTS if not wanted or v["name"] in wanted]
     unknown = wanted - {v["name"] for v in VARIANTS}
