@@ -2263,6 +2263,10 @@ export class RootTurnCoordinator implements HostedExecutionAuthority {
                   active.descriptor.maxSteps !== undefined
                     ? { maxSteps: active.descriptor.maxSteps }
                     : {}),
+                  ...(active.descriptor.kind === 'external_message' &&
+                  active.descriptor.toolMode !== undefined
+                    ? { toolMode: active.descriptor.toolMode }
+                    : {}),
                   ...(messageOrigin ? { origin: messageOrigin } : {}),
                 },
                 {

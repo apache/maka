@@ -1172,6 +1172,47 @@ describe('Runtime Host bootstrap protocol', () => {
     });
   });
 
+  test('decodes turn.start tool mode as trusted omission-or-concrete-mode', () => {
+    const start = (toolMode: unknown) =>
+      decodeClientFrame({
+        requestId: 'tool-mode-start',
+        operation: 'turn.start',
+        input: {
+          sessionId: 'session-1',
+          turnId: 'turn-tool-mode-1',
+          content: { text: 'plain' },
+          toolMode,
+        },
+      });
+    // #2578: only a concrete Runtime mode may cross; `auto` is resolved (or
+    // omitted) at the product boundary and must never appear on the wire.
+    assert.deepEqual(start('code_mode'), {
+      requestId: 'tool-mode-start',
+      operation: 'turn.start',
+      input: {
+        sessionId: 'session-1',
+        turnId: 'turn-tool-mode-1',
+        content: { text: 'plain' },
+        toolMode: 'code_mode',
+      },
+    });
+    assert.deepEqual(start('direct'), {
+      requestId: 'tool-mode-start',
+      operation: 'turn.start',
+      input: {
+        sessionId: 'session-1',
+        turnId: 'turn-tool-mode-1',
+        content: { text: 'plain' },
+        toolMode: 'direct',
+      },
+    });
+    for (const invalid of ['auto', 'AUTO', 'claude_mode', 42]) {
+      assert.throws(() => start(invalid), isInvalidFrame);
+    }
+    // Explicit absence decodes as omission.
+    assert.doesNotThrow(() => start(undefined));
+  });
+
   test('bounds turn.start feedback as one transport-safe result', () => {
     const receipt = {
       invocation: 'explicit' as const,

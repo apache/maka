@@ -54,6 +54,7 @@ import {
 } from '@maka/core/events';
 import { decodeAgentGraphIntentClaim } from '@maka/core/agent-graph-control';
 import { isTerminalRuntimeEvent, type RuntimeEvent } from '@maka/core/runtime-event';
+import { isToolMode } from '@maka/core/tool-mode';
 import { MAX_ATTACHMENT_BYTES, MAX_ATTACHMENT_COUNT } from '@maka/core/attachments';
 import { MODEL_CALL_ATTEMPT_EVENT_TYPE } from '@maka/core/model-call-attempt';
 import {
@@ -1874,7 +1875,7 @@ function normalizeRootExecutionDescriptor(value: unknown): RootExecutionDescript
     throw new Error('Invalid root execution descriptor');
   }
   if (value.kind === 'external_message') {
-    const allowedKeys = ['kind', 'inputDigest', 'maxSteps'];
+    const allowedKeys = ['kind', 'inputDigest', 'maxSteps', 'toolMode'];
     if (!Object.keys(value).every((key) => allowedKeys.includes(key))) {
       throw new Error('Invalid root execution descriptor');
     }
@@ -1889,10 +1890,16 @@ function normalizeRootExecutionDescriptor(value: unknown): RootExecutionDescript
     ) {
       throw new Error('Invalid root execution descriptor');
     }
+    // Only a concrete mode is durable: the product boundary resolves (or
+    // omits) the user preference before the descriptor is admitted.
+    if (value.toolMode !== undefined && !isToolMode(value.toolMode)) {
+      throw new Error('Invalid root execution descriptor');
+    }
     return Object.freeze({
       kind: 'external_message',
       ...(value.inputDigest !== undefined ? { inputDigest: value.inputDigest } : {}),
       ...(value.maxSteps !== undefined ? { maxSteps: value.maxSteps } : {}),
+      ...(value.toolMode !== undefined ? { toolMode: value.toolMode } : {}),
     });
   }
   if (value.kind === 'workhub_coordination') {

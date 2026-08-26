@@ -79,6 +79,13 @@ export type RootExecutionDescriptor =
       kind: 'external_message';
       inputDigest?: `sha256:${string}`;
       maxSteps?: number;
+      /**
+       * Trusted, host-resolved tool protocol for this run's execution. Only a
+       * concrete `ToolMode` is carried: the product boundary resolves (or
+       * omits) the user preference before the descriptor exists, so Runtime
+       * never sees or stores `auto`.
+       */
+      toolMode?: ToolMode;
     }
   | {
       /** Tool-free conversational execution admitted only by WorkHub authority. */

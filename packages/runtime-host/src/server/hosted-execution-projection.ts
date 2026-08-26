@@ -100,7 +100,17 @@ function assertRunMatchesExecution(
   }
   switch (execution.kind) {
     case 'external_message':
+      // A recovered Run must have started with the tool protocol its admission
+      // carried: an explicit override survives crashes, and a descriptor
+      // without one can never retroactively claim it.
+      if (execution.toolMode !== undefined && run.toolMode !== execution.toolMode) {
+        throw new RuntimeMessageAuthorityInvariantError(
+          `Admitted Turn ${turnId} changed its tool mode`,
+        );
+      }
+      return;
     case 'workhub_coordination':
+      // Tool-free by contract: it carries no toolMode to preserve.
       return;
     case 'regenerate':
     case 'context_compact':

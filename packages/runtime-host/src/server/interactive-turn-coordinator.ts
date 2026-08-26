@@ -86,6 +86,7 @@ export class HostInteractiveTurnCoordinator {
           kind: 'external_message',
           inputDigest: hostedExternalInputDigest(content, skillIds),
           ...(input.maxSteps !== undefined ? { maxSteps: input.maxSteps } : {}),
+          ...(input.toolMode !== undefined ? { toolMode: input.toolMode } : {}),
         },
         context,
       );
@@ -97,6 +98,7 @@ export class HostInteractiveTurnCoordinator {
         execution: {
           kind: 'external_message',
           ...(input.maxSteps !== undefined ? { maxSteps: input.maxSteps } : {}),
+          ...(input.toolMode !== undefined ? { toolMode: input.toolMode } : {}),
         },
         ...(input.turnOrchestration ? { turnOrchestration: { ...input.turnOrchestration } } : {}),
         archivedMessage: 'Cannot start a new Turn in an archived Session',

@@ -30,6 +30,7 @@ import {
   isTurnOrchestrationSource,
   type TurnOrchestration,
 } from '@maka/core/orchestration';
+import { isToolMode, type ToolMode } from '@maka/core/tool-mode';
 import {
   decodeSkillInvocationResult,
   type SkillInvocationResult,
@@ -56,6 +57,12 @@ export interface TurnStartInput {
   skillIds?: string[];
   turnOrchestration?: TurnOrchestration;
   maxSteps?: number;
+  /**
+   * Trusted, host-resolved tool protocol for this turn's root run. The
+   * product boundary resolves the user preference before sending; `auto`
+   * arrives as field omission and Runtime defaults to Direct.
+   */
+  toolMode?: ToolMode;
 }
 
 export type TurnStartResult =
@@ -338,7 +345,7 @@ function decodeTurnStartInput(value: unknown): TurnStartInput {
     value,
     'turn.start input',
     ['sessionId', 'turnId', 'content'],
-    ['skillIds', 'turnOrchestration', 'maxSteps'],
+    ['skillIds', 'turnOrchestration', 'maxSteps', 'toolMode'],
   );
   const skillIds = decodeSkillIds(record.skillIds);
   return {
@@ -352,7 +359,13 @@ function decodeTurnStartInput(value: unknown): TurnStartInput {
     ...(record.maxSteps !== undefined
       ? { maxSteps: requirePositiveSafeInteger(record.maxSteps, 'maxSteps') }
       : {}),
+    ...(record.toolMode === undefined ? {} : { toolMode: decodeTurnToolMode(record.toolMode) }),
   };
+}
+
+function decodeTurnToolMode(value: unknown): ToolMode {
+  if (!isToolMode(value)) throw invalidProtocolFrame('Invalid Turn tool mode');
+  return value;
 }
 
 function requirePositiveSafeInteger(value: unknown, label: string): number {
