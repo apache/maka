@@ -70,7 +70,7 @@ use windows_sys::Win32::System::Threading::{
     InitializeProcThreadAttributeList, OpenProcessToken, PROC_THREAD_ATTRIBUTE_HANDLE_LIST,
     PROC_THREAD_ATTRIBUTE_JOB_LIST, PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES,
     PROCESS_INFORMATION, ResumeThread, STARTF_USESTDHANDLES, STARTUPINFOEXW, STARTUPINFOW,
-    TerminateProcess, UpdateProcThreadAttribute, WaitForSingleObject,
+    TerminateProcess, UpdateProcThreadAttribute, WaitForMultipleObjects, WaitForSingleObject,
 };
 
 use crate::acl_ledger::{
@@ -132,6 +132,20 @@ pub fn launch_atomic(request: &LaunchRequest) -> Result<u8, String> {
 }
 
 pub fn launch_appcontainer(request: &LaunchRequest) -> Result<u8, String> {
+    launch_appcontainer_with_owner(request, None)
+}
+
+pub fn launch_appcontainer_owned(
+    request: &LaunchRequest,
+    owner_process: HANDLE,
+) -> Result<u8, String> {
+    launch_appcontainer_with_owner(request, Some(owner_process))
+}
+
+fn launch_appcontainer_with_owner(
+    request: &LaunchRequest,
+    owner_process: Option<HANDLE>,
+) -> Result<u8, String> {
     validate_appcontainer_policy(request)?;
     unsafe {
         let job = create_kill_on_close_job()?;
@@ -150,7 +164,7 @@ pub fn launch_appcontainer(request: &LaunchRequest) -> Result<u8, String> {
             }
         };
         let result = with_acl_grants(request, &sid, || {
-            create_appcontainer_child(request, job, profile.sid)
+            create_appcontainer_child(request, job, profile.sid, owner_process)
         });
         // The kill-on-close Job is the kernel backstop either way: closing the
         // last handle terminates whatever the settlement pass could not prove
@@ -1107,6 +1121,7 @@ unsafe fn create_appcontainer_child(
     request: &LaunchRequest,
     job: HANDLE,
     app_container_sid: *mut c_void,
+    owner_process: Option<HANDLE>,
 ) -> Result<u8, LaunchFailure> {
     let mut command = quote_command(&request.executable, &request.arguments);
     let executable = wide(&request.executable);
@@ -1238,7 +1253,7 @@ unsafe fn create_appcontainer_child(
             // Diagnostics go to stderr: stdout is reserved for the child's
             // relayed worker response.
             eprintln!("{{\"appContainer\":true,\"inJob\":true,\"atomicJob\":true}}");
-            unsafe { wait_for_child(process.hProcess, request.timeout_ms) }
+            unsafe { wait_for_child_or_owner(process.hProcess, owner_process, request.timeout_ms) }
         } else {
             Err(
                 "AppContainer launch did not establish the required token and Job boundary"
@@ -1356,6 +1371,37 @@ unsafe fn wait_for_child(process: HANDLE, timeout_ms: Option<u64>) -> Result<u8,
     if wait != WAIT_OBJECT_0 {
         return Err(last_error("WaitForSingleObject"));
     }
+    unsafe { child_exit_code(process) }
+}
+
+unsafe fn wait_for_child_or_owner(
+    child: HANDLE,
+    owner: Option<HANDLE>,
+    timeout_ms: Option<u64>,
+) -> Result<u8, String> {
+    let Some(owner) = owner else {
+        return unsafe { wait_for_child(child, timeout_ms) };
+    };
+    let timeout_ms = timeout_ms.unwrap_or(DEFAULT_LAUNCH_TIMEOUT_MS);
+    let handles = [child, owner];
+    let wait = unsafe {
+        WaitForMultipleObjects(handles.len() as u32, handles.as_ptr(), 0, timeout_ms as u32)
+    };
+    if wait == WAIT_OBJECT_0 {
+        return unsafe { child_exit_code(child) };
+    }
+    if wait == WAIT_OBJECT_0 + 1 {
+        return Err("Runtime Host owner exited during sandbox launch".to_owned());
+    }
+    if wait == WAIT_TIMEOUT {
+        return Err(format!("child exceeded the {timeout_ms} ms launch timeout"));
+    }
+    Err(last_error(
+        "WaitForMultipleObjects(child or Runtime Host owner)",
+    ))
+}
+
+unsafe fn child_exit_code(process: HANDLE) -> Result<u8, String> {
     let mut exit_code = 1;
     if unsafe { GetExitCodeProcess(process, &mut exit_code) } == 0 {
         return Err(last_error("GetExitCodeProcess"));

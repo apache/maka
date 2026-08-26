@@ -35,6 +35,7 @@ import type {
   DesktopRuntimeHostCandidateStartResult,
 } from '../runtime-host-desktop-candidate.js';
 import {
+  DesktopLocalHostRetirementError,
   RuntimeHostPairingFinalizationInterruptedError,
   RuntimeHostUpgradeCancelledError,
   startRuntimeHostDesktopManager,
@@ -128,15 +129,141 @@ test('quiesces reconnect and waits for the Host process before update install', 
     },
   });
 
-  const preparation = await owner.prepareForUpdate(false);
-  assert.equal(preparation.kind, 'prepared');
-  assert.equal(current.prepareUpgradeCalls, 1);
-  assert.deepEqual(current.prepareUpgradeAuthorities, [false]);
+  const retirement = await owner.retireOwnedLocalHost('refuse_active_work');
+  assert.equal(retirement.kind, 'retired');
+  assert.equal(current.prepareRetirementCalls, 1);
+  assert.deepEqual(current.retirementModes, ['refuse_active_work']);
   assert.equal(waitedForPid, 42);
   assert.equal(starts, 1);
-  if (preparation.kind === 'prepared') preparation.rollback();
+  if (retirement.kind === 'retired') retirement.resume();
   await reconnected;
   assert.equal(starts, 2);
+  await owner.close();
+});
+
+test('retires the owned ephemeral Host before Desktop quit', async () => {
+  const events: string[] = [];
+  const current = candidateHarness({
+    activeTasks: true,
+    disconnectOnPrepare: true,
+    onPrepare: () => events.push('prepare-host'),
+  });
+  const owner = await startRuntimeHostDesktopManager({
+    candidateLaunchBarrier: {
+      connect: async () => assert.fail('mocked candidate startup bypasses the barrier'),
+      pause: () => events.push('pause-launches'),
+      retireExcept: async (pid: number) => {
+        events.push(`retire-except:${pid}`);
+      },
+      resume: () => events.push('resume-launches'),
+      release: () => events.push('release-launches'),
+    },
+  } as unknown as DesktopRuntimeHostCandidateStartInput, {
+    startCandidate: async () => ready(current.candidate),
+    waitForHostExit: async (pid) => {
+      events.push(`wait:${pid}`);
+    },
+  });
+
+  await owner.retireOwnedLocalHost('interrupt_active_work');
+
+  assert.deepEqual(current.retirementModes, ['interrupt_active_work']);
+  assert.deepEqual(events, [
+    'pause-launches',
+    'retire-except:42',
+    'prepare-host',
+    'wait:42',
+  ]);
+  await owner.close();
+  assert.equal(events.at(-1), 'release-launches');
+  assert.ok(!events.includes('resume-launches'));
+});
+
+test('does not retire the local Host twice when an update handoff triggers quit', async () => {
+  const current = candidateHarness({ disconnectOnPrepare: true });
+  const waitedFor: number[] = [];
+  const owner = await startRuntimeHostDesktopManager({} as DesktopRuntimeHostCandidateStartInput, {
+    startCandidate: async () => ready(current.candidate),
+    waitForHostExit: async (pid) => {
+      waitedFor.push(pid);
+    },
+  });
+
+  const update = await owner.retireOwnedLocalHost('refuse_active_work');
+  assert.equal(update.kind, 'retired');
+  await owner.retireOwnedLocalHost('interrupt_active_work');
+
+  assert.equal(current.prepareRetirementCalls, 1);
+  assert.deepEqual(waitedFor, [42]);
+  await owner.close();
+});
+
+test('coalesces concurrent retirement intents onto one exact Host request', async () => {
+  const current = candidateHarness({ disconnectOnPrepare: true });
+  let releaseExitWait!: () => void;
+  let reportExitWait!: () => void;
+  const exitWaitStarted = new Promise<void>((resolve) => {
+    reportExitWait = resolve;
+  });
+  const exitWait = new Promise<void>((resolve) => {
+    releaseExitWait = resolve;
+  });
+  const owner = await startRuntimeHostDesktopManager({} as DesktopRuntimeHostCandidateStartInput, {
+    startCandidate: async () => ready(current.candidate),
+    waitForHostExit: async () => {
+      reportExitWait();
+      await exitWait;
+    },
+  });
+
+  const update = owner.retireOwnedLocalHost('refuse_active_work');
+  await exitWaitStarted;
+  const quit = owner.retireOwnedLocalHost('interrupt_active_work');
+  releaseExitWait();
+  assert.deepEqual(
+    (await Promise.all([update, quit])).map(({ kind }) => kind),
+    ['retired', 'retired'],
+  );
+
+  assert.equal(current.prepareRetirementCalls, 1);
+  assert.deepEqual(current.retirementModes, ['refuse_active_work']);
+  await owner.close();
+});
+
+test('reissues a concurrent strong retirement when weak retirement is refused', async () => {
+  let reportWeakPrepare!: () => void;
+  let releaseWeakPrepare!: () => void;
+  const weakPrepareStarted = new Promise<void>((resolve) => {
+    reportWeakPrepare = resolve;
+  });
+  const weakPrepareGate = new Promise<void>((resolve) => {
+    releaseWeakPrepare = resolve;
+  });
+  const current = candidateHarness({
+    activeTasks: true,
+    disconnectOnPrepare: true,
+    onPrepare: async (mode) => {
+      if (mode !== 'refuse_active_work') return;
+      reportWeakPrepare();
+      await weakPrepareGate;
+    },
+  });
+  const owner = await startRuntimeHostDesktopManager({} as DesktopRuntimeHostCandidateStartInput, {
+    startCandidate: async () => ready(current.candidate),
+    waitForHostExit: async () => {},
+  });
+
+  const update = owner.retireOwnedLocalHost('refuse_active_work');
+  await weakPrepareStarted;
+  const quit = owner.retireOwnedLocalHost('interrupt_active_work');
+  releaseWeakPrepare();
+
+  assert.deepEqual(await update, { kind: 'active_tasks' });
+  assert.equal((await quit).kind, 'retired');
+  assert.deepEqual(current.retirementModes, [
+    'refuse_active_work',
+    'interrupt_active_work',
+  ]);
   await owner.close();
 });
 
@@ -163,15 +290,15 @@ test('retires unadopted candidates before draining the tracked Host', async () =
     },
   });
 
-  const preparation = await owner.prepareForUpdate(false);
-  assert.equal(preparation.kind, 'prepared');
+  const retirement = await owner.retireOwnedLocalHost('refuse_active_work');
+  assert.equal(retirement.kind, 'retired');
   assert.deepEqual(events, [
     'pause-launches',
     'retire-except:42',
     'prepare-host',
     'wait:42',
   ]);
-  if (preparation.kind === 'prepared') preparation.rollback();
+  if (retirement.kind === 'retired') retirement.resume();
   assert.equal(events.at(-1), 'resume-launches');
   await owner.close();
   assert.equal(events.at(-1), 'release-launches');
@@ -194,10 +321,34 @@ test('resumes candidate launches when active tasks block the update', async () =
     startCandidate: async () => ready(current.candidate),
   });
 
-  assert.deepEqual(await owner.prepareForUpdate(false), { kind: 'active_tasks' });
+  assert.deepEqual(await owner.retireOwnedLocalHost('refuse_active_work'), {
+    kind: 'active_tasks',
+  });
   assert.deepEqual(events, ['pause', 'retire', 'resume']);
   await owner.close();
   assert.equal(events.at(-1), 'release');
+});
+
+test('preserves Host facts when authorized retirement is refused', async () => {
+  const current = candidateHarness({ activeTasks: 'always' });
+  const owner = await startRuntimeHostDesktopManager({
+    rootPath: '/test-root',
+  } as DesktopRuntimeHostCandidateStartInput, {
+    startCandidate: async () => ready(current.candidate),
+  });
+
+  await assert.rejects(
+    owner.retireOwnedLocalHost('interrupt_active_work'),
+    (error: unknown) =>
+      error instanceof DesktopLocalHostRetirementError &&
+      error.facts.hostId === 'test-host' &&
+      error.facts.hostEpoch === 'test-host-epoch' &&
+      error.facts.rootPath === '/test-root' &&
+      error.facts.pid === 42 &&
+      error.cause instanceof Error &&
+      error.cause.message === 'Runtime Host refused authorized retirement',
+  );
+  await owner.close();
 });
 
 test('resumes candidate launches when candidate retirement fails', async () => {
@@ -218,7 +369,14 @@ test('resumes candidate launches when candidate retirement fails', async () => {
     startCandidate: async () => ready(current.candidate),
   });
 
-  await assert.rejects(owner.prepareForUpdate(false), /retirement failed/);
+  await assert.rejects(
+    owner.retireOwnedLocalHost('refuse_active_work'),
+    (error: unknown) =>
+      error instanceof DesktopLocalHostRetirementError &&
+      error.facts.pid === 42 &&
+      error.cause instanceof Error &&
+      error.cause.message === 'retirement failed',
+  );
   assert.deepEqual(events, ['pause', 'retire', 'resume']);
   await owner.handleBotIncomingMessage({ text: 'still connected' } as BotIncomingMessage);
   assert.equal(current.botMessages, 1);
@@ -235,12 +393,14 @@ test('keeps active-task confirmation bound to the current Host', async () => {
     },
   });
 
-  assert.deepEqual(await owner.prepareForUpdate(false), { kind: 'active_tasks' });
+  assert.deepEqual(await owner.retireOwnedLocalHost('refuse_active_work'), {
+    kind: 'active_tasks',
+  });
   await owner.handleBotIncomingMessage({ text: 'still connected' } as BotIncomingMessage);
   assert.equal(current.botMessages, 1);
-  const authorized = await owner.prepareForUpdate(true);
-  assert.equal(authorized.kind, 'prepared');
-  assert.deepEqual(current.prepareUpgradeAuthorities, [false, true]);
+  const authorized = await owner.retireOwnedLocalHost('interrupt_active_work');
+  assert.equal(authorized.kind, 'retired');
+  assert.deepEqual(current.retirementModes, ['refuse_active_work', 'interrupt_active_work']);
   assert.deepEqual(waitedFor, [42]);
   await owner.close();
 });
@@ -253,10 +413,9 @@ for (const lifecycleMode of ['service', 'remote'] as const) {
       waitForHostExit: async () => assert.fail(`${lifecycleMode} Host exit must not be awaited`),
     });
 
-    const preparation = await owner.prepareForUpdate(false);
-    assert.equal(preparation.kind, 'prepared');
-    assert.equal(current.prepareUpgradeCalls, 0);
-    if (preparation.kind === 'prepared') preparation.rollback();
+    const retirement = await owner.retireOwnedLocalHost('refuse_active_work');
+    assert.equal(retirement.kind, 'not_owned');
+    assert.equal(current.prepareRetirementCalls, 0);
     await owner.handleBotIncomingMessage({ text: 'still connected' } as BotIncomingMessage);
     assert.equal(current.botMessages, 1);
     await owner.close();
@@ -901,13 +1060,13 @@ function candidateHarness(
   options: {
     delayDisconnect?: boolean;
     disconnectOnPrepare?: boolean;
-    activeTasks?: boolean;
+    activeTasks?: boolean | 'always';
     lifecycleMode?: 'ephemeral' | 'service' | 'remote';
     hostId?: string;
     hostEpoch?: string;
     finalizeFailures?: Error[];
     disconnectOnFinalizeFailure?: boolean;
-    onPrepare?: () => void;
+    onPrepare?: (mode: string) => unknown | Promise<unknown>;
   } = {},
 ) {
   let resolveClosed: (() => void) | undefined;
@@ -918,13 +1077,14 @@ function candidateHarness(
   let botMessages = 0;
   const stoppedSessions: string[] = [];
   let lifecycleState: 'ready' | 'unavailable' = 'ready';
-  let prepareUpgradeCalls = 0;
+  let prepareRetirementCalls = 0;
   let finalizeCalls = 0;
   const finalizeTimeouts: number[] = [];
-  const prepareUpgradeAuthorities: boolean[] = [];
+  const retirementModes: string[] = [];
   const candidate = {
     closed,
     hostLifecycleMode: options.lifecycleMode ?? 'ephemeral',
+    hostPid: 42,
     client: {
       hostId: options.hostId ?? 'test-host',
       hostEpoch: options.hostEpoch ?? 'test-host-epoch',
@@ -934,11 +1094,14 @@ function candidateHarness(
       async queryHostDiagnostics() {
         return { pid: 42 };
       },
-      async prepareHostUpgrade(allowInterruptActiveTasks: boolean) {
-        options.onPrepare?.();
-        prepareUpgradeCalls += 1;
-        prepareUpgradeAuthorities.push(allowInterruptActiveTasks);
-        if (options.activeTasks && !allowInterruptActiveTasks) {
+      async prepareHostRetirement(mode: string) {
+        prepareRetirementCalls += 1;
+        retirementModes.push(mode);
+        await options.onPrepare?.(mode);
+        if (
+          (options.activeTasks && mode === 'refuse_active_work') ||
+          options.activeTasks === 'always'
+        ) {
           return { kind: 'active_tasks' as const };
         }
         if (options.disconnectOnPrepare) {
@@ -991,11 +1154,11 @@ function candidateHarness(
     get stoppedSessions() {
       return stoppedSessions;
     },
-    get prepareUpgradeCalls() {
-      return prepareUpgradeCalls;
+    get prepareRetirementCalls() {
+      return prepareRetirementCalls;
     },
-    get prepareUpgradeAuthorities() {
-      return prepareUpgradeAuthorities;
+    get retirementModes() {
+      return retirementModes;
     },
     get finalizeCalls() {
       return finalizeCalls;

@@ -26,6 +26,7 @@
  * Connection-setup events live in ./connections.ts (separate channel).
  */
 
+import * as nodeCrypto from 'node:crypto';
 import type {
   AdditionalPermissionRequest,
   PermissionMode,
@@ -398,6 +399,24 @@ export function messageContentsEqual(left: MessageContent, right: MessageContent
   );
 }
 
+export function messageContentDigest(content: MessageContent): `sha256:${string}` {
+  return `sha256:${nodeCrypto
+    .createHash('sha256')
+    .update(JSON.stringify(canonicalizeMessageContent(normalizeMessageContent(content))))
+    .digest('hex')}`;
+}
+
+function canonicalizeMessageContent(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(canonicalizeMessageContent);
+  if (value === null || typeof value !== 'object') return value;
+  return Object.fromEntries(
+    Object.entries(value)
+      .filter(([, entry]) => entry !== undefined)
+      .sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0))
+      .map(([key, entry]) => [key, canonicalizeMessageContent(entry)]),
+  );
+}
+
 function inlineReferencesEqual(left: InlineReference, right: InlineReference): boolean {
   return (
     left.kind === right.kind &&
@@ -486,6 +505,7 @@ export type SessionEvent =
   | PlanSubmittedEvent
   | TokenUsageEvent
   | SteeringMessageEvent
+  | MessageAdmissionEvent
   | QueueUpdateEvent
   | ProviderRetryEvent
   | ErrorEvent
@@ -1062,6 +1082,18 @@ export interface SteeringMessageEvent extends BaseEvent {
   messageId: string;
   content: MessageContent;
   submittedContentDigest?: `sha256:${string}`;
+}
+
+/**
+ * Transient Host projection fact: a submitted message now belongs to this
+ * Turn. It is emitted by the session projector, not by a backend or durable
+ * event ledger, so a client can bind a queued admission without guessing from
+ * timing or Turn ids returned by a stale command response.
+ */
+export interface MessageAdmissionEvent extends BaseEvent {
+  type: 'message_admission';
+  messageId: string;
+  outcome: 'admitted' | 'retracted';
 }
 
 /**

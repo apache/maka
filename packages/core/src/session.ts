@@ -73,6 +73,16 @@ export const SESSION_BLOCKED_REASONS = [
 
 export type SessionBlockedReason = (typeof SESSION_BLOCKED_REASONS)[number];
 
+/** Reserved durable role for the one WorkHub coordination conversation owned by a Runtime Host. */
+export const WORKHUB_COORDINATION_SESSION_ROLE = 'workhub_coordination' as const;
+export const WORKHUB_COORDINATION_SESSION_ID = 'maka_workhub_coordination' as const;
+export type SessionRole = typeof WORKHUB_COORDINATION_SESSION_ROLE;
+
+/** Whether an identifier targets the reserved WorkHub Coordination Session. */
+export function isWorkHubCoordinationSessionId(sessionId: string): boolean {
+  return sessionId === WORKHUB_COORDINATION_SESSION_ID;
+}
+
 export const TURN_STATUSES = ['running', 'completed', 'aborted', 'failed'] as const;
 
 export type TurnStatus = (typeof TURN_STATUSES)[number];
@@ -158,6 +168,7 @@ export interface SessionConversationCopy {
   sourceTurnId: string;
   requestFingerprint: `sha256:${string}`;
   state: 'preparing' | 'committed';
+  intent?: 'side_conversation';
 }
 
 export type SubagentSessionRuntimeSummary = Omit<
@@ -194,7 +205,7 @@ export function isTurnStatus(value: unknown): value is TurnStatus {
 // Header (JSONL line 1)
 // ============================================================================
 
-export const SESSION_TOOL_PROFILES = ['headless-coding-v1'] as const;
+export const SESSION_TOOL_PROFILES = ['headless-coding-v1', 'workhub-coordination-v1'] as const;
 export type SessionToolProfile = (typeof SESSION_TOOL_PROFILES)[number];
 
 export function isSessionToolProfile(value: unknown): value is SessionToolProfile {
@@ -209,6 +220,8 @@ export interface SessionExternalOrigin {
 export interface SessionHeader {
   // Identity
   id: string;
+  /** Absent means an ordinary Session; special roles remain on the same Session substrate. */
+  readonly role?: SessionRole;
   workspaceRoot: string;
   cwd: string;
   /** Stable project-catalog association. Null means the user explicitly chose no project. */
@@ -282,9 +295,21 @@ export interface SessionHeader {
   schemaVersion: 1;
 }
 
-export type SessionHeaderPatch = Partial<Omit<SessionHeader, 'isArchived'>> & {
+export type SessionHeaderPatch = Partial<Omit<SessionHeader, 'isArchived' | 'role'>> & {
   readonly isArchived?: never;
+  readonly role?: never;
 };
+
+export function isWorkHubCoordinationSession(session: Pick<SessionHeader, 'role'>): boolean {
+  return session.role === WORKHUB_COORDINATION_SESSION_ROLE;
+}
+
+/** Whether durable state claims either half of the reserved Coordination identity/role pair. */
+export function isWorkHubCoordinationSessionTarget(
+  session: Pick<SessionHeader, 'id' | 'role'>,
+): boolean {
+  return isWorkHubCoordinationSessionId(session.id) || isWorkHubCoordinationSession(session);
+}
 
 /**
  * The backend a live build may select.
@@ -452,7 +477,7 @@ const SUBAGENT_SESSION_SPAWN_IDENTITY_SHAPE = defineObjectShape<SubagentSessionS
 );
 const SESSION_CONVERSATION_COPY_SHAPE = defineObjectShape<SessionConversationCopy>()(
   ['kind', 'sourceSessionId', 'sourceTurnId', 'requestFingerprint', 'state'],
-  [],
+  ['intent'],
 );
 const SESSION_LINEAGE_ID_MAX_CHARS = 512;
 const SESSION_LINEAGE_CONTROL_CHARACTERS = /[\u0000-\u001f\u007f]/;
@@ -551,6 +576,8 @@ export function isSessionConversationCopy(value: unknown): value is SessionConve
     isRecord(value) &&
     hasExactShape(value, SESSION_CONVERSATION_COPY_SHAPE) &&
     (value.kind === 'branch' || value.kind === 'revision') &&
+    (value.intent === undefined ||
+      (value.kind === 'branch' && value.intent === 'side_conversation')) &&
     isSessionLineageId(value.sourceSessionId) &&
     isSessionLineageId(value.sourceTurnId) &&
     typeof value.requestFingerprint === 'string' &&

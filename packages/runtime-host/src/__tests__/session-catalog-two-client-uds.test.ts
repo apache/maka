@@ -351,12 +351,12 @@ test('two Clients share stable Session creation, CAS configuration, and catalog 
       const secondCwd = join(base, 'workspace-second');
       await Promise.all([mkdir(firstCwd), mkdir(secondCwd)]);
       const relocationOutcomes = await Promise.all([
-        desktop.relocateSessionWorkspace({
+        desktop.request('session.workspace.relocate', {
           sessionId: narrowedSession.id,
           expectedRevision: narrowedSession.revision,
           workspace: { kind: 'host_path', path: firstCwd },
         }),
-        tui.relocateSessionWorkspace({
+        tui.request('session.workspace.relocate', {
           sessionId: narrowedSession.id,
           expectedRevision: narrowedSession.revision,
           workspace: { kind: 'host_path', path: secondCwd },

@@ -30,6 +30,10 @@ import { markPersisted } from '@maka/core/persisted-value';
 import type { StoredMessage } from '@maka/core/session';
 import { decodePersistedToolResultContent } from '@maka/core/tool-result-record-schema';
 import { isEmittedAgentRunEventType, isSessionInlineRun } from '@maka/core/agent-run';
+import {
+  decodeModelCallAttempt,
+  MODEL_CALL_ATTEMPT_EVENT_TYPE,
+} from '@maka/core/model-call-attempt';
 import { TOOL_RECOVERY_DECISION_FACT_KIND } from '@maka/core/tool-recovery-fact';
 import {
   buildHistoryCompactCheckpoint,
@@ -87,6 +91,10 @@ export type ConversationCopyArtifactReferenceMap =
       readonly relativePaths: ReadonlyMap<string, string>;
       readonly linkedChildren:
         | { readonly mode: 'reject' }
+        | {
+            readonly mode: 'snapshot';
+            readonly archivedResults: ReadonlyMap<string, string>;
+          }
         | {
             readonly mode: 'preserve_validated';
             readonly references: ReadonlyMap<string, ConversationCopyExternalChildReferences>;
@@ -316,6 +324,7 @@ export async function cloneConversationRuntimeLedger(
     ),
   );
   const providerTraceIds = providerTraceIdMap(flattenedPlans, input.newId);
+  const logicalCallIds = logicalModelCallIdMap(flattenedPlans, input.newId);
   const operationIds = toolOperationIdMap(flattenedPlans, targetInvocationIds);
   const references: ConversationCopyReferenceMap = {
     ...input.referenceMap,
@@ -365,6 +374,7 @@ export async function cloneConversationRuntimeLedger(
         checkpointIds,
         operationalEventIds,
         providerTraceIds,
+        logicalCallIds,
       );
       return clonedEvent ? [clonedEvent] : [];
     });
@@ -532,6 +542,20 @@ export function archivedToolResultContainsConversationOwnedReferences(
   return false;
 }
 
+export function archivedToolResultContainsLinkedChildReferences(serializedResult: string): boolean {
+  const value = deserializeToolResultArchive(serializedResult);
+  if (isArchivedToolResultPlaceholder(value)) return false;
+  try {
+    return (
+      conversationCopyLinkedChildReferences(
+        decodePersistedToolResultContent(markPersisted<ToolResultContent>(value)),
+      ).length > 0
+    );
+  } catch {
+    return false;
+  }
+}
+
 export function conversationCopyLinkedChildReferences(
   content: ToolResultContent,
 ): readonly ConversationCopyLinkedChildReference[] {
@@ -611,6 +635,7 @@ function cloneAgentRunEvent(
   checkpointIds: Map<string, string>,
   operationalEventIds: ReadonlyMap<string, string>,
   providerTraceIds: ReadonlyMap<string, string>,
+  logicalCallIds: ReadonlyMap<string, string>,
 ): EmittedAgentRunEvent | null {
   if (event.type === 'event_corrupt') {
     throw new Error(`Cannot copy corrupt AgentRun event ${event.id}`);
@@ -630,6 +655,14 @@ function cloneAgentRunEvent(
       references,
       operationalEventIds,
       providerTraceIds,
+    );
+  } else if (event.type === MODEL_CALL_ATTEMPT_EVENT_TYPE) {
+    data = rewriteModelCallAttempt(
+      event,
+      { sessionId: ids.sessionId, runId: ids.runId, attemptId: ids.eventId },
+      references,
+      providerTraceIds,
+      logicalCallIds,
     );
   } else if (event.type === 'history_compact_checkpoint_recorded') {
     const sourceCheckpoint = event.data?.checkpoint;
@@ -742,6 +775,49 @@ function rewriteProviderRequestAttempt(
   };
 }
 
+function rewriteModelCallAttempt(
+  event: AgentRunEvent,
+  ids: {
+    readonly sessionId: string;
+    readonly runId: string;
+    readonly attemptId: string;
+  },
+  references: ConversationCopyReferenceMap,
+  providerTraceIds: ReadonlyMap<string, string>,
+  logicalCallIds: ReadonlyMap<string, string>,
+): Record<string, unknown> {
+  // A ModelCallAttempt is an accounting authority whose payload identity is its
+  // portable source of truth and must agree with the rewritten envelope. Leaving
+  // the source `sessionId`/`runId` in place makes the model-call projection
+  // reject the attempt as unreadable (its envelope now disagrees), and reusing
+  // the source `attemptId` — the ledger's global primary key — lets the copy
+  // overwrite the source session's own row. Rewrite the owned identity the same
+  // way the sibling provider-request rewriters do.
+  //
+  // Unlike those siblings, do NOT require `attempt.attemptId === event.id`. A
+  // well-formed writer emits them equal, but the pre-fix copy path had no
+  // rewriter for this event, so it rewrote the envelope id while leaving the
+  // nested payload at the source identity. Sessions copied before that fix carry
+  // attempts whose nested `attemptId` disagrees with their envelope; asserting
+  // the writer contract on the *source* would strand them — they could never be
+  // copied again. The rewrite below reassigns the identity wholesale, so a stale
+  // nested identity is repaired rather than trusted and the *output* still
+  // satisfies the `event.id === attemptId` contract. `decodeModelCallAttempt`
+  // still rejects a schema-invalid payload.
+  const attempt = decodeModelCallAttempt(event.data);
+  return {
+    ...attempt,
+    sessionId: ids.sessionId,
+    runId: ids.runId,
+    attemptId: ids.attemptId,
+    logicalCallId: requiredMappedId(logicalCallIds, attempt.logicalCallId, 'logical model call'),
+    traceId: requiredMappedId(providerTraceIds, attempt.traceId, 'provider trace'),
+    ...(attempt.captureArtifactId !== undefined
+      ? { captureArtifactId: rewriteOwnedArtifactId(attempt.captureArtifactId, references) }
+      : {}),
+  };
+}
+
 function providerRequestCapture(event: AgentRunEvent): Record<string, unknown> & {
   readonly traceId: string;
   readonly captureId: string;
@@ -820,12 +896,30 @@ function providerTraceIdMap(
     for (const event of operationalEvents) {
       if (
         event.type !== 'provider_request_captured' &&
-        event.type !== 'provider_request_attempt_recorded'
+        event.type !== 'provider_request_attempt_recorded' &&
+        event.type !== MODEL_CALL_ATTEMPT_EVENT_TYPE
       ) {
         continue;
       }
       const traceId = event.data?.traceId;
       if (typeof traceId === 'string' && !result.has(traceId)) result.set(traceId, newId());
+    }
+  }
+  return result;
+}
+
+function logicalModelCallIdMap(
+  plans: readonly { readonly operationalEvents: readonly AgentRunEvent[] }[],
+  newId: () => string,
+): Map<string, string> {
+  const result = new Map<string, string>();
+  for (const { operationalEvents } of plans) {
+    for (const event of operationalEvents) {
+      if (event.type !== MODEL_CALL_ATTEMPT_EVENT_TYPE) continue;
+      const logicalCallId = event.data?.logicalCallId;
+      if (typeof logicalCallId === 'string' && !result.has(logicalCallId)) {
+        result.set(logicalCallId, newId());
+      }
     }
   }
   return result;
@@ -993,7 +1087,12 @@ function rewriteRuntimeEventReferences(
         : event.content;
   const refs = event.refs
     ? (() => {
-        const { operationId: _operationId, traceEventId: _traceEventId, ...preserved } = event.refs;
+        const {
+          operationId: _operationId,
+          parentOperationId: _parentOperationId,
+          traceEventId: _traceEventId,
+          ...preserved
+        } = event.refs;
         const traceEventId = event.refs.traceEventId
           ? references.agentRunEventIds.get(event.refs.traceEventId)
           : undefined;
@@ -1009,10 +1108,21 @@ function rewriteRuntimeEventReferences(
                 ),
               }
             : {}),
-          ...(event.refs.artifactId
+          ...(event.refs.parentOperationId
             ? {
-                artifactId: rewriteOwnedArtifactId(event.refs.artifactId, references),
+                parentOperationId: rewriteOwnedId(
+                  event.refs.parentOperationId,
+                  references.operationIds,
+                  'tool operation',
+                ),
               }
+            : {}),
+          ...(event.refs.artifactId
+            ? archivedSnapshotResult(event.refs.artifactId, references) !== undefined
+              ? {}
+              : {
+                  artifactId: rewriteOwnedArtifactId(event.refs.artifactId, references),
+                }
             : {}),
           ...(event.refs.sourceInvocationId
             ? {
@@ -1111,6 +1221,8 @@ function rewriteToolResultContent(
     return { ...content, ref: rewriteStorageRef(content.ref, references) };
   }
   if (content.kind === 'archived_tool_result') {
+    const snapshot = rewriteArchivedSnapshot(content, references);
+    if (snapshot) return snapshot;
     return {
       ...content,
       runtimeEventId: rewriteOwnedId(
@@ -1124,12 +1236,21 @@ function rewriteToolResultContent(
     };
   }
   if (content.kind === 'json' && isArchivedToolResultPlaceholder(content.value)) {
+    const snapshot = rewriteArchivedSnapshot(content.value, references);
+    if (snapshot) return snapshot;
     return {
       ...content,
       value: rewriteArchivedToolResult(content.value, references),
     };
   }
   if (content.kind === 'subagent') {
+    if (linkedChildrenAreSnapshots(references) && content.childSessionId) {
+      const { childSessionId: _childSessionId, runId: _runId, ...snapshot } = content;
+      return {
+        ...snapshot,
+        artifactIds: rewriteSnapshotArtifactIds(content.artifactIds, references),
+      };
+    }
     return {
       ...content,
       ...(content.runId
@@ -1153,6 +1274,18 @@ function rewriteToolResultContent(
     return {
       ...content,
       items: content.items.map((item) => {
+        if (linkedChildrenAreSnapshots(references) && item.childSessionId) {
+          const {
+            childSessionId: _childSessionId,
+            runId: _runId,
+            resumedFromRunId: _resumedFromRunId,
+            ...snapshot
+          } = item;
+          return {
+            ...snapshot,
+            artifactIds: rewriteSnapshotArtifactIds(item.artifactIds, references),
+          };
+        }
         return {
           ...item,
           ...(item.runId
@@ -1183,6 +1316,8 @@ function rewriteRuntimeToolResult(
   references: ConversationCopyMessageReferenceMap,
 ): unknown {
   if (isArchivedToolResultPlaceholder(value)) {
+    const snapshot = rewriteArchivedSnapshot(value, references);
+    if (snapshot) return snapshot;
     return rewriteArchivedToolResult(value, references);
   }
   let content: ToolResultContent;
@@ -1206,6 +1341,7 @@ function validatedExternalChildReferences(
   references: ConversationCopyMessageReferenceMap,
 ): ConversationCopyExternalChildReferences | undefined {
   if (references.mode === 'preserve_external') return undefined;
+  if (references.linkedChildren.mode === 'snapshot') return undefined;
   if (references.linkedChildren.mode === 'reject') {
     throw new Error(`Conversation copy cannot retain linked child Session ${childSessionId}`);
   }
@@ -1214,6 +1350,81 @@ function validatedExternalChildReferences(
     throw new Error(`Conversation copy is missing linked child Session ${childSessionId}`);
   }
   return external;
+}
+
+function linkedChildrenAreSnapshots(references: ConversationCopyMessageReferenceMap): boolean {
+  return references.mode === 'exact' && references.linkedChildren.mode === 'snapshot';
+}
+
+function rewriteSnapshotArtifactIds(
+  artifactIds: readonly string[],
+  references: ConversationCopyMessageReferenceMap,
+): readonly string[] {
+  if (references.mode !== 'exact' || references.linkedChildren.mode !== 'snapshot') {
+    return artifactIds;
+  }
+  return artifactIds.map((artifactId) =>
+    requiredMappedId(references.artifactIds, artifactId, 'linked Artifact'),
+  );
+}
+
+function rewriteArchivedSnapshot(
+  value:
+    | ArchivedToolResultPlaceholder
+    | Extract<ToolResultContent, { kind: 'archived_tool_result' }>,
+  references: ConversationCopyMessageReferenceMap,
+): ToolResultContent | undefined {
+  const serializedResult = archivedSnapshotResult(value.artifactId, references);
+  if (serializedResult === undefined) return undefined;
+  const archived = deserializeToolResultArchive(serializedResult);
+  if (isArchivedToolResultPlaceholder(archived)) {
+    return unavailableArchivedToolResult(value, references);
+  }
+  try {
+    const decoded = decodePersistedToolResultContent(markPersisted<ToolResultContent>(archived));
+    return decoded.kind === 'archived_tool_result'
+      ? unavailableArchivedToolResult(value, references)
+      : rewriteToolResultContent(decoded, references);
+  } catch {
+    return unavailableArchivedToolResult(value, references);
+  }
+}
+
+function archivedSnapshotResult(
+  artifactId: string | undefined,
+  references: ConversationCopyMessageReferenceMap,
+): string | undefined {
+  if (
+    artifactId === undefined ||
+    references.mode !== 'exact' ||
+    references.linkedChildren.mode !== 'snapshot'
+  ) {
+    return undefined;
+  }
+  return references.linkedChildren.archivedResults.get(artifactId);
+}
+
+function unavailableArchivedToolResult(
+  value:
+    | ArchivedToolResultPlaceholder
+    | Extract<ToolResultContent, { kind: 'archived_tool_result' }>,
+  references: ConversationCopyMessageReferenceMap,
+): Extract<ToolResultContent, { kind: 'archived_tool_result' }> {
+  return {
+    kind: 'archived_tool_result',
+    status: 'missing',
+    runtimeEventId: rewriteOwnedId(
+      value.runtimeEventId,
+      references.runtimeEventIds,
+      'RuntimeEvent',
+    ),
+    toolCallId: value.toolCallId,
+    toolName: value.toolName,
+    originalEstimatedTokens: value.originalEstimatedTokens,
+    originalBytes: value.originalBytes,
+    rewriteVersion: value.rewriteVersion,
+    reason: value.reason,
+  };
 }
 
 function rewriteLinkedRunId(

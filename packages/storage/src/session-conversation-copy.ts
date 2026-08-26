@@ -41,6 +41,7 @@ export function isValidConversationCopyTransition(
     previous.sourceSessionId === next.sourceSessionId &&
     previous.sourceTurnId === next.sourceTurnId &&
     previous.requestFingerprint === next.requestFingerprint &&
+    previous.intent === next.intent &&
     (previous.state !== 'committed' || next.state === 'committed') &&
     (previous.state !== 'preparing' || next.state === 'preparing' || next.state === 'committed')
   );

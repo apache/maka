@@ -48,6 +48,7 @@
 @import "./styles/model-switcher.css" layer(components);
 @import "./styles/chat-header.css" layer(components);
 @import "./styles/task-ledger.css" layer(components);
+@import "./styles/work-board.css" layer(components);
 @import "./styles/plan-mode.css" layer(components);
 @import "./styles/agent-graph.css" layer(components);
 @import "./styles/error.css" layer(components);

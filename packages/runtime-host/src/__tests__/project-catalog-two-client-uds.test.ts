@@ -22,7 +22,7 @@ import { mkdir, mkdtemp, realpath, rename, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
-import { openInteractiveProjectCatalogForWrite } from '@maka/storage';
+import { openInteractiveProjectCatalogForWrite } from '@maka/storage/project-catalog-authority';
 import { openInteractiveExecutionStoresForWrite } from '@maka/storage/execution-stores';
 import {
   resolveRootControlNamespace,

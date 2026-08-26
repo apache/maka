@@ -24,7 +24,7 @@ import { join } from 'node:path';
 import { describe, it } from 'node:test';
 import type { RuntimeEvent } from '@maka/core/runtime-event';
 import { canonicalToolArgsHash } from '@maka/core/tool-args-identity';
-import { createSqliteRuntimeStore } from '@maka/storage';
+import { createSqliteRuntimeStore } from '@maka/storage/sqlite-runtime-store';
 import { resolveRuntimeRecovery } from '../recovery-resolver.js';
 import { buildResumePlanFromRuntimeEvents } from '../runtime-resume.js';
 

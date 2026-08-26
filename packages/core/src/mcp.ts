@@ -17,7 +17,7 @@
  * under the License.
  */
 
-export const MCP_CONFIG_VERSION = 2 as const;
+export const MCP_CONFIG_VERSION = 3 as const;
 
 export type McpTransportKind = 'stdio' | 'streamable-http' | 'sse' | 'auto';
 
@@ -29,6 +29,7 @@ export interface McpStdioServerConfig {
   args?: string[];
   env?: Record<string, string>;
   cwd?: string;
+  protocol?: McpProtocolPreference;
 }
 
 export interface McpRemoteServerConfig {
@@ -243,6 +244,17 @@ export function isNonLoopbackCleartextHttp(url: URL): boolean {
  * fished out of a flattened IPC error string. */
 export type McpConfigAddResult = { status: 'added'; config: McpConfigFile } | { status: 'exists' };
 
+export type McpConfigSourceFailureReason =
+  | 'invalid-json'
+  | 'not-object'
+  | 'unsupported-version'
+  | 'missing-servers'
+  | 'protocol-version';
+
+export type McpConfigImportResult =
+  | { status: 'imported'; config: McpConfigFile; importedCount: number }
+  | { status: 'invalid'; reason: McpConfigSourceFailureReason; version?: string };
+
 export type McpConnectionState =
   | 'disabled'
   | 'disconnected'
@@ -331,9 +343,7 @@ export function isMcpStdioConfig(config: McpServerConfig): config is McpStdioSer
   return 'command' in config;
 }
 
-export function resolveMcpRemoteProtocolPreference(
-  config: McpRemoteServerConfig,
-): McpProtocolPreference {
+export function resolveMcpProtocolPreference(config: McpServerConfig): McpProtocolPreference {
   return config.protocol ?? 'legacy';
 }
 

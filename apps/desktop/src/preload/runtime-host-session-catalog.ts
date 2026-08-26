@@ -19,6 +19,35 @@
 
 import type { DesktopSessionSummary } from './bridge-contract.js';
 
+export interface RuntimeHostSessionCatalogRequest {
+  readonly hostId: string;
+  readonly sessions: Promise<DesktopSessionSummary[]>;
+}
+
+export interface RuntimeHostSessionCatalogCoverage {
+  readonly sessions: DesktopSessionSummary[];
+  readonly completeHostIds: string[];
+}
+
+export async function collectRuntimeHostSessionCatalogsWithCoverage(
+  requests: readonly RuntimeHostSessionCatalogRequest[],
+): Promise<RuntimeHostSessionCatalogCoverage> {
+  const results = await Promise.allSettled(requests.map((request) => request.sessions));
+  const fulfilled = results.flatMap((result, index) => result.status === 'fulfilled'
+    ? [{ hostId: requests[index]!.hostId, sessions: result.value }]
+    : []);
+  if (requests.length > 0 && fulfilled.length === 0) {
+    throw new AggregateError(
+      results.flatMap((result) => result.status === 'rejected' ? [result.reason] : []),
+      'Every Runtime Host Session Catalog request failed',
+    );
+  }
+  return {
+    sessions: sortSessionCatalogs(fulfilled.flatMap((entry) => entry.sessions)),
+    completeHostIds: fulfilled.map((entry) => entry.hostId),
+  };
+}
+
 export async function collectRuntimeHostSessionCatalogs(
   requests: readonly Promise<DesktopSessionSummary[]>[],
 ): Promise<DesktopSessionSummary[]> {
@@ -30,7 +59,11 @@ export async function collectRuntimeHostSessionCatalogs(
       'Every Runtime Host Session Catalog request failed',
     );
   }
-  return groups.flat().sort((left, right) => {
+  return sortSessionCatalogs(groups.flat());
+}
+
+function sortSessionCatalogs(sessions: DesktopSessionSummary[]): DesktopSessionSummary[] {
+  return sessions.sort((left, right) => {
     if (left.activityAt === undefined || right.activityAt === undefined) {
       throw new Error('Runtime Host Session Catalog activity is unavailable');
     }

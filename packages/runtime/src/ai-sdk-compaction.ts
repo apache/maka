@@ -722,7 +722,7 @@ export class AiSdkCompaction {
       // this step's payload (system prompt + projected messages + active tool
       // schemas) against the previous request's measured payload. Measured synchronously from
       // the SDK's own projection — no ledger dependency — so a same-turn
-      // `load_tools` schema expansion or a large tool result both count. This
+      // `tool_search` schema expansion or a large tool result both count. This
       // position measures BEFORE later shapers (prune) run, so it can
       // over-trigger; that is the recoverable direction, and the verdict owner
       // re-measures the post-shaping payload.
@@ -1534,7 +1534,7 @@ export class MidTurnCapacityCompactState {
  * the final-request estimate owner both measure with this ONE function, so
  * their raw payload comparisons against `lastRequestPayloadChars` are
  * commensurable and
- * same-turn tool-schema growth (a `load_tools` activation) is counted like
+ * same-turn tool-schema growth (a `tool_search` activation) is counted like
  * any other payload growth. The system prompt is constant between adjacent
  * requests — signed deltas cancel it — but the cold-start estimate (no usable
  * usage sample) is the whole payload, so omitting it would under-estimate by

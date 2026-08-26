@@ -24,7 +24,7 @@ import { join } from 'node:path';
 import { test } from 'node:test';
 import { localDayBoundsAt, type DailyReviewArchive } from '@maka/core/daily-review';
 import { openInteractiveDailyReviewAuthorityForWrite } from '@maka/storage/daily-review-authority';
-import { acquireOperationalStateDatabase } from '@maka/storage';
+import { acquireOperationalStateDatabase } from '@maka/storage/operational-state-store';
 import { resolveStorageRoot, tryAcquireInteractiveRootOwner } from '@maka/storage/root-authority';
 import { openInteractiveUsageStoresForWrite } from '@maka/storage/usage-stores';
 import type { ConnectionContext } from '../server/operation-dispatcher.js';

@@ -106,6 +106,8 @@ import { runMakaPiTuiTurn, type MakaPiTuiTurnRequest } from './pi-tui-turn.js';
 import { editorTheme, selectListTheme } from './tui-ansi.js';
 import { MakaAutocompleteAboveEditorComponent } from './tui-autocomplete-layout.js';
 import { TranscriptViewerOverlay } from './pi-tui-transcript-viewer.js';
+import { McpStatusOverlay } from './pi-tui-mcp-status.js';
+import type { TuiMcpSurface } from './tui-mcp-control.js';
 import { createShellRunElapsedTicker } from './shell-run-elapsed-ticker.js';
 import { createShellRunHydrationController } from './shell-run-hydration.js';
 import { sessionStatusBadge } from './tui-session-status.js';
@@ -212,6 +214,8 @@ export interface MakaPiTuiInput {
    *  whose listProviders/verify/save calls persist the connection + curated models
    *  via the host-owned stores. */
   onboarding?: MakaOnboardingSurface;
+  /** Client-owned MCP status and publication projection. Local TUI only in PR1. */
+  mcp?: TuiMcpSurface;
   /** First-run mode: auto-open the onboarding wizard on launch instead of
    *  waiting for /setup (used when the CLI starts with no configured connection). */
   firstRun?: boolean;
@@ -362,6 +366,9 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
   // that window would target the freshly attached Session instead of the Turn
   // being left behind.
   let detaching = false;
+  let sideConversation:
+    | { readonly parentSessionId: string; readonly sideSessionId: string }
+    | undefined;
   // True while the /session picker is open mid-turn: Escape must close the
   // overlay, not arm the double-Escape interrupt for the running Turn (#3380).
   let sessionPickerOverlayOpen = false;
@@ -462,8 +469,8 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
   const activityStrip = new MakaActivityStripComponent(metadata);
   const pendingQueue = new MakaPendingQueueComponent(state);
   const statusLine = new MakaStatusLineComponent(metadata);
-  // Show the whole slash-command set at once — discoverability is the point of
-  // the menu. Keep a little headroom above the current command count.
+  // Use the vendor editor's full 20-item autocomplete capacity. Larger command
+  // catalogs remain scrollable and keep an exact position/total counter.
   const editor = new MakaSkillHighlightEditor(tui, editorTheme(), {
     paddingX: 0,
     autocompleteMaxVisible: EDITOR_AUTOCOMPLETE_MAX_VISIBLE,
@@ -1082,6 +1089,11 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
   // The runner holds them so the wizard stays UI-only; the secret never crosses
   // back into the wizard.
   let wizardApiKey = '';
+  // The relay endpoint from the base-URL step ('' reuses the persisted one).
+  let wizardBaseUrl = '';
+  // The existing connection the picked provider resolved to, so saving edits
+  // it in place (a Desktop-created relay may live under a custom slug).
+  let wizardConnectionId: string | undefined;
   let wizardModels: readonly ModelInfo[] = [];
   // Authoritative ready model choices for `/model`. A startup snapshot refreshed
   // in place after `/setup` saves so newly configured models are immediately
@@ -1646,11 +1658,23 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     }
   };
 
+  const blockIdentityChangeWhileSideOpen = (action: string): boolean => {
+    if (!sideConversation) return false;
+    state.entries.push({
+      kind: 'notice',
+      level: 'error',
+      text: `Close the side conversation before ${action}.`,
+    });
+    requestRender();
+    return true;
+  };
+
   // `/session` is view navigation (#3380). Idle, it runs under runControl's
   // serial lock like any control action; mid-turn that lock is held by the
   // running Turn, so the switch goes through the detach path instead of
   // silently no-oping on the busy gate.
   const goToSession = async (sessionId: string): Promise<void> => {
+    if (blockIdentityChangeWhileSideOpen('switching Sessions')) return;
     if (!turnRunning) {
       await runControl(() => switchSession(sessionId));
       return;
@@ -1660,6 +1684,87 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     // the interrupt window, and double-apply the adoption.
     if (detaching) return;
     await switchAwayMidTurn(sessionId).catch(reportError);
+  };
+
+  const openSideConversation = async (prompt: string): Promise<void> => {
+    if (sideConversation) {
+      state.entries.push({
+        kind: 'notice',
+        level: 'error',
+        text: 'Close the current side conversation before opening another.',
+      });
+      requestRender();
+      return;
+    }
+    if (!input.driver.openSideConversation) {
+      state.entries.push({
+        kind: 'notice',
+        level: 'error',
+        text: 'Side conversations are unavailable on this runtime.',
+      });
+      requestRender();
+      return;
+    }
+    const previousActivity = currentActivityCompletion;
+    let opened = false;
+    const adopt = async () => {
+      const result = await input.driver.openSideConversation!();
+      if (turnRunning) turnEpoch += 1;
+      await applySwitchResult(result);
+      sideConversation = {
+        parentSessionId: result.parentSessionId,
+        sideSessionId: result.sideSessionId,
+      };
+      opened = true;
+      state.entries.push({
+        kind: 'notice',
+        level: 'info',
+        text: 'Side conversation opened.',
+      });
+      requestRender();
+    };
+    if (turnRunning) {
+      if (detaching) return;
+      detaching = true;
+      try {
+        await adopt();
+      } catch (error) {
+        reportError(error);
+      } finally {
+        detaching = false;
+        startPendingAttachedTurn();
+      }
+    } else {
+      await runControl(adopt);
+    }
+    if (!opened || !prompt) return;
+    await previousActivity?.catch(() => undefined);
+    submitPrompt(prompt);
+  };
+
+  const closeSideConversation = async (): Promise<void> => {
+    const pair = sideConversation;
+    if (!pair || !input.driver.closeSideConversation) return;
+    const result = await input.driver.closeSideConversation(
+      pair.sideSessionId,
+      pair.parentSessionId,
+    );
+    await applySwitchResult(result);
+    sideConversation = undefined;
+    if (result.cleanup === 'pending') {
+      state.entries.push({
+        kind: 'notice',
+        level: 'error',
+        text: 'Side conversation closed; cleanup will be retried on the next launch.',
+      });
+    }
+    requestRender();
+  };
+  const interruptAndCloseSideConversation = (): void => {
+    if (interruptRequested) return;
+    const completion = currentActivityCompletion;
+    requestTurnInterrupt();
+    void completion?.then(() => runControl(closeSideConversation));
   };
   const openSessionPicker = (): Promise<void> => {
     if (!turnRunning) return runControl(showSessionList);
@@ -1848,6 +1953,8 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     wizard = undefined;
     wizardProviderType = undefined;
     wizardApiKey = '';
+    wizardBaseUrl = '';
+    wizardConnectionId = undefined;
     wizardModels = [];
   };
 
@@ -1872,26 +1979,32 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     const attempt = ++wizardAttempt;
     targetWizard.setVerifying();
     requestRender();
-    void input.onboarding.verify({ providerType, apiKey }).then(
-      (result) => {
-        if (closed || wizard !== targetWizard || attempt !== wizardAttempt) return;
-        if (result.kind === 'error') {
-          // Probe failed: re-arm the key field in place. The host stores nothing
-          // during verify, so retrying with a corrected key is clean.
-          wizard.setKeyError(`API key 验证失败：${result.text}。请检查后重新输入。`);
+    void input.onboarding
+      .verify({ providerType, connectionId: wizardConnectionId, apiKey, baseUrl: wizardBaseUrl })
+      .then(
+        (result) => {
+          if (closed || wizard !== targetWizard || attempt !== wizardAttempt) return;
+          if (result.kind === 'error') {
+            // Probe failed: re-arm the key field in place. The host stores nothing
+            // during verify, so retrying with a corrected key is clean.
+            // A stale snapshot (the targeted connection is gone) is not a key
+            // problem — retyping cannot fix it, so skip that framing.
+            wizard.setKeyError(
+              result.stale ? result.text : `API key 验证失败：${result.text}。请检查后重新输入。`,
+            );
+            requestRender();
+            return;
+          }
+          wizardModels = result.models;
+          wizard.setModels(result.models); // advance to the models step
           requestRender();
-          return;
-        }
-        wizardModels = result.models;
-        wizard.setModels(result.models); // advance to the models step
-        requestRender();
-      },
-      (error) => {
-        if (closed || wizard !== targetWizard || attempt !== wizardAttempt) return;
-        wizard.setKeyError(`配置失败：${error instanceof Error ? error.message : String(error)}`);
-        requestRender();
-      },
-    );
+        },
+        (error) => {
+          if (closed || wizard !== targetWizard || attempt !== wizardAttempt) return;
+          wizard.setKeyError(`配置失败：${error instanceof Error ? error.message : String(error)}`);
+          requestRender();
+        },
+      );
   };
 
   // Models submit from the wizard: persist the curated enabled set, refresh the
@@ -1911,7 +2024,14 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     targetWizard.setSaving();
     requestRender();
     void input.onboarding
-      .save({ providerType, apiKey: wizardApiKey, enabledModelIds, models: wizardModels })
+      .save({
+        providerType,
+        connectionId: wizardConnectionId,
+        apiKey: wizardApiKey,
+        baseUrl: wizardBaseUrl,
+        enabledModelIds,
+        models: wizardModels,
+      })
       .then(
         (result) => {
           if (result.kind === 'error') {
@@ -1979,11 +2099,17 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     wizardOverlay?.hide();
     wizard = new OnboardingWizard(tui, {
       providers,
-      onPickProvider: (providerType) => {
+      onPickProvider: (providerType, existingConnectionId) => {
         wizardProviderType = providerType;
         wizardApiKey = '';
+        wizardBaseUrl = '';
+        wizardConnectionId = existingConnectionId;
         wizardModels = [];
         wizardAttempt += 1; // a new pick supersedes any in-flight attempt
+        requestRender();
+      },
+      onSubmitBaseUrl: (baseUrl) => {
+        wizardBaseUrl = baseUrl;
         requestRender();
       },
       onSubmitKey: submitWizardKey,
@@ -2279,6 +2405,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
   };
 
   const showRewindPicker = async () => {
+    if (blockIdentityChangeWhileSideOpen('rewinding')) return;
     const targets = await input.driver.listRewindTargets();
     if (targets.length === 0) {
       state.entries.push({
@@ -2322,6 +2449,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
   };
 
   const newSession = () => {
+    if (blockIdentityChangeWhileSideOpen('starting a new Session')) return;
     input.driver.startNewSession();
     // A fresh session is not bound by the previous one's boundary. Falling back
     // to the *current* label would keep the previous Session's mode, including
@@ -2351,6 +2479,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
   // short line shows in the transcript.
   const importForeignSession = async (summary: ForeignSessionSummary): Promise<void> => {
     if (busy || input.foreignSessions === undefined) return;
+    if (blockIdentityChangeWhileSideOpen('importing another Session')) return;
     busy = true;
     const activity = beginActivity();
     editor.disableSubmit = true;
@@ -2405,6 +2534,22 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     const renderTranscript = transcript.createDocumentRenderer();
     const viewer = new TranscriptViewerOverlay({
       renderTranscript,
+      viewportRows: () => terminal.rows,
+      onClose: () => overlay?.hide(),
+      onChange: () => tui.requestRender(),
+    });
+    overlay = tui.showOverlay(viewer, {
+      anchor: 'top-left',
+      width: '100%',
+      maxHeight: '100%',
+    });
+  };
+
+  const showMcpStatus = (): void => {
+    let overlay: OverlayHandle | undefined;
+    const viewer = new McpStatusOverlay({
+      locale,
+      ...(input.mcp ? { surface: input.mcp } : {}),
       viewportRows: () => terminal.rows,
       onClose: () => overlay?.hide(),
       onChange: () => tui.requestRender(),
@@ -2982,6 +3127,22 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
         void runControl(async () => showHelp());
       },
     },
+    mcp: {
+      description: primaryGuidance.commands.mcp,
+      midTurn: 'refuse',
+      run: (parts: string[]) => {
+        if (parts.length !== 1) {
+          state.entries.push({
+            kind: 'notice',
+            level: 'error',
+            text: 'Usage: /mcp',
+          });
+          requestRender();
+          return;
+        }
+        showMcpStatus();
+      },
+    },
     new: {
       description: primaryGuidance.commands.new,
       midTurn: 'refuse',
@@ -3213,6 +3374,13 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
         void goToSession(sessionId);
       },
     },
+    side: {
+      description: primaryGuidance.commands.side,
+      midTurn: 'switch',
+      run: (_parts: string[], rawTail?: string) => {
+        void openSideConversation(rawTail?.trim() ?? '');
+      },
+    },
     graph: {
       description: primaryGuidance.commands.graph,
       // parseGraphCommand answers status and refuses changes ahead of generic
@@ -3299,6 +3467,18 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     // press+release pair could count as a double Escape. We never act on
     // releases here; returning undefined lets the TUI apply its own filtering.
     if (isKeyRelease(data)) return undefined;
+    if (
+      sideConversation &&
+      matchesKey(data, Key.ctrl('c')) &&
+      !isKeyRepeat(data) &&
+      editor.getText().length === 0 &&
+      !editorPastePending
+    ) {
+      lastIdleCtrlCAt = 0;
+      if (turnRunning) interruptAndCloseSideConversation();
+      else if (!busy) void runControl(closeSideConversation);
+      return { consume: true };
+    }
     if (
       activeUserQuestionRequest(state) &&
       turnRunning &&
@@ -3500,10 +3680,9 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
 
 const BOTTOM_PICKER_MARGIN_ROWS = 4;
 
-// The editor's autocomplete window height. Keep it at least as large as the
-// full slash-command menu, so a bare `/` shows every command rather than
-// silently clipping the last command.
-const EDITOR_AUTOCOMPLETE_MAX_VISIBLE = 24;
+// The vendor editor clamps this window to 20 rows. Additional commands remain
+// reachable by scrolling and are identified by its exact position counter.
+const EDITOR_AUTOCOMPLETE_MAX_VISIBLE = 20;
 
 export function formatContextDiagnostics(diagnostics: ContextDiagnostics): string {
   if (diagnostics.status === 'unavailable') {

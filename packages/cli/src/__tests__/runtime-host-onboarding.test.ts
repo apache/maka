@@ -20,7 +20,7 @@
 import { describe, test } from 'node:test';
 import assert from 'node:assert/strict';
 import type { ConnectionCatalogSnapshot } from '@maka/core/runtime-policy';
-import { projectRuntimeHostModelChoices } from '../runtime-host-onboarding.js';
+import { projectProviders, projectRuntimeHostModelChoices } from '../runtime-host-onboarding.js';
 
 function catalog(connections: ConnectionCatalogSnapshot['connections']): ConnectionCatalogSnapshot {
   return { revision: 1, defaultTarget: null, connections };
@@ -76,5 +76,47 @@ describe('projectRuntimeHostModelChoices', () => {
     const choices = projectRuntimeHostModelChoices(catalog([live]));
 
     assert.equal(choices[0]?.displayName, 'GPT-5 Mini');
+  });
+});
+
+describe('projectProviders', () => {
+  const relay = {
+    connectionId: 'relay-custom-id',
+    revision: 1,
+    slug: 'my-relay',
+    name: 'My Relay',
+    providerType: 'openai-compatible',
+    baseUrl: 'https://relay.example.test/v1',
+    enabled: true,
+    enabledModelIds: ['relay/model'],
+    models: [{ id: 'relay/model' }],
+  } as const;
+
+  test('a Desktop-created relay under a custom slug reads as the existing connection', () => {
+    // Identity must survive the projection: a sole connection of the provider
+    // type is "the" one to edit even off the canonical slug, or saving would
+    // duplicate it there (#3467 review).
+    const entry = projectProviders(catalog([relay])).find(
+      ({ providerType }) => providerType === 'openai-compatible',
+    );
+    assert.equal(entry?.hasConnection, true);
+    assert.equal(entry?.connectionId, 'relay-custom-id');
+    assert.deepEqual(entry?.enabledModelIds, ['relay/model']);
+  });
+
+  test('several non-canonical connections resolve to none — the wizard offers a fresh setup', () => {
+    const entry = projectProviders(
+      catalog([relay, { ...relay, connectionId: 'relay-2-id', slug: 'my-relay-2' }]),
+    ).find(({ providerType }) => providerType === 'openai-compatible');
+    assert.equal(entry?.hasConnection, false);
+    assert.equal(entry?.connectionId, undefined);
+  });
+
+  test('the canonical-slug connection wins over other connections of the type', () => {
+    const canonical = { ...relay, connectionId: 'canonical-id', slug: 'openai-compatible' };
+    const entry = projectProviders(catalog([relay, canonical])).find(
+      ({ providerType }) => providerType === 'openai-compatible',
+    );
+    assert.equal(entry?.connectionId, 'canonical-id');
   });
 });

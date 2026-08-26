@@ -52,7 +52,7 @@ fs.promises.open = async (...args) => {
 };
 syncBuiltinESMExports();
 
-const { createSessionBundleFileService } = await import('../../index.js');
+const { createSessionBundleFileService } = await import('../../session-bundle-file-service.js');
 // Keep the deliberately wedged top-level await alive until the parent delivers
 // SIGKILL. Without a referenced handle, Node exits with code 13 as soon as the
 // event loop is empty and races the crash-state assertions in the parent test.

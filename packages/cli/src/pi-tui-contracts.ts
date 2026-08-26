@@ -52,21 +52,38 @@ export interface OnboardableProvider {
 
 export interface OnboardingProviderEntry extends OnboardableProvider {
   hasConnection: boolean;
+  /** The existing connection's identity, so saving edits it in place. */
+  connectionId?: string;
   enabledModelIds: readonly string[];
 }
 
 export interface OnboardingVerifyInput {
   providerType: ProviderType;
+  /** The existing connection this edit targets; absent creates/updates the canonical-slug one. */
+  connectionId?: string;
   apiKey?: string;
+  /** Endpoint for `requiresBaseUrl` providers; blank reuses the persisted one. */
+  baseUrl?: string;
 }
 
 export type OnboardingVerifyResult =
   | { kind: 'ok'; models: ModelInfo[] }
-  | { kind: 'error'; text: string };
+  | {
+      kind: 'error';
+      text: string;
+      /** The wizard's provider snapshot is outdated (e.g. the targeted
+       *  connection is gone) — retyping the key cannot fix this, so the
+       *  runner shows the text without its retype-the-key framing. */
+      stale?: boolean;
+    };
 
 export interface OnboardingSaveInput {
   providerType: ProviderType;
+  /** The existing connection this edit targets; absent creates/updates the canonical-slug one. */
+  connectionId?: string;
   apiKey?: string;
+  /** Endpoint for `requiresBaseUrl` providers; blank reuses the persisted one. */
+  baseUrl?: string;
   enabledModelIds: readonly string[];
   models: readonly ModelInfo[];
 }

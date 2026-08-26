@@ -148,7 +148,7 @@ test('finishes Host pairing after the cancellable SSH phase has completed', asyn
   while (!pairingStarted) await Promise.resolve();
 
   finishPairing({ profileId: 'office' });
-  assert.deepEqual(await setup, { kind: 'complete', profileId: 'office', revision: 3 });
+  assert.deepEqual(await setup, { kind: 'complete', profileId: 'office', revision: 4 });
   await harness.onboarding.close();
 });
 

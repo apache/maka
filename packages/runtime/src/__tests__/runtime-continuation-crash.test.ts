@@ -29,8 +29,9 @@ import { describe, test } from 'node:test';
 import type { AgentRunHeader } from '@maka/core/agent-run';
 
 import type { RuntimeEvent } from '@maka/core/runtime-event';
-import { createSessionStore, createSqliteRuntimeStore } from '@maka/storage';
-import { createSqliteAgentRunStore } from '@maka/storage';
+import { createSessionStore } from '@maka/storage/session-store';
+import { createSqliteRuntimeStore } from '@maka/storage/sqlite-runtime-store';
+import { createSqliteAgentRunStore } from '@maka/storage/agent-run-store';
 
 import { type RuntimeContinuationFailpoint } from '../agent-run.js';
 import { BackendRegistry, SessionManager } from '../session-manager.js';
@@ -188,7 +189,6 @@ async function runCrashChild(): Promise<void> {
       let ts = 10;
       return () => ++ts;
     })(),
-    runtimeSource: 'test',
   });
   const session = await manager.createSession({
     cwd: workspaceRoot,
@@ -270,7 +270,6 @@ function createManager(workspaceRoot: string): {
       inspectContinuationSafety: async () => stableSafetyObservation(),
       newId: () => `recovery-id-${++id}`,
       now: Date.now,
-      runtimeSource: 'test',
     }),
   };
 }

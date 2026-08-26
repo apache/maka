@@ -43,6 +43,7 @@ import { stableHash, toolCatalogHash } from '@maka/runtime/request-shape';
 import { toolAvailabilityHash } from '@maka/runtime/tool-availability';
 import { type BackendFactoryContext } from '@maka/runtime/session-manager';
 import { type RuntimeCommitSink } from '@maka/runtime/runtime-commit-sink';
+import type { SandboxDiagnosticsProvider } from '@maka/runtime/sandbox';
 import {
   createAttachmentByteReader,
   persistProviderRequestCaptureArtifact,
@@ -66,6 +67,7 @@ export interface HostAiSdkBackendInput {
   readonly runtimePolicy: HostExecutionRuntimePolicyAuthority;
   readonly oauthCredentials: HostOAuthExecutionAuthority;
   readonly createRunComposer: HostRunComposerFactory;
+  readonly sandboxDiagnostics: SandboxDiagnosticsProvider;
   readonly memoryExtraction?: HostMemoryExtractionCoordinator;
   readonly artifacts: HostExecutionArtifactAuthority;
   readonly executionArtifacts: HostExecutionArtifactServices;
@@ -342,6 +344,7 @@ export async function createHostAiSdkBackend(input: HostAiSdkBackendInput): Prom
           ((message) => input.context.store.appendMessage(input.context.sessionId, message)),
         readExecutionBoundary: () =>
           input.context.store.readExecutionBoundary(input.context.sessionId),
+        sandboxDiagnostics: input.sandboxDiagnostics,
         ...(input.context.store.createSandboxBoundaryRequest
           ? {
               createSandboxBoundaryRequest: (request) =>

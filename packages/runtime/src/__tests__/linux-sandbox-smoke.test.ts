@@ -286,7 +286,11 @@ describe('Linux sandbox smoke', () => {
         `printf additional-ok > ${shellQuote(allowedPath)}; ` +
         `/bin/sh -c ${shellQuote(siblingAttempt)} 2>/dev/null || :; exit 0`;
       const additionalResult = (await bash.impl(
-        { command: additionalCommand, required_boundary: requiredBoundary },
+        {
+          command: additionalCommand,
+          boundary_intent: 'expand',
+          required_boundary: requiredBoundary,
+        },
         {
           sessionId: 'session-1',
           turnId: 'turn-1',

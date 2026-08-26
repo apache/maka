@@ -517,6 +517,7 @@ export class ConnectionCatalogDocumentOwner {
     current: ConnectionCatalogDocument,
     rawConnectionId: string,
     rawProviderType: unknown,
+    rawBaseUrl: string | null,
     rawEnabledModelIds: readonly string[],
     rawResult: ConnectionModelDiscoveryResult,
     invalidateLastTest: boolean,
@@ -524,8 +525,18 @@ export class ConnectionCatalogDocumentOwner {
     const connectionId = decodeConnectionInput(() => decodeRuntimePolicyEntityId(rawConnectionId));
     const providerType = decodeConnectionInput(() => decodeProviderType(rawProviderType));
     const definition = PROVIDER_DEFAULTS[providerType];
-    const slug = deriveConnectionSlug(providerType);
-    const index = current.connections.findIndex((connection) => connection.slug === slug);
+    // Identity first: the intent's connectionId names the connection being
+    // edited, whatever slug it lives under — a relay created in Desktop under
+    // a custom slug is updated in place, never duplicated at the canonical
+    // slug. Only a genuinely new connection lands at the derived slug.
+    let index = current.connections.findIndex(
+      (connection) => connection.connectionId === connectionId,
+    );
+    if (index < 0) {
+      index = current.connections.findIndex(
+        (connection) => connection.slug === deriveConnectionSlug(providerType),
+      );
+    }
     const previous = current.connections[index];
     if (previous && previous.providerType !== providerType) {
       return { kind: 'slug_conflict' };
@@ -533,6 +544,7 @@ export class ConnectionCatalogDocumentOwner {
     if (previous && previous.connectionId !== connectionId) {
       throw codecError('invalid_document', 'Onboarding intent conflicts with the connection id');
     }
+    const slug = previous?.slug ?? deriveConnectionSlug(providerType);
     if (!previous && current.connections.length >= CONNECTION_CATALOG_MAX_CONNECTIONS) {
       throw codecError(
         'invalid_connection_input',
@@ -550,13 +562,14 @@ export class ConnectionCatalogDocumentOwner {
         'Onboarding requires a non-empty model inventory',
       );
     }
+    // A supplied endpoint replaces the previous one; null preserves the
+    // existing override or the registry default (blank-reuse, like the key).
+    const effectiveBaseUrl = rawBaseUrl ?? previous?.baseUrl ?? definition.baseUrl;
     const changes = decodeConnectionInput(() =>
       normalizeConnectionCatalogEntryUpdateForProvider(
         {
           name: previous?.name ?? definition.label,
-          ...((previous?.baseUrl ?? definition.baseUrl)
-            ? { baseUrl: previous?.baseUrl ?? definition.baseUrl }
-            : {}),
+          ...(effectiveBaseUrl ? { baseUrl: effectiveBaseUrl } : {}),
           enabled: true,
           enabledModelIds: rawEnabledModelIds,
         },
@@ -574,13 +587,18 @@ export class ConnectionCatalogDocumentOwner {
       (modelId) => !offered.has(modelId) && !changes.enabledModelIds.includes(modelId),
     );
     const enabledModelIds = [...changes.enabledModelIds, ...undisplayed];
+    // The endpoint keys the profile table and the last test the same way it
+    // does on the update path: declarations describe the relay that made
+    // them, so a swapped URL must not inherit either.
+    const endpointChanged = previous !== undefined && previous.baseUrl !== changes.baseUrl;
     // Onboarding installs a new enabledModelIds authority, so a profile keyed
     // by a model it dropped would violate the subset invariant. Like the
     // refresh path above, this one bypasses the canonical decoder, so pruning
     // has to happen here or the document is un-loadable on next read.
-    const relayModelProfiles = previous
-      ? pruneRelayModelProfiles(previous.relayModelProfiles, enabledModelIds)
-      : undefined;
+    const relayModelProfiles =
+      previous && !endpointChanged
+        ? pruneRelayModelProfiles(previous.relayModelProfiles, enabledModelIds)
+        : undefined;
     const base: ConnectionCatalogEntry = previous ?? {
       connectionId,
       revision: 0,
@@ -595,6 +613,7 @@ export class ConnectionCatalogDocumentOwner {
     const finalized: ConnectionCatalogEntry = {
       ...baseWithoutProfiles,
       ...(relayModelProfiles ? { relayModelProfiles } : {}),
+      ...(changes.baseUrl !== undefined ? { baseUrl: changes.baseUrl } : {}),
       revision: previous ? nextRevision(previous.revision) : 1,
       enabled: true,
       enabledModelIds,
@@ -609,6 +628,7 @@ export class ConnectionCatalogDocumentOwner {
     };
     if (
       previous?.enabled &&
+      (changes.baseUrl === undefined || changes.baseUrl === previous.baseUrl) &&
       sameStringArray(previous.enabledModelIds, enabledModelIds) &&
       isDeepStrictEqual(previous.models, result.models) &&
       previous.modelSource === result.source &&
@@ -619,7 +639,8 @@ export class ConnectionCatalogDocumentOwner {
       return { kind: 'ready', document: current, changed: false };
     }
     const testBasisChanged = previous
-      ? !sameConnectionTestModelBasis(
+      ? endpointChanged ||
+        !sameConnectionTestModelBasis(
           connectionTestModelBasis(previous),
           connectionTestModelBasis(finalized),
         )

@@ -706,12 +706,12 @@ function bridge(options: {
         },
       ],
       readSettledMessages: async () => ({ messages: [], settled: true }),
-      branchFromTurn: async () => SIDE_CHAT_SESSION,
+      branchFromTurn: async () => ({ ok: true, session: SIDE_CHAT_SESSION }),
       cleanupSessionCopy: async () => undefined,
       abandonSessionCopy: async () => undefined,
-      send: async () => ({ ok: true }),
+      send: async () => ({ ok: true, turnId: 'story-side-chat-turn' }),
       stop: async () => undefined,
-      steer: async () => ({ kind: 'queued' }),
+      steer: async () => ({ kind: 'started', turnId: 'story-side-chat-turn' }),
       setPermissionMode: async (_sessionId, mode) => ({
         ...SIDE_CHAT_SESSION,
         permissionMode: mode,
@@ -719,7 +719,11 @@ function bridge(options: {
       regenerateTurn: async () => undefined,
       respondToSandboxBoundary: async () => undefined,
       respondToUserQuestion: async () => undefined,
-      subscribeEvents: unsubscribe,
+      subscribeEvents: (_sessionId, _handler, onSeeded) => {
+        onSeeded?.();
+        return unsubscribe();
+      },
+      subscribeSessionChanges: unsubscribe,
     },
   });
   return (Story) => (

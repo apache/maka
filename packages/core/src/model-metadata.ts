@@ -432,7 +432,8 @@ const STATIC_MODEL_METADATA: Partial<Record<ProviderType, Record<string, ModelMe
   deepseek: {
     'deepseek-v4-flash': {
       capabilities: { ...REASONING_FUNCTION_CALLING, webSearch: true },
-      thinkingOptions: { efforts: ['high', 'max'], toggle: true },
+      lastUpdated: '2026-08-24',
+      thinkingOptions: { efforts: ['low', 'high', 'max'], toggle: true },
     },
     'deepseek-v4-pro': {
       capabilities: { ...REASONING_FUNCTION_CALLING, webSearch: true },

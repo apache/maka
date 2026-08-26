@@ -120,7 +120,7 @@ test('steering becomes durable and ordered followups automatically start the nex
     const first = await connectClient(fixture.root);
     const second = await connectClient(fixture.root);
     const firstTurnId = randomUUID();
-    await first.startTurn({
+    await first.request('turn.start', {
       sessionId: fixture.sessionId,
       turnId: firstTurnId,
       content: { text: FAKE_WAIT_FOR_STEERING_PROMPT },
@@ -168,6 +168,23 @@ test('steering becomes durable and ordered followups automatically start the nex
         'followup',
       );
     }
+    const queueSubscription = await second.openSessionSubscription({
+      sessionId: fixture.sessionId,
+      transcript: { kind: 'none' },
+    });
+    const queuedFollowups = queueSubscription.snapshot.queue.followup;
+    assert.deepEqual(
+      queuedFollowups.map((entry) => entry.messageId),
+      followupSources.map((source) => source.messageId),
+    );
+    await second.request('queue.entries.reorder', {
+      originHostEpoch: host.hostEpoch,
+      sessionId: fixture.sessionId,
+      reorderId: randomUUID(),
+      entryIds: queuedFollowups.map((entry) => entry.entryId).reverse(),
+    });
+    await queueSubscription.close();
+    const orderedFollowupSources = [...followupSources].reverse();
     assert.equal(
       (
         await second.request('turn.message.submit', {
@@ -195,7 +212,6 @@ test('steering becomes durable and ordered followups automatically start the nex
     await first.close();
     await second.close();
     await fixture.stopHost(host);
-
     const firstLedger = await fixture.readTurn(firstTurnId);
     const steeringEvents = firstLedger.runtimeEvents.filter(
       (event) =>
@@ -213,6 +229,7 @@ test('steering becomes durable and ordered followups automatically start the nex
     const chain = await fixture.readAdmissionChain();
     assert.equal(chain.length, 2);
     assert.equal(chain[1]?.previousRootTurnId, firstTurnId);
+    assert.equal(chain[1]?.userMessageId, null);
     assert.deepEqual(
       chain[1]?.sourceMessages.map(({ messageId, content, placement, disposition }) => ({
         messageId,
@@ -220,25 +237,45 @@ test('steering becomes durable and ordered followups automatically start the nex
         placement,
         disposition,
       })),
-      followupSources.map((source) => ({
+      orderedFollowupSources.map((source) => ({
         ...source,
         placement: 'next_turn',
         disposition: 'followup',
       })),
     );
     assert.deepEqual(chain[1]?.normalizedInput, {
-      text: `${followupSources[0].content.text}\n\n${followupSources[1].content.text}`,
-      displayText: `${followupSources[0].content.displayText}\n\n${followupSources[1].content.text}`,
-      attachments: followupSources[0].content.attachments,
-      quotes: followupSources.flatMap((source) => source.content.quotes ?? []),
+      text: `${orderedFollowupSources[0].content.text}\n\n${orderedFollowupSources[1].content.text}`,
+      displayText: `${orderedFollowupSources[0].content.text}\n\n${orderedFollowupSources[1].content.displayText}`,
+      attachments: orderedFollowupSources[1].content.attachments,
+      quotes: orderedFollowupSources.flatMap((source) => source.content.quotes ?? []),
     });
     const followupTurnId = chain[1]?.turnId;
     assert.ok(followupTurnId);
     const followupLedger = await fixture.readTurn(followupTurnId);
-    const expectedQuotes = followupSources.flatMap((source) => source.content.quotes ?? []);
-    assert.equal(followupLedger.userMessages.length, 1);
-    assert.deepEqual(followupLedger.userMessages[0]?.quotes, expectedQuotes);
+    const expectedQuotes = orderedFollowupSources.flatMap((source) => source.content.quotes ?? []);
+    assert.equal(followupLedger.userMessages.length, followupSources.length);
+    assert.deepEqual(
+      followupLedger.userMessages.flatMap((message) => message.quotes ?? []),
+      expectedQuotes,
+    );
     assert.deepEqual(userRuntimeContent(followupLedger.runtimeEvents)?.quotes, expectedQuotes);
+    const sessionUserMessages = await fixture.readSessionUserMessages();
+    for (const source of orderedFollowupSources) {
+      assert.equal(
+        sessionUserMessages.filter((message) => message.id === source.messageId).length,
+        1,
+      );
+    }
+    assert.equal(
+      sessionUserMessages.filter((message) => message.turnId === followupTurnId).length,
+      orderedFollowupSources.length,
+    );
+    assert.deepEqual(
+      sessionUserMessages
+        .filter((message) => message.turnId === followupTurnId)
+        .map((message) => message.id),
+      orderedFollowupSources.map((source) => source.messageId),
+    );
   });
 });
 
@@ -249,7 +286,7 @@ test('explicit retract is durable across connections and prevents successor admi
     const second = await connectClient(fixture.root);
     const turnId = randomUUID();
     const started = requireStartedTurn(
-      await first.startTurn({
+      await first.request('turn.start', {
         sessionId: fixture.sessionId,
         turnId,
         content: { text: FAKE_ASK_USER_QUESTION_PROMPT },
@@ -280,7 +317,7 @@ test('explicit retract is durable across connections and prevents successor admi
     const retrying = await connectClient(fixture.root);
     assert.deepEqual(await retrying.request('queue.retract', retractInput), retracted);
 
-    const terminal = await first.stopTurn({
+    const terminal = await first.request('turn.stop', {
       sessionId: fixture.sessionId,
       turnId,
       runId: started.runId,
@@ -290,6 +327,11 @@ test('explicit retract is durable across connections and prevents successor admi
     await retrying.close();
     await fixture.stopHost(host);
 
+    assert.equal(
+      (await fixture.readSessionUserMessages()).some((message) => message.id === messageId),
+      false,
+      'a retracted draft must not remain in the durable transcript',
+    );
     const chain = await fixture.readAdmissionChain();
     assert.deepEqual(
       chain.map((admission) => admission.turnId),
@@ -305,7 +347,7 @@ test('interrupt atomically retracts queued followup, stops the exact run, and is
     const second = await connectClient(fixture.root);
     const turnId = randomUUID();
     const started = requireStartedTurn(
-      await first.startTurn({
+      await first.request('turn.start', {
         sessionId: fixture.sessionId,
         turnId,
         content: { text: FAKE_ASK_USER_QUESTION_PROMPT },
@@ -358,6 +400,12 @@ test('interrupt atomically retracts queued followup, stops the exact run, and is
     await first.close();
     await second.close();
     await fixture.stopHost(host);
+
+    assert.equal(
+      (await fixture.readSessionUserMessages()).some((message) => message.id === followupId),
+      false,
+      'an interrupted draft must not remain in the durable transcript',
+    );
 
     const chain = await fixture.readAdmissionChain();
     assert.equal(chain.length, 1);

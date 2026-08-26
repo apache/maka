@@ -43,6 +43,13 @@ test('queue_update events drive the independent desktop queue projection', () =>
     placement: 'current_turn' as const,
     state: 'queued' as const,
   };
+  const inFlightEntry = {
+    ...steeringEntry,
+    entryId: 'entry-delivering',
+    messageId: 'message-delivering',
+    content: { text: 'already delivering' },
+    state: 'in_flight' as const,
+  };
 
   handlers.handleEvent('session-1', {
     type: 'queue_update',
@@ -52,7 +59,7 @@ test('queue_update events drive the independent desktop queue projection', () =>
     queueRevision: 3,
     steering: ['adjust this run'],
     followup: ['do this next'],
-    steeringEntries: [steeringEntry],
+    steeringEntries: [steeringEntry, inFlightEntry],
     followupEntries: [{
       entryId: 'entry-next',
       messageId: 'message-next',
@@ -62,13 +69,19 @@ test('queue_update events drive the independent desktop queue projection', () =>
     }],
   });
 
-  assert.deepEqual(controller.getState().messageQueueBySession['session-1'], [{
-    entryId: 'entry-next',
-    messageId: 'message-next',
-    content: { text: 'do this next' },
-    placement: 'next_turn',
-    state: 'queued',
-  }]);
+  assert.deepEqual(controller.getState().messageQueueBySession['session-1'], {
+    queueRevision: 3,
+    entries: [
+      steeringEntry,
+      {
+        entryId: 'entry-next',
+        messageId: 'message-next',
+        content: { text: 'do this next' },
+        placement: 'next_turn',
+        state: 'queued',
+      },
+    ],
+  });
 
   handlers.handleEvent('session-1', {
     type: 'queue_update',

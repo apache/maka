@@ -22,6 +22,7 @@ import type {
   DesktopTranscriptBatch,
   DesktopTranscriptHandle,
 } from '../preload/transcript-contract.js';
+import { parseDesktopSessionKey } from '../shared/runtime-host-identity.js';
 import { DesktopTranscriptRangeStore } from './desktop-transcript-range-store.js';
 import type {
   WorkHubProjectedTurn,
@@ -30,7 +31,10 @@ import type {
   WorkHubSessionState,
   WorkHubSessionTarget,
 } from './workhub-controller.js';
-import { boundedWorkHubTimelineText } from './workhub-controller.js';
+import {
+  boundedWorkHubTimelineText,
+  WorkHubSessionSubmitError,
+} from './workhub-controller.js';
 
 export interface WorkHubDesktopSession {
   id: string;
@@ -49,6 +53,10 @@ export interface WorkHubDesktopSession {
 
 export interface WorkHubDesktopSessionBridge {
   list(): Promise<readonly WorkHubDesktopSession[]>;
+  listWithCoverage?(): Promise<{
+    sessions: readonly WorkHubDesktopSession[];
+    completeHostIds: readonly string[];
+  }>;
   listTurns(sessionId: string): Promise<readonly { userPromptPreview?: string }[]>;
   create(input: { name: string }): Promise<WorkHubDesktopSession>;
   send(
@@ -60,9 +68,14 @@ export interface WorkHubDesktopSessionBridge {
   stop(
     sessionId: string,
     input?: { source?: 'stop_button'; expectedTurnId?: string },
-  ): Promise<void>;
+  ): Promise<unknown>;
   subscribeChanges(handler: () => void): () => void;
 }
+
+export type WorkHubCoordinationHostSessionCreator = (
+  coordinationSessionId: string,
+  input: { name: string },
+) => Promise<WorkHubDesktopSession>;
 
 export interface WorkHubDesktopTranscriptBridge {
   open(
@@ -104,15 +117,37 @@ export function createDesktopWorkHubSessionPort(deps: {
         : 'ordinary',
     archived: session.isArchived,
     state: projectState(session),
+    ...(session.runningTurnIds !== undefined
+      ? { runningTurnIds: [...session.runningTurnIds] }
+      : {}),
     ...(session.lastMessagePreview
       ? { latestResult: session.lastMessagePreview }
       : {}),
     updatedAt: session.lastMessageAt ?? session.statusUpdatedAt ?? 0,
   });
+  const projectCatalog = async () => {
+    const snapshot = deps.sessions.listWithCoverage
+      ? await deps.sessions.listWithCoverage()
+      : { sessions: await deps.sessions.list(), completeHostIds: [] };
+    const completeHostIds = new Set(snapshot.completeHostIds);
+    return {
+      sessions: snapshot.sessions.map(projectSession),
+      isCompleteFor(target: WorkHubSessionTarget) {
+        try {
+          return completeHostIds.has(parseDesktopSessionKey(target.sessionId).hostId);
+        } catch {
+          return false;
+        }
+      },
+    };
+  };
 
   return {
     async list() {
-      return (await deps.sessions.list()).map(projectSession);
+      return (await projectCatalog()).sessions;
+    },
+    listCatalog() {
+      return projectCatalog();
     },
     async recentTurns(targets) {
       const turnsBySession = await Promise.all(
@@ -157,18 +192,59 @@ export function createDesktopWorkHubSessionPort(deps: {
     async create({ name }) {
       return projectSession(await deps.sessions.create({ name }));
     },
-    async submit(target: WorkHubSessionTarget, text: string) {
-      const turnId = deps.newTurnId();
-      const result = await deps.sessions.send(target.sessionId, {
-        type: 'send',
-        turnId,
-        text,
-      });
-      if (!result.ok) throw new Error(`WorkHub Session send failed: ${result.reason}`);
+    reserveTurnId() {
+      return deps.newTurnId();
+    },
+    async submit(target: WorkHubSessionTarget, text: string, turnId: string) {
+      let result: Awaited<ReturnType<WorkHubDesktopSessionBridge['send']>>;
+      try {
+        result = await deps.sessions.send(target.sessionId, {
+          type: 'send',
+          turnId,
+          text,
+        });
+      } catch (cause) {
+        throw new WorkHubSessionSubmitError(
+          'WorkHub Session delivery outcome is unknown',
+          'unknown',
+          { cause },
+        );
+      }
+      if (!result.ok) {
+        throw new WorkHubSessionSubmitError(
+          `WorkHub Session send failed: ${result.reason}`,
+          'rejected',
+        );
+      }
       return {
         turnId: result.turnId,
         ...(result.steered ? { steered: true as const } : {}),
       };
+    },
+    async reconcileSubmission(target, reservedTurnId) {
+      try {
+        const messages = await readWorkHubSessionMessages(deps.transcripts, target);
+        let message: Extract<StoredMessage, { type: 'user' }> | undefined;
+        for (let index = messages.length - 1; index >= 0; index -= 1) {
+          const entry = messages[index];
+          if (
+            entry?.type === 'user' &&
+            (entry.turnId === reservedTurnId || entry.id === reservedTurnId)
+          ) {
+            message = entry;
+            break;
+          }
+        }
+        if (!message) return { kind: 'unknown' };
+        if (message.turnId === reservedTurnId) {
+          return { kind: 'root', turnId: message.turnId };
+        }
+        return message.steeringEventId
+          ? { kind: 'steered' }
+          : { kind: 'root', turnId: message.turnId };
+      } catch {
+        return { kind: 'unknown' };
+      }
     },
     async stop(target, expectedTurnId) {
       await deps.sessions.stop(target.sessionId, {

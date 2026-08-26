@@ -34,10 +34,12 @@ export type WorkHubRouteDecision =
       kind: 'target';
       target: WorkHubSessionTarget;
       evidence: WorkHubRouteEvidence;
+      correctedFrom?: WorkHubSessionTarget;
     }
   | {
       kind: 'clarification';
       options: WorkHubSessionFacts[];
+      correctedFrom?: WorkHubSessionTarget;
     }
   | { kind: 'discussion' }
   | { kind: 'new_session' };
@@ -49,8 +51,11 @@ export interface WorkHubRoutePolicy {
     originPromptBySessionId: ReadonlyMap<string, string | undefined>;
     explicitTarget?: WorkHubSessionTarget;
   }): WorkHubRouteDecision;
+  initializeFocus(targets: readonly WorkHubSessionTarget[]): void;
+  newVisit(): WorkHubRoutePolicy;
   rememberTarget(target: WorkHubSessionTarget): void;
-  rememberCorrection(text: string, target: WorkHubSessionTarget): void;
+  reserveSubmissionOrder(): number;
+  rememberCorrection(text: string, target: WorkHubSessionTarget, order: number): void;
 }
 
 export function workHubNewSessionName(text: string): string {
@@ -76,6 +81,11 @@ interface RouteCorrection {
   sequence: number;
 }
 
+interface RouteCorrectionMemory {
+  corrections: RouteCorrection[];
+  sequence: number;
+}
+
 const MAX_ROUTE_CORRECTIONS = 32;
 const MIN_EXACT_SESSION_NAME_LENGTH = 2;
 const MIN_CORRECTION_TERM_LENGTH = 3;
@@ -88,16 +98,21 @@ const MAX_UNCERTAINTY_OPTIONS = 5;
 const MAX_RELATED_CLARIFICATION_OPTIONS = 4;
 
 /**
- * Deep routing module for R2.3.
+ * Deep routing module for R2.4.
  *
  * It owns only transient inference context. Session identity, transcript,
  * execution state, and recovery continue to come from the Session port.
  */
 export function createWorkHubRoutePolicy(): WorkHubRoutePolicy {
+  return createWorkHubRoutePolicyVisit({ corrections: [], sequence: 0 });
+}
+
+function createWorkHubRoutePolicyVisit(
+  correctionMemory: RouteCorrectionMemory,
+): WorkHubRoutePolicy {
   let currentFocus: WorkHubSessionTarget | undefined;
   let previousFocus: WorkHubSessionTarget | undefined;
-  const corrections: RouteCorrection[] = [];
-  let correctionSequence = 0;
+  const corrections = correctionMemory.corrections;
 
   return {
     resolve({ text, sessions, originPromptBySessionId, explicitTarget }) {
@@ -109,17 +124,58 @@ export function createWorkHubRoutePolicy(): WorkHubRoutePolicy {
         return { kind: 'new_session' };
       }
 
-      const exact = sessions.map((session) => {
-        const qualifiedName = `${session.projectName}/${session.sessionName}`;
+      const correctionText = naturalCorrectionTargetText(text);
+      const correctedFrom = currentFocus && sessions.some((session) =>
+        session.target.sessionId === currentFocus?.sessionId)
+        ? currentFocus
+        : undefined;
+      if (
+        !correctionText &&
+        correctedFrom &&
+        looksLikeRecentFocus(text) &&
+        looksLikeContentReplacement(text)
+      ) {
+        return { kind: 'target', target: correctedFrom, evidence: 'recent_focus' };
+      }
+      if (correctionText && correctedFrom) {
+        const alternatives = sessions.filter((session) =>
+          session.target.sessionId !== correctedFrom.sessionId);
+        const exactCorrection = rankExactSessions(correctionText, alternatives);
+        if (
+          exactCorrection[0] &&
+          exactCorrection[0].matchLength > (exactCorrection[1]?.matchLength ?? 0)
+        ) {
+          return {
+            kind: 'target',
+            target: exactCorrection[0].session.target,
+            evidence: 'route_correction',
+            correctedFrom,
+          };
+        }
+        const relatedCorrection = rankRelatedSessions(
+          correctionText,
+          alternatives,
+          originPromptBySessionId,
+        );
+        if (relatedCorrection.length === 1) {
+          return {
+            kind: 'target',
+            target: relatedCorrection[0]!.session.target,
+            evidence: 'route_correction',
+            correctedFrom,
+          };
+        }
+        const options = relatedCorrection.length > 1
+          ? relatedCorrection.map(({ session }) => session)
+          : alternatives.sort((left, right) => right.updatedAt - left.updatedAt);
         return {
-          session,
-          matchLength: Math.max(
-            exactIdentityMatchLength(text, qualifiedName),
-            exactIdentityMatchLength(text, session.sessionName),
-          ),
+          kind: 'clarification',
+          options: options.slice(0, MAX_UNCERTAINTY_OPTIONS),
+          correctedFrom,
         };
-      }).filter(({ matchLength }) => matchLength >= MIN_EXACT_SESSION_NAME_LENGTH)
-        .sort((left, right) => right.matchLength - left.matchLength);
+      }
+
+      const exact = rankExactSessions(text, sessions);
       if (exact[0] && exact[0].matchLength > (exact[1]?.matchLength ?? 0)) {
         return {
           kind: 'target',
@@ -152,19 +208,28 @@ export function createWorkHubRoutePolicy(): WorkHubRoutePolicy {
 
       const previousReference = looksLikePreviousFocus(text);
       const currentReference = !previousReference && looksLikeRecentFocus(text);
-      const focused = previousReference
+      const focusCandidate = previousReference
         ? previousFocus
         : currentReference
           ? currentFocus
           : undefined;
+      const focused = focusCandidate && sessions.some((session) =>
+        session.target.sessionId === focusCandidate.sessionId)
+        ? focusCandidate
+        : undefined;
       const strongEvidenceElsewhere = focused
         ? related.some(({ session, strongEvidence }) =>
           session.target.sessionId !== focused.sessionId && strongEvidence)
         : false;
+      const weakEvidenceElsewhere = focused
+        ? related.some(({ session }) => session.target.sessionId !== focused.sessionId)
+        : false;
       const ambiguousEvidence = related.length > 1;
       if (
         focused &&
-        (previousReference || (!strongEvidenceElsewhere && !ambiguousEvidence))
+        (previousReference || (
+          !strongEvidenceElsewhere && !weakEvidenceElsewhere && !ambiguousEvidence
+        ))
       ) {
         return { kind: 'target', target: focused, evidence: 'recent_focus' };
       }
@@ -194,17 +259,61 @@ export function createWorkHubRoutePolicy(): WorkHubRoutePolicy {
       }
       return looksExecutable(text) ? { kind: 'new_session' } : { kind: 'discussion' };
     },
+    initializeFocus(targets) {
+      const ordered = targets.filter((target, index) =>
+        targets.findIndex((candidate) => candidate.sessionId === target.sessionId) === index);
+      const first = ordered[0];
+      if (!first) return;
+      const available = new Set(ordered.map((target) => target.sessionId));
+      if (currentFocus && !available.has(currentFocus.sessionId)) {
+        currentFocus = first;
+        previousFocus = ordered[1];
+        return;
+      }
+      if (!currentFocus) {
+        currentFocus = first;
+        previousFocus = ordered[1];
+        return;
+      }
+      if (!previousFocus || !available.has(previousFocus.sessionId)) {
+        previousFocus = ordered.find((target) => target.sessionId !== currentFocus?.sessionId);
+      }
+    },
+    newVisit() {
+      return createWorkHubRoutePolicyVisit(correctionMemory);
+    },
     rememberTarget(target) {
       if (currentFocus?.sessionId === target.sessionId) return;
       previousFocus = currentFocus;
       currentFocus = target;
     },
-    rememberCorrection(text, target) {
-      correctionSequence += 1;
-      corrections.unshift({ text, target, sequence: correctionSequence });
+    reserveSubmissionOrder() {
+      correctionMemory.sequence += 1;
+      return correctionMemory.sequence;
+    },
+    rememberCorrection(text, target, order) {
+      corrections.push({ text, target, sequence: order });
+      corrections.sort((left, right) => right.sequence - left.sequence);
       corrections.splice(MAX_ROUTE_CORRECTIONS);
     },
   };
+}
+
+function rankExactSessions(
+  text: string,
+  sessions: WorkHubSessionFacts[],
+): Array<{ session: WorkHubSessionFacts; matchLength: number }> {
+  return sessions.map((session) => {
+    const qualifiedName = `${session.projectName}/${session.sessionName}`;
+    return {
+      session,
+      matchLength: Math.max(
+        exactIdentityMatchLength(text, qualifiedName),
+        exactIdentityMatchLength(text, session.sessionName),
+      ),
+    };
+  }).filter(({ matchLength }) => matchLength >= MIN_EXACT_SESSION_NAME_LENGTH)
+    .sort((left, right) => right.matchLength - left.matchLength);
 }
 
 function correctedTarget(
@@ -295,6 +404,21 @@ function looksLikePreviousFocus(value: string): boolean {
   return /(?:上一个|前一个|之前那个|回到.{0,6}(?:之前|上一个|前一个)|previous\s+(?:one|work)|go\s+back)/iu.test(
     value,
   );
+}
+
+function naturalCorrectionTargetText(value: string): string | undefined {
+  const replacement = '(?:应该(?:是|用|改成|改为|切到|转到)?|而是|改成|改为|换成|换到|切到|转到|用|是)';
+  const chinese = value.match(
+    new RegExp(`(?:(?:不是|不要再继续)\\s*(?:(?:这个|那个|当前这个|刚才那个)(?:工作|任务|Session|会话)?|[^，,。；;\\n]{1,32}(?:那个|那项工作|Session|会话|工作|任务))|(?:(?:这个|那个|当前这个|刚才那个)(?:工作|任务|Session|会话)|[^，,。；;\\n]{1,32}(?:那个|那项工作|Session|会话|工作|任务))\\s*(?:不对|搞错了|弄错了))[，,。；;\\n]\\s*${replacement}\\s*(.{2,})$`, 'iu'),
+  )?.[1]?.trim();
+  if (chinese) return chinese;
+  return value.match(
+    /\b(?:not\s+(?:(?:this|that|the\s+current)(?:\s+(?:one|session|work|task))?|[^,.;\n]{1,32}\s+(?:session|work|task))|wrong\s+(?:one|session|work|task))\b[,.;\s]{0,4}(?:use|switch\s+to|change\s+to|move\s+to)\s+(.{2,})$/iu,
+  )?.[1]?.trim();
+}
+
+function looksLikeContentReplacement(value: string): boolean {
+  return /(?:不要(?:再)?用|别用|[^，,。；;\n]{1,32}(?:配置|实现|方案|字段|参数)?(?:不对|错了))[^\n]{0,64}[，,。；;]\s*(?:改成|改为|换成|换用|用)\s*\S{2,}/iu.test(value);
 }
 
 function looksLikeTargetUncertainty(value: string): boolean {

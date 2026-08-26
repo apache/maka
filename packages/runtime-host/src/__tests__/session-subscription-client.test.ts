@@ -181,7 +181,38 @@ test('isolates a sequence gap and continues requests on the same connection', as
         () => subscription[Symbol.asyncIterator]().next(),
         hasSubscriptionReason('sequence_gap'),
       );
+      await assert.rejects(
+        // @ts-expect-error host.status must use the validated status() API.
+        () => connection.request('host.status', {}),
+        /status requires the validated status\(\) API/,
+      );
       assert.equal((await connection.status()).hostEpoch, connection.hostEpoch);
+    },
+  );
+});
+
+test('fails the connection when status reports a different Host identity', async () => {
+  await withProtocolPeer(
+    async (transport, hostEpoch, rootId) => {
+      const request = await acceptConnectionAndReadOpen(transport, hostEpoch, rootId);
+      const opened = openResult(hostEpoch, 'subscription-status-identity');
+      await writeProtocolFrame(transport, {
+        requestId: request.requestId,
+        operation: 'subscription.open',
+        ok: true,
+        result: opened,
+      });
+      await answerClose(transport, opened.subscriptionId);
+      await answerStatus(transport, 'different-host-epoch');
+    },
+    async (connection) => {
+      const subscription = await connection.openSessionSubscription({
+        sessionId: 'session-1',
+        transcript: { kind: 'none' },
+      });
+      await subscription.close();
+      await assert.rejects(() => connection.status(), /status for a different Host identity/);
+      await connection.closed;
     },
   );
 });
@@ -671,7 +702,7 @@ test('fails the connection when overlay release is not confirmed', async () => {
         () => subscription.loadTranscript(decodeStoredMessage),
         hasSubscriptionReason('transcript_release_failed'),
       );
-      await assert.rejects(() => connection.request('host.status', {}));
+      await assert.rejects(() => connection.status());
     },
   );
 });
@@ -753,7 +784,7 @@ test('keeps the connection usable when close wins the overlay release race', asy
           text: 'overlay',
         },
       ]);
-      assert.equal((await connection.request('host.status', {})).hostEpoch, connection.hostEpoch);
+      assert.equal((await connection.status()).hostEpoch, connection.hostEpoch);
     },
   );
 });

@@ -126,6 +126,8 @@ function input(
   return {
     available: true,
     activeSession,
+    projectId: activeSession?.projectId,
+    projectAliases: [],
     authoritativeSessionIds: new Set(activeSession ? [activeSession.id] : []),
     shellObscured: false,
     modelChoices: [],
@@ -139,6 +141,20 @@ describe('useWorkbarController', () => {
     controllerRenderSnapshots = [];
     cleanupFakeDom();
     delete (globalThis as { window?: unknown }).window;
+  });
+
+  it('projects the canonical project and absorbed aliases into the host model', async () => {
+    const { root } = installReactRenderer();
+    const controllerInput = input(session('a'));
+    controllerInput.projectId = 'project-canonical';
+    controllerInput.projectAliases = ['project-absorbed'];
+
+    await act(async () =>
+      renderController(root, createFakeWorkbarServices(), controllerInput),
+    );
+
+    assert.equal(controller().host.projectId, 'project-canonical');
+    assert.deepEqual(controller().host.projectAliases, ['project-absorbed']);
   });
 
   it('keeps the initial Session active after StrictMode replays mount effects', async () => {

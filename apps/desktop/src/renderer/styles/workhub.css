@@ -86,9 +86,22 @@
   text-align: center;
 }
 
+.workhub-coordination-retry {
+  margin-top: var(--space-4, 16px);
+}
+
 .workhub-turns {
   display: flex;
   flex-direction: column;
+}
+
+.workhub-loading-user {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.workhub-loading-turn {
+  min-height: 172px;
 }
 
 .workhub-turn {

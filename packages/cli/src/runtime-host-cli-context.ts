@@ -44,7 +44,7 @@ import {
   type HostRegistration,
   type HostIncompatible,
 } from '@maka/runtime-host/protocol';
-import { resolveMakaClientDataRoot } from '@maka/storage';
+import { resolveMakaClientDataRoot } from '@maka/storage/workspace-root';
 
 /**
  * The mode a new Session starts in belongs to the Host: `session.create`

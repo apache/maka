@@ -1412,12 +1412,26 @@ export function renderMakaPiActivityStrip(
     const retry = metadata.providerRetry;
     const text =
       retry.phase === 'scheduled'
-        ? `Retrying in ${Math.max(1, Math.ceil(retry.delayMs / 1_000))}s (${retry.attempt}/${retry.maxAttempts})`
+        ? `Retrying in ${formatRetryDuration(retry.delayMs)} (${retry.attempt}/${retry.maxAttempts})`
         : `Retrying (${retry.attempt}/${retry.maxAttempts})`;
     return fitLine(ansi.dim(text), safeWidth);
   }
   if (metadata.turnElapsedMs === undefined) return '';
   return fitLine(ansi.dim(`Working… ${formatElapsedDuration(metadata.turnElapsedMs)}`), safeWidth);
+}
+
+function formatRetryDuration(delayMs: number): string {
+  let s = Math.max(1, Math.ceil(delayMs / 1_000));
+  const d = Math.floor(s / 86_400);
+  const h = Math.floor((s % 86_400) / 3_600);
+  const m = Math.floor((s % 3_600) / 60);
+  const sec = s % 60;
+  const parts: string[] = [];
+  if (d > 0) parts.push(`${d}d`);
+  if (h > 0) parts.push(`${h}h`);
+  if (m > 0) parts.push(`${m}m`);
+  if (sec > 0 || parts.length === 0) parts.push(`${sec}s`);
+  return parts.join(' ');
 }
 
 function formatElapsedDuration(elapsedMs: number): string {

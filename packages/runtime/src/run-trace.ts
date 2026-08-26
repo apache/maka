@@ -44,6 +44,7 @@ export type RunTracePhase =
 export type RunTraceEventType =
   | 'turn_started'
   | 'sandbox_context_resolved'
+  | 'sandbox_context_failed'
   | 'plan_context_resolved'
   | 'plan_submitted'
   | 'plan_execution_started'
@@ -61,6 +62,7 @@ export type RunTraceEventType =
   | 'model_stream_failed'
   | 'send_diagnostics_recorded'
   | 'tool_started'
+  | 'tool_searched'
   | 'tool_completed'
   | 'tool_failed'
   | 'skill_catalog_built'
@@ -146,6 +148,19 @@ export class RunTrace {
 
   sandboxContextResolved(snapshot: SandboxRunTraceProjection): void {
     this.emit('sandbox', 'sandbox_context_resolved', 'Sandbox context resolved', { snapshot });
+  }
+
+  sandboxContextFailed(stage: 'resolve' | 'render', error: unknown): void {
+    this.emit(
+      'sandbox',
+      'sandbox_context_failed',
+      'Sandbox context unavailable; continuing without prompt context',
+      {
+        stage,
+        error: explainError(error),
+        ...diagnoseError(error),
+      },
+    );
   }
 
   modelResolved(): void {

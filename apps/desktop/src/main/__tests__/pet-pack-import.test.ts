@@ -23,7 +23,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { PET_PACK_SCHEMA_V1 } from '@maka/core/pet';
-import { createSettingsStore } from '@maka/storage';
+import { createSettingsStore } from '@maka/storage/settings-store';
 import { createPetPackStore } from '@maka/storage/pet-pack-store';
 import {
   importPetPackFromDirectory,

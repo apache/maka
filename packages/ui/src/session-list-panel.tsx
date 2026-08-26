@@ -60,7 +60,7 @@ export function SessionListPanel(props: {
   selection: NavSelection;
   sessions: SessionSummary[];
   activeId?: string;
-  scheduledTasks?: ScheduledTask[];
+  scheduledTasks?: readonly ScheduledTask[];
   streamingSessionIds?: Set<string>;
   staleSessionIds?: Set<string>;
   groups?: ReadonlyArray<SessionHistoryGroup>;

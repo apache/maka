@@ -292,7 +292,13 @@ export function createAppShellSessionEventHandlers(options: {
           }
           return {
             ...current,
-            [sessionId]: event.followupEntries?.map((entry) => structuredClone(entry)) ?? [],
+            [sessionId]: {
+              queueRevision: event.queueRevision,
+              entries: [
+                ...(event.steeringEntries ?? []).filter((entry) => entry.state === 'queued'),
+                ...(event.followupEntries ?? []),
+              ].map((entry) => structuredClone(entry)),
+            },
           };
         });
         break;

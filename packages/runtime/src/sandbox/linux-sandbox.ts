@@ -29,6 +29,7 @@ import {
 } from './linux-capability.js';
 import type {
   SandboxBackend,
+  SandboxCapabilityProbeResult,
   SandboxCommand,
   SandboxPathContext,
   SandboxTransformRequest,
@@ -62,6 +63,25 @@ interface ResolvedLinuxRoots {
   hasDenyEntries: boolean;
 }
 
+type LinuxSandboxPlan =
+  | {
+      readonly ok: true;
+      readonly bwrapPath: string;
+      readonly roots: ResolvedLinuxRoots;
+      readonly networkSyscalls?: LinuxNetworkSyscalls;
+      readonly platform: string;
+      readonly preference: 'auto' | 'require' | 'forbid';
+    }
+  | Extract<SandboxTransformResult, { ok: false }>;
+
+type LinuxProfileValidation =
+  | { readonly ok: true; readonly networkSyscalls?: LinuxNetworkSyscalls }
+  | {
+      readonly ok: false;
+      readonly reason: 'backend_not_available' | 'invalid_request';
+      readonly message: string;
+    };
+
 export class LinuxBubblewrapBackend implements SandboxBackend {
   readonly type = 'linux' as const;
   private detectedCapability?: LinuxSandboxCapability;
@@ -79,79 +99,43 @@ export class LinuxBubblewrapBackend implements SandboxBackend {
   }
 
   canEnforceProfile(profile: PermissionProfile): boolean {
-    if (profile.type !== 'managed' || profile.fileSystem.kind !== 'restricted') return false;
-    if (profile.fileSystem.entries.some((entry) => entry.access === 'deny')) return false;
-    if (networkRestricted(profile)) {
-      try {
-        networkSyscalls(this.options.arch ?? process.arch);
-      } catch {
-        return false;
-      }
-    }
-    return true;
+    return validateLinuxProfile(profile, this.options.arch ?? process.arch).ok;
+  }
+
+  probe(request: SandboxTransformRequest): SandboxCapabilityProbeResult {
+    const plan = this.plan(request);
+    if (!plan.ok) return plan;
+    return {
+      ok: true,
+      executable: plan.bwrapPath,
+      sandboxType: 'linux',
+      requiresSandbox: true,
+      preference: plan.preference,
+    };
   }
 
   transform(request: SandboxTransformRequest): SandboxTransformResult {
     const { command } = request;
-    const preference = request.preference ?? 'auto';
-    const platform = request.platform ?? process.platform;
-
-    if (command.profile.type !== 'managed' || command.profile.fileSystem.kind !== 'restricted') {
-      return failure(
-        'invalid_request',
-        'Linux bubblewrap backend only accepts managed restricted profiles.',
-        platform,
-        preference,
-      );
-    }
-
-    const roots = resolveRoots(command.profile, command.pathContext);
-    if (roots.hasDenyEntries) {
-      return failure(
-        'invalid_request',
-        'Linux sandbox deny entries are not supported by the bubblewrap backend.',
-        platform,
-        preference,
-      );
-    }
-    const capability = this.capability(platform);
-    if (!capability.available) {
-      return failure(
-        'backend_not_available',
-        `Linux bubblewrap sandbox is not available (${capability.reason}).`,
-        platform,
-        preference,
-      );
-    }
-
-    let seccompFilter: Uint8Array | undefined;
-    if (networkRestricted(command.profile)) {
-      try {
-        seccompFilter = buildNetworkSeccompFilter(this.options.arch ?? process.arch);
-      } catch (error) {
-        return failure(
-          'backend_not_available',
-          error instanceof Error ? error.message : String(error),
-          platform,
-          preference,
-        );
-      }
-    }
+    const plan = this.plan(request);
+    if (!plan.ok) return plan;
+    const seccompFilter = plan.networkSyscalls
+      ? buildNetworkSeccompFilterFromSyscalls(plan.networkSyscalls)
+      : undefined;
 
     let nestedProtectedPaths: readonly string[];
     try {
       nestedProtectedPaths = (
         this.options.discoverProtectedMetadataPaths ?? discoverNestedProtectedMetadataPaths
       )({
-        writableRoots: roots.protectedWritableRoots,
-        names: roots.protectedMetadataNames,
+        writableRoots: plan.roots.protectedWritableRoots,
+        names: plan.roots.protectedMetadataNames,
       });
     } catch (error) {
       return failure(
-        'invalid_request',
+        'backend_not_available',
         `Unable to enumerate protected metadata: ${error instanceof Error ? error.message : String(error)}`,
-        platform,
-        preference,
+        plan.platform,
+        plan.preference,
       );
     }
 
@@ -177,11 +161,14 @@ export class LinuxBubblewrapBackend implements SandboxBackend {
     return {
       ok: true,
       exec: {
-        argv: buildBubblewrapArgv({
-          bwrapPath: capability.bwrapPath,
-          command,
-          protectedMetadataPaths: nestedProtectedPaths,
-        }),
+        argv: buildBubblewrapArgvWithRoots(
+          {
+            bwrapPath: plan.bwrapPath,
+            command,
+            protectedMetadataPaths: nestedProtectedPaths,
+          },
+          plan.roots,
+        ),
         ...(fdInputs.length > 0 ? { fdInputs } : {}),
         cwd: command.cwd,
         env: command.env,
@@ -190,6 +177,39 @@ export class LinuxBubblewrapBackend implements SandboxBackend {
       },
       sandboxType: 'linux',
       requiresSandbox: true,
+      preference: plan.preference,
+    };
+  }
+
+  private plan(request: SandboxTransformRequest): LinuxSandboxPlan {
+    const { command } = request;
+    const preference = request.preference ?? 'auto';
+    const platform = request.platform ?? process.platform;
+    const profileValidation = validateLinuxProfile(
+      command.profile,
+      this.options.arch ?? process.arch,
+    );
+    if (!profileValidation.ok) {
+      return failure(profileValidation.reason, profileValidation.message, platform, preference);
+    }
+    const roots = resolveRoots(command.profile, command.pathContext);
+    const capability = this.capability(platform);
+    if (!capability.available) {
+      return failure(
+        'backend_not_available',
+        `Linux bubblewrap sandbox is not available (${capability.reason}).`,
+        platform,
+        preference,
+      );
+    }
+    return {
+      ok: true,
+      bwrapPath: capability.bwrapPath,
+      roots,
+      ...(profileValidation.networkSyscalls
+        ? { networkSyscalls: profileValidation.networkSyscalls }
+        : {}),
+      platform,
       preference,
     };
   }
@@ -226,6 +246,14 @@ export function buildBubblewrapArgv(input: BuildBubblewrapArgvInput): readonly s
     throw new Error('Linux sandbox deny entries are not supported by the bubblewrap backend.');
   }
 
+  return buildBubblewrapArgvWithRoots(input, roots);
+}
+
+function buildBubblewrapArgvWithRoots(
+  input: BuildBubblewrapArgvInput,
+  roots: ResolvedLinuxRoots,
+): readonly string[] {
+  const { command } = input;
   const argv: string[] = [
     input.bwrapPath,
     '--die-with-parent',
@@ -379,7 +407,10 @@ export function buildBubblewrapArgv(input: BuildBubblewrapArgvInput): readonly s
  * host network.
  */
 export function buildNetworkSeccompFilter(arch: NodeJS.Architecture = process.arch): Uint8Array {
-  const syscall = networkSyscalls(arch);
+  return buildNetworkSeccompFilterFromSyscalls(networkSyscalls(arch));
+}
+
+function buildNetworkSeccompFilterFromSyscalls(syscall: LinuxNetworkSyscalls): Uint8Array {
   const instructions: ReadonlyArray<
     readonly [code: number, jt: number, jf: number, value: number]
   > = [
@@ -402,10 +433,12 @@ export function buildNetworkSeccompFilter(arch: NodeJS.Architecture = process.ar
   return output;
 }
 
-function networkSyscalls(arch: NodeJS.Architecture): {
+interface LinuxNetworkSyscalls {
   auditArch: number;
   socket: number;
-} {
+}
+
+function networkSyscalls(arch: NodeJS.Architecture): LinuxNetworkSyscalls {
   switch (arch) {
     case 'x64':
       return { auditArch: 0xc000003e, socket: 41 };
@@ -421,7 +454,7 @@ function failure(
   message: string,
   platform: string,
   preference: 'auto' | 'require' | 'forbid',
-): SandboxTransformResult {
+): Extract<SandboxTransformResult, { ok: false }> {
   return {
     ok: false,
     reason,
@@ -503,6 +536,36 @@ function rootsForEntry(entry: ProfileEntry, context: SandboxPathContext): readon
       return [context.slashTmp ?? '/tmp'];
     case ':minimal':
       return context.minimalRoots ?? [];
+  }
+}
+
+function validateLinuxProfile(
+  profile: PermissionProfile,
+  arch: NodeJS.Architecture,
+): LinuxProfileValidation {
+  if (profile.type !== 'managed' || profile.fileSystem.kind !== 'restricted') {
+    return {
+      ok: false,
+      reason: 'invalid_request',
+      message: 'Linux bubblewrap backend only accepts managed restricted profiles.',
+    };
+  }
+  if (profile.fileSystem.entries.some((entry) => entry.access === 'deny')) {
+    return {
+      ok: false,
+      reason: 'invalid_request',
+      message: 'Linux sandbox deny entries are not supported by the bubblewrap backend.',
+    };
+  }
+  if (!networkRestricted(profile)) return { ok: true };
+  try {
+    return { ok: true, networkSyscalls: networkSyscalls(arch) };
+  } catch (error) {
+    return {
+      ok: false,
+      reason: 'backend_not_available',
+      message: error instanceof Error ? error.message : String(error),
+    };
   }
 }
 

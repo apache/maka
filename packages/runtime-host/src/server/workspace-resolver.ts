@@ -26,7 +26,7 @@ import {
   ProjectNotFoundError,
   ProjectPathMismatchError,
   ProjectUnavailableError,
-} from '@maka/storage';
+} from '@maka/storage/project-catalog';
 import type { WorkspaceTarget } from '../protocol/index.js';
 import type { HostProjectMembershipGate } from './project-membership-gate.js';
 

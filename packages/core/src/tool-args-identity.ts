@@ -163,7 +163,7 @@ function canonicalizeMainlineV1(value: unknown, parentKey?: string): unknown {
  * The cost of not doing this was total. The refused write marked the runtime
  * event store unavailable, the turn's terminal write then threw, and every turn
  * that called any tool died a tenth of a second after the tool returned —
- * `load_tools` succeeded, reported the group loaded, and the turn ended there.
+ * `tool_search` succeeded, reported activated tools, and the turn ended there.
  *
  * Dropping the key is lossless in the only sense that matters: JSON cannot tell
  * an absent property from one set to `undefined`, so this writes down what

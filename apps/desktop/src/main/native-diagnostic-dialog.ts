@@ -114,25 +114,6 @@ export async function showMainRendererProcessGoneDialog(
   return result.response === 0 ? 'relaunch' : 'exit';
 }
 
-export async function showPreviousMainProcessInterruptionDialog(
-  deps: DiagnosticDialogDeps,
-): Promise<void> {
-  const copy = PREVIOUS_MAIN_PROCESS_INTERRUPTION_COPY[deps.locale];
-  await showMessageBoxWithDiagnostics(
-    {
-      type: 'warning',
-      title: copy.title,
-      message: copy.message,
-      detail: copy.detail,
-      buttons: [copy.continue],
-      defaultId: 0,
-      cancelId: 0,
-      noLink: true,
-    },
-    deps,
-  );
-}
-
 async function copyDiagnostics(
   copy: () => void | Promise<void>,
   locale: UiLocale,
@@ -212,20 +193,5 @@ const MAIN_RENDERER_GONE_COPY = {
     detail: '重新启动 Maka 以继续，或退出后稍后再打开。',
     relaunch: '重新启动',
     exit: '退出',
-  },
-} as const;
-
-const PREVIOUS_MAIN_PROCESS_INTERRUPTION_COPY = {
-  en: {
-    title: 'Previous session ended unexpectedly',
-    message: 'Maka did not finish shutting down during its previous session.',
-    detail: 'You can copy the available diagnostics before continuing.',
-    continue: 'Continue',
-  },
-  zh: {
-    title: '上一次会话意外结束',
-    message: 'Maka 上一次运行时未能完成退出流程。',
-    detail: '继续前，你可以复制当前可用的诊断信息。',
-    continue: '继续',
   },
 } as const;

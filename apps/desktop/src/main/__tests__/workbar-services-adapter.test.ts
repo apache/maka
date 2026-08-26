@@ -69,6 +69,24 @@ function createBridgeRecorder(): {
 }
 
 describe('createDesktopWorkbarServices', () => {
+  it('preserves the Side Conversation Stop identity kind', async () => {
+    const { bridge, calls } = createBridgeRecorder();
+    const services = createDesktopWorkbarServices(bridge, {
+      readSettledMessages: async () => ({ messages: [], settled: true }),
+    });
+
+    await services.sideChat.stop('fork', { kind: 'admission', messageId: 'message-1' });
+    await services.sideChat.stop('fork', { kind: 'turn', turnId: 'turn-1' });
+
+    assert.deepEqual(
+      calls.filter((call) => call.name === 'sessions.stop').map((call) => call.args),
+      [
+        ['fork', { source: 'stop_button', expectedAdmissionId: 'message-1' }],
+        ['fork', { source: 'stop_button', expectedTurnId: 'turn-1' }],
+      ],
+    );
+  });
+
   it('maps every Workbar capability to the existing Desktop bridge', async () => {
     const { bridge, calls } = createBridgeRecorder();
     const settledReads: unknown[][] = [];

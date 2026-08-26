@@ -106,6 +106,27 @@ test('renders session navigation and row actions as sibling controls', () => {
   assertNoNestedButtons(markup);
 });
 
+test('renders a scan-friendly compact timestamp in the session rail', () => {
+  const now = Date.UTC(2026, 7, 24, 12, 0, 0);
+  const originalDateNow = Date.now;
+  Date.now = () => now;
+  try {
+    const markup = renderToStaticMarkup(
+      <LocaleProvider locale="en">
+        <SessionHistoryList
+          sessions={[{ ...session, lastMessageAt: now - 46 * 60_000 }]}
+          onSelectSession={() => undefined}
+        />
+      </LocaleProvider>,
+    );
+    const { document } = parseHTML(markup);
+
+    assert.equal(document.querySelector('.maka-session-row-time-label')?.textContent, '46min');
+  } finally {
+    Date.now = originalDateNow;
+  }
+});
+
 test('renders Runtime Host live runs without requiring renderer-local streaming', () => {
   const hostRunning = { ...session, runningTurnIds: ['turn-live'] };
   const markup = renderToStaticMarkup(

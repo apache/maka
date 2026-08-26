@@ -21,6 +21,7 @@ import { createHash } from 'node:crypto';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { buildMcpTools, mcpProxyToolName, type McpToolProvider } from '@maka/runtime/mcp-tools';
 import { type MakaTool } from '@maka/runtime/tool-runtime';
+import type { RootExecutionDescriptor } from '@maka/core/agent-run';
 import { type ToolGroup } from '@maka/runtime/tool-availability';
 import {
   type ClientCapabilityOffer,
@@ -234,11 +235,30 @@ export class HostClientCapabilityCoordinator implements ClientCapabilityService 
     return this.#bindSession(sessionId, initiatingConnectionId, 'strict');
   }
 
-  async bindConfirmedFollowup(sessionId: string, initiatingConnectionId: string): Promise<void> {
-    const result = await this.#bindSession(sessionId, initiatingConnectionId, 'degrade');
+  async bindSessionSuccessor(sessionId: string): Promise<void> {
+    const result = await this.#bindSession(sessionId, '', 'degrade');
     if (!result.ok) {
-      throw new Error(`Confirmed follow-up capability binding failed: ${result.message}`);
+      throw new Error(`Session successor capability binding failed: ${result.message}`);
     }
+  }
+
+  /** Rebuild Session-scoped capability bindings from a durable root contract. */
+  async bindDurableRoot(input: {
+    sessionId: string;
+    execution: RootExecutionDescriptor;
+  }): Promise<void> {
+    if (input.execution.kind !== 'external_message') return;
+    // A live root already selected its Client capabilities at admission. Only
+    // cold recovery needs to rebuild a missing in-memory binding from the
+    // durable root contract; reselecting here would discard the active
+    // connection/turn-affine binding and can make providers ambiguous.
+    if (this.#sessions.has(input.sessionId)) return;
+    await this.#activation.runMutation(async () => {
+      const selection = this.#selectSessionState(input.sessionId, '', 'degrade');
+      if (!selection.ok) throw new Error(selection.message);
+      this.#storeSessionState(input.sessionId, selection.state);
+      if (selection.modelToolsChanged) this.#onModelToolsChanged();
+    });
   }
 
   async #bindSession(

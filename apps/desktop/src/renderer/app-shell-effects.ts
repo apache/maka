@@ -28,15 +28,13 @@ import type { UiLocale } from '@maka/core/ui-locale';
 import { generalizedErrorMessageChinese } from '@maka/core/redaction';
 import { sessionExpectsEventStream } from '@maka/core/session-event-health';
 import { type ShellRunUpdate } from '@maka/core/events';
-import type { LiveTurnProjection, NavSelection, SessionViewMode } from '@maka/ui';
+import type { LiveTurnProjection, NavSelection } from '@maka/ui';
 import { messageReadErrorMessage } from './app-shell-copy';
 import { getDesktopConversationCopy } from './locales/conversation-copy.js';
-import { getShellRemainingCopy } from './locales/shell-remaining-copy.js';
 import { applyTheme, applyThemePalette } from './theme';
 import { startTitlebarModalSync } from './titlebar-modal-sync';
 import { safeLocalStorageSet } from './browser-storage';
 import type { NavigationState } from './nav-selection.js';
-import { writeSessionListViewMode } from './session-list-layout.js';
 import {
   createSessionEventStreamSubscription,
   evaluateSessionEventStreamSnapshot,
@@ -61,7 +59,6 @@ import {
 } from './desktop-transcript-range-store.js';
 
 type RefBox<T> = { current: T };
-const LAYOUT_PERSIST_DEBOUNCE_MS = 200;
 
 type SessionEventHealthUpdater = (
   updater: (current: Record<string, SessionEventStreamSnapshot>) => Record<string, SessionEventStreamSnapshot>,
@@ -121,9 +118,6 @@ export function useAppShellHostEffects() {
 
 export function useAppShellPersistenceEffects(options: {
   navigationState: NavigationState;
-  sessionListCollapsed: boolean;
-  sessionListWidth: number;
-  sessionListViewMode: SessionViewMode;
   themePalette: ThemePalette;
   themePref: ThemePreference;
 }) {
@@ -143,28 +137,6 @@ export function useAppShellPersistenceEffects(options: {
   useEffect(() => {
     applyThemePalette(options.themePalette);
   }, [options.themePalette]);
-
-  // PR-FE-BUG-HUNT-5 (kenji bug-hunt 2026-06-24 LOW): pointer drag on
-  // the sidebar resizer fires `setSessionListWidth` on every move
-  // event — at ~60Hz over a long drag, that's a couple hundred
-  // localStorage writes for a single resize gesture. The setting
-  // converges to the user's final width at rest; intermediate
-  // values aren't load-bearing. 200ms trailing debounce keeps the
-  // last-render value in storage without flushing every pixel.
-  useEffect(() => {
-    const handle = window.setTimeout(() => {
-      safeLocalStorageSet('maka-chat-list-width-v1', String(options.sessionListWidth));
-    }, LAYOUT_PERSIST_DEBOUNCE_MS);
-    return () => window.clearTimeout(handle);
-  }, [options.sessionListWidth]);
-
-  useEffect(() => {
-    safeLocalStorageSet('maka-chat-list-collapsed-v1', options.sessionListCollapsed ? 'true' : 'false');
-  }, [options.sessionListCollapsed]);
-
-  useEffect(() => {
-    writeSessionListViewMode(options.sessionListViewMode);
-  }, [options.sessionListViewMode]);
 
   // Persist the active destination and each hub's last selected module.
   // Strict localStorage availability check — Vite dev sometimes runs through
@@ -196,26 +168,17 @@ export function useAppShellBootstrapSubscriptions(options: {
   refreshConnections: () => Promise<void>;
   refreshMemoryActive: (failureContext?: 'load') => Promise<void>;
   refreshMessages: (sessionId: string) => Promise<boolean>;
-  refreshScheduledTasks: (options?: { shouldShowError?: () => boolean }) => Promise<void>;
   refreshProjects: () => Promise<unknown>;
   refreshShellSettings: () => Promise<void>;
-  refreshSkills: (options?: { shouldShowError?: () => boolean }) => Promise<void>;
-  refreshManagedSkillSources: (options?: { shouldShowError?: () => boolean }) => Promise<void>;
-  refreshBundledSkillCatalog: (options?: { shouldShowError?: () => boolean }) => Promise<void>;
   refreshSessions: () => Promise<SessionSummary[]>;
   rendererMountedRef: RefBox<boolean>;
   setActiveId: (sessionId: string | undefined) => void;
   setMessages: (messages: StoredMessage[]) => void;
-  setNavSelection: (selection: NavSelection) => void;
   setSessionEventHealthBySession: SessionEventHealthUpdater;
   toastApi: ToastApi;
 }) {
   const runDeferredStartupRefreshes = useEffectEvent(() => {
     void options.refreshSessions();
-    void options.refreshSkills();
-    void options.refreshManagedSkillSources();
-    void options.refreshBundledSkillCatalog();
-    void options.refreshScheduledTasks();
     void options.applyE2eFixture();
   });
   const handleConnectionSubscriptionEvent = useEffectEvent((event: ConnectionEvent) => {
@@ -236,10 +199,6 @@ export function useAppShellBootstrapSubscriptions(options: {
     void options.refreshProjects();
     void options.refreshConnections();
     void options.refreshMemoryActive('load');
-    void options.refreshSkills();
-    void options.refreshManagedSkillSources();
-    void options.refreshBundledSkillCatalog();
-    void options.refreshScheduledTasks();
   });
   // PR-2088: the macOS application menu routes New Task / Settings / Keyboard
   // Shortcuts here through one channel. The renderer already owns these
@@ -297,23 +256,6 @@ export function useAppShellBootstrapSubscriptions(options: {
     }
     },
   );
-  const handleScheduledTaskChange = useEffectEvent(() => {
-    void options.refreshScheduledTasks();
-  });
-  const handleScheduledTaskDue = useEffectEvent((task: { id: string; title: string }) => {
-    const copy = getShellRemainingCopy(options.uiLocale).notifications;
-    void options.refreshScheduledTasks();
-    options.toastApi.toast({
-      title: copy.scheduledTask,
-      description: task.title,
-      variant: 'info',
-      duration: 8000,
-      action: {
-        label: copy.viewScheduledTasks,
-        onClick: () => options.setNavSelection({ section: 'automations', module: 'scheduled-tasks' }),
-      },
-    });
-  });
   // Both shortcuts fire while the composer has focus — they always did, and
   // that is the point of a global new-task / settings key — so both opt out of
   // the hook's default "stay silent while typing" rule.
@@ -379,8 +321,6 @@ export function useAppShellBootstrapSubscriptions(options: {
       () => void options.refreshShellSettings(),
     );
     const unsubscribeSessionChanges = window.maka.sessions.subscribeChanges(handleSessionChange);
-    const unsubscribeScheduledTaskChanges = window.maka.scheduledTasks.subscribeChanges(handleScheduledTaskChange);
-    const unsubscribeScheduledTaskDue = window.maka.scheduledTasks.subscribeDue(handleScheduledTaskDue);
     const unsubscribeWindowCommand = window.maka.appWindow.subscribeCommand(handleWindowCommand);
     markRendererMounted();
     return () => {
@@ -391,8 +331,6 @@ export function useAppShellBootstrapSubscriptions(options: {
       unsubscribeSettingsExternal();
       unsubscribeClientSettings();
       unsubscribeSessionChanges();
-      unsubscribeScheduledTaskChanges();
-      unsubscribeScheduledTaskDue();
       unsubscribeWindowCommand();
     };
   }, []);

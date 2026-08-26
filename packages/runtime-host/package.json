@@ -12,6 +12,7 @@
     "./operator": "./dist/operator/index.js",
     "./execution-candidate-main": "./dist/execution-candidate-main.js",
     "./server": "./dist/server/index.js",
+    "./test-only/client-capability-host": "./dist/test-only/client-capability-host.js",
     "./test-only/execution-candidate-e2e-main": "./dist/test-only/execution-candidate-e2e-main.js"
   },
   "scripts": {

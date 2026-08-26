@@ -22,7 +22,7 @@ import { afterEach, describe, it } from 'node:test';
 import {
   readSessionListViewMode,
   writeSessionListViewMode,
-} from '../../renderer/session-list-layout.js';
+} from '../../renderer/features/session-navigation/testing.js';
 
 const VIEW_MODE_KEY = 'maka-chat-list-view-mode-v1';
 

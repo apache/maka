@@ -250,7 +250,6 @@ describe('SessionManager terminal ledger invariants', () => {
       backends,
       newId: nextId(),
       now: nextNow(20_000),
-      runtimeSource: 'test',
     });
     const session = await manager.createSession(makeInput());
 
@@ -291,7 +290,6 @@ describe('SessionManager terminal ledger invariants', () => {
       backends,
       newId: nextId(),
       now: nextNow(21_000),
-      runtimeSource: 'test',
     });
     const session = await manager.createSession(makeInput());
 
@@ -332,7 +330,6 @@ describe('SessionManager terminal ledger invariants', () => {
       backends,
       newId: nextId(),
       now: nextNow(21_500),
-      runtimeSource: 'test',
     });
     const session = await manager.createSession(makeInput());
 
@@ -365,7 +362,6 @@ describe('SessionManager terminal ledger invariants', () => {
       backends,
       newId: nextId(),
       now: nextNow(21_700),
-      runtimeSource: 'test',
       interactionAuthority: hostedInteractionAuthority(),
       canonicalPermissionOutcomes: { readPermissionOutcome: async () => undefined },
     });
@@ -407,7 +403,6 @@ describe('SessionManager terminal ledger invariants', () => {
       backends,
       newId: nextId(),
       now: nextNow(21_000),
-      runtimeSource: 'test',
     });
     const session = await manager.createSession(makeInput());
 
@@ -1673,7 +1668,6 @@ describe('SessionManager terminal ledger invariants', () => {
       backends: new BackendRegistry(),
       newId: nextId(),
       now: nextNow(50_000),
-      runtimeSource: 'test',
     });
     const session = await store.create(makeInput({ status: 'active' }));
     const run = await runStore.createRun(
@@ -1733,7 +1727,6 @@ describe('SessionManager terminal ledger invariants', () => {
       backends: new BackendRegistry(),
       newId: nextId(),
       now: nextNow(60_000),
-      runtimeSource: 'test',
     });
     const session = await store.create(makeInput({ status: 'active' }));
     const run = await runStore.createRun(
@@ -1962,7 +1955,6 @@ describe('SessionManager terminal ledger invariants', () => {
       backends: new BackendRegistry(),
       newId: nextId(),
       now: nextNow(70_000),
-      runtimeSource: 'test',
     });
     const session = await store.create(makeInput({ status: 'active' }));
     const run = await runStore.createRun(
@@ -2035,7 +2027,6 @@ describe('SessionManager terminal ledger invariants', () => {
       backends: new BackendRegistry(),
       newId: nextId(),
       now: nextNow(80_000),
-      runtimeSource: 'test',
     });
     const completedSession = await store.create(makeInput({ status: 'active' }));
     const failedSession = await store.create(makeInput({ status: 'active' }));
@@ -2163,7 +2154,6 @@ async function makeHarness(
     backends,
     newId: nextId(),
     now: nextNow(10_000),
-    runtimeSource: 'test',
   });
   const session = await manager.createSession(makeInput());
   return { manager, runStore, session };

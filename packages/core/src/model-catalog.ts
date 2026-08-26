@@ -167,11 +167,11 @@ const DEFAULT_STALE_AFTER_MS = 7 * 24 * 60 * 60 * 1000;
 
 export function buildModelCatalogEntries(input: BuildModelCatalogInput): ModelCatalogEntry[] {
   const liveModels = input.models;
-  const modelSource = input.modelSource ?? (liveModels ? 'fetched' : 'fallback');
-  // The RAW `modelSource`, not the defaulted one above: an empty `models` array
-  // is truthy, so defaulting turned "nobody has asked yet" into "the provider
-  // enumerated nothing" and every model vanished from the picker while
-  // `authorizeConnectionModel` was still admitting it.
+  const modelSource =
+    input.modelSource ??
+    (liveModels !== undefined && liveModels.length > 0 ? 'fetched' : 'fallback');
+  // The RAW `modelSource`, not a source inferred from the array, distinguishes
+  // a failed discovery from an explicit empty provider response.
   const inventory = classifyConnectionModelInventory({
     providerType: input.providerType,
     models: input.models,
@@ -180,12 +180,17 @@ export function buildModelCatalogEntries(input: BuildModelCatalogInput): ModelCa
   const normalizedDefaultModel = input.defaultModel?.trim();
   const recommendedRanks = recommendedRanksForProvider(input.providerType, input.fallbackModels);
   const source = inventory === 'live' ? 'provider_api' : 'static_catalog';
+  // An empty array without a successful discovery source is the persisted
+  // shape of a failed or not-yet-run discovery. It must not hide the static
+  // fallback catalog from the picker. An empty fetched array is different: it
+  // is an authoritative provider response and should remain empty.
   const rawModels =
-    liveModels ??
-    (input.fallbackModels ?? []).map((id) => ({
-      id,
-      ...displayNameForKnownModel(input.providerType, id),
-    }));
+    liveModels !== undefined && (liveModels.length > 0 || modelSource === 'fetched')
+      ? liveModels
+      : (input.fallbackModels ?? []).map((id) => ({
+          id,
+          ...displayNameForKnownModel(input.providerType, id),
+        }));
   const savedChoiceSources = savedChoiceSourcesById(input.savedModelIds);
   const seen = new Set<string>();
   const entries = rawModels

@@ -42,7 +42,6 @@ import { afterEach, before, test } from 'node:test';
 import { openManagedWorkspaceOwner } from '../managed-workspace-owner.js';
 import { managedWorkspaceExecutionAuthorityTestSupport } from '../managed-workspace-execution-authority-internal.js';
 import { createGitWorkspaceService } from '../git-workspace-service.js';
-import * as publicStorage from '../index.js';
 import { acquireOperationalStateDatabase } from '../operational-state-store.js';
 import {
   adoptStorageRootOnImport,
@@ -84,11 +83,39 @@ test('does not expose baseline receipt issuance on the public Git workspace serv
 });
 
 test('does not expose artifact-only workspace creation through the public storage API', async () => {
-  assert.equal('createGitWorkspaceService' in publicStorage, false);
-  assert.equal('issueManagedWorkspaceExecutionHandleInternal' in publicStorage, false);
-  assert.equal('inspectManagedWorkspaceExecutionHandleInternal' in publicStorage, false);
-  assert.equal('issueManagedWorkspaceExecutionScopeInternal' in publicStorage, false);
-  assert.equal('inspectManagedWorkspaceExecutionScopeInternal' in publicStorage, false);
+  // The package has no barrel: reachability is decided by the `exports` map.
+  // Asserting on the map's targets alone would miss a published entrypoint
+  // re-exporting an internal module, so this loads every published entrypoint
+  // and checks the union of the symbols a consumer can actually reach.
+  const manifest = JSON.parse(
+    await readFile(new URL('../../package.json', import.meta.url), 'utf8'),
+  ) as { exports: Record<string, string> };
+  const reachable = new Set<string>();
+  await Promise.all(
+    Object.values(manifest.exports).map(async (target) => {
+      const entrypoint = (await import(new URL(`../../${target}`, import.meta.url).href)) as object;
+      for (const name of Object.keys(entrypoint)) reachable.add(name);
+    }),
+  );
+  for (const internalSymbol of [
+    'createGitWorkspaceService',
+    'GitWorkspaceServiceError',
+    'createManagedWorkspaceWorkerBridgeInternal',
+    'ManagedWorkspaceWorkerBridgeError',
+    'ManagedWorkspaceExecutionAuthorityError',
+    'issueManagedWorkspaceExecutionHandleInternal',
+    'requireManagedWorkspaceExecutionHandleInternal',
+    'issueManagedWorkspaceExecutionScopeInternal',
+    'revokeManagedWorkspaceExecutionScopeInternal',
+    'requireManagedWorkspaceExecutionScopeInternal',
+    'managedWorkspaceExecutionAuthorityTestSupport',
+    'createSqliteArtifactStoreWriteAuthority',
+    'migrateOperationalStateDatabaseInternal',
+    'inspectOperationalStateSchema',
+    'OperationalStateMigrationBlockedError',
+  ]) {
+    assert.equal(reachable.has(internalSymbol), false, internalSymbol);
+  }
   const root = await temporaryRoot();
   const storageRoot = join(root, 'storage');
   const capability = trackControlDirectory(

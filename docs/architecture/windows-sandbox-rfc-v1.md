@@ -238,7 +238,7 @@ Lexical prefix checks are never authorization evidence.
   retains only the exit result, so setup version and failure stage are not yet propagated — deferred
   with the structured unavailable reasons, see §6.5.)_
 
-### 6.5 Preview implementation status (2026-08-17)
+### 6.5 Preview implementation status (2026-08-24)
 
 The first product slice — the packaged Windows 11 x64 AppContainer backend in
 [#2961](https://github.com/maka-agent/maka-agent/pull/2961), merged 2026-08-17 — enforces a subset
@@ -260,6 +260,14 @@ Enforced (merged in #2961 unless tagged with a follow-up PR):
 - inheritance limited to declared stdio/protocol handles through `PROC_THREAD_ATTRIBUTE_HANDLE_LIST`
   (§6.3);
 - a closed, sorted, allowlisted environment (§6.3);
+- a kernel-observed Runtime Host owner handle on the packaged one-shot broker: owner exit interrupts
+  the first launch, terminates and drains the AppContainer Job, and releases the launch ledger/ACEs;
+- a packaged 64-launch repeated-wave concurrency soak with disjoint launch identities, followed by
+  process and ACL-ledger residue assertions;
+- a packaged malicious-child matrix covering recursive junction and multi-hard-link admission,
+  outside-file access, TCP connection denial, host named-pipe access, ambient environment,
+  host HKCU values, parent-token access, descendant AppContainer/Job inheritance, and quarantined
+  identity non-reuse;
 - per-launch private-desktop **placement** (§6.3) **(#3174)**: each production launch and the readiness probe
   create an alternate desktop on the current window station whose DACL grants only the launching user,
   Local System, and that launch's AppContainer SID — the SID getting only minimal non-interactive
@@ -336,6 +344,14 @@ Designed but deferred as later gates (not enforced in the preview slice):
   is composed once when a candidate is built — so recovery from a transient negative in an
   already-running host is scoped to a new composition build or a restart. An active readiness
   retry with dynamic worker publication is deferred.
+- Direct Windows Credential Manager/DPAPI isolation evidence. The packaged W1 matrix proves that
+  ambient credential files and environment secrets are not granted or inherited, but direct
+  `CredRead`/DPAPI probes remain a W2/W3 hardening gate.
+- Inbound listener enforcement. AppContainer denies the packaged outbound TCP/UDP attempts, but
+  local listener creation is not itself denied by the current token policy; full inbound-channel
+  enforcement remains a W2/W3 network hardening gate.
+- UDP channel enforcement. The W1 matrix proves outbound TCP denial; UDP send/response and DNS/SMB
+  enforcement remain a W2/W3 network hardening gate rather than a vacuous bind-only claim.
 
 Deferral narrows readiness richness and desktop-layer defense-in-depth, not the enforcement
 boundary: an unavailable, drifted, or failed backend still fails closed, and a restricted managed
@@ -425,7 +441,8 @@ closed. The authorized path can call only the AppContainer atomic launcher.
 - [x] compose capability detection into Runtime Host managed execution;
 - [x] package and verify the x64 native resource;
 - [x] fail closed when the resource or capability is unavailable;
-- [ ] finish cancellation, parent-death, concurrency, and residual-state release tests.
+- [x] finish cancellation, parent-death, concurrency, and residual-state release tests through the
+  packaged `FilesystemWorkerClient`/broker path.
 
 This is the first user-visible sandbox milestone. Remaining unchecked evidence limits the support
 claim; it does not permit an unsandboxed fallback.
@@ -445,6 +462,12 @@ claim; it does not permit an unsandboxed fallback.
 - document unsupported environments and recovery;
 - only then mark Phase 4 complete or advertise restricted profiles as supported.
 
+The packaged W1 matrix is release-blocking and machine-readable. It closes the executable evidence
+for the currently shipped filesystem-worker surface, not the wider W2 general-command claim.
+Authenticode identity, direct Credential Manager/DPAPI probes, no-Win32k, dedicated window-station
+and clipboard isolation, and power-loss automatic recovery remain explicit later gates. Independent
+human security review remains mandatory even when every automated row is green.
+
 ## 10. Required release evidence
 
 The Windows sandbox job must execute positive and negative child-process tests for:
@@ -459,6 +482,21 @@ The Windows sandbox job must execute positive and negative child-process tests f
 - concurrent sandboxes with disjoint identities and roots;
 - every durable setup, ACL, firewall/WFP, and marker publication failpoint;
 - installer/upgrade/uninstall verification of the exact signed launcher and complete state cleanup.
+
+For the W1 preview, the packaged verifier maps the supported attack surface to executable evidence:
+
+| Category | Packaged evidence |
+| --- | --- |
+| Filesystem aliases | outside denial plus recursive junction and multi-hard-link admission refusal |
+| Network channels | TCP connect denial without network capabilities |
+| IPC | host named-pipe denial and an explicit inherited-handle list |
+| Descendants | child creation is denied fail-closed, or a created descendant retains the AppContainer token and kill-on-close Job |
+| Environment/credentials | ambient host secret and outside credential file are unavailable |
+| Registry/parent | host HKCU value and parent process token are unavailable |
+| Lifecycle | timeout, cancellation, Runtime Host death, broker death, 64-launch soak, quarantine non-reuse |
+
+Rows that require a feature the W1 preview does not expose remain fail-closed and explicitly deferred
+above; they are not counted as passing evidence for a broader shell/general-command tier.
 
 Generated flags and unit tests are necessary but are not security evidence. A passing test must show
 that the denied operation fails in a real child and that no process or unknown durable authorization

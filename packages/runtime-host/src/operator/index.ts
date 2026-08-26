@@ -32,6 +32,7 @@ export {
   RUNTIME_HOST_OPERATOR_ACCESS_MANAGEMENT_CAPABILITY,
   RUNTIME_HOST_OPERATOR_CAPABILITY_REQUEST_ENV,
   RUNTIME_HOST_OPERATOR_PROCESS_LIFETIME_LOCK_CAPABILITY,
+  RUNTIME_HOST_OPERATOR_UPDATE_SCHEDULER_CAPABILITY,
   RUNTIME_HOST_SERVICE_ERROR_CODE_MAX_BYTES,
   RUNTIME_HOST_SERVICE_ERROR_MESSAGE_MAX_BYTES,
   RUNTIME_HOST_SERVICE_LOG_MAX_BYTES,
@@ -40,7 +41,9 @@ export {
   encodeRuntimeHostServiceManagementFrame,
   type RuntimeHostServiceManagementAction,
   type RuntimeHostServiceManagementFrame,
+  type RuntimeHostManagedUpdatePolicy,
   type RuntimeHostServiceUpdatePhase,
+  type RuntimeHostUpdateSchedulerState,
   type RuntimeHostOperatorCapability,
   type RuntimeHostServiceSummary,
 } from './service-management-frame.js';
@@ -55,3 +58,32 @@ export {
   type RuntimeHostSetupFrame,
   type RuntimeHostSetupPhase,
 } from './setup-frame.js';
+export {
+  compareProductReleaseVersions,
+  isProductReleaseVersion,
+  isRuntimeHostNpmDeploymentIdentity,
+  isSha512PackageIntegrity,
+  type RuntimeHostDeploymentIdentity,
+  type RuntimeHostNpmDeploymentIdentity,
+} from './update-package-evidence.js';
+export {
+  applyLocalHostDeploymentTransition,
+  LocalHostDeploymentAuthorityError,
+  readLocalHostDeploymentRecord,
+  resolveLocalHostDeploymentAuthorityRoot,
+  type LocalHostDeploymentAuthorityOptions,
+  type LocalHostDeploymentRecord,
+  type LocalHostDeploymentState,
+  type LocalHostDeploymentTransition,
+  type LocalHostDeploymentTransitionRejection,
+  type LocalHostDeploymentTransitionResult,
+  type RuntimeHostInstallationOwner,
+} from './local-deployment-owner.js';
+export {
+  handoffLocalHostProcessDeployment,
+  type LocalHostProcessDeploymentHandoffAdapter,
+  type LocalHostProcessDeploymentHandoffPhase,
+  type LocalHostProcessDeploymentHandoffRequest,
+  type LocalHostProcessDeploymentHandoffResult,
+  type LocalHostHandoffActiveWorkPolicy,
+} from './local-process-deployment-handoff.js';

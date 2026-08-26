@@ -38,7 +38,9 @@ import {
   type RuntimeHostAccessPreset,
 } from './runtime-host-access-command.js';
 import {
+  isRuntimeHostManagedDeploymentCli,
   isRuntimeHostDevelopmentPackageVersion,
+  openRuntimeHostManagedPackageDeployment,
   prepareRuntimeHostManagedPackageDeployment,
   RuntimeHostManagedDeploymentError,
 } from './runtime-host-managed-deployment.js';
@@ -75,6 +77,7 @@ export interface RuntimeHostSetupCliOptions {
 interface RuntimeHostSetupDeps {
   readonly manageService: typeof manageRuntimeHostService;
   readonly createBackend: (serviceId: string) => RuntimeHostServiceBackend;
+  readonly openDeployment: typeof openRuntimeHostManagedPackageDeployment;
   readonly prepareDeployment: typeof prepareRuntimeHostManagedPackageDeployment;
   readonly prepareCredential: typeof prepareRuntimeHostAccessCredential;
   readonly replaceCredential: typeof replaceRuntimeHostAccessCredential;
@@ -102,6 +105,7 @@ export async function runRuntimeHostSetupCli(
   const deps: RuntimeHostSetupDeps = {
     manageService: manageRuntimeHostService,
     createBackend: createPlatformRuntimeHostServiceBackend,
+    openDeployment: openRuntimeHostManagedPackageDeployment,
     prepareDeployment: prepareRuntimeHostManagedPackageDeployment,
     prepareCredential: prepareRuntimeHostAccessCredential,
     replaceCredential: replaceRuntimeHostAccessCredential,
@@ -148,14 +152,23 @@ async function runRuntimeHostSetupLocked(
   } as const;
   const status = await deps.manageService({ ...common, action: 'status' }, backend);
   await assertCompatibleExistingVersion(status, options.version);
+  const currentPackage = currentManagedPackage(status, serviceId, options.version);
 
   emit({ kind: 'progress', phase: 'installing_package' });
-  const deployment = await deps.prepareDeployment({
-    serviceId,
-    clientDataRoot: options.clientDataRoot,
-    sourcePackageRoot: options.sourcePackageRoot,
-    version: options.version,
-  });
+  const deployment = currentPackage
+    ? await deps.openDeployment({
+        serviceId,
+        clientDataRoot: options.clientDataRoot,
+        deploymentRoot: currentPackage.deploymentRoot,
+        cliPath: currentPackage.cliPath,
+        version: options.version,
+      })
+    : await deps.prepareDeployment({
+        serviceId,
+        clientDataRoot: options.clientDataRoot,
+        sourcePackageRoot: options.sourcePackageRoot,
+        version: options.version,
+      });
 
   emit({ kind: 'progress', phase: 'installing_service' });
   let installed: RuntimeHostManagedServiceResult;
@@ -175,7 +188,15 @@ async function runRuntimeHostSetupLocked(
       backend,
     );
   } catch (error) {
-    await deployment.rollback().catch(() => undefined);
+    try {
+      await deployment.rollback();
+    } catch (rollbackError) {
+      throw new RuntimeHostSetupError(
+        'deployment_failed',
+        'Runtime Host setup failed and its staged package could not be removed',
+        { cause: new AggregateError([error, rollbackError]) },
+      );
+    }
     throw error;
   }
   const config = installed.service.config;
@@ -221,7 +242,7 @@ async function runRuntimeHostSetupLocked(
     });
     emit({
       kind: 'complete',
-      version: deployment.version,
+      version: options.version,
       serviceId,
       operatorPath: deployment.operatorPath,
       rootPath: config.rootPath,
@@ -246,6 +267,34 @@ async function runRuntimeHostSetupLocked(
     }
     throw error;
   }
+}
+
+function currentManagedPackage(
+  status: RuntimeHostManagedServiceResult,
+  serviceId: string,
+  version: string,
+):
+  | {
+      readonly deploymentRoot: string;
+      readonly cliPath: string;
+    }
+  | undefined {
+  const config = status.service.config;
+  if (
+    status.service.installedVersion !== version ||
+    !config?.managedDeploymentRoot ||
+    !isRuntimeHostManagedDeploymentCli(
+      config.managedDeploymentRoot,
+      serviceId,
+      config.launch.cliPath,
+    )
+  ) {
+    return undefined;
+  }
+  return {
+    deploymentRoot: config.managedDeploymentRoot,
+    cliPath: config.launch.cliPath,
+  };
 }
 
 async function assertCompatibleExistingVersion(

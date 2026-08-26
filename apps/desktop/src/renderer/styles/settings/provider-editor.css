@@ -28,6 +28,22 @@
 /* .settingsRow label/value typography moved to rows.css
    (PR-SETTINGS-ROWS-CONVERGENCE-0). */
 
+/* Endpoint values are machine text, but unlike opaque filesystem paths they
+   carry useful URL boundaries. Prefer a slash/punctuation break before the
+   fallback anywhere-wrap so a long address does not split its hostname just
+   because the first line still had room for two more characters. */
+.settingsReadOnlyValue.providerEndpointValue[data-mono="true"] {
+  word-break: normal;
+}
+
+/* The model-override note is a second sentence under the endpoint's machine
+   text: block layout keeps it off the URL line, muted color keeps the URL
+   the primary fact. */
+.providerEndpointNote {
+  display: block;
+  color: var(--muted-foreground);
+}
+
 @media (max-width: 980px) {
   .app {
     grid-template-columns: 1fr;

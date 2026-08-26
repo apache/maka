@@ -28,8 +28,9 @@ import {
 } from 'react';
 import type { QuoteRef } from '@maka/core/events';
 import type { SessionSummary } from '@maka/core/session';
-import type { ChatModelChoice, Composer } from '@maka/ui';
-import { useUiLocale } from '@maka/ui';
+import { Composer, useUiLocale } from '@maka/ui';
+import type { ChatModelChoice } from '@maka/ui';
+import type { ComposerProps } from '../../../../../../../packages/ui/dist/composer.d.ts';
 import { safeLocalStorageGet, safeLocalStorageSet } from '../../../browser-storage.js';
 import { getDesktopConversationCopy } from '../../../locales/conversation-copy.js';
 import { localizedShellErrorMessage } from '../../../locales/shell-copy.js';
@@ -86,13 +87,15 @@ export interface UseWorkbarControllerInput {
   /** Whether the Session workspace (rather than a module page) owns the shell. */
   available: boolean;
   activeSession: SessionSummary | undefined;
+  projectId: string | null | undefined;
+  projectAliases: readonly string[];
   authoritativeSessionIds: ReadonlySet<string> | undefined;
   shellObscured: boolean;
   modelChoices: readonly ChatModelChoice[];
-  mentionSkills?: ComponentProps<typeof Composer>['mentionSkills'];
-  mentionSkillsUnavailable?: ComponentProps<typeof Composer>['mentionSkillsUnavailable'];
-  mentionSkillsLoading?: ComponentProps<typeof Composer>['mentionSkillsLoading'];
-  searchMentionFiles?: ComponentProps<typeof Composer>['onSearchMentionFiles'];
+  mentionSkills?: ComposerProps['mentionSkills'];
+  mentionSkillsUnavailable?: ComposerProps['mentionSkillsUnavailable'];
+  mentionSkillsLoading?: ComposerProps['mentionSkillsLoading'];
+  searchMentionFiles?: ComposerProps['onSearchMentionFiles'];
   reportError(title: string, description: string, sessionId: string): void;
 }
 
@@ -674,6 +677,8 @@ export function useWorkbarController(
     },
     host: {
       activeId: input.available ? activeSessionId : undefined,
+      projectId: input.projectId,
+      projectAliases: input.projectAliases,
       rightCollapsed: layout.workbarCollapsed,
       bottomOpen: layout.bottomPanelOpen,
       hidden: input.shellObscured,

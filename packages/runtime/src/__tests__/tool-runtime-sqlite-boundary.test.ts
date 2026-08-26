@@ -28,11 +28,14 @@ import { type LlmConnection } from '@maka/core/llm-connections';
 import { type SessionEvent } from '@maka/core/events';
 import { type SessionHeader } from '@maka/core/session';
 import type { McpToolBinding } from '@maka/core/mcp';
-import { createSqliteRuntimeStore } from '@maka/storage';
-import { createSessionEventMapMemory, mapSessionEventToRuntimeEvent } from '../ai-sdk-flow.js';
+import { createSqliteRuntimeStore } from '@maka/storage/sqlite-runtime-store';
+import {
+  createSessionEventMapMemory,
+  mapSessionEventToRuntimeEvent,
+} from '../session-event-runtime-mapper.js';
 import { buildRuntimeEventModelReplayPlan } from '../model-history.js';
 import { buildMcpTools } from '../mcp-tools.js';
-import type { InvocationContext } from '../invocation-context.js';
+import type { RuntimeEventMapContext } from '../session-event-runtime-mapper.js';
 import { MAX_ACTIVE_SUBAGENT_TOOLS_PER_TURN, ToolRuntime, type MakaTool } from '../tool-runtime.js';
 
 describe('ToolRuntime with real SQLite boundary', () => {
@@ -583,24 +586,13 @@ function header(): SessionHeader {
   };
 }
 
-function invocationContext(): InvocationContext {
+function invocationContext(): RuntimeEventMapContext {
   return {
     sessionId: 'session-1',
     invocationId: 'invocation-1',
     runId: 'run-1',
     turnId: 'turn-1',
-    source: 'test',
-    startedAt: 1,
-    newId: nextId(),
     now: () => 1,
-    request: {
-      sessionId: 'session-1',
-      invocationId: 'invocation-1',
-      runId: 'run-1',
-      turnId: 'turn-1',
-      text: 'test',
-      source: 'test',
-    },
   };
 }
 

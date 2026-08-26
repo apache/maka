@@ -171,22 +171,17 @@ describe('tool activity presentation', () => {
     );
   });
 
-  it('renders a client capability activation as a localized capability summary', () => {
+  it('renders a tool_search activation as a localized capability summary', () => {
     const item: ToolActivityItem = {
-      toolUseId: 'load-computer-use',
-      toolName: 'load_tools',
+      toolUseId: 'search-computer-use',
+      toolName: 'tool_search',
       activityKind: 'tool',
       status: 'completed',
-      args: { group: 'client_a5b9af66b60c5f5c_desktop_computer_use' },
+      args: { query: 'operate local desktop application' },
       result: {
         kind: 'json',
         value: {
-          loaded: ['mcp__desktop_computer_use__maka_computer'],
-          group: {
-            id: 'client_a5b9af66b60c5f5c_desktop_computer_use',
-            label: 'Computer Use',
-            description: 'Observe and operate the desktop through this Desktop client.',
-          },
+          activated: ['mcp__desktop_computer_use__maka_computer'],
         },
       },
     };
@@ -196,10 +191,9 @@ describe('tool activity presentation', () => {
     const detail = renderToStaticMarkup(createElement(ToolCallDetail, { item }));
     assert.match(detail, /桌面操作已启用/);
     assert.match(detail, /可以查看和操作已授权的本地应用/);
-    assert.match(detail, /Computer Use/);
     assert.match(detail, /1 项能力可用/);
     assert.match(detail, /技术详情/);
-    assert.match(detail, /client_a5b9af66b60c5f5c_desktop_computer_use/);
+    assert.match(detail, /mcp__desktop_computer_use__maka_computer/);
   });
 
   it('keeps legacy Computer Use activations friendly without result metadata', () => {

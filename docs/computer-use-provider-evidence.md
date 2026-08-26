@@ -109,7 +109,7 @@ The first qualifying run completed with:
 - terminal status: `complete / end_turn`;
 - fixture oracle: verification code matched and interaction count remained zero.
 
-The direct E2E tool exposure is deliberate. The default deferred `load_tools`
+The direct E2E tool exposure is deliberate. The default deferred `tool_search`
 path remains a separate product contract; the launcher narrows provider
 variables while still exercising the production tool implementation, permission
 engine, Runtime, Desktop host, and executor backend.

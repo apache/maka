@@ -29,7 +29,7 @@ import { Tooltip } from '@astryxdesign/core/Tooltip';
 
 export function SessionSidebarNav(props: {
   selection: NavSelection;
-  scheduledTasks?: ScheduledTask[];
+  scheduledTasks?: readonly ScheduledTask[];
   moduleMemory?: NavModuleMemory;
   onSelect(selection: NavSelection): void;
   onNew(): void;

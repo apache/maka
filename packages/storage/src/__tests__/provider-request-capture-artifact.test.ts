@@ -24,12 +24,15 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
 import { createSqliteArtifactStore as createArtifactStore } from '../artifact-store.js';
-import * as storage from '../index.js';
+import * as providerRequestCapture from '../provider-request-capture-artifact.js';
 
 test('persists the exact prepared request as a private artifact', async () => {
   const root = await mkdtemp(join(tmpdir(), 'maka-provider-capture-'));
   const store = createArtifactStore(root);
-  const persist = Reflect.get(storage, 'persistProviderRequestCaptureArtifact') as unknown as
+  const persist = Reflect.get(
+    providerRequestCapture,
+    'persistProviderRequestCaptureArtifact',
+  ) as unknown as
     | ((
         store: ReturnType<typeof createArtifactStore>,
         input: Record<string, unknown>,

@@ -24,6 +24,7 @@ import {
   useMemo,
   useRef,
   useState,
+  type ComponentProps,
   type ClipboardEvent,
   type DragEvent,
   type FormEvent,
@@ -247,10 +248,17 @@ export const Composer = forwardRef<
     /** True while the current streaming session is processing a stop request. */
     stopPending?: boolean;
     queuedMessages?: readonly MessageQueueEntryProjection[];
-    /** Promote a queued follow-up into the active Turn (立即发送). */
+    queuedMessageRevision?: number;
+    /** Promote a queued follow-up into the active Turn (调整方向). */
     onPromoteQueuedEntry?(entryId: string): void | Promise<void>;
-    /** Retract one queued entry back into the draft (收回草稿). */
-    onRetractQueuedEntry?(entry: MessageQueueEntryProjection): void | Promise<void>;
+    /** Update one queued entry in place without changing its order or placement. */
+    onUpdateQueuedEntry?(
+      entryId: string,
+      expectedQueueRevision: number,
+      text: string,
+    ): void | Promise<void>;
+    /** Remove one queued entry without restoring it. */
+    onDeleteQueuedEntry?(entryId: string): void | Promise<void>;
     /** Reorder the follow-up queue; entryIds is the full intended order. */
     onReorderQueuedEntries?(entryIds: readonly string[]): void | Promise<void>;
     /** Runtime-only key used to keep unsent drafts isolated per session. */
@@ -1532,11 +1540,13 @@ export const Composer = forwardRef<
         </div>
       )}
       {!props.hidden && queueCount > 0 ? (
-        <ComposerMessageQueue
-          queuedMessages={props.queuedMessages!}
+          <ComposerMessageQueue
+            queuedMessages={props.queuedMessages!}
+            queueRevision={props.queuedMessageRevision}
           copy={copy}
           onPromoteEntry={props.onPromoteQueuedEntry}
-          onRetractEntry={props.onRetractQueuedEntry}
+          onUpdateEntry={props.onUpdateQueuedEntry}
+          onDeleteEntry={props.onDeleteQueuedEntry}
           onReorderEntries={props.onReorderQueuedEntries}
         />
       ) : null}
@@ -2051,3 +2061,5 @@ export const Composer = forwardRef<
     </>
   );
 });
+
+export type ComposerProps = ComponentProps<typeof Composer>;

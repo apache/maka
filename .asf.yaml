@@ -69,6 +69,10 @@ github:
         # reports and no committer can override it.
         contexts:
           - test
+          # Windows recovery is a separate native crash/owner-death boundary.
+          # The workflow runs on every PR and main push so this context can be
+          # required without leaving unrelated pull requests pending forever.
+          - windows_recovery
 
   rulesets:
     - name: Immutable release tags

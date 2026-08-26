@@ -192,6 +192,18 @@ jobs:
           fi
           node scripts/run-workspace-tests-parallel.mjs --concurrency=3 --workspaces="$WORKSPACES"
 
+      - name: Run live Eval egress proxy test
+        if: contains(steps.plan.outputs.standard_workspaces, 'packages/eval')
+        env:
+          MAKA_EVAL_EGRESS_PROXY_TEST: '1'
+        run: |
+          docker pull python:3.12-slim
+          docker build \
+            --tag maka-eval-egress-proxy:12.2.3 \
+            --file packages/eval/harbor/egress-proxy/Dockerfile \
+            packages/eval/harbor
+          npm --workspace @maka/eval run test:egress-proxy:live
+
       - name: Run Runtime Host tests
         if: steps.plan.outputs.runtime_host == 'true'
         run: npm --workspace @maka/runtime-host run test:dist

@@ -26,8 +26,8 @@ import {
   type RootTurnAdmission,
   type RootTurnAdmissionStore,
   type RootTurnSourceMessage,
-} from '@maka/storage';
-import { createSqliteAgentRunStore } from '@maka/storage';
+} from '@maka/storage/agent-run-store';
+import { createSqliteAgentRunStore } from '@maka/storage/agent-run-store';
 import { RootAdmissionOwner } from '../server/root-admission-owner.js';
 import { SessionAdmissionGate } from '../server/session-admission-gate.js';
 
@@ -325,7 +325,7 @@ function multiSourceAdmitInput(sessionId: string, turnId: string, admittedAt: nu
     sessionId,
     turnId,
     proposedRunId: `run-${turnId}`,
-    proposedUserMessageId: `message-${turnId}`,
+    proposedUserMessageId: null,
     execution: { kind: 'external_message' as const },
     normalizedInput: {
       text: 'model text\n\nfollowup text',

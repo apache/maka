@@ -309,11 +309,11 @@ B3（typed retry/reattach branch）仍然 defer，不进入本 PR。
 | `runtime-kernel.ts` | immediate-source latest 重验、exact tool equality、原子 claim、provider T1 顺序 |
 | `agent-run.ts` | Run create 与 backend reservation 之间提交 continuation-start |
 | `runtime-continuation-admission.ts` | opaque、runner-bound、one-shot start proof/receipt 及精确 identity 绑定 |
-| `runtime-runner.ts` | public continuation dispatch fail closed；仅消费合法的一次性 receipt |
+| `runtime-kernel.ts` | continuation dispatch fail closed；仅消费合法的一次性 start proof |
 | `session-manager.ts` | claim-only saga、claim-owned child admission defer、proven-abandonment retry、branch/revision 创建前 preflight |
 | `runtime-event-read-model.ts` | continuation-start 是消息不可见的 canonical audit fact |
 | `runtime-continuation*.test.ts` | lineage、claim、T1、SIGKILL crash matrix |
-| `runtime-runner-continuation-admission.test.ts` | proof/receipt 防伪、runner-bound、one-shot 与 request mutation fence |
+| `session-manager.test.ts` | proof 防伪、one-shot、provider replay mutation fence 与无重复 user event |
 | `session-manager.test.ts` | production-shaped plan/execute/race/failure/stop，以及 linked/legacy child retry 的 V2 claim/start |
 
 #### UI 与文档
