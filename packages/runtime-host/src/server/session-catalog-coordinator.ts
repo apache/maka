@@ -200,8 +200,15 @@ export class HostSessionCatalogCoordinator {
   }
 
   /** WorkHub Action Gate path; callers cannot bypass the typed operation outcome. */
-  createForWorkHub(input: SessionCreateInput): Promise<OperationOutcome<'session.create'>> {
-    return this.#create(input);
+  async createForWorkHub(input: SessionCreateInput): Promise<{
+    readonly outcome: OperationOutcome<'session.create'>;
+    readonly createdRevision?: number;
+  }> {
+    let createdRevision: number | undefined;
+    const outcome = await this.#create(input, (revision) => {
+      createdRevision = revision;
+    });
+    return { outcome, ...(createdRevision === undefined ? {} : { createdRevision }) };
   }
 
   async #query(
@@ -336,7 +343,10 @@ export class HostSessionCatalogCoordinator {
     }
   }
 
-  async #create(input: SessionCreateInput): Promise<OperationOutcome<'session.create'>> {
+  async #create(
+    input: SessionCreateInput,
+    onCreated?: (revision: number) => void,
+  ): Promise<OperationOutcome<'session.create'>> {
     if (isWorkHubCoordinationSessionId(input.sessionId)) {
       return createFailure(
         'operation_conflict',
@@ -401,6 +411,7 @@ export class HostSessionCatalogCoordinator {
                 'Session identity belongs to a different create request',
               );
             }
+            if (result.kind === 'created') onCreated?.(result.record.revision);
             await this.#continuity.refreshCanonical(input.sessionId, lease);
             return createSuccess(
               projectSessionCatalogRecord(await this.#stores.readCatalogRecord(input.sessionId)),

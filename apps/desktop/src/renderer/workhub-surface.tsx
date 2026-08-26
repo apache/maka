@@ -167,6 +167,7 @@ export async function submitAndRecordWorkHubSurfaceInput(input: {
  */
 export function WorkHubSurface(props: {
   controller: WorkHubController;
+  leaseScope: string;
   locale: UiLocale;
   initialFocusSessionId?: string;
   onOpenSession(sessionId: string): void;
@@ -182,7 +183,7 @@ export function WorkHubSurface(props: {
   // a rerender can disable Composer and clarification controls.
   const routeGate = useRef(new WorkHubSurfaceRouteGate()).current;
   const refreshGate = useRef(new WorkHubProjectionRefreshGate()).current;
-  const sendLease = useRef(new WorkHubSendLease()).current;
+  const sendLease = useRef(new WorkHubSendLease({ scope: props.leaseScope })).current;
   const [loadError, setLoadError] = useState(false);
   const [conversationError, setConversationError] = useState(false);
   const refresh = useCallback(async (focusSessionId?: string) => {
@@ -256,7 +257,10 @@ export function WorkHubSurface(props: {
           controller: props.controller,
           request: input,
           recordedUserText,
-          summary: (result) => workHubCoordinationSummary(result, projection, copy),
+          summary: (result) => sendLease.summary(
+            input.requestId,
+            () => workHubCoordinationSummary(result, projection, copy),
+          ),
           // The ordinary Session admission may already have settled. A failed
           // Coordination summary keeps this send incomplete so the retry
           // reuses its durable Action Gate identity before filling the gap.
@@ -290,14 +294,19 @@ export function WorkHubSurface(props: {
   const send = useCallback(async (value: string) => {
     const text = value.trim();
     if (!text || !initialLoadSettled || !conversationReady || routeGate.pending) return false;
-    const requestId = sendLease.acquire(text);
+    const attempt = sendLease.acquireAttempt(text);
+    const { requestId } = attempt;
     setTurns((current) => current.some((turn) => turn.requestId === requestId)
       ? current.map((turn) => turn.requestId === requestId
         ? { requestId, text, state: 'routing' }
         : turn)
       : [...current, { requestId, text, state: 'routing' }]);
-    const result = await route({ requestId, text });
-    if (result) sendLease.complete(requestId);
+    const result = await route({
+      requestId,
+      text,
+      ...(attempt.retrying ? { retryAction: true as const } : {}),
+    });
+    if (result) sendLease.settle(requestId, workHubSubmissionClearsDraft(result));
     // Composer clears only accepted drafts. Waiting, delivery failures, and a
     // ref-blocked duplicate keep the exact text available for retry.
     return workHubSubmissionClearsDraft(result);

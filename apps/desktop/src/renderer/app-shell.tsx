@@ -2810,6 +2810,7 @@ function AppShellContent({
                   <WorkHubSurface
                     key={workHubCoordinationSessionId}
                     controller={workHubController}
+                    leaseScope={workHubCoordinationSessionId}
                     locale={uiLocale}
                     {...(activeId ? { initialFocusSessionId: activeId } : {})}
                     onOpenSession={openSessionInChat}

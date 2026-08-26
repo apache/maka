@@ -73,7 +73,14 @@ export interface WorkHubActionGateEffects {
     readonly sessionId: string;
     readonly workspace: WorkspaceTarget;
     readonly title: string;
-  }): Promise<void>;
+  }): Promise<{ readonly createdRevision?: number }>;
+  discardCreated(
+    input: {
+      readonly sessionId: string;
+      readonly expectedRevision: number;
+    },
+    context: ConnectionContext,
+  ): Promise<void>;
   submit(
     input: {
       readonly sessionId: string;
@@ -276,6 +283,7 @@ export class WorkHubCoordinationActionGate {
     intent: WorkHubDelegationIntent,
     context: ConnectionContext,
   ): Promise<WorkHubCoordinationActResult> {
+    let createdRevision: number | undefined;
     if (intent.disposition === 'create_new') {
       if (!intent.create) {
         throw new WorkHubActionGateFailure(
@@ -283,11 +291,12 @@ export class WorkHubCoordinationActionGate {
           'WorkHub durable creation intent is incomplete',
         );
       }
-      await this.#effects.create({
+      const created = await this.#effects.create({
         sessionId: intent.targetSessionId,
         workspace: intent.create.workspace,
         title: intent.create.title,
       });
+      createdRevision = created.createdRevision;
     } else if (intent.create) {
       throw new WorkHubActionGateFailure(
         'action_conflict',
@@ -304,10 +313,17 @@ export class WorkHubCoordinationActionGate {
     try {
       submitted = await this.#effects.submit(message, context);
     } catch (error) {
-      if (
-        !(error instanceof WorkHubActionEffectFailure) ||
-        error.code !== 'commit_outcome_unknown'
-      ) {
+      if (!(error instanceof WorkHubActionEffectFailure)) throw error;
+      if (error.code !== 'commit_outcome_unknown') {
+        if (createdRevision !== undefined) {
+          await this.#effects.discardCreated(
+            {
+              sessionId: intent.targetSessionId,
+              expectedRevision: createdRevision,
+            },
+            context,
+          );
+        }
         throw error;
       }
       const recovered = await this.#effects.recoverSubmission(message);

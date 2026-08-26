@@ -20,6 +20,8 @@
 const WORKHUB_SEND_LEASE_KEY = 'maka-workhub-send-lease-v1';
 const WORKHUB_DRAFT_KEY = 'workhub';
 const MAX_DRAFT_CHARS = 120_000;
+const MAX_SUMMARY_CHARS = 4_000;
+const MAX_SCOPE_CHARS = 1_024;
 const SAFE_REQUEST_ID = /^[A-Za-z0-9_-]{1,128}$/u;
 
 type WorkHubSendLeaseStorage = Pick<Storage, 'getItem' | 'setItem' | 'removeItem'>;
@@ -28,6 +30,18 @@ interface WorkHubSendLeaseState {
   readonly version: 1;
   readonly draft: string;
   readonly requestId?: string;
+  readonly summary?: string;
+}
+
+export interface WorkHubSendLeaseOptions {
+  readonly scope: string;
+  readonly storage?: WorkHubSendLeaseStorage;
+  readonly createId?: () => string;
+}
+
+export interface WorkHubSendAttempt {
+  readonly requestId: string;
+  readonly retrying: boolean;
 }
 
 /**
@@ -37,24 +51,57 @@ interface WorkHubSendLeaseState {
  */
 export class WorkHubSendLease {
   #memory: WorkHubSendLeaseState | undefined;
+  readonly #scope: string;
+  readonly #storage: WorkHubSendLeaseStorage | undefined;
+  readonly #createId: () => string;
+  readonly #storageKey: string;
 
-  constructor(
-    private readonly storage: WorkHubSendLeaseStorage | undefined = rendererSessionStorage(),
-    private readonly createId: () => string = () => crypto.randomUUID(),
-  ) {}
+  constructor(options: WorkHubSendLeaseOptions) {
+    if (!options.scope || options.scope.length > MAX_SCOPE_CHARS) {
+      throw new TypeError('WorkHub send lease requires a bounded Runtime Host scope');
+    }
+    this.#scope = options.scope;
+    this.#storage = options.storage ?? rendererSessionStorage();
+    this.#createId = options.createId ?? (() => crypto.randomUUID());
+    this.#storageKey = `${WORKHUB_SEND_LEASE_KEY}:${encodeURIComponent(this.#scope)}`;
+  }
 
   acquire(text: string): string {
+    return this.acquireAttempt(text).requestId;
+  }
+
+  acquireAttempt(text: string): WorkHubSendAttempt {
     const existing = this.#read();
-    if (existing?.draft === text && existing.requestId) return existing.requestId;
-    const requestId = this.createId();
+    if (existing?.draft === text && existing.requestId) {
+      return { requestId: existing.requestId, retrying: true };
+    }
+    const requestId = this.#createId();
     this.#write({ version: 1, draft: text, requestId });
-    return requestId;
+    return { requestId, retrying: false };
   }
 
   complete(requestId: string): void {
     const existing = this.#read();
     if (existing?.requestId !== requestId) return;
     this.#write({ version: 1, draft: existing.draft });
+  }
+
+  settle(requestId: string, _clearsDraft: boolean): void {
+    if (_clearsDraft) this.complete(requestId);
+  }
+
+  summary(requestId: string, create: () => string): string {
+    const existing = this.#read();
+    if (existing?.requestId !== requestId) {
+      throw new Error('WorkHub summary identity does not own the active send lease');
+    }
+    if (existing.summary) return existing.summary;
+    const summary = create();
+    if (!summary || summary.length > MAX_SUMMARY_CHARS) {
+      throw new Error('WorkHub coordination summary is invalid');
+    }
+    this.#write({ ...existing, summary });
+    return summary;
   }
 
   read(key: string | undefined): string | undefined {
@@ -68,18 +115,18 @@ export class WorkHubSendLease {
       return;
     }
     const existing = this.#read();
+    const preservesIdentity = existing?.draft === draft && existing.requestId;
     this.#write({
       version: 1,
       draft,
-      ...(existing?.draft === draft && existing.requestId
-        ? { requestId: existing.requestId }
-        : {}),
+      ...(preservesIdentity ? { requestId: existing.requestId } : {}),
+      ...(preservesIdentity && existing.summary ? { summary: existing.summary } : {}),
     });
   }
 
   #read(): WorkHubSendLeaseState | undefined {
     try {
-      const raw = this.storage?.getItem(WORKHUB_SEND_LEASE_KEY);
+      const raw = this.#storage?.getItem(this.#storageKey);
       if (!raw) return this.#memory;
       const value = JSON.parse(raw) as Partial<WorkHubSendLeaseState>;
       if (
@@ -87,7 +134,12 @@ export class WorkHubSendLease {
         typeof value.draft !== 'string' ||
         value.draft.length > MAX_DRAFT_CHARS ||
         (value.requestId !== undefined &&
-          (typeof value.requestId !== 'string' || !SAFE_REQUEST_ID.test(value.requestId)))
+          (typeof value.requestId !== 'string' || !SAFE_REQUEST_ID.test(value.requestId))) ||
+        (value.summary !== undefined &&
+          (typeof value.summary !== 'string' ||
+            !value.summary ||
+            value.summary.length > MAX_SUMMARY_CHARS ||
+            value.requestId === undefined))
       ) {
         return undefined;
       }
@@ -95,6 +147,7 @@ export class WorkHubSendLease {
         version: 1,
         draft: value.draft,
         ...(value.requestId ? { requestId: value.requestId } : {}),
+        ...(value.summary ? { summary: value.summary } : {}),
       } satisfies WorkHubSendLeaseState;
       this.#memory = decoded;
       return decoded;
@@ -106,7 +159,7 @@ export class WorkHubSendLease {
   #write(value: WorkHubSendLeaseState): void {
     this.#memory = value;
     try {
-      this.storage?.setItem(WORKHUB_SEND_LEASE_KEY, JSON.stringify(value));
+      this.#storage?.setItem(this.#storageKey, JSON.stringify(value));
     } catch {
       // Restricted renderer contexts may not expose web storage.
     }
@@ -115,7 +168,7 @@ export class WorkHubSendLease {
   #remove(): void {
     this.#memory = undefined;
     try {
-      this.storage?.removeItem(WORKHUB_SEND_LEASE_KEY);
+      this.#storage?.removeItem(this.#storageKey);
     } catch {
       // Restricted renderer contexts may not expose web storage.
     }

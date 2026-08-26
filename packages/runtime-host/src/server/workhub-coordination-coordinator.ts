@@ -103,7 +103,7 @@ export interface HostWorkHubCoordinationCoordinatorOptions {
   readonly executions: CoordinationExecutions;
   readonly sessionActions: Pick<
     WorkHubActionGateEffects,
-    'create' | 'submit' | 'recoverSubmission'
+    'create' | 'discardCreated' | 'submit' | 'recoverSubmission'
   >;
   readonly resolveCreateTarget: () => Promise<CoordinationCreateTarget>;
   readonly requestDrain: () => void;
@@ -162,6 +162,7 @@ export class HostWorkHubCoordinationCoordinator {
         }
       },
       create: options.sessionActions.create,
+      discardCreated: options.sessionActions.discardCreated,
       submit: options.sessionActions.submit,
       recoverSubmission: options.sessionActions.recoverSubmission,
       readDelegation: (actionId) => this.#delegations.read(actionId),

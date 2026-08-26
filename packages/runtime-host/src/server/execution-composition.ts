@@ -18,7 +18,7 @@
  */
 
 import { createHash, randomUUID } from 'node:crypto';
-import { messageContentDigest, normalizeMessageContent } from '@maka/core/events';
+import { normalizeMessageContent } from '@maka/core/events';
 import {
   describeChatConfigurationReason,
   NO_REAL_CONNECTION_CODE,
@@ -88,6 +88,7 @@ import {
   createHostChildAgentToolComposition,
 } from './child-agent-composition.js';
 import { HostCanonicalPermissionOutcomeReader } from './canonical-permission-outcome-reader.js';
+import { recoverWorkHubTargetSubmission } from './workhub-target-submission-recovery.js';
 import { HostArtifactCoordinator } from './artifact-coordinator.js';
 import { HostAgentGraphCoordinator } from './agent-graph-coordinator.js';
 import { HostAgentGraphExecutionCoordinator } from './agent-graph-execution-coordinator.js';
@@ -468,6 +469,7 @@ export async function createExecutionRuntimeHostComposition(
     let goal: HostGoalCoordinator | undefined;
     let deepResearch: HostDeepResearchCoordinator | undefined;
     let dailyReview: HostDailyReviewCoordinator | undefined;
+    let sessionRetirement: HostSessionRetirementCoordinator | undefined;
     const rootPort: HostMessageRootPort = {
       readSessionHeader: (sessionId) =>
         requireRootCoordinator(rootCoordinator).readSessionHeader(sessionId),
@@ -1231,7 +1233,7 @@ export async function createExecutionRuntimeHostComposition(
       executions: coordinator,
       sessionActions: {
         create: async (input) => {
-          const outcome = await sessionCatalog.createForWorkHub({
+          const created = await sessionCatalog.createForWorkHub({
             sessionId: input.sessionId,
             workspace: input.workspace,
             name: input.title,
@@ -1239,10 +1241,32 @@ export async function createExecutionRuntimeHostComposition(
             collaborationMode: 'agent',
             orchestrationMode: 'default',
           });
+          const { outcome } = created;
           if (!outcome.ok) {
             throw new WorkHubActionEffectFailure(
               outcome.error.code === 'invalid_request' ? 'operation_conflict' : outcome.error.code,
               outcome.error.message,
+            );
+          }
+          return created.createdRevision === undefined
+            ? {}
+            : { createdRevision: created.createdRevision };
+        },
+        discardCreated: async (input, connection) => {
+          const outcome = await requireSessionRetirement(sessionRetirement).handlers[
+            'session.remove'
+          ](
+            {
+              sessionId: input.sessionId,
+              expectedRevision: input.expectedRevision,
+            },
+            connection,
+          );
+          if (!outcome.ok || outcome.result.kind !== 'removed') {
+            context.requestDrain();
+            throw new WorkHubActionEffectFailure(
+              'commit_outcome_unknown',
+              'WorkHub empty created Session retirement outcome is unknown',
             );
           }
         },
@@ -1285,49 +1309,19 @@ export async function createExecutionRuntimeHostComposition(
           );
         },
         recoverSubmission: async (input) => {
-          const expectedDigest = messageContentDigest(
-            normalizeMessageContent({ text: input.text }),
+          return recoverWorkHubTargetSubmission(
+            {
+              readRootTurnSourceMessageReceipt: (sessionId, messageId) =>
+                stores.agentRunStore.readRootTurnSourceMessageReceipt(sessionId, messageId),
+              readMessageAdmission: (sessionId, messageId) =>
+                stores.sessionStore.readMessageAdmission(sessionId, messageId),
+              readRootTurnAdmission: (sessionId, turnId) =>
+                stores.agentRunStore.readRootTurnAdmission(sessionId, turnId),
+              readImmutableSteeringMessageProof: (sessionId, messageId) =>
+                stores.runtimeEventStore.readImmutableSteeringMessageProof(sessionId, messageId),
+            },
+            input,
           );
-          const receipt = await stores.agentRunStore.readRootTurnSourceMessageReceipt(
-            input.sessionId,
-            input.messageId,
-          );
-          if (receipt) {
-            const source = receipt.sourceMessage;
-            const actualDigest =
-              source.submittedContentDigest ?? messageContentDigest(source.content);
-            if (source.placement !== 'current_turn' || actualDigest !== expectedDigest) {
-              throw new WorkHubActionEffectFailure(
-                'operation_conflict',
-                'WorkHub target Message identity belongs to different content',
-              );
-            }
-            return source.disposition === 'turn_started'
-              ? { turnId: receipt.admission.turnId }
-              : source.disposition === 'steering'
-                ? { turnId: receipt.admission.turnId, steered: true as const }
-                : undefined;
-          }
-          const admission = await stores.sessionStore.readMessageAdmission(
-            input.sessionId,
-            input.messageId,
-          );
-          if (!admission) return undefined;
-          if (
-            admission.submittedPlacement !== 'current_turn' ||
-            admission.submittedContentDigest !== expectedDigest
-          ) {
-            throw new WorkHubActionEffectFailure(
-              'operation_conflict',
-              'WorkHub target Message admission belongs to different content',
-            );
-          }
-          const root = await stores.agentRunStore.readRootTurnAdmission(
-            input.sessionId,
-            admission.turnId,
-          );
-          if (!root || root.runId !== admission.runId) return undefined;
-          return { turnId: admission.turnId, steered: true as const };
         },
       },
       resolveCreateTarget: async () => {
@@ -1400,7 +1394,7 @@ export async function createExecutionRuntimeHostComposition(
       isSessionActive: (sessionId) => coordinator.readRootState(sessionId).kind !== 'idle',
       requestDrain: context.requestDrain,
     });
-    const sessionRetirement = new HostSessionRetirementCoordinator({
+    sessionRetirement = new HostSessionRetirementCoordinator({
       stores: stores.sessionStore,
       admission: sessionAdmission,
       root: coordinator,
@@ -1780,6 +1774,13 @@ export async function createExecutionRuntimeHostComposition(
 
 function requireRootCoordinator(coordinator: RootTurnCoordinator | undefined): RootTurnCoordinator {
   if (!coordinator) throw new Error('Runtime Host root coordinator is not composed');
+  return coordinator;
+}
+
+function requireSessionRetirement(
+  coordinator: HostSessionRetirementCoordinator | undefined,
+): HostSessionRetirementCoordinator {
+  if (!coordinator) throw new Error('Session retirement authority is unavailable');
   return coordinator;
 }
 

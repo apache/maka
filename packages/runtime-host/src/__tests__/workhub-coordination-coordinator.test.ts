@@ -495,7 +495,8 @@ describe('Host WorkHub Coordination coordinator', () => {
       });
       const submissions: Array<{ sessionId: string; messageId: string; text: string }> = [];
       const first = coordinator(root, store, () => undefined, undefined, undefined, undefined, {
-        create: async () => undefined,
+        create: async () => ({}),
+        discardCreated: async () => undefined,
         submit: async (input) => {
           submissions.push(input);
           return { turnId: 'payments-turn' };
@@ -550,6 +551,7 @@ describe('Host WorkHub Coordination coordinator', () => {
     try {
       const restarted = coordinator(root, store, () => undefined, undefined, undefined, undefined, {
         create: async () => assert.fail('durable replay must not create a Session'),
+        discardCreated: async () => assert.fail('durable replay must not discard a Session'),
         submit: async () => assert.fail('durable replay must not submit another Turn'),
         recoverSubmission: async () =>
           assert.fail('durable replay must not recover an already committed Turn'),
@@ -716,8 +718,12 @@ function coordinator(
     hasRootTurnAdmission: async () => false,
   },
   admission: SessionAdmissionGate = new SessionAdmissionGate(),
-  sessionActions: Pick<WorkHubActionGateEffects, 'create' | 'submit' | 'recoverSubmission'> = {
-    create: async () => undefined,
+  sessionActions: Pick<
+    WorkHubActionGateEffects,
+    'create' | 'discardCreated' | 'submit' | 'recoverSubmission'
+  > = {
+    create: async () => ({}),
+    discardCreated: async () => undefined,
     submit: async ({ sessionId }) => ({ turnId: `turn-${sessionId}` }),
     recoverSubmission: async () => undefined,
   },

@@ -52,14 +52,111 @@ test('production retry keeps one action identity across failure and renderer rel
     removeItem: (key: string) => values.delete(key),
   };
   const ids = ['action-1', 'action-2'];
-  const first = new WorkHubSendLease(storage, () => ids.shift()!);
+  const first = new WorkHubSendLease({
+    scope: 'host-a',
+    storage,
+    createId: () => ids.shift()!,
+  });
 
   assert.equal(first.acquire('Continue payment work'), 'action-1');
 
-  const restarted = new WorkHubSendLease(storage, () => ids.shift()!);
+  const restarted = new WorkHubSendLease({
+    scope: 'host-a',
+    storage,
+    createId: () => ids.shift()!,
+  });
   assert.equal(restarted.acquire('Continue payment work'), 'action-1');
   restarted.complete('action-1');
   assert.equal(restarted.acquire('Continue payment work'), 'action-2');
+});
+
+test('production retry identity is isolated by Runtime Host scope', () => {
+  const values = new Map<string, string>();
+  const storage = {
+    getItem: (key: string) => values.get(key) ?? null,
+    setItem: (key: string, value: string) => values.set(key, value),
+    removeItem: (key: string) => values.delete(key),
+  };
+  const hostA = new WorkHubSendLease({
+    scope: '["host-a","workhub_coordination"]',
+    storage,
+    createId: () => 'action-A',
+  });
+  const hostB = new WorkHubSendLease({
+    scope: '["host-b","workhub_coordination"]',
+    storage,
+    createId: () => 'action-B',
+  });
+
+  assert.equal(hostA.acquire('Continue payment work'), 'action-A');
+  assert.equal(hostB.acquire('Continue payment work'), 'action-B');
+  hostB.complete('action-B');
+  assert.equal(
+    new WorkHubSendLease({
+      scope: '["host-a","workhub_coordination"]',
+      storage,
+      createId: () => 'action-A-new',
+    }).acquire('Continue payment work'),
+    'action-A',
+  );
+});
+
+test('waiting keeps the action identity that may own an unrecorded summary', () => {
+  const values = new Map<string, string>();
+  const storage = {
+    getItem: (key: string) => values.get(key) ?? null,
+    setItem: (key: string, value: string) => values.set(key, value),
+    removeItem: (key: string) => values.delete(key),
+  };
+  const first = new WorkHubSendLease({
+    scope: 'host-a',
+    storage,
+    createId: () => 'action-1',
+  });
+  const requestId = first.acquire('Continue payment work');
+
+  first.settle(requestId, workHubSubmissionClearsDraft({
+    kind: 'waiting',
+    strategyId: WORKHUB_ROUTING_STRATEGY_ID,
+    requestId,
+    text: 'Continue payment work',
+    target: { sessionId: 'payment' },
+  }));
+
+  assert.equal(
+    new WorkHubSendLease({
+      scope: 'host-a',
+      storage,
+      createId: () => 'action-2',
+    }).acquire('Continue payment work'),
+    'action-1',
+  );
+});
+
+test('summary retry reuses the text first bound to the action identity', () => {
+  const values = new Map<string, string>();
+  const storage = {
+    getItem: (key: string) => values.get(key) ?? null,
+    setItem: (key: string, value: string) => values.set(key, value),
+    removeItem: (key: string) => values.delete(key),
+  };
+  const first = new WorkHubSendLease({
+    scope: 'host-a',
+    storage,
+    createId: () => 'action-1',
+  });
+  const requestId = first.acquire('Continue payment work');
+  assert.equal(first.summary(requestId, () => 'Sent to Payments · running'), 'Sent to Payments · running');
+
+  const restarted = new WorkHubSendLease({
+    scope: 'host-a',
+    storage,
+    createId: () => 'action-2',
+  });
+  assert.equal(
+    restarted.summary(requestId, () => 'Sent to Payment archive · completed'),
+    'Sent to Payments · running',
+  );
 });
 
 test('summary failure keeps the target action retryable under the same production identity', async () => {
@@ -100,12 +197,12 @@ test('summary failure keeps the target action retryable under the same productio
     summary: () => 'Sent to Payments.',
     onSummaryError: () => undefined,
   });
-  const first = new WorkHubSendLease(storage, () => 'action-1');
+  const first = new WorkHubSendLease({ scope: 'host-a', storage, createId: () => 'action-1' });
   const requestId = first.acquire('Continue payment work');
 
   await assert.rejects(send(requestId), /summary outcome unknown/u);
 
-  const restarted = new WorkHubSendLease(storage, () => 'action-2');
+  const restarted = new WorkHubSendLease({ scope: 'host-a', storage, createId: () => 'action-2' });
   const retriedId = restarted.acquire('Continue payment work');
   await send(retriedId);
   restarted.complete(retriedId);

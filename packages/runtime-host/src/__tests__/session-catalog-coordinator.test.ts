@@ -478,6 +478,35 @@ test('ordinary creation rejects the reserved WorkHub Coordination Session identi
   assert.equal(fixture.drainRequests(), 0);
 });
 
+test('WorkHub creation reports only the revision created by this exact attempt', async () => {
+  let creates = 0;
+  const header = sessionHeader('session-1', []);
+  const fixture = createFixture({
+    stores: {
+      createStableSession: async () => {
+        creates += 1;
+        return creates === 1
+          ? { kind: 'created', record: headerSnapshot(header, 7) }
+          : { kind: 'existing', record: headerSnapshot(header, 7) };
+      },
+      readCatalogRecord: async () => catalogRecord(header, 7),
+    },
+  });
+  const input = {
+    sessionId: fixture.sessionId,
+    workspace: { kind: 'host_path' as const, path: process.cwd() },
+    modelTarget: { kind: 'default' as const },
+  };
+
+  const created = await fixture.coordinator.createForWorkHub(input);
+  const replayed = await fixture.coordinator.createForWorkHub(input);
+
+  assert.equal(created.outcome.ok, true);
+  assert.equal(created.createdRevision, 7);
+  assert.equal(replayed.outcome.ok, true);
+  assert.equal(replayed.createdRevision, undefined);
+});
+
 test('ordinary configuration rejects the WorkHub Coordination Session identity', async () => {
   let reads = 0;
   const fixture = createFixture({

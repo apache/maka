@@ -99,6 +99,7 @@ export interface WorkHubProjection {
 export interface WorkHubSubmitInput {
   requestId: string;
   text: string;
+  retryAction?: true;
   explicitTarget?: WorkHubSessionTarget;
   correction?: WorkHubCorrectionContext;
 }
@@ -807,7 +808,7 @@ function createWorkHubControllerImplementation(deps: {
       if (!targetSession && evidence !== 'new_session') {
         throw new Error('WorkHub target Session is unavailable');
       }
-      if (targetSession?.state === 'waiting_for_user') {
+      if (targetSession?.state === 'waiting_for_user' && !input.retryAction) {
         return {
           kind: 'waiting',
           strategyId: WORKHUB_ROUTING_STRATEGY_ID,

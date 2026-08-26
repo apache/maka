@@ -124,14 +124,23 @@ fingerprint to reject conflicting reuse of an action identity. They do not form 
 general workflow state machine and do not persist target execution lifecycle.
 
 The renderer couples one reload-safe Composer draft to one action identity until
-both target admission and its Coordination summary settle. Retry therefore reuses
-the same identity instead of treating the retained draft as new work. The durable
-fingerprint covers stable user intent, not snapshot-scoped candidate ids; once
-prepared, the intent owns the resolved target, exact user text, and any
-`create_new` title/workspace context. Recovery is deliberately driven by that
-explicit caller retry rather than an autonomous startup scan: the latter would
-execute user work without a live request context and turn this journal into a
-background workflow engine.
+both target admission and its Coordination summary settle. The lease is scoped by
+Coordination Session, so switching Runtime Hosts cannot move or retire another
+Host's action identity. Retry therefore reuses the same identity instead of
+treating the retained draft as new work; `waiting_for_user` does not retire that
+identity, and the first generated Coordination summary is immutable across retry.
+The durable fingerprint covers stable user intent, not snapshot-scoped candidate
+ids; once prepared, the intent owns the resolved target, exact user text, and any
+`create_new` title/workspace context.
+
+Recovery accepts the target Session's existing root receipt, pending admission, or
+immutable steering proof as durable evidence. A definitive first-submit rejection
+after `create_new` compensates only a Session created by that exact attempt through
+the ordinary Session-retirement authority; an unknown submit outcome never removes
+a possibly admitted Session. Recovery is deliberately driven by explicit caller
+retry rather than an autonomous startup scan: the latter would execute user work
+without a live request context and turn this journal into a background workflow
+engine.
 
 ## Consequences, costs, and reevaluation
 

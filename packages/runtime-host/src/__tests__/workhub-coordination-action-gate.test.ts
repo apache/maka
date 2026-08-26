@@ -409,6 +409,54 @@ describe('WorkHub Coordination Action Gate', () => {
     ]);
     assert.equal(effects.submissions.length, 1);
   });
+
+  test('definitive create_new submit rejection retires the empty created Session', async () => {
+    const effects = fakeEffects([session('ordinary')]);
+    effects.submitFailure = new WorkHubActionEffectFailure(
+      'operation_conflict',
+      'Target submit was definitively rejected',
+    );
+
+    await assert.rejects(
+      new WorkHubCoordinationActionGate(effects).act(
+        {
+          actionId: 'rejected-create-action',
+          userText: 'Create a login audit',
+          proposal: { disposition: 'create_new', title: 'Login audit' },
+          create: { workspace: { kind: 'project', projectId: 'project-1' } },
+        },
+        CONTEXT,
+      ),
+      /definitively rejected/u,
+    );
+
+    assert.equal(effects.discardedCreatedSessionIds.length, 1);
+    assert.match(effects.discardedCreatedSessionIds[0] ?? '', /^whs_[a-f0-9]{48}$/u);
+    assert.deepEqual(effects.creations, []);
+  });
+
+  test('unknown create_new submit outcome never retires a possibly admitted Session', async () => {
+    const effects = fakeEffects([session('ordinary')]);
+    effects.submitUnknownAfterAdmission = true;
+    effects.recoverSubmissionMiss = true;
+
+    await assert.rejects(
+      new WorkHubCoordinationActionGate(effects).act(
+        {
+          actionId: 'unknown-create-action',
+          userText: 'Create a login audit',
+          proposal: { disposition: 'create_new', title: 'Login audit' },
+          create: { workspace: { kind: 'project', projectId: 'project-1' } },
+        },
+        CONTEXT,
+      ),
+      (error) =>
+        error instanceof WorkHubActionEffectFailure && error.code === 'commit_outcome_unknown',
+    );
+
+    assert.equal(effects.creations.length, 1);
+    assert.deepEqual(effects.discardedCreatedSessionIds, []);
+  });
 });
 
 function session(
@@ -453,6 +501,9 @@ function fakeEffects(initialSessions: WorkHubActionGateSession[]) {
     delegations: new Map<string, WorkHubDelegationRecord>(),
     commitFailuresRemaining: 0,
     submitUnknownAfterAdmission: false as boolean,
+    submitFailure: undefined as WorkHubActionEffectFailure | undefined,
+    recoverSubmissionMiss: false as boolean,
+    discardedCreatedSessionIds: [] as string[],
     async listSessions() {
       return this.sessions;
     },
@@ -470,8 +521,14 @@ function fakeEffects(initialSessions: WorkHubActionGateSession[]) {
       const existing = this.creations.find(({ sessionId }) => sessionId === input.sessionId);
       if (existing) assert.deepEqual(existing, input);
       else this.creations.push(input);
+      return existing ? {} : { createdRevision: 1 };
     },
     async submit(input: { sessionId: string; messageId: string; text: string }) {
+      if (this.submitFailure) {
+        const error = this.submitFailure;
+        this.submitFailure = undefined;
+        throw error;
+      }
       const existing = submitted.get(input.messageId);
       if (existing) {
         assert.deepEqual(existing.input, input);
@@ -489,7 +546,14 @@ function fakeEffects(initialSessions: WorkHubActionGateSession[]) {
       }
       return { turnId };
     },
+    async discardCreated(input: { sessionId: string; expectedRevision: number }) {
+      assert.equal(input.expectedRevision, 1);
+      this.discardedCreatedSessionIds.push(input.sessionId);
+      const index = this.creations.findIndex(({ sessionId }) => sessionId === input.sessionId);
+      if (index >= 0) this.creations.splice(index, 1);
+    },
     async recoverSubmission(input: { sessionId: string; messageId: string; text: string }) {
+      if (this.recoverSubmissionMiss) return undefined;
       const existing = submitted.get(input.messageId);
       if (!existing) return undefined;
       assert.deepEqual(existing.input, input);
@@ -531,6 +595,9 @@ function fakeEffects(initialSessions: WorkHubActionGateSession[]) {
     delegations: Map<string, WorkHubDelegationRecord>;
     commitFailuresRemaining: number;
     submitUnknownAfterAdmission: boolean;
+    submitFailure: WorkHubActionEffectFailure | undefined;
+    recoverSubmissionMiss: boolean;
+    discardedCreatedSessionIds: string[];
   };
   return state;
 }
