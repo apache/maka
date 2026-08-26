@@ -151,6 +151,7 @@ test('applies the import deadline and terminates the helper process tree', {
       error instanceof GitoxideHelperInvocationError &&
       error.code === 'gitoxide_helper_invocation_timed_out',
   );
+  await Promise.all([waitForProcessExit(helperPid), waitForProcessExit(descendantPid)]);
   assert.equal(isProcessAlive(helperPid), false);
   assert.equal(isProcessAlive(descendantPid), false);
 });
@@ -439,6 +440,18 @@ function isProcessAlive(pid: number): boolean {
   } catch {
     return false;
   }
+}
+
+async function waitForProcessExit(pid: number, timeoutMs = 2_000): Promise<void> {
+  const deadline = performance.now() + timeoutMs;
+  while (performance.now() < deadline) {
+    if (!isProcessAlive(pid)) return;
+    // The process-group signal has completed, but POSIX may expose a killed
+    // descendant as a zombie briefly while its new parent reaps it. This wait
+    // uses a real scheduler boundary because this test mocks only setTimeout.
+    await new Promise<void>((resolve) => setImmediate(resolve));
+  }
+  assert.equal(isProcessAlive(pid), false, `Process ${pid} remained observable after termination`);
 }
 
 function escapeSingleQuotedShell(value: string): string {
