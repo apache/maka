@@ -1337,7 +1337,8 @@ test('keeps a transcript consumer available after a delivery fails', async () =>
     observer.loadTranscriptAround(
       {
         consumerId,
-        generation: opened.generation,
+        sessionId: opened.sessionId,
+        hostEpoch: opened.hostEpoch,
         anchorSequence: 0,
         maxBytes: DESKTOP_TRANSCRIPT_FRAGMENT_MAX_BYTES,
       },
