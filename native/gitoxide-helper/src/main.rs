@@ -31,7 +31,7 @@ use unicode_normalization::UnicodeNormalization;
 
 const PROTOCOL_VERSION: u8 = 1;
 const MANAGED_TREE_POLICY_VERSION: u8 = 2;
-const MAX_REQUEST_BYTES: u64 = 64 * 1024;
+const MAX_REQUEST_BYTES: u64 = MAX_IMPORT_FILE_BYTES + 64 * 1024;
 const MAX_REPOSITORY_METADATA_BYTES: u64 = 1024 * 1024;
 const MAX_REPOSITORY_METADATA_ENTRIES: u64 = 16_384;
 const MAX_REPOSITORY_METADATA_DEPTH: u64 = 64;
@@ -78,7 +78,14 @@ const HELPER_ERROR_REASONS_V1: &[&str] = &[
     "baseline_commit_write_failed",
     "baseline_publish_failed",
     "baseline_ref_outside_maka_namespace",
+    "base_commit_unavailable",
+    "base_path_lookup_failed",
+    "base_tree_unavailable",
+    "blob_write_failed",
+    "commit_write_failed",
     "invalid_baseline_ref",
+    "invalid_base_commit_oid",
+    "invalid_successor_path",
     "import_destination_create_failed",
     "import_destination_not_fresh",
     "import_destination_object_format_mismatch",
@@ -112,6 +119,13 @@ const HELPER_ERROR_REASONS_V1: &[&str] = &[
     "source_tree_observation_mismatch",
     "source_tree_unavailable",
     "source_tree_visit_limit_exceeded",
+    "successor_content_limit_exceeded",
+    "successor_publish_failed",
+    "target_ref_outside_maka_namespace",
+    "target_ref_unavailable",
+    "tree_edit_failed",
+    "tree_write_failed",
+    "unsupported_base_path_kind",
     "unsupported_source_entry_kind",
     "unsupported_source_attributes",
     "unsupported_source_path",
@@ -137,6 +151,15 @@ enum Request {
         expected_source_head_commit_oid: String,
         destination_repository_path: PathBuf,
         baseline_ref: String,
+        managed_tree_policy_version: u8,
+    },
+    CreateSuccessor {
+        protocol_version: u8,
+        repository_path: PathBuf,
+        expected_base_commit_oid: String,
+        target_ref: String,
+        path: String,
+        content: String,
         managed_tree_policy_version: u8,
     },
 }
@@ -170,6 +193,28 @@ enum Response<'a> {
         managed_tree_policy_version: u8,
         files_imported: u64,
         bytes_imported: u64,
+    },
+    #[serde(rename_all = "camelCase")]
+    SuccessorPublished {
+        protocol_version: u8,
+        object_format: &'static str,
+        base_commit_oid: String,
+        successor_commit_oid: String,
+        successor_tree_oid: String,
+        result_blob_oid: String,
+        target_ref: String,
+        path: String,
+        managed_tree_policy_version: u8,
+    },
+    #[serde(rename_all = "camelCase")]
+    SuccessorRejected {
+        protocol_version: u8,
+        reason: &'static str,
+        object_format: &'static str,
+        expected_base_commit_oid: String,
+        actual_base_commit_oid: String,
+        target_ref: String,
+        managed_tree_policy_version: u8,
     },
     #[serde(rename_all = "camelCase")]
     HelperError {
@@ -220,6 +265,25 @@ fn run() -> Result<ExitCode, &'static str> {
                 expected_source_head_commit_oid,
                 destination_repository_path,
                 baseline_ref,
+                managed_tree_policy_version,
+            )
+        }
+        Request::CreateSuccessor {
+            protocol_version,
+            repository_path,
+            expected_base_commit_oid,
+            target_ref,
+            path,
+            content,
+            managed_tree_policy_version,
+        } => {
+            assert_protocol_version(protocol_version)?;
+            create_successor(
+                repository_path,
+                expected_base_commit_oid,
+                target_ref,
+                path,
+                content,
                 managed_tree_policy_version,
             )
         }
@@ -609,6 +673,165 @@ fn import_source_head(
         bytes_imported: copy_stats.bytes,
     });
     Ok(ExitCode::SUCCESS)
+}
+
+fn create_successor(
+    repository_path: PathBuf,
+    expected_base_commit_oid: String,
+    target_ref: String,
+    path: String,
+    content: String,
+    managed_tree_policy_version: u8,
+) -> Result<ExitCode, &'static str> {
+    use gix::bstr::ByteSlice;
+
+    if !target_ref.starts_with("refs/maka/") {
+        return Err("target_ref_outside_maka_namespace");
+    }
+    gix::refs::FullName::try_from(target_ref.as_str())
+        .map_err(|_| "target_ref_outside_maka_namespace")?;
+    if managed_tree_policy_version != MANAGED_TREE_POLICY_VERSION {
+        return Err("unsupported_managed_tree_policy");
+    }
+    if !is_canonical_successor_path_v2(&path) {
+        return Err("invalid_successor_path");
+    }
+    if content.len() as u64 > MAX_IMPORT_FILE_BYTES {
+        return Err("successor_content_limit_exceeded");
+    }
+
+    let repository = open_repository(repository_path)?;
+    if repository.object_hash() != gix::hash::Kind::Sha1 {
+        return Err("unsupported_object_format");
+    }
+    let expected_base = gix::hash::ObjectId::from_hex(expected_base_commit_oid.as_bytes())
+        .map_err(|_| "invalid_base_commit_oid")?;
+    if expected_base.kind() != gix::hash::Kind::Sha1 {
+        return Err("invalid_base_commit_oid");
+    }
+    let base_commit = load_verified_object(
+        &repository,
+        expected_base,
+        gix::objs::Kind::Commit,
+        MANAGED_TREE_POLICY_V2.max_commit_object_bytes,
+        "base_commit_unavailable",
+        "base_commit_unavailable",
+        "commit_object_limit_exceeded",
+        "head_commit_identity_mismatch",
+    )?
+    .try_into_commit()
+    .map_err(|_| "base_commit_unavailable")?;
+    let base_tree = base_commit
+        .tree_id()
+        .map_err(|_| "base_tree_unavailable")?
+        .detach();
+    let result_blob = repository
+        .write_blob(content.as_bytes())
+        .map_err(|_| "blob_write_failed")?
+        .detach();
+    let entry_kind = match repository
+        .find_tree(base_tree)
+        .map_err(|_| "base_tree_unavailable")?
+        .lookup_entry_by_path(path.as_str())
+        .map_err(|_| "base_path_lookup_failed")?
+        .map(|entry| entry.mode().kind())
+    {
+        Some(gix::objs::tree::EntryKind::BlobExecutable) => {
+            gix::objs::tree::EntryKind::BlobExecutable
+        }
+        Some(gix::objs::tree::EntryKind::Blob) | None => gix::objs::tree::EntryKind::Blob,
+        Some(_) => return Err("unsupported_base_path_kind"),
+    };
+    let mut editor = repository
+        .edit_tree(base_tree)
+        .map_err(|_| "tree_edit_failed")?;
+    editor
+        .upsert(path.as_str(), entry_kind, result_blob)
+        .map_err(|_| "tree_edit_failed")?;
+    let successor_tree = editor.write().map_err(|_| "tree_write_failed")?.detach();
+    let mut stats = ManagedTreeStats::default();
+    walk_verified_source_tree(
+        &repository,
+        None,
+        successor_tree,
+        "",
+        0,
+        MANAGED_TREE_POLICY_V2,
+        &mut stats,
+    )?;
+    let signature = gix::actor::SignatureRef {
+        name: b"Maka Workspace Service".as_bstr(),
+        email: b"workspace@maka.invalid".as_bstr(),
+        time: "946684800 +0000",
+    };
+    let successor_commit = repository
+        .new_commit_as(
+            signature,
+            signature,
+            "maka managed workspace successor v2",
+            successor_tree,
+            [expected_base],
+        )
+        .map_err(|_| "commit_write_failed")?
+        .id()
+        .detach();
+
+    let current = repository
+        .find_reference(target_ref.as_str())
+        .map_err(|_| "target_ref_unavailable")?
+        .into_fully_peeled_id()
+        .map_err(|_| "target_ref_unavailable")?
+        .detach();
+    if current != expected_base && current != successor_commit {
+        write_response(&Response::SuccessorRejected {
+            protocol_version: PROTOCOL_VERSION,
+            reason: "base_commit_mismatch",
+            object_format: "sha1",
+            expected_base_commit_oid: expected_base.to_string(),
+            actual_base_commit_oid: current.to_string(),
+            target_ref,
+            managed_tree_policy_version: MANAGED_TREE_POLICY_VERSION,
+        });
+        return Ok(ExitCode::from(3));
+    }
+    if current == expected_base {
+        repository
+            .reference(
+                target_ref.as_str(),
+                successor_commit,
+                gix::refs::transaction::PreviousValue::MustExistAndMatch(
+                    gix::refs::Target::Object(expected_base),
+                ),
+                "maka managed workspace successor",
+            )
+            .map_err(|_| "successor_publish_failed")?;
+    }
+
+    write_response(&Response::SuccessorPublished {
+        protocol_version: PROTOCOL_VERSION,
+        object_format: "sha1",
+        base_commit_oid: expected_base.to_string(),
+        successor_commit_oid: successor_commit.to_string(),
+        successor_tree_oid: successor_tree.to_string(),
+        result_blob_oid: result_blob.to_string(),
+        target_ref,
+        path,
+        managed_tree_policy_version: MANAGED_TREE_POLICY_VERSION,
+    });
+    Ok(ExitCode::SUCCESS)
+}
+
+fn is_canonical_successor_path_v2(path: &str) -> bool {
+    let policy = MANAGED_TREE_POLICY_V2;
+    !path.is_empty()
+        && !path.starts_with('/')
+        && !path.contains('\0')
+        && path.len() as u64 <= policy.max_relative_path_bytes
+        && fold_managed_path_v2(path).len() as u64 <= policy.max_folded_relative_path_bytes
+        && path.split('/').all(|component| {
+            is_supported_source_component(component)
+                && component.len() as u64 <= policy.max_component_bytes
+        })
 }
 
 fn claim_fresh_import_destination(path: &Path) -> Result<gix::Repository, &'static str> {
