@@ -21,7 +21,7 @@ import assert from 'node:assert/strict';
 import { readdirSync, readFileSync } from 'node:fs';
 import test from 'node:test';
 
-import { formatGitHubOutputs, planTests } from './ci-test-plan.mjs';
+import { formatGitHubOutputs, loadWorkspaceGraph, planTests } from './ci-test-plan.mjs';
 
 const dirs = [
   'packages/core',
@@ -236,70 +236,12 @@ test('full-suite authority files select every surface', () => {
 test('GitHub output matches the selections consumed by CI', () => {
   const output = formatGitHubOutputs(planTests([], { graph, forceFull: true }));
   const outputKeys = new Set(output.split('\n').map((line) => line.split('=', 1)[0]));
-  // Both planning lanes, so an output that no workflow reads fails here rather
-  // than accumulating as a selection nobody acts on.
+  const workflow = readWorkflow('ci.yml');
   const consumedKeys = new Set(
-    ['ci.yml', 'windows-recovery.yml']
-      .flatMap((name) => [...readWorkflow(name).matchAll(/steps\.plan\.outputs\.([a-z0-9_]+)/gu)])
-      .map((match) => match[1]),
+    [...workflow.matchAll(/steps\.plan\.outputs\.([a-z0-9_]+)/gu)].map((match) => match[1]),
   );
 
   assert.deepEqual(outputKeys, consumedKeys);
-});
-
-test('the Windows recovery lane is selected through the workspaces it executes', () => {
-  // packages/core is not named in the selection: the reverse dependency closure
-  // reaches storage, runtime and Runtime Host on its own, which is why this
-  // lane does not need a second hand-maintained path list.
-  for (const [path, expected] of [
-    ['packages/core/src/session.ts', true],
-    ['packages/storage/src/root-authority.ts', true],
-    ['packages/runtime-host/src/server/control-endpoint.ts', true],
-    ['scripts/windows-runtime-host-local-ipc-trust.ps1', true],
-    ['.github/workflows/windows-recovery.yml', true],
-    ['package-lock.json', true],
-    ['apps/desktop/src/main/index.ts', false],
-    ['packages/ui/src/button.tsx', false],
-    ['docs/windows-support.md', false],
-  ]) {
-    assert.equal(planTests([path], { graph }).windowsRecovery, expected, path);
-  }
-});
-
-test('every Windows recovery gate runs behind the planner selection', () => {
-  const workflow = readWorkflow('windows-recovery.yml');
-
-  // The lane stays a required context, so it has to report on every pull
-  // request and cannot carry a paths filter. The relevance check therefore
-  // lives inside the job, and every step that installs, builds or verifies has
-  // to sit behind it or an unrelated diff pays the lane's full cost.
-  assert.match(workflow, /\n {6}- id: plan\n {8}name: Select the recovery surface/u);
-  assert.match(workflow, /node scripts\/ci-test-plan\.mjs --full/u);
-  // Read from the `on:` block rather than the whole file, and reject the filter
-  // wherever it sits inside a trigger: a required context behind one would stop
-  // reporting and leave every unrelated pull request pending forever.
-  assert.doesNotMatch(triggerBlock('windows-recovery.yml'), /\bpaths(-ignore)?:/u);
-
-  const steps = workflow.split(/\n {6}- (?=id:|name:|uses:)/u).slice(1);
-  assert.ok(steps.length >= 9, `unexpected step count: ${steps.length}`);
-  for (const step of steps) {
-    const heading = step.split('\n', 1)[0];
-    if (heading.startsWith('id: plan') || step.includes('actions/checkout@')) continue;
-    assert.ok(
-      step.includes("if: steps.plan.outputs.windows_recovery == 'true'"),
-      `step runs unconditionally: ${heading}`,
-    );
-  }
-});
-
-test('the recovery planner needs history to compare against', () => {
-  // Without full history `git cat-file -e` on the base fails and the lane falls
-  // back to running every gate, which is safe but silently permanent.
-  const workflow = readWorkflow('windows-recovery.yml');
-  const checkout = checkoutSteps('windows-recovery.yml')[0];
-
-  assert.match(checkout, /fetch-depth: 0/u);
-  assert.match(workflow, /git cat-file -e "\$\{BASE_SHA\}\^\{commit\}"/u);
 });
 
 test('core CI validates pull requests and the resulting main branch state', () => {
@@ -410,14 +352,93 @@ test('pull request triggers stay on an explicit allowlist', () => {
   ]);
 });
 
-test('Windows recovery publishes one stable PR and main check for ruleset enforcement', () => {
+test('the recovery lane pairs its path filter with a nightly run and a main push', () => {
+  // Read from the `on:` block with comments stripped, so documenting a trigger
+  // cannot break its contract.
+  const triggers = triggerBlock('windows-recovery.yml');
+
+  // Same contract as the sandbox lane: the filter is a pre-filter, not the
+  // lane's import closure, so dropping the schedule would silently lose every
+  // transitive edit it cannot match, and dropping the filter would put every
+  // Windows recovery run back on every pull request. The main push carries no
+  // filter because `strict: false` lets a stale-base pull request go green,
+  // and because a diff over 3,000 files can skip a paths filter outright.
+  // Stripped comment lines survive as blank ones, so the gap between the
+  // trigger and its list is any mix of blank and four-space lines.
+  assert.match(triggers, /\n {2}pull_request:\n(?:(?: {4}[^\n]*)?\n)* {4}paths:/u);
+  assert.match(triggers, /\n {2}push:\n {4}branches: \[main\]\n/u);
+  assert.doesNotMatch(
+    triggers.match(/\n {2}push:\n(?:(?: {4}[^\n]*)?\n)*/u)?.[0] ?? '',
+    /\bpaths(-ignore)?:/u,
+  );
+  assert.match(triggers, /\n {2}schedule:\n/u);
+  assert.match(triggers, /\n {2}workflow_dispatch:/u);
+  assert.match(readWorkflow('windows-recovery.yml'), /\n {4}name: windows_recovery/u);
+});
+
+test('the recovery lane keeps every run kind out of one shared concurrency group', () => {
   const workflow = readWorkflow('windows-recovery.yml');
 
-  assert.match(workflow, /\n {2}pull_request:\n {4}branches: \[main\]/u);
-  assert.match(workflow, /\n {2}push:\n {4}branches: \[main\]/u);
-  assert.match(workflow, /\n {2}workflow_dispatch:/u);
-  assert.match(workflow, /\n {4}name: windows_recovery/u);
-  assert.match(workflow, /cancel-in-progress: \$\{\{ github\.event_name == 'pull_request' \}\}/u);
+  // github.head_ref is a bare branch name, so two forks pushing their own
+  // `main` would share a group and cancel each other; github.ref is
+  // refs/heads/main for the nightly, a dispatch and a main push alike, so a
+  // ref-keyed group made a dispatch queue behind the nightly and let the next
+  // dispatch discard it while pending.
+  assert.match(
+    workflow,
+    /group: windows-recovery-\$\{\{ github\.event\.pull_request\.number \|\| github\.run_id \}\}/u,
+  );
+  assert.match(workflow, /\n {2}cancel-in-progress: true/u);
+});
+
+test('the recovery lane filters pull requests by the workspaces its steps execute', () => {
+  const workflow = readWorkflow('windows-recovery.yml');
+  const filtered = new Set(pullRequestPathFilter('windows-recovery.yml'));
+
+  // Derived from the dist paths the steps run, then widened along the workspace
+  // dependency graph the planner selects with. The separator class matches the
+  // backslash form too, because these steps run under pwsh where both are
+  // legal. A new workspace on this lane, or a new dependency under one of them,
+  // fails here until the filter admits its sources and project file.
+  const executed = [
+    ...new Set(
+      [...workflow.matchAll(/packages[/\\]([^/\\]+)[/\\]dist[/\\]/gu)].map((match) => match[1]),
+    ),
+  ].sort();
+  assert.deepEqual(executed, ['runtime', 'runtime-host', 'storage']);
+
+  const closure = dependencyClosure(executed.map((workspace) => `packages/${workspace}`));
+  assert.ok(closure.includes('packages/core'), 'dependency closure must reach core');
+  for (const dir of closure) {
+    assert.ok(filtered.has(`${dir}/src/**`), `${dir}: sources`);
+    assert.ok(filtered.has(`${dir}/tsconfig.json`), `${dir}: project file`);
+    assert.ok(filtered.has(`${dir}/package.json`), `${dir}: manifest`);
+  }
+});
+
+test('the recovery lane filters pull requests by what its install and clean steps consume', () => {
+  const filtered = new Set(pullRequestPathFilter('windows-recovery.yml'));
+
+  // `npm.cmd ci` and `npm.cmd run build:test` run unconditionally, so these are
+  // first-class inputs of the lane rather than transitive edits the nightly can
+  // be left to cover. A grouped dependabot bump touches only the manifests, and
+  // the crash gates sit on a native file lock the Linux `test` lane never sees.
+  for (const path of [
+    'package.json',
+    'package-lock.json',
+    'patches/**',
+    'scripts/apply-dependency-patches.mjs',
+    'scripts/install-electron-with-retry.mjs',
+    'scripts/clean-build.mjs',
+    'scripts/clean-paths.mjs',
+    'scripts/windows-runtime-host-local-ipc-trust.ps1',
+    'tsconfig.base.json',
+    'tsconfig.lib.json',
+    'packages/runtime/scripts/**',
+    '.github/workflows/windows-recovery.yml',
+  ]) {
+    assert.ok(filtered.has(path), path);
+  }
 });
 
 test('the sandbox lane pairs its path filter with a nightly run', () => {
@@ -551,6 +572,56 @@ test('core CI runs the live Eval proxy lifecycle when Eval is selected', () => {
 });
 
 const WORKFLOW_DIR = new URL('../.github/workflows/', import.meta.url);
+
+/**
+ * Reads the `paths` list belonging to a workflow's `pull_request` trigger.
+ * Anchoring to the trigger, instead of matching entry text anywhere in the
+ * file, is what makes the filter assertions fail when entries move under
+ * `paths-ignore`, under another trigger, or out of `on:` altogether.
+ */
+function pullRequestPathFilter(name) {
+  // Reads the `on:` block with comments already stripped, so a comment between
+  // the trigger and its list cannot end the scan, and accepts the quoting and
+  // spacing YAML allows, so a legal rewrite reports the entries it really has
+  // instead of an empty list that reads as a missing filter.
+  const lines = triggerBlock(name).split('\n');
+  const start = lines.findIndex((line) => /^ {2}pull_request:\s*$/u.test(line));
+  assert.ok(start >= 0, `${name}: no pull_request trigger`);
+
+  const paths = [];
+  let inPaths = false;
+  for (const line of lines.slice(start + 1)) {
+    if (line.trim() === '') continue;
+    if (/^ {0,2}\S/u.test(line)) break;
+    if (/^ {4}\S/u.test(line)) {
+      inPaths = /^ {4}paths:\s*$/u.test(line);
+      continue;
+    }
+    const entry = inPaths ? /^\s+-\s+['"]?(.+?)['"]?\s*$/u.exec(line) : null;
+    if (entry) paths.push(entry[1]);
+  }
+  return paths;
+}
+
+/**
+ * Workspace dirs `seeds` depend on, transitively, read off the same graph the
+ * planner selects with rather than a second definition of the same edges. The
+ * graph stores dependents, so a dependency is any dir listing one of ours.
+ */
+function dependencyClosure(seeds) {
+  const graph = loadWorkspaceGraph();
+  const selected = new Set(seeds);
+  const pending = [...seeds];
+  while (pending.length > 0) {
+    const dir = pending.shift();
+    for (const [dependency, dependents] of graph.dependents) {
+      if (!dependents.has(dir) || selected.has(dependency)) continue;
+      selected.add(dependency);
+      pending.push(dependency);
+    }
+  }
+  return [...selected].sort();
+}
 
 function readWorkflow(name) {
   return readFileSync(new URL(name, WORKFLOW_DIR), 'utf8');

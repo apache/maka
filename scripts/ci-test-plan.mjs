@@ -145,30 +145,6 @@ function isReleaseContractPath(path) {
   );
 }
 
-// The Windows recovery lane executes the crash and owner-death gates that live
-// in these workspaces. Selection is the reverse dependency closure below, so a
-// packages/core change reaches them without being named here.
-const WINDOWS_RECOVERY_WORKSPACES = [
-  'packages/storage',
-  'packages/runtime',
-  'packages/runtime-host',
-];
-
-// Inputs that lane consumes from outside the workspace graph: its own
-// definition, the trust probe it shells out to, and the base project files its
-// build step compiles every workspace against.
-const WINDOWS_RECOVERY_FILES = new Set([
-  '.github/workflows/windows-recovery.yml',
-  'scripts/windows-runtime-host-local-ipc-trust.ps1',
-  'tsconfig.base.json',
-  'tsconfig.lib.json',
-]);
-
-function selectsWindowsRecovery(files, workspaces) {
-  if (files.some((path) => WINDOWS_RECOVERY_FILES.has(path))) return true;
-  return WINDOWS_RECOVERY_WORKSPACES.some((workspace) => workspaces.includes(workspace));
-}
-
 const DEDICATED_WORKSPACE_LANES = new Set(['packages/runtime-host']);
 
 // Scripts the Electron e2e job runs. Editing one of these changes what that
@@ -374,7 +350,6 @@ export function planTests(changedFiles, options = {}) {
       // every unrelated merge into a 10K-chunk pressure run.
       storageStress: false,
       storybook: true,
-      windowsRecovery: true,
       workspaces,
       ...workspaceLanes(workspaces, graph),
     };
@@ -445,7 +420,6 @@ export function planTests(changedFiles, options = {}) {
     // PR — product ship gates are typecheck, unit, and Electron e2e. See
     // isStorybookPath.
     storybook: files.some((path) => isStorybookPath(path)),
-    windowsRecovery: selectsWindowsRecovery(files, workspaces),
     workspaces,
     ...workspaceLanes(workspaces, graph),
   };
@@ -463,7 +437,6 @@ export function formatGitHubOutputs(plan) {
     `release_contract=${plan.releaseContract}`,
     `storage_stress=${plan.storageStress}`,
     `storybook=${plan.storybook}`,
-    `windows_recovery=${plan.windowsRecovery}`,
     `standard_workspaces=${plan.standardWorkspaces.join(',')}`,
   ].join('\n');
 }

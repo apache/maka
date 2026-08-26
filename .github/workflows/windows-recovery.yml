@@ -17,16 +17,73 @@
 
 name: Windows recovery
 
+# The paths below are a pre-filter, not this lane's real input. The real input
+# is the import closure of the crash and owner-death recovery authorities in
+# storage, runtime and Runtime Host, which reaches well past any list worth
+# hand-maintaining. So they name those workspaces and every workspace they hold
+# a TypeScript project reference to, plus the manifests, patches and scripts
+# the unconditional install and clean steps consume. That keeps a change there
+# reported before merge, and the nightly run covers the transitive edits the
+# list cannot match.
+#
+# A pull request whose diff exceeds 3,000 files can skip the filter outright,
+# because GitHub does not promise the matched files are in the first 3,000 it
+# returns. A repository-wide sweep is exactly the change that touches every
+# recovery authority at once, which is one more reason the main push below
+# carries no filter at all.
 on:
   pull_request:
     branches: [main]
+    paths:
+      - 'package.json'
+      - 'package-lock.json'
+      - 'patches/**'
+      - 'scripts/apply-dependency-patches.mjs'
+      - 'scripts/install-electron-with-retry.mjs'
+      - 'scripts/clean-build.mjs'
+      - 'scripts/clean-paths.mjs'
+      - 'scripts/windows-runtime-host-local-ipc-trust.ps1'
+      - 'tsconfig.base.json'
+      - 'tsconfig.lib.json'
+      - 'packages/core/package.json'
+      - 'packages/core/tsconfig.json'
+      - 'packages/core/src/**'
+      - 'packages/storage/package.json'
+      - 'packages/storage/tsconfig.json'
+      - 'packages/storage/src/**'
+      - 'packages/runtime/package.json'
+      - 'packages/runtime/tsconfig.json'
+      - 'packages/runtime/src/**'
+      - 'packages/runtime/scripts/**'
+      - 'packages/runtime-host/package.json'
+      - 'packages/runtime-host/tsconfig.json'
+      - 'packages/runtime-host/src/**'
+      - '.github/workflows/windows-recovery.yml'
+  # Unfiltered on purpose: required_status_checks is `strict: false`, so a pull
+  # request goes green against a stale base and only the merged result proves
+  # two independently green halves still agree. It is also the backstop for the
+  # 3,000-file case above. The nightly alone would find either a day later,
+  # against a batch of commits instead of one.
   push:
     branches: [main]
+  schedule:
+    # Offset from windows-sandbox-w0 so the Windows lanes do not overlap.
+    - cron: '17 8 * * *'
   workflow_dispatch:
 
+# Pull request pushes supersede each other, keyed on the pull request number
+# because github.head_ref is a bare branch name two forks can share: a second
+# contributor pushing to their own `main` would otherwise cancel the first
+# contributor's run, and a cancelled check is not a failed one.
+# Scheduled, manual and main-push runs fall back to the run id, since
+# github.ref is refs/heads/main for all three and one shared group would let a
+# dispatch queue behind the nightly and then be discarded while still pending.
+# That deliberately stops main pushes from superseding each other: this lane is
+# the only place a merged Windows regression is observed, so every merge needs
+# its own evidence rather than only the newest one surviving.
 concurrency:
-  group: windows-recovery-${{ github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  group: windows-recovery-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: true
 
 permissions:
   contents: read
@@ -39,42 +96,20 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          fetch-depth: 0
           persist-credentials: false
 
-      - id: plan
-        name: Select the recovery surface
-        shell: bash
-        env:
-          BASE_SHA: ${{ github.event_name == 'push' && github.event.before || github.event.pull_request.base.sha }}
-          HEAD_SHA: ${{ github.event_name == 'push' && github.sha || github.event.pull_request.head.sha }}
-        run: |
-          # The same planner the core lane selects with, so this lane and
-          # `test` agree on what a diff touches instead of keeping a second
-          # relevance authority in YAML. A dispatch, a first push and any
-          # unavailable history all fail safe to running every gate.
-          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]] || [[ "$BASE_SHA" =~ ^0+$ ]] || ! git cat-file -e "${BASE_SHA}^{commit}"; then
-            node scripts/ci-test-plan.mjs --full >> "$GITHUB_OUTPUT"
-          else
-            node scripts/ci-test-plan.mjs --base "$BASE_SHA" --head "$HEAD_SHA" >> "$GITHUB_OUTPUT"
-          fi
-
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
-        if: steps.plan.outputs.windows_recovery == 'true'
         with:
           node-version: "24"
           cache: npm
 
       - name: Install dependencies
-        if: steps.plan.outputs.windows_recovery == 'true'
         run: npm.cmd ci
 
       - name: Build test artifacts
-        if: steps.plan.outputs.windows_recovery == 'true'
         run: npm.cmd run build:test
 
       - name: Verify managed dependency alternate streams
-        if: steps.plan.outputs.windows_recovery == 'true'
         shell: pwsh
         run: |
           node.exe --test --test-reporter=tap --test-concurrency=1 `
@@ -90,14 +125,12 @@ jobs:
           }
 
       - name: Verify Runtime Host Local IPC trust boundary
-        if: steps.plan.outputs.windows_recovery == 'true'
         shell: pwsh
         run: |
           node.exe --test packages/runtime-host/dist/__tests__/control-endpoint.test.js
           ./scripts/windows-runtime-host-local-ipc-trust.ps1
 
       - name: Verify SQLite crash recovery
-        if: steps.plan.outputs.windows_recovery == 'true'
         shell: pwsh
         run: |
           node.exe --test --test-concurrency=1 `
@@ -105,7 +138,6 @@ jobs:
             packages/storage/dist/__tests__/sqlite-long-term-memory-crash.test.js
 
       - name: Verify Runtime continuation recovery
-        if: steps.plan.outputs.windows_recovery == 'true'
         shell: pwsh
         run: |
           node.exe --test --test-concurrency=1 `
@@ -113,7 +145,6 @@ jobs:
             packages/runtime/dist/__tests__/runtime-continuation-crash.test.js
 
       - name: Verify Runtime Host owner-death recovery
-        if: steps.plan.outputs.windows_recovery == 'true'
         shell: pwsh
         run: |
           node.exe --test --test-reporter=tap --test-concurrency=1 `
@@ -130,7 +161,6 @@ jobs:
           }
 
       - name: Verify managed workspace crash recovery
-        if: steps.plan.outputs.windows_recovery == 'true'
         shell: pwsh
         run: |
           $env:MAKA_STORAGE_STRESS = '1'
