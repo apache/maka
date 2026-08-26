@@ -362,7 +362,7 @@ test('the recovery lane pairs its path filter with a nightly run and a main push
   // transitive edit it cannot match, and dropping the filter would put every
   // Windows recovery run back on every pull request. The main push carries no
   // filter because `strict: false` lets a stale-base pull request go green,
-  // and because a diff over 3,000 files can skip a paths filter outright.
+  // and because a paths filter only sees the first 300 files of a diff.
   // Stripped comment lines survive as blank ones, so the gap between the
   // trigger and its list is any mix of blank and four-space lines.
   assert.match(triggers, /\n {2}pull_request:\n(?:(?: {4}[^\n]*)?\n)* {4}paths:/u);

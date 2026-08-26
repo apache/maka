@@ -26,9 +26,8 @@ name: Windows recovery
 # reported before merge, and the nightly run covers the transitive edits the
 # list cannot match.
 #
-# A pull request whose diff exceeds 3,000 files can skip the filter outright,
-# because GitHub does not promise the matched files are in the first 3,000 it
-# returns. A repository-wide sweep is exactly the change that touches every
+# GitHub evaluates a path filter against the first 300 files of the diff only,
+# so a pull request wider than that can skip the filter outright. A repository-wide sweep is exactly the change that touches every
 # recovery authority at once, which is one more reason the main push below
 # carries no filter at all.
 on:
@@ -63,7 +62,7 @@ on:
   # Unfiltered on purpose: required_status_checks is `strict: false`, so a pull
   # request goes green against a stale base and only the merged result proves
   # two independently green halves still agree. It is also the backstop for the
-  # 3,000-file case above. The nightly alone would find either a day later,
+  # 300-file case above. The nightly alone would find either a day later,
   # against a batch of commits instead of one.
   push:
     branches: [main]
