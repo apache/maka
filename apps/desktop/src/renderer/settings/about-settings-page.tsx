@@ -19,7 +19,6 @@
 
 import { useEffect, useId, useState, type ReactNode } from 'react';
 import { Badge, Link, List, ListItem } from '@astryxdesign/core';
-import { Kbd } from '@astryxdesign/core/Kbd';
 import { Sparkles } from '@maka/ui/icons';
 import {
   Banner,
@@ -30,6 +29,7 @@ import {
   useUiLocale,
 } from '@maka/ui';
 import type { AppUpdateStatus } from '../../preload/bridge-contract.js';
+import { ShortcutKeys } from '../shortcut-keys.js';
 import { SettingsActions, SettingsPage, SettingsSection } from './settings-section.js';
 import { SettingRow } from './settings-rows.js';
 import { settingsActionErrorMessage } from './settings-error-copy.js';
@@ -253,7 +253,7 @@ export function AboutSettingsPage(props: { onOpenKeyboardHelp?(): void }) {
             onClick={() => void copyDiagnostics()}
             label={copyingDiagnostics ? copy.copying : copy.copyDiagnostics}
           />
-          <Kbd keys="mod+shift+d" />
+          <ShortcutKeys keys="mod+shift+d" />
           <Link href={ISSUE_TRACKER_URL} target="_blank" rel="noreferrer noopener">
             {copy.reportIssueLabel}
           </Link>

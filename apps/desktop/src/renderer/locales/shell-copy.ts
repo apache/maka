@@ -63,7 +63,27 @@ export type StaticCommandId = (typeof STATIC_COMMAND_IDS)[number];
 type CommandCopy = {
   label: string;
   group: string;
+  /**
+   * Localized detail only. A command that answers to a shortcut leads its hint
+   * with that shortcut, but the keys are not localized and not spelled here —
+   * see STATIC_COMMAND_SHORTCUTS.
+   */
   hint?: string;
+};
+
+/**
+ * Which palette commands carry a shortcut, in neutral tokens.
+ *
+ * Locale-independent, because `⌘,` and `Ctrl+,` read the same in Chinese and
+ * in English, and platform-independent, because `formatShortcut` spells them:
+ * these used to be written into both catalogs as macOS glyphs and shown to
+ * Windows and Linux unchanged (#3876). `mod` is the same token the bindings
+ * use, so the label cannot drift from the key that triggers it.
+ */
+export const STATIC_COMMAND_SHORTCUTS: Partial<Record<StaticCommandId, readonly string[]>> = {
+  'action:side-chat': ['mod', 'alt', 's'],
+  'action:open-settings': ['mod', ','],
+  'diag:copy-diagnostics': ['mod', 'shift', 'd'],
 };
 
 const STATIC_COMMAND_KEYWORDS: Record<StaticCommandId, readonly string[]> = {
@@ -419,6 +439,12 @@ type ShellCopy = {
     title: string;
     sections: Array<{
       heading: string;
+      /**
+       * `keys` are neutral tokens (`mod`, `shift`, `alt`, `enter`, `up`, a bare
+       * character), never glyphs: `formatShortcut` in `@maka/ui` decides
+       * between ⇧⌘D and Ctrl+Shift+D at the point of display, so the same rows
+       * serve every platform (#3876).
+       */
       rows: Array<{ keys: string[]; description: string }>;
     }>;
   };
@@ -532,7 +558,6 @@ const ZH_STATIC_COMMANDS: Record<StaticCommandId, CommandCopy> = {
   'action:new-chat': { label: '新建任务', hint: '开始新的任务', group: '操作' },
   'action:side-chat': {
     label: '打开侧边对话',
-    hint: '⌥⌘S',
     group: '操作',
   },
   'action:new-deep-research': {
@@ -545,7 +570,7 @@ const ZH_STATIC_COMMANDS: Record<StaticCommandId, CommandCopy> = {
     hint: '打开定时任务表单',
     group: '操作',
   },
-  'action:open-settings': { label: '打开设置', hint: '⌘,', group: '操作' },
+  'action:open-settings': { label: '打开设置', group: '操作' },
   'action:keyboard-help': { label: '查看键盘快捷键', hint: '?', group: '操作' },
   'theme:light': { label: '主题 · 浅色', group: '主题' },
   'theme:dark': { label: '主题 · 深色', group: '主题' },
@@ -597,7 +622,7 @@ const ZH_STATIC_COMMANDS: Record<StaticCommandId, CommandCopy> = {
   },
   'diag:copy-diagnostics': {
     label: '复制诊断信息',
-    hint: '⇧⌘D · 脱敏日志 · 仅写入剪贴板',
+    hint: '脱敏日志 · 仅写入剪贴板',
     group: '诊断',
   },
   'diag:test-network-proxy': {
@@ -620,7 +645,6 @@ const EN_STATIC_COMMANDS: Record<StaticCommandId, CommandCopy> = {
   },
   'action:side-chat': {
     label: 'Open side chat',
-    hint: '⌥⌘S',
     group: 'Actions',
   },
   'action:new-deep-research': {
@@ -635,7 +659,6 @@ const EN_STATIC_COMMANDS: Record<StaticCommandId, CommandCopy> = {
   },
   'action:open-settings': {
     label: 'Open Settings',
-    hint: '⌘,',
     group: 'Actions',
   },
   'action:keyboard-help': {
@@ -693,7 +716,7 @@ const EN_STATIC_COMMANDS: Record<StaticCommandId, CommandCopy> = {
   },
   'diag:copy-diagnostics': {
     label: 'Copy diagnostics',
-    hint: '⇧⌘D · Redacted logs · clipboard only',
+    hint: 'Redacted logs · clipboard only',
     group: 'Diagnostics',
   },
   'diag:test-network-proxy': {
@@ -1116,52 +1139,52 @@ const SHELL_COPY_BY_LOCALE = {
           heading: '通用',
           rows: [
             {
-              keys: ['⌘', 'K'],
+              keys: ['mod', 'k'],
               description: '打开命令面板（跳任务 / 设置 / 主题等）',
             },
             { keys: ['?'], description: '打开 / 关闭此快捷键面板' },
-            { keys: ['⌘', 'N'], description: '新建任务' },
-            { keys: ['⌘', ','], description: '打开设置' },
+            { keys: ['mod', 'n'], description: '新建任务' },
+            { keys: ['mod', ','], description: '打开设置' },
             {
-              keys: ['⌘', 'Shift', 'D'],
+              keys: ['mod', 'shift', 'd'],
               description: '复制当前上下文的诊断信息',
             },
-            { keys: ['Esc'], description: '关闭当前模态框' },
+            { keys: ['escape'], description: '关闭当前模态框' },
           ],
         },
         {
           heading: 'Composer 输入',
           rows: [
-            { keys: ['Enter'], description: '发送消息' },
-            { keys: ['Shift', 'Enter'], description: '插入换行' },
-            { keys: ['Alt', 'Enter'], description: '插入换行（备用）' },
+            { keys: ['enter'], description: '发送消息' },
+            { keys: ['shift', 'enter'], description: '插入换行' },
+            { keys: ['alt', 'enter'], description: '插入换行（备用）' },
           ],
         },
         {
           heading: '任务列表',
           rows: [
-            { keys: ['Tab'], description: '在任务与导航之间移动焦点' },
-            { keys: ['↑', '↓'], description: '上下移动聚焦的任务' },
-            { keys: ['Home', 'End'], description: '跳到列表顶部 / 底部' },
-            { keys: ['Enter'], description: '打开聚焦的任务' },
-            { keys: ['Delete'], description: '弹出删除确认（永远不静默删除）' },
-            { keys: ['F'], description: '聚焦任务列表搜索框（按 Esc 清空）' },
+            { keys: ['tab'], description: '在任务与导航之间移动焦点' },
+            { keys: ['up', 'down'], description: '上下移动聚焦的任务' },
+            { keys: ['home', 'end'], description: '跳到列表顶部 / 底部' },
+            { keys: ['enter'], description: '打开聚焦的任务' },
+            { keys: ['delete'], description: '弹出删除确认（永远不静默删除）' },
+            { keys: ['f'], description: '聚焦任务列表搜索框（按 Esc 清空）' },
           ],
         },
         {
           heading: '聊天区',
           rows: [
-            { keys: ['Tab'], description: '聚焦工具活动 / 复制按钮' },
-            { keys: ['Space', 'Enter'], description: '展开 / 折叠工具调用' },
+            { keys: ['tab'], description: '聚焦工具活动 / 复制按钮' },
+            { keys: ['space', 'enter'], description: '展开 / 折叠工具调用' },
           ],
         },
         {
           heading: '面板调整',
           rows: [
-            { keys: ['Tab'], description: '聚焦左右分割条' },
-            { keys: ['←', '→'], description: '微调任务列表宽度（±10 px）' },
-            { keys: ['Shift', '←', '→'], description: '快速调整（±50 px）' },
-            { keys: ['Home', 'End'], description: '直接拉到最小 / 最大宽度' },
+            { keys: ['tab'], description: '聚焦左右分割条' },
+            { keys: ['left', 'right'], description: '微调任务列表宽度（±10 px）' },
+            { keys: ['shift', 'left', 'right'], description: '快速调整（±50 px）' },
+            { keys: ['home', 'end'], description: '直接拉到最小 / 最大宽度' },
           ],
         },
       ],
@@ -1648,26 +1671,26 @@ const SHELL_COPY_BY_LOCALE = {
           heading: 'General',
           rows: [
             {
-              keys: ['⌘', 'K'],
+              keys: ['mod', 'k'],
               description: 'Open the command palette (tasks, Settings, themes, and more)',
             },
             { keys: ['?'], description: 'Open or close this shortcuts panel' },
-            { keys: ['⌘', 'N'], description: 'Create a new task' },
-            { keys: ['⌘', ','], description: 'Open Settings' },
+            { keys: ['mod', 'n'], description: 'Create a new task' },
+            { keys: ['mod', ','], description: 'Open Settings' },
             {
-              keys: ['⌘', 'Shift', 'D'],
+              keys: ['mod', 'shift', 'd'],
               description: 'Copy diagnostics for the current context',
             },
-            { keys: ['Esc'], description: 'Close the current dialog' },
+            { keys: ['escape'], description: 'Close the current dialog' },
           ],
         },
         {
           heading: 'Composer',
           rows: [
-            { keys: ['Enter'], description: 'Send the message' },
-            { keys: ['Shift', 'Enter'], description: 'Insert a line break' },
+            { keys: ['enter'], description: 'Send the message' },
+            { keys: ['shift', 'enter'], description: 'Insert a line break' },
             {
-              keys: ['Alt', 'Enter'],
+              keys: ['alt', 'enter'],
               description: 'Insert a line break (alternative)',
             },
           ],
@@ -1676,24 +1699,24 @@ const SHELL_COPY_BY_LOCALE = {
           heading: 'Task list',
           rows: [
             {
-              keys: ['Tab'],
+              keys: ['tab'],
               description: 'Move focus between tasks and navigation',
             },
             {
-              keys: ['↑', '↓'],
+              keys: ['up', 'down'],
               description: 'Move through focused tasks',
             },
             {
-              keys: ['Home', 'End'],
+              keys: ['home', 'end'],
               description: 'Jump to the top or bottom of the list',
             },
-            { keys: ['Enter'], description: 'Open the focused task' },
+            { keys: ['enter'], description: 'Open the focused task' },
             {
-              keys: ['Delete'],
+              keys: ['delete'],
               description: 'Open the delete confirmation (never delete silently)',
             },
             {
-              keys: ['F'],
+              keys: ['f'],
               description: 'Focus task search (press Esc to clear)',
             },
           ],
@@ -1702,11 +1725,11 @@ const SHELL_COPY_BY_LOCALE = {
           heading: 'Chat',
           rows: [
             {
-              keys: ['Tab'],
+              keys: ['tab'],
               description: 'Focus tool activity and Copy buttons',
             },
             {
-              keys: ['Space', 'Enter'],
+              keys: ['space', 'enter'],
               description: 'Expand or collapse a tool call',
             },
           ],
@@ -1714,17 +1737,17 @@ const SHELL_COPY_BY_LOCALE = {
         {
           heading: 'Panel sizing',
           rows: [
-            { keys: ['Tab'], description: 'Focus the left or right splitter' },
+            { keys: ['tab'], description: 'Focus the left or right splitter' },
             {
-              keys: ['←', '→'],
+              keys: ['left', 'right'],
               description: 'Adjust task-list width (±10 px)',
             },
             {
-              keys: ['Shift', '←', '→'],
+              keys: ['shift', 'left', 'right'],
               description: 'Adjust quickly (±50 px)',
             },
             {
-              keys: ['Home', 'End'],
+              keys: ['home', 'end'],
               description: 'Jump directly to minimum or maximum width',
             },
           ],

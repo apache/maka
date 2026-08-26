@@ -63,13 +63,5 @@
   justify-self: end;
 }
 
-.maka-help-section dd > span {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--space-1);
-}
-
-.maka-help-plus {
-  font: var(--maka-text-supporting);
-  color: var(--muted-foreground);
-}
+/* The keys themselves are `.maka-shortcut-keys` (styles/shortcut-keys.css),
+   which owns the row's inline layout and the `+` between chips. */

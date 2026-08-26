@@ -64,6 +64,8 @@ type RefBox<T> = { current: T };
 
 export interface AppShellCommandListOptions {
   uiLocale: UiLocale;
+  /** Host OS, so shortcut hints read `Ctrl+,` off macOS and `⌘,` on it. */
+  hostPlatform: string | undefined;
   activeId: string | undefined;
   activePermissionMode: PermissionMode | undefined;
   canSetPermissionMode: boolean;
@@ -131,6 +133,7 @@ export function buildAppShellCommandList(
 
   return buildCommandList({
     locale: options.uiLocale,
+    platform: options.hostPlatform,
     activeSessionId: options.activeId,
     themePref: options.themePref,
     connections: options.connections,

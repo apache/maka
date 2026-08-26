@@ -41,6 +41,8 @@ export * from './input-history.js';
 export * from './daily-review-helpers.js';
 export * from './locale-helpers.js';
 export * from './locale-context.js';
+export * from './host-platform-context.js';
+export * from './keyboard-shortcut-display.js';
 export { MakaUriContext } from './markdown.js';
 export * from './maka-uri.js';
 export * from './materialize.js';

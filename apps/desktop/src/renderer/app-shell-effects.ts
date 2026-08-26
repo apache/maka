@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { useEffect, useEffectEvent, useLayoutEffect } from 'react';
+import { useEffect, useEffectEvent, useLayoutEffect, useState } from 'react';
 import { useHotkeys } from '@astryxdesign/core/hooks';
 import type { ConnectionEvent } from '@maka/core/connections';
 import type { SessionChangedEvent, SessionSummary, StoredMessage } from '@maka/core/session';
@@ -87,19 +87,33 @@ export function useAppShellNavRefSync(options: { navSelection: NavSelection; nav
   }, [options.navSelection]);
 }
 
-export function useAppShellHostEffects() {
-  // Tag the document with the host OS so glass-material CSS rules
-  // (sidebar vibrancy passthrough)
-  // can light up only on macOS, where `BrowserWindow({ vibrancy: 'sidebar' })`
-  // paints the native blur material behind the renderer. Other platforms
-  // keep their opaque chrome since vibrancy is a no-op there.
+/**
+ * The host OS, once the main process names it.
+ *
+ * Two readers, one round trip. It is tagged onto the document so
+ * glass-material CSS rules (sidebar vibrancy passthrough) can light up only on
+ * macOS, where `BrowserWindow({ vibrancy: 'sidebar' })` paints the native blur
+ * material behind the renderer — other platforms keep their opaque chrome
+ * since vibrancy is a no-op there. It is returned so `HostPlatformProvider`
+ * can hand it to every surface that shows a keyboard shortcut, which has to
+ * spell it `Ctrl` here and `⌘` there (#3876).
+ *
+ * Undefined until the answer arrives, and undefined forever if it never does.
+ * No label waits on it: the shortcut formatter reads `navigator` in the
+ * meantime, so the only thing an unanswered `app.info()` costs is the vibrancy
+ * rules, exactly as before.
+ */
+export function useResolvedHostPlatform(): string | undefined {
+  const [platform, setPlatform] = useState<string | undefined>(undefined);
+
   useEffect(() => {
     let cancelled = false;
     void window.maka.app
       .info()
       .then((info) => {
-      if (cancelled) return;
-      document.documentElement.setAttribute('data-os', info.platform);
+        if (cancelled) return;
+        document.documentElement.setAttribute('data-os', info.platform);
+        setPlatform(info.platform);
       })
       .catch(() => {
       /* swallow — leaves data-os unset, CSS falls back to opaque chrome */
@@ -109,6 +123,10 @@ export function useAppShellHostEffects() {
     };
   }, []);
 
+  return platform;
+}
+
+export function useAppShellHostEffects() {
   // Modal-open titlebar dimming/hiding is driven by observing the top layer
   // (`dialog:modal`) rather than the shell's own modal state, so dialogs
   // mounted deep in module pages — the scheduled-task form above all — are

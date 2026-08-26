@@ -70,7 +70,6 @@ import { Card } from '@astryxdesign/core/Card';
 import { ContextMenu } from '@astryxdesign/core/ContextMenu';
 import { Heading } from '@astryxdesign/core/Heading';
 import { Icon } from '@astryxdesign/core/Icon';
-import { Kbd } from '@astryxdesign/core/Kbd';
 import { List, ListItem } from '@astryxdesign/core/List';
 import { Section } from '@astryxdesign/core/Section';
 import { Spinner } from '@astryxdesign/core/Spinner';
@@ -88,6 +87,7 @@ import {
   terminalRefFromWorkbarTab,
 } from '../model/workbar-tabs';
 import { useSessionTasks } from '../tools/tasks/use-session-tasks';
+import { ShortcutKeys } from '../../../shortcut-keys';
 import { WorkbarToggle } from './workbar-toggle';
 import { WorkBoardPanel } from '../../../work-board-panel.js';
 import { getDesktopConversationCopy } from '../../../locales/conversation-copy.js';
@@ -660,7 +660,7 @@ function WorkbarLauncher(props: {
               description={action.description}
               endContent={
                 action.shortcut ? (
-                  <Kbd keys={action.shortcut} />
+                  <ShortcutKeys keys={action.shortcut} />
                 ) : undefined
               }
               isDisabled={action.disabled}
