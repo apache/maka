@@ -26,6 +26,7 @@ deepseek.key
 
 # Built only by the dedicated Gitoxide helper lane; normal workspace tests do not use Cargo.
 /native/gitoxide-helper/target/
+/native/runtime-host-peer/target/
 
 # Generated Computer Use executor binary; provenance metadata stays tracked.
 apps/desktop/resources/bin/

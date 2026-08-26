@@ -164,6 +164,18 @@ export interface ConnectRemoteRuntimeHostInput {
   readonly connectionResource?: RuntimeHostConnectionResource;
 }
 
+export interface ConnectRuntimeHostMessageTransportInput {
+  readonly transport: RuntimeHostMessageTransport;
+  readonly expectedRootId: string;
+  readonly compositionId: string;
+  readonly protocol: ProtocolRange;
+  readonly clientInstanceId?: string;
+  readonly handshakeTimeoutMs?: number;
+  readonly livenessIntervalMs?: number;
+  readonly onLivenessProbe?: () => void;
+  readonly connectionResource?: RuntimeHostConnectionResource;
+}
+
 export interface RuntimeHostConnectionResource {
   readonly closed: Promise<void>;
   close(): Promise<void>;
@@ -982,12 +994,8 @@ export async function connectExistingRuntimeHost(
 export async function connectRemoteRuntimeHost(
   input: ConnectRemoteRuntimeHostInput,
 ): Promise<ConnectRemoteRuntimeHostResult> {
-  const connectionResource = input.connectionResource;
-  let resourceTransferred = false;
   try {
     const normalized = normalizeConnectRuntimeHostInput(input);
-    const compositionId = requireHostCompositionId(input.compositionId);
-    const expectedRootId = requireHostRootId(input.expectedRootId);
     const url = normalizeRemoteRuntimeHostUrl(input.url, {
       allowInsecureRemote: input.allowInsecureRemote === true,
     });
@@ -995,42 +1003,66 @@ export async function connectRemoteRuntimeHost(
     try {
       transport = await openWebSocketTransport(url, input.credential, normalized.connectTimeoutMs);
     } catch (error) {
+      await input.connectionResource?.close().catch(() => undefined);
       return { kind: 'unavailable', reason: classifyRemoteRuntimeHostConnectFailure(error) };
     }
-    const timer = setTimeout(() => {
-      transport.abort(new Error('Timed out handshaking with Runtime Host'));
+    return connectRuntimeHostMessageTransport({
+      transport,
+      expectedRootId: input.expectedRootId,
+      compositionId: input.compositionId,
+      protocol: input.protocol,
+      clientInstanceId: normalized.clientInstanceId,
+      handshakeTimeoutMs: normalized.handshakeTimeoutMs,
+      livenessIntervalMs: normalized.livenessIntervalMs,
+      onLivenessProbe: input.onLivenessProbe,
+      connectionResource: input.connectionResource,
+    });
+  } catch (error) {
+    await input.connectionResource?.close().catch(() => undefined);
+    throw error;
+  }
+}
+
+export async function connectRuntimeHostMessageTransport(
+  input: ConnectRuntimeHostMessageTransportInput,
+): Promise<ConnectRemoteRuntimeHostResult> {
+  let resourceTransferred = false;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    const normalized = normalizeConnectRuntimeHostInput(input);
+    const compositionId = requireHostCompositionId(input.compositionId);
+    const expectedRootId = requireHostRootId(input.expectedRootId);
+    timer = setTimeout(() => {
+      input.transport.abort(new Error('Timed out handshaking with Runtime Host'));
     }, normalized.handshakeTimeoutMs);
-    try {
-      const result = await exchangeRuntimeHostHandshake({
-        transport,
-        protocol: input.protocol,
-        clientInstanceId: normalized.clientInstanceId,
-        compositionId,
-        expectedRootId,
-        livenessIntervalMs: normalized.livenessIntervalMs,
-        onLivenessProbe: input.onLivenessProbe,
-        connectionResource,
-      });
-      if (result.kind === 'connected') {
-        resourceTransferred = true;
-        return result;
-      }
-      transport.abort();
-      return result.kind === 'incompatible' ? result : { kind: 'draining' };
-    } catch (error) {
-      transport.abort();
-      if (error instanceof RuntimeHostRootMismatchError) {
-        return { kind: 'unavailable', reason: 'root_mismatch' };
-      }
-      if (error instanceof RuntimeHostCompositionMismatchError) {
-        return { kind: 'unavailable', reason: 'composition_mismatch' };
-      }
-      return { kind: 'unavailable', reason: 'handshake_failed' };
-    } finally {
-      clearTimeout(timer);
+    const result = await exchangeRuntimeHostHandshake({
+      transport: input.transport,
+      protocol: input.protocol,
+      clientInstanceId: normalized.clientInstanceId,
+      compositionId,
+      expectedRootId,
+      livenessIntervalMs: normalized.livenessIntervalMs,
+      onLivenessProbe: input.onLivenessProbe,
+      connectionResource: input.connectionResource,
+    });
+    if (result.kind === 'connected') {
+      resourceTransferred = true;
+      return result;
     }
+    input.transport.abort();
+    return result.kind === 'incompatible' ? result : { kind: 'draining' };
+  } catch (error) {
+    input.transport.abort();
+    if (error instanceof RuntimeHostRootMismatchError) {
+      return { kind: 'unavailable', reason: 'root_mismatch' };
+    }
+    if (error instanceof RuntimeHostCompositionMismatchError) {
+      return { kind: 'unavailable', reason: 'composition_mismatch' };
+    }
+    return { kind: 'unavailable', reason: 'handshake_failed' };
   } finally {
-    if (!resourceTransferred) await connectionResource?.close().catch(() => undefined);
+    if (timer) clearTimeout(timer);
+    if (!resourceTransferred) await input.connectionResource?.close().catch(() => undefined);
   }
 }
 

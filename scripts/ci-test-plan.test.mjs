@@ -346,6 +346,7 @@ test('pull request triggers stay on an explicit allowlist', () => {
     'gitoxide-helper-admission.yml',
     'release-windows-check.yml',
     'runtime-host-owner-platform.yml',
+    'runtime-host-peer-admission.yml',
     'windows-recovery.yml',
     'windows-sandbox-w0.yml',
   ]);

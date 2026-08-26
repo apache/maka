@@ -220,6 +220,7 @@ export const exclusionRules = [
       'docs/astryx-surface-file-inventory.paths',
       'docs/windows-test-inventory.md',
       'native/gitoxide-helper/Cargo.lock',
+      'native/runtime-host-peer/Cargo.lock',
       'packages/core/src/model-metadata.generated.ts',
       'packages/runtime/src/bundled-skill-catalog.generated.ts',
       'packages/runtime/src/telemetry/model-pricing.generated.ts',

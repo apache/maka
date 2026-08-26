@@ -1,0 +1,313 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
+import { createRequire } from 'node:module';
+import type { RuntimeHostByteStream } from './framed-byte-stream-transport.js';
+
+const AUTHENTICATION_MAX_BYTES = 12 * 1024;
+const require = createRequire(import.meta.url);
+
+export type RuntimeHostPeerErrorCode =
+  | 'peer_identity_mismatch'
+  | 'direct_path_unavailable'
+  | 'coordination_unavailable'
+  | 'peer_native_unavailable'
+  | 'peer_native_failed'
+  | 'peer_connect_in_progress';
+
+export class RuntimeHostPeerError extends Error {
+  constructor(
+    readonly code: RuntimeHostPeerErrorCode,
+    message: string,
+    options?: ErrorOptions,
+  ) {
+    super(message, options);
+    this.name = 'RuntimeHostPeerError';
+  }
+}
+
+export interface RuntimeHostPeerNativeStream {
+  readonly peerId: string;
+  read(): Promise<Buffer | null>;
+  write(bytes: Buffer): Promise<void>;
+  close(): Promise<void>;
+  abort(): void;
+}
+
+export interface RuntimeHostPeerNativeEndpoint {
+  readonly peerId: string;
+  readonly listenAddresses: readonly string[];
+  connect(options: {
+    readonly peerId: string;
+    readonly routeHints: readonly string[];
+    readonly coordinationRelays?: readonly string[];
+    readonly directDeadlineMs: number;
+  }): Promise<RuntimeHostPeerNativeStream>;
+  accept(): Promise<RuntimeHostPeerNativeStream | null>;
+  close(): Promise<void>;
+}
+
+interface RuntimeHostPeerNativeModule {
+  startPeerEndpoint(options: {
+    readonly keyPath: string;
+    readonly listenAddresses?: readonly string[];
+    readonly coordinationRelays?: readonly string[];
+  }): RuntimeHostPeerNativeEndpoint;
+}
+
+export function startRuntimeHostPeerEndpoint(input: {
+  readonly nativePath: string;
+  readonly keyPath: string;
+  readonly listenAddresses?: readonly string[];
+  readonly coordinationRelays?: readonly string[];
+}): RuntimeHostPeerNativeEndpoint {
+  let loaded: unknown;
+  try {
+    loaded = require(input.nativePath);
+  } catch (error) {
+    throw new RuntimeHostPeerError(
+      'peer_native_unavailable',
+      `Runtime Host peer native module could not be loaded: ${input.nativePath}`,
+      { cause: asError(error) },
+    );
+  }
+  if (!isPeerNativeModule(loaded)) {
+    throw new RuntimeHostPeerError(
+      'peer_native_unavailable',
+      'Runtime Host peer native module has an incompatible API',
+    );
+  }
+  try {
+    return loaded.startPeerEndpoint({
+      keyPath: input.keyPath,
+      ...(input.listenAddresses ? { listenAddresses: input.listenAddresses } : {}),
+      ...(input.coordinationRelays ? { coordinationRelays: input.coordinationRelays } : {}),
+    });
+  } catch (error) {
+    throw normalizePeerError(error);
+  }
+}
+
+export async function writeRuntimeHostPeerAuthentication(
+  stream: RuntimeHostPeerNativeStream,
+  credential: string,
+): Promise<void> {
+  if (!credential || /\s/u.test(credential)) {
+    throw new RuntimeHostPeerError(
+      'peer_native_failed',
+      'Runtime Host access credential is invalid',
+    );
+  }
+  await stream.write(Buffer.from(`${JSON.stringify({ v: 1, credential })}\n`, 'utf8'));
+}
+
+export async function readRuntimeHostPeerAuthentication(
+  stream: RuntimeHostPeerNativeStream,
+): Promise<{ readonly credential: string; readonly remainder: Buffer }> {
+  let buffered = Buffer.alloc(0);
+  while (true) {
+    const newline = buffered.indexOf(0x0a);
+    if (newline !== -1) {
+      if (newline > AUTHENTICATION_MAX_BYTES) {
+        throw new RuntimeHostPeerError(
+          'peer_native_failed',
+          'Peer authentication preface is too large',
+        );
+      }
+      const encoded = buffered.subarray(0, newline);
+      const value = JSON.parse(
+        new TextDecoder('utf-8', { fatal: true }).decode(encoded),
+      ) as unknown;
+      if (!isAuthenticationPreface(value)) {
+        throw new RuntimeHostPeerError(
+          'peer_native_failed',
+          'Peer authentication preface is invalid',
+        );
+      }
+      return { credential: value.credential, remainder: buffered.subarray(newline + 1) };
+    }
+    if (buffered.byteLength >= AUTHENTICATION_MAX_BYTES) {
+      throw new RuntimeHostPeerError(
+        'peer_native_failed',
+        'Peer authentication preface is too large',
+      );
+    }
+    const chunk = await stream.read();
+    if (!chunk) {
+      throw new RuntimeHostPeerError(
+        'peer_native_failed',
+        'Peer stream ended before authentication',
+      );
+    }
+    buffered = buffered.byteLength === 0 ? Buffer.from(chunk) : Buffer.concat([buffered, chunk]);
+  }
+}
+
+export class RuntimeHostPeerByteStream implements RuntimeHostByteStream {
+  readonly closed: Promise<void>;
+  readonly #dataListeners = new Set<(chunk: Buffer) => void>();
+  readonly #endListeners = new Set<() => void>();
+  readonly #errorListeners = new Set<(error: Error) => void>();
+  readonly #stream: RuntimeHostPeerNativeStream;
+  readonly #initialData: Buffer;
+  #resolveClosed!: () => void;
+  #resume: (() => void) | undefined;
+  #paused = false;
+  #closed = false;
+
+  constructor(stream: RuntimeHostPeerNativeStream, initialData: Buffer = Buffer.alloc(0)) {
+    this.#stream = stream;
+    this.#initialData = initialData;
+    this.closed = new Promise((resolve) => {
+      this.#resolveClosed = resolve;
+    });
+    queueMicrotask(() => void this.#pump());
+  }
+
+  onData(listener: (chunk: Buffer) => void): void {
+    this.#dataListeners.add(listener);
+  }
+
+  onEnd(listener: () => void): void {
+    this.#endListeners.add(listener);
+  }
+
+  onError(listener: (error: Error) => void): void {
+    this.#errorListeners.add(listener);
+  }
+
+  async write(chunk: Buffer): Promise<void> {
+    try {
+      await this.#stream.write(chunk);
+    } catch (error) {
+      throw normalizePeerError(error);
+    }
+  }
+
+  closeAfterFlush(): void {
+    void this.#stream.close().catch((error) => this.#emitError(normalizePeerError(error)));
+  }
+
+  abort(): void {
+    this.#stream.abort();
+    this.#finish();
+  }
+
+  pause(): void {
+    this.#paused = true;
+  }
+
+  resume(): void {
+    this.#paused = false;
+    this.#resume?.();
+    this.#resume = undefined;
+  }
+
+  async #pump(): Promise<void> {
+    try {
+      if (this.#initialData.byteLength > 0) this.#emitData(this.#initialData);
+      while (!this.#closed) {
+        if (this.#paused) {
+          await new Promise<void>((resolve) => {
+            this.#resume = resolve;
+          });
+          if (this.#closed) return;
+        }
+        const chunk = await this.#stream.read();
+        if (!chunk) {
+          for (const listener of this.#endListeners) listener();
+          return;
+        }
+        this.#emitData(chunk);
+      }
+    } catch (error) {
+      this.#emitError(normalizePeerError(error));
+    } finally {
+      this.#finish();
+    }
+  }
+
+  #emitData(chunk: Buffer): void {
+    for (const listener of this.#dataListeners) listener(chunk);
+  }
+
+  #emitError(error: Error): void {
+    for (const listener of this.#errorListeners) listener(error);
+  }
+
+  #finish(): void {
+    if (this.#closed) return;
+    this.#closed = true;
+    this.#resume?.();
+    this.#resolveClosed();
+  }
+}
+
+export function normalizePeerError(error: unknown): RuntimeHostPeerError {
+  if (error instanceof RuntimeHostPeerError) return error;
+  const cause = asError(error);
+  const match =
+    /^(peer_[a-z_]+|direct_path_unavailable|coordination_unavailable|udp_unavailable):\s*(.*)$/su.exec(
+      cause.message,
+    );
+  if (match && isPeerErrorCode(match[1])) {
+    return new RuntimeHostPeerError(match[1], match[2] || match[1], { cause });
+  }
+  return new RuntimeHostPeerError('peer_native_failed', cause.message, { cause });
+}
+
+function isPeerNativeModule(value: unknown): value is RuntimeHostPeerNativeModule {
+  return (
+    typeof value === 'object' &&
+    value !== null &&
+    'startPeerEndpoint' in value &&
+    typeof value.startPeerEndpoint === 'function'
+  );
+}
+
+function isAuthenticationPreface(value: unknown): value is { v: 1; credential: string } {
+  return (
+    typeof value === 'object' &&
+    value !== null &&
+    !Array.isArray(value) &&
+    Object.keys(value).length === 2 &&
+    'v' in value &&
+    value.v === 1 &&
+    'credential' in value &&
+    typeof value.credential === 'string' &&
+    value.credential.length > 0 &&
+    !/\s/u.test(value.credential)
+  );
+}
+
+function isPeerErrorCode(value: string | undefined): value is RuntimeHostPeerErrorCode {
+  return (
+    value === 'peer_identity_mismatch' ||
+    value === 'direct_path_unavailable' ||
+    value === 'coordination_unavailable' ||
+    value === 'udp_unavailable' ||
+    value === 'peer_native_unavailable' ||
+    value === 'peer_native_failed' ||
+    value === 'peer_connect_in_progress'
+  );
+}
+
+function asError(error: unknown): Error {
+  return error instanceof Error ? error : new Error(String(error));
+}

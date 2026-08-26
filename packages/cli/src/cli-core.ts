@@ -137,6 +137,7 @@ function helpText(cliCommand: string): string {
     `  ${cliCommand} runtime-host profile set --id <id> --name <name> --tls-url <wss-url> --expected-root <root-id> [--credential-env <name>]`,
     `  ${cliCommand} runtime-host profile set --id <id> --name <name> --ssh-destination <user@host> --ssh-remote-port <port> --expected-root <root-id> [--ssh-port <port>] [--credential-env <name>]`,
     `  ${cliCommand} runtime-host profile set --id <id> --name <name> --plaintext-url <ws-url> --acknowledge-plaintext --expected-root <root-id> [--credential-env <name>]`,
+    `  ${cliCommand} runtime-host profile set --id <id> --name <name> --peer-id <peer-id> --peer-route <multiaddr> --expected-root <root-id> [--credential-env <name>]`,
     `  ${cliCommand} runtime-host profile remove --id <id>`,
     `  ${cliCommand} runtime-host capability-provider serve --url <ws-url> --mcp-config <path> --expected-root <root-id>`,
     '',
@@ -159,6 +160,10 @@ function helpText(cliCommand: string): string {
     '  --tls-private-key <path>      TLS private key for WSS',
     '  --allow-insecure-remote       Allow plaintext WebSocket access beyond loopback',
     '  --allow-origin <origin>       Allow one browser Origin (repeatable)',
+    '  --peer-native-path <path>     Load the experimental direct-peer native module',
+    '  --peer-key <path>             Persist the direct-peer transport identity',
+    '  --peer-listen <multiaddr>     Listen on a direct-peer address (repeatable)',
+    '  --peer-coordination-relay <multiaddr>  Use a DCUtR coordination relay (repeatable)',
     '  --json                        Emit one machine-readable ready event',
     '',
     'Managed Runtime Host service install options (Linux or macOS):',
@@ -231,6 +236,7 @@ export async function runMakaCli(
           ? { projectDirectoryRoots: command.projectDirectoryRoots }
           : {}),
         ...(command.websocket ? { websocket: command.websocket } : {}),
+        ...(command.peer ? { peer: command.peer } : {}),
       });
     }
     case 'runtime-host-setup': {
