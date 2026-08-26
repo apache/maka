@@ -70,23 +70,33 @@ test('every shipped id has artwork, and every file is claimed by an id', async (
   }
 });
 
-test('the committed artwork is byte-identical to what the generator produces', (t) => {
+test('every committed icon is byte-identical to what the generator produces', (t) => {
   const runner = python();
   if (!runner) {
     t.skip('no python3 on PATH; run scripts/generate-app-icons.py --check locally');
     return;
   }
-  // A sample rather than all 38: rendering one 1024px tile is ~1.5s of
-  // pure-Python signed-distance evaluation. These four cover the three paint
-  // paths — flat fill, angled tile gradient, and a gradient carried by the
-  // stroke itself — so a regression in any of them fails here.
-  const result = spawnSync(runner, [SCRIPT, '--check', 'sky', 'ink', 'midnight', 'gold'], {
-    encoding: 'utf8',
-  });
+  // The WHOLE catalogue, not a sample. A sample only proves the sampled tiles:
+  // any of the other PNGs could be edited byte-wise, or a colourway constant
+  // could change without its artwork being regenerated, and the check would
+  // still pass. Since the claim being made is that every shipped tile comes
+  // out of this script, the check has to cover every shipped tile.
+  //
+  // The script renders across all cores for this reason — ~90s serial, ~16s
+  // parallel on an 8-core machine.
+  const result = spawnSync(runner, [SCRIPT, '--check'], { encoding: 'utf8' });
 
   assert.equal(
     result.status,
     0,
     `generator disagrees with the committed artwork:\n${result.stdout}${result.stderr}`,
+  );
+  // Guard against the check silently narrowing: the script reports how many it
+  // compared, and that number has to be the whole generated set.
+  const expected = APP_ICONS.filter((id) => !NOT_GENERATED.has(id)).length;
+  assert.match(
+    result.stdout,
+    new RegExp(`all ${expected} icons match`),
+    `expected the check to cover all ${expected} generated icons, got: ${result.stdout.trim()}`,
   );
 });

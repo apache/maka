@@ -42,6 +42,7 @@ import io
 import math
 import os
 import sys
+from multiprocessing import Pool
 import struct
 import zlib
 
@@ -517,6 +518,11 @@ def art_directory():
     return os.path.join(here, "..", "apps", "desktop", "assets", "app-icons")
 
 
+def _render_one(variant):
+    """Render one icon. Top-level so it survives the pickling a Pool does."""
+    return variant["name"], render(variant, ART_SIZE, inset=MACOS_MARGIN)
+
+
 def main(argv):
     check = "--check" in argv
     # Positional names limit the run to a subset. Rendering all 38 at 1024px is
@@ -531,15 +537,25 @@ def main(argv):
         return 2
     dest = art_directory()
     stale = []
-    for variant in selected:
-        raw = render(variant, ART_SIZE, inset=MACOS_MARGIN)
-        path = os.path.join(dest, variant["name"] + ".png")
+    # Rasterising 38 tiles at 1024px is ~90s of single-threaded signed-distance
+    # evaluation, which is the difference between checking the whole catalogue
+    # in CI and checking a sample of it. The work is per-icon and pure, so it
+    # parallelises exactly.
+    workers = min(len(selected), os.cpu_count() or 1)
+    if workers > 1:
+        with Pool(workers) as pool:
+            rendered = pool.map(_render_one, selected)
+    else:
+        rendered = [_render_one(v) for v in selected]
+
+    for name, raw in rendered:
+        path = os.path.join(dest, name + ".png")
         if check:
             buffer = io.BytesIO()
             write_png_stream(buffer, ART_SIZE, raw)
             with open(path, "rb") as handle:
                 if handle.read() != buffer.getvalue():
-                    stale.append(variant["name"])
+                    stale.append(name)
         else:
             write_png(path, ART_SIZE, raw)
     if not check:
