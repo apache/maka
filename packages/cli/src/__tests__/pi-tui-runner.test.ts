@@ -6659,10 +6659,78 @@ class ThrowingFocusReportTerminal extends FakeTerminal {
   }
 }
 
-class RejectingStopDriver implements MakaSessionDriver {
+/**
+ * The parts of `MakaSessionDriver` every fake in this file answers the same
+ * way. A driver here exists to vary one behaviour; without a shared base each
+ * of them restates the whole interface, and a change to it has to be made a
+ * dozen times over.
+ *
+ * Subclasses supply what a Turn is made of — `preparePrompt` and the event
+ * stream it hands back — and override only the members their scenario bends.
+ */
+abstract class FakeSessionDriver implements MakaSessionDriver {
   startedTurnListener: ((turn: MakaAttachedSessionTurn) => void) | undefined;
   hostSummary: Partial<SessionSummary> = {};
+  protected sessionId = 'session-1';
 
+  abstract preparePrompt(
+    prompt: string,
+    options?: MakaPreparePromptOptions,
+  ): Promise<MakaPreparedSessionTurn>;
+
+  abstract promptEvents(prompt: string, turnId?: string): AsyncIterable<SessionEvent>;
+
+  submitMessage(
+    text: string,
+    options: MakaSubmitMessageOptions,
+  ): Promise<TurnMessageSubmitResult | undefined> {
+    return admitMessageAsTurn(this, text, options);
+  }
+
+  subscribeStartedTurns(listener: (turn: MakaAttachedSessionTurn) => void): () => void {
+    this.startedTurnListener = listener;
+    return () => {
+      if (this.startedTurnListener === listener) this.startedTurnListener = undefined;
+    };
+  }
+
+  async queryCancelledMessages(): Promise<{ cancelledMessageIds: string[] }> {
+    return { cancelledMessageIds: [] };
+  }
+
+  async listSessions(): Promise<SessionSummary[]> {
+    return [];
+  }
+
+  async *compactSession(): AsyncIterable<SessionEvent> {}
+
+  async stop(): Promise<void> {}
+  async respondToSandboxBoundary(_response: SandboxBoundaryResponse): Promise<void> {}
+  async renameSession(_name: string): Promise<string | void> {}
+  async setModel(_model: string, _connectionSlug?: string): Promise<void> {}
+  async setPermissionMode(_mode: PermissionMode): Promise<void> {}
+  async setThinkingLevel(_level: ThinkingLevel | undefined): Promise<void> {}
+
+  async switchSession(sessionId: string): Promise<MakaSessionSwitchResult> {
+    return switchResult(fakeSessionSummary(sessionId));
+  }
+
+  async listRewindTargets(): Promise<RewindTarget[]> {
+    return [];
+  }
+
+  async rewindToTurn(_turnId: string): Promise<MakaSessionRewindResult> {
+    throw new Error('rewind not supported in this fake');
+  }
+
+  startNewSession(): void {}
+
+  getSessionId(): string | null {
+    return this.sessionId;
+  }
+}
+
+class RejectingStopDriver extends FakeSessionDriver {
   submitMessage(
     text: string,
     options: MakaSubmitMessageOptions,
@@ -6683,65 +6751,19 @@ class RejectingStopDriver implements MakaSessionDriver {
 
   stopCalls = 0;
 
-  async listSessions(): Promise<SessionSummary[]> {
-    return [];
-  }
-
   preparePrompt(prompt: string): Promise<MakaPreparedSessionTurn> {
     return prepareTestPrompt(this, prompt);
   }
 
   async *promptEvents(_prompt: string): AsyncIterable<never> {}
-  async *compactSession(): AsyncIterable<never> {}
 
   async stop(): Promise<void> {
     this.stopCalls += 1;
     throw new Error('stop failed');
   }
-
-  async respondToSandboxBoundary(_response: SandboxBoundaryResponse): Promise<void> {}
-  async renameSession(): Promise<void> {}
-  async setModel(): Promise<void> {}
-  async setPermissionMode(): Promise<void> {}
-  async setThinkingLevel(): Promise<void> {}
-  async switchSession(sessionId: string): Promise<MakaSessionSwitchResult> {
-    return switchResult(fakeSessionSummary(sessionId));
-  }
-
-  async listRewindTargets(): Promise<RewindTarget[]> {
-    return [];
-  }
-  async rewindToTurn(): Promise<MakaSessionRewindResult> {
-    throw new Error('rewind not supported in this fake');
-  }
-  startNewSession(): void {}
-  getSessionId(): string {
-    return 'session-1';
-  }
 }
 
-class SandboxBoundaryPromptDriver implements MakaSessionDriver {
-  startedTurnListener: ((turn: MakaAttachedSessionTurn) => void) | undefined;
-  hostSummary: Partial<SessionSummary> = {};
-
-  submitMessage(
-    text: string,
-    options: MakaSubmitMessageOptions,
-  ): Promise<TurnMessageSubmitResult | undefined> {
-    return admitMessageAsTurn(this, text, options);
-  }
-
-  subscribeStartedTurns(listener: (turn: MakaAttachedSessionTurn) => void): () => void {
-    this.startedTurnListener = listener;
-    return () => {
-      if (this.startedTurnListener === listener) this.startedTurnListener = undefined;
-    };
-  }
-
-  async queryCancelledMessages(): Promise<{ cancelledMessageIds: string[] }> {
-    return { cancelledMessageIds: [] };
-  }
-
+class SandboxBoundaryPromptDriver extends FakeSessionDriver {
   readonly boundaryResponses: SandboxBoundaryResponse[] = [];
   boundaryRequests = 0;
   stopCalls = 0;
@@ -6751,17 +6773,13 @@ class SandboxBoundaryPromptDriver implements MakaSessionDriver {
     private readonly paths: readonly string[] = ['/outside'],
     private readonly beforeBoundaryAck: (index: number) => Promise<void> = async () => {},
     private readonly beforeBoundaryRequest: (index: number) => Promise<void> = async () => {},
-  ) {}
-
-  async listSessions(): Promise<SessionSummary[]> {
-    return [];
+  ) {
+    super();
   }
 
   preparePrompt(prompt: string): Promise<MakaPreparedSessionTurn> {
     return prepareTestPrompt(this, prompt);
   }
-
-  async *compactSession(): AsyncIterable<never> {}
 
   async *promptEvents(_prompt: string): AsyncIterable<SessionEvent> {
     for (const [index, path] of this.paths.entries()) {
@@ -6821,59 +6839,16 @@ class SandboxBoundaryPromptDriver implements MakaSessionDriver {
     this.boundaryResponseWaiter = null;
     waiter?.();
   }
-  async renameSession(): Promise<void> {}
-  async setModel(): Promise<void> {}
-  async setPermissionMode(): Promise<void> {}
-  async setThinkingLevel(): Promise<void> {}
-  async switchSession(sessionId: string): Promise<MakaSessionSwitchResult> {
-    return switchResult(fakeSessionSummary(sessionId));
-  }
-
-  async listRewindTargets(): Promise<RewindTarget[]> {
-    return [];
-  }
-  async rewindToTurn(): Promise<MakaSessionRewindResult> {
-    throw new Error('rewind not supported in this fake');
-  }
-  startNewSession(): void {}
-  getSessionId(): string {
-    return 'session-1';
-  }
 }
 
-class UserQuestionPromptDriver implements MakaSessionDriver {
-  startedTurnListener: ((turn: MakaAttachedSessionTurn) => void) | undefined;
-  hostSummary: Partial<SessionSummary> = {};
-
-  submitMessage(
-    text: string,
-    options: MakaSubmitMessageOptions,
-  ): Promise<TurnMessageSubmitResult | undefined> {
-    return admitMessageAsTurn(this, text, options);
-  }
-
-  subscribeStartedTurns(listener: (turn: MakaAttachedSessionTurn) => void): () => void {
-    this.startedTurnListener = listener;
-    return () => {
-      if (this.startedTurnListener === listener) this.startedTurnListener = undefined;
-    };
-  }
-
-  async queryCancelledMessages(): Promise<{ cancelledMessageIds: string[] }> {
-    return { cancelledMessageIds: [] };
-  }
-
+class UserQuestionPromptDriver extends FakeSessionDriver {
   readonly responses: UserQuestionResponse[] = [];
   stopCalls = 0;
   private release: (() => void) | undefined;
 
-  async listSessions(): Promise<SessionSummary[]> {
-    return [];
-  }
   preparePrompt(prompt: string): Promise<MakaPreparedSessionTurn> {
     return prepareTestPrompt(this, prompt);
   }
-  async *compactSession(): AsyncIterable<never> {}
   async *promptEvents(_prompt: string): AsyncIterable<SessionEvent> {
     yield {
       type: 'user_question_request',
@@ -6904,62 +6879,20 @@ class UserQuestionPromptDriver implements MakaSessionDriver {
     this.stopCalls += 1;
     this.release?.();
   }
-  async respondToSandboxBoundary(_response: SandboxBoundaryResponse): Promise<void> {}
-  async renameSession(): Promise<void> {}
-  async setModel(): Promise<void> {}
-  async setPermissionMode(): Promise<void> {}
-  async setThinkingLevel(): Promise<void> {}
-  async switchSession(sessionId: string): Promise<MakaSessionSwitchResult> {
-    return switchResult(fakeSessionSummary(sessionId));
-  }
-  async listRewindTargets(): Promise<RewindTarget[]> {
-    return [];
-  }
   async rewindToTurn(): Promise<MakaSessionRewindResult> {
     throw new Error('rewind not supported');
   }
-  startNewSession(): void {}
-  getSessionId(): string {
-    return 'session-1';
-  }
 }
 
-class InterruptibleTurnDriver implements MakaSessionDriver {
-  startedTurnListener: ((turn: MakaAttachedSessionTurn) => void) | undefined;
-  hostSummary: Partial<SessionSummary> = {};
-
-  submitMessage(
-    text: string,
-    options: MakaSubmitMessageOptions,
-  ): Promise<TurnMessageSubmitResult | undefined> {
-    return admitMessageAsTurn(this, text, options);
-  }
-
-  subscribeStartedTurns(listener: (turn: MakaAttachedSessionTurn) => void): () => void {
-    this.startedTurnListener = listener;
-    return () => {
-      if (this.startedTurnListener === listener) this.startedTurnListener = undefined;
-    };
-  }
-
-  async queryCancelledMessages(): Promise<{ cancelledMessageIds: string[] }> {
-    return { cancelledMessageIds: [] };
-  }
-
+class InterruptibleTurnDriver extends FakeSessionDriver {
   stopCalls = 0;
   readonly prompts: string[] = [];
   private releaseTurn: (() => void) | null = null;
-
-  async listSessions(): Promise<SessionSummary[]> {
-    return [];
-  }
 
   preparePrompt(prompt: string): Promise<MakaPreparedSessionTurn> {
     this.prompts.push(prompt);
     return prepareTestPrompt(this, prompt);
   }
-
-  async *compactSession(): AsyncIterable<never> {}
 
   /** Bumped when the drain first pulls the Turn's stream. */
   streamPulls = 0;
@@ -6984,36 +6917,12 @@ class InterruptibleTurnDriver implements MakaSessionDriver {
     this.releaseTurn?.();
     this.releaseTurn = null;
   }
-
-  async respondToSandboxBoundary(_response: SandboxBoundaryResponse): Promise<void> {}
-  async renameSession(): Promise<void> {}
-  async setModel(): Promise<void> {}
-  async setPermissionMode(): Promise<void> {}
-  async setThinkingLevel(): Promise<void> {}
-  async switchSession(sessionId: string): Promise<MakaSessionSwitchResult> {
-    return switchResult(fakeSessionSummary(sessionId));
-  }
-
-  async listRewindTargets(): Promise<RewindTarget[]> {
-    return [];
-  }
-  async rewindToTurn(): Promise<MakaSessionRewindResult> {
-    throw new Error('rewind not supported in this fake');
-  }
-  startNewSession(): void {}
-  getSessionId(): string {
-    return 'session-1';
-  }
 }
 
 // A parking turn plus an in-memory steering/followup mirror, so the runner's
 // keybindings (Enter steer, Alt+Enter queue, Alt+↑ retract, Esc Esc refill) can
 // be exercised end-to-end without a real runtime.
-class SteeringTurnDriver implements MakaSessionDriver {
-  async queryCancelledMessages(): Promise<{ cancelledMessageIds: string[] }> {
-    return { cancelledMessageIds: [] };
-  }
-
+class SteeringTurnDriver extends FakeSessionDriver {
   stopCalls = 0;
   goal: GoalProjection | null = null;
   readonly steered: string[] = [];
@@ -7032,11 +6941,6 @@ class SteeringTurnDriver implements MakaSessionDriver {
   private turnOpen = false;
   private turnEnded = false;
   private eventSeq = 0;
-  private startedTurnListener: ((turn: MakaAttachedSessionTurn) => void) | undefined;
-
-  async listSessions(): Promise<SessionSummary[]> {
-    return [];
-  }
 
   preparePrompt(
     prompt: string,
@@ -7045,13 +6949,11 @@ class SteeringTurnDriver implements MakaSessionDriver {
     const turnId = options.turnId ?? 'turn-1';
     this.turnOrchestrations.push(options.turnOrchestration);
     return Promise.resolve({
-      sessionId: this.getSessionId(),
+      sessionId: this.sessionId,
       turnId,
       events: this.promptEvents(prompt, turnId),
     });
   }
-
-  async *compactSession(): AsyncIterable<never> {}
 
   getGoal(): GoalProjection | null {
     return this.goal;
@@ -7159,23 +7061,8 @@ class SteeringTurnDriver implements MakaSessionDriver {
     this.wakeTurn = null;
   }
 
-  async respondToSandboxBoundary(_response: SandboxBoundaryResponse): Promise<void> {}
-  async renameSession(): Promise<void> {}
-  async setModel(): Promise<void> {}
-  async setPermissionMode(): Promise<void> {}
-  async setThinkingLevel(): Promise<void> {}
-  async switchSession(sessionId: string): Promise<MakaSessionSwitchResult> {
-    return switchResult(fakeSessionSummary(sessionId));
-  }
   async listRewindTargets(): Promise<RewindTarget[]> {
     return this.rewindTargets;
-  }
-  async rewindToTurn(): Promise<MakaSessionRewindResult> {
-    throw new Error('rewind not supported in this fake');
-  }
-  startNewSession(): void {}
-  getSessionId(): string {
-    return 'session-1';
   }
 }
 
@@ -7185,42 +7072,15 @@ class FailingOrchestrationDriver extends SteeringTurnDriver {
   }
 }
 
-class SlowStopDriver implements MakaSessionDriver {
-  startedTurnListener: ((turn: MakaAttachedSessionTurn) => void) | undefined;
-  hostSummary: Partial<SessionSummary> = {};
-
-  submitMessage(
-    text: string,
-    options: MakaSubmitMessageOptions,
-  ): Promise<TurnMessageSubmitResult | undefined> {
-    return admitMessageAsTurn(this, text, options);
-  }
-
-  subscribeStartedTurns(listener: (turn: MakaAttachedSessionTurn) => void): () => void {
-    this.startedTurnListener = listener;
-    return () => {
-      if (this.startedTurnListener === listener) this.startedTurnListener = undefined;
-    };
-  }
-
-  async queryCancelledMessages(): Promise<{ cancelledMessageIds: string[] }> {
-    return { cancelledMessageIds: [] };
-  }
-
+class SlowStopDriver extends FakeSessionDriver {
   stopCalls = 0;
   readonly prompts: string[] = [];
   private releaseTurn: (() => void) | null = null;
-
-  async listSessions(): Promise<SessionSummary[]> {
-    return [];
-  }
 
   preparePrompt(prompt: string): Promise<MakaPreparedSessionTurn> {
     this.prompts.push(prompt);
     return prepareTestPrompt(this, prompt);
   }
-
-  async *compactSession(): AsyncIterable<never> {}
 
   async *promptEvents(_prompt: string): AsyncIterable<SessionEvent> {
     await new Promise<void>((resolve) => {
@@ -7245,59 +7105,12 @@ class SlowStopDriver implements MakaSessionDriver {
     this.releaseTurn?.();
     this.releaseTurn = null;
   }
-
-  async respondToSandboxBoundary(_response: SandboxBoundaryResponse): Promise<void> {}
-  async renameSession(): Promise<void> {}
-  async setModel(): Promise<void> {}
-  async setPermissionMode(): Promise<void> {}
-  async setThinkingLevel(): Promise<void> {}
-  async switchSession(sessionId: string): Promise<MakaSessionSwitchResult> {
-    return switchResult(fakeSessionSummary(sessionId));
-  }
-
-  async listRewindTargets(): Promise<RewindTarget[]> {
-    return [];
-  }
-  async rewindToTurn(): Promise<MakaSessionRewindResult> {
-    throw new Error('rewind not supported in this fake');
-  }
-  startNewSession(): void {}
-  getSessionId(): string {
-    return 'session-1';
-  }
 }
 
-class ToolOutputDriver implements MakaSessionDriver {
-  startedTurnListener: ((turn: MakaAttachedSessionTurn) => void) | undefined;
-  hostSummary: Partial<SessionSummary> = {};
-
-  submitMessage(
-    text: string,
-    options: MakaSubmitMessageOptions,
-  ): Promise<TurnMessageSubmitResult | undefined> {
-    return admitMessageAsTurn(this, text, options);
-  }
-
-  subscribeStartedTurns(listener: (turn: MakaAttachedSessionTurn) => void): () => void {
-    this.startedTurnListener = listener;
-    return () => {
-      if (this.startedTurnListener === listener) this.startedTurnListener = undefined;
-    };
-  }
-
-  async queryCancelledMessages(): Promise<{ cancelledMessageIds: string[] }> {
-    return { cancelledMessageIds: [] };
-  }
-
-  async listSessions(): Promise<SessionSummary[]> {
-    return [];
-  }
-
+class ToolOutputDriver extends FakeSessionDriver {
   preparePrompt(prompt: string): Promise<MakaPreparedSessionTurn> {
     return prepareTestPrompt(this, prompt);
   }
-
-  async *compactSession(): AsyncIterable<never> {}
 
   async *promptEvents(_prompt: string): AsyncIterable<SessionEvent> {
     yield {
@@ -7336,26 +7149,6 @@ class ToolOutputDriver implements MakaSessionDriver {
       ts: 3,
       stopReason: 'end_turn',
     };
-  }
-
-  async stop(): Promise<void> {}
-  async respondToSandboxBoundary(_response: SandboxBoundaryResponse): Promise<void> {}
-  async renameSession(): Promise<void> {}
-  async setModel(): Promise<void> {}
-  async setPermissionMode(): Promise<void> {}
-  async setThinkingLevel(): Promise<void> {}
-  async switchSession(sessionId: string): Promise<MakaSessionSwitchResult> {
-    return switchResult(fakeSessionSummary(sessionId));
-  }
-  async listRewindTargets(): Promise<RewindTarget[]> {
-    return [];
-  }
-  async rewindToTurn(): Promise<MakaSessionRewindResult> {
-    throw new Error('rewind not supported in this fake');
-  }
-  startNewSession(): void {}
-  getSessionId(): string {
-    return 'session-1';
   }
 }
 
@@ -7521,28 +7314,7 @@ function pipeOutput(stdout = '', stderr = '') {
   };
 }
 
-class SlashCommandDriver implements MakaSessionDriver {
-  startedTurnListener: ((turn: MakaAttachedSessionTurn) => void) | undefined;
-  hostSummary: Partial<SessionSummary> = {};
-
-  submitMessage(
-    text: string,
-    options: MakaSubmitMessageOptions,
-  ): Promise<TurnMessageSubmitResult | undefined> {
-    return admitMessageAsTurn(this, text, options);
-  }
-
-  subscribeStartedTurns(listener: (turn: MakaAttachedSessionTurn) => void): () => void {
-    this.startedTurnListener = listener;
-    return () => {
-      if (this.startedTurnListener === listener) this.startedTurnListener = undefined;
-    };
-  }
-
-  async queryCancelledMessages(): Promise<{ cancelledMessageIds: string[] }> {
-    return { cancelledMessageIds: [] };
-  }
-
+class SlashCommandDriver extends FakeSessionDriver {
   /** Model-facing text (options.modelText when set, else the typed prompt). */
   readonly prompts: string[] = [];
   /** Human-facing typed prompt for every prepared turn. */
@@ -7579,7 +7351,9 @@ class SlashCommandDriver implements MakaSessionDriver {
     private readonly sessions: SessionSummary[] = [fakeSessionSummary('session-2', '/repo')],
     private readonly sessionMessages: ReadonlyMap<string, readonly StoredMessage[]> = new Map(),
     private readonly boundaryDisplayModeBySession: ReadonlyMap<string, PermissionMode> = new Map(),
-  ) {}
+  ) {
+    super();
+  }
 
   async listSessions(): Promise<SessionSummary[]> {
     return this.sessions;
@@ -7698,8 +7472,6 @@ class SlashCommandDriver implements MakaSessionDriver {
     };
   }
 
-  async stop(): Promise<void> {}
-  async respondToSandboxBoundary(_response: SandboxBoundaryResponse): Promise<void> {}
   async setModel(model: string, connectionSlug?: string): Promise<void> {
     this.models.push(model);
     this.modelConnections.push(connectionSlug);
@@ -7743,9 +7515,6 @@ class SlashCommandDriver implements MakaSessionDriver {
       this.goal = this.goalsBySessionId.get(sessionId) ?? null;
     }
     return switchResult(nextSummary, [...(this.sessionMessages.get(nextSummary.id) ?? [])]);
-  }
-  async listRewindTargets(): Promise<RewindTarget[]> {
-    return [];
   }
   async rewindToTurn(_turnId: string): Promise<MakaSessionRewindResult> {
     throw new Error('rewind not supported in this fake');
@@ -8276,41 +8045,14 @@ class LongTranscriptDriver extends SlashCommandDriver {
   }
 }
 
-class DeferredControlDriver implements MakaSessionDriver {
-  startedTurnListener: ((turn: MakaAttachedSessionTurn) => void) | undefined;
-  hostSummary: Partial<SessionSummary> = {};
-
-  submitMessage(
-    text: string,
-    options: MakaSubmitMessageOptions,
-  ): Promise<TurnMessageSubmitResult | undefined> {
-    return admitMessageAsTurn(this, text, options);
-  }
-
-  subscribeStartedTurns(listener: (turn: MakaAttachedSessionTurn) => void): () => void {
-    this.startedTurnListener = listener;
-    return () => {
-      if (this.startedTurnListener === listener) this.startedTurnListener = undefined;
-    };
-  }
-
-  async queryCancelledMessages(): Promise<{ cancelledMessageIds: string[] }> {
-    return { cancelledMessageIds: [] };
-  }
-
+class DeferredControlDriver extends FakeSessionDriver {
   readonly prompts: string[] = [];
   readonly models: string[] = [];
   private resolveSetModel: (() => void) | null = null;
 
-  async listSessions(): Promise<SessionSummary[]> {
-    return [];
-  }
-
   preparePrompt(prompt: string): Promise<MakaPreparedSessionTurn> {
     return prepareTestPrompt(this, prompt);
   }
-
-  async *compactSession(): AsyncIterable<never> {}
 
   async *promptEvents(prompt: string): AsyncIterable<SessionEvent> {
     this.prompts.push(prompt);
@@ -8323,9 +8065,6 @@ class DeferredControlDriver implements MakaSessionDriver {
     };
   }
 
-  async stop(): Promise<void> {}
-  async respondToSandboxBoundary(_response: SandboxBoundaryResponse): Promise<void> {}
-
   async setModel(model: string): Promise<void> {
     this.models.push(model);
     await new Promise<void>((resolve) => {
@@ -8337,59 +8076,14 @@ class DeferredControlDriver implements MakaSessionDriver {
     this.resolveSetModel?.();
     this.resolveSetModel = null;
   }
-
-  async renameSession(): Promise<void> {}
-  async setPermissionMode(): Promise<void> {}
-  async setThinkingLevel(): Promise<void> {}
-  async switchSession(sessionId: string): Promise<MakaSessionSwitchResult> {
-    return switchResult(fakeSessionSummary(sessionId));
-  }
-
-  async listRewindTargets(): Promise<RewindTarget[]> {
-    return [];
-  }
-  async rewindToTurn(): Promise<MakaSessionRewindResult> {
-    throw new Error('rewind not supported in this fake');
-  }
-  startNewSession(): void {}
-  getSessionId(): string {
-    return 'session-1';
-  }
 }
 
-class RejectingSandboxBoundaryDriver implements MakaSessionDriver {
-  startedTurnListener: ((turn: MakaAttachedSessionTurn) => void) | undefined;
-  hostSummary: Partial<SessionSummary> = {};
-
-  submitMessage(
-    text: string,
-    options: MakaSubmitMessageOptions,
-  ): Promise<TurnMessageSubmitResult | undefined> {
-    return admitMessageAsTurn(this, text, options);
-  }
-
-  subscribeStartedTurns(listener: (turn: MakaAttachedSessionTurn) => void): () => void {
-    this.startedTurnListener = listener;
-    return () => {
-      if (this.startedTurnListener === listener) this.startedTurnListener = undefined;
-    };
-  }
-
-  async queryCancelledMessages(): Promise<{ cancelledMessageIds: string[] }> {
-    return { cancelledMessageIds: [] };
-  }
-
+class RejectingSandboxBoundaryDriver extends FakeSessionDriver {
   readonly responses: SandboxBoundaryResponse[] = [];
-
-  async listSessions(): Promise<SessionSummary[]> {
-    return [];
-  }
 
   preparePrompt(prompt: string): Promise<MakaPreparedSessionTurn> {
     return prepareTestPrompt(this, prompt);
   }
-
-  async *compactSession(): AsyncIterable<never> {}
 
   async *promptEvents(_prompt: string): AsyncIterable<SessionEvent> {
     yield {
@@ -8410,30 +8104,9 @@ class RejectingSandboxBoundaryDriver implements MakaSessionDriver {
     await new Promise<void>(() => {});
   }
 
-  async stop(): Promise<void> {}
-
   async respondToSandboxBoundary(response: SandboxBoundaryResponse): Promise<void> {
     this.responses.push(response);
     throw new Error('sandbox boundary response rejected');
-  }
-
-  async renameSession(): Promise<void> {}
-  async setModel(): Promise<void> {}
-  async setPermissionMode(): Promise<void> {}
-  async setThinkingLevel(): Promise<void> {}
-  async switchSession(sessionId: string): Promise<MakaSessionSwitchResult> {
-    return switchResult(fakeSessionSummary(sessionId));
-  }
-
-  async listRewindTargets(): Promise<RewindTarget[]> {
-    return [];
-  }
-  async rewindToTurn(): Promise<MakaSessionRewindResult> {
-    throw new Error('rewind not supported in this fake');
-  }
-  startNewSession(): void {}
-  getSessionId(): string {
-    return 'session-1';
   }
 }
 
@@ -8455,40 +8128,13 @@ class DeferredListSessionsDriver extends SlashCommandDriver {
   }
 }
 
-class SandboxBoundaryThenErrorDriver implements MakaSessionDriver {
-  startedTurnListener: ((turn: MakaAttachedSessionTurn) => void) | undefined;
-  hostSummary: Partial<SessionSummary> = {};
-
-  submitMessage(
-    text: string,
-    options: MakaSubmitMessageOptions,
-  ): Promise<TurnMessageSubmitResult | undefined> {
-    return admitMessageAsTurn(this, text, options);
-  }
-
-  subscribeStartedTurns(listener: (turn: MakaAttachedSessionTurn) => void): () => void {
-    this.startedTurnListener = listener;
-    return () => {
-      if (this.startedTurnListener === listener) this.startedTurnListener = undefined;
-    };
-  }
-
-  async queryCancelledMessages(): Promise<{ cancelledMessageIds: string[] }> {
-    return { cancelledMessageIds: [] };
-  }
-
+class SandboxBoundaryThenErrorDriver extends FakeSessionDriver {
   respondCalls = 0;
   private resolveContinue: (() => void) | null = null;
-
-  async listSessions(): Promise<SessionSummary[]> {
-    return [];
-  }
 
   preparePrompt(prompt: string): Promise<MakaPreparedSessionTurn> {
     return prepareTestPrompt(this, prompt);
   }
-
-  async *compactSession(): AsyncIterable<never> {}
 
   async *promptEvents(_prompt: string): AsyncIterable<SessionEvent> {
     yield {
@@ -8516,29 +8162,8 @@ class SandboxBoundaryThenErrorDriver implements MakaSessionDriver {
     this.resolveContinue = null;
   }
 
-  async stop(): Promise<void> {}
-
   async respondToSandboxBoundary(_response: SandboxBoundaryResponse): Promise<void> {
     this.respondCalls += 1;
-  }
-
-  async renameSession(): Promise<void> {}
-  async setModel(): Promise<void> {}
-  async setPermissionMode(): Promise<void> {}
-  async setThinkingLevel(): Promise<void> {}
-  async switchSession(sessionId: string): Promise<MakaSessionSwitchResult> {
-    return switchResult(fakeSessionSummary(sessionId));
-  }
-
-  async listRewindTargets(): Promise<RewindTarget[]> {
-    return [];
-  }
-  async rewindToTurn(): Promise<MakaSessionRewindResult> {
-    throw new Error('rewind not supported in this fake');
-  }
-  startNewSession(): void {}
-  getSessionId(): string {
-    return 'session-1';
   }
 }
 

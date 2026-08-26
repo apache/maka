@@ -39,83 +39,11 @@ import type { LiveTurnProjection } from '@maka/ui';
 import type { DesktopTranscriptRangeController } from '../../renderer/desktop-transcript-range-store.js';
 import { createAppShellChatActions } from '../../renderer/app-shell-chat-actions.js';
 
-function installWindow(maka: unknown): () => void {
-  const target = globalThis as unknown as { window?: unknown };
-  const hadWindow = Object.prototype.hasOwnProperty.call(target, 'window');
-  const previousWindow = target.window;
-  Object.defineProperty(target, 'window', {
-    configurable: true,
-    value: { maka },
-    writable: true,
-  });
-  return () => {
-    if (hadWindow) {
-      Object.defineProperty(target, 'window', {
-        configurable: true,
-        value: previousWindow,
-        writable: true,
-      });
-    } else {
-      delete target.window;
-    }
-  };
-}
-
-/**
- * The live-turn arm as a real map rather than a black-hole stub: a send that
- * never lands must leave nothing behind, and that cannot be asserted against a
- * no-op setter.
- */
-function createTurnState() {
-  const liveTurnBySession: Record<string, LiveTurnProjection> = {};
-  return {
-    liveTurnBySession,
-    setLiveTurnBySession(updater: (c: Record<string, LiveTurnProjection>) => Record<string, LiveTurnProjection>) {
-      const next = updater({ ...liveTurnBySession });
-      for (const key of Object.keys(liveTurnBySession)) delete liveTurnBySession[key];
-      Object.assign(liveTurnBySession, next);
-    },
-  };
-}
-
-function createActionsDeps() {
-  return {
-    uiLocale: 'en' as const,
-    activeIdRef: { current: undefined as string | undefined },
-    addPendingSessionAction: () => true,
-    captureComposerImportOwner: () => ({
-      sessionId: undefined,
-      navSection: 'sessions' as const,
-    }),
-    checkTaskSubmissionReadiness: async () => true,
-    clearPendingSessionAction: () => undefined,
-    isNewChatSendSurfaceActive: () => true,
-    isShellSurfaceOwnerActive: () => true,
-    markSessionReadLocally: () => undefined,
-    messageRetryPendingRef: { current: new Set<string>() },
-    refreshSessions: async () => [],
-    setActiveId: () => undefined,
-    setMessageLoadErrorBySession: () => undefined,
-    setMessageRetryPendingBySession: () => undefined,
-    setMessages: () => undefined,
-    addTransientMessage: () => undefined,
-    updateTransientMessage: () => undefined,
-    removeTransientMessage: () => undefined,
-    transcriptRangeRef: { current: undefined },
-    setNavSelection: () => undefined,
-    setLiveTurnBySession: () => undefined,
-    setInteractionBySession: () => undefined,
-    showModelSetupToast: () => undefined,
-    toastApi: { error: () => undefined, info: () => undefined },
-    newChatModel: null,
-    pendingNewChatThinkingLevel: null,
-    newChatPermissionChoice: undefined,
-    clearNewChatPermissionChoice: () => {},
-    newChatCollaborationMode: 'agent' as const,
-    newChatOrchestrationMode: 'default' as const,
-    newTaskTarget: { profileId: 'local', hostId: 'host-local', projectId: null },
-  };
-}
+import {
+  createActionsDeps,
+  createTurnState,
+  installWindow,
+} from './app-shell-chat-actions-fixture.js';
 
 describe('composer first-send cleanup', () => {
   it('cancels when the composer owner changes during the readiness check', async () => {
