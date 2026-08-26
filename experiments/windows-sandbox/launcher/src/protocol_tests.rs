@@ -138,7 +138,10 @@ mod tests {
         let original = launch_digest(&value.launch).expect("original digest");
         value.launch.non_following_read_root = Some("C:\\work\\repo".to_owned());
 
-        assert_ne!(launch_digest(&value.launch).expect("marked digest"), original);
+        assert_ne!(
+            launch_digest(&value.launch).expect("marked digest"),
+            original
+        );
     }
 
     #[test]

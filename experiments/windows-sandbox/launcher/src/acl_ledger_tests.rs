@@ -27,9 +27,10 @@ mod tests {
     use sha2::{Digest, Sha256};
 
     use crate::acl_ledger::{
-        LEDGER_VERSION, LaunchFailure, Ledger, LedgerRoot, collect_roots, recover_stale,
+        LEDGER_VERSION, LaunchFailure, Ledger, LedgerRoot, collect_roots,
         partition_non_following_read_root_with_limit,
-        partition_non_following_read_root_with_limits, with_acl_grants, write_ledger,
+        partition_non_following_read_root_with_limits, recover_stale, with_acl_grants,
+        write_ledger,
     };
     use crate::protocol::{LaunchRequest, NetworkMode};
 
@@ -421,12 +422,7 @@ mod tests {
     fn clean_non_following_tree_compresses_to_one_recursive_root() {
         let fixture = Fixture::new("non-following-clean");
         let root = fixture.target_str();
-        let mut request = launch_request(
-            vec![root.clone()],
-            Vec::new(),
-            Vec::new(),
-            Vec::new(),
-        );
+        let mut request = launch_request(vec![root.clone()], Vec::new(), Vec::new(), Vec::new());
         request.non_following_read_root = Some(root.clone());
 
         let roots = collect_roots(&request).expect("clean tree admits");
@@ -448,13 +444,9 @@ mod tests {
         fs::create_dir_all(&junction_parent).expect("create junction parent");
         create_junction(&junction, &outside);
         let target = fixture.target_str();
-        let raw_request = launch_request(
-            vec![target.clone()],
-            Vec::new(),
-            Vec::new(),
-            Vec::new(),
-        );
-        let raw_error = collect_roots(&raw_request).expect_err("raw recursive root must stay strict");
+        let raw_request = launch_request(vec![target.clone()], Vec::new(), Vec::new(), Vec::new());
+        let raw_error =
+            collect_roots(&raw_request).expect_err("raw recursive root must stay strict");
         assert!(
             raw_error.contains("reparse point"),
             "unexpected raw error: {raw_error}"
@@ -485,8 +477,7 @@ mod tests {
         let junction = junction.to_string_lossy();
         let outside = outside.to_string_lossy();
         assert!(!roots.iter().any(|root| {
-            root.path.eq_ignore_ascii_case(&junction)
-                || root.path.eq_ignore_ascii_case(&outside)
+            root.path.eq_ignore_ascii_case(&junction) || root.path.eq_ignore_ascii_case(&outside)
         }));
     }
 
@@ -497,12 +488,7 @@ mod tests {
         let junction = base.join("root-junction");
         create_junction(&junction, &fixture.target);
         let root = junction.to_string_lossy().into_owned();
-        let mut request = launch_request(
-            vec![root.clone()],
-            Vec::new(),
-            Vec::new(),
-            Vec::new(),
-        );
+        let mut request = launch_request(vec![root.clone()], Vec::new(), Vec::new(), Vec::new());
         request.non_following_read_root = Some(root);
 
         let error = collect_roots(&request).expect_err("reparse root must fail closed");
@@ -522,12 +508,7 @@ mod tests {
         fs::hard_link(&outside, fixture.target.join("child").join("linked.txt"))
             .expect("create hard link into tree");
         let root = fixture.target_str();
-        let mut request = launch_request(
-            vec![root.clone()],
-            Vec::new(),
-            Vec::new(),
-            Vec::new(),
-        );
+        let mut request = launch_request(vec![root.clone()], Vec::new(), Vec::new(), Vec::new());
         request.non_following_read_root = Some(root);
 
         let error = collect_roots(&request).expect_err("multi-link file must fail closed");
@@ -549,7 +530,10 @@ mod tests {
         let error = partition_non_following_read_root_with_limit(&fixture.target, 2)
             .expect_err("expanded grant plan must be bounded");
 
-        assert!(error.contains("safe limit of 2"), "unexpected error: {error}");
+        assert!(
+            error.contains("safe limit of 2"),
+            "unexpected error: {error}"
+        );
     }
 
     #[test]
@@ -576,7 +560,10 @@ mod tests {
         let error = partition_non_following_read_root_with_limit(&fixture.target, 0)
             .expect_err("even one clean recursive root must respect the grant limit");
 
-        assert!(error.contains("safe limit of 0"), "unexpected error: {error}");
+        assert!(
+            error.contains("safe limit of 0"),
+            "unexpected error: {error}"
+        );
     }
 
     #[test]

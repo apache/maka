@@ -405,9 +405,7 @@ pub(crate) fn collect_roots(request: &LaunchRequest) -> Result<Vec<LedgerRoot>, 
         if !contains_path(&request.read_roots, non_following_root)
             || contains_path(&request.exact_read_roots, non_following_root)
         {
-            return Err(
-                "nonFollowingReadRoot must name a declared recursive readRoot".to_owned(),
-            );
+            return Err("nonFollowingReadRoot must name a declared recursive readRoot".to_owned());
         }
         if !request.write_roots.is_empty() || !request.exact_write_roots.is_empty() {
             return Err("nonFollowingReadRoot requires a read-only launch".to_owned());
@@ -459,14 +457,17 @@ pub(crate) fn collect_roots(request: &LaunchRequest) -> Result<Vec<LedgerRoot>, 
         if metadata.is_dir() && (recursive_read || recursive_write) {
             reject_aliased_entries(Path::new(path))?;
         }
-        upsert_ledger_root(&mut roots, LedgerRoot {
-            path: path.clone(),
-            read: contains_path(&request.read_roots, path),
-            write: contains_path(&request.write_roots, path),
-            read_recursive: metadata.is_dir() && recursive_read,
-            write_recursive: metadata.is_dir() && recursive_write,
-            backup_path: None,
-        });
+        upsert_ledger_root(
+            &mut roots,
+            LedgerRoot {
+                path: path.clone(),
+                read: contains_path(&request.read_roots, path),
+                write: contains_path(&request.write_roots, path),
+                read_recursive: metadata.is_dir() && recursive_read,
+                write_recursive: metadata.is_dir() && recursive_write,
+                backup_path: None,
+            },
+        );
     }
     Ok(roots)
 }
@@ -614,7 +615,7 @@ fn plan_non_following_directory(
     entries.sort_by_key(|entry| entry.file_name());
 
     let mut clean = true;
-    let mut directory_plans = Vec::new();
+    let mut directory_plans: Vec<DirectoryReadPlan> = Vec::new();
     for entry in entries {
         let child = entry.path();
         let child_metadata = fs::symlink_metadata(&child)
