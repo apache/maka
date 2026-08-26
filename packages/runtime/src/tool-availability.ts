@@ -27,6 +27,8 @@ import type { MakaTool, ToolGating } from './tool-runtime.js';
 
 /** Canonical name of Maka's provider-independent deferred-tool search connector. */
 export const TOOL_SEARCH_NAME = 'tool_search';
+/** Provider-safe alias used because OpenAI Responses reserves `tool_search`. */
+export const TOOL_SEARCH_PROVIDER_NAME = 'maka_tool_search';
 export const TOOL_SEARCH_DEFAULT_LIMIT = 8;
 export const TOOL_SEARCH_MAX_LIMIT = 20;
 export const TOOL_SEARCH_MAX_SCHEMA_CHARS = 64 * 1024;
@@ -135,6 +137,9 @@ export class ToolAvailabilityRuntime {
   ) {
     if (tools.some((tool) => tool.name === TOOL_SEARCH_NAME)) {
       throw new Error(`Tool name "${TOOL_SEARCH_NAME}" is reserved by Runtime`);
+    }
+    if (tools.some((tool) => tool.name === TOOL_SEARCH_PROVIDER_NAME)) {
+      throw new Error(`Tool name "${TOOL_SEARCH_PROVIDER_NAME}" is reserved by Runtime`);
     }
     this.tools = [...tools];
     this.toolsByName = new Map(tools.map((tool) => [tool.name, tool]));
