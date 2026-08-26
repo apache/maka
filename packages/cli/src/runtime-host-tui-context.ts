@@ -32,6 +32,7 @@ import {
   readRuntimeHostAgentGraphEpochs,
   readRuntimeHostInvocableSkills,
   readRuntimeHostProjects,
+  isRuntimeHostReconnectingConnection,
   type AgentGraphEpochDirectory,
   type RuntimeHostConnection,
   type RuntimeHostProfile,
@@ -55,6 +56,11 @@ import {
   createRuntimeHostOnboardingSurface,
   projectRuntimeHostModelChoices,
 } from './runtime-host-onboarding.js';
+import {
+  createTuiMcpController,
+  type TuiMcpController,
+  type TuiMcpSurface,
+} from './tui-mcp-control.js';
 
 export interface RuntimeHostTuiContext {
   readonly connection: RuntimeHostConnection;
@@ -81,6 +87,7 @@ export interface RuntimeHostTuiContext {
   };
   readonly recap: SessionRecapGenerator;
   readonly onboarding: ReturnType<typeof createRuntimeHostOnboardingSurface>;
+  readonly mcp?: TuiMcpSurface;
   readonly profile: RuntimeHostProfile;
   close(): Promise<void>;
 }
@@ -104,6 +111,7 @@ export async function createRuntimeHostTuiContext(
     ...(input.hostProfileId ? { profileId: input.hostProfileId } : {}),
   });
   const connection = connected.connection;
+  let mcp: TuiMcpController | undefined;
   try {
     const catalog = connected.catalog;
     const workspace = await resolveRuntimeHostTuiWorkspace(connection, connected.profile, input);
@@ -131,6 +139,15 @@ export async function createRuntimeHostTuiContext(
     };
     const driver = createRuntimeHostMakaSessionDriver(driverInput);
     await driver.recoverSideConversations();
+    if (connected.profile.kind === 'local') {
+      if (!isRuntimeHostReconnectingConnection(connection)) {
+        throw new Error('Local Runtime Host TUI connection is not reconnectable');
+      }
+      mcp = createTuiMcpController({
+        workspaceRoot: input.rootPath,
+        connection,
+      });
+    }
     return {
       connection,
       driver,
@@ -155,13 +172,35 @@ export async function createRuntimeHostTuiContext(
       agentGraphHistory: createRuntimeHostAgentGraphHistory(connection),
       recap: createRuntimeHostRecapGenerator(connection),
       onboarding: createRuntimeHostOnboardingSurface(connection),
+      ...(mcp ? { mcp } : {}),
       profile: connected.profile,
-      close: () => connected.close(),
+      close: () => closeRuntimeHostTuiContext(mcp, connected.close),
     };
   } catch (error) {
-    await connection.close().catch(() => undefined);
+    await mcp?.close().catch(() => undefined);
+    await connected.close().catch(() => undefined);
     throw error;
   }
+}
+
+async function closeRuntimeHostTuiContext(
+  mcp: TuiMcpController | undefined,
+  closeConnection: () => Promise<void>,
+): Promise<void> {
+  const errors: unknown[] = [];
+  try {
+    await mcp?.close();
+  } catch (error) {
+    errors.push(error);
+  }
+  try {
+    await closeConnection();
+  } catch (error) {
+    errors.push(error);
+  }
+  if (errors.length === 1) throw errors[0];
+  if (errors.length > 1)
+    throw new AggregateError(errors, 'Unable to close Runtime Host TUI context');
 }
 
 function createRuntimeHostAgentGraphHistory(
