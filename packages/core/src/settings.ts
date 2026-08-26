@@ -165,14 +165,13 @@ export const APP_ICONS = [
   'mono',
   // The geometric M set: one drawing, recoloured. Ids name the colourway, not
   // the artwork, so a repaint never invalidates a settings file already on
-  // disk. Ordered by family, in the same order the icon discussion numbered
-  // them, so "no. 8" there and `ink` here are the same tile.
+  // disk. Ordered by family, following the order the icon discussion used —
+  // but not one-to-one with its numbering: three near-duplicate blues that
+  // were cut from the set before it shipped are still absent, so match a
+  // number from that thread to a tile by id, not by position.
   // Blue
   'sky',
-  'light-sky',
-  'baby',
   'cyan',
-  'periwinkle',
   'ice',
   'pale-inverted',
   // Monochrome

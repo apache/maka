@@ -85,15 +85,14 @@ function ThemePreviewPane(props: { mode: 'light' | 'dark' }) {
  * keyboard navigation.
  */
 /**
- * 43 shipped icons need grouping for the same reason 11 palettes did: an
+ * 40 shipped icons need grouping for the same reason 11 palettes did: an
  * ungrouped wall gives the eye nowhere to start. The brand pair leads;
  * everything after it is one drawing recoloured, split by what the colour is
  * doing. Imported art is appended as its own group by the renderer, since the
  * set is not known until the main process reads the directory.
  *
- * The order matches `APP_ICONS`, which in turn matches how the icon
- * discussion numbered the set — so a reply naming "no. 18" and the tile in
- * the `dark` group here are the same thing.
+ * The order matches `APP_ICONS`, which follows the order the icon discussion
+ * used — see the note there about why it is not one-to-one with its numbering.
  */
 const APP_ICON_GROUPS: ReadonlyArray<{
   id:
@@ -112,7 +111,7 @@ const APP_ICON_GROUPS: ReadonlyArray<{
   icons: ReadonlyArray<AppIcon>;
 }> = [
   { id: 'mascot', icons: ['default', 'mono'] },
-  { id: 'blue', icons: ['sky', 'light-sky', 'baby', 'cyan', 'periwinkle', 'ice', 'pale-inverted'] },
+  { id: 'blue', icons: ['sky', 'cyan', 'ice', 'pale-inverted'] },
   { id: 'contrast', icons: ['ink', 'paper', 'graphite'] },
   { id: 'pencil', icons: ['pencil-kraft', 'pencil-sky', 'pencil-navy'] },
   { id: 'mountain', icons: ['alpine', 'dusk', 'night', 'forest'] },
