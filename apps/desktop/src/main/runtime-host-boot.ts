@@ -1183,6 +1183,7 @@ function registerHostClientIpc(
   registerRuntimeHostUsageIpc({
     ipcMain: scopedIpc,
     client,
+    hostId: scope.hostId,
     sendToRenderer,
   });
   registerRuntimeHostWorkspaceIpc({

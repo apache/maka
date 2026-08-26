@@ -296,6 +296,7 @@ function UsageRequestsPanel(props: {
             { value: 'all', label: props.copy.statuses[0] },
             { value: 'success', label: props.copy.statuses[1] },
             { value: 'error', label: props.copy.statuses[2] },
+            { value: 'aborted', label: props.copy.statuses[3] },
           ]}
           width={320}
           onChange={(value) => props.onStatusChange(value as AppSettings['usage']['status'])}
@@ -339,7 +340,9 @@ function UsageRequestsPanel(props: {
           usageRequestTarget(row),
           usageRequestSessionCell(row, props.copy, props.onOpenSession),
           row.inputTokens + row.outputTokens,
-          row.kind === 'model' ? `$${(row.costUsd ?? 0).toFixed(2)}` : '-',
+          row.kind === 'model'
+            ? row.costUsd === undefined ? '-' : `$${row.costUsd.toFixed(2)}`
+            : '-',
           row.latencyMs ? `${row.latencyMs}ms` : '-',
           usageRequestStatusLabel(row.status, props.copy),
         ])}
@@ -405,8 +408,9 @@ function UsageToolsPanel(props: { stats: UsageStats | null; copy: UsageSettingsC
         { header: props.copy.tables.toolHeaders[2], numeric: true },
         { header: props.copy.tables.toolHeaders[3], numeric: true },
         { header: props.copy.tables.toolHeaders[4], numeric: true },
+        { header: props.copy.tables.toolHeaders[5], numeric: true },
       ]}
-      rows={(props.stats?.byTool ?? []).map((row) => [row.tool, row.calls, row.success, row.errors, `${row.avgDurationMs}ms`])}
+      rows={(props.stats?.byTool ?? []).map((row) => [row.tool, row.calls, row.success, row.errors, row.aborted ?? 0, `${row.avgDurationMs}ms`])}
       empty={{ Icon: Activity, title: props.copy.tables.toolEmptyTitle, body: props.copy.tables.toolEmptyBody }}
     />
   );
@@ -443,6 +447,7 @@ function usageRequestTarget(row: UsageStats['logs'][number]) {
 
 function usageRequestSessionCell(row: UsageStats['logs'][number], copy: UsageSettingsCopy, onOpenSession?: (sessionId: string) => void) {
   const label = shortUsageSessionId(row.sessionId);
+  if (row.sessionId === 'unknown') return copy.tables.unknownSession;
   if (!onOpenSession) return label;
   return (
     <Button variant="ghost" size="sm" onClick={() => onOpenSession(row.sessionId)} label={copy.tables.openSession(label)} />
@@ -457,6 +462,7 @@ function usageRequestStatusLabel(status: UsageStats['logs'][number]['status'], c
   switch (status) {
     case 'success': return copy.tables.success;
     case 'error': return copy.tables.error;
+    case 'aborted': return copy.tables.aborted;
   }
 }
 

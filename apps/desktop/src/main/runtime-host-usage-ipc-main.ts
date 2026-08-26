@@ -27,20 +27,34 @@ import type {
   UsageGroupBy,
   UsageQuery,
 } from "@maka/core/usage-stats/types";
+import type { UsageRange, UsageStats } from "@maka/core/settings";
+import { resolveUsageRange } from "@maka/core/model-call-usage-projection";
 import {
   handleReconnectableRead,
   type ReconnectableReadIpcMain,
   tryReconnectableReadResult,
 } from "./ipc-reconnect-policy.js";
 import type { DesktopRuntimeHostClient } from "./runtime-host-client.js";
+import type { OperationOutput } from "@maka/runtime-host/protocol";
+import { desktopSessionKey } from "../shared/runtime-host-identity.js";
 
 interface RuntimeHostUsageIpcDeps {
   readonly ipcMain: ReconnectableReadIpcMain;
   readonly client: DesktopRuntimeHostClient;
+  readonly hostId: string;
   readonly sendToRenderer: (channel: string, ...args: unknown[]) => void;
 }
 
 const PAGE_LIMIT = 100;
+
+type LlmUsageLog = Extract<
+  OperationOutput<"usage.query">,
+  { kind: "logs"; source: "llm" }
+>["rows"][number];
+type ToolUsageLog = Extract<
+  OperationOutput<"usage.query">,
+  { kind: "logs"; source: "tool" }
+>["rows"][number];
 
 export function registerRuntimeHostUsageIpc(
   deps: RuntimeHostUsageIpcDeps,
@@ -67,6 +81,15 @@ export function registerRuntimeHostUsageIpc(
         if (result.kind !== "summary") throw invalidUsageProjection();
         return { ...result.summary, provenance: result.provenance };
       }, "USAGE_SUMMARY_FAILED"),
+  );
+  handleReconnectableRead(
+    deps.ipcMain,
+    "usage:stats",
+    (_event, range?: UsageRange) =>
+      tryReconnectableReadResult(
+        () => loadDesktopUsageStats(deps.client, normalizeUsageRange(range), deps.hostId),
+        "USAGE_STATS_FAILED",
+      ),
   );
   handleReconnectableRead(
     deps.ipcMain,
@@ -142,8 +165,182 @@ export function registerRuntimeHostUsageIpc(
   );
 }
 
+export async function loadDesktopUsageStats(
+  client: Pick<DesktopRuntimeHostClient, "queryUsage">,
+  range: UsageRange,
+  hostId?: string,
+): Promise<UsageStats> {
+  const query: UsageQuery = { range: resolveUsageRange(range, Date.now()) };
+  const [summary, providers, models, tools, modelLogs, toolLogs] = await Promise.all([
+    queryUsageSummary(client, query),
+    loadAllBuckets(client, { ...query, groupBy: "provider" }),
+    loadAllBuckets(client, { ...query, groupBy: "model" }),
+    loadAllBuckets(client, { ...query, groupBy: "tool" }),
+    loadAllLogs(client, "llm", query),
+    loadAllLogs(client, "tool", query),
+  ]);
+  const logs = [
+    ...modelLogs.map((row) => toUsageModelLog(row, hostId)),
+    ...toolLogs.map((row) => toUsageToolLog(row, hostId)),
+  ].sort((left, right) => right.ts - left.ts);
+  return {
+    summary: {
+      totalRequests: summary.totalRequests,
+      totalCostUsd: summary.totalCostUsd,
+      totalTokens: summary.totalTokens.total,
+      inputTokens: summary.totalTokens.input,
+      outputTokens: summary.totalTokens.output,
+      cacheTokens: summary.totalTokens.cacheRead + summary.totalTokens.cacheWrite,
+      cacheMiss: summary.totalTokens.cacheMiss,
+      cacheRead: summary.totalTokens.cacheRead,
+      cacheCreation: summary.totalTokens.cacheWrite,
+      reasoning: summary.totalTokens.reasoning,
+    },
+    logs,
+    byProvider: providers.map((bucket) => ({
+      provider: bucket.key,
+      requests: bucket.requests,
+      tokens: bucket.totalTokens,
+      costUsd: bucket.costUsd,
+    })),
+    byModel: models.map((bucket) => ({
+      model: bucket.key,
+      requests: bucket.requests,
+      tokens: bucket.totalTokens,
+      costUsd: bucket.costUsd,
+    })),
+    byTool: aggregateToolUsage(toolLogs),
+    pricing: [],
+  };
+}
+
+async function queryUsageSummary(
+  client: Pick<DesktopRuntimeHostClient, "queryUsage">,
+  query: UsageQuery,
+) {
+  const result = await client.queryUsage({ kind: "summary", query: toLlmQuery(query) });
+  if (result.kind !== "summary") throw invalidUsageProjection();
+  return result.summary;
+}
+
+async function loadAllLogs(
+  client: Pick<DesktopRuntimeHostClient, "queryUsage">,
+  source: "llm",
+  query: UsageQuery,
+): Promise<readonly LlmUsageLog[]>;
+async function loadAllLogs(
+  client: Pick<DesktopRuntimeHostClient, "queryUsage">,
+  source: "tool",
+  query: UsageQuery,
+): Promise<readonly ToolUsageLog[]>;
+async function loadAllLogs(
+  client: Pick<DesktopRuntimeHostClient, "queryUsage">,
+  source: "llm" | "tool",
+  query: UsageQuery,
+): Promise<readonly (LlmUsageLog | ToolUsageLog)[]> {
+  const rows: Array<LlmUsageLog | ToolUsageLog> = [];
+  let offset = 0;
+  while (true) {
+    const result = await client.queryUsage(
+      source === "llm"
+        ? {
+            kind: "logs",
+            source,
+            query: toLlmQuery(query),
+            offset,
+            limit: PAGE_LIMIT,
+          }
+        : {
+            kind: "logs",
+            source,
+            query: toToolQuery(query),
+            offset,
+            limit: PAGE_LIMIT,
+          },
+    );
+    if (result.kind !== "logs" || result.source !== source || result.offset !== offset) {
+      throw invalidUsageProjection();
+    }
+    rows.push(...result.rows);
+    if (result.nextOffset === null) return rows;
+    if (result.nextOffset <= offset) throw invalidUsageProjection();
+    offset = result.nextOffset;
+  }
+}
+
+function normalizeUsageRange(range: UsageRange | undefined): UsageRange {
+  if (range === "24h" || range === "7d" || range === "30d" || range === "all") return range;
+  return "24h";
+}
+
+function toUsageModelLog(row: LlmUsageLog, hostId?: string): UsageStats["logs"][number] {
+  return {
+    id: row.id,
+    ts: row.ts,
+    kind: "model",
+    sessionId: projectSessionId(hostId, row.sessionId),
+    turnId: row.turnId ?? "unknown",
+    provider: row.connectionSlug ?? row.providerId,
+    model: row.modelId,
+    inputTokens: row.inputTokens,
+    outputTokens: row.outputTokens,
+    ...(row.cacheMissTokens ? { cacheMiss: row.cacheMissTokens } : {}),
+    ...(row.cacheReadTokens ? { cacheRead: row.cacheReadTokens } : {}),
+    ...(row.cacheWriteTokens ? { cacheCreation: row.cacheWriteTokens } : {}),
+    ...(row.reasoningTokens ? { reasoning: row.reasoningTokens } : {}),
+    ...(row.costUsd === undefined ? {} : { costUsd: row.costUsd }),
+    latencyMs: row.latencyMs,
+    status: row.status,
+  };
+}
+
+function toUsageToolLog(row: ToolUsageLog, hostId?: string): UsageStats["logs"][number] {
+  return {
+    id: row.id,
+    ts: row.ts,
+    kind: "tool",
+    sessionId: projectSessionId(hostId, row.sessionId),
+    turnId: row.turnId ?? "unknown",
+    provider: row.providerId ?? "unknown",
+    model: row.modelId ?? "unknown",
+    toolName: row.toolName,
+    inputTokens: 0,
+    outputTokens: 0,
+    latencyMs: row.durationMs,
+    status: row.status,
+  };
+}
+
+function projectSessionId(hostId: string | undefined, sessionId: string | undefined): string {
+  if (!sessionId) return "unknown";
+  return hostId ? desktopSessionKey({ hostId, sessionId }) : sessionId;
+}
+
+function aggregateToolUsage(rows: readonly ToolUsageLog[]): UsageStats["byTool"] {
+  const grouped = new Map<string, { calls: number; success: number; errors: number; aborted: number; duration: number }>();
+  for (const row of rows) {
+    const current = grouped.get(row.toolName) ?? { calls: 0, success: 0, errors: 0, aborted: 0, duration: 0 };
+    current.calls += 1;
+    if (row.status === "success") current.success += 1;
+    else if (row.status === "error") current.errors += 1;
+    else current.aborted += 1;
+    current.duration += row.durationMs;
+    grouped.set(row.toolName, current);
+  }
+  return [...grouped.entries()]
+    .map(([tool, row]) => ({
+      tool,
+      calls: row.calls,
+      success: row.success,
+      errors: row.errors,
+      ...(row.aborted > 0 ? { aborted: row.aborted } : {}),
+      avgDurationMs: row.calls === 0 ? 0 : Math.round(row.duration / row.calls),
+    }))
+    .sort((left, right) => right.calls - left.calls || left.tool.localeCompare(right.tool));
+}
+
 async function loadAllBuckets(
-  client: DesktopRuntimeHostClient,
+  client: Pick<DesktopRuntimeHostClient, "queryUsage">,
   query: UsageQuery & { groupBy: UsageGroupBy },
 ) {
   const buckets = [];

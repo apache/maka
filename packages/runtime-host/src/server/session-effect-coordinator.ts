@@ -193,17 +193,34 @@ export class HostSessionEffectCoordinator {
       }
       if (intent === 'found') {
         const active = this.#recaps.get(ids.result);
-        return active &&
+        if (
+          active &&
           active.sessionId === input.sessionId &&
           active.effectId === input.effectId &&
           active.reason === input.reason
-          ? { kind: 'active', task: active.task }
-          : settledRecap(
-              recapFailure(
-                'outcome_unknown',
-                'Recap provider outcome is unknown; use a new effect identity to retry',
-              ),
-            );
+        ) {
+          return { kind: 'active', task: active.task };
+        }
+
+        // A completed effect can publish its result between the first
+        // terminal probe and this intent probe. In that window the in-memory
+        // active entry has already been removed, but the first terminal probe
+        // legitimately observed a missing result. Re-read the durable result
+        // before classifying the intent as provider-unknown; otherwise an
+        // exact retry can fail even though the result is already committed.
+        const settled = await this.#readTerminal(input, ids.result);
+        if (settled.kind === 'found') return settledRecap(recapSuccess(settled.result));
+        if (settled.kind === 'conflict') {
+          return settledRecap(
+            recapFailure('operation_conflict', 'Recap effect identity is already in use'),
+          );
+        }
+        return settledRecap(
+          recapFailure(
+            'outcome_unknown',
+            'Recap provider outcome is unknown; use a new effect identity to retry',
+          ),
+        );
       }
 
       if (abort.signal.aborted) {

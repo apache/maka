@@ -202,6 +202,7 @@ import {
 } from '@maka/core/settings/network-settings';
 import type { Result } from '@maka/core/result';
 import type { CreateSessionRequestInput } from '@maka/core/runtime-inputs';
+import { unwrapRuntimeHostReadResult } from '../shared/runtime-host-read-result.js';
 import type {
   McpConfigAddResult,
   McpConfigImportResult,
@@ -2731,7 +2732,12 @@ const makaBridge = {
     testBotChannel(provider: BotProvider): Promise<SettingsTestResult> {
       return ipcRenderer.invoke('settings:testBotChannel', provider);
     },
-    usageStats(range?: UsageRange): Promise<UsageStats> {
+    async usageStats(range?: UsageRange, host?: DesktopRuntimeHostRef): Promise<UsageStats> {
+      if (host) {
+        return unwrapRuntimeHostReadResult(
+          await invokeSelectedRuntimeHost<Result<UsageStats>>(host, 'usage:stats', range),
+        );
+      }
       return ipcRenderer.invoke('settings:usageStats', range);
     },
     bots: {
