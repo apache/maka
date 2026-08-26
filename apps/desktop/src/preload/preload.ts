@@ -102,6 +102,7 @@ import type {
 import type {
   AppIcon,
   AppIconChoice,
+  AppIconTarget,
   AppSettings,
   SettingsTestResult,
   UpdateAppSettingsInput,
@@ -2951,8 +2952,8 @@ const makaBridge = {
     iconPreviews(): Promise<ReadonlyArray<{ id: AppIconChoice; dataUrl: string; removable?: boolean }>> {
       return ipcRenderer.invoke('app:iconPreviews');
     },
-    selectIcon(icon: AppIconChoice): Promise<AppIconSelectResult> {
-      return ipcRenderer.invoke('app:selectIcon', icon);
+    selectIcon(icon: AppIconChoice, target?: AppIconTarget): Promise<AppIconSelectResult> {
+      return ipcRenderer.invoke('app:selectIcon', icon, target);
     },
     importIcon(): Promise<AppIconImportResult> {
       return ipcRenderer.invoke('app:importIcon');

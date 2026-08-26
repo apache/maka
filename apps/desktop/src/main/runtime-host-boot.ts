@@ -22,6 +22,7 @@ import {
   clipboard,
   dialog,
   ipcMain,
+  nativeTheme,
   powerSaveBlocker,
   shell,
   type MessageBoxOptions,
@@ -582,12 +583,23 @@ const clientSettingsEffects = createClientSettingsEffects({
       console.error("[icon] failed to apply the app icon:", error),
     );
   },
+  systemPrefersDark: () => nativeTheme.shouldUseDarkColors,
   observeLocale: (settings) => desktopLocale.observe(settings),
   emitExternalChanged: () => {
     mainWindowController.send("settings:clientChanged");
     sendActiveRuntimeHostEvent("settings:externalChanged", { ts: Date.now() });
   },
 });
+// An OS appearance flip changes no setting, so nothing else would notice it.
+// Only the icon depends on the answer, and `refresh` re-resolves it and
+// no-ops when the resolved tile is the one already applied — which is the
+// case for every user who has not set a separate dark icon.
+nativeTheme.on("updated", () => {
+  void clientSettingsEffects.refresh(false).catch((error) => {
+    console.error("[icon] failed to re-apply the app icon after a theme change:", error);
+  });
+});
+
 const clientSettingsTools = buildClientSettingsTools({
   read: () => settingsStore.get(),
   update: async (patch) => {

@@ -23,11 +23,12 @@ import {
   isAppIcon,
   type AppIcon,
   type AppIconChoice,
+  type AppIconTarget,
   type ThemePalette,
   type ThemePreference,
   type UpdateAppSettingsResult,
 } from '@maka/core/settings';
-import { useMountedRef, useToast, useUiLocale } from '@maka/ui';
+import { Switch, useMountedRef, useToast, useUiLocale } from '@maka/ui';
 import { settingsActionErrorMessage } from './settings-error-copy';
 import { getSettingsPreferencesCopy } from '../locales/settings-preferences-copy.js';
 import { CustomPetSettingsSection } from './custom-pet-settings-section.js';
@@ -84,21 +85,44 @@ function ThemePreviewPane(props: { mode: 'light' | 'dark' }) {
  * keyboard navigation.
  */
 /**
- * 19 shipped icons need grouping for the same reason 11 palettes did: an
+ * 43 shipped icons need grouping for the same reason 11 palettes did: an
  * ungrouped wall gives the eye nowhere to start. The brand pair leads;
  * everything after it is one drawing recoloured, split by what the colour is
  * doing. Imported art is appended as its own group by the renderer, since the
  * set is not known until the main process reads the directory.
+ *
+ * The order matches `APP_ICONS`, which in turn matches how the icon
+ * discussion numbered the set — so a reply naming "no. 18" and the tile in
+ * the `dark` group here are the same thing.
  */
 const APP_ICON_GROUPS: ReadonlyArray<{
-  id: 'mascot' | 'blue' | 'contrast' | 'pencil' | 'mountain';
+  id:
+    | 'mascot'
+    | 'blue'
+    | 'contrast'
+    | 'pencil'
+    | 'mountain'
+    | 'dark'
+    | 'neon'
+    | 'muted'
+    | 'warm'
+    | 'nature'
+    | 'metal'
+    | 'highContrast';
   icons: ReadonlyArray<AppIcon>;
 }> = [
   { id: 'mascot', icons: ['default', 'mono'] },
-  { id: 'blue', icons: ['sky', 'cyan', 'ice', 'pale-inverted'] },
+  { id: 'blue', icons: ['sky', 'light-sky', 'baby', 'cyan', 'periwinkle', 'ice', 'pale-inverted'] },
   { id: 'contrast', icons: ['ink', 'paper', 'graphite'] },
   { id: 'pencil', icons: ['pencil-kraft', 'pencil-sky', 'pencil-navy'] },
   { id: 'mountain', icons: ['alpine', 'dusk', 'night', 'forest'] },
+  { id: 'dark', icons: ['midnight', 'carbon', 'slate', 'obsidian'] },
+  { id: 'neon', icons: ['neon-cyan', 'matrix', 'magenta', 'amber-crt'] },
+  { id: 'muted', icons: ['clay', 'sage', 'dust', 'fog'] },
+  { id: 'warm', icons: ['sunset', 'amber', 'terracotta'] },
+  { id: 'nature', icons: ['ocean', 'moss', 'desert', 'glacier'] },
+  { id: 'metal', icons: ['gold', 'chrome'] },
+  { id: 'highContrast', icons: ['mono-black', 'mono-white', 'hazard'] },
 ];
 
 const PALETTE_GROUPS: ReadonlyArray<{ id: 'editor' | 'product'; palettes: ReadonlyArray<ThemePalette> }> = [
@@ -122,6 +146,8 @@ export function AppearanceSettingsPage(props: {
   themePref: ThemePreference;
   themePalette: ThemePalette;
   appIcon: AppIconChoice;
+  /** Absent when one icon serves both appearances. */
+  appIconDark?: AppIconChoice;
   /* No `settings` prop: the page reads theme and palette from the two
      dedicated props above and writes through `onUpdate`. It used to accept
      the whole AppSettings object and pass it down one level, where nothing
@@ -161,7 +187,10 @@ export function AppearanceSettingsPage(props: {
         return;
       }
       await refreshAppIcons();
-      await setAppIcon(result.icon);
+      // Imported art lands in whichever slot the picker is editing, the same
+      // as clicking a tile — importing while on the dark slot and having it
+      // silently replace the light icon would be the surprising reading.
+      await setAppIcon(result.icon, appIconSplit ? appIconTarget : 'both');
     } catch (error) {
       // Reasons above describe the *file*; landing here instead means the call
       // itself failed — a stale preload bundle with no `importIcon` on the
@@ -242,16 +271,37 @@ export function AppearanceSettingsPage(props: {
   // the renderer, so a click has to show immediately. The app icon is an OS
   // surface applied by the main process, and the tile follows the settings
   // snapshot the write returns.
-  async function setAppIcon(next: AppIconChoice) {
+  // Which slot the grid is editing. Only meaningful while the two
+  // appearances are split; the toggle below owns that.
+  const [appIconTarget, setAppIconTarget] = useState<'light' | 'dark'>('light');
+  const appIconSplit = props.appIconDark !== undefined;
+  const editedAppIcon =
+    appIconSplit && appIconTarget === 'dark' ? (props.appIconDark ?? props.appIcon) : props.appIcon;
+
+  async function setAppIcon(next: AppIconChoice, target: AppIconTarget) {
     // Not `persistAppearance`: selection goes through the icon seam so it
     // queues behind import and removal in the main process. Writing it on the
     // generic settings channel is what let a selection land between a removal
     // resetting the setting and deleting the file.
     try {
-      const result = await window.maka.app.selectIcon(next);
+      const result = await window.maka.app.selectIcon(next, target);
       if (!result.ok) toast.error(copy.appIconSelectFailed);
     } catch (error) {
       toast.error(copy.appIconSelectFailed, settingsActionErrorMessage(error, locale));
+    }
+  }
+
+  // Turning the split on seeds the dark slot with what is already showing, so
+  // the dock does not change the instant the switch is flipped — the user
+  // opts into a second icon, then picks it. Turning it off writes the light
+  // choice with `both`, which clears the slot.
+  async function setAppIconSplit(enabled: boolean) {
+    if (enabled) {
+      setAppIconTarget('dark');
+      await setAppIcon(props.appIcon, 'dark');
+    } else {
+      setAppIconTarget('light');
+      await setAppIcon(props.appIcon, 'both');
     }
   }
 
@@ -399,6 +449,33 @@ export function AppearanceSettingsPage(props: {
           <Text type="supporting" size="sm" color="secondary">{copy.appIconUnavailable}</Text>
         ) : (
           <VStack gap={3}>
+            <HStack gap={2} align="center">
+              <Switch
+                label={copy.appIconSplitLabel}
+                value={appIconSplit}
+                isDisabled={appIconBusy}
+                onChange={(enabled) => void setAppIconSplit(enabled)}
+              />
+              <Text type="supporting" size="sm" color="secondary">
+                {copy.appIconSplitHelp}
+              </Text>
+            </HStack>
+            {appIconSplit ? (
+              /* Which slot the grid below edits. Two buttons rather than a
+                 second grid: 43 tiles twice over is a wall, and the choice
+                 being made is the same one either way. */
+              <HStack gap={1} role="group" aria-label={copy.appIconSplitLabel}>
+                {(['light', 'dark'] as const).map((target) => (
+                  <Button
+                    key={target}
+                    size="sm"
+                    variant={appIconTarget === target ? 'primary' : 'ghost'}
+                    label={copy.appIconTargets[target]}
+                    onClick={() => setAppIconTarget(target)}
+                  />
+                ))}
+              </HStack>
+            ) : null}
             {appIconGroupsToRender.map((group) => (
               <VStack key={group.id} gap={1.5}>
                 <Text
@@ -420,13 +497,15 @@ export function AppearanceSettingsPage(props: {
                     <SelectableCard
                       key={option.id}
                       label={appIconLabel(option.id)}
-                      isSelected={props.appIcon === option.id}
+                      isSelected={editedAppIcon === option.id}
                       // Removal reads the current selection in the main
                       // process before it deletes. A click landing inside that
                       // window would persist the very icon being removed, so
                       // the whole set is fenced, not just the remove button.
                       isDisabled={appIconBusy}
-                      onChange={() => void setAppIcon(option.id)}
+                      onChange={() =>
+                        void setAppIcon(option.id, appIconSplit ? appIconTarget : 'both')
+                      }
                       padding={2}
                     >
                       <HStack gap={2} align="center" height="100%">

@@ -41,3 +41,20 @@ export function isThemePreference(value: unknown): value is ThemePreference {
 export function toNativeThemeSource(pref: ThemePreference): NativeThemeSource {
   return pref === 'auto' ? 'system' : pref;
 }
+
+/**
+ * Whether the app is currently showing dark appearance.
+ *
+ * The stored preference alone cannot answer this: `auto` defers to the OS, so
+ * the caller has to supply what the OS currently says. Split out as a pure
+ * function because three places need the same answer — the window background,
+ * the window `icon` option, and the dock tile — and a disagreement between
+ * them is visible as a flash of the wrong theme on the first frame.
+ */
+export function isDarkAppearance(
+  pref: ThemePreference | undefined,
+  systemPrefersDark: boolean,
+): boolean {
+  const resolved = isThemePreference(pref) ? pref : 'auto';
+  return resolved === 'dark' || (resolved === 'auto' && systemPrefersDark);
+}
