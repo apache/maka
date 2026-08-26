@@ -65,6 +65,27 @@ describe('MCP status overlay', () => {
     assert.doesNotMatch(text, /尚未配置/u);
   });
 
+  test('localizes manager states without changing their source values', () => {
+    const overlay = new McpStatusOverlay({
+      locale: 'zh',
+      surface: surface({
+        initialization: 'ready',
+        publication: 'not_published',
+        toolCount: 0,
+        servers: [
+          { serverId: 'oauth', state: 'needs-auth', transport: 'streamable-http', toolCount: 0 },
+        ],
+      }),
+      viewportRows: () => 6,
+      onClose: () => undefined,
+      onChange: () => undefined,
+    });
+
+    const text = overlay.render(100).map(stripAnsi).join('\n');
+    assert.match(text, /oauth  需要登录 · streamable-http/u);
+    assert.doesNotMatch(text, /needs-auth/u);
+  });
+
   test('subscribes only for the overlay lifetime', () => {
     let subscribed = 0;
     let disposed = 0;

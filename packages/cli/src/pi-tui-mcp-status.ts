@@ -172,7 +172,9 @@ function serverLines(server: TuiMcpServerSnapshot, locale: UiLocale): string[] {
     ? `${server.negotiatedProtocol.era} ${server.negotiatedProtocol.revision}`
     : undefined;
   const tools = locale === 'zh' ? `${server.toolCount} 个工具` : `${server.toolCount} tools`;
-  const details = [server.state, server.transport, protocol, tools].filter(Boolean).join(' · ');
+  const details = [stateLabel(server.state, locale), server.transport, protocol, tools]
+    .filter(Boolean)
+    .join(' · ');
   return [
     `${statusMarker(server.state)} ${ansi.bold(server.serverId)}  ${details}`,
     ...(server.error ? [`  ${ansi.red(server.error)}`] : []),
@@ -184,6 +186,18 @@ function statusMarker(state: TuiMcpServerSnapshot['state']): string {
   if (state === 'connecting') return ansi.yellow('●');
   if (state === 'error' || state === 'needs-auth') return ansi.red('●');
   return ansi.dim('○');
+}
+
+function stateLabel(state: TuiMcpServerSnapshot['state'], locale: UiLocale): string {
+  if (locale === 'en') return state;
+  return {
+    disabled: '已停用',
+    disconnected: '未连接',
+    connecting: '连接中',
+    connected: '已连接',
+    'needs-auth': '需要登录',
+    error: '错误',
+  }[state];
 }
 
 function clamp(value: number, min: number, max: number): number {
