@@ -1487,6 +1487,10 @@ function AppShellContent({
           window.maka.workHub.answer(workHubCoordinationSessionId!, input),
         record: (input) =>
           window.maka.workHub.record(workHubCoordinationSessionId!, input),
+        candidates: () =>
+          window.maka.workHub.candidates(workHubCoordinationSessionId!),
+        act: (input) =>
+          window.maka.workHub.act(workHubCoordinationSessionId!, input),
       }),
       sessions: createDesktopWorkHubSessionPort({
         sessions: scopeWorkHubSessionsToCoordinationHost(

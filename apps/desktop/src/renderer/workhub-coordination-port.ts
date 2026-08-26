@@ -29,6 +29,11 @@ import type {
   WorkHubCoordinationTurn,
   WorkHubProjectedTurnState,
 } from './workhub-controller.js';
+import type {
+  WorkHubCoordinationActInput,
+  WorkHubCoordinationActResult,
+  WorkHubCoordinationCandidatesResult,
+} from '@maka/runtime-host/protocol';
 import { boundedWorkHubTimelineText } from './workhub-controller.js';
 import type { WorkHubDesktopTranscriptBridge } from './workhub-session-port.js';
 
@@ -43,10 +48,14 @@ export function createDesktopWorkHubCoordinationPort(deps: {
     userText: string;
     assistantText: string;
   }): Promise<{ turnId: string }>;
+  candidates(): Promise<WorkHubCoordinationCandidatesResult>;
+  act(input: Omit<WorkHubCoordinationActInput, 'create'>): Promise<WorkHubCoordinationActResult>;
 }): WorkHubCoordinationPort {
   return {
     answer: deps.answer,
     record: deps.record,
+    candidates: deps.candidates,
+    act: deps.act,
     async open(handler, onError) {
       const store = new DesktopTranscriptRangeStore(deps.sessionId);
       let disposed = false;

@@ -65,7 +65,7 @@ test('WorkHub rebuilds Session conversation after navigating away and back', asy
   ).toBeVisible();
 });
 
-test('WorkHub handles a first natural-language correction', async ({
+test('WorkHub defers destructive correction until linked delegation exists', async ({
   window: page,
 }) => {
   const sourceSessionName = '检查支付回调重复投递时的幂等性';
@@ -107,10 +107,11 @@ test('WorkHub handles a first natural-language correction', async ({
   ).toBeEnabled();
   await workHubComposer.press('Enter');
 
-  await expect(page.locator('.workhub-correction-note').last()).toBeVisible();
-  await expect(
-    page.locator('.workhub-turn', {
-      hasText: '不是这个，换成登录稳定性，补充刷新令牌失败判定。',
-    }).locator('.workhub-submitted-session strong'),
-  ).toHaveText('登录稳定性');
+  const correctionTurn = page.locator('.workhub-turn', {
+    hasText: '不是这个，换成登录稳定性，补充刷新令牌失败判定。',
+  });
+  await expect(correctionTurn.locator('.workhub-error')).toContainText(
+    '跨 Session 更正将在持久委托关联完成后开放',
+  );
+  await expect(correctionTurn.locator('.workhub-submitted')).toHaveCount(0);
 });

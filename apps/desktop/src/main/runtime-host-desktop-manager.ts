@@ -557,7 +557,7 @@ class RuntimeHostDesktopManagerImpl implements RuntimeHostDesktopManager {
     const lifecycle = this.#requireLifecycle(
       this.#requireTarget(LOCAL_RUNTIME_HOST_PROFILE.id),
     );
-    const quiescence = lifecycle.quiesce();
+    const quiescence = await lifecycle.quiesce();
     let hostPid = quiescence.current.hostPid;
     let launchBarrierPaused = false;
     const resume = () => {

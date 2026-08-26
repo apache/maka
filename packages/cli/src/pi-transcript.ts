@@ -46,7 +46,7 @@ import {
 import { type ShellRunUpdate } from '@maka/core/events';
 import { homedir } from 'node:os';
 import { basename } from 'node:path';
-import type { MakaSessionDriver } from './session-driver.js';
+import type { MakaSessionDriver, MakaSideConversationParentStatus } from './session-driver.js';
 import { BoundedChunkBuffer } from './bounded-chunk-buffer.js';
 import { ansi } from './tui-ansi.js';
 import {
@@ -206,6 +206,10 @@ export interface MakaPiTranscriptMetadata {
    * terminal goals leave no segment, matching the desktop chip.
    */
   goal?: GoalProjection | null;
+  sideConversation?: {
+    view: 'parent' | 'side';
+    parentStatus?: MakaSideConversationParentStatus;
+  };
 }
 
 export function createMakaPiTranscriptState(): MakaPiTranscriptState {
@@ -1329,6 +1333,9 @@ export function permissionModeLabel(mode: string): string {
 
 export function renderMakaPiStatusLine(metadata: MakaPiTranscriptMetadata, width: number): string {
   const safeWidth = Math.max(1, width);
+  if (metadata.sideConversation?.view === 'side') {
+    return fitLine(ansi.dim(sideConversationStatusLineText(metadata.sideConversation)), safeWidth);
+  }
   const sep = ansi.dim(' · ');
   // #3421: segments carry a dropRank so overflow drops whole low-value
   // segments instead of cutting the chain mid-token from the right.
@@ -1336,10 +1343,28 @@ export function renderMakaPiStatusLine(metadata: MakaPiTranscriptMetadata, width
   // title, permission mode and goal are safety-relevant, ctx is the
   // context budget, model is the session's identity.
   const parts: MakaPiStatusLineSegment[] = [
-    { text: ansi.bold(metadata.title) },
-    { text: ansi.dim(permissionModeLabel(metadata.permissionMode)) },
-    { text: ansi.dim(metadata.model) },
+    {
+      text: ansi.bold(metadata.title),
+      compactRank: 1,
+      shortenedText: ansi.bold(fitLine(metadata.title, 7)),
+    },
+    {
+      text: ansi.dim(permissionModeLabel(metadata.permissionMode)),
+      compactRank: 4,
+      shortenedText: ansi.dim(compactPermissionModeLabel(metadata.permissionMode)),
+    },
+    {
+      text: ansi.dim(metadata.model),
+      compactRank: 0,
+      shortenedText: ansi.dim(fitLine(metadata.model, 11)),
+    },
   ];
+  if (metadata.sideConversation?.view === 'parent') {
+    parts.push({
+      text: ansi.dim(sideConversationStatusLineText(metadata.sideConversation)),
+      dropRank: 4,
+    });
+  }
   // #1064: omit thinking:default — it is noise before the user explicitly
   // changes the level. Only a non-default, explicitly set level shows.
   if (metadata.thinkingLevel) {
@@ -1354,6 +1379,9 @@ export function renderMakaPiStatusLine(metadata: MakaPiTranscriptMetadata, width
   // invisible. Terminal goals show nothing (the desktop chip hides them too).
   if (metadata.goal && isLiveGoalStatus(metadata.goal.status)) {
     const text = goalStatusLineText(metadata.goal, Date.now());
+    const compactStatus =
+      metadata.goal.status === 'active' ? '' : metadata.goal.status === 'paused' ? 'p' : 'w';
+    const compactText = `g${compactStatus}${metadata.goal.iterations}/${metadata.goal.maxIterations}`;
     // paused gets warning salience: the loop stopped burning but stays armed
     // and resumable, which the user must not miss. waiting is a normal
     // transient between turns, so it stays dim like the other chrome.
@@ -1364,6 +1392,13 @@ export function renderMakaPiStatusLine(metadata: MakaPiTranscriptMetadata, width
           : metadata.goal.status === 'paused'
             ? ansi.yellow(text)
             : ansi.dim(text),
+      compactRank: 3,
+      shortenedText:
+        metadata.goal.status === 'active'
+          ? ansi.accent(fitLine(compactText, 8))
+          : metadata.goal.status === 'paused'
+            ? ansi.yellow(fitLine(compactText, 8))
+            : ansi.dim(fitLine(compactText, 8)),
     });
   }
   const usage = metadata.usage;
@@ -1381,13 +1416,19 @@ export function renderMakaPiStatusLine(metadata: MakaPiTranscriptMetadata, width
       text: ctxColor(
         `ctx ${formatTokenCount(used)}/${formatTokenCount(metadata.modelContextWindow)} ${pct}%`,
       ),
+      compactRank: 2,
+      shortenedText: ctxColor(`c${pct}%`),
     });
   } else if (metadata.modelContextWindow !== undefined) {
     // #3371: the window is known but no usage has arrived yet (fresh session,
     // or the provider doesn't report per-step input tokens). Degrade
     // explicitly, pi-style, instead of hiding the segment silently — the user
     // can then tell "not measured yet" apart from "window unknown".
-    parts.push({ text: ansi.dim(`ctx ?/${formatTokenCount(metadata.modelContextWindow)}`) });
+    parts.push({
+      text: ansi.dim(`ctx ?/${formatTokenCount(metadata.modelContextWindow)}`),
+      compactRank: 2,
+      shortenedText: ansi.dim('c?'),
+    });
   }
   if (usage) {
     if (usage.costUsd > 0) {
@@ -1420,39 +1461,82 @@ interface MakaPiStatusLineSegment {
   text: string;
   /** Overflow drops whole segments lowest-rank-first; undefined never drops. */
   dropRank?: number;
+  /** Critical segments shorten in this order after every droppable segment is gone. */
+  compactRank?: number;
   /** Progressive fallback tried before this segment is dropped entirely. */
   shortenedText?: string;
 }
 
 function fitStatusLine(segments: MakaPiStatusLineSegment[], sep: string, width: number): string {
+  const compactSep = ansi.dim(' ');
+  let activeSep = sep;
   const lineWidth = (segs: MakaPiStatusLineSegment[]): number =>
-    visibleWidth(segs.map((segment) => segment.text).join(sep));
+    visibleWidth(segs.map((segment) => segment.text).join(activeSep));
   let kept = segments;
   // Drop whole low-value segments, lowest rank first, re-checking after each
   // rank so the fewest possible segments are sacrificed.
   while (lineWidth(kept) > width) {
-    const droppable = kept.some((segment) => segment.dropRank !== undefined);
-    if (!droppable) break;
-    const lowest = Math.min(
-      ...kept.flatMap((segment) => (segment.dropRank !== undefined ? [segment.dropRank] : [])),
+    const dropRanks = kept.flatMap((segment) =>
+      segment.dropRank !== undefined ? [segment.dropRank] : [],
     );
-    // A segment with a shortened form degrades to it before dropping.
-    const shorten = kept.find(
-      (segment) => segment.dropRank === lowest && segment.shortenedText !== undefined,
-    );
-    if (shorten) {
-      kept = kept.map((segment) =>
-        segment === shorten
-          ? { ...segment, text: segment.shortenedText ?? segment.text, shortenedText: undefined }
-          : segment,
+    if (dropRanks.length > 0) {
+      const lowest = Math.min(...dropRanks);
+      // A droppable segment with a shortened form degrades before disappearing.
+      const shorten = kept.find(
+        (segment) => segment.dropRank === lowest && segment.shortenedText !== undefined,
       );
-    } else {
-      kept = kept.filter((segment) => segment.dropRank !== lowest);
+      if (shorten) {
+        kept = kept.map((segment) =>
+          segment === shorten
+            ? { ...segment, text: segment.shortenedText ?? segment.text, shortenedText: undefined }
+            : segment,
+        );
+      } else {
+        kept = kept.filter((segment) => segment.dropRank !== lowest);
+      }
+      continue;
     }
+
+    const compactRanks = kept.flatMap((segment) =>
+      segment.compactRank !== undefined && segment.shortenedText !== undefined
+        ? [segment.compactRank]
+        : [],
+    );
+    if (compactRanks.length === 0) break;
+    const nextRank = Math.min(...compactRanks);
+    const shorten = kept.find(
+      (segment) => segment.compactRank === nextRank && segment.shortenedText !== undefined,
+    );
+    if (!shorten) break;
+    kept = kept.map((segment) =>
+      segment === shorten
+        ? { ...segment, text: segment.shortenedText ?? segment.text, shortenedText: undefined }
+        : segment,
+    );
+    // Once critical values compact, reclaim separator chrome too. At widths
+    // below the compact critical seam, fitLine remains the honest fallback.
+    activeSep = compactSep;
   }
-  // Last resort for still-oversized lines (e.g. a long model id alone):
-  // the previous hard truncation.
-  return fitLine(kept.map((segment) => segment.text).join(sep), width);
+  return fitLine(kept.map((segment) => segment.text).join(activeSep), width);
+}
+
+function compactPermissionModeLabel(mode: string): string {
+  if (mode === 'bypass') return 'Full';
+  if (mode === 'explore') return 'Read';
+  return 'Auto';
+}
+
+function sideConversationStatusLineText(
+  side: NonNullable<MakaPiTranscriptMetadata['sideConversation']>,
+): string {
+  if (side.view === 'parent') return 'Ctrl+/ for side';
+  const status = side.parentStatus?.replaceAll('_', ' ');
+  return [
+    'Side from main thread',
+    ...(status ? [`main ${status}`] : []),
+    'Ctrl+/ to switch',
+    'Ctrl+C to close',
+  ].join(' · ');
 }
 
 /**

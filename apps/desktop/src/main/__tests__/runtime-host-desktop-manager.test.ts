@@ -141,6 +141,43 @@ test('quiesces reconnect and waits for the Host process before update install', 
   await owner.close();
 });
 
+test('waits through a reconnect gap before quiescing Host retirement', async () => {
+  const first = candidateHarness();
+  const replacement = candidateHarness({ disconnectOnPrepare: true });
+  let starts = 0;
+  let reportReplacementStart!: () => void;
+  let releaseReplacement!: () => void;
+  const replacementStarted = new Promise<void>((resolve) => {
+    reportReplacementStart = resolve;
+  });
+  const replacementReleased = new Promise<void>((resolve) => {
+    releaseReplacement = resolve;
+  });
+  const owner = await startRuntimeHostDesktopManager({} as DesktopRuntimeHostCandidateStartInput, {
+    startCandidate: async () => {
+      starts += 1;
+      if (starts === 1) return ready(first.candidate);
+      reportReplacementStart();
+      await replacementReleased;
+      return ready(replacement.candidate);
+    },
+    waitForHostExit: async () => {},
+  });
+
+  first.disconnect();
+  await replacementStarted;
+  const retirement = owner.retireOwnedLocalHost('interrupt_active_work');
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.equal(replacement.prepareRetirementCalls, 0);
+
+  releaseReplacement();
+  assert.equal((await retirement).kind, 'retired');
+  assert.equal(replacement.prepareRetirementCalls, 1);
+  assert.deepEqual(replacement.retirementModes, ['interrupt_active_work']);
+  assert.equal(starts, 2);
+  await owner.close();
+});
+
 test('retires the owned ephemeral Host before Desktop quit', async () => {
   const events: string[] = [];
   const current = candidateHarness({

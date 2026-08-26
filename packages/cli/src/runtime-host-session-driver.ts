@@ -69,6 +69,7 @@ import {
   WorkspaceTarget,
   type GoalControlAction,
   type GoalProjection,
+  type SessionContinuitySnapshot,
 } from '@maka/runtime-host/protocol';
 import {
   RuntimeHostSessionChannel,
@@ -79,6 +80,7 @@ import type {
   MakaAttachedSessionTurn,
   MakaSideConversationCloseResult,
   MakaSideConversationOpenResult,
+  MakaSideConversationParentStatus,
   MakaPreparePromptOptions,
   MakaPreparedSessionTurn,
   MakaSessionDriver,
@@ -685,11 +687,83 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
       throw new Error('The active Session is not the side conversation being closed.');
     }
     const parent = await this.switchSession(parentSessionId);
-    const cleanup = await this.#requireSessionCopyCleanup()
-      .cleanup(sideSessionId)
-      .then(() => 'removed' as const)
-      .catch(() => 'pending' as const);
+    const cleanup = await this.#cleanupSideConversation(sideSessionId);
     return { ...parent, cleanup };
+  }
+
+  async observeSideConversationParent(
+    parentSessionId: string,
+    listener: (status: MakaSideConversationParentStatus | undefined) => void,
+  ): Promise<() => Promise<void>> {
+    let closed = false;
+    let observedLiveRunId: string | undefined;
+    const drains = new Set<Promise<void>>();
+    const publish = (snapshot: SessionContinuitySnapshot): void => {
+      if (isLiveSessionTurn(snapshot.rootTurn)) observedLiveRunId = snapshot.rootTurn.runId;
+      if (!closed) listener(sideConversationParentStatus(snapshot, observedLiveRunId));
+    };
+    const drain = (turn: MakaPreparedSessionTurn): void => {
+      const task = (async () => {
+        try {
+          for await (const _event of turn.events) {
+            // The observer consumes the channel queue only to keep its Host
+            // projection live; the active Session remains the transcript owner.
+          }
+        } catch {
+          // onFailed clears the user-visible state once recovery is exhausted.
+        }
+      })().finally(() => drains.delete(task));
+      drains.add(task);
+    };
+    const opened = await RuntimeHostSessionChannel.open({
+      connection: this.#connection,
+      sessionId: parentSessionId,
+      now: this.#now,
+      onTurnStarted: drain,
+      onRuntimeResourceChanged: () => undefined,
+      onInteractionPending: () => undefined,
+      onInteractionResolved: () => undefined,
+      onTranscriptSettlement: () => undefined,
+      onTranscriptReplaced: () => undefined,
+      onGoalChanged: () => undefined,
+      onSnapshotChanged: publish,
+      onFailed: () => {
+        if (!closed) listener(undefined);
+      },
+      onRecovered: () => undefined,
+    });
+    if (opened.attachedTurnId) {
+      drain({
+        sessionId: parentSessionId,
+        turnId: opened.attachedTurnId,
+        events: opened.channel.eventsForTurn(opened.attachedTurnId),
+      });
+      opened.channel.activate(opened.attachedTurnId);
+    } else {
+      opened.channel.activate();
+    }
+    return async () => {
+      if (closed) return;
+      closed = true;
+      await opened.channel.close();
+      await Promise.allSettled(drains);
+    };
+  }
+
+  async discardSideConversation(sideSessionId: string): Promise<'removed' | 'pending'> {
+    await this.#stopSessionTurn(sideSessionId).catch(() => undefined);
+    return this.#cleanupSideConversation(sideSessionId);
+  }
+
+  async #cleanupSideConversation(sideSessionId: string): Promise<'removed' | 'pending'> {
+    const cleanup = this.#requireSessionCopyCleanup();
+    try {
+      await cleanup.cleanup(sideSessionId);
+      return 'removed';
+    } catch {
+      await cleanup.schedule(sideSessionId).catch(() => undefined);
+      return 'pending';
+    }
   }
 
   async cleanupOwnedSideConversations(): Promise<void> {
@@ -1087,6 +1161,30 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
     throw new Error(`Session kept changing while removing: ${sessionId}`);
   }
 
+  async #stopSessionTurn(sessionId: string): Promise<void> {
+    const subscription = await this.#connection.openSessionSubscription({
+      sessionId,
+      transcript: { kind: 'none' },
+    });
+    const draining = (async () => {
+      for await (const _frame of subscription) {
+        // Keep the bounded subscription healthy until turn.stop settles.
+      }
+    })();
+    try {
+      const turn = subscription.snapshot.rootTurn;
+      if (!turn || isTerminalTurn(turn)) return;
+      await this.#request('turn.stop', {
+        sessionId,
+        turnId: turn.turnId,
+        runId: turn.runId,
+      });
+    } finally {
+      await subscription.close().catch(() => undefined);
+      await draining.catch(() => undefined);
+    }
+  }
+
   #publishStartedTurn(turn: MakaPreparedSessionTurn, sessionGeneration: number): void {
     if (this.#claimedTurnIds.delete(turn.turnId)) return;
     const sourceChannel = this.#channel;
@@ -1314,6 +1412,34 @@ async function getRuntimeHostSession(
 
 function representableSession(item: SessionCatalogItem): SessionCatalogProjection[] {
   return 'kind' in item ? [] : [item];
+}
+
+function sideConversationParentStatus(
+  snapshot: SessionContinuitySnapshot,
+  observedLiveRunId: string | undefined,
+): MakaSideConversationParentStatus | undefined {
+  if (snapshot.session.isArchived) return 'closed';
+  const pendingKinds = new Set(
+    snapshot.interactions.pending.map((interaction) => interaction.request.kind),
+  );
+  if (pendingKinds.has('permission') || pendingKinds.has('sandbox_boundary')) {
+    return 'needs_approval';
+  }
+  if (pendingKinds.has('question')) return 'needs_input';
+  if (!snapshot.rootTurn || snapshot.rootTurn.runId !== observedLiveRunId) return undefined;
+  if (snapshot.rootTurn.status === 'failed') return 'failed';
+  if (snapshot.rootTurn.status === 'cancelled') return 'interrupted';
+  if (snapshot.rootTurn.status === 'completed') return 'finished';
+  return undefined;
+}
+
+function isLiveSessionTurn(
+  turn: SessionContinuitySnapshot['rootTurn'],
+): turn is Exclude<
+  NonNullable<SessionContinuitySnapshot['rootTurn']>,
+  { status: 'completed' | 'failed' | 'cancelled' }
+> {
+  return turn !== null && !isTerminalTurn(turn);
 }
 
 function isTuiProcessActive(ownerProcessId: string): boolean {

@@ -1561,6 +1561,47 @@ const makaBridge = {
       );
       return ipcRenderer.invoke('workhub:record', scope, input) as Promise<{ turnId: string }>;
     },
+    async candidates(
+      coordinationSessionId: string,
+    ): Promise<OperationOutput<'workhub.coordination.candidates'>> {
+      const scope = await resolveDesktopWorkHubCoordinationCreateScope(
+        coordinationSessionId,
+        runtimeHostSessionRef,
+      );
+      const result = await ipcRenderer.invoke(
+        'workhub:candidates',
+        scope,
+      ) as OperationOutput<'workhub.coordination.candidates'>;
+      return {
+        ...result,
+        candidates: result.candidates.map((candidate) => ({
+          ...candidate,
+          sessionId: desktopSessionKey({ hostId: scope.hostId, sessionId: candidate.sessionId }),
+        })),
+      };
+    },
+    async act(
+      coordinationSessionId: string,
+      input: Omit<OperationInput<'workhub.coordination.act'>, 'create'>,
+    ): Promise<OperationOutput<'workhub.coordination.act'>> {
+      const scope = await resolveDesktopWorkHubCoordinationCreateScope(
+        coordinationSessionId,
+        runtimeHostSessionRef,
+      );
+      const result = await ipcRenderer.invoke(
+        'workhub:act',
+        scope,
+        input,
+      ) as OperationOutput<'workhub.coordination.act'>;
+      if (result.disposition === 'answer_here' || result.disposition === 'clarify') return result;
+      return {
+        ...result,
+        targetSessionId: desktopSessionKey({
+          hostId: scope.hostId,
+          sessionId: result.targetSessionId,
+        }),
+      };
+    },
     async createSession(
       coordinationSessionId: string,
       input: { name: string },

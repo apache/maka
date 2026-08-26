@@ -21,7 +21,8 @@ import assert from 'node:assert/strict';
 import { existsSync, readFileSync } from 'node:fs';
 import test from 'node:test';
 import {
-  createWorkHubController,
+  createLegacyWorkHubControllerForTests as createWorkHubController,
+  createWorkHubController as createGatedWorkHubController,
   WorkHubSessionSubmitError,
   WORKHUB_ROUTING_STRATEGY_ID,
   type WorkHubSessionFacts,
@@ -2362,21 +2363,29 @@ test('submit lets strong foreign core evidence override a vague focus word', asy
 
 test('submit keeps unmatched non-executable conversation in WorkHub', async () => {
   let created = false;
-  const answered: Array<{ turnId: string; text: string }> = [];
+  const actions: unknown[] = [];
   const sessions = port([]);
   sessions.create = async () => {
     created = true;
     return session('unexpected');
   };
-  const controller = createWorkHubController({
+  const controller = createGatedWorkHubController({
     sessions,
     coordination: {
       open: async () => ({ close: async () => undefined }),
-      answer: async (input) => {
-        answered.push(input);
-        return { turnId: input.turnId };
-      },
+      answer: async (input) => ({ turnId: input.turnId }),
       record: async (input) => ({ turnId: input.turnId }),
+      candidates: async () => ({
+        candidateSetId: `sha256:${'a'.repeat(64)}`,
+        candidates: [],
+      }),
+      act: async (input) => {
+        actions.push(input);
+        return {
+          disposition: 'answer_here',
+          coordinationTurnId: 'coordination-turn',
+        };
+      },
     },
   });
 
@@ -2392,9 +2401,353 @@ test('submit keeps unmatched non-executable conversation in WorkHub', async () =
     text: '你觉得统一入口最重要的价值是什么？',
   });
   assert.equal(created, false);
-  assert.deepEqual(answered, [
-    { turnId: 'request-discussion', text: '你觉得统一入口最重要的价值是什么？' },
+  assert.deepEqual(actions, [
+    {
+      actionId: 'request-discussion',
+      userText: '你觉得统一入口最重要的价值是什么？',
+      proposal: { disposition: 'answer_here' },
+    },
   ]);
+});
+
+test('production submission delegates only through the Runtime-owned candidate reference', async () => {
+  const actions: unknown[] = [];
+  const sessions = port([session('payment')]);
+  sessions.submit = async () => {
+    throw new Error('renderer direct submit must not be used');
+  };
+  sessions.stop = async () => {
+    throw new Error('renderer direct stop must not be used');
+  };
+  const controller = createGatedWorkHubController({
+    sessions,
+    coordination: {
+      open: async () => ({ close: async () => undefined }),
+      answer: async (input) => ({ turnId: input.turnId }),
+      record: async (input) => ({ turnId: input.turnId }),
+      candidates: async () => ({
+        candidateSetId: `sha256:${'b'.repeat(64)}`,
+        candidates: [{
+          candidateRef: 'candidate-payment',
+          sessionId: 'payment',
+          sessionName: 'payment',
+          workspace: {
+            target: { kind: 'host_path', path: '/workspace/payment' },
+            hostCwd: '/workspace/payment',
+          },
+          state: 'active',
+          updatedAt: 1,
+        }],
+      }),
+      act: async (input) => {
+        actions.push(input);
+        return {
+          disposition: 'delegate_existing',
+          targetSessionId: 'payment',
+          targetTurnId: 'target-turn',
+        };
+      },
+    },
+  });
+
+  const result = await controller.submit({
+    requestId: 'delegate-action',
+    text: '继续支付工作',
+    explicitTarget: { sessionId: 'payment' },
+  });
+
+  assert.equal(result.kind, 'submitted');
+  assert.equal(result.kind === 'submitted' ? result.turnId : undefined, 'target-turn');
+  assert.deepEqual(actions, [{
+    actionId: 'delegate-action',
+    userText: '继续支付工作',
+    candidateSetId: `sha256:${'b'.repeat(64)}`,
+    proposal: {
+      disposition: 'delegate_existing',
+      candidateRef: 'candidate-payment',
+    },
+  }]);
+});
+
+test('production defers destructive correction until persistent delegation exists', async () => {
+  const actions: unknown[] = [];
+  const sessions = port([session('source'), session('target')]);
+  const controller = createGatedWorkHubController({
+    sessions,
+    coordination: {
+      open: async () => ({ close: async () => undefined }),
+      answer: async (input) => ({ turnId: input.turnId }),
+      record: async (input) => ({ turnId: input.turnId }),
+      candidates: async () => ({
+        candidateSetId: `sha256:${'d'.repeat(64)}`,
+        candidates: [
+          {
+            candidateRef: 'candidate-source',
+            sessionId: 'source',
+            sessionName: 'source',
+            workspace: {
+              target: { kind: 'host_path', path: '/workspace/source' },
+              hostCwd: '/workspace/source',
+            },
+            state: 'active',
+            updatedAt: 1,
+          },
+          {
+            candidateRef: 'candidate-target',
+            sessionId: 'target',
+            sessionName: 'target',
+            workspace: {
+              target: { kind: 'host_path', path: '/workspace/target' },
+              hostCwd: '/workspace/target',
+            },
+            state: 'active',
+            updatedAt: 2,
+          },
+        ],
+      }),
+      act: async (input) => {
+        actions.push(input);
+        throw new Error('incomplete correction must not reach the Action Gate');
+      },
+    },
+  });
+
+  await assert.rejects(
+    controller.submit({
+      requestId: 'deferred-correction',
+      text: 'No, use target instead',
+      explicitTarget: { sessionId: 'target' },
+      correction: { from: { sessionId: 'source' }, turnId: 'source-turn' },
+    }),
+    /linked correction requires persistent delegation support/u,
+  );
+  assert.deepEqual(actions, []);
+});
+
+const PRODUCTION_CORRECTION_CREATION_CASES = [
+  ['production-correction-with-create-en', 'No, create a new session called Login instead'],
+  [
+    'production-correction-with-polite-create-en',
+    'No, please create a new session called Login instead',
+  ],
+  [
+    'production-correction-with-em-dash-en',
+    'No — create a new session called Login instead',
+  ],
+  ['production-correction-with-create-zh', '不是这个，创建一个新会话叫登录稳定性'],
+  ['production-correction-with-polite-create-zh', '不是这个，请创建一个新会话叫Login'],
+  ['production-correction-with-alternate-cue-zh', '不对，创建一个新会话叫Login'],
+] as const;
+
+test('production natural-language correction fails closed before a second delegation', async () => {
+  const actions: unknown[] = [];
+  const sessions = port([
+    session('login', {
+      sessionName: '登录稳定性',
+      latestResult: '刷新令牌过期导致重复登录',
+      updatedAt: 20,
+    }),
+    session('payment', {
+      sessionName: '支付稳定性',
+      latestResult: '支付回调重复投递',
+      updatedAt: 30,
+    }),
+  ]);
+  const candidateSetId = `sha256:${'e'.repeat(64)}`;
+  const candidates = [
+    {
+      candidateRef: 'candidate-login',
+      sessionId: 'login',
+      sessionName: '登录稳定性',
+      workspace: {
+        target: { kind: 'host_path' as const, path: '/workspace/login' },
+        hostCwd: '/workspace/login',
+      },
+      state: 'active' as const,
+      updatedAt: 20,
+    },
+    {
+      candidateRef: 'candidate-payment',
+      sessionId: 'payment',
+      sessionName: '支付稳定性',
+      workspace: {
+        target: { kind: 'host_path' as const, path: '/workspace/payment' },
+        hostCwd: '/workspace/payment',
+      },
+      state: 'active' as const,
+      updatedAt: 30,
+    },
+  ];
+  const controller = createGatedWorkHubController({
+    sessions,
+    coordination: {
+      open: async () => ({ close: async () => undefined }),
+      answer: async (input) => ({ turnId: input.turnId }),
+      record: async (input) => ({ turnId: input.turnId }),
+      candidates: async () => ({ candidateSetId, candidates }),
+      act: async (input) => {
+        actions.push(input);
+        return {
+          disposition: 'delegate_existing',
+          targetSessionId: input.proposal.disposition === 'delegate_existing' &&
+              input.proposal.candidateRef === 'candidate-login'
+            ? 'login'
+            : 'payment',
+          targetTurnId: input.actionId === 'production-wrong-payment'
+            ? 'runtime-payment-turn'
+            : 'runtime-login-turn',
+        };
+      },
+    },
+  });
+  await controller.read();
+  await controller.submit({
+    requestId: 'production-wrong-payment',
+    text: '继续这个工作，补充验收项',
+  });
+
+  await assert.rejects(
+    controller.submit({
+      requestId: 'production-natural-correction',
+      text: '不是这个，换成登录那个，补充刷新令牌失败判定',
+    }),
+    /linked correction requires persistent delegation support/u,
+  );
+
+  for (const [requestId, text] of PRODUCTION_CORRECTION_CREATION_CASES) {
+    await assert.rejects(
+      controller.submit({ requestId, text }),
+      /linked correction requires persistent delegation support/u,
+    );
+  }
+
+  assert.deepEqual(actions, [{
+    actionId: 'production-wrong-payment',
+    userText: '继续这个工作，补充验收项',
+    candidateSetId,
+    proposal: {
+      disposition: 'delegate_existing',
+      candidateRef: 'candidate-payment',
+    },
+  }]);
+});
+
+test('production correction-shaped creation stays create_new without an existing focus', async () => {
+  const dispositions: string[] = [];
+  const controller = createGatedWorkHubController({
+    sessions: port([]),
+    coordination: {
+      open: async () => ({ close: async () => undefined }),
+      answer: async (input) => ({ turnId: input.turnId }),
+      record: async (input) => ({ turnId: input.turnId }),
+      candidates: async () => ({
+        candidateSetId: `sha256:${'c'.repeat(64)}`,
+        candidates: [],
+      }),
+      act: async (input) => {
+        dispositions.push(input.proposal.disposition);
+        return {
+          disposition: 'create_new',
+          targetSessionId: `runtime-created-${dispositions.length}`,
+          targetTurnId: `runtime-turn-${dispositions.length}`,
+        };
+      },
+    },
+  });
+
+  for (const [requestId, text] of PRODUCTION_CORRECTION_CREATION_CASES) {
+    const result = await controller.submit({ requestId: `without-focus-${requestId}`, text });
+    assert.equal(result.kind, 'submitted');
+  }
+
+  assert.deepEqual(dispositions, Array(PRODUCTION_CORRECTION_CREATION_CASES.length)
+    .fill('create_new'));
+});
+
+test('production clarification is persisted through the typed Action Gate disposition', async () => {
+  const actions: unknown[] = [];
+  const controller = createGatedWorkHubController({
+    sessions: port([]),
+    coordination: {
+      open: async () => ({ close: async () => undefined }),
+      answer: async (input) => ({ turnId: input.turnId }),
+      record: async () => {
+        throw new Error('legacy summary recording must not persist clarification');
+      },
+      candidates: async () => ({
+        candidateSetId: `sha256:${'c'.repeat(64)}`,
+        candidates: [],
+      }),
+      act: async (input) => {
+        actions.push(input);
+        return {
+          disposition: 'clarify',
+          coordinationTurnId: 'clarification-turn',
+        };
+      },
+    },
+  });
+
+  assert.deepEqual(await controller.recordConversationTurn({
+    turnId: 'clarification-action',
+    userText: '继续稳定性问题',
+    assistantText: '请选择目标 Session',
+    disposition: 'clarify',
+  }), { turnId: 'clarification-turn' });
+  assert.deepEqual(actions, [{
+    actionId: 'clarification-action',
+    userText: '继续稳定性问题',
+    proposal: {
+      disposition: 'clarify',
+      assistantText: '请选择目标 Session',
+    },
+  }]);
+});
+
+test('production creation leaves Session identity and workspace authority to main and Runtime', async () => {
+  const actions: unknown[] = [];
+  const sessions = port([]);
+  sessions.create = async () => {
+    throw new Error('renderer direct create must not be used');
+  };
+  const controller = createGatedWorkHubController({
+    sessions,
+    coordination: {
+      open: async () => ({ close: async () => undefined }),
+      answer: async (input) => ({ turnId: input.turnId }),
+      record: async (input) => ({ turnId: input.turnId }),
+      candidates: async () => ({
+        candidateSetId: `sha256:${'c'.repeat(64)}`,
+        candidates: [],
+      }),
+      act: async (input) => {
+        actions.push(input);
+        return {
+          disposition: 'create_new',
+          targetSessionId: 'runtime-created',
+          targetTurnId: 'runtime-turn',
+        };
+      },
+    },
+  });
+
+  const result = await controller.submit({
+    requestId: 'create-action',
+    text: '请创建新任务，检查支付回调重复投递。',
+  });
+
+  assert.equal(result.kind, 'submitted');
+  assert.deepEqual(result.kind === 'submitted' ? result.target : undefined, {
+    sessionId: 'runtime-created',
+  });
+  assert.deepEqual(actions, [{
+    actionId: 'create-action',
+    userText: '请创建新任务，检查支付回调重复投递。',
+    proposal: {
+      disposition: 'create_new',
+      title: '检查支付回调重复投递',
+    },
+  }]);
 });
 
 test('submit treats a design question containing an action word as discussion', async () => {

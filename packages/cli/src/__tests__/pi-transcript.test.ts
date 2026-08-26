@@ -195,6 +195,49 @@ describe('Maka Pi TUI transcript', () => {
     assert.doesNotMatch(stripAnsi(renderMakaPiStatusLine({ ...meta(), goal: null }, 120)), /goal/);
   });
 
+  test('renders side conversation status in English for every UI locale', () => {
+    assert.equal(
+      stripAnsi(
+        renderMakaPiStatusLine(
+          { ...meta(), uiLocale: 'zh', sideConversation: { view: 'side' } },
+          200,
+        ),
+      ),
+      'Side from main thread · Ctrl+/ to switch · Ctrl+C to close',
+    );
+    for (const [parentStatus, label] of [
+      ['needs_input', 'main needs input'],
+      ['needs_approval', 'main needs approval'],
+      ['failed', 'main failed'],
+      ['interrupted', 'main interrupted'],
+      ['closed', 'main closed'],
+      ['finished', 'main finished'],
+    ] as const) {
+      assert.equal(
+        stripAnsi(
+          renderMakaPiStatusLine(
+            {
+              ...meta(),
+              uiLocale: 'zh',
+              sideConversation: { view: 'side', parentStatus },
+            },
+            200,
+          ),
+        ),
+        `Side from main thread · ${label} · Ctrl+/ to switch · Ctrl+C to close`,
+      );
+    }
+    assert.match(
+      stripAnsi(
+        renderMakaPiStatusLine(
+          { ...meta(), uiLocale: 'zh', sideConversation: { view: 'parent' } },
+          200,
+        ),
+      ),
+      /Ctrl\+\/ for side/,
+    );
+  });
+
   test('status line degrades to ctx ?/window when the window is known but usage is not (#3371)', () => {
     // No usage object at all: the window is known, so degrade explicitly.
     assert.match(
@@ -359,6 +402,48 @@ describe('Maka Pi TUI transcript', () => {
     assert.match(line, /goal 1\/50/);
     assert.match(line, /ctx 20k\/500k 4%/);
     assert.doesNotMatch(line, /\$9\.99|cache|deepseek ·|tmp\/project/);
+  });
+
+  test('status line compacts every critical segment before the narrow-width fallback (#3421)', () => {
+    const metadata = {
+      ...meta(),
+      permissionMode: 'bypass',
+      model: 'anthropic/claude-opus-4-1-very-long',
+      modelContextWindow: 500_000,
+      usage: {
+        costUsd: 9.99,
+        cacheHitInput: 1,
+        cacheMissInput: 1,
+        contextRemaining: 20_000,
+      },
+      goal: {
+        goalId: 'goal-1',
+        revision: 1,
+        sessionId: 'session-1',
+        condition: 'Ship it',
+        setAt: Date.now() - 60_000,
+        iterations: 1,
+        maxIterations: 50,
+        consecutiveNoProgress: 0,
+        blockCap: 8,
+        tokenBudget: null,
+        tokensSpent: 0,
+        lastReason: null,
+        achievedAt: null,
+        pausedAt: null,
+        status: 'active' as const,
+      },
+    };
+
+    for (const width of [40, 70, 80]) {
+      const line = stripAnsi(renderMakaPiStatusLine(metadata, width));
+      assert.ok(visibleWidth(line) <= width);
+      assert.match(line, /Maka/);
+      assert.match(line, /Full/);
+      assert.match(line, /anthropic/);
+      assert.match(line, /(?:goal |g)1\/50/);
+      assert.match(line, /(?:ctx .*96%|c96%)/);
+    }
   });
 
   test('keeps assistant text after a tool call visible after the tool block', () => {

@@ -29,7 +29,9 @@ import {
   type RuntimeHostInstallationOwner,
 } from '../operator/local-deployment-owner.js';
 import {
+  claimLocalHostProcessDeployment,
   handoffLocalHostProcessDeployment,
+  type LocalHostProcessDeploymentClaimAdapter,
   type LocalHostProcessDeploymentHandoffAdapter,
 } from '../operator/local-process-deployment-handoff.js';
 import type { RuntimeHostDeploymentIdentity } from '../operator/update-package-evidence.js';
@@ -468,4 +470,100 @@ test('serializes the whole cutover so a competing owner mutation cannot enter mi
     competingResult.kind === 'rejected' ? competingResult.reason : undefined,
     'owner_changed',
   );
+});
+
+function claimAdapter(
+  events: string[],
+  host: 'target_absent' | 'target_present' | 'active_work' = 'target_absent',
+): LocalHostProcessDeploymentClaimAdapter<{ readonly path: string }> {
+  return {
+    async stageTarget(target, transactionId) {
+      events.push(`stage:${target.version}:${transactionId}`);
+      return { path: '/verified/maka' };
+    },
+    async prepareUnownedHostCutover(_rootId, _target, _staged, policy) {
+      events.push(`retire:${policy}`);
+      return { kind: host };
+    },
+    async observeWriterRelease() {
+      events.push('writer_released');
+    },
+    async activateTarget(_rootId, staged) {
+      events.push(`activate:${staged.path}`);
+    },
+    async verifyTargetReady(_rootId, target) {
+      events.push(`ready:${target.version}`);
+    },
+  };
+}
+
+test('establishes the first owner only after exact target Ready', async (t) => {
+  const options = await authority(t);
+  const events: string[] = [];
+  const result = await claimLocalHostProcessDeployment(
+    {
+      rootId: ROOT_ID,
+      transactionId: 'initial-cli-claim',
+      owner: CLI,
+      target: TARGET_DEPLOYMENT,
+      activeWorkPolicy: 'refuse_active_work',
+    },
+    claimAdapter(events),
+    options,
+  );
+
+  assert.equal(result.kind, 'completed');
+  assert.deepEqual(events, [
+    'stage:2.0.0:initial-cli-claim',
+    'retire:refuse_active_work',
+    'writer_released',
+    'activate:/verified/maka',
+    'ready:2.0.0',
+  ]);
+  assert.deepEqual(result.kind === 'completed' ? result.record.state : undefined, {
+    kind: 'owned',
+    owner: CLI,
+    selected: TARGET_DEPLOYMENT,
+  });
+});
+
+test('does not invent initial authority when legacy active work refuses cutover', async (t) => {
+  const options = await authority(t);
+  const events: string[] = [];
+  const result = await claimLocalHostProcessDeployment(
+    {
+      rootId: ROOT_ID,
+      transactionId: 'blocked-initial-claim',
+      owner: CLI,
+      target: TARGET_DEPLOYMENT,
+      activeWorkPolicy: 'refuse_active_work',
+    },
+    claimAdapter(events, 'active_work'),
+    options,
+  );
+
+  assert.equal(result.kind, 'active_work');
+  assert.deepEqual(events, ['stage:2.0.0:blocked-initial-claim', 'retire:refuse_active_work']);
+  assert.equal(await readLocalHostDeploymentRecord(ROOT_ID, options), undefined);
+});
+
+test('rejects a raced initial claim before touching the observed Host', async (t) => {
+  const options = await authority(t);
+  await claimed(options);
+  const events: string[] = [];
+  const result = await claimLocalHostProcessDeployment(
+    {
+      rootId: ROOT_ID,
+      transactionId: 'raced-initial-claim',
+      owner: CLI,
+      target: TARGET_DEPLOYMENT,
+      activeWorkPolicy: 'refuse_active_work',
+    },
+    claimAdapter(events),
+    options,
+  );
+
+  assert.equal(result.kind, 'rejected');
+  assert.equal(result.kind === 'rejected' ? result.reason : undefined, 'owner_exists');
+  assert.deepEqual(events, ['stage:2.0.0:raced-initial-claim']);
 });
