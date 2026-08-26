@@ -260,6 +260,28 @@ test('core CI validates pull requests and the resulting main branch state', () =
   assert.match(workflow, /\[\[ "\$BASE_SHA" =~ \^0\+\$ \]\]/u);
 });
 
+test('core CI gates the stable test check on selected macOS E2E', () => {
+  const workflow = readWorkflow('ci.yml');
+  const linux = workflow.slice(workflow.indexOf('\n  test_linux:\n'));
+  const macos = workflow.slice(workflow.indexOf('\n  e2e_macos:\n'));
+  const aggregate = workflow.slice(workflow.lastIndexOf('\n  test:\n'));
+  const uploadStart = macos.indexOf('      - name: Upload macOS desktop E2E diagnostics\n');
+  const upload = macos.slice(uploadStart, macos.indexOf('\n      - ', uploadStart + 1));
+
+  assert.match(linux, /outputs:\n\s+e2e: \$\{\{ steps\.plan\.outputs\.e2e \}\}/u);
+  assert.match(macos, /needs: test_linux/u);
+  assert.match(macos, /if: needs\.test_linux\.outputs\.e2e == 'true'/u);
+  assert.match(macos, /runs-on: macos-15/u);
+  assert.match(macos, /defaults write -g AppleShowScrollBars -string Always/u);
+  assert.ok(uploadStart >= 0);
+  assert.match(upload, /if: always\(\)/u);
+  assert.match(upload, /uses: actions\/upload-artifact@/u);
+  assert.match(upload, /path: apps\/desktop\/e2e\/test-results/u);
+  assert.match(aggregate, /needs: \[test_linux, e2e_macos\]/u);
+  assert.match(aggregate, /if: always\(\)/u);
+  assert.match(aggregate, /expected_macos="success"/u);
+});
+
 test('core CI uses the Windows inventory package-script authority', () => {
   const workflow = readWorkflow('ci.yml');
 

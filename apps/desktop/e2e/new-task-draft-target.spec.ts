@@ -61,21 +61,30 @@ test('the new-task draft follows the Project chosen under the composer', async (
   // different path and was never broken.
   await expect(picker).toHaveAttribute('aria-label', new RegExp(NEW_TASK_PROJECT_NAME));
 
-  await composer.click();
-  await page.keyboard.type(DRAFT);
+  await composer.fill(DRAFT);
   await expect(composer).toHaveText(DRAFT);
 
-  await picker.click();
-  await page.getByRole('menuitem', { name: '无项目', exact: true }).click();
-  // The picker's label is the selected target, so this asserts the click moved
-  // the selection. Without it the draft assertion below would still pass if the
-  // menu item stopped selecting anything at all.
+  await picker.press('Enter');
+  const projectItem = page.getByRole('menuitem', { name: NEW_TASK_PROJECT_NAME, exact: true });
+  const noProjectItem = page.getByRole('menuitem', { name: '无项目', exact: true });
+  await expect(projectItem).toBeFocused();
+  await page.keyboard.press('End');
+  await expect(noProjectItem).toBeFocused();
+  await page.keyboard.press('Enter');
+  await expect(noProjectItem).toHaveCount(0);
+  // The picker's label is the selected target, so this asserts the menu action
+  // moved the selection. Without it the draft assertion below would still pass
+  // if the menu item stopped selecting anything at all.
   await expect(picker).toHaveAttribute('aria-label', /无项目/);
   await settle(page);
   await expect(composer).toHaveText(DRAFT);
 
-  await picker.click();
-  await page.getByRole('menuitem', { name: NEW_TASK_PROJECT_NAME, exact: true }).click();
+  // Keyboard activation follows the menu button's public interaction contract
+  // and is not suppressed by the pointer light-dismiss guard while the first
+  // selection's replacement picker settles.
+  await picker.press('Enter');
+  await expect(projectItem).toBeFocused();
+  await page.keyboard.press('Enter');
   await expect(picker).toHaveAttribute('aria-label', new RegExp(NEW_TASK_PROJECT_NAME));
   await settle(page);
   await expect(composer).toHaveText(DRAFT);

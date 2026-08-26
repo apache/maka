@@ -79,7 +79,8 @@ test('compacts the active session', async ({
   const compact = menu.getByRole('group', { name: '命令' }).getByRole('option', {
     name: /压缩上下文.*\/compact/,
   });
-  await compact.click();
+  await expect(compact).toHaveAttribute('aria-selected', 'true');
+  await composer.press('Enter');
 
   await expect.poll(() => composer.textContent()).toBe('/compact ');
   await expect(menu).not.toBeVisible();

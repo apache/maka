@@ -32,7 +32,7 @@ import {
   tryAcquireInteractiveRootOwner,
 } from '@maka/storage/root-authority';
 import { openInteractiveRuntimePolicyStoresForWrite } from '@maka/storage/runtime-policy-stores';
-import { buildFixtureEnv, isCiLinuxDisplay } from '../../../scripts/fixture-env.mjs';
+import { buildFixtureEnv, isCiIsolatedDisplay } from '../../../scripts/fixture-env.mjs';
 import { closeElectronApplication } from '../../../scripts/electron-lifecycle.mjs';
 
 const DESKTOP_ROOT = process.cwd();
@@ -338,6 +338,7 @@ async function withE2eWindow(
     gitReviewExtraFiles,
     parentRemovalSessions,
     newTaskProject,
+    windowSize,
   }: {
     seed: boolean;
     readinessSelector: string;
@@ -353,8 +354,16 @@ async function withE2eWindow(
     gitReviewExtraFiles?: number;
     parentRemovalSessions?: boolean;
     newTaskProject?: boolean;
+    /** Deterministic native fixture size for geometry-sensitive surfaces. */
+    windowSize?: { width: number; height: number };
   },
-  use: (page: Page, context: { userDataDir: string }) => Promise<void>,
+  use: (
+    page: Page,
+    context: {
+      userDataDir: string;
+      activateWindow(): Promise<{ appActive: boolean; windowFocused: boolean }>;
+    },
+  ) => Promise<void>,
 ): Promise<void> {
   const userDataDir = await mkdtemp(path.join(tmpdir(), 'maka-e2e-'));
   // Lives inside the throwaway userData dir so the existing teardown removes
@@ -378,15 +387,23 @@ async function withE2eWindow(
     app = await electron.launch({
       args: ['.'],
       cwd: DESKTOP_ROOT,
-      env: buildFixtureEnv(userDataDir, homeDir, {
-        scenario: e2eFixtureScenario,
-        locale,
-        platform,
-        scrollMotion,
-        // xvfb throttles a hidden window's compositor to ~1fps. Geometry
-        // fixtures opt in locally; every fixture is visible on isolated CI X.
-        showWindow: showWindow || isCiLinuxDisplay(),
-      }),
+      env: {
+        ...buildFixtureEnv(userDataDir, homeDir, {
+          scenario: e2eFixtureScenario,
+          locale,
+          platform,
+          scrollMotion,
+          // Isolated CI displays throttle a hidden window's compositor. Geometry
+          // fixtures opt in locally; every fixture is visible on those runners.
+          showWindow: showWindow || isCiIsolatedDisplay(),
+        }),
+        ...(windowSize
+          ? {
+              MAKA_E2E_FIXTURE_WIDTH: String(windowSize.width),
+              MAKA_E2E_FIXTURE_HEIGHT: String(windowSize.height),
+            }
+          : {}),
+      },
     });
     app.on('console', (message) => {
       mainLogs.push(message.text());
@@ -394,7 +411,10 @@ async function withE2eWindow(
     });
     let page: Page;
     try {
-      page = await app.firstWindow();
+      // Runtime Host election is allowed 45 seconds. A fresh macOS runner can
+      // spend most of that budget starting its first Electron Candidate, so
+      // Playwright's 30-second default would fail before the product contract.
+      page = await app.firstWindow({ timeout: 60_000 });
     } catch (error) {
       const detail = error instanceof Error ? error.message : String(error);
       const logs = mainLogs.length > 0 ? `\nElectron main console:\n${mainLogs.join('\n')}` : '';
@@ -420,7 +440,29 @@ async function withE2eWindow(
       const rendererDetail = rendererLogs.length > 0 ? `\nRenderer console:\n${rendererLogs.join('\n')}` : '';
       throw new Error(`${detail}${mainDetail}${rendererDetail}`, { cause: error });
     }
-    await use(page, { userDataDir });
+    const activateWindow = async () => {
+      await app.evaluate(({ app: electronApp }) => {
+        if (process.platform === 'darwin') electronApp.focus({ steal: true });
+        else electronApp.focus();
+      });
+      const windowHandle = await app.browserWindow(page);
+      let windowFocused = false;
+      try {
+        windowFocused = await windowHandle.evaluate((window) => {
+          if (window.isMinimized()) window.restore();
+          window.show();
+          window.focus();
+          return window.isFocused();
+        });
+      } finally {
+        await windowHandle.dispose();
+      }
+      const appActive = await app.evaluate(({ app: electronApp }) =>
+        process.platform === 'darwin' ? electronApp.isActive() : true,
+      );
+      return { appActive, windowFocused };
+    };
+    await use(page, { userDataDir, activateWindow });
   } finally {
     try {
       if (app) await closeElectronApplication(app, 5_000);
@@ -432,6 +474,10 @@ async function withE2eWindow(
 
 export const test = base.extend<{
   window: Page;
+  codeScrollWindow: {
+    page: Page;
+    activate(): Promise<{ appActive: boolean; windowFocused: boolean }>;
+  };
   onboardingWindow: Page;
   gitReviewWindow: { page: Page; projectRoot: string };
   invocableSkillsWindow: Page;
@@ -446,6 +492,18 @@ export const test = base.extend<{
   // Seeded: a pre-staged connection clears onboarding so the composer is ready.
   window: async ({}, use) => {
     await withE2eWindow({ seed: true, readinessSelector: COMPOSER_INPUT, locale: 'zh' }, use);
+  },
+  // Text selection is a native pointer interaction on macOS. Keep this window
+  // visible so Chromium receives the same focused drag sequence as a user.
+  codeScrollWindow: async ({}, use) => {
+    await withE2eWindow({
+      seed: true,
+      readinessSelector: COMPOSER_INPUT,
+      locale: 'zh',
+      showWindow: true,
+    }, async (page, { activateWindow }) => {
+      await use({ page, activate: activateWindow });
+    });
   },
   onboardingWindow: async ({}, use) => {
     await withE2eWindow({
@@ -532,6 +590,9 @@ export const test = base.extend<{
       readinessSelector: '[data-turn-id]',
       e2eFixtureScenario: 'chat-prompt-rail',
       showWindow: true,
+      // Keep the bounded rail in its own scrolling state so the tests exercise
+      // clipped ticks instead of relying on every runner's font metrics to fit.
+      windowSize: { width: 1240, height: 740 },
     }, use);
   },
   // The same transcript, scrolling the way the shipped app scrolls. Separate
@@ -545,6 +606,7 @@ export const test = base.extend<{
       e2eFixtureScenario: 'chat-prompt-rail',
       showWindow: true,
       scrollMotion: 'smooth',
+      windowSize: { width: 1240, height: 740 },
     }, use);
   },
   // Settings → 模型, where `no-models` is the seeded openai-compatible relay —

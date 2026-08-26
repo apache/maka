@@ -54,9 +54,19 @@ async function composeWithSkill(page: Page, text: string, name: RegExp): Promise
   await composer.fill(text);
   await composer.click();
   await composer.pressSequentially(' /');
-  const option = page.getByRole('listbox', { name: /技能/ }).getByRole('option', { name });
+  const listbox = page.getByRole('listbox', { name: /技能/ });
+  const option = listbox.getByRole('option', { name });
   await expect(option).toBeVisible();
-  await option.click();
+  // The suggestion list can re-rank once when the cold Skill projection
+  // catches up. Walk its active-descendant state instead of racing a pointer
+  // target that is being replaced under the cursor.
+  const optionCount = await listbox.getByRole('option').count();
+  for (let index = 0; index < optionCount; index += 1) {
+    if ((await option.getAttribute('aria-selected')) === 'true') break;
+    await composer.press('ArrowDown');
+  }
+  await expect(option).toHaveAttribute('aria-selected', 'true');
+  await composer.press('Enter');
 }
 
 async function beginRevision(page: Page): Promise<void> {

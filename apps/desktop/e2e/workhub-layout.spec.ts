@@ -29,10 +29,14 @@ test('WorkHub target metadata does not overlap the submitted Session result', as
     timeout: 20_000,
   });
 
-  const sessionName = await page.evaluate(async () =>
-    (await window.maka.sessions.list())[0]?.name,
-  );
-  expect(sessionName).toBeTruthy();
+  await expect
+    .poll(
+      async () =>
+        page.evaluate(async () => (await window.maka.sessions.list())[0]?.name),
+      { timeout: 20_000 },
+    )
+    .toBe('支付回调幂等性');
+  const sessionName = '支付回调幂等性';
   await page.evaluate(async () => {
     await window.maka.settings.updateClient({ workHub: { enabled: true } });
   });
@@ -43,12 +47,13 @@ test('WorkHub target metadata does not overlap the submitted Session result', as
   );
   await workHubComposer.fill(`继续${sessionName}，补充重复投递测试点。`);
   await workHubComposer.press('Enter');
-  await expect(page.locator('.workhub-result')).toBeVisible();
+  const submitted = page.locator('.workhub-submitted').last();
+  await expect(submitted.locator('.workhub-result')).toBeVisible();
 
-  const geometry = await page.evaluate(() => {
-    const button = document.querySelector<HTMLElement>('.workhub-submitted > button')!;
+  const geometry = await submitted.evaluate((root) => {
+    const button = root.querySelector<HTMLElement>(':scope > button')!;
     const project = button.querySelector<HTMLElement>('.workhub-submitted-session small')!;
-    const result = document.querySelector<HTMLElement>('.workhub-result')!;
+    const result = root.querySelector<HTMLElement>('.workhub-result')!;
     const buttonBox = button.getBoundingClientRect();
     const projectBox = project.getBoundingClientRect();
     const resultBox = result.getBoundingClientRect();

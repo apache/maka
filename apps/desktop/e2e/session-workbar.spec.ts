@@ -281,6 +281,17 @@ test('titlebar workbar action restores an existing tool instead of the picker', 
   await expect(collapseButton).toBeVisible();
   await expect(workspaceActions.getByRole('button', { name: '打开工作栏工具' })).toHaveCount(0);
 
+  // Normalize the titlebar safe area before measuring the simulated delta.
+  // macOS runners can expose a non-zero native titlebar-area inset, so using
+  // that live value as the baseline would make an 80px override move by only
+  // the difference between the two values.
+  await page.evaluate(() => {
+    document.documentElement.style.setProperty('--maka-titlebar-overlay-right-width', '0px');
+    return new Promise<void>((resolve) => {
+      requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
+    });
+  });
+
   const activeTab = panelToolbar.getByRole('tab', { selected: true });
   await expect(activeTab).toBeVisible();
   const [toolbarBox, tabBox, toggleBox] = await Promise.all([

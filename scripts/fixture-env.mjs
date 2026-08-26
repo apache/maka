@@ -100,7 +100,7 @@ export function buildFixtureEnv(userDataDir, homeDir, options = {}) {
   if (options.timezone) env.MAKA_E2E_FIXTURE_TIMEZONE = options.timezone;
   // Windows launch hidden so a run never steals the developer's focus; a
   // caller that needs the compositor (hit testing, real input) or a throttled
-  // headless display (see isCiLinuxDisplay) asks for a visible window
+  // headless display (see isCiIsolatedDisplay) asks for a visible window
   // explicitly. The decision stays with the caller: this builder is a pure
   // function of its arguments, so a test asserting "hidden run stays hidden"
   // means the same thing on a laptop and on a CI runner.
@@ -121,13 +121,40 @@ export function buildFixtureEnv(userDataDir, homeDir, options = {}) {
  * protocols crawl. Only that isolated virtual display gets a visible window;
  * nobody is watching it.
  *
- * This is the one ambient read the launch environment needs, kept out of
- * `buildFixtureEnv` so the builder stays a pure function. Callers compose it:
- * `showWindow: wantVisible || isCiLinuxDisplay()`.
+ * This helper stays Linux-only so tests can assert the xvfb case in isolation.
+ * Call sites that also need GitHub macOS runners (App Nap) should compose
+ * `isCiIsolatedDisplay()` instead.
  *
  * @param {NodeJS.ProcessEnv} [env]
  * @param {NodeJS.Platform} [platform]
  */
 export function isCiLinuxDisplay(env = process.env, platform = process.platform) {
-  return Boolean(env.CI) && platform === 'linux';
+  return isTruthyCiFlag(env.CI) && platform === 'linux';
+}
+
+/**
+ * Isolated CI displays that throttle a hidden Electron window. Linux CI uses
+ * xvfb; GitHub's macOS runners App-Nap background windows the same way. Local
+ * developer machines stay hidden so a suite does not steal focus.
+ *
+ * This is the ambient read the launch environment needs, kept out of
+ * `buildFixtureEnv` so the builder stays a pure function. Callers compose it:
+ * `showWindow: wantVisible || isCiIsolatedDisplay()`.
+ *
+ * @param {NodeJS.ProcessEnv} [env]
+ * @param {NodeJS.Platform} [platform]
+ */
+export function isCiIsolatedDisplay(env = process.env, platform = process.platform) {
+  return isCiLinuxDisplay(env, platform) || (isTruthyCiFlag(env.CI) && platform === 'darwin');
+}
+
+/**
+ * `CI=false` and `CI=0` must stay hidden. `Boolean("false")` is true.
+ *
+ * @param {string | undefined} value
+ */
+function isTruthyCiFlag(value) {
+  if (value == null) return false;
+  const normalized = String(value).trim().toLowerCase();
+  return normalized === '1' || normalized === 'true' || normalized === 'yes';
 }
