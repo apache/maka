@@ -123,6 +123,16 @@ and acts as the durable action-replay result. The records carry an action
 fingerprint to reject conflicting reuse of an action identity. They do not form a
 general workflow state machine and do not persist target execution lifecycle.
 
+The renderer couples one reload-safe Composer draft to one action identity until
+both target admission and its Coordination summary settle. Retry therefore reuses
+the same identity instead of treating the retained draft as new work. The durable
+fingerprint covers stable user intent, not snapshot-scoped candidate ids; once
+prepared, the intent owns the resolved target, exact user text, and any
+`create_new` title/workspace context. Recovery is deliberately driven by that
+explicit caller retry rather than an autonomous startup scan: the latter would
+execute user work without a live request context and turn this journal into a
+background workflow engine.
+
 ## Consequences, costs, and reevaluation
 
 - WorkHub gains persistent conversational continuity without adding another

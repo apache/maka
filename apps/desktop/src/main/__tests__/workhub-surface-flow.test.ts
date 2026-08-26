@@ -26,6 +26,7 @@ import {
   WorkHubCoordinationStatus,
   WorkHubProjectionRefreshGate,
   WorkHubSurfaceRouteGate,
+  submitAndRecordWorkHubSurfaceInput,
   submitWorkHubSurfaceInput,
   visibleWorkHubConversation,
   workHubSurfaceFailure,
@@ -41,6 +42,77 @@ import {
   createDesktopWorkHubSessionPort,
   type WorkHubDesktopSession,
 } from '../../renderer/workhub-session-port.js';
+import { WorkHubSendLease } from '../../renderer/workhub-send-lease.js';
+
+test('production retry keeps one action identity across failure and renderer reload', () => {
+  const values = new Map<string, string>();
+  const storage = {
+    getItem: (key: string) => values.get(key) ?? null,
+    setItem: (key: string, value: string) => values.set(key, value),
+    removeItem: (key: string) => values.delete(key),
+  };
+  const ids = ['action-1', 'action-2'];
+  const first = new WorkHubSendLease(storage, () => ids.shift()!);
+
+  assert.equal(first.acquire('Continue payment work'), 'action-1');
+
+  const restarted = new WorkHubSendLease(storage, () => ids.shift()!);
+  assert.equal(restarted.acquire('Continue payment work'), 'action-1');
+  restarted.complete('action-1');
+  assert.equal(restarted.acquire('Continue payment work'), 'action-2');
+});
+
+test('summary failure keeps the target action retryable under the same production identity', async () => {
+  const values = new Map<string, string>();
+  const storage = {
+    getItem: (key: string) => values.get(key) ?? null,
+    setItem: (key: string, value: string) => values.set(key, value),
+    removeItem: (key: string) => values.delete(key),
+  };
+  const actionIds: string[] = [];
+  let summaries = 0;
+  const controller: WorkHubController = {
+    read: async () => ({ sessions: [], turns: [] }),
+    openConversation: async () => ({ close: async () => undefined }),
+    recordConversationTurn: async ({ turnId }) => {
+      summaries += 1;
+      if (summaries === 1) throw new Error('summary outcome unknown');
+      return { turnId };
+    },
+    resetVisitContext: () => {},
+    subscribe: () => () => {},
+    submit: async (input) => {
+      actionIds.push(input.requestId);
+      return {
+        kind: 'submitted',
+        strategyId: WORKHUB_ROUTING_STRATEGY_ID,
+        requestId: input.requestId,
+        target: { sessionId: 'payment' },
+        turnId: 'payment-turn',
+        evidence: 'explicit_target',
+      };
+    },
+  };
+  const send = (requestId: string) => submitAndRecordWorkHubSurfaceInput({
+    controller,
+    request: { requestId, text: 'Continue payment work' },
+    recordedUserText: 'Continue payment work',
+    summary: () => 'Sent to Payments.',
+    onSummaryError: () => undefined,
+  });
+  const first = new WorkHubSendLease(storage, () => 'action-1');
+  const requestId = first.acquire('Continue payment work');
+
+  await assert.rejects(send(requestId), /summary outcome unknown/u);
+
+  const restarted = new WorkHubSendLease(storage, () => 'action-2');
+  const retriedId = restarted.acquire('Continue payment work');
+  await send(retriedId);
+  restarted.complete(retriedId);
+
+  assert.deepEqual(actionIds, ['action-1', 'action-1']);
+  assert.equal(summaries, 2);
+});
 
 test('surface turns Action Gate rejections into safe actionable failures', () => {
   assert.equal(

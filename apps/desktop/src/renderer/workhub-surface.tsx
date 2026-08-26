@@ -35,6 +35,7 @@ import type {
   WorkHubSubmission,
   WorkHubSubmitInput,
 } from './workhub-controller.js';
+import { WorkHubSendLease } from './workhub-send-lease.js';
 
 export interface WorkHubConversationTurn {
   requestId: string;
@@ -134,6 +135,32 @@ export async function submitWorkHubSurfaceInput(input: {
   return input.controller.submit(input.input);
 }
 
+export async function submitAndRecordWorkHubSurfaceInput(input: {
+  controller: WorkHubController;
+  request: WorkHubSubmitInput;
+  recordedUserText: string;
+  summary(result: Exclude<WorkHubSubmission, { kind: 'discussion' }>): string;
+  onSummaryError(): void;
+}): Promise<WorkHubSubmission> {
+  const result = await submitWorkHubSurfaceInput({
+    controller: input.controller,
+    input: input.request,
+  });
+  if (result.kind === 'discussion') return result;
+  try {
+    await input.controller.recordConversationTurn({
+      turnId: input.request.requestId,
+      userText: input.recordedUserText,
+      assistantText: input.summary(result),
+      disposition: result.kind === 'clarification' ? 'clarify' : 'summary',
+    });
+  } catch (error) {
+    input.onSummaryError();
+    throw error;
+  }
+  return result;
+}
+
 /**
  * The persistent Coordination Session transcript is the primary conversation.
  * Ordinary Sessions remain a read-only status/routing projection.
@@ -155,6 +182,7 @@ export function WorkHubSurface(props: {
   // a rerender can disable Composer and clarification controls.
   const routeGate = useRef(new WorkHubSurfaceRouteGate()).current;
   const refreshGate = useRef(new WorkHubProjectionRefreshGate()).current;
+  const sendLease = useRef(new WorkHubSendLease()).current;
   const [loadError, setLoadError] = useState(false);
   const [conversationError, setConversationError] = useState(false);
   const refresh = useCallback(async (focusSessionId?: string) => {
@@ -224,24 +252,16 @@ export function WorkHubSurface(props: {
           : turn,
       ));
       try {
-        const result = await submitWorkHubSurfaceInput({
+        const result = await submitAndRecordWorkHubSurfaceInput({
           controller: props.controller,
-          input,
+          request: input,
+          recordedUserText,
+          summary: (result) => workHubCoordinationSummary(result, projection, copy),
+          // The ordinary Session admission may already have settled. A failed
+          // Coordination summary keeps this send incomplete so the retry
+          // reuses its durable Action Gate identity before filling the gap.
+          onSummaryError: () => setConversationError(true),
         });
-        if (result.kind !== 'discussion') {
-          try {
-            await props.controller.recordConversationTurn({
-              turnId: input.requestId,
-              userText: recordedUserText,
-              assistantText: workHubCoordinationSummary(result, projection, copy),
-              disposition: result.kind === 'clarification' ? 'clarify' : 'summary',
-            });
-          } catch {
-            // The ordinary Session admission has already settled. A failed
-            // Coordination summary must not make retry duplicate that work.
-            setConversationError(true);
-          }
-        }
         setTurns((current) => current.map((turn) =>
           turn.requestId === localRequestId
             ? { ...turn, state: 'settled', outcome: result }
@@ -270,13 +290,18 @@ export function WorkHubSurface(props: {
   const send = useCallback(async (value: string) => {
     const text = value.trim();
     if (!text || !initialLoadSettled || !conversationReady || routeGate.pending) return false;
-    const requestId = crypto.randomUUID();
-    setTurns((current) => [...current, { requestId, text, state: 'routing' }]);
+    const requestId = sendLease.acquire(text);
+    setTurns((current) => current.some((turn) => turn.requestId === requestId)
+      ? current.map((turn) => turn.requestId === requestId
+        ? { requestId, text, state: 'routing' }
+        : turn)
+      : [...current, { requestId, text, state: 'routing' }]);
     const result = await route({ requestId, text });
+    if (result) sendLease.complete(requestId);
     // Composer clears only accepted drafts. Waiting, delivery failures, and a
     // ref-blocked duplicate keep the exact text available for retry.
     return workHubSubmissionClearsDraft(result);
-  }, [conversationReady, initialLoadSettled, route, routeGate]);
+  }, [conversationReady, initialLoadSettled, route, routeGate, sendLease]);
   const visible = visibleWorkHubConversation(coordinationTurns, turns);
   const visibleCoordinationTurns = visible.coordination;
   const visibleLocalTurns = visible.local;
@@ -290,6 +315,7 @@ export function WorkHubSurface(props: {
       composer={(
         <Composer
           draftKey="workhub"
+          draftPersistence={sendLease}
           onSend={send}
           onStop={() => {}}
           sendBlocked={pending || !surfaceReady}

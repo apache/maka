@@ -215,6 +215,7 @@ test('projects durable WorkHub delegation targets into the Desktop host namespac
       coordinationTurnId: 'coordination-turn',
       targetSessionId: 'payments',
       disposition: 'delegate_existing',
+      userText: 'Continue payment work',
       delegationId: 'delegation-id',
       targetTurnId: 'payments-turn',
     },

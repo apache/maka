@@ -18,6 +18,7 @@
  */
 
 import { createHash } from 'node:crypto';
+import { isDeepStrictEqual } from 'node:util';
 import {
   WORKHUB_COORDINATION_RECORD_SCHEMA_VERSION,
   WORKHUB_COORDINATION_SESSION_ID,
@@ -37,7 +38,9 @@ import {
 import type { SessionAdmissionGate } from './session-admission-gate.js';
 
 const RECORD_KINDS = ['delegation_intent', 'delegation_committed'] as const;
-const RECORD_READ_MAX_BYTES = 16 * 1024;
+// Two records may each repeat the bounded 48 KiB request plus create context;
+// JSON escaping can expand one input byte to six encoded bytes.
+const RECORD_READ_MAX_BYTES = 768 * 1024;
 
 type JournalStores = Pick<
   SessionAuthorityStore,
@@ -239,6 +242,8 @@ function intentRecord(message: WorkHubDelegationIntentMessage): WorkHubDelegatio
     coordinationTurnId: message.coordinationTurnId,
     targetSessionId: message.targetSessionId,
     disposition: message.disposition,
+    userText: message.userText,
+    ...(message.create ? { create: message.create } : {}),
   };
 }
 
@@ -250,6 +255,8 @@ function commitRecord(message: WorkHubDelegationCommittedMessage): WorkHubDelega
     coordinationTurnId: message.coordinationTurnId,
     targetSessionId: message.targetSessionId,
     disposition: message.disposition,
+    userText: message.userText,
+    ...(message.create ? { create: message.create } : {}),
     delegationId: message.delegationId,
     targetTurnId: message.targetTurnId,
     ...(message.steered ? { steered: true as const } : {}),
@@ -272,7 +279,9 @@ function sameIntent(
     left.actionFingerprint === right.actionFingerprint &&
     left.coordinationTurnId === right.coordinationTurnId &&
     left.targetSessionId === right.targetSessionId &&
-    left.disposition === right.disposition
+    left.disposition === right.disposition &&
+    left.userText === right.userText &&
+    isDeepStrictEqual(left.create, right.create)
   );
 }
 

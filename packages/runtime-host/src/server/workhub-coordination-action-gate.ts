@@ -18,7 +18,12 @@
  */
 
 import { createHash } from 'node:crypto';
-import type { SessionHeader, SessionStatus } from '@maka/core/session';
+import type {
+  SessionHeader,
+  SessionStatus,
+  WorkHubDelegationCommittedMessage,
+  WorkHubDelegationIntentMessage,
+} from '@maka/core/session';
 import {
   WORKHUB_COORDINATION_SESSION_ID,
   isWorkHubCoordinationSessionTarget,
@@ -87,21 +92,17 @@ export interface WorkHubActionGateEffects {
   commitDelegation(commit: WorkHubDelegationCommit): Promise<void>;
 }
 
-export interface WorkHubDelegationIntent {
-  readonly kind: 'delegation_intent';
-  readonly actionId: string;
-  readonly actionFingerprint: `sha256:${string}`;
-  readonly coordinationTurnId: string;
-  readonly targetSessionId: string;
-  readonly disposition: 'delegate_existing' | 'create_new';
-}
+type StoredDelegationEnvelopeKeys = 'type' | 'id' | 'turnId' | 'ts' | 'schemaVersion';
 
-export interface WorkHubDelegationCommit extends Omit<WorkHubDelegationIntent, 'kind'> {
-  readonly kind: 'delegation_committed';
-  readonly delegationId: string;
-  readonly targetTurnId: string;
-  readonly steered?: true;
-}
+export type WorkHubDelegationIntent = Omit<
+  WorkHubDelegationIntentMessage,
+  StoredDelegationEnvelopeKeys
+>;
+
+export type WorkHubDelegationCommit = Omit<
+  WorkHubDelegationCommittedMessage,
+  StoredDelegationEnvelopeKeys
+>;
 
 export type WorkHubDelegationRecord = WorkHubDelegationIntent | WorkHubDelegationCommit;
 
@@ -173,7 +174,7 @@ export class WorkHubCoordinationActionGate {
     input: WorkHubCoordinationActInput,
     context: ConnectionContext,
   ): Promise<WorkHubCoordinationActResult> {
-    const fingerprint = digest(input);
+    const fingerprint = actionFingerprint(input);
     const replay = this.#actions.get(input.actionId);
     if (replay) {
       if (replay.fingerprint !== fingerprint) {
@@ -208,6 +209,19 @@ export class WorkHubCoordinationActionGate {
     context: ConnectionContext,
   ): Promise<WorkHubCoordinationActResult> {
     const proposal = input.proposal;
+    const durable = await this.#effects.readDelegation(input.actionId);
+    if (durable) {
+      if (durable.actionFingerprint !== fingerprint) {
+        throw new WorkHubActionGateFailure(
+          'action_conflict',
+          'WorkHub action identity belongs to a different proposal',
+        );
+      }
+      if (durable.kind === 'delegation_committed') {
+        return committedResult(durable);
+      }
+      return this.#executeDelegation(durable, context);
+    }
     if (proposal.disposition === 'answer_here') {
       const turnId = coordinationTurnId(input.actionId, 'answer');
       await this.#effects.answer({ turnId, text: input.userText }, context);
@@ -222,20 +236,6 @@ export class WorkHubCoordinationActionGate {
       });
       return { disposition: 'clarify', coordinationTurnId: turnId };
     }
-    const durable = await this.#effects.readDelegation(input.actionId);
-    if (durable) {
-      if (durable.actionFingerprint !== fingerprint) {
-        throw new WorkHubActionGateFailure(
-          'action_conflict',
-          'WorkHub action identity belongs to a different proposal',
-        );
-      }
-      if (durable.kind === 'delegation_committed') {
-        return committedResult(durable);
-      }
-      return this.#executeDelegation(input, durable, context);
-    }
-
     if (proposal.disposition === 'create_new') {
       if (!input.create) {
         throw new WorkHubActionGateFailure(
@@ -246,7 +246,7 @@ export class WorkHubCoordinationActionGate {
       const sessionId = workHubCreatedSessionId(input.actionId);
       const intent = delegationIntent(input, fingerprint, sessionId);
       await this.#effects.prepareDelegation(intent);
-      return this.#executeDelegation(input, intent, context);
+      return this.#executeDelegation(intent, context);
     }
 
     const candidates = await this.candidates();
@@ -269,37 +269,36 @@ export class WorkHubCoordinationActionGate {
 
     const intent = delegationIntent(input, fingerprint, target.sessionId);
     await this.#effects.prepareDelegation(intent);
-    return this.#executeDelegation(input, intent, context);
+    return this.#executeDelegation(intent, context);
   }
 
   async #executeDelegation(
-    input: WorkHubCoordinationActInput,
     intent: WorkHubDelegationIntent,
     context: ConnectionContext,
   ): Promise<WorkHubCoordinationActResult> {
     if (intent.disposition === 'create_new') {
-      if (input.proposal.disposition !== 'create_new' || !input.create) {
+      if (!intent.create) {
         throw new WorkHubActionGateFailure(
           'action_conflict',
-          'WorkHub durable creation intent does not match the requested action',
+          'WorkHub durable creation intent is incomplete',
         );
       }
       await this.#effects.create({
         sessionId: intent.targetSessionId,
-        workspace: input.create.workspace,
-        title: input.proposal.title,
+        workspace: intent.create.workspace,
+        title: intent.create.title,
       });
-    } else if (input.proposal.disposition !== 'delegate_existing') {
+    } else if (intent.create) {
       throw new WorkHubActionGateFailure(
         'action_conflict',
-        'WorkHub durable delegation intent does not match the requested action',
+        'WorkHub durable delegation intent contains creation context',
       );
     }
 
     const message = {
       sessionId: intent.targetSessionId,
-      messageId: actionMessageId(input.actionId),
-      text: input.userText,
+      messageId: actionMessageId(intent.actionId),
+      text: intent.userText,
     };
     let submitted: { readonly turnId: string; readonly steered?: true };
     try {
@@ -318,7 +317,7 @@ export class WorkHubCoordinationActionGate {
     const commit: WorkHubDelegationCommit = {
       ...intent,
       kind: 'delegation_committed',
-      delegationId: delegationId(input.actionId),
+      delegationId: delegationId(intent.actionId),
       targetTurnId: submitted.turnId,
       ...(submitted.steered ? { steered: true as const } : {}),
     };
@@ -407,6 +406,7 @@ function delegationIntent(
   actionFingerprint: `sha256:${string}`,
   targetSessionId: string,
 ): WorkHubDelegationIntent {
+  const create = input.create;
   if (
     input.proposal.disposition !== 'delegate_existing' &&
     input.proposal.disposition !== 'create_new'
@@ -416,13 +416,28 @@ function delegationIntent(
       'WorkHub local action cannot create a delegation intent',
     );
   }
-  return {
+  const base = {
     kind: 'delegation_intent',
     actionId: input.actionId,
     actionFingerprint,
     coordinationTurnId: input.actionId,
     targetSessionId,
     disposition: input.proposal.disposition,
+    userText: input.userText,
+  } as const;
+  if (input.proposal.disposition === 'delegate_existing') return base;
+  if (!create) {
+    throw new WorkHubActionGateFailure(
+      'action_conflict',
+      'WorkHub creation context is unavailable',
+    );
+  }
+  return {
+    ...base,
+    create: {
+      title: input.proposal.title,
+      workspace: create.workspace,
+    },
   };
 }
 
@@ -459,6 +474,16 @@ function committedResult(commit: WorkHubDelegationCommit): WorkHubCoordinationAc
 
 function digest(value: unknown): `sha256:${string}` {
   return `sha256:${hash(JSON.stringify(value))}`;
+}
+
+function actionFingerprint(input: WorkHubCoordinationActInput): `sha256:${string}` {
+  return digest({
+    userText: input.userText,
+    disposition: input.proposal.disposition,
+    ...(input.proposal.disposition === 'clarify'
+      ? { assistantText: input.proposal.assistantText }
+      : {}),
+  });
 }
 
 function hash(value: string): string {

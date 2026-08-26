@@ -37,6 +37,7 @@ describe('WorkHub Coordination stored records', () => {
       coordinationTurnId: 'coordination-turn',
       targetSessionId: 'payments',
       disposition: 'delegate_existing',
+      userText: 'Continue payment work',
     } as const;
     const committed = {
       ...intent,
@@ -71,11 +72,43 @@ describe('WorkHub Coordination stored records', () => {
       { ...base, coordinationTurnId: 'different-turn' },
       { ...base, actionFingerprint: 'not-a-digest' },
       { ...base, disposition: 'replace' },
+      { ...base, userText: undefined },
       { ...base, sourceSessionId: 'injected' },
       { ...base, kind: 'delegation_committed' },
       { ...base, schemaVersion: 2 },
     ]) {
       assert.throws(() => decodeCanonicalMessage(invalid), /Invalid stored message schema/u);
     }
+  });
+
+  test('requires a complete create payload only for create_new intents', () => {
+    const create = {
+      type: 'workhub_coordination',
+      id: 'create-intent-id',
+      turnId: 'coordination-turn',
+      ts: 1,
+      schemaVersion: 1,
+      kind: 'delegation_intent',
+      actionId: 'action-id',
+      actionFingerprint: FINGERPRINT,
+      coordinationTurnId: 'coordination-turn',
+      targetSessionId: 'created-session',
+      disposition: 'create_new',
+      userText: 'Create a login audit',
+      create: {
+        title: 'Login audit',
+        workspace: { kind: 'project', projectId: 'project-maka' },
+      },
+    } as const;
+
+    assert.deepEqual(decodeCanonicalMessage(create), create);
+    assert.throws(
+      () => decodeCanonicalMessage({ ...create, create: undefined }),
+      /Invalid stored message schema/u,
+    );
+    assert.throws(
+      () => decodeCanonicalMessage({ ...create, disposition: 'delegate_existing' }),
+      /Invalid stored message schema/u,
+    );
   });
 });

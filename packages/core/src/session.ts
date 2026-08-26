@@ -913,6 +913,15 @@ export const WORKHUB_COORDINATION_RECORD_SCHEMA_VERSION = 1 as const;
 
 export type WorkHubDelegationDisposition = 'delegate_existing' | 'create_new';
 
+export type WorkHubDelegationWorkspace =
+  | { readonly kind: 'project'; readonly projectId: string }
+  | { readonly kind: 'host_path'; readonly path: string };
+
+export interface WorkHubDelegationCreateSpec {
+  readonly title: string;
+  readonly workspace: WorkHubDelegationWorkspace;
+}
+
 interface WorkHubCoordinationMessageEnvelope {
   type: 'workhub_coordination';
   id: string;
@@ -925,6 +934,10 @@ interface WorkHubCoordinationMessageEnvelope {
   coordinationTurnId: string;
   targetSessionId: string;
   disposition: WorkHubDelegationDisposition;
+  /** Exact target payload; retained so retry does not depend on renderer memory. */
+  userText: string;
+  /** Present exactly for create_new. */
+  create?: WorkHubDelegationCreateSpec;
 }
 
 /** Durable target choice written before a delegated Session effect is attempted. */
@@ -1079,8 +1092,9 @@ const WORKHUB_DELEGATION_INTENT_MESSAGE_SHAPE = defineObjectShape<WorkHubDelegat
     'coordinationTurnId',
     'targetSessionId',
     'disposition',
+    'userText',
   ],
-  [],
+  ['create'],
 );
 const WORKHUB_DELEGATION_COMMITTED_MESSAGE_SHAPE =
   defineObjectShape<WorkHubDelegationCommittedMessage>()(
@@ -1096,11 +1110,22 @@ const WORKHUB_DELEGATION_COMMITTED_MESSAGE_SHAPE =
       'coordinationTurnId',
       'targetSessionId',
       'disposition',
+      'userText',
       'delegationId',
       'targetTurnId',
     ],
-    ['steered'],
+    ['create', 'steered'],
   );
+const WORKHUB_DELEGATION_CREATE_SHAPE = defineObjectShape<WorkHubDelegationCreateSpec>()(
+  ['title', 'workspace'],
+  [],
+);
+const WORKHUB_DELEGATION_PROJECT_WORKSPACE_SHAPE = defineObjectShape<
+  Extract<WorkHubDelegationWorkspace, { kind: 'project' }>
+>()(['kind', 'projectId'], []);
+const WORKHUB_DELEGATION_HOST_PATH_WORKSPACE_SHAPE = defineObjectShape<
+  Extract<WorkHubDelegationWorkspace, { kind: 'host_path' }>
+>()(['kind', 'path'], []);
 const SYSTEM_NOTE_MESSAGE_SHAPE = defineObjectShape<SystemNoteMessage>()(
   ['type', 'id', 'ts', 'kind'],
   ['turnId', 'data'],
@@ -1276,6 +1301,10 @@ function isWorkHubCoordinationMessage(message: Record<string, unknown>): boolean
     typeof message.coordinationTurnId === 'string' &&
     message.turnId === message.coordinationTurnId &&
     typeof message.targetSessionId === 'string' &&
+    typeof message.userText === 'string' &&
+    message.userText.trim().length > 0 &&
+    ((message.disposition === 'delegate_existing' && message.create === undefined) ||
+      (message.disposition === 'create_new' && isWorkHubDelegationCreateSpec(message.create))) &&
     (message.disposition === 'delegate_existing' || message.disposition === 'create_new');
   if (!common) return false;
   if (message.kind === 'delegation_intent') {
@@ -1287,6 +1316,31 @@ function isWorkHubCoordinationMessage(message: Record<string, unknown>): boolean
     typeof message.delegationId === 'string' &&
     typeof message.targetTurnId === 'string' &&
     (message.steered === undefined || message.steered === true)
+  );
+}
+
+function isWorkHubDelegationCreateSpec(value: unknown): value is WorkHubDelegationCreateSpec {
+  if (
+    !isRecord(value) ||
+    !hasExactShape(value, WORKHUB_DELEGATION_CREATE_SHAPE) ||
+    typeof value.title !== 'string' ||
+    value.title.trim().length === 0 ||
+    !isRecord(value.workspace)
+  ) {
+    return false;
+  }
+  if (value.workspace.kind === 'project') {
+    return (
+      hasExactShape(value.workspace, WORKHUB_DELEGATION_PROJECT_WORKSPACE_SHAPE) &&
+      typeof value.workspace.projectId === 'string' &&
+      value.workspace.projectId.length > 0
+    );
+  }
+  return (
+    value.workspace.kind === 'host_path' &&
+    hasExactShape(value.workspace, WORKHUB_DELEGATION_HOST_PATH_WORKSPACE_SHAPE) &&
+    typeof value.workspace.path === 'string' &&
+    value.workspace.path.length > 0
   );
 }
 

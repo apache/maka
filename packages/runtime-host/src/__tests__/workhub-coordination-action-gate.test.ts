@@ -221,8 +221,19 @@ describe('WorkHub Coordination Action Gate', () => {
       'title',
       'workspace',
     ]);
+    assert.deepEqual(
+      await new WorkHubCoordinationActionGate(effects).act(
+        {
+          ...input,
+          proposal: { disposition: 'create_new', title: 'Recomputed title' },
+          create: { workspace: { kind: 'project', projectId: 'new-current-project' } },
+        },
+        CONTEXT,
+      ),
+      first,
+    );
     await assert.rejects(
-      gate.act({ ...input, proposal: { disposition: 'create_new', title: 'Different' } }, CONTEXT),
+      gate.act({ ...input, userText: 'Create different work' }, CONTEXT),
       (error) => error instanceof WorkHubActionGateFailure && error.code === 'action_conflict',
     );
     assert.equal(effects.creations.length, 1);
@@ -334,11 +345,69 @@ describe('WorkHub Coordination Action Gate', () => {
     assert.equal(effects.submissions.length, 1);
 
     effects.sessions[0] = session('ordinary', { statusUpdatedAt: 99 });
-    const recovered = await new WorkHubCoordinationActionGate(effects).act(input, CONTEXT);
+    const restarted = new WorkHubCoordinationActionGate(effects);
+    const refreshed = await restarted.candidates();
+    await assert.rejects(
+      restarted.act(
+        {
+          actionId: input.actionId,
+          userText: input.userText,
+          proposal: { disposition: 'answer_here' },
+        },
+        CONTEXT,
+      ),
+      (error) => error instanceof WorkHubActionGateFailure && error.code === 'action_conflict',
+    );
+    const recovered = await restarted.act(
+      {
+        ...input,
+        candidateSetId: refreshed.candidateSetId,
+        proposal: {
+          disposition: 'delegate_existing',
+          candidateRef: refreshed.candidates[0]!.candidateRef,
+        },
+      },
+      CONTEXT,
+    );
 
     assert.equal(recovered.disposition, 'delegate_existing');
     assert.equal(effects.submissions.length, 1);
     assert.equal(effects.delegations.get(input.actionId)?.kind, 'delegation_committed');
+  });
+
+  test('resumes create_new from the durable payload instead of recomputed caller context', async () => {
+    const effects = fakeEffects([session('ordinary')]);
+    const input = {
+      actionId: 'interrupted-create-action',
+      userText: 'Create a login audit',
+      proposal: { disposition: 'create_new' as const, title: 'Login audit' },
+      create: { workspace: { kind: 'project' as const, projectId: 'original-project' } },
+    };
+    effects.commitFailuresRemaining = 1;
+
+    await assert.rejects(
+      new WorkHubCoordinationActionGate(effects).act(input, CONTEXT),
+      (error) =>
+        error instanceof WorkHubActionEffectFailure && error.code === 'commit_outcome_unknown',
+    );
+    const recovered = await new WorkHubCoordinationActionGate(effects).act(
+      {
+        ...input,
+        proposal: { disposition: 'create_new', title: 'Recomputed title' },
+        create: { workspace: { kind: 'project', projectId: 'new-current-project' } },
+      },
+      CONTEXT,
+    );
+
+    assert.equal(recovered.disposition, 'create_new');
+    assert.deepEqual(effects.creations, [
+      {
+        sessionId: effects.creations[0]!.sessionId,
+        workspace: { kind: 'project', projectId: 'original-project' },
+        title: 'Login audit',
+      },
+    ]);
+    assert.equal(effects.submissions.length, 1);
   });
 });
 
@@ -398,9 +467,9 @@ function fakeEffects(initialSessions: WorkHubActionGateSession[]) {
       workspace: { kind: 'project'; projectId: string } | { kind: 'host_path'; path: string };
       title: string;
     }) {
-      if (!this.creations.some(({ sessionId }) => sessionId === input.sessionId)) {
-        this.creations.push(input);
-      }
+      const existing = this.creations.find(({ sessionId }) => sessionId === input.sessionId);
+      if (existing) assert.deepEqual(existing, input);
+      else this.creations.push(input);
     },
     async submit(input: { sessionId: string; messageId: string; text: string }) {
       const existing = submitted.get(input.messageId);

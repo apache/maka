@@ -483,6 +483,7 @@ describe('Host WorkHub Coordination coordinator', () => {
 
   test('persists delegated action ownership and replays it after Host restart', async () => {
     const root = await mkdtemp(join(tmpdir(), 'maka-workhub-delegation-'));
+    const userText = 'Continue payment work. '.repeat(900);
     let store = createSessionStore(root);
     try {
       await store.create({
@@ -507,7 +508,7 @@ describe('Host WorkHub Coordination coordinator', () => {
       if (!candidates.ok) return;
       const input = {
         actionId: 'payments-action',
-        userText: 'Continue payment work',
+        userText,
         candidateSetId: candidates.result.candidateSetId,
         proposal: {
           disposition: 'delegate_existing' as const,
@@ -559,7 +560,7 @@ describe('Host WorkHub Coordination coordinator', () => {
       const replayed = await restarted.handlers['workhub.coordination.act'](
         {
           actionId: 'payments-action',
-          userText: 'Continue payment work',
+          userText,
           candidateSetId: candidates.result.candidateSetId,
           proposal: {
             disposition: 'delegate_existing',
