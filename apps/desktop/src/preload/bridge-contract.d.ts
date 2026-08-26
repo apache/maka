@@ -138,7 +138,12 @@ export type AppIconSelectResult =
   | { readonly ok: false; readonly reason: 'invalid_id' | 'missing_artwork' | 'write_failed' };
 
 export type AppIconRemoveResult =
-  | { readonly ok: true; readonly selection: AppIconChoice }
+  | {
+      readonly ok: true;
+      readonly selection: AppIconChoice;
+      /** Absent when one icon serves both appearances. */
+      readonly darkSelection?: AppIconChoice;
+    }
   | { readonly ok: false; readonly reason: 'invalid_id' | 'reset_failed' | 'remove_failed' };
 
 export type AppIconImportResult =

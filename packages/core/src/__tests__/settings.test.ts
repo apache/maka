@@ -256,3 +256,22 @@ describe('app icon per appearance', () => {
     expect(toAppIconChoice('../../evil')).toBe('default');
   });
 });
+
+describe('app icon on upgrade', () => {
+  test('a settings file that recorded a choice keeps it', () => {
+    // Anyone who ever opened the icon picker has an id on disk, and changing
+    // the shipped default must not move it.
+    const kept = normalizeSettings({ appearance: { theme: 'auto', appIcon: 'default' } });
+    expect(kept.appearance.appIcon).toBe('default');
+  });
+
+  test('a settings file that never recorded one takes the new default', () => {
+    // This is deliberate, and it is how a default actually changes: a file
+    // with no `appIcon` key predates the picker, so its owner never chose the
+    // old mark — they were shown it. `readOrCreate` does not rewrite existing
+    // files, so this resolves on every read rather than migrating once.
+    const migrated = normalizeSettings({ appearance: { theme: 'auto' } });
+    expect(migrated.appearance.appIcon).toBe(DEFAULT_APP_ICON);
+    expect(migrated.appearance.appIconDark).toBe(undefined);
+  });
+});

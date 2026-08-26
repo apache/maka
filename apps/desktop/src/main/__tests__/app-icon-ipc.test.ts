@@ -23,6 +23,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import type { IpcMainInvokeEvent } from 'electron';
+import { DEFAULT_APP_ICON } from '@maka/core/settings';
 import type { AppSettings, UpdateAppSettingsInput } from '@maka/core/settings';
 import { registerAppIconIpc } from '../app-icon-ipc.js';
 import { customAppIconDirectory, resolveCustomAppIconPath } from '../custom-app-icon-store.js';
@@ -36,13 +37,21 @@ async function harness(selected: string, options: {
     onCompareAndSet?: () => void;
     onApply?: () => void;
     onShowOpenDialog?: () => Promise<void>;
+    /** Seeds `appearance.appIconDark`; absent means the split is off. */
+    dark?: string;
   } = {}) {
   const root = await mkdtemp(join(tmpdir(), 'maka-icon-ipc-'));
   await mkdir(customAppIconDirectory(root), { recursive: true });
   await writeFile(resolveCustomAppIconPath(root, ID), 'x');
 
   const handlers = new Map<string, Handler>();
-  let settings = { appearance: { theme: 'auto', appIcon: selected } } as unknown as AppSettings;
+  let settings = {
+    appearance: {
+      theme: 'auto',
+      appIcon: selected,
+      ...(options.dark === undefined ? {} : { appIconDark: options.dark }),
+    },
+  } as unknown as AppSettings;
   const applied: AppSettings[] = [];
 
   registerAppIconIpc({
@@ -71,6 +80,9 @@ async function harness(selected: string, options: {
         // hook stands in for whatever else reached that queue first.
         options.onCompareAndSet?.();
         if (!predicate(settings)) return { applied: false, settings };
+        // Spread, like the real `mergeSettings`: an explicit `undefined` in a
+        // patch overwrites rather than being skipped, which is how a slot is
+        // cleared.
         settings = {
           ...settings,
           appearance: { ...settings.appearance, ...patch.appearance },
@@ -91,6 +103,7 @@ async function harness(selected: string, options: {
     remove: (icon: unknown) =>
       handlers.get('app:removeIcon')!(undefined as unknown as IpcMainInvokeEvent, icon),
     current: () => settings.appearance.appIcon,
+    currentDark: () => settings.appearance.appIconDark,
     select: (icon: unknown) =>
       handlers.get('app:selectIcon')!(undefined as unknown as IpcMainInvokeEvent, icon),
     importIcon: () =>
@@ -111,9 +124,10 @@ test('removing the current icon resets the selection before the file goes away',
   const result = (await h.remove(ICON)) as { ok: boolean; selection?: string };
 
   assert.equal(result.ok, true);
-  assert.equal(result.selection, 'default');
+  // The shipped default, which is no longer the id literally named `default`.
+  assert.equal(result.selection, DEFAULT_APP_ICON);
   // Both halves moved, and the setting is the half that moved first.
-  assert.equal(h.current(), 'default');
+  assert.equal(h.current(), DEFAULT_APP_ICON);
   assert.deepEqual(await readdir(customAppIconDirectory(h.root)), []);
   // The OS surface was told, so the dock is not still holding the deleted art.
   assert.equal(h.applied.length, 1);
@@ -194,10 +208,14 @@ test('a selection issued mid-removal cannot land between reset, apply and delete
   // It ran after the removal, not inside it, and the artwork was already gone.
   assert.equal(selected.ok, false);
   assert.equal(selected.reason, 'missing_artwork');
-  assert.equal(h.current(), 'default');
+  assert.equal(h.current(), DEFAULT_APP_ICON);
   assert.deepEqual(await readdir(customAppIconDirectory(h.root)), []);
-  // Nothing ran between the reset and the delete.
-  assert.deepEqual(observed, ['compare-and-set', 'apply']);
+  // Nothing ran between the reset and the delete. Two compare-and-sets, not
+  // one: the light slot and the dark slot are checked separately because
+  // `updateIf` takes a fixed patch and only the slots that actually name the
+  // removed icon may be reset. Both still sit inside the removal, ahead of the
+  // single apply and the delete — which is the property under test.
+  assert.deepEqual(observed, ['compare-and-set', 'compare-and-set', 'apply']);
 });
 
 /**
@@ -220,4 +238,40 @@ test('an open file dialog does not hold the queue', async () => {
 
   releaseDialog();
   await importing;
+});
+
+test('removing an icon used only in dark mode clears the dark slot', async () => {
+  // The dangling-reference case: the light slot names something else, so the
+  // light-slot predicate does not match and an earlier version of this handler
+  // deleted the file while leaving `appIconDark` pointing at it.
+  const h = await harness('sky', { dark: ICON });
+
+  const result = (await h.remove(ICON)) as { ok: boolean; darkSelection?: string };
+
+  assert.equal(result.ok, true);
+  assert.equal(h.current(), 'sky', 'the light choice is untouched');
+  assert.equal(h.currentDark(), undefined, 'the dark slot no longer names deleted artwork');
+  assert.equal(result.darkSelection, undefined);
+  assert.equal(h.applied.length, 1, 'the dock was re-applied for the cleared slot');
+});
+
+test('removing an icon used in both slots clears both', async () => {
+  const h = await harness(ICON, { dark: ICON });
+
+  const result = (await h.remove(ICON)) as { ok: boolean; selection: string };
+
+  assert.equal(result.ok, true);
+  assert.equal(h.current(), 'sky');
+  assert.equal(h.currentDark(), undefined);
+  assert.equal(result.selection, 'sky');
+});
+
+test('removing an unrelated icon leaves a dark choice alone', async () => {
+  const other = `custom:${'d'.repeat(32)}`;
+  const h = await harness('sky', { dark: 'ink' });
+
+  await h.remove(other);
+
+  assert.equal(h.current(), 'sky');
+  assert.equal(h.currentDark(), 'ink', 'an unrelated removal must not disturb the split');
 });
