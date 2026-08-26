@@ -20,6 +20,7 @@
 import { useRef, useState } from 'react';
 import type { StoredMessage } from '@maka/core/session';
 import type { TransientUserMessageProjection } from '@maka/ui';
+import { MESSAGE_QUEUE_MAX_ENTRIES } from '@maka/runtime-host/protocol';
 import { useAppShellSessionUiState } from './app-shell-session-ui-state';
 import { useAppShellSessionList } from './use-app-shell-session-list';
 import { createBootstrapSelectionLease } from './bootstrap-selection-lease';
@@ -137,12 +138,21 @@ export function useAppShellSessionWorkspace(toastApi: ToastApi) {
     const pending = transientMessagesBySessionRef.current.get(sessionId);
     if (!pending || pending.size === 0) return;
     try {
-      const result = await window.maka.sessions.queryCancelledMessages(sessionId, [
-        ...pending.keys(),
-      ]);
+      // A legal Host queue already fills the protocol's per-query cap, and an
+      // unreconciled root Message sits beside it, so asking about every row at
+      // once fails the whole proof and retires nothing.
+      const messageIds = [...pending.keys()];
+      const cancelled: string[] = [];
+      for (let from = 0; from < messageIds.length; from += MESSAGE_QUEUE_MAX_ENTRIES) {
+        const result = await window.maka.sessions.queryCancelledMessages(
+          sessionId,
+          messageIds.slice(from, from + MESSAGE_QUEUE_MAX_ENTRIES),
+        );
+        cancelled.push(...result.cancelledMessageIds);
+      }
       const current = transientMessagesBySessionRef.current.get(sessionId);
       if (!current) return;
-      for (const messageId of result.cancelledMessageIds) current.delete(messageId);
+      for (const messageId of cancelled) current.delete(messageId);
       if (current.size === 0) transientMessagesBySessionRef.current.delete(sessionId);
       if (activeIdRef.current === sessionId) {
         setTransientMessages(projectTransientMessages(sessionId, messagesRef.current));

@@ -1880,7 +1880,7 @@ function AppShellContent({
     const pending = pendingAttachments.length > 0 ? pendingAttachments : undefined;
     const quotes = pendingQuotes.length > 0 ? pendingQuotes : undefined;
     try {
-      await enqueueMessage(
+      const sent = await enqueueMessage(
         sessionId,
         text,
         mode === 'steer' ? 'current_turn' : 'next_turn',
@@ -1892,6 +1892,9 @@ function AppShellContent({
             : {}),
         },
       );
+      // Refused: the composer keeps the draft, the attachments and the quotes,
+      // because the user has to change something and send it again.
+      if (!sent) return false;
       if (pending) clearSubmittedAttachments(pending);
       if (quotes) clearQuotes();
       return true;

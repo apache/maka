@@ -114,6 +114,11 @@ export interface AppShellChatActions {
       onSessionResolved?: (sessionId: string) => void;
     },
   ): Promise<boolean>;
+  /**
+   * Resolves with whether the Message was sent. An unproven outcome counts as
+   * sent — Runtime Host may well have it — so the caller does not offer the
+   * same text twice; only a refusal is `false`.
+   */
   enqueueMessage(
     sessionId: string,
     text: string,
@@ -123,7 +128,7 @@ export interface AppShellChatActions {
       quotes?: readonly QuoteRef[];
       workspaceFileReferences?: readonly WorkspaceFileReferencePosition[];
     },
-  ): Promise<void>;
+  ): Promise<boolean>;
   respondToSandboxBoundary(response: SandboxBoundaryResponse): Promise<void>;
   respondToUserQuestion(response: UserQuestionResponse): Promise<void>;
   refreshMessages(sessionId: string, options?: RefreshMessagesOptions): Promise<boolean>;
@@ -669,7 +674,7 @@ export function createAppShellChatActions(deps: {
       quotes?: readonly QuoteRef[];
       workspaceFileReferences?: readonly WorkspaceFileReferencePosition[];
     } = {},
-  ): Promise<void> {
+  ): Promise<boolean> {
     const messageId = crypto.randomUUID();
     const quotes = options.quotes ?? [];
     showTransientUserMessage(sessionId, messageId, text, retainedAttachmentRefs(pending ?? []), {
@@ -680,7 +685,7 @@ export function createAppShellChatActions(deps: {
     try {
       const attachmentItems = pending?.length ? toComposerIngestItems(pending) : [];
       const retainedAttachments = pending?.length ? retainedAttachmentRefs(pending) : [];
-      await submitAndProject({
+      const submitted = await submitAndProject({
         sessionId,
         messageId,
         placement,
@@ -696,6 +701,9 @@ export function createAppShellChatActions(deps: {
         ...(quotes.length > 0 ? { quotes } : {}),
         isSurfaceVisible: () => activeIdRef.current === sessionId,
       });
+      // A refused Message opened nothing and left no row. Reporting it as sent
+      // would clear the composer draft the user has to retry from.
+      return submitted.kind !== 'refused';
     } catch (error) {
       removeOptimisticUserMessage(sessionId, messageId);
       throw error;

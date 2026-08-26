@@ -158,6 +158,58 @@ describe('busy-raced send settlement', () => {
     }
   });
 
+  it('reports a refused Follow Up as not sent', async () => {
+    const restoreWindow = installWindow({
+      sessions: {
+        submitMessage: async () => ({
+          ok: false as const,
+          reason: 'skill_invocation_failed' as const,
+          skillInvocation: {
+            loaded: [],
+            failed: [{ request: 'typo', reason: 'not_found' }],
+            receipts: [],
+          },
+        }),
+      },
+    });
+    try {
+      const actions = createAppShellChatActions({
+        ...createActionsDeps(),
+        activeIdRef: { current: 'session-a' },
+      });
+
+      // Refusal is not an exception, so a caller that only watches for a throw
+      // reads it as sent and clears the draft the user still needs.
+      assert.equal(
+        await actions.enqueueMessage('session-a', '/skill:typo do this next', 'next_turn'),
+        false,
+      );
+    } finally {
+      restoreWindow();
+    }
+  });
+
+  it('reports an unproven Follow Up as sent so its text is not offered twice', async () => {
+    const restoreWindow = installWindow({
+      sessions: {
+        submitMessage: async () => ({ ok: false as const, reason: 'outcome_unknown' as const }),
+      },
+    });
+    try {
+      const actions = createAppShellChatActions({
+        ...createActionsDeps(),
+        activeIdRef: { current: 'session-a' },
+      });
+
+      assert.equal(
+        await actions.enqueueMessage('session-a', 'do this next', 'next_turn'),
+        true,
+      );
+    } finally {
+      restoreWindow();
+    }
+  });
+
   it('does not resurrect a Follow Up retracted before its IPC reply settles', async () => {
     const transient = new Map<string, TransientUserMessageProjection>();
     let submittedMessageId: string | undefined;

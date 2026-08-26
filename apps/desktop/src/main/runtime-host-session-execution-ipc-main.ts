@@ -128,6 +128,17 @@ async function submitMessageWithReconnect(
     if (error instanceof RuntimeHostOperationError && error.code === 'outcome_unknown') {
       return undefined;
     }
+    // `dispatched` means the request reached Runtime Host and the answer was
+    // lost, which is the same thing `outcome_unknown` says. The retry above
+    // covers one interruption; a second one is still an unknown outcome, and
+    // raising it would have the renderer delete a Message the Host may hold
+    // — and, on a first send, the Session created for it.
+    if (
+      error instanceof RuntimeHostRequestInterruptedError &&
+      error.dispatch === 'dispatched'
+    ) {
+      return undefined;
+    }
     throw error;
   }
 }
