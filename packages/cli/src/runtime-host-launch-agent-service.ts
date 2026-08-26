@@ -117,29 +117,21 @@ export function createLaunchAgentRuntimeHostService(
   };
   return {
     preflightInstall: () => assertLaunchAgentDomain(context),
-    install: async (config) => {
-      await validateRuntimeHostServiceLaunch(config);
+    stageInstall: async () => {
       const [previous, previousScheduler] = await Promise.all([
         captureLaunchAgentDeployment(context),
         captureLaunchAgentDeployment(scheduler),
       ]);
       let schedulerMutationStarted = false;
-      try {
-        await applyLaunchAgentDeployment(context, config, serviceConfigPath);
-        await applyLaunchAgentUpdateSchedulerDesiredState(scheduler, config, () => {
-          schedulerMutationStarted = true;
-        });
-      } catch (error) {
-        await restoreFailedLaunchAgentDeployment(
-          previous,
-          schedulerMutationStarted ? previousScheduler : undefined,
-          context,
-          scheduler,
-          error,
-        );
-      }
       let rolledBack = false;
       return {
+        apply: async (config) => {
+          await validateRuntimeHostServiceLaunch(config);
+          await applyLaunchAgentDeployment(context, config, serviceConfigPath);
+          await applyLaunchAgentUpdateSchedulerDesiredState(scheduler, config, () => {
+            schedulerMutationStarted = true;
+          });
+        },
         rollback: async () => {
           if (rolledBack) return;
           rolledBack = true;

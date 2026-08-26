@@ -155,6 +155,7 @@ export type SettingsProjectsCopy = {
     uninstallConfirm: string;
     uninstallRetained(path: string): string;
     managementActionFailed: string;
+    managementReconnectFailed: string;
     manageAccess: string;
     accessTitle: string;
     noAccessCredentials: string;
@@ -378,6 +379,7 @@ const SETTINGS_PROJECTS_COPY_BY_LOCALE = {
       uninstallConfirm: '卸载服务',
       uninstallRetained: (path: string) => `服务已卸载，数据保留在 ${path}`,
       managementActionFailed: '无法管理 Runtime Host 服务',
+      managementReconnectFailed: '更改已应用，但 Desktop 未能重新连接',
       manageAccess: '管理访问权限',
       accessTitle: '访问权限',
       noAccessCredentials: '没有访问凭据',
@@ -602,6 +604,7 @@ const SETTINGS_PROJECTS_COPY_BY_LOCALE = {
       uninstallConfirm: 'Uninstall service',
       uninstallRetained: (path: string) => `Service uninstalled. Data was retained at ${path}`,
       managementActionFailed: 'Unable to manage the Runtime Host service',
+      managementReconnectFailed: 'Change applied, but Desktop could not reconnect',
       manageAccess: 'Manage access',
       accessTitle: 'Access',
       noAccessCredentials: 'No active access credentials',

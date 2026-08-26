@@ -99,6 +99,21 @@ test('projects invalid setup input as a recoverable failure', async () => {
   await harness.onboarding.close();
 });
 
+test('rejects relative remote Project roots before starting SSH setup', async () => {
+  const harness = createHarness();
+
+  const result = await harness.invoke('runtime-host-onboarding:start', {
+    destination: 'operator@example.com',
+    projectDirectoryRoots: [{ label: 'Work', path: 'srv/work' }],
+  });
+  assert.deepEqual(result, {
+    kind: 'failed',
+    message: 'Runtime Host Project directory is invalid',
+    revision: 1,
+  });
+  await harness.onboarding.close();
+});
+
 test('finishes Host pairing after the cancellable SSH phase has completed', async () => {
   let finishPairing!: (value: { profileId: string }) => void;
   const pairing = new Promise<{ profileId: string }>((resolve) => {

@@ -23,10 +23,12 @@ import { Layout, LayoutContent, LayoutFooter } from '@astryxdesign/core/Layout';
 import { Text } from '@astryxdesign/core/Text';
 import { Banner, Button, FormLayout, Spinner, TextInput, useUiLocale } from '@maka/ui';
 import type { DesktopRuntimeHostOnboardingSnapshot } from '../../preload/bridge-contract.js';
-import { getSettingsProjectsCopy } from '../locales/settings-projects-copy.js';
 import {
   canonicalProjectDirectoryRoots,
   projectDirectoryRootsValid,
+} from '../../shared/runtime-host-project-directory-policy.js';
+import { getSettingsProjectsCopy } from '../locales/settings-projects-copy.js';
+import {
   RuntimeHostProjectDirectoryEditor,
   type ProjectDirectoryRootDraft,
 } from './runtime-host-project-directory-editor.js';

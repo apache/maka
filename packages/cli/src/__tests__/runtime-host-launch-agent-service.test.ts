@@ -30,7 +30,11 @@ import {
   resolveLaunchAgentPath,
   resolveLaunchAgentUpdatePath,
 } from '../runtime-host-launch-agent-service.js';
-import type { RuntimeHostManagedServiceConfig } from '../runtime-host-service-manager.js';
+import type {
+  RuntimeHostManagedServiceConfig,
+  RuntimeHostServiceBackend,
+  RuntimeHostServiceDeployment,
+} from '../runtime-host-service-manager.js';
 
 const SERVICE_ID = 'a'.repeat(64);
 const UID = 501;
@@ -97,7 +101,7 @@ test('installs and removes the update scheduler with a managed LaunchAgent', asy
       managedDeploymentRoot: join(homeDir, 'managed'),
     };
 
-    await backend.install(config);
+    await applyStagedInstall(backend, config);
     await backend.verifyDeployment(config);
     const updatePath = resolveLaunchAgentUpdatePath(SERVICE_ID, homeDir);
     assert.match(await readFile(updatePath, 'utf8'), /reconcile-update/u);
@@ -141,7 +145,7 @@ test('installs and removes the update scheduler with a managed LaunchAgent', asy
       (error: unknown) =>
         error instanceof Error && 'code' in error && error.code === 'target_mismatch',
     );
-    await backend.install(config);
+    await applyStagedInstall(backend, config);
     await backend.verifyDeployment(config);
 
     await backend.stop();
@@ -157,7 +161,7 @@ test('installs and removes the update scheduler with a managed LaunchAgent', asy
     await backend.verifyDeployment(config, { requireSchedulerReady: true });
 
     const { managedDeploymentRoot: _managedDeploymentRoot, ...unmanagedConfig } = config;
-    await backend.install(unmanagedConfig);
+    await applyStagedInstall(backend, unmanagedConfig);
     await backend.verifyDeployment(unmanagedConfig);
     assert.equal(await fileExists(updatePath), false);
     assert.equal(launchctl.updateLoaded, false);
@@ -187,7 +191,7 @@ test('maps install, stop, start, restart, and uninstall onto one LaunchAgent ser
     const config = fixtureConfig(process.execPath, cliPath, join(homeDir, 'state'));
 
     await backend.preflightInstall();
-    await backend.install(config);
+    await applyStagedInstall(backend, config);
     await backend.verifyDeployment(config);
     assert.deepEqual(await backend.status(), {
       manager: 'launch_agent',
@@ -250,10 +254,20 @@ test('restores the previous loaded LaunchAgent when deployment bootstrap fails',
         isProcessAlive: () => false,
       });
 
-      await assert.rejects(
-        backend[action](fixtureConfig(process.execPath, cliPath, join(homeDir, 'state'))),
-        /Starting the Runtime Host LaunchAgent failed/u,
-      );
+      const config = fixtureConfig(process.execPath, cliPath, join(homeDir, 'state'));
+      if (action === 'install') {
+        const deployment = await backend.stageInstall();
+        await assert.rejects(
+          deployment.apply(config),
+          /Starting the Runtime Host LaunchAgent failed/u,
+        );
+        await deployment.rollback();
+      } else {
+        await assert.rejects(
+          backend.replace(config),
+          /Starting the Runtime Host LaunchAgent failed/u,
+        );
+      }
       assert.equal(await readFile(plistPath, 'utf8'), previousPlist);
       assert.equal(launchctl.loaded, true);
     });
@@ -352,6 +366,15 @@ function fixtureConfig(
     websocket: { host: '127.0.0.1', port: 23456, path: '/runtime-host' },
     launch: { nodePath, cliPath },
   };
+}
+
+async function applyStagedInstall(
+  backend: RuntimeHostServiceBackend,
+  config: RuntimeHostManagedServiceConfig,
+): Promise<RuntimeHostServiceDeployment> {
+  const deployment = await backend.stageInstall();
+  await deployment.apply(config);
+  return deployment;
 }
 
 async function withFixture(

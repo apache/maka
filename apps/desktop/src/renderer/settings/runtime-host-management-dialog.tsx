@@ -45,10 +45,12 @@ import type {
   DesktopRuntimeHostUpdateReconciliationResponse,
 } from '../../preload/bridge-contract.js';
 import { getSettingsProjectsCopy } from '../locales/settings-projects-copy.js';
-import { settingsActionErrorMessage } from './settings-error-copy.js';
 import {
   canonicalProjectDirectoryRoots,
   projectDirectoryRootsValid,
+} from '../../shared/runtime-host-project-directory-policy.js';
+import { settingsActionErrorMessage } from './settings-error-copy.js';
+import {
   RuntimeHostProjectDirectoryEditor,
   type ProjectDirectoryRootDraft,
 } from './runtime-host-project-directory-editor.js';
@@ -83,6 +85,7 @@ export function RuntimeHostManagementDialog(props: {
   const [result, setResult] = useState<DesktopRuntimeHostManagementResult>();
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string>();
+  const [reconnectWarning, setReconnectWarning] = useState<string>();
   const [uninstalledRoot, setUninstalledRoot] = useState<string>();
   const [access, setAccess] = useState<DesktopRuntimeHostAccessSnapshot>();
   const [confirmation, setConfirmation] = useState<RuntimeHostManagementConfirmation>();
@@ -103,6 +106,7 @@ export function RuntimeHostManagementDialog(props: {
     let disposed = false;
     setResult(undefined);
     setError(undefined);
+    setReconnectWarning(undefined);
     setUninstalledRoot(undefined);
     setAccess(undefined);
     setConfirmation(undefined);
@@ -161,6 +165,7 @@ export function RuntimeHostManagementDialog(props: {
     if (!profile) return;
     setLoading(true);
     setError(undefined);
+    setReconnectWarning(undefined);
     setLastUpdateOutcome(undefined);
     try {
       const response = await window.maka.runtimeHostManagement.run(profile.id, action);
@@ -209,6 +214,7 @@ export function RuntimeHostManagementDialog(props: {
     if (!profile) return;
     setLoading(true);
     setError(undefined);
+    setReconnectWarning(undefined);
     setUpdatePhase('checking');
     setLastUpdateOutcome(undefined);
     try {
@@ -227,6 +233,7 @@ export function RuntimeHostManagementDialog(props: {
       }
       setResult(response);
       reconcileDirectoryPolicy(response.service);
+      applyReconnectWarning(response.reconnectError);
       if (response.action === 'update') setLastUpdateOutcome(response.update);
       setConfirmation(
         response.action === 'update' && response.update.kind === 'active_tasks'
@@ -294,6 +301,7 @@ export function RuntimeHostManagementDialog(props: {
     if (!profile || !directoryPolicyEdit || directoryPolicyEdit.conflict) return;
     setLoading(true);
     setError(undefined);
+    setReconnectWarning(undefined);
     try {
       const response = await window.maka.runtimeHostManagement.configureProjectDirectories(
         profile.id,
@@ -310,6 +318,7 @@ export function RuntimeHostManagementDialog(props: {
         throw new Error('Runtime Host configuration returned an unrelated result');
       }
       setResult(response);
+      applyReconnectWarning(response.reconnectError);
       if (response.configuration.kind === 'active_tasks') {
         setConfirmation({ kind: 'configureDirectories' });
       } else {
@@ -377,6 +386,7 @@ export function RuntimeHostManagementDialog(props: {
     if (!profile) return;
     setLoading(true);
     setError(undefined);
+    setReconnectWarning(undefined);
     setUpdatePolicyError(undefined);
     setUpdatePhase('checking');
     setLastUpdateOutcome(undefined);
@@ -390,6 +400,7 @@ export function RuntimeHostManagementDialog(props: {
       }
       setLastUpdateOutcome(response.reconciliation);
       applyUpdatePolicy(response.updatePolicy);
+      applyReconnectWarning(response.reconnectError);
       const reconciledService = response.service;
       if (reconciledService) {
         reconcileDirectoryPolicy(reconciledService);
@@ -418,6 +429,15 @@ export function RuntimeHostManagementDialog(props: {
       toast.error(copy.accessActionFailed, message);
     } finally {
       setLoading(false);
+    }
+  }
+
+  function applyReconnectWarning(
+    reconnectError: { readonly message: string } | undefined,
+  ): void {
+    setReconnectWarning(reconnectError?.message);
+    if (reconnectError) {
+      toast.warning(copy.managementReconnectFailed, reconnectError.message);
     }
   }
 
@@ -493,6 +513,13 @@ export function RuntimeHostManagementDialog(props: {
                 </div>
               ) : null}
               {error ? <Banner status="error" title={error} /> : null}
+              {reconnectWarning ? (
+                <Banner
+                  status="warning"
+                  title={copy.managementReconnectFailed}
+                  description={reconnectWarning}
+                />
+              ) : null}
               {confirmation?.kind === 'configureDirectories' ? (
                 <Banner
                   status="warning"

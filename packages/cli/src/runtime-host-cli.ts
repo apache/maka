@@ -21,9 +21,10 @@ import { isAbsolute } from 'node:path';
 import { isProductReleaseVersion } from '@maka/runtime-host/operator';
 import type { RuntimeHostManagedUpdatePolicy } from '@maka/runtime-host/operator';
 import {
+  canonicalProjectDirectoryRootSpec,
   isCanonicalRuntimeHostWebSocketPath,
   PROJECT_DIRECTORY_MAX_ROOTS,
-  PROJECT_DIRECTORY_ROOT_LABEL_MAX_BYTES,
+  projectDirectoryRootSpecValid,
 } from '@maka/runtime-host/protocol';
 import type { RuntimeHostManagedServiceTarget } from './runtime-host-service-manager.js';
 
@@ -1072,17 +1073,14 @@ function parseProjectRoot(value: string): { label: string; path: string } | Runt
   if (separator <= 0 || separator === value.length - 1) {
     return error('--project-root must use <label>=<absolute-path>');
   }
-  const label = value.slice(0, separator).trim();
-  const path = value.slice(separator + 1);
-  if (
-    label.length === 0 ||
-    Buffer.byteLength(label, 'utf8') > PROJECT_DIRECTORY_ROOT_LABEL_MAX_BYTES ||
-    /[\u0000-\u001f\u007f]/u.test(label)
-  ) {
-    return error('--project-root label is invalid');
+  const root = canonicalProjectDirectoryRootSpec({
+    label: value.slice(0, separator),
+    path: value.slice(separator + 1),
+  });
+  if (!projectDirectoryRootSpecValid(root)) {
+    return error('--project-root must use a valid label and absolute POSIX path');
   }
-  if (!isAbsolute(path)) return error('--project-root path must be absolute');
-  return { label, path };
+  return root;
 }
 
 function parseProjectRootJson(
@@ -1105,16 +1103,11 @@ function parseProjectRootJson(
   ) {
     return error('--project-root-json must be a JSON object with label and path');
   }
-  const label = root.label.trim();
-  if (
-    label.length === 0 ||
-    Buffer.byteLength(label, 'utf8') > PROJECT_DIRECTORY_ROOT_LABEL_MAX_BYTES ||
-    /[\u0000-\u001f\u007f]/u.test(label)
-  ) {
-    return error('--project-root-json label is invalid');
+  const canonical = canonicalProjectDirectoryRootSpec({ label: root.label, path: root.path });
+  if (!projectDirectoryRootSpecValid(canonical)) {
+    return error('--project-root-json must use a valid label and absolute POSIX path');
   }
-  if (!isAbsolute(root.path)) return error('--project-root-json path must be absolute');
-  return { label, path: root.path };
+  return canonical;
 }
 
 function parseAccessCommand(argv: string[]): RuntimeHostCliCommand {

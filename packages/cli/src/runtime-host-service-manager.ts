@@ -25,9 +25,10 @@ import { homedir } from 'node:os';
 import { dirname, isAbsolute, join, resolve } from 'node:path';
 import { truncateUtf8 } from '@maka/core/diagnostic-log';
 import {
+  canonicalProjectDirectoryRootSpec,
   isCanonicalRuntimeHostWebSocketPath,
   PROJECT_DIRECTORY_MAX_ROOTS,
-  PROJECT_DIRECTORY_ROOT_LABEL_MAX_BYTES,
+  projectDirectoryRootSpecValid,
   RUNTIME_HOST_PROTOCOL_VERSION,
 } from '@maka/runtime-host/protocol';
 import {
@@ -101,7 +102,7 @@ export interface RuntimeHostServiceBackendStatus {
 
 export interface RuntimeHostServiceBackend {
   preflightInstall(): Promise<void>;
-  install(config: RuntimeHostManagedServiceConfig): Promise<RuntimeHostServiceDeployment>;
+  stageInstall(): Promise<RuntimeHostServiceDeployment>;
   /** A rejected replacement must restore the previous deployment or report update_incomplete. */
   replace(config: RuntimeHostManagedServiceConfig): Promise<void>;
   /** Reject partial or drifted scheduler state before replacement begins. */
@@ -122,6 +123,7 @@ export interface RuntimeHostServiceBackend {
 }
 
 export interface RuntimeHostServiceDeployment {
+  apply(config: RuntimeHostManagedServiceConfig): Promise<void>;
   rollback(): Promise<void>;
 }
 
@@ -406,34 +408,31 @@ async function manageRuntimeHostServiceLocked(
         'An existing Runtime Host Project root policy must be changed through the configuration workflow',
       );
     }
-    let deployment: RuntimeHostServiceDeployment | undefined;
+    const deployment = await backend.stageInstall();
     try {
       await writeRuntimeHostServiceFile(configPath, `${JSON.stringify(config, null, 2)}\n`, 0o600);
-      deployment = await backend.install(config);
+      await deployment.apply(config);
       await deps.waitForReady(config, backend);
     } catch (error) {
-      if (deployment) {
-        await rollbackDeployment(deployment, { configPath, previous }, error);
-      } else {
+      const revision = await identifyRuntimeHostServiceConfigRevision(configPath, previous, config);
+      if (revision === 'current') throw error;
+      if (revision === 'unknown') {
         try {
-          if (previous) {
-            await writeRuntimeHostServiceFile(
-              configPath,
-              `${JSON.stringify(previous, null, 2)}\n`,
-              0o600,
-            );
-          } else {
-            await removeRuntimeHostServiceFile(configPath, 'service config');
-          }
+          await quiesceRuntimeHostServiceForConfigRollback(backend);
         } catch (rollbackError) {
           throw new RuntimeHostServiceManagerError(
             'service_manager_operation_failed',
-            'Runtime Host service installation failed and its configuration could not be restored',
+            'Runtime Host service installation failed with an uncertain configuration and its process could not be stopped',
             { cause: new AggregateError([error, rollbackError]) },
           );
         }
+        throw new RuntimeHostServiceManagerError(
+          'service_manager_operation_failed',
+          'Runtime Host service installation failed with an uncertain configuration; its process was stopped for inspection',
+          { cause: error },
+        );
       }
-      throw error;
+      await rollbackDeployment(deployment, backend, { configPath, previous }, error);
     }
     return result(input.action, await readServiceStatus(configPath, backend));
   }
@@ -573,40 +572,12 @@ async function manageRuntimeHostServiceLocked(
       await backend.start();
       await deps.waitForReady(desired, backend);
     } catch (error) {
-      const rollbackErrors: unknown[] = [];
-      try {
-        await backend.retire();
-      } catch (rollbackError) {
-        rollbackErrors.push(rollbackError);
-      }
-      let previousConfigRestored = false;
-      try {
-        await writeRuntimeHostServiceFile(
-          configPath,
-          `${JSON.stringify(currentConfig, null, 2)}\n`,
-          0o600,
-        );
-        previousConfigRestored = true;
-      } catch (rollbackError) {
-        rollbackErrors.push(rollbackError);
-      }
-      if (previousConfigRestored) {
-        try {
-          await backend.start();
-          await deps.waitForReady(currentConfig, backend);
-        } catch (rollbackError) {
-          rollbackErrors.push(rollbackError);
-        }
-      }
-      throw new RuntimeHostServiceManagerError(
-        'configuration_incomplete',
-        rollbackErrors.length === 0
-          ? 'The Runtime Host configuration could not be applied; the previous configuration was restored'
-          : 'The Runtime Host configuration could not be applied or fully restored; inspect the service before retrying',
-        {
-          cause:
-            rollbackErrors.length === 0 ? error : new AggregateError([error, ...rollbackErrors]),
-        },
+      await rollbackRuntimeHostConfiguration(
+        { configPath, currentConfig, desiredConfig: desired, root },
+        backend,
+        deps,
+        input.allowInterruptActiveTasks ?? false,
+        error,
       );
     }
     return configurationResult('configured', await readServiceStatus(configPath, backend));
@@ -1048,13 +1019,15 @@ function validateServiceConfig(
     throw new TypeError('Invalid projectDirectoryRoots');
   }
   for (const root of value.projectDirectoryRoots) {
+    const canonical =
+      isRecord(root) && typeof root.label === 'string' && typeof root.path === 'string'
+        ? canonicalProjectDirectoryRootSpec({ label: root.label, path: root.path })
+        : undefined;
     if (
       !isRecord(root) ||
-      typeof root.label !== 'string' ||
-      root.label.length === 0 ||
-      Buffer.byteLength(root.label, 'utf8') > PROJECT_DIRECTORY_ROOT_LABEL_MAX_BYTES ||
-      hasControlCharacters(root.label) ||
-      !isSafeAbsolutePath(root.path)
+      !canonical ||
+      root.label !== canonical.label ||
+      !projectDirectoryRootSpecValid(canonical)
     ) {
       throw new TypeError('Invalid project directory root');
     }
@@ -1390,29 +1363,39 @@ async function releaseRuntimeHostRootRetirementFence(owner: InteractiveRootOwner
 
 async function rollbackDeployment(
   deployment: RuntimeHostServiceDeployment,
+  backend: RuntimeHostServiceBackend,
   configRollback: {
     readonly configPath: string;
     readonly previous: RuntimeHostManagedServiceConfig | null;
-  } | null,
+  },
   originalError: unknown,
 ): Promise<void> {
   const rollbackErrors: unknown[] = [];
   try {
-    await deployment.rollback();
+    await quiesceRuntimeHostServiceForConfigRollback(backend);
+  } catch (rollbackError) {
+    throw new RuntimeHostServiceManagerError(
+      'service_manager_operation_failed',
+      'Runtime Host service installation failed and its candidate process could not be stopped; the candidate configuration was retained',
+      { cause: new AggregateError([originalError, rollbackError]) },
+    );
+  }
+  try {
+    if (configRollback.previous) {
+      await writeRuntimeHostServiceFile(
+        configRollback.configPath,
+        `${JSON.stringify(configRollback.previous, null, 2)}\n`,
+        0o600,
+      );
+    } else {
+      await removeRuntimeHostServiceFile(configRollback.configPath, 'service config');
+    }
   } catch (rollbackError) {
     rollbackErrors.push(rollbackError);
   }
-  if (configRollback) {
+  if (rollbackErrors.length === 0) {
     try {
-      if (configRollback.previous) {
-        await writeRuntimeHostServiceFile(
-          configRollback.configPath,
-          `${JSON.stringify(configRollback.previous, null, 2)}\n`,
-          0o600,
-        );
-      } else {
-        await removeRuntimeHostServiceFile(configRollback.configPath, 'service config');
-      }
+      await deployment.rollback();
     } catch (rollbackError) {
       rollbackErrors.push(rollbackError);
     }
@@ -1425,6 +1408,150 @@ async function rollbackDeployment(
     );
   }
   throw originalError;
+}
+
+async function quiesceRuntimeHostServiceForConfigRollback(
+  backend: RuntimeHostServiceBackend,
+): Promise<void> {
+  let status = await backend.status();
+  if (status.active || status.pid !== null || status.state === 'starting') {
+    await backend.retire();
+    status = await backend.status();
+  }
+  if (
+    status.active ||
+    status.pid !== null ||
+    status.state === 'running' ||
+    status.state === 'starting'
+  ) {
+    throw new Error('The candidate Runtime Host service is still running');
+  }
+}
+
+async function rollbackRuntimeHostConfiguration(
+  input: {
+    readonly configPath: string;
+    readonly currentConfig: RuntimeHostManagedServiceConfig;
+    readonly desiredConfig: RuntimeHostManagedServiceConfig;
+    readonly root: StorageRootCapability<'interactive'>;
+  },
+  backend: RuntimeHostServiceBackend,
+  deps: RuntimeHostServiceManagerDeps,
+  allowInterruptActiveTasks: boolean,
+  originalError: unknown,
+): Promise<never> {
+  const revision = await identifyRuntimeHostServiceConfigRevision(
+    input.configPath,
+    input.currentConfig,
+    input.desiredConfig,
+  );
+  if (revision === 'current') {
+    try {
+      await backend.start();
+      await deps.waitForReady(input.currentConfig, backend);
+    } catch (rollbackError) {
+      throw new RuntimeHostServiceManagerError(
+        'configuration_incomplete',
+        'The Runtime Host configuration was not published and the previous Host could not be restarted',
+        { cause: new AggregateError([originalError, rollbackError]) },
+      );
+    }
+    throw new RuntimeHostServiceManagerError(
+      'configuration_incomplete',
+      'The Runtime Host configuration could not be published; the previous configuration was restored',
+      { cause: originalError },
+    );
+  }
+  if (revision === 'unknown') {
+    try {
+      await quiesceRuntimeHostServiceForConfigRollback(backend);
+    } catch (rollbackError) {
+      throw new RuntimeHostServiceManagerError(
+        'configuration_incomplete',
+        'The Runtime Host configuration could not be applied, its persisted revision is uncertain, and its process could not be stopped',
+        { cause: new AggregateError([originalError, rollbackError]) },
+      );
+    }
+    throw new RuntimeHostServiceManagerError(
+      'configuration_incomplete',
+      'The Runtime Host configuration could not be applied and its persisted revision is uncertain; the Host remains stopped for inspection',
+      { cause: originalError },
+    );
+  }
+
+  try {
+    const candidate = await readServiceStatus(input.configPath, backend);
+    const retired = await retireManagedRuntimeHostService(
+      { ...candidate, config: input.desiredConfig },
+      input.root,
+      backend,
+      deps,
+      allowInterruptActiveTasks,
+    );
+    if (retired.retirement.kind === 'active_tasks') {
+      throw new Error('The candidate Runtime Host accepted active work before rollback');
+    }
+  } catch (rollbackError) {
+    throw new RuntimeHostServiceManagerError(
+      'configuration_incomplete',
+      'The Runtime Host configuration could not be verified and the candidate Host could not be safely retired; its configuration was retained',
+      { cause: new AggregateError([originalError, rollbackError]) },
+    );
+  }
+
+  const rollbackErrors: unknown[] = [];
+  try {
+    await writeRuntimeHostServiceFile(
+      input.configPath,
+      `${JSON.stringify(input.currentConfig, null, 2)}\n`,
+      0o600,
+    );
+  } catch (rollbackError) {
+    rollbackErrors.push(rollbackError);
+  }
+  if (rollbackErrors.length === 0) {
+    try {
+      await backend.start();
+      await deps.waitForReady(input.currentConfig, backend);
+    } catch (rollbackError) {
+      rollbackErrors.push(rollbackError);
+    }
+  }
+  throw new RuntimeHostServiceManagerError(
+    'configuration_incomplete',
+    rollbackErrors.length === 0
+      ? 'The Runtime Host configuration could not be applied; the previous configuration was restored'
+      : 'The Runtime Host configuration could not be applied or fully restored; inspect the service before retrying',
+    {
+      cause:
+        rollbackErrors.length === 0
+          ? originalError
+          : new AggregateError([originalError, ...rollbackErrors]),
+    },
+  );
+}
+
+async function identifyRuntimeHostServiceConfigRevision(
+  configPath: string,
+  current: RuntimeHostManagedServiceConfig | null,
+  desired: RuntimeHostManagedServiceConfig,
+): Promise<'current' | 'desired' | 'unknown'> {
+  let observed: RuntimeHostManagedServiceConfig | null;
+  try {
+    observed = await readServiceConfig(configPath);
+  } catch {
+    return 'unknown';
+  }
+  if (sameRuntimeHostManagedServiceConfig(observed, current)) return 'current';
+  if (sameRuntimeHostManagedServiceConfig(observed, desired)) return 'desired';
+  return 'unknown';
+}
+
+function sameRuntimeHostManagedServiceConfig(
+  left: RuntimeHostManagedServiceConfig | null,
+  right: RuntimeHostManagedServiceConfig | null,
+): boolean {
+  return JSON.stringify(left) === JSON.stringify(right);
 }
 
 async function allocateLoopbackPort(): Promise<number> {

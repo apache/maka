@@ -78,17 +78,3 @@ export function RuntimeHostProjectDirectoryEditor(props: {
     </>
   );
 }
-
-export function canonicalProjectDirectoryRoots(
-  roots: readonly ProjectDirectoryRootDraft[],
-): readonly { readonly label: string; readonly path: string }[] {
-  return roots.map(({ label, path }) => ({ label: label.trim(), path: path.trim() }));
-}
-
-export function projectDirectoryRootsValid(roots: readonly ProjectDirectoryRootDraft[]): boolean {
-  const canonical = canonicalProjectDirectoryRoots(roots);
-  return (
-    canonical.every(({ label, path }) => label.length > 0 && path.length > 0) &&
-    new Set(canonical.map(({ label }) => label)).size === canonical.length
-  );
-}

@@ -36,7 +36,7 @@ import type {
 } from '../preload/bridge-contract.js';
 import type { DesktopRuntimeHostProfileService } from './runtime-host-profile-service.js';
 import { sameDesktopRuntimeHostManagedServiceBinding } from './runtime-host-managed-services.js';
-import { requireProjectDirectoryRoots } from './runtime-host-project-directory-policy.js';
+import { requireProjectDirectoryRoots } from '../shared/runtime-host-project-directory-policy.js';
 import type {
   DesktopRuntimeHostSshCleanupInput,
   DesktopRuntimeHostSshAccessInput,
@@ -282,25 +282,19 @@ export function createDesktopRuntimeHostManagement(input: {
       },
       (phase) => input.sendProgress({ profileId, phase }),
     );
-    if (response.kind === 'result' && response.update.kind !== 'active_tasks') {
-      const reconnectError = await reconnectUpdatedTarget(
+    const reconnectError =
+      response.kind === 'result' && response.update.kind !== 'active_tasks'
+        ? await reconnectUpdatedTarget(
         profileId,
         managed,
         previousHostEpoch,
         response.update.kind !== 'already_current',
-      );
-      if (reconnectError) {
-        return {
-          schemaVersion: 1,
-          kind: 'error',
-          action: 'update',
-          error: reconnectError,
-        };
-      }
-    }
+      )
+        : undefined;
     return response.kind === 'result'
       ? {
           ...response,
+          ...(reconnectError ? { reconnectError } : {}),
           accessManagementAvailable:
             response.operatorCapabilities?.includes(
               RUNTIME_HOST_OPERATOR_ACCESS_MANAGEMENT_CAPABILITY,
@@ -341,25 +335,19 @@ export function createDesktopRuntimeHostManagement(input: {
     if (response.action !== 'configure') {
       throw new Error('Remote Runtime Host returned a different management action');
     }
-    if (response.kind === 'result' && response.configuration.kind === 'configured') {
-      const reconnectError = await reconnectUpdatedTarget(
+    const reconnectError =
+      response.kind === 'result' && response.configuration.kind === 'configured'
+        ? await reconnectUpdatedTarget(
         profileId,
         managed,
         previousHostEpoch,
         true,
-      );
-      if (reconnectError) {
-        return {
-          schemaVersion: 1,
-          kind: 'error',
-          action: 'configure',
-          error: reconnectError,
-        };
-      }
-    }
+      )
+        : undefined;
     return response.kind === 'result'
       ? {
           ...response,
+          ...(reconnectError ? { reconnectError } : {}),
           accessManagementAvailable:
             response.operatorCapabilities?.includes(
               RUNTIME_HOST_OPERATOR_ACCESS_MANAGEMENT_CAPABILITY,
@@ -390,7 +378,7 @@ export function createDesktopRuntimeHostManagement(input: {
       return {
         code: 'desktop_reconnect_failed',
         message:
-          'The Runtime Host update completed, but Desktop could not reconnect: ' +
+          'The Runtime Host change was applied, but Desktop could not reconnect: ' +
           (error instanceof Error ? error.message : String(error)),
       };
     }
@@ -444,30 +432,19 @@ export function createDesktopRuntimeHostManagement(input: {
       },
       (phase) => input.sendProgress({ profileId, phase }),
     );
-    if (
+    const reconnectError =
       response.kind === 'result' &&
       (response.reconciliation.kind === 'updated' ||
         response.reconciliation.kind === 'repaired')
-    ) {
-      const reconnectError = await reconnectUpdatedTarget(
-        profileId,
-        managed,
-        previousHostEpoch,
-        true,
-      );
-      if (reconnectError) {
-        return {
-          kind: 'error',
-          error: reconnectError,
-        };
-      }
-    }
+        ? await reconnectUpdatedTarget(profileId, managed, previousHostEpoch, true)
+        : undefined;
     return response.kind === 'result'
       ? {
           kind: 'result',
           updatePolicy: projectUpdatePolicy(response),
           reconciliation: response.reconciliation,
           ...(response.service ? { service: response.service } : {}),
+          ...(reconnectError ? { reconnectError } : {}),
         }
       : { kind: 'error', error: response.error };
   };

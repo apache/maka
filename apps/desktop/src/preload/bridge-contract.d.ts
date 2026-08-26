@@ -439,6 +439,7 @@ export type DesktopRuntimeHostManagementResult = Extract<
 > & {
   readonly action: DesktopRuntimeHostManagementAction | 'configure' | 'update';
   readonly accessManagementAvailable: boolean;
+  readonly reconnectError?: { readonly code: string; readonly message: string };
 };
 
 export type DesktopRuntimeHostManagementResponse =
@@ -490,6 +491,7 @@ export type DesktopRuntimeHostUpdateReconciliationResponse =
       readonly updatePolicy: DesktopRuntimeHostUpdatePolicySnapshot;
       readonly reconciliation: DesktopRuntimeHostUpdateReconciliationOutcome;
       readonly service?: NonNullable<RuntimeHostUpdateReconciliationResult['service']>;
+      readonly reconnectError?: { readonly code: string; readonly message: string };
     };
 
 export interface DesktopRuntimeHostAccessCredential {

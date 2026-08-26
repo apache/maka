@@ -18,13 +18,34 @@
  */
 
 import {
+  canonicalProjectDirectoryRootSpec,
   PROJECT_DIRECTORY_MAX_ROOTS,
-  PROJECT_DIRECTORY_ROOT_LABEL_MAX_BYTES,
+  projectDirectoryRootSpecValid,
+  type ProjectDirectoryRootSpec,
 } from '@maka/runtime-host/protocol';
+
+export type RuntimeHostProjectDirectoryRootInput = ProjectDirectoryRootSpec;
+
+export function canonicalProjectDirectoryRoots(
+  roots: readonly RuntimeHostProjectDirectoryRootInput[],
+): readonly RuntimeHostProjectDirectoryRootInput[] {
+  return roots.map(canonicalProjectDirectoryRootSpec);
+}
+
+export function projectDirectoryRootsValid(
+  roots: readonly RuntimeHostProjectDirectoryRootInput[],
+): boolean {
+  if (roots.length > PROJECT_DIRECTORY_MAX_ROOTS) return false;
+  const canonical = canonicalProjectDirectoryRoots(roots);
+  return (
+    canonical.every(projectDirectoryRootSpecValid) &&
+    new Set(canonical.map(({ label }) => label)).size === canonical.length
+  );
+}
 
 export function requireProjectDirectoryRoots(
   value: unknown,
-): readonly { readonly label: string; readonly path: string }[] {
+): readonly RuntimeHostProjectDirectoryRootInput[] {
   if (!Array.isArray(value) || value.length > PROJECT_DIRECTORY_MAX_ROOTS) {
     throw new Error('Runtime Host Project directory policy is invalid');
   }
@@ -36,17 +57,15 @@ export function requireProjectDirectoryRoots(
     if (
       Object.keys(root).length !== 2 ||
       typeof root.label !== 'string' ||
-      root.label.length === 0 ||
-      Buffer.byteLength(root.label, 'utf8') > PROJECT_DIRECTORY_ROOT_LABEL_MAX_BYTES ||
-      /[\u0000-\u001f\u007f]/u.test(root.label) ||
-      typeof root.path !== 'string' ||
-      root.path.length === 0 ||
-      Buffer.byteLength(root.path, 'utf8') > 4 * 1024 ||
-      /[\u0000-\u001f\u007f]/u.test(root.path)
+      typeof root.path !== 'string'
     ) {
       throw new Error('Runtime Host Project directory is invalid');
     }
-    return { label: root.label, path: root.path };
+    const canonical = canonicalProjectDirectoryRootSpec({ label: root.label, path: root.path });
+    if (!projectDirectoryRootSpecValid(canonical)) {
+      throw new Error('Runtime Host Project directory is invalid');
+    }
+    return canonical;
   });
   if (new Set(roots.map(({ label }) => label)).size !== roots.length) {
     throw new Error('Runtime Host Project directory labels must be unique');

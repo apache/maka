@@ -430,25 +430,25 @@ test('publishes update progress and waits for the managed profile to reconnect',
   removeBindingAfterUpdate = true;
   const changedProfile = await update({}, profile.id, false);
   assert.equal(
-    (changedProfile as { kind: string; error?: { message: string } }).error?.message,
-    'The Runtime Host update completed, but Desktop could not reconnect: ' +
+    (changedProfile as { reconnectError?: { message: string } }).reconnectError?.message,
+    'The Runtime Host change was applied, but Desktop could not reconnect: ' +
       'Runtime Host profile changed while its service was updating',
   );
+  assert.equal((changedProfile as { kind: string }).kind, 'result');
 
   bindingPresent = true;
   removeBindingAfterUpdate = false;
   failConnection = true;
   const reconnectFailure = await update({}, profile.id, false);
-  assert.deepEqual(reconnectFailure, {
-    schemaVersion: 1,
-    kind: 'error',
-    action: 'update',
-    error: {
+  assert.equal((reconnectFailure as { kind: string }).kind, 'result');
+  assert.deepEqual(
+    (reconnectFailure as { reconnectError: { code: string; message: string } }).reconnectError,
+    {
       code: 'desktop_reconnect_failed',
       message:
-        'The Runtime Host update completed, but Desktop could not reconnect: authentication required',
+        'The Runtime Host change was applied, but Desktop could not reconnect: authentication required',
     },
-  });
+  );
 });
 
 test('configures Project roots with CAS and reconnects only after a committed cutover', async () => {
@@ -473,6 +473,7 @@ test('configures Project roots with CAS and reconnects only after a committed cu
   const fingerprint = `sha256:${'c'.repeat(64)}`;
   const inputs: DesktopRuntimeHostSshManagementInput[] = [];
   const reconnects: unknown[][] = [];
+  let failReconnect = false;
   createDesktopRuntimeHostManagement({
     ...unusedUpdateDependencies(),
     ipcMain: {
@@ -510,11 +511,12 @@ test('configures Project roots with CAS and reconnects only after a committed cu
     currentHostEpoch: () => 'host-before-configure',
     awaitUpdatedConnection: async (...args) => {
       reconnects.push(args);
+      if (failReconnect) throw new Error('authentication required');
     },
   });
   const configure = handlers.get('runtime-host-management:configure-project-directories');
   assert.ok(configure);
-  const roots = [{ label: 'Work', path: '/srv/work' }];
+  const roots = [{ label: 'Work', path: '/srv/work ' }];
   const blocked = await configure({}, profile.id, roots, fingerprint, false);
   assert.equal(
     (blocked as { configuration: { kind: string } }).configuration.kind,
@@ -536,6 +538,24 @@ test('configures Project roots with CAS and reconnects only after a committed cu
     { roots, fingerprint, allowInterruptActiveTasks: true },
   ]);
   assert.deepEqual(reconnects, [[profile.id, profile.rootId, 'host-before-configure', true]]);
+
+  failReconnect = true;
+  const committedWithoutReconnect = await configure({}, profile.id, roots, fingerprint, true);
+  assert.equal((committedWithoutReconnect as { kind: string }).kind, 'result');
+  assert.equal(
+    (committedWithoutReconnect as { service: { configurationFingerprint?: string } }).service
+      .configurationFingerprint,
+    `sha256:${'d'.repeat(64)}`,
+  );
+  assert.deepEqual(
+    (committedWithoutReconnect as { reconnectError?: { code: string; message: string } })
+      .reconnectError,
+    {
+      code: 'desktop_reconnect_failed',
+      message:
+        'The Runtime Host change was applied, but Desktop could not reconnect: authentication required',
+    },
+  );
 });
 
 test('manages one Host update policy and reconciles it through the bound operator', async () => {

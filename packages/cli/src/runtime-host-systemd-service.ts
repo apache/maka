@@ -110,30 +110,22 @@ export function createSystemdUserRuntimeHostService(
       await assertUserSystemd(runSystemctl);
       await assertUserLinger(uid, runLoginctl);
     },
-    install: async (config) => {
-      await validateRuntimeHostServiceLaunch(config);
+    stageInstall: async () => {
       const [previous, previousScheduler] = await Promise.all([
         captureSystemdDeployment(context.unitPath, readStatus),
         captureSystemdUpdateScheduler(scheduler),
       ]);
       await assertNoSystemdUpdateSchedulerDropIns(scheduler);
       let schedulerMutationStarted = false;
-      try {
-        await applySystemdDeployment(context, config, serviceConfigPath);
-        await applySystemdUpdateSchedulerDesiredState(scheduler, config, () => {
-          schedulerMutationStarted = true;
-        });
-      } catch (error) {
-        await restoreFailedSystemdDeployment(
-          previous,
-          schedulerMutationStarted ? previousScheduler : undefined,
-          context,
-          scheduler,
-          error,
-        );
-      }
       let rolledBack = false;
       return {
+        apply: async (config) => {
+          await validateRuntimeHostServiceLaunch(config);
+          await applySystemdDeployment(context, config, serviceConfigPath);
+          await applySystemdUpdateSchedulerDesiredState(scheduler, config, () => {
+            schedulerMutationStarted = true;
+          });
+        },
         rollback: async () => {
           if (rolledBack) return;
           rolledBack = true;

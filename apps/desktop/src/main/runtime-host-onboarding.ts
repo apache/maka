@@ -32,7 +32,7 @@ import type {
   DesktopRuntimeHostSetupPackage,
   DesktopRuntimeHostSshSetupInput,
 } from './runtime-host-ssh-terminal.js';
-import { requireProjectDirectoryRoots } from './runtime-host-project-directory-policy.js';
+import { requireProjectDirectoryRoots } from '../shared/runtime-host-project-directory-policy.js';
 
 type OnboardingState = DesktopRuntimeHostOnboardingSnapshot extends infer Snapshot
   ? Snapshot extends DesktopRuntimeHostOnboardingSnapshot
