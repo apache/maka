@@ -104,9 +104,12 @@ ready; failure restores the previous service.
 
 ### Experimental direct peer
 
-The released CLI includes the native direct-peer transport for CLI and TUI use; the Host does not
-need Rust or a source checkout. Desktop support is not part of this milestone. After managed setup,
-enable it against the exact service target printed by setup:
+The released CLI and Desktop include the native direct-peer transport; the Host does not need Rust
+or a source checkout. For an SSH-managed Host, Desktop can enable it from that computer's management
+dialog and creates a separate experimental profile without deleting the SSH profile. Only one
+profile for the same State Root can be enabled at a time.
+
+The equivalent CLI flow uses the exact service target printed by setup:
 
 ```sh
 maka runtime-host service peer enable \

@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { open, readFile, rename, rm } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import {
@@ -99,6 +99,21 @@ export interface DesktopRuntimeHostProfileService {
   resolveManagedAccess(
     profileId: string,
   ): Promise<DesktopRuntimeHostManagedAccess | undefined>;
+  resolveManagedDirectPeerProfile(profileId: string): Promise<{
+    readonly profileId: string;
+    readonly exists: boolean;
+    readonly enabled: boolean;
+  }>;
+  upsertManagedDirectPeerProfile(
+    profileId: string,
+    peer: {
+      readonly peerId: string;
+      readonly rootId: string;
+      readonly routeHints: readonly string[];
+      readonly coordinationRelays: readonly string[];
+    },
+  ): Promise<string>;
+  removeManagedDirectPeerProfile(profileId: string): Promise<void>;
   clearManagedServiceBinding(expected: DesktopRuntimeHostManagedServiceBinding): Promise<void>;
   markManagedServiceUninstalling(
     expected: DesktopRuntimeHostManagedServiceBinding,
@@ -752,6 +767,96 @@ export function createDesktopRuntimeHostProfileService(input: {
           : undefined;
       });
     },
+    resolveManagedDirectPeerProfile(profileId) {
+      return mutate(async () => {
+        const peerProfileId = managedDirectPeerProfileId(profileId);
+        return {
+          profileId: peerProfileId,
+          exists: (await catalog.read()).profiles.some((profile) => profile.id === peerProfileId),
+          enabled: preferences.enabledRemoteProfileIds.includes(peerProfileId),
+        };
+      });
+    },
+    upsertManagedDirectPeerProfile(profileId, peer) {
+      return mutateProfiles(async () => {
+        assertPairingComplete(profileId);
+        const source = await catalog.resolve(profileId);
+        if (
+          source.profile.kind !== 'remote' ||
+          source.profile.transport.kind !== 'ssh' ||
+          !source.credential
+        ) {
+          throw new Error('Direct peer can only be added through a managed SSH Runtime Host');
+        }
+        const managed = findDesktopRuntimeHostManagedServiceBinding(
+          await managedServices.read(),
+          source.profile,
+        );
+        if (!managed || managed.state !== 'active') {
+          throw new Error('This Runtime Host profile is not bound to an active managed service');
+        }
+        if (peer.rootId !== source.profile.rootId || peer.routeHints.length === 0) {
+          throw new Error('Runtime Host returned an invalid direct-peer descriptor');
+        }
+        const peerProfileId = managedDirectPeerProfileId(profileId);
+        if (preferences.enabledRemoteProfileIds.includes(peerProfileId)) {
+          throw new Error('Disable the Direct peer profile before changing its listener');
+        }
+        const profile: RemoteRuntimeHostProfile = {
+          id: peerProfileId,
+          name: directPeerProfileName(source.profile.name),
+          kind: 'remote',
+          rootId: source.profile.rootId,
+          transport: {
+            kind: 'libp2p-direct',
+            peerId: peer.peerId,
+            routeHints: peer.routeHints,
+            coordinationRelays: peer.coordinationRelays,
+          },
+        };
+        const existing = (await catalog.read()).profiles.find(
+          (candidate) => candidate.id === peerProfileId,
+        );
+        if (!existing) {
+          await catalog.create(profile, source.credential);
+          return peerProfileId;
+        }
+        const previous = await catalog.resolve(peerProfileId);
+        if (previous.profile.kind !== 'remote' || previous.profile.rootId !== source.profile.rootId) {
+          throw new Error('The Direct peer profile identity is already in use');
+        }
+        const rebound = await catalog.rebindIfCurrent(previous, profile, source.credential);
+        if (!rebound.rebound) {
+          throw new Error('The Direct peer profile changed before it could be updated');
+        }
+        return peerProfileId;
+      });
+    },
+    removeManagedDirectPeerProfile(profileId) {
+      return mutateProfiles(async () => {
+        assertPairingComplete(profileId);
+        const peerProfileId = managedDirectPeerProfileId(profileId);
+        if (preferences.enabledRemoteProfileIds.includes(peerProfileId)) {
+          throw new Error('Disable the Direct peer profile before changing its listener');
+        }
+        const current = await catalog.resolve(peerProfileId).catch(() => undefined);
+        if (!current) return;
+        const source = await catalog.resolve(profileId);
+        if (
+          source.profile.kind !== 'remote' ||
+          source.profile.transport.kind !== 'ssh' ||
+          current.profile.kind !== 'remote' ||
+          current.profile.transport.kind !== 'libp2p-direct' ||
+          current.profile.rootId !== source.profile.rootId
+        ) {
+          throw new Error('The Direct peer profile identity is already in use');
+        }
+        const removed = await catalog.removeIfCurrent(current);
+        if (!removed.removed) {
+          throw new Error('The Direct peer profile changed before it could be removed');
+        }
+      });
+    },
     markManagedServiceUninstalling(expected) {
       return mutateProfiles(async () => {
         assertPairingComplete(expected.profile.id);
@@ -940,6 +1045,18 @@ export function createDesktopRuntimeHostProfileService(input: {
       });
     },
   };
+}
+
+function managedDirectPeerProfileId(sourceProfileId: string): string {
+  const digest = createHash('sha256').update(sourceProfileId).digest('hex').slice(0, 32);
+  return `direct-${digest}`;
+}
+
+function directPeerProfileName(sourceName: string): string {
+  const suffix = ' · Direct';
+  let name = sourceName;
+  while (Buffer.byteLength(name + suffix, 'utf8') > 128) name = name.slice(0, -1);
+  return `${name}${suffix}`;
 }
 
 async function rollbackCreatedProfile(

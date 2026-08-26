@@ -19,6 +19,11 @@
 
 import { networkInterfaces } from 'node:os';
 import {
+  encodeRuntimeHostPeerManagementFrame,
+  type RuntimeHostPeerManagementFrame,
+  type RuntimeHostPeerStatus,
+} from '@maka/runtime-host/operator';
+import {
   configureRuntimeHostManagedPeer,
   manageRuntimeHostService,
   assertRuntimeHostManagedPeerMutationComplete,
@@ -35,6 +40,7 @@ import { createPlatformRuntimeHostServiceBackend } from './runtime-host-service-
 export interface RuntimeHostPeerManagementCliOptions {
   readonly action: 'enable' | 'disable' | 'status' | 'rotate' | 'descriptor';
   readonly json: boolean;
+  readonly framed?: boolean;
   readonly clientDataRoot: string;
   readonly defaultRootPath: string;
   readonly nodePath: string;
@@ -42,16 +48,6 @@ export interface RuntimeHostPeerManagementCliOptions {
   readonly listenAddresses: readonly string[];
   readonly coordinationRelays?: readonly string[];
   readonly expectedTarget?: RuntimeHostManagedServiceTarget;
-}
-
-interface RuntimeHostPeerStatus {
-  readonly schemaVersion: 1;
-  readonly state: 'not_configured' | 'disabled' | 'enabled';
-  readonly serviceState: string;
-  readonly peerId?: string;
-  readonly rootId?: string;
-  readonly routeHints: readonly string[];
-  readonly coordinationRelays: readonly string[];
 }
 
 interface RuntimeHostPeerManagementCliDeps {
@@ -140,7 +136,17 @@ async function runRuntimeHostPeerManagementLocked(
         deps,
       );
     }
-    if (options.json) {
+    if (options.framed) {
+      writePeerFrame(
+        {
+          kind: 'rotated',
+          action: 'rotate',
+          previousPeerId: result.previousPeerId,
+          peerId: result.peerId,
+        },
+        deps,
+      );
+    } else if (options.json) {
       deps.writeStdout(
         `${JSON.stringify({
           schemaVersion: 1,
@@ -165,10 +171,14 @@ async function runRuntimeHostPeerManagementLocked(
       'Direct peer is not enabled for the managed Runtime Host service',
     );
   }
-  if (options.json) {
-    deps.writeStdout(`${JSON.stringify({ ...status, ok: true, action: options.action })}\n`);
+  if (options.framed) {
+    writePeerFrame({ kind: 'result', action: options.action, status }, deps);
+  } else if (options.json) {
+    deps.writeStdout(
+      `${JSON.stringify({ schemaVersion: 1, ...status, ok: true, action: options.action })}\n`,
+    );
   } else if (options.action === 'descriptor') {
-    deps.writeStdout(`${JSON.stringify(status)}\n`);
+    deps.writeStdout(`${JSON.stringify({ schemaVersion: 1, ...status })}\n`);
   } else {
     deps.writeStdout(formatPeerStatus(status));
   }
@@ -201,6 +211,10 @@ function writePeerFailure(
   message: string,
   deps: RuntimeHostPeerManagementCliDeps,
 ): void {
+  if (options.framed) {
+    writePeerFrame({ kind: 'error', action: options.action, error: { code, message } }, deps);
+    return;
+  }
   if (options.json) {
     deps.writeStdout(
       `${JSON.stringify({
@@ -213,6 +227,13 @@ function writePeerFailure(
     return;
   }
   deps.writeStderr(`${message}\n`);
+}
+
+function writePeerFrame(
+  frame: RuntimeHostPeerManagementFrame,
+  deps: Pick<RuntimeHostPeerManagementCliDeps, 'writeStdout'>,
+): void {
+  deps.writeStdout(encodeRuntimeHostPeerManagementFrame(frame));
 }
 
 async function readPeerStatus(
@@ -236,7 +257,6 @@ async function readPeerStatus(
   const peer = result.service.config?.peer;
   if (!peer) {
     return {
-      schemaVersion: 1,
       state: 'not_configured',
       serviceState: result.service.state,
       routeHints: [],
@@ -244,13 +264,12 @@ async function readPeerStatus(
     };
   }
   return {
-    schemaVersion: 1,
     state: peer.enabled ? 'enabled' : 'disabled',
     serviceState: result.service.state,
     peerId: peer.peerId,
     ...(options.expectedTarget ? { rootId: options.expectedTarget.rootId } : {}),
     routeHints: expandWildcardListenAddresses(peer.listenAddresses),
-    coordinationRelays: peer.coordinationRelays,
+    coordinationRelays: [...peer.coordinationRelays],
   };
 }
 

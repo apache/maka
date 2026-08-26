@@ -92,8 +92,11 @@ service；未指定 WebSocket port 时会保留现有端口。卸载 npm 包前�
 
 ### 实验性 direct peer
 
-发布版 CLI 已包含供 CLI 和 TUI 使用的 direct peer native transport，Host 无需安装 Rust 或保留源码；
-Desktop 支持不在本里程碑范围内。完成 managed setup 后，使用 setup 输出的精确 service target 启用：
+发布版 CLI 与 Desktop 已包含 direct peer native transport，Host 无需安装 Rust 或保留源码。对于通过 SSH
+管理的 Host，可以在 Desktop 的电脑管理界面启用；Desktop 会创建独立的实验性 profile，不删除原 SSH
+profile。同一个 State Root 同时只能启用一个 profile。
+
+等价的 CLI 流程使用 setup 输出的精确 service target：
 
 ```sh
 maka runtime-host service peer enable \

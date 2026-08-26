@@ -352,6 +352,7 @@ export async function runMakaCli(
       return runRuntimeHostPeerManagementCli({
         action: command.action,
         json: command.json,
+        framed: command.framed ?? false,
         clientDataRoot: serviceDataRoots.clientDataRoot,
         defaultRootPath: serviceDataRoots.workspaceRoot,
         nodePath: process.execPath,

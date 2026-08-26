@@ -24,10 +24,13 @@ import {
   runtimeHostAccessCredentialFingerprint,
   type RuntimeHostManagedUpdatePolicy,
   type RuntimeHostAccessManagementFrame,
+  type RuntimeHostPeerManagementFrame,
+  type RuntimeHostPeerStatus,
   type RuntimeHostServiceManagementFrame,
 } from '@maka/runtime-host/operator';
 import type {
   DesktopRuntimeHostAccessSnapshot,
+  DesktopRuntimeHostDirectPeerSnapshot,
   DesktopRuntimeHostManagementAction,
   DesktopRuntimeHostManagementResponse,
   DesktopRuntimeHostManagementProgress,
@@ -41,6 +44,7 @@ import type {
   DesktopRuntimeHostSshCleanupInput,
   DesktopRuntimeHostSshAccessInput,
   DesktopRuntimeHostSshManagementInput,
+  DesktopRuntimeHostSshPeerManagementInput,
   DesktopRuntimeHostSshUpdateInput,
   DesktopRuntimeHostSshUpdatePolicyInput,
   DesktopRuntimeHostSshUpdateReconciliationInput,
@@ -74,6 +78,9 @@ export function createDesktopRuntimeHostManagement(input: {
     | 'markManagedServiceUninstalling'
     | 'markManagedServiceCleanupPending'
     | 'clearManagedServiceBinding'
+    | 'resolveManagedDirectPeerProfile'
+    | 'upsertManagedDirectPeerProfile'
+    | 'removeManagedDirectPeerProfile'
   >;
   readonly runServiceManagement: (
     input: DesktopRuntimeHostSshManagementInput,
@@ -81,6 +88,10 @@ export function createDesktopRuntimeHostManagement(input: {
   readonly runAccessManagement: (
     input: DesktopRuntimeHostSshAccessInput,
   ) => Promise<RuntimeHostAccessManagementFrame>;
+  readonly runPeerManagement: (
+    input: DesktopRuntimeHostSshPeerManagementInput,
+  ) => Promise<RuntimeHostPeerManagementFrame>;
+  readonly directPeerClientAvailable: boolean;
   readonly runUpdate: (
     input: DesktopRuntimeHostSshUpdateInput,
     onProgress: (phase: DesktopRuntimeHostManagementProgress['phase']) => void,
@@ -258,6 +269,94 @@ export function createDesktopRuntimeHostManagement(input: {
         rootId: managed.profile.rootId,
       },
     };
+  };
+
+  const peerSnapshot = async (
+    profileId: string,
+    status: RuntimeHostPeerStatus,
+  ): Promise<DesktopRuntimeHostDirectPeerSnapshot> => {
+    const profile = await input.profiles.resolveManagedDirectPeerProfile(profileId);
+    return {
+      ...status,
+      profileId: profile.profileId,
+      profilePresent: profile.exists,
+      profileEnabled: profile.enabled,
+      clientAvailable: input.directPeerClientAvailable,
+    };
+  };
+
+  const getDirectPeer = async (
+    profileIdValue: unknown,
+  ): Promise<DesktopRuntimeHostDirectPeerSnapshot> => {
+    const { profileId, managed, transport, expectedTarget } =
+      await managedMutationTarget(profileIdValue);
+    const response = await input.runPeerManagement({
+      destination: transport.destination,
+      ...(transport.sshPort === undefined ? {} : { sshPort: transport.sshPort }),
+      operatorPath: managed.service.operatorPath,
+      action: 'status',
+      expectedTarget,
+    });
+    if (response.kind !== 'result') {
+      throw new Error(
+        response.kind === 'error'
+          ? response.error.message
+          : 'Runtime Host returned an unrelated direct-peer result',
+      );
+    }
+    return peerSnapshot(profileId, response.status);
+  };
+
+  const configureDirectPeer = async (
+    profileIdValue: unknown,
+    enabledValue: unknown,
+    coordinationRelaysValue: unknown,
+  ): Promise<DesktopRuntimeHostDirectPeerSnapshot> => {
+    if (typeof enabledValue !== 'boolean') {
+      throw new Error('Runtime Host direct-peer state is invalid');
+    }
+    const coordinationRelays = requireCoordinationRelays(coordinationRelaysValue);
+    const { profileId, managed, transport, expectedTarget } =
+      await managedMutationTarget(profileIdValue);
+    const peerProfile = await input.profiles.resolveManagedDirectPeerProfile(profileId);
+    if (peerProfile.enabled) {
+      throw new Error('Disable the Direct peer profile before changing its listener');
+    }
+    const response = await input.runPeerManagement({
+      destination: transport.destination,
+      ...(transport.sshPort === undefined ? {} : { sshPort: transport.sshPort }),
+      operatorPath: managed.service.operatorPath,
+      action: enabledValue ? 'enable' : 'disable',
+      ...(enabledValue ? { coordinationRelays } : {}),
+      expectedTarget,
+    });
+    if (response.kind !== 'result') {
+      throw new Error(
+        response.kind === 'error'
+          ? response.error.message
+          : 'Runtime Host returned an unrelated direct-peer result',
+      );
+    }
+    const status = response.status;
+    if (enabledValue) {
+      if (
+        status.state !== 'enabled' ||
+        !status.peerId ||
+        status.rootId !== expectedTarget.rootId ||
+        status.routeHints.length === 0
+      ) {
+        throw new Error('Runtime Host did not return a usable direct-peer descriptor');
+      }
+      await input.profiles.upsertManagedDirectPeerProfile(profileId, {
+        peerId: status.peerId,
+        rootId: status.rootId,
+        routeHints: status.routeHints,
+        coordinationRelays: status.coordinationRelays,
+      });
+    } else {
+      await input.profiles.removeManagedDirectPeerProfile(profileId);
+    }
+    return peerSnapshot(profileId, status);
   };
 
   const update = async (
@@ -574,6 +673,8 @@ export function createDesktopRuntimeHostManagement(input: {
     getUpdatePolicy: 'runtime-host-management:get-update-policy',
     setUpdatePolicy: 'runtime-host-management:set-update-policy',
     reconcileUpdate: 'runtime-host-management:reconcile-update',
+    getDirectPeer: 'runtime-host-management:get-direct-peer',
+    configureDirectPeer: 'runtime-host-management:configure-direct-peer',
   } as const;
   input.ipcMain.handle(channels.run, (_event, profileId: unknown, action: unknown) =>
     run(profileId, action));
@@ -613,12 +714,37 @@ export function createDesktopRuntimeHostManagement(input: {
     updatePolicy(profileId, policy));
   input.ipcMain.handle(channels.reconcileUpdate, (_event, profileId: unknown) =>
     reconcileUpdate(profileId));
+  input.ipcMain.handle(channels.getDirectPeer, (_event, profileId: unknown) =>
+    getDirectPeer(profileId));
+  input.ipcMain.handle(
+    channels.configureDirectPeer,
+    (_event, profileId: unknown, enabled: unknown, coordinationRelays: unknown) =>
+      configureDirectPeer(profileId, enabled, coordinationRelays),
+  );
 
   return {
     close() {
       for (const channel of Object.values(channels)) input.ipcMain.removeHandler(channel);
     },
   };
+}
+
+function requireCoordinationRelays(value: unknown): readonly string[] {
+  if (
+    !Array.isArray(value) ||
+    value.length > 16 ||
+    value.some(
+      (relay) =>
+        typeof relay !== 'string' ||
+        relay.length === 0 ||
+        Buffer.byteLength(relay, 'utf8') > 2 * 1024 ||
+        /[\s\u0000-\u001f\u007f]/u.test(relay),
+    ) ||
+    new Set(value).size !== value.length
+  ) {
+    throw new Error('Runtime Host coordination relay list is invalid');
+  }
+  return value;
 }
 
 function projectUpdatePolicy(

@@ -471,6 +471,14 @@ export interface DesktopRuntimeHostManagementProgress {
     | import('@maka/runtime-host/operator').RuntimeHostServiceUpdatePhase;
 }
 
+export type DesktopRuntimeHostDirectPeerSnapshot =
+  import('@maka/runtime-host/operator').RuntimeHostPeerStatus & {
+    readonly profileId: string;
+    readonly profilePresent: boolean;
+    readonly profileEnabled: boolean;
+    readonly clientAvailable: boolean;
+  };
+
 type RuntimeHostUpdatePolicyResult = Extract<
   RuntimeHostServiceManagementFrame,
   { kind: 'result'; action: 'update_policy' }
@@ -650,6 +658,12 @@ export interface MakaBridge {
       policy: import('@maka/runtime-host/operator').RuntimeHostManagedUpdatePolicy,
     ): Promise<DesktopRuntimeHostUpdatePolicySnapshot>;
     reconcileUpdate(profileId: string): Promise<DesktopRuntimeHostUpdateReconciliationResponse>;
+    getDirectPeer(profileId: string): Promise<DesktopRuntimeHostDirectPeerSnapshot>;
+    configureDirectPeer(
+      profileId: string,
+      enabled: boolean,
+      coordinationRelays: readonly string[],
+    ): Promise<DesktopRuntimeHostDirectPeerSnapshot>;
     listCredentials(profileId: string): Promise<DesktopRuntimeHostAccessSnapshot>;
     rotateCredential(profileId: string): Promise<DesktopRuntimeHostAccessSnapshot>;
     revokeCredential(

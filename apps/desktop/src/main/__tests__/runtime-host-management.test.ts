@@ -73,6 +73,7 @@ test('identifies, rotates, and revokes managed credentials without exposing secr
       removeHandler: (channel) => handlers.delete(channel),
     },
     profiles: {
+      ...unusedDirectPeerProfileDependencies(),
       resolveManagedService: async () => ({ profile, service, state: 'active' as const }),
       resolveManagedAccess: async () => ({
         profile,
@@ -215,6 +216,7 @@ test('manages only the service identity bound by Desktop onboarding', async () =
       removeHandler: (channel) => handlers.delete(channel),
     },
     profiles: {
+      ...unusedDirectPeerProfileDependencies(),
       resolveManagedService: async (profileId) =>
         profileId === managedProfile.id
           ? { profile: managedProfile, service: managedService, state: 'active' as const }
@@ -361,6 +363,7 @@ test('publishes update progress and waits for the managed profile to reconnect',
       removeHandler: (channel) => handlers.delete(channel),
     },
     profiles: {
+      ...unusedDirectPeerProfileDependencies(),
       resolveManagedService: async () =>
         bindingPresent ? { profile, service, state: 'active' as const } : undefined,
       resolveManagedAccess: async () => undefined,
@@ -370,6 +373,8 @@ test('publishes update progress and waits for the managed profile to reconnect',
       clearManagedServiceBinding: async () => undefined,
     },
     runServiceManagement: async () => assert.fail('ordinary management is not expected'),
+    runPeerManagement: async () => assert.fail('direct peer management is not expected'),
+    directPeerClientAvailable: false,
     runUpdate: async (input, onProgress) => {
       updates.push(input);
       onProgress('staging');
@@ -481,6 +486,7 @@ test('configures Project roots with CAS and reconnects only after a committed cu
       removeHandler: (channel) => handlers.delete(channel),
     },
     profiles: {
+      ...unusedDirectPeerProfileDependencies(),
       resolveManagedService: async () => ({ profile, service, state: 'active' as const }),
       resolveManagedAccess: async () => undefined,
       rotateManagedCredential: async () => assert.fail('credential rotation is not expected'),
@@ -588,6 +594,7 @@ test('manages one Host update policy and reconciles it through the bound operato
       removeHandler: (channel) => handlers.delete(channel),
     },
     profiles: {
+      ...unusedDirectPeerProfileDependencies(),
       resolveManagedService: async () => ({ profile, service, state: 'active' as const }),
       resolveManagedAccess: async () => undefined,
       rotateManagedCredential: async () => assert.fail('credential rotation is not expected'),
@@ -733,6 +740,7 @@ test('resumes deployment cleanup without invoking the removed operator', async (
       removeHandler: (channel) => handlers.delete(channel),
     },
     profiles: {
+      ...unusedDirectPeerProfileDependencies(),
       resolveManagedService: async () => ({ profile, service, state }),
       resolveManagedAccess: async () => undefined,
       markManagedServiceUninstalling: async (binding) => {
@@ -785,6 +793,7 @@ test('rechecks uninstall intent before retrying the remote service', async () =>
       removeHandler: (channel) => handlers.delete(channel),
     },
     profiles: {
+      ...unusedDirectPeerProfileDependencies(),
       resolveManagedService: async () => ({
         profile: {
           id: 'office',
@@ -832,6 +841,94 @@ test('rechecks uninstall intent before retrying the remote service', async () =>
     /did not confirm/u,
   );
   assert.equal(marked, true);
+});
+
+test('keeps the SSH profile while adding and removing its managed Direct peer', async () => {
+  const handlers = new Map<string, (...args: unknown[]) => unknown>();
+  const profile = {
+    id: 'office',
+    name: 'Office',
+    kind: 'remote' as const,
+    rootId: 'a'.repeat(64),
+    transport: {
+      kind: 'ssh' as const,
+      destination: 'operator@example.com',
+      remotePort: 7443,
+      websocketPath: '/runtime-host',
+    },
+  };
+  const service = {
+    id: 'b'.repeat(64),
+    rootPath: '/srv/maka',
+    operatorPath: '/home/operator/.local/share/maka/operator',
+  };
+  let peerProfileExists = false;
+  const actions: string[] = [];
+
+  createDesktopRuntimeHostManagement({
+    ...unusedUpdateDependencies(),
+    ipcMain: {
+      handle: (channel, handler) => handlers.set(channel, handler as (...args: unknown[]) => unknown),
+      removeHandler: (channel) => handlers.delete(channel),
+    },
+    profiles: {
+      ...unusedDirectPeerProfileDependencies(),
+      resolveManagedService: async () => ({ profile, service, state: 'active' as const }),
+      resolveManagedAccess: async () => undefined,
+      rotateManagedCredential: async () => assert.fail('credential rotation is not expected'),
+      markManagedServiceUninstalling: async (binding) => binding,
+      markManagedServiceCleanupPending: async (binding) => binding,
+      clearManagedServiceBinding: async () => undefined,
+      resolveManagedDirectPeerProfile: async () => ({
+        profileId: 'direct-office',
+        exists: peerProfileExists,
+        enabled: false,
+      }),
+      upsertManagedDirectPeerProfile: async (_profileId, descriptor) => {
+        assert.equal(descriptor.rootId, profile.rootId);
+        assert.deepEqual(descriptor.routeHints, ['/ip4/192.0.2.8/udp/44001/quic-v1']);
+        peerProfileExists = true;
+        return 'direct-office';
+      },
+      removeManagedDirectPeerProfile: async () => {
+        peerProfileExists = false;
+      },
+    },
+    directPeerClientAvailable: true,
+    runServiceManagement: async () => assert.fail('service management is not expected'),
+    runAccessManagement: async () => assert.fail('access management is not expected'),
+    runPeerManagement: async (input) => {
+      actions.push(input.action);
+      return {
+        kind: 'result',
+        action: input.action,
+        status: input.action === 'disable'
+          ? {
+              state: 'not_configured',
+              serviceState: 'running',
+              routeHints: [],
+              coordinationRelays: [],
+            }
+          : {
+              state: 'enabled',
+              serviceState: 'running',
+              peerId: '12D3KooWpeer',
+              rootId: profile.rootId,
+              routeHints: ['/ip4/192.0.2.8/udp/44001/quic-v1'],
+              coordinationRelays: [],
+            },
+      };
+    },
+    cleanupManagedDeployment: async () => assert.fail('cleanup is not expected'),
+  });
+
+  const configure = handlers.get('runtime-host-management:configure-direct-peer');
+  assert.ok(configure);
+  const enabled = await configure({}, profile.id, true, []);
+  assert.equal((enabled as { profilePresent: boolean }).profilePresent, true);
+  const disabled = await configure({}, profile.id, false, []);
+  assert.equal((disabled as { profilePresent: boolean }).profilePresent, false);
+  assert.deepEqual(actions, ['enable', 'disable']);
 });
 
 function serviceResult(
@@ -884,10 +981,24 @@ function unusedUpdateDependencies() {
     runUpdatePolicy: async (): Promise<never> => assert.fail('update policy is not expected'),
     runUpdateReconciliation: async (): Promise<never> =>
       assert.fail('update reconciliation is not expected'),
+    runPeerManagement: async (): Promise<never> =>
+      assert.fail('direct peer management is not expected'),
+    directPeerClientAvailable: false,
     resolveUpdatePackage: () => ({ kind: 'npm', specifier: 'maka-agent@1.2.3' } as const),
     currentHostEpoch: () => undefined,
     awaitUpdatedConnection: async () => undefined,
     sendProgress: () => undefined,
+  };
+}
+
+function unusedDirectPeerProfileDependencies() {
+  return {
+    resolveManagedDirectPeerProfile: async (): Promise<never> =>
+      assert.fail('direct peer profile inspection is not expected'),
+    upsertManagedDirectPeerProfile: async (): Promise<never> =>
+      assert.fail('direct peer profile creation is not expected'),
+    removeManagedDirectPeerProfile: async (): Promise<never> =>
+      assert.fail('direct peer profile removal is not expected'),
   };
 }
 

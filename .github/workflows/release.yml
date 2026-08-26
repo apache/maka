@@ -137,6 +137,9 @@ jobs:
       - name: Audit shipped desktop closure
         run: node scripts/audit-shipped-dependencies.mjs
 
+      - name: Update stable Rust for Desktop native artifacts
+        run: rustup update stable --no-self-update
+
       - name: Write App Store Connect API key
         if: matrix.platform == 'macos'
         env:

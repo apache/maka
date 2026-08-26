@@ -523,6 +523,49 @@ test("finishes a persisted pairing after Desktop restarts before finalization", 
   );
 });
 
+test("adds a removable Direct route without replacing its managed SSH profile", async () => {
+  const root = await clientRoot();
+  const catalog = createClientRuntimeHostProfileCatalog(root);
+  const managedServices = createDesktopRuntimeHostManagedServiceStore(root);
+  await catalog.create(MANAGED_PROFILE, "owner-token");
+  await managedServices.save(MANAGED_PROFILE, MANAGED_SERVICE);
+  const startup = await resolveDesktopRuntimeHostStartup(root, { catalog });
+  const service = createDesktopRuntimeHostProfileService({
+    clientDataRoot: root,
+    startup,
+    catalog,
+    managedServices,
+    states: () => [connectingLocal()],
+    enable: async () => undefined,
+    disable: async () => undefined,
+    setDefault: () => undefined,
+    finalizePairing: async () => undefined,
+  });
+
+  const directId = await service.upsertManagedDirectPeerProfile(MANAGED_PROFILE.id, {
+    peerId: "12D3KooWpeer",
+    rootId: MANAGED_PROFILE.rootId,
+    routeHints: ["/ip4/192.0.2.8/udp/44001/quic-v1"],
+    coordinationRelays: [],
+  });
+
+  const direct = await catalog.resolve(directId);
+  assert.equal(direct.credential, "owner-token");
+  assert.equal(direct.profile.kind, "remote");
+  if (direct.profile.kind !== "remote") assert.fail("expected a remote Direct profile");
+  assert.deepEqual(direct.profile.transport, {
+    kind: "libp2p-direct",
+    peerId: "12D3KooWpeer",
+    routeHints: ["/ip4/192.0.2.8/udp/44001/quic-v1"],
+    coordinationRelays: [],
+  });
+  assert.equal((await catalog.resolve(MANAGED_PROFILE.id)).credential, "owner-token");
+
+  await service.removeManagedDirectPeerProfile(MANAGED_PROFILE.id);
+
+  assert.deepEqual((await catalog.read()).profiles, [MANAGED_PROFILE]);
+});
+
 test("recovers interrupted managed credential rotation after restart", async () => {
   const root = await clientRoot();
   const catalog = createClientRuntimeHostProfileCatalog(root);

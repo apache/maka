@@ -160,6 +160,7 @@ describe('managed Runtime Host service', () => {
         'service',
         'peer',
         'enable',
+        '--framed',
         '--listen',
         '/ip4/0.0.0.0/udp/44001/quic-v1',
         '--clear-coordination-relays',
@@ -174,6 +175,7 @@ describe('managed Runtime Host service', () => {
         kind: 'runtime-host-service-peer',
         action: 'enable',
         json: false,
+        framed: true,
         listenAddresses: ['/ip4/0.0.0.0/udp/44001/quic-v1'],
         coordinationRelays: [],
         expectedTarget: {
