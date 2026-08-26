@@ -28,6 +28,8 @@ import {
   type MessageContent,
 } from '@maka/core/events';
 import type { RuntimeEvent } from '@maka/core/runtime-event';
+import type { TurnOrchestration } from '@maka/core/runtime-inputs';
+import type { SkillInvocationResult } from '@maka/core/skill-invocation';
 import {
   RuntimeMessageAuthorityInvariantError,
   type RuntimeMessageAuthority,
@@ -106,7 +108,18 @@ export interface HostMessageStartInput {
   readonly initiatingConnectionId: string;
   readonly turnId?: string;
   readonly runId?: string;
+  readonly skillIds?: readonly string[];
+  readonly turnOrchestration?: TurnOrchestration;
 }
+
+/**
+ * Starting a Turn from a Message either admits it, reports Skill resolution
+ * the client can act on, or fails with an opaque reason.
+ */
+export type HostMessageStartOutcome =
+  | { readonly turnId: string; readonly skillInvocation?: SkillInvocationResult }
+  | { readonly blocked: SkillInvocationResult }
+  | { readonly error: string };
 
 export interface HostMessageRecoveryBatch {
   readonly sessionId: string;
@@ -145,7 +158,7 @@ export interface HostMessageRootPort {
     input: HostMessageStartInput,
     admission: SessionAdmissionLease,
     commitAdmission: (canonicalContent: MessageContent) => Promise<void>,
-  ): Promise<{ readonly turnId: string } | { readonly error: string }>;
+  ): Promise<HostMessageStartOutcome>;
   startRecoveredMessages?(
     input: HostMessageRecoveryBatch,
     admission: SessionAdmissionLease,
@@ -371,47 +384,24 @@ export class HostMessageCoordinator implements RuntimeMessageAuthority {
     return state ? hasLiveMessageState(state) : false;
   }
 
-  async queryMessages(input: { sessionId: string; messageIds: readonly string[] }): Promise<
-    MessageOutcome<{
-      messages: Array<{
-        messageId: string;
-        status: 'accepted' | 'handed_off' | 'cancelled' | 'unknown';
-      }>;
-    }>
-  > {
-    const messages = [] as Array<{
-      messageId: string;
-      status: 'accepted' | 'handed_off' | 'cancelled' | 'unknown';
-    }>;
+  /**
+   * Durable cancellation proof for client-held transient identities. Absence of
+   * a tombstone is never delivery or cancellation proof, so only cancelled
+   * identities are reported and the client keeps every other row.
+   */
+  async queryMessages(input: {
+    sessionId: string;
+    messageIds: readonly string[];
+  }): Promise<MessageOutcome<{ cancelledMessageIds: string[] }>> {
+    const cancelledMessageIds: string[] = [];
     for (const messageId of input.messageIds) {
       const cancelled = await this.#admissions.readCancelledMessageAdmission(
         input.sessionId,
         messageId,
       );
-      if (cancelled) {
-        messages.push({ messageId, status: 'cancelled' });
-        continue;
-      }
-      const accepted = await this.#admissions.readMessageAdmission(input.sessionId, messageId);
-      if (accepted) {
-        messages.push({ messageId, status: 'accepted' });
-        continue;
-      }
-      const root = await this.#durableProof.readRootTurnSourceMessageReceipt(
-        input.sessionId,
-        messageId,
-      );
-      if (root) {
-        messages.push({ messageId, status: 'handed_off' });
-        continue;
-      }
-      const steering = await this.#durableProof.readImmutableSteeringMessageProof(
-        input.sessionId,
-        messageId,
-      );
-      messages.push({ messageId, status: steering ? 'handed_off' : 'unknown' });
+      if (cancelled) cancelledMessageIds.push(messageId);
     }
-    return success({ messages });
+    return success({ cancelledMessageIds });
   }
 
   retireSessions(sessionIds: readonly string[]): void {
@@ -886,6 +876,10 @@ export class HostMessageCoordinator implements RuntimeMessageAuthority {
               initiatingConnectionId,
               turnId,
               runId,
+              ...(payload.skillIds.length > 0 ? { skillIds: payload.skillIds } : {}),
+              ...(payload.turnOrchestration
+                ? { turnOrchestration: payload.turnOrchestration }
+                : {}),
             },
             admission,
             async (canonicalContent) => {
@@ -906,13 +900,32 @@ export class HostMessageCoordinator implements RuntimeMessageAuthority {
           if ('error' in started) {
             return failure('operation_conflict', started.error);
           }
+          // A blocked Skill invocation admitted nothing: it is not remembered as
+          // a completed submit, so the same identity can be submitted again once
+          // the Skill resolves.
+          if ('blocked' in started) {
+            return success({
+              disposition: 'blocked',
+              skillInvocation: started.blocked,
+            } as const);
+          }
           if (!isEntityId(started.turnId)) {
             throw new RuntimeMessageAuthorityInvariantError(
               'Started Turn identity is not encodable',
             );
           }
-          const result = { disposition: 'turn_started', turnId: started.turnId } as const;
+          const result = {
+            disposition: 'turn_started',
+            turnId: started.turnId,
+            ...(started.skillInvocation ? { skillInvocation: started.skillInvocation } : {}),
+          } as const;
           return success(result);
+        }
+        if (requiresExactTurn(payload)) {
+          return failure(
+            'session_busy',
+            'An explicit Skill or orchestrated Message needs an idle Session',
+          );
         }
         if (rootState.kind === 'reserved') {
           return failure('session_busy', 'A Goal continuation is reserving the next root Turn');
@@ -2266,6 +2279,8 @@ interface CanonicalSubmitPayload {
   readonly messageId: string;
   readonly content: MessageContent;
   readonly placement: MessagePlacement;
+  readonly skillIds: readonly string[];
+  readonly turnOrchestration?: TurnOrchestration;
 }
 
 function canonicalSubmitPayload(input: TurnMessageSubmitInput): CanonicalSubmitPayload {
@@ -2275,7 +2290,19 @@ function canonicalSubmitPayload(input: TurnMessageSubmitInput): CanonicalSubmitP
     messageId: input.messageId,
     content: normalizeMessageContent(input.content),
     placement: input.placement,
+    skillIds: [...(input.skillIds ?? [])],
+    ...(input.turnOrchestration ? { turnOrchestration: input.turnOrchestration } : {}),
   };
+}
+
+/**
+ * Exact-Turn intent. Explicit Skill ids and an orchestration override describe
+ * how one Turn runs, so they have no queued form and need an idle Session.
+ * A `/skill:` token in the text is not exact-Turn intent: message preparation
+ * expands it on the queued path too.
+ */
+function requiresExactTurn(payload: CanonicalSubmitPayload): boolean {
+  return payload.skillIds.length > 0 || payload.turnOrchestration !== undefined;
 }
 
 function aggregateMessageContent(contents: readonly MessageContent[]): MessageContent {

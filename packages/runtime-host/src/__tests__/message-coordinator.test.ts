@@ -72,35 +72,12 @@ test('idle submit starts exactly one root Turn and retry identity is connection-
   assert.equal(fixture.liveResidencies(), 0);
 });
 
-test('message query returns durable cancellation proof after the live queue disappears', async () => {
+test('message query reports only durable cancellation proof', async () => {
   const fixture = createFixture();
   fixture.coordinator.reserveRootTurn(ROOT);
   await submit(fixture, 'cancelled-message', 'discard me', 'next_turn');
-  await fixture.coordinator.cancelMessages(ROOT.sessionId, ['cancelled-message']);
-
-  const result = await fixture.coordinator.handlers['turn.message.query'](
-    {
-      sessionId: ROOT.sessionId,
-      messageIds: ['cancelled-message', 'unknown-message'],
-    },
-    operationContext(),
-  );
-
-  assert.deepEqual(result, {
-    ok: true,
-    result: {
-      messages: [
-        { messageId: 'cancelled-message', status: 'cancelled' },
-        { messageId: 'unknown-message', status: 'unknown' },
-      ],
-    },
-  });
-});
-
-test('message query distinguishes a live admission from durable handoff proof', async () => {
-  const fixture = createFixture();
-  fixture.coordinator.reserveRootTurn(ROOT);
   await submit(fixture, 'accepted-message', 'waiting', 'next_turn');
+  await fixture.coordinator.cancelMessages(ROOT.sessionId, ['cancelled-message']);
   fixture.receipts.set(
     'handed-off-message',
     sourceReceipt('handed-off-message', 'delivered', 'current_turn', 'steering'),
@@ -109,19 +86,19 @@ test('message query distinguishes a live admission from durable handoff proof', 
   const result = await fixture.coordinator.handlers['turn.message.query'](
     {
       sessionId: ROOT.sessionId,
-      messageIds: ['accepted-message', 'handed-off-message'],
+      messageIds: [
+        'cancelled-message',
+        'accepted-message',
+        'handed-off-message',
+        'unknown-message',
+      ],
     },
     operationContext(),
   );
 
   assert.deepEqual(result, {
     ok: true,
-    result: {
-      messages: [
-        { messageId: 'accepted-message', status: 'accepted' },
-        { messageId: 'handed-off-message', status: 'handed_off' },
-      ],
-    },
+    result: { cancelledMessageIds: ['cancelled-message'] },
   });
 });
 

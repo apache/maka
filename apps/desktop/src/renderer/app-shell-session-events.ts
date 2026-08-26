@@ -298,8 +298,9 @@ export function createAppShellSessionEventHandlers(options: {
             .map((entry) => ({
               type: 'user',
               id: entry.messageId,
-              turnId: entry.placement === 'current_turn' ? event.turnId : entry.messageId,
+              turnId: entry.messageId,
               transientPlacement: entry.placement,
+              ...(entry.placement === 'current_turn' ? { hostTurnId: event.turnId } : {}),
               ts: event.ts,
               text: entry.content.displayText ?? entry.content.text,
               ...(entry.content.attachments ? { attachments: [...entry.content.attachments] } : {}),

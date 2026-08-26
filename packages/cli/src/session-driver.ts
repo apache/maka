@@ -32,6 +32,7 @@ import type {
   GoalControlAction,
   GoalProjection,
   TurnMessageQueryResult,
+  TurnMessageSubmitResult,
 } from '@maka/runtime-host/protocol';
 
 export interface MakaSessionMoveResult {
@@ -106,6 +107,8 @@ export interface MakaSubmitMessageOptions {
   messageId: string;
   placement: 'current_turn' | 'next_turn';
   modelText?: string;
+  /** Exact-Turn intent carried to Runtime Host, which decides how to admit it. */
+  turnOrchestration?: TurnOrchestration;
 }
 
 export interface MakaRetractedMessages {
@@ -127,8 +130,15 @@ export interface MakaSessionDriver {
     prompt: string,
     options?: MakaPreparePromptOptions,
   ): Promise<MakaPreparedSessionTurn>;
-  submitMessage?(text: string, options: MakaSubmitMessageOptions): Promise<void>;
-  queryMessageStatuses?(messageIds: readonly string[]): Promise<TurnMessageQueryResult>;
+  /**
+   * Submits one Message and reports how Runtime Host admitted it. `undefined`
+   * means the outcome could not be proven, so the caller keeps its row.
+   */
+  submitMessage(
+    text: string,
+    options: MakaSubmitMessageOptions,
+  ): Promise<TurnMessageSubmitResult | undefined>;
+  queryCancelledMessages(messageIds: readonly string[]): Promise<TurnMessageQueryResult>;
   compactSession(): AsyncIterable<SessionEvent>;
   resumeLatest?(): AsyncIterable<SessionEvent>;
   retractQueued?(): Promise<MakaRetractedMessages>;

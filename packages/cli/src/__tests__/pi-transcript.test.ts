@@ -37,7 +37,7 @@ import {
   refreshRunningShellRunElapsed,
   hydrateToolsWithStoredMessages,
   makaPiToolPresentationStatus,
-  reconcileTransientMessageLifecycle,
+  retireCancelledTransientMessages,
   replaceTranscriptWithStoredMessages,
   submitCompactToTranscript,
   toggleAllThinkingExpansion,
@@ -511,7 +511,7 @@ describe('Maka Pi TUI transcript', () => {
     const state = createMakaPiTranscriptState();
     appendUserPrompt(state, 'send now', 'message-1', true);
 
-    replaceTranscriptWithStoredMessages(state, [], { preserveTransientMessages: true });
+    replaceTranscriptWithStoredMessages(state, [], { preserveClientLocalEntries: true });
 
     assert.deepEqual(state.entries, [
       { kind: 'user', messageId: 'message-1', text: 'send now', transient: true },
@@ -524,11 +524,7 @@ describe('Maka Pi TUI transcript', () => {
     appendUserPrompt(state, 'handed off', 'message-handed-off', true);
     appendUserPrompt(state, 'cancelled', 'message-cancelled', true);
 
-    reconcileTransientMessageLifecycle(state, [
-      { messageId: 'message-accepted', status: 'accepted' },
-      { messageId: 'message-handed-off', status: 'handed_off' },
-      { messageId: 'message-cancelled', status: 'cancelled' },
-    ]);
+    retireCancelledTransientMessages(state, ['message-cancelled']);
 
     assert.deepEqual(
       state.entries.map((entry) => ('messageId' in entry ? entry.messageId : undefined)),
@@ -557,7 +553,7 @@ describe('Maka Pi TUI transcript', () => {
           modelId: 'model-1',
         },
       ],
-      { preserveTransientMessages: true },
+      { preserveClientLocalEntries: true },
     );
 
     assert.deepEqual(
@@ -596,7 +592,7 @@ describe('Maka Pi TUI transcript', () => {
           modelId: 'model-1',
         },
       ],
-      { preserveTransientMessages: true },
+      { preserveClientLocalEntries: true },
     );
 
     assert.deepEqual(
@@ -625,7 +621,7 @@ describe('Maka Pi TUI transcript', () => {
           modelId: 'model-1',
         },
       ],
-      { preserveTransientMessages: true },
+      { preserveClientLocalEntries: true },
     );
 
     assert.deepEqual(
@@ -643,7 +639,7 @@ describe('Maka Pi TUI transcript', () => {
     replaceTranscriptWithStoredMessages(
       state,
       [{ type: 'user', id: 'message-1', turnId: 'turn-1', ts: 1, text: 'send now' }],
-      { preserveTransientMessages: true },
+      { preserveClientLocalEntries: true },
     );
 
     assert.deepEqual(state.entries, [{ kind: 'user', messageId: 'message-1', text: 'send now' }]);

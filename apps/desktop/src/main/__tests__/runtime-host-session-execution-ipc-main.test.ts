@@ -604,8 +604,7 @@ test("submits an ordinary composer message once under its stable message identit
     ipc,
   );
 
-  const result = await ipc.invoke("sessions:send", "session-1", {
-    type: "send",
+  const result = await ipc.invoke("sessions:submitMessage", "session-1", "current_turn", {
     messageId: "message-1",
     text: "check the projection",
   });
@@ -631,16 +630,15 @@ test("submits an ordinary composer message once under its stable message identit
   });
 });
 
-test('returns Host-owned Message lifecycle proof to the renderer', async () => {
+test('returns Host-owned cancellation proof to the renderer', async () => {
   const ipc = ipcHarness();
   registerExecutionIpc(
     {
       client: executionClient({
         queryMessages: async (input) => ({
-          messages: input.messageIds.map((messageId) => ({
-            messageId,
-            status: messageId === 'message-cancelled' ? 'cancelled' : 'accepted',
-          })),
+          cancelledMessageIds: input.messageIds.filter(
+            (messageId) => messageId === 'message-cancelled',
+          ),
         }),
       }),
     },
@@ -648,39 +646,28 @@ test('returns Host-owned Message lifecycle proof to the renderer', async () => {
   );
 
   assert.deepEqual(
-    await ipc.invoke('sessions:queryMessageStatuses', 'session-1', [
+    await ipc.invoke('sessions:queryCancelledMessages', 'session-1', [
       'message-accepted',
       'message-cancelled',
     ]),
-    {
-      messages: [
-        { messageId: 'message-accepted', status: 'accepted' },
-        { messageId: 'message-cancelled', status: 'cancelled' },
-      ],
-    },
+    { cancelledMessageIds: ['message-cancelled'] },
   );
 });
 
-test('keeps slash Skill sends on the exact-Turn path with their stable message identity', async () => {
-  const starts: unknown[] = [];
+test('submits a slash Skill message and reports the Host Skill outcome', async () => {
+  const submits: unknown[] = [];
   const ipc = ipcHarness();
   registerExecutionIpc(
     {
       client: executionClient({
         getSession: async () => session(),
-        submitMessage: async () => {
-          throw new Error('slash Skill send must preserve Skill invocation feedback');
+        startTurn: async () => {
+          throw new Error('a Skill Message must not route around Host admission');
         },
-        startTurn: async (input) => {
-          starts.push(input);
+        submitMessage: async (input) => {
+          submits.push(input);
           return {
-            kind: 'started',
-            turn: {
-              sessionId: input.sessionId,
-              turnId: input.turnId,
-              runId: 'run-skill',
-              status: 'running',
-            },
+            disposition: 'blocked',
             skillInvocation: {
               loaded: [],
               failed: [{ request: 'missing', reason: 'not_found' }],
@@ -694,22 +681,20 @@ test('keeps slash Skill sends on the exact-Turn path with their stable message i
     ipc,
   );
 
-  const result = await ipc.invoke('sessions:send', 'session-1', {
-    type: 'send',
+  const result = await ipc.invoke('sessions:submitMessage', 'session-1', 'current_turn', {
     messageId: 'message-skill',
     text: '/skill:missing inspect this',
   });
 
-  assert.deepEqual(starts, [{
+  assert.deepEqual(submits, [{
     sessionId: 'session-1',
-    turnId: 'message-skill',
+    messageId: 'message-skill',
+    placement: 'current_turn',
     content: { text: '/skill:missing inspect this', inlineReferences: [] },
   }]);
   assert.deepEqual(result, {
-    ok: true,
-    turnId: 'message-skill',
-    attachments: [],
-    inlineReferences: [],
+    ok: false,
+    reason: 'skill_invocation_failed',
     skillInvocation: {
       loaded: [],
       failed: [{ request: 'missing', reason: 'not_found' }],
@@ -817,7 +802,7 @@ test("retries a dispatched normal send with its original Turn identity", async (
 
   const result = await ipc.invoke("sessions:send", "session-1", {
     type: "send",
-    messageId: 'message-1',
+    turnId: 'message-1',
     text: "keep this Turn identity",
   });
 
@@ -961,12 +946,13 @@ test("retries a dispatched busy fallback with its original message identity", as
   assert.deepEqual(
     await ipc.invoke("sessions:send", "session-1", {
       type: "send",
-      messageId: "turn-unknown",
+      turnId: "turn-unknown",
       text: "ordinary chat keeps the existing failure contract",
     }),
     {
       ok: false,
       reason: "outcome_unknown",
+      messageId: "turn-unknown",
       skillInvocation: { loaded: [], failed: [], receipts: [] },
     },
   );
@@ -1146,7 +1132,7 @@ test("queues explicit Desktop follow-ups", async () => {
   );
 
   assert.deepEqual(
-    await ipc.invoke("sessions:enqueue", "session-1", "next_turn", {
+    await ipc.invoke("sessions:submitMessage", "session-1", "next_turn", {
       messageId: "followup-message",
       text: "do this next",
       quotes: [{ text: "quoted context" }],
@@ -1165,7 +1151,8 @@ test("queues explicit Desktop follow-ups", async () => {
       ],
     }),
     {
-      kind: "queued",
+      ok: true,
+      disposition: "followup",
       attachments: [
         {
           kind: "other",
@@ -1180,6 +1167,7 @@ test("queues explicit Desktop follow-ups", async () => {
         },
       ],
       inlineReferences: [],
+      skillInvocation: { loaded: [], failed: [], receipts: [] },
     },
   );
   assert.deepEqual(submits, [
@@ -1234,11 +1222,11 @@ test('keeps an unknown Desktop follow-up admission available for reconciliation'
   );
 
   assert.deepEqual(
-    await ipc.invoke('sessions:enqueue', 'session-1', 'next_turn', {
+    await ipc.invoke('sessions:submitMessage', 'session-1', 'next_turn', {
       messageId: 'followup-unknown',
       text: 'keep this visible',
     }),
-    { kind: 'outcome_unknown' },
+    { ok: false, reason: 'outcome_unknown' },
   );
 });
 

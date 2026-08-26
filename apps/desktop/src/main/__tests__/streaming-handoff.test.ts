@@ -101,7 +101,10 @@ describe('single live-turn handoff', () => {
         { type: 'user', id: 'old-user', turnId: 'old-turn', ts: 1, text: 'before' },
       ],
       transientMessages: [
-        { type: 'user', id: 'message-pending', turnId: 'message-pending', ts: 2, text: 'send now' },
+        {
+          type: 'user', id: 'message-pending', turnId: 'message-pending', ts: 2,
+          text: 'send now', transientPlacement: 'current_turn',
+        },
       ],
       scrollBehavior: 'smooth',
       onNew() {},
@@ -121,7 +124,10 @@ describe('single live-turn handoff', () => {
       },
       messages: [],
       transientMessages: [
-        { type: 'user', id: 'turn-1', turnId: 'turn-1', ts: 1, text: 'send now' },
+        {
+          type: 'user', id: 'turn-1', turnId: 'turn-1', ts: 1, text: 'send now',
+          transientPlacement: 'current_turn',
+        },
       ],
       messageLoading: true,
       scrollBehavior: 'smooth',
@@ -154,7 +160,7 @@ describe('single live-turn handoff', () => {
       transientMessages: [
         {
           type: 'user', id: 'message-1', turnId: 'message-1', ts: 1, text: 'send now',
-          transientPlacement: 'turn_source',
+          transientPlacement: 'current_turn',
         },
         {
           type: 'user', id: 'message-next', turnId: 'message-next', ts: 2, text: 'do this next',

@@ -88,8 +88,9 @@ test('queue_update events drive the independent desktop queue projection', () =>
     {
       type: 'user',
       id: 'message-steer',
-      turnId: 'turn-1',
+      turnId: 'message-steer',
       transientPlacement: 'current_turn',
+      hostTurnId: 'turn-1',
       ts: 1,
       text: 'adjust this run',
     },

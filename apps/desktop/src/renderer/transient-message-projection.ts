@@ -18,7 +18,6 @@
  */
 
 import type { StoredMessage } from '@maka/core/session';
-import type { MessageLifecycleStatus } from '@maka/runtime-host/protocol';
 import type { TransientUserMessageProjection } from '@maka/ui';
 
 type TransientUserMessage = TransientUserMessageProjection;
@@ -40,25 +39,17 @@ export function projectQueuedTransientMessages(
   for (const message of queued) transient.set(message.id, message);
 }
 
+/**
+ * A Host-named Turn outranks a later local update that still has none: the
+ * IPC reply can land after the Host event that already bound this Message.
+ */
 export function mergeTransientMessageProjection(
   current: TransientUserMessage,
   update: TransientUserMessage,
 ): TransientUserMessage {
-  const hostBoundCurrentTurn =
-    current.transientPlacement === 'current_turn'
-    && update.transientPlacement === 'current_turn'
-    && current.turnId !== current.id
-    && update.turnId === update.id;
-  return hostBoundCurrentTurn ? { ...update, turnId: current.turnId } : update;
-}
-
-export function reconcileTransientMessageLifecycle(
-  transient: Map<string, TransientUserMessage>,
-  messages: readonly { messageId: string; status: MessageLifecycleStatus }[],
-): void {
-  for (const message of messages) {
-    if (message.status === 'cancelled') transient.delete(message.messageId);
-  }
+  return current.hostTurnId !== undefined && update.hostTurnId === undefined
+    ? { ...update, hostTurnId: current.hostTurnId }
+    : update;
 }
 
 /**

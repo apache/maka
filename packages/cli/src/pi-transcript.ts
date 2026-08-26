@@ -61,7 +61,7 @@ import { goalStatusLineText, isLiveGoalStatus } from './pi-goal.js';
 import { renderToolBlock } from './pi-transcript-tools.js';
 import { getTuiPrimaryGuidance } from './tui-primary-guidance.js';
 import { renderTuiShortcutCopy } from './tui-shortcut-copy.js';
-import type { GoalProjection, MessageLifecycleStatus } from '@maka/runtime-host/protocol';
+import type { GoalProjection } from '@maka/runtime-host/protocol';
 
 export interface MakaPiUsageSummary {
   /** Cumulative cost in USD across the session. */
@@ -260,13 +260,11 @@ export function appendUserPrompt(
   state.entries.push(entry);
 }
 
-export function reconcileTransientMessageLifecycle(
+export function retireCancelledTransientMessages(
   state: MakaPiTranscriptState,
-  messages: readonly { messageId: string; status: MessageLifecycleStatus }[],
+  cancelledMessageIds: readonly string[],
 ): void {
-  const cancelled = new Set(
-    messages.filter(({ status }) => status === 'cancelled').map(({ messageId }) => messageId),
-  );
+  const cancelled = new Set(cancelledMessageIds);
   if (cancelled.size === 0) return;
   state.entries = state.entries.filter(
     (entry) => entry.kind !== 'user' || entry.transient !== true || !cancelled.has(entry.messageId),
@@ -354,58 +352,42 @@ export function applyShellRunUpdateToTranscript(
 export function replaceTranscriptWithStoredMessages(
   state: MakaPiTranscriptState,
   messages: readonly StoredMessage[],
-  options: { preserveTransientMessages?: boolean } = {},
+  options: { preserveClientLocalEntries?: boolean } = {},
 ): void {
   const durableMessageIds = new Set(messages.map((message) => message.id));
   const durableEntries = foldStoredShellRunChildren(storedMessagesToTranscriptEntries(messages));
   const durableEntryIds = new Set(durableEntries.map(transcriptEntryId).filter(Boolean));
-  const transientEntries = options.preserveTransientMessages
-    ? state.entries.flatMap((entry, index) => {
-        if (
-          entry.kind !== 'user' ||
-          entry.transient !== true ||
-          durableMessageIds.has(entry.messageId)
-        ) {
-          return [];
-        }
-        const priorEntries = state.entries.slice(0, index);
-        const nextDurableId = state.entries
-          .slice(index + 1)
-          .map(transcriptEntryId)
-          .find((messageId) => messageId !== undefined && durableEntryIds.has(messageId));
-        const previousDurableId = priorEntries
-          .map(transcriptEntryId)
-          .reverse()
-          .find((messageId) => messageId !== undefined && durableEntryIds.has(messageId));
-        const hadPrecedingDurable = priorEntries.some(
-          (candidate) =>
-            !(candidate.kind === 'user' && candidate.transient === true) &&
-            transcriptEntryId(candidate) !== undefined,
-        );
-        return [{ entry, nextDurableId, previousDurableId, hadPrecedingDurable }];
-      })
-    : [];
+  // Client-local entries have no durable counterpart to arrive in `messages`:
+  // a transient user row still waiting for its canonical message, and every
+  // notice the client itself wrote (recap, skill card, error). A replacement
+  // that dropped them would erase what the client just told the user.
+  const isClientLocal = (entry: MakaPiTranscriptEntry): boolean =>
+    entry.kind === 'notice' ||
+    (entry.kind === 'user' && entry.transient === true && !durableMessageIds.has(entry.messageId));
+  // A preserved entry keeps its place relative to the durable entry it
+  // followed. With no durable entry ahead of it it stays at the head, unless
+  // something durable preceded it — then the tail is where it belongs.
   const transientEntriesByBoundary = new Map<number, MakaPiTranscriptEntry[]>();
-  for (const transient of transientEntries) {
-    const nextIndex = transient.nextDurableId
-      ? durableEntries.findIndex((entry) => transcriptEntryId(entry) === transient.nextDurableId)
-      : -1;
-    const previousIndex = transient.previousDurableId
-      ? durableEntries.findIndex(
-          (entry) => transcriptEntryId(entry) === transient.previousDurableId,
-        )
-      : -1;
-    const boundary =
-      nextIndex >= 0
-        ? nextIndex
-        : previousIndex >= 0
-          ? previousIndex + 1
-          : transient.hadPrecedingDurable
-            ? durableEntries.length
-            : 0;
-    const grouped = transientEntriesByBoundary.get(boundary);
-    if (grouped) grouped.push(transient.entry);
-    else transientEntriesByBoundary.set(boundary, [transient.entry]);
+  if (options.preserveClientLocalEntries) {
+    state.entries.forEach((entry, index) => {
+      if (!isClientLocal(entry)) return;
+      const priorEntries = state.entries.slice(0, index);
+      const previousDurableId = priorEntries
+        .map(transcriptEntryId)
+        .reverse()
+        .find((messageId) => messageId !== undefined && durableEntryIds.has(messageId));
+      const previousIndex = previousDurableId
+        ? durableEntries.findIndex(
+            (candidate) => transcriptEntryId(candidate) === previousDurableId,
+          )
+        : -1;
+      const hadPrecedingEntry = priorEntries.some((candidate) => !isClientLocal(candidate));
+      const boundary =
+        previousIndex >= 0 ? previousIndex + 1 : hadPrecedingEntry ? durableEntries.length : 0;
+      const grouped = transientEntriesByBoundary.get(boundary);
+      if (grouped) grouped.push(entry);
+      else transientEntriesByBoundary.set(boundary, [entry]);
+    });
   }
   state.entries = [];
   for (let boundary = 0; boundary <= durableEntries.length; boundary += 1) {

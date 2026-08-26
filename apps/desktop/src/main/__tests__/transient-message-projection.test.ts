@@ -20,19 +20,20 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import type { StoredMessage } from '@maka/core/session';
+import type { TransientUserMessageProjection } from '@maka/ui';
 import {
   mergeTransientMessageProjection,
   projectQueuedTransientMessages,
-  reconcileTransientMessageLifecycle,
   reconcileTransientMessages,
 } from '../../renderer/transient-message-projection.js';
 
-const transient: Extract<StoredMessage, { type: 'user' }> = {
+const transient: TransientUserMessageProjection = {
   type: 'user',
   id: 'message-1',
-  turnId: 'turn-1',
+  turnId: 'message-1',
   ts: 2,
   text: 'send now',
+  transientPlacement: 'current_turn',
 };
 
 test('keeps a transient message through sparse transcript replacement', () => {
@@ -66,25 +67,6 @@ test('replaces a transient message by canonical message id exactly once', () => 
 
   assert.deepEqual(projected, []);
   assert.equal(pending.size, 0);
-});
-
-test('removes only messages with durable cancellation proof after reconnect', () => {
-  const accepted = { ...transient, id: 'message-accepted' };
-  const handedOff = { ...transient, id: 'message-handed-off' };
-  const cancelled = { ...transient, id: 'message-cancelled' };
-  const unknown = { ...transient, id: 'message-unknown' };
-  const pending = new Map(
-    [accepted, handedOff, cancelled, unknown].map((message) => [message.id, message]),
-  );
-
-  reconcileTransientMessageLifecycle(pending, [
-    { messageId: accepted.id, status: 'accepted' },
-    { messageId: handedOff.id, status: 'handed_off' },
-    { messageId: cancelled.id, status: 'cancelled' },
-    { messageId: unknown.id, status: 'unknown' },
-  ]);
-
-  assert.deepEqual([...pending.keys()], [accepted.id, handedOff.id, unknown.id]);
 });
 
 test('canonicalizing one send does not hide a later transient send', () => {
@@ -164,20 +146,11 @@ test('uses the Host queue snapshot order for already-present transient messages'
 });
 
 test('keeps a Host-bound current Turn when a later IPC result has no Turn identity', () => {
-  const hostBound = {
-    ...transient,
-    id: 'message-current',
-    turnId: 'host-turn',
-    transientPlacement: 'current_turn' as const,
-  };
-  const lateIpcUpdate = {
-    ...hostBound,
-    turnId: hostBound.id,
-    text: 'uploaded content',
-  };
+  const hostBound = { ...transient, id: 'message-current', hostTurnId: 'host-turn' };
+  const lateIpcUpdate = { ...transient, id: 'message-current', text: 'uploaded content' };
 
   assert.deepEqual(mergeTransientMessageProjection(hostBound, lateIpcUpdate), {
     ...lateIpcUpdate,
-    turnId: 'host-turn',
+    hostTurnId: 'host-turn',
   });
 });

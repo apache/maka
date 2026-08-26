@@ -18,115 +18,69 @@
  */
 
 import type { SessionEvent } from '@maka/core/events';
-import { randomUUID } from 'node:crypto';
 import type { SkillInvocationResult } from '@maka/core/skill-invocation';
-import type { TurnOrchestration } from '@maka/core/runtime-inputs';
 import {
   drainGoalTurn,
   type SessionActivityLease,
   type SessionActivityRegistry,
 } from '@maka/runtime/goal-turn-lifecycle';
 import { type GoalTurnOutcome } from '@maka/runtime/goal-continuation';
-import {
-  SkillInvocationBlockedError,
-  type MakaPreparedSessionTurn,
-  type MakaSessionDriver,
-} from './session-driver.js';
+import type { MakaPreparedSessionTurn } from './session-driver.js';
 
 export interface MakaPiTuiTurnActivity {
   activities: SessionActivityRegistry;
 }
 
-export type MakaPiTuiTurnRequest =
-  | {
-      kind: 'external';
-      prompt: string;
-      /** Stable operation/message identity shared by the transient row and Host admission. */
-      turnId?: string;
-      /** Model-facing text after explicit skill expansion, when different. */
-      sendText?: string;
-      /** Session observed before preparation; null is valid for the first turn. */
-      sessionId: string | null;
-      /** Trusted one-turn orchestration override supplied by a host command. */
-      turnOrchestration?: TurnOrchestration;
-    }
-  | {
-      /** A Turn that another Client or the Runtime Host already started. */
-      kind: 'attached';
-      turn: MakaPreparedSessionTurn;
-    };
+/** A Turn that another Client or the Runtime Host already started. */
+export interface MakaPiTuiTurnRequest {
+  turn: MakaPreparedSessionTurn;
+}
 
 export interface RunMakaPiTuiTurnInput {
-  driver: Pick<MakaSessionDriver, 'preparePrompt' | 'submitMessage'>;
   turnActivity: MakaPiTuiTurnActivity;
   request: MakaPiTuiTurnRequest;
   shouldAbort: () => boolean;
-  onStart?: (turnId: string | undefined) => void;
+  onStart?: () => void;
   onPrepared?: (turn: MakaPreparedSessionTurn) => void | Promise<void>;
   onSkillInvocation?: (result: SkillInvocationResult) => void | Promise<void>;
   onEvent?: (event: SessionEvent) => void | Promise<void>;
   onFailure?: (error: unknown) => void | Promise<void>;
 }
 
-export type MakaPiTuiTurnOutcome = GoalTurnOutcome | { kind: 'admitted' };
-
 /**
  * Owns one visible TUI turn from activity reservation through full stream drain.
- * Goal continuation and ScheduledTask admission remain Runtime Host responsibilities.
+ * Every Turn reaches the TUI the same way: Runtime Host admits a submitted
+ * Message and this runner attaches to the Turn it started.
  */
-export async function runMakaPiTuiTurn(
-  input: RunMakaPiTuiTurnInput,
-): Promise<MakaPiTuiTurnOutcome> {
+export async function runMakaPiTuiTurn(input: RunMakaPiTuiTurnInput): Promise<GoalTurnOutcome> {
   const { request } = input;
   let activity: SessionActivityLease | undefined;
-  const externalTurnId = request.kind === 'external' ? (request.turnId ?? randomUUID()) : undefined;
-  let preparedTurnId = request.kind === 'attached' ? request.turn.turnId : externalTurnId;
+  let preparedTurnId = request.turn.turnId;
 
-  const finishBeforeDrain = <T extends MakaPiTuiTurnOutcome>(outcome: T): T => {
+  const finishBeforeDrain = (outcome: GoalTurnOutcome): GoalTurnOutcome => {
     activity?.release();
     activity = undefined;
     return outcome;
   };
 
   try {
-    input.onStart?.(preparedTurnId);
+    input.onStart?.();
     if (input.shouldAbort()) {
       return finishBeforeDrain(abortedOutcome(preparedTurnId));
     }
 
-    const observedSessionId =
-      request.kind === 'external' ? request.sessionId : request.turn.sessionId;
-    if (observedSessionId) {
-      activity = await input.turnActivity.activities.acquire(observedSessionId);
-      if (input.shouldAbort()) {
-        return finishBeforeDrain(abortedOutcome(preparedTurnId));
-      }
+    activity = await input.turnActivity.activities.acquire(request.turn.sessionId);
+    if (input.shouldAbort()) {
+      return finishBeforeDrain(abortedOutcome(preparedTurnId));
     }
 
-    if (
-      request.kind === 'external' &&
-      request.turnOrchestration === undefined &&
-      input.driver.submitMessage
-    ) {
-      await input.driver.submitMessage(request.prompt, {
-        messageId: externalTurnId!,
-        placement: 'current_turn',
-        ...(request.sendText !== undefined ? { modelText: request.sendText } : {}),
-      });
-      return finishBeforeDrain({ kind: 'admitted' });
-    }
-
-    const turn =
-      request.kind === 'attached'
-        ? request.turn
-        : await input.driver.preparePrompt(request.prompt, {
-            ...(externalTurnId ? { turnId: externalTurnId } : {}),
-            ...(request.sendText !== undefined ? { modelText: request.sendText } : {}),
-            ...(request.turnOrchestration ? { turnOrchestration: request.turnOrchestration } : {}),
-          });
+    const turn = request.turn;
     preparedTurnId = turn.turnId;
-    if (turn.skillInvocation) await input.onSkillInvocation?.(turn.skillInvocation);
+    // Adoption first: onPrepared replaces the transcript with the attached
+    // Turn's canonical messages, so a Skill card projected before it would be
+    // wiped by the very adoption that follows.
     await input.onPrepared?.(turn);
+    if (turn.skillInvocation) await input.onSkillInvocation?.(turn.skillInvocation);
 
     if (!activity) activity = await input.turnActivity.activities.acquire(turn.sessionId);
     if (input.shouldAbort()) {
@@ -159,10 +113,6 @@ export async function runMakaPiTuiTurn(
     return outcome;
   } catch (error) {
     if (input.shouldAbort()) {
-      return finishBeforeDrain(abortedOutcome(preparedTurnId));
-    }
-    if (error instanceof SkillInvocationBlockedError) {
-      await input.onSkillInvocation?.(error.skillInvocation);
       return finishBeforeDrain(abortedOutcome(preparedTurnId));
     }
     let reportedError = error;

@@ -35,7 +35,10 @@ import { type SessionSummary, type StoredMessage } from '@maka/core/session';
 import { type ThinkingLevel } from '@maka/core/model-thinking';
 import { type UserQuestionResponse } from '@maka/core/user-question';
 import type { SkillInvocationResult } from '@maka/core/skill-invocation';
-import type { AgentGraphClientSnapshot } from '@maka/runtime-host/protocol';
+import type {
+  AgentGraphClientSnapshot,
+  TurnMessageSubmitResult,
+} from '@maka/runtime-host/protocol';
 import { SessionActivityRegistry } from '@maka/runtime/goal-turn-lifecycle';
 import { type ContextDiagnostics } from '@maka/runtime/context-diagnostics';
 import type { GoalProjection } from '@maka/runtime-host/protocol';
@@ -296,7 +299,9 @@ describe('Maka Pi TUI runner', () => {
 
     terminal.input('run');
     terminal.input('\r');
-    await waitFor(() => driver.prompts.length === 1);
+    // The double Escape interrupts a *running* Turn, so wait for the Host-
+    // admitted Turn to reach the drain rather than for the Message to be sent.
+    await waitFor(() => driver.streamPulls === 1);
     terminal.input('\x1b');
     terminal.input('\x1b');
     await waitFor(() => driver.stopCalls === 1);
@@ -1610,7 +1615,7 @@ describe('Maka Pi TUI runner', () => {
     ]);
   });
 
-  test('waits to start a visible turn until shared session activity releases', async () => {
+  test('waits to drain a visible turn until shared session activity releases', async () => {
     const terminal = new FakeTerminal();
     const driver = new SlashCommandDriver();
     const activities = new SessionActivityRegistry();
@@ -1628,11 +1633,14 @@ describe('Maka Pi TUI runner', () => {
 
     terminal.input('run');
     terminal.input('\r');
+    // Runtime Host owns admission, so the Message goes out at once; it is the
+    // visible Turn that waits for the Session another surface is holding.
+    await waitFor(() => driver.prompts.length === 1);
     await delay(0);
-    assert.deepEqual(driver.prompts, []);
+    assert.equal(driver.streamPulls, 0);
 
     heartbeat.release();
-    await waitFor(() => driver.prompts.length === 1);
+    await waitFor(() => driver.streamPulls === 1);
     assert.deepEqual(driver.prompts, ['run']);
     assert.equal(activities.whenIdle('session-1'), undefined);
 
@@ -1696,21 +1704,23 @@ describe('Maka Pi TUI runner', () => {
 
     terminal.input('run');
     terminal.input('\r');
+    await waitFor(() => driver.prompts.length === 1);
     await delay(0);
-    assert.deepEqual(driver.prompts, []);
+    assert.equal(driver.streamPulls, 0);
 
     exitMaka(terminal);
     await run;
     heartbeat.release();
     await delay(0);
 
-    assert.deepEqual(driver.prompts, []);
+    assert.equal(driver.streamPulls, 0);
     assert.equal(activities.whenIdle('session-1'), undefined);
   });
 
   test('flows a transcript taller than the viewport into scrollback, untruncated and un-paged', async () => {
     const terminal = new FakeTerminal();
     const driver = new LongTranscriptDriver();
+    driver.hostSummary = { model: 'deepseek-v4-flash', llmConnectionSlug: 'deepseek' };
     const run = runMakaPiTui({
       title: 'Maka',
       driver,
@@ -1766,6 +1776,7 @@ describe('Maka Pi TUI runner', () => {
   test('browses a long transcript without depending on terminal scrollback', async () => {
     const terminal = new FakeTerminal();
     const driver = new LongTranscriptDriver();
+    driver.hostSummary = { model: 'deepseek-v4-flash', llmConnectionSlug: 'deepseek' };
     const run = runMakaPiTui({
       title: 'Maka',
       driver,
@@ -2455,7 +2466,7 @@ describe('Maka Pi TUI runner', () => {
     await run;
   });
 
-  test('Enter during Host admission keeps the second prompt in the editor', async () => {
+  test('a second Enter during Host admission submits another Message', async () => {
     const terminal = new FakeTerminal();
     const driver = new SteeringTurnDriver();
     const admission = deferred<void>();
@@ -2474,19 +2485,18 @@ describe('Maka Pi TUI runner', () => {
     terminal.input('\r');
     await waitFor(() => plainTerminalOutput(terminal.screenOutput()).includes('first prompt'));
 
+    // Runtime Host decides what a Message becomes, so the client neither holds
+    // the editor nor drops the text: the second Enter submits its own Message
+    // and only the keystroke typed after it stays in the draft.
     terminal.input('second prompt');
     terminal.input('\r');
     terminal.input('z');
-    await waitFor(() => editorInputText(terminal) === 'second promptz');
+    await waitFor(() => editorInputText(terminal) === 'z');
+    await waitFor(() => plainTerminalOutput(terminal.screenOutput()).includes('second prompt'));
 
     admission.resolve();
     await waitFor(() => terminal.progressStates.at(-1) === true);
-    terminal.input('\x1b');
-    terminal.input('\x1b');
-    await waitFor(() => terminal.progressStates.at(-1) === false);
-    terminal.input('\x03');
-    terminal.input('/exit');
-    terminal.input('\r');
+    exitMaka(terminal);
     await run;
   });
 
@@ -2871,6 +2881,7 @@ describe('Maka Pi TUI runner', () => {
   test('switches connection and model together from a cross-connection /model', async () => {
     const terminal = new FakeTerminal();
     const driver = new SlashCommandDriver();
+    driver.hostSummary = { model: 'gpt-5.5', llmConnectionSlug: 'openai' };
     const run = runMakaPiTui({
       title: 'Maka',
       driver,
@@ -5696,7 +5707,7 @@ describe('Maka Pi TUI runner', () => {
       await run;
     });
 
-    test('a turn prepared after a mid-turn detach does not adopt abandoned metadata', async () => {
+    test('a Turn that attaches after a mid-turn detach does not adopt abandoned metadata', async () => {
       const terminal = new FakeTerminal();
       const driver = new DetachingSwitchDriver([
         storedUserMessage('user-s2', 'turn-old-2', 'history from session two'),
@@ -5712,47 +5723,37 @@ describe('Maka Pi TUI runner', () => {
         terminal,
       });
 
-      // Park preparePrompt itself: while it is unresolved, /session can
-      // already detach — onPrepared/onSkillInvocation then fire for the
-      // abandoned Turn after the epoch fence moved.
-      let releasePrepare!: () => void;
-      const parkedPrepare = new Promise<void>((resolve) => {
-        releasePrepare = resolve;
-      });
-      const basePrepare = driver.preparePrompt.bind(driver);
-      driver.preparePrompt = async (prompt, options) => {
-        const turn = await basePrepare(prompt, options);
-        await parkedPrepare;
-        return {
-          ...turn,
-          summary: fakeSessionSummary('abandoned-session', '/abandoned-cwd', 'ABANDONED TITLE'),
-        };
-      };
-
       terminal.input('start the long task');
       terminal.input('\r');
       await waitFor(() => terminal.progressStates.at(-1) === true);
 
       terminal.input('/session session-2');
       terminal.input('\r');
-      // Nothing else drives the frame loop while preparePrompt stays parked,
-      // so force a repaint for the detach notices.
-      terminal.resize(80, 24);
       await waitFor(() =>
         plainTerminalOutput(terminal.output()).includes('Detached from the running Turn'),
       );
       assert.match(plainTerminalOutput(terminal.screenOutput()), /history from session two/);
 
-      // The abandoned Turn's prepare resolves only now — its summary must
-      // not steal the adopted Session's metadata.
-      releasePrepare();
       driver.releaseOldTurn();
       await waitFor(() => plainTerminalOutput(terminal.output()).includes('attached replay done'));
+      await waitFor(() => terminal.progressStates.at(-1) === false);
+
+      // The Host keeps running the abandoned Session's Turn and announces a
+      // successor on it. That Turn belongs to a Session this client left, so
+      // neither its transcript nor its metadata may reach the adopted view.
+      driver.announceStartedTurn({
+        sessionId: 'session-1',
+        turnId: 'turn-abandoned',
+        events: (async function* () {})(),
+        messages: [storedUserMessage('user-abandoned', 'turn-abandoned', 'ABANDONED MESSAGE')],
+        summary: fakeSessionSummary('session-1', '/abandoned-cwd', 'ABANDONED TITLE'),
+      });
+      await delay(0);
       assert.equal(terminal.titles.includes('ABANDONED TITLE (Maka)'), false);
       assert.equal(terminal.titles.at(-1), 'Existing chat (Maka)');
       assert.doesNotMatch(plainTerminalOutput(terminal.screenOutput()), /\/abandoned-cwd/);
+      assert.doesNotMatch(plainTerminalOutput(terminal.screenOutput()), /ABANDONED MESSAGE/);
 
-      await waitFor(() => terminal.progressStates.at(-1) === false);
       terminal.input('/exit');
       terminal.input('\r');
       await run;
@@ -6557,7 +6558,9 @@ describe('Maka Pi TUI runner', () => {
     await waitFor(() => plainTerminalOutput(terminal.screenOutput()).includes('(4s · 2 lines)'));
     await waitFor(() => terminal.progressStates.at(-1) === false);
     assert.deepEqual(driver.prompts, ['first']);
-    assert.deepEqual(driver.shellRunReads, ['session-1']);
+    // Every attached Turn hydrates background ShellRun state, the visible one
+    // this client submitted included.
+    assert.deepEqual(driver.shellRunReads, ['session-1', 'session-1']);
 
     terminal.input('/exit');
     terminal.input('\r');
@@ -6657,6 +6660,27 @@ class ThrowingFocusReportTerminal extends FakeTerminal {
 }
 
 class RejectingStopDriver implements MakaSessionDriver {
+  startedTurnListener: ((turn: MakaAttachedSessionTurn) => void) | undefined;
+  hostSummary: Partial<SessionSummary> = {};
+
+  submitMessage(
+    text: string,
+    options: MakaSubmitMessageOptions,
+  ): Promise<TurnMessageSubmitResult | undefined> {
+    return admitMessageAsTurn(this, text, options);
+  }
+
+  subscribeStartedTurns(listener: (turn: MakaAttachedSessionTurn) => void): () => void {
+    this.startedTurnListener = listener;
+    return () => {
+      if (this.startedTurnListener === listener) this.startedTurnListener = undefined;
+    };
+  }
+
+  async queryCancelledMessages(): Promise<{ cancelledMessageIds: string[] }> {
+    return { cancelledMessageIds: [] };
+  }
+
   stopCalls = 0;
 
   async listSessions(): Promise<SessionSummary[]> {
@@ -6697,6 +6721,27 @@ class RejectingStopDriver implements MakaSessionDriver {
 }
 
 class SandboxBoundaryPromptDriver implements MakaSessionDriver {
+  startedTurnListener: ((turn: MakaAttachedSessionTurn) => void) | undefined;
+  hostSummary: Partial<SessionSummary> = {};
+
+  submitMessage(
+    text: string,
+    options: MakaSubmitMessageOptions,
+  ): Promise<TurnMessageSubmitResult | undefined> {
+    return admitMessageAsTurn(this, text, options);
+  }
+
+  subscribeStartedTurns(listener: (turn: MakaAttachedSessionTurn) => void): () => void {
+    this.startedTurnListener = listener;
+    return () => {
+      if (this.startedTurnListener === listener) this.startedTurnListener = undefined;
+    };
+  }
+
+  async queryCancelledMessages(): Promise<{ cancelledMessageIds: string[] }> {
+    return { cancelledMessageIds: [] };
+  }
+
   readonly boundaryResponses: SandboxBoundaryResponse[] = [];
   boundaryRequests = 0;
   stopCalls = 0;
@@ -6797,6 +6842,27 @@ class SandboxBoundaryPromptDriver implements MakaSessionDriver {
 }
 
 class UserQuestionPromptDriver implements MakaSessionDriver {
+  startedTurnListener: ((turn: MakaAttachedSessionTurn) => void) | undefined;
+  hostSummary: Partial<SessionSummary> = {};
+
+  submitMessage(
+    text: string,
+    options: MakaSubmitMessageOptions,
+  ): Promise<TurnMessageSubmitResult | undefined> {
+    return admitMessageAsTurn(this, text, options);
+  }
+
+  subscribeStartedTurns(listener: (turn: MakaAttachedSessionTurn) => void): () => void {
+    this.startedTurnListener = listener;
+    return () => {
+      if (this.startedTurnListener === listener) this.startedTurnListener = undefined;
+    };
+  }
+
+  async queryCancelledMessages(): Promise<{ cancelledMessageIds: string[] }> {
+    return { cancelledMessageIds: [] };
+  }
+
   readonly responses: UserQuestionResponse[] = [];
   stopCalls = 0;
   private release: (() => void) | undefined;
@@ -6859,6 +6925,27 @@ class UserQuestionPromptDriver implements MakaSessionDriver {
 }
 
 class InterruptibleTurnDriver implements MakaSessionDriver {
+  startedTurnListener: ((turn: MakaAttachedSessionTurn) => void) | undefined;
+  hostSummary: Partial<SessionSummary> = {};
+
+  submitMessage(
+    text: string,
+    options: MakaSubmitMessageOptions,
+  ): Promise<TurnMessageSubmitResult | undefined> {
+    return admitMessageAsTurn(this, text, options);
+  }
+
+  subscribeStartedTurns(listener: (turn: MakaAttachedSessionTurn) => void): () => void {
+    this.startedTurnListener = listener;
+    return () => {
+      if (this.startedTurnListener === listener) this.startedTurnListener = undefined;
+    };
+  }
+
+  async queryCancelledMessages(): Promise<{ cancelledMessageIds: string[] }> {
+    return { cancelledMessageIds: [] };
+  }
+
   stopCalls = 0;
   readonly prompts: string[] = [];
   private releaseTurn: (() => void) | null = null;
@@ -6874,7 +6961,11 @@ class InterruptibleTurnDriver implements MakaSessionDriver {
 
   async *compactSession(): AsyncIterable<never> {}
 
+  /** Bumped when the drain first pulls the Turn's stream. */
+  streamPulls = 0;
+
   async *promptEvents(_prompt: string): AsyncIterable<SessionEvent> {
+    this.streamPulls += 1;
     // The turn parks like a real long-running provider call until stop() aborts it.
     await new Promise<void>((resolve) => {
       this.releaseTurn = resolve;
@@ -6919,6 +7010,10 @@ class InterruptibleTurnDriver implements MakaSessionDriver {
 // keybindings (Enter steer, Alt+Enter queue, Alt+↑ retract, Esc Esc refill) can
 // be exercised end-to-end without a real runtime.
 class SteeringTurnDriver implements MakaSessionDriver {
+  async queryCancelledMessages(): Promise<{ cancelledMessageIds: string[] }> {
+    return { cancelledMessageIds: [] };
+  }
+
   stopCalls = 0;
   goal: GoalProjection | null = null;
   readonly steered: string[] = [];
@@ -6927,6 +7022,7 @@ class SteeringTurnDriver implements MakaSessionDriver {
   nextSubmitError: Error | undefined;
   submitGate: Promise<void> | undefined;
   startedTurnMessages: StoredMessage[] = [];
+  hostSummary: Partial<SessionSummary> = {};
   retractCalls = 0;
   rewindTargets: RewindTarget[] = [];
   private steering: Array<{ messageId: string; text: string }> = [];
@@ -6993,24 +7089,29 @@ class SteeringTurnDriver implements MakaSessionDriver {
     yield { type: 'complete', id: 'event-complete', turnId, ts: 2, stopReason: 'user_stop' };
   }
 
-  async submitMessage(text: string, options: MakaSubmitMessageOptions) {
+  async submitMessage(text: string, options: MakaSubmitMessageOptions): Promise<undefined> {
+    // Stays in place: a gate set by a test holds every Message that arrives
+    // while the Host has not answered the first one.
     await this.submitGate;
-    this.submitGate = undefined;
     if (this.nextSubmitError) {
       const error = this.nextSubmitError;
       this.nextSubmitError = undefined;
       throw error;
     }
     if (!this.turnOpen) {
-      const turn = await this.preparePrompt(text);
+      const turn = await this.preparePrompt(text, {
+        turnId: options.messageId,
+        ...(options.modelText !== undefined ? { modelText: options.modelText } : {}),
+        ...(options.turnOrchestration ? { turnOrchestration: options.turnOrchestration } : {}),
+      });
       queueMicrotask(() =>
         this.startedTurnListener?.({
           ...turn,
           messages: this.startedTurnMessages,
-          summary: fakeSessionSummary(turn.sessionId),
+          summary: { ...fakeSessionSummary(turn.sessionId), ...this.hostSummary },
         }),
       );
-      return;
+      return undefined;
     }
     if (options.placement === 'current_turn') {
       this.steered.push(text);
@@ -7020,6 +7121,7 @@ class SteeringTurnDriver implements MakaSessionDriver {
       this.followup.push({ messageId: options.messageId, text });
     }
     this.emitQueueUpdate();
+    return undefined;
   }
 
   subscribeStartedTurns(listener: (turn: MakaAttachedSessionTurn) => void): () => void {
@@ -7084,6 +7186,27 @@ class FailingOrchestrationDriver extends SteeringTurnDriver {
 }
 
 class SlowStopDriver implements MakaSessionDriver {
+  startedTurnListener: ((turn: MakaAttachedSessionTurn) => void) | undefined;
+  hostSummary: Partial<SessionSummary> = {};
+
+  submitMessage(
+    text: string,
+    options: MakaSubmitMessageOptions,
+  ): Promise<TurnMessageSubmitResult | undefined> {
+    return admitMessageAsTurn(this, text, options);
+  }
+
+  subscribeStartedTurns(listener: (turn: MakaAttachedSessionTurn) => void): () => void {
+    this.startedTurnListener = listener;
+    return () => {
+      if (this.startedTurnListener === listener) this.startedTurnListener = undefined;
+    };
+  }
+
+  async queryCancelledMessages(): Promise<{ cancelledMessageIds: string[] }> {
+    return { cancelledMessageIds: [] };
+  }
+
   stopCalls = 0;
   readonly prompts: string[] = [];
   private releaseTurn: (() => void) | null = null;
@@ -7145,6 +7268,27 @@ class SlowStopDriver implements MakaSessionDriver {
 }
 
 class ToolOutputDriver implements MakaSessionDriver {
+  startedTurnListener: ((turn: MakaAttachedSessionTurn) => void) | undefined;
+  hostSummary: Partial<SessionSummary> = {};
+
+  submitMessage(
+    text: string,
+    options: MakaSubmitMessageOptions,
+  ): Promise<TurnMessageSubmitResult | undefined> {
+    return admitMessageAsTurn(this, text, options);
+  }
+
+  subscribeStartedTurns(listener: (turn: MakaAttachedSessionTurn) => void): () => void {
+    this.startedTurnListener = listener;
+    return () => {
+      if (this.startedTurnListener === listener) this.startedTurnListener = undefined;
+    };
+  }
+
+  async queryCancelledMessages(): Promise<{ cancelledMessageIds: string[] }> {
+    return { cancelledMessageIds: [] };
+  }
+
   async listSessions(): Promise<SessionSummary[]> {
     return [];
   }
@@ -7378,6 +7522,27 @@ function pipeOutput(stdout = '', stderr = '') {
 }
 
 class SlashCommandDriver implements MakaSessionDriver {
+  startedTurnListener: ((turn: MakaAttachedSessionTurn) => void) | undefined;
+  hostSummary: Partial<SessionSummary> = {};
+
+  submitMessage(
+    text: string,
+    options: MakaSubmitMessageOptions,
+  ): Promise<TurnMessageSubmitResult | undefined> {
+    return admitMessageAsTurn(this, text, options);
+  }
+
+  subscribeStartedTurns(listener: (turn: MakaAttachedSessionTurn) => void): () => void {
+    this.startedTurnListener = listener;
+    return () => {
+      if (this.startedTurnListener === listener) this.startedTurnListener = undefined;
+    };
+  }
+
+  async queryCancelledMessages(): Promise<{ cancelledMessageIds: string[] }> {
+    return { cancelledMessageIds: [] };
+  }
+
   /** Model-facing text (options.modelText when set, else the typed prompt). */
   readonly prompts: string[] = [];
   /** Human-facing typed prompt for every prepared turn. */
@@ -7490,7 +7655,11 @@ class SlashCommandDriver implements MakaSessionDriver {
       : { available: false, reason: 'Missing working directory' };
   }
 
+  /** Bumped when the drain first pulls the Turn's stream. */
+  streamPulls = 0;
+
   async *promptEvents(_prompt: string, turnId = 'turn-1'): AsyncIterable<SessionEvent> {
+    this.streamPulls += 1;
     yield {
       type: 'complete',
       id: 'event-complete',
@@ -7600,6 +7769,22 @@ class SlashCommandDriver implements MakaSessionDriver {
 class HostSkillDriver extends SlashCommandDriver {
   constructor(private readonly skillInvocation: SkillInvocationResult) {
     super();
+  }
+
+  // The Host answers a refused invocation with a `blocked` disposition rather
+  // than a Turn; the driver surfaces that as the submit result.
+  override async submitMessage(
+    text: string,
+    options: MakaSubmitMessageOptions,
+  ): Promise<TurnMessageSubmitResult | undefined> {
+    try {
+      return await super.submitMessage(text, options);
+    } catch (error) {
+      if (error instanceof SkillInvocationBlockedError) {
+        return { disposition: 'blocked', skillInvocation: error.skillInvocation };
+      }
+      throw error;
+    }
   }
 
   override async preparePrompt(
@@ -7793,6 +7978,12 @@ class ActiveResumeDriver extends SlashCommandDriver {
 // (submitted after switching) complete immediately.
 class DetachingSwitchDriver extends SlashCommandDriver {
   stopCalls = 0;
+
+  /** Pushes a Host-started Turn the way the real started-turn stream would. */
+  announceStartedTurn(turn: MakaAttachedSessionTurn): void {
+    this.startedTurnListener?.(turn);
+  }
+
   /** When set, the next switchSession rejects — a failed detach must leave
    *  the running drain fully live. */
   failNextSwitch = false;
@@ -7891,7 +8082,6 @@ class DetachingSwitchDriver extends SlashCommandDriver {
 }
 
 class HostSuccessorDriver extends SlashCommandDriver {
-  #startedTurnListener: ((turn: MakaAttachedSessionTurn) => void) | undefined;
   readonly #probeFirst = deferred<void>();
   #finishFirst: (() => void) | undefined;
   successorPulls = 0;
@@ -7921,17 +8111,10 @@ class HostSuccessorDriver extends SlashCommandDriver {
     yield { type: 'complete', id: 'complete-first', turnId, ts: 3, stopReason: 'end_turn' };
   }
 
-  subscribeStartedTurns(listener: (turn: MakaAttachedSessionTurn) => void): () => void {
-    this.#startedTurnListener = listener;
-    return () => {
-      if (this.#startedTurnListener === listener) this.#startedTurnListener = undefined;
-    };
-  }
-
   publishSuccessor(): void {
     const turnId = 'turn-second';
     const driver = this;
-    this.#startedTurnListener?.({
+    this.startedTurnListener?.({
       sessionId: this.getSessionId()!,
       turnId,
       messages: [
@@ -8095,6 +8278,27 @@ class LongTranscriptDriver extends SlashCommandDriver {
 }
 
 class DeferredControlDriver implements MakaSessionDriver {
+  startedTurnListener: ((turn: MakaAttachedSessionTurn) => void) | undefined;
+  hostSummary: Partial<SessionSummary> = {};
+
+  submitMessage(
+    text: string,
+    options: MakaSubmitMessageOptions,
+  ): Promise<TurnMessageSubmitResult | undefined> {
+    return admitMessageAsTurn(this, text, options);
+  }
+
+  subscribeStartedTurns(listener: (turn: MakaAttachedSessionTurn) => void): () => void {
+    this.startedTurnListener = listener;
+    return () => {
+      if (this.startedTurnListener === listener) this.startedTurnListener = undefined;
+    };
+  }
+
+  async queryCancelledMessages(): Promise<{ cancelledMessageIds: string[] }> {
+    return { cancelledMessageIds: [] };
+  }
+
   readonly prompts: string[] = [];
   readonly models: string[] = [];
   private resolveSetModel: (() => void) | null = null;
@@ -8155,6 +8359,27 @@ class DeferredControlDriver implements MakaSessionDriver {
 }
 
 class RejectingSandboxBoundaryDriver implements MakaSessionDriver {
+  startedTurnListener: ((turn: MakaAttachedSessionTurn) => void) | undefined;
+  hostSummary: Partial<SessionSummary> = {};
+
+  submitMessage(
+    text: string,
+    options: MakaSubmitMessageOptions,
+  ): Promise<TurnMessageSubmitResult | undefined> {
+    return admitMessageAsTurn(this, text, options);
+  }
+
+  subscribeStartedTurns(listener: (turn: MakaAttachedSessionTurn) => void): () => void {
+    this.startedTurnListener = listener;
+    return () => {
+      if (this.startedTurnListener === listener) this.startedTurnListener = undefined;
+    };
+  }
+
+  async queryCancelledMessages(): Promise<{ cancelledMessageIds: string[] }> {
+    return { cancelledMessageIds: [] };
+  }
+
   readonly responses: SandboxBoundaryResponse[] = [];
 
   async listSessions(): Promise<SessionSummary[]> {
@@ -8232,6 +8457,27 @@ class DeferredListSessionsDriver extends SlashCommandDriver {
 }
 
 class SandboxBoundaryThenErrorDriver implements MakaSessionDriver {
+  startedTurnListener: ((turn: MakaAttachedSessionTurn) => void) | undefined;
+  hostSummary: Partial<SessionSummary> = {};
+
+  submitMessage(
+    text: string,
+    options: MakaSubmitMessageOptions,
+  ): Promise<TurnMessageSubmitResult | undefined> {
+    return admitMessageAsTurn(this, text, options);
+  }
+
+  subscribeStartedTurns(listener: (turn: MakaAttachedSessionTurn) => void): () => void {
+    this.startedTurnListener = listener;
+    return () => {
+      if (this.startedTurnListener === listener) this.startedTurnListener = undefined;
+    };
+  }
+
+  async queryCancelledMessages(): Promise<{ cancelledMessageIds: string[] }> {
+    return { cancelledMessageIds: [] };
+  }
+
   respondCalls = 0;
   private resolveContinue: (() => void) | null = null;
 
@@ -8376,6 +8622,41 @@ function switchResult(
   messages: StoredMessage[] = [],
 ): MakaSessionSwitchResult {
   return { summary, messages };
+}
+
+interface HostAdmittingDriver {
+  preparePrompt(
+    prompt: string,
+    options?: MakaPreparePromptOptions,
+  ): Promise<MakaPreparedSessionTurn>;
+  startedTurnListener: ((turn: MakaAttachedSessionTurn) => void) | undefined;
+  hostSummary: Partial<SessionSummary>;
+}
+
+/**
+ * Emulates Runtime Host admission: an idle Session turns the submitted Message
+ * into a Turn the TUI then attaches to. `hostSummary` is what the Host reports
+ * for that Session, so a test whose TUI runs on a non-default model points it
+ * there instead of letting the default summary rewrite the status line.
+ */
+async function admitMessageAsTurn(
+  driver: HostAdmittingDriver,
+  text: string,
+  options: MakaSubmitMessageOptions,
+): Promise<undefined> {
+  const turn = await driver.preparePrompt(text, {
+    turnId: options.messageId,
+    ...(options.modelText !== undefined ? { modelText: options.modelText } : {}),
+    ...(options.turnOrchestration ? { turnOrchestration: options.turnOrchestration } : {}),
+  });
+  queueMicrotask(() =>
+    driver.startedTurnListener?.({
+      ...turn,
+      messages: [],
+      summary: { ...fakeSessionSummary(turn.sessionId), ...driver.hostSummary },
+    }),
+  );
+  return undefined;
 }
 
 function fakeSessionSummary(

@@ -802,42 +802,6 @@ export interface MakaBridge {
       completeHostIds: string[];
     }>;
     create(input?: CreateSessionRequestInput): Promise<DesktopSessionSummary>;
-    submitMessage(
-      sessionId: string,
-      command: {
-        type: 'send';
-        messageId: string;
-        text: string;
-        displayText?: string;
-        skillIds?: string[];
-        attachmentItems?: RendererIngestInput[];
-        retainedAttachments?: import('@maka/core/events').AttachmentRef[];
-        turnOrchestration?: never;
-        quotes?: import('@maka/core/events').QuoteRef[];
-        workspaceFileReferences?: Array<
-          Pick<import('@maka/core/events').InlineReference, 'value' | 'start'>
-        >;
-      },
-    ): Promise<
-      | {
-          ok: true;
-          disposition: 'turn_started' | 'steering' | 'followup';
-          turnId?: string;
-          attachments: import('@maka/core/events').AttachmentRef[];
-          inlineReferences: import('@maka/core/events').InlineReference[];
-          skillInvocation: import('@maka/runtime/skill-invocation').SkillInvocationResult;
-        }
-      | {
-          ok: false;
-          reason: 'skill_invocation_failed';
-          skillInvocation: import('@maka/runtime/skill-invocation').SkillInvocationResult;
-        }
-      | {
-          ok: false;
-          reason: 'outcome_unknown';
-          skillInvocation: import('@maka/runtime/skill-invocation').SkillInvocationResult;
-        }
-    >;
     send(
       sessionId: string,
       command: {
@@ -907,13 +871,20 @@ export interface MakaBridge {
       | { kind: 'outcome_unknown'; messageId: string }
       | { kind: 'started'; turnId: string }
     >;
-    enqueue(
+    /**
+     * The single Message admission path. Skill and orchestration intent travel
+     * with the Message; Runtime Host decides whether it opens its own Turn,
+     * steers the running one, or fails closed.
+     */
+    submitMessage(
       sessionId: string,
       placement: 'current_turn' | 'next_turn',
       command: {
         messageId: string;
         text: string;
         displayText?: string;
+        skillIds?: string[];
+        turnOrchestration?: TurnOrchestration;
         attachmentItems?: RendererIngestInput[];
         retainedAttachments?: import('@maka/core/events').AttachmentRef[];
         quotes?: import('@maka/core/events').QuoteRef[];
@@ -923,14 +894,21 @@ export interface MakaBridge {
       },
     ): Promise<
       | {
-          kind: 'queued' | 'started';
+          ok: true;
+          disposition: 'turn_started' | 'steering' | 'followup';
           turnId?: string;
           attachments: import('@maka/core/events').AttachmentRef[];
           inlineReferences: import('@maka/core/events').InlineReference[];
+          skillInvocation: import('@maka/runtime/skill-invocation').SkillInvocationResult;
         }
-      | { kind: 'outcome_unknown' }
+      | {
+          ok: false;
+          reason: 'skill_invocation_failed';
+          skillInvocation: import('@maka/runtime/skill-invocation').SkillInvocationResult;
+        }
+      | { ok: false; reason: 'outcome_unknown' }
     >;
-    queryMessageStatuses(
+    queryCancelledMessages(
       sessionId: string,
       messageIds: readonly string[],
     ): Promise<import('@maka/runtime-host/protocol').TurnMessageQueryResult>;

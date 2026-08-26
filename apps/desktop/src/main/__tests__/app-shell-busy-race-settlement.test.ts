@@ -101,6 +101,7 @@ function createActionsDeps() {
     setMessageRetryPendingBySession: () => undefined,
     setMessages: () => undefined,
     addTransientMessage: () => undefined,
+    updateTransientMessage: () => undefined,
     removeTransientMessage: () => undefined,
     transcriptRangeRef: { current: undefined },
     setNavSelection: () => undefined,
@@ -135,15 +136,20 @@ describe('busy-raced send settlement', () => {
     });
     const restoreWindow = installWindow({
       sessions: {
-        enqueue: async (_sessionId: string, _placement: string, command: { messageId: string }) => {
+        submitMessage: async (
+          _sessionId: string,
+          _placement: string,
+          command: { messageId: string },
+        ) => {
           submittedMessageId = command.messageId;
           observeSubmit();
           await admission;
           return {
-            kind: 'queued',
-            messageId: command.messageId,
+            ok: true,
+            disposition: 'followup',
             attachments: [],
             inlineReferences: [],
+            skillInvocation: EMPTY_SKILL_INVOCATION,
           };
         },
       },
@@ -153,6 +159,7 @@ describe('busy-raced send settlement', () => {
         ...createActionsDeps(),
         activeIdRef,
         addTransientMessage: (_sessionId, message) => transient.set(message.id, message),
+        updateTransientMessage: (_sessionId, message) => transient.set(message.id, message),
         removeTransientMessage: (_sessionId, messageId) => transient.delete(messageId),
       });
       const sending = actions.enqueueMessage(
@@ -176,10 +183,7 @@ describe('busy-raced send settlement', () => {
     const transient = new Map<string, StoredMessage>();
     const restoreWindow = installWindow({
       sessions: {
-        enqueue: async (_sessionId: string, _placement: string, command: { messageId: string }) => ({
-          kind: 'outcome_unknown' as const,
-          messageId: command.messageId,
-        }),
+        submitMessage: async () => ({ ok: false, reason: 'outcome_unknown' as const }),
       },
     });
     try {
@@ -187,6 +191,7 @@ describe('busy-raced send settlement', () => {
         ...createActionsDeps(),
         activeIdRef: { current: 'session-a' },
         addTransientMessage: (_sessionId, message) => transient.set(message.id, message),
+        updateTransientMessage: (_sessionId, message) => transient.set(message.id, message),
         removeTransientMessage: (_sessionId, messageId) => transient.delete(messageId),
       });
 
@@ -212,15 +217,20 @@ describe('busy-raced send settlement', () => {
     });
     const restoreWindow = installWindow({
       sessions: {
-        enqueue: async (_sessionId: string, _placement: string, command: { messageId: string }) => {
+        submitMessage: async (
+          _sessionId: string,
+          _placement: string,
+          command: { messageId: string },
+        ) => {
           submittedMessageId = command.messageId;
           observeSubmit();
           await admission;
           return {
-            kind: 'queued' as const,
-            messageId: command.messageId,
+            ok: true as const,
+            disposition: 'followup' as const,
             attachments: [],
             inlineReferences: [],
+            skillInvocation: EMPTY_SKILL_INVOCATION,
           };
         },
       },
@@ -263,7 +273,11 @@ describe('busy-raced send settlement', () => {
     });
     const restoreWindow = installWindow({
       sessions: {
-        submitMessage: async (_sessionId: string, command: { messageId: string }) => {
+        submitMessage: async (
+          _sessionId: string,
+          _placement: string,
+          command: { messageId: string },
+        ) => {
           submittedMessageId = command.messageId;
           observeSubmit();
           await admission;
@@ -284,6 +298,7 @@ describe('busy-raced send settlement', () => {
         ...createActionsDeps(),
         activeIdRef,
         addTransientMessage: (_sessionId, message) => transient.set(message.id, message),
+        updateTransientMessage: (_sessionId, message) => transient.set(message.id, message),
         removeTransientMessage: (_sessionId, messageId) => transient.delete(messageId),
       });
       const sending = actions.send('also check the tests');

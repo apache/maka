@@ -61,8 +61,13 @@ export interface LiveContentActivationSnapshot {
 }
 
 export type TransientUserMessageProjection = Extract<StoredMessage, { type: 'user' }> & {
-  /** Presentation-only placement until canonical transcript grouping arrives. */
-  transientPlacement?: 'turn_source' | 'current_turn' | 'next_turn';
+  /**
+   * Presentation-only placement until canonical transcript grouping arrives:
+   * `current_turn` renders beside the tail Turn, `next_turn` below it.
+   */
+  transientPlacement: 'current_turn' | 'next_turn';
+  /** The Host Turn this Message is already bound to, once the Host named one. */
+  hostTurnId?: string;
 };
 
 export function ChatView(props: {
@@ -472,7 +477,12 @@ export function ChatView(props: {
         ) {
           return false;
         }
-        return message.turnId === tailTurnId || message.transientPlacement === 'turn_source';
+        // An unbound row belongs to the Turn the user is looking at; a bound
+        // one only renders inline in the Turn the Host named.
+        return (
+          message.transientPlacement === 'current_turn'
+          && (message.hostTurnId === undefined || message.hostTurnId === tailTurnId)
+        );
       })
     : [];
   const inlineTransientMessageIds = new Set(

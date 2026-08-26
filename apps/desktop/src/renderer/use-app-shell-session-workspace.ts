@@ -32,7 +32,6 @@ import type { DesktopTranscriptRangeController } from './desktop-transcript-rang
 import {
   mergeTransientMessageProjection,
   projectQueuedTransientMessages as applyQueuedTransientProjection,
-  reconcileTransientMessageLifecycle,
   reconcileTransientMessages,
 } from './transient-message-projection.js';
 
@@ -134,17 +133,16 @@ export function useAppShellSessionWorkspace(toastApi: ToastApi) {
     }
   }
 
-  async function reconcileTransientMessageStatuses(sessionId: string): Promise<void> {
+  async function retireCancelledTransientMessages(sessionId: string): Promise<void> {
     const pending = transientMessagesBySessionRef.current.get(sessionId);
     if (!pending || pending.size === 0) return;
     try {
-      const result = await window.maka.sessions.queryMessageStatuses(
-        sessionId,
-        [...pending.keys()],
-      );
+      const result = await window.maka.sessions.queryCancelledMessages(sessionId, [
+        ...pending.keys(),
+      ]);
       const current = transientMessagesBySessionRef.current.get(sessionId);
       if (!current) return;
-      reconcileTransientMessageLifecycle(current, result.messages);
+      for (const messageId of result.cancelledMessageIds) current.delete(messageId);
       if (current.size === 0) transientMessagesBySessionRef.current.delete(sessionId);
       if (activeIdRef.current === sessionId) {
         setTransientMessages(projectTransientMessages(sessionId, messagesRef.current));
@@ -219,7 +217,7 @@ export function useAppShellSessionWorkspace(toastApi: ToastApi) {
     addTransientMessage,
     updateTransientMessage,
     projectQueuedTransientMessages,
-    reconcileTransientMessageStatuses,
+    retireCancelledTransientMessages,
     removeTransientMessage,
     transcriptRangeRef,
     messageLoadPending,

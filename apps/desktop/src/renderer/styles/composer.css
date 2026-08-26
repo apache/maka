@@ -61,6 +61,14 @@
   overflow-y: auto;
 }
 
+.maka-composer-queue-text {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
 .maka-composer-queue-actions {
   display: inline-flex;
   align-items: center;

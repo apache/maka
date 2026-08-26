@@ -390,7 +390,10 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
     yield* events;
   }
 
-  async submitMessage(text: string, options: MakaSubmitMessageOptions): Promise<void> {
+  async submitMessage(
+    text: string,
+    options: MakaSubmitMessageOptions,
+  ): Promise<OperationOutput<'turn.message.submit'> | undefined> {
     const sessionId = await this.#ensureSession();
     const sessionGeneration = this.#sessionGeneration;
     const configuration = await this.#loadConfiguration(sessionId);
@@ -400,7 +403,7 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
     this.#adoptLoadedConfiguration(configuration);
     const modelText = options.modelText ?? text;
     try {
-      await this.#request('turn.message.submit', {
+      return await this.#request('turn.message.submit', {
         originHostEpoch: this.#connection.hostEpoch,
         sessionId,
         messageId: options.messageId,
@@ -409,19 +412,20 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
           ...(modelText === text ? {} : { displayText: text }),
         },
         placement: options.placement,
+        ...(options.turnOrchestration ? { turnOrchestration: options.turnOrchestration } : {}),
       });
     } catch (error) {
       if (
         (error instanceof RuntimeHostOperationError && error.code === 'outcome_unknown') ||
         (error instanceof RuntimeHostRequestInterruptedError && error.dispatch === 'dispatched')
       ) {
-        return;
+        return undefined;
       }
       throw error;
     }
   }
 
-  async queryMessageStatuses(
+  async queryCancelledMessages(
     messageIds: readonly string[],
   ): Promise<OperationOutput<'turn.message.query'>> {
     const sessionId = await this.#ensureSession();

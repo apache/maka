@@ -99,6 +99,7 @@ function createActionsDeps() {
     setMessageRetryPendingBySession: () => undefined,
     setMessages: () => undefined,
     addTransientMessage: () => undefined,
+    updateTransientMessage: () => undefined,
     removeTransientMessage: () => undefined,
     transcriptRangeRef: { current: undefined },
     setNavSelection: () => undefined,

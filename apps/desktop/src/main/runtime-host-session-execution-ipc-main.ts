@@ -26,7 +26,6 @@ import {
 } from '@maka/runtime-host/client';
 import { SKILL_INVOCATION_TOKEN_SOURCE } from '@maka/core/skill-invocation-token';
 import { isSideConversationSession } from '@maka/core/side-conversation';
-import { parseSkillInvocationTokens } from '@maka/runtime/skill-invocation';
 import {
   type SessionChangedEvent,
   type SessionChangedReason,
@@ -113,6 +112,9 @@ type RuntimeHostSessionExecutionClient = Pick<
   | "updateSessionConfiguration"
 >;
 
+/** No Skill was named, so the Host resolved none. */
+const EMPTY_SKILL_INVOCATION = { loaded: [], failed: [], receipts: [] } as const;
+
 async function submitMessageWithReconnect(
   client: Pick<RuntimeHostSessionExecutionClient, 'getSession' | 'submitMessage'>,
   input: Parameters<RuntimeHostSessionExecutionClient['submitMessage']>[0],
@@ -193,7 +195,7 @@ export function registerRuntimeHostSessionExecutionIpc(
   const stopSession = createRuntimeHostSessionStop(deps, newId);
 
   ipcMain.handle(
-    'sessions:queryMessageStatuses',
+    'sessions:queryCancelledMessages',
     async (_event, sessionId: string, messageIds: unknown) => {
       if (!Array.isArray(messageIds)) throw new Error('Invalid Message identities');
       return deps.client.queryMessages({ sessionId, messageIds });
@@ -273,7 +275,7 @@ export function registerRuntimeHostSessionExecutionIpc(
       if (!session)
         throw new Error(`Runtime Host Session not found: ${sessionId}`);
       const sideConversation = isSideConversationSession(session.labels);
-      const turnId = command.turnId ?? command.messageId ?? newId();
+      const turnId = command.turnId ?? newId();
       let attachments = retainedAttachmentsForSession(
         sessionId,
         command.retainedAttachments ?? [],
@@ -331,49 +333,6 @@ export function registerRuntimeHostSessionExecutionIpc(
           ? { turnOrchestration: command.turnOrchestration }
           : {}),
       };
-      if (
-        command.messageId !== undefined &&
-        !sideConversation &&
-        (command.skillIds?.length ?? 0) === 0 &&
-        parseSkillInvocationTokens(command.text).length === 0 &&
-        command.turnOrchestration === undefined
-      ) {
-        const submitted = await submitMessageWithReconnect(deps.client, {
-          sessionId,
-          messageId: command.messageId,
-          content: startInput.content,
-          placement: 'current_turn',
-        });
-        const skillInvocation = { loaded: [], failed: [], receipts: [] };
-        if (!submitted) {
-          return {
-            ok: false as const,
-            reason: 'outcome_unknown' as const,
-            skillInvocation,
-          };
-        }
-        if (submitted.disposition === 'turn_started') {
-          deps.emitSessionsChanged('status-change', sessionId, {
-            turnId: submitted.turnId,
-          });
-          return {
-            ok: true as const,
-            disposition: submitted.disposition,
-            turnId: submitted.turnId,
-            attachments,
-            inlineReferences,
-            skillInvocation,
-          };
-        }
-        deps.emitSessionsChanged('status-change', sessionId);
-        return {
-          ok: true as const,
-          disposition: submitted.disposition,
-          attachments,
-          inlineReferences,
-          skillInvocation,
-        };
-      }
       let startResult;
       try {
         startResult = sideConversation
@@ -405,22 +364,19 @@ export function registerRuntimeHostSessionExecutionIpc(
         // Preserve the renderer's command identity in the durable message so
         // a lost IPC reply can be reconciled as root-vs-steering later.
         const messageId = turnId;
-        const emptySkillInvocation = { loaded: [], failed: [], receipts: [] };
         const submitInput = {
           sessionId,
           messageId,
           content: startInput.content,
           placement: 'current_turn' as const,
         };
-        const submitted = sideConversation
-          ? await submitMessageWithReconnect(deps.client, submitInput)
-          : await deps.client.submitMessage(submitInput);
+        const submitted = await submitMessageWithReconnect(deps.client, submitInput);
         if (!submitted) {
           return {
             ok: false as const,
             reason: 'outcome_unknown' as const,
             messageId,
-            skillInvocation: emptySkillInvocation,
+            skillInvocation: EMPTY_SKILL_INVOCATION,
           };
         }
         if (submitted.disposition === "turn_started") {
@@ -432,7 +388,7 @@ export function registerRuntimeHostSessionExecutionIpc(
             turnId: submitted.turnId,
             attachments,
             inlineReferences,
-            skillInvocation: emptySkillInvocation,
+            skillInvocation: EMPTY_SKILL_INVOCATION,
           };
         }
         // The steering renderer believed this session idle; nudge it to
@@ -445,7 +401,7 @@ export function registerRuntimeHostSessionExecutionIpc(
           ...(sideConversation ? { messageId } : {}),
           attachments,
           inlineReferences,
-          skillInvocation: emptySkillInvocation,
+          skillInvocation: EMPTY_SKILL_INVOCATION,
         };
       }
       if (startResult.kind === "blocked") {
@@ -488,7 +444,7 @@ export function registerRuntimeHostSessionExecutionIpc(
     },
   );
   ipcMain.handle(
-    "sessions:enqueue",
+    "sessions:submitMessage",
     async (event, sessionId: string, placement: unknown, value: unknown) => {
       if (placement !== "current_turn" && placement !== "next_turn") {
         throw new Error("Invalid message placement");
@@ -497,10 +453,7 @@ export function registerRuntimeHostSessionExecutionIpc(
         ...(value && typeof value === "object" ? value : {}),
         type: "send",
       });
-      if (!command) throw new Error("Invalid queued message");
-      if ((command.skillIds?.length ?? 0) > 0 || command.turnOrchestration) {
-        throw new Error("Queued control input is not available");
-      }
+      if (!command) throw new Error("Invalid submitted message");
       const session = await deps.client.getSession(sessionId);
       if (!session) {
         throw new Error(`Runtime Host Session not found: ${sessionId}`);
@@ -534,12 +487,19 @@ export function registerRuntimeHostSessionExecutionIpc(
       if (attachments.length > MAX_ATTACHMENT_COUNT) {
         throw new Error("Too many attachments");
       }
-      const displayText = command.displayText ?? command.text;
+      const displayText =
+        command.displayText ??
+        (command.text.trim().length > 0
+          ? command.text
+          : (command.skillIds ?? []).map((id) => `/skill:${id}`).join(" "));
       const inlineReferences = mergeWorkspaceFileInlineReferences({
         displayText,
         workspaceFileReferences: command.workspaceFileReferences,
       });
       const messageId = command.messageId ?? newId();
+      // Skill and orchestration intent travels with the Message. Runtime Host
+      // decides whether it opens its own Turn, steers the running one, or
+      // fails closed; the Desktop never routes on message content.
       const result = await submitMessageWithReconnect(deps.client, {
         sessionId,
         messageId,
@@ -553,23 +513,41 @@ export function registerRuntimeHostSessionExecutionIpc(
           ...(command.quotes ? { quotes: command.quotes } : {}),
           inlineReferences,
         },
+        ...((command.skillIds?.length ?? 0) > 0 ? { skillIds: command.skillIds } : {}),
+        ...(command.turnOrchestration
+          ? { turnOrchestration: command.turnOrchestration }
+          : {}),
       });
-      if (!result) return { kind: 'outcome_unknown' as const };
+      if (!result) return { ok: false as const, reason: 'outcome_unknown' as const };
+      if (result.disposition === 'blocked') {
+        return {
+          ok: false as const,
+          reason: 'skill_invocation_failed' as const,
+          skillInvocation: result.skillInvocation,
+        };
+      }
       if (result.disposition === "turn_started") {
         deps.emitSessionsChanged("status-change", sessionId, {
           turnId: result.turnId,
         });
         return {
-          kind: "started" as const,
+          ok: true as const,
+          disposition: result.disposition,
           turnId: result.turnId,
           attachments,
           inlineReferences,
+          skillInvocation: result.skillInvocation ?? EMPTY_SKILL_INVOCATION,
         };
       }
+      // The submitting surface believed this Session idle when it steered;
+      // nudge it to refresh so its composer converges on the running Turn.
+      deps.emitSessionsChanged("status-change", sessionId);
       return {
-        kind: "queued" as const,
+        ok: true as const,
+        disposition: result.disposition,
         attachments,
         inlineReferences,
+        skillInvocation: EMPTY_SKILL_INVOCATION,
       };
     },
   );

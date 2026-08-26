@@ -159,7 +159,7 @@ export function createAppShellChatActions(deps: {
     sessionId: string,
     message: TransientUserMessageProjection,
   ) => void;
-  updateTransientMessage?: (
+  updateTransientMessage: (
     sessionId: string,
     message: TransientUserMessageProjection,
   ) => void;
@@ -233,58 +233,37 @@ export function createAppShellChatActions(deps: {
   } = deps;
   const copy = getShellCopy(uiLocale).chatActions;
 
-  function optimisticUserMessage(
-    messageId: string,
-    turnId: string,
-    text: string,
-    attachments: readonly import('@maka/core/events').AttachmentRef[] = [],
-    quotes: readonly QuoteRef[] = [],
-    inlineReferences: readonly InlineReference[] = [],
-    transientPlacement?: TransientUserMessageProjection['transientPlacement'],
-  ): TransientUserMessageProjection {
-    return {
-      type: 'user',
-      id: messageId,
-      // StoredMessage requires a grouping key, but transient messages are
-      // rendered beside the Turn projection. Canonical transcript data later
-      // supplies the Host-owned grouping for this same message id.
-      turnId,
-      ts: Date.now(),
-      text,
-      ...(attachments.length > 0 ? { attachments: [...attachments] } : {}),
-      ...(quotes.length > 0 ? { quotes: [...quotes] } : {}),
-      inlineReferences: [...inlineReferences],
-      ...(transientPlacement ? { transientPlacement } : {}),
-    };
-  }
-
-  function showOptimisticUserMessage(
+  function showTransientUserMessage(
     sessionId: string,
     messageId: string,
     text: string,
     attachments: readonly import('@maka/core/events').AttachmentRef[] = [],
     options: {
-      turnId?: string;
+      placement?: TransientUserMessageProjection['transientPlacement'];
+      hostTurnId?: string;
       updateOnly?: boolean;
-      transientPlacement?: TransientUserMessageProjection['transientPlacement'];
       quotes?: readonly QuoteRef[];
       inlineReferences?: readonly InlineReference[];
     } = {},
   ): void {
-    const next = optimisticUserMessage(
-      messageId,
-      options.turnId ?? messageId,
+    const quotes = options.quotes ?? [];
+    const next: TransientUserMessageProjection = {
+      type: 'user',
+      id: messageId,
+      // StoredMessage requires a grouping key, but a transient row is not a
+      // Turn member yet: `hostTurnId` carries the Host grouping once it exists,
+      // and canonical transcript replaces the row by this same message id.
+      turnId: messageId,
+      ts: Date.now(),
       text,
-      attachments,
-      options.quotes,
-      options.inlineReferences,
-      options.transientPlacement,
-    );
-    if (options.updateOnly) {
-      (updateTransientMessage ?? addTransientMessage)(sessionId, next);
-    } else {
-      addTransientMessage(sessionId, next);
-    }
+      ...(attachments.length > 0 ? { attachments: [...attachments] } : {}),
+      ...(quotes.length > 0 ? { quotes: [...quotes] } : {}),
+      inlineReferences: [...(options.inlineReferences ?? [])],
+      transientPlacement: options.placement ?? 'current_turn',
+      ...(options.hostTurnId ? { hostTurnId: options.hostTurnId } : {}),
+    };
+    if (options.updateOnly) updateTransientMessage(sessionId, next);
+    else addTransientMessage(sessionId, next);
     if (activeIdRef.current !== sessionId) return;
     setMessageLoadErrorBySession((current) => {
       if (!current[sessionId]) return current;
@@ -390,13 +369,12 @@ export function createAppShellChatActions(deps: {
         if (newChatPermissionChoice) clearNewChatPermissionChoice();
         optimisticSessionId = session.id;
         optimisticMessageId = messageId;
-        showOptimisticUserMessage(
+        showTransientUserMessage(
           session.id,
           messageId,
           options.displayText ?? text,
           [],
           {
-            transientPlacement: 'turn_source',
             ...(quotes && quotes.length > 0 ? { quotes } : {}),
             inlineReferences: [],
           },
@@ -411,7 +389,6 @@ export function createAppShellChatActions(deps: {
             ? retainedAttachmentRefs(pending)
             : undefined;
         const sendCommand = {
-          type: 'send' as const,
           text,
           ...(options.displayText ? { displayText: options.displayText } : {}),
           ...(attachmentItems && attachmentItems.length > 0 ? { attachmentItems } : {}),
@@ -423,16 +400,17 @@ export function createAppShellChatActions(deps: {
             ? { workspaceFileReferences: [...options.workspaceFileReferences] }
             : {}),
         };
-        const sendResult = options.turnOrchestration
-          ? await window.maka.sessions.send(session.id, {
-              ...sendCommand,
-              turnId: messageId,
-              turnOrchestration: options.turnOrchestration,
-            })
-          : await window.maka.sessions.submitMessage(session.id, {
-              ...sendCommand,
-              messageId,
-            });
+        const sendResult = await window.maka.sessions.submitMessage(
+          session.id,
+          'current_turn',
+          {
+            ...sendCommand,
+            messageId,
+            ...(options.turnOrchestration
+              ? { turnOrchestration: options.turnOrchestration }
+              : {}),
+          },
+        );
         if (!sendResult.ok) {
           if (sendResult.reason === 'outcome_unknown') {
             unsentSessionId = undefined;
@@ -470,17 +448,16 @@ export function createAppShellChatActions(deps: {
         if (newChatOwner && isNewChatSendSurfaceActive(newChatOwner)) {
           setNavSelection({ section: 'sessions' });
           setActiveId(session.id);
-          showOptimisticUserMessage(
+          showTransientUserMessage(
             session.id,
             messageId,
             options.displayText ??
               skillInvocationDisplayText(text, sendResult.skillInvocation),
             sendResult.attachments,
             {
-              turnId: sendResult.turnId ?? messageId,
+              ...(sendResult.turnId ? { hostTurnId: sendResult.turnId } : {}),
               updateOnly: true,
-              transientPlacement: 'turn_source',
-              ...(quotes && quotes.length > 0 ? { quotes } : {}),
+                ...(quotes && quotes.length > 0 ? { quotes } : {}),
               inlineReferences: sendResult.inlineReferences ?? [],
             },
           );
@@ -508,13 +485,12 @@ export function createAppShellChatActions(deps: {
       }
       optimisticSessionId = sessionId;
       optimisticMessageId = messageId;
-      showOptimisticUserMessage(
+      showTransientUserMessage(
         sessionId,
         messageId,
         options.displayText ?? text,
         [],
         {
-          transientPlacement: 'turn_source',
           ...(quotes && quotes.length > 0 ? { quotes } : {}),
           inlineReferences: [],
         },
@@ -529,7 +505,6 @@ export function createAppShellChatActions(deps: {
           ? retainedAttachmentRefs(pending)
           : undefined;
       const sendCommand = {
-        type: 'send' as const,
         text,
         ...(options.displayText ? { displayText: options.displayText } : {}),
         ...(attachmentItems && attachmentItems.length > 0 ? { attachmentItems } : {}),
@@ -541,16 +516,11 @@ export function createAppShellChatActions(deps: {
           ? { workspaceFileReferences: [...options.workspaceFileReferences] }
           : {}),
       };
-      const sendResult = options.turnOrchestration
-        ? await window.maka.sessions.send(sessionId, {
-            ...sendCommand,
-            turnId: messageId,
-            turnOrchestration: options.turnOrchestration,
-          })
-        : await window.maka.sessions.submitMessage(sessionId, {
-            ...sendCommand,
-            messageId,
-          });
+      const sendResult = await window.maka.sessions.submitMessage(sessionId, 'current_turn', {
+        ...sendCommand,
+        messageId,
+        ...(options.turnOrchestration ? { turnOrchestration: options.turnOrchestration } : {}),
+      });
       if (!sendResult.ok) {
         if (sendResult.reason === 'outcome_unknown') return true;
         removeOptimisticUserMessage(sessionId, messageId);
@@ -574,16 +544,15 @@ export function createAppShellChatActions(deps: {
           sessionId,
         );
       }
-      showOptimisticUserMessage(
+      showTransientUserMessage(
         sessionId,
         messageId,
         options.displayText ??
           skillInvocationDisplayText(text, sendResult.skillInvocation),
         sendResult.attachments,
         {
-          turnId: sendResult.turnId ?? messageId,
+          ...(sendResult.turnId ? { hostTurnId: sendResult.turnId } : {}),
           updateOnly: true,
-          transientPlacement: 'turn_source',
           ...(quotes && quotes.length > 0 ? { quotes } : {}),
           inlineReferences: sendResult.inlineReferences ?? [],
         },
@@ -660,15 +629,15 @@ export function createAppShellChatActions(deps: {
   ): Promise<void> {
     const messageId = crypto.randomUUID();
     const quotes = options.quotes ?? [];
-    showOptimisticUserMessage(sessionId, messageId, text, retainedAttachmentRefs(pending ?? []), {
-      transientPlacement: placement,
+    showTransientUserMessage(sessionId, messageId, text, retainedAttachmentRefs(pending ?? []), {
+      placement,
       ...(quotes.length > 0 ? { quotes } : {}),
       inlineReferences: [],
     });
     try {
       const attachmentItems = pending?.length ? toComposerIngestItems(pending) : [];
       const retainedAttachments = pending?.length ? retainedAttachmentRefs(pending) : [];
-      const result = await window.maka.sessions.enqueue(sessionId, placement, {
+      const result = await window.maka.sessions.submitMessage(sessionId, placement, {
         messageId,
         text,
         ...(attachmentItems.length > 0 ? { attachmentItems } : {}),
@@ -678,10 +647,10 @@ export function createAppShellChatActions(deps: {
           ? { workspaceFileReferences: [...options.workspaceFileReferences] }
           : {}),
       });
-      if (result.kind === 'outcome_unknown') return;
-      showOptimisticUserMessage(sessionId, messageId, text, result.attachments, {
+      if (!result.ok) return;
+      showTransientUserMessage(sessionId, messageId, text, result.attachments, {
         updateOnly: true,
-        transientPlacement: placement,
+        placement,
         ...(quotes.length > 0 ? { quotes } : {}),
         inlineReferences: result.inlineReferences,
       });
