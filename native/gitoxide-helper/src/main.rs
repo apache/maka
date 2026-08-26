@@ -35,6 +35,8 @@ const MAX_REQUEST_BYTES: u64 = 64 * 1024;
 const MAX_REPOSITORY_METADATA_BYTES: u64 = 1024 * 1024;
 const MAX_REPOSITORY_METADATA_ENTRIES: u64 = 16_384;
 const MAX_REPOSITORY_METADATA_DEPTH: u64 = 64;
+const MAX_REPOSITORY_PACK_DIRECTORY_ENTRIES: u64 = 1024;
+const MAX_GITOXIDE_OBJECT_STORE_SLOTS: u16 = 1024;
 const MAX_IMPORT_FILE_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_ATTRIBUTES_FILE_BYTES: u64 = 64 * 1024;
 const MAX_GIT_ATTRIBUTES_LINE_BYTES_V2: usize = 2048;
@@ -67,6 +69,7 @@ const HELPER_ERROR_REASONS_V1: &[&str] = &[
     "invalid_request",
     "unsupported_protocol_version",
     "repository_metadata_limit_exceeded",
+    "repository_alternates_unsupported",
     "repository_open_failed",
     "head_commit_unavailable",
     "head_commit_identity_mismatch",
@@ -297,6 +300,9 @@ fn managed_open_options() -> gix::open::Options {
     gix::open::Options::isolated()
         .lossy_config(true)
         .strict_config(true)
+        .object_store_slots(gix::odb::store::init::Slots::Given(
+            MAX_GITOXIDE_OBJECT_STORE_SLOTS,
+        ))
         .config_overrides([MAX_GITOXIDE_OBJECT_ALLOCATION_BYTES])
 }
 
@@ -356,8 +362,6 @@ impl RepositoryMetadataBudget {
         self.observe_optional_file(&git_dir.join("config.worktree"))?;
         self.observe_optional_file(&git_dir.join("packed-refs"))?;
         self.observe_optional_file(&git_dir.join("shallow"))?;
-        self.observe_optional_file(&git_dir.join("objects/info/alternates"))?;
-        self.observe_optional_file(&git_dir.join("objects/info/http-alternates"))?;
         self.observe_tree(&git_dir.join("refs"), 0)?;
 
         let common_dir_path_file = git_dir.join("commondir");
@@ -374,7 +378,49 @@ impl RepositoryMetadataBudget {
         self.observe_optional_file(&common_dir.join("config"))?;
         self.observe_optional_file(&common_dir.join("packed-refs"))?;
         self.observe_optional_file(&common_dir.join("shallow"))?;
+        self.reject_alternates(&common_dir.join("objects/info/alternates"))?;
+        self.reject_alternates(&common_dir.join("objects/info/http-alternates"))?;
+        self.observe_pack_directory(&common_dir.join("objects/pack"))?;
         self.observe_tree(&common_dir.join("refs"), 0)
+    }
+
+    fn reject_alternates(&self, path: &Path) -> Result<(), &'static str> {
+        match fs::symlink_metadata(path) {
+            Ok(_) => Err("repository_alternates_unsupported"),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+            Err(_) => Err("repository_open_failed"),
+        }
+    }
+
+    fn observe_pack_directory(&mut self, path: &Path) -> Result<(), &'static str> {
+        match fs::symlink_metadata(path) {
+            Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_dir() => {
+                return Err("repository_open_failed");
+            }
+            Ok(_) => self.observe_entry(path, 0)?,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
+            Err(_) => return Err("repository_open_failed"),
+        }
+
+        let entries = fs::read_dir(path).map_err(|_| "repository_open_failed")?;
+        let mut pack_entries = 0u64;
+        for entry in entries {
+            let entry = entry.map_err(|_| "repository_open_failed")?;
+            pack_entries = pack_entries
+                .checked_add(1)
+                .filter(|entries| *entries <= MAX_REPOSITORY_PACK_DIRECTORY_ENTRIES)
+                .ok_or("repository_metadata_limit_exceeded")?;
+            let entry_path = entry.path();
+            let metadata =
+                fs::symlink_metadata(&entry_path).map_err(|_| "repository_open_failed")?;
+            if metadata.file_type().is_symlink() || !metadata.is_file() {
+                return Err("repository_open_failed");
+            }
+            let path_bytes = u64::try_from(entry.file_name().as_encoded_bytes().len())
+                .map_err(|_| "repository_metadata_limit_exceeded")?;
+            self.observe_entry(&entry_path, path_bytes)?;
+        }
+        Ok(())
     }
 
     fn observe_tree(&mut self, path: &Path, depth: u64) -> Result<(), &'static str> {

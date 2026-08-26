@@ -88,7 +88,9 @@ hook/filter/submodule/LFS，也不接入 T1/T2。
   的 Node 文件系统 preflight，调用方按 deadline fail closed，迟到结果不得继续启动 helper 或签发
   capability；
 - commit/tree/blob 在完整 decode 前先读取 object header 并执行对应预算；isolated Gitoxide open 另固定
-  `gitoxide.objects.allocLimit=64 MiB`，避免 policy counter 生效前发生无界单次 object allocation；
+  `gitoxide.objects.allocLimit=64 MiB` 与 1,024 个 object-store slots；source alternates 一律在 open 前
+  拒绝，primary `objects/pack` 的类型、名称 byte budget 与最多 1,024 entries 进入同一个 metadata
+  preflight，避免 policy counter 生效前递归发现 ODB 或按磁盘状态分配 slots；
 - Linux/macOS/Windows 运行同一 locked Cargo suite；当前只证明 fresh-only fail-closed，不承诺 import
   process-crash 自动恢复或断电恢复；
 - Windows 保留 Git tree 中的 executable bit，不把它映射成 ACL 权威。

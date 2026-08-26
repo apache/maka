@@ -61,7 +61,7 @@ caller 不能提供 executable path、argv、environment、protocol version、ti
 | repository/helper failure | exit 1 + allowlisted stable helper reason |
 | timeout | inspect 为 5 秒、source import 为 10 分钟；同一个绝对 deadline 从 public 入口覆盖 preflight 与执行。若 helper 已启动，共享 lifecycle force-kill process tree，并以有界 exit acknowledgement/output drain 收口；若仍在 Node 文件系统 preflight，调用方按 deadline fail closed，迟到结果被丢弃且不得签发 capability |
 | cancellation | preflight 或运行中 fail closed，`gitoxide_helper_invocation_aborted` |
-| resource failure | repository open 前的本地 metadata 总量 1 MiB、Gitoxide object allocation 64 MiB、stdout 64 KiB、stderr 16 KiB；超限 fail closed 或 force-kill |
+| resource failure | repository open 前的本地 metadata 总量 1 MiB、16,384 entries、primary `objects/pack` 1,024 entries；source alternates 一律拒绝；Gitoxide object allocation 64 MiB、object-store slots 固定 1,024、stdout 64 KiB、stderr 16 KiB；超限 fail closed 或 force-kill |
 | malformed protocol | exit code、JSON shape、OID 或字段不一致均拒绝 |
 | rollback | inspect 无 durable side effect；import 只允许 fresh destination，但 partial artifact cleanup 留给未来 storage owner |
 
@@ -78,10 +78,13 @@ Node 的 `realpath`/artifact 文件读取没有可移植的 syscall cancellation
 - `shell: false`，不会经过 shell parsing；
 - child `PATH` 为空，只保留 Windows loader 与临时目录所需的最少环境变量；
 - Rust 侧在 `gix::open()` 前按 pinned Gitoxide discovery 顺序检查 worktree 与 bare candidate，并有界
-  解析 `.git`/`commondir` 路径文件、`HEAD`、config、packed refs、shallow、alternates 与 refs tree；
-  metadata 总量超过 1 MiB、条目超过 16,384 或深度超过 64 时返回
+  解析 `.git`/`commondir` 路径文件、`HEAD`、config、packed refs、shallow、refs tree 与 primary
+  `objects/pack`；`objects/info/alternates` 或 `http-alternates` 只要存在就以
+  `repository_alternates_unsupported` 拒绝，不递归打开外部 object database；metadata 总量超过 1 MiB、
+  条目超过 16,384、pack 目录超过 1,024 entries 或深度超过 64 时返回
   `repository_metadata_limit_exceeded`；随后使用 `gix::open::Options::isolated()`、
-  `lossy_config(true)` 与 `strict_config(true)`；
+  `lossy_config(true)`、`strict_config(true)` 与固定 1,024 个 object-store slots，禁止 Gitoxide 再按
+  未验证磁盘状态决定初始 slot allocation；
 - request 最大 64 KiB；stdout 最大 64 KiB；stderr 最大 16 KiB；
 - SHA-1 OID 必须是 40 位小写十六进制；SHA-256/未知格式只返回 rejection，禁止 fallback。
 

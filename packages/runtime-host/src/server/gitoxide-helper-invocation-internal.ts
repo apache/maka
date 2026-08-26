@@ -42,6 +42,7 @@ export const GITOXIDE_HELPER_ERROR_REASONS_V1 = Object.freeze([
   'invalid_request',
   'unsupported_protocol_version',
   'repository_metadata_limit_exceeded',
+  'repository_alternates_unsupported',
   'repository_open_failed',
   'head_commit_unavailable',
   'head_commit_identity_mismatch',

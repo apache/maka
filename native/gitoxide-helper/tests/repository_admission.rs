@@ -28,6 +28,7 @@ use std::{
 
 const HELPER: &str = env!("CARGO_BIN_EXE_maka-gitoxide-helper");
 const MAX_REPOSITORY_METADATA_BYTES: usize = 1024 * 1024;
+const MAX_REPOSITORY_PACK_DIRECTORY_ENTRIES: usize = 1024;
 static FIXTURE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 #[test]
@@ -57,6 +58,33 @@ fn inspects_a_sha1_repository_without_invoking_system_git() {
 }
 
 #[test]
+fn inspects_and_imports_a_bounded_packed_sha1_repository() {
+    let fixture = RepositoryFixture::sha1_with_commit();
+    fixture.git(["gc", "--quiet"]);
+    let source_head = fixture.git_output(["rev-parse", "HEAD"]);
+    let expected_tree = fixture.git_output(["rev-parse", "HEAD^{tree}"]);
+
+    let inspection = invoke_helper(&fixture.root);
+    assert!(
+        inspection.status.success(),
+        "helper failed: {}",
+        String::from_utf8_lossy(&inspection.stderr)
+    );
+    let inspected: serde_json::Value = serde_json::from_slice(&inspection.stdout).unwrap();
+    assert_eq!(inspected["headTreeOid"], expected_tree);
+
+    let destination = fixture.root.join("packed-source-destination.git");
+    let import = invoke_import(&fixture.root, &source_head, &destination);
+    assert!(
+        import.status.success(),
+        "helper failed: {}",
+        String::from_utf8_lossy(&import.stderr)
+    );
+    let imported: serde_json::Value = serde_json::from_slice(&import.stdout).unwrap();
+    assert_eq!(imported["baselineTreeOid"], expected_tree);
+}
+
+#[test]
 fn rejects_oversized_repository_metadata_before_opening_or_importing() {
     let fixture = RepositoryFixture::sha1_with_commit();
     let source_head = fixture.git_output(["rev-parse", "HEAD"]);
@@ -75,6 +103,58 @@ fn rejects_oversized_repository_metadata_before_opening_or_importing() {
     let inspection = invoke_helper(&fixture.root);
     assert_helper_error(&inspection, "repository_metadata_limit_exceeded");
 
+    let import = invoke_import(&fixture.root, &source_head, &destination);
+    assert_helper_error(&import, "repository_metadata_limit_exceeded");
+    assert!(!destination.exists());
+}
+
+#[test]
+fn rejects_nested_alternate_object_databases_before_opening_or_importing() {
+    let fixture = RepositoryFixture::sha1_with_commit();
+    let source_head = fixture.git_output(["rev-parse", "HEAD"]);
+    let first_alternate = fixture.root.join("alternate-one");
+    let second_alternate = fixture.root.join("alternate-two");
+    for alternate in [&first_alternate, &second_alternate] {
+        fs::create_dir_all(alternate.join("info")).unwrap();
+        fs::create_dir_all(alternate.join("pack")).unwrap();
+    }
+    fs::write(
+        first_alternate.join("info/alternates"),
+        format!("{}\n", second_alternate.display()),
+    )
+    .unwrap();
+    fs::write(
+        fixture.root.join(".git/objects/info/alternates"),
+        format!("{}\n", first_alternate.display()),
+    )
+    .unwrap();
+
+    let inspection = invoke_helper(&fixture.root);
+    assert_helper_error(&inspection, "repository_alternates_unsupported");
+
+    let destination = fixture.root.join("alternates-destination.git");
+    let import = invoke_import(&fixture.root, &source_head, &destination);
+    assert_helper_error(&import, "repository_alternates_unsupported");
+    assert!(!destination.exists());
+}
+
+#[test]
+fn rejects_excessive_primary_pack_directory_entries_before_opening_or_importing() {
+    let fixture = RepositoryFixture::sha1_with_commit();
+    let source_head = fixture.git_output(["rev-parse", "HEAD"]);
+    let pack_directory = fixture.root.join(".git/objects/pack");
+    for index in 0..=MAX_REPOSITORY_PACK_DIRECTORY_ENTRIES {
+        fs::write(
+            pack_directory.join(format!("untrusted-{index:04}.entry")),
+            b"",
+        )
+        .unwrap();
+    }
+
+    let inspection = invoke_helper(&fixture.root);
+    assert_helper_error(&inspection, "repository_metadata_limit_exceeded");
+
+    let destination = fixture.root.join("pack-entries-destination.git");
     let import = invoke_import(&fixture.root, &source_head, &destination);
     assert_helper_error(&import, "repository_metadata_limit_exceeded");
     assert!(!destination.exists());
