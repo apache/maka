@@ -55,6 +55,7 @@ export type RuntimeHostCliCommand =
       peer?: {
         nativePath: string;
         keyPath: string;
+        expectedPeerId?: string;
         listenAddresses?: string[];
         coordinationRelays?: string[];
       };
@@ -101,8 +102,7 @@ export type RuntimeHostCliCommand =
       json: boolean;
       clientDataRoot?: string;
       listenAddresses: string[];
-      coordinationRelays: string[];
-      clearCoordinationRelays: boolean;
+      coordinationRelays?: string[];
       expectedTarget?: RuntimeHostManagedServiceTarget;
     }
   | {
@@ -530,8 +530,11 @@ function parseServicePeerCommand(argv: string[]): RuntimeHostCliCommand {
     json: options.json,
     ...(clientDataRoot ? { clientDataRoot } : {}),
     listenAddresses,
-    coordinationRelays,
-    clearCoordinationRelays,
+    ...(clearCoordinationRelays
+      ? { coordinationRelays: [] }
+      : coordinationRelays.length > 0
+        ? { coordinationRelays }
+        : {}),
     ...(options.expectedTarget ? { expectedTarget: options.expectedTarget } : {}),
   };
 }
@@ -986,6 +989,7 @@ function parseServeCommand(argv: string[]): RuntimeHostCliCommand {
   let allowInsecureRemote = false;
   let peerNativePath: string | undefined;
   let peerKeyPath: string | undefined;
+  let peerId: string | undefined;
   const allowedOrigins: string[] = [];
   const peerListenAddresses: string[] = [];
   const peerCoordinationRelays: string[] = [];
@@ -1098,6 +1102,7 @@ function parseServeCommand(argv: string[]): RuntimeHostCliCommand {
     if (
       argument === '--peer-native-path' ||
       argument === '--peer-key' ||
+      argument === '--peer-id' ||
       argument === '--peer-listen' ||
       argument === '--peer-coordination-relay'
     ) {
@@ -1105,6 +1110,7 @@ function parseServeCommand(argv: string[]): RuntimeHostCliCommand {
       if (typeof parsed !== 'string') return parsed;
       if (argument === '--peer-native-path') peerNativePath = parsed;
       if (argument === '--peer-key') peerKeyPath = parsed;
+      if (argument === '--peer-id') peerId = parsed;
       if (argument === '--peer-listen') peerListenAddresses.push(parsed);
       if (argument === '--peer-coordination-relay') peerCoordinationRelays.push(parsed);
       index += 1;
@@ -1129,7 +1135,7 @@ function parseServeCommand(argv: string[]): RuntimeHostCliCommand {
   }
   if (
     peerNativePath === undefined &&
-    (peerListenAddresses.length > 0 || peerCoordinationRelays.length > 0)
+    (peerId !== undefined || peerListenAddresses.length > 0 || peerCoordinationRelays.length > 0)
   ) {
     return error('peer listener options require --peer-native-path and --peer-key');
   }
@@ -1164,6 +1170,7 @@ function parseServeCommand(argv: string[]): RuntimeHostCliCommand {
           peer: {
             nativePath: peerNativePath,
             keyPath: peerKeyPath!,
+            ...(peerId ? { expectedPeerId: peerId } : {}),
             ...(peerListenAddresses.length > 0 ? { listenAddresses: peerListenAddresses } : {}),
             ...(peerCoordinationRelays.length > 0
               ? { coordinationRelays: peerCoordinationRelays }

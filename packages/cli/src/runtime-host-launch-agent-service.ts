@@ -126,10 +126,11 @@ export function createLaunchAgentRuntimeHostService(
       let schedulerMutationStarted = false;
       let rolledBack = false;
       return {
-        apply: async (config) => {
+        apply: async (config, options) => {
+          const activate = options?.activate ?? true;
           await validateRuntimeHostServiceLaunch(config);
-          await applyLaunchAgentDeployment(context, config, serviceConfigPath);
-          await applyLaunchAgentUpdateSchedulerDesiredState(scheduler, config, () => {
+          await applyLaunchAgentDeployment(context, config, serviceConfigPath, activate);
+          await applyLaunchAgentUpdateSchedulerDesiredState(scheduler, config, activate, () => {
             schedulerMutationStarted = true;
           });
         },
@@ -153,7 +154,7 @@ export function createLaunchAgentRuntimeHostService(
       ]);
       let schedulerMutationStarted = false;
       try {
-        await applyLaunchAgentDeployment(context, config, serviceConfigPath);
+        await applyLaunchAgentDeployment(context, config, serviceConfigPath, true);
         await convergeLaunchAgentUpdateSchedulerForReplacement(scheduler, config, () => {
           schedulerMutationStarted = true;
         });
@@ -432,6 +433,7 @@ async function captureLaunchAgentDeployment(
 async function applyLaunchAgentUpdateSchedulerDesiredState(
   context: LaunchAgentContext,
   config: RuntimeHostManagedServiceConfig,
+  activate: boolean,
   onMutation: () => void,
 ): Promise<void> {
   if (!runtimeHostUpdateReconcileLaunchArguments(config)) {
@@ -447,7 +449,7 @@ async function applyLaunchAgentUpdateSchedulerDesiredState(
     return;
   }
   try {
-    await verifyLaunchAgentUpdateScheduler(context, config, true);
+    await verifyLaunchAgentUpdateScheduler(context, config, activate);
     return;
   } catch (error) {
     if (!isTargetMismatch(error)) throw error;
@@ -460,8 +462,8 @@ async function applyLaunchAgentUpdateSchedulerDesiredState(
     renderLaunchAgentUpdatePlist(config, context),
     0o600,
   );
-  await bootstrapLaunchAgent(context);
-  await verifyLaunchAgentUpdateScheduler(context, config, true);
+  if (activate) await bootstrapLaunchAgent(context);
+  await verifyLaunchAgentUpdateScheduler(context, config, activate);
 }
 
 async function verifyLaunchAgentUpdateSchedulerDesiredState(
@@ -508,7 +510,7 @@ async function convergeLaunchAgentUpdateSchedulerForReplacement(
     if (!isTargetMismatch(error)) throw error;
     await verifyLaunchAgentUpdateSchedulerAbsent(context);
     onMutation();
-    await applyLaunchAgentUpdateSchedulerDesiredState(context, config, () => undefined);
+    await applyLaunchAgentUpdateSchedulerDesiredState(context, config, true, () => undefined);
   }
   await verifyLaunchAgentUpdateScheduler(context, config, true);
 }
@@ -568,6 +570,7 @@ async function applyLaunchAgentDeployment(
   context: LaunchAgentContext,
   config: RuntimeHostManagedServiceConfig,
   serviceConfigPath: string,
+  activate: boolean,
 ): Promise<void> {
   await bootoutLaunchAgent(context);
   await prepareLaunchAgentLogs(context);
@@ -576,7 +579,7 @@ async function applyLaunchAgentDeployment(
     renderLaunchAgentPlist(config, context, serviceConfigPath),
     0o600,
   );
-  await bootstrapLaunchAgent(context);
+  if (activate) await bootstrapLaunchAgent(context);
 }
 
 async function startLaunchAgent(context: LaunchAgentContext): Promise<void> {

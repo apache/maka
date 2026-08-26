@@ -20,7 +20,6 @@
 import { access } from 'node:fs/promises';
 import { networkInterfaces } from 'node:os';
 import { ensureRuntimeHostPeerIdentity } from '@maka/runtime-host/client';
-import { resolveExistingStorageRoot } from '@maka/storage/root-authority';
 import {
   configureRuntimeHostManagedPeer,
   manageRuntimeHostService,
@@ -42,8 +41,7 @@ export interface RuntimeHostPeerManagementCliOptions {
   readonly nodePath: string;
   readonly cliPath: string;
   readonly listenAddresses: readonly string[];
-  readonly coordinationRelays: readonly string[];
-  readonly clearCoordinationRelays: boolean;
+  readonly coordinationRelays?: readonly string[];
   readonly expectedTarget?: RuntimeHostManagedServiceTarget;
 }
 
@@ -62,7 +60,7 @@ export async function runRuntimeHostPeerManagementCli(
 ): Promise<number> {
   try {
     const serviceId = resolveRuntimeHostManagedServiceId(options.clientDataRoot);
-    const backend = createPlatformRuntimeHostServiceBackend(serviceId);
+    const backend = createPlatformRuntimeHostServiceBackend(serviceId, options.clientDataRoot);
     return await withRuntimeHostManagedServiceDeploymentLock(options.clientDataRoot, () =>
       withRuntimeHostManagedServiceLifecycleLock(options.clientDataRoot, () =>
         runRuntimeHostPeerManagementLocked(options, backend),
@@ -93,11 +91,9 @@ async function runRuntimeHostPeerManagementLocked(
                 ...(options.listenAddresses.length > 0
                   ? { listenAddresses: options.listenAddresses }
                   : {}),
-                ...(options.clearCoordinationRelays
-                  ? { coordinationRelays: [] }
-                  : options.coordinationRelays.length > 0
-                    ? { coordinationRelays: options.coordinationRelays }
-                    : {}),
+                ...(options.coordinationRelays
+                  ? { coordinationRelays: options.coordinationRelays }
+                  : {}),
               },
       },
       backend,
@@ -224,22 +220,22 @@ async function readPeerStatus(
       nativePath: peer.nativePath,
       keyPath: peer.keyPath,
     });
+    if (peerId !== peer.peerId) {
+      throw new RuntimeHostServiceManagerError(
+        'invalid_config',
+        'The managed Runtime Host peer identity does not match its configuration',
+      );
+    }
   } catch (error) {
+    peerId = undefined;
     if (peer.enabled) throw error;
   }
-  const root = options.expectedTarget
-    ? await resolveExistingStorageRoot({
-        path: result.service.config!.rootPath,
-        kind: 'interactive',
-        expectedRootId: options.expectedTarget.rootId,
-      })
-    : undefined;
   return {
     schemaVersion: 1,
     state: peer.enabled ? 'enabled' : 'disabled',
     serviceState: result.service.state,
     ...(peerId ? { peerId } : {}),
-    ...(root ? { rootId: root.rootId } : {}),
+    ...(options.expectedTarget ? { rootId: options.expectedTarget.rootId } : {}),
     routeHints: expandWildcardListenAddresses(peer.listenAddresses),
     coordinationRelays: peer.coordinationRelays,
   };

@@ -178,6 +178,7 @@ function helpText(cliCommand: string): string {
     '  --allow-origin <origin>       Allow one browser Origin (repeatable)',
     '  --peer-native-path <path>     Load the experimental direct-peer native module',
     '  --peer-key <path>             Persist the direct-peer transport identity',
+    '  --peer-id <id>                Require an existing direct-peer transport identity',
     '  --peer-listen <multiaddr>     Listen on a direct-peer address (repeatable)',
     '  --peer-coordination-relay <multiaddr>  Use a DCUtR coordination relay (repeatable)',
     '  --json                        Emit one machine-readable ready event',
@@ -340,8 +341,7 @@ export async function runMakaCli(
         nodePath: process.execPath,
         cliPath: process.argv[1] ?? '',
         listenAddresses: command.listenAddresses,
-        coordinationRelays: command.coordinationRelays,
-        clearCoordinationRelays: command.clearCoordinationRelays,
+        ...(command.coordinationRelays ? { coordinationRelays: command.coordinationRelays } : {}),
         ...(command.expectedTarget ? { expectedTarget: command.expectedTarget } : {}),
       });
     }

@@ -69,6 +69,7 @@ interface RuntimeHostPeerNativeModule {
   ensurePeerIdentity(keyPath: string): Promise<string>;
   startPeerEndpoint(options: {
     readonly keyPath: string;
+    readonly expectedPeerId?: string;
     readonly listenAddresses?: readonly string[];
     readonly coordinationRelays?: readonly string[];
   }): RuntimeHostPeerNativeEndpoint;
@@ -92,12 +93,14 @@ export async function ensureRuntimeHostPeerIdentity(input: {
 export function startRuntimeHostPeerEndpoint(input: {
   readonly nativePath: string;
   readonly keyPath: string;
+  readonly expectedPeerId?: string;
   readonly listenAddresses?: readonly string[];
   readonly coordinationRelays?: readonly string[];
 }): RuntimeHostPeerNativeEndpoint {
   try {
     return loadNativeModule(input.nativePath).startPeerEndpoint({
       keyPath: input.keyPath,
+      ...(input.expectedPeerId ? { expectedPeerId: input.expectedPeerId } : {}),
       ...(input.listenAddresses ? { listenAddresses: input.listenAddresses } : {}),
       ...(input.coordinationRelays ? { coordinationRelays: input.coordinationRelays } : {}),
     });

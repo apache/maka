@@ -156,6 +156,9 @@ test('installs and removes the update scheduler with a managed LaunchAgent', asy
       (error: unknown) =>
         error instanceof Error && 'code' in error && error.code === 'target_mismatch',
     );
+    await applyStagedDeployment(backend, config, { activate: false });
+    assert.equal((await backend.status()).state, 'stopped');
+    assert.equal(launchctl.updateLoaded, false);
     await backend.replace(config);
     assert.equal(launchctl.updateLoaded, true);
     await backend.verifyDeployment(config, { requireSchedulerReady: true });
@@ -470,9 +473,10 @@ function legacyLaunchAgentPlistFixture(
 async function applyStagedDeployment(
   backend: RuntimeHostServiceBackend,
   config: RuntimeHostManagedServiceConfig,
+  options?: { readonly activate?: boolean },
 ): Promise<RuntimeHostServiceDeployment> {
   const deployment = await backend.stageDeployment();
-  await deployment.apply(config);
+  await deployment.apply(config, options);
   return deployment;
 }
 

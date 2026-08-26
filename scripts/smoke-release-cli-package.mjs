@@ -172,7 +172,7 @@ async function validateInstalledProduct(root) {
   if (typeof ptySpawn !== 'function') throw new Error('Installed node-pty has no spawn function');
   await smokePty(ptySpawn, baseEnvironment, root);
   await smokeNativeFileLock(packageRoot, root);
-  await smokeRuntimeHostPeerAddon(packageRoot, root);
+  await smokeRuntimeHostPeerProtocol({ packageRoot, cliEntrypoint, root });
 
   logStep('checking the interactive TUI setup path');
   await smokeInteractiveTui({
@@ -202,63 +202,104 @@ async function validateInstalledProduct(root) {
   );
 }
 
-async function smokeRuntimeHostPeerAddon(packageRoot, root) {
-  const target = `${process.platform}-${process.arch}`;
-  const addonPath = join(
+async function smokeRuntimeHostPeerProtocol({ packageRoot, cliEntrypoint, root }) {
+  const peerArtifact = await importInstalled(packageRoot, 'dist/runtime-host-peer-artifact.js');
+  const server = await importInstalled(
     packageRoot,
-    'native/runtime-host-peer/prebuilds',
-    target,
-    'maka_runtime_host_peer.node',
+    'node_modules/@maka/runtime-host/dist/server/index.js',
   );
-  const addon = require(addonPath);
-  if (
-    typeof addon.ensurePeerIdentity !== 'function' ||
-    typeof addon.startPeerEndpoint !== 'function'
-  ) {
-    throw new Error('Installed Runtime Host peer addon has an incompatible API');
-  }
-  const keyPath = join(root, 'peer-smoke.key');
-  const first = await addon.ensurePeerIdentity(keyPath);
-  const second = await addon.ensurePeerIdentity(keyPath);
-  if (typeof first !== 'string' || first.length === 0 || second !== first) {
-    throw new Error('Installed Runtime Host peer addon did not preserve its identity');
-  }
+  const client = await importInstalled(
+    packageRoot,
+    'node_modules/@maka/runtime-host/dist/client/index.js',
+  );
+  const access = await importInstalled(packageRoot, 'dist/runtime-host-access-command.js');
+  const clientDataRoot = join(root, 'peer-client');
+  const hostRoot = join(root, 'peer-host');
+  const hostKeyPath = join(root, 'peer-host.key');
+  mkdirSync(clientDataRoot, { recursive: true });
+  mkdirSync(hostRoot, { recursive: true });
 
-  const server = addon.startPeerEndpoint({
-    keyPath: join(root, 'peer-server.key'),
-    listenAddresses: ['/ip4/127.0.0.1/udp/0/quic-v1'],
-  });
-  const client = addon.startPeerEndpoint({
-    keyPath: join(root, 'peer-client.key'),
-    listenAddresses: ['/ip4/127.0.0.1/udp/0/quic-v1'],
-  });
-  let outbound;
-  let inbound;
+  const previousNativePath = process.env.MAKA_RUNTIME_HOST_PEER_NATIVE_PATH;
+  const previousKeyPath = process.env.MAKA_RUNTIME_HOST_PEER_KEY_PATH;
+  let host;
+  let connection;
   try {
-    if (typeof server.peerId !== 'string' || server.listenAddresses.length === 0) {
-      throw new Error('Installed Runtime Host peer endpoint did not become ready');
-    }
-    const accepted = server.accept();
-    outbound = await client.connect({
-      peerId: server.peerId,
-      routeHints: server.listenAddresses,
-      directDeadlineMs: 5_000,
+    delete process.env.MAKA_RUNTIME_HOST_PEER_NATIVE_PATH;
+    delete process.env.MAKA_RUNTIME_HOST_PEER_KEY_PATH;
+    const configured = await peerArtifact.configureRuntimeHostPeerClient({
+      cliPath: cliEntrypoint,
+      clientDataRoot,
+      environment: process.env,
     });
-    inbound = await accepted;
-    if (!inbound) throw new Error('Installed Runtime Host peer endpoint did not accept a stream');
-    await outbound.write(Buffer.from('ping'));
-    const request = await inbound.read();
-    if (!request || request.toString() !== 'ping') {
-      throw new Error('Installed Runtime Host peer endpoint received the wrong request');
+    if (!configured) throw new Error('Installed CLI could not resolve its direct-peer artifact');
+    const nativePath = process.env.MAKA_RUNTIME_HOST_PEER_NATIVE_PATH;
+    if (!nativePath) throw new Error('Installed CLI did not configure its direct-peer artifact');
+    const addon = require(nativePath);
+    const peerId = await addon.ensurePeerIdentity(hostKeyPath);
+    const unrelatedPeerId = await addon.ensurePeerIdentity(join(root, 'unrelated-peer.key'));
+    try {
+      addon.startPeerEndpoint({ keyPath: hostKeyPath, expectedPeerId: unrelatedPeerId });
+      throw new Error('Installed direct-peer addon accepted the wrong persisted identity');
+    } catch (error) {
+      if (!String(error).includes('peer_identity_mismatch')) throw error;
     }
-    await inbound.write(Buffer.from('pong'));
-    const response = await outbound.read();
-    if (!response || response.toString() !== 'pong') {
-      throw new Error('Installed Runtime Host peer endpoint received the wrong response');
+    host = await server.startExecutionRuntimeHostService({
+      rootPath: hostRoot,
+      peer: {
+        nativePath,
+        keyPath: hostKeyPath,
+        expectedPeerId: peerId,
+        listenAddresses: ['/ip4/127.0.0.1/udp/0/quic-v1'],
+      },
+    });
+    const listener = host.peerListeners[0];
+    if (!listener || listener.peerId !== peerId || listener.listenAddresses.length === 0) {
+      throw new Error('Installed Runtime Host direct-peer listener did not become ready');
+    }
+    const issued = await access.issueRuntimeHostAccessCredential({
+      rootPath: hostRoot,
+      expectedRootId: host.rootId,
+      principalKind: 'remote_owner',
+      principalId: 'release-smoke-peer-client',
+      operationGrants: [],
+      canPublishClientCapabilities: false,
+      canUseHostPaths: false,
+      preset: 'terminal-client',
+    });
+    connection = await client.connectRemoteRuntimeHostProfile({
+      profile: {
+        id: 'release-smoke-peer',
+        name: 'Release smoke peer',
+        kind: 'remote',
+        rootId: host.rootId,
+        transport: {
+          kind: 'libp2p-direct',
+          peerId,
+          routeHints: listener.listenAddresses,
+          coordinationRelays: [],
+        },
+      },
+      credential: issued.credential,
+      clientInstanceId: 'release-smoke-peer-client',
+      connectTimeoutMs: 10_000,
+      handshakeTimeoutMs: 10_000,
+      readyTimeoutMs: 10_000,
+    });
+    const status = await connection.status(10_000);
+    if (status.state !== 'ready') {
+      throw new Error(`Installed Runtime Host direct-peer status is ${status.state}`);
     }
   } finally {
-    await Promise.allSettled([outbound?.close(), inbound?.close(), client.close(), server.close()]);
+    await connection?.close().catch(() => undefined);
+    await host?.close().catch(() => undefined);
+    restoreEnvironment('MAKA_RUNTIME_HOST_PEER_NATIVE_PATH', previousNativePath);
+    restoreEnvironment('MAKA_RUNTIME_HOST_PEER_KEY_PATH', previousKeyPath);
   }
+}
+
+function restoreEnvironment(name, value) {
+  if (value === undefined) delete process.env[name];
+  else process.env[name] = value;
 }
 
 function validateReleaseArtifact(path) {

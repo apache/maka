@@ -18,6 +18,7 @@
  */
 
 use futures::{AsyncReadExt as _, AsyncWriteExt as _};
+use libp2p::swarm::ConnectionId;
 use tokio::sync::{mpsc, oneshot};
 
 use super::PeerError;
@@ -41,7 +42,10 @@ pub enum StreamCommand {
     Abort,
 }
 
-pub(super) fn spawn_stream(stream: libp2p::swarm::Stream) -> PeerStream {
+pub(super) fn spawn_stream(
+    stream: libp2p::swarm::Stream,
+    close_connection: Option<(ConnectionId, mpsc::Sender<ConnectionId>)>,
+) -> PeerStream {
     let (incoming_tx, incoming_rx) = mpsc::channel(QUEUE_CAPACITY);
     let (command_tx, mut command_rx) = mpsc::channel(QUEUE_CAPACITY);
     tokio::spawn(async move {
@@ -81,6 +85,9 @@ pub(super) fn spawn_stream(stream: libp2p::swarm::Stream) -> PeerStream {
                     Some(StreamCommand::Abort) | None => break,
                 }
             }
+        }
+        if let Some((connection_id, close)) = close_connection {
+            let _ = close.send(connection_id).await;
         }
     });
     PeerStream {

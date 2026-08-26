@@ -175,7 +175,6 @@ describe('managed Runtime Host service', () => {
         json: false,
         listenAddresses: ['/ip4/0.0.0.0/udp/44001/quic-v1'],
         coordinationRelays: [],
-        clearCoordinationRelays: true,
         expectedTarget: {
           serviceId: 'b'.repeat(64),
           rootPath: '/srv/maka',
@@ -1076,6 +1075,15 @@ describe('managed Runtime Host service', () => {
       (error: unknown) =>
         error instanceof RuntimeHostServiceManagerError && error.code === 'target_mismatch',
     );
+    const inactiveInstallCalls = systemd.calls.length;
+    await applyStagedDeployment(repairBackend, managedConfig, { activate: false });
+    assert.equal((await repairBackend.status()).state, 'stopped');
+    assert.equal(
+      systemd.calls
+        .slice(inactiveInstallCalls)
+        .some(([command]) => command === 'start' || command === 'restart'),
+      false,
+    );
     await repairBackend.replace(managedConfig);
     assert.ok(
       systemd.calls.some(([command, target]) => command === 'start' && target === updateTimerName),
@@ -1299,11 +1307,13 @@ describe('managed Runtime Host service', () => {
     let retireCalls = 0;
     const backend: RuntimeHostServiceBackend = {
       ...createReadyBackend(),
-      install: async () => {
-        installed = true;
-        active = true;
-        return { rollback: async () => undefined };
-      },
+      stageDeployment: async () => ({
+        apply: async (_config, options) => {
+          installed = true;
+          active = options?.activate ?? true;
+        },
+        rollback: async () => undefined,
+      }),
       retire: async () => {
         retireCalls += 1;
         active = false;
@@ -1339,6 +1349,7 @@ describe('managed Runtime Host service', () => {
       allocatePeerPort: async () => 43_002,
       waitForReady: async () => undefined,
       prepareRetirement: async () => ({ kind: 'prepared' as const, hostEpoch: 'epoch', pid: 42 }),
+      ensurePeerIdentity: async () => 'owned-peer-identity',
     };
     const installedService = await manageRuntimeHostService(
       { ...common, action: 'install' },
@@ -1372,6 +1383,7 @@ describe('managed Runtime Host service', () => {
       enabled: true,
       nativePath: await realpath(nativePath),
       keyPath: resolveRuntimeHostManagedPeerKeyPath(clientDataRoot),
+      peerId: 'owned-peer-identity',
       listenAddresses: ['/ip4/0.0.0.0/udp/43002/quic-v1'],
       coordinationRelays: ['/dns4/relay.example/tcp/443'],
     });
@@ -1420,9 +1432,22 @@ describe('managed Runtime Host service', () => {
       deps,
     );
     assert.deepEqual(clearedRelayStatus.service.config?.peer?.coordinationRelays, []);
+    await manageRuntimeHostService({ ...common, action: 'stop', expectedTarget }, backend, deps);
+    await configureRuntimeHostManagedPeer(
+      {
+        ...common,
+        expectedTarget,
+        peer: { coordinationRelays: ['/dns4/replacement.example/tcp/443'] },
+      },
+      backend,
+      deps,
+    );
+    assert.equal(active, false);
+    await manageRuntimeHostService({ ...common, action: 'start', expectedTarget }, backend, deps);
     const keyPath = resolveRuntimeHostManagedPeerKeyPath(clientDataRoot);
     const previousPeerId = 'owned-peer-identity';
     const rotatedPeerId = 'rotated-peer-identity';
+    let nextPeerId = rotatedPeerId;
     await writeFile(keyPath, previousPeerId, 'utf8');
     let failRotationStart = true;
     const rotationDeps = {
@@ -1431,8 +1456,8 @@ describe('managed Runtime Host service', () => {
         try {
           return await readFile(candidatePath, 'utf8');
         } catch {
-          await writeFile(candidatePath, rotatedPeerId, { mode: 0o600 });
-          return rotatedPeerId;
+          await writeFile(candidatePath, nextPeerId, { mode: 0o600 });
+          return nextPeerId;
         }
       },
       waitForReady: async () => {
@@ -1467,6 +1492,21 @@ describe('managed Runtime Host service', () => {
       previousPeerId,
       peerId: rotatedPeerId,
     });
+    await manageRuntimeHostService({ ...common, action: 'stop', expectedTarget }, backend, deps);
+    nextPeerId = 'stopped-peer-identity';
+    assert.deepEqual(
+      await rotateRuntimeHostManagedPeerIdentity(
+        { ...common, expectedTarget },
+        backend,
+        rotationDeps,
+      ),
+      {
+        kind: 'rotated',
+        previousPeerId: rotatedPeerId,
+        peerId: nextPeerId,
+      },
+    );
+    assert.equal(active, false);
     await manageRuntimeHostService(
       { ...common, action: 'uninstall', expectedTarget },
       backend,
@@ -3265,9 +3305,10 @@ function createReadyBackend(): RuntimeHostServiceBackend {
 async function applyStagedDeployment(
   backend: RuntimeHostServiceBackend,
   config: RuntimeHostManagedServiceConfig,
+  options?: { readonly activate?: boolean },
 ): Promise<void> {
   const deployment = await backend.stageDeployment();
-  await deployment.apply(config);
+  await deployment.apply(config, options);
 }
 
 function success(stdout = ''): { exitCode: number; stdout: string; stderr: string } {

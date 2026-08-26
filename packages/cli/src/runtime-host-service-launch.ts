@@ -67,6 +67,8 @@ export function legacyRuntimeHostServiceLaunchArguments(
           config.peer.nativePath,
           '--peer-key',
           config.peer.keyPath,
+          '--peer-id',
+          config.peer.peerId,
           ...config.peer.listenAddresses.flatMap((address) => ['--peer-listen', address]),
           ...config.peer.coordinationRelays.flatMap((address) => [
             '--peer-coordination-relay',
