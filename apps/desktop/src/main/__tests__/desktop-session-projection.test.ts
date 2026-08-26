@@ -26,6 +26,7 @@ import { EMPTY_USAGE_PROVENANCE } from '@maka/core/usage-ledger-merge';
 import {
   projectDesktopSessionEvent,
   projectDesktopSessionSummary,
+  projectDesktopStoredMessage,
   projectDesktopTurnRecord,
   projectDesktopUsageStats,
 } from '../../shared/desktop-session-projection.js';
@@ -197,6 +198,32 @@ test('projects only present Usage Session ids into the Desktop host namespace', 
 
   assert.equal(projected.logs[0]?.sessionId, JSON.stringify(['remote-root', 'session-1']));
   assert.equal(projected.logs[1]?.sessionId, undefined);
+});
+
+test('projects durable WorkHub delegation targets into the Desktop host namespace', () => {
+  const projected = projectDesktopStoredMessage(
+    { hostId: 'remote-root' },
+    {
+      type: 'workhub_coordination',
+      id: 'delegation-commit-message',
+      turnId: 'coordination-turn',
+      ts: 2,
+      schemaVersion: 1,
+      kind: 'delegation_committed',
+      actionId: 'action-id',
+      actionFingerprint: `sha256:${'a'.repeat(64)}`,
+      coordinationTurnId: 'coordination-turn',
+      targetSessionId: 'payments',
+      disposition: 'delegate_existing',
+      delegationId: 'delegation-id',
+      targetTurnId: 'payments-turn',
+    },
+  );
+
+  assert.equal(projected.type, 'workhub_coordination');
+  if (projected.type === 'workhub_coordination') {
+    assert.equal(projected.targetSessionId, JSON.stringify(['remote-root', 'payments']));
+  }
 });
 
 function summary(id: string): SessionSummary {

@@ -18,7 +18,7 @@
  */
 
 import { createHash, randomUUID } from 'node:crypto';
-import { normalizeMessageContent } from '@maka/core/events';
+import { messageContentDigest, normalizeMessageContent } from '@maka/core/events';
 import {
   describeChatConfigurationReason,
   NO_REAL_CONNECTION_CODE,
@@ -1265,9 +1265,69 @@ export async function createExecutionRuntimeHostComposition(
               outcome.error.message,
             );
           }
-          return outcome.result.disposition === 'turn_started'
-            ? { turnId: outcome.result.turnId }
-            : { turnId: input.messageId, steered: true as const };
+          if (outcome.result.disposition === 'turn_started') {
+            return { turnId: outcome.result.turnId };
+          }
+          try {
+            const admission = await stores.sessionStore.readMessageAdmission(
+              input.sessionId,
+              input.messageId,
+            );
+            if (admission) return { turnId: admission.turnId, steered: true as const };
+          } catch {
+            // The submit already settled; losing its exact Turn identity makes
+            // the WorkHub linkage outcome uncertain rather than retryable.
+          }
+          context.requestDrain();
+          throw new WorkHubActionEffectFailure(
+            'commit_outcome_unknown',
+            'WorkHub target Turn identity could not be proven',
+          );
+        },
+        recoverSubmission: async (input) => {
+          const expectedDigest = messageContentDigest(
+            normalizeMessageContent({ text: input.text }),
+          );
+          const receipt = await stores.agentRunStore.readRootTurnSourceMessageReceipt(
+            input.sessionId,
+            input.messageId,
+          );
+          if (receipt) {
+            const source = receipt.sourceMessage;
+            const actualDigest =
+              source.submittedContentDigest ?? messageContentDigest(source.content);
+            if (source.placement !== 'current_turn' || actualDigest !== expectedDigest) {
+              throw new WorkHubActionEffectFailure(
+                'operation_conflict',
+                'WorkHub target Message identity belongs to different content',
+              );
+            }
+            return source.disposition === 'turn_started'
+              ? { turnId: receipt.admission.turnId }
+              : source.disposition === 'steering'
+                ? { turnId: receipt.admission.turnId, steered: true as const }
+                : undefined;
+          }
+          const admission = await stores.sessionStore.readMessageAdmission(
+            input.sessionId,
+            input.messageId,
+          );
+          if (!admission) return undefined;
+          if (
+            admission.submittedPlacement !== 'current_turn' ||
+            admission.submittedContentDigest !== expectedDigest
+          ) {
+            throw new WorkHubActionEffectFailure(
+              'operation_conflict',
+              'WorkHub target Message admission belongs to different content',
+            );
+          }
+          const root = await stores.agentRunStore.readRootTurnAdmission(
+            input.sessionId,
+            admission.turnId,
+          );
+          if (!root || root.runId !== admission.runId) return undefined;
+          return { turnId: admission.turnId, steered: true as const };
         },
       },
       resolveCreateTarget: async () => {

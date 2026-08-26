@@ -124,6 +124,11 @@ export function projectDesktopStoredMessage(
       return message.parentSessionId
         ? { ...message, parentSessionId: projectSessionId(host, message.parentSessionId) }
         : message;
+    case 'workhub_coordination':
+      return {
+        ...message,
+        targetSessionId: projectSessionId(host, message.targetSessionId),
+      };
     default:
       return message;
   }

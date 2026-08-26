@@ -25,6 +25,9 @@ import {
   WorkHubCoordinationActionGate,
   type WorkHubActionGateEffects,
   type WorkHubActionGateSession,
+  type WorkHubDelegationCommit,
+  type WorkHubDelegationIntent,
+  type WorkHubDelegationRecord,
 } from '../server/workhub-coordination-action-gate.js';
 import type { ConnectionContext } from '../server/operation-dispatcher.js';
 
@@ -202,8 +205,10 @@ describe('WorkHub Coordination Action Gate', () => {
 
     const first = await gate.act(input, CONTEXT);
     const replay = await gate.act(input, CONTEXT);
+    const restartedReplay = await new WorkHubCoordinationActionGate(effects).act(input, CONTEXT);
 
     assert.deepEqual(replay, first);
+    assert.deepEqual(restartedReplay, first);
     assert.equal(effects.creations.length, 1);
     assert.equal(effects.submissions.length, 1);
     assert.match(effects.creations[0]?.sessionId ?? '', /^whs_[a-f0-9]{48}$/u);
@@ -223,7 +228,7 @@ describe('WorkHub Coordination Action Gate', () => {
     assert.equal(effects.creations.length, 1);
   });
 
-  test('effect rejection grants no root ownership and releases the action identity', async () => {
+  test('effect rejection grants no root ownership and lets the durable intent retry', async () => {
     const effects = fakeEffects([session('ordinary')]);
     const gate = new WorkHubCoordinationActionGate(effects);
     const snapshot = await gate.candidates();
@@ -249,7 +254,31 @@ describe('WorkHub Coordination Action Gate', () => {
     assert.equal((await gate.act(input, CONTEXT)).disposition, 'delegate_existing');
   });
 
-  test('replays an ordinary delegation without submitting twice', async () => {
+  test('commits a delegation after recovering an unknown submit outcome', async () => {
+    const effects = fakeEffects([session('ordinary')]);
+    const gate = new WorkHubCoordinationActionGate(effects);
+    const snapshot = await gate.candidates();
+    effects.submitUnknownAfterAdmission = true;
+
+    const result = await gate.act(
+      {
+        actionId: 'unknown-submit-action',
+        userText: 'Continue ordinary work',
+        candidateSetId: snapshot.candidateSetId,
+        proposal: {
+          disposition: 'delegate_existing',
+          candidateRef: snapshot.candidates[0]!.candidateRef,
+        },
+      },
+      CONTEXT,
+    );
+
+    assert.equal(result.disposition, 'delegate_existing');
+    assert.equal(effects.submissions.length, 1);
+    assert.equal(effects.delegations.get('unknown-submit-action')?.kind, 'delegation_committed');
+  });
+
+  test('replays an ordinary delegation durably across Action Gate restart', async () => {
     const effects = fakeEffects([session('ordinary')]);
     const gate = new WorkHubCoordinationActionGate(effects);
     const snapshot = await gate.candidates();
@@ -264,11 +293,52 @@ describe('WorkHub Coordination Action Gate', () => {
     };
 
     const first = await gate.act(input, CONTEXT);
-    const replay = await gate.act(input, CONTEXT);
+    const replay = await new WorkHubCoordinationActionGate(effects).act(input, CONTEXT);
 
     assert.deepEqual(replay, first);
     assert.equal(effects.submissions.length, 1);
     assert.equal(effects.submissions[0]?.sessionId, 'ordinary');
+    assert.equal(effects.delegations.get(input.actionId)?.kind, 'delegation_committed');
+
+    await assert.rejects(
+      new WorkHubCoordinationActionGate(effects).act(
+        { ...input, userText: 'Different work' },
+        CONTEXT,
+      ),
+      (error) => error instanceof WorkHubActionGateFailure && error.code === 'action_conflict',
+    );
+    assert.equal(effects.submissions.length, 1);
+  });
+
+  test('resumes a durable intent after restart without re-admitting stale candidates', async () => {
+    const effects = fakeEffects([session('ordinary')]);
+    const gate = new WorkHubCoordinationActionGate(effects);
+    const snapshot = await gate.candidates();
+    const input = {
+      actionId: 'interrupted-delegate-action',
+      userText: 'Continue ordinary work',
+      candidateSetId: snapshot.candidateSetId,
+      proposal: {
+        disposition: 'delegate_existing' as const,
+        candidateRef: snapshot.candidates[0]!.candidateRef,
+      },
+    };
+    effects.commitFailuresRemaining = 1;
+
+    await assert.rejects(
+      gate.act(input, CONTEXT),
+      (error) =>
+        error instanceof WorkHubActionEffectFailure && error.code === 'commit_outcome_unknown',
+    );
+    assert.equal(effects.delegations.get(input.actionId)?.kind, 'delegation_intent');
+    assert.equal(effects.submissions.length, 1);
+
+    effects.sessions[0] = session('ordinary', { statusUpdatedAt: 99 });
+    const recovered = await new WorkHubCoordinationActionGate(effects).act(input, CONTEXT);
+
+    assert.equal(recovered.disposition, 'delegate_existing');
+    assert.equal(effects.submissions.length, 1);
+    assert.equal(effects.delegations.get(input.actionId)?.kind, 'delegation_committed');
   });
 });
 
@@ -290,6 +360,13 @@ function session(
 }
 
 function fakeEffects(initialSessions: WorkHubActionGateSession[]) {
+  const submitted = new Map<
+    string,
+    {
+      readonly input: { sessionId: string; messageId: string; text: string };
+      readonly turnId: string;
+    }
+  >();
   const state = {
     sessions: [...initialSessions],
     answers: [] as Array<{ turnId: string; text: string }>,
@@ -304,6 +381,9 @@ function fakeEffects(initialSessions: WorkHubActionGateSession[]) {
       title: string;
     }>,
     submissions: [] as Array<{ sessionId: string; messageId: string; text: string }>,
+    delegations: new Map<string, WorkHubDelegationRecord>(),
+    commitFailuresRemaining: 0,
+    submitUnknownAfterAdmission: false as boolean,
     async listSessions() {
       return this.sessions;
     },
@@ -318,11 +398,56 @@ function fakeEffects(initialSessions: WorkHubActionGateSession[]) {
       workspace: { kind: 'project'; projectId: string } | { kind: 'host_path'; path: string };
       title: string;
     }) {
-      this.creations.push(input);
+      if (!this.creations.some(({ sessionId }) => sessionId === input.sessionId)) {
+        this.creations.push(input);
+      }
     },
     async submit(input: { sessionId: string; messageId: string; text: string }) {
+      const existing = submitted.get(input.messageId);
+      if (existing) {
+        assert.deepEqual(existing.input, input);
+        return { turnId: existing.turnId };
+      }
       this.submissions.push(input);
-      return { turnId: `turn-${input.sessionId}` };
+      const turnId = `turn-${input.sessionId}`;
+      submitted.set(input.messageId, { input, turnId });
+      if (this.submitUnknownAfterAdmission) {
+        this.submitUnknownAfterAdmission = false;
+        throw new WorkHubActionEffectFailure(
+          'commit_outcome_unknown',
+          'Target submit outcome is unknown',
+        );
+      }
+      return { turnId };
+    },
+    async recoverSubmission(input: { sessionId: string; messageId: string; text: string }) {
+      const existing = submitted.get(input.messageId);
+      if (!existing) return undefined;
+      assert.deepEqual(existing.input, input);
+      return { turnId: existing.turnId };
+    },
+    async readDelegation(actionId: string) {
+      return this.delegations.get(actionId);
+    },
+    async prepareDelegation(intent: WorkHubDelegationIntent) {
+      const existing = this.delegations.get(intent.actionId);
+      if (existing) {
+        assert.deepEqual(existing, intent);
+        return;
+      }
+      this.delegations.set(intent.actionId, intent);
+    },
+    async commitDelegation(commit: WorkHubDelegationCommit) {
+      const existing = this.delegations.get(commit.actionId);
+      assert.equal(existing?.kind, 'delegation_intent');
+      if (this.commitFailuresRemaining > 0) {
+        this.commitFailuresRemaining -= 1;
+        throw new WorkHubActionEffectFailure(
+          'commit_outcome_unknown',
+          'Delegation commit outcome is unknown',
+        );
+      }
+      this.delegations.set(commit.actionId, commit);
     },
   } satisfies WorkHubActionGateEffects & {
     sessions: WorkHubActionGateSession[];
@@ -334,6 +459,9 @@ function fakeEffects(initialSessions: WorkHubActionGateSession[]) {
       title: string;
     }>;
     submissions: Array<{ sessionId: string; messageId: string; text: string }>;
+    delegations: Map<string, WorkHubDelegationRecord>;
+    commitFailuresRemaining: number;
+    submitUnknownAfterAdmission: boolean;
   };
   return state;
 }
