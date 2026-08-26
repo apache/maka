@@ -386,6 +386,42 @@ test("bounds reconnectable reads when no replacement handler becomes available",
   router.close();
 });
 
+test("settles concurrent invocations after one bounded replacement window", async () => {
+  const ipc = ipcHarness();
+  const router = new RuntimeHostReconnectingIpcMain(ipc, {
+    replacementWaitTimeoutMs: 5,
+  });
+  const target = router.createTarget("target-a");
+  target.handleReconnectableRead?.("projects:getSnapshot", async () => ({ projects: [] }));
+  router.activate("target-a");
+  target.removeHandler("projects:getSnapshot");
+
+  const reads = Array.from({ length: 200 }, (_, index) =>
+    ipc.invoke("projects:getSnapshot", scope("target-a"), { index }).then(
+      (value) => ({ ok: true as const, value }),
+      (error: unknown) => ({ ok: false as const, error }),
+    ),
+  );
+  const settled = Promise.all(reads);
+  try {
+    const result = await Promise.race([
+      settled,
+      new Promise<{ readonly timedOut: true }>((resolve) =>
+        setTimeout(() => resolve({ timedOut: true }), 100),
+      ),
+    ]);
+    assert.ok(Array.isArray(result), "Runtime Host invocations did not settle");
+    assert.equal(result.length, 200);
+    for (const read of result) {
+      assert.equal(read.ok, false);
+      if (!read.ok) assert.ok(read.error instanceof RuntimeHostHandlerUnavailableError);
+    }
+  } finally {
+    router.close();
+    await settled;
+  }
+});
+
 test("does not reset one reconnectable read deadline across failed replacements", async (t) => {
   const ipc = ipcHarness();
   const router = new RuntimeHostReconnectingIpcMain(ipc, {
