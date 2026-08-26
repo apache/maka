@@ -44,6 +44,8 @@ fs.promises.open = (async (path, flags, mode) => {
   return originalOpen(path, flags, mode);
 }) as typeof fs.promises.open;
 
+// Import after the interposition: marker-file captures the intrinsic at module
+// evaluation, while production code must ignore later global mutations.
 const { resolveStorageRoot, StorageRootAuthorityError } = await import('../../root-authority.js');
 
 const parentDisconnected = new Promise<void>((resolvePromise) =>
