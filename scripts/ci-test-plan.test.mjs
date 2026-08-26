@@ -464,6 +464,20 @@ test('Windows recovery executes the exact managed dependency ADS regressions', (
   assert.match(recovery, /# skipped 0/u);
 });
 
+test('Windows recovery executes the root initialization replacement race', () => {
+  const recovery = readWorkflow('windows-recovery.yml');
+
+  assert.match(recovery, /name: Verify root initialization replacement race/u);
+  assert.match(
+    recovery,
+    /--test-name-pattern="rejects replacement before opening the temporary marker"/u,
+  );
+  assert.match(recovery, /packages\/storage\/dist\/__tests__\/root-authority\.test\.js/u);
+  assert.match(recovery, /# tests 1/u);
+  assert.match(recovery, /# pass 1/u);
+  assert.match(recovery, /# skipped 0/u);
+});
+
 test('workflows never persist the job credential into the checkout', () => {
   for (const name of readdirSync(WORKFLOW_DIR)) {
     for (const step of checkoutSteps(name)) {

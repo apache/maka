@@ -67,6 +67,21 @@ jobs:
             exit 1
           }
 
+      - name: Verify root initialization replacement race
+        shell: pwsh
+        run: |
+          node.exe --test --test-reporter=tap --test-concurrency=1 `
+            --test-name-pattern="rejects replacement before opening the temporary marker" `
+            packages/storage/dist/__tests__/root-authority.test.js `
+            2>&1 | Tee-Object -FilePath "$env:RUNNER_TEMP/root-initialization-race.tap"
+          $exitCode = $LASTEXITCODE
+          if ($exitCode -ne 0) { exit $exitCode }
+          $output = Get-Content "$env:RUNNER_TEMP/root-initialization-race.tap"
+          if ($output -notcontains '# tests 1' -or $output -notcontains '# pass 1' -or $output -notcontains '# skipped 0') {
+            Write-Error 'Root initialization race gate did not run exactly one passing Windows test'
+            exit 1
+          }
+
       - name: Verify Runtime Host Local IPC trust boundary
         shell: pwsh
         run: |
