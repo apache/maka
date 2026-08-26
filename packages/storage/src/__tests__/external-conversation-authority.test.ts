@@ -53,8 +53,14 @@ describe('interactive external-conversation authority', () => {
         successorOwner.lease,
       );
       try {
-        assert.equal(await successor.claimSourceEvent('telegram:chat-1', 'bot_source_1'), 'existing');
-        assert.equal(await successor.claimSourceEvent('telegram:chat-1', 'bot_source_2'), 'claimed');
+        assert.equal(
+          await successor.claimSourceEvent('telegram:chat-1', 'bot_source_1'),
+          'existing',
+        );
+        assert.equal(
+          await successor.claimSourceEvent('telegram:chat-1', 'bot_source_2'),
+          'claimed',
+        );
       } finally {
         successor.close();
         await successorOwner.close();

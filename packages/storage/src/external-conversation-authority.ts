@@ -63,10 +63,7 @@ export interface ExternalConversationAuthority {
     proposedSessionId: string,
   ): Promise<ExternalConversationResolveResult>;
   release(conversationId: string, operationId: string): Promise<{ readonly hadBinding: boolean }>;
-  claimSourceEvent(
-    conversationId: string,
-    operationId: string,
-  ): Promise<'claimed' | 'existing'>;
+  claimSourceEvent(conversationId: string, operationId: string): Promise<'claimed' | 'existing'>;
   remove(conversationId: string, expectedSessionId: string): Promise<boolean>;
   purgeSession(sessionId: string): Promise<number>;
   /**
@@ -328,7 +325,8 @@ class SqliteExternalConversationAuthority implements ExternalConversationAuthori
         decodeCount(count.count, 'external-conversation source event receipt count') >=
         EXTERNAL_CONVERSATION_SOURCE_EVENT_RECEIPT_LIMIT
       ) {
-        this.#lease.database.prepare(`
+        this.#lease.database
+          .prepare(`
           DELETE FROM external_conversation_source_event_receipts
           WHERE (conversation_digest, operation_id) IN (
             SELECT conversation_digest, operation_id
@@ -336,7 +334,8 @@ class SqliteExternalConversationAuthority implements ExternalConversationAuthori
             ORDER BY committed_at, conversation_digest, operation_id
             LIMIT 1
           )
-        `).run();
+        `)
+          .run();
       }
       this.#lease.database
         .prepare(`
