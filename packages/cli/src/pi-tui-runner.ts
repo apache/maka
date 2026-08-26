@@ -3593,7 +3593,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
       return { consume: true };
     }
     if (tui.hasOverlay()) return undefined;
-    if (matchesSideConversationToggle(data)) {
+    if (sideConversation && matchesSideConversationToggle(data)) {
       if (!isKeyRepeat(data)) void toggleSideConversation();
       return { consume: true };
     }

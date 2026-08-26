@@ -6399,6 +6399,31 @@ describe('Maka Pi TUI runner', () => {
     await run;
   });
 
+  test('preserves legacy editor undo before a side conversation exists', async () => {
+    const terminal = new FakeTerminal();
+    const driver = new SideConversationDriver();
+    const run = runMakaPiTui({
+      title: 'Maka',
+      driver,
+      cwd: '/repo',
+      model: 'claude-sonnet-4-5',
+      connectionSlug: 'claude-subscription',
+      permissionMode: 'ask',
+      terminal,
+    });
+
+    try {
+      terminal.input('draft');
+      await waitFor(() => editorInputText(terminal) === 'draft');
+      terminal.input('\x1f');
+      await waitFor(() => editorInputText(terminal) === '');
+      assert.equal(driver.getSessionId(), 'session-1');
+    } finally {
+      exitMaka(terminal);
+      await run;
+    }
+  });
+
   test('Ctrl+/ toggles side views, preserves drafts, and projects parent status in English', async () => {
     const terminal = new FakeTerminal();
     const driver = new SideConversationDriver();
