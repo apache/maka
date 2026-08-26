@@ -610,6 +610,207 @@ describe('ImportTasksSettingsPage durable import state', () => {
   });
 });
 
+describe('ImportTasksSettingsPage source switching', () => {
+  const LOADING = /Reading external conversations/;
+
+  it('shows the reading spinner the first time a source is opened', async () => {
+    let settle: ((r: CatalogResult) => void) | undefined;
+    const pending = new Promise<CatalogResult>((resolve) => {
+      settle = resolve;
+    });
+    const harness = await renderPage({
+      adapterIds: ['codex', 'claude-code'],
+      bySource: {
+        codex: [catalog(externalSession({ id: 's-codex', name: 'Codex conv' }))],
+        'claude-code': [pending],
+      },
+    });
+
+    assert.match(harness.container.textContent, /Codex conv/, 'codex loads on mount');
+    assert.doesNotMatch(harness.container.textContent, LOADING, 'no spinner once codex is loaded');
+
+    const cc = segment(harness.container, 'claude-code');
+    assert.ok(cc, 'claude-code segment renders');
+    await act(async () => {
+      cc.click();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    // First visit to claude-code: nothing cached, so the blank + spinner shows.
+    assert.match(harness.container.textContent, LOADING, 'first-time load shows the spinner');
+    assert.doesNotMatch(harness.container.textContent, /Codex conv/, 'codex rows are cleared');
+
+    await act(async () => {
+      settle?.(catalog(externalSession({ id: 's-cc', name: 'CC conv' })));
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    assert.match(harness.container.textContent, /CC conv/, 'claude-code rows arrive');
+    assert.doesNotMatch(harness.container.textContent, LOADING, 'spinner clears when loaded');
+
+    await act(async () => harness.root.unmount());
+  });
+
+  it('shows a previously-loaded source instantly with no spinner, then refreshes in place', async () => {
+    let settleRevisit: ((r: CatalogResult) => void) | undefined;
+    const revisitRefresh = new Promise<CatalogResult>((resolve) => {
+      settleRevisit = resolve;
+    });
+    const harness = await renderPage({
+      adapterIds: ['codex', 'claude-code'],
+      bySource: {
+        // [initial load, background refresh on revisit]
+        codex: [catalog(externalSession({ id: 's-codex', name: 'Codex conv' })), revisitRefresh],
+        'claude-code': [catalog(externalSession({ id: 's-cc', name: 'CC conv' }))],
+      },
+    });
+
+    assert.match(harness.container.textContent, /Codex conv/);
+
+    await act(async () => {
+      segment(harness.container, 'claude-code')!.click();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    assert.match(harness.container.textContent, /CC conv/, 'claude-code loaded');
+
+    // Revisit codex: cached rows appear immediately with no blanking spinner
+    // (the background refresh is still pending here).
+    await act(async () => {
+      segment(harness.container, 'codex')!.click();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    assert.match(harness.container.textContent, /Codex conv/, 'cached codex rows shown instantly');
+    assert.doesNotMatch(harness.container.textContent, LOADING, 'no spinner on revisit');
+
+    await act(async () => {
+      settleRevisit?.(catalog(externalSession({ id: 's-codex', name: 'Codex conv refreshed' })));
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    assert.match(harness.container.textContent, /Codex conv refreshed/, 'background refresh lands');
+    assert.doesNotMatch(harness.container.textContent, LOADING, 'still no spinner after refresh');
+
+    await act(async () => harness.root.unmount());
+  });
+
+  it('does not let a stale background refresh overwrite a newer source selection', async () => {
+    let settleStaleCodexRefresh: ((r: CatalogResult) => void) | undefined;
+    const staleCodexRefresh = new Promise<CatalogResult>((resolve) => {
+      settleStaleCodexRefresh = resolve;
+    });
+    const harness = await renderPage({
+      adapterIds: ['codex', 'claude-code'],
+      bySource: {
+        codex: [catalog(externalSession({ id: 's-codex', name: 'Codex conv' })), staleCodexRefresh],
+        'claude-code': [
+          catalog(externalSession({ id: 's-cc', name: 'CC conv' })),
+          catalog(externalSession({ id: 's-cc', name: 'CC conv' })),
+        ],
+      },
+    });
+
+    await act(async () => {
+      segment(harness.container, 'claude-code')!.click();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    assert.match(harness.container.textContent, /CC conv/);
+
+    // Revisit codex (cache hit → background refresh left pending)...
+    await act(async () => {
+      segment(harness.container, 'codex')!.click();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    // ...then switch straight back to claude-code before that refresh resolves.
+    await act(async () => {
+      segment(harness.container, 'claude-code')!.click();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    assert.match(harness.container.textContent, /CC conv/, 'claude-code is the current source');
+
+    await act(async () => {
+      settleStaleCodexRefresh?.(
+        catalog(externalSession({ id: 's-codex', name: 'Stale codex conv' })),
+      );
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    assert.match(harness.container.textContent, /CC conv/, 'claude-code rows remain');
+    assert.doesNotMatch(
+      harness.container.textContent,
+      /Stale codex conv/,
+      'the superseded codex refresh never lands under claude-code',
+    );
+
+    await act(async () => harness.root.unmount());
+  });
+
+  it('drops an in-flight import poll after switching source, with no stuck spinner', async (context) => {
+    context.mock.timers.enable({ apis: ['setTimeout'] });
+    let settleStalePoll: ((r: CatalogResult) => void) | undefined;
+    const stalePoll = new Promise<CatalogResult>((resolve) => {
+      settleStalePoll = resolve;
+    });
+    const importing = externalSession({
+      id: 's-codex',
+      name: 'Codex conv',
+      importState: { importedCount: 0, importedSessionIds: [], isImporting: true },
+    });
+    const harness = await renderPage({
+      adapterIds: ['codex', 'claude-code'],
+      bySource: {
+        // [initial load with an import in flight, background poll read left pending]
+        codex: [{ sessions: [importing], nextCursor: null }, stalePoll],
+        'claude-code': [catalog(externalSession({ id: 's-cc', name: 'CC conv' }))],
+      },
+    });
+    assert.match(harness.container.textContent, /Codex conv/);
+
+    // The importing row schedules a poll; fire it so refreshLoadedCatalog is in
+    // flight against the pending read.
+    await act(async () => {
+      context.mock.timers.runAll();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    // Switch to claude-code while the codex poll is still in flight.
+    await act(async () => {
+      segment(harness.container, 'claude-code')!.click();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    assert.match(harness.container.textContent, /CC conv/, 'claude-code loaded');
+    assert.doesNotMatch(harness.container.textContent, LOADING, 'no stuck reading spinner');
+
+    // The stale codex poll resolves last — it must not overwrite claude-code.
+    await act(async () => {
+      settleStalePoll?.({
+        sessions: [externalSession({ id: 's-codex', name: 'Codex conv refreshed' })],
+        nextCursor: null,
+      });
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    assert.match(harness.container.textContent, /CC conv/, 'still showing claude-code');
+    assert.doesNotMatch(
+      harness.container.textContent,
+      /Codex conv refreshed/,
+      'stale poll result is dropped',
+    );
+    assert.doesNotMatch(harness.container.textContent, LOADING, 'still no spinner');
+
+    await act(async () => harness.root.unmount());
+  });
+});
+
 function externalSession(
   overrides: Partial<DesktopExternalSessionCatalogItem> = {},
 ): DesktopExternalSessionCatalogItem {
@@ -626,6 +827,10 @@ function externalSession(
 async function renderPage(options: {
   catalog?: CatalogResult;
   catalogs?: Array<CatalogResult | Error | Promise<CatalogResult>>;
+  // Multi-source tests: `listSources` reports these, and `list` draws per-source
+  // queues from `bySource` (keyed by adapterId) instead of the flat `catalogs`.
+  adapterIds?: string[];
+  bySource?: Record<string, Array<CatalogResult | Error | Promise<CatalogResult>>>;
   importResult?:
     | { ok: false; reason: 'commit_outcome_unknown' }
     | Promise<{ ok: false; reason: 'commit_outcome_unknown' }>;
@@ -671,16 +876,29 @@ async function renderPage(options: {
     host?: DesktopRuntimeHostRef;
   }> = [];
   const catalogs = options.catalogs ?? [options.catalog ?? { sessions: [], nextCursor: null }];
+  const sourceCounts: Record<string, number> = {};
   (window as unknown as { maka: unknown }).maka = {
     externalSessions: {
       listSources: async (host?: DesktopRuntimeHostRef) => {
         hostCalls.push({ operation: 'listSources', host });
-        return { adapterIds: ['codex'] };
+        return { adapterIds: options.adapterIds ?? ['codex'] };
       },
-      list: async (input: { includeArchived?: boolean }, host?: DesktopRuntimeHostRef) => {
+      list: async (
+        input: { includeArchived?: boolean; adapterId: string },
+        host?: DesktopRuntimeHostRef,
+      ) => {
         hostCalls.push({ operation: 'list', host });
         listInputs.push({ includeArchived: input.includeArchived === true });
-        const result = catalogs[Math.min(listCalls++, catalogs.length - 1)];
+        listCalls++;
+        if (options.bySource) {
+          const queue = options.bySource[input.adapterId] ?? [{ sessions: [], nextCursor: null }];
+          const index = Math.min(sourceCounts[input.adapterId] ?? 0, queue.length - 1);
+          sourceCounts[input.adapterId] = (sourceCounts[input.adapterId] ?? 0) + 1;
+          const perSource = queue[index];
+          if (perSource instanceof Error) throw perSource;
+          return perSource;
+        }
+        const result = catalogs[Math.min(listCalls - 1, catalogs.length - 1)];
         if (result instanceof Error) throw result;
         return result;
       },
@@ -728,4 +946,10 @@ function buttonWithText(container: HTMLElement, text: string): HTMLButtonElement
   return Array.from(container.querySelectorAll<HTMLButtonElement>('button')).find(
     (button) => button.textContent === text,
   );
+}
+
+function segment(container: HTMLElement, value: string): HTMLButtonElement | undefined {
+  return Array.from(
+    container.querySelectorAll<HTMLButtonElement>('button[role="radio"]'),
+  ).find((button) => button.getAttribute('data-value') === value);
 }
