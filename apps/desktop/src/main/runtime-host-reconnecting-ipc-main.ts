@@ -259,8 +259,8 @@ export class RuntimeHostReconnectingIpcMain {
       // One invocation gets one replacement window across every candidate it
       // visits. Resetting it per generation would let Host flapping retain the
       // renderer request indefinitely.
-      reconnectableReadDeadline ??= Date.now() + this.#reconnectableReadWaitTimeoutMs;
-      const remainingMs = Math.max(0, reconnectableReadDeadline - Date.now());
+      reconnectableReadDeadline ??= performance.now() + this.#reconnectableReadWaitTimeoutMs;
+      const remainingMs = Math.max(0, reconnectableReadDeadline - performance.now());
       if (remainingMs <= 0) throw new ReconnectableReadWaitExpiredError();
       try {
         return await this.#waitForHandler(slot, epoch, previous, remainingMs);

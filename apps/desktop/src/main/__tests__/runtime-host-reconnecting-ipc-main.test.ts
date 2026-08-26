@@ -213,8 +213,10 @@ test("does not reset a reconnectable read deadline across failed replacements", 
   const router = new RuntimeHostReconnectingIpcMain(ipc, {
     reconnectableReadWaitTimeoutMs: 15,
   });
-  let now = 0;
-  t.mock.method(Date, "now", () => now);
+  let monotonicNow = 0;
+  let wallClockNow = 1_000;
+  t.mock.method(performance, "now", () => monotonicNow);
+  t.mock.method(Date, "now", () => wallClockNow);
   router.activate("target-a");
   let attempts = 0;
   const maximumAttempts = 20;
@@ -222,7 +224,8 @@ test("does not reset a reconnectable read deadline across failed replacements", 
     const target = router.createTarget("target-a");
     target.handleReconnectableRead?.("projects:getSnapshot", async () => {
       attempts += 1;
-      now += 5;
+      monotonicNow += 5;
+      wallClockNow -= 100;
       target.removeHandler("projects:getSnapshot");
       if (attempts < maximumAttempts) installFailingTarget();
       throw new RuntimeHostOperationError(
