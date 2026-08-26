@@ -360,60 +360,71 @@ test('the recovery lane pairs its path filter with a nightly run and a main push
   // transitive edit it cannot match, and dropping the filter would put every
   // Windows recovery run back on every pull request. The main push carries no
   // filter because `strict: false` lets a stale-base pull request go green,
-  // and only the merged result proves two green halves still agree.
-  assert.match(workflow, /\n {2}pull_request:\n {4}paths:/u);
-  assert.match(workflow, /\n {2}push:\n {4}branches: \[main\]/u);
-  assert.match(workflow, /\n {2}schedule:/u);
+  // and because a diff over 3,000 files can skip a paths filter outright.
+  assert.match(workflow, /\n {2}pull_request:\n {4}branches: \[main\]\n {4}paths:/u);
+  assert.match(workflow, /\n {2}push:\n {4}branches: \[main\]\n {2}schedule:/u);
   assert.match(workflow, /\n {2}workflow_dispatch:/u);
   assert.match(workflow, /\n {4}name: windows_recovery/u);
 });
 
-test('the recovery lane keeps scheduled and manual runs out of one shared group', () => {
+test('the recovery lane keeps every run kind out of one shared concurrency group', () => {
   const workflow = readWorkflow('windows-recovery.yml');
 
-  // github.ref is refs/heads/main for the nightly, a dispatch and a main push
-  // alike, so a ref-keyed group made a dispatch queue behind the nightly for
-  // up to the job timeout and let the next dispatch discard it while pending.
+  // github.head_ref is a bare branch name, so two forks pushing their own
+  // `main` would share a group and cancel each other; github.ref is
+  // refs/heads/main for the nightly, a dispatch and a main push alike, so a
+  // ref-keyed group made a dispatch queue behind the nightly and let the next
+  // dispatch discard it while pending.
   assert.match(
     workflow,
-    /group: windows-recovery-\$\{\{ github\.head_ref \|\| github\.run_id \}\}/u,
+    /group: windows-recovery-\$\{\{ github\.event\.pull_request\.number \|\| github\.run_id \}\}/u,
   );
   assert.match(workflow, /\n {2}cancel-in-progress: true/u);
 });
 
-test('the recovery lane filter covers every workspace its steps execute', () => {
+test('the recovery lane filters pull requests by the workspaces its steps build', () => {
   const workflow = readWorkflow('windows-recovery.yml');
-  // Derived from the dist paths the steps actually run, so adding a workspace
-  // to this lane fails here until its sources and project file are filtered.
+  const filtered = new Set(pullRequestPathFilter('windows-recovery.yml'));
+
+  // Derived from the dist paths the steps actually run, then widened along the
+  // TypeScript project references those workspaces compile against. A new
+  // workspace on this lane, or a new reference under one of them, fails here
+  // until the filter admits its sources and project file.
   const executed = [
     ...new Set([...workflow.matchAll(/packages\/([^/]+)\/dist\//gu)].map((match) => match[1])),
   ].sort();
-
   assert.deepEqual(executed, ['runtime', 'runtime-host', 'storage']);
-  for (const workspace of executed) {
-    assert.ok(workflow.includes(`      - 'packages/${workspace}/src/**'`), workspace);
-    assert.ok(workflow.includes(`      - 'packages/${workspace}/tsconfig.json'`), workspace);
+
+  const closure = projectReferenceClosure(executed);
+  assert.ok(closure.includes('core'), 'project reference closure must reach core');
+  for (const workspace of closure) {
+    assert.ok(filtered.has(`packages/${workspace}/src/**`), `${workspace}: sources`);
+    assert.ok(filtered.has(`packages/${workspace}/tsconfig.json`), `${workspace}: project file`);
   }
 });
 
-test('the recovery lane filter names what its install and build steps consume', () => {
-  const workflow = readWorkflow('windows-recovery.yml');
+test('the recovery lane filters pull requests by what its install and clean steps consume', () => {
+  const filtered = new Set(pullRequestPathFilter('windows-recovery.yml'));
 
-  // `npm.cmd ci` and `npm.cmd run build:test` run unconditionally, so their
-  // inputs are first-class inputs of this lane rather than transitive edits
-  // the nightly can be left to cover. A grouped dependabot bump touches only
-  // the manifests, and the crash gates below sit on a native file lock that
-  // the Linux `test` lane cannot observe at all.
+  // `npm.cmd ci` and `npm.cmd run build:test` run unconditionally, so these are
+  // first-class inputs of the lane rather than transitive edits the nightly can
+  // be left to cover. A grouped dependabot bump touches only the manifests, and
+  // the crash gates sit on a native file lock the Linux `test` lane never sees.
   for (const path of [
     'package.json',
     'package-lock.json',
     'patches/**',
+    'scripts/apply-dependency-patches.mjs',
+    'scripts/install-electron-with-retry.mjs',
+    'scripts/clean-build.mjs',
+    'scripts/clean-paths.mjs',
+    'scripts/windows-runtime-host-local-ipc-trust.ps1',
     'tsconfig.base.json',
     'tsconfig.lib.json',
-    'scripts/windows-runtime-host-local-ipc-trust.ps1',
+    'packages/runtime/scripts/**',
     '.github/workflows/windows-recovery.yml',
   ]) {
-    assert.ok(workflow.includes(`      - '${path}'`), path);
+    assert.ok(filtered.has(path), path);
   }
 });
 
@@ -548,6 +559,50 @@ test('core CI runs the live Eval proxy lifecycle when Eval is selected', () => {
 });
 
 const WORKFLOW_DIR = new URL('../.github/workflows/', import.meta.url);
+
+/**
+ * Reads the `paths` list belonging to a workflow's `pull_request` trigger.
+ * Anchoring to the trigger, instead of matching entry text anywhere in the
+ * file, is what makes the filter assertions fail when entries move under
+ * `paths-ignore`, under another trigger, or out of `on:` altogether.
+ */
+function pullRequestPathFilter(name) {
+  const lines = readWorkflow(name).split('\n');
+  const start = lines.indexOf('  pull_request:');
+  assert.ok(start >= 0, `${name}: no pull_request trigger`);
+
+  const paths = [];
+  let inPaths = false;
+  for (const line of lines.slice(start + 1)) {
+    if (/^ {0,2}\S/u.test(line)) break;
+    if (/^ {4}\S/u.test(line)) {
+      inPaths = line === '    paths:';
+      continue;
+    }
+    const entry = inPaths ? /^ {6}- '(.+)'$/u.exec(line) : null;
+    if (entry) paths.push(entry[1]);
+  }
+  return paths;
+}
+
+/** Workspace names reachable from `workspaces` through tsconfig references. */
+function projectReferenceClosure(workspaces) {
+  const selected = new Set(workspaces);
+  const pending = [...workspaces];
+  while (pending.length > 0) {
+    const workspace = pending.shift();
+    const config = JSON.parse(
+      readFileSync(new URL(`../packages/${workspace}/tsconfig.json`, import.meta.url), 'utf8'),
+    );
+    for (const reference of config.references ?? []) {
+      const name = reference.path.replace(/^\.\.\//u, '');
+      if (selected.has(name)) continue;
+      selected.add(name);
+      pending.push(name);
+    }
+  }
+  return [...selected].sort();
+}
 
 function readWorkflow(name) {
   return readFileSync(new URL(name, WORKFLOW_DIR), 'utf8');

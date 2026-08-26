@@ -20,18 +20,33 @@ name: Windows recovery
 # The paths below are a pre-filter, not this lane's real input. The real input
 # is the import closure of the crash and owner-death recovery authorities in
 # storage, runtime and Runtime Host, which reaches well past any list worth
-# hand-maintaining. So they name the directories owning those authorities, plus
-# the manifests, patches and project files the unconditional install and build
-# steps consume directly. That keeps a change there reported before merge, and
-# the nightly run is what covers transitive edits once they land.
+# hand-maintaining. So they name those workspaces and every workspace they hold
+# a TypeScript project reference to, plus the manifests, patches and scripts
+# the unconditional install and clean steps consume. That keeps a change there
+# reported before merge, and the nightly run covers the transitive edits the
+# list cannot match.
+#
+# A pull request whose diff exceeds 3,000 files can skip the filter outright,
+# because GitHub does not promise the matched files are in the first 3,000 it
+# returns. A repository-wide sweep is exactly the change that touches every
+# recovery authority at once, which is one more reason the main push below
+# carries no filter at all.
 on:
   pull_request:
+    branches: [main]
     paths:
       - 'package.json'
       - 'package-lock.json'
       - 'patches/**'
+      - 'scripts/apply-dependency-patches.mjs'
+      - 'scripts/install-electron-with-retry.mjs'
+      - 'scripts/clean-build.mjs'
+      - 'scripts/clean-paths.mjs'
+      - 'scripts/windows-runtime-host-local-ipc-trust.ps1'
       - 'tsconfig.base.json'
       - 'tsconfig.lib.json'
+      - 'packages/core/tsconfig.json'
+      - 'packages/core/src/**'
       - 'packages/storage/tsconfig.json'
       - 'packages/storage/src/**'
       - 'packages/runtime/tsconfig.json'
@@ -39,14 +54,12 @@ on:
       - 'packages/runtime/scripts/**'
       - 'packages/runtime-host/tsconfig.json'
       - 'packages/runtime-host/src/**'
-      - 'scripts/clean-build.mjs'
-      - 'scripts/clean-paths.mjs'
-      - 'scripts/windows-runtime-host-local-ipc-trust.ps1'
       - '.github/workflows/windows-recovery.yml'
   # Unfiltered on purpose: required_status_checks is `strict: false`, so a pull
   # request goes green against a stale base and only the merged result proves
-  # two independently green halves still agree. The nightly alone would find
-  # that a day later, against a batch of commits instead of one.
+  # two independently green halves still agree. It is also the backstop for the
+  # 3,000-file case above. The nightly alone would find either a day later,
+  # against a batch of commits instead of one.
   push:
     branches: [main]
   schedule:
@@ -54,12 +67,15 @@ on:
     - cron: '17 8 * * *'
   workflow_dispatch:
 
-# Pull request pushes supersede each other. Scheduled, manual and main-push
-# runs each get a unique group, because github.ref is refs/heads/main for all
-# three: a shared group made a dispatch queue behind the nightly and let the
-# next dispatch discard it while still pending.
+# Pull request pushes supersede each other, keyed on the pull request number
+# because github.head_ref is a bare branch name two forks can share: a second
+# contributor pushing to their own `main` would otherwise cancel the first
+# contributor's run, and a cancelled check is not a failed one.
+# Scheduled, manual and main-push runs fall back to the run id, since
+# github.ref is refs/heads/main for all three and one shared group would let a
+# dispatch queue behind the nightly and then be discarded while still pending.
 concurrency:
-  group: windows-recovery-${{ github.head_ref || github.run_id }}
+  group: windows-recovery-${{ github.event.pull_request.number || github.run_id }}
   cancel-in-progress: true
 
 permissions:
