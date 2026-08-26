@@ -56,6 +56,7 @@ export interface LocalHostProcessDeploymentHandoffAdapter<StagedTarget> {
     target: RuntimeHostDeploymentIdentity,
     staged: StagedTarget,
     policy: LocalHostHandoffActiveWorkPolicy,
+    inheritableAuthorityLeaseFd: number,
   ): Promise<{
     readonly kind: 'target_absent' | 'target_present' | 'active_work';
   }>;
@@ -68,6 +69,13 @@ export interface LocalHostProcessDeploymentHandoffAdapter<StagedTarget> {
     rootId: string,
     target: RuntimeHostDeploymentIdentity,
     staged: StagedTarget,
+  ): Promise<void>;
+  /** Completes source-owned selection while the durable handoff remains serialized. */
+  finalizeTarget?(
+    rootId: string,
+    target: RuntimeHostDeploymentIdentity,
+    staged: StagedTarget,
+    inheritableAuthorityLeaseFd: number,
   ): Promise<void>;
 }
 
@@ -83,6 +91,7 @@ export interface LocalHostProcessDeploymentClaimAdapter<StagedTarget> {
     target: RuntimeHostDeploymentIdentity,
     staged: StagedTarget,
     policy: LocalHostHandoffActiveWorkPolicy,
+    inheritableAuthorityLeaseFd: number,
   ): Promise<{
     readonly kind: 'target_absent' | 'target_present' | 'active_work';
   }>;
@@ -92,6 +101,12 @@ export interface LocalHostProcessDeploymentClaimAdapter<StagedTarget> {
     rootId: string,
     target: RuntimeHostDeploymentIdentity,
     staged: StagedTarget,
+  ): Promise<void>;
+  finalizeTarget?(
+    rootId: string,
+    target: RuntimeHostDeploymentIdentity,
+    staged: StagedTarget,
+    inheritableAuthorityLeaseFd: number,
   ): Promise<void>;
 }
 
@@ -108,6 +123,7 @@ export type LocalHostProcessDeploymentClaimPhase =
   | 'observe_writer_release'
   | 'activate_target'
   | 'verify_target_ready'
+  | 'finalize_target'
   | 'claim';
 
 export type LocalHostProcessDeploymentClaimResult =
@@ -129,6 +145,7 @@ export type LocalHostProcessDeploymentHandoffPhase =
   | 'observe_writer_release'
   | 'activate_target'
   | 'verify_target_ready'
+  | 'finalize_target'
   | 'commit_handoff'
   | 'rollback_active_work';
 
@@ -167,7 +184,7 @@ export async function handoffLocalHostProcessDeployment<StagedTarget>(
   const staged = await adapter.stageTarget(request.target, request.transactionId);
   return withLocalHostDeploymentAuthority(
     request.rootId,
-    async (authority) => {
+    async (authority, inheritableAuthorityLeaseFd) => {
       const current = await authority.read();
       if (
         current?.state.kind === 'owned' &&
@@ -223,6 +240,7 @@ export async function handoffLocalHostProcessDeployment<StagedTarget>(
           request.target,
           staged,
           request.activeWorkPolicy,
+          inheritableAuthorityLeaseFd,
         );
       } catch (cause) {
         return recoveryRequired('prepare_host_cutover', handoffRecord, cause);
@@ -263,6 +281,13 @@ export async function handoffLocalHostProcessDeployment<StagedTarget>(
         adapter.verifyTargetReady(request.rootId, request.target, staged),
       );
       if (verification) return verification;
+      const finalizeTarget = adapter.finalizeTarget;
+      if (finalizeTarget) {
+        const finalization = await runPhase('finalize_target', handoffRecord, () =>
+          finalizeTarget(request.rootId, request.target, staged, inheritableAuthorityLeaseFd),
+        );
+        if (finalization) return finalization;
+      }
 
       let committed: Awaited<ReturnType<typeof authority.apply>>;
       const commitTransition = {
@@ -308,7 +333,7 @@ export async function claimLocalHostProcessDeployment<StagedTarget>(
   const staged = await adapter.stageTarget(request.target, request.transactionId);
   return withLocalHostDeploymentAuthority(
     request.rootId,
-    async (authority) => {
+    async (authority, inheritableAuthorityLeaseFd) => {
       const current = await authority.read();
       if (current) {
         return {
@@ -325,6 +350,7 @@ export async function claimLocalHostProcessDeployment<StagedTarget>(
           request.target,
           staged,
           request.activeWorkPolicy,
+          inheritableAuthorityLeaseFd,
         );
       } catch (cause) {
         return claimRecoveryRequired('prepare_host_cutover', cause);
@@ -344,6 +370,13 @@ export async function claimLocalHostProcessDeployment<StagedTarget>(
         adapter.verifyTargetReady(request.rootId, request.target, staged),
       );
       if (verification) return verification;
+      const finalizeTarget = adapter.finalizeTarget;
+      if (finalizeTarget) {
+        const finalization = await runClaimPhase('finalize_target', () =>
+          finalizeTarget(request.rootId, request.target, staged, inheritableAuthorityLeaseFd),
+        );
+        if (finalization) return finalization;
+      }
 
       try {
         const claimed = await authority.apply({
