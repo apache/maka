@@ -37,7 +37,9 @@ test('preserves opaque remote paths while normalizing labels', () => {
 });
 
 test('rejects paths that are not absolute on the remote POSIX Host', () => {
-  const roots = [{ label: 'Work', path: 'srv/work' }];
-  assert.equal(projectDirectoryRootsValid(roots), false);
-  assert.throws(() => requireProjectDirectoryRoots(roots), /Project directory is invalid/u);
+  for (const path of ['srv/work', 'C:\\work']) {
+    const roots = [{ label: 'Work', path }];
+    assert.equal(projectDirectoryRootsValid(roots), false);
+    assert.throws(() => requireProjectDirectoryRoots(roots), /Project directory is invalid/u);
+  }
 });

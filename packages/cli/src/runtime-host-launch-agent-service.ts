@@ -32,6 +32,7 @@ import {
   writeRuntimeHostServiceFile,
 } from './runtime-host-service-manager.js';
 import {
+  legacyRuntimeHostServiceLaunchArguments,
   RUNTIME_HOST_UPDATE_INTERVAL_SECONDS,
   runtimeHostServiceLaunchArguments,
   runtimeHostUpdateReconcileLaunchArguments,
@@ -116,8 +117,8 @@ export function createLaunchAgentRuntimeHostService(
     return status;
   };
   return {
-    preflightInstall: () => assertLaunchAgentDomain(context),
-    stageInstall: async () => {
+    preflightDeployment: () => assertLaunchAgentDomain(context),
+    stageDeployment: async () => {
       const [previous, previousScheduler] = await Promise.all([
         captureLaunchAgentDeployment(context),
         captureLaunchAgentDeployment(scheduler),
@@ -180,7 +181,13 @@ export function createLaunchAgentRuntimeHostService(
       ]);
       if (
         !status.installed ||
-        plist !== renderLaunchAgentPlist(config, context, serviceConfigPath)
+        !launchAgentPlistMatchesConfig(
+          plist,
+          config,
+          context,
+          serviceConfigPath,
+          options?.acceptLegacyConfigLaunch ?? false,
+        )
       ) {
         throw new RuntimeHostServiceManagerError(
           'target_mismatch',
@@ -255,10 +262,34 @@ export function renderLaunchAgentPlist(
   paths: Pick<LaunchAgentContext, 'label' | 'stdoutPath' | 'stderrPath'>,
   serviceConfigPath: string,
 ): string {
+  return renderLaunchAgentPlistWithArguments(
+    runtimeHostServiceLaunchArguments(config, serviceConfigPath),
+    paths,
+  );
+}
+
+function launchAgentPlistMatchesConfig(
+  plist: string | null,
+  config: RuntimeHostManagedServiceConfig,
+  paths: Pick<LaunchAgentContext, 'label' | 'stdoutPath' | 'stderrPath'>,
+  serviceConfigPath: string,
+  acceptLegacyConfigLaunch: boolean,
+): boolean {
+  return (
+    plist === renderLaunchAgentPlist(config, paths, serviceConfigPath) ||
+    (acceptLegacyConfigLaunch &&
+      config.schemaVersion === 1 &&
+      plist ===
+        renderLaunchAgentPlistWithArguments(legacyRuntimeHostServiceLaunchArguments(config), paths))
+  );
+}
+
+function renderLaunchAgentPlistWithArguments(
+  args: readonly string[],
+  paths: Pick<LaunchAgentContext, 'label' | 'stdoutPath' | 'stderrPath'>,
+): string {
   const stringEntry = (value: string) => `    <string>${escapeXml(value)}</string>`;
-  const argumentsXml = runtimeHostServiceLaunchArguments(config, serviceConfigPath)
-    .map(stringEntry)
-    .join('\n');
+  const argumentsXml = args.map(stringEntry).join('\n');
   return [
     '<?xml version="1.0" encoding="UTF-8"?>',
     '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "https://www.apple.com/DTDs/PropertyList-1.0.dtd">',

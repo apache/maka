@@ -32,6 +32,7 @@ import {
   writeRuntimeHostServiceFile,
 } from './runtime-host-service-manager.js';
 import {
+  legacyRuntimeHostServiceLaunchArguments,
   RUNTIME_HOST_UPDATE_INITIAL_DELAY_SECONDS,
   RUNTIME_HOST_UPDATE_INTERVAL_SECONDS,
   RUNTIME_HOST_UPDATE_RANDOM_DELAY_SECONDS,
@@ -106,11 +107,11 @@ export function createSystemdUserRuntimeHostService(
   };
 
   return {
-    preflightInstall: async () => {
+    preflightDeployment: async () => {
       await assertUserSystemd(runSystemctl);
       await assertUserLinger(uid, runLoginctl);
     },
-    stageInstall: async () => {
+    stageDeployment: async () => {
       const [previous, previousScheduler] = await Promise.all([
         captureSystemdDeployment(context.unitPath, readStatus),
         captureSystemdUpdateScheduler(scheduler),
@@ -177,7 +178,12 @@ export function createSystemdUserRuntimeHostService(
         status.fragmentPath !== context.unitPath ||
         status.needDaemonReload !== 'no' ||
         Boolean(status.dropInPaths?.trim()) ||
-        unit !== renderSystemdUnit(config, serviceConfigPath)
+        !systemdUnitMatchesConfig(
+          unit,
+          config,
+          serviceConfigPath,
+          options?.acceptLegacyConfigLaunch ?? false,
+        )
       ) {
         throw new RuntimeHostServiceManagerError(
           'target_mismatch',
@@ -324,7 +330,26 @@ export function renderSystemdUnit(
   config: RuntimeHostManagedServiceConfig,
   serviceConfigPath: string,
 ): string {
-  const args = runtimeHostServiceLaunchArguments(config, serviceConfigPath);
+  return renderSystemdUnitWithArguments(
+    runtimeHostServiceLaunchArguments(config, serviceConfigPath),
+  );
+}
+
+function systemdUnitMatchesConfig(
+  unit: string | null,
+  config: RuntimeHostManagedServiceConfig,
+  serviceConfigPath: string,
+  acceptLegacyConfigLaunch: boolean,
+): boolean {
+  return (
+    unit === renderSystemdUnit(config, serviceConfigPath) ||
+    (acceptLegacyConfigLaunch &&
+      config.schemaVersion === 1 &&
+      unit === renderSystemdUnitWithArguments(legacyRuntimeHostServiceLaunchArguments(config)))
+  );
+}
+
+function renderSystemdUnitWithArguments(args: readonly string[]): string {
   return [
     '[Unit]',
     'Description=Maka Runtime Host',

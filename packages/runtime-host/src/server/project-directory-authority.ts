@@ -170,8 +170,8 @@ function resolveRoot(
   index: number,
 ): ResolvedProjectDirectoryRoot {
   const root = canonicalProjectDirectoryRootSpec(input);
-  if (!projectDirectoryRootSpecValid(root)) {
-    throw new TypeError('Project directory root must use a valid label and absolute POSIX path');
+  if (!projectDirectoryRootSpecValid(root) || !isAbsolute(root.path)) {
+    throw new TypeError('Project directory root must use a valid label and absolute Host path');
   }
   const path = realpathSync(root.path);
   if (!statSync(path).isDirectory()) {

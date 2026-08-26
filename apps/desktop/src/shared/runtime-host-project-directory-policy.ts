@@ -20,7 +20,7 @@
 import {
   canonicalProjectDirectoryRootSpec,
   PROJECT_DIRECTORY_MAX_ROOTS,
-  projectDirectoryRootSpecValid,
+  projectDirectoryPosixRootSpecValid,
   type ProjectDirectoryRootSpec,
 } from '@maka/runtime-host/protocol';
 
@@ -38,7 +38,7 @@ export function projectDirectoryRootsValid(
   if (roots.length > PROJECT_DIRECTORY_MAX_ROOTS) return false;
   const canonical = canonicalProjectDirectoryRoots(roots);
   return (
-    canonical.every(projectDirectoryRootSpecValid) &&
+    canonical.every(projectDirectoryPosixRootSpecValid) &&
     new Set(canonical.map(({ label }) => label)).size === canonical.length
   );
 }
@@ -62,7 +62,7 @@ export function requireProjectDirectoryRoots(
       throw new Error('Runtime Host Project directory is invalid');
     }
     const canonical = canonicalProjectDirectoryRootSpec({ label: root.label, path: root.path });
-    if (!projectDirectoryRootSpecValid(canonical)) {
+    if (!projectDirectoryPosixRootSpecValid(canonical)) {
       throw new Error('Runtime Host Project directory is invalid');
     }
     return canonical;

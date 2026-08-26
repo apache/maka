@@ -28,7 +28,7 @@ import {
   canonicalProjectDirectoryRootSpec,
   isCanonicalRuntimeHostWebSocketPath,
   PROJECT_DIRECTORY_MAX_ROOTS,
-  projectDirectoryRootSpecValid,
+  projectDirectoryPosixRootSpecValid,
   RUNTIME_HOST_PROTOCOL_VERSION,
 } from '@maka/runtime-host/protocol';
 import {
@@ -101,8 +101,8 @@ export interface RuntimeHostServiceBackendStatus {
 }
 
 export interface RuntimeHostServiceBackend {
-  preflightInstall(): Promise<void>;
-  stageInstall(): Promise<RuntimeHostServiceDeployment>;
+  preflightDeployment(): Promise<void>;
+  stageDeployment(): Promise<RuntimeHostServiceDeployment>;
   /** A rejected replacement must restore the previous deployment or report update_incomplete. */
   replace(config: RuntimeHostManagedServiceConfig): Promise<void>;
   /** Reject partial or drifted scheduler state before replacement begins. */
@@ -110,7 +110,10 @@ export interface RuntimeHostServiceBackend {
   /** Verify the deployment definition and, when requested, its scheduler readiness. */
   verifyDeployment(
     config: RuntimeHostManagedServiceConfig,
-    options?: { readonly requireSchedulerReady?: boolean },
+    options?: {
+      readonly requireSchedulerReady?: boolean;
+      readonly acceptLegacyConfigLaunch?: boolean;
+    },
   ): Promise<void>;
   status(): Promise<RuntimeHostServiceBackendStatus>;
   start(): Promise<void>;
@@ -392,7 +395,7 @@ async function manageRuntimeHostServiceLocked(
   if (input.action === 'install') {
     const previous = await readServiceConfigForRepair(configPath);
     const expectedRoot = await resolveExpectedServiceRoot(previous, input);
-    await backend.preflightInstall();
+    await backend.preflightDeployment();
     const config = await prepareServiceConfig(
       expectedRoot ? { ...input, rootPath: expectedRoot.canonicalPath } : input,
       previous,
@@ -408,7 +411,7 @@ async function manageRuntimeHostServiceLocked(
         'An existing Runtime Host Project root policy must be changed through the configuration workflow',
       );
     }
-    const deployment = await backend.stageInstall();
+    const deployment = await backend.stageDeployment();
     try {
       await writeRuntimeHostServiceFile(configPath, `${JSON.stringify(config, null, 2)}\n`, 0o600);
       await deployment.apply(config);
@@ -555,8 +558,9 @@ async function manageRuntimeHostServiceLocked(
     if (sameProjectDirectoryRoots(currentConfig, desired)) {
       return configurationResult('unchanged', service);
     }
-    await backend.preflightInstall();
-    await backend.verifyDeployment(currentConfig);
+    await backend.preflightDeployment();
+    await backend.verifyDeployment(currentConfig, { acceptLegacyConfigLaunch: true });
+    const deployment = await backend.stageDeployment();
     const retired = await retireManagedRuntimeHostService(
       { ...service, config: currentConfig },
       root,
@@ -569,11 +573,11 @@ async function manageRuntimeHostServiceLocked(
     }
     try {
       await writeRuntimeHostServiceFile(configPath, `${JSON.stringify(desired, null, 2)}\n`, 0o600);
-      await backend.start();
+      await deployment.apply(desired);
       await deps.waitForReady(desired, backend);
     } catch (error) {
       await rollbackRuntimeHostConfiguration(
-        { configPath, currentConfig, desiredConfig: desired, root },
+        { configPath, currentConfig, desiredConfig: desired, root, deployment },
         backend,
         deps,
         input.allowInterruptActiveTasks ?? false,
@@ -664,7 +668,7 @@ async function replaceRuntimeHostManagedServiceLocked(
       'Retire the managed Runtime Host service before replacing its package',
     );
   }
-  await backend.preflightInstall();
+  await backend.preflightDeployment();
   const config = await prepareServiceConfig(input, service.config, deps);
   let rootFence: InteractiveRootOwner | undefined =
     await acquireRuntimeHostRootRetirementFence(root);
@@ -1027,7 +1031,7 @@ function validateServiceConfig(
       !isRecord(root) ||
       !canonical ||
       root.label !== canonical.label ||
-      !projectDirectoryRootSpecValid(canonical)
+      !projectDirectoryPosixRootSpecValid(canonical)
     ) {
       throw new TypeError('Invalid project directory root');
     }
@@ -1434,6 +1438,7 @@ async function rollbackRuntimeHostConfiguration(
     readonly currentConfig: RuntimeHostManagedServiceConfig;
     readonly desiredConfig: RuntimeHostManagedServiceConfig;
     readonly root: StorageRootCapability<'interactive'>;
+    readonly deployment: RuntimeHostServiceDeployment;
   },
   backend: RuntimeHostServiceBackend,
   deps: RuntimeHostServiceManagerDeps,
@@ -1447,6 +1452,7 @@ async function rollbackRuntimeHostConfiguration(
   );
   if (revision === 'current') {
     try {
+      await input.deployment.rollback();
       await backend.start();
       await deps.waitForReady(input.currentConfig, backend);
     } catch (rollbackError) {
@@ -1511,6 +1517,7 @@ async function rollbackRuntimeHostConfiguration(
   }
   if (rollbackErrors.length === 0) {
     try {
+      await input.deployment.rollback();
       await backend.start();
       await deps.waitForReady(input.currentConfig, backend);
     } catch (rollbackError) {

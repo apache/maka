@@ -64,11 +64,15 @@ export function projectDirectoryRootSpecValid(root: ProjectDirectoryRootSpec): b
     PROJECT_DIRECTORY_ROOT_TEXT_ENCODER.encode(canonical.label).byteLength <=
       PROJECT_DIRECTORY_ROOT_LABEL_MAX_BYTES &&
     !hasProjectDirectoryRootControlCharacters(canonical.label) &&
-    canonical.path.startsWith('/') &&
+    canonical.path.length > 0 &&
     PROJECT_DIRECTORY_ROOT_TEXT_ENCODER.encode(canonical.path).byteLength <=
       PROJECT_DIRECTORY_ROOT_PATH_MAX_BYTES &&
     !hasProjectDirectoryRootControlCharacters(canonical.path)
   );
+}
+
+export function projectDirectoryPosixRootSpecValid(root: ProjectDirectoryRootSpec): boolean {
+  return projectDirectoryRootSpecValid(root) && root.path.startsWith('/');
 }
 
 function hasProjectDirectoryRootControlCharacters(value: string): boolean {

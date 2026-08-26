@@ -40,6 +40,31 @@ export function runtimeHostServiceLaunchArguments(
   ];
 }
 
+/** Exact launch contract used before the managed configuration became authoritative. */
+export function legacyRuntimeHostServiceLaunchArguments(
+  config: RuntimeHostManagedServiceConfig,
+): readonly string[] {
+  return [
+    config.launch.nodePath,
+    config.launch.cliPath,
+    'runtime-host',
+    'serve',
+    '--root',
+    config.rootPath,
+    ...config.projectDirectoryRoots.flatMap(({ label, path }) => [
+      '--project-root',
+      `${label}=${path}`,
+    ]),
+    '--websocket-host',
+    config.websocket.host,
+    '--websocket-port',
+    String(config.websocket.port),
+    '--websocket-path',
+    config.websocket.path,
+    '--json',
+  ];
+}
+
 export const RUNTIME_HOST_UPDATE_INTERVAL_SECONDS = 24 * 60 * 60;
 export const RUNTIME_HOST_UPDATE_INITIAL_DELAY_SECONDS = 15 * 60;
 export const RUNTIME_HOST_UPDATE_RANDOM_DELAY_SECONDS = 60 * 60;

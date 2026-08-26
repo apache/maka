@@ -24,6 +24,7 @@ import {
   canonicalProjectDirectoryRootSpec,
   isCanonicalRuntimeHostWebSocketPath,
   PROJECT_DIRECTORY_MAX_ROOTS,
+  projectDirectoryPosixRootSpecValid,
   projectDirectoryRootSpecValid,
 } from '@maka/runtime-host/protocol';
 import type { RuntimeHostManagedServiceTarget } from './runtime-host-service-manager.js';
@@ -552,7 +553,9 @@ function parseManagedServiceOptions(
         }
         projectDirectoryPolicySpecified = true;
         const root =
-          argument === '--project-root' ? parseProjectRoot(parsed) : parseProjectRootJson(parsed);
+          argument === '--project-root'
+            ? parseProjectRoot(parsed, 'posix')
+            : parseProjectRootJson(parsed, 'posix');
         if ('kind' in root) return root;
         if (projectDirectoryRoots.length >= PROJECT_DIRECTORY_MAX_ROOTS) {
           return error(
@@ -927,7 +930,9 @@ function parseServeCommand(argv: string[]): RuntimeHostCliCommand {
       const parsed = optionValue(argv, index, argument);
       if (typeof parsed !== 'string') return parsed;
       const root =
-        argument === '--project-root' ? parseProjectRoot(parsed) : parseProjectRootJson(parsed);
+        argument === '--project-root'
+          ? parseProjectRoot(parsed, 'native')
+          : parseProjectRootJson(parsed, 'native');
       if ('kind' in root) return root;
       if (projectDirectoryRoots.length >= PROJECT_DIRECTORY_MAX_ROOTS) {
         return error(`--project-root may be provided at most ${PROJECT_DIRECTORY_MAX_ROOTS} times`);
@@ -1068,7 +1073,10 @@ function parseServeCommand(argv: string[]): RuntimeHostCliCommand {
   };
 }
 
-function parseProjectRoot(value: string): { label: string; path: string } | RuntimeHostCliError {
+function parseProjectRoot(
+  value: string,
+  pathKind: 'native' | 'posix',
+): { label: string; path: string } | RuntimeHostCliError {
   const separator = value.indexOf('=');
   if (separator <= 0 || separator === value.length - 1) {
     return error('--project-root must use <label>=<absolute-path>');
@@ -1077,14 +1085,17 @@ function parseProjectRoot(value: string): { label: string; path: string } | Runt
     label: value.slice(0, separator),
     path: value.slice(separator + 1),
   });
-  if (!projectDirectoryRootSpecValid(root)) {
-    return error('--project-root must use a valid label and absolute POSIX path');
+  if (!projectRootValid(root, pathKind)) {
+    return error(
+      `--project-root must use a valid label and absolute ${pathKind === 'posix' ? 'POSIX' : 'Host'} path`,
+    );
   }
   return root;
 }
 
 function parseProjectRootJson(
   value: string,
+  pathKind: 'native' | 'posix',
 ): { label: string; path: string } | RuntimeHostCliError {
   let parsed: unknown;
   try {
@@ -1104,10 +1115,21 @@ function parseProjectRootJson(
     return error('--project-root-json must be a JSON object with label and path');
   }
   const canonical = canonicalProjectDirectoryRootSpec({ label: root.label, path: root.path });
-  if (!projectDirectoryRootSpecValid(canonical)) {
-    return error('--project-root-json must use a valid label and absolute POSIX path');
+  if (!projectRootValid(canonical, pathKind)) {
+    return error(
+      `--project-root-json must use a valid label and absolute ${pathKind === 'posix' ? 'POSIX' : 'Host'} path`,
+    );
   }
   return canonical;
+}
+
+function projectRootValid(
+  root: { readonly label: string; readonly path: string },
+  pathKind: 'native' | 'posix',
+): boolean {
+  return pathKind === 'posix'
+    ? projectDirectoryPosixRootSpecValid(root)
+    : projectDirectoryRootSpecValid(root) && isAbsolute(root.path);
 }
 
 function parseAccessCommand(argv: string[]): RuntimeHostCliCommand {
