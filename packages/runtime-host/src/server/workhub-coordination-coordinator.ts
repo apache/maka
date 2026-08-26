@@ -55,6 +55,7 @@ import {
   WorkHubCoordinationActionGate,
   type WorkHubActionGateEffects,
 } from './workhub-coordination-action-gate.js';
+import { WorkHubDelegationJournal } from './workhub-delegation-journal.js';
 
 const CREATE_FINGERPRINT = `sha256:${createHash('sha256')
   .update('maka:workhub-coordination-session:v1', 'utf8')
@@ -100,7 +101,10 @@ export interface HostWorkHubCoordinationCoordinatorOptions {
   readonly admission: SessionAdmissionGate;
   readonly continuity: Pick<SessionContinuityCoordinator, 'refreshCanonical'>;
   readonly executions: CoordinationExecutions;
-  readonly sessionActions: Pick<WorkHubActionGateEffects, 'create' | 'submit'>;
+  readonly sessionActions: Pick<
+    WorkHubActionGateEffects,
+    'create' | 'submit' | 'recoverSubmission'
+  >;
   readonly resolveCreateTarget: () => Promise<CoordinationCreateTarget>;
   readonly requestDrain: () => void;
 }
@@ -123,6 +127,7 @@ export class HostWorkHubCoordinationCoordinator {
   readonly #resolveCreateTarget: () => Promise<CoordinationCreateTarget>;
   readonly #requestDrain: () => void;
   readonly #actionGate: WorkHubCoordinationActionGate;
+  readonly #delegations: WorkHubDelegationJournal;
 
   constructor(options: HostWorkHubCoordinationCoordinatorOptions) {
     this.#coordinationCwd = join(options.stateRoot, COORDINATION_CWD_DIRECTORY);
@@ -132,6 +137,12 @@ export class HostWorkHubCoordinationCoordinator {
     this.#executions = options.executions;
     this.#resolveCreateTarget = options.resolveCreateTarget;
     this.#requestDrain = options.requestDrain;
+    this.#delegations = new WorkHubDelegationJournal({
+      stores: options.stores,
+      admission: options.admission,
+      continuity: options.continuity,
+      requestDrain: options.requestDrain,
+    });
     this.#actionGate = new WorkHubCoordinationActionGate({
       listSessions: () => this.#stores.listHeaders(),
       answer: async (input, context) => {
@@ -152,6 +163,10 @@ export class HostWorkHubCoordinationCoordinator {
       },
       create: options.sessionActions.create,
       submit: options.sessionActions.submit,
+      recoverSubmission: options.sessionActions.recoverSubmission,
+      readDelegation: (actionId) => this.#delegations.read(actionId),
+      prepareDelegation: (intent) => this.#delegations.prepare(intent),
+      commitDelegation: (commit) => this.#delegations.commit(commit),
     });
   }
 

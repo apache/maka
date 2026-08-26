@@ -114,6 +114,15 @@ authoritative result. WorkHub may display a bounded projection or record a
 coordination summary, but it does not copy the ordinary Session's complete
 transcript into the Coordination Session.
 
+Delegation linkage uses closed, typed `workhub_coordination` records in the
+existing Coordination Session transcript. An immutable `delegation_intent` is
+appended before the target Session effect so an opaque candidate remains
+recoverable after the candidate set changes or the Runtime Host restarts. A
+`delegation_committed` record then binds that intent to the accepted target Turn
+and acts as the durable action-replay result. The records carry an action
+fingerprint to reject conflicting reuse of an action identity. They do not form a
+general workflow state machine and do not persist target execution lifecycle.
+
 ## Consequences, costs, and reevaluation
 
 - WorkHub gains persistent conversational continuity without adding another
@@ -129,9 +138,10 @@ transcript into the Coordination Session.
   entity remains unresolved.
 - Cross-Runtime-Host coordination remains deferred.
 - Coordination Session role representation, lazy creation, durable lookup,
-  recovery, and per-Host UI resolution are implemented. Coordination transcript,
-  disposition, delegation-link, and Action Gate behavior remain later work; this
-  ADR defines their authority boundaries without implementing them.
+  recovery, per-Host UI resolution, persistent transcript, closed dispositions,
+  and the Action Gate are implemented. Durable delegation linkage is encoded in
+  that transcript; target lifecycle projection and destructive replacement/Stop
+  recovery remain later work.
 
 Reevaluate the per-Host decision if supported workflows require one WorkHub
 conversation to coordinate ordinary Sessions on multiple Runtime Hosts, or if Host

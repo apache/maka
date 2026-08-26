@@ -756,6 +756,7 @@ export type StoredMessage =
   | PermissionDecisionMessage
   | TokenUsageMessage
   | TurnStateMessage
+  | WorkHubCoordinationMessage
   | SystemNoteMessage;
 
 export interface UserMessage extends MessageContent {
@@ -908,6 +909,41 @@ export interface TurnStateMessage {
   partialOutputRetained: boolean;
 }
 
+export const WORKHUB_COORDINATION_RECORD_SCHEMA_VERSION = 1 as const;
+
+export type WorkHubDelegationDisposition = 'delegate_existing' | 'create_new';
+
+interface WorkHubCoordinationMessageEnvelope {
+  type: 'workhub_coordination';
+  id: string;
+  /** The Coordination Turn that owns this action. */
+  turnId: string;
+  ts: number;
+  schemaVersion: typeof WORKHUB_COORDINATION_RECORD_SCHEMA_VERSION;
+  actionId: string;
+  actionFingerprint: `sha256:${string}`;
+  coordinationTurnId: string;
+  targetSessionId: string;
+  disposition: WorkHubDelegationDisposition;
+}
+
+/** Durable target choice written before a delegated Session effect is attempted. */
+export interface WorkHubDelegationIntentMessage extends WorkHubCoordinationMessageEnvelope {
+  kind: 'delegation_intent';
+}
+
+/** Durable proof that one Coordination action owns one accepted target Turn. */
+export interface WorkHubDelegationCommittedMessage extends WorkHubCoordinationMessageEnvelope {
+  kind: 'delegation_committed';
+  delegationId: string;
+  targetTurnId: string;
+  steered?: true;
+}
+
+export type WorkHubCoordinationMessage =
+  | WorkHubDelegationIntentMessage
+  | WorkHubDelegationCommittedMessage;
+
 export interface TurnRecord {
   turnId: string;
   firstSequence?: number;
@@ -1030,6 +1066,41 @@ const TURN_STATE_MESSAGE_SHAPE = defineObjectShape<TurnStateMessage>()(
     'errorClass',
   ],
 );
+const WORKHUB_DELEGATION_INTENT_MESSAGE_SHAPE = defineObjectShape<WorkHubDelegationIntentMessage>()(
+  [
+    'type',
+    'id',
+    'turnId',
+    'ts',
+    'schemaVersion',
+    'kind',
+    'actionId',
+    'actionFingerprint',
+    'coordinationTurnId',
+    'targetSessionId',
+    'disposition',
+  ],
+  [],
+);
+const WORKHUB_DELEGATION_COMMITTED_MESSAGE_SHAPE =
+  defineObjectShape<WorkHubDelegationCommittedMessage>()(
+    [
+      'type',
+      'id',
+      'turnId',
+      'ts',
+      'schemaVersion',
+      'kind',
+      'actionId',
+      'actionFingerprint',
+      'coordinationTurnId',
+      'targetSessionId',
+      'disposition',
+      'delegationId',
+      'targetTurnId',
+    ],
+    ['steered'],
+  );
 const SYSTEM_NOTE_MESSAGE_SHAPE = defineObjectShape<SystemNoteMessage>()(
   ['type', 'id', 'ts', 'kind'],
   ['turnId', 'data'],
@@ -1177,6 +1248,11 @@ function decodeMessage(
       )
         return message as unknown as TurnStateMessage;
       break;
+    case 'workhub_coordination':
+      if (isWorkHubCoordinationMessage(message)) {
+        return message as unknown as WorkHubCoordinationMessage;
+      }
+      break;
     case 'system_note':
       if (
         hasExactShape(message, SYSTEM_NOTE_MESSAGE_SHAPE) &&
@@ -1188,6 +1264,30 @@ function decodeMessage(
       break;
   }
   throw new Error('Invalid stored message schema');
+}
+
+function isWorkHubCoordinationMessage(message: Record<string, unknown>): boolean {
+  const common =
+    hasMessageEnvelope(message, true) &&
+    message.schemaVersion === WORKHUB_COORDINATION_RECORD_SCHEMA_VERSION &&
+    typeof message.actionId === 'string' &&
+    typeof message.actionFingerprint === 'string' &&
+    /^sha256:[a-f0-9]{64}$/u.test(message.actionFingerprint) &&
+    typeof message.coordinationTurnId === 'string' &&
+    message.turnId === message.coordinationTurnId &&
+    typeof message.targetSessionId === 'string' &&
+    (message.disposition === 'delegate_existing' || message.disposition === 'create_new');
+  if (!common) return false;
+  if (message.kind === 'delegation_intent') {
+    return hasExactShape(message, WORKHUB_DELEGATION_INTENT_MESSAGE_SHAPE);
+  }
+  return (
+    message.kind === 'delegation_committed' &&
+    hasExactShape(message, WORKHUB_DELEGATION_COMMITTED_MESSAGE_SHAPE) &&
+    typeof message.delegationId === 'string' &&
+    typeof message.targetTurnId === 'string' &&
+    (message.steered === undefined || message.steered === true)
+  );
 }
 
 function decodeStoredMessageContent(

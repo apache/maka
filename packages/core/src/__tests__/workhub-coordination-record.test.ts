@@ -1,0 +1,81 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
+import assert from 'node:assert/strict';
+import { describe, test } from 'node:test';
+import { decodeCanonicalMessage } from '../session.js';
+
+const FINGERPRINT = `sha256:${'a'.repeat(64)}`;
+
+describe('WorkHub Coordination stored records', () => {
+  test('decodes exact delegation intent and commit records', () => {
+    const intent = {
+      type: 'workhub_coordination',
+      id: 'intent-id',
+      turnId: 'coordination-turn',
+      ts: 1,
+      schemaVersion: 1,
+      kind: 'delegation_intent',
+      actionId: 'action-id',
+      actionFingerprint: FINGERPRINT,
+      coordinationTurnId: 'coordination-turn',
+      targetSessionId: 'payments',
+      disposition: 'delegate_existing',
+    } as const;
+    const committed = {
+      ...intent,
+      id: 'commit-id',
+      ts: 2,
+      kind: 'delegation_committed',
+      delegationId: 'delegation-id',
+      targetTurnId: 'target-turn',
+      steered: true,
+    } as const;
+
+    assert.deepEqual(decodeCanonicalMessage(intent), intent);
+    assert.deepEqual(decodeCanonicalMessage(committed), committed);
+  });
+
+  test('rejects malformed or widened coordination records', () => {
+    const base = {
+      type: 'workhub_coordination',
+      id: 'intent-id',
+      turnId: 'coordination-turn',
+      ts: 1,
+      schemaVersion: 1,
+      kind: 'delegation_intent',
+      actionId: 'action-id',
+      actionFingerprint: FINGERPRINT,
+      coordinationTurnId: 'coordination-turn',
+      targetSessionId: 'payments',
+      disposition: 'delegate_existing',
+    } as const;
+
+    for (const invalid of [
+      { ...base, coordinationTurnId: 'different-turn' },
+      { ...base, actionFingerprint: 'not-a-digest' },
+      { ...base, disposition: 'replace' },
+      { ...base, sourceSessionId: 'injected' },
+      { ...base, kind: 'delegation_committed' },
+      { ...base, schemaVersion: 2 },
+    ]) {
+      assert.throws(() => decodeCanonicalMessage(invalid), /Invalid stored message schema/u);
+    }
+  });
+});

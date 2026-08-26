@@ -77,7 +77,33 @@ export interface WorkHubActionGateEffects {
     },
     context: ConnectionContext,
   ): Promise<{ readonly turnId: string; readonly steered?: true }>;
+  recoverSubmission(input: {
+    readonly sessionId: string;
+    readonly messageId: string;
+    readonly text: string;
+  }): Promise<{ readonly turnId: string; readonly steered?: true } | undefined>;
+  readDelegation(actionId: string): Promise<WorkHubDelegationRecord | undefined>;
+  prepareDelegation(intent: WorkHubDelegationIntent): Promise<void>;
+  commitDelegation(commit: WorkHubDelegationCommit): Promise<void>;
 }
+
+export interface WorkHubDelegationIntent {
+  readonly kind: 'delegation_intent';
+  readonly actionId: string;
+  readonly actionFingerprint: `sha256:${string}`;
+  readonly coordinationTurnId: string;
+  readonly targetSessionId: string;
+  readonly disposition: 'delegate_existing' | 'create_new';
+}
+
+export interface WorkHubDelegationCommit extends Omit<WorkHubDelegationIntent, 'kind'> {
+  readonly kind: 'delegation_committed';
+  readonly delegationId: string;
+  readonly targetTurnId: string;
+  readonly steered?: true;
+}
+
+export type WorkHubDelegationRecord = WorkHubDelegationIntent | WorkHubDelegationCommit;
 
 export type WorkHubActionEffectFailureCode =
   | 'host_not_ready'
@@ -161,12 +187,12 @@ export class WorkHubCoordinationActionGate {
       return replay.result;
     }
 
-    const result = this.#act(input, context);
+    const result = this.#act(input, fingerprint, context);
     const action = { fingerprint, result };
     this.#actions.set(input.actionId, action);
-    // Successful actions remain replayable. A rejected admission does not own
-    // the action identity forever: callers must be able to refresh stale
-    // candidates or satisfy an actionable precondition and retry safely.
+    // Successful actions remain a Host-lifetime fast path. Rejections leave the
+    // in-memory slot so a pre-intent admission can retry; once an intent is
+    // durable, the journal independently keeps that action identity owned.
     void result.catch(() => {
       if (this.#actions.get(input.actionId) === action) {
         this.#actions.delete(input.actionId);
@@ -178,6 +204,7 @@ export class WorkHubCoordinationActionGate {
 
   async #act(
     input: WorkHubCoordinationActInput,
+    fingerprint: `sha256:${string}`,
     context: ConnectionContext,
   ): Promise<WorkHubCoordinationActResult> {
     const proposal = input.proposal;
@@ -195,6 +222,20 @@ export class WorkHubCoordinationActionGate {
       });
       return { disposition: 'clarify', coordinationTurnId: turnId };
     }
+    const durable = await this.#effects.readDelegation(input.actionId);
+    if (durable) {
+      if (durable.actionFingerprint !== fingerprint) {
+        throw new WorkHubActionGateFailure(
+          'action_conflict',
+          'WorkHub action identity belongs to a different proposal',
+        );
+      }
+      if (durable.kind === 'delegation_committed') {
+        return committedResult(durable);
+      }
+      return this.#executeDelegation(input, durable, context);
+    }
+
     if (proposal.disposition === 'create_new') {
       if (!input.create) {
         throw new WorkHubActionGateFailure(
@@ -203,20 +244,9 @@ export class WorkHubCoordinationActionGate {
         );
       }
       const sessionId = workHubCreatedSessionId(input.actionId);
-      await this.#effects.create({
-        sessionId,
-        workspace: input.create.workspace,
-        title: proposal.title,
-      });
-      const submitted = await this.#effects.submit(
-        {
-          sessionId,
-          messageId: actionMessageId(input.actionId),
-          text: input.userText,
-        },
-        context,
-      );
-      return executionResult('create_new', sessionId, submitted);
+      const intent = delegationIntent(input, fingerprint, sessionId);
+      await this.#effects.prepareDelegation(intent);
+      return this.#executeDelegation(input, intent, context);
     }
 
     const candidates = await this.candidates();
@@ -237,23 +267,63 @@ export class WorkHubCoordinationActionGate {
     }
     this.#assertTarget(target);
 
-    return this.#submitExisting(input, target, context);
+    const intent = delegationIntent(input, fingerprint, target.sessionId);
+    await this.#effects.prepareDelegation(intent);
+    return this.#executeDelegation(input, intent, context);
   }
 
-  async #submitExisting(
+  async #executeDelegation(
     input: WorkHubCoordinationActInput,
-    target: WorkHubCoordinationCandidate,
+    intent: WorkHubDelegationIntent,
     context: ConnectionContext,
   ): Promise<WorkHubCoordinationActResult> {
-    const submitted = await this.#effects.submit(
-      {
-        sessionId: target.sessionId,
-        messageId: actionMessageId(input.actionId),
-        text: input.userText,
-      },
-      context,
-    );
-    return executionResult('delegate_existing', target.sessionId, submitted);
+    if (intent.disposition === 'create_new') {
+      if (input.proposal.disposition !== 'create_new' || !input.create) {
+        throw new WorkHubActionGateFailure(
+          'action_conflict',
+          'WorkHub durable creation intent does not match the requested action',
+        );
+      }
+      await this.#effects.create({
+        sessionId: intent.targetSessionId,
+        workspace: input.create.workspace,
+        title: input.proposal.title,
+      });
+    } else if (input.proposal.disposition !== 'delegate_existing') {
+      throw new WorkHubActionGateFailure(
+        'action_conflict',
+        'WorkHub durable delegation intent does not match the requested action',
+      );
+    }
+
+    const message = {
+      sessionId: intent.targetSessionId,
+      messageId: actionMessageId(input.actionId),
+      text: input.userText,
+    };
+    let submitted: { readonly turnId: string; readonly steered?: true };
+    try {
+      submitted = await this.#effects.submit(message, context);
+    } catch (error) {
+      if (
+        !(error instanceof WorkHubActionEffectFailure) ||
+        error.code !== 'commit_outcome_unknown'
+      ) {
+        throw error;
+      }
+      const recovered = await this.#effects.recoverSubmission(message);
+      if (!recovered) throw error;
+      submitted = recovered;
+    }
+    const commit: WorkHubDelegationCommit = {
+      ...intent,
+      kind: 'delegation_committed',
+      delegationId: delegationId(input.actionId),
+      targetTurnId: submitted.turnId,
+      ...(submitted.steered ? { steered: true as const } : {}),
+    };
+    await this.#effects.commitDelegation(commit);
+    return committedResult(commit);
   }
 
   #assertTarget(target: WorkHubCoordinationCandidate): void {
@@ -328,6 +398,34 @@ function actionMessageId(actionId: string): string {
   return `whm_${hash(actionId).slice(0, 48)}`;
 }
 
+function delegationId(actionId: string): string {
+  return `whd_${hash(`delegation\0${actionId}`).slice(0, 48)}`;
+}
+
+function delegationIntent(
+  input: WorkHubCoordinationActInput,
+  actionFingerprint: `sha256:${string}`,
+  targetSessionId: string,
+): WorkHubDelegationIntent {
+  if (
+    input.proposal.disposition !== 'delegate_existing' &&
+    input.proposal.disposition !== 'create_new'
+  ) {
+    throw new WorkHubActionGateFailure(
+      'action_conflict',
+      'WorkHub local action cannot create a delegation intent',
+    );
+  }
+  return {
+    kind: 'delegation_intent',
+    actionId: input.actionId,
+    actionFingerprint,
+    coordinationTurnId: input.actionId,
+    targetSessionId,
+    disposition: input.proposal.disposition,
+  };
+}
+
 function workHubCreatedSessionId(actionId: string): string {
   return `whs_${hash(`create\0${actionId}`).slice(0, 48)}`;
 }
@@ -350,16 +448,12 @@ function updatedAt(session: WorkHubActionGateSession): number {
   return session.lastMessageAt ?? session.statusUpdatedAt ?? session.createdAt;
 }
 
-function executionResult(
-  disposition: 'delegate_existing' | 'create_new',
-  sessionId: string,
-  submitted: { readonly turnId: string; readonly steered?: true },
-): WorkHubCoordinationActResult {
+function committedResult(commit: WorkHubDelegationCommit): WorkHubCoordinationActResult {
   return {
-    disposition,
-    targetSessionId: sessionId,
-    targetTurnId: submitted.turnId,
-    ...(submitted.steered ? { steered: true as const } : {}),
+    disposition: commit.disposition,
+    targetSessionId: commit.targetSessionId,
+    targetTurnId: commit.targetTurnId,
+    ...(commit.steered ? { steered: true as const } : {}),
   } as WorkHubCoordinationActResult;
 }
 
