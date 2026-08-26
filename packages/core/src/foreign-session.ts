@@ -148,12 +148,13 @@ export function isSafeForeignId(value: unknown): value is string {
  * appear in a verbatim-rendered id, and that the display sanitizer strips.
  * Kept as one source of truth so the id guard and the sanitizer cannot drift.
  * Covers: C0/C1 controls, ALM (U+061C), bidi marks + embeddings/overrides/
- * isolates (U+200E/200F, U+202A-202E, U+2066-2069), zero-width joiners +
+ * isolates (U+200E/200F, U+202A-202E, U+2066-2069), the deprecated Cf
+ * bidi-adjacent controls (U+206A-206F, #3823), zero-width joiners +
  * invisible operators (U+200B-200D, U+2060-2064), the BOM (U+FEFF), and any
  * whitespace.
  */
 const FOREIGN_UNSAFE_CHARS =
-  /[\u0000-\u001F\u007F\u0080-\u009F\u061C\u200B-\u200F\u2060-\u2064\u2066-\u2069\u202A-\u202E\uFEFF\s]/;
+  /[\u0000-\u001F\u007F\u0080-\u009F\u061C\u200B-\u200F\u2060-\u2064\u2066-\u206F\u202A-\u202E\uFEFF\s]/;
 
 /* ------------------------------------------------------------------ *
  * Claude Code transcript records
