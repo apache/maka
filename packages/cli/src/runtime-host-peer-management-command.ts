@@ -43,6 +43,7 @@ export interface RuntimeHostPeerManagementCliOptions {
   readonly cliPath: string;
   readonly listenAddresses: readonly string[];
   readonly coordinationRelays: readonly string[];
+  readonly clearCoordinationRelays: boolean;
   readonly expectedTarget?: RuntimeHostManagedServiceTarget;
 }
 
@@ -68,7 +69,7 @@ export async function runRuntimeHostPeerManagementCli(
       ),
     );
   } catch (error) {
-    process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
+    writePeerError(options, error);
     return 1;
   }
 }
@@ -92,18 +93,20 @@ async function runRuntimeHostPeerManagementLocked(
                 ...(options.listenAddresses.length > 0
                   ? { listenAddresses: options.listenAddresses }
                   : {}),
-                ...(options.coordinationRelays.length > 0
-                  ? { coordinationRelays: options.coordinationRelays }
-                  : {}),
+                ...(options.clearCoordinationRelays
+                  ? { coordinationRelays: [] }
+                  : options.coordinationRelays.length > 0
+                    ? { coordinationRelays: options.coordinationRelays }
+                    : {}),
               },
       },
       backend,
     );
     if (result.kind === 'active_tasks') {
-      process.stderr.write(
-        'Runtime Host still owns active work; direct-peer configuration was not changed.\n',
+      return writePeerActiveTasks(
+        options,
+        'Runtime Host still owns active work; direct-peer configuration was not changed.',
       );
-      return 1;
     }
   } else if (options.action === 'rotate') {
     const result = await rotateRuntimeHostManagedPeerIdentity(
@@ -117,15 +120,17 @@ async function runRuntimeHostPeerManagementLocked(
       backend,
     );
     if (result.kind === 'active_tasks') {
-      process.stderr.write(
-        'Runtime Host still owns active work; its peer identity was not rotated.\n',
+      return writePeerActiveTasks(
+        options,
+        'Runtime Host still owns active work; its peer identity was not rotated.',
       );
-      return 1;
     }
     if (options.json) {
       process.stdout.write(
         `${JSON.stringify({
           schemaVersion: 1,
+          ok: true,
+          action: options.action,
           previousPeerId: result.previousPeerId,
           peerId: result.peerId,
         })}\n`,
@@ -145,12 +150,45 @@ async function runRuntimeHostPeerManagementLocked(
       'Direct peer is not enabled for the managed Runtime Host service',
     );
   }
-  if (options.json || options.action === 'descriptor') {
+  if (options.json) {
+    process.stdout.write(`${JSON.stringify({ ...status, ok: true, action: options.action })}\n`);
+  } else if (options.action === 'descriptor') {
     process.stdout.write(`${JSON.stringify(status)}\n`);
   } else {
     process.stdout.write(formatPeerStatus(status));
   }
   return 0;
+}
+
+function writePeerActiveTasks(options: RuntimeHostPeerManagementCliOptions, message: string): 1 {
+  writePeerFailure(options, 'active_tasks', message);
+  return 1;
+}
+
+function writePeerError(options: RuntimeHostPeerManagementCliOptions, error: unknown): void {
+  const code =
+    error instanceof RuntimeHostServiceManagerError ? error.code : 'internal_service_error';
+  const message = error instanceof Error ? error.message : String(error);
+  writePeerFailure(options, code, message);
+}
+
+function writePeerFailure(
+  options: RuntimeHostPeerManagementCliOptions,
+  code: string,
+  message: string,
+): void {
+  if (options.json) {
+    process.stdout.write(
+      `${JSON.stringify({
+        schemaVersion: 1,
+        ok: false,
+        action: options.action,
+        error: { code, message },
+      })}\n`,
+    );
+    return;
+  }
+  process.stderr.write(`${message}\n`);
 }
 
 async function readPeerStatus(

@@ -161,6 +161,7 @@ describe('managed Runtime Host service', () => {
         'enable',
         '--listen',
         '/ip4/0.0.0.0/udp/44001/quic-v1',
+        '--clear-coordination-relays',
         '--expected-service-id',
         'b'.repeat(64),
         '--expected-root-path',
@@ -174,6 +175,7 @@ describe('managed Runtime Host service', () => {
         json: false,
         listenAddresses: ['/ip4/0.0.0.0/udp/44001/quic-v1'],
         coordinationRelays: [],
+        clearCoordinationRelays: true,
         expectedTarget: {
           serviceId: 'b'.repeat(64),
           rootPath: '/srv/maka',
@@ -189,6 +191,39 @@ describe('managed Runtime Host service', () => {
         'enable',
         '--listen',
         '/ip4/0.0.0.0/udp/0/quic-v1',
+        '--expected-service-id',
+        'b'.repeat(64),
+        '--expected-root-path',
+        '/srv/maka',
+        '--expected-root-id',
+        'a'.repeat(64),
+      ]).kind,
+      'error',
+    );
+    assert.equal(
+      parseRuntimeHostCommand([
+        'service',
+        'peer',
+        'enable',
+        '--listen',
+        '/ip4/0.0.0.0/tcp/0',
+        '--expected-service-id',
+        'b'.repeat(64),
+        '--expected-root-path',
+        '/srv/maka',
+        '--expected-root-id',
+        'a'.repeat(64),
+      ]).kind,
+      'error',
+    );
+    assert.equal(
+      parseRuntimeHostCommand([
+        'service',
+        'peer',
+        'enable',
+        '--clear-coordination-relays',
+        '--coordination-relay',
+        '/dns4/relay.example/tcp/443',
         '--expected-service-id',
         'b'.repeat(64),
         '--expected-root-path',
@@ -1261,6 +1296,7 @@ describe('managed Runtime Host service', () => {
 
     let installed = false;
     let active = false;
+    let retireCalls = 0;
     const backend: RuntimeHostServiceBackend = {
       ...createReadyBackend(),
       install: async () => {
@@ -1269,6 +1305,7 @@ describe('managed Runtime Host service', () => {
         return { rollback: async () => undefined };
       },
       retire: async () => {
+        retireCalls += 1;
         active = false;
       },
       start: async () => {
@@ -1338,6 +1375,13 @@ describe('managed Runtime Host service', () => {
       listenAddresses: ['/ip4/0.0.0.0/udp/43002/quic-v1'],
       coordinationRelays: ['/dns4/relay.example/tcp/443'],
     });
+    const enabledAgain = await configureRuntimeHostManagedPeer(
+      { ...common, expectedTarget, peer: {} },
+      backend,
+      deps,
+    );
+    assert.equal(enabledAgain.kind, 'configured');
+    assert.equal(retireCalls, 1);
 
     await rm(nativePath);
     const disabled = await configureRuntimeHostManagedPeer(
@@ -1365,6 +1409,17 @@ describe('managed Runtime Host service', () => {
     assert.deepEqual(reenabledStatus.service.config?.peer?.coordinationRelays, [
       '/dns4/relay.example/tcp/443',
     ]);
+    await configureRuntimeHostManagedPeer(
+      { ...common, expectedTarget, peer: { coordinationRelays: [] } },
+      backend,
+      deps,
+    );
+    const clearedRelayStatus = await manageRuntimeHostService(
+      { ...common, action: 'status', expectedTarget },
+      backend,
+      deps,
+    );
+    assert.deepEqual(clearedRelayStatus.service.config?.peer?.coordinationRelays, []);
     const keyPath = resolveRuntimeHostManagedPeerKeyPath(clientDataRoot);
     const previousPeerId = 'owned-peer-identity';
     const rotatedPeerId = 'rotated-peer-identity';

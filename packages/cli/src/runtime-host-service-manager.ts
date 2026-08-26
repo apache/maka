@@ -58,6 +58,7 @@ import {
 import { writeRuntimeHostManagedUpdatePolicy } from './runtime-host-update-policy-store.js';
 import { isTemporaryNpxInstallation } from './runtime-host-cli-installation.js';
 import {
+  hasEphemeralRuntimeHostPeerPort,
   resolveRuntimeHostManagedPeerKeyPath,
   resolveRuntimeHostPeerNativePath,
 } from './runtime-host-peer-artifact.js';
@@ -306,12 +307,10 @@ export class RuntimeHostServiceManagerError extends Error {
   }
 }
 
-export async function manageRuntimeHostService(
-  input: RuntimeHostManagedServiceInput,
-  backend: RuntimeHostServiceBackend,
-  overrides: Partial<RuntimeHostServiceManagerDeps> = {},
-): Promise<RuntimeHostManagedServiceResult> {
-  const deps: RuntimeHostServiceManagerDeps = {
+function runtimeHostServiceManagerDeps(
+  overrides: Partial<RuntimeHostServiceManagerDeps>,
+): RuntimeHostServiceManagerDeps {
+  return {
     allocateLoopbackPort,
     allocatePeerPort,
     waitForReady: verifyRuntimeHostManagedServiceReady,
@@ -322,6 +321,14 @@ export async function manageRuntimeHostService(
     platform: process.platform,
     ...overrides,
   };
+}
+
+export async function manageRuntimeHostService(
+  input: RuntimeHostManagedServiceInput,
+  backend: RuntimeHostServiceBackend,
+  overrides: Partial<RuntimeHostServiceManagerDeps> = {},
+): Promise<RuntimeHostManagedServiceResult> {
+  const deps = runtimeHostServiceManagerDeps(overrides);
   const configPath = resolveRuntimeHostManagedServiceConfigPath(input.clientDataRoot);
   const configDirectory = dirname(configPath);
   if (input.action === 'status' && !(await isExistingDirectory(configDirectory))) {
@@ -386,17 +393,7 @@ export async function replaceRuntimeHostManagedService(
   backend: RuntimeHostServiceBackend,
   overrides: Partial<RuntimeHostServiceManagerDeps> = {},
 ): Promise<RuntimeHostManagedServiceStatus> {
-  const deps: RuntimeHostServiceManagerDeps = {
-    allocateLoopbackPort,
-    allocatePeerPort,
-    waitForReady: verifyRuntimeHostManagedServiceReady,
-    prepareRetirement: prepareRuntimeHostRetirement,
-    ensurePeerIdentity: ensureRuntimeHostPeerIdentity,
-    environment: process.env,
-    homeDir: homedir(),
-    platform: process.platform,
-    ...overrides,
-  };
+  const deps = runtimeHostServiceManagerDeps(overrides);
   const configPath = resolveRuntimeHostManagedServiceConfigPath(input.clientDataRoot);
   await mkdir(dirname(configPath), { recursive: true, mode: 0o700 });
   return withProcessLifetimeFileUpdateLock(
@@ -416,17 +413,7 @@ export async function rotateRuntimeHostManagedPeerIdentity(
   backend: RuntimeHostServiceBackend,
   overrides: Partial<RuntimeHostServiceManagerDeps> = {},
 ): Promise<RuntimeHostManagedPeerRotationResult> {
-  const deps: RuntimeHostServiceManagerDeps = {
-    allocateLoopbackPort,
-    allocatePeerPort,
-    waitForReady: verifyRuntimeHostManagedServiceReady,
-    prepareRetirement: prepareRuntimeHostRetirement,
-    ensurePeerIdentity: ensureRuntimeHostPeerIdentity,
-    environment: process.env,
-    homeDir: homedir(),
-    platform: process.platform,
-    ...overrides,
-  };
+  const deps = runtimeHostServiceManagerDeps(overrides);
   const configPath = resolveRuntimeHostManagedServiceConfigPath(input.clientDataRoot);
   await mkdir(dirname(configPath), { recursive: true, mode: 0o700 });
   return withProcessLifetimeFileUpdateLock(
@@ -444,17 +431,7 @@ export async function configureRuntimeHostManagedPeer(
   backend: RuntimeHostServiceBackend,
   overrides: Partial<RuntimeHostServiceManagerDeps> = {},
 ): Promise<RuntimeHostManagedPeerConfigurationResult> {
-  const deps: RuntimeHostServiceManagerDeps = {
-    allocateLoopbackPort,
-    allocatePeerPort,
-    waitForReady: verifyRuntimeHostManagedServiceReady,
-    prepareRetirement: prepareRuntimeHostRetirement,
-    ensurePeerIdentity: ensureRuntimeHostPeerIdentity,
-    environment: process.env,
-    homeDir: homedir(),
-    platform: process.platform,
-    ...overrides,
-  };
+  const deps = runtimeHostServiceManagerDeps(overrides);
   const configPath = resolveRuntimeHostManagedServiceConfigPath(input.clientDataRoot);
   await mkdir(dirname(configPath), { recursive: true, mode: 0o700 });
   return withProcessLifetimeFileUpdateLock(
@@ -947,8 +924,8 @@ async function rotateRuntimeHostManagedPeerIdentityLocked(
         return { kind: 'active_tasks' };
       }
     }
-    await rm(peer.keyPath, { force: true });
     await rename(stagedKeyPath, peer.keyPath);
+    await syncRuntimeHostServiceDirectory(dirname(peer.keyPath));
   }
 
   const service = await readServiceStatus(configPath, backend);
@@ -1003,6 +980,9 @@ async function configureRuntimeHostManagedPeerLocked(
     );
   }
   if (input.peer === null && before.config.peer?.enabled !== true) {
+    return { kind: 'configured' };
+  }
+  if (input.peer !== null && peerConfigurationMatchesRequest(before.config.peer, input.peer)) {
     return { kind: 'configured' };
   }
   const retired = await manageRuntimeHostServiceLocked(
@@ -1192,12 +1172,7 @@ export async function writeRuntimeHostServiceFile(
       await file.close();
     }
     await rename(temporaryPath, path);
-    const parent = await open(directory, 'r');
-    try {
-      await parent.sync();
-    } finally {
-      await parent.close();
-    }
+    await syncRuntimeHostServiceDirectory(directory);
   } finally {
     await rm(temporaryPath, { force: true });
   }
@@ -1212,6 +1187,15 @@ export async function removeRuntimeHostServiceFile(path: string, label: string):
       `Unable to remove Runtime Host ${label} at ${path}`,
       { cause: error },
     );
+  }
+}
+
+async function syncRuntimeHostServiceDirectory(directory: string): Promise<void> {
+  const parent = await open(directory, 'r');
+  try {
+    await parent.sync();
+  } finally {
+    await parent.close();
   }
 }
 
@@ -1529,7 +1513,7 @@ function validatePeerConfig(value: unknown, clientDataRoot: string): void {
     value.keyPath !== resolveRuntimeHostManagedPeerKeyPath(clientDataRoot) ||
     !isStringArray(value.listenAddresses, 16) ||
     value.listenAddresses.length === 0 ||
-    value.listenAddresses.some((address) => /\/udp\/0(?:\/|$)/u.test(address)) ||
+    value.listenAddresses.some(hasEphemeralRuntimeHostPeerPort) ||
     !isStringArray(value.coordinationRelays, 16)
   ) {
     throw new TypeError('Invalid peer config');
@@ -1553,6 +1537,27 @@ function isStringArray(value: unknown, maximumLength: number): value is string[]
 
 function uniqueStrings(values: readonly string[]): string[] {
   return [...new Set(values)];
+}
+
+function peerConfigurationMatchesRequest(
+  current: RuntimeHostManagedServiceConfig['peer'],
+  requested: NonNullable<RuntimeHostManagedServiceInput['peer']>,
+): boolean {
+  if (!current?.enabled) return false;
+  const listenAddresses = requested.listenAddresses
+    ? uniqueStrings(requested.listenAddresses)
+    : current.listenAddresses;
+  const coordinationRelays = requested.coordinationRelays
+    ? uniqueStrings(requested.coordinationRelays)
+    : current.coordinationRelays;
+  return (
+    arraysEqual(listenAddresses, current.listenAddresses) &&
+    arraysEqual(coordinationRelays, current.coordinationRelays)
+  );
+}
+
+function arraysEqual(left: readonly string[], right: readonly string[]): boolean {
+  return left.length === right.length && left.every((value, index) => value === right[index]);
 }
 
 async function normalizeStateRoot(requestedRoot: string): Promise<string> {

@@ -247,6 +247,16 @@ jobs:
         if: steps.plan.outputs.storybook == 'true'
         run: npm --workspace @maka/desktop run smoke:storybook
 
+      - name: Update stable Rust for CLI packaging
+        if: steps.plan.outputs.cli_package == 'true'
+        run: rustup update stable --no-self-update
+
+      - name: Install cargo-deny for CLI packaging
+        if: steps.plan.outputs.cli_package == 'true'
+        uses: taiki-e/install-action@fcf5432d9f50d67e37ee6e29bdb7a224ff67b4a7 # v2
+        with:
+          tool: cargo-deny@0.20.2
+
       - name: Build CLI release candidate
         if: steps.plan.outputs.cli_package == 'true'
         run: npm run release:cli:pack -- --allow-dirty

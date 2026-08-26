@@ -97,6 +97,10 @@ jobs:
           cache: npm
       - name: Select the release npm toolchain
         run: npm install --global --no-audit --no-fund "$(node -p 'require("./package.json").packageManager')"
+      - name: Install cargo-deny
+        uses: taiki-e/install-action@fcf5432d9f50d67e37ee6e29bdb7a224ff67b4a7 # v2
+        with:
+          tool: cargo-deny@0.20.2
       - name: Download direct-peer addons
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:

@@ -111,7 +111,7 @@ Descriptor 只包含 PeerId、Root ID 和候选 route，不包含 access credent
 `runtime-host profile set --peer-id ... --peer-route ...`，并通过
 `MAKA_RUNTIME_HOST_ACCESS_CREDENTIAL` 提供 setup 创建的 credential。Disable 后重新 enable 会保留
 PeerId 和 listener 配置；`peer rotate` 会明确更换 PeerId；卸载 service 会删除 peer key，但保留 State
-Root。
+Root。执行 `peer enable --clear-coordination-relays` 可以删除所有已配置的 coordination relay。
 
 Direct-only 路径仍是实验能力，在受限 NAT 或禁用 UDP 的网络中可能失败。它不会替代已有的 TLS、SSH
 或 overlay network fallback；除非用户在 `peer enable` 时明确传入 `--coordination-relay`，否则不会使用

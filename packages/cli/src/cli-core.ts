@@ -341,6 +341,7 @@ export async function runMakaCli(
         cliPath: process.argv[1] ?? '',
         listenAddresses: command.listenAddresses,
         coordinationRelays: command.coordinationRelays,
+        clearCoordinationRelays: command.clearCoordinationRelays,
         ...(command.expectedTarget ? { expectedTarget: command.expectedTarget } : {}),
       });
     }

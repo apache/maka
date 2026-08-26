@@ -28,6 +28,7 @@ import {
   projectDirectoryRootSpecValid,
 } from '@maka/runtime-host/protocol';
 import type { RuntimeHostManagedServiceTarget } from './runtime-host-service-manager.js';
+import { hasEphemeralRuntimeHostPeerPort } from './runtime-host-peer-artifact.js';
 
 type RuntimeHostCliError = { kind: 'error'; message: string; exitCode: number };
 
@@ -101,6 +102,7 @@ export type RuntimeHostCliCommand =
       clientDataRoot?: string;
       listenAddresses: string[];
       coordinationRelays: string[];
+      clearCoordinationRelays: boolean;
       expectedTarget?: RuntimeHostManagedServiceTarget;
     }
   | {
@@ -475,8 +477,15 @@ function parseServicePeerCommand(argv: string[]): RuntimeHostCliCommand {
   let clientDataRoot: string | undefined;
   const listenAddresses: string[] = [];
   const coordinationRelays: string[] = [];
+  let clearCoordinationRelays = false;
   const options = parseManagedServiceOptions(argv.slice(1), {
     allowConfiguration: false,
+    flagOptions: {
+      '--clear-coordination-relays': () => {
+        if (clearCoordinationRelays) return error('Duplicate --clear-coordination-relays');
+        clearCoordinationRelays = true;
+      },
+    },
     valueOptions: {
       '--client-data-root': (value) => {
         if (clientDataRoot !== undefined) return error('Duplicate --client-data-root');
@@ -492,11 +501,19 @@ function parseServicePeerCommand(argv: string[]): RuntimeHostCliCommand {
     },
   });
   if ('kind' in options) return options;
-  if (listenAddresses.some((address) => /\/udp\/0(?:\/|$)/u.test(address))) {
-    return error('--listen requires a stable non-zero UDP port');
+  if (listenAddresses.some(hasEphemeralRuntimeHostPeerPort)) {
+    return error('--listen requires a stable non-zero transport port');
   }
-  if (action !== 'enable' && (listenAddresses.length > 0 || coordinationRelays.length > 0)) {
-    return error('--listen and --coordination-relay are only valid with peer enable');
+  if (clearCoordinationRelays && coordinationRelays.length > 0) {
+    return error('--clear-coordination-relays cannot be combined with --coordination-relay');
+  }
+  if (
+    action !== 'enable' &&
+    (listenAddresses.length > 0 || coordinationRelays.length > 0 || clearCoordinationRelays)
+  ) {
+    return error(
+      '--listen, --coordination-relay, and --clear-coordination-relays are only valid with peer enable',
+    );
   }
   if (
     (action === 'enable' ||
@@ -514,6 +531,7 @@ function parseServicePeerCommand(argv: string[]): RuntimeHostCliCommand {
     ...(clientDataRoot ? { clientDataRoot } : {}),
     listenAddresses,
     coordinationRelays,
+    clearCoordinationRelays,
     ...(options.expectedTarget ? { expectedTarget: options.expectedTarget } : {}),
   };
 }

@@ -25,51 +25,22 @@ import { fileURLToPath } from 'node:url';
 const repoRoot = dirname(dirname(fileURLToPath(import.meta.url)));
 const manifestPath = join(repoRoot, 'native/runtime-host-peer/Cargo.toml');
 const cargo = process.env.CARGO ?? 'cargo';
-const metadata = JSON.parse(
-  execFileSync(
-    cargo,
-    ['metadata', '--manifest-path', manifestPath, '--locked', '--format-version', '1'],
-    { cwd: repoRoot, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 },
-  ),
-);
-const tree = execFileSync(
+const output = execFileSync(
   cargo,
   [
-    'tree',
+    'deny',
     '--manifest-path',
     manifestPath,
     '--locked',
-    '--target',
-    'all',
-    '--edges',
-    'normal',
-    '--prefix',
-    'none',
-    '--format',
-    '{p}',
+    '--exclude-dev',
+    'list',
+    '-f',
+    'tsv',
+    '-t',
+    '0.6',
   ],
   { cwd: repoRoot, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 },
 );
-const active = new Set(
-  tree
-    .split(/\r?\n/u)
-    .map((line) => /^(\S+) v(\S+)/u.exec(line))
-    .filter(Boolean)
-    .map((match) => `${match[1]}@${match[2]}`),
-);
-const rows = metadata.packages
-  .filter(
-    (pkg) => pkg.name !== 'maka-runtime-host-peer' && active.has(`${pkg.name}@${pkg.version}`),
-  )
-  .map((pkg) => {
-    if (!pkg.license) throw new Error(`${pkg.name}@${pkg.version}: missing SPDX license metadata`);
-    return [`${pkg.name}@${pkg.version}`, pkg.license, pkg.repository ?? pkg.source ?? 'unknown'];
-  })
-  .sort(([left], [right]) => Buffer.compare(Buffer.from(left), Buffer.from(right)));
-const output = [['crate', 'SPDX license', 'source'], ...rows]
-  .map((row) => row.join('\t'))
-  .join('\n')
-  .concat('\n');
 const outputPath = join(repoRoot, 'packages/cli/RUNTIME_HOST_PEER_DEPENDENCIES.rust.tsv');
 
 if (process.argv.includes('--check')) {

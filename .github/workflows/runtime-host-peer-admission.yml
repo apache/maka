@@ -23,7 +23,7 @@ on:
       - '.github/workflows/runtime-host-peer-admission.yml'
       - 'deny.toml'
       - 'native/runtime-host-peer/**'
-      - 'packages/cli/RUNTIME_HOST_PEER_THIRD_PARTY_NOTICES.txt'
+      - 'packages/cli/RUNTIME_HOST_PEER_DEPENDENCIES.rust.tsv'
       - 'scripts/generate-runtime-host-peer-dependencies.mjs'
       - 'packages/runtime-host/src/transport/peer-native.ts'
       - 'packages/runtime-host/src/server/peer-listener.ts'
@@ -34,7 +34,7 @@ on:
       - '.github/workflows/runtime-host-peer-admission.yml'
       - 'deny.toml'
       - 'native/runtime-host-peer/**'
-      - 'packages/cli/RUNTIME_HOST_PEER_THIRD_PARTY_NOTICES.txt'
+      - 'packages/cli/RUNTIME_HOST_PEER_DEPENDENCIES.rust.tsv'
       - 'scripts/generate-runtime-host-peer-dependencies.mjs'
       - 'packages/runtime-host/src/transport/peer-native.ts'
       - 'packages/runtime-host/src/server/peer-listener.ts'
@@ -73,17 +73,17 @@ jobs:
       - name: Lint the native peer
         working-directory: native/runtime-host-peer
         run: cargo clippy --locked --all-targets -- -D warnings
+      - name: Install cargo-deny
+        if: matrix.os == 'ubuntu-latest'
+        uses: taiki-e/install-action@fcf5432d9f50d67e37ee6e29bdb7a224ff67b4a7 # v2
+        with:
+          tool: cargo-deny@0.20.2
       - name: Check Cargo dependency inventory
         if: matrix.os == 'ubuntu-latest'
         run: npm run check:runtime-host-peer-dependencies
       - name: Check Cargo dependency licenses
         if: matrix.os == 'ubuntu-latest'
-        uses: EmbarkStudios/cargo-deny-action@9c67a826e39827395bfa619cd85cb2aaeb43cfaa # v2.1.1
-        with:
-          command: check licenses
-          arguments: --locked --exclude-dev
-          manifest-path: native/runtime-host-peer/Cargo.toml
-          rust-version: stable
+        run: cargo deny --manifest-path native/runtime-host-peer/Cargo.toml --locked --exclude-dev check licenses
       - name: Test the native peer
         working-directory: native/runtime-host-peer
         run: cargo test --locked

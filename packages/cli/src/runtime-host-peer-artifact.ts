@@ -72,6 +72,10 @@ export function resolveRuntimeHostClientPeerKeyPath(clientDataRoot: string): str
   return join(clientDataRoot, 'runtime-host-client.peer.key');
 }
 
+export function hasEphemeralRuntimeHostPeerPort(address: string): boolean {
+  return /\/(?:tcp|udp)\/0(?:\/|$)/u.test(address);
+}
+
 export async function configureRuntimeHostPeerClient(input: {
   readonly cliPath: string;
   readonly clientDataRoot: string;
