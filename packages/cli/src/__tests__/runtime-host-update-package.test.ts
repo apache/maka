@@ -19,18 +19,78 @@
 
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { mkdir, stat, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, stat, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, it } from 'node:test';
 import {
   RuntimeHostUpdatePackageError,
+  withRuntimeHostRegistryUpdateArtifact,
   withRuntimeHostRegistryUpdatePackage,
+  withVerifiedRuntimeHostUpdateArchive,
 } from '../runtime-host-update-package.js';
 
 const ARCHIVE = Buffer.from('verified release archive');
 const INTEGRITY = `sha512-${createHash('sha512').update(ARCHIVE).digest('base64')}`;
 
 describe('managed Runtime Host update package acquisition', () => {
+  it('keeps the verified archive available for an installation-owner finalizer', async () => {
+    const candidate = {
+      kind: 'npm_registry' as const,
+      version: '2.0.0',
+      integrity: INTEGRITY,
+    };
+    let archivePath = '';
+    await withRuntimeHostRegistryUpdateArtifact(
+      candidate,
+      async (artifact) => {
+        archivePath = artifact.archivePath;
+        assert.equal((await stat(archivePath)).isFile(), true);
+      },
+      async (args) => {
+        if (args[0] === 'pack') {
+          const destination = args[args.indexOf('--pack-destination') + 1]!;
+          await writeFile(join(destination, 'maka-agent-2.0.0.tgz'), ARCHIVE);
+          return 0;
+        }
+        const prefix = args[args.indexOf('--prefix') + 1]!;
+        const root = join(prefix, 'node_modules', 'maka-agent');
+        await Promise.all([
+          mkdir(join(root, 'dist'), { recursive: true }),
+          mkdir(join(root, 'node_modules', '@maka', 'runtime-host'), { recursive: true }),
+        ]);
+        await Promise.all([
+          writeFile(
+            join(root, 'package.json'),
+            JSON.stringify({ name: 'maka-agent', version: '2.0.0' }),
+          ),
+          writeFile(join(root, 'dist', 'cli.js'), ''),
+          writeFile(join(root, 'node_modules', '@maka', 'runtime-host', 'package.json'), '{}'),
+        ]);
+        return 0;
+      },
+    );
+    await assert.rejects(stat(archivePath), { code: 'ENOENT' });
+  });
+
+  it('revalidates an archive before a coordinator can consume it', async (t) => {
+    const root = await mkdtemp(join(tmpdir(), 'maka-update-archive-'));
+    t.after(() => rm(root, { recursive: true, force: true }));
+    const archive = join(root, 'maka.tgz');
+    await writeFile(archive, Buffer.from('changed archive'));
+    await assert.rejects(
+      withVerifiedRuntimeHostUpdateArchive(
+        { kind: 'npm_registry', version: '2.0.0', integrity: INTEGRITY },
+        archive,
+        async () => assert.fail('mismatched archive must not be consumed'),
+        async () => assert.fail('mismatched archive must not reach npm'),
+      ),
+      (error: unknown) =>
+        error instanceof RuntimeHostUpdatePackageError &&
+        error.code === 'package_integrity_mismatch',
+    );
+  });
+
   it('binds the official archive to its extracted release evidence', async () => {
     const calls: string[][] = [];
     const candidate = {

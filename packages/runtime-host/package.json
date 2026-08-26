@@ -10,6 +10,7 @@
     "./protocol": "./dist/protocol/index.js",
     "./client": "./dist/client/index.js",
     "./operator": "./dist/operator/index.js",
+    "./operator/update-package-evidence": "./dist/operator/update-package-evidence.js",
     "./execution-candidate-main": "./dist/execution-candidate-main.js",
     "./server": "./dist/server/index.js",
     "./test-only/client-capability-host": "./dist/test-only/client-capability-host.js",

@@ -23,8 +23,8 @@ import { createReadStream } from 'node:fs';
 import { lstat, mkdir, mkdtemp, readFile, readdir, realpath, rm, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { isRuntimeHostNpmDeploymentIdentity } from '@maka/runtime-host/operator';
-import type { RuntimeHostUpdateCandidate } from './runtime-host-update-discovery.js';
+import { isRuntimeHostNpmDeploymentIdentity } from '@maka/runtime-host/operator/update-package-evidence';
+import type { RuntimeHostUpdateCandidate } from './runtime-host-registry-update.js';
 
 const PACKAGE_NAME = 'maka-agent';
 const NPM_REGISTRY = 'https://registry.npmjs.org/';
@@ -47,30 +47,48 @@ export class RuntimeHostUpdatePackageError extends Error {
 
 type RunNpm = (args: readonly string[], cwd: string) => Promise<number>;
 
+export interface RuntimeHostRegistryUpdateArtifact {
+  readonly archivePath: string;
+  readonly packageRoot: string;
+}
+
 export async function withRuntimeHostRegistryUpdatePackage<T>(
   candidate: RuntimeHostUpdateCandidate,
   use: (packageRoot: string) => Promise<T>,
   runNpm: RunNpm = runNpmCommand,
 ): Promise<T> {
-  if (
-    !isRuntimeHostNpmDeploymentIdentity(candidate) ||
-    (candidate.compatibility !== undefined &&
-      (!Number.isInteger(candidate.compatibility) || candidate.compatibility <= 0))
-  ) {
-    throw new RuntimeHostUpdatePackageError(
-      'invalid_package',
-      'The selected Runtime Host update candidate is invalid',
-    );
-  }
+  return withRuntimeHostRegistryUpdateArtifact(
+    candidate,
+    ({ packageRoot }) => use(packageRoot),
+    runNpm,
+  );
+}
+
+export async function withRuntimeHostRegistryUpdateArtifact<T>(
+  candidate: RuntimeHostUpdateCandidate,
+  use: (artifact: RuntimeHostRegistryUpdateArtifact) => Promise<T>,
+  runNpm: RunNpm = runNpmCommand,
+): Promise<T> {
+  return withRuntimeHostRegistryUpdateArchive(
+    candidate,
+    (archivePath) => withVerifiedRuntimeHostUpdateArchive(candidate, archivePath, use, runNpm),
+    runNpm,
+  );
+}
+
+export async function withRuntimeHostRegistryUpdateArchive<T>(
+  candidate: RuntimeHostUpdateCandidate,
+  use: (archivePath: string) => Promise<T>,
+  runNpm: RunNpm = runNpmCommand,
+): Promise<T> {
+  assertCandidate(candidate);
 
   const temporaryRoot = await mkdtemp(join(tmpdir(), 'maka-runtime-host-update-'));
   try {
-    let packageRoot: string;
+    let archive: string;
     try {
       const downloadRoot = join(temporaryRoot, 'download');
       const downloadCache = join(temporaryRoot, 'download-cache');
-      const installRoot = join(temporaryRoot, 'install');
-      const emptyCache = join(temporaryRoot, 'empty-cache');
       await mkdir(downloadRoot, { mode: 0o700 });
       const packed = await runNpm(
         [
@@ -93,51 +111,105 @@ export async function withRuntimeHostRegistryUpdatePackage<T>(
         );
       }
 
-      const archive = await requireDownloadedArchive(downloadRoot);
-      if ((await packageIntegrity(archive)) !== candidate.integrity) {
-        throw new RuntimeHostUpdatePackageError(
-          'package_integrity_mismatch',
-          `The downloaded Maka ${candidate.version} package does not match its registry integrity`,
-        );
-      }
-
-      const installed = await runNpm(
-        [
-          'install',
-          '--prefix',
-          installRoot,
-          '--ignore-scripts',
-          '--no-audit',
-          '--no-fund',
-          '--package-lock=false',
-          '--offline',
-          '--cache',
-          emptyCache,
-          '--registry',
-          OFFLINE_REGISTRY,
-          archive,
-        ],
-        temporaryRoot,
-      );
-      if (installed !== 0) {
-        throw new RuntimeHostUpdatePackageError(
-          'invalid_package',
-          `Unable to extract the verified Maka ${candidate.version} package`,
-        );
-      }
-
-      packageRoot = await validateExtractedPackage(installRoot, candidate);
+      archive = await requireDownloadedArchive(downloadRoot);
     } catch (error) {
       if (error instanceof RuntimeHostUpdatePackageError) throw error;
       throw new RuntimeHostUpdatePackageError(
         'package_download_failed',
-        `Unable to prepare Maka ${candidate.version} for a managed Runtime Host update`,
+        `Unable to prepare Maka ${candidate.version} for an update`,
         { cause: error },
       );
     }
-    return await use(packageRoot);
+    const verifiedArchive = await validateArchive(archive, candidate);
+    return await use(verifiedArchive);
   } finally {
     await rm(temporaryRoot, { recursive: true, force: true }).catch(() => undefined);
+  }
+}
+
+export async function withVerifiedRuntimeHostUpdateArchive<T>(
+  candidate: RuntimeHostUpdateCandidate,
+  archivePath: string,
+  use: (artifact: RuntimeHostRegistryUpdateArtifact) => Promise<T>,
+  runNpm: RunNpm = runNpmCommand,
+  parentTemporaryRoot?: string,
+): Promise<T> {
+  assertCandidate(candidate);
+  const temporaryRoot =
+    parentTemporaryRoot ?? (await mkdtemp(join(tmpdir(), 'maka-runtime-host-update-')));
+  try {
+    const archive = await validateArchive(archivePath, candidate);
+    const installRoot = join(temporaryRoot, 'install');
+    const emptyCache = join(temporaryRoot, 'empty-cache');
+    const installed = await runNpm(
+      [
+        'install',
+        '--prefix',
+        installRoot,
+        '--ignore-scripts',
+        '--no-audit',
+        '--no-fund',
+        '--package-lock=false',
+        '--offline',
+        '--cache',
+        emptyCache,
+        '--registry',
+        OFFLINE_REGISTRY,
+        archive,
+      ],
+      temporaryRoot,
+    );
+    if (installed !== 0) {
+      throw new RuntimeHostUpdatePackageError(
+        'invalid_package',
+        `Unable to extract the verified Maka ${candidate.version} package`,
+      );
+    }
+    const packageRoot = await validateExtractedPackage(installRoot, candidate);
+    return await use({ archivePath: archive, packageRoot });
+  } finally {
+    if (parentTemporaryRoot === undefined) {
+      await rm(temporaryRoot, { recursive: true, force: true }).catch(() => undefined);
+    }
+  }
+}
+
+async function validateArchive(
+  archivePath: string,
+  candidate: RuntimeHostUpdateCandidate,
+): Promise<string> {
+  const archive = await realpath(archivePath);
+  const [metadata, target] = await Promise.all([stat(archive), lstat(archive)]);
+  if (
+    !metadata.isFile() ||
+    target.isSymbolicLink() ||
+    metadata.size <= 0 ||
+    metadata.size > ARCHIVE_MAX_BYTES
+  ) {
+    throw new RuntimeHostUpdatePackageError(
+      'invalid_package',
+      'The Maka package archive is invalid',
+    );
+  }
+  if ((await packageIntegrity(archive)) !== candidate.integrity) {
+    throw new RuntimeHostUpdatePackageError(
+      'package_integrity_mismatch',
+      `The downloaded Maka ${candidate.version} package does not match its registry integrity`,
+    );
+  }
+  return archive;
+}
+
+function assertCandidate(candidate: RuntimeHostUpdateCandidate): void {
+  if (
+    !isRuntimeHostNpmDeploymentIdentity(candidate) ||
+    (candidate.compatibility !== undefined &&
+      (!Number.isInteger(candidate.compatibility) || candidate.compatibility <= 0))
+  ) {
+    throw new RuntimeHostUpdatePackageError(
+      'invalid_package',
+      'The selected Runtime Host update candidate is invalid',
+    );
   }
 }
 
