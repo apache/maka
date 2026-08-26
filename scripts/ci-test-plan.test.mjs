@@ -586,6 +586,22 @@ test('workflows never persist the job credential into the checkout', () => {
   }
 });
 
+test('a pull_request_target checkout is pinned to the trusted base commit', () => {
+  // This event hands the job a writable token while the pull request is fork
+  // controlled, so what gets checked out is what decides whether that token can
+  // reach author-supplied code. `github.sha` is the base branch commit here;
+  // `head.sha` and a bare checkout under a merge-ref event are both the pull
+  // request's own tree. Nothing else in CI would notice that edit, which is why
+  // the rule lives here rather than in a comment.
+  for (const name of readdirSync(WORKFLOW_DIR)) {
+    if (!/\bpull_request_target\b/u.test(triggerBlock(name))) continue;
+
+    for (const step of checkoutSteps(name)) {
+      assert.match(step, /\n\s+ref: \$\{\{ github\.sha \}\}\n/u, `${name}: ${step.trim()}`);
+    }
+  }
+});
+
 test('core CI runs the live Eval proxy lifecycle when Eval is selected', () => {
   const workflow = readWorkflow('ci.yml');
   const evalPackage = JSON.parse(
