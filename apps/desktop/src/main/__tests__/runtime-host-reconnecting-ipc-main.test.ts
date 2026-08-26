@@ -169,6 +169,82 @@ test("bounds reconciliation when no replacement candidate becomes available", as
   }
 });
 
+test("bounds reconnectable reads while no replacement candidate is available", async () => {
+  const ipc = ipcHarness();
+  const router = new RuntimeHostReconnectingIpcMain(ipc, {
+    reconnectableReadWaitTimeoutMs: 5,
+  });
+  const target = router.createTarget("target-a");
+  target.handleReconnectableRead?.("projects:getSnapshot", async () => ({ projects: [] }));
+  router.activate("target-a");
+  target.removeHandler("projects:getSnapshot");
+
+  const reads = Array.from({ length: 64 }, () =>
+    ipc.invoke("projects:getSnapshot", scope("target-a")).then(
+      (value) => ({ ok: true as const, value }),
+      (error: unknown) => ({ ok: false as const, error }),
+    ),
+  );
+  const settled = Promise.all(reads);
+  try {
+    const result = await Promise.race([
+      settled,
+      new Promise<{ readonly timedOut: true }>((resolve) =>
+        setTimeout(() => resolve({ timedOut: true }), 50),
+      ),
+    ]);
+    assert.ok(Array.isArray(result), "Reconnectable reads did not settle at their retry deadline");
+    assert.equal(result.length, 64);
+    for (const read of result) {
+      assert.equal(read.ok, false);
+      if (!read.ok) {
+        assert.ok(read.error instanceof Error);
+        assert.match(read.error.message, /did not reconnect before the read retry deadline/);
+      }
+    }
+  } finally {
+    router.close();
+    await settled;
+  }
+});
+
+test("does not reset a reconnectable read deadline across failed replacements", async (t) => {
+  const ipc = ipcHarness();
+  const router = new RuntimeHostReconnectingIpcMain(ipc, {
+    reconnectableReadWaitTimeoutMs: 15,
+  });
+  let now = 0;
+  t.mock.method(Date, "now", () => now);
+  router.activate("target-a");
+  let attempts = 0;
+  const maximumAttempts = 20;
+  const installFailingTarget = (): void => {
+    const target = router.createTarget("target-a");
+    target.handleReconnectableRead?.("projects:getSnapshot", async () => {
+      attempts += 1;
+      now += 5;
+      target.removeHandler("projects:getSnapshot");
+      if (attempts < maximumAttempts) installFailingTarget();
+      throw new RuntimeHostOperationError(
+        "project.catalog.query",
+        "host_draining",
+        "Runtime Host is draining",
+      );
+    });
+  };
+  installFailingTarget();
+
+  try {
+    await assert.rejects(
+      () => ipc.invoke("projects:getSnapshot", scope("target-a")),
+      /did not reconnect before the read retry deadline/,
+    );
+    assert.equal(attempts, 4);
+  } finally {
+    router.close();
+  }
+});
+
 test("retries only reconciliation when its replacement connection is lost", async () => {
   const ipc = ipcHarness();
   const router = new RuntimeHostReconnectingIpcMain(ipc);

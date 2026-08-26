@@ -34,15 +34,24 @@ type ReconcileIpcHandler = (
 type ReconciliationUnavailableIpcHandler = ReconcileIpcHandler;
 
 const DEFAULT_RECONCILIATION_WAIT_TIMEOUT_MS = 15_000;
+const DEFAULT_RECONNECTABLE_READ_WAIT_TIMEOUT_MS = 15_000;
 
 export interface RuntimeHostReconnectingIpcMainOptions {
   readonly reconciliationWaitTimeoutMs?: number;
+  readonly reconnectableReadWaitTimeoutMs?: number;
 }
 
-class ReconciliationWaitExpiredError extends Error {
+class HandlerWaitExpiredError extends Error {
   constructor() {
-    super("Runtime Host reconciliation replacement wait expired");
-    this.name = "ReconciliationWaitExpiredError";
+    super("Runtime Host replacement wait expired");
+    this.name = "HandlerWaitExpiredError";
+  }
+}
+
+class ReconnectableReadWaitExpiredError extends Error {
+  constructor() {
+    super("Runtime Host did not reconnect before the read retry deadline");
+    this.name = "ReconnectableReadWaitExpiredError";
   }
 }
 
@@ -91,6 +100,7 @@ export class RuntimeHostReconnectingIpcMain {
   readonly #slots = new Map<string, HandlerSlot>();
   readonly #activeEpochs = new Set<string>();
   readonly #reconciliationWaitTimeoutMs: number;
+  readonly #reconnectableReadWaitTimeoutMs: number;
   #closed = false;
 
   constructor(
@@ -104,6 +114,15 @@ export class RuntimeHostReconnectingIpcMain {
       throw new TypeError("Runtime Host reconciliation wait timeout must be positive");
     }
     this.#reconciliationWaitTimeoutMs = reconciliationWaitTimeoutMs;
+    const reconnectableReadWaitTimeoutMs =
+      options.reconnectableReadWaitTimeoutMs ?? DEFAULT_RECONNECTABLE_READ_WAIT_TIMEOUT_MS;
+    if (
+      !Number.isSafeInteger(reconnectableReadWaitTimeoutMs) ||
+      reconnectableReadWaitTimeoutMs <= 0
+    ) {
+      throw new TypeError("Runtime Host reconnectable read wait timeout must be positive");
+    }
+    this.#reconnectableReadWaitTimeoutMs = reconnectableReadWaitTimeoutMs;
   }
 
   createTarget(epoch: string): RuntimeHostTargetIpcMain {
@@ -232,15 +251,35 @@ export class RuntimeHostReconnectingIpcMain {
     args: readonly unknown[],
   ): Promise<unknown> {
     const epoch = this.#requireTargetEpoch(args[0]);
+    let reconnectableReadDeadline: number | undefined;
+    const waitForReconnectableReadHandler = async (
+      previous?: BoundHandler,
+    ): Promise<BoundHandler> => {
+      if (!slot.reconnectableRead) return this.#waitForHandler(slot, epoch, previous);
+      // One invocation gets one replacement window across every candidate it
+      // visits. Resetting it per generation would let Host flapping retain the
+      // renderer request indefinitely.
+      reconnectableReadDeadline ??= Date.now() + this.#reconnectableReadWaitTimeoutMs;
+      const remainingMs = Math.max(0, reconnectableReadDeadline - Date.now());
+      if (remainingMs <= 0) throw new ReconnectableReadWaitExpiredError();
+      try {
+        return await this.#waitForHandler(slot, epoch, previous, remainingMs);
+      } catch (error) {
+        if (error instanceof HandlerWaitExpiredError) {
+          throw new ReconnectableReadWaitExpiredError();
+        }
+        throw error;
+      }
+    };
     let handler: BoundHandler =
-      slot.handlers.get(epoch) ?? await this.#waitForHandler(slot, epoch);
+      slot.handlers.get(epoch) ?? await waitForReconnectableReadHandler();
     let reconciliationContext: unknown;
     let reconciling = false;
     let reconciliationDeadline: number | undefined;
     const waitForReplacement = async (
       previous: BoundHandler,
     ): Promise<BoundHandler | undefined> => {
-      if (!reconciling) return this.#waitForHandler(slot, epoch, previous);
+      if (!reconciling) return waitForReconnectableReadHandler(previous);
       const remainingMs = Math.max(
         0,
         (reconciliationDeadline ?? Date.now()) - Date.now(),
@@ -248,7 +287,7 @@ export class RuntimeHostReconnectingIpcMain {
       try {
         return await this.#waitForHandler(slot, epoch, previous, remainingMs);
       } catch (error) {
-        if (error instanceof ReconciliationWaitExpiredError) return undefined;
+        if (error instanceof HandlerWaitExpiredError) return undefined;
         throw error;
       }
     };
@@ -325,7 +364,7 @@ export class RuntimeHostReconnectingIpcMain {
       return Promise.resolve(current);
     }
     if (timeoutMs !== undefined && timeoutMs <= 0) {
-      return Promise.reject(new ReconciliationWaitExpiredError());
+      return Promise.reject(new HandlerWaitExpiredError());
     }
     return new Promise((resolve, reject) => {
       let timeout: ReturnType<typeof setTimeout> | undefined;
@@ -344,7 +383,7 @@ export class RuntimeHostReconnectingIpcMain {
       if (timeoutMs !== undefined) {
         timeout = setTimeout(() => {
           if (!slot.waiters.delete(waiter)) return;
-          waiter.reject(new ReconciliationWaitExpiredError());
+          waiter.reject(new HandlerWaitExpiredError());
         }, timeoutMs);
       }
     });
