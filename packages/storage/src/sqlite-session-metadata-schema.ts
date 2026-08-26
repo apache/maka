@@ -19,7 +19,7 @@
 
 import type { DatabaseSync } from 'node:sqlite';
 
-export const SQLITE_SESSION_METADATA_SCHEMA_VERSION = 32;
+export const SQLITE_SESSION_METADATA_SCHEMA_VERSION = 33;
 export const SQLITE_SESSION_MESSAGE_CHUNK_BYTES = 64 * 1024;
 export const SQLITE_SESSION_MESSAGE_CHUNK_MARKER = '{"$maka":"session-message-chunks-v1"}';
 
@@ -1197,6 +1197,12 @@ const MIGRATIONS: ReadonlyMap<number, string> = new Map([
   [
     32,
     `
+    ALTER TABLE message_admissions ADD COLUMN submitted_intent_json TEXT;
+  `,
+  ],
+  [
+    33,
+    `
     CREATE TABLE external_conversation_source_event_receipts (
       conversation_digest TEXT NOT NULL,
       operation_id TEXT NOT NULL,
@@ -1269,7 +1275,12 @@ export function migrateSqliteSessionMetadataDatabase(
     ) {
       const sql = MIGRATIONS.get(version);
       if (!sql) throw new Error(`Missing SQLite session metadata migration ${version}`);
-      db.exec(sql);
+      // Version 32 adds one column, and the post-merge convergence path replays
+      // it onto a database that may already carry it. SQLite has no
+      // `ADD COLUMN IF NOT EXISTS`, so the guard lives here.
+      if (version !== 32 || !hasColumn(db, 'message_admissions', 'submitted_intent_json')) {
+        db.exec(sql);
+      }
       if (version === 29 && hasColumn(db, 'session_metadata', 'last_used_at')) {
         db.exec('ALTER TABLE session_metadata DROP COLUMN last_used_at');
       }

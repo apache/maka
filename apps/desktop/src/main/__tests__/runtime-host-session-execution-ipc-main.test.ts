@@ -578,6 +578,131 @@ test("forwards explicit Skill invocation to the Host-owned Turn admission", asyn
   });
 });
 
+test("submits an ordinary composer message once under its stable message identity", async () => {
+  const submits: unknown[] = [];
+  const ipc = ipcHarness();
+  registerExecutionIpc(
+    {
+      client: executionClient({
+        getSession: async () => session(),
+        startTurn: async () => {
+          throw new Error("ordinary composer send must not choose Turn admission");
+        },
+        submitMessage: async (input) => {
+          submits.push(input);
+          return { disposition: "turn_started", turnId: "host-turn" };
+        },
+      }),
+      observer: unusedObserver(),
+      attachmentApprovals: createAttachmentApprovalRegistry(),
+      emitSessionsChanged() {},
+      stat: async () => ({ size: 0 }),
+      resizeImage: async (bytes) => bytes,
+      beforeStop() {},
+      newId: () => "unexpected-generated-id",
+    },
+    ipc,
+  );
+
+  const result = await ipc.invoke("sessions:submitMessage", "session-1", "current_turn", {
+    messageId: "message-1",
+    text: "check the projection",
+  });
+
+  assert.deepEqual(submits, [
+    {
+      sessionId: "session-1",
+      messageId: "message-1",
+      content: {
+        text: "check the projection",
+        inlineReferences: [],
+      },
+      placement: "current_turn",
+    },
+  ]);
+  assert.deepEqual(result, {
+    ok: true,
+    disposition: "turn_started",
+    turnId: "host-turn",
+    attachments: [],
+    inlineReferences: [],
+    skillInvocation: { loaded: [], failed: [], receipts: [] },
+  });
+});
+
+test('returns Host-owned cancellation proof to the renderer', async () => {
+  const ipc = ipcHarness();
+  registerExecutionIpc(
+    {
+      client: executionClient({
+        queryMessages: async (input) => ({
+          cancelledMessageIds: input.messageIds.filter(
+            (messageId) => messageId === 'message-cancelled',
+          ),
+        }),
+      }),
+    },
+    ipc,
+  );
+
+  assert.deepEqual(
+    await ipc.invoke('sessions:queryCancelledMessages', 'session-1', [
+      'message-accepted',
+      'message-cancelled',
+    ]),
+    { cancelledMessageIds: ['message-cancelled'] },
+  );
+});
+
+test('submits a slash Skill message and reports the Host Skill outcome', async () => {
+  const submits: unknown[] = [];
+  const ipc = ipcHarness();
+  registerExecutionIpc(
+    {
+      client: executionClient({
+        getSession: async () => session(),
+        startTurn: async () => {
+          throw new Error('a Skill Message must not route around Host admission');
+        },
+        submitMessage: async (input) => {
+          submits.push(input);
+          return {
+            disposition: 'blocked',
+            skillInvocation: {
+              loaded: [],
+              failed: [{ request: 'missing', reason: 'not_found' }],
+              receipts: [],
+            },
+          };
+        },
+      }),
+      newId: () => 'unexpected-generated-id',
+    },
+    ipc,
+  );
+
+  const result = await ipc.invoke('sessions:submitMessage', 'session-1', 'current_turn', {
+    messageId: 'message-skill',
+    text: '/skill:missing inspect this',
+  });
+
+  assert.deepEqual(submits, [{
+    sessionId: 'session-1',
+    messageId: 'message-skill',
+    placement: 'current_turn',
+    content: { text: '/skill:missing inspect this', inlineReferences: [] },
+  }]);
+  assert.deepEqual(result, {
+    ok: false,
+    reason: 'skill_invocation_failed',
+    skillInvocation: {
+      loaded: [],
+      failed: [{ request: 'missing', reason: 'not_found' }],
+      receipts: [],
+    },
+  });
+});
+
 test("queues a mid-turn send as steering when the Host reports the session busy", async () => {
   const submits: unknown[] = [];
   const changes: unknown[] = [];
@@ -677,6 +802,7 @@ test("retries a dispatched normal send with its original Turn identity", async (
 
   const result = await ipc.invoke("sessions:send", "session-1", {
     type: "send",
+    turnId: 'message-1',
     text: "keep this Turn identity",
   });
 
@@ -684,18 +810,18 @@ test("retries a dispatched normal send with its original Turn identity", async (
   assert.deepEqual(starts, [
     {
       sessionId: "session-1",
-      turnId: "turn-1",
+      turnId: "message-1",
       content: { text: "keep this Turn identity", inlineReferences: [] },
     },
     {
       sessionId: "session-1",
-      turnId: "turn-1",
+      turnId: "message-1",
       content: { text: "keep this Turn identity", inlineReferences: [] },
     },
   ]);
   assert.deepEqual(result, {
     ok: true,
-    turnId: "turn-1",
+    turnId: "message-1",
     attachments: [],
     inlineReferences: [],
     skillInvocation: { loaded: [], failed: [], receipts: [] },
@@ -817,14 +943,18 @@ test("retries a dispatched busy fallback with its original message identity", as
     inlineReferences: [],
     skillInvocation: { loaded: [], failed: [], receipts: [] },
   });
-  await assert.rejects(
-    ipc.invoke("sessions:send", "session-1", {
+  assert.deepEqual(
+    await ipc.invoke("sessions:send", "session-1", {
       type: "send",
       turnId: "turn-unknown",
       text: "ordinary chat keeps the existing failure contract",
     }),
-    (error: unknown) =>
-      error instanceof RuntimeHostOperationError && error.code === 'outcome_unknown',
+    {
+      ok: false,
+      reason: "outcome_unknown",
+      messageId: "turn-unknown",
+      skillInvocation: { loaded: [], failed: [], receipts: [] },
+    },
   );
   assert.deepEqual(
     await ipc.invoke("sessions:send", "side-session", {
@@ -839,28 +969,6 @@ test("retries a dispatched busy fallback with its original message identity", as
       skillInvocation: { loaded: [], failed: [], receipts: [] },
     },
   );
-});
-
-test("returns the Host-started Turn identity when a direct steer races idle", async () => {
-  const ipc = ipcHarness();
-  registerExecutionIpc(
-    {
-      client: executionClient({
-        getSession: async () => session(),
-        submitMessage: async () => ({
-          disposition: "turn_started",
-          turnId: "host-started-turn",
-        }),
-      }),
-      newId: () => "steer-message-id",
-    },
-    ipc,
-  );
-
-  assert.deepEqual(await ipc.invoke("sessions:steer", "session-1", "continue now"), {
-    kind: "started",
-    turnId: "host-started-turn",
-  });
 });
 
 test("starts the turn from the queued message when the busy race resolves idle", async () => {
@@ -1002,7 +1110,8 @@ test("queues explicit Desktop follow-ups", async () => {
   );
 
   assert.deepEqual(
-    await ipc.invoke("sessions:enqueue", "session-1", "next_turn", {
+    await ipc.invoke("sessions:submitMessage", "session-1", "next_turn", {
+      messageId: "followup-message",
       text: "do this next",
       quotes: [{ text: "quoted context" }],
       retainedAttachments: [
@@ -1020,7 +1129,8 @@ test("queues explicit Desktop follow-ups", async () => {
       ],
     }),
     {
-      kind: "queued",
+      ok: true,
+      disposition: "followup",
       attachments: [
         {
           kind: "other",
@@ -1035,12 +1145,13 @@ test("queues explicit Desktop follow-ups", async () => {
         },
       ],
       inlineReferences: [],
+      skillInvocation: { loaded: [], failed: [], receipts: [] },
     },
   );
   assert.deepEqual(submits, [
     {
       sessionId: "session-1",
-      messageId: "id-2",
+      messageId: "followup-message",
       content: {
         text: "do this next",
         attachments: [
@@ -1062,6 +1173,39 @@ test("queues explicit Desktop follow-ups", async () => {
       placement: "next_turn",
     },
   ]);
+});
+
+test('keeps an unknown Desktop follow-up admission available for reconciliation', async () => {
+  const ipc = ipcHarness();
+  registerExecutionIpc(
+    {
+      client: executionClient({
+        getSession: async () => session(),
+        submitMessage: async () => {
+          throw new RuntimeHostOperationError(
+            'turn.message.submit',
+            'outcome_unknown',
+            'Message disposition cannot be proven in this Host Epoch',
+          );
+        },
+      }),
+      observer: unusedObserver(),
+      attachmentApprovals: createAttachmentApprovalRegistry(),
+      emitSessionsChanged() {},
+      stat: async () => ({ size: 0 }),
+      resizeImage: async (bytes) => bytes,
+      beforeStop() {},
+    },
+    ipc,
+  );
+
+  assert.deepEqual(
+    await ipc.invoke('sessions:submitMessage', 'session-1', 'next_turn', {
+      messageId: 'followup-unknown',
+      text: 'keep this visible',
+    }),
+    { ok: false, reason: 'outcome_unknown' },
+  );
 });
 
 test("routes per-entry queue mutations to the Runtime Host", async () => {
@@ -1177,7 +1321,13 @@ test("binds steer and stop to Host-owned queue and active Turn identities", asyn
       interrupts.push(input);
       return {
         queueRevision: 3,
-        retracted: [],
+        retracted: [{
+          entryId: 'entry-followup',
+          messageId: 'message-followup',
+          content: { text: 'Do this next' },
+          placement: 'next_turn',
+          state: 'retracted',
+        }],
         turn: {
           sessionId: input.sessionId,
           turnId: input.turnId,
@@ -1238,15 +1388,24 @@ test("binds steer and stop to Host-owned queue and active Turn identities", asyn
   );
 
   assert.deepEqual(
-    await ipc.invoke("sessions:steer", "session-1", "  Continue  ", "steer-ticket-1"),
-    {
-      kind: "queued",
+    await ipc.invoke("sessions:submitMessage", "session-1", "current_turn", {
       messageId: "steer-ticket-1",
+      text: "Continue",
+    }),
+    {
+      ok: true,
+      disposition: "steering",
+      attachments: [],
+      inlineReferences: [],
+      skillInvocation: { loaded: [], failed: [], receipts: [] },
     },
   );
   assert.deepEqual(
-    await ipc.invoke('sessions:steer', 'session-1', 'Continue', 'unknown-ticket'),
-    { kind: 'outcome_unknown', messageId: 'unknown-ticket' },
+    await ipc.invoke('sessions:submitMessage', 'session-1', 'current_turn', {
+      messageId: 'unknown-ticket',
+      text: 'Continue',
+    }),
+    { ok: false, reason: 'outcome_unknown' },
   );
   assert.deepEqual(
     await ipc.invoke("sessions:stop", "session-1", {
@@ -1282,10 +1441,10 @@ test("binds steer and stop to Host-owned queue and active Turn identities", asyn
     expectedTurnId: "turn-unrelated",
   });
   assert.deepEqual(stopLifecycle, []);
-  await ipc.invoke("sessions:stop", "session-1", {
+  assert.deepEqual(await ipc.invoke("sessions:stop", "session-1", {
     source: "stop_button",
     expectedTurnId: "turn-1",
-  });
+  }), { kind: 'interrupted', retractedMessageIds: ['message-followup'] });
   assert.deepEqual(stopLifecycle, [
     'teardown',
     'interrupt',
@@ -1295,13 +1454,13 @@ test("binds steer and stop to Host-owned queue and active Turn identities", asyn
     {
       sessionId: "session-1",
       messageId: "steer-ticket-1",
-      content: { text: "Continue" },
+      content: { text: "Continue", inlineReferences: [] },
       placement: "current_turn",
     },
     {
       sessionId: 'session-1',
       messageId: 'unknown-ticket',
-      content: { text: 'Continue' },
+      content: { text: 'Continue', inlineReferences: [] },
       placement: 'current_turn',
     },
   ]);
@@ -1379,6 +1538,7 @@ function executionClient(overrides: Partial<ExecutionClient>): ExecutionClient {
     interruptTurn: unavailable,
     listSessionTurnLandmarks: unavailable,
     listSessionTurns: unavailable,
+    queryMessages: unavailable,
     queryTurnResume: unavailable,
     readExecutionBoundary: unavailable,
     regenerateTurn: unavailable,

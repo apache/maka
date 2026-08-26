@@ -52,6 +52,7 @@ import { openInteractiveUsageStoresForWrite } from '@maka/storage/usage-stores';
 import { openInteractiveShellRunStoreForWrite } from '@maka/storage/shell-run-authority';
 import { openInteractiveRuntimePolicyStoresForWrite } from '@maka/storage/runtime-policy-stores';
 import { createSessionStore } from '@maka/storage/session-store';
+import { SQLITE_SESSION_METADATA_SCHEMA_VERSION } from '@maka/storage/sqlite-session-metadata-store';
 import { HostResidencyRegistry } from '../server/host-residency-registry.js';
 import {
   createExecutionRuntimeHostComposition,
@@ -241,6 +242,7 @@ test('production startup migrates a real v27 database before recovery', async ()
       database.exec(`
         DROP TABLE external_conversation_release_receipts;
         DROP TABLE external_conversation_bindings;
+        DROP TABLE external_conversation_source_event_receipts;
         DROP INDEX session_metadata_by_external_origin;
         ALTER TABLE session_metadata DROP COLUMN external_adapter_id;
         ALTER TABLE session_metadata DROP COLUMN external_source_session_id;
@@ -260,7 +262,7 @@ test('production startup migrates a real v27 database before recovery', async ()
         const version = migrated
           .prepare(`SELECT version FROM session_metadata_schema WHERE scope = 'session_metadata'`)
           .get() as { version: number };
-        assert.equal(version.version, 31);
+        assert.equal(version.version, SQLITE_SESSION_METADATA_SCHEMA_VERSION);
         const tables = migrated
           .prepare(
             `SELECT name FROM sqlite_schema
@@ -272,6 +274,7 @@ test('production startup migrates a real v27 database before recovery', async ()
         assert.deepEqual(tables, [
           'external_conversation_bindings',
           'external_conversation_release_receipts',
+          'external_conversation_source_event_receipts',
         ]);
       } finally {
         migrated.close();

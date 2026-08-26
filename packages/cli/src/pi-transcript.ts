@@ -106,14 +106,6 @@ export interface MakaPiTranscriptState {
    */
   steering: string[];
   followup: string[];
-  /**
-   * Messages whose enqueue hit the no-live-owner fallback while a turn was
-   * running (the begin window). CLI-owned, NOT a runtime mirror: the runner
-   * retries the original enqueue until it lands and flushes any remainder
-   * into the next turn at the turn boundary, so the text is never dropped.
-   * Rendered in the pending bar alongside the mirror.
-   */
-  pendingFallback: Array<{ text: string; enqueue: 'steer' | 'queue' }>;
   /** Current non-durable provider retry progress for the activity strip. */
   providerRetry?: ProviderRetryEvent;
 }
@@ -150,7 +142,7 @@ const LIVE_TOOL_BUFFER_MAX_CHARS = 64 * 1024;
 const LIVE_TOOL_BUFFER_MAX_CHUNKS = 512;
 
 export type MakaPiTranscriptEntry =
-  | { kind: 'user'; text: string }
+  | { kind: 'user'; messageId: string; text: string; transient?: boolean }
   | { kind: 'legacy_automation'; text: string }
   | { kind: 'goal_continuation'; text: string }
   | { kind: 'assistant'; messageId: string; text: string }
@@ -222,7 +214,6 @@ export function createMakaPiTranscriptState(): MakaPiTranscriptState {
     usage: { costUsd: 0, cacheHitInput: 0, cacheMissInput: 0 },
     steering: [],
     followup: [],
-    pendingFallback: [],
   };
 }
 
@@ -247,8 +238,37 @@ function accumulateUsage(
   usage.contextRemaining = msg.contextRemaining;
 }
 
-export function appendUserPrompt(state: MakaPiTranscriptState, text: string): void {
-  state.entries.push({ kind: 'user', text });
+export function appendUserPrompt(
+  state: MakaPiTranscriptState,
+  text: string,
+  messageId: string,
+  transient = false,
+): void {
+  const entry = {
+    kind: 'user',
+    messageId,
+    text,
+    ...(transient ? { transient: true } : {}),
+  } as const;
+  const existingIndex = state.entries.findIndex(
+    (candidate) => candidate.kind === 'user' && candidate.messageId === messageId,
+  );
+  if (existingIndex >= 0) {
+    state.entries[existingIndex] = entry;
+    return;
+  }
+  state.entries.push(entry);
+}
+
+export function retireCancelledTransientMessages(
+  state: MakaPiTranscriptState,
+  cancelledMessageIds: readonly string[],
+): void {
+  const cancelled = new Set(cancelledMessageIds);
+  if (cancelled.size === 0) return;
+  state.entries = state.entries.filter(
+    (entry) => entry.kind !== 'user' || entry.transient !== true || !cancelled.has(entry.messageId),
+  );
 }
 
 export function appendTurnFailureToTranscript(state: MakaPiTranscriptState, error: unknown): void {
@@ -332,8 +352,48 @@ export function applyShellRunUpdateToTranscript(
 export function replaceTranscriptWithStoredMessages(
   state: MakaPiTranscriptState,
   messages: readonly StoredMessage[],
+  options: { preserveClientLocalEntries?: boolean } = {},
 ): void {
-  state.entries = foldStoredShellRunChildren(storedMessagesToTranscriptEntries(messages));
+  const durableMessageIds = new Set(messages.map((message) => message.id));
+  const durableEntries = foldStoredShellRunChildren(storedMessagesToTranscriptEntries(messages));
+  const durableEntryIds = new Set(durableEntries.map(transcriptEntryId).filter(Boolean));
+  // Client-local entries have no durable counterpart to arrive in `messages`:
+  // a transient user row still waiting for its canonical message, and every
+  // notice the client itself wrote (recap, skill card, error). A replacement
+  // that dropped them would erase what the client just told the user.
+  const isClientLocal = (entry: MakaPiTranscriptEntry): boolean =>
+    entry.kind === 'notice' ||
+    (entry.kind === 'user' && entry.transient === true && !durableMessageIds.has(entry.messageId));
+  // A preserved entry keeps its place relative to the durable entry it
+  // followed. With no durable entry ahead of it it stays at the head, unless
+  // something durable preceded it — then the tail is where it belongs.
+  const transientEntriesByBoundary = new Map<number, MakaPiTranscriptEntry[]>();
+  if (options.preserveClientLocalEntries) {
+    state.entries.forEach((entry, index) => {
+      if (!isClientLocal(entry)) return;
+      const priorEntries = state.entries.slice(0, index);
+      const previousDurableId = priorEntries
+        .map(transcriptEntryId)
+        .reverse()
+        .find((messageId) => messageId !== undefined && durableEntryIds.has(messageId));
+      const previousIndex = previousDurableId
+        ? durableEntries.findIndex(
+            (candidate) => transcriptEntryId(candidate) === previousDurableId,
+          )
+        : -1;
+      const hadPrecedingEntry = priorEntries.some((candidate) => !isClientLocal(candidate));
+      const boundary =
+        previousIndex >= 0 ? previousIndex + 1 : hadPrecedingEntry ? durableEntries.length : 0;
+      const grouped = transientEntriesByBoundary.get(boundary);
+      if (grouped) grouped.push(entry);
+      else transientEntriesByBoundary.set(boundary, [entry]);
+    });
+  }
+  state.entries = [];
+  for (let boundary = 0; boundary <= durableEntries.length; boundary += 1) {
+    state.entries.push(...(transientEntriesByBoundary.get(boundary) ?? []));
+    if (boundary < durableEntries.length) state.entries.push(durableEntries[boundary]!);
+  }
   clearPendingInteractions(state);
   state.expandAllTools = false;
   state.expandAllThinking = false;
@@ -349,9 +409,21 @@ export function replaceTranscriptWithStoredMessages(
   // Queues are per-active-run; a switched/reset session has none pending.
   state.steering = [];
   state.followup = [];
-  state.pendingFallback = [];
   for (const msg of messages) {
     if (msg.type === 'token_usage') accumulateUsage(state.usage, msg);
+  }
+}
+
+function transcriptEntryId(entry: MakaPiTranscriptEntry): string | undefined {
+  switch (entry.kind) {
+    case 'user':
+    case 'assistant':
+    case 'thinking':
+      return entry.messageId;
+    case 'tool':
+      return entry.toolUseId;
+    default:
+      return undefined;
   }
 }
 
@@ -715,7 +787,28 @@ export function applyMakaSessionEventToTranscript(
 
     case 'steering_message':
       // A user interjection injected mid-turn; render it in place as a user turn.
-      appendUserPrompt(state, event.content.displayText ?? event.content.text);
+      appendUserPrompt(
+        state,
+        event.content.displayText ?? event.content.text,
+        event.messageId,
+        state.entries.some(
+          (entry) =>
+            entry.kind === 'user' &&
+            entry.messageId === event.messageId &&
+            entry.transient === true,
+        ),
+      );
+      break;
+
+    case 'message_admission':
+      if (event.outcome === 'retracted') {
+        state.entries = state.entries.filter(
+          (entry) =>
+            entry.kind !== 'user' ||
+            entry.transient !== true ||
+            entry.messageId !== event.messageId,
+        );
+      }
       break;
 
     case 'queue_update':
@@ -798,15 +891,17 @@ function storedMessagesToTranscriptEntries(
   for (const message of messages) {
     switch (message.type) {
       case 'user':
-        entries.push({
-          kind:
-            message.origin?.kind === 'legacy_automation'
-              ? 'legacy_automation'
-              : message.origin?.kind === 'goal'
-                ? 'goal_continuation'
-                : 'user',
-          text: message.displayText ?? message.text,
-        });
+        if (message.origin?.kind === 'legacy_automation') {
+          entries.push({ kind: 'legacy_automation', text: message.displayText ?? message.text });
+        } else if (message.origin?.kind === 'goal') {
+          entries.push({ kind: 'goal_continuation', text: message.displayText ?? message.text });
+        } else {
+          entries.push({
+            kind: 'user',
+            messageId: message.id,
+            text: message.displayText ?? message.text,
+          });
+        }
         break;
       case 'assistant': {
         // Stored thinking happened before the reply text, so it resumes above it.
@@ -1608,26 +1703,12 @@ export function renderMakaPiPendingQueue(
   width: number,
   platform: NodeJS.Platform = process.platform,
 ): string[] {
-  if (
-    state.steering.length === 0 &&
-    state.followup.length === 0 &&
-    state.pendingFallback.length === 0
-  ) {
+  if (state.steering.length === 0 && state.followup.length === 0) {
     return [];
   }
   const safeWidth = Math.max(1, width);
-  const steering = [
-    ...state.steering,
-    ...state.pendingFallback
-      .filter((entry) => entry.enqueue === 'steer')
-      .map((entry) => entry.text),
-  ];
-  const followup = [
-    ...state.followup,
-    ...state.pendingFallback
-      .filter((entry) => entry.enqueue === 'queue')
-      .map((entry) => entry.text),
-  ];
+  const steering = state.steering;
+  const followup = state.followup;
   const lines: string[] = [];
   for (const text of steering) {
     lines.push(

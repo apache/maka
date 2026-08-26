@@ -28,7 +28,11 @@ import type {
   DirectRequestOperationKey,
   RuntimeHostSessionSubscription,
 } from '@maka/runtime-host/client';
-import { RuntimeHostOperationError, RuntimeHostSubscriptionError } from '@maka/runtime-host/client';
+import {
+  RuntimeHostOperationError,
+  RuntimeHostRequestInterruptedError,
+  RuntimeHostSubscriptionError,
+} from '@maka/runtime-host/client';
 import {
   SESSION_CONTINUITY_SCHEMA_VERSION,
   type GoalProjection,
@@ -44,10 +48,9 @@ import {
   createRuntimeHostMakaSessionDriver,
   type RuntimeHostMakaSessionDriverInput,
 } from '../runtime-host-session-driver.js';
-import {
-  SkillInvocationBlockedError,
-  type MakaAttachedSessionTurn,
-  type MakaSideConversationParentStatus,
+import type {
+  MakaAttachedSessionTurn,
+  MakaSideConversationParentStatus,
 } from '../session-driver.js';
 import { WAIT_BUDGET_MS } from './tui-terminal-mock.js';
 
@@ -1100,12 +1103,18 @@ describe('Runtime Host Maka Session driver', () => {
       cwd: '/tmp',
       llmConnectionSlug: 'openai-main',
       model: 'gpt-5',
-      newId: sequenceIds('message-1', 'retract-1'),
+      newId: sequenceIds('retract-1'),
     });
     await driver.switchSession('session-1');
 
-    assert.deepEqual(await driver.queueMessage!('Later'), { kind: 'queued' });
-    assert.equal(await driver.retractQueued!(), 'Later');
+    await driver.submitMessage!('Later', {
+      messageId: 'message-1',
+      placement: 'next_turn',
+    });
+    assert.deepEqual(await driver.retractQueued!(), {
+      text: 'Later',
+      messageIds: ['message-1'],
+    });
     assert.deepEqual(
       connection.requests.filter(
         (request) =>
@@ -1131,6 +1140,170 @@ describe('Runtime Host Maka Session driver', () => {
           },
         },
       ],
+    );
+  });
+
+  test('submits an idle message under the caller-owned stable identity', async () => {
+    const subscription = new FakeSubscription(continuitySnapshot(), Promise.resolve([]));
+    const connection = new FakeConnection([subscription]);
+    const driver = createRuntimeHostMakaSessionDriver({
+      connection: connection.value,
+      cwd: '/tmp',
+      llmConnectionSlug: 'openai-main',
+      model: 'gpt-5',
+      newId: sequenceIds('unused-generated-id'),
+    });
+    await driver.switchSession('session-1');
+
+    await driver.submitMessage!('Visible prompt', {
+      messageId: 'message-1',
+      placement: 'current_turn',
+      modelText: 'Expanded prompt',
+    });
+    assert.deepEqual(connection.requests.at(-1), {
+      operation: 'turn.message.submit',
+      input: {
+        originHostEpoch: 'host-1',
+        sessionId: 'session-1',
+        messageId: 'message-1',
+        content: { text: 'Expanded prompt', displayText: 'Visible prompt' },
+        placement: 'current_turn',
+      },
+    });
+  });
+
+  test('admits concurrent first messages into one Session in submission order', async () => {
+    // Two subscriptions so a driver that creates two Sessions fails on the
+    // claim rather than on missing fake infrastructure.
+    const connection = new FakeConnection([
+      new FakeSubscription(continuitySnapshot(), Promise.resolve([])),
+      new FakeSubscription(continuitySnapshot(), Promise.resolve([])),
+    ]);
+    const create = deferred<void>();
+    connection.heldOperations.set('session.create', create.promise);
+    let nextId = 0;
+    const driver = createRuntimeHostMakaSessionDriver({
+      connection: connection.value,
+      cwd: '/repo',
+      llmConnectionSlug: 'openai-main',
+      model: 'gpt-5',
+      newId: () => `session-${++nextId}`,
+    });
+
+    // Two Enters before the first round trip resolves. Nothing about the TUI
+    // holds the second one back, so the driver is what has to keep them from
+    // racing into two Sessions or reaching the Host out of order.
+    const first = driver.submitMessage!('first', {
+      messageId: 'message-1',
+      placement: 'current_turn',
+    });
+    const second = driver.submitMessage!('second', {
+      messageId: 'message-2',
+      placement: 'current_turn',
+    });
+    create.resolve();
+    await Promise.all([first, second]);
+
+    const creates = connection.requests.filter(({ operation }) => operation === 'session.create');
+    assert.equal(creates.length, 1);
+    const submits = connection.requests.filter(
+      ({ operation }) => operation === 'turn.message.submit',
+    );
+    assert.deepEqual(
+      submits.map(({ input }) => (input as OperationInput<'turn.message.submit'>).messageId),
+      ['message-1', 'message-2'],
+    );
+    assert.deepEqual(
+      new Set(
+        submits.map(({ input }) => (input as OperationInput<'turn.message.submit'>).sessionId),
+      ),
+      new Set(['session-1']),
+    );
+  });
+
+  test('keeps a configuration change from crossing a pending admission', async () => {
+    const subscription = new FakeSubscription(continuitySnapshot(), Promise.resolve([]));
+    const connection = new FakeConnection([subscription]);
+    const driver = createRuntimeHostMakaSessionDriver({
+      connection: connection.value,
+      cwd: '/tmp',
+      llmConnectionSlug: 'openai-main',
+      model: 'gpt-5',
+    });
+    await driver.switchSession('session-1');
+
+    const submit = deferred<void>();
+    connection.heldOperations.set('turn.message.submit', submit.promise);
+    const admitted = driver.submitMessage!('before the model change', {
+      messageId: 'message-1',
+      placement: 'current_turn',
+    });
+    // `/model` typed while the Message is still in flight. The Host must see
+    // it after the Message it was typed after, or the Turn that Message opens
+    // runs under a model the user had not chosen yet.
+    const changed = driver.setModel('gpt-5-codex');
+    submit.resolve();
+    await Promise.all([admitted, changed]);
+
+    const ordered = connection.requests
+      .map(({ operation }) => operation)
+      .filter(
+        (operation) =>
+          operation === 'turn.message.submit' || operation === 'session.configuration.update',
+      );
+    assert.deepEqual(ordered, ['turn.message.submit', 'session.configuration.update']);
+  });
+
+  test('keeps an unknown message admission available for transcript reconciliation', async () => {
+    const subscription = new FakeSubscription(continuitySnapshot(), Promise.resolve([]));
+    const connection = new FakeConnection([subscription]);
+    connection.messageSubmitOutcomes.push(
+      new RuntimeHostOperationError(
+        'turn.message.submit',
+        'outcome_unknown',
+        'Message disposition cannot be proven in this Host Epoch',
+      ),
+    );
+    const driver = createRuntimeHostMakaSessionDriver({
+      connection: connection.value,
+      cwd: '/tmp',
+      llmConnectionSlug: 'openai-main',
+      model: 'gpt-5',
+    });
+    await driver.switchSession('session-1');
+
+    await assert.doesNotReject(() =>
+      driver.submitMessage!('Keep this visible', {
+        messageId: 'message-unknown',
+        placement: 'current_turn',
+      }),
+    );
+  });
+
+  test('keeps a dispatched interrupted admission available for transcript reconciliation', async () => {
+    const subscription = new FakeSubscription(continuitySnapshot(), Promise.resolve([]));
+    const connection = new FakeConnection([subscription]);
+    connection.messageSubmitOutcomes.push(
+      new RuntimeHostRequestInterruptedError(
+        'turn.message.submit',
+        'command',
+        'dispatched',
+        'connection_lost',
+      ),
+    );
+    const driver = createRuntimeHostMakaSessionDriver({
+      connection: connection.value,
+      cwd: '/tmp',
+      llmConnectionSlug: 'openai-main',
+      model: 'gpt-5',
+    });
+    await driver.switchSession('session-1');
+
+    await assert.doesNotReject(() =>
+      driver.submitMessage!('Keep this visible', {
+        messageId: 'message-interrupted',
+        placement: 'current_turn',
+      }),
     );
   });
 
@@ -1437,10 +1610,11 @@ describe('Runtime Host Maka Session driver', () => {
     assert.equal(connection.requests.at(-1)?.operation, 'turn.start');
 
     connection.skillStartBlocked = true;
-    await assert.rejects(
-      driver.preparePrompt('/skill:missing', { turnId: 'turn-blocked' }),
-      SkillInvocationBlockedError,
-    );
+    // The failure names what could not be resolved: headless `maka run` reports
+    // this message and nothing reads a structured payload off it.
+    await assert.rejects(driver.preparePrompt('/skill:missing', { turnId: 'turn-blocked' }), {
+      message: /Could not resolve the Skill this Turn asked for: \/skill:missing \(not found\)/,
+    });
   });
 
   test('retires a pending question when another client answers it', async () => {
@@ -1755,6 +1929,13 @@ class FakeConnection {
   readonly goalControlOutcomes: Array<GoalProjection | Error> = [];
   /** Scripted goal.query results, shifted per call; defaults to null (no goal). */
   readonly goalQueryResults: Array<GoalProjection | null> = [];
+  readonly messageSubmitOutcomes: Array<OperationOutput<'turn.message.submit'> | Error> = [];
+  /**
+   * Operations held open by a test. The request is recorded on entry and then
+   * waits, so a test can hold one round trip and observe what the driver does
+   * with a second call while the first is still in flight.
+   */
+  readonly heldOperations = new Map<string, Promise<void>>();
   readonly value: RuntimeHostMakaSessionDriverInput['connection'];
 
   constructor(
@@ -1781,6 +1962,8 @@ class FakeConnection {
     input: OperationInput<K>,
   ): Promise<OperationOutput<K>> {
     this.requests.push({ operation, input });
+    const held = this.heldOperations.get(operation);
+    if (held) await held;
     if (operation === 'session.workspace.relocate') {
       const workspace = (input as OperationInput<'session.workspace.relocate'>).workspace;
       if (workspace.kind !== 'host_path') throw new Error('Expected Host-path workspace');
@@ -1859,7 +2042,19 @@ class FakeConnection {
         : operation === 'session.execution_boundary.query'
           ? this.executionBoundary
           : operation === 'turn.message.submit'
-            ? { disposition: 'queued', queueRevision: 2 }
+            ? (() => {
+                const outcome = this.messageSubmitOutcomes.shift();
+                if (outcome instanceof Error) throw outcome;
+                return (
+                  outcome ?? {
+                    disposition:
+                      (input as OperationInput<'turn.message.submit'>).placement === 'next_turn'
+                        ? 'followup'
+                        : 'steering',
+                    queueRevision: 2,
+                  }
+                );
+              })()
             : operation === 'queue.retract'
               ? {
                   hostEpoch: 'host-1',

@@ -299,22 +299,25 @@ test('same idle Message submit is connection-independent and starts one canonica
   });
 });
 
-test('a rejected idle Message submit leaves no durable transcript entry', async () => {
+test('a blocked idle Message submit leaves no durable transcript entry', async () => {
   await withExecutionRoot(async (fixture) => {
     const host = await fixture.startHost();
     const client = await connectClient(fixture.root);
     const messageId = randomUUID();
     try {
-      await assert.rejects(
-        () =>
-          client.request('turn.message.submit', {
-            originHostEpoch: host.hostEpoch,
-            sessionId: fixture.sessionId,
-            messageId,
-            content: { text: '/skill:missing reject this submit' },
-            placement: 'current_turn',
-          }),
-        operationError('operation_conflict'),
+      // A Skill the Host cannot resolve is an outcome of admission, not a
+      // protocol failure: the submit answers `blocked` and no Turn is opened.
+      const result = await client.request('turn.message.submit', {
+        originHostEpoch: host.hostEpoch,
+        sessionId: fixture.sessionId,
+        messageId,
+        content: { text: '/skill:missing reject this submit' },
+        placement: 'current_turn',
+      });
+      assert.equal(result.disposition, 'blocked');
+      assert.ok(
+        result.disposition === 'blocked' && result.skillInvocation.failed.length > 0,
+        'the blocked outcome carries why the Skill could not be resolved',
       );
     } finally {
       await client.close();

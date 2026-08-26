@@ -92,9 +92,12 @@ export const RUNTIME_HOST_REGISTRATION_SCHEMA_VERSION = 1 as const;
 export const RUNTIME_HOST_PROTOCOL_VERSION = 0 as const;
 // Increment when the same protocol version no longer guarantees safe Client-Host
 // interoperability. Mismatches are rejected before domain commands are admitted.
-export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 53 as const;
-// 53: Bot conversation continuity introduces external-conversation bindings.
+export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 54 as const;
+// 54: Bot conversation continuity introduces external-conversation bindings.
 // Older peers reject the added protocol shapes.
+// 53: Message admission answers `turn.message.submit` with an explicit
+// disposition, and queued Messages can be proven cancelled. Older peers read the
+// answer as a bare acknowledgement and cannot reconcile their own projection.
 // 52: Session subscriptions can forward durable steering-message echoes and
 // preserve their identity across queue and transcript projection.
 // Older peers cannot safely de-duplicate the two authoritative paths.

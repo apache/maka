@@ -429,6 +429,17 @@ export function overlayLiveTurn(
   ) {
     return turns;
   }
+  // A send arm is only a presentation claim that the next message may still
+  // arrive. It is not a Turn record and must not manufacture one while the
+  // canonical transcript is catching up. A real live step (or steering
+  // message) is sufficient evidence to project a missing external Turn.
+  if (
+    targetIndex < 0
+    && liveTurn.steps.length === 0
+    && (liveTurn.pendingSteering?.length ?? 0) === 0
+  ) {
+    return turns;
+  }
   const current =
     targetIndex >= 0
       ? turns[targetIndex]!
