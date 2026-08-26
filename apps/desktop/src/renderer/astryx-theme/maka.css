@@ -323,7 +323,7 @@
   }
 
   .astryx-badge.error {
-    background-color: light-dark(#e33f4a, #ff705d);
+    background-color: light-dark(#c9303a, #ff705d);
     color: light-dark(#ffffff, #171717);
   }
 
@@ -386,7 +386,7 @@
   }
 
   .astryx-statusdot.error {
-    background-color: light-dark(#e33f4a, #ff705d);
+    background-color: light-dark(#c9303a, #ff705d);
   }
 
   .astryx-statusdot.accent {
@@ -439,7 +439,7 @@
   }
 
   .astryx-progressbar.error {
-    --color-error: #e33f4a;
+    --color-error: #c9303a;
   }
 
   .astryx-card {

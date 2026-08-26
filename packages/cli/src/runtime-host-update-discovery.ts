@@ -20,7 +20,7 @@
 import { spawn } from 'node:child_process';
 import { readFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import { truncateUtf8 } from '@maka/core/diagnostic-log';
 import {
   compareProductReleaseVersions,
@@ -30,6 +30,7 @@ import {
   RUNTIME_HOST_SERVICE_ERROR_CODE_MAX_BYTES,
   RUNTIME_HOST_SERVICE_ERROR_MESSAGE_MAX_BYTES,
   type RuntimeHostServiceManagementFrame,
+  type RuntimeHostNpmDeploymentIdentity,
 } from '@maka/runtime-host/operator';
 import {
   manageRuntimeHostService,
@@ -41,6 +42,7 @@ import {
   createPlatformRuntimeHostServiceBackend,
   runtimeHostServiceSummary,
 } from './runtime-host-service-management-command.js';
+import { resolveRuntimeHostManagedPackageCliPath } from './runtime-host-managed-deployment.js';
 import type { RuntimeHostUpdateSelector } from './runtime-host-cli.js';
 
 const PACKAGE_NAME = 'maka-agent';
@@ -50,28 +52,29 @@ const REGISTRY_TIMEOUT_MS = 30_000;
 const REGISTRY_OUTPUT_MAX_BYTES = 64 * 1024;
 const MANIFEST_MAX_BYTES = 64 * 1024;
 
-export interface RuntimeHostUpdateCandidate {
-  readonly version: string;
-  readonly integrity: string;
+export interface RuntimeHostUpdateCandidate extends RuntimeHostNpmDeploymentIdentity {
   readonly compatibility?: number;
 }
 
-type RuntimeHostUpdateCheckFrame = Extract<
+export type RuntimeHostUpdateCheckFrame = Extract<
   RuntimeHostServiceManagementFrame,
   { kind: 'result'; action: 'check_update' }
 >;
 type RuntimeHostUpdateCheck = RuntimeHostUpdateCheckFrame['updateCheck'];
 
-export interface RuntimeHostUpdateCheckCliOptions {
-  readonly json: boolean;
-  readonly framed: boolean;
+export interface RuntimeHostUpdateCheckOptions {
   readonly clientDataRoot: string;
   readonly defaultRootPath: string;
   readonly selector: RuntimeHostUpdateSelector;
   readonly expectedTarget?: RuntimeHostManagedServiceTarget;
 }
 
-class RuntimeHostUpdateDiscoveryError extends Error {
+export interface RuntimeHostUpdateCheckCliOptions extends RuntimeHostUpdateCheckOptions {
+  readonly json: boolean;
+  readonly framed: boolean;
+}
+
+export class RuntimeHostUpdateDiscoveryError extends Error {
   constructor(
     readonly code: 'target_unavailable' | 'registry_unavailable' | 'invalid_registry_metadata',
     message: string,
@@ -86,51 +89,7 @@ export async function runManagedRuntimeHostUpdateCheckCli(
   options: RuntimeHostUpdateCheckCliOptions,
 ): Promise<number> {
   try {
-    const serviceId = resolveRuntimeHostManagedServiceId(options.clientDataRoot);
-    const backend = createPlatformRuntimeHostServiceBackend(serviceId);
-    const status = await manageRuntimeHostService(
-      {
-        action: 'status',
-        clientDataRoot: options.clientDataRoot,
-        defaultRootPath: options.defaultRootPath,
-        nodePath: process.execPath,
-        cliPath: process.argv[1] ?? '',
-        ...(options.expectedTarget ? { expectedTarget: options.expectedTarget } : {}),
-      },
-      backend,
-    );
-    const currentVersion = status.service.installedVersion;
-    const config = status.service.config;
-    const service = runtimeHostServiceSummary(status);
-    const serviceState = service.state;
-    if (
-      !status.service.installed ||
-      serviceState === 'not_installed' ||
-      !currentVersion ||
-      !config?.managedDeploymentRoot
-    ) {
-      throw new RuntimeHostServiceManagerError(
-        'not_installed',
-        'A Maka-managed Runtime Host service is required to check for updates',
-      );
-    }
-    await backend.verifyDeployment(config);
-    const [candidate, currentCompatibility] = await Promise.all([
-      resolveRuntimeHostRegistryUpdateCandidate(options.selector),
-      readPackageCompatibility(config.launch.cliPath, currentVersion),
-    ]);
-    const assessment = assessRuntimeHostUpdate(currentVersion, currentCompatibility, candidate);
-    const frame: RuntimeHostUpdateCheckFrame = {
-      schemaVersion: 1,
-      kind: 'result',
-      action: 'check_update',
-      service: { ...service, state: serviceState, installedVersion: currentVersion },
-      updateCheck: {
-        selector: options.selector,
-        candidate: { version: candidate.version, integrity: candidate.integrity },
-        outcome: assessment,
-      },
-    };
+    const frame = await resolveManagedRuntimeHostUpdateCheck(options);
     writeSuccess(frame, options);
     return 0;
   } catch (error) {
@@ -145,13 +104,113 @@ export async function runManagedRuntimeHostUpdateCheckCli(
   }
 }
 
+export interface RuntimeHostUpdateSelection {
+  readonly service: RuntimeHostUpdateCheckFrame['service'];
+  readonly currentCliPath: string;
+  readonly selector: RuntimeHostUpdateSelector;
+  readonly candidate: RuntimeHostUpdateCandidate;
+  readonly outcome: RuntimeHostUpdateCheck['outcome'];
+}
+
+export function resolveManagedRuntimeHostUpdateSelection(
+  options: RuntimeHostUpdateCheckOptions,
+): Promise<RuntimeHostUpdateSelection> {
+  return resolveManagedRuntimeHostUpdate(options, false);
+}
+
+async function resolveManagedRuntimeHostUpdateCheck(
+  options: RuntimeHostUpdateCheckOptions,
+): Promise<RuntimeHostUpdateCheckFrame> {
+  return updateCheckFrame(await resolveManagedRuntimeHostUpdate(options, true));
+}
+
+async function resolveManagedRuntimeHostUpdate(
+  options: RuntimeHostUpdateCheckOptions,
+  verifyDeployment: boolean,
+): Promise<RuntimeHostUpdateSelection> {
+  const serviceId = resolveRuntimeHostManagedServiceId(options.clientDataRoot);
+  const backend = createPlatformRuntimeHostServiceBackend(serviceId);
+  const status = await manageRuntimeHostService(
+    {
+      action: 'status',
+      clientDataRoot: options.clientDataRoot,
+      defaultRootPath: options.defaultRootPath,
+      nodePath: process.execPath,
+      cliPath: process.argv[1] ?? '',
+      ...(options.expectedTarget ? { expectedTarget: options.expectedTarget } : {}),
+    },
+    backend,
+  );
+  const currentVersion = status.service.installedVersion;
+  const config = status.service.config;
+  const service = runtimeHostServiceSummary(status);
+  const serviceState = service.state;
+  if (
+    !status.service.installed ||
+    serviceState === 'not_installed' ||
+    !currentVersion ||
+    !config?.managedDeploymentRoot
+  ) {
+    throw new RuntimeHostServiceManagerError(
+      'not_installed',
+      'A Maka-managed Runtime Host service is required to check for updates',
+    );
+  }
+  if (verifyDeployment) await backend.verifyDeployment(config);
+  const [candidate, currentCompatibility] = await Promise.all([
+    resolveRuntimeHostRegistryUpdateCandidate(options.selector),
+    readPackageCompatibility(config.launch.cliPath, currentVersion),
+  ]);
+  const currentCliPath = resolve(config.launch.cliPath);
+  const targetCliPath = resolveRuntimeHostManagedPackageCliPath(
+    config.managedDeploymentRoot,
+    candidate.version,
+    candidate.integrity,
+  );
+  const assessment = assessRuntimeHostUpdate(
+    currentVersion,
+    currentCompatibility,
+    candidate,
+    currentCliPath === targetCliPath,
+  );
+  return {
+    service: {
+      ...service,
+      state: serviceState,
+      installedVersion: currentVersion,
+    },
+    currentCliPath,
+    selector: options.selector,
+    candidate,
+    outcome: assessment,
+  };
+}
+
+function updateCheckFrame(selection: RuntimeHostUpdateSelection): RuntimeHostUpdateCheckFrame {
+  return {
+    schemaVersion: 1,
+    kind: 'result',
+    action: 'check_update',
+    service: selection.service,
+    updateCheck: {
+      selector: selection.selector,
+      candidate: {
+        version: selection.candidate.version,
+        integrity: selection.candidate.integrity,
+      },
+      outcome: selection.outcome,
+    },
+  };
+}
+
 export function assessRuntimeHostUpdate(
   currentVersion: string,
   currentCompatibility: number | undefined,
   candidate: RuntimeHostUpdateCandidate,
+  currentDeploymentMatchesCandidate: boolean,
 ): RuntimeHostUpdateCheck['outcome'] {
   const relation = compareProductReleaseVersions(candidate.version, currentVersion);
-  if (relation === 0) return { kind: 'current' };
+  if (relation === 0 && currentDeploymentMatchesCandidate) return { kind: 'current' };
   if (relation < 0) {
     return { kind: 'manual_action', reason: 'target_not_newer' };
   }
@@ -214,7 +273,12 @@ export async function resolveRuntimeHostRegistryUpdateCandidate(
     return invalidMetadata();
   }
   const compatibility = positiveInteger(metadata[COMPATIBILITY_FIELD]);
-  return { version, integrity, ...(compatibility === undefined ? {} : { compatibility }) };
+  return {
+    kind: 'npm_registry',
+    version,
+    integrity,
+    ...(compatibility === undefined ? {} : { compatibility }),
+  };
 }
 
 async function readPackageCompatibility(

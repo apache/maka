@@ -38,7 +38,11 @@ import { test } from 'node:test';
 import { TOOL_BOUNDARY_PROTOCOL_V1 } from '@maka/core/runtime-event';
 import { canonicalToolArgsHash } from '@maka/core/tool-args-identity';
 import type { AgentRunHeader } from '@maka/core/agent-run';
-import { normalizeMessageContent, type MessageContent } from '@maka/core/events';
+import {
+  messageContentDigest,
+  normalizeMessageContent,
+  type MessageContent,
+} from '@maka/core/events';
 import type { ConnectionCatalogEntry } from '@maka/core/runtime-policy';
 import type { StoredMessage } from '@maka/core/session';
 import type { Task } from '@maka/core/task-ledger';
@@ -321,7 +325,6 @@ export class ExecutionFixture {
         },
         newId: randomUUID,
         now: Date.now,
-        runtimeSource: 'test',
       });
       const plan = await manager.planAuthoritativeSafeBoundaryContinuation(this.sessionId, {
         sourceRunId: source.sourceRunId,
@@ -405,7 +408,6 @@ export class ExecutionFixture {
         }),
         newId: randomUUID,
         now: Date.now,
-        runtimeSource: 'test',
       });
       const plan = await manager.planAuthoritativeSafeBoundaryContinuation(this.sessionId, {
         sourceRunId: source.sourceRunId,
@@ -672,6 +674,59 @@ export class ExecutionFixture {
     content: string | MessageContent,
   ): Promise<{ runId: string; userMessageId: string }> {
     return this.seedTurnState(turnId, content, false, false);
+  }
+
+  async seedAtomicRootAdmissionWithoutRun(input: {
+    turnId: string;
+    messageId: string;
+    content: MessageContent;
+  }): Promise<void> {
+    const owner = await tryAcquireInteractiveRootOwner(this.capability);
+    assert.ok(owner);
+    if (!owner) throw new Error('Unable to acquire execution root for atomic root setup');
+    let stores: Awaited<ReturnType<typeof openInteractiveExecutionStoresForWrite>> | undefined;
+    try {
+      stores = await openInteractiveExecutionStoresForWrite(owner.lease);
+      const admittedAt = Date.now();
+      const content = normalizeMessageContent(input.content);
+      const contentDigest = messageContentDigest(content);
+      const runId = randomUUID();
+      await stores.sessionStore.commitMessageAdmission({
+        sessionId: this.sessionId,
+        turnId: input.turnId,
+        runId,
+        messageId: input.messageId,
+        content,
+        submittedContentDigest: contentDigest,
+        submittedPlacement: 'current_turn',
+        placement: 'current_turn',
+        disposition: 'steering',
+        admittedAt,
+      });
+      const result = await stores.agentRunStore.admitRootTurn({
+        sessionId: this.sessionId,
+        turnId: input.turnId,
+        proposedRunId: runId,
+        proposedUserMessageId: input.messageId,
+        execution: { kind: 'external_message', inputDigest: contentDigest },
+        previousRootTurnId: null,
+        normalizedInput: content,
+        sourceMessages: [
+          {
+            messageId: input.messageId,
+            content,
+            submittedContentDigest: contentDigest,
+            placement: 'current_turn',
+            disposition: 'turn_started',
+          },
+        ],
+        admittedAt,
+      });
+      assert.equal(result.kind, 'admitted');
+    } finally {
+      await stores?.sessionStore.close?.();
+      await owner.close();
+    }
   }
 
   async archiveSession(): Promise<void> {
@@ -945,6 +1000,20 @@ export class ExecutionFixture {
     }
   }
 
+  async readSessionUserMessages(): Promise<Array<Extract<StoredMessage, { type: 'user' }>>> {
+    const reader = await acquireReader(this.capability);
+    let stores: Awaited<ReturnType<typeof openInteractiveExecutionStoresForRead>> | undefined;
+    try {
+      stores = await openInteractiveExecutionStoresForRead(reader.lease);
+      return (await stores.sessionStore.readMessages(this.sessionId)).filter(
+        (message): message is Extract<StoredMessage, { type: 'user' }> => message.type === 'user',
+      );
+    } finally {
+      await stores?.sessionStore.close?.();
+      await reader.close();
+    }
+  }
+
   async readAdmissionChain() {
     const owner = await tryAcquireInteractiveRootOwner(this.capability);
     assert.ok(owner);
@@ -1186,7 +1255,7 @@ export async function waitForTurn(
   const deadline = Date.now() + PROCESS_TIMEOUT_MS;
   while (true) {
     try {
-      return await connection.queryTurn({ sessionId, turnId });
+      return await connection.request('turn.query', { sessionId, turnId });
     } catch (error) {
       if (!(error instanceof RuntimeHostOperationError) || error.code !== 'not_found') throw error;
       if (Date.now() >= deadline) throw new Error('Turn admission was not observed');
@@ -1277,7 +1346,7 @@ export async function waitForTerminalTurn(
   try {
     return await withTimeout(
       (async () => {
-        const current = await connection.queryTurn({ sessionId, turnId });
+        const current = await connection.request('turn.query', { sessionId, turnId });
         if (isTerminalTurnSnapshot(current)) return current;
         for await (const frame of subscription) {
           if (frame.kind !== 'subscription.session_projection') continue;
@@ -1309,7 +1378,7 @@ export async function waitForRunningTurn(
 ): Promise<TurnSnapshot> {
   const deadline = Date.now() + PROCESS_TIMEOUT_MS;
   while (true) {
-    const snapshot = await connection.queryTurn({ sessionId, turnId });
+    const snapshot = await connection.request('turn.query', { sessionId, turnId });
     if (snapshot.status === 'running' || snapshot.status === 'waiting_for_user') return snapshot;
     if (Date.now() >= deadline) throw new Error('Turn did not become active');
     await sleep(20);

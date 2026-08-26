@@ -162,7 +162,7 @@ Maka 外已失陷的同用户进程。sandboxed code 从第一条指令开始按
 - restricted managed profile 在 `auto`/`require` 下绝不 fallback host execution；
 - diagnostics 只暴露 backend、setup version 与 failure stage，不暴露 path、SID、credential、env 或 firewall detail。 _(后续门禁:probe 以 `stdio: 'ignore'` 运行且只保留退出结果,setup version 与 failure stage 尚未传播,与结构化 unavailable reason 一并暂缓 —— 见 §6.5。)_
 
-### 6.5 预览实现状态（2026-08-17）
+### 6.5 预览实现状态（2026-08-24）
 
 首个预览切片 [#2961](https://github.com/maka-agent/maka-agent/pull/2961) 已于 2026-08-17 合并，强制上述保证的一个子集。本节把文档与已交付代码对齐，使 RFC 不 overclaim：§6.3/§6.4 中尚未强制的保证在此显式标为后续门禁。标注 `(#3161)` 的条目落在 readiness-probe 后续 PR，而非已合并的 #2961 切片；其余条目由 #2961 当前强制。
 
@@ -175,6 +175,13 @@ Maka 外已失陷的同用户进程。sandboxed code 从第一条指令开始按
 - 创建时原子附加、close 时杀整棵树的 kill-on-close Job（§6.3）；
 - 仅通过 `PROC_THREAD_ATTRIBUTE_HANDLE_LIST` 继承声明的 handle（§6.3）；
 - 封闭、排序后的 allowlist 环境（§6.3）；
+- 打包 one-shot broker 持有由内核进程表确认的 Runtime Host 父进程 wait handle：Host 退出会
+  中断首次启动、终止并 drain AppContainer Job，并释放本次 ledger/ACE；
+- 打包路径执行 64 次、按波次重复的并发 soak，每次使用互不相同的启动 identity，最后断言无进程与
+  ACL-ledger 残留；
+- 打包恶意 child 矩阵覆盖递归 junction 与多硬链接准入、outside 文件、TCP connection 拒绝、宿主 named
+  pipe、ambient 环境、宿主 HKCU、父进程 token、descendant 的 AppContainer/Job 继承，以及 quarantine
+  identity 不复用；
 - 按启动的 private desktop **放置(placement)**（§6.3）**(#3174)**:每次生产启动与 readiness probe 均在当前 window station 上创建 alternate desktop,其 DACL 仅授予发起用户、Local System 与该次启动的 AppContainer SID(且只给该 SID 最小非交互权限;并以前置 deny ACE 从 AppContainer 子进程有效携带的发起用户 SID 上剥离 `DESKTOP_SWITCHDESKTOP`/`DESKTOP_HOOKCONTROL`/journal 录制回放),并以 `STARTUPINFOW.lpDesktop` 指向它启动子进程,建不出或授不了即 fail closed。桌面钉在 Low integrity（`S:(ML;;NW;;;LW)`）使授予权限对 Low-IL 子进程通过 MIC,且 heap 经 `CreateDesktopExW` 按启动限额（512 KiB）使受支持并发不会耗尽系统 desktop heap。由于 `lpDesktop` 只选择*初始*桌面,这把 worker 放置到交互 `Default` 桌面之外并对私有桌面做 DACL 保护;这是 placement 加 DACL 保护、**不是**防逃逸边界——没有结构性机制阻止进程内代码 `OpenDesktopW("Default")` + `SetThreadDesktop` 重新挂回,clipboard 也归 window station、仍为共用(no-Win32k mitigation、独立 window station 与 token 边界见下方暂缓门禁);
 - 生产 identity readiness probe（§6.4）**(#3161)**:`--readiness-probe` 真正建立 AppContainer identity/token、kill-on-close Job 与 private desktop 并在该桌面上启动抛弃式受限子进程（`cmd.exe /d /c exit 0`,以 `/d` 关闭 AutoRun 使宿主 shell 定制不能扭曲结果）,使可用性在宿主无法创建边界时 fail closed,而非仅凭打包二进制存在;成功时输出机器可读 attestation（精确 SID 匹配、特定 Job membership、settlement、private-desktop placement）,发布冒烟逐字段断言,使该 gate 不会静默退化为空洞的 exit-0 检查;
 - 专属且跨进程串行的 readiness profile 生命周期（§6.4）**(#3161)**:probe profile 位于与生产不相交的命名空间,其保留 `requestId` 被 validation 拒绝,一个 DACL 加固的按用户命名互斥量串行其 delete→create→probe→drop 生命周期,未证清空的 probe 按周期 fail closed 而非宣称边界干净(清理依赖 kill-on-close Job 与零权限 identity,而非持久隔离),负可用性按有界 TTL 缓存以限制一次瞬时失败毒化 module 缓存的时长——由下一次 composition 构建重探,而非运行中宿主原地恢复;
@@ -195,6 +202,12 @@ Maka 外已失陷的同用户进程。sandboxed code 从第一条指令开始按
   端到端竞态 harness。
 - 未证清空的 readiness identity 的持久隔离（§6.4）:probe 无法证明其 Job 清空时按该周期 fail closed,下一次 probe 在锁下删除并重建那个固定 identity。残余风险有界——readiness 子进程是被授零 filesystem root 的 `cmd.exe /c exit 0`,一个假设存活的子进程既不 spawn 任何东西也继承不到任何 ACE 权限,且 kill-on-close Job 会终止整树——但该 identity 未被持久隔离。持久隔离(或每次 probe 用唯一 identity 加 orphan/对账 ledger)暂缓。
 - 运行中宿主的主动 readiness 恢复（§6.4）:负可用性结果由 TTL 限时,使其不会长时间毒化 module 缓存,并由**下一次 composition 构建**重探。运行中的 Runtime Host 不会主动重探或热发布 filesystem worker——worker 在候选构建时一次性组装——故已判负的运行中宿主对瞬时负结果的恢复被限定到新 composition 构建或重启。带动态 worker 发布的主动 readiness 重试暂缓。
+- Windows Credential Manager/DPAPI 的直接隔离证据：打包 W1 矩阵已证明 ambient credential 文件与
+  环境 secret 不会被授权或继承，但直接 `CredRead`/DPAPI probe 仍是 W2/W3 后续加固门禁。
+- inbound listener 强制：AppContainer 会拒绝打包的 outbound TCP/UDP 尝试，但当前 token policy
+  不会单独拒绝本地 listener 创建；完整 inbound channel 强制仍是 W2/W3 网络加固门禁。
+- UDP channel 强制：W1 矩阵证明 outbound TCP 拒绝；UDP send/response 与 DNS/SMB 强制仍是 W2/W3
+  网络加固门禁，不用 bind-only 结果冒充通过。
 
 暂缓收窄的是 readiness 丰富度与 desktop 层的 defense-in-depth，而非强制边界本身：backend 不可用、identity drift 或启动失败仍然 fail closed，受限 managed profile 也绝不回退到宿主执行。
 
@@ -275,7 +288,7 @@ frame 一律 fail closed；授权路径只能调用 AppContainer atomic launcher
 - [x] 把 capability detection 接入 Runtime Host managed execution；
 - [x] 打包并验证 x64 native resource；
 - [x] resource/capability 不可用时 fail closed；
-- [ ] 完成 cancel、parent-death、并发和残留状态发布测试。
+- [x] 通过打包 `FilesystemWorkerClient`/broker 路径完成 cancel、parent-death、并发和残留状态发布测试。
 
 这是第一个用户可见沙箱里程碑。未勾选证据限制支持声明，但绝不允许 unsandboxed fallback。
 
@@ -294,6 +307,11 @@ frame 一律 fail closed；授权路径只能调用 AppContainer atomic launcher
 - 文档化不支持环境与恢复方法；
 - 只有此后才勾选 Phase 4 或宣称 Windows restricted profile 受支持。
 
+打包 W1 矩阵是 release-blocking 且 machine-readable 的。它收口当前已交付 filesystem-worker 表面的
+可执行证据，不等于更宽的 W2 通用命令声明。Authenticode identity、Credential Manager/DPAPI 直接
+probe、no-Win32k、独立 window station/clipboard 隔离及断电自动恢复仍是明确的后续门禁。即便自动化
+矩阵全绿，独立人工安全评审仍不可省略。
+
 ## 10. 必需发布证据
 
 Windows sandbox job 必须运行真实 child-process 正反测试：
@@ -307,6 +325,21 @@ Windows sandbox job 必须运行真实 child-process 正反测试：
 - disjoint identity/root 的并发 sandbox；
 - 每个持久 setup、ACL、firewall/WFP、marker publication failpoint；
 - installer/upgrade/uninstall 对 exact signed launcher 与完整状态清理的验证。
+
+对于 W1 预览版，打包 verifier 将受支持攻击面映射到以下可执行证据：
+
+| 类别 | 打包证据 |
+| --- | --- |
+| 文件别名 | outside 拒绝，加递归 junction 与多硬链接准入拒绝 |
+| 网络通道 | 无网络 capability 时拒绝 TCP connect |
+| IPC | 拒绝宿主 named pipe，并只继承显式 handle 列表 |
+| descendant | child 创建被 fail-closed 拒绝，或已创建 descendant 仍持有 AppContainer token 与 kill-on-close Job |
+| 环境/credential | ambient host secret 与 outside credential 文件均不可用 |
+| registry/父进程 | 宿主 HKCU 值与父进程 token 均不可用 |
+| 生命周期 | timeout、cancel、Runtime Host 死亡、broker 死亡、64 次 soak、quarantine 不复用 |
+
+W1 预览版未暴露的能力继续 fail closed，并按上文显式 deferred；不能把它们计作更宽 shell/通用命令
+tier 的通过证据。
 
 只检查生成 flag 的 unit test 不是安全证据。绿色测试必须证明真实 child 的禁止操作失败，且没有残留进程或未知
 durable authorization。

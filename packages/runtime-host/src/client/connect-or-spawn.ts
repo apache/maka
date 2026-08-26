@@ -40,11 +40,14 @@ import {
 import {
   launchDetachedRuntimeHostCandidate,
   launchOwnedRuntimeHostCandidate,
+  type CandidateExitDetails,
   type CandidateProcessExit,
   type CandidateLauncher,
   type DetachedCandidateAttempt,
   type OwnedCandidateAttempt,
 } from './launcher.js';
+
+export type { CandidateExitDetails } from './launcher.js';
 import {
   isPermanentCandidateStartupFailure,
   type CandidateStartupFailure,
@@ -74,6 +77,8 @@ export interface ConnectOrSpawnRuntimeHostInput {
   handshakeTimeoutMs?: number;
   candidateEntrypoint: string | URL;
   signal?: AbortSignal;
+  /** Candidate-exit sink forwarded to the launcher; the embedder owns the sink. */
+  onExit?: (details: CandidateExitDetails) => void;
 }
 
 interface ConnectOrSpawnRuntimeHostDependencies {
@@ -245,7 +250,10 @@ export async function connectOwnedRuntimeHostWithDependencies(
     }
     const ownedConnection = result.connection;
     connection = ownedConnection;
-    const diagnostics = await abortable(() => ownedConnection.queryHostDiagnostics(), input.signal);
+    const diagnostics = await abortable(
+      () => ownedConnection.request('host.diagnostics.query', {}),
+      input.signal,
+    );
     if (diagnostics.pid !== host.pid) {
       await connection.close();
       connection = undefined;
@@ -409,6 +417,7 @@ export async function connectOrSpawnRuntimeHostWithDependencies(
             entrypoint: input.candidateEntrypoint,
             initialConnectionTimeoutMs: Math.ceil(remaining),
             ...(input.generation === undefined ? {} : { generation: input.generation }),
+            ...(input.onExit === undefined ? {} : { onExit: input.onExit }),
           });
           candidateLaunches.add(launch);
           const attempt = await settleBeforeDeadline(launch.spawned, deadline, input.signal);

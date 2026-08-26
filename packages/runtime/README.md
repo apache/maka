@@ -30,7 +30,7 @@ The package root barrel and the subpaths declared in `package.json` are supporte
 - `AiSdkBackend` for the shipped backend implementation. `FakeBackend` is test-only: it lives under `test-only/`, is exported as `@maka/runtime/test-only/fake-backend`, and release packaging drops that directory, so no production module may import it. Tests and the Desktop E2E run reach it through the composition's `primaryBackendFactory` seam.
 - Session execution-boundary APIs for managed sandbox expansion and explicit bypass.
 - `buildBuiltinTools()` and the workspace executor interfaces for tool composition.
-- `RuntimeRunner`, runtime events, projections, and recovery helpers for invocation lifecycle.
+- `RuntimeKernel`, runtime events, projections, and recovery helpers for execution lifecycle.
 
 Desktop composition lives in `apps/desktop/src/main/main.ts`. Other clients execute Maka through Runtime Host rather than composing Runtime directly.
 

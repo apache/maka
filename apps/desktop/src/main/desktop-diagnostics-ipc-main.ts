@@ -20,9 +20,11 @@
 import type { IpcMain } from 'electron';
 import {
   copyDesktopDiagnosticReport,
+  createDesktopPreviousMainProcessDiagnosticInput,
   parseDesktopDiagnosticInput,
   type DesktopDiagnosticsDeps,
 } from './main-process-diagnostics.js';
+import type { MainProcessRecoveryEvidence } from './main-process-recovery-journal.js';
 
 export interface DesktopDiagnosticsIpcDeps extends DesktopDiagnosticsDeps {
   readonly ipcMain: Pick<IpcMain, 'handle'>;
@@ -36,4 +38,28 @@ export function registerDesktopDiagnosticsIpc(deps: DesktopDiagnosticsIpcDeps): 
       await copyDesktopDiagnosticReport(deps, input, scope);
     },
   );
+}
+
+export interface PreviousMainProcessDiagnosticsIpcDeps extends DesktopDiagnosticsIpcDeps {
+  readonly evidence: MainProcessRecoveryEvidence | undefined;
+  readonly acknowledge: () => void;
+}
+
+export function registerPreviousMainProcessDiagnosticsIpc(
+  deps: PreviousMainProcessDiagnosticsIpcDeps,
+): void {
+  let noticeAvailable = deps.evidence !== undefined;
+  deps.ipcMain.handle('diagnostics:takePreviousMainProcessInterruption', (): boolean => {
+    if (!noticeAvailable) return false;
+    deps.acknowledge();
+    noticeAvailable = false;
+    return true;
+  });
+  deps.ipcMain.handle('diagnostics:copyPreviousMainProcessInterruption', async (): Promise<void> => {
+    if (!deps.evidence) throw new Error('Previous-session diagnostics are unavailable');
+    await copyDesktopDiagnosticReport(
+      deps,
+      createDesktopPreviousMainProcessDiagnosticInput(deps.evidence),
+    );
+  });
 }

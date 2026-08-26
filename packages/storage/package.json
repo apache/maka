@@ -39,6 +39,7 @@
     "./runtime-policy-stores": "./dist/runtime-policy-stores.js",
     "./scheduled-task-store": "./dist/scheduled-task-store.js",
     "./session-bundle-policy": "./dist/session-bundle-policy.js",
+    "./session-copy-cleanup": "./dist/session-copy-cleanup.js",
     "./session-store": "./dist/session-store.js",
     "./settings-store": "./dist/settings-store.js",
     "./shell-run-authority": "./dist/shell-run-authority.js",

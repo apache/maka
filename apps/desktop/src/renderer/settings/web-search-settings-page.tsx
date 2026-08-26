@@ -346,13 +346,13 @@ export function WebSearchSettingsPage(props: {
             isDisabled={usingEnvKey || credentialActionBusy}
             placeholder={usingEnvKey ? copy.envPlaceholder : hasStoredKey ? copy.storedPlaceholder : copy.keyPlaceholder}
             label={copy.key}
-            description={usingEnvKey ? copy.envKeyHelp : copy.savedKeyHelp}
+            description={usingEnvKey ? copy.envKeyHelp : (
+              <>
+                {copy.savedKeyHelp}
+                <Link href="https://tavily.com" target="_blank" rel="noreferrer noopener">tavily.com</Link>
+              </>
+            )}
           />
-          {!usingEnvKey && (
-            <small className="settingsQuietStatus">
-              <Link href="https://tavily.com" target="_blank" rel="noreferrer noopener">tavily.com</Link>
-            </small>
-          )}
         </SettingsField>
 
         <SettingsActions role="group" aria-label={copy.actions}>

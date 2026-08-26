@@ -98,7 +98,7 @@ import {
 import { getToolActivityCopy } from './tool-activity/copy.js';
 import { dotForStatus, type StatusSemantic } from './status-vocabulary.js';
 
-/** Friendly card for a `load_tools` result; falls back to JSON on unexpected shapes. */
+/** Friendly card for tool-search and historical loader results. */
 function LoadToolResultPreview(props: {
   args: unknown;
   value: unknown;

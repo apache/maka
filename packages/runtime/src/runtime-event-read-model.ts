@@ -1368,7 +1368,7 @@ function isPlanProposalStateDelta(event: RuntimeEvent): boolean {
 }
 
 /**
- * A boundary fact is canonical only in the exact shape AiSdkFlow emits: every
+ * A boundary fact is canonical only in the exact shape the Runtime mapper emits: every
  * field of the source SessionEvent, the identity it maps to, and the tool call
  * it settles. A partial match is worse than none — it would claim a corrupt
  * ledger as sound while still paying the cost of rejecting a malformed one.

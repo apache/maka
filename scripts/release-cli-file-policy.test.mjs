@@ -18,12 +18,21 @@
  */
 
 import assert from 'node:assert/strict';
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync } from 'node:fs';
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { describe, test } from 'node:test';
 import {
   collectWorkspaceDependencyClosure,
+  isCurrentDevelopmentJavaScript,
   isMakaDevelopmentArtifact,
   isThirdPartyDevelopmentArtifact,
   orderWorkspaceBuilds,
@@ -131,6 +140,26 @@ describe('CLI release file policy', () => {
     assert.equal(isMakaDevelopmentArtifact('src/index.js'), true);
     assert.equal(isMakaDevelopmentArtifact('dist/__tests__/fixture.js'), true);
     assert.equal(isMakaDevelopmentArtifact('dist/index.js'), false);
+  });
+
+  test('development packages exclude JavaScript left by deleted sources', () => {
+    const workspace = mkdtempSync(join(tmpdir(), 'maka-development-output-'));
+    try {
+      mkdirSync(join(workspace, 'src'), { recursive: true });
+      writeFileSync(join(workspace, 'src', 'current.ts'), 'export {}\n');
+      assert.equal(isCurrentDevelopmentJavaScript(workspace, 'current.js'), true);
+      assert.equal(isCurrentDevelopmentJavaScript(workspace, 'deleted.js'), false);
+      assert.equal(
+        isCurrentDevelopmentJavaScript(
+          workspace,
+          'workers\\generated.js',
+          new Set(['workers/generated.js']),
+        ),
+        true,
+      );
+    } finally {
+      rmSync(workspace, { recursive: true, force: true });
+    }
   });
 
   test('rejects Maka test-only modules so no test backend can ship', () => {

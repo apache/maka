@@ -28,14 +28,13 @@ import type { UiLocale } from '@maka/core/ui-locale';
 import { generalizedErrorMessageChinese } from '@maka/core/redaction';
 import { sessionExpectsEventStream } from '@maka/core/session-event-health';
 import { type ShellRunUpdate } from '@maka/core/events';
-import type { LiveTurnProjection, NavSelection, SessionViewMode } from '@maka/ui';
+import type { LiveTurnProjection, NavSelection } from '@maka/ui';
 import { messageReadErrorMessage } from './app-shell-copy';
 import { getDesktopConversationCopy } from './locales/conversation-copy.js';
 import { applyTheme, applyThemePalette } from './theme';
 import { startTitlebarModalSync } from './titlebar-modal-sync';
 import { safeLocalStorageSet } from './browser-storage';
 import type { NavigationState } from './nav-selection.js';
-import { writeSessionListViewMode } from './session-list-layout.js';
 import {
   createSessionEventStreamSubscription,
   evaluateSessionEventStreamSnapshot,
@@ -60,7 +59,6 @@ import {
 } from './desktop-transcript-range-store.js';
 
 type RefBox<T> = { current: T };
-const LAYOUT_PERSIST_DEBOUNCE_MS = 200;
 
 type SessionEventHealthUpdater = (
   updater: (current: Record<string, SessionEventStreamSnapshot>) => Record<string, SessionEventStreamSnapshot>,
@@ -120,9 +118,6 @@ export function useAppShellHostEffects() {
 
 export function useAppShellPersistenceEffects(options: {
   navigationState: NavigationState;
-  sessionListCollapsed: boolean;
-  sessionListWidth: number;
-  sessionListViewMode: SessionViewMode;
   themePalette: ThemePalette;
   themePref: ThemePreference;
 }) {
@@ -142,28 +137,6 @@ export function useAppShellPersistenceEffects(options: {
   useEffect(() => {
     applyThemePalette(options.themePalette);
   }, [options.themePalette]);
-
-  // PR-FE-BUG-HUNT-5 (kenji bug-hunt 2026-06-24 LOW): pointer drag on
-  // the sidebar resizer fires `setSessionListWidth` on every move
-  // event — at ~60Hz over a long drag, that's a couple hundred
-  // localStorage writes for a single resize gesture. The setting
-  // converges to the user's final width at rest; intermediate
-  // values aren't load-bearing. 200ms trailing debounce keeps the
-  // last-render value in storage without flushing every pixel.
-  useEffect(() => {
-    const handle = window.setTimeout(() => {
-      safeLocalStorageSet('maka-chat-list-width-v1', String(options.sessionListWidth));
-    }, LAYOUT_PERSIST_DEBOUNCE_MS);
-    return () => window.clearTimeout(handle);
-  }, [options.sessionListWidth]);
-
-  useEffect(() => {
-    safeLocalStorageSet('maka-chat-list-collapsed-v1', options.sessionListCollapsed ? 'true' : 'false');
-  }, [options.sessionListCollapsed]);
-
-  useEffect(() => {
-    writeSessionListViewMode(options.sessionListViewMode);
-  }, [options.sessionListViewMode]);
 
   // Persist the active destination and each hub's last selected module.
   // Strict localStorage availability check — Vite dev sometimes runs through

@@ -53,6 +53,8 @@ export {
 export {
   createRuntimeHostReconnectingConnection,
   isRuntimeHostReconnectingConnection,
+  type RuntimeHostConnectionAvailability,
+  type RuntimeHostReconnectingConnection,
 } from './reconnecting-connection.js';
 export {
   normalizeRuntimeHostSshDestination,
@@ -95,6 +97,7 @@ export {
 } from './catalog-reader.js';
 export {
   connectOrSpawnRuntimeHost,
+  type CandidateExitDetails,
   type ConnectOrSpawnRuntimeHostInput,
   type ConnectOrSpawnRuntimeHostResult,
   type RuntimeHostElectionDiagnostic,

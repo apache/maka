@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { execFile } from 'node:child_process';
+import { execFile, spawn } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import { mkdir, mkdtemp, readFile, readdir, realpath, rm, stat, writeFile } from 'node:fs/promises';
@@ -28,6 +28,53 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const repoRoot = dirname(dirname(fileURLToPath(import.meta.url)));
 const execFileAsync = promisify(execFile);
+
+export const WINDOWS_SANDBOX_PHASE4_MATRIX = Object.freeze([
+  {
+    category: 'filesystem_aliases',
+    evidence: ['junction admission', 'multi-hard-link admission', 'outside-root read denial'],
+  },
+  {
+    category: 'network_channels',
+    evidence: ['TCP connect denial'],
+  },
+  { category: 'ipc', evidence: ['host named-pipe denial', 'bounded inherited handle list'] },
+  {
+    category: 'descendants',
+    evidence: [
+      'descendant creation denied or AppContainer token retained',
+      'kill-on-close Job membership',
+    ],
+  },
+  {
+    category: 'environment',
+    evidence: ['ambient host secret omitted', 'closed allowlisted environment'],
+  },
+  {
+    category: 'credentials',
+    evidence: ['outside credential-file denial', 'ambient secret omission'],
+  },
+  { category: 'registry', evidence: ['host HKCU value denial'] },
+  {
+    category: 'lifecycle_failures',
+    evidence: [
+      'client cancellation',
+      'Runtime Host parent death',
+      '64-launch concurrency soak',
+      'quarantined identity non-reuse',
+    ],
+  },
+]);
+
+export const WINDOWS_SANDBOX_DEFERRED_HARDENING = Object.freeze([
+  'Authenticode identity verification',
+  'direct Credential Manager and DPAPI probes',
+  'inbound listener enforcement',
+  'UDP channel enforcement',
+  'no-Win32k mitigation',
+  'dedicated window-station and clipboard isolation',
+  'power-loss automatic recovery',
+]);
 
 function assertCondition(condition, message) {
   if (!condition) throw new Error(message);
@@ -173,6 +220,34 @@ export async function verifyWindowsSandboxWorkerE2E(appDirectoryPath) {
     });
     console.log('[verify-windows-sandbox] packaged client cancellation and recovery verified');
 
+    console.log('[verify-windows-sandbox] killing a Runtime Host parent during launch');
+    await verifyPackagedRuntimeHostParentDeath({
+      appDirectory,
+      appExecutable,
+      sandboxExecutable,
+      client,
+      workspace,
+      targetPath: insidePath,
+    });
+    console.log('[verify-windows-sandbox] Runtime Host parent-death cleanup verified');
+
+    console.log('[verify-windows-sandbox] running the 64-launch packaged concurrency soak');
+    await verifyPackagedConcurrencySoak({
+      FilesystemWorkerClient,
+      SandboxManager,
+      WindowsBrokerSandboxBackend,
+      createWindowsBrokerManifestWriter,
+      launchSpec: launchSpec.spec,
+      sandboxExecutable,
+      workspace,
+      targetPath: insidePath,
+    });
+    console.log('[verify-windows-sandbox] packaged concurrency soak verified');
+
+    console.log('[verify-windows-sandbox] running the packaged adversarial matrix');
+    await verifyPackagedAdversarialMatrix(sandboxExecutable);
+    console.log('[verify-windows-sandbox] packaged adversarial matrix verified');
+
     const sourceDirectory = join(workspace, 'src');
     await mkdir(sourceDirectory, { recursive: true });
     await writeFile(join(sourceDirectory, 'health.ts'), 'export const healthSignal = true;\n');
@@ -224,6 +299,206 @@ export async function verifyWindowsSandboxWorkerE2E(appDirectoryPath) {
       await rm(path, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
     }
   }
+}
+
+async function verifyPackagedRuntimeHostParentDeath({
+  appDirectory,
+  appExecutable,
+  sandboxExecutable,
+  client,
+  workspace,
+  targetPath,
+}) {
+  const requestId = `runtime-host-parent-death-${process.pid}-${randomBytes(4).toString('hex')}`;
+  const launchRequestId = `${requestId}-launch`;
+  assertCondition(
+    (await listCancellationProcesses(sandboxExecutable)).length === 0,
+    'Runtime Host parent-death evidence started with an existing sandbox process.',
+  );
+
+  const child = spawn(
+    appExecutable,
+    [
+      fileURLToPath(import.meta.url),
+      '--runtime-host-mid-launch-child',
+      JSON.stringify({ appDirectory, workspace, targetPath, requestId }),
+    ],
+    {
+      env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' },
+      stdio: ['ignore', 'pipe', 'pipe'],
+      windowsHide: true,
+    },
+  );
+  let stdout = '';
+  let stderr = '';
+  child.stdout.on('data', (chunk) => {
+    stdout += chunk.toString();
+  });
+  child.stderr.on('data', (chunk) => {
+    stderr += chunk.toString();
+  });
+  const exited = new Promise((resolvePromise) => {
+    child.once('exit', (code, signal) => resolvePromise({ code, signal }));
+  });
+
+  let primaryError;
+  try {
+    await waitForObservation({
+      description: 'Runtime Host-owned packaged AppContainer child',
+      probe: (remainingMs) => listCancellationProcesses(sandboxExecutable, remainingMs),
+      accept: (processes) => processes.length >= 2,
+      settledEarly: () => child.exitCode !== null,
+    });
+    assertCondition(child.kill(), 'Could not terminate the Runtime Host fixture process.');
+    await raceWithTimeout(
+      exited,
+      10_000,
+      `Runtime Host fixture did not exit. stdout=${stdout} stderr=${stderr}`,
+    );
+    await waitForObservation({
+      description: 'Runtime Host parent-death AppContainer tree exit',
+      probe: (remainingMs) => listCancellationProcesses(sandboxExecutable, remainingMs),
+      accept: (processes) => processes.length === 0,
+    });
+    await client.execute({
+      operation: { kind: 'read', path: targetPath },
+      cwd: workspace,
+      mode: 'ask',
+    });
+    assertCondition(
+      (await findRecoveryRecord(launchRequestId)) === undefined,
+      'Runtime Host parent death left an ACL recovery ledger after a successful recovery launch.',
+    );
+  } catch (error) {
+    primaryError = error;
+  } finally {
+    if (child.exitCode === null) child.kill();
+    await raceWithTimeout(exited, 10_000, 'Runtime Host fixture cleanup timed out.').catch(
+      () => undefined,
+    );
+  }
+  if (primaryError) throw primaryError;
+}
+
+async function runRuntimeHostMidLaunchChild({ appDirectory, workspace, targetPath, requestId }) {
+  const resourcesPath = join(appDirectory, 'resources');
+  const appExecutable = join(appDirectory, 'Maka.exe');
+  const sandboxExecutable = join(resourcesPath, 'windows-sandbox', 'maka-windows-sandbox.exe');
+  const runtimeDist = join(repoRoot, 'packages', 'runtime', 'dist');
+  const importDist = (relativePath) => import(pathToFileURL(join(runtimeDist, relativePath)).href);
+  const { FilesystemWorkerClient } = await importDist('filesystem-worker/client.js');
+  const { createFilesystemWorkerLaunchSpecProvider } = await importDist(
+    'filesystem-worker/launch-spec.js',
+  );
+  const { SandboxManager } = await importDist('sandbox/sandbox-manager.js');
+  const { WindowsBrokerSandboxBackend, createWindowsBrokerManifestWriter } = await importDist(
+    'sandbox/windows-sandbox.js',
+  );
+  const getPackagedLaunchSpec = createFilesystemWorkerLaunchSpecProvider({
+    runtime: 'electron',
+    executable: appExecutable,
+    resourceLocation: { kind: 'desktop-packaged', resourcesPath },
+  });
+  const packaged = await getPackagedLaunchSpec();
+  assertCondition(packaged.ok, 'Runtime Host fixture could not resolve the packaged launch spec.');
+  const client = new FilesystemWorkerClient({
+    sandboxManager: new SandboxManager([
+      new WindowsBrokerSandboxBackend({
+        clientPath: sandboxExecutable,
+        writeManifest: createWindowsBrokerManifestWriter(),
+        requestId: () => requestId,
+      }),
+    ]),
+    platform: 'win32',
+    newId: () => `${requestId}-operation`,
+    timeoutMs: 60_000,
+    getLaunchSpec: async () => ({
+      ok: true,
+      spec: {
+        ...packaged.spec,
+        program: sandboxExecutable,
+        args: ['--stdio-probe', '--sleep', '47'],
+      },
+    }),
+  });
+  process.stdout.write('runtime-host-mid-launch-ready\n');
+  await client.execute({
+    operation: { kind: 'read', path: targetPath },
+    cwd: workspace,
+    mode: 'ask',
+  });
+  throw new Error('Runtime Host mid-launch fixture unexpectedly completed.');
+}
+
+async function verifyPackagedConcurrencySoak({
+  FilesystemWorkerClient,
+  SandboxManager,
+  WindowsBrokerSandboxBackend,
+  createWindowsBrokerManifestWriter,
+  launchSpec,
+  sandboxExecutable,
+  workspace,
+  targetPath,
+}) {
+  const prefix = `phase4-soak-${process.pid}-${randomBytes(4).toString('hex')}`;
+  let sequence = 0;
+  const soakClient = new FilesystemWorkerClient({
+    sandboxManager: new SandboxManager([
+      new WindowsBrokerSandboxBackend({
+        clientPath: sandboxExecutable,
+        writeManifest: createWindowsBrokerManifestWriter(),
+        requestId: () => `${prefix}-${sequence++}`,
+      }),
+    ]),
+    platform: 'win32',
+    getLaunchSpec: async () => ({ ok: true, spec: launchSpec }),
+  });
+
+  const waves = 8;
+  const concurrency = 8;
+  for (let wave = 0; wave < waves; wave += 1) {
+    const results = await Promise.all(
+      Array.from({ length: concurrency }, () =>
+        soakClient.execute({
+          operation: { kind: 'read', path: targetPath },
+          cwd: workspace,
+          mode: 'ask',
+        }),
+      ),
+    );
+    assertCondition(
+      results.every((result) => result.kind === 'read'),
+      `Packaged concurrency soak wave ${wave + 1} returned a non-read result.`,
+    );
+  }
+  assertCondition(sequence === waves * concurrency, 'Concurrency soak did not run 64 launches.');
+  await waitForObservation({
+    description: 'packaged concurrency soak process drain',
+    probe: (remainingMs) => listCancellationProcesses(sandboxExecutable, remainingMs),
+    accept: (processes) => processes.length === 0,
+  });
+  assertCondition(
+    (await findRecoveryRecordsByPrefix(prefix)).length === 0,
+    'Packaged concurrency soak left ACL recovery records behind.',
+  );
+}
+
+async function verifyPackagedAdversarialMatrix(sandboxExecutable) {
+  const script = join(repoRoot, 'experiments', 'windows-sandbox', 'adversarial-matrix-smoke.ps1');
+  const { stdout, stderr } = await execFileAsync(
+    'pwsh.exe',
+    ['-NoProfile', '-NonInteractive', '-File', script, '-LauncherPath', sandboxExecutable],
+    {
+      cwd: repoRoot,
+      timeout: 180_000,
+      windowsHide: true,
+      maxBuffer: 8 * 1024 * 1024,
+    },
+  );
+  assertCondition(
+    stdout.includes('Phase 4 adversarial matrix verified:'),
+    `Packaged adversarial matrix returned no completion evidence. stdout=${stdout} stderr=${stderr}`,
+  );
 }
 
 async function verifyPackagedClientCancellation({
@@ -396,6 +671,36 @@ async function findRecoveryRecord(requestId) {
   return undefined;
 }
 
+async function findRecoveryRecordsByPrefix(prefix) {
+  const ledgerRoot = join(tmpdir(), 'maka-sandbox-acl-ledgers');
+  const entries = await readdir(ledgerRoot, { withFileTypes: true }).catch((error) => {
+    if (error?.code === 'ENOENT') return [];
+    throw error;
+  });
+  const matches = [];
+  for (const entry of entries) {
+    if (!entry.isFile()) continue;
+    const path = join(ledgerRoot, entry.name);
+    const contents = await readFile(path, 'utf8').catch(() => undefined);
+    if (contents?.includes(`"requestId":"${prefix}`)) matches.push(path);
+  }
+  return matches;
+}
+
+async function raceWithTimeout(promise, timeoutMs, message) {
+  let timer;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise((_, reject) => {
+        timer = setTimeout(() => reject(new Error(message)), timeoutMs);
+      }),
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 async function waitForObservation({
   description,
   probe,
@@ -434,12 +739,19 @@ function renderError(error) {
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
-  const appDirectory = process.argv[2];
-  if (!appDirectory || basename(appDirectory).endsWith('.exe')) {
-    throw new Error(
-      'Usage: node scripts/verify-windows-sandbox-e2e.mjs <win-unpacked app directory>',
-    );
+  if (process.argv[2] === '--runtime-host-mid-launch-child') {
+    const input = JSON.parse(process.argv[3] ?? 'null');
+    assertCondition(input && typeof input === 'object', 'Missing Runtime Host fixture input.');
+    await runRuntimeHostMidLaunchChild(input);
+    process.exitCode = 1;
+  } else {
+    const appDirectory = process.argv[2];
+    if (!appDirectory || basename(appDirectory).endsWith('.exe')) {
+      throw new Error(
+        'Usage: node scripts/verify-windows-sandbox-e2e.mjs <win-unpacked app directory>',
+      );
+    }
+    await verifyWindowsSandboxWorkerE2E(appDirectory);
+    console.log('Packaged Windows filesystem-worker E2E verified.');
   }
-  await verifyWindowsSandboxWorkerE2E(appDirectory);
-  console.log('Packaged Windows filesystem-worker E2E verified.');
 }

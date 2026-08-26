@@ -27,7 +27,7 @@ Maka has one execution authority: Runtime Host. Desktop, TUI, CLI, bots, and eva
 flowchart LR
     C["Desktop / TUI / CLI / Bot"] --> H["Runtime Host"]
     H --> S["SessionManager"]
-    S --> R["AgentRun + Runtime Runner"]
+    S --> R["AgentRun + RuntimeKernel"]
     R --> T["Tool Runtime"]
     R --> L["Runtime Event Log"]
     S --> G["Agent Graph Control Plane"]

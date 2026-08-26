@@ -35,10 +35,11 @@ export type MakaCliCommand =
   | { kind: 'run'; args: string[] }
   | { kind: 'activate'; args: string[] }
   | { kind: 'eval'; args: string[] }
+  | { kind: 'acp' }
   | RuntimeHostCliCommand
   | { kind: 'help'; text: string }
   | { kind: 'version'; text: string }
-  | { kind: 'error'; message: string; exitCode: number };
+  | { kind: 'error'; message: string; exitCode: number; showHelp?: boolean };
 
 export interface MakaCliLaunchOptions {
   readonly dataProfileName: string;
@@ -61,6 +62,16 @@ export function parseMakaCliArgs(
   const [first] = argv;
   if (first === '--help' || first === '-h') return { kind: 'help', text: helpText(cliCommand) };
   if (first === '--version' || first === '-v') return { kind: 'version', text: version };
+  if (first === '--acp') {
+    return argv.length === 1
+      ? { kind: 'acp' }
+      : {
+          kind: 'error',
+          message: 'maka --acp does not accept arguments',
+          exitCode: 2,
+          showHelp: false,
+        };
+  }
   if (first?.startsWith('--')) return parseTuiArgs(argv);
   if (first === 'run' || first === '-p') return { kind: 'run', args: argv.slice(1) };
   if (first === 'activate') return { kind: 'activate', args: argv.slice(1) };
@@ -113,6 +124,7 @@ function helpText(cliCommand: string): string {
     '',
     'Commands:',
     `  ${cliCommand}              Start the TUI`,
+    `  ${cliCommand} --acp      Serve ACP v1 over stdio (initialize only; session support in progress)`,
     `  ${cliCommand} run ...      Run one non-interactive model turn`,
     `  ${cliCommand} activate ... Run one Cloud Session activation and emit JSONL`,
     `  ${cliCommand} -p ...       Alias for ${cliCommand} run`,
@@ -123,7 +135,9 @@ function helpText(cliCommand: string): string {
     `  ${cliCommand} runtime-host service status|start|stop|restart|logs|uninstall [--json]`,
     `  ${cliCommand} runtime-host service retire --expected-service-id <id> --expected-root-path <path> --expected-root-id <id> [--allow-interrupt-active-tasks]`,
     `  ${cliCommand} runtime-host service check-update --target <latest|next|version> [--json]`,
-    `  ${cliCommand} runtime-host service update --expected-service-id <id> --expected-root-path <path> --expected-root-id <id> [--allow-interrupt-active-tasks]`,
+    `  ${cliCommand} runtime-host service update [--target <latest|next|version>] --expected-service-id <id> --expected-root-path <path> --expected-root-id <id> [--allow-interrupt-active-tasks]`,
+    `  ${cliCommand} runtime-host service update-policy [--target <manual|latest|next|version>] [--json]`,
+    `  ${cliCommand} runtime-host service reconcile-update [--json]`,
     `  ${cliCommand} runtime-host access issue --principal <id> --grant <operation>`,
     `  ${cliCommand} runtime-host access issue --principal <id> --preset <desktop-client|terminal-client>`,
     `  ${cliCommand} runtime-host access list`,
@@ -135,6 +149,7 @@ function helpText(cliCommand: string): string {
     `  ${cliCommand} runtime-host profile set --id <id> --name <name> --tls-url <wss-url> --expected-root <root-id> [--credential-env <name>]`,
     `  ${cliCommand} runtime-host profile set --id <id> --name <name> --ssh-destination <user@host> --ssh-remote-port <port> --expected-root <root-id> [--ssh-port <port>] [--credential-env <name>]`,
     `  ${cliCommand} runtime-host profile set --id <id> --name <name> --plaintext-url <ws-url> --acknowledge-plaintext --expected-root <root-id> [--credential-env <name>]`,
+    `  ${cliCommand} runtime-host profile set --id <id> --name <name> --peer-id <peer-id> --peer-route <multiaddr> --expected-root <root-id> [--credential-env <name>]`,
     `  ${cliCommand} runtime-host profile remove --id <id>`,
     `  ${cliCommand} runtime-host capability-provider serve --url <ws-url> --mcp-config <path> --expected-root <root-id>`,
     '',
@@ -157,6 +172,10 @@ function helpText(cliCommand: string): string {
     '  --tls-private-key <path>      TLS private key for WSS',
     '  --allow-insecure-remote       Allow plaintext WebSocket access beyond loopback',
     '  --allow-origin <origin>       Allow one browser Origin (repeatable)',
+    '  --peer-native-path <path>     Load the experimental direct-peer native module',
+    '  --peer-key <path>             Persist the direct-peer transport identity',
+    '  --peer-listen <multiaddr>     Listen on a direct-peer address (repeatable)',
+    '  --peer-coordination-relay <multiaddr>  Use a DCUtR coordination relay (repeatable)',
     '  --json                        Emit one machine-readable ready event',
     '',
     'Managed Runtime Host service install options (Linux or macOS):',
@@ -220,6 +239,10 @@ export async function runMakaCli(
       const { runMakaEvalCli } = await import('@maka/eval');
       return runMakaEvalCli(command.args);
     }
+    case 'acp': {
+      const { runMakaAcpStdioServer } = await import('./acp/stdio-server.js');
+      return runMakaAcpStdioServer({ version });
+    }
     case 'runtime-host-serve': {
       const { runRuntimeHostServiceCli } = await import('./runtime-host-service-command.js');
       return runRuntimeHostServiceCli({
@@ -229,6 +252,7 @@ export async function runMakaCli(
           ? { projectDirectoryRoots: command.projectDirectoryRoots }
           : {}),
         ...(command.websocket ? { websocket: command.websocket } : {}),
+        ...(command.peer ? { peer: command.peer } : {}),
       });
     }
     case 'runtime-host-setup': {
@@ -278,10 +302,22 @@ export async function runMakaCli(
       });
     }
     case 'runtime-host-service-update': {
-      const { runManagedRuntimeHostUpdateCli } = await import('./runtime-host-update-command.js');
+      const { runManagedRuntimeHostSelectedUpdateCli, runManagedRuntimeHostUpdateCli } =
+        await import('./runtime-host-update-command.js');
       const serviceDataRoots = command.clientDataRoot
         ? deriveMakaDataRoots(command.clientDataRoot)
         : dataRoots;
+      if (command.selector) {
+        return runManagedRuntimeHostSelectedUpdateCli({
+          json: command.json,
+          framed: command.framed ?? false,
+          clientDataRoot: serviceDataRoots.clientDataRoot,
+          defaultRootPath: serviceDataRoots.workspaceRoot,
+          selector: command.selector,
+          expectedTarget: command.expectedTarget,
+          ...(command.allowInterruptActiveTasks ? { allowInterruptActiveTasks: true } : {}),
+        });
+      }
       return runManagedRuntimeHostUpdateCli({
         json: command.json,
         framed: command.framed ?? false,
@@ -306,6 +342,31 @@ export async function runMakaCli(
         clientDataRoot: serviceDataRoots.clientDataRoot,
         defaultRootPath: serviceDataRoots.workspaceRoot,
         selector: command.selector,
+        ...(command.expectedTarget ? { expectedTarget: command.expectedTarget } : {}),
+      });
+    }
+    case 'runtime-host-service-update-policy':
+    case 'runtime-host-service-reconcile-update': {
+      const { runManagedRuntimeHostUpdatePolicyCli, runManagedRuntimeHostUpdateReconcileCli } =
+        await import('./runtime-host-update-reconciliation.js');
+      const serviceDataRoots = command.clientDataRoot
+        ? deriveMakaDataRoots(command.clientDataRoot)
+        : dataRoots;
+      if (command.kind === 'runtime-host-service-update-policy') {
+        return runManagedRuntimeHostUpdatePolicyCli({
+          json: command.json,
+          framed: command.framed ?? false,
+          clientDataRoot: serviceDataRoots.clientDataRoot,
+          defaultRootPath: serviceDataRoots.workspaceRoot,
+          ...(command.policy ? { policy: command.policy } : {}),
+          ...(command.expectedTarget ? { expectedTarget: command.expectedTarget } : {}),
+        });
+      }
+      return runManagedRuntimeHostUpdateReconcileCli({
+        json: command.json,
+        framed: command.framed ?? false,
+        clientDataRoot: serviceDataRoots.clientDataRoot,
+        defaultRootPath: serviceDataRoots.workspaceRoot,
         ...(command.expectedTarget ? { expectedTarget: command.expectedTarget } : {}),
       });
     }
@@ -431,7 +492,11 @@ export async function runMakaCli(
       process.stdout.write(`${command.text}\n`);
       return 0;
     case 'error':
-      process.stderr.write(`${command.message}\n\n${helpText(options.cliCommand)}\n`);
+      process.stderr.write(
+        'showHelp' in command && command.showHelp === false
+          ? `${command.message}\n`
+          : `${command.message}\n\n${helpText(options.cliCommand)}\n`,
+      );
       return command.exitCode;
     case 'tui': {
       const locale = resolveCliUiLocale(process.env);

@@ -29,12 +29,14 @@ import {
   startRuntimeHostReconnectLifecycle,
   type DirectRequestOperationKey,
   type RuntimeHostConnection,
+  type RuntimeHostConnectionAvailability,
 } from '../client/index.js';
 import {
   INTERACTIVE_RUNTIME_HOST_COMPOSITION_ID,
   RUNTIME_HOST_COMPATIBILITY_EPOCH,
   RUNTIME_HOST_PROTOCOL_VERSION,
   type HostIncompatible,
+  type HostStatusResult,
   type OperationInput,
   type OperationKey,
   type OperationOutput,
@@ -73,6 +75,95 @@ test('a reconnecting Client retries an interrupted query on the replacement conn
   assert.deepEqual(first.operations, ['goal.query']);
   assert.deepEqual(unstable.operations, ['goal.query']);
   assert.deepEqual(replacement.operations, ['goal.query']);
+  await connection.close();
+});
+
+test('a reconnecting Client reports the connection generation used by direct operations', async () => {
+  const first = connectionHarness('first', () => undefined);
+  const replacement = connectionHarness('replacement', () => undefined);
+  const reconnecting = deferredValue<RuntimeHostConnection>();
+  const connection = await createRuntimeHostReconnectingConnection({
+    initialConnection: first.connection,
+    connect: async () => reconnecting.promise,
+  });
+  const availability: RuntimeHostConnectionAvailability[] = [];
+  const unsubscribe = connection.subscribeConnectionAvailability((current) => {
+    availability.push(current);
+  });
+
+  assert.deepEqual(availability, [
+    { kind: 'connected', hostEpoch: 'host-first', connectionId: 'first' },
+  ]);
+  first.disconnect();
+  await waitForCondition(() => availability.length === 2);
+  const unavailable: RuntimeHostConnectionAvailability[] = [];
+  const unsubscribeUnavailable = connection.subscribeConnectionAvailability((value) => {
+    unavailable.push(value);
+  });
+  assert.deepEqual(unavailable, [{ kind: 'unavailable' }]);
+  unsubscribeUnavailable();
+  reconnecting.resolve(replacement.connection);
+  await waitForCondition(() => availability.length === 3);
+  assert.deepEqual(availability, [
+    { kind: 'connected', hostEpoch: 'host-first', connectionId: 'first' },
+    { kind: 'unavailable' },
+    { kind: 'connected', hostEpoch: 'host-replacement', connectionId: 'replacement' },
+  ]);
+
+  const current: RuntimeHostConnectionAvailability[] = [];
+  const unsubscribeCurrent = connection.subscribeConnectionAvailability((value) => {
+    current.push(value);
+  });
+  assert.deepEqual(current, [
+    { kind: 'connected', hostEpoch: 'host-replacement', connectionId: 'replacement' },
+  ]);
+  unsubscribeCurrent();
+
+  unsubscribe();
+  replacement.disconnect();
+  await yieldToEventLoop();
+  assert.equal(availability.length, 3);
+  await connection.close();
+});
+
+test('a reconnecting Client retries status through the validated status surface', async () => {
+  let firstStatusCalls = 0;
+  let replacementStatusCalls = 0;
+  const first = connectionHarness(
+    'first',
+    () => {
+      throw new Error('status must not use request()');
+    },
+    undefined,
+    undefined,
+    async () => {
+      firstStatusCalls += 1;
+      first.disconnect();
+      throw interrupted('host.status', 'query', 'dispatched');
+    },
+  );
+  const replacement = connectionHarness(
+    'replacement',
+    () => {
+      throw new Error('status must not use request()');
+    },
+    undefined,
+    undefined,
+    async () => {
+      replacementStatusCalls += 1;
+      return hostStatus('replacement');
+    },
+  );
+  const connection = await createRuntimeHostReconnectingConnection({
+    initialConnection: first.connection,
+    connect: async () => replacement.connection,
+  });
+
+  assert.deepEqual(await connection.status(), hostStatus('replacement'));
+  assert.equal(firstStatusCalls, 1);
+  assert.equal(replacementStatusCalls, 1);
+  assert.deepEqual(first.operations, []);
+  assert.deepEqual(replacement.operations, []);
   await connection.close();
 });
 
@@ -469,6 +560,7 @@ function connectionHarness(
     id: 'maka.interactive',
     revision: '1',
   },
+  status: () => Promise<HostStatusResult> = async () => hostStatus(id, composition),
 ) {
   let resolveClosed!: () => void;
   const closed = new Promise<void>((resolve) => {
@@ -484,6 +576,7 @@ function connectionHarness(
     compositionId: composition.id,
     compositionRevision: composition.revision,
     closed,
+    status,
     request: async (operation: DirectRequestOperationKey, input: unknown) => {
       operations.push(operation);
       return request(operation, input);
@@ -505,6 +598,24 @@ function connectionHarness(
     get openedSubscriptions() {
       return openedSubscriptions;
     },
+  };
+}
+
+function hostStatus(
+  id: string,
+  composition: { readonly id: string; readonly revision: string } = {
+    id: 'maka.interactive',
+    revision: '1',
+  },
+): HostStatusResult {
+  return {
+    hostEpoch: `host-${id}`,
+    compositionId: composition.id,
+    compositionRevision: composition.revision,
+    state: 'ready',
+    connections: 1,
+    activeOperations: 0,
+    activeResidencies: 0,
   };
 }
 

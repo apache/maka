@@ -32,8 +32,13 @@ import { join } from 'node:path';
 
 import { isCanonicalWindowsPath } from '@maka/core/windows-path';
 
-import type { SandboxBackend, SandboxTransformRequest, SandboxTransformResult } from './types.js';
-import { compileWindowsSandboxPolicy } from './windows-profile.js';
+import type {
+  SandboxBackend,
+  SandboxCapabilityProbeResult,
+  SandboxTransformRequest,
+  SandboxTransformResult,
+} from './types.js';
+import { compileWindowsSandboxPolicy, type WindowsSandboxPolicy } from './windows-profile.js';
 
 /**
  * Default broker-side child deadline. The runtime's own worker timeout
@@ -79,6 +84,15 @@ export interface WindowsSandboxBackendOptions {
   readonly timeoutMs?: number;
 }
 
+type WindowsSandboxPlan =
+  | {
+      readonly ok: true;
+      readonly platform: string;
+      readonly policy: WindowsSandboxPolicy;
+      readonly preference: 'auto' | 'require' | 'forbid';
+    }
+  | Extract<SandboxTransformResult, { ok: false }>;
+
 export function createWindowsBrokerManifestWriter(
   temporaryRoot: string = tmpdir(),
 ): (manifest: WindowsBrokerManifest) => string {
@@ -121,7 +135,106 @@ export class WindowsBrokerSandboxBackend implements SandboxBackend {
     );
   }
 
+  probe(request: SandboxTransformRequest): SandboxCapabilityProbeResult {
+    const plan = this.plan(request);
+    if (!plan.ok) return plan;
+    return {
+      ok: true,
+      executable: this.options.clientPath,
+      sandboxType: 'windows',
+      requiresSandbox: true,
+      preference: plan.preference,
+    };
+  }
+
   transform(request: SandboxTransformRequest): SandboxTransformResult {
+    const plan = this.plan(request);
+    if (!plan.ok) return plan;
+
+    const requestId = this.options.requestId?.() ?? randomBytes(16).toString('hex');
+    const clientNonce = this.options.nonce?.() ?? randomBytes(16).toString('hex');
+    // The request id is embedded in the manifest filename; NTFS treats ':'
+    // as an alternate-data-stream separator, so only Windows-filename-safe
+    // characters are accepted.
+    if (
+      requestId.length === 0 ||
+      requestId.length > MAX_WINDOWS_BROKER_REQUEST_ID_LENGTH ||
+      !/^[A-Za-z0-9._-]+$/u.test(requestId)
+    ) {
+      return failure(
+        'invalid_request',
+        'Invalid Windows broker request id.',
+        plan.platform,
+        plan.preference,
+      );
+    }
+    if (!/^[a-f0-9]{32}$/iu.test(clientNonce)) {
+      return failure(
+        'invalid_request',
+        'Invalid Windows broker client nonce.',
+        plan.platform,
+        plan.preference,
+      );
+    }
+    let manifestPath: string;
+    try {
+      const launch: WindowsBrokerManifest['launch'] = {
+        version: 1,
+        requestId: `${requestId}-launch`,
+        executable: request.command.program,
+        arguments: request.command.args,
+        cwd: request.command.cwd,
+        readRoots: plan.policy.readRoots,
+        writeRoots: plan.policy.writeRoots,
+        exactReadRoots: plan.policy.exactReadRoots,
+        exactWriteRoots: plan.policy.exactWriteRoots,
+        network: plan.policy.network,
+        // The marker tells the worker it runs inside the AppContainer, where
+        // spawning ripgrep is impossible and Grep must fail closed instead of
+        // approximating its contract. Only the broker path sets it, so an
+        // unsandboxed worker keeps the full ripgrep behavior.
+        environment: sortEnvironment({
+          ...plan.policy.environment,
+          MAKA_WINDOWS_SANDBOX: '1',
+        }),
+        timeoutMs: this.options.timeoutMs ?? DEFAULT_WINDOWS_BROKER_TIMEOUT_MS,
+      };
+      manifestPath = this.options.writeManifest({
+        version: 1,
+        requestId,
+        clientPid: 0,
+        clientNonce,
+        profileDigest: digestLaunch(launch),
+        launch,
+      });
+      if (!isCanonicalWindowsPath(manifestPath)) {
+        throw new Error('manifest path must be canonical and absolute');
+      }
+    } catch (error) {
+      return failure(
+        'backend_not_available',
+        `Unable to materialize Windows broker request: ${error instanceof Error ? error.message : String(error)}`,
+        plan.platform,
+        plan.preference,
+      );
+    }
+
+    return {
+      ok: true,
+      exec: {
+        argv: [this.options.clientPath, '--broker-local', manifestPath],
+        cwd: request.command.cwd,
+        env: request.command.env,
+        sandboxType: 'windows',
+        effectiveProfile: request.command.profile,
+      },
+      sandboxType: 'windows',
+      requiresSandbox: true,
+      preference: plan.preference,
+    };
+  }
+
+  private plan(request: SandboxTransformRequest): WindowsSandboxPlan {
     const preference = request.preference ?? 'auto';
     const platform = request.platform ?? process.platform;
     if (platform !== 'win32') {
@@ -144,10 +257,13 @@ export class WindowsBrokerSandboxBackend implements SandboxBackend {
     if (configurationError) {
       return failure('invalid_request', configurationError, platform, preference);
     }
-
-    let policy;
     try {
-      policy = compileWindowsSandboxPolicy(request.command);
+      return {
+        ok: true,
+        platform,
+        policy: compileWindowsSandboxPolicy(request.command),
+        preference,
+      };
     } catch (error) {
       return failure(
         'invalid_request',
@@ -156,80 +272,6 @@ export class WindowsBrokerSandboxBackend implements SandboxBackend {
         preference,
       );
     }
-
-    const requestId = this.options.requestId?.() ?? randomBytes(16).toString('hex');
-    const clientNonce = this.options.nonce?.() ?? randomBytes(16).toString('hex');
-    // The request id is embedded in the manifest filename; NTFS treats ':'
-    // as an alternate-data-stream separator, so only Windows-filename-safe
-    // characters are accepted.
-    if (
-      requestId.length === 0 ||
-      requestId.length > MAX_WINDOWS_BROKER_REQUEST_ID_LENGTH ||
-      !/^[A-Za-z0-9._-]+$/u.test(requestId)
-    ) {
-      return failure('invalid_request', 'Invalid Windows broker request id.', platform, preference);
-    }
-    if (!/^[a-f0-9]{32}$/iu.test(clientNonce)) {
-      return failure(
-        'invalid_request',
-        'Invalid Windows broker client nonce.',
-        platform,
-        preference,
-      );
-    }
-    let manifestPath: string;
-    try {
-      const launch: WindowsBrokerManifest['launch'] = {
-        version: 1,
-        requestId: `${requestId}-launch`,
-        executable: request.command.program,
-        arguments: request.command.args,
-        cwd: request.command.cwd,
-        readRoots: policy.readRoots,
-        writeRoots: policy.writeRoots,
-        exactReadRoots: policy.exactReadRoots,
-        exactWriteRoots: policy.exactWriteRoots,
-        network: policy.network,
-        // The marker tells the worker it runs inside the AppContainer, where
-        // spawning ripgrep is impossible and Grep must fail closed instead of
-        // approximating its contract. Only the broker path sets it, so an
-        // unsandboxed worker keeps the full ripgrep behavior.
-        environment: sortEnvironment({ ...policy.environment, MAKA_WINDOWS_SANDBOX: '1' }),
-        timeoutMs: this.options.timeoutMs ?? DEFAULT_WINDOWS_BROKER_TIMEOUT_MS,
-      };
-      manifestPath = this.options.writeManifest({
-        version: 1,
-        requestId,
-        clientPid: 0,
-        clientNonce,
-        profileDigest: digestLaunch(launch),
-        launch,
-      });
-      if (!isCanonicalWindowsPath(manifestPath)) {
-        throw new Error('manifest path must be canonical and absolute');
-      }
-    } catch (error) {
-      return failure(
-        'backend_not_available',
-        `Unable to materialize Windows broker request: ${error instanceof Error ? error.message : String(error)}`,
-        platform,
-        preference,
-      );
-    }
-
-    return {
-      ok: true,
-      exec: {
-        argv: [this.options.clientPath, '--broker-local', manifestPath],
-        cwd: request.command.cwd,
-        env: request.command.env,
-        sandboxType: 'windows',
-        effectiveProfile: request.command.profile,
-      },
-      sandboxType: 'windows',
-      requiresSandbox: true,
-      preference,
-    };
   }
 }
 
@@ -267,7 +309,7 @@ function failure(
   message: string,
   platform: string,
   preference: 'auto' | 'require' | 'forbid',
-): SandboxTransformResult {
+): Extract<SandboxTransformResult, { ok: false }> {
   return {
     ok: false,
     reason,

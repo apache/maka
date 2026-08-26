@@ -18,6 +18,7 @@
  */
 
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
 import { mkdtemp, open, readdir, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -28,6 +29,33 @@ import {
   type MarkerFileDependencies,
   type MarkerFileHandle,
 } from '../marker-file.js';
+
+test('keeps the open primitive captured at module initialization', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-marker-file-captured-open-'));
+  const markerFile = '.marker.json';
+  const originalOpen = fs.promises.open;
+  let intercepted = false;
+  fs.promises.open = (async (path, flags, mode) => {
+    if (typeof path === 'string' && path.startsWith(join(root, `${markerFile}.`))) {
+      intercepted = true;
+    }
+    return originalOpen(path, flags, mode);
+  }) as typeof fs.promises.open;
+  try {
+    await publishMarkerFile({
+      root,
+      markerFile,
+      contents: '{"schemaVersion":1}\n',
+      maxBytes: 1_024,
+      publication: 'create',
+      invalidFile: () => new Error('invalid marker'),
+    });
+    assert.equal(intercepted, false);
+  } finally {
+    fs.promises.open = originalOpen;
+    await rm(root, { recursive: true, force: true });
+  }
+});
 
 for (const publication of ['create', 'replace'] as const) {
   for (const failurePhase of ['write', 'sync', 'close'] as const) {

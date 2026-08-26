@@ -136,7 +136,10 @@ export function createFakeWorkbarServices(
       regenerateTurn: async () => undefined,
       respondToSandboxBoundary: async () => undefined,
       respondToUserQuestion: async () => undefined,
-      subscribeEvents: noopSubscription,
+      subscribeEvents: (_sessionId, _handler, onSeeded) => {
+        onSeeded?.();
+        return noopSubscription();
+      },
       subscribeSessionChanges: noopSubscription,
     },
     ...overrides,

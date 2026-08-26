@@ -92,7 +92,41 @@ export type SettingsProjectsCopy = {
     restartService: string;
     repairService: string;
     updateService: string;
-    updatePhase: Record<import('@maka/runtime-host/operator').RuntimeHostServiceUpdatePhase, string>;
+    updatePolicy: string;
+    updatePolicyDescription: string;
+    updatePolicyManual: string;
+    updatePolicyAutomatic: string;
+    updatePolicyOptions: {
+      manual: string;
+      fixed: string;
+      latest: string;
+      next: string;
+    };
+    updatePolicyFixedVersion: string;
+    updatePolicySave: string;
+    updatePolicyCheckNow: string;
+    updatePolicyUnavailable: string;
+    updateSchedulerUnavailable: string;
+    updateSchedulerUnavailableBody: string;
+    updateSchedulerUnsupported: string;
+    updateSchedulerInactive: string;
+    updateSchedulerInactiveBody: string;
+    updateSchedulerNeedsRepair: string;
+    updateSchedulerNeedsRepairBody: string;
+    updatePolicyDisabled: string;
+    updatePolicyActiveTasks: string;
+    updatePolicyNotNewer(version: string): string;
+    updatePolicyManualAction(version: string): string;
+    updatePolicyManualReason: Record<
+      | 'current_compatibility_unknown'
+      | 'target_compatibility_unknown'
+      | 'compatibility_mismatch',
+      string
+    >;
+    updatePhase: Record<
+      'preparing_cli' | import('@maka/runtime-host/operator').RuntimeHostServiceUpdatePhase,
+      string
+    >;
     updateBlockedTitle: string;
     updateBlockedBody: string;
     updateInterrupt: string;
@@ -198,6 +232,7 @@ const SETTINGS_PROJECTS_COPY_BY_LOCALE = {
       setupChooseProject: '选择项目',
       setupComplete: 'Runtime Host 已连接',
       setupPhase: {
+        preparing_cli: '正在准备本地 CLI…',
         connecting_ssh: '正在连接 SSH…',
         checking_environment: '正在检查远程环境…',
         installing_package: '正在安装 Maka…',
@@ -263,8 +298,39 @@ const SETTINGS_PROJECTS_COPY_BY_LOCALE = {
       startService: '启动',
       restartService: '重启',
       repairService: '修复',
-      updateService: '安装 Desktop 版本',
+      updateService: '安装配套版本',
+      updatePolicy: '更新策略',
+      updatePolicyDescription: '选择这个 Host 跟随的 Maka 版本',
+      updatePolicyManual: '手动',
+      updatePolicyAutomatic: '自动',
+      updatePolicyOptions: {
+        manual: '手动更新',
+        fixed: '固定版本',
+        latest: 'Latest 稳定频道',
+        next: 'Next 预览频道',
+      },
+      updatePolicyFixedVersion: '版本',
+      updatePolicySave: '保存策略',
+      updatePolicyCheckNow: '立即检查',
+      updatePolicyUnavailable: '无法读取自动更新策略',
+      updateSchedulerUnavailable: '此 Runtime Host 尚不支持自动更新',
+      updateSchedulerUnavailableBody: '请先更新或修复服务，再启用固定版本或发布频道',
+      updateSchedulerUnsupported: '不支持',
+      updateSchedulerInactive: '未运行',
+      updateSchedulerInactiveBody: '更新调度器未在运行，请启动或修复服务后再启用自动更新',
+      updateSchedulerNeedsRepair: '需要修复',
+      updateSchedulerNeedsRepairBody: '更新调度器未在运行，请修复服务后再启用自动更新',
+      updatePolicyDisabled: '自动更新已关闭',
+      updatePolicyActiveTasks: 'Runtime Host 正在执行任务，本次更新已推迟',
+      updatePolicyNotNewer: (version: string) => `Maka ${version} 不高于当前版本`,
+      updatePolicyManualAction: (version: string) => `Maka ${version} 需要手动更新`,
+      updatePolicyManualReason: {
+        current_compatibility_unknown: '无法确认当前版本的存储兼容性',
+        target_compatibility_unknown: '无法确认目标版本的存储兼容性',
+        compatibility_mismatch: '目标版本需要手动处理存储兼容性',
+      },
       updatePhase: {
+        preparing_cli: '正在准备本地 CLI…',
         checking: '正在检查版本…',
         staging: '正在准备新版本…',
         retiring: '正在安全停止当前 Runtime Host…',
@@ -373,6 +439,7 @@ const SETTINGS_PROJECTS_COPY_BY_LOCALE = {
       setupChooseProject: 'Choose project',
       setupComplete: 'Runtime Host connected',
       setupPhase: {
+        preparing_cli: 'Preparing the local CLI…',
         connecting_ssh: 'Connecting over SSH…',
         checking_environment: 'Checking the remote environment…',
         installing_package: 'Installing Maka…',
@@ -438,8 +505,42 @@ const SETTINGS_PROJECTS_COPY_BY_LOCALE = {
       startService: 'Start',
       restartService: 'Restart',
       repairService: 'Repair',
-      updateService: 'Install Desktop version',
+      updateService: 'Install matching version',
+      updatePolicy: 'Update policy',
+      updatePolicyDescription: 'Choose which Maka release this Host follows',
+      updatePolicyManual: 'Manual',
+      updatePolicyAutomatic: 'Automatic',
+      updatePolicyOptions: {
+        manual: 'Manual updates',
+        fixed: 'Fixed version',
+        latest: 'Latest stable channel',
+        next: 'Next preview channel',
+      },
+      updatePolicyFixedVersion: 'Version',
+      updatePolicySave: 'Save policy',
+      updatePolicyCheckNow: 'Check now',
+      updatePolicyUnavailable: 'Automatic update policy is unavailable',
+      updateSchedulerUnavailable: 'Automatic updates are not available on this Runtime Host',
+      updateSchedulerUnavailableBody:
+        'Update or repair the service before choosing a fixed version or release channel',
+      updateSchedulerUnsupported: 'Unsupported',
+      updateSchedulerInactive: 'Inactive',
+      updateSchedulerInactiveBody:
+        'The update scheduler is not running. Start or repair the service before enabling automatic updates',
+      updateSchedulerNeedsRepair: 'Needs repair',
+      updateSchedulerNeedsRepairBody:
+        'The update scheduler is not running. Repair the service before enabling automatic updates',
+      updatePolicyDisabled: 'Automatic updates are off',
+      updatePolicyActiveTasks: 'Runtime Host owns active work, so this update was deferred',
+      updatePolicyNotNewer: (version: string) => `Maka ${version} is not newer than this Host`,
+      updatePolicyManualAction: (version: string) => `Maka ${version} needs a manual update`,
+      updatePolicyManualReason: {
+        current_compatibility_unknown: 'The installed version has unknown storage compatibility',
+        target_compatibility_unknown: 'The target version has unknown storage compatibility',
+        compatibility_mismatch: 'The target requires a manual storage compatibility decision',
+      },
       updatePhase: {
+        preparing_cli: 'Preparing the local CLI…',
         checking: 'Checking versions…',
         staging: 'Staging the new version…',
         retiring: 'Safely stopping the current Runtime Host…',

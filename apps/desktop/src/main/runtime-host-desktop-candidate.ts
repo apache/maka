@@ -36,6 +36,7 @@ import {
   type RuntimeHostCandidateLaunchBarrier,
   type RuntimeHostSpawnedProcess,
   type RemoteRuntimeHostProfile,
+  type CandidateExitDetails,
 } from "@maka/runtime-host/client";
 import {
   INTERACTIVE_RUNTIME_HOST_COMPOSITION_ID,
@@ -53,13 +54,14 @@ import { DesktopRuntimeHostClient } from "./runtime-host-client.js";
 import type {
   SessionCopyCleanupAuthority,
   SessionCopyCleanupDisposition,
-} from "./quote-companion-cleanup.js";
+} from "@maka/storage/session-copy-cleanup";
 import {
   createDesktopNativeCapabilityProvider,
   type DesktopNativeCapabilityProvider,
   type DesktopNativeCapabilityProviderInput,
 } from "./runtime-host-native-capabilities.js";
 import { registerRuntimeHostSessionCatalogIpc } from "./runtime-host-session-catalog-ipc-main.js";
+import { registerRuntimeHostWorkHubIpc } from "./runtime-host-workhub-ipc-main.js";
 import { registerRuntimeHostExternalSessionsIpc } from "./runtime-host-external-sessions-ipc-main.js";
 import {
   registerRuntimeHostSessionDomainsIpc,
@@ -166,6 +168,8 @@ export interface DesktopRuntimeHostCandidateStartInput
   readonly generation?: string;
   readonly takeoverHostEpoch?: string;
   readonly signal?: AbortSignal;
+  /** Candidate-exit sink forwarded to the launcher; the Desktop owns the sink. */
+  readonly onExit?: (details: CandidateExitDetails) => void;
   readonly candidateLaunchBarrier?: RuntimeHostCandidateLaunchBarrier;
   readonly remote?: {
     readonly profile: RemoteRuntimeHostProfile;
@@ -678,6 +682,7 @@ export async function createDesktopRuntimeHostCandidate(
       },
       ipc,
     );
+    registerRuntimeHostWorkHubIpc(client, ipc);
     registerRuntimeHostExternalSessionsIpc(
       {
         client,
@@ -779,6 +784,7 @@ function connectInput(
       ? {}
       : { handshakeTimeoutMs: input.handshakeTimeoutMs }),
     ...(input.signal === undefined ? {} : { signal: input.signal }),
+    ...(input.onExit === undefined ? {} : { onExit: input.onExit }),
   };
 }
 

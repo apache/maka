@@ -559,14 +559,13 @@ async function createFixture(options: { recoverAdmissions?: boolean } = {}): Pro
     readRootState: (sessionId) => requireCoordinator(coordinator).readRootState(sessionId),
     claimStopFence: (input, commitQueueFence, lease) =>
       requireCoordinator(coordinator).claimStopFence(input, commitQueueFence, lease),
-    startFromMessage: (input, lease) =>
-      requireCoordinator(coordinator).startFromMessage(input, lease),
+    startFromMessage: (input, lease, commitAdmission) =>
+      requireCoordinator(coordinator).startFromMessage(input, lease, commitAdmission),
     prepareMessage: (input) => requireCoordinator(coordinator).prepareMessage(input),
     claimStop: (input, commitQueueFence, lease) =>
       requireCoordinator(coordinator).claimStop(input, commitQueueFence, lease),
   };
   const hostEpoch = 'goal-root-epoch';
-  await stores.messageReceiptStore.beginHostEpoch(hostEpoch);
   const messages = new HostMessageCoordinator({
     hostEpoch,
     root: rootPort,
@@ -576,7 +575,7 @@ async function createFixture(options: { recoverAdmissions?: boolean } = {}): Pro
       readImmutableSteeringMessageProof: (sessionId, messageId) =>
         stores.runtimeEventStore.readImmutableSteeringMessageProof(sessionId, messageId),
     },
-    receipts: stores.messageReceiptStore,
+    admissions: stores.sessionStore,
     sessionAdmission: admission,
     acquireResidency,
     requestDrain: () => {

@@ -30,7 +30,10 @@ import {
   SESSION_CONTINUITY_SCHEMA_VERSION,
   type SessionCatalogProjection,
 } from "@maka/runtime-host/protocol";
-import { RuntimeHostOperationError } from '@maka/runtime-host/client';
+import {
+  RuntimeHostOperationError,
+  RuntimeHostRequestInterruptedError,
+} from '@maka/runtime-host/client';
 import { createAttachmentApprovalRegistry } from "../attachment-approval.js";
 import type { DesktopRuntimeHostSession } from "../runtime-host-client.js";
 import {
@@ -39,6 +42,13 @@ import {
 } from "../runtime-host-session-execution-ipc-main.js";
 import { RuntimeHostSessionObserver } from "../runtime-host-session-observer.js";
 import { runtimeHostSessionFixture } from "./runtime-host-session-test-fixture.js";
+
+test('registers Session observation as one reconnectable operation', () => {
+  const ipc = ipcHarness();
+  registerExecutionIpc({ client: executionClient({}) }, ipc);
+
+  assert.equal(ipc.reconnectableChannels.has('sessions:observe'), true);
+});
 
 test("keeps synthetic E2E interactions visible through Host hydration and retires their answer", async () => {
   const observer = observerWithSnapshot();
@@ -609,7 +619,7 @@ test("queues a mid-turn send as steering when the Host reports the session busy"
   assert.deepEqual(submits, [
     {
       sessionId: "session-1",
-      messageId: "id-1",
+      messageId: "turn-1",
       content: { text: "also check the tests", inlineReferences: [] },
       placement: "current_turn",
     },
@@ -627,8 +637,235 @@ test("queues a mid-turn send as steering when the Host reports the session busy"
   ]);
 });
 
+test("retries a dispatched normal send with its original Turn identity", async () => {
+  const starts: unknown[] = [];
+  let reconnectQueries = 0;
+  const ipc = ipcHarness();
+  registerExecutionIpc(
+    {
+      client: executionClient({
+        getSession: async () => {
+          reconnectQueries += 1;
+          return sideConversationSession();
+        },
+        startTurn: async (input) => {
+          starts.push(input);
+          if (starts.length === 1) {
+            throw new RuntimeHostRequestInterruptedError(
+              "turn.start",
+              "command",
+              "dispatched",
+              "connection_lost",
+            );
+          }
+          return {
+            kind: "started",
+            turn: {
+              sessionId: input.sessionId,
+              turnId: input.turnId,
+              runId: "run-1",
+              status: "running",
+            },
+            skillInvocation: { loaded: [], failed: [], receipts: [] },
+          };
+        },
+      }),
+      newId: () => "turn-1",
+    },
+    ipc,
+  );
+
+  const result = await ipc.invoke("sessions:send", "session-1", {
+    type: "send",
+    text: "keep this Turn identity",
+  });
+
+  assert.equal(reconnectQueries, 2, 'initial Session lookup plus reconnect probe');
+  assert.deepEqual(starts, [
+    {
+      sessionId: "session-1",
+      turnId: "turn-1",
+      content: { text: "keep this Turn identity", inlineReferences: [] },
+    },
+    {
+      sessionId: "session-1",
+      turnId: "turn-1",
+      content: { text: "keep this Turn identity", inlineReferences: [] },
+    },
+  ]);
+  assert.deepEqual(result, {
+    ok: true,
+    turnId: "turn-1",
+    attachments: [],
+    inlineReferences: [],
+    skillInvocation: { loaded: [], failed: [], receipts: [] },
+  });
+});
+
+test("does not add admission retry semantics to an ordinary send", async () => {
+  let starts = 0;
+  let sessionQueries = 0;
+  const ipc = ipcHarness();
+  registerExecutionIpc(
+    {
+      client: executionClient({
+        getSession: async () => {
+          sessionQueries += 1;
+          return session();
+        },
+        startTurn: async () => {
+          starts += 1;
+          throw new RuntimeHostRequestInterruptedError(
+            "turn.start",
+            "command",
+            "dispatched",
+            "connection_lost",
+          );
+        },
+      }),
+      newId: () => "turn-1",
+    },
+    ipc,
+  );
+
+  await assert.rejects(
+    ipc.invoke("sessions:send", "session-1", {
+      type: "send",
+      text: "preserve the ordinary send contract",
+    }),
+    RuntimeHostRequestInterruptedError,
+  );
+  assert.equal(starts, 1);
+  assert.equal(sessionQueries, 1, "only the initial Session lookup runs");
+});
+
+test("retries a dispatched busy fallback with its original message identity", async () => {
+  const submits: unknown[] = [];
+  let reconnectQueries = 0;
+  const ipc = ipcHarness();
+  registerExecutionIpc(
+    {
+      client: executionClient({
+        getSession: async (sessionId) => {
+          reconnectQueries += 1;
+          return sessionId === 'side-session'
+            ? sideConversationSession(sessionId)
+            : session();
+        },
+        startTurn: async () => {
+          throw new RuntimeHostOperationError(
+            "turn.start",
+            "session_busy",
+            "Session already has an active root Turn",
+          );
+        },
+        submitMessage: async (input) => {
+          submits.push(input);
+          if (
+            input.messageId === "turn-unknown" ||
+            input.content.text === "ordinary chat keeps the existing failure contract"
+          ) {
+            throw new RuntimeHostOperationError(
+              "turn.message.submit",
+              "outcome_unknown",
+              "Message disposition cannot be proven in this Host Epoch",
+            );
+          }
+          if (submits.length === 1) {
+            throw new RuntimeHostRequestInterruptedError(
+              "turn.message.submit",
+              "command",
+              "dispatched",
+              "connection_lost",
+            );
+          }
+          return { disposition: "steering", queueRevision: 1 };
+        },
+      }),
+      newId: () => "id-1",
+    },
+    ipc,
+  );
+
+  const result = await ipc.invoke("sessions:send", "side-session", {
+    type: "send",
+    turnId: "turn-1",
+    text: "keep this message identity",
+  });
+
+  assert.equal(reconnectQueries, 2, 'initial Session lookup plus reconnect probe');
+  assert.deepEqual(submits, [
+    {
+      sessionId: "side-session",
+      messageId: "turn-1",
+      content: { text: "keep this message identity", inlineReferences: [] },
+      placement: "current_turn",
+    },
+    {
+      sessionId: "side-session",
+      messageId: "turn-1",
+      content: { text: "keep this message identity", inlineReferences: [] },
+      placement: "current_turn",
+    },
+  ]);
+  assert.deepEqual(result, {
+    ok: true,
+    steered: true,
+    turnId: "turn-1",
+    messageId: "turn-1",
+    attachments: [],
+    inlineReferences: [],
+    skillInvocation: { loaded: [], failed: [], receipts: [] },
+  });
+  await assert.rejects(
+    ipc.invoke("sessions:send", "session-1", {
+      type: "send",
+      turnId: "turn-unknown",
+      text: "ordinary chat keeps the existing failure contract",
+    }),
+    (error: unknown) =>
+      error instanceof RuntimeHostOperationError && error.code === 'outcome_unknown',
+  );
+  assert.deepEqual(
+    await ipc.invoke("sessions:send", "side-session", {
+      type: "send",
+      turnId: "turn-unknown",
+      text: "keep waiting for the Host outcome",
+    }),
+    {
+      ok: false,
+      reason: "outcome_unknown",
+      messageId: "turn-unknown",
+      skillInvocation: { loaded: [], failed: [], receipts: [] },
+    },
+  );
+});
+
+test("returns the Host-started Turn identity when a direct steer races idle", async () => {
+  const ipc = ipcHarness();
+  registerExecutionIpc(
+    {
+      client: executionClient({
+        getSession: async () => session(),
+        submitMessage: async () => ({
+          disposition: "turn_started",
+          turnId: "host-started-turn",
+        }),
+      }),
+      newId: () => "steer-message-id",
+    },
+    ipc,
+  );
+
+  assert.deepEqual(await ipc.invoke("sessions:steer", "session-1", "continue now"), {
+    kind: "started",
+    turnId: "host-started-turn",
+  });
+});
+
 test("starts the turn from the queued message when the busy race resolves idle", async () => {
   const changes: unknown[] = [];
+  const submits: unknown[] = [];
   const ipc = ipcHarness();
   registerExecutionIpc(
     {
@@ -641,10 +878,13 @@ test("starts the turn from the queued message when the busy race resolves idle",
             "Session already has an active root Turn",
           );
         },
-        submitMessage: async () => ({
-          disposition: "turn_started",
-          turnId: "turn-9",
-        }),
+        submitMessage: async (input) => {
+          submits.push(input);
+          return {
+            disposition: "turn_started",
+            turnId: "turn-9",
+          };
+        },
       }),
       observer: unusedObserver(),
       attachmentApprovals: createAttachmentApprovalRegistry(),
@@ -671,6 +911,12 @@ test("starts the turn from the queued message when the busy race resolves idle",
     inlineReferences: [],
     skillInvocation: { loaded: [], failed: [], receipts: [] },
   });
+  assert.deepEqual(submits, [{
+    sessionId: "session-1",
+    messageId: "turn-1",
+    content: { text: "also check the tests", inlineReferences: [] },
+    placement: "current_turn",
+  }]);
   assert.deepEqual(changes, [
     { reason: "status-change", sessionId: "session-1", turnId: "turn-9" },
   ]);
@@ -910,11 +1156,20 @@ test("routes per-entry queue mutations to the Runtime Host", async () => {
 test("binds steer and stop to Host-owned queue and active Turn identities", async () => {
   const submits: unknown[] = [];
   const interrupts: unknown[] = [];
+  const retractions: unknown[] = [];
   const stopLifecycle: string[] = [];
   let sequence = 0;
   const client = executionClient({
+    getSession: async () => sideConversationSession(),
     submitMessage: async (input) => {
       submits.push(input);
+      if (input.messageId === 'unknown-ticket') {
+        throw new RuntimeHostOperationError(
+          'turn.message.submit',
+          'outcome_unknown',
+          'Message disposition cannot be proven in this Host Epoch',
+        );
+      }
       return { disposition: "steering", queueRevision: 2 };
     },
     interruptTurn: async (input) => {
@@ -933,17 +1188,47 @@ test("binds steer and stop to Host-owned queue and active Turn identities", asyn
         },
       };
     },
+    retractQueueEntry: async (input) => {
+      retractions.push(input);
+      if (retractions.length === 1) {
+        throw new RuntimeHostRequestInterruptedError(
+          'queue.retract',
+          'command',
+          'dispatched',
+          'connection_lost',
+        );
+      }
+      return { queueRevision: 3 };
+    },
   });
-  const observer = observerWithSnapshot();
+  const observer = observerWithSnapshot({
+    queue: {
+      hostEpoch: 'host-1',
+      queueRevision: 2,
+      steering: [
+        {
+          entryId: 'entry-1',
+          messageId: 'steer-ticket-1',
+          content: { text: 'Continue' },
+          placement: 'current_turn',
+          state: 'queued',
+        },
+        {
+          entryId: 'entry-2',
+          messageId: 'in-flight-ticket',
+          content: { text: 'Already accepted' },
+          placement: 'current_turn',
+          state: 'in_flight',
+        },
+      ],
+      followup: [],
+    },
+  });
   const ipc = ipcHarness();
   registerExecutionIpc(
     {
       client,
       observer,
-      attachmentApprovals: createAttachmentApprovalRegistry(),
-      emitSessionsChanged() {},
-      stat: async () => ({ size: 0 }),
-      resizeImage: async (bytes) => bytes,
       beforeStop() {
         stopLifecycle.push("teardown");
       },
@@ -953,11 +1238,45 @@ test("binds steer and stop to Host-owned queue and active Turn identities", asyn
   );
 
   assert.deepEqual(
-    await ipc.invoke("sessions:steer", "session-1", "  Continue  "),
+    await ipc.invoke("sessions:steer", "session-1", "  Continue  ", "steer-ticket-1"),
     {
       kind: "queued",
+      messageId: "steer-ticket-1",
     },
   );
+  assert.deepEqual(
+    await ipc.invoke('sessions:steer', 'session-1', 'Continue', 'unknown-ticket'),
+    { kind: 'outcome_unknown', messageId: 'unknown-ticket' },
+  );
+  assert.deepEqual(
+    await ipc.invoke("sessions:stop", "session-1", {
+      source: "stop_button",
+      expectedAdmissionId: "steer-ticket-1",
+    }),
+    { kind: 'retracted', messageId: 'steer-ticket-1' },
+  );
+  assert.deepEqual(retractions, [
+    {
+      sessionId: 'session-1',
+      entryId: 'entry-1',
+      retractId: 'id-1',
+    },
+    {
+      sessionId: 'session-1',
+      entryId: 'entry-1',
+      retractId: 'id-1',
+    },
+  ]);
+  assert.deepEqual(stopLifecycle, []);
+  await assert.rejects(
+    () =>
+      ipc.invoke('sessions:stop', 'session-1', {
+        source: 'stop_button',
+        expectedAdmissionId: 'in-flight-ticket',
+      }),
+    /Host admission outcome is unknown/,
+  );
+  assert.deepEqual(stopLifecycle, []);
   await ipc.invoke("sessions:stop", "session-1", {
     source: "stop_button",
     expectedTurnId: "turn-unrelated",
@@ -967,24 +1286,81 @@ test("binds steer and stop to Host-owned queue and active Turn identities", asyn
     source: "stop_button",
     expectedTurnId: "turn-1",
   });
-  assert.deepEqual(stopLifecycle, ["teardown", "interrupt"]);
+  assert.deepEqual(stopLifecycle, [
+    'teardown',
+    'interrupt',
+  ]);
 
   assert.deepEqual(submits, [
     {
       sessionId: "session-1",
-      messageId: "id-1",
+      messageId: "steer-ticket-1",
       content: { text: "Continue" },
       placement: "current_turn",
+    },
+    {
+      sessionId: 'session-1',
+      messageId: 'unknown-ticket',
+      content: { text: 'Continue' },
+      placement: 'current_turn',
     },
   ]);
   assert.deepEqual(interrupts, [
     {
       sessionId: "session-1",
       interruptId: "id-2",
-      turnId: "turn-1",
-      runId: "run-1",
+      turnId: 'turn-1',
+      runId: 'run-1',
     },
   ]);
+  await observer.close();
+});
+
+test('does not let an admitted Stop interrupt a replacement Turn', async () => {
+  const interrupts: unknown[] = [];
+  const observer = observerWithSnapshot();
+  const originalSnapshot = observer.snapshot.bind(observer);
+  let replaced = false;
+  observer.snapshot = async (sessionId) => {
+    const current = await originalSnapshot(sessionId);
+    return replaced
+      ? {
+          ...current,
+          rootTurn: {
+            sessionId,
+            turnId: 'turn-2',
+            runId: 'run-2',
+            status: 'running',
+          },
+        }
+      : current;
+  };
+  const ipc = ipcHarness();
+  registerExecutionIpc(
+    {
+      client: executionClient({
+        interruptTurn: async (input) => {
+          interrupts.push(input);
+          throw new Error('replacement Turn must not be interrupted');
+        },
+      }),
+      observer,
+      beforeStop() {
+        replaced = true;
+      },
+    },
+    ipc,
+  );
+
+  await assert.rejects(
+    () =>
+      ipc.invoke('sessions:stop', 'session-1', {
+        source: 'stop_button',
+        expectedAdmissionId: 'turn-1',
+      }),
+    /Host admission outcome is unknown/,
+  );
+  assert.deepEqual(interrupts, []);
   await observer.close();
 });
 
@@ -1031,12 +1407,15 @@ function unusedObserver(): RuntimeHostSessionObserver {
   });
 }
 
-function observerWithSnapshot(): RuntimeHostSessionObserver {
-  return observerWithTranscript([]);
+function observerWithSnapshot(
+  overrides: Partial<import('@maka/runtime-host/protocol').SessionContinuitySnapshot> = {},
+): RuntimeHostSessionObserver {
+  return observerWithTranscript([], overrides);
 }
 
 function observerWithTranscript(
   transcript: readonly import('@maka/core/session').StoredMessage[],
+  overrides: Partial<import('@maka/runtime-host/protocol').SessionContinuitySnapshot> = {},
 ): RuntimeHostSessionObserver {
   let finishEvents!: () => void;
   const eventsFinished = new Promise<void>((resolve) => {
@@ -1069,6 +1448,7 @@ function observerWithTranscript(
             followup: [],
           },
           interactions: { pending: [] },
+          ...overrides,
         },
         activeAssistantStreams: [],
         transcript: Promise.resolve([...transcript]),
@@ -1090,15 +1470,24 @@ type IpcHandler = Parameters<Pick<IpcMain, "handle">["handle"]>[1];
 
 function ipcHarness() {
   const handlers = new Map<string, IpcHandler>();
+  const reconnectableChannels = new Set<string>();
   const sender = Object.assign(new EventEmitter(), { id: 9, send() {} });
+  const register = (channel: string, handler: IpcHandler) => {
+    assert.equal(
+      handlers.has(channel),
+      false,
+      `duplicate handler: ${channel}`,
+    );
+    handlers.set(channel, handler);
+  };
   return {
+    reconnectableChannels,
     handle(channel: string, handler: IpcHandler) {
-      assert.equal(
-        handlers.has(channel),
-        false,
-        `duplicate handler: ${channel}`,
-      );
-      handlers.set(channel, handler);
+      register(channel, handler);
+    },
+    handleReconnectableRead(channel: string, handler: IpcHandler) {
+      reconnectableChannels.add(channel);
+      register(channel, handler);
     },
     async invoke(channel: string, ...args: unknown[]): Promise<unknown> {
       const handler = handlers.get(channel);
@@ -1115,22 +1504,21 @@ function ipcHarness() {
 }
 
 function registerExecutionIpc(
-  deps: Omit<
-    RuntimeHostSessionExecutionIpcDeps,
-    'sessionCopyCleanup' | 'onBackgroundError' | 'observations'
-  > &
-    Partial<
-      Pick<
-        RuntimeHostSessionExecutionIpcDeps,
-        'sessionCopyCleanup' | 'onBackgroundError' | 'observations'
-      >
-    >,
-  ipcMain: Pick<IpcMain, 'handle'>,
+  deps: Pick<RuntimeHostSessionExecutionIpcDeps, 'client'> &
+    Partial<Omit<RuntimeHostSessionExecutionIpcDeps, 'client'>>,
+  ipcMain: Pick<IpcMain, 'handle'> & { handleReconnectableRead?: IpcMain['handle'] },
 ): (sessionId: string) => Promise<void> {
+  const observer = deps.observer ?? unusedObserver();
   return registerRuntimeHostSessionExecutionIpc(
     {
+      observer,
+      attachmentApprovals: createAttachmentApprovalRegistry(),
+      emitSessionsChanged() {},
+      stat: async () => ({ size: 0 }),
+      resizeImage: async (bytes) => bytes,
+      beforeStop() {},
       ...deps,
-      observations: deps.observations ?? deps.observer,
+      observations: deps.observations ?? observer,
       sessionCopyCleanup: deps.sessionCopyCleanup ?? unusedSessionCopyCleanup(),
       onBackgroundError: deps.onBackgroundError ?? (() => undefined),
     },
@@ -1151,9 +1539,9 @@ function unusedSessionCopyCleanup(): RuntimeHostSessionExecutionIpcDeps['session
   };
 }
 
-function session(cwd = "/workspace"): SessionCatalogProjection {
+function session(cwd = "/workspace", id = 'session-1'): SessionCatalogProjection {
   return {
-    id: "session-1",
+    id,
     revision: 1,
     workspace: {
       target: { kind: 'host_path', path: cwd },
@@ -1176,4 +1564,8 @@ function session(cwd = "/workspace"): SessionCatalogProjection {
     collaborationMode: "agent",
     orchestrationMode: "default",
   };
+}
+
+function sideConversationSession(id = 'session-1'): SessionCatalogProjection {
+  return { ...session('/workspace', id), labels: [SIDE_CONVERSATION_SESSION_LABEL] };
 }

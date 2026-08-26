@@ -267,15 +267,6 @@ async function exportFilteredDatabase(
       )
     `)
       .run();
-    database
-      .prepare(`
-      DELETE FROM core_message_host_epochs
-      WHERE NOT EXISTS (
-        SELECT 1 FROM core_message_receipts
-        WHERE core_message_receipts.host_epoch = core_message_host_epochs.host_epoch
-      )
-    `)
-      .run();
     database.exec('COMMIT');
     const foreignKeyViolation = database.prepare('PRAGMA foreign_key_check').get();
     if (foreignKeyViolation) throw new Error('Filtered session database has dangling references');
@@ -305,7 +296,6 @@ const PORTABLE_DERIVED_TABLES = new Set([
   'tool_operations',
   'runtime_partial_segments',
   'core_interaction_outcomes',
-  'core_message_host_epochs',
 ]);
 
 export function isArtifactPathForSession(relativePath: string, sessionId: string): boolean {

@@ -230,13 +230,13 @@ Astryx
 
 Source: https://github.com/facebook/astryx
 ChatReasoning revision: c9fe4379e9959b9ba5eeff56def34c752223450e
-Theme revision: 110987b4505dc44119b94bed53d92b9840088a61
+Theme revision: ea888ef33283ea44e37817d36bc8e84a0568bc30
 Copyright (c) 2026 Meta Platforms, Inc.
 License: MIT
 
 Maka includes an ejected adaptation of Astryx ChatReasoning v0.1.9 and generated
-theme artifacts based on Astryx theme-neutral v0.4.5. Maka also redistributes
-`patches/@astryxdesign+core+0.4.5.patch`, which modifies the MIT-licensed Astryx
+theme artifacts based on Astryx theme-neutral v0.5.0. Maka also redistributes
+`patches/@astryxdesign+core+0.5.0.patch`, which modifies the MIT-licensed Astryx
 core package. The following MIT License applies to that material:
 
 MIT License

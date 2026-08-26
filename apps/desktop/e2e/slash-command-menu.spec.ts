@@ -170,70 +170,109 @@ test('an open menu keeps its container and skills group across projection refres
   await composer.fill('seed session');
   await composer.press('Enter');
   await expect(page.getByText('Fake backend received: seed session')).toBeVisible();
+  await expect(page.getByRole('button', { name: '停止' })).toHaveCount(0);
+
+  // The completed turn publishes its own projection refresh. Wait on the
+  // composer's public loading state so that work cannot spill into the window
+  // this test is about.
+  await page.getByRole('button', { name: '添加上下文' }).click();
+  const contextMenu = page.getByRole('menu', { name: '添加上下文' });
+  await expect(contextMenu.getByRole('menuitem', { name: /选择技能/ })).not.toHaveAttribute(
+    'aria-busy',
+    'true',
+  );
+  await page.keyboard.press('Escape');
+  await expect(contextMenu).toHaveCount(0);
 
   await composer.click();
   await composer.pressSequentially('/');
   const menu = page.getByRole('listbox', { name: '命令和技能' });
   await expect(menu.getByRole('group', { name: 'Skills' })).toBeVisible();
 
-  // Armed before the refresh: the flicker was the skills group (and with it
-  // the listbox geometry) being torn down and re-created when the projection
-  // cleared and repopulated, so any removal during the refresh is the
-  // regression (#2667).
-  await page.evaluate(() => {
-    const state = { removals: 0 };
-    (globalThis as unknown as { __slashMenuWatch?: unknown }).__slashMenuWatch = state;
-    const observer = new MutationObserver((mutations) => {
-      for (const mutation of mutations) {
-        for (const node of mutation.removedNodes) {
-          if (!(node instanceof HTMLElement)) continue;
-          if (
-            node.matches('[role="listbox"], [role="group"]') ||
-            node.querySelector('[role="listbox"], [role="group"]') !== null
-          ) {
-            state.removals += 1;
-          }
-        }
-      }
-    });
-    observer.observe(document.body, { childList: true, subtree: true });
-  });
-
   // A thinking-level change publishes the session's 'updated' event and
   // reloads the Skill projection without changing what the menu shows: the
   // exact same-content refresh that used to alternate the popup (#2667).
-  const sessionId = await page.evaluate(async () => {
+  const observation = await menu.evaluate(async (menuElement) => {
     const sessions = await (
       window as unknown as {
         maka: { sessions: { list(): Promise<Array<{ id: string }>> } };
       }
     ).maka.sessions.list();
-    return sessions[0]?.id;
+    const sessionId = sessions[0]?.id;
+    if (!sessionId) throw new Error('Session missing before projection refresh');
+
+    // Arm immediately before the refreshes and only on this popover. The
+    // document body also contains unrelated overlays whose teardown says
+    // nothing about this menu's identity.
+    const menuContainer = menuElement.parentElement;
+    const state = { menuRemovals: 0, skillsGroupRemovals: 0 };
+    const skillsGroup = menuElement.querySelector<HTMLElement>('[role="group"][aria-label="Skills"]');
+    if (!menuContainer) throw new Error('Slash menu container missing before projection refresh');
+    if (!skillsGroup) throw new Error('Skills group missing before projection refresh');
+    const recordRemoval = (
+      mutations: MutationRecord[],
+      watchedNode: Node,
+      key: 'menuRemovals' | 'skillsGroupRemovals',
+    ) => {
+      for (const mutation of mutations) {
+        for (const node of mutation.removedNodes) {
+          if (node === watchedNode) state[key] += 1;
+        }
+      }
+    };
+    const menuObserver = new MutationObserver((mutations) => {
+      recordRemoval(mutations, menuElement, 'menuRemovals');
+    });
+    const skillsGroupObserver = new MutationObserver((mutations) => {
+      recordRemoval(mutations, skillsGroup, 'skillsGroupRemovals');
+    });
+    menuObserver.observe(menuContainer, { childList: true });
+    skillsGroupObserver.observe(menuElement, { childList: true });
+    const maka = (
+      window as unknown as {
+        maka: {
+          sessions: {
+            setThinkingLevel(id: string, level?: null): Promise<unknown>;
+          };
+        };
+      }
+    ).maka;
+    const e2eControls = (
+      window as unknown as {
+        makaE2eLatch?: {
+          waitForInvocableSkillsCall(sessionId: string): Promise<void>;
+        };
+      }
+    ).makaE2eLatch;
+    if (!e2eControls) throw new Error('E2E bridge controls missing before projection refresh');
+    try {
+      for (let round = 0; round < 3; round += 1) {
+        const projectionSettled = e2eControls.waitForInvocableSkillsCall(sessionId);
+        await maka.sessions.setThinkingLevel(sessionId, null);
+        await projectionSettled;
+        await new Promise<void>((resolve) => {
+          requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
+        });
+      }
+    } finally {
+      // Drain the final queued batch before closing the exact refresh window;
+      // polling a monotonic counter cannot turn a failure into success.
+      recordRemoval(menuObserver.takeRecords(), menuElement, 'menuRemovals');
+      recordRemoval(skillsGroupObserver.takeRecords(), skillsGroup, 'skillsGroupRemovals');
+      menuObserver.disconnect();
+      skillsGroupObserver.disconnect();
+    }
+    return {
+      ...state,
+      menuConnected: menuElement.isConnected,
+      skillsGroupConnected: skillsGroup.isConnected,
+    };
   });
-  for (let round = 0; round < 3; round += 1) {
-    await page.evaluate(
-      (id) =>
-        (
-          window as unknown as {
-            maka: { sessions: { setThinkingLevel(id: string, level?: null): Promise<unknown> } };
-          }
-        ).maka.sessions.setThinkingLevel(id!, null),
-      sessionId,
-    );
-  }
-  // The refresh round trip is IPC-fast; the poll below gives it room while
-  // asserting the menu never lost its skills group.
-  await expect(menu.getByRole('group', { name: 'Skills' })).toBeVisible();
-  await expect
-    .poll(
-      () =>
-        page.evaluate(
-          () =>
-            (globalThis as unknown as { __slashMenuWatch: { removals: number } }).__slashMenuWatch
-              .removals,
-        ),
-      { timeout: 3_000 },
-    )
-    .toBe(0);
+  expect(observation).toEqual({
+    menuRemovals: 0,
+    skillsGroupRemovals: 0,
+    menuConnected: true,
+    skillsGroupConnected: true,
+  });
   await expect(menu.getByRole('group', { name: 'Skills' })).toBeVisible();
 });

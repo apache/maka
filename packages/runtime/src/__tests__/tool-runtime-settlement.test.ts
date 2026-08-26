@@ -205,7 +205,7 @@ describe('ToolRuntime settlement', () => {
         turnId: 'turn-1',
         stepId: 'step-1',
         toolCallId: `call-${index}`,
-        input: { command: terminal.cmd },
+        input: { command: terminal.cmd, boundary_intent: 'current' },
         abortSignal: new AbortController().signal,
         eventSink: {
           push: () => {},

@@ -17,7 +17,10 @@
  * under the License.
  */
 
-import { RuntimeHostSubscriptionError } from "@maka/runtime-host/client";
+import {
+  RuntimeHostOperationError,
+  RuntimeHostSubscriptionError,
+} from "@maka/runtime-host/client";
 import type {
   SessionAssistantStreamIdentity,
   SessionContinuitySnapshot,
@@ -414,6 +417,9 @@ function subscriptionClosedError(
 }
 
 function isRecoverableSubscriptionFailure(error: unknown): boolean {
+  if (error instanceof RuntimeHostOperationError) {
+    return error.operation === "session.transcript.page" && error.code === "not_found";
+  }
   if (!(error instanceof RuntimeHostSubscriptionError)) return false;
   return (
     error.reason === "slow_consumer" ||

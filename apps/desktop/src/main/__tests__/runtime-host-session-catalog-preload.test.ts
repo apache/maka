@@ -20,7 +20,10 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import type { DesktopSessionSummary } from '../../preload/bridge-contract.js';
-import { collectRuntimeHostSessionCatalogs } from '../../preload/runtime-host-session-catalog.js';
+import {
+  collectRuntimeHostSessionCatalogs,
+  collectRuntimeHostSessionCatalogsWithCoverage,
+} from '../../preload/runtime-host-session-catalog.js';
 
 function session(id: string, activityAt: number): DesktopSessionSummary {
   return { id, activityAt } as DesktopSessionSummary;
@@ -34,6 +37,16 @@ test('keeps healthy Host catalogs when another Host rejects', async () => {
   ]);
 
   assert.deepEqual(sessions.map(({ id }) => id), ['newer', 'older']);
+});
+
+test('reports exactly which Host catalogs are complete', async () => {
+  const catalog = await collectRuntimeHostSessionCatalogsWithCoverage([
+    { hostId: 'local', sessions: Promise.resolve([session('local-session', 1)]) },
+    { hostId: 'remote', sessions: Promise.reject(new Error('remote unavailable')) },
+  ]);
+
+  assert.deepEqual(catalog.sessions.map(({ id }) => id), ['local-session']);
+  assert.deepEqual(catalog.completeHostIds, ['local']);
 });
 
 test('fails when every Host catalog rejects', async () => {

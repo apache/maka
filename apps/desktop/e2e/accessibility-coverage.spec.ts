@@ -83,25 +83,25 @@ test('module pages and global overlays expose named actionable controls', async 
   const extensionsNavigation = page.getByRole('navigation', { name: /扩展内容/ });
   await expect(
     extensionsNavigation.getByRole('button', { name: '技能', exact: true }),
-  ).toHaveAttribute('aria-current', 'page');
+  ).toHaveAttribute('aria-current', 'true');
   await assertAxHealth(cdp, 'extensions/skills');
   const mcpButton = extensionsNavigation.getByRole('button', { name: 'MCP', exact: true });
   await mcpButton.click();
-  await expect(mcpButton).toHaveAttribute('aria-current', 'page');
+  await expect(mcpButton).toHaveAttribute('aria-current', 'true');
   await assertAxHealth(cdp, 'extensions/mcp');
 
   await navigation.getByRole('button', { name: /定时任务/ }).click();
   const automationsNavigation = page.getByRole('navigation', { name: /定时任务内容/ });
   await expect(
     automationsNavigation.getByRole('button', { name: '定时任务', exact: true }),
-  ).toHaveAttribute('aria-current', 'page');
+  ).toHaveAttribute('aria-current', 'true');
   await assertAxHealth(cdp, 'automations/scheduled-tasks');
   const dailyReviewButton = automationsNavigation.getByRole('button', {
     name: '每日回顾',
     exact: true,
   });
   await dailyReviewButton.click();
-  await expect(dailyReviewButton).toHaveAttribute('aria-current', 'page');
+  await expect(dailyReviewButton).toHaveAttribute('aria-current', 'true');
   await assertAxHealth(cdp, 'automations/daily-review');
 
   await page.keyboard.press('Shift+Slash');

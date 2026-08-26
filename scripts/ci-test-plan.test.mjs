@@ -156,6 +156,8 @@ test('release authority changes select their dedicated contract gate', () => {
     'scripts/verify-packaged-app.mjs',
     'scripts/verify-windows-x64.mjs',
     'scripts/windows-upgrade-baseline.json',
+    'scripts/windows-package-source-closure.mjs',
+    'scripts/windows-package-source-closure.test.mjs',
   ]) {
     assert.equal(planTests([path], { graph }).releaseContract, true, path);
   }
@@ -341,9 +343,23 @@ test('pull request triggers stay on an explicit allowlist', () => {
     'ci.yml',
     'copilot-auto-review.yml',
     'dependency-audit.yml',
+    'gitoxide-helper-admission.yml',
     'release-windows-check.yml',
+    'runtime-host-owner-platform.yml',
+    'runtime-host-peer-admission.yml',
+    'windows-recovery.yml',
     'windows-sandbox-w0.yml',
   ]);
+});
+
+test('Windows recovery publishes one stable PR and main check for ruleset enforcement', () => {
+  const workflow = readWorkflow('windows-recovery.yml');
+
+  assert.match(workflow, /\n {2}pull_request:\n {4}branches: \[main\]/u);
+  assert.match(workflow, /\n {2}push:\n {4}branches: \[main\]/u);
+  assert.match(workflow, /\n {2}workflow_dispatch:/u);
+  assert.match(workflow, /\n {4}name: windows_recovery/u);
+  assert.match(workflow, /cancel-in-progress: \$\{\{ github\.event_name == 'pull_request' \}\}/u);
 });
 
 test('the sandbox lane pairs its path filter with a nightly run', () => {
@@ -363,6 +379,65 @@ test('the packaged Windows gate owns Runtime Host candidate election changes', (
   assert.match(workflow, /'packages\/runtime-host\/src\/client\/launcher\.ts'/u);
 });
 
+test('the packaged Windows gate triggers on release orchestration changes', () => {
+  const workflow = readWorkflow('release-windows-check.yml');
+
+  assert.match(workflow, /'\.github\/workflows\/release\.yml'/u);
+});
+
+test('the packaged Windows gate workflow is itself a release-contract input', () => {
+  assert.equal(
+    planTests(['.github/workflows/release-windows-check.yml'], { graph }).releaseContract,
+    true,
+  );
+  assert.match(
+    readWorkflow('release-windows-check.yml'),
+    /'\.github\/workflows\/release-windows-check\.yml'/u,
+  );
+});
+
+test('the packaged Windows gate triggers on packaged sandbox inputs', () => {
+  const workflow = readWorkflow('release-windows-check.yml');
+
+  for (const path of [
+    'apps/desktop/scripts/copy-runtime-filesystem-worker.mjs',
+    'packages/runtime/scripts/build-filesystem-worker.mjs',
+    'packages/runtime/src/filesystem-worker/**',
+    'packages/runtime/src/sandbox/**',
+    'packages/runtime/src/path-containment.ts',
+    'packages/runtime/src/sandbox-boundary-path.ts',
+    'packages/core/src/permission-profile.ts',
+    'packages/core/src/permission-profile-compiler.ts',
+  ]) {
+    assert.ok(workflow.includes(`      - '${path}'`), path);
+  }
+});
+
+test('pull-request and release lanes share the packaged sandbox lifecycle verifier', () => {
+  for (const name of ['release-windows-check.yml', 'release.yml']) {
+    assert.match(readWorkflow(name), /npm run verify:windows-x64/u, name);
+  }
+
+  const verifier = readFileSync(new URL('verify-windows-x64.mjs', import.meta.url), 'utf8');
+  assert.match(
+    verifier,
+    /await verifyPackagedWindowsSandboxLifecycle\(sandboxExecutable, \{ run \}\)/u,
+  );
+});
+
+test('the Gitoxide gate owns repository admission changes', () => {
+  const workflow = readWorkflow('gitoxide-helper-admission.yml');
+
+  assert.match(
+    workflow,
+    /'packages\/runtime-host\/src\/server\/gitoxide-repository-admission-authority-internal\.ts'/u,
+  );
+  assert.match(
+    workflow,
+    /'packages\/runtime-host\/src\/__tests__\/gitoxide-repository-admission-authority-internal\.test\.ts'/u,
+  );
+});
+
 test('specialized platform workflows stay reachable without pull requests', () => {
   const cli = readWorkflow('cli-package-validation.yml');
   const baseline = readWorkflow('windows-baseline.yml');
@@ -373,6 +448,20 @@ test('specialized platform workflows stay reachable without pull requests', () =
   }
   assert.match(cli, /\n  workflow_call:/u);
   assert.match(baseline, /\n  schedule:/u);
+});
+
+test('Windows recovery executes the exact managed dependency ADS regressions', () => {
+  const recovery = readWorkflow('windows-recovery.yml');
+
+  assert.match(recovery, /name: Verify managed dependency alternate streams/u);
+  assert.match(recovery, /--test-name-pattern="NTFS alternate stream"/u);
+  assert.match(
+    recovery,
+    /packages\/storage\/dist\/__tests__\/managed-dependency-environment\.test\.js/u,
+  );
+  assert.match(recovery, /# tests 3/u);
+  assert.match(recovery, /# pass 3/u);
+  assert.match(recovery, /# skipped 0/u);
 });
 
 test('workflows never persist the job credential into the checkout', () => {

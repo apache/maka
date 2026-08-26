@@ -46,7 +46,7 @@ import {
 import {
   isMcpStdioConfig,
   isNonLoopbackCleartextHttp,
-  resolveMcpRemoteProtocolPreference,
+  resolveMcpProtocolPreference,
   type McpBoundTool,
   type McpCallResult,
   type McpConfigFile,
@@ -218,7 +218,6 @@ interface Connection {
   credentialCleanupOwed?: McpServerConfig;
   client?: Client;
   transport?: Transport;
-  stdioTransport?: StdioClientTransport;
   connectPromise?: Promise<McpServerStatus>;
   connectController?: AbortController;
   status: McpServerStatus;
@@ -242,7 +241,6 @@ interface OpenedMcpClient {
   client: Client;
   events: McpClientEventBridge;
   transport: Transport;
-  stdioTransport?: StdioClientTransport;
   kind: 'stdio' | 'streamable-http' | 'sse';
   isClosed(): boolean;
 }
@@ -583,7 +581,6 @@ export class McpClientManager {
     const subscription = entry.subscription;
     entry.client = undefined;
     entry.transport = undefined;
-    entry.stdioTransport = undefined;
     entry.subscription = undefined;
     this.replaceToolSnapshot(entry, new Map());
     entry.connectionGeneration = undefined;
@@ -946,7 +943,6 @@ export class McpClientManager {
       }
       entry.client = connectedClient;
       entry.transport = connected.transport;
-      entry.stdioTransport = connected.stdioTransport;
       entry.subscription = subscription;
       const connectionGeneration = this.allocateConnectionGeneration();
       entry.connectionGeneration = connectionGeneration;
@@ -1077,7 +1073,6 @@ export class McpClientManager {
       if (!connected || !entry.client || entry.client === connected.client) {
         entry.client = undefined;
         entry.transport = undefined;
-        entry.stdioTransport = undefined;
         entry.subscription = undefined;
         this.replaceToolSnapshot(entry, new Map());
         entry.connectionGeneration = undefined;
@@ -1129,15 +1124,14 @@ export class McpClientManager {
       attachStderrTail(transport, entry, collectConfigSecrets(entry.config), () => {
         if (this.connections.get(serverId) === entry) this.emit(entry.status);
       });
-      const { client, events } = this.createClient('legacy');
+      const { client, events } = this.createClient(resolveMcpProtocolPreference(entry.config));
       const isClosed = this.watchClientClose(serverId, entry, client);
       try {
-        await client.connect(transport, { timeout: this.timeouts.stdioConnectMs, signal });
+        await connectCandidate(client, transport, this.timeouts.stdioConnectMs, signal);
         return {
           client,
           events,
           transport,
-          stdioTransport: transport,
           kind: 'stdio',
           isClosed,
         };
@@ -1148,7 +1142,7 @@ export class McpClientManager {
     }
     const remoteConfig: McpRemoteServerConfig = entry.config;
     const requested = remoteConfig.transport ?? 'auto';
-    const preference = resolveMcpRemoteProtocolPreference(remoteConfig);
+    const preference = resolveMcpProtocolPreference(remoteConfig);
     if (requested === 'sse' && preference !== 'legacy') {
       throw new Error(`MCP legacy SSE transport does not support protocol ${preference}`);
     }
@@ -1190,7 +1184,7 @@ export class McpClientManager {
       });
       const isClosed = this.watchClientClose(serverId, entry, client);
       try {
-        await connectRemoteCandidate(client, transport, this.timeouts.remoteConnectMs, signal);
+        await connectCandidate(client, transport, this.timeouts.remoteConnectMs, signal);
         return { client, events, transport, kind: 'streamable-http', isClosed };
       } catch (error) {
         const producedProtocolEvidence =
@@ -1219,7 +1213,7 @@ export class McpClientManager {
     });
     const isClosed = this.watchClientClose(serverId, entry, client);
     try {
-      await connectRemoteCandidate(client, transport, this.timeouts.remoteConnectMs, signal);
+      await connectCandidate(client, transport, this.timeouts.remoteConnectMs, signal);
       return { client, events, transport, kind: 'sse', isClosed };
     } catch (error) {
       await safeClose(client, transport);
@@ -1954,7 +1948,6 @@ export class McpClientManager {
     const subscription = entry.subscription;
     entry.client = undefined;
     entry.transport = undefined;
-    entry.stdioTransport = undefined;
     entry.subscription = undefined;
     this.replaceToolSnapshot(entry, new Map());
     entry.connectionGeneration = undefined;
@@ -1985,7 +1978,6 @@ export class McpClientManager {
     const retiredTransport = entry.transport;
     entry.client = undefined;
     entry.transport = undefined;
-    entry.stdioTransport = undefined;
     entry.connectionGeneration = undefined;
     entry.refreshState = undefined;
     entry.refreshNotificationState = undefined;
@@ -2154,7 +2146,7 @@ function shouldFallbackToLegacySse(options: {
   const { remoteConfig, error, signal, producedProtocolEvidence } = options;
   return (
     (remoteConfig.transport ?? 'auto') === 'auto' &&
-    resolveMcpRemoteProtocolPreference(remoteConfig) !== '2026-07-28' &&
+    resolveMcpProtocolPreference(remoteConfig) !== '2026-07-28' &&
     !producedProtocolEvidence &&
     !signal.aborted &&
     SdkHttpError.isInstance(error) &&
@@ -2553,16 +2545,16 @@ async function safeClose(
   ]);
 }
 
-async function connectRemoteCandidate(
+async function connectCandidate(
   client: Client,
   transport: Transport,
   timeout: number,
   signal: AbortSignal,
 ): Promise<void> {
   const closeOnAbort = () => {
-    // SDK v2's server/discover probe currently uses its timeout but not the
-    // Client.connect signal. Closing the candidate transport aborts that probe
-    // instead of leaving a late handshake running after manager cancellation.
+    // SDK v2's server/discover probes currently use their timeout but not the
+    // Client.connect signal. Closing the candidate transport aborts either an
+    // HTTP probe or the disposable stdio sibling before a late session starts.
     void transport.close().catch(() => {});
   };
   if (signal.aborted) {

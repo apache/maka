@@ -95,7 +95,7 @@ export function registerAppIpc(
   // observe the latest selection, not a snapshot taken at registration.
   const currentProjectRoot = (): Promise<string> => projectRoot.current();
 
-  targetIpc.handle('app:info', async () => {
+  handleReconnectableRead(targetIpc, 'app:info', async () => {
     const selection = await deps.projectManagement.current();
     const projectPath = allowLocalProjectPaths ? selection.path : '';
     return {

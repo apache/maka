@@ -19,7 +19,7 @@
 
 # Windows support baseline
 
-Windows is an active enablement target, not a fully supported Maka platform yet. The CLI and Electron desktop application can run from source, and release workflows produce a verified unsigned Windows x64 preview. The x64 package includes an AppContainer sandbox for restricted managed execution, and automatic updates are verified end to end in CI on the unsigned preview channel; signing, the complete adversarial sandbox matrix, and computer-use guarantees remain incomplete. Progress is tracked in [GitHub issue #2142](https://github.com/apache/maka/issues/2142).
+Windows is an active enablement target, not a fully supported Maka platform yet. The CLI and Electron desktop application can run from source, and release workflows produce a verified unsigned Windows x64 preview. The x64 package includes an AppContainer sandbox for the managed filesystem-worker surface, with packaged lifecycle and adversarial evidence, and automatic updates are verified end to end in CI on the unsigned preview channel. Signing, the wider general-command sandbox tier, direct Credential Manager/DPAPI probes, independent security review, and computer-use guarantees remain incomplete. Progress is tracked in [GitHub issue #2142](https://github.com/apache/maka/issues/2142).
 
 ## Install the Windows x64 preview
 
@@ -224,6 +224,11 @@ The root test timeout is tracked separately from individual test failures. Phase
 - PTY execution uses ConPTY through `node-pty`; process-tree termination uses `taskkill /T` where required.
 - Restricted managed profiles use the packaged AppContainer broker when available and fail closed
   when the native capability or requested policy is unavailable.
+- The packaged filesystem-worker gate covers client cancellation, Runtime Host parent death,
+  repeated concurrent launches, ACL quarantine isolation, filesystem aliases, restricted TCP outbound network,
+  host named pipes, ambient environment, host registry values, parent tokens, and descendant
+  denial or AppContainer/Job inheritance. It does not claim UDP/DNS/SMB enforcement, local inbound-listener enforcement, the deferred
+  no-Win32k/window-station tier, or direct Credential Manager/DPAPI isolation.
 - Computer-use has no Windows backend.
 - The Windows x64 NSIS installer is unsigned. The in-app automatic-update path (electron-updater →
   NSIS handoff → relaunch) is verified end to end in CI against a loopback feed; the production

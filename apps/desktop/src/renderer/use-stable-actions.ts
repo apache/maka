@@ -18,7 +18,7 @@
  */
 
 import { useLayoutEffect, useRef, useState } from 'react';
-import { createDelegatingActions } from './stable-actions';
+import { createDelegatingActions } from './stable-actions.js';
 
 /**
  * Runs an app-shell action factory in the render body but returns a stable

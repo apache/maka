@@ -18,7 +18,6 @@
  */
 
 import { useRef } from 'react';
-import { useHotkeys } from '@astryxdesign/core/hooks';
 import type { ChatDefaultPermissionMode, SettingsSection, ThemePalette, ThemePreference } from '@maka/core/settings';
 import type { ProviderType } from '@maka/core/llm-connections';
 import type { DesktopSessionSummary } from '../../preload/bridge-contract.js';
@@ -87,20 +86,6 @@ export function SettingsModal(props: {
   // happens per streamed token), and a focus side effect keyed on it yanks
   // focus away from anything open inside Settings while a session streams.
   const activeNavRef = useRef<HTMLButtonElement>(null);
-
-  // useHotkeys keeps its entries in a ref it refreshes every render, so Escape
-  // always calls the current `onClose` without the listener churning on that
-  // prop's identity (it is recreated on every AppShell render, i.e. per
-  // streamed token). It also skips defaultPrevented events, which is what the
-  // old `!event.defaultPrevented` check bought: a nested dialog that already
-  // consumed Escape closes itself, not the whole Settings surface.
-  //
-  // `allowInInputs` because Escape must close Settings from inside its own
-  // fields — the hook's default would have made Escape dead in every text box
-  // on the page.
-  useHotkeys([
-    { keys: 'escape', allowInInputs: true, onPress: () => props.onClose() },
-  ]);
 
   return (
     <div

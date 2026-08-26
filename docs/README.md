@@ -46,6 +46,8 @@ This page is the authority map for Maka documentation. Code and contract tests r
 - [Session task ledger lifecycle](./session-task-ledger-lifecycle.md)
 - [Work Board contract](./work-board-contract.md)
 - [Work Board Phase 1 surface](./work-board-phase1.md)
+- [WorkHub domain language](./workhub-domain-language.md)
+- [WorkHub Coordination Session ADR](./architecture/workhub-coordination-session-adr.md)
 - [Runtime resume architecture](./architecture/runtime-resume-architecture.md) ([中文](./architecture/runtime-resume-architecture.zh-CN.md))
 - [Runtime Host architecture](./architecture/runtime-host-architecture.md) ([中文](./architecture/runtime-host-architecture.zh-CN.md))
 - [Remote Runtime Host setup](./runtime-host-remote-access.md) ([中文](./runtime-host-remote-access.zh-CN.md))

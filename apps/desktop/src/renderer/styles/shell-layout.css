@@ -179,6 +179,8 @@
      e2e/sidebar-geometry.spec.ts locks. */
   height: 100%;
   width: var(--maka-sidenav-width);
+  /* Clip the expanded content while the sidebar width catches up. */
+  overflow: clip;
   transition: width var(--duration-large) var(--ease-out-strong);
 }
 

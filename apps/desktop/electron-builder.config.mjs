@@ -186,6 +186,16 @@ export default {
     },
   },
   dmg: {
+    title: 'Maka Installer',
+    // Relative to electron-builder's default buildResources directory (build/).
+    background: 'background.png',
+    window: { width: 540, height: 380 },
+    iconSize: 112,
+    iconTextSize: 16,
+    contents: [
+      { x: 130, y: 190, type: 'file' },
+      { x: 410, y: 190, type: 'link', path: '/Applications' },
+    ],
     sign: true,
     // Stapling the notarization ticket after electron-builder exits changes the
     // DMG bytes. macOS updates use the ZIP, so do not publish a stale DMG hash

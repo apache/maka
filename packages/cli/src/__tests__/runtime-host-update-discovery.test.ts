@@ -106,6 +106,7 @@ describe('managed Runtime Host update discovery', () => {
       'https://registry.npmjs.org/',
     ]);
     assert.deepEqual(candidate, {
+      kind: 'npm_registry',
       version: '2.0.0-beta.1',
       integrity: INTEGRITY,
       compatibility: 7,
@@ -140,40 +141,38 @@ describe('managed Runtime Host update discovery', () => {
     );
   });
 
-  it('admits only newer packages with matching compatibility evidence', () => {
+  it('admits only exact current or compatible target identities', () => {
+    const candidate = (version: string, compatibility?: number) => ({
+      kind: 'npm_registry' as const,
+      version,
+      integrity: INTEGRITY,
+      ...(compatibility === undefined ? {} : { compatibility }),
+    });
+    assert.deepEqual(assessRuntimeHostUpdate('1.0.0', undefined, candidate('1.0.0'), true), {
+      kind: 'current',
+    });
     assert.deepEqual(
-      assessRuntimeHostUpdate('1.0.0', undefined, { version: '1.0.0', integrity: INTEGRITY }),
-      { kind: 'current' },
-    );
-    assert.deepEqual(
-      assessRuntimeHostUpdate('1.0.0-beta.1', 4, {
-        version: '1.0.0-beta.2',
-        integrity: INTEGRITY,
-        compatibility: 4,
-      }),
+      assessRuntimeHostUpdate('1.0.0-beta.1', 4, candidate('1.0.0-beta.2', 4), false),
       { kind: 'unattended_update', compatibility: 4 },
     );
-    const manual = assessRuntimeHostUpdate('1.0.0', 4, {
-      version: '2.0.0',
-      integrity: INTEGRITY,
+    assert.deepEqual(assessRuntimeHostUpdate('1.0.0', 4, candidate('1.0.0', 4), false), {
+      kind: 'unattended_update',
+      compatibility: 4,
     });
+    assert.deepEqual(assessRuntimeHostUpdate('1.0.0', undefined, candidate('1.0.0', 4), false), {
+      kind: 'manual_action',
+      reason: 'current_compatibility_unknown',
+    });
+    const manual = assessRuntimeHostUpdate('1.0.0', 4, candidate('2.0.0'), false);
     assert.deepEqual(manual, { kind: 'manual_action', reason: 'target_compatibility_unknown' });
-    assert.deepEqual(
-      assessRuntimeHostUpdate('1.0.0', 4, {
-        version: '0.9.0',
-        integrity: INTEGRITY,
-        compatibility: 4,
-      }),
-      { kind: 'manual_action', reason: 'target_not_newer' },
-    );
-    assert.deepEqual(
-      assessRuntimeHostUpdate('1.0.0', 4, {
-        version: '2.0.0',
-        integrity: INTEGRITY,
-        compatibility: 5,
-      }),
-      { kind: 'manual_action', reason: 'compatibility_mismatch' },
-    );
+    assert.deepEqual(assessRuntimeHostUpdate('1.0.0', 4, candidate('0.9.0', 4), false), {
+      kind: 'manual_action',
+      reason: 'target_not_newer',
+    });
+    assert.deepEqual(assessRuntimeHostUpdate('1.0.0', 4, candidate('2.0.0', 5), false), {
+      kind: 'manual_action',
+      reason: 'compatibility_mismatch',
+    });
     assert.match(
       formatRuntimeHostUpdateCheck({
         ...FRAME,
@@ -185,6 +184,12 @@ describe('managed Runtime Host update discovery', () => {
 
   it('rejects malformed or contradictory machine evidence', () => {
     assert.doesNotThrow(() => encodeRuntimeHostServiceManagementFrame(FRAME));
+    assert.doesNotThrow(() =>
+      encodeRuntimeHostServiceManagementFrame({
+        ...FRAME,
+        service: { ...FRAME.service, installedVersion: '2.0.0' },
+      }),
+    );
     assert.throws(() =>
       encodeRuntimeHostServiceManagementFrame({
         ...FRAME,

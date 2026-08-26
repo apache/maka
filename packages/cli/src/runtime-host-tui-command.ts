@@ -93,6 +93,7 @@ export async function runRuntimeHostTui(input: RunRuntimeHostTuiInput): Promise<
       listSkills: context.listSkills,
       agentGraphHistory: context.agentGraphHistory,
       onboarding: context.onboarding,
+      ...(context.mcp ? { mcp: context.mcp } : {}),
       recap: context.recap,
       ...(context.profile.kind === 'local'
         ? { foreignSessions }
@@ -117,6 +118,7 @@ export async function runRuntimeHostTui(input: RunRuntimeHostTuiInput): Promise<
     if (hint) process.stdout.write(`${hint}\n`);
     return 0;
   } finally {
+    await context.driver.cleanupOwnedSideConversations().catch(() => undefined);
     await context.close();
   }
 }

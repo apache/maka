@@ -21,7 +21,7 @@
  * Shared product tool vocabulary (#1099).
  *
  * Tool is the catalog atom. Surface is optional and only for jointly governed
- * packs (deferred `load_tools` groups and/or a shared host product boundary).
+ * searchable groups and/or a shared host product boundary.
  * Hosts own implementations; this module owns names and metadata. Derive
  * HostCapabilities / ToolAvailability groups from catalog ∩ host binding.
  *
@@ -53,8 +53,6 @@ export interface CatalogSurfaceDef {
   readonly id: string;
   readonly label: string;
   readonly description: string;
-  /** v1 packs are deferred load groups only. */
-  readonly economy: 'deferred';
   readonly toolNames: readonly string[];
   readonly hosts: Readonly<Record<ToolHostId, ToolHostSupport>>;
 }
@@ -88,7 +86,6 @@ function freezeSurface(surface: CatalogSurfaceDef): CatalogSurfaceDef {
     id: surface.id,
     label: surface.label,
     description: surface.description,
-    economy: surface.economy,
     toolNames: Object.freeze([...surface.toolNames]),
     hosts: Object.freeze({ ...surface.hosts }),
   });
@@ -157,7 +154,7 @@ export const MAKA_CATALOG_TOOLS: readonly CatalogToolDef[] = Object.freeze(
 );
 
 /**
- * Jointly governed deferred packs. Id `agent` matches the runtime
+ * Jointly governed searchable packs. Id `agent` matches the runtime
  * ToolAvailability group id (AGENT_TOOL_GROUP_ID), not a separate "subagent" id.
  * Each surface gets its own hosts object so affinity cannot cross-contaminate.
  */
@@ -168,7 +165,6 @@ export const MAKA_CATALOG_SURFACES: readonly CatalogSurfaceDef[] = Object.freeze
       label: 'Rive',
       description:
         'Durable multi-agent Rive workflows: validate/import/run/status, scheduler, retries.',
-      economy: 'deferred' as const,
       toolNames: ['RiveWorkflow'],
       hosts: desktopOnlyHosts(),
     },
@@ -176,7 +172,6 @@ export const MAKA_CATALOG_SURFACES: readonly CatalogSurfaceDef[] = Object.freeze
       id: 'browser',
       label: 'Browser',
       description: 'Drive the embedded browser: navigate, snapshot, click, type, wait, extract.',
-      economy: 'deferred' as const,
       toolNames: [
         'browser_navigate',
         'browser_snapshot',
@@ -191,7 +186,6 @@ export const MAKA_CATALOG_SURFACES: readonly CatalogSurfaceDef[] = Object.freeze
       id: 'computer_use',
       label: 'Computer',
       description: 'Observe and operate an explicitly approved local application.',
-      economy: 'deferred' as const,
       toolNames: ['maka_computer'],
       hosts: desktopOnlyHosts(),
     },
@@ -199,7 +193,6 @@ export const MAKA_CATALOG_SURFACES: readonly CatalogSurfaceDef[] = Object.freeze
       id: 'agent',
       label: 'Agent',
       description: 'Spawn, fan out, and inspect foreground child agents.',
-      economy: 'deferred' as const,
       toolNames: [
         'agent_spawn',
         'agent_list',

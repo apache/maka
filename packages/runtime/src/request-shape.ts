@@ -125,7 +125,7 @@ export type PreparedRequestSegmentRef = Pick<PreparedRequestSegment, 'kind' | 'i
  * ungrouped + loaded groups). A tool absent from it is withheld from
  * `activeTools` but stays in `providerTools` so it remains dispatchable once
  * its group loads. Omitting `activeNames` advertises every visible tool — the
- * full-surface case (economy off / no gating).
+ * full-surface case (no searchable groups).
  */
 export function canonicalizeToolSet(
   tools: readonly MakaTool[],
@@ -560,7 +560,13 @@ function isEnabledSourceStrictSuperset(
   current: ToolAvailabilityDiagnostic | undefined,
   prior: ToolAvailabilityDiagnostic | undefined,
 ): boolean {
-  if (current?.mode !== 'economy' || prior?.mode !== 'economy') return false;
+  if (
+    !current ||
+    !prior ||
+    current.mode !== prior.mode ||
+    (current.mode !== 'economy' && current.mode !== 'search')
+  )
+    return false;
   const currentIds = new Set(current.enabledSourceIds);
   const priorIds = new Set(prior.enabledSourceIds);
   if (currentIds.size <= priorIds.size) return false;

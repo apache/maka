@@ -19,18 +19,21 @@
 
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { createElement } from 'react';
+import { renderToStaticMarkup } from 'react-dom/server';
+import { AstryxLocaleProvider, LocaleProvider } from '@maka/ui';
 import {
+  WorkHubCoordinationStatus,
   WorkHubProjectionRefreshGate,
   WorkHubSurfaceRouteGate,
-  projectedWorkHubTurnPresentation,
   submitWorkHubSurfaceInput,
-  visibleWorkHubProjectedTurns,
+  visibleWorkHubConversation,
   workHubSubmissionCanCorrect,
   workHubSubmissionClearsDraft,
 } from '../../renderer/workhub-surface.js';
 import {
-  boundedWorkHubTimelineText,
   createWorkHubController,
+  WORKHUB_ROUTING_STRATEGY_ID,
   type WorkHubController,
   type WorkHubSubmitInput,
 } from '../../renderer/workhub-controller.js';
@@ -57,6 +60,29 @@ test('surface route gate rejects same-frame duplicate operations and reopens aft
   assert.equal(await gate.run(async () => 'next'), 'next');
 });
 
+test('Coordination lifecycle keeps a visible loading state and exposes failure recovery', () => {
+  const renderStatus = (state: 'resolving' | 'failed') => renderToStaticMarkup(
+    createElement(LocaleProvider, {
+      locale: 'en',
+      children: createElement(AstryxLocaleProvider, {
+        children: createElement(WorkHubCoordinationStatus, {
+          locale: 'en',
+          state,
+          onRetry: () => undefined,
+        }),
+      }),
+    }),
+  );
+  const resolving = renderStatus('resolving');
+  const failed = renderStatus('failed');
+
+  assert.match(resolving, /Preparing WorkHub/);
+  assert.match(resolving, /aria-busy="true"/);
+  assert.match(failed, /role="alert"/);
+  assert.match(failed, /Check the default model/);
+  assert.match(failed, />Retry</);
+});
+
 test('surface projection refresh gate rejects older reads after a newer refresh starts', () => {
   const gate = new WorkHubProjectionRefreshGate();
   const first = gate.begin();
@@ -68,25 +94,18 @@ test('surface projection refresh gate rejects older reads after a newer refresh 
   assert.equal(second(), false);
 });
 
-test('projected archived Session keeps the actual turn state visible', () => {
-  assert.deepEqual(projectedWorkHubTurnPresentation('failed', true, 'zh'), {
-    heading: '来自已归档 Session：',
-    state: '失败',
-  });
-});
-
 test('surface keeps the Composer draft when routing fails or the target is waiting', () => {
   assert.equal(workHubSubmissionClearsDraft(undefined), false);
   assert.equal(workHubSubmissionClearsDraft({
     kind: 'waiting',
-    strategyId: 'wh-r2.3-session-core-evidence',
+    strategyId: WORKHUB_ROUTING_STRATEGY_ID,
     requestId: 'waiting',
     text: '继续处理',
     target: { sessionId: 'payment' },
   }), false);
   assert.equal(workHubSubmissionClearsDraft({
     kind: 'discussion',
-    strategyId: 'wh-r2.3-session-core-evidence',
+    strategyId: WORKHUB_ROUTING_STRATEGY_ID,
     requestId: 'discussion',
     text: '先讨论方向',
   }), true);
@@ -95,7 +114,7 @@ test('surface keeps the Composer draft when routing fails or the target is waiti
 test('surface disables correction after a request was steered into existing work', () => {
   const submission = {
     kind: 'submitted' as const,
-    strategyId: 'wh-r2.3-session-core-evidence' as const,
+    strategyId: WORKHUB_ROUTING_STRATEGY_ID,
     requestId: 'steered',
     target: { sessionId: 'payment' },
     turnId: 'turn-existing',
@@ -106,115 +125,50 @@ test('surface disables correction after a request was steered into existing work
   assert.equal(workHubSubmissionCanCorrect({ ...submission, steered: true }), false);
 });
 
-test('surface hides a rebuilt Session turn while the matching local turn is still mounted', () => {
-  assert.deepEqual(
-    visibleWorkHubProjectedTurns(
-      [{
-        messageId: 'user-0',
-        target: { sessionId: 'payment' },
-        turnId: 'turn-payment',
-        text: '检查支付回调风险',
-        state: 'running',
-        updatedAt: 9,
-      }, {
-        messageId: 'user-1',
-        target: { sessionId: 'payment' },
-        turnId: 'turn-payment',
-        text: '补充重复投递测试',
-        state: 'completed',
-        updatedAt: 10,
-      }],
-      [{
-        requestId: 'request-payment',
-        text: '补充重复投递测试',
-        state: 'settled',
-        outcome: {
-          kind: 'submitted',
-          strategyId: 'wh-r2.3-session-core-evidence',
-          requestId: 'request-payment',
-          target: { sessionId: 'payment' },
-          turnId: 'turn-payment',
-          evidence: 'explicit_target',
-        },
-      }],
-    ),
-    [{
-      messageId: 'user-0',
-      target: { sessionId: 'payment' },
-      turnId: 'turn-payment',
-      text: '检查支付回调风险',
-      state: 'running',
-      updatedAt: 9,
-    }],
-  );
-});
-
-test('surface canonicalizes bounded text before suppressing a local duplicate', () => {
-  const text = '长'.repeat(700);
-  assert.deepEqual(visibleWorkHubProjectedTurns([{
-    messageId: 'user-long',
-    target: { sessionId: 'payment' },
-    turnId: 'turn-long',
-    text: boundedWorkHubTimelineText(text),
-    state: 'running',
-    updatedAt: 10,
-  }], [{
-    requestId: 'request-long',
-    text,
-    state: 'settled',
+test('surface replaces a local discussion placeholder with its durable model answer', () => {
+  const local = [{
+    requestId: 'discussion-turn',
+    text: 'What is next?',
+    state: 'settled' as const,
     outcome: {
-      kind: 'submitted',
-      strategyId: 'wh-r2.3-session-core-evidence',
-      requestId: 'request-long',
-      target: { sessionId: 'payment' },
-      turnId: 'turn-long',
-      evidence: 'explicit_target',
+      kind: 'discussion' as const,
+      strategyId: WORKHUB_ROUTING_STRATEGY_ID,
+      requestId: 'discussion-turn',
+      text: 'What is next?',
     },
-  }]), []);
-});
-
-test('surface suppresses the newest matching projected steering turn', () => {
-  const projected = [{
-    messageId: 'user-old',
-    target: { sessionId: 'payment' },
-    turnId: 'turn-payment',
-    text: '继续检查',
-    state: 'running' as const,
-    updatedAt: 9,
-  }, {
-    messageId: 'user-new',
-    target: { sessionId: 'payment' },
-    turnId: 'turn-payment',
-    text: '继续检查',
-    state: 'running' as const,
+  }];
+  const durable = [{
+    messageId: 'user-message',
+    turnId: 'discussion-turn',
+    text: 'What is next?',
+    result: 'Slice 3 is next.',
+    state: 'completed' as const,
     updatedAt: 10,
   }];
-  assert.deepEqual(visibleWorkHubProjectedTurns(projected, [{
-    requestId: 'request-new',
-    text: '继续检查',
-    state: 'settled',
-    outcome: {
-      kind: 'submitted',
-      strategyId: 'wh-r2.3-session-core-evidence',
-      requestId: 'request-new',
-      target: { sessionId: 'payment' },
-      turnId: 'turn-payment',
-      evidence: 'explicit_target',
-    },
-  }]), [projected[0]]);
+
+  assert.deepEqual(visibleWorkHubConversation(durable, local), {
+    coordination: durable,
+    local: [],
+  });
 });
 
 test('surface keeps clarification and successful routing in WorkHub', async () => {
   const submissions: WorkHubSubmitInput[] = [];
   const controller: WorkHubController = {
     read: async () => ({ sessions: [], turns: [] }),
+    openConversation: async (handler) => {
+      handler([]);
+      return { close: async () => undefined };
+    },
+    recordConversationTurn: async ({ turnId }) => ({ turnId }),
+    resetVisitContext: () => {},
     subscribe: () => () => {},
     submit: async (input) => {
       submissions.push(input);
       if (!input.explicitTarget) {
         return {
           kind: 'clarification',
-          strategyId: 'wh-r2.3-session-core-evidence',
+          strategyId: WORKHUB_ROUTING_STRATEGY_ID,
           requestId: input.requestId,
           text: input.text,
           options: [{
@@ -226,7 +180,7 @@ test('surface keeps clarification and successful routing in WorkHub', async () =
       }
       return {
         kind: 'submitted',
-        strategyId: 'wh-r2.3-session-core-evidence',
+        strategyId: WORKHUB_ROUTING_STRATEGY_ID,
         requestId: input.requestId,
         target: input.explicitTarget,
         turnId: 'turn-payment',
@@ -256,10 +210,16 @@ test('surface keeps clarification and successful routing in WorkHub', async () =
 test('surface leaves discussion in WorkHub instead of creating a task view', async () => {
   const controller: WorkHubController = {
     read: async () => ({ sessions: [], turns: [] }),
+    openConversation: async (handler) => {
+      handler([]);
+      return { close: async () => undefined };
+    },
+    recordConversationTurn: async ({ turnId }) => ({ turnId }),
+    resetVisitContext: () => {},
     subscribe: () => () => {},
     submit: async (input) => ({
       kind: 'discussion',
-      strategyId: 'wh-r2.3-session-core-evidence',
+      strategyId: WORKHUB_ROUTING_STRATEGY_ID,
       requestId: input.requestId,
       text: input.text,
     }),

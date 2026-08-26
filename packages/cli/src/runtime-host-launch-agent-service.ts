@@ -22,6 +22,7 @@ import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { RUNTIME_HOST_SERVICE_LOG_MAX_BYTES } from '@maka/runtime-host/operator';
 import {
+  formatRuntimeHostServiceLogs,
   removeRuntimeHostServiceFile,
   RuntimeHostServiceManagerError,
   type RuntimeHostManagedServiceConfig,
@@ -31,7 +32,9 @@ import {
   writeRuntimeHostServiceFile,
 } from './runtime-host-service-manager.js';
 import {
+  RUNTIME_HOST_UPDATE_INTERVAL_SECONDS,
   runtimeHostServiceLaunchArguments,
+  runtimeHostUpdateReconcileLaunchArguments,
   validateRuntimeHostServiceLaunch,
 } from './runtime-host-service-launch.js';
 import {
@@ -97,6 +100,13 @@ export function createLaunchAgentRuntimeHostService(
     runLaunchctl,
     isProcessAlive,
   };
+  const scheduler = resolveLaunchAgentUpdateSchedulerContext(
+    serviceId,
+    homeDir,
+    uid,
+    runLaunchctl,
+    isProcessAlive,
+  );
 
   const readDetailedStatus = () => readLaunchAgentStatus(context);
   const readStatus = async (): Promise<RuntimeHostServiceBackendStatus> => {
@@ -107,26 +117,65 @@ export function createLaunchAgentRuntimeHostService(
     preflightInstall: () => assertLaunchAgentDomain(context),
     install: async (config) => {
       await validateRuntimeHostServiceLaunch(config);
-      const previous = await captureLaunchAgentDeployment(context);
+      const [previous, previousScheduler] = await Promise.all([
+        captureLaunchAgentDeployment(context),
+        captureLaunchAgentDeployment(scheduler),
+      ]);
+      let schedulerMutationStarted = false;
       try {
         await applyLaunchAgentDeployment(context, config);
+        await applyLaunchAgentUpdateSchedulerDesiredState(scheduler, config, () => {
+          schedulerMutationStarted = true;
+        });
       } catch (error) {
-        await restoreFailedLaunchAgentDeployment(previous, context, error);
+        await restoreFailedLaunchAgentDeployment(
+          previous,
+          schedulerMutationStarted ? previousScheduler : undefined,
+          context,
+          scheduler,
+          error,
+        );
       }
       let rolledBack = false;
       return {
         rollback: async () => {
           if (rolledBack) return;
           rolledBack = true;
-          await restoreLaunchAgentDeployment(previous, context);
+          await restoreLaunchAgentManagedDeployment(
+            previous,
+            schedulerMutationStarted ? previousScheduler : undefined,
+            context,
+            scheduler,
+          );
         },
       } satisfies RuntimeHostServiceDeployment;
     },
     replace: async (config) => {
       await validateRuntimeHostServiceLaunch(config);
-      await applyLaunchAgentDeployment(context, config);
+      const [previous, previousScheduler] = await Promise.all([
+        captureLaunchAgentDeployment(context),
+        captureLaunchAgentDeployment(scheduler),
+      ]);
+      let schedulerMutationStarted = false;
+      try {
+        await applyLaunchAgentDeployment(context, config);
+        await convergeLaunchAgentUpdateSchedulerForReplacement(scheduler, config, () => {
+          schedulerMutationStarted = true;
+        });
+      } catch (error) {
+        await restoreFailedLaunchAgentDeployment(
+          previous,
+          schedulerMutationStarted ? previousScheduler : undefined,
+          context,
+          scheduler,
+          error,
+          'update_incomplete',
+        );
+      }
     },
-    verifyDeployment: async (config) => {
+    verifyReplacementPreconditions: (config) =>
+      verifyLaunchAgentUpdateSchedulerReplacementState(scheduler, config),
+    verifyDeployment: async (config, options) => {
       await validateRuntimeHostServiceLaunch(config);
       const [status, plist] = await Promise.all([
         readDetailedStatus(),
@@ -141,57 +190,39 @@ export function createLaunchAgentRuntimeHostService(
           'The installed Runtime Host LaunchAgent does not match its managed deployment',
         );
       }
+      await verifyLaunchAgentUpdateSchedulerDesiredState(
+        scheduler,
+        config,
+        options?.requireSchedulerReady ?? false,
+      );
     },
     status: readStatus,
     start: async () => {
-      const status = await readDetailedStatus();
-      if (!status.installed) {
-        throw new RuntimeHostServiceManagerError(
-          'not_installed',
-          'Runtime Host LaunchAgent is not installed',
-        );
-      }
-      if (status.loaded) {
-        if (!status.active) {
-          await requireLaunchctl(
-            context,
-            ['kickstart', context.serviceTarget],
-            'Starting the Runtime Host LaunchAgent failed',
-          );
-        }
-        return;
-      }
-      await bootstrapLaunchAgent(context);
+      await startLaunchAgent(context);
+      await ensureLaunchAgentLoadedIfInstalled(scheduler);
     },
-    stop: () => bootoutLaunchAgent(context),
+    stop: () => stopLaunchAgentManagedDeployment(context, scheduler),
     restart: async () => {
-      const status = await readDetailedStatus();
-      if (!status.installed) {
-        throw new RuntimeHostServiceManagerError(
-          'not_installed',
-          'Runtime Host LaunchAgent is not installed',
-        );
-      }
-      if (!status.loaded) {
-        await bootstrapLaunchAgent(context);
-        return;
-      }
-      await requireLaunchctl(
-        context,
-        ['kickstart', '-k', context.serviceTarget],
-        'Restarting the Runtime Host LaunchAgent failed',
-      );
+      await restartLaunchAgent(context);
+      await ensureLaunchAgentLoadedIfInstalled(scheduler);
     },
+    retire: () => bootoutLaunchAgent(context),
     logs: async () => {
-      const [stdout, stderr] = await Promise.all([
+      const [stdout, stderr, updateStdout, updateStderr] = await Promise.all([
         readLogTail(context.stdoutPath),
         readLogTail(context.stderrPath),
+        readLogTail(scheduler.stdoutPath),
+        readLogTail(scheduler.stderrPath),
       ]);
-      return [stdout && `stdout:\n${stdout}`, stderr && `stderr:\n${stderr}`]
-        .filter(Boolean)
-        .join('\n');
+      return formatRuntimeHostServiceLogs([
+        { label: 'stdout', logs: stdout },
+        { label: 'stderr', logs: stderr },
+        { label: 'update stdout', logs: updateStdout },
+        { label: 'update stderr', logs: updateStderr },
+      ]);
     },
     uninstall: async () => {
+      await removeLaunchAgentUpdateScheduler(scheduler);
       await bootoutLaunchAgent(context);
       await Promise.all([
         removeRuntimeHostServiceFile(context.plistPath, 'LaunchAgent plist'),
@@ -211,6 +242,15 @@ export function createLaunchAgentRuntimeHostService(
 
 export function resolveLaunchAgentPath(serviceId: string, homeDir = homedir()): string {
   return join(homeDir, 'Library', 'LaunchAgents', `${resolveLaunchAgentLabel(serviceId)}.plist`);
+}
+
+export function resolveLaunchAgentUpdatePath(serviceId: string, homeDir = homedir()): string {
+  return join(
+    homeDir,
+    'Library',
+    'LaunchAgents',
+    `${resolveLaunchAgentUpdateLabel(serviceId)}.plist`,
+  );
 }
 
 export function renderLaunchAgentPlist(
@@ -251,9 +291,48 @@ export function renderLaunchAgentPlist(
   ].join('\n');
 }
 
+export function renderLaunchAgentUpdatePlist(
+  config: RuntimeHostManagedServiceConfig,
+  paths: Pick<LaunchAgentContext, 'label' | 'stdoutPath' | 'stderrPath'>,
+): string {
+  const args = runtimeHostUpdateReconcileLaunchArguments(config);
+  if (!args) throw new TypeError('Managed deployment root is required for update scheduling');
+  const stringEntry = (value: string) => `    <string>${escapeXml(value)}</string>`;
+  return [
+    '<?xml version="1.0" encoding="UTF-8"?>',
+    '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "https://www.apple.com/DTDs/PropertyList-1.0.dtd">',
+    '<plist version="1.0">',
+    '<dict>',
+    '  <key>Label</key>',
+    `  <string>${escapeXml(paths.label)}</string>`,
+    '  <key>ProgramArguments</key>',
+    '  <array>',
+    args.map(stringEntry).join('\n'),
+    '  </array>',
+    '  <key>StartInterval</key>',
+    `  <integer>${String(RUNTIME_HOST_UPDATE_INTERVAL_SECONDS)}</integer>`,
+    '  <key>ProcessType</key>',
+    '  <string>Background</string>',
+    '  <key>Umask</key>',
+    '  <integer>63</integer>',
+    '  <key>StandardOutPath</key>',
+    `  <string>${escapeXml(paths.stdoutPath)}</string>`,
+    '  <key>StandardErrorPath</key>',
+    `  <string>${escapeXml(paths.stderrPath)}</string>`,
+    '</dict>',
+    '</plist>',
+    '',
+  ].join('\n');
+}
+
 function resolveLaunchAgentLabel(serviceId: string): string {
   if (!/^[0-9a-f]{64}$/u.test(serviceId)) throw new TypeError('Invalid Runtime Host service ID');
   return `com.maka.runtime-host.${serviceId}`;
+}
+
+function resolveLaunchAgentUpdateLabel(serviceId: string): string {
+  if (!/^[0-9a-f]{64}$/u.test(serviceId)) throw new TypeError('Invalid Runtime Host service ID');
+  return `${resolveLaunchAgentLabel(serviceId)}.update`;
 }
 
 function resolveLaunchAgentLogPath(
@@ -271,6 +350,41 @@ function resolveLaunchAgentLogPath(
   );
 }
 
+function resolveLaunchAgentUpdateSchedulerContext(
+  serviceId: string,
+  homeDir: string,
+  uid: number,
+  runLaunchctl: LaunchctlRunner,
+  isProcessAlive: (pid: number) => boolean,
+): LaunchAgentContext {
+  const label = resolveLaunchAgentUpdateLabel(serviceId);
+  return {
+    domain: `gui/${String(uid)}`,
+    label,
+    serviceTarget: `gui/${String(uid)}/${label}`,
+    plistPath: resolveLaunchAgentUpdatePath(serviceId, homeDir),
+    stdoutPath: resolveLaunchAgentUpdateLogPath(serviceId, 'stdout', homeDir),
+    stderrPath: resolveLaunchAgentUpdateLogPath(serviceId, 'stderr', homeDir),
+    runLaunchctl,
+    isProcessAlive,
+  };
+}
+
+function resolveLaunchAgentUpdateLogPath(
+  serviceId: string,
+  stream: 'stdout' | 'stderr',
+  homeDir: string,
+): string {
+  return join(
+    homeDir,
+    'Library',
+    'Logs',
+    'Maka',
+    'runtime-host-services',
+    `${resolveLaunchAgentUpdateLabel(serviceId)}.${stream}.log`,
+  );
+}
+
 async function captureLaunchAgentDeployment(
   context: LaunchAgentContext,
 ): Promise<LaunchAgentDeploymentSnapshot> {
@@ -282,6 +396,141 @@ async function captureLaunchAgentDeployment(
     readLaunchAgentStatus(context),
   ]);
   return { plist, loaded: status.loaded };
+}
+
+async function applyLaunchAgentUpdateSchedulerDesiredState(
+  context: LaunchAgentContext,
+  config: RuntimeHostManagedServiceConfig,
+  onMutation: () => void,
+): Promise<void> {
+  if (!runtimeHostUpdateReconcileLaunchArguments(config)) {
+    try {
+      await verifyLaunchAgentUpdateSchedulerAbsent(context);
+      return;
+    } catch (error) {
+      if (!isTargetMismatch(error)) throw error;
+    }
+    onMutation();
+    await removeLaunchAgentUpdateScheduler(context);
+    await verifyLaunchAgentUpdateSchedulerAbsent(context);
+    return;
+  }
+  try {
+    await verifyLaunchAgentUpdateScheduler(context, config, true);
+    return;
+  } catch (error) {
+    if (!isTargetMismatch(error)) throw error;
+  }
+  onMutation();
+  await bootoutLaunchAgent(context);
+  await prepareLaunchAgentLogs(context);
+  await writeRuntimeHostServiceFile(
+    context.plistPath,
+    renderLaunchAgentUpdatePlist(config, context),
+    0o600,
+  );
+  await bootstrapLaunchAgent(context);
+  await verifyLaunchAgentUpdateScheduler(context, config, true);
+}
+
+async function verifyLaunchAgentUpdateSchedulerDesiredState(
+  context: LaunchAgentContext,
+  config: RuntimeHostManagedServiceConfig,
+  requireLoaded: boolean,
+): Promise<void> {
+  if (runtimeHostUpdateReconcileLaunchArguments(config)) {
+    await verifyLaunchAgentUpdateScheduler(context, config, requireLoaded);
+    return;
+  }
+  await verifyLaunchAgentUpdateSchedulerAbsent(context);
+}
+
+async function verifyLaunchAgentUpdateSchedulerReplacementState(
+  context: LaunchAgentContext,
+  config: RuntimeHostManagedServiceConfig,
+): Promise<void> {
+  if (!runtimeHostUpdateReconcileLaunchArguments(config)) {
+    await verifyLaunchAgentUpdateSchedulerAbsent(context);
+    return;
+  }
+  try {
+    await verifyLaunchAgentUpdateScheduler(context, config, false);
+  } catch (error) {
+    if (!isTargetMismatch(error)) throw error;
+    await verifyLaunchAgentUpdateSchedulerAbsent(context);
+  }
+}
+
+async function convergeLaunchAgentUpdateSchedulerForReplacement(
+  context: LaunchAgentContext,
+  config: RuntimeHostManagedServiceConfig,
+  onMutation: () => void,
+): Promise<void> {
+  try {
+    await verifyLaunchAgentUpdateScheduler(context, config, false);
+    const status = await readLaunchAgentStatus(context);
+    // The loaded scheduler may be running this replacement.
+    if (status.loaded) return;
+    onMutation();
+    await ensureLaunchAgentLoadedIfInstalled(context);
+  } catch (error) {
+    if (!isTargetMismatch(error)) throw error;
+    await verifyLaunchAgentUpdateSchedulerAbsent(context);
+    onMutation();
+    await applyLaunchAgentUpdateSchedulerDesiredState(context, config, () => undefined);
+  }
+  await verifyLaunchAgentUpdateScheduler(context, config, true);
+}
+
+async function verifyLaunchAgentUpdateScheduler(
+  context: LaunchAgentContext,
+  config: RuntimeHostManagedServiceConfig,
+  requireLoaded: boolean,
+): Promise<void> {
+  const [status, plist] = await Promise.all([
+    readLaunchAgentStatus(context),
+    readFile(context.plistPath, 'utf8').catch((error: unknown) => {
+      if (isNodeError(error, 'ENOENT')) return null;
+      throw error;
+    }),
+  ]);
+  if (
+    (requireLoaded && !status.loaded) ||
+    plist !== renderLaunchAgentUpdatePlist(config, context)
+  ) {
+    throw launchAgentSchedulerMismatch();
+  }
+}
+
+async function verifyLaunchAgentUpdateSchedulerAbsent(context: LaunchAgentContext): Promise<void> {
+  const [status, plist] = await Promise.all([
+    readLaunchAgentStatus(context),
+    readFile(context.plistPath, 'utf8').catch((error: unknown) => {
+      if (isNodeError(error, 'ENOENT')) return null;
+      throw error;
+    }),
+  ]);
+  if (status.loaded || plist !== null) throw launchAgentSchedulerMismatch();
+}
+
+async function removeLaunchAgentUpdateScheduler(context: LaunchAgentContext): Promise<void> {
+  await bootoutLaunchAgent(context);
+  await Promise.all([
+    removeRuntimeHostServiceFile(context.plistPath, 'LaunchAgent update plist'),
+    removeRuntimeHostServiceFile(context.stdoutPath, 'LaunchAgent update stdout log'),
+    removeRuntimeHostServiceFile(context.stderrPath, 'LaunchAgent update stderr log'),
+  ]);
+}
+
+function launchAgentSchedulerMismatch(): RuntimeHostServiceManagerError {
+  return new RuntimeHostServiceManagerError(
+    'target_mismatch',
+    'The Runtime Host update scheduler does not match its managed deployment',
+  );
+}
+
+function isTargetMismatch(error: unknown): boolean {
+  return error instanceof RuntimeHostServiceManagerError && error.code === 'target_mismatch';
 }
 
 async function applyLaunchAgentDeployment(
@@ -298,21 +547,121 @@ async function applyLaunchAgentDeployment(
   await bootstrapLaunchAgent(context);
 }
 
-async function restoreFailedLaunchAgentDeployment(
-  snapshot: LaunchAgentDeploymentSnapshot,
+async function startLaunchAgent(context: LaunchAgentContext): Promise<void> {
+  const status = await readLaunchAgentStatus(context);
+  if (!status.installed) {
+    throw new RuntimeHostServiceManagerError(
+      'not_installed',
+      'Runtime Host LaunchAgent is not installed',
+    );
+  }
+  if (!status.loaded) {
+    await bootstrapLaunchAgent(context);
+    return;
+  }
+  if (!status.active) {
+    await requireLaunchctl(
+      context,
+      ['kickstart', context.serviceTarget],
+      'Starting the Runtime Host LaunchAgent failed',
+    );
+  }
+}
+
+async function restartLaunchAgent(context: LaunchAgentContext): Promise<void> {
+  const status = await readLaunchAgentStatus(context);
+  if (!status.installed) {
+    throw new RuntimeHostServiceManagerError(
+      'not_installed',
+      'Runtime Host LaunchAgent is not installed',
+    );
+  }
+  if (!status.loaded) {
+    await bootstrapLaunchAgent(context);
+    return;
+  }
+  await requireLaunchctl(
+    context,
+    ['kickstart', '-k', context.serviceTarget],
+    'Restarting the Runtime Host LaunchAgent failed',
+  );
+}
+
+async function ensureLaunchAgentLoadedIfInstalled(context: LaunchAgentContext): Promise<void> {
+  const status = await readLaunchAgentStatus(context);
+  if (status.installed && !status.loaded) await bootstrapLaunchAgent(context);
+}
+
+async function stopLaunchAgentManagedDeployment(
   context: LaunchAgentContext,
-  originalError: unknown,
-): Promise<never> {
-  try {
-    await restoreLaunchAgentDeployment(snapshot, context);
-  } catch (rollbackError) {
+  scheduler: LaunchAgentContext,
+): Promise<void> {
+  const errors: unknown[] = [];
+  for (const target of [scheduler, context]) {
+    try {
+      await bootoutLaunchAgent(target);
+    } catch (error) {
+      errors.push(error);
+    }
+  }
+  if (errors.length > 0) {
     throw new RuntimeHostServiceManagerError(
       'service_manager_operation_failed',
+      'Unable to stop the Runtime Host managed deployment',
+      { cause: new AggregateError(errors) },
+    );
+  }
+}
+
+async function restoreFailedLaunchAgentDeployment(
+  snapshot: LaunchAgentDeploymentSnapshot,
+  schedulerSnapshot: LaunchAgentDeploymentSnapshot | undefined,
+  context: LaunchAgentContext,
+  schedulerContext: LaunchAgentContext,
+  originalError: unknown,
+  recoveryFailureCode:
+    | 'service_manager_operation_failed'
+    | 'update_incomplete' = 'service_manager_operation_failed',
+): Promise<never> {
+  try {
+    await restoreLaunchAgentManagedDeployment(
+      snapshot,
+      schedulerSnapshot,
+      context,
+      schedulerContext,
+    );
+  } catch (rollbackError) {
+    throw new RuntimeHostServiceManagerError(
+      recoveryFailureCode,
       'Updating the Runtime Host LaunchAgent failed and the previous deployment could not be restored',
       { cause: new AggregateError([originalError, rollbackError]) },
     );
   }
   throw originalError;
+}
+
+async function restoreLaunchAgentManagedDeployment(
+  snapshot: LaunchAgentDeploymentSnapshot,
+  schedulerSnapshot: LaunchAgentDeploymentSnapshot | undefined,
+  context: LaunchAgentContext,
+  schedulerContext: LaunchAgentContext,
+): Promise<void> {
+  const errors: unknown[] = [];
+  try {
+    await restoreLaunchAgentDeployment(snapshot, context);
+  } catch (error) {
+    errors.push(error);
+  }
+  if (schedulerSnapshot) {
+    try {
+      await restoreLaunchAgentDeployment(schedulerSnapshot, schedulerContext);
+    } catch (error) {
+      errors.push(error);
+    }
+  }
+  if (errors.length > 0) {
+    throw new AggregateError(errors, 'Unable to restore the previous LaunchAgent deployment');
+  }
 }
 
 async function restoreLaunchAgentDeployment(

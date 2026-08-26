@@ -29,6 +29,8 @@ import type {
   DesktopRuntimeHostSshCleanupInput,
   DesktopRuntimeHostSshManagementInput,
   DesktopRuntimeHostSshUpdateInput,
+  DesktopRuntimeHostSshUpdatePolicyInput,
+  DesktopRuntimeHostSshUpdateReconciliationInput,
 } from '../runtime-host-ssh-terminal.js';
 
 test('identifies, rotates, and revokes managed credentials without exposing secrets', async () => {
@@ -390,6 +392,9 @@ test('publishes update progress and waits for the managed profile to reconnect',
         update: { kind: 'updated', previousVersion: '1.2.3', targetVersion: '1.3.0' },
       };
     },
+    runUpdatePolicy: async () => assert.fail('update policy is not expected'),
+    runUpdateReconciliation: async () =>
+      assert.fail('update reconciliation is not expected'),
     resolveUpdatePackage: () => ({ kind: 'npm', specifier: 'maka-agent@1.3.0' }),
     currentHostEpoch: () => 'host-before-update',
     awaitUpdatedConnection: async (...args) => {
@@ -414,7 +419,10 @@ test('publishes update progress and waits for the managed profile to reconnect',
       rootId: profile.rootId,
     },
   }]);
-  assert.deepEqual(progress, [{ profileId: profile.id, phase: 'staging' }]);
+  assert.deepEqual(progress, [
+    { profileId: profile.id, phase: 'preparing_cli' },
+    { profileId: profile.id, phase: 'staging' },
+  ]);
   assert.deepEqual(connectionCompletions, [
     [profile.id, profile.rootId, 'host-before-update', true],
   ]);
@@ -441,6 +449,151 @@ test('publishes update progress and waits for the managed profile to reconnect',
         'The Runtime Host update completed, but Desktop could not reconnect: authentication required',
     },
   });
+});
+
+test('manages one Host update policy and reconciles it through the bound operator', async () => {
+  const handlers = new Map<string, (...args: unknown[]) => unknown>();
+  const policyInputs: DesktopRuntimeHostSshUpdatePolicyInput[] = [];
+  const reconciliationInputs: DesktopRuntimeHostSshUpdateReconciliationInput[] = [];
+  const progress: unknown[] = [];
+  const connections: unknown[] = [];
+  const profile = {
+    id: 'office',
+    name: 'Office',
+    kind: 'remote' as const,
+    rootId: 'a'.repeat(64),
+    transport: {
+      kind: 'ssh' as const,
+      destination: 'operator@example.com',
+      remotePort: 7443,
+      websocketPath: '/runtime-host',
+    },
+  };
+  const service = {
+    id: 'b'.repeat(64),
+    rootPath: '/srv/maka',
+    operatorPath: '/home/operator/.local/share/maka/operator',
+  };
+  createDesktopRuntimeHostManagement({
+    ...unusedUpdateDependencies(),
+    ipcMain: {
+      handle: (channel, handler) => handlers.set(channel, handler as (...args: unknown[]) => unknown),
+      removeHandler: (channel) => handlers.delete(channel),
+    },
+    profiles: {
+      resolveManagedService: async () => ({ profile, service, state: 'active' as const }),
+      resolveManagedAccess: async () => undefined,
+      rotateManagedCredential: async () => assert.fail('credential rotation is not expected'),
+      markManagedServiceUninstalling: async (binding) => binding,
+      markManagedServiceCleanupPending: async (binding) => binding,
+      clearManagedServiceBinding: async () => undefined,
+    },
+    runServiceManagement: async () => assert.fail('ordinary management is not expected'),
+    runUpdatePolicy: async (input) => {
+      policyInputs.push(input);
+      const policy = input.policy ?? { kind: 'manual' as const };
+      return {
+        schemaVersion: 1,
+        kind: 'result',
+        action: 'update_policy',
+        updateSchedulerState: 'ready',
+        updatePolicy: {
+          policy,
+          ...(policy.kind === 'manual' ? {} : { target: input.expectedTarget! }),
+        },
+      };
+    },
+    runUpdateReconciliation: async (input, onProgress) => {
+      reconciliationInputs.push(input);
+      onProgress('replacing');
+      return {
+        schemaVersion: 1,
+        kind: 'result',
+        action: 'reconcile_update',
+        updateSchedulerState: 'ready',
+        updatePolicy: {
+          policy: { kind: 'channel', channel: 'latest' },
+          target: {
+            serviceId: service.id,
+            rootPath: service.rootPath,
+            rootId: profile.rootId,
+          },
+        },
+        service: serviceSummary('1.3.0'),
+        reconciliation: {
+          kind: 'updated',
+          previousVersion: '1.2.3',
+          targetVersion: '1.3.0',
+        },
+      };
+    },
+    currentHostEpoch: () => 'host-before-update',
+    awaitUpdatedConnection: async (...args) => {
+      connections.push(args);
+    },
+    sendProgress: (event) => progress.push(event),
+    runAccessManagement: async () => assert.fail('access management is not expected'),
+    cleanupManagedDeployment: async () => assert.fail('cleanup is not expected'),
+  });
+
+  const getPolicy = handlers.get('runtime-host-management:get-update-policy');
+  const setPolicy = handlers.get('runtime-host-management:set-update-policy');
+  const reconcile = handlers.get('runtime-host-management:reconcile-update');
+  assert.ok(getPolicy && setPolicy && reconcile);
+
+  assert.deepEqual(await getPolicy({}, profile.id), {
+    policy: { kind: 'manual' },
+    schedulingState: 'ready',
+  });
+  assert.deepEqual(
+    await setPolicy({}, profile.id, { kind: 'channel', channel: 'latest' }),
+    {
+      policy: { kind: 'channel', channel: 'latest' },
+      target: {
+        serviceId: service.id,
+        rootPath: service.rootPath,
+        rootId: profile.rootId,
+      },
+      schedulingState: 'ready',
+    },
+  );
+  await assert.rejects(
+    setPolicy({}, profile.id, { kind: 'fixed', version: '' }) as Promise<unknown>,
+    /update policy is invalid/u,
+  );
+  for (const policyInput of policyInputs) {
+    assert.deepEqual(policyInput.expectedTarget, {
+      serviceId: service.id,
+      rootPath: service.rootPath,
+      rootId: profile.rootId,
+    });
+  }
+  assert.deepEqual(reconciliationInputs, []);
+
+  const response = await reconcile({}, profile.id);
+  assert.equal(
+    (response as { reconciliation?: { kind: string } }).reconciliation?.kind,
+    'updated',
+  );
+  assert.equal(
+    (response as { updatePolicy?: { schedulingState: string } }).updatePolicy?.schedulingState,
+    'ready',
+  );
+  assert.deepEqual(
+    (response as { service?: unknown }).service,
+    serviceSummary('1.3.0'),
+  );
+  assert.deepEqual(reconciliationInputs, [{
+    destination: profile.transport.destination,
+    operatorPath: service.operatorPath,
+    expectedTarget: {
+      serviceId: service.id,
+      rootPath: service.rootPath,
+      rootId: profile.rootId,
+    },
+  }]);
+  assert.deepEqual(progress, [{ profileId: profile.id, phase: 'replacing' }]);
+  assert.deepEqual(connections, [[profile.id, profile.rootId, 'host-before-update', true]]);
 });
 
 test('resumes deployment cleanup without invoking the removed operator', async () => {
@@ -579,7 +732,7 @@ function serviceResult(
   operatorAccess = false,
 ): Exclude<
   Extract<RuntimeHostServiceManagementFrame, { kind: 'result' }>,
-  { action: 'check_update' | 'update' }
+  { action: 'check_update' | 'update' | 'update_policy' | 'reconcile_update' }
 > {
   const result = {
     schemaVersion: 1 as const,
@@ -603,9 +756,25 @@ function serviceResult(
     : { ...result, action };
 }
 
+function serviceSummary(installedVersion: string) {
+  return {
+    platform: 'linux',
+    arch: 'x64',
+    osRelease: '6.8.0',
+    state: 'running' as const,
+    pid: 42,
+    lastExitCode: 0,
+    installedVersion,
+    projectDirectoryRoots: [],
+  };
+}
+
 function unusedUpdateDependencies() {
   return {
     runUpdate: async (): Promise<never> => assert.fail('update is not expected'),
+    runUpdatePolicy: async (): Promise<never> => assert.fail('update policy is not expected'),
+    runUpdateReconciliation: async (): Promise<never> =>
+      assert.fail('update reconciliation is not expected'),
     resolveUpdatePackage: () => ({ kind: 'npm', specifier: 'maka-agent@1.2.3' } as const),
     currentHostEpoch: () => undefined,
     awaitUpdatedConnection: async () => undefined,

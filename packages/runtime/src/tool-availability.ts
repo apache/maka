@@ -18,43 +18,34 @@
  */
 
 import type { ToolAvailabilityDiagnostic } from '@maka/core/usage-stats/types';
+import MiniSearch from 'minisearch';
 import { z } from 'zod';
 
 import { estimateTokens } from './context-budget-helpers.js';
 import { canonicalizeToolSet, stableHash, toolSchemaCharsForDiagnostics } from './request-shape.js';
 import type { MakaTool, ToolGating } from './tool-runtime.js';
 
-/**
- * Unified tool-availability mechanism (issue #37): one catalog, one connector,
- * one same-turn activation policy, one diagnostics source. Subsumes the former
- * deferred-loader (PR #30) and tool-source-economy (PR #34) into a single
- * runtime whose only knob is the global `economy` switch.
- *
- * - `economy: false` (or no hideable groups) → every tool is advertised every
- *   turn; no connector, no gating, no diagnostics (the full-surface case).
- * - `economy: true` → only ungrouped tools are visible; each group's
- *   tools are withheld until the model activates the group via `load_tools`,
- *   which takes effect in the next Runtime request projection. Activations persist
- *   across turns by re-seeding from the RuntimeEvent ledger.
- */
+/** Canonical name of Maka's provider-independent deferred-tool search connector. */
+export const TOOL_SEARCH_NAME = 'tool_search';
+export const TOOL_SEARCH_DEFAULT_LIMIT = 8;
+export const TOOL_SEARCH_MAX_LIMIT = 20;
+export const TOOL_SEARCH_MAX_SCHEMA_CHARS = 64 * 1024;
 
-/** Canonical name of the always-on group-activation connector. */
-export const LOAD_TOOLS_NAME = 'load_tools';
-
-/**
- * Historical connector names accepted ONLY when re-seeding prior-turn
- * activations from the durable ledger, so sessions that activated groups under
- * the pre-unification connectors (`load_tool` from PR #30, `connect_tool_source`
- * from PR #34) do not regress. Same-turn activation never honors these — only
- * `LOAD_TOOLS_NAME` is a live connector. Never exposed as a provider-visible tool.
- */
-const SEED_CONNECTOR_NAMES: ReadonlySet<string> = new Set([
-  LOAD_TOOLS_NAME,
-  'load_tool',
-  'connect_tool_source',
+/** Frequent baseline that a group declaration may never defer. */
+const DIRECT_TOOL_NAMES: ReadonlySet<string> = new Set([
+  'Bash',
+  'Read',
+  'ArchiveRead',
+  'Write',
+  'Edit',
+  'Glob',
+  'Grep',
+  'WebFetch',
+  'AskUserQuestion',
+  'StopBackgroundTask',
 ]);
 
-/** A natural cluster of tools that load together (browser, computer use, …). */
+/** A discoverable source whose members are searched and activated individually. */
 export interface ToolGroup {
   id: string;
   toolNames: readonly string[];
@@ -63,26 +54,21 @@ export interface ToolGroup {
 }
 
 export interface ToolAvailabilityConfig {
-  /** `true` = only ungrouped tools are visible, groups load on demand; `false` = all visible. */
-  economy: boolean;
-  /** Natural clusters hidden behind the connector when economy is on. */
+  /** Search-space presentation metadata derived from the current bound tools. */
   groups?: readonly ToolGroup[];
 }
 
-export interface LoadedToolGroup {
-  readonly id: string;
-  readonly label?: string;
-  readonly description?: string;
-}
-
-export interface LoadToolsResult {
-  readonly loaded: string[];
-  readonly group: LoadedToolGroup;
+export interface ToolSearchResult {
+  readonly activated: string[];
+  readonly blocked?: {
+    readonly name: string;
+    readonly reason: 'schema_too_large' | 'schema_budget_exhausted';
+    readonly schemaChars: number;
+  };
 }
 
 export function toolAvailabilityHash(config: ToolAvailabilityConfig): `sha256:${string}` {
   return stableHash({
-    economy: config.economy,
     groups: (config.groups ?? []).map((group) => ({
       id: group.id,
       toolNames: [...new Set(group.toolNames)].sort(compareExactString),
@@ -96,34 +82,18 @@ function compareExactString(left: string, right: string): number {
   return left < right ? -1 : left > right ? 1 : 0;
 }
 
-/** The minimal shape this module reads from an AI SDK `StepResult`. */
-export interface StepLike {
-  toolCalls?: ReadonlyArray<{ toolName: string; input?: unknown }>;
-}
-
-/** The minimal shape this module reads from a durable `RuntimeEvent`. */
-export interface RuntimeEventLike {
-  content?: { kind?: string; name?: string; args?: unknown } | undefined;
-}
-
-/**
- * Everything the backend needs for one turn. Produced by `prepare()`, which
- * seeds prior-turn activations from the ledger and wires same-turn activation.
- */
+/** Everything the backend needs for one turn. */
 export interface ToolAvailabilityPlan {
-  /** Full dispatch set (sorted visible tools + the repair fallback). */
+  /** Full dispatch set (sorted bound tools + search connector + repair fallback). */
   providerTools: MakaTool[];
-  /** Step-0 model-visible active subset. */
+  /** Step-0 model-visible subset. */
   activeTools: string[];
-  /** Recomputes the active subset from completed provider steps. */
-  projectActiveTools?: (options: { completedSteps?: ReadonlyArray<StepLike> }) => {
-    activeTools: string[];
-  };
-  /** Tool names the repair path matches against; tracks the current step's snapshot. */
+  /** Recomputes the provider-visible subset from the turn-owned activation map. */
+  projectActiveTools?: (_options?: unknown) => { activeTools: string[] };
+  /** Tool names the repair path matches against; tracks the current step snapshot. */
   currentRepairToolNames: () => string[];
-  /** Execute-boundary gating; undefined in full mode. */
+  /** Execute-boundary gating against the immutable step-start snapshot. */
   gating?: ToolGating;
-  /** Diagnostic for a given active set + measured visible schema chars; undefined in full mode. */
   diagnostics: (
     activeTools: readonly string[],
     visibleToolSchemaChars: number,
@@ -132,44 +102,57 @@ export interface ToolAvailabilityPlan {
 
 interface CatalogGroup {
   id: string;
-  /** Gated members only (core/unknown tools excluded). Sorted. */
   toolNames: string[];
   label?: string;
   description?: string;
 }
 
+interface SearchDocument {
+  id: string;
+  name: string;
+  searchText: string;
+}
+
+/**
+ * Immutable, backend-scoped bound-tool catalog and MiniSearch index.
+ *
+ * Mutable activation belongs to the per-send TurnScope and is passed to
+ * prepare(). Constructing one AiSdkBackend therefore constructs one index; all
+ * turns on that backend reuse it without sharing activation state.
+ */
 export class ToolAvailabilityRuntime {
-  private readonly economy: boolean;
-  private readonly groups: CatalogGroup[];
-  private readonly groupIds: Set<string>;
-  /** Tools that may be hidden this session (all group members). */
-  private readonly gatedNames: Set<string>;
-  /** Tools advertised on every step: ungrouped tools + the connector. */
-  private readonly alwaysActive: Set<string>;
-  private readonly connector?: MakaTool;
-  /** Real tools plus the connector (when present) — the canonicalize input. */
-  private readonly allTools: readonly MakaTool[];
+  private readonly tools: readonly MakaTool[];
+  private readonly toolsByName: ReadonlyMap<string, MakaTool>;
+  private readonly groups: readonly CatalogGroup[];
+  private readonly searchableNames: ReadonlySet<string>;
+  private readonly directNames: ReadonlySet<string>;
+  private readonly searchIndex?: MiniSearch<SearchDocument>;
 
   constructor(
     tools: readonly MakaTool[],
     config: ToolAvailabilityConfig | undefined,
     private readonly invalidTool: MakaTool,
   ) {
-    const known = new Set(tools.map((tool) => tool.name));
+    if (tools.some((tool) => tool.name === TOOL_SEARCH_NAME)) {
+      throw new Error(`Tool name "${TOOL_SEARCH_NAME}" is reserved by Runtime`);
+    }
+    this.tools = [...tools];
+    this.toolsByName = new Map(tools.map((tool) => [tool.name, tool]));
 
+    const known = new Set(this.toolsByName.keys());
+    const claimed = new Set<string>();
     const groups: CatalogGroup[] = [];
-    const gatedNames = new Set<string>();
     for (const group of config?.groups ?? []) {
       if (!group.id) continue;
       const members: string[] = [];
       for (const name of group.toolNames) {
-        // Unknown tools are ignored; the first group to claim a tool owns it.
-        if (!known.has(name) || gatedNames.has(name)) continue;
-        gatedNames.add(name);
+        // The first source to claim a currently bound tool owns its inventory row.
+        if (!known.has(name) || claimed.has(name) || DIRECT_TOOL_NAMES.has(name)) continue;
+        claimed.add(name);
         members.push(name);
       }
       if (members.length === 0) continue;
-      members.sort((a, b) => a.localeCompare(b));
+      members.sort(compareExactString);
       groups.push({
         id: group.id,
         toolNames: members,
@@ -178,28 +161,53 @@ export class ToolAvailabilityRuntime {
       });
     }
     this.groups = groups;
-    this.groupIds = new Set(groups.map((group) => group.id));
-    this.gatedNames = gatedNames;
+    this.searchableNames = claimed;
+    this.directNames = new Set([...known].filter((name) => !claimed.has(name)));
 
-    // Economy only bites when there is actually something to hide.
-    this.economy = (config?.economy ?? false) && gatedNames.size > 0;
-
-    this.connector = this.economy ? this.buildConnector() : undefined;
-    this.alwaysActive = new Set<string>([
-      ...[...known].filter((name) => !gatedNames.has(name)),
-      ...(this.connector ? [this.connector.name] : []),
-    ]);
-    this.allTools = this.connector ? [...tools, this.connector] : tools;
+    if (claimed.size > 0) {
+      const groupByToolName = new Map(
+        groups.flatMap((group) => group.toolNames.map((name) => [name, group] as const)),
+      );
+      const index = new MiniSearch<SearchDocument>({
+        fields: ['name', 'searchText'],
+        storeFields: ['name'],
+        idField: 'id',
+        searchOptions: {
+          boost: { name: 4, searchText: 1 },
+          combineWith: 'OR',
+          prefix: true,
+          fuzzy: 0.2,
+        },
+      });
+      index.addAll(
+        [...claimed].map((name) => {
+          const tool = this.toolsByName.get(name)!;
+          const group = groupByToolName.get(name);
+          return {
+            id: name,
+            name,
+            searchText: [
+              name.replaceAll('_', ' '),
+              tool.description,
+              group?.id,
+              group?.label,
+              group?.description,
+            ]
+              .filter((value): value is string => value !== undefined && value.length > 0)
+              .join(' '),
+          };
+        }),
+      );
+      this.searchIndex = index;
+    }
   }
 
   prepare(
-    priorEvents: ReadonlyArray<RuntimeEventLike> | undefined,
+    activeTools: Map<string, MakaTool>,
     requiredToolNames: ReadonlySet<string> = new Set(),
   ): ToolAvailabilityPlan {
-    const canonical = canonicalizeToolSet(this.allTools, this.invalidTool);
-
-    if (!this.economy) {
-      // Full surface: every visible tool is active, nothing is gated.
+    if (!this.searchIndex) {
+      const canonical = canonicalizeToolSet(this.tools, this.invalidTool);
       return {
         providerTools: canonical.providerTools,
         activeTools: canonical.activeTools,
@@ -208,148 +216,132 @@ export class ToolAvailabilityRuntime {
       };
     }
 
-    const seedGroups = this.seedLoadedGroups(priorEvents);
+    const connector = this.buildSearchConnector(activeTools);
+    const allTools = [...this.tools, connector];
+    const canonical = canonicalizeToolSet(allTools, this.invalidTool);
     const knownNames = new Set(canonical.providerTools.map((tool) => tool.name));
     const requiredNames = [...requiredToolNames].filter((name) => knownNames.has(name));
-    // Turn-local snapshot the guard / repair / diagnostics read; recomputed
-    // before every provider request. No cross-turn mutable state — a load
-    // survives turns only via the ledger seed above (durable by construction),
-    // and within one send the backend's translation point hands every hook a
-    // send-global completed-step view spanning overflow-retry attempts, so activation
-    // stays monotonic per send without a bespoke set here.
-    const turn = { active: new Set<string>() };
-    const computeActive = (steps: ReadonlyArray<StepLike> | undefined): string[] => {
-      const loaded = new Set<string>([...seedGroups, ...this.loadedGroupsFromSteps(steps)]);
-      const activeNames = this.activeNamesFor(loaded);
-      for (const name of requiredNames) activeNames.add(name);
-      const active = canonicalizeToolSet(this.allTools, this.invalidTool, activeNames).activeTools;
-      turn.active = new Set(active);
+    const step = { active: new Set<string>() };
+    const computeActive = (): string[] => {
+      const names = new Set<string>([...this.directNames, TOOL_SEARCH_NAME]);
+      for (const name of activeTools.keys()) {
+        if (knownNames.has(name)) names.add(name);
+      }
+      for (const name of requiredNames) names.add(name);
+      const active = canonicalizeToolSet(allTools, this.invalidTool, names).activeTools;
+      // Replace, rather than mutate, so an in-flight step retains its own snapshot.
+      step.active = new Set(active);
       return active;
     };
 
     return {
       providerTools: canonical.providerTools,
-      activeTools: computeActive(undefined),
-      projectActiveTools: ({ completedSteps }) => ({
-        activeTools: computeActive(completedSteps),
-      }),
-      currentRepairToolNames: () => [...turn.active],
-      gating: { gatedNames: this.gatedNames, activeNames: () => turn.active },
-      diagnostics: (active, chars) => this.buildDiagnostic(active, chars),
+      activeTools: computeActive(),
+      projectActiveTools: () => ({ activeTools: computeActive() }),
+      currentRepairToolNames: () => [...step.active],
+      gating: { gatedNames: this.searchableNames, activeNames: () => step.active },
+      diagnostics: (active, chars) => this.buildDiagnostic(allTools, active, chars),
     };
   }
 
-  // ── catalog helpers ───────────────────────────────────────────────────────
-
-  private activeNamesFor(loadedGroupIds: ReadonlySet<string>): Set<string> {
-    const active = new Set<string>(this.alwaysActive);
-    for (const group of this.groups) {
-      if (loadedGroupIds.has(group.id)) {
-        for (const name of group.toolNames) active.add(name);
-      }
-    }
-    return active;
-  }
-
-  private seedLoadedGroups(events: ReadonlyArray<RuntimeEventLike> | undefined): Set<string> {
-    const out = new Set<string>();
-    for (const event of events ?? []) {
-      const content = event?.content;
-      if (
-        !content ||
-        content.kind !== 'function_call' ||
-        !SEED_CONNECTOR_NAMES.has(content.name ?? '')
-      )
-        continue;
-      // Ledger seeding reads the group id from any historical arg key.
-      const id = extractGroupId(content.args);
-      if (id && this.groupIds.has(id)) out.add(id);
-    }
-    return out;
-  }
-
-  private loadedGroupsFromSteps(steps: ReadonlyArray<StepLike> | undefined): Set<string> {
-    const out = new Set<string>();
-    for (const step of steps ?? []) {
-      for (const call of step.toolCalls ?? []) {
-        // Same-turn activation is the unified connector only. The historical
-        // names are accepted for ledger seeding (prior turns), never live this
-        // turn — and only the `group` arg is honored here.
-        if (call?.toolName !== LOAD_TOOLS_NAME) continue;
-        const id = extractGroupId(call.input, ['group']);
-        if (id && this.groupIds.has(id)) out.add(id);
-      }
-    }
-    return out;
-  }
-
-  private buildConnector(): MakaTool<{ group: string }, LoadToolsResult> {
-    // Only reached when economy is on, which requires at least one gated group,
-    // so `ids` is always non-empty — a plain enum, no empty fallback.
-    const ids = this.groups.map((group) => group.id);
-    const groupSchema = z.enum(ids as [string, ...string[]]);
+  private buildSearchConnector(
+    activeTools: Map<string, MakaTool>,
+  ): MakaTool<{ query: string; limit?: number }, ToolSearchResult> {
     return {
-      name: LOAD_TOOLS_NAME,
-      description: renderCatalog(this.groups),
+      name: TOOL_SEARCH_NAME,
+      description: renderInventory(this.groups),
       parameters: z.object({
-        group: groupSchema.describe('The capability group to load.'),
+        query: z.string().trim().min(1).describe('Search query describing the needed capability.'),
+        limit: z
+          .number()
+          .int()
+          .min(1)
+          .max(TOOL_SEARCH_MAX_LIMIT)
+          .optional()
+          .describe(`Maximum matches to activate; defaults to ${TOOL_SEARCH_DEFAULT_LIMIT}.`),
       }),
       nesting: 'direct_only',
-      impl: ({ group }: { group: string }) => {
-        const found = this.groups.find((candidate) => candidate.id === group);
-        if (!found) {
-          throw new Error(`Unknown tool group "${group}". Available: ${ids.join(', ')}.`);
+      impl: ({ query, limit = TOOL_SEARCH_DEFAULT_LIMIT }, context) => {
+        const normalizedQuery = query.trim();
+        const ranked = this.searchIndex!.search(normalizedQuery)
+          .map((result) => String(result.id))
+          .filter((name) => !activeTools.has(name))
+          .slice(0, TOOL_SEARCH_MAX_LIMIT)
+          .filter((name) => this.searchableNames.has(name));
+        const activated: string[] = [];
+        let blocked: ToolSearchResult['blocked'];
+        let schemaChars = 0;
+        for (const name of ranked) {
+          if (activated.length >= limit) break;
+          const tool = this.toolsByName.get(name);
+          if (!tool) continue;
+          const chars = toolSchemaCharsForDiagnostics([tool], [tool.name]);
+          if (chars > TOOL_SEARCH_MAX_SCHEMA_CHARS) {
+            blocked ??= { name, reason: 'schema_too_large', schemaChars: chars };
+            continue;
+          }
+          if (schemaChars + chars > TOOL_SEARCH_MAX_SCHEMA_CHARS) {
+            blocked = { name, reason: 'schema_budget_exhausted', schemaChars: chars };
+            break;
+          }
+          activated.push(name);
+          schemaChars += chars;
         }
+        for (const name of activated) activeTools.set(name, this.toolsByName.get(name)!);
+        const result: ToolSearchResult = {
+          activated,
+          ...(blocked ? { blocked } : {}),
+        };
+        context.emitRunTrace?.('tool_searched', 'Deferred tools searched', {
+          query: normalizedQuery,
+          requestedLimit: limit,
+          ranked,
+          activated,
+          newlyActivated: activated,
+          schemaChars,
+          ...(blocked ? { blocked } : {}),
+        });
+        return result;
+      },
+      toModelOutput: ({ output }) => {
+        const result = output as ToolSearchResult;
         return {
-          loaded: [...found.toolNames],
-          group: {
-            id: found.id,
-            ...(found.label ? { label: found.label } : {}),
-            ...(found.description ? { description: found.description } : {}),
+          type: 'json',
+          value: {
+            activated: [...result.activated],
+            ...(result.blocked ? { blocked: { ...result.blocked } } : {}),
           },
         };
       },
-      // Keep presentation metadata in the durable result without spending
-      // provider context on copy the model already received in the catalog.
-      toModelOutput: ({ output }) => ({
-        type: 'json',
-        value: {
-          loaded: [...(output as LoadToolsResult).loaded],
-        },
-      }),
     };
   }
 
   private buildDiagnostic(
+    allTools: readonly MakaTool[],
     active: readonly string[],
     visibleToolSchemaChars: number,
   ): ToolAvailabilityDiagnostic {
     const activeSet = new Set(active);
-    const isLoaded = (group: CatalogGroup): boolean =>
-      group.toolNames.every((name) => activeSet.has(name));
     const enabledSourceIds = this.groups
-      .filter(isLoaded)
+      .filter((group) => group.toolNames.every((name) => activeSet.has(name)))
       .map((group) => group.id)
-      .sort((a, b) => a.localeCompare(b));
+      .sort(compareExactString);
     const availableSourceIds = this.groups
-      .filter((group) => !isLoaded(group))
+      .filter((group) => !group.toolNames.every((name) => activeSet.has(name)))
       .map((group) => group.id)
-      .sort((a, b) => a.localeCompare(b));
-
-    const full = canonicalizeToolSet(this.allTools, this.invalidTool);
+      .sort(compareExactString);
+    const full = canonicalizeToolSet(allTools, this.invalidTool);
     const fullToolSchemaChars = toolSchemaCharsForDiagnostics(full.providerTools, full.activeTools);
     const toolSchemaCharReduction = Math.max(0, fullToolSchemaChars - visibleToolSchemaChars);
 
     return {
-      mode: 'economy',
+      mode: 'search',
       enabledSourceIds,
       availableSourceIds,
-      connectorToolName: LOAD_TOOLS_NAME,
+      connectorToolName: TOOL_SEARCH_NAME,
       visibleToolNamesBySource: groupToolNamesById(this.groups),
       visibleToolCount: active.length,
       fullToolCount: full.activeTools.length,
-      // active and full both count the connector, so the difference is exactly
-      // the hidden (unloaded group) tools — keeps full = visible + hidden.
       hiddenToolCount: Math.max(0, full.activeTools.length - active.length),
       visibleToolSchemaChars,
       fullToolSchemaChars,
@@ -359,45 +351,26 @@ export class ToolAvailabilityRuntime {
   }
 }
 
-function extractGroupId(
-  input: unknown,
-  keys: readonly string[] = ['group', 'namespace', 'source'],
-): string | undefined {
-  let value = input;
-  if (typeof value === 'string') {
-    try {
-      value = JSON.parse(value);
-    } catch {
-      return undefined;
-    }
-  }
-  if (value && typeof value === 'object') {
-    const record = value as Record<string, unknown>;
-    for (const key of keys) {
-      if (typeof record[key] === 'string') return record[key] as string;
-    }
-  }
-  return undefined;
-}
-
-function renderCatalog(groups: readonly CatalogGroup[]): string {
-  const lines = groups.map(
-    (group) => `- ${group.id}: ${group.description ?? group.label ?? group.toolNames.join(', ')}`,
-  );
+function renderInventory(groups: readonly CatalogGroup[]): string {
+  const lines = groups.flatMap((group) => [
+    `${group.id}:`,
+    ...group.toolNames.map((name) => `- ${name}`),
+  ]);
   return [
-    'Load additional tool groups on demand. These capabilities exist but their full',
-    'parameter schemas are withheld to keep each turn lean. Call load_tools with a',
-    'group id; the tools it returns become callable on your next step.',
+    'Search the deferred tools bound to this run. A successful search activates the',
+    'bounded top matches; their complete callable definitions become visible on the',
+    'next provider step. Search again to expand the active set. A blocked result means',
+    'the highest remaining match did not fit this search schema budget.',
     '',
-    'Available groups:',
+    'Searchable tool inventory (group and canonical name only):',
     ...lines,
   ].join('\n');
 }
 
 function groupToolNamesById(groups: readonly CatalogGroup[]): Record<string, string[]> {
   const out: Record<string, string[]> = {};
-  for (const group of [...groups].sort((a, b) => a.id.localeCompare(b.id))) {
-    out[group.id] = [...group.toolNames].sort((a, b) => a.localeCompare(b));
+  for (const group of [...groups].sort((a, b) => compareExactString(a.id, b.id))) {
+    out[group.id] = [...group.toolNames].sort(compareExactString);
   }
   return out;
 }

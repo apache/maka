@@ -465,7 +465,7 @@ sequenceDiagram
   participant Planner as RuntimeContinuationPlanner
   participant Kernel as RuntimeKernel
   participant Run as New AgentRun
-  participant Runner as RuntimeRunner
+  participant Kernel as RuntimeKernel
   participant Provider as Model provider
 
   User->>UI: click Safe resume
@@ -482,9 +482,9 @@ sequenceDiagram
     SM->>Kernel: resumeSafeBoundaryContinuation
     Kernel->>Kernel: reread and revalidate every boundary
     Kernel->>Run: create new Run with continuationSource
-    Run->>Runner: begin continuation
-    Runner->>Run: durable continuation-start RuntimeEvent
-    Runner->>Provider: replay history without duplicate user message
+    Run->>Kernel: return durable continuation-start proof
+    Kernel->>Kernel: consume one-shot start proof
+    Kernel->>Provider: replay history without duplicate user message
     Provider-->>UI: stream the new Turn
   end
 ```
@@ -689,7 +689,7 @@ flowchart LR
     RP["RuntimeContinuationPlanner"]
     CS["Continuation safety inspector"]
     RK["RuntimeKernel"]
-    AR["AgentRun / RuntimeRunner"]
+    AR["AgentRun"]
     TR["ToolRuntime"]
   end
 
@@ -915,8 +915,7 @@ The two most important follow-ups are:
 4. `packages/runtime/src/continuation-safety.ts`
 5. `packages/runtime/src/session-manager.ts`
 6. `packages/runtime/src/runtime-kernel.ts`
-7. `packages/runtime/src/runtime-runner.ts`
-8. `packages/runtime/src/agent-run.ts`
+7. `packages/runtime/src/agent-run.ts`
 
 ### Product wiring
 

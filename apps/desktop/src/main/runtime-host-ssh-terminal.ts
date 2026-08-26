@@ -24,6 +24,7 @@ import { posix as pathPosix } from 'node:path';
 import type { IpcMain } from 'electron';
 import type { IPty } from 'node-pty';
 import { spawn as spawnPty } from 'node-pty';
+import { terminateProcessTree } from '@maka/runtime/process-tree-terminator';
 import {
   normalizeRuntimeHostSshDestination,
   openRuntimeHostSshTunnel,
@@ -39,9 +40,11 @@ import {
   RUNTIME_HOST_ACCESS_MANAGEMENT_FRAME_PREFIX,
   RUNTIME_HOST_OPERATOR_ACCESS_MANAGEMENT_CAPABILITY,
   RUNTIME_HOST_OPERATOR_CAPABILITY_REQUEST_ENV,
+  RUNTIME_HOST_OPERATOR_UPDATE_SCHEDULER_CAPABILITY,
   RUNTIME_HOST_SERVICE_MANAGEMENT_FRAME_PREFIX,
   RUNTIME_HOST_SETUP_FRAME_PREFIX,
   type RuntimeHostAccessManagementFrame,
+  type RuntimeHostManagedUpdatePolicy,
   type RuntimeHostServiceManagementAction,
   type RuntimeHostServiceManagementFrame,
   type RuntimeHostServiceUpdatePhase,
@@ -56,6 +59,7 @@ interface ActiveTerminal {
   readonly sessionId: string;
   readonly pty: IPty;
   readonly exited: Promise<void>;
+  readonly hasExited: () => boolean;
   revealTimer: ReturnType<typeof setTimeout> | undefined;
   phase: 'connecting' | 'connected';
   revealed: boolean;
@@ -63,6 +67,10 @@ interface ActiveTerminal {
   presentationSuppressed: boolean;
   output: string;
 }
+
+type DesktopRuntimeHostSshProcess = RuntimeHostSshProcess & {
+  readonly hasExited: () => boolean;
+};
 
 const TERMINAL_REVEAL_DELAY_MS = 500;
 const TERMINAL_OUTPUT_MAX = 64 * 1024;
@@ -85,7 +93,10 @@ export interface DesktopRuntimeHostSshManagementInput {
   readonly destination: string;
   readonly sshPort?: number;
   readonly operatorPath: string;
-  readonly action: Exclude<RuntimeHostServiceManagementAction, 'check_update' | 'update'>;
+  readonly action: Exclude<
+    RuntimeHostServiceManagementAction,
+    'check_update' | 'update' | 'update_policy' | 'reconcile_update'
+  >;
   readonly expectedTarget: {
     readonly serviceId: string;
     readonly rootPath: string;
@@ -104,6 +115,23 @@ export interface DesktopRuntimeHostSshUpdateInput {
   readonly setupPackage: DesktopRuntimeHostSetupPackage;
   readonly expectedTarget: DesktopRuntimeHostSshManagementInput['expectedTarget'];
   readonly allowInterruptActiveTasks?: boolean;
+  readonly signal?: AbortSignal;
+}
+
+export interface DesktopRuntimeHostSshUpdatePolicyInput {
+  readonly destination: string;
+  readonly sshPort?: number;
+  readonly operatorPath: string;
+  readonly policy?: RuntimeHostManagedUpdatePolicy;
+  readonly expectedTarget: DesktopRuntimeHostSshManagementInput['expectedTarget'];
+  readonly signal?: AbortSignal;
+}
+
+export interface DesktopRuntimeHostSshUpdateReconciliationInput {
+  readonly destination: string;
+  readonly sshPort?: number;
+  readonly operatorPath: string;
+  readonly expectedTarget: DesktopRuntimeHostSshManagementInput['expectedTarget'];
   readonly signal?: AbortSignal;
 }
 
@@ -145,6 +173,16 @@ export type RuntimeHostServiceUpdateTerminalFrame =
       readonly action: 'update';
     });
 
+export type RuntimeHostServiceUpdatePolicyTerminalFrame = Extract<
+  RuntimeHostServiceManagementFrame,
+  { kind: 'result' | 'error'; action: 'update_policy' }
+>;
+
+export type RuntimeHostServiceUpdateReconciliationTerminalFrame = Extract<
+  RuntimeHostServiceManagementFrame,
+  { kind: 'result' | 'error'; action: 'reconcile_update' }
+>;
+
 export function isExactRuntimeHostSetupPackageSpecifier(value: unknown): value is string {
   return typeof value === 'string' && /^maka-agent@[0-9][0-9A-Za-z.+-]*$/u.test(value);
 }
@@ -159,6 +197,7 @@ export function createDesktopRuntimeHostSshTerminal(input: {
   readonly revealDelayMs?: number;
   readonly managementTimeoutMs?: number;
   readonly processStopGraceMs?: number;
+  readonly terminateProcessTree?: typeof terminateProcessTree;
 }): {
   openSshTunnel(input: RuntimeHostSshTunnelInput): Promise<RuntimeHostSshTunnel>;
   runSetup(
@@ -173,6 +212,13 @@ export function createDesktopRuntimeHostSshTerminal(input: {
     input: DesktopRuntimeHostSshUpdateInput,
     onProgress: (phase: RuntimeHostServiceUpdatePhase) => void,
   ): Promise<RuntimeHostServiceUpdateTerminalFrame>;
+  runUpdatePolicy(
+    input: DesktopRuntimeHostSshUpdatePolicyInput,
+  ): Promise<RuntimeHostServiceUpdatePolicyTerminalFrame>;
+  runUpdateReconciliation(
+    input: DesktopRuntimeHostSshUpdateReconciliationInput,
+    onProgress: (phase: RuntimeHostServiceUpdatePhase) => void,
+  ): Promise<RuntimeHostServiceUpdateReconciliationTerminalFrame>;
   runAccessManagement(
     input: DesktopRuntimeHostSshAccessInput,
   ): Promise<RuntimeHostAccessManagementFrame>;
@@ -238,7 +284,7 @@ export function createDesktopRuntimeHostSshTerminal(input: {
     args: readonly string[],
     transformOutput: (data: string) => string = (data) => data,
     successfulExitCompletes = false,
-  ): { readonly process: RuntimeHostSshProcess; readonly terminal: ActiveTerminal } => {
+  ): { readonly process: DesktopRuntimeHostSshProcess; readonly terminal: ActiveTerminal } => {
     if (closed) throw new Error('Runtime Host SSH terminal is closed');
     if (active) throw new Error('Another Runtime Host SSH terminal is already active');
     const sessionId = randomUUID();
@@ -259,10 +305,13 @@ export function createDesktopRuntimeHostSshTerminal(input: {
     }>((resolve) => {
       resolveExit = resolve;
     });
+    let processExited = false;
+    const hasExited = () => processExited;
     const terminal: ActiveTerminal = {
       sessionId,
       pty,
       exited: exited.then(() => undefined),
+      hasExited,
       revealTimer: undefined,
       phase: 'connecting',
       revealed: false,
@@ -305,6 +354,7 @@ export function createDesktopRuntimeHostSshTerminal(input: {
       });
     });
     pty.onExit(({ exitCode, signal }) => {
+      processExited = true;
       if (terminal.revealTimer !== undefined) clearTimeout(terminal.revealTimer);
       if (successfulExitCompletes && exitCode === 0) completePresentation(terminal);
       if (active === terminal) active = undefined;
@@ -338,7 +388,8 @@ export function createDesktopRuntimeHostSshTerminal(input: {
           // The exit event is the authority; a concurrent exit makes kill a no-op.
         }
       },
-    } satisfies RuntimeHostSshProcess;
+      hasExited,
+    } satisfies DesktopRuntimeHostSshProcess;
     return { process, terminal };
   };
   const spawnProcess: RuntimeHostSshProcessFactory = ({ executable, args, interaction }) => {
@@ -391,7 +442,11 @@ export function createDesktopRuntimeHostSshTerminal(input: {
       return;
     }
     dismissPresentation(terminal);
-    await terminateActiveTerminal(terminal, input.processStopGraceMs);
+    await terminateActiveTerminal(
+      terminal,
+      input.processStopGraceMs,
+      input.terminateProcessTree,
+    );
   });
 
   const runFramedManagement = async <Frame>(options: {
@@ -459,7 +514,7 @@ export function createDesktopRuntimeHostSshTerminal(input: {
       timeoutMs: options.timeoutMs ?? input.managementTimeoutMs ?? MANAGEMENT_TIMEOUT_MS,
       stopGraceMs: input.processStopGraceMs,
       onAbort: () => dismissPresentation(terminal),
-    });
+    }, input.terminateProcessTree);
     filter.finish();
     if (failure) throw failure;
     if (!frame) {
@@ -506,6 +561,7 @@ export function createDesktopRuntimeHostSshTerminal(input: {
           cancellation.signal,
           input.processStopGraceMs,
           dismissPresentation,
+          input.terminateProcessTree,
         );
         const remoteCommand = runtimeHostSetupRemoteCommand(setupPackage, setupInput);
         let complete: RuntimeHostSetupCompleteFrame | undefined;
@@ -541,7 +597,7 @@ export function createDesktopRuntimeHostSshTerminal(input: {
           timeoutMs: SETUP_TIMEOUT_MS,
           stopGraceMs: input.processStopGraceMs,
           onAbort: () => dismissPresentation(terminal),
-        });
+        }, input.terminateProcessTree);
         filter.finish();
         if (setupFailure) throw setupFailure;
         if (!complete) {
@@ -593,6 +649,7 @@ export function createDesktopRuntimeHostSshTerminal(input: {
         updateInput.signal,
         input.processStopGraceMs,
         dismissPresentation,
+        input.terminateProcessTree,
       );
       const frame = await runFramedManagement({
         ...updateInput,
@@ -616,6 +673,41 @@ export function createDesktopRuntimeHostSshTerminal(input: {
         return { ...frame, action: 'update' };
       }
       throw new Error('Remote Runtime Host update returned an invalid result');
+    },
+    runUpdatePolicy: async (policyInput) => {
+      const frame = await runFramedManagement({
+        ...policyInput,
+        remoteCommand: runtimeHostUpdatePolicyRemoteCommand(policyInput),
+        prefix: RUNTIME_HOST_SERVICE_MANAGEMENT_FRAME_PREFIX,
+        pendingMaxBytes: MANAGEMENT_FRAME_PENDING_MAX,
+        decode: decodeRuntimeHostServiceManagementFrame,
+        action: 'update_policy',
+        frameAction: (candidate) => candidate.action,
+        label: 'Remote Runtime Host update policy',
+      });
+      if (frame.kind === 'result' && frame.action === 'update_policy') return frame;
+      if (frame.kind === 'error' && frame.action === 'update_policy') return frame;
+      throw new Error('Remote Runtime Host update policy returned an invalid result');
+    },
+    runUpdateReconciliation: async (reconciliationInput, onProgress) => {
+      const frame = await runFramedManagement({
+        ...reconciliationInput,
+        remoteCommand: runtimeHostUpdateReconciliationRemoteCommand(reconciliationInput),
+        prefix: RUNTIME_HOST_SERVICE_MANAGEMENT_FRAME_PREFIX,
+        pendingMaxBytes: MANAGEMENT_FRAME_PENDING_MAX,
+        decode: decodeRuntimeHostServiceManagementFrame,
+        action: 'reconcile_update',
+        frameAction: (candidate) => candidate.action,
+        isTerminalFrame: (candidate) => candidate.kind !== 'progress',
+        onProgress: (candidate) => {
+          if (candidate.kind === 'progress') onProgress(candidate.phase);
+        },
+        label: 'Remote Runtime Host update reconciliation',
+        timeoutMs: SETUP_TIMEOUT_MS,
+      });
+      if (frame.kind === 'result' && frame.action === 'reconcile_update') return frame;
+      if (frame.kind === 'error' && frame.action === 'reconcile_update') return frame;
+      throw new Error('Remote Runtime Host update reconciliation returned an invalid result');
     },
     runAccessManagement: (accessInput) =>
       runFramedManagement({
@@ -650,7 +742,7 @@ export function createDesktopRuntimeHostSshTerminal(input: {
         timeoutMs: input.managementTimeoutMs ?? MANAGEMENT_TIMEOUT_MS,
         stopGraceMs: input.processStopGraceMs,
         onAbort: () => dismissPresentation(terminal),
-      });
+      }, input.terminateProcessTree);
       if (wait.timedOut) {
         throw new Error('Remote Runtime Host deployment cleanup timed out');
       }
@@ -670,7 +762,11 @@ export function createDesktopRuntimeHostSshTerminal(input: {
       presentation = undefined;
       terminal.dismissed = true;
       if (terminal.revealTimer !== undefined) clearTimeout(terminal.revealTimer);
-      await terminateActiveTerminal(terminal, input.processStopGraceMs).catch(() => undefined);
+      await terminateActiveTerminal(
+        terminal,
+        input.processStopGraceMs,
+        input.terminateProcessTree,
+      ).catch(() => undefined);
     },
   };
 }
@@ -792,10 +888,11 @@ async function prepareSetupPackage(
     args: readonly string[],
     transformOutput?: (data: string) => string,
     successfulExitCompletes?: boolean,
-  ) => { readonly process: RuntimeHostSshProcess; readonly terminal: ActiveTerminal },
+  ) => { readonly process: DesktopRuntimeHostSshProcess; readonly terminal: ActiveTerminal },
   signal: AbortSignal | undefined,
   stopGraceMs: number | undefined,
   dismissPresentation: (terminal: ActiveTerminal) => void,
+  terminateTree: typeof terminateProcessTree | undefined,
 ): Promise<PreparedSetupPackage> {
   if (setupPackage.kind === 'npm') {
     if (!isExactRuntimeHostSetupPackageSpecifier(setupPackage.specifier)) {
@@ -829,7 +926,7 @@ async function prepareSetupPackage(
     timeoutMs: SETUP_TIMEOUT_MS,
     stopGraceMs,
     onAbort: () => dismissPresentation(terminal),
-  });
+  }, terminateTree);
   if (wait.timedOut) {
     throw new Error('Uploading the Runtime Host development package timed out');
   }
@@ -848,13 +945,14 @@ function remoteDevelopmentArchivePath(principalId: string): string {
 }
 
 async function waitForTerminalProcess(
-  process: RuntimeHostSshProcess,
+  process: DesktopRuntimeHostSshProcess,
   input: {
     readonly signal?: AbortSignal;
     readonly timeoutMs: number;
     readonly stopGraceMs?: number;
     readonly onAbort?: () => void;
   },
+  terminateTree: typeof terminateProcessTree = terminateProcessTree,
 ): Promise<{
   readonly exit: Awaited<RuntimeHostSshProcess['exited']>;
   readonly timedOut: boolean;
@@ -877,7 +975,7 @@ async function waitForTerminalProcess(
       process.exited,
       stopRequested.then(async (reason) => {
         if (reason === 'aborted') input.onAbort?.();
-        await terminateTerminalProcess(process, input.stopGraceMs);
+        await terminateTerminalProcess(process, input.stopGraceMs, terminateTree);
         return process.exited;
       }),
     ]);
@@ -890,14 +988,34 @@ async function waitForTerminalProcess(
 }
 
 async function terminateTerminalProcess(
-  process: Pick<RuntimeHostSshProcess, 'exited' | 'kill'>,
+  process: Pick<DesktopRuntimeHostSshProcess, 'pid' | 'exited' | 'kill' | 'hasExited'>,
   graceMs = PROCESS_STOP_GRACE_MS,
+  terminateTree: typeof terminateProcessTree = terminateProcessTree,
 ): Promise<void> {
-  process.kill('SIGTERM');
+  await signalTerminalProcess(process, 'SIGTERM', terminateTree);
   if (await settlesWithin(process.exited, graceMs)) return;
-  process.kill('SIGKILL');
+  await signalTerminalProcess(process, 'SIGKILL', terminateTree);
   if (await settlesWithin(process.exited, graceMs)) return;
   throw new Error('SSH process did not exit after forced termination');
+}
+
+async function signalTerminalProcess(
+  process: Pick<DesktopRuntimeHostSshProcess, 'pid' | 'kill' | 'hasExited'>,
+  signal: 'SIGTERM' | 'SIGKILL',
+  terminateTree: typeof terminateProcessTree,
+): Promise<void> {
+  const fallback = () => process.kill(signal);
+  if (process.pid === undefined) {
+    fallback();
+    return;
+  }
+  await terminateTree({
+    pid: process.pid,
+    signal,
+    fallback,
+    hasExited: process.hasExited,
+    beforeSignal: () => !process.hasExited(),
+  });
 }
 
 async function settlesWithin(promise: Promise<unknown>, timeoutMs: number): Promise<boolean> {
@@ -976,6 +1094,43 @@ function runtimeHostUpdateRemoteCommand(
         RUNTIME_HOST_OPERATOR_ACCESS_MANAGEMENT_CAPABILITY,
     },
   );
+}
+
+function runtimeHostUpdatePolicyRemoteCommand(
+  input: DesktopRuntimeHostSshUpdatePolicyInput,
+): string {
+  const policy = input.policy;
+  const target = policy === undefined
+    ? []
+    : ['--target', policy.kind === 'channel' ? policy.channel : policy.kind === 'fixed' ? policy.version : 'manual'];
+  const command = [
+    input.operatorPath,
+    'update-policy',
+    '--framed',
+    ...target,
+    ...managedServiceTargetArgs(input.expectedTarget),
+  ].map(quotePosix).join(' ');
+  const invocation =
+    `${RUNTIME_HOST_OPERATOR_CAPABILITY_REQUEST_ENV}=` +
+    `${quotePosix(RUNTIME_HOST_OPERATOR_UPDATE_SCHEDULER_CAPABILITY)} exec ${command}`;
+  return `exec "\${SHELL:-/bin/sh}" -lic ${quotePosix(invocation)}`;
+}
+
+function runtimeHostUpdateReconciliationRemoteCommand(
+  input: DesktopRuntimeHostSshUpdateReconciliationInput,
+): string {
+  const command = [
+    input.operatorPath,
+    'reconcile-update',
+    '--framed',
+    ...managedServiceTargetArgs(input.expectedTarget),
+  ]
+    .map(quotePosix)
+    .join(' ');
+  const invocation =
+    `${RUNTIME_HOST_OPERATOR_CAPABILITY_REQUEST_ENV}=` +
+    `${quotePosix(RUNTIME_HOST_OPERATOR_UPDATE_SCHEDULER_CAPABILITY)} exec ${command}`;
+  return `exec "\${SHELL:-/bin/sh}" -lic ${quotePosix(invocation)}`;
 }
 
 function runtimeHostAccessManagementRemoteCommand(
@@ -1106,10 +1261,13 @@ function findActive(
 function terminateActiveTerminal(
   terminal: ActiveTerminal,
   graceMs: number | undefined,
+  terminateTree: typeof terminateProcessTree | undefined,
 ): Promise<void> {
   return terminateTerminalProcess(
     {
+      pid: terminal.pty.pid,
       exited: terminal.exited.then(() => ({ code: null, signal: null })),
+      hasExited: terminal.hasExited,
       kill: (signal) => {
         try {
           terminal.pty.kill(signal);
@@ -1119,6 +1277,7 @@ function terminateActiveTerminal(
       },
     },
     graceMs,
+    terminateTree,
   );
 }
 

@@ -15,6 +15,8 @@ apps/desktop/src/renderer/features/goals/ui/goal-dialog.tsx
 apps/desktop/src/renderer/features/goals/ui/goal-host.tsx
 apps/desktop/src/renderer/features/module-hub/services-context.tsx
 apps/desktop/src/renderer/features/module-hub/ui/module-hub-host.tsx
+apps/desktop/src/renderer/features/session-navigation/services-context.tsx
+apps/desktop/src/renderer/features/session-navigation/ui/session-navigation-host.tsx
 apps/desktop/src/renderer/features/workbar/services-context.tsx
 apps/desktop/src/renderer/features/workbar/tools/artifacts/artifact-pane.tsx
 apps/desktop/src/renderer/features/workbar/tools/artifacts/artifact-preview-registry-shell.tsx

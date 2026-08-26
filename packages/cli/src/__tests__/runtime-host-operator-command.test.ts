@@ -238,6 +238,12 @@ describe('Runtime Host operator commands', () => {
       hostEpoch: 'epoch-1',
       endpoint: '/tmp/maka.sock',
       websocketEndpoints: ['wss://runtime.example.com:443/runtime-host'],
+      peerListeners: [
+        {
+          peerId: '12D3KooWPeer',
+          listenAddresses: ['/ip4/192.0.2.10/udp/4001/quic-v1/p2p/12D3KooWPeer'],
+        },
+      ],
       compositionDescriptor: { id: 'maka.interactive', revision: '2' },
     });
 
@@ -259,6 +265,11 @@ describe('Runtime Host operator commands', () => {
           host: 'runtime.example.com',
           port: 443,
           path: '/runtime-host',
+        },
+        {
+          kind: 'libp2p_direct',
+          peerId: '12D3KooWPeer',
+          listenAddresses: ['/ip4/192.0.2.10/udp/4001/quic-v1/p2p/12D3KooWPeer'],
         },
       ],
     });

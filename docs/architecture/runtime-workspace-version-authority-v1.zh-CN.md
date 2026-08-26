@@ -330,8 +330,20 @@ SQLite read transaction/snapshot；否则并发 writer 可能让读者拼接两�
 
 只证明：Maka 能用一个显式注入且经过校验的 Git runtime 创建并独占 private internal
 repository/worktree lifecycle；外部 drift 被检测后 quarantine。ASF Desktop 不再提供该 runtime，后续实现将
-验证 Apache-2.0/MIT 的 gitoxide backend。需要先拍板 ignored dependencies/scratch、identity marker、fixed
-Git config、symlink/LFS/submodule/case/filemode 平台政策。
+验证 Apache-2.0/MIT 的 gitoxide backend。旧 Git-CLI-shaped service 仅作为历史/测试实现，不能成为
+新生产 backend 的 identity owner。
+
+当前 Gitoxide 验证栈已拆成三个窄、可独立合并的 enabling-infrastructure 层：isolated short-lived Rust helper、exact helper artifact →
+opaque invocation capability、bounded invocation → opaque repository admission capability。分别见：
+
+- [`gitoxide-short-lived-helper-admission-v1.zh-CN.md`](./gitoxide-short-lived-helper-admission-v1.zh-CN.md)
+- [`gitoxide-helper-artifact-authority-v1.zh-CN.md`](./gitoxide-helper-artifact-authority-v1.zh-CN.md)
+- [`gitoxide-helper-invocation-owner-v1.zh-CN.md`](./gitoxide-helper-invocation-owner-v1.zh-CN.md)
+- [`gitoxide-repository-admission-capability-v1.zh-CN.md`](./gitoxide-repository-admission-capability-v1.zh-CN.md)
+
+这些基础设施尚未建立 signed packaged-release trust root，也没有 Desktop/CLI/T1 消费者，因此不能据此
+恢复 managed mode。后续生产接线仍需先拍板 ignored dependencies/scratch、identity marker、
+symlink/LFS/submodule/case/filemode 平台政策。
 
 ### Slice 3：Baseline Open Bundle（实现中）
 

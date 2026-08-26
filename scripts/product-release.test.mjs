@@ -194,6 +194,19 @@ test('Desktop packaging does not distribute the retired bundled Git runtime', ()
   );
 });
 
+test('macOS DMG ships correctly sized background assets', async () => {
+  const backgroundDirectory = join(repoRoot, 'apps', 'desktop', 'build');
+  const pngSignature = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]);
+  for (const [name, dimensions] of [
+    ['background.png', { width: 540, height: 380 }],
+    ['background@2x.png', { width: 1080, height: 760 }],
+  ]) {
+    const data = await readFile(join(backgroundDirectory, name));
+    assert.deepEqual(data.subarray(0, pngSignature.length), pngSignature, `${name} must be a PNG`);
+    assert.deepEqual({ width: data.readUInt32BE(16), height: data.readUInt32BE(20) }, dimensions);
+  }
+});
+
 test('a successful Windows upgrade invalidates stale backup authority before best-effort cleanup', async () => {
   const source = await readFile(
     join(repoRoot, 'apps', 'desktop', 'build', 'installer.nsh'),
@@ -711,6 +724,10 @@ test('one product workflow gates one draft release on every required artifact', 
 
 test('repository control plane admits only reviewed immutable release tags', async () => {
   const config = parseYaml(await readFile(new URL('../.asf.yaml', import.meta.url), 'utf8'));
+  assert.deepEqual(config.github.protected_branches.main.required_status_checks.contexts, [
+    'test',
+    'windows_recovery',
+  ]);
   const environments = config.github.environments;
   for (const [name, tagPattern] of [
     ['release', 'v*-incubating-rc*'],

@@ -61,6 +61,7 @@ import { TASK_LEDGER_OPERATION_SPECS } from './task-ledger.js';
 import { TURN_OPERATION_SPECS } from './turn.js';
 import { USAGE_PRICING_OPERATION_SPECS } from './usage-pricing.js';
 import { WEB_SEARCH_OPERATION_SPECS } from './web-search.js';
+import { WORKHUB_COORDINATION_OPERATION_SPECS } from './workhub-coordination.js';
 
 export type {
   HostDiagnosticsInput,
@@ -211,6 +212,7 @@ export const HOST_OPERATION_SPECS = composeOperationSpecMaps(
   WEB_SEARCH_OPERATION_SPECS,
   NETWORK_PROXY_OPERATION_SPECS,
   CONFIGURATION_OPERATION_SPECS,
+  WORKHUB_COORDINATION_OPERATION_SPECS,
 );
 
 export type OperationSpecMap = typeof HOST_OPERATION_SPECS;
@@ -323,6 +325,9 @@ export const REMOTE_OWNER_OPERATION_GRANTS = Object.freeze([
   'turn.stop',
   'usage.query',
   'web-search.execute',
+  'workhub.coordination.answer',
+  'workhub.coordination.record',
+  'workhub.coordination.resolve',
 ] as const satisfies readonly OperationKey[]);
 
 const REMOTE_OWNER_OPERATION_GRANT_SET = new Set<OperationKey>(REMOTE_OWNER_OPERATION_GRANTS);

@@ -80,6 +80,11 @@ export type RootExecutionDescriptor =
       inputDigest?: `sha256:${string}`;
       maxSteps?: number;
     }
+  | {
+      /** Tool-free conversational execution admitted only by WorkHub authority. */
+      kind: 'workhub_coordination';
+      inputDigest: `sha256:${string}`;
+    }
   | { kind: 'regenerate'; sourceTurnId: string }
   | { kind: 'context_compact' }
   | { kind: 'scheduled_task'; scheduledTaskId: string }
@@ -372,6 +377,7 @@ export const AGENT_RUN_EVENT_TYPES = [
   'run_started',
   'turn_started',
   'sandbox_context_resolved',
+  'sandbox_context_failed',
   'plan_context_resolved',
   'plan_submitted',
   'plan_execution_started',
@@ -390,6 +396,7 @@ export const AGENT_RUN_EVENT_TYPES = [
   'model_stream_failed',
   'send_diagnostics_recorded',
   'tool_started',
+  'tool_searched',
   'tool_completed',
   'tool_failed',
   'skill_catalog_built',

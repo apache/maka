@@ -23,13 +23,11 @@ import type { MessageBoxOptions, MessageBoxReturnValue } from 'electron';
 import {
   copyDesktopDiagnosticReport,
   createDesktopMainRendererDiagnosticInput,
-  createDesktopPreviousMainProcessDiagnosticInput,
 } from '../main-process-diagnostics.js';
 import {
   showFatalStartupError,
   showMainRendererProcessGoneDialog,
   showMessageBoxWithDiagnostics,
-  showPreviousMainProcessInterruptionDialog,
 } from '../native-diagnostic-dialog.js';
 
 const diagnosticEnvironment = () => ({
@@ -150,60 +148,4 @@ test('main Renderer loss keeps Copy Diagnostics auxiliary to recovery', async ()
   assert.match(clipboard, /Exit code: 137/);
   assert.match(clipboard, /Recent main-process logs \(1\)/);
   assert.doesNotMatch(clipboard, /very-secret-token/);
-});
-
-test('previous main-process evidence remains copyable before a Renderer exists', async () => {
-  const shown: MessageBoxOptions[] = [];
-  const responses = [1, 0];
-  let clipboard = '';
-  const input = createDesktopPreviousMainProcessDiagnosticInput({
-    run: {
-      startedAt: '2026-08-20T00:00:00.000Z',
-      appVersion: '0.1.10',
-      buildMode: 'packaged',
-      buildCommit: 'b'.repeat(40),
-      electronVersion: '43.2.0',
-      nodeVersion: '24.0.0',
-      chromeVersion: '144.0.0',
-      platform: 'win32',
-      arch: 'x64',
-      osRelease: '10.0.26100',
-    },
-    snapshotAt: '2026-08-20T00:10:00.000Z',
-    logs: ['previous main log with api_key=very-secret-token'],
-  });
-
-  await showPreviousMainProcessInterruptionDialog({
-    locale: 'en',
-    copyDiagnostics: () =>
-      copyDesktopDiagnosticReport(
-        {
-          environment: diagnosticEnvironment,
-          mainLogs: () => ['current main log'],
-          runtimeHostProcessLogs: () => ['current Runtime Host exit'],
-          resolveActiveRuntimeHost: () => {
-            throw new Error('Previous-run diagnostics must remain Desktop-only');
-          },
-          resolveRuntimeHost: () => {
-            throw new Error('Previous-run diagnostics must not resolve a task Host');
-          },
-          writeClipboard: (value) => {
-            clipboard = value;
-          },
-        },
-        input,
-      ),
-    showMessageBox: async (options): Promise<MessageBoxReturnValue> => {
-      shown.push(options);
-      return { response: responses.shift() ?? 0, checkboxChecked: false };
-    },
-  });
-
-  assert.deepEqual(shown[0]?.buttons, ['Continue', 'Copy Diagnostics']);
-  assert.deepEqual(shown[1]?.buttons, ['Continue', 'Copy Again']);
-  assert.match(clipboard, /Surface: previous_main_process_interruption/);
-  assert.match(clipboard, /clean shutdown was not observed/);
-  assert.match(clipboard, /Maka: 0\.1\.10/);
-  assert.match(clipboard, /Recent previous main-process logs \(1\)/);
-  assert.doesNotMatch(clipboard, /current main log|current Runtime Host exit|very-secret-token/);
 });

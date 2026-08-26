@@ -21,44 +21,13 @@ import {
   HOST_OPERATION_SPECS,
   type ClientCapabilityReplaceResult,
   type ClientCapabilityUnregisterResult,
-  type ContextCompactInput,
-  type ContextCompactResult,
-  type ContextDiagnosticsQueryInput,
-  type ContextDiagnosticsResult,
-  type DeepResearchQueryInput,
-  type DeepResearchQueryResult,
-  type DailyReviewMutateInput,
-  type DailyReviewMutateResult,
-  type DailyReviewQueryInput,
-  type DailyReviewQueryResult,
-  type HostDiagnosticsResult,
   type HostStatusResult,
   type OperationInput,
   type OperationKey,
   type OperationOutput,
-  type PlanControlInput,
-  type PlanControlResult,
-  type PlanQueryInput,
-  type PlanQueryResult,
-  type PlanTurnStartInput,
-  type PlanTurnStartResult,
   type SessionCatalogChangedFrame,
   type ScheduledTaskChangedFrame,
-  type SessionWorkspaceRelocateInput,
-  type SessionRecapGenerateInput,
-  type SessionRecapGenerateResult,
-  type SessionUpdateResult,
   type SubscriptionOpenInput,
-  type TurnQueryInput,
-  type TurnRegenerateInput,
-  type TurnResumePlan,
-  type TurnResumeQueryInput,
-  type TurnResumeStartInput,
-  type TurnResumeStartResult,
-  type TurnSnapshot,
-  type TurnStartInput,
-  type TurnStartResult,
-  type TurnStopInput,
 } from '../protocol/index.js';
 import type { ClientCapabilityProvider } from './client-capability.js';
 import {
@@ -77,7 +46,18 @@ import type { RuntimeHostSessionSubscription } from './session-subscription.js';
 
 export interface RuntimeHostReconnectingConnection extends RuntimeHostConnection {
   readonly reconnecting: true;
+  subscribeConnectionAvailability(
+    listener: (availability: RuntimeHostConnectionAvailability) => void,
+  ): () => void;
 }
+
+export type RuntimeHostConnectionAvailability =
+  | { readonly kind: 'unavailable' }
+  | {
+      readonly kind: 'connected';
+      readonly hostEpoch: string;
+      readonly connectionId: string;
+    };
 
 export async function createRuntimeHostReconnectingConnection(input: {
   readonly initialConnection: RuntimeHostConnection;
@@ -135,10 +115,14 @@ class RuntimeHostReconnectingConnectionImpl implements RuntimeHostReconnectingCo
   readonly reconnecting = true as const;
   readonly closed: Promise<void>;
   readonly #configurationListeners = new Set<(revision: number) => void>();
+  readonly #connectionAvailabilityListeners = new Set<
+    (availability: RuntimeHostConnectionAvailability) => void
+  >();
   readonly #projectListeners = new Set<(revision: number) => void>();
   readonly #sessionListeners = new Set<(frame: SessionCatalogChangedFrame) => void>();
   readonly #scheduledTaskListeners = new Set<(frame: ScheduledTaskChangedFrame) => void>();
   readonly #lifecycle: RuntimeHostReconnectLifecycle<RuntimeHostConnection>;
+  #connectionAvailability: RuntimeHostConnectionAvailability;
   #lastConnection: RuntimeHostConnection;
   #listenerDisposers: (() => void)[] = [];
 
@@ -147,13 +131,18 @@ class RuntimeHostReconnectingConnectionImpl implements RuntimeHostReconnectingCo
     if (!initial) throw new Error('Runtime Host reconnect lifecycle has no initial connection');
     this.#lifecycle = lifecycle;
     this.#lastConnection = initial;
+    this.#connectionAvailability = this.#connectedAvailability(initial);
     this.closed = lifecycle.closed;
     this.#bindListeners(initial);
     lifecycle.subscribe((connection) => {
       this.#unbindListeners();
-      if (!connection) return;
+      if (!connection) {
+        this.#setConnectionAvailability({ kind: 'unavailable' });
+        return;
+      }
       this.#lastConnection = connection;
       this.#bindListeners(connection);
+      this.#setConnectionAvailability(this.#connectedAvailability(connection));
     });
   }
 
@@ -189,94 +178,19 @@ class RuntimeHostReconnectingConnectionImpl implements RuntimeHostReconnectingCo
     return this.#request(operation, input, timeoutMs);
   }
 
-  status(timeoutMs?: number): Promise<HostStatusResult> {
-    return this.#request('host.status', {}, timeoutMs);
-  }
-
-  queryHostDiagnostics(timeoutMs?: number): Promise<HostDiagnosticsResult> {
-    return this.#request('host.diagnostics.query', {}, timeoutMs);
-  }
-
-  startTurn(input: TurnStartInput, timeoutMs?: number): Promise<TurnStartResult> {
-    return this.#request('turn.start', input, timeoutMs);
-  }
-
-  queryTurn(input: TurnQueryInput, timeoutMs?: number): Promise<TurnSnapshot> {
-    return this.#request('turn.query', input, timeoutMs);
-  }
-
-  stopTurn(input: TurnStopInput, timeoutMs?: number): Promise<TurnSnapshot> {
-    return this.#request('turn.stop', input, timeoutMs);
-  }
-
-  regenerateTurn(input: TurnRegenerateInput, timeoutMs?: number): Promise<TurnSnapshot> {
-    return this.#request('turn.regenerate', input, timeoutMs);
-  }
-
-  queryContextDiagnostics(
-    input: ContextDiagnosticsQueryInput,
-    timeoutMs?: number,
-  ): Promise<ContextDiagnosticsResult> {
-    return this.#request('context.diagnostics.query', input, timeoutMs);
-  }
-
-  compactContext(input: ContextCompactInput, timeoutMs?: number): Promise<ContextCompactResult> {
-    return this.#request('context.compact', input, timeoutMs);
-  }
-
-  relocateSessionWorkspace(
-    input: SessionWorkspaceRelocateInput,
-    timeoutMs?: number,
-  ): Promise<SessionUpdateResult> {
-    return this.#request('session.workspace.relocate', input, timeoutMs);
-  }
-
-  generateSessionRecap(
-    input: SessionRecapGenerateInput,
-    timeoutMs?: number,
-  ): Promise<SessionRecapGenerateResult> {
-    return this.#request('session.recap.generate', input, timeoutMs);
-  }
-
-  queryPlan(input: PlanQueryInput, timeoutMs?: number): Promise<PlanQueryResult> {
-    return this.#request('plan.query', input, timeoutMs);
-  }
-
-  controlPlan(input: PlanControlInput, timeoutMs?: number): Promise<PlanControlResult> {
-    return this.#request('plan.control', input, timeoutMs);
-  }
-
-  startPlanTurn(input: PlanTurnStartInput, timeoutMs?: number): Promise<PlanTurnStartResult> {
-    return this.#request('plan.turn.start', input, timeoutMs);
-  }
-
-  queryDeepResearch(
-    input: DeepResearchQueryInput,
-    timeoutMs?: number,
-  ): Promise<DeepResearchQueryResult> {
-    return this.#request('deep-research.query', input, timeoutMs);
-  }
-
-  queryDailyReview(
-    input: DailyReviewQueryInput,
-    timeoutMs?: number,
-  ): Promise<DailyReviewQueryResult> {
-    return this.#request('daily-review.query', input, timeoutMs);
-  }
-
-  mutateDailyReview(
-    input: DailyReviewMutateInput,
-    timeoutMs?: number,
-  ): Promise<DailyReviewMutateResult> {
-    return this.#request('daily-review.mutate', input, timeoutMs);
-  }
-
-  queryTurnResume(input: TurnResumeQueryInput, timeoutMs?: number): Promise<TurnResumePlan> {
-    return this.#request('turn.resume.query', input, timeoutMs);
-  }
-
-  startTurnResume(input: TurnResumeStartInput, timeoutMs?: number): Promise<TurnResumeStartResult> {
-    return this.#request('turn.resume.start', input, timeoutMs);
+  async status(timeoutMs?: number): Promise<HostStatusResult> {
+    const deadline = requestDeadline(timeoutMs);
+    let previous: RuntimeHostConnection | undefined;
+    while (true) {
+      const connection = await this.#waitForConnection('host.status', previous, deadline);
+      const remaining = deadline === undefined ? undefined : Math.max(1, deadline - Date.now());
+      try {
+        return await connection.status(remaining);
+      } catch (error) {
+        if (!isRetryableQueryInterruption(error)) throw error;
+        previous = connection;
+      }
+    }
   }
 
   async openSessionSubscription(
@@ -317,6 +231,18 @@ class RuntimeHostReconnectingConnectionImpl implements RuntimeHostReconnectingCo
     return () => this.#configurationListeners.delete(listener);
   }
 
+  subscribeConnectionAvailability(
+    listener: (availability: RuntimeHostConnectionAvailability) => void,
+  ): () => void {
+    this.#connectionAvailabilityListeners.add(listener);
+    try {
+      listener(this.#connectionAvailability);
+    } catch {
+      // A presentation listener cannot invalidate the Host connection.
+    }
+    return () => this.#connectionAvailabilityListeners.delete(listener);
+  }
+
   subscribeProjectCatalogChanges(listener: (revision: number) => void): () => void {
     this.#projectListeners.add(listener);
     return () => this.#projectListeners.delete(listener);
@@ -336,6 +262,7 @@ class RuntimeHostReconnectingConnectionImpl implements RuntimeHostReconnectingCo
 
   close(): Promise<void> {
     this.#unbindListeners();
+    this.#connectionAvailabilityListeners.clear();
     return this.#lifecycle.close();
   }
 
@@ -426,6 +353,19 @@ class RuntimeHostReconnectingConnectionImpl implements RuntimeHostReconnectingCo
 
   #unbindListeners(): void {
     for (const dispose of this.#listenerDisposers.splice(0)) dispose();
+  }
+
+  #connectedAvailability(connection: RuntimeHostConnection): RuntimeHostConnectionAvailability {
+    return {
+      kind: 'connected',
+      hostEpoch: connection.hostEpoch,
+      connectionId: connection.connectionId,
+    };
+  }
+
+  #setConnectionAvailability(availability: RuntimeHostConnectionAvailability): void {
+    this.#connectionAvailability = availability;
+    notify(this.#connectionAvailabilityListeners, availability);
   }
 }
 
