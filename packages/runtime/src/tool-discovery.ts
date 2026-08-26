@@ -22,6 +22,10 @@
  *   schema. The policy is owned by Maka, not by a provider adapter.
  * - Tool Search changes visibility, not authorization. Every loaded tool still
  *   runs through `ToolRuntime`.
+ * - Native deferral is a model-context optimization, not a request-byte
+ *   optimization: deferred definitions still cross the provider API boundary
+ *   with `defer_loading`. Use the provider-independent `load_tools` path when
+ *   schemas must stay off the wire until selected.
  * - Unsupported models keep the current deterministic behavior — they receive
  *   the full surface (the existing `load_tools` economy governs deferral), never
  *   a partially deferred catalog they cannot load.
@@ -50,12 +54,25 @@ export type ToolDiscovery =
 export type ToolDiscoveryPolicy = ReadonlyMap<string, ToolDiscovery>;
 
 /**
- * Which native Tool Search path a resolved model supports, derived from the
- * `ModelAdapter`-resolved provider runtime adapter kind and model id. `none`
- * means the existing `load_tools` economy is the fallback and the lowerer is a
- * no-op.
+ * Which native Tool Search path a resolved model supports. `none` means the
+ * existing `load_tools` economy is the fallback and the lowerer is a no-op.
  */
 export type ProviderToolSearchCapability = 'anthropic' | 'openai' | 'none';
+
+/**
+ * Resolved access-path facts required to select provider-native Tool Search.
+ * The effective wire is authoritative: an adapter name or model id alone does
+ * not prove that a connection uses Responses / Messages or that a relay
+ * implements the hosted feature.
+ */
+export interface ProviderToolSearchAccess {
+  readonly providerType: string;
+  readonly adapterKind: string;
+  readonly wire: string;
+  readonly modelId: string;
+  /** Explicit relay/account declaration. First-party paths may omit it. */
+  readonly declaredCapability?: Exclude<ProviderToolSearchCapability, 'none'>;
+}
 
 /** Anthropic server-side search variant. Default: BM25 (natural language). */
 export type AnthropicSearchVariant = 'bm25' | 'regex';
@@ -104,9 +121,10 @@ export interface LoweredToolEntry {
  * The full provider-native lowering result. The backend's tool-assembly point
  * consumes this to build the `streamText` `tools` dict and `activeTools`.
  *
- * - `mode: 'none'` → fallback: `tools` carries every entry as direct, no search
- *   tool, `activeTools` lists every name. Identical to today's full surface;
- *   the existing `ToolAvailabilityRuntime` economy continues to own deferral.
+ * - `mode: 'none'` → fallback: `tools` carries every entry as direct, no native
+ *   search tool is added, and the caller's baseline `activeTools` allowlist is
+ *   preserved. The existing `ToolAvailabilityRuntime` economy continues to own
+ *   deferral without the lowerer reactivating hidden tools.
  * - `mode: 'anthropic' | 'openai'` → native: deferred entries carry
  *   `deferLoading` (and `namespace` + `namespaceDescription` for OpenAI), remain
  *   in `activeTools` so the AI SDK `tools` dict keeps them (the `deferLoading`
@@ -141,59 +159,74 @@ export const NATIVE_TOOL_SEARCH_DESCRIPTION =
   'seen; loaded tools become callable on your next step.';
 
 /**
- * Resolve the native Tool Search capability for a resolved model. The adapter
- * kind is the same one `resolveModelRuntime` (`model-runtime.ts`) produces.
+ * Resolve native Tool Search from the complete resolved access path. The
+ * adapter kind and wire are the values `resolveModelRuntime`
+ * (`model-runtime.ts`) produces.
  *
  * Model-id gating ensures only models that actually support native Tool Search
  * take the native path; older models fall back to the deterministic `load_tools`
  * economy so they never receive a partially deferred catalog they cannot load.
  *
- * Anthropic: native Tool Search is exposed on Claude Opus 4.5 / Sonnet 4.5
- * and later (model ids `claude-opus-4-5*` / `claude-sonnet-4-5*` and above).
+ * Anthropic: native Tool Search is exposed on Claude Opus, Sonnet, and Haiku
+ * 4.5+, plus Fable 5+.
  * OpenAI: `tool_search` requires the Responses API on GPT-5.4 or later
  * (`gpt-5.4*` and above). Chat Completions models such as `gpt-4o` and older
  * GPT-5 variants do not support it and fall back to `load_tools`.
  */
 export function resolveProviderToolSearchCapability(
-  adapterKind: string,
+  access: ProviderToolSearchAccess,
+): ProviderToolSearchCapability {
+  const declared =
+    access.declaredCapability ??
+    firstPartyToolSearchCapability(access.providerType, access.modelId);
+  if (declared === 'anthropic') {
+    return access.wire === 'anthropic-messages' && access.adapterKind === 'anthropic'
+      ? 'anthropic'
+      : 'none';
+  }
+  if (declared === 'openai') {
+    return access.wire === 'openai-responses' && access.adapterKind === 'openai'
+      ? 'openai'
+      : 'none';
+  }
+  return 'none';
+}
+
+function firstPartyToolSearchCapability(
+  providerType: string,
   modelId: string,
 ): ProviderToolSearchCapability {
-  switch (adapterKind) {
-    case 'anthropic':
-    case 'claude-subscription':
-      return supportsAnthropicToolSearch(modelId) ? 'anthropic' : 'none';
-    case 'openai':
-      return supportsOpenaiToolSearch(modelId) ? 'openai' : 'none';
-    default:
-      return 'none';
+  if (
+    (providerType === 'anthropic' || providerType === 'claude-subscription') &&
+    supportsAnthropicToolSearch(modelId)
+  ) {
+    return 'anthropic';
   }
+  if (providerType === 'openai' && supportsOpenaiToolSearch(modelId)) return 'openai';
+  return 'none';
 }
 
 /**
- * Anthropic native Tool Search is available on Claude Opus 4.5 / Sonnet 4.5
- * and later. Model ids follow the `claude-{opus|sonnet|haiku}-{major}-{minor}`
- * convention. The capability is gated on Opus 4.5+ / Sonnet 4.5+.
+ * Declared first-party minimums. Keeping the family table explicit prevents a
+ * new family from becoming enabled merely because its name matches a broad
+ * Claude regex.
  */
+const ANTHROPIC_TOOL_SEARCH_MINIMUMS = {
+  opus: [4, 5],
+  sonnet: [4, 5],
+  haiku: [4, 5],
+  fable: [5, 0],
+} as const;
+
 function supportsAnthropicToolSearch(modelId: string): boolean {
-  const id = modelId
+  const match = modelId
+    .trim()
     .toLowerCase()
-    .replace(/-\d{8}$/, '')
-    .replace(/-\w{2,4}-\d+$/, '');
-  const opusMatch = id.match(/^claude-opus-(\d+)(?:-(\d+))?/);
-  if (opusMatch) {
-    return (
-      Number(opusMatch[1]) > 4 || (Number(opusMatch[1]) === 4 && Number(opusMatch[2] ?? 0) >= 5)
-    );
-  }
-  const sonnetMatch = id.match(/^claude-sonnet-(\d+)(?:-(\d+))?/);
-  if (sonnetMatch) {
-    return (
-      Number(sonnetMatch[1]) > 4 ||
-      (Number(sonnetMatch[1]) === 4 && Number(sonnetMatch[2] ?? 0) >= 5)
-    );
-  }
-  // Unknown Anthropic model — be conservative, fall back.
-  return false;
+    .match(/^claude-(opus|sonnet|haiku|fable)-(\d+)(?:[.-](\d+))?/);
+  if (!match) return false;
+  const minimum =
+    ANTHROPIC_TOOL_SEARCH_MINIMUMS[match[1] as keyof typeof ANTHROPIC_TOOL_SEARCH_MINIMUMS];
+  return versionAtLeast(Number(match[2]), Number(match[3] ?? 0), minimum[0], minimum[1]);
 }
 
 /**
@@ -207,8 +240,16 @@ function supportsOpenaiToolSearch(modelId: string): boolean {
   if (!match) return false;
   const major = Number(match[1]);
   const minor = Number(match[2] ?? 0);
-  // GPT-5.4+ or GPT-6+
-  return major > 5 || (major === 5 && minor >= 4);
+  return versionAtLeast(major, minor, 5, 4);
+}
+
+function versionAtLeast(
+  major: number,
+  minor: number,
+  minimumMajor: number,
+  minimumMinor: number,
+): boolean {
+  return major > minimumMajor || (major === minimumMajor && minor >= minimumMinor);
 }
 
 export interface DeferredSurfaceInput {
@@ -260,7 +301,8 @@ export function buildToolDiscoveryPolicy(
     for (const name of surface.toolNames) {
       // First claim wins: a surface member is only deferred if it is actually
       // bound; an unbound surface member never enters the policy here.
-      if (!policy.has(name)) continue;
+      const current = policy.get(name);
+      if (!current || current.mode === 'deferred') continue;
       policy.set(name, {
         mode: 'deferred',
         namespace: surface.id,
@@ -292,6 +334,8 @@ export function buildToolDiscoveryPolicy(
  * @param tools Full dispatch set (the same `MakaTool[]` the backend builds).
  * @param policy Discovery policy for these tools.
  * @param capability Resolved native search capability for the model.
+ * @param baselineActiveTools Authoritative model-visible allowlist computed by
+ *   `ToolAvailabilityRuntime` before provider-native lowering.
  * @param options.searchVariant Anthropic search variant; default `bm25`.
  * @param options.neverAdvertise Tool names kept in the dispatch dict but never
  *   advertised (the `invalid` repair fallback). They stay direct and inactive.
@@ -300,11 +344,13 @@ export function lowerToolsForProvider(input: {
   tools: ReadonlyArray<MakaTool>;
   policy: ToolDiscoveryPolicy;
   capability: ProviderToolSearchCapability;
+  baselineActiveTools: ReadonlyArray<string>;
   searchVariant?: AnthropicSearchVariant;
   neverAdvertise?: ReadonlySet<string>;
 }): LoweredProviderToolPayload {
   const { tools, policy, capability } = input;
   const neverAdvertise = input.neverAdvertise ?? EMPTY_SET;
+  const baselineActiveTools = new Set(input.baselineActiveTools);
   const native = capability !== 'none';
   const searchVariant: AnthropicSearchVariant = input.searchVariant ?? 'bm25';
 
@@ -313,6 +359,10 @@ export function lowerToolsForProvider(input: {
   const deferredToolNames: string[] = [];
 
   for (const tool of tools) {
+    // Native search replaces the existing provider-independent connector. The
+    // two tools intentionally share a canonical name, but only one definition
+    // may cross an SDK request boundary.
+    if (native && tool.name === NATIVE_TOOL_SEARCH_NAME) continue;
     const discovery = policy.get(tool.name) ?? ({ mode: 'direct' } as const);
     const deferred = native && discovery.mode === 'deferred';
     entries.push({
@@ -340,7 +390,7 @@ export function lowerToolsForProvider(input: {
       if (!neverAdvertise.has(tool.name)) {
         activeTools.push(tool.name);
       }
-    } else if (!neverAdvertise.has(tool.name)) {
+    } else if (baselineActiveTools.has(tool.name) && !neverAdvertise.has(tool.name)) {
       activeTools.push(tool.name);
     }
   }

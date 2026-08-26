@@ -20,46 +20,72 @@ function tool(name: string): MakaTool {
 }
 
 describe('resolveProviderToolSearchCapability', () => {
-  test('anthropic + claude-subscription with supported model → anthropic', () => {
+  test('first-party Anthropic Messages supports all declared model families', () => {
+    for (const modelId of [
+      'claude-opus-4-5-20251101',
+      'claude-sonnet-4-5-20250929',
+      'claude-haiku-4-5-20251001',
+      'claude-fable-5',
+    ]) {
+      assert.equal(
+        resolveProviderToolSearchCapability({
+          providerType: 'anthropic',
+          adapterKind: 'anthropic',
+          wire: 'anthropic-messages',
+          modelId,
+        }),
+        'anthropic',
+      );
+    }
+  });
+
+  test('older Anthropic models fall back', () => {
+    for (const modelId of ['claude-sonnet-4-0', 'claude-opus-4-0', 'claude-3-5-sonnet']) {
+      assert.equal(
+        resolveProviderToolSearchCapability({
+          providerType: 'anthropic',
+          adapterKind: 'anthropic',
+          wire: 'anthropic-messages',
+          modelId,
+        }),
+        'none',
+      );
+    }
+  });
+
+  test('first-party OpenAI requires both GPT-5.4+ and the Responses wire', () => {
     assert.equal(
-      resolveProviderToolSearchCapability('anthropic', 'claude-sonnet-4-5'),
-      'anthropic',
+      resolveProviderToolSearchCapability({
+        providerType: 'openai',
+        adapterKind: 'openai',
+        wire: 'openai-responses',
+        modelId: 'gpt-5.4',
+      }),
+      'openai',
     );
     assert.equal(
-      resolveProviderToolSearchCapability('claude-subscription', 'claude-opus-4-5'),
-      'anthropic',
+      resolveProviderToolSearchCapability({
+        providerType: 'openai',
+        adapterKind: 'openai',
+        wire: 'openai-chat',
+        modelId: 'gpt-5.4',
+      }),
+      'none',
     );
+  });
+
+  test('compatible relays require an explicit feature declaration', () => {
+    const relay = {
+      providerType: 'openai-responses-compatible',
+      adapterKind: 'openai',
+      wire: 'openai-responses',
+      modelId: 'gpt-5.4',
+    } as const;
+    assert.equal(resolveProviderToolSearchCapability(relay), 'none');
     assert.equal(
-      resolveProviderToolSearchCapability('anthropic', 'claude-opus-4-5-20250929'),
-      'anthropic',
+      resolveProviderToolSearchCapability({ ...relay, declaredCapability: 'openai' }),
+      'openai',
     );
-  });
-
-  test('anthropic with older model → none (fallback)', () => {
-    assert.equal(resolveProviderToolSearchCapability('anthropic', 'claude-sonnet-4-0'), 'none');
-    assert.equal(resolveProviderToolSearchCapability('anthropic', 'claude-opus-4-0'), 'none');
-    assert.equal(resolveProviderToolSearchCapability('anthropic', 'claude-3-5-sonnet'), 'none');
-    assert.equal(resolveProviderToolSearchCapability('anthropic', 'claude-3-haiku'), 'none');
-  });
-
-  test('openai with supported model (GPT-5.4+) → openai', () => {
-    assert.equal(resolveProviderToolSearchCapability('openai', 'gpt-5.4'), 'openai');
-    assert.equal(resolveProviderToolSearchCapability('openai', 'gpt-5.4-mini'), 'openai');
-    assert.equal(resolveProviderToolSearchCapability('openai', 'gpt-6'), 'openai');
-  });
-
-  test('openai with unsupported model (Chat Completions / older GPT-5) → none (fallback)', () => {
-    assert.equal(resolveProviderToolSearchCapability('openai', 'gpt-4o'), 'none');
-    assert.equal(resolveProviderToolSearchCapability('openai', 'gpt-4o-mini'), 'none');
-    assert.equal(resolveProviderToolSearchCapability('openai', 'gpt-5'), 'none');
-    assert.equal(resolveProviderToolSearchCapability('openai', 'gpt-5-mini'), 'none');
-    assert.equal(resolveProviderToolSearchCapability('openai', 'gpt-5.3'), 'none');
-  });
-
-  test('unknown / openai-compatible / google → none (fallback)', () => {
-    assert.equal(resolveProviderToolSearchCapability('openai-compatible', 'x'), 'none');
-    assert.equal(resolveProviderToolSearchCapability('google', 'gemini'), 'none');
-    assert.equal(resolveProviderToolSearchCapability('deepseek', 'x'), 'none');
   });
 });
 
@@ -128,6 +154,22 @@ describe('buildToolDiscoveryPolicy', () => {
     });
   });
 
+  test('the first deferred surface claim wins over later surfaces', () => {
+    const p = buildToolDiscoveryPolicy({
+      productToolNames: ['shared'],
+      deferredSurfaces: [
+        { id: 'first', description: 'First', toolNames: ['shared'] },
+        { id: 'second', description: 'Second', toolNames: ['shared'] },
+      ],
+      mcpTools: [],
+    });
+    assert.deepEqual(p.get('shared'), {
+      mode: 'deferred',
+      namespace: 'first',
+      namespaceDescription: 'First',
+    });
+  });
+
   test('unbound surface members do not enter the policy', () => {
     const p = buildToolDiscoveryPolicy({
       productToolNames: ['Bash'],
@@ -148,8 +190,13 @@ describe('lowerToolsForProvider — fallback (capability none)', () => {
     ],
   });
 
-  test('fallback is identity: every tool direct, no search tool, no deferral', () => {
-    const out = lowerToolsForProvider({ tools, policy: pol, capability: 'none' });
+  test('fallback preserves the baseline allowlist, no search tool, no deferral', () => {
+    const out = lowerToolsForProvider({
+      tools,
+      policy: pol,
+      capability: 'none',
+      baselineActiveTools: ['Bash', 'mcp__github__create_issue', 'RiveWorkflow'],
+    });
     assert.equal(out.mode, 'none');
     assert.equal(out.searchTool, undefined);
     assert.deepEqual(out.deferredToolNames, []);
@@ -164,6 +211,16 @@ describe('lowerToolsForProvider — fallback (capability none)', () => {
       assert.equal(entry.namespaceDescription, undefined);
     }
   });
+
+  test('fallback never reactivates a tool hidden by ToolAvailabilityRuntime', () => {
+    const out = lowerToolsForProvider({
+      tools,
+      policy: pol,
+      capability: 'none',
+      baselineActiveTools: ['Bash'],
+    });
+    assert.deepEqual(out.activeTools, ['Bash']);
+  });
 });
 
 describe('lowerToolsForProvider — anthropic native', () => {
@@ -177,7 +234,12 @@ describe('lowerToolsForProvider — anthropic native', () => {
   });
 
   test('deferred tools are kept in activeTools and marked deferLoading', () => {
-    const out = lowerToolsForProvider({ tools, policy: pol, capability: 'anthropic' });
+    const out = lowerToolsForProvider({
+      tools,
+      policy: pol,
+      capability: 'anthropic',
+      baselineActiveTools: ['Bash'],
+    });
     assert.equal(out.mode, 'anthropic');
     assert.deepEqual(out.deferredToolNames, ['mcp__github__create_issue', 'RiveWorkflow']);
     // P1 fix: deferred tools remain in activeTools so the AI SDK `tools` dict
@@ -201,7 +263,12 @@ describe('lowerToolsForProvider — anthropic native', () => {
   });
 
   test('a native search tool is added and kept active (BM25 by default)', () => {
-    const out = lowerToolsForProvider({ tools, policy: pol, capability: 'anthropic' });
+    const out = lowerToolsForProvider({
+      tools,
+      policy: pol,
+      capability: 'anthropic',
+      baselineActiveTools: ['Bash'],
+    });
     assert.equal(out.searchTool?.name, NATIVE_TOOL_SEARCH_NAME);
     assert.equal(out.searchTool?.kind, 'anthropic-bm25');
     assert.ok(out.activeTools.includes(NATIVE_TOOL_SEARCH_NAME));
@@ -215,6 +282,7 @@ describe('lowerToolsForProvider — anthropic native', () => {
       tools,
       policy: pol,
       capability: 'anthropic',
+      baselineActiveTools: ['Bash'],
       searchVariant: 'regex',
     });
     assert.equal(out.searchTool?.kind, 'anthropic-regex');
@@ -230,7 +298,12 @@ describe('lowerToolsForProvider — openai native', () => {
   });
 
   test('deferred tools carry namespace + namespaceDescription; search tool kind is openai', () => {
-    const out = lowerToolsForProvider({ tools, policy: pol, capability: 'openai' });
+    const out = lowerToolsForProvider({
+      tools,
+      policy: pol,
+      capability: 'openai',
+      baselineActiveTools: ['Bash'],
+    });
     assert.equal(out.mode, 'openai');
     assert.equal(out.searchTool?.kind, 'openai');
     const fsEntry = out.tools.find((t) => t.name === 'mcp__fs__read');
@@ -252,6 +325,7 @@ describe('lowerToolsForProvider — catalog authority', () => {
       tools: [tool('UnknownTool')],
       policy: new Map(),
       capability: 'anthropic',
+      baselineActiveTools: ['UnknownTool'],
     });
     assert.ok(out.activeTools.includes('UnknownTool'));
     assert.equal(out.tools[0].deferLoading, undefined);
@@ -263,6 +337,7 @@ describe('lowerToolsForProvider — catalog authority', () => {
       tools: [tool('Bash'), tool('invalid')],
       policy: new Map([['Bash', { mode: 'direct' }]]),
       capability: 'anthropic',
+      baselineActiveTools: ['Bash', 'invalid'],
       neverAdvertise: new Set(['invalid']),
     });
     assert.ok(
@@ -285,6 +360,7 @@ describe('lowerToolsForProvider — catalog authority', () => {
         ],
       ]),
       capability: 'anthropic',
+      baselineActiveTools: ['Bash', 'mcp__broken__x'],
       neverAdvertise: new Set(['mcp__broken__x']),
     });
     assert.ok(
@@ -293,5 +369,18 @@ describe('lowerToolsForProvider — catalog authority', () => {
     );
     assert.ok(!out.activeTools.includes('mcp__broken__x'), 'broken tool never advertised');
     assert.ok(out.deferredToolNames.includes('mcp__broken__x'), 'broken tool is deferred');
+  });
+
+  test('native search replaces the local connector instead of duplicating its name', () => {
+    const out = lowerToolsForProvider({
+      tools: [tool('Bash'), tool(NATIVE_TOOL_SEARCH_NAME), tool('RiveWorkflow')],
+      policy: new Map([
+        ['Bash', { mode: 'direct' }],
+        ['RiveWorkflow', { mode: 'deferred', namespace: 'rive', namespaceDescription: 'Rive' }],
+      ]),
+      capability: 'anthropic',
+      baselineActiveTools: ['Bash', NATIVE_TOOL_SEARCH_NAME],
+    });
+    assert.equal(out.tools.filter((entry) => entry.name === NATIVE_TOOL_SEARCH_NAME).length, 1);
   });
 });
