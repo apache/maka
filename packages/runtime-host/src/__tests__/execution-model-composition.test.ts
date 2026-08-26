@@ -827,7 +827,10 @@ test('backend abort cannot cancel the authority-owned OAuth refresh used by its 
       expires_at: 0,
       account_id: 'oauth-account-v1',
     };
-    const login = await policy.operations.beginInteractiveOAuthLogin(connection.connectionId);
+    const login = await policy.operations.beginInteractiveOAuthLogin({
+      attemptId: 'execution-model-oauth',
+      target: { kind: 'existing', connectionId: connection.connectionId },
+    });
     assert.equal(login.kind, 'ready');
     if (login.kind !== 'ready') return;
     const storedToken = await policy.operations.completeInteractiveOAuthLogin(

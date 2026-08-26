@@ -82,17 +82,18 @@ export interface OAuthLoginService {
 export function oauthLoginServiceFor(
   providerType: ProviderType,
   host: import('../../preload/bridge-contract.js').DesktopRuntimeHostRef,
+  connectionId: string,
 ): OAuthLoginService | null {
   switch (providerType) {
     case 'openai-codex':
       return {
-        bridge: runtimeHostOAuthLoginBridge(window.maka.openAiCodex, host),
+        bridge: runtimeHostOAuthLoginBridge(window.maka.openAiCodex, host, connectionId),
         display: { name: 'OpenAI Codex', shortName: 'Codex' },
         showsDeviceCode: true,
       };
     case 'xai-oauth':
       return {
-        bridge: runtimeHostOAuthLoginBridge(window.maka.xaiOAuth, host),
+        bridge: runtimeHostOAuthLoginBridge(window.maka.xaiOAuth, host, connectionId),
         display: { name: 'xAI Grok', shortName: 'SuperGrok / X Premium' },
         showsDeviceCode: false,
       };
@@ -158,8 +159,8 @@ export function useConnectionDetail(props: ConnectionDetailProps) {
   // connections" — an instruction whose only destination is the retirement
   // notice itself.
   const retired = isRetiredProvider(connection.providerType);
-  const oauthLoginService = needsOAuth && !retired
-    ? oauthLoginServiceFor(connection.providerType, host)
+  const oauthLoginService = needsOAuth && !retired && connection.connectionId
+    ? oauthLoginServiceFor(connection.providerType, host, connection.connectionId)
     : null;
   const usesGitHubCopilotLogin = connection.providerType === 'github-copilot';
   const supportsRemoteDiscovery = providerSupportsModelDiscovery(connection.providerType);

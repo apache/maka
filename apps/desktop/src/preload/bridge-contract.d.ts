@@ -1438,11 +1438,11 @@ export interface MakaBridge {
   };
   openAiCodex: {
     isExperimentalEnabled(host?: DesktopRuntimeHostRef): Promise<boolean>;
-    getAuthUrl(host?: DesktopRuntimeHostRef): Promise<AuthorizationUrlPayload | SubscriptionActionResult>;
+    getAuthUrl(host?: DesktopRuntimeHostRef, connectionId?: string): Promise<AuthorizationUrlPayload | SubscriptionActionResult>;
     openAuthUrl(authRequestId: string, host?: DesktopRuntimeHostRef): Promise<SubscriptionActionResult>;
     completeAuthorization(authRequestId: string, host?: DesktopRuntimeHostRef): Promise<SubscriptionActionResult>;
     cancelAuthorization(authRequestId?: string, host?: DesktopRuntimeHostRef): Promise<{ ok: true }>;
-    getAccountState(host?: DesktopRuntimeHostRef): Promise<{
+    getAccountState(host?: DesktopRuntimeHostRef, connectionId?: string): Promise<{
       provider: 'openai-codex';
       runtimeState:
         | 'not_logged_in'
@@ -1456,15 +1456,15 @@ export interface MakaBridge {
       picture?: string;
       errorMessage?: string;
     }>;
-    refreshTokens(host?: DesktopRuntimeHostRef): Promise<SubscriptionActionResult>;
-    logout(host?: DesktopRuntimeHostRef): Promise<SubscriptionActionResult>;
+    refreshTokens(host?: DesktopRuntimeHostRef, connectionId?: string): Promise<SubscriptionActionResult>;
+    logout(host?: DesktopRuntimeHostRef, connectionId?: string): Promise<SubscriptionActionResult>;
   };
   xaiOAuth: {
-    getAuthUrl(host?: DesktopRuntimeHostRef): Promise<AuthorizationUrlPayload | SubscriptionActionResult>;
+    getAuthUrl(host?: DesktopRuntimeHostRef, connectionId?: string): Promise<AuthorizationUrlPayload | SubscriptionActionResult>;
     openAuthUrl(authRequestId: string, host?: DesktopRuntimeHostRef): Promise<SubscriptionActionResult>;
     completeAuthorization(authRequestId: string, host?: DesktopRuntimeHostRef): Promise<SubscriptionActionResult>;
     cancelAuthorization(authRequestId?: string, host?: DesktopRuntimeHostRef): Promise<{ ok: true }>;
-    getAccountState(host?: DesktopRuntimeHostRef): Promise<{
+    getAccountState(host?: DesktopRuntimeHostRef, connectionId?: string): Promise<{
       provider: 'xai-oauth';
       runtimeState:
         | 'not_logged_in'
@@ -1475,8 +1475,8 @@ export interface MakaBridge {
         | 'storage_failed';
       errorMessage?: string;
     }>;
-    refreshTokens(host?: DesktopRuntimeHostRef): Promise<SubscriptionActionResult>;
-    logout(host?: DesktopRuntimeHostRef): Promise<SubscriptionActionResult>;
+    refreshTokens(host?: DesktopRuntimeHostRef, connectionId?: string): Promise<SubscriptionActionResult>;
+    logout(host?: DesktopRuntimeHostRef, connectionId?: string): Promise<SubscriptionActionResult>;
   };
   githubCopilotSubscription: {
     connectExistingLogin(host?: DesktopRuntimeHostRef): Promise<SubscriptionActionResult>;

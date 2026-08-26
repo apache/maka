@@ -2763,8 +2763,8 @@ const makaBridge = {
     isExperimentalEnabled(host?: DesktopRuntimeHostRef): Promise<boolean> {
       return invokeSelectedRuntimeHost(host, 'openai-codex:is-experimental-enabled');
     },
-    getAuthUrl(host?: DesktopRuntimeHostRef): Promise<AuthorizationUrlPayload | SubscriptionActionResult> {
-      return invokeSelectedRuntimeHost(host, 'openai-codex:get-auth-url');
+    getAuthUrl(host?: DesktopRuntimeHostRef, connectionId?: string): Promise<AuthorizationUrlPayload | SubscriptionActionResult> {
+      return invokeSelectedRuntimeHost(host, 'openai-codex:get-auth-url', connectionId);
     },
     openAuthUrl(authRequestId: string, host?: DesktopRuntimeHostRef): Promise<SubscriptionActionResult> {
       return invokeSelectedRuntimeHost(host, 'openai-codex:open-auth-url', authRequestId);
@@ -2775,7 +2775,7 @@ const makaBridge = {
     cancelAuthorization(authRequestId?: string, host?: DesktopRuntimeHostRef): Promise<{ ok: true }> {
       return invokeSelectedRuntimeHost(host, 'openai-codex:cancel-authorization', authRequestId);
     },
-    getAccountState(host?: DesktopRuntimeHostRef): Promise<{
+    getAccountState(host?: DesktopRuntimeHostRef, connectionId?: string): Promise<{
       provider: 'openai-codex';
       runtimeState: 'not_logged_in' | 'authorizing' | 'authenticated' | 'refreshing' | 'refresh_failed';
       accountId?: string;
@@ -2784,18 +2784,18 @@ const makaBridge = {
       picture?: string;
       errorMessage?: string;
     }> {
-      return invokeSelectedRuntimeHost(host, 'openai-codex:get-account-state');
+      return invokeSelectedRuntimeHost(host, 'openai-codex:get-account-state', connectionId);
     },
-    refreshTokens(host?: DesktopRuntimeHostRef): Promise<SubscriptionActionResult> {
-      return invokeSelectedRuntimeHost(host, 'openai-codex:refresh-tokens');
+    refreshTokens(host?: DesktopRuntimeHostRef, connectionId?: string): Promise<SubscriptionActionResult> {
+      return invokeSelectedRuntimeHost(host, 'openai-codex:refresh-tokens', connectionId);
     },
-    logout(host?: DesktopRuntimeHostRef): Promise<SubscriptionActionResult> {
-      return invokeSelectedRuntimeHost(host, 'openai-codex:logout');
+    logout(host?: DesktopRuntimeHostRef, connectionId?: string): Promise<SubscriptionActionResult> {
+      return invokeSelectedRuntimeHost(host, 'openai-codex:logout', connectionId);
     },
   },
   xaiOAuth: {
-    getAuthUrl(host?: DesktopRuntimeHostRef): Promise<AuthorizationUrlPayload | SubscriptionActionResult> {
-      return invokeSelectedRuntimeHost(host, 'xai-oauth:get-auth-url');
+    getAuthUrl(host?: DesktopRuntimeHostRef, connectionId?: string): Promise<AuthorizationUrlPayload | SubscriptionActionResult> {
+      return invokeSelectedRuntimeHost(host, 'xai-oauth:get-auth-url', connectionId);
     },
     openAuthUrl(authRequestId: string, host?: DesktopRuntimeHostRef): Promise<SubscriptionActionResult> {
       return invokeSelectedRuntimeHost(host, 'xai-oauth:open-auth-url', authRequestId);
@@ -2806,7 +2806,7 @@ const makaBridge = {
     cancelAuthorization(authRequestId?: string, host?: DesktopRuntimeHostRef): Promise<{ ok: true }> {
       return invokeSelectedRuntimeHost(host, 'xai-oauth:cancel-authorization', authRequestId);
     },
-    getAccountState(host?: DesktopRuntimeHostRef): Promise<{
+    getAccountState(host?: DesktopRuntimeHostRef, connectionId?: string): Promise<{
       provider: 'xai-oauth';
       runtimeState:
         | 'not_logged_in'
@@ -2817,13 +2817,13 @@ const makaBridge = {
         | 'storage_failed';
       errorMessage?: string;
     }> {
-      return invokeSelectedRuntimeHost(host, 'xai-oauth:get-account-state');
+      return invokeSelectedRuntimeHost(host, 'xai-oauth:get-account-state', connectionId);
     },
-    refreshTokens(host?: DesktopRuntimeHostRef): Promise<SubscriptionActionResult> {
-      return invokeSelectedRuntimeHost(host, 'xai-oauth:refresh-tokens');
+    refreshTokens(host?: DesktopRuntimeHostRef, connectionId?: string): Promise<SubscriptionActionResult> {
+      return invokeSelectedRuntimeHost(host, 'xai-oauth:refresh-tokens', connectionId);
     },
-    logout(host?: DesktopRuntimeHostRef): Promise<SubscriptionActionResult> {
-      return invokeSelectedRuntimeHost(host, 'xai-oauth:logout');
+    logout(host?: DesktopRuntimeHostRef, connectionId?: string): Promise<SubscriptionActionResult> {
+      return invokeSelectedRuntimeHost(host, 'xai-oauth:logout', connectionId);
     },
   },
   githubCopilotSubscription: {
