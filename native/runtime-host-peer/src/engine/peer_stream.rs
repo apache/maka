@@ -18,7 +18,6 @@
  */
 
 use futures::{AsyncReadExt as _, AsyncWriteExt as _};
-use libp2p::PeerId;
 use tokio::sync::{mpsc, oneshot};
 
 use super::PeerError;
@@ -27,7 +26,6 @@ const QUEUE_CAPACITY: usize = 64;
 const CHUNK_BYTES: usize = 64 * 1024;
 
 pub struct PeerStream {
-    pub peer_id: PeerId,
     pub incoming: mpsc::Receiver<Result<Vec<u8>, PeerError>>,
     pub commands: mpsc::Sender<StreamCommand>,
 }
@@ -43,7 +41,7 @@ pub enum StreamCommand {
     Abort,
 }
 
-pub(super) fn spawn_stream(peer_id: PeerId, stream: libp2p::swarm::Stream) -> PeerStream {
+pub(super) fn spawn_stream(stream: libp2p::swarm::Stream) -> PeerStream {
     let (incoming_tx, incoming_rx) = mpsc::channel(QUEUE_CAPACITY);
     let (command_tx, mut command_rx) = mpsc::channel(QUEUE_CAPACITY);
     tokio::spawn(async move {
@@ -86,7 +84,6 @@ pub(super) fn spawn_stream(peer_id: PeerId, stream: libp2p::swarm::Stream) -> Pe
         }
     });
     PeerStream {
-        peer_id,
         incoming: incoming_rx,
         commands: command_tx,
     }

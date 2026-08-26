@@ -52,6 +52,21 @@ test('expires a peer that does not send its credential', async (context) => {
   await listener.cleanup();
 });
 
+test('reports an explicit authentication rejection before closing the stream', async () => {
+  const stream = recordingStream(Buffer.from('{"v":1,"credential":"rejected"}\n'));
+  const listener = createRuntimeHostPeerListener(
+    endpointWith([stream]),
+    { authenticate: () => null } as never,
+    () => {},
+  );
+  await waitForImmediate();
+  await waitForImmediate();
+
+  assert.deepEqual(stream.writes, [Buffer.from('{"v":1,"accepted":false}\n')]);
+  assert.equal(stream.closed, true);
+  await listener.cleanup();
+});
+
 function endpointWith(streams: RuntimeHostPeerNativeStream[]): RuntimeHostPeerNativeEndpoint {
   return {
     peerId: 'peer',
@@ -71,7 +86,6 @@ function pendingStream(): RuntimeHostPeerNativeStream & { readonly aborted: bool
   });
   let aborted = false;
   return {
-    peerId: 'peer',
     get aborted() {
       return aborted;
     },
@@ -82,5 +96,34 @@ function pendingStream(): RuntimeHostPeerNativeStream & { readonly aborted: bool
       aborted = true;
       finish(null);
     },
+  };
+}
+
+function recordingStream(initial: Buffer): RuntimeHostPeerNativeStream & {
+  readonly writes: readonly Buffer[];
+  readonly closed: boolean;
+} {
+  let pending: Buffer | null = initial;
+  let closed = false;
+  const writes: Buffer[] = [];
+  return {
+    get writes() {
+      return writes;
+    },
+    get closed() {
+      return closed;
+    },
+    read: async () => {
+      const value = pending;
+      pending = null;
+      return value;
+    },
+    write: async (bytes) => {
+      writes.push(Buffer.from(bytes));
+    },
+    close: async () => {
+      closed = true;
+    },
+    abort: () => undefined,
   };
 }

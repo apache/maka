@@ -26,8 +26,9 @@ use std::{
 
 use futures::StreamExt;
 use libp2p::{
-    Multiaddr, PeerId, StreamProtocol, Swarm, SwarmBuilder, connection_limits, dcutr, identify,
-    identity,
+    Multiaddr, PeerId, StreamProtocol, Swarm, SwarmBuilder, connection_limits,
+    core::transport::ListenerId,
+    dcutr, identify, identity,
     multiaddr::Protocol,
     noise, ping, relay,
     swarm::{ConnectionId, NetworkBehaviour, SwarmEvent},
@@ -123,13 +124,48 @@ struct PendingConnect {
     next_coordination_attempt: Instant,
 }
 
-#[derive(Default)]
 struct CoordinationRelay {
     addresses: Vec<Multiaddr>,
     identify_received: bool,
     identify_sent: bool,
     reserve: bool,
-    reservation_requested: bool,
+    reservation_listener: Option<ListenerId>,
+    next_connection_attempt: Instant,
+    next_reservation_attempt: Instant,
+}
+
+impl Default for CoordinationRelay {
+    fn default() -> Self {
+        let now = Instant::now();
+        Self {
+            addresses: Vec::new(),
+            identify_received: false,
+            identify_sent: false,
+            reserve: false,
+            reservation_listener: None,
+            next_connection_attempt: now,
+            next_reservation_attempt: now,
+        }
+    }
+}
+
+impl CoordinationRelay {
+    fn connection_lost(&mut self, now: Instant) -> Option<ListenerId> {
+        self.identify_received = false;
+        self.identify_sent = false;
+        self.next_connection_attempt = now;
+        self.next_reservation_attempt = now + COORDINATION_RETRY_INTERVAL;
+        self.reservation_listener.take()
+    }
+
+    fn listener_closed(&mut self, listener_id: ListenerId, now: Instant) -> bool {
+        if self.reservation_listener != Some(listener_id) {
+            return false;
+        }
+        self.reservation_listener = None;
+        self.next_reservation_attempt = now + COORDINATION_RETRY_INTERVAL;
+        true
+    }
 }
 
 struct OpenedStream {
@@ -258,7 +294,6 @@ async fn run_endpoint_async(
 
     let (opened_tx, mut opened_rx) = mpsc::channel::<OpenedStream>(COMMAND_CAPACITY);
     let mut pending = HashMap::<PeerId, PendingConnect>::new();
-    let mut direct = HashMap::<PeerId, HashSet<ConnectionId>>::new();
     let mut relayed = HashMap::<PeerId, HashSet<ConnectionId>>::new();
     let mut external_candidate_ready = startup_external_candidate_ready;
     let mut deadline_tick = tokio::time::interval(Duration::from_millis(100));
@@ -294,7 +329,6 @@ async fn run_endpoint_async(
                     maybe_open_direct_stream(
                         options.peer_id,
                         &mut pending,
-                        &direct,
                         stream_control.clone(),
                         opened_tx.clone(),
                     );
@@ -305,8 +339,8 @@ async fn run_endpoint_async(
                 }
                 None => return Ok(()),
             },
-            Some((peer_id, stream)) = incoming_streams.recv() => {
-                let peer_stream = spawn_stream(peer_id, stream);
+            Some(stream) = incoming_streams.recv() => {
+                let peer_stream = spawn_stream(stream);
                 if incoming_tx.try_send(peer_stream).is_err() {
                     // Dropping the stream closes it. A slow Host cannot create an unbounded queue.
                 }
@@ -314,7 +348,7 @@ async fn run_endpoint_async(
             Some(opened) = opened_rx.recv() => {
                 if let Some(waiter) = pending.remove(&opened.peer_id) {
                     let result = opened.result
-                        .map(|stream| spawn_stream(opened.peer_id, stream))
+                        .map(spawn_stream)
                         .map_err(|message| PeerError::new("direct_path_unavailable", message));
                     let _ = waiter.result.send(result);
                 }
@@ -323,17 +357,21 @@ async fn run_endpoint_async(
                 handle_swarm_event(
                     &mut swarm,
                     event,
-                    &mut direct,
                     &mut relayed,
                     &mut coordination_relays,
                     &mut external_candidate_ready,
+                );
+                maintain_coordination_relays(
+                    &mut swarm,
+                    &mut coordination_relays,
+                    external_candidate_ready,
+                    Instant::now(),
                 );
                 let peers = pending.keys().copied().collect::<Vec<_>>();
                 for peer_id in peers {
                     maybe_open_direct_stream(
                         peer_id,
                         &mut pending,
-                        &direct,
                         stream_control.clone(),
                         opened_tx.clone(),
                     );
@@ -341,11 +379,17 @@ async fn run_endpoint_async(
             }
             _ = deadline_tick.tick() => {
                 let now = Instant::now();
+                maintain_coordination_relays(
+                    &mut swarm,
+                    &mut coordination_relays,
+                    external_candidate_ready,
+                    now,
+                );
                 retry_coordination_routes(
                     &mut swarm,
                     &mut pending,
                     &coordination_relays,
-                    &direct,
+                    &stream_control,
                     &relayed,
                     external_candidate_ready,
                     now,
@@ -369,7 +413,7 @@ async fn run_endpoint_async(
 type BuiltSwarm = (
     Swarm<Behaviour>,
     application_stream::Control,
-    mpsc::Receiver<(PeerId, libp2p::swarm::Stream)>,
+    mpsc::Receiver<libp2p::swarm::Stream>,
 );
 
 fn build_swarm(key: identity::Keypair) -> Result<BuiltSwarm, PeerError> {
@@ -457,14 +501,13 @@ fn start_connect(
 fn maybe_open_direct_stream(
     peer_id: PeerId,
     pending: &mut HashMap<PeerId, PendingConnect>,
-    direct: &HashMap<PeerId, HashSet<ConnectionId>>,
     mut control: application_stream::Control,
     opened_tx: mpsc::Sender<OpenedStream>,
 ) {
     let Some(waiter) = pending.get_mut(&peer_id) else {
         return;
     };
-    if waiter.opening || direct.get(&peer_id).is_none_or(HashSet::is_empty) {
+    if waiter.opening || !control.has_connection(peer_id) {
         return;
     }
     waiter.opening = true;
@@ -480,7 +523,6 @@ fn maybe_open_direct_stream(
 fn handle_swarm_event(
     swarm: &mut Swarm<Behaviour>,
     event: SwarmEvent<BehaviourEvent>,
-    direct: &mut HashMap<PeerId, HashSet<ConnectionId>>,
     relayed: &mut HashMap<PeerId, HashSet<ConnectionId>>,
     coordination_relays: &mut HashMap<PeerId, CoordinationRelay>,
     external_candidate_ready: &mut bool,
@@ -495,7 +537,6 @@ fn handle_swarm_event(
             if endpoint.is_relayed() {
                 relayed.entry(peer_id).or_default().insert(connection_id);
             } else {
-                direct.entry(peer_id).or_default().insert(connection_id);
                 if let Some(ids) = relayed.get(&peer_id) {
                     for id in ids.iter().copied().collect::<Vec<_>>() {
                         swarm.close_connection(id);
@@ -508,8 +549,13 @@ fn handle_swarm_event(
             connection_id,
             ..
         } => {
-            remove_connection(direct, peer_id, connection_id);
             remove_connection(relayed, peer_id, connection_id);
+            if !swarm.is_connected(&peer_id)
+                && let Some(relay) = coordination_relays.get_mut(&peer_id)
+                && let Some(listener) = relay.connection_lost(Instant::now())
+            {
+                swarm.remove_listener(listener);
+            }
         }
         SwarmEvent::Behaviour(BehaviourEvent::Identify(identify::Event::Received {
             peer_id,
@@ -523,6 +569,7 @@ fn handle_swarm_event(
                 coordination_relays,
                 peer_id,
                 *external_candidate_ready,
+                Instant::now(),
             );
         }
         SwarmEvent::Behaviour(BehaviourEvent::Identify(identify::Event::Sent {
@@ -536,12 +583,26 @@ fn handle_swarm_event(
                 coordination_relays,
                 peer_id,
                 *external_candidate_ready,
+                Instant::now(),
             );
         }
         SwarmEvent::NewExternalAddrCandidate { .. } => {
             *external_candidate_ready = true;
             for peer_id in coordination_relays.keys().copied().collect::<Vec<_>>() {
-                request_coordination_reservation(swarm, coordination_relays, peer_id, true);
+                request_coordination_reservation(
+                    swarm,
+                    coordination_relays,
+                    peer_id,
+                    true,
+                    Instant::now(),
+                );
+            }
+        }
+        SwarmEvent::ListenerClosed { listener_id, .. } => {
+            for relay in coordination_relays.values_mut() {
+                if relay.listener_closed(listener_id, Instant::now()) {
+                    break;
+                }
             }
         }
         _ => {}
@@ -557,7 +618,6 @@ fn handle_startup_event(
     handle_swarm_event(
         swarm,
         event,
-        &mut HashMap::new(),
         &mut HashMap::new(),
         coordination_relays,
         external_candidate_ready,
@@ -583,13 +643,47 @@ fn register_coordination_relay(
             "peer endpoint cannot use itself as a coordination relay",
         ));
     }
+    let connected = swarm.is_connected(&relay_peer);
     let relay = relays.entry(relay_peer).or_default();
     relay.reserve |= reserve;
     if !relay.addresses.contains(address) {
         relay.addresses.push(address.clone());
-        let _ = swarm.dial(address.clone());
+    }
+    if !connected {
+        dial_coordination_relay(swarm, relay, Instant::now());
     }
     Ok(())
+}
+
+fn dial_coordination_relay(
+    swarm: &mut Swarm<Behaviour>,
+    relay: &mut CoordinationRelay,
+    now: Instant,
+) {
+    if relay.next_connection_attempt > now {
+        return;
+    }
+    relay.next_connection_attempt = now + COORDINATION_RETRY_INTERVAL;
+    for address in &relay.addresses {
+        let _ = swarm.dial(address.clone());
+    }
+}
+
+fn maintain_coordination_relays(
+    swarm: &mut Swarm<Behaviour>,
+    relays: &mut HashMap<PeerId, CoordinationRelay>,
+    external_candidate_ready: bool,
+    now: Instant,
+) {
+    for peer_id in relays.keys().copied().collect::<Vec<_>>() {
+        if !swarm.is_connected(&peer_id) {
+            if let Some(relay) = relays.get_mut(&peer_id) {
+                dial_coordination_relay(swarm, relay, now);
+            }
+            continue;
+        }
+        request_coordination_reservation(swarm, relays, peer_id, external_candidate_ready, now);
+    }
 }
 
 fn request_coordination_reservation(
@@ -597,21 +691,26 @@ fn request_coordination_reservation(
     relays: &mut HashMap<PeerId, CoordinationRelay>,
     peer_id: PeerId,
     external_candidate_ready: bool,
+    now: Instant,
 ) {
     let Some(relay) = relays.get_mut(&peer_id) else {
         return;
     };
     if !relay.reserve
-        || relay.reservation_requested
+        || relay.reservation_listener.is_some()
         || !relay.identify_received
         || !relay.identify_sent
         || !external_candidate_ready
+        || relay.next_reservation_attempt > now
     {
         return;
     }
-    relay.reservation_requested = true;
+    relay.next_reservation_attempt = now + COORDINATION_RETRY_INTERVAL;
     for address in &relay.addresses {
-        let _ = swarm.listen_on(address.clone().with(Protocol::P2pCircuit));
+        if let Ok(listener) = swarm.listen_on(address.clone().with(Protocol::P2pCircuit)) {
+            relay.reservation_listener = Some(listener);
+            break;
+        }
     }
 }
 
@@ -619,7 +718,7 @@ fn retry_coordination_routes(
     swarm: &mut Swarm<Behaviour>,
     pending: &mut HashMap<PeerId, PendingConnect>,
     coordination_relays: &HashMap<PeerId, CoordinationRelay>,
-    direct: &HashMap<PeerId, HashSet<ConnectionId>>,
+    stream_control: &application_stream::Control,
     relayed: &HashMap<PeerId, HashSet<ConnectionId>>,
     external_candidate_ready: bool,
     now: Instant,
@@ -628,7 +727,7 @@ fn retry_coordination_routes(
         if connect.next_coordination_attempt > now {
             continue;
         }
-        if direct.get(peer_id).is_some_and(|ids| !ids.is_empty()) {
+        if stream_control.has_connection(*peer_id) {
             continue;
         }
         if relayed.get(peer_id).is_some_and(|ids| !ids.is_empty()) {
@@ -671,4 +770,32 @@ fn remove_connection(
 
 fn native_error(error: impl std::fmt::Display) -> PeerError {
     PeerError::new("peer_native_failed", error.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn coordination_reservation_can_be_recreated_after_its_lifecycle_ends() {
+        let now = Instant::now();
+        let listener = ListenerId::next();
+        let mut relay = CoordinationRelay {
+            identify_received: true,
+            identify_sent: true,
+            reservation_listener: Some(listener),
+            next_connection_attempt: now + Duration::from_secs(30),
+            next_reservation_attempt: now + Duration::from_secs(30),
+            ..CoordinationRelay::default()
+        };
+
+        assert!(relay.listener_closed(listener, now));
+        assert!(relay.reservation_listener.is_none());
+
+        relay.reservation_listener = Some(listener);
+        assert_eq!(relay.connection_lost(now), Some(listener));
+        assert!(!relay.identify_received);
+        assert!(!relay.identify_sent);
+        assert_eq!(relay.next_connection_attempt, now);
+    }
 }

@@ -159,18 +159,12 @@ impl Drop for PeerEndpoint {
 
 #[napi]
 pub struct PeerStream {
-    peer_id: String,
     incoming: Arc<AsyncMutex<IncomingStreamReceiver>>,
     commands: mpsc::Sender<StreamCommand>,
 }
 
 #[napi]
 impl PeerStream {
-    #[napi(getter)]
-    pub fn peer_id(&self) -> String {
-        self.peer_id.clone()
-    }
-
     #[napi]
     pub async fn read(&self) -> Result<Option<Buffer>> {
         match self.incoming.lock().await.recv().await {
@@ -246,7 +240,6 @@ pub fn start_peer_endpoint(options: StartPeerEndpointOptions) -> Result<PeerEndp
 
 fn wrap_stream(stream: engine::PeerStream) -> Result<PeerStream> {
     Ok(PeerStream {
-        peer_id: stream.peer_id.to_string(),
         incoming: Arc::new(AsyncMutex::new(stream.incoming)),
         commands: stream.commands,
     })

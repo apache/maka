@@ -20,8 +20,10 @@
 import { FramedByteStreamTransport } from '../transport/framed-byte-stream-transport.js';
 import {
   readRuntimeHostPeerAuthentication,
+  RUNTIME_HOST_PEER_AUTHENTICATION_TIMEOUT_MS,
   RuntimeHostPeerByteStream,
   startRuntimeHostPeerEndpoint,
+  writeRuntimeHostPeerAuthenticationResult,
   type RuntimeHostPeerNativeEndpoint,
   type RuntimeHostPeerNativeStream,
 } from '../transport/peer-native.js';
@@ -32,7 +34,6 @@ import type {
 } from './listener-set.js';
 
 const MAX_PENDING_AUTHENTICATIONS = 16;
-const AUTHENTICATION_TIMEOUT_MS = 5_000;
 
 export interface StartRuntimeHostPeerListenerOptions {
   readonly nativePath: string;
@@ -67,8 +68,7 @@ class RuntimeHostPeerListener implements RuntimeHostPeerListenerContract {
   readonly #accessAuthority: RuntimeHostAccessAuthority;
   readonly #accept: (connection: RuntimeHostListenerConnection) => void;
   readonly #transports = new Set<FramedByteStreamTransport>();
-  readonly #authenticating = new Set<RuntimeHostPeerNativeStream>();
-  readonly #authenticationTasks = new Set<Promise<void>>();
+  readonly #authentications = new Map<RuntimeHostPeerNativeStream, Promise<void>>();
   readonly #acceptTask: Promise<void>;
   #acceptFailure: unknown;
   #admitting = true;
@@ -94,8 +94,8 @@ class RuntimeHostPeerListener implements RuntimeHostPeerListenerContract {
   closeAdmission(): Promise<void> {
     this.#closeAdmissionTask ??= (async () => {
       this.#admitting = false;
-      for (const stream of this.#authenticating) stream.abort();
-      await Promise.allSettled([...this.#authenticationTasks]);
+      for (const stream of this.#authentications.keys()) stream.abort();
+      await Promise.allSettled([...this.#authentications.values()]);
     })();
     return this.#closeAdmissionTask;
   }
@@ -125,16 +125,14 @@ class RuntimeHostPeerListener implements RuntimeHostPeerListenerContract {
         stream.abort();
         continue;
       }
-      if (this.#authenticating.size >= MAX_PENDING_AUTHENTICATIONS) {
+      if (this.#authentications.size >= MAX_PENDING_AUTHENTICATIONS) {
         stream.abort();
         continue;
       }
-      this.#authenticating.add(stream);
       const task = this.#authenticateAndAccept(stream).finally(() => {
-        this.#authenticating.delete(stream);
-        this.#authenticationTasks.delete(task);
+        this.#authentications.delete(stream);
       });
-      this.#authenticationTasks.add(task);
+      this.#authentications.set(stream, task);
       void task;
     }
   }
@@ -143,11 +141,21 @@ class RuntimeHostPeerListener implements RuntimeHostPeerListenerContract {
     try {
       const authenticated = await withDeadline(
         readRuntimeHostPeerAuthentication(stream),
-        AUTHENTICATION_TIMEOUT_MS,
+        RUNTIME_HOST_PEER_AUTHENTICATION_TIMEOUT_MS,
         () => stream.abort(),
       );
       const authority = this.#accessAuthority.authenticate(authenticated.credential);
-      if (!authority || !this.#admitting) {
+      if (!authority) {
+        await writeRuntimeHostPeerAuthenticationResult(stream, false);
+        await stream.close();
+        return;
+      }
+      if (!this.#admitting) {
+        stream.abort();
+        return;
+      }
+      await writeRuntimeHostPeerAuthenticationResult(stream, true);
+      if (!this.#admitting) {
         stream.abort();
         return;
       }

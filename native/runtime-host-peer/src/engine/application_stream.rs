@@ -50,7 +50,7 @@ const OUTBOUND_COMMAND_CAPACITY: usize = 1;
 
 pub(super) struct Behaviour {
     protocol: StreamProtocol,
-    incoming: mpsc::Sender<(PeerId, Stream)>,
+    incoming: mpsc::Sender<Stream>,
     shared: Arc<Mutex<DirectConnections>>,
 }
 
@@ -58,7 +58,7 @@ impl Behaviour {
     pub(super) fn new(
         protocol: StreamProtocol,
         incoming_capacity: usize,
-    ) -> (Self, Control, mpsc::Receiver<(PeerId, Stream)>) {
+    ) -> (Self, Control, mpsc::Receiver<Stream>) {
         let (incoming, receiver) = mpsc::channel(incoming_capacity);
         let shared = Arc::new(Mutex::new(DirectConnections::default()));
         (
@@ -78,12 +78,7 @@ impl Behaviour {
         }
         let (sender, receiver) = mpsc::channel(OUTBOUND_COMMAND_CAPACITY);
         lock(&self.shared).insert(connection_id, peer_id, sender);
-        Handler::direct(
-            peer_id,
-            self.protocol.clone(),
-            self.incoming.clone(),
-            receiver,
-        )
+        Handler::direct(self.protocol.clone(), self.incoming.clone(), receiver)
     }
 }
 
@@ -142,6 +137,10 @@ pub(super) struct Control {
 }
 
 impl Control {
+    pub(super) fn has_connection(&self, peer_id: PeerId) -> bool {
+        lock(&self.shared).sender(peer_id).is_some()
+    }
+
     pub(super) async fn open_stream(&mut self, peer_id: PeerId) -> Result<Stream, OpenStreamError> {
         let sender = lock(&self.shared)
             .sender(peer_id)
@@ -218,22 +217,19 @@ fn lock(shared: &Arc<Mutex<DirectConnections>>) -> MutexGuard<'_, DirectConnecti
 }
 
 pub(super) struct Handler {
-    peer_id: Option<PeerId>,
     protocol: Option<StreamProtocol>,
-    incoming: Option<mpsc::Sender<(PeerId, Stream)>>,
+    incoming: Option<mpsc::Sender<Stream>>,
     commands: Option<mpsc::Receiver<NewStream>>,
     pending: Option<oneshot::Sender<Result<Stream, OpenStreamError>>>,
 }
 
 impl Handler {
     fn direct(
-        peer_id: PeerId,
         protocol: StreamProtocol,
-        incoming: mpsc::Sender<(PeerId, Stream)>,
+        incoming: mpsc::Sender<Stream>,
         commands: mpsc::Receiver<NewStream>,
     ) -> Self {
         Self {
-            peer_id: Some(peer_id),
             protocol: Some(protocol),
             incoming: Some(incoming),
             commands: Some(commands),
@@ -243,7 +239,6 @@ impl Handler {
 
     fn relayed() -> Self {
         Self {
-            peer_id: None,
             protocol: None,
             incoming: None,
             commands: None,
@@ -313,8 +308,8 @@ impl ConnectionHandler for Handler {
                 protocol: (stream, _),
                 ..
             }) => {
-                if let (Some(peer_id), Some(incoming)) = (self.peer_id, self.incoming.as_ref()) {
-                    let _ = incoming.try_send((peer_id, stream));
+                if let Some(incoming) = self.incoming.as_ref() {
+                    let _ = incoming.try_send(stream);
                 }
             }
             ConnectionEvent::FullyNegotiatedOutbound(FullyNegotiatedOutbound {
@@ -409,6 +404,7 @@ mod tests {
             0
         );
         assert!(lock(&control.shared).sender(peer_id).is_none());
+        assert!(!control.has_connection(peer_id));
 
         let direct = behaviour
             .handle_established_outbound_connection(
@@ -430,5 +426,6 @@ mod tests {
             vec![protocol]
         );
         assert!(lock(&control.shared).sender(peer_id).is_some());
+        assert!(control.has_connection(peer_id));
     }
 }

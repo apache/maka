@@ -26,6 +26,7 @@ import { test } from 'node:test';
 import { connectPeerRuntimeHost } from '../client/host-profile.js';
 import {
   readRuntimeHostPeerAuthentication,
+  readRuntimeHostPeerAuthenticationResult,
   RuntimeHostPeerError,
   startRuntimeHostPeerEndpoint,
   type RuntimeHostPeerNativeStream,
@@ -112,12 +113,17 @@ test('bounds and separates the peer credential preface from Runtime Host frames'
     (error: unknown) =>
       error instanceof RuntimeHostPeerError && /preface is too large/u.test(error.message),
   );
+
+  const result = await readRuntimeHostPeerAuthenticationResult(
+    streamWith(Buffer.concat([Buffer.from('{"v":1,"accepted":true}\n'), frame])),
+  );
+  assert.equal(result.accepted, true);
+  assert.deepEqual(result.remainder, frame);
 });
 
 function streamWith(chunk: Buffer): RuntimeHostPeerNativeStream {
   let pending: Buffer | null = chunk;
   return {
-    peerId: 'peer',
     read: async () => {
       const value = pending;
       pending = null;

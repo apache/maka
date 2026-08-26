@@ -67,25 +67,58 @@ jobs:
       - name: Lint the native peer
         working-directory: native/runtime-host-peer
         run: cargo clippy --locked --all-targets -- -D warnings
+      - name: Test the native peer
+        working-directory: native/runtime-host-peer
+        run: cargo test --locked
       - name: Build the Node addon
         run: node native/runtime-host-peer/build.mjs
       - name: Exercise the Node boundary
         shell: bash
         run: |
           node <<'NODE'
-          const { mkdtempSync } = require('node:fs');
+          const { mkdtempSync, rmSync } = require('node:fs');
           const { tmpdir } = require('node:os');
           const { join, resolve } = require('node:path');
           const addon = require(resolve('native/runtime-host-peer/target/debug/maka_runtime_host_peer.node'));
           void (async () => {
             const directory = mkdtempSync(join(tmpdir(), 'maka-peer-'));
-            const endpoint = addon.startPeerEndpoint({
-              keyPath: join(directory, 'peer.key'),
+            const server = addon.startPeerEndpoint({
+              keyPath: join(directory, 'server.key'),
               listenAddresses: ['/ip4/127.0.0.1/udp/0/quic-v1'],
             });
-            if (!endpoint.peerId || endpoint.listenAddresses.length === 0) {
-              throw new Error('native peer endpoint did not become ready');
+            const client = addon.startPeerEndpoint({
+              keyPath: join(directory, 'client.key'),
+              listenAddresses: ['/ip4/127.0.0.1/udp/0/quic-v1'],
+            });
+            try {
+              if (!server.peerId || server.listenAddresses.length === 0) {
+                throw new Error('native peer endpoint did not become ready');
+              }
+              const accepted = server.accept();
+              const outbound = await client.connect({
+                peerId: server.peerId,
+                routeHints: server.listenAddresses,
+                directDeadlineMs: 5_000,
+              });
+              const inbound = await accepted;
+              if (!inbound) throw new Error('native peer endpoint did not accept the stream');
+              await outbound.write(Buffer.from('ping'));
+              const request = await inbound.read();
+              if (!request || request.toString() !== 'ping') {
+                throw new Error('native peer endpoint received the wrong request');
+              }
+              await inbound.write(Buffer.from('pong'));
+              const response = await outbound.read();
+              if (!response || response.toString() !== 'pong') {
+                throw new Error('native peer endpoint received the wrong response');
+              }
+              await Promise.all([outbound.close(), inbound.close()]);
+            } finally {
+              await Promise.allSettled([client.close(), server.close()]);
+              rmSync(directory, { recursive: true, force: true });
             }
-            await endpoint.close();
-          })();
+          })().catch((error) => {
+            console.error(error);
+            process.exitCode = 1;
+          });
           NODE

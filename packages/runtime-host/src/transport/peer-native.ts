@@ -22,6 +22,8 @@ import { resolve } from 'node:path';
 import type { RuntimeHostByteStream } from './framed-byte-stream-transport.js';
 
 const AUTHENTICATION_MAX_BYTES = 12 * 1024;
+const AUTHENTICATION_RESULT_MAX_BYTES = 256;
+export const RUNTIME_HOST_PEER_AUTHENTICATION_TIMEOUT_MS = 5_000;
 const require = createRequire(import.meta.url);
 
 export type RuntimeHostPeerErrorCode =
@@ -44,7 +46,6 @@ export class RuntimeHostPeerError extends Error {
 }
 
 export interface RuntimeHostPeerNativeStream {
-  readonly peerId: string;
   read(): Promise<Buffer | null>;
   write(bytes: Buffer): Promise<void>;
   close(): Promise<void>;
@@ -119,43 +120,67 @@ export async function writeRuntimeHostPeerAuthentication(
   await stream.write(Buffer.from(`${JSON.stringify({ v: 1, credential })}\n`, 'utf8'));
 }
 
+export async function writeRuntimeHostPeerAuthenticationResult(
+  stream: RuntimeHostPeerNativeStream,
+  accepted: boolean,
+): Promise<void> {
+  await stream.write(Buffer.from(`${JSON.stringify({ v: 1, accepted })}\n`, 'utf8'));
+}
+
 export async function readRuntimeHostPeerAuthentication(
   stream: RuntimeHostPeerNativeStream,
 ): Promise<{ readonly credential: string; readonly remainder: Buffer }> {
+  const decoded = await readBoundedJsonLine(
+    stream,
+    AUTHENTICATION_MAX_BYTES,
+    'Peer authentication preface',
+  );
+  if (!isAuthenticationPreface(decoded.value)) {
+    throw new RuntimeHostPeerError('peer_native_failed', 'Peer authentication preface is invalid');
+  }
+  return { credential: decoded.value.credential, remainder: decoded.remainder };
+}
+
+export async function readRuntimeHostPeerAuthenticationResult(
+  stream: RuntimeHostPeerNativeStream,
+  timeoutMs = RUNTIME_HOST_PEER_AUTHENTICATION_TIMEOUT_MS,
+): Promise<{ readonly accepted: boolean; readonly remainder: Buffer }> {
+  const decoded = await withStreamDeadline(
+    readBoundedJsonLine(stream, AUTHENTICATION_RESULT_MAX_BYTES, 'Peer authentication result'),
+    stream,
+    timeoutMs,
+    'Timed out waiting for peer authentication result',
+  );
+  if (!isAuthenticationResult(decoded.value)) {
+    throw new RuntimeHostPeerError('peer_native_failed', 'Peer authentication result is invalid');
+  }
+  return { accepted: decoded.value.accepted, remainder: decoded.remainder };
+}
+
+async function readBoundedJsonLine(
+  stream: RuntimeHostPeerNativeStream,
+  maxBytes: number,
+  label: string,
+): Promise<{ readonly value: unknown; readonly remainder: Buffer }> {
   let buffered = Buffer.alloc(0);
   while (true) {
     const newline = buffered.indexOf(0x0a);
     if (newline !== -1) {
-      if (newline > AUTHENTICATION_MAX_BYTES) {
-        throw new RuntimeHostPeerError(
-          'peer_native_failed',
-          'Peer authentication preface is too large',
-        );
+      if (newline > maxBytes) {
+        throw new RuntimeHostPeerError('peer_native_failed', `${label} is too large`);
       }
       const encoded = buffered.subarray(0, newline);
-      const value = JSON.parse(
-        new TextDecoder('utf-8', { fatal: true }).decode(encoded),
-      ) as unknown;
-      if (!isAuthenticationPreface(value)) {
-        throw new RuntimeHostPeerError(
-          'peer_native_failed',
-          'Peer authentication preface is invalid',
-        );
-      }
-      return { credential: value.credential, remainder: buffered.subarray(newline + 1) };
+      return {
+        value: JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(encoded)) as unknown,
+        remainder: buffered.subarray(newline + 1),
+      };
     }
-    if (buffered.byteLength >= AUTHENTICATION_MAX_BYTES) {
-      throw new RuntimeHostPeerError(
-        'peer_native_failed',
-        'Peer authentication preface is too large',
-      );
+    if (buffered.byteLength >= maxBytes) {
+      throw new RuntimeHostPeerError('peer_native_failed', `${label} is too large`);
     }
     const chunk = await stream.read();
     if (!chunk) {
-      throw new RuntimeHostPeerError(
-        'peer_native_failed',
-        'Peer stream ended before authentication',
-      );
+      throw new RuntimeHostPeerError('peer_native_failed', `Peer stream ended before ${label}`);
     }
     buffered = buffered.byteLength === 0 ? Buffer.from(chunk) : Buffer.concat([buffered, chunk]);
   }
@@ -295,6 +320,41 @@ function isAuthenticationPreface(value: unknown): value is { v: 1; credential: s
     value.credential.length > 0 &&
     !/\s/u.test(value.credential)
   );
+}
+
+function isAuthenticationResult(value: unknown): value is { v: 1; accepted: boolean } {
+  return (
+    typeof value === 'object' &&
+    value !== null &&
+    !Array.isArray(value) &&
+    Object.keys(value).length === 2 &&
+    'v' in value &&
+    value.v === 1 &&
+    'accepted' in value &&
+    typeof value.accepted === 'boolean'
+  );
+}
+
+async function withStreamDeadline<T>(
+  operation: Promise<T>,
+  stream: RuntimeHostPeerNativeStream,
+  timeoutMs: number,
+  message: string,
+): Promise<T> {
+  let timer: NodeJS.Timeout | undefined;
+  try {
+    return await Promise.race([
+      operation,
+      new Promise<never>((_resolve, reject) => {
+        timer = setTimeout(() => {
+          stream.abort();
+          reject(new RuntimeHostPeerError('peer_native_failed', message));
+        }, timeoutMs);
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
 }
 
 function isPeerErrorCode(value: string | undefined): value is RuntimeHostPeerErrorCode {

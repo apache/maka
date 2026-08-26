@@ -39,6 +39,7 @@ import { FramedByteStreamTransport } from '../transport/framed-byte-stream-trans
 import {
   RuntimeHostPeerByteStream,
   RuntimeHostPeerError,
+  readRuntimeHostPeerAuthenticationResult,
   startRuntimeHostPeerEndpoint,
   writeRuntimeHostPeerAuthentication,
 } from '../transport/peer-native.js';
@@ -228,8 +229,9 @@ export async function connectRemoteRuntimeHostProfile(
 ): Promise<RuntimeHostConnection> {
   input.signal?.throwIfAborted();
   const transport = input.profile.transport;
+  let connection: RuntimeHostConnection;
   if (transport.kind === 'libp2p-direct') {
-    const connection = await (overrides.connectPeer ?? connectPeerRuntimeHost)({
+    connection = await (overrides.connectPeer ?? connectPeerRuntimeHost)({
       profileId: input.profile.id,
       transport,
       credential: input.credential,
@@ -241,77 +243,67 @@ export async function connectRemoteRuntimeHostProfile(
         ? {}
         : { handshakeTimeoutMs: input.handshakeTimeoutMs }),
     });
+  } else {
+    const tunnel =
+      transport.kind === 'ssh'
+        ? await (overrides.openSshTunnel ?? openRuntimeHostSshTunnel)({
+            destination: transport.destination,
+            ...(transport.sshPort === undefined ? {} : { sshPort: transport.sshPort }),
+            remotePort: transport.remotePort,
+            websocketPath: transport.websocketPath,
+            interaction: input.sshInteraction ?? 'batch',
+            ...(input.signal === undefined ? {} : { signal: input.signal }),
+          })
+        : undefined;
+    const connected = await (overrides.connect ?? connectRemoteRuntimeHost)({
+      url: transport.kind === 'ssh' ? tunnel!.url : transport.url,
+      ...(transport.kind === 'plaintext' ? { allowInsecureRemote: true } : {}),
+      ...(tunnel ? { connectionResource: tunnel.resource } : {}),
+      credential: input.credential,
+      expectedRootId: input.profile.rootId,
+      compositionId: INTERACTIVE_RUNTIME_HOST_COMPOSITION_ID,
+      protocol: {
+        min: RUNTIME_HOST_PROTOCOL_VERSION,
+        max: RUNTIME_HOST_PROTOCOL_VERSION,
+      },
+      clientInstanceId: input.clientInstanceId,
+      ...(input.connectTimeoutMs === undefined ? {} : { connectTimeoutMs: input.connectTimeoutMs }),
+      ...(input.handshakeTimeoutMs === undefined
+        ? {}
+        : { handshakeTimeoutMs: input.handshakeTimeoutMs }),
+    });
     try {
       input.signal?.throwIfAborted();
-      await (overrides.waitForReady ?? waitForRuntimeHostReady)(
-        connection,
-        input.readyTimeoutMs ?? 45_000,
-        input.signal,
-      );
-      return connection;
     } catch (error) {
-      await connection.close().catch(() => undefined);
+      if (connected.kind === 'connected') {
+        await connected.connection.close().catch(() => undefined);
+      }
       throw error;
     }
-  }
-  const tunnel =
-    transport.kind === 'ssh'
-      ? await (overrides.openSshTunnel ?? openRuntimeHostSshTunnel)({
-          destination: transport.destination,
-          ...(transport.sshPort === undefined ? {} : { sshPort: transport.sshPort }),
-          remotePort: transport.remotePort,
-          websocketPath: transport.websocketPath,
-          interaction: input.sshInteraction ?? 'batch',
-          ...(input.signal === undefined ? {} : { signal: input.signal }),
-        })
-      : undefined;
-  const connected = await (overrides.connect ?? connectRemoteRuntimeHost)({
-    url: transport.kind === 'ssh' ? tunnel!.url : transport.url,
-    ...(transport.kind === 'plaintext' ? { allowInsecureRemote: true } : {}),
-    ...(tunnel ? { connectionResource: tunnel.resource } : {}),
-    credential: input.credential,
-    expectedRootId: input.profile.rootId,
-    compositionId: INTERACTIVE_RUNTIME_HOST_COMPOSITION_ID,
-    protocol: {
-      min: RUNTIME_HOST_PROTOCOL_VERSION,
-      max: RUNTIME_HOST_PROTOCOL_VERSION,
-    },
-    clientInstanceId: input.clientInstanceId,
-    ...(input.connectTimeoutMs === undefined ? {} : { connectTimeoutMs: input.connectTimeoutMs }),
-    ...(input.handshakeTimeoutMs === undefined
-      ? {}
-      : { handshakeTimeoutMs: input.handshakeTimeoutMs }),
-  });
-  try {
-    input.signal?.throwIfAborted();
-  } catch (error) {
-    if (connected.kind === 'connected') {
-      await connected.connection.close().catch(() => undefined);
+    if (connected.kind === 'incompatible') {
+      throw new RuntimeHostRemoteCompatibilityError(input.profile.id, connected.handshake);
     }
-    throw error;
-  }
-  if (connected.kind === 'incompatible') {
-    throw new RuntimeHostRemoteCompatibilityError(input.profile.id, connected.handshake);
-  }
-  if (connected.kind !== 'connected') {
-    if (connected.kind === 'draining') {
-      throw new Error(`Runtime Host profile ${input.profile.id} is draining`);
+    if (connected.kind !== 'connected') {
+      if (connected.kind === 'draining') {
+        throw new Error(`Runtime Host profile ${input.profile.id} is draining`);
+      }
+      throw remoteRuntimeHostUnavailableError(
+        `Runtime Host profile ${input.profile.id}`,
+        connected.reason,
+      );
     }
-    throw remoteRuntimeHostUnavailableError(
-      `Runtime Host profile ${input.profile.id}`,
-      connected.reason,
-    );
+    connection = connected.connection;
   }
   try {
     input.signal?.throwIfAborted();
     await (overrides.waitForReady ?? waitForRuntimeHostReady)(
-      connected.connection,
+      connection,
       input.readyTimeoutMs ?? 45_000,
       input.signal,
     );
-    return connected.connection;
+    return connection;
   } catch (error) {
-    await connected.connection.close().catch(() => undefined);
+    await connection.close().catch(() => undefined);
     throw error;
   }
 }
@@ -360,8 +352,19 @@ export async function connectPeerRuntimeHost(input: {
     });
     input.signal?.throwIfAborted();
     await writeRuntimeHostPeerAuthentication(stream, input.credential);
+    const authentication = await readRuntimeHostPeerAuthenticationResult(
+      stream,
+      input.handshakeTimeoutMs,
+    );
+    if (!authentication.accepted) {
+      throw new RuntimeHostPermanentReconnectError(
+        `Runtime Host profile ${input.profileId} rejected its access credential`,
+      );
+    }
     const result = await connectRuntimeHostMessageTransport({
-      transport: new FramedByteStreamTransport(new RuntimeHostPeerByteStream(stream)),
+      transport: new FramedByteStreamTransport(
+        new RuntimeHostPeerByteStream(stream, authentication.remainder),
+      ),
       expectedRootId: input.expectedRootId,
       compositionId: INTERACTIVE_RUNTIME_HOST_COMPOSITION_ID,
       protocol: {
