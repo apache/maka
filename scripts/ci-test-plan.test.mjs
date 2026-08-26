@@ -352,14 +352,32 @@ test('pull request triggers stay on an explicit allowlist', () => {
   ]);
 });
 
-test('Windows recovery publishes one stable PR and main check for ruleset enforcement', () => {
+test('the recovery lane pairs its path filter with a nightly run', () => {
   const workflow = readWorkflow('windows-recovery.yml');
 
-  assert.match(workflow, /\n {2}pull_request:\n {4}branches: \[main\]/u);
-  assert.match(workflow, /\n {2}push:\n {4}branches: \[main\]/u);
+  // Same contract as the sandbox lane: the filter is a pre-filter, not the
+  // lane's import closure, so dropping the schedule would silently lose every
+  // transitive edit it cannot match, and dropping the filter would put every
+  // Windows recovery run back on every pull request.
+  assert.match(workflow, /\n {2}pull_request:\n {4}paths:/u);
+  assert.match(workflow, /\n {2}schedule:/u);
   assert.match(workflow, /\n {2}workflow_dispatch:/u);
   assert.match(workflow, /\n {4}name: windows_recovery/u);
   assert.match(workflow, /cancel-in-progress: \$\{\{ github\.event_name == 'pull_request' \}\}/u);
+});
+
+test('the recovery lane filter names the authorities its steps execute', () => {
+  const workflow = readWorkflow('windows-recovery.yml');
+
+  for (const path of [
+    'packages/storage/src/**',
+    'packages/runtime/src/**',
+    'packages/runtime-host/src/**',
+    'scripts/windows-runtime-host-local-ipc-trust.ps1',
+    '.github/workflows/windows-recovery.yml',
+  ]) {
+    assert.ok(workflow.includes(`      - '${path}'`), path);
+  }
 });
 
 test('the sandbox lane pairs its path filter with a nightly run', () => {

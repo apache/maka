@@ -17,11 +17,23 @@
 
 name: Windows recovery
 
+# The paths below are a pre-filter, not this lane's real input. The real input
+# is the import closure of the crash and owner-death recovery authorities in
+# storage, runtime, and Runtime Host, which reaches well past any list worth
+# hand-maintaining. So they name the directories that own those authorities,
+# which keeps a change there blocking before merge, and the nightly run is what
+# covers transitive edits once they land.
 on:
   pull_request:
-    branches: [main]
-  push:
-    branches: [main]
+    paths:
+      - 'packages/storage/src/**'
+      - 'packages/runtime/src/**'
+      - 'packages/runtime-host/src/**'
+      - 'scripts/windows-runtime-host-local-ipc-trust.ps1'
+      - '.github/workflows/windows-recovery.yml'
+  schedule:
+    # Offset from windows-sandbox-w0 so the Windows lanes do not overlap.
+    - cron: '17 8 * * *'
   workflow_dispatch:
 
 concurrency:
