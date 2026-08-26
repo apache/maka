@@ -28,8 +28,16 @@ import {
   type RuntimeHostInstallationOwner,
 } from '@maka/runtime-host/operator';
 import {
-  handoffRuntimeHostNpmGlobalDeployment,
+  INTERACTIVE_RUNTIME_HOST_COMPOSITION_ID,
+  RUNTIME_HOST_COMPATIBILITY_EPOCH,
+  RUNTIME_HOST_PROTOCOL_VERSION,
+  RUNTIME_HOST_REGISTRATION_SCHEMA_VERSION,
+  type HostRegistration,
+} from '@maka/runtime-host/protocol';
+import {
+  reconcileRuntimeHostNpmGlobalDeployment,
   resolveRuntimeHostLocalCliDeploymentRoot,
+  restartRuntimeHostNpmGlobalDeployment,
   RuntimeHostLocalHandoffError,
   stageRuntimeHostNpmGlobalDeploymentTarget,
 } from '../runtime-host-local-handoff.js';
@@ -145,17 +153,16 @@ test('npm-global handoff stages before the one durable owner transaction', async
   assert.equal(claimed.kind, 'applied');
   const events: string[] = [];
 
-  const result = await handoffRuntimeHostNpmGlobalDeployment(
+  const result = await reconcileRuntimeHostNpmGlobalDeployment(
     {
       rootId: ROOT_ID,
-      expectedRevision: claimed.record!.revision,
       transactionId: 'desktop-to-cli',
-      from: DESKTOP_OWNER,
       target: TARGET,
       activeWorkPolicy: 'refuse_active_work',
       deploymentPathOptions: { platform: 'linux', homeDir: join(base, 'home') },
     },
     {
+      prepareUnownedHostCutover: async () => assert.fail('owner record already exists'),
       async prepareHostCutover(rootId, _selected, target, staged, policy) {
         const intent = await readLocalHostDeploymentRecord(rootId, { authorityRoot });
         assert.equal(intent?.state.kind, 'handoff');
@@ -214,17 +221,16 @@ test('package verification failure leaves deployment authority unchanged', async
   assert.equal(claimed.kind, 'applied');
 
   await assert.rejects(
-    handoffRuntimeHostNpmGlobalDeployment(
+    reconcileRuntimeHostNpmGlobalDeployment(
       {
         rootId: ROOT_ID,
-        expectedRevision: claimed.record!.revision,
         transactionId: 'failed-staging',
-        from: DESKTOP_OWNER,
         target: TARGET,
         activeWorkPolicy: 'refuse_active_work',
         deploymentPathOptions: { platform: 'linux', homeDir: join(base, 'home') },
       },
       {
+        prepareUnownedHostCutover: async () => assert.fail('cutover must not begin'),
         prepareHostCutover: async () => assert.fail('retirement must not begin'),
         observeWriterRelease: async () => assert.fail('writer observation must not begin'),
         activateTarget: async () => assert.fail('activation must not begin'),
@@ -263,16 +269,15 @@ test('installed release skew is rejected before staging or authority mutation', 
   let staged = false;
 
   await assert.rejects(
-    handoffRuntimeHostNpmGlobalDeployment(
+    reconcileRuntimeHostNpmGlobalDeployment(
       {
         rootId: ROOT_ID,
-        expectedRevision: claimed.record!.revision,
         transactionId: 'stale-installed-release',
-        from: DESKTOP_OWNER,
         target: TARGET,
         activeWorkPolicy: 'refuse_active_work',
       },
       {
+        prepareUnownedHostCutover: async () => assert.fail('cutover must not begin'),
         prepareHostCutover: async () => assert.fail('retirement must not begin'),
         observeWriterRelease: async () => assert.fail('writer observation must not begin'),
         activateTarget: async () => assert.fail('activation must not begin'),
@@ -301,6 +306,163 @@ test('installed release skew is rejected before staging or authority mutation', 
   assert.deepEqual(await readLocalHostDeploymentRecord(ROOT_ID, { authorityRoot }), claimed.record);
 });
 
+test('explicit npm-global restart claims an exact staged legacy takeover', async (t) => {
+  const base = await mkdtemp(join(tmpdir(), 'maka-local-restart-'));
+  t.after(() => rm(base, { recursive: true, force: true }));
+  const sourcePackageRoot = await selfContainedPackage(base, TARGET.version);
+  const authorityRoot = join(base, 'authority');
+  let closed = 0;
+  let launchedEntrypoint = '';
+
+  const result = await restartRuntimeHostNpmGlobalDeployment(
+    {
+      rootPath: join(base, 'root'),
+      registration: hostRegistration(),
+      deploymentPathOptions: { platform: 'linux', homeDir: join(base, 'home') },
+    },
+    { authorityRoot },
+    {
+      resolveInstallation: async () => ({
+        owner: CLI_OWNER,
+        observedRelease: {
+          version: TARGET.version,
+          packageRoot: sourcePackageRoot,
+          cliPath: join(sourcePackageRoot, 'dist', 'cli.js'),
+        },
+      }),
+      resolveCandidate: async () => TARGET,
+      withPackage: async (_candidate, use) => use(sourcePackageRoot),
+      prepareDeployment: prepareRuntimeHostPackageDeployment,
+      connectOrSpawn: async (input) => {
+        launchedEntrypoint = String(input.candidateEntrypoint);
+        const registration = hostRegistration({
+          hostEpoch: 'new-host',
+          pid: 84,
+          generation: input.generation,
+        });
+        return {
+          kind: 'connected',
+          registration,
+          spawnedProcess: {
+            pid: 84,
+            exited: new Promise(() => undefined),
+          },
+          connection: {
+            close: async () => {
+              closed += 1;
+            },
+          } as never,
+        };
+      },
+    },
+  );
+
+  assert.equal(result.kind, 'completed');
+  assert.match(launchedEntrypoint, /execution-candidate-main\.js$/u);
+  assert.equal(closed >= 1, true);
+  const record = await readLocalHostDeploymentRecord(ROOT_ID, { authorityRoot });
+  assert.deepEqual(record?.state, { kind: 'owned', owner: CLI_OWNER, selected: TARGET });
+});
+
+test('legacy restart reports active work without claiming deployment authority', async (t) => {
+  const base = await mkdtemp(join(tmpdir(), 'maka-local-restart-active-'));
+  t.after(() => rm(base, { recursive: true, force: true }));
+  const sourcePackageRoot = await selfContainedPackage(base, TARGET.version);
+  const authorityRoot = join(base, 'authority');
+  const observed = hostRegistration();
+
+  const result = await restartRuntimeHostNpmGlobalDeployment(
+    {
+      rootPath: join(base, 'root'),
+      registration: observed,
+      deploymentPathOptions: { platform: 'linux', homeDir: join(base, 'home') },
+    },
+    { authorityRoot },
+    {
+      resolveInstallation: async () => ({
+        owner: CLI_OWNER,
+        observedRelease: {
+          version: TARGET.version,
+          packageRoot: sourcePackageRoot,
+          cliPath: join(sourcePackageRoot, 'dist', 'cli.js'),
+        },
+      }),
+      resolveCandidate: async () => TARGET,
+      withPackage: async (_candidate, use) => use(sourcePackageRoot),
+      prepareDeployment: prepareRuntimeHostPackageDeployment,
+      connectOrSpawn: async () => ({
+        kind: 'incompatible',
+        registration: observed,
+        handshake: {
+          kind: 'incompatible',
+          hostEpoch: observed.hostEpoch,
+          protocolMin: 0,
+          protocolMax: 0,
+          compatibilityEpoch: observed.compatibilityEpoch,
+          compositionId: observed.compositionId,
+          compositionRevision: observed.compositionRevision,
+          state: 'ready',
+          replacement: 'blocked_by_residency',
+        },
+      }),
+    },
+  );
+
+  assert.equal(result.kind, 'active_work');
+  assert.equal(await readLocalHostDeploymentRecord(ROOT_ID, { authorityRoot }), undefined);
+});
+
+test('local restart keeps service Hosts under operator authority', async () => {
+  assert.deepEqual(
+    await restartRuntimeHostNpmGlobalDeployment({
+      rootPath: '/managed-root',
+      registration: hostRegistration({ lifecycleMode: 'service' }),
+    }),
+    { kind: 'operator_required', reason: 'service_host' },
+  );
+  assert.deepEqual(
+    await restartRuntimeHostNpmGlobalDeployment({
+      rootPath: '/legacy-root',
+      registration: hostRegistration({ lifecycleMode: undefined }),
+    }),
+    { kind: 'operator_required', reason: 'unowned_host' },
+  );
+});
+
+test('committed target conflicting with the observed Host fails closed', async (t) => {
+  const base = await mkdtemp(join(tmpdir(), 'maka-local-restart-observation-conflict-'));
+  t.after(() => rm(base, { recursive: true, force: true }));
+  const authorityRoot = join(base, 'authority');
+  const claimed = await applyLocalHostDeploymentTransition(
+    ROOT_ID,
+    { kind: 'claim', owner: CLI_OWNER, selected: TARGET },
+    { authorityRoot },
+  );
+  assert.equal(claimed.kind, 'applied');
+
+  await assert.rejects(
+    restartRuntimeHostNpmGlobalDeployment(
+      { rootPath: join(base, 'root'), registration: hostRegistration() },
+      { authorityRoot },
+      {
+        resolveInstallation: async () => ({
+          owner: CLI_OWNER,
+          observedRelease: {
+            version: TARGET.version,
+            packageRoot: base,
+            cliPath: join(base, 'dist', 'cli.js'),
+          },
+        }),
+        resolveCandidate: async () => TARGET,
+        withPackage: async () => assert.fail('conflicting committed target must not be staged'),
+      },
+    ),
+    (error: unknown) =>
+      error instanceof RuntimeHostLocalHandoffError &&
+      error.code === 'selected_target_observation_conflict',
+  );
+});
+
 async function selfContainedPackage(base: string, version: string): Promise<string> {
   const root = join(base, `source-${version}`);
   const runtimeHostRoot = join(root, 'node_modules', '@maka', 'runtime-host');
@@ -315,4 +477,24 @@ async function selfContainedPackage(base: string, version: string): Promise<stri
     writeFile(join(runtimeHostRoot, 'dist', 'execution-candidate-main.js'), ''),
   ]);
   return root;
+}
+
+function hostRegistration(overrides: Partial<HostRegistration> = {}): HostRegistration {
+  return {
+    kind: 'maka-runtime-host',
+    schemaVersion: RUNTIME_HOST_REGISTRATION_SCHEMA_VERSION,
+    rootId: ROOT_ID,
+    hostEpoch: 'old-host',
+    endpoint: '/tmp/maka-host.sock',
+    protocolMin: RUNTIME_HOST_PROTOCOL_VERSION,
+    protocolMax: RUNTIME_HOST_PROTOCOL_VERSION,
+    compatibilityEpoch: RUNTIME_HOST_COMPATIBILITY_EPOCH - 1,
+    compositionId: INTERACTIVE_RUNTIME_HOST_COMPOSITION_ID,
+    compositionRevision: 'legacy',
+    lifecycleMode: 'ephemeral',
+    state: 'ready',
+    pid: 42,
+    createdAt: new Date(0).toISOString(),
+    ...overrides,
+  };
 }

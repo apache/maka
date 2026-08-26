@@ -80,7 +80,12 @@ export {
   type RuntimeHostInstallationOwner,
 } from './local-deployment-owner.js';
 export {
+  claimLocalHostProcessDeployment,
   handoffLocalHostProcessDeployment,
+  type LocalHostProcessDeploymentClaimAdapter,
+  type LocalHostProcessDeploymentClaimPhase,
+  type LocalHostProcessDeploymentClaimRequest,
+  type LocalHostProcessDeploymentClaimResult,
   type LocalHostProcessDeploymentHandoffAdapter,
   type LocalHostProcessDeploymentHandoffPhase,
   type LocalHostProcessDeploymentHandoffRequest,

@@ -38,9 +38,11 @@ import {
   RUNTIME_HOST_PROTOCOL_VERSION,
   RUNTIME_HOST_REGISTRATION_SCHEMA_VERSION,
   type HostIncompatible,
+  type HostRegistration,
 } from '@maka/runtime-host/protocol';
 import {
   connectRuntimeHostCli,
+  resolveRuntimeHostCliConflictDecision,
   RuntimeHostCliConflictError,
   shouldRetryRuntimeHostConflict,
 } from '../runtime-host-cli-context.js';
@@ -93,6 +95,31 @@ test('CLI Runtime Host bootstrap launches the execution composition', async () =
   assert.equal(basename(fileURLToPath(candidateEntrypoint)), 'execution-candidate-main.js');
   assert.ok(clientInstanceId);
   await context.close();
+  assert.equal(closes, 1);
+});
+
+test('CLI refuses a staged Host whose durable installation claim is missing', async () => {
+  let closes = 0;
+  await assert.rejects(
+    connectRuntimeHostCli(
+      { rootPath: '/runtime-host-root' },
+      {
+        connectOrSpawn: async () => ({
+          kind: 'connected',
+          registration: hostRegistration({
+            generation: `npm-global-handoff:${'a'.repeat(64)}`,
+          }),
+          connection: {
+            close: async () => {
+              closes += 1;
+            },
+          } as RuntimeHostConnection,
+        }),
+        readDeploymentRecord: async () => undefined,
+      },
+    ),
+    /RUNTIME_HOST_RECOVERY_REQUIRED/u,
+  );
   assert.equal(closes, 1);
 });
 
@@ -181,6 +208,11 @@ test('Runtime Host conflict waits only after an explicit wait answer', () => {
   assert.equal(shouldRetryRuntimeHostConflict('c'), false);
   assert.equal(shouldRetryRuntimeHostConflict('cancel'), false);
   assert.equal(shouldRetryRuntimeHostConflict('unexpected'), false);
+  assert.equal(resolveRuntimeHostCliConflictDecision('r', true), 'restart');
+  assert.equal(resolveRuntimeHostCliConflictDecision(' restart ', true), 'restart');
+  assert.equal(resolveRuntimeHostCliConflictDecision('r', false), 'cancel');
+  assert.equal(resolveRuntimeHostCliConflictDecision('w', true), 'wait');
+  assert.equal(resolveRuntimeHostCliConflictDecision('', true), 'cancel');
 });
 
 test('CLI reports an actionable stored-data startup failure', async () => {
@@ -476,12 +508,7 @@ test('remote profiles preserve shared compatibility errors', async () => {
   }
 });
 
-function hostRegistration(
-  overrides: Partial<{
-    compatibilityEpoch: number;
-    lifecycleMode: 'ephemeral' | 'service';
-  }> = {},
-) {
+function hostRegistration(overrides: Partial<HostRegistration> = {}): HostRegistration {
   return {
     kind: 'maka-runtime-host' as const,
     schemaVersion: RUNTIME_HOST_REGISTRATION_SCHEMA_VERSION,
