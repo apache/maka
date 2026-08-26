@@ -295,6 +295,7 @@ export type CommitConnectionOnboardingResult =
 
 export type ResolveExecutionConnectionResult =
   | { readonly kind: 'not_found' }
+  | { readonly kind: 'identity_mismatch' }
   | { readonly kind: 'disabled' }
   /**
    * The provider was retired. Distinct from `disabled`, which the user chose
@@ -310,6 +311,17 @@ export type ResolveExecutionConnectionResult =
       readonly networkProxy: RuntimePolicy['networkProxy'];
     };
 
+export type ExecutionConnectionRef =
+  | {
+      readonly kind: 'bound';
+      readonly connectionId: string;
+      readonly connectionSlug: string;
+    }
+  | {
+      readonly kind: 'catalog_slug';
+      readonly connectionSlug: string;
+    };
+
 export type ReplaceConnectionRequestHeadersResult =
   | ({ readonly kind: 'committed' | 'unchanged' } & SavedRequestHeaders)
   | { readonly kind: 'connection_not_found' };
@@ -323,7 +335,9 @@ export interface RuntimePolicyOperationCoordinator {
     connectionId: string,
     updates: readonly RequestHeaderUpdate[],
   ): Promise<ReplaceConnectionRequestHeadersResult>;
-  resolveExecutionConnection(connectionSlug: string): Promise<ResolveExecutionConnectionResult>;
+  resolveExecutionConnection(
+    ref: ExecutionConnectionRef,
+  ): Promise<ResolveExecutionConnectionResult>;
   resolveWebSearchExecution(
     input?: ResolveWebSearchExecutionInput,
   ): Promise<ResolveWebSearchExecutionResult>;

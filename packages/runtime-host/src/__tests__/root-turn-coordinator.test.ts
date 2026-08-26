@@ -1264,6 +1264,7 @@ test('linked child Sessions reject public safe-boundary continuation', async () 
     const parent = await fixture.stores.sessionStore.readHeaderSnapshot(fixture.sessionId);
     const { header: child } = await fixture.stores.sessionStore.createSubagent({
       cwd: parent.cwd,
+      llmConnectionId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
       llmConnectionSlug: 'fake',
       model: 'fake-model',
       permissionMode: 'ask',
@@ -1407,6 +1408,7 @@ test('worktree child Sessions reject roots outside managed child execution', asy
   try {
     const { header: child } = await fixture.stores.sessionStore.createSubagent({
       cwd: binding.worktreePath,
+      llmConnectionId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
       llmConnectionSlug: 'fake',
       model: 'fake-model',
       permissionMode: 'ask',
@@ -2324,6 +2326,7 @@ test('hosted linked child roots share admission, message, terminal, and stop aut
     const stores = await openInteractiveExecutionStoresForWrite(owner.lease);
     const parent = await stores.sessionStore.create({
       cwd: capability.canonicalPath,
+      llmConnectionId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
       llmConnectionSlug: 'fake',
       model: 'fake-model',
       permissionMode: 'ask',
@@ -4199,6 +4202,7 @@ test('post-start backend failure closes its owner without draining an unrelated 
   try {
     const unrelatedSession = await fixture.stores.sessionStore.create({
       cwd: '/tmp/unrelated-active-root',
+      llmConnectionId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
       llmConnectionSlug: 'fake',
       model: 'fake-model',
       permissionMode: 'ask',
@@ -4775,6 +4779,7 @@ async function seedPendingSafeBoundaryContinuation(
     turnId: sourceTurnId,
     status: 'created' as const,
     backendKind: 'fake' as const,
+    llmConnectionId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
     llmConnectionSlug: 'fake',
     modelId: 'fake-model',
     cwd: session.cwd,
@@ -4935,6 +4940,7 @@ async function createFailureFixture(options: {
   await artifacts?.recover();
   const session = await stores.sessionStore.create({
     cwd: capability.canonicalPath,
+    llmConnectionId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
     llmConnectionSlug: 'fake',
     model: 'fake-model',
     permissionMode: 'ask',

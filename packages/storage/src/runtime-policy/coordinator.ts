@@ -109,6 +109,7 @@ import {
   type InteractiveOAuthLoginProvider,
   type InteractiveOAuthLoginTicket,
   type ModelFetchTicket,
+  type ExecutionConnectionRef,
   type RuntimePolicyCredentialMaterial,
   type RuntimePolicyOperationSecretMaterial,
   type ResolveExecutionConnectionResult,
@@ -620,12 +621,35 @@ export class RuntimePolicyCoordinator {
     });
   }
 
-  resolveExecutionConnection(rawConnectionSlug: string): Promise<ResolveExecutionConnectionResult> {
+  resolveExecutionConnection(
+    rawRef: ExecutionConnectionRef,
+  ): Promise<ResolveExecutionConnectionResult> {
     return this.inLane(async (root) => {
-      const connectionSlug = decodeConnectionInput(() => decodeConnectionSlug(rawConnectionSlug));
+      const ref = decodeConnectionInput(() => {
+        if (rawRef.kind === 'bound') {
+          return {
+            kind: rawRef.kind,
+            connectionId: decodeRuntimePolicyEntityId(rawRef.connectionId),
+            connectionSlug: decodeConnectionSlug(rawRef.connectionSlug),
+          } as const;
+        }
+        if (rawRef.kind === 'catalog_slug') {
+          return {
+            kind: rawRef.kind,
+            connectionSlug: decodeConnectionSlug(rawRef.connectionSlug),
+          } as const;
+        }
+        throw new Error('Invalid execution Connection reference kind');
+      });
       const catalog = await this.catalog.read(root);
-      const connection = catalog.connections.find((candidate) => candidate.slug === connectionSlug);
+      const connection =
+        ref.kind === 'bound'
+          ? catalog.connections.find((candidate) => candidate.connectionId === ref.connectionId)
+          : catalog.connections.find((candidate) => candidate.slug === ref.connectionSlug);
       if (!connection) return deepFreeze({ kind: 'not_found' as const });
+      if (ref.kind === 'bound' && connection.slug !== ref.connectionSlug) {
+        return deepFreeze({ kind: 'identity_mismatch' as const });
+      }
       if (!connection.enabled) return deepFreeze({ kind: 'disabled' as const });
       // Ahead of the credential material: a retired connection keeps its stored
       // token, so `requiresSecret` is satisfied and every later check passes.

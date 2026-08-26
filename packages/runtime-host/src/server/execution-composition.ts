@@ -27,7 +27,11 @@ import type { RuntimeExecutionConnection } from '@maka/core/llm-connections';
 import { generalizedErrorMessage } from '@maka/core/redaction';
 import { emptyPlanSessionState } from '@maka/core/plan';
 import type { PermissionMode } from '@maka/core/permission';
-import { isDeepResearchSession, WORKHUB_COORDINATION_SESSION_ID } from '@maka/core/session';
+import {
+  isDeepResearchSession,
+  type SessionHeader,
+  WORKHUB_COORDINATION_SESSION_ID,
+} from '@maka/core/session';
 import { filterModelVisibleTaskLedgerTasks } from '@maka/core/task-ledger';
 import { AgentGraphCoordinator } from '@maka/runtime/stream-graph-coordinator';
 import { AgentGraphSupervisorWakeCoordinator } from '@maka/runtime/agent-graph-supervisor-wake';
@@ -80,6 +84,7 @@ import { createExternalSessionAdapterRegistry } from '@maka/storage/external-ses
 import { createGitWorktreeChildExecutor } from '@maka/storage/git-worktree-child-executor';
 import { runWithStorageRootLease } from '@maka/storage/root-authority';
 import { openStorageWriterComposition } from '@maka/storage/storage-writer-composition';
+import type { RuntimePolicyStoresWriter } from '@maka/storage/runtime-policy-stores';
 import { resolveWorkspaceIdentity } from '@maka/storage/workspace-identity';
 import { type ManagedWorkspaceFilesystemWorker } from '@maka/storage/managed-workspace-owner';
 import { CanonicalSessionProjectionReader } from './canonical-session-projection.js';
@@ -106,6 +111,7 @@ import {
   createInteractiveRunComposerFactory,
   routeInteractiveRunToolSurface,
 } from './interactive-run-composer.js';
+
 import {
   createHostGoalEvaluator,
   createHostDailyReviewModel,
@@ -168,6 +174,10 @@ import { HostUsagePricingCoordinator } from './usage-pricing-coordinator.js';
 import { HostWebSearchCoordinator } from './web-search-coordinator.js';
 import { HostWorkHubCoordinationCoordinator } from './workhub-coordination-coordinator.js';
 import { WorkHubActionEffectFailure } from './workhub-coordination-action-gate.js';
+
+type ExecutionConnectionRef = Parameters<
+  RuntimePolicyStoresWriter['operations']['resolveExecutionConnection']
+>[0];
 import {
   createHostWebSearchService,
   createHostWebSearchToolFromService,
@@ -682,7 +692,7 @@ export async function createExecutionRuntimeHostComposition(
         requireRootCoordinator(rootCoordinator).stopSession(sessionId, input),
     };
     const resolveInteractiveToolSurface = async (input: {
-      readonly connectionSlug?: string;
+      readonly connectionRef?: ExecutionConnectionRef;
       readonly modelId: string;
       readonly hostTools: readonly MakaTool[];
       readonly boundTools?: readonly MakaTool[];
@@ -691,8 +701,8 @@ export async function createExecutionRuntimeHostComposition(
     }) => {
       const [runtimePolicy, resolved] = await Promise.all([
         runtimePolicyStores.runtimePolicy.getSnapshot(),
-        input.connectionSlug
-          ? runtimePolicyStores.operations.resolveExecutionConnection(input.connectionSlug)
+        input.connectionRef
+          ? runtimePolicyStores.operations.resolveExecutionConnection(input.connectionRef)
           : Promise.resolve(undefined),
       ]);
       let connection: RuntimeExecutionConnection | undefined;
@@ -739,7 +749,7 @@ export async function createExecutionRuntimeHostComposition(
           throw new Error('Subagent runtime tool snapshot is unavailable');
         }
         const { surface } = await resolveInteractiveToolSurface({
-          connectionSlug: header.llmConnectionSlug,
+          connectionRef: sessionExecutionConnectionRef(header),
           modelId: header.model,
           hostTools: [],
           boundTools: tools,
@@ -757,7 +767,7 @@ export async function createExecutionRuntimeHostComposition(
           openedPlanStore.readState(sessionId),
         ]);
         const { runtimePolicy, surface } = await resolveInteractiveToolSurface({
-          connectionSlug: header.llmConnectionSlug,
+          connectionRef: sessionExecutionConnectionRef(header),
           modelId: header.model,
           hostTools: [...hostTools, ...graphTools],
           childTools: childAgentTools.childTools,
@@ -815,7 +825,15 @@ export async function createExecutionRuntimeHostComposition(
               )
             : undefined;
           const { runtimePolicy, surface } = await resolveInteractiveToolSurface({
-            ...(connection ? { connectionSlug: connection.slug } : {}),
+            ...(connection
+              ? {
+                  connectionRef: {
+                    kind: 'bound' as const,
+                    connectionId: connection.connectionId,
+                    connectionSlug: connection.slug,
+                  },
+                }
+              : {}),
             modelId: target?.modelId ?? '',
             hostTools,
             childTools: childAgentTools.childTools,
@@ -883,7 +901,7 @@ export async function createExecutionRuntimeHostComposition(
         worktreePatchWriteBackAvailable: true,
       }).childTools;
       const { surface } = await resolveInteractiveToolSurface({
-        connectionSlug: header.llmConnectionSlug,
+        connectionRef: sessionExecutionConnectionRef(header),
         modelId: header.model,
         hostTools: [],
         childTools,
@@ -1772,6 +1790,18 @@ export async function createExecutionRuntimeHostComposition(
     if (errors.length === 1) throw error;
     throw new AggregateError(errors, 'Unable to clean up Runtime Host execution composition');
   }
+}
+
+function sessionExecutionConnectionRef(
+  header: Pick<SessionHeader, 'llmConnectionId' | 'llmConnectionSlug'>,
+): ExecutionConnectionRef {
+  return header.llmConnectionId === undefined
+    ? { kind: 'catalog_slug', connectionSlug: header.llmConnectionSlug }
+    : {
+        kind: 'bound',
+        connectionId: header.llmConnectionId,
+        connectionSlug: header.llmConnectionSlug,
+      };
 }
 
 function requireRootCoordinator(coordinator: RootTurnCoordinator | undefined): RootTurnCoordinator {

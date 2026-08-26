@@ -439,6 +439,7 @@ describe('SessionManager Plan control boundaries', () => {
         expectedRevision: 1,
         configuration: {
           backend: child.backend,
+          llmConnectionId: 'test-connection-id',
           llmConnectionSlug: child.llmConnectionSlug,
           connectionLocked: true,
           model: child.model,
@@ -474,6 +475,7 @@ describe('SessionManager graph operator provisioning', () => {
       subagentCatalog: {
         list: async () => [],
         resolve: async (id) => ({
+          connectionId: '22222222-2222-4222-8222-222222222222',
           id,
           name: 'Fast graph reader',
           description: 'Cheap graph scans',
@@ -586,6 +588,7 @@ describe('SessionManager graph operator provisioning', () => {
         expectedRevision: 1,
         configuration: {
           backend: parent.backend,
+          llmConnectionId: 'test-connection-id',
           llmConnectionSlug: parent.llmConnectionSlug,
           connectionLocked: true,
           model: parent.model,
@@ -2348,6 +2351,7 @@ describe('SessionManager child-session runtime primitive', () => {
         resolve: async (id) => {
           if (id !== 'fast-reader') throw new Error('unknown preset');
           return {
+            connectionId: '33333333-3333-4333-8333-333333333333',
             id,
             name: 'Fast reader',
             description: 'Cheap scans',
@@ -2389,6 +2393,7 @@ describe('SessionManager child-session runtime primitive', () => {
     const child = await store.readHeader(result.childSessionId);
 
     expect(child.llmConnectionSlug).toBe('worker-connection');
+    expect(child.llmConnectionId).toBe('33333333-3333-4333-8333-333333333333');
     expect(child.model).toBe('worker-model');
     expect(child.thinkingLevel).toBe('low');
     expect(child.subagentRuntime?.presetId).toBe('fast-reader');
@@ -4291,6 +4296,7 @@ describe('SessionManager manual compaction and quiescent session changes', () =>
     );
     const baseConfiguration = {
       backend: session.backend,
+      llmConnectionId: 'test-connection-id',
       llmConnectionSlug: session.llmConnectionSlug,
       connectionLocked: true,
       model: session.model,
@@ -4429,6 +4435,7 @@ describe('SessionManager manual compaction and quiescent session changes', () =>
         expectedRevision: 1,
         configuration: {
           backend: session.backend,
+          llmConnectionId: 'test-connection-id',
           llmConnectionSlug: session.llmConnectionSlug,
           connectionLocked: true,
           model: session.model,
@@ -4480,6 +4487,7 @@ describe('SessionManager manual compaction and quiescent session changes', () =>
       expectedRevision: 1,
       configuration: {
         backend: session.backend,
+        llmConnectionId: 'test-connection-id',
         llmConnectionSlug: session.llmConnectionSlug,
         connectionLocked: true,
         model: 'new-model',
@@ -5095,7 +5103,9 @@ describe('SessionManager permission mode updates', () => {
       newId: nextId(),
       now: nextNow(6_526),
     });
-    const session = await manager.createSession(makeInput());
+    const session = await manager.createSession(
+      makeInput({ llmConnectionId: '11111111-1111-4111-8111-111111111111' }),
+    );
 
     const events = await collectSessionEvents(
       manager.sendMessage(session.id, {
@@ -5106,6 +5116,7 @@ describe('SessionManager permission mode updates', () => {
 
     expect(events.map((event) => event.type)).toEqual(['text_complete', 'complete']);
     const [run] = await runStore.listSessionRuns(session.id);
+    expect(run?.llmConnectionId).toBe('11111111-1111-4111-8111-111111111111');
     expect(run?.workspaceIdentity).toBeUndefined();
   });
 
@@ -16528,6 +16539,7 @@ class MemorySessionStore implements SessionStore {
       ...(input.revisionState ? { revisionState: input.revisionState } : {}),
       hasUnread: false,
       backend: 'ai-sdk',
+      ...(input.llmConnectionId === undefined ? {} : { llmConnectionId: input.llmConnectionId }),
       llmConnectionSlug: input.llmConnectionSlug,
       connectionLocked: input.subagentParent !== undefined,
       model: input.model ?? 'fake-model',

@@ -5007,6 +5007,7 @@ function memoryExtractionModelHeader(
   header: SessionHeader,
 ): MemoryExtractionSourceSnapshot['sourceHeader'] {
   return {
+    ...(header.llmConnectionId === undefined ? {} : { llmConnectionId: header.llmConnectionId }),
     llmConnectionSlug: header.llmConnectionSlug,
     model: header.model,
     ...(header.thinkingLevel !== undefined ? { thinkingLevel: header.thinkingLevel } : {}),

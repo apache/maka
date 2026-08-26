@@ -145,6 +145,7 @@ export interface HostSessionCatalogCoordinatorOptions {
 }
 
 interface ResolvedSessionModel {
+  readonly connectionId: string;
   readonly connectionSlug: string;
   readonly model: string;
 }
@@ -187,6 +188,7 @@ export class HostSessionCatalogCoordinator {
       this.#readRuntimePolicy(),
     ]);
     return {
+      llmConnectionId: model.connectionId,
       llmConnectionSlug: model.connectionSlug,
       model: model.model,
       permissionMode: policy.policy.chatDefaults.permissionMode,
@@ -410,6 +412,7 @@ export class HostSessionCatalogCoordinator {
               ...(workspace.projectId === null ? {} : { projectId: workspace.projectId }),
               name: prepared.name,
               labels: [...prepared.labels],
+              llmConnectionId: model.connectionId,
               llmConnectionSlug: model.connectionSlug,
               model: model.model,
               ...(input.thinkingLevel === undefined ? {} : { thinkingLevel: input.thinkingLevel }),
@@ -525,6 +528,7 @@ export class HostSessionCatalogCoordinator {
         const model = await this.#resolveModel(
           input.configuration.modelTarget,
           input.configuration.thinkingLevel ?? undefined,
+          current.header,
         );
         const clearsConnectionBlock = current.header.blockedReason === 'NO_REAL_CONNECTION';
         if (
@@ -543,6 +547,7 @@ export class HostSessionCatalogCoordinator {
           expectedRevision: input.expectedRevision,
           configuration: {
             backend: 'ai-sdk',
+            llmConnectionId: model.connectionId,
             llmConnectionSlug: model.connectionSlug,
             model: model.model,
             thinkingLevel: input.configuration.thinkingLevel ?? undefined,
@@ -749,12 +754,55 @@ export class HostSessionCatalogCoordinator {
   async #resolveModel(
     target: SessionModelTarget,
     thinkingLevel: SessionCreateInput['thinkingLevel'],
+    existing?: Pick<SessionHeader, 'llmConnectionId' | 'llmConnectionSlug' | 'model'>,
   ): Promise<ResolvedSessionModel> {
-    const selected = await this.#selectModelTarget(target);
+    if (existing?.llmConnectionId === undefined && existing !== undefined) {
+      throw new SessionOperationFailure(
+        'operation_conflict',
+        'Legacy Session configuration requires an explicit account selection',
+      );
+    }
+    if (
+      existing !== undefined &&
+      target.kind === 'explicit' &&
+      target.connectionSlug !== existing.llmConnectionSlug
+    ) {
+      throw new SessionOperationFailure(
+        'operation_conflict',
+        'Session account changes require an exact Connection identity',
+      );
+    }
+    const selected =
+      existing === undefined
+        ? await this.#selectModelTarget(target)
+        : {
+            connectionId: existing.llmConnectionId!,
+            connectionSlug: existing.llmConnectionSlug,
+            modelId: target.kind === 'explicit' ? target.model : existing.model,
+          };
     const readiness = await this.#runtimePolicy.operations.resolveExecutionConnection(
-      selected.connectionSlug,
+      selected.connectionId === undefined
+        ? { kind: 'catalog_slug', connectionSlug: selected.connectionSlug }
+        : {
+            kind: 'bound',
+            connectionId: selected.connectionId,
+            connectionSlug: selected.connectionSlug,
+          },
     );
-    if (readiness.kind === 'not_found' || readiness.kind === 'disabled') {
+    if (
+      selected.connectionId !== undefined &&
+      (readiness.kind === 'not_found' || readiness.kind === 'identity_mismatch')
+    ) {
+      throw new SessionOperationFailure(
+        'operation_conflict',
+        'Session model identity changed during selection',
+      );
+    }
+    if (
+      readiness.kind === 'not_found' ||
+      readiness.kind === 'identity_mismatch' ||
+      readiness.kind === 'disabled'
+    ) {
       throw new SessionOperationFailure(
         'invalid_request',
         'Session model connection is unavailable',
@@ -820,7 +868,11 @@ export class HostSessionCatalogCoordinator {
         `Session model does not support thinking level ${thinkingLevel}`,
       );
     }
-    return { connectionSlug: connection.slug, model: selected.modelId };
+    return {
+      connectionId: connection.connectionId,
+      connectionSlug: connection.slug,
+      model: selected.modelId,
+    };
   }
 
   async #selectModelTarget(target: SessionModelTarget): Promise<{
@@ -880,6 +932,7 @@ function sessionConfigurationMatches(
 ): boolean {
   return (
     header.backend === 'ai-sdk' &&
+    header.llmConnectionId === model.connectionId &&
     header.llmConnectionSlug === model.connectionSlug &&
     header.model === model.model &&
     header.thinkingLevel === (configuration.thinkingLevel ?? undefined) &&

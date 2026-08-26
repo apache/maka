@@ -754,6 +754,7 @@ async function seedSource(
     const source = await execution.sessionStore.create({
       cwd: root,
       name: 'Source Session',
+      llmConnectionId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
       llmConnectionSlug: 'fake',
       model: 'fake-model',
       permissionMode: 'ask',
@@ -761,6 +762,7 @@ async function seedSource(
     const busy = await execution.sessionStore.create({
       cwd: root,
       name: 'Busy Session',
+      llmConnectionId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
       llmConnectionSlug: 'fake',
       model: 'fake-model',
       permissionMode: 'ask',
@@ -768,6 +770,7 @@ async function seedSource(
     const linkedChildSource = await execution.sessionStore.create({
       cwd: root,
       name: 'Linked Child Source Session',
+      llmConnectionId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
       llmConnectionSlug: 'fake',
       model: 'fake-model',
       permissionMode: 'ask',
@@ -775,6 +778,7 @@ async function seedSource(
     const metadataLinkedSource = await execution.sessionStore.create({
       cwd: root,
       name: 'Metadata-linked Source Session',
+      llmConnectionId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
       llmConnectionSlug: 'fake',
       model: 'fake-model',
       permissionMode: 'ask',
@@ -782,6 +786,7 @@ async function seedSource(
     const archivedOwnedSource = await execution.sessionStore.create({
       cwd: root,
       name: 'Archived-owned Source Session',
+      llmConnectionId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
       llmConnectionSlug: 'fake',
       model: 'fake-model',
       permissionMode: 'ask',
@@ -789,6 +794,7 @@ async function seedSource(
     const continuationSource = await execution.sessionStore.create({
       cwd: root,
       name: 'Continuation Source Session',
+      llmConnectionId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
       llmConnectionSlug: 'fake',
       model: 'fake-model',
       permissionMode: 'ask',
@@ -1058,6 +1064,7 @@ async function seedSource(
       {
         cwd: root,
         name: 'Graph Worker',
+        llmConnectionId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
         llmConnectionSlug: 'fake',
         model: 'fake-model',
         permissionMode: 'ask',
@@ -1295,6 +1302,7 @@ async function seedSource(
     const ordinaryLinkedChild = await execution.sessionStore.createSubagent({
       cwd: root,
       name: 'Metadata-linked Child Session',
+      llmConnectionId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
       llmConnectionSlug: 'fake',
       model: 'fake-model',
       permissionMode: 'ask',
@@ -1889,6 +1897,7 @@ function agentRunHeader(
     turnId,
     status: 'completed',
     backendKind: 'fake',
+    llmConnectionId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
     llmConnectionSlug: 'fake',
     modelId: 'fake-model',
     cwd,

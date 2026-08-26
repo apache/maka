@@ -108,7 +108,9 @@ describe('runtime policy stores', () => {
         { names: ['x-tenant', 'X-Title'] },
       );
 
-      const resolved = await stores.operations.resolveExecutionConnection(connection.slug);
+      const resolved = await stores.operations.resolveExecutionConnection(
+        catalogSlug(connection.slug),
+      );
       assert.equal(resolved.kind, 'ready');
       if (resolved.kind !== 'ready') return;
       assert.deepEqual(resolved.connection.requestBodyOverlay, {
@@ -1308,20 +1310,34 @@ describe('runtime policy stores', () => {
         connectionDraft('execution-none', 'ollama', 'None'),
       );
 
-      assert.deepEqual(await stores.operations.resolveExecutionConnection('missing'), {
+      assert.deepEqual(await stores.operations.resolveExecutionConnection(catalogSlug('missing')), {
         kind: 'not_found',
       });
-      assert.deepEqual(await stores.operations.resolveExecutionConnection(disabled.slug), {
-        kind: 'disabled',
-      });
+      await assert.rejects(
+        stores.operations.resolveExecutionConnection({
+          kind: 'unexpected',
+          connectionSlug: 'missing',
+        } as never),
+        /Invalid execution Connection reference kind/,
+      );
+      assert.deepEqual(
+        await stores.operations.resolveExecutionConnection(catalogSlug(disabled.slug)),
+        {
+          kind: 'disabled',
+        },
+      );
 
-      const missingRequired = await stores.operations.resolveExecutionConnection(required.slug);
+      const missingRequired = await stores.operations.resolveExecutionConnection(
+        catalogSlug(required.slug),
+      );
       assert.equal(missingRequired.kind, 'credential_not_configured');
       if (missingRequired.kind === 'credential_not_configured') {
         assert.deepEqual(missingRequired.status.locator, connectionCredential(required, 'api_key'));
       }
       for (const connection of [optional, none]) {
-        const resolved = await stores.operations.resolveExecutionConnection(connection.slug);
+        const resolved = await stores.operations.resolveExecutionConnection(
+          catalogSlug(connection.slug),
+        );
         assert.equal(resolved.kind, 'ready');
         if (resolved.kind === 'ready') assert.deepEqual(resolved.secretMaterial, {});
       }
@@ -1338,9 +1354,12 @@ describe('runtime policy stores', () => {
       );
       const retiredLogin = await stores.operations.beginInteractiveOAuthLogin(retired.connectionId);
       assert.equal(retiredLogin.kind, 'provider_action_unavailable');
-      assert.deepEqual(await stores.operations.resolveExecutionConnection(retired.slug), {
-        kind: 'provider_retired',
-      });
+      assert.deepEqual(
+        await stores.operations.resolveExecutionConnection(catalogSlug(retired.slug)),
+        {
+          kind: 'provider_retired',
+        },
+      );
 
       assert.equal(
         (
@@ -1360,7 +1379,9 @@ describe('runtime policy stores', () => {
         ).kind,
         'committed',
       );
-      const missingProxy = await stores.operations.resolveExecutionConnection(required.slug);
+      const missingProxy = await stores.operations.resolveExecutionConnection(
+        catalogSlug(required.slug),
+      );
       assert.equal(missingProxy.kind, 'credential_not_configured');
       if (missingProxy.kind === 'credential_not_configured') {
         assert.deepEqual(missingProxy.status.locator, proxyCredential());
@@ -1372,7 +1393,7 @@ describe('runtime policy stores', () => {
           expected: null,
           secret: 'execution-proxy-secret',
         }),
-        stores.operations.resolveExecutionConnection(required.slug),
+        stores.operations.resolveExecutionConnection(catalogSlug(required.slug)),
       ]);
       assert.equal(proxySet.kind, 'committed');
       assert.equal(resolved.kind, 'ready');
@@ -1381,6 +1402,62 @@ describe('runtime policy stores', () => {
       assert.equal(resolved.networkProxy.host, 'execution.proxy.internal');
       assert.equal(resolved.secretMaterial.connection?.secret, 'execution-connection-secret');
       assert.equal(resolved.secretMaterial.networkProxy?.secret, 'execution-proxy-secret');
+    });
+  });
+
+  test('bound execution never follows a reused connection slug', async () => {
+    await withInteractiveOwner(async ({ stores }) => {
+      const original = await createConnection(
+        stores,
+        0,
+        connectionDraft('reused-execution-slug', 'openai', 'Original'),
+      );
+      await stores.credentialVault.set({
+        locator: connectionCredential(original, 'api_key'),
+        expected: null,
+        secret: 'original-secret',
+      });
+
+      const bound = {
+        kind: 'bound' as const,
+        connectionId: original.connectionId,
+        connectionSlug: original.slug,
+      };
+      assert.equal((await stores.operations.resolveExecutionConnection(bound)).kind, 'ready');
+      assert.deepEqual(
+        await stores.operations.resolveExecutionConnection({
+          ...bound,
+          connectionSlug: 'different-slug',
+        }),
+        { kind: 'identity_mismatch' },
+      );
+
+      assert.equal(
+        (await stores.connectionCatalog.remove({ expected: connectionBasis(original) })).kind,
+        'committed',
+      );
+      const replacement = await createConnection(
+        stores,
+        2,
+        connectionDraft(original.slug, 'openai', 'Replacement'),
+      );
+      await stores.credentialVault.set({
+        locator: connectionCredential(replacement, 'api_key'),
+        expected: null,
+        secret: 'replacement-secret',
+      });
+
+      assert.deepEqual(await stores.operations.resolveExecutionConnection(bound), {
+        kind: 'not_found',
+      });
+      const current = await stores.operations.resolveExecutionConnection(
+        catalogSlug(original.slug),
+      );
+      assert.equal(current.kind, 'ready');
+      if (current.kind === 'ready') {
+        assert.equal(current.connection.connectionId, replacement.connectionId);
+        assert.equal(current.secretMaterial.connection?.secret, 'replacement-secret');
+      }
     });
   });
 
@@ -1429,7 +1506,9 @@ describe('runtime policy stores', () => {
         (await stores.connectionCatalog.getSnapshot()).connections[0]?.lastTest?.status,
         'verified',
       );
-      const resolved = await stores.operations.resolveExecutionConnection(connection.slug);
+      const resolved = await stores.operations.resolveExecutionConnection(
+        catalogSlug(connection.slug),
+      );
       assert.equal(resolved.kind, 'ready');
       if (resolved.kind === 'ready') {
         assert.equal(resolved.secretMaterial.connection?.secret, replacementSecret);
@@ -1441,7 +1520,9 @@ describe('runtime policy stores', () => {
         secret: 'stale-refresh-must-not-commit',
       });
       assert.equal(stale.kind, 'superseded');
-      const stillResolved = await stores.operations.resolveExecutionConnection(connection.slug);
+      const stillResolved = await stores.operations.resolveExecutionConnection(
+        catalogSlug(connection.slug),
+      );
       assert.equal(stillResolved.kind, 'ready');
       if (stillResolved.kind === 'ready') {
         assert.equal(stillResolved.secretMaterial.connection?.secret, replacementSecret);
@@ -3302,7 +3383,9 @@ describe('runtime policy stores', () => {
       if (!secondOwner) return;
       try {
         const second = await openInteractiveRuntimePolicyStoresForWrite(secondOwner.lease);
-        const resolved = await second.operations.resolveExecutionConnection(connection.slug);
+        const resolved = await second.operations.resolveExecutionConnection(
+          catalogSlug(connection.slug),
+        );
         assert.equal(resolved.kind, 'ready');
         if (resolved.kind !== 'ready') return;
         assert.equal(resolved.secretMaterial.connection?.secret, secret);
@@ -3617,6 +3700,10 @@ function networkProxyMutation(
       },
     },
   };
+}
+
+function catalogSlug(connectionSlug: string) {
+  return { kind: 'catalog_slug' as const, connectionSlug };
 }
 
 function isStoreError(code: RuntimePolicyStoreError['code']) {

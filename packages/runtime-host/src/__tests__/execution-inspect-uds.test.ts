@@ -50,6 +50,7 @@ test('a live Host serves Interactive inspection over its real endpoint while ret
   const session = await stores.sessionStore.create({
     cwd: root,
     name: 'Live inspection',
+    llmConnectionId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
     llmConnectionSlug: 'fake',
     model: 'fake-model',
     permissionMode: 'ask',

@@ -1232,6 +1232,7 @@ function buildSessionHeader(
     ...(input.revisionState ? { revisionState: input.revisionState } : {}),
     hasUnread: false,
     backend: 'ai-sdk',
+    ...(input.llmConnectionId === undefined ? {} : { llmConnectionId: input.llmConnectionId }),
     llmConnectionSlug: input.llmConnectionSlug,
     // A subagent Session's route is chosen by the spawn that created it and is
     // never re-targeted, so it is born frozen. Every other Session freezes on
@@ -1289,6 +1290,8 @@ export function normalizeSessionHeader(
     (header.lastReadMessageId === undefined || typeof header.lastReadMessageId === 'string') &&
     typeof header.hasUnread === 'boolean' &&
     isPersistedBackendKind(header.backend) &&
+    (header.llmConnectionId === undefined ||
+      (typeof header.llmConnectionId === 'string' && header.llmConnectionId.length > 0)) &&
     typeof header.llmConnectionSlug === 'string' &&
     typeof header.connectionLocked === 'boolean' &&
     typeof header.model === 'string' &&
@@ -1517,6 +1520,7 @@ function toSummary(header: SessionHeader, messages: StoredMessage[] = []): Sessi
     ...(header.revisionIndex !== undefined ? { revisionIndex: header.revisionIndex } : {}),
     ...(header.revisionState ? { revisionState: header.revisionState } : {}),
     backend: header.backend,
+    ...(header.llmConnectionId === undefined ? {} : { llmConnectionId: header.llmConnectionId }),
     llmConnectionSlug: header.llmConnectionSlug,
     connectionLocked: header.connectionLocked,
     model: header.model,

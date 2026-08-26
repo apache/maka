@@ -273,6 +273,8 @@ export interface SessionHeader {
 
   // Backend / model config
   backend: PersistedBackendKind;
+  /** Immutable Connection entity identity. Optional only on legacy Session records. */
+  llmConnectionId?: string;
   llmConnectionSlug: string;
   /** True after first UserMessage is flushed. Storage self-heals (§5.2). */
   connectionLocked: boolean;
@@ -382,6 +384,8 @@ export interface SessionSummary {
   revisionIndex?: number;
   revisionState?: 'preparing' | 'committed';
   backend: PersistedBackendKind;
+  /** Immutable Connection entity identity. Optional only on legacy summaries. */
+  llmConnectionId?: string;
   llmConnectionSlug: string;
   /**
    * True once the session has user messages — its connection/model is

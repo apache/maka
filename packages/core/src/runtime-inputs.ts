@@ -61,6 +61,8 @@ export interface CreateSessionInput {
    * legacy row is a real session whose connection slug resolves to nothing,
    * which is what the readiness projection already says about it.
    */
+  /** Immutable Connection entity identity. Omitted only while copying legacy state. */
+  llmConnectionId?: string;
   llmConnectionSlug: string;
   /** Falls back to the connection's defaultModel if omitted. */
   model?: string;

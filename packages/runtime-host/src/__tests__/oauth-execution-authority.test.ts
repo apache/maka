@@ -52,6 +52,7 @@ test('one OAuth generation singleflights refresh and persists its lease with can
     const before = fixture.material;
     const binding = fixture.authority.bind({
       providerType: 'github-copilot',
+      connectionId: connectionId(before),
       connectionSlug: CONNECTION_SLUG,
       material: before,
       createRefreshTransport: () => testRefreshTransport(unexpectedFetch),
@@ -68,10 +69,28 @@ test('one OAuth generation singleflights refresh and persists its lease with can
   });
 });
 
+test('rejects OAuth material from a different bound Connection entity', async () => {
+  await withCopilotCredential(currentTokens('access-v1'), async (fixture) => {
+    assert.throws(
+      () =>
+        fixture.authority.bind({
+          providerType: 'github-copilot',
+          connectionId: '11111111-1111-4111-8111-111111111111',
+          connectionSlug: CONNECTION_SLUG,
+          material: fixture.material,
+          createRefreshTransport: () => testRefreshTransport(unexpectedFetch),
+        }),
+      (error: unknown) =>
+        error instanceof OAuthExecutionCredentialError && error.code === 'persistence_failed',
+    );
+  });
+});
+
 test('an active OAuth binding cannot use a credential generation replaced by the user', async () => {
   await withCopilotCredential(currentTokens('old-access'), async (fixture) => {
     const oldBinding = fixture.authority.bind({
       providerType: 'github-copilot',
+      connectionId: connectionId(fixture.material),
       connectionSlug: CONNECTION_SLUG,
       material: fixture.material,
       createRefreshTransport: () => testRefreshTransport(unexpectedFetch),
@@ -89,6 +108,7 @@ test('an active OAuth binding cannot use a credential generation replaced by the
     const replacementMaterial = await readMaterial(fixture.stores);
     const newBinding = fixture.authority.bind({
       providerType: 'github-copilot',
+      connectionId: connectionId(replacementMaterial),
       connectionSlug: CONNECTION_SLUG,
       material: replacementMaterial,
       createRefreshTransport: () => testRefreshTransport(unexpectedFetch),
@@ -172,6 +192,7 @@ test('reconciles a published OAuth lease claim before the next demand', async ()
       });
       const binding = fixture.authority.bind({
         providerType: 'openai-codex',
+        connectionId: connectionId(fixture.material),
         connectionSlug: CONNECTION_SLUG,
         material: fixture.material,
         createRefreshTransport: () => testRefreshTransport(providerFetch),
@@ -183,10 +204,12 @@ test('reconciles a published OAuth lease claim before the next demand', async ()
           await assert.rejects(() => binding.resolve(), isOAuthError('persistence_failed'));
         });
         assert.equal(refreshCalls, 0);
+        const secondMaterial = await readMaterial(fixture.stores);
         const secondBinding = fixture.authority.bind({
           providerType: 'openai-codex',
+          connectionId: connectionId(secondMaterial),
           connectionSlug: CONNECTION_SLUG,
-          material: await readMaterial(fixture.stores),
+          material: secondMaterial,
           createRefreshTransport: () => testRefreshTransport(providerFetch),
         });
         leaseNow += 30_001;
@@ -212,6 +235,7 @@ test('reconciles a published OAuth refresh finalization before the next demand',
       });
       const binding = fixture.authority.bind({
         providerType: 'openai-codex',
+        connectionId: connectionId(fixture.material),
         connectionSlug: CONNECTION_SLUG,
         material: fixture.material,
         createRefreshTransport: () => testRefreshTransport(providerFetch),
@@ -245,6 +269,7 @@ test('reconciles a published OAuth lease release before retrying refresh', async
       };
       const binding = fixture.authority.bind({
         providerType: 'openai-codex',
+        connectionId: connectionId(fixture.material),
         connectionSlug: CONNECTION_SLUG,
         material: fixture.material,
         createRefreshTransport: () => testRefreshTransport(providerFetch),
@@ -324,6 +349,7 @@ test('a Codex 401 force-refreshes canonical credentials and replays once', async
     };
     const binding = fixture.authority.bind({
       providerType: 'openai-codex',
+      connectionId: connectionId(fixture.material),
       connectionSlug: CONNECTION_SLUG,
       material: fixture.material,
       createRefreshTransport: () => testRefreshTransport(providerFetch),
@@ -368,6 +394,7 @@ test('concurrent forced refreshes join one Host credential refresh', async () =>
     let refreshCalls = 0;
     const binding = fixture.authority.bind({
       providerType: 'openai-codex',
+      connectionId: connectionId(fixture.material),
       connectionSlug: CONNECTION_SLUG,
       material: fixture.material,
       createRefreshTransport: () =>
@@ -524,12 +551,22 @@ async function withSeededOAuthCredential(
 async function readMaterial(
   stores: RuntimePolicyStoresWriter,
 ): Promise<RuntimePolicyCredentialMaterial> {
-  const resolved = await stores.operations.resolveExecutionConnection(CONNECTION_SLUG);
+  const resolved = await stores.operations.resolveExecutionConnection({
+    kind: 'catalog_slug',
+    connectionSlug: CONNECTION_SLUG,
+  });
   assert.equal(resolved.kind, 'ready');
   if (resolved.kind !== 'ready' || !resolved.secretMaterial.connection) {
     throw new Error('OAuth execution material was not ready');
   }
   return resolved.secretMaterial.connection;
+}
+
+function connectionId(material: RuntimePolicyCredentialMaterial): string {
+  if (material.locator.scope !== 'connection') {
+    throw new Error('Expected connection-scoped OAuth material');
+  }
+  return material.locator.connectionId;
 }
 
 function expiredTokens(accessToken: string, accountUuid?: string): OAuthSubscriptionTokens {
