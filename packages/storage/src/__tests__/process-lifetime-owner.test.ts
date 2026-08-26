@@ -19,7 +19,7 @@
 
 import { strict as assert } from 'node:assert';
 import { fork } from 'node:child_process';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, readdir, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test, type TestContext } from 'node:test';
@@ -71,6 +71,30 @@ test('releases its owner reference on graceful close', async (t) => {
   const claim = await observer.tryClaimReleased(owner.reference);
   assert.ok(claim);
   await claim.retire();
+});
+
+test('retires an unreferenced owner file after an unclean process exit', async (t) => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-process-lifetime-owner-'));
+  const child = fork(
+    new URL('./fixtures/process-lifetime-owner-holder.js', import.meta.url),
+    [root],
+    { stdio: ['ignore', 'ignore', 'inherit', 'ipc'] },
+  );
+  t.after(async () => {
+    if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
+    await rm(root, { recursive: true, force: true });
+  });
+
+  const deadReference = await waitForReference(t, child);
+  child.kill('SIGKILL');
+  await new Promise<void>((resolve) => child.once('exit', () => resolve()));
+
+  const successor = await acquireProcessLifetimeOwner(root);
+  t.after(() => successor.close());
+  await successor.retireUnreferencedReleasedOwners(new Set());
+  const files = await readdir(join(root, 'owners'));
+  assert.deepEqual(files, [`${successor.reference.slice('lock-v1:'.length)}.lease`]);
+  assert.equal(files.includes(`${deadReference.slice('lock-v1:'.length)}.lease`), false);
 });
 
 test('rejects owner references outside its versioned namespace', async (t) => {

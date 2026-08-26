@@ -18,7 +18,7 @@
  */
 
 import { randomUUID } from 'node:crypto';
-import { chmod, lstat, mkdir, type FileHandle } from 'node:fs/promises';
+import { chmod, lstat, mkdir, readdir, type FileHandle } from 'node:fs/promises';
 import { join } from 'node:path';
 import {
   openStableNativeLockFile,
@@ -30,6 +30,8 @@ import {
 const OWNER_REFERENCE_PREFIX = 'lock-v1:';
 const OWNER_REFERENCE_PATTERN =
   /^lock-v1:([0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})$/;
+const OWNER_FILE_PATTERN =
+  /^([0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})\.lease$/;
 
 export interface ProcessLifetimeRecoveryClaim {
   retire(): Promise<void>;
@@ -39,6 +41,7 @@ export interface ProcessLifetimeRecoveryClaim {
 export interface ProcessLifetimeOwner {
   readonly reference: string;
   tryClaimReleased(reference: string): Promise<ProcessLifetimeRecoveryClaim | undefined>;
+  retireUnreferencedReleasedOwners(referenced: ReadonlySet<string>): Promise<void>;
   close(): Promise<void>;
 }
 
@@ -61,6 +64,10 @@ export async function acquireProcessLifetimeOwner(root: string): Promise<Process
   return new ProcessLifetimeOwnerImpl(ownersRoot, reference, path, handle);
 }
 
+export function isProcessLifetimeOwnerReference(reference: string): boolean {
+  return OWNER_REFERENCE_PATTERN.test(reference);
+}
+
 class ProcessLifetimeOwnerImpl implements ProcessLifetimeOwner {
   #closed = false;
 
@@ -81,6 +88,17 @@ class ProcessLifetimeOwnerImpl implements ProcessLifetimeOwner {
       return undefined;
     }
     return new ProcessLifetimeRecoveryClaimImpl(path, handle);
+  }
+
+  async retireUnreferencedReleasedOwners(referenced: ReadonlySet<string>): Promise<void> {
+    for (const entry of await readdir(this.ownersRoot, { withFileTypes: true })) {
+      const match = OWNER_FILE_PATTERN.exec(entry.name);
+      if (!match) continue;
+      const reference = `${OWNER_REFERENCE_PREFIX}${match[1]}`;
+      if (referenced.has(reference)) continue;
+      const claim = await this.tryClaimReleased(reference);
+      if (claim) await claim.retire();
+    }
   }
 
   async close(): Promise<void> {

@@ -275,6 +275,122 @@ describe('session copy cleanup authority', () => {
     assert.deepEqual(await readPendingIds(workspaceRoot), []);
   });
 
+  it('holds the released owner claim while recovering a cleanup-phase copy', async () => {
+    const workspaceRoot = await createWorkspace();
+    const original = fakeLifetimeOwner('lock-v1:77777777-7777-4777-8777-777777777777');
+    const owner = createSessionCopyCleanupAuthority({
+      workspaceRoot,
+      processId: 'tui:707',
+      processLifetimeOwner: original.owner,
+      removeSession: async () => {},
+    });
+    await owner.ownCreation(
+      {
+        sessionId: 'fork-cleanup-phase',
+        kind: 'branch',
+        sourceSessionId: 'source-session',
+        sourceTurnId: 'source-turn',
+        ownerId: 'tui-side',
+      },
+      async () => 'created',
+    );
+    updatePendingLease(workspaceRoot, 'fork-cleanup-phase', (record) => ({
+      ...record,
+      phase: 'cleanup',
+      cancelRequested: true,
+    }));
+
+    const successor = fakeLifetimeOwner('lock-v1:88888888-8888-4888-8888-888888888888');
+    const authority = createSessionCopyCleanupAuthority({
+      workspaceRoot,
+      processId: 'tui:808',
+      processLifetimeOwner: successor.owner,
+      removeSession: async () => {
+        assert.equal(successor.claimClosed, false);
+      },
+    });
+
+    assert.deepEqual(await authority.recover(), {
+      removed: ['fork-cleanup-phase'],
+      failed: [],
+    });
+    assert.equal(successor.claimAttempts, 1);
+    assert.equal(successor.claimRetired, true);
+  });
+
+  it('falls back to process liveness for an unsupported owner reference version', async () => {
+    const workspaceRoot = await createWorkspace();
+    const original = fakeLifetimeOwner('lock-v1:99999999-9999-4999-8999-999999999999');
+    const owner = createSessionCopyCleanupAuthority({
+      workspaceRoot,
+      processId: 'tui:909',
+      processLifetimeOwner: original.owner,
+      removeSession: async () => {},
+    });
+    await owner.ownCreation(
+      {
+        sessionId: 'fork-future-owner',
+        kind: 'branch',
+        sourceSessionId: 'source-session',
+        sourceTurnId: 'source-turn',
+        ownerId: 'tui-side',
+      },
+      async () => 'created',
+    );
+    updatePendingLease(workspaceRoot, 'fork-future-owner', (record) => ({
+      ...record,
+      ownerLifetimeRef: 'lock-v2:future-owner',
+    }));
+
+    let claimAttempts = 0;
+    const removed: string[] = [];
+    const authority = createSessionCopyCleanupAuthority({
+      workspaceRoot,
+      processId: 'tui:1001',
+      processLifetimeOwner: {
+        reference: 'lock-v1:aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+        tryClaimReleased: async () => {
+          claimAttempts += 1;
+          throw new Error('unsupported owner reference must use the PID fallback');
+        },
+        retireUnreferencedReleasedOwners: async () => {},
+        close: async () => {},
+      },
+      isOwnerProcessActive: () => false,
+      removeSession: async (sessionId) => {
+        removed.push(sessionId);
+      },
+    });
+
+    assert.deepEqual(await authority.recover(), {
+      removed: ['fork-future-owner'],
+      failed: [],
+    });
+    assert.equal(claimAttempts, 0);
+    assert.deepEqual(removed, ['fork-future-owner']);
+  });
+
+  it('asks the process owner to retire released files with no database references', async () => {
+    const workspaceRoot = await createWorkspace();
+    let referenced: ReadonlySet<string> | undefined;
+    const authority = createSessionCopyCleanupAuthority({
+      workspaceRoot,
+      processLifetimeOwner: {
+        reference: 'lock-v1:bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+        tryClaimReleased: async () => undefined,
+        retireUnreferencedReleasedOwners: async (current) => {
+          referenced = current;
+        },
+        close: async () => {},
+      },
+      removeSession: async () => {},
+    });
+
+    assert.deepEqual(await authority.recover(), { removed: [], failed: [] });
+    assert.ok(referenced);
+    assert.deepEqual([...referenced], []);
+  });
+
   it('fails closed when process-incarnation ownership cannot be inspected', async () => {
     const workspaceRoot = await createWorkspace();
     const original = fakeLifetimeOwner('lock-v1:33333333-3333-4333-8333-333333333333');
@@ -304,6 +420,7 @@ describe('session copy cleanup authority', () => {
         tryClaimReleased: async () => {
           throw failure;
         },
+        retireUnreferencedReleasedOwners: async () => {},
         close: async () => {},
       },
       removeSession: async () => {
@@ -510,6 +627,30 @@ async function readPendingIds(workspaceRoot: string): Promise<string[]> {
   }
 }
 
+function updatePendingLease(
+  workspaceRoot: string,
+  sessionId: string,
+  update: (record: Record<string, unknown>) => Record<string, unknown>,
+): void {
+  const database = new DatabaseSync(join(workspaceRoot, 'runtime.sqlite'));
+  try {
+    const row = database
+      .prepare(
+        'SELECT record_json AS recordJson FROM workflow_quote_companion_cleanup WHERE session_id = ?',
+      )
+      .get(sessionId) as { recordJson: string } | undefined;
+    assert.ok(row);
+    database
+      .prepare('UPDATE workflow_quote_companion_cleanup SET record_json = ? WHERE session_id = ?')
+      .run(
+        JSON.stringify(update(JSON.parse(row.recordJson) as Record<string, unknown>)),
+        sessionId,
+      );
+  } finally {
+    database.close();
+  }
+}
+
 function fakeLifetimeOwner(reference: string): {
   owner: ProcessLifetimeOwner;
   readonly claimAttempts: number;
@@ -535,6 +676,7 @@ function fakeLifetimeOwner(reference: string): {
         claimAttempts += 1;
         return claim;
       },
+      retireUnreferencedReleasedOwners: async () => {},
       close: async () => {},
     },
     get claimAttempts() {

@@ -207,12 +207,12 @@ async function closeRuntimeHostTuiContext(
     errors.push(error);
   }
   try {
-    await sessionCopyCleanupOwner?.close();
+    await closeConnection();
   } catch (error) {
     errors.push(error);
   }
   try {
-    await closeConnection();
+    await sessionCopyCleanupOwner?.close();
   } catch (error) {
     errors.push(error);
   }

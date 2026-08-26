@@ -19,9 +19,10 @@
 
 import { randomUUID } from 'node:crypto';
 import { acquireOperationalStateDatabase } from './operational-state-store.js';
-import type {
-  ProcessLifetimeOwner,
-  ProcessLifetimeRecoveryClaim,
+import {
+  isProcessLifetimeOwnerReference,
+  type ProcessLifetimeOwner,
+  type ProcessLifetimeRecoveryClaim,
 } from './process-lifetime-owner.js';
 
 export interface SessionCopyCreationLease {
@@ -188,15 +189,22 @@ class SessionCopyCleanupAuthorityImpl implements SessionCopyCleanupAuthority {
     const failed: SessionCopyCleanupRecovery['failed'] = [];
     const lifetimeGroups = new Map<string, PersistedSessionCopyLease[]>();
     for (const record of await this.store.list()) {
-      if (record.phase === 'cleanup' || record.cancelRequested) {
-        await this.recoverRecord(record, removed, failed);
-        continue;
-      }
-      if (record.ownerLifetimeRef && this.processLifetimeOwner) {
+      if (
+        record.ownerLifetimeRef &&
+        this.processLifetimeOwner &&
+        isProcessLifetimeOwnerReference(record.ownerLifetimeRef)
+      ) {
         if (record.ownerLifetimeRef === this.processLifetimeOwner.reference) continue;
         const group = lifetimeGroups.get(record.ownerLifetimeRef) ?? [];
         group.push(record);
         lifetimeGroups.set(record.ownerLifetimeRef, group);
+        continue;
+      }
+      if (
+        record.ownerLifetimeRef === undefined &&
+        (record.phase === 'cleanup' || record.cancelRequested)
+      ) {
+        await this.recoverRecord(record, removed, failed);
         continue;
       }
       try {
@@ -227,6 +235,24 @@ class SessionCopyCleanupAuthorityImpl implements SessionCopyCleanupAuthority {
         if (!ownerStillReferenced) await claim.retire().catch(() => undefined);
       } finally {
         await claim.close().catch(() => undefined);
+      }
+    }
+    if (this.processLifetimeOwner) {
+      const referenced = await this.store
+        .list()
+        .then(
+          (records) =>
+            new Set(
+              records.flatMap((record) =>
+                record.ownerLifetimeRef ? [record.ownerLifetimeRef] : [],
+              ),
+            ),
+        )
+        .catch(() => undefined);
+      if (referenced) {
+        await this.processLifetimeOwner
+          .retireUnreferencedReleasedOwners(referenced)
+          .catch(() => undefined);
       }
     }
     return { removed, failed };
