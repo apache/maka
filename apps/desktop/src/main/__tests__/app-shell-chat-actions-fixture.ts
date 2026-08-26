@@ -24,7 +24,6 @@
  * actions gain a dependency.
  */
 
-import type { StoredMessage } from '@maka/core/session';
 import type { LiveTurnProjection, TransientUserMessageProjection } from '@maka/ui';
 
 /** Installs a `window.maka` bridge double; the returned function restores it. */
@@ -88,18 +87,6 @@ export function createTransientState() {
       removeTransientMessage: (_sessionId: string, messageId: string) => {
         rows.delete(messageId);
       },
-    },
-  };
-}
-
-export function createMessageState() {
-  const messages: StoredMessage[] = [];
-  return {
-    messages,
-    setMessages(updater: StoredMessage[] | ((current: StoredMessage[]) => StoredMessage[])) {
-      const next = typeof updater === 'function' ? updater([...messages]) : updater;
-      messages.length = 0;
-      messages.push(...next);
     },
   };
 }
