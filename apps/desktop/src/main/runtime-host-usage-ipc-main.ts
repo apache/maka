@@ -336,6 +336,7 @@ export async function loadUsageStatsSnapshot(
         loadAllLlmLogs(client, query, snapshot),
         loadAllToolLogs(client, query, snapshot),
         client.loadPricingSnapshot(),
+        client.listSessions(),
       ]);
     } catch (error) {
       if (error instanceof UsageSnapshotChangedError) continue;
@@ -352,6 +353,7 @@ export async function loadUsageStatsSnapshot(
       llmResult,
       toolResult,
       pricingSnapshot,
+      sessions,
     ] = results;
     if (summaryResult.kind !== "summary") throw invalidUsageProjection();
     if (
@@ -379,6 +381,7 @@ export async function loadUsageStatsSnapshot(
         llmResult.total + toolResult.total,
         llmResult.truncated || toolResult.truncated,
         projectCustomPricingRows(pricingSnapshot.entries),
+        new Map(sessions.map((session) => [session.id, session.name])),
       );
     }
   }
@@ -526,6 +529,7 @@ function projectUsageStats(
   logsTotal: number,
   logsTruncated: boolean,
   pricing: UsageStats["pricing"],
+  sessionNames: ReadonlyMap<string, string>,
 ): UsageStats {
   return {
     provenance,
@@ -558,6 +562,8 @@ function projectUsageStats(
               }),
             }),
         ...(row.turnId === undefined ? {} : { turnId: row.turnId }),
+        sessionName:
+          row.sessionId === undefined ? "" : sessionNames.get(row.sessionId) ?? "",
         provider: row.connectionSlug ?? row.providerId,
         model: row.modelId,
         inputTokens: row.inputTokens,
@@ -589,6 +595,8 @@ function projectUsageStats(
               }),
             }),
         ...(row.turnId === undefined ? {} : { turnId: row.turnId }),
+        sessionName:
+          row.sessionId === undefined ? "" : sessionNames.get(row.sessionId) ?? "",
         provider: row.providerId ?? "",
         model: row.modelId ?? "",
         toolName: row.toolName,

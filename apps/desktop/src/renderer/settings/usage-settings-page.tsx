@@ -544,7 +544,7 @@ function usageRequestTarget(row: UsageStats['logs'][number]) {
 
 function usageRequestSessionCell(row: UsageStats['logs'][number], copy: UsageSettingsCopy, onOpenSession?: (sessionId: string) => void) {
   const label = usageSessionDisplayLabel(row, copy);
-  if (!onOpenSession) return label;
+  if (!onOpenSession || !row.sessionId) return label;
   return (
     <Button
       className="settingsUsageSessionCell"
@@ -564,6 +564,7 @@ function usageRequestSessionCell(row: UsageStats['logs'][number], copy: UsageSet
 function usageSessionDisplayLabel(row: UsageStats['logs'][number], copy: UsageSettingsCopy) {
   const name = row.sessionName?.trim();
   if (name) return name;
+  if (!row.sessionId) return copy.tables.untitledSession;
   return `${copy.tables.untitledSession} · ${shortRealSessionId(row.sessionId)}`;
 }
 

@@ -39,6 +39,7 @@ describe("Runtime Host Usage projection", () => {
     assert.equal(stats.logs[1]?.usageBasis, "missing");
     assert.equal(stats.logs[1]?.costBasis, "unpriced");
     assert.equal(stats.logs[2]?.status, "aborted");
+    assert.ok(stats.logs.every((row) => row.sessionName === "Usage Session"));
     assert.equal(stats.logsTotal, 3);
     assert.equal(stats.logsTruncated, false);
     assert.deepEqual(stats.byProvider, [
@@ -304,6 +305,7 @@ describe("Runtime Host Usage projection", () => {
     const stats = await loadUsageStatsSnapshot(client as never, HOST_A, "all", 2_000);
 
     assert.ok(stats.logs.every((row) => row.sessionId === undefined));
+    assert.ok(stats.logs.every((row) => row.sessionName === ""));
   });
 });
 
@@ -389,6 +391,9 @@ function usageClient(options: {
         revision: 0,
         entries: options.pricingEntries ?? [],
       };
+    },
+    async listSessions() {
+      return [{ id: "session-1", name: "Usage Session" }];
     },
   };
 }
