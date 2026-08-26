@@ -67,7 +67,8 @@ describe('workspace version authority contract', () => {
             changedPaths: ['notes.txt'],
             changedFileCount: 1,
             deletedFileCount: 0,
-            executionProfileDigest: `sha256:${'a'.repeat(64)}`,
+            executionProfileDigest:
+              'sha256:7032f291deed40ef4afee654b6587236e58813bb479d012128408fad86d36262' as const,
           },
         },
       },
@@ -294,7 +295,8 @@ function successorInput(): WorkspaceSuccessorAuthorityInput {
       changedPaths: ['notes.txt'],
       changedFileCount: 1,
       deletedFileCount: 0,
-      executionProfileDigest: `sha256:${'a'.repeat(64)}`,
+      executionProfileDigest:
+        'sha256:7032f291deed40ef4afee654b6587236e58813bb479d012128408fad86d36262' as const,
     },
     origin: {
       operationId: 'operation-successor-1',

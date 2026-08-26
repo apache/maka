@@ -28,6 +28,7 @@ import {
   buildWorkspaceBaselineAuthorityEvents,
   workspaceAuthorityIdentity,
   type WorkspaceBaselineAuthorityInput,
+  type WorkspaceSuccessorAuthorityInput,
 } from '@maka/core/workspace-version-authority';
 import { type RuntimeEvent } from '@maka/core/runtime-event';
 import { canonicalToolArgsHash } from '@maka/core/tool-args-identity';
@@ -36,15 +37,31 @@ import {
   createSqliteRuntimeStore,
   type SqliteRuntimeStoreFailpoint,
 } from '../sqlite-runtime-store.js';
+import { SQLITE_RUNTIME_SCHEMA_VERSION } from '../sqlite-runtime-schema.js';
 import {
   bindWorkspaceBaselineAuthorityStoreRootInternal,
+  commitManagedMutationTerminalInternal,
   commitWorkspaceBaselineInternal,
   commitWorkspaceSuccessorInternal,
   readActiveManagedMutationInternal,
+  registerWorkspaceSuccessorCandidateVerifierInternal,
   type WorkspaceSuccessorCommitInput,
 } from '../workspace-version-authority-internal.js';
 
 const TEST_STORAGE_ROOT_ID = 'a'.repeat(64);
+const TEST_CANDIDATES = new WeakMap<object, WorkspaceSuccessorAuthorityInput>();
+
+function issueTestCandidate(successor: WorkspaceSuccessorAuthorityInput): object {
+  const capability = Object.freeze({});
+  TEST_CANDIDATES.set(capability, structuredClone(successor));
+  return capability;
+}
+
+function verifyTestCandidate(capability: object): WorkspaceSuccessorAuthorityInput {
+  const successor = TEST_CANDIDATES.get(capability);
+  if (!successor) throw new Error('Unrecognized test candidate capability');
+  return structuredClone(successor);
+}
 
 describe('workspace version persistence authority', () => {
   it('does not expose the unverified baseline writer on the public SQLite store', () => {
@@ -180,6 +197,29 @@ describe('workspace version persistence authority', () => {
     });
   });
 
+  it('rejects a managed T1 whose authorized path differs from the durable tool call', async () => {
+    await withDatabase(async ({ store }) => {
+      const baseline = baselineInput();
+      const opened = await commitWorkspaceBaselineInternal(store, baseline);
+      const prepared = managedPreparedCommit(
+        baseline,
+        opened.head,
+        'operation-path-authority-conflict',
+      );
+      const mutation = prepared.dispatchRuntimeEvent.actions.toolDispatch.managedMutation;
+      mutation.expectedPath = 'other.txt';
+
+      await assert.rejects(
+        store.commitToolPrepared(prepared),
+        /managed mutation path does not match its durable tool call/i,
+      );
+      assert.equal(
+        await readActiveManagedMutationInternal(store, baseline.epoch.workspaceInstanceId),
+        undefined,
+      );
+    });
+  });
+
   it('refuses to settle a managed mutation through the generic T2 writer', async () => {
     await withDatabase(async ({ store }) => {
       const baseline = baselineInput();
@@ -214,15 +254,99 @@ describe('workspace version persistence authority', () => {
             },
           },
         }),
-        /managed mutation outcome requires the workspace successor writer/i,
+        /managed mutation outcome requires a managed mutation authority writer/i,
       );
       assert.equal((await store.readToolOperation(prepared.operationId))?.currentState, 'prepared');
     });
   });
 
+  for (const terminalKind of ['no_workspace_change', 'operation_failed_no_effect'] as const) {
+    it(`atomically commits ${terminalKind} without advancing the workspace head`, async () => {
+      await withDatabase(async ({ dbPath, store }) => {
+        const baseline = baselineInput();
+        const opened = await commitWorkspaceBaselineInternal(store, baseline);
+        const prepared = managedPreparedCommit(baseline, opened.head, `operation-${terminalKind}`);
+        await store.commitToolPrepared(prepared);
+        const outcomeEvent: RuntimeEvent = {
+          id: `${prepared.operationId}-outcome-event`,
+          sessionId: prepared.runtimeEvent.sessionId,
+          invocationId: prepared.runtimeEvent.invocationId,
+          runId: prepared.runtimeEvent.runId,
+          turnId: prepared.runtimeEvent.turnId,
+          ts: baseline.committedAt + 2,
+          partial: false,
+          role: 'tool',
+          author: 'tool',
+          content: {
+            kind: 'function_response',
+            id: prepared.providerToolCallId,
+            name: prepared.toolName,
+            result: terminalKind,
+            ...(terminalKind === 'operation_failed_no_effect' ? { isError: true } : {}),
+          },
+          actions: {
+            managedMutationTerminal: {
+              protocol: 'managed_mutation_terminal_v1',
+              operationId: prepared.operationId,
+              dispatchEventId: prepared.dispatchRuntimeEvent.id,
+              workspaceInstanceId: baseline.epoch.workspaceInstanceId,
+              terminalKind,
+            },
+          },
+          refs: {
+            operationId: prepared.operationId,
+            toolCallId: prepared.providerToolCallId,
+          },
+        };
+        const input = {
+          toolOutcome: {
+            operationId: prepared.operationId,
+            journalEventId: `${prepared.operationId}_outcome`,
+            runtimeEvent: outcomeEvent,
+            committedAt: baseline.committedAt + 2,
+          },
+        };
+
+        const committed = await commitManagedMutationTerminalInternal(store, input);
+        assert.equal(committed.created, true);
+        assert.equal(
+          (await store.readToolOperation(prepared.operationId))?.currentState,
+          'outcome_committed',
+        );
+        assert.equal(
+          await readActiveManagedMutationInternal(store, baseline.epoch.workspaceInstanceId),
+          undefined,
+        );
+        assert.deepEqual(
+          await store.readWorkspaceHead(
+            baseline.epoch.workspaceId,
+            baseline.epoch.workspaceEpochId,
+          ),
+          opened.head,
+        );
+        assert.deepEqual(await commitManagedMutationTerminalInternal(store, input), {
+          ...committed,
+          created: false,
+        });
+
+        const raw = new DatabaseSync(dbPath);
+        try {
+          raw.exec('DELETE FROM runtime_managed_mutation_reservations');
+        } finally {
+          raw.close();
+        }
+        await store.rebuildWorkspaceVersionProjections();
+        assert.equal(
+          await readActiveManagedMutationInternal(store, baseline.epoch.workspaceInstanceId),
+          undefined,
+        );
+      });
+    });
+  }
+
   it('atomically commits one tool outcome with its successor workspace head', async () => {
     await withDatabase(async ({ dbPath, store }) => {
-      const { baseline, input } = await prepareSuccessorCommit(store);
+      const { baseline, input, successor } = await prepareSuccessorCommit(store);
       const result = await commitWorkspaceSuccessorInternal(store, input);
 
       assert.equal(result.created, true);
@@ -269,7 +393,7 @@ describe('workspace version persistence authority', () => {
       try {
         const row = corrupt
           .prepare('SELECT payload_json FROM runtime_events WHERE event_id = ?')
-          .get(input.successor.acceptedEventId) as { payload_json: string };
+          .get(successor.acceptedEventId) as { payload_json: string };
         const event = JSON.parse(row.payload_json) as RuntimeEvent;
         const fact = event.actions?.workspaceFact;
         assert.equal(fact?.kind, 'maka.workspace.version_accepted');
@@ -278,7 +402,7 @@ describe('workspace version persistence authority', () => {
         }
         corrupt
           .prepare('UPDATE runtime_events SET payload_json = ? WHERE event_id = ?')
-          .run(JSON.stringify(event), input.successor.acceptedEventId);
+          .run(JSON.stringify(event), successor.acceptedEventId);
       } finally {
         corrupt.close();
       }
@@ -289,18 +413,37 @@ describe('workspace version persistence authority', () => {
     });
   });
 
+  it('rejects a raw successor descriptor without an owner-issued candidate capability', async () => {
+    await withDatabase(async ({ store }) => {
+      const { input, successor } = await prepareSuccessorCommit(store);
+
+      await assert.rejects(
+        async () =>
+          commitWorkspaceSuccessorInternal(store, {
+            ...input,
+            candidateOutcome: { successor },
+          }),
+        /unrecognized test candidate capability/i,
+      );
+      assert.equal(
+        (await store.readToolOperation(input.toolOutcome.operationId))?.currentState,
+        'prepared',
+      );
+    });
+  });
+
   it('rejects a successor whose immutable changed paths exceed its T1 authorization', async () => {
     await withDatabase(async ({ store }) => {
-      const { input } = await prepareSuccessorCommit(store);
+      const { input, successor } = await prepareSuccessorCommit(store);
       const mismatched: WorkspaceSuccessorCommitInput = {
         ...input,
-        successor: {
-          ...input.successor,
+        candidateOutcome: issueTestCandidate({
+          ...successor,
           successor: {
-            ...input.successor.successor,
+            ...successor.successor,
             changedPaths: ['other.txt'],
           },
-        },
+        }),
       };
 
       await assert.rejects(
@@ -316,7 +459,7 @@ describe('workspace version persistence authority', () => {
 
   it('rejects a failed Write outcome without advancing the workspace head', async () => {
     await withDatabase(async ({ store }) => {
-      const { baseline, input } = await prepareSuccessorCommit(store);
+      const { baseline, input, successor } = await prepareSuccessorCommit(store);
       assert.equal(input.toolOutcome.runtimeEvent.content?.kind, 'function_response');
       if (input.toolOutcome.runtimeEvent.content?.kind !== 'function_response') {
         throw new Error('Expected a function response fixture');
@@ -341,7 +484,7 @@ describe('workspace version persistence authority', () => {
 
   it('rolls back tool outcome, successor fact, projection, and head together', async () => {
     await withDatabase(async ({ dbPath, store, setFailpoint }) => {
-      const { baseline, input } = await prepareSuccessorCommit(store);
+      const { baseline, input, successor } = await prepareSuccessorCommit(store);
       setFailpoint('after_workspace_successor_event_insert');
       await assert.rejects(commitWorkspaceSuccessorInternal(store, input), /failpoint/);
       setFailpoint(undefined);
@@ -363,7 +506,7 @@ describe('workspace version persistence authority', () => {
           baseline.baseline.workspaceVersionId,
         );
         assert.equal(
-          await reopened.readWorkspaceVersion(input.successor.successor.workspaceVersionId),
+          await reopened.readWorkspaceVersion(successor.successor.workspaceVersionId),
           undefined,
         );
       } finally {
@@ -465,8 +608,9 @@ describe('workspace version persistence authority', () => {
 
       const upgraded = createSqliteRuntimeStore(dbPath);
       bindWorkspaceBaselineAuthorityStoreRootInternal(upgraded, TEST_STORAGE_ROOT_ID);
+      registerWorkspaceSuccessorCandidateVerifierInternal(upgraded, verifyTestCandidate);
       try {
-        assert.equal(upgraded.schemaVersion(), 14);
+        assert.equal(upgraded.schemaVersion(), SQLITE_RUNTIME_SCHEMA_VERSION);
         assert.equal(
           (
             await upgraded.readWorkspaceHead(
@@ -855,6 +999,7 @@ async function withDatabase(
     },
   });
   bindWorkspaceBaselineAuthorityStoreRootInternal(store, TEST_STORAGE_ROOT_ID);
+  registerWorkspaceSuccessorCandidateVerifierInternal(store, verifyTestCandidate);
   try {
     await run({
       root,
@@ -876,6 +1021,7 @@ async function prepareSuccessorCommit(
 ): Promise<{
   baseline: WorkspaceBaselineAuthorityInput;
   input: WorkspaceSuccessorCommitInput;
+  successor: WorkspaceSuccessorAuthorityInput;
 }> {
   const baseline = baselineInput();
   const opened = await commitWorkspaceBaselineInternal(store, baseline);
@@ -920,19 +1066,21 @@ async function prepareSuccessorCommit(
           canonicalArgsHash: argsHash,
           recoveryMode: 'reconcile',
           managedMutation: {
-            protocol: 'managed_mutation_v1',
+            protocol: 'managed_mutation_v2',
             repositoryId: baseline.epoch.repositoryId,
             workspaceId: baseline.epoch.workspaceId,
             workspaceEpochId: baseline.epoch.workspaceEpochId,
             workspaceInstanceId: baseline.epoch.workspaceInstanceId,
-            objectFormat: baseline.epoch.objectFormat,
+            objectFormat: 'sha1' as const,
             baseWorkspaceVersionId: opened.head.workspaceVersionId,
             baseAcceptedEventId: opened.head.acceptedEventId,
             baseHeadRevision: opened.head.revision,
             baseCommitOid: opened.head.commitOid,
             baseTreeOid: opened.head.treeOid,
-            expectedPaths: ['notes.txt'],
-            executionProfileDigest: `sha256:${'a'.repeat(64)}`,
+            expectedPath: 'notes.txt',
+            pathPolicyVersion: 3 as const,
+            executionProfileDigest:
+              'sha256:7032f291deed40ef4afee654b6587236e58813bb479d012128408fad86d36262' as const,
           },
         },
       },
@@ -945,36 +1093,39 @@ async function prepareSuccessorCommit(
     committedAt: baseline.committedAt + 1,
   });
 
+  const successor: WorkspaceSuccessorAuthorityInput = {
+    acceptedEventId: `workspace-successor-event-${variant}`,
+    committedAt: baseline.committedAt + 2,
+    successor: {
+      repositoryId: baseline.epoch.repositoryId,
+      workspaceId: baseline.epoch.workspaceId,
+      workspaceEpochId: baseline.epoch.workspaceEpochId,
+      workspaceVersionId: `version_${commitDigit.repeat(32)}`,
+      objectFormat: baseline.epoch.objectFormat,
+      parentWorkspaceVersionId: opened.head.workspaceVersionId,
+      baseAcceptedEventId: opened.head.acceptedEventId,
+      baseHeadRevision: opened.head.revision,
+      commitOid: commitDigit.repeat(40),
+      treeOid: treeDigit.repeat(40),
+      policyHash: baseline.epoch.policyHash,
+      treeDeltaDigest: `sha256:${'9'.repeat(64)}`,
+      changedPaths: ['notes.txt'],
+      changedFileCount: 1,
+      deletedFileCount: 0,
+      executionProfileDigest:
+        'sha256:7032f291deed40ef4afee654b6587236e58813bb479d012128408fad86d36262' as const,
+    },
+    origin: {
+      operationId,
+      dispatchEventId: `dispatch-successor-event-${variant}`,
+      outcomeEventId: `outcome-successor-event-${variant}`,
+    },
+  };
   return {
     baseline,
+    successor,
     input: {
-      successor: {
-        acceptedEventId: `workspace-successor-event-${variant}`,
-        committedAt: baseline.committedAt + 2,
-        successor: {
-          repositoryId: baseline.epoch.repositoryId,
-          workspaceId: baseline.epoch.workspaceId,
-          workspaceEpochId: baseline.epoch.workspaceEpochId,
-          workspaceVersionId: `version_${commitDigit.repeat(32)}`,
-          objectFormat: baseline.epoch.objectFormat,
-          parentWorkspaceVersionId: opened.head.workspaceVersionId,
-          baseAcceptedEventId: opened.head.acceptedEventId,
-          baseHeadRevision: opened.head.revision,
-          commitOid: commitDigit.repeat(40),
-          treeOid: treeDigit.repeat(40),
-          policyHash: baseline.epoch.policyHash,
-          treeDeltaDigest: `sha256:${'9'.repeat(64)}`,
-          changedPaths: ['notes.txt'],
-          changedFileCount: 1,
-          deletedFileCount: 0,
-          executionProfileDigest: `sha256:${'a'.repeat(64)}`,
-        },
-        origin: {
-          operationId,
-          dispatchEventId: `dispatch-successor-event-${variant}`,
-          outcomeEventId: `outcome-successor-event-${variant}`,
-        },
-      },
+      candidateOutcome: issueTestCandidate(successor),
       toolOutcome: {
         operationId,
         journalEventId: `${operationId}_outcome`,
@@ -1045,19 +1196,21 @@ function managedPreparedCommit(
           canonicalArgsHash: argsHash,
           recoveryMode: 'reconcile' as const,
           managedMutation: {
-            protocol: 'managed_mutation_v1' as const,
+            protocol: 'managed_mutation_v2' as const,
             repositoryId: baseline.epoch.repositoryId,
             workspaceId: baseline.epoch.workspaceId,
             workspaceEpochId: baseline.epoch.workspaceEpochId,
             workspaceInstanceId: baseline.epoch.workspaceInstanceId,
-            objectFormat: baseline.epoch.objectFormat,
+            objectFormat: 'sha1' as const,
             baseWorkspaceVersionId: head.workspaceVersionId,
             baseAcceptedEventId: head.acceptedEventId,
             baseHeadRevision: head.revision,
             baseCommitOid: head.commitOid,
             baseTreeOid: head.treeOid,
-            expectedPaths: ['notes.txt'],
-            executionProfileDigest: `sha256:${'a'.repeat(64)}` as const,
+            expectedPath: 'notes.txt',
+            pathPolicyVersion: 3 as const,
+            executionProfileDigest:
+              'sha256:7032f291deed40ef4afee654b6587236e58813bb479d012128408fad86d36262' as const,
           },
         },
       },
@@ -1140,6 +1293,7 @@ function recreateWorkspaceTablesAsSchema12(database: DatabaseSync): void {
 
     DROP TABLE runtime_workspace_heads_schema_13;
     DROP TABLE runtime_workspace_versions_schema_13;
+    DROP INDEX runtime_events_by_managed_mutation_protocol;
     DROP TABLE runtime_managed_mutation_reservations;
     PRAGMA user_version = 12;
     COMMIT;

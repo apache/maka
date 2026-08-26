@@ -238,9 +238,12 @@ describe('ToolRuntime durable boundary', () => {
       },
     );
     const managedTool = tool(() => {
-      order.push('impl');
-      return { ok: true };
+      throw new Error('ordinary mutable implementation must not run');
     });
+    managedTool.managedMutationTransform = () => {
+      order.push('transform');
+      return { ok: true };
+    };
     managedTool.name = 'Write';
     managedTool.recoveryMode = 'reconcile';
     managedTool.durableExecutionProfile = 'managed_mutation_v1';
@@ -250,7 +253,7 @@ describe('ToolRuntime durable boundary', () => {
       'admit',
       't1',
       'lease-enter',
-      'impl',
+      'transform',
       'successor-bundle',
       'published-result',
       'dispose',
@@ -577,7 +580,7 @@ describe('ToolRuntime durable boundary', () => {
             await operation();
             const result = { error: 'candidate was safely discarded' };
             return {
-              kind: 'safely_discarded',
+              kind: 'operation_failed_no_effect_committed',
               providerResult: result,
               durableOutcome: managedOutcomeEvent(
                 operationId,
@@ -603,6 +606,47 @@ describe('ToolRuntime durable boundary', () => {
     assert.equal(published?.type === 'tool_result' && published.isError, true);
   });
 
+  it('publishes an owner-committed no-change success without invoking generic T2', async () => {
+    let operationId = '';
+    const harness = makeHarness(
+      {
+        commitToolPrepared: async () => ({ created: true, runtimeEventSeq: 1 }),
+        commitToolOutcome: async () => {
+          throw new Error('generic T2 must not settle a managed mutation');
+        },
+      },
+      undefined,
+      'run-1',
+      {
+        admitManagedMutation: async (input) => {
+          operationId = input.operationId;
+          return managedAdmission(async (operation) => {
+            await operation();
+            const result = { ok: true, changed: false };
+            return {
+              kind: 'no_workspace_change_committed',
+              providerResult: result,
+              durableOutcome: managedOutcomeEvent(
+                operationId,
+                { kind: 'json', value: result },
+                false,
+              ),
+            };
+          });
+        },
+      },
+    );
+    const managedTool = tool(() => ({ ignored: true }));
+    managedTool.name = 'Write';
+    managedTool.recoveryMode = 'reconcile';
+    managedTool.durableExecutionProfile = 'managed_mutation_v1';
+
+    assert.deepEqual(await harness.execute(managedTool), { ok: true, changed: false });
+    const published = harness.events.at(-1);
+    assert.equal(published?.type, 'tool_result');
+    assert.equal(published?.type === 'tool_result' && published.isError, false);
+  });
+
   it('snapshots a safe-discard result before its owner can mutate it', async () => {
     let operationId = '';
     const ownerResult = { error: 'discarded-A' };
@@ -626,7 +670,7 @@ describe('ToolRuntime durable boundary', () => {
           return managedAdmission(async (operation) => {
             await operation();
             return {
-              kind: 'safely_discarded',
+              kind: 'operation_failed_no_effect_committed',
               providerResult: ownerResult,
               durableOutcome: managedOutcomeEvent(
                 operationId,
@@ -675,7 +719,7 @@ describe('ToolRuntime durable boundary', () => {
             retainedOperation = operation;
             const result = { error: 'candidate was safely discarded' };
             return {
-              kind: 'safely_discarded',
+              kind: 'operation_failed_no_effect_committed',
               providerResult: result,
               durableOutcome: managedOutcomeEvent(
                 operationId,
@@ -725,7 +769,7 @@ describe('ToolRuntime durable boundary', () => {
             void operation().catch(() => undefined);
             const result = { error: 'candidate was safely discarded' };
             return {
-              kind: 'safely_discarded',
+              kind: 'operation_failed_no_effect_committed',
               providerResult: result,
               durableOutcome: managedOutcomeEvent(
                 operationId,
@@ -780,7 +824,7 @@ describe('ToolRuntime durable boundary', () => {
           return managedAdmission(async (operation) => {
             await operation();
             return {
-              kind: 'safely_discarded',
+              kind: 'operation_failed_no_effect_committed',
               providerResult: { error: 'live provider error A' },
               durableOutcome: managedOutcomeEvent(
                 operationId,
@@ -829,7 +873,7 @@ describe('ToolRuntime durable boundary', () => {
           return managedAdmission(async (operation) => {
             await operation();
             return {
-              kind: 'safely_discarded',
+              kind: 'operation_failed_no_effect_committed',
               providerResult,
               durableOutcome: managedOutcomeEvent(
                 operationId,
@@ -877,7 +921,7 @@ describe('ToolRuntime durable boundary', () => {
           return managedAdmission(async (operation) => {
             await operation();
             return {
-              kind: 'safely_discarded',
+              kind: 'operation_failed_no_effect_committed',
               providerResult: oversized,
               durableOutcome: managedOutcomeEvent(
                 operationId,
@@ -946,6 +990,60 @@ describe('ToolRuntime durable boundary', () => {
     );
     assert.equal(lateGetterReads, 0);
     assert.equal(genericOutcomeCalls, 0);
+  });
+
+  it('enforces the fixed managed result budget when the caller omits one', async () => {
+    const harness = makeHarness(
+      {
+        commitToolPrepared: async () => ({ created: true, runtimeEventSeq: 1 }),
+        commitToolOutcome: async () => {
+          throw new Error('generic T2 must not settle a managed mutation');
+        },
+      },
+      undefined,
+      'run-1',
+      {
+        admitManagedMutation: async () =>
+          managedAdmission(async (operation) => {
+            await operation();
+            return { kind: 'unsettled', error: new Error('unreachable') };
+          }),
+      },
+    );
+    const managedTool = tool(() => ({ payload: 'x'.repeat(1024 * 1024 + 1) }));
+    managedTool.name = 'Write';
+    managedTool.recoveryMode = 'reconcile';
+    managedTool.durableExecutionProfile = 'managed_mutation_v1';
+
+    await assert.rejects(harness.execute(managedTool), /tool result byte limit exceeded/i);
+  });
+
+  it('rejects a managed result deeper than the fixed profile permits', async () => {
+    const harness = makeHarness(
+      {
+        commitToolPrepared: async () => ({ created: true, runtimeEventSeq: 1 }),
+        commitToolOutcome: async () => {
+          throw new Error('generic T2 must not settle a managed mutation');
+        },
+      },
+      undefined,
+      'run-1',
+      {
+        admitManagedMutation: async () =>
+          managedAdmission(async (operation) => {
+            await operation();
+            return { kind: 'unsettled', error: new Error('unreachable') };
+          }),
+      },
+    );
+    let result: Record<string, unknown> = {};
+    for (let depth = 0; depth < 66; depth += 1) result = { child: result };
+    const managedTool = tool(() => result);
+    managedTool.name = 'Write';
+    managedTool.recoveryMode = 'reconcile';
+    managedTool.durableExecutionProfile = 'managed_mutation_v1';
+
+    await assert.rejects(harness.execute(managedTool), /tool result byte limit exceeded/i);
   });
 
   it('rejects undefined fields instead of creating a non-canonical durable result', async () => {
@@ -1473,7 +1571,7 @@ function makeHarness(
           tool: target,
           turnId: 'turn-1',
           toolCallId: 'provider-call-1',
-          input: {},
+          input: target.durableExecutionProfile ? { path: 'notes.txt' } : {},
           abortSignal,
           eventSink: {
             push: (event) => {
@@ -1493,7 +1591,7 @@ function makeHarness(
           tool: target,
           turnId: 'turn-1',
           toolCallId: 'nested-call-1',
-          input: {},
+          input: target.durableExecutionProfile ? { path: 'notes.txt' } : {},
           abortSignal: new AbortController().signal,
           eventSink: {
             push: (event) => events.push(event),
@@ -1568,7 +1666,7 @@ function managedOutcomeEvent(
 
 function managedMutationDispatch() {
   return {
-    protocol: 'managed_mutation_v1' as const,
+    protocol: 'managed_mutation_v2' as const,
     repositoryId: 'repository_11111111111111111111111111111111',
     workspaceId: 'workspace_22222222222222222222222222222222',
     workspaceEpochId: 'epoch_33333333333333333333333333333333',
@@ -1579,8 +1677,10 @@ function managedMutationDispatch() {
     baseHeadRevision: 1,
     baseCommitOid: '1'.repeat(40),
     baseTreeOid: '2'.repeat(40),
-    expectedPaths: ['notes.txt'],
-    executionProfileDigest: `sha256:${'a'.repeat(64)}` as const,
+    expectedPath: 'notes.txt',
+    pathPolicyVersion: 3 as const,
+    executionProfileDigest:
+      'sha256:7032f291deed40ef4afee654b6587236e58813bb479d012128408fad86d36262' as const,
   };
 }
 
@@ -1591,6 +1691,7 @@ function tool(impl: MakaTool['impl']): MakaTool {
     parameters: {},
     recoveryMode: 'replay_safe',
     impl,
+    managedMutationTransform: (args) => impl(args, undefined as never),
   };
 }
 

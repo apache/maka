@@ -459,7 +459,7 @@ describe('RuntimeEvent content variants', () => {
 describe('RuntimeEvent actions', () => {
   test('decodes only a platform-independent T1-frozen managed mutation identity', () => {
     const managedMutation = {
-      protocol: 'managed_mutation_v1',
+      protocol: 'managed_mutation_v2',
       repositoryId: 'repository_11111111111111111111111111111111',
       workspaceId: 'workspace_22222222222222222222222222222222',
       workspaceEpochId: 'epoch_33333333333333333333333333333333',
@@ -470,8 +470,10 @@ describe('RuntimeEvent actions', () => {
       baseHeadRevision: 1,
       baseCommitOid: '1'.repeat(40),
       baseTreeOid: '2'.repeat(40),
-      expectedPaths: ['src/a.ts'],
-      executionProfileDigest: `sha256:${'a'.repeat(64)}`,
+      expectedPath: 'src/a.ts',
+      pathPolicyVersion: 3,
+      executionProfileDigest:
+        'sha256:7032f291deed40ef4afee654b6587236e58813bb479d012128408fad86d36262',
     } as const;
     const toolDispatch = {
       protocol: 't1_after_preflight_v1',
@@ -489,11 +491,12 @@ describe('RuntimeEvent actions', () => {
       managedMutation,
     );
     for (const invalid of [
-      { ...managedMutation, expectedPaths: ['src/../secrets.txt'] },
-      { ...managedMutation, expectedPaths: ['NoDe_MoDuLeS/pkg/index.js'] },
-      { ...managedMutation, expectedPaths: ['.GiT/config'] },
-      { ...managedMutation, expectedPaths: ['z.txt', 'a.txt'] },
-      { ...managedMutation, expectedPaths: ['x'.repeat(4097)] },
+      { ...managedMutation, expectedPath: 'src/../secrets.txt' },
+      { ...managedMutation, expectedPath: 'NoDe_MoDuLeS/pkg/index.js' },
+      { ...managedMutation, expectedPath: '.GiT/config' },
+      { ...managedMutation, expectedPath: 'x'.repeat(4097) },
+      { ...managedMutation, pathPolicyVersion: 2 },
+      { ...managedMutation, executionProfileDigest: `sha256:${'a'.repeat(64)}` },
       { ...managedMutation, baseAcceptedEventId: 'event id with spaces' },
       { ...managedMutation, baseHeadRevision: 0 },
       { ...managedMutation, baseTreeOid: 'not-an-oid' },

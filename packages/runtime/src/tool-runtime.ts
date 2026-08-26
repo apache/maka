@@ -65,9 +65,11 @@ import type { SessionHeader } from '@maka/core/session';
 import type { ToolInvocationRecord } from '@maka/core/usage-stats/types';
 import { redactSecrets } from '@maka/core/redaction';
 import {
+  decodeRuntimeEvent,
+  MANAGED_MUTATION_EXECUTION_PROFILE_V1,
   TOOL_BOUNDARY_PROTOCOL_V1,
   type RuntimeEvent,
-  type RuntimeEventManagedWorkspaceMutationV1,
+  type RuntimeEventManagedWorkspaceMutationV2,
 } from '@maka/core/runtime-event';
 import { isDeepStrictEqual } from 'node:util';
 
@@ -171,6 +173,11 @@ export interface MakaTool<P = any, R = unknown> {
   recoveryMode?: ToolRecoveryMode;
   /** Durable execution profile selected by the Host before T1. */
   durableExecutionProfile?: 'managed_mutation_v1';
+  /**
+   * Pure Write/Edit transform for managed mutation mode. It receives only the
+   * frozen arguments and must not read or mutate the live workspace.
+   */
+  managedMutationTransform?: (args: P) => Promise<R> | R;
   /** Step-level admission contract. Exclusive tools cannot share an assistant step. */
   executionSemantics?: 'parallel' | 'exclusive_step';
   /** Nested CodeMode admission. Ordinary tools are nestable by default. */
@@ -416,7 +423,7 @@ export type RuntimeManagedMutationSettlement =
       readonly durableOutcome: RuntimeEvent;
     }
   | {
-      readonly kind: 'safely_discarded';
+      readonly kind: 'no_workspace_change_committed' | 'operation_failed_no_effect_committed';
       /** Exact value returned to the provider and canonicalized for durable replay. */
       readonly providerResult: unknown;
       readonly durableOutcome: RuntimeEvent;
@@ -424,7 +431,7 @@ export type RuntimeManagedMutationSettlement =
   | { readonly kind: 'unsettled'; readonly error: unknown };
 
 export interface RuntimeManagedMutationAdmission {
-  readonly durableDispatch: Readonly<RuntimeEventManagedWorkspaceMutationV1>;
+  readonly durableDispatch: Readonly<RuntimeEventManagedWorkspaceMutationV2>;
   execute(
     operation: () => Promise<RuntimeManagedMutationOperationProof>,
   ): Promise<RuntimeManagedMutationSettlement>;
@@ -1357,6 +1364,7 @@ export class ToolRuntime {
       if (
         (tool.name !== 'Write' && tool.name !== 'Edit') ||
         tool.recoveryMode !== 'reconcile' ||
+        !tool.managedMutationTransform ||
         !dispatchOperationId ||
         !this.input.runtimeCommitSink ||
         !this.input.admitManagedMutation
@@ -1481,10 +1489,10 @@ export class ToolRuntime {
             ...(trace
               ? {
                   emitRunTrace: (
-                  type:
-                    | 'tool_started'
-                    | 'tool_searched'
-                    | 'tool_completed'
+                    type:
+                      | 'tool_started'
+                      | 'tool_searched'
+                      | 'tool_completed'
                       | 'tool_failed'
                       | 'skill_searched'
                       | 'skill_loaded'
@@ -1524,10 +1532,12 @@ export class ToolRuntime {
                 queue,
               ),
           });
+        const invokeManagedTransform = () =>
+          tool.managedMutationTransform!(structuredClone(executionArgs) as never);
         const prepareOperationValue = async (
           immutableSnapshot = false,
         ): Promise<RuntimeManagedMutationOperationValue<unknown>> => {
-          const rawResult = await invokeTool();
+          const rawResult = await (immutableSnapshot ? invokeManagedTransform() : invokeTool());
           const result = immutableSnapshot
             ? snapshotManagedToolResult(rawResult, ctx.maxResultBytes)
             : rawResult;
@@ -1961,7 +1971,7 @@ export class ToolRuntime {
     /** The projection the model replays as its own call. */
     modelFacingArgs: unknown;
     abortSignal: AbortSignal;
-    managedMutation?: Readonly<RuntimeEventManagedWorkspaceMutationV1>;
+    managedMutation?: Readonly<RuntimeEventManagedWorkspaceMutationV2>;
     invocationId?: string;
     runId?: string;
   }): Promise<DurableToolAttempt | undefined> {
@@ -2061,6 +2071,24 @@ export class ToolRuntime {
       },
     };
     try {
+      if (input.managedMutation) {
+        decodeRuntimeEvent(dispatchEvent);
+        const persistedPath =
+          input.persistedArgs &&
+          typeof input.persistedArgs === 'object' &&
+          !Array.isArray(input.persistedArgs)
+            ? (input.persistedArgs as { path?: unknown }).path
+            : undefined;
+        if (
+          (input.tool.name !== 'Write' && input.tool.name !== 'Edit') ||
+          typeof persistedPath !== 'string' ||
+          input.managedMutation.expectedPath !== persistedPath ||
+          input.managedMutation.pathPolicyVersion !== 3 ||
+          input.managedMutation.executionProfileDigest !== MANAGED_MUTATION_EXECUTION_PROFILE_V1
+        ) {
+          throw new Error('Managed mutation admission does not match the durable tool call');
+        }
+      }
       this.assertDurableDispatchNotAborted(input.tool.name, input.abortSignal);
       const prepared = await sink.commitToolPrepared({
         operationId,
@@ -3176,7 +3204,7 @@ function normalizeManagedMutationSettlement(
       durableOutcome: RuntimeEvent;
     }
   | {
-      kind: 'safely_discarded';
+      kind: 'no_workspace_change_committed' | 'operation_failed_no_effect_committed';
       value: RuntimeManagedMutationOperationValue<unknown>;
       durableOutcome: RuntimeEvent;
     } {
@@ -3188,7 +3216,11 @@ function normalizeManagedMutationSettlement(
   if (kind === 'unsettled') {
     throw new RuntimeManagedMutationUnsettledError(record.error);
   }
-  if (kind !== 'workspace_successor_committed' && kind !== 'safely_discarded') {
+  if (
+    kind !== 'workspace_successor_committed' &&
+    kind !== 'no_workspace_change_committed' &&
+    kind !== 'operation_failed_no_effect_committed'
+  ) {
     throw new Error('Managed mutation owner returned an unknown settlement kind');
   }
   const durableOutcomeValue = Object.hasOwn(record, 'durableOutcome')
@@ -3211,17 +3243,21 @@ function normalizeManagedMutationSettlement(
   }
 
   if (!Object.hasOwn(record, 'providerResult')) {
-    throw new Error('Managed safely-discarded settlement has no provider result');
+    throw new Error('Managed no-effect settlement has no provider result');
   }
   const providerResult = snapshotManagedToolResult(record.providerResult, maxResultBytes);
   const response = durableOutcome.content;
-  if (response?.kind !== 'function_response' || response.isError !== true) {
-    throw new Error('Managed safely-discarded settlement has no durable error outcome');
+  const expectedError = kind === 'operation_failed_no_effect_committed';
+  if (
+    response?.kind !== 'function_response' ||
+    (expectedError ? response.isError !== true : response.isError === true)
+  ) {
+    throw new Error('Managed no-effect settlement has the wrong durable outcome state');
   }
   const content = Object.freeze(coerceResultContent(providerResult));
   const outcome = Object.freeze({
     content,
-    isError: true,
+    isError: expectedError,
     durationMs:
       typeof durableOutcome.actions?.stateDelta?.durationMs === 'number'
         ? durableOutcome.actions.stateDelta.durationMs
@@ -3259,23 +3295,33 @@ function coerceResultContent(raw: unknown): ToolResultContent {
  * The walk stops at the first over-budget token and never retains a mutable
  * tool/owner-owned object alias.
  */
+const MANAGED_RESULT_MAX_BYTES = 1024 * 1024;
+const MANAGED_RESULT_MAX_DEPTH = 64;
+const MANAGED_RESULT_MAX_NODES = 65_536;
+const MANAGED_RESULT_MAX_PROPERTIES = 65_536;
+const MANAGED_RESULT_MAX_ARRAY_LENGTH = 65_536;
+
 function snapshotManagedToolResult(value: unknown, maxBytes: number | undefined): unknown {
   const budget: ManagedResultSnapshotBudget = {
     bytes: 0,
     limit:
-      maxBytes === undefined || maxBytes === Number.POSITIVE_INFINITY
-        ? Number.POSITIVE_INFINITY
+      maxBytes === undefined
+        ? MANAGED_RESULT_MAX_BYTES
         : Number.isFinite(maxBytes) && maxBytes >= 0
-          ? Math.floor(maxBytes)
+          ? Math.min(Math.floor(maxBytes), MANAGED_RESULT_MAX_BYTES)
           : 0,
+    nodes: 0,
+    properties: 0,
     active: new WeakSet<object>(),
   };
-  return snapshotStrictJsonValue(value, budget, '$');
+  return snapshotStrictJsonValue(value, budget, '$', 0);
 }
 
 interface ManagedResultSnapshotBudget {
   bytes: number;
   limit: number;
+  nodes: number;
+  properties: number;
   active: WeakSet<object>;
 }
 
@@ -3283,7 +3329,12 @@ function snapshotStrictJsonValue(
   value: unknown,
   budget: ManagedResultSnapshotBudget,
   path: string,
+  depth: number,
 ): unknown {
+  budget.nodes += 1;
+  if (budget.nodes > MANAGED_RESULT_MAX_NODES || depth > MANAGED_RESULT_MAX_DEPTH) {
+    throw new ToolResultLimitError();
+  }
   if (value === null) {
     consumeManagedResultBytes(budget, 4);
     return null;
@@ -3326,6 +3377,7 @@ function snapshotStrictJsonValue(
   budget.active.add(value);
   try {
     if (Array.isArray(value)) {
+      if (value.length > MANAGED_RESULT_MAX_ARRAY_LENGTH) throw new ToolResultLimitError();
       consumeManagedResultBytes(budget, 1);
       const output: unknown[] = [];
       for (let index = 0; index < value.length; index += 1) {
@@ -3339,7 +3391,9 @@ function snapshotStrictJsonValue(
             `Managed tool result must be strict JSON: ${path}[${index}] is an accessor`,
           );
         }
-        output.push(snapshotStrictJsonValue(descriptor.value, budget, `${path}[${index}]`));
+        output.push(
+          snapshotStrictJsonValue(descriptor.value, budget, `${path}[${index}]`, depth + 1),
+        );
       }
       consumeManagedResultBytes(budget, 1);
       return Object.freeze(output);
@@ -3350,6 +3404,8 @@ function snapshotStrictJsonValue(
     let emitted = 0;
     for (const key in value) {
       if (!Object.hasOwn(value, key)) continue;
+      budget.properties += 1;
+      if (budget.properties > MANAGED_RESULT_MAX_PROPERTIES) throw new ToolResultLimitError();
       if (emitted > 0) consumeManagedResultBytes(budget, 1);
       consumeManagedJsonStringBytes(budget, key);
       consumeManagedResultBytes(budget, 1);
@@ -3360,7 +3416,7 @@ function snapshotStrictJsonValue(
       Object.defineProperty(output, key, {
         configurable: true,
         enumerable: true,
-        value: snapshotStrictJsonValue(descriptor.value, budget, `${path}.${key}`),
+        value: snapshotStrictJsonValue(descriptor.value, budget, `${path}.${key}`, depth + 1),
         writable: true,
       });
       emitted += 1;

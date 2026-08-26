@@ -37,6 +37,7 @@ import {
   type WorkspaceEpochRecordV1,
   type WorkspaceHeadRecordV1,
   type WorkspaceProjectionRebuildResult,
+  type WorkspaceSuccessorAuthorityInput,
   type WorkspaceVersionAcceptedV1,
   type WorkspaceVersionRecordV1,
 } from '@maka/core/workspace-version-authority';
@@ -46,7 +47,7 @@ import {
   isTerminalRuntimeEvent,
   TOOL_BOUNDARY_PROTOCOL_V1,
   type RuntimeEvent,
-  type RuntimeEventManagedWorkspaceMutationV1,
+  type RuntimeEventManagedWorkspaceMutationV2,
   type ToolRecoveryMode,
 } from '@maka/core/runtime-event';
 import {
@@ -98,6 +99,8 @@ import {
 } from './sqlite-runtime-schema.js';
 import {
   registerWorkspaceBaselineAuthorityWriterInternal,
+  type ManagedMutationTerminalCommitInput,
+  type ManagedMutationTerminalCommitResult,
   type WorkspaceSuccessorCommitInput,
   type WorkspaceSuccessorCommitResult,
 } from './workspace-version-authority-internal.js';
@@ -1255,7 +1258,10 @@ export class SqliteRuntimeStore
   }
 
   async #commitWorkspaceSuccessor(
-    input: WorkspaceSuccessorCommitInput,
+    input: {
+      successor: WorkspaceSuccessorAuthorityInput;
+      toolOutcome: WorkspaceSuccessorCommitInput['toolOutcome'];
+    },
     rootId: string,
   ): Promise<WorkspaceSuccessorCommitResult> {
     const toolOutcome: CommitToolOutcomeInput = {
@@ -1392,8 +1398,8 @@ export class SqliteRuntimeStore
       }
       const reservedPaths = JSON.parse(reservation.expected_paths_json) as unknown;
       if (
-        !isDeepStrictEqual(reservedPaths, mutation.expectedPaths) ||
-        !isDeepStrictEqual(successor.changedPaths, mutation.expectedPaths)
+        !isDeepStrictEqual(reservedPaths, [mutation.expectedPath]) ||
+        !isDeepStrictEqual(successor.changedPaths, [mutation.expectedPath])
       ) {
         throw new Error('Managed mutation path authorization conflict');
       }
@@ -1465,12 +1471,75 @@ export class SqliteRuntimeStore
     });
   }
 
+  async #commitManagedMutationTerminal(
+    input: ManagedMutationTerminalCommitInput,
+    rootId: string,
+  ): Promise<ManagedMutationTerminalCommitResult> {
+    const toolOutcome: CommitToolOutcomeInput = {
+      ...input.toolOutcome,
+      runtimeEvent: canonicalizeRuntimeEventForStorage(input.toolOutcome.runtimeEvent),
+    };
+    assertOutcomeInput(toolOutcome);
+    const terminal = toolOutcome.runtimeEvent.actions?.managedMutationTerminal;
+    if (!terminal) throw new Error('Managed mutation terminal fact is missing');
+
+    return this.transaction(() => {
+      this.#assertWorkspaceStorageRootBinding(rootId);
+      const operation = this.readToolOperationSync(toolOutcome.operationId);
+      if (
+        !operation ||
+        !operation.dispatchEventId ||
+        operation.dispatchEventId !== terminal.dispatchEventId ||
+        terminal.operationId !== operation.operationId ||
+        operation.recoveryMode !== 'reconcile' ||
+        (operation.toolName !== 'Write' && operation.toolName !== 'Edit')
+      ) {
+        throw new Error('Managed mutation terminal requires its exact prepared operation');
+      }
+      const dispatchJson = this.readRuntimeEventJson(operation.dispatchEventId);
+      const dispatchEvent = dispatchJson
+        ? decodeRuntimeEvent(JSON.parse(dispatchJson) as unknown)
+        : undefined;
+      const mutation = dispatchEvent?.actions?.toolDispatch?.managedMutation;
+      if (!mutation || mutation.workspaceInstanceId !== terminal.workspaceInstanceId) {
+        throw new Error('Managed mutation terminal requires its exact durable reservation');
+      }
+      const response = toolOutcome.runtimeEvent.content;
+      if (
+        response?.kind !== 'function_response' ||
+        (terminal.terminalKind === 'no_workspace_change'
+          ? response.isError === true
+          : response.isError !== true)
+      ) {
+        throw new Error('Managed mutation terminal outcome has the wrong success state');
+      }
+
+      const result = this.commitToolOutcomeSync(toolOutcome, 'workspace_terminal');
+      const released = this.db
+        .prepare(`
+          DELETE FROM runtime_managed_mutation_reservations
+          WHERE workspace_instance_id = ? AND operation_id = ? AND dispatch_event_id = ?
+        `)
+        .run(terminal.workspaceInstanceId, operation.operationId, operation.dispatchEventId);
+      if (result.created && released.changes !== 1) {
+        throw new Error('Managed mutation terminal reservation release compare-and-set failed');
+      }
+      if (!result.created && released.changes !== 0) {
+        throw new Error('Managed mutation terminal exact retry found an active reservation');
+      }
+      const authority = this.readCanonicalWorkspaceAuthoritySync();
+      this.assertWorkspaceProjectionsMatchSync(authority);
+      return { created: result.created, outcomeRuntimeEventSeq: result.runtimeEventSeq };
+    });
+  }
+
   private registerWorkspaceBaselineAuthorityWriter(): void {
     const readWorkspaceHead = this.readWorkspaceHead.bind(this);
     registerWorkspaceBaselineAuthorityWriterInternal(
       this,
       (input, rootId) => this.#commitWorkspaceBaseline(input, rootId),
       (input, rootId) => this.#commitWorkspaceSuccessor(input, rootId),
+      (input, rootId) => this.#commitManagedMutationTerminal(input, rootId),
       (rootId) => this.#bindWorkspaceStorageRoot(rootId),
       readWorkspaceHead,
       (workspaceInstanceId) => this.#readActiveManagedMutation(workspaceInstanceId),
@@ -1491,7 +1560,11 @@ export class SqliteRuntimeStore
       );
       if (!reservation) return undefined;
       const expectedPaths = JSON.parse(reservation.expected_paths_json) as unknown;
-      if (!Array.isArray(expectedPaths) || expectedPaths.some((path) => typeof path !== 'string')) {
+      if (
+        !Array.isArray(expectedPaths) ||
+        expectedPaths.length !== 1 ||
+        typeof expectedPaths[0] !== 'string'
+      ) {
         throw new Error('Managed mutation reservation has invalid expected paths');
       }
       return {
@@ -1506,7 +1579,7 @@ export class SqliteRuntimeStore
         baseHeadRevision: reservation.base_head_revision,
         baseCommitOid: reservation.base_commit_oid,
         baseTreeOid: reservation.base_tree_oid,
-        expectedPaths,
+        expectedPath: expectedPaths[0],
         executionProfileDigest: reservation.execution_profile_digest,
         reservedAt: reservation.reserved_at,
       };
@@ -1657,6 +1730,7 @@ export class SqliteRuntimeStore
   }
 
   private readCanonicalWorkspaceAuthoritySync(): CanonicalWorkspaceAuthority {
+    const maxAuthorityEvidenceRows = 100_000;
     const partial = this.db
       .prepare(`
         SELECT stream_key FROM runtime_partial_snapshots
@@ -1671,11 +1745,28 @@ export class SqliteRuntimeStore
     }
     const rows = this.db
       .prepare(`
+        WITH managed_invocations AS (
+          SELECT invocation_id
+          FROM runtime_events
+          WHERE json_extract(
+              payload_json,
+              '$.actions.toolDispatch.managedMutation.protocol'
+            ) = 'managed_mutation_v2'
+        )
         SELECT event_id, session_id, invocation_id, run_id, turn_id, event_seq, payload_json
         FROM runtime_events
+        WHERE session_id = ?
+          OR invocation_id IN (SELECT invocation_id FROM managed_invocations)
         ORDER BY invocation_id ASC, event_seq ASC, event_id ASC
+        LIMIT ?
       `)
-      .all() as unknown as RuntimeEventPrefixStorageRow[];
+      .all(
+        WORKSPACE_AUTHORITY_SESSION_ID,
+        maxAuthorityEvidenceRows + 1,
+      ) as unknown as RuntimeEventPrefixStorageRow[];
+    if (rows.length > maxAuthorityEvidenceRows) {
+      throw new Error('Workspace authority evidence exceeds its bounded read budget');
+    }
     const events = rows.map(decodeRuntimeEventStorageRow);
     const authorityRows: WorkspaceAuthorityLedgerRow[] = rows.map((row, index) => ({
       event: events[index]!,
@@ -1763,9 +1854,22 @@ export class SqliteRuntimeStore
       }
       if (acceptedOperations.has(operation.operationId)) continue;
       if (operation.responseEvent) {
-        throw new Error(
-          `Corrupt managed mutation reservation: generic_outcome at ${operation.responseEvent.id}`,
-        );
+        const terminal = operation.responseEvent.actions?.managedMutationTerminal;
+        if (
+          !terminal ||
+          terminal.operationId !== operation.operationId ||
+          terminal.dispatchEventId !== dispatchEvent.id ||
+          terminal.workspaceInstanceId !== mutation.workspaceInstanceId ||
+          operation.responseEvent.content?.kind !== 'function_response' ||
+          (terminal.terminalKind === 'no_workspace_change'
+            ? operation.responseEvent.content.isError === true
+            : operation.responseEvent.content.isError !== true)
+        ) {
+          throw new Error(
+            `Corrupt managed mutation reservation: generic_outcome at ${operation.responseEvent.id}`,
+          );
+        }
+        continue;
       }
       const epoch = authority.baselines.find(
         (candidate) =>
@@ -1807,7 +1911,7 @@ export class SqliteRuntimeStore
         base_head_revision: mutation.baseHeadRevision,
         base_commit_oid: mutation.baseCommitOid,
         base_tree_oid: mutation.baseTreeOid,
-        expected_paths_json: JSON.stringify(mutation.expectedPaths),
+        expected_paths_json: JSON.stringify([mutation.expectedPath]),
         execution_profile_digest: mutation.executionProfileDigest,
         protocol_version: 1,
         reserved_at: this.runtimeEventCommittedAt(dispatchEvent.id),
@@ -2250,12 +2354,21 @@ export class SqliteRuntimeStore
   private assertManagedMutationReservationAvailableSync(input: CommitToolPreparedInput): void {
     const mutation = input.dispatchRuntimeEvent.actions?.toolDispatch?.managedMutation;
     if (!mutation) return;
+    const call = input.runtimeEvent.content;
+    const callArgs = call?.kind === 'function_call' ? call.args : undefined;
+    const callPath =
+      callArgs && typeof callArgs === 'object' && !Array.isArray(callArgs)
+        ? (callArgs as { path?: unknown }).path
+        : undefined;
     if (
       (input.toolName !== 'Write' && input.toolName !== 'Edit') ||
       input.recoveryMode !== 'reconcile' ||
       input.dispatchRuntimeEvent.actions?.toolDispatch?.toolName !== input.toolName
     ) {
       throw new Error('Managed mutation reservation requires a reconcile Write operation');
+    }
+    if (typeof callPath !== 'string' || mutation.expectedPath !== callPath) {
+      throw new Error('Managed mutation path does not match its durable tool call');
     }
     if (!this.#readWorkspaceStorageRootBinding()) {
       throw new Error('Managed mutation reservation requires a durable storage-root binding');
@@ -2315,7 +2428,7 @@ export class SqliteRuntimeStore
       base_head_revision: mutation.baseHeadRevision,
       base_commit_oid: mutation.baseCommitOid,
       base_tree_oid: mutation.baseTreeOid,
-      expected_paths_json: JSON.stringify(mutation.expectedPaths),
+      expected_paths_json: JSON.stringify([mutation.expectedPath]),
       execution_profile_digest: mutation.executionProfileDigest,
       protocol_version: 1,
       reserved_at: input.committedAt,
@@ -2669,7 +2782,7 @@ export class SqliteRuntimeStore
 
   private commitToolOutcomeSync(
     input: CommitToolOutcomeInput,
-    settlementOwner: 'generic' | 'workspace_successor' = 'generic',
+    settlementOwner: 'generic' | 'workspace_successor' | 'workspace_terminal' = 'generic',
   ): ToolCommitResult {
     const operation = this.readToolOperationSync(input.operationId);
     if (!operation) throw new Error(`Unknown tool operation ${input.operationId}`);
@@ -2702,8 +2815,8 @@ export class SqliteRuntimeStore
       if (!reservation) {
         throw new Error('Managed mutation T1 is missing its durable reservation');
       }
-      if (settlementOwner !== 'workspace_successor') {
-        throw new Error('Managed mutation outcome requires the workspace successor writer');
+      if (settlementOwner === 'generic') {
+        throw new Error('Managed mutation outcome requires a managed mutation authority writer');
       }
     }
     const runtimeEventSeq = this.insertRuntimeEvent(input.runtimeEvent, input.committedAt, false);
@@ -4109,13 +4222,13 @@ function workspaceHeadBeforeSuccessor(
 }
 
 function managedMutationMatchesAcceptedSuccessor(
-  mutation: RuntimeEventManagedWorkspaceMutationV1 | undefined,
+  mutation: RuntimeEventManagedWorkspaceMutationV2 | undefined,
   successor: WorkspaceVersionAcceptedV1,
   baseHead: WorkspaceHeadRecordV1,
   workspaceInstanceId: string,
 ): boolean {
   return (
-    mutation?.protocol === 'managed_mutation_v1' &&
+    mutation?.protocol === 'managed_mutation_v2' &&
     mutation.repositoryId === successor.repositoryId &&
     mutation.workspaceId === successor.workspaceId &&
     mutation.workspaceEpochId === successor.workspaceEpochId &&
@@ -4127,7 +4240,7 @@ function managedMutationMatchesAcceptedSuccessor(
     mutation.baseCommitOid === baseHead.commitOid &&
     mutation.baseTreeOid === baseHead.treeOid &&
     mutation.executionProfileDigest === successor.executionProfileDigest &&
-    isDeepStrictEqual(mutation.expectedPaths, successor.changedPaths)
+    isDeepStrictEqual([mutation.expectedPath], successor.changedPaths)
   );
 }
 

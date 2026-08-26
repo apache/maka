@@ -19,7 +19,7 @@
 
 import type { DatabaseSync } from 'node:sqlite';
 
-export const SQLITE_RUNTIME_SCHEMA_VERSION = 14;
+export const SQLITE_RUNTIME_SCHEMA_VERSION = 15;
 export const RUNTIME_RECOVERY_AUTHORITY_CAPABILITY = 'runtime_recovery_authority';
 export const RUNTIME_RECOVERY_AUTHORITY_CAPABILITY_VERSION = 1;
 export const RUNTIME_CONTINUATION_AUTHORITY_CAPABILITY = 'runtime_continuation_authority';
@@ -441,6 +441,20 @@ const MIGRATIONS: ReadonlyMap<number, string> = new Map([
       FOREIGN KEY (workspace_id, workspace_epoch_id)
         REFERENCES runtime_workspace_epochs(workspace_id, workspace_epoch_id)
     );
+    `,
+  ],
+  [
+    15,
+    `
+    CREATE INDEX runtime_events_by_managed_mutation_protocol
+      ON runtime_events(
+        json_extract(payload_json, '$.actions.toolDispatch.managedMutation.protocol'),
+        invocation_id
+      )
+      WHERE json_extract(
+        payload_json,
+        '$.actions.toolDispatch.managedMutation.protocol'
+      ) IS NOT NULL;
     `,
   ],
 ]);

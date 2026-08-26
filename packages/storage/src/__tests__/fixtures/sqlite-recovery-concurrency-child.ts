@@ -361,7 +361,7 @@ function managedMutationPreparedCommit(variant: 'a' | 'b') {
           canonicalArgsHash,
           recoveryMode: 'reconcile' as const,
           managedMutation: {
-            protocol: 'managed_mutation_v1' as const,
+            protocol: 'managed_mutation_v2' as const,
             repositoryId: `repository_${'1'.repeat(32)}`,
             workspaceId: `workspace_${'2'.repeat(32)}`,
             workspaceEpochId: `epoch_${'3'.repeat(32)}`,
@@ -372,8 +372,10 @@ function managedMutationPreparedCommit(variant: 'a' | 'b') {
             baseHeadRevision: 1,
             baseCommitOid: '5'.repeat(40),
             baseTreeOid: '2'.repeat(40),
-            expectedPaths: ['notes.txt'],
-            executionProfileDigest: `sha256:${'a'.repeat(64)}` as const,
+            expectedPath: 'notes.txt',
+            pathPolicyVersion: 3 as const,
+            executionProfileDigest:
+              'sha256:7032f291deed40ef4afee654b6587236e58813bb479d012128408fad86d36262' as const,
           },
         },
       },
