@@ -344,6 +344,7 @@ test('pull request triggers stay on an explicit allowlist', () => {
     'copilot-auto-review.yml',
     'dependency-audit.yml',
     'gitoxide-helper-admission.yml',
+    'pr-effort-label.yml',
     'release-windows-check.yml',
     'runtime-host-owner-platform.yml',
     'runtime-host-peer-admission.yml',
