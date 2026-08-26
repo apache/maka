@@ -262,6 +262,53 @@ test("reconnects an enabled remote Host with interactive SSH", async () => {
   ]);
 });
 
+test("tests an unsaved remote Host without persisting its profile or credential", async () => {
+  const root = await clientRoot();
+  const startup = await resolveDesktopRuntimeHostStartup(root);
+  const tested: ResolvedRuntimeHostProfile[] = [];
+  const service = createDesktopRuntimeHostProfileService({
+    clientDataRoot: root,
+    startup,
+    states: () => [connectingLocal()],
+    enable: async () => undefined,
+    test: async (target) => {
+      tested.push(target);
+    },
+    disable: async () => undefined,
+    setDefault: () => undefined,
+    finalizePairing: async () => undefined,
+  });
+
+  const result = await service.testConnection({ profile: PROFILE, credential: "opaque-token" });
+
+  assert.deepEqual(result, { kind: "connected" });
+  assert.equal(tested.length, 1);
+  assert.equal(tested[0]?.credential, "opaque-token");
+  assert.equal((await service.getSnapshot()).entries.some((entry) => entry.profile.id === PROFILE.id), false);
+});
+
+test("classifies a rejected temporary connection without creating a profile", async () => {
+  const root = await clientRoot();
+  const startup = await resolveDesktopRuntimeHostStartup(root);
+  const service = createDesktopRuntimeHostProfileService({
+    clientDataRoot: root,
+    startup,
+    states: () => [connectingLocal()],
+    enable: async () => undefined,
+    test: async () => {
+      throw new RuntimeHostPermanentReconnectError("Runtime Host rejected its access credential");
+    },
+    disable: async () => undefined,
+    setDefault: () => undefined,
+    finalizePairing: async () => undefined,
+  });
+
+  const result = await service.testConnection({ profile: PROFILE, credential: "opaque-token" });
+
+  assert.deepEqual(result, { kind: "failed", stage: "credential" });
+  assert.equal((await service.getSnapshot()).entries.some((entry) => entry.profile.id === PROFILE.id), false);
+});
+
 test("does not enable the same State Root twice", async () => {
   const root = await clientRoot();
   const startup = await resolveDesktopRuntimeHostStartup(root);
@@ -293,12 +340,14 @@ test("does not enable the same State Root twice", async () => {
 test("preserves an enabled remote profile when that Host is unavailable", async () => {
   const root = await clientRoot();
   const startup = await resolveDesktopRuntimeHostStartup(root);
+  const errorStateRootId = "f".repeat(64);
+  const errorCredential = "maka_rh_sensitive_credential";
   const service = createDesktopRuntimeHostProfileService({
     clientDataRoot: root,
     startup,
     states: () => [connectingLocal()],
     enable: async () => {
-      throw new Error("connection refused");
+      throw new Error(`connection refused for ${errorStateRootId}; credential ${errorCredential}`);
     },
     disable: async () => undefined,
     setDefault: () => undefined,
@@ -308,11 +357,13 @@ test("preserves an enabled remote profile when that Host is unavailable", async 
   const result = await service.addAndEnable({ profile: PROFILE, credential: "token" });
 
   assert.equal(result.kind, "unavailable");
+  assert.equal(result.stage, "connection");
   assert.equal(result.snapshot.entries.find((entry) => entry.profile.id === PROFILE.id)?.enabled, true);
-  assert.match(
-    result.snapshot.entries.find((entry) => entry.profile.id === PROFILE.id)?.message ?? "",
-    /connection refused/,
-  );
+  const entry = result.snapshot.entries.find((candidate) => candidate.profile.id === PROFILE.id);
+  assert.equal(entry?.failureStage, "connection");
+  assert.equal("message" in (entry ?? {}), false);
+  assert.equal(JSON.stringify(result).includes(errorStateRootId), false);
+  assert.equal(JSON.stringify(result).includes(errorCredential), false);
   assert.equal(result.snapshot.entries.find((entry) => entry.profile.id === "local")?.enabled, true);
 });
 
@@ -366,12 +417,12 @@ test("projects a shared compatibility error through an unavailable enabled remot
 
   assert.equal(office?.enabled, true);
   assert.equal(office?.readiness, "unavailable");
-  assert.equal(office?.message, compatibilityError.message);
+  assert.equal(office?.failureStage, "compatibility");
   assert.equal(local?.enabled, true);
   assert.equal(local?.readiness, "connecting");
   assert.equal(backup?.enabled, true);
   assert.equal(backup?.readiness, "ready");
-  assert.equal(backup?.message, undefined);
+  assert.equal(backup?.failureStage, undefined);
 });
 
 test("removes a managed profile when its verified connection cannot be established", async () => {

@@ -27,6 +27,7 @@ import {
   RUNTIME_HOST_ACCESS_CREDENTIAL_MAX_BYTES,
   RuntimeHostOperationError,
   RuntimeHostPermanentReconnectError,
+  RuntimeHostRemoteCompatibilityError,
   sameRemoteRuntimeHostProfileTarget,
   sameResolvedRuntimeHostProfileTarget,
   type RemoteRuntimeHostProfile,
@@ -41,6 +42,8 @@ import type {
   DesktopRuntimeHostProfileAddResult,
   DesktopRuntimeHostProfileEntry,
   DesktopRuntimeHostProfileSnapshot,
+  DesktopRuntimeHostProfileTestStage,
+  DesktopRuntimeHostProfileTestResult,
 } from "../preload/bridge-contract.js";
 import {
   RuntimeHostPairingFinalizationInterruptedError,
@@ -110,6 +113,7 @@ export interface DesktopRuntimeHostProfileService {
     expected: DesktopRuntimeHostManagedAccess,
     credential: string,
   ): Promise<void>;
+  testConnection(input: DesktopRuntimeHostProfileAddInput): Promise<DesktopRuntimeHostProfileTestResult>;
   startEnabledProfiles(): Promise<void>;
   resolvePairingRecovery(): Promise<DesktopRuntimeHostProfileSnapshot>;
   setEnabled(profileId: string, enabled: boolean): Promise<DesktopRuntimeHostProfileSnapshot>;
@@ -235,6 +239,10 @@ export function createDesktopRuntimeHostProfileService(input: {
     target: ResolvedRuntimeHostProfile,
     sshInteraction: "terminal" | "batch",
   ) => Promise<void>;
+  readonly test?: (
+    target: ResolvedRuntimeHostProfile,
+    sshInteraction: "terminal" | "batch",
+  ) => Promise<void>;
   readonly disable: (profileId: string) => Promise<void>;
   readonly finalizePairing: (profileId: string) => Promise<void>;
   readonly setDefault: (profileId: string) => void;
@@ -341,7 +349,7 @@ export function createDesktopRuntimeHostProfileService(input: {
             : state && "hostId" in state && state.hostId
               ? { hostId: state.hostId }
               : {}),
-          ...(error ? { message: error.message } : {}),
+          ...(error ? { failureStage: classifyConnectionTestFailure(error) } : {}),
         };
       }),
     };
@@ -619,8 +627,32 @@ export function createDesktopRuntimeHostProfileService(input: {
           throw failure;
         }
         return error
-          ? { kind: "unavailable", snapshot: await snapshot(), message: error.message }
+          ? {
+              kind: "unavailable",
+              snapshot: await snapshot(),
+              stage: classifyConnectionTestFailure(error),
+            }
           : { kind: "connected", snapshot: await snapshot() };
+      });
+    },
+    testConnection(value) {
+      requireSaveInput(value);
+      return mutate(async () => {
+        if (value.credential === undefined) {
+          return { kind: "failed", stage: "credential" };
+        }
+        const target = { profile: value.profile, credential: value.credential } as const;
+        try {
+          if (!input.test) throw new Error("Runtime Host connection testing is unavailable");
+          await input.test(target, "terminal");
+          return { kind: "connected" };
+        } catch (error) {
+          const stage = classifyConnectionTestFailure(error);
+          console.warn(
+            `[runtime-host] temporary connection test failed at stage=${stage}`,
+          );
+          return { kind: "failed", stage };
+        }
       });
     },
     addAndEnableVerified(value) {
@@ -1025,6 +1057,7 @@ export function registerDesktopRuntimeHostProfileIpc(
   const channels = [
     "runtime-host-profiles:getSnapshot",
     "runtime-host-profiles:add-and-enable",
+    "runtime-host-profiles:test-connection",
     "runtime-host-profiles:set-enabled",
     "runtime-host-profiles:set-default",
     "runtime-host-profiles:remove",
@@ -1034,15 +1067,42 @@ export function registerDesktopRuntimeHostProfileIpc(
   ipcMain.handle(channels[1], (_event, value: DesktopRuntimeHostProfileAddInput) =>
     service.addAndEnable(value),
   );
-  ipcMain.handle(channels[2], (_event, profileId: string, enabled: boolean) =>
+  ipcMain.handle(channels[2], (_event, value: DesktopRuntimeHostProfileAddInput) =>
+    service.testConnection(value),
+  );
+  ipcMain.handle(channels[3], (_event, profileId: string, enabled: boolean) =>
     service.setEnabled(profileId, enabled),
   );
-  ipcMain.handle(channels[3], (_event, profileId: string) => service.setDefault(profileId));
-  ipcMain.handle(channels[4], (_event, profileId: string) => service.remove(profileId));
-  ipcMain.handle(channels[5], () => service.resolvePairingRecovery());
+  ipcMain.handle(channels[4], (_event, profileId: string) => service.setDefault(profileId));
+  ipcMain.handle(channels[5], (_event, profileId: string) => service.remove(profileId));
+  ipcMain.handle(channels[6], () => service.resolvePairingRecovery());
   return () => {
     for (const channel of channels) ipcMain.removeHandler(channel);
   };
+}
+
+function classifyConnectionTestFailure(error: unknown): DesktopRuntimeHostProfileTestStage {
+  const message = error instanceof Error ? error.message : "";
+  if (error instanceof RuntimeHostRemoteCompatibilityError) return "compatibility";
+  if (error instanceof RuntimeHostPermanentReconnectError) {
+    if (message.includes("access credential")) return "credential";
+    if (message.includes("unexpected State Root")) return "state_root";
+  }
+  if (message.includes("RUNTIME_HOST_REMOTE_INCOMPATIBLE") || message.includes("incompatible")) {
+    return "compatibility";
+  }
+  if (
+    message.includes("OpenSSH configuration") ||
+    message.includes("additional port forwarding") ||
+    message.includes("SSH destination is invalid")
+  ) {
+    return "ssh_configuration";
+  }
+  if (message.includes("SSH tunnel") || message.includes("SSH exited")) return "ssh_tunnel";
+  if (message.includes("could not reach its endpoint") || message.includes("unreachable")) {
+    return "endpoint";
+  }
+  return "connection";
 }
 
 function requireSaveInput(value: unknown): asserts value is {

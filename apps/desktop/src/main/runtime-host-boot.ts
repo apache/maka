@@ -49,6 +49,7 @@ import {
   createClientRuntimeHostCredentialStore,
   createClientRuntimeHostProfileCatalog,
   createRuntimeHostCandidateLaunchBarrier,
+  connectRemoteRuntimeHostProfile,
   LOCAL_RUNTIME_HOST_PROFILE,
   loadOrCreateRuntimeHostClientInstanceId,
 } from "@maka/runtime-host/client";
@@ -426,6 +427,21 @@ const runtimeHostProfileService = createDesktopRuntimeHostProfileService({
       ...(target.profile.transport.kind === "ssh" ? { sshInteraction } : {}),
     });
   },
+  test: async (target, sshInteraction) => {
+    if (target.profile.kind !== "remote" || !target.credential) {
+      throw new Error("A resolved remote Runtime Host profile is required");
+    }
+    const connection = await connectRemoteRuntimeHostProfile(
+      {
+        profile: target.profile,
+        credential: target.credential,
+        clientInstanceId: runtimeHostClientInstanceId,
+        ...(target.profile.transport.kind === "ssh" ? { sshInteraction } : {}),
+      },
+      { openSshTunnel: runtimeHostSshTerminal.openSshTunnel },
+    );
+    await connection.close();
+  },
   disable: async (profileId) => {
     if (!runtimeHostManager) throw new Error("Runtime Host manager is unavailable");
     await runtimeHostManager.disable(profileId);
@@ -510,7 +526,7 @@ const defaultRuntimeHostRecovery = createRuntimeHostDefaultRecovery({
       const snapshot = await runtimeHostProfileService.setEnabled(profileId, true);
       const entry = snapshot.entries.find((candidate) => candidate.profile.id === profileId);
       return entry?.readiness === "unavailable"
-        ? new Error(entry.message ?? "Runtime Host is unavailable")
+        ? new Error("Runtime Host is unavailable")
         : undefined;
     } catch (error) {
       return error instanceof Error ? error : new Error(String(error));

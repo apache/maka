@@ -670,7 +670,7 @@ const unavailableRuntimeHostProfiles: DesktopRuntimeHostProfileSnapshot = {
       enabled: true,
       isDefault: true,
       readiness: 'unavailable',
-      message: 'Runtime Host is offline in this story.',
+      failureStage: 'connection',
     },
   ],
 };

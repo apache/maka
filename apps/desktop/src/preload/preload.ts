@@ -499,7 +499,6 @@ async function loadNewTaskCatalog(): Promise<DesktopNewTaskCatalog> {
               : entry.readiness === 'disabled'
                 ? 'unavailable'
                 : entry.readiness,
-            ...(entry.message ? { message: entry.message } : {}),
           };
         }
         const host = { profileId: entry.profile.id, hostId: entry.hostId };
@@ -1175,6 +1174,9 @@ const makaBridge = {
     },
     addAndEnable(input: DesktopRuntimeHostProfileAddInput) {
       return ipcRenderer.invoke('runtime-host-profiles:add-and-enable', input);
+    },
+    testConnection(input: DesktopRuntimeHostProfileAddInput) {
+      return ipcRenderer.invoke('runtime-host-profiles:test-connection', input);
     },
     remove(profileId: string) {
       return ipcRenderer.invoke('runtime-host-profiles:remove', profileId);

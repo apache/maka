@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   Banner,
   HStack,
@@ -51,6 +51,8 @@ import { RuntimeHostOnboardingDialog } from './runtime-host-onboarding-dialog.js
 import { RuntimeHostManagementDialog } from './runtime-host-management-dialog.js';
 
 type RemoteTransportKind = RuntimeHostRemoteTransport["kind"];
+type RemoteHostDraft = ReturnType<typeof createRemoteHostDraft>;
+type DraftField = keyof ReturnType<typeof validateDraft>;
 
 function createRemoteHostDraft() {
   return {
@@ -82,7 +84,22 @@ export function RuntimeHostProfilesSection(props: {
   const [showOnboarding, setShowOnboarding] = useState(false);
   const [managedProfile, setManagedProfile] = useState<RemoteRuntimeHostProfile>();
   const [switching, setSwitching] = useState(false);
+  const [testing, setTesting] = useState(false);
+  const [testResult, setTestResult] = useState<
+    Awaited<ReturnType<typeof window.maka.runtimeHostProfiles.testConnection>>
+  >();
+  const [testInvalidated, setTestInvalidated] = useState(false);
   const [draft, setDraft] = useState(createRemoteHostDraft);
+  const draftRevision = useRef(0);
+  const validation = validateDraft(draft, copy);
+  const firstInvalid = Object.values(validation)[0];
+
+  function updateDraft(update: (value: RemoteHostDraft) => RemoteHostDraft) {
+    draftRevision.current += 1;
+    setDraft(update);
+    if (testResult) setTestInvalidated(true);
+    setTestResult(undefined);
+  }
 
   const reload = useCallback(async () => {
     const next = await window.maka.runtimeHostProfiles.getSnapshot();
@@ -118,8 +135,51 @@ export function RuntimeHostProfilesSection(props: {
   }
 
   function toggleAdd() {
-    if (!showAdd) setDraft(createRemoteHostDraft());
+    if (!showAdd) {
+      setDraft(createRemoteHostDraft());
+      setTestResult(undefined);
+      setTestInvalidated(false);
+    }
     setShowAdd((value) => !value);
+  }
+
+  async function testConnection() {
+    if (Object.keys(validation).length > 0) return;
+    const revision = draftRevision.current;
+    setTesting(true);
+    try {
+      const result = await window.maka.runtimeHostProfiles.testConnection({
+        profile: {
+          id: draft.id,
+          name: draft.name,
+          kind: "remote",
+          transport: createTransport(draft),
+          rootId: draft.rootId,
+        },
+        credential: draft.credential,
+      });
+      if (!mountedRef.current || draftRevision.current !== revision) return;
+      setTestResult(result);
+      setTestInvalidated(false);
+      if (result.kind === "connected") toast.success(copy.testConnected);
+      else {
+        toast.error(
+          copy.testConnection,
+          copy.testFailed[result.stage],
+          `Runtime Host test stage: ${result.stage}`,
+        );
+      }
+    } catch {
+      if (mountedRef.current) {
+        toast.error(
+          copy.testConnection,
+          copy.testFailed.connection,
+          "Runtime Host test did not return a classified result",
+        );
+      }
+    } finally {
+      if (mountedRef.current) setTesting(false);
+    }
   }
 
   async function saveAndEnable() {
@@ -140,9 +200,13 @@ export function RuntimeHostProfilesSection(props: {
       if (!mountedRef.current) return;
       setSnapshot(result.snapshot);
       if (result.kind === "unavailable") {
+        setShowAdd(false);
+        setDraft(createRemoteHostDraft());
+        setTestResult(undefined);
+        setTestInvalidated(false);
         toast.error(
-          copy.selectFailed,
-          result.message,
+          copy.savedUnavailable,
+          copy.testFailed[result.stage],
           undefined,
           { profileId },
         );
@@ -150,15 +214,12 @@ export function RuntimeHostProfilesSection(props: {
       }
       setShowAdd(false);
       setDraft(createRemoteHostDraft());
-    } catch (error) {
+      setTestResult(undefined);
+      setTestInvalidated(false);
+    } catch {
       if (mountedRef.current) {
         await reload().catch(() => undefined);
-        toast.error(
-          copy.saveFailed,
-          settingsActionErrorMessage(error, locale),
-          undefined,
-          { profileId },
-        );
+        toast.error(copy.saveFailed, copy.testFailed.connection, undefined, { profileId });
       }
     } finally {
       if (mountedRef.current) setSwitching(false);
@@ -188,10 +249,10 @@ export function RuntimeHostProfilesSection(props: {
       if (!mountedRef.current) return;
       setSnapshot(next);
       const entry = next.entries.find((candidate) => candidate.profile.id === profileId);
-      if (entry?.readiness === "unavailable" && entry.message) {
+      if (entry?.readiness === "unavailable") {
         toast.error(
           copy.selectFailed,
-          entry.message,
+          copy.testFailed[entry.failureStage ?? "connection"],
           undefined,
           { profileId },
         );
@@ -299,7 +360,7 @@ export function RuntimeHostProfilesSection(props: {
             <SettingsRow
               label={copy.name}
               description={copy.nameHelp}
-              end={<TextInput label={copy.name} isLabelHidden value={draft.name} onChange={(name) => setDraft((value) => ({ ...value, name }))} />}
+              end={<TextInput label={copy.name} isLabelHidden isRequired value={draft.name} status={fieldStatus(validation.name)} onChange={(name) => updateDraft((value) => ({ ...value, name }))} />}
             />
             <SettingsField className="settingsRuntimeHostTransportField">
               <fieldset className="settingsRuntimeHostTransport">
@@ -311,7 +372,7 @@ export function RuntimeHostProfilesSection(props: {
                   layout="fill"
                   size="sm"
                   onChange={(transportKind) =>
-                    setDraft((value) => ({
+                    updateDraft((value) => ({
                       ...value,
                       transportKind: transportKind as RemoteTransportKind,
                     }))
@@ -328,29 +389,29 @@ export function RuntimeHostProfilesSection(props: {
                 <SettingsRow
                   label={copy.sshDestination}
                   description={copy.sshDestinationHelp}
-                  end={<TextInput label={copy.sshDestination} isLabelHidden value={draft.destination} placeholder="user@host.example" onChange={(destination) => setDraft((value) => ({ ...value, destination }))} />}
+                  end={<TextInput label={copy.sshDestination} isLabelHidden isRequired value={draft.destination} placeholder="user@host.example" status={fieldStatus(validation.destination)} onChange={(destination) => updateDraft((value) => ({ ...value, destination }))} />}
                 />
                 <SettingsRow
                   label={copy.sshPort}
                   description={copy.sshPortHelp}
-                  end={<TextInput label={copy.sshPort} isLabelHidden value={draft.sshPort} placeholder="22" onChange={(sshPort) => setDraft((value) => ({ ...value, sshPort }))} />}
+                  end={<TextInput label={copy.sshPort} isLabelHidden value={draft.sshPort} placeholder="22" status={fieldStatus(validation.sshPort)} onChange={(sshPort) => updateDraft((value) => ({ ...value, sshPort }))} />}
                 />
                 <SettingsRow
                   label={copy.remotePort}
                   description={copy.remotePortHelp}
-                  end={<TextInput label={copy.remotePort} isLabelHidden value={draft.remotePort} placeholder="8765" onChange={(remotePort) => setDraft((value) => ({ ...value, remotePort }))} />}
+                  end={<TextInput label={copy.remotePort} isLabelHidden isRequired value={draft.remotePort} placeholder="7443" status={fieldStatus(validation.remotePort)} onChange={(remotePort) => updateDraft((value) => ({ ...value, remotePort }))} />}
                 />
                 <SettingsRow
                   label={copy.websocketPath}
                   description={copy.websocketPathHelp}
-                  end={<TextInput label={copy.websocketPath} isLabelHidden value={draft.websocketPath} placeholder="/runtime-host" onChange={(websocketPath) => setDraft((value) => ({ ...value, websocketPath }))} />}
+                  end={<TextInput label={copy.websocketPath} isLabelHidden isRequired value={draft.websocketPath} placeholder="/runtime-host" status={fieldStatus(validation.websocketPath)} onChange={(websocketPath) => updateDraft((value) => ({ ...value, websocketPath }))} />}
                 />
               </>
             ) : (
               <SettingsRow
                 label={draft.transportKind === "tls" ? copy.url : copy.plaintextUrl}
                 description={draft.transportKind === "tls" ? copy.urlHelp : copy.plaintextUrlHelp}
-                end={<TextInput label={draft.transportKind === "tls" ? copy.url : copy.plaintextUrl} isLabelHidden value={draft.url} placeholder={draft.transportKind === "tls" ? "wss://host.example" : "ws://host.example"} onChange={(url) => setDraft((value) => ({ ...value, url }))} />}
+                end={<TextInput label={draft.transportKind === "tls" ? copy.url : copy.plaintextUrl} isLabelHidden isRequired value={draft.url} placeholder={draft.transportKind === "tls" ? "wss://host.example" : "ws://host.example"} status={fieldStatus(validation.url)} onChange={(url) => updateDraft((value) => ({ ...value, url }))} />}
               />
             )}
             {draft.transportKind === "plaintext" ? (
@@ -358,7 +419,7 @@ export function RuntimeHostProfilesSection(props: {
                 <SettingsRow
                   label={copy.plaintextAcknowledgement}
                   description={copy.plaintextAcknowledgementHelp}
-                  end={<Switch label={copy.plaintextAcknowledgement} isLabelHidden value={draft.plaintextAcknowledged} onChange={(plaintextAcknowledged) => setDraft((value) => ({ ...value, plaintextAcknowledged }))} />}
+                  end={<Switch label={copy.plaintextAcknowledgement} isLabelHidden value={draft.plaintextAcknowledged} onChange={(plaintextAcknowledged) => updateDraft((value) => ({ ...value, plaintextAcknowledged }))} />}
                 />
                 <Banner status="warning" title={copy.plaintextWarning} />
               </>
@@ -366,16 +427,24 @@ export function RuntimeHostProfilesSection(props: {
             <SettingsRow
               label={copy.rootId}
               description={copy.rootIdHelp}
-              end={<TextInput label={copy.rootId} isLabelHidden value={draft.rootId} onChange={(rootId) => setDraft((value) => ({ ...value, rootId }))} />}
+              end={<TextInput label={copy.rootId} isLabelHidden isRequired value={draft.rootId} status={fieldStatus(validation.rootId)} onChange={(rootId) => updateDraft((value) => ({ ...value, rootId }))} />}
             />
             <SettingsRow
               label={copy.credential}
               description={copy.credentialHelp}
-              end={<PasswordInput label={copy.credential} isLabelHidden value={draft.credential} onChange={(credential) => setDraft((value) => ({ ...value, credential }))} />}
+              end={<PasswordInput label={copy.credential} isLabelHidden isRequired value={draft.credential} status={fieldStatus(validation.credential)} onChange={(credential) => updateDraft((value) => ({ ...value, credential }))} />}
             />
+            {testResult ? (
+              <Banner
+                status={testResult.kind === "connected" ? "success" : "error"}
+                title={testResult.kind === "connected" ? copy.testConnected : copy.testFailed[testResult.stage]}
+              />
+            ) : null}
+            {testInvalidated ? <Banner status="warning" title={copy.testInvalidated} /> : null}
             <SettingsRow
               label={copy.add}
-              end={<Button variant="primary" size="sm" label={copy.saveAndEnable} isDisabled={switching || !draftComplete(draft)} clickAction={saveAndEnable} />}
+              description={firstInvalid ?? (testInvalidated ? copy.testInvalidated : undefined)}
+              end={<HStack gap={2} align="center"><Button variant="secondary" size="sm" label={copy.testConnection} isLoading={testing} isDisabled={switching || testing || Object.keys(validation).length > 0} clickAction={testConnection} /><Button variant="primary" size="sm" label={copy.saveAndEnable} isLoading={switching} isDisabled={switching || testing || Object.keys(validation).length > 0} clickAction={saveAndEnable} /></HStack>}
             />
           </>
         ) : null}
@@ -459,7 +528,7 @@ export function RuntimeHostProfilesSection(props: {
   );
 }
 
-function createTransport(draft: ReturnType<typeof createRemoteHostDraft>): RuntimeHostRemoteTransport {
+function createTransport(draft: RemoteHostDraft): RuntimeHostRemoteTransport {
   if (draft.transportKind === "tls") return { kind: "tls", url: draft.url };
   if (draft.transportKind === "plaintext") {
     return {
@@ -477,20 +546,30 @@ function createTransport(draft: ReturnType<typeof createRemoteHostDraft>): Runti
   };
 }
 
-function draftComplete(draft: ReturnType<typeof createRemoteHostDraft>): boolean {
-  if ([draft.name, draft.rootId, draft.credential].some((value) => !value.trim())) return false;
+function validateDraft(
+  draft: RemoteHostDraft,
+  copy: ReturnType<typeof getSettingsProjectsCopy>["runtimeHost"],
+): Partial<Record<"name" | "url" | "destination" | "sshPort" | "remotePort" | "websocketPath" | "plaintextAcknowledged" | "rootId" | "credential", string>> {
+  const errors: Partial<Record<DraftField, string>> = {};
+  if (!draft.name.trim()) errors.name = copy.fieldRequired;
+  if (!/^[a-f0-9]{64}$/.test(draft.rootId)) errors.rootId = copy.invalidRootId;
+  if (!draft.credential.trim() || /\s/.test(draft.credential)) errors.credential = copy.invalidCredential;
   if (draft.transportKind === "ssh") {
-    return Boolean(
-      draft.destination.trim() &&
-      validPort(draft.remotePort) &&
-      validWebSocketPath(draft.websocketPath) &&
-      (!draft.sshPort.trim() || validPort(draft.sshPort)),
-    );
+    if (!validSshDestination(draft.destination)) errors.destination = copy.invalidSshDestination;
+    if (draft.sshPort.trim() && !validPort(draft.sshPort)) errors.sshPort = copy.invalidPort;
+    if (!validPort(draft.remotePort)) errors.remotePort = copy.invalidPort;
+    if (!validWebSocketPath(draft.websocketPath)) errors.websocketPath = copy.invalidWebsocketPath;
+  } else if (!draft.url.trim()) {
+    errors.url = copy.fieldRequired;
   }
-  return Boolean(
-    draft.url.trim() &&
-    (draft.transportKind !== "plaintext" || draft.plaintextAcknowledged),
-  );
+  if (draft.transportKind === "plaintext" && !draft.plaintextAcknowledged) {
+    errors.plaintextAcknowledged = copy.plaintextAcknowledgementHelp;
+  }
+  return errors;
+}
+
+function fieldStatus(message: string | undefined) {
+  return message ? { type: "error" as const, message } : undefined;
 }
 
 function validPort(value: string): boolean {
@@ -500,4 +579,14 @@ function validPort(value: string): boolean {
 
 function validWebSocketPath(value: string): boolean {
   return isCanonicalRuntimeHostWebSocketPath(value);
+}
+
+function validSshDestination(value: string): boolean {
+  const destination = value.trim();
+  return (
+    destination.length > 0 &&
+    destination.length <= 512 &&
+    !destination.startsWith("-") &&
+    !/\s|[\u0000-\u001f\u007f]/u.test(destination)
+  );
 }

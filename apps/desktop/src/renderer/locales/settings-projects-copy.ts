@@ -73,6 +73,17 @@ export type SettingsProjectsCopy = {
     rootIdHelp: string;
     credential: string;
     credentialHelp: string;
+    fieldRequired: string;
+    invalidSshDestination: string;
+    invalidPort: string;
+    invalidWebsocketPath: string;
+    invalidRootId: string;
+    invalidCredential: string;
+    testConnection: string;
+    testConnected: string;
+    testFailed: Record<import('../../preload/bridge-contract.js').DesktopRuntimeHostProfileTestStage, string>;
+    testInvalidated: string;
+    savedUnavailable: string;
     saveAndEnable: string;
     defaultBadge: string;
     defaultDisableHelp: string;
@@ -289,6 +300,25 @@ const SETTINGS_PROJECTS_COPY_BY_LOCALE = {
       rootIdHelp: '来自远程 service 的 ready 输出，用于确认连接的是预期 Host',
       credential: '访问凭据',
       credentialHelp: '在远程机器使用 desktop-client preset 签发',
+      fieldRequired: '此项为必填项',
+      invalidSshDestination: '请输入有效的 OpenSSH 目标或 SSH config 别名',
+      invalidPort: '请输入 1 到 65535 之间的整数端口',
+      invalidWebsocketPath: '请输入以 / 开头的规范 WebSocket 路径',
+      invalidRootId: '请输入 64 位小写十六进制 State Root ID',
+      invalidCredential: '凭据不能为空，且不能包含空白字符',
+      testConnection: '测试连接',
+      testConnected: '连接测试通过',
+      testFailed: {
+        ssh_configuration: 'SSH 配置不可用。请检查 destination、SSH 端口和额外端口转发。',
+        ssh_tunnel: 'SSH tunnel 未建立。请完成 SSH 提示或检查密钥和认证。',
+        credential: 'Runtime Host 拒绝了访问凭据。请重新签发并粘贴凭据。',
+        state_root: '连接到的 Runtime Host 与填写的 State Root ID 不一致。',
+        compatibility: 'Desktop 与 Runtime Host 版本不兼容。请更新并重启远程 Host。',
+        endpoint: '无法访问远程 Runtime Host。请确认它正在监听远程 Host 端口。',
+        connection: 'Runtime Host 握手失败。请确认 SSH tunnel 已连到远程 Host 端口，WebSocket 路径正确且远程 Host 正在运行。',
+      },
+      testInvalidated: '连接设置已变更，请重新测试。',
+      savedUnavailable: '已保存，但无法连接。可在远程 Host 列表中重试。',
       saveAndEnable: '保存并启用',
       defaultBadge: '默认',
       defaultDisableHelp: '先选择另一个默认 Host，才能停用此 Host',
@@ -511,6 +541,25 @@ const SETTINGS_PROJECTS_COPY_BY_LOCALE = {
       rootIdHelp: 'Copied from the remote service ready output to verify the expected Host',
       credential: 'Access credential',
       credentialHelp: 'Issue it on the remote machine with the desktop-client preset',
+      fieldRequired: 'This field is required',
+      invalidSshDestination: 'Enter a valid OpenSSH destination or SSH config alias',
+      invalidPort: 'Enter an integer port between 1 and 65535',
+      invalidWebsocketPath: 'Enter a canonical WebSocket path beginning with /',
+      invalidRootId: 'Enter a 64-character lowercase hexadecimal State Root ID',
+      invalidCredential: 'The credential cannot be empty or contain whitespace',
+      testConnection: 'Test connection',
+      testConnected: 'Connection test passed',
+      testFailed: {
+        ssh_configuration: 'SSH configuration is unavailable. Check the destination, SSH port, and extra forwarding.',
+        ssh_tunnel: 'The SSH tunnel could not be established. Complete SSH prompts or check key authentication.',
+        credential: 'Runtime Host rejected the access credential. Issue and paste a new credential.',
+        state_root: 'The connected Runtime Host does not match the State Root ID.',
+        compatibility: 'Desktop and Runtime Host are incompatible. Update and restart the remote Host.',
+        endpoint: 'The remote Runtime Host could not be reached. Confirm it is listening on the Remote Host port.',
+        connection: 'The Runtime Host handshake failed. Confirm the SSH tunnel reaches the Remote Host port, the WebSocket path is correct, and the remote Host is running.',
+      },
+      testInvalidated: 'Connection settings changed. Test again.',
+      savedUnavailable: 'Saved, but could not connect. Retry from the remote Host list.',
       saveAndEnable: 'Save and enable',
       defaultBadge: 'Default',
       defaultDisableHelp: 'Choose another default Host before disabling this Host',
