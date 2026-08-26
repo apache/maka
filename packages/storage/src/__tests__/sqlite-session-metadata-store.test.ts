@@ -80,6 +80,7 @@ describe('SqliteSessionMetadataStore', () => {
         DROP TABLE IF EXISTS message_admissions;
         DROP TABLE external_conversation_release_receipts;
         DROP TABLE external_conversation_bindings;
+        DROP TABLE external_conversation_source_event_receipts;
         DROP INDEX session_metadata_by_external_origin;
         ALTER TABLE session_metadata DROP COLUMN external_adapter_id;
         ALTER TABLE session_metadata DROP COLUMN external_source_session_id;
@@ -608,6 +609,7 @@ describe('SqliteSessionMetadataStore', () => {
         legacy.exec(`
           DROP TABLE external_conversation_release_receipts;
           DROP TABLE external_conversation_bindings;
+          DROP TABLE external_conversation_source_event_receipts;
         `);
       } finally {
         legacy.close();
@@ -824,6 +826,7 @@ describe('SqliteSessionMetadataStore', () => {
           UPDATE session_metadata_schema SET version = 26 WHERE scope = 'session_metadata';
           DROP TABLE external_conversation_release_receipts;
           DROP TABLE external_conversation_bindings;
+          DROP TABLE external_conversation_source_event_receipts;
         `);
         legacy
           .prepare(
