@@ -20,6 +20,7 @@
 use std::path::Path;
 
 use libp2p::identity;
+#[cfg(unix)]
 use tokio::io::AsyncWriteExt as _;
 
 use super::{PeerError, native_error};
