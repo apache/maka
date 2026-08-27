@@ -25,6 +25,7 @@ import {
   createReadStream,
   existsSync,
   linkSync,
+  lstatSync,
   mkdirSync,
   mkdtempSync,
   openSync,
@@ -45,6 +46,31 @@ const requiredReleaseDocuments = ['DISCLAIMER-WIP', 'LICENSE', 'NOTICE'];
 const requiredRootFiles = [...requiredReleaseDocuments, 'package.json', 'package-lock.json'];
 const forbiddenSegments = new Set(['.agents', '.claude', '.git', '.maka-shots', 'node_modules']);
 const forbiddenRootFiles = new Set(['maka-proposal-zh-review.txt']);
+const knownNonCategoryXLicenses = new Set([
+  '(AFL-2.1 OR BSD-3-Clause)',
+  '(MIT OR CC0-1.0)',
+  '(MPL-2.0 OR Apache-2.0)',
+  '(WTFPL OR MIT)',
+  '0BSD',
+  'Apache-2.0',
+  'BSD',
+  'BSD-2-Clause',
+  'BSD-3-Clause',
+  'BlueOak-1.0.0',
+  'CC-BY-4.0',
+  'CC0-1.0',
+  'ISC',
+  'MIT',
+  'MIT OR Apache-2.0',
+  'MPL-2.0',
+  'OFL-1.1',
+  'Public Domain',
+  'Python-2.0',
+  'Unlicense',
+  'WTFPL',
+  'WTFPL OR ISC',
+]);
+const categoryXLicensePattern = /(?:^|[^A-Za-z])(?:A?GPL|LGPL)-?\d/i;
 const maxCommandBuffer = 64 * 1024 * 1024;
 const rejectedGpgStatuses = new Set([
   'BADSIG',
@@ -190,7 +216,7 @@ export async function verifySourceCandidate({ archivePath, keysPath }) {
     maxBuffer: maxCommandBuffer,
   }).split(/\r?\n/);
   validateArchiveEntries(entries, identity.rootDirectory);
-  validateArchiveContents(archivePath, identity);
+  validateArchiveContents(archivePath, identity, entries);
 
   return { archivePath, digest, rootDirectory: identity.rootDirectory, version: identity.version };
 }
@@ -456,39 +482,222 @@ async function sha512(path) {
   return hash.digest('hex');
 }
 
-function validateArchiveContents(archivePath, identity) {
-  for (const requiredFile of requiredReleaseDocuments) {
-    const contents = execTar(archivePath, ['-xOzf', `${identity.rootDirectory}/${requiredFile}`], {
-      encoding: 'utf8',
-      maxBuffer: maxCommandBuffer,
+function validateArchiveContents(archivePath, identity, entries) {
+  const temporaryRoot = mkdtempSync(join(tmpdir(), 'maka-asf-contents-'));
+  try {
+    execTar(archivePath, ['-xzf', '-C', temporaryRoot], { stdio: 'ignore' });
+    const candidateRoot = join(temporaryRoot, identity.rootDirectory);
+    for (const entry of entries.filter(Boolean)) {
+      const path = join(temporaryRoot, entry);
+      const type = lstatSync(path);
+      if (!type.isDirectory() && !type.isFile()) {
+        throw new Error(`Unsupported archive entry type: ${entry}`);
+      }
+    }
+
+    for (const requiredFile of requiredReleaseDocuments) {
+      const contents = readFileSync(join(candidateRoot, requiredFile), 'utf8');
+      if (!contents.trim()) throw new Error(`${requiredFile} is empty`);
+      if (
+        requiredFile === 'DISCLAIMER-WIP' &&
+        (!contents.includes('Apache Maka') || !contents.includes('incubation'))
+      ) {
+        throw new Error('DISCLAIMER-WIP does not identify Apache Maka as an incubating project');
+      }
+    }
+
+    const packageJson = JSON.parse(readFileSync(join(candidateRoot, 'package.json'), 'utf8'));
+    const packageLock = JSON.parse(readFileSync(join(candidateRoot, 'package-lock.json'), 'utf8'));
+    validatePackageVersions({
+      packageJson,
+      packageLock,
+      source: basename(archivePath),
+      version: identity.version,
     });
-    if (!contents.trim()) throw new Error(`${requiredFile} is empty`);
-    if (
-      requiredFile === 'DISCLAIMER-WIP' &&
-      (!contents.includes('Apache Maka') || !contents.includes('incubation'))
-    ) {
-      throw new Error('DISCLAIMER-WIP does not identify Apache Maka as an incubating project');
+    validateNodePackageInputs(candidateRoot, identity, entries);
+    validateNonTextInputs(candidateRoot, identity, entries);
+  } finally {
+    rmSync(temporaryRoot, { force: true, recursive: true });
+  }
+}
+
+function validateNodePackageInputs(candidateRoot, identity, entries) {
+  const files = entries.filter((entry) => entry && !entry.endsWith('/'));
+  const readEntry = (entry) =>
+    readFileSync(join(candidateRoot, entry.slice(`${identity.rootDirectory}/`.length)), 'utf8');
+  const noticeLicenses = new Map();
+  for (const entry of files.filter((name) => name.endsWith('THIRD_PARTY_NOTICES.txt'))) {
+    for (const block of readEntry(entry).split(/\n={20,}\n/u)) {
+      const packageKey = /^Package: (.+)$/mu.exec(block)?.[1];
+      const license = /^Selected license: (.+)$/mu.exec(block)?.[1];
+      if (!packageKey || !license) continue;
+      const previous = noticeLicenses.get(packageKey);
+      if (previous && previous !== license) {
+        throw new Error(`Conflicting license inventory for ${packageKey}: ${previous}, ${license}`);
+      }
+      noticeLicenses.set(packageKey, license);
     }
   }
 
-  const packageJson = JSON.parse(
-    execTar(archivePath, ['-xOzf', `${identity.rootDirectory}/package.json`], {
-      encoding: 'utf8',
-      maxBuffer: maxCommandBuffer,
-    }),
-  );
-  const packageLock = JSON.parse(
-    execTar(archivePath, ['-xOzf', `${identity.rootDirectory}/package-lock.json`], {
-      encoding: 'utf8',
-      maxBuffer: maxCommandBuffer,
-    }),
-  );
-  validatePackageVersions({
-    packageJson,
-    packageLock,
-    source: basename(archivePath),
-    version: identity.version,
-  });
+  for (const entry of files.filter((name) => name.endsWith('/package.json'))) {
+    const manifest = parseArchiveJson(readEntry(entry), entry);
+    if (manifest.license) validateReleaseLicense(manifest.license, entry);
+    else if (manifest.private !== true) {
+      throw new Error(`Cannot safely classify package manifest without a license: ${entry}`);
+    }
+  }
+
+  for (const entry of files.filter((name) => /\/(?:pnpm-lock\.yaml|yarn\.lock)$/u.test(name))) {
+    throw new Error(`Cannot safely classify unsupported package lockfile: ${entry}`);
+  }
+  for (const entry of files.filter((name) =>
+    /\/(?:package-lock|npm-shrinkwrap)\.json$/u.test(name),
+  )) {
+    const lock = parseArchiveJson(readEntry(entry), entry);
+    if (!lock.packages || typeof lock.packages !== 'object' || Array.isArray(lock.packages)) {
+      throw new Error(`Cannot safely classify package lockfile without packages: ${entry}`);
+    }
+    for (const [lockPath, dependency] of Object.entries(lock.packages)) {
+      if (!lockPath || dependency?.link === true || !lockPath.includes('node_modules/')) continue;
+      const name = dependency.name ?? lockPath.slice(lockPath.lastIndexOf('node_modules/') + 13);
+      const version = dependency.version;
+      const packageKey = version ? `${name}@${version}` : undefined;
+      const license =
+        dependency.license ?? (packageKey ? noticeLicenses.get(packageKey) : undefined);
+      if (!license) {
+        throw new Error(
+          `Cannot safely classify ${name}${version ? `@${version}` : ''} in ${entry}`,
+        );
+      }
+      validateReleaseLicense(license, `${name}${version ? `@${version}` : ''} in ${entry}`);
+    }
+  }
+}
+
+function parseArchiveJson(contents, entry) {
+  try {
+    return JSON.parse(contents);
+  } catch (error) {
+    throw new Error(`Invalid JSON release input: ${entry}`, { cause: error });
+  }
+}
+
+function validateReleaseLicense(license, source) {
+  if (typeof license !== 'string' || !license.trim()) {
+    throw new Error(`Cannot safely classify the license for ${source}`);
+  }
+  if (categoryXLicensePattern.test(license)) {
+    throw new Error(`Category X dependency ${source} declares ${license}`);
+  }
+  if (!knownNonCategoryXLicenses.has(license)) {
+    throw new Error(`Cannot safely classify license ${license} for ${source}`);
+  }
+}
+
+function validateNonTextInputs(candidateRoot, identity, entries) {
+  const files = entries.filter((entry) => entry && !entry.endsWith('/'));
+  const readEntry = (entry) =>
+    readFileSync(join(candidateRoot, entry.slice(`${identity.rootDirectory}/`.length)));
+  const provenanceEntry = `${identity.rootDirectory}/docs/code-origin-audit.md`;
+  const provenancePatterns = files.includes(provenanceEntry)
+    ? sourceNonTextProvenancePatterns(readEntry(provenanceEntry).toString('utf8'))
+    : [];
+  const decoder = new TextDecoder('utf-8', { fatal: true });
+
+  for (const entry of files) {
+    const contents = readEntry(entry);
+    const compiledFormat = compiledArtifactFormat(contents);
+    if (compiledFormat) {
+      throw new Error(`Compiled artifact ${entry} has forbidden ${compiledFormat} content`);
+    }
+    try {
+      const text = decoder.decode(contents);
+      if (!/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/u.test(text)) continue;
+    } catch {
+      // Invalid UTF-8 continues to the candidate-owned provenance inventory.
+    }
+    const imageFormat = sourceImageFormat(contents);
+    const relativePath = entry.slice(`${identity.rootDirectory}/`.length);
+    if (
+      provenancePatterns.some((pattern) => sourceInventoryPatternMatches(pattern, relativePath))
+    ) {
+      continue;
+    }
+    throw new Error(
+      `Cannot safely classify non-text release input ${entry}${imageFormat ? ` (${imageFormat})` : ''}`,
+    );
+  }
+}
+
+function compiledArtifactFormat(contents) {
+  const prefix = contents.subarray(0, 8);
+  if (prefix.subarray(0, 4).equals(Buffer.from([0x7f, 0x45, 0x4c, 0x46]))) return 'ELF';
+  if (prefix.subarray(0, 2).equals(Buffer.from('MZ'))) return 'PE';
+  if (prefix.subarray(0, 4).equals(Buffer.from([0x00, 0x61, 0x73, 0x6d]))) return 'WASM';
+  if (
+    [
+      [0xfe, 0xed, 0xfa, 0xce],
+      [0xfe, 0xed, 0xfa, 0xcf],
+      [0xce, 0xfa, 0xed, 0xfe],
+      [0xcf, 0xfa, 0xed, 0xfe],
+      [0xca, 0xfe, 0xba, 0xbe],
+      [0xca, 0xfe, 0xba, 0xbf],
+    ].some((magic) => prefix.subarray(0, 4).equals(Buffer.from(magic)))
+  ) {
+    return 'Mach-O';
+  }
+  if (
+    [
+      [0x50, 0x4b, 0x03, 0x04],
+      [0x50, 0x4b, 0x05, 0x06],
+      [0x50, 0x4b, 0x07, 0x08],
+    ].some((magic) => prefix.subarray(0, 4).equals(Buffer.from(magic)))
+  ) {
+    return 'ZIP/JAR';
+  }
+  if (prefix.equals(Buffer.from('!<arch>\n'))) return 'ar archive';
+  return undefined;
+}
+
+function sourceImageFormat(contents) {
+  const prefix = contents.subarray(0, 12);
+  if (prefix.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]))) return 'PNG';
+  if (prefix.subarray(0, 3).equals(Buffer.from([0xff, 0xd8, 0xff]))) return 'JPEG';
+  if (
+    prefix
+      .subarray(0, 6)
+      .toString('ascii')
+      .match(/^GIF8[79]a$/u)
+  )
+    return 'GIF';
+  if (
+    prefix.subarray(0, 4).toString('ascii') === 'RIFF' &&
+    prefix.subarray(8, 12).toString('ascii') === 'WEBP'
+  ) {
+    return 'WebP';
+  }
+  return undefined;
+}
+
+function sourceNonTextProvenancePatterns(provenance) {
+  const section = provenance
+    .split('### Source archive non-text inventory\n', 2)[1]
+    ?.split('\n### ', 1)[0];
+  if (!section) return [];
+  return [...section.matchAll(/^- `([^`]+)`:/gmu)].map((match) => match[1]);
+}
+
+function sourceInventoryPatternMatches(pattern, path) {
+  const expression = pattern
+    .split('**')
+    .map((part) =>
+      part
+        .split('*')
+        .map((literal) => literal.replace(/[.+?^${}()|[\]\\]/gu, '\\$&'))
+        .join('[^/]*'),
+    )
+    .join('.*');
+  return new RegExp(`^${expression}$`, 'u').test(path);
 }
 
 function verifyDetachedSignature({ archivePath, keysPath, signaturePath }) {
