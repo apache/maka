@@ -85,8 +85,11 @@ export interface MakaPiTranscriptState {
    * live viewport and flips the default for entries created later. Entries
    * above the viewport keep their state — their rendered lines sit in terminal
    * scrollback, which cannot be rewritten, so resizing one would force pi-tui
-   * into a scrollback-clearing full redraw (#1097). In-memory only; never
-   * persisted to storage. Resume resets both to collapsed.
+   * into a scrollback-clearing full redraw (#1097). The deliberate exception:
+   * a second press within 2s of a collapse that stranded expanded entries
+   * above the viewport applies the default to them too and pays one such
+   * redraw knowingly (#4011, applyExpansionDefaultToAll). In-memory only;
+   * never persisted to storage. Resume resets both to collapsed.
    */
   expandAllTools: boolean;
   expandAllThinking: boolean;
@@ -516,52 +519,138 @@ function togglesInert(state: MakaPiTranscriptState): boolean {
  * future cards; false when the session has no tool card at all or the toggles
  * are inert pending a render.
  *
- * When every card sits above the viewport (e.g. a block whose own expansion
- * pushed its head into scrollback, #1134), nothing visible can change — those
- * lines are immutable short of a scrollback-clearing full redraw — so the
- * toggle still flips the default and appends a notice saying why.
+ * A collapse that strands expanded cards above the viewport (their heads sit
+ * in scrollback, #1134) appends a notice naming them and offering the #4011
+ * second-press escape: the runner arms a confirm window whenever
+ * hasExpandedEntriesAboveViewport still holds after the toggle. A partial
+ * collapse says so too — the keypress is never silent about what it skipped.
  */
 export function toggleAllToolExpansion(state: MakaPiTranscriptState): boolean {
-  if (togglesInert(state)) return false;
-  const candidates = state.entries.filter(
-    (entry): entry is MakaPiToolEntry => entry.kind === 'tool',
-  );
-  if (candidates.length === 0) return false;
-  state.expandAllTools = !state.expandAllTools;
-  const targets = candidates.filter((entry) => entryInLiveViewport(state, entry));
-  for (const entry of targets) entry.expanded = state.expandAllTools;
-  if (targets.length === 0) {
-    state.entries.push({
-      kind: 'notice',
-      level: 'info',
-      text: `No tool card in view to toggle — cards above stay as rendered in scrollback. New tool output starts ${state.expandAllTools ? 'expanded' : 'collapsed'}.`,
-    });
-  }
-  return true;
+  return toggleExpansion(state, 'tool');
 }
 
 /**
  * Toggle every thinking entry in the live viewport at once and flip the
  * default for future entries; false when there is no thinking at all or the
- * toggles are inert pending a render. Same head-scrolled contract as
- * toggleAllToolExpansion (#1134).
+ * toggles are inert pending a render. Same head-scrolled contract and #4011
+ * second-press escape as toggleAllToolExpansion.
  */
 export function toggleAllThinkingExpansion(state: MakaPiTranscriptState): boolean {
+  return toggleExpansion(state, 'thinking');
+}
+
+/**
+ * True when an entry of the kind above the live viewport remains expanded —
+ * the stranded blocks the #4011 confirmed collapse exists for. False while
+ * the toggles are inert (positions unknown after a wholesale replacement).
+ */
+export function hasExpandedEntriesAboveViewport(
+  state: MakaPiTranscriptState,
+  kind: ExpansionEntryKind,
+): boolean {
   if (togglesInert(state)) return false;
-  const candidates = state.entries.filter(
-    (entry): entry is MakaPiThinkingEntry =>
-      entry.kind === 'thinking' && Boolean(entry.text.trim()),
+  return expansionCandidates(state, kind).some(
+    (entry) => entry.expanded && !entryInLiveViewport(state, entry),
   );
+}
+
+/**
+ * Apply the current expansion default to every entry of the kind, including
+ * entries above the live viewport whose rendered lines sit in scrollback.
+ * This is #4011's confirmed second press: a true return means lines above
+ * the viewport change, so the caller MUST follow with pi-tui's
+ * `requestRender(true)` — a scrollback-clearing full redraw that re-anchors
+ * the viewport at the tail. (The differential path would reach the same
+ * redraw via `firstChanged < viewportTop`; forcing it keeps renderer and the
+ * layout's viewport shadow in agreement by construction.)
+ */
+export function applyExpansionDefaultToAll(
+  state: MakaPiTranscriptState,
+  kind: ExpansionEntryKind,
+): boolean {
+  const expanded = kind === 'tool' ? state.expandAllTools : state.expandAllThinking;
+  let changed = false;
+  for (const entry of expansionCandidates(state, kind)) {
+    if (entry.expanded === expanded) continue;
+    entry.expanded = expanded;
+    changed = true;
+  }
+  return changed;
+}
+
+export type ExpansionEntryKind = 'tool' | 'thinking';
+
+/**
+ * How close together two identical expansion-toggle presses read as the
+ * confirmed "collapse the stranded blocks above the viewport" gesture (#4011).
+ * Lives beside the notice copy so the offer text and the runner's confirm
+ * window share one authority and cannot drift.
+ */
+export const EXPANSION_COLLAPSE_CONFIRM_WINDOW_MS = 2_000;
+
+const EXPANSION_KIND_COPY: Record<
+  ExpansionEntryKind,
+  {
+    key: string;
+    singular: string;
+    plural: string;
+    noTargetsNotice: (expand: boolean) => string;
+    newOutput: string;
+  }
+> = {
+  tool: {
+    key: 'Ctrl+O',
+    singular: 'tool card',
+    plural: 'tool cards',
+    newOutput: 'tool output',
+    noTargetsNotice: (expand) =>
+      `No tool card in view to toggle — cards above stay as rendered in scrollback. New tool output starts ${expand ? 'expanded' : 'collapsed'}.`,
+  },
+  thinking: {
+    key: 'Ctrl+T',
+    singular: 'thinking block',
+    plural: 'thinking blocks',
+    newOutput: 'thinking',
+    noTargetsNotice: (expand) =>
+      `No thinking in view to toggle — thinking above stays as rendered in scrollback. New thinking starts ${expand ? 'expanded' : 'collapsed'}.`,
+  },
+};
+
+function expansionCandidates(
+  state: MakaPiTranscriptState,
+  kind: ExpansionEntryKind,
+): Array<MakaPiToolEntry | MakaPiThinkingEntry> {
+  return kind === 'tool'
+    ? state.entries.filter((entry): entry is MakaPiToolEntry => entry.kind === 'tool')
+    : state.entries.filter(
+        (entry): entry is MakaPiThinkingEntry =>
+          entry.kind === 'thinking' && Boolean(entry.text.trim()),
+      );
+}
+
+function toggleExpansion(state: MakaPiTranscriptState, kind: ExpansionEntryKind): boolean {
+  if (togglesInert(state)) return false;
+  const candidates = expansionCandidates(state, kind);
   if (candidates.length === 0) return false;
-  state.expandAllThinking = !state.expandAllThinking;
+  const expand = kind === 'tool' ? !state.expandAllTools : !state.expandAllThinking;
+  if (kind === 'tool') state.expandAllTools = expand;
+  else state.expandAllThinking = expand;
   const targets = candidates.filter((entry) => entryInLiveViewport(state, entry));
-  for (const entry of targets) entry.expanded = state.expandAllThinking;
-  if (targets.length === 0) {
+  for (const entry of targets) entry.expanded = expand;
+  const stuck = candidates.filter((entry) => entry.expanded !== expand);
+  const copy = EXPANSION_KIND_COPY[kind];
+  // The confirm offer exists for collapses only: expanded-above blocks are the
+  // screen-reclaiming pain (#4011), while collapsed-above blocks are compact
+  // and harmless in scrollback — and arming on expand would make a quick
+  // expand-then-collapse pair read the second press as "expand everything".
+  if (!expand && stuck.length > 0) {
     state.entries.push({
       kind: 'notice',
       level: 'info',
-      text: `No thinking in view to toggle — thinking above stays as rendered in scrollback. New thinking starts ${state.expandAllThinking ? 'expanded' : 'collapsed'}.`,
+      text: `${stuck.length} ${stuck.length === 1 ? copy.singular : copy.plural} above the view stayed expanded in scrollback — press ${copy.key} again within ${EXPANSION_COLLAPSE_CONFIRM_WINDOW_MS / 1000}s to collapse them too (this redraws the screen and clears pre-session scrollback). New ${copy.newOutput} starts collapsed.`,
     });
+  } else if (targets.length === 0) {
+    state.entries.push({ kind: 'notice', level: 'info', text: copy.noTargetsNotice(expand) });
   }
   return true;
 }
