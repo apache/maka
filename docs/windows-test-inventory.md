@@ -15,11 +15,11 @@ Locations intentionally omit line numbers so unrelated edits do not invalidate t
 
 | Classification | Count |
 |---|---:|
-| windows-backend-gap | 23 |
-| portable-candidate | 8 |
-| platform-contract | 35 |
+| windows-backend-gap | 24 |
+| portable-candidate | 9 |
+| platform-contract | 36 |
 
-Total Windows-excluded declarations: **66**
+Total Windows-excluded declarations: **69**
 
 ## Inventory
 
@@ -45,6 +45,8 @@ Total Windows-excluded declarations: **66**
 | windows-backend-gap | `packages/runtime-host/src/__tests__/host-kernel.test.ts` a non-reading Client overload is isolated to its connection | `process.platform === 'win32'` |
 | windows-backend-gap | `packages/runtime-host/src/__tests__/host-kernel.test.ts` reports one shutdown failure through close and closed while releasing ownership | `process.platform === 'win32'` |
 | platform-contract | `packages/runtime-host/src/__tests__/host-kernel.test.ts` publishes private POSIX endpoint and registration permissions | `process.platform === 'win32'` |
+| windows-backend-gap | `packages/runtime-host/src/__tests__/managed-deployment.test.ts` managed ownership survives deletion of the disposable control cache | `process.platform === 'win32' ? 'Windows does not unlink an open native lock file' : false` |
+| platform-contract | `packages/runtime-host/src/__tests__/managed-deployment.test.ts` keeps transient deployment record I/O retryable at the Candidate boundary | `process.platform === 'win32' ? 'POSIX file permissions are required to make the record unreadable' : false` |
 | windows-backend-gap | `packages/runtime-host/src/__tests__/memory-two-client-uds.test.ts` two UDS clients share one recoverable Memory authority across Host death | `process.platform === 'win32' ? 'POSIX process death gate' : false` |
 | windows-backend-gap | `packages/runtime-host/src/__tests__/project-catalog-two-client-uds.test.ts` two UDS clients converge on one Host-owned Project Catalog | `process.platform === 'win32'` |
 | windows-backend-gap | `packages/runtime-host/src/__tests__/runtime-policy-coordinator.test.ts` invalidates when a real published mutation loses its commit reply | `process.platform === 'win32'` |
@@ -81,6 +83,7 @@ Total Windows-excluded declarations: **66**
 | platform-contract | `packages/storage/src/__tests__/root-authority.test.ts` preserves unexpected marker I/O failures at the public authority boundary | `process.platform === 'win32' ? 'POSIX permissions are required to make the marker unreadable' : typeof process.getuid === 'function' && process.getuid() === 0` |
 | platform-contract | `packages/storage/src/__tests__/root-authority.test.ts` rejects FIFO marker paths without blocking root resolution | `process.platform === 'win32'` |
 | platform-contract | `packages/storage/src/__tests__/root-authority.test.ts` rejects a lock path that aliases another filesystem object | `process.platform === 'win32' ? 'Windows file-symlink permissions are not guaranteed in CI' : false` |
+| portable-candidate | `packages/storage/src/__tests__/root-authority.test.ts` cache deletion cannot create a second State Root owner | `process.platform === 'win32' ? 'Windows does not unlink an open native lock file' : false` |
 | platform-contract | `packages/storage/src/__tests__/root-authority.test.ts` validates an existing control directory without repairing its permissions | `process.platform === 'win32'` |
 | platform-contract | `packages/storage/src/__tests__/runtime-policy-stores.test.ts` reports unknown outcome when credential persistence fails after clearing verified state | `process.platform === 'win32' ? 'POSIX permissions are required to inject a persistence failure' : false` |
 | platform-contract | `packages/storage/src/__tests__/runtime-policy-stores.test.ts` validates proxy policy mutations before clearing and reports failed follow-up commits as unknown | `process.platform === 'win32' ? 'POSIX permissions are required to inject a persistence failure' : false` |

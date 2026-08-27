@@ -317,7 +317,7 @@ test('concurrent managed activations elect exactly one State Root owner', async 
 });
 
 test('managed ownership survives deletion of the disposable control cache', {
-  skip: process.platform === 'win32',
+  skip: process.platform === 'win32' ? 'Windows does not unlink an open native lock file' : false,
 }, async (t) => {
   const input = await fixture(t);
   const { claim } = await claimRuntimeHostManagedDeployment(
@@ -402,7 +402,10 @@ test('normalizes unreadable deployment records at the launch authority boundary'
 });
 
 test('keeps transient deployment record I/O retryable at the Candidate boundary', {
-  skip: process.platform === 'win32',
+  skip:
+    process.platform === 'win32'
+      ? 'POSIX file permissions are required to make the record unreadable'
+      : false,
 }, async (t) => {
   const input = await fixture(t);
   const { claim } = await claimRuntimeHostManagedDeployment(

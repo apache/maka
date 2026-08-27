@@ -761,7 +761,7 @@ describe('storage root authority', () => {
   });
 
   test('cache deletion cannot create a second State Root owner', {
-    skip: process.platform === 'win32',
+    skip: process.platform === 'win32' ? 'Windows does not unlink an open native lock file' : false,
   }, async () => {
     await withRoots(async ({ root }) => {
       const capability = await resolveStorageRoot({ path: root, kind: 'interactive' });
