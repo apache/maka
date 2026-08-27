@@ -259,6 +259,15 @@ async function runRuntimeHostSetupLocked(
       operatorPath: deployment.operatorPath,
       rootPath: config.rootPath,
       endpoint: websocketUrl(config.websocket),
+      ...(config.peer?.enabled
+        ? {
+            directPeer: {
+              peerId: config.peer.peerId,
+              routeHints: expandWildcardListenAddresses(config.peer.listenAddresses),
+              coordinationRelays: [...config.peer.coordinationRelays],
+            },
+          }
+        : {}),
     },
     deps,
     emit,
@@ -274,6 +283,12 @@ async function runRuntimeHostOnDemandSetupLocked(
     throw new RuntimeHostSetupError(
       'lifecycle_owner_exists',
       'On-demand setup cannot replace an existing managed service',
+    );
+  }
+  if (options.directPeer) {
+    throw new RuntimeHostSetupError(
+      'unsupported_lifecycle_configuration',
+      'On-demand setup does not support a Direct peer listener',
     );
   }
   try {
@@ -421,6 +436,11 @@ async function pairAndVerifyRuntimeHostSetup(
     readonly operatorPath: string;
     readonly rootPath: string;
     readonly endpoint: string;
+    readonly directPeer?: {
+      readonly peerId: string;
+      readonly routeHints: readonly string[];
+      readonly coordinationRelays: readonly string[];
+    };
   },
   deps: RuntimeHostSetupDeps,
   emit: SetupEmitter,
@@ -466,12 +486,12 @@ async function pairAndVerifyRuntimeHostSetup(
       endpoint: target.endpoint,
       credentialId: paired.credentialId,
       credential: paired.credential,
-      ...(config.peer?.enabled
+      ...(target.directPeer
         ? {
             directPeer: {
-              peerId: config.peer.peerId,
-              routeHints: expandWildcardListenAddresses(config.peer.listenAddresses),
-              coordinationRelays: [...config.peer.coordinationRelays],
+              peerId: target.directPeer.peerId,
+              routeHints: [...target.directPeer.routeHints],
+              coordinationRelays: [...target.directPeer.coordinationRelays],
             },
           }
         : {}),

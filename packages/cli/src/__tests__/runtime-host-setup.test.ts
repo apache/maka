@@ -165,6 +165,24 @@ test('on-demand setup installs one exact deployment without a service backend', 
   ) as { lifecycle: { mode: string }; listeners: { websocket: { port: number } } };
   assert.equal(persisted.lifecycle.mode, 'on_demand');
   assert.equal(persisted.listeners.websocket.port, 0);
+
+  const rejected: string[] = [];
+  assert.equal(
+    await runRuntimeHostSetupCli(
+      { ...options, directPeer: { coordinationRelays: [] } },
+      { ...overrides, writeOutput: (value) => rejected.push(value) },
+    ),
+    1,
+  );
+  const failure = rejected
+    .map(decodeRuntimeHostSetupFrame)
+    .find((frame) => frame?.kind === 'error');
+  assert.equal(
+    failure?.kind === 'error' ? failure.error.code : undefined,
+    'unsupported_lifecycle_configuration',
+  );
+  assert.equal(prepareCount, 1);
+  assert.equal(openCount, 1);
 });
 
 test('managed setup converges on one exact package and verified Client pairing', async (t) => {
