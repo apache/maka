@@ -57,6 +57,13 @@ import {
   clearCandidateStartupDiagnostic,
   selectCandidateStartupDiagnostic,
 } from '../control/startup-diagnostic.js';
+import {
+  decodeRuntimeHostManagedLaunchClaim,
+  readRuntimeHostLifecycleFence,
+  runtimeHostManagedLaunchRejection,
+  type RuntimeHostManagedLaunchClaim,
+  type RuntimeHostManagedLaunchRejection,
+} from '../operator/managed-deployment.js';
 import { abortable, waitForRuntimeHostReady } from './wait-for-ready.js';
 
 const DEFAULT_ELECTION_DEADLINE_MS = 45_000;
@@ -76,6 +83,7 @@ export interface ConnectOrSpawnRuntimeHostInput {
   connectTimeoutMs?: number;
   handshakeTimeoutMs?: number;
   candidateEntrypoint: string | URL;
+  managedLaunchClaim?: RuntimeHostManagedLaunchClaim;
   signal?: AbortSignal;
   /** Candidate-exit sink forwarded to the launcher; the embedder owns the sink. */
   onExit?: (details: CandidateExitDetails) => void;
@@ -133,7 +141,11 @@ export type ConnectOrSpawnRuntimeHostResult =
     }
   | {
       kind: 'failed';
-      reason: CandidateStartupFailure['reason'] | 'startup_timeout' | 'host_unresponsive';
+      reason:
+        | CandidateStartupFailure['reason']
+        | RuntimeHostManagedLaunchRejection
+        | 'startup_timeout'
+        | 'host_unresponsive';
       diagnostic?: RuntimeHostElectionDiagnostic;
     };
 
@@ -296,6 +308,10 @@ export async function connectOrSpawnRuntimeHostWithDependencies(
   requireHostCompositionId(input.compositionId);
   requireOptionalTimeout(input.connectTimeoutMs, 'connectTimeoutMs', 1);
   requireOptionalTimeout(input.handshakeTimeoutMs, 'handshakeTimeoutMs', 1);
+  const managedLaunchClaim =
+    input.managedLaunchClaim === undefined
+      ? undefined
+      : decodeRuntimeHostManagedLaunchClaim(input.managedLaunchClaim);
   input.signal?.throwIfAborted();
   const clientInstanceId = requireClientInstanceId(input.clientInstanceId ?? randomUUID());
   const capability = await resolveStorageRoot({ path: input.rootPath, kind: 'interactive' });
@@ -408,6 +424,13 @@ export async function connectOrSpawnRuntimeHostWithDependencies(
         !candidateInFlight &&
         now >= nextCandidateAt
       ) {
+        const managedLaunchRejection = runtimeHostManagedLaunchRejection(
+          await readRuntimeHostLifecycleFence(capability),
+          managedLaunchClaim,
+        );
+        if (managedLaunchRejection !== undefined) {
+          return { kind: 'failed', reason: managedLaunchRejection };
+        }
         try {
           const remaining = deadline - performance.now();
           if (remaining <= 0) break;
@@ -417,6 +440,7 @@ export async function connectOrSpawnRuntimeHostWithDependencies(
             entrypoint: input.candidateEntrypoint,
             initialConnectionTimeoutMs: Math.ceil(remaining),
             ...(input.generation === undefined ? {} : { generation: input.generation }),
+            ...(managedLaunchClaim === undefined ? {} : { managedLaunchClaim }),
             ...(input.onExit === undefined ? {} : { onExit: input.onExit }),
           });
           candidateLaunches.add(launch);

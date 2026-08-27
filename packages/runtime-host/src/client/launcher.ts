@@ -25,6 +25,7 @@ import {
   candidateStartupFailureForExitCode,
   type CandidateStartupFailureReport,
 } from '../candidate-startup-failure.js';
+import type { RuntimeHostManagedLaunchClaim } from '../operator/managed-deployment.js';
 import { RUNTIME_HOST_STDERR_PIPE_ENV } from '../process-diagnostics.js';
 
 const CANDIDATE_STDERR_MAX_BYTES = 4 * 1024;
@@ -42,6 +43,7 @@ export interface DetachedCandidateInput {
   initialConnectionTimeoutMs?: number;
   idleGraceMs?: number;
   handshakeTimeoutMs?: number;
+  managedLaunchClaim?: RuntimeHostManagedLaunchClaim;
   executable?: string;
   entrypoint: string | URL;
   env?: NodeJS.ProcessEnv;
@@ -136,6 +138,14 @@ function spawnCandidate(
   appendArgument(args, '--idle-grace-ms', input.idleGraceMs);
   appendArgument(args, '--handshake-timeout-ms', input.handshakeTimeoutMs);
   appendArgument(args, '--generation', input.generation);
+  if (input.managedLaunchClaim !== undefined) {
+    appendArgument(args, '--managed-deployment-id', input.managedLaunchClaim.deploymentId);
+    appendArgument(args, '--managed-config-revision', input.managedLaunchClaim.configRevision);
+    appendArgument(args, '--managed-lifecycle-mode', input.managedLaunchClaim.lifecycle.mode);
+    if (input.managedLaunchClaim.lifecycle.mode === 'supervised') {
+      appendArgument(args, '--managed-provider', input.managedLaunchClaim.lifecycle.provider);
+    }
+  }
 
   // spawn() commits the side effect synchronously; spawned only reports that commit's outcome.
   const child = spawn(executable, args, {

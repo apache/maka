@@ -23,6 +23,7 @@ import { parseInteractiveRuntimeHostCandidateArguments } from '../candidate-cli.
 
 const ROOT_ID = 'a'.repeat(64);
 const STARTUP_ATTEMPT_ID = '00000000-0000-4000-8000-000000000001';
+const DEPLOYMENT_ID = '00000000-0000-4000-8000-000000000002';
 
 test('parses the production candidate flags', () => {
   const parsed = parseInteractiveRuntimeHostCandidateArguments([
@@ -39,6 +40,66 @@ test('parses the production candidate flags', () => {
   assert.equal(parsed.expectedRootId, ROOT_ID);
   assert.equal(parsed.startupAttemptId, STARTUP_ATTEMPT_ID);
   assert.equal(parsed.idleGraceMs, 10_000);
+});
+
+test('parses a complete managed on-demand launch claim', () => {
+  const parsed = parseInteractiveRuntimeHostCandidateArguments([
+    '--root',
+    '/tmp/workspace',
+    '--expected-root-id',
+    ROOT_ID,
+    '--startup-attempt-id',
+    STARTUP_ATTEMPT_ID,
+    '--managed-deployment-id',
+    DEPLOYMENT_ID,
+    '--managed-config-revision',
+    '7',
+    '--managed-lifecycle-mode',
+    'on_demand',
+  ]);
+
+  assert.deepEqual(parsed.managedLaunchClaim, {
+    deploymentId: DEPLOYMENT_ID,
+    configRevision: 7,
+    lifecycle: { mode: 'on_demand' },
+  });
+});
+
+test('rejects partial or contradictory managed launch claims', () => {
+  assert.throws(
+    () =>
+      parseInteractiveRuntimeHostCandidateArguments([
+        '--root',
+        '/tmp/workspace',
+        '--expected-root-id',
+        ROOT_ID,
+        '--startup-attempt-id',
+        STARTUP_ATTEMPT_ID,
+        '--managed-deployment-id',
+        DEPLOYMENT_ID,
+      ]),
+    /complete managed launch claim/u,
+  );
+  assert.throws(
+    () =>
+      parseInteractiveRuntimeHostCandidateArguments([
+        '--root',
+        '/tmp/workspace',
+        '--expected-root-id',
+        ROOT_ID,
+        '--startup-attempt-id',
+        STARTUP_ATTEMPT_ID,
+        '--managed-deployment-id',
+        DEPLOYMENT_ID,
+        '--managed-config-revision',
+        '7',
+        '--managed-lifecycle-mode',
+        'on_demand',
+        '--managed-provider',
+        'systemd_user',
+      ]),
+    /cannot declare a supervisor provider/u,
+  );
 });
 
 // The Desktop E2E composition is selected by its own entry module, not by a

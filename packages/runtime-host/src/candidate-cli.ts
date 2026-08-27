@@ -19,6 +19,10 @@
 
 import type { InteractiveRuntimeHostCandidateOptions } from './server/candidate.js';
 import { isCandidateStartupAttemptId } from './candidate-startup-failure.js';
+import {
+  decodeRuntimeHostManagedLaunchClaim,
+  type RuntimeHostManagedLaunchClaim,
+} from './operator/managed-deployment.js';
 
 export interface ParsedInteractiveRuntimeHostCandidateArguments
   extends InteractiveRuntimeHostCandidateOptions {
@@ -36,6 +40,10 @@ export function parseInteractiveRuntimeHostCandidateArguments(
     'idle-grace-ms',
     'handshake-timeout-ms',
     'generation',
+    'managed-deployment-id',
+    'managed-config-revision',
+    'managed-lifecycle-mode',
+    'managed-provider',
   ]);
   const values = new Map<string, string>();
   for (let index = 0; index < args.length; index += 2) {
@@ -60,6 +68,7 @@ export function parseInteractiveRuntimeHostCandidateArguments(
   if (!isCandidateStartupAttemptId(startupAttemptId)) {
     throw new Error('Runtime Host candidate requires a valid --startup-attempt-id');
   }
+  const managedLaunchClaim = readManagedLaunchClaim(values);
   return {
     rootPath,
     expectedRootId,
@@ -68,7 +77,50 @@ export function parseInteractiveRuntimeHostCandidateArguments(
     idleGraceMs: readOptionalInteger(values, 'idle-grace-ms'),
     handshakeTimeoutMs: readOptionalInteger(values, 'handshake-timeout-ms'),
     ...(values.has('generation') ? { generation: readGeneration(values) } : {}),
+    ...(managedLaunchClaim === undefined ? {} : { managedLaunchClaim }),
   };
+}
+
+function readManagedLaunchClaim(
+  values: ReadonlyMap<string, string>,
+): RuntimeHostManagedLaunchClaim | undefined {
+  const deploymentId = values.get('managed-deployment-id');
+  const rawRevision = values.get('managed-config-revision');
+  const lifecycleMode = values.get('managed-lifecycle-mode');
+  const provider = values.get('managed-provider');
+  if (
+    deploymentId === undefined &&
+    rawRevision === undefined &&
+    lifecycleMode === undefined &&
+    provider === undefined
+  ) {
+    return undefined;
+  }
+  if (deploymentId === undefined || rawRevision === undefined || lifecycleMode === undefined) {
+    throw new Error('Runtime Host candidate requires a complete managed launch claim');
+  }
+  const configRevision = Number(rawRevision);
+  if (!Number.isSafeInteger(configRevision) || configRevision <= 0) {
+    throw new Error('Invalid --managed-config-revision');
+  }
+  if (lifecycleMode === 'on_demand') {
+    if (provider !== undefined) {
+      throw new Error('An on-demand Runtime Host candidate cannot declare a supervisor provider');
+    }
+    return decodeRuntimeHostManagedLaunchClaim({
+      deploymentId,
+      configRevision,
+      lifecycle: { mode: lifecycleMode },
+    });
+  }
+  if (lifecycleMode === 'supervised' && provider !== undefined) {
+    return decodeRuntimeHostManagedLaunchClaim({
+      deploymentId,
+      configRevision,
+      lifecycle: { mode: lifecycleMode, provider },
+    });
+  }
+  throw new Error('Invalid --managed-lifecycle-mode');
 }
 
 function readGeneration(values: Map<string, string>): string {

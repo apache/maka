@@ -18,11 +18,13 @@
  */
 
 import type { CandidateStartupFailureReason } from '../candidate-startup-failure.js';
+import type { RuntimeHostManagedLaunchRejection } from '../operator/managed-deployment.js';
 import type { RuntimeHostElectionDiagnostic } from './connect-or-spawn.js';
 import { RuntimeHostPermanentReconnectError } from './reconnect-lifecycle.js';
 
 export type RuntimeHostStartupFailureReason =
   | CandidateStartupFailureReason
+  | RuntimeHostManagedLaunchRejection
   | 'composition_mismatch'
   | 'startup_timeout'
   | 'host_unresponsive';
@@ -34,7 +36,8 @@ export class RuntimeHostStartupError extends RuntimeHostPermanentReconnectError 
     readonly reason:
       | 'stored_data_incompatible'
       | 'operational_state_migration_blocked'
-      | 'composition_mismatch',
+      | 'composition_mismatch'
+      | RuntimeHostManagedLaunchRejection,
     message: string,
   ) {
     super(message);
@@ -68,6 +71,31 @@ export function runtimeHostStartupError(
       return new RuntimeHostStartupError(
         reason,
         'This workspace belongs to a different Runtime Host composition. Diagnostic code: COMPOSITION_MISMATCH.',
+      );
+    case 'managed_root_requires_operator':
+      return new RuntimeHostStartupError(
+        reason,
+        'This workspace is managed by a Runtime Host operator. Activate it through the configured Host profile. Diagnostic code: MANAGED_ROOT_REQUIRES_OPERATOR.',
+      );
+    case 'deployment_fence_missing':
+      return new RuntimeHostStartupError(
+        reason,
+        'The managed Runtime Host deployment is missing its State Root lifecycle fence. Repair the deployment before connecting. Diagnostic code: DEPLOYMENT_FENCE_MISSING.',
+      );
+    case 'deployment_fence_mismatch':
+      return new RuntimeHostStartupError(
+        reason,
+        'The Runtime Host operator does not match the State Root lifecycle owner. Repair or explicitly migrate the deployment. Diagnostic code: DEPLOYMENT_FENCE_MISMATCH.',
+      );
+    case 'deployment_transition_in_progress':
+      return new RuntimeHostStartupError(
+        reason,
+        'The Runtime Host deployment is changing lifecycle owner. Retry after the operation completes. Diagnostic code: DEPLOYMENT_TRANSITION_IN_PROGRESS.',
+      );
+    case 'deployment_needs_repair':
+      return new RuntimeHostStartupError(
+        reason,
+        'The Runtime Host deployment could not prove a safe lifecycle owner. Run deployment repair before connecting. Diagnostic code: DEPLOYMENT_NEEDS_REPAIR.',
       );
     case 'startup_timeout':
       return new Error(

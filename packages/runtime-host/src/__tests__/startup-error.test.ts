@@ -36,6 +36,20 @@ test('presents migration blockers with a permanent previous-release recovery pat
   assert.match(error.message, /OPERATIONAL_STATE_MIGRATION_BLOCKED/u);
 });
 
+test('presents a managed root bypass as an operator-required permanent error', () => {
+  const error = runtimeHostStartupError('managed_root_requires_operator');
+  assert.ok(error instanceof RuntimeHostPermanentReconnectError);
+  assert.match(error.message, /configured Host profile/u);
+  assert.match(error.message, /MANAGED_ROOT_REQUIRES_OPERATOR/u);
+});
+
+test('presents an uncertain lifecycle owner as requiring repair', () => {
+  const error = runtimeHostStartupError('deployment_needs_repair');
+  assert.ok(error instanceof RuntimeHostPermanentReconnectError);
+  assert.match(error.message, /repair/u);
+  assert.match(error.message, /DEPLOYMENT_NEEDS_REPAIR/u);
+});
+
 test('keeps an unresponsive Host retryable and includes bounded diagnostics', () => {
   const error = runtimeHostStartupError('host_unresponsive', {
     deadlineMs: 45_000,

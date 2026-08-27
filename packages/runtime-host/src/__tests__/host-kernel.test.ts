@@ -59,6 +59,7 @@ import {
   readCandidateStartupDiagnostic,
   writeCandidateStartupDiagnostic,
 } from '../control/startup-diagnostic.js';
+import { claimRuntimeHostLifecycleFence } from '../operator/managed-deployment.js';
 import { removePosixEndpointDirectories } from './fixtures/endpoint-hygiene.js';
 import {
   decodeHostFrame,
@@ -157,6 +158,86 @@ function diagnosticRegistration(state: 'ready' | 'draining') {
 }
 
 describe('non-serving Runtime Host kernel', () => {
+  test('a managed State Root refuses an ordinary candidate launch before election', async () => {
+    await withHostPaths(async (paths) => {
+      const capability = await resolveStorageRoot({ path: paths.root, kind: 'interactive' });
+      await claimRuntimeHostLifecycleFence(capability, {
+        deploymentId: '00000000-0000-4000-8000-000000000001',
+        configRevision: 1,
+        lifecycle: { mode: 'on_demand' },
+      });
+      let launches = 0;
+
+      const result = await connectOrSpawnRuntimeHostWithDependencies(
+        {
+          rootPath: paths.root,
+          protocol: CURRENT_PROTOCOL,
+          compositionId: KERNEL_COMPOSITION.descriptor.id,
+          candidateEntrypoint: KERNEL_CANDIDATE_ENTRYPOINT,
+          electionDeadlineMs: 1_000,
+        },
+        {
+          random: () => 0.5,
+          connectHost: async () => ({
+            kind: 'unavailable',
+            reason: 'not_registered',
+            endpointConnected: false,
+          }),
+          launchCandidate: () => {
+            launches += 1;
+            throw new Error('managed root must not launch without its operator claim');
+          },
+        },
+      );
+
+      assert.deepEqual(result, {
+        kind: 'failed',
+        reason: 'managed_root_requires_operator',
+      });
+      assert.equal(launches, 0);
+    });
+  });
+
+  test('a matching managed claim reaches the existing candidate election', async () => {
+    await withHostPaths(async (paths) => {
+      const capability = await resolveStorageRoot({ path: paths.root, kind: 'interactive' });
+      const claim = {
+        deploymentId: '00000000-0000-4000-8000-000000000001',
+        configRevision: 1,
+        lifecycle: { mode: 'on_demand' as const },
+      };
+      await claimRuntimeHostLifecycleFence(capability, claim);
+      let launches = 0;
+
+      const result = await connectOrSpawnRuntimeHostWithDependencies(
+        {
+          rootPath: paths.root,
+          protocol: CURRENT_PROTOCOL,
+          compositionId: KERNEL_COMPOSITION.descriptor.id,
+          candidateEntrypoint: KERNEL_CANDIDATE_ENTRYPOINT,
+          managedLaunchClaim: claim,
+          electionDeadlineMs: 100,
+        },
+        {
+          random: () => 0.5,
+          connectHost: async () => ({
+            kind: 'unavailable',
+            reason: 'not_registered',
+            endpointConnected: false,
+          }),
+          launchCandidate: () => {
+            launches += 1;
+            return { spawned: new Promise<never>(() => undefined) };
+          },
+        },
+      );
+
+      assert.equal(result.kind, 'failed');
+      if (result.kind === 'failed') assert.equal(result.reason, 'startup_timeout');
+      assert.equal(launches, 1);
+    });
+  });
+
   test('reports a recovery failure when the election produces no ready Host', async () => {
     await withHostPaths(async (paths) => {
       const result = await connectOrSpawnRuntimeHostWithDependencies(

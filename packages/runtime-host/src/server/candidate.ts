@@ -18,6 +18,10 @@
  */
 
 import { resolveExistingStorageRoot, tryAcquireStateRootOwner } from '@maka/storage/root-authority';
+import {
+  assertRuntimeHostManagedLaunchAuthorized,
+  type RuntimeHostManagedLaunchClaim,
+} from '../operator/managed-deployment.js';
 import type { RuntimeHostCompositionSource } from './host-composition.js';
 import { RuntimeHostKernel } from './host-kernel.js';
 
@@ -28,6 +32,7 @@ export interface InteractiveRuntimeHostCandidateOptions {
   idleGraceMs?: number;
   handshakeTimeoutMs?: number;
   generation?: string;
+  managedLaunchClaim?: RuntimeHostManagedLaunchClaim;
 }
 
 export type InteractiveRuntimeHostCandidateResult =
@@ -43,6 +48,7 @@ export async function startInteractiveRuntimeHostCandidate(
     kind: 'interactive',
     expectedRootId: options.expectedRootId,
   });
+  await assertRuntimeHostManagedLaunchAuthorized(capability, options.managedLaunchClaim);
   const owner = await tryAcquireStateRootOwner(capability);
   if (!owner) return { kind: 'loser' };
   const host = await RuntimeHostKernel.start({
