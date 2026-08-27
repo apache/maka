@@ -87,7 +87,7 @@ test('stage builds the npm candidate from the exact product release commit', () 
   assert.match(bind, /PRODUCT_TAG: \$\{\{ needs\.authorize\.outputs\.product_tag \}\}/u);
 });
 
-test('finalize validates one exact stage attempt from the product tag', () => {
+test('finalize validates exact stage and Release attempts from the product tag', () => {
   const workflow = readWorkflow('release-cli-finalize.yml');
   const steps = workflowSteps(workflow);
   assert.match(workflow, /stage_run_attempt:[\s\S]*?required: true/u);
@@ -95,6 +95,8 @@ test('finalize validates one exact stage attempt from the product tag', () => {
   const checkoutIndex = workflow.indexOf('uses: actions/checkout@');
   assert.ok(loadIndex >= 0 && checkoutIndex > loadIndex);
   assert.match(workflow, /actions\/runs\/\$STAGE_RUN_ID\/attempts\/\$STAGE_RUN_ATTEMPT/u);
+  assert.match(workflow, /release_run_attempt:[\s\S]*?required: true/u);
+  assert.match(workflow, /actions\/runs\/\$RELEASE_RUN_ID\/attempts\/\$RELEASE_RUN_ATTEMPT/u);
   const checkout = namedStep(steps, 'Check out the current release verifier');
   assert.match(checkout, /ref: \$\{\{ github\.sha \}\}/u);
   const exactTag = namedStep(steps, 'Require the exact product tag');
@@ -108,6 +110,7 @@ test('finalize revalidates the live product release before trusting public npm b
   assert.match(record, /id: release/u);
   assert.match(record, /"\$GITHUB_OUTPUT"/u);
   const authority = namedStep(steps, 'Revalidate the product release authority');
+  assert.match(authority, /product-release-authority\.mjs verify-build-run/u);
   assert.match(authority, /product-release-authority\.mjs verify-draft/u);
   assert.ok(
     workflow.indexOf(authority) < workflow.indexOf('Fetch and verify the public registry bytes'),
@@ -123,6 +126,13 @@ test('finalize preserves npm evidence and owns the single product publication bo
   assert.match(workflow, /contents: write/u);
   assert.match(workflow, /product-release-artifacts\.mjs verify/u);
   assert.match(workflow, /product-release-authority\.mjs publish-draft/u);
+  const artifacts = namedStep(
+    workflowSteps(workflow),
+    'Download the exact verified Release run artifacts',
+  );
+  assert.match(artifacts, /run-id: \$\{\{ inputs\.release_run_id \}\}/u);
+  assert.match(artifacts, /release-\*-\$\{\{ inputs\.release_run_attempt \}\}/u);
+  assert.doesNotMatch(workflow, /gh release download/u);
   assert.doesNotMatch(workflow, /gh release edit|gh release create/u);
 });
 

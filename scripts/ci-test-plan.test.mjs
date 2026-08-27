@@ -113,7 +113,6 @@ test('release metadata selects only the gate that consumes it', () => {
 
 test('source legal authority and generated provenance select the ASF source gate', () => {
   for (const path of [
-    'apps/desktop/src/main/app-update-test-context.ts',
     'DISCLAIMER-WIP',
     'biome.jsonc',
     'patches/node-pty+1.2.0-beta.15.patch',
@@ -131,6 +130,7 @@ test('source legal authority and generated provenance select the ASF source gate
 
 test('release authority changes select their dedicated contract gate', () => {
   for (const path of [
+    'apps/desktop/src/main/app-update-test-context.ts',
     'apps/desktop/build/entitlements.mac.plist',
     'apps/desktop/electron-builder.config.mjs',
     'apps/desktop/package.json',

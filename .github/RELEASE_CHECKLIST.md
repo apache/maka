@@ -106,7 +106,8 @@ then rerun. If only the tag exists, the retry creates the missing Draft.
 
 Follow [the npm release runbook](../docs/cli-npm-release.md) against the exact product tag and Draft:
 
-1. Run **Stage CLI npm release** from `v<version>` and record its successful run ID and attempt.
+1. Record the successful **Release** workflow run ID and attempt that built the Draft assets. Run
+   **Stage CLI npm release** from `v<version>` and record its successful run ID and attempt.
 2. Inspect the staged tarball and provenance, then approve that exact stage with npm 2FA.
 3. Run **Finalize product release** from `v<version>`. Its first job verifies the public package
    bytes, provenance, signature, and release dist-tag.
@@ -114,8 +115,9 @@ Follow [the npm release runbook](../docs/cli-npm-release.md) against the exact p
 
 Keep the GitHub Release in Draft throughout this sequence. The final workflow job waits at the
 `product-release` Environment. Approve it only after every npm and cross-machine acceptance check
-has passed. It redownloads and verifies every Draft byte, then publishes the release and makes a
-stable release Latest in the same GitHub operation; prereleases remain non-Latest. Do not publish or
+has passed. It verifies the live Draft digests against the immutable artifacts from the exact
+successful Release run, then publishes the release and makes a stable release Latest in the same
+GitHub operation; prereleases remain non-Latest. Do not publish or
 change the Latest designation manually. A failed or rejected npm candidate requires a new product
 version; never publish the Draft to work around npm state.
 

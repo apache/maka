@@ -22,7 +22,6 @@ import { createReadStream } from 'node:fs';
 import { readFile, stat } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import { join } from 'node:path';
-import { parse as parseYaml } from 'yaml';
 import { parseProductReleaseVersion } from './release-version.mjs';
 
 export const DESKTOP_UPDATE_PROVIDER = Object.freeze({
@@ -32,11 +31,16 @@ export const DESKTOP_UPDATE_PROVIDER = Object.freeze({
   updaterCacheDirName: '@makadesktop-updater',
 });
 
-/** A stable successor lets both stable and prerelease candidates use one feed contract. */
+/** A stable successor lets stable, alpha, and beta candidates use one feed contract. */
 export function bumpedAutoupdateVersion(candidateVersion) {
   const { core, prerelease } = parseProductReleaseVersion(candidateVersion);
   const [major, minor, patch] = core;
   return prerelease.length > 0 ? `${major}.${minor}.${patch}` : `${major}.${minor}.${patch + 1n}`;
+}
+
+async function readYaml(path, read = readFile) {
+  const [source, { parse }] = await Promise.all([read(path, 'utf8'), import('yaml')]);
+  return parse(source);
 }
 
 function requireExactObject(actual, expected, subject) {
@@ -58,7 +62,7 @@ export async function assertPackagedUpdateConfiguration(resourcesPath, { read = 
   const path = join(resourcesPath, 'app-update.yml');
   let configuration;
   try {
-    configuration = parseYaml(await read(path, 'utf8'));
+    configuration = await readYaml(path, read);
   } catch (error) {
     throw new Error(`Packaged update configuration is unreadable: ${path}`, { cause: error });
   }
@@ -80,7 +84,7 @@ export async function verifyDesktopUpdateArtifacts({
   const metadataPath = join(directory, metadataName);
   let metadata;
   try {
-    metadata = parseYaml(await readFile(metadataPath, 'utf8'));
+    metadata = await readYaml(metadataPath);
   } catch (error) {
     throw new Error(`Desktop update metadata is unreadable: ${metadataPath}`, { cause: error });
   }

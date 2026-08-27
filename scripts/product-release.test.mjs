@@ -157,6 +157,30 @@ test('the product identity classifies prereleases once for every publication sur
   assert.equal(identity.tag, `v${version}`);
 });
 
+test('product prereleases use only updater-compatible alpha and beta channels', () => {
+  for (const version of ['1.2.3-alpha.1', '1.2.3-beta.2']) {
+    assert.equal(
+      resolveProductManifestIdentity({
+        rootManifest: { ...rootManifest, version },
+        desktopManifest: { version },
+        cliManifest: { version, bin: { maka: './dist/cli.js' } },
+      }).isPrerelease,
+      true,
+    );
+  }
+  for (const version of ['1.2.3-rc.1', '1.2.3-dev.1']) {
+    assert.throws(
+      () =>
+        resolveProductManifestIdentity({
+          rootManifest: { ...rootManifest, version },
+          desktopManifest: { version },
+          cliManifest: { version, bin: { maka: './dist/cli.js' } },
+        }),
+      /prerelease channel must be alpha or beta/u,
+    );
+  }
+});
+
 test('Desktop packaging derives the Runtime Host setup package from product manifests', async () => {
   const manifestIdentity = resolveProductManifestIdentity({
     rootManifest,
@@ -673,12 +697,22 @@ test('one product workflow gates one draft release on every required artifact', 
       String(step.uses).startsWith('actions/upload-artifact@'),
     );
     assert.equal(upload.with.path, '${{ runner.temp }}/release-assets');
+    assert.equal(upload.with['retention-days'], 30);
+    assert.match(upload.with.name, /release-.*\$\{\{ github\.run_attempt \}\}/u);
   }
   const verifyArtifacts = jobs.publish.steps.find(
     (step) => step.name === 'Verify the exact product artifact manifest',
   ).run;
   assert.match(verifyArtifacts, /product-release-artifacts\.mjs verify release-assets/u);
+  assert.doesNotMatch(verifyArtifacts, /sha256sum|find release-assets/u);
   assert.doesNotMatch(verifyArtifacts, /required=\(|Maka-\*|latest\*\.yml/u);
+  const installVerifier = jobs.publish.steps.findIndex(
+    (step) => step.name === 'Install the release verifier dependencies',
+  );
+  const verifyManifest = jobs.publish.steps.findIndex(
+    (step) => step.name === 'Verify the exact product artifact manifest',
+  );
+  assert.ok(installVerifier >= 0 && installVerifier < verifyManifest);
 
   const commands = Object.values(jobs)
     .flatMap((job) => job.steps ?? [])

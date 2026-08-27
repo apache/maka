@@ -25,6 +25,7 @@ import { join } from 'node:path';
 import test from 'node:test';
 import {
   assertDraftProductRelease,
+  assertProductReleaseWorkflowRun,
   assertPublishedProductRelease,
   publishDraftProductRelease,
   verifyDraftProductRelease,
@@ -36,14 +37,14 @@ test('Draft state and prerelease classification are one product Release contract
     ['v1.2.3-beta.1', true],
   ]) {
     assert.equal(
-      assertDraftProductRelease({ tagName: tag, isDraft: true, isPrerelease }, tag).tagName,
+      assertDraftProductRelease({ id: 42, tag, draft: true, prerelease: isPrerelease }, tag).tag,
       tag,
     );
   }
   assert.throws(
     () =>
       assertDraftProductRelease(
-        { tagName: 'v1.2.3', isDraft: false, isPrerelease: false },
+        { id: 42, tag: 'v1.2.3', draft: false, prerelease: false },
         'v1.2.3',
       ),
     /must remain a Draft/u,
@@ -51,7 +52,7 @@ test('Draft state and prerelease classification are one product Release contract
   assert.throws(
     () =>
       assertDraftProductRelease(
-        { tagName: 'v1.2.3-beta.1', isDraft: true, isPrerelease: false },
+        { id: 42, tag: 'v1.2.3-beta.1', draft: true, prerelease: false },
         'v1.2.3-beta.1',
       ),
     /prerelease state must be true/u,
@@ -61,18 +62,68 @@ test('Draft state and prerelease classification are one product Release contract
 test('published state keeps stable and prerelease classification exact', () => {
   assert.equal(
     assertPublishedProductRelease(
-      { tagName: 'v1.2.3', isDraft: false, isPrerelease: false },
+      { id: 42, tag: 'v1.2.3', draft: false, prerelease: false },
       'v1.2.3',
-    ).tagName,
+    ).tag,
     'v1.2.3',
   );
   assert.throws(
     () =>
       assertPublishedProductRelease(
-        { tagName: 'v1.2.3-beta.1', isDraft: false, isPrerelease: false },
+        { id: 42, tag: 'v1.2.3-beta.1', draft: false, prerelease: false },
         'v1.2.3-beta.1',
       ),
     /prerelease state/u,
+  );
+});
+
+test('Release workflow evidence binds an exact successful attempt to approved source', () => {
+  const sourceCommit = 'a'.repeat(40);
+  const run = {
+    id: 123,
+    run_attempt: 2,
+    path: '.github/workflows/release.yml',
+    event: 'workflow_dispatch',
+    status: 'completed',
+    conclusion: 'success',
+    head_sha: sourceCommit,
+    head_branch: 'v1.2.3-incubating-rc1',
+    head_repository: { full_name: 'apache/maka' },
+  };
+  assert.equal(
+    assertProductReleaseWorkflowRun({
+      run,
+      tag: 'v1.2.3',
+      sourceCommit,
+      repository: 'apache/maka',
+      runId: '123',
+      runAttempt: '2',
+    }),
+    run,
+  );
+  assert.throws(
+    () =>
+      assertProductReleaseWorkflowRun({
+        run: { ...run, head_sha: 'b'.repeat(40) },
+        tag: 'v1.2.3',
+        sourceCommit,
+        repository: 'apache/maka',
+        runId: '123',
+        runAttempt: '2',
+      }),
+    /does not match the approved product source/u,
+  );
+  assert.throws(
+    () =>
+      assertProductReleaseWorkflowRun({
+        run,
+        tag: 'v1.2.3',
+        sourceCommit,
+        repository: 'apache/maka',
+        runId: '0',
+        runAttempt: '2',
+      }),
+    /must be positive integers/u,
   );
 });
 
@@ -87,9 +138,11 @@ test('the live authority verifier binds the tag, main ancestry, and Draft Releas
     if (command === 'gh') {
       return {
         stdout: JSON.stringify({
+          databaseId: 42,
           tagName: 'v1.2.3',
           isDraft: true,
           isPrerelease: false,
+          assets: [],
         }),
       };
     }
@@ -114,7 +167,7 @@ test('the live authority verifier binds the tag, main ancestry, and Draft Releas
   );
   assert.deepEqual(calls.at(-1)[1].slice(-2), [
     '--json',
-    'databaseId,tagName,isDraft,isPrerelease',
+    'databaseId,tagName,isDraft,isPrerelease,assets',
   ]);
 });
 
@@ -156,16 +209,6 @@ test('publication verifies live asset digests before one Stable/Latest mutation'
           tagName: 'v1.2.3',
           isDraft: true,
           isPrerelease: false,
-        }),
-      };
-    }
-    if (command === 'gh' && args.includes('repos/apache/maka/releases/tags/v1.2.3')) {
-      return {
-        stdout: JSON.stringify({
-          id: 42,
-          tag_name: 'v1.2.3',
-          draft: true,
-          prerelease: false,
           assets: [{ name: 'artifact.zip', size: contents.length, digest }],
         }),
       };
@@ -196,9 +239,6 @@ test('publication verifies live asset digests before one Stable/Latest mutation'
   assert.ok(patchCall[1].includes('draft=false'));
   assert.ok(patchCall[1].includes('prerelease=false'));
   assert.ok(patchCall[1].includes('make_latest=true'));
-  assert.ok(
-    calls.findIndex(([, args]) => args.includes('repos/apache/maka/releases/tags/v1.2.3')) <
-      calls.indexOf(patchCall),
-  );
+  assert.ok(calls.every(([, args]) => !args.includes('repos/apache/maka/releases/tags/v1.2.3')));
   assert.equal(latestReads, 2);
 });

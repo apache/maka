@@ -51,10 +51,11 @@ The two workflow boundaries are:
    tarball, records that single tag commit and workflow run, enters the protected `npm-release`
    Environment, and submits it to npm staging through OIDC.
 2. [Finalize product release](../.github/workflows/release-cli-finalize.yml) accepts only the exact
-   successful Stage run and attempt, verifies the public registry bytes, signature, provenance, and
-   dist-tag, then waits at the protected `product-release` Environment. After independent Desktop
-   acceptance, approval makes it reverify every Draft asset and publish the GitHub Release together
-   with its Stable/Latest classification in one operation.
+   successful Stage run and Release build run attempts. It verifies the public registry bytes,
+   signature, provenance, dist-tag, and the live Draft digests against the immutable artifacts from
+   that Release run, then waits at the protected `product-release` Environment. After independent
+   Desktop acceptance, approval publishes the GitHub Release together with its Stable/Latest
+   classification in one operation.
 
 ## One-time control-plane configuration
 
@@ -199,13 +200,15 @@ not dist-tag mutations, and the release workflows must not gain a long-lived npm
 After npm reports the version as public:
 
 1. Open **Actions → Finalize product release → Run workflow** on `v<version>`.
-2. Enter the successful Stage run ID, its exact run attempt, and the version.
+2. Enter the successful Stage run ID and attempt, the successful Release build run ID and attempt,
+   and the version.
 3. Let the inspection job verify the public tarball bytes, checksum, inventory, npm signature,
    Trusted Publishing provenance, the release dist-tag, and that `next` is not older than `latest`.
 4. While the publication job waits for `product-release` approval, complete the product checklist's
    cross-machine acceptance against the Draft.
-5. Approve the Environment. Confirm the workflow redownloads and verifies every Draft artifact,
-   publishes it, and makes a stable release Latest without a separate manual action.
+5. Approve the Environment. Confirm the workflow matches every live Draft digest to the immutable
+   artifacts from the exact Release attempt, publishes it, and makes a stable release Latest without
+   a separate manual action.
 
 Check the resulting registry state:
 

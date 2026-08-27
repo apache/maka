@@ -43,9 +43,10 @@ source RC 阶段的 [npm 预检](../.github/ASF_NPM_RELEASE.md) 是更早执行�
 1. [Stage CLI npm release](../.github/workflows/release-cli-stage.yml) 解析已有的产品 tag 与 GitHub
    Release，checkout 该产品的精确 commit，构建并验证一个 immutable tarball，记录这个唯一的 tag commit 与 workflow run，进入受保护的 `npm-release` Environment，然后通过 OIDC 提交到 npm staging；
 2. [Finalize product release](../.github/workflows/release-cli-finalize.yml) 只接受精确的成功
-   Stage run 和 attempt，验证公共 registry 字节、signature、provenance 和 dist-tag，然后等待受保护的
-   `product-release` Environment；独立 Desktop 验收完成并批准后，它会重新验证 Draft 的每个
-   artifact，并在同一个操作中发布 GitHub Release 及其 Stable/Latest 分类。
+   Stage run attempt 和 Release build run attempt，验证公共 registry 字节、signature、provenance、
+   dist-tag，并将 live Draft digest 与该 Release run 的不可变 artifact 对比，然后等待受保护的
+   `product-release` Environment；独立 Desktop 验收完成并批准后，它会在同一个操作中发布 GitHub
+   Release 及其 Stable/Latest 分类。
 
 ## 一次性控制面配置
 
@@ -179,12 +180,13 @@ release workflow 不得获得长期 npm token。
 npm 显示该版本已经公开后：
 
 1. 在 `v<version>` 上打开 **Actions → Finalize product release → Run workflow**；
-2. 输入成功 Stage 的 run ID、精确 run attempt 和 version；
+2. 输入成功 Stage 的 run ID 与精确 attempt、成功 Release build 的 run ID 与精确 attempt，以及
+   version；
 3. 让 inspection job 验证公共 tarball 字节、checksum、inventory、npm signature、Trusted
    Publishing provenance、发布 dist-tag，并确认 `next` 不比 `latest` 更旧；
 4. publication job 等待 `product-release` 批准期间，针对 Draft 完成产品检查清单中的跨机器验收；
-5. 批准 Environment，并确认 workflow 重新下载并验证每个 Draft artifact，随后发布 Release；
-   stable release 会同时成为 Latest，不再需要单独人工操作。
+5. 批准 Environment，并确认 workflow 将每个 live Draft digest 与精确 Release attempt 的不可变
+   artifact 对比后发布 Release；stable release 会同时成为 Latest，不再需要单独人工操作。
 
 检查最终 registry 状态：
 
