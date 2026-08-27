@@ -1744,6 +1744,35 @@ function AppShellContent({
     [sessions, localProjects, sessionNavigation.commands],
   );
 
+  const firstSendObservationWaitersRef = useRef(new Map<string, {
+    promise: Promise<void>;
+    resolve: () => void;
+    reject: (error: Error) => void;
+  }>());
+  const activateSessionForFirstSend = useCallback((sessionId: string): Promise<void> => {
+    let waiter = firstSendObservationWaitersRef.current.get(sessionId);
+    if (!waiter) {
+      let resolve!: () => void;
+      let reject!: (error: Error) => void;
+      const promise = new Promise<void>((resolvePromise, rejectPromise) => {
+        resolve = resolvePromise;
+        reject = rejectPromise;
+      });
+      waiter = { promise, resolve, reject };
+      firstSendObservationWaitersRef.current.set(sessionId, waiter);
+    }
+    setNavSelection({ section: 'sessions' });
+    setActiveId(sessionId);
+    return waiter.promise;
+  }, [setActiveId, setNavSelection]);
+  useEffect(() => {
+    for (const [sessionId, waiter] of firstSendObservationWaitersRef.current) {
+      if (sessionId === activeId) continue;
+      firstSendObservationWaitersRef.current.delete(sessionId);
+      waiter.reject(new Error('The new Session was left before its event stream became ready'));
+    }
+  }, [activeId]);
+
   const { applyE2eFixture } = useStableActions(createAppShellE2eFixtureActions, {
     openSettingsSection,
     refreshSessions,
@@ -1778,6 +1807,7 @@ function AppShellContent({
     isShellSurfaceOwnerActive,
     messageRetryPendingRef,
     refreshSessions,
+    activateSessionForFirstSend,
     setActiveId,
     setMessageLoadErrorBySession,
     setMessageRetryPendingBySession,
@@ -1786,7 +1816,6 @@ function AppShellContent({
     updateTransientMessage,
     removeTransientMessage,
     transcriptRangeRef,
-    setNavSelection,
     setLiveTurnBySession,
     setInteractionBySession,
     onInteractionChanged: markInteractionChanged,
@@ -2312,6 +2341,11 @@ function AppShellContent({
     const next = completeLiveContentSeed(current, sessionId, expected);
     activeEventSeedRef.current = next;
     setActiveEventSeed(next);
+    const firstSendWaiter = firstSendObservationWaitersRef.current.get(sessionId);
+    if (firstSendWaiter) {
+      firstSendObservationWaitersRef.current.delete(sessionId);
+      firstSendWaiter.resolve();
+    }
     void retireCancelledTransientMessages(sessionId);
   };
   useActiveSessionEvents({

@@ -425,8 +425,11 @@ export function useActiveSessionEvents(options: {
 
   useLayoutEffect(() => {
     if (!activeId) return;
-    const observationGeneration = beginObservationSeed(activeId);
     let disposed = false;
+    let observationAttempt = 0;
+    let observationFailures = 0;
+    let observationRetryTimer: ReturnType<typeof globalThis.setTimeout> | undefined;
+    let unsubscribeSessionEvents = () => {};
     const transcript = new DesktopTranscriptRangeStore(activeId);
     const subscribedAt = Date.now();
     options.setMessageLoadErrorBySession((current) => {
@@ -465,24 +468,56 @@ export function useActiveSessionEvents(options: {
       applyReadError(activeId, error, () => disposed);
     });
     options.transcriptRangeRef.current = controller;
-    const unsubscribe = window.maka.sessions.subscribeEvents(
-      activeId,
-      (event) => {
-        handleSessionEvent(activeId, event);
-      },
-      () => completeObservationSeed(activeId, observationGeneration),
-      (phase) => {
-        if (phase === 'pending') beginObservationSeed(activeId);
-        else completeObservationSeed(activeId);
-      },
-    );
+    const subscribeSessionEvents = () => {
+      const attempt = ++observationAttempt;
+      const observationGeneration = beginObservationSeed(activeId);
+      let unsubscribeRequested = false;
+      let unsubscribeCurrent = () => {
+        unsubscribeRequested = true;
+      };
+      const unsubscribe = window.maka.sessions.subscribeEvents(
+        activeId,
+        (event) => {
+          if (attempt !== observationAttempt) return;
+          handleSessionEvent(activeId, event);
+        },
+        () => {
+          if (attempt !== observationAttempt) return;
+          observationFailures = 0;
+          completeObservationSeed(activeId, observationGeneration);
+        },
+        (phase) => {
+          if (attempt !== observationAttempt) return;
+          if (phase === 'pending') beginObservationSeed(activeId);
+          else completeObservationSeed(activeId);
+        },
+        () => {
+          if (disposed || attempt !== observationAttempt) return;
+          unsubscribeCurrent();
+          observationFailures += 1;
+          const retryDelayMs = Math.min(100 * (2 ** (observationFailures - 1)), 2_000);
+          observationRetryTimer = globalThis.setTimeout(() => {
+            observationRetryTimer = undefined;
+            if (!disposed && attempt === observationAttempt) subscribeSessionEvents();
+          }, retryDelayMs);
+        },
+      );
+      unsubscribeCurrent = unsubscribe;
+      unsubscribeSessionEvents = unsubscribe;
+      if (unsubscribeRequested) unsubscribe();
+    };
+    subscribeSessionEvents();
     return () => {
       disposed = true;
+      observationAttempt += 1;
+      if (observationRetryTimer !== undefined) {
+        globalThis.clearTimeout(observationRetryTimer);
+      }
       if (options.transcriptRangeRef.current?.store === transcript) {
         options.transcriptRangeRef.current = undefined;
       }
       void controller.close();
-      unsubscribe();
+      unsubscribeSessionEvents();
       markSessionEventStreamClosed(activeId);
     };
   }, [activeId]);

@@ -92,9 +92,10 @@ export function createTransientState() {
 }
 
 export function createActionsDeps() {
+  const activeIdRef = { current: undefined as string | undefined };
   return {
     uiLocale: 'en' as const,
-    activeIdRef: { current: undefined as string | undefined },
+    activeIdRef,
     addPendingSessionAction: () => true,
     captureComposerImportOwner: () => ({
       sessionId: undefined,
@@ -107,6 +108,9 @@ export function createActionsDeps() {
     markSessionReadLocally: () => undefined,
     messageRetryPendingRef: { current: new Set<string>() },
     refreshSessions: async () => [],
+    activateSessionForFirstSend: async (sessionId: string) => {
+      activeIdRef.current = sessionId;
+    },
     setActiveId: () => undefined,
     setMessageLoadErrorBySession: () => undefined,
     setMessageRetryPendingBySession: () => undefined,
@@ -115,7 +119,6 @@ export function createActionsDeps() {
     updateTransientMessage: () => undefined,
     removeTransientMessage: () => undefined,
     transcriptRangeRef: { current: undefined },
-    setNavSelection: () => undefined,
     setLiveTurnBySession: () => undefined,
     setInteractionBySession: () => undefined,
     showModelSetupToast: () => undefined,

@@ -301,6 +301,47 @@ describe('composer first-send cleanup', () => {
     assert.deepEqual(removed, []);
   });
 
+  it('waits for the new session observation before submitting its first message', async () => {
+    const observation = deferred<void>();
+    const order: string[] = [];
+    const activeIdRef = { current: undefined as string | undefined };
+    const restoreWindow = installWindow({
+      newTasks: {
+        create: async () => {
+          order.push('create');
+          return { id: 'session-1' };
+        },
+      },
+      sessions: {
+        submitMessage: async () => {
+          order.push('submit');
+          return { ok: true, attachments: [], skillInvocation: { loaded: [], failed: [] } };
+        },
+      },
+    });
+
+    try {
+      const sending = createAppShellChatActions({
+        ...createActionsDeps(),
+        activeIdRef,
+        activateSessionForFirstSend: async (sessionId) => {
+          order.push('observe');
+          activeIdRef.current = sessionId;
+          await observation.promise;
+          order.push('seeded');
+        },
+      }).send('hello');
+      await new Promise((resolve) => setImmediate(resolve));
+      assert.deepEqual(order, ['create', 'observe']);
+
+      observation.resolve();
+      assert.equal(await sending, true);
+      assert.deepEqual(order, ['create', 'observe', 'seeded', 'submit']);
+    } finally {
+      restoreWindow();
+    }
+  });
+
   it('leaves an EXISTING session alone when its send rejects', async () => {
     // Only the session this send created is disposable. A send that fails in
     // an open conversation must not delete the conversation.
