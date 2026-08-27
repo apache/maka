@@ -133,6 +133,79 @@ test('waiting keeps the action identity that may own an unrecorded summary', () 
   );
 });
 
+test('waiting does not bind the final summary before the same action is accepted', async () => {
+  const values = new Map<string, string>();
+  const storage = {
+    getItem: (key: string) => values.get(key) ?? null,
+    setItem: (key: string, value: string) => values.set(key, value),
+    removeItem: (key: string) => values.delete(key),
+  };
+  const recorded: string[] = [];
+  let attempts = 0;
+  const controller: WorkHubController = {
+    read: async () => ({ sessions: [], turns: [] }),
+    openConversation: async () => ({ close: async () => undefined }),
+    recordConversationTurn: async ({ turnId, assistantText }) => {
+      recorded.push(assistantText);
+      return { turnId };
+    },
+    resetVisitContext: () => {},
+    subscribe: () => () => {},
+    submit: async (input) => {
+      attempts += 1;
+      return attempts === 1
+        ? {
+            kind: 'waiting' as const,
+            strategyId: WORKHUB_ROUTING_STRATEGY_ID,
+            requestId: input.requestId,
+            text: input.text,
+            target: { sessionId: 'payment' },
+          }
+        : {
+            kind: 'submitted' as const,
+            strategyId: WORKHUB_ROUTING_STRATEGY_ID,
+            requestId: input.requestId,
+            target: { sessionId: 'payment' },
+            turnId: 'payment-turn',
+            evidence: 'explicit_target' as const,
+          };
+    },
+  };
+  const first = new WorkHubSendLease({
+    scope: 'host-a',
+    storage,
+    createId: () => 'action-1',
+  });
+  const requestId = first.acquire('Continue payment work');
+  const send = (lease: WorkHubSendLease, retrying: boolean) =>
+    submitAndRecordWorkHubSurfaceInput({
+      controller,
+      request: {
+        requestId,
+        text: 'Continue payment work',
+        ...(retrying ? { retryAction: true as const } : {}),
+      },
+      recordedUserText: 'Continue payment work',
+      summary: (result) => lease.summary(
+        requestId,
+        () => result.kind === 'waiting' ? 'Request not sent.' : 'Accepted by Payments.',
+      ),
+      onSummaryError: () => undefined,
+    });
+
+  const waiting = await send(first, false);
+  first.settle(requestId, workHubSubmissionClearsDraft(waiting));
+  const restarted = new WorkHubSendLease({
+    scope: 'host-a',
+    storage,
+    createId: () => 'action-2',
+  });
+  assert.equal(restarted.acquire('Continue payment work'), requestId);
+  await send(restarted, true);
+
+  assert.deepEqual(recorded, ['Accepted by Payments.']);
+});
+
 test('summary retry reuses the text first bound to the action identity', () => {
   const values = new Map<string, string>();
   const storage = {

@@ -19,6 +19,14 @@
 
 import { COMPOSER_INPUT, ensureSidebarExpanded, expect, test } from './fixtures';
 
+type WorkHubEvidenceWindow = Window & {
+  makaE2eLatch?: {
+    arm(key: 'workHub.record', options?: { oneShot?: boolean }): void;
+    reject(key: 'workHub.record', message: string): void;
+    waitForCall(key: 'workHub.record'): Promise<void>;
+  };
+};
+
 test('WorkHub rebuilds Session conversation after navigating away and back', async ({
   window: page,
 }) => {
@@ -64,6 +72,66 @@ test('WorkHub rebuilds Session conversation after navigating away and back', asy
       hasText: routedPrompt,
     }),
   ).toBeVisible();
+});
+
+test('WorkHub retries one accepted action after summary failure and renderer reload', async ({
+  window: page,
+}) => {
+  const composer = page.locator(COMPOSER_INPUT);
+  await composer.fill('检查支付回调重复投递时的幂等性');
+  await composer.press('Enter');
+  await expect(page.getByRole('button', { name: '重新生成' })).toHaveCount(1, {
+    timeout: 20_000,
+  });
+  await page.evaluate(async () => {
+    await window.maka.settings.updateClient({ workHub: { enabled: true } });
+  });
+  await expect(page.getByRole('main', { name: 'WorkHub' })).toBeVisible();
+
+  const latchInstalled = await page.evaluate(() => {
+    const e2e = window as WorkHubEvidenceWindow;
+    if (!e2e.makaE2eLatch) return false;
+    e2e.makaE2eLatch.arm('workHub.record', { oneShot: true });
+    return true;
+  });
+  expect(latchInstalled, 'the isolated E2E summary latch is installed').toBe(true);
+
+  const routedPrompt = '继续这个工作，补充重复投递测试点。';
+  const workHubComposer = page.locator(
+    '.workhub-surface .maka-composer-editor [contenteditable="true"]',
+  );
+  await workHubComposer.fill(routedPrompt);
+  const recordReached = page.evaluate(() =>
+    (window as WorkHubEvidenceWindow).makaE2eLatch?.waitForCall('workHub.record'),
+  );
+  await workHubComposer.press('Enter');
+  await recordReached;
+  await page.evaluate(() => {
+    (window as WorkHubEvidenceWindow).makaE2eLatch?.reject(
+      'workHub.record',
+      'forced WorkHub summary failure',
+    );
+  });
+
+  const failed = page.locator('.workhub-turn', { hasText: routedPrompt });
+  await expect(failed.locator('.workhub-error')).toContainText('输入未能送达');
+  await expect(workHubComposer).toHaveText(routedPrompt);
+
+  await page.reload();
+
+  await expect(page.getByRole('main', { name: 'WorkHub' })).toBeVisible();
+  const reloadedComposer = page.locator(
+    '.workhub-surface .maka-composer-editor [contenteditable="true"]',
+  );
+  await expect(reloadedComposer).toHaveText(routedPrompt);
+  await reloadedComposer.press('Enter');
+
+  await expect(page.locator('.workhub-submitted').last()).toBeVisible();
+  await expect(
+    page.locator('.workhub-user-bubble > p', {
+      hasText: routedPrompt,
+    }),
+  ).toHaveCount(1);
 });
 
 test('WorkHub defers destructive correction until linked delegation exists', async ({

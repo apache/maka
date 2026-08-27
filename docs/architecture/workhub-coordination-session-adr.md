@@ -134,13 +134,17 @@ ids; once prepared, the intent owns the resolved target, exact user text, and an
 `create_new` title/workspace context.
 
 Recovery accepts the target Session's existing root receipt, pending admission, or
-immutable steering proof as durable evidence. A definitive first-submit rejection
-after `create_new` compensates only a Session created by that exact attempt through
-the ordinary Session-retirement authority; an unknown submit outcome never removes
-a possibly admitted Session. Recovery is deliberately driven by explicit caller
-retry rather than an autonomous startup scan: the latter would execute user work
-without a live request context and turn this journal into a background workflow
-engine.
+immutable steering proof as durable evidence, and checks that evidence before a
+retry submits again. A waiting result is local and retryable: it neither consumes
+the action's immutable Coordination summary nor records a false acceptance. A
+definitive `create_new` submit rejection compensates through the ordinary
+Session-retirement authority. The exact stable create may expose its revision again
+only while the Session remains at the initial revision, so an uncertain retirement
+can be retried without granting cleanup authority over a subsequently mutated
+Session. An unknown submit outcome never removes a possibly admitted Session.
+Recovery is deliberately driven by explicit caller retry rather than an autonomous
+startup scan: the latter would execute user work without a live request context and
+turn this journal into a background workflow engine.
 
 ## Consequences, costs, and reevaluation
 

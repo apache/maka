@@ -478,7 +478,7 @@ test('ordinary creation rejects the reserved WorkHub Coordination Session identi
   assert.equal(fixture.drainRequests(), 0);
 });
 
-test('WorkHub creation reports only the revision created by this exact attempt', async () => {
+test('WorkHub creation reports a discard revision for creation and a pristine replay', async () => {
   let creates = 0;
   const header = sessionHeader('session-1', []);
   const fixture = createFixture({
@@ -486,10 +486,10 @@ test('WorkHub creation reports only the revision created by this exact attempt',
       createStableSession: async () => {
         creates += 1;
         return creates === 1
-          ? { kind: 'created', record: headerSnapshot(header, 7) }
-          : { kind: 'existing', record: headerSnapshot(header, 7) };
+          ? { kind: 'created', record: headerSnapshot(header, 1) }
+          : { kind: 'existing', record: headerSnapshot(header, creates === 2 ? 1 : 2) };
       },
-      readCatalogRecord: async () => catalogRecord(header, 7),
+      readCatalogRecord: async () => catalogRecord(header, 1),
     },
   });
   const input = {
@@ -500,11 +500,14 @@ test('WorkHub creation reports only the revision created by this exact attempt',
 
   const created = await fixture.coordinator.createForWorkHub(input);
   const replayed = await fixture.coordinator.createForWorkHub(input);
+  const mutated = await fixture.coordinator.createForWorkHub(input);
 
   assert.equal(created.outcome.ok, true);
-  assert.equal(created.createdRevision, 7);
+  assert.equal(created.discardRevision, 1);
   assert.equal(replayed.outcome.ok, true);
-  assert.equal(replayed.createdRevision, undefined);
+  assert.equal(replayed.discardRevision, 1);
+  assert.equal(mutated.outcome.ok, true);
+  assert.equal(mutated.discardRevision, undefined);
 });
 
 test('ordinary configuration rejects the WorkHub Coordination Session identity', async () => {

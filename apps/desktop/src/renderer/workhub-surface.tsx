@@ -146,7 +146,10 @@ export async function submitAndRecordWorkHubSurfaceInput(input: {
     controller: input.controller,
     input: input.request,
   });
-  if (result.kind === 'discussion') return result;
+  // Waiting is a local, retryable admission result: the request has not been
+  // accepted and must not consume the immutable Coordination summary owned by
+  // this action identity. A later same-identity retry may still be admitted.
+  if (result.kind === 'discussion' || result.kind === 'waiting') return result;
   try {
     await input.controller.recordConversationTurn({
       turnId: input.request.requestId,

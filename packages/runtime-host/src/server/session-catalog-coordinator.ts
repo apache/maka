@@ -148,6 +148,10 @@ interface ResolvedSessionModel {
   readonly model: string;
 }
 
+// Stable Session creation owns revision 1; any later metadata or execution
+// mutation advances it and therefore revokes WorkHub's empty-Session cleanup.
+const STABLE_SESSION_INITIAL_REVISION = 1;
+
 /** Host-owned Session catalog, creation, and configuration authority. */
 export class HostSessionCatalogCoordinator {
   readonly handlers: SessionCatalogOperationHandlerMap = {
@@ -202,13 +206,14 @@ export class HostSessionCatalogCoordinator {
   /** WorkHub Action Gate path; callers cannot bypass the typed operation outcome. */
   async createForWorkHub(input: SessionCreateInput): Promise<{
     readonly outcome: OperationOutcome<'session.create'>;
-    readonly createdRevision?: number;
+    readonly discardRevision?: number;
   }> {
-    let createdRevision: number | undefined;
-    const outcome = await this.#create(input, (revision) => {
-      createdRevision = revision;
-    });
-    return { outcome, ...(createdRevision === undefined ? {} : { createdRevision }) };
+    let discardRevision: number | undefined;
+    const rememberDiscardRevision = (revision: number) => {
+      discardRevision = revision;
+    };
+    const outcome = await this.#create(input, rememberDiscardRevision, rememberDiscardRevision);
+    return { outcome, ...(discardRevision === undefined ? {} : { discardRevision }) };
   }
 
   async #query(
@@ -346,6 +351,7 @@ export class HostSessionCatalogCoordinator {
   async #create(
     input: SessionCreateInput,
     onCreated?: (revision: number) => void,
+    onPristineReplay?: (revision: number) => void,
   ): Promise<OperationOutcome<'session.create'>> {
     if (isWorkHubCoordinationSessionId(input.sessionId)) {
       return createFailure(
@@ -369,6 +375,9 @@ export class HostSessionCatalogCoordinator {
           requestFingerprint,
         );
         if (probe.kind === 'existing') {
+          if (probe.record.revision === STABLE_SESSION_INITIAL_REVISION) {
+            onPristineReplay?.(probe.record.revision);
+          }
           return createSuccess(
             projectSessionCatalogRecord(await this.#stores.readCatalogRecord(input.sessionId)),
           );
@@ -412,6 +421,12 @@ export class HostSessionCatalogCoordinator {
               );
             }
             if (result.kind === 'created') onCreated?.(result.record.revision);
+            else if (
+              result.kind === 'existing' &&
+              result.record.revision === STABLE_SESSION_INITIAL_REVISION
+            ) {
+              onPristineReplay?.(result.record.revision);
+            }
             await this.#continuity.refreshCanonical(input.sessionId, lease);
             return createSuccess(
               projectSessionCatalogRecord(await this.#stores.readCatalogRecord(input.sessionId)),

@@ -73,7 +73,7 @@ export interface WorkHubActionGateEffects {
     readonly sessionId: string;
     readonly workspace: WorkspaceTarget;
     readonly title: string;
-  }): Promise<{ readonly createdRevision?: number }>;
+  }): Promise<{ readonly discardRevision?: number }>;
   discardCreated(
     input: {
       readonly sessionId: string;
@@ -283,7 +283,7 @@ export class WorkHubCoordinationActionGate {
     intent: WorkHubDelegationIntent,
     context: ConnectionContext,
   ): Promise<WorkHubCoordinationActResult> {
-    let createdRevision: number | undefined;
+    let discardRevision: number | undefined;
     if (intent.disposition === 'create_new') {
       if (!intent.create) {
         throw new WorkHubActionGateFailure(
@@ -296,7 +296,7 @@ export class WorkHubCoordinationActionGate {
         workspace: intent.create.workspace,
         title: intent.create.title,
       });
-      createdRevision = created.createdRevision;
+      discardRevision = created.discardRevision;
     } else if (intent.create) {
       throw new WorkHubActionGateFailure(
         'action_conflict',
@@ -309,26 +309,28 @@ export class WorkHubCoordinationActionGate {
       messageId: actionMessageId(intent.actionId),
       text: intent.userText,
     };
-    let submitted: { readonly turnId: string; readonly steered?: true };
-    try {
-      submitted = await this.#effects.submit(message, context);
-    } catch (error) {
-      if (!(error instanceof WorkHubActionEffectFailure)) throw error;
-      if (error.code !== 'commit_outcome_unknown') {
-        if (createdRevision !== undefined) {
-          await this.#effects.discardCreated(
-            {
-              sessionId: intent.targetSessionId,
-              expectedRevision: createdRevision,
-            },
-            context,
-          );
+    let submitted = await this.#effects.recoverSubmission(message);
+    if (!submitted) {
+      try {
+        submitted = await this.#effects.submit(message, context);
+      } catch (error) {
+        if (!(error instanceof WorkHubActionEffectFailure)) throw error;
+        if (error.code !== 'commit_outcome_unknown') {
+          if (discardRevision !== undefined) {
+            await this.#effects.discardCreated(
+              {
+                sessionId: intent.targetSessionId,
+                expectedRevision: discardRevision,
+              },
+              context,
+            );
+          }
+          throw error;
         }
-        throw error;
+        const recovered = await this.#effects.recoverSubmission(message);
+        if (!recovered) throw error;
+        submitted = recovered;
       }
-      const recovered = await this.#effects.recoverSubmission(message);
-      if (!recovered) throw error;
-      submitted = recovered;
     }
     const commit: WorkHubDelegationCommit = {
       ...intent,

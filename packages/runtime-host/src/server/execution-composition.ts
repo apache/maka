@@ -1248,9 +1248,9 @@ export async function createExecutionRuntimeHostComposition(
               outcome.error.message,
             );
           }
-          return created.createdRevision === undefined
+          return created.discardRevision === undefined
             ? {}
-            : { createdRevision: created.createdRevision };
+            : { discardRevision: created.discardRevision };
         },
         discardCreated: async (input, connection) => {
           const outcome = await requireSessionRetirement(sessionRetirement).handlers[
