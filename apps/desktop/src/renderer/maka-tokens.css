@@ -936,17 +936,16 @@
   --h-control-2xl: var(--space-10); /* 40px — toolbar, large touch target  */
 
   /* === content measure (#520 PR4 item 16) ================================
-     The chat content max-width — the column the conversation, tool output,
-     composer, and onboarding hero share so prose + controls line up at one
-     measure. Previously a local token on .mainColumn with a 680px fallback
+     The chat content max-width — the column the composer, header notices,
+     hero, and WorkHub share so prose + controls line up at one measure.
+     The transcript column is wider; see `--maka-transcript-measure` below. Previously a local token on .mainColumn with a 680px fallback
      at every call site; promoted to :root so the token is canonical and the
      fallbacks are redundant. */
   --maka-chat-measure: 680px;
 
-  /* Astryx's AI Chat conversation uses an 800px message area while Markdown
-     keeps prose at 680px and lets code/tables fill the wider container. Keep
-     that exception transcript-scoped so the shared Maka surfaces above do not
-     change width as a side effect of making source evidence readable. */
+  /* Transcript turns stay wider than the shared controls above so source
+     evidence — code, tables, tool output — is readable. Scoped to `.maka-turn`
+     so nothing else changes width as a side effect. */
   --maka-transcript-measure: 800px;
 
   /* === settings ==========================================================
