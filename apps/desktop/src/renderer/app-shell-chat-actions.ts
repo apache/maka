@@ -478,10 +478,10 @@ export function createAppShellChatActions(deps: {
         // Consumed: the choice is now the created Session's, not the next
         // draft's. A failed create leaves it in place so a retry keeps it.
         if (newChatPermissionChoice) clearNewChatPermissionChoice();
-        // The first Turn must not outrun the only renderer observation that
-        // can identify its live assistant stream. Activating the new Session
-        // is only a render request; the explicit seed barrier is what makes
-        // the subscription ready before Runtime Host admits the Message.
+        // Active-stream snapshots can only restore assistant segments that
+        // are still streaming. Wait until the observer is ready before the
+        // first admission so a completed segment in a still-running Turn
+        // cannot become durable text without live identity.
         await activateSessionForFirstSend(session.id);
         if (activeIdRef.current !== session.id) {
           await discardUnsentSession();
@@ -612,6 +612,22 @@ export function createAppShellChatActions(deps: {
       options.onSessionResolved?.(sessionId);
       return true;
     } catch (error) {
+      // Capture ownership before cleanup clears the optimistic Session. A
+      // barrier timeout belongs to the surface that was waiting for it, while
+      // navigation away still suppresses feedback.
+      const feedbackSessionId = optimisticSessionId ?? initialSessionId;
+      const diagnosticTarget = feedbackSessionId
+        ? { sessionId: feedbackSessionId }
+        : initialNewTaskTarget
+          ? { profileId: initialNewTaskTarget.profileId }
+          : undefined;
+      const sendStillOwnsCurrentSurface =
+        (feedbackSessionId !== undefined &&
+          isShellSurfaceOwnerActive({
+            ...sendOwner,
+            sessionId: feedbackSessionId,
+          })) ||
+        (newChatOwner !== null && isNewChatSendSurfaceActive(newChatOwner));
       await discardUnsentSession();
       if (optimisticSessionId && optimisticMessageId) {
         removeOptimisticUserMessage(optimisticSessionId, optimisticMessageId);
@@ -635,19 +651,6 @@ export function createAppShellChatActions(deps: {
       // The owner MOVES on an optimistic create: the send began on the new-chat
       // surface and the app is now on the session it just made, so the id is
       // taken from the flight and only the section comes from the capture.
-      const feedbackSessionId = optimisticSessionId ?? initialSessionId;
-      const diagnosticTarget = feedbackSessionId
-        ? { sessionId: feedbackSessionId }
-        : initialNewTaskTarget
-          ? { profileId: initialNewTaskTarget.profileId }
-          : undefined;
-      const sendStillOwnsCurrentSurface =
-        (feedbackSessionId !== undefined &&
-          isShellSurfaceOwnerActive({
-            ...sendOwner,
-            sessionId: feedbackSessionId,
-          })) ||
-        (newChatOwner !== null && isNewChatSendSurfaceActive(newChatOwner));
       if (!sendStillOwnsCurrentSurface) return false;
       if (isNoRealConnectionError(error)) {
         const reason = noRealConnectionReasonFromError(error);

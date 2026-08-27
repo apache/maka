@@ -342,6 +342,56 @@ describe('composer first-send cleanup', () => {
     }
   });
 
+  it('removes the unsent session and surfaces an observation barrier failure', async () => {
+    const activeIdRef = { current: undefined as string | undefined };
+    const removed: string[] = [];
+    const errors: string[] = [];
+    let submissions = 0;
+    const restoreWindow = installWindow({
+      newTasks: { create: async () => ({ id: 'session-1' }) },
+      sessions: {
+        submitMessage: async () => {
+          submissions += 1;
+          return { ok: true, attachments: [], skillInvocation: { loaded: [], failed: [] } };
+        },
+        remove: async (sessionId: string) => {
+          removed.push(sessionId);
+        },
+      },
+    });
+
+    try {
+      const actions = createAppShellChatActions({
+        ...createActionsDeps(),
+        activeIdRef,
+        activateSessionForFirstSend: async (sessionId) => {
+          activeIdRef.current = sessionId;
+          throw new Error('Timed out while preparing the new Session event stream');
+        },
+        setActiveId: (sessionId) => {
+          activeIdRef.current = sessionId;
+        },
+        isNewChatSendSurfaceActive: () => activeIdRef.current === undefined,
+        isShellSurfaceOwnerActive: (owner) =>
+          owner.navSection === 'sessions' && owner.sessionId === activeIdRef.current,
+        toastApi: {
+          error: (_title, description) => {
+            if (description) errors.push(description);
+          },
+          info: () => undefined,
+        },
+      });
+      assert.equal(await actions.send('hello'), false);
+    } finally {
+      restoreWindow();
+    }
+
+    assert.equal(submissions, 0);
+    assert.deepEqual(removed, ['session-1']);
+    assert.equal(activeIdRef.current, undefined);
+    assert.deepEqual(errors, ['The message could not be sent. Try again later.']);
+  });
+
   it('leaves an EXISTING session alone when its send rejects', async () => {
     // Only the session this send created is disposable. A send that fails in
     // an open conversation must not delete the conversation.

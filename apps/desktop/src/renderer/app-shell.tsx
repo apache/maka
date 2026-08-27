@@ -258,6 +258,13 @@ function newTaskDraftKey(target: {
  * assistant stream slot when the primary post-commit signal is missed.
  */
 const SETTLE_FALLBACK_GRACE_MS = 1000;
+const FIRST_SEND_OBSERVATION_TIMEOUT_MS = 30_000;
+type FirstSendObservationWaiter = {
+  promise: Promise<void>;
+  resolve: () => void;
+  reject: (error: Error) => void;
+  timeoutId: ReturnType<typeof globalThis.setTimeout>;
+};
 /**
  * Module surfaces that own their whole column and render no workspace toolbar.
  * This used to be a `display: none` rule keyed on the detail panel's
@@ -1744,11 +1751,9 @@ function AppShellContent({
     [sessions, localProjects, sessionNavigation.commands],
   );
 
-  const firstSendObservationWaitersRef = useRef(new Map<string, {
-    promise: Promise<void>;
-    resolve: () => void;
-    reject: (error: Error) => void;
-  }>());
+  const firstSendObservationWaitersRef = useRef(
+    new Map<string, FirstSendObservationWaiter>(),
+  );
   const activateSessionForFirstSend = useCallback((sessionId: string): Promise<void> => {
     let waiter = firstSendObservationWaitersRef.current.get(sessionId);
     if (!waiter) {
@@ -1758,7 +1763,14 @@ function AppShellContent({
         resolve = resolvePromise;
         reject = rejectPromise;
       });
-      waiter = { promise, resolve, reject };
+      let created!: FirstSendObservationWaiter;
+      const timeoutId = globalThis.setTimeout(() => {
+        if (firstSendObservationWaitersRef.current.get(sessionId) !== created) return;
+        firstSendObservationWaitersRef.current.delete(sessionId);
+        created.reject(new Error('Timed out while preparing the new Session event stream'));
+      }, FIRST_SEND_OBSERVATION_TIMEOUT_MS);
+      created = { promise, resolve, reject, timeoutId };
+      waiter = created;
       firstSendObservationWaitersRef.current.set(sessionId, waiter);
     }
     setNavSelection({ section: 'sessions' });
@@ -1769,9 +1781,17 @@ function AppShellContent({
     for (const [sessionId, waiter] of firstSendObservationWaitersRef.current) {
       if (sessionId === activeId) continue;
       firstSendObservationWaitersRef.current.delete(sessionId);
+      globalThis.clearTimeout(waiter.timeoutId);
       waiter.reject(new Error('The new Session was left before its event stream became ready'));
     }
   }, [activeId]);
+  useEffect(() => () => {
+    for (const [sessionId, waiter] of firstSendObservationWaitersRef.current) {
+      firstSendObservationWaitersRef.current.delete(sessionId);
+      globalThis.clearTimeout(waiter.timeoutId);
+      waiter.reject(new Error('The app closed before the new Session event stream became ready'));
+    }
+  }, []);
 
   const { applyE2eFixture } = useStableActions(createAppShellE2eFixtureActions, {
     openSettingsSection,
@@ -2344,6 +2364,7 @@ function AppShellContent({
     const firstSendWaiter = firstSendObservationWaitersRef.current.get(sessionId);
     if (firstSendWaiter) {
       firstSendObservationWaitersRef.current.delete(sessionId);
+      globalThis.clearTimeout(firstSendWaiter.timeoutId);
       firstSendWaiter.resolve();
     }
     void retireCancelledTransientMessages(sessionId);
