@@ -89,6 +89,7 @@ apps/desktop/src/renderer/settings/subagent-settings-page.tsx
 apps/desktop/src/renderer/settings/tasks-settings-page.tsx
 apps/desktop/src/renderer/settings/usage-settings-page.tsx
 apps/desktop/src/renderer/settings/web-search-settings-page.tsx
+apps/desktop/src/renderer/shortcut-keys.tsx
 apps/desktop/src/renderer/styles.css
 apps/desktop/src/renderer/styles/agent-graph.css
 apps/desktop/src/renderer/styles/astryx-mount.css
@@ -140,6 +141,7 @@ apps/desktop/src/renderer/styles/settings/usage.css
 apps/desktop/src/renderer/styles/settings/web-search.css
 apps/desktop/src/renderer/styles/settings/wechat.css
 apps/desktop/src/renderer/styles/shell-layout.css
+apps/desktop/src/renderer/styles/shortcut-keys.css
 apps/desktop/src/renderer/styles/sidebar.css
 apps/desktop/src/renderer/styles/task-ledger.css
 apps/desktop/src/renderer/styles/theme-glass.css
@@ -168,6 +170,7 @@ packages/ui/src/components.tsx
 packages/ui/src/composer-message-queue.tsx
 packages/ui/src/composer.tsx
 packages/ui/src/daily-review-panel.tsx
+packages/ui/src/host-platform-context.tsx
 packages/ui/src/icons.tsx
 packages/ui/src/inline-reference.tsx
 packages/ui/src/inline-rename-input.tsx
