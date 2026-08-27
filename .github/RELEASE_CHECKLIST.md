@@ -60,8 +60,12 @@ must never be exposed to fork or ordinary pull-request jobs.
 Before the first product release, confirm the checked-in `.asf.yaml` has reconciled the live repository:
 
 - the `Immutable release tags` ruleset blocks updates, force-pushes, and deletions of `v*` tags;
-- the `release`, `npm-release`, and `product-release` Environments accept only their declared tag patterns and require a reviewer other than the triggering user;
+- the `release` and `npm-release` Environments accept only their declared tag patterns,
+  `product-release` accepts only `main`, and each requires a reviewer other than the triggering user;
 - enable immutable releases so assets and the associated tag cannot change after publication.
+- install the release-policy GitHub App only on `apache/maka` with repository
+  **Administration: read**, then configure its client ID and private key only in the
+  `product-release` Environment.
 
 These controls close the check-to-upload and check-to-stage windows. Keep the Release in Draft while assets and acceptance are incomplete; publishing early must make subsequent mutation fail closed.
 
@@ -109,15 +113,16 @@ Follow [the npm release runbook](../docs/cli-npm-release.md) against the exact p
 1. Record the successful **Release** workflow run ID and attempt that built the Draft assets. Run
    **Stage CLI npm release** from `v<version>` and record its successful run ID and attempt.
 2. Inspect the staged tarball and provenance, then approve that exact stage with npm 2FA.
-3. Run **Finalize product release** from `v<version>`. Its first job verifies the public package
+3. Run **Finalize product release** from `main`. Its first job verifies the public package
    bytes, provenance, signature, and release dist-tag.
 4. Install the exact public version on each release platform and complete the npm acceptance steps.
 
 Keep the GitHub Release in Draft throughout this sequence. The final workflow job waits at the
 `product-release` Environment. Approve it only after every npm and cross-machine acceptance check
-has passed. It verifies the live Draft digests against the immutable artifacts from the exact
-successful Release run, then publishes the release and makes a stable release Latest in the same
-GitHub operation; prereleases remain non-Latest. Do not publish or
+has passed. It verifies the live Draft digests against the immutable publication record from the
+exact successful Release run, verifies the repository immutable-release policy, then publishes an
+immutable release and makes a stable release Latest in the same GitHub operation; prereleases remain
+non-Latest. Do not publish or
 change the Latest designation manually. A failed or rejected npm candidate requires a new product
 version; never publish the Draft to work around npm state.
 

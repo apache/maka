@@ -18,12 +18,13 @@
  */
 
 import { execFile } from 'node:child_process';
-import { createHash } from 'node:crypto';
-import { createReadStream } from 'node:fs';
-import { readFile, readdir, stat } from 'node:fs/promises';
-import { join } from 'node:path';
+import { readFile } from 'node:fs/promises';
 import { pathToFileURL } from 'node:url';
 import { promisify } from 'node:util';
+import {
+  readProductReleasePublicationRecord,
+  verifyProductReleasePublicationRecord,
+} from './product-release-artifacts.mjs';
 import { parseAsfSourceReferenceTag } from './product-release-identity.mjs';
 import { parseProductTag, remoteProductTagCommit } from './product-release-tag.mjs';
 
@@ -53,15 +54,28 @@ export function assertDraftProductRelease(release, tag) {
   return release;
 }
 
-export function assertPublishedProductRelease(release, tag) {
+export function assertPublishedProductRelease(release, tag, releaseId, expectedAssets) {
   const expected = expectedReleaseIdentity(tag);
-  if (!release || release.tag !== tag || release.draft !== false) {
+  if (!release || release.id !== releaseId || release.tag !== tag || release.draft !== false) {
     throw new Error(`GitHub Release ${tag} was not published`);
   }
   if (release.prerelease !== expected.isPrerelease) {
     throw new Error(`GitHub Release ${tag} prerelease state must be ${expected.isPrerelease}`);
   }
+  if (release.immutable !== true) {
+    throw new Error(`GitHub Release ${tag} was published without immutable release protection`);
+  }
+  if (JSON.stringify(release.assets) !== JSON.stringify(expectedAssets)) {
+    throw new Error(`GitHub Release ${tag} assets changed during publication`);
+  }
   return release;
+}
+
+export function assertImmutableReleasePolicy(policy) {
+  if (policy?.enabled !== true || typeof policy.enforced_by_owner !== 'boolean') {
+    throw new Error('Immutable releases must be enabled before product publication');
+  }
+  return policy;
 }
 
 function releaseSnapshotFromGhView(value) {
@@ -70,7 +84,9 @@ function releaseSnapshotFromGhView(value) {
     tag: value?.tagName,
     draft: value?.isDraft,
     prerelease: value?.isPrerelease,
-    assets: value?.assets ?? [],
+    assets: (value?.assets ?? [])
+      .map(({ name, size, digest }) => ({ name, size, digest }))
+      .sort((left, right) => left.name.localeCompare(right.name)),
   };
 }
 
@@ -80,6 +96,7 @@ function releaseSnapshotFromRest(value) {
     tag: value?.tag_name,
     draft: value?.draft,
     prerelease: value?.prerelease,
+    immutable: value?.immutable,
     assets: value?.assets ?? [],
   };
 }
@@ -111,27 +128,6 @@ export function assertProductReleaseWorkflowRun({
     throw new Error('Release workflow run does not match the approved product source');
   }
   return run;
-}
-
-function digestFile(path) {
-  return new Promise((resolvePromise, reject) => {
-    const hash = createHash('sha256');
-    const stream = createReadStream(path);
-    stream.once('error', reject);
-    stream.on('data', (chunk) => hash.update(chunk));
-    stream.once('end', () => resolvePromise(hash.digest('hex')));
-  });
-}
-
-async function localAssetRecords(directory) {
-  const records = [];
-  for (const entry of await readdir(directory, { withFileTypes: true })) {
-    if (!entry.isFile()) throw new Error(`Release artifact must be a regular file: ${entry.name}`);
-    const path = join(directory, entry.name);
-    const [details, digest] = await Promise.all([stat(path), digestFile(path)]);
-    records.push({ name: entry.name, size: details.size, digest: `sha256:${digest}` });
-  }
-  return records.sort((left, right) => left.name.localeCompare(right.name));
 }
 
 export async function verifyDraftProductRelease({
@@ -189,25 +185,72 @@ export async function publishDraftProductRelease({
   sourceCommit,
   repository,
   artifactDirectory,
+  publicationRecordPath,
+  sourceReferenceTag,
+  releaseRunId,
+  releaseRunAttempt,
+  policyToken = process.env.RELEASE_POLICY_TOKEN,
   cwd = process.cwd(),
   run = execFileAsync,
   pause = (milliseconds) =>
     new Promise((resolvePromise) => setTimeout(resolvePromise, milliseconds)),
 }) {
-  const localAssets = await localAssetRecords(artifactDirectory);
+  if (typeof policyToken !== 'string' || policyToken.length === 0) {
+    throw new Error('Product publication requires a read-only repository policy token');
+  }
+  const evidence = await readProductReleasePublicationRecord(publicationRecordPath, {
+    repository,
+    tag,
+    sourceCommit,
+    sourceReferenceTag,
+    runId: releaseRunId,
+    runAttempt: releaseRunAttempt,
+  });
+  await verifyProductReleasePublicationRecord({
+    artifactDirectory,
+    record: evidence,
+    expected: {
+      repository,
+      tag,
+      sourceCommit,
+      sourceReferenceTag,
+      runId: releaseRunId,
+      runAttempt: releaseRunAttempt,
+    },
+  });
   const draft = await verifyDraftProductRelease({ tag, sourceCommit, repository, cwd, run });
   const remoteAssets = (draft.assets ?? [])
     .map(({ name, size, digest }) => ({ name, size, digest }))
     .sort((left, right) => left.name.localeCompare(right.name));
-  if (JSON.stringify(remoteAssets) !== JSON.stringify(localAssets)) {
+  if (JSON.stringify(remoteAssets) !== JSON.stringify(evidence.assets)) {
     throw new Error('Draft GitHub Release assets do not match the verified Release run artifacts');
   }
+
+  const policy = await run(
+    'gh',
+    [
+      'api',
+      '--header',
+      'X-GitHub-Api-Version: 2026-03-10',
+      `repos/${repository}/immutable-releases`,
+    ],
+    { cwd, env: { ...process.env, GH_TOKEN: policyToken } },
+  );
+  let parsedPolicy;
+  try {
+    parsedPolicy = JSON.parse(policy.stdout);
+  } catch (error) {
+    throw new Error('GitHub returned an invalid immutable release policy', { cause: error });
+  }
+  assertImmutableReleasePolicy(parsedPolicy);
 
   const isPrerelease = expectedReleaseIdentity(tag).isPrerelease;
   const published = await run(
     'gh',
     [
       'api',
+      '--header',
+      'X-GitHub-Api-Version: 2026-03-10',
       '--method',
       'PATCH',
       `repos/${repository}/releases/${draft.id}`,
@@ -226,7 +269,7 @@ export async function publishDraftProductRelease({
   } catch (error) {
     throw new Error(`GitHub returned an invalid publication result for ${tag}`, { cause: error });
   }
-  assertPublishedProductRelease(record, tag);
+  assertPublishedProductRelease(record, tag, draft.id, evidence.assets);
 
   if (!isPrerelease) {
     let latestTag;
@@ -252,7 +295,7 @@ export async function publishDraftProductRelease({
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   const [command, ...args] = process.argv.slice(2);
   const usage =
-    'usage: product-release-authority.mjs verify-build-run <run-json> <tag> <source-commit> <owner/repository> <run-id> <run-attempt> | <verify-draft|publish-draft> <tag> <source-commit> <owner/repository> [artifact-directory]';
+    'usage: product-release-authority.mjs verify-build-run <run-json> <tag> <source-commit> <owner/repository> <run-id> <run-attempt> | verify-draft <tag> <source-commit> <owner/repository> | publish-draft <tag> <source-commit> <owner/repository> <artifact-directory> <publication-record> <source-reference-tag> <run-id> <run-attempt>';
   if (command === 'verify-build-run' && args.length === 6) {
     const [runPath, tag, sourceCommit, repository, runId, runAttempt] = args;
     const run = JSON.parse(await readFile(runPath, 'utf8'));
@@ -262,13 +305,26 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
     const [tag, sourceCommit, repository] = args;
     await verifyDraftProductRelease({ tag, sourceCommit, repository });
     console.log(`Verified Draft product Release ${tag} at ${sourceCommit}`);
-  } else if (command === 'publish-draft' && args.length === 4) {
-    const [tag, sourceCommit, repository, artifactDirectory] = args;
+  } else if (command === 'publish-draft' && args.length === 8) {
+    const [
+      tag,
+      sourceCommit,
+      repository,
+      artifactDirectory,
+      publicationRecordPath,
+      sourceReferenceTag,
+      releaseRunId,
+      releaseRunAttempt,
+    ] = args;
     await publishDraftProductRelease({
       tag,
       sourceCommit,
       repository,
       artifactDirectory,
+      publicationRecordPath,
+      sourceReferenceTag,
+      releaseRunId,
+      releaseRunAttempt,
     });
     console.log(`Published product Release ${tag} from ${sourceCommit}`);
   } else {

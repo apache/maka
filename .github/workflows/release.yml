@@ -29,7 +29,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: release
+  group: product-release
   cancel-in-progress: false
 
 jobs:
@@ -404,6 +404,27 @@ jobs:
 
       - name: Verify the exact product artifact manifest
         run: node scripts/product-release-artifacts.mjs verify release-assets
+
+      - name: Record the immutable publication evidence
+        env:
+          GITHUB_SHA: ${{ needs.release-identity.outputs.source_commit }}
+          SOURCE_REFERENCE_TAG: ${{ needs.release-identity.outputs.source_reference_tag }}
+        run: |
+          node scripts/product-release-artifacts.mjs record \
+            release-assets \
+            "$RUNNER_TEMP/product-release.json" \
+            "$GITHUB_REPOSITORY" \
+            "$GITHUB_RUN_ID" \
+            "$GITHUB_RUN_ATTEMPT"
+
+      - name: Upload the immutable publication evidence
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: product-release-record-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/product-release.json
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 30
 
       - name: Revalidate the live ASF source reference
         env:

@@ -43,10 +43,10 @@ source RC 阶段的 [npm 预检](../.github/ASF_NPM_RELEASE.md) 是更早执行�
 1. [Stage CLI npm release](../.github/workflows/release-cli-stage.yml) 解析已有的产品 tag 与 GitHub
    Release，checkout 该产品的精确 commit，构建并验证一个 immutable tarball，记录这个唯一的 tag commit 与 workflow run，进入受保护的 `npm-release` Environment，然后通过 OIDC 提交到 npm staging；
 2. [Finalize product release](../.github/workflows/release-cli-finalize.yml) 只接受精确的成功
-   Stage run attempt 和 Release build run attempt，验证公共 registry 字节、signature、provenance、
-   dist-tag，并将 live Draft digest 与该 Release run 的不可变 artifact 对比，然后等待受保护的
-   `product-release` Environment；独立 Desktop 验收完成并批准后，它会在同一个操作中发布 GitHub
-   Release 及其 Stable/Latest 分类。
+   Stage run、Release build run 及其自包含 publication record；`main` 上当前已审查的 verifier
+   验证公共 registry 字节、signature、provenance、dist-tag、不可变 build artifacts 与 live Draft
+   digest，然后等待受保护的 `product-release` Environment；独立 Desktop 验收完成并批准后，它会
+   在同一个操作中发布 GitHub Release 及其 Stable/Latest 分类。
 
 ## 一次性控制面配置
 
@@ -55,14 +55,18 @@ source RC 阶段的 [npm 预检](../.github/ASF_NPM_RELEASE.md) 是更早执行�
 仓库中的 `.asf.yaml` 是 `npm-release` 和 `product-release` Environment 的权威。该配置进入 `main` 后，确认 ASF
 同步出的 live 配置满足：
 
-- 使用匹配 `v*` 的 selected deployment tag rule，不配置 branch rule；
+- `npm-release` 使用 selected `v*` tag rule，`product-release` 使用 selected `main` branch rule；
 - required reviewer 为 `M4n5ter`；
 - 禁止 self-review；
 - 仓库策略允许时禁用 administrator bypass；
-- 不配置 environment secret 或 variable。
+- 在 `product-release` Environment 中配置 variable `RELEASE_POLICY_APP_CLIENT_ID` 与 secret
+  `RELEASE_POLICY_APP_PRIVATE_KEY`。
 
 检查或修复同步结果需要仓库 administration 权限；不要再在 GitHub UI 中维护第二套手工
-Environment policy。workflow 使用 GitHub OIDC，不读取 npm token。
+Environment policy。policy GitHub App 只能安装到 `apache/maka`，只能拥有仓库
+**Administration: read**，并且仓库必须启用 immutable releases。Finalize 会生成一小时有效、
+仅限本仓库的 installation token，在发布前立即验证该策略，并要求发布响应返回
+`immutable: true`。workflow 使用 GitHub OIDC，不读取 npm token。
 
 ### npm Trusted Publisher
 
@@ -179,14 +183,15 @@ release workflow 不得获得长期 npm token。
 
 npm 显示该版本已经公开后：
 
-1. 在 `v<version>` 上打开 **Actions → Finalize product release → Run workflow**；
+1. 在 `main` 上打开 **Actions → Finalize product release → Run workflow**；
 2. 输入成功 Stage 的 run ID 与精确 attempt、成功 Release build 的 run ID 与精确 attempt，以及
    version；
 3. 让 inspection job 验证公共 tarball 字节、checksum、inventory、npm signature、Trusted
    Publishing provenance、发布 dist-tag，并确认 `next` 不比 `latest` 更旧；
 4. publication job 等待 `product-release` 批准期间，针对 Draft 完成产品检查清单中的跨机器验收；
-5. 批准 Environment，并确认 workflow 将每个 live Draft digest 与精确 Release attempt 的不可变
-   artifact 对比后发布 Release；stable release 会同时成为 Latest，不再需要单独人工操作。
+5. 批准 Environment，并确认 workflow 验证仓库 release immutability，将每个 live Draft digest
+   与精确 Release attempt 的 publication record 对比，发布 immutable Release；stable release
+   会同时成为 Latest，不再需要单独人工操作。
 
 检查最终 registry 状态：
 
@@ -228,11 +233,14 @@ npm stage reject "$stage_id" --registry https://registry.npmjs.org/
 
 ### npm approval 成功，但 Finalize 失败
 
-npm 版本此时已经 immutable，不要再次 publish 或 approve。保留 Stage run ID、attempt、version
-和 artifacts。如果 package 字节与 provenance 有效，在 `main` 修复当前 Finalize verifier，
-然后针对同一个成功 Stage identity 重新运行 Finalize。
+npm 版本此时已经 immutable，不要再次 publish 或 approve。保留 Stage run ID、attempt、version，
+以及 Release run ID、attempt、publication record 和 artifacts。如果这些字节与 provenance
+有效，在 `main` 修复 Finalize verifier，然后针对同一组不可变 Stage 与 Release 证据重新运行。
 
-Finalize 对产品发布状态只读。如果 npm 包版本、字节、dist-tag、签名、provenance 或记录的 Stage identity 不一致，立即停止并调查；不要修改产品 tag 或 GitHub Release 来让 npm 验证通过。
+inspection job 只读；只有受保护的 publication job 可以执行一次 Draft-to-immutable 转换。如果
+npm identity、build evidence 或 Draft 不一致，立即停止并调查；不要修改产品 tag 或 GitHub
+Release 来让验证通过。如果错误发生在 publication request 之后，先检查精确 Release；已经成功
+完成的 immutable 转换不得重复执行。
 
 ### 公共版本存在缺陷
 

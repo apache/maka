@@ -32,7 +32,7 @@ retaining Maka's stronger protected-Environment, staged-publishing, 2FA, and Fin
 ## Release invariants
 
 - Dispatch the product Release workflow only from the exact approved ASF source candidate tag.
-  Dispatch both npm Stage and product Finalize only from the resulting product `v<version>` tag.
+  Dispatch npm Stage from the resulting product `v<version>` tag and product Finalize from `main`.
 - Publish prereleases under `next` and stable versions under `latest`. `next` must never resolve to
   a version older than `latest`; when no newer prerelease exists, both tags point to the stable
   version.
@@ -51,11 +51,11 @@ The two workflow boundaries are:
    tarball, records that single tag commit and workflow run, enters the protected `npm-release`
    Environment, and submits it to npm staging through OIDC.
 2. [Finalize product release](../.github/workflows/release-cli-finalize.yml) accepts only the exact
-   successful Stage run and Release build run attempts. It verifies the public registry bytes,
-   signature, provenance, dist-tag, and the live Draft digests against the immutable artifacts from
-   that Release run, then waits at the protected `product-release` Environment. After independent
-   Desktop acceptance, approval publishes the GitHub Release together with its Stable/Latest
-   classification in one operation.
+   successful Stage run, Release build run, and self-contained publication record. The current
+   reviewed verifier on `main` checks the public registry bytes, signature, provenance, dist-tag,
+   immutable build artifacts, and live Draft digests, then waits at the protected `product-release`
+   Environment. After independent Desktop acceptance, approval publishes the GitHub Release together
+   with its Stable/Latest classification in one operation.
 
 ## One-time control-plane configuration
 
@@ -65,15 +65,20 @@ The checked-in `.asf.yaml` is the authority for the `npm-release` and `product-r
 Environments. After it reaches
 `main`, confirm ASF reconciliation produced:
 
-- a selected deployment tag rule matching `v*`, with no branch rule;
+- a selected `v*` tag rule for `npm-release` and a selected `main` branch rule for
+  `product-release`;
 - `M4n5ter` as the required reviewer;
 - self-review disabled;
 - administrator bypass disabled where repository policy permits it;
-- no environment secrets or variables.
+- `RELEASE_POLICY_APP_CLIENT_ID` as a `product-release` Environment variable and
+  `RELEASE_POLICY_APP_PRIVATE_KEY` as an Environment secret.
 
 Repository administration permission is required to inspect or repair reconciliation. Do not maintain
-a second manual Environment policy in GitHub. The workflow itself uses GitHub OIDC and does not read
-an npm token.
+a second manual Environment policy in GitHub. Install the policy GitHub App only on `apache/maka`,
+grant it only repository **Administration: read**, and enable immutable releases for the repository.
+Finalize mints a one-hour, repository-scoped installation token, verifies that policy immediately
+before publication, and requires the published Release response to report `immutable: true`. The
+workflow uses GitHub OIDC for npm and never reads an npm token.
 
 ### npm Trusted Publisher
 
@@ -199,16 +204,16 @@ not dist-tag mutations, and the release workflows must not gain a long-lived npm
 
 After npm reports the version as public:
 
-1. Open **Actions → Finalize product release → Run workflow** on `v<version>`.
+1. Open **Actions → Finalize product release → Run workflow** on `main`.
 2. Enter the successful Stage run ID and attempt, the successful Release build run ID and attempt,
    and the version.
 3. Let the inspection job verify the public tarball bytes, checksum, inventory, npm signature,
    Trusted Publishing provenance, the release dist-tag, and that `next` is not older than `latest`.
 4. While the publication job waits for `product-release` approval, complete the product checklist's
    cross-machine acceptance against the Draft.
-5. Approve the Environment. Confirm the workflow matches every live Draft digest to the immutable
-   artifacts from the exact Release attempt, publishes it, and makes a stable release Latest without
-   a separate manual action.
+5. Approve the Environment. Confirm the workflow verifies repository release immutability, matches
+   every live Draft digest to the exact Release attempt's publication record, publishes an immutable
+   Release, and makes a stable release Latest without a separate manual action.
 
 Check the resulting registry state:
 
@@ -254,10 +259,15 @@ Reject the stage, fix the problem on `main`, increment the product version, crea
 ### npm approval succeeded but Finalize failed
 
 The npm version is already immutable. Do not publish or approve it again. Preserve the Stage run ID,
-attempt, version, and artifacts. If the package bytes and provenance are valid, fix the current
-Finalize verifier on `main` and rerun Finalize against that same successful Stage identity.
+attempt, version, and the Release run ID, attempt, publication record, and artifacts. If those bytes
+and provenance are valid, fix the Finalize verifier on `main` and rerun it against the same immutable
+Stage and Release evidence.
 
-Finalize is read-only with respect to product release state. If the npm package version, bytes, dist-tag, signature, provenance, or recorded Stage identity differ, stop and investigate; do not modify the product tag or GitHub Release to make npm verification pass.
+The inspection job is read-only. Only the protected publication job may perform the single
+Draft-to-immutable transition. If npm identity, build evidence, or the Draft differs, stop and
+investigate; do not modify the product tag or GitHub Release to make verification pass. If failure is
+reported after the publication request, inspect the exact Release first: a successful immutable
+transition must not be repeated.
 
 ### The public version is defective
 

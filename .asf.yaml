@@ -119,8 +119,8 @@ github:
       deployment_branch_policy:
         protected_branches: false
         policies:
-          - name: "v*"
-            type: tag
+          - name: main
+            type: branch
 
 notifications:
   commits:      commits@maka.apache.org

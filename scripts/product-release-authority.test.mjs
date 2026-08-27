@@ -25,6 +25,7 @@ import { join } from 'node:path';
 import test from 'node:test';
 import {
   assertDraftProductRelease,
+  assertImmutableReleasePolicy,
   assertProductReleaseWorkflowRun,
   assertPublishedProductRelease,
   publishDraftProductRelease,
@@ -62,18 +63,54 @@ test('Draft state and prerelease classification are one product Release contract
 test('published state keeps stable and prerelease classification exact', () => {
   assert.equal(
     assertPublishedProductRelease(
-      { id: 42, tag: 'v1.2.3', draft: false, prerelease: false },
+      { id: 42, tag: 'v1.2.3', draft: false, prerelease: false, immutable: true, assets: [] },
       'v1.2.3',
+      42,
+      [],
     ).tag,
     'v1.2.3',
   );
   assert.throws(
     () =>
       assertPublishedProductRelease(
-        { id: 42, tag: 'v1.2.3-beta.1', draft: false, prerelease: false },
+        {
+          id: 42,
+          tag: 'v1.2.3-beta.1',
+          draft: false,
+          prerelease: false,
+          immutable: true,
+          assets: [],
+        },
         'v1.2.3-beta.1',
+        42,
+        [],
       ),
     /prerelease state/u,
+  );
+  assert.throws(
+    () =>
+      assertPublishedProductRelease(
+        {
+          id: 42,
+          tag: 'v1.2.3',
+          draft: false,
+          prerelease: false,
+          immutable: false,
+          assets: [],
+        },
+        'v1.2.3',
+        42,
+        [],
+      ),
+    /without immutable release protection/u,
+  );
+  assert.equal(
+    assertImmutableReleasePolicy({ enabled: true, enforced_by_owner: false }).enabled,
+    true,
+  );
+  assert.throws(
+    () => assertImmutableReleasePolicy({ enabled: false, enforced_by_owner: false }),
+    /must be enabled/u,
   );
 });
 
@@ -190,11 +227,30 @@ test('the live authority verifier rejects product tag drift before later checks'
 
 test('publication verifies live asset digests before one Stable/Latest mutation', async (t) => {
   const directory = await mkdtemp(join(tmpdir(), 'maka-publish-authority-'));
+  const recordDirectory = await mkdtemp(join(tmpdir(), 'maka-publish-record-'));
   t.after(() => rm(directory, { recursive: true, force: true }));
+  t.after(() => rm(recordDirectory, { recursive: true, force: true }));
   const contents = Buffer.from('verified artifact');
   await writeFile(join(directory, 'artifact.zip'), contents);
   const digest = `sha256:${createHash('sha256').update(contents).digest('hex')}`;
+  const publicationRecordPath = join(recordDirectory, 'product-release.json');
   const sourceCommit = 'a'.repeat(40);
+  await writeFile(
+    publicationRecordPath,
+    `${JSON.stringify({
+      schemaVersion: 1,
+      repository: 'apache/maka',
+      workflow: '.github/workflows/release.yml',
+      runId: '123',
+      runAttempt: '2',
+      sourceReferenceTag: 'v1.2.3-incubating-rc1',
+      sourceCommit,
+      tag: 'v1.2.3',
+      version: '1.2.3',
+      prerelease: false,
+      assets: [{ name: 'artifact.zip', size: contents.length, digest }],
+    })}\n`,
+  );
   const calls = [];
   let latestReads = 0;
   const run = async (command, args) => {
@@ -213,9 +269,19 @@ test('publication verifies live asset digests before one Stable/Latest mutation'
         }),
       };
     }
+    if (command === 'gh' && args.includes('repos/apache/maka/immutable-releases')) {
+      return { stdout: JSON.stringify({ enabled: true, enforced_by_owner: false }) };
+    }
     if (command === 'gh' && args.includes('PATCH')) {
       return {
-        stdout: JSON.stringify({ tag_name: 'v1.2.3', draft: false, prerelease: false }),
+        stdout: JSON.stringify({
+          id: 42,
+          tag_name: 'v1.2.3',
+          draft: false,
+          prerelease: false,
+          immutable: true,
+          assets: [{ name: 'artifact.zip', size: contents.length, digest }],
+        }),
       };
     }
     if (command === 'gh' && args.includes('repos/apache/maka/releases/latest')) {
@@ -230,6 +296,11 @@ test('publication verifies live asset digests before one Stable/Latest mutation'
     sourceCommit,
     repository: 'apache/maka',
     artifactDirectory: directory,
+    publicationRecordPath,
+    sourceReferenceTag: 'v1.2.3-incubating-rc1',
+    releaseRunId: '123',
+    releaseRunAttempt: '2',
+    policyToken: 'policy-token',
     run,
     pause: async () => {},
   });
@@ -240,5 +311,10 @@ test('publication verifies live asset digests before one Stable/Latest mutation'
   assert.ok(patchCall[1].includes('prerelease=false'));
   assert.ok(patchCall[1].includes('make_latest=true'));
   assert.ok(calls.every(([, args]) => !args.includes('repos/apache/maka/releases/tags/v1.2.3')));
+  const policyCall = calls.find(([, args]) =>
+    args.includes('repos/apache/maka/immutable-releases'),
+  );
+  assert.ok(policyCall);
+  assert.ok(calls.indexOf(policyCall) < calls.indexOf(patchCall));
   assert.equal(latestReads, 2);
 });

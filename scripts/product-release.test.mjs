@@ -713,6 +713,26 @@ test('one product workflow gates one draft release on every required artifact', 
     (step) => step.name === 'Verify the exact product artifact manifest',
   );
   assert.ok(installVerifier >= 0 && installVerifier < verifyManifest);
+  const publicationRecord = jobs.publish.steps.find(
+    (step) => step.name === 'Record the immutable publication evidence',
+  );
+  assert.match(publicationRecord.run, /product-release-artifacts\.mjs record/u);
+  assert.equal(
+    publicationRecord.env.GITHUB_SHA,
+    '${{ needs.release-identity.outputs.source_commit }}',
+  );
+  assert.equal(
+    publicationRecord.env.SOURCE_REFERENCE_TAG,
+    '${{ needs.release-identity.outputs.source_reference_tag }}',
+  );
+  const publicationRecordUpload = jobs.publish.steps.find(
+    (step) => step.name === 'Upload the immutable publication evidence',
+  );
+  assert.equal(
+    publicationRecordUpload.with.name,
+    'product-release-record-${{ github.run_attempt }}',
+  );
+  assert.equal(publicationRecordUpload.with['retention-days'], 30);
 
   const commands = Object.values(jobs)
     .flatMap((job) => job.steps ?? [])
@@ -760,14 +780,14 @@ test('one product workflow gates one draft release on every required artifact', 
   assert.doesNotMatch(commands, /cli-v|npm (?:stage )?publish/u);
 });
 
-test('repository control plane admits only reviewed immutable release tags', async () => {
+test('repository control plane admits only each release phase owner ref', async () => {
   const config = parseYaml(await readFile(new URL('../.asf.yaml', import.meta.url), 'utf8'));
   assert.deepEqual(config.github.protected_branches.main.required_status_checks.contexts, ['test']);
   const environments = config.github.environments;
-  for (const [name, tagPattern] of [
-    ['release', 'v*-incubating-rc*'],
-    ['npm-release', 'v*'],
-    ['product-release', 'v*'],
+  for (const [name, pattern, type] of [
+    ['release', 'v*-incubating-rc*', 'tag'],
+    ['npm-release', 'v*', 'tag'],
+    ['product-release', 'main', 'branch'],
   ]) {
     assert.deepEqual(environments[name], {
       required_reviewers: [{ id: 'M4n5ter', type: 'User' }],
@@ -775,7 +795,7 @@ test('repository control plane admits only reviewed immutable release tags', asy
       prevent_self_review: true,
       deployment_branch_policy: {
         protected_branches: false,
-        policies: [{ name: tagPattern, type: 'tag' }],
+        policies: [{ name: pattern, type }],
       },
     });
   }

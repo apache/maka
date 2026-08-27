@@ -25,8 +25,11 @@ import { join } from 'node:path';
 import test from 'node:test';
 import {
   assertExactArtifactSet,
+  assertProductReleasePublicationRecord,
+  createProductReleasePublicationRecord,
   stageProductReleaseArtifactGroup,
   verifyProductReleaseArtifactIntegrity,
+  verifyProductReleasePublicationRecord,
 } from './product-release-artifacts.mjs';
 
 function updateMetadata(version, artifactName, bytes) {
@@ -138,5 +141,79 @@ test('final artifact verification binds checksums and both update channels to ex
   await assert.rejects(
     verifyProductReleaseArtifactIntegrity(directory, identity),
     /checksum does not match/u,
+  );
+});
+
+test('publication record binds exact build identity and every artifact byte', async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), 'maka-release-publication-record-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const version = '1.2.3';
+  const macZip = `Maka-${version}-mac-arm64.zip`;
+  const exe = `Maka-${version}-win-x64.exe`;
+  const macBytes = Buffer.from('mac application');
+  const windowsBytes = Buffer.from('windows application');
+  const names = [
+    macZip,
+    `${macZip}.blockmap`,
+    'latest-mac.yml',
+    exe,
+    `${exe}.blockmap`,
+    'latest.yml',
+  ];
+  await Promise.all([
+    writeFile(join(directory, macZip), macBytes),
+    writeFile(join(directory, `${macZip}.blockmap`), 'mac blockmap'),
+    writeFile(join(directory, 'latest-mac.yml'), updateMetadata(version, macZip, macBytes)),
+    writeFile(join(directory, exe), windowsBytes),
+    writeFile(join(directory, `${exe}.blockmap`), 'windows blockmap'),
+    writeFile(join(directory, 'latest.yml'), updateMetadata(version, exe, windowsBytes)),
+  ]);
+  const identity = {
+    version,
+    isPrerelease: false,
+    tag: `v${version}`,
+    sourceReferenceTag: `v${version}-incubating-rc1`,
+    sourceCommit: 'a'.repeat(40),
+    exe,
+    artifacts: { test: names },
+  };
+  const record = await createProductReleasePublicationRecord({
+    artifactDirectory: directory,
+    identity,
+    repository: 'apache/maka',
+    runId: '123',
+    runAttempt: '2',
+  });
+
+  assert.equal(record.workflow, '.github/workflows/release.yml');
+  assert.deepEqual(
+    record.assets.map(({ name }) => name),
+    [...names].sort(),
+  );
+  assert.equal(
+    assertProductReleasePublicationRecord(record, {
+      repository: 'apache/maka',
+      tag: 'v1.2.3',
+      sourceCommit: 'a'.repeat(40),
+      sourceReferenceTag: 'v1.2.3-incubating-rc1',
+      runId: '123',
+      runAttempt: '2',
+    }),
+    record,
+  );
+  await verifyProductReleasePublicationRecord({
+    artifactDirectory: directory,
+    record,
+    expected: { runId: '123', runAttempt: '2' },
+  });
+  assert.throws(
+    () => assertProductReleasePublicationRecord(record, { runAttempt: '3' }),
+    /runAttempt does not match/u,
+  );
+
+  await writeFile(join(directory, macZip), 'tampered mac application');
+  await assert.rejects(
+    verifyProductReleasePublicationRecord({ artifactDirectory: directory, record }),
+    /do not match the immutable publication record/u,
   );
 });

@@ -87,9 +87,12 @@ test('stage builds the npm candidate from the exact product release commit', () 
   assert.match(bind, /PRODUCT_TAG: \$\{\{ needs\.authorize\.outputs\.product_tag \}\}/u);
 });
 
-test('finalize validates exact stage and Release attempts from the product tag', () => {
+test('finalize runs the current verifier from reviewed main against exact immutable evidence', () => {
   const workflow = readWorkflow('release-cli-finalize.yml');
+  const productWorkflow = readWorkflow('release.yml');
   const steps = workflowSteps(workflow);
+  assert.match(workflow, /concurrency:\n  group: product-release/u);
+  assert.match(productWorkflow, /concurrency:\n  group: product-release/u);
   assert.match(workflow, /stage_run_attempt:[\s\S]*?required: true/u);
   const loadIndex = workflow.indexOf('name: Load the exact stage workflow run');
   const checkoutIndex = workflow.indexOf('uses: actions/checkout@');
@@ -99,8 +102,16 @@ test('finalize validates exact stage and Release attempts from the product tag',
   assert.match(workflow, /actions\/runs\/\$RELEASE_RUN_ID\/attempts\/\$RELEASE_RUN_ATTEMPT/u);
   const checkout = namedStep(steps, 'Check out the current release verifier');
   assert.match(checkout, /ref: \$\{\{ github\.sha \}\}/u);
-  const exactTag = namedStep(steps, 'Require the exact product tag');
-  assert.match(exactTag, /refs\/tags\/\$PRODUCT_TAG/u);
+  const requireMain = namedStep(steps, 'Require main');
+  assert.match(requireMain, /refs\/heads\/main/u);
+  const recordDownloads = steps.filter((step) =>
+    step.includes('name: Download the immutable publication record'),
+  );
+  assert.equal(recordDownloads.length, 2);
+  for (const download of recordDownloads) {
+    assert.match(download, /product-release-record-\$\{\{ inputs\.release_run_attempt \}\}/u);
+    assert.match(download, /run-id: \$\{\{ inputs\.release_run_id \}\}/u);
+  }
 });
 
 test('finalize revalidates the live product release before trusting public npm bytes', () => {
@@ -111,6 +122,7 @@ test('finalize revalidates the live product release before trusting public npm b
   assert.match(record, /"\$GITHUB_OUTPUT"/u);
   const authority = namedStep(steps, 'Revalidate the product release authority');
   assert.match(authority, /product-release-authority\.mjs verify-build-run/u);
+  assert.match(authority, /product-release-artifacts\.mjs inspect-record/u);
   assert.match(authority, /product-release-authority\.mjs verify-draft/u);
   assert.ok(
     workflow.indexOf(authority) < workflow.indexOf('Fetch and verify the public registry bytes'),
@@ -124,14 +136,21 @@ test('finalize preserves npm evidence and owns the single product publication bo
   assert.doesNotMatch(workflow, /cli-v/u);
   assert.match(workflow, /name: product-release/u);
   assert.match(workflow, /contents: write/u);
-  assert.match(workflow, /product-release-artifacts\.mjs verify/u);
   assert.match(workflow, /product-release-authority\.mjs publish-draft/u);
+  assert.match(workflow, /actions\/create-github-app-token@[0-9a-f]{40}/u);
+  assert.match(workflow, /permission-administration: read/u);
+  assert.match(
+    workflow,
+    /RELEASE_POLICY_TOKEN: \$\{\{ steps\.release-policy\.outputs\.token \}\}/u,
+  );
   const artifacts = namedStep(
     workflowSteps(workflow),
     'Download the exact verified Release run artifacts',
   );
   assert.match(artifacts, /run-id: \$\{\{ inputs\.release_run_id \}\}/u);
   assert.match(artifacts, /release-\*-\$\{\{ inputs\.release_run_attempt \}\}/u);
+  assert.doesNotMatch(workflow, /ref: \$\{\{ needs\.inspect\.outputs\.source_commit \}\}/u);
+  assert.doesNotMatch(workflow, /product-release-artifacts\.mjs verify/u);
   assert.doesNotMatch(workflow, /gh release download/u);
   assert.doesNotMatch(workflow, /gh release edit|gh release create/u);
 });
