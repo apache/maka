@@ -264,6 +264,69 @@ describe('ToolRuntime durable boundary', () => {
     );
   });
 
+  it('ignores owner-supplied execution args while retaining Runtime-owned managed arguments', async () => {
+    let operationId = '';
+    let transformArgs: unknown;
+    const canonicalPath = 'notes.txt';
+    const harness = makeHarness(
+      {
+        commitToolPrepared: async () => ({ created: true, runtimeEventSeq: 1 }),
+        commitToolOutcome: async () => {
+          throw new Error('generic T2 must not settle a managed mutation');
+        },
+      },
+      undefined,
+      'run-1',
+      {
+        admitManagedMutation: async (input) => {
+          operationId = input.operationId;
+          return {
+            durableDispatch: managedMutationDispatch(canonicalPath),
+            canonicalPath,
+            // Deliberately shaped like the old over-broad Host seam. Runtime
+            // must ignore every owner-supplied argument except canonicalPath.
+            executionArgs: {
+              path: canonicalPath,
+              content: 'HOST REPLACED CONTENT',
+            },
+            execute: async (operation) => {
+              const proof = await operation();
+              return {
+                kind: 'workspace_successor_committed',
+                durableOutcome: managedOutcomeEvent(operationId, proof.content, false, {
+                  durationMs: proof.durationMs,
+                }),
+              };
+            },
+            dispose: async () => undefined,
+          } as RuntimeManagedMutationAdmission & { readonly executionArgs: unknown };
+        },
+      },
+    );
+    const managedTool = tool(() => {
+      throw new Error('ordinary mutable implementation must not run');
+    });
+    managedTool.name = 'Write';
+    managedTool.recoveryMode = 'reconcile';
+    managedTool.durableExecutionProfile = 'managed_mutation_v1';
+    managedTool.managedMutationTransform = (args) => {
+      transformArgs = args;
+      return { ok: true };
+    };
+
+    assert.deepEqual(
+      await harness.executeWithInput(managedTool, {
+        path: 'notes.txt',
+        content: 'RUNTIME ORIGINAL CONTENT',
+      }),
+      { ok: true },
+    );
+    assert.deepEqual(transformArgs, {
+      path: canonicalPath,
+      content: 'RUNTIME ORIGINAL CONTENT',
+    });
+  });
+
   it('does not replace a committed managed result when admission cleanup fails', async () => {
     let operationId = '';
     const harness = makeHarness(
@@ -1585,6 +1648,22 @@ function makeHarness(
           },
         })
       ).result,
+    executeWithInput: async (target: MakaTool, input: unknown) =>
+      (
+        await runtime.settleToolCall({
+          tool: target,
+          turnId: 'turn-1',
+          toolCallId: 'provider-call-1',
+          input,
+          abortSignal: new AbortController().signal,
+          eventSink: {
+            push: (event) => events.push(event),
+            pushAndWaitUntilConsumed: async (event) => {
+              events.push(event);
+            },
+          },
+        })
+      ).result,
     executeNested: async (target: MakaTool, maxResultBytes?: number) =>
       (
         await runtime.settleToolCall({
@@ -1664,7 +1743,7 @@ function managedOutcomeEvent(
   };
 }
 
-function managedMutationDispatch() {
+function managedMutationDispatch(expectedPath = 'notes.txt') {
   return {
     protocol: 'managed_mutation_v2' as const,
     repositoryId: 'repository_11111111111111111111111111111111',
@@ -1677,7 +1756,7 @@ function managedMutationDispatch() {
     baseHeadRevision: 1,
     baseCommitOid: '1'.repeat(40),
     baseTreeOid: '2'.repeat(40),
-    expectedPath: 'notes.txt',
+    expectedPath,
     pathPolicyVersion: 3 as const,
     executionProfileDigest:
       'sha256:ffdfdda9cf38f382e0c4db81dac7319cd33586a6c65051a97a15e6c41b88f825' as const,
