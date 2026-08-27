@@ -18,10 +18,7 @@
  */
 
 import { createHash } from 'node:crypto';
-import type {
-  McpBoundTool,
-  McpToolBinding,
-} from '@maka/core/mcp';
+import type { McpBoundTool, McpToolBinding } from '@maka/core/mcp';
 import type { McpClientManager } from '@maka/mcp';
 import type { ClientCapabilityProvider } from '@maka/runtime-host/client';
 import {
