@@ -350,7 +350,23 @@ export function normalizeShellRunRecord(
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
     throw new Error(`Invalid ShellRun record for ${shellRunId}: expected an object`);
   }
-  const record = value as Partial<ShellRunRecord>;
+  // Legacy `visibility` (`model`|`user`) was briefly persisted around 2026-08 before
+  // being removed. Retain read-compatibility by stripping it (after validating its
+  // shape) so a workspace that was written by that build can still recover.
+  const rawRecord = value as Partial<ShellRunRecord> & Record<string, unknown>;
+  let record: Partial<ShellRunRecord> = rawRecord;
+  if ('visibility' in rawRecord) {
+    const visibility = rawRecord.visibility;
+    if (
+      visibility !== undefined &&
+      visibility !== 'model' &&
+      visibility !== 'user'
+    ) {
+      throw new Error(`Invalid ShellRun record for ${shellRunId}: malformed fields`);
+    }
+    const { visibility: _stripped, ...withoutVisibility } = rawRecord;
+    record = withoutVisibility as Partial<ShellRunRecord>;
+  }
   const requiredStrings = [
     record.shellRunId,
     record.sessionId,
