@@ -1573,6 +1573,54 @@ describe('Maka Pi TUI runner', () => {
     ]);
   });
 
+  test('a confirmed second Ctrl+T collapses a head-scrolled block with one full redraw (#4011)', async () => {
+    const terminal = new FakeTerminal();
+    const driver = new ThinkingDriver();
+    const run = runMakaPiTui({
+      title: 'Maka',
+      driver,
+      cwd: '/repo',
+      model: 'claude-sonnet-4-5',
+      connectionSlug: 'claude-subscription',
+      permissionMode: 'ask',
+      terminal,
+    });
+
+    terminal.input('run');
+    terminal.input('\r');
+    await waitFor(() => terminal.output().includes('Thinking…'));
+
+    // Expand: the 80-line thinking block renders in full and pushes its own
+    // head above the 24-row viewport.
+    terminal.input('\x14');
+    await waitFor(() => terminal.output().includes('reason-row-0'));
+    assert.equal(terminal.output().includes('\x1b[3J'), false);
+
+    // First collapse press: the block's head is stranded in scrollback, so the
+    // toggle flips the default, names the stranded block, offers the second
+    // press — and does NOT redraw. (Match a wrap-safe early fragment: the
+    // notice line wraps at 80 columns.)
+    terminal.input('\x14');
+    await waitFor(() =>
+      plainTerminalOutput(terminal.output()).includes('stayed expanded in scrollback'),
+    );
+    assert.equal(terminal.output().includes('\x1b[3J'), false);
+
+    // Confirmed second press inside the window: one deliberate
+    // scrollback-clearing full redraw collapses the stranded block.
+    terminal.input('\x14');
+    await waitFor(() => plainTerminalOutput(terminal.screenOutput()).includes('Thinking…'));
+    assert.equal(terminal.output().includes('\x1b[3J'), true);
+
+    exitMaka(terminal);
+    await Promise.race([
+      run,
+      delay(CLOSE_BUDGET_MS).then(() => {
+        throw new Error('TUI did not close during test cleanup');
+      }),
+    ]);
+  });
+
   test('does not treat a kitty Escape press+release as a double Escape', async () => {
     const terminal = new FakeTerminal();
     const driver = new InterruptibleTurnDriver();
@@ -7172,6 +7220,28 @@ class ToolOutputDriver extends FakeSessionDriver {
       id: 'event-complete',
       turnId: 'turn-1',
       ts: 3,
+      stopReason: 'end_turn',
+    };
+  }
+}
+
+// #4011: an 80-line thinking block renders in full when expanded, so one
+// Ctrl+T pushes its head above the 24-row viewport into scrollback.
+class ThinkingDriver extends ToolOutputDriver {
+  override async *promptEvents(_prompt: string): AsyncIterable<SessionEvent> {
+    yield {
+      type: 'thinking_delta',
+      id: 'event-thinking-1',
+      turnId: 'turn-1',
+      ts: 1,
+      messageId: 'message-1',
+      text: Array.from({ length: 80 }, (_, i) => `reason-row-${i}`).join('\n'),
+    };
+    yield {
+      type: 'complete',
+      id: 'event-complete',
+      turnId: 'turn-1',
+      ts: 2,
       stopReason: 'end_turn',
     };
   }
