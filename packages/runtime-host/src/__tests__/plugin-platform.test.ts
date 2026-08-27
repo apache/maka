@@ -28,6 +28,7 @@ import {
   decodeRequestFrame,
   decodeResponseFrame,
 } from '../protocol/index.js';
+import { PLUGIN_PLATFORM_QUERY_RESULT_MAX_BYTES } from '../protocol/plugin-platform.js';
 import {
   HostPluginCompositionStore,
   HostPluginCompositionStoreError,
@@ -135,6 +136,53 @@ test('Plugin Platform coordinator keeps package and composition operations gener
         null as never,
       ),
       { ok: true, result: {} },
+    );
+    await platform.close();
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('Plugin Platform query pages share the protocol byte budget across multiple items', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-plugin-query-budget-'));
+  try {
+    const platform = new HostPluginPlatform(join(root, 'control'));
+    const coordinator = new HostPluginPlatformCoordinator(platform);
+    await platform.recover();
+    for (let index = 0; index < 12; index += 1) {
+      await platform.apply({
+        operations: [
+          {
+            type: 'insert',
+            entry: {
+              id: `large-query-entry-${index}`,
+              config: { payload: `${index}:${'x'.repeat(60 * 1024)}` },
+            },
+          },
+        ],
+      });
+    }
+
+    const queried = await coordinator.handlers['plugin.platform.query'](
+      { view: 'entries', limit: 64 },
+      null as never,
+    );
+    assert.equal(queried.ok, true);
+    if (!queried.ok || queried.result.view !== 'entries') throw new Error('Expected Entry page');
+    assert.ok(queried.result.items.length > 1);
+    assert.ok(queried.result.items.length < 12);
+    assert.notEqual(queried.result.nextCursor, null);
+    assert.ok(
+      Buffer.byteLength(JSON.stringify(queried.result), 'utf8') <=
+        PLUGIN_PLATFORM_QUERY_RESULT_MAX_BYTES,
+    );
+    assert.doesNotThrow(() =>
+      decodeResponseFrame({
+        requestId: 'bounded-query',
+        operation: 'plugin.platform.query',
+        ok: true,
+        result: queried.result,
+      }),
     );
     await platform.close();
   } finally {
@@ -368,6 +416,28 @@ test('Plugin Platform protocol rejects open and malformed generic composition sh
         nextCursor: 'invalid',
       },
     }),
+  );
+
+  const prototypeKeys = decodePluginCompositionApplyInput(
+    JSON.parse(
+      '{"operations":[{"type":"insert","entry":{"id":"prototype-fields","config":{"__proto__":"configured","constructor":"constructor-value"},"isolate":{"constructor":"mapped"}}}]}',
+    ),
+  );
+  const operation = prototypeKeys.operations[0];
+  assert.equal(operation?.type, 'insert');
+  if (operation?.type !== 'insert') throw new Error('Expected insert operation');
+  const config = operation.entry.config as Readonly<Record<string, unknown>>;
+  const isolate = operation.entry.isolate as Readonly<Record<string, unknown>>;
+  assert.equal(Object.hasOwn(config, '__proto__'), true);
+  assert.equal(config['__proto__'], 'configured');
+  assert.equal(Object.hasOwn(isolate, 'constructor'), true);
+  assert.equal(isolate['constructor'], 'mapped');
+  assert.throws(() =>
+    decodePluginCompositionApplyInput(
+      JSON.parse(
+        '{"operations":[{"type":"insert","entry":{"id":"invalid-isolate","isolate":{"__proto__":true}}}]}',
+      ),
+    ),
   );
 });
 
@@ -803,6 +873,43 @@ test('Manifest v1 rejects unsupported secret configuration metadata', async () =
 
     await assert.rejects(() => platform.installPackage(source), /manifest fields are invalid/u);
     assert.deepEqual(await platform.packages.identities(), []);
+    await platform.close();
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('Manifest configuration reads declared prototype-named keys as own values', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-plugin-config-prototype-'));
+  try {
+    const platform = new HostPluginPlatform(join(root, 'control'));
+    await platform.recover();
+    await platform.installPackage(
+      await writeFixturePackage(root, 'prototype-config-package', 'prototype-config', {
+        manifest: {
+          configuration: {
+            properties: { constructor: { type: 'string' } },
+            required: ['constructor'],
+          },
+        },
+      }),
+    );
+
+    await platform.apply({
+      operations: [
+        {
+          type: 'insert',
+          entry: {
+            id: 'prototype-config-entry',
+            packageId: 'prototype-config-package',
+            config: { constructor: 'configured' },
+          },
+        },
+      ],
+    });
+    const config = platform.desiredComposition().roots.profile[0]?.config;
+    assert.equal(Object.hasOwn(config ?? {}, 'constructor'), true);
+    assert.equal(config?.constructor, 'configured');
     await platform.close();
   } finally {
     await rm(root, { recursive: true, force: true });

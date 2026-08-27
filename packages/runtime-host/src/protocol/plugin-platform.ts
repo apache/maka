@@ -53,6 +53,7 @@ const MUTATE_ERRORS = [
   'commit_outcome_unknown',
 ] as const;
 const MAX_FRAME_BYTES = 512 * 1024;
+export const PLUGIN_PLATFORM_QUERY_RESULT_MAX_BYTES = 480 * 1024;
 
 export interface PluginPackageProjection {
   readonly extensionId: string;
@@ -307,7 +308,11 @@ function decodePluginPlatformQueryResult(value: unknown): PluginPlatformQueryRes
           ? { view, items: decodeInspections(output.items), nextCursor }
           : { view: 'failures', items: output.items.map(decodePlatformFailure), nextCursor };
   }
-  requireEncodedByteLimit(decoded, 'Plugin Platform query result', MAX_FRAME_BYTES);
+  requireEncodedByteLimit(
+    decoded,
+    'Plugin Platform query result',
+    PLUGIN_PLATFORM_QUERY_RESULT_MAX_BYTES,
+  );
   return decoded;
 }
 
@@ -569,15 +574,15 @@ function decodeInject(value: unknown): readonly string[] | Readonly<Record<strin
 
 function decodeIsolate(value: unknown): Readonly<Record<string, true | string>> {
   const record = requireRecord(value, 'Plugin Entry isolate');
-  const output: Record<string, true | string> = {};
+  const output: Array<readonly [string, true | string]> = [];
   for (const [key, item] of Object.entries(record)) {
     requireId(key, 'Plugin Entry isolate key');
     if (item !== true && (typeof item !== 'string' || !item)) {
       throw invalidProtocolFrame('Invalid Plugin Entry isolate value');
     }
-    output[key] = item;
+    output.push([key, item]);
   }
-  return output;
+  return Object.fromEntries(output);
 }
 
 function decodeJsonRecord(value: unknown, label: string): Readonly<Record<string, unknown>> {
@@ -595,7 +600,7 @@ function decodeScalarRecord(
   label: string,
 ): Readonly<Record<string, string | number | boolean>> {
   const record = requireRecord(value, `Plugin Entry ${label}`);
-  const output: Record<string, string | number | boolean> = {};
+  const output: Array<readonly [string, string | number | boolean]> = [];
   for (const [key, item] of Object.entries(record)) {
     requireId(key, `Plugin Entry ${label} key`);
     if (
@@ -603,10 +608,10 @@ function decodeScalarRecord(
       typeof item === 'boolean' ||
       (typeof item === 'number' && Number.isFinite(item))
     )
-      output[key] = item;
+      output.push([key, item]);
     else throw invalidProtocolFrame(`Invalid Plugin Entry ${label} value`);
   }
-  return output;
+  return Object.fromEntries(output);
 }
 
 function requireBoolean(value: unknown): boolean {

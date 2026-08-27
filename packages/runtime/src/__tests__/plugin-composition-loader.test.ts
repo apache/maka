@@ -468,6 +468,21 @@ test('replacement subtrees reject duplicate ids across different branches', asyn
 
 test('state preserves session ids that overlap object prototype properties', async () => {
   const loader = new MakaCompositionLoader();
+  const reduced = applyCompositionState(loader.compositionState(), {
+    operations: [
+      {
+        type: 'insert',
+        rootId: 'session:__proto__',
+        entry: { id: 'reduced-special-session-entry' },
+      },
+    ],
+  });
+  assert.equal(Object.hasOwn(reduced.roots.sessions, '__proto__'), true);
+  assert.deepEqual(
+    reduced.roots.sessions.__proto__?.map(({ id }) => id),
+    ['reduced-special-session-entry'],
+  );
+
   await loader.create('session:__proto__', { id: 'special-session-entry' });
 
   const state = loader.compositionState();

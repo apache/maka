@@ -157,7 +157,7 @@ export function validateExtensionConfiguration(
   if (unknown) throw invalid(`Extension configuration key is not declared: ${unknown}`);
   const result: Record<string, ExtensionConfigurationScalar> = {};
   for (const [key, property] of Object.entries(schema.properties)) {
-    const configured = input[key] ?? property.default;
+    const configured = Object.hasOwn(input, key) ? input[key] : property.default;
     if (configured === undefined) {
       if (schema.required.includes(key)) {
         throw invalid(`Extension configuration is missing required key: ${key}`);

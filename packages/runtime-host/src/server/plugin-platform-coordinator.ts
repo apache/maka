@@ -32,6 +32,7 @@ import type {
   PluginPlatformQueryInput,
   PluginPlatformQueryResult,
 } from '../protocol/index.js';
+import { PLUGIN_PLATFORM_QUERY_RESULT_MAX_BYTES } from '../protocol/plugin-platform.js';
 import { ExtensionBundleError } from './extension-bundle.js';
 import { ExtensionPackageManifestError } from './extension-package-manifest.js';
 import type { PluginPlatformOperationHandlerMap } from './operation-dispatcher.js';
@@ -209,7 +210,7 @@ function boundedPage<T>(
     const candidate = [...items, values[index] as T];
     if (
       Buffer.byteLength(JSON.stringify({ view, items: candidate, nextCursor: index + 1 }), 'utf8') >
-      480 * 1024
+      PLUGIN_PLATFORM_QUERY_RESULT_MAX_BYTES
     ) {
       break;
     }

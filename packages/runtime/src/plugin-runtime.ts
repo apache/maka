@@ -162,7 +162,15 @@ export function applyCompositionState(
     if (rootId === 'profile') return profile;
     if (rootId === 'desktop-ui') return desktopUi;
     const scopeId = rootId.slice('session:'.length);
-    return (sessions[scopeId] ??= []);
+    if (!Object.hasOwn(sessions, scopeId)) {
+      Object.defineProperty(sessions, scopeId, {
+        value: [],
+        writable: true,
+        enumerable: true,
+        configurable: true,
+      });
+    }
+    return sessions[scopeId]!;
   };
   const unindex = (entry: MakaCompositionEntry): void => {
     locations.delete(entry.id);
