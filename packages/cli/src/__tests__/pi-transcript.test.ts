@@ -37,6 +37,7 @@ import {
   refreshRunningShellRunElapsed,
   hydrateToolsWithStoredMessages,
   makaPiToolPresentationStatus,
+  retireCancelledTransientMessages,
   replaceTranscriptWithStoredMessages,
   submitCompactToTranscript,
   toggleAllThinkingExpansion,
@@ -448,7 +449,7 @@ describe('Maka Pi TUI transcript', () => {
 
   test('keeps assistant text after a tool call visible after the tool block', () => {
     const state = createMakaPiTranscriptState();
-    appendUserPrompt(state, 'inspect the package');
+    appendUserPrompt(state, 'inspect the package', 'message-1', true);
 
     applyMakaSessionEventToTranscript(
       state,
@@ -504,6 +505,207 @@ describe('Maka Pi TUI transcript', () => {
       state.entries[3]?.kind === 'assistant' ? state.entries[3].text : '',
       'The package is named maka-agent.',
     );
+  });
+
+  test('preserves a transient user row across a sparse transcript replacement', () => {
+    const state = createMakaPiTranscriptState();
+    appendUserPrompt(state, 'send now', 'message-1', true);
+
+    replaceTranscriptWithStoredMessages(state, [], { preserveClientLocalEntries: true });
+
+    assert.deepEqual(state.entries, [
+      { kind: 'user', messageId: 'message-1', text: 'send now', transient: true },
+    ]);
+  });
+
+  test('removes only transient rows with durable cancellation proof', () => {
+    const state = createMakaPiTranscriptState();
+    appendUserPrompt(state, 'accepted', 'message-accepted', true);
+    appendUserPrompt(state, 'handed off', 'message-handed-off', true);
+    appendUserPrompt(state, 'cancelled', 'message-cancelled', true);
+
+    retireCancelledTransientMessages(state, ['message-cancelled']);
+
+    assert.deepEqual(
+      state.entries.map((entry) => ('messageId' in entry ? entry.messageId : undefined)),
+      ['message-accepted', 'message-handed-off'],
+    );
+  });
+
+  test('keeps a transient user row before later durable output in a sparse replacement', () => {
+    const state = createMakaPiTranscriptState();
+    replaceTranscriptWithStoredMessages(state, [
+      { type: 'user', id: 'old-user', turnId: 'old-turn', ts: 1, text: 'before' },
+    ]);
+    appendUserPrompt(state, 'send now', 'message-1', true);
+    state.entries.push({ kind: 'assistant', messageId: 'later-assistant', text: 'after' });
+
+    replaceTranscriptWithStoredMessages(
+      state,
+      [
+        { type: 'user', id: 'old-user', turnId: 'old-turn', ts: 1, text: 'before' },
+        {
+          type: 'assistant',
+          id: 'later-assistant',
+          turnId: 'turn-1',
+          ts: 3,
+          text: 'after',
+          modelId: 'model-1',
+        },
+      ],
+      { preserveClientLocalEntries: true },
+    );
+
+    assert.deepEqual(
+      state.entries.map((entry) =>
+        entry.kind === 'user' || entry.kind === 'assistant' ? entry.messageId : entry.kind,
+      ),
+      ['old-user', 'message-1', 'later-assistant'],
+    );
+  });
+
+  test('keeps an unanchored transient user row after existing durable history', () => {
+    const state = createMakaPiTranscriptState();
+    replaceTranscriptWithStoredMessages(state, [
+      { type: 'user', id: 'old-user', turnId: 'old-turn', ts: 1, text: 'before' },
+      {
+        type: 'assistant',
+        id: 'old-assistant',
+        turnId: 'old-turn',
+        ts: 2,
+        text: 'answer',
+        modelId: 'model-1',
+      },
+    ]);
+    appendUserPrompt(state, 'send now', 'message-1', true);
+
+    replaceTranscriptWithStoredMessages(
+      state,
+      [
+        { type: 'user', id: 'old-user', turnId: 'old-turn', ts: 1, text: 'before' },
+        {
+          type: 'assistant',
+          id: 'old-assistant',
+          turnId: 'old-turn',
+          ts: 2,
+          text: 'answer',
+          modelId: 'model-1',
+        },
+      ],
+      { preserveClientLocalEntries: true },
+    );
+
+    assert.deepEqual(
+      state.entries.map((entry) =>
+        entry.kind === 'user' || entry.kind === 'assistant' ? entry.messageId : entry.kind,
+      ),
+      ['old-user', 'old-assistant', 'message-1'],
+    );
+  });
+
+  test('keeps a leading transient row before an entirely new durable replacement', () => {
+    const state = createMakaPiTranscriptState();
+    appendUserPrompt(state, 'current prompt', 'message-current', true);
+    state.entries.push({ kind: 'assistant', messageId: 'old-assistant', text: 'old live output' });
+
+    replaceTranscriptWithStoredMessages(
+      state,
+      [
+        { type: 'user', id: 'next-user', turnId: 'next-turn', ts: 3, text: 'next prompt' },
+        {
+          type: 'assistant',
+          id: 'next-assistant',
+          turnId: 'next-turn',
+          ts: 4,
+          text: 'next answer',
+          modelId: 'model-1',
+        },
+      ],
+      { preserveClientLocalEntries: true },
+    );
+
+    assert.deepEqual(
+      state.entries.map((entry) =>
+        entry.kind === 'user' || entry.kind === 'assistant' ? entry.messageId : entry.kind,
+      ),
+      ['message-current', 'next-user', 'next-assistant'],
+    );
+  });
+
+  test('reconciles a transient user row by messageId when durable history arrives', () => {
+    const state = createMakaPiTranscriptState();
+    appendUserPrompt(state, 'send now', 'message-1', true);
+
+    replaceTranscriptWithStoredMessages(
+      state,
+      [{ type: 'user', id: 'message-1', turnId: 'turn-1', ts: 1, text: 'send now' }],
+      { preserveClientLocalEntries: true },
+    );
+
+    assert.deepEqual(state.entries, [{ kind: 'user', messageId: 'message-1', text: 'send now' }]);
+  });
+
+  test('keeps a projected in-flight steering echo transient until durable reconciliation', () => {
+    const state = createMakaPiTranscriptState();
+    appendUserPrompt(state, 'send now', 'message-1', true);
+
+    applyMakaSessionEventToTranscript(
+      state,
+      event({
+        type: 'steering_message',
+        messageId: 'message-1',
+        content: { text: 'send now' },
+      }),
+    );
+    applyMakaSessionEventToTranscript(
+      state,
+      event({
+        type: 'message_admission',
+        messageId: 'message-1',
+        outcome: 'retracted',
+      }),
+    );
+
+    assert.deepEqual(state.entries, []);
+  });
+
+  test('removes only the transient row named by a retracted admission', () => {
+    const state = createMakaPiTranscriptState();
+    appendUserPrompt(state, 'keep this', 'message-kept', true);
+    appendUserPrompt(state, 'take this back', 'message-retracted', true);
+
+    applyMakaSessionEventToTranscript(
+      state,
+      event({
+        type: 'message_admission',
+        messageId: 'message-retracted',
+        outcome: 'retracted',
+      }),
+    );
+
+    assert.deepEqual(state.entries, [
+      { kind: 'user', messageId: 'message-kept', text: 'keep this', transient: true },
+    ]);
+  });
+
+  test('updates a projected steering echo in its transient message position', () => {
+    const state = createMakaPiTranscriptState();
+    appendUserPrompt(state, 'send now', 'message-1', true);
+    state.entries.push({ kind: 'notice', level: 'error', text: 'later row' });
+
+    applyMakaSessionEventToTranscript(
+      state,
+      event({
+        type: 'steering_message',
+        messageId: 'message-1',
+        content: { text: 'canonical text' },
+      }),
+    );
+
+    assert.deepEqual(state.entries, [
+      { kind: 'user', messageId: 'message-1', text: 'canonical text', transient: true },
+      { kind: 'notice', level: 'error', text: 'later row' },
+    ]);
   });
 
   test('uses a shared message gutter and trims trailing block rows', () => {
@@ -575,7 +777,6 @@ describe('Maka Pi TUI transcript', () => {
     );
     state.entries.push({ kind: 'notice', level: 'error', text: 'Turn failed: provider_error' });
     state.steering = ['Keep going'];
-    state.pendingFallback = [{ text: 'Try again', enqueue: 'steer' }];
 
     assert.equal(
       hydrateToolsWithStoredMessages(state, 'turn-1', [
@@ -607,7 +808,6 @@ describe('Maka Pi TUI transcript', () => {
     assert.deepEqual(tool?.input, { path: 'README.md' });
     assert.deepEqual(tool?.result, { kind: 'text', text: 'README contents' });
     assert.deepEqual(state.steering, ['Keep going']);
-    assert.deepEqual(state.pendingFallback, [{ text: 'Try again', enqueue: 'steer' }]);
     assert.equal(state.entries.at(-1)?.kind, 'notice');
   });
 
@@ -1065,8 +1265,8 @@ describe('Maka Pi TUI transcript', () => {
     );
 
     assert.deepEqual(state.entries, [
-      { kind: 'user', text: 'Show the result' },
-      { kind: 'user', text: 'Also include the tests' },
+      { kind: 'user', messageId: 'steering-display', text: 'Show the result' },
+      { kind: 'user', messageId: 'steering-plain', text: 'Also include the tests' },
     ]);
     const rendered = renderMakaPiTranscript(state, meta(), 100).map(stripAnsi).join('\n');
     assert.match(rendered, /Show the result/);

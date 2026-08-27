@@ -46,6 +46,7 @@ release commit 中的 [DISCLAIMER-WIP](https://github.com/apache/maka/blob/main/
 | --- | --- | --- | --- | --- |
 | Linux | x64 | 22.19 | 已验证 | 仅验证 preflight |
 | Linux | x64 | 24 | 已验证 | 已验证 |
+| Linux | arm64 | 24 | 已验证 | 仅验证 preflight |
 | macOS | arm64 | 24 | 已验证 | 仅验证 preflight |
 | Windows | x64 | 24 | 已验证 | 仅验证 preflight |
 

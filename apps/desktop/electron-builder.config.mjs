@@ -89,6 +89,14 @@ export default {
       from: 'resources/workers/filesystem-worker.js',
       to: 'workers/filesystem-worker.js',
     },
+    {
+      from: '../../native/runtime-host-peer/target/release/maka_runtime_host_peer.node',
+      to: 'runtime-host-peer/maka_runtime_host_peer.node',
+    },
+    {
+      from: '../../packages/cli/RUNTIME_HOST_PEER_THIRD_PARTY_NOTICES.txt',
+      to: 'licenses/runtime-host-peer/THIRD_PARTY_NOTICES.txt',
+    },
     ...(process.platform === 'win32'
       ? [
           {
@@ -174,7 +182,14 @@ export default {
       { target: 'zip', arch: ['arm64'] },
     ],
     category: 'public.app-category.productivity',
-    icon: 'assets/icon.png',
+    // The bundle icon is what Finder, Launchpad and the installer show, and
+    // none of those run our code — so it cannot follow the user's choice and
+    // has to be the shipped default. `assets/icon.png` is the original mascot
+    // mark, which is still selectable as the `default` id but is no longer the
+    // default; pointing the bundle at it would leave every surface outside the
+    // running app on the old artwork. Kept in step with `DEFAULT_APP_ICON` by
+    // a test in scripts/verify-packaged-app-icons.test.mjs.
+    icon: 'assets/app-icons/sky.png',
     forceCodeSigning: true,
     hardenedRuntime: true,
     notarize: true,
@@ -208,7 +223,9 @@ export default {
       { target: 'zip', arch: ['x64'] },
     ],
     artifactName: 'Maka-${version}-win-${arch}.${ext}',
-    icon: 'assets/icon.png',
+    // Same reason as `mac.icon` above: the .exe, the installer and the
+    // shortcut are drawn by the OS from this file, not by us.
+    icon: 'assets/app-icons/sky.png',
     // No Authenticode certificate yet. Being unsigned is the absence of one:
     // electron-builder skips signing when no certificate is configured, and
     // `forceCodeSigning` is left off so that skip is not an error. Nothing here

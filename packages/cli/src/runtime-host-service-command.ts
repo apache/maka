@@ -44,6 +44,7 @@ export interface RuntimeHostServiceCliOptions {
   readonly peer?: {
     readonly nativePath: string;
     readonly keyPath: string;
+    readonly expectedPeerId?: string;
     readonly listenAddresses?: readonly string[];
     readonly coordinationRelays?: readonly string[];
   };

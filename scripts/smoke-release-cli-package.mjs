@@ -19,7 +19,9 @@
 
 import { execFileSync, spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
+import { createSocket } from 'node:dgram';
 import { createServer } from 'node:http';
+import { createRequire } from 'node:module';
 import {
   closeSync,
   existsSync,
@@ -52,6 +54,7 @@ const API_KEY = 'maka-release-smoke-key';
 const FILE_SENTINEL = 'MAKA_RELEASE_FILESYSTEM_WORKER_OK';
 const RESPONSE_SENTINEL = 'MAKA_RELEASE_SMOKE_OK';
 const INSTALLED_ROOT_ENV = 'MAKA_CLI_RELEASE_INSTALLED_ROOT';
+const require = createRequire(import.meta.url);
 
 const repoRoot = resolve(import.meta.dirname, '..');
 const cliVersion = JSON.parse(
@@ -170,6 +173,7 @@ async function validateInstalledProduct(root) {
   if (typeof ptySpawn !== 'function') throw new Error('Installed node-pty has no spawn function');
   await smokePty(ptySpawn, baseEnvironment, root);
   await smokeNativeFileLock(packageRoot, root);
+  await smokeRuntimeHostPeerProtocol({ packageRoot, cliEntrypoint, root });
 
   logStep('checking the interactive TUI setup path');
   await smokeInteractiveTui({
@@ -197,6 +201,106 @@ async function validateInstalledProduct(root) {
   console.log(
     `[release-cli-validation] OK — installed ${basename(tarballPath)} offline as ${version}`,
   );
+}
+
+async function smokeRuntimeHostPeerProtocol({ packageRoot, cliEntrypoint, root }) {
+  const peerArtifact = await importInstalled(packageRoot, 'dist/runtime-host-peer-artifact.js');
+  const server = await importInstalled(
+    packageRoot,
+    'node_modules/@maka/runtime-host/dist/server/index.js',
+  );
+  const client = await importInstalled(
+    packageRoot,
+    'node_modules/@maka/runtime-host/dist/client/index.js',
+  );
+  const access = await importInstalled(packageRoot, 'dist/runtime-host-access-command.js');
+  const clientDataRoot = join(root, 'peer-client');
+  const hostRoot = join(root, 'peer-host');
+  const hostKeyPath = join(root, 'peer-host.key');
+  mkdirSync(clientDataRoot, { recursive: true });
+  mkdirSync(hostRoot, { recursive: true });
+
+  const previousNativePath = process.env.MAKA_RUNTIME_HOST_PEER_NATIVE_PATH;
+  const previousKeyPath = process.env.MAKA_RUNTIME_HOST_PEER_KEY_PATH;
+  let host;
+  let connection;
+  try {
+    delete process.env.MAKA_RUNTIME_HOST_PEER_NATIVE_PATH;
+    delete process.env.MAKA_RUNTIME_HOST_PEER_KEY_PATH;
+    const configured = await peerArtifact.configureRuntimeHostPeerClient({
+      cliPath: cliEntrypoint,
+      clientDataRoot,
+      environment: process.env,
+    });
+    if (!configured) throw new Error('Installed CLI could not resolve its direct-peer artifact');
+    const nativePath = process.env.MAKA_RUNTIME_HOST_PEER_NATIVE_PATH;
+    if (!nativePath) throw new Error('Installed CLI did not configure its direct-peer artifact');
+    const addon = require(nativePath);
+    const peerId = await addon.ensurePeerIdentity(hostKeyPath);
+    const unrelatedPeerId = await addon.ensurePeerIdentity(join(root, 'unrelated-peer.key'));
+    try {
+      addon.startPeerEndpoint({ keyPath: hostKeyPath, expectedPeerId: unrelatedPeerId });
+      throw new Error('Installed direct-peer addon accepted the wrong persisted identity');
+    } catch (error) {
+      if (!String(error).includes('peer_identity_mismatch')) throw error;
+    }
+    host = await server.startExecutionRuntimeHostService({
+      rootPath: hostRoot,
+      peer: {
+        nativePath,
+        keyPath: hostKeyPath,
+        expectedPeerId: peerId,
+        listenAddresses: ['/ip4/127.0.0.1/udp/0/quic-v1'],
+      },
+    });
+    const listener = host.peerListeners[0];
+    if (!listener || listener.peerId !== peerId || listener.listenAddresses.length === 0) {
+      throw new Error('Installed Runtime Host direct-peer listener did not become ready');
+    }
+    const issued = await access.issueRuntimeHostAccessCredential({
+      rootPath: hostRoot,
+      expectedRootId: host.rootId,
+      principalKind: 'remote_owner',
+      principalId: 'release-smoke-peer-client',
+      operationGrants: [],
+      canPublishClientCapabilities: false,
+      canUseHostPaths: false,
+      preset: 'terminal-client',
+    });
+    connection = await client.connectRemoteRuntimeHostProfile({
+      profile: {
+        id: 'release-smoke-peer',
+        name: 'Release smoke peer',
+        kind: 'remote',
+        rootId: host.rootId,
+        transport: {
+          kind: 'libp2p-direct',
+          peerId,
+          routeHints: listener.listenAddresses,
+          coordinationRelays: [],
+        },
+      },
+      credential: issued.credential,
+      clientInstanceId: 'release-smoke-peer-client',
+      connectTimeoutMs: 10_000,
+      handshakeTimeoutMs: 10_000,
+      readyTimeoutMs: 10_000,
+    });
+    const status = await connection.status(10_000);
+    if (status.state !== 'ready') {
+      throw new Error(`Installed Runtime Host direct-peer status is ${status.state}`);
+    }
+  } finally {
+    await connection?.close().catch(() => undefined);
+    await host?.close().catch(() => undefined);
+    restoreEnvironment('MAKA_RUNTIME_HOST_PEER_NATIVE_PATH', previousNativePath);
+    restoreEnvironment('MAKA_RUNTIME_HOST_PEER_KEY_PATH', previousKeyPath);
+  }
+}
+
+function restoreEnvironment(name, value) {
+  if (value === undefined) delete process.env[name];
+  else process.env[name] = value;
 }
 
 function validateReleaseArtifact(path) {
@@ -391,13 +495,57 @@ async function smokeInteractiveTui({ packageRoot, cliEntrypoint, ptySpawn, root 
 async function smokeRuntimeHostService({ packageRoot, cliEntrypoint, ptySpawn, root }) {
   mkdirSync(root, { recursive: true });
   const environment = isolatedEnvironment(join(root, 'home'));
+  const clientDataRoot = join(root, 'client');
+  const stateRoot = join(root, 'state');
+  mkdirSync(clientDataRoot, { recursive: true });
+  mkdirSync(stateRoot, { recursive: true });
+  const peerArtifact = await importInstalled(packageRoot, 'dist/runtime-host-peer-artifact.js');
+  const configured = await peerArtifact.configureRuntimeHostPeerClient({
+    cliPath: cliEntrypoint,
+    clientDataRoot,
+    environment,
+  });
+  if (!configured) throw new Error('Installed service could not resolve its direct-peer artifact');
+  const nativePath = environment.MAKA_RUNTIME_HOST_PEER_NATIVE_PATH;
+  if (!nativePath) throw new Error('Installed service did not configure its direct-peer artifact');
+  const keyPath = join(clientDataRoot, 'runtime-host-service.peer.key');
+  const peerId = await require(nativePath).ensurePeerIdentity(keyPath);
+  const configPath = join(clientDataRoot, 'runtime-host-service.json');
+  writeFileSync(
+    configPath,
+    `${JSON.stringify({
+      schemaVersion: 2,
+      rootPath: stateRoot,
+      projectDirectoryRoots: [{ label: '~', path: root }],
+      websocket: {
+        host: '127.0.0.1',
+        port: await allocateLoopbackPort(),
+        path: '/runtime-host',
+      },
+      launch: { nodePath: process.execPath, cliPath: cliEntrypoint },
+      peer: {
+        enabled: true,
+        peerId,
+        listenAddresses: [`/ip4/127.0.0.1/udp/${await allocateLoopbackUdpPort()}/quic-v1`],
+        coordinationRelays: [],
+      },
+    })}\n`,
+    { mode: 0o600 },
+  );
   let ready;
   await withCleanup(
     async () => {
       const result = await runPtyScenario({
         ptySpawn,
         command: process.execPath,
-        args: [cliEntrypoint, 'runtime-host', 'serve', '--root', root, '--json'],
+        args: [
+          cliEntrypoint,
+          'runtime-host',
+          'serve',
+          '--managed-service-config',
+          configPath,
+          '--json',
+        ],
         cwd: root,
         environment,
         marker: '"event":"runtime_host_ready"',
@@ -419,13 +567,41 @@ async function smokeRuntimeHostService({ packageRoot, cliEntrypoint, ptySpawn, r
         ready.protocol?.version === undefined ||
         !ready.hostEpoch ||
         !ready.rootId ||
-        !ready.listeners?.some((listener) => listener.kind === 'local_ipc')
+        !ready.listeners?.some((listener) => listener.kind === 'local_ipc') ||
+        !ready.listeners?.some(
+          (listener) => listener.kind === 'libp2p_direct' && listener.peerId === peerId,
+        )
       ) {
         throw new Error('Runtime Host ready event is incomplete');
       }
     },
-    (completed) => settleRuntimeHost(packageRoot, root, completed),
+    (completed) => settleRuntimeHost(packageRoot, stateRoot, completed),
   );
+}
+
+async function allocateLoopbackPort() {
+  const server = createServer();
+  await new Promise((resolve, reject) => {
+    server.once('error', reject);
+    server.listen(0, '127.0.0.1', resolve);
+  });
+  const address = server.address();
+  await new Promise((resolve, reject) =>
+    server.close((error) => (error ? reject(error) : resolve())),
+  );
+  if (!address || typeof address === 'string') throw new Error('Unable to allocate a TCP port');
+  return address.port;
+}
+
+async function allocateLoopbackUdpPort() {
+  const socket = createSocket('udp4');
+  await new Promise((resolve, reject) => {
+    socket.once('error', reject);
+    socket.bind(0, '127.0.0.1', resolve);
+  });
+  const address = socket.address();
+  await new Promise((resolve) => socket.close(resolve));
+  return address.port;
 }
 
 async function smokeControlledRun({ packageRoot, cliEntrypoint, root }) {

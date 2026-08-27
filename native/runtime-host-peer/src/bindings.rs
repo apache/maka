@@ -35,6 +35,7 @@ type IncomingStreamReceiver = mpsc::Receiver<std::result::Result<Vec<u8>, PeerEr
 #[napi(object)]
 pub struct StartPeerEndpointOptions {
     pub key_path: String,
+    pub expected_peer_id: Option<String>,
     pub listen_addresses: Option<Vec<String>>,
     pub coordination_relays: Option<Vec<String>>,
 }
@@ -217,6 +218,10 @@ impl PeerStream {
 pub fn start_peer_endpoint(options: StartPeerEndpointOptions) -> Result<PeerEndpoint> {
     let started = engine::start(engine::StartOptions {
         key_path: PathBuf::from(options.key_path),
+        expected_peer_id: options
+            .expected_peer_id
+            .map(|value| parse_peer_id(&value))
+            .transpose()?,
         listen_addresses: parse_addresses(options.listen_addresses.unwrap_or_default(), "listen")?,
         coordination_relays: parse_addresses(
             options.coordination_relays.unwrap_or_default(),
@@ -236,6 +241,14 @@ pub fn start_peer_endpoint(options: StartPeerEndpointOptions) -> Result<PeerEndp
         terminal: Arc::new(AsyncMutex::new(started.terminal)),
         thread: Arc::new(Mutex::new(Some(started.thread))),
     })
+}
+
+#[napi]
+pub async fn ensure_peer_identity(key_path: String) -> Result<String> {
+    engine::ensure_identity(PathBuf::from(key_path))
+        .await
+        .map(|peer_id| peer_id.to_string())
+        .map_err(peer_error)
 }
 
 fn wrap_stream(stream: engine::PeerStream) -> Result<PeerStream> {

@@ -66,21 +66,52 @@ export interface RuntimeHostPeerNativeEndpoint {
 }
 
 interface RuntimeHostPeerNativeModule {
+  ensurePeerIdentity(keyPath: string): Promise<string>;
   startPeerEndpoint(options: {
     readonly keyPath: string;
+    readonly expectedPeerId?: string;
     readonly listenAddresses?: readonly string[];
     readonly coordinationRelays?: readonly string[];
   }): RuntimeHostPeerNativeEndpoint;
 }
 
+export async function ensureRuntimeHostPeerIdentity(input: {
+  readonly nativePath: string;
+  readonly keyPath: string;
+}): Promise<string> {
+  try {
+    const peerId = await loadNativeModule(input.nativePath).ensurePeerIdentity(input.keyPath);
+    if (!isPeerId(peerId)) {
+      throw new RuntimeHostPeerError('peer_native_failed', 'Native peer identity is invalid');
+    }
+    return peerId;
+  } catch (error) {
+    throw normalizePeerError(error);
+  }
+}
+
 export function startRuntimeHostPeerEndpoint(input: {
   readonly nativePath: string;
   readonly keyPath: string;
+  readonly expectedPeerId?: string;
   readonly listenAddresses?: readonly string[];
   readonly coordinationRelays?: readonly string[];
 }): RuntimeHostPeerNativeEndpoint {
+  try {
+    return loadNativeModule(input.nativePath).startPeerEndpoint({
+      keyPath: input.keyPath,
+      ...(input.expectedPeerId ? { expectedPeerId: input.expectedPeerId } : {}),
+      ...(input.listenAddresses ? { listenAddresses: input.listenAddresses } : {}),
+      ...(input.coordinationRelays ? { coordinationRelays: input.coordinationRelays } : {}),
+    });
+  } catch (error) {
+    throw normalizePeerError(error);
+  }
+}
+
+function loadNativeModule(path: string): RuntimeHostPeerNativeModule {
+  const nativePath = resolve(path);
   let loaded: unknown;
-  const nativePath = resolve(input.nativePath);
   try {
     loaded = require(nativePath);
   } catch (error) {
@@ -96,15 +127,7 @@ export function startRuntimeHostPeerEndpoint(input: {
       'Runtime Host peer native module has an incompatible API',
     );
   }
-  try {
-    return loaded.startPeerEndpoint({
-      keyPath: input.keyPath,
-      ...(input.listenAddresses ? { listenAddresses: input.listenAddresses } : {}),
-      ...(input.coordinationRelays ? { coordinationRelays: input.coordinationRelays } : {}),
-    });
-  } catch (error) {
-    throw normalizePeerError(error);
-  }
+  return loaded;
 }
 
 export async function writeRuntimeHostPeerAuthentication(
@@ -302,6 +325,8 @@ function isPeerNativeModule(value: unknown): value is RuntimeHostPeerNativeModul
   return (
     typeof value === 'object' &&
     value !== null &&
+    'ensurePeerIdentity' in value &&
+    typeof value.ensurePeerIdentity === 'function' &&
     'startPeerEndpoint' in value &&
     typeof value.startPeerEndpoint === 'function'
   );
@@ -365,6 +390,15 @@ function isPeerErrorCode(value: string | undefined): value is RuntimeHostPeerErr
     value === 'peer_native_unavailable' ||
     value === 'peer_native_failed' ||
     value === 'peer_connect_in_progress'
+  );
+}
+
+function isPeerId(value: unknown): value is string {
+  return (
+    typeof value === 'string' &&
+    value.length > 0 &&
+    Buffer.byteLength(value, 'utf8') <= 256 &&
+    !/[\u0000-\u001f\u007f]/u.test(value)
   );
 }
 

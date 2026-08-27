@@ -35,7 +35,7 @@ test('validation consumers download the artifact produced by the build job', () 
     /release_candidate_artifact_id: \$\{\{ steps\.release-candidate\.outputs\.artifact-id \}\}/u,
   );
   const downloads = workflowSteps(workflow).filter((step) =>
-    step.includes('uses: actions/download-artifact@'),
+    step.includes('name: Download the release candidate'),
   );
   assert.ok(downloads.length > 0);
   for (const step of downloads) {

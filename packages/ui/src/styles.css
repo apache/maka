@@ -670,6 +670,44 @@
      a rhythm no other row in the panel has. */
   --text-supporting-leading: var(--text-code-leading);
 }
+/* A headerless CodeBlock floats its copy button over the viewport's top-right
+   corner, and a long unbroken first line — a maka://archive URI, a long
+   command — runs straight under it (markdown avoids this by always giving the
+   block a header toolbar; tool wells stay quiet on purpose). Reserve the
+   button's footprint with a float on the first line so wrapped text flows
+   around the corner instead of colliding. On the line div, not <code>: 100+
+   line blocks wrap lines in content-visibility chunks whose layout containment
+   would keep an outer float from shortening their line boxes. The lengths are
+   the button's geometry, not tunables: the 28px button inset spacing-2 (8px)
+   ends 20px past the code's spacing-4 (16px) inline padding — plus an 8px gap
+   — and its bottom edge sits 36px − spacing-3 (12px) = 24px below the first
+   line's top. Tool wells never enable line numbers, so the numbered-gutter
+   ::before cannot collide here. */
+.maka-tool-call-detail .astryx-codeblock:not(:has(.astryx-codeblock-header)) [data-line="1"]::before {
+  content: '';
+  float: inline-end;
+  width: 28px;
+  height: 24px;
+}
+/* The headered variant has the same collision inside its header row: the
+   title (often a long unbroken maka://archive URI headline) is a flex span
+   with white-space: pre and visible overflow, so it runs straight under the
+   header's copy button — and headerCompact draws no divider, so the title
+   reads as the well's first content line while colliding like an overlay.
+   Ellipsize it inside the title slot the header already sizes (flex: 1,
+   min-width: 0). display: block because a flex container will not ellipsize
+   its anonymous text; tool wells never render the collapsible chevron that
+   the flex display exists for. white-space stays `pre`, not nowrap: both
+   satisfy text-overflow's no-wrap requirement, but nowrap would collapse
+   runs of spaces — and a title is often a literal path or command where
+   `report  final.txt` and `report final.txt` are different names, with the
+   title as their only display (the copy button copies the body). */
+.maka-tool-call-detail .astryx-codeblock-header .astryx-codeblock-title {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: pre;
+}
 .maka-tool-output-chunk { display: contents; }
 .maka-tool-output-chunk-stderr { color: var(--destructive); }
 .maka-tool-output-chunk-redacted { opacity: 0.65; }

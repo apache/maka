@@ -35,6 +35,7 @@ import {
 } from '@maka/runtime-host/client';
 import {
   decodeRuntimeHostAccessManagementFrame,
+  decodeRuntimeHostPeerManagementFrame,
   decodeRuntimeHostServiceManagementFrame,
   decodeRuntimeHostSetupFrame,
   RUNTIME_HOST_ACCESS_MANAGEMENT_FRAME_PREFIX,
@@ -42,10 +43,14 @@ import {
   RUNTIME_HOST_OPERATOR_CAPABILITY_REQUEST_ENV,
   RUNTIME_HOST_OPERATOR_PROJECT_DIRECTORY_CONFIGURATION_REQUEST_ENV,
   RUNTIME_HOST_OPERATOR_UPDATE_SCHEDULER_CAPABILITY,
+  RUNTIME_HOST_PEER_MANAGEMENT_FRAME_PREFIX,
   RUNTIME_HOST_SERVICE_MANAGEMENT_FRAME_PREFIX,
   RUNTIME_HOST_SETUP_FRAME_PREFIX,
   type RuntimeHostAccessManagementFrame,
   type RuntimeHostManagedUpdatePolicy,
+  type RuntimeHostPeerManagementAction,
+  type RuntimeHostPeerManagementFrame,
+  type RuntimeHostOperatorCapability,
   type RuntimeHostServiceManagementAction,
   type RuntimeHostServiceManagementFrame,
   type RuntimeHostServiceUpdatePhase,
@@ -78,6 +83,7 @@ const TERMINAL_OUTPUT_MAX = 64 * 1024;
 const SETUP_FRAME_PENDING_MAX = 20 * 1024;
 const MANAGEMENT_FRAME_PENDING_MAX = 128 * 1024;
 const ACCESS_MANAGEMENT_FRAME_PENDING_MAX = 768 * 1024;
+const PEER_MANAGEMENT_FRAME_PENDING_MAX = 128 * 1024;
 const SETUP_TIMEOUT_MS = 10 * 60_000;
 const MANAGEMENT_TIMEOUT_MS = 2 * 60_000;
 const PROCESS_STOP_GRACE_MS = 2_000;
@@ -111,6 +117,7 @@ export interface DesktopRuntimeHostSshManagementInput {
   readonly expectedConfigFingerprint?: string;
   readonly allowInterruptActiveTasks?: boolean;
   readonly retainManagedDeployment?: boolean;
+  readonly capabilityRequest?: RuntimeHostOperatorCapability;
   readonly signal?: AbortSignal;
 }
 
@@ -136,6 +143,16 @@ export interface DesktopRuntimeHostSshUpdateReconciliationInput {
   readonly destination: string;
   readonly sshPort?: number;
   readonly operatorPath: string;
+  readonly expectedTarget: DesktopRuntimeHostSshManagementInput['expectedTarget'];
+  readonly signal?: AbortSignal;
+}
+
+export interface DesktopRuntimeHostSshPeerManagementInput {
+  readonly destination: string;
+  readonly sshPort?: number;
+  readonly operatorPath: string;
+  readonly action: Extract<RuntimeHostPeerManagementAction, 'enable' | 'disable' | 'status'>;
+  readonly coordinationRelays?: readonly string[];
   readonly expectedTarget: DesktopRuntimeHostSshManagementInput['expectedTarget'];
   readonly signal?: AbortSignal;
 }
@@ -227,6 +244,9 @@ export function createDesktopRuntimeHostSshTerminal(input: {
   runAccessManagement(
     input: DesktopRuntimeHostSshAccessInput,
   ): Promise<RuntimeHostAccessManagementFrame>;
+  runPeerManagement(
+    input: DesktopRuntimeHostSshPeerManagementInput,
+  ): Promise<RuntimeHostPeerManagementFrame>;
   cleanupManagedDeployment(input: DesktopRuntimeHostSshCleanupInput): Promise<void>;
   close(): Promise<void>;
 } {
@@ -725,6 +745,17 @@ export function createDesktopRuntimeHostSshTerminal(input: {
         frameAction: (frame) => frame.action,
         label: 'Remote Runtime Host access management',
       }),
+    runPeerManagement: (peerInput) =>
+      runFramedManagement({
+        ...peerInput,
+        remoteCommand: runtimeHostPeerManagementRemoteCommand(peerInput),
+        prefix: RUNTIME_HOST_PEER_MANAGEMENT_FRAME_PREFIX,
+        pendingMaxBytes: PEER_MANAGEMENT_FRAME_PENDING_MAX,
+        decode: decodeRuntimeHostPeerManagementFrame,
+        action: peerInput.action,
+        frameAction: (frame) => frame.action,
+        label: 'Remote Runtime Host direct-peer management',
+      }),
     cleanupManagedDeployment: async (cleanupInput) => {
       if (closed) throw new Error('Runtime Host SSH terminal is closed');
       cleanupInput.signal?.throwIfAborted();
@@ -1097,7 +1128,7 @@ function runtimeHostServiceManagementRemoteCommand(
   const invocation =
     `${RUNTIME_HOST_OPERATOR_PROJECT_DIRECTORY_CONFIGURATION_REQUEST_ENV}=1 ` +
     `${RUNTIME_HOST_OPERATOR_CAPABILITY_REQUEST_ENV}=` +
-    `${quotePosix(RUNTIME_HOST_OPERATOR_ACCESS_MANAGEMENT_CAPABILITY)} exec ${command}`;
+    `${quotePosix(input.capabilityRequest ?? RUNTIME_HOST_OPERATOR_ACCESS_MANAGEMENT_CAPABILITY)} exec ${command}`;
   return `exec "\${SHELL:-/bin/sh}" -lic ${quotePosix(invocation)}`;
 }
 
@@ -1182,6 +1213,24 @@ function runtimeHostAccessManagementRemoteCommand(
     '--expected-root',
     input.expectedRootId,
     ...actionArgs,
+  ].map(quotePosix).join(' ');
+  return `exec "\${SHELL:-/bin/sh}" -lic ${quotePosix(`exec ${command}`)}`;
+}
+
+function runtimeHostPeerManagementRemoteCommand(
+  input: DesktopRuntimeHostSshPeerManagementInput,
+): string {
+  const command = [
+    input.operatorPath,
+    'peer',
+    input.action,
+    '--framed',
+    ...(input.action === 'enable' && input.coordinationRelays
+      ? input.coordinationRelays.length === 0
+        ? ['--clear-coordination-relays']
+        : input.coordinationRelays.flatMap((relay) => ['--coordination-relay', relay])
+      : []),
+    ...managedServiceTargetArgs(input.expectedTarget),
   ].map(quotePosix).join(' ');
   return `exec "\${SHELL:-/bin/sh}" -lic ${quotePosix(`exec ${command}`)}`;
 }

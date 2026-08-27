@@ -19,6 +19,7 @@
 
 import { join } from 'node:path';
 import type { UsageRange, UsageStats } from '@maka/core/settings';
+import { legacyUsageProvenance } from '@maka/core/usage-ledger-merge';
 import type { SessionHeader } from '@maka/core/session';
 import {
   acquireOperationalStateDatabase,
@@ -136,6 +137,9 @@ export async function readUsageStats(
     byModel: aggregateBy(modelLogs, 'model'),
     byTool: toolRows,
     pricing: [],
+    // This store reads the frozen pre-canonical session records, so its rows are
+    // all legacy: cost is present but was never qualified with a cost basis.
+    provenance: legacyUsageProvenance(modelLogs.length),
   };
 }
 

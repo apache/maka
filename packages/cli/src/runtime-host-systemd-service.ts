@@ -120,10 +120,10 @@ export function createSystemdUserRuntimeHostService(
       let schedulerMutationStarted = false;
       let rolledBack = false;
       return {
-        apply: async (config) => {
+        apply: async (config, activate) => {
           await validateRuntimeHostServiceLaunch(config);
-          await applySystemdDeployment(context, config, serviceConfigPath);
-          await applySystemdUpdateSchedulerDesiredState(scheduler, config, () => {
+          await applySystemdDeployment(context, config, serviceConfigPath, activate);
+          await applySystemdUpdateSchedulerDesiredState(scheduler, config, activate, () => {
             schedulerMutationStarted = true;
           });
         },
@@ -147,7 +147,7 @@ export function createSystemdUserRuntimeHostService(
       ]);
       let schedulerMutationStarted = false;
       try {
-        await applySystemdDeployment(context, config, serviceConfigPath);
+        await applySystemdDeployment(context, config, serviceConfigPath, true);
         await convergeSystemdUpdateSchedulerForReplacement(scheduler, config, () => {
           schedulerMutationStarted = true;
         });
@@ -462,6 +462,7 @@ async function captureSystemdUpdateScheduler(
 async function applySystemdUpdateSchedulerDesiredState(
   context: SystemdUpdateSchedulerContext,
   config: RuntimeHostManagedServiceConfig,
+  activate: boolean,
   onMutation: () => void,
 ): Promise<void> {
   if (!runtimeHostUpdateReconcileLaunchArguments(config)) {
@@ -477,7 +478,7 @@ async function applySystemdUpdateSchedulerDesiredState(
     return;
   }
   try {
-    await verifySystemdUpdateScheduler(context, config, true);
+    await verifySystemdUpdateScheduler(context, config, activate);
     return;
   } catch (error) {
     if (!isTargetMismatch(error)) throw error;
@@ -501,14 +502,16 @@ async function applySystemdUpdateSchedulerDesiredState(
     ['enable', context.timer.unitName],
     'Enabling Runtime Host update reconciliation failed',
   );
-  await context.timer.runSystemctl(['reset-failed', context.service.unitName]);
-  await context.timer.runSystemctl(['reset-failed', context.timer.unitName]);
-  await requireSystemctl(
-    context.timer.runSystemctl,
-    ['restart', context.timer.unitName],
-    'Scheduling Runtime Host update reconciliation failed',
-  );
-  await verifySystemdUpdateScheduler(context, config, true);
+  if (activate) {
+    await context.timer.runSystemctl(['reset-failed', context.service.unitName]);
+    await context.timer.runSystemctl(['reset-failed', context.timer.unitName]);
+    await requireSystemctl(
+      context.timer.runSystemctl,
+      ['restart', context.timer.unitName],
+      'Scheduling Runtime Host update reconciliation failed',
+    );
+  }
+  await verifySystemdUpdateScheduler(context, config, activate);
 }
 
 async function assertNoSystemdUpdateSchedulerDropIns(
@@ -570,7 +573,7 @@ async function convergeSystemdUpdateSchedulerForReplacement(
     if (!isTargetMismatch(error)) throw error;
     await verifySystemdUpdateSchedulerAbsent(context);
     onMutation();
-    await applySystemdUpdateSchedulerDesiredState(context, config, () => undefined);
+    await applySystemdUpdateSchedulerDesiredState(context, config, true, () => undefined);
   }
   await verifySystemdUpdateScheduler(context, config, true);
 }
@@ -787,6 +790,7 @@ async function applySystemdDeployment(
   context: SystemdUnitContext,
   config: RuntimeHostManagedServiceConfig,
   serviceConfigPath: string,
+  activate: boolean,
 ): Promise<void> {
   await writeRuntimeHostServiceFile(
     context.unitPath,
@@ -799,12 +803,14 @@ async function applySystemdDeployment(
     ['enable', context.unitName],
     'Enabling the Runtime Host service failed',
   );
-  await context.runSystemctl(['reset-failed', context.unitName]);
-  await requireSystemctl(
-    context.runSystemctl,
-    ['restart', context.unitName],
-    'Starting the Runtime Host service failed',
-  );
+  if (activate) {
+    await context.runSystemctl(['reset-failed', context.unitName]);
+    await requireSystemctl(
+      context.runSystemctl,
+      ['restart', context.unitName],
+      'Starting the Runtime Host service failed',
+    );
+  }
 }
 
 async function restoreFailedSystemdDeployment(

@@ -36,6 +36,7 @@ import { uiLocaleToIntlLocale, type UiLocale } from '@maka/core/ui-locale';
 import type { RemoteRuntimeHostProfile } from '@maka/runtime-host/client';
 import type {
   DesktopRuntimeHostManagementAction,
+  DesktopRuntimeHostDirectPeerSnapshot,
   DesktopRuntimeHostManagementResult,
   DesktopRuntimeHostManagementProgress,
   DesktopRuntimeHostAccessCredential,
@@ -97,6 +98,9 @@ export function RuntimeHostManagementDialog(props: {
   const [lastUpdateOutcome, setLastUpdateOutcome] =
     useState<DesktopRuntimeHostUpdateReconciliationOutcome>();
   const [directoryPolicyEdit, setDirectoryPolicyEdit] = useState<DirectoryPolicyEdit>();
+  const [directPeer, setDirectPeer] = useState<DesktopRuntimeHostDirectPeerSnapshot>();
+  const [directPeerError, setDirectPeerError] = useState<string>();
+  const [coordinationRelays, setCoordinationRelays] = useState('');
   const nextDirectoryRootId = useRef(1);
   const logsRef = useRef<HTMLPreElement>(null);
 
@@ -117,6 +121,9 @@ export function RuntimeHostManagementDialog(props: {
     setUpdatePolicyError(undefined);
     setLastUpdateOutcome(undefined);
     setDirectoryPolicyEdit(undefined);
+    setDirectPeer(undefined);
+    setDirectPeerError(undefined);
+    setCoordinationRelays('');
     setLoading(true);
     void (async () => {
       let shouldLoadUpdatePolicy = false;
@@ -142,6 +149,14 @@ export function RuntimeHostManagementDialog(props: {
             setUpdatePolicy(undefined);
             setUpdatePolicyError(settingsActionErrorMessage(failure, locale));
           }
+        }
+      }
+      if (shouldLoadUpdatePolicy) {
+        try {
+          const peer = await window.maka.runtimeHostManagement.getDirectPeer(profile.id);
+          if (!disposed) applyDirectPeer(peer);
+        } catch (failure) {
+          if (!disposed) setDirectPeerError(settingsActionErrorMessage(failure, locale));
         }
       }
       if (!disposed) setLoading(false);
@@ -190,6 +205,55 @@ export function RuntimeHostManagementDialog(props: {
       setUpdatePolicy(undefined);
       setError(message);
       toast.error(copy.managementActionFailed, message);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  function applyDirectPeer(snapshot: DesktopRuntimeHostDirectPeerSnapshot): void {
+    setDirectPeer(snapshot);
+    setCoordinationRelays(snapshot.coordinationRelays.join(', '));
+    setDirectPeerError(undefined);
+  }
+
+  async function reloadDirectPeer(): Promise<void> {
+    if (!profile) return;
+    setLoading(true);
+    setDirectPeerError(undefined);
+    try {
+      applyDirectPeer(await window.maka.runtimeHostManagement.getDirectPeer(profile.id));
+    } catch (failure) {
+      setDirectPeerError(settingsActionErrorMessage(failure, locale));
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function configureDirectPeer(enabled: boolean): Promise<void> {
+    if (!profile) return;
+    setLoading(true);
+    setDirectPeerError(undefined);
+    try {
+      const relays = coordinationRelays
+        .split(',')
+        .map((relay) => relay.trim())
+        .filter(Boolean);
+      applyDirectPeer(
+        await window.maka.runtimeHostManagement.configureDirectPeer(
+          profile.id,
+          enabled,
+          relays,
+        ),
+      );
+    } catch (failure) {
+      const message = settingsActionErrorMessage(failure, locale);
+      try {
+        applyDirectPeer(await window.maka.runtimeHostManagement.getDirectPeer(profile.id));
+      } catch {
+        // Preserve the last authoritative snapshot when recovery cannot be read.
+      }
+      setDirectPeerError(message);
+      toast.error(copy.directPeerActionFailed, message);
     } finally {
       setLoading(false);
     }
@@ -607,6 +671,119 @@ export function RuntimeHostManagementDialog(props: {
                       <Fact label={copy.stateRoot} value={service.stateRoot} wide />
                     ) : null}
                   </dl>
+                  {serviceInstalled ? (
+                    <section className="settingsRuntimeHostDirectPeer">
+                      <div className="settingsRuntimeHostUpdatePolicyHeading">
+                        <div>
+                          <Text type="body" weight="semibold">{copy.directPeer}</Text>
+                          <Text type="supporting" color="secondary">
+                            {copy.directPeerDescription}
+                          </Text>
+                        </div>
+                        <Badge
+                          variant={directPeer?.state === 'enabled' ? 'success' : 'neutral'}
+                          label={directPeer
+                            ? copy.directPeerState[directPeer.state]
+                            : copy.directPeerState.unavailable}
+                        />
+                      </div>
+                      {directPeerError ? (
+                        <Banner
+                          status="warning"
+                          title={copy.directPeerUnavailable}
+                          description={directPeerError}
+                        />
+                      ) : null}
+                      {directPeer && !directPeer.managementAvailable ? (
+                        <Banner
+                          status="warning"
+                          title={copy.directPeerUpgradeRequired}
+                        />
+                      ) : null}
+                      {!directPeer ? (
+                        <div className="settingsRuntimeHostUpdatePolicyActions">
+                          <Button
+                            variant="secondary"
+                            size="sm"
+                            label={copy.refresh}
+                            isDisabled={loading}
+                            onClick={() => void reloadDirectPeer()}
+                          />
+                        </div>
+                      ) : null}
+                      {directPeer && !directPeer.clientAvailable ? (
+                        <Banner status="warning" title={copy.directPeerClientUnavailable} />
+                      ) : null}
+                      {directPeer?.profileEnabled ? (
+                        <Banner status="info" title={copy.directPeerDisableProfileFirst} />
+                      ) : null}
+                      {directPeer?.managementAvailable ? (
+                        <>
+                          {directPeer.peerId ? (
+                            <dl className="settingsRuntimeHostManagementFacts">
+                              <Fact label={copy.directPeerId} value={directPeer.peerId} wide />
+                              <Fact
+                                label={copy.directPeerRoutes}
+                                value={directPeer.routeHints.join(', ') || '—'}
+                                wide
+                              />
+                            </dl>
+                          ) : null}
+                          <TextInput
+                            label={copy.directPeerCoordinationRelays}
+                            value={coordinationRelays}
+                            placeholder={copy.directPeerCoordinationRelaysPlaceholder}
+                            isDisabled={
+                              loading ||
+                              directPeer.profileEnabled ||
+                              directPeer.state === 'enabled'
+                            }
+                            onChange={setCoordinationRelays}
+                          />
+                          <div className="settingsRuntimeHostUpdatePolicyActions">
+                            <Button
+                              variant="secondary"
+                              size="sm"
+                              label={copy.refresh}
+                              isDisabled={loading}
+                              onClick={() => void reloadDirectPeer()}
+                            />
+                            {directPeer.state === 'enabled' && !directPeer.profilePresent ? (
+                              <Button
+                                variant="secondary"
+                                size="sm"
+                                label={copy.directPeerAddProfile}
+                                isDisabled={
+                                  loading ||
+                                  directPeer.profileEnabled ||
+                                  !directPeer.clientAvailable
+                                }
+                                onClick={() => void configureDirectPeer(true)}
+                              />
+                            ) : null}
+                            <Button
+                              variant={directPeer.state === 'enabled' ? 'secondary' : 'primary'}
+                              size="sm"
+                              label={directPeer.state === 'enabled'
+                                ? copy.directPeerDisable
+                                : copy.directPeerEnable}
+                              isDisabled={
+                                loading ||
+                                directPeer.profileEnabled ||
+                                (
+                                  !directPeer.clientAvailable &&
+                                  directPeer.state !== 'enabled'
+                                )
+                              }
+                              onClick={() => void configureDirectPeer(
+                                directPeer.state !== 'enabled',
+                              )}
+                            />
+                          </div>
+                        </>
+                      ) : null}
+                    </section>
+                  ) : null}
                   {serviceInstalled ? (
                     <section className="settingsRuntimeHostUpdatePolicy">
                       <div className="settingsRuntimeHostUpdatePolicyHeading">

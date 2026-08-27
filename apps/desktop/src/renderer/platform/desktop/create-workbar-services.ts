@@ -120,16 +120,38 @@ export function createDesktopWorkbarServices(
       abandonSessionCopy: (sourceSessionId, copyId) =>
         bridge.sessions.abandonSessionCopy(sourceSessionId, copyId),
       send: (sessionId, command) => bridge.sessions.send(sessionId, command),
-      stop: (sessionId, target) =>
-        bridge.sessions.stop(
+      stop: async (sessionId, target) => {
+        const result = await bridge.sessions.stop(
           sessionId,
           target?.kind === 'admission'
             ? { source: 'stop_button', expectedAdmissionId: target.messageId }
             : target?.kind === 'turn'
               ? { source: 'stop_button', expectedTurnId: target.turnId }
               : undefined,
-        ),
-      steer: (sessionId, text, admissionId) => bridge.sessions.steer(sessionId, text, admissionId),
+        );
+        return result?.kind === 'retracted' ? result : undefined;
+      },
+      // Steering is a Message placed at the current Turn's boundary, so it
+      // rides the one admission channel. Runtime Host names the outcome; this
+      // adapter only renames it for the Side Conversation port.
+      steer: async (sessionId, text, admissionId) => {
+        const messageId = admissionId ?? crypto.randomUUID();
+        const result = await bridge.sessions.submitMessage(sessionId, 'current_turn', {
+          messageId,
+          text,
+        });
+        if (!result.ok) {
+          if (result.reason === 'outcome_unknown') {
+            return { kind: 'outcome_unknown', messageId };
+          }
+          // No Turn opened and nothing was queued; the caller surfaces it as a
+          // failed send rather than waiting for an admission that never lands.
+          throw new Error('Runtime Host refused the steering Message');
+        }
+        return result.disposition === 'turn_started' && result.turnId
+          ? { kind: 'started', turnId: result.turnId }
+          : { kind: 'queued', messageId };
+      },
       setPermissionMode: (sessionId, mode) =>
         bridge.sessions.setPermissionMode(sessionId, mode),
       regenerateTurn: (sessionId, input) =>

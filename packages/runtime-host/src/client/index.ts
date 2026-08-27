@@ -120,6 +120,7 @@ export {
 export { loadOrCreateRuntimeHostClientInstanceId } from './client-instance-identity.js';
 export { projectSessionCatalogSummary } from './session-catalog-summary.js';
 export { consumeAccessCredentialDelivery } from '../control/access-credential-delivery.js';
+export { ensureRuntimeHostPeerIdentity } from '../transport/peer-native.js';
 export {
   createOAuthPresentationClientProvider,
   type OAuthPresentationBackend,

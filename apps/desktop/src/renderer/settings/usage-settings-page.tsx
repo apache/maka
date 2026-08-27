@@ -39,6 +39,7 @@ import {
   type UsageRange,
   type UsageStats,
 } from '@maka/core/settings';
+import { estimatedUsageCost, hasUnavailableUsage } from '@maka/core/usage-ledger-merge';
 import {
   Button,
   TextInput,
@@ -96,6 +97,7 @@ export function UsageSettingsPage(props: {
       .filter((log) =>
         normalizedModelFilter.length === 0 ||
         log.model.toLowerCase().includes(normalizedModelFilter) ||
+        log.provider.toLowerCase().includes(normalizedModelFilter) ||
         (log.toolName ?? '').toLowerCase().includes(normalizedModelFilter)
       );
   }, [stats, usageDraft.status, normalizedModelFilter]);
@@ -136,8 +138,32 @@ export function UsageSettingsPage(props: {
     void updateUsage({ status: 'all', modelFilter: '' });
   }
 
+  // `stats == null` means "not loaded for this Host/range yet", which is not the
+  // same as a real zero — render an em dash so the cards do not fabricate 0s
+  // (mirrors the '-' the activity cost cell already uses for unknown values).
+  const usageIncomplete =
+    stats != null && (hasUnavailableUsage(stats.provenance) || stats.logsTruncated === true);
+  const totalCostDisplay = stats
+    ? (() => {
+        const cost = estimatedUsageCost(stats.provenance, stats.summary.totalCostUsd);
+        if (cost !== undefined) return `$${cost.toFixed(2)}`;
+        // No priced/legacy basis to trust: a genuinely empty range is $0.00, but
+        // a range that had spend we could not qualify reads as unavailable
+        // rather than a misleading $0.00.
+        return stats.summary.totalRequests === 0 ? '$0.00' : copy.costUnavailable;
+      })()
+    : '—';
+
   return (
     <SettingsPage className="settingsUsagePage">
+      {usageIncomplete ? (
+        <Banner
+          status="warning"
+          role="status"
+          title={copy.incompleteTitle}
+          description={copy.incompleteBody}
+        />
+      ) : null}
       <div className="settingsUsageOverview">
         <div className="settingsUsageToolbar" role="group" aria-label={copy.toolbarAria}>
           <SegmentedControl
@@ -170,10 +196,10 @@ export function UsageSettingsPage(props: {
         </div>
 
         <div className="settingsUsageSummary" role="group" aria-label={copy.summaryAria}>
-          <MetricCard title={copy.totalRequests} value={String(stats?.summary.totalRequests ?? 0)} />
-          <MetricCard title={copy.totalCost} value={`$${(stats?.summary.totalCostUsd ?? 0).toFixed(2)}`} detail={copy.costHelp} />
-          <MetricCard title={copy.totalTokens} value={String(stats?.summary.totalTokens ?? 0)} detail={copy.tokenDetail(stats?.summary.inputTokens ?? 0, stats?.summary.outputTokens ?? 0)} />
-          <MetricCard title={copy.cacheTokens} value={String(stats?.summary.cacheTokens ?? 0)} detail={copy.cacheDetail(stats?.summary.cacheMiss ?? 0, stats?.summary.cacheRead ?? 0, stats?.summary.cacheCreation ?? 0)} />
+          <MetricCard title={copy.totalRequests} value={stats ? String(stats.summary.totalRequests) : '—'} />
+          <MetricCard title={copy.totalCost} value={totalCostDisplay} detail={copy.costHelp} />
+          <MetricCard title={copy.totalTokens} value={stats ? String(stats.summary.totalTokens) : '—'} detail={stats ? copy.tokenDetail(stats.summary.inputTokens, stats.summary.outputTokens) : undefined} />
+          <MetricCard title={copy.cacheTokens} value={stats ? String(stats.summary.cacheTokens) : '—'} detail={stats ? copy.cacheDetail(stats.summary.cacheMiss, stats.summary.cacheRead, stats.summary.cacheCreation) : undefined} />
         </div>
       </div>
 
@@ -297,6 +323,7 @@ function UsageRequestsPanel(props: {
             { value: 'all', label: props.copy.statuses[0] },
             { value: 'success', label: props.copy.statuses[1] },
             { value: 'error', label: props.copy.statuses[2] },
+            { value: 'aborted', label: props.copy.statuses[3] },
           ]}
           width={320}
           onChange={(value) => props.onStatusChange(value as AppSettings['usage']['status'])}
@@ -340,8 +367,8 @@ function UsageRequestsPanel(props: {
           usageRequestTarget(row),
           usageRequestSessionCell(row, props.copy, props.onOpenSession),
           row.inputTokens + row.outputTokens,
-          row.kind === 'model' ? `$${(row.costUsd ?? 0).toFixed(2)}` : '-',
-          row.latencyMs ? `${row.latencyMs}ms` : '-',
+          row.kind === 'model' && row.costUsd !== undefined ? `$${row.costUsd.toFixed(2)}` : '-',
+          row.latencyMs !== undefined ? `${row.latencyMs}ms` : '-',
           usageRequestStatusLabel(row.status, props.copy),
         ])}
         empty={{
@@ -439,10 +466,14 @@ function usageRequestKindLabel(kind: UsageStats['logs'][number]['kind'], copy: U
 }
 
 function usageRequestTarget(row: UsageStats['logs'][number]) {
-  return row.kind === 'tool' ? row.toolName ?? row.model : row.model;
+  return row.kind === 'tool' ? row.toolName || row.model || row.provider || '-' : row.model || row.provider || '-';
 }
 
 function usageRequestSessionCell(row: UsageStats['logs'][number], copy: UsageSettingsCopy, onOpenSession?: (sessionId: string) => void) {
+  // Canonical activity rows can lack a session (e.g. an aborted call before a
+  // session was attached); show it as unknown rather than a blank link.
+  if (!row.sessionId) return copy.tables.unknown;
+  const sessionId = row.sessionId;
   const label = usageSessionDisplayLabel(row, copy);
   if (!onOpenSession) return label;
   return (
@@ -450,7 +481,7 @@ function usageRequestSessionCell(row: UsageStats['logs'][number], copy: UsageSet
       className="settingsUsageSessionCell"
       variant="ghost"
       size="sm"
-      onClick={() => onOpenSession(row.sessionId)}
+      onClick={() => onOpenSession(sessionId)}
       label={label}
       tooltip={copy.tables.openSession(label)}
     />
@@ -464,7 +495,7 @@ function usageRequestSessionCell(row: UsageStats['logs'][number], copy: UsageSet
 function usageSessionDisplayLabel(row: UsageStats['logs'][number], copy: UsageSettingsCopy) {
   const name = row.sessionName?.trim();
   if (name) return name;
-  return `${copy.tables.untitledSession} · ${shortRealSessionId(row.sessionId)}`;
+  return `${copy.tables.untitledSession} · ${shortRealSessionId(row.sessionId ?? '')}`;
 }
 
 function shortRealSessionId(sessionKey: string) {
@@ -483,6 +514,7 @@ function usageRequestStatusLabel(status: UsageStats['logs'][number]['status'], c
   switch (status) {
     case 'success': return copy.tables.success;
     case 'error': return copy.tables.error;
+    case 'aborted': return copy.tables.aborted;
   }
 }
 

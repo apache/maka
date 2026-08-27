@@ -37,6 +37,7 @@ import {
   HostMessageCoordinator,
   type HostMessageCoordinatorOptions,
   type HostMessageRootPort,
+  type HostMessageRecoveryBatch,
   type HostMessageRootState,
 } from '../server/message-coordinator.js';
 import { SessionAdmissionGate } from '../server/session-admission-gate.js';
@@ -70,6 +71,73 @@ test('idle submit starts exactly one root Turn and retry identity is connection-
   assert.deepEqual(retry, first);
   assert.equal(fixture.startCalls(), 1);
   assert.equal(fixture.liveResidencies(), 0);
+});
+
+test('a retry that changes exact-Turn intent is a conflict, not the earlier success', async () => {
+  const fixture = createFixture();
+  fixture.setRootState({ kind: 'idle' });
+  const submitted = (mode: 'graph' | 'swarm') =>
+    ({
+      originHostEpoch: 'epoch-1',
+      sessionId: ROOT.sessionId,
+      messageId: 'exact-message',
+      content: { text: 'run this exactly' },
+      placement: 'current_turn',
+      turnOrchestration: { mode, source: 'slash_command' },
+    }) as const;
+
+  const first = await fixture.coordinator.handlers['turn.message.submit'](
+    submitted('graph'),
+    operationContext(),
+  );
+  assert.equal(first.ok, true);
+
+  // Same Message identity, same text, same placement — but a different
+  // execution mode. Answering the earlier success here would run one exact
+  // request and report it as another.
+  const changed = await fixture.coordinator.handlers['turn.message.submit'](
+    submitted('swarm'),
+    operationContext(),
+  );
+  assert.equal(changed.ok, false);
+  if (!changed.ok) assert.equal(changed.error.code, 'operation_conflict');
+
+  const unchanged = await fixture.coordinator.handlers['turn.message.submit'](
+    submitted('graph'),
+    operationContext(),
+  );
+  assert.deepEqual(unchanged, first);
+  assert.equal(fixture.startCalls(), 1);
+});
+
+test('message query reports only durable cancellation proof', async () => {
+  const fixture = createFixture();
+  fixture.coordinator.reserveRootTurn(ROOT);
+  await submit(fixture, 'cancelled-message', 'discard me', 'next_turn');
+  await submit(fixture, 'accepted-message', 'waiting', 'next_turn');
+  await fixture.coordinator.cancelMessages(ROOT.sessionId, ['cancelled-message']);
+  fixture.receipts.set(
+    'handed-off-message',
+    sourceReceipt('handed-off-message', 'delivered', 'current_turn', 'steering'),
+  );
+
+  const result = await fixture.coordinator.handlers['turn.message.query'](
+    {
+      sessionId: ROOT.sessionId,
+      messageIds: [
+        'cancelled-message',
+        'accepted-message',
+        'handed-off-message',
+        'unknown-message',
+      ],
+    },
+    operationContext(),
+  );
+
+  assert.deepEqual(result, {
+    ok: true,
+    result: { cancelledMessageIds: ['cancelled-message'] },
+  });
 });
 
 test('submit re-runs admission when the queue revision moves during preflight', async () => {
@@ -282,6 +350,82 @@ test('recovered followups without a connection owner still form one successor ba
       runId: 'run-recovered-successor',
     }),
   );
+});
+
+// The Host stopped after the Message admission committed and before the root
+// admission that carries the exact-Turn intent was written.
+async function recoverExactTurnAcrossHostStop(): Promise<ReturnType<typeof createFixture>> {
+  const fixture = createFixture();
+  fixture.setRootState({ kind: 'idle' });
+  await fixture.admissions.commitMessageAdmission({
+    sessionId: ROOT.sessionId,
+    turnId: ROOT.turnId,
+    runId: ROOT.runId,
+    messageId: 'recovered-exact',
+    content: { text: 'run this as a graph' },
+    submittedContentDigest: messageContentDigest({ text: 'run this as a graph' }),
+    submittedPlacement: 'current_turn',
+    placement: 'current_turn',
+    disposition: 'steering',
+    submittedIntent: {
+      skillIds: ['review'],
+      turnOrchestration: { mode: 'graph', source: 'slash_command' },
+    },
+    admittedAt: 1,
+  });
+  await fixture.coordinator.recoverPendingAfterHostRestart([ROOT.sessionId]);
+  return fixture;
+}
+
+function resubmitRecoveredExact(
+  fixture: ReturnType<typeof createFixture>,
+  mode: 'graph' | 'swarm',
+) {
+  return fixture.coordinator.handlers['turn.message.submit'](
+    {
+      originHostEpoch: 'epoch-1',
+      sessionId: ROOT.sessionId,
+      messageId: 'recovered-exact',
+      content: { text: 'run this as a graph' },
+      placement: 'current_turn',
+      skillIds: ['review'],
+      turnOrchestration: { mode, source: 'slash_command' },
+    },
+    operationContext(),
+  );
+}
+
+test('recovery re-opens a Turn under the intent the Message asked for', async () => {
+  const fixture = await recoverExactTurnAcrossHostStop();
+
+  assert.equal(fixture.recoveredBatches.length, 1);
+  assert.deepEqual(fixture.recoveredBatches[0]?.submittedIntent, {
+    skillIds: ['review'],
+    turnOrchestration: { mode: 'graph', source: 'slash_command' },
+  });
+});
+
+test('a retry of a recovered exact-Turn Message is not a conflict', async () => {
+  const fixture = await recoverExactTurnAcrossHostStop();
+
+  const retried = await resubmitRecoveredExact(fixture, 'graph');
+
+  // The intent survived the crash cut whole, so the unchanged retry reads as
+  // the same submit. The recovered source keeps the queued disposition the
+  // pending record can express, so the Host answers `outcome_unknown` — the
+  // client keeps its row and reconciles from canonical transcript — instead of
+  // rejecting a request it is already executing.
+  assert.equal(retried.ok, false);
+  if (!retried.ok) assert.equal(retried.error.code, 'outcome_unknown');
+  assert.equal(fixture.startCalls(), 0);
+});
+
+test('a retry that changes intent after recovery is still a conflict', async () => {
+  const fixture = await recoverExactTurnAcrossHostStop();
+
+  const changed = await resubmitRecoveredExact(fixture, 'swarm');
+  assert.equal(changed.ok, false);
+  if (!changed.ok) assert.equal(changed.error.code, 'operation_conflict');
 });
 
 test('recovery treats a durable steering event as the handoff proof', async () => {
@@ -2124,6 +2268,7 @@ function createFixture(
       }
     | undefined;
   const receipts = new Map<string, RootTurnSourceMessageReceipt>();
+  const recoveredBatches: HostMessageRecoveryBatch[] = [];
   const events: RuntimeEvent[] = [];
   const messageAdmissions = new Map<
     string,
@@ -2162,17 +2307,54 @@ function createFixture(
     startFromMessage: async (input) => {
       startCalls += 1;
       const turnId = 'idle-turn';
-      receipts.set(
+      // Store the source message the coordinator actually produced. Rebuilding
+      // one from parts drops whatever the coordinator recorded about the
+      // submit, which is the very thing a retry is compared against.
+      const receipt = sourceReceipt(
         input.sourceMessage.messageId,
-        sourceReceipt(
-          input.sourceMessage.messageId,
-          input.sourceMessage.content,
-          input.sourceMessage.placement,
-          'turn_started',
-          turnId,
-        ),
+        input.sourceMessage.content,
+        input.sourceMessage.placement,
+        'turn_started',
+        turnId,
       );
+      receipts.set(input.sourceMessage.messageId, {
+        admission: {
+          ...receipt.admission,
+          sourceMessages: [input.sourceMessage],
+          ...(input.turnOrchestration ? { turnOrchestration: input.turnOrchestration } : {}),
+        },
+        sourceMessage: input.sourceMessage,
+      });
       rootState = { kind: 'active', sessionId: input.sessionId, turnId, runId: 'idle-run' };
+      coordinator.reserveRootTurn(rootState);
+      return { turnId };
+    },
+    startRecoveredMessages: async (input) => {
+      recoveredBatches.push(input);
+      const turnId = 'recovered-turn';
+      // Recovery admits a root Turn from the reconstructed sources, so the
+      // durable receipt a later retry is compared against is written here too.
+      // Skipping it would leave the retry with nothing to disagree with.
+      for (const source of input.sources) {
+        const receipt = sourceReceipt(
+          source.messageId,
+          source.content,
+          source.placement,
+          source.disposition,
+          turnId,
+        );
+        receipts.set(source.messageId, {
+          admission: {
+            ...receipt.admission,
+            sourceMessages: [source],
+            ...(input.submittedIntent?.turnOrchestration
+              ? { turnOrchestration: input.submittedIntent.turnOrchestration }
+              : {}),
+          },
+          sourceMessage: source,
+        });
+      }
+      rootState = { kind: 'active', sessionId: input.sessionId, turnId, runId: 'recovered-run' };
       coordinator.reserveRootTurn(rootState);
       return { turnId };
     },
@@ -2234,6 +2416,7 @@ function createFixture(
     startCalls: () => startCalls,
     events,
     receipts,
+    recoveredBatches,
     readMessageAdmission: (messageId: string) => messageAdmissions.get(messageId)?.admission,
     stopClaimed,
     resolveTerminal: terminal.resolve,
@@ -2267,6 +2450,8 @@ function memoryMessageAdmissionStore(
       return admission;
     },
     readMessageAdmission: async (_sessionId, messageId) => admissions.get(messageId)?.admission,
+    hasCancelledMessageAdmission: async (_sessionId, messageId) =>
+      admissions.get(messageId)?.state === 'cancelled',
     listMessageAdmissions: async (sessionId) =>
       [...admissions.values()]
         .filter(({ admission, state }) => admission.sessionId === sessionId && state === 'accepted')

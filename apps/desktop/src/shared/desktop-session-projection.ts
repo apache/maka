@@ -240,7 +240,9 @@ export function projectDesktopUsageStats(
     ...stats,
     logs: stats.logs.map((log) => ({
       ...log,
-      sessionId: projectSessionId(host, log.sessionId),
+      ...(log.sessionId === undefined
+        ? {}
+        : { sessionId: projectSessionId(host, log.sessionId) }),
     })),
   };
 }

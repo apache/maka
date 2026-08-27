@@ -29,8 +29,17 @@ export {
 } from './access-management-frame.js';
 export { runtimeHostAccessCredentialFingerprint } from '../access-credential-identity.js';
 export {
+  RUNTIME_HOST_PEER_MANAGEMENT_FRAME_PREFIX,
+  decodeRuntimeHostPeerManagementFrame,
+  encodeRuntimeHostPeerManagementFrame,
+  type RuntimeHostPeerManagementAction,
+  type RuntimeHostPeerManagementFrame,
+  type RuntimeHostPeerStatus,
+} from './peer-management-frame.js';
+export {
   RUNTIME_HOST_OPERATOR_ACCESS_MANAGEMENT_CAPABILITY,
   RUNTIME_HOST_OPERATOR_CAPABILITY_REQUEST_ENV,
+  RUNTIME_HOST_OPERATOR_PEER_MANAGEMENT_CAPABILITY,
   RUNTIME_HOST_OPERATOR_PROJECT_DIRECTORY_CONFIGURATION_REQUEST_ENV,
   RUNTIME_HOST_OPERATOR_PROCESS_LIFETIME_LOCK_CAPABILITY,
   RUNTIME_HOST_OPERATOR_UPDATE_SCHEDULER_CAPABILITY,

@@ -523,6 +523,98 @@ test("finishes a persisted pairing after Desktop restarts before finalization", 
   );
 });
 
+test("keeps a managed Direct route on the SSH profile credential authority", async () => {
+  const root = await clientRoot();
+  const catalog = createClientRuntimeHostProfileCatalog(root);
+  const managedServices = createDesktopRuntimeHostManagedServiceStore(root);
+  await catalog.create(MANAGED_PROFILE, "owner-token");
+  await managedServices.save(MANAGED_PROFILE, MANAGED_SERVICE);
+  const startup = await resolveDesktopRuntimeHostStartup(root, { catalog });
+  const activated: ResolvedRuntimeHostProfile[] = [];
+  const service = createDesktopRuntimeHostProfileService({
+    clientDataRoot: root,
+    startup,
+    catalog,
+    managedServices,
+    states: () => [connectingLocal()],
+    enable: async (target) => {
+      activated.push(target);
+    },
+    disable: async () => undefined,
+    setDefault: () => undefined,
+    finalizePairing: async () => undefined,
+  });
+
+  await service.upsertManagedDirectPeerProfile(MANAGED_PROFILE.id, {
+    peerId: "12D3KooWpeer",
+    routeHints: ["/ip4/192.0.2.8/udp/44001/quic-v1"],
+    coordinationRelays: [],
+  });
+
+  const directId = (await catalog.read()).profiles.find(
+    (profile) => profile.kind === 'remote' && profile.transport.kind === 'libp2p-direct',
+  )?.id;
+  assert.ok(directId);
+  const direct = await catalog.resolve(directId);
+  assert.equal(direct.credential, "owner-token");
+  assert.equal(direct.profile.kind, "remote");
+  if (direct.profile.kind !== "remote") assert.fail("expected a remote Direct profile");
+  assert.deepEqual(direct.profile.transport, {
+    kind: "libp2p-direct",
+    peerId: "12D3KooWpeer",
+    routeHints: ["/ip4/192.0.2.8/udp/44001/quic-v1"],
+    coordinationRelays: [],
+  });
+  assert.equal((await catalog.resolve(MANAGED_PROFILE.id)).credential, "owner-token");
+
+  const beforeRejectedRemoval = {
+    document: await catalog.read(),
+    source: await catalog.resolve(MANAGED_PROFILE.id),
+    direct: await catalog.resolve(directId),
+    managed: await managedServices.read(),
+    snapshot: await service.getSnapshot(),
+  };
+  const managedBinding = await service.resolveManagedService(MANAGED_PROFILE.id);
+  assert.ok(managedBinding);
+  await assert.rejects(
+    service.remove(MANAGED_PROFILE.id),
+    /remove the Direct peer profile/u,
+  );
+  await assert.rejects(
+    service.markManagedServiceUninstalling(managedBinding),
+    /remove the Direct peer profile/u,
+  );
+  assert.deepEqual(
+    {
+      document: await catalog.read(),
+      source: await catalog.resolve(MANAGED_PROFILE.id),
+      direct: await catalog.resolve(directId),
+      managed: await managedServices.read(),
+      snapshot: await service.getSnapshot(),
+    },
+    beforeRejectedRemoval,
+  );
+
+  await service.setEnabled(MANAGED_PROFILE.id, true);
+  const access = await service.resolveManagedAccess(MANAGED_PROFILE.id);
+  assert.ok(access);
+  await service.rotateManagedCredential(access, 'replacement-token');
+  await service.setEnabled(MANAGED_PROFILE.id, false);
+  await service.setEnabled(directId, true);
+
+  assert.equal((await catalog.resolve(directId)).credential, 'replacement-token');
+  assert.equal(activated.at(-1)?.profile.id, directId);
+  assert.equal(activated.at(-1)?.credential, 'replacement-token');
+
+  await service.setEnabled(directId, false);
+  await service.removeManagedDirectPeerProfile(MANAGED_PROFILE.id);
+
+  assert.deepEqual((await catalog.read()).profiles, [MANAGED_PROFILE]);
+  await service.remove(MANAGED_PROFILE.id);
+  assert.deepEqual((await catalog.read()).profiles, []);
+  assert.deepEqual((await managedServices.read()).bindings, []);
+});
+
 test("recovers interrupted managed credential rotation after restart", async () => {
   const root = await clientRoot();
   const catalog = createClientRuntimeHostProfileCatalog(root);

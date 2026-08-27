@@ -321,6 +321,13 @@ describe('SqliteSessionMetadataStore', () => {
         submittedPlacement: 'current_turn',
         placement: 'current_turn',
         disposition: 'steering',
+        // Exact-Turn intent is durable and whole: recovery re-opens the Turn
+        // from this record and answers retries against it, and content and
+        // placement describe neither the Skills nor the execution mode.
+        submittedIntent: {
+          skillIds: ['review'],
+          turnOrchestration: { mode: 'graph', source: 'slash_command' },
+        },
         admittedAt: 10,
       };
 
@@ -445,6 +452,8 @@ describe('SqliteSessionMetadataStore', () => {
       await store.commitMessageAdmission(admission);
       await store.cancelMessageAdmissions('session-1', ['message-1']);
       assert.deepEqual(await store.listMessageAdmissions('session-1'), []);
+      assert.equal(await store.hasCancelledMessageAdmission('session-1', 'message-1'), true);
+      assert.equal(await store.hasCancelledMessageAdmission('session-1', 'message-2'), false);
       await assert.rejects(
         store.commitMessageAdmission(admission),
         /identity is already cancelled/,

@@ -361,7 +361,7 @@ function requirePositiveSafeInteger(value: unknown, label: string): number {
   return decoded;
 }
 
-function decodeSkillIds(value: unknown): string[] {
+export function decodeSkillIds(value: unknown): string[] {
   if (value === undefined) return [];
   if (
     !Array.isArray(value) ||
@@ -379,7 +379,7 @@ function decodeSkillIds(value: unknown): string[] {
   return [...value];
 }
 
-function decodeTurnOrchestration(value: unknown): TurnOrchestration {
+export function decodeTurnOrchestration(value: unknown): TurnOrchestration {
   const record = requireExactRecord(value, 'Turn orchestration', ['mode', 'source']);
   if (!isOrchestrationMode(record.mode) || !isTurnOrchestrationSource(record.source)) {
     throw invalidProtocolFrame('Invalid Turn orchestration');

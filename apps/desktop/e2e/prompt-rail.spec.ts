@@ -91,6 +91,8 @@ async function scrollTranscriptTo(page: Page, position: 'top' | 'bottom'): Promi
     if (!scroller) throw new Error('the chat scroll container is missing');
     scroller.scrollTop = where === 'top' ? 0 : scroller.scrollHeight;
   }, position);
+  await notifyTranscriptScrolled(page);
+  await waitForPaintedFrames(page);
 }
 
 async function waitForPaintedFrames(page: Page, count = 2): Promise<void> {

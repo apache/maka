@@ -205,7 +205,7 @@ describe('TranscriptViewerOverlay', () => {
 
   test('renders through a detached geometry projection', () => {
     const state = createMakaPiTranscriptState();
-    const entry = { kind: 'user' as const, text: 'oldest prompt' };
+    const entry = { kind: 'user' as const, messageId: 'oldest-message', text: 'oldest prompt' };
     const entryFirstLine = new Map([[entry, 17]]);
     state.entries.push(entry);
     state.renderGeometry = { entryFirstLine, viewportTop: 16 };

@@ -30,6 +30,7 @@ import type {
   UsageRange,
   UsageStats,
 } from '@maka/core/settings';
+import { EMPTY_USAGE_PROVENANCE } from '@maka/core/usage-ledger-merge';
 import type {
   CapabilitySnapshot,
   CapabilitySnapshotCollection,
@@ -203,7 +204,7 @@ function makeUsageLog(input: {
   kind: 'model' | 'tool';
   model: string;
   toolName?: string;
-  status?: 'success' | 'error';
+  status?: 'success' | 'error' | 'aborted';
   minutesAgo: number;
   sessionName?: string;
 }): UsageStats['logs'][number] {
@@ -245,7 +246,25 @@ const usageLogs: UsageStats['logs'] = [
   // No sessionName → renders the "未命名会话 · <short id>" fallback.
   makeUsageLog({ id: '3', kind: 'model', model: 'glm-4.7', status: 'error', minutesAgo: 16 }),
   makeUsageLog({ id: '4', kind: 'tool', model: 'glm-4.7', toolName: 'Bash', sessionName: 'Bash 环境探查', minutesAgo: 25 }),
+  {
+    ...makeUsageLog({ id: '5', kind: 'model', model: 'gpt-5', status: 'aborted', minutesAgo: 31 }),
+    sessionId: undefined,
+    turnId: undefined,
+    costUsd: undefined,
+  },
 ];
+
+// Priced provenance so the fixtures' costs read as authoritative
+// (pricedAttempts > 0); the empty fixture keeps the all-zero provenance.
+const STORY_USAGE_PROVENANCE = {
+  ...EMPTY_USAGE_PROVENANCE,
+  coverage: {
+    ...EMPTY_USAGE_PROVENANCE.coverage,
+    attempts: 1,
+    pricedAttempts: 1,
+    usageReportedAttempts: 1,
+  },
+};
 
 const usageStats: UsageStats = {
   summary: {
@@ -282,6 +301,7 @@ const usageStats: UsageStats = {
     { tool: 'Bash', calls: 120, success: 118, errors: 2, avgDurationMs: 840 },
   ],
   pricing: [{ provider: 'zai-coding-plan', model: 'glm-4.7', inputPerMTokUsd: 0, outputPerMTokUsd: 0 }],
+  provenance: STORY_USAGE_PROVENANCE,
 };
 
 const emptyUsageStats: UsageStats = {
@@ -302,6 +322,7 @@ const emptyUsageStats: UsageStats = {
   byModel: [],
   byTool: [],
   pricing: [],
+  provenance: EMPTY_USAGE_PROVENANCE,
 };
 
 const singleProviderUsageStats: UsageStats = {
@@ -315,6 +336,7 @@ const singleProviderUsageStats: UsageStats = {
     outputTokens: 5_200,
   },
   byProvider: [{ provider: 'zai-coding-plan', requests: 37, tokens: 24_800, costUsd: 0.18 }],
+  provenance: STORY_USAGE_PROVENANCE,
 };
 
 const multiModelUsageStats: UsageStats = {
@@ -336,6 +358,7 @@ const multiModelUsageStats: UsageStats = {
     { model: 'gemini-2.5-pro', requests: 48, tokens: 96_000, costUsd: 0.52 },
     { model: 'qwen3-coder-480b-a35b-instruct', requests: 20, tokens: 32_000, costUsd: 0.1 },
   ],
+  provenance: STORY_USAGE_PROVENANCE,
 };
 
 function makeMemoryEntry(input: {
@@ -1954,13 +1977,26 @@ export const UsageMultiModel: Story = {
   decorators: [withUsageMultiModelBridge],
   render: () => <SettingsStory section="usage" />,
 };
-// Real path: 设置 → 使用统计 → 详情记录 on → 请求日志, with long model and tool names.
+// Real path: 设置 → 使用统计 → 详情记录 on → 活动记录, with long model and tool names.
 export const UsageLongTail: Story = {
   decorators: [withUsageLongTailBridge],
   render: () => <SettingsStory section="usage" />,
   play: async ({ canvasElement, globals }) => {
     const canvas = within(canvasElement);
     const usageCopy = getUsageSettingsCopy(globals.locale === 'en' ? 'en' : 'zh');
+    expect(
+      await canvas.findByText(usageCopy.totalRequests, {
+        selector: '[data-slot="stat-tile-label"]',
+      }),
+    ).toBeInTheDocument();
+    // Astryx `TabList` is a <nav> of <button> tabs — there is no ARIA `tab`
+    // role, so query the tab by `button` (that is how @astryxdesign's own
+    // TabList tests reach them). The tab also carries a count badge in its
+    // `endContent`, which folds into the accessible name after the label
+    // (e.g. '活动记录 5'), so match the label as a prefix rather than whole.
+    expect(
+      await canvas.findByRole('button', { name: new RegExp(`^${usageCopy.tabs[0]}`) }),
+    ).toBeInTheDocument();
     await waitForStoryCondition(
       () => canvas.queryByRole('table', { name: usageCopy.tables.requestsAria }) !== null
         || canvas.queryByRole('button', { name: usageCopy.showDetails }) !== null,

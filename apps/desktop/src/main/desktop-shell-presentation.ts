@@ -16,7 +16,8 @@
  * specific language governing permissions and limitations
  * under the License.
  */
-import { app } from 'electron';
+import { app, nativeTheme } from 'electron';
+import { startupAppIcon } from '@maka/core/settings';
 import { applyAppIcon } from './app-icon-surface.js';
 import { installApplicationMenu } from './application-menu.js';
 import { resolveDockPresentation } from './dock-presentation.js';
@@ -41,13 +42,18 @@ export function installDesktopShellPresentation(
     if (dockPresentation === 'hide') {
       app.dock.hide();
     } else if (dockPresentation === 'icon') {
-      // The DEFAULT mark, synchronously, even when the user picked another
-      // one: reading the persisted choice means awaiting the settings store,
-      // and a dock that shows the generic Electron rocket until that resolves
-      // is the exact regression PR-GRAY-CARD-LIFT-0 fixed. The persisted
-      // choice lands a tick later, from the same client-settings effect that
-      // applies it when the user switches (see client-settings-effects.ts).
-      applyAppIcon('default', deps.onIconError);
+      // A DEFAULT, synchronously, even when the user picked another one:
+      // reading the persisted choice means awaiting the settings store, and a
+      // dock that shows the generic Electron rocket until that resolves is the
+      // exact regression PR-GRAY-CARD-LIFT-0 fixed. The persisted choice lands
+      // a tick later, from the same client-settings effect that applies it
+      // when the user switches (see client-settings-effects.ts).
+      //
+      // Which default depends on the appearance, and only the OS half of that
+      // is readable synchronously — the stored `theme` preference is not. So a
+      // user whose in-app theme disagrees with the OS still sees one swap, the
+      // same as before; what this avoids is every default install swapping.
+      applyAppIcon(startupAppIcon(nativeTheme.shouldUseDarkColors), deps.onIconError);
     }
   }
 

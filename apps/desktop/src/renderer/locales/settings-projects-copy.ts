@@ -75,12 +75,28 @@ export type SettingsProjectsCopy = {
     credentialHelp: string;
     saveAndEnable: string;
     defaultBadge: string;
+    experimentalBadge: string;
     defaultDisableHelp: string;
     unavailable: string;
     manage: string;
     managementTitle(name: string): string;
     serviceStatus: string;
     serviceState: Record<import('../../preload/bridge-contract.js').DesktopRuntimeHostManagementResult['service']['state'], string>;
+    directPeer: string;
+    directPeerDescription: string;
+    directPeerState: Record<'unsupported' | 'not_configured' | 'disabled' | 'enabled' | 'unavailable', string>;
+    directPeerUnavailable: string;
+    directPeerUpgradeRequired: string;
+    directPeerClientUnavailable: string;
+    directPeerDisableProfileFirst: string;
+    directPeerId: string;
+    directPeerRoutes: string;
+    directPeerCoordinationRelays: string;
+    directPeerCoordinationRelaysPlaceholder: string;
+    directPeerEnable: string;
+    directPeerDisable: string;
+    directPeerAddProfile: string;
+    directPeerActionFailed: string;
     installedVersion: string;
     operatingSystem: string;
     processId: string;
@@ -291,6 +307,7 @@ const SETTINGS_PROJECTS_COPY_BY_LOCALE = {
       credentialHelp: '在远程机器使用 desktop-client preset 签发',
       saveAndEnable: '保存并启用',
       defaultBadge: '默认',
+      experimentalBadge: '实验性',
       defaultDisableHelp: '先选择另一个默认 Host，才能停用此 Host',
       unavailable: '无法连接',
       manage: '管理',
@@ -303,6 +320,27 @@ const SETTINGS_PROJECTS_COPY_BY_LOCALE = {
         running: '运行中',
         failed: '启动失败',
       },
+      directPeer: 'Direct peer（实验性）',
+      directPeerDescription: '创建独立的实验性 Direct profile。受限 NAT 或被阻止的 UDP 可能使其不可达，且不会自动回退；保留 SSH profile 用于手动恢复。',
+      directPeerState: {
+        unsupported: '需要更新',
+        not_configured: '未配置',
+        disabled: '已停用',
+        enabled: '已启用',
+        unavailable: '不可用',
+      },
+      directPeerUnavailable: '无法读取 Direct peer 状态',
+      directPeerUpgradeRequired: '请先更新远程 Runtime Host，再管理 Direct peer。',
+      directPeerClientUnavailable: '当前 Desktop 构建不包含 Direct peer 支持。',
+      directPeerDisableProfileFirst: '请先在 Runtime Host 列表中停用 Direct peer。',
+      directPeerId: 'Peer ID',
+      directPeerRoutes: '可用路径',
+      directPeerCoordinationRelays: '连接协调节点（可选）',
+      directPeerCoordinationRelaysPlaceholder: '多个地址用逗号分隔',
+      directPeerEnable: '启用并添加',
+      directPeerDisable: '停用',
+      directPeerAddProfile: '添加到 Desktop',
+      directPeerActionFailed: 'Direct peer 操作失败',
       installedVersion: '版本',
       operatingSystem: '系统',
       processId: '进程 ID',
@@ -513,6 +551,7 @@ const SETTINGS_PROJECTS_COPY_BY_LOCALE = {
       credentialHelp: 'Issue it on the remote machine with the desktop-client preset',
       saveAndEnable: 'Save and enable',
       defaultBadge: 'Default',
+      experimentalBadge: 'Experimental',
       defaultDisableHelp: 'Choose another default Host before disabling this Host',
       unavailable: 'Unavailable',
       manage: 'Manage',
@@ -525,6 +564,27 @@ const SETTINGS_PROJECTS_COPY_BY_LOCALE = {
         running: 'Running',
         failed: 'Failed',
       },
+      directPeer: 'Direct peer (experimental)',
+      directPeerDescription: 'Create an independent experimental Direct profile. Restrictive NAT or blocked UDP may make it unreachable, and it does not fall back automatically; keep the SSH profile for manual recovery.',
+      directPeerState: {
+        unsupported: 'Update required',
+        not_configured: 'Not configured',
+        disabled: 'Disabled',
+        enabled: 'Enabled',
+        unavailable: 'Unavailable',
+      },
+      directPeerUnavailable: 'Direct peer status is unavailable',
+      directPeerUpgradeRequired: 'Update the remote Runtime Host before managing Direct peer.',
+      directPeerClientUnavailable: 'This Desktop build does not include Direct peer support.',
+      directPeerDisableProfileFirst: 'Disable the Direct peer in the Runtime Host list first.',
+      directPeerId: 'Peer ID',
+      directPeerRoutes: 'Routes',
+      directPeerCoordinationRelays: 'Connection coordination peers (optional)',
+      directPeerCoordinationRelaysPlaceholder: 'Separate multiple addresses with commas',
+      directPeerEnable: 'Enable and add',
+      directPeerDisable: 'Disable',
+      directPeerAddProfile: 'Add to Desktop',
+      directPeerActionFailed: 'Direct peer action failed',
       installedVersion: 'Version',
       operatingSystem: 'System',
       processId: 'Process ID',

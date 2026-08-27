@@ -29,6 +29,7 @@ import type {
 import type {
   AppIcon,
   AppIconChoice,
+  AppIconTarget,
   AppSettings,
   ChatDefaultsSettings,
   SettingsTestResult,
@@ -128,11 +129,21 @@ import type { DesktopSessionSummary } from '../shared/desktop-session-projection
  * picker can say which rather than showing one generic failure.
  */
 export type AppIconSelectResult =
-  | { readonly ok: true; readonly selection: AppIconChoice }
+  | {
+      readonly ok: true;
+      readonly selection: AppIconChoice;
+      /** Absent when one icon serves both appearances. */
+      readonly darkSelection?: AppIconChoice;
+    }
   | { readonly ok: false; readonly reason: 'invalid_id' | 'missing_artwork' | 'write_failed' };
 
 export type AppIconRemoveResult =
-  | { readonly ok: true; readonly selection: AppIconChoice }
+  | {
+      readonly ok: true;
+      readonly selection: AppIconChoice;
+      /** Absent when one icon serves both appearances. */
+      readonly darkSelection?: AppIconChoice;
+    }
   | { readonly ok: false; readonly reason: 'invalid_id' | 'reset_failed' | 'remove_failed' };
 
 export type AppIconImportResult =
@@ -209,6 +220,7 @@ export type DesktopSideConversationBranchResult =
 
 export type DesktopSessionStopResult =
   | { kind: 'retracted'; messageId: string }
+  | { kind: 'interrupted'; retractedMessageIds: string[] }
   | undefined;
 
 export type DesktopReviseBeforeTurnInput = ReviseBeforeTurnInput & {
@@ -459,6 +471,17 @@ export interface DesktopRuntimeHostManagementProgress {
     | import('@maka/runtime-host/operator').RuntimeHostServiceUpdatePhase;
 }
 
+export interface DesktopRuntimeHostDirectPeerSnapshot {
+  readonly state: 'unsupported' | 'not_configured' | 'disabled' | 'enabled';
+  readonly peerId?: string;
+  readonly routeHints: readonly string[];
+  readonly coordinationRelays: readonly string[];
+  readonly profilePresent: boolean;
+  readonly profileEnabled: boolean;
+  readonly clientAvailable: boolean;
+  readonly managementAvailable: boolean;
+}
+
 type RuntimeHostUpdatePolicyResult = Extract<
   RuntimeHostServiceManagementFrame,
   { kind: 'result'; action: 'update_policy' }
@@ -638,6 +661,12 @@ export interface MakaBridge {
       policy: import('@maka/runtime-host/operator').RuntimeHostManagedUpdatePolicy,
     ): Promise<DesktopRuntimeHostUpdatePolicySnapshot>;
     reconcileUpdate(profileId: string): Promise<DesktopRuntimeHostUpdateReconciliationResponse>;
+    getDirectPeer(profileId: string): Promise<DesktopRuntimeHostDirectPeerSnapshot>;
+    configureDirectPeer(
+      profileId: string,
+      enabled: boolean,
+      coordinationRelays: readonly string[],
+    ): Promise<DesktopRuntimeHostDirectPeerSnapshot>;
     listCredentials(profileId: string): Promise<DesktopRuntimeHostAccessSnapshot>;
     rotateCredential(profileId: string): Promise<DesktopRuntimeHostAccessSnapshot>;
     revokeCredential(
@@ -803,22 +832,20 @@ export interface MakaBridge {
     create(input?: CreateSessionRequestInput): Promise<DesktopSessionSummary>;
     send(
       sessionId: string,
-      command:
-        | SessionCommand
-          | {
-            type: 'send';
-            turnId: string;
-            text: string;
-            displayText?: string;
-            skillIds?: string[];
-            attachmentItems?: RendererIngestInput[];
-            retainedAttachments?: import('@maka/core/events').AttachmentRef[];
-            turnOrchestration?: TurnOrchestration;
-            quotes?: import('@maka/core/events').QuoteRef[];
-            workspaceFileReferences?: Array<
-              Pick<import('@maka/core/events').InlineReference, 'value' | 'start'>
-            >;
-          },
+      command: {
+        type: 'send';
+        turnId: string;
+        text: string;
+        displayText?: string;
+        skillIds?: string[];
+        attachmentItems?: RendererIngestInput[];
+        retainedAttachments?: import('@maka/core/events').AttachmentRef[];
+        turnOrchestration?: TurnOrchestration;
+        quotes?: import('@maka/core/events').QuoteRef[];
+        workspaceFileReferences?: Array<
+          Pick<import('@maka/core/events').InlineReference, 'value' | 'start'>
+        >;
+      },
     ): Promise<
       | {
           ok: true;
@@ -863,21 +890,20 @@ export interface MakaBridge {
         expectedAdmissionId?: string;
       },
     ): Promise<DesktopSessionStopResult>;
-    steer(
-      sessionId: string,
-      text: string,
-      admissionId?: string,
-    ): Promise<
-      | { kind: 'queued'; messageId: string }
-      | { kind: 'outcome_unknown'; messageId: string }
-      | { kind: 'started'; turnId: string }
-    >;
-    enqueue(
+    /**
+     * The single Message admission path. Skill and orchestration intent travel
+     * with the Message; Runtime Host decides whether it opens its own Turn,
+     * steers the running one, or fails closed.
+     */
+    submitMessage(
       sessionId: string,
       placement: 'current_turn' | 'next_turn',
       command: {
+        messageId: string;
         text: string;
         displayText?: string;
+        skillIds?: string[];
+        turnOrchestration?: TurnOrchestration;
         attachmentItems?: RendererIngestInput[];
         retainedAttachments?: import('@maka/core/events').AttachmentRef[];
         quotes?: import('@maka/core/events').QuoteRef[];
@@ -885,12 +911,26 @@ export interface MakaBridge {
           Pick<import('@maka/core/events').InlineReference, 'value' | 'start'>
         >;
       },
-    ): Promise<{
-      kind: 'queued' | 'started';
-      turnId?: string;
-      attachments: import('@maka/core/events').AttachmentRef[];
-      inlineReferences: import('@maka/core/events').InlineReference[];
-    }>;
+    ): Promise<
+      | {
+          ok: true;
+          disposition: 'turn_started' | 'steering' | 'followup';
+          turnId?: string;
+          attachments: import('@maka/core/events').AttachmentRef[];
+          inlineReferences: import('@maka/core/events').InlineReference[];
+          skillInvocation: import('@maka/runtime/skill-invocation').SkillInvocationResult;
+        }
+      | {
+          ok: false;
+          reason: 'skill_invocation_failed';
+          skillInvocation: import('@maka/runtime/skill-invocation').SkillInvocationResult;
+        }
+      | { ok: false; reason: 'outcome_unknown' }
+    >;
+    queryCancelledMessages(
+      sessionId: string,
+      messageIds: readonly string[],
+    ): Promise<import('@maka/runtime-host/protocol').TurnMessageQueryResult>;
     retractQueueEntry(sessionId: string, entryId: string): Promise<void>;
     promoteQueueEntry(sessionId: string, entryId: string): Promise<void>;
     updateQueueEntry(
@@ -1137,7 +1177,7 @@ export interface MakaBridge {
     subscribeExternalChanged(handler: () => void, host?: DesktopRuntimeHostRef): () => void;
     testNetworkProxy(input?: TestProxyInput, host?: DesktopRuntimeHostRef): Promise<SettingsTestResult>;
     testBotChannel(provider: BotProvider): Promise<SettingsTestResult>;
-    usageStats(range?: UsageRange): Promise<UsageStats>;
+    usageStats(range?: UsageRange, host?: DesktopRuntimeHostRef): Promise<UsageStats>;
     bots: {
       listStatuses(): Promise<Record<BotProvider, BotStatus>>;
       restart(provider: BotProvider): Promise<BotStatus>;
@@ -1397,7 +1437,7 @@ export interface MakaBridge {
      * generic settings channel so it queues behind import and removal in the
      * main process, and so a choice whose artwork is gone can be refused.
      */
-    selectIcon(icon: AppIconChoice): Promise<AppIconSelectResult>;
+    selectIcon(icon: AppIconChoice, target?: AppIconTarget): Promise<AppIconSelectResult>;
     /** Opens a file picker in the main process and stores a normalized copy. */
     importIcon(): Promise<AppIconImportResult>;
     /**

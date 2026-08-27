@@ -390,49 +390,56 @@ export function RuntimeHostProfilesSection(props: {
                 <ListItem
                   key={profile.id}
                   label={profile.name}
-                description={
-                  profile.transport.kind === "ssh"
-                    ? profile.transport.destination
-                    : profile.transport.kind === "libp2p-direct"
-                      ? profile.transport.peerId
-                      : profile.transport.url
-                }
-                startContent={<Cpu size={ICON_SIZE.control} aria-hidden="true" />}
-                endContent={
-                  <HStack gap={2} align="center">
-                    {entry.isDefault ? <Badge variant="neutral" label={copy.defaultBadge} /> : null}
-                    {entry.readiness === "unavailable" ? <Badge variant="neutral" label={copy.unavailable} /> : null}
-                    <Switch
-                      label={profile.name}
-                      isLabelHidden
-                      value={entry.enabled}
-                      isDisabled={switching || entry.isDefault}
-                      disabledMessage={entry.isDefault ? copy.defaultDisableHelp : undefined}
-                      onChange={(enabled) => void setEnabled(profile.id, enabled)}
-                    />
-                    <MoreMenu
-                      label={copy.moreActions(profile.name)}
-                      size="sm"
-                      items={[
-                        ...(profile.transport.kind === "ssh" && entry.managedService
-                          ? [{
-                              label: copy.manage,
-                              isDisabled: switching,
-                              onClick: () => setManagedProfile(profile),
-                            }]
-                          : []),
-                        {
-                          label: copy.remove,
-                          isDisabled:
-                            switching ||
-                            entry.enabled ||
-                            entry.isDefault,
-                          onClick: () => void remove(profile.id),
-                        },
-                      ]}
-                    />
-                  </HStack>
-                }
+                  description={
+                    profile.transport.kind === "ssh"
+                      ? profile.transport.destination
+                      : profile.transport.kind === "libp2p-direct"
+                        ? abbreviatePeerId(profile.transport.peerId)
+                        : profile.transport.url
+                  }
+                  startContent={<Cpu size={ICON_SIZE.control} aria-hidden="true" />}
+                  endContent={
+                    <HStack gap={2} align="center">
+                      {entry.isDefault ? (
+                        <Badge variant="neutral" label={copy.defaultBadge} />
+                      ) : null}
+                      {profile.transport.kind === 'libp2p-direct' ? (
+                        <Badge variant="warning" label={copy.experimentalBadge} />
+                      ) : null}
+                      {entry.readiness === "unavailable" ? (
+                        <Badge variant="neutral" label={copy.unavailable} />
+                      ) : null}
+                      <Switch
+                        label={profile.name}
+                        isLabelHidden
+                        value={entry.enabled}
+                        isDisabled={switching || entry.isDefault}
+                        disabledMessage={entry.isDefault ? copy.defaultDisableHelp : undefined}
+                        onChange={(enabled) => void setEnabled(profile.id, enabled)}
+                      />
+                      <MoreMenu
+                        label={copy.moreActions(profile.name)}
+                        size="sm"
+                        items={[
+                          ...(profile.transport.kind === "ssh" && entry.managedService
+                            ? [{
+                                label: copy.manage,
+                                isDisabled: switching,
+                                onClick: () => setManagedProfile(profile),
+                              }]
+                            : []),
+                          {
+                            label: copy.remove,
+                            isDisabled:
+                              switching ||
+                              entry.enabled ||
+                              entry.isDefault,
+                            onClick: () => void remove(profile.id),
+                          },
+                        ]}
+                      />
+                    </HStack>
+                  }
                 />
               );
             })}
@@ -457,6 +464,10 @@ export function RuntimeHostProfilesSection(props: {
       />
     </>
   );
+}
+
+function abbreviatePeerId(peerId: string): string {
+  return peerId.length <= 20 ? peerId : `${peerId.slice(0, 10)}…${peerId.slice(-6)}`;
 }
 
 function createTransport(draft: ReturnType<typeof createRemoteHostDraft>): RuntimeHostRemoteTransport {

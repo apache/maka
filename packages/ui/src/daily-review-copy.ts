@@ -132,11 +132,11 @@ const DAILY_REVIEW_COPY = {
       title: '每日回顾', generateAnalysis: '生成分析', retryAnalysis: '重新生成', viewAnalysis: '查看分析', backToActivity: '返回活动', timeRange: '时间范围', rangeOptions: [['1', '今日'], ['7', '最近 7 天'], ['30', '最近 30 天']], rangeSwitch: '时间范围切换',
     },
     overview: {
-      ariaLabel: (label) => `${label}概览`, refreshFailed: (error) => `每日回顾刷新失败：${error}`, retry: '重试', conversations: '任务', requests: '请求', tokens: 'Token', cost: '费用', activeConversations: '活跃任务',
+      ariaLabel: (label) => `${label}概览`, refreshFailed: (error) => `每日回顾刷新失败：${error}`, retry: '重试', conversations: '任务', requests: '模型调用', tokens: 'Token', cost: '费用', activeConversations: '活跃任务',
     },
     errorFallback: '每日回顾暂时不可用，请稍后重试。',
     markdown: {
-      separator: '：', title: (dayLabel) => `# Maka · 每日回顾 · ${dayLabel}`, conversations: '任务', requests: '请求', tokens: 'Token', cost: '费用', errors: '错误', activeConversations: '活跃任务', modelUsage: '模型使用', toolCalls: '工具调用', requestCount: (count) => `${count} 次`,
+      separator: '：', title: (dayLabel) => `# Maka · 每日回顾 · ${dayLabel}`, conversations: '任务', requests: '模型调用', tokens: 'Token', cost: '费用', errors: '错误', activeConversations: '活跃任务', modelUsage: '模型使用', toolCalls: '工具调用', requestCount: (count) => `${count} 次`,
     },
   },
   en: {
@@ -167,11 +167,11 @@ const DAILY_REVIEW_COPY = {
       title: 'Daily review', generateAnalysis: 'Generate analysis', retryAnalysis: 'Generate again', viewAnalysis: 'View analysis', backToActivity: 'Back to activity', timeRange: 'Time range', rangeOptions: [['1', 'Today'], ['7', 'Last 7 days'], ['30', 'Last 30 days']], rangeSwitch: 'Change time range',
     },
     overview: {
-      ariaLabel: (label) => `${label} overview`, refreshFailed: (error) => `Failed to refresh daily review: ${error}`, retry: 'Retry', conversations: 'Tasks', requests: 'Requests', tokens: 'Tokens', cost: 'Cost', activeConversations: 'Active tasks',
+      ariaLabel: (label) => `${label} overview`, refreshFailed: (error) => `Failed to refresh daily review: ${error}`, retry: 'Retry', conversations: 'Tasks', requests: 'Model calls', tokens: 'Tokens', cost: 'Cost', activeConversations: 'Active tasks',
     },
     errorFallback: 'Daily review is temporarily unavailable. Try again later.',
     markdown: {
-      separator: ':', title: (dayLabel) => `# Maka · Daily review · ${dayLabel}`, conversations: 'Tasks', requests: 'Requests', tokens: 'Tokens', cost: 'Cost', errors: 'Errors', activeConversations: 'Active tasks', modelUsage: 'Model usage', toolCalls: 'Tool calls', requestCount: (count) => `${count} ${count === 1 ? 'request' : 'requests'}`,
+      separator: ':', title: (dayLabel) => `# Maka · Daily review · ${dayLabel}`, conversations: 'Tasks', requests: 'Model calls', tokens: 'Tokens', cost: 'Cost', errors: 'Errors', activeConversations: 'Active tasks', modelUsage: 'Model usage', toolCalls: 'Tool calls', requestCount: (count) => `${count} ${count === 1 ? 'call' : 'calls'}`,
     },
   },
 } satisfies UiCatalog<DailyReviewCopy>;

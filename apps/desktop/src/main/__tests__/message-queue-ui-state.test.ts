@@ -24,6 +24,8 @@ import { createAppShellSessionUiStateController } from '../../renderer/app-shell
 
 test('queue_update events drive the independent desktop queue projection', () => {
   const controller = createAppShellSessionUiStateController();
+  const transientMessages: unknown[] = [];
+  const removedTransientMessageIds: string[] = [];
   const handlers = createAppShellSessionEventHandlers({
     uiLocale: 'zh',
     activeIdRef: { current: 'session-1' },
@@ -33,6 +35,9 @@ test('queue_update events drive the independent desktop queue projection', () =>
     setLiveTurnBySession: controller.setLiveTurnBySession,
     setInteractionBySession: controller.setInteractionBySession,
     setMessageQueueBySession: controller.setMessageQueueBySession,
+    projectQueuedTransientMessages: (_sessionId, messages) => transientMessages.push(...messages),
+    removeTransientMessage: (_sessionId, messageId) =>
+      removedTransientMessageIds.push(messageId),
     showModelSetupToast() {},
     toastApi: { error() {} },
   });
@@ -45,9 +50,6 @@ test('queue_update events drive the independent desktop queue projection', () =>
   };
   const inFlightEntry = {
     ...steeringEntry,
-    entryId: 'entry-delivering',
-    messageId: 'message-delivering',
-    content: { text: 'already delivering' },
     state: 'in_flight' as const,
   };
 
@@ -59,7 +61,7 @@ test('queue_update events drive the independent desktop queue projection', () =>
     queueRevision: 3,
     steering: ['adjust this run'],
     followup: ['do this next'],
-    steeringEntries: [steeringEntry, inFlightEntry],
+    steeringEntries: [steeringEntry],
     followupEntries: [{
       entryId: 'entry-next',
       messageId: 'message-next',
@@ -82,17 +84,68 @@ test('queue_update events drive the independent desktop queue projection', () =>
       },
     ],
   });
+  assert.deepEqual(transientMessages, [
+    {
+      id: 'message-steer',
+      transientPlacement: 'current_turn',
+      hostTurnId: 'turn-1',
+      ts: 1,
+      text: 'adjust this run',
+    },
+    {
+      id: 'message-next',
+      transientPlacement: 'next_turn',
+      ts: 1,
+      text: 'do this next',
+    },
+  ]);
+
+  handlers.handleEvent('session-1', {
+    type: 'steering_message',
+    id: 'steering-message-steer',
+    turnId: 'turn-1',
+    messageId: 'message-steer',
+    ts: 2,
+    content: { text: 'adjust this run' },
+  });
+  assert.deepEqual(removedTransientMessageIds, ['message-steer']);
 
   handlers.handleEvent('session-1', {
     type: 'queue_update',
     id: 'queue-2',
     turnId: 'turn-1',
-    ts: 2,
+    ts: 3,
     queueRevision: 4,
-    steering: [],
-    followup: [],
+    steering: ['adjust this run'],
+    followup: ['do this next'],
+    steeringEntries: [inFlightEntry],
+    followupEntries: [{
+      entryId: 'entry-next',
+      messageId: 'message-next',
+      content: { text: 'do this next' },
+      placement: 'next_turn',
+      state: 'queued',
+    }],
   });
-  assert.equal(controller.getState().messageQueueBySession['session-1'], undefined);
+  assert.deepEqual(controller.getState().messageQueueBySession['session-1']?.entries, [{
+    entryId: 'entry-next',
+    messageId: 'message-next',
+    content: { text: 'do this next' },
+    placement: 'next_turn',
+    state: 'queued',
+  }]);
+  assert.deepEqual(removedTransientMessageIds, ['message-steer']);
+  assert.equal(transientMessages.length, 3, 'in-flight queue projection must not re-add the row');
+
+  handlers.handleEvent('session-1', {
+    type: 'message_admission',
+    id: 'retracted-message-next',
+    turnId: 'turn-1',
+    ts: 4,
+    messageId: 'message-next',
+    outcome: 'retracted',
+  });
+  assert.deepEqual(removedTransientMessageIds, ['message-steer', 'message-next']);
 });
 
 test('complete events deliver the durable context compaction outcome to Desktop', () => {

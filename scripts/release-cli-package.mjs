@@ -57,6 +57,7 @@ const preparedTree = process.env.MAKA_CLI_RELEASE_PREPARED_TREE === '1';
 const releaseRoot = join(cliSource, 'release');
 const artifactRoot = developmentBuild ? createDevelopmentArtifactRoot() : releaseRoot;
 const stageRoot = join(artifactRoot, 'package');
+const peerPrebuildTargets = ['darwin-arm64', 'linux-arm64', 'linux-x64', 'win32-x64'];
 const unsupportedArguments = process.argv
   .slice(2)
   .filter((argument) => !['--allow-dirty', '--development'].includes(argument));
@@ -88,7 +89,8 @@ try {
 }
 
 function main() {
-  validateToolchain();
+  validateNodeVersion();
+  if (!developmentBuild) validateReleaseNpmVersion();
   if (developmentBuild) {
     if (allowDirty || preparedTree) {
       throw new Error('--development cannot be combined with release build options');
@@ -117,6 +119,8 @@ function main() {
   buildRuntimeWorkspaces({ clean: true });
   checkProductionAudit();
   runNpm(['run', 'check:cli-third-party-notices']);
+  runNpm(['run', 'check:runtime-host-peer-dependencies']);
+  runNpm(['run', 'check:runtime-host-peer-notices']);
 
   packageCli(preparedTree);
 }
@@ -129,11 +133,12 @@ function packageCli(publishable) {
   rmSync(artifactRoot, { recursive: true, force: true });
   mkdirSync(stageRoot, { recursive: true, mode: 0o755 });
   copyCliRuntime();
+  copyRuntimeHostPeerPrebuilds(publishable);
   const expectedDependencyManifests = copyDependencyClosure(cli);
   copyEvalMirror();
   copyReleaseDocuments();
   writeReleaseManifest(cli, publishable);
-  validateStaging();
+  validateStaging(publishable);
 
   const [pack] = JSON.parse(
     runNpm(['pack', stageRoot, '--json', '--pack-destination', artifactRoot], {
@@ -195,6 +200,7 @@ function buildFromCleanDependencyTree() {
       stdio: 'inherit',
     });
     execFileSync('tar', ['-xf', archivePath, '-C', cleanRoot], { stdio: 'inherit' });
+    const preparedPeerPrebuilds = copyPeerPrebuildInputToCleanTree(cleanRoot);
     console.log('[release-cli] installing the committed dependency tree with npm ci');
     const cleanEnvironment = releaseNpmEnvironment(process.env, join(cleanRoot, '.npmrc'));
     execFileSync(
@@ -204,7 +210,13 @@ function buildFromCleanDependencyTree() {
     );
     execFileSync(process.execPath, [join(cleanRoot, 'scripts/release-cli-package.mjs')], {
       cwd: cleanRoot,
-      env: { ...cleanEnvironment, MAKA_CLI_RELEASE_PREPARED_TREE: '1' },
+      env: {
+        ...cleanEnvironment,
+        MAKA_CLI_RELEASE_PREPARED_TREE: '1',
+        ...(preparedPeerPrebuilds
+          ? { MAKA_RUNTIME_HOST_PEER_PREBUILDS: preparedPeerPrebuilds }
+          : {}),
+      },
       stdio: 'inherit',
     });
 
@@ -220,11 +232,22 @@ function buildFromCleanDependencyTree() {
   }
 }
 
-function validateToolchain() {
+function copyPeerPrebuildInputToCleanTree(cleanRoot) {
+  const source = process.env.MAKA_RUNTIME_HOST_PEER_PREBUILDS?.trim();
+  if (!source) return undefined;
+  const destination = join(cleanRoot, '.release-runtime-host-peer-prebuilds');
+  cpSync(realpathSync(source), destination, { recursive: true, preserveTimestamps: true });
+  return destination;
+}
+
+function validateNodeVersion() {
   const [major = 0, minor = 0] = process.versions.node.split('.').map(Number);
   if (major < 22 || (major === 22 && minor < 19)) {
     throw new Error(`Node.js >=22.19.0 is required; found ${process.versions.node}`);
   }
+}
+
+function validateReleaseNpmVersion() {
   const packageManager = readJson(join(repoRoot, 'package.json')).packageManager;
   const requiredNpmVersion = /^npm@(.+)$/.exec(packageManager)?.[1];
   if (!requiredNpmVersion) {
@@ -504,6 +527,55 @@ function copyReleaseDocuments() {
     join(cliSource, 'THIRD_PARTY_NOTICES.txt'),
     join(stageRoot, 'THIRD_PARTY_NOTICES.txt'),
   );
+  copyFileSync(
+    join(cliSource, 'RUNTIME_HOST_PEER_DEPENDENCIES.rust.tsv'),
+    join(stageRoot, 'RUNTIME_HOST_PEER_DEPENDENCIES.rust.tsv'),
+  );
+  copyFileSync(
+    join(cliSource, 'RUNTIME_HOST_PEER_THIRD_PARTY_NOTICES.txt'),
+    join(stageRoot, 'RUNTIME_HOST_PEER_THIRD_PARTY_NOTICES.txt'),
+  );
+}
+
+function copyRuntimeHostPeerPrebuilds(publishable) {
+  let sourceRoot = process.env.MAKA_RUNTIME_HOST_PEER_PREBUILDS?.trim();
+  let generatedRoot;
+  let targets = peerPrebuildTargets;
+  if (!sourceRoot && !publishable) {
+    execFileSync(process.execPath, [join(repoRoot, 'native/runtime-host-peer/build.mjs')], {
+      cwd: repoRoot,
+      stdio: 'inherit',
+    });
+    const target = `${process.platform}-${process.arch}`;
+    if (!peerPrebuildTargets.includes(target)) {
+      throw new Error(`Direct peer is not supported on ${target}`);
+    }
+    sourceRoot = generatedRoot = mkdtempSync(join(tmpdir(), 'maka-runtime-host-peer-prebuilds-'));
+    const targetRoot = join(sourceRoot, target);
+    mkdirSync(targetRoot, { recursive: true, mode: 0o755 });
+    copyFileSync(
+      join(repoRoot, 'native/runtime-host-peer/target/release/maka_runtime_host_peer.node'),
+      join(targetRoot, 'maka_runtime_host_peer.node'),
+    );
+    targets = [target];
+  }
+  if (!sourceRoot) {
+    throw new Error('MAKA_RUNTIME_HOST_PEER_PREBUILDS must contain all release platform addons');
+  }
+  const destinationRoot = join(stageRoot, 'native/runtime-host-peer/prebuilds');
+  try {
+    for (const target of targets) {
+      const source = join(sourceRoot, target, 'maka_runtime_host_peer.node');
+      if (!existsSync(source) || !statSync(source).isFile()) {
+        throw new Error(`Runtime Host peer prebuild is missing: ${target}`);
+      }
+      const destination = join(destinationRoot, target, 'maka_runtime_host_peer.node');
+      mkdirSync(dirname(destination), { recursive: true, mode: 0o755 });
+      copyFileSync(source, destination);
+    }
+  } finally {
+    if (generatedRoot) rmSync(generatedRoot, { recursive: true, force: true });
+  }
 }
 
 function writeReleaseManifest(cli, publishable) {
@@ -553,6 +625,7 @@ function writeReleaseManifest(cli, publishable) {
         },
     files: [
       'dist',
+      'native',
       'packages/eval',
       'README.md',
       'README.zh-CN.md',
@@ -560,6 +633,8 @@ function writeReleaseManifest(cli, publishable) {
       'NOTICE',
       'DISCLAIMER-WIP',
       'THIRD_PARTY_NOTICES.txt',
+      'RUNTIME_HOST_PEER_DEPENDENCIES.rust.tsv',
+      'RUNTIME_HOST_PEER_THIRD_PARTY_NOTICES.txt',
     ],
     dependencies,
     bundledDependencies: Object.keys(dependencies).sort(),
@@ -588,11 +663,13 @@ function developmentPackageVersion(baseVersion, manifest) {
   return `${baseVersion}${baseVersion.includes('-') ? '.' : '-'}dev-${digest.digest('hex').slice(0, 12)}`;
 }
 
-function validateStaging() {
+function validateStaging(publishable) {
   const required = [
     'dist/cli.js',
     'README.zh-CN.md',
     'DISCLAIMER-WIP',
+    'RUNTIME_HOST_PEER_DEPENDENCIES.rust.tsv',
+    'RUNTIME_HOST_PEER_THIRD_PARTY_NOTICES.txt',
     'node_modules/@maka/runtime/dist/workers/filesystem-worker.js',
     'node_modules/@maka/runtime-host/dist/execution-candidate-main.js',
     'packages/eval/dist/harbor-external-subject.js',
@@ -605,6 +682,17 @@ function validateStaging() {
     'node_modules/fs-native-extensions/prebuilds/darwin-arm64/fs-native-extensions.node',
     'node_modules/fs-native-extensions/prebuilds/win32-x64/fs-native-extensions.node',
   ];
+  if (publishable) {
+    required.push(
+      ...peerPrebuildTargets.map(
+        (target) => `native/runtime-host-peer/prebuilds/${target}/maka_runtime_host_peer.node`,
+      ),
+    );
+  } else {
+    required.push(
+      `native/runtime-host-peer/prebuilds/${process.platform}-${process.arch}/maka_runtime_host_peer.node`,
+    );
+  }
   for (const path of required) {
     if (!existsSync(join(stageRoot, path)))
       throw new Error(`Required release file is missing: ${path}`);
@@ -690,9 +778,14 @@ function validatePackedFiles(files, expectedDependencyManifests) {
     'node_modules/@maka/runtime/dist/workers/filesystem-worker.js',
     'node_modules/@maka/runtime-host/dist/execution-candidate-main.js',
     'packages/eval/harbor/relay_agent.py',
+    'native/runtime-host-peer/prebuilds/',
   ];
   for (const suffix of requiredPacked) {
-    if (!paths.some((path) => path.endsWith(suffix))) {
+    if (
+      !paths.some((path) =>
+        suffix.endsWith('/') ? path.startsWith(suffix) : path.endsWith(suffix),
+      )
+    ) {
       throw new Error(`Required file was not packed: ${suffix}`);
     }
   }
