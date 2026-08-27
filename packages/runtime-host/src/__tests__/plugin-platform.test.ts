@@ -18,7 +18,7 @@
  */
 
 import assert from 'node:assert/strict';
-import { mkdir, mkdtemp, readdir, rename, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
@@ -793,21 +793,117 @@ test('Manifest dependencies gate activation and protect required packages', asyn
   }
 });
 
-test('package storage repairs an owner-death previous generation', async () => {
-  const root = await mkdtemp(join(tmpdir(), 'maka-plugin-package-recovery-'));
-  try {
-    const control = join(root, 'control');
-    const platform = new HostPluginPlatform(control);
-    await platform.recover();
-    await platform.installPackage(await writeFixturePackage(root, 'recover-package', 'recover'));
-    await platform.close();
-    const packages = join(control, 'plugin-packages-v2');
-    await rename(join(packages, 'recover-package'), join(packages, '.previous-owner-death'));
+test('package storage recovers every base-generation install and rollback boundary', async () => {
+  const cases = [
+    {
+      name: 'journal synced before publication',
+      target: 'old',
+      candidate: 'new',
+    },
+    {
+      name: 'previous moved out of target',
+      previous: 'old',
+      candidate: 'new',
+    },
+    {
+      name: 'candidate published before authority commit',
+      target: 'new',
+      previous: 'old',
+    },
+    {
+      name: 'rollback rejected the candidate',
+      previous: 'old',
+      rejected: 'new',
+    },
+    {
+      name: 'rollback restored the previous Package',
+      target: 'old',
+      rejected: 'new',
+    },
+    {
+      name: 'rollback returned the candidate to staging',
+      target: 'old',
+      candidate: 'new',
+    },
+  ] as const;
+  for (const state of cases) {
+    const root = await mkdtemp(join(tmpdir(), 'maka-plugin-package-recovery-'));
+    try {
+      const { store, transaction, target } = await writeInstallRecoveryState(root, state);
+      await store.recover(7);
+      assert.equal(await readPackageMarker(target), 'old', state.name);
+      await assert.rejects(() => readdir(transaction), isEnoent, state.name);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  }
+});
 
-    const recovered = new HostPluginPlatform(control);
-    await recovered.recover();
-    assert.equal((await recovered.packages.load('recover-package')).extensionId, 'recover-package');
-    await recovered.close();
+test('package storage removes a fresh install at every base-generation boundary', async () => {
+  const cases = [
+    { name: 'prepared', candidate: 'new' },
+    { name: 'published', target: 'new' },
+    { name: 'rollback started', rejected: 'new' },
+    { name: 'rollback completed', candidate: 'new' },
+  ] as const;
+  for (const state of cases) {
+    const root = await mkdtemp(join(tmpdir(), 'maka-plugin-package-fresh-recovery-'));
+    try {
+      const { store, transaction, target } = await writeInstallRecoveryState(root, state);
+      await store.recover(7);
+      await assert.rejects(() => readdir(target), isEnoent, state.name);
+      await assert.rejects(() => readdir(transaction), isEnoent, state.name);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  }
+});
+
+test('package storage retains a Package committed by the authority generation', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-plugin-package-committed-recovery-'));
+  try {
+    const { store, transaction, target } = await writeInstallRecoveryState(root, {
+      target: 'new',
+      previous: 'old',
+    });
+    await store.recover(8);
+    assert.equal(await readPackageMarker(target), 'new');
+    await assert.rejects(() => readdir(transaction), isEnoent);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('package storage discards journal-less transaction remnants', async () => {
+  const cases = [
+    { name: 'abandoned preparation', target: 'old', candidate: 'new' },
+    { name: 'partially removed committed transaction', target: 'new', previous: 'old' },
+  ] as const;
+  for (const state of cases) {
+    const root = await mkdtemp(join(tmpdir(), 'maka-plugin-package-journal-less-'));
+    try {
+      const { store, transaction, target } = await writeInstallRecoveryState(root, state, false);
+      await store.recover(state.target === 'new' ? 8 : 7);
+      assert.equal(await readPackageMarker(target), state.target, state.name);
+      await assert.rejects(() => readdir(transaction), isEnoent, state.name);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  }
+});
+
+test('package storage still fences a corrupt install journal', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-plugin-package-corrupt-journal-'));
+  try {
+    const { store, transaction } = await writeInstallRecoveryState(root, {
+      target: 'old',
+      candidate: 'new',
+    });
+    await writeFile(join(transaction, 'transaction.json'), '{invalid');
+    await assert.rejects(
+      () => store.recover(7),
+      /Unable to read Plugin package install transaction/u,
+    );
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -832,6 +928,55 @@ test('Plugin Platform close aggregates every resource failure', async () => {
     await rm(root, { recursive: true, force: true });
   }
 });
+
+interface InstallRecoveryState {
+  readonly target?: string;
+  readonly candidate?: string;
+  readonly previous?: string;
+  readonly rejected?: string;
+}
+
+async function writeInstallRecoveryState(
+  root: string,
+  state: InstallRecoveryState,
+  journal = true,
+): Promise<{
+  readonly store: PluginPackageStore;
+  readonly transaction: string;
+  readonly target: string;
+}> {
+  const store = new PluginPackageStore(join(root, 'control'));
+  const transaction = join(store.root, '.install-owner-death');
+  const target = join(store.root, 'recover-package');
+  await mkdir(transaction, { recursive: true });
+  if (journal) {
+    await writeFile(
+      join(transaction, 'transaction.json'),
+      `${JSON.stringify({
+        schemaVersion: 1,
+        extensionId: 'recover-package',
+        baseGeneration: 7,
+        nextGeneration: 8,
+      })}\n`,
+    );
+  }
+  for (const name of ['target', 'candidate', 'previous', 'rejected'] as const) {
+    const marker = state[name];
+    if (marker === undefined) continue;
+    const directory = name === 'target' ? target : join(transaction, name);
+    await mkdir(directory, { recursive: true });
+    await writeFile(join(directory, 'marker'), marker);
+  }
+  return { store, transaction, target };
+}
+
+async function readPackageMarker(root: string): Promise<string> {
+  return await readFile(join(root, 'marker'), 'utf8');
+}
+
+function isEnoent(error: unknown): boolean {
+  return (error as NodeJS.ErrnoException).code === 'ENOENT';
+}
 
 async function writeFixturePackage(
   root: string,

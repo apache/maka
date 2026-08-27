@@ -257,17 +257,35 @@ export class PluginPackageStore {
 
   async #recoverInstall(transactionRoot: string, authorityGeneration: number): Promise<void> {
     const transaction = await readTransaction(transactionRoot);
+    if (!transaction) {
+      // The journal is synced before the first canonical Package rename. A
+      // journal-less directory is therefore either an abandoned preparation
+      // or a partially removed, already-committed transaction. In both cases
+      // the transaction directory is only a remnant and is safe to discard.
+      await rm(transactionRoot, { recursive: true, force: true });
+      return;
+    }
     const target = join(this.root, transaction.extensionId);
     const candidate = join(transactionRoot, 'candidate');
     const previous = join(transactionRoot, 'previous');
+    const rejected = join(transactionRoot, 'rejected');
     const candidateExists = await exists(candidate);
     const targetExists = await exists(target);
     const previousExists = await exists(previous);
+    const rejectedExists = await exists(rejected);
     if (authorityGeneration === transaction.baseGeneration) {
-      if (!candidateExists && targetExists) {
-        await rm(target, { recursive: true, force: true });
+      if (rejectedExists) {
+        // Rollback has already moved the candidate away from the canonical
+        // target. If target exists it is the restored previous Package; if it
+        // does not, finish restoring previous before dropping the rejected
+        // candidate with the transaction directory.
+        if (!targetExists && previousExists) await rename(previous, target);
+      } else {
+        if (!candidateExists && targetExists) {
+          await rm(target, { recursive: true, force: true });
+        }
+        if (previousExists) await rename(previous, target);
       }
-      if (previousExists) await rename(previous, target);
       await syncDirectory(this.root);
       await rm(transactionRoot, { recursive: true, force: true });
       return;
@@ -360,11 +378,12 @@ async function writeTransaction(
   await syncDirectory(dirname(root));
 }
 
-async function readTransaction(root: string): Promise<PackageInstallTransaction> {
+async function readTransaction(root: string): Promise<PackageInstallTransaction | undefined> {
   let value: unknown;
   try {
     value = JSON.parse(await readFile(join(root, 'transaction.json'), 'utf8'));
   } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return undefined;
     throw persistence('Unable to read Plugin package install transaction', error);
   }
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
