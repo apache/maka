@@ -66,7 +66,7 @@ import {
 import {
   claimRuntimeHostManagedDeployment,
   resolveRuntimeHostManagedDeploymentConfigPath,
-  type RuntimeHostManagedOnDemandDeploymentConfig,
+  type RuntimeHostManagedDeploymentConfig,
 } from '../operator/managed-deployment.js';
 import { removePosixEndpointDirectories } from './fixtures/endpoint-hygiene.js';
 import {
@@ -3218,7 +3218,7 @@ describe('non-serving Runtime Host kernel', () => {
 
 function managedDeploymentConfig(
   capability: StorageRootCapability<'interactive'>,
-): RuntimeHostManagedOnDemandDeploymentConfig {
+): RuntimeHostManagedDeploymentConfig {
   return {
     schemaVersion: 1,
     deploymentId: '00000000-0000-4000-8000-000000000001',

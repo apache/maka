@@ -181,16 +181,6 @@ export type RuntimeHostSupervisorProvider = z.infer<typeof providerSchema>;
 export type RuntimeHostReconciliationProvider = z.infer<typeof reconciliationProviderSchema>;
 export type RuntimeHostManagedDeploymentConfig = z.infer<typeof managedDeploymentConfigSchema>;
 export type RuntimeHostManagedLaunchClaim = z.infer<typeof managedLaunchClaimSchema>;
-export type RuntimeHostManagedOnDemandDeploymentConfig = RuntimeHostManagedDeploymentConfig & {
-  readonly lifecycle: { readonly mode: 'on_demand'; readonly availability: 'activation' };
-};
-export type RuntimeHostManagedSupervisedDeploymentConfig = RuntimeHostManagedDeploymentConfig & {
-  readonly lifecycle: {
-    readonly mode: 'supervised';
-    readonly provider: RuntimeHostSupervisorProvider;
-    readonly availability: 'session' | 'environment' | 'machine';
-  };
-};
 
 export interface RuntimeHostManagedDeploymentAuthorityOptions {
   /** Test-only or embedding override. Production uses the account-local durable default. */
