@@ -44,7 +44,7 @@ const RESULT = {
   endpoint: { host: '127.0.0.1', port: 45_678, websocketPath: '/runtime-host' },
 } as const;
 
-test('SSH activation invokes only the absolute operator and accepts one strict result frame', async () => {
+test('SSH activation accepts a strict final frame that drains after process exit', async () => {
   let invocation: Parameters<RuntimeHostSshOperatorProcessFactory>[0] | undefined;
   const result = await activateRuntimeHostSshOperator(
     {
@@ -57,7 +57,7 @@ test('SSH activation invokes only the absolute operator and accepts one strict r
     {
       spawnProcess: (input) => {
         invocation = input;
-        return completedProcess(encodeRuntimeHostActivationFrame(RESULT));
+        return completedProcess(encodeRuntimeHostActivationFrame(RESULT), true);
       },
     },
   );
@@ -128,12 +128,13 @@ test('SSH activation kills and rejects oversized operator output', async () => {
   assert.equal(killedWith, 'SIGKILL');
 });
 
-function completedProcess(output: string): RuntimeHostSshOperatorProcess {
+function completedProcess(output: string, exitBeforeOutput = false): RuntimeHostSshOperatorProcess {
   const stdout = new PassThrough();
   const exited = new Promise<{ code: 0; signal: null }>((resolve) => {
     queueMicrotask(() => {
-      stdout.end(output);
       resolve({ code: 0, signal: null });
+      if (exitBeforeOutput) setImmediate(() => stdout.end(output));
+      else stdout.end(output);
     });
   });
   return { stdout, exited, kill: () => undefined };

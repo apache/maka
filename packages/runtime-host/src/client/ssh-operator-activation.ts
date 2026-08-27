@@ -19,6 +19,7 @@
 
 import { spawn } from 'node:child_process';
 import { posix } from 'node:path';
+import { finished } from 'node:stream/promises';
 import {
   RUNTIME_HOST_ACTIVATION_FRAME_MAX_BYTES,
   decodeRuntimeHostActivationFrame,
@@ -134,7 +135,10 @@ async function waitForActivation(
     child.kill('SIGKILL');
   }, timeoutMs);
   try {
-    const exit = await child.exited;
+    const [exit] = await Promise.all([
+      child.exited,
+      child.stdout === null ? Promise.resolve() : finished(child.stdout, { cleanup: true }),
+    ]);
     input.signal?.throwIfAborted();
     if (overflow) {
       throw new RuntimeHostSshOperatorActivationError(

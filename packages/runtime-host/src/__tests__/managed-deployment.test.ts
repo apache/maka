@@ -339,3 +339,46 @@ test('concurrent install and unmanaged launch cannot both cross the authority bo
     assert.equal(claimResult.reason.code, 'state_root_owned');
   }
 });
+
+test('concurrent claims cannot adopt an unsynced authority directory', async (t) => {
+  const input = await fixture(t);
+  const authorityBase = await mkdtemp(join(tmpdir(), 'maka-managed-durability-'));
+  t.after(() => rm(authorityBase, { recursive: true, force: true }));
+  let entered!: () => void;
+  const firstEntered = new Promise<void>((resolve) => {
+    entered = resolve;
+  });
+  let release!: () => void;
+  const released = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+
+  const first = claimRuntimeHostManagedDeployment(input.capability, input.config, {
+    homeDir: authorityBase,
+    beforeDirectorySync: async (path) => {
+      if (path !== authorityBase) return;
+      entered();
+      await released;
+      throw new Error('injected directory sync failure');
+    },
+  });
+  await firstEntered;
+  try {
+    await assert.rejects(
+      claimRuntimeHostManagedDeployment(input.capability, input.config, {
+        homeDir: authorityBase,
+        beforeDirectorySync: (path) => {
+          if (path === authorityBase) throw new Error('injected directory sync failure');
+        },
+      }),
+      { code: 'deployment_io_failed' },
+    );
+  } finally {
+    release();
+  }
+  await assert.rejects(first, { code: 'deployment_io_failed' });
+  assert.equal(
+    await readRuntimeHostManagedDeploymentConfig(input.capability, { homeDir: authorityBase }),
+    undefined,
+  );
+});

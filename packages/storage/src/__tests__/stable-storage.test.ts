@@ -18,7 +18,7 @@
  */
 
 import assert from 'node:assert/strict';
-import { lstat, mkdtemp, rename, rm, symlink, writeFile } from 'node:fs/promises';
+import { appendFile, lstat, mkdtemp, open, rename, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
@@ -36,11 +36,34 @@ function invalidFile(): Error {
   return new Error('invalid stable file');
 }
 
-test('reads one bounded regular-file snapshot', async (t) => {
+test('reads one bounded regular-file snapshot and rejects in-place growth', async (t) => {
   const { path } = await fixture(t);
   assert.equal(
     (await readStableBoundedFile({ path, maxBytes: 4, invalidFile })).toString('utf8'),
     'data',
+  );
+  await assert.rejects(
+    readStableBoundedFile(
+      { path, maxBytes: 4, invalidFile },
+      {
+        open: async (openedPath, flags) => {
+          const handle = await open(openedPath, flags);
+          let firstRead = true;
+          return {
+            stat: (options) => handle.stat(options),
+            read: async (buffer, offset, length, position) => {
+              if (firstRead) {
+                firstRead = false;
+                await appendFile(path, '!');
+              }
+              return handle.read(buffer, offset, length, position);
+            },
+            close: () => handle.close(),
+          };
+        },
+      },
+    ),
+    /invalid stable file/u,
   );
 });
 
