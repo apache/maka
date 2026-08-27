@@ -18,7 +18,7 @@
  */
 
 .maka-agent-graph-panel {
-  width: min(var(--maka-chat-measure), calc(100% - var(--space-8)));
+  width: min(var(--maka-reading-measure), calc(100% - var(--space-8)));
   max-height: min(300px, 36vh);
   margin: var(--space-2) auto;
   padding: var(--space-3);

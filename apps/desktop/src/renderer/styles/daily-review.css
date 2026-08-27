@@ -86,7 +86,7 @@
    the window width and the code blocks inside it ran wider still, since they
    come from `components.code` and so bypass Astryx's own. */
 .maka-daily-review-report {
-  max-width: var(--maka-chat-measure);
+  max-width: var(--maka-reading-measure);
 }
 
 .maka-daily-review-report-prose {

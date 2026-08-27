@@ -38,7 +38,7 @@
  * external CSS / smoke fixture references still match.
  */
 /* #1433: the width was a hardcoded `min(750px, 80vw)` — the one content
-   surface that did not use `--maka-chat-measure`. Everything else the user
+   surface that did not use `--maka-reading-measure`. Everything else the user
    reads or types into (message rows, composer, plan mode, permission
    dialog, `.maka-onboarding`) is capped by that token.
    This is a consistency fix, not a bug fix: the hero and the composer are
@@ -47,7 +47,7 @@
    and a viewport unit that ignores the sidebar, so the hero's column drifted
    from the composer's as the window resized. */
 .maka-hero {
-  width: min(var(--maka-chat-measure), 100%);
+  width: min(var(--maka-reading-measure), 100%);
   margin: auto;
   padding: 0;
   display: grid;
