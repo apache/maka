@@ -44,7 +44,10 @@ import {
   type RuntimeHostNpmGlobalInstallation,
 } from './runtime-host-cli-installation.js';
 import type { RuntimeHostUpdateCandidate } from './runtime-host-registry-update.js';
-import { withVerifiedRuntimeHostUpdateArchive } from './runtime-host-update-package.js';
+import {
+  assertRuntimeHostArchiveExpansionBudget,
+  withVerifiedRuntimeHostUpdateArchive,
+} from './runtime-host-update-package.js';
 
 const NPM_TIMEOUT_MS = 5 * 60_000;
 const NPM_OUTPUT_MAX_BYTES = 64 * 1024;
@@ -256,10 +259,14 @@ async function finalizeInstalledPackage(
   }
 }
 
-export function installRuntimeHostNpmGlobalArchive(
+export async function installRuntimeHostNpmGlobalArchive(
   archivePath: string,
   inheritableAuthorityLeaseFd: number,
 ): Promise<void> {
+  // The final global switch extracts the same verified archive a second time;
+  // apply the expansion budget here as well so the bound holds no matter
+  // which caller reached this function.
+  await assertRuntimeHostArchiveExpansionBudget(archivePath);
   return new Promise((resolve, reject) => {
     const child = spawn(
       'npm',

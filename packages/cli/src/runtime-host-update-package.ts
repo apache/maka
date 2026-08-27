@@ -23,6 +23,7 @@ import { createReadStream } from 'node:fs';
 import { lstat, mkdir, mkdtemp, readFile, readdir, realpath, rm, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { createGunzip } from 'node:zlib';
 import { isRuntimeHostNpmDeploymentIdentity } from '@maka/runtime-host/operator/update-package-evidence';
 import type { RuntimeHostUpdateCandidate } from './runtime-host-registry-update.js';
 
@@ -32,6 +33,14 @@ const OFFLINE_REGISTRY = 'http://127.0.0.1:9/';
 const NPM_TIMEOUT_MS = 5 * 60_000;
 const NPM_OUTPUT_MAX_BYTES = 64 * 1024;
 const ARCHIVE_MAX_BYTES = 256 * 1024 * 1024;
+// Integrity proves the archive matches the registry metadata; it does not make
+// its expansion safe. A small valid .tgz can still exhaust the user's disk
+// while npm extracts it, so the tar headers are budgeted before any npm
+// install consumes the archive — staging, managed extraction, and the final
+// npm-global switch all pass through the same bound.
+const ARCHIVE_EXTRACTED_MAX_BYTES = 2 * 1024 * 1024 * 1024;
+const ARCHIVE_MAX_ENTRIES = 100_000;
+const TAR_BLOCK_BYTES = 512;
 const MANIFEST_MAX_BYTES = 64 * 1024;
 
 export class RuntimeHostUpdatePackageError extends Error {
@@ -139,6 +148,7 @@ export async function withVerifiedRuntimeHostUpdateArchive<T>(
     parentTemporaryRoot ?? (await mkdtemp(join(tmpdir(), 'maka-runtime-host-update-')));
   try {
     const archive = await validateArchive(archivePath, candidate);
+    await assertRuntimeHostArchiveExpansionBudget(archive);
     const installRoot = join(temporaryRoot, 'install');
     const emptyCache = join(temporaryRoot, 'empty-cache');
     const installed = await runNpm(
@@ -198,6 +208,90 @@ async function validateArchive(
     );
   }
   return archive;
+}
+
+export interface RuntimeHostArchiveExpansionBudget {
+  readonly maxExtractedBytes: number;
+  readonly maxEntries: number;
+}
+
+/**
+ * Budget the tar headers of a verified .tgz before npm extracts it. SHA-512
+ * integrity binds the archive to the registry metadata but says nothing about
+ * its expansion: a small valid archive can still claim gigabytes of entry
+ * data. Scanning the headers costs one pass over the compressed stream and
+ * never writes a byte, so every extraction path — staging, the managed
+ * prepare, and the npm-global switch — is bounded before npm runs.
+ */
+export async function assertRuntimeHostArchiveExpansionBudget(
+  archivePath: string,
+  budget: RuntimeHostArchiveExpansionBudget = {
+    maxExtractedBytes: ARCHIVE_EXTRACTED_MAX_BYTES,
+    maxEntries: ARCHIVE_MAX_ENTRIES,
+  },
+): Promise<void> {
+  const fail = (message: string, options?: ErrorOptions): never => {
+    throw new RuntimeHostUpdatePackageError('invalid_package', message, options);
+  };
+  const stream = createReadStream(archivePath).pipe(createGunzip());
+  let pending = Buffer.alloc(0);
+  let entries = 0;
+  let extractedBytes = 0;
+  let ended = false;
+  try {
+    for await (const chunk of stream as AsyncIterable<Buffer>) {
+      pending = Buffer.concat([pending, chunk]);
+      let offset = 0;
+      while (pending.length - offset >= TAR_BLOCK_BYTES) {
+        const header = pending.subarray(offset, offset + TAR_BLOCK_BYTES);
+        if (isZeroBlock(header)) {
+          ended = true;
+          break;
+        }
+        const entryBytes = tarEntrySize(header, fail);
+        entries += 1;
+        extractedBytes += entryBytes;
+        if (entries > budget.maxEntries || extractedBytes > budget.maxExtractedBytes) {
+          fail('The Maka package archive exceeds its extraction budget');
+        }
+        offset += TAR_BLOCK_BYTES + Math.ceil(entryBytes / TAR_BLOCK_BYTES) * TAR_BLOCK_BYTES;
+      }
+      if (ended) break;
+      pending = pending.subarray(offset);
+    }
+  } catch (error) {
+    if (error instanceof RuntimeHostUpdatePackageError) throw error;
+    fail('The Maka package archive is not a readable gzip tarball', { cause: error });
+  } finally {
+    stream.destroy();
+  }
+  if (!ended) {
+    fail('The Maka package archive is a truncated tarball');
+  }
+}
+
+function isZeroBlock(block: Buffer): boolean {
+  for (const byte of block) {
+    if (byte !== 0) return false;
+  }
+  return true;
+}
+
+/** Octal size field at offset 124 of a tar header; base-256 (GNU) sizes are refused. */
+function tarEntrySize(header: Buffer, fail: (message: string) => never): number {
+  const field = header.subarray(124, 136);
+  if (field[0]! & 0x80) {
+    fail('The Maka package archive exceeds its extraction budget');
+  }
+  const text = field.toString('latin1').replace(/\0.*$/u, '').trim();
+  if (!/^[0-7]+$/u.test(text)) {
+    fail('The Maka package archive has a malformed tar header');
+  }
+  const size = Number.parseInt(text, 8);
+  if (!Number.isSafeInteger(size)) {
+    fail('The Maka package archive exceeds its extraction budget');
+  }
+  return size;
 }
 
 function assertCandidate(candidate: RuntimeHostUpdateCandidate): void {
