@@ -89,7 +89,8 @@ try {
 }
 
 function main() {
-  validateToolchain();
+  validateNodeVersion();
+  if (!developmentBuild) validateReleaseNpmVersion();
   if (developmentBuild) {
     if (allowDirty || preparedTree) {
       throw new Error('--development cannot be combined with release build options');
@@ -239,11 +240,14 @@ function copyPeerPrebuildInputToCleanTree(cleanRoot) {
   return destination;
 }
 
-function validateToolchain() {
+function validateNodeVersion() {
   const [major = 0, minor = 0] = process.versions.node.split('.').map(Number);
   if (major < 22 || (major === 22 && minor < 19)) {
     throw new Error(`Node.js >=22.19.0 is required; found ${process.versions.node}`);
   }
+}
+
+function validateReleaseNpmVersion() {
   const packageManager = readJson(join(repoRoot, 'package.json')).packageManager;
   const requiredNpmVersion = /^npm@(.+)$/.exec(packageManager)?.[1];
   if (!requiredNpmVersion) {
