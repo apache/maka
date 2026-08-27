@@ -21,7 +21,7 @@ import { test } from 'node:test';
 import {
   describeDevProfileOwner,
   parseDevProfileLockTarget,
-  resolveLiveDevProfileOwner,
+  resolveLiveDevProfileOwnerFromTarget,
 } from '../dev-single-instance-owner.js';
 
 test('parse reads hostname and pid by splitting from the end', () => {
@@ -39,11 +39,15 @@ test('parse keeps dashed hostnames intact because the pid is the final segment',
   });
 });
 
-test('parse takes the final path segment of path-shaped targets', () => {
-  assert.deepEqual(
+test('parse rejects path-shaped targets instead of widening them into owners', () => {
+  // #3539 authorizes only the bare lock record; anything path-shaped is
+  // someone else's symlink layout and must degrade to the generic wording.
+  assert.equal(
     parseDevProfileLockTarget('/Users/dev/Library/Application Support/Maka Dev-192.168.0.2-5'),
-    { hostname: 'Maka Dev-192.168.0.2', pid: 5 },
+    undefined,
   );
+  assert.equal(parseDevProfileLockTarget('/tmp/other-box-739'), undefined);
+  assert.equal(parseDevProfileLockTarget('C:\\Users\\dev\\AppData-host-739'), undefined);
 });
 
 test('parse rejects malformed targets instead of guessing', () => {
@@ -59,9 +63,8 @@ test('parse rejects malformed targets instead of guessing', () => {
 const alive = () => true;
 const dead = () => false;
 
-test('resolve reports a live local holder from an injected lock target', () => {
-  const owner = resolveLiveDevProfileOwner('/profile', {
-    readLockTarget: () => 'mac.local-739',
+test('resolve reports a live local holder from a lock target', () => {
+  const owner = resolveLiveDevProfileOwnerFromTarget('mac.local-739', {
     liveness: alive,
     localHostname: 'Mac.Local',
   });
@@ -69,47 +72,50 @@ test('resolve reports a live local holder from an injected lock target', () => {
   assert.equal(describeDevProfileOwner(owner!), 'PID 739 on this machine');
 });
 
-test('resolve flags foreign-host records without treating them as local pids', () => {
-  const owner = resolveLiveDevProfileOwner('/profile', {
-    readLockTarget: () => 'other-box-739',
-    liveness: alive,
+test('resolve classifies a remote record without probing the local process table', () => {
+  let probes = 0;
+  const owner = resolveLiveDevProfileOwnerFromTarget('other-box-739', {
+    liveness: () => {
+      probes += 1;
+      return true;
+    },
     localHostname: 'mac.local',
   });
+  // Hostname is compared first: a remote hostname is never validated against
+  // local PIDs, whether or not some unrelated local process reuses the id.
+  assert.equal(probes, 0);
   assert.deepEqual(owner, { hostname: 'other-box', pid: 739, isLocalHost: false });
   assert.equal(describeDevProfileOwner(owner!), 'PID 739 on host "other-box"');
 });
 
-test('resolve returns undefined for a stale symlink whose pid is gone', () => {
-  const owner = resolveLiveDevProfileOwner('/profile', {
-    readLockTarget: () => 'mac.local-739',
+test('resolve returns undefined for a stale local record whose pid is gone', () => {
+  const owner = resolveLiveDevProfileOwnerFromTarget('mac.local-739', {
     liveness: dead,
     localHostname: 'mac.local',
   });
   assert.equal(owner, undefined);
 });
 
-test('resolve degrades to undefined on unreadable, missing, or malformed locks', () => {
+test('resolve degrades to undefined without a local hostname to compare against', () => {
+  // Without the local hostname the record cannot be classified: naming it as
+  // a remote holder could launder a stale local lock, so nothing is reported.
+  assert.equal(resolveLiveDevProfileOwnerFromTarget('mac.local-739'), undefined);
   assert.equal(
-    resolveLiveDevProfileOwner('/profile', { readLockTarget: () => undefined }),
-    undefined,
-  );
-  assert.equal(
-    resolveLiveDevProfileOwner('/profile', {
-      readLockTarget: () => {
-        throw new Error('ENOENT');
-      },
-    }),
-    undefined,
-  );
-  assert.equal(
-    resolveLiveDevProfileOwner('/profile', { readLockTarget: () => 'garbage' }),
+    resolveLiveDevProfileOwnerFromTarget('mac.local-739', { liveness: alive }),
     undefined,
   );
 });
 
+test('resolve degrades to undefined on malformed targets', () => {
+  assert.equal(
+    resolveLiveDevProfileOwnerFromTarget('garbage', { localHostname: 'mac.local' }),
+    undefined,
+  );
+  assert.equal(resolveLiveDevProfileOwnerFromTarget('', { localHostname: 'mac.local' }), undefined);
+});
+
 test('a probe that throws is treated as no trustworthy holder', () => {
-  const owner = resolveLiveDevProfileOwner('/profile', {
-    readLockTarget: () => 'mac.local-739',
+  const owner = resolveLiveDevProfileOwnerFromTarget('mac.local-739', {
     liveness: () => {
       throw new Error('boom');
     },

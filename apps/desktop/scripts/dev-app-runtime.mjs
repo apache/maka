@@ -51,11 +51,12 @@ import {
   existsSync,
   mkdirSync,
   readFileSync,
+  readlinkSync,
   renameSync,
   rmSync,
   writeFileSync,
 } from 'node:fs';
-import { homedir, tmpdir } from 'node:os';
+import { homedir, hostname, tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -215,15 +216,45 @@ export async function readDevelopmentLaunchResult(resultFile, loader) {
 }
 
 /**
+ * The shared dev profile's userData dir on this platform: Electron derives it
+ * from the 'Maka Dev' app name. Windows has no POSIX SingletonLock symlink, so
+ * it resolves to null there and the conflict detail degrades to the generic
+ * wording (#3539).
+ */
+export function defaultDevUserDataDir(platform = process.platform) {
+  if (platform === 'darwin') return DEV_USER_DATA_DIR;
+  if (platform === 'linux') {
+    const xdgConfigHome = process.env.XDG_CONFIG_HOME || join(homedir(), '.config');
+    return join(xdgConfigHome, 'Maka Dev');
+  }
+  return null;
+}
+
+/** PID liveness for the scripts side; EPERM counts as alive (other user). */
+function pidLiveness(pid) {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return error?.code === 'EPERM';
+  }
+}
+
+/**
  * Holder identity for a lost launch race, resolved from Chromium's own
  * SingletonLock record (see #3539) — never from the process table. An explicit
- * `--user-data-dir` wins over the shared default, matching launch behavior.
- * Empty string when nothing trustworthy resolves, so callers fall back to the
- * generic wording verbatim.
+ * `--user-data-dir` wins over the platform default, matching launch behavior;
+ * on platforms without a POSIX lock symlink the detail is empty. The pure
+ * record classifier comes from @maka/core; the symlink read and the liveness
+ * probe are this script's own OS effects. Empty string when nothing
+ * trustworthy resolves, so callers fall back to the generic wording verbatim.
  */
 export async function developmentProfileConflictDetail(options = {}) {
   const explicitUserDataDir = splitDevelopmentCliArgs(options.argv ?? []).userDataDir;
-  const userDataDir = explicitUserDataDir ?? options.userDataDir ?? DEV_USER_DATA_DIR;
+  const platform = options.platform ?? process.platform;
+  const userDataDir =
+    explicitUserDataDir ?? options.userDataDir ?? defaultDevUserDataDir(platform);
+  if (!userDataDir) return '';
   const loader =
     options.loader ?? (() => import('@maka/core/dev-single-instance-owner'));
   let mod;
@@ -232,9 +263,13 @@ export async function developmentProfileConflictDetail(options = {}) {
   } catch {
     return '';
   }
-  if (typeof mod?.resolveLiveDevProfileOwner !== 'function') return '';
+  if (typeof mod?.resolveLiveDevProfileOwnerFromTarget !== 'function') return '';
   try {
-    const owner = mod.resolveLiveDevProfileOwner(userDataDir);
+    const target = readlinkSync(join(userDataDir, 'SingletonLock'), 'utf8');
+    const owner = mod.resolveLiveDevProfileOwnerFromTarget(target, {
+      liveness: options.liveness ?? pidLiveness,
+      localHostname: options.localHostname ?? hostname(),
+    });
     return owner ? ` The holder appears to be ${mod.describeDevProfileOwner(owner)}.` : '';
   } catch {
     return '';

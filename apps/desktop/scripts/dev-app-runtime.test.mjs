@@ -18,6 +18,9 @@
  */
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
+import { mkdtempSync, symlinkSync } from 'node:fs';
+import { homedir, tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { test } from 'node:test';
 
 test('a launcher signal cancels preparation before Electron can spawn', async () => {
@@ -337,50 +340,94 @@ test('an absorbed launch without a resolvable holder keeps the generic wording',
   assert.equal(logs[0], 'Maka Dev was absorbed by another instance holding the profile lock; quitting.');
 });
 
+function makeLockDir(target) {
+  const dir = mkdtempSync(join(tmpdir(), 'maka-owner-'));
+  symlinkSync(target, join(dir, 'SingletonLock'));
+  return dir;
+}
+
 test('conflict detail resolves the holder through the core owner module', async () => {
   const { developmentProfileConflictDetail } = await import('./dev-app-runtime.mjs');
+  const dir = makeLockDir('mac.local-739');
+  const seen = [];
   const detail = await developmentProfileConflictDetail({
-    userDataDir: '/profile',
+    userDataDir: dir,
+    localHostname: 'mac.local',
     loader: async () => ({
-      resolveLiveDevProfileOwner: (dir) =>
-        dir === '/profile' ? { hostname: 'mac.local', pid: 739, isLocalHost: true } : undefined,
+      resolveLiveDevProfileOwnerFromTarget: (target, deps) => {
+        seen.push([target, deps.localHostname]);
+        return deps.localHostname === 'mac.local'
+          ? { hostname: 'mac.local', pid: 739, isLocalHost: true }
+          : undefined;
+      },
       describeDevProfileOwner: (owner) => `PID ${owner.pid} on this machine`,
     }),
   });
+  assert.deepEqual(seen, [['mac.local-739', 'mac.local']]);
   assert.equal(detail, ' The holder appears to be PID 739 on this machine.');
 });
 
-test('an explicit --user-data-dir wins over the shared default profile', async () => {
+test('an explicit --user-data-dir wins over the platform default', async () => {
   const { developmentProfileConflictDetail } = await import('./dev-app-runtime.mjs');
-  const seen = [];
+  const explicitDir = makeLockDir('explicit-box-5');
+  const defaultDir = makeLockDir('default-box-9');
   const detail = await developmentProfileConflictDetail({
-    argv: ['--user-data-dir=/explicit/dir', '--other'],
+    argv: [`--user-data-dir=${explicitDir}`, '--other'],
+    userDataDir: defaultDir,
     loader: async () => ({
-      resolveLiveDevProfileOwner: (dir) => {
-        seen.push(dir);
-        return { hostname: 'mac.local', pid: 739, isLocalHost: true };
-      },
+      resolveLiveDevProfileOwnerFromTarget: (target, deps) =>
+        target === 'explicit-box-5' ? { hostname: 'explicit-box', pid: 5, isLocalHost: false } : undefined,
       describeDevProfileOwner: (owner) => `PID ${owner.pid}`,
     }),
   });
-  assert.deepEqual(seen, ['/explicit/dir']);
-  assert.equal(detail, ' The holder appears to be PID 739.');
+  assert.equal(detail, ' The holder appears to be PID 5.');
+});
+
+test('the platform default is macOS and Linux capable, and Windows degrades', async () => {
+  const { defaultDevUserDataDir, developmentProfileConflictDetail } = await import(
+    './dev-app-runtime.mjs'
+  );
+  assert.equal(defaultDevUserDataDir('win32'), null);
+  assert.equal(defaultDevUserDataDir('darwin'), join(homedir(), 'Library', 'Application Support', 'Maka Dev'));
+  const linuxConfigHome = process.env.XDG_CONFIG_HOME || join(homedir(), '.config');
+  assert.equal(defaultDevUserDataDir('linux'), join(linuxConfigHome, 'Maka Dev'));
+  // Without an explicit dir on Windows there is no POSIX SingletonLock to
+  // read, so the detail degrades before any loader runs.
+  let loaded = false;
+  assert.equal(
+    await developmentProfileConflictDetail({
+      platform: 'win32',
+      loader: async () => {
+        loaded = true;
+        return {};
+      },
+    }),
+    '',
+  );
+  assert.equal(loaded, false);
 });
 
 test('conflict detail degrades to empty on any resolution failure', async () => {
   const { developmentProfileConflictDetail } = await import('./dev-app-runtime.mjs');
+  const dir = makeLockDir('mac.local-739');
   const failingLoader = async () => {
     throw new Error('not built');
   };
-  assert.equal(await developmentProfileConflictDetail({ loader: failingLoader }), '');
+  assert.equal(
+    await developmentProfileConflictDetail({ userDataDir: dir, loader: failingLoader }),
+    '',
+  );
   // A module without the expected surface degrades the same way.
-  assert.equal(await developmentProfileConflictDetail({ loader: async () => ({}) }), '');
+  assert.equal(
+    await developmentProfileConflictDetail({ userDataDir: dir, loader: async () => ({}) }),
+    '',
+  );
   // So does a resolver that throws.
   assert.equal(
     await developmentProfileConflictDetail({
-      userDataDir: '/profile',
+      userDataDir: dir,
       loader: async () => ({
-        resolveLiveDevProfileOwner: () => {
+        resolveLiveDevProfileOwnerFromTarget: () => {
           throw new Error('boom');
         },
         describeDevProfileOwner: () => '',
@@ -388,6 +435,9 @@ test('conflict detail degrades to empty on any resolution failure', async () => 
     }),
     '',
   );
+  // And a userData dir with no lock symlink at all.
+  const empty = mkdtempSync(join(tmpdir(), 'maka-owner-'));
+  assert.equal(await developmentProfileConflictDetail({ userDataDir: empty }), '');
 });
 
 test('shared-profile launches warn about legacy TCC data before choosing plain or bundle mode', async () => {

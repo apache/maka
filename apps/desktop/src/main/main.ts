@@ -23,13 +23,13 @@ import {
   developmentLaunchResultFile,
   shouldShowLoserDialog,
 } from '@maka/core/dev-single-instance';
-import {
-  describeDevProfileOwner,
-  resolveLiveDevProfileOwner,
-} from '@maka/core/dev-single-instance-owner';
 import { app, clipboard, dialog, ipcMain } from 'electron';
 import { join } from 'node:path';
 import { resolveBuildInfo } from './build-info.js';
+import {
+  describeDevProfileOwner,
+  resolveLiveDevProfileOwner,
+} from './dev-profile-owner.js';
 import {
   captureDesktopDiagnosticEnvironment,
   copyDesktopDiagnosticReport,
