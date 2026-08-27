@@ -132,6 +132,7 @@ export class HostOAuthCoordinator {
     'oauth.login.start': (input, context) => this.#start(input, context.connectionId),
     'oauth.login.query': (input) => this.#query(input.attemptId),
     'oauth.login.cancel': (input) => this.#cancel(input.attemptId),
+    'oauth.enrollment.query': (input) => this.#enrollment(input.provider),
   };
 
   readonly #runtimePolicy: RuntimePolicyStoresWriter;
@@ -339,6 +340,16 @@ export class HostOAuthCoordinator {
       this.#requestCancellation(attempt, new DOMException('OAuth login cancelled', 'AbortError'));
     }
     return Promise.resolve({ ok: true, result: projection(attempt) });
+  }
+
+  // The Host owns the enrollment gate: whether a provider may begin an
+  // interactive login is this Host's answer, and only the Host has it. Surfaces
+  // read it to avoid presenting a primary action that a default install refuses.
+  #enrollment(provider: OAuthLoginProvider): Promise<OperationOutcome<'oauth.enrollment.query'>> {
+    return Promise.resolve({
+      ok: true,
+      result: { provider, enabled: this.#isProviderEnabled(provider) },
+    });
   }
 
   #requestCancellation(attempt: ActiveLoginAttempt, reason: Error): void {

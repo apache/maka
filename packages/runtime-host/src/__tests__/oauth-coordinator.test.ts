@@ -825,6 +825,37 @@ test('OAuth login rejects an experimentally disabled provider before presentatio
   }
 });
 
+test('OAuth enrollment query reports the Host gate answer per provider', async () => {
+  await withFixture('github-copilot', async (fixture) => {
+    const coordinator = new HostOAuthCoordinator({
+      runtimePolicy: fixture.stores,
+      activation: fixture.activation,
+      clientCapabilities: fixture.capabilities,
+      isProviderEnabled: (candidate) => candidate === 'github-copilot',
+      acquireResidency: fixture.acquireResidency,
+      invalidateBackends: async () => undefined,
+      onFatal: (error) => {
+        throw error;
+      },
+    });
+    assert.deepEqual(
+      await coordinator.handlers['oauth.enrollment.query'](
+        { provider: 'github-copilot' },
+        operationContext('client-enrollment', fixture.acquireResidency),
+      ),
+      { ok: true, result: { provider: 'github-copilot', enabled: true } },
+    );
+    assert.deepEqual(
+      await coordinator.handlers['oauth.enrollment.query'](
+        { provider: 'openai-codex' },
+        operationContext('client-enrollment', fixture.acquireResidency),
+      ),
+      { ok: true, result: { provider: 'openai-codex', enabled: false } },
+    );
+    await coordinator.close();
+  });
+});
+
 test('OAuth credential commit excludes overlapping backend activations in both directions', async () => {
   await withFixture('openai-codex', async (fixture) => {
     const client = await attachPresentation(fixture.capabilities, 'client-activation', []);

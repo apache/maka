@@ -62,6 +62,7 @@ export function runtimeHostOAuthLoginBridge(
     cancelAuthorization: (authRequestId) =>
       bridge.cancelAuthorization(authRequestId, host),
     getAccountState: () => bridge.getAccountState(host),
+    getEnrollmentState: () => bridge.getEnrollmentState(host),
     logout: () => bridge.logout(host),
   };
 }

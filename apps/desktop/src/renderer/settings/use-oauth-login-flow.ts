@@ -64,6 +64,7 @@ export interface OAuthLoginFlowBridge {
   completeAuthorization(authRequestId: string): Promise<{ ok: true } | { ok: false; reason: string; message: string }>;
   cancelAuthorization(authRequestId?: string): Promise<{ ok: true }>;
   getAccountState(): Promise<unknown>;
+  getEnrollmentState(): Promise<{ enabled: boolean }>;
   logout(): Promise<{ ok: true } | { ok: false; reason: string; message: string }>;
 }
 
@@ -85,6 +86,10 @@ export interface OAuthLoginFlowController {
   // a device grant left polling by an earlier mount. Surfaces that offer a
   // second route to the same Connection consult it before acting.
   hostAttemptPending: boolean;
+  // The Host's answer to whether this provider may begin an interactive login.
+  // Starts undefined (unknown) and resolves after the first enrollment probe;
+  // surfaces treat unknown as enabled so a slow probe never hides the action.
+  enrollmentEnabled: boolean | undefined;
   startLogin(): Promise<void>;
   logout(): Promise<void>;
   refresh(): Promise<boolean>;
@@ -109,6 +114,7 @@ export function useOAuthLoginFlow(params: {
   const [stateHint, setStateHint] = useState<string | null>(null);
   const [pendingAction, setPendingAction] = useState<OAuthLoginPendingAction | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [enrollmentEnabled, setEnrollmentEnabled] = useState<boolean | undefined>(undefined);
   const pendingGuard = useRef(createOneShotActionGuard<OAuthLoginPendingAction>()).current;
   const authRequestIdRef = useRef<string | null>(null);
   const oauthLoginFlowMountedRef = useMountedRef();
@@ -131,6 +137,14 @@ export function useOAuthLoginFlow(params: {
 
   useEffect(() => {
     void refresh();
+    // Ask the Host whether this provider may enrol. A probe failure leaves the
+    // answer unknown, which surfaces read as enabled rather than hiding sign-in.
+    void bridge
+      .getEnrollmentState()
+      .then((result) => {
+        if (oauthLoginFlowMountedRef.current) setEnrollmentEnabled(result.enabled);
+      })
+      .catch(() => undefined);
     return () => {
       pendingGuard.finish();
       teardownPendingAuthorization(authRequestIdRef, (id) => void bridge.cancelAuthorization(id));
@@ -156,7 +170,7 @@ export function useOAuthLoginFlow(params: {
       const payload = await bridge.getAuthUrl();
       if ('ok' in payload) {
         if (!oauthLoginFlowMountedRef.current) return;
-        const failureMessage = payload.ok ? copy.retry : subscriptionResultMessage(payload.message, copy.startFailedRetry, locale);
+        const failureMessage = payload.ok ? copy.retry : subscriptionResultMessage(payload.message, copy.startFailedRetry, locale, payload.reason);
         reportHostError(copy.startFailed, failureMessage);
         setErrorMessage(failureMessage);
         return;
@@ -172,7 +186,7 @@ export function useOAuthLoginFlow(params: {
       const opened = await bridge.openAuthUrl(payload.authRequestId);
       if (!oauthLoginFlowMountedRef.current) return;
       if (!opened.ok) {
-        const message = subscriptionResultMessage(opened.message, copy.openFailedRetry, locale);
+        const message = subscriptionResultMessage(opened.message, copy.openFailedRetry, locale, opened.reason);
         reportHostError(copy.openFailed, message);
         setErrorMessage(message);
         void bridge.cancelAuthorization(payload.authRequestId);
@@ -195,7 +209,7 @@ export function useOAuthLoginFlow(params: {
         if (!oauthLoginFlowMountedRef.current) return;
         if (params.onLoginSuccess) await params.onLoginSuccess();
       } else {
-        const message = subscriptionResultMessage(result.message, copy.incompleteRetry, locale);
+        const message = subscriptionResultMessage(result.message, copy.incompleteRetry, locale, result.reason);
         reportHostError(copy.incomplete, message);
         setErrorMessage(message);
       }
@@ -267,6 +281,7 @@ export function useOAuthLoginFlow(params: {
     errorMessage,
     actionBusy,
     hostAttemptPending,
+    enrollmentEnabled,
     startLogin,
     logout,
     refresh,
@@ -282,8 +297,17 @@ export function subscriptionActionErrorMessage(error: unknown, locale: UiLocale 
   return subscriptionResultMessage(message, getProviderSettingsCopy(locale).oauthFlow.serviceUnavailable, locale);
 }
 
-export function subscriptionResultMessage(message: string | undefined, fallback: string, locale: UiLocale = 'zh'): string {
+export function subscriptionResultMessage(message: string | undefined, fallback: string, locale: UiLocale = 'zh', reason?: string): string {
   const raw = redactSecrets(message ?? '').trim();
+  // The Host refuses enrollment this install has not opted into and says so with
+  // a typed reason. Read the reason, not the English message: a reworded string
+  // or an added locale must not silently disable this branch. The message-string
+  // match below stays only as a fallback for callers without a typed reason.
+  if (reason === 'experimental_disabled' || /enrollment is disabled for this provider/i.test(raw)) {
+    return locale === 'zh'
+      ? '本机未启用该账号登录方式；可改用导入兼容凭据，或由管理员启用后重试。'
+      : 'This sign-in is not enabled on this install. Import a compatible credential instead, or ask an operator to enable it.';
+  }
   if (!raw) return fallback;
   // Host conflict / supersede copy before the coarse keyword classifier turns
   // "authorization" into a generic 鉴权失败 that does not tell the user what to do.
@@ -297,13 +321,6 @@ export function subscriptionResultMessage(message: string | undefined, fallback:
     return locale === 'zh'
       ? '无法打开系统浏览器完成登录，请检查是否拦截了弹窗后重试。'
       : 'Could not open the system browser for login. Check popup blockers and try again.';
-  }
-  // The Host refuses enrollment this install has not opted into. Say so plainly:
-  // the generic classifier would turn it into a 鉴权失败 the user cannot act on.
-  if (/enrollment is disabled for this provider/i.test(raw)) {
-    return locale === 'zh'
-      ? '本机未启用该账号登录方式；可改用导入兼容凭据，或由管理员启用后重试。'
-      : 'This sign-in is not enabled on this install. Import a compatible credential instead, or ask an operator to enable it.';
   }
   const classified = locale === 'zh'
     ? generalizedErrorMessageChinese(new Error(raw), '')

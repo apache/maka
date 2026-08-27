@@ -39,6 +39,7 @@ function bridgeReporting(runtimeState: string): OAuthLoginFlowBridge {
     completeAuthorization: async () => new Promise<never>(() => undefined),
     cancelAuthorization: async () => ({ ok: true as const }),
     getAccountState: async () => ({ runtimeState }),
+    getEnrollmentState: async () => ({ enabled: true }),
     logout: async () => ({ ok: true as const }),
   };
 }

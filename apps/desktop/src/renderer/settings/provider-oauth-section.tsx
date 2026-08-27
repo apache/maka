@@ -298,6 +298,10 @@ function GitHubCopilotLoginPanel(props: { onLoginSuccess(): void | Promise<void>
   const [importing, setImporting] = useState(false);
   const loggedIn = flow.isLoggedIn;
   const actionBusy = flow.actionBusy || importing;
+  // The Host answers whether Copilot may enrol on this install. Until it does
+  // (undefined), sign-in stays offered; once it says no, the primary action is
+  // Import — a disabled sign-in with a tooltip is not a working primary button.
+  const enrollmentDisabled = flow.enrollmentEnabled === false;
   // The Host keeps polling a device grant across a Settings remount, and this
   // panel cannot rejoin that attempt: the snapshot reports that one is running
   // but not which one. Importing meanwhile would commit over the login the user
@@ -344,13 +348,14 @@ function GitHubCopilotLoginPanel(props: { onLoginSuccess(): void | Promise<void>
         {!loggedIn ? (
           <>
             <Button
-              variant="primary"
+              variant={enrollmentDisabled ? 'secondary' : 'primary'}
               onClick={() => void flow.startLogin()}
-              isDisabled={actionBusy}
+              isDisabled={actionBusy || enrollmentDisabled}
+              tooltip={enrollmentDisabled ? copy.copilotSignInDisabledHint : undefined}
               label={flow.pendingAction === 'login' ? copy.openingBrowser : copy.copilotSignIn}
             />
             <Button
-              variant="secondary"
+              variant={enrollmentDisabled ? 'primary' : 'secondary'}
               onClick={() => void importLocalCredential()}
               isDisabled={importBusy}
               label={importing ? copy.importing : copy.importCredential}

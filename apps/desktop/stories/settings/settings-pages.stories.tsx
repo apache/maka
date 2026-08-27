@@ -772,12 +772,15 @@ const makaBridge = {
       email: 'codex@example.com',
       plan: 'Plus',
     }),
+    getEnrollmentState: async () => ({ enabled: true }),
   },
   githubCopilotSubscription: {
     getAccountState: async () => ({ runtimeState: 'not_logged_in' }),
+    getEnrollmentState: async () => ({ enabled: true }),
   },
   xaiOAuth: {
     getAccountState: async () => ({ runtimeState: 'not_logged_in' }),
+    getEnrollmentState: async () => ({ enabled: true }),
   },
   app: {
     info: async () => ({

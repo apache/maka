@@ -2580,6 +2580,9 @@ const makaBridge = {
     }> {
       return invokeSelectedRuntimeHost(host, 'openai-codex:get-account-state');
     },
+    getEnrollmentState(host?: DesktopRuntimeHostRef): Promise<{ enabled: boolean }> {
+      return invokeSelectedRuntimeHost(host, 'openai-codex:get-enrollment-state');
+    },
     refreshTokens(host?: DesktopRuntimeHostRef): Promise<SubscriptionActionResult> {
       return invokeSelectedRuntimeHost(host, 'openai-codex:refresh-tokens');
     },
@@ -2613,6 +2616,9 @@ const makaBridge = {
     }> {
       return invokeSelectedRuntimeHost(host, 'xai-oauth:get-account-state');
     },
+    getEnrollmentState(host?: DesktopRuntimeHostRef): Promise<{ enabled: boolean }> {
+      return invokeSelectedRuntimeHost(host, 'xai-oauth:get-enrollment-state');
+    },
     refreshTokens(host?: DesktopRuntimeHostRef): Promise<SubscriptionActionResult> {
       return invokeSelectedRuntimeHost(host, 'xai-oauth:refresh-tokens');
     },
@@ -2642,6 +2648,9 @@ const makaBridge = {
       errorMessage?: string;
     }> {
       return invokeSelectedRuntimeHost(host, 'github-copilot:get-account-state');
+    },
+    getEnrollmentState(host?: DesktopRuntimeHostRef): Promise<{ enabled: boolean }> {
+      return invokeSelectedRuntimeHost(host, 'github-copilot:get-enrollment-state');
     },
     refreshTokens(host?: DesktopRuntimeHostRef): Promise<SubscriptionActionResult> {
       return invokeSelectedRuntimeHost(host, 'github-copilot:refresh-tokens');

@@ -50,6 +50,7 @@ const SHARED_OAUTH_IPC_OPERATIONS = [
   'complete-authorization',
   'cancel-authorization',
   'get-account-state',
+  'get-enrollment-state',
   'refresh-tokens',
   'logout',
 ] as const;
@@ -62,6 +63,7 @@ export const RUNTIME_HOST_OAUTH_IPC_CHANNELS = Object.freeze([
 type OAuthClient = RuntimeHostAccountConnectionClient & Pick<
   DesktopRuntimeHostClient,
   | 'cancelOAuthLogin'
+  | 'queryOAuthEnrollment'
   | 'queryOAuthLogin'
   | 'startOAuthLogin'
 >;
@@ -185,6 +187,13 @@ export function registerRuntimeHostOAuthIpc(deps: RuntimeHostOAuthIpcDeps): void
         (attempt) => attempt.provider === provider,
       );
       return accountState(provider, authorizing ? 'authorizing' : 'not_logged_in');
+    });
+    handleReconnectableRead(deps.ipcMain, channel('get-enrollment-state'), async () => {
+      // The renderer asks the Host whether this provider may enrol so it can
+      // avoid presenting a primary sign-in that a default install refuses. The
+      // gate is the Host's, not Desktop's: no local copy is kept here.
+      const enrollment = await deps.client.queryOAuthEnrollment(provider);
+      return { enabled: enrollment.enabled };
     });
     deps.ipcMain.handle(channel('refresh-tokens'), async () => {
       const connection = findRuntimeHostAccountConnection(

@@ -1279,6 +1279,7 @@ export interface MakaBridge {
       picture?: string;
       errorMessage?: string;
     }>;
+    getEnrollmentState(host?: DesktopRuntimeHostRef): Promise<{ enabled: boolean }>;
     refreshTokens(host?: DesktopRuntimeHostRef): Promise<SubscriptionActionResult>;
     logout(host?: DesktopRuntimeHostRef): Promise<SubscriptionActionResult>;
   };
@@ -1298,6 +1299,7 @@ export interface MakaBridge {
         | 'storage_failed';
       errorMessage?: string;
     }>;
+    getEnrollmentState(host?: DesktopRuntimeHostRef): Promise<{ enabled: boolean }>;
     refreshTokens(host?: DesktopRuntimeHostRef): Promise<SubscriptionActionResult>;
     logout(host?: DesktopRuntimeHostRef): Promise<SubscriptionActionResult>;
   };
@@ -1329,6 +1331,7 @@ export interface MakaBridge {
         | 'storage_failed';
       errorMessage?: string;
     }>;
+    getEnrollmentState(host?: DesktopRuntimeHostRef): Promise<{ enabled: boolean }>;
     refreshTokens(host?: DesktopRuntimeHostRef): Promise<SubscriptionActionResult>;
     logout(host?: DesktopRuntimeHostRef): Promise<SubscriptionActionResult>;
   };

@@ -329,6 +329,7 @@ function installSubscriptionFixtures() {
 function xaiDeviceSubscriptionFixture() {
   return {
     getAccountState: async () => ({ provider: 'xai-oauth', runtimeState: 'authorizing' }),
+    getEnrollmentState: async () => ({ enabled: true }),
     getAuthUrl: async () => ({ authRequestId: 'storybook-xai', stateHint: 'ABCD-EFGH' }),
     openAuthUrl: async () => ({ ok: true }),
     completeAuthorization: async () => new Promise<never>(() => undefined),
@@ -345,6 +346,7 @@ function browserSubscriptionFixture(state: {
 }) {
   return {
     getAccountState: async () => state,
+    getEnrollmentState: async () => ({ enabled: true }),
     getAuthUrl: async () => ({ authRequestId: 'storybook-oauth', stateHint: 'storybook' }),
     openAuthUrl: async () => ({ ok: true }),
     completeAuthorization: async () => ({ ok: true }),

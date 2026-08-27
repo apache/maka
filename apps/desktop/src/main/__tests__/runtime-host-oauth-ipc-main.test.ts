@@ -115,6 +115,7 @@ test('adapts every Host OAuth provider through one Desktop flow', async () => {
         phase,
       );
     },
+    queryOAuthEnrollment: async (queryProvider) => ({ provider: queryProvider, enabled: true }),
     fetchConnectionModels: async () => {
       const current = catalog.connections[0];
       assert.ok(current);
@@ -277,6 +278,10 @@ test('keeps a committed OAuth login successful when model discovery fails', asyn
       provider,
       phase: 'cancelled' as const,
     }),
+    queryOAuthEnrollment: async (queryProvider: typeof provider) => ({
+      provider: queryProvider,
+      enabled: true,
+    }),
     fetchConnectionModels: async () => {
       throw new Error('provider temporarily unavailable');
     },
@@ -356,6 +361,10 @@ test('reports the selected Host refusing an enrollment this install has not enab
       throw new Error('A refused start has no attempt to query');
     },
     cancelOAuthLogin: async () => oauthCopilotProjection(),
+    queryOAuthEnrollment: async (queryProvider: 'github-copilot') => ({
+      provider: queryProvider,
+      enabled: false,
+    }),
     queryCredential: async () => null,
   } as unknown as RuntimeHostOAuthIpcDeps['client'];
 
@@ -370,6 +379,11 @@ test('reports the selected Host refusing an enrollment this install has not enab
     ok: false,
     reason: 'experimental_disabled',
     message: 'OAuth enrollment is disabled for this provider',
+  });
+  // The renderer reads the Host's enrollment answer to disable the primary
+  // sign-in rather than presenting a button that this install always refuses.
+  assert.deepEqual(await invoke(handlers, 'github-copilot:get-enrollment-state'), {
+    enabled: false,
   });
   assert.equal(catalog.revision, 1);
 });
