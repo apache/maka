@@ -2876,11 +2876,10 @@ export class AiSdkBackend implements AgentBackend {
               }
               return undefined;
             })();
-            const tu: TokenUsageMessage = {
-              type: 'token_usage',
-              id: this.newId(),
-              turnId,
-              ts: this.now(),
+            // One shared usage payload for the durable message and the live
+            // event: twin per-field literals drifted before (#4019), so a field
+            // now has exactly one definition site.
+            const usageFields = {
               input: tokenUsage.inputTokens,
               output: tokenUsage.outputTokens,
               cacheHitInput: tokenUsage.cacheHitInputTokens,
@@ -2911,6 +2910,13 @@ export class AiSdkBackend implements AgentBackend {
                 ? { contextRemaining: contextRemainingForUsage }
                 : {}),
               ...(providerRequestTraceId ? { providerRequestTraceId } : {}),
+            };
+            const tu: TokenUsageMessage = {
+              type: 'token_usage',
+              id: this.newId(),
+              turnId,
+              ts: this.now(),
+              ...usageFields,
             };
             await this.input.appendMessage(tu).catch(() => {});
             if (
@@ -2946,36 +2952,7 @@ export class AiSdkBackend implements AgentBackend {
               id: this.newId(),
               turnId,
               ts: this.now(),
-              input: tokenUsage.inputTokens,
-              output: tokenUsage.outputTokens,
-              cacheHitInput: tokenUsage.cacheHitInputTokens,
-              cacheMissInput: tokenUsage.cacheMissInputTokens,
-              cacheMissInputSource: tokenUsage.cacheMissInputSource,
-              cacheWriteInput: tokenUsage.cacheWriteInputTokens,
-              reasoning: tokenUsage.reasoningTokens,
-              total: tokenUsage.totalTokens,
-              ...(tokenUsage.rawFinishReason !== undefined
-                ? { rawFinishReason: tokenUsage.rawFinishReason }
-                : {}),
-              ...(runtimeSteps > 0 ? { runtimeSteps } : {}),
-              ...(tokenUsage.cachedInputTokens > 0
-                ? { cacheRead: tokenUsage.cachedInputTokens }
-                : {}),
-              ...(tokenUsage.cacheWriteInputTokens > 0
-                ? { cacheCreation: tokenUsage.cacheWriteInputTokens }
-                : {}),
-              ...(tokenUsageCostUsd !== undefined ? { costUsd: tokenUsageCostUsd } : {}),
-              systemPromptHash,
-              prefixHash: turnDiagnostics.requestShape.prefixHash,
-              prefixChangeReason: turnDiagnostics.requestShape.prefixChangeReason,
-              requestShapeHash: turnDiagnostics.requestShape.requestShapeHash,
-              requestShapeChangeReason: turnDiagnostics.requestShape.requestShapeChangeReason,
-              promptSegments: turnDiagnostics.promptSegments,
-              ...(contextBudgetForUsage ? { contextBudget: contextBudgetForUsage } : {}),
-              ...(contextRemainingForUsage !== undefined
-                ? { contextRemaining: contextRemainingForUsage }
-                : {}),
-              ...(providerRequestTraceId ? { providerRequestTraceId } : {}),
+              ...usageFields,
             } satisfies TokenUsageEvent);
           }
         } catch {
