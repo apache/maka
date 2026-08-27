@@ -35,6 +35,7 @@ import {
   AlertTriangle,
   Archive,
   ArchiveRestore,
+  FolderClosed,
   FolderOpen,
   Pencil,
   Pin,
@@ -311,13 +312,17 @@ function ProjectNavRow(props: {
   // still truthy children for Astryx (!!children) and fabricates a disclosure.
   const hasSessions = props.sessions.length > 0;
   const hasActions = props.project !== undefined && props.projectActions !== undefined;
+  const [isCollapsed, setIsCollapsed] = useState(false);
   return (
     <div data-project-id={props.groupKey} className="maka-project-row">
       <SideNavItem
         key="navigation"
         label={props.label}
-        icon={FolderOpen}
-        collapsible={hasSessions ? { defaultIsCollapsed: false } : undefined}
+        icon={hasSessions && isCollapsed ? FolderClosed : FolderOpen}
+        collapsible={
+          hasSessions ? { isCollapsed, onCollapsedChange: setIsCollapsed } : undefined
+        }
+        data-maka-project-disclosure={hasSessions ? 'true' : undefined}
         endContent={
           <ProjectItemMeta
             project={props.project}
@@ -331,7 +336,7 @@ function ProjectNavRow(props: {
               project={props.project}
               actions={props.projectActions}
               onStartRename={props.onStartRename}
-              position={hasSessions ? 'before-disclosure' : 'trailing'}
+              position="trailing"
             />
           ) : undefined
         }

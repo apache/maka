@@ -275,6 +275,18 @@
   padding-inline-start: var(--spacing-2) !important;
 }
 
+/* Project folders communicate their disclosure state through the open/closed
+ * folder glyph, so the generic trailing chevron would repeat the same signal.
+ * SideNavItem renders that chevron as the final direct span in the project
+ * navigation button; the data contract keeps this override scoped to these
+ * rows rather than every collapsible item in the application. */
+.maka-project-row
+  > div
+  > [data-maka-project-disclosure="true"]
+  > span:last-child {
+  display: none;
+}
+
 .maka-session-row-end,
 .maka-project-item-end {
   display: inline-flex;
@@ -403,16 +415,6 @@
   align-items: center;
   justify-content: center;
   width: var(--h-control-sm, 24px);
-}
-
-/* A collapsible project keeps Astryx's 24px disclosure after endContent. Match
- * the placeholder's original slot immediately before that disclosure: row
- * gutter + disclosure + SideNavItem gap. Empty projects have no disclosure and
- * use the default trailing inset above. */
-.maka-project-row
-  > div
-  > .maka-session-row-action[data-position="before-disclosure"] {
-  inset-inline-end: calc(var(--space-2) + var(--space-6) + var(--space-2));
 }
 
 /* The sibling menu is visually part of the project header, but Astryx's

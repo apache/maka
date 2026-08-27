@@ -246,6 +246,8 @@ test('renders collapsible project navigation and row actions as sibling controls
   assert.equal(navigation.contains(action), false);
   assert.equal(metadata.textContent, '1');
   assert.equal(controlledGroup.getAttribute('aria-hidden'), 'false');
+  assert.ok(navigation.querySelector('.lucide-folder-open'));
+  assert.equal(navigation.getAttribute('data-maka-project-disclosure'), 'true');
   const projectButtons = [...projectRow.querySelectorAll('button')];
   assert.equal(
     projectButtons.indexOf(navigation),

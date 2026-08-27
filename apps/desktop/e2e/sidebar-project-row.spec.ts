@@ -79,6 +79,9 @@ test('project navigation and actions follow their visual keyboard order', async 
 
   await expect(projectRow.locator('button button')).toHaveCount(0);
   await expect(navigation).toHaveAttribute('aria-expanded', 'true');
+  await expect(navigation.locator('.lucide-folder-open')).toBeVisible();
+  await expect(navigation.locator('.lucide-folder-closed')).toHaveCount(0);
+  await expect(navigation.locator(':scope > span').last()).toBeHidden();
 
   await navigation.focus();
   await page.keyboard.press('Tab');
@@ -89,10 +92,14 @@ test('project navigation and actions follow their visual keyboard order', async 
   await navigation.focus();
   await page.keyboard.press('Enter');
   await expect(navigation).toHaveAttribute('aria-expanded', 'false');
+  await expect(navigation.locator('.lucide-folder-closed')).toBeVisible();
+  await expect(navigation.locator('.lucide-folder-open')).toHaveCount(0);
   await expect(controlledGroup).toHaveAttribute('aria-hidden', 'true');
   expect(await controlledGroup.getAttribute('inert')).not.toBeNull();
   await page.keyboard.press('Enter');
   await expect(navigation).toHaveAttribute('aria-expanded', 'true');
+  await expect(navigation.locator('.lucide-folder-open')).toBeVisible();
+  await expect(navigation.locator('.lucide-folder-closed')).toHaveCount(0);
   await expect(controlledGroup).toHaveAttribute('aria-hidden', 'false');
   expect(await controlledGroup.getAttribute('inert')).toBeNull();
 
