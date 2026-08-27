@@ -43,6 +43,7 @@ import {
   commitWorkspaceBaselineInternal,
   commitWorkspaceSuccessorInternal,
   readActiveManagedMutationInternal,
+  readWorkspaceVersionInternal,
   registerManagedMutationNoEffectVerifierInternal,
   registerWorkspaceSuccessorCandidateVerifierInternal,
   type ManagedMutationNoEffectClaimV1,
@@ -152,6 +153,10 @@ describe('workspace version persistence authority', () => {
       );
       assert.equal(
         (await store.readWorkspaceVersion(input.baseline.workspaceVersionId))?.origin.kind,
+        'baseline',
+      );
+      assert.equal(
+        (await readWorkspaceVersionInternal(store, input.baseline.workspaceVersionId))?.origin.kind,
         'baseline',
       );
       assert.deepEqual(

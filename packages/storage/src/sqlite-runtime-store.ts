@@ -1547,13 +1547,16 @@ export class SqliteRuntimeStore
 
   private registerWorkspaceBaselineAuthorityWriter(): void {
     const readWorkspaceHead = this.readWorkspaceHead.bind(this);
+    const readWorkspaceVersion = this.readWorkspaceVersion.bind(this);
     registerWorkspaceBaselineAuthorityWriterInternal(
       this,
       (input, rootId) => this.#commitWorkspaceBaseline(input, rootId),
       (input, rootId) => this.#commitWorkspaceSuccessor(input, rootId),
       (input, rootId) => this.#commitManagedMutationTerminal(input, rootId),
       (rootId) => this.#bindWorkspaceStorageRoot(rootId),
+      (rootId) => this.#adoptWorkspaceStorageRoot(rootId),
       readWorkspaceHead,
+      readWorkspaceVersion,
       (workspaceInstanceId) => this.#readActiveManagedMutation(workspaceInstanceId),
     );
   }
@@ -1611,6 +1614,35 @@ export class SqliteRuntimeStore
       }
       if (this.#databaseHasLogicalStateBeforeRootBinding()) {
         throw new Error('Unbound operational data require explicit storage-root adoption');
+      }
+      this.db
+        .prepare(`
+          INSERT INTO runtime_storage_root_binding(singleton, root_id, protocol_version)
+          VALUES (1, ?, 1)
+        `)
+        .run(rootId);
+    });
+  }
+
+  #adoptWorkspaceStorageRoot(rootId: string): void {
+    this.transaction(() => {
+      const existing = this.#readWorkspaceStorageRootBinding();
+      if (existing) {
+        if (existing.root_id !== rootId || existing.protocol_version !== 1) {
+          throw new Error(
+            'Workspace authority database belongs to a different durable storage root',
+          );
+        }
+        return;
+      }
+      const workspaceStateExists = [
+        'runtime_workspace_epochs',
+        'runtime_workspace_versions',
+        'runtime_workspace_heads',
+        'runtime_managed_mutation_reservations',
+      ].some((table) => this.db.prepare(`SELECT 1 FROM ${table} LIMIT 1`).get() !== undefined);
+      if (workspaceStateExists) {
+        throw new Error('Unbound workspace authority facts cannot be adopted');
       }
       this.db
         .prepare(`

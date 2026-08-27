@@ -264,6 +264,99 @@ describe('ToolRuntime durable boundary', () => {
     );
   });
 
+  it('gives the settlement owner a Runtime-issued immutable outcome instead of result authority', async () => {
+    let observedOutcome: unknown;
+    const harness = makeHarness(
+      {
+        commitToolPrepared: async () => ({ created: true, runtimeEventSeq: 1 }),
+        commitToolOutcome: async () => {
+          throw new Error('generic T2 must not settle a managed mutation');
+        },
+      },
+      undefined,
+      'run-1',
+      {
+        admitManagedMutation: async () => ({
+          durableDispatch: managedMutationDispatch(),
+          immutableBase: Object.freeze({ content: 'before\n' }),
+          execute: async (operation) => {
+            const proof = await operation();
+            observedOutcome = proof.durableOutcome;
+            assert.equal(proof.durableOutcome.content?.kind, 'function_response');
+            assert.equal(proof.durableOutcome.content?.result, proof.content);
+            assert.equal(Object.isFrozen(proof.durableOutcome), true);
+            return {
+              kind: 'workspace_successor_committed',
+              durableOutcome: proof.durableOutcome,
+            };
+          },
+          dispose: async () => undefined,
+        }),
+      },
+    );
+    const managedTool = tool(() => {
+      throw new Error('ordinary mutable implementation must not run');
+    });
+    managedTool.name = 'Write';
+    managedTool.recoveryMode = 'reconcile';
+    managedTool.durableExecutionProfile = 'managed_mutation_v1';
+
+    await harness.executeWithInput(managedTool, { path: 'notes.txt', content: 'after\n' });
+    assert.ok(observedOutcome);
+  });
+
+  it('issues the exact no-change terminal fact from the Runtime-owned transform result', async () => {
+    const harness = makeHarness(
+      {
+        commitToolPrepared: async () => ({ created: true, runtimeEventSeq: 1 }),
+        commitToolOutcome: async () => {
+          throw new Error('generic T2 must not settle a managed mutation');
+        },
+      },
+      undefined,
+      'run-1',
+      {
+        admitManagedMutation: async () => ({
+          durableDispatch: managedMutationDispatch(),
+          immutableBase: Object.freeze({ content: 'same\n' }),
+          execute: async (operation) => {
+            const proof = await operation();
+            assert.equal(proof.mutationResult?.changed, false);
+            assert.equal(proof.terminalOutcome?.kind, 'no_workspace_change');
+            assert.deepEqual(proof.terminalOutcome?.durableOutcome.actions, {
+              stateDelta: { durationMs: proof.durationMs },
+              managedMutationTerminal: {
+                protocol: 'managed_mutation_terminal_v1',
+                operationId: proof.durableOutcome.refs?.operationId,
+                dispatchEventId: `${proof.durableOutcome.refs?.operationId}_dispatch`,
+                workspaceInstanceId: managedMutationDispatch().workspaceInstanceId,
+                terminalKind: 'no_workspace_change',
+              },
+            });
+            return {
+              kind: 'no_workspace_change_committed',
+              providerResult: proof.content,
+              durableOutcome: proof.terminalOutcome!.durableOutcome,
+            };
+          },
+          dispose: async () => undefined,
+        }),
+      },
+    );
+    const managedTool = tool(() => {
+      throw new Error('ordinary mutable implementation must not run');
+    });
+    managedTool.name = 'Write';
+    managedTool.recoveryMode = 'reconcile';
+    managedTool.durableExecutionProfile = 'managed_mutation_v1';
+
+    const result = await harness.executeWithInput(managedTool, {
+      path: 'notes.txt',
+      content: 'same\n',
+    });
+    assert.equal((result as { kind?: unknown }).kind, 'file_write');
+  });
+
   it('ignores owner-supplied execution args while retaining Runtime-owned managed arguments', async () => {
     let operationId = '';
     let mutationResult: unknown;
@@ -649,6 +742,7 @@ describe('ToolRuntime durable boundary', () => {
                 operationId,
                 { kind: 'json', value: result },
                 true,
+                { terminalKind: 'operation_failed_no_effect' },
               ),
             };
           });
@@ -693,6 +787,7 @@ describe('ToolRuntime durable boundary', () => {
                 operationId,
                 { kind: 'json', value: result },
                 false,
+                { terminalKind: 'no_workspace_change' },
               ),
             };
           });
@@ -739,6 +834,7 @@ describe('ToolRuntime durable boundary', () => {
                 operationId,
                 { kind: 'json', value: { error: 'discarded-A' } },
                 true,
+                { terminalKind: 'operation_failed_no_effect' },
               ),
             };
           });
@@ -788,6 +884,7 @@ describe('ToolRuntime durable boundary', () => {
                 operationId,
                 { kind: 'json', value: result },
                 true,
+                { terminalKind: 'operation_failed_no_effect' },
               ),
             };
           });
@@ -1711,6 +1808,7 @@ function managedOutcomeEvent(
     toolCallId?: string;
     parentToolCallId?: string;
     parentOperationId?: string;
+    terminalKind?: 'no_workspace_change' | 'operation_failed_no_effect';
   } = {},
 ) {
   const toolCallId = options.toolCallId ?? 'provider-call-1';
@@ -1739,7 +1837,20 @@ function managedOutcomeEvent(
       ...(options.parentToolCallId ? { parentToolCallId: options.parentToolCallId } : {}),
       ...(options.parentOperationId ? { parentOperationId: options.parentOperationId } : {}),
     },
-    actions: { stateDelta: { durationMs: options.durationMs ?? 0 } },
+    actions: {
+      stateDelta: { durationMs: options.durationMs ?? 0 },
+      ...(options.terminalKind
+        ? {
+            managedMutationTerminal: {
+              protocol: 'managed_mutation_terminal_v1' as const,
+              operationId,
+              dispatchEventId: `${operationId}_dispatch`,
+              workspaceInstanceId: managedMutationDispatch().workspaceInstanceId,
+              terminalKind: options.terminalKind,
+            },
+          }
+        : {}),
+    },
   };
 }
 

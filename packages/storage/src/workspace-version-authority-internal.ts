@@ -22,6 +22,7 @@ import type {
   WorkspaceBaselineCommitResult,
   WorkspaceHeadRecordV1,
   WorkspaceSuccessorAuthorityInput,
+  WorkspaceVersionRecordV1,
 } from '@maka/core/workspace-version-authority';
 import type { RuntimeEvent } from '@maka/core/runtime-event';
 
@@ -30,6 +31,7 @@ type WorkspaceBaselineAuthorityWriter = (
   rootId: string,
 ) => Promise<WorkspaceBaselineCommitResult>;
 type WorkspaceStorageRootBinder = (rootId: string) => void;
+type WorkspaceStorageRootAdopter = (rootId: string) => void;
 export interface WorkspaceSuccessorCommitInput {
   /** Opaque capability issued by the repository candidate owner. */
   candidateOutcome: object;
@@ -85,6 +87,9 @@ type WorkspaceHeadReader = (
   workspaceId: string,
   workspaceEpochId: string,
 ) => Promise<WorkspaceHeadRecordV1 | undefined>;
+type WorkspaceVersionReader = (
+  workspaceVersionId: string,
+) => Promise<WorkspaceVersionRecordV1 | undefined>;
 export interface ManagedMutationReservationRecordV1 {
   readonly workspaceInstanceId: string;
   readonly repositoryId: string;
@@ -112,8 +117,10 @@ interface WorkspaceBaselineAuthorityRegistration {
   noEffectVerifier?: ManagedMutationNoEffectVerifier;
   readonly terminalWriter: ManagedMutationTerminalAuthorityWriter;
   readonly readHead: WorkspaceHeadReader;
+  readonly readVersion: WorkspaceVersionReader;
   readonly readActiveManagedMutation: ManagedMutationReservationReader;
   readonly bindStorageRoot: WorkspaceStorageRootBinder;
+  readonly adoptStorageRoot: WorkspaceStorageRootAdopter;
   boundRootId?: string;
 }
 
@@ -128,7 +135,9 @@ export function registerWorkspaceBaselineAuthorityWriterInternal(
   successorWriter: WorkspaceSuccessorAuthorityWriter,
   terminalWriter: ManagedMutationTerminalAuthorityWriter,
   bindStorageRoot: WorkspaceStorageRootBinder,
+  adoptStorageRoot: WorkspaceStorageRootAdopter,
   readHead: WorkspaceHeadReader,
+  readVersion: WorkspaceVersionReader,
   readActiveManagedMutation: ManagedMutationReservationReader,
 ): void {
   if (workspaceBaselineAuthorityWriters.has(store)) {
@@ -139,8 +148,10 @@ export function registerWorkspaceBaselineAuthorityWriterInternal(
     successorWriter,
     terminalWriter,
     readHead,
+    readVersion,
     readActiveManagedMutation,
     bindStorageRoot,
+    adoptStorageRoot,
   });
 }
 
@@ -161,6 +172,15 @@ export function readWorkspaceHeadInternal(
   const registration = workspaceBaselineAuthorityWriters.get(store);
   if (!registration) throw new Error('Workspace baseline authority reader is unavailable');
   return registration.readHead(workspaceId, workspaceEpochId);
+}
+
+export function readWorkspaceVersionInternal(
+  store: object,
+  workspaceVersionId: string,
+): Promise<WorkspaceVersionRecordV1 | undefined> {
+  const registration = workspaceBaselineAuthorityWriters.get(store);
+  if (!registration) throw new Error('Workspace version authority reader is unavailable');
+  return registration.readVersion(workspaceVersionId);
 }
 
 /**
@@ -257,5 +277,24 @@ export function bindWorkspaceBaselineAuthorityStoreRootInternal(
     throw new Error('Invalid durable storage-root identity');
   }
   registration.bindStorageRoot(rootId);
+  registration.boundRootId = rootId;
+}
+
+/**
+ * Adopts ordinary pre-authority runtime state for the root identity already
+ * proven by the ExecutionStores lease. Existing workspace authority facts are
+ * rejected by the SQLite owner, so the operation cannot re-home a managed
+ * ledger under a different root.
+ */
+export function adoptWorkspaceBaselineAuthorityStoreRootInternal(
+  store: object,
+  rootId: string,
+): void {
+  const registration = workspaceBaselineAuthorityWriters.get(store);
+  if (!registration) throw new Error('Workspace baseline authority writer is unavailable');
+  if (!/^[a-f0-9]{64}$/u.test(rootId)) {
+    throw new Error('Invalid durable storage-root identity');
+  }
+  registration.adoptStorageRoot(rootId);
   registration.boundRootId = rootId;
 }
