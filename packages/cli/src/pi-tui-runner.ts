@@ -2390,7 +2390,13 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
           void importForeignSession(foreign);
           return;
         }
-        if (options.onlyResumable && availability.get(item.value)?.available === false) return;
+        const itemAvailability = availability.get(item.value);
+        if (
+          itemAvailability?.available === false &&
+          itemAvailability.reason === 'Missing working directory'
+        ) {
+          return;
+        }
         closeOverlay();
         void (async () => {
           await goToSession(item.value);
