@@ -26,9 +26,9 @@
 //
 import {
   DEFAULT_TERMINAL_FONT_SIZE,
-  DEFAULT_UI_FONT_SCALE,
-  isTerminalFontSize,
-  isUiFontScale,
+  DEFAULT_UI_FONT_SIZE,
+  normalizeTerminalFontSize,
+  normalizeUiFontSize,
   type ThemePalette,
   type ThemePreference,
 } from '@maka/core/settings';
@@ -38,32 +38,35 @@ import { compositeScrimOverBackground, parseCssRgbColor } from './titlebar-dim-c
 const DARK_CLASS = 'dark';
 
 // Persisted alongside the theme/palette caches so the pre-React paint
-// (cached-theme-bootstrap.ts) can restore a non-default UI scale before the
-// first frame, and the same rationale as `maka-theme-v1`.
-const UI_FONT_SCALE_STORAGE_KEY = 'maka-font-scale-v1';
+// (cached-theme-bootstrap.ts) can restore a non-default size before the first
+// frame, same rationale as `maka-theme-v1`.
+const UI_FONT_SIZE_STORAGE_KEY = 'maka-ui-font-size-v1';
 const TERMINAL_FONT_SIZE_STORAGE_KEY = 'maka-terminal-font-size-v1';
-// The document root stays at the browser default; every --font-size-* token is
-// rem, so a scaled root font-size grows text, icons and rem spacing uniformly.
-const ROOT_FONT_SIZE_PX = 16;
+// The renderer type scale is generated from base 14 and every --font-size-*
+// token is rem, so the root font-size that reproduces a chosen base px is
+// `16 * px / 14`. At 14px that is the 16px browser default (no change); larger
+// values grow text, icons and rem spacing together.
+const BROWSER_ROOT_FONT_SIZE_PX = 16;
+const TYPE_SCALE_BASE_PX = 14;
 
-let currentUiFontScale: number = DEFAULT_UI_FONT_SCALE;
+let currentUiFontSize: number = DEFAULT_UI_FONT_SIZE;
 let currentTerminalFontSize: number = DEFAULT_TERMINAL_FONT_SIZE;
 const terminalFontSizeListeners = new Set<(size: number) => void>();
 
-export function getUiFontScale(): number {
-  return currentUiFontScale;
+export function getUiFontSize(): number {
+  return currentUiFontSize;
 }
 
 /**
- * Scale the whole UI by writing the document-root font-size, then persist so
- * the pre-React paint can restore it next launch. An out-of-range value fails
- * closed to the default rather than driving an arbitrary root size.
+ * Apply the UI base font size by writing the proportional document-root
+ * font-size, then persist so the pre-React paint can restore it next launch.
+ * Clamps out-of-range / wrong-typed input to a sane value.
  */
-export function applyUiFontScale(scale: number): void {
-  const next = isUiFontScale(scale) ? scale : DEFAULT_UI_FONT_SCALE;
-  currentUiFontScale = next;
-  document.documentElement.style.fontSize = `${ROOT_FONT_SIZE_PX * next}px`;
-  safeLocalStorageSet(UI_FONT_SCALE_STORAGE_KEY, String(next));
+export function applyUiFontSize(size: number): void {
+  const next = normalizeUiFontSize(size);
+  currentUiFontSize = next;
+  document.documentElement.style.fontSize = `${(BROWSER_ROOT_FONT_SIZE_PX * next) / TYPE_SCALE_BASE_PX}px`;
+  safeLocalStorageSet(UI_FONT_SIZE_STORAGE_KEY, String(next));
 }
 
 export function getTerminalFontSize(): number {
@@ -76,7 +79,7 @@ export function getTerminalFontSize(): number {
  * opened later reads `getTerminalFontSize()` at creation.
  */
 export function applyTerminalFontSize(size: number): void {
-  const next = isTerminalFontSize(size) ? size : DEFAULT_TERMINAL_FONT_SIZE;
+  const next = normalizeTerminalFontSize(size);
   currentTerminalFontSize = next;
   safeLocalStorageSet(TERMINAL_FONT_SIZE_STORAGE_KEY, String(next));
   for (const listener of terminalFontSizeListeners) listener(next);
@@ -91,16 +94,16 @@ export function subscribeTerminalFontSize(listener: (size: number) => void): () 
 }
 
 /**
- * Restore the cached UI font scale before React mounts, so a non-default scale
- * does not paint at 1× and snap once settings.json loads. Mirrors the cached
- * theme/palette restore in cached-theme-bootstrap.ts. Also seeds the terminal
- * size cache so an early terminal open uses the right size without a reflow.
+ * Restore the cached UI font size before React mounts, so a non-default size
+ * does not paint at the default and snap once settings.json loads. Mirrors the
+ * cached theme/palette restore in cached-theme-bootstrap.ts. Also seeds the
+ * terminal size cache so an early terminal open uses the right size.
  */
 export function applyCachedFontAppearanceBeforeMount(): void {
-  const cachedScale = Number.parseFloat(safeLocalStorageGet(UI_FONT_SCALE_STORAGE_KEY) ?? '');
-  if (isUiFontScale(cachedScale)) applyUiFontScale(cachedScale);
+  const cachedUi = Number.parseInt(safeLocalStorageGet(UI_FONT_SIZE_STORAGE_KEY) ?? '', 10);
+  if (Number.isFinite(cachedUi)) applyUiFontSize(cachedUi);
   const cachedTerminal = Number.parseInt(safeLocalStorageGet(TERMINAL_FONT_SIZE_STORAGE_KEY) ?? '', 10);
-  if (isTerminalFontSize(cachedTerminal)) currentTerminalFontSize = cachedTerminal;
+  if (Number.isFinite(cachedTerminal)) currentTerminalFontSize = normalizeTerminalFontSize(cachedTerminal);
 }
 
 let unsubscribeMediaQuery: (() => void) | null = null;

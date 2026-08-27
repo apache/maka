@@ -18,29 +18,30 @@
  */
 import { useEffect, useRef, useState } from 'react';
 import { Button, Grid, HStack, SelectableCard, Text, VStack } from '@astryxdesign/core';
-import { SettingsPage, SettingsSection } from './settings-section';
+import { SettingsPage, SettingsRow, SettingsSection } from './settings-section';
 import {
   isAppIcon,
   type AppIcon,
   DEFAULT_APP_ICON_DARK,
   type AppIconChoice,
   type AppIconTarget,
-  TERMINAL_FONT_SIZES,
-  type TerminalFontSize,
+  TERMINAL_FONT_SIZE_MAX,
+  TERMINAL_FONT_SIZE_MIN,
   type ThemePalette,
   type ThemePreference,
-  type UiFontScale,
+  UI_FONT_SIZE_MAX,
+  UI_FONT_SIZE_MIN,
   type UpdateAppSettingsResult,
 } from '@maka/core/settings';
-import { Switch, useMountedRef, useToast, useUiLocale } from '@maka/ui';
+import { NumberInput, Switch, useMountedRef, useToast, useUiLocale } from '@maka/ui';
 import { settingsActionErrorMessage } from './settings-error-copy';
 import { getSettingsPreferencesCopy } from '../locales/settings-preferences-copy.js';
 import { CustomPetSettingsSection } from './custom-pet-settings-section.js';
 import {
   applyTerminalFontSize,
-  applyUiFontScale,
+  applyUiFontSize,
   getTerminalFontSize,
-  getUiFontScale,
+  getUiFontSize,
 } from '../theme';
 
 /**
@@ -151,20 +152,6 @@ const PALETTE_SECTION_HEADING_ID = 'settings-appearance-palette-heading';
 const paletteGroupLabelId = (group: 'editor' | 'product') => `settings-appearance-palette-${group}-label`;
 const appIconGroupLabelId = (group: string) => `settings-appearance-app-icon-${group}-label`;
 const FONT_SIZE_SECTION_HEADING_ID = 'settings-appearance-font-size-heading';
-const UI_FONT_SIZE_GROUP_LABEL_ID = 'settings-appearance-ui-font-size-label';
-const TERMINAL_FONT_SIZE_GROUP_LABEL_ID = 'settings-appearance-terminal-font-size-label';
-
-// The UI font scale is a document-root multiplier (see theme.ts). Each tile
-// maps a stable copy key to one of the closed `UI_FONT_SCALES` values.
-const UI_FONT_SCALE_OPTIONS: ReadonlyArray<{
-  key: 'compact' | 'default' | 'large' | 'xlarge';
-  scale: UiFontScale;
-}> = [
-  { key: 'compact', scale: 0.9 },
-  { key: 'default', scale: 1 },
-  { key: 'large', scale: 1.15 },
-  { key: 'xlarge', scale: 1.3 },
-];
 
 export function AppearanceSettingsPage(props: {
   themePref: ThemePreference;
@@ -367,16 +354,16 @@ export function AppearanceSettingsPage(props: {
   }
 
   // Font sizing has no app-shell state to thread: theme.ts holds the live
-  // values, so the page seeds its selection from there and applies directly.
+  // values, so the page seeds its inputs from there and applies directly.
   // Same apply-then-persist shape as theme/palette above.
-  const [uiFontScale, setUiFontScaleState] = useState<number>(() => getUiFontScale());
+  const [uiFontSize, setUiFontSizeState] = useState<number>(() => getUiFontSize());
   const [terminalFontSize, setTerminalFontSizeState] = useState<number>(() => getTerminalFontSize());
-  async function setUiFontScale(next: UiFontScale) {
-    setUiFontScaleState(next);
-    applyUiFontScale(next);
-    await persistAppearance({ uiFontScale: next });
+  async function setUiFontSize(next: number) {
+    setUiFontSizeState(next);
+    applyUiFontSize(next);
+    await persistAppearance({ uiFontSize: next });
   }
-  async function setTerminalFontSize(next: TerminalFontSize) {
+  async function setTerminalFontSize(next: number) {
     setTerminalFontSizeState(next);
     applyTerminalFontSize(next);
     await persistAppearance({ terminalFontSize: next });
@@ -486,66 +473,44 @@ export function AppearanceSettingsPage(props: {
         title={sections.fontSize}
         description={sections.fontSizeHelp}
       >
-        <VStack gap={3}>
-          <VStack gap={1.5}>
-            <Text
-              id={UI_FONT_SIZE_GROUP_LABEL_ID}
-              type="supporting"
-              size="sm"
-              color="secondary"
-              weight="medium"
-            >
-              {copy.fontSize.uiLabel}
-            </Text>
-            <Grid
-              columns={{ minWidth: 140 }}
-              gap={2}
-              role="group"
-              aria-labelledby={UI_FONT_SIZE_GROUP_LABEL_ID}
-            >
-              {UI_FONT_SCALE_OPTIONS.map((option) => (
-                <SelectableCard
-                  key={option.key}
-                  label={copy.fontSize.ui[option.key]}
-                  isSelected={uiFontScale === option.scale}
-                  onChange={() => void setUiFontScale(option.scale)}
-                  padding={2}
-                >
-                  <Text type="label" size="sm">{copy.fontSize.ui[option.key]}</Text>
-                </SelectableCard>
-              ))}
-            </Grid>
-          </VStack>
-          <VStack gap={1.5}>
-            <Text
-              id={TERMINAL_FONT_SIZE_GROUP_LABEL_ID}
-              type="supporting"
-              size="sm"
-              color="secondary"
-              weight="medium"
-            >
-              {copy.fontSize.terminalLabel}
-            </Text>
-            <Grid
-              columns={{ minWidth: 120 }}
-              gap={2}
-              role="group"
-              aria-labelledby={TERMINAL_FONT_SIZE_GROUP_LABEL_ID}
-            >
-              {TERMINAL_FONT_SIZES.map((size) => (
-                <SelectableCard
-                  key={size}
-                  label={`${size}px`}
-                  isSelected={terminalFontSize === size}
-                  onChange={() => void setTerminalFontSize(size)}
-                  padding={2}
-                >
-                  <Text type="label" size="sm">{`${size}px`}</Text>
-                </SelectableCard>
-              ))}
-            </Grid>
-          </VStack>
-        </VStack>
+        <SettingsRow
+          label={copy.fontSize.uiLabel}
+          description={copy.fontSize.uiHelp}
+          end={
+            <NumberInput
+              label={copy.fontSize.uiLabel}
+              isLabelHidden
+              value={uiFontSize}
+              min={UI_FONT_SIZE_MIN}
+              max={UI_FONT_SIZE_MAX}
+              step={1}
+              isIntegerOnly
+              hasNumberSteppers
+              units="px"
+              width={132}
+              onChange={(value) => void setUiFontSize(value)}
+            />
+          }
+        />
+        <SettingsRow
+          label={copy.fontSize.terminalLabel}
+          description={copy.fontSize.terminalHelp}
+          end={
+            <NumberInput
+              label={copy.fontSize.terminalLabel}
+              isLabelHidden
+              value={terminalFontSize}
+              min={TERMINAL_FONT_SIZE_MIN}
+              max={TERMINAL_FONT_SIZE_MAX}
+              step={1}
+              isIntegerOnly
+              hasNumberSteppers
+              units="px"
+              width={132}
+              onChange={(value) => void setTerminalFontSize(value)}
+            />
+          }
+        />
       </SettingsSection>
       <SettingsSection
         variant="bare"
