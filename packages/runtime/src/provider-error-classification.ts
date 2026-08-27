@@ -35,6 +35,7 @@ const CONTEXT_OVERFLOW_PROVIDER_CODES: ReadonlySet<string> = new Set([
 const PROVIDER_UNAVAILABLE_PROVIDER_CODES: ReadonlySet<string> = new Set([
   'server_error', // OpenAI-compatible stream errors can omit the HTTP status.
 ]);
+const OPENAI_CODEX_EDGE_REJECTION_CODE = 'openai_codex_edge_rejection';
 
 // Node, TLS, and undici codes that identify transport failures before an HTTP response.
 const TRANSPORT_FAILURE_CODES: ReadonlySet<string> = new Set([
@@ -224,6 +225,9 @@ export function providerRetryMetadata(error: unknown): ProviderRetryMetadata {
   const { evidence } = facts;
 
   if (RUNTIME_RETRYABLE_ERROR_CODES.has(evidence.code)) return { retryable: true };
+  // The Codex transport already spent its complete 2/10/30-second budget.
+  // Do not let the outer model loop restart that same transport budget.
+  if (isTrustedCodexEdgeRejection(facts)) return { retryable: false };
 
   const status = Number(evidence.statusCode || evidence.code);
   const errorClass = classifyProviderFacts(facts);
@@ -431,7 +435,7 @@ export function providerFailureDiagnostic(error: unknown): ProviderFailureDiagno
       ? numericStatus
       : undefined;
   const classified = classifyProviderFacts(facts);
-  const errorClass = durableProviderErrorClass(classified, httpStatus);
+  const errorClass = durableProviderErrorClass(facts, classified, httpStatus);
   const providerCode =
     firstProviderField(sources, ['code']) ?? firstProviderField(sources, ['type']);
   const providerRequestId =
@@ -446,10 +450,20 @@ export function providerFailureDiagnostic(error: unknown): ProviderFailureDiagno
   };
 }
 
-function durableProviderErrorClass(classified: string, httpStatus: number | undefined): string {
+function durableProviderErrorClass(
+  facts: ProviderErrorFacts,
+  classified: string,
+  httpStatus: number | undefined,
+): string {
   // Structured context-overflow and capacity evidence can legitimately arrive
   // behind a generic 4xx/5xx proxy response and remains stronger than the wrapper code.
-  if (classified === 'ContextLength' || classified === 'ProviderCapacity') return classified;
+  if (
+    classified === 'ContextLength' ||
+    classified === 'ProviderCapacity' ||
+    (classified === 'ProviderUnavailable' && isTrustedCodexEdgeRejection(facts))
+  ) {
+    return classified;
+  }
   if (httpStatus === 401 || httpStatus === 403) return 'Auth';
   if (httpStatus === 402) return 'ProviderBilling';
   if (httpStatus === 408) return 'Timeout';
@@ -728,6 +742,12 @@ function classifyProviderFacts(facts: ProviderErrorFacts): string {
   if (text.includes('abort')) return 'Abort';
   if (statusCode === '402' || code === '402') return 'ProviderBilling';
   if (statusCode === '429' || code === '429') return 'RateLimit';
+  if (
+    structuredCodes.includes(OPENAI_CODEX_EDGE_REJECTION_CODE) &&
+    isTrustedCodexEdgeRejection(facts)
+  ) {
+    return 'ProviderUnavailable';
+  }
   if (statusCode === '401' || statusCode === '403' || code === '401' || code === '403') {
     // Credential-shaped statuses can still carry account-level usage
     // evidence: an exhausted plan/credit window for a validly signed-in
@@ -740,9 +760,10 @@ function classifyProviderFacts(facts: ProviderErrorFacts): string {
   if (statusCode === '413' || code === '413') return 'ContextLength';
   // Free-text overflow relations on the composite text, veto-first inside.
   if (isContextOverflowErrorText(text)) return 'ContextLength';
-  if (structuredCodes.some((c) => PROVIDER_UNAVAILABLE_PROVIDER_CODES.has(c)))
-    return 'ProviderUnavailable';
   if (/^5\d\d$/.test(statusCode) || /^5\d\d$/.test(code)) return 'ProviderUnavailable';
+  if (structuredCodes.some((c) => PROVIDER_UNAVAILABLE_PROVIDER_CODES.has(c))) {
+    return 'ProviderUnavailable';
+  }
   if (evidence.transportFailure) return 'Network';
   // Weak word heuristics, last: they only catch errors that carried no
   // stronger evidence for any other class. `rate` must be word-shaped
@@ -758,6 +779,20 @@ function classifyProviderFacts(facts: ProviderErrorFacts): string {
   )
     return 'Network';
   return classificationTarget instanceof Error ? classificationTarget.name || 'Other' : 'Other';
+}
+
+function isTrustedCodexEdgeRejection(facts: ProviderErrorFacts): boolean {
+  let current: unknown = facts.target;
+  const seen = new Set<unknown>();
+  for (let depth = 0; depth < 5 && current !== undefined && !seen.has(current); depth += 1) {
+    seen.add(current);
+    if (current instanceof Error && current.name === 'OpenAiCodexEdgeRejectionError') return true;
+    current =
+      typeof current === 'object' && current !== null
+        ? (current as { cause?: unknown }).cause
+        : undefined;
+  }
+  return false;
 }
 
 export function errorPresentationFromClass(errorClass: string): {
