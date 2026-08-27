@@ -36,7 +36,7 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { basename, dirname, join, resolve } from 'node:path';
+import { basename, dirname, extname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const defaultRepoRoot = resolve(import.meta.dirname, '..');
@@ -78,6 +78,49 @@ const packageDependencyFields = [
   'peerDependencies',
 ];
 const bundledDependencyFields = ['bundleDependencies', 'bundledDependencies'];
+const textSourceExtensions = new Set([
+  '.cjs',
+  '.css',
+  '.csv',
+  '.html',
+  '.js',
+  '.json',
+  '.jsonc',
+  '.jsonl',
+  '.lock',
+  '.md',
+  '.mjs',
+  '.mts',
+  '.nsh',
+  '.patch',
+  '.paths',
+  '.plist',
+  '.ps1',
+  '.py',
+  '.rs',
+  '.sh',
+  '.sql',
+  '.svg',
+  '.swift',
+  '.toml',
+  '.ts',
+  '.tsv',
+  '.tsx',
+  '.txt',
+  '.yaml',
+  '.yml',
+]);
+const textSourceBasenames = new Set([
+  '.git-blame-ignore-revs',
+  '.gitattributes',
+  '.gitignore',
+  '.mailmap',
+  'DISCLAIMER-WIP',
+  'Dockerfile',
+  'LICENSE',
+  'NOTICE',
+  'network-policy',
+]);
 const maxCommandBuffer = 64 * 1024 * 1024;
 const rejectedGpgStatuses = new Set([
   'BADSIG',
@@ -120,11 +163,18 @@ export function parseSha512File(contents, expectedArchiveName) {
 export function validateArchiveEntries(entries, rootDirectory) {
   const rootPrefix = `${rootDirectory}/`;
   const seen = new Set();
+  const portableEntries = new Map();
 
   for (const entry of entries) {
     if (!entry) continue;
     if (seen.has(entry)) throw new Error(`Duplicate archive entry: ${entry}`);
     seen.add(entry);
+    const portableEntry = entry.normalize('NFC').toLowerCase();
+    const conflictingEntry = portableEntries.get(portableEntry);
+    if (conflictingEntry && conflictingEntry !== entry) {
+      throw new Error(`Cross-platform archive entry collision: ${conflictingEntry}, ${entry}`);
+    }
+    portableEntries.set(portableEntry, entry);
 
     if (entry.startsWith('/') || entry.includes('\\')) {
       throw new Error(`Unsafe archive entry: ${entry}`);
@@ -530,10 +580,13 @@ function validateArchiveContents(archivePath, identity, entries) {
 
 function validateNodePackageInputs(candidateRoot, identity, entries) {
   const files = entries.filter((entry) => entry && !entry.endsWith('/'));
+  const rootPrefix = `${identity.rootDirectory}/`;
   const readEntry = (entry) =>
-    readFileSync(join(candidateRoot, entry.slice(`${identity.rootDirectory}/`.length)), 'utf8');
+    readFileSync(join(candidateRoot, entry.slice(rootPrefix.length)), 'utf8');
   const noticeLicenses = new Map();
-  for (const entry of files.filter((name) => name.endsWith('THIRD_PARTY_NOTICES.txt'))) {
+  const generatedNpmNotice = `${rootPrefix}apps/desktop/resources/licenses/npm/THIRD_PARTY_NOTICES.txt`;
+  if (files.includes(generatedNpmNotice)) {
+    const entry = generatedNpmNotice;
     for (const block of readEntry(entry).split(/\n={20,}\n/u)) {
       const packageKey = /^Package: (.+)$/mu.exec(block)?.[1];
       const license = /^Selected license: (.+)$/mu.exec(block)?.[1];
@@ -553,6 +606,11 @@ function validateNodePackageInputs(candidateRoot, identity, entries) {
   const readLock = (entry) => {
     if (parsedLocks.has(entry)) return parsedLocks.get(entry);
     const lock = parseArchiveJson(readEntry(entry), entry);
+    if (lock.lockfileVersion !== 3 || Object.hasOwn(lock, 'dependencies')) {
+      throw new Error(
+        `Unsupported npm lockfile version ${lock.lockfileVersion} or schema: ${entry}`,
+      );
+    }
     if (!lock.packages || typeof lock.packages !== 'object' || Array.isArray(lock.packages)) {
       throw new Error(`Cannot safely classify package lockfile without packages: ${entry}`);
     }
@@ -560,31 +618,39 @@ function validateNodePackageInputs(candidateRoot, identity, entries) {
     return lock;
   };
 
-  for (const entry of files.filter((name) => name.endsWith('/package.json'))) {
-    const manifest = parseArchiveJson(readEntry(entry), entry);
+  const manifests = new Map(
+    files
+      .filter((name) => name.endsWith('/package.json'))
+      .map((entry) => [entry, parseArchiveJson(readEntry(entry), entry)]),
+  );
+  const rootLockEntry = `${rootPrefix}package-lock.json`;
+  for (const [entry, manifest] of manifests) {
     if (manifest.license) validateReleaseLicense(manifest.license, entry);
     else if (manifest.private !== true) {
       throw new Error(`Cannot safely classify package manifest without a license: ${entry}`);
-    } else {
-      const dependencyNames = declaredPackageDependencies(manifest, entry);
-      if (dependencyNames.length > 0) {
-        const directory = dirname(entry);
-        const lockEntry = [
-          `${directory}/npm-shrinkwrap.json`,
-          `${directory}/package-lock.json`,
-        ].find((name) => lockEntries.includes(name));
-        if (!lockEntry) {
+    }
+    const dependencyNames = declaredPackageDependencies(manifest, entry);
+    if (dependencyNames.length > 0) {
+      const directory = dirname(entry);
+      const lockEntry = [
+        `${directory}/npm-shrinkwrap.json`,
+        `${directory}/package-lock.json`,
+        rootLockEntry,
+      ].find((name) => lockEntries.includes(name));
+      if (!lockEntry) {
+        throw new Error(`Cannot safely classify package manifest ${entry} without lock provenance`);
+      }
+      const lock = readLock(lockEntry);
+      for (const name of dependencyNames) {
+        if (
+          !Object.keys(lock.packages).some(
+            (lockPath) =>
+              lockPath === `node_modules/${name}` || lockPath.endsWith(`/node_modules/${name}`),
+          )
+        ) {
           throw new Error(
-            `Cannot safely classify private package manifest ${entry} without lock provenance`,
+            `Cannot safely classify ${name} declared by ${entry} without matching lock provenance`,
           );
-        }
-        const lock = readLock(lockEntry);
-        for (const name of dependencyNames) {
-          if (!Object.hasOwn(lock.packages, `node_modules/${name}`)) {
-            throw new Error(
-              `Cannot safely classify ${name} declared by ${entry} without matching lock provenance`,
-            );
-          }
         }
       }
     }
@@ -596,12 +662,43 @@ function validateNodePackageInputs(candidateRoot, identity, entries) {
   for (const entry of lockEntries) {
     const lock = readLock(entry);
     for (const [lockPath, dependency] of Object.entries(lock.packages)) {
-      if (!lockPath || dependency?.link === true || !lockPath.includes('node_modules/')) continue;
+      if (!lockPath) continue;
+      if (dependency?.link === true) {
+        const name = lockPath.slice(lockPath.lastIndexOf('node_modules/') + 13);
+        const targetManifestEntry = join(dirname(entry), dependency.resolved ?? '', 'package.json');
+        const targetManifest = manifests.get(targetManifestEntry);
+        const targetLockPath = dependency.resolved;
+        const targetLock = targetLockPath ? lock.packages[targetLockPath] : undefined;
+        if (
+          !targetManifest ||
+          targetManifest.name !== name ||
+          !targetLock ||
+          targetLock.name !== targetManifest.name ||
+          targetLock.version !== targetManifest.version
+        ) {
+          throw new Error(`Cannot safely classify workspace link ${name} in ${entry}`);
+        }
+        continue;
+      }
+      if (!lockPath.includes('node_modules/')) {
+        const manifestEntry = join(dirname(entry), lockPath, 'package.json');
+        const manifest = manifests.get(manifestEntry);
+        if (!manifest || manifest.name !== dependency.name) {
+          throw new Error(`Cannot safely classify workspace package ${lockPath} in ${entry}`);
+        }
+        if (dependency.version !== manifest.version) {
+          throw new Error(`Workspace version mismatch for ${lockPath} in ${entry}`);
+        }
+        if (dependency.license) {
+          validateReleaseLicense(dependency.license, `${lockPath} in ${entry}`);
+        }
+        continue;
+      }
       const name = dependency.name ?? lockPath.slice(lockPath.lastIndexOf('node_modules/') + 13);
       const version = dependency.version;
       const packageKey = version ? `${name}@${version}` : undefined;
       const license =
-        dependency.license ?? (packageKey ? noticeLicenses.get(packageKey) : undefined);
+        (packageKey ? noticeLicenses.get(packageKey) : undefined) ?? dependency.license;
       if (!license) {
         throw new Error(
           `Cannot safely classify ${name}${version ? `@${version}` : ''} in ${entry}`,
@@ -671,7 +768,14 @@ function validateNonTextInputs(candidateRoot, identity, entries) {
     }
     try {
       const text = decoder.decode(contents);
-      if (!/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/u.test(text)) continue;
+      const basename = entry.slice(entry.lastIndexOf('/') + 1);
+      const extension = extname(basename).toLowerCase();
+      if (
+        !/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/u.test(text) &&
+        (textSourceExtensions.has(extension) || textSourceBasenames.has(basename))
+      ) {
+        continue;
+      }
     } catch {
       // Invalid UTF-8 continues to the candidate-owned provenance inventory.
     }
@@ -693,6 +797,12 @@ function compiledArtifactFormat(contents) {
   if (prefix.subarray(0, 4).equals(Buffer.from([0x7f, 0x45, 0x4c, 0x46]))) return 'ELF';
   if (prefix.subarray(0, 2).equals(Buffer.from('MZ'))) return 'PE';
   if (prefix.subarray(0, 4).equals(Buffer.from([0x00, 0x61, 0x73, 0x6d]))) return 'WASM';
+  if (prefix.subarray(0, 4).equals(Buffer.from([0xbe, 0xba, 0xfe, 0xca]))) {
+    return 'Mach-O fat little-endian';
+  }
+  if (prefix.subarray(0, 4).equals(Buffer.from([0xbf, 0xba, 0xfe, 0xca]))) {
+    return 'Mach-O fat64 little-endian';
+  }
   if (
     [
       [0xfe, 0xed, 0xfa, 0xce],
@@ -710,11 +820,12 @@ function compiledArtifactFormat(contents) {
       [0x50, 0x4b, 0x03, 0x04],
       [0x50, 0x4b, 0x05, 0x06],
       [0x50, 0x4b, 0x07, 0x08],
-    ].some((magic) => prefix.subarray(0, 4).equals(Buffer.from(magic)))
+    ].some((magic) => contents.indexOf(Buffer.from(magic)) !== -1)
   ) {
     return 'ZIP/JAR';
   }
   if (prefix.equals(Buffer.from('!<arch>\n'))) return 'ar archive';
+  if (prefix.equals(Buffer.from('!<thin>\n'))) return 'thin ar archive';
   return undefined;
 }
 
@@ -741,21 +852,37 @@ function sourceImageFormat(contents) {
 function sourceNonTextProvenancePatterns(provenance) {
   const section = provenance
     .split('### Source archive non-text inventory\n', 2)[1]
-    ?.split('\n### ', 1)[0];
+    ?.split(/\n#{1,3} /u, 1)[0];
   if (!section) return [];
-  return [...section.matchAll(/^- `([^`]+)`:/gmu)].map((match) => match[1]);
+  return [...section.matchAll(/^- `([^`]+)`:/gmu)].map((match) => {
+    const pattern = match[1];
+    if (
+      pattern.startsWith('/') ||
+      pattern.startsWith('*') ||
+      pattern.startsWith('?') ||
+      pattern.split('/').includes('..')
+    ) {
+      throw new Error(`Unsafe source archive inventory pattern: ${pattern}`);
+    }
+    return pattern;
+  });
 }
 
 function sourceInventoryPatternMatches(pattern, path) {
-  const expression = pattern
-    .split('**')
-    .map((part) =>
-      part
-        .split('*')
-        .map((literal) => literal.replace(/[.+?^${}()|[\]\\]/gu, '\\$&'))
-        .join('[^/]*'),
-    )
-    .join('.*');
+  let expression = '';
+  for (let index = 0; index < pattern.length; index += 1) {
+    if (pattern.slice(index, index + 3) === '**/') {
+      expression += '(?:.*/)?';
+      index += 2;
+    } else if (pattern.slice(index, index + 2) === '**') {
+      expression += '.*';
+      index += 1;
+    } else if (pattern[index] === '*') {
+      expression += '[^/]*';
+    } else {
+      expression += pattern[index].replace(/[.+?^${}()|[\]\\]/u, '\\$&');
+    }
+  }
   return new RegExp(`^${expression}$`, 'u').test(path);
 }
 

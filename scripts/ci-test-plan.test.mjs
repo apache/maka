@@ -190,6 +190,7 @@ test('ASF source authority changes select their dedicated gate', () => {
   for (const path of [
     '.gitattributes',
     '.github/workflows/asf-source-candidate.yml',
+    'docs/code-origin-audit.md',
     'scripts/asf-source-release.mjs',
     'scripts/asf-source-release.test.mjs',
   ]) {
