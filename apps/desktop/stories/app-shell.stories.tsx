@@ -67,6 +67,7 @@ const noop = () => undefined;
 
 const modelChoices: ChatModelChoice[] = [
   {
+    connectionId: 'connection-anthropic-main',
     connectionSlug: 'anthropic-main',
     providerType: 'anthropic',
     providerLabel: 'Anthropic',
@@ -76,6 +77,7 @@ const modelChoices: ChatModelChoice[] = [
     thinkingLevels: [],
   },
   {
+    connectionId: 'connection-openai-main',
     connectionSlug: 'openai-main',
     providerType: 'openai',
     providerLabel: 'OpenAI',
@@ -780,7 +782,7 @@ export const NewChatComposer: Story = {
       session={null}
       chat={{ messages: [] }}
       composer={{
-        newChatModel: { llmConnectionSlug: 'anthropic-main', model: 'claude-sonnet-4-5' },
+        newChatModel: { llmConnectionId: 'connection-anthropic-main', llmConnectionSlug: 'anthropic-main', model: 'claude-sonnet-4-5' },
         onPickNewChatModel: noop,
         onOpenModelSettings: noop,
       }}
@@ -796,7 +798,7 @@ export const NewChatComposerEmptyLocalHost: Story = {
       session={null}
       chat={{ messages: [] }}
       composer={{
-        newChatModel: { llmConnectionSlug: 'anthropic-main', model: 'claude-sonnet-4-5' },
+        newChatModel: { llmConnectionId: 'connection-anthropic-main', llmConnectionSlug: 'anthropic-main', model: 'claude-sonnet-4-5' },
         onPickNewChatModel: noop,
         onOpenModelSettings: noop,
         workspacePicker: {
@@ -821,7 +823,7 @@ export const NewChatComposerProjectPending: Story = {
       session={null}
       chat={{ messages: [] }}
       composer={{
-        newChatModel: { llmConnectionSlug: 'anthropic-main', model: 'claude-sonnet-4-5' },
+        newChatModel: { llmConnectionId: 'connection-anthropic-main', llmConnectionSlug: 'anthropic-main', model: 'claude-sonnet-4-5' },
         onPickNewChatModel: noop,
         onOpenModelSettings: noop,
         workspacePicker: {

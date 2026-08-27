@@ -49,7 +49,7 @@ function choice(
   model: string,
   label: string,
 ): ChatModelChoice {
-  return { connectionSlug, providerType, providerLabel, model, label, isDefault: false, thinkingLevels: [] };
+  return { connectionId: `connection-${connectionSlug}`, connectionSlug, providerType, providerLabel, model, label, isDefault: false, thinkingLevels: [] };
 }
 
 const CHOICES: ChatModelChoice[] = [

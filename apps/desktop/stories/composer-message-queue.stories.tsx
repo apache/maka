@@ -62,6 +62,7 @@ function session(): SessionSummary {
 
 const modelChoices: ChatModelChoice[] = [
   {
+    connectionId: 'connection-anthropic-main',
     connectionSlug: 'anthropic-main',
     providerType: 'anthropic',
     providerLabel: 'Anthropic',
