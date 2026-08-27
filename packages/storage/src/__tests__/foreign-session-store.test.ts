@@ -21,7 +21,7 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdir, mkdtemp, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join, win32 } from 'node:path';
+import { basename, join, win32 } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import {
   FOREIGN_SESSION_SCAN_MAX_SESSIONS,
@@ -32,6 +32,7 @@ import {
   createForeignSessionStore,
   isClaudeCodeImportEnabled,
   isCodexImportEnabled,
+  probeForeignSessionRepoState,
 } from '../foreign-session-store.js';
 
 const NOW = Date.now();
@@ -92,11 +93,34 @@ async function seedClaudeSession(
         content: [
           { type: 'text', text: options.assistantText ?? 'done' },
           ...(options.filePath
-            ? [{ type: 'tool_use', name: 'Edit', input: { file_path: options.filePath } }]
+            ? [
+                {
+                  type: 'tool_use',
+                  id: 'toolu_01',
+                  name: 'Edit',
+                  input: { file_path: options.filePath },
+                },
+              ]
             : []),
         ],
       },
     }),
+    // The completion boundary for the tool_use above: the file write happens
+    // between the two records, so the touch anchors HERE (#1512 review P1).
+    ...(options.filePath
+      ? [
+          claudeLine({
+            type: 'user',
+            sessionId: options.id,
+            isSidechain: options.sidechain ?? false,
+            timestamp: new Date(NOW - 25_000).toISOString(),
+            message: {
+              role: 'user',
+              content: [{ type: 'tool_result', tool_use_id: 'toolu_01', content: 'ok' }],
+            },
+          }),
+        ]
+      : []),
     'not valid json\n',
     ...(options.aiTitle
       ? [claudeLine({ type: 'ai-title', sessionId: options.id, aiTitle: options.aiTitle })]
@@ -492,12 +516,55 @@ describe('foreign session store — digest', () => {
     const digest = await store.readDigest(session);
     assert.deepEqual(digest.userMessages, ['帮我修复解析器']);
     assert.deepEqual(digest.assistantTexts, ['已修复并补了测试']);
-    assert.deepEqual(digest.filesTouched, ['/repo/src/parser.ts']);
+    // Evidence pointers: the touch anchors to the matching tool_result
+    // record (the completion boundary — the write happens between tool_use
+    // and its result), and the digest names its source transcript.
+    assert.deepEqual(digest.filesTouched, [
+      { path: '/repo/src/parser.ts', lastEventAtMs: NOW - 25_000 },
+    ]);
+    assert.equal(digest.transcriptPath, session.transcriptPath);
     // The seeded transcript contains one deliberately-broken line.
     assert.ok(
       digest.warnings.some((w) => w.includes('malformed')),
       JSON.stringify(digest.warnings),
     );
+  });
+
+  it('reports the branch the session ENDED on, not the first observation (#1512 P2)', async () => {
+    const home = await tempHome();
+    const dir = join(home, '.claude', 'projects', '-repo');
+    await mkdir(dir, { recursive: true });
+    const id = '1ab0463a-ec8e-4d50-896d-c825c3148ae8';
+    await writeFile(
+      join(dir, `${id}.jsonl`),
+      [
+        claudeLine({
+          type: 'user',
+          cwd: '/repo',
+          gitBranch: 'main',
+          isSidechain: false,
+          timestamp: new Date(NOW - 60_000).toISOString(),
+          message: { content: 'start on main' },
+        }),
+        claudeLine({
+          type: 'user',
+          cwd: '/repo',
+          gitBranch: 'feat/switched',
+          isSidechain: false,
+          timestamp: new Date(NOW - 30_000).toISOString(),
+          message: { content: 'after checkout' },
+        }),
+      ].join(''),
+      'utf8',
+    );
+    const store = createForeignSessionStore({ homeDir: home, env: {} });
+    const [session] = await store.listSessions();
+    assert.ok(session);
+    // The scanner's summary keeps its first-observation semantic…
+    assert.equal(session.gitBranch, 'main');
+    // …but the digest (what the staleness check compares) uses the stop point.
+    const digest = await store.readDigest(session);
+    assert.equal(digest.gitBranch, 'feat/switched');
   });
 
   it('excludes interleaved sidechain records (both user and assistant) from the digest', async () => {
@@ -551,7 +618,7 @@ describe('foreign session store — digest', () => {
     const digest = await store.readDigest(session);
     assert.deepEqual(digest.userMessages, ['main request']);
     assert.deepEqual(digest.assistantTexts, ['main reply']);
-    assert.deepEqual(digest.filesTouched, ['/repo/main.ts']);
+    assert.deepEqual(digest.filesTouched, [{ path: '/repo/main.ts', lastEventAtMs: undefined }]);
     const flat = JSON.stringify(digest);
     assert.ok(!flat.includes('SIDECHAIN'), flat);
     assert.ok(!flat.includes('sidechain-only.ts'), flat);
@@ -583,5 +650,115 @@ describe('foreign session store — digest', () => {
     await rm(path);
     await symlink(secret, path);
     await assert.rejects(() => store.readDigest(session as ForeignSessionSummary), /escaped/);
+  });
+});
+
+/* ------------------------------------------------------------------ *
+ * #1057 follow-up: handoff-time repository probe
+ * ------------------------------------------------------------------ */
+
+describe('probeForeignSessionRepoState', () => {
+  /** Seed a fake repo: cwd + .git/HEAD on a branch + a transcript file. */
+  async function seedRepo(branch = 'feat/probe') {
+    const repo = await mkdtemp(join(tmpdir(), 'maka-probe-'));
+    await mkdir(join(repo, '.git'), { recursive: true });
+    await writeFile(join(repo, '.git', 'HEAD'), `ref: refs/heads/${branch}\n`, 'utf8');
+    const transcript = join(repo, 'transcript.jsonl');
+    await writeFile(transcript, '{}\n', 'utf8');
+    return { repo, transcript };
+  }
+
+  it('observes cwd, branch, transcript mtime, and per-file states keyed verbatim', async () => {
+    const { repo, transcript } = await seedRepo();
+    await mkdir(join(repo, 'src'), { recursive: true });
+    await writeFile(join(repo, 'src', 'a.ts'), 'export {}\n', 'utf8');
+    const probe = await probeForeignSessionRepoState(
+      {
+        cwd: repo,
+        transcriptPath: transcript,
+        filesTouched: [
+          { path: 'src/a.ts', lastEventAtMs: 1 }, // relative — resolved against cwd
+          { path: join(repo, 'src', 'a.ts') }, // absolute — same file, separate key
+          { path: 'src/gone.ts' }, // missing
+        ],
+      },
+      { nowMs: 12345 },
+    );
+    assert.equal(probe.probedAtMs, 12345);
+    assert.equal(probe.cwdState, 'ok');
+    assert.deepEqual(probe.gitState, { status: 'branch', branch: 'feat/probe' });
+    assert.ok(probe.transcriptMtimeMs! > 0);
+    assert.equal(probe.fileStates.get('src/a.ts')!.status, 'ok');
+    assert.equal(probe.fileStates.get(join(repo, 'src', 'a.ts'))!.status, 'ok');
+    assert.deepEqual(probe.fileStates.get('src/gone.ts'), { status: 'missing' });
+  });
+
+  it('confines transcript-controlled paths to the session directory (#1512 P1)', async () => {
+    const { repo, transcript } = await seedRepo();
+    const outside = await mkdtemp(join(tmpdir(), 'maka-probe-outside-'));
+    await writeFile(join(outside, 'secret.ts'), 'x\n', 'utf8');
+    // A symlink INSIDE the repo pointing OUT must not be followed either.
+    await symlink(join(outside, 'secret.ts'), join(repo, 'sneaky.ts'));
+    const probe = await probeForeignSessionRepoState({
+      cwd: repo,
+      transcriptPath: transcript,
+      filesTouched: [
+        { path: join(outside, 'secret.ts') }, // absolute escape
+        { path: '../' + basename(outside) + '/secret.ts' }, // dot-dot escape
+        { path: 'sneaky.ts' }, // symlink escape
+      ],
+    });
+    for (const [, state] of probe.fileStates) {
+      assert.equal(state.status, 'out_of_scope');
+    }
+  });
+
+  it('follows a worktree .git FILE to its gitdir HEAD, bounded', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'maka-probe-wt-'));
+    const gitdir = join(root, 'real-gitdir');
+    await mkdir(gitdir, { recursive: true });
+    await writeFile(join(gitdir, 'HEAD'), 'ref: refs/heads/wt-branch\n', 'utf8');
+    const worktree = join(root, 'worktree');
+    await mkdir(worktree, { recursive: true });
+    await writeFile(join(worktree, '.git'), `gitdir: ${gitdir}\n`, 'utf8');
+    const probe = await probeForeignSessionRepoState({
+      cwd: worktree,
+      transcriptPath: join(root, 'none.jsonl'),
+      filesTouched: [],
+    });
+    assert.deepEqual(probe.gitState, { status: 'branch', branch: 'wt-branch' });
+  });
+
+  it('reports an oversized HEAD as unreadable instead of reading it (#1512 P1)', async () => {
+    const { repo, transcript } = await seedRepo();
+    await writeFile(join(repo, '.git', 'HEAD'), 'x'.repeat(5000), 'utf8');
+    const probe = await probeForeignSessionRepoState({
+      cwd: repo,
+      transcriptPath: transcript,
+      filesTouched: [],
+    });
+    assert.deepEqual(probe.gitState, { status: 'unreadable' });
+  });
+
+  it('reports detached HEAD, missing cwd, and a missing transcript with explicit states', async () => {
+    const { repo, transcript } = await seedRepo();
+    await writeFile(join(repo, '.git', 'HEAD'), 'a1b2c3d4e5f6\n', 'utf8');
+    const detached = await probeForeignSessionRepoState({
+      cwd: repo,
+      transcriptPath: transcript,
+      filesTouched: [],
+    });
+    assert.deepEqual(detached.gitState, { status: 'detached' });
+    assert.equal(detached.cwdState, 'ok');
+
+    const gone = await probeForeignSessionRepoState({
+      cwd: join(repo, 'no-such-dir'),
+      transcriptPath: join(repo, 'no-such-transcript.jsonl'),
+      filesTouched: [{ path: 'x.ts' }],
+    });
+    assert.equal(gone.cwdState, 'missing');
+    assert.deepEqual(gone.gitState, { status: 'unchecked' });
+    assert.equal(gone.transcriptMtimeMs, undefined);
+    assert.equal(gone.fileStates.size, 0);
   });
 });

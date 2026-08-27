@@ -3350,6 +3350,10 @@ describe('Maka Pi TUI runner', () => {
       updatedAtMs: Date.now(),
       transcriptPath: '/home/u/.claude/projects/-repo/fabc.jsonl',
     };
+    // A REAL directory as the digest cwd so the handoff-time repo probe runs
+    // deterministically: the cwd exists, and the single touched file does
+    // not — the staleness report must flag it.
+    const digestCwd = await mkdtemp(join(tmpdir(), 'maka-foreign-handoff-'));
     let readDigestCalls = 0;
     const foreignSessions = {
       availableSources: async () => ['claude-code' as const],
@@ -3360,11 +3364,12 @@ describe('Maka Pi TUI runner', () => {
           source: 'claude-code' as const,
           id: 'fabc',
           title: 'Prior parser work',
-          cwd: '/repo',
+          cwd: digestCwd,
           updatedAtMs: summary.updatedAtMs,
+          transcriptPath: summary.transcriptPath,
           userMessages: ['重构解析器'],
           assistantTexts: ['已修复并补测试'],
-          filesTouched: ['/repo/parser.ts'],
+          filesTouched: [{ path: 'parser.ts' }],
           warnings: [],
         };
       },
@@ -3398,6 +3403,11 @@ describe('Maka Pi TUI runner', () => {
     assert.match(driver.prompts[0]!, /<foreign-session-digest>/);
     assert.match(driver.prompts[0]!, /untrusted reference DATA/);
     assert.match(driver.prompts[0]!, /重构解析器/);
+    // The Maka-verified repo state check ran: cwd exists, the touched file
+    // does not — the handoff carries the mismatch as an explicit flag.
+    assert.match(driver.prompts[0]!, /<repo-state-check maka-verified="true">/);
+    assert.match(driver.prompts[0]!, /\[files_missing\].*parser\.ts/);
+    assert.match(driver.prompts[0]!, /source_transcript="[^\n]*fabc\.jsonl"/);
 
     exitMaka(terminal);
     await Promise.race([

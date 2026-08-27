@@ -43,9 +43,9 @@
  * rollout-file directory walk as fallback.
  */
 
-import { open, readdir, realpath, stat, type FileHandle } from 'node:fs/promises';
+import { lstat, open, readdir, realpath, stat, type FileHandle } from 'node:fs/promises';
 import { homedir } from 'node:os';
-import { basename, join, resolve, sep } from 'node:path';
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import {
   FOREIGN_SESSION_DIGEST_MAX_READ_BYTES,
   FOREIGN_SESSION_HEAD_BYTES,
@@ -53,7 +53,8 @@ import {
   FOREIGN_SESSION_SCAN_MAX_SESSIONS,
   FOREIGN_SESSION_TITLE_WINDOW_BYTES,
   claudeAssistantText,
-  claudeToolFilePaths,
+  claudeToolFileUses,
+  claudeToolResultIds,
   claudeUserAuthoredText,
   codexRolloutMessage,
   codexRolloutSessionMeta,
@@ -61,6 +62,7 @@ import {
   collectClaudeTitle,
   createDigestAccumulator,
   finishDigest,
+  foreignRecordTimestampMs,
   isSafeForeignId,
   normalizeCodexThreadRow,
   parseForeignJsonLine,
@@ -73,6 +75,8 @@ import {
   type ClaudeTranscriptMeta,
   type CodexThreadRow,
   type ForeignSessionDigest,
+  type ForeignSessionProbeFileState,
+  type ForeignSessionRepoProbe,
   type ForeignSessionSource,
   type ForeignSessionSummary,
 } from '@maka/core/foreign-session';
@@ -412,6 +416,17 @@ class FileForeignSessionStore implements ForeignSessionStore {
     }
 
     let dropped = 0;
+    // #1512 review P1: a file's mtime is set BETWEEN the tool_use record and
+    // its tool_result, so the tool_use timestamp misreports every normal
+    // Edit/Write as changed-after-session. Anchor each touch to the matching
+    // result record instead: remember pending tool_use ids, re-stamp on the
+    // record that completes them. Bounded so a hostile transcript cannot
+    // grow the map without limit.
+    const pendingToolFiles = new Map<string, string[]>();
+    const PENDING_TOOL_FILES_MAX = 256;
+    // #1512 review P2: the scanner's first-branch observation is not the
+    // branch the session ENDED on; track the last one seen in the window.
+    let lastGitBranch: string | undefined;
     for (const line of text.split('\n')) {
       if (line.trim().length === 0) continue;
       const record = parseForeignJsonLine(line);
@@ -425,16 +440,36 @@ class FileForeignSessionStore implements ForeignSessionStore {
         // session and must not enter its handoff (drop them for BOTH the user
         // and assistant branches, not just the user one).
         if (record.isSidechain === true) continue;
+        if (typeof record.gitBranch === 'string' && record.gitBranch.length > 0) {
+          lastGitBranch = record.gitBranch;
+        }
         if (record.type === 'user') {
           // claudeUserAuthoredText drops isMeta / isCompactSummary records so
           // Claude's own injected context and generated compaction summaries
           // never enter the handoff as user-authored text.
           const text = claudeUserAuthoredText(record);
           if (text !== undefined) pushDigestMessage(acc, 'user', text);
+          // tool_result blocks live on user-role records; they complete the
+          // pending tool uses (even on records whose text is synthetic).
+          const resultAtMs = foreignRecordTimestampMs(record);
+          for (const id of claudeToolResultIds(record)) {
+            const paths = pendingToolFiles.get(id);
+            if (paths === undefined) continue;
+            pendingToolFiles.delete(id);
+            for (const path of paths) pushDigestFile(acc, path, resultAtMs);
+          }
         } else if (record.type === 'assistant') {
           const text = claudeAssistantText(record);
           if (text !== undefined) pushDigestMessage(acc, 'assistant', text);
-          for (const path of claudeToolFilePaths(record)) pushDigestFile(acc, path);
+          for (const use of claudeToolFileUses(record)) {
+            // Record the touch immediately (timestamp-less); the matching
+            // result re-stamps it. An interrupted tool call keeps the
+            // conservative session-end fallback.
+            for (const path of use.paths) pushDigestFile(acc, path);
+            if (use.toolUseId !== undefined && pendingToolFiles.size < PENDING_TOOL_FILES_MAX) {
+              pendingToolFiles.set(use.toolUseId, use.paths);
+            }
+          }
         }
       } else {
         const message = codexRolloutMessage(record);
@@ -448,9 +483,196 @@ class FileForeignSessionStore implements ForeignSessionStore {
       id: summary.id,
       title: summary.title,
       cwd: summary.cwd,
-      gitBranch: summary.gitBranch,
+      gitBranch: lastGitBranch ?? summary.gitBranch,
       updatedAtMs: summary.updatedAtMs,
+      transcriptPath: summary.transcriptPath,
     });
+  }
+}
+
+/* --------------------- handoff-time repository probe --------------------- */
+
+/** Bytes cap for git metadata reads (.git pointer file, HEAD). */
+const GIT_METADATA_MAX_BYTES = 4096;
+
+/**
+ * Observe the CURRENT repository state the digest's claims will be compared
+ * against (#1057 follow-up; assessment itself is pure and lives in core).
+ *
+ * Trust rules (#1512 review P1):
+ *   - CONFINED. Every touched-file path (transcript-controlled) is
+ *     realpath-resolved and must land inside the realpath of the session
+ *     cwd; anything else — `../`, absolute paths elsewhere, symlinks out —
+ *     is reported `out_of_scope`, never followed. Files are only ever
+ *     stat'd, never opened.
+ *   - BOUNDED. The only reads are git metadata (`.git` pointer file, HEAD),
+ *     each lstat-gated to a regular file ≤4KB and re-checked on the open
+ *     handle before reading (same TOCTOU discipline as readDigest).
+ *   - TRUSTED CEILING. The transcript file's own mtime is captured so the
+ *     assessment can clamp transcript-claimed timestamps — a forged future
+ *     timestamp cannot suppress mtime warnings.
+ *   - HONEST FAILURE. Never throws, and never folds an error into a
+ *     healthy-looking value: every observation carries an explicit
+ *     missing/unreadable/out_of_scope state (#1512 review P2).
+ */
+export async function probeForeignSessionRepoState(
+  digest: Pick<ForeignSessionDigest, 'cwd' | 'filesTouched' | 'transcriptPath'>,
+  options?: { nowMs?: number },
+): Promise<ForeignSessionRepoProbe> {
+  const probedAtMs = options?.nowMs ?? Date.now();
+  const transcriptMtimeMs = await statRegularFileMtime(digest.transcriptPath);
+
+  let cwdState: ForeignSessionRepoProbe['cwdState'] = 'unknown';
+  let realCwd: string | undefined;
+  if (digest.cwd.length > 0) {
+    try {
+      const real = await realpath(digest.cwd);
+      cwdState = (await stat(real)).isDirectory() ? 'ok' : 'missing';
+      if (cwdState === 'ok') realCwd = real;
+    } catch (error) {
+      cwdState = isNotFound(error) ? 'missing' : 'unreadable';
+    }
+  }
+
+  const gitState: ForeignSessionRepoProbe['gitState'] =
+    realCwd !== undefined ? await readGitState(realCwd) : { status: 'unchecked' };
+
+  const fileStates = new Map<string, ForeignSessionProbeFileState>();
+  if (realCwd !== undefined) {
+    for (const touch of digest.filesTouched) {
+      // Keyed VERBATIM by the digest path (the assessment matches keys as
+      // given); resolution happens only for the confinement check + stat.
+      fileStates.set(touch.path, await probeTouchedFile(realCwd, touch.path));
+    }
+  }
+
+  return { probedAtMs, cwdState, gitState, transcriptMtimeMs, fileStates };
+}
+
+async function probeTouchedFile(
+  realCwd: string,
+  touchPath: string,
+): Promise<ForeignSessionProbeFileState> {
+  const candidate = isAbsolute(touchPath) ? touchPath : resolve(realCwd, touchPath);
+  let real: string;
+  try {
+    real = await realpath(candidate);
+  } catch (error) {
+    if (!isNotFound(error)) return { status: 'unreadable' };
+    // The leaf does not exist. Confine on the parent's real path so a
+    // symlinked directory cannot smuggle the check out of the repo, then
+    // report an honest `missing` for in-scope paths.
+    try {
+      const realParent = await realpath(dirname(candidate));
+      return isInsideOrSamePath(realCwd, join(realParent, basename(candidate)))
+        ? { status: 'missing' }
+        : { status: 'out_of_scope' };
+    } catch {
+      return { status: 'missing' };
+    }
+  }
+  if (!isInsideOrSamePath(realCwd, real)) return { status: 'out_of_scope' };
+  try {
+    const st = await stat(real);
+    return st.isFile() ? { status: 'ok', mtimeMs: st.mtimeMs } : { status: 'unreadable' };
+  } catch (error) {
+    return isNotFound(error) ? { status: 'missing' } : { status: 'unreadable' };
+  }
+}
+
+/** Same strict-interior recipe as artifact-store.ts / session-metadata-
+ *  maintenance.ts (the family the containment-guard contract allows in
+ *  packages that cannot import @maka/runtime's isPathInside). Inputs here
+ *  are realpath-resolved absolute paths. */
+function isInsideOrSamePath(root: string, target: string): boolean {
+  if (target === root) return true;
+  const rel = relative(root, target);
+  return (
+    rel !== '' &&
+    !rel.startsWith('..') &&
+    rel !== '..' &&
+    !rel.includes(`..${sep}`) &&
+    !rel.startsWith(sep)
+  );
+}
+
+function isNotFound(error: unknown): boolean {
+  return (
+    typeof error === 'object' &&
+    error !== null &&
+    ((error as NodeJS.ErrnoException).code === 'ENOENT' ||
+      (error as NodeJS.ErrnoException).code === 'ENOTDIR')
+  );
+}
+
+/** mtime of a path iff it is (still) a regular file; undefined otherwise. */
+async function statRegularFileMtime(path: string): Promise<number | undefined> {
+  try {
+    const st = await stat(path);
+    return st.isFile() ? st.mtimeMs : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Current branch from `.git/HEAD` without spawning git, with explicit
+ * failure states. Handles the worktree/submodule layout where `.git` is a
+ * FILE containing `gitdir: <path>` (one level — enough for worktrees; the
+ * target may legitimately live outside the cwd, but every read stays
+ * bounded to a ≤4KB regular file).
+ */
+async function readGitState(realCwd: string): Promise<ForeignSessionRepoProbe['gitState']> {
+  const gitPath = join(realCwd, '.git');
+  let gitDir = gitPath;
+  try {
+    const st = await stat(gitPath);
+    if (st.isFile()) {
+      const pointer = await readBoundedRegularFile(gitPath, GIT_METADATA_MAX_BYTES);
+      if (pointer === undefined) return { status: 'unreadable' };
+      const match = pointer.match(/^gitdir:\s*(.+)\s*$/m);
+      if (!match) return { status: 'unreadable' };
+      const target = match[1]!.trim();
+      gitDir = isAbsolute(target) ? target : resolve(dirname(gitPath), target);
+    } else if (!st.isDirectory()) {
+      return { status: 'unreadable' };
+    }
+  } catch (error) {
+    return isNotFound(error) ? { status: 'not_a_repo' } : { status: 'unreadable' };
+  }
+  const head = await readBoundedRegularFile(join(gitDir, 'HEAD'), GIT_METADATA_MAX_BYTES);
+  if (head === undefined) return { status: 'unreadable' };
+  const ref = head.match(/^ref:\s*refs\/heads\/(.+)\s*$/m);
+  if (ref) return { status: 'branch', branch: ref[1]!.trim() };
+  // A bare commit hash is a legitimate detached HEAD; anything else is noise.
+  return /^[0-9a-f]{4,64}\s*$/i.test(head) ? { status: 'detached' } : { status: 'unreadable' };
+}
+
+/**
+ * Read a small metadata file defensively: lstat-gate (no symlinks, regular
+ * file, size cap) then open and re-check on the held fd before reading —
+ * the same TOCTOU discipline as readDigest. Undefined on ANY failure or
+ * bound violation; callers map that to an explicit unreadable state.
+ */
+async function readBoundedRegularFile(path: string, maxBytes: number): Promise<string | undefined> {
+  try {
+    const pre = await lstat(path);
+    if (!pre.isFile() || pre.size > maxBytes) return undefined;
+  } catch {
+    return undefined;
+  }
+  let handle: FileHandle | undefined;
+  try {
+    handle = await open(path, 'r');
+    const st = await handle.stat();
+    if (!st.isFile() || st.size > maxBytes) return undefined;
+    const buffer = Buffer.alloc(st.size);
+    await handle.read(buffer, 0, st.size, 0);
+    return buffer.toString('utf8');
+  } catch {
+    return undefined;
+  } finally {
+    await handle?.close();
   }
 }
 

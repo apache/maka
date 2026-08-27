@@ -95,14 +95,29 @@ export interface ForeignSessionDigest {
   cwd: string;
   gitBranch?: string;
   updatedAtMs: number;
+  /** Absolute source transcript path — the evidence pointer for every claim
+   *  in this digest (#1057 follow-up: claims carry their source). */
+  transcriptPath: string;
   /** Chronological user-authored messages (sanitized, redacted, capped). */
   userMessages: string[];
   /** Chronological assistant text snippets (sanitized, redacted, capped). */
   assistantTexts: string[];
-  /** Workspace-relative or absolute file paths referenced by tool calls. */
-  filesTouched: string[];
+  /** Files referenced by tool calls, newest-touch last. */
+  filesTouched: ForeignSessionFileTouch[];
   /** Records dropped by parsing/caps — surfaced as reader uncertainty. */
   warnings: string[];
+}
+
+/**
+ * One file the foreign session touched. `lastEventAtMs` anchors the claim to
+ * the source event's own timestamp — chosen over transcript line offsets
+ * because large transcripts are read as a bounded TAIL window, where line
+ * numbers would be window-relative and silently wrong. The timestamp is also
+ * what the staleness check compares against the file's current mtime.
+ */
+export interface ForeignSessionFileTouch {
+  path: string;
+  lastEventAtMs?: number;
 }
 
 /**
@@ -361,23 +376,56 @@ export function claudeAssistantText(record: Record<string, unknown>): string | u
 
 /** File paths referenced by tool_use blocks in a Claude assistant record. */
 export function claudeToolFilePaths(record: Record<string, unknown>): string[] {
+  return claudeToolFileUses(record).flatMap((use) => use.paths);
+}
+
+/**
+ * File paths per tool_use block, keyed by the block's own id so the digest
+ * can anchor each touch to the matching tool_result's timestamp. The
+ * tool_use record is written BEFORE the tool executes — a file's mtime is
+ * newer than that record even when nothing changed after the session
+ * (#1512 review P1) — so the completion boundary is the result record.
+ */
+export function claudeToolFileUses(
+  record: Record<string, unknown>,
+): Array<{ toolUseId?: string; paths: string[] }> {
   const message = asRecord(record.message);
   const content = message?.content;
   if (!Array.isArray(content)) return [];
-  const paths: string[] = [];
+  const uses: Array<{ toolUseId?: string; paths: string[] }> = [];
   for (const block of content) {
     const rec = asRecord(block);
     if (!rec || rec.type !== 'tool_use') continue;
     const input = asRecord(rec.input);
     if (!input) continue;
+    const paths: string[] = [];
     for (const key of ['file_path', 'path', 'notebook_path']) {
       const value = input[key];
       if (typeof value === 'string' && value.length > 0) {
         paths.push(sanitizeForeignText(value, FOREIGN_SESSION_PATH_MAX_CODE_POINTS));
       }
     }
+    if (paths.length === 0) continue;
+    uses.push({
+      toolUseId: isSafeForeignId(rec.id) ? rec.id : undefined,
+      paths,
+    });
   }
-  return paths;
+  return uses;
+}
+
+/** tool_use ids completed by the tool_result blocks of a Claude record. */
+export function claudeToolResultIds(record: Record<string, unknown>): string[] {
+  const message = asRecord(record.message);
+  const content = message?.content;
+  if (!Array.isArray(content)) return [];
+  const ids: string[] = [];
+  for (const block of content) {
+    const rec = asRecord(block);
+    if (!rec || rec.type !== 'tool_result') continue;
+    if (isSafeForeignId(rec.tool_use_id)) ids.push(rec.tool_use_id);
+  }
+  return ids;
 }
 
 /* ------------------------------------------------------------------ *
@@ -538,12 +586,13 @@ export function codexRolloutMessage(
 export interface DigestAccumulator {
   userMessages: string[];
   assistantTexts: string[];
-  filesTouched: Set<string>;
+  /** path → newest event timestamp seen for it (undefined when unknown). */
+  filesTouched: Map<string, number | undefined>;
   warnings: string[];
 }
 
 export function createDigestAccumulator(): DigestAccumulator {
-  return { userMessages: [], assistantTexts: [], filesTouched: new Set(), warnings: [] };
+  return { userMessages: [], assistantTexts: [], filesTouched: new Map(), warnings: [] };
 }
 
 export function pushDigestMessage(
@@ -561,28 +610,253 @@ export function pushDigestMessage(
   if (list.length > FOREIGN_SESSION_DIGEST_MAX_MESSAGES) list.shift();
 }
 
-export function pushDigestFile(acc: DigestAccumulator, path: string): void {
+export function pushDigestFile(acc: DigestAccumulator, path: string, eventAtMs?: number): void {
   if (path.length === 0) return;
   // Re-insert to move an existing path to newest, then evict the oldest —
   // the most recently touched files are the ones the handoff cares about.
+  // The newest touch also wins the timestamp, falling back to an earlier
+  // known one so a timestamp-less re-touch does not erase evidence.
+  const previous = acc.filesTouched.get(path);
   acc.filesTouched.delete(path);
-  acc.filesTouched.add(path);
+  acc.filesTouched.set(path, eventAtMs ?? previous);
   if (acc.filesTouched.size > FOREIGN_SESSION_DIGEST_MAX_FILES) {
-    const oldest = acc.filesTouched.values().next().value;
+    const oldest = acc.filesTouched.keys().next().value;
     if (oldest !== undefined) acc.filesTouched.delete(oldest);
   }
 }
 
 export function finishDigest(
   acc: DigestAccumulator,
-  base: Pick<ForeignSessionDigest, 'source' | 'id' | 'title' | 'cwd' | 'gitBranch' | 'updatedAtMs'>,
+  base: Pick<
+    ForeignSessionDigest,
+    'source' | 'id' | 'title' | 'cwd' | 'gitBranch' | 'updatedAtMs' | 'transcriptPath'
+  >,
 ): ForeignSessionDigest {
   return {
     ...base,
     userMessages: acc.userMessages,
     assistantTexts: acc.assistantTexts,
-    filesTouched: [...acc.filesTouched],
+    filesTouched: [...acc.filesTouched.entries()].map(([path, lastEventAtMs]) => ({
+      path,
+      lastEventAtMs,
+    })),
     warnings: acc.warnings,
+  };
+}
+
+/** Event wall clock from a foreign transcript record ('timestamp' field). */
+export function foreignRecordTimestampMs(record: Record<string, unknown>): number | undefined {
+  return parseTimestampMs(record.timestamp);
+}
+
+/* ------------------------------------------------------------------ *
+ * Handoff-time staleness assessment (#1057 follow-up)
+ *
+ * The digest's claims are anchored to a session that may be days old.
+ * Before the handoff reaches the model, Maka probes the CURRENT repository
+ * state and turns mismatches into explicit flags — the receiving agent gets
+ * a confidence signal computed by Maka itself instead of having to trust
+ * the transcript's own account of the world. Probing (fs/git access) lives
+ * in @maka/storage; this module owns the pure assessment and rendering.
+ * ------------------------------------------------------------------ */
+
+/** Per-file observation. `out_of_scope` = the real path resolved outside the
+ *  session directory and was deliberately not checked (#1512 review P1: the
+ *  probe must not follow transcript-controlled paths out of the repo). */
+export type ForeignSessionProbeFileState =
+  | { status: 'ok'; mtimeMs: number }
+  | { status: 'missing' }
+  | { status: 'out_of_scope' }
+  | { status: 'unreadable' };
+
+export type ForeignSessionProbeGitState =
+  | { status: 'branch'; branch: string }
+  | { status: 'detached' }
+  | { status: 'not_a_repo' }
+  | { status: 'unreadable' }
+  | { status: 'unchecked' };
+
+/** Facts observed about the repository at handoff time. Every observation
+ *  carries an explicit failure state — the assessment must be able to tell
+ *  "checked and fine" from "could not check" (#1512 review P2). */
+export interface ForeignSessionRepoProbe {
+  probedAtMs: number;
+  /** 'unknown' = the digest recorded no cwd, nothing to check. */
+  cwdState: 'ok' | 'missing' | 'unreadable' | 'unknown';
+  gitState: ForeignSessionProbeGitState;
+  /**
+   * mtime of the source transcript itself — the TRUSTED upper bound for
+   * every transcript-claimed timestamp (#1512 review P1: a forged future
+   * timestamp must not be able to suppress mtime warnings). Undefined when
+   * the transcript could not be statted; mtime comparisons are then
+   * unverifiable.
+   */
+  transcriptMtimeMs?: number;
+  /** Keyed VERBATIM by `filesTouched` paths. */
+  fileStates: ReadonlyMap<string, ForeignSessionProbeFileState>;
+}
+
+export type ForeignSessionStalenessKind =
+  | 'cwd_missing'
+  | 'branch_changed'
+  | 'files_changed'
+  | 'files_missing';
+
+export interface ForeignSessionStalenessFlag {
+  kind: ForeignSessionStalenessKind;
+  detail: string;
+}
+
+/**
+ * What was checked, every mismatch found, and every required check that did
+ * NOT complete. The renderer derives a tri-state from it: `stale` (flags),
+ * `partial` (no flags but something was unverifiable), `clean` (everything
+ * checked, nothing mismatched). A probe failure can never fold into `clean`
+ * (#1512 review P2).
+ */
+export interface ForeignSessionStalenessReport {
+  probedAtMs: number;
+  cwdChecked: boolean;
+  branchChecked: boolean;
+  filesChecked: number;
+  /** Human-readable reasons for checks that could not complete. */
+  unverified: string[];
+  flags: ForeignSessionStalenessFlag[];
+}
+
+const STALENESS_FLAG_MAX_PATHS = 5;
+
+function listWithOverflow(paths: string[]): string {
+  const shown = paths.slice(0, STALENESS_FLAG_MAX_PATHS).join(', ');
+  const rest = paths.length - STALENESS_FLAG_MAX_PATHS;
+  return rest > 0 ? `${shown} (+${rest} more)` : shown;
+}
+
+/** Pure comparison of the digest's claims against the probed repo state. */
+export function assessForeignSessionStaleness(
+  digest: ForeignSessionDigest,
+  probe: ForeignSessionRepoProbe,
+): ForeignSessionStalenessReport {
+  const flags: ForeignSessionStalenessFlag[] = [];
+  const unverified: string[] = [];
+
+  const cwdChecked = probe.cwdState === 'ok' || probe.cwdState === 'missing';
+  if (probe.cwdState === 'missing') {
+    flags.push({
+      kind: 'cwd_missing',
+      detail: `the session's working directory no longer exists: ${digest.cwd}`,
+    });
+  } else if (probe.cwdState === 'unreadable') {
+    unverified.push('the working directory could not be read');
+  }
+
+  let branchChecked = false;
+  if (digest.gitBranch !== undefined) {
+    switch (probe.gitState.status) {
+      case 'branch':
+        branchChecked = true;
+        if (probe.gitState.branch !== digest.gitBranch) {
+          flags.push({
+            kind: 'branch_changed',
+            detail: `the repository is on '${probe.gitState.branch}' now, but the session ended on '${digest.gitBranch}'`,
+          });
+        }
+        break;
+      case 'detached':
+        unverified.push('the repository is on a detached HEAD; branch comparison skipped');
+        break;
+      case 'not_a_repo':
+        unverified.push(
+          `no git repository found, but the session recorded branch '${digest.gitBranch}'`,
+        );
+        break;
+      case 'unreadable':
+        unverified.push('git metadata could not be read; branch comparison skipped');
+        break;
+      case 'unchecked':
+        break;
+    }
+  }
+
+  // The trusted ceiling: no transcript-claimed timestamp may count as later
+  // than the transcript file's own last write (or the probe itself). A
+  // forged year-9999 anchor clamps down and cannot suppress mtime warnings.
+  const ceiling =
+    probe.transcriptMtimeMs !== undefined
+      ? Math.min(probe.transcriptMtimeMs, probe.probedAtMs)
+      : undefined;
+
+  // File checks are meaningless when the whole cwd is gone — cwd_missing
+  // already says everything the missing-file noise would.
+  let filesChecked = 0;
+  if (probe.cwdState !== 'missing' && digest.filesTouched.length > 0) {
+    const changed: string[] = [];
+    const missing: string[] = [];
+    const outOfScope: string[] = [];
+    const unreadable: string[] = [];
+    let mtimesUnverifiable = false;
+    for (const touch of digest.filesTouched) {
+      const state = probe.fileStates.get(touch.path);
+      if (state === undefined || state.status === 'unreadable') {
+        unreadable.push(touch.path);
+        continue;
+      }
+      if (state.status === 'out_of_scope') {
+        outOfScope.push(touch.path);
+        continue;
+      }
+      if (state.status === 'missing') {
+        filesChecked += 1;
+        missing.push(touch.path);
+        continue;
+      }
+      // Existence is checkable without a time reference; modification is not.
+      if (ceiling === undefined) {
+        filesChecked += 1;
+        mtimesUnverifiable = true;
+        continue;
+      }
+      filesChecked += 1;
+      const claimed = touch.lastEventAtMs ?? digest.updatedAtMs;
+      const anchor = Number.isFinite(claimed) ? Math.min(claimed, ceiling) : ceiling;
+      if (state.mtimeMs > anchor) changed.push(touch.path);
+    }
+    if (changed.length > 0) {
+      flags.push({
+        kind: 'files_changed',
+        detail: `${changed.length} touched file(s) were modified after the session ended: ${listWithOverflow(changed)}`,
+      });
+    }
+    if (missing.length > 0) {
+      flags.push({
+        kind: 'files_missing',
+        detail: `${missing.length} touched file(s) no longer exist: ${listWithOverflow(missing)}`,
+      });
+    }
+    if (mtimesUnverifiable) {
+      unverified.push(
+        'the source transcript could not be statted — no trusted time reference, so file modification times were not compared',
+      );
+    }
+    if (outOfScope.length > 0) {
+      unverified.push(
+        `${outOfScope.length} touched file(s) resolve outside the session directory and were not checked: ${listWithOverflow(outOfScope)}`,
+      );
+    }
+    if (unreadable.length > 0) {
+      unverified.push(
+        `${unreadable.length} touched file(s) could not be read: ${listWithOverflow(unreadable)}`,
+      );
+    }
+  }
+
+  return {
+    probedAtMs: probe.probedAtMs,
+    cwdChecked,
+    branchChecked,
+    filesChecked,
+    unverified,
+    flags,
   };
 }
 
@@ -595,7 +869,10 @@ export function finishDigest(
  * changing. Bounded by string length, so it always terminates.
  */
 export function stripEnvelopeTags(text: string): string {
-  const pattern = /<\/?foreign-session-digest[^\n>]*>/gi;
+  // Covers BOTH envelopes this module renders: the untrusted digest block
+  // and the Maka-authored <repo-state-check> block — a foreign path could
+  // otherwise close the latter and forge "maka-verified" content.
+  const pattern = /<\/?(foreign-session-digest|repo-state-check)[^\n>]*>/gi;
   let current = text;
   for (;;) {
     const next = current.replace(pattern, '');
@@ -617,6 +894,10 @@ export function stripEnvelopeTags(text: string): string {
  * `source` and `updated_at` are the only unquoted fields; both are
  * Maka-controlled enums/timestamps.
  */
+function toIsoOrUnknown(ms: number): string {
+  return Number.isFinite(ms) ? new Date(ms).toISOString() : 'unknown';
+}
+
 export function renderForeignSessionDigestForPrompt(digest: ForeignSessionDigest): string {
   const safe = (text: string): string =>
     JSON.stringify(
@@ -630,9 +911,12 @@ export function renderForeignSessionDigestForPrompt(digest: ForeignSessionDigest
     `title=${safe(digest.title)}`,
     `cwd=${safe(digest.cwd)}`,
     ...(digest.gitBranch ? [`git_branch=${safe(digest.gitBranch)}`] : []),
+    // The evidence pointer for the whole digest: which transcript these
+    // claims were distilled from (#1057 follow-up).
+    `source_transcript=${safe(digest.transcriptPath)}`,
     // A non-finite timestamp (corrupt store row) would make new Date().toISOString()
     // throw RangeError, so guard it rather than let the render crash.
-    `updated_at=${Number.isFinite(digest.updatedAtMs) ? new Date(digest.updatedAtMs).toISOString() : 'unknown'}`,
+    `updated_at=${toIsoOrUnknown(digest.updatedAtMs)}`,
     '',
     '## User messages (chronological)',
     ...digest.userMessages.map((m, i) => `${i + 1}. ${safe(m)}`),
@@ -641,7 +925,11 @@ export function renderForeignSessionDigestForPrompt(digest: ForeignSessionDigest
     ...digest.assistantTexts.map((m, i) => `${i + 1}. ${safe(m)}`),
     '',
     '## Files referenced by tool calls',
-    ...digest.filesTouched.map((f) => `- ${safe(f)}`),
+    ...digest.filesTouched.map((f) =>
+      f.lastEventAtMs !== undefined && Number.isFinite(f.lastEventAtMs)
+        ? `- ${safe(f.path)} (last touched ${toIsoOrUnknown(f.lastEventAtMs)})`
+        : `- ${safe(f.path)}`,
+    ),
     ...(digest.warnings.length > 0
       ? ['', '## Reader warnings', ...digest.warnings.map((w) => `- ${safe(w)}`)]
       : []),
@@ -673,13 +961,65 @@ export const FOREIGN_SESSION_HANDOFF_INSTRUCTION = [
 ].join('\n');
 
 /**
- * Model-facing first-turn text for a resumed foreign session: the handoff
- * instruction followed by the untrusted digest envelope. Goes in
- * `UserMessageInput.text`; pair it with {@link foreignSessionHandoffDisplayText}
- * in `displayText`.
+ * Render the Maka-computed staleness report. This block is authored by Maka
+ * (not distilled from the transcript), so it sits OUTSIDE the untrusted
+ * envelope — but file paths inside the flags originate from the transcript
+ * and stay safe()-quoted. An empty flag list renders as an explicit
+ * all-clear: a receiving agent must be able to tell "checked and clean"
+ * apart from "never checked".
  */
-export function buildForeignSessionHandoffMessage(digest: ForeignSessionDigest): string {
-  return `${FOREIGN_SESSION_HANDOFF_INSTRUCTION}\n\n${renderForeignSessionDigestForPrompt(digest)}`;
+export function renderForeignSessionStalenessReport(report: ForeignSessionStalenessReport): string {
+  const safe = (text: string): string =>
+    JSON.stringify(
+      stripEnvelopeTags(
+        redactSecrets(sanitizeForeignText(text, FOREIGN_SESSION_MESSAGE_MAX_CODE_POINTS)),
+      ),
+    );
+  const scope = [
+    report.cwdChecked ? 'cwd' : null,
+    report.branchChecked ? 'git branch' : null,
+    report.filesChecked > 0 ? `${report.filesChecked} touched file(s)` : null,
+  ]
+    .filter((part): part is string => part !== null)
+    .join(', ');
+  const lines: string[] = [
+    '<repo-state-check maka-verified="true">',
+    `checked_at=${toIsoOrUnknown(report.probedAtMs)}`,
+    `checked=${scope.length > 0 ? scope : 'nothing verifiable (no cwd, branch, or files recorded)'}`,
+  ];
+  // Tri-state, and a probe failure can never fold into `clean` (#1512 P2):
+  // `clean` requires that something was checked AND every required check
+  // completed. "Nothing verifiable" is partial, not clean.
+  const nothingChecked = !report.cwdChecked && !report.branchChecked && report.filesChecked === 0;
+  if (report.flags.length > 0) {
+    lines.push('result=stale — treat the digest claims below these flags with extra suspicion');
+    for (const flag of report.flags) lines.push(`- [${flag.kind}] ${safe(flag.detail)}`);
+  } else if (report.unverified.length > 0 || nothingChecked) {
+    lines.push(
+      'result=partial — no mismatches found, but some checks could not complete; do not treat this as a clean verification',
+    );
+  } else {
+    lines.push('result=clean — no mismatches between the digest and the current repository state');
+  }
+  for (const reason of report.unverified) lines.push(`- [unverified] ${safe(reason)}`);
+  lines.push('</repo-state-check>');
+  return lines.join('\n');
+}
+
+/**
+ * Model-facing first-turn text for a resumed foreign session: the handoff
+ * instruction, Maka's repository state check (when a probe ran), then the
+ * untrusted digest envelope. Goes in `UserMessageInput.text`; pair it with
+ * {@link foreignSessionHandoffDisplayText} in `displayText`.
+ */
+export function buildForeignSessionHandoffMessage(
+  digest: ForeignSessionDigest,
+  staleness?: ForeignSessionStalenessReport,
+): string {
+  const parts = [FOREIGN_SESSION_HANDOFF_INSTRUCTION];
+  if (staleness !== undefined) parts.push(renderForeignSessionStalenessReport(staleness));
+  parts.push(renderForeignSessionDigestForPrompt(digest));
+  return parts.join('\n\n');
 }
 
 /** Human-facing product name for a foreign session source. */
