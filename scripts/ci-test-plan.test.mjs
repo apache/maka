@@ -579,6 +579,19 @@ test('Windows recovery executes the root initialization replacement race', () =>
   assert.match(recovery, /# skipped 0/u);
 });
 
+test('Windows recovery executes the complete Skill catalog suite', () => {
+  const recovery = readWorkflow('windows-recovery.yml');
+
+  assert.match(recovery, /skill-catalog-coordinator\.test\.js/u);
+  assert.match(recovery, /skill-catalog-protocol\.test\.js/u);
+  assert.match(recovery, /skill-catalog-repository\.test\.js/u);
+  assert.match(recovery, /skill-catalog-transaction\.test\.js/u);
+  assert.match(recovery, /skill-catalog-two-client-uds\.test\.js/u);
+  assert.match(recovery, /# tests 90/u);
+  assert.match(recovery, /# pass 90/u);
+  assert.match(recovery, /# skipped 0/u);
+});
+
 test('workflows never persist the job credential into the checkout', () => {
   for (const name of readdirSync(WORKFLOW_DIR)) {
     for (const step of checkoutSteps(name)) {

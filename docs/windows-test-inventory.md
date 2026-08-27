@@ -15,11 +15,11 @@ Locations intentionally omit line numbers so unrelated edits do not invalidate t
 
 | Classification | Count |
 |---|---:|
-| windows-backend-gap | 24 |
+| windows-backend-gap | 23 |
 | portable-candidate | 8 |
 | platform-contract | 35 |
 
-Total Windows-excluded declarations: **67**
+Total Windows-excluded declarations: **66**
 
 ## Inventory
 
@@ -53,7 +53,6 @@ Total Windows-excluded declarations: **67**
 | windows-backend-gap | `packages/runtime-host/src/__tests__/session-catalog-two-client-uds.test.ts` two Clients share stable Session creation, CAS configuration, and catalog continuity | `process.platform === 'win32' ? 'Windows SQLite shutdown lifecycle' : false` |
 | windows-backend-gap | `packages/runtime-host/src/__tests__/session-catalog-two-client-uds.test.ts` stable Session creation survives response loss and Host restart | `process.platform === 'win32' ? 'Windows SQLite shutdown lifecycle' : false` |
 | windows-backend-gap | `packages/runtime-host/src/__tests__/session-revision-two-client-uds.test.ts` two Clients share exact retryable Session branch and revision authority | `process.platform === 'win32' ? 'Windows SQLite shutdown lifecycle' : false` |
-| windows-backend-gap | `packages/runtime-host/src/__tests__/skill-catalog-two-client-uds.test.ts` two UDS clients converge on one lease-bound Skill catalog authority | `process.platform === 'win32'` |
 | windows-backend-gap | `packages/runtime-host/src/__tests__/usage-pricing-client-correlation.test.ts` fails the connection for a canonical response with mismatched ${mismatch.name} | `process.platform === 'win32'` |
 | windows-backend-gap | `packages/runtime-host/src/__tests__/usage-pricing-client-correlation.test.ts` rejects local invalid input without poisoning transport and correlates a private canonical copy | `process.platform === 'win32'` |
 | windows-backend-gap | `packages/runtime-host/src/__tests__/usage-pricing-two-client-uds.test.ts` two clients share usage projection and one revision-CAS pricing authority | `process.platform === 'win32'` |
