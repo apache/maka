@@ -64,15 +64,18 @@ export const THINKING_LEVELS: readonly ThinkingLevel[] = [
  * relay is presumed to honor that encoding; built-in providers that support
  * it get `off` from their own metadata instead. The Anthropic-protocol relay
  * has a true disable wire (`thinking: { type: 'disabled' }`), so its
- * declarations may carry `off`. `minimal` and every effort tier above are
- * pure intensity values — the user declaring them is the authority on what
- * the relay accepts.
+ * declarations may carry `off`. `minimal` is excluded there too: the relay's
+ * levels are emitted as `providerOptions.anthropic.effort`, and the pinned
+ * `@ai-sdk/anthropic` parses that option through a closed enum
+ * (`low|medium|high|xhigh|max`) before any request — `minimal` would throw
+ * locally. Every other effort tier is a pure intensity value — the user
+ * declaring them is the authority on what the relay accepts.
  */
 export function declarableRelayThinkingLevels(
   providerType: ProviderType,
 ): readonly ThinkingLevel[] {
   return providerType === 'anthropic-compatible'
-    ? THINKING_LEVELS
+    ? THINKING_LEVELS.filter((level) => level !== 'minimal')
     : THINKING_LEVELS.filter((level) => level !== 'off');
 }
 
@@ -308,7 +311,8 @@ export function supportsRelayFastServiceTier(providerType: ProviderType, modelId
 }
 
 /**
- * OpenAI-compatible relay connections declare thinking support **per model** via
+ * Custom relay connections (OpenAI chat/responses or Anthropic protocol)
+ * declare thinking support **per model** via
  * `relayModelProfiles[modelId].thinkingLevels` — a relay may front a
  * DeepSeek-family reasoner and a plain instruct model side by side, so the
  * declaration granularity is the model, not the connection. Without a usable

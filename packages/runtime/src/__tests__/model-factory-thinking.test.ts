@@ -88,6 +88,24 @@ describe('buildProviderOptions: thinking level', () => {
     assert.deepEqual(buildProviderOptions(relay, 'relay-claude', 'high'), {
       anthropic: { effort: 'high' },
     });
+    // Every level the vocabulary offers maps 1:1 onto the SDK's closed
+    // effort enum (low|medium|high|xhigh|max) — a declared choice must
+    // never produce a provider-options payload the SDK would reject
+    // before the request (the vocabulary excludes `minimal` for exactly
+    // that reason).
+    for (const level of ['low', 'medium', 'xhigh', 'max'] as const) {
+      assert.deepEqual(
+        buildProviderOptions(
+          {
+            ...conn('anthropic-compatible'),
+            relayModelProfiles: { 'relay-claude': { thinkingLevels: ['off', level] } },
+          } as LlmConnection,
+          'relay-claude',
+          level,
+        ),
+        { anthropic: { effort: level } },
+      );
+    }
     // A declared off uses the protocol's true disable wire — unlike the
     // native effort models, the declaration is the authority that the
     // relay's models accept a disabled thinking request.

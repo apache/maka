@@ -384,8 +384,9 @@ export function useConnectionDetail(props: ConnectionDetailProps) {
     }
   }
 
-  // Per-model profile declarations for custom OpenAI relays, edited as a
-  // LOCAL DRAFT and committed by an explicit 保存 button — never keystroke by
+  // Per-model profile declarations for custom relays (OpenAI chat/responses
+  // or Anthropic protocol), edited as a LOCAL DRAFT and committed by an
+  // explicit 保存 button — never keystroke by
   // keystroke. A draft is `Record<modelId, RelayModelProfile>` seeded from the
   // saved table; entries a user empties fully drop out of the map, and the
   // ≥1-enabled-model invariant is honored live: the draft is pruned against

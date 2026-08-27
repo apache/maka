@@ -201,12 +201,12 @@ function ConnectionDetailInner(props: ConnectionDetailProps) {
     refreshAfterRelogin,
   } = useConnectionDetail(props);
   // A model gets capability switches when Maka cannot describe it otherwise.
-  // On a custom OpenAI relay that is every model: the id is whatever the
-  // operator chose, so even one that collides with a known name may front
-  // something else entirely. Elsewhere it is the models the bundled metadata
-  // has never heard of — a model newer than this build, or one the user typed
-  // in on a provider whose key cannot call a model-list endpoint, which no
-  // refresh will ever describe (#1584).
+  // On a custom relay (OpenAI chat/responses or Anthropic protocol) that is
+  // every model: the id is whatever the operator chose, so even one that
+  // collides with a known name may front something else entirely. Elsewhere
+  // it is the models the bundled metadata has never heard of — a model newer
+  // than this build, or one the user typed in on a provider whose key cannot
+  // call a model-list endpoint, which no refresh will ever describe (#1584).
   //
   // A model that already carries a declaration always keeps its row, or a
   // stale declaration would be uneditable and unclearable.

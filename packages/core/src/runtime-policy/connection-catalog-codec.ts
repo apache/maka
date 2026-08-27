@@ -326,10 +326,10 @@ export function decodeRelayModelProfilesTable(
  * `thinkingLevels` — `reasoning_effort` tiers on the OpenAI relays, the
  * `thinking`/`effort` controls on the Anthropic-protocol relay — is legal
  * on all three custom relays, with the per-provider vocabulary (notably
- * `off`) enforced at table decode. `serviceTier` (priority processing)
- * encodes into a request shape only the OpenAI-compatible relays accept —
- * `supportsRelayFastServiceTier` gates the read side by provider for the
- * same reason. A table carrying them on another provider describes a
+ * `off` and `minimal`) enforced at table decode. `serviceTier` (priority
+ * processing) encodes into a request shape only the OpenAI Responses relay
+ * accepts — `supportsRelayFastServiceTier` gates the read side by provider
+ * for the same reason. A table carrying them on another provider describes a
  * request Maka would never send: dead state at best, and on a provider
  * whose wire rejects the unknown value, a 400 the user cannot explain.
  */
@@ -339,21 +339,22 @@ function assertProfileFieldsFitProvider(
 ): void {
   if (!profiles) return;
   const isRelay = isRelayProviderType(providerType);
-  const isOpenAiRelay =
-    providerType === 'openai-compatible' || providerType === 'openai-responses-compatible';
+  const isResponsesRelay = providerType === 'openai-responses-compatible';
   for (const [modelId, profile] of Object.entries(profiles)) {
     // `thinkingLevels` names a wire feature all three custom relays accept
     // (per-provider vocabulary enforced at table decode); `serviceTier` is
-    // an OpenAI Responses wire fact. Elsewhere either is a request Maka
-    // would never send.
+    // an OpenAI Responses wire fact — the Chat Completions relay has no
+    // tier to send, so a persisted declaration there is dead state the read
+    // seam would never honor. Elsewhere either is a request Maka would
+    // never send.
     if (profile.thinkingLevels !== undefined && !isRelay) {
       throw domainError(
         `declared thinking levels for ${modelId} require a custom relay connection`,
       );
     }
-    if (profile.serviceTier !== undefined && !isOpenAiRelay) {
+    if (profile.serviceTier !== undefined && !isResponsesRelay) {
       throw domainError(
-        `declared service tier for ${modelId} requires an OpenAI-compatible connection`,
+        `declared service tier for ${modelId} requires an OpenAI Responses relay connection`,
       );
     }
   }

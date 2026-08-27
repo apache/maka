@@ -134,15 +134,16 @@ export interface RuntimeExecutionConnection {
   defaultModel: string;
   models?: ModelInfo[];
   /**
-   * Per-model user declarations for a custom OpenAI relay: the facts
-   * (offered thinking levels, vision enable/disable, context window) that
-   * neither the relay's /models report nor built-in metadata can decide
-   * (see `RelayModelProfile` in `model-thinking.ts`). First-class and typed —
-   * relay models are unknown to metadata and a catalog refresh rewrites
-   * `models[]` rows, so declarations live next to the user-edited fields.
-   * Invariants enforced at store boundaries: only custom OpenAI relay
-   * connections carry profiles, and only for ids in `enabledModelIds`
-   * (disabling a model deletes its profile).
+   * Per-model user declarations for a custom relay (OpenAI chat/responses
+   * or Anthropic protocol): the facts (offered thinking levels, vision
+   * enable/disable, context window) that neither the relay's /models report
+   * nor built-in metadata can decide (see `RelayModelProfile` in
+   * `model-thinking.ts`). First-class and typed — relay models are unknown
+   * to metadata and a catalog refresh rewrites `models[]` rows, so
+   * declarations live next to the user-edited fields. Invariants enforced
+   * at store boundaries: only custom relay connections carry profiles, and
+   * only for ids in `enabledModelIds` (disabling a model deletes its
+   * profile).
    */
   relayModelProfiles?: RelayModelProfiles;
   /** Additional top-level JSON properties added to model request bodies. */
@@ -725,7 +726,7 @@ export interface UpdateConnectionInput {
   /**
    * Replace the whole relay profiles table: absent leaves it untouched,
    * `null` clears it outright, a table replaces it (with the usual rules —
-   * only custom OpenAI relays, only for `enabledModelIds`).
+   * only custom relays, only for `enabledModelIds`).
    */
   relayModelProfiles?: RelayModelProfiles | null;
   requestBodyOverlay?: JsonObject | null;

@@ -38,6 +38,10 @@ test('declarable relay levels are per provider: Anthropic relays may declare off
   // (reasoning_effort 'none') no generic relay is presumed to speak.
   // Anthropic-protocol relays have a true disable wire
   // (`thinking: { type: 'disabled' }`), so their declarations may carry it.
+  // They keep `minimal` out instead: their levels are emitted as
+  // `providerOptions.anthropic.effort`, which the SDK parses through a
+  // closed `low|medium|high|xhigh|max` enum before any request — `minimal`
+  // would throw locally.
   assert.deepEqual(declarableRelayThinkingLevels('openai-compatible'), [
     'minimal',
     'low',
@@ -56,7 +60,6 @@ test('declarable relay levels are per provider: Anthropic relays may declare off
   ]);
   assert.deepEqual(declarableRelayThinkingLevels('anthropic-compatible'), [
     'off',
-    'minimal',
     'low',
     'medium',
     'high',
@@ -79,6 +82,20 @@ test('normalize filters off per provider and is lenient without one', () => {
   assert.deepEqual(
     normalizeRelayModelProfiles({ m: { thinkingLevels: ['off', 'high'] } }, 'anthropic-compatible'),
     { m: { thinkingLevels: ['off', 'high'] } },
+  );
+  // `minimal` is the mirror image on the Anthropic wire: not an effort the
+  // SDK's closed enum accepts, so the sanitizer drops it there just as it
+  // drops `off` on the OpenAI wires.
+  assert.deepEqual(
+    normalizeRelayModelProfiles(
+      { m: { thinkingLevels: ['minimal', 'high'] } },
+      'anthropic-compatible',
+    ),
+    { m: { thinkingLevels: ['high'] } },
+  );
+  assert.equal(
+    normalizeRelayModelProfiles({ m: { thinkingLevels: ['minimal'] } }, 'anthropic-compatible'),
+    undefined,
   );
   // Without a provider (host-wire decode fallback) the sanitizer is
   // provider-blind: the canonical store's codec has already validated
