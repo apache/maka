@@ -77,10 +77,7 @@ test('normalize filters off per provider and is lenient without one', () => {
   );
   // ...while an anthropic-compatible declaration keeps it.
   assert.deepEqual(
-    normalizeRelayModelProfiles(
-      { m: { thinkingLevels: ['off', 'high'] } },
-      'anthropic-compatible',
-    ),
+    normalizeRelayModelProfiles({ m: { thinkingLevels: ['off', 'high'] } }, 'anthropic-compatible'),
     { m: { thinkingLevels: ['off', 'high'] } },
   );
   // Without a provider (host-wire decode fallback) the sanitizer is
