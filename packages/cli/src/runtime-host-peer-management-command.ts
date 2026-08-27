@@ -269,7 +269,7 @@ async function readPeerStatus(
   };
 }
 
-function expandWildcardListenAddresses(addresses: readonly string[]): string[] {
+export function expandWildcardListenAddresses(addresses: readonly string[]): string[] {
   const interfaces = Object.values(networkInterfaces()).flatMap((entries) => entries ?? []);
   const ipv4 = interfaces
     .filter((entry) => entry.family === 'IPv4' && !entry.internal)

@@ -437,7 +437,12 @@ describe('managed Runtime Host service', () => {
         'desktop.client-1',
         '--preset',
         'desktop-client',
+        '--client-data-root',
+        '/var/lib/maka-client',
         '--defer-pairing-commit',
+        '--enable-direct-peer',
+        '--coordination-relay',
+        '/dns4/discovery.example/udp/443/quic-v1',
         '--json',
       ]),
       {
@@ -445,7 +450,11 @@ describe('managed Runtime Host service', () => {
         json: true,
         principalId: 'desktop.client-1',
         preset: 'desktop-client',
+        clientDataRoot: '/var/lib/maka-client',
         deferPairingCommit: true,
+        directPeer: {
+          coordinationRelays: ['/dns4/discovery.example/udp/443/quic-v1'],
+        },
       },
     );
   });

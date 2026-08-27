@@ -141,6 +141,41 @@ test('quiesces reconnect and waits for the Host process before update install', 
   await owner.close();
 });
 
+test('quiesces Local reconnect while a managed service changes', async () => {
+  const current = candidateHarness({ lifecycleMode: 'service' });
+  const replacement = candidateHarness({
+    lifecycleMode: 'service',
+    hostEpoch: 'service-after',
+  });
+  let starts = 0;
+  let finishChange!: () => void;
+  const change = new Promise<void>((resolve) => {
+    finishChange = resolve;
+  });
+  const owner = await startRuntimeHostDesktopManager(
+    {} as DesktopRuntimeHostCandidateStartInput,
+    {
+      startCandidate: async () => {
+        starts += 1;
+        return ready(starts === 1 ? current.candidate : replacement.candidate);
+      },
+    },
+  );
+
+  const changing = owner.runManagedLocalHostChange(async () => {
+    current.disconnect();
+    await change;
+  });
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.equal(starts, 1);
+
+  finishChange();
+  await changing;
+  await owner.waitUntilReady('local', 'test-host-epoch');
+  assert.equal(starts, 2);
+  await owner.close();
+});
+
 test('waits through a reconnect gap before quiescing Host retirement', async () => {
   const first = candidateHarness();
   const replacement = candidateHarness({ disconnectOnPrepare: true });

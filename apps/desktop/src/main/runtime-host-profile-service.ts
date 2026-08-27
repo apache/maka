@@ -23,6 +23,7 @@ import { dirname, join } from "node:path";
 import {
   createClientRuntimeHostCredentialStore,
   createClientRuntimeHostProfileCatalog,
+  decodeRuntimeHostOwnerConnectionCode,
   LOCAL_RUNTIME_HOST_PROFILE,
   RUNTIME_HOST_ACCESS_CREDENTIAL_MAX_BYTES,
   RuntimeHostOperationError,
@@ -93,6 +94,7 @@ export interface DesktopRuntimeHostProfileService {
       readonly managedService?: DesktopRuntimeHostManagedService;
     },
   ): Promise<{ readonly profileId: string }>;
+  importConnectionCode(code: string): Promise<{ readonly profileId: string }>;
   resolveManagedService(
     profileId: string,
   ): Promise<DesktopRuntimeHostManagedServiceBinding | undefined>;
@@ -652,6 +654,56 @@ export function createDesktopRuntimeHostProfileService(input: {
       }
     });
 
+  const addAndEnableVerified = (
+    value: DesktopRuntimeHostProfileAddInput & {
+      readonly credential: string;
+      readonly managedService?: DesktopRuntimeHostManagedService;
+    },
+  ): Promise<{ readonly profileId: string }> => {
+    requireSaveInput(value);
+    return mutateProfiles(async () => {
+      const currentDocument = await catalog.read();
+      const existing = currentDocument.profiles.find((profile) =>
+        profile.rootId === value.profile.rootId &&
+        sameRemoteRuntimeHostProfileTarget(profile, value.profile),
+      );
+      const previousTarget = existing ? await catalog.resolve(existing.id) : undefined;
+      const profile = existing ? { ...value.profile, id: existing.id } : value.profile;
+      const target = { profile, credential: value.credential } as const;
+      const intent = createDesktopRuntimeHostPairingIntent({
+        target,
+        ...(previousTarget ? { previous: previousTarget } : {}),
+        wasEnabled:
+          previousTarget !== undefined &&
+          preferences.enabledRemoteProfileIds.includes(previousTarget.profile.id),
+      });
+      await beginPairingIntent(intent);
+      try {
+        if (value.managedService) {
+          await managedServices.save(profile, value.managedService);
+        }
+        if (previousTarget) {
+          const rebound = await catalog.rebindIfCurrent(
+            previousTarget,
+            profile,
+            value.credential,
+          );
+          if (!rebound.rebound) {
+            throw new Error("Runtime Host profile changed before it could be updated");
+          }
+        } else {
+          await catalog.create(profile, value.credential);
+        }
+        await finishPairingIntent(intent);
+        return { profileId: profile.id };
+      } catch (failure) {
+        if (failure instanceof RuntimeHostPairingFinalizationInterruptedError) throw failure;
+        await rollbackPairingIntent(intent, failure);
+        throw failure;
+      }
+    });
+  };
+
   return {
     getSnapshot: () => mutate(snapshot),
     addAndEnable(value) {
@@ -676,48 +728,18 @@ export function createDesktopRuntimeHostProfileService(input: {
           : { kind: "connected", snapshot: await snapshot() };
       });
     },
-    addAndEnableVerified(value) {
-      requireSaveInput(value);
-      return mutateProfiles(async () => {
-        const currentDocument = await catalog.read();
-        const existing = currentDocument.profiles.find((profile) =>
-          profile.rootId === value.profile.rootId &&
-          sameRemoteRuntimeHostProfileTarget(profile, value.profile),
-        );
-        const previousTarget = existing ? await catalog.resolve(existing.id) : undefined;
-        const profile = existing ? { ...value.profile, id: existing.id } : value.profile;
-        const target = { profile, credential: value.credential } as const;
-        const intent = createDesktopRuntimeHostPairingIntent({
-          target,
-          ...(previousTarget ? { previous: previousTarget } : {}),
-          wasEnabled:
-            previousTarget !== undefined &&
-            preferences.enabledRemoteProfileIds.includes(previousTarget.profile.id),
-        });
-        await beginPairingIntent(intent);
-        try {
-          if (value.managedService) {
-            await managedServices.save(profile, value.managedService);
-          }
-          if (previousTarget) {
-            const rebound = await catalog.rebindIfCurrent(
-              previousTarget,
-              profile,
-              value.credential,
-            );
-            if (!rebound.rebound) {
-              throw new Error("Runtime Host profile changed before it could be updated");
-            }
-          } else {
-            await catalog.create(profile, value.credential);
-          }
-          await finishPairingIntent(intent);
-          return { profileId: profile.id };
-        } catch (failure) {
-          if (failure instanceof RuntimeHostPairingFinalizationInterruptedError) throw failure;
-          await rollbackPairingIntent(intent, failure);
-          throw failure;
-        }
+    addAndEnableVerified,
+    importConnectionCode(code) {
+      const decoded = decodeRuntimeHostOwnerConnectionCode(code);
+      return addAndEnableVerified({
+        profile: {
+          id: `remote-${randomUUID()}`,
+          name: decoded.name,
+          kind: 'remote',
+          rootId: decoded.rootId,
+          transport: decoded.transport,
+        },
+        credential: decoded.credential,
       });
     },
     rotateManagedCredential(expected, credential) {
@@ -1200,6 +1222,7 @@ export function registerDesktopRuntimeHostProfileIpc(
   const channels = [
     "runtime-host-profiles:getSnapshot",
     "runtime-host-profiles:add-and-enable",
+    "runtime-host-profiles:import-connection-code",
     "runtime-host-profiles:set-enabled",
     "runtime-host-profiles:set-default",
     "runtime-host-profiles:remove",
@@ -1209,12 +1232,13 @@ export function registerDesktopRuntimeHostProfileIpc(
   ipcMain.handle(channels[1], (_event, value: DesktopRuntimeHostProfileAddInput) =>
     service.addAndEnable(value),
   );
-  ipcMain.handle(channels[2], (_event, profileId: string, enabled: boolean) =>
+  ipcMain.handle(channels[2], (_event, code: string) => service.importConnectionCode(code));
+  ipcMain.handle(channels[3], (_event, profileId: string, enabled: boolean) =>
     service.setEnabled(profileId, enabled),
   );
-  ipcMain.handle(channels[3], (_event, profileId: string) => service.setDefault(profileId));
-  ipcMain.handle(channels[4], (_event, profileId: string) => service.remove(profileId));
-  ipcMain.handle(channels[5], () => service.resolvePairingRecovery());
+  ipcMain.handle(channels[4], (_event, profileId: string) => service.setDefault(profileId));
+  ipcMain.handle(channels[5], (_event, profileId: string) => service.remove(profileId));
+  ipcMain.handle(channels[6], () => service.resolvePairingRecovery());
   return () => {
     for (const channel of channels) ipcMain.removeHandler(channel);
   };
