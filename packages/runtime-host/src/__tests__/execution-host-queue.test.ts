@@ -51,6 +51,7 @@ import {
   commitTerminalRunWithRuntimeFact,
 } from '@maka/runtime/terminal-run-commit';
 import {
+  FAKE_ASK_USER_QUESTION_DURING_DRAIN_PROMPT,
   FAKE_ASK_USER_QUESTION_PROMPT,
   FAKE_WAIT_FOR_STEERING_PROMPT,
 } from '@maka/runtime/test-only/fake-backend';
@@ -554,6 +555,50 @@ test('graceful Host shutdown stops and drains an active Turn before releasing ow
     assert.equal(stable.status, 'cancelled');
     await observer.close();
     await fixture.stopHost(successor);
+
+    const ledger = await fixture.readTurn(turnId);
+    assert.equal(ledger.terminalEvents.length, 1);
+    assert.equal(ledger.classification.kind, 'fact');
+    if (ledger.classification.kind === 'fact') {
+      assert.equal(ledger.classification.fact.runStatus, 'cancelled');
+      assert.notEqual(ledger.classification.fact.failureClass, 'app_restarted');
+    }
+  });
+});
+
+test('Host shutdown contains a user-question admission rejected by Interaction drain', async () => {
+  await withExecutionRoot(async (fixture) => {
+    const host = await fixture.startHost();
+    const client = await connectClient(fixture.root);
+    const subscription = await client.openSessionSubscription({
+      sessionId: fixture.sessionId,
+      transcript: { kind: 'none' },
+    });
+    const probe = new SubscriptionProbe(subscription);
+    const turnId = randomUUID();
+    const started = requireStartedTurn(
+      await client.request('turn.start', {
+        sessionId: fixture.sessionId,
+        turnId,
+        content: { text: FAKE_ASK_USER_QUESTION_DURING_DRAIN_PROMPT },
+      }),
+    );
+
+    await probe.waitFor(
+      (frame) =>
+        frame.kind === 'subscription.session_event' &&
+        frame.runId === started.runId &&
+        frame.event.type === 'tool_start' &&
+        frame.event.toolName === 'AskUserQuestion',
+      'question scenario did not reach its admission checkpoint',
+    );
+
+    const exit = await fixture.stopHost(host, { type: 'shutdown_question_admission' });
+    assert.deepEqual(exit, { code: 0, signal: null });
+    await client.closed;
+    await probe.waitForFailure('connection_closed');
+    await fixture.assertOwnerAvailable();
+    assert.equal(await fixture.readPendingInteractionCount(), 0);
 
     const ledger = await fixture.readTurn(turnId);
     assert.equal(ledger.terminalEvents.length, 1);

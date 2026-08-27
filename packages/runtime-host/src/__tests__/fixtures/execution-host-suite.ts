@@ -934,9 +934,10 @@ export class ExecutionFixture {
 
   async stopHost(
     host: ExecutionHostHandle,
+    shutdownMessage: { type: 'shutdown' | 'shutdown_question_admission' } = { type: 'shutdown' },
   ): Promise<{ code: number | null; signal: NodeJS.Signals | null }> {
     if (host.child.exitCode === null && host.child.signalCode === null) {
-      host.child.send({ type: 'shutdown' });
+      host.child.send(shutdownMessage);
     }
     const exit = await withTimeout(
       waitForExitResult(host.child),
@@ -994,6 +995,18 @@ export class ExecutionFixture {
         terminalEvents: runtimeEvents.filter(isTerminalRuntimeEvent),
         classification: classifyTerminalRuntimeLedger(run, runtimeEvents),
       };
+    } finally {
+      await stores?.sessionStore.close?.();
+      await reader.close();
+    }
+  }
+
+  async readPendingInteractionCount(): Promise<number> {
+    const reader = await acquireReader(this.capability);
+    let stores: Awaited<ReturnType<typeof openInteractiveExecutionStoresForRead>> | undefined;
+    try {
+      stores = await openInteractiveExecutionStoresForRead(reader.lease);
+      return (await stores.interactionStore.listSessionPending(this.sessionId)).length;
     } finally {
       await stores?.sessionStore.close?.();
       await reader.close();

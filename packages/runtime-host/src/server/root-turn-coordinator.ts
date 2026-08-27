@@ -455,7 +455,8 @@ export class RootTurnCoordinator implements HostedExecutionAuthority {
         ...results
           .filter(
             (result): result is PromiseRejectedResult =>
-              result.status === 'rejected' && !isShutdownCancelledBackendStart(result.reason),
+              result.status === 'rejected' &&
+              !isShutdownCancelledInteractionAdmission(result.reason),
           )
           .map((result) => result.reason),
       );
@@ -2970,13 +2971,15 @@ function isTerminalSnapshot(
   );
 }
 
-function isShutdownCancelledBackendStart(error: unknown): boolean {
-  // The Host began draining while a Turn was still starting its backend, so
-  // the interaction bind was rejected with authority_draining. The Turn never
-  // ran; its drain rejects with this FailStopError and the Host is already
-  // shutting down. Treating it as a shutdown failure would fail the whole
-  // Host close — it is the expected consequence of stopping mid-start, not a
-  // resource that failed to close.
+function isShutdownCancelledInteractionAdmission(error: unknown): boolean {
+  // Drain can reach a running question admission before the Turn's stop fence
+  // closes its Interaction Run, so this expected cancellation is direct.
+  if (
+    error instanceof RuntimeInteractionAdmissionRejectedError &&
+    error.reason === 'authority_draining'
+  ) {
+    return true;
+  }
   return (
     error instanceof RuntimeInteractionFailStopError &&
     error.authorityFailure instanceof RuntimeInteractionAdmissionRejectedError &&
