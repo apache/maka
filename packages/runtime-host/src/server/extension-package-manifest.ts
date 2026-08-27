@@ -37,7 +37,6 @@ export interface ExtensionConfigurationProperty {
   readonly description?: string;
   readonly default?: ExtensionConfigurationScalar;
   readonly enum?: readonly ExtensionConfigurationScalar[];
-  readonly secret: boolean;
 }
 
 export interface ExtensionConfigurationSchema {
@@ -208,7 +207,7 @@ function decodeConfigurationSchema(value: unknown): ExtensionConfigurationSchema
   for (const [key, value] of Object.entries(propertiesSource)) {
     if (!KEY_PATTERN.test(key)) throw invalid(`Extension configuration key is invalid: ${key}`);
     const property = record(value, `configuration.properties.${key}`);
-    exactOptional(property, ['type'], ['title', 'description', 'default', 'enum', 'secret']);
+    exactOptional(property, ['type'], ['title', 'description', 'default', 'enum']);
     if (property.type !== 'string' && property.type !== 'number' && property.type !== 'boolean') {
       throw invalid(`Extension configuration property type is invalid: ${key}`);
     }
@@ -246,7 +245,6 @@ function decodeConfigurationSchema(value: unknown): ExtensionConfigurationSchema
         ? {}
         : { default: defaultValue as ExtensionConfigurationScalar }),
       ...(values ? { enum: values } : {}),
-      secret: property.secret === true,
     });
   }
   const required = schema.required === undefined ? [] : schema.required;

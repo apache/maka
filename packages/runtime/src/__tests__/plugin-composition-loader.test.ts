@@ -711,6 +711,35 @@ test('failed composition batches restore the prior generation exactly', async ()
   await loader.close();
 });
 
+test('failed composition batches preserve both the operation and rollback failures', async () => {
+  let activations = 0;
+  const loader = new MakaCompositionLoader();
+  await loader.install(
+    pkg('rollback-failure', () => {
+      activations += 1;
+      if (activations > 1) throw new Error('rollback activation failed');
+    }),
+  );
+  await loader.create('profile', entry('stable-entry', 'rollback-failure'));
+
+  await assert.rejects(
+    () =>
+      loader.apply({
+        operations: [
+          { type: 'insert', entry: { id: 'temporary-entry' } },
+          { type: 'update', entryId: 'missing-entry', patch: { disabled: true } },
+        ],
+      }),
+    (error: unknown) =>
+      error instanceof AggregateError &&
+      error.errors.length === 2 &&
+      error.errors.some((cause) => /missing-entry/u.test(String(cause))) &&
+      error.errors.some((cause) => /rollback activation failed/u.test(String(cause))),
+  );
+
+  await loader.close();
+});
+
 test('package reload replaces every matching mount without restarting unrelated Entries', async () => {
   const events: string[] = [];
   const host =

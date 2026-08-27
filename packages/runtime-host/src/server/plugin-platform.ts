@@ -259,6 +259,8 @@ export class HostPluginPlatform {
   async uninstallPackage(extensionId: string): Promise<void> {
     this.#assertMutable();
     await this.#serializeMutable(async () => {
+      const previousAuthority = this.#authority;
+      const previousDesired = this.#desired;
       let planned: MakaCompositionState | undefined;
       let packageLayers = this.#authority.packageLayers;
       if (this.#authority.packageLayers.includes(extensionId)) {
@@ -304,6 +306,7 @@ export class HostPluginPlatform {
             { cause: error },
           );
         }
+        const rollbackErrors: unknown[] = [];
         if (pkg) {
           let restored: MakaPluginPackage | undefined;
           try {
@@ -312,8 +315,28 @@ export class HostPluginPlatform {
             await this.#releaseGeneration(pkg);
           } catch (rollbackError) {
             if (restored) await this.packageLoader.release(restored).catch(() => undefined);
-            this.#poisoned = asError(rollbackError);
+            rollbackErrors.push(rollbackError);
           }
+        }
+        if (planned) {
+          try {
+            await this.#replaceDesiredComposition(
+              compositionWithGeneration(previousDesired, this.#desired.generation + 1),
+              previousAuthority.packageLayers,
+              previousAuthority.overlays,
+            );
+          } catch (rollbackError) {
+            rollbackErrors.push(rollbackError);
+          }
+        }
+        if (rollbackErrors.length > 0) {
+          this.#poisoned = asError(rollbackErrors[0]);
+          this.#draining = true;
+          throw new HostPluginPlatformError(
+            'mutation_failed',
+            'Plugin package uninstall and rollback both failed; Plugin Platform was fenced',
+            { cause: new AggregateError([error, ...rollbackErrors]) },
+          );
         }
         throw error;
       }

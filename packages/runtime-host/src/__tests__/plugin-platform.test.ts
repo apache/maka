@@ -560,6 +560,42 @@ test('failed uninstall keeps Package layers and desired state unchanged', async 
   }
 });
 
+test('package storage uninstall failure restores durable authority and Runtime state', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-plugin-uninstall-rollback-'));
+  try {
+    const control = join(root, 'control');
+    const packages = new FailingUninstallPackageStore(control);
+    const platform = new HostPluginPlatform(control, { packages });
+    await platform.recover();
+    await platform.installPackage(
+      await writeFixturePackage(root, 'uninstall-rollback', 'installed', {
+        composition: [
+          {
+            type: 'insert',
+            entry: { id: 'package-default', packageId: 'uninstall-rollback' },
+          },
+        ],
+      }),
+    );
+    const before = platform.desiredComposition();
+    packages.failUninstall = true;
+
+    await assert.rejects(
+      () => platform.uninstallPackage('uninstall-rollback'),
+      /injected package uninstall failure/u,
+    );
+
+    const authority = await platform.store.read();
+    assert.deepEqual(authority?.packageLayers, ['uninstall-rollback']);
+    assert.deepEqual(platform.desiredComposition().roots, before.roots);
+    assert.equal(platform.composition.inspect('package-default').status, 'active');
+    assert.deepEqual(await platform.packages.identities(), ['uninstall-rollback']);
+    await platform.close();
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test('composition authority commits before Runtime convergence and exposes divergence', async () => {
   const root = await mkdtemp(join(tmpdir(), 'maka-plugin-divergence-'));
   try {
@@ -746,6 +782,27 @@ test('Manifest configuration defaults are committed to desired and live Entries'
     assert.deepEqual(platform.composition.compositionState().roots.profile[0]?.config, {
       enabled: true,
     });
+    await platform.close();
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('Manifest v1 rejects unsupported secret configuration metadata', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-plugin-config-secret-'));
+  try {
+    const platform = new HostPluginPlatform(join(root, 'control'));
+    await platform.recover();
+    const source = await writeFixturePackage(root, 'secret-package', 'secret', {
+      manifest: {
+        configuration: {
+          properties: { token: { type: 'string', secret: true } },
+        },
+      },
+    });
+
+    await assert.rejects(() => platform.installPackage(source), /manifest fields are invalid/u);
+    assert.deepEqual(await platform.packages.identities(), []);
     await platform.close();
   } finally {
     await rm(root, { recursive: true, force: true });
@@ -1028,6 +1085,15 @@ class FailingCompositionStore extends HostPluginCompositionStore {
   override async replace(state: PersistedPluginComposition): Promise<void> {
     if (this.fail) throw new Error('injected persistence failure');
     await super.replace(state);
+  }
+}
+
+class FailingUninstallPackageStore extends PluginPackageStore {
+  failUninstall = false;
+
+  override async uninstall(extensionId: string): Promise<void> {
+    if (this.failUninstall) throw new Error('injected package uninstall failure');
+    await super.uninstall(extensionId);
   }
 }
 

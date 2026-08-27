@@ -224,7 +224,16 @@ export class MakaCompositionLoader {
         // A candidate can fail before changing the live tree. Rebuilding in
         // that case would unnecessarily dispose the current Fiber and lose
         // its registered contributions.
-        if (appliedOperations > 0) await this.#replaceComposition(before, 'rollback');
+        if (appliedOperations > 0) {
+          try {
+            await this.#replaceComposition(before, 'rollback');
+          } catch (rollbackError) {
+            throw new AggregateError(
+              [error, rollbackError],
+              'Plugin composition batch and rollback both failed',
+            );
+          }
+        }
         throw error;
       }
       if (input.operations.length > 0) this.#compositionGeneration += 1;
