@@ -573,6 +573,109 @@ export const RunningStatusDuringToolRun: Story = {
   ),
 };
 
+// A real prefix of `npm test` stdout, copied verbatim from an actual run killed
+// mid-build (the full suite runs for minutes, so a cancel here is genuinely
+// reachable). Kept short by cutting inside the build phase — no test-runner
+// interleaving, no truncation. Cutting the fixture from a real run is what keeps
+// the expanded panel's bytes honest.
+const NPM_TEST_STDOUT_AT_CANCEL = "\n> maka@0.2.0 test\n> npm run build:test && node scripts/run-workspace-tests-parallel.mjs --concurrency=3\n\n\n> maka@0.2.0 build:test\n> npm run clean && npm --workspace @maka/core run build && npm --workspace @maka/storage run build && npm --workspace @maka/mcp run build && npm --workspace @maka/runtime run build && npm --workspace @maka/runtime-host run build && npm --workspace @maka/computer-use run build && npm --workspace @maka/eval run build && npm --workspace maka-agent run build && npm --workspace @maka/ui run build && npm --workspace @maka/desktop run build:test\n\n\n> maka@0.2.0 clean\n> node scripts/clean-build.mjs\n\ncleaned packages/core/dist\ncleaned packages/core/tsconfig.tsbuildinfo\ncleaned packages/storage/dist\ncleaned packages/storage/tsconfig.tsbuildinfo\ncleaned packages/mcp/dist\ncleaned packages/mcp/tsconfig.tsbuildinfo\ncleaned packages/runtime/dist\ncleaned packages/runtime/tsconfig.tsbuildinfo\ncleaned packages/runtime-host/dist\ncleaned packages/runtime-host/tsconfig.tsbuildinfo\ncleaned packages/eval/dist\ncleaned packages/eval/tsconfig.tsbuildinfo\ncleaned packages/computer-use/dist\ncleaned packages/computer-use/tsconfig.tsbuildinfo\ncleaned packages/cli/dist\ncleaned packages/cli/tsconfig.tsbuildinfo\ncleaned packages/ui/dist\ncleaned packages/ui/tsconfig.tsbuildinfo\ncleaned apps/desktop/dist\ncleaned apps/desktop/tsconfig.main.tsbuildinfo\ncleaned apps/desktop/tsconfig.renderer.tsbuildinfo\ncleaned 21 path(s).\n\n> @maka/core@0.1.0 build\n> tsc -p tsconfig.json\n\n\n> @maka/storage@0.1.0 build\n> tsc -p tsconfig.json\n\n\n> @maka/mcp@0.1.0 build\n> tsc -p tsconfig.json\n";
+
+// Real path: run the full test suite → the user hits stop before it returns.
+// Aborting settles the call as a cancelled `terminal` result (isError), and
+// `toolResultActivityStatus` maps a cancelled terminal to `interrupted`. There is
+// no `interrupted` turn status (only running/completed/aborted/failed) — the
+// tool-level state is derived from the settled result, not asserted. Because the
+// turn kept that partial result, `partialOutputRetained` is true.
+//
+// `npm test` runs for minutes (build:test then the runner), so a cancel at ~16s is
+// still inside a running process — it settles `cancelled`/130, not `timed_out`/124
+// (which needs the 120s foreground default) and not a `completed` run. The retained
+// stdout is a verbatim prefix of a real run (see NPM_TEST_STDOUT_AT_CANCEL), cut in
+// the build phase so there is no runner interleaving and nothing is truncated.
+//
+// This is the interrupted counterpart to RunningStatusDuringToolRun, and the only
+// story that reaches the interrupted tool row. It goes through the real
+// ChatView → materializeTurns → ToolTrow path, so the row renders inside the
+// production `.maka-turn` frame. The session is `aborted` too, so the sidebar row
+// and composer agree with the transcript instead of still reading as active.
+export const InterruptedToolAfterTurnAbort: Story = {
+  render: () => (
+    <ComposedShell
+      session={{ status: 'aborted', lastMessageAt: NOW - 98_000 }}
+      chat={{
+        messages: [
+          user('msg-i-1', 'turn-i', 2, '把整套测试跑一遍，我刚改完 core，想确认没打断别的。'),
+          {
+            type: 'turn_state',
+            id: 'state-i-running',
+            turnId: 'turn-i',
+            ts: NOW - 118_000,
+            status: 'running',
+            partialOutputRetained: false,
+          },
+          {
+            type: 'assistant',
+            id: 'msg-assistant-i',
+            turnId: 'turn-i',
+            ts: NOW - 116_000,
+            text: '跑 npm test —— 先全量重建再跑用例。',
+            modelId: 'claude-sonnet-4-5',
+          },
+          {
+            type: 'tool_call',
+            id: 'tool-i-1',
+            turnId: 'turn-i',
+            ts: NOW - 114_000,
+            toolName: 'Bash',
+            activityKind: 'command',
+            stepId: 'msg-assistant-i',
+            origin: 'provider',
+            modelVisibility: 'visible',
+            args: { command: 'npm test' },
+          },
+          {
+            type: 'tool_result',
+            id: 'tool-i-1-result',
+            turnId: 'turn-i',
+            ts: NOW - 98_000,
+            toolUseId: 'tool-i-1',
+            isError: true,
+            durationMs: 16_000,
+            origin: 'provider',
+            modelVisibility: 'visible',
+            content: {
+              kind: 'terminal',
+              cwd: '/workspace/maka-agent/.worktree/storybook',
+              cmd: 'npm test',
+              status: 'cancelled',
+              exitCode: 130,
+              failureMessage: 'Command cancelled',
+              output: {
+                mode: 'pipes',
+                stdout: NPM_TEST_STDOUT_AT_CANCEL,
+                stderr: '',
+                stdoutTruncated: false,
+                stderrTruncated: false,
+                redacted: false,
+              },
+            },
+          },
+          {
+            type: 'turn_state',
+            id: 'state-i-aborted',
+            turnId: 'turn-i',
+            ts: NOW - 98_000,
+            status: 'aborted',
+            abortedAt: NOW - 98_000,
+            abortSource: 'renderer.stop_button',
+            partialOutputRetained: true,
+          },
+        ],
+      }}
+    />
+  ),
+};
+
 // Real path: Desktop Computer Use is exposed through the Runtime Host Client
 // Capability bridge. The settled observation establishes the confirmed target;
 // the following sequence inherits it while live progress replaces the generic

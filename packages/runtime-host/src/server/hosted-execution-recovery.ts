@@ -49,7 +49,10 @@ export interface PrepareHostedExecutionRecoveryInput {
 export async function prepareHostedExecutionRecovery(
   input: PrepareHostedExecutionRecoveryInput,
 ): Promise<readonly HostedExecutionRecoveryPlan[]> {
-  const sessions = await input.stores.sessionStore.listForRecovery();
+  // listHeaders() avoids listForRecovery()'s discarded per-Session message
+  // pre-read; the per-Session readMessagesForRecovery below remains the single
+  // decode that validates durable messages before replay.
+  const sessions = await input.stores.sessionStore.listHeaders();
   const prepared: PreparedRecoverySession[] = [];
   for (const session of sessions) {
     const admissions = await input.rootAdmissions.recoverSession(session.id);
