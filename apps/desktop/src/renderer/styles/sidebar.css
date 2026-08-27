@@ -228,6 +228,10 @@
   -webkit-app-region: no-drag;
 }
 
+.maka-project-row + .maka-project-row {
+  margin-block-start: var(--space-1);
+}
+
 /*
  * Grouping switch (session-list-panel.tsx): the last row of the sticky top
  * region, above the scrolling history it governs.
@@ -259,20 +263,25 @@
 }
 
 /*
- * Project groups are a parent-child hierarchy. SideNav always nests children
- * by spacing-6; that is a fixed inset, not a title-alignment rule. Project
- * rows lead with a 16px folder, session rows with an 8px StatusDot, so the
- * default 24px inset puts session titles 16px right of the project name.
- * Product intent: keep an 8px hierarchical inset (spacing-2) so titles share
- * one x. The whole session button, including hover/selected fill, moves with
- * that inset; the right edge stays on the rail. Pin the value because StyleX
- * owns the unlayered default. Child combinator only — do not use a descendant
- * selector that would indent deeper nest levels twice if any appear later.
+ * Project groups are a parent-child hierarchy. SideNav nests children by
+ * spacing-6, which shortens the nested session button — selected/hover fill
+ * then sits inset from the project header above it. Zero the inset so both
+ * rows share one inline length; folder vs status-dot still marks the tree.
+ * Pin the value because StyleX owns the unlayered default. Child combinator
+ * only — do not use a descendant selector that would indent deeper nest
+ * levels twice if any appear later.
  * DOM: .maka-project-row > SideNavItem root > [role=group] > childrenInner
  */
 .maka-project-row > div > [role="group"] > div {
-  /* !important: StyleX childrenInner paddingInlineStart is unlayered. */
-  padding-inline-start: var(--spacing-2) !important;
+  /* Justified: StyleX childrenInner paddingInlineStart is unlayered. */
+  padding-inline-start: 0 !important;
+}
+
+/* Give the expanded session subtree a small visual break from its project
+ * header. Scope it to the visible group so collapsing a project leaves no
+ * residual gap below the header row. */
+.maka-project-row > div > [role="group"][aria-hidden="false"] {
+  margin-block-start: var(--space-0-5);
 }
 
 /* Project folders communicate their disclosure state through the open/closed

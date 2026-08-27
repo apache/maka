@@ -341,7 +341,8 @@ function ProjectNavRow(props: {
           ) : undefined
         }
       >
-        {/* sidebar.css keeps an 8px nest so session titles share the project x. */}
+        {/* sidebar.css zeroes the nest inset so session buttons match the
+            project header's inline length. */}
         {hasSessions ? (
           <VStack gap={0.5}>{props.sessions.map((session) => props.renderSession(session))}</VStack>
         ) : undefined}
@@ -480,7 +481,9 @@ function ProjectItemMeta(props: {
       {props.project && !props.project.available && (
         <AlertTriangle size={ICON_SIZE.meta} aria-label={copy.projectUnavailable} />
       )}
-      <Badge variant="neutral" label={props.sessionCount} />
+      {props.sessionCount > 0 ? (
+        <Badge variant="neutral" label={props.sessionCount} />
+      ) : null}
       {props.reserveAction ? (
         <span className="maka-session-row-trailing" aria-hidden="true" />
       ) : null}

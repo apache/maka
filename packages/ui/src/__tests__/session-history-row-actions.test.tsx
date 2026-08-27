@@ -257,3 +257,22 @@ test('renders collapsible project navigation and row actions as sibling controls
   assert.equal(projectButtons.indexOf(action), 1, 'project action precedes nested tasks');
   assertNoNestedButtons(markup);
 });
+
+test('omits a zero count on empty projects', () => {
+  const markup = renderToStaticMarkup(
+    <LocaleProvider locale="en">
+      <SessionHistoryList
+        sessions={[]}
+        groups={[{ id: project.id, label: project.name, project, sessions: [] }]}
+        groupVariant="project"
+        projectActions={projectActions}
+        onSelectSession={() => undefined}
+      />
+    </LocaleProvider>,
+  );
+
+  const { document } = parseHTML(markup);
+  const metadata = document.querySelector('.maka-project-item-end');
+  assert.ok(metadata);
+  assert.equal(metadata.textContent, '');
+});

@@ -59,23 +59,17 @@ test('project navigation and actions follow their visual keyboard order', async 
   const sessionTitle = firstSessionControl.getByText('任务 00', { exact: true });
   await expect(projectTitle).toBeVisible();
   await expect(sessionTitle).toBeVisible();
-  const [projectNavigationBox, firstSessionBox, projectTitleBox, sessionTitleBox] = await Promise.all([
+  const [projectNavigationBox, firstSessionBox] = await Promise.all([
     navigation.boundingBox(),
     firstSessionControl.boundingBox(),
-    projectTitle.boundingBox(),
-    sessionTitle.boundingBox(),
   ]);
   expect(projectNavigationBox).not.toBeNull();
   expect(firstSessionBox).not.toBeNull();
-  expect(projectTitleBox).not.toBeNull();
-  expect(sessionTitleBox).not.toBeNull();
-  // Hierarchy is the session button sitting inside the project button. Title
-  // alignment is the product contract: leading content widths differ, so the
-  // inset is not the same as the title column.
+  // Nested session buttons share the project header's inline box. Folder vs
+  // status-dot still mark the tree; the selected fill must not sit inset.
   const sessionInset = firstSessionBox!.x - projectNavigationBox!.x;
-  expect(sessionInset).toBeGreaterThanOrEqual(6);
-  expect(sessionInset).toBeLessThan(16);
-  expect(Math.abs(projectTitleBox!.x - sessionTitleBox!.x)).toBeLessThanOrEqual(2);
+  expect(Math.abs(sessionInset)).toBeLessThanOrEqual(2);
+  expect(Math.abs(firstSessionBox!.width - projectNavigationBox!.width)).toBeLessThanOrEqual(2);
 
   await expect(projectRow.locator('button button')).toHaveCount(0);
   await expect(navigation).toHaveAttribute('aria-expanded', 'true');
