@@ -98,7 +98,7 @@ test('rejects partial or contradictory managed launch claims', () => {
         '--managed-provider',
         'systemd_user',
       ]),
-    /cannot declare a supervisor provider/u,
+    /Invalid Runtime Host candidate argument: --managed-provider/u,
   );
 });
 

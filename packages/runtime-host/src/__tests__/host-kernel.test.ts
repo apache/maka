@@ -59,7 +59,10 @@ import {
   readCandidateStartupDiagnostic,
   writeCandidateStartupDiagnostic,
 } from '../control/startup-diagnostic.js';
-import { claimRuntimeHostLifecycleFence } from '../operator/managed-deployment.js';
+import {
+  claimRuntimeHostManagedDeployment,
+  type RuntimeHostManagedOnDemandDeploymentConfig,
+} from '../operator/managed-deployment.js';
 import { removePosixEndpointDirectories } from './fixtures/endpoint-hygiene.js';
 import {
   decodeHostFrame,
@@ -106,6 +109,7 @@ const CURRENT_PROTOCOL = {
 const LEGACY_PROTOCOL = { min: 1, max: 1 } as const;
 const STARTUP_ATTEMPT_A = '00000000-0000-4000-8000-000000000001';
 const STARTUP_ATTEMPT_B = '00000000-0000-4000-8000-000000000002';
+const MANAGED_PACKAGE_INTEGRITY = 'sha512-' + Buffer.alloc(64, 1).toString('base64');
 const KERNEL_CANDIDATE_ENTRYPOINT = new URL('./fixtures/kernel-candidate.js', import.meta.url);
 const KERNEL_COMPOSITION = defineInteractiveRuntimeHostComposition(async () => ({
   handlers: createUnavailableDomainOperationHandlers(),
@@ -161,11 +165,12 @@ describe('non-serving Runtime Host kernel', () => {
   test('a managed State Root refuses an ordinary candidate launch before election', async () => {
     await withHostPaths(async (paths) => {
       const capability = await resolveStorageRoot({ path: paths.root, kind: 'interactive' });
-      await claimRuntimeHostLifecycleFence(capability, {
-        deploymentId: '00000000-0000-4000-8000-000000000001',
-        configRevision: 1,
-        lifecycle: { mode: 'on_demand' },
-      });
+      const managedDeploymentAuthority = { authorityRoot: join(paths.base, 'managed-authority') };
+      await claimRuntimeHostManagedDeployment(
+        capability,
+        managedDeploymentConfig(capability),
+        managedDeploymentAuthority,
+      );
       let launches = 0;
 
       const result = await connectOrSpawnRuntimeHostWithDependencies(
@@ -187,6 +192,7 @@ describe('non-serving Runtime Host kernel', () => {
             launches += 1;
             throw new Error('managed root must not launch without its operator claim');
           },
+          managedDeploymentAuthority,
         },
       );
 
@@ -201,12 +207,12 @@ describe('non-serving Runtime Host kernel', () => {
   test('a matching managed claim reaches the existing candidate election', async () => {
     await withHostPaths(async (paths) => {
       const capability = await resolveStorageRoot({ path: paths.root, kind: 'interactive' });
-      const claim = {
-        deploymentId: '00000000-0000-4000-8000-000000000001',
-        configRevision: 1,
-        lifecycle: { mode: 'on_demand' as const },
-      };
-      await claimRuntimeHostLifecycleFence(capability, claim);
+      const managedDeploymentAuthority = { authorityRoot: join(paths.base, 'managed-authority') };
+      const { claim } = await claimRuntimeHostManagedDeployment(
+        capability,
+        managedDeploymentConfig(capability),
+        managedDeploymentAuthority,
+      );
       let launches = 0;
 
       const result = await connectOrSpawnRuntimeHostWithDependencies(
@@ -229,6 +235,7 @@ describe('non-serving Runtime Host kernel', () => {
             launches += 1;
             return { spawned: new Promise<never>(() => undefined) };
           },
+          managedDeploymentAuthority,
         },
       );
 
@@ -3157,6 +3164,32 @@ describe('non-serving Runtime Host kernel', () => {
     });
   });
 });
+
+function managedDeploymentConfig(
+  capability: StorageRootCapability<'interactive'>,
+): RuntimeHostManagedOnDemandDeploymentConfig {
+  return {
+    schemaVersion: 1,
+    deploymentId: '00000000-0000-4000-8000-000000000001',
+    configRevision: 1,
+    deploymentRoot: '/opt/maka/runtime-host',
+    root: { path: capability.canonicalPath, id: capability.rootId },
+    projectDirectoryRoots: [],
+    launch: {
+      kind: 'exact_package',
+      nodePath: '/usr/bin/node',
+      cliPath: '/opt/maka/runtime-host/versions/1.2.3/cli.js',
+      package: {
+        kind: 'npm_registry',
+        version: '1.2.3',
+        integrity: MANAGED_PACKAGE_INTEGRITY,
+      },
+    },
+    listeners: { localIpc: true },
+    lifecycle: { mode: 'on_demand', availability: 'activation' },
+    reconciliation: { trigger: 'activation' },
+  };
+}
 
 function testComposition(
   overrides: Partial<Pick<RuntimeHostComposition, 'beginDrain' | 'recover' | 'close'>> = {},

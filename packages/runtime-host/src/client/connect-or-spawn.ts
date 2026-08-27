@@ -59,9 +59,12 @@ import {
 } from '../control/startup-diagnostic.js';
 import {
   decodeRuntimeHostManagedLaunchClaim,
-  readRuntimeHostLifecycleFence,
+  isRuntimeHostManagedOnDemandLaunchClaim,
+  readRuntimeHostManagedDeploymentConfig,
   runtimeHostManagedLaunchRejection,
-  type RuntimeHostManagedLaunchClaim,
+  RuntimeHostManagedDeploymentError,
+  type RuntimeHostManagedDeploymentAuthorityOptions,
+  type RuntimeHostManagedOnDemandLaunchClaim,
   type RuntimeHostManagedLaunchRejection,
 } from '../operator/managed-deployment.js';
 import { abortable, waitForRuntimeHostReady } from './wait-for-ready.js';
@@ -83,7 +86,7 @@ export interface ConnectOrSpawnRuntimeHostInput {
   connectTimeoutMs?: number;
   handshakeTimeoutMs?: number;
   candidateEntrypoint: string | URL;
-  managedLaunchClaim?: RuntimeHostManagedLaunchClaim;
+  managedLaunchClaim?: RuntimeHostManagedOnDemandLaunchClaim;
   signal?: AbortSignal;
   /** Candidate-exit sink forwarded to the launcher; the embedder owns the sink. */
   onExit?: (details: CandidateExitDetails) => void;
@@ -95,6 +98,8 @@ interface ConnectOrSpawnRuntimeHostDependencies {
   /** Defaults to `process.env`; injected so tests never mutate the real environment. */
   env?: NodeJS.ProcessEnv;
   connectHost?: typeof connectResolvedRuntimeHost;
+  /** Authority-location override for tests and embedded runtimes. */
+  managedDeploymentAuthority?: RuntimeHostManagedDeploymentAuthorityOptions;
 }
 
 type ElectionConnectionResult = Awaited<ReturnType<typeof connectResolvedRuntimeHost>>;
@@ -312,6 +317,9 @@ export async function connectOrSpawnRuntimeHostWithDependencies(
     input.managedLaunchClaim === undefined
       ? undefined
       : decodeRuntimeHostManagedLaunchClaim(input.managedLaunchClaim);
+  if (managedLaunchClaim && !isRuntimeHostManagedOnDemandLaunchClaim(managedLaunchClaim)) {
+    return { kind: 'failed', reason: 'deployment_lifecycle_mismatch' };
+  }
   input.signal?.throwIfAborted();
   const clientInstanceId = requireClientInstanceId(input.clientInstanceId ?? randomUUID());
   const capability = await resolveStorageRoot({ path: input.rootPath, kind: 'interactive' });
@@ -424,9 +432,25 @@ export async function connectOrSpawnRuntimeHostWithDependencies(
         !candidateInFlight &&
         now >= nextCandidateAt
       ) {
+        let managedDeployment;
+        try {
+          managedDeployment = await readRuntimeHostManagedDeploymentConfig(
+            capability,
+            dependencies.managedDeploymentAuthority,
+          );
+        } catch (error) {
+          if (
+            error instanceof RuntimeHostManagedDeploymentError &&
+            error.code === 'invalid_config'
+          ) {
+            return { kind: 'failed', reason: 'deployment_record_invalid' };
+          }
+          throw error;
+        }
         const managedLaunchRejection = runtimeHostManagedLaunchRejection(
-          await readRuntimeHostLifecycleFence(capability),
+          managedDeployment,
           managedLaunchClaim,
+          'on_demand',
         );
         if (managedLaunchRejection !== undefined) {
           return { kind: 'failed', reason: managedLaunchRejection };

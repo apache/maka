@@ -43,11 +43,11 @@ test('presents a managed root bypass as an operator-required permanent error', (
   assert.match(error.message, /MANAGED_ROOT_REQUIRES_OPERATOR/u);
 });
 
-test('presents an uncertain lifecycle owner as requiring repair', () => {
-  const error = runtimeHostStartupError('deployment_needs_repair');
+test('presents an invalid deployment record as requiring repair', () => {
+  const error = runtimeHostStartupError('deployment_record_invalid');
   assert.ok(error instanceof RuntimeHostPermanentReconnectError);
   assert.match(error.message, /repair/u);
-  assert.match(error.message, /DEPLOYMENT_NEEDS_REPAIR/u);
+  assert.match(error.message, /DEPLOYMENT_RECORD_INVALID/u);
 });
 
 test('keeps an unresponsive Host retryable and includes bounded diagnostics', () => {

@@ -18,21 +18,21 @@
  */
 
 import { randomUUID } from 'node:crypto';
-import { chmod, lstat, open, readFile, rename, rm, unlink } from 'node:fs/promises';
-import { dirname, isAbsolute, join, resolve } from 'node:path';
+import { chmod, lstat, mkdir, open, readFile, rename, rm } from 'node:fs/promises';
+import { userInfo } from 'node:os';
+import { dirname, isAbsolute, join, posix, resolve, win32 } from 'node:path';
+import { isDeepStrictEqual } from 'node:util';
 import {
-  prepareStorageRootControlDirectory,
+  type StateRootOwner,
   type StorageRootCapability,
+  tryAcquireStateRootOwner,
 } from '@maka/storage/root-authority';
 import { withProcessLifetimeFileUpdateLock } from '@maka/storage/process-lifetime-file-update-lock';
+import { syncDirectory, syncDirectoryChain } from '@maka/storage/stable-storage';
 import { z } from 'zod';
-import {
-  isRuntimeHostNpmDeploymentIdentity,
-  type RuntimeHostDeploymentIdentity,
-} from './update-package-evidence.js';
+import { isProductReleaseVersion, isSha512PackageIntegrity } from './update-package-evidence.js';
 
 export const RUNTIME_HOST_MANAGED_DEPLOYMENT_CONFIG_FILE = 'runtime-host-deployment.json';
-export const RUNTIME_HOST_LIFECYCLE_FENCE_FILE = 'runtime-host-managed-owner.json';
 
 const SCHEMA_VERSION = 1 as const;
 const MAX_DOCUMENT_BYTES = 64 * 1024;
@@ -58,9 +58,13 @@ const reconciliationProviderSchema = z.enum([
   'launch_agent_timer',
   'openrc_supervised_loop',
 ]);
-const packageIdentitySchema = z.custom<RuntimeHostDeploymentIdentity>(
-  isRuntimeHostNpmDeploymentIdentity,
-);
+const packageIdentitySchema = z
+  .object({
+    kind: z.literal('npm_registry'),
+    version: z.string().refine(isProductReleaseVersion),
+    integrity: z.string().refine(isSha512PackageIntegrity),
+  })
+  .strict();
 
 const lifecycleSchema = z.discriminatedUnion('mode', [
   z
@@ -78,23 +82,34 @@ const lifecycleSchema = z.discriminatedUnion('mode', [
     .strict(),
 ]);
 
-const reconciliationSchema = z.discriminatedUnion('policy', [
-  z.object({ policy: z.literal('manual') }).strict(),
+const launchLifecycleSchema = z.discriminatedUnion('mode', [
+  z.object({ mode: z.literal('on_demand') }).strict(),
   z
     .object({
-      policy: z.literal('automatic'),
-      trigger: z.discriminatedUnion('kind', [
-        z.object({ kind: z.literal('activation') }).strict(),
-        z
-          .object({
-            kind: z.literal('scheduled'),
-            provider: reconciliationProviderSchema,
-          })
-          .strict(),
-      ]),
+      mode: z.literal('supervised'),
+      provider: providerSchema,
     })
     .strict(),
 ]);
+
+const reconciliationSchema = z.discriminatedUnion('trigger', [
+  z.object({ trigger: z.literal('manual') }).strict(),
+  z.object({ trigger: z.literal('activation') }).strict(),
+  z
+    .object({
+      trigger: z.literal('scheduled'),
+      provider: reconciliationProviderSchema,
+    })
+    .strict(),
+]);
+
+const managedLaunchClaimSchema = z
+  .object({
+    deploymentId: deploymentIdSchema,
+    configRevision: configRevisionSchema,
+    lifecycle: launchLifecycleSchema,
+  })
+  .strict();
 
 const managedDeploymentConfigSchema = z
   .object({
@@ -144,134 +159,83 @@ const managedDeploymentConfigSchema = z
   })
   .strict()
   .superRefine((value, context) => {
-    if (
-      value.lifecycle.mode === 'on_demand' &&
-      value.reconciliation.policy === 'automatic' &&
-      value.reconciliation.trigger.kind !== 'activation'
-    ) {
+    if (value.lifecycle.mode === 'on_demand' && value.reconciliation.trigger === 'scheduled') {
       context.addIssue({
         code: 'custom',
-        message: 'An on-demand deployment can only reconcile during activation',
+        message: 'An on-demand deployment cannot use scheduled reconciliation',
         path: ['reconciliation'],
       });
     }
-    if (
-      value.lifecycle.mode === 'supervised' &&
-      value.reconciliation.policy === 'automatic' &&
-      value.reconciliation.trigger.kind === 'activation'
-    ) {
+    if (value.lifecycle.mode === 'supervised' && value.reconciliation.trigger === 'activation') {
       context.addIssue({
         code: 'custom',
-        message: 'A supervised deployment requires a scheduled reconciliation trigger',
+        message: 'A supervised deployment cannot reconcile during Client activation',
         path: ['reconciliation'],
       });
     }
-    if (
-      value.lifecycle.mode === 'supervised' &&
-      value.reconciliation.policy === 'automatic' &&
-      value.reconciliation.trigger.kind === 'scheduled'
-    ) {
+    if (value.lifecycle.mode === 'supervised' && value.reconciliation.trigger === 'scheduled') {
       const expected =
         value.lifecycle.provider === 'systemd_user'
           ? 'systemd_timer'
           : value.lifecycle.provider === 'launch_agent'
             ? 'launch_agent_timer'
             : 'openrc_supervised_loop';
-      if (value.reconciliation.trigger.provider !== expected) {
+      if (value.reconciliation.provider !== expected) {
         context.addIssue({
           code: 'custom',
           message: 'The reconciliation trigger does not match the persisted supervisor provider',
-          path: ['reconciliation', 'trigger', 'provider'],
+          path: ['reconciliation', 'provider'],
         });
       }
     }
   });
 
-const activeFenceStateSchema = z
-  .object({
-    kind: z.literal('active'),
-    deploymentId: deploymentIdSchema,
-    configRevision: configRevisionSchema,
-    lifecycle: z.discriminatedUnion('mode', [
-      z.object({ mode: z.literal('on_demand') }).strict(),
-      z
-        .object({
-          mode: z.literal('supervised'),
-          provider: providerSchema,
-        })
-        .strict(),
-    ]),
-  })
-  .strict();
-
-const lifecycleFenceSchema = z
-  .object({
-    schemaVersion: z.literal(SCHEMA_VERSION),
-    rootId: z.string().regex(ROOT_ID_PATTERN),
-    revision: z.string().regex(UUID_PATTERN),
-    state: z.discriminatedUnion('kind', [
-      activeFenceStateSchema,
-      z
-        .object({
-          kind: z.literal('transition'),
-          deploymentId: deploymentIdSchema,
-          transactionId: deploymentIdSchema,
-          fromConfigRevision: configRevisionSchema.nullable(),
-          toConfigRevision: configRevisionSchema.nullable(),
-        })
-        .strict(),
-      z
-        .object({
-          kind: z.literal('blocked'),
-          deploymentId: deploymentIdSchema,
-          transactionId: deploymentIdSchema,
-          reasonCode: boundedText(256),
-        })
-        .strict(),
-    ]),
-  })
-  .strict();
-
-const managedLaunchClaimSchema = z
-  .object({
-    deploymentId: deploymentIdSchema,
-    configRevision: configRevisionSchema,
-    lifecycle: z.discriminatedUnion('mode', [
-      z.object({ mode: z.literal('on_demand') }).strict(),
-      z
-        .object({
-          mode: z.literal('supervised'),
-          provider: providerSchema,
-        })
-        .strict(),
-    ]),
-  })
-  .strict();
-
 export type RuntimeHostSupervisorProvider = z.infer<typeof providerSchema>;
 export type RuntimeHostReconciliationProvider = z.infer<typeof reconciliationProviderSchema>;
 export type RuntimeHostManagedDeploymentConfig = z.infer<typeof managedDeploymentConfigSchema>;
-export type RuntimeHostLifecycleFence = z.infer<typeof lifecycleFenceSchema>;
 export type RuntimeHostManagedLaunchClaim = z.infer<typeof managedLaunchClaimSchema>;
-export type RuntimeHostActiveLifecycleFence = RuntimeHostLifecycleFence & {
-  readonly state: z.infer<typeof activeFenceStateSchema>;
+export type RuntimeHostManagedOnDemandDeploymentConfig = RuntimeHostManagedDeploymentConfig & {
+  readonly lifecycle: { readonly mode: 'on_demand'; readonly availability: 'activation' };
 };
+export type RuntimeHostManagedSupervisedDeploymentConfig = RuntimeHostManagedDeploymentConfig & {
+  readonly lifecycle: {
+    readonly mode: 'supervised';
+    readonly provider: RuntimeHostSupervisorProvider;
+    readonly availability: 'session' | 'environment' | 'machine';
+  };
+};
+export type RuntimeHostManagedOnDemandLaunchClaim = RuntimeHostManagedLaunchClaim & {
+  readonly lifecycle: { readonly mode: 'on_demand' };
+};
+export type RuntimeHostManagedSupervisedLaunchClaim = RuntimeHostManagedLaunchClaim & {
+  readonly lifecycle: {
+    readonly mode: 'supervised';
+    readonly provider: RuntimeHostSupervisorProvider;
+  };
+};
+
+export interface RuntimeHostManagedDeploymentAuthorityOptions {
+  /** Test-only or embedding override. Production uses the account-local durable default. */
+  readonly authorityRoot?: string;
+  readonly homeDir?: string;
+  readonly platform?: NodeJS.Platform;
+}
 
 export type RuntimeHostManagedLaunchRejection =
   | 'managed_root_requires_operator'
-  | 'deployment_fence_missing'
-  | 'deployment_fence_mismatch'
-  | 'deployment_transition_in_progress'
-  | 'deployment_needs_repair';
+  | 'deployment_record_missing'
+  | 'deployment_claim_mismatch'
+  | 'deployment_lifecycle_mismatch'
+  | 'deployment_record_invalid';
 
 export class RuntimeHostManagedDeploymentError extends Error {
   constructor(
     readonly code:
       | 'invalid_config'
-      | 'invalid_fence'
       | 'deployment_io_failed'
+      | 'deployment_commit_unknown'
       | 'lifecycle_owner_exists'
-      | 'lifecycle_owner_changed'
+      | 'state_root_owned'
       | RuntimeHostManagedLaunchRejection,
     message: string,
     options?: ErrorOptions,
@@ -295,188 +259,259 @@ export function decodeRuntimeHostManagedDeploymentConfig(
   }
 }
 
-export function decodeRuntimeHostLifecycleFence(
-  value: unknown,
-  expectedRootId?: string,
-): RuntimeHostLifecycleFence {
-  try {
-    const fence = lifecycleFenceSchema.parse(value);
-    if (expectedRootId !== undefined && fence.rootId !== expectedRootId) {
-      throw new Error('The lifecycle fence belongs to a different State Root');
-    }
-    return fence;
-  } catch (error) {
-    throw new RuntimeHostManagedDeploymentError(
-      'invalid_fence',
-      'The Runtime Host lifecycle fence is invalid',
-      { cause: error },
-    );
-  }
-}
-
 export function decodeRuntimeHostManagedLaunchClaim(value: unknown): RuntimeHostManagedLaunchClaim {
   try {
     return managedLaunchClaimSchema.parse(value);
   } catch (error) {
     throw new RuntimeHostManagedDeploymentError(
-      'deployment_fence_mismatch',
+      'deployment_claim_mismatch',
       'The Runtime Host managed launch claim is invalid',
       { cause: error },
     );
   }
 }
 
-export function resolveRuntimeHostManagedDeploymentConfigPath(clientDataRoot: string): string {
-  if (!isAbsolute(clientDataRoot)) {
+export function isRuntimeHostManagedOnDemandLaunchClaim(
+  claim: RuntimeHostManagedLaunchClaim,
+): claim is RuntimeHostManagedOnDemandLaunchClaim {
+  return claim.lifecycle.mode === 'on_demand';
+}
+
+export function runtimeHostManagedLaunchClaim(
+  config: RuntimeHostManagedOnDemandDeploymentConfig,
+): RuntimeHostManagedOnDemandLaunchClaim;
+export function runtimeHostManagedLaunchClaim(
+  config: RuntimeHostManagedSupervisedDeploymentConfig,
+): RuntimeHostManagedSupervisedLaunchClaim;
+export function runtimeHostManagedLaunchClaim(
+  config: RuntimeHostManagedDeploymentConfig,
+): RuntimeHostManagedLaunchClaim;
+export function runtimeHostManagedLaunchClaim(
+  config: RuntimeHostManagedDeploymentConfig,
+): RuntimeHostManagedLaunchClaim {
+  const canonical = decodeRuntimeHostManagedDeploymentConfig(config);
+  return {
+    deploymentId: canonical.deploymentId,
+    configRevision: canonical.configRevision,
+    lifecycle:
+      canonical.lifecycle.mode === 'on_demand'
+        ? { mode: 'on_demand' }
+        : { mode: 'supervised', provider: canonical.lifecycle.provider },
+  };
+}
+
+export function resolveRuntimeHostManagedDeploymentAuthorityRoot(
+  options: RuntimeHostManagedDeploymentAuthorityOptions = {},
+): string {
+  if (options.authorityRoot !== undefined) {
+    if (!isAbsolute(options.authorityRoot)) {
+      throw new RuntimeHostManagedDeploymentError(
+        'invalid_config',
+        'The Runtime Host managed deployment authority root must be absolute',
+      );
+    }
+    return resolve(options.authorityRoot);
+  }
+  const homeDir = options.homeDir ?? userInfo().homedir;
+  const platform = options.platform ?? process.platform;
+  const accountPath = platform === 'win32' ? win32 : posix;
+  if (!accountPath.isAbsolute(homeDir)) {
     throw new RuntimeHostManagedDeploymentError(
       'invalid_config',
-      'The Runtime Host client data root must be absolute',
+      'The OS account home must be absolute',
     );
   }
-  return join(resolve(clientDataRoot), RUNTIME_HOST_MANAGED_DEPLOYMENT_CONFIG_FILE);
+  const segments =
+    platform === 'darwin'
+      ? ['Library', 'Application Support', 'Maka', 'runtime-host-deployments']
+      : platform === 'win32'
+        ? ['AppData', 'Local', 'Maka', 'runtime-host-deployments']
+        : ['.local', 'share', 'Maka', 'runtime-host-deployments'];
+  return accountPath.join(accountPath.normalize(homeDir), ...segments);
+}
+
+export function resolveRuntimeHostManagedDeploymentConfigPath(
+  rootId: string,
+  options: RuntimeHostManagedDeploymentAuthorityOptions = {},
+): string {
+  requireRootId(rootId);
+  return join(
+    resolveRuntimeHostManagedDeploymentAuthorityRoot(options),
+    rootId,
+    RUNTIME_HOST_MANAGED_DEPLOYMENT_CONFIG_FILE,
+  );
 }
 
 export async function readRuntimeHostManagedDeploymentConfig(
-  path: string,
+  capability: StorageRootCapability<'interactive'>,
+  options: RuntimeHostManagedDeploymentAuthorityOptions = {},
 ): Promise<RuntimeHostManagedDeploymentConfig | undefined> {
-  const value = await readBoundedJson(path, 'config');
-  return value === undefined ? undefined : decodeRuntimeHostManagedDeploymentConfig(value);
-}
-
-export async function writeRuntimeHostManagedDeploymentConfig(
-  path: string,
-  config: RuntimeHostManagedDeploymentConfig,
-): Promise<void> {
-  const canonical = decodeRuntimeHostManagedDeploymentConfig(config);
-  await withProcessLifetimeFileUpdateLock(path, () => writePrivateJson(path, canonical));
-}
-
-export async function readRuntimeHostLifecycleFence(
-  capability: StorageRootCapability<'interactive'>,
-): Promise<RuntimeHostLifecycleFence | undefined> {
-  const { controlDirectory } = await prepareStorageRootControlDirectory(capability);
   const value = await readBoundedJson(
-    join(controlDirectory, RUNTIME_HOST_LIFECYCLE_FENCE_FILE),
-    'fence',
+    resolveRuntimeHostManagedDeploymentConfigPath(capability.rootId, options),
   );
-  return value === undefined
-    ? undefined
-    : decodeRuntimeHostLifecycleFence(value, capability.rootId);
+  if (value === undefined) return undefined;
+  const config = decodeRuntimeHostManagedDeploymentConfig(value);
+  assertConfigTargetsCapability(config, capability);
+  return config;
 }
 
-export async function claimRuntimeHostLifecycleFence(
+export function claimRuntimeHostManagedDeployment(
   capability: StorageRootCapability<'interactive'>,
-  claim: RuntimeHostManagedLaunchClaim,
+  config: RuntimeHostManagedOnDemandDeploymentConfig,
+  options?: RuntimeHostManagedDeploymentAuthorityOptions,
 ): Promise<{
   readonly kind: 'applied' | 'unchanged';
-  readonly fence: RuntimeHostLifecycleFence;
+  readonly config: RuntimeHostManagedOnDemandDeploymentConfig;
+  readonly claim: RuntimeHostManagedOnDemandLaunchClaim;
+}>;
+export function claimRuntimeHostManagedDeployment(
+  capability: StorageRootCapability<'interactive'>,
+  config: RuntimeHostManagedSupervisedDeploymentConfig,
+  options?: RuntimeHostManagedDeploymentAuthorityOptions,
+): Promise<{
+  readonly kind: 'applied' | 'unchanged';
+  readonly config: RuntimeHostManagedSupervisedDeploymentConfig;
+  readonly claim: RuntimeHostManagedSupervisedLaunchClaim;
+}>;
+export function claimRuntimeHostManagedDeployment(
+  capability: StorageRootCapability<'interactive'>,
+  config: RuntimeHostManagedDeploymentConfig,
+  options?: RuntimeHostManagedDeploymentAuthorityOptions,
+): Promise<{
+  readonly kind: 'applied' | 'unchanged';
+  readonly config: RuntimeHostManagedDeploymentConfig;
+  readonly claim: RuntimeHostManagedLaunchClaim;
+}>;
+export async function claimRuntimeHostManagedDeployment(
+  capability: StorageRootCapability<'interactive'>,
+  config: RuntimeHostManagedDeploymentConfig,
+  options: RuntimeHostManagedDeploymentAuthorityOptions = {},
+): Promise<{
+  readonly kind: 'applied' | 'unchanged';
+  readonly config: RuntimeHostManagedDeploymentConfig;
+  readonly claim: RuntimeHostManagedLaunchClaim;
 }> {
-  const canonicalClaim = decodeRuntimeHostManagedLaunchClaim(claim);
-  const { controlDirectory } = await prepareStorageRootControlDirectory(capability);
-  const path = join(controlDirectory, RUNTIME_HOST_LIFECYCLE_FENCE_FILE);
-  return withProcessLifetimeFileUpdateLock(path, async () => {
-    const currentValue = await readBoundedJson(path, 'fence');
-    const current =
-      currentValue === undefined
-        ? undefined
-        : decodeRuntimeHostLifecycleFence(currentValue, capability.rootId);
-    if (current !== undefined) {
-      if (current.state.kind === 'active' && sameManagedLaunch(current.state, canonicalClaim)) {
-        return { kind: 'unchanged', fence: current };
+  const canonical = decodeRuntimeHostManagedDeploymentConfig(config);
+  assertConfigTargetsCapability(canonical, capability);
+  const authorityRoot = resolveRuntimeHostManagedDeploymentAuthorityRoot(options);
+  const path = resolveRuntimeHostManagedDeploymentConfigPath(capability.rootId, options);
+  await prepareAuthorityDirectory(dirname(path), authorityRoot);
+  return withProcessLifetimeFileUpdateLock(
+    path,
+    async () => {
+      const currentValue = await readBoundedJson(path);
+      if (currentValue !== undefined) {
+        const current = decodeRuntimeHostManagedDeploymentConfig(currentValue);
+        assertConfigTargetsCapability(current, capability);
+        if (isDeepStrictEqual(current, canonical)) {
+          return {
+            kind: 'unchanged',
+            config: current,
+            claim: runtimeHostManagedLaunchClaim(current),
+          };
+        }
+        throw new RuntimeHostManagedDeploymentError(
+          'lifecycle_owner_exists',
+          'The State Root already has a managed deployment',
+        );
       }
-      throw new RuntimeHostManagedDeploymentError(
-        'lifecycle_owner_exists',
-        'The State Root already has a managed lifecycle owner',
-      );
-    }
-    const fence: RuntimeHostLifecycleFence = {
-      schemaVersion: SCHEMA_VERSION,
-      rootId: capability.rootId,
-      revision: randomUUID(),
-      state: {
-        kind: 'active',
-        ...canonicalClaim,
-      },
-    };
-    await writePrivateJson(path, fence);
-    return { kind: 'applied', fence };
-  });
+      const owner = await tryAcquireStateRootOwner(capability);
+      if (!owner) {
+        throw new RuntimeHostManagedDeploymentError(
+          'state_root_owned',
+          'The State Root must be retired before it can become managed',
+        );
+      }
+      try {
+        await writePrivateJson(path, canonical);
+      } finally {
+        await owner.close();
+      }
+      return {
+        kind: 'applied',
+        config: canonical,
+        claim: runtimeHostManagedLaunchClaim(canonical),
+      };
+    },
+    UPDATE_LOCK_TIMEOUT_MS,
+  );
 }
 
-export async function releaseRuntimeHostLifecycleFence(
+export async function tryAcquireRuntimeHostLaunchOwner(
   capability: StorageRootCapability<'interactive'>,
-  expected: {
-    readonly revision: string;
-    readonly deploymentId: string;
-    readonly configRevision: number;
-  },
-): Promise<'released' | 'unchanged'> {
-  const { controlDirectory } = await prepareStorageRootControlDirectory(capability);
-  const path = join(controlDirectory, RUNTIME_HOST_LIFECYCLE_FENCE_FILE);
-  return withProcessLifetimeFileUpdateLock(path, async () => {
-    const currentValue = await readBoundedJson(path, 'fence');
-    if (currentValue === undefined) return 'unchanged';
-    const current = decodeRuntimeHostLifecycleFence(currentValue, capability.rootId);
-    if (
-      current.revision !== expected.revision ||
-      current.state.kind !== 'active' ||
-      current.state.deploymentId !== expected.deploymentId ||
-      current.state.configRevision !== expected.configRevision
-    ) {
-      throw new RuntimeHostManagedDeploymentError(
-        'lifecycle_owner_changed',
-        'The Runtime Host lifecycle owner changed before release',
+  expectedLifecycleMode: 'on_demand' | 'supervised',
+  claim: RuntimeHostManagedLaunchClaim | undefined,
+  options: RuntimeHostManagedDeploymentAuthorityOptions = {},
+): Promise<StateRootOwner<'interactive'> | undefined> {
+  const canonicalClaim =
+    claim === undefined ? undefined : decodeRuntimeHostManagedLaunchClaim(claim);
+  const authorityRoot = resolveRuntimeHostManagedDeploymentAuthorityRoot(options);
+  const path = resolveRuntimeHostManagedDeploymentConfigPath(capability.rootId, options);
+  await prepareAuthorityDirectory(dirname(path), authorityRoot);
+  return withProcessLifetimeFileUpdateLock(
+    path,
+    async () => {
+      const configValue = await readBoundedJson(path);
+      let config: RuntimeHostManagedDeploymentConfig | undefined;
+      if (configValue !== undefined) {
+        try {
+          config = decodeRuntimeHostManagedDeploymentConfig(configValue);
+          assertConfigTargetsCapability(config, capability);
+        } catch (error) {
+          throw new RuntimeHostManagedDeploymentError(
+            'deployment_record_invalid',
+            'The Runtime Host managed deployment record is invalid',
+            { cause: error },
+          );
+        }
+      }
+      const rejection = runtimeHostManagedLaunchRejection(
+        config,
+        canonicalClaim,
+        expectedLifecycleMode,
       );
-    }
-    await removePrivateJson(path);
-    return 'released';
-  });
+      if (rejection !== undefined) {
+        throw new RuntimeHostManagedDeploymentError(
+          rejection,
+          managedLaunchRejectionMessage(rejection),
+        );
+      }
+      return tryAcquireStateRootOwner(capability);
+    },
+    UPDATE_LOCK_TIMEOUT_MS,
+  );
 }
 
 export function runtimeHostManagedLaunchRejection(
-  fence: RuntimeHostLifecycleFence | undefined,
+  config: RuntimeHostManagedDeploymentConfig | undefined,
   claim: RuntimeHostManagedLaunchClaim | undefined,
+  expectedLifecycleMode: 'on_demand' | 'supervised',
 ): RuntimeHostManagedLaunchRejection | undefined {
-  if (fence === undefined) return claim === undefined ? undefined : 'deployment_fence_missing';
-  if (fence.state.kind === 'transition') return 'deployment_transition_in_progress';
-  if (fence.state.kind === 'blocked') return 'deployment_needs_repair';
+  if (config === undefined) return claim === undefined ? undefined : 'deployment_record_missing';
   if (claim === undefined) return 'managed_root_requires_operator';
-  return sameManagedLaunch(fence.state, claim) ? undefined : 'deployment_fence_mismatch';
-}
-
-export async function assertRuntimeHostManagedLaunchAuthorized(
-  capability: StorageRootCapability<'interactive'>,
-  claim: RuntimeHostManagedLaunchClaim | undefined,
-): Promise<void> {
-  const canonicalClaim =
-    claim === undefined ? undefined : decodeRuntimeHostManagedLaunchClaim(claim);
-  const rejection = runtimeHostManagedLaunchRejection(
-    await readRuntimeHostLifecycleFence(capability),
-    canonicalClaim,
-  );
-  if (rejection !== undefined) {
-    throw new RuntimeHostManagedDeploymentError(
-      rejection,
-      managedLaunchRejectionMessage(rejection),
-    );
+  if (!sameManagedLaunch(runtimeHostManagedLaunchClaim(config), claim)) {
+    return 'deployment_claim_mismatch';
   }
+  return config.lifecycle.mode === expectedLifecycleMode
+    ? undefined
+    : 'deployment_lifecycle_mismatch';
 }
 
 function sameManagedLaunch(
-  active: z.infer<typeof activeFenceStateSchema>,
+  expected: RuntimeHostManagedLaunchClaim,
   claim: RuntimeHostManagedLaunchClaim,
 ): boolean {
   if (
-    active.deploymentId !== claim.deploymentId ||
-    active.configRevision !== claim.configRevision ||
-    active.lifecycle.mode !== claim.lifecycle.mode
+    expected.deploymentId !== claim.deploymentId ||
+    expected.configRevision !== claim.configRevision ||
+    expected.lifecycle.mode !== claim.lifecycle.mode
   ) {
     return false;
   }
   return (
-    active.lifecycle.mode !== 'supervised' ||
+    expected.lifecycle.mode !== 'supervised' ||
     (claim.lifecycle.mode === 'supervised' &&
-      active.lifecycle.provider === claim.lifecycle.provider)
+      expected.lifecycle.provider === claim.lifecycle.provider)
   );
 }
 
@@ -484,48 +519,60 @@ function managedLaunchRejectionMessage(rejection: RuntimeHostManagedLaunchReject
   switch (rejection) {
     case 'managed_root_requires_operator':
       return 'The State Root is managed and must be activated through its operator';
-    case 'deployment_fence_missing':
-      return 'The managed Runtime Host deployment has no lifecycle fence';
-    case 'deployment_fence_mismatch':
-      return 'The Runtime Host launch does not match the active lifecycle owner';
-    case 'deployment_transition_in_progress':
-      return 'The Runtime Host deployment is changing lifecycle owner';
-    case 'deployment_needs_repair':
-      return 'The Runtime Host deployment requires repair before activation';
+    case 'deployment_record_missing':
+      return 'The managed Runtime Host launch has no deployment record';
+    case 'deployment_claim_mismatch':
+      return 'The Runtime Host launch does not match the managed deployment';
+    case 'deployment_lifecycle_mismatch':
+      return 'The Runtime Host launch path cannot honor the configured lifecycle';
+    case 'deployment_record_invalid':
+      return 'The Runtime Host managed deployment record is invalid';
   }
 }
 
-async function readBoundedJson(
-  path: string,
-  kind: 'config' | 'fence',
-): Promise<unknown | undefined> {
+function assertConfigTargetsCapability(
+  config: RuntimeHostManagedDeploymentConfig,
+  capability: StorageRootCapability<'interactive'>,
+): void {
+  if (
+    config.root.id !== capability.rootId ||
+    resolve(config.root.path) !== capability.canonicalPath
+  ) {
+    throw new RuntimeHostManagedDeploymentError(
+      'invalid_config',
+      'The Runtime Host managed deployment targets a different State Root',
+    );
+  }
+}
+
+async function readBoundedJson(path: string): Promise<unknown | undefined> {
   let target: Awaited<ReturnType<typeof lstat>>;
   try {
     target = await lstat(path);
   } catch (error) {
     if (isNodeError(error, 'ENOENT')) return undefined;
-    throw deploymentIo('Unable to inspect the Runtime Host managed deployment ' + kind, error);
+    throw deploymentIo('Unable to inspect the Runtime Host managed deployment record', error);
   }
   if (!target.isFile() || target.isSymbolicLink() || target.size > MAX_DOCUMENT_BYTES) {
     throw new RuntimeHostManagedDeploymentError(
-      kind === 'config' ? 'invalid_config' : 'invalid_fence',
-      'The Runtime Host managed deployment ' + kind + ' must be a bounded regular file',
+      'invalid_config',
+      'The Runtime Host managed deployment record must be a bounded regular file',
     );
   }
   try {
     const contents = await readFile(path, 'utf8');
     if (Buffer.byteLength(contents, 'utf8') > MAX_DOCUMENT_BYTES) {
       throw new RuntimeHostManagedDeploymentError(
-        kind === 'config' ? 'invalid_config' : 'invalid_fence',
-        'The Runtime Host managed deployment ' + kind + ' exceeds its size limit',
+        'invalid_config',
+        'The Runtime Host managed deployment record exceeds its size limit',
       );
     }
     return JSON.parse(contents) as unknown;
   } catch (error) {
     if (error instanceof RuntimeHostManagedDeploymentError) throw error;
     throw new RuntimeHostManagedDeploymentError(
-      kind === 'config' ? 'invalid_config' : 'invalid_fence',
-      'The Runtime Host managed deployment ' + kind + ' is not valid JSON',
+      'invalid_config',
+      'The Runtime Host managed deployment record is not valid JSON',
       { cause: error },
     );
   }
@@ -536,7 +583,7 @@ async function writePrivateJson(path: string, value: unknown): Promise<void> {
   if (Buffer.byteLength(contents, 'utf8') > MAX_DOCUMENT_BYTES) {
     throw new RuntimeHostManagedDeploymentError(
       'deployment_io_failed',
-      'The Runtime Host managed deployment document exceeds its size limit',
+      'The Runtime Host managed deployment record exceeds its size limit',
     );
   }
   const temporaryPath = path + '.' + process.pid + '.' + randomUUID() + '.tmp';
@@ -555,37 +602,51 @@ async function writePrivateJson(path: string, value: unknown): Promise<void> {
     await syncDirectory(dirname(path));
   } catch (error) {
     if (error instanceof RuntimeHostManagedDeploymentError) throw error;
-    throw deploymentIo('Unable to publish the Runtime Host managed deployment document', error);
+    if (published) {
+      throw new RuntimeHostManagedDeploymentError(
+        'deployment_commit_unknown',
+        'The Runtime Host managed deployment may have been persisted; re-read it before retrying',
+        { cause: error },
+      );
+    }
+    throw deploymentIo('Unable to publish the Runtime Host managed deployment record', error);
   } finally {
     if (!published) await rm(temporaryPath, { force: true });
   }
 }
 
-async function removePrivateJson(path: string): Promise<void> {
+async function prepareAuthorityDirectory(path: string, authorityRoot: string): Promise<void> {
   try {
-    await unlink(path);
-    await syncDirectory(dirname(path));
+    await mkdir(path, { recursive: true, mode: 0o700 });
+    const metadata = await lstat(path);
+    if (!metadata.isDirectory() || metadata.isSymbolicLink()) {
+      throw new Error('Managed deployment authority path is not a directory');
+    }
+    if (process.platform !== 'win32') {
+      if (typeof process.getuid === 'function' && metadata.uid !== process.getuid()) {
+        throw new Error('Managed deployment authority path belongs to a different user');
+      }
+      await chmod(path, 0o700);
+    }
+    await syncDirectoryChain(path, dirname(authorityRoot));
   } catch (error) {
-    if (isNodeError(error, 'ENOENT')) return;
-    throw deploymentIo('Unable to remove the Runtime Host lifecycle fence', error);
+    throw deploymentIo('Unable to prepare the Runtime Host managed deployment authority', error);
   }
 }
 
-async function syncDirectory(path: string): Promise<void> {
-  const directory = await open(path, 'r');
-  try {
-    await directory.sync();
-  } finally {
-    await directory.close();
+function requireRootId(rootId: string): void {
+  if (!ROOT_ID_PATTERN.test(rootId)) {
+    throw new RuntimeHostManagedDeploymentError(
+      'invalid_config',
+      'The Runtime Host State Root ID is invalid',
+    );
   }
 }
 
 function deploymentIo(message: string, cause: unknown): RuntimeHostManagedDeploymentError {
   return cause instanceof RuntimeHostManagedDeploymentError
     ? cause
-    : new RuntimeHostManagedDeploymentError('deployment_io_failed', message, {
-        cause,
-      });
+    : new RuntimeHostManagedDeploymentError('deployment_io_failed', message, { cause });
 }
 
 function isNodeError(error: unknown, code: string): error is NodeJS.ErrnoException {

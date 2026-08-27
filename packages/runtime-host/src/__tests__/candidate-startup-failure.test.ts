@@ -107,3 +107,26 @@ test('classifies unknown startup failures without serializing their message', ()
   assert.deepEqual(failure, { reason: 'internal_startup_failure' });
   assert.equal(JSON.stringify(failure).includes('private'), false);
 });
+
+test('preserves managed authority rejections as permanent bounded diagnostics', () => {
+  const reasons = [
+    'managed_root_requires_operator',
+    'deployment_record_missing',
+    'deployment_claim_mismatch',
+    'deployment_lifecycle_mismatch',
+    'deployment_record_invalid',
+  ] as const;
+
+  for (const reason of reasons) {
+    const failure = classifyCandidateStartupFailure(
+      Object.assign(new Error('private deployment detail'), { code: reason }),
+    );
+    assert.deepEqual(failure, { reason });
+    assert.deepEqual(
+      candidateStartupFailureForExitCode(candidateStartupFailureExitCode(failure)),
+      failure,
+    );
+    assert.equal(isPermanentCandidateStartupFailure(failure), true);
+    assert.equal(JSON.stringify(failure).includes('private'), false);
+  }
+});

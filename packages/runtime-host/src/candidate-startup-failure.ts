@@ -17,11 +17,19 @@
  * under the License.
  */
 
-export type CandidateStartupFailureReason =
-  | 'stored_data_incompatible'
-  | 'operational_state_migration_blocked'
-  | 'local_ipc_security_failed'
-  | 'internal_startup_failure';
+export const CANDIDATE_STARTUP_FAILURE_REASONS = [
+  'stored_data_incompatible',
+  'operational_state_migration_blocked',
+  'local_ipc_security_failed',
+  'internal_startup_failure',
+  'managed_root_requires_operator',
+  'deployment_record_missing',
+  'deployment_claim_mismatch',
+  'deployment_lifecycle_mismatch',
+  'deployment_record_invalid',
+] as const;
+
+export type CandidateStartupFailureReason = (typeof CANDIDATE_STARTUP_FAILURE_REASONS)[number];
 
 export interface CandidateStartupFailure {
   readonly reason: CandidateStartupFailureReason;
@@ -34,11 +42,24 @@ export interface CandidateStartupFailureReport extends CandidateStartupFailure {
 const STARTUP_ATTEMPT_ID_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u;
 
+const MANAGED_AUTHORITY_FAILURES = [
+  'managed_root_requires_operator',
+  'deployment_record_missing',
+  'deployment_claim_mismatch',
+  'deployment_lifecycle_mismatch',
+  'deployment_record_invalid',
+] as const;
+
 const EXIT_CODE_BY_REASON: Readonly<Record<CandidateStartupFailureReason, number>> = {
   stored_data_incompatible: 65,
   operational_state_migration_blocked: 78,
   local_ipc_security_failed: 77,
   internal_startup_failure: 70,
+  managed_root_requires_operator: 80,
+  deployment_record_missing: 81,
+  deployment_claim_mismatch: 82,
+  deployment_lifecycle_mismatch: 83,
+  deployment_record_invalid: 84,
 };
 
 export function classifyCandidateStartupFailure(error: unknown): CandidateStartupFailure {
@@ -52,17 +73,24 @@ export function classifyCandidateStartupFailure(error: unknown): CandidateStartu
   if (errors.some((candidate) => errorCode(candidate) === 'insecure_endpoint_directory')) {
     return { reason: 'local_ipc_security_failed' };
   }
+  for (const reason of MANAGED_AUTHORITY_FAILURES) {
+    if (errors.some((candidate) => errorCode(candidate) === reason)) return { reason };
+  }
   return { reason: 'internal_startup_failure' };
 }
 
 export function isPermanentCandidateStartupFailure(
   failure: CandidateStartupFailure | undefined,
 ): failure is CandidateStartupFailure & {
-  readonly reason: 'stored_data_incompatible' | 'operational_state_migration_blocked';
+  readonly reason: Exclude<
+    CandidateStartupFailureReason,
+    'local_ipc_security_failed' | 'internal_startup_failure'
+  >;
 } {
   return (
-    failure?.reason === 'stored_data_incompatible' ||
-    failure?.reason === 'operational_state_migration_blocked'
+    failure !== undefined &&
+    failure.reason !== 'local_ipc_security_failed' &&
+    failure.reason !== 'internal_startup_failure'
   );
 }
 

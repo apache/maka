@@ -77,25 +77,25 @@ export function runtimeHostStartupError(
         reason,
         'This workspace is managed by a Runtime Host operator. Activate it through the configured Host profile. Diagnostic code: MANAGED_ROOT_REQUIRES_OPERATOR.',
       );
-    case 'deployment_fence_missing':
+    case 'deployment_record_missing':
       return new RuntimeHostStartupError(
         reason,
-        'The managed Runtime Host deployment is missing its State Root lifecycle fence. Repair the deployment before connecting. Diagnostic code: DEPLOYMENT_FENCE_MISSING.',
+        'The Runtime Host operator refers to a managed deployment that is not installed. Repair the deployment before connecting. Diagnostic code: DEPLOYMENT_RECORD_MISSING.',
       );
-    case 'deployment_fence_mismatch':
+    case 'deployment_claim_mismatch':
       return new RuntimeHostStartupError(
         reason,
-        'The Runtime Host operator does not match the State Root lifecycle owner. Repair or explicitly migrate the deployment. Diagnostic code: DEPLOYMENT_FENCE_MISMATCH.',
+        'The Runtime Host operator does not match the managed deployment. Repair or explicitly migrate the deployment. Diagnostic code: DEPLOYMENT_CLAIM_MISMATCH.',
       );
-    case 'deployment_transition_in_progress':
+    case 'deployment_lifecycle_mismatch':
       return new RuntimeHostStartupError(
         reason,
-        'The Runtime Host deployment is changing lifecycle owner. Retry after the operation completes. Diagnostic code: DEPLOYMENT_TRANSITION_IN_PROGRESS.',
+        'The Runtime Host launch path cannot honor the configured lifecycle. Use the deployment operator. Diagnostic code: DEPLOYMENT_LIFECYCLE_MISMATCH.',
       );
-    case 'deployment_needs_repair':
+    case 'deployment_record_invalid':
       return new RuntimeHostStartupError(
         reason,
-        'The Runtime Host deployment could not prove a safe lifecycle owner. Run deployment repair before connecting. Diagnostic code: DEPLOYMENT_NEEDS_REPAIR.',
+        'The Runtime Host managed deployment record is invalid. Run deployment repair before connecting. Diagnostic code: DEPLOYMENT_RECORD_INVALID.',
       );
     case 'startup_timeout':
       return new Error(

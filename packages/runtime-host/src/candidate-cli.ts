@@ -21,7 +21,8 @@ import type { InteractiveRuntimeHostCandidateOptions } from './server/candidate.
 import { isCandidateStartupAttemptId } from './candidate-startup-failure.js';
 import {
   decodeRuntimeHostManagedLaunchClaim,
-  type RuntimeHostManagedLaunchClaim,
+  isRuntimeHostManagedOnDemandLaunchClaim,
+  type RuntimeHostManagedOnDemandLaunchClaim,
 } from './operator/managed-deployment.js';
 
 export interface ParsedInteractiveRuntimeHostCandidateArguments
@@ -43,7 +44,6 @@ export function parseInteractiveRuntimeHostCandidateArguments(
     'managed-deployment-id',
     'managed-config-revision',
     'managed-lifecycle-mode',
-    'managed-provider',
   ]);
   const values = new Map<string, string>();
   for (let index = 0; index < args.length; index += 2) {
@@ -83,17 +83,11 @@ export function parseInteractiveRuntimeHostCandidateArguments(
 
 function readManagedLaunchClaim(
   values: ReadonlyMap<string, string>,
-): RuntimeHostManagedLaunchClaim | undefined {
+): RuntimeHostManagedOnDemandLaunchClaim | undefined {
   const deploymentId = values.get('managed-deployment-id');
   const rawRevision = values.get('managed-config-revision');
   const lifecycleMode = values.get('managed-lifecycle-mode');
-  const provider = values.get('managed-provider');
-  if (
-    deploymentId === undefined &&
-    rawRevision === undefined &&
-    lifecycleMode === undefined &&
-    provider === undefined
-  ) {
+  if (deploymentId === undefined && rawRevision === undefined && lifecycleMode === undefined) {
     return undefined;
   }
   if (deploymentId === undefined || rawRevision === undefined || lifecycleMode === undefined) {
@@ -103,24 +97,16 @@ function readManagedLaunchClaim(
   if (!Number.isSafeInteger(configRevision) || configRevision <= 0) {
     throw new Error('Invalid --managed-config-revision');
   }
-  if (lifecycleMode === 'on_demand') {
-    if (provider !== undefined) {
-      throw new Error('An on-demand Runtime Host candidate cannot declare a supervisor provider');
-    }
-    return decodeRuntimeHostManagedLaunchClaim({
-      deploymentId,
-      configRevision,
-      lifecycle: { mode: lifecycleMode },
-    });
+  if (lifecycleMode !== 'on_demand') throw new Error('Invalid --managed-lifecycle-mode');
+  const claim = decodeRuntimeHostManagedLaunchClaim({
+    deploymentId,
+    configRevision,
+    lifecycle: { mode: lifecycleMode },
+  });
+  if (!isRuntimeHostManagedOnDemandLaunchClaim(claim)) {
+    throw new Error('Invalid --managed-lifecycle-mode');
   }
-  if (lifecycleMode === 'supervised' && provider !== undefined) {
-    return decodeRuntimeHostManagedLaunchClaim({
-      deploymentId,
-      configRevision,
-      lifecycle: { mode: lifecycleMode, provider },
-    });
-  }
-  throw new Error('Invalid --managed-lifecycle-mode');
+  return claim;
 }
 
 function readGeneration(values: Map<string, string>): string {

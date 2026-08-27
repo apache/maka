@@ -17,14 +17,15 @@
  * under the License.
  */
 
-import { resolveStorageRoot, tryAcquireStateRootOwner } from '@maka/storage/root-authority';
+import { resolveStorageRoot } from '@maka/storage/root-authority';
 import {
   createExecutionRuntimeHostCompositionSource,
   type ExecutionRuntimeHostCompositionDependencies,
 } from './execution-composition-factory.js';
 import {
-  assertRuntimeHostManagedLaunchAuthorized,
-  type RuntimeHostManagedLaunchClaim,
+  tryAcquireRuntimeHostLaunchOwner,
+  type RuntimeHostManagedDeploymentAuthorityOptions,
+  type RuntimeHostManagedSupervisedLaunchClaim,
 } from '../operator/managed-deployment.js';
 import { RuntimeHostKernel } from './host-kernel.js';
 import { openRuntimeHostAccessAuthority } from './access-authority.js';
@@ -38,7 +39,7 @@ export interface ExecutionRuntimeHostServiceOptions {
   readonly projectDirectoryRoots?: readonly PublishedProjectDirectoryRoot[];
   readonly handshakeTimeoutMs?: number;
   readonly shutdownGraceMs?: number;
-  readonly managedLaunchClaim?: RuntimeHostManagedLaunchClaim;
+  readonly managedLaunchClaim?: RuntimeHostManagedSupervisedLaunchClaim;
   readonly websocket?: Omit<
     StartRuntimeHostWebSocketListenerOptions,
     'accessAuthority' | 'accept' | 'isReady'
@@ -46,7 +47,11 @@ export interface ExecutionRuntimeHostServiceOptions {
   readonly peer?: Omit<StartRuntimeHostPeerListenerOptions, 'accessAuthority' | 'accept'>;
 }
 
-export type ExecutionRuntimeHostServiceDependencies = ExecutionRuntimeHostCompositionDependencies;
+export interface ExecutionRuntimeHostServiceDependencies
+  extends ExecutionRuntimeHostCompositionDependencies {
+  /** Test-only authority-location override. */
+  readonly managedDeploymentAuthority?: RuntimeHostManagedDeploymentAuthorityOptions;
+}
 
 export class RuntimeHostRootAlreadyOwnedError extends Error {
   readonly code = 'root_already_owned';
@@ -63,8 +68,12 @@ export async function startExecutionRuntimeHostService(
 ): Promise<RuntimeHostKernel> {
   const composition = await createExecutionRuntimeHostCompositionSource(options, dependencies);
   const capability = await resolveStorageRoot({ path: options.rootPath, kind: 'interactive' });
-  await assertRuntimeHostManagedLaunchAuthorized(capability, options.managedLaunchClaim);
-  const owner = await tryAcquireStateRootOwner(capability);
+  const owner = await tryAcquireRuntimeHostLaunchOwner(
+    capability,
+    'supervised',
+    options.managedLaunchClaim,
+    dependencies.managedDeploymentAuthority,
+  );
   if (!owner) throw new RuntimeHostRootAlreadyOwnedError(capability.canonicalPath);
   try {
     const accessAuthority = await openRuntimeHostAccessAuthority(owner.controlDirectory);

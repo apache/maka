@@ -17,10 +17,11 @@
  * under the License.
  */
 
-import { resolveExistingStorageRoot, tryAcquireStateRootOwner } from '@maka/storage/root-authority';
+import { resolveExistingStorageRoot } from '@maka/storage/root-authority';
 import {
-  assertRuntimeHostManagedLaunchAuthorized,
-  type RuntimeHostManagedLaunchClaim,
+  tryAcquireRuntimeHostLaunchOwner,
+  type RuntimeHostManagedDeploymentAuthorityOptions,
+  type RuntimeHostManagedOnDemandLaunchClaim,
 } from '../operator/managed-deployment.js';
 import type { RuntimeHostCompositionSource } from './host-composition.js';
 import { RuntimeHostKernel } from './host-kernel.js';
@@ -32,7 +33,12 @@ export interface InteractiveRuntimeHostCandidateOptions {
   idleGraceMs?: number;
   handshakeTimeoutMs?: number;
   generation?: string;
-  managedLaunchClaim?: RuntimeHostManagedLaunchClaim;
+  managedLaunchClaim?: RuntimeHostManagedOnDemandLaunchClaim;
+}
+
+export interface InteractiveRuntimeHostCandidateDependencies {
+  /** Test-only authority-location override. */
+  readonly managedDeploymentAuthority?: RuntimeHostManagedDeploymentAuthorityOptions;
 }
 
 export type InteractiveRuntimeHostCandidateResult =
@@ -42,14 +48,19 @@ export type InteractiveRuntimeHostCandidateResult =
 export async function startInteractiveRuntimeHostCandidate(
   options: InteractiveRuntimeHostCandidateOptions,
   composition: RuntimeHostCompositionSource,
+  dependencies: InteractiveRuntimeHostCandidateDependencies = {},
 ): Promise<InteractiveRuntimeHostCandidateResult> {
   const capability = await resolveExistingStorageRoot({
     path: options.rootPath,
     kind: 'interactive',
     expectedRootId: options.expectedRootId,
   });
-  await assertRuntimeHostManagedLaunchAuthorized(capability, options.managedLaunchClaim);
-  const owner = await tryAcquireStateRootOwner(capability);
+  const owner = await tryAcquireRuntimeHostLaunchOwner(
+    capability,
+    'on_demand',
+    options.managedLaunchClaim,
+    dependencies.managedDeploymentAuthority,
+  );
   if (!owner) return { kind: 'loser' };
   const host = await RuntimeHostKernel.start({
     owner,
