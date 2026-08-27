@@ -160,7 +160,11 @@ describe('ASF source release verification', () => {
 
   test('accepts a classified dependency from a nested package lockfile', async () => {
     const fixture = createFixtureCandidate({
-      'tools/source/package.json': `${JSON.stringify({ name: 'source', private: true, license: 'Apache-2.0' })}\n`,
+      'tools/source/package.json': `${JSON.stringify({
+        dependencies: { 'source-helper': '1.0.0' },
+        name: 'source',
+        private: true,
+      })}\n`,
       'tools/source/package-lock.json': `${JSON.stringify({
         lockfileVersion: 3,
         name: 'source',
@@ -196,6 +200,45 @@ describe('ASF source release verification', () => {
       );
     } finally {
       fixture.cleanup();
+    }
+  });
+
+  test('accepts an unlicensed private manifest without dependencies', async () => {
+    const fixture = createFixtureCandidate({
+      'tools/profile/package.json': `${JSON.stringify({ name: 'profile', private: true })}\n`,
+    });
+    try {
+      await assert.doesNotReject(() => verifySourceCandidate({ archivePath: fixture.archivePath }));
+    } finally {
+      fixture.cleanup();
+    }
+  });
+
+  test('rejects unlicensed private manifests whose dependencies lack lock provenance', async () => {
+    const dependencyDeclarations = {
+      bundleDependencies: ['runtime-helper'],
+      bundledDependencies: ['runtime-helper'],
+      dependencies: { 'runtime-helper': '1.0.0' },
+      devDependencies: { 'runtime-helper': '1.0.0' },
+      optionalDependencies: { 'runtime-helper': '1.0.0' },
+      peerDependencies: { 'runtime-helper': '1.0.0' },
+    };
+    for (const [field, declaration] of Object.entries(dependencyDeclarations)) {
+      const fixture = createFixtureCandidate({
+        [`tools/${field}/package.json`]: `${JSON.stringify({
+          [field]: declaration,
+          name: field,
+          private: true,
+        })}\n`,
+      });
+      try {
+        await assert.rejects(
+          () => verifySourceCandidate({ archivePath: fixture.archivePath }),
+          new RegExp(`Cannot safely classify.*${field}.*without lock provenance`, 'u'),
+        );
+      } finally {
+        fixture.cleanup();
+      }
     }
   });
 

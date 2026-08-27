@@ -71,6 +71,13 @@ const knownNonCategoryXLicenses = new Set([
   'WTFPL OR ISC',
 ]);
 const categoryXLicensePattern = /(?:^|[^A-Za-z])(?:A?GPL|LGPL)-?\d/i;
+const packageDependencyFields = [
+  'dependencies',
+  'devDependencies',
+  'optionalDependencies',
+  'peerDependencies',
+];
+const bundledDependencyFields = ['bundleDependencies', 'bundledDependencies'];
 const maxCommandBuffer = 64 * 1024 * 1024;
 const rejectedGpgStatuses = new Set([
   'BADSIG',
@@ -539,24 +546,55 @@ function validateNodePackageInputs(candidateRoot, identity, entries) {
     }
   }
 
+  const lockEntries = files.filter((name) =>
+    /\/(?:package-lock|npm-shrinkwrap)\.json$/u.test(name),
+  );
+  const parsedLocks = new Map();
+  const readLock = (entry) => {
+    if (parsedLocks.has(entry)) return parsedLocks.get(entry);
+    const lock = parseArchiveJson(readEntry(entry), entry);
+    if (!lock.packages || typeof lock.packages !== 'object' || Array.isArray(lock.packages)) {
+      throw new Error(`Cannot safely classify package lockfile without packages: ${entry}`);
+    }
+    parsedLocks.set(entry, lock);
+    return lock;
+  };
+
   for (const entry of files.filter((name) => name.endsWith('/package.json'))) {
     const manifest = parseArchiveJson(readEntry(entry), entry);
     if (manifest.license) validateReleaseLicense(manifest.license, entry);
     else if (manifest.private !== true) {
       throw new Error(`Cannot safely classify package manifest without a license: ${entry}`);
+    } else {
+      const dependencyNames = declaredPackageDependencies(manifest, entry);
+      if (dependencyNames.length > 0) {
+        const directory = dirname(entry);
+        const lockEntry = [
+          `${directory}/npm-shrinkwrap.json`,
+          `${directory}/package-lock.json`,
+        ].find((name) => lockEntries.includes(name));
+        if (!lockEntry) {
+          throw new Error(
+            `Cannot safely classify private package manifest ${entry} without lock provenance`,
+          );
+        }
+        const lock = readLock(lockEntry);
+        for (const name of dependencyNames) {
+          if (!Object.hasOwn(lock.packages, `node_modules/${name}`)) {
+            throw new Error(
+              `Cannot safely classify ${name} declared by ${entry} without matching lock provenance`,
+            );
+          }
+        }
+      }
     }
   }
 
   for (const entry of files.filter((name) => /\/(?:pnpm-lock\.yaml|yarn\.lock)$/u.test(name))) {
     throw new Error(`Cannot safely classify unsupported package lockfile: ${entry}`);
   }
-  for (const entry of files.filter((name) =>
-    /\/(?:package-lock|npm-shrinkwrap)\.json$/u.test(name),
-  )) {
-    const lock = parseArchiveJson(readEntry(entry), entry);
-    if (!lock.packages || typeof lock.packages !== 'object' || Array.isArray(lock.packages)) {
-      throw new Error(`Cannot safely classify package lockfile without packages: ${entry}`);
-    }
+  for (const entry of lockEntries) {
+    const lock = readLock(entry);
     for (const [lockPath, dependency] of Object.entries(lock.packages)) {
       if (!lockPath || dependency?.link === true || !lockPath.includes('node_modules/')) continue;
       const name = dependency.name ?? lockPath.slice(lockPath.lastIndexOf('node_modules/') + 13);
@@ -572,6 +610,27 @@ function validateNodePackageInputs(candidateRoot, identity, entries) {
       validateReleaseLicense(license, `${name}${version ? `@${version}` : ''} in ${entry}`);
     }
   }
+}
+
+function declaredPackageDependencies(manifest, entry) {
+  const names = new Set();
+  for (const field of packageDependencyFields) {
+    const dependencies = manifest[field];
+    if (dependencies === undefined) continue;
+    if (!dependencies || typeof dependencies !== 'object' || Array.isArray(dependencies)) {
+      throw new Error(`Invalid ${field} in package manifest: ${entry}`);
+    }
+    for (const name of Object.keys(dependencies)) names.add(name);
+  }
+  for (const field of bundledDependencyFields) {
+    const dependencies = manifest[field];
+    if (dependencies === undefined) continue;
+    if (!Array.isArray(dependencies) || dependencies.some((name) => typeof name !== 'string')) {
+      throw new Error(`Invalid ${field} in package manifest: ${entry}`);
+    }
+    for (const name of dependencies) names.add(name);
+  }
+  return [...names];
 }
 
 function parseArchiveJson(contents, entry) {
