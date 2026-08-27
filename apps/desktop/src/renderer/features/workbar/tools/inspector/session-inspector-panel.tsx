@@ -261,6 +261,7 @@ function InspectorOverview(props: {
 }) {
   const { copy, overview } = props;
   const formatNumber = numberFormatter(props.locale);
+  const formatCompactNumber = compactNumberFormatter(props.locale);
   const context = overview.context;
 
   return (
@@ -287,7 +288,12 @@ function InspectorOverview(props: {
       )}
 
       {context && (
-        <InspectorContextSection copy={copy} context={context} formatNumber={formatNumber} />
+        <InspectorContextSection
+          copy={copy}
+          context={context}
+          formatCompactNumber={formatCompactNumber}
+          formatNumber={formatNumber}
+        />
       )}
 
       {overview.composition && (
@@ -351,9 +357,10 @@ function FactRow(props: { label: ReactNode; value: ReactNode; swatch?: ReactNode
 function InspectorContextSection(props: {
   copy: InspectorCopy;
   context: NonNullable<ReturnType<typeof deriveInspectorOverviewModel>['context']>;
+  formatCompactNumber: (value: number) => string;
   formatNumber: (value: number) => string;
 }) {
-  const { context, copy, formatNumber } = props;
+  const { context, copy, formatCompactNumber, formatNumber } = props;
   const level = context.ratio >= 0.9 ? 'error' : context.ratio >= 0.7 ? 'warning' : undefined;
 
   return (
@@ -363,7 +370,7 @@ function InspectorContextSection(props: {
           {copy.overview.context}
         </Heading>
         <span className="maka-inspector-section-readout">
-          {formatNumber(context.usedTokens)} / {formatNumber(context.windowTokens)} ·{' '}
+          {formatCompactNumber(context.usedTokens)} / {formatCompactNumber(context.windowTokens)} ·{' '}
           {formatPercent(context.ratio)}
         </span>
       </div>
@@ -509,6 +516,19 @@ export function InspectorCompositionSection(props: {
 function numberFormatter(locale: UiLocale): (value: number) => string {
   const formatter = new Intl.NumberFormat(uiLocaleToIntlLocale(locale));
   return (value) => formatter.format(value);
+}
+
+export function compactNumberFormatter(_locale: UiLocale): (value: number) => string {
+  return (value) => {
+    if (value < 1_000) return String(value);
+
+    if (value < 1_000_000) {
+      const thousands = Math.round(value / 100) / 10;
+      return thousands >= 1_000 ? '1M' : `${thousands}K`;
+    }
+
+    return `${Math.round(value / 100_000) / 10}M`;
+  };
 }
 
 function formatPercent(ratio: number): string {
