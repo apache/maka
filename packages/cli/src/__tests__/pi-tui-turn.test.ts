@@ -24,48 +24,27 @@ import { SessionActivityRegistry } from '@maka/runtime/goal-turn-lifecycle';
 import { runMakaPiTuiTurn } from '../pi-tui-turn.js';
 
 describe('Maka Pi TUI turn', () => {
-  test('prepares and drains an external turn under one Session activity lease', async () => {
+  test('drains an attached turn under one Session activity lease', async () => {
     const activities = new SessionActivityRegistry();
     const sequence: string[] = [];
 
     const outcome = await runMakaPiTuiTurn({
-      driver: {
-        async preparePrompt(prompt, options) {
-          sequence.push('prepare');
-          assert.equal(prompt, 'visible prompt');
-          assert.deepEqual(options, {
-            modelText: 'expanded prompt',
-            turnOrchestration: { mode: 'swarm', source: 'slash_command' },
-          });
-          return preparedTurn([
-            event({
-              type: 'text_delta',
-              messageId: 'message-1',
-              text: 'working',
-            }),
-            event({ type: 'complete', stopReason: 'end_turn' }),
-          ]);
-        },
-      },
       turnActivity: { activities },
       request: {
-        kind: 'external',
-        prompt: 'visible prompt',
-        sendText: 'expanded prompt',
-        sessionId: null,
-        turnOrchestration: { mode: 'swarm', source: 'slash_command' },
+        turn: preparedTurn([
+          event({ type: 'text_delta', messageId: 'message-1', text: 'working' }),
+          event({ type: 'complete', stopReason: 'end_turn' }),
+        ]),
       },
       shouldAbort: () => false,
-      onStart: () => {
-        sequence.push('start');
-      },
+      onStart: () => sequence.push('start'),
       onEvent: (sessionEvent) => {
         sequence.push(`event:${sessionEvent.type}`);
       },
     });
 
     assert.deepEqual(outcome, { kind: 'completed', turnId: 'turn-1' });
-    assert.deepEqual(sequence, ['start', 'prepare', 'event:text_delta', 'event:complete']);
+    assert.deepEqual(sequence, ['start', 'event:text_delta', 'event:complete']);
     assert.equal(activities.whenIdle('session-1'), undefined);
   });
 
@@ -74,13 +53,8 @@ describe('Maka Pi TUI turn', () => {
     const failures: string[] = [];
 
     const outcome = await runMakaPiTuiTurn({
-      driver: {
-        async preparePrompt() {
-          return preparedTurn([]);
-        },
-      },
       turnActivity: { activities },
-      request: { kind: 'external', prompt: 'hello', sessionId: null },
+      request: { turn: preparedTurn([]) },
       shouldAbort: () => false,
       onFailure: (error) => {
         failures.push(errorMessage(error));
@@ -96,30 +70,35 @@ describe('Maka Pi TUI turn', () => {
     assert.equal(activities.whenIdle('session-1'), undefined);
   });
 
-  test('releases existing-session activity when preparation fails', async () => {
+  test('releases the Session activity when the attached stream fails', async () => {
     const activities = new SessionActivityRegistry();
     const failures: string[] = [];
 
     const outcome = await runMakaPiTuiTurn({
-      driver: {
-        async preparePrompt() {
-          assert.ok(activities.whenIdle('session-1'));
-          throw new Error('prepare failed');
+      turnActivity: { activities },
+      request: {
+        turn: {
+          sessionId: 'session-1',
+          turnId: 'turn-1',
+          events: failingEvents('stream failed'),
         },
       },
-      turnActivity: { activities },
-      request: { kind: 'external', prompt: 'hello', sessionId: 'session-1' },
       shouldAbort: () => false,
       onFailure: (error) => {
         failures.push(errorMessage(error));
       },
     });
 
-    assert.deepEqual(outcome, { kind: 'errored', reason: 'prepare failed' });
-    assert.deepEqual(failures, ['prepare failed']);
+    assert.deepEqual(outcome, { kind: 'errored', turnId: 'turn-1', reason: 'stream failed' });
+    assert.deepEqual(failures, ['stream failed']);
     assert.equal(activities.whenIdle('session-1'), undefined);
   });
 });
+
+async function* failingEvents(reason: string): AsyncIterable<SessionEvent> {
+  await Promise.resolve();
+  throw new Error(reason);
+}
 
 function preparedTurn(events: readonly SessionEvent[]) {
   return {

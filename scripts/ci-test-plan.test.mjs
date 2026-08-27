@@ -21,7 +21,7 @@ import assert from 'node:assert/strict';
 import { readdirSync, readFileSync } from 'node:fs';
 import test from 'node:test';
 
-import { formatGitHubOutputs, planTests } from './ci-test-plan.mjs';
+import { formatGitHubOutputs, loadWorkspaceGraph, planTests } from './ci-test-plan.mjs';
 
 const dirs = [
   'packages/core',
@@ -341,13 +341,126 @@ test('pull request triggers stay on an explicit allowlist', () => {
 
   assert.deepEqual(onPullRequests, [
     'ci.yml',
+    'cli-package-validation.yml',
     'copilot-auto-review.yml',
     'dependency-audit.yml',
     'gitoxide-helper-admission.yml',
+    'pr-effort-label.yml',
     'release-windows-check.yml',
     'runtime-host-owner-platform.yml',
+    'runtime-host-peer-admission.yml',
+    'windows-recovery.yml',
     'windows-sandbox-w0.yml',
   ]);
+});
+
+test('the recovery lane pairs its path filter with a nightly run and a main push', () => {
+  // Read from the `on:` block with comments stripped, so documenting a trigger
+  // cannot break its contract.
+  const triggers = triggerBlock('windows-recovery.yml');
+
+  // Same contract as the sandbox lane: the filter is a pre-filter, not the
+  // lane's import closure, so dropping the schedule would silently lose every
+  // transitive edit it cannot match, and dropping the filter would put every
+  // Windows recovery run back on every pull request. The main push carries no
+  // filter because `strict: false` lets a stale-base pull request go green,
+  // and because a paths filter only sees the first 300 files of a diff.
+  // Stripped comment lines survive as blank ones, so the gap between the
+  // trigger and its list is any mix of blank and four-space lines.
+  assert.match(triggers, /\n {2}pull_request:\n(?:(?: {4}[^\n]*)?\n)* {4}paths:/u);
+  assert.match(triggers, /\n {2}push:\n {4}branches: \[main\]\n/u);
+  assert.doesNotMatch(
+    triggers.match(/\n {2}push:\n(?:(?: {4}[^\n]*)?\n)*/u)?.[0] ?? '',
+    /\bpaths(-ignore)?:/u,
+  );
+  assert.match(triggers, /\n {2}schedule:\n/u);
+  assert.match(triggers, /\n {2}workflow_dispatch:/u);
+  assert.match(readWorkflow('windows-recovery.yml'), /\n {4}name: windows_recovery/u);
+});
+
+test('the recovery lane keeps every run kind out of one shared concurrency group', () => {
+  const workflow = readWorkflow('windows-recovery.yml');
+
+  // github.head_ref is a bare branch name, so two forks pushing their own
+  // `main` would share a group and cancel each other; github.ref is
+  // refs/heads/main for the nightly, a dispatch and a main push alike, so a
+  // ref-keyed group made a dispatch queue behind the nightly and let the next
+  // dispatch discard it while pending.
+  assert.match(
+    workflow,
+    /group: windows-recovery-\$\{\{ github\.event\.pull_request\.number \|\| github\.run_id \}\}/u,
+  );
+  assert.match(workflow, /\n {2}cancel-in-progress: true/u);
+});
+
+test('the recovery lane filters pull requests by the workspaces its steps execute', () => {
+  const workflow = readWorkflow('windows-recovery.yml');
+  const filtered = new Set(pullRequestPathFilter('windows-recovery.yml'));
+
+  // Derived from the dist paths the steps run, then widened along the workspace
+  // dependency graph the planner selects with. The separator class matches the
+  // backslash form too, because these steps run under pwsh where both are
+  // legal. A new workspace on this lane, or a new dependency under one of them,
+  // fails here until the filter admits its sources and project file.
+  const executed = [
+    ...new Set(
+      [...workflow.matchAll(/packages[/\\]([^/\\]+)[/\\]dist[/\\]/gu)].map((match) => match[1]),
+    ),
+  ].sort();
+  assert.deepEqual(executed, ['runtime', 'runtime-host', 'storage']);
+
+  const closure = dependencyClosure(executed.map((workspace) => `packages/${workspace}`));
+  assert.ok(closure.includes('packages/core'), 'dependency closure must reach core');
+  for (const dir of closure) {
+    assert.ok(filtered.has(`${dir}/src/**`), `${dir}: sources`);
+    assert.ok(filtered.has(`${dir}/tsconfig.json`), `${dir}: project file`);
+    assert.ok(filtered.has(`${dir}/package.json`), `${dir}: manifest`);
+  }
+});
+
+test('the recovery lane filter follows the postinstall launcher chain', () => {
+  const filtered = new Set(pullRequestPathFilter('windows-recovery.yml'));
+  const manifest = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
+  // Derived from postinstall itself, then one hop into whatever those entry
+  // points launch, because a launcher the filter cannot see still decides what
+  // `npm ci` produces on Windows. A restated list missed exactly that hop.
+  const entrypoints = [...manifest.scripts.postinstall.matchAll(/node (scripts\/[\w.-]+)/gu)].map(
+    (match) => match[1],
+  );
+  assert.ok(entrypoints.length > 0, 'postinstall runs no script');
+
+  for (const entrypoint of entrypoints) {
+    assert.ok(filtered.has(entrypoint), entrypoint);
+    const source = readFileSync(new URL(`../${entrypoint}`, import.meta.url), 'utf8');
+    for (const launched of source.matchAll(/new URL\('\.\/([\w.-]+)'/gu)) {
+      assert.ok(filtered.has(`scripts/${launched[1]}`), `${entrypoint} launches ${launched[1]}`);
+    }
+  }
+});
+
+test('the recovery lane filters pull requests by what its install and clean steps consume', () => {
+  const filtered = new Set(pullRequestPathFilter('windows-recovery.yml'));
+
+  // `npm.cmd ci` and `npm.cmd run build:test` run unconditionally, so these are
+  // first-class inputs of the lane rather than transitive edits the nightly can
+  // be left to cover. A grouped dependabot bump touches only the manifests, and
+  // the crash gates sit on a native file lock the Linux `test` lane never sees.
+  for (const path of [
+    'package.json',
+    'package-lock.json',
+    'patches/**',
+    'scripts/apply-dependency-patches.mjs',
+    'scripts/install-electron-with-retry.mjs',
+    'scripts/clean-build.mjs',
+    'scripts/clean-paths.mjs',
+    'scripts/windows-runtime-host-local-ipc-trust.ps1',
+    'tsconfig.base.json',
+    'tsconfig.lib.json',
+    'packages/runtime/scripts/**',
+    '.github/workflows/windows-recovery.yml',
+  ]) {
+    assert.ok(filtered.has(path), path);
+  }
 });
 
 test('the sandbox lane pairs its path filter with a nightly run', () => {
@@ -438,10 +551,54 @@ test('specialized platform workflows stay reachable without pull requests', () =
   assert.match(baseline, /\n  schedule:/u);
 });
 
+test('Windows recovery executes the exact managed dependency ADS regressions', () => {
+  const recovery = readWorkflow('windows-recovery.yml');
+
+  assert.match(recovery, /name: Verify managed dependency alternate streams/u);
+  assert.match(recovery, /--test-name-pattern="NTFS alternate stream"/u);
+  assert.match(
+    recovery,
+    /packages\/storage\/dist\/__tests__\/managed-dependency-environment\.test\.js/u,
+  );
+  assert.match(recovery, /# tests 3/u);
+  assert.match(recovery, /# pass 3/u);
+  assert.match(recovery, /# skipped 0/u);
+});
+
+test('Windows recovery executes the root initialization replacement race', () => {
+  const recovery = readWorkflow('windows-recovery.yml');
+
+  assert.match(recovery, /name: Verify root initialization replacement race/u);
+  assert.match(
+    recovery,
+    /--test-name-pattern="rejects replacement before opening the temporary marker"/u,
+  );
+  assert.match(recovery, /packages\/storage\/dist\/__tests__\/root-authority\.test\.js/u);
+  assert.match(recovery, /# tests 1/u);
+  assert.match(recovery, /# pass 1/u);
+  assert.match(recovery, /# skipped 0/u);
+});
+
 test('workflows never persist the job credential into the checkout', () => {
   for (const name of readdirSync(WORKFLOW_DIR)) {
     for (const step of checkoutSteps(name)) {
       assert.match(step, /persist-credentials: false/u, `${name}: ${step.trim()}`);
+    }
+  }
+});
+
+test('a pull_request_target checkout is pinned to the trusted base commit', () => {
+  // This event hands the job a writable token while the pull request is fork
+  // controlled, so what gets checked out is what decides whether that token can
+  // reach author-supplied code. `github.sha` is the base branch commit here;
+  // `head.sha` and a bare checkout under a merge-ref event are both the pull
+  // request's own tree. Nothing else in CI would notice that edit, which is why
+  // the rule lives here rather than in a comment.
+  for (const name of readdirSync(WORKFLOW_DIR)) {
+    if (!/\bpull_request_target\b/u.test(triggerBlock(name))) continue;
+
+    for (const step of checkoutSteps(name)) {
+      assert.match(step, /\n\s+ref: \$\{\{ github\.sha \}\}\n/u, `${name}: ${step.trim()}`);
     }
   }
 });
@@ -468,6 +625,56 @@ test('core CI runs the live Eval proxy lifecycle when Eval is selected', () => {
 
 const WORKFLOW_DIR = new URL('../.github/workflows/', import.meta.url);
 
+/**
+ * Reads the `paths` list belonging to a workflow's `pull_request` trigger.
+ * Anchoring to the trigger, instead of matching entry text anywhere in the
+ * file, is what makes the filter assertions fail when entries move under
+ * `paths-ignore`, under another trigger, or out of `on:` altogether.
+ */
+function pullRequestPathFilter(name) {
+  // Reads the `on:` block with comments already stripped, so a comment between
+  // the trigger and its list cannot end the scan, and accepts the quoting and
+  // spacing YAML allows, so a legal rewrite reports the entries it really has
+  // instead of an empty list that reads as a missing filter.
+  const lines = triggerBlock(name).split('\n');
+  const start = lines.findIndex((line) => /^ {2}pull_request:\s*$/u.test(line));
+  assert.ok(start >= 0, `${name}: no pull_request trigger`);
+
+  const paths = [];
+  let inPaths = false;
+  for (const line of lines.slice(start + 1)) {
+    if (line.trim() === '') continue;
+    if (/^ {0,2}\S/u.test(line)) break;
+    if (/^ {4}\S/u.test(line)) {
+      inPaths = /^ {4}paths:\s*$/u.test(line);
+      continue;
+    }
+    const entry = inPaths ? /^\s+-\s+['"]?(.+?)['"]?\s*$/u.exec(line) : null;
+    if (entry) paths.push(entry[1]);
+  }
+  return paths;
+}
+
+/**
+ * Workspace dirs `seeds` depend on, transitively, read off the same graph the
+ * planner selects with rather than a second definition of the same edges. The
+ * graph stores dependents, so a dependency is any dir listing one of ours.
+ */
+function dependencyClosure(seeds) {
+  const graph = loadWorkspaceGraph();
+  const selected = new Set(seeds);
+  const pending = [...seeds];
+  while (pending.length > 0) {
+    const dir = pending.shift();
+    for (const [dependency, dependents] of graph.dependents) {
+      if (!dependents.has(dir) || selected.has(dependency)) continue;
+      selected.add(dependency);
+      pending.push(dependency);
+    }
+  }
+  return [...selected].sort();
+}
+
 function readWorkflow(name) {
   return readFileSync(new URL(name, WORKFLOW_DIR), 'utf8');
 }
@@ -476,11 +683,14 @@ function readWorkflow(name) {
  * Reads the `on:` block only, so a workflow cannot escape a trigger contract by
  * writing `on: [pull_request]`, and prose elsewhere in the file cannot fake one.
  */
-function hasPullRequestTrigger(name) {
+function triggerBlock(name) {
   const withoutComments = readWorkflow(name).replaceAll(/^[ \t]*#.*$/gmu, '');
-  const triggers = withoutComments.match(/^on:(.*(?:\n(?![^\s#]).*)*)/mu)?.[1] ?? '';
 
-  return /\bpull_request(_target)?\b/u.test(triggers);
+  return withoutComments.match(/^on:(.*(?:\n(?![^\s#]).*)*)/mu)?.[1] ?? '';
+}
+
+function hasPullRequestTrigger(name) {
+  return /\bpull_request(_target)?\b/u.test(triggerBlock(name));
 }
 
 /**

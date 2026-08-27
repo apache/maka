@@ -18,7 +18,7 @@
  */
 
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, realpath, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -206,7 +206,7 @@ async function fixtureConfig(
   protocol?: McpProtocolPreference,
   extraEnv: Record<string, string> = {},
 ): Promise<{ config: McpConfigFile; log: string; root: string }> {
-  const root = await mkdtemp(join(tmpdir(), 'maka-mcp-stdio-negotiation-'));
+  const root = await realpath(await mkdtemp(join(tmpdir(), 'maka-mcp-stdio-negotiation-')));
   roots.push(root);
   const log = join(root, 'events.jsonl');
   const fixturePath = kind === 'legacy' ? legacyFixturePath : dualEraFixturePath;

@@ -21,7 +21,7 @@
 
 [简体中文](./runtime-host-remote-access.zh-CN.md)
 
-Maka Desktop, TUI, and CLI can connect to a Runtime Host through TLS, SSH, or explicitly enabled plaintext WebSocket.
+Maka Desktop, TUI, and CLI can connect to a Runtime Host through TLS, SSH, or explicitly enabled plaintext WebSocket. The CLI and TUI also support the experimental direct-peer transport described below.
 
 ## Set up a Linux or macOS Host
 
@@ -55,7 +55,7 @@ npm --workspace maka-agent exec -- maka runtime-host project add /srv/projects/e
 npm --workspace maka-agent exec -- maka runtime-host project list --root /srv/maka
 ```
 
-The Desktop directory picker publishes the service user's home directory by default. To publish a different allowlist, pass one or more named roots when starting the service:
+The Desktop directory picker publishes the service user's home directory by default. Managed services persist that default as an explicit Project root policy. To publish a different allowlist, pass one or more named roots when starting the service:
 
 ```sh
 npm --workspace maka-agent exec -- maka runtime-host serve \
@@ -66,6 +66,10 @@ npm --workspace maka-agent exec -- maka runtime-host serve \
 ```
 
 When any `--project-root <label>=<absolute-path>` option is present, only those roots are available to remote directory browsing. The option is repeatable up to eight times. Maka resolves every root at startup and keeps browsing and registration contained within the selected root.
+
+Pass `--no-project-roots` to publish an explicit empty policy. This disables directory browsing and registration without removing Projects that are already registered. Desktop-managed SSH Hosts expose the same complete policy in Host settings. Applying it uses the SSH management plane, refuses to interrupt active tasks without confirmation, and restarts the service only when the effective policy changes.
+
+For a managed service, the Host-owned service configuration is the single authority for this policy. The system service starts from that configuration instead of retaining a second copy of the roots in its launch definition.
 
 Project paths stay on the Host. Issue a credential for each Client:
 
@@ -97,6 +101,35 @@ global Maka installation, not `npx`. A replacement is committed only after the n
 ready; failure restores the previous service.
 
 ## Choose a connection method
+
+### Experimental direct peer
+
+The released CLI includes the native direct-peer transport for CLI and TUI use; the Host does not
+need Rust or a source checkout. Desktop support is not part of this milestone. After managed setup,
+enable it against the exact service target printed by setup:
+
+```sh
+maka runtime-host service peer enable \
+  --expected-service-id '<serviceId>' \
+  --expected-root-path '<rootPath>' \
+  --expected-root-id '<rootId>'
+
+maka runtime-host service peer descriptor \
+  --expected-service-id '<serviceId>' \
+  --expected-root-path '<rootPath>' \
+  --expected-root-id '<rootId>'
+```
+
+The descriptor contains the PeerId, Root ID, and candidate routes, but never an access credential.
+Use those values with `runtime-host profile set --peer-id ... --peer-route ...`; supply the
+credential created by setup through `MAKA_RUNTIME_HOST_ACCESS_CREDENTIAL`. Disable and re-enable
+preserve the PeerId and listener settings; `peer rotate` intentionally changes the PeerId, and
+service uninstall removes its key while retaining the State Root. Pass
+`peer enable --clear-coordination-relays` to remove every configured coordination relay.
+
+This direct-only path is experimental and may fail on restrictive NAT or UDP-blocked networks. It
+does not replace an existing TLS, SSH, or overlay-network fallback and does not use a public relay
+unless one is explicitly configured with `peer enable --coordination-relay`.
 
 ### Direct TLS
 

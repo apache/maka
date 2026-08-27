@@ -57,7 +57,7 @@ import type {
   DesktopSessionSummary,
 } from '../../preload/bridge-contract.js';
 import type { UiLocalePreference } from '@maka/core/ui-locale';
-import { createDefaultSettings } from '@maka/core/settings';
+import { createDefaultSettings, DEFAULT_APP_ICON } from '@maka/core/settings';
 import { Banner, Selector, useMountedRef, useToast, useUiLocale } from '@maka/ui';
 import { ProvidersPanel } from './providers-panel';
 import { SubagentSettingsPage } from './subagent-settings-page';
@@ -1141,7 +1141,8 @@ function SettingsPageBody(props: {
         <AppearanceSettingsPage
           themePref={props.themePref}
           themePalette={props.themePalette}
-          appIcon={props.settings.appearance.appIcon ?? 'default'}
+          appIcon={props.settings.appearance.appIcon ?? DEFAULT_APP_ICON}
+          appIconDark={props.settings.appearance.appIconDark}
           onUpdate={props.onUpdateSettings}
           onThemeChange={props.onThemeChange}
           onThemePaletteChange={props.onThemePaletteChange}

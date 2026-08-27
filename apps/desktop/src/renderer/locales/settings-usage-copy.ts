@@ -29,7 +29,7 @@ export type UsageSettingsCopy = {
   tables: {
     providersAria: string; modelsAria: string; toolsAria: string; pricingAria: string; requestsAria: string;
     providerHeaders: string[]; modelHeaders: string[]; toolHeaders: string[]; pricingHeaders: string[]; requestHeaders: string[];
-    noPricing: string; modelKind: string; toolKind: string; openSession(label: string): string; success: string; error: string;
+    noPricing: string; modelKind: string; toolKind: string; openSession(label: string): string; untitledSession: string; success: string; error: string;
     providerEmptyTitle: string; providerEmptyBody: string; modelEmptyTitle: string; modelEmptyBody: string;
     toolEmptyTitle: string; toolEmptyBody: string; pricingEmptyBody: string;
   };
@@ -49,7 +49,7 @@ const SETTINGS_USAGE_COPY = {
       providersAria: '使用统计供应商统计表', modelsAria: '使用统计模型统计表', toolsAria: '使用统计工具统计表', pricingAria: '使用统计定价配置表', requestsAria: '使用统计请求日志表',
       providerHeaders: ['供应商', '请求', 'Token', '费用'], modelHeaders: ['模型', '请求', 'Token', '费用'], toolHeaders: ['工具', '调用', '成功', '错误', '平均耗时'],
       pricingHeaders: ['供应商', '模型', '输入 / 1M', '输出 / 1M'], requestHeaders: ['时间', '类型', '对象', '任务', 'Token', '费用', '延迟', '状态'],
-      noPricing: '暂无定价覆盖配置', modelKind: '模型', toolKind: '工具', openSession: (label) => `打开 ${label}`, success: '成功', error: '错误',
+      noPricing: '暂无定价覆盖配置', modelKind: '模型', toolKind: '工具', openSession: (label) => `打开会话「${label}」`, untitledSession: '未命名会话', success: '成功', error: '错误',
       providerEmptyTitle: '暂无供应商用量', providerEmptyBody: '完成一次模型请求后，这里会按供应商聚合请求数、Token 与费用。',
       modelEmptyTitle: '暂无模型用量', modelEmptyBody: '完成一次模型请求后，这里会按模型聚合请求数、Token 与费用。',
       toolEmptyTitle: '暂无工具调用', toolEmptyBody: '智能体调用工具后，这里会按工具聚合调用次数、成功、错误与平均耗时。',
@@ -69,7 +69,7 @@ const SETTINGS_USAGE_COPY = {
       providersAria: 'Usage by provider', modelsAria: 'Usage by model', toolsAria: 'Usage by tool', pricingAria: 'Usage pricing configuration', requestsAria: 'Usage request log',
       providerHeaders: ['Provider', 'Requests', 'Tokens', 'Cost'], modelHeaders: ['Model', 'Requests', 'Tokens', 'Cost'], toolHeaders: ['Tool', 'Calls', 'Success', 'Errors', 'Average duration'],
       pricingHeaders: ['Provider', 'Model', 'Input / 1M', 'Output / 1M'], requestHeaders: ['Time', 'Type', 'Target', 'Task', 'Tokens', 'Cost', 'Latency', 'Status'],
-      noPricing: 'No pricing overrides', modelKind: 'Model', toolKind: 'Tool', openSession: (label) => `Open ${label}`, success: 'Success', error: 'Error',
+      noPricing: 'No pricing overrides', modelKind: 'Model', toolKind: 'Tool', openSession: (label) => `Open session "${label}"`, untitledSession: 'Untitled session', success: 'Success', error: 'Error',
       providerEmptyTitle: 'No provider usage', providerEmptyBody: 'After a model request, provider request counts, tokens, and costs appear here.',
       modelEmptyTitle: 'No model usage', modelEmptyBody: 'After a model request, request counts, tokens, and costs appear here by model.',
       toolEmptyTitle: 'No tool calls', toolEmptyBody: 'After an agent calls a tool, calls, successes, errors, and average duration appear here by tool.',

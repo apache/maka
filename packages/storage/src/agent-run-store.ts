@@ -28,6 +28,11 @@ import {
   decodeRuntimeEvent,
 } from './execution-record-codec.js';
 import { immutableSteeringMessageId } from './runtime-event-invariants.js';
+import {
+  normalizeSubmittedTurnIntent,
+  submittedTurnIntentsEqual,
+  type SubmittedTurnIntent,
+} from './submitted-turn-intent.js';
 import { assertNoReservedWorkspaceAuthorityAppend } from './runtime-event-authority.js';
 import {
   acquireOperationalStateDatabase,
@@ -99,6 +104,14 @@ export interface RootTurnSourceMessage {
   /** Trusted Host-authored provenance; never accepted from message protocol input. */
   origin?: TurnOrigin;
   submittedContentDigest?: `sha256:${string}`;
+  /**
+   * The exact-Turn intent this Message was submitted with — the Skill ids and
+   * the orchestration override. Content and placement do not describe it, so
+   * without this a retry that asks for a different execution mode under the
+   * same Message identity aliases the earlier success. Absent on a record
+   * written for a submit that carried no exact intent.
+   */
+  submittedIntent?: SubmittedTurnIntent;
   placement: 'current_turn' | 'next_turn';
   disposition: 'steering' | 'followup' | 'turn_started';
 }
@@ -1658,6 +1671,7 @@ function normalizeRootTurnSourceMessages(value: unknown): readonly RootTurnSourc
         'disposition',
         ...(Object.hasOwn(item, 'origin') ? ['origin'] : []),
         ...(Object.hasOwn(item, 'submittedContentDigest') ? ['submittedContentDigest'] : []),
+        ...(Object.hasOwn(item, 'submittedIntent') ? ['submittedIntent'] : []),
       ])
     ) {
       throw new Error(`Invalid root turn source message at index ${index}`);
@@ -1667,6 +1681,7 @@ function normalizeRootTurnSourceMessages(value: unknown): readonly RootTurnSourc
       content,
       origin: rawOrigin,
       submittedContentDigest,
+      submittedIntent,
       placement,
       disposition,
     } = item;
@@ -1698,6 +1713,9 @@ function normalizeRootTurnSourceMessages(value: unknown): readonly RootTurnSourc
       ),
       ...(origin !== undefined ? { origin: Object.freeze(origin) } : {}),
       ...(submittedContentDigest !== undefined ? { submittedContentDigest } : {}),
+      ...(submittedIntent !== undefined
+        ? { submittedIntent: normalizeSubmittedTurnIntent(submittedIntent) }
+        : {}),
       placement,
       disposition,
     });
@@ -1726,6 +1744,7 @@ function rootTurnAdmissionPayloadsEqual(
         source.disposition === other.disposition &&
         isDeepStrictEqual(source.origin, other.origin) &&
         source.submittedContentDigest === other.submittedContentDigest &&
+        submittedTurnIntentsEqual(source.submittedIntent, other.submittedIntent) &&
         messageContentsEqual(source.content, other.content)
       );
     })

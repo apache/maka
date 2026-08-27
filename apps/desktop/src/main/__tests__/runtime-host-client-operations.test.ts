@@ -98,6 +98,8 @@ test('restarts a paginated catalog read instead of mixing revisions', async () =
 test('resolves WorkHub coordination through the dedicated Host operation', async () => {
   const { client, requests } = clientWithResponses([
     { sessionId: 'maka_workhub_coordination' },
+    { candidateSetId: `sha256:${'a'.repeat(64)}`, candidates: [] },
+    { disposition: 'answer_here', coordinationTurnId: 'action-turn' },
     { turnId: 'answer-turn' },
     { turnId: 'summary-turn' },
   ]);
@@ -105,6 +107,18 @@ test('resolves WorkHub coordination through the dedicated Host operation', async
   assert.deepEqual(await client.resolveWorkHubCoordinationSession(), {
     sessionId: 'maka_workhub_coordination',
   });
+  assert.deepEqual(await client.listWorkHubCoordinationCandidates(), {
+    candidateSetId: `sha256:${'a'.repeat(64)}`,
+    candidates: [],
+  });
+  assert.deepEqual(
+    await client.actWorkHubCoordination({
+      actionId: 'action',
+      userText: 'Question',
+      proposal: { disposition: 'answer_here' },
+    }),
+    { disposition: 'answer_here', coordinationTurnId: 'action-turn' },
+  );
   assert.deepEqual(
     await client.answerWorkHubCoordination({ turnId: 'answer-turn', text: 'Question' }),
     { turnId: 'answer-turn' },
@@ -119,6 +133,15 @@ test('resolves WorkHub coordination through the dedicated Host operation', async
   );
   assert.deepEqual(requests, [
     { operation: 'workhub.coordination.resolve', input: {} },
+    { operation: 'workhub.coordination.candidates', input: {} },
+    {
+      operation: 'workhub.coordination.act',
+      input: {
+        actionId: 'action',
+        userText: 'Question',
+        proposal: { disposition: 'answer_here' },
+      },
+    },
     {
       operation: 'workhub.coordination.answer',
       input: { turnId: 'answer-turn', text: 'Question' },

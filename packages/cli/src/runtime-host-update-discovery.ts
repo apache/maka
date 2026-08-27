@@ -129,7 +129,7 @@ async function resolveManagedRuntimeHostUpdate(
   verifyDeployment: boolean,
 ): Promise<RuntimeHostUpdateSelection> {
   const serviceId = resolveRuntimeHostManagedServiceId(options.clientDataRoot);
-  const backend = createPlatformRuntimeHostServiceBackend(serviceId);
+  const backend = createPlatformRuntimeHostServiceBackend(serviceId, options.clientDataRoot);
   const status = await manageRuntimeHostService(
     {
       action: 'status',

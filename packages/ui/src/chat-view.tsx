@@ -30,7 +30,12 @@ import { useMessageSelectionQuote } from './use-message-selection-quote.js';
 import type { DeepResearchClientProgress } from '@maka/core/deep-research-run';
 import type { ProviderType } from '@maka/core/llm-connections';
 import type { SessionSummary, StoredMessage } from '@maka/core/session';
-import type { ShellRunUpdate } from '@maka/core/events';
+import type {
+  AttachmentRef,
+  InlineReference,
+  QuoteRef,
+  ShellRunUpdate,
+} from '@maka/core/events';
 import { isDeepResearchSession } from '@maka/core/explore-agent';
 import { Button, ButtonGroup, ChatMessageList, EmptyState, Spinner } from '@astryxdesign/core';
 import { useChatLayoutContext } from '@astryxdesign/core/Chat';
@@ -43,6 +48,7 @@ import {
   LocalizedChatMessage,
   TurnRunningStatus,
   TurnView,
+  TransientUserMessage,
   type ReadAttachmentBytes,
   type TurnFooterActionMeta,
   type TurnPresentationDeriver,
@@ -59,8 +65,35 @@ export interface LiveContentActivationSnapshot {
   entries: ReadonlyMap<string, string>;
 }
 
+/**
+ * A user Message this client has shown but cannot yet prove is durable.
+ *
+ * Deliberately not a `StoredMessage`: a stored one belongs to a Turn, and the
+ * Turn identity is exactly what a client does not have while Runtime Host is
+ * still deciding what the Message becomes. Borrowing that shape forced a
+ * fabricated `turnId`, which then had to be kept from being read as the real
+ * grouping. These are the presentation fields the transcript actually renders,
+ * plus `hostTurnId` for the grouping once the Host names one.
+ */
+export interface TransientUserMessageProjection {
+  id: string;
+  text: string;
+  ts: number;
+  attachments?: readonly AttachmentRef[];
+  quotes?: readonly QuoteRef[];
+  inlineReferences?: readonly InlineReference[];
+  /**
+   * Presentation-only placement until canonical transcript grouping arrives:
+   * `current_turn` renders beside the tail Turn, `next_turn` below it.
+   */
+  transientPlacement: 'current_turn' | 'next_turn';
+  /** The Host Turn this Message is already bound to, once the Host named one. */
+  hostTurnId?: string;
+}
+
 export function ChatView(props: {
   messages: StoredMessage[];
+  transientMessages?: readonly TransientUserMessageProjection[];
   messageLoading?: boolean;
   liveTurn?: LiveTurnProjection;
   /** Live display content already present when the host activated this conversation surface. */
@@ -272,6 +305,7 @@ export function ChatView(props: {
     [drainingMessageIds, props.messages],
   );
   const chat = useMemo(() => materializeChat(visibleMessages, locale), [visibleMessages, locale]);
+  const transientMessages = props.transientMessages ?? [];
   // The projection owns the derived turns, so a turn nothing said anything
   // about keeps its object identity and its memoized TurnView skips — across
   // deltas AND across the message refreshes that fire at every step/tool
@@ -454,6 +488,27 @@ export function ChatView(props: {
     }
   }, [revealTurn]);
   const mountedTurns = turns.slice(mountStart, mountEnd);
+  const inlineTransientMessages = tailTurnId
+    ? transientMessages.filter((message) => {
+        const turn = mountedTurns.find((candidate) => candidate.turnId === tailTurnId);
+        if (
+          turn === undefined
+          || turn.user !== undefined
+          || turn.timeline.some((item) => item.kind === 'user' && item.messageId === message.id)
+        ) {
+          return false;
+        }
+        // An unbound row belongs to the Turn the user is looking at; a bound
+        // one only renders inline in the Turn the Host named.
+        return (
+          message.transientPlacement === 'current_turn'
+          && (message.hostTurnId === undefined || message.hostTurnId === tailTurnId)
+        );
+      })
+    : [];
+  const inlineTransientMessageIds = new Set(
+    inlineTransientMessages.map((message) => message.id),
+  );
   const { highlightedTurnId } = useChatScroll({
     scrollRef,
     sessionId: props.activeSession?.id,
@@ -529,8 +584,10 @@ export function ChatView(props: {
   const hasVisibleConversationItem =
     conversationItemPlacement.byTurn.size > 0 || conversationItemPlacement.orphan !== undefined;
   const showEmptyState =
-    (chat.length === 0 && !streamingActive && !hasVisibleConversationItem)
-    || Boolean(props.messageLoading && chat.length === 0 && !hasVisibleConversationItem);
+    chat.length === 0
+    && transientMessages.length === 0
+    && !streamingActive
+    && !hasVisibleConversationItem;
   const emptyContent = props.messageLoading
     ? (
         <div className="maka-chat-message-loading">
@@ -636,6 +693,15 @@ export function ChatView(props: {
                     className="maka-turn-virtual-item"
                     data-virtual-turn-id={turn.turnId}
                   >
+                    {turn.turnId === tailTurnId
+                      ? inlineTransientMessages.map((message) => (
+                          <TransientUserMessage
+                            key={message.id}
+                            message={message}
+                            onReadAttachmentBytes={props.onReadAttachmentBytes}
+                          />
+                        ))
+                      : null}
                     <TurnView
                       turn={turn}
                       userLabel={props.userLabel}
@@ -690,6 +756,15 @@ export function ChatView(props: {
                   style={{ height: afterHeight, flex: '0 0 auto', transition: 'none' }}
                 />
               )}
+              {transientMessages.filter(
+                (message) => !inlineTransientMessageIds.has(message.id),
+              ).map((message) => (
+                <TransientUserMessage
+                  key={message.id}
+                  message={message}
+                  onReadAttachmentBytes={props.onReadAttachmentBytes}
+                />
+              ))}
               {/* #642 fallback: streaming began before the optimistic user turn
                   materialized (rare — e.g. an event replay while messages are still
                   loading), so there is no tail turn to inject into. Render the live

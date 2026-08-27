@@ -85,6 +85,7 @@ export type ConnectionEffectOperationKey = Extract<
 >;
 export type MessageOperationKey = Extract<
   OperationKey,
+  | 'turn.message.query'
   | 'turn.message.submit'
   | 'queue.retract'
   | 'queue.entry.retract'

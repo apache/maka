@@ -1,0 +1,85 @@
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+
+name: Runtime Host peer admission
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/runtime-host-peer-admission.yml'
+      - 'deny.toml'
+      - 'native/runtime-host-peer/**'
+      - 'packages/cli/RUNTIME_HOST_PEER_DEPENDENCIES.rust.tsv'
+      - 'packages/cli/RUNTIME_HOST_PEER_THIRD_PARTY_NOTICES.txt'
+      - 'scripts/generate-runtime-host-peer-dependencies.mjs'
+      - 'scripts/generate-runtime-host-peer-notices.mjs'
+      - 'packages/runtime-host/src/transport/peer-native.ts'
+      - 'packages/runtime-host/src/server/peer-listener.ts'
+  push:
+    branches:
+      - main
+    paths:
+      - '.github/workflows/runtime-host-peer-admission.yml'
+      - 'deny.toml'
+      - 'native/runtime-host-peer/**'
+      - 'packages/cli/RUNTIME_HOST_PEER_DEPENDENCIES.rust.tsv'
+      - 'packages/cli/RUNTIME_HOST_PEER_THIRD_PARTY_NOTICES.txt'
+      - 'scripts/generate-runtime-host-peer-dependencies.mjs'
+      - 'scripts/generate-runtime-host-peer-notices.mjs'
+      - 'packages/runtime-host/src/transport/peer-native.ts'
+      - 'packages/runtime-host/src/server/peer-listener.ts'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: runtime-host-peer-admission-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: quality
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24.18.1
+      - name: Update stable Rust
+        run: rustup update stable --no-self-update
+      - name: Check Rust formatting
+        working-directory: native/runtime-host-peer
+        run: cargo fmt --check
+      - name: Lint the native peer
+        working-directory: native/runtime-host-peer
+        run: cargo clippy --locked --all-targets -- -D warnings
+      - name: Install cargo-deny
+        uses: taiki-e/install-action@fcf5432d9f50d67e37ee6e29bdb7a224ff67b4a7 # v2
+        with:
+          tool: cargo-deny@0.20.2
+      - name: Check Cargo dependency inventory
+        run: npm run check:runtime-host-peer-dependencies
+      - name: Check Cargo dependency licenses
+        run: cargo deny --manifest-path native/runtime-host-peer/Cargo.toml --locked --exclude-dev check licenses
+      - name: Check Cargo dependency notices
+        run: npm run check:runtime-host-peer-notices
+      - name: Test the native peer
+        working-directory: native/runtime-host-peer
+        run: cargo test --locked

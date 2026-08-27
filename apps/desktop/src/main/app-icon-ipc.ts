@@ -29,6 +29,9 @@ import {
   toAppIconChoice,
   type AppIconChoice,
   type AppSettings,
+  isAppIconTarget,
+  DEFAULT_APP_ICON,
+  type AppIconTarget,
 } from "@maka/core/settings";
 import type { SettingsStore } from "@maka/storage/settings-store";
 import type { AppIconPreview } from "./app-icon-surface.js";
@@ -44,14 +47,24 @@ export type AppIconImportResult =
   | { readonly ok: false; readonly reason: CustomAppIconImportReason };
 
 export type AppIconSelectResult =
-  | { readonly ok: true; readonly selection: AppIconChoice }
+  | {
+      readonly ok: true;
+      readonly selection: AppIconChoice;
+      /** Absent when one icon serves both appearances. */
+      readonly darkSelection?: AppIconChoice;
+    }
   | {
       readonly ok: false;
       readonly reason: "invalid_id" | "missing_artwork" | "write_failed";
     };
 
 export type AppIconRemoveResult =
-  | { readonly ok: true; readonly selection: AppIconChoice }
+  | {
+      readonly ok: true;
+      readonly selection: AppIconChoice;
+      /** Absent when one icon serves both appearances. */
+      readonly darkSelection?: AppIconChoice;
+    }
   | {
       readonly ok: false;
       readonly reason: "invalid_id" | "reset_failed" | "remove_failed";
@@ -108,9 +121,16 @@ export function registerAppIconIpc(input: {
    * that can refuse a choice whose artwork is gone — the generic channel would
    * happily persist an id with nothing behind it.
    */
-  input.ipcMain.handle("app:selectIcon", (_event, icon: unknown) =>
+  input.ipcMain.handle("app:selectIcon", (_event, icon: unknown, target: unknown) =>
     serialize(async (): Promise<AppIconSelectResult> => {
       if (!isAppIconChoice(icon)) return { ok: false, reason: "invalid_id" };
+      // An absent target is the pre-split call shape, which meant "the icon,
+      // everywhere". Anything else unrecognized is rejected rather than
+      // guessed: this writes to settings, and guessing would silently put the
+      // id in a slot the caller did not ask for.
+      const requested: unknown = target === undefined ? "both" : target;
+      if (!isAppIconTarget(requested)) return { ok: false, reason: "invalid_id" };
+      const slot: AppIconTarget = requested;
       const custom = customAppIconId(icon);
       if (custom !== undefined) {
         const present = await listCustomAppIconIds(userDataPath());
@@ -119,12 +139,22 @@ export function registerAppIconIpc(input: {
       }
       try {
         const settings = await input.settingsStore.update({
-          appearance: { appIcon: icon },
+          appearance:
+            slot === "dark"
+              ? { appIconDark: icon }
+              : // `undefined` is a real value through mergeSettings' spread,
+                // so this clears the dark slot rather than leaving it behind
+                // to override every future light-only change.
+                slot === "both"
+                ? { appIcon: icon, appIconDark: undefined }
+                : { appIcon: icon },
         });
         await input.applySettings(settings);
+        const dark = settings.appearance.appIconDark;
         return {
           ok: true,
           selection: toAppIconChoice(settings.appearance.appIcon),
+          ...(dark === undefined ? {} : { darkSelection: toAppIconChoice(dark) }),
         };
       } catch {
         return { ok: false, reason: "write_failed" };
@@ -193,14 +223,37 @@ export function registerAppIconIpc(input: {
       // When the predicate no longer holds, the newer selection stands and the
       // file is still deleted: it is no longer the one in use, which is
       // exactly the state the caller asked for.
+      // Either slot, both, or neither may name the icon being removed, and
+      // all of it has to move in ONE queued write. Two conditional updates
+      // would let the second fail after the first committed: the light slot
+      // would already be on disk as the default while the dark slot still
+      // named deleted artwork, `applySettings` would never run, and the
+      // handler would report `reset_failed` over a state it had half changed.
+      // The derived patch resets exactly the slots that matched, atomically.
       let settings: AppSettings;
+      let applied = false;
       try {
         const outcome = await input.settingsStore.updateIf(
-          (current) => toAppIconChoice(current.appearance.appIcon) === icon,
-          { appearance: { appIcon: "default" } },
+          (current) =>
+            toAppIconChoice(current.appearance.appIcon) === icon ||
+            current.appearance.appIconDark === icon,
+          (current) => ({
+            appearance: {
+              ...(toAppIconChoice(current.appearance.appIcon) === icon
+                ? { appIcon: DEFAULT_APP_ICON }
+                : {}),
+              // Cleared rather than reset to the shipped dark id: the user
+              // removed the only dark icon they had chosen, and inheriting the
+              // light one is the state that needs no further decision.
+              ...(current.appearance.appIconDark === icon
+                ? { appIconDark: undefined }
+                : {}),
+            },
+          }),
         );
         settings = outcome.settings;
-        if (outcome.applied) await input.applySettings(settings);
+        applied = outcome.applied;
+        if (applied) await input.applySettings(settings);
       } catch {
         return { ok: false, reason: "reset_failed" };
       }
@@ -210,9 +263,11 @@ export function registerAppIconIpc(input: {
       } catch {
         return { ok: false, reason: "remove_failed" };
       }
+      const darkAfter = settings.appearance.appIconDark;
       return {
         ok: true,
         selection: toAppIconChoice(settings.appearance.appIcon),
+        ...(darkAfter === undefined ? {} : { darkSelection: toAppIconChoice(darkAfter) }),
       };
     }),
   );

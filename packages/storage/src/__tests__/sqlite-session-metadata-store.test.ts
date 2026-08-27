@@ -54,6 +54,54 @@ import {
 import { SQLITE_AGENT_GRAPH_CONTROL_TABLES } from '../sqlite-session-metadata-schema.js';
 
 describe('SqliteSessionMetadataStore', () => {
+  for (const version32Shape of ['mailbox-origin', 'submitted-intent'] as const) {
+    test(`converges the ${version32Shape} version-32 schema after the merge`, async () => {
+      const root = await mkdtemp(join(tmpdir(), `maka-session-v32-${version32Shape}-`));
+      const path = join(root, 'state.sqlite');
+      try {
+        const setup = createSqliteSessionMetadataStore(path);
+        setup.close();
+
+        const version32 = new DatabaseSync(path);
+        try {
+          version32.exec(
+            version32Shape === 'mailbox-origin'
+              ? 'ALTER TABLE message_admissions DROP COLUMN submitted_intent_json'
+              : 'ALTER TABLE message_admissions DROP COLUMN origin_json',
+          );
+          version32
+            .prepare(
+              `UPDATE session_metadata_schema SET version = 32 WHERE scope = 'session_metadata'`,
+            )
+            .run();
+        } finally {
+          version32.close();
+        }
+
+        const converged = createSqliteSessionMetadataStore(path);
+        try {
+          assert.equal(converged.schemaVersion(), SQLITE_SESSION_METADATA_SCHEMA_VERSION);
+        } finally {
+          converged.close();
+        }
+
+        const schema = new DatabaseSync(path, { readOnly: true });
+        try {
+          const columns = schema
+            .prepare('PRAGMA table_info(message_admissions)')
+            .all()
+            .map((row) => (row as { name: string }).name);
+          assert.equal(columns.includes('origin_json'), true);
+          assert.equal(columns.includes('submitted_intent_json'), true);
+        } finally {
+          schema.close();
+        }
+      } finally {
+        await rm(root, { recursive: true, force: true });
+      }
+    });
+  }
+
   for (const version30Shape of ['admissions-only', 'coordination-only', 'complete'] as const) {
     test(`converges the ${version30Shape} version-30 schema after the merge`, async () => {
       const root = await mkdtemp(join(tmpdir(), `maka-session-v30-${version30Shape}-`));
@@ -329,6 +377,13 @@ describe('SqliteSessionMetadataStore', () => {
         submittedPlacement: 'current_turn',
         placement: 'current_turn',
         disposition: 'steering',
+        // Exact-Turn intent is durable and whole: recovery re-opens the Turn
+        // from this record and answers retries against it, and content and
+        // placement describe neither the Skills nor the execution mode.
+        submittedIntent: {
+          skillIds: ['review'],
+          turnOrchestration: { mode: 'graph', source: 'slash_command' },
+        },
         admittedAt: 10,
       };
 
@@ -455,6 +510,8 @@ describe('SqliteSessionMetadataStore', () => {
       await store.commitMessageAdmission(admission);
       await store.cancelMessageAdmissions('session-1', ['message-1']);
       assert.deepEqual(await store.listMessageAdmissions('session-1'), []);
+      assert.equal(await store.hasCancelledMessageAdmission('session-1', 'message-1'), true);
+      assert.equal(await store.hasCancelledMessageAdmission('session-1', 'message-2'), false);
       await assert.rejects(
         store.commitMessageAdmission(admission),
         /identity is already cancelled/,

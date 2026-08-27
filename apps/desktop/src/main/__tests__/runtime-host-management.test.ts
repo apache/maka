@@ -430,25 +430,132 @@ test('publishes update progress and waits for the managed profile to reconnect',
   removeBindingAfterUpdate = true;
   const changedProfile = await update({}, profile.id, false);
   assert.equal(
-    (changedProfile as { kind: string; error?: { message: string } }).error?.message,
-    'The Runtime Host update completed, but Desktop could not reconnect: ' +
+    (changedProfile as { reconnectError?: { message: string } }).reconnectError?.message,
+    'The Runtime Host change was applied, but Desktop could not reconnect: ' +
       'Runtime Host profile changed while its service was updating',
   );
+  assert.equal((changedProfile as { kind: string }).kind, 'result');
 
   bindingPresent = true;
   removeBindingAfterUpdate = false;
   failConnection = true;
   const reconnectFailure = await update({}, profile.id, false);
-  assert.deepEqual(reconnectFailure, {
-    schemaVersion: 1,
-    kind: 'error',
-    action: 'update',
-    error: {
+  assert.equal((reconnectFailure as { kind: string }).kind, 'result');
+  assert.deepEqual(
+    (reconnectFailure as { reconnectError: { code: string; message: string } }).reconnectError,
+    {
       code: 'desktop_reconnect_failed',
       message:
-        'The Runtime Host update completed, but Desktop could not reconnect: authentication required',
+        'The Runtime Host change was applied, but Desktop could not reconnect: authentication required',
+    },
+  );
+});
+
+test('configures Project roots with CAS and reconnects only after a committed cutover', async () => {
+  const handlers = new Map<string, (...args: unknown[]) => unknown>();
+  const profile = {
+    id: 'office',
+    name: 'Office',
+    kind: 'remote' as const,
+    rootId: 'a'.repeat(64),
+    transport: {
+      kind: 'ssh' as const,
+      destination: 'operator@example.com',
+      remotePort: 7443,
+      websocketPath: '/runtime-host',
+    },
+  };
+  const service = {
+    id: 'b'.repeat(64),
+    rootPath: '/srv/maka',
+    operatorPath: '/home/operator/.local/share/maka/operator',
+  };
+  const fingerprint = `sha256:${'c'.repeat(64)}`;
+  const inputs: DesktopRuntimeHostSshManagementInput[] = [];
+  const reconnects: unknown[][] = [];
+  let failReconnect = false;
+  createDesktopRuntimeHostManagement({
+    ...unusedUpdateDependencies(),
+    ipcMain: {
+      handle: (channel, handler) => handlers.set(channel, handler as (...args: unknown[]) => unknown),
+      removeHandler: (channel) => handlers.delete(channel),
+    },
+    profiles: {
+      resolveManagedService: async () => ({ profile, service, state: 'active' as const }),
+      resolveManagedAccess: async () => undefined,
+      rotateManagedCredential: async () => assert.fail('credential rotation is not expected'),
+      markManagedServiceUninstalling: async (binding) => binding,
+      markManagedServiceCleanupPending: async (binding) => binding,
+      clearManagedServiceBinding: async () => undefined,
+    },
+    runServiceManagement: async (input) => {
+      inputs.push(input);
+      assert.equal(input.action, 'configure');
+      return {
+        schemaVersion: 1,
+        kind: 'result',
+        action: 'configure',
+        service: {
+          ...serviceSummary('1.2.3'),
+          configurationFingerprint:
+            input.allowInterruptActiveTasks ? `sha256:${'d'.repeat(64)}` : fingerprint,
+          projectDirectoryRoots: [...(input.projectDirectoryRoots ?? [])],
+        },
+        configuration: {
+          kind: input.allowInterruptActiveTasks ? 'configured' : 'active_tasks',
+        },
+      };
+    },
+    runAccessManagement: async () => assert.fail('access management is not expected'),
+    cleanupManagedDeployment: async () => assert.fail('cleanup is not expected'),
+    currentHostEpoch: () => 'host-before-configure',
+    awaitUpdatedConnection: async (...args) => {
+      reconnects.push(args);
+      if (failReconnect) throw new Error('authentication required');
     },
   });
+  const configure = handlers.get('runtime-host-management:configure-project-directories');
+  assert.ok(configure);
+  const roots = [{ label: 'Work', path: '/srv/work ' }];
+  const blocked = await configure({}, profile.id, roots, fingerprint, false);
+  assert.equal(
+    (blocked as { configuration: { kind: string } }).configuration.kind,
+    'active_tasks',
+  );
+  assert.equal(reconnects.length, 0);
+
+  const configured = await configure({}, profile.id, roots, fingerprint, true);
+  assert.equal(
+    (configured as { configuration: { kind: string } }).configuration.kind,
+    'configured',
+  );
+  assert.deepEqual(inputs.map((input) => ({
+    roots: input.projectDirectoryRoots,
+    fingerprint: input.expectedConfigFingerprint,
+    allowInterruptActiveTasks: input.allowInterruptActiveTasks ?? false,
+  })), [
+    { roots, fingerprint, allowInterruptActiveTasks: false },
+    { roots, fingerprint, allowInterruptActiveTasks: true },
+  ]);
+  assert.deepEqual(reconnects, [[profile.id, profile.rootId, 'host-before-configure', true]]);
+
+  failReconnect = true;
+  const committedWithoutReconnect = await configure({}, profile.id, roots, fingerprint, true);
+  assert.equal((committedWithoutReconnect as { kind: string }).kind, 'result');
+  assert.equal(
+    (committedWithoutReconnect as { service: { configurationFingerprint?: string } }).service
+      .configurationFingerprint,
+    `sha256:${'d'.repeat(64)}`,
+  );
+  assert.deepEqual(
+    (committedWithoutReconnect as { reconnectError?: { code: string; message: string } })
+      .reconnectError,
+    {
+      code: 'desktop_reconnect_failed',
+      message:
+        'The Runtime Host change was applied, but Desktop could not reconnect: authentication required',
+    },
+  );
 });
 
 test('manages one Host update policy and reconciles it through the bound operator', async () => {
@@ -751,9 +858,11 @@ function serviceResult(
       projectDirectoryRoots: [],
     },
   };
-  return action === 'retire'
-    ? { ...result, action, retirement: { kind: 'stopped' } }
-    : { ...result, action };
+  if (action === 'retire') return { ...result, action, retirement: { kind: 'stopped' } };
+  if (action === 'configure') {
+    return { ...result, action, configuration: { kind: 'unchanged' } };
+  }
+  return { ...result, action };
 }
 
 function serviceSummary(installedVersion: string) {

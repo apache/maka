@@ -37,6 +37,7 @@ import {
   refreshRunningShellRunElapsed,
   hydrateToolsWithStoredMessages,
   makaPiToolPresentationStatus,
+  retireCancelledTransientMessages,
   replaceTranscriptWithStoredMessages,
   submitCompactToTranscript,
   toggleAllThinkingExpansion,
@@ -195,6 +196,49 @@ describe('Maka Pi TUI transcript', () => {
     assert.doesNotMatch(stripAnsi(renderMakaPiStatusLine({ ...meta(), goal: null }, 120)), /goal/);
   });
 
+  test('renders side conversation status in English for every UI locale', () => {
+    assert.equal(
+      stripAnsi(
+        renderMakaPiStatusLine(
+          { ...meta(), uiLocale: 'zh', sideConversation: { view: 'side' } },
+          200,
+        ),
+      ),
+      'Side from main thread · Ctrl+/ to switch · Ctrl+C to close',
+    );
+    for (const [parentStatus, label] of [
+      ['needs_input', 'main needs input'],
+      ['needs_approval', 'main needs approval'],
+      ['failed', 'main failed'],
+      ['interrupted', 'main interrupted'],
+      ['closed', 'main closed'],
+      ['finished', 'main finished'],
+    ] as const) {
+      assert.equal(
+        stripAnsi(
+          renderMakaPiStatusLine(
+            {
+              ...meta(),
+              uiLocale: 'zh',
+              sideConversation: { view: 'side', parentStatus },
+            },
+            200,
+          ),
+        ),
+        `Side from main thread · ${label} · Ctrl+/ to switch · Ctrl+C to close`,
+      );
+    }
+    assert.match(
+      stripAnsi(
+        renderMakaPiStatusLine(
+          { ...meta(), uiLocale: 'zh', sideConversation: { view: 'parent' } },
+          200,
+        ),
+      ),
+      /Ctrl\+\/ for side/,
+    );
+  });
+
   test('status line degrades to ctx ?/window when the window is known but usage is not (#3371)', () => {
     // No usage object at all: the window is known, so degrade explicitly.
     assert.match(
@@ -244,9 +288,168 @@ describe('Maka Pi TUI transcript', () => {
     );
   });
 
+  test('status line drops whole low-value segments on overflow, lowest rank first (#3421)', () => {
+    const richMeta = {
+      ...meta(),
+      modelContextWindow: 500_000,
+      usage: {
+        costUsd: 0.42,
+        cacheHitInput: 60,
+        cacheMissInput: 40,
+        contextRemaining: 480_000,
+      },
+    };
+    // Wide: everything renders.
+    const wide = stripAnsi(renderMakaPiStatusLine(richMeta, 120));
+    assert.match(wide, /ctx 20k\/500k 4%/);
+    assert.match(wide, /\$0\.42/);
+    assert.match(wide, /cache 60%/);
+    assert.match(wide, /deepseek · \/tmp\/project/);
+
+    // Below full width, cache drops before cost, and no segment is cut
+    // mid-token while any lower rank still survives.
+    const fullWidth = visibleWidth(wide);
+    const noCache = stripAnsi(renderMakaPiStatusLine(richMeta, fullWidth - 1));
+    assert.doesNotMatch(noCache, /cache/);
+    assert.match(noCache, /\$0\.42/);
+    const noCost = stripAnsi(
+      renderMakaPiStatusLine(richMeta, fullWidth - 'cache 60% · '.length - 1),
+    );
+    assert.doesNotMatch(noCost, /cache|\$0\.42/);
+    assert.match(noCost, /deepseek · \/tmp\/project/);
+  });
+
+  test('status line shortens cwd to its basename before dropping it (#3421)', () => {
+    const line = stripAnsi(
+      renderMakaPiStatusLine(
+        {
+          ...meta(),
+          cwd: '/very/long/nested/project-directory',
+          modelContextWindow: 500_000,
+          usage: {
+            costUsd: 0,
+            cacheHitInput: 1,
+            cacheMissInput: 1,
+            contextRemaining: 480_000,
+          },
+        },
+        // Room for title, mode, model, ctx and a short tail only.
+        'Maka · Auto · deepseek-v4-flash · ctx 20k/500k 4% · project-directory'.length,
+      ),
+    );
+    assert.doesNotMatch(line, /very\/long/);
+    assert.match(line, /project-directory/);
+  });
+
+  test('status line drops a drive-root cwd instead of rendering an empty basename (#3421)', () => {
+    const line = stripAnsi(
+      renderMakaPiStatusLine(
+        {
+          ...meta(),
+          cwd: 'C:\\',
+          modelContextWindow: 500_000,
+          usage: {
+            costUsd: 0.5,
+            cacheHitInput: 1,
+            cacheMissInput: 1,
+            contextRemaining: 480_000,
+          },
+        },
+        40,
+      ),
+    );
+    // C:\ has no useful basename; the segment drops cleanly rather than
+    // leaving an empty segment dangling after the separator.
+    assert.doesNotMatch(line, /C:\\/);
+    assert.doesNotMatch(line, /·\s*$/);
+  });
+
+  test('status line never drops mode, model, goal, or ctx at narrow widths (#3421)', () => {
+    const line = stripAnsi(
+      renderMakaPiStatusLine(
+        {
+          ...meta(),
+          permissionMode: 'bypass',
+          modelContextWindow: 500_000,
+          usage: {
+            costUsd: 9.99,
+            cacheHitInput: 1,
+            cacheMissInput: 1,
+            contextRemaining: 480_000,
+          },
+          goal: {
+            goalId: 'goal-1',
+            revision: 1,
+            sessionId: 'session-1',
+            condition: 'Ship it',
+            setAt: Date.now() - 60_000,
+            iterations: 1,
+            maxIterations: 50,
+            consecutiveNoProgress: 0,
+            blockCap: 8,
+            tokenBudget: null,
+            tokensSpent: 0,
+            lastReason: null,
+            achievedAt: null,
+            pausedAt: null,
+            status: 'active' as const,
+          },
+        },
+        75,
+      ),
+    );
+    assert.match(line, /Full access/);
+    assert.match(line, /deepseek-v4-flash/);
+    assert.match(line, /goal 1\/50/);
+    assert.match(line, /ctx 20k\/500k 4%/);
+    assert.doesNotMatch(line, /\$9\.99|cache|deepseek ·|tmp\/project/);
+  });
+
+  test('status line compacts every critical segment before the narrow-width fallback (#3421)', () => {
+    const metadata = {
+      ...meta(),
+      permissionMode: 'bypass',
+      model: 'anthropic/claude-opus-4-1-very-long',
+      modelContextWindow: 500_000,
+      usage: {
+        costUsd: 9.99,
+        cacheHitInput: 1,
+        cacheMissInput: 1,
+        contextRemaining: 20_000,
+      },
+      goal: {
+        goalId: 'goal-1',
+        revision: 1,
+        sessionId: 'session-1',
+        condition: 'Ship it',
+        setAt: Date.now() - 60_000,
+        iterations: 1,
+        maxIterations: 50,
+        consecutiveNoProgress: 0,
+        blockCap: 8,
+        tokenBudget: null,
+        tokensSpent: 0,
+        lastReason: null,
+        achievedAt: null,
+        pausedAt: null,
+        status: 'active' as const,
+      },
+    };
+
+    for (const width of [40, 70, 80]) {
+      const line = stripAnsi(renderMakaPiStatusLine(metadata, width));
+      assert.ok(visibleWidth(line) <= width);
+      assert.match(line, /Maka/);
+      assert.match(line, /Full/);
+      assert.match(line, /anthropic/);
+      assert.match(line, /(?:goal |g)1\/50/);
+      assert.match(line, /(?:ctx .*96%|c96%)/);
+    }
+  });
+
   test('keeps assistant text after a tool call visible after the tool block', () => {
     const state = createMakaPiTranscriptState();
-    appendUserPrompt(state, 'inspect the package');
+    appendUserPrompt(state, 'inspect the package', 'message-1', true);
 
     applyMakaSessionEventToTranscript(
       state,
@@ -302,6 +505,207 @@ describe('Maka Pi TUI transcript', () => {
       state.entries[3]?.kind === 'assistant' ? state.entries[3].text : '',
       'The package is named maka-agent.',
     );
+  });
+
+  test('preserves a transient user row across a sparse transcript replacement', () => {
+    const state = createMakaPiTranscriptState();
+    appendUserPrompt(state, 'send now', 'message-1', true);
+
+    replaceTranscriptWithStoredMessages(state, [], { preserveClientLocalEntries: true });
+
+    assert.deepEqual(state.entries, [
+      { kind: 'user', messageId: 'message-1', text: 'send now', transient: true },
+    ]);
+  });
+
+  test('removes only transient rows with durable cancellation proof', () => {
+    const state = createMakaPiTranscriptState();
+    appendUserPrompt(state, 'accepted', 'message-accepted', true);
+    appendUserPrompt(state, 'handed off', 'message-handed-off', true);
+    appendUserPrompt(state, 'cancelled', 'message-cancelled', true);
+
+    retireCancelledTransientMessages(state, ['message-cancelled']);
+
+    assert.deepEqual(
+      state.entries.map((entry) => ('messageId' in entry ? entry.messageId : undefined)),
+      ['message-accepted', 'message-handed-off'],
+    );
+  });
+
+  test('keeps a transient user row before later durable output in a sparse replacement', () => {
+    const state = createMakaPiTranscriptState();
+    replaceTranscriptWithStoredMessages(state, [
+      { type: 'user', id: 'old-user', turnId: 'old-turn', ts: 1, text: 'before' },
+    ]);
+    appendUserPrompt(state, 'send now', 'message-1', true);
+    state.entries.push({ kind: 'assistant', messageId: 'later-assistant', text: 'after' });
+
+    replaceTranscriptWithStoredMessages(
+      state,
+      [
+        { type: 'user', id: 'old-user', turnId: 'old-turn', ts: 1, text: 'before' },
+        {
+          type: 'assistant',
+          id: 'later-assistant',
+          turnId: 'turn-1',
+          ts: 3,
+          text: 'after',
+          modelId: 'model-1',
+        },
+      ],
+      { preserveClientLocalEntries: true },
+    );
+
+    assert.deepEqual(
+      state.entries.map((entry) =>
+        entry.kind === 'user' || entry.kind === 'assistant' ? entry.messageId : entry.kind,
+      ),
+      ['old-user', 'message-1', 'later-assistant'],
+    );
+  });
+
+  test('keeps an unanchored transient user row after existing durable history', () => {
+    const state = createMakaPiTranscriptState();
+    replaceTranscriptWithStoredMessages(state, [
+      { type: 'user', id: 'old-user', turnId: 'old-turn', ts: 1, text: 'before' },
+      {
+        type: 'assistant',
+        id: 'old-assistant',
+        turnId: 'old-turn',
+        ts: 2,
+        text: 'answer',
+        modelId: 'model-1',
+      },
+    ]);
+    appendUserPrompt(state, 'send now', 'message-1', true);
+
+    replaceTranscriptWithStoredMessages(
+      state,
+      [
+        { type: 'user', id: 'old-user', turnId: 'old-turn', ts: 1, text: 'before' },
+        {
+          type: 'assistant',
+          id: 'old-assistant',
+          turnId: 'old-turn',
+          ts: 2,
+          text: 'answer',
+          modelId: 'model-1',
+        },
+      ],
+      { preserveClientLocalEntries: true },
+    );
+
+    assert.deepEqual(
+      state.entries.map((entry) =>
+        entry.kind === 'user' || entry.kind === 'assistant' ? entry.messageId : entry.kind,
+      ),
+      ['old-user', 'old-assistant', 'message-1'],
+    );
+  });
+
+  test('keeps a leading transient row before an entirely new durable replacement', () => {
+    const state = createMakaPiTranscriptState();
+    appendUserPrompt(state, 'current prompt', 'message-current', true);
+    state.entries.push({ kind: 'assistant', messageId: 'old-assistant', text: 'old live output' });
+
+    replaceTranscriptWithStoredMessages(
+      state,
+      [
+        { type: 'user', id: 'next-user', turnId: 'next-turn', ts: 3, text: 'next prompt' },
+        {
+          type: 'assistant',
+          id: 'next-assistant',
+          turnId: 'next-turn',
+          ts: 4,
+          text: 'next answer',
+          modelId: 'model-1',
+        },
+      ],
+      { preserveClientLocalEntries: true },
+    );
+
+    assert.deepEqual(
+      state.entries.map((entry) =>
+        entry.kind === 'user' || entry.kind === 'assistant' ? entry.messageId : entry.kind,
+      ),
+      ['message-current', 'next-user', 'next-assistant'],
+    );
+  });
+
+  test('reconciles a transient user row by messageId when durable history arrives', () => {
+    const state = createMakaPiTranscriptState();
+    appendUserPrompt(state, 'send now', 'message-1', true);
+
+    replaceTranscriptWithStoredMessages(
+      state,
+      [{ type: 'user', id: 'message-1', turnId: 'turn-1', ts: 1, text: 'send now' }],
+      { preserveClientLocalEntries: true },
+    );
+
+    assert.deepEqual(state.entries, [{ kind: 'user', messageId: 'message-1', text: 'send now' }]);
+  });
+
+  test('keeps a projected in-flight steering echo transient until durable reconciliation', () => {
+    const state = createMakaPiTranscriptState();
+    appendUserPrompt(state, 'send now', 'message-1', true);
+
+    applyMakaSessionEventToTranscript(
+      state,
+      event({
+        type: 'steering_message',
+        messageId: 'message-1',
+        content: { text: 'send now' },
+      }),
+    );
+    applyMakaSessionEventToTranscript(
+      state,
+      event({
+        type: 'message_admission',
+        messageId: 'message-1',
+        outcome: 'retracted',
+      }),
+    );
+
+    assert.deepEqual(state.entries, []);
+  });
+
+  test('removes only the transient row named by a retracted admission', () => {
+    const state = createMakaPiTranscriptState();
+    appendUserPrompt(state, 'keep this', 'message-kept', true);
+    appendUserPrompt(state, 'take this back', 'message-retracted', true);
+
+    applyMakaSessionEventToTranscript(
+      state,
+      event({
+        type: 'message_admission',
+        messageId: 'message-retracted',
+        outcome: 'retracted',
+      }),
+    );
+
+    assert.deepEqual(state.entries, [
+      { kind: 'user', messageId: 'message-kept', text: 'keep this', transient: true },
+    ]);
+  });
+
+  test('updates a projected steering echo in its transient message position', () => {
+    const state = createMakaPiTranscriptState();
+    appendUserPrompt(state, 'send now', 'message-1', true);
+    state.entries.push({ kind: 'notice', level: 'error', text: 'later row' });
+
+    applyMakaSessionEventToTranscript(
+      state,
+      event({
+        type: 'steering_message',
+        messageId: 'message-1',
+        content: { text: 'canonical text' },
+      }),
+    );
+
+    assert.deepEqual(state.entries, [
+      { kind: 'user', messageId: 'message-1', text: 'canonical text', transient: true },
+      { kind: 'notice', level: 'error', text: 'later row' },
+    ]);
   });
 
   test('uses a shared message gutter and trims trailing block rows', () => {
@@ -373,7 +777,6 @@ describe('Maka Pi TUI transcript', () => {
     );
     state.entries.push({ kind: 'notice', level: 'error', text: 'Turn failed: provider_error' });
     state.steering = ['Keep going'];
-    state.pendingFallback = [{ text: 'Try again', enqueue: 'steer' }];
 
     assert.equal(
       hydrateToolsWithStoredMessages(state, 'turn-1', [
@@ -405,7 +808,6 @@ describe('Maka Pi TUI transcript', () => {
     assert.deepEqual(tool?.input, { path: 'README.md' });
     assert.deepEqual(tool?.result, { kind: 'text', text: 'README contents' });
     assert.deepEqual(state.steering, ['Keep going']);
-    assert.deepEqual(state.pendingFallback, [{ text: 'Try again', enqueue: 'steer' }]);
     assert.equal(state.entries.at(-1)?.kind, 'notice');
   });
 
@@ -863,8 +1265,8 @@ describe('Maka Pi TUI transcript', () => {
     );
 
     assert.deepEqual(state.entries, [
-      { kind: 'user', text: 'Show the result' },
-      { kind: 'user', text: 'Also include the tests' },
+      { kind: 'user', messageId: 'steering-display', text: 'Show the result' },
+      { kind: 'user', messageId: 'steering-plain', text: 'Also include the tests' },
     ]);
     const rendered = renderMakaPiTranscript(state, meta(), 100).map(stripAnsi).join('\n');
     assert.match(rendered, /Show the result/);

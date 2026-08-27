@@ -49,6 +49,7 @@ The release gate validates the following installed-package matrix:
 | --- | --- | --- | --- | --- |
 | Linux | x64 | 22.19 | Validated | Preflight only |
 | Linux | x64 | 24 | Validated | Validated |
+| Linux | arm64 | 24 | Validated | Preflight only |
 | macOS | arm64 | 24 | Validated | Preflight only |
 | Windows | x64 | 24 | Validated | Preflight only |
 

@@ -37,7 +37,11 @@ export { ToolResultPreview } from './tool-activity/tool-result-preview.js';
 export { SandboxBoundaryPrompt } from './sandbox-boundary-prompt.js';
 export { ChatSurfaceLayout } from './chat-surface-layout.js';
 export type { ChatSurfaceLayoutProps } from './chat-surface-layout.js';
-export { ChatView, type LiveContentActivationSnapshot } from './chat-view.js';
+export {
+  ChatView,
+  type LiveContentActivationSnapshot,
+  type TransientUserMessageProjection,
+} from './chat-view.js';
 export { WorkspacePicker } from './workspace-picker.js';
 export type { WorkspacePickerModel } from './workspace-picker.js';
 export {

@@ -20,6 +20,11 @@
 import { isDeepStrictEqual } from 'node:util';
 import { normalizeMessageContent, type MessageContent } from '@maka/core/events';
 import { decodeTurnOrigin, type TurnOrigin } from '@maka/core/turn-origin';
+import {
+  normalizeSubmittedTurnIntent,
+  submittedTurnIntentsEqual,
+  type SubmittedTurnIntent,
+} from './submitted-turn-intent.js';
 
 const SAFE_ID_PATTERN = /^[A-Za-z0-9_-]{1,128}$/;
 
@@ -34,6 +39,15 @@ export interface PendingMessageAdmission {
   readonly submittedPlacement: 'current_turn' | 'next_turn';
   readonly placement: 'current_turn' | 'next_turn';
   readonly disposition: 'steering' | 'followup';
+  /**
+   * What this Message asked of its Turn beyond the words, when it asked for
+   * anything. Recovery re-opens the Turn from this record and answers retries
+   * against it, so the whole intent lives here: without it a crash between
+   * this commit and the root admission silently downgrades an explicit graph
+   * or swarm request to the Session default, and a later retry of the very
+   * same submit reads as a different one.
+   */
+  readonly submittedIntent?: SubmittedTurnIntent;
   readonly admittedAt: number;
 }
 
@@ -43,6 +57,12 @@ export interface MessageAdmissionStore {
     sessionId: string,
     messageId: string,
   ): Promise<PendingMessageAdmission | undefined>;
+  /**
+   * Whether this Message identity carries a cancellation tombstone. That a
+   * Message was cancelled is the whole fact callers need — the tombstone's
+   * own columns never leave this layer.
+   */
+  hasCancelledMessageAdmission(sessionId: string, messageId: string): Promise<boolean>;
   listMessageAdmissions(sessionId: string): Promise<readonly PendingMessageAdmission[]>;
   markMessagesHandedOff(input: {
     sessionId: string;
@@ -85,6 +105,9 @@ export function normalizePendingMessageAdmission(
     ...admission,
     ...(origin ? { origin: Object.freeze(origin) } : {}),
     content: normalizeMessageContent(admission.content),
+    ...(admission.submittedIntent
+      ? { submittedIntent: normalizeSubmittedTurnIntent(admission.submittedIntent) }
+      : {}),
   });
   if (!/^sha256:[a-f0-9]{64}$/u.test(normalized.submittedContentDigest)) {
     throw new Error('Invalid pending Message submitted content digest');
@@ -109,6 +132,7 @@ export function samePendingMessageAdmission(
     a.placement === b.placement &&
     a.disposition === b.disposition &&
     a.admittedAt === b.admittedAt &&
+    submittedTurnIntentsEqual(a.submittedIntent, b.submittedIntent) &&
     isDeepStrictEqual(a.content, b.content)
   );
 }

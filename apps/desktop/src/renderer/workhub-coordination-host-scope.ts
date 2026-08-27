@@ -80,7 +80,7 @@ export function scopeWorkHubSessionsToCoordinationHost(
     },
     async send(sessionId: string, command: { type: 'send'; turnId: string; text: string }) {
       requireTargetHost(sessionId);
-      return await sessions.send(sessionId, command);
+      return sessions.send(sessionId, command);
     },
     async stop(
       sessionId: string,

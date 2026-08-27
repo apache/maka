@@ -45,9 +45,9 @@ Streaming tool-call association for gateways that reuse or omit `index` / `id`
 
 Delete when that guard passes against an unpatched package.
 
-## `@astryxdesign/core@0.4.5`
+## `@astryxdesign/core@0.5.0`
 
-Six published component seams drop host-owned state or semantics:
+Five published component seams drop host-owned state or semantics:
 
 - `ChatLayout` needs a conversation identity that resets scroll/unread state
   without remounting its composer slot and discarding the live draft.
@@ -71,10 +71,6 @@ Six published component seams drop host-owned state or semantics:
   Skills entry holds its look steady while the Skill catalog refreshes and
   defers activation meanwhile; without the attribute the row announces
   "available" to assistive technology and silently ignores the action.
-
-Blank UA-CH `navigator.userAgentData.platform` must also not mean "not Apple".
-Electron builds with a rewritten identity ship `platform: ''`, which made every
-`mod` hotkey listen for Ctrl and every `Kbd` draw Ctrl on macOS.
 
 Streaming text and Markdown expose an explicit `settledText` seam so the
 renderer can verify and advance the exact prefix already presented without

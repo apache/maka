@@ -17,11 +17,13 @@
  * under the License.
  */
 
-/// <reference path="./fs-native-extensions.d.ts" />
-
 import { constants as fsConstants } from 'node:fs';
-import { lstat, open, rmdir, unlink, type FileHandle } from 'node:fs/promises';
-import { tryLock, unlock } from 'fs-native-extensions';
+import { lstat, open, rmdir, unlink } from 'node:fs/promises';
+import {
+  openStableNativeLockFile,
+  releaseNativeFileLock,
+  tryAcquireNativeFileLock,
+} from './native-file-lock.js';
 
 const LOCK_POLL_MS = 25;
 const LOCK_TIMEOUT_MS = 10_000;
@@ -37,12 +39,14 @@ export async function withLegacyFileUpdateLockLease<T>(
   const supervisionPath = `${targetPath}.supervised`;
   const deadline = Date.now() + timeoutMs;
   return runWithLockGate(leasePath, deadline, async () => {
-    const lease = await openStableLockFile(leasePath);
+    const lease = await openStableNativeLockFile(leasePath);
     let leased = false;
     let supervised = false;
     let completed = false;
     try {
-      while (!(leased = tryLock(lease.fd))) await waitForLockTurn(lockPath, deadline);
+      while (!(leased = tryAcquireNativeFileLock(lease))) {
+        await waitForLockTurn(lockPath, deadline);
+      }
       // The inherited advisory lease follows the legacy child process. A surviving
       // supervision marker therefore proves that its directory lock is ownerless
       // once a later process can acquire this lease.
@@ -56,7 +60,7 @@ export async function withLegacyFileUpdateLockLease<T>(
       try {
         if (supervised && completed) await unlink(supervisionPath).catch(ignoreMissing);
       } finally {
-        if (leased) releaseLock(lease);
+        if (leased) releaseNativeFileLock(lease);
         await lease.close();
       }
     }
@@ -72,11 +76,13 @@ export async function withProcessLifetimeFileUpdateLock<T>(
   const deadline = Date.now() + timeoutMs;
   const leasePath = `${targetPath}.lease`;
   return runWithLockGate(leasePath, deadline, async () => {
-    const lease = await openStableLockFile(leasePath);
+    const lease = await openStableNativeLockFile(leasePath);
     let leased = false;
     let markerCreated = false;
     try {
-      while (!(leased = tryLock(lease.fd))) await waitForLockTurn(lockPath, deadline);
+      while (!(leased = tryAcquireNativeFileLock(lease))) {
+        await waitForLockTurn(lockPath, deadline);
+      }
       await recoverSupervisedLegacyLock(lockPath, `${targetPath}.supervised`);
       await acquireLegacyMarker(lockPath, deadline);
       markerCreated = true;
@@ -85,7 +91,7 @@ export async function withProcessLifetimeFileUpdateLock<T>(
       try {
         if (markerCreated) await unlink(lockPath).catch(ignoreMissing);
       } finally {
-        if (leased) releaseLock(lease);
+        if (leased) releaseNativeFileLock(lease);
         await lease.close();
       }
     }
@@ -161,22 +167,6 @@ async function waitForGate(
   }
 }
 
-async function openStableLockFile(lockPath: string): Promise<FileHandle> {
-  const handle = await open(
-    lockPath,
-    fsConstants.O_CREAT | fsConstants.O_RDWR | fsConstants.O_NOFOLLOW,
-    0o600,
-  );
-  try {
-    await assertStableRegularFile(handle, lockPath);
-    if (process.platform !== 'win32') await handle.chmod(0o600);
-    return handle;
-  } catch (error) {
-    await handle.close();
-    throw error;
-  }
-}
-
 async function acquireLegacyMarker(lockPath: string, deadline: number): Promise<void> {
   for (;;) {
     try {
@@ -210,21 +200,6 @@ async function acquireLegacyMarker(lockPath: string, deadline: number): Promise<
   }
 }
 
-async function assertStableRegularFile(handle: FileHandle, lockPath: string): Promise<void> {
-  const [handleStat, pathStat] = await Promise.all([
-    handle.stat({ bigint: true }),
-    lstat(lockPath, { bigint: true }),
-  ]);
-  if (
-    !handleStat.isFile() ||
-    !pathStat.isFile() ||
-    handleStat.dev !== pathStat.dev ||
-    handleStat.ino !== pathStat.ino
-  ) {
-    throw new Error(`File update lease is not one stable regular file: ${lockPath}`);
-  }
-}
-
 async function waitForLockTurn(lockPath: string, deadline: number): Promise<void> {
   if (Date.now() >= deadline) throw lockTimeout(lockPath);
   await new Promise<void>((resolve) => setTimeout(resolve, LOCK_POLL_MS));
@@ -232,14 +207,6 @@ async function waitForLockTurn(lockPath: string, deadline: number): Promise<void
 
 function lockTimeout(lockPath: string): Error {
   return new Error(`File update is locked by another process (${lockPath})`);
-}
-
-function releaseLock(handle: FileHandle): void {
-  try {
-    unlock(handle.fd);
-  } catch {
-    // Closing the OS handle is the authoritative release path.
-  }
 }
 
 function ignoreMissing(error: unknown): void {

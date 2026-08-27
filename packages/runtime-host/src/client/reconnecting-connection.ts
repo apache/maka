@@ -46,7 +46,18 @@ import type { RuntimeHostSessionSubscription } from './session-subscription.js';
 
 export interface RuntimeHostReconnectingConnection extends RuntimeHostConnection {
   readonly reconnecting: true;
+  subscribeConnectionAvailability(
+    listener: (availability: RuntimeHostConnectionAvailability) => void,
+  ): () => void;
 }
+
+export type RuntimeHostConnectionAvailability =
+  | { readonly kind: 'unavailable' }
+  | {
+      readonly kind: 'connected';
+      readonly hostEpoch: string;
+      readonly connectionId: string;
+    };
 
 export async function createRuntimeHostReconnectingConnection(input: {
   readonly initialConnection: RuntimeHostConnection;
@@ -104,10 +115,14 @@ class RuntimeHostReconnectingConnectionImpl implements RuntimeHostReconnectingCo
   readonly reconnecting = true as const;
   readonly closed: Promise<void>;
   readonly #configurationListeners = new Set<(revision: number) => void>();
+  readonly #connectionAvailabilityListeners = new Set<
+    (availability: RuntimeHostConnectionAvailability) => void
+  >();
   readonly #projectListeners = new Set<(revision: number) => void>();
   readonly #sessionListeners = new Set<(frame: SessionCatalogChangedFrame) => void>();
   readonly #scheduledTaskListeners = new Set<(frame: ScheduledTaskChangedFrame) => void>();
   readonly #lifecycle: RuntimeHostReconnectLifecycle<RuntimeHostConnection>;
+  #connectionAvailability: RuntimeHostConnectionAvailability;
   #lastConnection: RuntimeHostConnection;
   #listenerDisposers: (() => void)[] = [];
 
@@ -116,13 +131,18 @@ class RuntimeHostReconnectingConnectionImpl implements RuntimeHostReconnectingCo
     if (!initial) throw new Error('Runtime Host reconnect lifecycle has no initial connection');
     this.#lifecycle = lifecycle;
     this.#lastConnection = initial;
+    this.#connectionAvailability = this.#connectedAvailability(initial);
     this.closed = lifecycle.closed;
     this.#bindListeners(initial);
     lifecycle.subscribe((connection) => {
       this.#unbindListeners();
-      if (!connection) return;
+      if (!connection) {
+        this.#setConnectionAvailability({ kind: 'unavailable' });
+        return;
+      }
       this.#lastConnection = connection;
       this.#bindListeners(connection);
+      this.#setConnectionAvailability(this.#connectedAvailability(connection));
     });
   }
 
@@ -211,6 +231,18 @@ class RuntimeHostReconnectingConnectionImpl implements RuntimeHostReconnectingCo
     return () => this.#configurationListeners.delete(listener);
   }
 
+  subscribeConnectionAvailability(
+    listener: (availability: RuntimeHostConnectionAvailability) => void,
+  ): () => void {
+    this.#connectionAvailabilityListeners.add(listener);
+    try {
+      listener(this.#connectionAvailability);
+    } catch {
+      // A presentation listener cannot invalidate the Host connection.
+    }
+    return () => this.#connectionAvailabilityListeners.delete(listener);
+  }
+
   subscribeProjectCatalogChanges(listener: (revision: number) => void): () => void {
     this.#projectListeners.add(listener);
     return () => this.#projectListeners.delete(listener);
@@ -230,6 +262,7 @@ class RuntimeHostReconnectingConnectionImpl implements RuntimeHostReconnectingCo
 
   close(): Promise<void> {
     this.#unbindListeners();
+    this.#connectionAvailabilityListeners.clear();
     return this.#lifecycle.close();
   }
 
@@ -320,6 +353,19 @@ class RuntimeHostReconnectingConnectionImpl implements RuntimeHostReconnectingCo
 
   #unbindListeners(): void {
     for (const dispose of this.#listenerDisposers.splice(0)) dispose();
+  }
+
+  #connectedAvailability(connection: RuntimeHostConnection): RuntimeHostConnectionAvailability {
+    return {
+      kind: 'connected',
+      hostEpoch: connection.hostEpoch,
+      connectionId: connection.connectionId,
+    };
+  }
+
+  #setConnectionAvailability(availability: RuntimeHostConnectionAvailability): void {
+    this.#connectionAvailability = availability;
+    notify(this.#connectionAvailabilityListeners, availability);
   }
 }
 

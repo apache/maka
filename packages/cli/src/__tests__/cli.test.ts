@@ -51,6 +51,10 @@ describe('Maka CLI args', () => {
     assert.match(help.text, /^  maka run /m);
     assert.match(help.text, /^  maka activate /m);
     assert.match(help.text, /^  maka eval /m);
+    assert.match(
+      help.text,
+      /^  maka --acp      Serve ACP v1 over stdio \(initialize only; session support in progress\)$/m,
+    );
     assert.match(help.text, /^  maka runtime-host serve /m);
     assert.doesNotMatch(help.text, /cli:dev/);
   });
@@ -61,6 +65,30 @@ describe('Maka CLI args', () => {
       hostProfileId: 'office',
       projectId: 'project-1',
     });
+  });
+
+  test('parses the ACP stdio command before TUI flags', () => {
+    assert.deepEqual(parseMakaCliArgs(['--acp'], '0.1.0'), { kind: 'acp' });
+    assert.deepEqual(parseMakaCliArgs(['--acp', 'extra'], '0.1.0'), {
+      kind: 'error',
+      message: 'maka --acp does not accept arguments',
+      exitCode: 2,
+      showHelp: false,
+    });
+    assert.deepEqual(parseMakaCliArgs(['--host', 'office', '--project', 'project-1'], '0.1.0'), {
+      kind: 'tui',
+      hostProfileId: 'office',
+      projectId: 'project-1',
+    });
+  });
+
+  test('compiled ACP launcher rejects trailing arguments without help output', async () => {
+    const result = await runCompiledCli('dev-cli.js', ['--acp', 'extra'], process.env);
+
+    assert.equal(result.signal, null);
+    assert.equal(result.code, 2);
+    assert.equal(result.stdout, '');
+    assert.equal(result.stderr, 'maka --acp does not accept arguments\n');
   });
 
   test('uses the active launcher in development help and rejects an empty profile name', async () => {
@@ -265,19 +293,24 @@ async function runCompiledCli(
   entrypoint: string,
   args: readonly string[],
   env: NodeJS.ProcessEnv,
-): Promise<{ code: number | null; signal: NodeJS.Signals | null; stderr: string }> {
+): Promise<{ code: number | null; signal: NodeJS.Signals | null; stdout: string; stderr: string }> {
   const child = spawn(
     process.execPath,
     [fileURLToPath(new URL(`../${entrypoint}`, import.meta.url)), ...args],
-    { env, stdio: ['ignore', 'ignore', 'pipe'], timeout: 15_000, killSignal: 'SIGKILL' },
+    { env, stdio: ['ignore', 'pipe', 'pipe'], timeout: 15_000, killSignal: 'SIGKILL' },
   );
+  let stdout = '';
+  child.stdout.setEncoding('utf8');
+  child.stdout.on('data', (chunk: string) => {
+    stdout += chunk;
+  });
   let stderr = '';
   child.stderr.setEncoding('utf8');
   child.stderr.on('data', (chunk: string) => {
     stderr += chunk;
   });
   const [code, signal] = (await once(child, 'close')) as [number | null, NodeJS.Signals | null];
-  return { code, signal, stderr };
+  return { code, signal, stdout, stderr };
 }
 
 function platformProfileRoot(home: string, applicationData: string, profileName: string): string {

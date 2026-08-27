@@ -39,6 +39,7 @@ import {
   type SessionDomainChangedFrame,
   type SessionEventFrame,
   type SessionRuntimeResourcePtyDataFrame,
+  type SessionSteeringEvent,
   type SessionToolEvent,
   type SessionTranscriptAdvancedFrame,
   type SessionTranscriptPageInput,
@@ -80,7 +81,7 @@ const MAX_SUBSCRIBER_QUEUED_BYTES = 256 * 1024;
 
 export type { CanonicalSessionProjection } from './canonical-session-projection.js';
 
-export type RuntimeSessionTransientEvent = Extract<
+export type RuntimeSessionForwardedEvent = Extract<
   SessionEvent,
   {
     type:
@@ -93,6 +94,7 @@ export type RuntimeSessionTransientEvent = Extract<
       | 'tool_progress'
       | 'tool_result_preview'
       | 'tool_result'
+      | 'steering_message'
       | 'provider_retry';
   }
 >;
@@ -114,7 +116,7 @@ interface SessionProjectionState {
    */
   toolResultPreviews: Map<
     string,
-    Extract<RuntimeSessionTransientEvent, { type: 'tool_result_preview' }>
+    Extract<RuntimeSessionForwardedEvent, { type: 'tool_result_preview' }>
   >;
   terminalPublicationFence?: TerminalPublicationFence;
 }
@@ -617,7 +619,7 @@ export class SessionContinuityCoordinator implements SessionContinuityService {
   async acceptRuntimeEvent(
     sessionId: string,
     runId: string,
-    event: RuntimeSessionTransientEvent,
+    event: RuntimeSessionForwardedEvent,
   ): Promise<void> {
     if (
       (event.type === 'text_delta' || event.type === 'thinking_delta') &&
@@ -734,7 +736,7 @@ export class SessionContinuityCoordinator implements SessionContinuityService {
       } else if (event.type === 'tool_result') {
         state.toolResultPreviews.delete(event.toolUseId);
       }
-      const projected = projectToolEvent(event);
+      const projected = projectSessionEvent(event);
       for (const subscriber of state.subscribers.values()) {
         const frame: SessionEventFrame = {
           kind: 'subscription.session_event',
@@ -968,7 +970,7 @@ export class SessionContinuityCoordinator implements SessionContinuityService {
                     sequence: subscriber.nextSequence,
                     sessionId,
                     runId: rootTurn.runId,
-                    event: projectToolEvent(preview),
+                    event: projectSessionEvent(preview),
                   };
                   this.#enqueue(subscriber, frame);
                 }
@@ -1450,7 +1452,7 @@ export class SessionContinuityCoordinator implements SessionContinuityService {
     subscriber: Subscriber,
     sessionId: string,
     runId: string,
-    event: Extract<RuntimeSessionTransientEvent, { type: 'text_delta' | 'thinking_delta' }>,
+    event: Extract<RuntimeSessionForwardedEvent, { type: 'text_delta' | 'thinking_delta' }>,
     kind: SessionAssistantDelta['kind'],
     startOffset: number,
   ): void {
@@ -1919,9 +1921,9 @@ function jsonStringContentBytes(value: string): number {
   return Buffer.byteLength(encoded.slice(1, -1), 'utf8');
 }
 
-function projectToolEvent(
+function projectSessionEvent(
   event: Exclude<
-    RuntimeSessionTransientEvent,
+    RuntimeSessionForwardedEvent,
     {
       type:
         | 'text_delta'
@@ -1931,7 +1933,20 @@ function projectToolEvent(
         | 'provider_retry';
     }
   >,
-): SessionToolEvent {
+): SessionToolEvent | SessionSteeringEvent {
+  if (event.type === 'steering_message') {
+    // The durable steering echo: forwarded verbatim so subscribers render the
+    // interjection in place instead of depending on observing the transient
+    // in-flight queue state.
+    return {
+      type: 'steering_message',
+      id: event.id,
+      turnId: event.turnId,
+      ts: event.ts,
+      messageId: event.messageId,
+      content: structuredClone(event.content),
+    };
+  }
   const identity = {
     id: event.id,
     turnId: event.turnId,
@@ -2008,7 +2023,7 @@ function boundedUtf8(value: string, maxBytes: number): string {
 }
 
 function toolStartShellRunRef(
-  event: Extract<RuntimeSessionTransientEvent, { type: 'tool_start' }>,
+  event: Extract<RuntimeSessionForwardedEvent, { type: 'tool_start' }>,
 ): string | undefined {
   if (event.toolName !== 'Read' && event.toolName !== 'StopBackgroundTask') return undefined;
   const ref =

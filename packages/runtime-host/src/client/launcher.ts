@@ -29,6 +29,12 @@ import { RUNTIME_HOST_STDERR_PIPE_ENV } from '../process-diagnostics.js';
 
 const CANDIDATE_STDERR_MAX_BYTES = 4 * 1024;
 
+export interface CandidateExitDetails {
+  readonly pid: number | undefined;
+  readonly code: number | null;
+  readonly signal: NodeJS.Signals | null;
+}
+
 export interface DetachedCandidateInput {
   rootPath: string;
   expectedRootId: string;
@@ -39,6 +45,8 @@ export interface DetachedCandidateInput {
   executable?: string;
   entrypoint: string | URL;
   env?: NodeJS.ProcessEnv;
+  /** Called with the candidate's exit details; the embedder owns the sink. */
+  readonly onExit?: (details: CandidateExitDetails) => void;
 }
 
 export interface DetachedCandidateAttempt {
@@ -72,6 +80,7 @@ export function launchDetachedRuntimeHostCandidate(
   const startupAttemptId = randomUUID();
   const child = spawnCandidate(input, true, startupAttemptId);
   const exited = observeCandidateExit(child);
+  notifyCandidateExit(child, exited, input.onExit);
   const startupFailure = readStartupFailure(exited, startupAttemptId);
   const spawned = spawnedPid(child).then(({ pid }) => {
     child.unref();
@@ -86,6 +95,7 @@ export function launchOwnedRuntimeHostCandidate(input: DetachedCandidateInput): 
   const startupAttemptId = randomUUID();
   const child = spawnCandidate(input, false, startupAttemptId);
   const exited = observeCandidateExit(child);
+  notifyCandidateExit(child, exited, input.onExit);
   const startupFailure = readStartupFailure(exited, startupAttemptId);
   return {
     spawned: spawnedPid(child).then(({ pid }) => ({
@@ -162,6 +172,21 @@ function spawnedPid(child: ReturnType<typeof spawn>): Promise<{ pid: number }> {
     };
     child.once('spawn', onSpawn);
     child.once('error', onError);
+  });
+}
+
+function notifyCandidateExit(
+  child: ChildProcess,
+  exited: Promise<CandidateProcessExit>,
+  onExit: DetachedCandidateInput['onExit'],
+): void {
+  if (!onExit) return;
+  void exited.then(({ code, signal }) => {
+    try {
+      onExit({ pid: child.pid, code, signal });
+    } catch {
+      // The embedder owns this diagnostics sink; it must not affect process settlement.
+    }
   });
 }
 

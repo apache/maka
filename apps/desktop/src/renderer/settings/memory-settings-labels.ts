@@ -55,16 +55,11 @@ export function formatLocalMemorySaveSummary(state: LocalMemoryState, copy: Memo
   return copy.saveSummary(state.activeEntryCount, state.archivedEntryCount);
 }
 
-/** Display-only path shortening: the full absolute MEMORY.md path used
- * to render as a full-width mono line that shoved the sibling status
- * words into a cramped stack (and leaked the raw absolute path into
- * the renderer, against the UI quality plan). Show the meaningful
- * trailing segments; the full path stays available via title= and the
- * copy-path action. */
 export function displayMemoryPath(path: string): string {
-  const parts = path.split('/').filter(Boolean);
+  const separator = /^[A-Za-z]:\\/.test(path) || path.startsWith('\\\\') ? '\\' : '/';
+  const parts = path.split(/[/\\]+/).filter(Boolean);
   if (parts.length <= 3) return path;
-  return `…/${parts.slice(-3).join('/')}`;
+  return `…${separator}${parts.slice(-3).join(separator)}`;
 }
 
 export function localMemoryBackupKindLabel(kind: NonNullable<LocalMemoryState['latestBackup']>['kind'], copy: MemorySettingsCopy): string {

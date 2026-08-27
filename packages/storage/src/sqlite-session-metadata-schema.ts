@@ -19,7 +19,7 @@
 
 import type { DatabaseSync } from 'node:sqlite';
 
-export const SQLITE_SESSION_METADATA_SCHEMA_VERSION = 32;
+export const SQLITE_SESSION_METADATA_SCHEMA_VERSION = 33;
 export const SQLITE_SESSION_MESSAGE_CHUNK_BYTES = 64 * 1024;
 export const SQLITE_SESSION_MESSAGE_CHUNK_MARKER = '{"$maka":"session-message-chunks-v1"}';
 
@@ -1197,6 +1197,12 @@ const MIGRATIONS: ReadonlyMap<number, string> = new Map([
   [
     32,
     `
+    ALTER TABLE message_admissions ADD COLUMN submitted_intent_json TEXT;
+  `,
+  ],
+  [
+    33,
+    `
     ALTER TABLE message_admissions ADD COLUMN origin_json TEXT;
   `,
   ],
@@ -1257,7 +1263,15 @@ export function migrateSqliteSessionMetadataDatabase(
     ) {
       const sql = MIGRATIONS.get(version);
       if (!sql) throw new Error(`Missing SQLite session metadata migration ${version}`);
-      if (version !== 32 || !hasColumn(db, 'message_admissions', 'origin_json')) {
+      // The mailbox branch and main both used version 32 during development,
+      // but each added a different column. Version 33 converges either shape.
+      if (version === 33 && !hasColumn(db, 'message_admissions', 'submitted_intent_json')) {
+        db.exec(MIGRATIONS.get(32)!);
+      }
+      const columnAlreadyPresent =
+        (version === 32 && hasColumn(db, 'message_admissions', 'submitted_intent_json')) ||
+        (version === 33 && hasColumn(db, 'message_admissions', 'origin_json'));
+      if (!columnAlreadyPresent) {
         db.exec(sql);
       }
       if (version === 29 && hasColumn(db, 'session_metadata', 'last_used_at')) {

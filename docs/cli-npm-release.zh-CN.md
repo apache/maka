@@ -106,7 +106,7 @@ authentication and disallow tokens**，然后撤销不再使用的 publish token
    ```
 
 2. 确认新建的 run 使用 `v<version>`。workflow 要求其 GitHub ref、checkout、产品 tag、Release、source commit 和 npm provenance 全部指向这一个 tag commit，并要求该 commit 仍是 `main` 的 ancestor；
-3. 等待可复用 package validation jobs 全部通过。它们只构建一个 tarball，并在 Linux x64、
+3. 等待可复用 package validation jobs 全部通过。它们只构建一个 tarball，并在 Linux x64/arm64、
    macOS arm64、Windows x64 上验证安装态 CLI，在 Linux x64 上运行真实 Harbor 和 Pier
    Docker cell；
 4. 审查并批准 `npm-release` Environment deployment；

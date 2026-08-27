@@ -45,7 +45,8 @@ import {
 } from '@maka/core/tool-result-status';
 import { type ShellRunUpdate } from '@maka/core/events';
 import { homedir } from 'node:os';
-import type { MakaSessionDriver } from './session-driver.js';
+import { basename } from 'node:path';
+import type { MakaSessionDriver, MakaSideConversationParentStatus } from './session-driver.js';
 import { BoundedChunkBuffer } from './bounded-chunk-buffer.js';
 import { ansi } from './tui-ansi.js';
 import {
@@ -105,14 +106,6 @@ export interface MakaPiTranscriptState {
    */
   steering: string[];
   followup: string[];
-  /**
-   * Messages whose enqueue hit the no-live-owner fallback while a turn was
-   * running (the begin window). CLI-owned, NOT a runtime mirror: the runner
-   * retries the original enqueue until it lands and flushes any remainder
-   * into the next turn at the turn boundary, so the text is never dropped.
-   * Rendered in the pending bar alongside the mirror.
-   */
-  pendingFallback: Array<{ text: string; enqueue: 'steer' | 'queue' }>;
   /** Current non-durable provider retry progress for the activity strip. */
   providerRetry?: ProviderRetryEvent;
 }
@@ -149,7 +142,7 @@ const LIVE_TOOL_BUFFER_MAX_CHARS = 64 * 1024;
 const LIVE_TOOL_BUFFER_MAX_CHUNKS = 512;
 
 export type MakaPiTranscriptEntry =
-  | { kind: 'user'; text: string }
+  | { kind: 'user'; messageId: string; text: string; transient?: boolean }
   | { kind: 'legacy_automation'; text: string }
   | { kind: 'goal_continuation'; text: string }
   | { kind: 'assistant'; messageId: string; text: string }
@@ -205,6 +198,10 @@ export interface MakaPiTranscriptMetadata {
    * terminal goals leave no segment, matching the desktop chip.
    */
   goal?: GoalProjection | null;
+  sideConversation?: {
+    view: 'parent' | 'side';
+    parentStatus?: MakaSideConversationParentStatus;
+  };
 }
 
 export function createMakaPiTranscriptState(): MakaPiTranscriptState {
@@ -217,7 +214,6 @@ export function createMakaPiTranscriptState(): MakaPiTranscriptState {
     usage: { costUsd: 0, cacheHitInput: 0, cacheMissInput: 0 },
     steering: [],
     followup: [],
-    pendingFallback: [],
   };
 }
 
@@ -242,8 +238,37 @@ function accumulateUsage(
   usage.contextRemaining = msg.contextRemaining;
 }
 
-export function appendUserPrompt(state: MakaPiTranscriptState, text: string): void {
-  state.entries.push({ kind: 'user', text });
+export function appendUserPrompt(
+  state: MakaPiTranscriptState,
+  text: string,
+  messageId: string,
+  transient = false,
+): void {
+  const entry = {
+    kind: 'user',
+    messageId,
+    text,
+    ...(transient ? { transient: true } : {}),
+  } as const;
+  const existingIndex = state.entries.findIndex(
+    (candidate) => candidate.kind === 'user' && candidate.messageId === messageId,
+  );
+  if (existingIndex >= 0) {
+    state.entries[existingIndex] = entry;
+    return;
+  }
+  state.entries.push(entry);
+}
+
+export function retireCancelledTransientMessages(
+  state: MakaPiTranscriptState,
+  cancelledMessageIds: readonly string[],
+): void {
+  const cancelled = new Set(cancelledMessageIds);
+  if (cancelled.size === 0) return;
+  state.entries = state.entries.filter(
+    (entry) => entry.kind !== 'user' || entry.transient !== true || !cancelled.has(entry.messageId),
+  );
 }
 
 export function appendTurnFailureToTranscript(state: MakaPiTranscriptState, error: unknown): void {
@@ -327,8 +352,48 @@ export function applyShellRunUpdateToTranscript(
 export function replaceTranscriptWithStoredMessages(
   state: MakaPiTranscriptState,
   messages: readonly StoredMessage[],
+  options: { preserveClientLocalEntries?: boolean } = {},
 ): void {
-  state.entries = foldStoredShellRunChildren(storedMessagesToTranscriptEntries(messages));
+  const durableMessageIds = new Set(messages.map((message) => message.id));
+  const durableEntries = foldStoredShellRunChildren(storedMessagesToTranscriptEntries(messages));
+  const durableEntryIds = new Set(durableEntries.map(transcriptEntryId).filter(Boolean));
+  // Client-local entries have no durable counterpart to arrive in `messages`:
+  // a transient user row still waiting for its canonical message, and every
+  // notice the client itself wrote (recap, skill card, error). A replacement
+  // that dropped them would erase what the client just told the user.
+  const isClientLocal = (entry: MakaPiTranscriptEntry): boolean =>
+    entry.kind === 'notice' ||
+    (entry.kind === 'user' && entry.transient === true && !durableMessageIds.has(entry.messageId));
+  // A preserved entry keeps its place relative to the durable entry it
+  // followed. With no durable entry ahead of it it stays at the head, unless
+  // something durable preceded it — then the tail is where it belongs.
+  const transientEntriesByBoundary = new Map<number, MakaPiTranscriptEntry[]>();
+  if (options.preserveClientLocalEntries) {
+    state.entries.forEach((entry, index) => {
+      if (!isClientLocal(entry)) return;
+      const priorEntries = state.entries.slice(0, index);
+      const previousDurableId = priorEntries
+        .map(transcriptEntryId)
+        .reverse()
+        .find((messageId) => messageId !== undefined && durableEntryIds.has(messageId));
+      const previousIndex = previousDurableId
+        ? durableEntries.findIndex(
+            (candidate) => transcriptEntryId(candidate) === previousDurableId,
+          )
+        : -1;
+      const hadPrecedingEntry = priorEntries.some((candidate) => !isClientLocal(candidate));
+      const boundary =
+        previousIndex >= 0 ? previousIndex + 1 : hadPrecedingEntry ? durableEntries.length : 0;
+      const grouped = transientEntriesByBoundary.get(boundary);
+      if (grouped) grouped.push(entry);
+      else transientEntriesByBoundary.set(boundary, [entry]);
+    });
+  }
+  state.entries = [];
+  for (let boundary = 0; boundary <= durableEntries.length; boundary += 1) {
+    state.entries.push(...(transientEntriesByBoundary.get(boundary) ?? []));
+    if (boundary < durableEntries.length) state.entries.push(durableEntries[boundary]!);
+  }
   clearPendingInteractions(state);
   state.expandAllTools = false;
   state.expandAllThinking = false;
@@ -344,9 +409,21 @@ export function replaceTranscriptWithStoredMessages(
   // Queues are per-active-run; a switched/reset session has none pending.
   state.steering = [];
   state.followup = [];
-  state.pendingFallback = [];
   for (const msg of messages) {
     if (msg.type === 'token_usage') accumulateUsage(state.usage, msg);
+  }
+}
+
+function transcriptEntryId(entry: MakaPiTranscriptEntry): string | undefined {
+  switch (entry.kind) {
+    case 'user':
+    case 'assistant':
+    case 'thinking':
+      return entry.messageId;
+    case 'tool':
+      return entry.toolUseId;
+    default:
+      return undefined;
   }
 }
 
@@ -710,7 +787,28 @@ export function applyMakaSessionEventToTranscript(
 
     case 'steering_message':
       // A user interjection injected mid-turn; render it in place as a user turn.
-      appendUserPrompt(state, event.content.displayText ?? event.content.text);
+      appendUserPrompt(
+        state,
+        event.content.displayText ?? event.content.text,
+        event.messageId,
+        state.entries.some(
+          (entry) =>
+            entry.kind === 'user' &&
+            entry.messageId === event.messageId &&
+            entry.transient === true,
+        ),
+      );
+      break;
+
+    case 'message_admission':
+      if (event.outcome === 'retracted') {
+        state.entries = state.entries.filter(
+          (entry) =>
+            entry.kind !== 'user' ||
+            entry.transient !== true ||
+            entry.messageId !== event.messageId,
+        );
+      }
       break;
 
     case 'queue_update':
@@ -793,15 +891,17 @@ function storedMessagesToTranscriptEntries(
   for (const message of messages) {
     switch (message.type) {
       case 'user':
-        entries.push({
-          kind:
-            message.origin?.kind === 'legacy_automation'
-              ? 'legacy_automation'
-              : message.origin?.kind === 'goal'
-                ? 'goal_continuation'
-                : 'user',
-          text: message.displayText ?? message.text,
-        });
+        if (message.origin?.kind === 'legacy_automation') {
+          entries.push({ kind: 'legacy_automation', text: message.displayText ?? message.text });
+        } else if (message.origin?.kind === 'goal') {
+          entries.push({ kind: 'goal_continuation', text: message.displayText ?? message.text });
+        } else {
+          entries.push({
+            kind: 'user',
+            messageId: message.id,
+            text: message.displayText ?? message.text,
+          });
+        }
         break;
       case 'assistant': {
         // Stored thinking happened before the reply text, so it resumes above it.
@@ -1328,36 +1428,73 @@ export function permissionModeLabel(mode: string): string {
 
 export function renderMakaPiStatusLine(metadata: MakaPiTranscriptMetadata, width: number): string {
   const safeWidth = Math.max(1, width);
+  if (metadata.sideConversation?.view === 'side') {
+    return fitLine(ansi.dim(sideConversationStatusLineText(metadata.sideConversation)), safeWidth);
+  }
   const sep = ansi.dim(' · ');
-  const parts: string[] = [
-    ansi.bold(metadata.title),
-    ansi.dim(permissionModeLabel(metadata.permissionMode)),
-    ansi.dim(metadata.model),
+  // #3421: segments carry a dropRank so overflow drops whole low-value
+  // segments instead of cutting the chain mid-token from the right.
+  // Lower ranks drop first; segments without a rank never drop:
+  // title, permission mode and goal are safety-relevant, ctx is the
+  // context budget, model is the session's identity.
+  const parts: MakaPiStatusLineSegment[] = [
+    {
+      text: ansi.bold(metadata.title),
+      compactRank: 1,
+      shortenedText: ansi.bold(fitLine(metadata.title, 7)),
+    },
+    {
+      text: ansi.dim(permissionModeLabel(metadata.permissionMode)),
+      compactRank: 4,
+      shortenedText: ansi.dim(compactPermissionModeLabel(metadata.permissionMode)),
+    },
+    {
+      text: ansi.dim(metadata.model),
+      compactRank: 0,
+      shortenedText: ansi.dim(fitLine(metadata.model, 11)),
+    },
   ];
+  if (metadata.sideConversation?.view === 'parent') {
+    parts.push({
+      text: ansi.dim(sideConversationStatusLineText(metadata.sideConversation)),
+      dropRank: 4,
+    });
+  }
   // #1064: omit thinking:default — it is noise before the user explicitly
   // changes the level. Only a non-default, explicitly set level shows.
   if (metadata.thinkingLevel) {
-    parts.push(ansi.dim(`thinking:${metadata.thinkingLevel}`));
+    parts.push({ text: ansi.dim(`thinking:${metadata.thinkingLevel}`), dropRank: 3 });
   }
   if (metadata.orchestrationMode === 'swarm') {
-    parts.push(ansi.accent('swarm'));
+    parts.push({ text: ansi.accent('swarm'), dropRank: 4 });
   } else if (metadata.orchestrationMode === 'graph') {
-    parts.push(ansi.accent('graph'));
+    parts.push({ text: ansi.accent('graph'), dropRank: 4 });
   }
   // An autonomous goal burns tokens between prompts; it must never be
   // invisible. Terminal goals show nothing (the desktop chip hides them too).
   if (metadata.goal && isLiveGoalStatus(metadata.goal.status)) {
     const text = goalStatusLineText(metadata.goal, Date.now());
+    const compactStatus =
+      metadata.goal.status === 'active' ? '' : metadata.goal.status === 'paused' ? 'p' : 'w';
+    const compactText = `g${compactStatus}${metadata.goal.iterations}/${metadata.goal.maxIterations}`;
     // paused gets warning salience: the loop stopped burning but stays armed
     // and resumable, which the user must not miss. waiting is a normal
     // transient between turns, so it stays dim like the other chrome.
-    parts.push(
-      metadata.goal.status === 'active'
-        ? ansi.accent(text)
-        : metadata.goal.status === 'paused'
-          ? ansi.yellow(text)
-          : ansi.dim(text),
-    );
+    parts.push({
+      text:
+        metadata.goal.status === 'active'
+          ? ansi.accent(text)
+          : metadata.goal.status === 'paused'
+            ? ansi.yellow(text)
+            : ansi.dim(text),
+      compactRank: 3,
+      shortenedText:
+        metadata.goal.status === 'active'
+          ? ansi.accent(fitLine(compactText, 8))
+          : metadata.goal.status === 'paused'
+            ? ansi.yellow(fitLine(compactText, 8))
+            : ansi.dim(fitLine(compactText, 8)),
+    });
   }
   const usage = metadata.usage;
   // ctx segment: only show "used" when contextRemaining is available, since
@@ -1370,32 +1507,131 @@ export function renderMakaPiStatusLine(metadata: MakaPiTranscriptMetadata, width
     const pct = Math.round((used / metadata.modelContextWindow) * 100);
     // #1064: color warning — yellow >80%, red >95%, dim otherwise.
     const ctxColor = pct > 95 ? ansi.red : pct > 80 ? ansi.yellow : ansi.dim;
-    parts.push(
-      ctxColor(
+    parts.push({
+      text: ctxColor(
         `ctx ${formatTokenCount(used)}/${formatTokenCount(metadata.modelContextWindow)} ${pct}%`,
       ),
-    );
+      compactRank: 2,
+      shortenedText: ctxColor(`c${pct}%`),
+    });
   } else if (metadata.modelContextWindow !== undefined) {
     // #3371: the window is known but no usage has arrived yet (fresh session,
     // or the provider doesn't report per-step input tokens). Degrade
     // explicitly, pi-style, instead of hiding the segment silently — the user
     // can then tell "not measured yet" apart from "window unknown".
-    parts.push(ansi.dim(`ctx ?/${formatTokenCount(metadata.modelContextWindow)}`));
+    parts.push({
+      text: ansi.dim(`ctx ?/${formatTokenCount(metadata.modelContextWindow)}`),
+      compactRank: 2,
+      shortenedText: ansi.dim('c?'),
+    });
   }
   if (usage) {
     if (usage.costUsd > 0) {
-      parts.push(ansi.dim(`$${formatCost(usage.costUsd)}`));
+      parts.push({ text: ansi.dim(`$${formatCost(usage.costUsd)}`), dropRank: 1 });
     }
     const totalCache = usage.cacheHitInput + usage.cacheMissInput;
     if (totalCache > 0) {
       const hitRate = Math.round((usage.cacheHitInput / totalCache) * 100);
-      parts.push(ansi.dim(`cache ${hitRate}%`));
+      parts.push({ text: ansi.dim(`cache ${hitRate}%`), dropRank: 0 });
     }
   }
-  parts.push(ansi.dim(metadata.connectionSlug));
+  parts.push({ text: ansi.dim(metadata.connectionSlug), dropRank: 2 });
   // #1064: shorten cwd to ~-relative path instead of the full path.
-  parts.push(ansi.dim(shortenCwd(metadata.cwd)));
-  return fitLine(parts.join(sep), safeWidth);
+  const cwd = shortenCwd(metadata.cwd);
+  // cwd degrades progressively (full → basename → dropped), after every
+  // ranked segment above but before the final truncation fallback. A drive
+  // root (C:\) or filesystem root has no useful basename — empty, or the
+  // path itself — so it drops directly instead of rendering an empty
+  // segment after the separator.
+  const cwdBase = basename(cwd);
+  parts.push({
+    text: ansi.dim(cwd),
+    dropRank: 5,
+    shortenedText: cwdBase === '' || cwdBase === cwd ? undefined : ansi.dim(cwdBase),
+  });
+  return fitStatusLine(parts, sep, safeWidth);
+}
+
+interface MakaPiStatusLineSegment {
+  text: string;
+  /** Overflow drops whole segments lowest-rank-first; undefined never drops. */
+  dropRank?: number;
+  /** Critical segments shorten in this order after every droppable segment is gone. */
+  compactRank?: number;
+  /** Progressive fallback tried before this segment is dropped entirely. */
+  shortenedText?: string;
+}
+
+function fitStatusLine(segments: MakaPiStatusLineSegment[], sep: string, width: number): string {
+  const compactSep = ansi.dim(' ');
+  let activeSep = sep;
+  const lineWidth = (segs: MakaPiStatusLineSegment[]): number =>
+    visibleWidth(segs.map((segment) => segment.text).join(activeSep));
+  let kept = segments;
+  // Drop whole low-value segments, lowest rank first, re-checking after each
+  // rank so the fewest possible segments are sacrificed.
+  while (lineWidth(kept) > width) {
+    const dropRanks = kept.flatMap((segment) =>
+      segment.dropRank !== undefined ? [segment.dropRank] : [],
+    );
+    if (dropRanks.length > 0) {
+      const lowest = Math.min(...dropRanks);
+      // A droppable segment with a shortened form degrades before disappearing.
+      const shorten = kept.find(
+        (segment) => segment.dropRank === lowest && segment.shortenedText !== undefined,
+      );
+      if (shorten) {
+        kept = kept.map((segment) =>
+          segment === shorten
+            ? { ...segment, text: segment.shortenedText ?? segment.text, shortenedText: undefined }
+            : segment,
+        );
+      } else {
+        kept = kept.filter((segment) => segment.dropRank !== lowest);
+      }
+      continue;
+    }
+
+    const compactRanks = kept.flatMap((segment) =>
+      segment.compactRank !== undefined && segment.shortenedText !== undefined
+        ? [segment.compactRank]
+        : [],
+    );
+    if (compactRanks.length === 0) break;
+    const nextRank = Math.min(...compactRanks);
+    const shorten = kept.find(
+      (segment) => segment.compactRank === nextRank && segment.shortenedText !== undefined,
+    );
+    if (!shorten) break;
+    kept = kept.map((segment) =>
+      segment === shorten
+        ? { ...segment, text: segment.shortenedText ?? segment.text, shortenedText: undefined }
+        : segment,
+    );
+    // Once critical values compact, reclaim separator chrome too. At widths
+    // below the compact critical seam, fitLine remains the honest fallback.
+    activeSep = compactSep;
+  }
+  return fitLine(kept.map((segment) => segment.text).join(activeSep), width);
+}
+
+function compactPermissionModeLabel(mode: string): string {
+  if (mode === 'bypass') return 'Full';
+  if (mode === 'explore') return 'Read';
+  return 'Auto';
+}
+
+function sideConversationStatusLineText(
+  side: NonNullable<MakaPiTranscriptMetadata['sideConversation']>,
+): string {
+  if (side.view === 'parent') return 'Ctrl+/ for side';
+  const status = side.parentStatus?.replaceAll('_', ' ');
+  return [
+    'Side from main thread',
+    ...(status ? [`main ${status}`] : []),
+    'Ctrl+/ to switch',
+    'Ctrl+C to close',
+  ].join(' · ');
 }
 
 /**
@@ -1467,26 +1703,12 @@ export function renderMakaPiPendingQueue(
   width: number,
   platform: NodeJS.Platform = process.platform,
 ): string[] {
-  if (
-    state.steering.length === 0 &&
-    state.followup.length === 0 &&
-    state.pendingFallback.length === 0
-  ) {
+  if (state.steering.length === 0 && state.followup.length === 0) {
     return [];
   }
   const safeWidth = Math.max(1, width);
-  const steering = [
-    ...state.steering,
-    ...state.pendingFallback
-      .filter((entry) => entry.enqueue === 'steer')
-      .map((entry) => entry.text),
-  ];
-  const followup = [
-    ...state.followup,
-    ...state.pendingFallback
-      .filter((entry) => entry.enqueue === 'queue')
-      .map((entry) => entry.text),
-  ];
+  const steering = state.steering;
+  const followup = state.followup;
   const lines: string[] = [];
   for (const text of steering) {
     lines.push(

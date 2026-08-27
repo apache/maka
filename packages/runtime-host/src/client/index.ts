@@ -53,6 +53,8 @@ export {
 export {
   createRuntimeHostReconnectingConnection,
   isRuntimeHostReconnectingConnection,
+  type RuntimeHostConnectionAvailability,
+  type RuntimeHostReconnectingConnection,
 } from './reconnecting-connection.js';
 export {
   normalizeRuntimeHostSshDestination,
@@ -95,6 +97,7 @@ export {
 } from './catalog-reader.js';
 export {
   connectOrSpawnRuntimeHost,
+  type CandidateExitDetails,
   type ConnectOrSpawnRuntimeHostInput,
   type ConnectOrSpawnRuntimeHostResult,
   type RuntimeHostElectionDiagnostic,
@@ -117,6 +120,7 @@ export {
 export { loadOrCreateRuntimeHostClientInstanceId } from './client-instance-identity.js';
 export { projectSessionCatalogSummary } from './session-catalog-summary.js';
 export { consumeAccessCredentialDelivery } from '../control/access-credential-delivery.js';
+export { ensureRuntimeHostPeerIdentity } from '../transport/peer-native.js';
 export {
   createOAuthPresentationClientProvider,
   type OAuthPresentationBackend,

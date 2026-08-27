@@ -33,8 +33,13 @@ import {
 import type { SessionAuthorityStore, SessionHeaderSnapshot } from '@maka/storage/session-store';
 import type {
   OperationOutcome,
+  WorkHubCoordinationActInput,
   WorkHubCoordinationAnswerInput,
   WorkHubCoordinationRecordInput,
+} from '../protocol/index.js';
+import {
+  WORKHUB_COORDINATION_SUMMARY_MAX_BYTES,
+  WORKHUB_COORDINATION_TEXT_MAX_BYTES,
 } from '../protocol/index.js';
 import type {
   ConnectionContext,
@@ -44,6 +49,12 @@ import type { RootTurnCoordinator } from './root-turn-coordinator.js';
 import { SessionAdmissionGate } from './session-admission-gate.js';
 import { SessionOperationFailure } from './session-catalog-coordinator.js';
 import type { SessionContinuityCoordinator } from './session-continuity-coordinator.js';
+import {
+  WorkHubActionEffectFailure,
+  WorkHubActionGateFailure,
+  WorkHubCoordinationActionGate,
+  type WorkHubActionGateEffects,
+} from './workhub-coordination-action-gate.js';
 
 const CREATE_FINGERPRINT = `sha256:${createHash('sha256')
   .update('maka:workhub-coordination-session:v1', 'utf8')
@@ -57,11 +68,18 @@ const COORDINATION_ORCHESTRATION_MODE = 'default' as const;
 const COORDINATION_SUMMARY_MESSAGE_KINDS = ['user', 'assistant', 'state'] as const;
 const TURN_IDENTITY_CONFLICT_MESSAGE =
   'WorkHub Coordination Turn identity belongs to a different operation';
+// A one-byte control character can occupy six bytes as a JSON `\u0000` escape.
+const JSON_ESCAPE_MAX_BYTES_PER_INPUT_BYTE = 6;
+const COORDINATION_SUMMARY_READ_MAX_BYTES =
+  JSON_ESCAPE_MAX_BYTES_PER_INPUT_BYTE *
+    (WORKHUB_COORDINATION_TEXT_MAX_BYTES + WORKHUB_COORDINATION_SUMMARY_MAX_BYTES) +
+  16 * 1024;
 
 type CoordinationStores = Pick<
   SessionAuthorityStore,
   | 'appendMessages'
   | 'createStableSession'
+  | 'listHeaders'
   | 'probeStableSessionCreate'
   | 'readHeaderSnapshot'
   | 'readTranscriptHighWaterSnapshot'
@@ -82,6 +100,7 @@ export interface HostWorkHubCoordinationCoordinatorOptions {
   readonly admission: SessionAdmissionGate;
   readonly continuity: Pick<SessionContinuityCoordinator, 'refreshCanonical'>;
   readonly executions: CoordinationExecutions;
+  readonly sessionActions: Pick<WorkHubActionGateEffects, 'create' | 'submit'>;
   readonly resolveCreateTarget: () => Promise<CoordinationCreateTarget>;
   readonly requestDrain: () => void;
 }
@@ -92,6 +111,8 @@ export class HostWorkHubCoordinationCoordinator {
     'workhub.coordination.resolve': () => this.#resolve(),
     'workhub.coordination.answer': (input, context) => this.#answer(input, context),
     'workhub.coordination.record': (input) => this.#record(input),
+    'workhub.coordination.candidates': () => this.#candidates(),
+    'workhub.coordination.act': (input, context) => this.#act(input, context),
   };
 
   readonly #coordinationCwd: string;
@@ -101,6 +122,7 @@ export class HostWorkHubCoordinationCoordinator {
   readonly #executions: CoordinationExecutions;
   readonly #resolveCreateTarget: () => Promise<CoordinationCreateTarget>;
   readonly #requestDrain: () => void;
+  readonly #actionGate: WorkHubCoordinationActionGate;
 
   constructor(options: HostWorkHubCoordinationCoordinatorOptions) {
     this.#coordinationCwd = join(options.stateRoot, COORDINATION_CWD_DIRECTORY);
@@ -110,6 +132,76 @@ export class HostWorkHubCoordinationCoordinator {
     this.#executions = options.executions;
     this.#resolveCreateTarget = options.resolveCreateTarget;
     this.#requestDrain = options.requestDrain;
+    this.#actionGate = new WorkHubCoordinationActionGate({
+      listSessions: () => this.#stores.listHeaders(),
+      answer: async (input, context) => {
+        const outcome = await this.#answer({ turnId: input.turnId, text: input.text }, context);
+        if (!outcome.ok) {
+          throw new WorkHubActionEffectFailure(outcome.error.code, outcome.error.message);
+        }
+      },
+      clarify: async (input) => {
+        const outcome = await this.#record({
+          turnId: input.turnId,
+          userText: input.userText,
+          assistantText: input.assistantText,
+        });
+        if (!outcome.ok) {
+          throw new WorkHubActionEffectFailure(outcome.error.code, outcome.error.message);
+        }
+      },
+      create: options.sessionActions.create,
+      submit: options.sessionActions.submit,
+    });
+  }
+
+  async #candidates(): Promise<OperationOutcome<'workhub.coordination.candidates'>> {
+    try {
+      return { ok: true, result: await this.#actionGate.candidates() };
+    } catch {
+      return {
+        ok: false,
+        error: {
+          code: 'persistence_failed',
+          message: 'WorkHub Session candidates are unavailable',
+        },
+      };
+    }
+  }
+
+  async #act(
+    input: WorkHubCoordinationActInput,
+    context: ConnectionContext,
+  ): Promise<OperationOutcome<'workhub.coordination.act'>> {
+    try {
+      return { ok: true, result: await this.#actionGate.act(input, context) };
+    } catch (error) {
+      if (error instanceof WorkHubActionEffectFailure) {
+        return {
+          ok: false,
+          error: {
+            code: error.code === 'unauthorized' ? 'operation_unavailable' : error.code,
+            message: error.message,
+          },
+        };
+      }
+      if (error instanceof WorkHubActionGateFailure) {
+        return {
+          ok: false,
+          error: {
+            code: error.code === 'target_waiting_for_user' ? 'session_busy' : 'operation_conflict',
+            message: error.message,
+          },
+        };
+      }
+      return {
+        ok: false,
+        error: {
+          code: 'persistence_failed',
+          message: 'WorkHub action authority is unavailable',
+        },
+      };
+    }
   }
 
   #resolve(): Promise<OperationOutcome<'workhub.coordination.resolve'>> {
@@ -311,7 +403,7 @@ export class HostWorkHubCoordinationCoordinator {
         coordinationSummaryMessageId(turnId, kind),
       ),
       throughSequence,
-      maxBytes: 32 * 1024,
+      maxBytes: COORDINATION_SUMMARY_READ_MAX_BYTES,
       maxMessages: COORDINATION_SUMMARY_MESSAGE_KINDS.length,
     });
   }

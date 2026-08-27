@@ -45,4 +45,11 @@ describe('matchesBypassList', () => {
     expect(matchesBypassList('LocalHost', list)).toBe(true);
     expect(matchesBypassList('anything', ['*'])).toBe(true);
   });
+
+  test('rejects malformed CIDR entries', () => {
+    expect(matchesBypassList('10.0.0.1', ['10.0.0.0/24.5'])).toBe(false);
+    expect(matchesBypassList('10.0.0.1', ['10.0.0.0/24/ignored'])).toBe(false);
+    expect(matchesBypassList('10.0.0.1', ['10.0.0.0/'])).toBe(false);
+    expect(matchesBypassList('10.0.0.1', ['1e1.0.0.0/8'])).toBe(false);
+  });
 });

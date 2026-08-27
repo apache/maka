@@ -41,7 +41,43 @@ export const PROJECT_DIRECTORY_MAX_ENTRIES = 4_096;
 export const PROJECT_DIRECTORY_MAX_ROOTS = 8;
 export const PROJECT_DIRECTORY_MAX_SEGMENTS = 64;
 export const PROJECT_DIRECTORY_ROOT_LABEL_MAX_BYTES = 128;
+export const PROJECT_DIRECTORY_ROOT_PATH_MAX_BYTES = PROJECT_CATALOG_PATH_MAX_BYTES;
 export const PROJECT_DIRECTORY_SEGMENT_MAX_BYTES = 255;
+
+const PROJECT_DIRECTORY_ROOT_TEXT_ENCODER = new TextEncoder();
+
+export interface ProjectDirectoryRootSpec {
+  readonly label: string;
+  readonly path: string;
+}
+
+export function canonicalProjectDirectoryRootSpec(
+  root: ProjectDirectoryRootSpec,
+): ProjectDirectoryRootSpec {
+  return { label: root.label.trim(), path: root.path };
+}
+
+export function projectDirectoryRootSpecValid(root: ProjectDirectoryRootSpec): boolean {
+  const canonical = canonicalProjectDirectoryRootSpec(root);
+  return (
+    canonical.label.length > 0 &&
+    PROJECT_DIRECTORY_ROOT_TEXT_ENCODER.encode(canonical.label).byteLength <=
+      PROJECT_DIRECTORY_ROOT_LABEL_MAX_BYTES &&
+    !hasProjectDirectoryRootControlCharacters(canonical.label) &&
+    canonical.path.length > 0 &&
+    PROJECT_DIRECTORY_ROOT_TEXT_ENCODER.encode(canonical.path).byteLength <=
+      PROJECT_DIRECTORY_ROOT_PATH_MAX_BYTES &&
+    !hasProjectDirectoryRootControlCharacters(canonical.path)
+  );
+}
+
+export function projectDirectoryPosixRootSpecValid(root: ProjectDirectoryRootSpec): boolean {
+  return projectDirectoryRootSpecValid(root) && root.path.startsWith('/');
+}
+
+function hasProjectDirectoryRootControlCharacters(value: string): boolean {
+  return /[\u0000-\u001f\u007f]/u.test(value);
+}
 
 const QUERY_ERRORS = [
   'host_not_ready',
