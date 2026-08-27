@@ -147,6 +147,9 @@ export function worstCaseFailedTurnSnapshot(identity: CanonicalTurnIdentity): Tu
     terminalEventId: 'x'.repeat(128),
     failureClass: '\0'.repeat(128),
     failureMessage: '\0'.repeat(TURN_FAILURE_MESSAGE_MAX_BYTES),
+    // Keep capacity preflight conservative for every protocol-valid failure
+    // detail, including the longest malformed-summary diagnostic.
+    contextBudgetExhaustedDetail: 'malformed_summary_too_small_for_fold',
   };
 }
 

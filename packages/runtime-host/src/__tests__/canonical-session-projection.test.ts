@@ -333,11 +333,19 @@ test('preflights the worst-case failed Turn before accepting more queued content
         Number.MAX_SAFE_INTEGER,
       ),
     );
+    const worstCaseFailedTurn = worstCaseFailedTurnSnapshot(capacityCanonical.rootTurn!);
+    assert.equal(worstCaseFailedTurn.status, 'failed');
+    if (worstCaseFailedTurn.status === 'failed') {
+      assert.equal(
+        worstCaseFailedTurn.contextBudgetExhaustedDetail,
+        'malformed_summary_too_small_for_fold',
+      );
+    }
     assert.throws(() =>
       createSessionContinuitySnapshot(
         {
           ...capacityCanonical,
-          rootTurn: worstCaseFailedTurnSnapshot(capacityCanonical.rootTurn!),
+          rootTurn: worstCaseFailedTurn,
           queue: currentQueue,
         },
         Number.MAX_SAFE_INTEGER,

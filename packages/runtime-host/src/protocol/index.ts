@@ -92,11 +92,11 @@ export const RUNTIME_HOST_REGISTRATION_SCHEMA_VERSION = 1 as const;
 export const RUNTIME_HOST_PROTOCOL_VERSION = 0 as const;
 // Increment when the same protocol version no longer guarantees safe Client-Host
 // interoperability. Mismatches are rejected before domain commands are admitted.
-export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 55 as const;
+export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 56 as const;
+// 56: Failed Turn snapshots preserve the structured context-budget exhaustion
+// detail. Epoch-55 peers reject the optional field on the closed snapshot shape.
 // 55: Local owners can atomically revoke every credential for one access
 // principal, closing pairing-finalize races that credential-by-ID revocation cannot.
-// 55: Failed Turn snapshots preserve the structured context-budget exhaustion
-// detail. Epoch-53 peers reject the optional field on the closed snapshot shape.
 // 54: Client-bound pairing candidates restrict pre-claim authority and bind
 // their durable credential to the claiming Client identity; it is also reserved
 // by concurrent protocol changes in #3390 and #3935.
