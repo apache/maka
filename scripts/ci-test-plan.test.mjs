@@ -341,6 +341,7 @@ test('pull request triggers stay on an explicit allowlist', () => {
 
   assert.deepEqual(onPullRequests, [
     'ci.yml',
+    'cli-package-validation.yml',
     'copilot-auto-review.yml',
     'dependency-audit.yml',
     'gitoxide-helper-admission.yml',
