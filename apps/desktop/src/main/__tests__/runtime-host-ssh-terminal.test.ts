@@ -31,6 +31,7 @@ import {
   encodeRuntimeHostServiceManagementFrame,
   encodeRuntimeHostSetupFrame,
   runtimeHostAccessCredentialFingerprint,
+  RUNTIME_HOST_OPERATOR_PEER_MANAGEMENT_CAPABILITY,
   RUNTIME_HOST_SETUP_FRAME_PREFIX,
 } from '@maka/runtime-host/operator';
 import { createDesktopRuntimeHostSshTerminal } from '../runtime-host-ssh-terminal.js';
@@ -256,6 +257,7 @@ test('reads a framed service result without projecting it into the SSH terminal'
     destination: 'operator@example.com',
     operatorPath: '/home/operator/.local/share/maka/operator',
     action: 'status',
+    capabilityRequest: RUNTIME_HOST_OPERATOR_PEER_MANAGEMENT_CAPABILITY,
     expectedTarget: {
       serviceId: 'b'.repeat(64),
       rootPath: '/home/operator/.config/Maka/workspaces/default',
@@ -266,7 +268,7 @@ test('reads a framed service result without projecting it into the SSH terminal'
   const remoteCommand = harness.launchArgs.at(-1)?.at(-1) ?? '';
   assert.match(remoteCommand, /\.local\/share\/maka\/operator/u);
   assert.match(remoteCommand, /MAKA_RUNTIME_HOST_OPERATOR_CAPABILITY_REQUEST/u);
-  assert.match(remoteCommand, /access-management-v1/u);
+  assert.match(remoteCommand, /peer-management-v1/u);
   assert.doesNotMatch(remoteCommand, /npx|maka-agent@/u);
   harness.pty.emitData('Password: ');
   harness.pty.emitData(
@@ -297,6 +299,74 @@ test('reads a framed service result without projecting it into the SSH terminal'
   assert.equal(result.service.installedVersion, '1.2.3');
   assert.doesNotMatch(JSON.stringify(harness.events), /MAKA_RUNTIME_HOST_SERVICE/u);
   assert.match(JSON.stringify(harness.events), /Password/u);
+  await harness.terminal.close();
+});
+
+test('applies the complete remote Project root policy through the managed operator', async () => {
+  const harness = createHarness('pending');
+  const fingerprint = `sha256:${'c'.repeat(64)}`;
+  const management = harness.terminal.runServiceManagement({
+    destination: 'operator@example.com',
+    operatorPath: '/home/operator/.local/share/maka/operator',
+    action: 'configure',
+    expectedTarget: {
+      serviceId: 'b'.repeat(64),
+      rootPath: '/srv/maka',
+      rootId: 'a'.repeat(64),
+    },
+    projectDirectoryRoots: [
+      { label: 'Work=Primary', path: '/srv/work trees' },
+      { label: 'Data', path: '/mnt/data' },
+    ],
+    expectedConfigFingerprint: fingerprint,
+    allowInterruptActiveTasks: true,
+  });
+  await waitFor(() => harness.pty.hasDataListener());
+  const remoteCommand = harness.launchArgs.at(-1)?.at(-1) ?? '';
+  assert.match(remoteCommand, /operator.*configure/u);
+  assert.match(remoteCommand, /--project-root-json/u);
+  assert.match(remoteCommand, /Work=Primary/u);
+  assert.match(remoteCommand, /srv\/work trees/u);
+  assert.match(remoteCommand, /Data/u);
+  assert.match(remoteCommand, /mnt\/data/u);
+  assert.match(remoteCommand, /--expected-config-fingerprint/u);
+  assert.match(remoteCommand, /--allow-interrupt-active-tasks/u);
+  assert.match(
+    remoteCommand,
+    /MAKA_RUNTIME_HOST_OPERATOR_PROJECT_DIRECTORY_CONFIGURATION_REQUEST=1/u,
+  );
+  harness.pty.emitData(
+    encodeRuntimeHostServiceManagementFrame({
+      schemaVersion: 1,
+      kind: 'result',
+      action: 'configure',
+      service: {
+        platform: 'linux',
+        arch: 'x64',
+        osRelease: '6.8.0',
+        state: 'running',
+        pid: 43,
+        lastExitCode: 0,
+        installedVersion: '1.2.3',
+        configurationFingerprint: `sha256:${'d'.repeat(64)}`,
+        projectDirectoryRoots: [
+          { label: 'Work=Primary', path: '/srv/work trees' },
+          { label: 'Data', path: '/mnt/data' },
+        ],
+      },
+      configuration: { kind: 'configured' },
+    }),
+  );
+  harness.pty.exit(0);
+
+  const result = await management;
+  assert.equal(result.kind, 'result');
+  assert.equal(
+    result.kind === 'result' && result.action === 'configure'
+      ? result.configuration.kind
+      : undefined,
+    'configured',
+  );
   await harness.terminal.close();
 });
 

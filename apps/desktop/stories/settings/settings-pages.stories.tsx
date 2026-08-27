@@ -30,6 +30,7 @@ import type {
   UsageRange,
   UsageStats,
 } from '@maka/core/settings';
+import { EMPTY_USAGE_PROVENANCE } from '@maka/core/usage-ledger-merge';
 import type {
   CapabilitySnapshot,
   CapabilitySnapshotCollection,
@@ -203,14 +204,16 @@ function makeUsageLog(input: {
   kind: 'model' | 'tool';
   model: string;
   toolName?: string;
-  status?: 'success' | 'error';
+  status?: 'success' | 'error' | 'aborted';
   minutesAgo: number;
+  sessionName?: string;
 }): UsageStats['logs'][number] {
   return {
     id: input.id,
     ts: NOW - input.minutesAgo * 60_000,
     kind: input.kind,
     sessionId: `b0efaaf9-9e58-46c1-bfea-${input.id.padStart(12, '0')}`,
+    sessionName: input.sessionName ?? '',
     turnId: `turn-${input.id}`,
     provider: 'zai-coding-plan',
     model: input.model,
@@ -228,6 +231,8 @@ const usageLogs: UsageStats['logs'] = [
     id: '1',
     kind: 'model',
     model: 'anthropic/claude-sonnet-4-5-20250929-preview-extended-thinking',
+    // A long session name exercises the 任务 column's truncate-plus-tooltip path.
+    sessionName: '重构使用统计页请求日志的任务列，改为显示会话名称并处理超长标题的截断',
     minutesAgo: 4,
   }),
   makeUsageLog({
@@ -235,11 +240,31 @@ const usageLogs: UsageStats['logs'] = [
     kind: 'tool',
     model: 'glm-4.7',
     toolName: 'mcp__cloud_workspace__list_repository_branch_protection_rules',
+    sessionName: '排查 MCP 分支保护规则拉取失败',
     minutesAgo: 9,
   }),
+  // No sessionName → renders the "未命名会话 · <short id>" fallback.
   makeUsageLog({ id: '3', kind: 'model', model: 'glm-4.7', status: 'error', minutesAgo: 16 }),
-  makeUsageLog({ id: '4', kind: 'tool', model: 'glm-4.7', toolName: 'Bash', minutesAgo: 25 }),
+  makeUsageLog({ id: '4', kind: 'tool', model: 'glm-4.7', toolName: 'Bash', sessionName: 'Bash 环境探查', minutesAgo: 25 }),
+  {
+    ...makeUsageLog({ id: '5', kind: 'model', model: 'gpt-5', status: 'aborted', minutesAgo: 31 }),
+    sessionId: undefined,
+    turnId: undefined,
+    costUsd: undefined,
+  },
 ];
+
+// Priced provenance so the fixtures' costs read as authoritative
+// (pricedAttempts > 0); the empty fixture keeps the all-zero provenance.
+const STORY_USAGE_PROVENANCE = {
+  ...EMPTY_USAGE_PROVENANCE,
+  coverage: {
+    ...EMPTY_USAGE_PROVENANCE.coverage,
+    attempts: 1,
+    pricedAttempts: 1,
+    usageReportedAttempts: 1,
+  },
+};
 
 const usageStats: UsageStats = {
   summary: {
@@ -276,6 +301,7 @@ const usageStats: UsageStats = {
     { tool: 'Bash', calls: 120, success: 118, errors: 2, avgDurationMs: 840 },
   ],
   pricing: [{ provider: 'zai-coding-plan', model: 'glm-4.7', inputPerMTokUsd: 0, outputPerMTokUsd: 0 }],
+  provenance: STORY_USAGE_PROVENANCE,
 };
 
 const emptyUsageStats: UsageStats = {
@@ -296,6 +322,7 @@ const emptyUsageStats: UsageStats = {
   byModel: [],
   byTool: [],
   pricing: [],
+  provenance: EMPTY_USAGE_PROVENANCE,
 };
 
 const singleProviderUsageStats: UsageStats = {
@@ -309,6 +336,7 @@ const singleProviderUsageStats: UsageStats = {
     outputTokens: 5_200,
   },
   byProvider: [{ provider: 'zai-coding-plan', requests: 37, tokens: 24_800, costUsd: 0.18 }],
+  provenance: STORY_USAGE_PROVENANCE,
 };
 
 const multiModelUsageStats: UsageStats = {
@@ -330,6 +358,7 @@ const multiModelUsageStats: UsageStats = {
     { model: 'gemini-2.5-pro', requests: 48, tokens: 96_000, costUsd: 0.52 },
     { model: 'qwen3-coder-480b-a35b-instruct', requests: 20, tokens: 32_000, costUsd: 0.1 },
   ],
+  provenance: STORY_USAGE_PROVENANCE,
 };
 
 function makeMemoryEntry(input: {
@@ -1948,13 +1977,26 @@ export const UsageMultiModel: Story = {
   decorators: [withUsageMultiModelBridge],
   render: () => <SettingsStory section="usage" />,
 };
-// Real path: 设置 → 使用统计 → 详情记录 on → 请求日志, with long model and tool names.
+// Real path: 设置 → 使用统计 → 详情记录 on → 活动记录, with long model and tool names.
 export const UsageLongTail: Story = {
   decorators: [withUsageLongTailBridge],
   render: () => <SettingsStory section="usage" />,
   play: async ({ canvasElement, globals }) => {
     const canvas = within(canvasElement);
     const usageCopy = getUsageSettingsCopy(globals.locale === 'en' ? 'en' : 'zh');
+    expect(
+      await canvas.findByText(usageCopy.totalRequests, {
+        selector: '[data-slot="stat-tile-label"]',
+      }),
+    ).toBeInTheDocument();
+    // Astryx `TabList` is a <nav> of <button> tabs — there is no ARIA `tab`
+    // role, so query the tab by `button` (that is how @astryxdesign's own
+    // TabList tests reach them). The tab also carries a count badge in its
+    // `endContent`, which folds into the accessible name after the label
+    // (e.g. '活动记录 5'), so match the label as a prefix rather than whole.
+    expect(
+      await canvas.findByRole('button', { name: new RegExp(`^${usageCopy.tabs[0]}`) }),
+    ).toBeInTheDocument();
     await waitForStoryCondition(
       () => canvas.queryByRole('table', { name: usageCopy.tables.requestsAria }) !== null
         || canvas.queryByRole('button', { name: usageCopy.showDetails }) !== null,

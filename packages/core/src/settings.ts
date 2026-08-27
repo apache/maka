@@ -36,6 +36,7 @@ import {
 import { defaultLocalMemorySettings, normalizeLocalMemorySettings } from './local-memory.js';
 import type { PermissionMode } from './permission.js';
 import { decodePersistedPermissionMode } from './permission.js';
+import type { UsageProvenance } from './usage-ledger-merge.js';
 import {
   UI_LOCALE_PREFERENCES,
   isUiLocalePreference,
@@ -112,7 +113,7 @@ export interface AppNetworkSettings {
 }
 
 export type UsageRange = '24h' | '7d' | '30d' | 'all';
-export type UsageStatus = 'all' | 'success' | 'error';
+export type UsageStatus = 'all' | 'success' | 'error' | 'aborted';
 export type UsageTab = 'requests' | 'providers' | 'models' | 'tools' | 'pricing';
 
 export interface UsageSettings {
@@ -165,21 +166,59 @@ export const APP_ICONS = [
   'mono',
   // The geometric M set: one drawing, recoloured. Ids name the colourway, not
   // the artwork, so a repaint never invalidates a settings file already on
-  // disk.
+  // disk. Ordered by family, following the order the icon discussion used —
+  // but not one-to-one with its numbering: three near-duplicate blues that
+  // were cut from the set before it shipped are still absent, so match a
+  // number from that thread to a tile by id, not by position.
+  // Blue
   'sky',
   'cyan',
   'ice',
   'pale-inverted',
+  // Monochrome
   'ink',
   'paper',
   'graphite',
+  // Pencil
   'pencil-kraft',
   'pencil-sky',
   'pencil-navy',
+  // Alpine
   'alpine',
   'dusk',
   'night',
   'forest',
+  // Dark — sized for a dark dock, where a mid-tone tile glows like a light leak
+  'midnight',
+  'carbon',
+  'slate',
+  'obsidian',
+  // Neon / terminal
+  'neon-cyan',
+  'matrix',
+  'magenta',
+  'amber-crt',
+  // Muted
+  'clay',
+  'sage',
+  'dust',
+  'fog',
+  // Warm
+  'sunset',
+  'amber',
+  'terracotta',
+  // Nature
+  'ocean',
+  'moss',
+  'desert',
+  'glacier',
+  // Metal
+  'gold',
+  'chrome',
+  // High contrast — one-colour printing and 7:1
+  'mono-black',
+  'mono-white',
+  'hazard',
 ] as const;
 
 export type AppIcon = (typeof APP_ICONS)[number];
@@ -237,12 +276,102 @@ export function customAppIconId(choice: AppIconChoice): string | undefined {
   return isCustomAppIcon(choice) ? choice.slice(CUSTOM_APP_ICON_PREFIX.length) : undefined;
 }
 
+/**
+ * Which appearance a selection is for.
+ *
+ * `both` is not "write the same id twice": it CLEARS the dark slot, which is
+ * the only way back to one-icon-everywhere. A settings file with no dark slot
+ * and one whose slots happen to match look identical in the dock but not in
+ * the picker, and only the first keeps following the light choice when the
+ * user later changes it.
+ */
+export type AppIconTarget = 'both' | 'light' | 'dark';
+
+export function isAppIconTarget(value: unknown): value is AppIconTarget {
+  return value === 'both' || value === 'light' || value === 'dark';
+}
+
+/**
+ * What a fresh install shows.
+ *
+ * The split starts OFF: `appIcon` alone serves both appearances, so an install
+ * nobody has touched shows one tile everywhere. `DEFAULT_APP_ICON_DARK` is
+ * what the dark slot is seeded with when someone turns the split ON — a
+ * recommendation offered at that moment, not something applied behind their
+ * back.
+ */
+export const DEFAULT_APP_ICON: AppIcon = 'sky';
+export const DEFAULT_APP_ICON_DARK: AppIcon = 'ink';
+
+/** The icon half of a fresh install's appearance, for resolving startup state. */
+const DEFAULT_APP_ICON_APPEARANCE: Pick<AppearanceSettings, 'appIcon' | 'appIconDark'> = {
+  appIcon: DEFAULT_APP_ICON,
+};
+
+/**
+ * The dark slot as it should be stored, given what the settings file said.
+ *
+ * Three cases, and they are genuinely different:
+ *   - no appearance block at all — a fresh install, which gets the shipped pair
+ *   - an appearance block with no dark key — a file written before this option
+ *     existed, which means "one icon for both" and must stay that way
+ *   - a dark key present — validated, falling back only if it is malformed
+ */
+function normalizedDarkAppIcon(
+  raw: Partial<AppearanceSettings> | undefined,
+  fresh: AppIconChoice | undefined,
+): { appIconDark?: AppIconChoice } {
+  if (raw === undefined) return fresh === undefined ? {} : { appIconDark: fresh };
+  if (!('appIconDark' in raw)) return {};
+  if (raw.appIconDark === undefined) return {};
+  return {
+    appIconDark: isAppIconChoice(raw.appIconDark) ? raw.appIconDark : DEFAULT_APP_ICON_DARK,
+  };
+}
+
+/**
+ * The icon the app puts up before it has read any settings.
+ *
+ * Two callers must agree on this exactly: the startup path applies it to the
+ * dock synchronously, and the settings effect seeds its "already applied"
+ * state with it. If they disagreed, every launch would either re-decode a
+ * 1024px PNG for nothing or leave the seeded value showing.
+ */
+export function startupAppIcon(systemPrefersDark: boolean): AppIconChoice {
+  // Derived rather than restated: this must agree with what a fresh install
+  // resolves to, and writing the pair out again here is exactly how the two
+  // drift apart the next time a default changes.
+  return appIconForTheme(DEFAULT_APP_ICON_APPEARANCE, systemPrefersDark);
+}
+
+/**
+ * The icon for one appearance.
+ *
+ * `appIconDark` left unset means "use one icon everywhere", which is what
+ * every settings file written before this option existed says — so an upgrade
+ * keeps showing the tile the user picked instead of silently gaining a second
+ * one they never chose.
+ */
+export function appIconForTheme(
+  appearance: Pick<AppearanceSettings, 'appIcon' | 'appIconDark'>,
+  isDark: boolean,
+): AppIconChoice {
+  const light = toAppIconChoice(appearance.appIcon);
+  if (!isDark) return light;
+  return appearance.appIconDark === undefined ? light : toAppIconChoice(appearance.appIconDark);
+}
+
 export interface AppearanceSettings {
   theme: ThemePreference;
   /** Optional palette override; missing values normalize to `default`. */
   palette?: ThemePalette;
-  /** Optional app-icon override; missing values normalize to `default`. */
+  /** Optional app-icon override; missing values normalize to the default. */
   appIcon?: AppIconChoice;
+  /**
+   * Optional separate icon for dark appearance. Absent means the one in
+   * `appIcon` is used in both.
+   */
+  appIconDark?: AppIconChoice;
 }
 
 export interface PersonalizationSettings {
@@ -382,8 +511,10 @@ export interface UsageRequestLog {
   id: string;
   ts: number;
   kind: 'model' | 'tool';
-  sessionId: string;
-  turnId: string;
+  sessionId?: string;
+  /** Human-readable session title (SessionHeader.name); may be empty for untitled sessions. */
+  sessionName?: string;
+  turnId?: string;
   provider: string;
   model: string;
   toolName?: string;
@@ -395,7 +526,7 @@ export interface UsageRequestLog {
   reasoning?: number;
   costUsd?: number;
   latencyMs?: number;
-  status: 'success' | 'error';
+  status: 'success' | 'error' | 'aborted';
 }
 
 export interface UsageSummary {
@@ -439,6 +570,19 @@ export interface UsageStats {
     inputPerMTokUsd: number;
     outputPerMTokUsd: number;
   }>;
+  /**
+   * Coverage/legacy/unreadable/pending accounting behind these totals, so the
+   * page can qualify a cost that reads low (unpriced/unreadable/pending) rather
+   * than presenting it as authoritative. Same provenance the summary IPC and
+   * Session Inspector already carry.
+   */
+  provenance: UsageProvenance;
+  /**
+   * True when the activity log was capped at MAX_ACTIVITY_RECORDS, so the page
+   * can say the list (and the log-derived breakdowns) are incomplete instead of
+   * silently showing a short list.
+   */
+  logsTruncated?: boolean;
 }
 
 export interface SettingsTestResult {
@@ -533,7 +677,7 @@ export function createDefaultSettings(): AppSettings {
     appearance: {
       theme: 'auto',
       palette: 'default',
-      appIcon: 'default',
+      appIcon: DEFAULT_APP_ICON,
     },
     personalization: {
       displayName: '',
@@ -717,7 +861,18 @@ export function normalizeSettings(input: unknown): AppSettings {
       // here, and the main process is the only thing that turns it into a path.
       // An id whose file was deleted behind the app's back still normalizes
       // through, and fails over to the brand mark when the artwork is read.
-      appIcon: isAppIconChoice(base.appearance.appIcon) ? base.appearance.appIcon : 'default',
+      appIcon: isAppIconChoice(base.appearance.appIcon)
+        ? base.appearance.appIcon
+        : DEFAULT_APP_ICON,
+      // Cleared first, then re-set from the RAW input rather than from `base`:
+      // `base` has already been merged over the defaults, which carry a dark
+      // icon, so an existing settings file that predates this option would
+      // come out of the merge looking like it had asked for one. Absent must
+      // stay absent — that is what makes an upgrade keep showing the icon the
+      // user actually picked in BOTH appearances, instead of silently gaining
+      // a second one they never chose.
+      appIconDark: undefined,
+      ...normalizedDarkAppIcon(value.appearance, defaults.appearance.appIconDark),
     },
     // PR-LANG-PREF-0: closed-enum fail-closed for the new
     // `personalization.uiLocale` preference. mergeSettings spreads

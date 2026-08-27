@@ -55,6 +55,23 @@ export const PARENT_REMOVAL_CHILD_NAME = '应归档的子任务';
 export const NEW_TASK_PROJECT_NAME = 'new-task-project';
 
 /**
+ * Restore the navigation column through the titlebar action when a test needs
+ * controls that only exist in the expanded sidebar. The fixture starts with
+ * the sidebar collapsed, and the action follows the configured UI locale.
+ */
+export async function ensureSidebarExpanded(page: Page): Promise<void> {
+  const expandSidebar = page.getByRole('button', {
+    name: /^(?:展开侧边栏|Expand sidebar)$/,
+  });
+  if (!(await expandSidebar.isVisible())) return;
+
+  await expandSidebar.click();
+  await expect(
+    page.getByRole('button', { name: /^(?:收起侧边栏|Collapse sidebar)$/ }),
+  ).toBeVisible();
+}
+
+/**
  * Wait for Runtime's authoritative Skill projection, not merely for the
  * composer DOM to mount. The renderer requests this projection after its first
  * render, so a visible editor can still have an empty `/` source during cold

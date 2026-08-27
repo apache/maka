@@ -33,20 +33,26 @@ export async function readCanonicalUsage(
   stores: InteractiveUsageStoresWriter,
   query: UsageQuery,
   now: number,
+  repair = true,
 ): Promise<CanonicalUsageSource> {
-  const repair = await stores.modelCalls
-    .catchUpModelCallProjection(
-      query.sessionId === undefined ? undefined : { sessionId: query.sessionId },
-    )
-    .catch(() => ({ pendingRuns: 1, unreadableEvents: 0 }));
+  // `catchUpModelCallProjection` is a write. Paged log reads call this once per
+  // page, so a caller that already repaired on its first page can pass
+  // `repair: false` on later pages to avoid a redundant repair write per page.
+  const repairOutcome = repair
+    ? await stores.modelCalls
+        .catchUpModelCallProjection(
+          query.sessionId === undefined ? undefined : { sessionId: query.sessionId },
+        )
+        .catch(() => ({ pendingRuns: 1, unreadableEvents: 0 }))
+    : { pendingRuns: 0, unreadableEvents: 0 };
   const page = await stores.modelCalls.modelCallAttempts(
     resolveUsageRange(query.range, now),
     query.sessionId,
   );
   return {
     attempts: page.attempts,
-    unreadableRecords: page.unreadableRecords + repair.unreadableEvents,
-    pendingRepairs: repair.pendingRuns,
+    unreadableRecords: page.unreadableRecords + repairOutcome.unreadableEvents,
+    pendingRepairs: repairOutcome.pendingRuns,
   };
 }
 

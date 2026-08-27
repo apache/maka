@@ -29,6 +29,10 @@ import type { ConnectionCatalogEntry, ConnectionCatalogSnapshot } from '@maka/co
 import { SessionActivityRegistry } from '@maka/runtime/goal-turn-lifecycle';
 import { type InvocableSkillEntry } from '@maka/runtime/skill-invocation';
 import {
+  acquireProcessLifetimeOwner,
+  type ProcessLifetimeOwner,
+} from '@maka/storage/process-lifetime-owner';
+import {
   readRuntimeHostAgentGraphEpochs,
   readRuntimeHostInvocableSkills,
   readRuntimeHostProjects,
@@ -112,6 +116,7 @@ export async function createRuntimeHostTuiContext(
   });
   const connection = connected.connection;
   let mcp: TuiMcpController | undefined;
+  let sessionCopyCleanupOwner: ProcessLifetimeOwner | undefined;
   try {
     const catalog = connected.catalog;
     const workspace = await resolveRuntimeHostTuiWorkspace(connection, connected.profile, input);
@@ -126,13 +131,19 @@ export async function createRuntimeHostTuiContext(
       executionBoundaryDisplayMode(
         createGenesisExecutionBoundary(await readHostChatDefaultPermissionMode(connection)),
       ) ?? 'ask';
+    const sessionCopyCleanupRoot = join(input.clientDataRoot, 'tui-session-copies');
+    const owner = await acquireProcessLifetimeOwner(
+      join(sessionCopyCleanupRoot, connection.rootId),
+    );
+    sessionCopyCleanupOwner = owner;
     const driverInput: RuntimeHostMakaSessionDriverInput = {
       connection,
       cwd: input.cwd,
       llmConnectionSlug: target.connection.slug,
       model: target.model,
       prospectivePermissionMode,
-      sessionCopyCleanupRoot: join(input.clientDataRoot, 'tui-session-copies'),
+      sessionCopyCleanupRoot,
+      sessionCopyCleanupOwner: owner,
       executionLocation:
         connected.profile.kind === 'local' ? { kind: 'client_path' } : { kind: 'host' },
       ...(workspace ? { workspace } : {}),
@@ -174,17 +185,19 @@ export async function createRuntimeHostTuiContext(
       onboarding: createRuntimeHostOnboardingSurface(connection),
       ...(mcp ? { mcp } : {}),
       profile: connected.profile,
-      close: () => closeRuntimeHostTuiContext(mcp, connected.close),
+      close: () => closeRuntimeHostTuiContext(mcp, owner, connected.close),
     };
   } catch (error) {
-    await mcp?.close().catch(() => undefined);
-    await connected.close().catch(() => undefined);
+    await closeRuntimeHostTuiContext(mcp, sessionCopyCleanupOwner, connected.close).catch(
+      () => undefined,
+    );
     throw error;
   }
 }
 
 async function closeRuntimeHostTuiContext(
   mcp: TuiMcpController | undefined,
+  sessionCopyCleanupOwner: ProcessLifetimeOwner | undefined,
   closeConnection: () => Promise<void>,
 ): Promise<void> {
   const errors: unknown[] = [];
@@ -195,6 +208,11 @@ async function closeRuntimeHostTuiContext(
   }
   try {
     await closeConnection();
+  } catch (error) {
+    errors.push(error);
+  }
+  try {
+    await sessionCopyCleanupOwner?.close();
   } catch (error) {
     errors.push(error);
   }

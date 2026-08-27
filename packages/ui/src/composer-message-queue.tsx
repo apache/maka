@@ -26,9 +26,10 @@ import { Check, GripVertical, ICON_SIZE, Trash2, X } from './icons.js';
 import { useMountedRef } from './use-mounted-ref.js';
 
 /**
- * The pending plate above the composer card. It mirrors both pending steering
- * and follow-up entries so a submitted message never disappears while waiting
- * for the active Turn to reach a steering boundary.
+ * The pending plate above the composer card. It lists both pending steering
+ * and follow-up entries so a submitted message stays editable, reorderable and
+ * deletable while it waits for the active Turn to reach a steering boundary.
+ * Each row is a one-line preview: the transcript owns the full message text.
  */
 export interface ComposerMessageQueueProps {
   queuedMessages: readonly MessageQueueEntryProjection[];
@@ -161,7 +162,13 @@ export const ComposerMessageQueue = memo(function ComposerMessageQueue(
                     }
                   }}
                 />
-              ) : entry.content.displayText ?? entry.content.text}
+              ) : (
+                // The transcript renders the queued message in full; the plate
+                // only needs enough of it to tell the rows apart.
+                <span className="maka-composer-queue-text">
+                  {entry.content.displayText ?? entry.content.text}
+                </span>
+              )}
               style={{ minHeight: 28, paddingBlock: 0 }}
               startContent={entry.placement === 'next_turn' ? (
                 <span

@@ -103,6 +103,8 @@ export async function packageWindowsX64({
 
   await run('npm', ['run', 'clean']);
   await run('npm', ['run', 'build']);
+  await run('npm', ['run', 'build:runtime-host-peer']);
+  await run('npm', ['run', 'check:runtime-host-peer-notices']);
   await run('cargo', ['build', '--manifest-path', sandboxManifestPath, '--release', '--locked']);
   await run('npm', ['run', 'check:windows-cargo-notices']);
   await mkdir(sandboxResourceDirectory, { recursive: true });

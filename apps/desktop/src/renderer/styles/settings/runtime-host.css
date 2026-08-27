@@ -121,20 +121,35 @@
   font: var(--maka-text-body);
 }
 
-.settingsRuntimeHostManagementRoots {
-  display: grid;
-  gap: var(--space-2);
-  margin: var(--space-2) 0 0;
-  padding: 0;
-  list-style: none;
-}
-
 .settingsRuntimeHostManagementDirectoryRoots {
   display: grid;
   gap: var(--space-2);
+  padding: var(--space-3);
+  border: var(--border-width-hairline) solid var(--border-soft);
+  border-radius: var(--radius-container);
+  background: var(--background-secondary);
 }
 
-.settingsRuntimeHostUpdatePolicy {
+.settingsRuntimeHostManagementRootEditor {
+  display: grid;
+  gap: var(--space-3);
+}
+
+.settingsRuntimeHostManagementRootRow {
+  display: grid;
+  grid-template-columns: minmax(120px, 0.35fr) minmax(0, 1fr) auto;
+  align-items: end;
+  gap: var(--space-2);
+}
+
+.settingsRuntimeHostManagementDirectoryRootActions {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--space-2);
+}
+
+.settingsRuntimeHostUpdatePolicy,
+.settingsRuntimeHostDirectPeer {
   display: grid;
   gap: var(--space-3);
   padding: var(--space-3);
@@ -162,12 +177,6 @@
   justify-content: flex-end;
 }
 
-.settingsRuntimeHostManagementRoots li {
-  display: grid;
-  gap: var(--space-1);
-}
-
-.settingsRuntimeHostManagementRoots code,
 .settingsRuntimeHostManagementLogs {
   overflow-wrap: anywhere;
   color: var(--foreground-secondary);

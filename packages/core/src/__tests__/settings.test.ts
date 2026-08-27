@@ -20,9 +20,13 @@
 import { describe, test } from 'node:test';
 import { expect } from './test-helpers.js';
 import {
+  appIconForTheme,
   createDefaultSettings,
+  DEFAULT_APP_ICON,
+  DEFAULT_APP_ICON_DARK,
   mergeSettings,
   normalizeSettings,
+  startupAppIcon,
   toAppIconChoice,
 } from '../settings.js';
 
@@ -122,13 +126,18 @@ test('a chat-default thinking level the app does not recognize drops to no prefe
 });
 
 test('an app icon the build does not ship falls back without disturbing the theme', () => {
-  expect(createDefaultSettings().appearance.appIcon).toBe('default');
+  // The fallback is the shipped default, which is no longer the id literally
+  // named `default` — that id is now one selectable icon among many (the
+  // original mascot mark), while the default a fresh install gets is a
+  // separate decision. Asserted through the constant so changing the default
+  // again does not mean editing this test.
+  expect(createDefaultSettings().appearance.appIcon).toBe(DEFAULT_APP_ICON);
 
   for (const appIcon of [undefined, 'holiday-2019', 42, null]) {
     const normalized = normalizeSettings({
       appearance: { theme: 'dark', palette: 'nord', appIcon } as never,
     });
-    expect(normalized.appearance.appIcon).toBe('default');
+    expect(normalized.appearance.appIcon).toBe(DEFAULT_APP_ICON);
     // The fallback is scoped to the field that failed the guard: a stray icon
     // id must not silently reset the theme the user is actually looking at.
     expect(normalized.appearance.theme).toBe('dark');
@@ -146,12 +155,12 @@ test('imported app icons normalize by id shape, never by path', () => {
     normalizeSettings({ appearance: { theme: 'auto', appIcon: custom } }).appearance.appIcon,
   ).toBe(custom);
   // Anything that is not a shipped id or a well-formed reference falls back to
-  // the brand mark: the main process turns this value into a file path, so a
-  // hand-edited settings file must not be able to name one.
+  // the shipped default: the main process turns this value into a file path,
+  // so a hand-edited settings file must not be able to name one.
   for (const bad of ['custom:../../etc/passwd', 'custom:', 'custom:zzzz', '/tmp/evil.png']) {
     expect(
       normalizeSettings({ appearance: { theme: 'auto', appIcon: bad } }).appearance.appIcon,
-    ).toBe('default');
+    ).toBe(DEFAULT_APP_ICON);
   }
 });
 
@@ -181,5 +190,88 @@ test('WorkHub stays opt-in and malformed persisted values fail closed', () => {
   expect(normalizeSettings({ workHub: { enabled: 'yes' } }).workHub).toEqual({ enabled: false });
   expect(mergeSettings(defaults, { workHub: { enabled: true } }).workHub).toEqual({
     enabled: true,
+  });
+});
+
+describe('app icon per appearance', () => {
+  test('one icon serves both appearances until a dark one is chosen', () => {
+    const appearance = { appIcon: 'forest' } as const;
+    expect(appIconForTheme(appearance, false)).toBe('forest');
+    expect(appIconForTheme(appearance, true)).toBe('forest');
+  });
+
+  test('a dark choice applies only to dark', () => {
+    const appearance = { appIcon: 'sky', appIconDark: 'midnight' } as const;
+    expect(appIconForTheme(appearance, false)).toBe('sky');
+    expect(appIconForTheme(appearance, true)).toBe('midnight');
+  });
+
+  test('a settings file written before the dark slot existed keeps its icon in both', () => {
+    // The upgrade case: absent must not silently become the shipped dark
+    // default, or everyone who ever picked an icon gains a second one they
+    // never chose the first time they launch in dark mode.
+    const normalized = normalizeSettings({ appearance: { appIcon: 'paper' } });
+    expect(normalized.appearance.appIconDark).toBe(undefined);
+    expect(appIconForTheme(normalized.appearance, true)).toBe('paper');
+  });
+
+  test('clearing the dark slot survives normalization as absent, not as a default', () => {
+    const cleared = mergeSettings(createDefaultSettings(), {
+      appearance: { appIcon: 'ink', appIconDark: undefined },
+    });
+    expect(normalizeSettings(cleared).appearance.appIconDark).toBe(undefined);
+  });
+
+  test('a present-but-invalid dark id falls back instead of reaching the main process', () => {
+    const normalized = normalizeSettings({
+      appearance: { appIcon: 'sky', appIconDark: '../../etc/passwd' },
+    });
+    expect(normalized.appearance.appIconDark).toBe(DEFAULT_APP_ICON_DARK);
+  });
+
+  test('a fresh install uses one icon in both appearances', () => {
+    // The split ships OFF. DEFAULT_APP_ICON_DARK is what the dark slot is
+    // seeded with when the user turns it on, not something applied for them.
+    const fresh = createDefaultSettings().appearance;
+    expect(fresh.appIconDark).toBe(undefined);
+    expect(appIconForTheme(fresh, false)).toBe(DEFAULT_APP_ICON);
+    expect(appIconForTheme(fresh, true)).toBe(DEFAULT_APP_ICON);
+  });
+
+  test('the shipped dark recommendation is a real icon that can be seeded', () => {
+    // It is not in the defaults, so nothing else would catch it going stale.
+    expect(
+      appIconForTheme({ appIcon: DEFAULT_APP_ICON, appIconDark: DEFAULT_APP_ICON_DARK }, true),
+    ).toBe(DEFAULT_APP_ICON_DARK);
+  });
+
+  test('the startup icon matches what a fresh install resolves to', () => {
+    // These two are applied by different code paths — one before settings are
+    // read, one after — and a mismatch is a visible flash on every launch.
+    expect(startupAppIcon(false)).toBe(appIconForTheme(createDefaultSettings().appearance, false));
+    expect(startupAppIcon(true)).toBe(appIconForTheme(createDefaultSettings().appearance, true));
+  });
+
+  test('a malformed choice cannot survive as a path fragment', () => {
+    expect(toAppIconChoice('../../evil')).toBe('default');
+  });
+});
+
+describe('app icon on upgrade', () => {
+  test('a settings file that recorded a choice keeps it', () => {
+    // Anyone who ever opened the icon picker has an id on disk, and changing
+    // the shipped default must not move it.
+    const kept = normalizeSettings({ appearance: { theme: 'auto', appIcon: 'default' } });
+    expect(kept.appearance.appIcon).toBe('default');
+  });
+
+  test('a settings file that never recorded one takes the new default', () => {
+    // This is deliberate, and it is how a default actually changes: a file
+    // with no `appIcon` key predates the picker, so its owner never chose the
+    // old mark — they were shown it. `readOrCreate` does not rewrite existing
+    // files, so this resolves on every read rather than migrating once.
+    const migrated = normalizeSettings({ appearance: { theme: 'auto' } });
+    expect(migrated.appearance.appIcon).toBe(DEFAULT_APP_ICON);
+    expect(migrated.appearance.appIconDark).toBe(undefined);
   });
 });

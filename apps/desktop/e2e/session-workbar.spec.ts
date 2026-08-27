@@ -51,6 +51,69 @@ async function createSession(page: Page, prompt: string) {
   return { composer, sessionId: sessionId!, sidebar };
 }
 
+test('a collapsed workbar never flashes during the first send', async ({
+  window: page,
+}) => {
+  await page.evaluate(() => {
+    const watch = { visibleRightWorkbar: false };
+    const inspect = () => {
+      const panel = document.querySelector<HTMLElement>(
+        '.maka-session-workbar[data-placement="right"]',
+      );
+      if (
+        panel &&
+        getComputedStyle(panel).display !== 'none' &&
+        panel.getBoundingClientRect().width > 0
+      ) {
+        watch.visibleRightWorkbar = true;
+      }
+    };
+    const observer = new MutationObserver(inspect);
+    observer.observe(document.body, {
+      subtree: true,
+      childList: true,
+      attributes: true,
+    });
+    (
+      window as typeof window & {
+        __makaFirstSendWorkbarWatch?: typeof watch;
+        __makaFirstSendWorkbarWatchStop?: () => void;
+      }
+    ).__makaFirstSendWorkbarWatch = watch;
+    (
+      window as typeof window & {
+        __makaFirstSendWorkbarWatchStop?: () => void;
+      }
+    ).__makaFirstSendWorkbarWatchStop = () => {
+      inspect();
+      observer.disconnect();
+    };
+  });
+
+  const composer = page.locator(COMPOSER_INPUT);
+  await composer.fill('create a session without opening the workbar');
+  await page.getByRole('button', { name: '发送' }).click();
+  const expandWorkbar = page.getByRole('button', { name: '展开任务工作栏' });
+  await expect(expandWorkbar).toBeVisible({
+    timeout: 20_000,
+  });
+
+  const watch = await page.evaluate(() => {
+    const target = window as typeof window & {
+      __makaFirstSendWorkbarWatch?: { visibleRightWorkbar: boolean };
+      __makaFirstSendWorkbarWatchStop?: () => void;
+    };
+    target.__makaFirstSendWorkbarWatchStop?.();
+    return target.__makaFirstSendWorkbarWatch;
+  });
+  expect(watch?.visibleRightWorkbar, 'the collapsed right workbar stayed hidden').toBe(false);
+
+  await expandWorkbar.evaluate((button) => button.click());
+  await expect(
+    page.locator('.maka-session-workbar[data-placement="right"]'),
+  ).toBeVisible();
+});
+
 async function waitForCompanionForkId(page: Page, sourceSessionId: string) {
   let forkId: string | undefined;
   await expect

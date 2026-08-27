@@ -18,6 +18,7 @@
  */
 
 import { z } from 'zod';
+import { PROJECT_DIRECTORY_MAX_ROOTS } from '../protocol/project-catalog.js';
 import {
   compareProductReleaseVersions,
   isProductReleaseVersion,
@@ -30,7 +31,10 @@ export const RUNTIME_HOST_SERVICE_LOG_MAX_BYTES = 48 * 1024;
 export const RUNTIME_HOST_SERVICE_ERROR_CODE_MAX_BYTES = 128;
 export const RUNTIME_HOST_SERVICE_ERROR_MESSAGE_MAX_BYTES = 2 * 1024;
 export const RUNTIME_HOST_OPERATOR_ACCESS_MANAGEMENT_CAPABILITY = 'access-management-v1';
+export const RUNTIME_HOST_OPERATOR_PROJECT_DIRECTORY_CONFIGURATION_REQUEST_ENV =
+  'MAKA_RUNTIME_HOST_OPERATOR_PROJECT_DIRECTORY_CONFIGURATION_REQUEST';
 export const RUNTIME_HOST_OPERATOR_PROCESS_LIFETIME_LOCK_CAPABILITY = 'process-lifetime-lock-v1';
+export const RUNTIME_HOST_OPERATOR_PEER_MANAGEMENT_CAPABILITY = 'peer-management-v1';
 export const RUNTIME_HOST_OPERATOR_UPDATE_SCHEDULER_CAPABILITY = 'update-scheduler-v1';
 export const RUNTIME_HOST_OPERATOR_CAPABILITY_REQUEST_ENV =
   'MAKA_RUNTIME_HOST_OPERATOR_CAPABILITY_REQUEST';
@@ -40,6 +44,7 @@ const PATH_MAX_BYTES = 4 * 1024;
 const FIELD_MAX_BYTES = 512;
 const SERVICE_ACTIONS = [
   'install',
+  'configure',
   'status',
   'start',
   'stop',
@@ -63,6 +68,7 @@ const NON_RETIRE_SERVICE_ACTIONS = [
 ] as const;
 const NON_UPDATE_SERVICE_ACTIONS = [
   'install',
+  'configure',
   'status',
   'start',
   'stop',
@@ -85,6 +91,7 @@ const INSTALLED_SERVICE_STATES = ['stopped', 'starting', 'running', 'failed'] as
 const SERVICE_STATES = ['not_installed', ...INSTALLED_SERVICE_STATES] as const;
 const OPERATOR_CAPABILITIES = [
   RUNTIME_HOST_OPERATOR_ACCESS_MANAGEMENT_CAPABILITY,
+  RUNTIME_HOST_OPERATOR_PEER_MANAGEMENT_CAPABILITY,
   RUNTIME_HOST_OPERATOR_PROCESS_LIFETIME_LOCK_CAPABILITY,
   RUNTIME_HOST_OPERATOR_UPDATE_SCHEDULER_CAPABILITY,
 ] as const;
@@ -227,6 +234,10 @@ const SERVICE_SUMMARY_SCHEMA = z
     lastExitCode: z.number().int().nonnegative().nullable(),
     installedVersion: boundedString(FIELD_MAX_BYTES).nullable(),
     stateRoot: boundedString(PATH_MAX_BYTES).optional(),
+    configurationFingerprint: z
+      .string()
+      .regex(/^sha256:[a-f0-9]{64}$/u)
+      .optional(),
     projectDirectoryRoots: z
       .array(
         z
@@ -236,7 +247,7 @@ const SERVICE_SUMMARY_SCHEMA = z
           })
           .strict(),
       )
-      .max(64),
+      .max(PROJECT_DIRECTORY_MAX_ROOTS),
   })
   .strict();
 const INSTALLED_SERVICE_SUMMARY_SCHEMA = SERVICE_SUMMARY_SCHEMA.extend({
@@ -248,7 +259,9 @@ const SERVICE_RESULT_COMMON = {
   schemaVersion: z.literal(1),
   kind: z.literal('result'),
   service: SERVICE_SUMMARY_SCHEMA,
-  operatorCapabilities: z.array(z.enum(OPERATOR_CAPABILITIES)).max(16).optional(),
+  // Unknown tokens are ignored by callers. Keeping the wire field open lets
+  // older Clients decode status from a newer operator.
+  operatorCapabilities: z.array(boundedNonEmptyString(FIELD_MAX_BYTES)).max(16).optional(),
   retainedStateRoot: boundedString(PATH_MAX_BYTES).optional(),
   logs: boundedString(RUNTIME_HOST_SERVICE_LOG_MAX_BYTES).optional(),
 } as const;
@@ -361,6 +374,15 @@ const SERVICE_MANAGEMENT_FRAME_SCHEMA = z.union([
         });
       }
     }),
+  z
+    .object({
+      ...SERVICE_RESULT_COMMON,
+      action: z.literal('configure'),
+      configuration: z
+        .object({ kind: z.enum(['unchanged', 'configured', 'active_tasks']) })
+        .strict(),
+    })
+    .strict(),
   z
     .object({
       ...SERVICE_RESULT_COMMON,

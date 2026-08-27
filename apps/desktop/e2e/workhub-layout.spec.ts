@@ -36,7 +36,7 @@ test('WorkHub target metadata does not overlap the submitted Session result', as
   await page.evaluate(async () => {
     await window.maka.settings.updateClient({ workHub: { enabled: true } });
   });
-  await expect(page.getByRole('main', { name: 'WorkHub' })).toBeVisible();
+  await expect(page.getByText('1 项工作', { exact: true })).toBeVisible();
 
   const workHubComposer = page.locator(
     '.workhub-surface .maka-composer-editor [contenteditable="true"]',

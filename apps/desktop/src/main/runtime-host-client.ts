@@ -834,6 +834,16 @@ export class DesktopRuntimeHostClient {
     return this.request("workhub.coordination.resolve", {});
   }
 
+  listWorkHubCoordinationCandidates() {
+    return this.request("workhub.coordination.candidates", {});
+  }
+
+  actWorkHubCoordination(
+    input: OperationInput<"workhub.coordination.act">,
+  ): Promise<OperationOutput<"workhub.coordination.act">> {
+    return this.request("workhub.coordination.act", input);
+  }
+
   answerWorkHubCoordination(
     input: OperationInput<"workhub.coordination.answer">,
   ): Promise<OperationOutput<"workhub.coordination.answer">> {
@@ -1082,6 +1092,12 @@ export class DesktopRuntimeHostClient {
       ...input,
       originHostEpoch: this.connection.hostEpoch,
     });
+  }
+
+  queryMessages(
+    input: OperationInput<'turn.message.query'>,
+  ): Promise<OperationOutput<'turn.message.query'>> {
+    return this.request('turn.message.query', input);
   }
 
   retractQueueEntry(

@@ -114,6 +114,66 @@ import {
   withTimeout,
 } from './fixtures/execution-host-suite.js';
 
+test('subscribed Clients receive the durable steering echo as a session event', async () => {
+  await withExecutionRoot(async (fixture) => {
+    const host = await fixture.startHost();
+    const client = await connectClient(fixture.root);
+    const subscription = await client.openSessionSubscription({
+      sessionId: fixture.sessionId,
+      transcript: { kind: 'none' },
+    });
+    const probe = new SubscriptionProbe(subscription);
+
+    const turnId = randomUUID();
+    requireStartedTurn(
+      await client.request('turn.start', {
+        sessionId: fixture.sessionId,
+        turnId,
+        content: { text: FAKE_WAIT_FOR_STEERING_PROMPT },
+      }),
+    );
+    const steeringId = randomUUID();
+    const steeringContent = {
+      text: '<steer>steer mid-turn</steer>',
+      displayText: 'steer mid-turn',
+    };
+    const submitted = await client.request('turn.message.submit', {
+      originHostEpoch: host.hostEpoch,
+      sessionId: fixture.sessionId,
+      messageId: steeringId,
+      content: steeringContent,
+      placement: 'current_turn',
+    });
+    assert.equal(submitted.disposition, 'steering');
+
+    // apache/maka#3304: the steering render must not depend on observing the
+    // transient in-flight queue state; the durable echo is forwarded verbatim.
+    const echoed = await probe.waitFor(
+      (frame) =>
+        frame.kind === 'subscription.session_event' && frame.event.type === 'steering_message',
+      'continuity did not forward the durable steering echo',
+    );
+    assert.equal(echoed.kind, 'subscription.session_event');
+    if (echoed.kind === 'subscription.session_event') {
+      assert.equal(echoed.event.type, 'steering_message');
+      if (echoed.event.type === 'steering_message') {
+        assert.equal(echoed.event.turnId, turnId);
+        assert.equal(echoed.event.messageId, steeringId);
+        assert.deepEqual(echoed.event.content, steeringContent);
+      }
+    }
+
+    assert.equal(
+      (await waitForTerminalTurn(client, fixture.sessionId, turnId)).status,
+      'completed',
+    );
+    await subscription.close();
+    await probe.done;
+    await client.close();
+    await fixture.stopHost(host);
+  });
+});
+
 test('steering becomes durable and ordered followups automatically start the next root', async () => {
   await withExecutionRoot(async (fixture) => {
     const host = await fixture.startHost();

@@ -61,6 +61,7 @@ const COORDINATION_RETRY_INTERVAL: Duration = Duration::from_secs(1);
 #[derive(Clone)]
 pub struct StartOptions {
     pub key_path: PathBuf,
+    pub expected_peer_id: Option<PeerId>,
     pub listen_addresses: Vec<Multiaddr>,
     pub coordination_relays: Vec<Multiaddr>,
 }
@@ -173,6 +174,13 @@ struct OpenedStream {
     result: Result<libp2p::swarm::Stream, String>,
 }
 
+pub async fn ensure_identity(key_path: PathBuf) -> Result<PeerId, PeerError> {
+    Ok(identity_store::load_or_create_key(&key_path)
+        .await?
+        .public()
+        .to_peer_id())
+}
+
 pub fn start(options: StartOptions) -> Result<StartedEndpoint, PeerError> {
     let (ready_tx, ready_rx) = std::sync::mpsc::sync_channel(1);
     let (command_tx, command_rx) = mpsc::channel(COMMAND_CAPACITY);
@@ -221,7 +229,19 @@ async fn run_endpoint_async(
     incoming_tx: mpsc::Sender<PeerStream>,
     ready_tx: std::sync::mpsc::SyncSender<Result<(PeerId, Vec<Multiaddr>), PeerError>>,
 ) -> Result<(), PeerError> {
-    let key = load_or_create_key(&options.key_path).await?;
+    let key = match options.expected_peer_id {
+        Some(expected) => {
+            let key = identity_store::load_key(&options.key_path).await?;
+            if PeerId::from(key.public()) != expected {
+                return Err(PeerError::new(
+                    "peer_identity_mismatch",
+                    "the persisted peer identity does not match the expected PeerId",
+                ));
+            }
+            key
+        }
+        None => load_or_create_key(&options.key_path).await?,
+    };
     let local_peer_id = PeerId::from(key.public());
     let (mut swarm, stream_control, mut incoming_streams) = build_swarm(key)?;
 
@@ -293,6 +313,8 @@ async fn run_endpoint_async(
     let _ = ready_tx.send(Ok((local_peer_id, bound_addresses)));
 
     let (opened_tx, mut opened_rx) = mpsc::channel::<OpenedStream>(COMMAND_CAPACITY);
+    let (close_connection_tx, mut close_connection_rx) =
+        mpsc::channel::<ConnectionId>(MAX_ESTABLISHED_CONNECTIONS as usize);
     let mut pending = HashMap::<PeerId, PendingConnect>::new();
     let mut relayed = HashMap::<PeerId, HashSet<ConnectionId>>::new();
     let mut external_candidate_ready = startup_external_candidate_ready;
@@ -340,15 +362,21 @@ async fn run_endpoint_async(
                 None => return Ok(()),
             },
             Some(stream) = incoming_streams.recv() => {
-                let peer_stream = spawn_stream(stream);
+                let peer_stream = spawn_stream(
+                    stream.stream,
+                    Some((stream.connection_id, close_connection_tx.clone())),
+                );
                 if incoming_tx.try_send(peer_stream).is_err() {
                     // Dropping the stream closes it. A slow Host cannot create an unbounded queue.
                 }
             }
+            Some(connection_id) = close_connection_rx.recv() => {
+                let _ = swarm.close_connection(connection_id);
+            }
             Some(opened) = opened_rx.recv() => {
                 if let Some(waiter) = pending.remove(&opened.peer_id) {
                     let result = opened.result
-                        .map(spawn_stream)
+                        .map(|stream| spawn_stream(stream, None))
                         .map_err(|message| PeerError::new("direct_path_unavailable", message));
                     let _ = waiter.result.send(result);
                 }
@@ -413,7 +441,7 @@ async fn run_endpoint_async(
 type BuiltSwarm = (
     Swarm<Behaviour>,
     application_stream::Control,
-    mpsc::Receiver<libp2p::swarm::Stream>,
+    mpsc::Receiver<application_stream::InboundStream>,
 );
 
 fn build_swarm(key: identity::Keypair) -> Result<BuiltSwarm, PeerError> {

@@ -93,8 +93,12 @@ export class HostUsagePricingCoordinator {
    * Reads the canonical ledger for the window a query addresses (#1679). The
    * range is resolved once here so both sources answer the same window.
    */
-  async #canonicalUsage(query: UsageQuery, now: number): Promise<CanonicalUsageSource> {
-    return readCanonicalUsage(this.#stores, query, now);
+  async #canonicalUsage(
+    query: UsageQuery,
+    now: number,
+    repair = true,
+  ): Promise<CanonicalUsageSource> {
+    return readCanonicalUsage(this.#stores, query, now, repair);
   }
 
   async #queryUsage(input: UsageQueryInput): Promise<OperationOutcome<'usage.query'>> {
@@ -124,7 +128,8 @@ export class HostUsagePricingCoordinator {
             ? { buckets: [...legacy], provenance: EMPTY_PROVENANCE }
             : mergeUsageBuckets(
                 legacy,
-                await this.#canonicalUsage(input.query, now),
+                // Only the first page repairs; later pages reuse it.
+                await this.#canonicalUsage(input.query, now, offset === 0),
                 input.query,
                 input.groupBy,
                 now,
@@ -161,7 +166,8 @@ export class HostUsagePricingCoordinator {
       const legacy = await this.#stores.telemetry.logs(input.query, 0, offset + limit);
       const merged = mergeUsageLogs(
         legacy,
-        await this.#canonicalUsage(input.query, now),
+        // Only the first page repairs; later pages reuse it.
+        await this.#canonicalUsage(input.query, now, offset === 0),
         input.query,
         now,
         offset,

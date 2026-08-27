@@ -5,7 +5,7 @@ Each row is one on-disk product surface file. Regenerated inventory must stay in
 
 Wiki bar: Design Conventions · API Use-the-System · Theming · Container Padding.
 
-**Totals:** 213 files — blocker 0, polish 1, aligned 212.
+**Totals:** 214 files — blocker 0, polish 1, aligned 213.
 
 ## Exclusions (explicit)
 
@@ -102,6 +102,7 @@ Wiki bar: Design Conventions · API Use-the-System · Theming · Container Paddi
 | `apps/desktop/src/renderer/settings/runtime-host-management-dialog.tsx` | settings-module | Badge, Banner, Button, Dialog, DialogHeader, Layout, LayoutContent, Selector, Spinner, Text | aligned — uses Astryx (Badge, Banner, Button, Dialog, DialogHeader, Layout, LayoutContent, Selector) | aligned |
 | `apps/desktop/src/renderer/settings/runtime-host-onboarding-dialog.tsx` | settings-module | Banner, Button, Dialog, DialogHeader, Layout, LayoutContent, Spinner, Text | aligned — uses Astryx (Banner, Button, Dialog, DialogHeader, Layout, LayoutContent, Spinner, Text) | aligned |
 | `apps/desktop/src/renderer/settings/runtime-host-profiles-section.tsx` | settings-module | Badge, Banner, Button, HStack, List, ListItem, SegmentedControl, SegmentedControlItem, Selector, Switch | aligned — uses Astryx (Badge, Banner, Button, HStack, List, ListItem, SegmentedControl, SegmentedControlItem) | aligned |
+| `apps/desktop/src/renderer/settings/runtime-host-project-directory-editor.tsx` | settings-module | Button | aligned — uses Astryx (Button) | aligned |
 | `apps/desktop/src/renderer/settings/runtime-host-settings-target.tsx` | settings-module | none | aligned — no raw controls; no Astryx JSX usage | aligned |
 | `apps/desktop/src/renderer/settings/runtime-host-ssh-terminal-dialog.tsx` | settings-module | Banner, Button, Dialog, DialogHeader, Layout, LayoutContent | aligned — uses Astryx (Banner, Button, Dialog, DialogHeader, Layout, LayoutContent) | aligned |
 | `apps/desktop/src/renderer/settings/settings-expandable-row.tsx` | settings-module | Button, HStack, Text | aligned — uses Astryx (Button, HStack, Text) | aligned |

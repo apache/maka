@@ -24,6 +24,7 @@ import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import test from 'node:test';
+import { CLI_RELEASE_ARTIFACT_LIMITS } from './release-cli-artifact-policy.mjs';
 import {
   fetchRegistryRelease,
   parseCliReleaseVersion,
@@ -268,6 +269,8 @@ test('registry downloads stop reading as soon as the tarball exceeds its bound',
   const fixture = createPreparedCandidate();
   const fallback = registryFetch({ fixture });
   const tarballUrl = `https://registry.npmjs.org/maka-agent/-/${fixture.tarball}`;
+  const chunkBytes = 1024 * 1024;
+  const offeredChunks = Math.floor(CLI_RELEASE_ARTIFACT_LIMITS.compressedBytes / chunkBytes) + 8;
   let pulls = 0;
   const fetchImpl = async (input, options) => {
     if (String(input) !== tarballUrl) return fallback(input, options);
@@ -275,8 +278,8 @@ test('registry downloads stop reading as soon as the tarball exceeds its bound',
       new ReadableStream({
         pull(controller) {
           pulls += 1;
-          if (pulls > 30) return controller.close();
-          controller.enqueue(new Uint8Array(1024 * 1024));
+          if (pulls > offeredChunks) return controller.close();
+          controller.enqueue(new Uint8Array(chunkBytes));
         },
       }),
     );
@@ -290,7 +293,7 @@ test('registry downloads stop reading as soon as the tarball exceeds its bound',
     }),
     /exceeds the reviewed compressed size limit/u,
   );
-  assert.ok(pulls < 30, `expected an early bounded read, consumed ${pulls} chunks`);
+  assert.ok(pulls < offeredChunks, `expected an early bounded read, consumed ${pulls} chunks`);
 });
 
 test('signature audit must contain Maka provenance for the finalized version', () => {

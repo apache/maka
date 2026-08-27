@@ -400,6 +400,12 @@ export const CODEX_SUPPORTED_THREAD_SOURCES = ['cli', 'vscode', 'atlas', 'chatgp
  * `updated_at_ms` in ms on newer ones; this lets one path normalize both.
  */
 export const FOREIGN_SESSION_MIN_EPOCH_MS = 1_577_836_800_000;
+/** Largest absolute timestamp accepted by ECMAScript Date's TimeClip operation. */
+const FOREIGN_SESSION_MAX_EPOCH_MS = 8_640_000_000_000_000;
+
+function isValidForeignEpochMs(value: number): boolean {
+  return Number.isFinite(value) && Math.abs(value) <= FOREIGN_SESSION_MAX_EPOCH_MS;
+}
 
 function normalizeEpochMs(value: unknown): number | undefined {
   const n =
@@ -409,7 +415,8 @@ function normalizeEpochMs(value: unknown): number | undefined {
         ? Number(value)
         : undefined;
   if (n === undefined) return undefined;
-  return n > 0 && n < FOREIGN_SESSION_MIN_EPOCH_MS ? n * 1000 : n;
+  const normalized = n > 0 && n < FOREIGN_SESSION_MIN_EPOCH_MS ? n * 1000 : n;
+  return isValidForeignEpochMs(normalized) ? normalized : undefined;
 }
 
 /**
@@ -630,9 +637,9 @@ export function renderForeignSessionDigestForPrompt(digest: ForeignSessionDigest
     `title=${safe(digest.title)}`,
     `cwd=${safe(digest.cwd)}`,
     ...(digest.gitBranch ? [`git_branch=${safe(digest.gitBranch)}`] : []),
-    // A non-finite timestamp (corrupt store row) would make new Date().toISOString()
-    // throw RangeError, so guard it rather than let the render crash.
-    `updated_at=${Number.isFinite(digest.updatedAtMs) ? new Date(digest.updatedAtMs).toISOString() : 'unknown'}`,
+    // Invalid timestamps (corrupt store rows) make toISOString() throw RangeError,
+    // including finite values outside Date's TimeClip range.
+    `updated_at=${isValidForeignEpochMs(digest.updatedAtMs) ? new Date(digest.updatedAtMs).toISOString() : 'unknown'}`,
     '',
     '## User messages (chronological)',
     ...digest.userMessages.map((m, i) => `${i + 1}. ${safe(m)}`),

@@ -17,35 +17,19 @@
  * under the License.
  */
 
-import { createHash, randomUUID } from 'node:crypto';
-import {
-  cp,
-  lstat,
-  mkdir,
-  open,
-  readFile,
-  readdir,
-  realpath,
-  rename,
-  rm,
-  stat,
-} from 'node:fs/promises';
+import { randomUUID } from 'node:crypto';
+import { lstat, open, readdir, realpath, rename, rm } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
-import { isSha512PackageIntegrity } from '@maka/runtime-host/operator';
+import {
+  openRuntimeHostPackageDeployment,
+  prepareRuntimeHostPackageDeployment,
+  resolveRuntimeHostPackageCliPath,
+  RuntimeHostPackageDeploymentError as RuntimeHostManagedDeploymentError,
+  type RuntimeHostPackageDeployment,
+} from './runtime-host-package-deployment.js';
 
-const PACKAGE_NAME = 'maka-agent';
-
-export class RuntimeHostManagedDeploymentError extends Error {
-  constructor(
-    readonly code: 'invalid_package' | 'deployment_failed',
-    message: string,
-    options?: ErrorOptions,
-  ) {
-    super(message, options);
-    this.name = 'RuntimeHostManagedDeploymentError';
-  }
-}
+export { RuntimeHostPackageDeploymentError as RuntimeHostManagedDeploymentError } from './runtime-host-package-deployment.js';
 
 export interface RuntimeHostManagedPackageDeployment {
   readonly version: string;
@@ -62,9 +46,7 @@ export function resolveRuntimeHostManagedPackageCliPath(
   version: string,
   packageIntegrity?: string,
 ): string {
-  assertVersion(version);
-  const packageDirectory = packageIntegrity ? registryPackageDirectory(packageIntegrity) : version;
-  return join(resolve(deploymentRoot), 'versions', packageDirectory, 'dist', 'cli.js');
+  return resolveRuntimeHostPackageCliPath(deploymentRoot, version, packageIntegrity);
 }
 
 export function isRuntimeHostDevelopmentPackageVersion(value: unknown): value is string {
@@ -81,55 +63,14 @@ export async function prepareRuntimeHostManagedPackageDeployment(
   },
   options: RuntimeHostManagedDeploymentPathOptions = {},
 ): Promise<RuntimeHostManagedPackageDeployment> {
-  assertVersion(input.version);
-  const sourcePackageRoot = await validatePackage(input.sourcePackageRoot, input.version);
-  const requestedDeploymentRoot = resolveRuntimeHostManagedDeploymentRoot(input.serviceId, options);
-  await mkdir(join(requestedDeploymentRoot, 'versions'), { recursive: true, mode: 0o700 });
-  const deploymentRoot = await realpath(requestedDeploymentRoot);
-  const versionsRoot = join(deploymentRoot, 'versions');
-  const packageDirectory = input.packageIntegrity
-    ? registryPackageDirectory(input.packageIntegrity)
-    : input.version;
-  const packageRoot = join(versionsRoot, packageDirectory);
-  const cliPath = resolveRuntimeHostManagedPackageCliPath(
-    deploymentRoot,
-    input.version,
-    input.packageIntegrity,
-  );
   const clientDataRoot = resolve(input.clientDataRoot);
-  if (await pathExists(packageRoot)) {
-    await validatePackage(packageRoot, input.version);
-    return deployment(input.version, deploymentRoot, packageRoot, cliPath, clientDataRoot, false);
-  }
-
-  await removeAbandonedPackageWorkspaces(versionsRoot, packageDirectory);
-  const stagingRoot = join(versionsRoot, `.${packageDirectory}.${randomUUID()}.tmp`);
-  try {
-    await cp(sourcePackageRoot, stagingRoot, {
-      recursive: true,
-      force: false,
-      errorOnExist: true,
-      preserveTimestamps: true,
-    });
-    await validatePackage(stagingRoot, input.version);
-    try {
-      await rename(stagingRoot, packageRoot);
-    } catch (error) {
-      if (!isNodeError(error, 'EEXIST') && !isNodeError(error, 'ENOTEMPTY')) throw error;
-      await validatePackage(packageRoot, input.version);
-      await rm(stagingRoot, { recursive: true, force: true });
-      return deployment(input.version, deploymentRoot, packageRoot, cliPath, clientDataRoot, false);
-    }
-    return deployment(input.version, deploymentRoot, packageRoot, cliPath, clientDataRoot, true);
-  } catch (error) {
-    await rm(stagingRoot, { recursive: true, force: true }).catch(() => undefined);
-    if (error instanceof RuntimeHostManagedDeploymentError) throw error;
-    throw new RuntimeHostManagedDeploymentError(
-      'deployment_failed',
-      `Unable to install Maka ${input.version} into the managed Runtime Host deployment`,
-      { cause: error },
-    );
-  }
+  const staged = await prepareRuntimeHostPackageDeployment({
+    deploymentRoot: resolveRuntimeHostManagedDeploymentRoot(input.serviceId, options),
+    sourcePackageRoot: input.sourcePackageRoot,
+    version: input.version,
+    ...(input.packageIntegrity ? { packageIntegrity: input.packageIntegrity } : {}),
+  });
+  return managedDeployment(staged, clientDataRoot);
 }
 
 export async function openRuntimeHostManagedPackageDeployment(input: {
@@ -139,7 +80,6 @@ export async function openRuntimeHostManagedPackageDeployment(input: {
   readonly cliPath: string;
   readonly version: string;
 }): Promise<RuntimeHostManagedPackageDeployment> {
-  assertVersion(input.version);
   let deploymentRoot: string;
   let cliPath: string;
   try {
@@ -158,36 +98,13 @@ export async function openRuntimeHostManagedPackageDeployment(input: {
       'The configured Runtime Host package does not belong to its managed deployment',
     );
   }
-  const packageRoot = await validatePackage(dirname(dirname(cliPath)), input.version);
-  if (cliPath !== join(packageRoot, 'dist', 'cli.js')) {
-    throw new RuntimeHostManagedDeploymentError(
-      'invalid_package',
-      'The configured Runtime Host CLI does not match its managed package',
-    );
-  }
-  return deployment(
-    input.version,
-    deploymentRoot,
-    packageRoot,
-    cliPath,
+  return managedDeployment(
+    await openRuntimeHostPackageDeployment({
+      deploymentRoot,
+      cliPath,
+      version: input.version,
+    }),
     resolve(input.clientDataRoot),
-    false,
-  );
-}
-
-async function removeAbandonedPackageWorkspaces(
-  versionsRoot: string,
-  packageDirectory: string,
-): Promise<void> {
-  const prefix = `.${packageDirectory}.`;
-  await Promise.all(
-    (await readdir(versionsRoot, { withFileTypes: true }))
-      .filter(
-        (entry) =>
-          entry.name.startsWith(prefix) &&
-          (entry.name.endsWith('.tmp') || entry.name.endsWith('.deleted')),
-      )
-      .map((entry) => rm(join(versionsRoot, entry.name), { recursive: true, force: true })),
   );
 }
 
@@ -292,63 +209,20 @@ export async function removeRuntimeHostManagedDeployment(
   await rm(requestedRoot, { recursive: true, force: true });
 }
 
-async function validatePackage(path: string, version: string): Promise<string> {
-  let packageRoot: string;
-  let manifest: unknown;
-  try {
-    packageRoot = await realpath(resolve(path));
-    manifest = JSON.parse(await readFile(join(packageRoot, 'package.json'), 'utf8')) as unknown;
-    const cli = await stat(join(packageRoot, 'dist', 'cli.js'));
-    const runtimeHost = await stat(
-      join(packageRoot, 'node_modules', '@maka', 'runtime-host', 'package.json'),
-    );
-    if (!cli.isFile() || !runtimeHost.isFile()) throw new Error('Package payload is incomplete');
-  } catch (error) {
-    throw new RuntimeHostManagedDeploymentError(
-      'invalid_package',
-      `Maka ${version} is not a self-contained release package`,
-      { cause: error },
-    );
-  }
-  if (!isRecord(manifest) || manifest.name !== PACKAGE_NAME || manifest.version !== version) {
-    throw new RuntimeHostManagedDeploymentError(
-      'invalid_package',
-      `The setup package does not contain ${PACKAGE_NAME}@${version}`,
-    );
-  }
-  return packageRoot;
-}
-
-async function pathExists(path: string): Promise<boolean> {
-  try {
-    await stat(path);
-    return true;
-  } catch (error) {
-    if (isNodeError(error, 'ENOENT')) return false;
-    throw error;
-  }
-}
-
-function deployment(
-  version: string,
-  root: string,
-  packageRoot: string,
-  cliPath: string,
+function managedDeployment(
+  staged: RuntimeHostPackageDeployment,
   clientDataRoot: string,
-  created: boolean,
 ): RuntimeHostManagedPackageDeployment {
-  const operatorPath = join(root, 'operator');
+  const operatorPath = join(staged.root, 'operator');
   return {
-    version,
-    root,
-    cliPath,
+    version: staged.version,
+    root: staged.root,
+    cliPath: staged.cliPath,
     operatorPath,
-    activate: () => writeOperatorLauncher(operatorPath, process.execPath, cliPath, clientDataRoot),
-    cleanup: () => pruneInactivePackages(dirname(packageRoot), basename(packageRoot)),
-    rollback: () =>
-      created
-        ? removePackageAtomically(dirname(packageRoot), basename(packageRoot))
-        : Promise.resolve(),
+    activate: () =>
+      writeOperatorLauncher(operatorPath, process.execPath, staged.cliPath, clientDataRoot),
+    cleanup: staged.cleanup,
+    rollback: staged.rollback,
   };
 }
 
@@ -394,57 +268,6 @@ async function writeOperatorLauncher(
 
 function quotePosix(value: string): string {
   return `'${value.replaceAll("'", `'"'"'`)}'`;
-}
-
-async function pruneInactivePackages(versionsRoot: string, retainedPackage: string): Promise<void> {
-  await Promise.all(
-    (await readdir(versionsRoot, { withFileTypes: true }))
-      .filter((entry) => entry.name !== retainedPackage)
-      .map((entry) => removePackageAtomically(versionsRoot, entry.name)),
-  );
-}
-
-async function removePackageAtomically(versionsRoot: string, packageName: string): Promise<void> {
-  const packageRoot = join(versionsRoot, packageName);
-  try {
-    if (packageName.startsWith('.') && packageName.endsWith('.deleted')) {
-      await rm(packageRoot, { recursive: true, force: true });
-      return;
-    }
-    const tombstone = join(versionsRoot, `.${packageName}.${randomUUID()}.deleted`);
-    await rename(packageRoot, tombstone);
-    await rm(tombstone, { recursive: true, force: true });
-  } catch (error) {
-    if (isNodeError(error, 'ENOENT')) return;
-    throw new RuntimeHostManagedDeploymentError(
-      'deployment_failed',
-      'Unable to remove an inactive managed Runtime Host package',
-      { cause: error },
-    );
-  }
-}
-
-function registryPackageDirectory(integrity: string): string {
-  if (!isSha512PackageIntegrity(integrity)) {
-    throw new RuntimeHostManagedDeploymentError(
-      'invalid_package',
-      'The managed Runtime Host package integrity is invalid',
-    );
-  }
-  return `registry-${createHash('sha256').update(integrity).digest('hex')}`;
-}
-
-function assertVersion(version: string): void {
-  if (!/^[0-9A-Za-z][0-9A-Za-z.+-]{0,127}$/u.test(version)) {
-    throw new RuntimeHostManagedDeploymentError(
-      'invalid_package',
-      'The Maka package version cannot be used as a managed deployment identity',
-    );
-  }
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return value !== null && typeof value === 'object' && !Array.isArray(value);
 }
 
 function isNodeError(error: unknown, code: string): error is NodeJS.ErrnoException {

@@ -18,7 +18,7 @@
  */
 
 import assert from 'node:assert/strict';
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, realpath, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -138,7 +138,7 @@ test('rejects non-UTF-8 package metadata instead of normalizing an owner observa
 });
 
 async function installationFixture(t: test.TestContext, version: string) {
-  const base = await mkdtemp(join(tmpdir(), 'maka-cli-global-installation-'));
+  const base = await realpath(await mkdtemp(join(tmpdir(), 'maka-cli-global-installation-')));
   t.after(() => rm(base, { recursive: true, force: true }));
   const homeDir = join(base, 'home');
   const globalRoot = join(base, 'lib', 'node_modules');

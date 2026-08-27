@@ -25,16 +25,22 @@ import {
   requireExactRecord,
   requireId,
   requireRecord,
+  requireShapedRecord,
   requireUtf8String,
 } from './codec.js';
 import { defineOperation } from './operation-spec.js';
 import {
   decodeMessageContent,
+  decodeSkillIds,
+  decodeTurnOrchestration,
   decodeTurnSnapshot,
   type MessageContent,
   TURN_MESSAGE_TEXT_MAX_BYTES,
   type TurnSnapshot,
 } from './turn.js';
+import { decodeSkillInvocationResult } from '@maka/core/skill-invocation';
+import type { SkillInvocationResult } from '@maka/core/skill-invocation';
+import type { TurnOrchestration } from '@maka/core/runtime-inputs';
 
 export const MESSAGE_QUEUE_MAX_ENTRIES = 64;
 export const MESSAGE_QUEUE_PROJECTION_MAX_BYTES = 52 * 1024;
@@ -78,18 +84,44 @@ export interface SessionMessageQueueProjection {
   readonly followup: readonly QueuedMessageSnapshot[];
 }
 
+/**
+ * The sole client admission input for a user Message. `skillIds` and
+ * `turnOrchestration` carry exact-Turn intent: the Host, not the client,
+ * decides that such a Message can only open its own Turn.
+ */
 export interface TurnMessageSubmitInput {
   readonly originHostEpoch: string;
   readonly sessionId: string;
   readonly messageId: string;
   readonly content: MessageContent;
   readonly placement: MessagePlacement;
+  readonly skillIds?: readonly string[];
+  readonly turnOrchestration?: TurnOrchestration;
 }
 
 export type TurnMessageSubmitResult =
   | { readonly disposition: 'steering'; readonly queueRevision: number }
   | { readonly disposition: 'followup'; readonly queueRevision: number }
-  | { readonly disposition: 'turn_started'; readonly turnId: string };
+  | {
+      readonly disposition: 'turn_started';
+      readonly turnId: string;
+      readonly skillInvocation?: SkillInvocationResult;
+    }
+  | { readonly disposition: 'blocked'; readonly skillInvocation: SkillInvocationResult };
+
+export interface TurnMessageQueryInput {
+  readonly sessionId: string;
+  readonly messageIds: readonly string[];
+}
+
+/**
+ * Durable cancellation proof for the queried identities. Only a cancelled
+ * Message retires a client's transient row; every other identity stays visible
+ * until canonical transcript replaces it, so absence needs no status of its own.
+ */
+export interface TurnMessageQueryResult {
+  readonly cancelledMessageIds: readonly string[];
+}
 
 export interface QueueRetractInput {
   readonly originHostEpoch: string;
@@ -163,6 +195,13 @@ const MESSAGE_OPERATION_ERRORS = [
 ] as const;
 
 export const MESSAGE_OPERATION_SPECS = {
+  'turn.message.query': defineOperation({
+    mode: 'query',
+    availability: 'ready',
+    errors: MESSAGE_OPERATION_ERRORS,
+    decodeInput: decodeTurnMessageQueryInput,
+    decodeOutput: decodeTurnMessageQueryResult,
+  }),
   'turn.message.submit': defineOperation({
     mode: 'command',
     availability: 'ready',
@@ -242,27 +281,93 @@ export function decodeSessionMessageQueueProjection(value: unknown): SessionMess
 }
 
 function decodeTurnMessageSubmitInput(value: unknown): TurnMessageSubmitInput {
-  const record = requireExactRecord(value, 'turn.message.submit input', [
-    'originHostEpoch',
-    'sessionId',
-    'messageId',
-    'content',
-    'placement',
-  ]);
+  const record = requireShapedRecord(
+    value,
+    'turn.message.submit input',
+    ['originHostEpoch', 'sessionId', 'messageId', 'content', 'placement'],
+    ['skillIds', 'turnOrchestration'],
+  );
+  const skillIds = decodeSkillIds(record.skillIds);
+  const placement = requireMessagePlacement(record.placement);
+  const turnOrchestration =
+    record.turnOrchestration !== undefined
+      ? decodeTurnOrchestration(record.turnOrchestration)
+      : undefined;
+  // Exact-Turn intent has no queued form: a Skill or orchestration Message
+  // opens its own Turn or fails closed, so `next_turn` cannot describe it.
+  if ((skillIds.length > 0 || turnOrchestration !== undefined) && placement !== 'current_turn') {
+    throw invalidProtocolFrame('Invalid turn.message.submit placement for an exact Turn');
+  }
   return {
     originHostEpoch: requireId(record.originHostEpoch, 'originHostEpoch'),
     sessionId: requireEntityId(record.sessionId, 'sessionId'),
     messageId: requireEntityId(record.messageId, 'messageId'),
-    content: decodeMessageContent(record.content),
-    placement: requireMessagePlacement(record.placement),
+    content: decodeMessageContent(record.content, skillIds.length > 0),
+    placement,
+    ...(skillIds.length > 0 ? { skillIds } : {}),
+    ...(turnOrchestration !== undefined ? { turnOrchestration } : {}),
   };
+}
+
+function decodeTurnMessageQueryInput(value: unknown): TurnMessageQueryInput {
+  const record = requireExactRecord(value, 'turn.message.query input', ['sessionId', 'messageIds']);
+  if (!Array.isArray(record.messageIds) || record.messageIds.length > MESSAGE_QUEUE_MAX_ENTRIES) {
+    throw invalidProtocolFrame('Invalid turn.message.query messageIds');
+  }
+  const messageIds = record.messageIds.map((messageId) => requireEntityId(messageId, 'messageId'));
+  if (new Set(messageIds).size !== messageIds.length) {
+    throw invalidProtocolFrame('Duplicate turn.message.query messageId');
+  }
+  return {
+    sessionId: requireEntityId(record.sessionId, 'sessionId'),
+    messageIds,
+  };
+}
+
+function decodeTurnMessageQueryResult(value: unknown): TurnMessageQueryResult {
+  const record = requireExactRecord(value, 'turn.message.query result', ['cancelledMessageIds']);
+  if (
+    !Array.isArray(record.cancelledMessageIds) ||
+    record.cancelledMessageIds.length > MESSAGE_QUEUE_MAX_ENTRIES
+  ) {
+    throw invalidProtocolFrame('Invalid turn.message.query cancelledMessageIds');
+  }
+  const cancelledMessageIds = record.cancelledMessageIds.map((messageId) =>
+    requireEntityId(messageId, 'messageId'),
+  );
+  if (new Set(cancelledMessageIds).size !== cancelledMessageIds.length) {
+    throw invalidProtocolFrame('Duplicate turn.message.query cancelledMessageId');
+  }
+  return { cancelledMessageIds };
 }
 
 function decodeTurnMessageSubmitResult(value: unknown): TurnMessageSubmitResult {
   const record = requireRecord(value, 'turn.message.submit result');
   if (record.disposition === 'turn_started') {
-    assertExactKeys(record, 'turn.message.submit turn_started result', ['disposition', 'turnId']);
-    return { disposition: record.disposition, turnId: requireEntityId(record.turnId, 'turnId') };
+    const shaped = requireShapedRecord(
+      record,
+      'turn.message.submit turn_started result',
+      ['disposition', 'turnId'],
+      ['skillInvocation'],
+    );
+    return {
+      disposition: 'turn_started',
+      turnId: requireEntityId(shaped.turnId, 'turnId'),
+      ...(shaped.skillInvocation !== undefined
+        ? { skillInvocation: decodeSubmitSkillInvocation(shaped.skillInvocation) }
+        : {}),
+    };
+  }
+  if (record.disposition === 'blocked') {
+    assertExactKeys(record, 'turn.message.submit blocked result', [
+      'disposition',
+      'skillInvocation',
+    ]);
+    const skillInvocation = decodeSubmitSkillInvocation(record.skillInvocation);
+    if (skillInvocation.loaded.length !== 0 || skillInvocation.failed.length === 0) {
+      throw invalidProtocolFrame('Invalid blocked turn.message.submit Skill invocation');
+    }
+    return { disposition: 'blocked', skillInvocation };
   }
   if (record.disposition === 'steering' || record.disposition === 'followup') {
     assertExactKeys(record, 'turn.message.submit queued result', ['disposition', 'queueRevision']);
@@ -272,6 +377,14 @@ function decodeTurnMessageSubmitResult(value: unknown): TurnMessageSubmitResult 
     };
   }
   throw invalidProtocolFrame('Invalid turn.message.submit disposition');
+}
+
+function decodeSubmitSkillInvocation(value: unknown): SkillInvocationResult {
+  try {
+    return decodeSkillInvocationResult(value);
+  } catch {
+    throw invalidProtocolFrame('Invalid turn.message.submit Skill invocation');
+  }
 }
 
 function decodeQueueRetractInput(value: unknown): QueueRetractInput {

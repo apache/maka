@@ -32,6 +32,7 @@
     "./pet-pack-store": "./dist/pet-pack-store.js",
     "./plan-authority": "./dist/plan-authority.js",
     "./process-lifetime-file-update-lock": "./dist/process-lifetime-file-update-lock.js",
+    "./process-lifetime-owner": "./dist/process-lifetime-owner.js",
     "./project-catalog": "./dist/project-catalog.js",
     "./project-catalog-authority": "./dist/project-catalog-authority.js",
     "./root-authority": "./dist/root-authority.js",

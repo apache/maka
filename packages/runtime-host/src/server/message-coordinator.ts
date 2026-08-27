@@ -28,6 +28,8 @@ import {
   type MessageContent,
 } from '@maka/core/events';
 import type { RuntimeEvent } from '@maka/core/runtime-event';
+import type { TurnOrchestration } from '@maka/core/runtime-inputs';
+import type { SkillInvocationResult } from '@maka/core/skill-invocation';
 import {
   RuntimeMessageAuthorityInvariantError,
   type RuntimeMessageAuthority,
@@ -36,11 +38,13 @@ import {
 } from '@maka/runtime/message-authority';
 import {
   normalizeRootTurnAdmissionPayload,
+  submittedTurnIntentsEqual,
   type ImmutableSteeringMessageProof,
   type MessageAdmissionStore,
   type PendingMessageAdmission,
   type RootTurnSourceMessage,
   type RootTurnSourceMessageReceipt,
+  type SubmittedTurnIntent,
 } from '@maka/storage/execution-stores';
 import type { HostOperationErrorCode, OperationSpec } from '../protocol/operation-spec.js';
 import {
@@ -106,13 +110,31 @@ export interface HostMessageStartInput {
   readonly initiatingConnectionId: string;
   readonly turnId?: string;
   readonly runId?: string;
+  readonly skillIds?: readonly string[];
+  readonly turnOrchestration?: TurnOrchestration;
 }
+
+/**
+ * Starting a Turn from a Message either admits it, reports Skill resolution
+ * the client can act on, or fails with an opaque reason.
+ */
+export type HostMessageStartOutcome =
+  | { readonly turnId: string; readonly skillInvocation?: SkillInvocationResult }
+  | { readonly blocked: SkillInvocationResult }
+  | { readonly error: string };
 
 export interface HostMessageRecoveryBatch {
   readonly sessionId: string;
   readonly content: MessageContent;
   readonly submittedContent: MessageContent;
   readonly sources: readonly RootTurnSourceMessage[];
+  /**
+   * What the recovered Message asked of its Turn. Only a lone Message can
+   * carry one — exact-Turn intent needs an idle Session and opens its own root
+   * Turn — and without it the recovered Turn silently runs under the Session
+   * default instead of the graph or swarm that was requested.
+   */
+  readonly submittedIntent?: SubmittedTurnIntent;
 }
 
 export interface HostMessagePreparationInput {
@@ -145,7 +167,7 @@ export interface HostMessageRootPort {
     input: HostMessageStartInput,
     admission: SessionAdmissionLease,
     commitAdmission: (canonicalContent: MessageContent) => Promise<void>,
-  ): Promise<{ readonly turnId: string } | { readonly error: string }>;
+  ): Promise<HostMessageStartOutcome>;
   startRecoveredMessages?(
     input: HostMessageRecoveryBatch,
     admission: SessionAdmissionLease,
@@ -315,6 +337,7 @@ const HOST_EPOCH_PATTERN = /^[A-Za-z0-9_-]{1,128}$/u;
 /** The sole in-memory message authority for one Runtime Host Epoch. */
 export class HostMessageCoordinator implements RuntimeMessageAuthority {
   readonly handlers: MessageOperationHandlerMap = {
+    'turn.message.query': (input) => this.queryMessages(input),
     'turn.message.submit': (input, context) => this.submit(input, context),
     'queue.retract': (input) => this.retract(input),
     'queue.entry.retract': (input) => this.retractQueuedEntry(input),
@@ -368,6 +391,24 @@ export class HostMessageCoordinator implements RuntimeMessageAuthority {
   hasLiveSessionState(sessionId: string): boolean {
     const state = this.#sessions.get(sessionId);
     return state ? hasLiveMessageState(state) : false;
+  }
+
+  /**
+   * Durable cancellation proof for client-held transient identities. Absence of
+   * a tombstone is never delivery or cancellation proof, so only cancelled
+   * identities are reported and the client keeps every other row.
+   */
+  async queryMessages(input: {
+    sessionId: string;
+    messageIds: readonly string[];
+  }): Promise<MessageOutcome<{ cancelledMessageIds: string[] }>> {
+    const cancelledMessageIds: string[] = [];
+    for (const messageId of input.messageIds) {
+      if (await this.#admissions.hasCancelledMessageAdmission(input.sessionId, messageId)) {
+        cancelledMessageIds.push(messageId);
+      }
+    }
+    return success({ cancelledMessageIds });
   }
 
   retireSessions(sessionIds: readonly string[]): void {
@@ -662,6 +703,9 @@ export class HostMessageCoordinator implements RuntimeMessageAuthority {
               content: aggregateMessageContents(pending.map((entry) => entry.content)),
               submittedContent: aggregateMessageContents(pending.map((entry) => entry.content)),
               sources: pending.map(pendingMessageSource),
+              ...(pending.length === 1 && pending[0]!.submittedIntent
+                ? { submittedIntent: pending[0]!.submittedIntent }
+                : {}),
             },
             admission,
           ),
@@ -814,10 +858,12 @@ export class HostMessageCoordinator implements RuntimeMessageAuthority {
               'Root reported idle while the message authority retained live state',
             );
           }
+          const intent = submittedTurnIntent(payload);
           const sourceMessage: RootTurnSourceMessage = {
             messageId: input.messageId,
             content: payload.content,
             submittedContentDigest: messageContentDigest(payload.content),
+            ...(intent ? { submittedIntent: intent } : {}),
             placement: input.placement,
             disposition: 'turn_started',
           };
@@ -828,7 +874,8 @@ export class HostMessageCoordinator implements RuntimeMessageAuthority {
           if (
             pendingAdmission &&
             (pendingAdmission.submittedContentDigest !== messageContentDigest(payload.content) ||
-              pendingAdmission.submittedPlacement !== input.placement)
+              pendingAdmission.submittedPlacement !== input.placement ||
+              !submittedTurnIntentsEqual(pendingAdmission.submittedIntent, intent))
           ) {
             return failure('operation_conflict', 'Message admission has a different payload');
           }
@@ -842,6 +889,10 @@ export class HostMessageCoordinator implements RuntimeMessageAuthority {
               initiatingConnectionId,
               turnId,
               runId,
+              ...(payload.skillIds.length > 0 ? { skillIds: payload.skillIds } : {}),
+              ...(payload.turnOrchestration
+                ? { turnOrchestration: payload.turnOrchestration }
+                : {}),
             },
             admission,
             async (canonicalContent) => {
@@ -855,6 +906,7 @@ export class HostMessageCoordinator implements RuntimeMessageAuthority {
                 submittedPlacement: input.placement,
                 placement: 'current_turn',
                 disposition: 'steering',
+                ...(intent ? { submittedIntent: intent } : {}),
                 admittedAt: pendingAdmission?.admittedAt ?? Date.now(),
               });
             },
@@ -862,13 +914,32 @@ export class HostMessageCoordinator implements RuntimeMessageAuthority {
           if ('error' in started) {
             return failure('operation_conflict', started.error);
           }
+          // A blocked Skill invocation admitted nothing: it is not remembered as
+          // a completed submit, so the same identity can be submitted again once
+          // the Skill resolves.
+          if ('blocked' in started) {
+            return success({
+              disposition: 'blocked',
+              skillInvocation: started.blocked,
+            } as const);
+          }
           if (!isEntityId(started.turnId)) {
             throw new RuntimeMessageAuthorityInvariantError(
               'Started Turn identity is not encodable',
             );
           }
-          const result = { disposition: 'turn_started', turnId: started.turnId } as const;
+          const result = {
+            disposition: 'turn_started',
+            turnId: started.turnId,
+            ...(started.skillInvocation ? { skillInvocation: started.skillInvocation } : {}),
+          } as const;
           return success(result);
+        }
+        if (requiresExactTurn(payload)) {
+          return failure(
+            'session_busy',
+            'An explicit Skill or orchestrated Message needs an idle Session',
+          );
         }
         if (rootState.kind === 'reserved') {
           return failure('session_busy', 'A Goal continuation is reserving the next root Turn');
@@ -2073,6 +2144,12 @@ function sameRun(left: RuntimeMessageRunIdentity, right: RuntimeMessageRunIdenti
   );
 }
 
+/**
+ * Whether a durable receipt answers the submit being retried. The receipt's own
+ * record of the exact-Turn intent is authoritative; a receipt that carries none
+ * was written for a submit that asked for none, so any intent now is a
+ * different request.
+ */
 function sameSourcePayload(
   receipt: RootTurnSourceMessageReceipt,
   input: CanonicalSubmitPayload,
@@ -2091,7 +2168,8 @@ function sameSourcePayload(
     (durableDigest
       ? durableDigest === messageContentDigest(input.content)
       : messageContentsEqual(source.content, input.content)) &&
-    source.placement === input.placement
+    source.placement === input.placement &&
+    submittedTurnIntentsEqual(source.submittedIntent, submittedTurnIntent(input))
   );
 }
 
@@ -2110,6 +2188,7 @@ function pendingMessageSource(admission: PendingMessageAdmission): RootTurnSourc
     messageId: admission.messageId,
     content: normalizeMessageContent(admission.content),
     submittedContentDigest: admission.submittedContentDigest,
+    ...(admission.submittedIntent ? { submittedIntent: admission.submittedIntent } : {}),
     placement: admission.placement,
     disposition: admission.disposition,
   };
@@ -2222,6 +2301,8 @@ interface CanonicalSubmitPayload {
   readonly messageId: string;
   readonly content: MessageContent;
   readonly placement: MessagePlacement;
+  readonly skillIds: readonly string[];
+  readonly turnOrchestration?: TurnOrchestration;
 }
 
 function canonicalSubmitPayload(input: TurnMessageSubmitInput): CanonicalSubmitPayload {
@@ -2231,6 +2312,33 @@ function canonicalSubmitPayload(input: TurnMessageSubmitInput): CanonicalSubmitP
     messageId: input.messageId,
     content: normalizeMessageContent(input.content),
     placement: input.placement,
+    skillIds: [...(input.skillIds ?? [])],
+    ...(input.turnOrchestration ? { turnOrchestration: input.turnOrchestration } : {}),
+  };
+}
+
+/**
+ * Exact-Turn intent. Explicit Skill ids and an orchestration override describe
+ * how one Turn runs, so they have no queued form and need an idle Session.
+ * A `/skill:` token in the text is not exact-Turn intent: message preparation
+ * expands it on the queued path too.
+ */
+function requiresExactTurn(payload: CanonicalSubmitPayload): boolean {
+  return payload.skillIds.length > 0 || payload.turnOrchestration !== undefined;
+}
+
+/**
+ * The exact-Turn intent as the durable value every record keeps, or undefined
+ * when the submit asked for none. Content and placement say nothing about how a
+ * Turn runs, so this is the rest of what makes a submit the same submit:
+ * without it, a retry under one Message identity can change the execution mode
+ * and still be answered with the earlier Turn's success.
+ */
+function submittedTurnIntent(payload: CanonicalSubmitPayload): SubmittedTurnIntent | undefined {
+  if (!requiresExactTurn(payload)) return undefined;
+  return {
+    skillIds: payload.skillIds,
+    ...(payload.turnOrchestration ? { turnOrchestration: payload.turnOrchestration } : {}),
   };
 }
 

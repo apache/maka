@@ -242,6 +242,10 @@ describe('Runtime Host bootstrap protocol', () => {
     assert.ok(RUNTIME_HOST_COMPATIBILITY_EPOCH > 43);
   });
 
+  test('publishes a new compatibility epoch for durable Message lifecycle queries', () => {
+    assert.ok(RUNTIME_HOST_COMPATIBILITY_EPOCH > 50);
+  });
+
   test('selects the highest mutually supported protocol and rejects a gap', () => {
     assert.equal(negotiateProtocol({ min: 0, max: 0 }, { min: 0, max: 0 }), 0);
     assert.equal(negotiateProtocol({ min: 1, max: 3 }, { min: 2, max: 4 }), 3);
@@ -250,7 +254,7 @@ describe('Runtime Host bootstrap protocol', () => {
   });
 
   test('keeps the subscription queue Epoch correlated', () => {
-    assert.equal(SESSION_CONTINUITY_SCHEMA_VERSION, 4);
+    assert.equal(SESSION_CONTINUITY_SCHEMA_VERSION, 5);
     const opened = {
       requestId: 'open-1',
       operation: 'subscription.open',
@@ -467,6 +471,37 @@ describe('Runtime Host bootstrap protocol', () => {
     ]) {
       assert.throws(() => decodeHostFrame({ ...envelope, event }), isInvalidFrame);
     }
+
+    // The durable steering echo shares the session-event frame without a
+    // toolUseId; unknown keys stay rejected.
+    const steering = {
+      type: 'steering_message' as const,
+      id: 'steering-event-1',
+      turnId: 'turn-1',
+      ts: 7,
+      messageId: 'steering-message-1',
+      content: { text: 'steer the turn' },
+    };
+    const decodedSteering = decodeHostFrame({ ...envelope, event: steering });
+    assert.ok('kind' in decodedSteering);
+    if ('kind' in decodedSteering) {
+      assert.equal(decodedSteering.kind, 'subscription.session_event');
+      if (decodedSteering.kind === 'subscription.session_event') {
+        assert.deepEqual(decodedSteering.event, steering);
+      }
+    }
+    assert.throws(
+      () => decodeHostFrame({ ...envelope, event: { ...steering, toolUseId: 'tool-1' } }),
+      isInvalidFrame,
+    );
+    assert.throws(
+      () =>
+        decodeHostFrame({
+          ...envelope,
+          event: { ...steering, content: { text: 'x'.repeat(49 * 1024) } },
+        }),
+      isInvalidFrame,
+    );
     assert.throws(
       () =>
         decodeHostFrame({
@@ -969,6 +1004,14 @@ describe('Runtime Host bootstrap protocol', () => {
   });
 
   test('requires stable Message command identities, origin Host Epoch, and exact inputs', () => {
+    const query = {
+      requestId: 'query-request-1',
+      operation: 'turn.message.query' as const,
+      input: {
+        sessionId: 'session-1',
+        messageIds: ['message-1', 'message-2'],
+      },
+    };
     const submit = {
       requestId: 'submit-request-1',
       operation: 'turn.message.submit' as const,
@@ -996,6 +1039,7 @@ describe('Runtime Host bootstrap protocol', () => {
         runId: 'run-1',
       },
     };
+    assert.deepEqual(decodeClientFrame(query), query);
     assert.deepEqual(decodeClientFrame(submit), submit);
     assert.deepEqual(decodeClientFrame(retract), retract);
     assert.deepEqual(decodeClientFrame(interrupt), interrupt);

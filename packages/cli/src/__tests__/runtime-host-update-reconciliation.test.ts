@@ -519,8 +519,11 @@ function managedStatus(managedDeploymentRoot: string) {
 
 function unusedBackend() {
   return {
-    preflightInstall: async () => undefined,
-    install: async () => ({ rollback: async () => undefined }),
+    preflightDeployment: async () => undefined,
+    stageDeployment: async () => ({
+      apply: async () => undefined,
+      rollback: async () => undefined,
+    }),
     replace: async () => undefined,
     verifyReplacementPreconditions: async () => undefined,
     verifyDeployment: async () => undefined,

@@ -58,6 +58,12 @@ pub(super) async fn load_or_create_key(path: &Path) -> Result<identity::Keypair,
     }
 }
 
+pub(super) async fn load_key(path: &Path) -> Result<identity::Keypair, PeerError> {
+    let bytes = tokio::fs::read(path).await.map_err(native_error)?;
+    identity::Keypair::from_protobuf_encoding(&bytes)
+        .map_err(|error| PeerError::new("peer_native_failed", error.to_string()))
+}
+
 async fn publish_private_file(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     let parent = path.parent().unwrap_or_else(|| Path::new(""));
     let temporary = loop {

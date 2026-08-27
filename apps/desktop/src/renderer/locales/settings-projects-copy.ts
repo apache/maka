@@ -33,6 +33,7 @@ export type SettingsProjectsCopy = {
     setupDescription: string;
     setupName: string;
     setupSshPort: string;
+    setupDirectoryRootsDescription: string;
     setupConnect: string;
     setupCancel: string;
     setupRetry: string;
@@ -74,19 +75,48 @@ export type SettingsProjectsCopy = {
     credentialHelp: string;
     saveAndEnable: string;
     defaultBadge: string;
+    experimentalBadge: string;
     defaultDisableHelp: string;
     unavailable: string;
     manage: string;
     managementTitle(name: string): string;
     serviceStatus: string;
     serviceState: Record<import('../../preload/bridge-contract.js').DesktopRuntimeHostManagementResult['service']['state'], string>;
+    directPeer: string;
+    directPeerDescription: string;
+    directPeerState: Record<'unsupported' | 'not_configured' | 'disabled' | 'enabled' | 'unavailable', string>;
+    directPeerUnavailable: string;
+    directPeerUpgradeRequired: string;
+    directPeerClientUnavailable: string;
+    directPeerDisableProfileFirst: string;
+    directPeerId: string;
+    directPeerRoutes: string;
+    directPeerCoordinationRelays: string;
+    directPeerCoordinationRelaysPlaceholder: string;
+    directPeerEnable: string;
+    directPeerDisable: string;
+    directPeerAddProfile: string;
+    directPeerActionFailed: string;
     installedVersion: string;
     operatingSystem: string;
     processId: string;
     lastExitCode: string;
     stateRoot: string;
     directoryRoots: string;
+    directoryRootsDescription: string;
+    directoryRootsUnavailable: string;
+    directoryRootsChanged: string;
+    directoryRootsChangedDescription: string;
+    reloadDirectoryRoots: string;
     noDirectoryRoots: string;
+    directoryRootLabel: string;
+    directoryRootPath: string;
+    addDirectoryRoot: string;
+    removeDirectoryRoot: string;
+    saveDirectoryRoots: string;
+    directoryRootsActiveTasks: string;
+    directoryRootsActiveTasksDescription: string;
+    configureDirectoriesInterrupt: string;
     refresh: string;
     startService: string;
     restartService: string;
@@ -141,6 +171,7 @@ export type SettingsProjectsCopy = {
     uninstallConfirm: string;
     uninstallRetained(path: string): string;
     managementActionFailed: string;
+    managementReconnectFailed: string;
     manageAccess: string;
     accessTitle: string;
     noAccessCredentials: string;
@@ -225,6 +256,7 @@ const SETTINGS_PROJECTS_COPY_BY_LOCALE = {
       setupDescription: '通过 SSH 安装并连接 Runtime Host',
       setupName: '显示名称（可选）',
       setupSshPort: 'SSH 端口（可选）',
+      setupDirectoryRootsDescription: '留空时使用远端 Home。添加目录后，只有这些目录可用于浏览并添加项目。',
       setupConnect: '连接',
       setupCancel: '取消',
       setupRetry: '重试',
@@ -275,6 +307,7 @@ const SETTINGS_PROJECTS_COPY_BY_LOCALE = {
       credentialHelp: '在远程机器使用 desktop-client preset 签发',
       saveAndEnable: '保存并启用',
       defaultBadge: '默认',
+      experimentalBadge: '实验性',
       defaultDisableHelp: '先选择另一个默认 Host，才能停用此 Host',
       unavailable: '无法连接',
       manage: '管理',
@@ -287,13 +320,47 @@ const SETTINGS_PROJECTS_COPY_BY_LOCALE = {
         running: '运行中',
         failed: '启动失败',
       },
+      directPeer: 'Direct peer（实验性）',
+      directPeerDescription: '创建独立的实验性 Direct profile。受限 NAT 或被阻止的 UDP 可能使其不可达，且不会自动回退；保留 SSH profile 用于手动恢复。',
+      directPeerState: {
+        unsupported: '需要更新',
+        not_configured: '未配置',
+        disabled: '已停用',
+        enabled: '已启用',
+        unavailable: '不可用',
+      },
+      directPeerUnavailable: '无法读取 Direct peer 状态',
+      directPeerUpgradeRequired: '请先更新远程 Runtime Host，再管理 Direct peer。',
+      directPeerClientUnavailable: '当前 Desktop 构建不包含 Direct peer 支持。',
+      directPeerDisableProfileFirst: '请先在 Runtime Host 列表中停用 Direct peer。',
+      directPeerId: 'Peer ID',
+      directPeerRoutes: '可用路径',
+      directPeerCoordinationRelays: '连接协调节点（可选）',
+      directPeerCoordinationRelaysPlaceholder: '多个地址用逗号分隔',
+      directPeerEnable: '启用并添加',
+      directPeerDisable: '停用',
+      directPeerAddProfile: '添加到 Desktop',
+      directPeerActionFailed: 'Direct peer 操作失败',
       installedVersion: '版本',
       operatingSystem: '系统',
       processId: '进程 ID',
       lastExitCode: '上次退出码',
       stateRoot: 'State Root',
-      directoryRoots: '可用目录',
-      noDirectoryRoots: '未配置额外目录',
+      directoryRoots: '可用于添加项目的目录',
+      directoryRootsDescription: '远程 Client 只能从这些目录浏览并添加新项目。移除目录不会删除已经添加的项目。',
+      directoryRootsUnavailable: '更新或修复这个 Host 后，即可在 Desktop 中管理这些目录。',
+      directoryRootsChanged: '这些目录已在其他位置更改',
+      directoryRootsChangedDescription: '你的编辑仍被保留。加载当前配置后再继续编辑。',
+      reloadDirectoryRoots: '加载当前配置',
+      noDirectoryRoots: '目录浏览和项目添加已禁用',
+      directoryRootLabel: '显示名称',
+      directoryRootPath: '远端绝对路径',
+      addDirectoryRoot: '添加目录',
+      removeDirectoryRoot: '移除',
+      saveDirectoryRoots: '应用目录',
+      directoryRootsActiveTasks: '这个 Host 仍有正在运行的任务',
+      directoryRootsActiveTasksDescription: '应用目录需要安全重启远端服务。只有明确确认后才会中断这些任务。',
+      configureDirectoriesInterrupt: '中断任务并应用',
       refresh: '刷新',
       startService: '启动',
       restartService: '重启',
@@ -350,6 +417,7 @@ const SETTINGS_PROJECTS_COPY_BY_LOCALE = {
       uninstallConfirm: '卸载服务',
       uninstallRetained: (path: string) => `服务已卸载，数据保留在 ${path}`,
       managementActionFailed: '无法管理 Runtime Host 服务',
+      managementReconnectFailed: '更改已应用，但 Desktop 未能重新连接',
       manageAccess: '管理访问权限',
       accessTitle: '访问权限',
       noAccessCredentials: '没有访问凭据',
@@ -432,6 +500,7 @@ const SETTINGS_PROJECTS_COPY_BY_LOCALE = {
       setupDescription: 'Install and connect Runtime Host over SSH',
       setupName: 'Display name (optional)',
       setupSshPort: 'SSH port (optional)',
+      setupDirectoryRootsDescription: 'Leave empty to use the remote Home directory. When directories are added, only those locations can be browsed to add projects.',
       setupConnect: 'Connect',
       setupCancel: 'Cancel',
       setupRetry: 'Retry',
@@ -482,6 +551,7 @@ const SETTINGS_PROJECTS_COPY_BY_LOCALE = {
       credentialHelp: 'Issue it on the remote machine with the desktop-client preset',
       saveAndEnable: 'Save and enable',
       defaultBadge: 'Default',
+      experimentalBadge: 'Experimental',
       defaultDisableHelp: 'Choose another default Host before disabling this Host',
       unavailable: 'Unavailable',
       manage: 'Manage',
@@ -494,13 +564,47 @@ const SETTINGS_PROJECTS_COPY_BY_LOCALE = {
         running: 'Running',
         failed: 'Failed',
       },
+      directPeer: 'Direct peer (experimental)',
+      directPeerDescription: 'Create an independent experimental Direct profile. Restrictive NAT or blocked UDP may make it unreachable, and it does not fall back automatically; keep the SSH profile for manual recovery.',
+      directPeerState: {
+        unsupported: 'Update required',
+        not_configured: 'Not configured',
+        disabled: 'Disabled',
+        enabled: 'Enabled',
+        unavailable: 'Unavailable',
+      },
+      directPeerUnavailable: 'Direct peer status is unavailable',
+      directPeerUpgradeRequired: 'Update the remote Runtime Host before managing Direct peer.',
+      directPeerClientUnavailable: 'This Desktop build does not include Direct peer support.',
+      directPeerDisableProfileFirst: 'Disable the Direct peer in the Runtime Host list first.',
+      directPeerId: 'Peer ID',
+      directPeerRoutes: 'Routes',
+      directPeerCoordinationRelays: 'Connection coordination peers (optional)',
+      directPeerCoordinationRelaysPlaceholder: 'Separate multiple addresses with commas',
+      directPeerEnable: 'Enable and add',
+      directPeerDisable: 'Disable',
+      directPeerAddProfile: 'Add to Desktop',
+      directPeerActionFailed: 'Direct peer action failed',
       installedVersion: 'Version',
       operatingSystem: 'System',
       processId: 'Process ID',
       lastExitCode: 'Last exit code',
       stateRoot: 'State Root',
-      directoryRoots: 'Available directories',
-      noDirectoryRoots: 'No additional directories configured',
+      directoryRoots: 'Directories for adding projects',
+      directoryRootsDescription: 'Remote Clients can browse and add new projects only from these directories. Removing one does not delete projects already added.',
+      directoryRootsUnavailable: 'Update or repair this Host to manage these directories in Desktop.',
+      directoryRootsChanged: 'These directories changed elsewhere',
+      directoryRootsChangedDescription: 'Your draft is preserved. Load the current configuration before continuing.',
+      reloadDirectoryRoots: 'Load current configuration',
+      noDirectoryRoots: 'Directory browsing and project registration are disabled',
+      directoryRootLabel: 'Display name',
+      directoryRootPath: 'Absolute path on remote computer',
+      addDirectoryRoot: 'Add directory',
+      removeDirectoryRoot: 'Remove',
+      saveDirectoryRoots: 'Apply directories',
+      directoryRootsActiveTasks: 'This Host still has running tasks',
+      directoryRootsActiveTasksDescription: 'Applying these directories requires a safe remote service restart. Tasks are interrupted only after explicit confirmation.',
+      configureDirectoriesInterrupt: 'Interrupt tasks and apply',
       refresh: 'Refresh',
       startService: 'Start',
       restartService: 'Restart',
@@ -560,6 +664,7 @@ const SETTINGS_PROJECTS_COPY_BY_LOCALE = {
       uninstallConfirm: 'Uninstall service',
       uninstallRetained: (path: string) => `Service uninstalled. Data was retained at ${path}`,
       managementActionFailed: 'Unable to manage the Runtime Host service',
+      managementReconnectFailed: 'Change applied, but Desktop could not reconnect',
       manageAccess: 'Manage access',
       accessTitle: 'Access',
       noAccessCredentials: 'No active access credentials',

@@ -70,6 +70,62 @@ export interface UsageProvenance {
   pendingRepairs: number;
 }
 
+/**
+ * The cost to present for a usage total, or `undefined` when it cannot be shown
+ * honestly. Trust the total only when at least one canonical attempt was priced;
+ * otherwise a legacy total is a usable estimate only when strictly positive (a
+ * zero cannot tell a free call apart from one whose price was never resolved),
+ * and everything else is unknown rather than `$0`. Shared with Session
+ * Inspector's `estimatedSessionCost` so the two surfaces qualify cost the same way.
+ */
+export function estimatedUsageCost(
+  provenance: UsageProvenance,
+  totalCostUsd: number,
+): number | undefined {
+  if (provenance.coverage.pricedAttempts > 0) return totalCostUsd;
+  return provenance.legacyRecords > 0 && totalCostUsd > 0 ? totalCostUsd : undefined;
+}
+
+/**
+ * Whether real spend is missing from the totals: canonical records that failed
+ * to decode, or runs the read model has not folded in yet. When true, a total
+ * reads low and the surface should say so.
+ */
+export function hasUnavailableUsage(provenance: UsageProvenance): boolean {
+  return provenance.unreadableRecords > 0 || provenance.pendingRepairs > 0;
+}
+
+export const EMPTY_MODEL_CALL_COVERAGE: ModelCallCoverage = {
+  attempts: 0,
+  pricedAttempts: 0,
+  unpricedAttempts: 0,
+  usageReportedAttempts: 0,
+  usagePartialAttempts: 0,
+  usageMissingAttempts: 0,
+};
+
+/** Provenance for a result with no canonical or legacy records behind it. */
+export const EMPTY_USAGE_PROVENANCE: UsageProvenance = {
+  coverage: EMPTY_MODEL_CALL_COVERAGE,
+  legacyRecords: 0,
+  unreadableRecords: 0,
+  pendingRepairs: 0,
+};
+
+/**
+ * Provenance for a result built entirely from the frozen legacy table: its cost
+ * is present but was never qualified with a cost basis, so a positive total is a
+ * usable estimate while a zero stays "unknown".
+ */
+export function legacyUsageProvenance(legacyRecords: number): UsageProvenance {
+  return {
+    coverage: EMPTY_MODEL_CALL_COVERAGE,
+    legacyRecords,
+    unreadableRecords: 0,
+    pendingRepairs: 0,
+  };
+}
+
 export interface MergedUsageSummary extends UsageSummaryV2 {
   provenance: UsageProvenance;
 }

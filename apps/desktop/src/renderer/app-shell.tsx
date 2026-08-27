@@ -172,10 +172,6 @@ import {
   createAppShellChatActions,
   type WorkspaceFileReferencePosition,
 } from './app-shell-chat-actions';
-import {
-  retainedAttachmentRefs,
-  toComposerIngestItems,
-} from './composer-attachments';
 import { createAppShellTurnActions } from './app-shell-turn-actions';
 import {
   abandonTurnRevisionCopyAttempt,
@@ -351,7 +347,13 @@ function AppShellContent({
     startNewSession,
     clearOwnedSessionState,
     messages,
+    transientMessages,
     setMessages,
+    addTransientMessage,
+    updateTransientMessage,
+    projectQueuedTransientMessages,
+    retireCancelledTransientMessages,
+    removeTransientMessage,
     transcriptRangeRef,
     messageLoadPending,
     setMessageLoadPending,
@@ -801,6 +803,7 @@ function AppShellContent({
   const activeQuestion = activeInteraction?.type === 'user_question_request' ? activeInteraction : undefined;
   const activeSession = sessions.find((session) => session.id === activeId);
   const activeMessageQueue = activeId ? messageQueueBySession[activeId] : undefined;
+  const activeMessageSubmitting = transientMessages.length > 0;
   const activeDesktopSession = activeSession;
   // The shell's reading of the active live turn: streaming/settled flags, the
   // in-flight tool signal, and the #646 turn-wait cues, all derived from the
@@ -1487,6 +1490,10 @@ function AppShellContent({
           window.maka.workHub.answer(workHubCoordinationSessionId!, input),
         record: (input) =>
           window.maka.workHub.record(workHubCoordinationSessionId!, input),
+        candidates: () =>
+          window.maka.workHub.candidates(workHubCoordinationSessionId!),
+        act: (input) =>
+          window.maka.workHub.act(workHubCoordinationSessionId!, input),
       }),
       sessions: createDesktopWorkHubSessionPort({
         sessions: scopeWorkHubSessionsToCoordinationHost(
@@ -1755,6 +1762,7 @@ function AppShellContent({
 
   const {
     send,
+    enqueueMessage,
     respondToSandboxBoundary,
     respondToUserQuestion,
     refreshMessages,
@@ -1774,6 +1782,9 @@ function AppShellContent({
     setMessageLoadErrorBySession,
     setMessageRetryPendingBySession,
     setMessages,
+    addTransientMessage,
+    updateTransientMessage,
+    removeTransientMessage,
     transcriptRangeRef,
     setNavSelection,
     setLiveTurnBySession,
@@ -1868,28 +1879,24 @@ function AppShellContent({
   ): Promise<boolean> {
     const pending = pendingAttachments.length > 0 ? pendingAttachments : undefined;
     const quotes = pendingQuotes.length > 0 ? pendingQuotes : undefined;
-    const attachmentItems = pending ? toComposerIngestItems(pending) : [];
-    const retainedAttachments = pending ? retainedAttachmentRefs(pending) : [];
     try {
-      const result = await window.maka.sessions.enqueue(
+      const sent = await enqueueMessage(
         sessionId,
+        text,
         mode === 'steer' ? 'current_turn' : 'next_turn',
+        pending,
         {
-          text,
-          ...(attachmentItems.length > 0 ? { attachmentItems } : {}),
-          ...(retainedAttachments.length > 0 ? { retainedAttachments } : {}),
           ...(quotes ? { quotes: [...quotes] } : {}),
           ...(metadata?.workspaceFileReferences?.length
             ? { workspaceFileReferences: [...metadata.workspaceFileReferences] }
             : {}),
         },
       );
+      // Refused: the composer keeps the draft, the attachments and the quotes,
+      // because the user has to change something and send it again.
+      if (!sent) return false;
       if (pending) clearSubmittedAttachments(pending);
       if (quotes) clearQuotes();
-      if (result.kind === 'started') {
-        await refreshMessages(sessionId);
-        await refreshSessions();
-      }
       return true;
     } catch (error) {
       if (activeIdRef.current === sessionId) {
@@ -2140,18 +2147,23 @@ function AppShellContent({
   }
 
   async function deleteQueuedEntry(entryId: string): Promise<void> {
-    await runQueueEntryAction((sessionId) =>
+    const messageId = activeMessageQueue?.entries.find((entry) => entry.entryId === entryId)?.messageId;
+    const sessionId = await runQueueEntryAction((sessionId) =>
       window.maka.sessions.retractQueueEntry(sessionId, entryId).then(() => undefined)
     );
+    if (sessionId && messageId) removeTransientMessage(sessionId, messageId);
   }
 
   // Surfaces the failure, then rethrows so the pending plate can settle its
   // in-flight action state without guessing with a timer.
-  async function runQueueEntryAction(action: (sessionId: string) => Promise<void>): Promise<void> {
+  async function runQueueEntryAction(
+    action: (sessionId: string) => Promise<void>,
+  ): Promise<string | undefined> {
     const sessionId = activeIdRef.current;
     if (!sessionId) return;
     try {
       await action(sessionId);
+      return sessionId;
     } catch (error) {
       if (activeIdRef.current === sessionId) {
         const copy = getDesktopConversationCopy(uiLocale).actions;
@@ -2184,6 +2196,7 @@ function AppShellContent({
     clearPendingSessionAction,
     setStopPendingBySession,
     stopPendingRef,
+    removeTransientMessage,
     toastApi,
   });
 
@@ -2204,6 +2217,8 @@ function AppShellContent({
     setLiveTurnBySession,
     setInteractionBySession,
     setMessageQueueBySession,
+    projectQueuedTransientMessages,
+    removeTransientMessage,
     displayBatch: sessionDisplayBatch,
     onInteractionChanged: markInteractionChanged,
     onExecutionBoundaryChanged: reloadActiveExecutionBoundary,
@@ -2297,6 +2312,7 @@ function AppShellContent({
     const next = completeLiveContentSeed(current, sessionId, expected);
     activeEventSeedRef.current = next;
     setActiveEventSeed(next);
+    void retireCancelledTransientMessages(sessionId);
   };
   useActiveSessionEvents({
     uiLocale,
@@ -2876,7 +2892,7 @@ function AppShellContent({
                   // #646: in the first-token wait (Stop up, nothing streams yet) the
                   // hint reads "Maka 正在处理…"; in a mid-turn lull it reads the calm
                   // "Maka 继续中…". Both are mutually exclusive with activeStreamingLive.
-                  processing={showProcessingIndicator && !activeStreamingLive}
+                  processing={(showProcessingIndicator || activeMessageSubmitting) && !activeStreamingLive}
                   continuing={showContinuingIndicator && !activeStreamingLive}
                   onSend={sendOwningItsTarget}
                   onStop={stop}
@@ -3018,6 +3034,7 @@ function AppShellContent({
                 onReturnToLatestHistory={() => loadTranscriptHistory('latest')}
                 liveContentSeedRevision={liveContentSeedRevision(activeEventSeed, activeId)}
                 messages={messages}
+                transientMessages={transientMessages}
                 messageLoading={activeMessageLoading}
                 runningStatus={showRunningStatus}
                     onStreamingSettled={

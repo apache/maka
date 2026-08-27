@@ -163,6 +163,14 @@ test('Coordination transcript adapter emits an initial empty ready snapshot and 
     },
     answer: async (input) => ({ turnId: input.turnId }),
     record: async (input) => ({ turnId: input.turnId }),
+    candidates: async () => ({
+      candidateSetId: `sha256:${'a'.repeat(64)}`,
+      candidates: [],
+    }),
+    act: async () => ({
+      disposition: 'answer_here',
+      coordinationTurnId: 'coordination-turn',
+    }),
   });
 
   const handle = await adapter.open((turns) => snapshots.push(turns), () => {});

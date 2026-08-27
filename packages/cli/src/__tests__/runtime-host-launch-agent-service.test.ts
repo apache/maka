@@ -30,7 +30,11 @@ import {
   resolveLaunchAgentPath,
   resolveLaunchAgentUpdatePath,
 } from '../runtime-host-launch-agent-service.js';
-import type { RuntimeHostManagedServiceConfig } from '../runtime-host-service-manager.js';
+import type {
+  RuntimeHostManagedServiceConfig,
+  RuntimeHostServiceBackend,
+  RuntimeHostServiceDeployment,
+} from '../runtime-host-service-manager.js';
 
 const SERVICE_ID = 'a'.repeat(64);
 const UID = 501;
@@ -42,11 +46,15 @@ const UPDATE_TARGET = `${DOMAIN}/${UPDATE_LABEL}`;
 
 test('renders the canonical Runtime Host command as a private persistent LaunchAgent', () => {
   const config = fixtureConfig('/tmp/node & tool', '/tmp/maka <cli>', '/tmp/state > root');
-  const plist = renderLaunchAgentPlist(config, {
-    label: LABEL,
-    stdoutPath: '/tmp/stdout & log',
-    stderrPath: '/tmp/stderr < log',
-  });
+  const plist = renderLaunchAgentPlist(
+    config,
+    {
+      label: LABEL,
+      stdoutPath: '/tmp/stdout & log',
+      stderrPath: '/tmp/stderr < log',
+    },
+    '/tmp/runtime-host-service.json',
+  );
 
   assert.match(
     plist,
@@ -56,8 +64,9 @@ test('renders the canonical Runtime Host command as a private persistent LaunchA
   assert.match(plist, /<key>Umask<\/key>\n  <integer>63<\/integer>/u);
   assert.match(plist, /<string>\/tmp\/node &amp; tool<\/string>/u);
   assert.match(plist, /<string>\/tmp\/maka &lt;cli&gt;<\/string>/u);
-  assert.match(plist, /<string>\/tmp\/state &gt; root<\/string>/u);
-  assert.match(plist, /<string>workspace=\/tmp\/projects<\/string>/u);
+  assert.match(plist, /<string>--managed-service-config<\/string>/u);
+  assert.match(plist, /<string>\/tmp\/runtime-host-service\.json<\/string>/u);
+  assert.doesNotMatch(plist, /state &gt; root|workspace=/u);
 });
 
 test('renders managed update reconciliation as a periodic one-shot LaunchAgent', () => {
@@ -81,6 +90,7 @@ test('renders managed update reconciliation as a periodic one-shot LaunchAgent',
 test('installs and removes the update scheduler with a managed LaunchAgent', async () => {
   await withFixture(async ({ homeDir, cliPath, launchctl }) => {
     const backend = createLaunchAgentRuntimeHostService(SERVICE_ID, {
+      serviceConfigPath: join(homeDir, 'runtime-host-service.json'),
       homeDir,
       uid: UID,
       runLaunchctl: launchctl.run,
@@ -91,7 +101,7 @@ test('installs and removes the update scheduler with a managed LaunchAgent', asy
       managedDeploymentRoot: join(homeDir, 'managed'),
     };
 
-    await backend.install(config);
+    await applyStagedDeployment(backend, config);
     await backend.verifyDeployment(config);
     const updatePath = resolveLaunchAgentUpdatePath(SERVICE_ID, homeDir);
     assert.match(await readFile(updatePath, 'utf8'), /reconcile-update/u);
@@ -135,7 +145,7 @@ test('installs and removes the update scheduler with a managed LaunchAgent', asy
       (error: unknown) =>
         error instanceof Error && 'code' in error && error.code === 'target_mismatch',
     );
-    await backend.install(config);
+    await applyStagedDeployment(backend, config);
     await backend.verifyDeployment(config);
 
     await backend.stop();
@@ -146,12 +156,15 @@ test('installs and removes the update scheduler with a managed LaunchAgent', asy
       (error: unknown) =>
         error instanceof Error && 'code' in error && error.code === 'target_mismatch',
     );
+    await applyStagedDeployment(backend, config, { activate: false });
+    assert.equal((await backend.status()).state, 'stopped');
+    assert.equal(launchctl.updateLoaded, false);
     await backend.replace(config);
     assert.equal(launchctl.updateLoaded, true);
     await backend.verifyDeployment(config, { requireSchedulerReady: true });
 
     const { managedDeploymentRoot: _managedDeploymentRoot, ...unmanagedConfig } = config;
-    await backend.install(unmanagedConfig);
+    await applyStagedDeployment(backend, unmanagedConfig);
     await backend.verifyDeployment(unmanagedConfig);
     assert.equal(await fileExists(updatePath), false);
     assert.equal(launchctl.updateLoaded, false);
@@ -169,6 +182,7 @@ test('maps install, stop, start, restart, and uninstall onto one LaunchAgent ser
   await withFixture(async ({ homeDir, cliPath, launchctl }) => {
     let processChecks = 0;
     const backend = createLaunchAgentRuntimeHostService(SERVICE_ID, {
+      serviceConfigPath: join(homeDir, 'runtime-host-service.json'),
       homeDir,
       uid: UID,
       runLaunchctl: launchctl.run,
@@ -179,8 +193,8 @@ test('maps install, stop, start, restart, and uninstall onto one LaunchAgent ser
     });
     const config = fixtureConfig(process.execPath, cliPath, join(homeDir, 'state'));
 
-    await backend.preflightInstall();
-    await backend.install(config);
+    await backend.preflightDeployment();
+    await applyStagedDeployment(backend, config);
     await backend.verifyDeployment(config);
     assert.deepEqual(await backend.status(), {
       manager: 'launch_agent',
@@ -227,6 +241,43 @@ test('maps install, stop, start, restart, and uninstall onto one LaunchAgent ser
   });
 });
 
+test('recognizes and transactionally replaces the exact legacy LaunchAgent definition', async () => {
+  await withFixture(async ({ homeDir, cliPath, launchctl }) => {
+    const config = fixtureConfig(process.execPath, cliPath, join(homeDir, 'state'));
+    const plistPath = resolveLaunchAgentPath(SERVICE_ID, homeDir);
+    const legacyPlist = legacyLaunchAgentPlistFixture(config, homeDir);
+    await writeFile(plistPath, legacyPlist, { mode: 0o600 });
+    launchctl.loaded = true;
+    launchctl.running = true;
+    const backend = createLaunchAgentRuntimeHostService(SERVICE_ID, {
+      serviceConfigPath: join(homeDir, 'runtime-host-service.json'),
+      homeDir,
+      uid: UID,
+      runLaunchctl: launchctl.run,
+      isProcessAlive: () => false,
+    });
+
+    await assert.rejects(
+      backend.verifyDeployment(config),
+      (error: unknown) =>
+        error instanceof Error && 'code' in error && error.code === 'target_mismatch',
+    );
+    await backend.verifyDeployment(config, { acceptLegacyConfigLaunch: true });
+
+    const deployment = await backend.stageDeployment();
+    await backend.retire();
+    await deployment.apply({ ...config, schemaVersion: 2 }, true);
+    await backend.verifyDeployment({ ...config, schemaVersion: 2 });
+    assert.match(await readFile(plistPath, 'utf8'), /--managed-service-config/u);
+
+    await backend.retire();
+    await deployment.rollback();
+    assert.equal(await readFile(plistPath, 'utf8'), legacyPlist);
+    assert.equal(launchctl.loaded, true);
+    assert.equal(launchctl.running, true);
+  });
+});
+
 test('restores the previous loaded LaunchAgent when deployment bootstrap fails', async () => {
   for (const action of ['install', 'replace'] as const) {
     await withFixture(async ({ homeDir, cliPath, launchctl }) => {
@@ -236,16 +287,27 @@ test('restores the previous loaded LaunchAgent when deployment bootstrap fails',
       launchctl.loaded = true;
       launchctl.failNextBootstrap = true;
       const backend = createLaunchAgentRuntimeHostService(SERVICE_ID, {
+        serviceConfigPath: join(homeDir, 'runtime-host-service.json'),
         homeDir,
         uid: UID,
         runLaunchctl: launchctl.run,
         isProcessAlive: () => false,
       });
 
-      await assert.rejects(
-        backend[action](fixtureConfig(process.execPath, cliPath, join(homeDir, 'state'))),
-        /Starting the Runtime Host LaunchAgent failed/u,
-      );
+      const config = fixtureConfig(process.execPath, cliPath, join(homeDir, 'state'));
+      if (action === 'install') {
+        const deployment = await backend.stageDeployment();
+        await assert.rejects(
+          deployment.apply(config, true),
+          /Starting the Runtime Host LaunchAgent failed/u,
+        );
+        await deployment.rollback();
+      } else {
+        await assert.rejects(
+          backend.replace(config),
+          /Starting the Runtime Host LaunchAgent failed/u,
+        );
+      }
       assert.equal(await readFile(plistPath, 'utf8'), previousPlist);
       assert.equal(launchctl.loaded, true);
     });
@@ -344,6 +406,78 @@ function fixtureConfig(
     websocket: { host: '127.0.0.1', port: 23456, path: '/runtime-host' },
     launch: { nodePath, cliPath },
   };
+}
+
+function legacyLaunchAgentPlistFixture(
+  config: RuntimeHostManagedServiceConfig,
+  homeDir: string,
+): string {
+  const escape = (value: string) =>
+    value
+      .replaceAll('&', '&amp;')
+      .replaceAll('<', '&lt;')
+      .replaceAll('>', '&gt;')
+      .replaceAll('"', '&quot;')
+      .replaceAll("'", '&apos;');
+  const args = [
+    config.launch.nodePath,
+    config.launch.cliPath,
+    'runtime-host',
+    'serve',
+    '--root',
+    config.rootPath,
+    ...config.projectDirectoryRoots.flatMap(({ label, path }) => [
+      '--project-root',
+      `${label}=${path}`,
+    ]),
+    '--websocket-host',
+    config.websocket.host,
+    '--websocket-port',
+    String(config.websocket.port),
+    '--websocket-path',
+    config.websocket.path,
+    '--json',
+  ];
+  return [
+    '<?xml version="1.0" encoding="UTF-8"?>',
+    '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "https://www.apple.com/DTDs/PropertyList-1.0.dtd">',
+    '<plist version="1.0">',
+    '<dict>',
+    '  <key>Label</key>',
+    `  <string>${LABEL}</string>`,
+    '  <key>ProgramArguments</key>',
+    '  <array>',
+    ...args.map((value) => `    <string>${escape(value)}</string>`),
+    '  </array>',
+    '  <key>KeepAlive</key>',
+    '  <dict>',
+    '    <key>SuccessfulExit</key>',
+    '    <false/>',
+    '  </dict>',
+    '  <key>ThrottleInterval</key>',
+    '  <integer>2</integer>',
+    '  <key>ExitTimeOut</key>',
+    '  <integer>45</integer>',
+    '  <key>Umask</key>',
+    '  <integer>63</integer>',
+    '  <key>StandardOutPath</key>',
+    `  <string>${escape(join(homeDir, 'Library', 'Logs', 'Maka', 'runtime-host-services', `${LABEL}.stdout.log`))}</string>`,
+    '  <key>StandardErrorPath</key>',
+    `  <string>${escape(join(homeDir, 'Library', 'Logs', 'Maka', 'runtime-host-services', `${LABEL}.stderr.log`))}</string>`,
+    '</dict>',
+    '</plist>',
+    '',
+  ].join('\n');
+}
+
+async function applyStagedDeployment(
+  backend: RuntimeHostServiceBackend,
+  config: RuntimeHostManagedServiceConfig,
+  options?: { readonly activate?: boolean },
+): Promise<RuntimeHostServiceDeployment> {
+  const deployment = await backend.stageDeployment();
+  await deployment.apply(config, options?.activate ?? true);
+  return deployment;
 }
 
 async function withFixture(

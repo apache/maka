@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { open, readFile, rename, rm } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import {
@@ -99,6 +99,19 @@ export interface DesktopRuntimeHostProfileService {
   resolveManagedAccess(
     profileId: string,
   ): Promise<DesktopRuntimeHostManagedAccess | undefined>;
+  resolveManagedDirectPeerProfile(profileId: string): Promise<{
+    readonly exists: boolean;
+    readonly enabled: boolean;
+  }>;
+  upsertManagedDirectPeerProfile(
+    profileId: string,
+    peer: {
+      readonly peerId: string;
+      readonly routeHints: readonly string[];
+      readonly coordinationRelays: readonly string[];
+    },
+  ): Promise<void>;
+  removeManagedDirectPeerProfile(profileId: string): Promise<void>;
   clearManagedServiceBinding(expected: DesktopRuntimeHostManagedServiceBinding): Promise<void>;
   markManagedServiceUninstalling(
     expected: DesktopRuntimeHostManagedServiceBinding,
@@ -370,25 +383,65 @@ export function createDesktopRuntimeHostProfileService(input: {
     preferences = next;
   };
 
+  const resolveActivationTarget = async (
+    target: ResolvedRuntimeHostProfile,
+  ): Promise<ResolvedRuntimeHostProfile> => {
+    if (
+      target.profile.kind !== 'remote' ||
+      target.profile.transport.kind !== 'libp2p-direct'
+    ) {
+      return target;
+    }
+    const directProfile = target.profile;
+    const document = await catalog.read();
+    const sourceProfile = document.profiles.find(
+      (profile) =>
+        profile.kind === 'remote' &&
+        profile.transport.kind === 'ssh' &&
+        profile.rootId === directProfile.rootId &&
+        managedDirectPeerProfileId(profile.id) === directProfile.id,
+    );
+    if (!sourceProfile) return target;
+    const managed = findDesktopRuntimeHostManagedServiceBinding(
+      await managedServices.read(),
+      sourceProfile,
+    );
+    if (!managed) return target;
+    if (managed.state !== 'active') {
+      throw new Error('The managed SSH recovery profile is not available');
+    }
+    const source = await catalog.resolve(sourceProfile.id);
+    if (source.profile.kind !== 'remote' || !source.credential) {
+      throw new Error('The managed SSH recovery profile credential is not available');
+    }
+    if (source.credential === target.credential) return target;
+    const rebound = await catalog.rebindIfCurrent(target, target.profile, source.credential);
+    if (!rebound.rebound) {
+      throw new Error('The Direct peer profile changed before its credential could be refreshed');
+    }
+    return catalog.resolve(target.profile.id);
+  };
+
   const activateTarget = async (
     target: ResolvedRuntimeHostProfile,
     sshInteraction: "terminal" | "batch",
   ): Promise<void> => {
     try {
-      await input.enable(target, sshInteraction);
-      const current = await catalog.resolve(target.profile.id).catch(() => undefined);
-      if (!current || !sameResolvedRuntimeHostProfileTarget(current, target)) {
-        await input.disable(target.profile.id);
+      const activationTarget = await resolveActivationTarget(target);
+      await input.enable(activationTarget, sshInteraction);
+      const current = await catalog.resolve(activationTarget.profile.id).catch(() => undefined);
+      if (!current || !sameResolvedRuntimeHostProfileTarget(current, activationTarget)) {
+        await input.disable(activationTarget.profile.id);
         throw new Error("Runtime Host profile changed while it was connecting");
       }
       const remainsEnabled =
-        target.profile.id === preferences.defaultProfileId ||
-        preferences.enabledRemoteProfileIds.includes(target.profile.id);
+        activationTarget.profile.id === preferences.defaultProfileId ||
+        preferences.enabledRemoteProfileIds.includes(activationTarget.profile.id);
       if (!remainsEnabled) {
-        await input.disable(target.profile.id);
+        await input.disable(activationTarget.profile.id);
         return;
       }
-      unavailable.delete(target.profile.id);
+      unavailable.delete(activationTarget.profile.id);
     } catch (error) {
       const failure = asError(error);
       unavailable.set(target.profile.id, failure);
@@ -752,15 +805,115 @@ export function createDesktopRuntimeHostProfileService(input: {
           : undefined;
       });
     },
+    resolveManagedDirectPeerProfile(profileId) {
+      return mutate(async () => {
+        const peerProfileId = managedDirectPeerProfileId(profileId);
+        return {
+          exists: (await catalog.read()).profiles.some((profile) => profile.id === peerProfileId),
+          enabled: preferences.enabledRemoteProfileIds.includes(peerProfileId),
+        };
+      });
+    },
+    upsertManagedDirectPeerProfile(profileId, peer) {
+      return mutateProfiles(async () => {
+        assertPairingComplete(profileId);
+        const source = await catalog.resolve(profileId);
+        if (
+          source.profile.kind !== 'remote' ||
+          source.profile.transport.kind !== 'ssh' ||
+          !source.credential
+        ) {
+          throw new Error('Direct peer can only be added through a managed SSH Runtime Host');
+        }
+        const managed = findDesktopRuntimeHostManagedServiceBinding(
+          await managedServices.read(),
+          source.profile,
+        );
+        if (!managed || managed.state !== 'active') {
+          throw new Error('This Runtime Host profile is not bound to an active managed service');
+        }
+        if (peer.routeHints.length === 0 && peer.coordinationRelays.length === 0) {
+          throw new Error('Runtime Host returned an invalid direct-peer descriptor');
+        }
+        const peerProfileId = managedDirectPeerProfileId(profileId);
+        if (preferences.enabledRemoteProfileIds.includes(peerProfileId)) {
+          throw new Error('Disable the Direct peer profile before changing its listener');
+        }
+        const profile: RemoteRuntimeHostProfile = {
+          id: peerProfileId,
+          name: directPeerProfileName(source.profile.name),
+          kind: 'remote',
+          rootId: source.profile.rootId,
+          transport: {
+            kind: 'libp2p-direct',
+            peerId: peer.peerId,
+            routeHints: peer.routeHints,
+            coordinationRelays: peer.coordinationRelays,
+          },
+        };
+        const existing = (await catalog.read()).profiles.find(
+          (candidate) => candidate.id === peerProfileId,
+        );
+        if (!existing) {
+          await catalog.create(profile, source.credential);
+          return;
+        }
+        const previous = await catalog.resolve(peerProfileId);
+        if (previous.profile.kind !== 'remote' || previous.profile.rootId !== source.profile.rootId) {
+          throw new Error('The Direct peer profile identity is already in use');
+        }
+        const rebound = await catalog.rebindIfCurrent(previous, profile, source.credential);
+        if (!rebound.rebound) {
+          throw new Error('The Direct peer profile changed before it could be updated');
+        }
+      });
+    },
+    removeManagedDirectPeerProfile(profileId) {
+      return mutateProfiles(async () => {
+        assertPairingComplete(profileId);
+        const peerProfileId = managedDirectPeerProfileId(profileId);
+        if (preferences.enabledRemoteProfileIds.includes(peerProfileId)) {
+          throw new Error('Disable the Direct peer profile before changing its listener');
+        }
+        const current = await catalog.resolve(peerProfileId).catch(() => undefined);
+        if (!current) return;
+        const source = await catalog.resolve(profileId);
+        if (
+          source.profile.kind !== 'remote' ||
+          source.profile.transport.kind !== 'ssh' ||
+          current.profile.kind !== 'remote' ||
+          current.profile.transport.kind !== 'libp2p-direct' ||
+          current.profile.rootId !== source.profile.rootId
+        ) {
+          throw new Error('The Direct peer profile identity is already in use');
+        }
+        const removed = await catalog.removeIfCurrent(current);
+        if (!removed.removed) {
+          throw new Error('The Direct peer profile changed before it could be removed');
+        }
+      });
+    },
     markManagedServiceUninstalling(expected) {
       return mutateProfiles(async () => {
         assertPairingComplete(expected.profile.id);
-        const current = (await catalog.read()).profiles.find(
+        const document = await catalog.read();
+        const current = document.profiles.find(
           (profile) => profile.id === expected.profile.id,
         );
         if (
           !current ||
-          !sameRemoteRuntimeHostProfileTarget(current, expected.profile) ||
+          !sameRemoteRuntimeHostProfileTarget(current, expected.profile)
+        ) {
+          throw new Error('Runtime Host managed service binding changed during uninstall');
+        }
+        if (
+          document.profiles.some(
+            (profile) => profile.id === managedDirectPeerProfileId(expected.profile.id),
+          )
+        ) {
+          throw new Error('Disable and remove the Direct peer profile before uninstalling this service');
+        }
+        if (
           !(await managedServices.markUninstallingIfCurrent(
             expected.profile,
             expected.service,
@@ -916,10 +1069,20 @@ export function createDesktopRuntimeHostProfileService(input: {
         if (preferences.defaultProfileId === profileId) {
           throw new Error("Choose another default Runtime Host before removing this one");
         }
-        const profile = (await catalog.read()).profiles.find(
+        const document = await catalog.read();
+        const profile = document.profiles.find(
           (candidate) => candidate.id === profileId,
         );
         if (!profile) throw new Error("Runtime Host profile was not found");
+        if (
+          profile.kind === 'remote' &&
+          profile.transport.kind === 'ssh' &&
+          document.profiles.some(
+            (candidate) => candidate.id === managedDirectPeerProfileId(profileId),
+          )
+        ) {
+          throw new Error('Disable and remove the Direct peer profile before removing its SSH profile');
+        }
         const managedBinding = findDesktopRuntimeHostManagedServiceBinding(
           await managedServices.read(),
           profile,
@@ -940,6 +1103,18 @@ export function createDesktopRuntimeHostProfileService(input: {
       });
     },
   };
+}
+
+function managedDirectPeerProfileId(sourceProfileId: string): string {
+  const digest = createHash('sha256').update(sourceProfileId).digest('hex').slice(0, 32);
+  return `direct-${digest}`;
+}
+
+function directPeerProfileName(sourceName: string): string {
+  const suffix = ' · Direct';
+  let name = sourceName;
+  while (Buffer.byteLength(name + suffix, 'utf8') > 128) name = name.slice(0, -1);
+  return `${name}${suffix}`;
 }
 
 async function rollbackCreatedProfile(

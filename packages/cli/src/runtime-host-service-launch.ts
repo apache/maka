@@ -24,8 +24,25 @@ import {
   RuntimeHostServiceManagerError,
   type RuntimeHostManagedServiceConfig,
 } from './runtime-host-service-manager.js';
+import { resolveRuntimeHostPeerNativePath } from './runtime-host-peer-artifact.js';
 
 export function runtimeHostServiceLaunchArguments(
+  config: RuntimeHostManagedServiceConfig,
+  serviceConfigPath: string,
+): readonly string[] {
+  return [
+    config.launch.nodePath,
+    config.launch.cliPath,
+    'runtime-host',
+    'serve',
+    '--managed-service-config',
+    serviceConfigPath,
+    '--json',
+  ];
+}
+
+/** Exact launch contract used before the managed configuration became authoritative. */
+export function legacyRuntimeHostServiceLaunchArguments(
   config: RuntimeHostManagedServiceConfig,
 ): readonly string[] {
   return [
@@ -69,13 +86,26 @@ export async function validateRuntimeHostServiceLaunch(
       realpath(config.launch.nodePath),
       realpath(config.launch.cliPath),
     ]);
-    const [node, cli] = await Promise.all([stat(nodePath), stat(cliPath)]);
-    if (!node.isFile() || !cli.isFile()) throw new Error('Launch path is not a file');
-    await Promise.all([access(nodePath, constants.X_OK), access(cliPath, constants.R_OK)]);
+    const peerNativePath = config.peer?.enabled
+      ? await resolveRuntimeHostPeerNativePath(cliPath)
+      : undefined;
+    const [node, cli, peerNative] = await Promise.all([
+      stat(nodePath),
+      stat(cliPath),
+      peerNativePath ? stat(peerNativePath) : undefined,
+    ]);
+    if (!node.isFile() || !cli.isFile() || (peerNative && !peerNative.isFile())) {
+      throw new Error('Launch path is not a file');
+    }
+    await Promise.all([
+      access(nodePath, constants.X_OK),
+      access(cliPath, constants.R_OK),
+      ...(peerNativePath ? [access(peerNativePath, constants.R_OK)] : []),
+    ]);
   } catch (error) {
     throw new RuntimeHostServiceManagerError(
       'invalid_launch',
-      'The configured Node.js or Maka CLI installation is unavailable',
+      'A configured Runtime Host launch file is unavailable',
       { cause: error },
     );
   }

@@ -123,8 +123,8 @@ package owner or recovery access as part of that change.
 
 2. Confirm the created run uses `v<version>`. The workflow requires its GitHub ref, checkout, product tag, Release, source commit, and npm provenance to identify that one tag commit, and requires the commit to remain an ancestor of `main`.
 3. Wait for the reusable package validation jobs to pass. They build one tarball and validate the
-   installed CLI on Linux x64, macOS arm64, and Windows x64, plus real Harbor and Pier Docker cells
-   on Linux x64.
+   installed CLI on Linux x64/arm64, macOS arm64, and Windows x64, plus real Harbor and Pier
+   Docker cells on Linux x64.
 4. Review and approve the `npm-release` Environment deployment.
 5. Record the successful Stage workflow run ID, run attempt, source commit, version, and staged
    artifact checksum from the run summary and `cli-staged-release-<attempt>` artifact.
