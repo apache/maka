@@ -95,6 +95,7 @@ export async function runManagedRuntimeHostServiceCli(
           : await mutate();
     const blocked =
       (result.action === 'retire' && result.retirement.kind === 'active_tasks') ||
+      (result.action === 'uninstall' && result.retirement.kind === 'active_tasks') ||
       (result.action === 'configure' && result.configuration.kind === 'active_tasks');
     if (options.framed) {
       deps.writeOutput(encodeRuntimeHostServiceManagementFrame(successFrame(result)));
@@ -158,6 +159,9 @@ export async function runManagedRuntimeHostDeploymentCleanupCli(options: {
 function formatHumanResult(result: RuntimeHostManagedServiceResult): string {
   const service = result.service;
   if (result.action === 'uninstall') {
+    if (result.retirement.kind === 'active_tasks') {
+      return 'Runtime Host service still owns active work. Retry with explicit interruption authority.\n';
+    }
     return result.retainedStateRoot
       ? `Runtime Host service is uninstalled. Data was retained at ${result.retainedStateRoot}\n`
       : 'Runtime Host service is uninstalled.\n';
@@ -197,7 +201,7 @@ function successFrame(result: RuntimeHostManagedServiceResult): RuntimeHostServi
     ...(result.retainedStateRoot ? { retainedStateRoot: result.retainedStateRoot } : {}),
     ...(result.logs !== undefined ? { logs: result.logs } : {}),
   } as const;
-  if (result.action === 'retire') {
+  if (result.action === 'retire' || result.action === 'uninstall') {
     return { ...common, action: result.action, retirement: { ...result.retirement } };
   }
   if (result.action === 'configure') {

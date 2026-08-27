@@ -40,11 +40,19 @@ const STATUS_SCHEMA = z
   })
   .strict();
 
-const FRAME_SCHEMA = z.discriminatedUnion('kind', [
+const FRAME_SCHEMA = z.union([
   z
     .object({
       kind: z.literal('result'),
-      action: ACTION_SCHEMA,
+      action: z.enum(['enable', 'disable']),
+      status: STATUS_SCHEMA,
+      restarted: z.boolean(),
+    })
+    .strict(),
+  z
+    .object({
+      kind: z.literal('result'),
+      action: z.literal('status'),
       status: STATUS_SCHEMA,
     })
     .strict(),

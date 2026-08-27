@@ -88,6 +88,7 @@ async function runRuntimeHostPeerManagementLocked(
   backend: ReturnType<typeof createPlatformRuntimeHostServiceBackend>,
   deps: RuntimeHostPeerManagementCliDeps,
 ): Promise<number> {
+  let restarted: boolean | undefined;
   if (options.action === 'enable' || options.action === 'disable') {
     const result = await configureRuntimeHostManagedPeer(
       {
@@ -119,6 +120,7 @@ async function runRuntimeHostPeerManagementLocked(
         deps,
       );
     }
+    restarted = result.restarted;
   } else if (options.action === 'rotate') {
     const result = await rotateRuntimeHostManagedPeerIdentity(
       {
@@ -167,7 +169,12 @@ async function runRuntimeHostPeerManagementLocked(
     if (options.action === 'descriptor') {
       throw new TypeError('Direct-peer descriptor does not support framed output');
     }
-    writePeerFrame({ kind: 'result', action: options.action, status }, deps);
+    writePeerFrame(
+      options.action === 'status'
+        ? { kind: 'result', action: options.action, status }
+        : { kind: 'result', action: options.action, status, restarted: restarted! },
+      deps,
+    );
   } else if (options.json) {
     deps.writeStdout(
       `${JSON.stringify({ schemaVersion: 1, ...status, ok: true, action: options.action })}\n`,

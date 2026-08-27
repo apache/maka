@@ -907,25 +907,24 @@ test('keeps the SSH profile while adding and removing its managed Direct peer', 
     runAccessManagement: async () => assert.fail('access management is not expected'),
     runPeerManagement: async (input) => {
       actions.push(input.action);
-      return {
-        kind: 'result',
-        action: input.action,
-        status: input.action === 'disable'
+      const status = input.action === 'disable'
           ? {
-              state: 'not_configured',
+              state: 'not_configured' as const,
               serviceState: 'running',
               routeHints: [],
               coordinationRelays: [],
             }
           : {
-              state: 'enabled',
+              state: 'enabled' as const,
               serviceState: 'running',
               peerId: '12D3KooWpeer',
               rootId: profile.rootId,
               routeHints: ['/ip4/192.0.2.8/udp/44001/quic-v1'],
               coordinationRelays: [],
-            },
-      };
+            };
+      return input.action === 'status'
+        ? { kind: 'result', action: input.action, status }
+        : { kind: 'result', action: input.action, status, restarted: true };
     },
     cleanupManagedDeployment: async () => assert.fail('cleanup is not expected'),
   });
@@ -971,12 +970,9 @@ test('disables a newly enabled listener when its Desktop profile cannot be commi
       runAccessManagement: async () => assert.fail('access management is not expected'),
       runPeerManagement: async (input) => {
         actions.push(input.action);
-        return {
-          kind: 'result',
-          action: input.action,
-          status: input.action === 'disable'
+        const status = input.action === 'disable'
             ? {
-                state: 'disabled',
+                state: 'disabled' as const,
                 serviceState: 'running',
                 peerId: '12D3KooWpeer',
                 rootId: 'a'.repeat(64),
@@ -984,14 +980,16 @@ test('disables a newly enabled listener when its Desktop profile cannot be commi
                 coordinationRelays: [],
               }
             : {
-                state: 'enabled',
+                state: 'enabled' as const,
                 serviceState: 'running',
                 peerId: '12D3KooWpeer',
                 rootId: 'a'.repeat(64),
                 routeHints: failure === 'descriptor' ? [] : ['/ip4/192.0.2.8/udp/44001/quic-v1'],
                 coordinationRelays: [],
-              },
-        };
+              };
+        return input.action === 'status'
+          ? { kind: 'result', action: input.action, status }
+          : { kind: 'result', action: input.action, status, restarted: true };
       },
       cleanupManagedDeployment: async () => assert.fail('cleanup is not expected'),
     });
@@ -1098,6 +1096,7 @@ function serviceResult(
     },
   };
   if (action === 'retire') return { ...result, action, retirement: { kind: 'stopped' } };
+  if (action === 'uninstall') return { ...result, action, retirement: { kind: 'stopped' } };
   if (action === 'configure') {
     return { ...result, action, configuration: { kind: 'unchanged' } };
   }

@@ -370,6 +370,12 @@ function parseServiceManagementCommand(argv: string[]): RuntimeHostCliCommand {
             if (retainManagedDeployment) return error('Duplicate --retain-managed-deployment');
             retainManagedDeployment = true;
           },
+          '--allow-interrupt-active-tasks': () => {
+            if (allowInterruptActiveTasks) {
+              return error('Duplicate --allow-interrupt-active-tasks');
+            }
+            allowInterruptActiveTasks = true;
+          },
         }
       : action === 'retire' || action === 'update' || action === 'configure'
         ? {
@@ -418,7 +424,10 @@ function parseServiceManagementCommand(argv: string[]): RuntimeHostCliCommand {
   });
   if ('kind' in options) return options;
   if (
-    (action === 'retire' || action === 'update' || action === 'configure') &&
+    (action === 'retire' ||
+      action === 'update' ||
+      action === 'configure' ||
+      action === 'uninstall') &&
     !options.expectedTarget
   ) {
     return error(`runtime-host service ${action} requires an expected target`);

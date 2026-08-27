@@ -660,6 +660,9 @@ test('a Client-bound pairing candidate can be claimed by exactly one Client iden
     assert.deepEqual(await authority.finalize(candidate.credentialId, 'desktop-a'), {
       reconnectRequired: true,
     });
+    assert.deepEqual(await authority.finalize(candidate.credentialId, 'desktop-a'), {
+      reconnectRequired: true,
+    });
     const claimed = authority.authenticate(credential);
     assert.equal(claimed?.clientInstanceId, 'desktop-a');
     assert.ok(

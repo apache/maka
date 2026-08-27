@@ -77,7 +77,6 @@ export function ProjectsSettingsPage(props: {
   ): Promise<UpdateAppSettingsResult>;
   onRetryRuntimeHost(): Promise<void>;
   onRemoteHostAdded(profileId: string): void;
-  onLocalConnectionCode(connectionCode: string): void;
 }) {
   const host = useOptionalRuntimeHostSettingsTarget();
   const locale = useUiLocale();
@@ -206,7 +205,6 @@ export function ProjectsSettingsPage(props: {
       <SettingsPage as="section" aria-label={copy.section}>
         <RuntimeHostProfilesSection
           onRemoteHostAdded={props.onRemoteHostAdded}
-          onLocalConnectionCode={props.onLocalConnectionCode}
         />
         {props.runtimeHostStatus !== 'loading' ? (
           <Banner
@@ -234,7 +232,6 @@ export function ProjectsSettingsPage(props: {
     <SettingsPage as="section" aria-label={copy.section}>
       <RuntimeHostProfilesSection
         onRemoteHostAdded={props.onRemoteHostAdded}
-        onLocalConnectionCode={props.onLocalConnectionCode}
       />
       {props.runtimeHostStatus === 'error' ? (
         <Banner

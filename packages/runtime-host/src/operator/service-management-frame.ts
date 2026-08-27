@@ -64,7 +64,6 @@ const NON_RETIRE_SERVICE_ACTIONS = [
   'stop',
   'restart',
   'logs',
-  'uninstall',
 ] as const;
 const NON_UPDATE_SERVICE_ACTIONS = [
   'install',
@@ -386,7 +385,7 @@ const SERVICE_MANAGEMENT_FRAME_SCHEMA = z.union([
   z
     .object({
       ...SERVICE_RESULT_COMMON,
-      action: z.literal('retire'),
+      action: z.enum(['retire', 'uninstall']),
       retirement: RETIREMENT_RESULT_SCHEMA,
     })
     .strict(),

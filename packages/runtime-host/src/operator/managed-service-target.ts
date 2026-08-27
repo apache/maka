@@ -17,29 +17,9 @@
  * under the License.
  */
 
-import assert from 'node:assert/strict';
-import { test } from 'node:test';
-import {
-  decodeRuntimeHostPeerManagementFrame,
-  encodeRuntimeHostPeerManagementFrame,
-} from '../operator/index.js';
+import { createHash } from 'node:crypto';
+import { resolve } from 'node:path';
 
-test('peer management frames preserve a bounded machine-readable descriptor', () => {
-  const frame = {
-    kind: 'result' as const,
-    action: 'enable' as const,
-    restarted: true,
-    status: {
-      state: 'enabled' as const,
-      serviceState: 'running',
-      peerId: '12D3KooWpeer',
-      rootId: 'a'.repeat(64),
-      routeHints: ['/ip4/192.0.2.1/udp/41000/quic-v1'],
-      coordinationRelays: [],
-    },
-  };
-  assert.deepEqual(
-    decodeRuntimeHostPeerManagementFrame(encodeRuntimeHostPeerManagementFrame(frame)),
-    frame,
-  );
-});
+export function resolveRuntimeHostManagedServiceId(clientDataRoot: string): string {
+  return createHash('sha256').update(resolve(clientDataRoot)).digest('hex');
+}

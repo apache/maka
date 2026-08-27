@@ -29,6 +29,11 @@ test('local setup installs one managed service for the Desktop root with Direct 
       rootPath: '/Users/ada/Library/Application Support/Maka/workspaces/default',
       principalId: 'desktop-owner:pairing',
       coordinationRelays: ['/dns4/discovery.example/udp/443/quic-v1'],
+      expectedTarget: {
+        serviceId: 'b'.repeat(64),
+        rootPath: '/Users/ada/Library/Application Support/Maka/workspaces/default',
+        rootId: 'a'.repeat(64),
+      },
     }),
     {
       executable: 'npm',
@@ -42,6 +47,9 @@ test('local setup installs one managed service for the Desktop root with Direct 
         '--defer-pairing-commit',
         '--bind-pairing-to-client',
         '--enable-direct-peer',
+        '--expected-service-id', 'b'.repeat(64),
+        '--expected-root-path', '/Users/ada/Library/Application Support/Maka/workspaces/default',
+        '--expected-root-id', 'a'.repeat(64),
         '--coordination-relay', '/dns4/discovery.example/udp/443/quic-v1',
         '--json',
       ],

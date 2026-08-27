@@ -28,6 +28,7 @@ export {
   type RuntimeHostAccessManagementFrame,
 } from './access-management-frame.js';
 export { runtimeHostAccessCredentialFingerprint } from '../access-credential-identity.js';
+export { resolveRuntimeHostManagedServiceId } from './managed-service-target.js';
 export {
   RUNTIME_HOST_PEER_MANAGEMENT_FRAME_PREFIX,
   decodeRuntimeHostPeerManagementFrame,

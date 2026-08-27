@@ -67,6 +67,44 @@ test('reports an explicit authentication rejection before closing the stream', a
   await listener.cleanup();
 });
 
+test('rechecks peer authority at admission after the authentication response is written', async () => {
+  let releaseWrite!: () => void;
+  const writeReleased = new Promise<void>((resolve) => {
+    releaseWrite = resolve;
+  });
+  let aborted = false;
+  let reads = 0;
+  const stream: RuntimeHostPeerNativeStream = {
+    read: async () => (reads++ === 0 ? Buffer.from('{"v":1,"credential":"revoked"}\n') : null),
+    write: async () => writeReleased,
+    close: async () => undefined,
+    abort: () => {
+      aborted = true;
+    },
+  };
+  let authentications = 0;
+  let accepted = false;
+  const listener = createRuntimeHostPeerListener(
+    endpointWith([stream]),
+    {
+      authenticate: () => (authentications++ === 0 ? { operationGrants: 'all' } : null),
+    } as never,
+    () => {
+      accepted = true;
+    },
+  );
+  await waitForImmediate();
+
+  releaseWrite();
+  await waitForImmediate();
+  await waitForImmediate();
+
+  assert.equal(authentications, 2);
+  assert.equal(accepted, false);
+  assert.equal(aborted, true);
+  await listener.cleanup();
+});
+
 function endpointWith(streams: RuntimeHostPeerNativeStream[]): RuntimeHostPeerNativeEndpoint {
   return {
     peerId: 'peer',

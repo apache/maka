@@ -20,23 +20,19 @@
 import { z } from 'zod';
 import { requireHostRootId } from '../protocol/index.js';
 import {
+  decodeRuntimeHostRemoteTransport,
   RUNTIME_HOST_ACCESS_CREDENTIAL_MAX_BYTES,
   type RuntimeHostRemoteTransport,
 } from './host-profile.js';
 
 const PREFIX = 'maka-runtime-host:connect:v1:';
 const ENCODED_MAX_BYTES = 48 * 1024;
-const FIELD_MAX_BYTES = 2 * 1024;
-const ROUTE_MAX = 16;
 
 const boundedString = (maxBytes: number) =>
   z
     .string()
     .min(1)
     .refine((value) => Buffer.byteLength(value, 'utf8') <= maxBytes);
-const peerAddress = boundedString(FIELD_MAX_BYTES).refine(
-  (value) => value.startsWith('/') && !/[\s\u0000-\u001f\u007f]/u.test(value),
-);
 const payloadSchema = z
   .object({
     schemaVersion: z.literal(1),
@@ -49,17 +45,7 @@ const payloadSchema = z
         return false;
       }
     }),
-    transport: z
-      .object({
-        kind: z.literal('libp2p-direct'),
-        peerId: boundedString(160),
-        routeHints: z.array(peerAddress).max(ROUTE_MAX),
-        coordinationRelays: z.array(peerAddress).max(ROUTE_MAX),
-      })
-      .strict()
-      .refine(
-        (transport) => transport.routeHints.length > 0 || transport.coordinationRelays.length > 0,
-      ),
+    transport: z.unknown(),
     credential: boundedString(RUNTIME_HOST_ACCESS_CREDENTIAL_MAX_BYTES),
   })
   .strict();
@@ -74,7 +60,8 @@ export interface RuntimeHostOwnerConnectionCode {
 export function encodeRuntimeHostOwnerConnectionCode(
   input: RuntimeHostOwnerConnectionCode,
 ): string {
-  const payload = payloadSchema.parse({ schemaVersion: 1, ...input });
+  const transport = requireDirectPeerTransport(input.transport);
+  const payload = payloadSchema.parse({ schemaVersion: 1, ...input, transport });
   const encoded = Buffer.from(JSON.stringify(payload), 'utf8').toString('base64url');
   if (Buffer.byteLength(encoded, 'utf8') > ENCODED_MAX_BYTES) {
     throw new RangeError('Runtime Host connection code is too large');
@@ -96,13 +83,24 @@ export function decodeRuntimeHostOwnerConnectionCode(
     const payload = payloadSchema.parse(
       JSON.parse(Buffer.from(encoded, 'base64url').toString('utf8')),
     );
+    const transport = requireDirectPeerTransport(payload.transport);
     return {
       name: payload.name,
       rootId: requireHostRootId(payload.rootId),
-      transport: payload.transport,
+      transport,
       credential: payload.credential,
     };
   } catch (error) {
     throw new Error('Runtime Host connection code is invalid', { cause: error });
   }
+}
+
+function requireDirectPeerTransport(
+  value: unknown,
+): Extract<RuntimeHostRemoteTransport, { kind: 'libp2p-direct' }> {
+  const transport = decodeRuntimeHostRemoteTransport(value);
+  if (transport.kind !== 'libp2p-direct') {
+    throw new Error('Runtime Host connection code requires a Direct peer transport');
+  }
+  return transport;
 }

@@ -23,6 +23,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 import { decodeRuntimeHostOwnerConnectionCode } from '@maka/runtime-host/client';
+import { resolveRuntimeHostManagedServiceId } from '@maka/runtime-host/operator';
 import type { RuntimeHostDesktopManager } from '../runtime-host-desktop-manager.js';
 import { createDesktopLocalRuntimeHostRemoteAccess } from '../runtime-host-local-remote-access.js';
 import type { createDesktopRuntimeHostLocalOperator } from '../runtime-host-local-operator.js';
@@ -32,6 +33,7 @@ test('enabling remote access hands the same root to one managed service before D
   t.after(() => rm(base, { recursive: true, force: true }));
   const clientDataRoot = join(base, 'client');
   const rootPath = join(clientDataRoot, 'workspaces', 'default');
+  const serviceId = resolveRuntimeHostManagedServiceId(clientDataRoot);
   await mkdir(rootPath, { recursive: true });
   const handlers = new Map<string, Parameters<Electron.IpcMain['handle']>[1]>();
   let retired = false;
@@ -52,7 +54,7 @@ test('enabling remote access hands the same root to one managed service before D
       assert.equal(retired, true);
       assert.equal(input.rootPath, rootPath);
       return {
-        serviceId: 'b'.repeat(64),
+        serviceId,
         operatorPath: join(base, 'operator'),
         rootPath,
         rootId: 'a'.repeat(64),
@@ -119,15 +121,18 @@ test('an interrupted Local Host handoff converges to its exact managed service',
   const clientDataRoot = join(base, 'client');
   const rootPath = join(clientDataRoot, 'workspaces', 'default');
   const rootId = 'a'.repeat(64);
+  const serviceId = resolveRuntimeHostManagedServiceId(clientDataRoot);
   await mkdir(rootPath, { recursive: true });
   await writeFile(
     join(clientDataRoot, 'runtime-host-local-service.json'),
     `${JSON.stringify({
       schemaVersion: 1,
       state: 'handoff',
+      serviceId,
       rootPath,
       rootId,
       coordinationRelays: [],
+      allowInterruptActiveTasks: true,
     })}\n`,
   );
   let setupCalls = 0;
@@ -139,7 +144,8 @@ test('an interrupted Local Host handoff converges to its exact managed service',
     directPeerAvailable: true,
     manager: () =>
       ({
-        async retireOwnedLocalHost() {
+        async retireOwnedLocalHost(mode: string) {
+          assert.equal(mode, 'interrupt_active_work');
           return { kind: 'not_owned' as const };
         },
       }) as unknown as RuntimeHostDesktopManager,
@@ -148,7 +154,7 @@ test('an interrupted Local Host handoff converges to its exact managed service',
       async runSetup() {
         setupCalls += 1;
         return {
-          serviceId: 'b'.repeat(64),
+          serviceId,
           operatorPath: join(base, 'operator'),
           rootPath,
           rootId,
@@ -222,6 +228,7 @@ test('startup replays the persisted peer intent instead of gating recovery on st
         return {
           kind: 'result' as const,
           action: 'enable' as const,
+          restarted: true,
           status: {
             state: 'enabled' as const,
             serviceState: 'running',
@@ -341,20 +348,22 @@ test('startup completes an exact persisted uninstall intent after Desktop interr
       }) as unknown as RuntimeHostDesktopManager,
     resolveSetupPackage: async () => ({ kind: 'npm', specifier: 'maka-agent@0.2.0' }),
     operator: {
-      async runService(input: { readonly action: 'retire' | 'uninstall' }) {
+      async runService(input: {
+        readonly action: 'retire' | 'uninstall';
+        readonly retainManagedDeployment?: boolean;
+      }) {
         actions.push(input.action);
-        return input.action === 'retire'
-          ? {
-              kind: 'result' as const,
-              action: 'retire' as const,
-              retirement: { kind: 'stopped' as const },
-              service: { state: 'stopped' },
-            }
-          : {
-              kind: 'result' as const,
-              action: 'uninstall' as const,
-              service: { state: 'not_installed' },
-            };
+        assert.equal(input.action, 'uninstall');
+        assert.equal(input.retainManagedDeployment, true);
+        return {
+          kind: 'result' as const,
+          action: 'uninstall' as const,
+          retirement: { kind: 'stopped' as const },
+          service: { state: 'not_installed' },
+        };
+      },
+      async cleanupManagedDeployment() {
+        actions.push('cleanup');
       },
       async close() {},
     } as unknown as ReturnType<typeof createDesktopRuntimeHostLocalOperator>,
@@ -362,7 +371,53 @@ test('startup completes an exact persisted uninstall intent after Desktop interr
   t.after(() => service.close());
 
   await service.recover();
-  assert.deepEqual(actions, ['retire', 'uninstall']);
+  assert.deepEqual(actions, ['uninstall', 'cleanup']);
+  await assert.rejects(readFile(join(clientDataRoot, 'runtime-host-local-service.json'), 'utf8'), {
+    code: 'ENOENT',
+  });
+});
+
+test('startup resumes deployment cleanup without repeating a completed uninstall', async (t) => {
+  const base = await mkdtemp(join(tmpdir(), 'maka-local-cleanup-recovery-'));
+  t.after(() => rm(base, { recursive: true, force: true }));
+  const clientDataRoot = join(base, 'client');
+  const rootPath = join(clientDataRoot, 'workspaces', 'default');
+  await mkdir(rootPath, { recursive: true });
+  await writeFile(
+    join(clientDataRoot, 'runtime-host-local-service.json'),
+    `${JSON.stringify({
+      schemaVersion: 1,
+      state: 'cleanupPending',
+      serviceId: 'b'.repeat(64),
+      operatorPath: join(base, 'operator'),
+      rootPath,
+      rootId: 'a'.repeat(64),
+      allowInterruptActiveTasks: false,
+    })}\n`,
+  );
+  let cleaned = false;
+  const service = createDesktopLocalRuntimeHostRemoteAccess({
+    ipcMain: { handle() {}, removeHandler() {} },
+    clientDataRoot,
+    rootPath,
+    rootId: 'a'.repeat(64),
+    directPeerAvailable: true,
+    manager: () => ({}) as RuntimeHostDesktopManager,
+    resolveSetupPackage: async () => ({ kind: 'npm', specifier: 'maka-agent@0.2.0' }),
+    operator: {
+      async runService() {
+        assert.fail('completed uninstall must not be repeated');
+      },
+      async cleanupManagedDeployment() {
+        cleaned = true;
+      },
+      async close() {},
+    } as unknown as ReturnType<typeof createDesktopRuntimeHostLocalOperator>,
+  });
+  t.after(() => service.close());
+
+  await service.recover();
+  assert.equal(cleaned, true);
   await assert.rejects(readFile(join(clientDataRoot, 'runtime-host-local-service.json'), 'utf8'), {
     code: 'ENOENT',
   });

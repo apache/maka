@@ -18,9 +18,9 @@
  */
 
 import { spawn, type ChildProcess } from 'node:child_process';
-import { mkdtemp, realpath, rm, stat } from 'node:fs/promises';
+import { mkdtemp, realpath, rm, rmdir, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { redactSecrets } from '@maka/core/redaction';
 import {
   DEFAULT_PROCESS_TERMINATION_GRACE_MS,
@@ -62,6 +62,7 @@ export interface DesktopRuntimeHostLocalSetupInput {
   readonly principalId: string;
   readonly projectDirectoryRoots?: readonly { readonly label: string; readonly path: string }[];
   readonly coordinationRelays?: readonly string[];
+  readonly expectedTarget: DesktopRuntimeHostLocalServiceTarget;
   readonly signal?: AbortSignal;
 }
 
@@ -77,6 +78,7 @@ export function runtimeHostLocalSetupCommand(input: {
   readonly principalId: string;
   readonly projectDirectoryRoots?: readonly { readonly label: string; readonly path: string }[];
   readonly coordinationRelays?: readonly string[];
+  readonly expectedTarget: DesktopRuntimeHostLocalServiceTarget;
 }): DesktopRuntimeHostLocalSetupCommand {
   if (!/^[A-Za-z0-9_.:-]{1,128}$/u.test(input.principalId)) {
     throw new Error('Runtime Host setup principal is invalid');
@@ -103,6 +105,7 @@ export function runtimeHostLocalSetupCommand(input: {
       '--defer-pairing-commit',
       '--bind-pairing-to-client',
       '--enable-direct-peer',
+      ...managedTargetArgs(input.expectedTarget),
       ...(input.coordinationRelays ?? []).flatMap((relay) => [
         '--coordination-relay',
         relay,
@@ -143,8 +146,14 @@ export function createDesktopRuntimeHostLocalOperator(input: {
     readonly action: 'status' | 'retire' | 'uninstall';
     readonly target: DesktopRuntimeHostLocalServiceTarget;
     readonly allowInterruptActiveTasks?: boolean;
+    readonly retainManagedDeployment?: boolean;
     readonly signal?: AbortSignal;
   }): Promise<RuntimeHostServiceManagementFrame>;
+  cleanupManagedDeployment(input: {
+    readonly operatorPath: string;
+    readonly target: DesktopRuntimeHostLocalServiceTarget;
+    readonly signal?: AbortSignal;
+  }): Promise<void>;
   close(): Promise<void>;
 } {
   const active = new Set<ChildProcess>();
@@ -219,6 +228,7 @@ export function createDesktopRuntimeHostLocalOperator(input: {
             command.action,
             '--framed',
             ...(command.allowInterruptActiveTasks ? ['--allow-interrupt-active-tasks'] : []),
+            ...(command.retainManagedDeployment ? ['--retain-managed-deployment'] : []),
             ...managedTargetArgs(command.target),
           ],
         },
@@ -232,6 +242,33 @@ export function createDesktopRuntimeHostLocalOperator(input: {
         signal: combinedSignal(command.signal, closing.signal),
         active,
       }).then((frame) => requireServiceFrame(frame, command.action));
+    },
+    async cleanupManagedDeployment(command) {
+      if (closed) throw new Error('Local Runtime Host operator is closed');
+      try {
+        await stat(command.operatorPath);
+      } catch (error) {
+        if (!isNodeError(error, 'ENOENT')) throw error;
+        try {
+          await rmdir(dirname(command.operatorPath));
+        } catch (directoryError) {
+          if (!isNodeError(directoryError, 'ENOENT')) throw directoryError;
+        }
+        return;
+      }
+      await runExitProcess({
+        command: {
+          executable: command.operatorPath,
+          args: ['__cleanup-managed-deployment', ...managedTargetArgs(command.target)],
+        },
+        label: 'Local Runtime Host deployment cleanup',
+        environment: input.environment ?? process.env,
+        spawnProcess: input.spawnProcess ?? spawn,
+        timeoutMs: input.setupTimeoutMs ?? SETUP_TIMEOUT_MS,
+        terminate,
+        signal: combinedSignal(command.signal, closing.signal),
+        active,
+      });
     },
     async close() {
       if (closed) return;
@@ -328,6 +365,26 @@ function runSingleFrameProcess<Frame>(input: {
     failure: () => failure,
     acceptNonzeroResult: true,
   });
+}
+
+function runExitProcess(input: {
+  readonly command: DesktopRuntimeHostLocalSetupCommand;
+  readonly label: string;
+  readonly environment: NodeJS.ProcessEnv;
+  readonly spawnProcess: typeof spawn;
+  readonly timeoutMs: number;
+  readonly terminate: typeof terminateChildProcessTree;
+  readonly signal?: AbortSignal;
+  readonly active: Set<ChildProcess>;
+}): Promise<void> {
+  return runFramedProcess<never, true>({
+    ...input,
+    prefix: 'MAKA_UNUSED_FRAME ',
+    decode: () => undefined,
+    onFrame: () => undefined,
+    result: () => true,
+    failure: () => undefined,
+  }).then(() => undefined);
 }
 
 function runSetupProcess(input: {
@@ -498,4 +555,8 @@ function appendBounded(current: string, chunk: string, maxBytes: number): string
 
 function abortError(signal: AbortSignal | undefined): Error {
   return signal?.reason instanceof Error ? signal.reason : new Error('Local Maka setup was cancelled');
+}
+
+function isNodeError(error: unknown, code: string): error is NodeJS.ErrnoException {
+  return error instanceof Error && 'code' in error && error.code === code;
 }

@@ -74,7 +74,6 @@ function createRemoteHostDraft() {
 
 export function RuntimeHostProfilesSection(props: {
   readonly onRemoteHostAdded: (profileId: string) => void;
-  readonly onLocalConnectionCode: (connectionCode: string) => void;
 }) {
   const locale = useUiLocale();
   const copy = getSettingsProjectsCopy(locale).runtimeHost;
@@ -87,7 +86,9 @@ export function RuntimeHostProfilesSection(props: {
   const [showOnboarding, setShowOnboarding] = useState(false);
   const [managedProfile, setManagedProfile] = useState<RemoteRuntimeHostProfile>();
   const [localAccess, setLocalAccess] = useState<DesktopLocalRuntimeHostRemoteAccessSnapshot>();
-  const [showConnectionCodeImport, setShowConnectionCodeImport] = useState(false);
+  const [connectionCodeDialog, setConnectionCodeDialog] = useState<
+    { readonly mode: 'import' } | { readonly mode: 'share'; readonly connectionCode: string }
+  >();
   const [switching, setSwitching] = useState(false);
   const [draft, setDraft] = useState(createRemoteHostDraft);
 
@@ -249,7 +250,7 @@ export function RuntimeHostProfilesSection(props: {
         coordinationRelays: [],
       });
       if (result.kind === 'enabled') {
-        props.onLocalConnectionCode(result.connectionCode);
+        setConnectionCodeDialog({ mode: 'share', connectionCode: result.connectionCode });
       }
       if (!mountedRef.current) return;
       if (result.kind === 'active_tasks') {
@@ -280,7 +281,7 @@ export function RuntimeHostProfilesSection(props: {
     setSwitching(true);
     try {
       const code = await window.maka.localRuntimeHostRemoteAccess.createConnectionCode();
-      if (mountedRef.current) props.onLocalConnectionCode(code);
+      if (mountedRef.current) setConnectionCodeDialog({ mode: 'share', connectionCode: code });
     } catch (error) {
       if (mountedRef.current) {
         toast.error(copy.remoteAccessFailed, settingsActionErrorMessage(error, locale));
@@ -414,8 +415,7 @@ export function RuntimeHostProfilesSection(props: {
                     isDisabled={
                       switching ||
                       !localAccess ||
-                      localAccess.state === 'unsupported' ||
-                      localAccess.state === 'unavailable'
+                      localAccess.state === 'unsupported'
                     }
                     onClick={() => void enableLocalRemoteAccess()}
                   />
@@ -460,7 +460,7 @@ export function RuntimeHostProfilesSection(props: {
                 {
                   label: copy.useConnectionCode,
                   isDisabled: switching,
-                  onClick: () => setShowConnectionCodeImport(true),
+                  onClick: () => setConnectionCodeDialog({ mode: 'import' }),
                 },
                 {
                   label: showAdd ? copy.cancel : copy.configureManually,
@@ -655,15 +655,22 @@ export function RuntimeHostProfilesSection(props: {
           void reload();
         }}
       />
-      <RuntimeHostConnectionCodeDialog
-        isOpen={showConnectionCodeImport}
-        mode="import"
-        onClose={() => setShowConnectionCodeImport(false)}
-        onImported={(profileId) => {
-          props.onRemoteHostAdded(profileId);
-          void reload();
-        }}
-      />
+      {connectionCodeDialog?.mode === 'import' ? (
+        <RuntimeHostConnectionCodeDialog
+          mode="import"
+          onClose={() => setConnectionCodeDialog(undefined)}
+          onImported={(profileId) => {
+            props.onRemoteHostAdded(profileId);
+            void reload();
+          }}
+        />
+      ) : connectionCodeDialog ? (
+        <RuntimeHostConnectionCodeDialog
+          mode="share"
+          connectionCode={connectionCodeDialog.connectionCode}
+          onClose={() => setConnectionCodeDialog(undefined)}
+        />
+      ) : null}
     </>
   );
 }

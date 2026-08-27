@@ -17,31 +17,28 @@
  * under the License.
  */
 
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
 import { Dialog, DialogHeader } from '@astryxdesign/core/Dialog';
 import { Layout, LayoutContent, LayoutFooter } from '@astryxdesign/core/Layout';
 import { Button, FormLayout, TextArea, useToast, useUiLocale } from '@maka/ui';
 import { getSettingsProjectsCopy } from '../locales/settings-projects-copy.js';
 import { settingsActionErrorMessage } from './settings-error-copy.js';
 
-export function RuntimeHostConnectionCodeDialog(props: {
-  readonly isOpen: boolean;
-  readonly mode: 'share' | 'import';
-  readonly connectionCode?: string;
+type RuntimeHostConnectionCodeDialogProps = {
   readonly onClose: () => void;
-  readonly onImported?: (profileId: string) => void;
-}) {
+} & (
+  | { readonly mode: 'share'; readonly connectionCode: string }
+  | { readonly mode: 'import'; readonly onImported: (profileId: string) => void }
+);
+
+export function RuntimeHostConnectionCodeDialog(props: RuntimeHostConnectionCodeDialogProps) {
   const locale = useUiLocale();
   const copy = getSettingsProjectsCopy(locale).runtimeHost;
   const toast = useToast();
   const [draft, setDraft] = useState('');
   const [working, setWorking] = useState(false);
 
-  useEffect(() => {
-    if (!props.isOpen) setDraft('');
-  }, [props.isOpen]);
-
-  const value = props.mode === 'share' ? props.connectionCode ?? '' : draft;
+  const value = props.mode === 'share' ? props.connectionCode : draft;
 
   async function copyCode(): Promise<void> {
     try {
@@ -53,10 +50,11 @@ export function RuntimeHostConnectionCodeDialog(props: {
   }
 
   async function connect(): Promise<void> {
+    if (props.mode !== 'import') return;
     setWorking(true);
     try {
       const result = await window.maka.runtimeHostProfiles.importConnectionCode(draft.trim());
-      props.onImported?.(result.profileId);
+      props.onImported(result.profileId);
       props.onClose();
     } catch (error) {
       toast.error(copy.remoteAccessFailed, settingsActionErrorMessage(error, locale));
@@ -67,7 +65,7 @@ export function RuntimeHostConnectionCodeDialog(props: {
 
   return (
     <Dialog
-      isOpen={props.isOpen}
+      isOpen
       onOpenChange={(open) => {
         if (!open && !working) props.onClose();
       }}

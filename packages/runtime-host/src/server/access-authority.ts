@@ -352,7 +352,7 @@ class FileRuntimeHostAccessAuthority implements RuntimeHostAccessAuthority {
             'The pairing candidate was claimed by another Client',
           );
         }
-        return { reconnectRequired: false };
+        return { reconnectRequired: retained.clientInstanceId !== undefined };
       }
       if (Date.parse(retained.expiresAt!) <= Date.now()) {
         await this.#expirePending();
