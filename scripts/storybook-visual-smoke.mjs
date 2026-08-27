@@ -26,6 +26,8 @@ import { auditAxTree } from './ax-tree-audit.mjs';
 
 const RENDER_VIEWPORT = Object.freeze({ width: 1280, height: 900 });
 const NARROW_RENDER_VIEWPORT = Object.freeze({ width: 720, height: 900 });
+const COLOR_SCHEMES = Object.freeze(['light', 'dark']);
+const FULL_PALETTE_STORY_IDS = new Set(['product-shell-official-appshell--native-conversation']);
 const REQUIRED_COMPUTER_USE_STORY_IDS = new Set([
   'product-accessibility-dialogs--create-scheduled-task',
   'product-accessibility-dialogs--mermaid-fullscreen',
@@ -119,24 +121,46 @@ function installStorybookRenderProbe({ storyId }) {
   connect();
 }
 
-export function catalogJobs(storyIndex) {
+export function catalogJobs(
+  storyIndex,
+  { themePalettes = ['default'], fullPaletteStoryIds = FULL_PALETTE_STORY_IDS } = {},
+) {
   const entries = storyIndex?.entries;
   if (!entries || typeof entries !== 'object' || Array.isArray(entries)) {
     throw new Error('Built Storybook index has no entries');
   }
+  if (!Array.isArray(themePalettes) || themePalettes.length === 0) {
+    throw new Error('Storybook smoke requires at least one theme palette');
+  }
+  const palettes = [...new Set(themePalettes)];
+  if (!palettes.includes('default')) {
+    throw new Error('Storybook smoke theme palettes must include default');
+  }
   const jobs = Object.values(entries)
     .filter((entry) => entry?.type === 'story' && typeof entry.id === 'string')
-    .map((entry) => ({ storyId: entry.id }));
+    .flatMap((entry) =>
+      (fullPaletteStoryIds.has(entry.id) ? palettes : ['default']).flatMap((palette) =>
+        COLOR_SCHEMES.map((colorScheme) => ({
+          storyId: entry.id,
+          colorScheme,
+          palette,
+        })),
+      ),
+    );
   if (jobs.length === 0) throw new Error('Built Storybook index has no stories');
   return jobs;
 }
 
-export function storyUrl(baseUrl, storyId) {
+export function storyUrl(baseUrl, job) {
   const url = new URL('/iframe.html', baseUrl);
-  url.searchParams.set('id', storyId);
+  url.searchParams.set('id', job.storyId);
   url.searchParams.set('viewMode', 'story');
-  url.searchParams.set('globals', 'colorScheme:light');
+  url.searchParams.set('globals', `colorScheme:${job.colorScheme};palette:${job.palette}`);
   return url.href;
+}
+
+function jobLabel(job) {
+  return `${job.storyId} [${job.colorScheme}/${job.palette}]`;
 }
 
 export function storyViewport(storyId) {
@@ -144,7 +168,7 @@ export function storyViewport(storyId) {
 }
 
 async function smokeStory(page, baseUrl, job, options = {}) {
-  const prefix = `[${job.storyId}]`;
+  const prefix = `[${job.storyId}][${job.colorScheme}/${job.palette}]`;
   const browserFailures = [];
   const onConsole = (message) => {
     if (message.type() === 'error') browserFailures.push(`console.error: ${message.text()}`);
@@ -158,7 +182,7 @@ async function smokeStory(page, baseUrl, job, options = {}) {
   try {
     await page.addInitScript(installStorybookRenderProbe, { storyId: job.storyId });
     await page.setViewportSize(storyViewport(job.storyId));
-    await page.goto(storyUrl(baseUrl, job.storyId), { waitUntil: 'load' });
+    await page.goto(storyUrl(baseUrl, job), { waitUntil: 'load' });
 
     try {
       await page.waitForFunction(
@@ -242,10 +266,10 @@ async function runJobs(browser, baseUrl, jobs, concurrency) {
       const page = await browser.newPage();
       try {
         await smokeStory(page, baseUrl, job);
-        process.stdout.write(`✓ ${job.storyId}\n`);
+        process.stdout.write(`✓ ${jobLabel(job)}\n`);
       } catch (error) {
         failures.push(error instanceof Error ? error.message : String(error));
-        process.stdout.write(`✗ ${job.storyId}\n`);
+        process.stdout.write(`✗ ${jobLabel(job)}\n`);
       } finally {
         await page.close();
       }
@@ -312,7 +336,8 @@ async function runCli() {
   const repoRoot = resolve(scriptDir, '..');
   const staticDir = resolve(process.argv[2] ?? join(repoRoot, 'apps/desktop/storybook-static'));
   const storyIndex = await readFile(join(staticDir, 'index.json'), 'utf8').then(JSON.parse);
-  const jobs = catalogJobs(storyIndex);
+  const { THEME_PALETTES } = await import('@maka/core/settings');
+  const jobs = catalogJobs(storyIndex, { themePalettes: THEME_PALETTES });
   const storyIds = new Set(jobs.map((job) => job.storyId));
   const missingRequiredStories = [...REQUIRED_COMPUTER_USE_STORY_IDS].filter(
     (storyId) => !storyIds.has(storyId),
@@ -335,7 +360,9 @@ async function runCli() {
   if (problems.length > 0) {
     throw new Error(`${problems.length} story render(s) failed:\n${problems.join('\n')}`);
   }
-  process.stdout.write(`Storybook render smoke passed (${jobs.length} stories).\n`);
+  process.stdout.write(
+    `Storybook render smoke passed (${jobs.length} renders across ${storyIds.size} stories).\n`,
+  );
 }
 
 if (process.argv[1] && pathToFileURL(resolve(process.argv[1])).href === import.meta.url) {
