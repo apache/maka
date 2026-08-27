@@ -101,6 +101,7 @@ import {
   samePendingMessageAdmission,
   type PendingMessageAdmission,
 } from './message-admission-store.js';
+import { normalizeSubmittedTurnIntent } from './submitted-turn-intent.js';
 import { messageContentsEqual, normalizeMessageContent } from '@maka/core/events';
 import {
   type AgentGraphIntentAdmissionSnapshot,
@@ -247,6 +248,7 @@ interface MessageAdmissionRow {
   readonly disposition?: unknown;
   readonly queue_order?: unknown;
   readonly admitted_at?: unknown;
+  readonly submitted_intent_json?: unknown;
 }
 
 function decodeMessageAdmissionRow(
@@ -280,6 +282,9 @@ function decodeMessageAdmissionRow(
     submittedPlacement: row.submitted_placement,
     placement: row.placement,
     disposition: row.disposition,
+    ...(typeof row.submitted_intent_json === 'string'
+      ? { submittedIntent: normalizeSubmittedTurnIntent(JSON.parse(row.submitted_intent_json)) }
+      : {}),
     admittedAt: row.admitted_at,
   });
 }
@@ -1574,7 +1579,8 @@ export class SqliteSessionMetadataStore {
         .prepare(
           `
           SELECT turn_id, run_id, message_id, content_json, submitted_content_digest,
-            submitted_placement, placement, disposition, queue_order, admitted_at
+            submitted_placement, placement, disposition, queue_order, admitted_at,
+            submitted_intent_json
           FROM message_admissions
           WHERE session_id = ? AND message_id = ?
         `,
@@ -1612,8 +1618,9 @@ export class SqliteSessionMetadataStore {
           `
           INSERT INTO message_admissions(
             session_id, turn_id, run_id, message_id, content_json, submitted_content_digest,
-            submitted_placement, placement, disposition, queue_order, admitted_at
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            submitted_placement, placement, disposition, queue_order, admitted_at,
+            submitted_intent_json
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `,
         )
         .run(
@@ -1628,6 +1635,7 @@ export class SqliteSessionMetadataStore {
           stored.disposition,
           orderRow.next_order,
           stored.admittedAt,
+          stored.submittedIntent ? JSON.stringify(stored.submittedIntent) : null,
         );
 
       return stored;
@@ -1646,13 +1654,28 @@ export class SqliteSessionMetadataStore {
         .prepare(
           `
           SELECT turn_id, run_id, message_id, content_json, submitted_content_digest,
-            submitted_placement, placement, disposition, queue_order, admitted_at
+            submitted_placement, placement, disposition, queue_order, admitted_at,
+            submitted_intent_json
           FROM message_admissions
           WHERE session_id = ? AND message_id = ?
         `,
         )
         .get(sessionId, messageId) as MessageAdmissionRow | undefined;
       return row ? decodeMessageAdmissionRow(sessionId, row) : undefined;
+    });
+  }
+
+  async hasCancelledMessageAdmission(sessionId: string, messageId: string): Promise<boolean> {
+    this.assertOpen();
+    assertSafeSessionId(sessionId);
+    assertSafeSessionId(messageId);
+    return this.readTransaction(() => {
+      const row = this.db
+        .prepare(
+          'SELECT 1 AS present FROM cancelled_message_admissions WHERE session_id = ? AND message_id = ?',
+        )
+        .get(sessionId, messageId);
+      return row !== undefined;
     });
   }
 
@@ -1664,7 +1687,8 @@ export class SqliteSessionMetadataStore {
         .prepare(
           `
           SELECT turn_id, run_id, message_id, content_json, submitted_content_digest,
-            submitted_placement, placement, disposition, queue_order, admitted_at
+            submitted_placement, placement, disposition, queue_order, admitted_at,
+            submitted_intent_json
           FROM message_admissions
           WHERE session_id = ?
           ORDER BY queue_order, sequence
@@ -1704,7 +1728,8 @@ export class SqliteSessionMetadataStore {
           .prepare(
             `
             SELECT turn_id, run_id, message_id, content_json, submitted_content_digest,
-              submitted_placement, placement, disposition, queue_order, admitted_at
+              submitted_placement, placement, disposition, queue_order, admitted_at,
+            submitted_intent_json
             FROM message_admissions
             WHERE session_id = ? AND message_id = ?
           `,
@@ -1813,7 +1838,8 @@ export class SqliteSessionMetadataStore {
         .prepare(
           `
           SELECT turn_id, run_id, message_id, content_json, submitted_content_digest,
-            submitted_placement, placement, disposition, queue_order, admitted_at
+            submitted_placement, placement, disposition, queue_order, admitted_at,
+            submitted_intent_json
           FROM message_admissions
           WHERE session_id = ? AND message_id = ?
         `,

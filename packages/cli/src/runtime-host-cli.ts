@@ -28,6 +28,7 @@ import {
   projectDirectoryRootSpecValid,
 } from '@maka/runtime-host/protocol';
 import type { RuntimeHostManagedServiceTarget } from './runtime-host-service-manager.js';
+import { hasEphemeralRuntimeHostPeerPort } from './runtime-host-peer-artifact.js';
 
 type RuntimeHostCliError = { kind: 'error'; message: string; exitCode: number };
 
@@ -54,6 +55,7 @@ export type RuntimeHostCliCommand =
       peer?: {
         nativePath: string;
         keyPath: string;
+        expectedPeerId?: string;
         listenAddresses?: string[];
         coordinationRelays?: string[];
       };
@@ -93,6 +95,15 @@ export type RuntimeHostCliCommand =
       expectedConfigFingerprint?: string;
       retainManagedDeployment?: true;
       allowInterruptActiveTasks?: true;
+    }
+  | {
+      kind: 'runtime-host-service-peer';
+      action: 'enable' | 'disable' | 'status' | 'rotate' | 'descriptor';
+      json: boolean;
+      clientDataRoot?: string;
+      listenAddresses: string[];
+      coordinationRelays?: string[];
+      expectedTarget?: RuntimeHostManagedServiceTarget;
     }
   | {
       kind: 'runtime-host-service-check-update';
@@ -163,7 +174,12 @@ export type RuntimeHostCliCommand =
       framed: boolean;
     }
   | { kind: 'runtime-host-project-list'; rootPath?: string }
-  | { kind: 'runtime-host-project-add'; rootPath?: string; path: string; prefer: boolean }
+  | {
+      kind: 'runtime-host-project-add';
+      rootPath?: string;
+      path: string;
+      prefer: boolean;
+    }
   | {
       kind: 'runtime-host-capability-provider-serve';
       url: string;
@@ -259,6 +275,7 @@ function parseSetupCommand(argv: string[]): RuntimeHostCliCommand {
 
 function parseServiceManagementCommand(argv: string[]): RuntimeHostCliCommand {
   const action = argv[0];
+  if (action === 'peer') return parseServicePeerCommand(argv.slice(1));
   if (action === 'cleanup-deployment') {
     let clientDataRoot: string | undefined;
     const options = parseManagedServiceOptions(argv.slice(1), {
@@ -442,6 +459,86 @@ function parseServiceManagementCommand(argv: string[]): RuntimeHostCliCommand {
   };
 }
 
+function parseServicePeerCommand(argv: string[]): RuntimeHostCliCommand {
+  const action = argv[0];
+  if (
+    action !== 'enable' &&
+    action !== 'disable' &&
+    action !== 'status' &&
+    action !== 'rotate' &&
+    action !== 'descriptor'
+  ) {
+    return error(
+      action
+        ? `Unexpected runtime-host service peer command: ${action}`
+        : 'runtime-host service peer requires enable, disable, status, rotate, or descriptor',
+    );
+  }
+  let clientDataRoot: string | undefined;
+  const listenAddresses: string[] = [];
+  const coordinationRelays: string[] = [];
+  let clearCoordinationRelays = false;
+  const options = parseManagedServiceOptions(argv.slice(1), {
+    allowConfiguration: false,
+    flagOptions: {
+      '--clear-coordination-relays': () => {
+        if (clearCoordinationRelays) return error('Duplicate --clear-coordination-relays');
+        clearCoordinationRelays = true;
+      },
+    },
+    valueOptions: {
+      '--client-data-root': (value) => {
+        if (clientDataRoot !== undefined) return error('Duplicate --client-data-root');
+        if (!isSafeAbsolutePath(value)) return error('--client-data-root must be an absolute path');
+        clientDataRoot = value;
+      },
+      '--listen': (value) => {
+        listenAddresses.push(value);
+      },
+      '--coordination-relay': (value) => {
+        coordinationRelays.push(value);
+      },
+    },
+  });
+  if ('kind' in options) return options;
+  if (listenAddresses.some(hasEphemeralRuntimeHostPeerPort)) {
+    return error('--listen requires a stable non-zero transport port');
+  }
+  if (clearCoordinationRelays && coordinationRelays.length > 0) {
+    return error('--clear-coordination-relays cannot be combined with --coordination-relay');
+  }
+  if (
+    action !== 'enable' &&
+    (listenAddresses.length > 0 || coordinationRelays.length > 0 || clearCoordinationRelays)
+  ) {
+    return error(
+      '--listen, --coordination-relay, and --clear-coordination-relays are only valid with peer enable',
+    );
+  }
+  if (
+    (action === 'enable' ||
+      action === 'disable' ||
+      action === 'rotate' ||
+      action === 'descriptor') &&
+    !options.expectedTarget
+  ) {
+    return error(`runtime-host service peer ${action} requires an expected target`);
+  }
+  return {
+    kind: 'runtime-host-service-peer',
+    action,
+    json: options.json,
+    ...(clientDataRoot ? { clientDataRoot } : {}),
+    listenAddresses,
+    ...(clearCoordinationRelays
+      ? { coordinationRelays: [] }
+      : coordinationRelays.length > 0
+        ? { coordinationRelays }
+        : {}),
+    ...(options.expectedTarget ? { expectedTarget: options.expectedTarget } : {}),
+  };
+}
+
 function parseUpdatePolicy(value: string): RuntimeHostManagedUpdatePolicy | RuntimeHostCliError {
   if (value === 'manual') return { kind: 'manual' };
   const selector = parseUpdateSelector(value, 'update-policy');
@@ -467,7 +564,10 @@ interface ManagedServiceOptions {
   readonly json: boolean;
   readonly framed?: true;
   readonly rootPath?: string;
-  readonly projectDirectoryRoots?: { readonly label: string; readonly path: string }[];
+  readonly projectDirectoryRoots?: {
+    readonly label: string;
+    readonly path: string;
+  }[];
   readonly websocketPort?: number;
   readonly websocketPath?: string;
   readonly expectedTarget?: RuntimeHostManagedServiceTarget;
@@ -662,7 +762,10 @@ function parseProjectCommand(argv: string[]): RuntimeHostCliCommand {
     return error(`Unexpected argument: ${argument ?? ''}`);
   }
   if (action === 'list') {
-    return { kind: 'runtime-host-project-list', ...(rootPath ? { rootPath } : {}) };
+    return {
+      kind: 'runtime-host-project-list',
+      ...(rootPath ? { rootPath } : {}),
+    };
   }
   if (!path) return error('runtime-host project add requires a path');
   return {
@@ -886,6 +989,7 @@ function parseServeCommand(argv: string[]): RuntimeHostCliCommand {
   let allowInsecureRemote = false;
   let peerNativePath: string | undefined;
   let peerKeyPath: string | undefined;
+  let peerId: string | undefined;
   const allowedOrigins: string[] = [];
   const peerListenAddresses: string[] = [];
   const peerCoordinationRelays: string[] = [];
@@ -998,6 +1102,7 @@ function parseServeCommand(argv: string[]): RuntimeHostCliCommand {
     if (
       argument === '--peer-native-path' ||
       argument === '--peer-key' ||
+      argument === '--peer-id' ||
       argument === '--peer-listen' ||
       argument === '--peer-coordination-relay'
     ) {
@@ -1005,6 +1110,7 @@ function parseServeCommand(argv: string[]): RuntimeHostCliCommand {
       if (typeof parsed !== 'string') return parsed;
       if (argument === '--peer-native-path') peerNativePath = parsed;
       if (argument === '--peer-key') peerKeyPath = parsed;
+      if (argument === '--peer-id') peerId = parsed;
       if (argument === '--peer-listen') peerListenAddresses.push(parsed);
       if (argument === '--peer-coordination-relay') peerCoordinationRelays.push(parsed);
       index += 1;
@@ -1029,13 +1135,16 @@ function parseServeCommand(argv: string[]): RuntimeHostCliCommand {
   }
   if (
     peerNativePath === undefined &&
-    (peerListenAddresses.length > 0 || peerCoordinationRelays.length > 0)
+    (peerId !== undefined || peerListenAddresses.length > 0 || peerCoordinationRelays.length > 0)
   ) {
     return error('peer listener options require --peer-native-path and --peer-key');
   }
   if (
     managedServiceConfigPath !== undefined &&
-    (rootPath !== undefined || projectDirectoryPolicySpecified || websocketConfigured)
+    (rootPath !== undefined ||
+      projectDirectoryPolicySpecified ||
+      websocketConfigured ||
+      peerNativePath !== undefined)
   ) {
     return error('--managed-service-config cannot be combined with Runtime Host settings');
   }
@@ -1064,6 +1173,7 @@ function parseServeCommand(argv: string[]): RuntimeHostCliCommand {
           peer: {
             nativePath: peerNativePath,
             keyPath: peerKeyPath!,
+            ...(peerId ? { expectedPeerId: peerId } : {}),
             ...(peerListenAddresses.length > 0 ? { listenAddresses: peerListenAddresses } : {}),
             ...(peerCoordinationRelays.length > 0
               ? { coordinationRelays: peerCoordinationRelays }

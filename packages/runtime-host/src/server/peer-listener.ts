@@ -38,6 +38,7 @@ const MAX_PENDING_AUTHENTICATIONS = 16;
 export interface StartRuntimeHostPeerListenerOptions {
   readonly nativePath: string;
   readonly keyPath: string;
+  readonly expectedPeerId?: string;
   readonly listenAddresses?: readonly string[];
   readonly coordinationRelays?: readonly string[];
   readonly accessAuthority: RuntimeHostAccessAuthority;

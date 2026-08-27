@@ -18,7 +18,7 @@
  */
 
 import assert from 'node:assert/strict';
-import { readdir } from 'node:fs/promises';
+import { readFile, readdir, stat } from 'node:fs/promises';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { assertPackagedResources } from './verify-packaged-app.mjs';
@@ -96,4 +96,29 @@ test('a package that dropped the artwork fails the check', async () => {
       `dropping ${dropped} should fail`,
     );
   }
+});
+
+/**
+ * The bundle icon is drawn by Finder, Launchpad and the installer — surfaces
+ * that never run our code and so cannot follow a user's choice. It therefore
+ * has to be the shipped default, and the packaging config has to name that
+ * file by path because it is read before the workspace is built. This is what
+ * keeps the hardcoded path honest: change `DEFAULT_APP_ICON` without changing
+ * the packaging config and the bundle silently keeps shipping the old mark.
+ */
+test('the packaged bundle icon is the shipped default', async () => {
+  const { DEFAULT_APP_ICON } = await import('@maka/core/settings');
+  const config = await readFile(
+    new URL('../apps/desktop/electron-builder.config.mjs', import.meta.url),
+    'utf8',
+  );
+  const expected = `assets/app-icons/${DEFAULT_APP_ICON}.png`;
+  const named = [...config.matchAll(/^\s*icon: '([^']+)',/gm)].map((m) => m[1]);
+
+  assert.ok(named.length >= 2, `expected mac and win icons, found ${named.length}`);
+  for (const path of named) {
+    assert.equal(path, expected);
+  }
+  // …and the file it names has to exist, or packaging fails far from here.
+  await stat(new URL(`../apps/desktop/${expected}`, import.meta.url));
 });

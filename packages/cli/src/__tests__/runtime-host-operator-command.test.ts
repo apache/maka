@@ -127,6 +127,18 @@ describe('Runtime Host operator commands', () => {
       ]).kind,
       'error',
     );
+    assert.equal(
+      parseRuntimeHostCommand([
+        'serve',
+        '--managed-service-config',
+        '/config/Maka/runtime-host-service.json',
+        '--peer-native-path',
+        '/opt/maka/peer.node',
+        '--peer-key',
+        '/config/Maka/peer.key',
+      ]).kind,
+      'error',
+    );
     assert.deepEqual(
       parseRuntimeHostCommand([
         'serve',

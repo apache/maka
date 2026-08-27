@@ -18,9 +18,14 @@
  */
 
 import { readFile } from 'node:fs/promises';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { deriveMakaDataRoots, resolveMakaDataRoots } from './workspace-root.js';
+import {
+  configureRuntimeHostPeerClient,
+  resolveRuntimeHostManagedPeerKeyPath,
+  resolveRuntimeHostPeerNativePath,
+} from './runtime-host-peer-artifact.js';
 import { parseRuntimeHostCommand, type RuntimeHostCliCommand } from './runtime-host-cli.js';
 import { resolveCliUiLocale } from './cli-ui-locale.js';
 
@@ -134,6 +139,7 @@ function helpText(cliCommand: string): string {
     `  ${cliCommand} runtime-host service install [options]`,
     `  ${cliCommand} runtime-host service configure (--project-root <label>=<path> ... | --no-project-roots) --expected-config-fingerprint <sha256:...> --expected-service-id <id> --expected-root-path <path> --expected-root-id <id> [--allow-interrupt-active-tasks]`,
     `  ${cliCommand} runtime-host service status|start|stop|restart|logs|uninstall [--json]`,
+    `  ${cliCommand} runtime-host service peer enable|disable|status|rotate|descriptor [options]`,
     `  ${cliCommand} runtime-host service retire --expected-service-id <id> --expected-root-path <path> --expected-root-id <id> [--allow-interrupt-active-tasks]`,
     `  ${cliCommand} runtime-host service check-update --target <latest|next|version> [--json]`,
     `  ${cliCommand} runtime-host service update [--target <latest|next|version>] --expected-service-id <id> --expected-root-path <path> --expected-root-id <id> [--allow-interrupt-active-tasks]`,
@@ -176,6 +182,7 @@ function helpText(cliCommand: string): string {
     '  --allow-origin <origin>       Allow one browser Origin (repeatable)',
     '  --peer-native-path <path>     Load the experimental direct-peer native module',
     '  --peer-key <path>             Persist the direct-peer transport identity',
+    '  --peer-id <id>                Require an existing direct-peer transport identity',
     '  --peer-listen <multiaddr>     Listen on a direct-peer address (repeatable)',
     '  --peer-coordination-relay <multiaddr>  Use a DCUtR coordination relay (repeatable)',
     '  --json                        Emit one machine-readable ready event',
@@ -223,6 +230,10 @@ export async function runMakaCli(
   const version = await readPackageVersion();
   const command = parseMakaCliArgs(argv, version, options.cliCommand);
   const dataRoots = resolveMakaDataRoots({ profileName: options.dataProfileName });
+  await configureRuntimeHostPeerClient({
+    cliPath: process.argv[1] ?? '',
+    clientDataRoot: dataRoots.clientDataRoot,
+  });
   switch (command.kind) {
     case 'run': {
       const { runRuntimeHostTextCli } = await import('./runtime-host-run-command.js');
@@ -253,11 +264,23 @@ export async function runMakaCli(
         const { effectiveRuntimeHostProjectDirectoryRoots, readRuntimeHostManagedServiceConfig } =
           await import('./runtime-host-service-manager.js');
         const config = await readRuntimeHostManagedServiceConfig(command.managedServiceConfigPath);
+        const peer = config.peer?.enabled
+          ? {
+              nativePath: await resolveRuntimeHostPeerNativePath(config.launch.cliPath),
+              keyPath: resolveRuntimeHostManagedPeerKeyPath(
+                dirname(command.managedServiceConfigPath),
+              ),
+              expectedPeerId: config.peer.peerId,
+              listenAddresses: config.peer.listenAddresses,
+              coordinationRelays: config.peer.coordinationRelays,
+            }
+          : undefined;
         return runRuntimeHostServiceCli({
           rootPath: config.rootPath,
           json: command.json,
           projectDirectoryRoots: effectiveRuntimeHostProjectDirectoryRoots(config),
           websocket: config.websocket,
+          ...(peer ? { peer } : {}),
         });
       }
       return runRuntimeHostServiceCli({
@@ -317,6 +340,25 @@ export async function runMakaCli(
           : {}),
         ...(command.retainManagedDeployment ? { retainManagedDeployment: true } : {}),
         ...(command.allowInterruptActiveTasks ? { allowInterruptActiveTasks: true } : {}),
+      });
+    }
+    case 'runtime-host-service-peer': {
+      const { runRuntimeHostPeerManagementCli } = await import(
+        './runtime-host-peer-management-command.js'
+      );
+      const serviceDataRoots = command.clientDataRoot
+        ? deriveMakaDataRoots(command.clientDataRoot)
+        : dataRoots;
+      return runRuntimeHostPeerManagementCli({
+        action: command.action,
+        json: command.json,
+        clientDataRoot: serviceDataRoots.clientDataRoot,
+        defaultRootPath: serviceDataRoots.workspaceRoot,
+        nodePath: process.execPath,
+        cliPath: process.argv[1] ?? '',
+        listenAddresses: command.listenAddresses,
+        ...(command.coordinationRelays ? { coordinationRelays: command.coordinationRelays } : {}),
+        ...(command.expectedTarget ? { expectedTarget: command.expectedTarget } : {}),
       });
     }
     case 'runtime-host-service-update': {

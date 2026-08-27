@@ -156,6 +156,9 @@ test('installs and removes the update scheduler with a managed LaunchAgent', asy
       (error: unknown) =>
         error instanceof Error && 'code' in error && error.code === 'target_mismatch',
     );
+    await applyStagedDeployment(backend, config, { activate: false });
+    assert.equal((await backend.status()).state, 'stopped');
+    assert.equal(launchctl.updateLoaded, false);
     await backend.replace(config);
     assert.equal(launchctl.updateLoaded, true);
     await backend.verifyDeployment(config, { requireSchedulerReady: true });
@@ -263,7 +266,7 @@ test('recognizes and transactionally replaces the exact legacy LaunchAgent defin
 
     const deployment = await backend.stageDeployment();
     await backend.retire();
-    await deployment.apply({ ...config, schemaVersion: 2 });
+    await deployment.apply({ ...config, schemaVersion: 2 }, true);
     await backend.verifyDeployment({ ...config, schemaVersion: 2 });
     assert.match(await readFile(plistPath, 'utf8'), /--managed-service-config/u);
 
@@ -295,7 +298,7 @@ test('restores the previous loaded LaunchAgent when deployment bootstrap fails',
       if (action === 'install') {
         const deployment = await backend.stageDeployment();
         await assert.rejects(
-          deployment.apply(config),
+          deployment.apply(config, true),
           /Starting the Runtime Host LaunchAgent failed/u,
         );
         await deployment.rollback();
@@ -470,9 +473,10 @@ function legacyLaunchAgentPlistFixture(
 async function applyStagedDeployment(
   backend: RuntimeHostServiceBackend,
   config: RuntimeHostManagedServiceConfig,
+  options?: { readonly activate?: boolean },
 ): Promise<RuntimeHostServiceDeployment> {
   const deployment = await backend.stageDeployment();
-  await deployment.apply(config);
+  await deployment.apply(config, options?.activate ?? true);
   return deployment;
 }
 

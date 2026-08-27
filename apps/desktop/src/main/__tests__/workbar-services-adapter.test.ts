@@ -41,13 +41,26 @@ function createBridgeRecorder(): {
     'artifacts.subscribeChanges',
     'inspector.subscribeUsageChanges',
   ]);
+  // Adapters that reshape a bridge answer need one to reshape.
+  const answers = new Map<string, unknown>([
+    [
+      'sessions.submitMessage',
+      {
+        ok: true,
+        disposition: 'steering',
+        attachments: [],
+        inlineReferences: [],
+        skillInvocation: { loaded: [], failed: [], receipts: [] },
+      },
+    ],
+  ]);
   const domain = (name: string) =>
     new Proxy({}, {
       get: (_target, property) => (...args: unknown[]) => {
         const callName = `${name}.${String(property)}`;
         calls.push({ name: callName, args });
         if (syncMethods.has(callName)) return () => undefined;
-        return Promise.resolve(undefined);
+        return Promise.resolve(answers.get(callName));
       },
     });
 
@@ -215,7 +228,7 @@ describe('createDesktopWorkbarServices', () => {
         'sessions.abandonSessionCopy',
         'sessions.send',
         'sessions.stop',
-        'sessions.steer',
+        'sessions.submitMessage',
         'sessions.setPermissionMode',
         'sessions.regenerateTurn',
         'sessions.respondToSandboxBoundary',

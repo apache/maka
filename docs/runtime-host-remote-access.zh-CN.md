@@ -21,7 +21,7 @@
 
 [English](./runtime-host-remote-access.md)
 
-Maka Desktop、TUI 和 CLI 可以通过 TLS、SSH 或明确启用的明文 WebSocket 连接 Runtime Host。
+Maka Desktop、TUI 和 CLI 可以通过 TLS、SSH 或明确启用的明文 WebSocket 连接 Runtime Host。CLI 和 TUI 还支持下文所述的实验性 direct peer transport。
 
 ## 设置 Linux 或 macOS Host
 
@@ -89,6 +89,33 @@ service；未指定 WebSocket port 时会保留现有端口。卸载 npm 包前�
 `npx`。替换操作只会在新的 Runtime Host ready 之后提交；失败时会恢复之前的 service。
 
 ## 选择连接方式
+
+### 实验性 direct peer
+
+发布版 CLI 已包含供 CLI 和 TUI 使用的 direct peer native transport，Host 无需安装 Rust 或保留源码；
+Desktop 支持不在本里程碑范围内。完成 managed setup 后，使用 setup 输出的精确 service target 启用：
+
+```sh
+maka runtime-host service peer enable \
+  --expected-service-id '<serviceId>' \
+  --expected-root-path '<rootPath>' \
+  --expected-root-id '<rootId>'
+
+maka runtime-host service peer descriptor \
+  --expected-service-id '<serviceId>' \
+  --expected-root-path '<rootPath>' \
+  --expected-root-id '<rootId>'
+```
+
+Descriptor 只包含 PeerId、Root ID 和候选 route，不包含 access credential。使用这些值执行
+`runtime-host profile set --peer-id ... --peer-route ...`，并通过
+`MAKA_RUNTIME_HOST_ACCESS_CREDENTIAL` 提供 setup 创建的 credential。Disable 后重新 enable 会保留
+PeerId 和 listener 配置；`peer rotate` 会明确更换 PeerId；卸载 service 会删除 peer key，但保留 State
+Root。执行 `peer enable --clear-coordination-relays` 可以删除所有已配置的 coordination relay。
+
+Direct-only 路径仍是实验能力，在受限 NAT 或禁用 UDP 的网络中可能失败。它不会替代已有的 TLS、SSH
+或 overlay network fallback；除非用户在 `peer enable` 时明确传入 `--coordination-relay`，否则不会使用
+公共 relay。
 
 ### Direct TLS
 

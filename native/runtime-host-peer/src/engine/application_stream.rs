@@ -18,7 +18,7 @@
  */
 
 use std::{
-    collections::HashMap,
+    collections::{HashMap, VecDeque},
     convert::Infallible,
     future::{Ready, ready},
     io,
@@ -34,8 +34,9 @@ use libp2p::{
         upgrade::{InboundUpgrade, OutboundUpgrade, UpgradeInfo},
     },
     swarm::{
-        ConnectionDenied, ConnectionHandler, ConnectionId, FromSwarm, NetworkBehaviour, Stream,
-        StreamProtocol, THandler, THandlerInEvent, THandlerOutEvent, ToSwarm,
+        CloseConnection, ConnectionDenied, ConnectionHandler, ConnectionId, FromSwarm,
+        NetworkBehaviour, Stream, StreamProtocol, THandler, THandlerInEvent, THandlerOutEvent,
+        ToSwarm,
         behaviour::ConnectionClosed,
         handler::{
             ConnectionEvent, DialUpgradeError, FullyNegotiatedInbound, FullyNegotiatedOutbound,
@@ -50,15 +51,21 @@ const OUTBOUND_COMMAND_CAPACITY: usize = 1;
 
 pub(super) struct Behaviour {
     protocol: StreamProtocol,
-    incoming: mpsc::Sender<Stream>,
+    incoming: mpsc::Sender<InboundStream>,
     shared: Arc<Mutex<DirectConnections>>,
+    closing: VecDeque<(PeerId, ConnectionId)>,
+}
+
+pub(super) struct InboundStream {
+    pub(super) connection_id: ConnectionId,
+    pub(super) stream: Stream,
 }
 
 impl Behaviour {
     pub(super) fn new(
         protocol: StreamProtocol,
         incoming_capacity: usize,
-    ) -> (Self, Control, mpsc::Receiver<Stream>) {
+    ) -> (Self, Control, mpsc::Receiver<InboundStream>) {
         let (incoming, receiver) = mpsc::channel(incoming_capacity);
         let shared = Arc::new(Mutex::new(DirectConnections::default()));
         (
@@ -66,6 +73,7 @@ impl Behaviour {
                 protocol,
                 incoming,
                 shared: shared.clone(),
+                closing: VecDeque::new(),
             },
             Control { shared },
             receiver,
@@ -78,7 +86,12 @@ impl Behaviour {
         }
         let (sender, receiver) = mpsc::channel(OUTBOUND_COMMAND_CAPACITY);
         lock(&self.shared).insert(connection_id, peer_id, sender);
-        Handler::direct(self.protocol.clone(), self.incoming.clone(), receiver)
+        Handler::direct(
+            connection_id,
+            self.protocol.clone(),
+            self.incoming.clone(),
+            receiver,
+        )
     }
 }
 
@@ -119,15 +132,21 @@ impl NetworkBehaviour for Behaviour {
 
     fn on_connection_handler_event(
         &mut self,
-        _: PeerId,
-        _: ConnectionId,
-        event: THandlerOutEvent<Self>,
+        peer_id: PeerId,
+        connection_id: ConnectionId,
+        _: THandlerOutEvent<Self>,
     ) {
-        libp2p::core::util::unreachable(event);
+        self.closing.push_back((peer_id, connection_id));
     }
 
     fn poll(&mut self, _: &mut Context<'_>) -> Poll<ToSwarm<Self::ToSwarm, THandlerInEvent<Self>>> {
-        Poll::Pending
+        let Some((peer_id, connection_id)) = self.closing.pop_front() else {
+            return Poll::Pending;
+        };
+        Poll::Ready(ToSwarm::CloseConnection {
+            peer_id,
+            connection: CloseConnection::One(connection_id),
+        })
     }
 }
 
@@ -217,39 +236,49 @@ fn lock(shared: &Arc<Mutex<DirectConnections>>) -> MutexGuard<'_, DirectConnecti
 }
 
 pub(super) struct Handler {
+    connection_id: Option<ConnectionId>,
     protocol: Option<StreamProtocol>,
-    incoming: Option<mpsc::Sender<Stream>>,
+    incoming: Option<mpsc::Sender<InboundStream>>,
     commands: Option<mpsc::Receiver<NewStream>>,
     pending: Option<oneshot::Sender<Result<Stream, OpenStreamError>>>,
+    accepted_inbound: bool,
+    close: bool,
 }
 
 impl Handler {
     fn direct(
+        connection_id: ConnectionId,
         protocol: StreamProtocol,
-        incoming: mpsc::Sender<Stream>,
+        incoming: mpsc::Sender<InboundStream>,
         commands: mpsc::Receiver<NewStream>,
     ) -> Self {
         Self {
+            connection_id: Some(connection_id),
             protocol: Some(protocol),
             incoming: Some(incoming),
             commands: Some(commands),
             pending: None,
+            accepted_inbound: false,
+            close: false,
         }
     }
 
     fn relayed() -> Self {
         Self {
+            connection_id: None,
             protocol: None,
             incoming: None,
             commands: None,
             pending: None,
+            accepted_inbound: false,
+            close: false,
         }
     }
 }
 
 impl ConnectionHandler for Handler {
     type FromBehaviour = Infallible;
-    type ToBehaviour = Infallible;
+    type ToBehaviour = ();
     type InboundProtocol = ProtocolUpgrade;
     type OutboundProtocol = ProtocolUpgrade;
     type InboundOpenInfo = ();
@@ -273,6 +302,9 @@ impl ConnectionHandler for Handler {
         context: &mut Context<'_>,
     ) -> Poll<libp2p::swarm::ConnectionHandlerEvent<Self::OutboundProtocol, (), Self::ToBehaviour>>
     {
+        if std::mem::take(&mut self.close) {
+            return Poll::Ready(libp2p::swarm::ConnectionHandlerEvent::NotifyBehaviour(()));
+        }
         if self.pending.is_some() {
             return Poll::Pending;
         }
@@ -308,8 +340,22 @@ impl ConnectionHandler for Handler {
                 protocol: (stream, _),
                 ..
             }) => {
-                if let Some(incoming) = self.incoming.as_ref() {
-                    let _ = incoming.try_send(stream);
+                if self.accepted_inbound {
+                    self.close = true;
+                    return;
+                }
+                self.accepted_inbound = true;
+                if self.incoming.as_ref().is_none_or(|incoming| {
+                    incoming
+                        .try_send(InboundStream {
+                            connection_id: self
+                                .connection_id
+                                .expect("direct handlers have a connection id"),
+                            stream,
+                        })
+                        .is_err()
+                }) {
+                    self.close = true;
                 }
             }
             ConnectionEvent::FullyNegotiatedOutbound(FullyNegotiatedOutbound {

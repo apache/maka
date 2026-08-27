@@ -38,16 +38,19 @@ export function clientOwnedSettingsPatch(
             ? {}
             : { selectedPetId: patch.personalization.selectedPetId }),
         };
-  // `appIcon` is filtered out the way `personalization` is filtered field by
-  // field above, rather than forwarding the section wholesale: the app icon is
-  // owned by the main process's icon seam, which serializes selection against
-  // import and removal and refuses a choice whose artwork is gone. A write
-  // arriving through this generic channel would queue behind none of that and
-  // could land between a removal's settings apply and its file deletion.
+  // Both icon slots are filtered out the way `personalization` is filtered
+  // field by field above, rather than forwarding the section wholesale: the
+  // app icon is owned by the main process's icon seam, which serializes
+  // selection against import and removal and refuses a choice whose artwork is
+  // gone. A write arriving through this generic channel would queue behind
+  // none of that and could land between a removal's settings apply and its
+  // file deletion. `appIconDark` names artwork on exactly the same terms as
+  // `appIcon`, so leaving it unfiltered would reopen that race through the
+  // other slot.
   const appearance =
     patch.appearance === undefined
       ? undefined
-      : (({ appIcon: _ignored, ...rest }) =>
+      : (({ appIcon: _ignored, appIconDark: _ignoredDark, ...rest }) =>
           Object.keys(rest).length === 0 ? undefined : rest)(patch.appearance);
   return {
     ...(patch.botChat ? { botChat: patch.botChat } : {}),

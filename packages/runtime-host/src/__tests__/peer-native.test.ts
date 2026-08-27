@@ -25,6 +25,7 @@ import { setImmediate as waitForImmediate } from 'node:timers/promises';
 import { test } from 'node:test';
 import { connectPeerRuntimeHost } from '../client/host-profile.js';
 import {
+  ensureRuntimeHostPeerIdentity,
   readRuntimeHostPeerAuthentication,
   readRuntimeHostPeerAuthenticationResult,
   RuntimeHostPeerError,
@@ -44,6 +45,7 @@ test('closes an in-flight peer endpoint when connection is cancelled', {
       nativePath,
       `let rejectConnect;
 module.exports = {
+  ensurePeerIdentity: async () => 'client',
   startPeerEndpoint: () => ({
     peerId: 'client',
     listenAddresses: [],
@@ -86,13 +88,17 @@ test('loads a relative native module path from the process working directory', a
     const modulePath = join(directory, 'peer.cjs');
     await writeFile(
       modulePath,
-      'module.exports = { startPeerEndpoint: () => ({ peerId: "peer", listenAddresses: [] }) };\n',
+      'module.exports = { ensurePeerIdentity: async () => "peer", startPeerEndpoint: () => ({ peerId: "peer", listenAddresses: [] }) };\n',
     );
     const endpoint = startRuntimeHostPeerEndpoint({
       nativePath: relative(process.cwd(), modulePath),
       keyPath: 'unused',
     });
     assert.equal(endpoint.peerId, 'peer');
+    assert.equal(
+      await ensureRuntimeHostPeerIdentity({ nativePath: modulePath, keyPath: 'unused' }),
+      'peer',
+    );
   } finally {
     await rm(directory, { recursive: true, force: true });
   }

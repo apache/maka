@@ -33,6 +33,10 @@
  * no-ops. SideNav uses pillPlacement="end" (sub-pixel X bias) and mounts the
  * handle as a sibling of <nav.maka-session-panel>, not a descendant — target the
  * handle test id. Remove once Astryx fixes hitAreaOffsetX.
+ *
+ * e2e/sidebar-geometry.spec.ts drags the handle from its vertical centre — the
+ * half this fix restores — and asserts the column resizes, so removing this
+ * before Astryx is fixed fails loudly instead of silently killing the grab.
  */
 [data-testid="astryx-sidenav-resize-handle"] > div:not(.astryx-resize-handle-pill) {
   /* !important: Astryx StyleX injects the bad transform unlayered, which
