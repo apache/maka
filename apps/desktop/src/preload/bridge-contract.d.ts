@@ -105,6 +105,7 @@ import type { WorkBoardItem, WorkBoardListQuery, WorkBoardPage } from '@maka/cor
 import type { WorkBoardMutationOptions } from '@maka/storage/work-board-store';
 import type {
   OperationInput,
+  OperationOutcome,
   OperationOutput,
 } from '@maka/runtime-host/protocol';
 import type { AgentGraphEpochDirectory } from '@maka/runtime-host/client';
@@ -858,7 +859,7 @@ export interface MakaBridge {
     act(
       coordinationSessionId: string,
       input: Omit<OperationInput<'workhub.coordination.act'>, 'create'>,
-    ): Promise<OperationOutput<'workhub.coordination.act'>>;
+    ): Promise<OperationOutcome<'workhub.coordination.act'>>;
     /** Create an ordinary Session on the exact Host owning the resolved conversation. */
     createSession(
       coordinationSessionId: string,

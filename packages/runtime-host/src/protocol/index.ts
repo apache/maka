@@ -110,8 +110,9 @@ export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 59 as const;
 // 55: Local owners can atomically revoke every credential for one access
 // principal, closing pairing-finalize races that credential-by-ID revocation cannot.
 // 54: Client-bound pairing candidates restrict pre-claim authority and bind
-// their durable credential to the claiming Client identity; it is also reserved
-// by concurrent protocol changes in #3390 and #3935.
+// their durable credential to the claiming Client identity. WorkHub also stores
+// strict durable delegation intent, commit, and abandonment records that older
+// peers cannot decode during transcript recovery.
 // 53: Message admission answers `turn.message.submit` with an explicit
 // disposition, and queued Messages can be proven cancelled. Older peers read the
 // answer as a bare acknowledgement and cannot reconcile their own projection.

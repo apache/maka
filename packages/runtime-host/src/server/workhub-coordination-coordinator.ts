@@ -168,6 +168,7 @@ export class HostWorkHubCoordinationCoordinator {
       readDelegation: (actionId) => this.#delegations.read(actionId),
       prepareDelegation: (intent) => this.#delegations.prepare(intent),
       commitDelegation: (commit) => this.#delegations.commit(commit),
+      abandonDelegation: (abandoned) => this.#delegations.abandon(abandoned),
     });
   }
 

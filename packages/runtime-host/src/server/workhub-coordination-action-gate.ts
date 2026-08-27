@@ -21,6 +21,7 @@ import { createHash } from 'node:crypto';
 import type {
   SessionHeader,
   SessionStatus,
+  WorkHubDelegationAbandonedMessage,
   WorkHubDelegationCommittedMessage,
   WorkHubDelegationIntentMessage,
 } from '@maka/core/session';
@@ -73,7 +74,9 @@ export interface WorkHubActionGateEffects {
     readonly sessionId: string;
     readonly workspace: WorkspaceTarget;
     readonly title: string;
-  }): Promise<{ readonly discardRevision?: number }>;
+  }): Promise<
+    { readonly kind: 'available'; readonly discardRevision?: number } | { readonly kind: 'retired' }
+  >;
   discardCreated(
     input: {
       readonly sessionId: string;
@@ -97,6 +100,7 @@ export interface WorkHubActionGateEffects {
   readDelegation(actionId: string): Promise<WorkHubDelegationRecord | undefined>;
   prepareDelegation(intent: WorkHubDelegationIntent): Promise<void>;
   commitDelegation(commit: WorkHubDelegationCommit): Promise<void>;
+  abandonDelegation(abandoned: WorkHubDelegationAbandoned): Promise<void>;
 }
 
 type StoredDelegationEnvelopeKeys = 'type' | 'id' | 'turnId' | 'ts' | 'schemaVersion';
@@ -111,7 +115,15 @@ export type WorkHubDelegationCommit = Omit<
   StoredDelegationEnvelopeKeys
 >;
 
-export type WorkHubDelegationRecord = WorkHubDelegationIntent | WorkHubDelegationCommit;
+export type WorkHubDelegationAbandoned = Omit<
+  WorkHubDelegationAbandonedMessage,
+  StoredDelegationEnvelopeKeys
+>;
+
+export type WorkHubDelegationRecord =
+  | WorkHubDelegationIntent
+  | WorkHubDelegationCommit
+  | WorkHubDelegationAbandoned;
 
 export type WorkHubActionEffectFailureCode =
   | 'host_not_ready'
@@ -181,6 +193,16 @@ export class WorkHubCoordinationActionGate {
     input: WorkHubCoordinationActInput,
     context: ConnectionContext,
   ): Promise<WorkHubCoordinationActResult> {
+    if (!input.userText.trim()) {
+      return Promise.reject(
+        new WorkHubActionGateFailure('action_conflict', 'WorkHub action text is empty'),
+      );
+    }
+    if (input.proposal.disposition === 'create_new' && !input.proposal.title.trim()) {
+      return Promise.reject(
+        new WorkHubActionGateFailure('action_conflict', 'WorkHub creation title is empty'),
+      );
+    }
     const fingerprint = actionFingerprint(input);
     const replay = this.#actions.get(input.actionId);
     if (replay) {
@@ -226,6 +248,9 @@ export class WorkHubCoordinationActionGate {
       }
       if (durable.kind === 'delegation_committed') {
         return committedResult(durable);
+      }
+      if (durable.kind === 'delegation_abandoned') {
+        throw abandonedAction();
       }
       return this.#executeDelegation(durable, context);
     }
@@ -296,6 +321,10 @@ export class WorkHubCoordinationActionGate {
         workspace: intent.create.workspace,
         title: intent.create.title,
       });
+      if (created.kind === 'retired') {
+        await this.#abandonDelegation(intent, 'created_session_retired');
+        throw abandonedAction();
+      }
       discardRevision = created.discardRevision;
     } else if (intent.create) {
       throw new WorkHubActionGateFailure(
@@ -315,18 +344,32 @@ export class WorkHubCoordinationActionGate {
         submitted = await this.#effects.submit(message, context);
       } catch (error) {
         if (!(error instanceof WorkHubActionEffectFailure)) throw error;
-        if (error.code !== 'commit_outcome_unknown') {
+        if (isDefinitiveSubmissionFailure(error.code)) {
           if (discardRevision !== undefined) {
-            await this.#effects.discardCreated(
-              {
-                sessionId: intent.targetSessionId,
-                expectedRevision: discardRevision,
-              },
-              context,
-            );
+            try {
+              await this.#effects.discardCreated(
+                {
+                  sessionId: intent.targetSessionId,
+                  expectedRevision: discardRevision,
+                },
+                context,
+              );
+            } catch (cleanupError) {
+              if (
+                !(cleanupError instanceof WorkHubActionEffectFailure) ||
+                cleanupError.code === 'commit_outcome_unknown'
+              ) {
+                throw cleanupError;
+              }
+              // The target effect was definitively rejected. Cleanup may be
+              // unnecessary or conflict with later user changes, but that
+              // must not leave the action executable again.
+            }
           }
+          await this.#abandonDelegation(intent, 'target_rejected');
           throw error;
         }
+        if (error.code !== 'commit_outcome_unknown') throw error;
         const recovered = await this.#effects.recoverSubmission(message);
         if (!recovered) throw error;
         submitted = recovered;
@@ -341,6 +384,17 @@ export class WorkHubCoordinationActionGate {
     };
     await this.#effects.commitDelegation(commit);
     return committedResult(commit);
+  }
+
+  async #abandonDelegation(
+    intent: WorkHubDelegationIntent,
+    reason: WorkHubDelegationAbandoned['reason'],
+  ): Promise<void> {
+    await this.#effects.abandonDelegation({
+      ...intent,
+      kind: 'delegation_abandoned',
+      reason,
+    });
   }
 
   #assertTarget(target: WorkHubCoordinationCandidate): void {
@@ -362,6 +416,19 @@ export class WorkHubCoordinationActionGate {
       this.#actions.delete(oldest);
     }
   }
+}
+
+function abandonedAction(): WorkHubActionGateFailure {
+  return new WorkHubActionGateFailure('action_conflict', 'WorkHub action is permanently abandoned');
+}
+
+function isDefinitiveSubmissionFailure(code: WorkHubActionEffectFailureCode): boolean {
+  return (
+    code === 'not_found' ||
+    code === 'session_archived' ||
+    code === 'operation_conflict' ||
+    code === 'unauthorized'
+  );
 }
 
 export function candidateSet(

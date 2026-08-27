@@ -953,9 +953,16 @@ export interface WorkHubDelegationCommittedMessage extends WorkHubCoordinationMe
   steered?: true;
 }
 
+/** Durable terminal proof that an action cannot be executed or retried. */
+export interface WorkHubDelegationAbandonedMessage extends WorkHubCoordinationMessageEnvelope {
+  kind: 'delegation_abandoned';
+  reason: 'target_rejected' | 'created_session_retired';
+}
+
 export type WorkHubCoordinationMessage =
   | WorkHubDelegationIntentMessage
-  | WorkHubDelegationCommittedMessage;
+  | WorkHubDelegationCommittedMessage
+  | WorkHubDelegationAbandonedMessage;
 
 export interface TurnRecord {
   turnId: string;
@@ -1115,6 +1122,25 @@ const WORKHUB_DELEGATION_COMMITTED_MESSAGE_SHAPE =
       'targetTurnId',
     ],
     ['create', 'steered'],
+  );
+const WORKHUB_DELEGATION_ABANDONED_MESSAGE_SHAPE =
+  defineObjectShape<WorkHubDelegationAbandonedMessage>()(
+    [
+      'type',
+      'id',
+      'turnId',
+      'ts',
+      'schemaVersion',
+      'kind',
+      'actionId',
+      'actionFingerprint',
+      'coordinationTurnId',
+      'targetSessionId',
+      'disposition',
+      'userText',
+      'reason',
+    ],
+    ['create'],
   );
 const WORKHUB_DELEGATION_CREATE_SHAPE = defineObjectShape<WorkHubDelegationCreateSpec>()(
   ['title', 'workspace'],
@@ -1309,6 +1335,12 @@ function isWorkHubCoordinationMessage(message: Record<string, unknown>): boolean
   if (!common) return false;
   if (message.kind === 'delegation_intent') {
     return hasExactShape(message, WORKHUB_DELEGATION_INTENT_MESSAGE_SHAPE);
+  }
+  if (message.kind === 'delegation_abandoned') {
+    return (
+      hasExactShape(message, WORKHUB_DELEGATION_ABANDONED_MESSAGE_SHAPE) &&
+      (message.reason === 'target_rejected' || message.reason === 'created_session_retired')
+    );
   }
   return (
     message.kind === 'delegation_committed' &&

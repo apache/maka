@@ -27,14 +27,8 @@ import type {
   RootTurnAdmission,
   RootTurnSourceMessageReceipt,
 } from '@maka/storage/agent-run-store';
+import type { PendingMessageAdmission } from '@maka/storage/execution-stores';
 import { WorkHubActionEffectFailure } from './workhub-coordination-action-gate.js';
-
-interface WorkHubPendingMessageAdmission {
-  readonly turnId: string;
-  readonly runId: string;
-  readonly submittedPlacement: 'current_turn' | 'next_turn';
-  readonly submittedContentDigest: `sha256:${string}`;
-}
 
 export interface WorkHubSubmissionRecoveryStores {
   readRootTurnSourceMessageReceipt(
@@ -44,7 +38,7 @@ export interface WorkHubSubmissionRecoveryStores {
   readMessageAdmission(
     sessionId: string,
     messageId: string,
-  ): Promise<WorkHubPendingMessageAdmission | undefined>;
+  ): Promise<PendingMessageAdmission | undefined>;
   readRootTurnAdmission(sessionId: string, turnId: string): Promise<RootTurnAdmission | undefined>;
   readImmutableSteeringMessageProof(
     sessionId: string,
@@ -100,7 +94,8 @@ export async function recoverWorkHubTargetSubmission(
     expectedDigest,
   );
   const root = await stores.readRootTurnAdmission(input.sessionId, admission.turnId);
-  if (!root || root.runId !== admission.runId) return undefined;
+  if (admission.disposition !== 'steering' || !root || root.runId !== admission.runId)
+    return undefined;
   return { turnId: admission.turnId, steered: true };
 }
 

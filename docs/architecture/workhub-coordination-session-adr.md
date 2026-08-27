@@ -119,16 +119,21 @@ existing Coordination Session transcript. An immutable `delegation_intent` is
 appended before the target Session effect so an opaque candidate remains
 recoverable after the candidate set changes or the Runtime Host restarts. A
 `delegation_committed` record then binds that intent to the accepted target Turn
-and acts as the durable action-replay result. The records carry an action
-fingerprint to reject conflicting reuse of an action identity. They do not form a
-general workflow state machine and do not persist target execution lifecycle.
+and acts as the durable action-replay result. A mutually exclusive
+`delegation_abandoned` record spends an identity whose target effect was
+definitively rejected; for `create_new`, it also closes a retired deterministic
+Session id. The records carry an action fingerprint to reject conflicting reuse
+of an action identity. They do not form a general workflow state machine and do
+not persist target execution lifecycle.
 
-The renderer couples one reload-safe Composer draft to one action identity until
-both target admission and its Coordination summary settle. The lease is scoped by
-Coordination Session, so switching Runtime Hosts cannot move or retire another
-Host's action identity. Retry therefore reuses the same identity instead of
-treating the retained draft as new work; `waiting_for_user` does not retire that
-identity, and the first generated Coordination summary is immutable across retry.
+The renderer persists the Composer draft and its in-flight action as separate
+fields in local storage until both target admission and its Coordination summary
+settle. Draft edits cannot revoke an admitted action, and the identity survives a
+renderer reload or full application relaunch. The lease is scoped by Coordination
+Session, so switching Runtime Hosts cannot move or retire another Host's action
+identity. Retry therefore reuses the same identity instead of treating retained
+text as new work; `waiting_for_user` does not retire that identity, and the first
+generated Coordination summary remains bound to the action across draft changes.
 The durable fingerprint covers stable user intent, not snapshot-scoped candidate
 ids; once prepared, the intent owns the resolved target, exact user text, and any
 `create_new` title/workspace context.
@@ -141,7 +146,10 @@ definitive `create_new` submit rejection compensates through the ordinary
 Session-retirement authority. The exact stable create may expose its revision again
 only while the Session remains at the initial revision, so an uncertain retirement
 can be retried without granting cleanup authority over a subsequently mutated
-Session. An unknown submit outcome never removes a possibly admitted Session.
+Session. `not_found` is successful cleanup, while revision, busy, and other
+definitive cleanup failures stay local to the action; only an already-uncertain
+commit path may request Runtime Host drain. An unknown submit outcome never removes
+a possibly admitted Session.
 Recovery is deliberately driven by explicit caller retry rather than an autonomous
 startup scan: the latter would execute user work without a live request context and
 turn this journal into a background workflow engine.
@@ -157,14 +165,18 @@ turn this journal into a background workflow engine.
   other Host's Sessions.
 - The special Session role adds provisioning, lookup, recovery, retention, and UI
   obligations even though it deliberately reuses the existing Session substrate.
+- Every delegated Coordination turn adds two invisible journal messages (intent
+  plus committed or abandoned) beside its three visible transcript messages.
+  Message-count page limits therefore retain up to roughly 40% fewer visible
+  delegated turns than an answer-only Coordination history.
 - Whether Work is 1:1 with Session, 1:N over Sessions, or an independent durable
   entity remains unresolved.
 - Cross-Runtime-Host coordination remains deferred.
 - Coordination Session role representation, lazy creation, durable lookup,
   recovery, per-Host UI resolution, persistent transcript, closed dispositions,
   and the Action Gate are implemented. Durable delegation linkage is encoded in
-  that transcript; target lifecycle projection and destructive replacement/Stop
-  recovery remain later work.
+  that transcript; target lifecycle projection, linked correction, and destructive
+  replacement/Stop recovery remain later work.
 
 Reevaluate the per-Host decision if supported workflows require one WorkHub
 conversation to coordinate ordinary Sessions on multiple Runtime Hosts, or if Host

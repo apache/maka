@@ -168,8 +168,11 @@ test('Coordination transcript adapter emits an initial empty ready snapshot and 
       candidates: [],
     }),
     act: async () => ({
-      disposition: 'answer_here',
-      coordinationTurnId: 'coordination-turn',
+      ok: true,
+      result: {
+        disposition: 'answer_here',
+        coordinationTurnId: 'coordination-turn',
+      },
     }),
   });
 

@@ -1242,6 +1242,7 @@ export async function createExecutionRuntimeHostComposition(
             orchestrationMode: 'default',
           });
           const { outcome } = created;
+          if (created.retired) return { kind: 'retired' as const };
           if (!outcome.ok) {
             throw new WorkHubActionEffectFailure(
               outcome.error.code === 'invalid_request' ? 'operation_conflict' : outcome.error.code,
@@ -1249,8 +1250,8 @@ export async function createExecutionRuntimeHostComposition(
             );
           }
           return created.discardRevision === undefined
-            ? {}
-            : { discardRevision: created.discardRevision };
+            ? { kind: 'available' as const }
+            : { kind: 'available' as const, discardRevision: created.discardRevision };
         },
         discardCreated: async (input, connection) => {
           const outcome = await requireSessionRetirement(sessionRetirement).handlers[
@@ -1262,11 +1263,14 @@ export async function createExecutionRuntimeHostComposition(
             },
             connection,
           );
-          if (!outcome.ok || outcome.result.kind !== 'removed') {
-            context.requestDrain();
+          if (!outcome.ok) {
+            if (outcome.error.code === 'not_found') return;
+            throw new WorkHubActionEffectFailure(outcome.error.code, outcome.error.message);
+          }
+          if (outcome.result.kind !== 'removed') {
             throw new WorkHubActionEffectFailure(
-              'commit_outcome_unknown',
-              'WorkHub empty created Session retirement outcome is unknown',
+              'operation_conflict',
+              'WorkHub empty created Session changed before retirement',
             );
           }
         },

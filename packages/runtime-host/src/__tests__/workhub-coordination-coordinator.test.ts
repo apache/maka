@@ -495,7 +495,7 @@ describe('Host WorkHub Coordination coordinator', () => {
       });
       const submissions: Array<{ sessionId: string; messageId: string; text: string }> = [];
       const first = coordinator(root, store, () => undefined, undefined, undefined, undefined, {
-        create: async () => ({}),
+        create: async () => ({ kind: 'available' }),
         discardCreated: async () => undefined,
         submit: async (input) => {
           submissions.push(input);
@@ -722,7 +722,7 @@ function coordinator(
     WorkHubActionGateEffects,
     'create' | 'discardCreated' | 'submit' | 'recoverSubmission'
   > = {
-    create: async () => ({}),
+    create: async () => ({ kind: 'available' }),
     discardCreated: async () => undefined,
     submit: async ({ sessionId }) => ({ turnId: `turn-${sessionId}` }),
     recoverSubmission: async () => undefined,

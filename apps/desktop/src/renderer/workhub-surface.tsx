@@ -35,7 +35,11 @@ import type {
   WorkHubSubmission,
   WorkHubSubmitInput,
 } from './workhub-controller.js';
-import { WorkHubSendLease } from './workhub-send-lease.js';
+import {
+  WorkHubSendLease,
+  type WorkHubSendAttempt,
+} from './workhub-send-lease.js';
+import { WorkHubCoordinationFailure } from './workhub-coordination-port.js';
 
 export interface WorkHubConversationTurn {
   requestId: string;
@@ -90,6 +94,14 @@ export function workHubSubmissionClearsDraft(
 }
 
 export function workHubSurfaceFailure(error: unknown): WorkHubSurfaceFailure {
+  if (error instanceof WorkHubCoordinationFailure) {
+    if (error.code === 'operation_conflict') return 'action_changed';
+    if (error.code === 'not_found' || error.code === 'session_archived') {
+      return 'candidates_changed';
+    }
+    if (error.code === 'session_busy') return 'target_waiting';
+    return 'delivery_failed';
+  }
   const message = error instanceof Error ? error.message : '';
   if (
     /candidates changed|not in the admitted candidate set|source or target is not in/iu.test(
@@ -162,6 +174,29 @@ export async function submitAndRecordWorkHubSurfaceInput(input: {
     throw error;
   }
   return result;
+}
+
+export async function submitLeasedWorkHubSurfaceInput(input: {
+  lease: WorkHubSendLease;
+  text: string;
+  preserveDraft?: boolean;
+  submit(attempt: WorkHubSendAttempt): Promise<WorkHubSubmission | undefined>;
+}): Promise<boolean> {
+  const attempt = input.lease.acquireAttempt(input.text, {
+    preserveDraft: input.preserveDraft,
+  });
+  if (input.preserveDraft && attempt.text !== input.text) return false;
+  const result = await input.submit(attempt);
+  if (!result) return false;
+  const clearsDraft = input.lease.settle(
+    attempt.requestId,
+    workHubSubmissionClearsDraft(result),
+  );
+  if (input.preserveDraft && clearsDraft) {
+    input.lease.write('workhub', '');
+    return false;
+  }
+  return clearsDraft;
 }
 
 /**
@@ -277,6 +312,9 @@ export function WorkHubSurface(props: {
         if (result.kind === 'submitted') await refresh();
         return result;
       } catch (error) {
+        if (isTerminalWorkHubSurfaceFailure(error)) {
+          sendLease.abandon(input.requestId);
+        }
         setTurns((current) => current.map((turn) =>
           turn.requestId === localRequestId
             ? {
@@ -297,22 +335,23 @@ export function WorkHubSurface(props: {
   const send = useCallback(async (value: string) => {
     const text = value.trim();
     if (!text || !initialLoadSettled || !conversationReady || routeGate.pending) return false;
-    const attempt = sendLease.acquireAttempt(text);
-    const { requestId } = attempt;
-    setTurns((current) => current.some((turn) => turn.requestId === requestId)
-      ? current.map((turn) => turn.requestId === requestId
-        ? { requestId, text, state: 'routing' }
-        : turn)
-      : [...current, { requestId, text, state: 'routing' }]);
-    const result = await route({
-      requestId,
+    return submitLeasedWorkHubSurfaceInput({
+      lease: sendLease,
       text,
-      ...(attempt.retrying ? { retryAction: true as const } : {}),
+      submit: async (attempt) => {
+        const { requestId } = attempt;
+        setTurns((current) => current.some((turn) => turn.requestId === requestId)
+          ? current.map((turn) => turn.requestId === requestId
+            ? { requestId, text: attempt.text, state: 'routing' }
+            : turn)
+          : [...current, { requestId, text: attempt.text, state: 'routing' }]);
+        return route({
+          requestId,
+          text: attempt.text,
+          ...(attempt.retrying ? { retryAction: true as const } : {}),
+        });
+      },
     });
-    if (result) sendLease.settle(requestId, workHubSubmissionClearsDraft(result));
-    // Composer clears only accepted drafts. Waiting, delivery failures, and a
-    // ref-blocked duplicate keep the exact text available for retry.
-    return workHubSubmissionClearsDraft(result);
   }, [conversationReady, initialLoadSettled, route, routeGate, sendLease]);
   const visible = visibleWorkHubConversation(coordinationTurns, turns);
   const visibleCoordinationTurns = visible.coordination;
@@ -383,14 +422,22 @@ export function WorkHubSurface(props: {
                       const selected = projection.sessions.find(
                         (session) => session.target.sessionId === target.sessionId,
                       );
-                      void route({
-                        requestId: crypto.randomUUID(),
+                      void submitLeasedWorkHubSurfaceInput({
+                        lease: sendLease,
                         text: turn.text,
-                        explicitTarget: target,
-                        ...(turn.outcome?.kind === 'clarification' && turn.outcome.correction
-                          ? { correction: turn.outcome.correction }
-                          : {}),
-                      }, turn.requestId, copy.choseWork(selected?.sessionName ?? copy.sessionFallback));
+                        preserveDraft: true,
+                        submit: (attempt) => route({
+                          requestId: attempt.requestId,
+                          text: attempt.text,
+                          explicitTarget: target,
+                          ...(attempt.retrying ? { retryAction: true as const } : {}),
+                          ...(turn.outcome?.kind === 'clarification' && turn.outcome.correction
+                            ? { correction: turn.outcome.correction }
+                            : {}),
+                        }, turn.requestId, copy.choseWork(
+                          selected?.sessionName ?? copy.sessionFallback,
+                        )),
+                      });
                     }}
                     onOpenSession={props.onOpenSession}
                   />
@@ -401,6 +448,16 @@ export function WorkHubSurface(props: {
         </div>
       </main>
     </ChatSurfaceLayout>
+  );
+}
+
+function isTerminalWorkHubSurfaceFailure(error: unknown): boolean {
+  return (
+    error instanceof WorkHubCoordinationFailure &&
+    (error.code === 'operation_conflict' ||
+      error.code === 'not_found' ||
+      error.code === 'session_archived' ||
+      error.code === 'unauthorized')
   );
 }
 

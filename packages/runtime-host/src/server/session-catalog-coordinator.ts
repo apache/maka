@@ -207,13 +207,26 @@ export class HostSessionCatalogCoordinator {
   async createForWorkHub(input: SessionCreateInput): Promise<{
     readonly outcome: OperationOutcome<'session.create'>;
     readonly discardRevision?: number;
+    readonly retired?: true;
   }> {
     let discardRevision: number | undefined;
+    let retired: true | undefined;
     const rememberDiscardRevision = (revision: number) => {
       discardRevision = revision;
     };
-    const outcome = await this.#create(input, rememberDiscardRevision, rememberDiscardRevision);
-    return { outcome, ...(discardRevision === undefined ? {} : { discardRevision }) };
+    const outcome = await this.#create(
+      input,
+      rememberDiscardRevision,
+      rememberDiscardRevision,
+      () => {
+        retired = true;
+      },
+    );
+    return {
+      outcome,
+      ...(discardRevision === undefined ? {} : { discardRevision }),
+      ...(retired ? { retired } : {}),
+    };
   }
 
   async #query(
@@ -352,6 +365,7 @@ export class HostSessionCatalogCoordinator {
     input: SessionCreateInput,
     onCreated?: (revision: number) => void,
     onPristineReplay?: (revision: number) => void,
+    onRetiredReplay?: () => void,
   ): Promise<OperationOutcome<'session.create'>> {
     if (isWorkHubCoordinationSessionId(input.sessionId)) {
       return createFailure(
@@ -383,6 +397,7 @@ export class HostSessionCatalogCoordinator {
           );
         }
         if (probe.kind === 'conflict') {
+          if (probe.reason === 'removed') onRetiredReplay?.();
           return createFailure(
             'operation_conflict',
             'Session identity belongs to a different create request',
@@ -415,6 +430,7 @@ export class HostSessionCatalogCoordinator {
               input: createInput,
             });
             if (result.kind === 'conflict') {
+              if (result.reason === 'removed') onRetiredReplay?.();
               return createFailure(
                 'operation_conflict',
                 'Session identity belongs to a different create request',

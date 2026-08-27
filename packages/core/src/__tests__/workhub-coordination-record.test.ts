@@ -24,7 +24,7 @@ import { decodeCanonicalMessage } from '../session.js';
 const FINGERPRINT = `sha256:${'a'.repeat(64)}`;
 
 describe('WorkHub Coordination stored records', () => {
-  test('decodes exact delegation intent and commit records', () => {
+  test('decodes exact delegation intent, commit, and abandonment records', () => {
     const intent = {
       type: 'workhub_coordination',
       id: 'intent-id',
@@ -48,9 +48,17 @@ describe('WorkHub Coordination stored records', () => {
       targetTurnId: 'target-turn',
       steered: true,
     } as const;
+    const abandoned = {
+      ...intent,
+      id: 'abandoned-id',
+      ts: 3,
+      kind: 'delegation_abandoned',
+      reason: 'target_rejected',
+    } as const;
 
     assert.deepEqual(decodeCanonicalMessage(intent), intent);
     assert.deepEqual(decodeCanonicalMessage(committed), committed);
+    assert.deepEqual(decodeCanonicalMessage(abandoned), abandoned);
   });
 
   test('rejects malformed or widened coordination records', () => {

@@ -27,6 +27,7 @@ import {
   WorkHubProjectionRefreshGate,
   WorkHubSurfaceRouteGate,
   submitAndRecordWorkHubSurfaceInput,
+  submitLeasedWorkHubSurfaceInput,
   submitWorkHubSurfaceInput,
   visibleWorkHubConversation,
   workHubSurfaceFailure,
@@ -43,6 +44,7 @@ import {
   type WorkHubDesktopSession,
 } from '../../renderer/workhub-session-port.js';
 import { WorkHubSendLease } from '../../renderer/workhub-send-lease.js';
+import { WorkHubCoordinationFailure } from '../../renderer/workhub-coordination-port.js';
 
 test('production retry keeps one action identity across failure and renderer reload', () => {
   const values = new Map<string, string>();
@@ -68,6 +70,135 @@ test('production retry keeps one action identity across failure and renderer rel
   assert.equal(restarted.acquire('Continue payment work'), 'action-1');
   restarted.complete('action-1');
   assert.equal(restarted.acquire('Continue payment work'), 'action-2');
+});
+
+test('a failed storage retirement cannot resurrect a settled action in memory', () => {
+  const values = new Map<string, string>();
+  let rejectWrites = false;
+  const storage = {
+    getItem: (key: string) => values.get(key) ?? null,
+    setItem: (key: string, value: string) => {
+      if (rejectWrites) throw new Error('storage unavailable');
+      values.set(key, value);
+    },
+    removeItem: (key: string) => {
+      if (rejectWrites) throw new Error('storage unavailable');
+      values.delete(key);
+    },
+  };
+  const ids = ['action-1', 'action-2'];
+  const lease = new WorkHubSendLease({
+    scope: 'host-a',
+    storage,
+    createId: () => ids.shift()!,
+  });
+
+  const first = lease.acquire('Continue payment work');
+  rejectWrites = true;
+  lease.complete(first);
+
+  assert.equal(lease.acquire('Continue payment work'), 'action-2');
+});
+
+test('typing the next draft while an action is in flight cannot revoke its summary identity', () => {
+  const values = new Map<string, string>();
+  const storage = {
+    getItem: (key: string) => values.get(key) ?? null,
+    setItem: (key: string, value: string) => values.set(key, value),
+    removeItem: (key: string) => values.delete(key),
+  };
+  const ids = ['action-in-flight', 'action-next'];
+  const lease = new WorkHubSendLease({
+    scope: 'host-a',
+    storage,
+    createId: () => ids.shift()!,
+  });
+  const attempt = lease.acquireAttempt('Continue payment work');
+
+  lease.write('workhub', 'Start the next message');
+
+  assert.equal(
+    lease.summary(attempt.requestId, () => 'Accepted by Payments.'),
+    'Accepted by Payments.',
+  );
+  assert.deepEqual(lease.acquireAttempt('Start the next message'), {
+    requestId: 'action-in-flight',
+    text: 'Continue payment work',
+    retrying: true,
+  });
+  assert.equal(lease.settle(attempt.requestId, true), false);
+  assert.equal(lease.read('workhub'), 'Start the next message');
+  assert.deepEqual(lease.acquireAttempt('Start the next message'), {
+    requestId: 'action-next',
+    text: 'Start the next message',
+    retrying: false,
+  });
+});
+
+test('a new send normalizes surrounding whitespace without retaining the sent draft', () => {
+  const values = new Map<string, string>();
+  const storage = {
+    getItem: (key: string) => values.get(key) ?? null,
+    setItem: (key: string, value: string) => values.set(key, value),
+    removeItem: (key: string) => values.delete(key),
+  };
+  const lease = new WorkHubSendLease({
+    scope: 'host-a',
+    storage,
+    createId: () => 'trimmed-action',
+  });
+  lease.write('workhub', '  Continue payment work  ');
+
+  const attempt = lease.acquireAttempt('Continue payment work');
+
+  assert.equal(lease.read('workhub'), 'Continue payment work');
+  assert.equal(lease.settle(attempt.requestId, true), true);
+});
+
+test('clarification choice retries through the same leased action identity', async () => {
+  const values = new Map<string, string>();
+  const storage = {
+    getItem: (key: string) => values.get(key) ?? null,
+    setItem: (key: string, value: string) => values.set(key, value),
+    removeItem: (key: string) => values.delete(key),
+  };
+  const ids = ['choice-action-1', 'choice-action-2'];
+  const lease = new WorkHubSendLease({
+    scope: 'host-a',
+    storage,
+    createId: () => ids.shift()!,
+  });
+  const clarificationRequestId = lease.acquire('Continue the login work');
+  assert.equal(lease.settle(clarificationRequestId, true), true);
+  lease.write('workhub', '');
+  const submittedIds: string[] = [];
+  let failSummary = true;
+  const choose = () => submitLeasedWorkHubSurfaceInput({
+    lease,
+    text: 'Continue the login work',
+    preserveDraft: true,
+    submit: async (attempt) => {
+      submittedIds.push(attempt.requestId);
+      if (failSummary) {
+        failSummary = false;
+        return undefined;
+      }
+      return {
+        kind: 'submitted',
+        strategyId: WORKHUB_ROUTING_STRATEGY_ID,
+        requestId: attempt.requestId,
+        target: { sessionId: 'login' },
+        turnId: 'login-turn',
+        evidence: 'explicit_target',
+      };
+    },
+  });
+
+  assert.equal(await choose(), false);
+  assert.equal(lease.read('workhub'), 'Continue the login work');
+  assert.equal(await choose(), false);
+  assert.equal(lease.read('workhub'), undefined);
+  assert.deepEqual(submittedIds, ['choice-action-2', 'choice-action-2']);
 });
 
 test('production retry identity is isolated by Runtime Host scope', () => {
@@ -285,6 +416,15 @@ test('summary failure keeps the target action retryable under the same productio
 });
 
 test('surface turns Action Gate rejections into safe actionable failures', () => {
+  assert.equal(
+    workHubSurfaceFailure(
+      new WorkHubCoordinationFailure(
+        'operation_conflict',
+        'WorkHub action is permanently abandoned',
+      ),
+    ),
+    'action_changed',
+  );
   assert.equal(
     workHubSurfaceFailure(
       new Error('WorkHub Session candidates changed; refresh before delegating'),

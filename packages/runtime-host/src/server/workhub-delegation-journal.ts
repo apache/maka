@@ -24,6 +24,7 @@ import {
   WORKHUB_COORDINATION_SESSION_ID,
   isWorkHubCoordinationSession,
   type StoredMessage,
+  type WorkHubDelegationAbandonedMessage,
   type WorkHubDelegationCommittedMessage,
   type WorkHubDelegationIntentMessage,
 } from '@maka/core/session';
@@ -31,13 +32,14 @@ import type { SessionAuthorityStore } from '@maka/storage/session-store';
 import type { SessionContinuityCoordinator } from './session-continuity-coordinator.js';
 import {
   WorkHubActionEffectFailure,
+  type WorkHubDelegationAbandoned,
   type WorkHubDelegationCommit,
   type WorkHubDelegationIntent,
   type WorkHubDelegationRecord,
 } from './workhub-coordination-action-gate.js';
 import type { SessionAdmissionGate } from './session-admission-gate.js';
 
-const RECORD_KINDS = ['delegation_intent', 'delegation_committed'] as const;
+const RECORD_KINDS = ['delegation_intent', 'delegation_committed', 'delegation_abandoned'] as const;
 // Two records may each repeat the bounded 48 KiB request plus create context;
 // JSON escaping can expand one input byte to six encoded bytes.
 const RECORD_READ_MAX_BYTES = 768 * 1024;
@@ -118,6 +120,7 @@ export class WorkHubDelegationJournal {
         if (!sameCommit(existing, commit)) throw actionConflict();
         return;
       }
+      if (existing?.kind === 'delegation_abandoned') throw actionConflict();
       if (!existing || !sameIntent(existing, commit)) throw actionConflict();
       try {
         await this.#stores.appendMessages(WORKHUB_COORDINATION_SESSION_ID, [
@@ -130,6 +133,36 @@ export class WorkHubDelegationJournal {
         throw new WorkHubActionEffectFailure(
           'commit_outcome_unknown',
           'WorkHub delegation commit outcome is unknown',
+        );
+      }
+    });
+  }
+
+  abandon(abandoned: WorkHubDelegationAbandoned): Promise<void> {
+    return this.#admission.run(WORKHUB_COORDINATION_SESSION_ID, async (lease) => {
+      await this.#assertCoordinationSession();
+      const existing = this.#projectRecord(
+        abandoned.actionId,
+        await this.#readMessages(abandoned.actionId),
+      );
+      if (existing?.kind === 'delegation_abandoned') {
+        if (!sameAbandoned(existing, abandoned)) throw actionConflict();
+        return;
+      }
+      if (!existing || existing.kind !== 'delegation_intent' || !sameIntent(existing, abandoned)) {
+        throw actionConflict();
+      }
+      try {
+        await this.#stores.appendMessages(WORKHUB_COORDINATION_SESSION_ID, [
+          abandonedMessage(abandoned),
+        ]);
+        await this.#continuity.refreshCanonical(WORKHUB_COORDINATION_SESSION_ID, lease);
+      } catch (error) {
+        if (error instanceof WorkHubActionEffectFailure) throw error;
+        this.#requestDrain();
+        throw new WorkHubActionEffectFailure(
+          'commit_outcome_unknown',
+          'WorkHub delegation abandonment outcome is unknown',
         );
       }
     });
@@ -177,12 +210,7 @@ export class WorkHubDelegationJournal {
     actionId: string,
     messages: readonly StoredMessage[],
   ): WorkHubDelegationRecord | undefined {
-    try {
-      return projectRecord(actionId, messages);
-    } catch (error) {
-      this.#requestDrain();
-      throw error;
-    }
+    return projectRecord(actionId, messages);
   }
 }
 
@@ -199,17 +227,32 @@ function projectRecord(
     (message): message is WorkHubDelegationCommittedMessage =>
       message.type === 'workhub_coordination' && message.kind === 'delegation_committed',
   );
+  const abandoned = messages.find(
+    (message): message is WorkHubDelegationAbandonedMessage =>
+      message.type === 'workhub_coordination' && message.kind === 'delegation_abandoned',
+  );
   if (
-    messages.length !== Number(intent !== undefined) + Number(committed !== undefined) ||
+    messages.length !==
+      Number(intent !== undefined) +
+        Number(committed !== undefined) +
+        Number(abandoned !== undefined) ||
     intent?.actionId !== actionId ||
-    (committed !== undefined && (!intent || !sameMessageIntent(intent, committed)))
+    (committed !== undefined && (!intent || !sameMessageIntent(intent, committed))) ||
+    (abandoned !== undefined && (!intent || !sameMessageIntent(intent, abandoned))) ||
+    (committed !== undefined && abandoned !== undefined)
   ) {
     throw new WorkHubActionEffectFailure(
       'persistence_failed',
       'WorkHub delegation record chain is invalid',
     );
   }
-  return committed ? commitRecord(committed) : intent ? intentRecord(intent) : undefined;
+  return committed
+    ? commitRecord(committed)
+    : abandoned
+      ? abandonedRecord(abandoned)
+      : intent
+        ? intentRecord(intent)
+        : undefined;
 }
 
 function intentMessage(intent: WorkHubDelegationIntent): WorkHubDelegationIntentMessage {
@@ -231,6 +274,19 @@ function committedMessage(commit: WorkHubDelegationCommit): WorkHubDelegationCom
     ts: Date.now(),
     schemaVersion: WORKHUB_COORDINATION_RECORD_SCHEMA_VERSION,
     ...commit,
+  };
+}
+
+function abandonedMessage(
+  abandoned: WorkHubDelegationAbandoned,
+): WorkHubDelegationAbandonedMessage {
+  return {
+    type: 'workhub_coordination',
+    id: recordMessageId(abandoned.actionId, 'delegation_abandoned'),
+    turnId: abandoned.coordinationTurnId,
+    ts: Date.now(),
+    schemaVersion: WORKHUB_COORDINATION_RECORD_SCHEMA_VERSION,
+    ...abandoned,
   };
 }
 
@@ -263,11 +319,28 @@ function commitRecord(message: WorkHubDelegationCommittedMessage): WorkHubDelega
   };
 }
 
+function abandonedRecord(message: WorkHubDelegationAbandonedMessage): WorkHubDelegationAbandoned {
+  return {
+    kind: 'delegation_abandoned',
+    actionId: message.actionId,
+    actionFingerprint: message.actionFingerprint,
+    coordinationTurnId: message.coordinationTurnId,
+    targetSessionId: message.targetSessionId,
+    disposition: message.disposition,
+    userText: message.userText,
+    ...(message.create ? { create: message.create } : {}),
+    reason: message.reason,
+  };
+}
+
 function sameMessageIntent(
   intent: WorkHubDelegationIntentMessage,
-  committed: WorkHubDelegationCommittedMessage,
+  terminal: WorkHubDelegationCommittedMessage | WorkHubDelegationAbandonedMessage,
 ): boolean {
-  return sameIntent(intentRecord(intent), commitRecord(committed));
+  return sameIntent(
+    intentRecord(intent),
+    terminal.kind === 'delegation_committed' ? commitRecord(terminal) : abandonedRecord(terminal),
+  );
 }
 
 function sameIntent(
@@ -292,6 +365,13 @@ function sameCommit(left: WorkHubDelegationCommit, right: WorkHubDelegationCommi
     left.targetTurnId === right.targetTurnId &&
     left.steered === right.steered
   );
+}
+
+function sameAbandoned(
+  left: WorkHubDelegationAbandoned,
+  right: WorkHubDelegationAbandoned,
+): boolean {
+  return left.reason === right.reason && sameIntent(left, right);
 }
 
 function recordMessageId(actionId: string, kind: (typeof RECORD_KINDS)[number]): string {

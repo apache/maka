@@ -510,6 +510,25 @@ test('WorkHub creation reports a discard revision for creation and a pristine re
   assert.equal(mutated.discardRevision, undefined);
 });
 
+test('WorkHub creation distinguishes a retired deterministic Session identity', async () => {
+  const fixture = createFixture({
+    stores: {
+      probeStableSessionCreate: async () => ({ kind: 'conflict', reason: 'removed' }),
+    },
+  });
+
+  const retired = await fixture.coordinator.createForWorkHub({
+    sessionId: fixture.sessionId,
+    workspace: { kind: 'host_path', path: process.cwd() },
+    modelTarget: { kind: 'default' },
+  });
+
+  assert.equal(retired.outcome.ok, false);
+  assert.equal(retired.retired, true);
+  assert.equal(retired.discardRevision, undefined);
+  assert.equal(fixture.drainRequests(), 0);
+});
+
 test('ordinary configuration rejects the WorkHub Coordination Session identity', async () => {
   let reads = 0;
   const fixture = createFixture({

@@ -216,6 +216,7 @@ import type { OnboardingMilestoneId } from '@maka/core/onboarding';
 import {
   SCHEDULED_TASK_CATALOG_MAX_ITEMS,
   type OperationInput,
+  type OperationOutcome,
   type OperationOutput,
 } from '@maka/runtime-host/protocol';
 import type { AgentGraphEpochDirectory } from '@maka/runtime-host/client';
@@ -1642,7 +1643,7 @@ const makaBridge = {
     async act(
       coordinationSessionId: string,
       input: Omit<OperationInput<'workhub.coordination.act'>, 'create'>,
-    ): Promise<OperationOutput<'workhub.coordination.act'>> {
+    ): Promise<OperationOutcome<'workhub.coordination.act'>> {
       const scope = await resolveDesktopWorkHubCoordinationCreateScope(
         coordinationSessionId,
         runtimeHostSessionRef,
@@ -1651,14 +1652,21 @@ const makaBridge = {
         'workhub:act',
         scope,
         input,
-      ) as OperationOutput<'workhub.coordination.act'>;
-      if (result.disposition === 'answer_here' || result.disposition === 'clarify') return result;
+      ) as OperationOutcome<'workhub.coordination.act'>;
+      if (!result.ok) return result;
+      if (
+        result.result.disposition === 'answer_here' ||
+        result.result.disposition === 'clarify'
+      ) return result;
       return {
-        ...result,
-        targetSessionId: desktopSessionKey({
+        ok: true,
+        result: {
+          ...result.result,
+          targetSessionId: desktopSessionKey({
           hostId: scope.hostId,
-          sessionId: result.targetSessionId,
-        }),
+            sessionId: result.result.targetSessionId,
+          }),
+        },
       };
     },
     async createSession(
