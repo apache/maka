@@ -2920,7 +2920,7 @@ OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 
 ================================================================================
 
-Package: brace-expansion@5.0.7
+Package: brace-expansion@5.0.9
 Declared license: MIT
 Selected license: MIT
 Repository: git+https://github.com/juliangruber/brace-expansion.git
