@@ -40,7 +40,8 @@ retaining Maka's stronger protected-Environment, staged-publishing, 2FA, and Fin
 - Publish prereleases under `next` and stable versions under `latest`. `next` must never resolve to
   a version older than `latest`; when no newer prerelease exists, both tags point to the stable
   version.
-- Do not create an npm-specific Git tag or GitHub Release. The product `v<version>` tag and GitHub Release are owned only by the `Release` workflow, and must already exist before npm staging.
+- Do not create an npm-specific Git tag or GitHub Release. The `Release` workflow creates the
+  product `v<version>` tag and Draft before npm staging; Finalize is the sole publisher of that Draft.
 - Keep that GitHub Release in Draft until npm Finalize and Desktop remote Runtime Host acceptance
   succeed. The Draft supplies npm's product identity; its publication is the final product action.
 - Do not run `npm publish`. GitHub Actions may only run `npm stage publish`; a human package

@@ -33,7 +33,8 @@ source RC 阶段的 [npm 预检](../.github/ASF_NPM_RELEASE.md) 是更早执行�
 - 产品 Release workflow 只能从已批准的 ASF source candidate tag dispatch；npm Stage 只能从随后创建的产品 `v<version>` tag dispatch，npm Finalize 只能从 `main` dispatch；
 - 预发布版本使用 `next`，稳定版本使用 `latest`；`next` 不得指向比 `latest` 更旧的版本；没有
   更新的预发布版本时，两个 tag 都指向稳定版；
-- 不创建 npm 专属 Git tag 或 GitHub Release；产品 `v<version>` tag 与 GitHub Release 只由 `Release` workflow 管理，并且必须先于 npm staging 存在；
+- 不创建 npm 专属 Git tag 或 GitHub Release；`Release` workflow 在 npm staging 前创建产品
+  `v<version>` tag 与 Draft，Finalize 是该 Draft 唯一的发布者；
 - 在 npm Finalize 与 Desktop 远程 Runtime Host 验收成功前，GitHub Release 必须保持 Draft；
   Draft 为 npm 提供产品身份，发布 Draft 是最终的产品发布动作；
 - 不运行 `npm publish`。GitHub Actions 只能运行 `npm stage publish`，由人工 package

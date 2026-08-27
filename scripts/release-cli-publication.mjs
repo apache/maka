@@ -515,6 +515,7 @@ async function main() {
       appendOutputs(output, {
         product_tag: record.productTag,
         source_commit: record.source.commit,
+        version: record.version,
       });
     }
     return;

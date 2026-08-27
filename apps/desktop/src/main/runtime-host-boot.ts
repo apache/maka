@@ -667,7 +667,8 @@ const updateService = createAppUpdateService({
   onStatusChange: (status) =>
     mainWindowController.send("app:updateStatusChanged", status),
   // The loopback-only upgrade harness owns synthetic bytes that cannot carry
-  // a GitHub Actions identity. Production has no override and always reaches
+  // a GitHub Actions identity, so it tests updater mechanics rather than
+  // provenance. Ordinary packaged launches have no override and always reach
   // the Sigstore verifier below.
   verifyDownloadedUpdate: updateTestFeed
     ? async () => {}

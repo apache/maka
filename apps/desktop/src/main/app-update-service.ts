@@ -140,9 +140,8 @@ const UPDATE_CHECK_ON_FOCUS_MIN_INTERVAL_MS = 15 * 60 * 1000;
  * capability across any privilege boundary. Loopback-only keeps even that
  * same-user surface minimal: the feed must be a process listening on this
  * machine. With the variable unset the feed configuration is byte-identical
- * to production, and update signature verification (once a certificate
- * exists) applies to overridden feeds exactly as it does to the GitHub feed —
- * nothing here relaxes it.
+ * to production. The application composition root deliberately bypasses
+ * release provenance only for this synthetic-byte transport harness.
  */
 function normalizeVersion(version: string): string {
   return version.trim().replace(/^v/i, '');

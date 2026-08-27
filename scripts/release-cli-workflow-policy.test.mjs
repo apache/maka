@@ -120,6 +120,7 @@ test('finalize revalidates the live product release before trusting public npm b
 
 test('finalize preserves npm evidence and owns the single product publication boundary', () => {
   const workflow = readWorkflow('release-cli-finalize.yml');
+  const steps = workflowSteps(workflow);
   assert.match(workflow, /name: Preserve the verified public npm package/u);
   assert.match(workflow, /path: \$\{\{ runner\.temp \}\}\/registry-release/u);
   assert.doesNotMatch(workflow, /cli-v/u);
@@ -129,12 +130,22 @@ test('finalize preserves npm evidence and owns the single product publication bo
   assert.match(workflow, /attestations: write/u);
   assert.match(workflow, /product-release-authority\.mjs publish-draft/u);
   assert.match(workflow, /actions\/attest@[0-9a-f]{40}/u);
-  const artifacts = namedStep(
-    workflowSteps(workflow),
-    'Download the exact verified Release run artifacts',
+  const artifacts = namedStep(steps, 'Download the exact verified Release run artifacts');
+  assert.match(artifacts, /run-id: \$\{\{ needs\.inspect\.outputs\.release_run_id \}\}/u);
+  const preflight = namedStep(steps, 'Verify the exact publication input');
+  const attest = steps.find((step) => step.includes('uses: actions/attest@'));
+  const verify = namedStep(steps, 'Verify the issued provenance');
+  const publish = namedStep(steps, 'Publish the verified convenience release');
+  assert.ok(attest);
+  assert.ok(
+    workflow.indexOf(preflight) < workflow.indexOf(attest) &&
+      workflow.indexOf(attest) < workflow.indexOf(verify) &&
+      workflow.indexOf(verify) < workflow.indexOf(publish),
   );
-  assert.match(artifacts, /run-id: \$\{\{ inputs\.release_run_id \}\}/u);
-  assert.match(artifacts, /release-\*-\$\{\{ inputs\.release_run_attempt \}\}/u);
+  assert.match(preflight, /product-release-authority\.mjs verify-publication/u);
+  assert.match(verify, /gh attestation verify/u);
+  assert.match(verify, /@refs\/heads\/main/u);
+  assert.doesNotMatch(workflow.slice(workflow.indexOf('\n  publish:')), /\$\{\{ inputs\./u);
 });
 
 test('release workflows select npm from the root packageManager authority', () => {

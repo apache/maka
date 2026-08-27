@@ -484,6 +484,7 @@ test('validate-stage-run CLI accepts the canonical staged release identity', () 
   assert.deepEqual(readFileSync(output, 'utf8').trim().split('\n'), [
     `product_tag=${PRODUCT_TAG}`,
     `source_commit=${SOURCE_SHA}`,
+    `version=${fixture.version}`,
   ]);
 });
 

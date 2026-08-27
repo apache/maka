@@ -210,40 +210,18 @@ export async function publishDraftProductRelease({
   if (attestation.name !== releaseIdentity.attestationName) {
     throw new Error(`Product release attestation must be named ${releaseIdentity.attestationName}`);
   }
-  const evidence = await readProductReleasePublicationRecord(publicationRecordPath, {
-    repository,
+  const { draft, evidence } = await verifyDraftProductReleasePublication({
     tag,
     sourceCommit,
-    sourceReferenceTag,
-    runId: releaseRunId,
-    runAttempt: releaseRunAttempt,
-  });
-  await verifyProductReleasePublicationRecord({
+    repository,
     artifactDirectory,
-    record: evidence,
-    expected: {
-      repository,
-      tag,
-      sourceCommit,
-      sourceReferenceTag,
-      runId: releaseRunId,
-      runAttempt: releaseRunAttempt,
-    },
+    publicationRecordPath,
+    sourceReferenceTag,
+    releaseRunId,
+    releaseRunAttempt,
+    cwd,
+    run,
   });
-  const draft = await verifyDraftProductRelease({ tag, sourceCommit, repository, cwd, run });
-  const remoteAssets = (draft.assets ?? [])
-    .map(({ name, size, digest }) => ({ name, size, digest }))
-    .sort((left, right) => compareProductReleaseNames(left.name, right.name));
-  const allowedDraftAssets = remoteAssets.filter(({ name }) => name !== attestation.name);
-  const unexpectedAttestations = remoteAssets.filter(
-    ({ name }) => name.endsWith('-attestation.sigstore.json') && name !== attestation.name,
-  );
-  if (
-    unexpectedAttestations.length > 0 ||
-    JSON.stringify(allowedDraftAssets) !== JSON.stringify(evidence.assets)
-  ) {
-    throw new Error('Draft GitHub Release assets do not match the verified Release run artifacts');
-  }
 
   await run(
     'gh',
@@ -312,10 +290,63 @@ export async function publishDraftProductRelease({
   return record;
 }
 
+export async function verifyDraftProductReleasePublication({
+  tag,
+  sourceCommit,
+  repository,
+  artifactDirectory,
+  publicationRecordPath,
+  sourceReferenceTag,
+  releaseRunId,
+  releaseRunAttempt,
+  cwd = process.cwd(),
+  run = execFileAsync,
+}) {
+  const releaseIdentity = expectedReleaseIdentity(tag);
+  const evidence = await readProductReleasePublicationRecord(publicationRecordPath, {
+    repository,
+    tag,
+    sourceCommit,
+    sourceReferenceTag,
+    runId: releaseRunId,
+    runAttempt: releaseRunAttempt,
+  });
+  await verifyProductReleasePublicationRecord({
+    artifactDirectory,
+    record: evidence,
+    expected: {
+      repository,
+      tag,
+      sourceCommit,
+      sourceReferenceTag,
+      runId: releaseRunId,
+      runAttempt: releaseRunAttempt,
+    },
+  });
+  const draft = await verifyDraftProductRelease({ tag, sourceCommit, repository, cwd, run });
+  const remoteAssets = (draft.assets ?? [])
+    .map(({ name, size, digest }) => ({ name, size, digest }))
+    .sort((left, right) => compareProductReleaseNames(left.name, right.name));
+  const allowedDraftAssets = remoteAssets.filter(
+    ({ name }) => name !== releaseIdentity.attestationName,
+  );
+  const unexpectedAttestations = remoteAssets.filter(
+    ({ name }) =>
+      name.endsWith('-attestation.sigstore.json') && name !== releaseIdentity.attestationName,
+  );
+  if (
+    unexpectedAttestations.length > 0 ||
+    JSON.stringify(allowedDraftAssets) !== JSON.stringify(evidence.assets)
+  ) {
+    throw new Error('Draft GitHub Release assets do not match the verified Release run artifacts');
+  }
+  return { draft, evidence };
+}
+
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   const [command, ...args] = process.argv.slice(2);
   const usage =
-    'usage: product-release-authority.mjs verify-build-run <run-json> <tag> <source-commit> <owner/repository> <run-id> <run-attempt> | verify-draft <tag> <source-commit> <owner/repository> | publish-draft <tag> <source-commit> <owner/repository> <artifact-directory> <publication-record> <source-reference-tag> <run-id> <run-attempt> <attestation-bundle>';
+    'usage: product-release-authority.mjs verify-build-run <run-json> <tag> <source-commit> <owner/repository> <run-id> <run-attempt> | verify-draft <tag> <source-commit> <owner/repository> | verify-publication <tag> <source-commit> <owner/repository> <artifact-directory> <publication-record> <source-reference-tag> <run-id> <run-attempt> | publish-draft <tag> <source-commit> <owner/repository> <artifact-directory> <publication-record> <source-reference-tag> <run-id> <run-attempt> <attestation-bundle>';
   if (command === 'verify-build-run' && args.length === 6) {
     const [runPath, tag, sourceCommit, repository, runId, runAttempt] = args;
     const run = JSON.parse(await readFile(runPath, 'utf8'));
@@ -325,6 +356,28 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
     const [tag, sourceCommit, repository] = args;
     await verifyDraftProductRelease({ tag, sourceCommit, repository });
     console.log(`Verified Draft product Release ${tag} at ${sourceCommit}`);
+  } else if (command === 'verify-publication' && args.length === 8) {
+    const [
+      tag,
+      sourceCommit,
+      repository,
+      artifactDirectory,
+      publicationRecordPath,
+      sourceReferenceTag,
+      releaseRunId,
+      releaseRunAttempt,
+    ] = args;
+    await verifyDraftProductReleasePublication({
+      tag,
+      sourceCommit,
+      repository,
+      artifactDirectory,
+      publicationRecordPath,
+      sourceReferenceTag,
+      releaseRunId,
+      releaseRunAttempt,
+    });
+    console.log(`Verified exact publication input for ${tag}`);
   } else if (command === 'publish-draft' && args.length === 9) {
     const [
       tag,
