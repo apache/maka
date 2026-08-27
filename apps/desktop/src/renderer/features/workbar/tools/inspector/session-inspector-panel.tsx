@@ -192,15 +192,6 @@ export function SessionInspectorPanel(props: { sessionId: string; active: boolea
                 </p>
               )}
 
-              {snapshot.nextCursor && (
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  label={snapshot.loadingEarlier ? copy.loadingEarlier : copy.loadEarlier}
-                  isDisabled={snapshot.loading || snapshot.loadingEarlier}
-                  onClick={snapshot.loadEarlier}
-                />
-              )}
               <ol className="maka-inspector-turns">
                 {model.turns.map((turn) => (
                   <TurnRow
@@ -212,6 +203,15 @@ export function SessionInspectorPanel(props: { sessionId: string; active: boolea
                   />
                 ))}
               </ol>
+              {snapshot.nextCursor && (
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  label={snapshot.loadingEarlier ? copy.loadingEarlier : copy.loadEarlier}
+                  isDisabled={snapshot.loading || snapshot.loadingEarlier}
+                  onClick={snapshot.loadEarlier}
+                />
+              )}
             </VStack>
           </div>
         )}
