@@ -44,9 +44,13 @@ const PUBLICATION_RECORD_KEYS = [
   'assets',
 ];
 
+export function compareProductReleaseNames(left, right) {
+  return left < right ? -1 : left > right ? 1 : 0;
+}
+
 export function assertExactArtifactSet(actualNames, expectedNames) {
-  const actual = [...new Set(actualNames)].sort();
-  const expected = [...new Set(expectedNames)].sort();
+  const actual = [...new Set(actualNames)].sort(compareProductReleaseNames);
+  const expected = [...new Set(expectedNames)].sort(compareProductReleaseNames);
   const actualSet = new Set(actual);
   const expectedSet = new Set(expected);
   const missing = expected.filter((name) => !actualSet.has(name));
@@ -105,7 +109,7 @@ function digestFile(path, algorithm = 'sha256') {
 
 async function artifactRecords(directory, names) {
   return Promise.all(
-    [...names].sort().map(async (name) => {
+    [...names].sort(compareProductReleaseNames).map(async (name) => {
       const path = join(directory, name);
       const [details, digest] = await Promise.all([stat(path), digestFile(path)]);
       if (!details.isFile()) {
@@ -227,7 +231,10 @@ export function assertProductReleasePublicationRecord(record, expected = {}) {
     }
     names.add(asset.name);
   }
-  if (JSON.stringify(record.assets.map(({ name }) => name)) !== JSON.stringify([...names].sort())) {
+  if (
+    JSON.stringify(record.assets.map(({ name }) => name)) !==
+    JSON.stringify([...names].sort(compareProductReleaseNames))
+  ) {
     throw new Error('Product release publication assets must be sorted');
   }
   return record;

@@ -24,12 +24,7 @@ import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
-import {
-  assertProductReleaseAttestationSubject,
-  productReleaseAttestationName,
-  productReleaseAttestationUrl,
-  verifyDownloadedUpdateAttestation,
-} from '../app-update-attestation.js';
+import { verifyDownloadedUpdateAttestation } from '../app-update-attestation.js';
 
 function provenanceBundle(name: string, sha256: string): Bundle {
   const statement = {
@@ -56,32 +51,7 @@ function provenanceBundle(name: string, sha256: string): Bundle {
   } as unknown as Bundle;
 }
 
-test('product attestation location is one version-derived release asset', () => {
-  assert.equal(productReleaseAttestationName('1.2.3-beta.1'), 'Maka-1.2.3-beta.1-attestation.sigstore.json');
-  assert.equal(
-    productReleaseAttestationUrl('1.2.3-beta.1'),
-    'https://github.com/apache/maka/releases/download/v1.2.3-beta.1/Maka-1.2.3-beta.1-attestation.sigstore.json',
-  );
-  assert.throws(() => productReleaseAttestationName('../escape'), /cannot identify/u);
-});
-
-test('attestation subject must bind the exact update name and digest', () => {
-  const digest = 'a'.repeat(64);
-  const bundle = provenanceBundle('Maka-1.2.3-mac-arm64.zip', digest);
-  assert.doesNotThrow(() =>
-    assertProductReleaseAttestationSubject(bundle, 'Maka-1.2.3-mac-arm64.zip', digest),
-  );
-  assert.throws(
-    () => assertProductReleaseAttestationSubject(bundle, 'Maka-1.2.3-win-x64.exe', digest),
-    /does not identify/u,
-  );
-  assert.throws(
-    () => assertProductReleaseAttestationSubject(bundle, 'Maka-1.2.3-mac-arm64.zip', 'b'.repeat(64)),
-    /does not identify/u,
-  );
-});
-
-test('download verification checks cryptography before accepting the exact artifact subject', async (t) => {
+test('download verification accepts only a trusted exact artifact subject', async (t) => {
   const directory = await mkdtemp(join(tmpdir(), 'maka-update-attestation-'));
   t.after(() => rm(directory, { recursive: true, force: true }));
   const artifact = join(directory, 'cached-update.zip');
@@ -89,37 +59,48 @@ test('download verification checks cryptography before accepting the exact artif
   await writeFile(artifact, bytes);
   const digest = createHash('sha256').update(bytes).digest('hex');
   const bundle = provenanceBundle('Maka-1.2.3-mac-arm64.zip', digest);
-  let cryptographicVerifications = 0;
-
-  await verifyDownloadedUpdateAttestation({
+  const bundleBytes = Buffer.from(JSON.stringify({
+    mediaType: bundle.mediaType,
+    verificationMaterial: {
+      certificate: { rawBytes: Buffer.from('fixture certificate').toString('base64') },
+      tlogEntries: [],
+    },
+    dsseEnvelope: {
+      payloadType: bundle.content.$case === 'dsseEnvelope'
+        ? bundle.content.dsseEnvelope.payloadType
+        : '',
+      payload: bundle.content.$case === 'dsseEnvelope'
+        ? Buffer.from(bundle.content.dsseEnvelope.payload).toString('base64')
+        : '',
+      signatures: [{ sig: Buffer.from('fixture signature').toString('base64') }],
+    },
+  }));
+  const options = {
     downloadedFile: artifact,
     version: '1.2.3',
-    platform: 'darwin',
+    platform: 'darwin' as const,
     arch: 'arm64',
     trustRootCacheDirectory: join(directory, 'trust'),
-    fetchBundle: async (url) => {
-      assert.equal(url, productReleaseAttestationUrl('1.2.3'));
-      return Buffer.from(JSON.stringify({
-        mediaType: bundle.mediaType,
-        verificationMaterial: {
-          certificate: { rawBytes: Buffer.from('fixture certificate').toString('base64') },
-          tlogEntries: [],
-        },
-        dsseEnvelope: {
-          payloadType: bundle.content.$case === 'dsseEnvelope'
-            ? bundle.content.dsseEnvelope.payloadType
-            : '',
-          payload: bundle.content.$case === 'dsseEnvelope'
-            ? Buffer.from(bundle.content.dsseEnvelope.payload).toString('base64')
-            : '',
-          signatures: [{ sig: Buffer.from('fixture signature').toString('base64') }],
-        },
-      }));
-    },
-    verifyBundle: async () => {
-      cryptographicVerifications += 1;
-    },
-  });
+    fetchBundle: async () => bundleBytes,
+    verifyBundle: async () => {},
+  };
 
-  assert.equal(cryptographicVerifications, 1);
+  await verifyDownloadedUpdateAttestation(options);
+  await assert.rejects(
+    verifyDownloadedUpdateAttestation({ ...options, platform: 'win32', arch: 'x64' }),
+    /does not identify/u,
+  );
+
+  await writeFile(artifact, 'different update bytes');
+  await assert.rejects(verifyDownloadedUpdateAttestation(options), /does not identify/u);
+
+  await assert.rejects(
+    verifyDownloadedUpdateAttestation({
+      ...options,
+      verifyBundle: () => {
+        throw new Error('untrusted workflow identity');
+      },
+    }),
+    /untrusted workflow identity/u,
+  );
 });

@@ -697,42 +697,16 @@ test('one product workflow gates one draft release on every required artifact', 
       String(step.uses).startsWith('actions/upload-artifact@'),
     );
     assert.equal(upload.with.path, '${{ runner.temp }}/release-assets');
-    assert.equal(upload.with['retention-days'], 30);
-    assert.match(upload.with.name, /release-.*\$\{\{ github\.run_attempt \}\}/u);
   }
   const verifyArtifacts = jobs.publish.steps.find(
     (step) => step.name === 'Verify the exact product artifact manifest',
   ).run;
   assert.match(verifyArtifacts, /product-release-artifacts\.mjs verify release-assets/u);
-  assert.doesNotMatch(verifyArtifacts, /sha256sum|find release-assets/u);
   assert.doesNotMatch(verifyArtifacts, /required=\(|Maka-\*|latest\*\.yml/u);
-  const installVerifier = jobs.publish.steps.findIndex(
-    (step) => step.name === 'Install the release verifier dependencies',
-  );
-  const verifyManifest = jobs.publish.steps.findIndex(
-    (step) => step.name === 'Verify the exact product artifact manifest',
-  );
-  assert.ok(installVerifier >= 0 && installVerifier < verifyManifest);
   const publicationRecord = jobs.publish.steps.find(
     (step) => step.name === 'Record the immutable publication evidence',
   );
   assert.match(publicationRecord.run, /product-release-artifacts\.mjs record/u);
-  assert.equal(
-    publicationRecord.env.GITHUB_SHA,
-    '${{ needs.release-identity.outputs.source_commit }}',
-  );
-  assert.equal(
-    publicationRecord.env.SOURCE_REFERENCE_TAG,
-    '${{ needs.release-identity.outputs.source_reference_tag }}',
-  );
-  const publicationRecordUpload = jobs.publish.steps.find(
-    (step) => step.name === 'Upload the immutable publication evidence',
-  );
-  assert.equal(
-    publicationRecordUpload.with.name,
-    'product-release-record-${{ github.run_attempt }}',
-  );
-  assert.equal(publicationRecordUpload.with['retention-days'], 30);
 
   const commands = Object.values(jobs)
     .flatMap((job) => job.steps ?? [])

@@ -25,6 +25,7 @@ import { basename } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { promisify } from 'node:util';
 import {
+  compareProductReleaseNames,
   readProductReleasePublicationRecord,
   verifyProductReleasePublicationRecord,
 } from './product-release-artifacts.mjs';
@@ -84,7 +85,7 @@ function releaseSnapshotFromGhView(value) {
     prerelease: value?.isPrerelease,
     assets: (value?.assets ?? [])
       .map(({ name, size, digest }) => ({ name, size, digest }))
-      .sort((left, right) => left.name.localeCompare(right.name)),
+      .sort((left, right) => compareProductReleaseNames(left.name, right.name)),
   };
 }
 
@@ -96,7 +97,7 @@ function releaseSnapshotFromRest(value) {
     prerelease: value?.prerelease,
     assets: (value?.assets ?? [])
       .map(({ name, size, digest }) => ({ name, size, digest }))
-      .sort((left, right) => left.name.localeCompare(right.name)),
+      .sort((left, right) => compareProductReleaseNames(left.name, right.name)),
   };
 }
 
@@ -232,7 +233,7 @@ export async function publishDraftProductRelease({
   const draft = await verifyDraftProductRelease({ tag, sourceCommit, repository, cwd, run });
   const remoteAssets = (draft.assets ?? [])
     .map(({ name, size, digest }) => ({ name, size, digest }))
-    .sort((left, right) => left.name.localeCompare(right.name));
+    .sort((left, right) => compareProductReleaseNames(left.name, right.name));
   const allowedDraftAssets = remoteAssets.filter(({ name }) => name !== attestation.name);
   const unexpectedAttestations = remoteAssets.filter(
     ({ name }) => name.endsWith('-attestation.sigstore.json') && name !== attestation.name,
@@ -257,7 +258,7 @@ export async function publishDraftProductRelease({
     run,
   });
   const expectedAssets = [...evidence.assets, attestation].sort((left, right) =>
-    left.name.localeCompare(right.name),
+    compareProductReleaseNames(left.name, right.name),
   );
   if (JSON.stringify(attestedDraft.assets) !== JSON.stringify(expectedAssets)) {
     throw new Error('Draft GitHub Release does not contain the exact attestation bundle');

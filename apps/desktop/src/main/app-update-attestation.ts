@@ -73,14 +73,14 @@ function exactDesktopUpdateArtifactName(
   throw new Error(`Automatic updates are unsupported on ${platform}/${arch}`);
 }
 
-export function productReleaseAttestationName(version: string): string {
+function productReleaseAttestationName(version: string): string {
   if (!/^[0-9A-Za-z][0-9A-Za-z.+-]*$/u.test(version)) {
     throw new Error('Update version cannot identify a product attestation');
   }
   return `Maka-${version}-attestation.sigstore.json`;
 }
 
-export function productReleaseAttestationUrl(version: string): string {
+function productReleaseAttestationUrl(version: string): string {
   const tag = `v${version}`;
   const name = productReleaseAttestationName(version);
   return `https://github.com/${PRODUCT_REPOSITORY}/releases/download/${encodeURIComponent(tag)}/${encodeURIComponent(name)}`;
@@ -163,7 +163,7 @@ function statementFromBundle(bundle: Bundle): AttestationStatement {
   }
 }
 
-export function assertProductReleaseAttestationSubject(
+function assertProductReleaseAttestationSubject(
   bundle: Bundle,
   expectedName: string,
   expectedSha256: string,

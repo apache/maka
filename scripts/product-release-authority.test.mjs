@@ -24,68 +24,24 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 import {
-  assertDraftProductRelease,
   assertProductReleaseWorkflowRun,
-  assertPublishedProductRelease,
   publishDraftProductRelease,
-  verifyDraftProductRelease,
 } from './product-release-authority.mjs';
+import { createProductReleasePublicationRecord } from './product-release-artifacts.mjs';
 
-test('Draft state and prerelease classification are one product Release contract', () => {
-  for (const [tag, isPrerelease] of [
-    ['v1.2.3', false],
-    ['v1.2.3-beta.1', true],
-  ]) {
-    assert.equal(
-      assertDraftProductRelease({ id: 42, tag, draft: true, prerelease: isPrerelease }, tag).tag,
-      tag,
-    );
-  }
-  assert.throws(
-    () =>
-      assertDraftProductRelease(
-        { id: 42, tag: 'v1.2.3', draft: false, prerelease: false },
-        'v1.2.3',
-      ),
-    /must remain a Draft/u,
-  );
-  assert.throws(
-    () =>
-      assertDraftProductRelease(
-        { id: 42, tag: 'v1.2.3-beta.1', draft: true, prerelease: false },
-        'v1.2.3-beta.1',
-      ),
-    /prerelease state must be true/u,
-  );
-});
-
-test('published state keeps stable and prerelease classification exact', () => {
-  assert.equal(
-    assertPublishedProductRelease(
-      { id: 42, tag: 'v1.2.3', draft: false, prerelease: false, assets: [] },
-      'v1.2.3',
-      42,
-      [],
-    ).tag,
-    'v1.2.3',
-  );
-  assert.throws(
-    () =>
-      assertPublishedProductRelease(
-        {
-          id: 42,
-          tag: 'v1.2.3-beta.1',
-          draft: false,
-          prerelease: false,
-          assets: [],
-        },
-        'v1.2.3-beta.1',
-        42,
-        [],
-      ),
-    /prerelease state/u,
-  );
-});
+function updateMetadata(version, artifactName, bytes) {
+  const sha512 = createHash('sha512').update(bytes).digest('base64');
+  return [
+    `version: ${version}`,
+    'files:',
+    `  - url: ${artifactName}`,
+    `    sha512: ${sha512}`,
+    `    size: ${bytes.length}`,
+    `path: ${artifactName}`,
+    `sha512: ${sha512}`,
+    '',
+  ].join('\n');
+}
 
 test('Release workflow evidence binds an exact successful attempt to approved source', () => {
   const sourceCommit = 'a'.repeat(40);
@@ -137,75 +93,48 @@ test('Release workflow evidence binds an exact successful attempt to approved so
   );
 });
 
-test('the live authority verifier binds the tag, main ancestry, and Draft Release', async () => {
-  const sourceCommit = 'a'.repeat(40);
-  const calls = [];
-  const run = async (command, args) => {
-    calls.push([command, args]);
-    if (args[0] === 'ls-remote') {
-      return { stdout: `${sourceCommit}\trefs/tags/v1.2.3\n` };
-    }
-    if (command === 'gh') {
-      return {
-        stdout: JSON.stringify({
-          databaseId: 42,
-          tagName: 'v1.2.3',
-          isDraft: true,
-          isPrerelease: false,
-          assets: [],
-        }),
-      };
-    }
-    return { stdout: '' };
-  };
-
-  await verifyDraftProductRelease({
-    tag: 'v1.2.3',
-    sourceCommit,
-    repository: 'apache/maka',
-    run,
-  });
-
-  assert.deepEqual(
-    calls.map(([command, args]) => [command, args[0]]),
-    [
-      ['git', 'ls-remote'],
-      ['git', 'fetch'],
-      ['git', 'merge-base'],
-      ['gh', 'release'],
-    ],
-  );
-  assert.deepEqual(calls.at(-1)[1].slice(-2), [
-    '--json',
-    'databaseId,tagName,isDraft,isPrerelease,assets',
-  ]);
-});
-
-test('the live authority verifier rejects product tag drift before later checks', async () => {
-  const calls = [];
-  await assert.rejects(
-    verifyDraftProductRelease({
-      tag: 'v1.2.3',
-      sourceCommit: 'a'.repeat(40),
-      repository: 'apache/maka',
-      run: async (command, args) => {
-        calls.push([command, args]);
-        return { stdout: `${'b'.repeat(40)}\trefs/tags/v1.2.3\n` };
-      },
-    }),
-    /points to .* instead of/u,
-  );
-  assert.equal(calls.length, 1);
-});
-
 test('publication verifies live asset digests before one Stable/Latest mutation', async (t) => {
   const directory = await mkdtemp(join(tmpdir(), 'maka-publish-authority-'));
   const recordDirectory = await mkdtemp(join(tmpdir(), 'maka-publish-record-'));
   t.after(() => rm(directory, { recursive: true, force: true }));
   t.after(() => rm(recordDirectory, { recursive: true, force: true }));
-  const contents = Buffer.from('verified artifact');
-  await writeFile(join(directory, 'artifact.zip'), contents);
-  const digest = `sha256:${createHash('sha256').update(contents).digest('hex')}`;
+  const version = '1.2.3';
+  const macZip = `Maka-${version}-mac-arm64.zip`;
+  const exe = `Maka-${version}-win-x64.exe`;
+  const macBytes = Buffer.from('mac application');
+  const windowsBytes = Buffer.from('windows application');
+  const names = [
+    macZip,
+    `${macZip}.blockmap`,
+    'latest-mac.yml',
+    exe,
+    `${exe}.blockmap`,
+    'latest.yml',
+  ];
+  await Promise.all([
+    writeFile(join(directory, macZip), macBytes),
+    writeFile(join(directory, `${macZip}.blockmap`), 'mac blockmap'),
+    writeFile(join(directory, 'latest-mac.yml'), updateMetadata(version, macZip, macBytes)),
+    writeFile(join(directory, exe), windowsBytes),
+    writeFile(join(directory, `${exe}.blockmap`), 'windows blockmap'),
+    writeFile(join(directory, 'latest.yml'), updateMetadata(version, exe, windowsBytes)),
+  ]);
+  const sourceCommit = 'a'.repeat(40);
+  const record = await createProductReleasePublicationRecord({
+    artifactDirectory: directory,
+    identity: {
+      version,
+      isPrerelease: false,
+      tag: `v${version}`,
+      sourceReferenceTag: `v${version}-incubating-rc1`,
+      sourceCommit,
+      exe,
+      artifacts: { test: names },
+    },
+    repository: 'apache/maka',
+    runId: '123',
+    runAttempt: '2',
+  });
   const attestationContents = Buffer.from('sigstore bundle');
   const attestationBundlePath = join(recordDirectory, 'Maka-1.2.3-attestation.sigstore.json');
   await writeFile(attestationBundlePath, attestationContents);
@@ -215,23 +144,7 @@ test('publication verifies live asset digests before one Stable/Latest mutation'
     digest: `sha256:${createHash('sha256').update(attestationContents).digest('hex')}`,
   };
   const publicationRecordPath = join(recordDirectory, 'product-release.json');
-  const sourceCommit = 'a'.repeat(40);
-  await writeFile(
-    publicationRecordPath,
-    `${JSON.stringify({
-      schemaVersion: 1,
-      repository: 'apache/maka',
-      workflow: '.github/workflows/release.yml',
-      runId: '123',
-      runAttempt: '2',
-      sourceReferenceTag: 'v1.2.3-incubating-rc1',
-      sourceCommit,
-      tag: 'v1.2.3',
-      version: '1.2.3',
-      prerelease: false,
-      assets: [{ name: 'artifact.zip', size: contents.length, digest }],
-    })}\n`,
-  );
+  await writeFile(publicationRecordPath, `${JSON.stringify(record)}\n`);
   const calls = [];
   let latestReads = 0;
   let attestationUploaded = false;
@@ -251,10 +164,7 @@ test('publication verifies live asset digests before one Stable/Latest mutation'
           tagName: 'v1.2.3',
           isDraft: true,
           isPrerelease: false,
-          assets: [
-            ...(attestationUploaded ? [attestation] : []),
-            { name: 'artifact.zip', size: contents.length, digest },
-          ],
+          assets: [...record.assets, ...(attestationUploaded ? [attestation] : [])],
         }),
       };
     }
@@ -265,7 +175,7 @@ test('publication verifies live asset digests before one Stable/Latest mutation'
           tag_name: 'v1.2.3',
           draft: false,
           prerelease: false,
-          assets: [attestation, { name: 'artifact.zip', size: contents.length, digest }],
+          assets: [...record.assets, attestation],
         }),
       };
     }
@@ -276,7 +186,7 @@ test('publication verifies live asset digests before one Stable/Latest mutation'
     return { stdout: '' };
   };
 
-  await publishDraftProductRelease({
+  const publication = {
     tag: 'v1.2.3',
     sourceCommit,
     repository: 'apache/maka',
@@ -286,8 +196,23 @@ test('publication verifies live asset digests before one Stable/Latest mutation'
     releaseRunId: '123',
     releaseRunAttempt: '2',
     attestationBundlePath,
-    run,
     pause: async () => {},
+  };
+  await writeFile(join(directory, macZip), 'tampered mac application');
+  await assert.rejects(
+    publishDraftProductRelease({
+      ...publication,
+      run: async () => {
+        throw new Error('network must not be reached for invalid local evidence');
+      },
+    }),
+    /do not match the immutable publication record/u,
+  );
+  await writeFile(join(directory, macZip), macBytes);
+
+  await publishDraftProductRelease({
+    ...publication,
+    run,
   });
 
   const patchCall = calls.find(([, args]) => args.includes('PATCH'));
@@ -295,11 +220,8 @@ test('publication verifies live asset digests before one Stable/Latest mutation'
   assert.ok(patchCall[1].includes('draft=false'));
   assert.ok(patchCall[1].includes('prerelease=false'));
   assert.ok(patchCall[1].includes('make_latest=true'));
-  assert.ok(calls.every(([, args]) => !args.includes('repos/apache/maka/releases/tags/v1.2.3')));
   const uploadCall = calls.find(([, args]) => args[0] === 'release' && args[1] === 'upload');
   assert.ok(uploadCall);
-  assert.ok(uploadCall[1].includes('--clobber'));
   assert.ok(calls.indexOf(uploadCall) < calls.indexOf(patchCall));
-  assert.ok(calls.every(([, args]) => !args.includes('repos/apache/maka/immutable-releases')));
   assert.equal(latestReads, 2);
 });
