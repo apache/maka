@@ -34,6 +34,8 @@ import {
   type AccessCredentialRotationPrepareResult,
   type AccessCredentialRotationRevokeInput,
   type AccessCredentialRotationRevokeResult,
+  type AccessPrincipalRevokeInput,
+  type AccessPrincipalRevokeResult,
 } from '../protocol/index.js';
 import {
   createRuntimeHostConnectionAuthority,
@@ -72,6 +74,7 @@ export interface RuntimeHostAccessAuthority {
   replace(input: AccessCredentialReplaceInput): Promise<AccessCredentialReplaceResult>;
   prepare(input: AccessCredentialPrepareInput): Promise<AccessCredentialPrepareResult>;
   revoke(input: AccessCredentialRevokeInput): Promise<AccessCredentialRevokeResult>;
+  revokePrincipal(input: AccessPrincipalRevokeInput): Promise<AccessPrincipalRevokeResult>;
   prepareRotation(
     input: AccessCredentialRotationPrepareInput,
   ): Promise<AccessCredentialRotationPrepareResult>;
@@ -275,6 +278,29 @@ class FileRuntimeHostAccessAuthority implements RuntimeHostAccessAuthority {
   revoke(input: AccessCredentialRevokeInput): Promise<AccessCredentialRevokeResult> {
     return this.#mutate(async () => {
       return this.#revoke(input.credentialId);
+    });
+  }
+
+  revokePrincipal(input: AccessPrincipalRevokeInput): Promise<AccessPrincipalRevokeResult> {
+    return this.#mutate(async () => {
+      const matches = this.#file.credentials.filter(
+        (credential) =>
+          credential.status !== 'revoked' &&
+          credential.principalKind === input.principalKind &&
+          credential.principalId === input.principalId,
+      );
+      if (matches.length === 0) return { revoked: false };
+
+      const matchedIds = new Set(matches.map((credential) => credential.credentialId));
+      const revokedAt = new Date().toISOString();
+      const credentials = this.#file.credentials.flatMap((credential) => {
+        if (!matchedIds.has(credential.credentialId)) return [credential];
+        if (credential.status === 'pending') return [];
+        const { clientInstanceId: _clientInstanceId, ...revoked } = credential;
+        return [{ ...revoked, status: 'revoked' as const, revokedAt }];
+      });
+      await this.#commit(createAccessCredentialFile(credentials), [...matchedIds]);
+      return { revoked: true };
     });
   }
 
@@ -609,6 +635,22 @@ export async function revokeAccessCredential(
   }
 }
 
+export async function revokeAccessPrincipal(
+  authority: RuntimeHostAccessAuthority | undefined,
+  input: AccessPrincipalRevokeInput,
+): Promise<OperationOutcome<'access.principal.revoke'>> {
+  if (!authority) return unavailable('principal.revoke');
+  try {
+    return { ok: true, result: await authority.revokePrincipal(input) };
+  } catch (error) {
+    return accessPersistenceFailure(
+      error,
+      'Access principal revocation outcome is unknown',
+      'Access principal could not be revoked',
+    );
+  }
+}
+
 export async function revokeAccessCredentialRotation(
   authority: RuntimeHostAccessAuthority | undefined,
   input: AccessCredentialRotationRevokeInput,
@@ -674,6 +716,7 @@ function unavailable(operation: 'issue'): OperationOutcome<'access.credential.is
 function unavailable(operation: 'replace'): OperationOutcome<'access.credential.replace'>;
 function unavailable(operation: 'prepare'): OperationOutcome<'access.credential.prepare'>;
 function unavailable(operation: 'revoke'): OperationOutcome<'access.credential.revoke'>;
+function unavailable(operation: 'principal.revoke'): OperationOutcome<'access.principal.revoke'>;
 function unavailable(
   operation: 'rotation.prepare',
 ): OperationOutcome<'access.credential.rotation.prepare'>;
@@ -687,6 +730,7 @@ function unavailable(
     | 'replace'
     | 'prepare'
     | 'revoke'
+    | 'principal.revoke'
     | 'rotation.prepare'
     | 'rotation.revoke'
     | 'finalize',
@@ -695,6 +739,7 @@ function unavailable(
   | OperationOutcome<'access.credential.replace'>
   | OperationOutcome<'access.credential.prepare'>
   | OperationOutcome<'access.credential.revoke'>
+  | OperationOutcome<'access.principal.revoke'>
   | OperationOutcome<'access.credential.rotation.prepare'>
   | OperationOutcome<'access.credential.rotation.revoke'>
   | OperationOutcome<'access.credential.finalize'> {

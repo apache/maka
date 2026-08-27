@@ -71,6 +71,15 @@ export interface AccessCredentialRevokeInput {
   readonly credentialId: string;
 }
 
+export interface AccessPrincipalRevokeInput {
+  readonly principalKind: AccessCredentialPrincipalKind;
+  readonly principalId: string;
+}
+
+export interface AccessPrincipalRevokeResult {
+  readonly revoked: boolean;
+}
+
 export interface AccessCredentialRotationPrepareInput {
   readonly replacementOfCredentialId: string;
 }
@@ -138,6 +147,17 @@ export const ACCESS_AUTHORITY_OPERATION_SPECS = {
     errors: ACCESS_ERRORS,
     decodeInput: decodeAccessCredentialRevokeInput,
     decodeOutput: decodeAccessCredentialRevokeResult,
+  }),
+  'access.principal.revoke': defineOperation<
+    AccessPrincipalRevokeInput,
+    AccessPrincipalRevokeResult,
+    (typeof ACCESS_ERRORS)[number]
+  >({
+    mode: 'command',
+    availability: 'ready',
+    errors: ACCESS_ERRORS,
+    decodeInput: decodeAccessPrincipalRevokeInput,
+    decodeOutput: decodeAccessPrincipalRevokeResult,
   }),
   'access.credential.rotation.prepare': defineOperation<
     AccessCredentialRotationPrepareInput,
@@ -258,6 +278,17 @@ export function decodeAccessCredentialRevokeInput(value: unknown): AccessCredent
   return { credentialId: requireId(record.credentialId, 'credentialId') };
 }
 
+export function decodeAccessPrincipalRevokeInput(value: unknown): AccessPrincipalRevokeInput {
+  const record = requireExactRecord(value, 'access principal revoke input', [
+    'principalKind',
+    'principalId',
+  ]);
+  return {
+    principalKind: principalKind(record.principalKind),
+    principalId: principalId(record.principalId),
+  };
+}
+
 export function decodeAccessCredentialRotationPrepareInput(
   value: unknown,
 ): AccessCredentialRotationPrepareInput {
@@ -297,6 +328,11 @@ export function decodeAccessCredentialRevokeResult(value: unknown): AccessCreden
     credentialId: requireId(record.credentialId, 'credentialId'),
     revoked: boolean(record.revoked, 'revoked'),
   };
+}
+
+export function decodeAccessPrincipalRevokeResult(value: unknown): AccessPrincipalRevokeResult {
+  const record = requireExactRecord(value, 'access principal revoke result', ['revoked']);
+  return { revoked: boolean(record.revoked, 'revoked') };
 }
 
 export function decodeAccessCredentialFinalizeInput(value: unknown): AccessCredentialFinalizeInput {

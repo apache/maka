@@ -125,7 +125,7 @@ test('revokes the one Local sharing authority without changing peer connectivity
   await mkdir(rootPath, { recursive: true });
   await writeManagedLifecycle(clientDataRoot, rootPath, rootId);
   const handlers = new Map<string, Parameters<Electron.IpcMain['handle']>[1]>();
-  const revoked: string[] = [];
+  const revoked: unknown[] = [];
   const peer = {
     peerId: '12D3KooWpeer',
     routeHints: ['/ip4/192.0.2.1/udp/41000/quic-v1'],
@@ -146,10 +146,10 @@ test('revokes the one Local sharing authority without changing peer connectivity
           return {
             candidate: {
               client: {
-                async request(operation: string, input: { readonly credentialId: string }) {
-                  assert.equal(operation, 'access.credential.revoke');
-                  revoked.push(input.credentialId);
-                  return { credentialId: input.credentialId, revoked: true };
+                async request(operation: string, input: unknown) {
+                  assert.equal(operation, 'access.principal.revoke');
+                  revoked.push(input);
+                  return { revoked: true };
                 },
               },
             },
@@ -158,18 +158,6 @@ test('revokes the one Local sharing authority without changing peer connectivity
       }) as unknown as RuntimeHostDesktopManager,
     resolveSetupPackage: async () => ({ kind: 'npm', specifier: 'maka-agent@0.2.0' }),
     operator: {
-      async runAccess() {
-        return {
-          schemaVersion: 1 as const,
-          kind: 'result' as const,
-          action: 'list' as const,
-          credentials: [
-            sharedCredential('active-credential', 'active'),
-            sharedCredential('pending-credential', 'pending'),
-            { ...sharedCredential('unrelated', 'active'), principalId: 'another-client' },
-          ],
-        };
-      },
       async runPeer() {
         return {
           kind: 'result' as const,
@@ -190,7 +178,12 @@ test('revokes the one Local sharing authority without changing peer connectivity
   const revoke = handlers.get('local-runtime-host-remote-access:revoke-shared-access');
   assert.ok(revoke);
   assert.deepEqual(await revoke({} as Electron.IpcMainInvokeEvent), { state: 'on' });
-  assert.deepEqual(revoked, ['active-credential']);
+  assert.deepEqual(revoked, [
+    {
+      principalKind: 'remote_owner',
+      principalId: 'desktop-owner:local-runtime-host-sharing',
+    },
+  ]);
 });
 
 test('an interrupted Local Host handoff converges to its exact managed service', async (t) => {

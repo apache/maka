@@ -316,22 +316,10 @@ export function createDesktopLocalRuntimeHostRemoteAccess(input: {
       const managed = requireManaged(
         await readLifecycle(lifecyclePath, input.rootPath, input.rootId),
       );
-      const response = await input.operator.runAccess({
-        operatorPath: managed.operatorPath,
-        target: managed,
+      await localClient(input.manager).request('access.principal.revoke', {
+        principalKind: 'remote_owner',
+        principalId: LOCAL_REMOTE_ACCESS_PRINCIPAL_ID,
       });
-      if (response.kind === 'error') throw new Error(response.error.message);
-      const credentials = response.credentials.filter(
-        (credential) =>
-          credential.principalKind === 'remote_owner' &&
-          credential.principalId === LOCAL_REMOTE_ACCESS_PRINCIPAL_ID,
-      );
-      const credential = credentials.find((candidate) => candidate.status === 'active') ?? credentials[0];
-      if (credential) {
-        await localClient(input.manager).request('access.credential.revoke', {
-          credentialId: credential.credentialId,
-        });
-      }
       const peer = await readPeer(input.operator, managed);
       return peer ? onSnapshot(false) : { state: 'off', managedService: true };
     });

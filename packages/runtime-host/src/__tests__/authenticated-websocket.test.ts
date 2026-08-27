@@ -680,6 +680,64 @@ test('a Client-bound pairing candidate can be claimed by exactly one Client iden
   }
 });
 
+test('principal revocation is atomic with pairing finalization', async () => {
+  const { consumeAccessCredentialDeliveryFromControlDirectory } = await import(
+    '../control/access-credential-delivery.js'
+  );
+  for (const order of ['finalize-first', 'revoke-first'] as const) {
+    const directory = await mkdtemp(join(tmpdir(), `maka-access-principal-revoke-${order}-`));
+    const authority = await openRuntimeHostAccessAuthority(directory);
+    try {
+      const principal = {
+        principalKind: 'remote_owner' as const,
+        principalId: 'desktop-owner:local-sharing',
+      };
+      const active = await authority.issue({
+        ...principal,
+        operationGrants: ['access.credential.finalize'],
+        canPublishClientCapabilities: false,
+        canUseHostPaths: false,
+      });
+      const activeSecret = await consumeAccessCredentialDeliveryFromControlDirectory(
+        directory,
+        active.deliveryId,
+        active.credentialId,
+      );
+      const candidate = await authority.prepare({
+        ...principal,
+        operationGrants: ['access.credential.finalize'],
+        canPublishClientCapabilities: false,
+        canUseHostPaths: false,
+        bindClientInstance: true,
+      });
+      const candidateSecret = await consumeAccessCredentialDeliveryFromControlDirectory(
+        directory,
+        candidate.deliveryId,
+        candidate.credentialId,
+      );
+
+      if (order === 'finalize-first') {
+        const finalized = authority.finalize(candidate.credentialId, 'desktop-new');
+        const revoked = authority.revokePrincipal(principal);
+        assert.deepEqual(await finalized, { reconnectRequired: true });
+        assert.deepEqual(await revoked, { revoked: true });
+      } else {
+        const revoked = authority.revokePrincipal(principal);
+        const finalized = authority.finalize(candidate.credentialId, 'desktop-new');
+        assert.deepEqual(await revoked, { revoked: true });
+        await assert.rejects(finalized, /no longer active/u);
+      }
+
+      assert.equal(authority.authenticate(activeSecret), undefined);
+      assert.equal(authority.authenticate(candidateSecret), undefined);
+      assert.deepEqual(await authority.revokePrincipal(principal), { revoked: false });
+    } finally {
+      await authority.close();
+      await rm(directory, { recursive: true, force: true });
+    }
+  }
+});
+
 test('a revoked Client-bound credential remains readable after restart', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'maka-access-authority-bound-revoke-'));
   const authority = await openRuntimeHostAccessAuthority(directory);

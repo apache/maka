@@ -64,6 +64,7 @@ import {
   prepareAccessCredentialRotation,
   replaceAccessCredential,
   revokeAccessCredential,
+  revokeAccessPrincipal,
   revokeAccessCredentialRotation,
   type RuntimeHostAccessAuthority,
 } from './access-authority.js';
@@ -666,6 +667,10 @@ export class RuntimeHostKernel {
         'access.credential.revoke': async (input) =>
           this.#settleAccessCredentialMutation(
             revokeAccessCredential(this.#options.accessAuthority, input),
+          ),
+        'access.principal.revoke': async (input) =>
+          this.#settleAccessCredentialMutation(
+            revokeAccessPrincipal(this.#options.accessAuthority, input),
           ),
         'access.credential.rotation.prepare': async (input) =>
           this.#settleAccessCredentialMutation(
