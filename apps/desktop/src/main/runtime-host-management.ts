@@ -277,8 +277,10 @@ export function createDesktopRuntimeHostManagement(input: {
   ): Promise<DesktopRuntimeHostDirectPeerSnapshot> => {
     const profile = await input.profiles.resolveManagedDirectPeerProfile(profileId);
     return {
-      ...status,
-      profileId: profile.profileId,
+      state: status.state,
+      ...(status.peerId ? { peerId: status.peerId } : {}),
+      routeHints: status.routeHints,
+      coordinationRelays: status.coordinationRelays,
       profilePresent: profile.exists,
       profileEnabled: profile.enabled,
       clientAvailable: input.directPeerClientAvailable,

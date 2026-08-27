@@ -100,7 +100,6 @@ export interface DesktopRuntimeHostProfileService {
     profileId: string,
   ): Promise<DesktopRuntimeHostManagedAccess | undefined>;
   resolveManagedDirectPeerProfile(profileId: string): Promise<{
-    readonly profileId: string;
     readonly exists: boolean;
     readonly enabled: boolean;
   }>;
@@ -112,7 +111,7 @@ export interface DesktopRuntimeHostProfileService {
       readonly routeHints: readonly string[];
       readonly coordinationRelays: readonly string[];
     },
-  ): Promise<string>;
+  ): Promise<void>;
   removeManagedDirectPeerProfile(profileId: string): Promise<void>;
   clearManagedServiceBinding(expected: DesktopRuntimeHostManagedServiceBinding): Promise<void>;
   markManagedServiceUninstalling(
@@ -385,25 +384,65 @@ export function createDesktopRuntimeHostProfileService(input: {
     preferences = next;
   };
 
+  const resolveActivationTarget = async (
+    target: ResolvedRuntimeHostProfile,
+  ): Promise<ResolvedRuntimeHostProfile> => {
+    if (
+      target.profile.kind !== 'remote' ||
+      target.profile.transport.kind !== 'libp2p-direct'
+    ) {
+      return target;
+    }
+    const directProfile = target.profile;
+    const document = await catalog.read();
+    const sourceProfile = document.profiles.find(
+      (profile) =>
+        profile.kind === 'remote' &&
+        profile.transport.kind === 'ssh' &&
+        profile.rootId === directProfile.rootId &&
+        managedDirectPeerProfileId(profile.id) === directProfile.id,
+    );
+    if (!sourceProfile) return target;
+    const managed = findDesktopRuntimeHostManagedServiceBinding(
+      await managedServices.read(),
+      sourceProfile,
+    );
+    if (!managed) return target;
+    if (managed.state !== 'active') {
+      throw new Error('The managed SSH recovery profile is not available');
+    }
+    const source = await catalog.resolve(sourceProfile.id);
+    if (source.profile.kind !== 'remote' || !source.credential) {
+      throw new Error('The managed SSH recovery profile credential is not available');
+    }
+    if (source.credential === target.credential) return target;
+    const rebound = await catalog.rebindIfCurrent(target, target.profile, source.credential);
+    if (!rebound.rebound) {
+      throw new Error('The Direct peer profile changed before its credential could be refreshed');
+    }
+    return catalog.resolve(target.profile.id);
+  };
+
   const activateTarget = async (
     target: ResolvedRuntimeHostProfile,
     sshInteraction: "terminal" | "batch",
   ): Promise<void> => {
     try {
-      await input.enable(target, sshInteraction);
-      const current = await catalog.resolve(target.profile.id).catch(() => undefined);
-      if (!current || !sameResolvedRuntimeHostProfileTarget(current, target)) {
-        await input.disable(target.profile.id);
+      const activationTarget = await resolveActivationTarget(target);
+      await input.enable(activationTarget, sshInteraction);
+      const current = await catalog.resolve(activationTarget.profile.id).catch(() => undefined);
+      if (!current || !sameResolvedRuntimeHostProfileTarget(current, activationTarget)) {
+        await input.disable(activationTarget.profile.id);
         throw new Error("Runtime Host profile changed while it was connecting");
       }
       const remainsEnabled =
-        target.profile.id === preferences.defaultProfileId ||
-        preferences.enabledRemoteProfileIds.includes(target.profile.id);
+        activationTarget.profile.id === preferences.defaultProfileId ||
+        preferences.enabledRemoteProfileIds.includes(activationTarget.profile.id);
       if (!remainsEnabled) {
-        await input.disable(target.profile.id);
+        await input.disable(activationTarget.profile.id);
         return;
       }
-      unavailable.delete(target.profile.id);
+      unavailable.delete(activationTarget.profile.id);
     } catch (error) {
       const failure = asError(error);
       unavailable.set(target.profile.id, failure);
@@ -771,7 +810,6 @@ export function createDesktopRuntimeHostProfileService(input: {
       return mutate(async () => {
         const peerProfileId = managedDirectPeerProfileId(profileId);
         return {
-          profileId: peerProfileId,
           exists: (await catalog.read()).profiles.some((profile) => profile.id === peerProfileId),
           enabled: preferences.enabledRemoteProfileIds.includes(peerProfileId),
         };
@@ -819,7 +857,7 @@ export function createDesktopRuntimeHostProfileService(input: {
         );
         if (!existing) {
           await catalog.create(profile, source.credential);
-          return peerProfileId;
+          return;
         }
         const previous = await catalog.resolve(peerProfileId);
         if (previous.profile.kind !== 'remote' || previous.profile.rootId !== source.profile.rootId) {
@@ -829,7 +867,6 @@ export function createDesktopRuntimeHostProfileService(input: {
         if (!rebound.rebound) {
           throw new Error('The Direct peer profile changed before it could be updated');
         }
-        return peerProfileId;
       });
     },
     removeManagedDirectPeerProfile(profileId) {

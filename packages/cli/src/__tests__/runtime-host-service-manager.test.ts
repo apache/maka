@@ -186,6 +186,23 @@ describe('managed Runtime Host service', () => {
       },
     );
     assert.equal(parseRuntimeHostCommand(['service', 'peer', 'disable']).kind, 'error');
+    for (const action of ['rotate', 'descriptor']) {
+      assert.equal(
+        parseRuntimeHostCommand([
+          'service',
+          'peer',
+          action,
+          '--framed',
+          '--expected-service-id',
+          'b'.repeat(64),
+          '--expected-root-path',
+          '/srv/maka',
+          '--expected-root-id',
+          'a'.repeat(64),
+        ]).kind,
+        'error',
+      );
+    }
     assert.equal(
       parseRuntimeHostCommand([
         'service',

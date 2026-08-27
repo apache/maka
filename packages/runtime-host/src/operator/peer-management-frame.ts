@@ -22,7 +22,7 @@ import { z } from 'zod';
 export const RUNTIME_HOST_PEER_MANAGEMENT_FRAME_PREFIX = 'MAKA_RUNTIME_HOST_PEER_MANAGEMENT_V1 ';
 const FRAME_MAX_BYTES = 128 * 1024;
 
-const ACTION_SCHEMA = z.enum(['enable', 'disable', 'status', 'rotate', 'descriptor']);
+const ACTION_SCHEMA = z.enum(['enable', 'disable', 'status']);
 const boundedString = (maxBytes: number) =>
   z.string().refine((value) => Buffer.byteLength(value, 'utf8') <= maxBytes);
 const ADDRESS_SCHEMA = boundedString(2 * 1024);
@@ -46,14 +46,6 @@ const FRAME_SCHEMA = z.discriminatedUnion('kind', [
       kind: z.literal('result'),
       action: ACTION_SCHEMA,
       status: STATUS_SCHEMA,
-    })
-    .strict(),
-  z
-    .object({
-      kind: z.literal('rotated'),
-      action: z.literal('rotate'),
-      previousPeerId: boundedString(160),
-      peerId: boundedString(160),
     })
     .strict(),
   z

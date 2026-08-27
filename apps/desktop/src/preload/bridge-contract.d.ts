@@ -471,13 +471,15 @@ export interface DesktopRuntimeHostManagementProgress {
     | import('@maka/runtime-host/operator').RuntimeHostServiceUpdatePhase;
 }
 
-export type DesktopRuntimeHostDirectPeerSnapshot =
-  import('@maka/runtime-host/operator').RuntimeHostPeerStatus & {
-    readonly profileId: string;
-    readonly profilePresent: boolean;
-    readonly profileEnabled: boolean;
-    readonly clientAvailable: boolean;
-  };
+export interface DesktopRuntimeHostDirectPeerSnapshot {
+  readonly state: 'not_configured' | 'disabled' | 'enabled';
+  readonly peerId?: string;
+  readonly routeHints: readonly string[];
+  readonly coordinationRelays: readonly string[];
+  readonly profilePresent: boolean;
+  readonly profileEnabled: boolean;
+  readonly clientAvailable: boolean;
+}
 
 type RuntimeHostUpdatePolicyResult = Extract<
   RuntimeHostServiceManagementFrame,

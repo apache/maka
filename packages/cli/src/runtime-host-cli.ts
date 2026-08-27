@@ -503,6 +503,9 @@ function parseServicePeerCommand(argv: string[]): RuntimeHostCliCommand {
     },
   });
   if ('kind' in options) return options;
+  if (options.framed && (action === 'rotate' || action === 'descriptor')) {
+    return error(`runtime-host service peer ${action} does not support --framed`);
+  }
   if (listenAddresses.some(hasEphemeralRuntimeHostPeerPort)) {
     return error('--listen requires a stable non-zero transport port');
   }

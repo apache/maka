@@ -136,17 +136,7 @@ async function runRuntimeHostPeerManagementLocked(
         deps,
       );
     }
-    if (options.framed) {
-      writePeerFrame(
-        {
-          kind: 'rotated',
-          action: 'rotate',
-          previousPeerId: result.previousPeerId,
-          peerId: result.peerId,
-        },
-        deps,
-      );
-    } else if (options.json) {
+    if (options.json) {
       deps.writeStdout(
         `${JSON.stringify({
           schemaVersion: 1,
@@ -172,6 +162,9 @@ async function runRuntimeHostPeerManagementLocked(
     );
   }
   if (options.framed) {
+    if (options.action === 'descriptor') {
+      throw new TypeError('Direct-peer descriptor does not support framed output');
+    }
     writePeerFrame({ kind: 'result', action: options.action, status }, deps);
   } else if (options.json) {
     deps.writeStdout(
@@ -212,6 +205,9 @@ function writePeerFailure(
   deps: RuntimeHostPeerManagementCliDeps,
 ): void {
   if (options.framed) {
+    if (options.action === 'rotate' || options.action === 'descriptor') {
+      throw new TypeError('Direct-peer action does not support framed output');
+    }
     writePeerFrame({ kind: 'error', action: options.action, error: { code, message } }, deps);
     return;
   }
