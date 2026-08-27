@@ -44,6 +44,7 @@ import {
 import type {
   TaskEntryCatalog,
   TaskEntryHostRef,
+  TaskEntryProjectMutationResult,
   TaskEntryTarget,
 } from '../ports.js';
 import { useTaskEntryServices } from '../services-context.js';
@@ -95,6 +96,35 @@ const EMPTY_CATALOG: TaskEntryCatalog = {
   hosts: [],
 };
 
+type DirectoryHandoff = TaskEntryHostRef & {
+  readonly name: string;
+};
+
+function directoryHandoffForHost(host: ReadyTaskEntryHost): DirectoryHandoff {
+  return {
+    profileId: host.profile.id,
+    hostId: host.hostId,
+    name: host.profile.name,
+  };
+}
+
+function reconcileDirectoryHandoff(
+  catalog: TaskEntryCatalog,
+  current: DirectoryHandoff | undefined,
+): DirectoryHandoff | undefined {
+  if (!current) return undefined;
+  const host = catalog.hosts.find((candidate) =>
+    candidate.profile.id === current.profileId
+  );
+  if (!host) return undefined;
+  if (host.readiness !== 'ready') {
+    return { ...current, name: host.profile.name };
+  }
+  return host.hostId === current.hostId
+    ? { ...current, name: host.profile.name }
+    : undefined;
+}
+
 /** Owns Task Entry Host/Project state, catalog subscriptions, and workspace selection. */
 export function useTaskEntryController(
   input: UseTaskEntryControllerInput,
@@ -112,59 +142,71 @@ export function useTaskEntryController(
   const [pending, setPending] = useState(false);
   const [refreshing, setRefreshing] = useState(true);
   const [error, setError] = useState<string>();
-  const [directoryHost, setDirectoryHost] = useState<ReadyTaskEntryHost>();
+  const [directoryHost, setDirectoryHost] = useState<DirectoryHandoff>();
   const directoryOpenerRef = useRef<HTMLElement | null>(null);
   const committedCatalogRef = useRef<TaskEntryCatalog>(EMPTY_CATALOG);
-  const refreshSequence = useRef(0);
-  // Imperative callers must follow a refresh that supersedes their own read;
-  // otherwise a one-shot onboarding handoff can act on the previous catalog.
-  const latestRefreshRef = useRef<{
-    readonly sequence: number;
-    readonly promise: Promise<TaskEntryCatalog>;
-  } | undefined>(undefined);
+  const refreshRequestSequenceRef = useRef(0);
+  const refreshLifecycleRef = useRef(0);
+  const refreshRunRef = useRef<Promise<TaskEntryCatalog | undefined> | undefined>(undefined);
   const projectMutationPendingRef = useRef(false);
 
-  const refresh = useCallback((): Promise<TaskEntryCatalog> => {
-    const sequence = ++refreshSequence.current;
+  const commitCatalog = useCallback((next: TaskEntryCatalog): void => {
+    committedCatalogRef.current = next;
+    setCatalog(next);
+    setSelectedProfileId((current) => selectAvailableProfile(next, current));
+    setDirectoryHost((current) => reconcileDirectoryHandoff(next, current));
+  }, []);
+
+  const refresh = useCallback((): Promise<TaskEntryCatalog | undefined> => {
+    refreshRequestSequenceRef.current += 1;
+    const running = refreshRunRef.current;
+    if (running) return running;
+
+    const lifecycle = refreshLifecycleRef.current;
     setRefreshing(true);
-    const promise = (async (): Promise<TaskEntryCatalog> => {
-      try {
-        const next = await service.getCatalog();
-        if (refreshSequence.current !== sequence) {
-          const winner = latestRefreshRef.current;
-          return winner && winner.sequence > sequence
-            ? winner.promise
-            : committedCatalogRef.current;
+    const run = (async (): Promise<TaskEntryCatalog | undefined> => {
+      let latestSuccess: TaskEntryCatalog | undefined;
+      let latestFailure: unknown;
+
+      while (refreshLifecycleRef.current === lifecycle) {
+        const requestedSequence = refreshRequestSequenceRef.current;
+        try {
+          latestSuccess = await service.getCatalog();
+          latestFailure = undefined;
+        } catch (cause) {
+          latestFailure = cause;
         }
-        committedCatalogRef.current = next;
-        setCatalog(next);
-        setError(undefined);
-        setSelectedProfileId((current) => selectAvailableProfile(next, current));
-        setDirectoryHost((current) => {
-          if (!current) return current;
-          return next.hosts.find(
-            (host): host is ReadyTaskEntryHost =>
-              host.profile.id === current.profile.id &&
-              isReadyTaskEntryHost(host) &&
-              host.hostId === current.hostId,
-          );
-        });
-        return next;
-      } catch (cause) {
-        if (refreshSequence.current !== sequence) {
-          const winner = latestRefreshRef.current;
-          if (winner && winner.sequence > sequence) return winner.promise;
-        } else {
-          setError(localizedShellErrorMessage(cause, copy.catalogUnavailable, locale));
+        if (refreshLifecycleRef.current !== lifecycle) {
+          return undefined;
         }
-        throw cause;
-      } finally {
-        if (refreshSequence.current === sequence) setRefreshing(false);
+        if (requestedSequence === refreshRequestSequenceRef.current) break;
       }
+
+      if (latestSuccess) {
+        commitCatalog(latestSuccess);
+        setError(latestFailure === undefined
+          ? undefined
+          : localizedShellErrorMessage(latestFailure, copy.catalogUnavailable, locale));
+        return latestSuccess;
+      }
+
+      setError(localizedShellErrorMessage(latestFailure, copy.catalogUnavailable, locale));
+      throw latestFailure;
     })();
-    latestRefreshRef.current = { sequence, promise };
-    return promise;
-  }, [copy.catalogUnavailable, locale, service]);
+    refreshRunRef.current = run;
+
+    const finish = (): void => {
+      if (
+        refreshRunRef.current === run &&
+        refreshLifecycleRef.current === lifecycle
+      ) {
+        refreshRunRef.current = undefined;
+        setRefreshing(false);
+      }
+    };
+    void run.then(finish, finish);
+    return run;
+  }, [commitCatalog, copy.catalogUnavailable, locale, service]);
 
   useEffect(() => {
     const unsubscribe = service.subscribeChanges(() => {
@@ -172,7 +214,9 @@ export function useTaskEntryController(
     });
     void refresh().catch(() => undefined);
     return () => {
-      refreshSequence.current += 1;
+      refreshLifecycleRef.current += 1;
+      refreshRequestSequenceRef.current += 1;
+      refreshRunRef.current = undefined;
       unsubscribe();
     };
   }, [refresh, service]);
@@ -216,42 +260,73 @@ export function useTaskEntryController(
     setProjectSelections((current) => new Map(current).set(host.profile.id, null));
   }, []);
 
+  const refreshAfterProjectMutation = useCallback(async (profileId: string): Promise<void> => {
+    try {
+      await refresh();
+    } catch (cause) {
+      reportError({
+        title: copy.projectUpdateFailedTitle,
+        description: localizedShellErrorMessage(
+          cause,
+          copy.projectUpdateFailedFallback,
+          locale,
+        ),
+        profileId,
+      });
+    }
+  }, [copy.projectUpdateFailedFallback, copy.projectUpdateFailedTitle, locale, refresh, reportError]);
+
   const addProjectForHost = useCallback(async (host: ReadyTaskEntryHost): Promise<void> => {
     if (projectMutationPendingRef.current) return;
     if (host.capabilities.chooseHostDirectory) {
       directoryOpenerRef.current =
         document.activeElement instanceof HTMLElement ? document.activeElement : null;
-      setDirectoryHost(host);
+      setDirectoryHost(directoryHandoffForHost(host));
       return;
     }
     if (!host.capabilities.chooseClientDirectory) return;
     projectMutationPendingRef.current = true;
     setPending(true);
     try {
-      const result = await service.addProject({
-        profileId: host.profile.id,
-        hostId: host.hostId,
-      });
+      let result: TaskEntryProjectMutationResult;
+      try {
+        result = await service.addProject({
+          profileId: host.profile.id,
+          hostId: host.hostId,
+        });
+      } catch (cause) {
+        reportError({
+          title: copy.selectDirectoryFailedTitle,
+          description: localizedShellErrorMessage(cause, copy.readPathFailedFallback, locale),
+          profileId: host.profile.id,
+        });
+        return;
+      }
       if (!result.ok) return;
       setSelectedProfileId(host.profile.id);
       setProjectSelections((current) =>
         new Map(current).set(host.profile.id, result.project.id),
       );
-      await refresh();
-    } catch (cause) {
-      reportError({
-        title: copy.selectDirectoryFailedTitle,
-        description: localizedShellErrorMessage(cause, copy.readPathFailedFallback, locale),
-        profileId: host.profile.id,
-      });
+      await refreshAfterProjectMutation(host.profile.id);
     } finally {
       projectMutationPendingRef.current = false;
       setPending(false);
     }
-  }, [copy.readPathFailedFallback, copy.selectDirectoryFailedTitle, locale, refresh, reportError, service]);
+  }, [copy.readPathFailedFallback, copy.selectDirectoryFailedTitle, locale, refreshAfterProjectMutation, reportError, service]);
 
   const chooseProjectForProfile = useCallback(async (profileId: string): Promise<void> => {
-    const next = await refresh();
+    let next: TaskEntryCatalog | undefined;
+    try {
+      next = await refresh();
+    } catch (cause) {
+      reportError({
+        title: copy.catalogUnavailable,
+        description: localizedShellErrorMessage(cause, copy.catalogUnavailable, locale),
+        profileId,
+      });
+      return;
+    }
+    if (!next) return;
     const host = next.hosts.find(
       (candidate): candidate is ReadyTaskEntryHost =>
         candidate.profile.id === profileId && isReadyTaskEntryHost(candidate),
@@ -264,8 +339,10 @@ export function useTaskEntryController(
       return;
     }
     setSelectedProfileId(profileId);
-    if (host.capabilities.chooseHostDirectory) setDirectoryHost(host);
-  }, [copy.catalogUnavailable, refresh, reportError]);
+    if (host.capabilities.chooseHostDirectory) {
+      setDirectoryHost(directoryHandoffForHost(host));
+    }
+  }, [copy.catalogUnavailable, locale, refresh, reportError]);
 
   const acceptRegisteredProject = useCallback(async (
     project: ProjectRecord,
@@ -274,22 +351,14 @@ export function useTaskEntryController(
     const host = directoryHost;
     if (
       !host ||
-      host.profile.id !== registeredHost.profileId ||
+      host.profileId !== registeredHost.profileId ||
       host.hostId !== registeredHost.hostId
     ) return;
     setDirectoryHost(undefined);
-    setSelectedProfileId(host.profile.id);
-    setProjectSelections((current) => new Map(current).set(host.profile.id, project.id));
-    try {
-      await refresh();
-    } catch (cause) {
-      reportError({
-        title: copy.projectUpdateFailedTitle,
-        description: localizedShellErrorMessage(cause, copy.projectUpdateFailedFallback, locale),
-        profileId: host.profile.id,
-      });
-    }
-  }, [copy.projectUpdateFailedFallback, copy.projectUpdateFailedTitle, directoryHost, locale, refresh, reportError]);
+    setSelectedProfileId(host.profileId);
+    setProjectSelections((current) => new Map(current).set(host.profileId, project.id));
+    await refreshAfterProjectMutation(host.profileId);
+  }, [directoryHost, refreshAfterProjectMutation]);
 
   const relinkProject = useCallback(async (
     host: ReadyTaskEntryHost,
@@ -299,27 +368,31 @@ export function useTaskEntryController(
     projectMutationPendingRef.current = true;
     setPending(true);
     try {
-      const result = await service.relinkProject(
-        { profileId: host.profile.id, hostId: host.hostId },
-        projectId,
-      );
+      let result: TaskEntryProjectMutationResult;
+      try {
+        result = await service.relinkProject(
+          { profileId: host.profile.id, hostId: host.hostId },
+          projectId,
+        );
+      } catch (cause) {
+        reportError({
+          title: copy.selectDirectoryFailedTitle,
+          description: localizedShellErrorMessage(cause, copy.readPathFailedFallback, locale),
+          profileId: host.profile.id,
+        });
+        return;
+      }
       if (!result.ok) return;
       setSelectedProfileId(host.profile.id);
       setProjectSelections((current) =>
         new Map(current).set(host.profile.id, result.project.id),
       );
-      await refresh();
-    } catch (cause) {
-      reportError({
-        title: copy.selectDirectoryFailedTitle,
-        description: localizedShellErrorMessage(cause, copy.readPathFailedFallback, locale),
-        profileId: host.profile.id,
-      });
+      await refreshAfterProjectMutation(host.profile.id);
     } finally {
       projectMutationPendingRef.current = false;
       setPending(false);
     }
-  }, [copy.readPathFailedFallback, copy.selectDirectoryFailedTitle, locale, refresh, reportError, service]);
+  }, [copy.readPathFailedFallback, copy.selectDirectoryFailedTitle, locale, refreshAfterProjectMutation, reportError, service]);
 
   const workspacePicker = useMemo<WorkspacePickerModel>(() => {
     const selectedCatalogHost = catalog.hosts.find(
@@ -436,9 +509,9 @@ export function useTaskEntryController(
       ...(directoryHost
         ? {
             directoryHost: {
-              profileId: directoryHost.profile.id,
+              profileId: directoryHost.profileId,
               hostId: directoryHost.hostId,
-              name: directoryHost.profile.name,
+              name: directoryHost.name,
             },
           }
         : {}),
