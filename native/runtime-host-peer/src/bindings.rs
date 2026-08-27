@@ -42,6 +42,7 @@ pub struct StartPeerEndpointOptions {
 
 #[napi(object)]
 pub struct ConnectPeerOptions {
+    pub request_id: u32,
     pub peer_id: String,
     pub route_hints: Vec<String>,
     pub coordination_relays: Option<Vec<String>>,
@@ -88,6 +89,7 @@ impl PeerEndpoint {
         self.commands
             .send(EngineCommand::Connect {
                 options: engine::ConnectOptions {
+                    request_id: options.request_id,
                     peer_id,
                     route_hints,
                     coordination_relays,
@@ -108,6 +110,19 @@ impl PeerEndpoint {
                 .map_err(|_| native_closed_error())?
                 .map_err(peer_error)?,
         )
+    }
+
+    #[napi]
+    pub async fn cancel_connect(&self, request_id: u32) -> Result<bool> {
+        let (result_tx, result_rx) = oneshot::channel();
+        self.commands
+            .send(EngineCommand::CancelConnect {
+                request_id,
+                result: result_tx,
+            })
+            .await
+            .map_err(|_| native_closed_error())?;
+        result_rx.await.map_err(|_| native_closed_error())
     }
 
     #[napi]

@@ -56,11 +56,13 @@ export interface RuntimeHostPeerNativeEndpoint {
   readonly peerId: string;
   readonly listenAddresses: readonly string[];
   connect(options: {
+    readonly requestId: number;
     readonly peerId: string;
     readonly routeHints: readonly string[];
     readonly coordinationRelays?: readonly string[];
     readonly directDeadlineMs: number;
   }): Promise<RuntimeHostPeerNativeStream>;
+  cancelConnect(requestId: number): Promise<boolean>;
   accept(): Promise<RuntimeHostPeerNativeStream | null>;
   close(): Promise<void>;
 }

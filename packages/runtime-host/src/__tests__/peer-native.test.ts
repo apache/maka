@@ -23,7 +23,7 @@ import { tmpdir } from 'node:os';
 import { join, relative } from 'node:path';
 import { setImmediate as waitForImmediate } from 'node:timers/promises';
 import { test } from 'node:test';
-import { connectPeerRuntimeHost } from '../client/host-profile.js';
+import { createRuntimeHostPeerClient } from '../client/peer-client.js';
 import {
   ensureRuntimeHostPeerIdentity,
   readRuntimeHostPeerAuthentication,
@@ -33,51 +33,77 @@ import {
   type RuntimeHostPeerNativeStream,
 } from '../transport/peer-native.js';
 
-test('closes an in-flight peer endpoint when connection is cancelled', {
-  timeout: 2_000,
-}, async () => {
+test('shares one peer endpoint while cancelling connection attempts independently', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'maka-peer-abort-'));
   const nativePath = join(directory, 'peer.cjs');
-  const previousNativePath = process.env.MAKA_RUNTIME_HOST_PEER_NATIVE_PATH;
-  const previousKeyPath = process.env.MAKA_RUNTIME_HOST_PEER_KEY_PATH;
   try {
     await writeFile(
       nativePath,
-      `let rejectConnect;
+      `let finishAccept;
+const pending = new Map();
+const stats = { starts: 0, closes: 0, requests: [], cancellations: [] };
+let missFirstCancellation = true;
+const stream = { read: async () => null, write: async () => {}, close: async () => {}, abort: () => {} };
 module.exports = {
+  stats,
+  failEndpoint: () => finishAccept?.(null),
   ensurePeerIdentity: async () => 'client',
-  startPeerEndpoint: () => ({
-    peerId: 'client',
-    listenAddresses: [],
-    connect: () => new Promise((_resolve, reject) => { rejectConnect = reject; }),
-    close: async () => rejectConnect?.(new Error('closed by abort')),
-  }),
+  startPeerEndpoint: () => {
+    stats.starts += 1;
+    return {
+      peerId: 'client',
+      listenAddresses: [],
+      connect: ({ requestId, peerId }) => {
+        stats.requests.push(requestId);
+        if (peerId === 'ready') return Promise.resolve(stream);
+        return new Promise((_resolve, reject) => pending.set(requestId, reject));
+      },
+      cancelConnect: async (requestId) => {
+        stats.cancellations.push(requestId);
+        if (missFirstCancellation) {
+          missFirstCancellation = false;
+          return false;
+        }
+        pending.get(requestId)?.(new Error('peer_connect_cancelled: cancelled'));
+        pending.delete(requestId);
+        return true;
+      },
+      accept: () => new Promise((resolve) => { finishAccept = resolve; }),
+      close: async () => { stats.closes += 1; finishAccept?.(null); },
+    };
+  },
 };
 `,
     );
-    process.env.MAKA_RUNTIME_HOST_PEER_NATIVE_PATH = nativePath;
-    process.env.MAKA_RUNTIME_HOST_PEER_KEY_PATH = join(directory, 'peer.key');
-    const abort = new AbortController();
-    const connection = connectPeerRuntimeHost({
-      profileId: 'peer-test',
-      transport: {
-        kind: 'libp2p-direct',
-        peerId: 'target',
-        routeHints: ['/memory/1'],
-        coordinationRelays: [],
-      },
-      credential: 'credential',
-      expectedRootId: '00000000-0000-4000-8000-000000000001',
-      clientInstanceId: 'client-test',
-      signal: abort.signal,
-      connectTimeoutMs: 120_000,
+    const client = createRuntimeHostPeerClient({
+      nativePath,
+      keyPath: join(directory, 'peer.key'),
     });
-    await waitForImmediate();
+    const abort = new AbortController();
+    const pending = client.connect(peerConnectInput('pending'), abort.signal);
     abort.abort();
-    await assert.rejects(connection, /closed by abort/u);
+    await assert.rejects(pending, /aborted/u);
+
+    await client.connect(peerConnectInput('ready'));
+    const native = await import(nativePath);
+    assert.deepEqual(native.default.stats, {
+      starts: 1,
+      closes: 0,
+      requests: [1, 2],
+      cancellations: [1, 1],
+    });
+
+    native.default.failEndpoint();
+    await waitForImmediate();
+    await assert.rejects(
+      client.connect(peerConnectInput('ready')),
+      /cannot recover until this Client restarts/u,
+    );
+    assert.equal(native.default.stats.starts, 1);
+
+    await client.close();
+    assert.equal(native.default.stats.closes, 1);
   } finally {
-    restoreEnvironment('MAKA_RUNTIME_HOST_PEER_NATIVE_PATH', previousNativePath);
-    restoreEnvironment('MAKA_RUNTIME_HOST_PEER_KEY_PATH', previousKeyPath);
     await rm(directory, { recursive: true, force: true });
   }
 });
@@ -141,7 +167,11 @@ function streamWith(chunk: Buffer): RuntimeHostPeerNativeStream {
   };
 }
 
-function restoreEnvironment(name: string, value: string | undefined): void {
-  if (value === undefined) delete process.env[name];
-  else process.env[name] = value;
+function peerConnectInput(peerId: string) {
+  return {
+    peerId,
+    routeHints: ['/memory/1'],
+    coordinationRelays: [],
+    directDeadlineMs: 1_000,
+  } as const;
 }

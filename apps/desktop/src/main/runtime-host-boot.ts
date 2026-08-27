@@ -48,6 +48,7 @@ import {
   createClientRuntimeHostCredentialStore,
   createClientRuntimeHostProfileCatalog,
   createRuntimeHostCandidateLaunchBarrier,
+  createRuntimeHostPeerClientFromEnvironment,
   LOCAL_RUNTIME_HOST_PROFILE,
   loadOrCreateRuntimeHostClientInstanceId,
 } from "@maka/runtime-host/client";
@@ -220,6 +221,9 @@ const runtimeHostDirectPeerAvailable = await configureDesktopRuntimeHostPeerClie
   resourcesPath: process.resourcesPath,
   clientDataRoot: userDataDir,
 });
+const runtimeHostPeerClient = runtimeHostDirectPeerAvailable
+  ? createRuntimeHostPeerClientFromEnvironment()
+  : undefined;
 const runtimeHostClientInstanceId = await loadOrCreateRuntimeHostClientInstanceId(
   join(userDataDir, "runtime-host-client.json"),
 );
@@ -724,6 +728,7 @@ runtimeHostManager = await startRuntimeHostDesktopManager(
     clientInstanceId: runtimeHostClientInstanceId,
     generation: runtimeHostGeneration,
     candidateLaunchBarrier: runtimeHostCandidateLaunchBarrier,
+    ...(runtimeHostPeerClient ? { peerClient: runtimeHostPeerClient } : {}),
     // The Desktop E2E composition lives behind its own entry module, which
     // release packaging drops: picking it here is what keeps FakeBackend and
     // the E2E bootstrap out of the shipped Runtime Host.

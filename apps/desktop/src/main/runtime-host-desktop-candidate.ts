@@ -28,6 +28,7 @@ import {
   type RuntimeHostSshOperatorActivationInput,
   connectOrSpawnRuntimeHost,
   connectRemoteRuntimeHostProfile,
+  type RuntimeHostPeerClient,
   type RuntimeHostSshInteraction,
   type RuntimeHostSshTunnel,
   type RuntimeHostSshTunnelInput,
@@ -176,6 +177,7 @@ export interface DesktopRuntimeHostCandidateStartInput
   /** Candidate-exit sink forwarded to the launcher; the Desktop owns the sink. */
   readonly onExit?: (details: CandidateExitDetails) => void;
   readonly candidateLaunchBarrier?: RuntimeHostCandidateLaunchBarrier;
+  readonly peerClient?: RuntimeHostPeerClient;
   readonly remote?: {
     readonly profile: RemoteRuntimeHostProfile;
     readonly credential: string;
@@ -388,6 +390,7 @@ async function startRemoteDesktopRuntimeHostCandidate(
       ? {}
       : { handshakeTimeoutMs: input.handshakeTimeoutMs }),
     readyTimeoutMs: input.electionDeadlineMs ?? 45_000,
+    ...(input.peerClient === undefined ? {} : { peerClient: input.peerClient }),
     ...(remote.sshInteraction === undefined
       ? {}
       : { sshInteraction: remote.sshInteraction }),

@@ -40,9 +40,9 @@ import {
   RuntimeHostPeerByteStream,
   RuntimeHostPeerError,
   readRuntimeHostPeerAuthenticationResult,
-  startRuntimeHostPeerEndpoint,
   writeRuntimeHostPeerAuthentication,
 } from '../transport/peer-native.js';
+import type { RuntimeHostPeerClient } from './peer-client.js';
 import { RuntimeHostPermanentReconnectError } from './reconnect-lifecycle.js';
 import { RuntimeHostRemoteCompatibilityError } from './remote-compatibility-error.js';
 import {
@@ -232,6 +232,7 @@ export async function connectRemoteRuntimeHostProfile(
     readonly handshakeTimeoutMs?: number;
     readonly readyTimeoutMs?: number;
     readonly sshInteraction?: RuntimeHostSshInteraction;
+    readonly peerClient?: RuntimeHostPeerClient;
   },
   overrides: {
     connect?: typeof connectRemoteRuntimeHost;
@@ -251,6 +252,7 @@ export async function connectRemoteRuntimeHostProfile(
       credential: input.credential,
       expectedRootId: input.profile.rootId,
       clientInstanceId: input.clientInstanceId,
+      peerClient: requireRuntimeHostPeerClient(input.peerClient),
       ...(input.signal === undefined ? {} : { signal: input.signal }),
       ...(input.connectTimeoutMs === undefined ? {} : { connectTimeoutMs: input.connectTimeoutMs }),
       ...(input.handshakeTimeoutMs === undefined
@@ -355,42 +357,26 @@ export async function connectPeerRuntimeHost(input: {
   readonly credential: string;
   readonly expectedRootId: string;
   readonly clientInstanceId: string;
+  readonly peerClient: RuntimeHostPeerClient;
   readonly signal?: AbortSignal;
   readonly connectTimeoutMs?: number;
   readonly handshakeTimeoutMs?: number;
 }): Promise<RuntimeHostConnection> {
   input.signal?.throwIfAborted();
-  const nativePath = process.env.MAKA_RUNTIME_HOST_PEER_NATIVE_PATH;
-  const keyPath = process.env.MAKA_RUNTIME_HOST_PEER_KEY_PATH;
-  if (!nativePath || !keyPath) {
-    throw new RuntimeHostPeerError(
-      'peer_native_unavailable',
-      'Experimental direct peer requires MAKA_RUNTIME_HOST_PEER_NATIVE_PATH and MAKA_RUNTIME_HOST_PEER_KEY_PATH',
-    );
-  }
-  const endpoint = startRuntimeHostPeerEndpoint({ nativePath, keyPath });
-  let resolveResourceClosed!: () => void;
-  let closeTask: Promise<void> | undefined;
-  const resource = {
-    closed: new Promise<void>((resolve) => {
-      resolveResourceClosed = resolve;
-    }),
-    close: () => {
-      closeTask ??= endpoint.close().finally(resolveResourceClosed);
-      return closeTask;
-    },
-  };
-  const abort = () => void resource.close().catch(() => undefined);
-  input.signal?.addEventListener('abort', abort, { once: true });
-  if (input.signal?.aborted) abort();
-  let transferred = false;
-  try {
-    const stream = await endpoint.connect({
+  const stream = await input.peerClient.connect(
+    {
       peerId: input.transport.peerId,
       routeHints: input.transport.routeHints,
       coordinationRelays: input.transport.coordinationRelays,
       directDeadlineMs: Math.min(input.connectTimeoutMs ?? 40_000, 120_000),
-    });
+    },
+    input.signal,
+  );
+  const abort = () => stream.abort();
+  input.signal?.addEventListener('abort', abort, { once: true });
+  if (input.signal?.aborted) abort();
+  let transferred = false;
+  try {
     input.signal?.throwIfAborted();
     await writeRuntimeHostPeerAuthentication(stream, input.credential);
     const authentication = await readRuntimeHostPeerAuthenticationResult(
@@ -416,8 +402,8 @@ export async function connectPeerRuntimeHost(input: {
       ...(input.handshakeTimeoutMs === undefined
         ? {}
         : { handshakeTimeoutMs: input.handshakeTimeoutMs }),
-      connectionResource: resource,
     });
+    input.signal?.throwIfAborted();
     if (result.kind === 'incompatible') {
       throw new RuntimeHostRemoteCompatibilityError(input.profileId, result.handshake);
     }
@@ -429,8 +415,18 @@ export async function connectPeerRuntimeHost(input: {
     return result.connection;
   } finally {
     input.signal?.removeEventListener('abort', abort);
-    if (!transferred) await resource.close().catch(() => undefined);
+    if (!transferred) stream.abort();
   }
+}
+
+function requireRuntimeHostPeerClient(
+  peerClient: RuntimeHostPeerClient | undefined,
+): RuntimeHostPeerClient {
+  if (peerClient) return peerClient;
+  throw new RuntimeHostPeerError(
+    'peer_native_unavailable',
+    'Experimental direct peer requires a Client peer endpoint owner',
+  );
 }
 
 export function remoteRuntimeHostUnavailableError(

@@ -112,6 +112,7 @@ function endpointWith(streams: RuntimeHostPeerNativeStream[]): RuntimeHostPeerNa
     connect: async () => {
       throw new Error('not used');
     },
+    cancelConnect: async () => false,
     accept: async () => streams.shift() ?? null,
     close: async () => undefined,
   };

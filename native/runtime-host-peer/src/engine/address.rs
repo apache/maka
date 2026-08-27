@@ -50,6 +50,35 @@ pub(super) fn peer_id_from_address(address: &Multiaddr) -> Option<PeerId> {
     })
 }
 
+pub(super) fn coordination_relay_peer_id(address: &Multiaddr) -> Result<PeerId, PeerError> {
+    let mut peer_id = None;
+    for protocol in address.iter() {
+        match protocol {
+            Protocol::P2p(_) if peer_id.is_some() => {
+                return Err(PeerError::new(
+                    "coordination_unavailable",
+                    "coordination relay address must name exactly one peer",
+                ));
+            }
+            Protocol::P2p(value) => peer_id = Some(value),
+            Protocol::P2pCircuit => {
+                return Err(PeerError::new(
+                    "coordination_unavailable",
+                    "coordination relay address must be a base relay address",
+                ));
+            }
+            _ => {}
+        }
+    }
+    match (peer_id, address.iter().last()) {
+        (Some(peer_id), Some(Protocol::P2p(terminal))) if peer_id == terminal => Ok(peer_id),
+        _ => Err(PeerError::new(
+            "coordination_unavailable",
+            "coordination relay address must end with its peer identity",
+        )),
+    }
+}
+
 pub(super) fn is_relayed_address(address: &Multiaddr) -> bool {
     address
         .iter()

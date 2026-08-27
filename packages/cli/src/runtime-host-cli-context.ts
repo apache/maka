@@ -26,6 +26,7 @@ import {
   connectOrSpawnRuntimeHost,
   connectRemoteRuntimeHostProfile,
   createClientRuntimeHostProfileCatalog,
+  createRuntimeHostPeerClientFromEnvironment,
   createRuntimeHostReconnectingConnection,
   loadOrCreateRuntimeHostClientInstanceId,
   LOCAL_RUNTIME_HOST_PROFILE,
@@ -36,6 +37,7 @@ import {
   type RuntimeHostProfile,
   type ResolvedRuntimeHostProfile,
   type RuntimeHostProfileCatalog,
+  type RuntimeHostPeerClient,
 } from '@maka/runtime-host/client';
 import {
   INTERACTIVE_RUNTIME_HOST_COMPOSITION_ID,
@@ -100,6 +102,7 @@ interface RuntimeHostCliContextDeps {
   readonly loadClientInstanceId: typeof loadOrCreateRuntimeHostClientInstanceId;
   readonly executionCandidateEntrypoint: URL;
   readonly readDeploymentRecord: typeof readLocalHostDeploymentRecord;
+  readonly createPeerClient: typeof createRuntimeHostPeerClientFromEnvironment;
   readonly profileCatalog?: RuntimeHostProfileCatalog;
 }
 
@@ -121,6 +124,7 @@ export async function connectRuntimeHostCli(
       import.meta.resolve('@maka/runtime-host/execution-candidate-main'),
     ),
     readDeploymentRecord: readLocalHostDeploymentRecord,
+    createPeerClient: createRuntimeHostPeerClientFromEnvironment,
     ...overrides,
   };
   const resolvedProfile = await resolveHostProfile(input, deps);
@@ -131,6 +135,10 @@ export async function connectRuntimeHostCli(
       : await deps.loadClientInstanceId(
           join(input.clientDataRoot ?? resolveMakaClientDataRoot(), 'runtime-host-client.json'),
         );
+  const peerClient: RuntimeHostPeerClient | undefined =
+    profile.kind === 'remote' && profile.transport.kind === 'libp2p-direct'
+      ? deps.createPeerClient()
+      : undefined;
   const connectInput = {
     rootPath: input.rootPath,
     protocol: { min: RUNTIME_HOST_PROTOCOL_VERSION, max: RUNTIME_HOST_PROTOCOL_VERSION },
@@ -148,6 +156,7 @@ export async function connectRuntimeHostCli(
         credential: resolvedProfile.credential!,
         clientInstanceId,
         sshInteraction,
+        ...(peerClient ? { peerClient } : {}),
         ...(signal ? { signal } : {}),
       });
     }
@@ -177,23 +186,32 @@ export async function connectRuntimeHostCli(
     }
     return connected.connection;
   };
-  const initialConnection = await connect(
-    undefined,
-    input.interactiveSsh && process.stdin.isTTY && process.stdout.isTTY ? 'inherit' : 'batch',
-  );
-  const connection = await createRuntimeHostReconnectingConnection({
-    initialConnection,
-    connect: (signal) => connect(signal, 'batch'),
-  });
+  let connection: Awaited<ReturnType<typeof createRuntimeHostReconnectingConnection>> | undefined;
   try {
+    const initialConnection = await connect(
+      undefined,
+      input.interactiveSsh && process.stdin.isTTY && process.stdout.isTTY ? 'inherit' : 'batch',
+    );
+    connection = await createRuntimeHostReconnectingConnection({
+      initialConnection,
+      connect: (signal) => connect(signal, 'batch'),
+    });
+    const liveConnection = connection;
     return {
-      connection,
-      catalog: await deps.readConnectionCatalog(connection),
+      connection: liveConnection,
+      catalog: await deps.readConnectionCatalog(liveConnection),
       profile,
-      close: () => connection.close(),
+      close: async () => {
+        try {
+          await liveConnection.close();
+        } finally {
+          await peerClient?.close();
+        }
+      },
     };
   } catch (error) {
-    await connection.close().catch(() => undefined);
+    await connection?.close().catch(() => undefined);
+    await peerClient?.close().catch(() => undefined);
     throw error;
   }
 }

@@ -18,7 +18,7 @@
  */
 
 use std::{
-    collections::{HashMap, VecDeque},
+    collections::{HashMap, HashSet, VecDeque},
     convert::Infallible,
     future::{Ready, ready},
     io,
@@ -156,23 +156,36 @@ pub(super) struct Control {
 }
 
 impl Control {
-    pub(super) fn has_connection(&self, peer_id: PeerId) -> bool {
-        lock(&self.shared).sender(peer_id).is_some()
+    pub(super) fn has_connection(&self, peer_id: PeerId, excluded: &HashSet<ConnectionId>) -> bool {
+        lock(&self.shared).connection(peer_id, excluded).is_some()
     }
 
-    pub(super) async fn open_stream(&mut self, peer_id: PeerId) -> Result<Stream, OpenStreamError> {
-        let sender = lock(&self.shared)
-            .sender(peer_id)
+    pub(super) async fn open_stream(
+        &mut self,
+        peer_id: PeerId,
+        excluded: &HashSet<ConnectionId>,
+    ) -> Result<OpenedApplicationStream, OpenStreamError> {
+        let (connection_id, sender) = lock(&self.shared)
+            .connection(peer_id, excluded)
             .ok_or(OpenStreamError::NoDirectConnection)?;
         let (result, receiver) = oneshot::channel();
         sender
             .send(NewStream { result })
             .await
             .map_err(|_| OpenStreamError::ConnectionClosed)?;
-        receiver
+        let stream = receiver
             .await
-            .map_err(|_| OpenStreamError::ConnectionClosed)?
+            .map_err(|_| OpenStreamError::ConnectionClosed)??;
+        Ok(OpenedApplicationStream {
+            connection_id,
+            stream,
+        })
     }
+}
+
+pub(super) struct OpenedApplicationStream {
+    pub(super) connection_id: ConnectionId,
+    pub(super) stream: Stream,
 }
 
 #[derive(Debug)]
@@ -221,11 +234,19 @@ impl DirectConnections {
         self.connections.remove(&connection_id);
     }
 
-    fn sender(&self, peer_id: PeerId) -> Option<mpsc::Sender<NewStream>> {
+    fn connection(
+        &self,
+        peer_id: PeerId,
+        excluded: &HashSet<ConnectionId>,
+    ) -> Option<(ConnectionId, mpsc::Sender<NewStream>)> {
         self.connections
-            .values()
-            .find(|connection| connection.peer_id == peer_id && !connection.sender.is_closed())
-            .map(|connection| connection.sender.clone())
+            .iter()
+            .find(|(connection_id, connection)| {
+                connection.peer_id == peer_id
+                    && !excluded.contains(connection_id)
+                    && !connection.sender.is_closed()
+            })
+            .map(|(connection_id, connection)| (*connection_id, connection.sender.clone()))
     }
 }
 
@@ -305,7 +326,11 @@ impl ConnectionHandler for Handler {
         if std::mem::take(&mut self.close) {
             return Poll::Ready(libp2p::swarm::ConnectionHandlerEvent::NotifyBehaviour(()));
         }
-        if self.pending.is_some() {
+        if let Some(result) = self.pending.as_mut() {
+            if result.poll_closed(context).is_ready() {
+                self.pending = None;
+                return Poll::Ready(libp2p::swarm::ConnectionHandlerEvent::NotifyBehaviour(()));
+            }
             return Poll::Pending;
         }
         let Some(commands) = self.commands.as_mut() else {
@@ -449,8 +474,12 @@ mod tests {
             relayed.listen_protocol().upgrade().protocol_info().count(),
             0
         );
-        assert!(lock(&control.shared).sender(peer_id).is_none());
-        assert!(!control.has_connection(peer_id));
+        assert!(
+            lock(&control.shared)
+                .connection(peer_id, &HashSet::new())
+                .is_none()
+        );
+        assert!(!control.has_connection(peer_id, &HashSet::new()));
 
         let direct = behaviour
             .handle_established_outbound_connection(
@@ -471,7 +500,14 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec![protocol]
         );
-        assert!(lock(&control.shared).sender(peer_id).is_some());
-        assert!(control.has_connection(peer_id));
+        assert!(
+            lock(&control.shared)
+                .connection(peer_id, &HashSet::new())
+                .is_some()
+        );
+        assert!(control.has_connection(peer_id, &HashSet::new()));
+        assert!(
+            !control.has_connection(peer_id, &HashSet::from([ConnectionId::new_unchecked(2)]),)
+        );
     }
 }

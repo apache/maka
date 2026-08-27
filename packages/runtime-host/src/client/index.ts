@@ -138,6 +138,12 @@ export {
 } from './owner-connection-code.js';
 export { ensureRuntimeHostPeerIdentity } from '../transport/peer-native.js';
 export {
+  createRuntimeHostPeerClient,
+  createRuntimeHostPeerClientFromEnvironment,
+  type RuntimeHostPeerClient,
+  type RuntimeHostPeerConnectInput,
+} from './peer-client.js';
+export {
   createOAuthPresentationClientProvider,
   type OAuthPresentationBackend,
 } from './oauth-presentation.js';
