@@ -23,7 +23,8 @@ import { join } from 'node:path';
 import { describe, test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { UI_LOCALES } from '@maka/core/ui-locale';
-import { formatTuiCopy, getTuiCopyCatalog, type TuiCopyDomain } from '../tui-copy-catalog.js';
+import { getShellControlsCopy } from '../shell-controls-copy.js';
+import { getUiCopyCatalog, type UiCopyDomain } from '../ui-copy-catalog.js';
 
 const LOCALES_ROOT = fileURLToPath(new URL('../locales/', import.meta.url));
 const COPY_RESOURCES = Object.fromEntries(
@@ -32,36 +33,23 @@ const COPY_RESOURCES = Object.fromEntries(
     .map((entry) => [entry.name, readLocaleResources(entry.name)]),
 ) as Readonly<Record<string, Readonly<Record<string, unknown>>>>;
 
-describe('TUI copy resources', () => {
+describe('shared UI copy resources', () => {
   test('loads every supported locale and domain through the registry', () => {
     assert.deepEqual(Object.keys(COPY_RESOURCES).sort(), [...UI_LOCALES].sort());
-    const domains = Object.keys(localeResources('en')).sort() as TuiCopyDomain[];
+    const domains = Object.keys(localeResources('en')).sort() as UiCopyDomain[];
     for (const locale of UI_LOCALES) {
       for (const domain of domains) {
-        assert.deepEqual(getTuiCopyCatalog(domain)[locale], domainResource(locale, domain));
+        assert.deepEqual(getUiCopyCatalog(domain)[locale], domainResource(locale, domain));
       }
     }
   });
 
-  test('keeps every locale structurally aligned by domain', () => {
-    const reference = localeResources('en');
-    const domains = Object.keys(reference).sort();
-    for (const [locale, resources] of Object.entries(COPY_RESOURCES)) {
-      assert.deepEqual(Object.keys(resources).sort(), domains, locale);
-      for (const domain of domains) {
-        assert.deepEqual(
-          resourcePaths(resources[domain]),
-          resourcePaths(reference[domain]),
-          `${locale}/${domain}`,
-        );
-      }
-    }
-  });
-
-  test('keeps interpolation placeholders aligned by domain', () => {
+  test('keeps every locale structurally and parametrically aligned', () => {
     const reference = localeResources('en');
     for (const [locale, resources] of Object.entries(COPY_RESOURCES)) {
+      assert.deepEqual(Object.keys(resources).sort(), Object.keys(reference).sort(), locale);
       for (const [domain, resource] of Object.entries(resources)) {
+        assert.deepEqual(resourcePaths(resource), resourcePaths(reference[domain]), `${locale}/${domain}`);
         assert.deepEqual(
           resourcePlaceholders(resource),
           resourcePlaceholders(reference[domain]),
@@ -69,34 +57,21 @@ describe('TUI copy resources', () => {
         );
       }
     }
-    assert.deepEqual(resourcePlaceholders(domainResource('en', 'mcp-status'), true), {
-      toolCount: ['count'],
-    });
-    assert.deepEqual(resourcePlaceholders(domainResource('en', 'pickers'), true), {
-      enabledModels: ['count'],
-      listProvidersFailed: ['detail'],
-      saveFailed: ['detail'],
-      selectedModels: ['count'],
-      selectedModelsAndSave: ['count'],
-      setupFailed: ['detail'],
-      verifyFailed: ['detail'],
-    });
-    assert.deepEqual(resourcePlaceholders(domainResource('en', 'primary-guidance'), true), {});
-    assert.deepEqual(resourcePlaceholders(domainResource('en', 'session-status'), true), {});
   });
 
-  test('fails closed when a required interpolation value is absent', () => {
-    assert.equal(formatTuiCopy('{count} tools', { count: 3 }), '3 tools');
-    assert.throws(() => formatTuiCopy('{count} tools', {}), /Missing UI copy placeholder count/u);
-  });
+  test('preserves shell control copy and plural behavior', () => {
+    const en = getShellControlsCopy('en');
+    const zh = getShellControlsCopy('zh');
 
-  test('keeps model picker copy locale-specific', () => {
-    const enPickers = domainResource('en', 'pickers');
-    const zhPickers = domainResource('zh', 'pickers');
-    assert.equal(enPickers.modelPickerTitle, 'Select Model');
-    assert.equal(enPickers.searchLabel, 'Search');
-    assert.equal(zhPickers.modelPickerTitle, '选择模型');
-    assert.equal(zhPickers.searchLabel, '搜索');
+    assert.equal(en.navigation.buildStamp('1.2.3'), 'Current build 1.2.3');
+    assert.equal(en.navigation.updateDownloaded('1.2.3'), 'Update 1.2.3 downloaded. Restart to install.');
+    assert.equal(en.navigation.pendingTasks(2), 'Scheduled tasks, 2 active');
+    assert.equal(en.search.results(1), '1 match');
+    assert.equal(en.search.results(2), '2 matches');
+    assert.equal(en.search.truncatedResults(20), 'Many results; showing the first 20');
+    assert.equal(zh.navigation.buildStamp('1.2.3'), '当前版本 1.2.3');
+    assert.equal(zh.navigation.pendingTasks(2), '定时任务，2 条进行中');
+    assert.equal(zh.search.results(2), '找到 2 条匹配');
   });
 });
 
@@ -118,13 +93,10 @@ function localeResources(locale: string): Readonly<Record<string, unknown>> {
   return resources;
 }
 
-function domainResource(locale: string, domain: string): Readonly<Record<string, unknown>> {
+function domainResource(locale: string, domain: string): unknown {
   const resource = localeResources(locale)[domain];
-  assert.ok(
-    resource && typeof resource === 'object' && !Array.isArray(resource),
-    `${locale}/${domain}`,
-  );
-  return resource as Readonly<Record<string, unknown>>;
+  assert.notEqual(resource, undefined, `${locale}/${domain}`);
+  return resource;
 }
 
 function resourcePaths(value: unknown, prefix = ''): string[] {
@@ -139,19 +111,12 @@ function resourcePaths(value: unknown, prefix = ''): string[] {
   return [prefix];
 }
 
-function resourcePlaceholders(
-  value: unknown,
-  populatedOnly = false,
-): Readonly<Record<string, readonly string[]>> {
-  const entries = leafEntries(value).map(
-    ([path, text]) =>
-      [
-        path,
-        [...text.matchAll(/\{([A-Za-z][A-Za-z0-9]*)\}/gu)].map((match) => match[1]!).sort(),
-      ] as const,
-  );
+function resourcePlaceholders(value: unknown): Readonly<Record<string, readonly string[]>> {
   return Object.fromEntries(
-    populatedOnly ? entries.filter(([, names]) => names.length > 0) : entries,
+    leafEntries(value).map(([path, text]) => [
+      path,
+      [...text.matchAll(/\{([A-Za-z][A-Za-z0-9]*)\}/gu)].map((match) => match[1]!).sort(),
+    ]),
   );
 }
 

@@ -1,0 +1,37 @@
+{
+  "shared": {
+    "close": "关闭"
+  },
+  "navigation": {
+    "mainLabel": "主导航",
+    "newTask": "新任务",
+    "automations": "定时任务",
+    "extensions": "扩展",
+    "settings": "设置",
+    "buildStamp": "当前版本 {stamp}",
+    "updateDownloaded": "新版本 {version} 已下载，重启后安装",
+    "updateFailed": "新版本 {version} 更新失败，点击重试或手动下载",
+    "pendingTasks": "定时任务，{count} 条进行中"
+  },
+  "search": {
+    "title": "搜索",
+    "conversationsLabel": "搜索任务",
+    "placeholder": "搜索任务标题和内容…",
+    "clearLabel": "清空搜索",
+    "statusRegionLabel": "搜索状态和结果",
+    "unavailable": "当前环境无法连接搜索后端，请稍后重试。",
+    "privacyTitle": "隐私模式已关闭搜索。",
+    "privacyDetail": "关闭隐私模式后可以继续按关键词查找历史任务。",
+    "errorTitle": "搜索暂时无法完成。",
+    "errorFallback": "搜索服务需要刷新，请重试。",
+    "introduction": "开始输入以按关键词查找历史任务。结果只包含任务标题和内容文本，不进入网络。",
+    "searching": "正在搜索…",
+    "empty": "没有匹配的任务标题或内容。换个关键词试试。",
+    "results": {
+      "one": "找到 {count} 条匹配",
+      "other": "找到 {count} 条匹配"
+    },
+    "truncatedResults": "结果较多，已显示前 {count} 条",
+    "resultsLabel": "搜索结果"
+  }
+}

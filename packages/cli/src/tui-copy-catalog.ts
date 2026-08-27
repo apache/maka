@@ -18,6 +18,10 @@
  */
 
 import type { UiCatalog, UiLocale } from '@maka/core/ui-locale';
+export {
+  defineUiCatalog as defineTuiCopyCatalog,
+  formatUiCopy as formatTuiCopy,
+} from '@maka/core/ui-locale';
 import enMcpStatus from './locales/en/mcp-status.json' with { type: 'json' };
 import enPickers from './locales/en/pickers.json' with { type: 'json' };
 import enPrimaryGuidance from './locales/en/primary-guidance.json' with { type: 'json' };
@@ -50,29 +54,6 @@ export type TuiDomainCatalog<Domain extends TuiCopyDomain> = {
   readonly [Locale in UiLocale]: (typeof TUI_COPY_RESOURCES)[Locale][Domain];
 };
 
-type ExactCopyShape<Actual, Expected> = Actual extends readonly unknown[]
-  ? Expected extends readonly unknown[]
-    ? Actual
-    : never
-  : Actual extends object
-    ? Exclude<keyof Actual, keyof Expected> extends never
-      ? {
-          readonly [Key in keyof Actual]: ExactCopyShape<
-            Actual[Key],
-            Expected[Key & keyof Expected]
-          >;
-        }
-      : never
-    : Actual;
-
-export function defineTuiCopyCatalog<Expected>() {
-  return <Catalog extends UiCatalog<Expected>>(
-    catalog: Catalog & {
-      readonly [Locale in UiLocale]: ExactCopyShape<Catalog[Locale], Expected>;
-    },
-  ): UiCatalog<Expected> => catalog;
-}
-
 export function getTuiCopyCatalog<Domain extends TuiCopyDomain>(
   domain: Domain,
 ): TuiDomainCatalog<Domain> {
@@ -80,15 +61,4 @@ export function getTuiCopyCatalog<Domain extends TuiCopyDomain>(
     zh: TUI_COPY_RESOURCES.zh[domain],
     en: TUI_COPY_RESOURCES.en[domain],
   };
-}
-
-export function formatTuiCopy(
-  template: string,
-  values: Readonly<Record<string, string | number>>,
-): string {
-  return template.replace(/\{([A-Za-z][A-Za-z0-9]*)\}/gu, (_match, name: string) => {
-    const value = values[name];
-    if (value === undefined) throw new Error(`Missing TUI copy placeholder ${name}`);
-    return String(value);
-  });
 }

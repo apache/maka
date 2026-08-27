@@ -30,6 +30,40 @@ export const UI_LOCALE_PREFERENCES = ['auto', ...UI_LOCALES] as const;
 /** A catalog must carry copy for every supported resolved locale. */
 export type UiCatalog<T> = Record<UiLocale, T>;
 
+type ExactUiCatalogShape<Actual, Expected> = Actual extends readonly unknown[]
+  ? Expected extends readonly unknown[]
+    ? Actual
+    : never
+  : Actual extends object
+    ? Exclude<keyof Actual, keyof Expected> extends never
+      ? {
+          readonly [Key in keyof Actual]: ExactUiCatalogShape<
+            Actual[Key],
+            Expected[Key & keyof Expected]
+          >;
+        }
+      : never
+    : Actual;
+
+export function defineUiCatalog<Expected>() {
+  return <Catalog extends UiCatalog<Expected>>(
+    catalog: Catalog & {
+      readonly [Locale in UiLocale]: ExactUiCatalogShape<Catalog[Locale], Expected>;
+    },
+  ): UiCatalog<Expected> => catalog;
+}
+
+export function formatUiCopy(
+  template: string,
+  values: Readonly<Record<string, string | number>>,
+): string {
+  return template.replace(/\{([A-Za-z][A-Za-z0-9]*)\}/gu, (_match, name: string) => {
+    const value = values[name];
+    if (value === undefined) throw new Error(`Missing UI copy placeholder ${name}`);
+    return String(value);
+  });
+}
+
 export function isUiLocale(value: unknown): value is UiLocale {
   return value === 'zh' || value === 'en';
 }
