@@ -566,6 +566,32 @@ test('replays pairing finalization after an unknown commit and reconnect', async
   await manager.close();
 });
 
+test('reconnects after a pairing candidate becomes bound to this Client', async () => {
+  const local = candidateHarness({ hostId: 'host-a' });
+  const remoteHostId = 'a'.repeat(64);
+  const candidate = candidateHarness({
+    hostId: remoteHostId,
+    finalizeReconnectRequired: true,
+  });
+  const claimed = candidateHarness({ hostId: remoteHostId });
+  const queue = [local.candidate, candidate.candidate, claimed.candidate];
+  const manager = await startRuntimeHostDesktopManager(
+    {} as DesktopRuntimeHostCandidateStartInput,
+    {
+      startCandidate: async () => ready(queue.shift()!),
+      reconnectBackoff: { minMs: 0, maxMs: 0 },
+    },
+  );
+  await manager.enable(remoteTarget('office'));
+
+  await manager.finalizePairing('office');
+
+  assert.equal(candidate.finalizeCalls, 1);
+  assert.equal(candidate.closeCalls, 1);
+  assert.equal(manager.current('office')?.candidate, claimed.candidate);
+  await manager.close();
+});
+
 for (const dispatch of ['not_dispatched', 'dispatched'] as const) {
   test(`replays ${dispatch} pairing finalization after connection loss`, async () => {
     const local = candidateHarness({ hostId: 'host-a' });
@@ -1137,6 +1163,7 @@ function candidateHarness(
     hostId?: string;
     hostEpoch?: string;
     finalizeFailures?: Error[];
+    finalizeReconnectRequired?: boolean;
     disconnectOnFinalizeFailure?: boolean;
     onPrepare?: (mode: string) => unknown | Promise<unknown>;
   } = {},
@@ -1193,7 +1220,7 @@ function candidateHarness(
           }
           throw failure;
         }
-        return {};
+        return { reconnectRequired: options.finalizeReconnectRequired ?? false };
       },
     },
     botIncoming: {

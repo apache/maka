@@ -201,6 +201,19 @@ describe('Runtime Host bootstrap protocol', () => {
       HOST_OPERATION_SPECS['access.credential.prepare'].decodeInput(issueInput),
       issueInput,
     );
+    assert.deepEqual(
+      HOST_OPERATION_SPECS['access.credential.prepare'].decodeInput({
+        ...issueInput,
+        bindClientInstance: true,
+      }),
+      { ...issueInput, bindClientInstance: true },
+    );
+    assert.deepEqual(
+      HOST_OPERATION_SPECS['access.credential.finalize'].decodeOutput({
+        reconnectRequired: true,
+      }),
+      { reconnectRequired: true },
+    );
     assert.throws(() =>
       HOST_OPERATION_SPECS['access.credential.prepare'].decodeInput({
         replacementOfCredentialId: 'credential-current',
@@ -228,6 +241,10 @@ describe('Runtime Host bootstrap protocol', () => {
         requiredActiveCredentialId: 'credential-current',
       },
     );
+  });
+
+  test('publishes a new compatibility epoch for Client-bound pairing claims', () => {
+    assert.ok(RUNTIME_HOST_COMPATIBILITY_EPOCH > 53);
   });
 
   test('publishes a new compatibility epoch for provider capacity retry progress', () => {

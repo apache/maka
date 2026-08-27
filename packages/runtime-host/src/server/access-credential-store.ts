@@ -61,6 +61,8 @@ export interface StoredAccessCredential {
   readonly canPublishClientCapabilities: boolean;
   readonly canUseHostPaths: boolean;
   readonly createdAt: string;
+  readonly bindClientInstanceOnFinalize?: true;
+  readonly clientInstanceId?: string;
   readonly expiresAt?: string;
   readonly revokedAt?: string;
 }
@@ -228,6 +230,26 @@ function decodeStoredCredential(value: unknown): StoredAccessCredential {
     throw new Error('Invalid access credential authority');
   }
   const createdAt = requireStoredString(value.createdAt, 'createdAt');
+  const bindClientInstanceOnFinalize = value.bindClientInstanceOnFinalize;
+  if (bindClientInstanceOnFinalize !== undefined && bindClientInstanceOnFinalize !== true) {
+    throw new Error('Invalid bindClientInstanceOnFinalize');
+  }
+  const clientInstanceId = value.clientInstanceId;
+  if (
+    clientInstanceId !== undefined &&
+    (typeof clientInstanceId !== 'string' ||
+      clientInstanceId.length === 0 ||
+      clientInstanceId.length > 128)
+  ) {
+    throw new Error('Invalid clientInstanceId');
+  }
+  if (
+    (bindClientInstanceOnFinalize !== undefined && value.status !== 'pending') ||
+    (clientInstanceId !== undefined && value.status !== 'active') ||
+    (bindClientInstanceOnFinalize !== undefined && clientInstanceId !== undefined)
+  ) {
+    throw new Error('Invalid access credential Client binding state');
+  }
   const expiresAt = value.expiresAt;
   if (value.status === 'pending') {
     if (typeof expiresAt !== 'string' || !Number.isFinite(Date.parse(expiresAt))) {
@@ -250,6 +272,8 @@ function decodeStoredCredential(value: unknown): StoredAccessCredential {
     canPublishClientCapabilities: value.canPublishClientCapabilities,
     canUseHostPaths: value.canUseHostPaths,
     createdAt,
+    ...(bindClientInstanceOnFinalize === true ? { bindClientInstanceOnFinalize } : {}),
+    ...(typeof clientInstanceId === 'string' ? { clientInstanceId } : {}),
     ...(typeof expiresAt === 'string' ? { expiresAt } : {}),
     ...(revokedAt === undefined ? {} : { revokedAt }),
   };

@@ -18,7 +18,13 @@
  */
 
 import { invalidProtocolFrame } from './errors.js';
-import { requireExactRecord, requireId, requireString, requireUtf8String } from './codec.js';
+import {
+  requireExactRecord,
+  requireId,
+  requireShapedRecord,
+  requireString,
+  requireUtf8String,
+} from './codec.js';
 import { defineOperation } from './operation-spec.js';
 import type { OperationKey } from './operations.js';
 
@@ -56,7 +62,9 @@ export interface AccessCredentialIssueResult {
 
 export type AccessCredentialReplaceInput = AccessCredentialIssueInput;
 export type AccessCredentialReplaceResult = AccessCredentialIssueResult;
-export type AccessCredentialPrepareInput = AccessCredentialIssueInput;
+export interface AccessCredentialPrepareInput extends AccessCredentialIssueInput {
+  readonly bindClientInstance?: boolean;
+}
 export type AccessCredentialPrepareResult = AccessCredentialIssueResult;
 
 export interface AccessCredentialRevokeInput {
@@ -82,7 +90,9 @@ export interface AccessCredentialRevokeResult {
 }
 
 export type AccessCredentialFinalizeInput = Record<string, never>;
-export type AccessCredentialFinalizeResult = Record<string, never>;
+export interface AccessCredentialFinalizeResult {
+  readonly reconnectRequired: boolean;
+}
 
 export const ACCESS_AUTHORITY_OPERATION_SPECS = {
   'access.credential.issue': defineOperation<
@@ -115,7 +125,7 @@ export const ACCESS_AUTHORITY_OPERATION_SPECS = {
     mode: 'command',
     availability: 'ready',
     errors: ACCESS_ERRORS,
-    decodeInput: decodeAccessCredentialIssueInput,
+    decodeInput: decodeAccessCredentialPrepareInput,
     decodeOutput: decodeAccessCredentialIssueResult,
   }),
   'access.credential.revoke': defineOperation<
@@ -181,6 +191,34 @@ export function decodeAccessCredentialIssueInput(value: unknown): AccessCredenti
       'canPublishClientCapabilities',
     ),
     canUseHostPaths: boolean(record.canUseHostPaths, 'canUseHostPaths'),
+  };
+}
+
+export function decodeAccessCredentialPrepareInput(value: unknown): AccessCredentialPrepareInput {
+  const record = requireShapedRecord(
+    value,
+    'access credential prepare input',
+    [
+      'principalKind',
+      'principalId',
+      'operationGrants',
+      'canPublishClientCapabilities',
+      'canUseHostPaths',
+    ],
+    ['bindClientInstance'],
+  );
+  return {
+    principalKind: principalKind(record.principalKind),
+    principalId: principalId(record.principalId),
+    operationGrants: operationGrants(record.operationGrants),
+    canPublishClientCapabilities: boolean(
+      record.canPublishClientCapabilities,
+      'canPublishClientCapabilities',
+    ),
+    canUseHostPaths: boolean(record.canUseHostPaths, 'canUseHostPaths'),
+    ...(record.bindClientInstance === undefined
+      ? {}
+      : { bindClientInstance: boolean(record.bindClientInstance, 'bindClientInstance') }),
   };
 }
 
@@ -269,8 +307,10 @@ export function decodeAccessCredentialFinalizeInput(value: unknown): AccessCrede
 export function decodeAccessCredentialFinalizeResult(
   value: unknown,
 ): AccessCredentialFinalizeResult {
-  requireExactRecord(value, 'access credential finalize result', []);
-  return {};
+  const record = requireExactRecord(value, 'access credential finalize result', [
+    'reconnectRequired',
+  ]);
+  return { reconnectRequired: boolean(record.reconnectRequired, 'reconnectRequired') };
 }
 
 function operationGrants(value: unknown): readonly OperationKey[] {

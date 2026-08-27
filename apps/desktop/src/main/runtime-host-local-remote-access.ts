@@ -40,6 +40,7 @@ import type {
 import type { DesktopRuntimeHostSetupPackage } from './runtime-host-ssh-terminal.js';
 
 const RECEIPT_FILE = 'runtime-host-local-service.json';
+const HANDOFF_FILE = 'runtime-host-local-service-handoff.json';
 const SERVICE_ID_PATTERN = /^[a-f0-9]{64}$/u;
 const ROOT_ID_PATTERN = /^[a-f0-9]{64}$/u;
 const ADDRESS_MAX_BYTES = 2 * 1024;
@@ -48,6 +49,13 @@ const ADDRESS_MAX_COUNT = 16;
 interface LocalServiceReceipt extends DesktopRuntimeHostLocalServiceTarget {
   readonly schemaVersion: 1;
   readonly operatorPath: string;
+}
+
+interface LocalServiceHandoff {
+  readonly schemaVersion: 1;
+  readonly rootPath: string;
+  readonly rootId: string;
+  readonly coordinationRelays: readonly string[];
 }
 
 interface LocalPeerDescriptor {
@@ -64,14 +72,17 @@ export function createDesktopLocalRuntimeHostRemoteAccess(input: {
   readonly ipcMain: Pick<IpcMain, 'handle' | 'removeHandler'>;
   readonly clientDataRoot: string;
   readonly rootPath: string;
+  readonly rootId: string;
   readonly directPeerAvailable: boolean;
   readonly manager: () => RuntimeHostDesktopManager | undefined;
   readonly resolveSetupPackage: (
     signal?: AbortSignal,
   ) => DesktopRuntimeHostSetupPackage | Promise<DesktopRuntimeHostSetupPackage>;
   readonly operator: DesktopRuntimeHostLocalOperator;
-}): { close(): Promise<void> } {
+}): { recover(): Promise<void>; close(): Promise<void> } {
   const receiptPath = join(input.clientDataRoot, RECEIPT_FILE);
+  const handoffPath = join(input.clientDataRoot, HANDOFF_FILE);
+  const closing = new AbortController();
   let mutation = Promise.resolve();
   const serialize = <T>(operation: () => Promise<T>): Promise<T> => {
     const result = mutation.then(operation);
@@ -87,9 +98,13 @@ export function createDesktopLocalRuntimeHostRemoteAccess(input: {
       if (!supported(input.directPeerAvailable)) return unsupportedSnapshot();
       try {
         const receipt = await readReceipt(receiptPath, input.rootPath);
-        if (!receipt) return { state: 'off' };
+        if (!receipt) {
+          return (await readHandoff(handoffPath, input.rootPath, input.rootId))
+            ? { state: 'unavailable', message: 'Local Runtime Host setup is being recovered' }
+            : { state: 'off' };
+        }
         const peer = await readPeer(input.operator, receipt);
-        return peer ? onSnapshot(peer) : { state: 'off', managedService: true };
+        return peer ? onSnapshot() : { state: 'off', managedService: true };
       } catch (error) {
         return { state: 'unavailable', message: errorMessage(error) };
       }
@@ -99,7 +114,19 @@ export function createDesktopLocalRuntimeHostRemoteAccess(input: {
     serialize(async () => {
       const request = requireEnableInput(value);
       if (!supported(input.directPeerAvailable)) throw new Error(unsupportedSnapshot().message);
-      const existing = await readReceipt(receiptPath, input.rootPath);
+      let existing = await readReceipt(receiptPath, input.rootPath);
+      if (!existing) {
+        const interrupted = await readHandoff(handoffPath, input.rootPath, input.rootId);
+        if (interrupted) {
+          const recovered = await finishHandoff(
+            interrupted,
+            true,
+            request.allowInterruptActiveTasks,
+          );
+          if (recovered.kind === 'active_tasks') return recovered;
+          existing = recovered.receipt;
+        }
+      }
       if (existing) {
         const currentPeer = await readPeer(input.operator, existing);
         if (
@@ -107,7 +134,6 @@ export function createDesktopLocalRuntimeHostRemoteAccess(input: {
           sameStrings(currentPeer.coordinationRelays, request.coordinationRelays)
         ) {
           return enabledResult(
-            currentPeer,
             await issueConnectionCode(
               input.rootPath,
               existing.rootId,
@@ -133,67 +159,110 @@ export function createDesktopLocalRuntimeHostRemoteAccess(input: {
         const peer = requireEnabledPeer(response.status);
         await manager.waitUntilReady('local', previousHostEpoch);
         return enabledResult(
-          peer,
           await issueConnectionCode(input.rootPath, existing.rootId, peer, localClient(input.manager)),
         );
       }
 
-      const setupPackage = await input.resolveSetupPackage();
-      const manager = requireManager(input.manager);
-      const retirement = await manager.retireOwnedLocalHost(
-        request.allowInterruptActiveTasks ? 'interrupt_active_work' : 'refuse_active_work',
+      const handoff: LocalServiceHandoff = {
+        schemaVersion: 1,
+        rootPath: input.rootPath,
+        rootId: input.rootId,
+        coordinationRelays: request.coordinationRelays,
+      };
+      await writeDocument(handoffPath, handoff);
+      const completed = await finishHandoff(
+        handoff,
+        false,
+        request.allowInterruptActiveTasks,
       );
-      if (retirement.kind === 'active_tasks') return { kind: 'active_tasks' };
-      if (retirement.kind === 'not_owned') {
-        throw new Error('The Local Runtime Host is already managed outside this Desktop');
+      if (completed.kind === 'active_tasks') return completed;
+      return enabledResult(
+        encodeRuntimeHostOwnerConnectionCode({
+          name: hostName(),
+          rootId: completed.receipt.rootId,
+          transport: { kind: 'libp2p-direct', ...completed.peer },
+          credential: completed.credential,
+        }),
+      );
+    });
+
+  const finishHandoff = async (
+    handoff: LocalServiceHandoff,
+    allowAlreadyManaged: boolean,
+    allowInterruptActiveTasks: boolean,
+  ): Promise<
+    | { readonly kind: 'active_tasks' }
+    | {
+        readonly kind: 'complete';
+        readonly receipt: LocalServiceReceipt;
+        readonly peer: LocalPeerDescriptor;
+        readonly credential: string;
       }
-      try {
-        const complete = await input.operator.runSetup(
-          {
-            setupPackage,
-            clientDataRoot: input.clientDataRoot,
-            rootPath: input.rootPath,
-            principalId: `desktop-owner:${randomUUID()}`,
-            coordinationRelays: request.coordinationRelays,
-          },
-          () => undefined,
-        );
-        if (complete.rootPath !== input.rootPath || !complete.directPeer) {
-          throw new Error('Local Runtime Host setup returned an unrelated service');
-        }
-        const peer = requireEnabledPeer({ state: 'enabled', ...complete.directPeer });
-        const receipt = requireReceipt({
+  > => {
+    const setupPackage = await input.resolveSetupPackage(closing.signal);
+    const manager = requireManager(input.manager);
+    const retirement = await manager.retireOwnedLocalHost(
+      allowInterruptActiveTasks ? 'interrupt_active_work' : 'refuse_active_work',
+    );
+    if (retirement.kind === 'active_tasks') {
+      if (!allowAlreadyManaged) await removeDocument(handoffPath);
+      return { kind: 'active_tasks' };
+    }
+    if (retirement.kind === 'not_owned' && !allowAlreadyManaged) {
+      await removeDocument(handoffPath);
+      throw new Error('The Local Runtime Host is already managed outside this Desktop');
+    }
+    let receipt: LocalServiceReceipt | undefined;
+    try {
+      const complete = await input.operator.runSetup(
+        {
+          setupPackage,
+          clientDataRoot: input.clientDataRoot,
+          rootPath: handoff.rootPath,
+          principalId: `desktop-owner:${randomUUID()}`,
+          coordinationRelays: handoff.coordinationRelays,
+          signal: closing.signal,
+        },
+        () => undefined,
+      );
+      if (
+        complete.rootPath !== handoff.rootPath ||
+        complete.rootId !== handoff.rootId ||
+        !complete.directPeer
+      ) {
+        throw new Error('Local Runtime Host setup returned an unrelated service');
+      }
+      receipt = requireReceipt(
+        {
           schemaVersion: 1,
           serviceId: complete.serviceId,
           operatorPath: complete.operatorPath,
           rootPath: complete.rootPath,
           rootId: complete.rootId,
-        }, input.rootPath);
-        try {
-          await writeReceipt(receiptPath, receipt);
-        } catch (error) {
-          await input.operator.runService({
-            operatorPath: receipt.operatorPath,
-            action: 'uninstall',
-            target: receipt,
-          }).catch((rollbackError) => {
-            throw new AggregateError([error, rollbackError], 'Local Runtime Host setup rollback failed');
-          });
-          throw error;
-        }
-        return enabledResult(
-          peer,
-          encodeRuntimeHostOwnerConnectionCode({
-            name: hostName(),
-            rootId: receipt.rootId,
-            transport: { kind: 'libp2p-direct', ...peer },
-            credential: complete.credential,
-          }),
+        },
+        handoff.rootPath,
+      );
+      const peer = requireEnabledPeer({ state: 'enabled', ...complete.directPeer });
+      await writeDocument(receiptPath, receipt);
+      await removeDocument(handoffPath);
+      return { kind: 'complete', receipt, peer, credential: complete.credential };
+    } catch (error) {
+      if (!receipt) throw error;
+      try {
+        await uninstallExactService(input.operator, receipt);
+        await removeDocument(receiptPath);
+        await removeDocument(handoffPath);
+      } catch (rollbackError) {
+        throw new AggregateError(
+          [error, rollbackError],
+          'Local Runtime Host setup rollback failed',
         );
-      } finally {
-        retirement.resume();
       }
-    });
+      throw error;
+    } finally {
+      if (retirement.kind === 'retired') retirement.resume();
+    }
+  };
 
   const createConnectionCode = (): Promise<string> =>
     serialize(async () => {
@@ -214,6 +283,9 @@ export function createDesktopLocalRuntimeHostRemoteAccess(input: {
         }),
       );
       if (response.kind === 'error') throw new Error(response.error.message);
+      if (response.status.state === 'enabled') {
+        throw new Error('Local Runtime Host Direct peer did not disable');
+      }
       return { state: 'off', managedService: true };
     });
 
@@ -247,7 +319,7 @@ export function createDesktopLocalRuntimeHostRemoteAccess(input: {
         if (removed.action !== 'uninstall' || removed.service.state !== 'not_installed') {
           throw new Error('Local Runtime Host service was not cleanly uninstalled');
         }
-        await rm(receiptPath, { force: true });
+        await removeDocument(receiptPath);
         return { kind: 'uninstalled' };
       });
     });
@@ -266,8 +338,20 @@ export function createDesktopLocalRuntimeHostRemoteAccess(input: {
   input.ipcMain.handle(channels[4], (_event, value: unknown) => uninstall(value));
 
   return {
+    recover: () =>
+      serialize(async () => {
+        if (!supported(input.directPeerAvailable)) return;
+        if (await readReceipt(receiptPath, input.rootPath)) {
+          await removeDocument(handoffPath);
+          return;
+        }
+        const handoff = await readHandoff(handoffPath, input.rootPath, input.rootId);
+        if (!handoff) return;
+        await finishHandoff(handoff, true, false);
+      }),
     async close() {
       for (const channel of channels) input.ipcMain.removeHandler(channel);
+      closing.abort(new Error('Maka is shutting down'));
       await input.operator.close();
       await mutation;
     },
@@ -324,25 +408,28 @@ function requireEnabledPeer(value: unknown): LocalPeerDescriptor {
   if (typeof value.peerId !== 'string' || value.peerId.length === 0 || value.peerId.length > 160) {
     throw new Error('Runtime Host returned an invalid peer identity');
   }
-  return {
+  const peer = {
     peerId: value.peerId,
     routeHints: requireAddresses(value.routeHints),
     coordinationRelays: requireAddresses(value.coordinationRelays),
   };
+  if (peer.routeHints.length === 0 && peer.coordinationRelays.length === 0) {
+    throw new Error('Runtime Host Direct peer has no reachable route');
+  }
+  return peer;
 }
 
-function onSnapshot(peer: LocalPeerDescriptor): Extract<
+function onSnapshot(): Extract<
   DesktopLocalRuntimeHostRemoteAccessSnapshot,
   { state: 'on' }
 > {
-  return { state: 'on', ...peer };
+  return { state: 'on' };
 }
 
 function enabledResult(
-  peer: LocalPeerDescriptor,
   connectionCode: string,
 ): Extract<DesktopLocalRuntimeHostRemoteAccessEnableResult, { kind: 'enabled' }> {
-  return { kind: 'enabled', connectionCode, snapshot: onSnapshot(peer) };
+  return { kind: 'enabled', connectionCode, snapshot: onSnapshot() };
 }
 
 async function issueConnectionCode(
@@ -357,6 +444,7 @@ async function issueConnectionCode(
     operationGrants: REMOTE_OWNER_OPERATION_GRANTS,
     canPublishClientCapabilities: true,
     canUseHostPaths: false,
+    bindClientInstance: true,
   });
   const credential = await consumeAccessCredentialDelivery(
     rootPath,
@@ -427,19 +515,88 @@ function requireReceipt(value: unknown, rootPath: string): LocalServiceReceipt {
   };
 }
 
-async function writeReceipt(path: string, receipt: LocalServiceReceipt): Promise<void> {
+async function writeDocument(path: string, value: object): Promise<void> {
   const temporaryPath = join(dirname(path), `.runtime-host-local-service-${randomUUID()}.tmp`);
   const handle = await open(temporaryPath, 'wx', 0o600);
   try {
-    await handle.writeFile(`${JSON.stringify(receipt, null, 2)}\n`, 'utf8');
+    await handle.writeFile(`${JSON.stringify(value, null, 2)}\n`, 'utf8');
     await handle.sync();
   } finally {
     await handle.close();
   }
   try {
     await rename(temporaryPath, path);
+    await syncDirectory(dirname(path));
   } finally {
     await rm(temporaryPath, { force: true });
+  }
+}
+
+async function readHandoff(
+  path: string,
+  rootPath: string,
+  rootId: string,
+): Promise<LocalServiceHandoff | undefined> {
+  let value: unknown;
+  try {
+    value = JSON.parse(await readFile(path, 'utf8')) as unknown;
+  } catch (error) {
+    if (isNodeError(error, 'ENOENT')) return undefined;
+    throw error;
+  }
+  if (
+    !isRecord(value) ||
+    value.schemaVersion !== 1 ||
+    value.rootPath !== rootPath ||
+    value.rootId !== rootId ||
+    Object.keys(value).some(
+      (key) => !['schemaVersion', 'rootPath', 'rootId', 'coordinationRelays'].includes(key),
+    )
+  ) {
+    throw new Error('Local Runtime Host handoff journal is invalid');
+  }
+  return {
+    schemaVersion: 1,
+    rootPath,
+    rootId,
+    coordinationRelays: requireAddresses(value.coordinationRelays),
+  };
+}
+
+async function syncDirectory(path: string): Promise<void> {
+  if (process.platform === 'win32') return;
+  const handle = await open(path, 'r');
+  try {
+    await handle.sync();
+  } finally {
+    await handle.close();
+  }
+}
+
+async function removeDocument(path: string): Promise<void> {
+  await rm(path, { force: true });
+  await syncDirectory(dirname(path));
+}
+
+async function uninstallExactService(
+  operator: DesktopRuntimeHostLocalOperator,
+  receipt: LocalServiceReceipt,
+): Promise<void> {
+  const response = await operator.runService({
+    operatorPath: receipt.operatorPath,
+    action: 'uninstall',
+    target: receipt,
+  });
+  if (
+    response.kind === 'error' ||
+    response.action !== 'uninstall' ||
+    response.service.state !== 'not_installed'
+  ) {
+    throw new Error(
+      response.kind === 'error'
+        ? response.error.message
+        : 'Local Runtime Host service was not cleanly uninstalled',
+    );
   }
 }
 

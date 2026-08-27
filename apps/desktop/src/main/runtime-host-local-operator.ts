@@ -101,6 +101,7 @@ export function runtimeHostLocalSetupCommand(input: {
       '--preset',
       'desktop-client',
       '--defer-pairing-commit',
+      '--bind-pairing-to-client',
       '--enable-direct-peer',
       ...(input.coordinationRelays ?? []).flatMap((relay) => [
         '--coordination-relay',
@@ -147,6 +148,7 @@ export function createDesktopRuntimeHostLocalOperator(input: {
 } {
   const active = new Set<ChildProcess>();
   let closed = false;
+  const closing = new AbortController();
   const terminate = input.terminateProcess ?? terminateChildProcessTree;
 
   return {
@@ -157,6 +159,9 @@ export function createDesktopRuntimeHostLocalOperator(input: {
       const command = runtimeHostLocalSetupCommand({ ...setup, packageSpecifier });
       const workingDirectory = await mkdtemp(join(tmpdir(), 'maka-runtime-host-local-setup-'));
       try {
+        if (closed) throw new Error('Local Runtime Host operator is closed');
+        const signal = combinedSignal(setup.signal, closing.signal);
+        signal.throwIfAborted();
         return await runSetupProcess({
           command,
           cwd: workingDirectory,
@@ -164,7 +169,7 @@ export function createDesktopRuntimeHostLocalOperator(input: {
           spawnProcess: input.spawnProcess ?? spawn,
           timeoutMs: input.setupTimeoutMs ?? SETUP_TIMEOUT_MS,
           terminate,
-          signal: setup.signal,
+          signal,
           onProgress,
           active,
         });
@@ -199,9 +204,9 @@ export function createDesktopRuntimeHostLocalOperator(input: {
         spawnProcess: input.spawnProcess ?? spawn,
         timeoutMs: input.setupTimeoutMs ?? SETUP_TIMEOUT_MS,
         terminate,
-        signal: command.signal,
+        signal: combinedSignal(command.signal, closing.signal),
         active,
-      });
+      }).then((frame) => requirePeerFrame(frame, command.action, command.target));
     },
     runService(command) {
       if (closed) throw new Error('Local Runtime Host operator is closed');
@@ -222,16 +227,52 @@ export function createDesktopRuntimeHostLocalOperator(input: {
         spawnProcess: input.spawnProcess ?? spawn,
         timeoutMs: input.setupTimeoutMs ?? SETUP_TIMEOUT_MS,
         terminate,
-        signal: command.signal,
+        signal: combinedSignal(command.signal, closing.signal),
         active,
-      });
+      }).then((frame) => requireServiceFrame(frame, command.action));
     },
     async close() {
       if (closed) return;
       closed = true;
+      closing.abort(new Error('Local Runtime Host operator is closed'));
       await Promise.allSettled([...active].map((child) => stopProcess(child, terminate)));
     },
   };
+}
+
+function requirePeerFrame(
+  frame: RuntimeHostPeerManagementFrame,
+  action: 'enable' | 'disable' | 'status',
+  target: DesktopRuntimeHostLocalServiceTarget,
+): RuntimeHostPeerManagementFrame {
+  if (frame.action !== action) {
+    throw new Error('Local Runtime Host peer management returned an unrelated result');
+  }
+  if (
+    frame.kind === 'result' &&
+    frame.status.state === 'enabled' &&
+    frame.status.rootId !== target.rootId
+  ) {
+    throw new Error('Local Runtime Host peer management returned an unrelated root');
+  }
+  return frame;
+}
+
+function requireServiceFrame(
+  frame: RuntimeHostServiceManagementFrame,
+  action: 'status' | 'retire' | 'uninstall',
+): RuntimeHostServiceManagementFrame {
+  if (frame.action !== action) {
+    throw new Error('Local Runtime Host service management returned an unrelated result');
+  }
+  return frame;
+}
+
+function combinedSignal(
+  operation: AbortSignal | undefined,
+  closing: AbortSignal,
+): AbortSignal {
+  return operation ? AbortSignal.any([operation, closing]) : closing;
 }
 
 async function resolveLocalSetupPackage(
@@ -273,73 +314,17 @@ function runSingleFrameProcess<Frame>(input: {
   readonly signal?: AbortSignal;
   readonly active: Set<ChildProcess>;
 }): Promise<Frame> {
-  input.signal?.throwIfAborted();
-  return new Promise((resolve, reject) => {
-    const child = input.spawnProcess(input.command.executable, [...input.command.args], {
-      detached: process.platform !== 'win32',
-      env: input.environment,
-      stdio: ['ignore', 'pipe', 'pipe'],
-      windowsHide: true,
-    });
-    input.active.add(child);
-    let result: Frame | undefined;
-    let failure: Error | undefined;
-    let stderr = '';
-    let settled = false;
-    const filter = createRuntimeHostFramedOutputFilter({
-      prefix: input.prefix,
-      pendingMaxBytes: SETUP_FRAME_PENDING_MAX,
-      decode: input.decode,
-      label: input.label,
-      onFrame: (frame) => {
-        if (result) failure = new Error(`${input.label} returned multiple results`);
-        else result = frame;
-      },
-      onError: (error) => {
-        failure = error;
-      },
-    });
-    const cleanup = () => {
-      clearTimeout(timeout);
-      input.signal?.removeEventListener('abort', onAbort);
-      input.active.delete(child);
-    };
-    const finish = (error?: Error) => {
-      if (settled) return;
-      settled = true;
-      cleanup();
-      if (error) reject(error);
-      else resolve(result!);
-    };
-    const stop = (error: Error) => {
-      void stopProcess(child, input.terminate).then(
-        () => finish(error),
-        (stopError) => finish(new AggregateError([error, stopError])),
-      );
-    };
-    const onAbort = () => stop(abortError(input.signal));
-    const timeout = setTimeout(() => stop(new Error(`${input.label} timed out`)), input.timeoutMs);
-    input.signal?.addEventListener('abort', onAbort, { once: true });
-    child.stdout?.on('data', (chunk: Buffer) => filter.push(chunk.toString('utf8')));
-    child.stderr?.on('data', (chunk: Buffer) => {
-      stderr = appendBounded(stderr, chunk.toString('utf8'), STDERR_MAX_BYTES);
-    });
-    child.once('error', (error) => finish(error));
-    child.once('close', (code, signal) => {
-      filter.finish();
-      if (failure) return finish(failure);
-      if (result) return finish();
-      const status = code === null ? signal ?? 'an unknown status' : `code ${code}`;
-      const detail = redactSecrets(stderr.trim()).slice(-2_000);
-      finish(
-        new Error(
-          detail
-            ? `${input.label} exited with ${status}: ${detail}`
-            : `${input.label} exited with ${status}`,
-        ),
-      );
-    });
-    if (input.signal?.aborted) onAbort();
+  let result: Frame | undefined;
+  let failure: Error | undefined;
+  return runFramedProcess({
+    ...input,
+    onFrame(frame) {
+      if (result) failure = new Error(`${input.label} returned multiple results`);
+      else result = frame;
+    },
+    result: () => result,
+    failure: () => failure,
+    acceptNonzeroResult: true,
   });
 }
 
@@ -354,32 +339,69 @@ function runSetupProcess(input: {
   readonly onProgress: (frame: Extract<RuntimeHostSetupFrame, { kind: 'progress' }>) => void;
   readonly active: Set<ChildProcess>;
 }): Promise<RuntimeHostSetupCompleteFrame> {
+  let complete: RuntimeHostSetupCompleteFrame | undefined;
+  let failure: Error | undefined;
+  return runFramedProcess({
+    ...input,
+    prefix: RUNTIME_HOST_SETUP_FRAME_PREFIX,
+    decode: decodeRuntimeHostSetupFrame,
+    label: 'Local Maka setup',
+    onFrame(frame) {
+      if (frame.kind === 'progress') input.onProgress(frame);
+      else if (frame.kind === 'error') failure = new Error(frame.error.message);
+      else if (complete) failure = new Error('Local Maka setup returned multiple results');
+      else complete = frame;
+    },
+    result: () => complete,
+    failure: () => failure,
+  });
+}
+
+function runFramedProcess<Frame, Result>(input: {
+  readonly command: DesktopRuntimeHostLocalSetupCommand;
+  readonly cwd?: string;
+  readonly prefix: string;
+  readonly decode: (line: string) => Frame | undefined;
+  readonly label: string;
+  readonly environment: NodeJS.ProcessEnv;
+  readonly spawnProcess: typeof spawn;
+  readonly timeoutMs: number;
+  readonly terminate: typeof terminateChildProcessTree;
+  readonly signal?: AbortSignal;
+  readonly active: Set<ChildProcess>;
+  readonly onFrame: (frame: Frame) => void;
+  readonly result: () => Result | undefined;
+  readonly failure: () => Error | undefined;
+  readonly acceptNonzeroResult?: boolean;
+}): Promise<Result> {
+  input.signal?.throwIfAborted();
   return new Promise((resolve, reject) => {
     const child = input.spawnProcess(input.command.executable, [...input.command.args], {
-      cwd: input.cwd,
+      ...(input.cwd ? { cwd: input.cwd } : {}),
       detached: process.platform !== 'win32',
       env: input.environment,
       stdio: ['ignore', 'pipe', 'pipe'],
       windowsHide: true,
     });
     input.active.add(child);
-    let complete: RuntimeHostSetupCompleteFrame | undefined;
-    let failure: Error | undefined;
+    let filterFailure: Error | undefined;
+    let stopFailure: Error | undefined;
     let stderr = '';
     let settled = false;
     const filter = createRuntimeHostFramedOutputFilter({
-      prefix: RUNTIME_HOST_SETUP_FRAME_PREFIX,
+      prefix: input.prefix,
       pendingMaxBytes: SETUP_FRAME_PENDING_MAX,
-      decode: decodeRuntimeHostSetupFrame,
-      label: 'Local Maka setup',
+      decode: input.decode,
+      label: input.label,
       onFrame: (frame) => {
-        if (frame.kind === 'progress') input.onProgress(frame);
-        else if (frame.kind === 'error') failure = new Error(frame.error.message);
-        else if (complete) failure = new Error('Local Maka setup returned multiple results');
-        else complete = frame;
+        try {
+          input.onFrame(frame);
+        } catch (error) {
+          filterFailure = error instanceof Error ? error : new Error(String(error));
+        }
       },
       onError: (error) => {
-        failure = error;
+        filterFailure = error;
       },
     });
     const cleanup = () => {
@@ -387,42 +409,48 @@ function runSetupProcess(input: {
       input.signal?.removeEventListener('abort', onAbort);
       input.active.delete(child);
     };
-    const finish = (error?: Error) => {
+    const finish = (result: Result | undefined, error?: Error) => {
       if (settled) return;
       settled = true;
       cleanup();
       if (error) reject(error);
-      else resolve(complete!);
+      else resolve(result!);
     };
     const stop = (error: Error) => {
-      void stopProcess(child, input.terminate).then(() => finish(error), finish);
+      if (stopFailure) return;
+      stopFailure = error;
+      void stopProcess(child, input.terminate).then(
+        () => finish(undefined, error),
+        (stopError) => finish(undefined, new AggregateError([error, stopError])),
+      );
     };
     const onAbort = () => stop(abortError(input.signal));
-    const timeout = setTimeout(
-      () => stop(new Error('Local Maka setup timed out')),
-      input.timeoutMs,
-    );
+    const timeout = setTimeout(() => stop(new Error(`${input.label} timed out`)), input.timeoutMs);
     input.signal?.addEventListener('abort', onAbort, { once: true });
-    child.stdout?.on('data', (chunk: Buffer) => {
-      filter.push(chunk.toString('utf8'));
-    });
+    child.stdout?.on('data', (chunk: Buffer) => filter.push(chunk.toString('utf8')));
     child.stderr?.on('data', (chunk: Buffer) => {
       stderr = appendBounded(stderr, chunk.toString('utf8'), STDERR_MAX_BYTES);
     });
-    child.once('error', (error) => finish(error));
+    child.once('error', (error) => {
+      if (!stopFailure) finish(undefined, error);
+    });
     child.once('close', (code, signal) => {
+      if (stopFailure) return;
       filter.finish();
-      if (failure) return finish(failure);
-      if (complete && code === 0) return finish();
+      const failure = filterFailure ?? input.failure();
+      if (failure) return finish(undefined, failure);
+      const result = input.result();
+      if (result && (code === 0 || input.acceptNonzeroResult)) return finish(result);
       const status = code === null ? signal ?? 'an unknown status' : `code ${code}`;
       const detail = redactSecrets(stderr.trim()).slice(-2_000);
       finish(
+        undefined,
         new Error(
-          complete
-            ? `Local Maka setup exited with ${status}`
-            : detail
-              ? `Local Maka setup exited with ${status}: ${detail}`
-              : `Local Maka setup ended without a completion result (${status})`,
+          detail
+            ? `${input.label} exited with ${status}: ${detail}`
+            : result
+              ? `${input.label} exited with ${status}`
+              : `${input.label} ended without a result (${status})`,
         ),
       );
     });

@@ -384,12 +384,7 @@ export interface DesktopRuntimeHostProfileChangedEvent {
 export type DesktopLocalRuntimeHostRemoteAccessSnapshot =
   | { readonly state: 'unsupported'; readonly message: string }
   | { readonly state: 'off'; readonly managedService?: true }
-  | {
-      readonly state: 'on';
-      readonly peerId: string;
-      readonly routeHints: readonly string[];
-      readonly coordinationRelays: readonly string[];
-    }
+  | { readonly state: 'on' }
   | { readonly state: 'unavailable'; readonly message: string };
 
 export type DesktopLocalRuntimeHostRemoteAccessEnableResult =

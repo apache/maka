@@ -40,6 +40,7 @@ test('local setup installs one managed service for the Desktop root with Direct 
         '--principal', 'desktop-owner:pairing',
         '--preset', 'desktop-client',
         '--defer-pairing-commit',
+        '--bind-pairing-to-client',
         '--enable-direct-peer',
         '--coordination-relay', '/dns4/discovery.example/udp/443/quic-v1',
         '--json',

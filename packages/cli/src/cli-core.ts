@@ -304,6 +304,7 @@ export async function runMakaCli(
         principalId: command.principalId,
         preset: command.preset,
         deferPairingCommit: command.deferPairingCommit,
+        bindPairingToClient: command.bindPairingToClient,
         ...(command.rootPath ? { rootPath: command.rootPath } : {}),
         ...(command.projectDirectoryRoots
           ? { projectDirectoryRoots: command.projectDirectoryRoots }

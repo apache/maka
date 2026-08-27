@@ -438,6 +438,9 @@ export class RuntimeHostKernel {
         compositionRevision: this.compositionDescriptor.revision,
       };
     }
+    if (authority.clientInstanceId && authority.clientInstanceId !== hello.clientInstanceId) {
+      throw new Error('Runtime Host access credential belongs to another Client');
+    }
     const selectedProtocol = negotiateProtocol(
       { min: hello.protocolMin, max: hello.protocolMax },
       HOST_PROTOCOL,
@@ -674,7 +677,11 @@ export class RuntimeHostKernel {
           ),
         'access.credential.finalize': async (_input, context) =>
           this.#settleAccessCredentialMutation(
-            finalizeAccessCredential(this.#options.accessAuthority, context.credentialId),
+            finalizeAccessCredential(
+              this.#options.accessAuthority,
+              context.credentialId,
+              context.clientInstanceId,
+            ),
           ),
       },
       domainHandlers,

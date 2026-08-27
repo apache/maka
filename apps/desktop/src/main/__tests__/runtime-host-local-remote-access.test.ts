@@ -18,7 +18,7 @@
  */
 
 import assert from 'node:assert/strict';
-import { mkdir, mkdtemp, readFile, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
@@ -84,6 +84,7 @@ test('enabling remote access hands the same root to one managed service before D
     },
     clientDataRoot,
     rootPath,
+    rootId: 'a'.repeat(64),
     directPeerAvailable: true,
     manager: () => manager,
     resolveSetupPackage: async () => ({ kind: 'npm', specifier: 'maka-agent@0.2.0' }),
@@ -109,5 +110,70 @@ test('enabling remote access hands the same root to one managed service before D
     JSON.parse(await readFile(join(clientDataRoot, 'runtime-host-local-service.json'), 'utf8'))
       .rootPath,
     rootPath,
+  );
+});
+
+test('an interrupted Local Host handoff converges to its exact managed service', async (t) => {
+  const base = await mkdtemp(join(tmpdir(), 'maka-local-remote-access-recovery-'));
+  t.after(() => rm(base, { recursive: true, force: true }));
+  const clientDataRoot = join(base, 'client');
+  const rootPath = join(clientDataRoot, 'workspaces', 'default');
+  const rootId = 'a'.repeat(64);
+  await mkdir(rootPath, { recursive: true });
+  await writeFile(
+    join(clientDataRoot, 'runtime-host-local-service-handoff.json'),
+    `${JSON.stringify({
+      schemaVersion: 1,
+      rootPath,
+      rootId,
+      coordinationRelays: [],
+    })}\n`,
+  );
+  let setupCalls = 0;
+  const service = createDesktopLocalRuntimeHostRemoteAccess({
+    ipcMain: { handle() {}, removeHandler() {} },
+    clientDataRoot,
+    rootPath,
+    rootId,
+    directPeerAvailable: true,
+    manager: () =>
+      ({
+        async retireOwnedLocalHost() {
+          return { kind: 'not_owned' as const };
+        },
+      }) as unknown as RuntimeHostDesktopManager,
+    resolveSetupPackage: async () => ({ kind: 'npm', specifier: 'maka-agent@0.2.0' }),
+    operator: {
+      async runSetup() {
+        setupCalls += 1;
+        return {
+          serviceId: 'b'.repeat(64),
+          operatorPath: join(base, 'operator'),
+          rootPath,
+          rootId,
+          credential: 'unused-pending-credential',
+          directPeer: {
+            peerId: '12D3KooWpeer',
+            routeHints: ['/ip4/192.0.2.1/udp/41000/quic-v1'],
+            coordinationRelays: [],
+          },
+        };
+      },
+      async close() {},
+    } as unknown as ReturnType<typeof createDesktopRuntimeHostLocalOperator>,
+  });
+  t.after(() => service.close());
+
+  await service.recover();
+
+  assert.equal(setupCalls, 1);
+  assert.equal(
+    JSON.parse(await readFile(join(clientDataRoot, 'runtime-host-local-service.json'), 'utf8'))
+      .rootId,
+    rootId,
+  );
+  await assert.rejects(
+    readFile(join(clientDataRoot, 'runtime-host-local-service-handoff.json'), 'utf8'),
+    { code: 'ENOENT' },
   );
 });

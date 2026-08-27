@@ -68,6 +68,7 @@ export interface RuntimeHostSetupCliOptions {
   readonly principalId: string;
   readonly preset: RuntimeHostAccessPreset;
   readonly deferPairingCommit?: boolean;
+  readonly bindPairingToClient?: boolean;
   readonly rootPath?: string;
   readonly projectDirectoryRoots?: readonly { readonly label: string; readonly path: string }[];
   readonly websocketPort?: number;
@@ -230,6 +231,7 @@ async function runRuntimeHostSetupLocked(
       canPublishClientCapabilities: false,
       canUseHostPaths: false,
       preset: options.preset,
+      ...(options.bindPairingToClient ? { bindClientInstance: true } : {}),
     });
   } catch (error) {
     throw new RuntimeHostSetupError(

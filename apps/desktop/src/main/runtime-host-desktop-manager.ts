@@ -327,7 +327,11 @@ class RuntimeHostDesktopManagerImpl implements RuntimeHostDesktopManager {
         try {
           const remainingMs = deadline - Date.now();
           if (remainingMs <= 0) throw new RuntimeHostPairingFinalizationInterruptedError();
-          await candidate.client.finalizeAccessCredential(remainingMs);
+          const finalized = await candidate.client.finalizeAccessCredential(remainingMs);
+          if (finalized.reconnectRequired) {
+            await candidate.close();
+            await this.#waitForReadyCandidate(lifecycle, candidate, signal);
+          }
           return;
         } catch (error) {
           if (pairingFinalizeTimedOut(error)) {

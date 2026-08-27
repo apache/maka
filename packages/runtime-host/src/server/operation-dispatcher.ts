@@ -39,6 +39,7 @@ export interface ConnectionContext {
   connectionId: string;
   principal: string;
   credentialId?: string;
+  clientInstanceId?: string;
   acquireResidency(): OperationResidency;
 }
 

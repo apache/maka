@@ -66,6 +66,7 @@ export type RuntimeHostCliCommand =
       principalId: string;
       preset: 'desktop-client' | 'terminal-client';
       deferPairingCommit: boolean;
+      bindPairingToClient?: true;
       clientDataRoot?: string;
       rootPath?: string;
       projectDirectoryRoots?: { label: string; path: string }[];
@@ -245,6 +246,7 @@ function parseSetupCommand(argv: string[]): RuntimeHostCliCommand {
   let principalId: string | undefined;
   let preset: 'desktop-client' | 'terminal-client' | undefined;
   let deferPairingCommit = false;
+  let bindPairingToClient = false;
   let clientDataRoot: string | undefined;
   let enableDirectPeer = false;
   const coordinationRelays: string[] = [];
@@ -277,6 +279,10 @@ function parseSetupCommand(argv: string[]): RuntimeHostCliCommand {
         if (deferPairingCommit) return error('Duplicate --defer-pairing-commit');
         deferPairingCommit = true;
       },
+      '--bind-pairing-to-client': () => {
+        if (bindPairingToClient) return error('Duplicate --bind-pairing-to-client');
+        bindPairingToClient = true;
+      },
     },
   });
   if ('kind' in options) return options;
@@ -287,12 +293,16 @@ function parseSetupCommand(argv: string[]): RuntimeHostCliCommand {
   if (!enableDirectPeer && coordinationRelays.length > 0) {
     return error('--coordination-relay requires --enable-direct-peer');
   }
+  if (bindPairingToClient && !deferPairingCommit) {
+    return error('--bind-pairing-to-client requires --defer-pairing-commit');
+  }
   return {
     kind: 'runtime-host-setup',
     ...options,
     principalId,
     preset,
     deferPairingCommit,
+    ...(bindPairingToClient ? { bindPairingToClient: true } : {}),
     ...(clientDataRoot ? { clientDataRoot } : {}),
     ...(enableDirectPeer ? { directPeer: { coordinationRelays } } : {}),
   };

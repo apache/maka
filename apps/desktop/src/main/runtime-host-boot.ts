@@ -388,6 +388,7 @@ const localRuntimeHostRemoteAccess = createDesktopLocalRuntimeHostRemoteAccess({
   ipcMain,
   clientDataRoot: userDataDir,
   rootPath: startupLocalStorageRoot.canonicalPath,
+  rootId: startupLocalStorageRoot.rootId,
   directPeerAvailable: runtimeHostDirectPeerAvailable,
   manager: () => runtimeHostManager,
   resolveSetupPackage: runtimeHostSetupPackage.resolve,
@@ -928,6 +929,9 @@ runtimeHostManager = await startRuntimeHostDesktopManager(
 });
 wireLifecycle();
 runtimeHostManager.setDefaultProfile(runtimeHostStartup.preferences.defaultProfileId);
+await localRuntimeHostRemoteAccess.recover().catch((error: unknown) => {
+  console.error('[runtime-host] interrupted Local Host setup could not be recovered:', error);
+});
 void runtimeHostProfileService.startEnabledProfiles();
 const unavailableDefault = runtimeHostStartup.unavailable.get(
   runtimeHostStartup.preferences.defaultProfileId,

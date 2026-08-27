@@ -78,7 +78,7 @@ export interface RuntimeHostAccessAuthority {
   revokeRotation(
     input: AccessCredentialRotationRevokeInput,
   ): Promise<AccessCredentialRotationRevokeResult>;
-  finalize(credentialId: string): Promise<AccessCredentialFinalizeResult>;
+  finalize(credentialId: string, clientInstanceId: string): Promise<AccessCredentialFinalizeResult>;
   subscribeRevocations(listener: (credentialId: string) => void): () => void;
   close(): Promise<void>;
 }
@@ -143,9 +143,13 @@ class FileRuntimeHostAccessAuthority implements RuntimeHostAccessAuthority {
           principalKind: match.principalKind,
           principalId: match.principalId,
           credentialId: match.credentialId,
-          operationGrants: match.operationGrants,
-          canPublishClientCapabilities: match.canPublishClientCapabilities,
-          canUseHostPaths: match.canUseHostPaths,
+          operationGrants: match.bindClientInstanceOnFinalize
+            ? ['host.status', 'access.credential.finalize']
+            : match.operationGrants,
+          canPublishClientCapabilities:
+            !match.bindClientInstanceOnFinalize && match.canPublishClientCapabilities,
+          canUseHostPaths: !match.bindClientInstanceOnFinalize && match.canUseHostPaths,
+          ...(match.clientInstanceId ? { clientInstanceId: match.clientInstanceId } : {}),
         })
       : undefined;
   }
@@ -179,14 +183,14 @@ class FileRuntimeHostAccessAuthority implements RuntimeHostAccessAuthority {
   }
 
   #issue(
-    input: AccessCredentialIssueInput,
+    input: AccessCredentialIssueInput | AccessCredentialPrepareInput,
     mode: 'issue' | 'replace' | 'prepare',
   ): Promise<AccessCredentialIssueResult> {
     return this.#mutate(() => this.#createCredential(input, mode));
   }
 
   async #createCredential(
-    input: AccessCredentialIssueInput,
+    input: AccessCredentialIssueInput | AccessCredentialPrepareInput,
     mode: 'issue' | 'replace' | 'prepare',
     operationGrants = issuedAccessGrants(input.operationGrants),
   ): Promise<AccessCredentialIssueResult> {
@@ -224,6 +228,9 @@ class FileRuntimeHostAccessAuthority implements RuntimeHostAccessAuthority {
       ...(mode === 'prepare'
         ? {
             expiresAt: new Date(createdAt.getTime() + PENDING_CREDENTIAL_LIFETIME_MS).toISOString(),
+            ...('bindClientInstance' in input && input.bindClientInstance
+              ? { bindClientInstanceOnFinalize: true as const }
+              : {}),
           }
         : {}),
     };
@@ -328,7 +335,10 @@ class FileRuntimeHostAccessAuthority implements RuntimeHostAccessAuthority {
     return { credentialId, revoked: true };
   }
 
-  finalize(credentialId: string): Promise<AccessCredentialFinalizeResult> {
+  finalize(
+    credentialId: string,
+    clientInstanceId: string,
+  ): Promise<AccessCredentialFinalizeResult> {
     return this.#mutate(async () => {
       const retained = this.#file.credentials.find(
         (credential) => credential.credentialId === credentialId,
@@ -336,7 +346,14 @@ class FileRuntimeHostAccessAuthority implements RuntimeHostAccessAuthority {
       if (!retained || retained.status === 'revoked') {
         throw new RuntimeHostAccessInputError('The current access credential is no longer active');
       }
-      if (retained.status === 'active') return {};
+      if (retained.status === 'active') {
+        if (retained.clientInstanceId && retained.clientInstanceId !== clientInstanceId) {
+          throw new RuntimeHostAccessInputError(
+            'The pairing candidate was claimed by another Client',
+          );
+        }
+        return { reconnectRequired: false };
+      }
       if (Date.parse(retained.expiresAt!) <= Date.now()) {
         await this.#expirePending();
         throw new RuntimeHostAccessInputError('The pairing candidate has expired');
@@ -352,14 +369,16 @@ class FileRuntimeHostAccessAuthority implements RuntimeHostAccessAuthority {
         this.#file.credentials
           .filter((credential) => !revoked.includes(credential))
           .map((credential) =>
-            credential === retained ? activatePendingCredential(credential) : credential,
+            credential === retained
+              ? activatePendingCredential(credential, clientInstanceId)
+              : credential,
           ),
       );
       await this.#commit(
         finalized,
         revoked.map((credential) => credential.credentialId),
       );
-      return {};
+      return { reconnectRequired: retained.bindClientInstanceOnFinalize === true };
     });
   }
 
@@ -463,9 +482,16 @@ class FileRuntimeHostAccessAuthority implements RuntimeHostAccessAuthority {
   }
 }
 
-function activatePendingCredential(credential: StoredAccessCredential): StoredAccessCredential {
-  const { expiresAt: _expiresAt, ...retained } = credential;
-  return { ...retained, status: 'active' };
+function activatePendingCredential(
+  credential: StoredAccessCredential,
+  clientInstanceId: string,
+): StoredAccessCredential {
+  const { expiresAt: _expiresAt, bindClientInstanceOnFinalize, ...retained } = credential;
+  return {
+    ...retained,
+    status: 'active',
+    ...(bindClientInstanceOnFinalize ? { clientInstanceId } : {}),
+  };
 }
 
 function assertCredentialAuthority(
@@ -605,6 +631,7 @@ export async function revokeAccessCredentialRotation(
 export async function finalizeAccessCredential(
   authority: RuntimeHostAccessAuthority | undefined,
   credentialId: string | undefined,
+  clientInstanceId: string | undefined,
 ): Promise<OperationOutcome<'access.credential.finalize'>> {
   if (!authority) return unavailable('finalize');
   if (!credentialId) {
@@ -613,8 +640,14 @@ export async function finalizeAccessCredential(
       error: { code: 'invalid_request', message: 'A remote access credential is required' },
     };
   }
+  if (!clientInstanceId) {
+    return {
+      ok: false,
+      error: { code: 'invalid_request', message: 'A Client identity is required' },
+    };
+  }
   try {
-    return { ok: true, result: await authority.finalize(credentialId) };
+    return { ok: true, result: await authority.finalize(credentialId, clientInstanceId) };
   } catch (error) {
     if (error instanceof RuntimeHostAccessInputError) {
       return { ok: false, error: { code: 'invalid_request', message: error.message } };
