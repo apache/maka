@@ -3445,7 +3445,7 @@ describe('Maka Pi TUI runner', () => {
     const driver = new SlashCommandDriver([attachable, archived]);
     driver.getSessionResumeAvailability = async (session) => {
       if (session.id === archived.id) throw new Error('session archived');
-      return { available: true };
+      return { available: false, reason: 'no resumable turn' };
     };
     const run = runMakaPiTui({
       title: 'Maka',
@@ -3462,10 +3462,16 @@ describe('Maka Pi TUI runner', () => {
     await waitFor(() => plainTerminalOutput(terminal.output()).includes('Resume Session Current'));
     assert.match(plainTerminalOutput(terminal.output()), /attachab/);
 
-    terminal.input('\x1b');
-    terminal.input('/exit');
-    terminal.input('\r');
-    await run;
+    let switched = false;
+    try {
+      terminal.input('\r');
+      await waitFor(() => driver.sessionIds.includes(attachable.id));
+      switched = true;
+    } finally {
+      exitMaka(terminal);
+      await run;
+    }
+    assert.equal(switched, true);
   });
 
   test('surfaces a notice when the foreign-session scan fails', async () => {
@@ -4080,6 +4086,7 @@ describe('Maka Pi TUI runner', () => {
     driver.releaseList();
     // The rendered picker is the observable arming signal for the Escape.
     await waitFor(() => plainTerminalOutput(terminal.screenOutput()).includes('Existing chat'));
+    assert.equal(driver.listCalls, 1);
 
     terminal.input('\x1b');
     exitMaka(terminal);
@@ -8204,6 +8211,12 @@ class RejectingSandboxBoundaryDriver extends FakeSessionDriver {
 class DeferredListSessionsDriver extends SlashCommandDriver {
   listCalls = 0;
   private resolveList: (() => void) | null = null;
+
+  async getSessionResumeCandidateAvailability(
+    _session: SessionSummary,
+  ): Promise<SessionResumeAvailability> {
+    return { available: true };
+  }
 
   override async listSessions(): Promise<SessionSummary[]> {
     this.listCalls += 1;
