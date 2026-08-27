@@ -509,7 +509,7 @@ Authority, safety, and other recovery failures remain red errors with the raw
 reason preserved for diagnosis.
 
 Because this changes a closed protocol union, Runtime Host compatibility epoch
-52 rejects mixed old/new Client-Host pairs during handshake instead of letting
+54 rejects mixed old/new Client-Host pairs during handshake instead of letting
 a Client misclassify a recovery failure as a disabled feature. This change only
 corrects Host projection and CLI presentation; it does not move ownership of
 the planner, durable continuation claim, or feature flag.
