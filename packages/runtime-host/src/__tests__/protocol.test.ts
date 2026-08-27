@@ -324,7 +324,7 @@ describe('Runtime Host bootstrap protocol', () => {
   });
 
   test('publishes a new compatibility epoch for exact Session Connection identity', () => {
-    assert.ok(RUNTIME_HOST_COMPATIBILITY_EPOCH > 53);
+    assert.ok(RUNTIME_HOST_COMPATIBILITY_EPOCH > 55);
   });
 
   test('selects the highest mutually supported protocol and rejects a gap', () => {

@@ -76,6 +76,7 @@ function session(o: Partial<SessionSummary> = {}): SessionSummary {
     lastMessagePreview: '帮我看下这几个文件。',
     status: 'active',
     backend: 'ai-sdk',
+    llmConnectionId: 'connection-anthropic-main',
     llmConnectionSlug: 'anthropic-main',
     connectionLocked: false,
     model: 'claude-sonnet-4-5',

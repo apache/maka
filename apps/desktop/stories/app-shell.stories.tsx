@@ -108,6 +108,7 @@ function makeSession(input: {
     status: input.status ?? 'active',
     lastMessageAt: input.lastMessageAt ?? NOW - 12 * 60_000,
     backend: 'ai-sdk',
+    llmConnectionId: 'connection-anthropic-main',
     llmConnectionSlug: 'anthropic-main',
     connectionLocked: false,
     model: 'claude-sonnet-4-5',
