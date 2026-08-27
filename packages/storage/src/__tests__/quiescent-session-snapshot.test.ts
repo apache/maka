@@ -1,5 +1,25 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import assert from 'node:assert/strict';
 import {
+  copyFile,
   mkdir,
   mkdtemp,
   readFile,
@@ -31,8 +51,8 @@ afterEach(async () => {
 
 test('prepares state and workspace under one quiescence boundary, then releases live writers', async () => {
   const fixture = await createFixture();
-  let liveState = 'state-at-boundary';
-  let liveWorkspace = 'workspace-at-boundary';
+  await writeFile(join(fixture.liveStateRoot, 'runtime.sqlite'), 'state-at-boundary', 'utf8');
+  await writeFile(join(fixture.liveWorkspaceRoot, 'main.ts'), 'workspace-at-boundary', 'utf8');
   const events: string[] = [];
   let quiescent = false;
 
@@ -57,7 +77,10 @@ test('prepares state and workspace under one quiescence boundary, then releases 
         assert.equal(quiescent, true);
         events.push('state');
         await mkdir(input.destinationRoot);
-        await writeFile(join(input.destinationRoot, 'runtime.sqlite'), liveState, 'utf8');
+        await copyFile(
+          join(fixture.liveStateRoot, 'runtime.sqlite'),
+          join(input.destinationRoot, 'runtime.sqlite'),
+        );
         return {
           mediaType: 'application/vnd.maka.session-state-identity+json;version=1',
           bytes: Buffer.from('{"makaSessionId":"session-1"}', 'utf8'),
@@ -70,7 +93,10 @@ test('prepares state and workspace under one quiescence boundary, then releases 
         assert.equal(input.policy, SESSION_SNAPSHOT_WORKSPACE_POLICY_V1);
         events.push('workspace');
         await mkdir(input.destinationRoot);
-        await writeFile(join(input.destinationRoot, 'main.ts'), liveWorkspace, 'utf8');
+        await copyFile(
+          join(fixture.liveWorkspaceRoot, 'main.ts'),
+          join(input.destinationRoot, 'main.ts'),
+        );
         return workspaceResult({ includedEntries: 1 });
       },
     },
@@ -82,15 +108,15 @@ test('prepares state and workspace under one quiescence boundary, then releases 
   assert.notEqual(handle.snapshot.workspaceRoot, fixture.liveWorkspaceRoot);
   assert.equal(
     await readFile(join(handle.snapshot.stateRoot, 'runtime.sqlite'), 'utf8'),
-    liveState,
+    'state-at-boundary',
   );
   assert.equal(
     await readFile(join(handle.snapshot.workspaceRoot, 'main.ts'), 'utf8'),
-    liveWorkspace,
+    'workspace-at-boundary',
   );
 
-  liveState = 'later-state';
-  liveWorkspace = 'later-workspace';
+  await writeFile(join(fixture.liveStateRoot, 'runtime.sqlite'), 'later-state', 'utf8');
+  await writeFile(join(fixture.liveWorkspaceRoot, 'main.ts'), 'later-workspace', 'utf8');
   assert.equal(
     await readFile(join(handle.snapshot.stateRoot, 'runtime.sqlite'), 'utf8'),
     'state-at-boundary',
@@ -306,6 +332,41 @@ test('cancellation and an expired deadline stop before staging begins', async ()
   );
   assert.equal(authorityCalls, 0);
   assert.deepEqual(await readdir(fixture.stagingParent), []);
+});
+
+test('a deadline beyond the Node timer limit is rescheduled until the absolute time', async (t) => {
+  t.mock.timers.enable({ apis: ['Date', 'setTimeout'], now: 0 });
+  const fixture = await createFixture();
+  const authorityEntered = deferred<void>();
+  let cancellationSignal: AbortSignal | undefined;
+  const coordinator = createFileQuiescentSessionSnapshotCoordinator({
+    stagingParent: fixture.stagingParent,
+    privateStagingRootAuthority,
+    now: Date.now,
+    quiescence: {
+      async runQuiescent(input) {
+        cancellationSignal = input.cancellation.signal;
+        authorityEntered.resolve();
+        await waitForAbort(input.cancellation);
+        throw Object.assign(new Error('aborted'), { name: 'AbortError' });
+      },
+    },
+    state: directoryStatePreparer,
+    workspace: directoryWorkspacePreparer,
+  });
+  const timerLimit = 2_147_483_647;
+  const preparation = coordinator.prepare({
+    makaSessionId: 'long-deadline',
+    deadlineAt: timerLimit + 1_000,
+  });
+  await authorityEntered.promise;
+
+  t.mock.timers.tick(timerLimit);
+  assert.equal(cancellationSignal?.aborted, false);
+  t.mock.timers.tick(999);
+  assert.equal(cancellationSignal?.aborted, false);
+  t.mock.timers.tick(1);
+  await assert.rejects(preparation, isSnapshotError('snapshot_cancelled'));
 });
 
 test('cancellation while waiting for quiescence is propagated as snapshot_cancelled', async () => {
@@ -547,12 +608,21 @@ test('V1 workspace policy includes portable inputs, excludes rebuildable data, a
     ['.turbo/cache.bin', 'file', { kind: 'exclude', category: 'cache' }],
     ['logs/agent.txt', 'file', { kind: 'exclude', category: 'log' }],
     ['debug.log', 'file', { kind: 'exclude', category: 'log' }],
-    ['secrets.log', 'file', { kind: 'exclude', category: 'log' }],
+    ['secrets.log', 'file', { kind: 'reject', category: 'known_secret_file' }],
+    ['.env.log', 'file', { kind: 'reject', category: 'known_secret_file' }],
+    ['keys/private-key.log', 'file', { kind: 'reject', category: 'known_secret_file' }],
     ['.maka-runtime/input.json', 'file', { kind: 'exclude', category: 'runtime_scratch' }],
     ['.env.local', 'file', { kind: 'reject', category: 'known_secret_file' }],
+    ['.env.example', 'file', { kind: 'include' }],
+    ['.env.template', 'file', { kind: 'include' }],
+    ['.env.example.local', 'file', { kind: 'reject', category: 'known_secret_file' }],
     ['keys/id_ed25519', 'file', { kind: 'reject', category: 'known_secret_file' }],
+    ['keys/id_ed25519.pub', 'file', { kind: 'include' }],
+    ['keys/id_rsa.pub', 'file', { kind: 'include' }],
     ['credentials.yaml', 'file', { kind: 'reject', category: 'known_secret_file' }],
     ['secrets.json', 'file', { kind: 'reject', category: 'known_secret_file' }],
+    ['src/secrets.ts', 'file', { kind: 'include' }],
+    ['docs/secrets.md', 'file', { kind: 'include' }],
     ['.terraformrc', 'file', { kind: 'reject', category: 'known_secret_file' }],
     ['.git-credentials.lock', 'file', { kind: 'reject', category: 'known_secret_file' }],
     ['keys/client-private-key.pem', 'file', { kind: 'reject', category: 'known_secret_file' }],
@@ -562,7 +632,13 @@ test('V1 workspace policy includes portable inputs, excludes rebuildable data, a
     ['certs/client.csr', 'file', { kind: 'include' }],
     ['certs/client.pem', 'file', { kind: 'include' }],
     ['certs/client.der', 'file', { kind: 'include' }],
+    ['privkey.pem', 'file', { kind: 'reject', category: 'known_secret_file' }],
+    ['private.pem', 'file', { kind: 'reject', category: 'known_secret_file' }],
     ['keys/service-account.json', 'file', { kind: 'reject', category: 'known_secret_file' }],
+    ['secrets', 'directory', { kind: 'reject', category: 'known_secret_file' }],
+    ['secrets/token', 'file', { kind: 'reject', category: 'known_secret_file' }],
+    ['credentials/oauth.json', 'file', { kind: 'reject', category: 'known_secret_file' }],
+    ['private/token', 'file', { kind: 'reject', category: 'known_secret_file' }],
     ['.ssh/config', 'file', { kind: 'reject', category: 'known_secret_file' }],
     ['.aws/credentials', 'file', { kind: 'reject', category: 'known_secret_file' }],
     ['.cargo/credentials', 'file', { kind: 'reject', category: 'known_secret_file' }],
@@ -575,6 +651,11 @@ test('V1 workspace policy includes portable inputs, excludes rebuildable data, a
     ],
     ['../escape', 'file', { kind: 'reject', category: 'unsafe_path' }],
     ['a\\b', 'file', { kind: 'reject', category: 'unsafe_path' }],
+    ['CON', 'file', { kind: 'reject', category: 'unsafe_path' }],
+    ['nested/LPT1.txt', 'file', { kind: 'reject', category: 'unsafe_path' }],
+    ['foo:bar', 'file', { kind: 'reject', category: 'unsafe_path' }],
+    ['name.', 'file', { kind: 'reject', category: 'unsafe_path' }],
+    ['name ', 'directory', { kind: 'reject', category: 'unsafe_path' }],
   ] as const;
 
   for (const [relativePath, kind, expected] of cases) {

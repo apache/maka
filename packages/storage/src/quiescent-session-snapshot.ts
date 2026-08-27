@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import { randomUUID } from 'node:crypto';
 import { constants as fsConstants } from 'node:fs';
 import { lstat, mkdir, open, realpath, rename, rm } from 'node:fs/promises';
@@ -7,6 +26,7 @@ import type {
   OpaqueStateIdentityDescriptor,
   PreparedSessionBundleSnapshot,
 } from './session-bundle-contract.js';
+import { isSessionBundleUstarPathV1 } from './session-bundle-ustar.js';
 import { isSafeSessionId } from './session-store.js';
 
 export const SESSION_SNAPSHOT_POLICY_VERSION = 1 as const;
@@ -15,6 +35,7 @@ export const SESSION_SNAPSHOT_STAGING_SCHEMA_VERSION = 1 as const;
 const SNAPSHOT_ID_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u;
 const MAX_OWNER_RECORD_BYTES = 1_024;
+const MAX_TIMER_DELAY_MS = 2_147_483_647;
 const NO_FOLLOW_OPEN_FLAG = process.platform === 'win32' ? 0 : fsConstants.O_NOFOLLOW;
 
 export type SessionSnapshotWorkspaceEntryKind = 'file' | 'directory';
@@ -63,12 +84,20 @@ const INCLUDE = Object.freeze({ kind: 'include' } as const);
 // measurement rules introduced by #1353. Snapshot rejection is reserved for
 // names that identify known secret material; public certificate encodings and
 // other ambiguous formats are not rejected by extension alone.
+const PUBLIC_ENV_TEMPLATE_PATTERN = /^\.env\.(?:example|sample|template)$/i;
+const KNOWN_SECRET_WORKSPACE_DIRECTORY_NAMES = new Set([
+  '.ssh',
+  'credentials',
+  'private',
+  'secrets',
+]);
 const KNOWN_SECRET_WORKSPACE_FILE_PATTERNS = [
   /^\.env(?:\..*)?$/i,
   /^\.(?:npmrc|netrc|pypirc|terraformrc)$/i,
   /^\.git-credentials(?:\.lock)?$/i,
-  /^(?:credentials?|secrets?)(?:\..*)?$/i,
+  /^(?:credentials?|secrets?)(?:\.(?:cfg|conf|ini|json|log|properties|toml|ya?ml))?$/i,
   /(?:^|[-_.])(?:id_(?:rsa|dsa|ecdsa|ed25519)|private[-_.]?key)(?:$|[-_.])/i,
+  /^(?:private|privkey)\.pem$/i,
   /\.(?:key|p12|pfx)$/i,
 ] as const;
 
@@ -101,18 +130,18 @@ export const SESSION_SNAPSHOT_WORKSPACE_POLICY_V1: SessionSnapshotWorkspacePolic
     ) {
       return { kind: 'exclude', category: 'cache' };
     }
+    if (lowerSegments.includes('.maka-runtime') || lowerSegments.includes('.maka-activation')) {
+      return { kind: 'exclude', category: 'runtime_scratch' };
+    }
+    if (isKnownSecretEntry(entry.kind, lowerSegments, lowerName)) {
+      return { kind: 'reject', category: 'known_secret_file' };
+    }
     if (
       lowerSegments.includes('logs') ||
       lowerSegments.includes('.logs') ||
       (entry.kind === 'file' && lowerName.endsWith('.log'))
     ) {
       return { kind: 'exclude', category: 'log' };
-    }
-    if (lowerSegments.includes('.maka-runtime') || lowerSegments.includes('.maka-activation')) {
-      return { kind: 'exclude', category: 'runtime_scratch' };
-    }
-    if (entry.kind === 'file' && isKnownSecretPath(lowerSegments, lowerName)) {
-      return { kind: 'reject', category: 'known_secret_file' };
     }
     return INCLUDE;
   },
@@ -371,7 +400,7 @@ class FileQuiescentSessionSnapshotCoordinator implements QuiescentSessionSnapsho
             prepared = handle;
             return handle;
           } catch (error) {
-            await cleanupAfterPreparationFailure(staging, error);
+            return cleanupAfterPreparationFailure(staging, error);
           }
         },
       );
@@ -649,22 +678,29 @@ function decodeWorkspaceEntry(
   if (segments.some((segment) => segment.length === 0 || segment === '.' || segment === '..')) {
     return { kind: 'reject', category: 'unsafe_path' };
   }
+  const bundlePath = `workspace/${entry.relativePath}${entry.kind === 'directory' ? '/' : ''}`;
+  if (!isSessionBundleUstarPathV1(bundlePath)) {
+    return { kind: 'reject', category: 'unsafe_path' };
+  }
   return { kind: 'valid', segments, basename: segments.at(-1)! };
 }
 
-function isKnownSecretPath(lowerSegments: readonly string[], lowerName: string): boolean {
+function isKnownSecretEntry(
+  kind: SessionSnapshotWorkspaceEntryKind,
+  lowerSegments: readonly string[],
+  lowerName: string,
+): boolean {
+  if (lowerSegments.some((segment) => KNOWN_SECRET_WORKSPACE_DIRECTORY_NAMES.has(segment))) {
+    return true;
+  }
+  if (kind === 'directory') return false;
+  if (PUBLIC_ENV_TEMPLATE_PATTERN.test(lowerName) || lowerName.endsWith('.pub')) return false;
   if (KNOWN_SECRET_WORKSPACE_FILE_PATTERNS.some((pattern) => pattern.test(lowerName))) return true;
-  if (
-    lowerSegments.includes('.ssh') ||
-    lowerName === 'service-account.json' ||
-    lowerName === 'service-account-key.json'
-  ) {
+  if (lowerName === 'service-account.json' || lowerName === 'service-account-key.json') {
     return true;
   }
   return (
     (lowerSegments.at(-2) === '.docker' && lowerName === 'config.json') ||
-    (lowerSegments.at(-2) === '.aws' && lowerName === 'credentials') ||
-    (lowerSegments.at(-2) === '.cargo' && lowerName === 'credentials') ||
     (lowerSegments.at(-2) === '.kube' && lowerName === 'config') ||
     (lowerSegments.at(-2) === 'gcloud' &&
       lowerSegments.at(-3) === '.config' &&
@@ -785,12 +821,19 @@ function createCancellation(
   const controller = new AbortController();
   const abort = () => controller.abort();
   input.signal?.addEventListener('abort', abort, { once: true });
+  let timeout: NodeJS.Timeout | undefined;
+  const scheduleDeadline = () => {
+    if (input.deadlineAt === undefined) return;
+    const remaining = input.deadlineAt - now();
+    if (remaining <= 0) {
+      abort();
+      return;
+    }
+    timeout = setTimeout(scheduleDeadline, Math.min(remaining, MAX_TIMER_DELAY_MS));
+    timeout.unref();
+  };
   const remaining = input.deadlineAt === undefined ? undefined : input.deadlineAt - now();
-  const timeout =
-    remaining === undefined || remaining <= 0
-      ? undefined
-      : setTimeout(abort, Math.min(remaining, 2_147_483_647));
-  timeout?.unref();
+  if (remaining !== undefined && remaining > 0) scheduleDeadline();
   if (input.signal?.aborted || (remaining !== undefined && remaining <= 0)) abort();
   const value = Object.freeze({
     signal: controller.signal,
