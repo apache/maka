@@ -381,6 +381,25 @@ export interface DesktopRuntimeHostProfileChangedEvent {
   readonly removed?: boolean;
 }
 
+export type DesktopLocalRuntimeHostRemoteAccessSnapshot =
+  | { readonly state: 'unsupported'; readonly message: string }
+  | { readonly state: 'off'; readonly managedService?: true }
+  | {
+      readonly state: 'on';
+      readonly peerId: string;
+      readonly routeHints: readonly string[];
+      readonly coordinationRelays: readonly string[];
+    }
+  | { readonly state: 'unavailable'; readonly message: string };
+
+export type DesktopLocalRuntimeHostRemoteAccessEnableResult =
+  | { readonly kind: 'active_tasks' }
+  | {
+      readonly kind: 'enabled';
+      readonly connectionCode: string;
+      readonly snapshot: Extract<DesktopLocalRuntimeHostRemoteAccessSnapshot, { state: 'on' }>;
+    };
+
 export type DesktopRuntimeHostSshTerminalEvent =
   | { readonly kind: 'opened'; readonly revision: number; readonly sessionId: string }
   | { readonly kind: 'data'; readonly revision: number; readonly sessionId: string; readonly data: string }
@@ -612,6 +631,7 @@ export interface MakaBridge {
     addAndEnable(
       input: DesktopRuntimeHostProfileAddInput,
     ): Promise<DesktopRuntimeHostProfileAddResult>;
+    importConnectionCode(code: string): Promise<{ readonly profileId: string }>;
     remove(profileId: string): Promise<DesktopRuntimeHostProfileSnapshot>;
     setEnabled(profileId: string, enabled: boolean): Promise<DesktopRuntimeHostProfileSnapshot>;
     setDefault(profileId: string): Promise<DesktopRuntimeHostProfileSnapshot>;
@@ -619,6 +639,19 @@ export interface MakaBridge {
     subscribeChanges(
       handler: (event: DesktopRuntimeHostProfileChangedEvent) => void,
     ): () => void;
+  };
+
+  localRuntimeHostRemoteAccess: {
+    getSnapshot(): Promise<DesktopLocalRuntimeHostRemoteAccessSnapshot>;
+    enable(input: {
+      readonly allowInterruptActiveTasks: boolean;
+      readonly coordinationRelays: readonly string[];
+    }): Promise<DesktopLocalRuntimeHostRemoteAccessEnableResult>;
+    createConnectionCode(): Promise<string>;
+    disable(): Promise<DesktopLocalRuntimeHostRemoteAccessSnapshot>;
+    uninstall(input: {
+      readonly allowInterruptActiveTasks: boolean;
+    }): Promise<{ readonly kind: 'active_tasks' | 'uninstalled' }>;
   };
 
   runtimeHostSshTerminal: {

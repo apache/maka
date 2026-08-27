@@ -66,10 +66,14 @@ export type RuntimeHostCliCommand =
       principalId: string;
       preset: 'desktop-client' | 'terminal-client';
       deferPairingCommit: boolean;
+      clientDataRoot?: string;
       rootPath?: string;
       projectDirectoryRoots?: { label: string; path: string }[];
       websocketPort?: number;
       websocketPath?: string;
+      directPeer?: {
+        coordinationRelays: string[];
+      };
       expectedTarget?: RuntimeHostManagedServiceTarget;
     }
   | {
@@ -241,8 +245,19 @@ function parseSetupCommand(argv: string[]): RuntimeHostCliCommand {
   let principalId: string | undefined;
   let preset: 'desktop-client' | 'terminal-client' | undefined;
   let deferPairingCommit = false;
+  let clientDataRoot: string | undefined;
+  let enableDirectPeer = false;
+  const coordinationRelays: string[] = [];
   const options = parseManagedServiceOptions(argv, {
     valueOptions: {
+      '--client-data-root': (value) => {
+        if (clientDataRoot !== undefined) return error('Duplicate --client-data-root');
+        if (!isSafeAbsolutePath(value)) return error('--client-data-root must be an absolute path');
+        clientDataRoot = value;
+      },
+      '--coordination-relay': (value) => {
+        coordinationRelays.push(value);
+      },
       '--principal': (value) => {
         principalId = value;
       },
@@ -254,6 +269,10 @@ function parseSetupCommand(argv: string[]): RuntimeHostCliCommand {
       },
     },
     flagOptions: {
+      '--enable-direct-peer': () => {
+        if (enableDirectPeer) return error('Duplicate --enable-direct-peer');
+        enableDirectPeer = true;
+      },
       '--defer-pairing-commit': () => {
         if (deferPairingCommit) return error('Duplicate --defer-pairing-commit');
         deferPairingCommit = true;
@@ -265,12 +284,17 @@ function parseSetupCommand(argv: string[]): RuntimeHostCliCommand {
     return error('runtime-host setup requires a valid --principal');
   }
   if (!preset) return error('runtime-host setup requires --preset');
+  if (!enableDirectPeer && coordinationRelays.length > 0) {
+    return error('--coordination-relay requires --enable-direct-peer');
+  }
   return {
     kind: 'runtime-host-setup',
     ...options,
     principalId,
     preset,
     deferPairingCommit,
+    ...(clientDataRoot ? { clientDataRoot } : {}),
+    ...(enableDirectPeer ? { directPeer: { coordinationRelays } } : {}),
   };
 }
 

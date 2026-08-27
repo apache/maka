@@ -99,6 +99,7 @@ import {
   projectClientOwnedSettings,
 } from '../../shared/settings-ownership.js';
 import { RuntimeHostSettingsTarget } from './runtime-host-settings-target.js';
+import { RuntimeHostConnectionCodeDialog } from './runtime-host-connection-code-dialog.js';
 import {
   beginSettingsResourceLoad,
   completeSettingsResourceLoad,
@@ -300,6 +301,7 @@ export function SettingsSurface(props: {
     range: UsageRange;
     value: UsageStats;
   } | null>(null);
+  const [localConnectionCode, setLocalConnectionCode] = useState<string>();
   const [clientLoading, setClientLoading] = useState(initialClientSettings === undefined);
   const settingsModalMountedRef = useMountedRef();
   const clientSettingsTicketRef = useRef(0);
@@ -1032,6 +1034,7 @@ export function SettingsSurface(props: {
                             archivedTasks={props.archivedTasks}
                             onTaskImported={props.onTaskImported}
                             onRemoteHostAdded={props.onRemoteHostAdded}
+                            onLocalConnectionCode={setLocalConnectionCode}
                             openProviderCatalog={providerCatalogRequested}
                             initialConnectionSlug={props.initialConnectionSlug}
                             initialCreateProviderType={createProviderRequest}
@@ -1051,6 +1054,12 @@ export function SettingsSurface(props: {
             />
           </section>
         )}
+      />
+      <RuntimeHostConnectionCodeDialog
+        isOpen={localConnectionCode !== undefined}
+        mode="share"
+        connectionCode={localConnectionCode}
+        onClose={() => setLocalConnectionCode(undefined)}
       />
     </div>
   );
@@ -1087,6 +1096,7 @@ function SettingsPageBody(props: {
   archivedTasks: ArchivedTasksBridge;
   onTaskImported(session: DesktopSessionSummary): void;
   onRemoteHostAdded(profileId: string): void;
+  onLocalConnectionCode(connectionCode: string): void;
   openProviderCatalog?: boolean;
   initialConnectionSlug?: string;
   initialCreateProviderType?: ProviderType;
@@ -1174,6 +1184,7 @@ function SettingsPageBody(props: {
           onUpdate={props.onUpdateSettings}
           onRetryRuntimeHost={props.onRetryRuntimeHost}
           onRemoteHostAdded={props.onRemoteHostAdded}
+          onLocalConnectionCode={props.onLocalConnectionCode}
         />
       );
     case 'appearance':

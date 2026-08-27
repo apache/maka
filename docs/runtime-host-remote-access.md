@@ -184,6 +184,12 @@ Open `Settings → Workspace → Runtime Host` and choose **Add computer**. Ente
 
 Use **Configure manually** for an existing TLS, SSH, or explicitly acknowledged plaintext endpoint.
 
+To reach the current computer from another Desktop, enable **Remote access** in the same settings
+page. Maka keeps the existing Local Host and State Root, moves that Host under the OS service
+manager, and adds a Direct peer listener alongside Local IPC. Share the one-time connection code
+with the other Desktop. Turning remote access off removes only the Direct peer listener; removing
+the background service returns Local Host ownership to Desktop and retains all data.
+
 The credential is stored separately from the Profile. Desktop keeps Local and every enabled remote Host connected independently. Choose one as the default for new Sessions; existing Sessions continue to use their owning Host. A failed remote connection remains visible without interrupting the other Hosts. After connecting, choose a Project registered on that Host; Client-local directory actions remain unavailable.
 
 During guided pairing, the delivered credential has the selected Client grants and expires after 15 minutes unless Desktop explicitly finalizes it after saving the local binding.

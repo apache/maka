@@ -297,7 +297,7 @@ export async function runMakaCli(
       const { runRuntimeHostSetupCli } = await import('./runtime-host-setup-command.js');
       return runRuntimeHostSetupCli({
         json: command.json,
-        clientDataRoot: dataRoots.clientDataRoot,
+        clientDataRoot: command.clientDataRoot ?? dataRoots.clientDataRoot,
         defaultRootPath: dataRoots.workspaceRoot,
         sourcePackageRoot: fileURLToPath(new URL('..', import.meta.url)),
         version,
@@ -310,6 +310,7 @@ export async function runMakaCli(
           : {}),
         ...(command.websocketPort === undefined ? {} : { websocketPort: command.websocketPort }),
         ...(command.websocketPath ? { websocketPath: command.websocketPath } : {}),
+        ...(command.directPeer ? { directPeer: command.directPeer } : {}),
         ...(command.expectedTarget ? { expectedTarget: command.expectedTarget } : {}),
       });
     }

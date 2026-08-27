@@ -170,6 +170,11 @@ Client Profile 还必须单独持久化明文风险确认。Maka 不会把 TLS �
 
 已有 TLS、SSH 或明确允许的明文 endpoint 可通过**手动配置**添加。
 
+如需从另一台 Desktop 访问当前电脑，可在同一设置页开启**远程访问**。Maka 会保留现有
+Local Host 和 State Root，将该 Host 交由操作系统服务管理，并在 Local IPC 之外同时启用 Direct
+peer listener。将一次性 connection code 提供给另一台 Desktop 即可连接。关闭远程访问只会停止
+Direct peer listener；移除后台服务后，Local Host 会重新由 Desktop 管理，所有数据均保留。
+
 Credential 与 Profile 分开存储。Desktop 会让 Local 与每个已启用的 remote Host 独立保持连接，并允许指定一个默认 Host 来创建新 Session；已有 Session 仍使用自己的 Host。Remote connection 失败时仍会显示，但不会中断其他 Host。连接后从该 Host 已注册的 Project 中选择一个；Client 本地目录操作不可用。
 
 对于通过 SSH 管理的电脑，可从其**管理**操作查看已安装版本、服务状态、可用目录和近期日志，也可以启动、重启、修复或卸载服务。卸载会保留远端 State Root，且不会删除 Desktop Profile；移除 Profile 也不会卸载远端服务。手动配置的 direct connection 仍可正常使用，但需要在 Host 机器上管理服务。
