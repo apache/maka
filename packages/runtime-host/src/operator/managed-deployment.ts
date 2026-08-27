@@ -18,7 +18,7 @@
  */
 
 import { randomUUID } from 'node:crypto';
-import { chmod, lstat, mkdir, open, readFile, rename, rm } from 'node:fs/promises';
+import { chmod, lstat, mkdir, open, realpath, rename, rm } from 'node:fs/promises';
 import { userInfo } from 'node:os';
 import { dirname, isAbsolute, join, parse, posix, relative, resolve, sep, win32 } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
@@ -27,9 +27,17 @@ import {
   type StorageRootCapability,
   tryAcquireStateRootOwner,
 } from '@maka/storage/root-authority';
-import { syncDirectory, syncDirectoryChain } from '@maka/storage/stable-storage';
+import {
+  readStableBoundedFile,
+  syncDirectory,
+  syncDirectoryChain,
+} from '@maka/storage/stable-storage';
 import { z } from 'zod';
-import { isProductReleaseVersion, isSha512PackageIntegrity } from './update-package-evidence.js';
+import {
+  isProductReleaseVersion,
+  isSha512PackageIntegrity,
+  resolveRuntimeHostNpmDeploymentLayout,
+} from './update-package-evidence.js';
 
 export const RUNTIME_HOST_MANAGED_DEPLOYMENT_CONFIG_FILE = 'runtime-host-deployment.json';
 
@@ -124,7 +132,6 @@ const managedDeploymentConfigSchema = z
       .object({
         kind: z.literal('exact_package'),
         nodePath: absolutePathSchema,
-        cliPath: absolutePathSchema,
         package: packageIdentitySchema,
       })
       .strict(),
@@ -193,11 +200,30 @@ export interface RuntimeHostManagedDeploymentAuthorityOptions {
   readonly beforeDirectorySync?: (path: string) => void | Promise<void>;
 }
 
+export interface RuntimeHostManagedProcessLaunch {
+  readonly executablePath: string;
+  readonly entrypointPath: string;
+}
+
+export interface RuntimeHostManagedLaunchRequest {
+  readonly lifecycleMode: 'on_demand' | 'supervised';
+  readonly claim?: RuntimeHostManagedLaunchClaim;
+  readonly processLaunch: RuntimeHostManagedProcessLaunch;
+}
+
+export function currentRuntimeHostProcessLaunch(): RuntimeHostManagedProcessLaunch {
+  return {
+    executablePath: process.execPath,
+    entrypointPath: process.argv[1] ?? '',
+  };
+}
+
 export const RUNTIME_HOST_MANAGED_LAUNCH_REJECTIONS = [
   'managed_root_requires_operator',
   'deployment_record_missing',
   'deployment_claim_mismatch',
   'deployment_lifecycle_mismatch',
+  'deployment_launch_mismatch',
   'deployment_record_invalid',
 ] as const;
 
@@ -356,12 +382,11 @@ export async function claimRuntimeHostManagedDeployment(
 
 export async function tryAcquireRuntimeHostLaunchOwner(
   capability: StorageRootCapability<'interactive'>,
-  expectedLifecycleMode: 'on_demand' | 'supervised',
-  claim: RuntimeHostManagedLaunchClaim | undefined,
+  request: RuntimeHostManagedLaunchRequest,
   options: RuntimeHostManagedDeploymentAuthorityOptions = {},
 ): Promise<StateRootOwner<'interactive'> | undefined> {
   const canonicalClaim =
-    claim === undefined ? undefined : decodeRuntimeHostManagedLaunchClaim(claim);
+    request.claim === undefined ? undefined : decodeRuntimeHostManagedLaunchClaim(request.claim);
   const path = resolveRuntimeHostManagedDeploymentConfigPath(capability.rootId, options);
   const owner = await tryAcquireStateRootOwner(capability);
   if (!owner) return undefined;
@@ -385,12 +410,18 @@ export async function tryAcquireRuntimeHostLaunchOwner(
     const rejection = runtimeHostManagedLaunchRejection(
       config,
       canonicalClaim,
-      expectedLifecycleMode,
+      request.lifecycleMode,
     );
     if (rejection !== undefined) {
       throw new RuntimeHostManagedDeploymentError(
         rejection,
         managedLaunchRejectionMessage(rejection),
+      );
+    }
+    if (config && !(await matchesManagedProcessLaunch(config, request))) {
+      throw new RuntimeHostManagedDeploymentError(
+        'deployment_launch_mismatch',
+        managedLaunchRejectionMessage('deployment_launch_mismatch'),
       );
     }
     return owner;
@@ -466,8 +497,50 @@ function managedLaunchRejectionMessage(rejection: RuntimeHostManagedLaunchReject
       return 'The Runtime Host launch does not match the managed deployment';
     case 'deployment_lifecycle_mismatch':
       return 'The Runtime Host launch path cannot honor the configured lifecycle';
+    case 'deployment_launch_mismatch':
+      return 'The Runtime Host process was not launched from the configured exact package';
     case 'deployment_record_invalid':
       return 'The Runtime Host managed deployment record is invalid';
+  }
+}
+
+async function matchesManagedProcessLaunch(
+  config: RuntimeHostManagedDeploymentConfig,
+  request: RuntimeHostManagedLaunchRequest,
+): Promise<boolean> {
+  const layout = resolveRuntimeHostNpmDeploymentLayout(
+    config.deploymentRoot,
+    config.launch.package.integrity,
+  );
+  const expectedEntrypoint =
+    request.lifecycleMode === 'on_demand' ? layout.candidateEntrypoint : layout.cliPath;
+  const [actualExecutable, expectedExecutable, actualEntrypoint, canonicalExpectedEntrypoint] =
+    await Promise.all([
+      canonicalLaunchPath(request.processLaunch.executablePath),
+      canonicalLaunchPath(config.launch.nodePath),
+      canonicalLaunchPath(request.processLaunch.entrypointPath),
+      canonicalLaunchPath(expectedEntrypoint),
+    ]);
+  return (
+    actualExecutable !== undefined &&
+    actualExecutable === expectedExecutable &&
+    actualEntrypoint !== undefined &&
+    actualEntrypoint === canonicalExpectedEntrypoint
+  );
+}
+
+async function canonicalLaunchPath(path: string): Promise<string | undefined> {
+  try {
+    return await realpath(path);
+  } catch (error) {
+    if (
+      isNodeError(error, 'ENOENT') ||
+      isNodeError(error, 'ENOTDIR') ||
+      isNodeError(error, 'ELOOP')
+    ) {
+      return undefined;
+    }
+    throw deploymentIo('Unable to verify the Runtime Host managed launch path', error);
   }
 }
 
@@ -487,29 +560,30 @@ function assertConfigTargetsCapability(
 }
 
 async function readBoundedJson(path: string): Promise<unknown | undefined> {
-  let target: Awaited<ReturnType<typeof lstat>>;
+  let document: Buffer;
   try {
-    target = await lstat(path);
+    document = await readStableBoundedFile({
+      path,
+      maxBytes: MAX_DOCUMENT_BYTES,
+      invalidFile: () =>
+        new RuntimeHostManagedDeploymentError(
+          'invalid_config',
+          'The Runtime Host managed deployment record must be one stable bounded regular file',
+        ),
+    });
   } catch (error) {
     if (isNodeError(error, 'ENOENT')) return undefined;
+    if (error instanceof RuntimeHostManagedDeploymentError) throw error;
     throw deploymentIo('Unable to inspect the Runtime Host managed deployment record', error);
-  }
-  if (!target.isFile() || target.isSymbolicLink() || target.size > MAX_DOCUMENT_BYTES) {
-    throw new RuntimeHostManagedDeploymentError(
-      'invalid_config',
-      'The Runtime Host managed deployment record must be a bounded regular file',
-    );
   }
   let contents: string;
   try {
-    contents = await readFile(path, 'utf8');
+    contents = new TextDecoder('utf-8', { fatal: true }).decode(document);
   } catch (error) {
-    throw deploymentIo('Unable to read the Runtime Host managed deployment record', error);
-  }
-  if (Buffer.byteLength(contents, 'utf8') > MAX_DOCUMENT_BYTES) {
     throw new RuntimeHostManagedDeploymentError(
       'invalid_config',
-      'The Runtime Host managed deployment record exceeds its size limit',
+      'The Runtime Host managed deployment record is not valid UTF-8',
+      { cause: error },
     );
   }
   try {

@@ -19,9 +19,11 @@
 
 import { resolveExistingStorageRoot } from '@maka/storage/root-authority';
 import {
+  currentRuntimeHostProcessLaunch,
   tryAcquireRuntimeHostLaunchOwner,
   type RuntimeHostManagedDeploymentAuthorityOptions,
   type RuntimeHostManagedLaunchClaim,
+  type RuntimeHostManagedProcessLaunch,
 } from '../operator/managed-deployment.js';
 import type { RuntimeHostCompositionSource } from './host-composition.js';
 import { RuntimeHostKernel } from './host-kernel.js';
@@ -39,6 +41,8 @@ export interface InteractiveRuntimeHostCandidateOptions {
 export interface InteractiveRuntimeHostCandidateDependencies {
   /** Test-only authority-location override. */
   readonly managedDeploymentAuthority?: RuntimeHostManagedDeploymentAuthorityOptions;
+  /** Test-only process-identity override. Production derives this from the running process. */
+  readonly processLaunch?: RuntimeHostManagedProcessLaunch;
 }
 
 export type InteractiveRuntimeHostCandidateResult =
@@ -57,8 +61,11 @@ export async function startInteractiveRuntimeHostCandidate(
   });
   const owner = await tryAcquireRuntimeHostLaunchOwner(
     capability,
-    'on_demand',
-    options.managedLaunchClaim,
+    {
+      lifecycleMode: 'on_demand',
+      claim: options.managedLaunchClaim,
+      processLaunch: dependencies.processLaunch ?? currentRuntimeHostProcessLaunch(),
+    },
     dependencies.managedDeploymentAuthority,
   );
   if (!owner) return { kind: 'loser' };

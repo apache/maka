@@ -17,6 +17,9 @@
  * under the License.
  */
 
+import { createHash } from 'node:crypto';
+import { join, resolve } from 'node:path';
+
 interface ProductReleaseVersion {
   readonly core: readonly [bigint, bigint, bigint];
   readonly prerelease: readonly string[];
@@ -42,6 +45,35 @@ export function isRuntimeHostNpmDeploymentIdentity(
     typeof value.integrity === 'string' &&
     isSha512PackageIntegrity(value.integrity)
   );
+}
+
+export interface RuntimeHostNpmDeploymentLayout {
+  readonly packageRoot: string;
+  readonly cliPath: string;
+  readonly candidateEntrypoint: string;
+}
+
+export function resolveRuntimeHostNpmDeploymentLayout(
+  deploymentRoot: string,
+  integrity: string,
+): RuntimeHostNpmDeploymentLayout {
+  if (!isSha512PackageIntegrity(integrity)) {
+    throw new TypeError('Expected canonical Runtime Host npm package integrity');
+  }
+  const directory = `registry-${createHash('sha256').update(integrity).digest('hex')}`;
+  const packageRoot = join(resolve(deploymentRoot), 'versions', directory);
+  return {
+    packageRoot,
+    cliPath: join(packageRoot, 'dist', 'cli.js'),
+    candidateEntrypoint: join(
+      packageRoot,
+      'node_modules',
+      '@maka',
+      'runtime-host',
+      'dist',
+      'execution-candidate-main.js',
+    ),
+  };
 }
 
 export function isProductReleaseVersion(value: string): boolean {

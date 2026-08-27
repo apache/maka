@@ -18,6 +18,7 @@
  */
 
 import { generalizedErrorMessage } from '@maka/core/redaction';
+import { fileURLToPath } from 'node:url';
 import {
   candidateStartupFailureExitCode,
   classifyCandidateStartupFailure,
@@ -51,6 +52,7 @@ export interface ExecutionCandidateEntryHooks {
  */
 export async function runExecutionCandidateEntry(
   argv: readonly string[],
+  entrypointUrl: string,
   hooks: ExecutionCandidateEntryHooks = {},
 ): Promise<never | void> {
   installRuntimeHostLogCapture();
@@ -65,7 +67,13 @@ export async function runExecutionCandidateEntry(
     startupAttemptId = parsedStartupAttemptId;
     result = await startExecutionRuntimeHostCandidate(
       hooks.overrideOptions ? hooks.overrideOptions(options) : options,
-      hooks.dependencies ?? {},
+      {
+        ...hooks.dependencies,
+        processLaunch: {
+          executablePath: process.execPath,
+          entrypointPath: fileURLToPath(entrypointUrl),
+        },
+      },
     );
   } catch (error) {
     const failure = classifyCandidateStartupFailure(error);

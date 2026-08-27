@@ -23,9 +23,11 @@ import {
   type ExecutionRuntimeHostCompositionDependencies,
 } from './execution-composition-factory.js';
 import {
+  currentRuntimeHostProcessLaunch,
   tryAcquireRuntimeHostLaunchOwner,
   type RuntimeHostManagedDeploymentAuthorityOptions,
   type RuntimeHostManagedLaunchClaim,
+  type RuntimeHostManagedProcessLaunch,
 } from '../operator/managed-deployment.js';
 import { RuntimeHostKernel } from './host-kernel.js';
 import { openRuntimeHostAccessAuthority } from './access-authority.js';
@@ -51,6 +53,8 @@ export interface ExecutionRuntimeHostServiceDependencies
   extends ExecutionRuntimeHostCompositionDependencies {
   /** Test-only authority-location override. */
   readonly managedDeploymentAuthority?: RuntimeHostManagedDeploymentAuthorityOptions;
+  /** Test-only process-identity override. Production derives this from the running process. */
+  readonly processLaunch?: RuntimeHostManagedProcessLaunch;
 }
 
 export class RuntimeHostRootAlreadyOwnedError extends Error {
@@ -70,8 +74,11 @@ export async function startExecutionRuntimeHostService(
   const capability = await resolveStorageRoot({ path: options.rootPath, kind: 'interactive' });
   const owner = await tryAcquireRuntimeHostLaunchOwner(
     capability,
-    'supervised',
-    options.managedLaunchClaim,
+    {
+      lifecycleMode: 'supervised',
+      claim: options.managedLaunchClaim,
+      processLaunch: dependencies.processLaunch ?? currentRuntimeHostProcessLaunch(),
+    },
     dependencies.managedDeploymentAuthority,
   );
   if (!owner) throw new RuntimeHostRootAlreadyOwnedError(capability.canonicalPath);

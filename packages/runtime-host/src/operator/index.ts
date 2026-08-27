@@ -74,7 +74,9 @@ export {
   isProductReleaseVersion,
   isRuntimeHostNpmDeploymentIdentity,
   isSha512PackageIntegrity,
+  resolveRuntimeHostNpmDeploymentLayout,
   type RuntimeHostDeploymentIdentity,
+  type RuntimeHostNpmDeploymentLayout,
   type RuntimeHostNpmDeploymentIdentity,
 } from './update-package-evidence.js';
 export {

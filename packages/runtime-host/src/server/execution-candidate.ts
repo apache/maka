@@ -19,6 +19,7 @@
 
 import {
   startInteractiveRuntimeHostCandidate,
+  type InteractiveRuntimeHostCandidateDependencies,
   type InteractiveRuntimeHostCandidateOptions,
   type InteractiveRuntimeHostCandidateResult,
 } from './candidate.js';
@@ -31,12 +32,14 @@ export type ExecutionRuntimeHostCandidateResult = InteractiveRuntimeHostCandidat
 
 export type ExecutionRuntimeHostCandidateOptions = InteractiveRuntimeHostCandidateOptions;
 
-export type ExecutionRuntimeHostCandidateDependencies = ExecutionRuntimeHostCompositionDependencies;
+export interface ExecutionRuntimeHostCandidateDependencies
+  extends ExecutionRuntimeHostCompositionDependencies,
+    InteractiveRuntimeHostCandidateDependencies {}
 
 export async function startExecutionRuntimeHostCandidate(
   options: ExecutionRuntimeHostCandidateOptions,
   dependencies: ExecutionRuntimeHostCandidateDependencies = {},
 ): Promise<ExecutionRuntimeHostCandidateResult> {
   const composition = await createExecutionRuntimeHostCompositionSource({}, dependencies);
-  return startInteractiveRuntimeHostCandidate(options, composition);
+  return startInteractiveRuntimeHostCandidate(options, composition, dependencies);
 }

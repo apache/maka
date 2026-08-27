@@ -42,6 +42,7 @@ import {
   type RuntimeHostManagedDeploymentAuthorityOptions,
   type RuntimeHostManagedDeploymentConfig,
 } from '../operator/managed-deployment.js';
+import { resolveRuntimeHostNpmDeploymentLayout } from '../operator/update-package-evidence.js';
 
 const DEPLOYMENT_ID = '00000000-0000-4000-8000-000000000001';
 const OTHER_DEPLOYMENT_ID = '00000000-0000-4000-8000-000000000002';
@@ -68,25 +69,44 @@ async function fixture(t: test.TestContext): Promise<Fixture> {
       rm(join(resolveRootOwnershipNamespace(), `${capability.rootId}.lock`), { force: true }),
     ]),
   );
+  const config = createConfig(
+    capability.canonicalPath,
+    capability.rootId,
+    join(authorityRoot, 'runtime-host'),
+    process.execPath,
+  );
+  const layout = resolveRuntimeHostNpmDeploymentLayout(
+    config.deploymentRoot,
+    config.launch.package.integrity,
+  );
+  await Promise.all([
+    mkdir(dirname(layout.cliPath), { recursive: true }),
+    mkdir(dirname(layout.candidateEntrypoint), { recursive: true }),
+  ]);
+  await Promise.all([writeFile(layout.cliPath, ''), writeFile(layout.candidateEntrypoint, '')]);
   return {
     capability,
     authority: { authorityRoot, durabilityBoundary: authorityRoot },
-    config: createConfig(capability.canonicalPath, capability.rootId),
+    config,
   };
 }
 
-function createConfig(rootPath: string, rootId: string): RuntimeHostManagedDeploymentConfig {
+function createConfig(
+  rootPath: string,
+  rootId: string,
+  deploymentRoot = '/opt/maka/runtime-host',
+  nodePath = '/usr/bin/node',
+): RuntimeHostManagedDeploymentConfig {
   return {
     schemaVersion: 1,
     deploymentId: DEPLOYMENT_ID,
     configRevision: 1,
-    deploymentRoot: '/opt/maka/runtime-host',
+    deploymentRoot,
     root: { path: rootPath, id: rootId },
     projectDirectoryRoots: [{ label: 'projects', path: '/srv/projects' }],
     launch: {
       kind: 'exact_package',
-      nodePath: '/usr/bin/node',
-      cliPath: '/opt/maka/runtime-host/versions/1.2.3/cli.js',
+      nodePath,
       package: {
         kind: 'npm_registry',
         version: '1.2.3',
@@ -104,6 +124,33 @@ function createConfig(rootPath: string, rootId: string): RuntimeHostManagedDeplo
     lifecycle: { mode: 'on_demand', availability: 'activation' },
     reconciliation: { trigger: 'activation' },
   };
+}
+
+function launchRequest(
+  config: RuntimeHostManagedDeploymentConfig | undefined,
+  lifecycleMode: 'on_demand' | 'supervised',
+  claim?: ReturnType<typeof runtimeHostManagedLaunchClaim>,
+) {
+  const layout =
+    config === undefined
+      ? undefined
+      : resolveRuntimeHostNpmDeploymentLayout(
+          config.deploymentRoot,
+          config.launch.package.integrity,
+        );
+  return {
+    lifecycleMode,
+    claim,
+    processLaunch: {
+      executablePath: config?.launch.nodePath ?? process.execPath,
+      entrypointPath:
+        layout === undefined
+          ? (process.argv[1] ?? '')
+          : lifecycleMode === 'on_demand'
+            ? layout.candidateEntrypoint
+            : layout.cliPath,
+    },
+  } as const;
 }
 
 test('strictly decodes every level of the canonical deployment contract', () => {
@@ -227,8 +274,7 @@ test('launch acquisition atomically joins deployment authorization and State Roo
   const input = await fixture(t);
   const unmanagedOwner = await tryAcquireRuntimeHostLaunchOwner(
     input.capability,
-    'on_demand',
-    undefined,
+    launchRequest(undefined, 'on_demand'),
     input.authority,
   );
   assert.ok(unmanagedOwner);
@@ -248,7 +294,11 @@ test('launch acquisition atomically joins deployment authorization and State Roo
     input.authority,
   );
   await assert.rejects(
-    tryAcquireRuntimeHostLaunchOwner(input.capability, 'on_demand', undefined, input.authority),
+    tryAcquireRuntimeHostLaunchOwner(
+      input.capability,
+      launchRequest(input.config, 'on_demand', undefined),
+      input.authority,
+    ),
     (error: unknown) =>
       error instanceof RuntimeHostManagedDeploymentError &&
       error.code === 'managed_root_requires_operator',
@@ -256,8 +306,7 @@ test('launch acquisition atomically joins deployment authorization and State Roo
   await assert.rejects(
     tryAcquireRuntimeHostLaunchOwner(
       input.capability,
-      'supervised',
-      managed.claim,
+      launchRequest(input.config, 'supervised', managed.claim),
       input.authority,
     ),
     (error: unknown) =>
@@ -266,8 +315,7 @@ test('launch acquisition atomically joins deployment authorization and State Roo
   );
   const managedOwner = await tryAcquireRuntimeHostLaunchOwner(
     input.capability,
-    'on_demand',
-    managed.claim,
+    launchRequest(input.config, 'on_demand', managed.claim),
     input.authority,
   );
   assert.ok(managedOwner);
@@ -278,7 +326,11 @@ test('concurrent install and unmanaged launch cannot both cross the authority bo
   const input = await fixture(t);
   const [claimResult, launchResult] = await Promise.allSettled([
     claimRuntimeHostManagedDeployment(input.capability, input.config, input.authority),
-    tryAcquireRuntimeHostLaunchOwner(input.capability, 'on_demand', undefined, input.authority),
+    tryAcquireRuntimeHostLaunchOwner(
+      input.capability,
+      launchRequest(input.config, 'on_demand', undefined),
+      input.authority,
+    ),
   ]);
 
   const claimSucceeded = claimResult.status === 'fulfilled';
@@ -308,12 +360,54 @@ test('concurrent managed activations elect exactly one State Root owner', async 
     input.authority,
   );
   const owners = await Promise.all([
-    tryAcquireRuntimeHostLaunchOwner(input.capability, 'on_demand', claim, input.authority),
-    tryAcquireRuntimeHostLaunchOwner(input.capability, 'on_demand', claim, input.authority),
+    tryAcquireRuntimeHostLaunchOwner(
+      input.capability,
+      launchRequest(input.config, 'on_demand', claim),
+      input.authority,
+    ),
+    tryAcquireRuntimeHostLaunchOwner(
+      input.capability,
+      launchRequest(input.config, 'on_demand', claim),
+      input.authority,
+    ),
   ]);
 
   assert.equal(owners.filter((owner) => owner !== undefined).length, 1);
   await Promise.all(owners.map((owner) => owner?.close()));
+});
+
+test('managed launch ownership is bound to the configured exact package', async (t) => {
+  const input = await fixture(t);
+  const { claim } = await claimRuntimeHostManagedDeployment(
+    input.capability,
+    input.config,
+    input.authority,
+  );
+
+  await assert.rejects(
+    tryAcquireRuntimeHostLaunchOwner(
+      input.capability,
+      {
+        ...launchRequest(input.config, 'on_demand', claim),
+        processLaunch: {
+          executablePath: input.config.launch.nodePath,
+          entrypointPath: '/opt/maka/runtime-host/versions/unclaimed/candidate.js',
+        },
+      },
+      input.authority,
+    ),
+    (error: unknown) =>
+      error instanceof RuntimeHostManagedDeploymentError &&
+      error.code === 'deployment_launch_mismatch',
+  );
+
+  const owner = await tryAcquireRuntimeHostLaunchOwner(
+    input.capability,
+    launchRequest(input.config, 'on_demand', claim),
+    input.authority,
+  );
+  assert.ok(owner);
+  await owner.close();
 });
 
 test('managed ownership survives deletion of the disposable control cache', {
@@ -327,15 +421,18 @@ test('managed ownership survives deletion of the disposable control cache', {
   );
   const owner = await tryAcquireRuntimeHostLaunchOwner(
     input.capability,
-    'on_demand',
-    claim,
+    launchRequest(input.config, 'on_demand', claim),
     input.authority,
   );
   assert.ok(owner);
   await rm(owner.controlDirectory, { recursive: true, force: true });
 
   assert.equal(
-    await tryAcquireRuntimeHostLaunchOwner(input.capability, 'on_demand', claim, input.authority),
+    await tryAcquireRuntimeHostLaunchOwner(
+      input.capability,
+      launchRequest(input.config, 'on_demand', claim),
+      input.authority,
+    ),
     undefined,
   );
   await owner.close();
@@ -380,6 +477,22 @@ test('rejects oversized deployment records before parsing', async (t) => {
   );
 });
 
+test('rejects deployment records that are not valid UTF-8', async (t) => {
+  const input = await fixture(t);
+  const path = resolveRuntimeHostManagedDeploymentConfigPath(
+    input.capability.rootId,
+    input.authority,
+  );
+  await mkdir(dirname(path), { recursive: true });
+  await writeFile(path, Buffer.from([0xc3, 0x28]));
+
+  await assert.rejects(
+    readRuntimeHostManagedDeploymentConfig(input.capability, input.authority),
+    (error: unknown) =>
+      error instanceof RuntimeHostManagedDeploymentError && error.code === 'invalid_config',
+  );
+});
+
 test('normalizes unreadable deployment records at the launch authority boundary', async (t) => {
   const input = await fixture(t);
   const path = resolveRuntimeHostManagedDeploymentConfigPath(
@@ -391,8 +504,29 @@ test('normalizes unreadable deployment records at the launch authority boundary'
   await assert.rejects(
     tryAcquireRuntimeHostLaunchOwner(
       input.capability,
-      'on_demand',
-      runtimeHostManagedLaunchClaim(input.config),
+      launchRequest(input.config, 'on_demand', runtimeHostManagedLaunchClaim(input.config)),
+      input.authority,
+    ),
+    (error: unknown) =>
+      error instanceof RuntimeHostManagedDeploymentError &&
+      error.code === 'deployment_record_invalid',
+  );
+});
+
+test('normalizes a non-directory deployment record ancestor at the launch boundary', async (t) => {
+  const input = await fixture(t);
+  await writeFile(
+    join(
+      resolveRuntimeHostManagedDeploymentAuthorityRoot(input.authority),
+      input.capability.rootId,
+    ),
+    'not a directory',
+  );
+
+  await assert.rejects(
+    tryAcquireRuntimeHostLaunchOwner(
+      input.capability,
+      launchRequest(input.config, 'on_demand', runtimeHostManagedLaunchClaim(input.config)),
       input.authority,
     ),
     (error: unknown) =>
@@ -420,7 +554,11 @@ test('keeps transient deployment record I/O retryable at the Candidate boundary'
   await chmod(path, 0o000);
 
   await assert.rejects(
-    tryAcquireRuntimeHostLaunchOwner(input.capability, 'on_demand', claim, input.authority),
+    tryAcquireRuntimeHostLaunchOwner(
+      input.capability,
+      launchRequest(input.config, 'on_demand', claim),
+      input.authority,
+    ),
     (error: unknown) => {
       assert.ok(error instanceof RuntimeHostManagedDeploymentError);
       assert.equal(error.code, 'deployment_io_failed');

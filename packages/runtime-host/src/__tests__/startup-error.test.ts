@@ -50,6 +50,13 @@ test('presents an invalid deployment record as requiring repair', () => {
   assert.match(error.message, /DEPLOYMENT_RECORD_INVALID/u);
 });
 
+test('presents an exact-package mismatch as requiring repair or migration', () => {
+  const error = runtimeHostStartupError('deployment_launch_mismatch');
+  assert.ok(error instanceof RuntimeHostPermanentReconnectError);
+  assert.match(error.message, /exact package/u);
+  assert.match(error.message, /DEPLOYMENT_LAUNCH_MISMATCH/u);
+});
+
 test('keeps an unresponsive Host retryable and includes bounded diagnostics', () => {
   const error = runtimeHostStartupError('host_unresponsive', {
     deadlineMs: 45_000,

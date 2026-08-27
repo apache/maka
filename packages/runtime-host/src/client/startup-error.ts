@@ -89,6 +89,11 @@ export function runtimeHostStartupError(
         reason,
         'The Runtime Host launch path cannot honor the configured lifecycle. Use the deployment operator. Diagnostic code: DEPLOYMENT_LIFECYCLE_MISMATCH.',
       );
+    case 'deployment_launch_mismatch':
+      return new RuntimeHostStartupError(
+        reason,
+        'The Runtime Host process does not match the exact package selected by the managed deployment. Repair or explicitly migrate the deployment. Diagnostic code: DEPLOYMENT_LAUNCH_MISMATCH.',
+      );
     case 'deployment_record_invalid':
       return new RuntimeHostStartupError(
         reason,

@@ -114,6 +114,7 @@ test('preserves managed authority rejections as permanent bounded diagnostics', 
     'deployment_record_missing',
     'deployment_claim_mismatch',
     'deployment_lifecycle_mismatch',
+    'deployment_launch_mismatch',
     'deployment_record_invalid',
   ] as const;
 

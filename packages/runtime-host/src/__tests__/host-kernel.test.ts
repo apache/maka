@@ -68,6 +68,7 @@ import {
   resolveRuntimeHostManagedDeploymentConfigPath,
   type RuntimeHostManagedDeploymentConfig,
 } from '../operator/managed-deployment.js';
+import { resolveRuntimeHostNpmDeploymentLayout } from '../operator/update-package-evidence.js';
 import { removePosixEndpointDirectories } from './fixtures/endpoint-hygiene.js';
 import {
   decodeHostFrame,
@@ -290,6 +291,50 @@ describe('non-serving Runtime Host kernel', () => {
           const failure = classifyCandidateStartupFailure(error);
           assert.deepEqual(failure, { reason: 'deployment_record_invalid' });
           assert.equal(candidateStartupFailureExitCode(failure), 84);
+          return true;
+        },
+      );
+    });
+  });
+
+  test('a mismatched exact-package launch crosses the Candidate boundary as exit 85', async () => {
+    await withHostPaths(async (paths) => {
+      const capability = await resolveStorageRoot({ path: paths.root, kind: 'interactive' });
+      const managedDeploymentAuthority = {
+        authorityRoot: join(paths.base, 'managed-authority'),
+        durabilityBoundary: paths.base,
+      };
+      const config = managedDeploymentConfig(capability);
+      const { claim } = await claimRuntimeHostManagedDeployment(
+        capability,
+        config,
+        managedDeploymentAuthority,
+      );
+
+      await assert.rejects(
+        startInteractiveRuntimeHostCandidate(
+          {
+            rootPath: capability.canonicalPath,
+            expectedRootId: capability.rootId,
+            managedLaunchClaim: claim,
+          },
+          KERNEL_COMPOSITION,
+          {
+            managedDeploymentAuthority,
+            processLaunch: {
+              executablePath: config.launch.nodePath,
+              entrypointPath:
+                resolveRuntimeHostNpmDeploymentLayout(
+                  config.deploymentRoot,
+                  config.launch.package.integrity,
+                ).candidateEntrypoint + '.stale',
+            },
+          },
+        ),
+        (error: unknown) => {
+          const failure = classifyCandidateStartupFailure(error);
+          assert.deepEqual(failure, { reason: 'deployment_launch_mismatch' });
+          assert.equal(candidateStartupFailureExitCode(failure), 85);
           return true;
         },
       );
@@ -3229,7 +3274,6 @@ function managedDeploymentConfig(
     launch: {
       kind: 'exact_package',
       nodePath: '/usr/bin/node',
-      cliPath: '/opt/maka/runtime-host/versions/1.2.3/cli.js',
       package: {
         kind: 'npm_registry',
         version: '1.2.3',
