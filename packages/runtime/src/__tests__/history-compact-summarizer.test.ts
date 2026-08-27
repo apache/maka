@@ -774,6 +774,27 @@ describe('buildLlmHistorySummarizer', () => {
     assert.equal(calls, 2);
   });
 
+  test('preserves cancellation when a malformed-summary repair is aborted', async () => {
+    let calls = 0;
+    const abortError = Object.assign(new Error('stopped during repair'), { name: 'AbortError' });
+    const summarize = buildLlmHistorySummarizer({
+      resolveModel: () => 'fake-model',
+      generateText: async () => {
+        calls += 1;
+        if (calls === 1) return { text: 'free-form incomplete summary', finishReason: 'stop' };
+        throw abortError;
+      },
+    });
+
+    await assert.rejects(
+      summarize(
+        inputWith([ev({ role: 'user', author: 'user', content: { kind: 'text', text: 'hi' } })]),
+      ),
+      (error) => error === abortError,
+    );
+    assert.equal(calls, 2);
+  });
+
   test('preserves the initial malformed defect when the repair is empty', async () => {
     let calls = 0;
     const summarize = buildLlmHistorySummarizer({

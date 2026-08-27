@@ -178,6 +178,7 @@ export function buildLlmHistorySummarizer(options: BuildLlmHistorySummarizerOpti
       try {
         repaired = await generateSummary(1, repairInstructions, repairMessages);
       } catch (error) {
+        if (isAbortError(error)) throw error;
         throw new HistoryCompactSummarizerError(initial.defect, {
           cause:
             error instanceof HistoryCompactSummarizerError
@@ -197,10 +198,15 @@ export function buildLlmHistorySummarizer(options: BuildLlmHistorySummarizerOpti
       }
       return repaired.text;
     } catch (error) {
+      if (isAbortError(error)) throw error;
       if (error instanceof HistoryCompactSummarizerError) throw error;
       throw new HistoryCompactSummarizerError('provider_error', { cause: error });
     }
   };
+}
+
+function isAbortError(error: unknown): error is Error {
+  return error instanceof Error && error.name === 'AbortError';
 }
 
 interface AiSdkTextModule {

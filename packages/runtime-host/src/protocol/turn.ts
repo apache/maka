@@ -20,6 +20,7 @@
 import { MAX_ATTACHMENT_BYTES, MAX_ATTACHMENT_COUNT } from '@maka/core/attachments';
 import {
   decodeMessageContent as decodeCanonicalMessageContent,
+  isContextBudgetExhaustedDetail,
   isCanonicalAttachmentRef,
   type ContextBudgetExhaustedDetail,
   type ContextCompactionOutcome,
@@ -720,16 +721,7 @@ export function decodeTurnSnapshot(value: unknown): TurnSnapshot {
 }
 
 function requireContextBudgetExhaustedDetail(value: unknown): ContextBudgetExhaustedDetail {
-  if (
-    value === 'no_safe_completed_span' ||
-    value === 'summarizer_failed' ||
-    value === 'malformed_summary_missing_section' ||
-    value === 'malformed_summary_truncated' ||
-    value === 'malformed_summary_too_small_for_fold' ||
-    value === 'head_anchor_exceeds_capacity'
-  ) {
-    return value;
-  }
+  if (isContextBudgetExhaustedDetail(value)) return value;
   throw invalidProtocolFrame('Invalid context budget exhausted detail');
 }
 

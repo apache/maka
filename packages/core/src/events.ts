@@ -1195,13 +1195,22 @@ export type ContextCompactionOutcome =
   | { kind: 'unchanged'; reason: string }
   | { kind: 'failed'; reason: string };
 
-export type ContextBudgetExhaustedDetail =
-  | 'no_safe_completed_span'
-  | 'summarizer_failed'
-  | 'malformed_summary_missing_section'
-  | 'malformed_summary_truncated'
-  | 'malformed_summary_too_small_for_fold'
-  | 'head_anchor_exceeds_capacity';
+export const CONTEXT_BUDGET_EXHAUSTED_DETAILS = [
+  'no_safe_completed_span',
+  'summarizer_failed',
+  'malformed_summary_missing_section',
+  'malformed_summary_truncated',
+  'malformed_summary_too_small_for_fold',
+  'head_anchor_exceeds_capacity',
+] as const;
+
+export type ContextBudgetExhaustedDetail = (typeof CONTEXT_BUDGET_EXHAUSTED_DETAILS)[number];
+
+export function isContextBudgetExhaustedDetail(
+  value: unknown,
+): value is ContextBudgetExhaustedDetail {
+  return CONTEXT_BUDGET_EXHAUSTED_DETAILS.includes(value as ContextBudgetExhaustedDetail);
+}
 
 export type CompleteStopReason = CompleteEvent['stopReason'];
 

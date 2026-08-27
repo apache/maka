@@ -5485,6 +5485,100 @@ describe('AiSdkBackend model history', () => {
     assert.deepEqual(repeated.outcome, first.outcome);
   });
 
+  test('a cancelled malformed-summary repair does not arm the Session circuit', async () => {
+    let repairStarted!: () => void;
+    const started = new Promise<void>((resolve) => {
+      repairStarted = resolve;
+    });
+    let providerCalls = 0;
+    let recordCalls = 0;
+    const summarize = buildLlmHistorySummarizer({
+      resolveModel: () => 'fake-model',
+      generateText: async ({ abortSignal }) => {
+        providerCalls += 1;
+        if (providerCalls === 1) {
+          return { text: 'free-form incomplete summary', finishReason: 'stop' };
+        }
+        if (providerCalls > 2) {
+          return { text: structuredSummary('RECOVERED_AFTER_CANCEL'), finishReason: 'stop' };
+        }
+        repairStarted();
+        return await new Promise<never>((_resolve, reject) => {
+          const rejectAbort = () =>
+            reject(
+              abortSignal?.reason ?? Object.assign(new Error('stopped'), { name: 'AbortError' }),
+            );
+          if (abortSignal?.aborted) rejectAbort();
+          else abortSignal?.addEventListener('abort', rejectAbort, { once: true });
+        });
+      },
+    });
+    const backend = createTestAiSdkBackend({
+      sessionId: 'session-1',
+      header: header(),
+      appendMessage: async () => {},
+      connection: connection(),
+      apiKey: 'sk-test',
+      modelId: 'mock-model-id',
+      modelFactory: () => completionModel(),
+      tools: [],
+      newId: idGenerator(),
+      now: monotonicClock(),
+      contextBudget: {
+        name: 'malformed-summary-cancel-circuit-test',
+        maxHistoryEstimatedTokens: 10_000,
+        charsPerToken: 1,
+        historyCompact: { enabled: true },
+      },
+      summarizeHistoryCompact: (input) => summarize(input),
+      recordHistoryCompactCheckpoint: () => {
+        recordCalls += 1;
+      },
+    });
+    const history = [
+      runtimeTextEvent({
+        id: 'cancel-circuit-old',
+        turnId: 'old',
+        role: 'user',
+        author: 'user',
+        text: 'old '.repeat(100),
+      }),
+      runtimeTextEvent({
+        id: 'cancel-circuit-older',
+        turnId: 'older',
+        role: 'model',
+        author: 'agent',
+        text: 'older '.repeat(100),
+      }),
+      runtimeTextEvent({
+        id: 'cancel-circuit-recent',
+        turnId: 'recent',
+        role: 'model',
+        author: 'agent',
+        text: 'recent',
+      }),
+    ];
+
+    const cancelled = backend.compactHistory({
+      turnId: 'turn-cancel-compact-1',
+      runId: 'run-1',
+      runtimeContext: history,
+    });
+    await started;
+    await backend.stop('user_stop');
+
+    assert.deepEqual(await cancelled, { outcome: { kind: 'failed', reason: 'aborted' } });
+    const retried = await backend.compactHistory({
+      turnId: 'turn-cancel-compact-2',
+      runId: 'run-2',
+      runtimeContext: history,
+    });
+
+    assert.equal(providerCalls, 3);
+    assert.equal(recordCalls, 1);
+    assert.equal(retried.outcome.kind, 'compacted');
+  });
+
   test('invalidates the malformed compaction circuit when configuration changes', async (t) => {
     type FingerprintCase = {
       name: string;

@@ -18,7 +18,11 @@
  */
 
 import type { AgentRunHeader } from '@maka/core/agent-run';
-import type { ContextBudgetExhaustedDetail, ContextCompactionOutcome } from '@maka/core/events';
+import {
+  isContextBudgetExhaustedDetail,
+  type ContextBudgetExhaustedDetail,
+  type ContextCompactionOutcome,
+} from '@maka/core/events';
 import { truncateUtf8 } from '@maka/core/diagnostic-log';
 import { redactSecrets } from '@maka/core/redaction';
 import { classifyTerminalRuntimeLedger } from '@maka/runtime/terminal-run-commit';
@@ -117,17 +121,7 @@ export async function readCanonicalTurnSnapshot(
 function readContextBudgetExhaustedDetail(
   value: unknown,
 ): ContextBudgetExhaustedDetail | undefined {
-  if (
-    value === 'no_safe_completed_span' ||
-    value === 'summarizer_failed' ||
-    value === 'malformed_summary_missing_section' ||
-    value === 'malformed_summary_truncated' ||
-    value === 'malformed_summary_too_small_for_fold' ||
-    value === 'head_anchor_exceeds_capacity'
-  ) {
-    return value;
-  }
-  return undefined;
+  return isContextBudgetExhaustedDetail(value) ? value : undefined;
 }
 
 function readContextCompactionOutcome(value: unknown): ContextCompactionOutcome | undefined {
