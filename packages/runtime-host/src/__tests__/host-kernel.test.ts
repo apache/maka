@@ -1182,7 +1182,11 @@ describe('non-serving Runtime Host kernel', () => {
 
   test('does not take over a generation-mismatched Host before it is ready', async () => {
     await withHostPaths(async (paths) => {
+      let markRecoveryEntered!: () => void;
       let releaseRecovery!: () => void;
+      const recoveryEntered = new Promise<void>((resolve) => {
+        markRecoveryEntered = resolve;
+      });
       const recovery = new Promise<void>((resolve) => {
         releaseRecovery = resolve;
       });
@@ -1197,33 +1201,30 @@ describe('non-serving Runtime Host kernel', () => {
         composition: defineInteractiveRuntimeHostComposition(async () => ({
           ...testComposition(),
           async recover() {
+            markRecoveryEntered();
             await recovery;
           },
         })),
       });
 
-      let takeover = await connectRuntimeHost({
-        rootPath: paths.root,
-        protocol: CURRENT_PROTOCOL,
-        generation: 'desktop-new',
-      });
-      while (takeover.kind === 'unavailable' && takeover.reason === 'not_registered') {
-        await sleep(10);
-        takeover = await connectRuntimeHost({
+      try {
+        await withTimeout(recoveryEntered, 5_000, 'Runtime Host did not enter recovery');
+        const takeover = await connectRuntimeHost({
           rootPath: paths.root,
           protocol: CURRENT_PROTOCOL,
           generation: 'desktop-new',
         });
+        assert.equal(takeover.kind, 'upgrade_required');
+        if (takeover.kind === 'upgrade_required') {
+          assert.equal(takeover.restartable, false);
+          assert.equal(takeover.handshake?.state, 'recovering');
+        }
+      } finally {
+        releaseRecovery();
+        const host = await hostPromise;
+        await host.close();
+        await sleep(100);
       }
-      assert.equal(takeover.kind, 'upgrade_required');
-      if (takeover.kind === 'upgrade_required') {
-        assert.equal(takeover.restartable, false);
-        assert.equal(takeover.handshake?.state, 'recovering');
-      }
-      releaseRecovery();
-      const host = await hostPromise;
-      await host.close();
-      await sleep(100);
     });
   });
 
