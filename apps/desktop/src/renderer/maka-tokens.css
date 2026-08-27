@@ -899,17 +899,19 @@
                                       stepper item                        */
 
   /* === content measure (#520 PR4 item 16) ================================
-     The chat content max-width — the column the composer, header notices,
-     hero, and WorkHub share so prose + controls line up at one measure.
-     The transcript column is wider; see `--maka-transcript-measure` below. Previously a local token on .mainColumn with a 680px fallback
-     at every call site; promoted to :root so the token is canonical and the
-     fallbacks are redundant. */
-  --maka-chat-measure: 680px;
+     One reading column, and the only one: the transcript turn, the composer,
+     header notices, hero, plan mode, WorkHub, the Daily Review report and the
+     Artifact Preview all stop at this edge, so a turn and the box you answer
+     it in line up.
 
-  /* Transcript turns stay wider than the shared controls above so source
-     evidence — code, tables, tool output — is readable. Scoped to `.maka-turn`
-     so nothing else changes width as a side effect. */
-  --maka-transcript-measure: 800px;
+     Markdown containers own this — `MarkdownBody` passes `contentWidth: 100%`
+     precisely so no component holds a measure of its own.
+
+     800px, not the 680px this token carried before: #3617 widened transcript
+     turns alone so code, tables, and tool output stayed readable, which left
+     the answer wider than the composer under it. Two measures for one column
+     is what put a second right edge inside a turn; there is one now. */
+  --maka-chat-measure: 800px;
 
   /* === settings ==========================================================
      One right-edge cap for a settings row's end slot — the read-only value
@@ -1463,7 +1465,7 @@
        between-turn gap (.maka-chatContent) — one density, no between/within
        split. */
     gap: var(--space-3);
-    max-width: var(--maka-transcript-measure);
+    max-width: var(--maka-chat-measure);
     margin: 0 auto;
     width: 100%;
     box-sizing: border-box;

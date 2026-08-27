@@ -779,7 +779,7 @@
 .maka-turn-footer {
   display: flex;
   width: 100%;
-  max-width: var(--maka-chat-measure, 680px);
+  max-width: var(--maka-chat-measure, 800px);
   flex-wrap: wrap;
   align-items: center;
   justify-content: flex-start;
