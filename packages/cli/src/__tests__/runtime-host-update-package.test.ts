@@ -58,9 +58,7 @@ function tgz(entries: ReadonlyArray<{ name: string; body?: Buffer }>): Buffer {
   return gzipSync(Buffer.concat(blocks));
 }
 
-const ARCHIVE = tgz([
-  { name: 'package/package.json', body: Buffer.from('{"name":"maka-agent"}') },
-]);
+const ARCHIVE = tgz([{ name: 'package/package.json', body: Buffer.from('{"name":"maka-agent"}') }]);
 const INTEGRITY = `sha512-${createHash('sha512').update(ARCHIVE).digest('base64')}`;
 
 describe('managed Runtime Host update package acquisition', () => {
@@ -257,9 +255,7 @@ describe('managed Runtime Host update package acquisition', () => {
 
     // One header claims 4 GiB of entry data inside a tiny compressed archive:
     // integrity still matches, so only the expansion budget can stop it.
-    const bloated = tgz([
-      { name: 'package/blob.bin', body: Buffer.from('x') },
-    ]);
+    const bloated = tgz([{ name: 'package/blob.bin', body: Buffer.from('x') }]);
     const bloatedHeader = tarHeader('package/huge.bin', 4 * 1024 * 1024 * 1024);
     const oversized = gzipSync(Buffer.concat([bloatedHeader, Buffer.alloc(1024)]));
     const crowded = tgz(
