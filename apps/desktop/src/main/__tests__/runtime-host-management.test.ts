@@ -884,7 +884,6 @@ test('keeps the SSH profile while adding and removing its managed Direct peer', 
         enabled: false,
       }),
       upsertManagedDirectPeerProfile: async (_profileId, descriptor) => {
-        assert.equal(descriptor.rootId, profile.rootId);
         assert.deepEqual(descriptor.routeHints, ['/ip4/192.0.2.8/udp/44001/quic-v1']);
         peerProfileExists = true;
       },

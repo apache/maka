@@ -344,14 +344,12 @@ export function createDesktopRuntimeHostManagement(input: {
       if (
         status.state !== 'enabled' ||
         !status.peerId ||
-        status.rootId !== expectedTarget.rootId ||
         status.routeHints.length === 0
       ) {
         throw new Error('Runtime Host did not return a usable direct-peer descriptor');
       }
       await input.profiles.upsertManagedDirectPeerProfile(profileId, {
         peerId: status.peerId,
-        rootId: status.rootId,
         routeHints: status.routeHints,
         coordinationRelays: status.coordinationRelays,
       });

@@ -107,7 +107,6 @@ export interface DesktopRuntimeHostProfileService {
     profileId: string,
     peer: {
       readonly peerId: string;
-      readonly rootId: string;
       readonly routeHints: readonly string[];
       readonly coordinationRelays: readonly string[];
     },
@@ -833,7 +832,7 @@ export function createDesktopRuntimeHostProfileService(input: {
         if (!managed || managed.state !== 'active') {
           throw new Error('This Runtime Host profile is not bound to an active managed service');
         }
-        if (peer.rootId !== source.profile.rootId || peer.routeHints.length === 0) {
+        if (peer.routeHints.length === 0) {
           throw new Error('Runtime Host returned an invalid direct-peer descriptor');
         }
         const peerProfileId = managedDirectPeerProfileId(profileId);

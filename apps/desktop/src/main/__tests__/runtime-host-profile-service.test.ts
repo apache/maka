@@ -547,7 +547,6 @@ test("keeps a managed Direct route on the SSH profile credential authority", asy
 
   await service.upsertManagedDirectPeerProfile(MANAGED_PROFILE.id, {
     peerId: "12D3KooWpeer",
-    rootId: MANAGED_PROFILE.rootId,
     routeHints: ["/ip4/192.0.2.8/udp/44001/quic-v1"],
     coordinationRelays: [],
   });
