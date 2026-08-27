@@ -38,11 +38,17 @@ type BotClient = RuntimeHostBotSessionAdapterDeps['client'];
 
 test('creates an explore Session through the Host-owned default model route', async () => {
   const creates: unknown[] = [];
+  const updates: unknown[] = [];
   const changes: unknown[] = [];
   const client = botClient({
     createSession: async (input) => {
       creates.push(input);
-      return session(input.sessionId, { permissionMode: 'explore' });
+      // Host default is ask; Bot adapter must pin explore after create.
+      return session(input.sessionId, { permissionMode: 'ask' });
+    },
+    updateSessionConfiguration: async (sessionId, patch) => {
+      updates.push({ sessionId, patch });
+      return session(sessionId, { permissionMode: 'explore' });
     },
   });
   const adapter = createRuntimeHostBotSessionAdapter({
@@ -68,8 +74,10 @@ test('creates an explore Session through the Host-owned default model route', as
       name: 'Telegram conversation',
       labels: ['bot', 'telegram'],
       modelTarget: { kind: 'default' },
-      permissionMode: 'explore',
     },
+  ]);
+  assert.deepEqual(updates, [
+    { sessionId: 'bot-session-1', patch: { permissionMode: 'explore' } },
   ]);
   assert.deepEqual(changes, [
     { reason: 'created', sessionId: 'bot-session-1', extra: undefined },

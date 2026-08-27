@@ -70,13 +70,17 @@ export function createRuntimeHostBotSessionAdapter(
       const sessionId = newId();
       let session: SessionCatalogProjection;
       try {
+        // Do not pass permissionMode: 'explore' on create. Runtime Host
+        // requires a declared SessionStartMode (e.g. deep_research) when
+        // explore is requested at create time; bot conversations are not
+        // that product mode. Create with the Host default, then pin explore
+        // via the same configuration update prepareSession uses.
         session = await deps.client.createSession({
           sessionId,
           workspace: target.workspace,
           name: input.name,
           labels: [...input.labels],
           modelTarget: { kind: 'default' },
-          permissionMode: 'explore',
         });
       } catch (error) {
         if (
@@ -88,6 +92,21 @@ export function createRuntimeHostBotSessionAdapter(
         const reconciled = await deps.client.getSession(sessionId);
         if (!reconciled) throw error;
         session = reconciled;
+      }
+      if (session.permissionMode !== 'explore') {
+        try {
+          session = await deps.client.updateSessionConfiguration(session.id, {
+            permissionMode: 'explore',
+          });
+        } catch (error) {
+          throwUnavailable(error, session.id);
+          throw error;
+        }
+        if (session.permissionMode !== 'explore') {
+          throw new Error(
+            `Bot Session could not enter explore mode: ${session.id}`,
+          );
+        }
       }
       deps.emitSessionsChanged('created', session.id);
       return session.id;
