@@ -48,6 +48,7 @@ export interface RuntimeHostPeerManagementCliOptions {
   readonly listenAddresses: readonly string[];
   readonly coordinationRelays?: readonly string[];
   readonly expectedTarget?: RuntimeHostManagedServiceTarget;
+  readonly allowInterruptActiveTasks?: boolean;
 }
 
 interface RuntimeHostPeerManagementCliDeps {
@@ -95,6 +96,7 @@ async function runRuntimeHostPeerManagementLocked(
         nodePath: options.nodePath,
         cliPath: options.cliPath,
         expectedTarget: options.expectedTarget!,
+        allowInterruptActiveTasks: options.allowInterruptActiveTasks ?? false,
         peer:
           options.action === 'disable'
             ? null

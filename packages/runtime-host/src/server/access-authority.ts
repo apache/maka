@@ -319,15 +319,15 @@ class FileRuntimeHostAccessAuthority implements RuntimeHostAccessAuthority {
         ? this.#file.credentials.filter((credential) => credential !== current)
         : this.#file.credentials
             .filter((credential) => !pendingForPrincipal.includes(credential))
-            .map((credential) =>
-              credential === current
-                ? {
-                    ...credential,
-                    status: 'revoked' as const,
-                    revokedAt: new Date().toISOString(),
-                  }
-                : credential,
-            );
+            .map((credential) => {
+              if (credential !== current) return credential;
+              const { clientInstanceId: _clientInstanceId, ...revoked } = credential;
+              return {
+                ...revoked,
+                status: 'revoked' as const,
+                revokedAt: new Date().toISOString(),
+              };
+            });
     await this.#commit(
       createAccessCredentialFile(credentials),
       [current, ...pendingForPrincipal].map((credential) => credential.credentialId),

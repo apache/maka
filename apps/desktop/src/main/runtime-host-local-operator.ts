@@ -135,6 +135,7 @@ export function createDesktopRuntimeHostLocalOperator(input: {
     readonly action: 'enable' | 'disable' | 'status';
     readonly target: DesktopRuntimeHostLocalServiceTarget;
     readonly coordinationRelays?: readonly string[];
+    readonly allowInterruptActiveTasks?: boolean;
     readonly signal?: AbortSignal;
   }): Promise<RuntimeHostPeerManagementFrame>;
   runService(input: {
@@ -194,6 +195,7 @@ export function createDesktopRuntimeHostLocalOperator(input: {
                   ])
                 : ['--clear-coordination-relays']
               : []),
+            ...(command.allowInterruptActiveTasks ? ['--allow-interrupt-active-tasks'] : []),
             ...managedTargetArgs(command.target),
           ],
         },

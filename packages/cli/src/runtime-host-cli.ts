@@ -110,6 +110,7 @@ export type RuntimeHostCliCommand =
       listenAddresses: string[];
       coordinationRelays?: string[];
       expectedTarget?: RuntimeHostManagedServiceTarget;
+      allowInterruptActiveTasks?: true;
     }
   | {
       kind: 'runtime-host-service-check-update';
@@ -513,6 +514,7 @@ function parseServicePeerCommand(argv: string[]): RuntimeHostCliCommand {
   const listenAddresses: string[] = [];
   const coordinationRelays: string[] = [];
   let clearCoordinationRelays = false;
+  let allowInterruptActiveTasks = false;
   const options = parseManagedServiceOptions(argv.slice(1), {
     allowConfiguration: false,
     allowFramed: true,
@@ -520,6 +522,10 @@ function parseServicePeerCommand(argv: string[]): RuntimeHostCliCommand {
       '--clear-coordination-relays': () => {
         if (clearCoordinationRelays) return error('Duplicate --clear-coordination-relays');
         clearCoordinationRelays = true;
+      },
+      '--allow-interrupt-active-tasks': () => {
+        if (allowInterruptActiveTasks) return error('Duplicate --allow-interrupt-active-tasks');
+        allowInterruptActiveTasks = true;
       },
     },
     valueOptions: {
@@ -554,6 +560,9 @@ function parseServicePeerCommand(argv: string[]): RuntimeHostCliCommand {
       '--listen, --coordination-relay, and --clear-coordination-relays are only valid with peer enable',
     );
   }
+  if (allowInterruptActiveTasks && action !== 'enable' && action !== 'disable') {
+    return error('--allow-interrupt-active-tasks is only valid with peer enable or peer disable');
+  }
   if (
     (action === 'enable' ||
       action === 'disable' ||
@@ -576,6 +585,7 @@ function parseServicePeerCommand(argv: string[]): RuntimeHostCliCommand {
         ? { coordinationRelays }
         : {}),
     ...(options.expectedTarget ? { expectedTarget: options.expectedTarget } : {}),
+    ...(allowInterruptActiveTasks ? { allowInterruptActiveTasks: true } : {}),
   };
 }
 

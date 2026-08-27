@@ -677,6 +677,39 @@ test('a Client-bound pairing candidate can be claimed by exactly one Client iden
   }
 });
 
+test('a revoked Client-bound credential remains readable after restart', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'maka-access-authority-bound-revoke-'));
+  const authority = await openRuntimeHostAccessAuthority(directory);
+  const candidate = await authority.prepare({
+    principalKind: 'remote_owner',
+    principalId: 'desktop-owner:revoke',
+    operationGrants: ['access.credential.finalize', 'session.catalog.query'],
+    canPublishClientCapabilities: true,
+    canUseHostPaths: false,
+    bindClientInstance: true,
+  });
+  try {
+    await authority.finalize(candidate.credentialId, 'desktop-a');
+    await authority.revoke({ credentialId: candidate.credentialId });
+  } finally {
+    await authority.close();
+  }
+
+  const reopened = await openRuntimeHostAccessAuthority(directory);
+  try {
+    await reopened.issue({
+      principalKind: 'remote_owner',
+      principalId: 'desktop-owner:replacement',
+      operationGrants: ['host.status'],
+      canPublishClientCapabilities: false,
+      canUseHostPaths: false,
+    });
+  } finally {
+    await reopened.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test('guarded credential revocation requires its active credential', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'maka-access-authority-guarded-revoke-'));
   const authority = await openRuntimeHostAccessAuthority(directory);

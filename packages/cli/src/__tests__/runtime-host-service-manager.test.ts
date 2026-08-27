@@ -70,6 +70,7 @@ import {
   RuntimeHostServiceManagerError,
   type RuntimeHostManagedServiceConfig,
   type RuntimeHostManagedServiceResult,
+  type RuntimeHostServiceManagerOverrides,
   type RuntimeHostServiceBackend,
 } from '../runtime-host-service-manager.js';
 import {
@@ -166,6 +167,7 @@ describe('managed Runtime Host service', () => {
         '--listen',
         '/ip4/0.0.0.0/udp/44001/quic-v1',
         '--clear-coordination-relays',
+        '--allow-interrupt-active-tasks',
         '--expected-service-id',
         'b'.repeat(64),
         '--expected-root-path',
@@ -180,6 +182,7 @@ describe('managed Runtime Host service', () => {
         framed: true,
         listenAddresses: ['/ip4/0.0.0.0/udp/44001/quic-v1'],
         coordinationRelays: [],
+        allowInterruptActiveTasks: true,
         expectedTarget: {
           serviceId: 'b'.repeat(64),
           rootPath: '/srv/maka',
@@ -1337,6 +1340,7 @@ describe('managed Runtime Host service', () => {
     let active = false;
     let retireCalls = 0;
     let startCalls = 0;
+    let lastAllowInterruptActiveTasks: boolean | undefined;
     const backend: RuntimeHostServiceBackend = {
       ...createReadyBackend(),
       stageDeployment: async () => ({
@@ -1381,7 +1385,12 @@ describe('managed Runtime Host service', () => {
       allocateLoopbackPort: async () => 43_001,
       allocatePeerPort: async () => 43_002,
       waitForReady: async () => undefined,
-      prepareRetirement: async () => ({ kind: 'prepared' as const, hostEpoch: 'epoch', pid: 42 }),
+      prepareRetirement: async (
+        ...args: Parameters<NonNullable<RuntimeHostServiceManagerOverrides['prepareRetirement']>>
+      ) => {
+        lastAllowInterruptActiveTasks = args[2];
+        return { kind: 'prepared' as const, hostEpoch: 'epoch', pid: 42 };
+      },
       ensurePeerIdentity: async () => 'owned-peer-identity',
     };
     const installedService = await manageRuntimeHostService(
@@ -1400,6 +1409,7 @@ describe('managed Runtime Host service', () => {
     const runPeer = async (
       action: 'enable' | 'disable' | 'status' | 'rotate' | 'descriptor',
       coordinationRelays?: readonly string[],
+      allowInterruptActiveTasks = false,
     ) => {
       peerOutput.length = 0;
       const exitCode = await runRuntimeHostPeerManagementCli(
@@ -1409,6 +1419,7 @@ describe('managed Runtime Host service', () => {
           ...common,
           listenAddresses: action === 'enable' ? ['/ip4/127.0.0.1/udp/43002/quic-v1'] : [],
           ...(coordinationRelays ? { coordinationRelays } : {}),
+          allowInterruptActiveTasks,
           expectedTarget,
         },
         {
@@ -1446,7 +1457,8 @@ describe('managed Runtime Host service', () => {
     assert.equal(retireCalls, 1);
 
     await rm(nativePath);
-    assert.equal((await runPeer('disable')).state, 'disabled');
+    assert.equal((await runPeer('disable', undefined, true)).state, 'disabled');
+    assert.equal(lastAllowInterruptActiveTasks, true);
     const disabledStatus = await manageRuntimeHostService(
       { ...common, action: 'status', expectedTarget },
       backend,

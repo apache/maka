@@ -362,6 +362,7 @@ export async function runMakaCli(
         listenAddresses: command.listenAddresses,
         ...(command.coordinationRelays ? { coordinationRelays: command.coordinationRelays } : {}),
         ...(command.expectedTarget ? { expectedTarget: command.expectedTarget } : {}),
+        ...(command.allowInterruptActiveTasks ? { allowInterruptActiveTasks: true } : {}),
       });
     }
     case 'runtime-host-service-update': {

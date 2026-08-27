@@ -108,8 +108,8 @@ test('enabling remote access hands the same root to one managed service before D
   });
   assert.equal(
     JSON.parse(await readFile(join(clientDataRoot, 'runtime-host-local-service.json'), 'utf8'))
-      .rootPath,
-    rootPath,
+      .state,
+    'managed',
   );
 });
 
@@ -121,9 +121,10 @@ test('an interrupted Local Host handoff converges to its exact managed service',
   const rootId = 'a'.repeat(64);
   await mkdir(rootPath, { recursive: true });
   await writeFile(
-    join(clientDataRoot, 'runtime-host-local-service-handoff.json'),
+    join(clientDataRoot, 'runtime-host-local-service.json'),
     `${JSON.stringify({
       schemaVersion: 1,
+      state: 'handoff',
       rootPath,
       rootId,
       coordinationRelays: [],
@@ -169,11 +170,218 @@ test('an interrupted Local Host handoff converges to its exact managed service',
   assert.equal(setupCalls, 1);
   assert.equal(
     JSON.parse(await readFile(join(clientDataRoot, 'runtime-host-local-service.json'), 'utf8'))
-      .rootId,
-    rootId,
-  );
-  await assert.rejects(
-    readFile(join(clientDataRoot, 'runtime-host-local-service-handoff.json'), 'utf8'),
-    { code: 'ENOENT' },
+      .state,
+    'managed',
   );
 });
+
+test('startup replays the persisted peer intent instead of gating recovery on status', async (t) => {
+  const base = await mkdtemp(join(tmpdir(), 'maka-local-peer-recovery-'));
+  t.after(() => rm(base, { recursive: true, force: true }));
+  const clientDataRoot = join(base, 'client');
+  const rootPath = join(clientDataRoot, 'workspaces', 'default');
+  const rootId = 'a'.repeat(64);
+  await mkdir(rootPath, { recursive: true });
+  await writeFile(
+    join(clientDataRoot, 'runtime-host-local-service.json'),
+    `${JSON.stringify({
+      schemaVersion: 1,
+      state: 'peerChanging',
+      serviceId: 'b'.repeat(64),
+      operatorPath: join(clientDataRoot, 'operator'),
+      rootPath,
+      rootId,
+      peerEnabled: true,
+      coordinationRelays: ['/dns4/discovery.example/udp/443/quic-v1'],
+      allowInterruptActiveTasks: false,
+    })}\n`,
+  );
+  let resumed = false;
+  const service = createDesktopLocalRuntimeHostRemoteAccess({
+    ipcMain: { handle() {}, removeHandler() {} },
+    clientDataRoot,
+    rootPath,
+    rootId,
+    directPeerAvailable: true,
+    manager: () =>
+      ({
+        async retireOwnedLocalHost() {
+          return { kind: 'retired' as const, resume: () => { resumed = true; } };
+        },
+      }) as unknown as RuntimeHostDesktopManager,
+    resolveSetupPackage: async () => ({ kind: 'npm', specifier: 'maka-agent@0.2.0' }),
+    operator: {
+      async runPeer(input: {
+        readonly action: string;
+        readonly coordinationRelays?: readonly string[];
+      }) {
+        assert.equal(input.action, 'enable');
+        assert.deepEqual(input.coordinationRelays, [
+          '/dns4/discovery.example/udp/443/quic-v1',
+        ]);
+        return {
+          kind: 'result' as const,
+          action: 'enable' as const,
+          status: {
+            state: 'enabled' as const,
+            serviceState: 'running',
+            rootId,
+            peerId: '12D3KooWpeer',
+            routeHints: ['/ip4/192.0.2.1/udp/41000/quic-v1'],
+            coordinationRelays: ['/dns4/discovery.example/udp/443/quic-v1'],
+          },
+        };
+      },
+      async close() {},
+    } as unknown as ReturnType<typeof createDesktopRuntimeHostLocalOperator>,
+  });
+  t.after(() => service.close());
+
+  await service.recover();
+  assert.equal(resumed, true);
+  assert.equal(
+    JSON.parse(await readFile(join(clientDataRoot, 'runtime-host-local-service.json'), 'utf8'))
+      .state,
+    'managed',
+  );
+});
+
+test('re-enabling a managed peer forwards explicit interruption authority', async (t) => {
+  const base = await mkdtemp(join(tmpdir(), 'maka-local-peer-interrupt-'));
+  t.after(() => rm(base, { recursive: true, force: true }));
+  const clientDataRoot = join(base, 'client');
+  const rootPath = join(clientDataRoot, 'workspaces', 'default');
+  const rootId = 'a'.repeat(64);
+  await mkdir(rootPath, { recursive: true });
+  await writeManagedLifecycle(clientDataRoot, rootPath, rootId);
+  const handlers = new Map<string, Parameters<Electron.IpcMain['handle']>[1]>();
+  const service = createDesktopLocalRuntimeHostRemoteAccess({
+    ipcMain: {
+      handle: (channel, handler) => { handlers.set(channel, handler); },
+      removeHandler: (channel) => { handlers.delete(channel); },
+    },
+    clientDataRoot,
+    rootPath,
+    rootId,
+    directPeerAvailable: true,
+    manager: () =>
+      ({
+        current() {
+          return undefined;
+        },
+        async retireOwnedLocalHost() {
+          return { kind: 'not_owned' as const };
+        },
+        async runManagedLocalHostChange(change: () => Promise<unknown>) {
+          return change();
+        },
+      }) as unknown as RuntimeHostDesktopManager,
+    resolveSetupPackage: async () => ({ kind: 'npm', specifier: 'maka-agent@0.2.0' }),
+    operator: {
+      async runPeer(input: { readonly allowInterruptActiveTasks?: boolean }) {
+        assert.equal(input.allowInterruptActiveTasks, true);
+        return {
+          kind: 'error' as const,
+          action: 'enable' as const,
+          error: { code: 'active_tasks', message: 'active' },
+        };
+      },
+      async close() {},
+    } as unknown as ReturnType<typeof createDesktopRuntimeHostLocalOperator>,
+  });
+  t.after(() => service.close());
+
+  const enable = handlers.get('local-runtime-host-remote-access:enable');
+  assert.ok(enable);
+  assert.deepEqual(
+    await enable({} as Electron.IpcMainInvokeEvent, {
+      allowInterruptActiveTasks: true,
+      coordinationRelays: [],
+    }),
+    { kind: 'active_tasks' },
+  );
+  assert.equal(
+    JSON.parse(await readFile(join(clientDataRoot, 'runtime-host-local-service.json'), 'utf8'))
+      .state,
+    'managed',
+  );
+});
+
+test('startup completes an exact persisted uninstall intent after Desktop interruption', async (t) => {
+  const base = await mkdtemp(join(tmpdir(), 'maka-local-uninstall-recovery-'));
+  t.after(() => rm(base, { recursive: true, force: true }));
+  const clientDataRoot = join(base, 'client');
+  const rootPath = join(clientDataRoot, 'workspaces', 'default');
+  const rootId = 'a'.repeat(64);
+  await mkdir(rootPath, { recursive: true });
+  await writeFile(
+    join(clientDataRoot, 'runtime-host-local-service.json'),
+    `${JSON.stringify({
+      schemaVersion: 1,
+      state: 'uninstalling',
+      serviceId: 'b'.repeat(64),
+      operatorPath: join(base, 'operator'),
+      rootPath,
+      rootId,
+      allowInterruptActiveTasks: false,
+    })}\n`,
+  );
+  const actions: string[] = [];
+  const service = createDesktopLocalRuntimeHostRemoteAccess({
+    ipcMain: { handle() {}, removeHandler() {} },
+    clientDataRoot,
+    rootPath,
+    rootId,
+    directPeerAvailable: true,
+    manager: () =>
+      ({
+        async retireOwnedLocalHost() {
+          return { kind: 'retired' as const, resume() {} };
+        },
+      }) as unknown as RuntimeHostDesktopManager,
+    resolveSetupPackage: async () => ({ kind: 'npm', specifier: 'maka-agent@0.2.0' }),
+    operator: {
+      async runService(input: { readonly action: 'retire' | 'uninstall' }) {
+        actions.push(input.action);
+        return input.action === 'retire'
+          ? {
+              kind: 'result' as const,
+              action: 'retire' as const,
+              retirement: { kind: 'stopped' as const },
+              service: { state: 'stopped' },
+            }
+          : {
+              kind: 'result' as const,
+              action: 'uninstall' as const,
+              service: { state: 'not_installed' },
+            };
+      },
+      async close() {},
+    } as unknown as ReturnType<typeof createDesktopRuntimeHostLocalOperator>,
+  });
+  t.after(() => service.close());
+
+  await service.recover();
+  assert.deepEqual(actions, ['retire', 'uninstall']);
+  await assert.rejects(readFile(join(clientDataRoot, 'runtime-host-local-service.json'), 'utf8'), {
+    code: 'ENOENT',
+  });
+});
+
+async function writeManagedLifecycle(
+  clientDataRoot: string,
+  rootPath: string,
+  rootId: string,
+): Promise<void> {
+  await writeFile(
+    join(clientDataRoot, 'runtime-host-local-service.json'),
+    `${JSON.stringify({
+      schemaVersion: 1,
+      state: 'managed',
+      serviceId: 'b'.repeat(64),
+      operatorPath: join(clientDataRoot, 'operator'),
+      rootPath,
+      rootId,
+    })}\n`,
+  );
+}
