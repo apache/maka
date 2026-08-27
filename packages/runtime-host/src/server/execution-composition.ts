@@ -864,6 +864,9 @@ export async function createExecutionRuntimeHostComposition(
       sessions: stores.sessionStore,
       readSessionHeader: (sessionId) => stores.sessionStore.readHeaderSnapshot(sessionId),
       sessionAdmission,
+      nameSessionIfUnnamed: (sessionId, title) =>
+        stores.sessionStore.setGeneratedTitleIfAbsent(sessionId, title),
+      onSessionNamed: (sessionId) => continuityCoordinator.enqueueCanonicalRefresh(sessionId),
       acquireResidency: () => context.acquireResidency('session-effect'),
       requestDrain: context.requestDrain,
     });
@@ -905,9 +908,6 @@ export async function createExecutionRuntimeHostComposition(
       newId: randomUUID,
       now: Date.now,
       safeBoundaryResumeEnabled: process.env.MAKA_RUNTIME_SAFE_BOUNDARY_RESUME === '1',
-      generateSessionTitle: (input) => sessionEffectCoordinator.generateTitle(input),
-      onSessionTitleChanged: (sessionId) =>
-        continuityCoordinator.enqueueCanonicalRefresh(sessionId),
       inspectContinuationSafety: createLocalContinuationSafetyInspector({
         readSessionCwd: async (sessionId) =>
           (await stores.sessionStore.readHeaderSnapshot(sessionId)).cwd,
@@ -1105,6 +1105,7 @@ export async function createExecutionRuntimeHostComposition(
             )
           ).graphId,
       },
+      (input) => sessionEffectCoordinator.nameSessionFromRootMessage(input),
     );
     const coordinator = rootCoordinator;
     const contextOperations = new HostContextCoordinator({

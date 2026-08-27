@@ -191,6 +191,7 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
   const stopRequestRef = useRef<Promise<unknown> | null>(null);
   const activeTurnIdRef = useRef<string | null>(null);
   const pendingAdmissionRef = useRef<PendingAdmission | null>(null);
+  const reconcilingAdmissionRef = useRef<PendingAdmission | null>(null);
   const subscriptionReadyRef = useRef<Promise<void>>(Promise.resolve());
   const submitLockRef = useRef(false);
   const settlingTurnIdsRef = useRef<Set<string>>(new Set());
@@ -308,6 +309,33 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
     [applyOwnedEvent, setPendingAdmission],
   );
 
+  // A Message whose admission answer was lost is still reconcilable: the Host
+  // materializes a root Message before its Run starts, so the durable
+  // transcript names the Turn it opened under the identity the panel sent.
+  const reconcileUnknownAdmission = useCallback(
+    async (forkId: string, admission: PendingAdmission): Promise<void> => {
+      if (reconcilingAdmissionRef.current === admission) return;
+      reconcilingAdmissionRef.current = admission;
+      try {
+        const { messages } = await sideChat.readSettledMessages(forkId);
+        if (!mountedRef.current || pendingAdmissionRef.current !== admission) return;
+        const admitted = messages.find(
+          (message) => message.type === 'user' && message.id === admission.messageId,
+        );
+        if (admitted?.turnId) {
+          bindAdmittedTurn(forkId, admitted.turnId, { preserveLiveTurn: true });
+        }
+      } catch {
+        // The next event this fork produces is another chance to reconcile.
+      } finally {
+        if (reconcilingAdmissionRef.current === admission) {
+          reconcilingAdmissionRef.current = null;
+        }
+      }
+    },
+    [bindAdmittedTurn, mountedRef, sideChat],
+  );
+
   const releaseAdmission = useCallback(
     (admission: PendingAdmission, message?: string) => {
       if (pendingAdmissionRef.current !== admission) return;
@@ -398,6 +426,9 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
             applyOwnedEvent(forkId, event);
           } else {
             admission.events.push(event);
+            // This fork is producing Turn events while the panel still holds an
+            // unproven Message: the transcript can say whether they are its own.
+            void reconcileUnknownAdmission(forkId, admission);
           }
           return;
         }
@@ -645,6 +676,7 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
           if (outcome?.kind === 'retracted') {
             return false;
           }
+          void reconcileUnknownAdmission(result.forkId, admission);
         } else if (result.steered) {
           if (resolveAdmission(result.forkId, admission, result.messageId)?.kind === 'retracted') {
             return false;

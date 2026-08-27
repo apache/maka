@@ -890,11 +890,12 @@ export interface MakaBridge {
     ): Promise<
       | {
           ok: true;
-          turnId: string;
           /**
-           * The send raced a root Turn another client opened first and was
-           * queued into it as steering instead of starting `turnId`.
+           * The Turn Runtime Host opened for this Message. Admission mints it,
+           * so it is not the `turnId` the caller reserved — that identity is
+           * the Message's, and stays the caller's to reconcile with.
            */
+          turnId: string;
           steered?: never;
           messageId?: never;
           attachments: import('@maka/core/events').AttachmentRef[];
@@ -903,6 +904,10 @@ export interface MakaBridge {
         }
       | {
           ok: true;
+          /**
+           * The running Turn this Message was queued into as steering, rather
+           * than one opened for it.
+           */
           turnId: string;
           steered: true;
           /** Host admission identity for the message queued as steering. */

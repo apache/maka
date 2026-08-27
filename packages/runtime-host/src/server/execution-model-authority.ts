@@ -39,7 +39,7 @@ import {
   buildSessionTitlePrompt,
   cleanGeneratedSessionTitle,
   SESSION_TITLE_GENERATION_TIMEOUT_MS,
-} from '@maka/runtime/session-title';
+} from './session-title.js';
 import {
   createProxiedFetchTransport,
   type ProxiedFetchProxy,

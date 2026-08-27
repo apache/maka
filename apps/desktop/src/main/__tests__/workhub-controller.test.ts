@@ -1335,6 +1335,52 @@ test('a correction after remount stops a root whose admission is still pending',
   ]);
 });
 
+test('a correction stops an uncertain root under the Turn identity the Host minted', async () => {
+  const stopped: Array<[string, string]> = [];
+  const sessions = port([
+    session('login', { sessionName: '登录稳定性', updatedAt: 20 }),
+    session('payment', { sessionName: '支付稳定性', updatedAt: 30 }),
+  ]);
+  sessions.reserveTurnId = () => 'reserved-payment';
+  // The Host admitted the Message and opened a Turn under its own identity,
+  // then the answer was lost. Only the transcript can tie the reserved Message
+  // identity back to that Turn.
+  sessions.submit = async (target, _text, turnId) => {
+    if (target.sessionId !== 'payment') return { turnId };
+    throw new WorkHubSessionSubmitError('delivery outcome is unknown', 'unknown');
+  };
+  // The transcript has not caught up at delivery time, so the candidate stays
+  // uncertain; the correction is the next chance to resolve it.
+  let transcriptCaughtUp = false;
+  sessions.reconcileSubmission = async (_target, reservedTurnId) => {
+    if (reservedTurnId !== 'reserved-payment' || !transcriptCaughtUp) {
+      transcriptCaughtUp = true;
+      return { kind: 'unknown' };
+    }
+    return { kind: 'root', turnId: 'turn-payment-host' };
+  };
+  sessions.stop = async (target, turnId) => {
+    stopped.push([target.sessionId, turnId]);
+  };
+  const controller = createWorkHubController({ sessions });
+
+  await assert.rejects(controller.submit({
+    requestId: 'request-payment-uncertain',
+    text: '继续支付稳定性',
+    explicitTarget: { sessionId: 'payment' },
+  }));
+
+  const corrected = await controller.submit({
+    requestId: 'request-correct-uncertain-root',
+    text: '不是这个工作，换成登录稳定性',
+  });
+
+  assert.deepEqual(corrected.kind === 'submitted' ? corrected.target : undefined, {
+    sessionId: 'login',
+  });
+  assert.deepEqual(stopped, [['payment', 'turn-payment-host']]);
+});
+
 test('a correction retries Stop when the same reserved root is admitted before Stop settles', async () => {
   const stopped: Array<[string, string]> = [];
   const sessions = port([

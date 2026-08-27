@@ -331,6 +331,10 @@ export class RootTurnCoordinator implements HostedExecutionAuthority {
     attachmentValidator?: HostTurnAttachmentValidator,
     prepareSkillInvocation?: HostSkillInvocationPreparer,
     private readonly agentGraphEpochs?: HostAgentGraphEpochAuthority,
+    private readonly nameSessionFromRootMessage?: (input: {
+      sessionId: string;
+      content: MessageContent;
+    }) => void,
   ) {
     this.stores = authenticateExecutionStoresWriter(stores, 'interactive');
     this.executionProjection = new HostedExecutionProjectionReader(this.stores);
@@ -2234,6 +2238,51 @@ export class RootTurnCoordinator implements HostedExecutionAuthority {
     };
   }
 
+  /**
+   * The one root path that carries a user Message. Session naming hangs here
+   * rather than on the shared run-started hook: a compaction or a continuation
+   * opens a Run without new words, and neither should name a Session.
+   */
+  private startRootMessageTurn(
+    input: RootTurnActivationInput,
+    active: ActiveRootTurn,
+    content: MessageContent,
+    messageOrigin: ReturnType<typeof hostedExecutionMessageOrigin>,
+    onRunStarted: () => Promise<void>,
+  ): AsyncIterable<SessionEvent> {
+    return this.manager.sendMessage(
+      input.sessionId,
+      {
+        turnId: input.turnId,
+        ...content,
+        ...(active.descriptor.kind === 'regenerate'
+          ? {
+              parentTurnId: active.descriptor.sourceTurnId,
+              regeneratedFromTurnId: active.descriptor.sourceTurnId,
+            }
+          : {}),
+        ...(input.turnOrchestration ? { turnOrchestration: input.turnOrchestration } : {}),
+        ...(active.descriptor.kind === 'external_message' &&
+        active.descriptor.maxSteps !== undefined
+          ? { maxSteps: active.descriptor.maxSteps }
+          : {}),
+        ...(messageOrigin ? { origin: messageOrigin } : {}),
+      },
+      {
+        runId: active.runId,
+        userMessageId: active.userMessageId,
+        durability: 'required',
+        onRunStarted: async (startedRunId) => {
+          if (startedRunId !== active.runId) {
+            throw new Error('Runtime started a different Run than the admitted identity');
+          }
+          await onRunStarted();
+          this.nameSessionFromRootMessage?.({ sessionId: input.sessionId, content });
+        },
+      },
+    );
+  }
+
   private async drainTurn(
     input: RootTurnActivationInput,
     active: ActiveRootTurn,
@@ -2268,37 +2317,12 @@ export class RootTurnCoordinator implements HostedExecutionAuthority {
             ? this.manager.resumeSafeBoundaryContinuation(active.continuation, {
                 onRunStarted,
               })
-            : this.manager.sendMessage(
-                input.sessionId,
-                {
-                  turnId: input.turnId,
-                  ...normalizeMessageContent(requireRootMessageContent(input)),
-                  ...(active.descriptor.kind === 'regenerate'
-                    ? {
-                        parentTurnId: active.descriptor.sourceTurnId,
-                        regeneratedFromTurnId: active.descriptor.sourceTurnId,
-                      }
-                    : {}),
-                  ...(input.turnOrchestration
-                    ? { turnOrchestration: input.turnOrchestration }
-                    : {}),
-                  ...(active.descriptor.kind === 'external_message' &&
-                  active.descriptor.maxSteps !== undefined
-                    ? { maxSteps: active.descriptor.maxSteps }
-                    : {}),
-                  ...(messageOrigin ? { origin: messageOrigin } : {}),
-                },
-                {
-                  runId: active.runId,
-                  userMessageId: active.userMessageId,
-                  durability: 'required',
-                  onRunStarted: async (startedRunId) => {
-                    if (startedRunId !== active.runId) {
-                      throw new Error('Runtime started a different Run than the admitted identity');
-                    }
-                    await onRunStarted();
-                  },
-                },
+            : this.startRootMessageTurn(
+                input,
+                active,
+                normalizeMessageContent(requireRootMessageContent(input)),
+                messageOrigin,
+                onRunStarted,
               );
       for await (const event of stream) {
         if (active.execution?.onEvent) {

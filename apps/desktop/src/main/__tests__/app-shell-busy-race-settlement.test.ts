@@ -18,9 +18,9 @@
  */
 
 /**
- * #1954 busy-race settlement: a sessions:send that raced a root turn another
- * client opened can come back `steered` (the send owns no turn) or under a
- * Host-chosen turnId. Both results must be interpreted identically by the
+ * #1954 busy-race settlement: a submitted Message that raced a root turn
+ * another client opened can come back `steered` (the send owns no turn) or
+ * under a Host-chosen turnId. Both results must be interpreted identically by the
  * new-chat and existing-session branches, and a rebind must never overwrite
  * an authoritative live projection that beat the IPC response.
  */

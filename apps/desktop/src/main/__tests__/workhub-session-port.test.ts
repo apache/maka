@@ -589,7 +589,7 @@ test('desktop adapter preserves when Session delivery steered an existing root T
 });
 
 test('desktop adapter distinguishes definite rejection from an unknown delivery outcome', async () => {
-  let outcome: 'throw' | 'reject' = 'throw';
+  let outcome: 'throw' | 'unknown' | 'reject' = 'throw';
   const adapter = createDesktopWorkHubSessionPort({
     transcripts: unusedTranscripts,
     sessions: {
@@ -598,7 +598,23 @@ test('desktop adapter distinguishes definite rejection from an unknown delivery 
       create: async () => { throw new Error('not used'); },
       send: async () => {
         if (outcome === 'throw') throw new Error('transport disconnected');
-        return { ok: false as const, reason: 'archived' as const };
+        if (outcome === 'unknown') {
+          return {
+            ok: false as const,
+            reason: 'outcome_unknown' as const,
+            messageId: 'reserved-turn',
+            skillInvocation: { loaded: [], failed: [], receipts: [] },
+          };
+        }
+        return {
+          ok: false as const,
+          reason: 'skill_invocation_failed' as const,
+          skillInvocation: {
+            loaded: [],
+            failed: [{ request: 'missing', reason: 'not_found' as const }],
+            receipts: [],
+          },
+        };
       },
       stop: async () => {},
       subscribeChanges: () => () => {},
@@ -607,6 +623,13 @@ test('desktop adapter distinguishes definite rejection from an unknown delivery 
     newTurnId: () => 'reserved-turn',
   });
 
+  await assert.rejects(
+    adapter.submit({ sessionId: 'payment' }, '继续支付', 'reserved-turn'),
+    (error) => error instanceof WorkHubSessionSubmitError && error.admission === 'unknown',
+  );
+  // The Host declining to prove the outcome must stay reconcilable; only a
+  // Host-owned refusal releases the reserved root.
+  outcome = 'unknown';
   await assert.rejects(
     adapter.submit({ sessionId: 'payment' }, '继续支付', 'reserved-turn'),
     (error) => error instanceof WorkHubSessionSubmitError && error.admission === 'unknown',

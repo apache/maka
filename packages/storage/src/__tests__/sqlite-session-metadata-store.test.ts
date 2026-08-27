@@ -121,6 +121,60 @@ describe('SqliteSessionMetadataStore', () => {
     });
   }
 
+  test('migrates a legacy subagent Session to a frozen model route', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'maka-session-metadata-v32-'));
+    const path = join(root, 'state.sqlite');
+    const child = fullHeader({
+      id: 'legacy-child',
+      parentSessionId: undefined,
+      branchOfTurnId: undefined,
+      revisionRootSessionId: undefined,
+      revisionParentSessionId: undefined,
+      revisionOfTurnId: undefined,
+      revisionIndex: undefined,
+      revisionState: undefined,
+      connectionLocked: false,
+      subagentParent: {
+        kind: 'subagent',
+        parentSessionId: 'parent-session',
+        spawnedBy: {
+          parentRunId: 'parent-run',
+          parentTurnId: 'parent-turn',
+          toolCallId: 'tool-call',
+        },
+        lifecycle: 'foreground',
+      },
+    });
+    const ordinary = fullHeader({ id: 'legacy-ordinary', connectionLocked: false });
+    const setup = createSqliteSessionMetadataStore(path);
+    try {
+      await setup.create(child);
+      await setup.create(ordinary);
+    } finally {
+      setup.close();
+    }
+    // A subagent spawned before the route froze at creation, and abandoned
+    // before its first Message, is the one shape nothing else can lock.
+    const legacy = new DatabaseSync(path);
+    try {
+      legacy.exec(`
+        UPDATE session_metadata_schema SET version = 32 WHERE scope = 'session_metadata';
+      `);
+    } finally {
+      legacy.close();
+    }
+
+    const migrated = createSqliteSessionMetadataStore(path);
+    try {
+      assert.equal(migrated.schemaVersion(), SQLITE_SESSION_METADATA_SCHEMA_VERSION);
+      assert.equal((await migrated.read('legacy-child')).header.connectionLocked, true);
+      assert.equal((await migrated.read('legacy-ordinary')).header.connectionLocked, false);
+    } finally {
+      migrated.close();
+    }
+    await rm(root, { recursive: true, force: true });
+  });
+
   test('migrates v27 metadata to the current schema without backfilling external origin', async () => {
     const root = await mkdtemp(join(tmpdir(), 'maka-session-metadata-v27-'));
     const path = join(root, 'state.sqlite');

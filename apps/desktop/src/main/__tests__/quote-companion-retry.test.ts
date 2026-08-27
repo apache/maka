@@ -561,6 +561,66 @@ test('replays queued Side Conversation text after Host assigns the ticket to a s
   assert.equal(probe.getAttribute('data-processing'), 'false');
 });
 
+test('binds an unproven Side Conversation send through the durable transcript', async () => {
+  let admissionId: string | undefined;
+  const pendingSend = deferred<{
+    ok: false;
+    reason: 'outcome_unknown';
+    messageId: string;
+  }>();
+  // The Host opened a root Turn under its own identity and the answer was lost.
+  // No `message_admission` event exists for a root Message, so the transcript is
+  // the only thing that can tie the sent identity back to the Turn.
+  const { container, emit, send } = await renderOwnershipProbe({
+    send: async (_sessionId, command) => {
+      admissionId = command.turnId;
+      return pendingSend.promise;
+    },
+    readSettledMessages: async () => ({
+      messages: admissionId
+        ? [
+            {
+              type: 'user' as const,
+              id: admissionId,
+              turnId: 'unproven-root',
+              ts: 1,
+              text: 'reconcile me',
+            },
+          ]
+        : [],
+      settled: true,
+    }),
+  });
+
+  let sendResult!: Promise<boolean>;
+  await act(async () => {
+    sendResult = send('reconcile me');
+    await Promise.resolve();
+  });
+  await act(async () => {
+    pendingSend.resolve({
+      ok: false,
+      reason: 'outcome_unknown',
+      messageId: admissionId as string,
+    });
+    assert.equal(await sendResult, true);
+    await Promise.resolve();
+  });
+  await act(async () => {
+    emit(textDeltaEvent('unproven-text', 'unproven-root', 1, 'answer from the lost send'));
+    await Promise.resolve();
+  });
+  await act(async () => {
+    await Promise.resolve();
+  });
+
+  const probe = container.firstElementChild;
+  assert.ok(probe);
+  assert.equal(probe.getAttribute('data-live-turn-id'), 'unproven-root');
+  assert.equal(probe.getAttribute('data-live-text'), 'answer from the lost send');
+  assert.equal(probe.getAttribute('data-processing'), 'false');
+});
+
 test('clears a stopped Side Conversation admission when its live retraction is lost', async () => {
   let admissionId: string | undefined;
   const pendingStop = deferred<{ kind: 'retracted'; messageId: string }>();

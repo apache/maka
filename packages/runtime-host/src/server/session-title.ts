@@ -17,7 +17,6 @@
  * under the License.
  */
 
-import { generateText as aiGenerateText, type LanguageModel } from 'ai';
 import { normalizeUserSessionName } from '@maka/core/session-name';
 
 const MAX_SOURCE_BYTES = 8 * 1024;
@@ -49,46 +48,6 @@ export function fallbackSessionTitle(sourceText: string): string | undefined {
     .find((line) => line.trim())
     ?.trim();
   return firstLine ? Array.from(firstLine).slice(0, MAX_FALLBACK_CODE_POINTS).join('') : undefined;
-}
-
-type GenerateText = (options: Record<string, unknown>) => Promise<{
-  text: string;
-  finishReason?: string;
-}>;
-
-export async function generateSessionTitle(input: {
-  model: LanguageModel;
-  sourceText: string;
-  providerOptions?: unknown;
-  generateText?: GenerateText;
-  timeoutMs?: number;
-}): Promise<string | undefined> {
-  if (!input.sourceText.trim()) return undefined;
-  try {
-    const generateText: GenerateText =
-      input.generateText ??
-      (async (options) => aiGenerateText(options as Parameters<typeof aiGenerateText>[0]));
-    const abortSignal = AbortSignal.timeout(input.timeoutMs ?? SESSION_TITLE_GENERATION_TIMEOUT_MS);
-    let onAbort!: () => void;
-    const timeout = new Promise<never>((_resolve, reject) => {
-      onAbort = () => reject(abortSignal.reason);
-      abortSignal.addEventListener('abort', onAbort, { once: true });
-    });
-    const result = await Promise.race([
-      generateText({
-        model: input.model,
-        prompt: buildSessionTitlePrompt(input.sourceText),
-        ...(input.providerOptions === undefined ? {} : { providerOptions: input.providerOptions }),
-        maxOutputTokens: 1024,
-        abortSignal,
-      }),
-      timeout,
-    ]).finally(() => abortSignal.removeEventListener('abort', onAbort));
-    if (result.finishReason === 'length') return undefined;
-    return cleanGeneratedSessionTitle(result.text);
-  } catch {
-    return undefined;
-  }
 }
 
 export function buildSessionTitlePrompt(sourceText: string): string {

@@ -211,9 +211,12 @@ export function createDesktopWorkHubSessionPort(deps: {
         );
       }
       if (!result.ok) {
+        // `outcome_unknown` is the Host declining to prove what happened, not a
+        // refusal: the Message may already be running, so it stays reachable
+        // for reconciliation rather than being released.
         throw new WorkHubSessionSubmitError(
           `WorkHub Session send failed: ${result.reason}`,
-          'rejected',
+          result.reason === 'outcome_unknown' ? 'unknown' : 'rejected',
         );
       }
       return {

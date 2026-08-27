@@ -355,6 +355,45 @@ test('pull request triggers stay on an explicit allowlist', () => {
   ]);
 });
 
+test('every pull request lane holds a scarce runner for the same bounded time', () => {
+  // One tier, not per-lane values. The worst observed successful runs are 19
+  // minutes (ci.yml) and 20 (release-windows-check), so 45 is about 2.3x the
+  // slowest lane: enough headroom for a cold cache and a flake retry, and far
+  // short of the 120 and 90 a hung job used to hold. A lane with no limit at
+  // all inherits GitHub's 360 and fails here.
+  // `pull_request` only: a `pull_request_target` lane reads the pull request
+  // rather than gating it, so it is not competing for a runner the author is
+  // waiting on and keeps its own tighter limit.
+  // Granularity is the file, not the job: a job inside a gating workflow that
+  // opts out of pull requests still carries the tier, because reading a job's
+  // `if:` would need the YAML parser this file cannot install.
+  const gates = readdirSync(WORKFLOW_DIR).filter((name) =>
+    /\bpull_request\b/u.test(triggerBlock(name)),
+  );
+  assert.ok(gates.length > 0, 'no pull request lane found');
+
+  for (const name of gates) {
+    // From `jobs:` on, with comment lines stripped, so prose above the triggers
+    // cannot be read as a job.
+    const workflow = readWorkflow(name).replaceAll(/^[ \t]*#.*$/gmu, '');
+    const start = workflow.indexOf('\njobs:');
+    assert.ok(start >= 0, `${name}: no jobs block`);
+    const jobs = workflow.slice(start);
+
+    const limits = [...jobs.matchAll(/^ {4}timeout-minutes: (\d+)$/gmu)].map((match) => match[1]);
+    // Counted by `runs-on`, one per job that consumes a runner, rather than by
+    // job id: a quoted id escapes an id pattern, and a two-space line inside a
+    // `run: |` block satisfies one.
+    const runners = [...jobs.matchAll(/^ {4}runs-on:/gmu)].length;
+    assert.ok(runners > 0, `${name}: no job consumes a runner`);
+    assert.deepEqual(
+      limits,
+      Array.from({ length: runners }, () => '45'),
+      name,
+    );
+  }
+});
+
 test('the recovery lane pairs its path filter with a nightly run and a main push', () => {
   // Read from the `on:` block with comments stripped, so documenting a trigger
   // cannot break its contract.

@@ -1045,15 +1045,31 @@ class SqliteSessionStore implements SessionAuthorityStore {
   async setGeneratedTitleIfAbsent(sessionId: string, title: string): Promise<SessionHeader | null> {
     const normalized = normalizeUserSessionName(title);
     if (!normalized.ok) return null;
-    const current = await this.readHeaderSnapshot(sessionId);
-    if (
-      current.titleIsManual ||
-      current.name !== DEFAULT_SESSION_NAME ||
-      normalized.value === current.name
-    ) {
-      return null;
+    // A generated title only ever fills an absence. Writing at the revision the
+    // check read makes a rename that lands between the two a winner rather than
+    // something this silently overwrites; a revision that moved for any other
+    // reason is re-read, so losing the race stays the only way to answer null.
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      const record = await this.readHeaderRecordSnapshot(sessionId);
+      const current = record.header;
+      if (
+        current.titleIsManual ||
+        current.name !== DEFAULT_SESSION_NAME ||
+        normalized.value === current.name
+      ) {
+        return null;
+      }
+      try {
+        return (
+          await this.updateHeaderVersioned(sessionId, { name: normalized.value }, record.revision)
+        ).header;
+      } catch (error) {
+        if (!(error instanceof SessionMetadataVersionConflictError)) throw error;
+      }
     }
-    return this.updateHeader(sessionId, { name: normalized.value });
+    // Losing the race every attempt reads the same as losing it once: the
+    // Session keeps whichever name the writer that won gave it.
+    return null;
   }
 
   async remove(sessionId: string): Promise<void> {
@@ -1139,7 +1155,10 @@ function buildSessionHeader(
     hasUnread: false,
     backend: 'ai-sdk',
     llmConnectionSlug: input.llmConnectionSlug,
-    connectionLocked: false,
+    // A subagent Session's route is chosen by the spawn that created it and is
+    // never re-targeted, so it is born frozen. Every other Session freezes on
+    // its first user Message.
+    connectionLocked: input.subagentParent !== undefined,
     model: input.model ?? 'default',
     ...(input.toolProfile !== undefined ? { toolProfile: input.toolProfile } : {}),
     permissionMode: input.permissionMode,

@@ -226,7 +226,7 @@ export class AgentRun {
   readonly toolMode: ToolMode;
 
   private readonly input: AgentRunInput;
-  private header: SessionHeader;
+  private readonly header: SessionHeader;
   private active: AgentRunActiveSession | undefined;
   private stopped = false;
   private abortSource: string | undefined;
@@ -686,10 +686,6 @@ export class AgentRun {
       requireDurableWrite: this.requiresDurablePersistence(),
     });
 
-    if (!this.header.connectionLocked) {
-      this.header = await this.input.hooks.updateHeader(this.sessionId, { connectionLocked: true });
-    }
-
     this.active = await this.input.hooks.reserveRun(this.sessionId, this.header, this);
     await this.markRunStarted(this.lastTs);
 
@@ -732,10 +728,6 @@ export class AgentRun {
       await this.input.hooks.appendTurnState(this.sessionId, this.turnId, 'running', this.lineage, {
         ts: startedAt,
       });
-    }
-
-    if (!this.header.connectionLocked) {
-      this.header = await this.input.hooks.updateHeader(this.sessionId, { connectionLocked: true });
     }
 
     this.active = await this.input.hooks.reserveRun(this.sessionId, this.header, this);
@@ -781,10 +773,6 @@ export class AgentRun {
       await this.input.hooks.appendTurnState(this.sessionId, this.turnId, 'running', this.lineage, {
         ts: startedAt,
       });
-    }
-
-    if (!this.header.connectionLocked) {
-      this.header = await this.input.hooks.updateHeader(this.sessionId, { connectionLocked: true });
     }
 
     this.active = await this.input.hooks.reserveRun(this.sessionId, this.header, this);

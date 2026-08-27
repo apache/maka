@@ -61,7 +61,7 @@ jobs:
   peer-native:
     name: Build direct-peer addon (${{ matrix.target }})
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 30
+    timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:
@@ -132,7 +132,7 @@ jobs:
     name: Build immutable tarball
     needs: peer-native
     runs-on: ubuntu-24.04
-    timeout-minutes: 60
+    timeout-minutes: 45
     outputs:
       release_candidate_artifact_id: ${{ steps.release-candidate.outputs.artifact-id }}
       release_candidate_run_attempt: ${{ github.run_attempt }}
@@ -177,7 +177,7 @@ jobs:
     name: Validate installed CLI ${{ matrix.name }}
     needs: build
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 15
+    timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:
@@ -236,7 +236,7 @@ jobs:
     if: github.event_name != 'pull_request'
     needs: build
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:

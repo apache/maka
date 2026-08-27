@@ -19,7 +19,7 @@
 
 import type { DatabaseSync } from 'node:sqlite';
 
-export const SQLITE_SESSION_METADATA_SCHEMA_VERSION = 32;
+export const SQLITE_SESSION_METADATA_SCHEMA_VERSION = 33;
 export const SQLITE_SESSION_MESSAGE_CHUNK_BYTES = 64 * 1024;
 export const SQLITE_SESSION_MESSAGE_CHUNK_MARKER = '{"$maka":"session-message-chunks-v1"}';
 
@@ -1198,6 +1198,22 @@ const MIGRATIONS: ReadonlyMap<number, string> = new Map([
     32,
     `
     ALTER TABLE message_admissions ADD COLUMN submitted_intent_json TEXT;
+  `,
+  ],
+  [
+    33,
+    `
+    UPDATE session_metadata
+    SET
+      payload_json = json_set(payload_json, '$.connectionLocked', json('true')),
+      metadata_version = metadata_version + 1,
+      committed_at = MAX(
+        committed_at,
+        CAST(strftime('%s', 'now') AS INTEGER) * 1000
+      )
+    WHERE
+      json_extract(payload_json, '$.connectionLocked') = 0
+      AND json_extract(payload_json, '$.subagentParent') IS NOT NULL;
   `,
   ],
 ]);

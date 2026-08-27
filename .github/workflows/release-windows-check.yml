@@ -106,7 +106,7 @@ concurrency:
 jobs:
   package:
     runs-on: windows-2025
-    timeout-minutes: 90
+    timeout-minutes: 45
     defaults:
       run:
         shell: bash

@@ -87,7 +87,6 @@
     "./sandbox-boundary-tool": "./dist/sandbox-boundary-tool.js",
     "./scheduled-task-tools": "./dist/scheduled-task-tools.js",
     "./session-recap": "./dist/session-recap.js",
-    "./session-title": "./dist/session-title.js",
     "./session-trace-projection": "./dist/session-trace-projection.js",
     "./shell-detect": "./dist/shell-detect.js",
     "./shell-run-contract": "./dist/shell-run-contract.js",

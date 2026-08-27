@@ -1144,7 +1144,6 @@ export class RuntimeKernel implements RuntimeKernelLike {
     const childHeader: SessionHeader = {
       ...parentHeader,
       permissionMode: definition.permissionMode,
-      connectionLocked: true,
     };
     const userInput: UserMessageInput = {
       turnId: input.turnId,
@@ -1264,7 +1263,6 @@ export class RuntimeKernel implements RuntimeKernelLike {
       : {
           ...parentHeader,
           permissionMode: definition.permissionMode,
-          connectionLocked: true,
         };
     const userInput: UserMessageInput = {
       turnId: continuation.turnId,

@@ -3816,69 +3816,6 @@ describe('SessionManager child-session runtime primitive', () => {
   });
 });
 
-describe('SessionManager automatic titles', () => {
-  test('falls back once on generation failure', async () => {
-    const store = new MemorySessionStore();
-    const backends = new BackendRegistry();
-    backends.register('ai-sdk', (ctx) => new TestBackend(ctx));
-    const changed = makeGate();
-    let calls = 0;
-    const manager = new SessionManager({
-      store,
-      backends,
-      newId: nextId(),
-      now: nextNow(600),
-      generateSessionTitle: async () => {
-        calls += 1;
-        throw new Error('offline');
-      },
-      onSessionTitleChanged: () => changed.release(),
-    });
-    const session = await manager.createSession(makeInput({ name: 'New Chat' }));
-
-    await drain(
-      manager.sendMessage(session.id, { turnId: 'first', text: '\nFallback title\nignored' }),
-    );
-    await changed.promise;
-    await drain(manager.sendMessage(session.id, { turnId: 'second', text: 'second prompt' }));
-
-    expect((await store.readHeader(session.id)).name).toBe('Fallback title');
-    expect(calls).toBe(1);
-  });
-
-  test('does not overwrite or notify after a racing manual rename', async () => {
-    const store = new MemorySessionStore();
-    const backends = new BackendRegistry();
-    backends.register('ai-sdk', (ctx) => new TestBackend(ctx));
-    const release = makeGate();
-    const attempted = makeGate();
-    store.generatedTitleAttempted = attempted;
-    let notifications = 0;
-    const manager = new SessionManager({
-      store,
-      backends,
-      newId: nextId(),
-      now: nextNow(700),
-      generateSessionTitle: async () => {
-        await release.promise;
-        return 'Generated loses';
-      },
-      onSessionTitleChanged: () => {
-        notifications += 1;
-      },
-    });
-    const session = await manager.createSession(makeInput({ name: 'New Chat' }));
-
-    await drain(manager.sendMessage(session.id, { turnId: 'turn-race', text: 'hello' }));
-    await manager.renameSession(session.id, 'Manual wins');
-    release.release();
-    await attempted.promise;
-
-    expect((await store.readHeader(session.id)).name).toBe('Manual wins');
-    expect(notifications).toBe(0);
-  });
-});
-
 describe('SessionManager manual compaction and quiescent session changes', () => {
   test('runs backend history compaction as a runtime turn and persists diagnostics', async () => {
     const store = new MemorySessionStore();
@@ -16499,7 +16436,6 @@ class MemorySessionStore implements SessionStore {
   disposeCount = 0;
   nextReadHeaderGate: { started: Gate; release: Gate } | undefined;
   nextGraphOperatorProvisionGate: { started: Gate; release: Gate } | undefined;
-  generatedTitleAttempted: Gate | undefined;
 
   async createSubagent(
     input: CreateSessionInput,
@@ -16593,7 +16529,7 @@ class MemorySessionStore implements SessionStore {
       hasUnread: false,
       backend: 'ai-sdk',
       llmConnectionSlug: input.llmConnectionSlug,
-      connectionLocked: false,
+      connectionLocked: input.subagentParent !== undefined,
       model: input.model ?? 'fake-model',
       ...(input.thinkingLevel !== undefined ? { thinkingLevel: input.thinkingLevel } : {}),
       permissionMode: input.permissionMode,
@@ -16760,13 +16696,6 @@ class MemorySessionStore implements SessionStore {
 
   async rename(sessionId: string, name: string): Promise<void> {
     await this.updateHeader(sessionId, { name, titleIsManual: true });
-  }
-
-  async setGeneratedTitleIfAbsent(sessionId: string, title: string): Promise<SessionHeader | null> {
-    const current = await this.readHeader(sessionId);
-    this.generatedTitleAttempted?.release();
-    if (current.titleIsManual || current.name !== 'New Chat') return null;
-    return this.updateHeader(sessionId, { name: title });
   }
 
   async remove(sessionId: string): Promise<void> {

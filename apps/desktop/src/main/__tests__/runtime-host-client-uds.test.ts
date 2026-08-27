@@ -345,19 +345,16 @@ test('drives the renderer Session execution facade through real UDS framing', as
               result: { kind: 'managed', access: 'read_only', revision: 2 },
             };
           },
-          'turn.start': async (input) => {
+          'turn.message.submit': async (input) => {
             assert.equal(input.sessionId, projected.id);
+            assert.equal(input.messageId, 'turn-1');
+            assert.equal(input.placement, 'current_turn');
             assert.equal(input.content.text, 'Run through the Host');
             return {
               ok: true,
               result: {
-                kind: 'started',
-                turn: {
-                  sessionId: input.sessionId,
-                  turnId: input.turnId,
-                  runId: 'run-1',
-                  status: 'running',
-                },
+                disposition: 'turn_started',
+                turnId: 'turn-host-1',
                 skillInvocation: { loaded: [], failed: [], receipts: [] },
               },
             };
@@ -410,7 +407,7 @@ test('drives the renderer Session execution facade through real UDS framing', as
       }),
       {
         ok: true,
-        turnId: 'turn-1',
+        turnId: 'turn-host-1',
         attachments: [],
         inlineReferences: [],
         skillInvocation: { loaded: [], failed: [], receipts: [] },
