@@ -340,53 +340,6 @@ test('reseeds a scheduled retry with remainingMs recomputed from the stored sche
   assert.ok(retry && retry.type === 'provider_retry' && retry.phase === 'scheduled');
   assert.equal(retry.delayMs, 40_000);
   assert.equal(retry.remainingMs, 39_995);
-      rootTurn: {
-        sessionId: 'session-1',
-        turnId: 'turn-1',
-        runId: 'run-1',
-<<<<<<< HEAD
-        status: 'failed',
-        terminalEventId: 'terminal-1',
-        failureClass: 'context_budget_exhausted',
-        contextBudgetExhaustedDetail: 'malformed_summary_missing_section',
-      },
-    }),
-  }).events;
-
-  assert.deepEqual(events, [
-    {
-      type: 'error',
-      id: 'terminal-1',
-      turnId: 'turn-1',
-      ts: 10,
-      recoverable: false,
-      reason: 'context_budget_exhausted',
-      message: 'Turn failed: context_budget_exhausted',
-      details: { contextBudgetExhaustedDetail: 'malformed_summary_missing_section' },
-    },
-  ]);
-=======
-        status: 'running',
-        providerRetry: {
-          phase: 'scheduled' as const,
-          attempt: 8,
-          maxAttempts: 10,
-          delayMs: 40_000,
-          ts: 5, // scheduled 5ms before the projector clock's `now`
-          reason: 'rate_limit' as const,
-        },
-      },
-    }),
-    createRuntimeHostSessionProjectionSeed([], snapshot()),
-    () => 10,
-  );
-
-  const seeded = projector.seedActive(true);
-  const retry = seeded[0];
-  assert.ok(retry && retry.type === 'provider_retry' && retry.phase === 'scheduled');
-  assert.equal(retry.delayMs, 40_000);
-  assert.equal(retry.remainingMs, 39_995);
->>>>>>> 361a6d056 (fix(ui,cli,core,runtime-host): count down provider retry wait from event timestamp (#3393))
 });
 
 test('emits a live provider retry when the snapshot overlay appears, then drops it after content', () => {
