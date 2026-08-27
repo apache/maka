@@ -93,6 +93,7 @@ import {
 import { AdmissionLimiter } from './admission-limiter.js';
 import type { AgentProfile } from './agent-catalog.js';
 import type { SubagentExecutionRef } from './subagent-execution.js';
+import { transformManagedMutation } from './managed-mutation-transform.js';
 import {
   SandboxCommandError,
   sandboxErrorMetadata,
@@ -405,6 +406,13 @@ interface RuntimeManagedMutationOperationValue<T> {
     readonly isError: boolean;
     readonly durationMs: number;
   };
+  readonly mutationResult?: RuntimeManagedMutationResultProof;
+}
+
+export interface RuntimeManagedMutationResultProof {
+  readonly path: string;
+  readonly content: string;
+  readonly changed: boolean;
 }
 
 /**
@@ -416,6 +424,7 @@ export interface RuntimeManagedMutationOperationProof {
   readonly content: ToolResultContent;
   readonly isError: boolean;
   readonly durationMs: number;
+  readonly mutationResult?: RuntimeManagedMutationResultProof;
 }
 
 export type RuntimeManagedMutationSettlement =
@@ -433,6 +442,8 @@ export type RuntimeManagedMutationSettlement =
 
 export interface RuntimeManagedMutationAdmission {
   readonly durableDispatch: Readonly<RuntimeEventManagedWorkspaceMutationV2>;
+  /** Immutable accepted-tree input. It grants no permission to rewrite tool arguments. */
+  readonly immutableBase?: Readonly<{ content: string | null }>;
   execute(
     operation: () => Promise<RuntimeManagedMutationOperationProof>,
   ): Promise<RuntimeManagedMutationSettlement>;
@@ -1362,7 +1373,6 @@ export class ToolRuntime {
       if (
         (tool.name !== 'Write' && tool.name !== 'Edit') ||
         tool.recoveryMode !== 'reconcile' ||
-        !tool.managedMutationTransform ||
         !dispatchOperationId ||
         !this.input.runtimeCommitSink ||
         !this.input.admitManagedMutation
@@ -1379,6 +1389,17 @@ export class ToolRuntime {
           persistedArgs: structuredClone(persistedArgs),
           abortSignal: ctx.abortSignal,
         });
+        const immutableBaseContent = managedMutationAdmission.immutableBase?.content;
+        if (
+          managedMutationAdmission.immutableBase &&
+          immutableBaseContent !== null &&
+          typeof immutableBaseContent !== 'string'
+        ) {
+          throw new Error('Managed workspace mutation immutable base is invalid');
+        }
+        if (!managedMutationAdmission.immutableBase && !tool.managedMutationTransform) {
+          throw new Error('Managed workspace mutation has no immutable transform input');
+        }
       } catch (error) {
         const reason = `Managed workspace mutation admission failed: ${formatSyntheticToolErrorText(error)}`;
         await refuseBeforeDispatch(reason);
@@ -1530,12 +1551,36 @@ export class ToolRuntime {
                 queue,
               ),
           });
-        const invokeManagedTransform = () =>
-          tool.managedMutationTransform!(structuredClone(executionArgs) as never);
         const prepareOperationValue = async (
           immutableSnapshot = false,
         ): Promise<RuntimeManagedMutationOperationValue<unknown>> => {
-          const rawResult = await (immutableSnapshot ? invokeManagedTransform() : invokeTool());
+          let mutationResult: RuntimeManagedMutationResultProof | undefined;
+          let rawResult: unknown;
+          if (immutableSnapshot && managedMutationAdmission?.immutableBase) {
+            try {
+              if (tool.name !== 'Write' && tool.name !== 'Edit') {
+                throw new Error('Managed mutation transform is unavailable for this tool');
+              }
+              const transformed = transformManagedMutation({
+                toolName: tool.name,
+                canonicalPath: managedMutationAdmission.durableDispatch.expectedPath,
+                baseContent: managedMutationAdmission.immutableBase.content,
+                args: structuredClone(executionArgs),
+              });
+              rawResult = transformed.providerResult;
+              mutationResult = Object.freeze({
+                path: managedMutationAdmission.durableDispatch.expectedPath,
+                content: transformed.content,
+                changed: transformed.changed,
+              });
+            } catch (error) {
+              rawResult = this.errorReturn(formatSyntheticToolErrorText(error));
+            }
+          } else {
+            rawResult = await (immutableSnapshot
+              ? tool.managedMutationTransform!(structuredClone(executionArgs) as never)
+              : invokeTool());
+          }
           const result = immutableSnapshot
             ? snapshotManagedToolResult(rawResult, ctx.maxResultBytes)
             : rawResult;
@@ -1557,6 +1602,7 @@ export class ToolRuntime {
           const value = {
             result,
             outcome: immutableSnapshot ? Object.freeze(outcome) : outcome,
+            ...(mutationResult ? { mutationResult } : {}),
           };
           return immutableSnapshot ? Object.freeze(value) : value;
         };
@@ -1593,6 +1639,7 @@ export class ToolRuntime {
                   content: value.outcome.content,
                   isError: value.outcome.isError,
                   durationMs: value.outcome.durationMs,
+                  ...(value.mutationResult ? { mutationResult: value.mutationResult } : {}),
                 };
               } finally {
                 if (operationLifecycle.state === 'running') {

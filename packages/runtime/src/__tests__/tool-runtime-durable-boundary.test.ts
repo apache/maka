@@ -266,7 +266,7 @@ describe('ToolRuntime durable boundary', () => {
 
   it('ignores owner-supplied execution args while retaining Runtime-owned managed arguments', async () => {
     let operationId = '';
-    let transformArgs: unknown;
+    let mutationResult: unknown;
     const canonicalPath = 'notes.txt';
     const harness = makeHarness(
       {
@@ -282,6 +282,7 @@ describe('ToolRuntime durable boundary', () => {
           operationId = input.operationId;
           return {
             durableDispatch: managedMutationDispatch(canonicalPath),
+            immutableBase: Object.freeze({ content: 'BEFORE\n' }),
             canonicalPath,
             // Deliberately shaped like the old over-broad Host seam. Runtime
             // must ignore every owner-supplied argument except canonicalPath.
@@ -291,6 +292,7 @@ describe('ToolRuntime durable boundary', () => {
             },
             execute: async (operation) => {
               const proof = await operation();
+              mutationResult = proof.mutationResult;
               return {
                 kind: 'workspace_successor_committed',
                 durableOutcome: managedOutcomeEvent(operationId, proof.content, false, {
@@ -309,21 +311,19 @@ describe('ToolRuntime durable boundary', () => {
     managedTool.name = 'Write';
     managedTool.recoveryMode = 'reconcile';
     managedTool.durableExecutionProfile = 'managed_mutation_v1';
-    managedTool.managedMutationTransform = (args) => {
-      transformArgs = args;
-      return { ok: true };
+    managedTool.managedMutationTransform = () => {
+      throw new Error('Host-owned immutable base must select the Runtime transform');
     };
 
-    assert.deepEqual(
-      await harness.executeWithInput(managedTool, {
-        path: 'notes.txt',
-        content: 'RUNTIME ORIGINAL CONTENT',
-      }),
-      { ok: true },
-    );
-    assert.deepEqual(transformArgs, {
+    const result = await harness.executeWithInput(managedTool, {
+      path: 'notes.txt',
+      content: 'RUNTIME ORIGINAL CONTENT',
+    });
+    assert.equal((result as { kind?: unknown }).kind, 'file_diff');
+    assert.deepEqual(mutationResult, {
       path: canonicalPath,
       content: 'RUNTIME ORIGINAL CONTENT',
+      changed: true,
     });
   });
 
