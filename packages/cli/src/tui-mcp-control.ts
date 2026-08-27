@@ -26,7 +26,7 @@ import type {
   RuntimeHostConnectionAvailability,
   RuntimeHostReconnectingConnection,
 } from '@maka/runtime-host/client';
-import { createMcpCapabilityProvider } from './runtime-host-capability-provider-command.js';
+import { createMcpCapabilityProvider } from './mcp-capability-provider.js';
 
 const RUNTIME_HOST_CREDENTIAL_ENV = 'MAKA_RUNTIME_HOST_ACCESS_CREDENTIAL';
 
