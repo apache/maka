@@ -131,11 +131,11 @@ import {
 import {
   MakaAutocompleteProvider,
   DirectoryPickerOverlay,
-  MODEL_SWITCH_CACHE_WARNING,
   ModelSearchOverlay,
   OnboardingWizard,
   PickerOverlay,
   UserQuestionOverlay,
+  getTuiPickerCopy,
   modelPickerItems,
   permissionModePickerItems,
   skillPickerItems,
@@ -151,6 +151,7 @@ import {
   isLiveGoalStatus,
 } from './pi-goal.js';
 import { getTuiPrimaryGuidance } from './tui-primary-guidance.js';
+import { formatTuiCopy } from './tui-copy-catalog.js';
 import type { GoalControlAction, GoalProjection } from '@maka/runtime-host/protocol';
 
 export interface MakaPiTuiInput {
@@ -279,6 +280,7 @@ export function resolveTaskbarProgress(
 
 export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
   const locale = input.locale ?? 'en';
+  const pickerCopy = getTuiPickerCopy(locale);
   const primaryGuidance = getTuiPrimaryGuidance(locale);
   const terminal = input.terminal ?? new ProcessTerminal();
   const taskbarProgress = resolveTaskbarProgress(input.taskbarProgress);
@@ -1950,7 +1952,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
       return;
     }
     if (!input.onboarding) {
-      wizard.setKeyError('Onboarding 不可用：当前运行环境未提供配置入口。');
+      wizard.setKeyError(pickerCopy.onboardingUnavailable);
       requestRender();
       return;
     }
@@ -1970,7 +1972,9 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
             // A stale snapshot (the targeted connection is gone) is not a key
             // problem — retyping cannot fix it, so skip that framing.
             wizard.setKeyError(
-              result.stale ? result.text : `API key 验证失败：${result.text}。请检查后重新输入。`,
+              result.stale
+                ? result.text
+                : formatTuiCopy(pickerCopy.verifyFailed, { detail: result.text }),
             );
             requestRender();
             return;
@@ -1981,7 +1985,11 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
         },
         (error) => {
           if (closed || wizard !== targetWizard || attempt !== wizardAttempt) return;
-          wizard.setKeyError(`配置失败：${error instanceof Error ? error.message : String(error)}`);
+          wizard.setKeyError(
+            formatTuiCopy(pickerCopy.setupFailed, {
+              detail: error instanceof Error ? error.message : String(error),
+            }),
+          );
           requestRender();
         },
       );
@@ -1995,7 +2003,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     const providerType = wizardProviderType;
     if (!providerType || !wizard) return;
     if (!input.onboarding) {
-      wizard.setModelError('Onboarding 不可用：当前运行环境未提供配置入口。');
+      wizard.setModelError(pickerCopy.onboardingUnavailable);
       requestRender();
       return;
     }
@@ -2037,7 +2045,9 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
         (error) => {
           if (closed || wizard !== targetWizard || attempt !== wizardAttempt) return;
           wizard.setModelError(
-            `保存失败：${error instanceof Error ? error.message : String(error)}`,
+            formatTuiCopy(pickerCopy.saveFailed, {
+              detail: error instanceof Error ? error.message : String(error),
+            }),
           );
           requestRender();
         },
@@ -2053,7 +2063,9 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
         state.entries.push({
           kind: 'notice',
           level: 'info',
-          text: `无法读取已配置的连接：${error instanceof Error ? error.message : String(error)}`,
+          text: formatTuiCopy(pickerCopy.listProvidersFailed, {
+            detail: error instanceof Error ? error.message : String(error),
+          }),
         });
         requestRender();
         return;
@@ -2071,13 +2083,14 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
       state.entries.push({
         kind: 'notice',
         level: 'info',
-        text: '没有可配置的 API key 类供应商。',
+        text: pickerCopy.noConfigurableProviders,
       });
       requestRender();
       return;
     }
     wizardOverlay?.hide();
     wizard = new OnboardingWizard(tui, {
+      locale,
       providers,
       onPickProvider: (providerType, existingConnectionId) => {
         wizardProviderType = providerType;
@@ -2546,6 +2559,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     if (choices && choices.length > 0) {
       let overlay: OverlayHandle | undefined;
       const picker = new ModelSearchOverlay(tui, {
+        locale,
         choices,
         current: { model, connectionSlug },
         showCacheWarning: hasConversationHistory,
@@ -2559,16 +2573,16 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
       return;
     }
     showSelectPicker(
-      'Select Model',
+      pickerCopy.modelPickerTitle,
       connectionSlug,
-      modelPickerItems(model, input.models),
+      modelPickerItems(model, input.models, locale),
       (item) => {
         void runControl(() => setModel(item.value));
       },
       {
         minPrimaryColumnWidth: 24,
         maxPrimaryColumnWidth: 48,
-        notice: hasConversationHistory ? MODEL_SWITCH_CACHE_WARNING : undefined,
+        notice: hasConversationHistory ? pickerCopy.modelSwitchCacheWarning : undefined,
       },
     );
   };
@@ -2601,9 +2615,9 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
   };
 
   const showThinkingLevelList = () => {
-    const items = thinkingLevelPickerItems(thinkingLevels, thinkingLevel);
+    const items = thinkingLevelPickerItems(thinkingLevels, thinkingLevel, locale);
     showSelectPicker(
-      'Select Thinking Level',
+      pickerCopy.thinkingPickerTitle,
       thinkingLevel ?? 'default',
       items,
       (item) => {
@@ -3193,7 +3207,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
             state.entries.push({
               kind: 'notice',
               level: 'info',
-              text: '当前模型不支持思考级别切换。',
+              text: pickerCopy.thinkingUnsupported,
             });
             requestRender();
             return;
@@ -3214,7 +3228,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
             level: 'error',
             text:
               thinkingLevels.length === 0
-                ? '当前模型不支持思考级别切换。'
+                ? pickerCopy.thinkingUnsupported
                 : `Usage: /thinking ${['default', ...thinkingLevels].join('|')}`,
           });
           requestRender();

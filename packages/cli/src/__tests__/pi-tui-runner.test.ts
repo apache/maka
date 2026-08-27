@@ -173,7 +173,7 @@ function historicalGraphSnapshot(graphId: string): AgentGraphClientSnapshot {
 }
 
 /** Catalog API-key providers as wizard entries with no existing connection —
- *  the default `/setup` provider list for tests that don't need 已设置 state. */
+ *  the default `/setup` provider list for tests that don't need configured state. */
 function defaultOnboardingProviders(): OnboardingProviderEntry[] {
   return listApiKeyOnboardableProviders().map((provider) => ({
     ...provider,
@@ -501,6 +501,7 @@ describe('Maka Pi TUI runner', () => {
       model: 'claude-sonnet-4-5',
       connectionSlug: 'claude-subscription',
       permissionMode: 'bypass',
+      locale: 'zh',
       terminal,
       onboarding: fakeOnboardingSurface({
         verify: async (input) => {
@@ -517,7 +518,7 @@ describe('Maka Pi TUI runner', () => {
     terminal.input('\r');
     await waitFor(() => {
       try {
-        return latestPlainLineContaining(terminal.writes.join(''), 'Set Up Provider') !== null;
+        return latestPlainLineContaining(terminal.writes.join(''), '配置模型提供商') !== null;
       } catch {
         return false;
       }
@@ -655,7 +656,9 @@ describe('Maka Pi TUI runner', () => {
     terminal.input('\r');
     await waitFor(() => {
       try {
-        return latestPlainLineContaining(terminal.writes.join(''), 'Onboarding 不可用') !== null;
+        return (
+          latestPlainLineContaining(terminal.writes.join(''), 'Onboarding is unavailable') !== null
+        );
       } catch {
         return false;
       }
@@ -698,7 +701,7 @@ describe('Maka Pi TUI runner', () => {
     );
     assert.doesNotMatch(
       plainTerminalOutput(terminal.screenOutput()),
-      /没有可配置的 API key 类供应商/,
+      /No configurable API key providers are available/,
     );
 
     process.emit('SIGTERM');
@@ -758,7 +761,7 @@ describe('Maka Pi TUI runner', () => {
     await waitFor(() => verifyCalls.length === 1);
     await waitFor(() => {
       try {
-        return latestPlainLineContaining(terminal.writes.join(''), '验证') !== null;
+        return latestPlainLineContaining(terminal.writes.join(''), 'Verifying') !== null;
       } catch {
         return false;
       }
@@ -855,7 +858,7 @@ describe('Maka Pi TUI runner', () => {
     await waitFor(() => saveCalls.length === 1);
     await waitFor(() => {
       try {
-        return latestPlainLineContaining(terminal.writes.join(''), '保存') !== null;
+        return latestPlainLineContaining(terminal.writes.join(''), 'Saving') !== null;
       } catch {
         return false;
       }
@@ -876,7 +879,7 @@ describe('Maka Pi TUI runner', () => {
     // would be in this exact frame.
     terminal.input('sk-z');
     await waitFor(() => plainTerminalOutput(terminal.screenOutput()).includes('sk-z'));
-    assert.doesNotMatch(plainTerminalOutput(terminal.screenOutput()), /已启用/);
+    assert.doesNotMatch(plainTerminalOutput(terminal.screenOutput()), /Models enabled/u);
 
     process.emit('SIGTERM');
     await Promise.race([
@@ -931,7 +934,7 @@ describe('Maka Pi TUI runner', () => {
     // A malformed endpoint is rejected in place, before any host call.
     terminal.input('not a url');
     terminal.input('\r');
-    await waitFor(() => plainTerminalOutput(terminal.screenOutput()).includes('不是有效的 URL'));
+    await waitFor(() => plainTerminalOutput(terminal.screenOutput()).includes('not a valid URL'));
     for (let i = 0; i < 'not a url'.length; i++) terminal.input('\x7f'); // clear the field
     terminal.input('https://relay.example.test/v1');
     terminal.input('\r');
@@ -951,7 +954,7 @@ describe('Maka Pi TUI runner', () => {
     terminal.input('\r'); // save
     await waitFor(() => saveCalls.length === 1);
     assert.equal(saveCalls[0]?.baseUrl, 'https://relay.example.test/v1');
-    await waitFor(() => plainTerminalOutput(terminal.screenOutput()).includes('已启用'));
+    await waitFor(() => plainTerminalOutput(terminal.screenOutput()).includes('Models enabled'));
 
     process.emit('SIGTERM');
     await Promise.race([
@@ -2889,6 +2892,7 @@ describe('Maka Pi TUI runner', () => {
       model: 'gpt-5.5',
       connectionSlug: 'openai',
       providerType: 'openai',
+      locale: 'en',
       modelChoices: [
         {
           connectionSlug: 'openai',
@@ -2921,7 +2925,7 @@ describe('Maka Pi TUI runner', () => {
     await waitFor(() => terminal.output().includes('GLM 5.2'));
     assert.match(
       plainTerminalOutput(terminal.screenOutput()),
-      /切换模型可能需要重建提示缓存；下一次请求可能更慢或成本更高/,
+      /Switching models may rebuild the prompt cache; the next request may be slower/,
     );
     // The picker opens on the current model (gpt-5.5); move down to the choice on
     // the other connection and select it.
@@ -3003,7 +3007,7 @@ describe('Maka Pi TUI runner', () => {
     });
     assert.doesNotMatch(
       plainTerminalOutput(terminal.screenOutput()),
-      /切换模型可能需要重建提示缓存/,
+      /Switching models may rebuild the prompt cache/,
     );
 
     // Each query isolates exactly one of the five match criteria named by #1098
@@ -3083,7 +3087,7 @@ describe('Maka Pi TUI runner', () => {
     await waitFor(() => terminal.output().includes('gpt-5.6'));
     assert.doesNotMatch(
       plainTerminalOutput(terminal.screenOutput()),
-      /切换模型可能需要重建提示缓存/,
+      /Switching models may rebuild the prompt cache/,
     );
 
     terminal.input('\x1b[B');

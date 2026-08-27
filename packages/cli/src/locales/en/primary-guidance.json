@@ -1,0 +1,49 @@
+{
+  "welcome": {
+    "tagline": "Get things done together",
+    "start": "Type a message to start",
+    "session": "Switch or resume a session",
+    "model": "Switch models",
+    "setup": "Set up a model provider"
+  },
+  "commands": {
+    "compact": "Compact session context",
+    "context": "Show latest request context usage",
+    "exit": "Exit Maka",
+    "goal": "Show autonomous goal status",
+    "graph": "Show, enable, disable, or run one Graph turn",
+    "help": "Show commands and keybindings",
+    "mcp": "Show client-owned MCP servers and tool publication status",
+    "model": "Select model",
+    "move": "Move current session to another directory",
+    "new": "Start a new session",
+    "permissions": "Set session permissions",
+    "recap": "One-sentence recap of the session so far",
+    "rename": "Rename current session",
+    "resume": "Resume latest interrupted run at a safe boundary",
+    "rewind": "Rewind to an earlier turn",
+    "session": "Resume session",
+    "setup": "Set up a model provider (API key)",
+    "side": "Open a temporary side conversation",
+    "skill": "Invoke a skill (or type /skill:<name> inline)",
+    "swarm": "Show, enable, disable, or run one Swarm turn",
+    "thinking": "Set thinking level",
+    "transcript": "Browse the full transcript inside Maka"
+  },
+  "help": {
+    "commandsHeading": "Commands",
+    "keybindingsHeading": "Keybindings",
+    "keybindings": [
+      "  Ctrl+O — expand or collapse all tool output",
+      "  Ctrl+T — expand or collapse all thinking in view",
+      "  Scroll the transcript with your terminal or trackpad",
+      "  Enter (during a turn) — steer: inject a message into the running turn",
+      "  Alt+Enter (during a turn) — queue a message for the next turn",
+      "  Alt+↑ — take queued messages back into the editor to re-edit",
+      "  Esc Esc (during a turn) — interrupt the turn",
+      "  Esc Esc (when idle) — rewind to an earlier turn",
+      "  Ctrl+C — stop the turn, clear input, or press twice to exit",
+      "  Ctrl+D — exit when input is empty"
+    ]
+  }
+}

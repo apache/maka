@@ -39,7 +39,7 @@ import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'nod
 import { npmSpawnOptions } from './npm-spawn.mjs';
 import { validateCliReleaseArtifactMetrics } from './release-cli-artifact-policy.mjs';
 import {
-  isCurrentDevelopmentJavaScript,
+  isCurrentDevelopmentRuntimeFile,
   isMakaDevelopmentArtifact,
   isThirdPartyDevelopmentArtifact,
   orderWorkspaceBuilds,
@@ -57,6 +57,10 @@ const preparedTree = process.env.MAKA_CLI_RELEASE_PREPARED_TREE === '1';
 const releaseRoot = join(cliSource, 'release');
 const artifactRoot = developmentBuild ? createDevelopmentArtifactRoot() : releaseRoot;
 const stageRoot = join(artifactRoot, 'package');
+const cliLocaleResources = walkFiles(join(cliSource, 'src', 'locales'))
+  .filter((path) => path.endsWith('.json'))
+  .map((path) => `dist/${relative(join(cliSource, 'src'), path).split(sep).join('/')}`)
+  .sort();
 const peerPrebuildTargets = ['darwin-arm64', 'linux-arm64', 'linux-x64', 'win32-x64'];
 const unsupportedArguments = process.argv
   .slice(2)
@@ -443,7 +447,7 @@ function copyRuntimeDist(source, destination, packageName = 'maka-agent') {
     if (isMakaDevelopmentArtifact(join('dist', relativePath))) return false;
     return (
       !developmentBuild ||
-      isCurrentDevelopmentJavaScript(
+      isCurrentDevelopmentRuntimeFile(
         source,
         relativePath,
         developmentGeneratedFiles.get(packageName),
@@ -666,6 +670,7 @@ function developmentPackageVersion(baseVersion, manifest) {
 function validateStaging(publishable) {
   const required = [
     'dist/cli.js',
+    ...cliLocaleResources,
     'README.zh-CN.md',
     'DISCLAIMER-WIP',
     'RUNTIME_HOST_PEER_DEPENDENCIES.rust.tsv',
@@ -774,6 +779,7 @@ function validatePackedFiles(files, expectedDependencyManifests) {
   }
   const requiredPacked = [
     'dist/cli.js',
+    ...cliLocaleResources,
     'DISCLAIMER-WIP',
     'node_modules/@maka/runtime/dist/workers/filesystem-worker.js',
     'node_modules/@maka/runtime-host/dist/execution-candidate-main.js',

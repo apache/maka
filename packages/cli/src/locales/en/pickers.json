@@ -1,0 +1,62 @@
+{
+  "modelPickerTitle": "Select Model",
+  "modelSwitchCacheWarning": "⚠ Switching models may rebuild the prompt cache; the next request may be slower or cost more.",
+  "modelSearchHint": "Search models / providers / connections · ↑↓ select · Enter confirm · Esc cancel",
+  "searchLabel": "Search",
+  "noMatchingModels": "No matching models",
+  "providerConfigured": "configured",
+  "thinkingLevels": {
+    "off": "Off",
+    "minimal": "Minimal",
+    "low": "Low",
+    "medium": "Medium",
+    "high": "High",
+    "xhigh": "Extra high",
+    "max": "Maximum"
+  },
+  "defaultThinkingLevel": "Default",
+  "thinkingPickerTitle": "Select Thinking Level",
+  "currentMarker": "current",
+  "defaultMarker": "default",
+  "setupTitle": "Set Up Provider",
+  "baseUrlLabel": "Base URL",
+  "apiKeyLabel": "API key",
+  "onboardingUnavailable": "Onboarding is unavailable: this environment does not provide a setup surface.",
+  "verifyFailed": "API key verification failed. Check it and try again. {detail}",
+  "setupFailed": "Setup failed: {detail}",
+  "saveFailed": "Save failed: {detail}",
+  "listProvidersFailed": "Could not read configured connections: {detail}",
+  "noConfigurableProviders": "No configurable API key providers are available.",
+  "baseUrlRequired": "Enter a Base URL",
+  "baseUrlInvalid": "Base URL is not a valid URL",
+  "baseUrlProtocol": "Base URL must use http or https",
+  "baseUrlCredentials": "Base URL cannot include credentials",
+  "baseUrlQuery": "Base URL cannot include a query or fragment",
+  "baseUrlTooLong": "Base URL cannot exceed 2048 bytes",
+  "selectModelBeforeSaving": "Select at least one model before saving",
+  "reuseBaseUrlHint": "Leave blank to reuse the saved Base URL, or enter a replacement · Esc returns to provider selection",
+  "enterBaseUrlHint": "Enter the relay Base URL (http/https) · Esc returns to provider selection",
+  "continueAction": "Enter to continue",
+  "providerSearchHint": "Search providers · ↑↓ select · Enter confirm · Esc cancel",
+  "noMatchingProviders": "No matching providers",
+  "keyHints": {
+    "reuse": {
+      "baseUrl": "Leave blank to reuse the saved key, or enter a new key to rotate it · Esc returns to Base URL",
+      "provider": "Leave blank to reuse the saved key, or enter a new key to rotate it · Esc returns to provider selection"
+    },
+    "enter": {
+      "baseUrl": "Enter an API key · stored only on this machine · Esc returns to Base URL",
+      "provider": "Enter an API key · stored only on this machine · Esc returns to provider selection"
+    }
+  },
+  "submitAction": "Enter to submit",
+  "verifyingKey": "Verifying key…",
+  "modelSelectionHint": "Search models · ↑↓ select · Space toggle · Enter save · Esc back",
+  "selectedModels": "{count} selected",
+  "selectedModelsAndSave": "{count} selected · Enter to save",
+  "saving": "Saving…",
+  "complete": "Complete",
+  "enabledModels": "Models enabled: {count}",
+  "closeAction": "Enter to close",
+  "thinkingUnsupported": "This model does not support changing the thinking level."
+}

@@ -1,0 +1,26 @@
+{
+  "title": "MCP 服务器",
+  "footer": "↑/↓ 滚动 · PgUp/PgDn 翻页 · Home/End 跳转 · q/Esc 关闭",
+  "unavailableTitle": "当前 TUI 未连接本地 MCP 控制面。",
+  "unavailableDetail": "远程 Runtime Host 的客户端 MCP 工具关联将在后续版本提供。",
+  "loading": "正在读取 mcp.json 并发现工具…",
+  "loadError": "无法读取或应用 MCP 配置；没有向 Runtime Host 发布工具。",
+  "noServers": "尚未配置 MCP 服务器。",
+  "publication": {
+    "waiting": "等待发布",
+    "host_unavailable": "Runtime Host 重连中",
+    "publishing": "正在发布",
+    "published": "已发布",
+    "not_published": "未发布",
+    "error": "发布失败"
+  },
+  "serverState": {
+    "disabled": "已停用",
+    "disconnected": "未连接",
+    "connecting": "连接中",
+    "connected": "已连接",
+    "needs-auth": "需要登录",
+    "error": "错误"
+  },
+  "toolCount": "{count} 个工具"
+}

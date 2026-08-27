@@ -1,0 +1,26 @@
+{
+  "title": "MCP SERVERS",
+  "footer": "↑/↓ scroll · PgUp/PgDn page · Home/End jump · q/Esc close",
+  "unavailableTitle": "This TUI is not connected to a local MCP control plane.",
+  "unavailableDetail": "Client MCP tool association for remote Runtime Hosts is planned for a later release.",
+  "loading": "Loading mcp.json and discovering tools…",
+  "loadError": "MCP configuration could not be loaded; no tools were published to the Runtime Host.",
+  "noServers": "No MCP servers are configured.",
+  "publication": {
+    "waiting": "waiting to publish",
+    "host_unavailable": "Runtime Host reconnecting",
+    "publishing": "publishing",
+    "published": "published",
+    "not_published": "not published",
+    "error": "publication failed"
+  },
+  "serverState": {
+    "disabled": "disabled",
+    "disconnected": "disconnected",
+    "connecting": "connecting",
+    "connected": "connected",
+    "needs-auth": "needs-auth",
+    "error": "error"
+  },
+  "toolCount": "{count} tools"
+}

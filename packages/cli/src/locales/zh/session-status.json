@@ -1,0 +1,8 @@
+{
+  "running": "进行中",
+  "waitingForUser": "等你确认",
+  "permissionRequired": "需要权限",
+  "connectionRequired": "需要连接",
+  "signInRequired": "需要重新登录",
+  "stopped": "已中止"
+}

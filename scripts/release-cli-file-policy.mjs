@@ -245,13 +245,16 @@ export function isMakaDevelopmentArtifact(relativePath) {
   );
 }
 
-export function isCurrentDevelopmentJavaScript(
+export function isCurrentDevelopmentRuntimeFile(
   workspaceRoot,
   relativePath,
   generatedFiles = new Set(),
 ) {
   const portablePath = relativePath.split(/[\\/]/u).join('/');
   if (generatedFiles.has(portablePath)) return true;
+  if (portablePath.endsWith('.json')) {
+    return existsSync(join(workspaceRoot, 'src', portablePath));
+  }
   if (!portablePath.endsWith('.js')) return false;
   const sourcePath = portablePath.slice(0, -'.js'.length);
   return ['.ts', '.tsx', '.mts', '.cts'].some((extension) =>

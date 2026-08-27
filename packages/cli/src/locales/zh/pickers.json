@@ -1,0 +1,62 @@
+{
+  "modelPickerTitle": "选择模型",
+  "modelSwitchCacheWarning": "⚠ 切换模型可能需要重建提示缓存；下一次请求可能更慢或成本更高。",
+  "modelSearchHint": "搜索模型 / 服务商 / 连接 · ↑↓ 选择 · Enter 确认 · Esc 取消",
+  "searchLabel": "搜索",
+  "noMatchingModels": "没有匹配的模型",
+  "providerConfigured": "已设置",
+  "thinkingLevels": {
+    "off": "关",
+    "minimal": "最小",
+    "low": "低",
+    "medium": "中",
+    "high": "高",
+    "xhigh": "超高",
+    "max": "最高"
+  },
+  "defaultThinkingLevel": "默认",
+  "thinkingPickerTitle": "选择思考级别",
+  "currentMarker": "当前",
+  "defaultMarker": "默认连接",
+  "setupTitle": "配置模型提供商",
+  "baseUrlLabel": "Base URL",
+  "apiKeyLabel": "API key",
+  "onboardingUnavailable": "Onboarding 不可用：当前运行环境未提供配置入口。",
+  "verifyFailed": "API key 验证失败，请检查后重新输入。{detail}",
+  "setupFailed": "配置失败：{detail}",
+  "saveFailed": "保存失败：{detail}",
+  "listProvidersFailed": "无法读取已配置的连接：{detail}",
+  "noConfigurableProviders": "没有可配置的 API key 类供应商。",
+  "baseUrlRequired": "需要填写 Base URL",
+  "baseUrlInvalid": "Base URL 不是有效的 URL",
+  "baseUrlProtocol": "Base URL 必须使用 http 或 https",
+  "baseUrlCredentials": "Base URL 不能包含账号密码",
+  "baseUrlQuery": "Base URL 不能包含查询串或片段",
+  "baseUrlTooLong": "Base URL 不能超过 2048 字节",
+  "selectModelBeforeSaving": "至少选择一个模型再保存",
+  "reuseBaseUrlHint": "留空复用已保存的 Base URL，或输入新地址替换 · Esc 返回选择服务商",
+  "enterBaseUrlHint": "输入中转站的 Base URL（http/https）· Esc 返回选择服务商",
+  "continueAction": "Enter 继续",
+  "providerSearchHint": "搜索服务商，↑↓ 选择 · Enter 确认 · Esc 取消",
+  "noMatchingProviders": "没有匹配的服务商",
+  "keyHints": {
+    "reuse": {
+      "baseUrl": "留空复用已保存的 key，或输入新 key 轮换 · Esc 返回 Base URL",
+      "provider": "留空复用已保存的 key，或输入新 key 轮换 · Esc 返回选择服务商"
+    },
+    "enter": {
+      "baseUrl": "输入 API key · 仅本机存储 · Esc 返回 Base URL",
+      "provider": "输入 API key · 仅本机存储 · Esc 返回选择服务商"
+    }
+  },
+  "submitAction": "Enter 提交",
+  "verifyingKey": "正在验证 key…",
+  "modelSelectionHint": "搜索模型，↑↓ 选择 · Space 切换 · Enter 保存 · Esc 返回",
+  "selectedModels": "已选 {count}",
+  "selectedModelsAndSave": "已选 {count} · Enter 保存",
+  "saving": "正在保存…",
+  "complete": "完成",
+  "enabledModels": "已启用模型：{count}",
+  "closeAction": "Enter 关闭",
+  "thinkingUnsupported": "当前模型不支持思考级别切换。"
+}

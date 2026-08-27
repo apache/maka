@@ -32,7 +32,7 @@ import { join, resolve } from 'node:path';
 import { describe, test } from 'node:test';
 import {
   collectWorkspaceDependencyClosure,
-  isCurrentDevelopmentJavaScript,
+  isCurrentDevelopmentRuntimeFile,
   isMakaDevelopmentArtifact,
   isThirdPartyDevelopmentArtifact,
   orderWorkspaceBuilds,
@@ -142,15 +142,18 @@ describe('CLI release file policy', () => {
     assert.equal(isMakaDevelopmentArtifact('dist/index.js'), false);
   });
 
-  test('development packages exclude JavaScript left by deleted sources', () => {
+  test('development packages keep only current runtime files', () => {
     const workspace = mkdtempSync(join(tmpdir(), 'maka-development-output-'));
     try {
-      mkdirSync(join(workspace, 'src'), { recursive: true });
+      mkdirSync(join(workspace, 'src', 'locales', 'en'), { recursive: true });
       writeFileSync(join(workspace, 'src', 'current.ts'), 'export {}\n');
-      assert.equal(isCurrentDevelopmentJavaScript(workspace, 'current.js'), true);
-      assert.equal(isCurrentDevelopmentJavaScript(workspace, 'deleted.js'), false);
+      writeFileSync(join(workspace, 'src', 'locales', 'en', 'copy.json'), '{}\n');
+      assert.equal(isCurrentDevelopmentRuntimeFile(workspace, 'current.js'), true);
+      assert.equal(isCurrentDevelopmentRuntimeFile(workspace, 'deleted.js'), false);
+      assert.equal(isCurrentDevelopmentRuntimeFile(workspace, 'locales/en/copy.json'), true);
+      assert.equal(isCurrentDevelopmentRuntimeFile(workspace, 'locales/en/deleted.json'), false);
       assert.equal(
-        isCurrentDevelopmentJavaScript(
+        isCurrentDevelopmentRuntimeFile(
           workspace,
           'workers\\generated.js',
           new Set(['workers/generated.js']),

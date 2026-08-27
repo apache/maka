@@ -1,0 +1,8 @@
+{
+  "running": "running",
+  "waitingForUser": "waiting for you",
+  "permissionRequired": "needs permission",
+  "connectionRequired": "needs connection",
+  "signInRequired": "needs sign-in",
+  "stopped": "stopped"
+}
