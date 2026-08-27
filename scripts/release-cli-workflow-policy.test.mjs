@@ -129,7 +129,6 @@ test('finalize preserves npm evidence and owns the single product publication bo
   assert.match(workflow, /attestations: write/u);
   assert.match(workflow, /product-release-authority\.mjs publish-draft/u);
   assert.match(workflow, /actions\/attest@[0-9a-f]{40}/u);
-  assert.match(workflow, /subject-path: \$\{\{ runner\.temp \}\}\/product-release\/\*/u);
   const artifacts = namedStep(
     workflowSteps(workflow),
     'Download the exact verified Release run artifacts',

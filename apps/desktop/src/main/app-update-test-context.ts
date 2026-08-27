@@ -62,16 +62,12 @@ export function resolveUpdateTestUserDataDirectory({
   isPackaged,
   appPath,
   executablePath,
-  platform = process.platform,
-  read = (path, encoding) => readFileSync(path, encoding),
 }: {
   feedUrl?: string;
   explicitDirectory?: string;
   isPackaged: boolean;
   appPath: string;
   executablePath: string;
-  platform?: NodeJS.Platform;
-  read?: (path: string, encoding: 'utf8') => string;
 }): string | undefined {
   if (explicitDirectory) {
     if (!resolveUpdateFeedOverride(feedUrl)) {
@@ -82,11 +78,11 @@ export function resolveUpdateTestUserDataDirectory({
     }
     return explicitDirectory;
   }
-  if (!isPackaged || platform !== 'darwin') return undefined;
+  if (!isPackaged || process.platform !== 'darwin') return undefined;
 
   let manifest: unknown;
   try {
-    manifest = JSON.parse(read(join(appPath, 'package.json'), 'utf8'));
+    manifest = JSON.parse(readFileSync(join(appPath, 'package.json'), 'utf8'));
   } catch {
     return undefined;
   }

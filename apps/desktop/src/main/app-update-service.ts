@@ -23,8 +23,6 @@ import type { ProgressInfo, UpdateInfo } from 'electron-updater';
 import type { DownloadedUpdateAttestationVerifier } from './app-update-attestation.js';
 import { resolveUpdateFeedOverride } from './app-update-test-context.js';
 
-export { resolveUpdateFeedOverride } from './app-update-test-context.js';
-
 export type AppUpdateProgress = {
   percent: number;
   bytesPerSecond?: number;

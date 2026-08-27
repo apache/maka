@@ -62,8 +62,6 @@ const RELEASE_CONTRACT_FILES = new Set([
   'scripts/verify-macos-arm64-dmg.mjs',
   'scripts/verify-macos-autoupdate.mjs',
   'scripts/desktop-update-contract.mjs',
-  'scripts/desktop-update-contract.test.mjs',
-  'scripts/experiment-macos-autoupdate.mjs',
   'scripts/verify-packaged-app.mjs',
   'scripts/verify-windows-autoupdate.mjs',
   'scripts/verify-windows-installer-lifecycle.mjs',

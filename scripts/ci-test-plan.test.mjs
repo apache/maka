@@ -156,8 +156,6 @@ test('release authority changes select their dedicated contract gate', () => {
     'scripts/verify-macos-arm64-dmg.mjs',
     'scripts/verify-macos-autoupdate.mjs',
     'scripts/desktop-update-contract.mjs',
-    'scripts/desktop-update-contract.test.mjs',
-    'scripts/experiment-macos-autoupdate.mjs',
     'scripts/verify-packaged-app.mjs',
     'scripts/verify-windows-x64.mjs',
     'scripts/windows-upgrade-baseline.json',

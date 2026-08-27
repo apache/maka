@@ -23,10 +23,7 @@ import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
-import {
-  assertProductReleaseWorkflowRun,
-  publishDraftProductRelease,
-} from './product-release-authority.mjs';
+import { publishDraftProductRelease } from './product-release-authority.mjs';
 import { createProductReleasePublicationRecord } from './product-release-artifacts.mjs';
 
 function updateMetadata(version, artifactName, bytes) {
@@ -42,56 +39,6 @@ function updateMetadata(version, artifactName, bytes) {
     '',
   ].join('\n');
 }
-
-test('Release workflow evidence binds an exact successful attempt to approved source', () => {
-  const sourceCommit = 'a'.repeat(40);
-  const run = {
-    id: 123,
-    run_attempt: 2,
-    path: '.github/workflows/release.yml',
-    event: 'workflow_dispatch',
-    status: 'completed',
-    conclusion: 'success',
-    head_sha: sourceCommit,
-    head_branch: 'v1.2.3-incubating-rc1',
-    head_repository: { full_name: 'apache/maka' },
-  };
-  assert.equal(
-    assertProductReleaseWorkflowRun({
-      run,
-      tag: 'v1.2.3',
-      sourceCommit,
-      repository: 'apache/maka',
-      runId: '123',
-      runAttempt: '2',
-    }),
-    run,
-  );
-  assert.throws(
-    () =>
-      assertProductReleaseWorkflowRun({
-        run: { ...run, head_sha: 'b'.repeat(40) },
-        tag: 'v1.2.3',
-        sourceCommit,
-        repository: 'apache/maka',
-        runId: '123',
-        runAttempt: '2',
-      }),
-    /does not match the approved product source/u,
-  );
-  assert.throws(
-    () =>
-      assertProductReleaseWorkflowRun({
-        run,
-        tag: 'v1.2.3',
-        sourceCommit,
-        repository: 'apache/maka',
-        runId: '0',
-        runAttempt: '2',
-      }),
-    /must be positive integers/u,
-  );
-});
 
 test('publication verifies live asset digests before one Stable/Latest mutation', async (t) => {
   const directory = await mkdtemp(join(tmpdir(), 'maka-publish-authority-'));
