@@ -20,6 +20,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import {
+  RUNTIME_HOST_OPERATOR_PEER_MANAGEMENT_CAPABILITY,
   runtimeHostAccessCredentialFingerprint,
   type RuntimeHostServiceManagementFrame,
 } from '@maka/runtime-host/operator';
@@ -892,7 +893,17 @@ test('keeps the SSH profile while adding and removing its managed Direct peer', 
       },
     },
     directPeerClientAvailable: true,
-    runServiceManagement: async () => assert.fail('service management is not expected'),
+    runServiceManagement: async (input) => {
+      assert.equal(input.action, 'status');
+      assert.equal(
+        input.capabilityRequest,
+        RUNTIME_HOST_OPERATOR_PEER_MANAGEMENT_CAPABILITY,
+      );
+      return {
+        ...serviceResult('status'),
+        operatorCapabilities: [RUNTIME_HOST_OPERATOR_PEER_MANAGEMENT_CAPABILITY],
+      };
+    },
     runAccessManagement: async () => assert.fail('access management is not expected'),
     runPeerManagement: async (input) => {
       actions.push(input.action);
@@ -927,6 +938,140 @@ test('keeps the SSH profile while adding and removing its managed Direct peer', 
   assert.equal((disabled as { profilePresent: boolean }).profilePresent, false);
   assert.deepEqual(actions, ['enable', 'disable']);
 });
+
+test('disables a newly enabled listener when its Desktop profile cannot be committed', async () => {
+  for (const failure of ['descriptor', 'persistence'] as const) {
+    const handlers = new Map<string, (...args: unknown[]) => unknown>();
+    const actions: string[] = [];
+    createDesktopRuntimeHostManagement({
+      ...unusedUpdateDependencies(),
+      ipcMain: {
+        handle: (channel, handler) => handlers.set(channel, handler as (...args: unknown[]) => unknown),
+        removeHandler: (channel) => handlers.delete(channel),
+      },
+      profiles: {
+        ...unusedDirectPeerProfileDependencies(),
+        resolveManagedService: async () => managedSshBinding(),
+        resolveManagedAccess: async () => undefined,
+        rotateManagedCredential: async () => assert.fail('credential rotation is not expected'),
+        markManagedServiceUninstalling: async (binding) => binding,
+        markManagedServiceCleanupPending: async (binding) => binding,
+        clearManagedServiceBinding: async () => undefined,
+        resolveManagedDirectPeerProfile: async () => ({ exists: false, enabled: false }),
+        upsertManagedDirectPeerProfile: async () => {
+          if (failure === 'persistence') throw new Error('profile store failed');
+        },
+        removeManagedDirectPeerProfile: async () => undefined,
+      },
+      directPeerClientAvailable: true,
+      runServiceManagement: async () => ({
+        ...serviceResult('status'),
+        operatorCapabilities: [RUNTIME_HOST_OPERATOR_PEER_MANAGEMENT_CAPABILITY],
+      }),
+      runAccessManagement: async () => assert.fail('access management is not expected'),
+      runPeerManagement: async (input) => {
+        actions.push(input.action);
+        return {
+          kind: 'result',
+          action: input.action,
+          status: input.action === 'disable'
+            ? {
+                state: 'disabled',
+                serviceState: 'running',
+                peerId: '12D3KooWpeer',
+                rootId: 'a'.repeat(64),
+                routeHints: [],
+                coordinationRelays: [],
+              }
+            : {
+                state: 'enabled',
+                serviceState: 'running',
+                peerId: '12D3KooWpeer',
+                rootId: 'a'.repeat(64),
+                routeHints: failure === 'descriptor' ? [] : ['/ip4/192.0.2.8/udp/44001/quic-v1'],
+                coordinationRelays: [],
+              },
+        };
+      },
+      cleanupManagedDeployment: async () => assert.fail('cleanup is not expected'),
+    });
+
+    const configure = handlers.get('runtime-host-management:configure-direct-peer');
+    assert.ok(configure);
+    await assert.rejects(
+      configure({}, 'office', true, []) as Promise<unknown>,
+      failure === 'descriptor' ? /usable direct-peer descriptor/u : /profile store failed/u,
+    );
+    assert.deepEqual(actions, ['enable', 'disable']);
+  }
+});
+
+test('does not invoke peer management when the remote operator lacks its capability', async () => {
+  const handlers = new Map<string, (...args: unknown[]) => unknown>();
+  createDesktopRuntimeHostManagement({
+    ...unusedUpdateDependencies(),
+    ipcMain: {
+      handle: (channel, handler) => handlers.set(channel, handler as (...args: unknown[]) => unknown),
+      removeHandler: (channel) => handlers.delete(channel),
+    },
+    profiles: {
+      ...unusedDirectPeerProfileDependencies(),
+      resolveManagedService: async () => managedSshBinding(),
+      resolveManagedAccess: async () => undefined,
+      rotateManagedCredential: async () => assert.fail('credential rotation is not expected'),
+      markManagedServiceUninstalling: async (binding) => binding,
+      markManagedServiceCleanupPending: async (binding) => binding,
+      clearManagedServiceBinding: async () => undefined,
+      resolveManagedDirectPeerProfile: async () => ({ exists: false, enabled: false }),
+    },
+    directPeerClientAvailable: true,
+    runServiceManagement: async () => serviceResult('status'),
+    runAccessManagement: async () => assert.fail('access management is not expected'),
+    runPeerManagement: async () => assert.fail('peer management is not expected'),
+    cleanupManagedDeployment: async () => assert.fail('cleanup is not expected'),
+  });
+
+  const get = handlers.get('runtime-host-management:get-direct-peer');
+  const configure = handlers.get('runtime-host-management:configure-direct-peer');
+  assert.ok(get);
+  assert.ok(configure);
+  assert.deepEqual(await get({}, 'office'), {
+    state: 'unsupported',
+    routeHints: [],
+    coordinationRelays: [],
+    profilePresent: false,
+    profileEnabled: false,
+    clientAvailable: true,
+    managementAvailable: false,
+  });
+  await assert.rejects(
+    configure({}, 'office', true, []) as Promise<unknown>,
+    /Update this Runtime Host/u,
+  );
+});
+
+function managedSshBinding() {
+  return {
+    profile: {
+      id: 'office',
+      name: 'Office',
+      kind: 'remote' as const,
+      rootId: 'a'.repeat(64),
+      transport: {
+        kind: 'ssh' as const,
+        destination: 'operator@example.com',
+        remotePort: 7443,
+        websocketPath: '/runtime-host',
+      },
+    },
+    service: {
+      id: 'b'.repeat(64),
+      rootPath: '/srv/maka',
+      operatorPath: '/home/operator/.local/share/maka/operator',
+    },
+    state: 'active' as const,
+  };
+}
 
 function serviceResult(
   action: DesktopRuntimeHostSshManagementInput['action'],

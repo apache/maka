@@ -84,8 +84,9 @@ export type SettingsProjectsCopy = {
     serviceState: Record<import('../../preload/bridge-contract.js').DesktopRuntimeHostManagementResult['service']['state'], string>;
     directPeer: string;
     directPeerDescription: string;
-    directPeerState: Record<'not_configured' | 'disabled' | 'enabled' | 'unavailable', string>;
+    directPeerState: Record<'unsupported' | 'not_configured' | 'disabled' | 'enabled' | 'unavailable', string>;
     directPeerUnavailable: string;
+    directPeerUpgradeRequired: string;
     directPeerClientUnavailable: string;
     directPeerDisableProfileFirst: string;
     directPeerId: string;
@@ -320,14 +321,16 @@ const SETTINGS_PROJECTS_COPY_BY_LOCALE = {
         failed: '启动失败',
       },
       directPeer: 'Direct peer（实验性）',
-      directPeerDescription: '添加一条点对点连接路径；原 SSH 连接会保留。',
+      directPeerDescription: '创建独立的实验性 Direct profile。受限 NAT 或被阻止的 UDP 可能使其不可达，且不会自动回退；保留 SSH profile 用于手动恢复。',
       directPeerState: {
+        unsupported: '需要更新',
         not_configured: '未配置',
         disabled: '已停用',
         enabled: '已启用',
         unavailable: '不可用',
       },
       directPeerUnavailable: '无法读取 Direct peer 状态',
+      directPeerUpgradeRequired: '请先更新远程 Runtime Host，再管理 Direct peer。',
       directPeerClientUnavailable: '当前 Desktop 构建不包含 Direct peer 支持。',
       directPeerDisableProfileFirst: '请先在 Runtime Host 列表中停用 Direct peer。',
       directPeerId: 'Peer ID',
@@ -562,14 +565,16 @@ const SETTINGS_PROJECTS_COPY_BY_LOCALE = {
         failed: 'Failed',
       },
       directPeer: 'Direct peer (experimental)',
-      directPeerDescription: 'Add a peer-to-peer route while keeping the existing SSH connection.',
+      directPeerDescription: 'Create an independent experimental Direct profile. Restrictive NAT or blocked UDP may make it unreachable, and it does not fall back automatically; keep the SSH profile for manual recovery.',
       directPeerState: {
+        unsupported: 'Update required',
         not_configured: 'Not configured',
         disabled: 'Disabled',
         enabled: 'Enabled',
         unavailable: 'Unavailable',
       },
       directPeerUnavailable: 'Direct peer status is unavailable',
+      directPeerUpgradeRequired: 'Update the remote Runtime Host before managing Direct peer.',
       directPeerClientUnavailable: 'This Desktop build does not include Direct peer support.',
       directPeerDisableProfileFirst: 'Disable the Direct peer in the Runtime Host list first.',
       directPeerId: 'Peer ID',

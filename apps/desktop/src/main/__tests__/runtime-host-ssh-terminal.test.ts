@@ -31,6 +31,7 @@ import {
   encodeRuntimeHostServiceManagementFrame,
   encodeRuntimeHostSetupFrame,
   runtimeHostAccessCredentialFingerprint,
+  RUNTIME_HOST_OPERATOR_PEER_MANAGEMENT_CAPABILITY,
   RUNTIME_HOST_SETUP_FRAME_PREFIX,
 } from '@maka/runtime-host/operator';
 import { createDesktopRuntimeHostSshTerminal } from '../runtime-host-ssh-terminal.js';
@@ -256,6 +257,7 @@ test('reads a framed service result without projecting it into the SSH terminal'
     destination: 'operator@example.com',
     operatorPath: '/home/operator/.local/share/maka/operator',
     action: 'status',
+    capabilityRequest: RUNTIME_HOST_OPERATOR_PEER_MANAGEMENT_CAPABILITY,
     expectedTarget: {
       serviceId: 'b'.repeat(64),
       rootPath: '/home/operator/.config/Maka/workspaces/default',
@@ -266,7 +268,7 @@ test('reads a framed service result without projecting it into the SSH terminal'
   const remoteCommand = harness.launchArgs.at(-1)?.at(-1) ?? '';
   assert.match(remoteCommand, /\.local\/share\/maka\/operator/u);
   assert.match(remoteCommand, /MAKA_RUNTIME_HOST_OPERATOR_CAPABILITY_REQUEST/u);
-  assert.match(remoteCommand, /access-management-v1/u);
+  assert.match(remoteCommand, /peer-management-v1/u);
   assert.doesNotMatch(remoteCommand, /npx|maka-agent@/u);
   harness.pty.emitData('Password: ');
   harness.pty.emitData(

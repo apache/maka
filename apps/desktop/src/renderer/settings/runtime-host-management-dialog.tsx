@@ -247,6 +247,11 @@ export function RuntimeHostManagementDialog(props: {
       );
     } catch (failure) {
       const message = settingsActionErrorMessage(failure, locale);
+      try {
+        applyDirectPeer(await window.maka.runtimeHostManagement.getDirectPeer(profile.id));
+      } catch {
+        // Preserve the last authoritative snapshot when recovery cannot be read.
+      }
       setDirectPeerError(message);
       toast.error(copy.directPeerActionFailed, message);
     } finally {
@@ -689,6 +694,12 @@ export function RuntimeHostManagementDialog(props: {
                           description={directPeerError}
                         />
                       ) : null}
+                      {directPeer && !directPeer.managementAvailable ? (
+                        <Banner
+                          status="warning"
+                          title={copy.directPeerUpgradeRequired}
+                        />
+                      ) : null}
                       {!directPeer ? (
                         <div className="settingsRuntimeHostUpdatePolicyActions">
                           <Button
@@ -706,7 +717,7 @@ export function RuntimeHostManagementDialog(props: {
                       {directPeer?.profileEnabled ? (
                         <Banner status="info" title={copy.directPeerDisableProfileFirst} />
                       ) : null}
-                      {directPeer ? (
+                      {directPeer?.managementAvailable ? (
                         <>
                           {directPeer.peerId ? (
                             <dl className="settingsRuntimeHostManagementFacts">
@@ -737,24 +748,35 @@ export function RuntimeHostManagementDialog(props: {
                               isDisabled={loading}
                               onClick={() => void reloadDirectPeer()}
                             />
+                            {directPeer.state === 'enabled' && !directPeer.profilePresent ? (
+                              <Button
+                                variant="secondary"
+                                size="sm"
+                                label={copy.directPeerAddProfile}
+                                isDisabled={
+                                  loading ||
+                                  directPeer.profileEnabled ||
+                                  !directPeer.clientAvailable
+                                }
+                                onClick={() => void configureDirectPeer(true)}
+                              />
+                            ) : null}
                             <Button
                               variant={directPeer.state === 'enabled' ? 'secondary' : 'primary'}
                               size="sm"
-                              label={directPeer.state === 'enabled' && directPeer.profilePresent
+                              label={directPeer.state === 'enabled'
                                 ? copy.directPeerDisable
-                                : directPeer.state === 'enabled'
-                                  ? copy.directPeerAddProfile
-                                  : copy.directPeerEnable}
+                                : copy.directPeerEnable}
                               isDisabled={
                                 loading ||
                                 directPeer.profileEnabled ||
                                 (
                                   !directPeer.clientAvailable &&
-                                  !(directPeer.state === 'enabled' && directPeer.profilePresent)
+                                  directPeer.state !== 'enabled'
                                 )
                               }
                               onClick={() => void configureDirectPeer(
-                                !(directPeer.state === 'enabled' && directPeer.profilePresent),
+                                directPeer.state !== 'enabled',
                               )}
                             />
                           </div>

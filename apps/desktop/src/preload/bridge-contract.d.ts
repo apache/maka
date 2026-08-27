@@ -472,13 +472,14 @@ export interface DesktopRuntimeHostManagementProgress {
 }
 
 export interface DesktopRuntimeHostDirectPeerSnapshot {
-  readonly state: 'not_configured' | 'disabled' | 'enabled';
+  readonly state: 'unsupported' | 'not_configured' | 'disabled' | 'enabled';
   readonly peerId?: string;
   readonly routeHints: readonly string[];
   readonly coordinationRelays: readonly string[];
   readonly profilePresent: boolean;
   readonly profileEnabled: boolean;
   readonly clientAvailable: boolean;
+  readonly managementAvailable: boolean;
 }
 
 type RuntimeHostUpdatePolicyResult = Extract<

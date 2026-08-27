@@ -832,7 +832,7 @@ export function createDesktopRuntimeHostProfileService(input: {
         if (!managed || managed.state !== 'active') {
           throw new Error('This Runtime Host profile is not bound to an active managed service');
         }
-        if (peer.routeHints.length === 0) {
+        if (peer.routeHints.length === 0 && peer.coordinationRelays.length === 0) {
           throw new Error('Runtime Host returned an invalid direct-peer descriptor');
         }
         const peerProfileId = managedDirectPeerProfileId(profileId);
@@ -896,12 +896,24 @@ export function createDesktopRuntimeHostProfileService(input: {
     markManagedServiceUninstalling(expected) {
       return mutateProfiles(async () => {
         assertPairingComplete(expected.profile.id);
-        const current = (await catalog.read()).profiles.find(
+        const document = await catalog.read();
+        const current = document.profiles.find(
           (profile) => profile.id === expected.profile.id,
         );
         if (
           !current ||
-          !sameRemoteRuntimeHostProfileTarget(current, expected.profile) ||
+          !sameRemoteRuntimeHostProfileTarget(current, expected.profile)
+        ) {
+          throw new Error('Runtime Host managed service binding changed during uninstall');
+        }
+        if (
+          document.profiles.some(
+            (profile) => profile.id === managedDirectPeerProfileId(expected.profile.id),
+          )
+        ) {
+          throw new Error('Disable and remove the Direct peer profile before uninstalling this service');
+        }
+        if (
           !(await managedServices.markUninstallingIfCurrent(
             expected.profile,
             expected.service,
@@ -1057,10 +1069,20 @@ export function createDesktopRuntimeHostProfileService(input: {
         if (preferences.defaultProfileId === profileId) {
           throw new Error("Choose another default Runtime Host before removing this one");
         }
-        const profile = (await catalog.read()).profiles.find(
+        const document = await catalog.read();
+        const profile = document.profiles.find(
           (candidate) => candidate.id === profileId,
         );
         if (!profile) throw new Error("Runtime Host profile was not found");
+        if (
+          profile.kind === 'remote' &&
+          profile.transport.kind === 'ssh' &&
+          document.profiles.some(
+            (candidate) => candidate.id === managedDirectPeerProfileId(profileId),
+          )
+        ) {
+          throw new Error('Disable and remove the Direct peer profile before removing its SSH profile');
+        }
         const managedBinding = findDesktopRuntimeHostManagedServiceBinding(
           await managedServices.read(),
           profile,

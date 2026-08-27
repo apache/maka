@@ -567,6 +567,34 @@ test("keeps a managed Direct route on the SSH profile credential authority", asy
   });
   assert.equal((await catalog.resolve(MANAGED_PROFILE.id)).credential, "owner-token");
 
+  const beforeRejectedRemoval = {
+    document: await catalog.read(),
+    source: await catalog.resolve(MANAGED_PROFILE.id),
+    direct: await catalog.resolve(directId),
+    managed: await managedServices.read(),
+    snapshot: await service.getSnapshot(),
+  };
+  const managedBinding = await service.resolveManagedService(MANAGED_PROFILE.id);
+  assert.ok(managedBinding);
+  await assert.rejects(
+    service.remove(MANAGED_PROFILE.id),
+    /remove the Direct peer profile/u,
+  );
+  await assert.rejects(
+    service.markManagedServiceUninstalling(managedBinding),
+    /remove the Direct peer profile/u,
+  );
+  assert.deepEqual(
+    {
+      document: await catalog.read(),
+      source: await catalog.resolve(MANAGED_PROFILE.id),
+      direct: await catalog.resolve(directId),
+      managed: await managedServices.read(),
+      snapshot: await service.getSnapshot(),
+    },
+    beforeRejectedRemoval,
+  );
+
   await service.setEnabled(MANAGED_PROFILE.id, true);
   const access = await service.resolveManagedAccess(MANAGED_PROFILE.id);
   assert.ok(access);
@@ -582,6 +610,9 @@ test("keeps a managed Direct route on the SSH profile credential authority", asy
   await service.removeManagedDirectPeerProfile(MANAGED_PROFILE.id);
 
   assert.deepEqual((await catalog.read()).profiles, [MANAGED_PROFILE]);
+  await service.remove(MANAGED_PROFILE.id);
+  assert.deepEqual((await catalog.read()).profiles, []);
+  assert.deepEqual((await managedServices.read()).bindings, []);
 });
 
 test("recovers interrupted managed credential rotation after restart", async () => {

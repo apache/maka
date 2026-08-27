@@ -50,6 +50,7 @@ import {
   type RuntimeHostManagedUpdatePolicy,
   type RuntimeHostPeerManagementAction,
   type RuntimeHostPeerManagementFrame,
+  type RuntimeHostOperatorCapability,
   type RuntimeHostServiceManagementAction,
   type RuntimeHostServiceManagementFrame,
   type RuntimeHostServiceUpdatePhase,
@@ -116,6 +117,7 @@ export interface DesktopRuntimeHostSshManagementInput {
   readonly expectedConfigFingerprint?: string;
   readonly allowInterruptActiveTasks?: boolean;
   readonly retainManagedDeployment?: boolean;
+  readonly capabilityRequest?: RuntimeHostOperatorCapability;
   readonly signal?: AbortSignal;
 }
 
@@ -1126,7 +1128,7 @@ function runtimeHostServiceManagementRemoteCommand(
   const invocation =
     `${RUNTIME_HOST_OPERATOR_PROJECT_DIRECTORY_CONFIGURATION_REQUEST_ENV}=1 ` +
     `${RUNTIME_HOST_OPERATOR_CAPABILITY_REQUEST_ENV}=` +
-    `${quotePosix(RUNTIME_HOST_OPERATOR_ACCESS_MANAGEMENT_CAPABILITY)} exec ${command}`;
+    `${quotePosix(input.capabilityRequest ?? RUNTIME_HOST_OPERATOR_ACCESS_MANAGEMENT_CAPABILITY)} exec ${command}`;
   return `exec "\${SHELL:-/bin/sh}" -lic ${quotePosix(invocation)}`;
 }
 
