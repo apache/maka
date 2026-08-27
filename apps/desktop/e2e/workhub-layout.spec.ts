@@ -43,7 +43,12 @@ test('WorkHub target metadata does not overlap the submitted Session result', as
   );
   await workHubComposer.fill(`继续${sessionName}，补充重复投递测试点。`);
   await workHubComposer.press('Enter');
-  await expect(page.locator('.workhub-result')).toBeVisible();
+  // The result panel waits on the same model-roundtrip budget the spec's
+  // first submit gets (20s above), plus the WorkHub routing and projection
+  // refresh on top of it — the default 10s occasionally loses that race on
+  // CI Xvfb runners (run 33035109906). Same class of wait as the 20s asserts
+  // in workhub-reconstruction.spec.ts.
+  await expect(page.locator('.workhub-result')).toBeVisible({ timeout: 20_000 });
 
   const geometry = await page.evaluate(() => {
     const button = document.querySelector<HTMLElement>('.workhub-submitted > button')!;
