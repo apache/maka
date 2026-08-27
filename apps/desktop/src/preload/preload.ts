@@ -1177,6 +1177,9 @@ const makaBridge = {
     addAndEnable(input: DesktopRuntimeHostProfileAddInput) {
       return ipcRenderer.invoke('runtime-host-profiles:add-and-enable', input);
     },
+    importConnectionCode(code: string) {
+      return ipcRenderer.invoke('runtime-host-profiles:import-connection-code', code);
+    },
     remove(profileId: string) {
       return ipcRenderer.invoke('runtime-host-profiles:remove', profileId);
     },
@@ -1198,6 +1201,31 @@ const makaBridge = {
       };
       ipcRenderer.on('runtime-host-profiles:changed', listener);
       return () => ipcRenderer.off('runtime-host-profiles:changed', listener);
+    },
+  },
+  localRuntimeHostRemoteAccess: {
+    getSnapshot() {
+      return ipcRenderer.invoke('local-runtime-host-remote-access:get-snapshot');
+    },
+    enable(input: {
+      readonly allowInterruptActiveTasks: boolean;
+      readonly coordinationRelays: readonly string[];
+    }) {
+      return ipcRenderer.invoke('local-runtime-host-remote-access:enable', input);
+    },
+    createConnectionCode() {
+      return ipcRenderer.invoke(
+        'local-runtime-host-remote-access:create-connection-code',
+      );
+    },
+    revokeSharedAccess() {
+      return ipcRenderer.invoke('local-runtime-host-remote-access:revoke-shared-access');
+    },
+    disable() {
+      return ipcRenderer.invoke('local-runtime-host-remote-access:disable');
+    },
+    uninstall(input: { readonly allowInterruptActiveTasks: boolean }) {
+      return ipcRenderer.invoke('local-runtime-host-remote-access:uninstall', input);
     },
   },
   runtimeHostSshTerminal: {
@@ -3292,6 +3320,7 @@ if (process.env.MAKA_E2E === '1' && process.env.MAKA_E2E_USER_DATA_DIR) {
   type LatchKey = 'newTasks.listInvocableSkills' | 'sessions.list' | 'settings.chunk';
   const gates = new Map<LatchKey, { promise: Promise<void>; oneShot: boolean }>();
   const releases = new Map<LatchKey, { resolve: () => void; reject: (error: Error) => void }>();
+  let nextSessionObservationError: Error | undefined;
   const invocableSkillsWaiters = new Map<string, Array<() => void>>();
   const waitForLatch = async (key: LatchKey): Promise<void> => {
     const gate = gates.get(key);
@@ -3314,6 +3343,33 @@ if (process.env.MAKA_E2E === '1' && process.env.MAKA_E2E_USER_DATA_DIR) {
     makaBridge.sessions.list.bind(makaBridge.sessions),
     'sessions.list',
   );
+  const subscribeSessionEvents = makaBridge.sessions.subscribeEvents.bind(makaBridge.sessions);
+  makaBridge.sessions.subscribeEvents = (
+    sessionId,
+    handler,
+    onSeeded,
+    onObservationSeed,
+    onSeedError,
+  ) => {
+    const nextError = nextSessionObservationError;
+    nextSessionObservationError = undefined;
+    if (!nextError) {
+      return subscribeSessionEvents(
+        sessionId,
+        handler,
+        onSeeded,
+        onObservationSeed,
+        onSeedError,
+      );
+    }
+    let disposed = false;
+    void Promise.resolve().then(() => {
+      if (!disposed) onSeedError?.(nextError);
+    });
+    return () => {
+      disposed = true;
+    };
+  };
   const listInvocableSkills = makaBridge.skills.listInvocable.bind(makaBridge.skills);
   makaBridge.skills.listInvocable = async (...args) => {
     try {
@@ -3352,6 +3408,9 @@ if (process.env.MAKA_E2E === '1' && process.env.MAKA_E2E_USER_DATA_DIR) {
         waiters.push(resolve);
         invocableSkillsWaiters.set(sessionId, waiters);
       });
+    },
+    rejectNextSessionObservation(message: string) {
+      nextSessionObservationError = new Error(message);
     },
     release(key: LatchKey) {
       releases.get(key)?.resolve();

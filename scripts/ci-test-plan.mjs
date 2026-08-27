@@ -95,6 +95,7 @@ const ASF_SOURCE_FILES = new Set([
   'NOTICE',
   'apps/desktop/src/renderer/public/THIRD_PARTY_LICENSES.txt',
   'biome.jsonc',
+  'docs/code-origin-audit.md',
   'package.json',
   'packages/core/src/model-metadata.generated.ts',
   'packages/eval/harbor/deepseek-harness-profile/cordis.patch.yml',

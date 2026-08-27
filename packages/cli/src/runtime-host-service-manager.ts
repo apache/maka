@@ -37,7 +37,10 @@ import {
   ensureRuntimeHostPeerIdentity,
   prepareConnectedRuntimeHostRetirement,
 } from '@maka/runtime-host/client';
-import { RUNTIME_HOST_SERVICE_LOG_MAX_BYTES } from '@maka/runtime-host/operator';
+import {
+  resolveRuntimeHostManagedServiceId,
+  RUNTIME_HOST_SERVICE_LOG_MAX_BYTES,
+} from '@maka/runtime-host/operator';
 import {
   withLegacyFileUpdateLockLease,
   withProcessLifetimeFileUpdateLock,
@@ -189,7 +192,15 @@ export type RuntimeHostManagedServiceResult =
       readonly retirement?: never;
     })
   | (RuntimeHostManagedServiceResultBase & {
-      readonly action: Exclude<RuntimeHostManagedServiceAction, 'retire' | 'configure'>;
+      readonly action: 'uninstall';
+      readonly retirement: RuntimeHostRetirementResult;
+      readonly configuration?: never;
+    })
+  | (RuntimeHostManagedServiceResultBase & {
+      readonly action: Exclude<
+        RuntimeHostManagedServiceAction,
+        'retire' | 'configure' | 'uninstall'
+      >;
       readonly retirement?: never;
       readonly configuration?: never;
     });
@@ -254,7 +265,7 @@ export type RuntimeHostManagedPeerRotationResult =
 
 export type RuntimeHostManagedPeerConfigurationResult =
   | { readonly kind: 'active_tasks' }
-  | { readonly kind: 'configured' };
+  | { readonly kind: 'configured'; readonly restarted: boolean };
 
 export interface RuntimeHostManagedServiceReplacementInput
   extends Omit<RuntimeHostManagedServiceInput, 'action' | 'expectedTarget'> {
@@ -547,12 +558,47 @@ async function manageRuntimeHostServiceLocked(
   }
 
   if (input.action === 'uninstall') {
+    if (!input.expectedTarget) {
+      throw new RuntimeHostServiceManagerError(
+        'target_mismatch',
+        'Runtime Host uninstall requires the expected managed service identity',
+      );
+    }
     const { config: before, invalid: invalidConfig } =
       await readServiceConfigForUninstall(configPath);
+    const retirementRoot =
+      before === null && !invalidConfig
+        ? undefined
+        : await resolveExpectedServiceRoot(before, input);
     const retainedStateRoot =
       before === null && !invalidConfig && input.expectedTarget
         ? input.expectedTarget.rootPath
-        : (await resolveExpectedServiceRoot(before, input))?.canonicalPath;
+        : retirementRoot?.canonicalPath;
+    let retirement: RuntimeHostRetirementResult = { kind: 'stopped' };
+    const beforeStatus: RuntimeHostManagedServiceStatus = {
+      ...(await backend.status()),
+      config: before,
+      installedVersion: before ? await readInstalledVersion(before.launch.cliPath) : null,
+    };
+    if (beforeStatus.installed && before && retirementRoot) {
+      const retired = await retireManagedRuntimeHostService(
+        { ...beforeStatus, config: before },
+        retirementRoot,
+        backend,
+        deps,
+        input.allowInterruptActiveTasks ?? false,
+      );
+      retirement = retired.retirement;
+      if (retirement.kind === 'active_tasks') {
+        return {
+          schemaVersion: 1,
+          action: input.action,
+          service: beforeStatus,
+          retirement,
+          ...(retainedStateRoot ? { retainedStateRoot } : {}),
+        };
+      }
+    }
     const managedDeploymentRoot =
       before?.managedDeploymentRoot ??
       resolveRuntimeHostManagedDeploymentForCli(serviceId, input.cliPath);
@@ -621,7 +667,15 @@ async function manageRuntimeHostServiceLocked(
         `Runtime Host service still has managed state: ${service.state}`,
       );
     }
-    return result(input.action, service, before?.rootPath ?? retainedStateRoot);
+    return {
+      schemaVersion: 1,
+      action: input.action,
+      service,
+      retirement,
+      ...((before?.rootPath ?? retainedStateRoot)
+        ? { retainedStateRoot: before?.rootPath ?? retainedStateRoot }
+        : {}),
+    };
   }
 
   if (input.action === 'logs') {
@@ -1026,6 +1080,7 @@ async function configureRuntimeHostManagedPeerLocked(
     serviceId,
     input.clientDataRoot,
   );
+  let restarted = false;
   if (pending) {
     const resumed = await resumeRuntimeHostManagedPeerConfiguration(
       input,
@@ -1036,6 +1091,7 @@ async function configureRuntimeHostManagedPeerLocked(
       configurationPath,
     );
     if (resumed.kind === 'active_tasks') return resumed;
+    restarted = resumed.restarted;
   }
   const before = await readServiceStatus(configPath, backend);
   const root = await resolveExpectedServiceRoot(before.config, input);
@@ -1046,7 +1102,7 @@ async function configureRuntimeHostManagedPeerLocked(
     );
   }
   if (input.peer === null && before.config.peer?.enabled !== true) {
-    return { kind: 'configured' };
+    return { kind: 'configured', restarted };
   }
   const activate = shouldActivateService(before);
   const desired = await prepareServiceConfig(
@@ -1060,7 +1116,7 @@ async function configureRuntimeHostManagedPeerLocked(
     deps,
   );
   if (sameRuntimeHostManagedServiceConfig(before.config, desired)) {
-    return { kind: 'configured' };
+    return { kind: 'configured', restarted };
   }
   await backend.preflightDeployment();
   await backend.verifyDeployment(before.config, { acceptLegacyConfigLaunch: true });
@@ -1092,7 +1148,7 @@ async function configureRuntimeHostManagedPeerLocked(
       activate,
     });
     await rm(configurationPath, { force: true });
-    return { kind: 'configured' };
+    return { kind: 'configured', restarted: restarted || activate };
   } catch (error) {
     if (!activate) throw error;
     const revision = await identifyRuntimeHostServiceConfigRevision(
@@ -1146,7 +1202,7 @@ async function resumeRuntimeHostManagedPeerConfiguration(
     await backend.verifyDeployment(configuration.desired);
     if (configuration.activate) await deps.waitForReady(configuration.desired, backend);
     await rm(configurationPath, { force: true });
-    return { kind: 'configured' };
+    return { kind: 'configured', restarted: false };
   }
   if (shouldActivateService(service)) {
     const current = service.config;
@@ -1175,7 +1231,7 @@ async function resumeRuntimeHostManagedPeerConfiguration(
     activate: configuration.activate,
   });
   await rm(configurationPath, { force: true });
-  return { kind: 'configured' };
+  return { kind: 'configured', restarted: configuration.activate };
 }
 
 function shouldActivateService(service: RuntimeHostServiceBackendStatus): boolean {
@@ -1359,9 +1415,7 @@ export function resolveRuntimeHostManagedServiceConfigPath(clientDataRoot: strin
   return join(clientDataRoot, SERVICE_CONFIG_FILE);
 }
 
-export function resolveRuntimeHostManagedServiceId(clientDataRoot: string): string {
-  return createHash('sha256').update(resolve(clientDataRoot)).digest('hex');
-}
+export { resolveRuntimeHostManagedServiceId };
 
 export async function writeRuntimeHostServiceFile(
   path: string,
@@ -2344,7 +2398,7 @@ async function allocatePeerPort(): Promise<number> {
 }
 
 function result(
-  action: Exclude<RuntimeHostManagedServiceAction, 'retire' | 'configure'>,
+  action: Exclude<RuntimeHostManagedServiceAction, 'retire' | 'configure' | 'uninstall'>,
   service: RuntimeHostManagedServiceStatus,
   retainedStateRoot?: string,
   logs?: string,

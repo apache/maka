@@ -55,6 +55,7 @@ import {
   type RuntimeHostManagedServiceTarget,
   type RuntimeHostServiceBackend,
 } from './runtime-host-service-manager.js';
+import { expandWildcardListenAddresses } from './runtime-host-peer-management-command.js';
 
 const SETUP_LOCK_TIMEOUT_MS = 5 * 60_000;
 
@@ -67,10 +68,14 @@ export interface RuntimeHostSetupCliOptions {
   readonly principalId: string;
   readonly preset: RuntimeHostAccessPreset;
   readonly deferPairingCommit?: boolean;
+  readonly bindPairingToClient?: boolean;
   readonly rootPath?: string;
   readonly projectDirectoryRoots?: readonly { readonly label: string; readonly path: string }[];
   readonly websocketPort?: number;
   readonly websocketPath?: string;
+  readonly directPeer?: {
+    readonly coordinationRelays: readonly string[];
+  };
   readonly expectedTarget?: RuntimeHostManagedServiceTarget;
 }
 
@@ -184,6 +189,9 @@ async function runRuntimeHostSetupLocked(
           : {}),
         ...(options.websocketPort === undefined ? {} : { websocketPort: options.websocketPort }),
         ...(options.websocketPath ? { websocketPath: options.websocketPath } : {}),
+        ...(options.directPeer
+          ? { peer: { coordinationRelays: options.directPeer.coordinationRelays } }
+          : {}),
       },
       backend,
     );
@@ -223,6 +231,7 @@ async function runRuntimeHostSetupLocked(
       canPublishClientCapabilities: false,
       canUseHostPaths: false,
       preset: options.preset,
+      ...(options.bindPairingToClient ? { bindClientInstance: true } : {}),
     });
   } catch (error) {
     throw new RuntimeHostSetupError(
@@ -250,6 +259,15 @@ async function runRuntimeHostSetupLocked(
       endpoint,
       credentialId: paired.credentialId,
       credential: paired.credential,
+      ...(config.peer?.enabled
+        ? {
+            directPeer: {
+              peerId: config.peer.peerId,
+              routeHints: expandWildcardListenAddresses(config.peer.listenAddresses),
+              coordinationRelays: [...config.peer.coordinationRelays],
+            },
+          }
+        : {}),
     });
   } catch (error) {
     if (options.deferPairingCommit) {

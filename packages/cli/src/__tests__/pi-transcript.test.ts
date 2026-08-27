@@ -127,6 +127,22 @@ describe('Maka Pi TUI transcript', () => {
     assert.match(chinese, /\/session\s+切换或恢复会话/);
   });
 
+  test('keeps every pending-queue preview on exactly one terminal row (#3824)', () => {
+    const state = createMakaPiTranscriptState();
+    // limitText appends its truncation suffix behind a newline once the 200-char
+    // cap trips; an embedded newline shifts every later row down while pi-tui
+    // still counts one row written, corrupting the frame until the queue drains.
+    state.steering = ['s'.repeat(250)];
+    state.followup = ['f'.repeat(250)];
+
+    const lines = renderMakaPiPendingQueue(state, 400);
+    for (const line of lines) {
+      assert.doesNotMatch(line, /[\r\n]/, `pending-queue row must be a single row: ${line}`);
+    }
+    // The truncation notice still reaches the user, just on the same row.
+    assert.match(stripAnsi(lines[0] ?? ''), /50 chars truncated/);
+  });
+
   test('renders the pending-queue edit shortcut for the current platform', () => {
     const state = createMakaPiTranscriptState();
     state.steering = ['Keep going'];

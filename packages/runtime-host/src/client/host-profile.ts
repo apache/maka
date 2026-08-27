@@ -704,7 +704,7 @@ export function decodeRemoteRuntimeHostProfile(value: unknown): RemoteRuntimeHos
   });
 }
 
-function decodeRuntimeHostRemoteTransport(value: unknown): RuntimeHostRemoteTransport {
+export function decodeRuntimeHostRemoteTransport(value: unknown): RuntimeHostRemoteTransport {
   const kind = requireRecord(value, 'Runtime Host transport').kind;
   if (kind === 'tls') {
     const record = requireExactRecord(value, 'Runtime Host TLS transport', ['kind', 'url']);

@@ -25,6 +25,7 @@ import { afterEach, test } from "node:test";
 import {
   createClientRuntimeHostCredentialStore,
   createClientRuntimeHostProfileCatalog,
+  encodeRuntimeHostOwnerConnectionCode,
   LOCAL_RUNTIME_HOST_PROFILE,
   RuntimeHostPermanentReconnectError,
   RuntimeHostRemoteCompatibilityError,
@@ -492,6 +493,45 @@ test("keeps a separate profile when the same Host is paired through another conn
   });
   assert.equal((await catalog.resolve(PROFILE.id)).credential, "old-token");
   assert.equal((await catalog.resolve("replacement")).credential, "new-token");
+});
+
+test('classifies connection-code failures without exposing transport errors to the renderer', async () => {
+  const root = await clientRoot();
+  const startup = await resolveDesktopRuntimeHostStartup(root);
+  const service = createDesktopRuntimeHostProfileService({
+    clientDataRoot: root,
+    startup,
+    states: () => [connectingLocal()],
+    enable: async () => {
+      throw new RuntimeHostPermanentReconnectError(
+        'Runtime Host profile candidate rejected its access credential',
+      );
+    },
+    disable: async () => undefined,
+    setDefault: () => undefined,
+    finalizePairing: async () => undefined,
+  });
+
+  assert.deepEqual(await service.importConnectionCode('not-a-code'), {
+    kind: 'error',
+    reason: 'invalid_code',
+  });
+  assert.deepEqual(
+    await service.importConnectionCode(
+      encodeRuntimeHostOwnerConnectionCode({
+        name: 'Other computer',
+        rootId: ROOT_ID,
+        transport: {
+          kind: 'libp2p-direct',
+          peerId: '12D3KooWpeer',
+          routeHints: ['/ip4/192.0.2.8/udp/44001/quic-v1'],
+          coordinationRelays: [],
+        },
+        credential: 'pending-credential',
+      }),
+    ),
+    { kind: 'error', reason: 'code_unavailable' },
+  );
 });
 
 test("finishes a persisted pairing after Desktop restarts before finalization", async () => {

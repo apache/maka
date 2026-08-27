@@ -39,6 +39,7 @@ export interface ConnectionContext {
   connectionId: string;
   principal: string;
   credentialId?: string;
+  clientInstanceId?: string;
   acquireResidency(): OperationResidency;
 }
 
@@ -291,6 +292,13 @@ export function createUnavailableAccessAuthorityOperationHandlers(): AccessAutho
       },
     }),
     'access.credential.revoke': async () => ({
+      ok: false,
+      error: {
+        code: 'operation_unavailable',
+        message: 'Runtime Host access credentials are unavailable',
+      },
+    }),
+    'access.principal.revoke': async () => ({
       ok: false,
       error: {
         code: 'operation_unavailable',

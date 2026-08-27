@@ -157,6 +157,7 @@ export function createAppShellChatActions(deps: {
   isShellSurfaceOwnerActive: (owner: ComposerImportOwner) => boolean;
   messageRetryPendingRef: RefBox<Set<string>>;
   refreshSessions: () => Promise<DesktopSessionSummary[]>;
+  activateSessionForFirstSend: (sessionId: string) => Promise<void>;
   setActiveId: (sessionId: string | undefined) => void;
   setMessageLoadErrorBySession: MessageLoadErrorUpdater;
   setMessageRetryPendingBySession: BooleanRecordUpdater;
@@ -171,7 +172,6 @@ export function createAppShellChatActions(deps: {
   ) => void;
   removeTransientMessage: (sessionId: string, messageId: string) => void;
   transcriptRangeRef: RefBox<DesktopTranscriptRangeController | undefined>;
-  setNavSelection: (selection: NavSelection) => void;
   /** #646: arm the "正在处理…" indicator locally at send() — the model-wait
    * window opens before any SessionEvent arrives (turn_started is not one). */
   setLiveTurnBySession: LiveTurnRecordUpdater;
@@ -214,6 +214,7 @@ export function createAppShellChatActions(deps: {
     isShellSurfaceOwnerActive,
     messageRetryPendingRef,
     refreshSessions,
+    activateSessionForFirstSend,
     setActiveId,
     setMessageLoadErrorBySession,
     setMessageRetryPendingBySession,
@@ -222,7 +223,6 @@ export function createAppShellChatActions(deps: {
     updateTransientMessage,
     removeTransientMessage,
     transcriptRangeRef,
-    setNavSelection,
     setLiveTurnBySession,
     setInteractionBySession,
     onInteractionChanged,
@@ -449,6 +449,7 @@ export function createAppShellChatActions(deps: {
       unsentSessionId = undefined;
       try {
         await window.maka.sessions.remove(sessionId);
+        if (activeIdRef.current === sessionId) setActiveId(undefined);
         await refreshSessions();
       } catch {
         // Best-effort: a failed cleanup must not replace the real error.
@@ -473,10 +474,19 @@ export function createAppShellChatActions(deps: {
           orchestrationMode: newChatOrchestrationMode,
         });
         unsentSessionId = session.id;
+        optimisticSessionId = session.id;
         // Consumed: the choice is now the created Session's, not the next
         // draft's. A failed create leaves it in place so a retry keeps it.
         if (newChatPermissionChoice) clearNewChatPermissionChoice();
-        optimisticSessionId = session.id;
+        // Active-stream snapshots can only restore assistant segments that
+        // are still streaming. Wait until the observer is ready before the
+        // first admission so a completed segment in a still-running Turn
+        // cannot become durable text without live identity.
+        await activateSessionForFirstSend(session.id);
+        if (activeIdRef.current !== session.id) {
+          await discardUnsentSession();
+          return false;
+        }
         optimisticMessageId = messageId;
         showTransientUserMessage(
           session.id,
@@ -522,8 +532,7 @@ export function createAppShellChatActions(deps: {
           ...(options.displayText ? { displayText: options.displayText } : {}),
           ...(quotes && quotes.length > 0 ? { quotes } : {}),
           exactTurn,
-          isSurfaceVisible: () =>
-            Boolean(newChatOwner && isNewChatSendSurfaceActive(newChatOwner)),
+          isSurfaceVisible: () => activeIdRef.current === session.id,
         });
         if (submitted.kind === 'refused') {
           await discardUnsentSession();
@@ -531,10 +540,6 @@ export function createAppShellChatActions(deps: {
         }
         unsentSessionId = undefined;
         options.onSessionResolved?.(session.id);
-        if (newChatOwner && isNewChatSendSurfaceActive(newChatOwner)) {
-          setNavSelection({ section: 'sessions' });
-          setActiveId(session.id);
-        }
         await refreshSessions();
         return true;
       }
@@ -607,6 +612,22 @@ export function createAppShellChatActions(deps: {
       options.onSessionResolved?.(sessionId);
       return true;
     } catch (error) {
+      // Capture ownership before cleanup clears the optimistic Session. A
+      // barrier timeout belongs to the surface that was waiting for it, while
+      // navigation away still suppresses feedback.
+      const feedbackSessionId = optimisticSessionId ?? initialSessionId;
+      const diagnosticTarget = feedbackSessionId
+        ? { sessionId: feedbackSessionId }
+        : initialNewTaskTarget
+          ? { profileId: initialNewTaskTarget.profileId }
+          : undefined;
+      const sendStillOwnsCurrentSurface =
+        (feedbackSessionId !== undefined &&
+          isShellSurfaceOwnerActive({
+            ...sendOwner,
+            sessionId: feedbackSessionId,
+          })) ||
+        (newChatOwner !== null && isNewChatSendSurfaceActive(newChatOwner));
       await discardUnsentSession();
       if (optimisticSessionId && optimisticMessageId) {
         removeOptimisticUserMessage(optimisticSessionId, optimisticMessageId);
@@ -630,19 +651,6 @@ export function createAppShellChatActions(deps: {
       // The owner MOVES on an optimistic create: the send began on the new-chat
       // surface and the app is now on the session it just made, so the id is
       // taken from the flight and only the section comes from the capture.
-      const feedbackSessionId = optimisticSessionId ?? initialSessionId;
-      const diagnosticTarget = feedbackSessionId
-        ? { sessionId: feedbackSessionId }
-        : initialNewTaskTarget
-          ? { profileId: initialNewTaskTarget.profileId }
-          : undefined;
-      const sendStillOwnsCurrentSurface =
-        (feedbackSessionId !== undefined &&
-          isShellSurfaceOwnerActive({
-            ...sendOwner,
-            sessionId: feedbackSessionId,
-          })) ||
-        (newChatOwner !== null && isNewChatSendSurfaceActive(newChatOwner));
       if (!sendStillOwnsCurrentSurface) return false;
       if (isNoRealConnectionError(error)) {
         const reason = noRealConnectionReasonFromError(error);

@@ -459,8 +459,11 @@ describe('busy-raced send settlement', () => {
       const actions = createAppShellChatActions({
         ...createActionsDeps(),
         activeIdRef,
+        activateSessionForFirstSend: async (sessionId) => {
+          activated.push(sessionId);
+          activeIdRef.current = sessionId;
+        },
         setActiveId: (sessionId: string | undefined) => {
-          if (sessionId !== undefined) activated.push(sessionId);
           activeIdRef.current = sessionId;
         },
         setLiveTurnBySession: turnState.setLiveTurnBySession,
@@ -500,6 +503,9 @@ describe('busy-raced send settlement', () => {
       const actions = createAppShellChatActions({
         ...createActionsDeps(),
         activeIdRef,
+        activateSessionForFirstSend: async (sessionId) => {
+          activeIdRef.current = sessionId;
+        },
         setActiveId: (sessionId: string | undefined) => {
           activeIdRef.current = sessionId;
         },

@@ -70,6 +70,7 @@ import {
   RuntimeHostServiceManagerError,
   type RuntimeHostManagedServiceConfig,
   type RuntimeHostManagedServiceResult,
+  type RuntimeHostServiceManagerOverrides,
   type RuntimeHostServiceBackend,
 } from '../runtime-host-service-manager.js';
 import {
@@ -166,6 +167,7 @@ describe('managed Runtime Host service', () => {
         '--listen',
         '/ip4/0.0.0.0/udp/44001/quic-v1',
         '--clear-coordination-relays',
+        '--allow-interrupt-active-tasks',
         '--expected-service-id',
         'b'.repeat(64),
         '--expected-root-path',
@@ -180,6 +182,7 @@ describe('managed Runtime Host service', () => {
         framed: true,
         listenAddresses: ['/ip4/0.0.0.0/udp/44001/quic-v1'],
         coordinationRelays: [],
+        allowInterruptActiveTasks: true,
         expectedTarget: {
           serviceId: 'b'.repeat(64),
           rootPath: '/srv/maka',
@@ -282,19 +285,33 @@ describe('managed Runtime Host service', () => {
         },
       },
     );
-    assert.deepEqual(parseRuntimeHostCommand(['service', 'uninstall', '--json']), {
-      kind: 'runtime-host-service-manage',
-      action: 'uninstall',
-      json: true,
-    });
+    assert.equal(parseRuntimeHostCommand(['service', 'uninstall', '--json']).kind, 'error');
     assert.deepEqual(
-      parseRuntimeHostCommand(['service', 'uninstall', '--framed', '--retain-managed-deployment']),
+      parseRuntimeHostCommand([
+        'service',
+        'uninstall',
+        '--framed',
+        '--retain-managed-deployment',
+        '--allow-interrupt-active-tasks',
+        '--expected-service-id',
+        'b'.repeat(64),
+        '--expected-root-path',
+        '/srv/maka',
+        '--expected-root-id',
+        'a'.repeat(64),
+      ]),
       {
         kind: 'runtime-host-service-manage',
         action: 'uninstall',
         json: false,
         framed: true,
         retainManagedDeployment: true,
+        allowInterruptActiveTasks: true,
+        expectedTarget: {
+          serviceId: 'b'.repeat(64),
+          rootPath: '/srv/maka',
+          rootId: 'a'.repeat(64),
+        },
       },
     );
     assert.deepEqual(
@@ -437,7 +454,12 @@ describe('managed Runtime Host service', () => {
         'desktop.client-1',
         '--preset',
         'desktop-client',
+        '--client-data-root',
+        '/var/lib/maka-client',
         '--defer-pairing-commit',
+        '--enable-direct-peer',
+        '--coordination-relay',
+        '/dns4/discovery.example/udp/443/quic-v1',
         '--json',
       ]),
       {
@@ -445,7 +467,11 @@ describe('managed Runtime Host service', () => {
         json: true,
         principalId: 'desktop.client-1',
         preset: 'desktop-client',
+        clientDataRoot: '/var/lib/maka-client',
         deferPairingCommit: true,
+        directPeer: {
+          coordinationRelays: ['/dns4/discovery.example/udp/443/quic-v1'],
+        },
       },
     );
   });
@@ -1011,6 +1037,11 @@ describe('managed Runtime Host service', () => {
     const managerDeps = {
       allocateLoopbackPort: async () => 49_999,
       waitForReady: async () => undefined,
+      prepareRetirement: async (_config: unknown, pid: number) => ({
+        kind: 'prepared' as const,
+        hostEpoch: 'test-host',
+        pid,
+      }),
       environment: env,
       homeDir,
       platform: 'linux' as const,
@@ -1189,6 +1220,7 @@ describe('managed Runtime Host service', () => {
         },
       },
       backend(),
+      managerDeps,
     );
     assert.equal(retained.service.installed, false);
     await access(deploymentRoot);
@@ -1253,6 +1285,7 @@ describe('managed Runtime Host service', () => {
         expectedTarget,
       },
       backend(),
+      managerDeps,
     );
     assert.equal(await readRuntimeHostManagedUpdatePolicy(deploymentRoot), null);
     await cleanupRuntimeHostManagedDeployment(
@@ -1302,7 +1335,10 @@ describe('managed Runtime Host service', () => {
     await assert.rejects(access(updateTimerPath));
     await assert.rejects(access(deploymentRoot));
 
-    const repeated = await manageRuntimeHostService({ ...common, action: 'uninstall' }, backend());
+    const repeated = await manageRuntimeHostService(
+      { ...common, action: 'uninstall', expectedTarget },
+      backend(),
+    );
     assert.equal(repeated.service.installed, false);
   });
 
@@ -1328,6 +1364,7 @@ describe('managed Runtime Host service', () => {
     let active = false;
     let retireCalls = 0;
     let startCalls = 0;
+    let lastAllowInterruptActiveTasks: boolean | undefined;
     const backend: RuntimeHostServiceBackend = {
       ...createReadyBackend(),
       stageDeployment: async () => ({
@@ -1372,7 +1409,12 @@ describe('managed Runtime Host service', () => {
       allocateLoopbackPort: async () => 43_001,
       allocatePeerPort: async () => 43_002,
       waitForReady: async () => undefined,
-      prepareRetirement: async () => ({ kind: 'prepared' as const, hostEpoch: 'epoch', pid: 42 }),
+      prepareRetirement: async (
+        ...args: Parameters<NonNullable<RuntimeHostServiceManagerOverrides['prepareRetirement']>>
+      ) => {
+        lastAllowInterruptActiveTasks = args[2];
+        return { kind: 'prepared' as const, hostEpoch: 'epoch', pid: 42 };
+      },
       ensurePeerIdentity: async () => 'owned-peer-identity',
     };
     const installedService = await manageRuntimeHostService(
@@ -1391,6 +1433,7 @@ describe('managed Runtime Host service', () => {
     const runPeer = async (
       action: 'enable' | 'disable' | 'status' | 'rotate' | 'descriptor',
       coordinationRelays?: readonly string[],
+      allowInterruptActiveTasks = false,
     ) => {
       peerOutput.length = 0;
       const exitCode = await runRuntimeHostPeerManagementCli(
@@ -1400,6 +1443,7 @@ describe('managed Runtime Host service', () => {
           ...common,
           listenAddresses: action === 'enable' ? ['/ip4/127.0.0.1/udp/43002/quic-v1'] : [],
           ...(coordinationRelays ? { coordinationRelays } : {}),
+          allowInterruptActiveTasks,
           expectedTarget,
         },
         {
@@ -1433,11 +1477,12 @@ describe('managed Runtime Host service', () => {
       backend,
       deps,
     );
-    assert.equal(enabledAgain.kind, 'configured');
+    assert.deepEqual(enabledAgain, { kind: 'configured', restarted: false });
     assert.equal(retireCalls, 1);
 
     await rm(nativePath);
-    assert.equal((await runPeer('disable')).state, 'disabled');
+    assert.equal((await runPeer('disable', undefined, true)).state, 'disabled');
+    assert.equal(lastAllowInterruptActiveTasks, true);
     const disabledStatus = await manageRuntimeHostService(
       { ...common, action: 'status', expectedTarget },
       backend,
@@ -1497,7 +1542,7 @@ describe('managed Runtime Host service', () => {
         backend,
         deps,
       ),
-      { kind: 'configured' },
+      { kind: 'configured', restarted: true },
     );
     assert.equal(active, true);
     await manageRuntimeHostService({ ...common, action: 'stop', expectedTarget }, backend, deps);
@@ -1639,6 +1684,11 @@ describe('managed Runtime Host service', () => {
           defaultRootPath: join(base, 'state'),
           nodePath: process.execPath,
           cliPath: join(deploymentRoot, 'versions', '1.0.0', 'dist', 'cli.js'),
+          expectedTarget: {
+            serviceId,
+            rootPath: join(base, 'state'),
+            rootId: 'a'.repeat(64),
+          },
         },
         createReadyBackend(),
       ),
@@ -1724,8 +1774,21 @@ describe('managed Runtime Host service', () => {
       development.backend,
       ready,
     );
+    const developmentStateRoot = await resolveStorageRoot({
+      path: input(developmentRoot).defaultRootPath,
+      kind: 'interactive',
+    });
+    await development.backend.stop();
     await manageRuntimeHostService(
-      { ...input(developmentRoot), action: 'uninstall' },
+      {
+        ...input(developmentRoot),
+        action: 'uninstall',
+        expectedTarget: {
+          serviceId: resolveRuntimeHostManagedServiceId(developmentRoot),
+          rootPath: developmentStateRoot.canonicalPath,
+          rootId: developmentStateRoot.rootId,
+        },
+      },
       development.backend,
     );
 
@@ -2266,6 +2329,20 @@ describe('managed Runtime Host service', () => {
       deps,
     );
     assert.deepEqual(blocked.retirement, { kind: 'active_tasks' });
+    assert.equal(stops, 0);
+
+    const blockedUninstall = await manageRuntimeHostService(
+      {
+        ...common,
+        action: 'uninstall',
+        expectedTarget,
+        retainManagedDeployment: true,
+      },
+      backend,
+      deps,
+    );
+    assert.deepEqual(blockedUninstall.retirement, { kind: 'active_tasks' });
+    assert.equal(blockedUninstall.service.installed, true);
     assert.equal(stops, 0);
 
     const retired = await manageRuntimeHostService(

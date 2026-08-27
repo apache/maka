@@ -195,7 +195,7 @@ const UserMessageBody = memo(function UserMessageBody(props: {
           /* `value` takes ms directly: Timestamp's own parseValue reads
              anything past 1e12 as milliseconds (2001-09-09 onward), and a
              chat message never predates that. */
-          (<Timestamp className="maka-message-time-inline" value={props.ts} format="time" />)
+          (<Timestamp className="maka-message-time-inline" value={props.ts} format="auto" isLive />)
         ) : undefined
       }
       footer={
@@ -1165,6 +1165,9 @@ const AssistantAnswerBubble = memo(function AssistantAnswerBubble(props: Assista
   return (
     <ChatMessageBubble
       variant="ghost"
+      // Astryx's own seam for a bubble that spans the message column: it sets
+      // the width and drops the default max(80%, 280px) cap in one prop.
+      width="100%"
       className={
         props.phase === 'historical'
           ? 'maka-chat-message-bubble maka-chat-message-bubble-assistant'

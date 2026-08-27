@@ -138,7 +138,8 @@ function helpText(cliCommand: string): string {
     `  ${cliCommand} runtime-host setup --principal <id> --preset <desktop-client|terminal-client> [options]`,
     `  ${cliCommand} runtime-host service install [options]`,
     `  ${cliCommand} runtime-host service configure (--project-root <label>=<path> ... | --no-project-roots) --expected-config-fingerprint <sha256:...> --expected-service-id <id> --expected-root-path <path> --expected-root-id <id> [--allow-interrupt-active-tasks]`,
-    `  ${cliCommand} runtime-host service status|start|stop|restart|logs|uninstall [--json]`,
+    `  ${cliCommand} runtime-host service status|start|stop|restart|logs [--json]`,
+    `  ${cliCommand} runtime-host service uninstall --expected-service-id <id> --expected-root-path <path> --expected-root-id <id> [--allow-interrupt-active-tasks]`,
     `  ${cliCommand} runtime-host service peer enable|disable|status|rotate|descriptor [options]`,
     `  ${cliCommand} runtime-host service retire --expected-service-id <id> --expected-root-path <path> --expected-root-id <id> [--allow-interrupt-active-tasks]`,
     `  ${cliCommand} runtime-host service check-update --target <latest|next|version> [--json]`,
@@ -297,19 +298,21 @@ export async function runMakaCli(
       const { runRuntimeHostSetupCli } = await import('./runtime-host-setup-command.js');
       return runRuntimeHostSetupCli({
         json: command.json,
-        clientDataRoot: dataRoots.clientDataRoot,
+        clientDataRoot: command.clientDataRoot ?? dataRoots.clientDataRoot,
         defaultRootPath: dataRoots.workspaceRoot,
         sourcePackageRoot: fileURLToPath(new URL('..', import.meta.url)),
         version,
         principalId: command.principalId,
         preset: command.preset,
         deferPairingCommit: command.deferPairingCommit,
+        bindPairingToClient: command.bindPairingToClient,
         ...(command.rootPath ? { rootPath: command.rootPath } : {}),
         ...(command.projectDirectoryRoots
           ? { projectDirectoryRoots: command.projectDirectoryRoots }
           : {}),
         ...(command.websocketPort === undefined ? {} : { websocketPort: command.websocketPort }),
         ...(command.websocketPath ? { websocketPath: command.websocketPath } : {}),
+        ...(command.directPeer ? { directPeer: command.directPeer } : {}),
         ...(command.expectedTarget ? { expectedTarget: command.expectedTarget } : {}),
       });
     }
@@ -360,6 +363,7 @@ export async function runMakaCli(
         listenAddresses: command.listenAddresses,
         ...(command.coordinationRelays ? { coordinationRelays: command.coordinationRelays } : {}),
         ...(command.expectedTarget ? { expectedTarget: command.expectedTarget } : {}),
+        ...(command.allowInterruptActiveTasks ? { allowInterruptActiveTasks: true } : {}),
       });
     }
     case 'runtime-host-service-update': {

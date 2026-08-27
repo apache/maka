@@ -50,6 +50,7 @@ import type { MakaSessionDriver, MakaSideConversationParentStatus } from './sess
 import { BoundedChunkBuffer } from './bounded-chunk-buffer.js';
 import { ansi } from './tui-ansi.js';
 import {
+  collapseToSingleLine,
   fitLine,
   formatTokenCount,
   formatUnknown,
@@ -1724,14 +1725,24 @@ export function renderMakaPiPendingQueue(
   return lines;
 }
 
-/** First non-empty line of a queued message, trimmed for a one-line preview. */
+/**
+ * First non-empty line of a queued message, trimmed for a one-line preview.
+ *
+ * `limitText` appends its truncation suffix behind a newline, so its output is
+ * multi-line whenever the cap trips. Each element the pending-bar returns must
+ * occupy exactly one terminal row — pi-tui writes them between explicit \r\n
+ * separators and counts one row each, so an embedded newline shifts every
+ * later row down while the diff accounting still believes one row was written
+ * (#3824). `fitLine` cannot catch it: visibleWidth treats controls as
+ * zero-width. Sibling call sites collapse the same output the same way.
+ */
 function firstLinePreview(text: string): string {
   const line =
     text
       .split('\n')
       .map((part) => part.trim())
       .find((part) => part.length > 0) ?? '';
-  return limitText(line, 200);
+  return collapseToSingleLine(limitText(line, 200));
 }
 
 /**

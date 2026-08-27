@@ -24,6 +24,7 @@ export const RUNTIME_HOST_SETUP_FRAME_PREFIX = 'MAKA_RUNTIME_HOST_SETUP_V1 ';
 const SETUP_FRAME_MAX_BYTES = 32 * 1024;
 const SETUP_FIELD_MAX_BYTES = 1024;
 const SETUP_CREDENTIAL_MAX_BYTES = 8 * 1024;
+const SETUP_PEER_ADDRESS_MAX_BYTES = 2 * 1024;
 export const RUNTIME_HOST_SETUP_ERROR_CODE_MAX_BYTES = 128;
 export const RUNTIME_HOST_SETUP_ERROR_MESSAGE_MAX_BYTES = SETUP_FIELD_MAX_BYTES;
 const SETUP_PHASES = [
@@ -69,6 +70,14 @@ const SETUP_FRAME_SCHEMA = z.discriminatedUnion('kind', [
       ),
       credentialId: boundedString(SETUP_FIELD_MAX_BYTES),
       credential: boundedString(SETUP_CREDENTIAL_MAX_BYTES),
+      directPeer: z
+        .object({
+          peerId: boundedString(160),
+          routeHints: z.array(boundedString(SETUP_PEER_ADDRESS_MAX_BYTES)).max(16),
+          coordinationRelays: z.array(boundedString(SETUP_PEER_ADDRESS_MAX_BYTES)).max(16),
+        })
+        .strict()
+        .optional(),
     })
     .strict(),
   z

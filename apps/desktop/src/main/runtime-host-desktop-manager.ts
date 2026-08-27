@@ -71,6 +71,7 @@ export interface RuntimeHostDesktopManager {
     previousHostEpoch?: string,
     signal?: AbortSignal,
   ): Promise<void>;
+  runManagedLocalHostChange<T>(change: () => Promise<T>): Promise<T>;
   setDefaultProfile(profileId: string): void;
   retireOwnedLocalHost(mode: RuntimeHostRetirementMode): Promise<DesktopLocalHostRetirement>;
   close(): Promise<void>;
@@ -326,7 +327,11 @@ class RuntimeHostDesktopManagerImpl implements RuntimeHostDesktopManager {
         try {
           const remainingMs = deadline - Date.now();
           if (remainingMs <= 0) throw new RuntimeHostPairingFinalizationInterruptedError();
-          await candidate.client.finalizeAccessCredential(remainingMs);
+          const finalized = await candidate.client.finalizeAccessCredential(remainingMs);
+          if (finalized.reconnectRequired) {
+            await candidate.close();
+            await this.#waitForReadyCandidate(lifecycle, candidate, signal);
+          }
           return;
         } catch (error) {
           if (pairingFinalizeTimedOut(error)) {
@@ -515,6 +520,23 @@ class RuntimeHostDesktopManagerImpl implements RuntimeHostDesktopManager {
     const target = this.#targets.get(profileId);
     if (!target) return;
     await this.#removeTarget(target);
+  }
+
+  runManagedLocalHostChange<T>(change: () => Promise<T>): Promise<T> {
+    return this.#mutateTarget(LOCAL_RUNTIME_HOST_PROFILE.id, async () => {
+      const lifecycle = this.#requireLifecycle(
+        this.#requireTarget(LOCAL_RUNTIME_HOST_PROFILE.id),
+      );
+      const quiescence = await lifecycle.quiesce();
+      try {
+        if (quiescence.current.hostLifecycleMode !== 'service') {
+          throw new Error('The Local Runtime Host is not managed by a background service');
+        }
+        return await change();
+      } finally {
+        quiescence.resume();
+      }
+    });
   }
 
   setDefaultProfile(profileId: string): void {
@@ -842,19 +864,22 @@ class RuntimeHostDesktopManagerImpl implements RuntimeHostDesktopManager {
     }
   }
 
-  #mutateTarget(profileId: string, operation: () => Promise<void>): Promise<void> {
+  #mutateTarget<T>(profileId: string, operation: () => Promise<T>): Promise<T> {
     if (this.#closed) {
       return Promise.reject(new Error('Desktop Runtime Host manager is closed'));
     }
     const previous = this.#targetMutations.get(profileId) ?? Promise.resolve();
     const pending = previous.catch(() => undefined).then(operation);
-    const settled = pending.finally(() => {
+    const settled = pending.then(
+      () => undefined,
+      () => undefined,
+    ).finally(() => {
       if (this.#targetMutations.get(profileId) === settled) {
         this.#targetMutations.delete(profileId);
       }
     });
     this.#targetMutations.set(profileId, settled);
-    return settled;
+    return pending;
   }
 
   #activate(target: DesktopRuntimeHostTargetGeneration): void {

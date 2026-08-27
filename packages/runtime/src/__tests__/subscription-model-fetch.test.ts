@@ -191,6 +191,66 @@ describe('subscription model fetch', () => {
     assert.equal(attempts, 2);
   });
 
+  test('does not treat parseable JSON auth errors as HTML edge rejections', async () => {
+    let attempts = 0;
+    const modelFetch = buildSubscriptionModelFetch({
+      connection: openAiCodexConnection(),
+      sessionId: 'session-json-403',
+      modelId: 'gpt-5.6-sol',
+      fetchFn: async () => {
+        attempts += 1;
+        return new Response(
+          JSON.stringify({ error: { code: 'account_not_authorized', message: 'not allowed' } }),
+          { status: 403, headers: { 'content-type': 'text/html' } },
+        );
+      },
+    });
+
+    assert.ok(modelFetch);
+    await assert.rejects(
+      modelFetch('https://chatgpt.com/backend-api/codex/responses', {
+        method: 'POST',
+        body: JSON.stringify({ input: [] }),
+      }),
+      (error) => {
+        assert.ok(error instanceof Error);
+        assert.equal(error.name, 'OpenAiCodexHttpError');
+        assert.deepEqual((error as { data?: unknown }).data, {
+          error: { code: 'account_not_authorized' },
+        });
+        return true;
+      },
+    );
+    assert.equal(attempts, 1);
+  });
+
+  test('does not stamp a non-replayable HTML 403 as an exhausted edge rejection', async () => {
+    let attempts = 0;
+    const modelFetch = buildSubscriptionModelFetch({
+      connection: openAiCodexConnection(),
+      sessionId: 'session-non-replayable',
+      modelId: 'gpt-5.6-sol',
+      fetchFn: async () => {
+        attempts += 1;
+        return new Response('<html><title>Request rejected</title>', { status: 403 });
+      },
+    });
+
+    assert.ok(modelFetch);
+    await assert.rejects(
+      modelFetch('https://chatgpt.com/backend-api/codex/responses', {
+        method: 'POST',
+        body: new ReadableStream(),
+      }),
+      (error) => {
+        assert.ok(error instanceof Error);
+        assert.equal(error.name, 'OpenAiCodexHttpError');
+        return true;
+      },
+    );
+    assert.equal(attempts, 1);
+  });
+
   test('does not retry a JSON 403 from the Codex API', async () => {
     let attempts = 0;
     const modelFetch = buildSubscriptionModelFetch({
@@ -373,7 +433,16 @@ describe('subscription model fetch', () => {
         method: 'POST',
         body: JSON.stringify({ input: [{ role: 'user', content: 'hello' }] }),
       }),
-      /Codex OAuth request failed: HTTP 403/,
+      (error) => {
+        assert.ok(error instanceof Error);
+        assert.match(error.message, /Codex OAuth request failed: HTTP 403/);
+        assert.equal(error.name, 'OpenAiCodexEdgeRejectionError');
+        assert.equal((error as { statusCode?: unknown }).statusCode, 403);
+        assert.deepEqual((error as { data?: unknown }).data, {
+          error: { code: 'openai_codex_edge_rejection' },
+        });
+        return true;
+      },
     );
 
     await eventLoopTurn();
@@ -395,6 +464,45 @@ describe('subscription model fetch', () => {
     assert.equal(attempts, 3);
     t.mock.timers.tick(1);
     await rejection;
+    assert.equal(attempts, 4);
+  });
+
+  test('preserves a JSON auth failure that follows three HTML edge retries', async () => {
+    let attempts = 0;
+    const modelFetch = buildSubscriptionModelFetch({
+      connection: openAiCodexConnection(),
+      sessionId: 'session-edge-then-auth',
+      modelId: 'gpt-5.6-sol',
+      fetchFn: async () => {
+        attempts += 1;
+        if (attempts <= 3) {
+          return new Response('<html><title>Request rejected</title>', {
+            status: 403,
+            headers: { 'content-type': 'text/html', 'retry-after': '0' },
+          });
+        }
+        return Response.json(
+          { error: { code: 'account_not_authorized', message: 'not allowed' } },
+          { status: 403 },
+        );
+      },
+    });
+
+    assert.ok(modelFetch);
+    await assert.rejects(
+      modelFetch('https://chatgpt.com/backend-api/codex/responses', {
+        method: 'POST',
+        body: JSON.stringify({ input: [] }),
+      }),
+      (error) => {
+        assert.ok(error instanceof Error);
+        assert.equal(error.name, 'OpenAiCodexHttpError');
+        assert.deepEqual((error as { data?: unknown }).data, {
+          error: { code: 'account_not_authorized' },
+        });
+        return true;
+      },
+    );
     assert.equal(attempts, 4);
   });
 

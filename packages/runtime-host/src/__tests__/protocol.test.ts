@@ -201,6 +201,19 @@ describe('Runtime Host bootstrap protocol', () => {
       HOST_OPERATION_SPECS['access.credential.prepare'].decodeInput(issueInput),
       issueInput,
     );
+    assert.deepEqual(
+      HOST_OPERATION_SPECS['access.credential.prepare'].decodeInput({
+        ...issueInput,
+        bindClientInstance: true,
+      }),
+      { ...issueInput, bindClientInstance: true },
+    );
+    assert.deepEqual(
+      HOST_OPERATION_SPECS['access.credential.finalize'].decodeOutput({
+        reconnectRequired: true,
+      }),
+      { reconnectRequired: true },
+    );
     assert.throws(() =>
       HOST_OPERATION_SPECS['access.credential.prepare'].decodeInput({
         replacementOfCredentialId: 'credential-current',
@@ -228,6 +241,28 @@ describe('Runtime Host bootstrap protocol', () => {
         requiredActiveCredentialId: 'credential-current',
       },
     );
+  });
+
+  test('decodes atomic principal revocation and publishes its compatibility boundary', () => {
+    assert.deepEqual(
+      HOST_OPERATION_SPECS['access.principal.revoke'].decodeInput({
+        principalKind: 'remote_owner',
+        principalId: 'desktop-owner:local-sharing',
+      }),
+      {
+        principalKind: 'remote_owner',
+        principalId: 'desktop-owner:local-sharing',
+      },
+    );
+    assert.deepEqual(
+      HOST_OPERATION_SPECS['access.principal.revoke'].decodeOutput({ revoked: true }),
+      { revoked: true },
+    );
+    assert.ok(RUNTIME_HOST_COMPATIBILITY_EPOCH > 54);
+  });
+
+  test('publishes a new compatibility epoch for Client-bound pairing claims', () => {
+    assert.ok(RUNTIME_HOST_COMPATIBILITY_EPOCH > 53);
   });
 
   test('publishes a new compatibility epoch for provider capacity retry progress', () => {

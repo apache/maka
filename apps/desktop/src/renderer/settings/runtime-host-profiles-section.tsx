@@ -28,6 +28,9 @@ import {
   Switch,
 } from "@astryxdesign/core";
 import type {
+  DesktopLocalRuntimeHostRemoteAccessSnapshot,
+} from '../../preload/bridge-contract.js';
+import type {
   RemoteRuntimeHostProfile,
   RuntimeHostRemoteTransport,
 } from "@maka/runtime-host/client";
@@ -49,6 +52,7 @@ import { settingsActionErrorMessage } from "./settings-error-copy.js";
 import { SettingsField, SettingsRow, SettingsSection } from "./settings-section.js";
 import { RuntimeHostOnboardingDialog } from './runtime-host-onboarding-dialog.js';
 import { RuntimeHostManagementDialog } from './runtime-host-management-dialog.js';
+import { RuntimeHostConnectionCodeDialog } from './runtime-host-connection-code-dialog.js';
 
 type RemoteTransportKind = RuntimeHostRemoteTransport["kind"];
 
@@ -81,12 +85,22 @@ export function RuntimeHostProfilesSection(props: {
   const [showAdd, setShowAdd] = useState(false);
   const [showOnboarding, setShowOnboarding] = useState(false);
   const [managedProfile, setManagedProfile] = useState<RemoteRuntimeHostProfile>();
+  const [localAccess, setLocalAccess] = useState<DesktopLocalRuntimeHostRemoteAccessSnapshot>();
+  const [connectionCodeDialog, setConnectionCodeDialog] = useState<
+    { readonly mode: 'import' } | { readonly mode: 'share'; readonly connectionCode: string }
+  >();
   const [switching, setSwitching] = useState(false);
   const [draft, setDraft] = useState(createRemoteHostDraft);
 
   const reload = useCallback(async () => {
-    const next = await window.maka.runtimeHostProfiles.getSnapshot();
-    if (mountedRef.current) setSnapshot(next);
+    const [next, nextLocalAccess] = await Promise.all([
+      window.maka.runtimeHostProfiles.getSnapshot(),
+      window.maka.localRuntimeHostRemoteAccess.getSnapshot(),
+    ]);
+    if (mountedRef.current) {
+      setSnapshot(next);
+      setLocalAccess(nextLocalAccess);
+    }
   }, [mountedRef]);
 
   useEffect(() => {
@@ -228,6 +242,140 @@ export function RuntimeHostProfilesSection(props: {
     }
   }
 
+  async function enableLocalRemoteAccess(allowInterruptActiveTasks = false): Promise<void> {
+    setSwitching(true);
+    try {
+      const result = await window.maka.localRuntimeHostRemoteAccess.enable({
+        allowInterruptActiveTasks,
+        coordinationRelays: [],
+      });
+      if (result.kind === 'enabled') {
+        setConnectionCodeDialog({ mode: 'share', connectionCode: result.connectionCode });
+      }
+      if (!mountedRef.current) return;
+      if (result.kind === 'active_tasks') {
+        const confirmed = await toast.confirm({
+          title: copy.remoteAccessActiveTasks,
+          description: copy.remoteAccessActiveTasksDescription,
+          confirmLabel: copy.interruptAndEnable,
+          cancelLabel: copy.cancel,
+          destructive: true,
+        });
+        if (confirmed) await enableLocalRemoteAccess(true);
+        return;
+      }
+      setLocalAccess(result.snapshot);
+    } catch (error) {
+      if (mountedRef.current) {
+        toast.error(
+          copy.remoteAccessFailed,
+          settingsActionErrorMessage(error, locale),
+        );
+      }
+    } finally {
+      if (mountedRef.current) setSwitching(false);
+    }
+  }
+
+  async function createLocalConnectionCode(): Promise<void> {
+    setSwitching(true);
+    try {
+      const code = await window.maka.localRuntimeHostRemoteAccess.createConnectionCode();
+      if (mountedRef.current) setConnectionCodeDialog({ mode: 'share', connectionCode: code });
+    } catch (error) {
+      if (mountedRef.current) {
+        toast.error(copy.remoteAccessFailed, settingsActionErrorMessage(error, locale));
+      }
+    } finally {
+      if (mountedRef.current) setSwitching(false);
+    }
+  }
+
+  async function disableLocalRemoteAccess(): Promise<void> {
+    const confirmed = await toast.confirm({
+      title: copy.disableRemoteAccessConfirm,
+      description: copy.disableRemoteAccessDescription,
+      confirmLabel: copy.disableRemoteAccess,
+      cancelLabel: copy.cancel,
+    });
+    if (!confirmed) return;
+    setSwitching(true);
+    try {
+      const next = await window.maka.localRuntimeHostRemoteAccess.disable();
+      if (mountedRef.current) setLocalAccess(next);
+    } catch (error) {
+      if (mountedRef.current) {
+        toast.error(copy.remoteAccessFailed, settingsActionErrorMessage(error, locale));
+      }
+    } finally {
+      if (mountedRef.current) setSwitching(false);
+    }
+  }
+
+  async function revokeLocalSharedAccess(): Promise<void> {
+    const confirmed = await toast.confirm({
+      title: copy.revokeSharedAccessConfirm,
+      description: copy.revokeSharedAccessDescription,
+      confirmLabel: copy.revokeSharedAccess,
+      cancelLabel: copy.cancel,
+      destructive: true,
+    });
+    if (!confirmed) return;
+    setSwitching(true);
+    try {
+      const next = await window.maka.localRuntimeHostRemoteAccess.revokeSharedAccess();
+      if (mountedRef.current) {
+        setLocalAccess(next);
+        toast.success(copy.revokeSharedAccessDone);
+      }
+    } catch (error) {
+      if (mountedRef.current) {
+        toast.error(copy.remoteAccessFailed, settingsActionErrorMessage(error, locale));
+      }
+    } finally {
+      if (mountedRef.current) setSwitching(false);
+    }
+  }
+
+  async function uninstallLocalService(allowInterruptActiveTasks = false): Promise<void> {
+    if (!allowInterruptActiveTasks) {
+      const confirmed = await toast.confirm({
+        title: copy.uninstallLocalServiceConfirm,
+        description: copy.uninstallLocalServiceDescription,
+        confirmLabel: copy.uninstallLocalService,
+        cancelLabel: copy.cancel,
+        destructive: true,
+      });
+      if (!confirmed) return;
+    }
+    setSwitching(true);
+    try {
+      const result = await window.maka.localRuntimeHostRemoteAccess.uninstall({
+        allowInterruptActiveTasks,
+      });
+      if (!mountedRef.current) return;
+      if (result.kind === 'active_tasks') {
+        const confirmed = await toast.confirm({
+          title: copy.remoteAccessActiveTasks,
+          description: copy.uninstallActiveTasksDescription,
+          confirmLabel: copy.interruptAndUninstall,
+          cancelLabel: copy.cancel,
+          destructive: true,
+        });
+        if (confirmed) await uninstallLocalService(true);
+        return;
+      }
+      setLocalAccess({ state: 'off' });
+      toast.success(copy.uninstallLocalServiceDone);
+    } catch (error) {
+      if (mountedRef.current) {
+        toast.error(copy.remoteAccessFailed, settingsActionErrorMessage(error, locale));
+      }
+    } finally {
+      if (mountedRef.current) setSwitching(false);
+    }
+  }
+
   const remoteEntries = snapshot?.entries.filter((entry) => entry.profile.kind === "remote") ?? [];
   const profileOptions = (snapshot?.entries ?? [])
     .filter((entry) => entry.enabled)
@@ -253,6 +401,88 @@ export function RuntimeHostProfilesSection(props: {
             />
           </HStack>}
         />
+        <SettingsRow
+          label={copy.thisComputerRemoteAccess}
+          description={
+            localAccess?.state === 'unsupported'
+              ? localAccess.message
+              : localAccess?.state === 'unavailable'
+                ? localAccess.message
+                : copy.thisComputerRemoteAccessHelp
+          }
+          end={(
+            <HStack gap={2} align="center">
+              <Badge
+                variant="neutral"
+                label={localAccess?.state === 'on' ? copy.remoteAccessOn : copy.remoteAccessOff}
+              />
+              {localAccess?.state === 'on' ? (
+                <MoreMenu
+                  label={copy.thisComputerRemoteAccess}
+                  size="sm"
+                  items={[
+                    {
+                      label: copy.createConnectionCode,
+                      isDisabled: switching,
+                      onClick: () => void createLocalConnectionCode(),
+                    },
+                    ...(localAccess.sharedAccess
+                      ? [{
+                          label: copy.revokeSharedAccess,
+                          isDisabled: switching,
+                          onClick: () => void revokeLocalSharedAccess(),
+                        }]
+                      : []),
+                    {
+                      label: copy.disableRemoteAccess,
+                      isDisabled: switching,
+                      onClick: () => void disableLocalRemoteAccess(),
+                    },
+                    {
+                      label: copy.uninstallLocalService,
+                      isDisabled: switching,
+                      onClick: () => void uninstallLocalService(),
+                    },
+                  ]}
+                />
+              ) : (
+                <>
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    label={copy.enableRemoteAccess}
+                    isDisabled={
+                      switching ||
+                      !localAccess ||
+                      localAccess.state === 'unsupported'
+                    }
+                    onClick={() => void enableLocalRemoteAccess()}
+                  />
+                  {localAccess?.state === 'off' && localAccess.managedService ? (
+                    <MoreMenu
+                      label={copy.thisComputerRemoteAccess}
+                      size="sm"
+                      items={[
+                        ...(localAccess.sharedAccess
+                          ? [{
+                              label: copy.revokeSharedAccess,
+                              isDisabled: switching,
+                              onClick: () => void revokeLocalSharedAccess(),
+                            }]
+                          : []),
+                        {
+                          label: copy.uninstallLocalService,
+                          isDisabled: switching,
+                          onClick: () => void uninstallLocalService(),
+                        },
+                      ]}
+                    />
+                  ) : null}
+                </>
+              )}
+            </HStack>
+          )}
+        />
       </SettingsSection>
 
       <SettingsSection
@@ -269,12 +499,21 @@ export function RuntimeHostProfilesSection(props: {
                 setShowOnboarding(true);
               }}
             />
-            <Button
-              variant="secondary"
+            <MoreMenu
+              label={copy.moreActions(copy.remoteTitle)}
               size="sm"
-              label={showAdd ? copy.cancel : copy.configureManually}
-              isDisabled={switching}
-              onClick={toggleAdd}
+              items={[
+                {
+                  label: copy.useConnectionCode,
+                  isDisabled: switching,
+                  onClick: () => setConnectionCodeDialog({ mode: 'import' }),
+                },
+                {
+                  label: showAdd ? copy.cancel : copy.configureManually,
+                  isDisabled: switching,
+                  onClick: toggleAdd,
+                },
+              ]}
             />
           </HStack>
         }
@@ -462,6 +701,22 @@ export function RuntimeHostProfilesSection(props: {
           void reload();
         }}
       />
+      {connectionCodeDialog?.mode === 'import' ? (
+        <RuntimeHostConnectionCodeDialog
+          mode="import"
+          onClose={() => setConnectionCodeDialog(undefined)}
+          onImported={(profileId) => {
+            props.onRemoteHostAdded(profileId);
+            void reload();
+          }}
+        />
+      ) : connectionCodeDialog ? (
+        <RuntimeHostConnectionCodeDialog
+          mode="share"
+          connectionCode={connectionCodeDialog.connectionCode}
+          onClose={() => setConnectionCodeDialog(undefined)}
+        />
+      ) : null}
     </>
   );
 }

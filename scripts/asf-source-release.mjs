@@ -25,6 +25,7 @@ import {
   createReadStream,
   existsSync,
   linkSync,
+  lstatSync,
   mkdirSync,
   mkdtempSync,
   openSync,
@@ -35,7 +36,7 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { basename, dirname, join, resolve } from 'node:path';
+import { basename, dirname, extname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const defaultRepoRoot = resolve(import.meta.dirname, '..');
@@ -45,6 +46,81 @@ const requiredReleaseDocuments = ['DISCLAIMER-WIP', 'LICENSE', 'NOTICE'];
 const requiredRootFiles = [...requiredReleaseDocuments, 'package.json', 'package-lock.json'];
 const forbiddenSegments = new Set(['.agents', '.claude', '.git', '.maka-shots', 'node_modules']);
 const forbiddenRootFiles = new Set(['maka-proposal-zh-review.txt']);
+const knownNonCategoryXLicenses = new Set([
+  '(AFL-2.1 OR BSD-3-Clause)',
+  '(MIT OR CC0-1.0)',
+  '(MPL-2.0 OR Apache-2.0)',
+  '(WTFPL OR MIT)',
+  '0BSD',
+  'Apache-2.0',
+  'BSD',
+  'BSD-2-Clause',
+  'BSD-3-Clause',
+  'BlueOak-1.0.0',
+  'CC-BY-4.0',
+  'CC0-1.0',
+  'ISC',
+  'MIT',
+  'MIT OR Apache-2.0',
+  'MPL-2.0',
+  'OFL-1.1',
+  'Public Domain',
+  'Python-2.0',
+  'Unlicense',
+  'WTFPL',
+  'WTFPL OR ISC',
+]);
+const categoryXLicensePattern = /(?:^|[^A-Za-z])(?:A?GPL|LGPL)-?\d/i;
+const packageDependencyFields = [
+  'dependencies',
+  'devDependencies',
+  'optionalDependencies',
+  'peerDependencies',
+];
+const bundledDependencyFields = ['bundleDependencies', 'bundledDependencies'];
+const textSourceExtensions = new Set([
+  '.cjs',
+  '.css',
+  '.csv',
+  '.html',
+  '.js',
+  '.json',
+  '.jsonc',
+  '.jsonl',
+  '.lock',
+  '.md',
+  '.mjs',
+  '.mts',
+  '.nsh',
+  '.patch',
+  '.paths',
+  '.plist',
+  '.ps1',
+  '.py',
+  '.rs',
+  '.sh',
+  '.sql',
+  '.svg',
+  '.swift',
+  '.toml',
+  '.ts',
+  '.tsv',
+  '.tsx',
+  '.txt',
+  '.yaml',
+  '.yml',
+]);
+const textSourceBasenames = new Set([
+  '.git-blame-ignore-revs',
+  '.gitattributes',
+  '.gitignore',
+  '.mailmap',
+  'DISCLAIMER-WIP',
+  'Dockerfile',
+  'LICENSE',
+  'NOTICE',
+  'network-policy',
+]);
 const maxCommandBuffer = 64 * 1024 * 1024;
 const rejectedGpgStatuses = new Set([
   'BADSIG',
@@ -87,11 +163,18 @@ export function parseSha512File(contents, expectedArchiveName) {
 export function validateArchiveEntries(entries, rootDirectory) {
   const rootPrefix = `${rootDirectory}/`;
   const seen = new Set();
+  const portableEntries = new Map();
 
   for (const entry of entries) {
     if (!entry) continue;
     if (seen.has(entry)) throw new Error(`Duplicate archive entry: ${entry}`);
     seen.add(entry);
+    const portableEntry = entry.normalize('NFC').toLowerCase();
+    const conflictingEntry = portableEntries.get(portableEntry);
+    if (conflictingEntry && conflictingEntry !== entry) {
+      throw new Error(`Cross-platform archive entry collision: ${conflictingEntry}, ${entry}`);
+    }
+    portableEntries.set(portableEntry, entry);
 
     if (entry.startsWith('/') || entry.includes('\\')) {
       throw new Error(`Unsafe archive entry: ${entry}`);
@@ -190,7 +273,7 @@ export async function verifySourceCandidate({ archivePath, keysPath }) {
     maxBuffer: maxCommandBuffer,
   }).split(/\r?\n/);
   validateArchiveEntries(entries, identity.rootDirectory);
-  validateArchiveContents(archivePath, identity);
+  validateArchiveContents(archivePath, identity, entries);
 
   return { archivePath, digest, rootDirectory: identity.rootDirectory, version: identity.version };
 }
@@ -456,39 +539,351 @@ async function sha512(path) {
   return hash.digest('hex');
 }
 
-function validateArchiveContents(archivePath, identity) {
-  for (const requiredFile of requiredReleaseDocuments) {
-    const contents = execTar(archivePath, ['-xOzf', `${identity.rootDirectory}/${requiredFile}`], {
-      encoding: 'utf8',
-      maxBuffer: maxCommandBuffer,
+function validateArchiveContents(archivePath, identity, entries) {
+  const temporaryRoot = mkdtempSync(join(tmpdir(), 'maka-asf-contents-'));
+  try {
+    execTar(archivePath, ['-xzf', '-C', temporaryRoot], { stdio: 'ignore' });
+    const candidateRoot = join(temporaryRoot, identity.rootDirectory);
+    for (const entry of entries.filter(Boolean)) {
+      const path = join(temporaryRoot, entry);
+      const type = lstatSync(path);
+      if (!type.isDirectory() && !type.isFile()) {
+        throw new Error(`Unsupported archive entry type: ${entry}`);
+      }
+    }
+
+    for (const requiredFile of requiredReleaseDocuments) {
+      const contents = readFileSync(join(candidateRoot, requiredFile), 'utf8');
+      if (!contents.trim()) throw new Error(`${requiredFile} is empty`);
+      if (
+        requiredFile === 'DISCLAIMER-WIP' &&
+        (!contents.includes('Apache Maka') || !contents.includes('incubation'))
+      ) {
+        throw new Error('DISCLAIMER-WIP does not identify Apache Maka as an incubating project');
+      }
+    }
+
+    const packageJson = JSON.parse(readFileSync(join(candidateRoot, 'package.json'), 'utf8'));
+    const packageLock = JSON.parse(readFileSync(join(candidateRoot, 'package-lock.json'), 'utf8'));
+    validatePackageVersions({
+      packageJson,
+      packageLock,
+      source: basename(archivePath),
+      version: identity.version,
     });
-    if (!contents.trim()) throw new Error(`${requiredFile} is empty`);
-    if (
-      requiredFile === 'DISCLAIMER-WIP' &&
-      (!contents.includes('Apache Maka') || !contents.includes('incubation'))
-    ) {
-      throw new Error('DISCLAIMER-WIP does not identify Apache Maka as an incubating project');
+    validateNodePackageInputs(candidateRoot, identity, entries);
+    validateNonTextInputs(candidateRoot, identity, entries);
+  } finally {
+    rmSync(temporaryRoot, { force: true, recursive: true });
+  }
+}
+
+function validateNodePackageInputs(candidateRoot, identity, entries) {
+  const files = entries.filter((entry) => entry && !entry.endsWith('/'));
+  const rootPrefix = `${identity.rootDirectory}/`;
+  const readEntry = (entry) =>
+    readFileSync(join(candidateRoot, entry.slice(rootPrefix.length)), 'utf8');
+  const noticeLicenses = new Map();
+  const generatedNpmNotice = `${rootPrefix}apps/desktop/resources/licenses/npm/THIRD_PARTY_NOTICES.txt`;
+  if (files.includes(generatedNpmNotice)) {
+    const entry = generatedNpmNotice;
+    for (const block of readEntry(entry).split(/\n={20,}\n/u)) {
+      const packageKey = /^Package: (.+)$/mu.exec(block)?.[1];
+      const license = /^Selected license: (.+)$/mu.exec(block)?.[1];
+      if (!packageKey || !license) continue;
+      const previous = noticeLicenses.get(packageKey);
+      if (previous && previous !== license) {
+        throw new Error(`Conflicting license inventory for ${packageKey}: ${previous}, ${license}`);
+      }
+      noticeLicenses.set(packageKey, license);
     }
   }
 
-  const packageJson = JSON.parse(
-    execTar(archivePath, ['-xOzf', `${identity.rootDirectory}/package.json`], {
-      encoding: 'utf8',
-      maxBuffer: maxCommandBuffer,
-    }),
+  const lockEntries = files.filter((name) =>
+    /\/(?:package-lock|npm-shrinkwrap)\.json$/u.test(name),
   );
-  const packageLock = JSON.parse(
-    execTar(archivePath, ['-xOzf', `${identity.rootDirectory}/package-lock.json`], {
-      encoding: 'utf8',
-      maxBuffer: maxCommandBuffer,
-    }),
+  const parsedLocks = new Map();
+  const readLock = (entry) => {
+    if (parsedLocks.has(entry)) return parsedLocks.get(entry);
+    const lock = parseArchiveJson(readEntry(entry), entry);
+    if (lock.lockfileVersion !== 3 || Object.hasOwn(lock, 'dependencies')) {
+      throw new Error(
+        `Unsupported npm lockfile version ${lock.lockfileVersion} or schema: ${entry}`,
+      );
+    }
+    if (!lock.packages || typeof lock.packages !== 'object' || Array.isArray(lock.packages)) {
+      throw new Error(`Cannot safely classify package lockfile without packages: ${entry}`);
+    }
+    parsedLocks.set(entry, lock);
+    return lock;
+  };
+
+  const manifests = new Map(
+    files
+      .filter((name) => name.endsWith('/package.json'))
+      .map((entry) => [entry, parseArchiveJson(readEntry(entry), entry)]),
   );
-  validatePackageVersions({
-    packageJson,
-    packageLock,
-    source: basename(archivePath),
-    version: identity.version,
+  const rootLockEntry = `${rootPrefix}package-lock.json`;
+  for (const [entry, manifest] of manifests) {
+    if (manifest.license) validateReleaseLicense(manifest.license, entry);
+    else if (manifest.private !== true) {
+      throw new Error(`Cannot safely classify package manifest without a license: ${entry}`);
+    }
+    const dependencyNames = declaredPackageDependencies(manifest, entry);
+    if (dependencyNames.length > 0) {
+      const directory = dirname(entry);
+      const lockEntry = [
+        `${directory}/npm-shrinkwrap.json`,
+        `${directory}/package-lock.json`,
+        rootLockEntry,
+      ].find((name) => lockEntries.includes(name));
+      if (!lockEntry) {
+        throw new Error(`Cannot safely classify package manifest ${entry} without lock provenance`);
+      }
+      const lock = readLock(lockEntry);
+      for (const name of dependencyNames) {
+        if (
+          !Object.keys(lock.packages).some(
+            (lockPath) =>
+              lockPath === `node_modules/${name}` || lockPath.endsWith(`/node_modules/${name}`),
+          )
+        ) {
+          throw new Error(
+            `Cannot safely classify ${name} declared by ${entry} without matching lock provenance`,
+          );
+        }
+      }
+    }
+  }
+
+  for (const entry of files.filter((name) => /\/(?:pnpm-lock\.yaml|yarn\.lock)$/u.test(name))) {
+    throw new Error(`Cannot safely classify unsupported package lockfile: ${entry}`);
+  }
+  for (const entry of lockEntries) {
+    const lock = readLock(entry);
+    for (const [lockPath, dependency] of Object.entries(lock.packages)) {
+      if (!lockPath) continue;
+      if (dependency?.link === true) {
+        const name = lockPath.slice(lockPath.lastIndexOf('node_modules/') + 13);
+        const targetManifestEntry = join(dirname(entry), dependency.resolved ?? '', 'package.json');
+        const targetManifest = manifests.get(targetManifestEntry);
+        const targetLockPath = dependency.resolved;
+        const targetLock = targetLockPath ? lock.packages[targetLockPath] : undefined;
+        if (
+          !targetManifest ||
+          targetManifest.name !== name ||
+          !targetLock ||
+          targetLock.name !== targetManifest.name ||
+          targetLock.version !== targetManifest.version
+        ) {
+          throw new Error(`Cannot safely classify workspace link ${name} in ${entry}`);
+        }
+        continue;
+      }
+      if (!lockPath.includes('node_modules/')) {
+        const manifestEntry = join(dirname(entry), lockPath, 'package.json');
+        const manifest = manifests.get(manifestEntry);
+        if (!manifest || manifest.name !== dependency.name) {
+          throw new Error(`Cannot safely classify workspace package ${lockPath} in ${entry}`);
+        }
+        if (dependency.version !== manifest.version) {
+          throw new Error(`Workspace version mismatch for ${lockPath} in ${entry}`);
+        }
+        if (dependency.license) {
+          validateReleaseLicense(dependency.license, `${lockPath} in ${entry}`);
+        }
+        continue;
+      }
+      const name = dependency.name ?? lockPath.slice(lockPath.lastIndexOf('node_modules/') + 13);
+      const version = dependency.version;
+      const packageKey = version ? `${name}@${version}` : undefined;
+      const license =
+        (packageKey ? noticeLicenses.get(packageKey) : undefined) ?? dependency.license;
+      if (!license) {
+        throw new Error(
+          `Cannot safely classify ${name}${version ? `@${version}` : ''} in ${entry}`,
+        );
+      }
+      validateReleaseLicense(license, `${name}${version ? `@${version}` : ''} in ${entry}`);
+    }
+  }
+}
+
+function declaredPackageDependencies(manifest, entry) {
+  const names = new Set();
+  for (const field of packageDependencyFields) {
+    const dependencies = manifest[field];
+    if (dependencies === undefined) continue;
+    if (!dependencies || typeof dependencies !== 'object' || Array.isArray(dependencies)) {
+      throw new Error(`Invalid ${field} in package manifest: ${entry}`);
+    }
+    for (const name of Object.keys(dependencies)) names.add(name);
+  }
+  for (const field of bundledDependencyFields) {
+    const dependencies = manifest[field];
+    if (dependencies === undefined) continue;
+    if (!Array.isArray(dependencies) || dependencies.some((name) => typeof name !== 'string')) {
+      throw new Error(`Invalid ${field} in package manifest: ${entry}`);
+    }
+    for (const name of dependencies) names.add(name);
+  }
+  return [...names];
+}
+
+function parseArchiveJson(contents, entry) {
+  try {
+    return JSON.parse(contents);
+  } catch (error) {
+    throw new Error(`Invalid JSON release input: ${entry}`, { cause: error });
+  }
+}
+
+function validateReleaseLicense(license, source) {
+  if (typeof license !== 'string' || !license.trim()) {
+    throw new Error(`Cannot safely classify the license for ${source}`);
+  }
+  if (categoryXLicensePattern.test(license)) {
+    throw new Error(`Category X dependency ${source} declares ${license}`);
+  }
+  if (!knownNonCategoryXLicenses.has(license)) {
+    throw new Error(`Cannot safely classify license ${license} for ${source}`);
+  }
+}
+
+function validateNonTextInputs(candidateRoot, identity, entries) {
+  const files = entries.filter((entry) => entry && !entry.endsWith('/'));
+  const readEntry = (entry) =>
+    readFileSync(join(candidateRoot, entry.slice(`${identity.rootDirectory}/`.length)));
+  const provenanceEntry = `${identity.rootDirectory}/docs/code-origin-audit.md`;
+  const provenancePatterns = files.includes(provenanceEntry)
+    ? sourceNonTextProvenancePatterns(readEntry(provenanceEntry).toString('utf8'))
+    : [];
+  const decoder = new TextDecoder('utf-8', { fatal: true });
+
+  for (const entry of files) {
+    const contents = readEntry(entry);
+    const compiledFormat = compiledArtifactFormat(contents);
+    if (compiledFormat) {
+      throw new Error(`Compiled artifact ${entry} has forbidden ${compiledFormat} content`);
+    }
+    try {
+      const text = decoder.decode(contents);
+      const basename = entry.slice(entry.lastIndexOf('/') + 1);
+      const extension = extname(basename).toLowerCase();
+      if (
+        !/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/u.test(text) &&
+        (textSourceExtensions.has(extension) || textSourceBasenames.has(basename))
+      ) {
+        continue;
+      }
+    } catch {
+      // Invalid UTF-8 continues to the candidate-owned provenance inventory.
+    }
+    const imageFormat = sourceImageFormat(contents);
+    const relativePath = entry.slice(`${identity.rootDirectory}/`.length);
+    if (
+      provenancePatterns.some((pattern) => sourceInventoryPatternMatches(pattern, relativePath))
+    ) {
+      continue;
+    }
+    throw new Error(
+      `Cannot safely classify non-text release input ${entry}${imageFormat ? ` (${imageFormat})` : ''}`,
+    );
+  }
+}
+
+function compiledArtifactFormat(contents) {
+  const prefix = contents.subarray(0, 8);
+  if (prefix.subarray(0, 4).equals(Buffer.from([0x7f, 0x45, 0x4c, 0x46]))) return 'ELF';
+  if (prefix.subarray(0, 2).equals(Buffer.from('MZ'))) return 'PE';
+  if (prefix.subarray(0, 4).equals(Buffer.from([0x00, 0x61, 0x73, 0x6d]))) return 'WASM';
+  if (prefix.subarray(0, 4).equals(Buffer.from([0xbe, 0xba, 0xfe, 0xca]))) {
+    return 'Mach-O fat little-endian';
+  }
+  if (prefix.subarray(0, 4).equals(Buffer.from([0xbf, 0xba, 0xfe, 0xca]))) {
+    return 'Mach-O fat64 little-endian';
+  }
+  if (
+    [
+      [0xfe, 0xed, 0xfa, 0xce],
+      [0xfe, 0xed, 0xfa, 0xcf],
+      [0xce, 0xfa, 0xed, 0xfe],
+      [0xcf, 0xfa, 0xed, 0xfe],
+      [0xca, 0xfe, 0xba, 0xbe],
+      [0xca, 0xfe, 0xba, 0xbf],
+    ].some((magic) => prefix.subarray(0, 4).equals(Buffer.from(magic)))
+  ) {
+    return 'Mach-O';
+  }
+  if (
+    [
+      [0x50, 0x4b, 0x03, 0x04],
+      [0x50, 0x4b, 0x05, 0x06],
+      [0x50, 0x4b, 0x07, 0x08],
+    ].some((magic) => contents.indexOf(Buffer.from(magic)) !== -1)
+  ) {
+    return 'ZIP/JAR';
+  }
+  if (prefix.equals(Buffer.from('!<arch>\n'))) return 'ar archive';
+  if (prefix.equals(Buffer.from('!<thin>\n'))) return 'thin ar archive';
+  return undefined;
+}
+
+function sourceImageFormat(contents) {
+  const prefix = contents.subarray(0, 12);
+  if (prefix.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]))) return 'PNG';
+  if (prefix.subarray(0, 3).equals(Buffer.from([0xff, 0xd8, 0xff]))) return 'JPEG';
+  if (
+    prefix
+      .subarray(0, 6)
+      .toString('ascii')
+      .match(/^GIF8[79]a$/u)
+  )
+    return 'GIF';
+  if (
+    prefix.subarray(0, 4).toString('ascii') === 'RIFF' &&
+    prefix.subarray(8, 12).toString('ascii') === 'WEBP'
+  ) {
+    return 'WebP';
+  }
+  return undefined;
+}
+
+function sourceNonTextProvenancePatterns(provenance) {
+  const section = provenance
+    .split('### Source archive non-text inventory\n', 2)[1]
+    ?.split(/\n#{1,3} /u, 1)[0];
+  if (!section) return [];
+  return [...section.matchAll(/^- `([^`]+)`:/gmu)].map((match) => {
+    const pattern = match[1];
+    if (
+      pattern.startsWith('/') ||
+      pattern.startsWith('*') ||
+      pattern.startsWith('?') ||
+      pattern.split('/').includes('..')
+    ) {
+      throw new Error(`Unsafe source archive inventory pattern: ${pattern}`);
+    }
+    return pattern;
   });
+}
+
+function sourceInventoryPatternMatches(pattern, path) {
+  let expression = '';
+  for (let index = 0; index < pattern.length; index += 1) {
+    if (pattern.slice(index, index + 3) === '**/') {
+      expression += '(?:.*/)?';
+      index += 2;
+    } else if (pattern.slice(index, index + 2) === '**') {
+      expression += '.*';
+      index += 1;
+    } else if (pattern[index] === '*') {
+      expression += '[^/]*';
+    } else {
+      expression += pattern[index].replace(/[.+?^${}()|[\]\\]/u, '\\$&');
+    }
+  }
+  return new RegExp(`^${expression}$`, 'u').test(path);
 }
 
 function verifyDetachedSignature({ archivePath, keysPath, signaturePath }) {

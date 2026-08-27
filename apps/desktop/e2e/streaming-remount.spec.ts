@@ -25,6 +25,13 @@ import {
 import type { Locator } from '@playwright/test';
 import { COMPOSER_INPUT, ensureSidebarExpanded, expect, test } from './fixtures';
 
+interface SessionObservationLatchWindow extends Window {
+  /** E2E-only preload affordance; see the MAKA_E2E block in preload.ts. */
+  makaE2eLatch?: {
+    rejectNextSessionObservation(message: string): void;
+  };
+}
+
 function sessionRow(sidebar: Locator, sessionId: string): Locator {
   return sidebar.locator(`[data-session-id=${JSON.stringify(sessionId)}]`);
 }
@@ -35,6 +42,28 @@ async function steerActiveTurn(composer: Locator, text: string): Promise<void> {
   await composer.fill(text);
   await composer.press('Shift+Enter');
 }
+
+test('a failed first observation seed reconnects to the live Turn', async ({ window: page }) => {
+  const latchInstalled = await page.evaluate(() => {
+    const latch = (window as SessionObservationLatchWindow).makaE2eLatch;
+    if (!latch) return false;
+    latch.rejectNextSessionObservation('forced first observation failure');
+    return true;
+  });
+  expect(latchInstalled, 'the preload E2E latch is installed').toBe(true);
+
+  const composer = page.locator(COMPOSER_INPUT);
+  await composer.fill(FAKE_HOLD_OPEN_PROMPT);
+  await composer.press('Enter');
+
+  await expect(page.locator('.maka-bubble-streaming')).toContainText(
+    'Fake backend waiting',
+  );
+  await page.getByRole('button', { name: '停止' }).click();
+  await expect(page.getByRole('button', { name: '重新生成' })).toHaveCount(1, {
+    timeout: 20_000,
+  });
+});
 
 test('remounting a live surface leaves accumulated output settled', async ({
   window: page,
@@ -130,7 +159,7 @@ test('keeps a completed reply after an interrupted turn and conversation remount
   await composer.fill(FAKE_HOLD_OPEN_PROMPT);
   await composer.press('Enter');
   await expect(page.locator('.maka-bubble-streaming')).toContainText(
-    'Fake backend waiting for the test to stop the Turn.',
+    'Fake backend waiting',
   );
   const originalSessionId = await sidebar
     .locator('[data-session-id]:has([aria-current="page"])')

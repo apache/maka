@@ -64,6 +64,7 @@ import {
   prepareAccessCredentialRotation,
   replaceAccessCredential,
   revokeAccessCredential,
+  revokeAccessPrincipal,
   revokeAccessCredentialRotation,
   type RuntimeHostAccessAuthority,
 } from './access-authority.js';
@@ -438,6 +439,9 @@ export class RuntimeHostKernel {
         compositionRevision: this.compositionDescriptor.revision,
       };
     }
+    if (authority.clientInstanceId && authority.clientInstanceId !== hello.clientInstanceId) {
+      throw new Error('Runtime Host access credential belongs to another Client');
+    }
     const selectedProtocol = negotiateProtocol(
       { min: hello.protocolMin, max: hello.protocolMax },
       HOST_PROTOCOL,
@@ -664,6 +668,10 @@ export class RuntimeHostKernel {
           this.#settleAccessCredentialMutation(
             revokeAccessCredential(this.#options.accessAuthority, input),
           ),
+        'access.principal.revoke': async (input) =>
+          this.#settleAccessCredentialMutation(
+            revokeAccessPrincipal(this.#options.accessAuthority, input),
+          ),
         'access.credential.rotation.prepare': async (input) =>
           this.#settleAccessCredentialMutation(
             prepareAccessCredentialRotation(this.#options.accessAuthority, input),
@@ -674,7 +682,11 @@ export class RuntimeHostKernel {
           ),
         'access.credential.finalize': async (_input, context) =>
           this.#settleAccessCredentialMutation(
-            finalizeAccessCredential(this.#options.accessAuthority, context.credentialId),
+            finalizeAccessCredential(
+              this.#options.accessAuthority,
+              context.credentialId,
+              context.clientInstanceId,
+            ),
           ),
       },
       domainHandlers,

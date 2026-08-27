@@ -102,8 +102,6 @@
 }
 
 .maka-chat-message-bubble-assistant {
-  width: 100%;
-  max-width: none;
   padding: var(--space-0-5) 0 0;
 }
 
@@ -247,18 +245,6 @@
     animation: none;
   }
 }
-
-/* --- Assistant bubble shell ----------------------------------------------- */
-/* User message: a tinted Astryx bubble anchored to the right, sized by the
-   primitive's own compact-density geometry. */
-/* Assistant: no bubble — just text on background, like an editor. The
-   Markdown typography and block rhythm belong to Astryx, so the shell keeps
-   only container geometry.
-   The reading measure is inherited from the conversation surface shared with
-   the composer, so the assistant block matches the composer width. */
-/* The streaming ▎ caret + its trailing-<p> inline hack were retired by the
-   streaming UI rework. Chat smooths the visible text before it reaches
-   Markdown; PR 8 owns the remaining streaming and scroll-anchoring boundary. */
 
 /* --- User-turn meta row (relocated from tool-output.css) ----------------- */
 /* The time is an Astryx `Timestamp`, so the quiet register (supporting tier,

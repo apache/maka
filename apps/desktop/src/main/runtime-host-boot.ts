@@ -169,6 +169,8 @@ import {
 } from "./runtime-host-ssh-terminal.js";
 import { createRuntimeHostSetupPackageResolver } from "./runtime-host-setup-package.js";
 import { configureDesktopRuntimeHostPeerClient } from './runtime-host-peer-client.js';
+import { createDesktopRuntimeHostLocalOperator } from './runtime-host-local-operator.js';
+import { createDesktopLocalRuntimeHostRemoteAccess } from './runtime-host-local-remote-access.js';
 import { createDesktopRuntimeHostOnboarding } from "./runtime-host-onboarding.js";
 import { createDesktopRuntimeHostManagement } from "./runtime-host-management.js";
 import { registerRuntimeHostOAuthIpc } from "./runtime-host-oauth-ipc-main.js";
@@ -380,6 +382,17 @@ const runtimeHostSetupPackage = createRuntimeHostSetupPackageResolver({
   isPackaged: app.isPackaged,
   appPath: app.getAppPath(),
   environment: process.env,
+});
+const localRuntimeHostOperator = createDesktopRuntimeHostLocalOperator();
+const localRuntimeHostRemoteAccess = createDesktopLocalRuntimeHostRemoteAccess({
+  ipcMain,
+  clientDataRoot: userDataDir,
+  rootPath: startupLocalStorageRoot.canonicalPath,
+  rootId: startupLocalStorageRoot.rootId,
+  directPeerAvailable: runtimeHostDirectPeerAvailable,
+  manager: () => runtimeHostManager,
+  resolveSetupPackage: runtimeHostSetupPackage.resolve,
+  operator: localRuntimeHostOperator,
 });
 const native = assembleDesktopNativeCapabilities({
   isComputerUseRealModelE2e,
@@ -916,6 +929,9 @@ runtimeHostManager = await startRuntimeHostDesktopManager(
 });
 wireLifecycle();
 runtimeHostManager.setDefaultProfile(runtimeHostStartup.preferences.defaultProfileId);
+await localRuntimeHostRemoteAccess.recover().catch((error: unknown) => {
+  console.error('[runtime-host] interrupted Local Host setup could not be recovered:', error);
+});
 void runtimeHostProfileService.startEnabledProfiles();
 const unavailableDefault = runtimeHostStartup.unavailable.get(
   runtimeHostStartup.preferences.defaultProfileId,
@@ -1591,6 +1607,7 @@ async function closeRuntimeHostDesktop(): Promise<void> {
     Promise.resolve().then(() => runtimeHostManagement.close()),
     runtimeHostManager?.close(),
     runtimeHostOnboarding.close(),
+    localRuntimeHostRemoteAccess.close(),
     runtimeHostSetupPackage.close(),
     Promise.resolve().then(() => workBoardIpc.close()),
     runtimeHostSshTerminal.close(),

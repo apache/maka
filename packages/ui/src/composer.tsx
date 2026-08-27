@@ -478,6 +478,7 @@ export const Composer = forwardRef<
   const composerMountedRef = useMountedRef();
   const sendPendingRef = useRef(false);
   const compositionActiveRef = useRef(false);
+  const plainTextPasteInputActiveRef = useRef(false);
   const importActionOwnerRef = useRef<ChatInputActionOwner<ComposerImportActionId> | null>(null);
   if (!importActionOwnerRef.current) {
     importActionOwnerRef.current = createChatInputActionOwner((action) => {
@@ -1681,6 +1682,9 @@ export const Composer = forwardRef<
           input={(
             <div
               className="maka-composer-input"
+              onInputCapture={(event) => {
+                if (plainTextPasteInputActiveRef.current) event.stopPropagation();
+              }}
               // PR-FE-BUG-HUNT-10: a paste that lands mid-CJK-composition must
               // not be consumed — `ChatComposerInput` always preventDefault()s
               // the paste, which would interrupt the IME mid-character. The
@@ -1711,6 +1715,36 @@ export const Composer = forwardRef<
                 hasHistory={false}
                 triggers={triggers}
                 pasteAsToken={pasteAsToken}
+                onPaste={(event, pasted) => {
+                  // Astryx has already offered token-adjacent, file, and
+                  // reference-sized-token pastes before it reaches this seam.
+                  const plainTextContainer = document.createElement('div');
+                  plainTextContainer.textContent = pasted;
+                  const menuWasOpen = event.currentTarget.getAttribute('aria-expanded') === 'true';
+                  plainTextPasteInputActiveRef.current = true;
+                  try {
+                    // Deprecated, but still the composer's only insertion
+                    // primitive that creates a browser undo transaction.
+                    // Migrate when Astryx exposes a transactional plain-text
+                    // insertion authority.
+                    return document.execCommand(
+                      'insertHTML',
+                      false,
+                      plainTextContainer.innerHTML.replace(/\r\n?|\n/g, '<br>'),
+                    );
+                  } finally {
+                    plainTextPasteInputActiveRef.current = false;
+                    if (menuWasOpen) {
+                      event.currentTarget.dispatchEvent(
+                        new KeyboardEvent('keydown', {
+                          key: 'Escape',
+                          bubbles: true,
+                          cancelable: true,
+                        }),
+                      );
+                    }
+                  }
+                }}
                 onFiles={onInputFiles}
                 onKeyDown={onInputKeyDown}
                 onCompositionStart={() => { compositionActiveRef.current = true; }}

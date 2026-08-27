@@ -1420,7 +1420,9 @@ describe('non-serving Runtime Host kernel', () => {
     });
   });
 
-  test('startup failure preserves its cause when shutdown reaches the active deadline', async () => {
+  test('startup failure preserves its cause when shutdown reaches the active deadline', {
+    timeout: 10_000,
+  }, async (t) => {
     await withHostPaths(async (paths) => {
       const capability = await resolveStorageRoot({ path: paths.root, kind: 'interactive' });
       const owner = await tryAcquireInteractiveRootOwner(capability);
@@ -1434,6 +1436,19 @@ describe('non-serving Runtime Host kernel', () => {
         releaseClose = resolve;
       });
       const lifecycle: string[] = [];
+
+      // Fake timers isolate the shutdownGraceMs deadline from real I/O jitter
+      // (registration writes, listener admission, storage-root binding) that
+      // #closeResources() performs before it ever calls composition.close().
+      // On a loaded runner that real work alone can exceed a real 100ms
+      // deadline, aborting shutdown via #assertShutdownCanContinue() before
+      // close() is entered at all — closeEntered then never resolves, and the
+      // test fails with "composition close did not begin" despite the kernel
+      // behaving correctly. Enabling mock timers only after `owner` is already
+      // acquired keeps the earlier real lock-acquisition path (which does poll
+      // via a real setTimeout in @maka/storage's file-update-lock) unaffected.
+      t.mock.timers.enable({ apis: ['setTimeout'] });
+
       const hostTask = RuntimeHostKernel.start({
         owner,
         idleGraceMs: 10_000,
@@ -1460,10 +1475,22 @@ describe('non-serving Runtime Host kernel', () => {
       );
 
       try {
-        // The storage/owner/drain chain before the close hook can exceed 1s
-        // on loaded CI runners (see #3840); tolerate that without weakening
-        // shutdownGraceMs, which still exercises the active-deadline path.
+        // #3844 widened these budgets to tolerate real wall-clock jitter on a
+        // loaded runner (see #3840). Fake timers remove that jitter, so these
+        // withTimeout wrappers no longer tolerate anything real - they are
+        // deliberate redundancy, kept only so a genuine regression (close()
+        // never entered, or startupFailure never settling after the tick)
+        // fails fast with a named error instead of the generic message from
+        // the outer 10_000ms test timeout.
         await withTimeout(closeEntered, 5_000, 'composition close did not begin');
+        // Deliberately fire the shutdown deadline now that close() is
+        // confirmed to be genuinely stuck on closeReleased - the exact
+        // scenario this test exists to exercise, reproduced deterministically
+        // instead of raced against wall-clock jitter.
+        t.mock.timers.tick(100);
+        // Let the promise chain settle after the synchronous timer callback
+        // (same pattern as gitoxide-helper-invocation-internal.test.ts).
+        await new Promise<void>((resolve) => setImmediate(resolve));
         const error = await withTimeout(
           startupFailure,
           5_000,

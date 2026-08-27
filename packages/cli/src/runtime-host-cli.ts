@@ -66,10 +66,15 @@ export type RuntimeHostCliCommand =
       principalId: string;
       preset: 'desktop-client' | 'terminal-client';
       deferPairingCommit: boolean;
+      bindPairingToClient?: true;
+      clientDataRoot?: string;
       rootPath?: string;
       projectDirectoryRoots?: { label: string; path: string }[];
       websocketPort?: number;
       websocketPath?: string;
+      directPeer?: {
+        coordinationRelays: string[];
+      };
       expectedTarget?: RuntimeHostManagedServiceTarget;
     }
   | {
@@ -105,6 +110,7 @@ export type RuntimeHostCliCommand =
       listenAddresses: string[];
       coordinationRelays?: string[];
       expectedTarget?: RuntimeHostManagedServiceTarget;
+      allowInterruptActiveTasks?: true;
     }
   | {
       kind: 'runtime-host-service-check-update';
@@ -241,8 +247,20 @@ function parseSetupCommand(argv: string[]): RuntimeHostCliCommand {
   let principalId: string | undefined;
   let preset: 'desktop-client' | 'terminal-client' | undefined;
   let deferPairingCommit = false;
+  let bindPairingToClient = false;
+  let clientDataRoot: string | undefined;
+  let enableDirectPeer = false;
+  const coordinationRelays: string[] = [];
   const options = parseManagedServiceOptions(argv, {
     valueOptions: {
+      '--client-data-root': (value) => {
+        if (clientDataRoot !== undefined) return error('Duplicate --client-data-root');
+        if (!isSafeAbsolutePath(value)) return error('--client-data-root must be an absolute path');
+        clientDataRoot = value;
+      },
+      '--coordination-relay': (value) => {
+        coordinationRelays.push(value);
+      },
       '--principal': (value) => {
         principalId = value;
       },
@@ -254,9 +272,17 @@ function parseSetupCommand(argv: string[]): RuntimeHostCliCommand {
       },
     },
     flagOptions: {
+      '--enable-direct-peer': () => {
+        if (enableDirectPeer) return error('Duplicate --enable-direct-peer');
+        enableDirectPeer = true;
+      },
       '--defer-pairing-commit': () => {
         if (deferPairingCommit) return error('Duplicate --defer-pairing-commit');
         deferPairingCommit = true;
+      },
+      '--bind-pairing-to-client': () => {
+        if (bindPairingToClient) return error('Duplicate --bind-pairing-to-client');
+        bindPairingToClient = true;
       },
     },
   });
@@ -265,12 +291,21 @@ function parseSetupCommand(argv: string[]): RuntimeHostCliCommand {
     return error('runtime-host setup requires a valid --principal');
   }
   if (!preset) return error('runtime-host setup requires --preset');
+  if (!enableDirectPeer && coordinationRelays.length > 0) {
+    return error('--coordination-relay requires --enable-direct-peer');
+  }
+  if (bindPairingToClient && !deferPairingCommit) {
+    return error('--bind-pairing-to-client requires --defer-pairing-commit');
+  }
   return {
     kind: 'runtime-host-setup',
     ...options,
     principalId,
     preset,
     deferPairingCommit,
+    ...(bindPairingToClient ? { bindPairingToClient: true } : {}),
+    ...(clientDataRoot ? { clientDataRoot } : {}),
+    ...(enableDirectPeer ? { directPeer: { coordinationRelays } } : {}),
   };
 }
 
@@ -335,6 +370,12 @@ function parseServiceManagementCommand(argv: string[]): RuntimeHostCliCommand {
             if (retainManagedDeployment) return error('Duplicate --retain-managed-deployment');
             retainManagedDeployment = true;
           },
+          '--allow-interrupt-active-tasks': () => {
+            if (allowInterruptActiveTasks) {
+              return error('Duplicate --allow-interrupt-active-tasks');
+            }
+            allowInterruptActiveTasks = true;
+          },
         }
       : action === 'retire' || action === 'update' || action === 'configure'
         ? {
@@ -383,7 +424,10 @@ function parseServiceManagementCommand(argv: string[]): RuntimeHostCliCommand {
   });
   if ('kind' in options) return options;
   if (
-    (action === 'retire' || action === 'update' || action === 'configure') &&
+    (action === 'retire' ||
+      action === 'update' ||
+      action === 'configure' ||
+      action === 'uninstall') &&
     !options.expectedTarget
   ) {
     return error(`runtime-host service ${action} requires an expected target`);
@@ -479,6 +523,7 @@ function parseServicePeerCommand(argv: string[]): RuntimeHostCliCommand {
   const listenAddresses: string[] = [];
   const coordinationRelays: string[] = [];
   let clearCoordinationRelays = false;
+  let allowInterruptActiveTasks = false;
   const options = parseManagedServiceOptions(argv.slice(1), {
     allowConfiguration: false,
     allowFramed: true,
@@ -486,6 +531,10 @@ function parseServicePeerCommand(argv: string[]): RuntimeHostCliCommand {
       '--clear-coordination-relays': () => {
         if (clearCoordinationRelays) return error('Duplicate --clear-coordination-relays');
         clearCoordinationRelays = true;
+      },
+      '--allow-interrupt-active-tasks': () => {
+        if (allowInterruptActiveTasks) return error('Duplicate --allow-interrupt-active-tasks');
+        allowInterruptActiveTasks = true;
       },
     },
     valueOptions: {
@@ -520,6 +569,9 @@ function parseServicePeerCommand(argv: string[]): RuntimeHostCliCommand {
       '--listen, --coordination-relay, and --clear-coordination-relays are only valid with peer enable',
     );
   }
+  if (allowInterruptActiveTasks && action !== 'enable' && action !== 'disable') {
+    return error('--allow-interrupt-active-tasks is only valid with peer enable or peer disable');
+  }
   if (
     (action === 'enable' ||
       action === 'disable' ||
@@ -542,6 +594,7 @@ function parseServicePeerCommand(argv: string[]): RuntimeHostCliCommand {
         ? { coordinationRelays }
         : {}),
     ...(options.expectedTarget ? { expectedTarget: options.expectedTarget } : {}),
+    ...(allowInterruptActiveTasks ? { allowInterruptActiveTasks: true } : {}),
   };
 }
 

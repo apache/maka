@@ -48,6 +48,7 @@ export interface RuntimeHostPeerManagementCliOptions {
   readonly listenAddresses: readonly string[];
   readonly coordinationRelays?: readonly string[];
   readonly expectedTarget?: RuntimeHostManagedServiceTarget;
+  readonly allowInterruptActiveTasks?: boolean;
 }
 
 interface RuntimeHostPeerManagementCliDeps {
@@ -87,6 +88,7 @@ async function runRuntimeHostPeerManagementLocked(
   backend: ReturnType<typeof createPlatformRuntimeHostServiceBackend>,
   deps: RuntimeHostPeerManagementCliDeps,
 ): Promise<number> {
+  let restarted: boolean | undefined;
   if (options.action === 'enable' || options.action === 'disable') {
     const result = await configureRuntimeHostManagedPeer(
       {
@@ -95,6 +97,7 @@ async function runRuntimeHostPeerManagementLocked(
         nodePath: options.nodePath,
         cliPath: options.cliPath,
         expectedTarget: options.expectedTarget!,
+        allowInterruptActiveTasks: options.allowInterruptActiveTasks ?? false,
         peer:
           options.action === 'disable'
             ? null
@@ -117,6 +120,7 @@ async function runRuntimeHostPeerManagementLocked(
         deps,
       );
     }
+    restarted = result.restarted;
   } else if (options.action === 'rotate') {
     const result = await rotateRuntimeHostManagedPeerIdentity(
       {
@@ -165,7 +169,12 @@ async function runRuntimeHostPeerManagementLocked(
     if (options.action === 'descriptor') {
       throw new TypeError('Direct-peer descriptor does not support framed output');
     }
-    writePeerFrame({ kind: 'result', action: options.action, status }, deps);
+    writePeerFrame(
+      options.action === 'status'
+        ? { kind: 'result', action: options.action, status }
+        : { kind: 'result', action: options.action, status, restarted: restarted! },
+      deps,
+    );
   } else if (options.json) {
     deps.writeStdout(
       `${JSON.stringify({ schemaVersion: 1, ...status, ok: true, action: options.action })}\n`,
@@ -269,7 +278,7 @@ async function readPeerStatus(
   };
 }
 
-function expandWildcardListenAddresses(addresses: readonly string[]): string[] {
+export function expandWildcardListenAddresses(addresses: readonly string[]): string[] {
   const interfaces = Object.values(networkInterfaces()).flatMap((entries) => entries ?? []);
   const ipv4 = interfaces
     .filter((entry) => entry.family === 'IPv4' && !entry.internal)

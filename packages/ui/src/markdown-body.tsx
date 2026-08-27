@@ -151,6 +151,15 @@ export function MarkdownBody(props: {
     >
       <AstryxMarkdown
         autolink="gfm"
+        // Markdown holds no reading measure; the container it lands in does.
+        //
+        // Astryx caps prose at 680px by default but renders a supplied
+        // `components.code` bare — no spacing, no width, no alignment. Maka
+        // always supplies one, so any container that leans on the default gets
+        // prose at 680 and code blocks at whatever the container is: two right
+        // edges, which is the defect this whole change exists to remove. One
+        // authority per column, and it is the container.
+        contentWidth="100%"
         // Chosen by the caller, and defaulting to document rhythm.
         //
         // The transcript passes `compact`: Astryx's default heading spacing

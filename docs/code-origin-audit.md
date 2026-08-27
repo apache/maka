@@ -228,6 +228,24 @@ A maintainer confirmed that the following assets were AI-generated and that no t
 
 The first three used ChatGPT Image. The status PNGs were exported from an AI-generated SVG. Exact prompts were not retained and may have requested a visual style reference, so this confirmation is provenance evidence rather than a guarantee that no style or IP concern exists.
 
+### Source archive non-text inventory
+
+The ASF source verifier reads this inventory from the candidate itself. A
+non-text image must match one of these paths; executable and archive magic is
+rejected even if a path is listed here.
+
+- `.github/assets/*.png`: the AI-generated hero images recorded above.
+- `apps/desktop/assets/icon.png`: the AI-generated application mark recorded above.
+- `apps/desktop/assets/app-icons/*.png`: `mono.png` is the contributor-submitted grayscale derivative of the application mark from pull request #3431; the remaining variants are reproducibly rendered from the Apache-licensed geometry and palette in `scripts/generate-app-icons.py` and byte-checked by `scripts/generate-app-icons.test.mjs`.
+- `apps/desktop/build/*.png`: contributor-submitted DMG artwork from pull request #3817; that contribution records Codex as review and verification assistance, not as the source of the artwork.
+- `apps/desktop/resources/status/*.png`: the status images recorded above and reproducibly rendered by `scripts/generate-cu-status-icons.mjs`.
+- `docs/images/**/*.png`: screenshots of Maka's own user interface committed as review evidence, including pull requests #3584 and #3588.
+- `packages/core/src/__tests__/foreign-session.test.ts`: Apache-licensed source fixture containing a literal NUL, bidi override, and zero-width character to verify imported-session sanitization.
+- `packages/runtime-host/src/protocol/artifact.ts`: Apache-licensed protocol source containing literal C0 and DEL characters in the control-character rejection expression.
+- `packages/storage/src/__tests__/foreign-session-store.test.ts`: Apache-licensed storage fixture containing literal bidi and bell characters to verify durable imported-title sanitization.
+- `packages/storage/src/__tests__/mcp-config-store.test.ts`: Apache-licensed validation fixture containing a literal control character in a rejected MCP tool name.
+- `packages/storage/test-fixtures/v0.1.6-operational-state/runtime.sqlite`: migration fixture created through Maka's public storage APIs at tag `v0.1.6`; its exact origin and SHA-256 are recorded in the adjacent `README.md`.
+
 ## Bootstrap generative tooling
 
 The initial commit is `8fd91a43cc64cdde58cfbd046256effce0cfa6f8` (2026-05-19). The current contributor account is expected to confirm the bootstrap history. The working account is that Raft orchestrated Claude and Codex, but the repository does not establish:

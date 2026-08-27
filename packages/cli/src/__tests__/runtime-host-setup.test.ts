@@ -84,6 +84,7 @@ test('managed setup converges on one exact package and verified Client pairing',
     version: '0.2.0',
     principalId: 'desktop.client-1',
     preset: 'desktop-client',
+    directPeer: { coordinationRelays: [] },
   } as const;
   const overrides = {
     createBackend: () => unusedBackend(),
@@ -97,6 +98,12 @@ test('managed setup converges on one exact package and verified Client pairing',
         projectDirectoryRoots: [],
         websocket: { host: '127.0.0.1', port: 42_111, path: '/runtime-host' },
         launch: { nodePath: process.execPath, cliPath: input.cliPath },
+        peer: {
+          enabled: true,
+          peerId: '12D3KooWpeer',
+          listenAddresses: ['/ip4/192.0.2.10/udp/41000/quic-v1'],
+          coordinationRelays: [],
+        },
       };
       return serviceResult('install', config, '0.2.0');
     },
@@ -160,6 +167,11 @@ test('managed setup converges on one exact package and verified Client pairing',
   assert.equal(frames.filter((frame) => frame?.kind === 'complete').length, 2);
   const complete = frames.find((frame) => frame?.kind === 'complete');
   assert.equal(complete?.kind === 'complete' ? complete.credential : undefined, 'secret-1');
+  assert.deepEqual(complete?.kind === 'complete' ? complete.directPeer : undefined, {
+    peerId: '12D3KooWpeer',
+    routeHints: ['/ip4/192.0.2.10/udp/41000/quic-v1'],
+    coordinationRelays: [],
+  });
   const operatorPath = complete?.kind === 'complete' ? complete.operatorPath : undefined;
   assert.equal(operatorPath, join(canonicalDeploymentRoot, 'operator'));
   const operator = await readFile(operatorPath!, 'utf8');
@@ -573,7 +585,7 @@ async function createReleasePackage(base: string, version: string): Promise<stri
 }
 
 function serviceResult(
-  action: Exclude<RuntimeHostManagedServiceResult['action'], 'retire' | 'configure'>,
+  action: Exclude<RuntimeHostManagedServiceResult['action'], 'retire' | 'configure' | 'uninstall'>,
   config: RuntimeHostManagedServiceConfig | null,
   installedVersion: string | null,
 ): RuntimeHostManagedServiceResult {

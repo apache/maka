@@ -54,6 +54,7 @@ export interface RuntimeHostAccessIssueOptions {
   readonly canPublishClientCapabilities: boolean;
   readonly canUseHostPaths: boolean;
   readonly preset?: RuntimeHostAccessPreset;
+  readonly bindClientInstance?: boolean;
 }
 
 export type RuntimeHostAccessPreset = 'desktop-client' | 'terminal-client';
@@ -217,6 +218,9 @@ async function mutateRuntimeHostAccessCredential(
       operationGrants: resolved.operationGrants,
       canPublishClientCapabilities: resolved.canPublishClientCapabilities,
       canUseHostPaths: resolved.canUseHostPaths,
+      ...(operation === 'access.credential.prepare' && options.bindClientInstance
+        ? { bindClientInstance: true }
+        : {}),
     });
     const credential = await consumeAccessCredentialDelivery(
       options.rootPath,

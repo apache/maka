@@ -30,7 +30,7 @@
      centered. Once React mounts, `.appFrame` is that flex container's
      only child, and without an explicit main-axis size a flex item
      shrinks to its content width and gets centered — so on the
-     first-run hero (onboarding content max-content ~680px) the whole
+     first-run hero (onboarding content is narrower than the window) the whole
      app frame floated mid-window with large left/right gutters, while
      long-message sessions filled the width. Pin `width:100%` so the
      frame always spans the window regardless of inner content's

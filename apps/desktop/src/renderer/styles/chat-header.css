@@ -32,11 +32,11 @@
 /* #1032: hard-block session health notice sits above the composer,
    outside the message scroll area (sibling of maka-composer-interaction-slot).
    It is a peer of the composer form, so it must resolve to the SAME box as the
-   composer card: capped at the chat measure, centered, and inset by the
+   composer card: capped at the reading measure, centered, and inset by the
    composer's own `--space-6` gutters plus Astryx balanced dock's `--space-3`.
    The old `margin: 0 var(--space-3)` left it
    uncapped, so on a wide window the notice ran the full chat column while the
-   composer stayed at 680px — a visibly mismatched edge. Same formula as
+   composer stopped at the measure — a visibly mismatched edge. Same formula as
    `.maka-composer-no-model-hint` / `.maka-composer-revision-notice`.
 
    #1629: the boundary-unreadable notice stands in for the composer it replaces,
@@ -48,10 +48,10 @@
 .maka-workspace-readiness-notice,
 .maka-session-health-notice {
   width: min(
-    var(--maka-chat-measure),
+    var(--maka-reading-measure),
     calc(100% - (2 * var(--space-6)) - (2 * var(--space-3)))
   );
-  max-width: var(--maka-chat-measure);
+  max-width: var(--maka-reading-measure);
   margin: 0 auto var(--space-2);
   -webkit-app-region: no-drag;
 }

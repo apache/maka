@@ -779,13 +779,10 @@
 .maka-turn-footer {
   display: flex;
   width: 100%;
-  max-width: var(--maka-chat-measure, 680px);
   flex-wrap: wrap;
   align-items: center;
   justify-content: flex-start;
   gap: var(--space-0-5);
-  margin-left: 0;
-  margin-right: auto;
 }
 
 .maka-turn-lineage-row {

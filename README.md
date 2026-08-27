@@ -190,17 +190,20 @@ Start with [ARCHITECTURE.md](./ARCHITECTURE.md). It provides the system map, cod
 ## Repository layout
 
 ```text
-apps/desktop/       Electron main / preload / React renderer
+apps/desktop/          Electron main / preload / React renderer
 
-packages/core/      Pure contracts for Sessions, Events, Permissions, and Connections
-packages/storage/   SQLite operational state, configuration, and payload stores
-packages/runtime/   AgentRun, model adapters, tools, context, and recovery
-packages/eval/      Experiment cells, attempts, results, and executor/subject adapters
-packages/cli/       TUI and non-interactive CLI
-packages/ui/        Shared conversation, Markdown, Artifact, and UI primitives
+packages/core/         Pure contracts for Sessions, Events, Permissions, and Connections
+packages/storage/      SQLite operational state, configuration, and payload stores
+packages/mcp/          Provider-neutral Model Context Protocol client integration
+packages/runtime/      AgentRun, model adapters, tools, context, and recovery
+packages/runtime-host/ Single-owner Runtime Host lifecycle, protocol, and client bootstrap
+packages/eval/         Experiment cells, attempts, results, and executor/subject adapters
+packages/computer-use/ Computer-use backend selection, host lifecycle, and protocol adapters
+packages/cli/          TUI and non-interactive CLI
+packages/ui/           Shared conversation, Markdown, Artifact, and UI primitives
 
-docs/               Architecture, product, security, privacy, and test contracts
-scripts/            Build hygiene, visual checks, smoke tests, and release helpers
+docs/                  Architecture, product, security, privacy, and test contracts
+scripts/               Build hygiene, visual checks, smoke tests, and release helpers
 ```
 
 ## Local data and recovery

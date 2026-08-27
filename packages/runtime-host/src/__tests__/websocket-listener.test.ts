@@ -191,6 +191,7 @@ test('credential revocation during WebSocket upgrade cannot admit stale authorit
     prepare: async () => assert.fail('Credential preparation is not expected'),
     prepareRotation: async () => assert.fail('Credential rotation is not expected'),
     revoke: async () => assert.fail('Credential revoke is not expected'),
+    revokePrincipal: async () => assert.fail('Principal revoke is not expected'),
     revokeRotation: async () => assert.fail('Credential rotation revoke is not expected'),
     finalize: async () => assert.fail('Credential finalize is not expected'),
     subscribeRevocations: () => () => undefined,

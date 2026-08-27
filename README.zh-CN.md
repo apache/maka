@@ -187,17 +187,20 @@ Experiment → Cells → Attempts → Results
 ## 仓库结构
 
 ```text
-apps/desktop/       Electron main / preload / React renderer
+apps/desktop/          Electron main / preload / React renderer
 
-packages/core/      Session、Event、Permission、Connection 等纯 contracts
-packages/storage/   SQLite 运行状态、配置与 payload stores
-packages/runtime/   AgentRun、模型适配、工具、上下文和恢复
-packages/eval/      Experiment cell、attempt、result 与 executor/subject adapter
-packages/cli/       TUI 和非交互 CLI
-packages/ui/        共享对话、Markdown、Artifact 与 UI primitives
+packages/core/         Session、Event、Permission、Connection 等纯 contracts
+packages/storage/      SQLite 运行状态、配置与 payload stores
+packages/mcp/          与提供商无关的 Model Context Protocol 客户端集成
+packages/runtime/      AgentRun、模型适配、工具、上下文和恢复
+packages/runtime-host/ 单一所有者的 Runtime Host 生命周期、协议和客户端启动
+packages/eval/         Experiment cell、attempt、result 与 executor/subject adapter
+packages/computer-use/ Computer Use 后端选择、Host 生命周期和协议适配
+packages/cli/          TUI 和非交互 CLI
+packages/ui/           共享对话、Markdown、Artifact 与 UI primitives
 
-docs/               架构、产品、安全、隐私和测试契约
-scripts/            Build hygiene、视觉检查、smoke 和 release helpers
+docs/                  架构、产品、安全、隐私和测试契约
+scripts/               Build hygiene、视觉检查、smoke 和 release helpers
 ```
 
 ## 本地数据与恢复

@@ -32,10 +32,9 @@ import { cn } from "../utils.js";
  * onto package-owned semantic classes.
  *
  * The measure-column geometry the old `tool-output.css` re-anchor applied to
- * the summary / lineage rows / footer (`max-width:var(--maka-chat-measure)`,
- * `margin-right:auto`) is folded directly into those container variants here,
- * so the layout is location-independent instead of coupled to a
- * `[data-role="assistant"]` descendant selector.
+ * the summary / lineage rows / footer is gone rather than moved: `.maka-turn`
+ * is the column, and every `Marker` renders inside one, so a second cap on the
+ * chrome could only ever be the same edge stated twice.
  *
  * `markerVariants` is exported from THIS module as a local variant recipe
  * so the lineage badge + footer action — which render as `UiButton` and can't

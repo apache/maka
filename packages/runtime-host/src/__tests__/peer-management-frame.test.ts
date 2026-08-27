@@ -28,6 +28,7 @@ test('peer management frames preserve a bounded machine-readable descriptor', ()
   const frame = {
     kind: 'result' as const,
     action: 'enable' as const,
+    restarted: true,
     status: {
       state: 'enabled' as const,
       serviceState: 'running',

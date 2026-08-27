@@ -70,7 +70,7 @@ export const TranscriptTurn: Story = {
   render: () => (
     <ProseFrame>
       <div className="maka-turn">
-        <ChatMessageBubble variant="ghost" className="maka-chat-message-bubble maka-chat-message-bubble-assistant">
+        <ChatMessageBubble variant="ghost" width="100%" className="maka-chat-message-bubble maka-chat-message-bubble-assistant">
           <Markdown
             density="compact"
             text={[
@@ -108,7 +108,7 @@ export const TranscriptCodeBlock: Story = {
   render: () => (
     <ProseFrame width={1040}>
       <div className="maka-turn">
-        <ChatMessageBubble variant="ghost" className="maka-chat-message-bubble maka-chat-message-bubble-assistant">
+        <ChatMessageBubble variant="ghost" width="100%" className="maka-chat-message-bubble maka-chat-message-bubble-assistant">
           <Markdown
             density="compact"
             text={[
@@ -135,7 +135,7 @@ export const TranscriptCodeBlock: Story = {
 export const RichAssistantAnswer: Story = {
   render: () => (
     <ProseFrame>
-      <ChatMessageBubble variant="ghost" className="maka-chat-message-bubble maka-chat-message-bubble-assistant">
+      <ChatMessageBubble variant="ghost" width="100%" className="maka-chat-message-bubble maka-chat-message-bubble-assistant">
         <Markdown
           text={[
             '## 改动思路',
@@ -170,7 +170,7 @@ export const RichAssistantAnswer: Story = {
 export const LongFormArticle: Story = {
   render: () => (
     <ProseFrame width={680}>
-      <ChatMessageBubble variant="ghost" className="maka-chat-message-bubble maka-chat-message-bubble-assistant">
+      <ChatMessageBubble variant="ghost" width="100%" className="maka-chat-message-bubble maka-chat-message-bubble-assistant">
         <Markdown
           text={[
             '# Storybook 表面覆盖：为什么单独可看很重要',

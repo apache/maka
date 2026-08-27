@@ -28,7 +28,44 @@ export type SettingsProjectsCopy = {
     remoteTitle: string;
     remoteDescription: string;
     addComputer: string;
+    useConnectionCode: string;
     configureManually: string;
+    thisComputerRemoteAccess: string;
+    thisComputerRemoteAccessHelp: string;
+    remoteAccessOn: string;
+    remoteAccessOff: string;
+    enableRemoteAccess: string;
+    disableRemoteAccess: string;
+    disableRemoteAccessConfirm: string;
+    disableRemoteAccessDescription: string;
+    revokeSharedAccess: string;
+    revokeSharedAccessConfirm: string;
+    revokeSharedAccessDescription: string;
+    revokeSharedAccessDone: string;
+    uninstallLocalService: string;
+    uninstallLocalServiceConfirm: string;
+    uninstallLocalServiceDescription: string;
+    uninstallLocalServiceDone: string;
+    createConnectionCode: string;
+    connectionCodeTitle: string;
+    connectionCodeDescription: string;
+    importConnectionCodeTitle: string;
+    importConnectionCodeDescription: string;
+    connectionCode: string;
+    copyConnectionCode: string;
+    connectionCodeCopied: string;
+    connectionCodeInvalid: string;
+    connectionCodeUnavailable: string;
+    connectionCodeHostUnreachable: string;
+    connectionCodeHostMismatch: string;
+    connectionCodeUnknownError: string;
+    connectWithCode: string;
+    remoteAccessActiveTasks: string;
+    remoteAccessActiveTasksDescription: string;
+    uninstallActiveTasksDescription: string;
+    interruptAndEnable: string;
+    interruptAndUninstall: string;
+    remoteAccessFailed: string;
     setupTitle: string;
     setupDescription: string;
     setupName: string;
@@ -251,7 +288,44 @@ const SETTINGS_PROJECTS_COPY_BY_LOCALE = {
       remoteTitle: '远程 Host',
       remoteDescription: '通过 SSH 自动设置一台电脑，或手动连接已有 Runtime Host。',
       addComputer: '添加电脑',
+      useConnectionCode: '使用连接码',
       configureManually: '手动配置',
+      thisComputerRemoteAccess: '远程访问',
+      thisComputerRemoteAccessHelp: '让其他 Maka Desktop 通过实验性 Direct peer 连接此 Host',
+      remoteAccessOn: '已开启',
+      remoteAccessOff: '未开启',
+      enableRemoteAccess: '开启',
+      disableRemoteAccess: '关闭连接',
+      disableRemoteAccessConfirm: '关闭远程连接？',
+      disableRemoteAccessDescription: '这只会停止 Direct peer 连接；已授予的共享访问仍会保留。',
+      revokeSharedAccess: '撤销共享访问',
+      revokeSharedAccessConfirm: '撤销共享访问？',
+      revokeSharedAccessDescription: '已连接的 Desktop 将断开，尚未使用的连接码也会失效。',
+      revokeSharedAccessDone: '共享访问已撤销',
+      uninstallLocalService: '移除后台服务',
+      uninstallLocalServiceConfirm: '移除 Runtime Host 后台服务？',
+      uninstallLocalServiceDescription: '数据和已授予的共享访问会保留；Local Host 将恢复为仅在 Maka Desktop 运行时启动。',
+      uninstallLocalServiceDone: '后台服务已移除',
+      createConnectionCode: '新建连接码',
+      connectionCodeTitle: '连接这台电脑',
+      connectionCodeDescription: '连接码将在 15 分钟后过期且只能使用一次。对方将获得 Owner 权限；Direct peer 无后备连接。',
+      importConnectionCodeTitle: '使用连接码',
+      importConnectionCodeDescription: '连接后将获得对方 Host 的 Owner 权限。Direct peer 无后备连接。',
+      connectionCode: '连接码',
+      copyConnectionCode: '复制连接码',
+      connectionCodeCopied: '连接码已复制',
+      connectionCodeInvalid: '连接码格式无效。',
+      connectionCodeUnavailable: '连接码已过期或已被使用。请在另一台电脑上新建连接码。',
+      connectionCodeHostUnreachable: '无法建立 Direct peer 连接。请确认两台电脑在线且网络允许 UDP。',
+      connectionCodeHostMismatch: '连接码指向的 Host 与实际连接的 Host 不匹配或版本不兼容。',
+      connectionCodeUnknownError: '连接结果未知。请先检查远程 Host 列表，再决定是否重试。',
+      connectWithCode: '连接',
+      remoteAccessActiveTasks: '这台电脑仍有正在运行的任务',
+      remoteAccessActiveTasksDescription: '开启远程访问需要把 Local Host 交给系统服务。是否中断当前任务并继续？',
+      uninstallActiveTasksDescription: '移除后台服务会停止当前任务。是否中断这些任务并继续？',
+      interruptAndEnable: '中断任务并开启',
+      interruptAndUninstall: '中断任务并移除',
+      remoteAccessFailed: '远程访问操作失败',
       setupTitle: '添加远程电脑',
       setupDescription: '通过 SSH 安装并连接 Runtime Host',
       setupName: '显示名称（可选）',
@@ -495,7 +569,44 @@ const SETTINGS_PROJECTS_COPY_BY_LOCALE = {
       remoteDescription:
         'Set up a computer over SSH, or connect an existing Runtime Host manually.',
       addComputer: 'Add computer',
+      useConnectionCode: 'Use connection code',
       configureManually: 'Configure manually',
+      thisComputerRemoteAccess: 'Remote access',
+      thisComputerRemoteAccessHelp: 'Let another Maka Desktop reach this Host through experimental Direct peer',
+      remoteAccessOn: 'On',
+      remoteAccessOff: 'Off',
+      enableRemoteAccess: 'Enable',
+      disableRemoteAccess: 'Turn off connectivity',
+      disableRemoteAccessConfirm: 'Turn off remote connectivity?',
+      disableRemoteAccessDescription: 'This only stops Direct peer connectivity. Granted shared access is retained.',
+      revokeSharedAccess: 'Revoke shared access',
+      revokeSharedAccessConfirm: 'Revoke shared access?',
+      revokeSharedAccessDescription: 'The connected Desktop will be disconnected, and unused connection codes will stop working.',
+      revokeSharedAccessDone: 'Shared access revoked',
+      uninstallLocalService: 'Remove background service',
+      uninstallLocalServiceConfirm: 'Remove the Runtime Host background service?',
+      uninstallLocalServiceDescription: 'Data and granted shared access are retained. The Local Host will return to running only while Maka Desktop is open.',
+      uninstallLocalServiceDone: 'Background service removed',
+      createConnectionCode: 'New connection code',
+      connectionCodeTitle: 'Connect to this computer',
+      connectionCodeDescription: 'Expires in 15 minutes and can be used once. The other Desktop receives Owner access. Direct peer has no fallback.',
+      importConnectionCodeTitle: 'Use a connection code',
+      importConnectionCodeDescription: 'Connecting grants this Desktop Owner access to the other Host. Direct peer has no fallback.',
+      connectionCode: 'Connection code',
+      copyConnectionCode: 'Copy connection code',
+      connectionCodeCopied: 'Connection code copied',
+      connectionCodeInvalid: 'The connection code is invalid.',
+      connectionCodeUnavailable: 'The connection code expired or was already used. Create a new code on the other computer.',
+      connectionCodeHostUnreachable: 'A Direct peer connection could not be established. Check that both computers are online and UDP is allowed.',
+      connectionCodeHostMismatch: 'The code does not match the connected Host, or the Host version is incompatible.',
+      connectionCodeUnknownError: 'The connection outcome is unknown. Check the remote Host list before retrying.',
+      connectWithCode: 'Connect',
+      remoteAccessActiveTasks: 'This computer still has running tasks',
+      remoteAccessActiveTasksDescription: 'Enabling remote access hands the Local Host to a system service. Interrupt the current tasks and continue?',
+      uninstallActiveTasksDescription: 'Removing the background service stops the current tasks. Interrupt them and continue?',
+      interruptAndEnable: 'Interrupt and enable',
+      interruptAndUninstall: 'Interrupt and remove',
+      remoteAccessFailed: 'Remote access failed',
       setupTitle: 'Add remote computer',
       setupDescription: 'Install and connect Runtime Host over SSH',
       setupName: 'Display name (optional)',

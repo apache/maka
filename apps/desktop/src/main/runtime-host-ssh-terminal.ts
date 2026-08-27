@@ -60,6 +60,7 @@ import type {
   DesktopRuntimeHostSshTerminalEvent,
   DesktopRuntimeHostSshTerminalSnapshot,
 } from '../preload/bridge-contract.js';
+import { createRuntimeHostFramedOutputFilter } from './runtime-host-framed-output.js';
 
 interface ActiveTerminal {
   readonly sessionId: string;
@@ -497,7 +498,7 @@ export function createDesktopRuntimeHostSshTerminal(input: {
     let failure: Error | undefined;
     let activeTerminal: ActiveTerminal | undefined;
     let receivedProgress = false;
-    const filter = createFramedOutputFilter({
+    const filter = createRuntimeHostFramedOutputFilter({
       prefix: options.prefix,
       pendingMaxBytes: options.pendingMaxBytes,
       decode: options.decode,
@@ -592,7 +593,7 @@ export function createDesktopRuntimeHostSshTerminal(input: {
         let complete: RuntimeHostSetupCompleteFrame | undefined;
         let setupFailure: Error | undefined;
         let setupTerminal: ActiveTerminal | undefined;
-        const filter = createFramedOutputFilter({
+        const filter = createRuntimeHostFramedOutputFilter({
           prefix: RUNTIME_HOST_SETUP_FRAME_PREFIX,
           pendingMaxBytes: SETUP_FRAME_PENDING_MAX,
           decode: decodeRuntimeHostSetupFrame,
@@ -830,83 +831,6 @@ function cancellableUntilComplete(signal: AbortSignal | undefined): {
     },
     close,
   };
-}
-
-function createFramedOutputFilter<Frame>(input: {
-  readonly prefix: string;
-  readonly pendingMaxBytes: number;
-  readonly decode: (line: string) => Frame | undefined;
-  readonly label: string;
-  readonly onFrame: (frame: Frame) => void;
-  readonly onError: (error: Error) => void;
-}): { push(data: string): string; finish(): string } {
-  let pending = '';
-  let discardReservedLine = false;
-  const drain = (finished: boolean): string => {
-    let visible = '';
-    while (pending) {
-      if (discardReservedLine) {
-        const newline = pending.indexOf('\n');
-        if (newline < 0) {
-          pending = '';
-          break;
-        }
-        pending = pending.slice(newline + 1);
-        discardReservedLine = false;
-        continue;
-      }
-      const marker = pending.indexOf(input.prefix);
-      if (marker >= 0) {
-        visible += pending.slice(0, marker);
-        pending = pending.slice(marker);
-        const newline = pending.indexOf('\n');
-        if (newline < 0) {
-          if (finished) {
-            input.onError(new Error(`${input.label} returned an incomplete result`));
-            pending = '';
-          } else if (pending.length > input.pendingMaxBytes) {
-            input.onError(new Error(`${input.label} returned an oversized result`));
-            pending = '';
-            discardReservedLine = true;
-          }
-          break;
-        }
-        const line = pending.slice(0, newline + 1);
-        pending = pending.slice(newline + 1);
-        const frame = input.decode(line);
-        if (frame) input.onFrame(frame);
-        else input.onError(new Error(`${input.label} returned an invalid result`));
-        continue;
-      }
-      if (finished) {
-        visible += pending;
-        pending = '';
-        break;
-      }
-      const retained = markerSuffixLength(pending, input.prefix);
-      visible += pending.slice(0, pending.length - retained);
-      pending = pending.slice(pending.length - retained);
-      break;
-    }
-    return visible;
-  };
-  return {
-    push(data) {
-      pending += data;
-      return drain(false);
-    },
-    finish() {
-      return drain(true);
-    },
-  };
-}
-
-function markerSuffixLength(value: string, prefix: string): number {
-  const limit = Math.min(value.length, prefix.length - 1);
-  for (let length = limit; length > 0; length -= 1) {
-    if (prefix.startsWith(value.slice(-length))) return length;
-  }
-  return 0;
 }
 
 interface PreparedSetupPackage {

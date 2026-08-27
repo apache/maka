@@ -31,6 +31,7 @@ export interface RuntimeHostConnectionAuthority {
   readonly principalKind: 'local_owner' | AccessCredentialPrincipalKind;
   readonly principalId: string;
   readonly credentialId?: string;
+  readonly clientInstanceId?: string;
   readonly operationGrants: 'all' | readonly OperationKey[];
   readonly canPublishClientCapabilities: boolean;
   readonly canUseHostPaths: boolean;
@@ -55,6 +56,12 @@ export function createRuntimeHostConnectionAuthority(
     !/^[A-Za-z0-9_.:-]{1,128}$/.test(input.credentialId ?? '')
   ) {
     throw new Error('Runtime Host access credential identity is invalid');
+  }
+  if (
+    input.clientInstanceId !== undefined &&
+    (input.clientInstanceId.length === 0 || input.clientInstanceId.length > 128)
+  ) {
+    throw new Error('Runtime Host bound Client identity is invalid');
   }
   const operationGrants =
     input.operationGrants === 'all'
