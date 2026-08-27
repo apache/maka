@@ -51,8 +51,8 @@ import { isRetiredProvider } from '@maka/core/provider-registry';
 import type { PermissionMode } from '@maka/core/permission';
 import type { SessionSummary } from '@maka/core/session';
 import type { UiLocale } from '@maka/core/ui-locale';
-import type { NavSelection } from '@maka/ui';
-import { getShellCopy } from './locales/shell-copy.js';
+import { formatShortcut, type NavSelection } from '@maka/ui';
+import { getShellCopy, STATIC_COMMAND_SHORTCUTS } from './locales/shell-copy.js';
 import { SETTINGS_NAV } from './settings/settings-nav.js';
 import type { Command } from './command-palette-types.js';
 
@@ -64,6 +64,11 @@ import type { Command } from './command-palette-types.js';
  */
 export function buildCommandList(args: {
   locale: UiLocale;
+  /**
+   * Host OS, so a hint spells its shortcut the way this platform does. Omitted
+   * outside the desktop shell, where the formatter falls back to `navigator`.
+   */
+  platform?: string;
   activeSessionId: string | undefined;
   themePref: ThemePreference;
   connections: LlmConnection[];
@@ -147,7 +152,16 @@ export function buildCommandList(args: {
   onStartScheduledTask?(): void;
 }): Command[] {
   const copy = getShellCopy(args.locale).commandPalette;
-  const staticCopy = (id: keyof typeof copy.commands) => copy.commands[id];
+  // A shortcut leads the hint, and the localized detail follows it behind the
+  // separator this file already uses everywhere else ("诊断 · 不打开设置").
+  // Commands without a shortcut keep their hint exactly as written.
+  const staticCopy = (id: keyof typeof copy.commands) => {
+    const entry = copy.commands[id];
+    const keys = STATIC_COMMAND_SHORTCUTS[id];
+    if (!keys) return entry;
+    const shortcut = formatShortcut(keys, args.platform);
+    return { ...entry, hint: entry.hint ? `${shortcut} · ${entry.hint}` : shortcut };
+  };
   const cmds: Command[] = [
     {
       id: 'action:new-chat',

@@ -53,6 +53,7 @@ import {
   type MakaUriDest,
   MakaUriContext,
   AstryxLocaleProvider,
+  HostPlatformProvider,
   LocaleProvider,
   ToastProvider,
   type ToastDiagnosticTarget,
@@ -67,6 +68,7 @@ import {
   enqueueInteraction,
   getConversationCopy,
   reconcileInteractions,
+  useHostPlatform,
 } from '@maka/ui';
 import type { ConnectionEvent } from '@maka/core/connections';
 import { GitBranch, MessageCircleQuestion, Minimize2, Network } from '@maka/ui/icons';
@@ -189,6 +191,7 @@ import {
   useAppShellHostEffects,
   useAppShellPersistenceEffects,
   useAppShellNavRefSync,
+  useResolvedHostPlatform,
   useSessionEventHealthPolling,
   useShellRunUpdates,
 } from './app-shell-effects';
@@ -276,6 +279,7 @@ export function AppShell({ initialOnboardingSnapshot = null }: AppShellProps = {
   const [uiLocaleOverride, setUiLocaleOverride] = useState<UiLocale | null>(null);
   const systemUiLocale = useSystemUiLocale();
   const uiLocale = resolveUiLocale(uiLocalePreference, systemUiLocale, uiLocaleOverride);
+  const hostPlatform = useResolvedHostPlatform();
   const errorToastAction = useMemo<ToastErrorAction>(
     () => ({
       label: getShellCopy(uiLocale).errorBoundary.copyReport,
@@ -299,17 +303,22 @@ export function AppShell({ initialOnboardingSnapshot = null }: AppShellProps = {
           `useUiLocale()` throws before anything renders. Still above every
           Astryx subtree. */}
       <AstryxLocaleProvider>
-        <ToastProvider errorAction={errorToastAction}>
-          <ErrorBoundary locale={uiLocale}>
-            <AppShellContent
-              initialOnboardingSnapshot={initialOnboardingSnapshot}
-              uiLocale={uiLocale}
-              uiLocaleOverride={uiLocaleOverride}
-              setUiLocaleOverride={setUiLocaleOverride}
-              setUiLocalePreference={setUiLocalePreference}
-            />
-          </ErrorBoundary>
-        </ToastProvider>
+        {/* Above the shell, not inside it: the rail's new-task hint and the
+            shortcuts sheet both spell `mod` per platform, and they sit in
+            different subtrees. */}
+        <HostPlatformProvider platform={hostPlatform}>
+          <ToastProvider errorAction={errorToastAction}>
+            <ErrorBoundary locale={uiLocale}>
+              <AppShellContent
+                initialOnboardingSnapshot={initialOnboardingSnapshot}
+                uiLocale={uiLocale}
+                uiLocaleOverride={uiLocaleOverride}
+                setUiLocaleOverride={setUiLocaleOverride}
+                setUiLocalePreference={setUiLocalePreference}
+              />
+            </ErrorBoundary>
+          </ToastProvider>
+        </HostPlatformProvider>
       </AstryxLocaleProvider>
     </LocaleProvider>
   );
@@ -329,6 +338,7 @@ function AppShellContent({
   setUiLocalePreference: Dispatch<SetStateAction<UiLocalePreference>>;
 }) {
   const toastApi = useToast();
+  const hostPlatform = useHostPlatform();
   const [appUpdateStatus, setAppUpdateStatus] = useState<AppUpdateStatus | null>(null);
   const updateInstallInFlightRef = useRef(false);
   const notifiedInstallErrorRef = useRef<string | null>(null);
@@ -2614,6 +2624,7 @@ function AppShellContent({
     !activeMessageLoadError;
   const commandOptions: AppShellCommandListOptions = {
     uiLocale,
+    hostPlatform,
     activeId,
     activePermissionMode,
     canSetPermissionMode: activeBoundarySurface.localInteractionAvailable,

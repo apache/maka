@@ -52,6 +52,7 @@
 @import "./styles/plan-mode.css" layer(components);
 @import "./styles/agent-graph.css" layer(components);
 @import "./styles/error.css" layer(components);
+@import "./styles/shortcut-keys.css" layer(components);
 @import "./styles/help.css" layer(components);
 @import "./styles/palette.css" layer(components);
 @import "./styles/hero.css" layer(components);

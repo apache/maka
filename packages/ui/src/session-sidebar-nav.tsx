@@ -21,6 +21,8 @@ import type { ScheduledTask } from '@maka/core/scheduled-task';
 import { AlertCircle, Blocks, Download, Network, Settings, SquarePen, Timer } from './icons.js';
 import type { NavModuleMemory, NavSelection } from './nav-selection.js';
 import { useUiLocale } from './locale-context.js';
+import { useHostPlatform } from './host-platform-context.js';
+import { formatShortcut } from './keyboard-shortcut-display.js';
 import { getShellControlsCopy } from './shell-controls-copy.js';
 import { Icon } from '@astryxdesign/core/Icon';
 import { IconButton } from '@astryxdesign/core/IconButton';
@@ -41,6 +43,12 @@ export function SessionSidebarNav(props: {
 }) {
   const locale = useUiLocale();
   const copy = getShellControlsCopy(locale).navigation;
+  const platform = useHostPlatform();
+  // A single space, which is what this hint has always used, rather than the
+  // `+` a chord takes elsewhere: the row is 32px and the label is already
+  // beside it, so `Ctrl N` (`⌘ N` on macOS) is as much punctuation as it can
+  // carry. `mod+n` is the binding app-shell-effects.ts registers, unchanged.
+  const newTaskShortcut = formatShortcut(['mod', 'n'], platform, { separator: ' ' });
   const extensionsActive = props.selection.section === 'extensions';
   const automationsActive = props.selection.section === 'automations';
   const moduleMemory = props.moduleMemory ?? { extensions: 'skills', automations: 'scheduled-tasks' };
@@ -66,7 +74,7 @@ export function SessionSidebarNav(props: {
         icon={SquarePen}
         size="md"
         onClick={props.onNew}
-        endContent={<kbd className="maka-nav-kbd" aria-hidden="true">⌘ N</kbd>}
+        endContent={<kbd className="maka-nav-kbd" aria-hidden="true">{newTaskShortcut}</kbd>}
       />
       {props.workHubEntry ? (
         <SideNavItem
