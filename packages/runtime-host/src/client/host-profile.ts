@@ -19,7 +19,7 @@
 
 import { createHash, randomUUID } from 'node:crypto';
 import { chmod, mkdir, open, readFile, rename, rm } from 'node:fs/promises';
-import { dirname, join } from 'node:path';
+import { dirname, join, posix } from 'node:path';
 import { createFileCredentialStore, type CredentialStore } from '@maka/storage/credential-store';
 import { withFileUpdateLock } from '@maka/storage/file-update-lock';
 import {
@@ -50,9 +50,10 @@ import {
   openRuntimeHostSshTunnel,
   type RuntimeHostSshInteraction,
 } from './ssh-tunnel.js';
+import { activateRuntimeHostSshOperator } from './ssh-operator-activation.js';
 import { waitForRuntimeHostReady } from './wait-for-ready.js';
 
-const PROFILE_SCHEMA_VERSION = 1;
+const PROFILE_SCHEMA_VERSION = 2;
 const PROFILE_DOCUMENT_MAX_BYTES = 64 * 1024;
 const PROFILE_COUNT_MAX = 32;
 const PROFILE_NAME_MAX_BYTES = 128;
@@ -95,6 +96,18 @@ export type RuntimeHostRemoteTransport =
       readonly sshPort?: number;
       readonly remotePort: number;
       readonly websocketPath: string;
+      readonly activation?: never;
+    }
+  | {
+      readonly kind: 'ssh';
+      readonly destination: string;
+      readonly sshPort?: number;
+      readonly activation: {
+        readonly kind: 'ssh_operator';
+        readonly operatorPath: string;
+      };
+      readonly remotePort?: never;
+      readonly websocketPath?: never;
     }
   | {
       readonly kind: 'libp2p-direct';
@@ -225,6 +238,7 @@ export async function connectRemoteRuntimeHostProfile(
     connectPeer?: typeof connectPeerRuntimeHost;
     waitForReady?: typeof waitForRuntimeHostReady;
     openSshTunnel?: typeof openRuntimeHostSshTunnel;
+    activateSshOperator?: typeof activateRuntimeHostSshOperator;
   } = {},
 ): Promise<RuntimeHostConnection> {
   input.signal?.throwIfAborted();
@@ -244,13 +258,28 @@ export async function connectRemoteRuntimeHostProfile(
         : { handshakeTimeoutMs: input.handshakeTimeoutMs }),
     });
   } else {
+    const activation =
+      transport.kind === 'ssh' && transport.activation
+        ? await (overrides.activateSshOperator ?? activateRuntimeHostSshOperator)({
+            destination: transport.destination,
+            ...(transport.sshPort === undefined ? {} : { sshPort: transport.sshPort }),
+            operatorPath: transport.activation.operatorPath,
+            rootId: input.profile.rootId,
+            interaction: input.sshInteraction ?? 'batch',
+            ...(input.signal === undefined ? {} : { signal: input.signal }),
+          })
+        : undefined;
+    const sshEndpoint =
+      transport.kind === 'ssh'
+        ? (activation?.endpoint ?? requireConnectOnlySshEndpoint(transport))
+        : undefined;
     const tunnel =
       transport.kind === 'ssh'
         ? await (overrides.openSshTunnel ?? openRuntimeHostSshTunnel)({
             destination: transport.destination,
             ...(transport.sshPort === undefined ? {} : { sshPort: transport.sshPort }),
-            remotePort: transport.remotePort,
-            websocketPath: transport.websocketPath,
+            remotePort: sshEndpoint!.port,
+            websocketPath: sshEndpoint!.websocketPath,
             interaction: input.sshInteraction ?? 'batch',
             ...(input.signal === undefined ? {} : { signal: input.signal }),
           })
@@ -306,6 +335,18 @@ export async function connectRemoteRuntimeHostProfile(
     await connection.close().catch(() => undefined);
     throw error;
   }
+}
+
+function requireConnectOnlySshEndpoint(
+  transport: Extract<RuntimeHostRemoteTransport, { kind: 'ssh' }>,
+): {
+  readonly port: number;
+  readonly websocketPath: string;
+} {
+  if (transport.remotePort === undefined || transport.websocketPath === undefined) {
+    throw new Error('SSH activation did not return a Runtime Host endpoint');
+  }
+  return { port: transport.remotePort, websocketPath: transport.websocketPath };
 }
 
 export async function connectPeerRuntimeHost(input: {
@@ -425,13 +466,21 @@ export function decodeRuntimeHostProfileDocument(value: unknown): RuntimeHostPro
     'schemaVersion',
     'profiles',
   ]);
-  if (record.schemaVersion !== PROFILE_SCHEMA_VERSION) {
+  if (record.schemaVersion !== 1 && record.schemaVersion !== PROFILE_SCHEMA_VERSION) {
     throw new Error('Runtime Host profile document has an unsupported schema');
   }
   if (!Array.isArray(record.profiles) || record.profiles.length > PROFILE_COUNT_MAX) {
     throw new Error('Runtime Host profile document has an invalid profile list');
   }
   const profiles = record.profiles.map(decodeRemoteRuntimeHostProfile);
+  if (
+    record.schemaVersion === 1 &&
+    profiles.some(
+      (profile) => profile.transport.kind === 'ssh' && profile.transport.activation !== undefined,
+    )
+  ) {
+    throw new Error('Runtime Host profile schema 1 cannot contain activation');
+  }
   const ids = new Set<string>();
   for (const profile of profiles) {
     if (ids.has(profile.id)) throw new Error(`Duplicate Runtime Host profile: ${profile.id}`);
@@ -452,20 +501,25 @@ class FileRuntimeHostProfileCatalog implements RuntimeHostProfileCatalog {
   ) {}
 
   async read(): Promise<RuntimeHostProfileDocument> {
+    return this.#readSnapshot();
+  }
+
+  async #readSnapshot(): Promise<RuntimeHostProfileDocument> {
     let bytes: Buffer;
     try {
       bytes = await readFile(this.path);
     } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return emptyProfileDocument();
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+        return emptyProfileDocument();
+      }
       throw error;
     }
     if (bytes.length > PROFILE_DOCUMENT_MAX_BYTES) {
       throw new Error('Runtime Host profile document exceeds its size limit');
     }
     try {
-      return decodeRuntimeHostProfileDocument(
-        JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes)),
-      );
+      const value: unknown = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes));
+      return decodeRuntimeHostProfileDocument(value);
     } catch (error) {
       throw new Error('Runtime Host profile document is invalid', { cause: error });
     }
@@ -511,7 +565,7 @@ class FileRuntimeHostProfileCatalog implements RuntimeHostProfileCatalog {
   ): Promise<RuntimeHostProfileDocument> {
     const profile = decodeRemoteRuntimeHostProfile(value);
     return this.#exclusive(async () => {
-      const current = await this.read();
+      const current = await this.#readSnapshot();
       const previousProfile = current.profiles.find((candidate) => candidate.id === profile.id);
       if (requireNew && previousProfile) {
         throw new Error('A new Runtime Host profile must use a new profile id');
@@ -566,7 +620,7 @@ class FileRuntimeHostProfileCatalog implements RuntimeHostProfileCatalog {
     }
     const id = requireProfileId(profileId);
     return this.#exclusive(async () => {
-      const current = await this.read();
+      const current = await this.#readSnapshot();
       const profile = current.profiles.find((candidate) => candidate.id === id);
       if (!profile) return current;
       return this.#removeProfile(current, profile);
@@ -582,7 +636,7 @@ class FileRuntimeHostProfileCatalog implements RuntimeHostProfileCatalog {
     }
     const expectedProfile = decodeRemoteRuntimeHostProfile(target.profile);
     return this.#exclusive(async () => {
-      const current = await this.read();
+      const current = await this.#readSnapshot();
       const profile = current.profiles.find((candidate) => candidate.id === expectedProfile.id);
       if (
         !profile ||
@@ -615,7 +669,7 @@ class FileRuntimeHostProfileCatalog implements RuntimeHostProfileCatalog {
       return Promise.reject(new Error('A Runtime Host profile rebind must retain its connection'));
     }
     return this.#exclusive(async () => {
-      const current = await this.read();
+      const current = await this.#readSnapshot();
       const stored = current.profiles.find((candidate) => candidate.id === expectedProfile.id);
       if (
         !stored ||
@@ -736,16 +790,41 @@ export function decodeRuntimeHostRemoteTransport(value: unknown): RuntimeHostRem
     });
   }
   if (kind === 'ssh') {
-    const record = requireExactRecord(
-      value,
-      'Runtime Host SSH transport',
-      ['kind', 'destination', 'remotePort', 'websocketPath'],
-      ['sshPort'],
-    );
+    const candidate = requireRecord(value, 'Runtime Host SSH transport');
+    const activated = candidate.activation !== undefined;
+    const record = activated
+      ? requireExactRecord(
+          value,
+          'Runtime Host activated SSH transport',
+          ['kind', 'destination', 'activation'],
+          ['sshPort'],
+        )
+      : requireExactRecord(
+          value,
+          'Runtime Host connect-only SSH transport',
+          ['kind', 'destination', 'remotePort', 'websocketPath'],
+          ['sshPort'],
+        );
     const destination = normalizeRuntimeHostSshDestination(
       requireString(record.destination, 'Runtime Host SSH destination'),
     );
     const sshPort = optionalPort(record.sshPort, 'Runtime Host SSH port');
+    if (activated) {
+      const activation = requireExactRecord(record.activation, 'Runtime Host SSH activation', [
+        'kind',
+        'operatorPath',
+      ]);
+      if (activation.kind !== 'ssh_operator') {
+        throw new Error('Runtime Host SSH activation kind is invalid');
+      }
+      const operatorPath = requireOperatorPath(activation.operatorPath);
+      return Object.freeze({
+        kind: 'ssh',
+        destination,
+        ...(sshPort === undefined ? {} : { sshPort }),
+        activation: Object.freeze({ kind: 'ssh_operator', operatorPath }),
+      });
+    }
     const remotePort = requirePort(record.remotePort, 'Runtime Host SSH remote port');
     const websocketPath = requireWebSocketPath(record.websocketPath);
     return Object.freeze({
@@ -812,7 +891,9 @@ function transportCredentialBinding(transport: RuntimeHostRemoteTransport): stri
     case 'plaintext':
       return `${transport.url}\0${transport.acknowledgement}`;
     case 'ssh':
-      return `${transport.destination}\0${transport.sshPort ?? ''}\0${transport.remotePort}\0${transport.websocketPath}`;
+      return transport.activation
+        ? `${transport.destination}\0${transport.sshPort ?? ''}\0activate\0${transport.activation.operatorPath}`
+        : `${transport.destination}\0${transport.sshPort ?? ''}\0${transport.remotePort}\0${transport.websocketPath}`;
     case 'libp2p-direct':
       return transport.peerId;
   }
@@ -908,6 +989,18 @@ function requireWebSocketPath(value: unknown): string {
   return path;
 }
 
+function requireOperatorPath(value: unknown): string {
+  const path = requireString(value, 'Runtime Host SSH operator path');
+  if (
+    !posix.isAbsolute(path) ||
+    Buffer.byteLength(path, 'utf8') > 4_096 ||
+    /[\u0000-\u001f\u007f]/u.test(path)
+  ) {
+    throw new Error('Runtime Host SSH operator path must be an absolute POSIX path');
+  }
+  return posix.normalize(path);
+}
+
 function requireRecord(value: unknown, label: string): Record<string, unknown> {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) {
     throw new Error(`${label} must be an object`);
@@ -943,7 +1036,12 @@ async function writeProfileDocument(
   path: string,
   document: RuntimeHostProfileDocument,
 ): Promise<void> {
-  const encoded = `${JSON.stringify(document, null, 2)}\n`;
+  const schemaVersion = document.profiles.some(
+    (profile) => profile.transport.kind === 'ssh' && profile.transport.activation !== undefined,
+  )
+    ? PROFILE_SCHEMA_VERSION
+    : 1;
+  const encoded = `${JSON.stringify({ ...document, schemaVersion }, null, 2)}\n`;
   if (Buffer.byteLength(encoded, 'utf8') > PROFILE_DOCUMENT_MAX_BYTES) {
     throw new Error('Runtime Host profile document exceeds its size limit');
   }

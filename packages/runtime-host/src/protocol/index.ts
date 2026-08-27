@@ -60,6 +60,7 @@ import {
   type RequestFrame,
   type ResponseFrame,
 } from './operations.js';
+import { isCanonicalRuntimeHostWebSocketPath } from './websocket-path.js';
 
 export * from './access-authority.js';
 export * from './agent-graph.js';
@@ -239,6 +240,7 @@ export interface HostRegistration {
   rootId: string;
   hostEpoch: string;
   endpoint: string;
+  websocketEndpoints?: readonly string[];
   protocolMin: number;
   protocolMax: number;
   compatibilityEpoch: number;
@@ -374,6 +376,7 @@ export function decodeHostRegistration(value: unknown): HostRegistration {
   const protocolMax = requireProtocolVersion(registration.protocolMax, 'protocolMax');
   validateProtocolRange({ min: protocolMin, max: protocolMax });
   const rootId = requireHostRootId(registration.rootId);
+  const websocketEndpoints = decodeRegistrationWebSocketEndpoints(registration.websocketEndpoints);
   const pid = requireCount(registration.pid, 'pid');
   if (pid === 0) throw invalidProtocolFrame('Invalid pid');
   return {
@@ -382,6 +385,7 @@ export function decodeHostRegistration(value: unknown): HostRegistration {
     rootId,
     hostEpoch: requireId(registration.hostEpoch, 'hostEpoch'),
     endpoint: requireString(registration.endpoint, 'endpoint', 512),
+    ...(websocketEndpoints === undefined ? {} : { websocketEndpoints }),
     protocolMin,
     protocolMax,
     compatibilityEpoch:
@@ -400,6 +404,39 @@ export function decodeHostRegistration(value: unknown): HostRegistration {
     pid,
     createdAt: requireString(registration.createdAt, 'createdAt', 64),
   };
+}
+
+function decodeRegistrationWebSocketEndpoints(value: unknown): readonly string[] | undefined {
+  if (value === undefined) return undefined;
+  if (!Array.isArray(value) || value.length === 0 || value.length > 4) {
+    throw invalidProtocolFrame('Invalid Runtime Host registration WebSocket endpoints');
+  }
+  const endpoints = value.map((entry) => {
+    const endpoint = requireString(entry, 'Runtime Host WebSocket endpoint', 2_048);
+    let url: URL;
+    try {
+      url = new URL(endpoint);
+    } catch {
+      throw invalidProtocolFrame('Invalid Runtime Host registration WebSocket endpoint');
+    }
+    if (
+      url.protocol !== 'ws:' ||
+      url.hostname !== '127.0.0.1' ||
+      url.username ||
+      url.password ||
+      url.port === '' ||
+      url.search ||
+      url.hash ||
+      !isCanonicalRuntimeHostWebSocketPath(url.pathname)
+    ) {
+      throw invalidProtocolFrame('Invalid Runtime Host registration WebSocket endpoint');
+    }
+    return url.toString();
+  });
+  if (new Set(endpoints).size !== endpoints.length) {
+    throw invalidProtocolFrame('Duplicate Runtime Host registration WebSocket endpoint');
+  }
+  return Object.freeze(endpoints);
 }
 
 function requireHostLifecycleMode(value: unknown): 'ephemeral' | 'service' {

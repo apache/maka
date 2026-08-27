@@ -38,6 +38,7 @@ import {
   resolveRuntimeHostManagedDeploymentConfigPath,
   runtimeHostManagedLaunchClaim,
   runtimeHostManagedLaunchRejection,
+  tryAcquireRuntimeHostLaunch,
   tryAcquireRuntimeHostLaunchOwner,
   type RuntimeHostManagedDeploymentAuthorityOptions,
   type RuntimeHostManagedDeploymentConfig,
@@ -163,6 +164,18 @@ test('strictly decodes every level of the canonical deployment contract', () => 
         launch: {
           ...config.launch,
           package: { ...config.launch.package, credential: 'must-not-be-persisted' },
+        },
+      }),
+    (error: unknown) =>
+      error instanceof RuntimeHostManagedDeploymentError && error.code === 'invalid_config',
+  );
+  assert.throws(
+    () =>
+      decodeRuntimeHostManagedDeploymentConfig({
+        ...config,
+        listeners: {
+          ...config.listeners,
+          websocket: { host: '127.0.0.1', port: 7443, path: '/runtime-host?secret=x' },
         },
       }),
     (error: unknown) =>
@@ -313,13 +326,16 @@ test('launch acquisition atomically joins deployment authorization and State Roo
       error instanceof RuntimeHostManagedDeploymentError &&
       error.code === 'deployment_lifecycle_mismatch',
   );
-  const managedOwner = await tryAcquireRuntimeHostLaunchOwner(
+  const managedOwnership = await tryAcquireRuntimeHostLaunch(
     input.capability,
     launchRequest(input.config, 'on_demand', managed.claim),
     input.authority,
   );
-  assert.ok(managedOwner);
-  await managedOwner.close();
+  assert.ok(managedOwnership);
+  assert.deepEqual(managedOwnership.managedConfig?.projectDirectoryRoots, [
+    { label: 'projects', path: '/srv/projects' },
+  ]);
+  await managedOwnership.owner.close();
 });
 
 test('concurrent install and unmanaged launch cannot both cross the authority boundary', async (t) => {

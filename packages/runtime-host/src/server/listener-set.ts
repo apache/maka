@@ -81,7 +81,7 @@ export async function startLocalRuntimeHostListenerSet(
   return createRuntimeHostListenerSet(local);
 }
 
-export async function startRuntimeHostServiceListenerSet(
+export async function startRuntimeHostAuthenticatedListenerSet(
   input: RuntimeHostListenerSetFactoryInput,
   options: {
     readonly websocket?: Omit<StartRuntimeHostWebSocketListenerOptions, 'accept' | 'isReady'>;

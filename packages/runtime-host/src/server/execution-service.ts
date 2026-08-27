@@ -24,14 +24,14 @@ import {
 } from './execution-composition-factory.js';
 import {
   currentRuntimeHostProcessLaunch,
-  tryAcquireRuntimeHostLaunchOwner,
+  tryAcquireRuntimeHostLaunch,
   type RuntimeHostManagedDeploymentAuthorityOptions,
   type RuntimeHostManagedLaunchClaim,
   type RuntimeHostManagedProcessLaunch,
 } from '../operator/managed-deployment.js';
 import { RuntimeHostKernel } from './host-kernel.js';
 import { openRuntimeHostAccessAuthority } from './access-authority.js';
-import { startRuntimeHostServiceListenerSet } from './listener-set.js';
+import { startRuntimeHostAuthenticatedListenerSet } from './listener-set.js';
 import type { StartRuntimeHostWebSocketListenerOptions } from './websocket-listener.js';
 import type { PublishedProjectDirectoryRoot } from './project-directory-authority.js';
 import type { StartRuntimeHostPeerListenerOptions } from './peer-listener.js';
@@ -72,7 +72,7 @@ export async function startExecutionRuntimeHostService(
 ): Promise<RuntimeHostKernel> {
   const composition = await createExecutionRuntimeHostCompositionSource(options, dependencies);
   const capability = await resolveStorageRoot({ path: options.rootPath, kind: 'interactive' });
-  const owner = await tryAcquireRuntimeHostLaunchOwner(
+  const ownership = await tryAcquireRuntimeHostLaunch(
     capability,
     {
       lifecycleMode: 'supervised',
@@ -81,7 +81,8 @@ export async function startExecutionRuntimeHostService(
     },
     dependencies.managedDeploymentAuthority,
   );
-  if (!owner) throw new RuntimeHostRootAlreadyOwnedError(capability.canonicalPath);
+  if (!ownership) throw new RuntimeHostRootAlreadyOwnedError(capability.canonicalPath);
+  const { owner } = ownership;
   try {
     const accessAuthority = await openRuntimeHostAccessAuthority(owner.controlDirectory);
     return await RuntimeHostKernel.start({
@@ -94,7 +95,7 @@ export async function startExecutionRuntimeHostService(
       ...(options.websocket || options.peer
         ? {
             listenerSetFactory: (input) =>
-              startRuntimeHostServiceListenerSet(input, {
+              startRuntimeHostAuthenticatedListenerSet(input, {
                 ...(options.websocket
                   ? { websocket: { ...options.websocket, accessAuthority } }
                   : {}),

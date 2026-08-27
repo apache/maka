@@ -21,12 +21,14 @@ import assert from 'node:assert/strict';
 import { resolve } from 'node:path';
 import { describe, test } from 'node:test';
 import type { RuntimeHostConnection } from '@maka/runtime-host/client';
+import { decodeRuntimeHostActivationFrame } from '@maka/runtime-host/operator';
 import {
   HOST_OPERATION_SPECS,
   REMOTE_OWNER_OPERATION_GRANTS,
   RUNTIME_HOST_COMPATIBILITY_EPOCH,
   RUNTIME_HOST_PROTOCOL_VERSION,
 } from '@maka/runtime-host/protocol';
+import { runRuntimeHostManagedActivationCli } from '../runtime-host-activation-command.js';
 import {
   resolveRuntimeHostAccessIssue,
   type RuntimeHostAccessIssueOptions,
@@ -39,6 +41,44 @@ const projectRootA = process.platform === 'win32' ? 'C:\\srv\\projects' : '/srv/
 const projectRootB = process.platform === 'win32' ? 'D:\\data' : '/mnt/data';
 
 describe('Runtime Host operator commands', () => {
+  test('parses and emits the stable framed managed activation contract', async () => {
+    const rootId = 'a'.repeat(64);
+    assert.deepEqual(parseRuntimeHostCommand(['activate', '--framed', '--root-id', rootId]), {
+      kind: 'runtime-host-managed-activate',
+      rootId,
+      framed: true,
+    });
+    assert.equal(parseRuntimeHostCommand(['activate', '--root-id', rootId]).kind, 'error');
+
+    let output = '';
+    assert.equal(
+      await runRuntimeHostManagedActivationCli(
+        { rootId },
+        {
+          activate: async () => ({
+            schemaVersion: 1,
+            kind: 'result',
+            deploymentId: '00000000-0000-4000-8000-000000000001',
+            configRevision: 1,
+            rootId,
+            hostEpoch: 'host-epoch',
+            pid: 1234,
+            protocolVersion: RUNTIME_HOST_PROTOCOL_VERSION,
+            endpoint: {
+              host: '127.0.0.1',
+              port: 43_210,
+              websocketPath: '/runtime-host',
+            },
+          }),
+          writeOutput: (value) => {
+            output += value;
+          },
+        },
+      ),
+      0,
+    );
+    assert.equal(decodeRuntimeHostActivationFrame(output)?.kind, 'result');
+  });
   test('parses project management and machine-readable service readiness', () => {
     assert.deepEqual(parseRuntimeHostCommand(['project', 'list', '--root', '/srv/maka']), {
       kind: 'runtime-host-project-list',

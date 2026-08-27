@@ -63,6 +63,41 @@ import {
 } from '../protocol/turn.js';
 
 describe('Runtime Host bootstrap protocol', () => {
+  test('accepts only authenticated-listener registration endpoints on IPv4 loopback', () => {
+    const registration = {
+      kind: 'maka-runtime-host',
+      schemaVersion: 1,
+      rootId: 'a'.repeat(64),
+      hostEpoch: 'host-epoch',
+      endpoint: '/tmp/runtime-host.sock',
+      websocketEndpoints: ['ws://127.0.0.1:43210/runtime-host'],
+      protocolMin: RUNTIME_HOST_PROTOCOL_VERSION,
+      protocolMax: RUNTIME_HOST_PROTOCOL_VERSION,
+      compatibilityEpoch: RUNTIME_HOST_COMPATIBILITY_EPOCH,
+      compositionId: 'maka.interactive',
+      compositionRevision: 'revision',
+      lifecycleMode: 'ephemeral',
+      state: 'ready',
+      pid: 1234,
+      createdAt: new Date(0).toISOString(),
+    } as const;
+    assert.deepEqual(decodeHostRegistration(registration).websocketEndpoints, [
+      'ws://127.0.0.1:43210/runtime-host',
+    ]);
+    assert.throws(() =>
+      decodeHostRegistration({
+        ...registration,
+        websocketEndpoints: ['ws://0.0.0.0:43210/runtime-host'],
+      }),
+    );
+    assert.throws(() =>
+      decodeHostRegistration({
+        ...registration,
+        websocketEndpoints: ['ws://127.0.0.1:43210/runtime-host?credential=secret'],
+      }),
+    );
+  });
+
   test('decodes a Client hello without a surface identity', () => {
     const hello = {
       kind: 'hello',

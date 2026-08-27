@@ -25,6 +25,7 @@ import type { CreateSessionRequestInput } from '@maka/core/runtime-inputs';
 import type { SessionChangedEvent, SessionChangedReason } from '@maka/core/session';
 import type { BotRegistry } from '@maka/runtime/bots';
 import {
+  type RuntimeHostSshOperatorActivationInput,
   connectOrSpawnRuntimeHost,
   connectRemoteRuntimeHostProfile,
   type RuntimeHostSshInteraction,
@@ -38,6 +39,7 @@ import {
   type RemoteRuntimeHostProfile,
   type CandidateExitDetails,
 } from "@maka/runtime-host/client";
+import type { RuntimeHostActivationResult } from "@maka/runtime-host/operator";
 import {
   INTERACTIVE_RUNTIME_HOST_COMPOSITION_ID,
   RUNTIME_HOST_PROTOCOL_VERSION,
@@ -125,6 +127,9 @@ export interface DesktopRuntimeHostCandidateDeps {
   readonly openSshTunnel?: (
     input: RuntimeHostSshTunnelInput,
   ) => Promise<RuntimeHostSshTunnel>;
+  readonly activateSshOperator?: (
+    input: RuntimeHostSshOperatorActivationInput,
+  ) => Promise<RuntimeHostActivationResult>;
   readonly createSessionCopyCleanup: (input: {
     removeSession: (sessionId: string) => Promise<SessionCopyCleanupDisposition>;
     resumeSessionCopy: (input: {
@@ -389,6 +394,9 @@ async function startRemoteDesktopRuntimeHostCandidate(
   },
   {
     ...(input.openSshTunnel ? { openSshTunnel: input.openSshTunnel } : {}),
+    ...(input.activateSshOperator
+      ? { activateSshOperator: input.activateSshOperator }
+      : {}),
   });
   try {
     return {

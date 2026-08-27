@@ -106,6 +106,7 @@ export function createDesktopRuntimeHostOnboarding(input: {
   ): Promise<DesktopRuntimeHostOnboardingSnapshot> => {
     try {
       const setupPackage = await input.resolveSetupPackage(signal);
+      const lifecycle = setupPackage.kind === 'npm' ? 'on_demand' : 'supervised';
       signal.throwIfAborted();
       publish({ kind: 'running', phase: 'connecting_ssh' });
       let commitStarted = false;
@@ -123,6 +124,7 @@ export function createDesktopRuntimeHostOnboarding(input: {
           destination: request.destination,
           ...(request.sshPort === undefined ? {} : { sshPort: request.sshPort }),
           setupPackage,
+          lifecycle,
           principalId: `desktop:${input.clientInstanceId}`,
           ...(request.projectDirectoryRoots
             ? { projectDirectoryRoots: request.projectDirectoryRoots }
@@ -153,16 +155,29 @@ export function createDesktopRuntimeHostOnboarding(input: {
             kind: 'ssh',
             destination: request.destination,
             ...(request.sshPort === undefined ? {} : { sshPort: request.sshPort }),
-            remotePort: endpoint.port,
-            websocketPath: endpoint.websocketPath,
+            ...(lifecycle === 'on_demand'
+              ? {
+                  activation: {
+                    kind: 'ssh_operator' as const,
+                    operatorPath: complete.operatorPath,
+                  },
+                }
+              : {
+                  remotePort: endpoint.port,
+                  websocketPath: endpoint.websocketPath,
+                }),
           },
         },
         credential: complete.credential,
-        managedService: {
-          id: complete.serviceId,
-          rootPath: complete.rootPath,
-          operatorPath: complete.operatorPath,
-        },
+        ...(lifecycle === 'supervised'
+          ? {
+              managedService: {
+                id: complete.serviceId,
+                rootPath: complete.rootPath,
+                operatorPath: complete.operatorPath,
+              },
+            }
+          : {}),
       });
       return publish({
         kind: 'complete',

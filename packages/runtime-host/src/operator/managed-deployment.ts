@@ -25,6 +25,8 @@ import { isDeepStrictEqual } from 'node:util';
 import {
   type StateRootOwner,
   type StorageRootCapability,
+  assertStorageRootLease,
+  resolveExistingStorageRoot,
   tryAcquireStateRootOwner,
 } from '@maka/storage/root-authority';
 import {
@@ -33,6 +35,7 @@ import {
   syncDirectoryChain,
 } from '@maka/storage/stable-storage';
 import { z } from 'zod';
+import { isCanonicalRuntimeHostWebSocketPath } from '../protocol/websocket-path.js';
 import {
   isProductReleaseVersion,
   isSha512PackageIntegrity,
@@ -141,8 +144,8 @@ const managedDeploymentConfigSchema = z
         websocket: z
           .object({
             host: z.literal('127.0.0.1'),
-            port: z.number().int().min(1).max(65_535),
-            path: boundedText(2_048).refine((value) => value.startsWith('/')),
+            port: z.number().int().min(0).max(65_535),
+            path: boundedText(2_048).refine(isCanonicalRuntimeHostWebSocketPath),
           })
           .strict()
           .optional(),
@@ -335,6 +338,44 @@ export async function readRuntimeHostManagedDeploymentConfig(
   );
 }
 
+export async function resolveRuntimeHostManagedDeployment(
+  rootId: string,
+  options: RuntimeHostManagedDeploymentAuthorityOptions = {},
+): Promise<{
+  readonly capability: StorageRootCapability<'interactive'>;
+  readonly config: RuntimeHostManagedDeploymentConfig;
+}> {
+  requireRootId(rootId);
+  const path = resolveRuntimeHostManagedDeploymentConfigPath(rootId, options);
+  const value = await readBoundedJson(path);
+  if (value === undefined) {
+    throw new RuntimeHostManagedDeploymentError(
+      'deployment_record_missing',
+      'The managed Runtime Host deployment is not installed',
+    );
+  }
+  const initial = decodeRuntimeHostManagedDeploymentConfig(value);
+  if (initial.root.id !== rootId) {
+    throw new RuntimeHostManagedDeploymentError(
+      'invalid_config',
+      'The Runtime Host managed deployment record has an invalid Root identity',
+    );
+  }
+  const capability = await resolveExistingStorageRoot({
+    path: initial.root.path,
+    kind: 'interactive',
+    expectedRootId: rootId,
+  });
+  const config = await readDeploymentConfigForCapability(path, capability);
+  if (config === undefined) {
+    throw new RuntimeHostManagedDeploymentError(
+      'deployment_record_missing',
+      'The managed Runtime Host deployment disappeared during activation',
+    );
+  }
+  return { capability, config };
+}
+
 export async function claimRuntimeHostManagedDeployment(
   capability: StorageRootCapability<'interactive'>,
   config: RuntimeHostManagedDeploymentConfig,
@@ -367,24 +408,57 @@ export async function claimRuntimeHostManagedDeployment(
     );
   }
   try {
-    const current = await readDeploymentConfigForCapability(path, capability);
-    if (current !== undefined) return existingDeploymentClaim(current, canonical);
-    await writePrivateJson(path, canonical);
-    return {
-      kind: 'applied',
-      config: canonical,
-      claim: runtimeHostManagedLaunchClaim(canonical),
-    };
+    return await commitRuntimeHostManagedDeployment(owner, canonical, options);
   } finally {
     await owner.close();
   }
 }
 
-export async function tryAcquireRuntimeHostLaunchOwner(
+export async function commitRuntimeHostManagedDeployment(
+  owner: StateRootOwner<'interactive'>,
+  config: RuntimeHostManagedDeploymentConfig,
+  options: RuntimeHostManagedDeploymentAuthorityOptions = {},
+): Promise<{
+  readonly kind: 'applied' | 'unchanged';
+  readonly config: RuntimeHostManagedDeploymentConfig;
+  readonly claim: RuntimeHostManagedLaunchClaim;
+}> {
+  if (owner.closed) {
+    throw new RuntimeHostManagedDeploymentError(
+      'state_root_owned',
+      'The State Root deployment owner is no longer active',
+    );
+  }
+  const canonical = decodeRuntimeHostManagedDeploymentConfig(config);
+  assertConfigTargetsCapability(canonical, owner.capability);
+  await assertStorageRootLease(owner.lease, 'interactive', 'write');
+  const authorityRoot = resolveRuntimeHostManagedDeploymentAuthorityRoot(options);
+  const path = resolveRuntimeHostManagedDeploymentConfigPath(owner.capability.rootId, options);
+  await prepareAuthorityDirectory(
+    dirname(path),
+    resolveAuthorityDurabilityBoundary(authorityRoot, options),
+    options,
+  );
+  const current = await readDeploymentConfigForCapability(path, owner.capability);
+  if (current !== undefined) return existingDeploymentClaim(current, canonical);
+  await writePrivateJson(path, canonical);
+  return {
+    kind: 'applied',
+    config: canonical,
+    claim: runtimeHostManagedLaunchClaim(canonical),
+  };
+}
+
+export interface RuntimeHostLaunchOwnership {
+  readonly owner: StateRootOwner<'interactive'>;
+  readonly managedConfig?: RuntimeHostManagedDeploymentConfig;
+}
+
+export async function tryAcquireRuntimeHostLaunch(
   capability: StorageRootCapability<'interactive'>,
   request: RuntimeHostManagedLaunchRequest,
   options: RuntimeHostManagedDeploymentAuthorityOptions = {},
-): Promise<StateRootOwner<'interactive'> | undefined> {
+): Promise<RuntimeHostLaunchOwnership | undefined> {
   const canonicalClaim =
     request.claim === undefined ? undefined : decodeRuntimeHostManagedLaunchClaim(request.claim);
   const path = resolveRuntimeHostManagedDeploymentConfigPath(capability.rootId, options);
@@ -424,11 +498,19 @@ export async function tryAcquireRuntimeHostLaunchOwner(
         managedLaunchRejectionMessage('deployment_launch_mismatch'),
       );
     }
-    return owner;
+    return config === undefined ? { owner } : { owner, managedConfig: config };
   } catch (error) {
     await owner.close();
     throw error;
   }
+}
+
+export async function tryAcquireRuntimeHostLaunchOwner(
+  capability: StorageRootCapability<'interactive'>,
+  request: RuntimeHostManagedLaunchRequest,
+  options: RuntimeHostManagedDeploymentAuthorityOptions = {},
+): Promise<StateRootOwner<'interactive'> | undefined> {
+  return (await tryAcquireRuntimeHostLaunch(capability, request, options))?.owner;
 }
 
 export function runtimeHostManagedLaunchRejection(

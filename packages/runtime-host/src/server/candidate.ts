@@ -20,13 +20,16 @@
 import { resolveExistingStorageRoot } from '@maka/storage/root-authority';
 import {
   currentRuntimeHostProcessLaunch,
-  tryAcquireRuntimeHostLaunchOwner,
+  tryAcquireRuntimeHostLaunch,
   type RuntimeHostManagedDeploymentAuthorityOptions,
+  type RuntimeHostManagedDeploymentConfig,
   type RuntimeHostManagedLaunchClaim,
   type RuntimeHostManagedProcessLaunch,
 } from '../operator/managed-deployment.js';
 import type { RuntimeHostCompositionSource } from './host-composition.js';
 import { RuntimeHostKernel } from './host-kernel.js';
+import { openRuntimeHostAccessAuthority } from './access-authority.js';
+import { startRuntimeHostAuthenticatedListenerSet } from './listener-set.js';
 
 export interface InteractiveRuntimeHostCandidateOptions {
   rootPath: string;
@@ -49,9 +52,13 @@ export type InteractiveRuntimeHostCandidateResult =
   | { kind: 'loser' }
   | { kind: 'winner'; host: RuntimeHostKernel };
 
+export type InteractiveRuntimeHostCompositionFactory = (
+  managedConfig: RuntimeHostManagedDeploymentConfig | undefined,
+) => RuntimeHostCompositionSource | Promise<RuntimeHostCompositionSource>;
+
 export async function startInteractiveRuntimeHostCandidate(
   options: InteractiveRuntimeHostCandidateOptions,
-  composition: RuntimeHostCompositionSource,
+  createComposition: InteractiveRuntimeHostCompositionFactory,
   dependencies: InteractiveRuntimeHostCandidateDependencies = {},
 ): Promise<InteractiveRuntimeHostCandidateResult> {
   const capability = await resolveExistingStorageRoot({
@@ -59,7 +66,7 @@ export async function startInteractiveRuntimeHostCandidate(
     kind: 'interactive',
     expectedRootId: options.expectedRootId,
   });
-  const owner = await tryAcquireRuntimeHostLaunchOwner(
+  const ownership = await tryAcquireRuntimeHostLaunch(
     capability,
     {
       lifecycleMode: 'on_demand',
@@ -68,15 +75,35 @@ export async function startInteractiveRuntimeHostCandidate(
     },
     dependencies.managedDeploymentAuthority,
   );
-  if (!owner) return { kind: 'loser' };
-  const host = await RuntimeHostKernel.start({
-    owner,
-    lifecycleMode: 'ephemeral',
-    initialConnectionTimeoutMs: options.initialConnectionTimeoutMs,
-    idleGraceMs: options.idleGraceMs,
-    handshakeTimeoutMs: options.handshakeTimeoutMs,
-    generation: options.generation,
-    composition,
-  });
-  return { kind: 'winner', host };
+  if (!ownership) return { kind: 'loser' };
+  const { owner, managedConfig } = ownership;
+  try {
+    const composition = await createComposition(managedConfig);
+    const websocket = managedConfig?.listeners.websocket;
+    const accessAuthority = websocket
+      ? await openRuntimeHostAccessAuthority(owner.controlDirectory)
+      : undefined;
+    const host = await RuntimeHostKernel.start({
+      owner,
+      lifecycleMode: 'ephemeral',
+      initialConnectionTimeoutMs: options.initialConnectionTimeoutMs,
+      idleGraceMs: options.idleGraceMs,
+      handshakeTimeoutMs: options.handshakeTimeoutMs,
+      generation: options.generation,
+      composition,
+      ...(accessAuthority ? { accessAuthority } : {}),
+      ...(websocket && accessAuthority
+        ? {
+            listenerSetFactory: (input) =>
+              startRuntimeHostAuthenticatedListenerSet(input, {
+                websocket: { ...websocket, accessAuthority },
+              }),
+          }
+        : {}),
+    });
+    return { kind: 'winner', host };
+  } catch (error) {
+    if (!owner.closed) await owner.close();
+    throw error;
+  }
 }

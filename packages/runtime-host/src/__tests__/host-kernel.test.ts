@@ -284,7 +284,7 @@ describe('non-serving Runtime Host kernel', () => {
             expectedRootId: capability.rootId,
             managedLaunchClaim: claim,
           },
-          KERNEL_COMPOSITION,
+          () => KERNEL_COMPOSITION,
           { managedDeploymentAuthority },
         ),
         (error: unknown) => {
@@ -318,7 +318,7 @@ describe('non-serving Runtime Host kernel', () => {
             expectedRootId: capability.rootId,
             managedLaunchClaim: claim,
           },
-          KERNEL_COMPOSITION,
+          () => KERNEL_COMPOSITION,
           {
             managedDeploymentAuthority,
             processLaunch: {
@@ -3475,7 +3475,7 @@ async function startTestRuntimeHostCandidate(
     (await resolveStorageRoot({ path: options.rootPath, kind: 'interactive' })).rootId;
   const result = await startInteractiveRuntimeHostCandidate(
     { ...options, expectedRootId },
-    KERNEL_COMPOSITION,
+    () => KERNEL_COMPOSITION,
   );
   if (result.kind === 'winner') paths.resources.trackCloseable(result.host);
   return result;

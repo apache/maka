@@ -18,6 +18,12 @@
  */
 
 export {
+  RuntimeHostManagedActivationError,
+  activateRuntimeHostManagedDeployment,
+  type ActivateRuntimeHostManagedDeploymentInput,
+  type RuntimeHostManagedActivationErrorCode,
+} from './managed-activation.js';
+export {
   connectRuntimeHost,
   connectExistingRuntimeHost,
   connectRemoteRuntimeHost,
@@ -56,6 +62,11 @@ export {
   type RuntimeHostConnectionAvailability,
   type RuntimeHostReconnectingConnection,
 } from './reconnecting-connection.js';
+export {
+  RuntimeHostSshOperatorActivationError,
+  activateRuntimeHostSshOperator,
+  type RuntimeHostSshOperatorActivationInput,
+} from './ssh-operator-activation.js';
 export {
   normalizeRuntimeHostSshDestination,
   openRuntimeHostSshTunnel,

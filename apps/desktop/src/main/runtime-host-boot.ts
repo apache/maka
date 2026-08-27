@@ -842,6 +842,7 @@ runtimeHostManager = await startRuntimeHostDesktopManager(
       console.error("[runtime-host] projection refresh failed:", error),
     registerClientIpc: registerHostClientIpc,
     openSshTunnel: runtimeHostSshTerminal.openSshTunnel,
+    activateSshOperator: runtimeHostSshTerminal.activateSshOperator,
   },
   {
     upgradePrompts: createRuntimeHostUpgradePrompts(

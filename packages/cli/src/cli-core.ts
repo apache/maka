@@ -135,6 +135,7 @@ function helpText(cliCommand: string): string {
     `  ${cliCommand} -p ...       Alias for ${cliCommand} run`,
     `  ${cliCommand} eval ...     Run one declarative multi-arm experiment`,
     `  ${cliCommand} runtime-host serve [options]  Run a Runtime Host service`,
+    `  ${cliCommand} runtime-host activate --framed --root-id <id>`,
     `  ${cliCommand} runtime-host setup --principal <id> --preset <desktop-client|terminal-client> [options]`,
     `  ${cliCommand} runtime-host service install [options]`,
     `  ${cliCommand} runtime-host service configure (--project-root <label>=<path> ... | --no-project-roots) --expected-config-fingerprint <sha256:...> --expected-service-id <id> --expected-root-path <path> --expected-root-id <id> [--allow-interrupt-active-tasks]`,
@@ -236,6 +237,12 @@ export async function runMakaCli(
     clientDataRoot: dataRoots.clientDataRoot,
   });
   switch (command.kind) {
+    case 'runtime-host-managed-activate': {
+      const { runRuntimeHostManagedActivationCli } = await import(
+        './runtime-host-activation-command.js'
+      );
+      return runRuntimeHostManagedActivationCli({ rootId: command.rootId });
+    }
     case 'run': {
       const { runRuntimeHostTextCli } = await import('./runtime-host-run-command.js');
       return runRuntimeHostTextCli(
@@ -304,6 +311,7 @@ export async function runMakaCli(
         version,
         principalId: command.principalId,
         preset: command.preset,
+        lifecycle: command.lifecycle,
         deferPairingCommit: command.deferPairingCommit,
         bindPairingToClient: command.bindPairingToClient,
         ...(command.rootPath ? { rootPath: command.rootPath } : {}),

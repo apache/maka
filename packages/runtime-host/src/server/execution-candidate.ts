@@ -40,6 +40,13 @@ export async function startExecutionRuntimeHostCandidate(
   options: ExecutionRuntimeHostCandidateOptions,
   dependencies: ExecutionRuntimeHostCandidateDependencies = {},
 ): Promise<ExecutionRuntimeHostCandidateResult> {
-  const composition = await createExecutionRuntimeHostCompositionSource({}, dependencies);
-  return startInteractiveRuntimeHostCandidate(options, composition, dependencies);
+  return startInteractiveRuntimeHostCandidate(
+    options,
+    (managedConfig) =>
+      createExecutionRuntimeHostCompositionSource(
+        managedConfig ? { projectDirectoryRoots: managedConfig.projectDirectoryRoots } : {},
+        dependencies,
+      ),
+    dependencies,
+  );
 }

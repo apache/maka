@@ -38,6 +38,11 @@ export type RuntimeHostUpdateSelector =
 
 export type RuntimeHostCliCommand =
   | {
+      kind: 'runtime-host-managed-activate';
+      rootId: string;
+      framed: true;
+    }
+  | {
       kind: 'runtime-host-serve';
       rootPath?: string;
       managedServiceConfigPath?: string;
@@ -65,6 +70,7 @@ export type RuntimeHostCliCommand =
       json: boolean;
       principalId: string;
       preset: 'desktop-client' | 'terminal-client';
+      lifecycle: 'supervised' | 'on_demand';
       deferPairingCommit: boolean;
       bindPairingToClient?: true;
       clientDataRoot?: string;
@@ -227,6 +233,7 @@ export type RuntimeHostCliCommand =
   | RuntimeHostCliError;
 
 export function parseRuntimeHostCommand(argv: string[]): RuntimeHostCliCommand {
+  if (argv[0] === 'activate') return parseManagedActivationCommand(argv.slice(1));
   if (argv[0] === 'serve') return parseServeCommand(argv.slice(1));
   if (argv[0] === 'setup') return parseSetupCommand(argv.slice(1));
   if (argv[0] === 'service') return parseServiceManagementCommand(argv.slice(1));
@@ -239,13 +246,41 @@ export function parseRuntimeHostCommand(argv: string[]): RuntimeHostCliCommand {
   return error(
     argv[0]
       ? `Unexpected runtime-host command: ${argv[0]}`
-      : 'runtime-host requires the serve, setup, service, access, project, profile, or capability-provider command',
+      : 'runtime-host requires the activate, serve, setup, service, access, project, profile, or capability-provider command',
   );
+}
+
+function parseManagedActivationCommand(argv: string[]): RuntimeHostCliCommand {
+  let rootId: string | undefined;
+  let framed = false;
+  for (let index = 0; index < argv.length; index += 1) {
+    const argument = argv[index];
+    if (argument === '--framed') {
+      if (framed) return error('Duplicate --framed');
+      framed = true;
+      continue;
+    }
+    if (argument === '--root-id') {
+      if (rootId !== undefined) return error('Duplicate --root-id');
+      rootId = argv[index + 1];
+      index += 1;
+      if (rootId === undefined) return error('--root-id requires a value');
+      continue;
+    }
+    return error(`Unexpected runtime-host activate option: ${String(argument)}`);
+  }
+  if (!framed) return error('runtime-host activate requires --framed');
+  if (!rootId || !/^[a-f0-9]{64}$/u.test(rootId)) {
+    return error('runtime-host activate requires a valid --root-id');
+  }
+  return { kind: 'runtime-host-managed-activate', rootId, framed: true };
 }
 
 function parseSetupCommand(argv: string[]): RuntimeHostCliCommand {
   let principalId: string | undefined;
   let preset: 'desktop-client' | 'terminal-client' | undefined;
+  let lifecycle: 'supervised' | 'on_demand' = 'supervised';
+  let lifecycleProvided = false;
   let deferPairingCommit = false;
   let bindPairingToClient = false;
   let clientDataRoot: string | undefined;
@@ -269,6 +304,14 @@ function parseSetupCommand(argv: string[]): RuntimeHostCliCommand {
           return error('--preset must be desktop-client or terminal-client');
         }
         preset = value;
+      },
+      '--lifecycle': (value) => {
+        if (lifecycleProvided) return error('Duplicate --lifecycle');
+        if (value !== 'supervised' && value !== 'on-demand') {
+          return error('--lifecycle must be supervised or on-demand');
+        }
+        lifecycleProvided = true;
+        lifecycle = value === 'on-demand' ? 'on_demand' : 'supervised';
       },
     },
     flagOptions: {
@@ -302,6 +345,7 @@ function parseSetupCommand(argv: string[]): RuntimeHostCliCommand {
     ...options,
     principalId,
     preset,
+    lifecycle,
     deferPairingCommit,
     ...(bindPairingToClient ? { bindPairingToClient: true } : {}),
     ...(clientDataRoot ? { clientDataRoot } : {}),
