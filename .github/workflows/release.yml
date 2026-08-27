@@ -187,6 +187,20 @@ jobs:
         if: matrix.platform == 'macos'
         run: npm run verify:macos-arm64 -- "apps/desktop/release/${{ needs.release-identity.outputs.dmg }}"
 
+      - name: Build the version-bumped macOS update
+        if: matrix.platform == 'macos'
+        env:
+          CSC_LINK: ${{ secrets.CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
+        run: npm run package:macos-autoupdate-next
+
+      - name: Verify macOS automatic update end to end
+        if: matrix.platform == 'macos'
+        run: |
+          npm run verify:macos-autoupdate -- \
+            "apps/desktop/release/Maka-${{ needs.release-identity.outputs.version }}-mac-arm64.zip" \
+            apps/desktop/release-autoupdate-next
+
       # Windows has no Authenticode certificate yet, so this build is unsigned
       # and there is nothing to notarize between packaging and verification.
       - name: Package the Windows installer and ZIP

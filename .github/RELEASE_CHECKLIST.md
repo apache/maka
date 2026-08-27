@@ -60,7 +60,7 @@ must never be exposed to fork or ordinary pull-request jobs.
 Before the first product release, confirm the checked-in `.asf.yaml` has reconciled the live repository:
 
 - the `Immutable release tags` ruleset blocks updates, force-pushes, and deletions of `v*` tags;
-- the `release` and `npm-release` Environments accept only their declared tag patterns and require a reviewer other than the triggering user;
+- the `release`, `npm-release`, and `product-release` Environments accept only their declared tag patterns and require a reviewer other than the triggering user;
 - enable immutable releases so assets and the associated tag cannot change after publication.
 
 These controls close the check-to-upload and check-to-stage windows. Keep the Release in Draft while assets and acceptance are incomplete; publishing early must make subsequent mutation fail closed.
@@ -108,15 +108,16 @@ Follow [the npm release runbook](../docs/cli-npm-release.md) against the exact p
 
 1. Run **Stage CLI npm release** from `v<version>` and record its successful run ID and attempt.
 2. Inspect the staged tarball and provenance, then approve that exact stage with npm 2FA.
-3. Run **Finalize CLI npm channel** from `main` and confirm it verifies the public package bytes,
-   provenance, signature, and release dist-tag.
+3. Run **Finalize product release** from `v<version>`. Its first job verifies the public package
+   bytes, provenance, signature, and release dist-tag.
 4. Install the exact public version on each release platform and complete the npm acceptance steps.
 
-Keep the GitHub Release in Draft throughout this sequence. A failed or rejected npm candidate
-requires a new product version; never publish the Draft to work around npm state.
-
-When every npm and cross-machine acceptance check has passed, publish the Draft. Mark a stable
-release as Latest at that final publication boundary; prereleases must remain non-Latest.
+Keep the GitHub Release in Draft throughout this sequence. The final workflow job waits at the
+`product-release` Environment. Approve it only after every npm and cross-machine acceptance check
+has passed. It redownloads and verifies every Draft byte, then publishes the release and makes a
+stable release Latest in the same GitHub operation; prereleases remain non-Latest. Do not publish or
+change the Latest designation manually. A failed or rejected npm candidate requires a new product
+version; never publish the Draft to work around npm state.
 
 ## Acceptance on another Apple Silicon Mac
 
@@ -155,8 +156,8 @@ Download the installer, Windows Desktop ZIP, and both checksum files through a b
 7. Add a clean remote Runtime Host from the packaged Desktop app. Confirm setup installs the exact
    public `maka-agent@<version>` package and the remote session completes one model turn.
 
-Immediately before publication, reverify that the approved ASF candidate tag and convenience
-`v<version>` tag still resolve to the same recorded commit. Publish only after npm Finalize and both
-independent-machine acceptance passes. If any required artifact, npm step, or
+Immediately before approving the `product-release` Environment, reverify that the approved ASF
+candidate tag and convenience `v<version>` tag still resolve to the same recorded commit. Approve
+only after npm verification and both independent-machine acceptance passes. If any required artifact, npm step, or
 acceptance step fails, keep the Draft unpublished, fix the issue, increment the root product
 version, and run the full workflow again. Never replace an existing release identity.

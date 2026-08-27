@@ -15,7 +15,7 @@
 # specific language governing permissions and limitations
 # under the License.
 
-name: Finalize CLI npm channel
+name: Finalize product release
 
 on:
   workflow_dispatch:
@@ -38,7 +38,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: cli-npm-finalize
+  group: product-release-finalize
   cancel-in-progress: false
 
 jobs:
@@ -46,13 +46,17 @@ jobs:
     name: Verify the public npm channel
     runs-on: ubuntu-24.04
     timeout-minutes: 20
+    outputs:
+      product_tag: ${{ steps.release.outputs.product_tag }}
+      source_commit: ${{ steps.release.outputs.source_commit }}
     steps:
-      - name: Require main
+      - name: Require the exact product tag
         env:
           RELEASE_REF: ${{ github.ref }}
+          PRODUCT_TAG: v${{ inputs.version }}
         run: |
-          if [[ "$RELEASE_REF" != "refs/heads/main" ]]; then
-            echo "CLI npm finalization must be dispatched from main; found $RELEASE_REF" >&2
+          if [[ "$RELEASE_REF" != "refs/tags/$PRODUCT_TAG" ]]; then
+            echo "Product finalization must be dispatched from $PRODUCT_TAG; found $RELEASE_REF" >&2
             exit 1
           fi
 
@@ -141,3 +145,52 @@ jobs:
           if-no-files-found: error
           compression-level: 0
           retention-days: 30
+
+  publish:
+    name: Publish the immutable product release
+    needs: inspect
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    environment:
+      name: product-release
+      url: https://github.com/apache/maka/releases/tag/${{ needs.inspect.outputs.product_tag }}
+    permissions:
+      contents: write
+    steps:
+      - name: Check out the exact product source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.inspect.outputs.source_commit }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '24'
+          package-manager-cache: false
+
+      - name: Install the release verifier dependencies
+        run: npm ci --ignore-scripts --no-audit --no-fund
+
+      - name: Download the complete Draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PRODUCT_TAG: ${{ needs.inspect.outputs.product_tag }}
+        run: gh release download "$PRODUCT_TAG" --dir "$RUNNER_TEMP/product-release"
+
+      - name: Revalidate every product artifact
+        env:
+          GITHUB_SHA: ${{ needs.inspect.outputs.source_commit }}
+        run: node scripts/product-release-artifacts.mjs verify "$RUNNER_TEMP/product-release"
+
+      - name: Publish the verified release and update its channel atomically
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PRODUCT_SOURCE_COMMIT: ${{ needs.inspect.outputs.source_commit }}
+          PRODUCT_TAG: ${{ needs.inspect.outputs.product_tag }}
+        run: |
+          node scripts/product-release-authority.mjs publish-draft \
+            "$PRODUCT_TAG" \
+            "$PRODUCT_SOURCE_COMMIT" \
+            "$GITHUB_REPOSITORY" \
+            "$RUNNER_TEMP/product-release"

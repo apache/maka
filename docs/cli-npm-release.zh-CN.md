@@ -42,13 +42,16 @@ source RC 阶段的 [npm 预检](../.github/ASF_NPM_RELEASE.md) 是更早执行�
 
 1. [Stage CLI npm release](../.github/workflows/release-cli-stage.yml) 解析已有的产品 tag 与 GitHub
    Release，checkout 该产品的精确 commit，构建并验证一个 immutable tarball，记录这个唯一的 tag commit 与 workflow run，进入受保护的 `npm-release` Environment，然后通过 OIDC 提交到 npm staging；
-2. [Finalize CLI npm channel](../.github/workflows/release-cli-finalize.yml) 只接受精确的成功 Stage run 和 attempt，并验证公共 registry 字节、signature、provenance 和 dist-tag；它不创建 tag 或 GitHub Release。
+2. [Finalize product release](../.github/workflows/release-cli-finalize.yml) 只接受精确的成功
+   Stage run 和 attempt，验证公共 registry 字节、signature、provenance 和 dist-tag，然后等待受保护的
+   `product-release` Environment；独立 Desktop 验收完成并批准后，它会重新验证 Draft 的每个
+   artifact，并在同一个操作中发布 GitHub Release 及其 Stable/Latest 分类。
 
 ## 一次性控制面配置
 
 ### GitHub Environment
 
-仓库中的 `.asf.yaml` 是 `npm-release` Environment 的权威。该配置进入 `main` 后，确认 ASF
+仓库中的 `.asf.yaml` 是 `npm-release` 和 `product-release` Environment 的权威。该配置进入 `main` 后，确认 ASF
 同步出的 live 配置满足：
 
 - 使用匹配 `v*` 的 selected deployment tag rule，不配置 branch rule；
@@ -171,15 +174,17 @@ npm dist-tag add "maka-agent@$version" next --registry https://registry.npmjs.or
 npm Trusted Publishing 只认证 `npm publish` 和 `npm stage publish`，不认证 dist-tag 变更，而
 release workflow 不得获得长期 npm token。
 
-## Finalize 公共 npm 渠道
+## Finalize 产品发布
 
 npm 显示该版本已经公开后：
 
-1. 在 `main` 上打开 **Actions → Finalize CLI npm channel → Run workflow**；
+1. 在 `v<version>` 上打开 **Actions → Finalize product release → Run workflow**；
 2. 输入成功 Stage 的 run ID、精确 run attempt 和 version；
 3. 让 inspection job 验证公共 tarball 字节、checksum、inventory、npm signature、Trusted
    Publishing provenance、发布 dist-tag，并确认 `next` 不比 `latest` 更旧；
-4. 确认 workflow 将验证后的公开包保存为 Actions artifact，且没有创建或修改任何 Git tag 或 GitHub Release。
+4. publication job 等待 `product-release` 批准期间，针对 Draft 完成产品检查清单中的跨机器验收；
+5. 批准 Environment，并确认 workflow 重新下载并验证每个 Draft artifact，随后发布 Release；
+   stable release 会同时成为 Latest，不再需要单独人工操作。
 
 检查最终 registry 状态：
 
@@ -192,8 +197,7 @@ npm view maka-agent dist-tags --json
 最后，在每个发布平台安装精确的公共版本，并完成一次真实的 TUI/model turn。在支持的 Eval
 host 上完成至少一个真实 experiment cell，检查 score、usage、cost 和 artifacts。
 
-回到[产品发布检查清单](../.github/RELEASE_CHECKLIST.md)，使用打包后的 Desktop 应用完成远程
-Runtime Host setup 验收，再发布 GitHub Release。
+[产品发布检查清单](../.github/RELEASE_CHECKLIST.md)仍是批准发布前所需验收证据的权威。
 
 ## 失败恢复
 

@@ -23,6 +23,7 @@ import { tmpdir } from 'node:os';
 import { basename, dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { readProductManifestIdentity } from './product-release-identity.mjs';
+import { assertPackagedUpdateConfiguration } from './desktop-update-contract.mjs';
 import {
   assertMissing,
   assertPackagedDependencyClosure,
@@ -148,8 +149,10 @@ export async function verifyPackagedWindowsApp(
     requireAppIconCatalog: requiresCurrentContract,
     requireDirectPeerArtifact: requiresCurrentContract,
   });
-  if (requiresCurrentContract) await assertPackagedDependencyClosure(resources);
-  else await requirePath(join(resources, 'git', 'cmd', 'git.exe'));
+  if (requiresCurrentContract) {
+    await assertPackagedUpdateConfiguration(resources);
+    await assertPackagedDependencyClosure(resources);
+  } else await requirePath(join(resources, 'git', 'cmd', 'git.exe'));
 
   step('reading the executable architecture');
   const machine = await readMachine(executable);

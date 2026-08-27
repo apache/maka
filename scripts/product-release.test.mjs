@@ -233,7 +233,7 @@ test('platform package verifiers keep Git checks out of current artifacts', asyn
   );
   assert.match(
     windowsSource,
-    /if \(requiresCurrentContract\) await assertPackagedDependencyClosure\(resources\);\s*else await requirePath\(join\(resources, ['"]git['"]/u,
+    /if \(requiresCurrentContract\) \{\s*await assertPackagedUpdateConfiguration\(resources\);\s*await assertPackagedDependencyClosure\(resources\);\s*\}\s*else await requirePath\(join\(resources, ['"]git['"]/u,
   );
 
   const macosSource = await readFile(
@@ -653,7 +653,9 @@ test('one product workflow gates one draft release on every required artifact', 
   assert.ok(uploadIndex >= 0);
   for (const verifier of [
     'Verify the final DMG',
+    'Verify macOS automatic update end to end',
     'Verify the Windows release',
+    'Verify automatic update end to end',
     'Prove deterministic mid-install failure rollback',
   ]) {
     const verifierIndex = desktopStepNames.indexOf(verifier);
@@ -687,6 +689,8 @@ test('one product workflow gates one draft release on every required artifact', 
   assert.equal(jobs.desktop['timeout-minutes'], 75);
   assert.match(commands, /npm run package:windows-autoupdate-next/u);
   assert.match(commands, /npm run verify:windows-autoupdate/u);
+  assert.match(commands, /npm run package:macos-autoupdate-next/u);
+  assert.match(commands, /npm run verify:macos-autoupdate/u);
   assert.match(commands, /npm run verify:windows-installer-rollback/u);
   assert.match(commands, /product-release-tag\.mjs ensure/u);
   assert.doesNotMatch(commands, /RECOVERY_SOURCE|inputs\.source_commit/u);
@@ -729,6 +733,7 @@ test('repository control plane admits only reviewed immutable release tags', asy
   for (const [name, tagPattern] of [
     ['release', 'v*-incubating-rc*'],
     ['npm-release', 'v*'],
+    ['product-release', 'v*'],
   ]) {
     assert.deepEqual(environments[name], {
       required_reviewers: [{ id: 'M4n5ter', type: 'User' }],

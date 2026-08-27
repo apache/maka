@@ -113,6 +113,7 @@ test('release metadata selects only the gate that consumes it', () => {
 
 test('source legal authority and generated provenance select the ASF source gate', () => {
   for (const path of [
+    'apps/desktop/src/main/app-update-test-context.ts',
     'DISCLAIMER-WIP',
     'biome.jsonc',
     'patches/node-pty+1.2.0-beta.15.patch',
@@ -138,6 +139,7 @@ test('release authority changes select their dedicated contract gate', () => {
     '.github/workflows/release-cli-stage.yml',
     '.github/workflows/release.yml',
     'scripts/package-macos-arm64.mjs',
+    'scripts/package-macos-autoupdate-next.mjs',
     'scripts/package-macos-arm64-cli.mjs',
     'scripts/package-windows-x64.mjs',
     'scripts/prepare-windows-upgrade-baseline.mjs',
@@ -153,6 +155,10 @@ test('release authority changes select their dedicated contract gate', () => {
     'scripts/release-cli-publication.test.mjs',
     'scripts/verify-macos-arm64-cli.mjs',
     'scripts/verify-macos-arm64-dmg.mjs',
+    'scripts/verify-macos-autoupdate.mjs',
+    'scripts/desktop-update-contract.mjs',
+    'scripts/desktop-update-contract.test.mjs',
+    'scripts/experiment-macos-autoupdate.mjs',
     'scripts/verify-packaged-app.mjs',
     'scripts/verify-windows-x64.mjs',
     'scripts/windows-upgrade-baseline.json',

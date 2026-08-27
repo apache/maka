@@ -18,6 +18,7 @@
  */
 
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -25,7 +26,22 @@ import test from 'node:test';
 import {
   assertExactArtifactSet,
   stageProductReleaseArtifactGroup,
+  verifyProductReleaseArtifactIntegrity,
 } from './product-release-artifacts.mjs';
+
+function updateMetadata(version, artifactName, bytes) {
+  const sha512 = createHash('sha512').update(bytes).digest('base64');
+  return [
+    `version: ${version}`,
+    'files:',
+    `  - url: ${artifactName}`,
+    `    sha512: ${sha512}`,
+    `    size: ${bytes.length}`,
+    `path: ${artifactName}`,
+    `sha512: ${sha512}`,
+    '',
+  ].join('\n');
+}
 
 test('product release artifact validation rejects missing and unexpected files', () => {
   assert.deepEqual(assertExactArtifactSet(['b.zip', 'a.dmg'], ['a.dmg', 'b.zip']), [
@@ -80,4 +96,47 @@ test('artifact staging refuses to replace an existing target directory', async (
     /target directory must be empty/u,
   );
   assert.equal(await readFile(join(targetDirectory, 'keep.txt'), 'utf8'), 'keep');
+});
+
+test('final artifact verification binds checksums and both update channels to exact bytes', async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), 'maka-release-integrity-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const version = '1.2.3';
+  const macZip = `Maka-${version}-mac-arm64.zip`;
+  const exe = `Maka-${version}-win-x64.exe`;
+  const manual = 'manual.txt';
+  const macBytes = Buffer.from('mac application');
+  const windowsBytes = Buffer.from('windows application');
+  const manualBytes = Buffer.from('release notes');
+  const names = [
+    macZip,
+    `${macZip}.blockmap`,
+    'latest-mac.yml',
+    exe,
+    `${exe}.blockmap`,
+    'latest.yml',
+    manual,
+    `${manual}.sha256`,
+  ];
+  await Promise.all([
+    writeFile(join(directory, macZip), macBytes),
+    writeFile(join(directory, `${macZip}.blockmap`), 'mac blockmap'),
+    writeFile(join(directory, 'latest-mac.yml'), updateMetadata(version, macZip, macBytes)),
+    writeFile(join(directory, exe), windowsBytes),
+    writeFile(join(directory, `${exe}.blockmap`), 'windows blockmap'),
+    writeFile(join(directory, 'latest.yml'), updateMetadata(version, exe, windowsBytes)),
+    writeFile(join(directory, manual), manualBytes),
+    writeFile(
+      join(directory, `${manual}.sha256`),
+      `${createHash('sha256').update(manualBytes).digest('hex')}  ${manual}\n`,
+    ),
+  ]);
+  const identity = { version, exe, artifacts: { test: names } };
+
+  assert.deepEqual(await verifyProductReleaseArtifactIntegrity(directory, identity), names);
+  await writeFile(join(directory, `${manual}.sha256`), `${'0'.repeat(64)}  ${manual}\n`);
+  await assert.rejects(
+    verifyProductReleaseArtifactIntegrity(directory, identity),
+    /checksum does not match/u,
+  );
 });

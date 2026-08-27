@@ -20,6 +20,9 @@
 import electronUpdater from 'electron-updater';
 import type { AppUpdater, UpdateCheckResult } from 'electron-updater';
 import type { ProgressInfo, UpdateInfo } from 'electron-updater';
+import { resolveUpdateFeedOverride } from './app-update-test-context.js';
+
+export { resolveUpdateFeedOverride } from './app-update-test-context.js';
 
 export type AppUpdateProgress = {
   percent: number;
@@ -140,35 +143,6 @@ const UPDATE_CHECK_ON_FOCUS_MIN_INTERVAL_MS = 15 * 60 * 1000;
  * exists) applies to overridden feeds exactly as it does to the GitHub feed —
  * nothing here relaxes it.
  */
-export function resolveUpdateFeedOverride(
-  raw: string | undefined,
-): { provider: 'generic'; url: string } | undefined {
-  if (raw === undefined || raw === '') return undefined;
-  let url: URL;
-  try {
-    url = new URL(raw);
-  } catch {
-    throw new TypeError(
-      `MAKA_UPDATE_TEST_FEED is not a URL: ${JSON.stringify(raw)}`,
-    );
-  }
-  if (
-    url.protocol !== 'http:' ||
-    url.hostname !== '127.0.0.1' ||
-    url.port === '' ||
-    url.username !== '' ||
-    url.password !== '' ||
-    url.search !== '' ||
-    url.hash !== ''
-  ) {
-    throw new TypeError(
-      'MAKA_UPDATE_TEST_FEED must be http://127.0.0.1:<port>[/path] ' +
-        `(got ${JSON.stringify(raw)})`,
-    );
-  }
-  return { provider: 'generic', url: url.toString() };
-}
-
 function normalizeVersion(version: string): string {
   return version.trim().replace(/^v/i, '');
 }

@@ -155,7 +155,7 @@ jobs:
             echo "## maka-agent@$RELEASE_VERSION staging"
             echo
             echo "After this workflow succeeds, review and approve the staged package with 2FA on npmjs.com."
-            echo "After the package becomes public, run **Finalize CLI npm channel** with:"
+            echo "After the package becomes public, run **Finalize product release** with:"
             echo
             echo "- stage run ID: \`$RELEASE_RUN_ID\`"
             echo "- stage run attempt: \`$RELEASE_RUN_ATTEMPT\`"

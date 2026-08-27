@@ -21,6 +21,7 @@ import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
 import { describe, test } from 'node:test';
 import type { AppUpdater } from 'electron-updater';
+import { resolveUpdateTestUserDataDirectory } from '../app-update-test-context.js';
 import {
   createAppUpdateService,
   resolveUpdateFeedOverride,
@@ -227,6 +228,36 @@ describe('AppUpdateService', () => {
         `expected rejection: ${raw}`,
       );
     }
+  });
+
+  test('the macOS update harness keeps candidate and relaunched successor in one profile', () => {
+    const explicit = resolveUpdateTestUserDataDirectory({
+      feedUrl: 'http://127.0.0.1:1234',
+      explicitDirectory: '/tmp/update/candidate/.maka-update-test-user-data',
+      isPackaged: true,
+      appPath: '/tmp/update/candidate/Maka.app/Contents/Resources/app.asar',
+      executablePath: '/tmp/update/candidate/Maka.app/Contents/MacOS/Maka',
+      platform: 'darwin',
+    });
+    const relaunched = resolveUpdateTestUserDataDirectory({
+      isPackaged: true,
+      appPath: '/tmp/update/candidate/Maka.app/Contents/Resources/app.asar',
+      executablePath: '/tmp/update/candidate/Maka.app/Contents/MacOS/Maka',
+      platform: 'darwin',
+      read: () => JSON.stringify({ makaUpdateTestProfile: true }),
+    });
+    assert.equal(relaunched, explicit);
+    assert.throws(
+      () =>
+        resolveUpdateTestUserDataDirectory({
+          explicitDirectory: '/tmp/update/profile',
+          isPackaged: true,
+          appPath: '',
+          executablePath: '',
+          platform: 'darwin',
+        }),
+      /requires MAKA_UPDATE_TEST_FEED/u,
+    );
   });
 
   test('does not overlap checks and cannot re-arm after disposal', async () => {

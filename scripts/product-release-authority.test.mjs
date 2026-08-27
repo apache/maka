@@ -18,9 +18,15 @@
  */
 
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import test from 'node:test';
 import {
   assertDraftProductRelease,
+  assertPublishedProductRelease,
+  publishDraftProductRelease,
   verifyDraftProductRelease,
 } from './product-release-authority.mjs';
 
@@ -49,6 +55,24 @@ test('Draft state and prerelease classification are one product Release contract
         'v1.2.3-beta.1',
       ),
     /prerelease state must be true/u,
+  );
+});
+
+test('published state keeps stable and prerelease classification exact', () => {
+  assert.equal(
+    assertPublishedProductRelease(
+      { tagName: 'v1.2.3', isDraft: false, isPrerelease: false },
+      'v1.2.3',
+    ).tagName,
+    'v1.2.3',
+  );
+  assert.throws(
+    () =>
+      assertPublishedProductRelease(
+        { tagName: 'v1.2.3-beta.1', isDraft: false, isPrerelease: false },
+        'v1.2.3-beta.1',
+      ),
+    /prerelease state/u,
   );
 });
 
@@ -88,7 +112,10 @@ test('the live authority verifier binds the tag, main ancestry, and Draft Releas
       ['gh', 'release'],
     ],
   );
-  assert.deepEqual(calls.at(-1)[1].slice(-2), ['--json', 'tagName,isDraft,isPrerelease']);
+  assert.deepEqual(calls.at(-1)[1].slice(-2), [
+    '--json',
+    'databaseId,tagName,isDraft,isPrerelease',
+  ]);
 });
 
 test('the live authority verifier rejects product tag drift before later checks', async () => {
@@ -106,4 +133,72 @@ test('the live authority verifier rejects product tag drift before later checks'
     /points to .* instead of/u,
   );
   assert.equal(calls.length, 1);
+});
+
+test('publication verifies live asset digests before one Stable/Latest mutation', async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), 'maka-publish-authority-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const contents = Buffer.from('verified artifact');
+  await writeFile(join(directory, 'artifact.zip'), contents);
+  const digest = `sha256:${createHash('sha256').update(contents).digest('hex')}`;
+  const sourceCommit = 'a'.repeat(40);
+  const calls = [];
+  let latestReads = 0;
+  const run = async (command, args) => {
+    calls.push([command, args]);
+    if (command === 'git' && args[0] === 'ls-remote') {
+      return { stdout: `${sourceCommit}\trefs/tags/v1.2.3\n` };
+    }
+    if (command === 'gh' && args[0] === 'release') {
+      return {
+        stdout: JSON.stringify({
+          databaseId: 42,
+          tagName: 'v1.2.3',
+          isDraft: true,
+          isPrerelease: false,
+        }),
+      };
+    }
+    if (command === 'gh' && args.includes('repos/apache/maka/releases/tags/v1.2.3')) {
+      return {
+        stdout: JSON.stringify({
+          id: 42,
+          tag_name: 'v1.2.3',
+          draft: true,
+          prerelease: false,
+          assets: [{ name: 'artifact.zip', size: contents.length, digest }],
+        }),
+      };
+    }
+    if (command === 'gh' && args.includes('PATCH')) {
+      return {
+        stdout: JSON.stringify({ tag_name: 'v1.2.3', draft: false, prerelease: false }),
+      };
+    }
+    if (command === 'gh' && args.includes('repos/apache/maka/releases/latest')) {
+      latestReads += 1;
+      return { stdout: JSON.stringify({ tag_name: latestReads === 1 ? 'v1.2.2' : 'v1.2.3' }) };
+    }
+    return { stdout: '' };
+  };
+
+  await publishDraftProductRelease({
+    tag: 'v1.2.3',
+    sourceCommit,
+    repository: 'apache/maka',
+    artifactDirectory: directory,
+    run,
+    pause: async () => {},
+  });
+
+  const patchCall = calls.find(([, args]) => args.includes('PATCH'));
+  assert.ok(patchCall);
+  assert.ok(patchCall[1].includes('draft=false'));
+  assert.ok(patchCall[1].includes('prerelease=false'));
+  assert.ok(patchCall[1].includes('make_latest=true'));
+  assert.ok(
+    calls.findIndex(([, args]) => args.includes('repos/apache/maka/releases/tags/v1.2.3')) <
+      calls.indexOf(patchCall),
+  );
+  assert.equal(latestReads, 2);
 });

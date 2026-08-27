@@ -87,7 +87,7 @@ test('stage builds the npm candidate from the exact product release commit', () 
   assert.match(bind, /PRODUCT_TAG: \$\{\{ needs\.authorize\.outputs\.product_tag \}\}/u);
 });
 
-test('finalize validates one exact stage attempt before running the current verifier', () => {
+test('finalize validates one exact stage attempt from the product tag', () => {
   const workflow = readWorkflow('release-cli-finalize.yml');
   const steps = workflowSteps(workflow);
   assert.match(workflow, /stage_run_attempt:[\s\S]*?required: true/u);
@@ -97,6 +97,8 @@ test('finalize validates one exact stage attempt before running the current veri
   assert.match(workflow, /actions\/runs\/\$STAGE_RUN_ID\/attempts\/\$STAGE_RUN_ATTEMPT/u);
   const checkout = namedStep(steps, 'Check out the current release verifier');
   assert.match(checkout, /ref: \$\{\{ github\.sha \}\}/u);
+  const exactTag = namedStep(steps, 'Require the exact product tag');
+  assert.match(exactTag, /refs\/tags\/\$PRODUCT_TAG/u);
 });
 
 test('finalize revalidates the live product release before trusting public npm bytes', () => {
@@ -112,11 +114,16 @@ test('finalize revalidates the live product release before trusting public npm b
   );
 });
 
-test('finalize preserves verified npm bytes without creating another product release', () => {
+test('finalize preserves npm evidence and owns the single product publication boundary', () => {
   const workflow = readWorkflow('release-cli-finalize.yml');
   assert.match(workflow, /name: Preserve the verified public npm package/u);
   assert.match(workflow, /path: \$\{\{ runner\.temp \}\}\/registry-release/u);
-  assert.doesNotMatch(workflow, /cli-v|contents: write/u);
+  assert.doesNotMatch(workflow, /cli-v/u);
+  assert.match(workflow, /name: product-release/u);
+  assert.match(workflow, /contents: write/u);
+  assert.match(workflow, /product-release-artifacts\.mjs verify/u);
+  assert.match(workflow, /product-release-authority\.mjs publish-draft/u);
+  assert.doesNotMatch(workflow, /gh release edit|gh release create/u);
 });
 
 test('release workflows select npm from the root packageManager authority', () => {

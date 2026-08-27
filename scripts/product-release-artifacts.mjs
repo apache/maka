@@ -17,9 +17,12 @@
  * under the License.
  */
 
-import { copyFile, mkdir, readdir } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
+import { createReadStream } from 'node:fs';
+import { copyFile, mkdir, readFile, readdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
+import { verifyDesktopUpdateArtifacts } from './desktop-update-contract.mjs';
 import { readProductReleaseIdentity } from './product-release-identity.mjs';
 
 export function assertExactArtifactSet(actualNames, expectedNames) {
@@ -71,6 +74,48 @@ export async function verifyProductReleaseArtifactDirectory(directory, expectedN
   return assertExactArtifactSet(await regularFileNames(directory), expectedNames);
 }
 
+function digestFile(path, algorithm = 'sha256') {
+  return new Promise((resolvePromise, reject) => {
+    const hash = createHash(algorithm);
+    const stream = createReadStream(path);
+    stream.once('error', reject);
+    stream.on('data', (chunk) => hash.update(chunk));
+    stream.once('end', () => resolvePromise(hash.digest('hex')));
+  });
+}
+
+export async function verifyProductReleaseArtifactIntegrity(directory, identity) {
+  await verifyProductReleaseArtifactDirectory(directory, allArtifactNames(identity));
+  const checksumNames = allArtifactNames(identity).filter((name) => name.endsWith('.sha256'));
+  for (const checksumName of checksumNames) {
+    const artifactName = checksumName.slice(0, -'.sha256'.length);
+    const source = await readFile(join(directory, checksumName), 'utf8');
+    const match = /^([0-9a-f]{64}) {2}([^\r\n]+)\r?\n?$/u.exec(source);
+    if (!match || match[2] !== artifactName) {
+      throw new Error(`Product release checksum is malformed: ${checksumName}`);
+    }
+    const digest = await digestFile(join(directory, artifactName));
+    if (digest !== match[1]) {
+      throw new Error(`Product release checksum does not match: ${artifactName}`);
+    }
+  }
+  await Promise.all([
+    verifyDesktopUpdateArtifacts({
+      directory,
+      metadataName: 'latest-mac.yml',
+      version: identity.version,
+      artifactName: `Maka-${identity.version}-mac-arm64.zip`,
+    }),
+    verifyDesktopUpdateArtifacts({
+      directory,
+      metadataName: 'latest.yml',
+      version: identity.version,
+      artifactName: identity.exe,
+    }),
+  ]);
+  return allArtifactNames(identity);
+}
+
 function allArtifactNames(identity) {
   return Object.values(identity.artifacts).flat();
 }
@@ -93,8 +138,8 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
     if (!directory) {
       throw new Error('usage: product-release-artifacts.mjs verify <artifact-directory>');
     }
-    await verifyProductReleaseArtifactDirectory(directory, allArtifactNames(identity));
-    console.log(`Verified exact product release artifacts in ${directory}`);
+    await verifyProductReleaseArtifactIntegrity(directory, identity);
+    console.log(`Verified exact product release artifact bytes in ${directory}`);
   } else if (command === 'list' && args.length === 0) {
     console.log(JSON.stringify(identity.artifacts, null, 2));
   } else {

@@ -32,7 +32,7 @@ retaining Maka's stronger protected-Environment, staged-publishing, 2FA, and Fin
 ## Release invariants
 
 - Dispatch the product Release workflow only from the exact approved ASF source candidate tag.
-  Dispatch npm Stage only from the resulting product `v<version>` tag and npm Finalize from `main`.
+  Dispatch both npm Stage and product Finalize only from the resulting product `v<version>` tag.
 - Publish prereleases under `next` and stable versions under `latest`. `next` must never resolve to
   a version older than `latest`; when no newer prerelease exists, both tags point to the stable
   version.
@@ -50,13 +50,18 @@ The two workflow boundaries are:
    tag and GitHub Release, checks out that exact product commit, builds and validates one immutable
    tarball, records that single tag commit and workflow run, enters the protected `npm-release`
    Environment, and submits it to npm staging through OIDC.
-2. [Finalize CLI npm channel](../.github/workflows/release-cli-finalize.yml) accepts only the exact successful Stage run and attempt, then verifies the public registry bytes, signature, provenance, and dist-tag. It creates no tag or GitHub Release.
+2. [Finalize product release](../.github/workflows/release-cli-finalize.yml) accepts only the exact
+   successful Stage run and attempt, verifies the public registry bytes, signature, provenance, and
+   dist-tag, then waits at the protected `product-release` Environment. After independent Desktop
+   acceptance, approval makes it reverify every Draft asset and publish the GitHub Release together
+   with its Stable/Latest classification in one operation.
 
 ## One-time control-plane configuration
 
 ### GitHub Environment
 
-The checked-in `.asf.yaml` is the authority for the `npm-release` Environment. After it reaches
+The checked-in `.asf.yaml` is the authority for the `npm-release` and `product-release`
+Environments. After it reaches
 `main`, confirm ASF reconciliation produced:
 
 - a selected deployment tag rule matching `v*`, with no branch rule;
@@ -189,15 +194,18 @@ Do not change `next` when it already points to a newer version such as `0.2.0-be
 intentionally manual: npm Trusted Publishing authenticates `npm publish` and `npm stage publish`,
 not dist-tag mutations, and the release workflows must not gain a long-lived npm token.
 
-## Finalize the public npm channel
+## Finalize the product release
 
 After npm reports the version as public:
 
-1. Open **Actions → Finalize CLI npm channel → Run workflow** on `main`.
+1. Open **Actions → Finalize product release → Run workflow** on `v<version>`.
 2. Enter the successful Stage run ID, its exact run attempt, and the version.
 3. Let the inspection job verify the public tarball bytes, checksum, inventory, npm signature,
    Trusted Publishing provenance, the release dist-tag, and that `next` is not older than `latest`.
-4. Confirm the workflow preserved the verified public package as an Actions artifact and did not create or modify any Git tag or GitHub Release.
+4. While the publication job waits for `product-release` approval, complete the product checklist's
+   cross-machine acceptance against the Draft.
+5. Approve the Environment. Confirm the workflow redownloads and verifies every Draft artifact,
+   publishes it, and makes a stable release Latest without a separate manual action.
 
 Check the resulting registry state:
 
@@ -211,8 +219,8 @@ Finally, install the exact public version on each release platform and complete 
 turn. On the supported Eval host, complete at least one real experiment cell and inspect score,
 usage, cost, and artifacts.
 
-Return to the [product release checklist](../.github/RELEASE_CHECKLIST.md) and exercise remote Runtime
-Host setup from the packaged Desktop apps before publishing the GitHub Release.
+The [product release checklist](../.github/RELEASE_CHECKLIST.md) remains the authority for the
+acceptance evidence required before approving publication.
 
 ## Failure recovery
 
