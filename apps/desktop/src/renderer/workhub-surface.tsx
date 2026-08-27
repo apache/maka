@@ -576,7 +576,11 @@ function WorkHubMessageFrame(props: {
         </ChatMessageBubble>
       </ChatMessage>
       <ChatMessage sender="assistant" density="compact" className="workhub-message">
-        <ChatMessageBubble variant="ghost" className="maka-chat-message-bubble maka-chat-message-bubble-assistant workhub-assistant-bubble">
+        <ChatMessageBubble
+          variant="ghost"
+          width="100%"
+          className="maka-chat-message-bubble maka-chat-message-bubble-assistant workhub-assistant-bubble"
+        >
           {props.children}
         </ChatMessageBubble>
       </ChatMessage>

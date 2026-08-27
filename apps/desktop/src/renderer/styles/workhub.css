@@ -125,12 +125,6 @@
   overflow-wrap: anywhere;
 }
 
-.workhub-assistant-bubble.maka-chat-message-bubble-assistant {
-  box-sizing: border-box;
-  width: 100%;
-  max-width: none;
-}
-
 .workhub-assistant-bubble > small,
 .workhub-status {
   color: var(--color-text-secondary, var(--muted-foreground));
