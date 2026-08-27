@@ -277,6 +277,7 @@ describe('Runtime Host operator commands', () => {
         'access.credential.revoke',
         'access.credential.rotation.prepare',
         'access.credential.rotation.revoke',
+        'access.principal.revoke',
         'host.upgrade.prepare',
         'hosted.execution.cancel',
         'hosted.execution.start',
