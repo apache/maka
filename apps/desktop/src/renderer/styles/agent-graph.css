@@ -46,9 +46,10 @@
 .maka-agent-graph-heading {
   position: sticky;
   top: 0;
-  z-index: 1;
+  z-index: var(--z-sticky);
   justify-content: space-between;
   background: var(--surface-raised);
+  box-shadow: 0 var(--border-width-hairline) 0 var(--border-soft);
 }
 
 .maka-agent-graph-heading-copy {

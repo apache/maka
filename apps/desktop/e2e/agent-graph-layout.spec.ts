@@ -64,7 +64,9 @@ test('Agent Graph keeps its heading fixed while the content scrolls', async ({ w
       panelOverflow,
       panelMaxHeight,
       headingPosition: headingStyle.position,
+      headingZIndex: headingStyle.zIndex,
       headingBackground: headingStyle.backgroundColor,
+      headingBoxShadow: headingStyle.boxShadow,
       panelScrollHeight: panel.scrollHeight,
       panelClientHeight: panel.clientHeight,
       headingOffsetBefore: beforeOffset,
@@ -75,7 +77,9 @@ test('Agent Graph keeps its heading fixed while the content scrolls', async ({ w
   });
   expect(geometry.panelOverflow).toBe('auto');
   expect(geometry.headingPosition).toBe('sticky');
+  expect(geometry.headingZIndex).toBe('20');
   expect(geometry.headingBackground).not.toBe('rgba(0, 0, 0, 0)');
+  expect(geometry.headingBoxShadow).not.toBe('none');
   expect(geometry.panelScrollHeight).toBeGreaterThan(geometry.panelClientHeight);
   expect(Math.abs(geometry.headingOffsetAfter - geometry.headingOffsetBefore)).toBeLessThanOrEqual(1);
   expect(geometry.collapsedOverflow).toBe('visible');
