@@ -69,8 +69,6 @@ import {
   isMalformedHistoryCompactSummaryReason,
   type MalformedHistoryCompactSummaryReason,
 } from './history-compact-error.js';
-import { findCheckpointSummaryDefect } from './history-compact-summary-validation.js';
-
 import { createHash } from 'node:crypto';
 import type { ModelMessage } from './model-protocol.js';
 import type { ModelAdapter } from './model-adapter.js';
@@ -471,17 +469,7 @@ export class AiSdkCompaction {
     if (priorFailure) throw new HistoryCompactSummarizerError(priorFailure);
 
     try {
-      const summary = await Promise.resolve(summarizer(input));
-      if (typeof summary === 'string') {
-        const defect = findCheckpointSummaryDefect(summary, {
-          coveredRuntimeEvents: input.source.foldedRuntimeEvents,
-          ...(input.inputBudget?.charsPerToken !== undefined
-            ? { charsPerToken: input.inputBudget.charsPerToken }
-            : {}),
-        });
-        if (defect) throw new HistoryCompactSummarizerError(defect);
-      }
-      return summary;
+      return await Promise.resolve(summarizer(input));
     } catch (error) {
       if (
         error instanceof HistoryCompactSummarizerError &&
