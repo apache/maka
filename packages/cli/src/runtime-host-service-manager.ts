@@ -29,7 +29,7 @@ import {
   canonicalProjectDirectoryRootSpec,
   isCanonicalRuntimeHostWebSocketPath,
   PROJECT_DIRECTORY_MAX_ROOTS,
-  projectDirectoryPosixRootSpecValid,
+  projectDirectoryRootSpecValid,
   RUNTIME_HOST_PROTOCOL_VERSION,
 } from '@maka/runtime-host/protocol';
 import {
@@ -1680,7 +1680,8 @@ function validateServiceConfig(
       !isRecord(root) ||
       !canonical ||
       root.label !== canonical.label ||
-      !projectDirectoryPosixRootSpecValid(canonical)
+      !projectDirectoryRootSpecValid(canonical) ||
+      !isAbsolute(canonical.path)
     ) {
       throw new TypeError('Invalid project directory root');
     }
