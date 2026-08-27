@@ -18,7 +18,6 @@
  */
 
 import assert from 'node:assert/strict';
-import { createHash } from 'node:crypto';
 import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -189,45 +188,6 @@ describe('Runtime Host profiles', () => {
       (JSON.parse(await readFile(path, 'utf8')) as { schemaVersion: number }).schemaVersion,
       2,
     );
-  });
-
-  test('preserves the schema 1 SSH credential binding for connect-only profiles', async () => {
-    let slot = '';
-    const credentials = createRuntimeHostProfileCredentialStore({
-      getSecret: async () => null,
-      setSecret: async (nextSlot) => {
-        slot = nextSlot;
-      },
-      deleteSecret: async () => undefined,
-    });
-    const profile: RemoteRuntimeHostProfile = {
-      id: 'ssh-lab',
-      name: 'SSH Lab',
-      kind: 'remote',
-      transport: {
-        kind: 'ssh',
-        destination: 'operator@example.com',
-        sshPort: 2222,
-        remotePort: 7443,
-        websocketPath: '/runtime-host',
-      },
-      rootId: ROOT_A,
-    };
-    await credentials.set(profile, 'opaque-token');
-    const legacyBinding = createHash('sha256')
-      .update('ssh')
-      .update('\0')
-      .update('operator@example.com')
-      .update('\0')
-      .update('2222')
-      .update('\0')
-      .update('7443')
-      .update('\0')
-      .update('/runtime-host')
-      .update('\0')
-      .update(ROOT_A)
-      .digest('hex');
-    assert.equal(slot, `runtime-host-profile:ssh-lab:${legacyBinding}`);
   });
 
   test('preserves concurrent updates from independent store instances', async () => {

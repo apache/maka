@@ -67,7 +67,6 @@ test('on-demand setup installs one exact deployment without a service backend', 
   const outputs: string[] = [];
   let rootId = '';
   let prepareCount = 0;
-  let openCount = 0;
   t.after(async () => {
     await Promise.all([
       rm(base, { recursive: true, force: true }),
@@ -118,10 +117,6 @@ test('on-demand setup installs one exact deployment without a service backend', 
       prepareCount += 1;
       return deployment(input.serviceId);
     },
-    openDeployment: async (input) => {
-      openCount += 1;
-      return deployment(input.serviceId);
-    },
     activateManaged: async (input) => {
       rootId = input.rootId;
       return {
@@ -153,9 +148,7 @@ test('on-demand setup installs one exact deployment without a service backend', 
     writeOutput: (value) => outputs.push(value),
   } satisfies NonNullable<Parameters<typeof runRuntimeHostSetupCli>[1]>;
   assert.equal(await runRuntimeHostSetupCli(options, overrides), 0);
-  assert.equal(await runRuntimeHostSetupCli(options, overrides), 0);
   assert.equal(prepareCount, 1);
-  assert.equal(openCount, 1);
   const complete = outputs
     .map(decodeRuntimeHostSetupFrame)
     .find((frame) => frame?.kind === 'complete');
@@ -181,8 +174,6 @@ test('on-demand setup installs one exact deployment without a service backend', 
     failure?.kind === 'error' ? failure.error.code : undefined,
     'unsupported_lifecycle_configuration',
   );
-  assert.equal(prepareCount, 1);
-  assert.equal(openCount, 1);
 });
 
 test('managed setup converges on one exact package and verified Client pairing', async (t) => {

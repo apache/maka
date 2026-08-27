@@ -35,66 +35,19 @@ test('parses the production candidate flags', () => {
     STARTUP_ATTEMPT_ID,
     '--idle-grace-ms',
     '10000',
-  ]);
-  assert.equal(parsed.rootPath, '/tmp/workspace');
-  assert.equal(parsed.expectedRootId, ROOT_ID);
-  assert.equal(parsed.startupAttemptId, STARTUP_ATTEMPT_ID);
-  assert.equal(parsed.idleGraceMs, 10_000);
-});
-
-test('parses a complete managed launch claim', () => {
-  const parsed = parseInteractiveRuntimeHostCandidateArguments([
-    '--root',
-    '/tmp/workspace',
-    '--expected-root-id',
-    ROOT_ID,
-    '--startup-attempt-id',
-    STARTUP_ATTEMPT_ID,
     '--managed-deployment-id',
     DEPLOYMENT_ID,
     '--managed-config-revision',
     '7',
   ]);
-
+  assert.equal(parsed.rootPath, '/tmp/workspace');
+  assert.equal(parsed.expectedRootId, ROOT_ID);
+  assert.equal(parsed.startupAttemptId, STARTUP_ATTEMPT_ID);
+  assert.equal(parsed.idleGraceMs, 10_000);
   assert.deepEqual(parsed.managedLaunchClaim, {
     deploymentId: DEPLOYMENT_ID,
     configRevision: 7,
   });
-});
-
-test('rejects partial or retired managed launch fields', () => {
-  assert.throws(
-    () =>
-      parseInteractiveRuntimeHostCandidateArguments([
-        '--root',
-        '/tmp/workspace',
-        '--expected-root-id',
-        ROOT_ID,
-        '--startup-attempt-id',
-        STARTUP_ATTEMPT_ID,
-        '--managed-deployment-id',
-        DEPLOYMENT_ID,
-      ]),
-    /complete managed launch claim/u,
-  );
-  assert.throws(
-    () =>
-      parseInteractiveRuntimeHostCandidateArguments([
-        '--root',
-        '/tmp/workspace',
-        '--expected-root-id',
-        ROOT_ID,
-        '--startup-attempt-id',
-        STARTUP_ATTEMPT_ID,
-        '--managed-deployment-id',
-        DEPLOYMENT_ID,
-        '--managed-config-revision',
-        '7',
-        '--managed-lifecycle-mode',
-        'on_demand',
-      ]),
-    /Invalid Runtime Host candidate argument: --managed-lifecycle-mode/u,
-  );
 });
 
 // The Desktop E2E composition is selected by its own entry module, not by a

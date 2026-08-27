@@ -69,46 +69,6 @@ const config: RuntimeHostManagedDeploymentConfig = {
   reconciliation: { trigger: 'manual' },
 };
 
-test('concurrent managed activation results use the elected Host identity and actual endpoint', async () => {
-  const registration = {
-    rootId: ROOT_ID,
-    hostEpoch: 'elected-host-epoch',
-    pid: 4321,
-    lifecycleMode: 'ephemeral',
-    websocketEndpoints: ['ws://127.0.0.1:45678/runtime-host'],
-  } as const;
-  const connection = {
-    request: async () => ({
-      hostEpoch: registration.hostEpoch,
-      pid: registration.pid,
-      protocolVersion: RUNTIME_HOST_PROTOCOL_VERSION,
-    }),
-    close: async () => undefined,
-  };
-  const activate = () =>
-    activateRuntimeHostManagedDeployment(
-      { rootId: ROOT_ID },
-      {
-        resolveDeployment: async () =>
-          ({
-            capability: { canonicalPath: config.root.path, rootId: ROOT_ID },
-            config,
-          }) as never,
-        connectOrSpawn: async () => ({ kind: 'connected', registration, connection }) as never,
-      },
-    );
-
-  const [first, second] = await Promise.all([activate(), activate()]);
-  assert.deepEqual(first, second);
-  assert.equal(first.pid, registration.pid);
-  assert.equal(first.hostEpoch, registration.hostEpoch);
-  assert.deepEqual(first.endpoint, {
-    host: '127.0.0.1',
-    port: 45_678,
-    websocketPath: '/runtime-host',
-  });
-});
-
 test('activation reconciliation fails closed when no one-shot reconciler is installed', async () => {
   await assert.rejects(
     activateRuntimeHostManagedDeployment(

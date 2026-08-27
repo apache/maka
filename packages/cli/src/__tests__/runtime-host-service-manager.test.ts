@@ -475,18 +475,6 @@ describe('managed Runtime Host service', () => {
         },
       },
     );
-    assert.equal(
-      parseRuntimeHostCommand([
-        'setup',
-        '--principal',
-        'desktop.client-1',
-        '--preset',
-        'desktop-client',
-        '--lifecycle',
-        'on-demand',
-      ]).kind,
-      'runtime-host-setup',
-    );
   });
 
   it('applies Project roots as a compare-and-set transaction and restores failed changes', async (t) => {

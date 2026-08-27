@@ -15,11 +15,11 @@ Locations intentionally omit line numbers so unrelated edits do not invalidate t
 
 | Classification | Count |
 |---|---:|
-| windows-backend-gap | 25 |
+| windows-backend-gap | 24 |
 | portable-candidate | 10 |
-| platform-contract | 36 |
+| platform-contract | 35 |
 
-Total Windows-excluded declarations: **71**
+Total Windows-excluded declarations: **69**
 
 ## Inventory
 
@@ -46,8 +46,6 @@ Total Windows-excluded declarations: **71**
 | windows-backend-gap | `packages/runtime-host/src/__tests__/host-kernel.test.ts` reports one shutdown failure through close and closed while releasing ownership | `process.platform === 'win32'` |
 | platform-contract | `packages/runtime-host/src/__tests__/host-kernel.test.ts` publishes private POSIX endpoint and registration permissions | `process.platform === 'win32'` |
 | windows-backend-gap | `packages/runtime-host/src/__tests__/managed-activation.test.ts` two real managed activations converge on one Host and exit at true idle | `process.platform === 'win32' ? 'requires a POSIX package-entrypoint symlink' : false` |
-| windows-backend-gap | `packages/runtime-host/src/__tests__/managed-deployment.test.ts` managed ownership survives deletion of the disposable control cache | `process.platform === 'win32' ? 'Windows does not unlink an open native lock file' : false` |
-| platform-contract | `packages/runtime-host/src/__tests__/managed-deployment.test.ts` keeps transient deployment record I/O retryable at the Candidate boundary | `process.platform === 'win32' ? 'POSIX file permissions are required to make the record unreadable' : false` |
 | windows-backend-gap | `packages/runtime-host/src/__tests__/memory-two-client-uds.test.ts` two UDS clients share one recoverable Memory authority across Host death | `process.platform === 'win32' ? 'POSIX process death gate' : false` |
 | windows-backend-gap | `packages/runtime-host/src/__tests__/project-catalog-two-client-uds.test.ts` two UDS clients converge on one Host-owned Project Catalog | `process.platform === 'win32'` |
 | windows-backend-gap | `packages/runtime-host/src/__tests__/runtime-policy-coordinator.test.ts` invalidates when a real published mutation loses its commit reply | `process.platform === 'win32'` |

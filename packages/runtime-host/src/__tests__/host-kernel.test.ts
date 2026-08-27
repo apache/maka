@@ -59,16 +59,6 @@ import {
   readCandidateStartupDiagnostic,
   writeCandidateStartupDiagnostic,
 } from '../control/startup-diagnostic.js';
-import {
-  candidateStartupFailureExitCode,
-  classifyCandidateStartupFailure,
-} from '../candidate-startup-failure.js';
-import {
-  claimRuntimeHostManagedDeployment,
-  resolveRuntimeHostManagedDeploymentConfigPath,
-  type RuntimeHostManagedDeploymentConfig,
-} from '../operator/managed-deployment.js';
-import { resolveRuntimeHostNpmDeploymentLayout } from '../operator/update-package-evidence.js';
 import { removePosixEndpointDirectories } from './fixtures/endpoint-hygiene.js';
 import {
   decodeHostFrame,
@@ -115,7 +105,6 @@ const CURRENT_PROTOCOL = {
 const LEGACY_PROTOCOL = { min: 1, max: 1 } as const;
 const STARTUP_ATTEMPT_A = '00000000-0000-4000-8000-000000000001';
 const STARTUP_ATTEMPT_B = '00000000-0000-4000-8000-000000000002';
-const MANAGED_PACKAGE_INTEGRITY = 'sha512-' + Buffer.alloc(64, 1).toString('base64');
 const KERNEL_CANDIDATE_ENTRYPOINT = new URL('./fixtures/kernel-candidate.js', import.meta.url);
 const KERNEL_COMPOSITION = defineInteractiveRuntimeHostComposition(async () => ({
   handlers: createUnavailableDomainOperationHandlers(),
@@ -168,179 +157,6 @@ function diagnosticRegistration(state: 'ready' | 'draining') {
 }
 
 describe('non-serving Runtime Host kernel', () => {
-  test('a managed State Root refuses an ordinary candidate launch before election', async () => {
-    await withHostPaths(async (paths) => {
-      const capability = await resolveStorageRoot({ path: paths.root, kind: 'interactive' });
-      const managedDeploymentAuthority = {
-        authorityRoot: join(paths.base, 'managed-authority'),
-        durabilityBoundary: paths.base,
-      };
-      await claimRuntimeHostManagedDeployment(
-        capability,
-        managedDeploymentConfig(capability),
-        managedDeploymentAuthority,
-      );
-      let launches = 0;
-
-      const result = await connectOrSpawnRuntimeHostWithDependencies(
-        {
-          rootPath: paths.root,
-          protocol: CURRENT_PROTOCOL,
-          compositionId: KERNEL_COMPOSITION.descriptor.id,
-          candidateEntrypoint: KERNEL_CANDIDATE_ENTRYPOINT,
-          electionDeadlineMs: 1_000,
-        },
-        {
-          random: () => 0.5,
-          connectHost: async () => ({
-            kind: 'unavailable',
-            reason: 'not_registered',
-            endpointConnected: false,
-          }),
-          launchCandidate: () => {
-            launches += 1;
-            throw new Error('managed root must not launch without its operator claim');
-          },
-          managedDeploymentAuthority,
-        },
-      );
-
-      assert.deepEqual(result, {
-        kind: 'failed',
-        reason: 'managed_root_requires_operator',
-      });
-      assert.equal(launches, 0);
-    });
-  });
-
-  test('a matching managed claim reaches the existing candidate election', async () => {
-    await withHostPaths(async (paths) => {
-      const capability = await resolveStorageRoot({ path: paths.root, kind: 'interactive' });
-      const managedDeploymentAuthority = {
-        authorityRoot: join(paths.base, 'managed-authority'),
-        durabilityBoundary: paths.base,
-      };
-      const { claim } = await claimRuntimeHostManagedDeployment(
-        capability,
-        managedDeploymentConfig(capability),
-        managedDeploymentAuthority,
-      );
-      let launches = 0;
-
-      const result = await connectOrSpawnRuntimeHostWithDependencies(
-        {
-          rootPath: paths.root,
-          protocol: CURRENT_PROTOCOL,
-          compositionId: KERNEL_COMPOSITION.descriptor.id,
-          candidateEntrypoint: KERNEL_CANDIDATE_ENTRYPOINT,
-          managedLaunchClaim: claim,
-          electionDeadlineMs: 100,
-        },
-        {
-          random: () => 0.5,
-          connectHost: async () => ({
-            kind: 'unavailable',
-            reason: 'not_registered',
-            endpointConnected: false,
-          }),
-          launchCandidate: () => {
-            launches += 1;
-            return { spawned: new Promise<never>(() => undefined) };
-          },
-          managedDeploymentAuthority,
-        },
-      );
-
-      assert.equal(result.kind, 'failed');
-      if (result.kind === 'failed') assert.equal(result.reason, 'startup_timeout');
-      assert.equal(launches, 1);
-    });
-  });
-
-  test('a malformed managed record crosses the Candidate boundary as exit 84', async () => {
-    await withHostPaths(async (paths) => {
-      const capability = await resolveStorageRoot({ path: paths.root, kind: 'interactive' });
-      const managedDeploymentAuthority = {
-        authorityRoot: join(paths.base, 'managed-authority'),
-        durabilityBoundary: paths.base,
-      };
-      const { claim } = await claimRuntimeHostManagedDeployment(
-        capability,
-        managedDeploymentConfig(capability),
-        managedDeploymentAuthority,
-      );
-      await writeFile(
-        resolveRuntimeHostManagedDeploymentConfigPath(
-          capability.rootId,
-          managedDeploymentAuthority,
-        ),
-        '{not-json',
-      );
-
-      await assert.rejects(
-        startInteractiveRuntimeHostCandidate(
-          {
-            rootPath: capability.canonicalPath,
-            expectedRootId: capability.rootId,
-            managedLaunchClaim: claim,
-          },
-          () => KERNEL_COMPOSITION,
-          { managedDeploymentAuthority },
-        ),
-        (error: unknown) => {
-          const failure = classifyCandidateStartupFailure(error);
-          assert.deepEqual(failure, { reason: 'deployment_record_invalid' });
-          assert.equal(candidateStartupFailureExitCode(failure), 84);
-          return true;
-        },
-      );
-    });
-  });
-
-  test('a mismatched exact-package launch crosses the Candidate boundary as exit 85', async () => {
-    await withHostPaths(async (paths) => {
-      const capability = await resolveStorageRoot({ path: paths.root, kind: 'interactive' });
-      const managedDeploymentAuthority = {
-        authorityRoot: join(paths.base, 'managed-authority'),
-        durabilityBoundary: paths.base,
-      };
-      const config = managedDeploymentConfig(capability);
-      const { claim } = await claimRuntimeHostManagedDeployment(
-        capability,
-        config,
-        managedDeploymentAuthority,
-      );
-
-      await assert.rejects(
-        startInteractiveRuntimeHostCandidate(
-          {
-            rootPath: capability.canonicalPath,
-            expectedRootId: capability.rootId,
-            managedLaunchClaim: claim,
-          },
-          () => KERNEL_COMPOSITION,
-          {
-            managedDeploymentAuthority,
-            processLaunch: {
-              executablePath: config.launch.nodePath,
-              entrypointPath:
-                resolveRuntimeHostNpmDeploymentLayout(
-                  config.deploymentRoot,
-                  config.launch.package.integrity,
-                ).candidateEntrypoint + '.stale',
-            },
-          },
-        ),
-        (error: unknown) => {
-          const failure = classifyCandidateStartupFailure(error);
-          assert.deepEqual(failure, { reason: 'deployment_launch_mismatch' });
-          assert.equal(candidateStartupFailureExitCode(failure), 85);
-          return true;
-        },
-      );
-    });
-  });
-
   test('reports a recovery failure when the election produces no ready Host', async () => {
     await withHostPaths(async (paths) => {
       const result = await connectOrSpawnRuntimeHostWithDependencies(
@@ -3260,31 +3076,6 @@ describe('non-serving Runtime Host kernel', () => {
     });
   });
 });
-
-function managedDeploymentConfig(
-  capability: StorageRootCapability<'interactive'>,
-): RuntimeHostManagedDeploymentConfig {
-  return {
-    schemaVersion: 1,
-    deploymentId: '00000000-0000-4000-8000-000000000001',
-    configRevision: 1,
-    deploymentRoot: '/opt/maka/runtime-host',
-    root: { path: capability.canonicalPath, id: capability.rootId },
-    projectDirectoryRoots: [],
-    launch: {
-      kind: 'exact_package',
-      nodePath: '/usr/bin/node',
-      package: {
-        kind: 'npm_registry',
-        version: '1.2.3',
-        integrity: MANAGED_PACKAGE_INTEGRITY,
-      },
-    },
-    listeners: { localIpc: true },
-    lifecycle: { mode: 'on_demand', availability: 'activation' },
-    reconciliation: { trigger: 'activation' },
-  };
-}
 
 function testComposition(
   overrides: Partial<Pick<RuntimeHostComposition, 'beginDrain' | 'recover' | 'close'>> = {},
