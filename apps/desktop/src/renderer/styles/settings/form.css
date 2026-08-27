@@ -54,7 +54,7 @@
   border: var(--border-width-hairline) solid var(--border-soft);
   border-radius: var(--radius-modal);
   background: var(--surface-overlay);
-  box-shadow: var(--elevation-overlay);
+  box-shadow: var(--shadow-med);
   opacity: 1;
 }
 
