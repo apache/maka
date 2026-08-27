@@ -54,6 +54,10 @@ export function RuntimeHostConnectionCodeDialog(props: RuntimeHostConnectionCode
     setWorking(true);
     try {
       const result = await window.maka.runtimeHostProfiles.importConnectionCode(draft.trim());
+      if (result.kind === 'error') {
+        toast.error(copy.remoteAccessFailed, connectionCodeError(copy, result.reason));
+        return;
+      }
       props.onImported(result.profileId);
       props.onClose();
     } catch (error) {
@@ -126,4 +130,22 @@ export function RuntimeHostConnectionCodeDialog(props: RuntimeHostConnectionCode
       />
     </Dialog>
   );
+}
+
+function connectionCodeError(
+  copy: ReturnType<typeof getSettingsProjectsCopy>['runtimeHost'],
+  reason: 'invalid_code' | 'code_unavailable' | 'host_unreachable' | 'host_mismatch' | 'unknown',
+): string {
+  switch (reason) {
+    case 'invalid_code':
+      return copy.connectionCodeInvalid;
+    case 'code_unavailable':
+      return copy.connectionCodeUnavailable;
+    case 'host_unreachable':
+      return copy.connectionCodeHostUnreachable;
+    case 'host_mismatch':
+      return copy.connectionCodeHostMismatch;
+    case 'unknown':
+      return copy.connectionCodeUnknownError;
+  }
 }

@@ -292,10 +292,42 @@ export function RuntimeHostProfilesSection(props: {
   }
 
   async function disableLocalRemoteAccess(): Promise<void> {
+    const confirmed = await toast.confirm({
+      title: copy.disableRemoteAccessConfirm,
+      description: copy.disableRemoteAccessDescription,
+      confirmLabel: copy.disableRemoteAccess,
+      cancelLabel: copy.cancel,
+    });
+    if (!confirmed) return;
     setSwitching(true);
     try {
       const next = await window.maka.localRuntimeHostRemoteAccess.disable();
       if (mountedRef.current) setLocalAccess(next);
+    } catch (error) {
+      if (mountedRef.current) {
+        toast.error(copy.remoteAccessFailed, settingsActionErrorMessage(error, locale));
+      }
+    } finally {
+      if (mountedRef.current) setSwitching(false);
+    }
+  }
+
+  async function revokeLocalSharedAccess(): Promise<void> {
+    const confirmed = await toast.confirm({
+      title: copy.revokeSharedAccessConfirm,
+      description: copy.revokeSharedAccessDescription,
+      confirmLabel: copy.revokeSharedAccess,
+      cancelLabel: copy.cancel,
+      destructive: true,
+    });
+    if (!confirmed) return;
+    setSwitching(true);
+    try {
+      const next = await window.maka.localRuntimeHostRemoteAccess.revokeSharedAccess();
+      if (mountedRef.current) {
+        setLocalAccess(next);
+        toast.success(copy.revokeSharedAccessDone);
+      }
     } catch (error) {
       if (mountedRef.current) {
         toast.error(copy.remoteAccessFailed, settingsActionErrorMessage(error, locale));
@@ -394,6 +426,13 @@ export function RuntimeHostProfilesSection(props: {
                       isDisabled: switching,
                       onClick: () => void createLocalConnectionCode(),
                     },
+                    ...(localAccess.sharedAccess
+                      ? [{
+                          label: copy.revokeSharedAccess,
+                          isDisabled: switching,
+                          onClick: () => void revokeLocalSharedAccess(),
+                        }]
+                      : []),
                     {
                       label: copy.disableRemoteAccess,
                       isDisabled: switching,
@@ -424,6 +463,13 @@ export function RuntimeHostProfilesSection(props: {
                       label={copy.thisComputerRemoteAccess}
                       size="sm"
                       items={[
+                        ...(localAccess.sharedAccess
+                          ? [{
+                              label: copy.revokeSharedAccess,
+                              isDisabled: switching,
+                              onClick: () => void revokeLocalSharedAccess(),
+                            }]
+                          : []),
                         {
                           label: copy.uninstallLocalService,
                           isDisabled: switching,

@@ -28,6 +28,7 @@ import {
   RUNTIME_HOST_ACCESS_CREDENTIAL_MAX_BYTES,
   RuntimeHostOperationError,
   RuntimeHostPermanentReconnectError,
+  RuntimeHostRemoteCompatibilityError,
   sameRemoteRuntimeHostProfileTarget,
   sameResolvedRuntimeHostProfileTarget,
   type RemoteRuntimeHostProfile,
@@ -42,6 +43,7 @@ import type {
   DesktopRuntimeHostProfileAddResult,
   DesktopRuntimeHostProfileEntry,
   DesktopRuntimeHostProfileSnapshot,
+  DesktopRuntimeHostConnectionCodeImportResult,
 } from "../preload/bridge-contract.js";
 import {
   RuntimeHostPairingFinalizationInterruptedError,
@@ -94,7 +96,7 @@ export interface DesktopRuntimeHostProfileService {
       readonly managedService?: DesktopRuntimeHostManagedService;
     },
   ): Promise<{ readonly profileId: string }>;
-  importConnectionCode(code: string): Promise<{ readonly profileId: string }>;
+  importConnectionCode(code: string): Promise<DesktopRuntimeHostConnectionCodeImportResult>;
   resolveManagedService(
     profileId: string,
   ): Promise<DesktopRuntimeHostManagedServiceBinding | undefined>;
@@ -729,18 +731,28 @@ export function createDesktopRuntimeHostProfileService(input: {
       });
     },
     addAndEnableVerified,
-    importConnectionCode(code) {
-      const decoded = decodeRuntimeHostOwnerConnectionCode(code);
-      return addAndEnableVerified({
-        profile: {
-          id: `remote-${randomUUID()}`,
-          name: decoded.name,
-          kind: 'remote',
-          rootId: decoded.rootId,
-          transport: decoded.transport,
-        },
-        credential: decoded.credential,
-      });
+    async importConnectionCode(code) {
+      let decoded;
+      try {
+        decoded = decodeRuntimeHostOwnerConnectionCode(code);
+      } catch {
+        return { kind: 'error', reason: 'invalid_code' };
+      }
+      try {
+        const result = await addAndEnableVerified({
+          profile: {
+            id: `remote-${randomUUID()}`,
+            name: decoded.name,
+            kind: 'remote',
+            rootId: decoded.rootId,
+            transport: decoded.transport,
+          },
+          credential: decoded.credential,
+        });
+        return { kind: 'connected', profileId: result.profileId };
+      } catch (error) {
+        return { kind: 'error', reason: connectionCodeImportFailure(error) };
+      }
     },
     rotateManagedCredential(expected, credential) {
       return mutateProfiles(async () => {
@@ -1242,6 +1254,36 @@ export function registerDesktopRuntimeHostProfileIpc(
   return () => {
     for (const channel of channels) ipcMain.removeHandler(channel);
   };
+}
+
+function connectionCodeImportFailure(
+  error: unknown,
+): Extract<DesktopRuntimeHostConnectionCodeImportResult, { kind: 'error' }>['reason'] {
+  if (error instanceof RuntimeHostRemoteCompatibilityError) return 'host_mismatch';
+  if (
+    error instanceof RuntimeHostOperationError &&
+    error.operation === 'access.credential.finalize' &&
+    error.code === 'invalid_request'
+  ) {
+    return 'code_unavailable';
+  }
+  if (error instanceof RuntimeHostPermanentReconnectError) {
+    if (/rejected its access credential/u.test(error.message)) return 'code_unavailable';
+    if (/unexpected State Root|incompatible Host composition/u.test(error.message)) {
+      return 'host_mismatch';
+    }
+  }
+  if (error !== null && typeof error === 'object' && 'code' in error && typeof error.code === 'string') {
+    if (error.code === 'peer_identity_mismatch') return 'host_mismatch';
+    if (
+      error.code === 'direct_path_unavailable' ||
+      error.code === 'coordination_unavailable' ||
+      error.code === 'peer_connect_in_progress'
+    ) {
+      return 'host_unreachable';
+    }
+  }
+  return 'unknown';
 }
 
 function requireSaveInput(value: unknown): asserts value is {

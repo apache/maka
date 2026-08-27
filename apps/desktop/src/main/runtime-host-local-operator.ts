@@ -27,12 +27,15 @@ import {
   terminateChildProcessTree,
 } from '@maka/runtime/process-tree-terminator';
 import {
+  decodeRuntimeHostAccessManagementFrame,
   decodeRuntimeHostPeerManagementFrame,
   decodeRuntimeHostServiceManagementFrame,
   decodeRuntimeHostSetupFrame,
+  RUNTIME_HOST_ACCESS_MANAGEMENT_FRAME_PREFIX,
   RUNTIME_HOST_PEER_MANAGEMENT_FRAME_PREFIX,
   RUNTIME_HOST_SERVICE_MANAGEMENT_FRAME_PREFIX,
   RUNTIME_HOST_SETUP_FRAME_PREFIX,
+  type RuntimeHostAccessManagementFrame,
   type RuntimeHostPeerManagementFrame,
   type RuntimeHostServiceManagementFrame,
   type RuntimeHostSetupFrame,
@@ -141,6 +144,11 @@ export function createDesktopRuntimeHostLocalOperator(input: {
     readonly allowInterruptActiveTasks?: boolean;
     readonly signal?: AbortSignal;
   }): Promise<RuntimeHostPeerManagementFrame>;
+  runAccess(input: {
+    readonly operatorPath: string;
+    readonly target: DesktopRuntimeHostLocalServiceTarget;
+    readonly signal?: AbortSignal;
+  }): Promise<RuntimeHostAccessManagementFrame>;
   runService(input: {
     readonly operatorPath: string;
     readonly action: 'status' | 'retire' | 'uninstall';
@@ -219,6 +227,32 @@ export function createDesktopRuntimeHostLocalOperator(input: {
         active,
       }).then((frame) => requirePeerFrame(frame, command.action, command.target));
     },
+    runAccess(command) {
+      if (closed) throw new Error('Local Runtime Host operator is closed');
+      return runSingleFrameProcess({
+        command: {
+          executable: command.operatorPath,
+          args: [
+            'access',
+            'list',
+            '--framed',
+            '--root',
+            command.target.rootPath,
+            '--expected-root',
+            command.target.rootId,
+          ],
+        },
+        prefix: RUNTIME_HOST_ACCESS_MANAGEMENT_FRAME_PREFIX,
+        decode: decodeRuntimeHostAccessManagementFrame,
+        label: 'Local Runtime Host access management',
+        environment: input.environment ?? process.env,
+        spawnProcess: input.spawnProcess ?? spawn,
+        timeoutMs: input.setupTimeoutMs ?? SETUP_TIMEOUT_MS,
+        terminate,
+        signal: combinedSignal(command.signal, closing.signal),
+        active,
+      }).then(requireAccessListFrame);
+    },
     runService(command) {
       if (closed) throw new Error('Local Runtime Host operator is closed');
       return runSingleFrameProcess({
@@ -293,6 +327,15 @@ function requirePeerFrame(
     frame.status.rootId !== target.rootId
   ) {
     throw new Error('Local Runtime Host peer management returned an unrelated root');
+  }
+  return frame;
+}
+
+function requireAccessListFrame(
+  frame: RuntimeHostAccessManagementFrame,
+): RuntimeHostAccessManagementFrame {
+  if (frame.action !== 'list') {
+    throw new Error('Local Runtime Host access management returned an unrelated result');
   }
   return frame;
 }

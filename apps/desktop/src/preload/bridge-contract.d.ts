@@ -383,9 +383,21 @@ export interface DesktopRuntimeHostProfileChangedEvent {
 
 export type DesktopLocalRuntimeHostRemoteAccessSnapshot =
   | { readonly state: 'unsupported'; readonly message: string }
-  | { readonly state: 'off'; readonly managedService?: true }
-  | { readonly state: 'on' }
-  | { readonly state: 'unavailable'; readonly message: string };
+  | { readonly state: 'off'; readonly managedService?: true; readonly sharedAccess?: true }
+  | { readonly state: 'on'; readonly sharedAccess?: true }
+  | { readonly state: 'unavailable'; readonly message: string; readonly sharedAccess?: true };
+
+export type DesktopRuntimeHostConnectionCodeImportResult =
+  | { readonly kind: 'connected'; readonly profileId: string }
+  | {
+      readonly kind: 'error';
+      readonly reason:
+        | 'invalid_code'
+        | 'code_unavailable'
+        | 'host_unreachable'
+        | 'host_mismatch'
+        | 'unknown';
+    };
 
 export type DesktopLocalRuntimeHostRemoteAccessEnableResult =
   | { readonly kind: 'active_tasks' }
@@ -626,7 +638,7 @@ export interface MakaBridge {
     addAndEnable(
       input: DesktopRuntimeHostProfileAddInput,
     ): Promise<DesktopRuntimeHostProfileAddResult>;
-    importConnectionCode(code: string): Promise<{ readonly profileId: string }>;
+    importConnectionCode(code: string): Promise<DesktopRuntimeHostConnectionCodeImportResult>;
     remove(profileId: string): Promise<DesktopRuntimeHostProfileSnapshot>;
     setEnabled(profileId: string, enabled: boolean): Promise<DesktopRuntimeHostProfileSnapshot>;
     setDefault(profileId: string): Promise<DesktopRuntimeHostProfileSnapshot>;
@@ -643,6 +655,7 @@ export interface MakaBridge {
       readonly coordinationRelays: readonly string[];
     }): Promise<DesktopLocalRuntimeHostRemoteAccessEnableResult>;
     createConnectionCode(): Promise<string>;
+    revokeSharedAccess(): Promise<DesktopLocalRuntimeHostRemoteAccessSnapshot>;
     disable(): Promise<DesktopLocalRuntimeHostRemoteAccessSnapshot>;
     uninstall(input: {
       readonly allowInterruptActiveTasks: boolean;

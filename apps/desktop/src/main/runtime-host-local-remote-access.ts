@@ -45,6 +45,7 @@ const SERVICE_ID_PATTERN = /^[a-f0-9]{64}$/u;
 const ROOT_ID_PATTERN = /^[a-f0-9]{64}$/u;
 const ADDRESS_MAX_BYTES = 2 * 1024;
 const ADDRESS_MAX_COUNT = 16;
+const LOCAL_REMOTE_ACCESS_PRINCIPAL_ID = 'desktop-owner:local-runtime-host-sharing';
 
 interface LocalServiceTarget extends DesktopRuntimeHostLocalServiceTarget {
   readonly schemaVersion: 1;
@@ -138,8 +139,11 @@ export function createDesktopLocalRuntimeHostRemoteAccess(input: {
                   : 'Local Runtime Host uninstall is being recovered',
           };
         }
+        const sharedAccess = await hasSharedAccess(input.operator, lifecycle);
         const peer = await readPeer(input.operator, lifecycle);
-        return peer ? onSnapshot() : { state: 'off', managedService: true };
+        return peer
+          ? onSnapshot(sharedAccess)
+          : { state: 'off', managedService: true, ...(sharedAccess ? { sharedAccess: true } : {}) };
       } catch (error) {
         return { state: 'unavailable', message: errorMessage(error) };
       }
@@ -248,7 +252,7 @@ export function createDesktopLocalRuntimeHostRemoteAccess(input: {
           setupPackage,
           clientDataRoot: input.clientDataRoot,
           rootPath: handoff.rootPath,
-          principalId: `desktop-owner:${randomUUID()}`,
+          principalId: LOCAL_REMOTE_ACCESS_PRINCIPAL_ID,
           coordinationRelays: handoff.coordinationRelays,
           expectedTarget: handoff,
           signal: closing.signal,
@@ -307,6 +311,31 @@ export function createDesktopLocalRuntimeHostRemoteAccess(input: {
       return issueConnectionCode(input.rootPath, managed.rootId, peer, localClient(input.manager));
     });
 
+  const revokeSharedAccess = (): Promise<DesktopLocalRuntimeHostRemoteAccessSnapshot> =>
+    serialize(async () => {
+      const managed = requireManaged(
+        await readLifecycle(lifecyclePath, input.rootPath, input.rootId),
+      );
+      const response = await input.operator.runAccess({
+        operatorPath: managed.operatorPath,
+        target: managed,
+      });
+      if (response.kind === 'error') throw new Error(response.error.message);
+      const credentials = response.credentials.filter(
+        (credential) =>
+          credential.principalKind === 'remote_owner' &&
+          credential.principalId === LOCAL_REMOTE_ACCESS_PRINCIPAL_ID,
+      );
+      const credential = credentials.find((candidate) => candidate.status === 'active') ?? credentials[0];
+      if (credential) {
+        await localClient(input.manager).request('access.credential.revoke', {
+          credentialId: credential.credentialId,
+        });
+      }
+      const peer = await readPeer(input.operator, managed);
+      return peer ? onSnapshot(false) : { state: 'off', managedService: true };
+    });
+
   const disable = (): Promise<DesktopLocalRuntimeHostRemoteAccessSnapshot> =>
     serialize(async () => {
       const managed = requireManaged(
@@ -327,7 +356,7 @@ export function createDesktopLocalRuntimeHostRemoteAccess(input: {
       if (changed.response.status.state === 'enabled') {
         throw new Error('Local Runtime Host Direct peer did not disable');
       }
-      return { state: 'off', managedService: true };
+      return { state: 'off', managedService: true, ...(await sharedAccessFlag(input.operator, managed)) };
     });
 
   const uninstall = (
@@ -445,14 +474,16 @@ export function createDesktopLocalRuntimeHostRemoteAccess(input: {
     'local-runtime-host-remote-access:get-snapshot',
     'local-runtime-host-remote-access:enable',
     'local-runtime-host-remote-access:create-connection-code',
+    'local-runtime-host-remote-access:revoke-shared-access',
     'local-runtime-host-remote-access:disable',
     'local-runtime-host-remote-access:uninstall',
   ] as const;
   input.ipcMain.handle(channels[0], getSnapshot);
   input.ipcMain.handle(channels[1], (_event, value: unknown) => enable(value));
   input.ipcMain.handle(channels[2], createConnectionCode);
-  input.ipcMain.handle(channels[3], disable);
-  input.ipcMain.handle(channels[4], (_event, value: unknown) => uninstall(value));
+  input.ipcMain.handle(channels[3], revokeSharedAccess);
+  input.ipcMain.handle(channels[4], disable);
+  input.ipcMain.handle(channels[5], (_event, value: unknown) => uninstall(value));
 
   return {
     recover: () =>
@@ -549,17 +580,17 @@ function requireEnabledPeer(value: unknown): LocalPeerDescriptor {
   return peer;
 }
 
-function onSnapshot(): Extract<
+function onSnapshot(sharedAccess: boolean): Extract<
   DesktopLocalRuntimeHostRemoteAccessSnapshot,
   { state: 'on' }
 > {
-  return { state: 'on' };
+  return { state: 'on', ...(sharedAccess ? { sharedAccess: true } : {}) };
 }
 
 function enabledResult(
   connectionCode: string,
 ): Extract<DesktopLocalRuntimeHostRemoteAccessEnableResult, { kind: 'enabled' }> {
-  return { kind: 'enabled', connectionCode, snapshot: onSnapshot() };
+  return { kind: 'enabled', connectionCode, snapshot: onSnapshot(true) };
 }
 
 async function issueConnectionCode(
@@ -570,7 +601,7 @@ async function issueConnectionCode(
 ): Promise<string> {
   const prepared = await client.request('access.credential.prepare', {
     principalKind: 'remote_owner',
-    principalId: `desktop-owner:${randomUUID()}`,
+    principalId: LOCAL_REMOTE_ACCESS_PRINCIPAL_ID,
     operationGrants: REMOTE_OWNER_OPERATION_GRANTS,
     canPublishClientCapabilities: true,
     canUseHostPaths: false,
@@ -587,6 +618,29 @@ async function issueConnectionCode(
     transport: { kind: 'libp2p-direct', ...peer },
     credential,
   });
+}
+
+async function hasSharedAccess(
+  operator: DesktopRuntimeHostLocalOperator,
+  target: LocalServiceTarget,
+): Promise<boolean> {
+  const response = await operator.runAccess({
+    operatorPath: target.operatorPath,
+    target,
+  });
+  if (response.kind === 'error') throw new Error(response.error.message);
+  return response.credentials.some(
+    (credential) =>
+      credential.principalKind === 'remote_owner' &&
+      credential.principalId === LOCAL_REMOTE_ACCESS_PRINCIPAL_ID,
+  );
+}
+
+async function sharedAccessFlag(
+  operator: DesktopRuntimeHostLocalOperator,
+  target: LocalServiceTarget,
+): Promise<{ readonly sharedAccess: true } | Record<string, never>> {
+  return (await hasSharedAccess(operator, target)) ? { sharedAccess: true } : {};
 }
 
 function localClient(manager: () => RuntimeHostDesktopManager | undefined): DesktopRuntimeHostClient {

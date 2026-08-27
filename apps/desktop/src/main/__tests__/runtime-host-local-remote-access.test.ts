@@ -50,9 +50,10 @@ test('enabling remote access hands the same root to one managed service before D
     coordinationRelays: [],
   };
   const operator = {
-    async runSetup(input: { readonly rootPath: string }) {
+    async runSetup(input: { readonly rootPath: string; readonly principalId: string }) {
       assert.equal(retired, true);
       assert.equal(input.rootPath, rootPath);
+      assert.equal(input.principalId, 'desktop-owner:local-runtime-host-sharing');
       return {
         serviceId,
         operatorPath: join(base, 'operator'),
@@ -113,6 +114,83 @@ test('enabling remote access hands the same root to one managed service before D
       .state,
     'managed',
   );
+});
+
+test('revokes the one Local sharing authority without changing peer connectivity', async (t) => {
+  const base = await mkdtemp(join(tmpdir(), 'maka-local-shared-access-revoke-'));
+  t.after(() => rm(base, { recursive: true, force: true }));
+  const clientDataRoot = join(base, 'client');
+  const rootPath = join(clientDataRoot, 'workspaces', 'default');
+  const rootId = 'a'.repeat(64);
+  await mkdir(rootPath, { recursive: true });
+  await writeManagedLifecycle(clientDataRoot, rootPath, rootId);
+  const handlers = new Map<string, Parameters<Electron.IpcMain['handle']>[1]>();
+  const revoked: string[] = [];
+  const peer = {
+    peerId: '12D3KooWpeer',
+    routeHints: ['/ip4/192.0.2.1/udp/41000/quic-v1'],
+    coordinationRelays: [],
+  };
+  const service = createDesktopLocalRuntimeHostRemoteAccess({
+    ipcMain: {
+      handle: (channel, handler) => { handlers.set(channel, handler); },
+      removeHandler: (channel) => { handlers.delete(channel); },
+    },
+    clientDataRoot,
+    rootPath,
+    rootId,
+    directPeerAvailable: true,
+    manager: () =>
+      ({
+        current() {
+          return {
+            candidate: {
+              client: {
+                async request(operation: string, input: { readonly credentialId: string }) {
+                  assert.equal(operation, 'access.credential.revoke');
+                  revoked.push(input.credentialId);
+                  return { credentialId: input.credentialId, revoked: true };
+                },
+              },
+            },
+          };
+        },
+      }) as unknown as RuntimeHostDesktopManager,
+    resolveSetupPackage: async () => ({ kind: 'npm', specifier: 'maka-agent@0.2.0' }),
+    operator: {
+      async runAccess() {
+        return {
+          schemaVersion: 1 as const,
+          kind: 'result' as const,
+          action: 'list' as const,
+          credentials: [
+            sharedCredential('active-credential', 'active'),
+            sharedCredential('pending-credential', 'pending'),
+            { ...sharedCredential('unrelated', 'active'), principalId: 'another-client' },
+          ],
+        };
+      },
+      async runPeer() {
+        return {
+          kind: 'result' as const,
+          action: 'status' as const,
+          status: {
+            state: 'enabled' as const,
+            serviceState: 'running',
+            rootId,
+            ...peer,
+          },
+        };
+      },
+      async close() {},
+    } as unknown as ReturnType<typeof createDesktopRuntimeHostLocalOperator>,
+  });
+  t.after(() => service.close());
+
+  const revoke = handlers.get('local-runtime-host-remote-access:revoke-shared-access');
+  assert.ok(revoke);
+  assert.deepEqual(await revoke({} as Electron.IpcMainInvokeEvent), { state: 'on' });
+  assert.deepEqual(revoked, ['active-credential']);
 });
 
 test('an interrupted Local Host handoff converges to its exact managed service', async (t) => {
@@ -439,4 +517,19 @@ async function writeManagedLifecycle(
       rootId,
     })}\n`,
   );
+}
+
+function sharedCredential(credentialId: string, status: 'active' | 'pending') {
+  return {
+    credentialId,
+    credentialFingerprint: 'f'.repeat(32),
+    principalKind: 'remote_owner' as const,
+    principalId: 'desktop-owner:local-runtime-host-sharing',
+    status,
+    operationGrants: [],
+    canPublishClientCapabilities: true,
+    canUseHostPaths: false,
+    createdAt: new Date(0).toISOString(),
+    ...(status === 'pending' ? { expiresAt: new Date(Date.now() + 60_000).toISOString() } : {}),
+  };
 }

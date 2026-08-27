@@ -1218,6 +1218,9 @@ const makaBridge = {
         'local-runtime-host-remote-access:create-connection-code',
       );
     },
+    revokeSharedAccess() {
+      return ipcRenderer.invoke('local-runtime-host-remote-access:revoke-shared-access');
+    },
     disable() {
       return ipcRenderer.invoke('local-runtime-host-remote-access:disable');
     },
