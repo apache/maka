@@ -17,19 +17,21 @@
  * under the License.
  */
 
+import { RUNTIME_HOST_MANAGED_LAUNCH_REJECTIONS } from './operator/managed-deployment.js';
+
 export const CANDIDATE_STARTUP_FAILURE_REASONS = [
   'stored_data_incompatible',
   'operational_state_migration_blocked',
   'local_ipc_security_failed',
   'internal_startup_failure',
-  'managed_root_requires_operator',
-  'deployment_record_missing',
-  'deployment_claim_mismatch',
-  'deployment_lifecycle_mismatch',
-  'deployment_record_invalid',
+  ...RUNTIME_HOST_MANAGED_LAUNCH_REJECTIONS,
 ] as const;
 
 export type CandidateStartupFailureReason = (typeof CANDIDATE_STARTUP_FAILURE_REASONS)[number];
+export type PermanentCandidateStartupFailureReason = Exclude<
+  CandidateStartupFailureReason,
+  'local_ipc_security_failed' | 'internal_startup_failure'
+>;
 
 export interface CandidateStartupFailure {
   readonly reason: CandidateStartupFailureReason;
@@ -41,14 +43,6 @@ export interface CandidateStartupFailureReport extends CandidateStartupFailure {
 
 const STARTUP_ATTEMPT_ID_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u;
-
-const MANAGED_AUTHORITY_FAILURES = [
-  'managed_root_requires_operator',
-  'deployment_record_missing',
-  'deployment_claim_mismatch',
-  'deployment_lifecycle_mismatch',
-  'deployment_record_invalid',
-] as const;
 
 const EXIT_CODE_BY_REASON: Readonly<Record<CandidateStartupFailureReason, number>> = {
   stored_data_incompatible: 65,
@@ -73,7 +67,7 @@ export function classifyCandidateStartupFailure(error: unknown): CandidateStartu
   if (errors.some((candidate) => errorCode(candidate) === 'insecure_endpoint_directory')) {
     return { reason: 'local_ipc_security_failed' };
   }
-  for (const reason of MANAGED_AUTHORITY_FAILURES) {
+  for (const reason of RUNTIME_HOST_MANAGED_LAUNCH_REJECTIONS) {
     if (errors.some((candidate) => errorCode(candidate) === reason)) return { reason };
   }
   return { reason: 'internal_startup_failure' };
@@ -82,10 +76,7 @@ export function classifyCandidateStartupFailure(error: unknown): CandidateStartu
 export function isPermanentCandidateStartupFailure(
   failure: CandidateStartupFailure | undefined,
 ): failure is CandidateStartupFailure & {
-  readonly reason: Exclude<
-    CandidateStartupFailureReason,
-    'local_ipc_security_failed' | 'internal_startup_failure'
-  >;
+  readonly reason: PermanentCandidateStartupFailureReason;
 } {
   return (
     failure !== undefined &&

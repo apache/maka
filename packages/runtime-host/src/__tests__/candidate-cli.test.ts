@@ -42,7 +42,7 @@ test('parses the production candidate flags', () => {
   assert.equal(parsed.idleGraceMs, 10_000);
 });
 
-test('parses a complete managed on-demand launch claim', () => {
+test('parses a complete managed launch claim', () => {
   const parsed = parseInteractiveRuntimeHostCandidateArguments([
     '--root',
     '/tmp/workspace',
@@ -54,18 +54,15 @@ test('parses a complete managed on-demand launch claim', () => {
     DEPLOYMENT_ID,
     '--managed-config-revision',
     '7',
-    '--managed-lifecycle-mode',
-    'on_demand',
   ]);
 
   assert.deepEqual(parsed.managedLaunchClaim, {
     deploymentId: DEPLOYMENT_ID,
     configRevision: 7,
-    lifecycle: { mode: 'on_demand' },
   });
 });
 
-test('rejects partial or contradictory managed launch claims', () => {
+test('rejects partial or retired managed launch fields', () => {
   assert.throws(
     () =>
       parseInteractiveRuntimeHostCandidateArguments([
@@ -95,10 +92,8 @@ test('rejects partial or contradictory managed launch claims', () => {
         '7',
         '--managed-lifecycle-mode',
         'on_demand',
-        '--managed-provider',
-        'systemd_user',
       ]),
-    /Invalid Runtime Host candidate argument: --managed-provider/u,
+    /Invalid Runtime Host candidate argument: --managed-lifecycle-mode/u,
   );
 });
 

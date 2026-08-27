@@ -18,11 +18,17 @@
  */
 
 import assert from 'node:assert/strict';
-import { lstat, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { chmod, lstat, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import test from 'node:test';
-import { resolveStorageRoot, tryAcquireStateRootOwner } from '@maka/storage/root-authority';
+import {
+  resolveRootControlNamespace,
+  resolveRootOwnershipNamespace,
+  resolveStorageRoot,
+  tryAcquireStateRootOwner,
+} from '@maka/storage/root-authority';
+import { classifyCandidateStartupFailure } from '../candidate-startup-failure.js';
 import {
   RuntimeHostManagedDeploymentError,
   claimRuntimeHostManagedDeployment,
@@ -53,9 +59,18 @@ async function fixture(t: test.TestContext): Promise<Fixture> {
   t.after(() => rm(rootPath, { recursive: true, force: true }));
   t.after(() => rm(authorityRoot, { recursive: true, force: true }));
   const capability = await resolveStorageRoot({ path: rootPath, kind: 'interactive' });
+  t.after(() =>
+    Promise.all([
+      rm(join(resolveRootControlNamespace(), capability.rootId), {
+        recursive: true,
+        force: true,
+      }),
+      rm(join(resolveRootOwnershipNamespace(), `${capability.rootId}.lock`), { force: true }),
+    ]),
+  );
   return {
     capability,
-    authority: { authorityRoot },
+    authority: { authorityRoot, durabilityBoundary: authorityRoot },
     config: createConfig(capability.canonicalPath, capability.rootId),
   };
 }
@@ -272,9 +287,12 @@ test('concurrent install and unmanaged launch cannot both cross the authority bo
   await launchOwner?.close();
 
   if (claimSucceeded) {
-    assert.equal(launchResult.status, 'rejected');
-    assert.ok(launchResult.reason instanceof RuntimeHostManagedDeploymentError);
-    assert.equal(launchResult.reason.code, 'managed_root_requires_operator');
+    if (launchResult.status === 'rejected') {
+      assert.ok(launchResult.reason instanceof RuntimeHostManagedDeploymentError);
+      assert.equal(launchResult.reason.code, 'managed_root_requires_operator');
+    } else {
+      assert.equal(launchResult.value, undefined);
+    }
   } else {
     assert.equal(claimResult.status, 'rejected');
     assert.ok(claimResult.reason instanceof RuntimeHostManagedDeploymentError);
@@ -296,6 +314,31 @@ test('concurrent managed activations elect exactly one State Root owner', async 
 
   assert.equal(owners.filter((owner) => owner !== undefined).length, 1);
   await Promise.all(owners.map((owner) => owner?.close()));
+});
+
+test('managed ownership survives deletion of the disposable control cache', {
+  skip: process.platform === 'win32',
+}, async (t) => {
+  const input = await fixture(t);
+  const { claim } = await claimRuntimeHostManagedDeployment(
+    input.capability,
+    input.config,
+    input.authority,
+  );
+  const owner = await tryAcquireRuntimeHostLaunchOwner(
+    input.capability,
+    'on_demand',
+    claim,
+    input.authority,
+  );
+  assert.ok(owner);
+  await rm(owner.controlDirectory, { recursive: true, force: true });
+
+  assert.equal(
+    await tryAcquireRuntimeHostLaunchOwner(input.capability, 'on_demand', claim, input.authority),
+    undefined,
+  );
+  await owner.close();
 });
 
 test('maps missing and stale claims to fail-closed launch decisions', () => {
@@ -334,5 +377,110 @@ test('rejects oversized deployment records before parsing', async (t) => {
     readRuntimeHostManagedDeploymentConfig(input.capability, input.authority),
     (error: unknown) =>
       error instanceof RuntimeHostManagedDeploymentError && error.code === 'invalid_config',
+  );
+});
+
+test('normalizes unreadable deployment records at the launch authority boundary', async (t) => {
+  const input = await fixture(t);
+  const path = resolveRuntimeHostManagedDeploymentConfigPath(
+    input.capability.rootId,
+    input.authority,
+  );
+  await mkdir(path, { recursive: true });
+
+  await assert.rejects(
+    tryAcquireRuntimeHostLaunchOwner(
+      input.capability,
+      'on_demand',
+      runtimeHostManagedLaunchClaim(input.config),
+      input.authority,
+    ),
+    (error: unknown) =>
+      error instanceof RuntimeHostManagedDeploymentError &&
+      error.code === 'deployment_record_invalid',
+  );
+});
+
+test('keeps transient deployment record I/O retryable at the Candidate boundary', {
+  skip: process.platform === 'win32',
+}, async (t) => {
+  const input = await fixture(t);
+  const { claim } = await claimRuntimeHostManagedDeployment(
+    input.capability,
+    input.config,
+    input.authority,
+  );
+  const path = resolveRuntimeHostManagedDeploymentConfigPath(
+    input.capability.rootId,
+    input.authority,
+  );
+  await chmod(path, 0o000);
+
+  await assert.rejects(
+    tryAcquireRuntimeHostLaunchOwner(input.capability, 'on_demand', claim, input.authority),
+    (error: unknown) => {
+      assert.ok(error instanceof RuntimeHostManagedDeploymentError);
+      assert.equal(error.code, 'deployment_io_failed');
+      assert.deepEqual(classifyCandidateStartupFailure(error), {
+        reason: 'internal_startup_failure',
+      });
+      return true;
+    },
+  );
+});
+
+test('concurrent first claims cannot adopt an unsynced directory as their durability boundary', async (t) => {
+  const input = await fixture(t);
+  const authorityBase = await mkdtemp(join(tmpdir(), 'maka-managed-durability-'));
+  t.after(() => rm(authorityBase, { recursive: true, force: true }));
+  let reportDirectoriesCreated!: () => void;
+  const directoriesCreated = new Promise<void>((resolve) => {
+    reportDirectoriesCreated = resolve;
+  });
+  let resumeFirst!: () => void;
+  const firstMayContinue = new Promise<void>((resolve) => {
+    resumeFirst = resolve;
+  });
+  let firstSync = true;
+
+  const firstClaim = claimRuntimeHostManagedDeployment(input.capability, input.config, {
+    homeDir: authorityBase,
+    beforeDirectorySync: async (path) => {
+      if (firstSync) {
+        firstSync = false;
+        reportDirectoriesCreated();
+        await firstMayContinue;
+      }
+      if (path === authorityBase) throw new Error('injected first directory sync failure');
+    },
+  });
+  await directoriesCreated;
+
+  try {
+    await assert.rejects(
+      claimRuntimeHostManagedDeployment(input.capability, input.config, {
+        homeDir: authorityBase,
+        beforeDirectorySync: (path) => {
+          if (path === authorityBase) {
+            throw new Error('injected concurrent directory sync failure');
+          }
+        },
+      }),
+      (error: unknown) =>
+        error instanceof RuntimeHostManagedDeploymentError && error.code === 'deployment_io_failed',
+    );
+  } finally {
+    resumeFirst();
+  }
+  await assert.rejects(
+    firstClaim,
+    (error: unknown) =>
+      error instanceof RuntimeHostManagedDeploymentError && error.code === 'deployment_io_failed',
+  );
+  assert.equal(
+    await readRuntimeHostManagedDeploymentConfig(input.capability, {
+      homeDir: authorityBase,
+    }),
+    undefined,
   );
 });

@@ -60,7 +60,12 @@ import {
   writeCandidateStartupDiagnostic,
 } from '../control/startup-diagnostic.js';
 import {
+  candidateStartupFailureExitCode,
+  classifyCandidateStartupFailure,
+} from '../candidate-startup-failure.js';
+import {
   claimRuntimeHostManagedDeployment,
+  resolveRuntimeHostManagedDeploymentConfigPath,
   type RuntimeHostManagedOnDemandDeploymentConfig,
 } from '../operator/managed-deployment.js';
 import { removePosixEndpointDirectories } from './fixtures/endpoint-hygiene.js';
@@ -165,7 +170,10 @@ describe('non-serving Runtime Host kernel', () => {
   test('a managed State Root refuses an ordinary candidate launch before election', async () => {
     await withHostPaths(async (paths) => {
       const capability = await resolveStorageRoot({ path: paths.root, kind: 'interactive' });
-      const managedDeploymentAuthority = { authorityRoot: join(paths.base, 'managed-authority') };
+      const managedDeploymentAuthority = {
+        authorityRoot: join(paths.base, 'managed-authority'),
+        durabilityBoundary: paths.base,
+      };
       await claimRuntimeHostManagedDeployment(
         capability,
         managedDeploymentConfig(capability),
@@ -207,7 +215,10 @@ describe('non-serving Runtime Host kernel', () => {
   test('a matching managed claim reaches the existing candidate election', async () => {
     await withHostPaths(async (paths) => {
       const capability = await resolveStorageRoot({ path: paths.root, kind: 'interactive' });
-      const managedDeploymentAuthority = { authorityRoot: join(paths.base, 'managed-authority') };
+      const managedDeploymentAuthority = {
+        authorityRoot: join(paths.base, 'managed-authority'),
+        durabilityBoundary: paths.base,
+      };
       const { claim } = await claimRuntimeHostManagedDeployment(
         capability,
         managedDeploymentConfig(capability),
@@ -242,6 +253,46 @@ describe('non-serving Runtime Host kernel', () => {
       assert.equal(result.kind, 'failed');
       if (result.kind === 'failed') assert.equal(result.reason, 'startup_timeout');
       assert.equal(launches, 1);
+    });
+  });
+
+  test('a malformed managed record crosses the Candidate boundary as exit 84', async () => {
+    await withHostPaths(async (paths) => {
+      const capability = await resolveStorageRoot({ path: paths.root, kind: 'interactive' });
+      const managedDeploymentAuthority = {
+        authorityRoot: join(paths.base, 'managed-authority'),
+        durabilityBoundary: paths.base,
+      };
+      const { claim } = await claimRuntimeHostManagedDeployment(
+        capability,
+        managedDeploymentConfig(capability),
+        managedDeploymentAuthority,
+      );
+      await writeFile(
+        resolveRuntimeHostManagedDeploymentConfigPath(
+          capability.rootId,
+          managedDeploymentAuthority,
+        ),
+        '{not-json',
+      );
+
+      await assert.rejects(
+        startInteractiveRuntimeHostCandidate(
+          {
+            rootPath: capability.canonicalPath,
+            expectedRootId: capability.rootId,
+            managedLaunchClaim: claim,
+          },
+          KERNEL_COMPOSITION,
+          { managedDeploymentAuthority },
+        ),
+        (error: unknown) => {
+          const failure = classifyCandidateStartupFailure(error);
+          assert.deepEqual(failure, { reason: 'deployment_record_invalid' });
+          assert.equal(candidateStartupFailureExitCode(failure), 84);
+          return true;
+        },
+      );
     });
   });
 

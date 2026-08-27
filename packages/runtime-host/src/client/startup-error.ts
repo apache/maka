@@ -17,14 +17,15 @@
  * under the License.
  */
 
-import type { CandidateStartupFailureReason } from '../candidate-startup-failure.js';
-import type { RuntimeHostManagedLaunchRejection } from '../operator/managed-deployment.js';
+import type {
+  CandidateStartupFailureReason,
+  PermanentCandidateStartupFailureReason,
+} from '../candidate-startup-failure.js';
 import type { RuntimeHostElectionDiagnostic } from './connect-or-spawn.js';
 import { RuntimeHostPermanentReconnectError } from './reconnect-lifecycle.js';
 
 export type RuntimeHostStartupFailureReason =
   | CandidateStartupFailureReason
-  | RuntimeHostManagedLaunchRejection
   | 'composition_mismatch'
   | 'startup_timeout'
   | 'host_unresponsive';
@@ -33,11 +34,7 @@ export class RuntimeHostStartupError extends RuntimeHostPermanentReconnectError 
   readonly name = 'RuntimeHostStartupError';
 
   constructor(
-    readonly reason:
-      | 'stored_data_incompatible'
-      | 'operational_state_migration_blocked'
-      | 'composition_mismatch'
-      | RuntimeHostManagedLaunchRejection,
+    readonly reason: PermanentCandidateStartupFailureReason | 'composition_mismatch',
     message: string,
   ) {
     super(message);

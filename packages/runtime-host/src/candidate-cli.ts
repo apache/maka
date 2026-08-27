@@ -21,8 +21,7 @@ import type { InteractiveRuntimeHostCandidateOptions } from './server/candidate.
 import { isCandidateStartupAttemptId } from './candidate-startup-failure.js';
 import {
   decodeRuntimeHostManagedLaunchClaim,
-  isRuntimeHostManagedOnDemandLaunchClaim,
-  type RuntimeHostManagedOnDemandLaunchClaim,
+  type RuntimeHostManagedLaunchClaim,
 } from './operator/managed-deployment.js';
 
 export interface ParsedInteractiveRuntimeHostCandidateArguments
@@ -43,7 +42,6 @@ export function parseInteractiveRuntimeHostCandidateArguments(
     'generation',
     'managed-deployment-id',
     'managed-config-revision',
-    'managed-lifecycle-mode',
   ]);
   const values = new Map<string, string>();
   for (let index = 0; index < args.length; index += 2) {
@@ -83,30 +81,21 @@ export function parseInteractiveRuntimeHostCandidateArguments(
 
 function readManagedLaunchClaim(
   values: ReadonlyMap<string, string>,
-): RuntimeHostManagedOnDemandLaunchClaim | undefined {
+): RuntimeHostManagedLaunchClaim | undefined {
   const deploymentId = values.get('managed-deployment-id');
   const rawRevision = values.get('managed-config-revision');
-  const lifecycleMode = values.get('managed-lifecycle-mode');
-  if (deploymentId === undefined && rawRevision === undefined && lifecycleMode === undefined) {
-    return undefined;
-  }
-  if (deploymentId === undefined || rawRevision === undefined || lifecycleMode === undefined) {
+  if (deploymentId === undefined && rawRevision === undefined) return undefined;
+  if (deploymentId === undefined || rawRevision === undefined) {
     throw new Error('Runtime Host candidate requires a complete managed launch claim');
   }
   const configRevision = Number(rawRevision);
   if (!Number.isSafeInteger(configRevision) || configRevision <= 0) {
     throw new Error('Invalid --managed-config-revision');
   }
-  if (lifecycleMode !== 'on_demand') throw new Error('Invalid --managed-lifecycle-mode');
-  const claim = decodeRuntimeHostManagedLaunchClaim({
+  return decodeRuntimeHostManagedLaunchClaim({
     deploymentId,
     configRevision,
-    lifecycle: { mode: lifecycleMode },
   });
-  if (!isRuntimeHostManagedOnDemandLaunchClaim(claim)) {
-    throw new Error('Invalid --managed-lifecycle-mode');
-  }
-  return claim;
 }
 
 function readGeneration(values: Map<string, string>): string {

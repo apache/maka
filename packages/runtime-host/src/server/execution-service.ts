@@ -25,7 +25,7 @@ import {
 import {
   tryAcquireRuntimeHostLaunchOwner,
   type RuntimeHostManagedDeploymentAuthorityOptions,
-  type RuntimeHostManagedSupervisedLaunchClaim,
+  type RuntimeHostManagedLaunchClaim,
 } from '../operator/managed-deployment.js';
 import { RuntimeHostKernel } from './host-kernel.js';
 import { openRuntimeHostAccessAuthority } from './access-authority.js';
@@ -39,7 +39,7 @@ export interface ExecutionRuntimeHostServiceOptions {
   readonly projectDirectoryRoots?: readonly PublishedProjectDirectoryRoot[];
   readonly handshakeTimeoutMs?: number;
   readonly shutdownGraceMs?: number;
-  readonly managedLaunchClaim?: RuntimeHostManagedSupervisedLaunchClaim;
+  readonly managedLaunchClaim?: RuntimeHostManagedLaunchClaim;
   readonly websocket?: Omit<
     StartRuntimeHostWebSocketListenerOptions,
     'accessAuthority' | 'accept' | 'isReady'

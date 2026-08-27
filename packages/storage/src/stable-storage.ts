@@ -32,7 +32,11 @@ export async function syncFile(path: string): Promise<void> {
   }
 }
 
-export async function syncDirectoryChain(path: string, root: string): Promise<void> {
+export async function syncDirectoryChain(
+  path: string,
+  root: string,
+  beforeSync?: (path: string) => void | Promise<void>,
+): Promise<void> {
   const boundary = resolve(root);
   let current = resolve(path);
   const pathFromBoundary = relative(boundary, current);
@@ -44,6 +48,7 @@ export async function syncDirectoryChain(path: string, root: string): Promise<vo
     throw new Error(`Durability path escapes workspace root: ${path}`);
   }
   while (true) {
+    await beforeSync?.(current);
     await syncDirectory(current);
     if (current === boundary) return;
     current = dirname(current);

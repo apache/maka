@@ -21,7 +21,7 @@ import { resolveExistingStorageRoot } from '@maka/storage/root-authority';
 import {
   tryAcquireRuntimeHostLaunchOwner,
   type RuntimeHostManagedDeploymentAuthorityOptions,
-  type RuntimeHostManagedOnDemandLaunchClaim,
+  type RuntimeHostManagedLaunchClaim,
 } from '../operator/managed-deployment.js';
 import type { RuntimeHostCompositionSource } from './host-composition.js';
 import { RuntimeHostKernel } from './host-kernel.js';
@@ -33,7 +33,7 @@ export interface InteractiveRuntimeHostCandidateOptions {
   idleGraceMs?: number;
   handshakeTimeoutMs?: number;
   generation?: string;
-  managedLaunchClaim?: RuntimeHostManagedOnDemandLaunchClaim;
+  managedLaunchClaim?: RuntimeHostManagedLaunchClaim;
 }
 
 export interface InteractiveRuntimeHostCandidateDependencies {

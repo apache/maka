@@ -59,13 +59,11 @@ import {
 } from '../control/startup-diagnostic.js';
 import {
   decodeRuntimeHostManagedLaunchClaim,
-  isRuntimeHostManagedOnDemandLaunchClaim,
   readRuntimeHostManagedDeploymentConfig,
   runtimeHostManagedLaunchRejection,
   RuntimeHostManagedDeploymentError,
   type RuntimeHostManagedDeploymentAuthorityOptions,
-  type RuntimeHostManagedOnDemandLaunchClaim,
-  type RuntimeHostManagedLaunchRejection,
+  type RuntimeHostManagedLaunchClaim,
 } from '../operator/managed-deployment.js';
 import { abortable, waitForRuntimeHostReady } from './wait-for-ready.js';
 
@@ -86,7 +84,7 @@ export interface ConnectOrSpawnRuntimeHostInput {
   connectTimeoutMs?: number;
   handshakeTimeoutMs?: number;
   candidateEntrypoint: string | URL;
-  managedLaunchClaim?: RuntimeHostManagedOnDemandLaunchClaim;
+  managedLaunchClaim?: RuntimeHostManagedLaunchClaim;
   signal?: AbortSignal;
   /** Candidate-exit sink forwarded to the launcher; the embedder owns the sink. */
   onExit?: (details: CandidateExitDetails) => void;
@@ -146,11 +144,7 @@ export type ConnectOrSpawnRuntimeHostResult =
     }
   | {
       kind: 'failed';
-      reason:
-        | CandidateStartupFailure['reason']
-        | RuntimeHostManagedLaunchRejection
-        | 'startup_timeout'
-        | 'host_unresponsive';
+      reason: CandidateStartupFailure['reason'] | 'startup_timeout' | 'host_unresponsive';
       diagnostic?: RuntimeHostElectionDiagnostic;
     };
 
@@ -317,9 +311,6 @@ export async function connectOrSpawnRuntimeHostWithDependencies(
     input.managedLaunchClaim === undefined
       ? undefined
       : decodeRuntimeHostManagedLaunchClaim(input.managedLaunchClaim);
-  if (managedLaunchClaim && !isRuntimeHostManagedOnDemandLaunchClaim(managedLaunchClaim)) {
-    return { kind: 'failed', reason: 'deployment_lifecycle_mismatch' };
-  }
   input.signal?.throwIfAborted();
   const clientInstanceId = requireClientInstanceId(input.clientInstanceId ?? randomUUID());
   const capability = await resolveStorageRoot({ path: input.rootPath, kind: 'interactive' });

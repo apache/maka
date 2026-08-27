@@ -20,14 +20,13 @@
 import { randomUUID } from 'node:crypto';
 import { chmod, lstat, mkdir, open, readFile, rename, rm } from 'node:fs/promises';
 import { userInfo } from 'node:os';
-import { dirname, isAbsolute, join, posix, resolve, win32 } from 'node:path';
+import { dirname, isAbsolute, join, parse, posix, relative, resolve, sep, win32 } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import {
   type StateRootOwner,
   type StorageRootCapability,
   tryAcquireStateRootOwner,
 } from '@maka/storage/root-authority';
-import { withProcessLifetimeFileUpdateLock } from '@maka/storage/process-lifetime-file-update-lock';
 import { syncDirectory, syncDirectoryChain } from '@maka/storage/stable-storage';
 import { z } from 'zod';
 import { isProductReleaseVersion, isSha512PackageIntegrity } from './update-package-evidence.js';
@@ -36,7 +35,6 @@ export const RUNTIME_HOST_MANAGED_DEPLOYMENT_CONFIG_FILE = 'runtime-host-deploym
 
 const SCHEMA_VERSION = 1 as const;
 const MAX_DOCUMENT_BYTES = 64 * 1024;
-const UPDATE_LOCK_TIMEOUT_MS = 60_000;
 const ROOT_ID_PATTERN = /^[a-f0-9]{64}$/u;
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u;
 
@@ -82,16 +80,6 @@ const lifecycleSchema = z.discriminatedUnion('mode', [
     .strict(),
 ]);
 
-const launchLifecycleSchema = z.discriminatedUnion('mode', [
-  z.object({ mode: z.literal('on_demand') }).strict(),
-  z
-    .object({
-      mode: z.literal('supervised'),
-      provider: providerSchema,
-    })
-    .strict(),
-]);
-
 const reconciliationSchema = z.discriminatedUnion('trigger', [
   z.object({ trigger: z.literal('manual') }).strict(),
   z.object({ trigger: z.literal('activation') }).strict(),
@@ -107,7 +95,6 @@ const managedLaunchClaimSchema = z
   .object({
     deploymentId: deploymentIdSchema,
     configRevision: configRevisionSchema,
-    lifecycle: launchLifecycleSchema,
   })
   .strict();
 
@@ -204,29 +191,28 @@ export type RuntimeHostManagedSupervisedDeploymentConfig = RuntimeHostManagedDep
     readonly availability: 'session' | 'environment' | 'machine';
   };
 };
-export type RuntimeHostManagedOnDemandLaunchClaim = RuntimeHostManagedLaunchClaim & {
-  readonly lifecycle: { readonly mode: 'on_demand' };
-};
-export type RuntimeHostManagedSupervisedLaunchClaim = RuntimeHostManagedLaunchClaim & {
-  readonly lifecycle: {
-    readonly mode: 'supervised';
-    readonly provider: RuntimeHostSupervisorProvider;
-  };
-};
 
 export interface RuntimeHostManagedDeploymentAuthorityOptions {
   /** Test-only or embedding override. Production uses the account-local durable default. */
   readonly authorityRoot?: string;
   readonly homeDir?: string;
   readonly platform?: NodeJS.Platform;
+  /** Pre-existing test/embedding durability anchor for an authorityRoot override. */
+  readonly durabilityBoundary?: string;
+  /** Test-only durability fault injection. */
+  readonly beforeDirectorySync?: (path: string) => void | Promise<void>;
 }
 
+export const RUNTIME_HOST_MANAGED_LAUNCH_REJECTIONS = [
+  'managed_root_requires_operator',
+  'deployment_record_missing',
+  'deployment_claim_mismatch',
+  'deployment_lifecycle_mismatch',
+  'deployment_record_invalid',
+] as const;
+
 export type RuntimeHostManagedLaunchRejection =
-  | 'managed_root_requires_operator'
-  | 'deployment_record_missing'
-  | 'deployment_claim_mismatch'
-  | 'deployment_lifecycle_mismatch'
-  | 'deployment_record_invalid';
+  (typeof RUNTIME_HOST_MANAGED_LAUNCH_REJECTIONS)[number];
 
 export class RuntimeHostManagedDeploymentError extends Error {
   constructor(
@@ -271,21 +257,6 @@ export function decodeRuntimeHostManagedLaunchClaim(value: unknown): RuntimeHost
   }
 }
 
-export function isRuntimeHostManagedOnDemandLaunchClaim(
-  claim: RuntimeHostManagedLaunchClaim,
-): claim is RuntimeHostManagedOnDemandLaunchClaim {
-  return claim.lifecycle.mode === 'on_demand';
-}
-
-export function runtimeHostManagedLaunchClaim(
-  config: RuntimeHostManagedOnDemandDeploymentConfig,
-): RuntimeHostManagedOnDemandLaunchClaim;
-export function runtimeHostManagedLaunchClaim(
-  config: RuntimeHostManagedSupervisedDeploymentConfig,
-): RuntimeHostManagedSupervisedLaunchClaim;
-export function runtimeHostManagedLaunchClaim(
-  config: RuntimeHostManagedDeploymentConfig,
-): RuntimeHostManagedLaunchClaim;
 export function runtimeHostManagedLaunchClaim(
   config: RuntimeHostManagedDeploymentConfig,
 ): RuntimeHostManagedLaunchClaim {
@@ -293,10 +264,6 @@ export function runtimeHostManagedLaunchClaim(
   return {
     deploymentId: canonical.deploymentId,
     configRevision: canonical.configRevision,
-    lifecycle:
-      canonical.lifecycle.mode === 'on_demand'
-        ? { mode: 'on_demand' }
-        : { mode: 'supervised', provider: canonical.lifecycle.provider },
   };
 }
 
@@ -346,42 +313,12 @@ export async function readRuntimeHostManagedDeploymentConfig(
   capability: StorageRootCapability<'interactive'>,
   options: RuntimeHostManagedDeploymentAuthorityOptions = {},
 ): Promise<RuntimeHostManagedDeploymentConfig | undefined> {
-  const value = await readBoundedJson(
+  return readDeploymentConfigForCapability(
     resolveRuntimeHostManagedDeploymentConfigPath(capability.rootId, options),
+    capability,
   );
-  if (value === undefined) return undefined;
-  const config = decodeRuntimeHostManagedDeploymentConfig(value);
-  assertConfigTargetsCapability(config, capability);
-  return config;
 }
 
-export function claimRuntimeHostManagedDeployment(
-  capability: StorageRootCapability<'interactive'>,
-  config: RuntimeHostManagedOnDemandDeploymentConfig,
-  options?: RuntimeHostManagedDeploymentAuthorityOptions,
-): Promise<{
-  readonly kind: 'applied' | 'unchanged';
-  readonly config: RuntimeHostManagedOnDemandDeploymentConfig;
-  readonly claim: RuntimeHostManagedOnDemandLaunchClaim;
-}>;
-export function claimRuntimeHostManagedDeployment(
-  capability: StorageRootCapability<'interactive'>,
-  config: RuntimeHostManagedSupervisedDeploymentConfig,
-  options?: RuntimeHostManagedDeploymentAuthorityOptions,
-): Promise<{
-  readonly kind: 'applied' | 'unchanged';
-  readonly config: RuntimeHostManagedSupervisedDeploymentConfig;
-  readonly claim: RuntimeHostManagedSupervisedLaunchClaim;
-}>;
-export function claimRuntimeHostManagedDeployment(
-  capability: StorageRootCapability<'interactive'>,
-  config: RuntimeHostManagedDeploymentConfig,
-  options?: RuntimeHostManagedDeploymentAuthorityOptions,
-): Promise<{
-  readonly kind: 'applied' | 'unchanged';
-  readonly config: RuntimeHostManagedDeploymentConfig;
-  readonly claim: RuntimeHostManagedLaunchClaim;
-}>;
 export async function claimRuntimeHostManagedDeployment(
   capability: StorageRootCapability<'interactive'>,
   config: RuntimeHostManagedDeploymentConfig,
@@ -395,46 +332,36 @@ export async function claimRuntimeHostManagedDeployment(
   assertConfigTargetsCapability(canonical, capability);
   const authorityRoot = resolveRuntimeHostManagedDeploymentAuthorityRoot(options);
   const path = resolveRuntimeHostManagedDeploymentConfigPath(capability.rootId, options);
-  await prepareAuthorityDirectory(dirname(path), authorityRoot);
-  return withProcessLifetimeFileUpdateLock(
-    path,
-    async () => {
-      const currentValue = await readBoundedJson(path);
-      if (currentValue !== undefined) {
-        const current = decodeRuntimeHostManagedDeploymentConfig(currentValue);
-        assertConfigTargetsCapability(current, capability);
-        if (isDeepStrictEqual(current, canonical)) {
-          return {
-            kind: 'unchanged',
-            config: current,
-            claim: runtimeHostManagedLaunchClaim(current),
-          };
-        }
-        throw new RuntimeHostManagedDeploymentError(
-          'lifecycle_owner_exists',
-          'The State Root already has a managed deployment',
-        );
-      }
-      const owner = await tryAcquireStateRootOwner(capability);
-      if (!owner) {
-        throw new RuntimeHostManagedDeploymentError(
-          'state_root_owned',
-          'The State Root must be retired before it can become managed',
-        );
-      }
-      try {
-        await writePrivateJson(path, canonical);
-      } finally {
-        await owner.close();
-      }
-      return {
-        kind: 'applied',
-        config: canonical,
-        claim: runtimeHostManagedLaunchClaim(canonical),
-      };
-    },
-    UPDATE_LOCK_TIMEOUT_MS,
+  await prepareAuthorityDirectory(
+    dirname(path),
+    resolveAuthorityDurabilityBoundary(authorityRoot, options),
+    options,
   );
+
+  const existing = await readDeploymentConfigForCapability(path, capability);
+  if (existing !== undefined) return existingDeploymentClaim(existing, canonical);
+
+  const owner = await tryAcquireStateRootOwner(capability);
+  if (!owner) {
+    const raced = await readDeploymentConfigForCapability(path, capability);
+    if (raced !== undefined) return existingDeploymentClaim(raced, canonical);
+    throw new RuntimeHostManagedDeploymentError(
+      'state_root_owned',
+      'The State Root must be retired before it can become managed',
+    );
+  }
+  try {
+    const current = await readDeploymentConfigForCapability(path, capability);
+    if (current !== undefined) return existingDeploymentClaim(current, canonical);
+    await writePrivateJson(path, canonical);
+    return {
+      kind: 'applied',
+      config: canonical,
+      claim: runtimeHostManagedLaunchClaim(canonical),
+    };
+  } finally {
+    await owner.close();
+  }
 }
 
 export async function tryAcquireRuntimeHostLaunchOwner(
@@ -445,41 +372,42 @@ export async function tryAcquireRuntimeHostLaunchOwner(
 ): Promise<StateRootOwner<'interactive'> | undefined> {
   const canonicalClaim =
     claim === undefined ? undefined : decodeRuntimeHostManagedLaunchClaim(claim);
-  const authorityRoot = resolveRuntimeHostManagedDeploymentAuthorityRoot(options);
   const path = resolveRuntimeHostManagedDeploymentConfigPath(capability.rootId, options);
-  await prepareAuthorityDirectory(dirname(path), authorityRoot);
-  return withProcessLifetimeFileUpdateLock(
-    path,
-    async () => {
-      const configValue = await readBoundedJson(path);
-      let config: RuntimeHostManagedDeploymentConfig | undefined;
-      if (configValue !== undefined) {
-        try {
-          config = decodeRuntimeHostManagedDeploymentConfig(configValue);
-          assertConfigTargetsCapability(config, capability);
-        } catch (error) {
-          throw new RuntimeHostManagedDeploymentError(
-            'deployment_record_invalid',
-            'The Runtime Host managed deployment record is invalid',
-            { cause: error },
-          );
-        }
+  const owner = await tryAcquireStateRootOwner(capability);
+  if (!owner) return undefined;
+  try {
+    let config: RuntimeHostManagedDeploymentConfig | undefined;
+    try {
+      config = await readDeploymentConfigForCapability(path, capability);
+    } catch (error) {
+      if (
+        !(error instanceof RuntimeHostManagedDeploymentError) ||
+        error.code !== 'invalid_config'
+      ) {
+        throw error;
       }
-      const rejection = runtimeHostManagedLaunchRejection(
-        config,
-        canonicalClaim,
-        expectedLifecycleMode,
+      throw new RuntimeHostManagedDeploymentError(
+        'deployment_record_invalid',
+        'The Runtime Host managed deployment record is invalid',
+        { cause: error },
       );
-      if (rejection !== undefined) {
-        throw new RuntimeHostManagedDeploymentError(
-          rejection,
-          managedLaunchRejectionMessage(rejection),
-        );
-      }
-      return tryAcquireStateRootOwner(capability);
-    },
-    UPDATE_LOCK_TIMEOUT_MS,
-  );
+    }
+    const rejection = runtimeHostManagedLaunchRejection(
+      config,
+      canonicalClaim,
+      expectedLifecycleMode,
+    );
+    if (rejection !== undefined) {
+      throw new RuntimeHostManagedDeploymentError(
+        rejection,
+        managedLaunchRejectionMessage(rejection),
+      );
+    }
+    return owner;
+  } catch (error) {
+    await owner.close();
+    throw error;
+  }
 }
 
 export function runtimeHostManagedLaunchRejection(
@@ -501,18 +429,41 @@ function sameManagedLaunch(
   expected: RuntimeHostManagedLaunchClaim,
   claim: RuntimeHostManagedLaunchClaim,
 ): boolean {
-  if (
-    expected.deploymentId !== claim.deploymentId ||
-    expected.configRevision !== claim.configRevision ||
-    expected.lifecycle.mode !== claim.lifecycle.mode
-  ) {
-    return false;
-  }
   return (
-    expected.lifecycle.mode !== 'supervised' ||
-    (claim.lifecycle.mode === 'supervised' &&
-      expected.lifecycle.provider === claim.lifecycle.provider)
+    expected.deploymentId === claim.deploymentId && expected.configRevision === claim.configRevision
   );
+}
+
+function existingDeploymentClaim(
+  existing: RuntimeHostManagedDeploymentConfig,
+  requested: RuntimeHostManagedDeploymentConfig,
+): {
+  readonly kind: 'unchanged';
+  readonly config: RuntimeHostManagedDeploymentConfig;
+  readonly claim: RuntimeHostManagedLaunchClaim;
+} {
+  if (!isDeepStrictEqual(existing, requested)) {
+    throw new RuntimeHostManagedDeploymentError(
+      'lifecycle_owner_exists',
+      'The State Root already has a managed deployment',
+    );
+  }
+  return {
+    kind: 'unchanged',
+    config: existing,
+    claim: runtimeHostManagedLaunchClaim(existing),
+  };
+}
+
+async function readDeploymentConfigForCapability(
+  path: string,
+  capability: StorageRootCapability<'interactive'>,
+): Promise<RuntimeHostManagedDeploymentConfig | undefined> {
+  const value = await readBoundedJson(path);
+  if (value === undefined) return undefined;
+  const config = decodeRuntimeHostManagedDeploymentConfig(value);
+  assertConfigTargetsCapability(config, capability);
+  return config;
 }
 
 function managedLaunchRejectionMessage(rejection: RuntimeHostManagedLaunchRejection): string {
@@ -559,17 +510,21 @@ async function readBoundedJson(path: string): Promise<unknown | undefined> {
       'The Runtime Host managed deployment record must be a bounded regular file',
     );
   }
+  let contents: string;
   try {
-    const contents = await readFile(path, 'utf8');
-    if (Buffer.byteLength(contents, 'utf8') > MAX_DOCUMENT_BYTES) {
-      throw new RuntimeHostManagedDeploymentError(
-        'invalid_config',
-        'The Runtime Host managed deployment record exceeds its size limit',
-      );
-    }
+    contents = await readFile(path, 'utf8');
+  } catch (error) {
+    throw deploymentIo('Unable to read the Runtime Host managed deployment record', error);
+  }
+  if (Buffer.byteLength(contents, 'utf8') > MAX_DOCUMENT_BYTES) {
+    throw new RuntimeHostManagedDeploymentError(
+      'invalid_config',
+      'The Runtime Host managed deployment record exceeds its size limit',
+    );
+  }
+  try {
     return JSON.parse(contents) as unknown;
   } catch (error) {
-    if (error instanceof RuntimeHostManagedDeploymentError) throw error;
     throw new RuntimeHostManagedDeploymentError(
       'invalid_config',
       'The Runtime Host managed deployment record is not valid JSON',
@@ -615,8 +570,16 @@ async function writePrivateJson(path: string, value: unknown): Promise<void> {
   }
 }
 
-async function prepareAuthorityDirectory(path: string, authorityRoot: string): Promise<void> {
+async function prepareAuthorityDirectory(
+  path: string,
+  durabilityBoundary: string,
+  options: RuntimeHostManagedDeploymentAuthorityOptions,
+): Promise<void> {
   try {
+    const boundaryMetadata = await lstat(durabilityBoundary);
+    if (!boundaryMetadata.isDirectory() || boundaryMetadata.isSymbolicLink()) {
+      throw new Error('Managed deployment durability boundary is not a directory');
+    }
     await mkdir(path, { recursive: true, mode: 0o700 });
     const metadata = await lstat(path);
     if (!metadata.isDirectory() || metadata.isSymbolicLink()) {
@@ -628,10 +591,40 @@ async function prepareAuthorityDirectory(path: string, authorityRoot: string): P
       }
       await chmod(path, 0o700);
     }
-    await syncDirectoryChain(path, dirname(authorityRoot));
+    await syncDirectoryChain(path, durabilityBoundary, options.beforeDirectorySync);
   } catch (error) {
     throw deploymentIo('Unable to prepare the Runtime Host managed deployment authority', error);
   }
+}
+
+function resolveAuthorityDurabilityBoundary(
+  authorityRoot: string,
+  options: RuntimeHostManagedDeploymentAuthorityOptions,
+): string {
+  if (options.durabilityBoundary !== undefined && !isAbsolute(options.durabilityBoundary)) {
+    throw new RuntimeHostManagedDeploymentError(
+      'invalid_config',
+      'The Runtime Host managed deployment durability boundary must be absolute',
+    );
+  }
+  const boundary = resolve(
+    options.durabilityBoundary ??
+      (options.authorityRoot === undefined
+        ? (options.homeDir ?? userInfo().homedir)
+        : parse(authorityRoot).root),
+  );
+  const pathFromBoundary = relative(boundary, authorityRoot);
+  if (
+    pathFromBoundary === '..' ||
+    pathFromBoundary.startsWith(`..${sep}`) ||
+    isAbsolute(pathFromBoundary)
+  ) {
+    throw new RuntimeHostManagedDeploymentError(
+      'invalid_config',
+      'The Runtime Host managed deployment durability boundary must contain the authority root',
+    );
+  }
+  return boundary;
 }
 
 function requireRootId(rootId: string): void {

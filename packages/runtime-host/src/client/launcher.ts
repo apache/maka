@@ -25,7 +25,7 @@ import {
   candidateStartupFailureForExitCode,
   type CandidateStartupFailureReport,
 } from '../candidate-startup-failure.js';
-import type { RuntimeHostManagedOnDemandLaunchClaim } from '../operator/managed-deployment.js';
+import type { RuntimeHostManagedLaunchClaim } from '../operator/managed-deployment.js';
 import { RUNTIME_HOST_STDERR_PIPE_ENV } from '../process-diagnostics.js';
 
 const CANDIDATE_STDERR_MAX_BYTES = 4 * 1024;
@@ -43,7 +43,7 @@ export interface DetachedCandidateInput {
   initialConnectionTimeoutMs?: number;
   idleGraceMs?: number;
   handshakeTimeoutMs?: number;
-  managedLaunchClaim?: RuntimeHostManagedOnDemandLaunchClaim;
+  managedLaunchClaim?: RuntimeHostManagedLaunchClaim;
   executable?: string;
   entrypoint: string | URL;
   env?: NodeJS.ProcessEnv;
@@ -141,7 +141,6 @@ function spawnCandidate(
   if (input.managedLaunchClaim !== undefined) {
     appendArgument(args, '--managed-deployment-id', input.managedLaunchClaim.deploymentId);
     appendArgument(args, '--managed-config-revision', input.managedLaunchClaim.configRevision);
-    appendArgument(args, '--managed-lifecycle-mode', input.managedLaunchClaim.lifecycle.mode);
   }
 
   // spawn() commits the side effect synchronously; spawned only reports that commit's outcome.

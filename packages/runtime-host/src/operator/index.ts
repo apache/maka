@@ -105,11 +105,11 @@ export {
 } from './local-process-deployment-handoff.js';
 export {
   RUNTIME_HOST_MANAGED_DEPLOYMENT_CONFIG_FILE,
+  RUNTIME_HOST_MANAGED_LAUNCH_REJECTIONS,
   RuntimeHostManagedDeploymentError,
   claimRuntimeHostManagedDeployment,
   decodeRuntimeHostManagedDeploymentConfig,
   decodeRuntimeHostManagedLaunchClaim,
-  isRuntimeHostManagedOnDemandLaunchClaim,
   readRuntimeHostManagedDeploymentConfig,
   resolveRuntimeHostManagedDeploymentAuthorityRoot,
   resolveRuntimeHostManagedDeploymentConfigPath,
@@ -121,9 +121,7 @@ export {
   type RuntimeHostManagedLaunchClaim,
   type RuntimeHostManagedLaunchRejection,
   type RuntimeHostManagedOnDemandDeploymentConfig,
-  type RuntimeHostManagedOnDemandLaunchClaim,
   type RuntimeHostManagedSupervisedDeploymentConfig,
-  type RuntimeHostManagedSupervisedLaunchClaim,
   type RuntimeHostReconciliationProvider,
   type RuntimeHostSupervisorProvider,
 } from './managed-deployment.js';
