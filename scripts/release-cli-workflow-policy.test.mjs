@@ -87,7 +87,7 @@ test('stage builds the npm candidate from the exact product release commit', () 
   assert.match(bind, /PRODUCT_TAG: \$\{\{ needs\.authorize\.outputs\.product_tag \}\}/u);
 });
 
-test('finalize runs the current verifier from reviewed main against exact immutable evidence', () => {
+test('finalize runs the current verifier from reviewed main against exact build evidence', () => {
   const workflow = readWorkflow('release-cli-finalize.yml');
   const productWorkflow = readWorkflow('release.yml');
   const steps = workflowSteps(workflow);
@@ -105,7 +105,7 @@ test('finalize runs the current verifier from reviewed main against exact immuta
   const requireMain = namedStep(steps, 'Require main');
   assert.match(requireMain, /refs\/heads\/main/u);
   const recordDownloads = steps.filter((step) =>
-    step.includes('name: Download the immutable publication record'),
+    step.includes('name: Download the publication record'),
   );
   assert.equal(recordDownloads.length, 2);
   for (const download of recordDownloads) {
@@ -136,12 +136,15 @@ test('finalize preserves npm evidence and owns the single product publication bo
   assert.doesNotMatch(workflow, /cli-v/u);
   assert.match(workflow, /name: product-release/u);
   assert.match(workflow, /contents: write/u);
+  assert.match(workflow, /id-token: write/u);
+  assert.match(workflow, /attestations: write/u);
   assert.match(workflow, /product-release-authority\.mjs publish-draft/u);
-  assert.match(workflow, /actions\/create-github-app-token@[0-9a-f]{40}/u);
-  assert.match(workflow, /permission-administration: read/u);
-  assert.match(
+  assert.match(workflow, /actions\/attest@[0-9a-f]{40}/u);
+  assert.match(workflow, /subject-path: \$\{\{ runner\.temp \}\}\/product-release\/\*/u);
+  assert.match(workflow, /Maka-\$\{PRODUCT_VERSION\}-attestation\.sigstore\.json/u);
+  assert.doesNotMatch(
     workflow,
-    /RELEASE_POLICY_TOKEN: \$\{\{ steps\.release-policy\.outputs\.token \}\}/u,
+    /create-github-app-token|permission-administration|RELEASE_POLICY/u,
   );
   const artifacts = namedStep(
     workflowSteps(workflow),

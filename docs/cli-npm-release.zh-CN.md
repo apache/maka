@@ -23,6 +23,9 @@
 
 本文档是发布 `maka-agent` npm 安装渠道的操作权威。根目录 `package.json` 仍是 Maka 唯一产品版本权威，`packages/cli/package.json` 必须与其一致。每个公开 npm 版本都必须来自 Stage workflow 验证过的同一个精确 tarball。
 
+ASF 分发基础设施上经 IPMC 批准的源码归档才是 Apache release。npm、Desktop 安装包和
+GitHub Release assets 都是从该源码身份构建的便利包，不是额外的 ASF release artifacts。
+
 source RC 阶段的 [npm 预检](../.github/ASF_NPM_RELEASE.md) 是更早执行、且不持有发布凭据的兼容性检查；其 tarball 不会进入正式发布。source release 获批后，Stage 从位于同一获批 commit 的最终产品 tag 重新构建，并成为 npm staging 与 registry 验证所使用的字节权威。这与 Apache OpenDAL 孵化期的实践一致，同时保留了 Maka 更严格的受保护 Environment、staged publishing、2FA 与 Finalize 控制。
 
 ## 发布不变量
@@ -46,7 +49,7 @@ source RC 阶段的 [npm 预检](../.github/ASF_NPM_RELEASE.md) 是更早执行�
    Stage run、Release build run 及其自包含 publication record；`main` 上当前已审查的 verifier
    验证公共 registry 字节、signature、provenance、dist-tag、不可变 build artifacts 与 live Draft
    digest，然后等待受保护的 `product-release` Environment；独立 Desktop 验收完成并批准后，它会
-   在同一个操作中发布 GitHub Release 及其 Stable/Latest 分类。
+   用受保护 workflow 的身份证明精确便利包，并在同一个操作中发布 GitHub Release 及其 Stable/Latest 分类。
 
 ## 一次性控制面配置
 
@@ -58,15 +61,11 @@ source RC 阶段的 [npm 预检](../.github/ASF_NPM_RELEASE.md) 是更早执行�
 - `npm-release` 使用 selected `v*` tag rule，`product-release` 使用 selected `main` branch rule；
 - required reviewer 为 `M4n5ter`；
 - 禁止 self-review；
-- 仓库策略允许时禁用 administrator bypass；
-- 在 `product-release` Environment 中配置 variable `RELEASE_POLICY_APP_CLIENT_ID` 与 secret
-  `RELEASE_POLICY_APP_PRIVATE_KEY`。
+- 仓库策略允许时禁用 administrator bypass。
 
 检查或修复同步结果需要仓库 administration 权限；不要再在 GitHub UI 中维护第二套手工
-Environment policy。policy GitHub App 只能安装到 `apache/maka`，只能拥有仓库
-**Administration: read**，并且仓库必须启用 immutable releases。Finalize 会生成一小时有效、
-仅限本仓库的 installation token，在发布前立即验证该策略，并要求发布响应返回
-`immutable: true`。workflow 使用 GitHub OIDC，不读取 npm token。
+Environment policy。Finalize 使用 GitHub Actions OIDC 为精确便利包生成 Sigstore provenance，
+并把离线验证 bundle 与便利包放在一起；不需要仓库 administration credential、签名私钥或 npm token。
 
 ### npm Trusted Publisher
 
@@ -189,9 +188,9 @@ npm 显示该版本已经公开后：
 3. 让 inspection job 验证公共 tarball 字节、checksum、inventory、npm signature、Trusted
    Publishing provenance、发布 dist-tag，并确认 `next` 不比 `latest` 更旧；
 4. publication job 等待 `product-release` 批准期间，针对 Draft 完成产品检查清单中的跨机器验收；
-5. 批准 Environment，并确认 workflow 验证仓库 release immutability，将每个 live Draft digest
-   与精确 Release attempt 的 publication record 对比，发布 immutable Release；stable release
-   会同时成为 Latest，不再需要单独人工操作。
+5. 批准 Environment，并确认 workflow 将每个 live Draft digest 与精确 Release attempt 的
+   publication record 对比，生成并上传 `Maka-<version>-attestation.sigstore.json`，发布便利包
+   Release；stable release 会同时成为 Latest，不再需要单独人工操作。
 
 检查最终 registry 状态：
 
@@ -237,10 +236,10 @@ npm 版本此时已经 immutable，不要再次 publish 或 approve。保留 Sta
 以及 Release run ID、attempt、publication record 和 artifacts。如果这些字节与 provenance
 有效，在 `main` 修复 Finalize verifier，然后针对同一组不可变 Stage 与 Release 证据重新运行。
 
-inspection job 只读；只有受保护的 publication job 可以执行一次 Draft-to-immutable 转换。如果
+inspection job 只读；只有受保护的 publication job 可以执行一次 Draft-to-published 转换并证明其字节。如果
 npm identity、build evidence 或 Draft 不一致，立即停止并调查；不要修改产品 tag 或 GitHub
 Release 来让验证通过。如果错误发生在 publication request 之后，先检查精确 Release；已经成功
-完成的 immutable 转换不得重复执行。
+完成的发布不得重复执行。
 
 ### 公共版本存在缺陷
 

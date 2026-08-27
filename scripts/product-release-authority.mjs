@@ -18,7 +18,10 @@
  */
 
 import { execFile } from 'node:child_process';
-import { readFile } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
+import { createReadStream } from 'node:fs';
+import { readFile, stat } from 'node:fs/promises';
+import { basename } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { promisify } from 'node:util';
 import {
@@ -31,8 +34,13 @@ import { parseProductTag, remoteProductTagCommit } from './product-release-tag.m
 const execFileAsync = promisify(execFile);
 
 function expectedReleaseIdentity(tag) {
-  const { prerelease } = parseProductTag(tag);
-  return { tag, isPrerelease: prerelease.length > 0 };
+  const { prerelease, version } = parseProductTag(tag);
+  return {
+    tag,
+    version,
+    isPrerelease: prerelease.length > 0,
+    attestationName: `Maka-${version}-attestation.sigstore.json`,
+  };
 }
 
 export function assertDraftProductRelease(release, tag) {
@@ -62,20 +70,10 @@ export function assertPublishedProductRelease(release, tag, releaseId, expectedA
   if (release.prerelease !== expected.isPrerelease) {
     throw new Error(`GitHub Release ${tag} prerelease state must be ${expected.isPrerelease}`);
   }
-  if (release.immutable !== true) {
-    throw new Error(`GitHub Release ${tag} was published without immutable release protection`);
-  }
   if (JSON.stringify(release.assets) !== JSON.stringify(expectedAssets)) {
     throw new Error(`GitHub Release ${tag} assets changed during publication`);
   }
   return release;
-}
-
-export function assertImmutableReleasePolicy(policy) {
-  if (policy?.enabled !== true || typeof policy.enforced_by_owner !== 'boolean') {
-    throw new Error('Immutable releases must be enabled before product publication');
-  }
-  return policy;
 }
 
 function releaseSnapshotFromGhView(value) {
@@ -96,9 +94,20 @@ function releaseSnapshotFromRest(value) {
     tag: value?.tag_name,
     draft: value?.draft,
     prerelease: value?.prerelease,
-    immutable: value?.immutable,
-    assets: value?.assets ?? [],
+    assets: (value?.assets ?? [])
+      .map(({ name, size, digest }) => ({ name, size, digest }))
+      .sort((left, right) => left.name.localeCompare(right.name)),
   };
+}
+
+async function localAssetRecord(path) {
+  const details = await stat(path);
+  if (!details.isFile() || details.size === 0) {
+    throw new Error('Product release attestation bundle must be a non-empty regular file');
+  }
+  const hash = createHash('sha256');
+  for await (const chunk of createReadStream(path)) hash.update(chunk);
+  return { name: basename(path), size: details.size, digest: `sha256:${hash.digest('hex')}` };
 }
 
 export function assertProductReleaseWorkflowRun({
@@ -189,14 +198,16 @@ export async function publishDraftProductRelease({
   sourceReferenceTag,
   releaseRunId,
   releaseRunAttempt,
-  policyToken = process.env.RELEASE_POLICY_TOKEN,
+  attestationBundlePath,
   cwd = process.cwd(),
   run = execFileAsync,
   pause = (milliseconds) =>
     new Promise((resolvePromise) => setTimeout(resolvePromise, milliseconds)),
 }) {
-  if (typeof policyToken !== 'string' || policyToken.length === 0) {
-    throw new Error('Product publication requires a read-only repository policy token');
+  const releaseIdentity = expectedReleaseIdentity(tag);
+  const attestation = await localAssetRecord(attestationBundlePath);
+  if (attestation.name !== releaseIdentity.attestationName) {
+    throw new Error(`Product release attestation must be named ${releaseIdentity.attestationName}`);
   }
   const evidence = await readProductReleasePublicationRecord(publicationRecordPath, {
     repository,
@@ -222,29 +233,37 @@ export async function publishDraftProductRelease({
   const remoteAssets = (draft.assets ?? [])
     .map(({ name, size, digest }) => ({ name, size, digest }))
     .sort((left, right) => left.name.localeCompare(right.name));
-  if (JSON.stringify(remoteAssets) !== JSON.stringify(evidence.assets)) {
+  const allowedDraftAssets = remoteAssets.filter(({ name }) => name !== attestation.name);
+  const unexpectedAttestations = remoteAssets.filter(
+    ({ name }) => name.endsWith('-attestation.sigstore.json') && name !== attestation.name,
+  );
+  if (
+    unexpectedAttestations.length > 0 ||
+    JSON.stringify(allowedDraftAssets) !== JSON.stringify(evidence.assets)
+  ) {
     throw new Error('Draft GitHub Release assets do not match the verified Release run artifacts');
   }
 
-  const policy = await run(
+  await run(
     'gh',
-    [
-      'api',
-      '--header',
-      'X-GitHub-Api-Version: 2026-03-10',
-      `repos/${repository}/immutable-releases`,
-    ],
-    { cwd, env: { ...process.env, GH_TOKEN: policyToken } },
+    ['release', 'upload', tag, attestationBundlePath, '--repo', repository, '--clobber'],
+    { cwd },
   );
-  let parsedPolicy;
-  try {
-    parsedPolicy = JSON.parse(policy.stdout);
-  } catch (error) {
-    throw new Error('GitHub returned an invalid immutable release policy', { cause: error });
+  const attestedDraft = await verifyDraftProductRelease({
+    tag,
+    sourceCommit,
+    repository,
+    cwd,
+    run,
+  });
+  const expectedAssets = [...evidence.assets, attestation].sort((left, right) =>
+    left.name.localeCompare(right.name),
+  );
+  if (JSON.stringify(attestedDraft.assets) !== JSON.stringify(expectedAssets)) {
+    throw new Error('Draft GitHub Release does not contain the exact attestation bundle');
   }
-  assertImmutableReleasePolicy(parsedPolicy);
 
-  const isPrerelease = expectedReleaseIdentity(tag).isPrerelease;
+  const isPrerelease = releaseIdentity.isPrerelease;
   const published = await run(
     'gh',
     [
@@ -269,7 +288,7 @@ export async function publishDraftProductRelease({
   } catch (error) {
     throw new Error(`GitHub returned an invalid publication result for ${tag}`, { cause: error });
   }
-  assertPublishedProductRelease(record, tag, draft.id, evidence.assets);
+  assertPublishedProductRelease(record, tag, draft.id, expectedAssets);
 
   if (!isPrerelease) {
     let latestTag;
@@ -295,7 +314,7 @@ export async function publishDraftProductRelease({
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   const [command, ...args] = process.argv.slice(2);
   const usage =
-    'usage: product-release-authority.mjs verify-build-run <run-json> <tag> <source-commit> <owner/repository> <run-id> <run-attempt> | verify-draft <tag> <source-commit> <owner/repository> | publish-draft <tag> <source-commit> <owner/repository> <artifact-directory> <publication-record> <source-reference-tag> <run-id> <run-attempt>';
+    'usage: product-release-authority.mjs verify-build-run <run-json> <tag> <source-commit> <owner/repository> <run-id> <run-attempt> | verify-draft <tag> <source-commit> <owner/repository> | publish-draft <tag> <source-commit> <owner/repository> <artifact-directory> <publication-record> <source-reference-tag> <run-id> <run-attempt> <attestation-bundle>';
   if (command === 'verify-build-run' && args.length === 6) {
     const [runPath, tag, sourceCommit, repository, runId, runAttempt] = args;
     const run = JSON.parse(await readFile(runPath, 'utf8'));
@@ -305,7 +324,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
     const [tag, sourceCommit, repository] = args;
     await verifyDraftProductRelease({ tag, sourceCommit, repository });
     console.log(`Verified Draft product Release ${tag} at ${sourceCommit}`);
-  } else if (command === 'publish-draft' && args.length === 8) {
+  } else if (command === 'publish-draft' && args.length === 9) {
     const [
       tag,
       sourceCommit,
@@ -315,6 +334,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
       sourceReferenceTag,
       releaseRunId,
       releaseRunAttempt,
+      attestationBundlePath,
     ] = args;
     await publishDraftProductRelease({
       tag,
@@ -325,6 +345,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
       sourceReferenceTag,
       releaseRunId,
       releaseRunAttempt,
+      attestationBundlePath,
     });
     console.log(`Published product Release ${tag} from ${sourceCommit}`);
   } else {

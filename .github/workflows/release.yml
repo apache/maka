@@ -462,7 +462,9 @@ jobs:
 
           The Windows build is unsigned: SmartScreen warns on first launch, and the download has to be checked against its .sha256 file.
 
-          Known limitations: Computer Use and managed-workspace execution are not included in this release. The ASF Desktop artifacts do not distribute a Git runtime."
+          These files are convenience binaries built from the approved ASF source release; they are not ASF release artifacts.
+
+          Known limitations: Computer Use and managed-workspace execution are not included in this release. The Desktop convenience artifacts do not distribute a Git runtime."
 
           classification=(--prerelease=false --latest=false)
           if [[ "$IS_PRERELEASE" == "true" ]]; then

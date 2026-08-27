@@ -238,6 +238,7 @@ export type SettingsPreferencesCopy = {
     updateNotAvailable: string;
     updateAvailable: (version: string) => string;
     updateDownloading: (version: string, percent: number) => string;
+    updateVerifying: (version: string) => string;
     updateDownloaded: (version: string) => string;
     updateInstalling: (version: string) => string;
     updateCheckFailed: string;
@@ -336,6 +337,7 @@ const SETTINGS_PREFERENCES_COPY_BY_LOCALE = {
       updateNotAvailable: '已是最新版本。',
       updateAvailable: (version) => `发现新版本 v${version}，正在准备下载…`,
       updateDownloading: (version, percent) => `正在下载 v${version}（${percent}%）…`,
+      updateVerifying: (version) => `正在验证 v${version} 的发布来源…`,
       updateDownloaded: (version) => `v${version} 已下载，可在侧栏选择重启安装。`,
       updateInstalling: (version) => `正在安装 v${version}…`,
       updateCheckFailed: '检查更新失败',
@@ -387,6 +389,7 @@ const SETTINGS_PREFERENCES_COPY_BY_LOCALE = {
       updateNotAvailable: 'You are on the latest version.',
       updateAvailable: (version) => `Version v${version} is available and will download shortly…`,
       updateDownloading: (version, percent) => `Downloading v${version} (${percent}%)…`,
+      updateVerifying: (version) => `Verifying the release provenance for v${version}…`,
       updateDownloaded: (version) => `v${version} is ready. Restart from the sidebar to install.`,
       updateInstalling: (version) => `Installing v${version}…`,
       updateCheckFailed: 'Could not check for updates',

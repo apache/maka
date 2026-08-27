@@ -62,6 +62,7 @@ import { resolveStorageRoot } from "@maka/storage/root-authority";
 import { createMcpOAuthController } from "./mcp-oauth-controller.js";
 import { registerAppClientIpc, registerAppIpc } from "./app-ipc-main.js";
 import { createAppQuitCoordinator } from "./app-quit-coordinator.js";
+import { verifyDownloadedUpdateAttestation } from "./app-update-attestation.js";
 import { createAppUpdateService } from "./app-update-service.js";
 import { createAttachmentApprovalRegistry } from "./attachment-approval.js";
 import { renderAttachmentPreview, resizeImageForAttachment } from "./attachment-resize-native.js";
@@ -656,14 +657,26 @@ const updateMockState =
   process.env.MAKA_UPDATE_MOCK_STATE === "downloaded"
     ? process.env.MAKA_UPDATE_MOCK_STATE
     : undefined;
+const updateTestFeed = process.env.MAKA_UPDATE_TEST_FEED;
 const updateService = createAppUpdateService({
   currentVersion: app.getVersion(),
   isPackaged: app.isPackaged,
-  testFeedUrl: process.env.MAKA_UPDATE_TEST_FEED,
+  testFeedUrl: updateTestFeed,
   mockLatestVersion: process.env.MAKA_UPDATE_MOCK_VERSION,
   mockState: updateMockState,
   onStatusChange: (status) =>
     mainWindowController.send("app:updateStatusChanged", status),
+  // The loopback-only upgrade harness owns synthetic bytes that cannot carry
+  // a GitHub Actions identity. Production has no override and always reaches
+  // the Sigstore verifier below.
+  verifyDownloadedUpdate: updateTestFeed
+    ? async () => {}
+    : ({ downloadedFile, version }) =>
+        verifyDownloadedUpdateAttestation({
+          downloadedFile,
+          version,
+          trustRootCacheDirectory: join(userDataDir, "update-trust", "sigstore"),
+        }),
   prepareInstall: async (input) => {
     if (!runtimeHostManager) throw new Error("Runtime Host manager is unavailable");
     const retirement = await runtimeHostManager.retireOwnedLocalHost(

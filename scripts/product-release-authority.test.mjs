@@ -25,7 +25,6 @@ import { join } from 'node:path';
 import test from 'node:test';
 import {
   assertDraftProductRelease,
-  assertImmutableReleasePolicy,
   assertProductReleaseWorkflowRun,
   assertPublishedProductRelease,
   publishDraftProductRelease,
@@ -63,7 +62,7 @@ test('Draft state and prerelease classification are one product Release contract
 test('published state keeps stable and prerelease classification exact', () => {
   assert.equal(
     assertPublishedProductRelease(
-      { id: 42, tag: 'v1.2.3', draft: false, prerelease: false, immutable: true, assets: [] },
+      { id: 42, tag: 'v1.2.3', draft: false, prerelease: false, assets: [] },
       'v1.2.3',
       42,
       [],
@@ -78,7 +77,6 @@ test('published state keeps stable and prerelease classification exact', () => {
           tag: 'v1.2.3-beta.1',
           draft: false,
           prerelease: false,
-          immutable: true,
           assets: [],
         },
         'v1.2.3-beta.1',
@@ -86,31 +84,6 @@ test('published state keeps stable and prerelease classification exact', () => {
         [],
       ),
     /prerelease state/u,
-  );
-  assert.throws(
-    () =>
-      assertPublishedProductRelease(
-        {
-          id: 42,
-          tag: 'v1.2.3',
-          draft: false,
-          prerelease: false,
-          immutable: false,
-          assets: [],
-        },
-        'v1.2.3',
-        42,
-        [],
-      ),
-    /without immutable release protection/u,
-  );
-  assert.equal(
-    assertImmutableReleasePolicy({ enabled: true, enforced_by_owner: false }).enabled,
-    true,
-  );
-  assert.throws(
-    () => assertImmutableReleasePolicy({ enabled: false, enforced_by_owner: false }),
-    /must be enabled/u,
   );
 });
 
@@ -233,6 +206,14 @@ test('publication verifies live asset digests before one Stable/Latest mutation'
   const contents = Buffer.from('verified artifact');
   await writeFile(join(directory, 'artifact.zip'), contents);
   const digest = `sha256:${createHash('sha256').update(contents).digest('hex')}`;
+  const attestationContents = Buffer.from('sigstore bundle');
+  const attestationBundlePath = join(recordDirectory, 'Maka-1.2.3-attestation.sigstore.json');
+  await writeFile(attestationBundlePath, attestationContents);
+  const attestation = {
+    name: 'Maka-1.2.3-attestation.sigstore.json',
+    size: attestationContents.length,
+    digest: `sha256:${createHash('sha256').update(attestationContents).digest('hex')}`,
+  };
   const publicationRecordPath = join(recordDirectory, 'product-release.json');
   const sourceCommit = 'a'.repeat(40);
   await writeFile(
@@ -253,10 +234,15 @@ test('publication verifies live asset digests before one Stable/Latest mutation'
   );
   const calls = [];
   let latestReads = 0;
+  let attestationUploaded = false;
   const run = async (command, args) => {
     calls.push([command, args]);
     if (command === 'git' && args[0] === 'ls-remote') {
       return { stdout: `${sourceCommit}\trefs/tags/v1.2.3\n` };
+    }
+    if (command === 'gh' && args[0] === 'release' && args[1] === 'upload') {
+      attestationUploaded = true;
+      return { stdout: '' };
     }
     if (command === 'gh' && args[0] === 'release') {
       return {
@@ -265,12 +251,12 @@ test('publication verifies live asset digests before one Stable/Latest mutation'
           tagName: 'v1.2.3',
           isDraft: true,
           isPrerelease: false,
-          assets: [{ name: 'artifact.zip', size: contents.length, digest }],
+          assets: [
+            ...(attestationUploaded ? [attestation] : []),
+            { name: 'artifact.zip', size: contents.length, digest },
+          ],
         }),
       };
-    }
-    if (command === 'gh' && args.includes('repos/apache/maka/immutable-releases')) {
-      return { stdout: JSON.stringify({ enabled: true, enforced_by_owner: false }) };
     }
     if (command === 'gh' && args.includes('PATCH')) {
       return {
@@ -279,8 +265,7 @@ test('publication verifies live asset digests before one Stable/Latest mutation'
           tag_name: 'v1.2.3',
           draft: false,
           prerelease: false,
-          immutable: true,
-          assets: [{ name: 'artifact.zip', size: contents.length, digest }],
+          assets: [attestation, { name: 'artifact.zip', size: contents.length, digest }],
         }),
       };
     }
@@ -300,7 +285,7 @@ test('publication verifies live asset digests before one Stable/Latest mutation'
     sourceReferenceTag: 'v1.2.3-incubating-rc1',
     releaseRunId: '123',
     releaseRunAttempt: '2',
-    policyToken: 'policy-token',
+    attestationBundlePath,
     run,
     pause: async () => {},
   });
@@ -311,10 +296,10 @@ test('publication verifies live asset digests before one Stable/Latest mutation'
   assert.ok(patchCall[1].includes('prerelease=false'));
   assert.ok(patchCall[1].includes('make_latest=true'));
   assert.ok(calls.every(([, args]) => !args.includes('repos/apache/maka/releases/tags/v1.2.3')));
-  const policyCall = calls.find(([, args]) =>
-    args.includes('repos/apache/maka/immutable-releases'),
-  );
-  assert.ok(policyCall);
-  assert.ok(calls.indexOf(policyCall) < calls.indexOf(patchCall));
+  const uploadCall = calls.find(([, args]) => args[0] === 'release' && args[1] === 'upload');
+  assert.ok(uploadCall);
+  assert.ok(uploadCall[1].includes('--clobber'));
+  assert.ok(calls.indexOf(uploadCall) < calls.indexOf(patchCall));
+  assert.ok(calls.every(([, args]) => !args.includes('repos/apache/maka/immutable-releases')));
   assert.equal(latestReads, 2);
 });

@@ -28,6 +28,7 @@ import {
   type AppUpdateInstallRequest,
   type AppUpdateStatus,
 } from '../app-update-service.js';
+import type { DownloadedUpdateAttestationVerifier } from '../app-update-attestation.js';
 
 const FIRST_UPDATE_CHECK_DELAY_MS = 10_000;
 const UPDATE_CHECK_INTERVAL_MS = 4 * 60 * 60 * 1000;
@@ -130,6 +131,7 @@ function createHarness(input: {
   mockLatestVersion?: string;
   mockState?: 'available' | 'downloading' | 'downloaded';
   testFeedUrl?: string;
+  verifyDownloadedUpdate?: DownloadedUpdateAttestationVerifier;
 } = {}) {
   const updater = input.updater ?? new FakeUpdater();
   const clock = input.clock ?? new FakeClock();
@@ -146,8 +148,13 @@ function createHarness(input: {
     mockLatestVersion: input.mockLatestVersion,
     mockState: input.mockState,
     testFeedUrl: input.testFeedUrl,
+    verifyDownloadedUpdate: input.verifyDownloadedUpdate ?? (async () => {}),
   });
   return { clock, service, updater };
+}
+
+async function settleUpdateVerification(): Promise<void> {
+  await new Promise<void>((resolve) => setImmediate(resolve));
 }
 
 describe('AppUpdateService', () => {
@@ -326,11 +333,13 @@ describe('AppUpdateService', () => {
       ...updateInfo('1.1.0'),
       downloadedFile: '/tmp/maka-update.zip',
     });
+    await settleUpdateVerification();
 
     assert.deepEqual(statuses.map((status) => status.state), [
       'checking',
       'available',
       'downloading',
+      'verifying',
       'downloaded',
     ]);
     assert.deepEqual(service.getStatus(), {
@@ -338,6 +347,50 @@ describe('AppUpdateService', () => {
       currentVersion: '1.0.0',
       latestVersion: '1.1.0',
     });
+  });
+
+  test('does not expose an update for installation until provenance verification succeeds', async () => {
+    let finishVerification!: () => void;
+    const { service, updater } = createHarness({
+      verifyDownloadedUpdate: () => new Promise<void>((resolve) => {
+        finishVerification = resolve;
+      }),
+    });
+    updater.emit('update-downloaded', {
+      ...updateInfo('1.1.0'),
+      downloadedFile: '/tmp/maka-update.zip',
+    });
+
+    assert.equal(service.getStatus().state, 'verifying');
+    assert.deepEqual(await service.installUpdate({ allowInterruptActiveTasks: false }), {
+      ok: false,
+      reason: 'not_downloaded',
+    });
+    finishVerification();
+    await settleUpdateVerification();
+    assert.equal(service.getStatus().state, 'downloaded');
+  });
+
+  test('fails closed when downloaded update provenance cannot be verified', async () => {
+    const { service, updater } = createHarness({
+      verifyDownloadedUpdate: async () => {
+        throw new Error('release provenance did not match');
+      },
+    });
+    updater.emit('update-downloaded', {
+      ...updateInfo('1.1.0'),
+      downloadedFile: '/tmp/maka-update.zip',
+    });
+    await settleUpdateVerification();
+
+    assert.deepEqual(service.getStatus(), {
+      state: 'error',
+      currentVersion: '1.0.0',
+      latestVersion: '1.1.0',
+      operation: 'download',
+      message: 'release provenance did not match',
+    });
+    assert.equal(updater.quitAndInstallCalls, 0);
   });
 
   test('cancels a stalled auto-download before retrying it', async () => {
@@ -421,6 +474,7 @@ describe('AppUpdateService', () => {
       ...updateInfo('1.1.0'),
       downloadedFile: '/tmp/maka-update.zip',
     });
+    await settleUpdateVerification();
 
     assert.deepEqual(
       await service.installUpdate({ allowInterruptActiveTasks: false }),
@@ -439,6 +493,7 @@ describe('AppUpdateService', () => {
       ...updateInfo('1.1.0'),
       downloadedFile: '/tmp/maka-update.zip',
     });
+    await settleUpdateVerification();
     assert.deepEqual(
       await idle.service.installUpdate({ allowInterruptActiveTasks: false }),
       { ok: true },
@@ -461,6 +516,7 @@ describe('AppUpdateService', () => {
       ...updateInfo('1.1.0'),
       downloadedFile: '/tmp/maka-update.zip',
     });
+    await settleUpdateVerification();
 
     assert.deepEqual(await service.installUpdate({ allowInterruptActiveTasks: false }), {
       ok: true,
@@ -483,6 +539,7 @@ describe('AppUpdateService', () => {
       ...updateInfo('1.1.0'),
       downloadedFile: '/tmp/maka-update.zip',
     });
+    await settleUpdateVerification();
     assert.deepEqual(
       await synchronous.service.installUpdate({ allowInterruptActiveTasks: false }),
       { ok: false, reason: 'install_failed' },
@@ -510,6 +567,7 @@ describe('AppUpdateService', () => {
       ...updateInfo('1.1.0'),
       downloadedFile: '/tmp/maka-update.zip',
     });
+    await settleUpdateVerification();
     assert.deepEqual(
       await asynchronous.service.installUpdate({ allowInterruptActiveTasks: false }),
       { ok: true },

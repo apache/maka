@@ -23,6 +23,10 @@
 
 This runbook is the operational authority for publishing the `maka-agent` npm installation channel. The root `package.json` remains the sole Maka product-version authority, and `packages/cli/package.json` must match it. Every public npm version must come from the exact tarball validated by the Stage workflow.
 
+The IPMC-approved source archive on ASF distribution infrastructure is the Apache release. npm,
+Desktop installers, and GitHub Release assets are convenience packages built from that approved
+source identity; they are not additional ASF release artifacts.
+
 The source-RC [npm preflight](../.github/ASF_NPM_RELEASE.md) is an earlier, credential-free
 compatibility check. Its tarball is not carried into publication. After source approval, Stage
 rebuilds from the final product tag at the same approved commit and becomes the byte authority for
@@ -54,8 +58,9 @@ The two workflow boundaries are:
    successful Stage run, Release build run, and self-contained publication record. The current
    reviewed verifier on `main` checks the public registry bytes, signature, provenance, dist-tag,
    immutable build artifacts, and live Draft digests, then waits at the protected `product-release`
-   Environment. After independent Desktop acceptance, approval publishes the GitHub Release together
-   with its Stable/Latest classification in one operation.
+  Environment. After independent Desktop acceptance, approval attests the exact convenience
+  artifacts with the protected workflow identity, publishes the GitHub Release, and applies its
+  Stable/Latest classification in one operation.
 
 ## One-time control-plane configuration
 
@@ -69,16 +74,12 @@ Environments. After it reaches
   `product-release`;
 - `M4n5ter` as the required reviewer;
 - self-review disabled;
-- administrator bypass disabled where repository policy permits it;
-- `RELEASE_POLICY_APP_CLIENT_ID` as a `product-release` Environment variable and
-  `RELEASE_POLICY_APP_PRIVATE_KEY` as an Environment secret.
+- administrator bypass disabled where repository policy permits it.
 
 Repository administration permission is required to inspect or repair reconciliation. Do not maintain
-a second manual Environment policy in GitHub. Install the policy GitHub App only on `apache/maka`,
-grant it only repository **Administration: read**, and enable immutable releases for the repository.
-Finalize mints a one-hour, repository-scoped installation token, verifies that policy immediately
-before publication, and requires the published Release response to report `immutable: true`. The
-workflow uses GitHub OIDC for npm and never reads an npm token.
+a second manual Environment policy in GitHub. Finalize uses GitHub Actions OIDC to create Sigstore
+provenance for the exact convenience artifacts and stores the offline verification bundle beside
+them. It requires no repository-administration credential, signing key, or npm token.
 
 ### npm Trusted Publisher
 
@@ -211,9 +212,10 @@ After npm reports the version as public:
    Trusted Publishing provenance, the release dist-tag, and that `next` is not older than `latest`.
 4. While the publication job waits for `product-release` approval, complete the product checklist's
    cross-machine acceptance against the Draft.
-5. Approve the Environment. Confirm the workflow verifies repository release immutability, matches
-   every live Draft digest to the exact Release attempt's publication record, publishes an immutable
-   Release, and makes a stable release Latest without a separate manual action.
+5. Approve the Environment. Confirm the workflow matches every live Draft digest to the exact
+   Release attempt's publication record, creates and uploads
+   `Maka-<version>-attestation.sigstore.json`, publishes the convenience Release, and makes a stable
+   release Latest without a separate manual action.
 
 Check the resulting registry state:
 
@@ -264,10 +266,10 @@ and provenance are valid, fix the Finalize verifier on `main` and rerun it again
 Stage and Release evidence.
 
 The inspection job is read-only. Only the protected publication job may perform the single
-Draft-to-immutable transition. If npm identity, build evidence, or the Draft differs, stop and
+Draft-to-published transition and attest its bytes. If npm identity, build evidence, or the Draft differs, stop and
 investigate; do not modify the product tag or GitHub Release to make verification pass. If failure is
-reported after the publication request, inspect the exact Release first: a successful immutable
-transition must not be repeated.
+reported after the publication request, inspect the exact Release first: a successful publication
+must not be repeated.
 
 ### The public version is defective
 
