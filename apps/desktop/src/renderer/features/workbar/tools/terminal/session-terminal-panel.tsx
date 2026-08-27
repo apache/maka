@@ -33,6 +33,7 @@ import { SessionTerminalHydration } from './session-terminal-hydration';
 import { suppressTerminalQueryReplies } from './session-terminal-query';
 import { scheduleTerminalFrame } from './session-terminal-frame';
 import { useWorkbarServices } from '../../services-context.js';
+import { getTerminalFontSize, subscribeTerminalFontSize } from '../../../../theme';
 
 function terminalTheme(element: HTMLElement) {
   const styles = getComputedStyle(element);
@@ -88,7 +89,7 @@ export function SessionTerminalPanel(props: {
       cursorBlink: true,
       cursorStyle: 'bar',
       fontFamily: 'Geist Mono Variable, ui-monospace, SFMono-Regular, Menlo, monospace',
-      fontSize: 12,
+      fontSize: getTerminalFontSize(),
       letterSpacing: 0,
       lineHeight: 1.2,
       screenReaderMode: true,
@@ -193,6 +194,15 @@ export function SessionTerminalPanel(props: {
     const observer = new ResizeObserver(resize);
     observer.observe(host);
 
+    // Live-apply font-size changes from Appearance settings. Changing the size
+    // reflows cols/rows, so clear the cached size and re-fit to re-emit the new
+    // geometry to the PTY.
+    const unsubscribeFontSize = subscribeTerminalFontSize((size) => {
+      terminal.options.fontSize = size;
+      lastSizeRef.current = '';
+      resize();
+    });
+
     setError(null);
     hydrate(hydration.begin());
 
@@ -201,6 +211,7 @@ export function SessionTerminalPanel(props: {
       cancelHydrationFrame?.();
       cancelHydrationFrame = null;
       observer.disconnect();
+      unsubscribeFontSize();
       unsubscribe();
       unsubscribeResync();
       inputSubscription.dispose();

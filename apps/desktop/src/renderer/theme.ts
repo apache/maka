@@ -24,11 +24,84 @@
 // is `auto`, the helper subscribes to the system `prefers-color-scheme` media
 // query so the app follows OS-level Light/Dark switches in real time.
 //
-import type { ThemePalette, ThemePreference } from '@maka/core/settings';
-import { safeLocalStorageSet } from './browser-storage';
+import {
+  DEFAULT_TERMINAL_FONT_SIZE,
+  DEFAULT_UI_FONT_SCALE,
+  isTerminalFontSize,
+  isUiFontScale,
+  type ThemePalette,
+  type ThemePreference,
+} from '@maka/core/settings';
+import { safeLocalStorageGet, safeLocalStorageSet } from './browser-storage';
 import { compositeScrimOverBackground, parseCssRgbColor } from './titlebar-dim-color.js';
 
 const DARK_CLASS = 'dark';
+
+// Persisted alongside the theme/palette caches so the pre-React paint
+// (cached-theme-bootstrap.ts) can restore a non-default UI scale before the
+// first frame, and the same rationale as `maka-theme-v1`.
+const UI_FONT_SCALE_STORAGE_KEY = 'maka-font-scale-v1';
+const TERMINAL_FONT_SIZE_STORAGE_KEY = 'maka-terminal-font-size-v1';
+// The document root stays at the browser default; every --font-size-* token is
+// rem, so a scaled root font-size grows text, icons and rem spacing uniformly.
+const ROOT_FONT_SIZE_PX = 16;
+
+let currentUiFontScale: number = DEFAULT_UI_FONT_SCALE;
+let currentTerminalFontSize: number = DEFAULT_TERMINAL_FONT_SIZE;
+const terminalFontSizeListeners = new Set<(size: number) => void>();
+
+export function getUiFontScale(): number {
+  return currentUiFontScale;
+}
+
+/**
+ * Scale the whole UI by writing the document-root font-size, then persist so
+ * the pre-React paint can restore it next launch. An out-of-range value fails
+ * closed to the default rather than driving an arbitrary root size.
+ */
+export function applyUiFontScale(scale: number): void {
+  const next = isUiFontScale(scale) ? scale : DEFAULT_UI_FONT_SCALE;
+  currentUiFontScale = next;
+  document.documentElement.style.fontSize = `${ROOT_FONT_SIZE_PX * next}px`;
+  safeLocalStorageSet(UI_FONT_SCALE_STORAGE_KEY, String(next));
+}
+
+export function getTerminalFontSize(): number {
+  return currentTerminalFontSize;
+}
+
+/**
+ * Set the xterm font size. There is no DOM to touch here — live terminals
+ * subscribe via `subscribeTerminalFontSize` and re-fit themselves; a terminal
+ * opened later reads `getTerminalFontSize()` at creation.
+ */
+export function applyTerminalFontSize(size: number): void {
+  const next = isTerminalFontSize(size) ? size : DEFAULT_TERMINAL_FONT_SIZE;
+  currentTerminalFontSize = next;
+  safeLocalStorageSet(TERMINAL_FONT_SIZE_STORAGE_KEY, String(next));
+  for (const listener of terminalFontSizeListeners) listener(next);
+}
+
+/** Subscribe to live terminal font-size changes. Returns an unsubscribe fn. */
+export function subscribeTerminalFontSize(listener: (size: number) => void): () => void {
+  terminalFontSizeListeners.add(listener);
+  return () => {
+    terminalFontSizeListeners.delete(listener);
+  };
+}
+
+/**
+ * Restore the cached UI font scale before React mounts, so a non-default scale
+ * does not paint at 1× and snap once settings.json loads. Mirrors the cached
+ * theme/palette restore in cached-theme-bootstrap.ts. Also seeds the terminal
+ * size cache so an early terminal open uses the right size without a reflow.
+ */
+export function applyCachedFontAppearanceBeforeMount(): void {
+  const cachedScale = Number.parseFloat(safeLocalStorageGet(UI_FONT_SCALE_STORAGE_KEY) ?? '');
+  if (isUiFontScale(cachedScale)) applyUiFontScale(cachedScale);
+  const cachedTerminal = Number.parseInt(safeLocalStorageGet(TERMINAL_FONT_SIZE_STORAGE_KEY) ?? '', 10);
+  if (isTerminalFontSize(cachedTerminal)) currentTerminalFontSize = cachedTerminal;
+}
 
 let unsubscribeMediaQuery: (() => void) | null = null;
 

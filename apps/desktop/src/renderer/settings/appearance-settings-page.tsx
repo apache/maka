@@ -25,14 +25,23 @@ import {
   DEFAULT_APP_ICON_DARK,
   type AppIconChoice,
   type AppIconTarget,
+  TERMINAL_FONT_SIZES,
+  type TerminalFontSize,
   type ThemePalette,
   type ThemePreference,
+  type UiFontScale,
   type UpdateAppSettingsResult,
 } from '@maka/core/settings';
 import { Switch, useMountedRef, useToast, useUiLocale } from '@maka/ui';
 import { settingsActionErrorMessage } from './settings-error-copy';
 import { getSettingsPreferencesCopy } from '../locales/settings-preferences-copy.js';
 import { CustomPetSettingsSection } from './custom-pet-settings-section.js';
+import {
+  applyTerminalFontSize,
+  applyUiFontScale,
+  getTerminalFontSize,
+  getUiFontScale,
+} from '../theme';
 
 /**
  * Mini chat-surface mockup rendered inside each theme radio tile. Replaces
@@ -141,6 +150,21 @@ const APP_ICON_SECTION_HEADING_ID = 'settings-appearance-app-icon-heading';
 const PALETTE_SECTION_HEADING_ID = 'settings-appearance-palette-heading';
 const paletteGroupLabelId = (group: 'editor' | 'product') => `settings-appearance-palette-${group}-label`;
 const appIconGroupLabelId = (group: string) => `settings-appearance-app-icon-${group}-label`;
+const FONT_SIZE_SECTION_HEADING_ID = 'settings-appearance-font-size-heading';
+const UI_FONT_SIZE_GROUP_LABEL_ID = 'settings-appearance-ui-font-size-label';
+const TERMINAL_FONT_SIZE_GROUP_LABEL_ID = 'settings-appearance-terminal-font-size-label';
+
+// The UI font scale is a document-root multiplier (see theme.ts). Each tile
+// maps a stable copy key to one of the closed `UI_FONT_SCALES` values.
+const UI_FONT_SCALE_OPTIONS: ReadonlyArray<{
+  key: 'compact' | 'default' | 'large' | 'xlarge';
+  scale: UiFontScale;
+}> = [
+  { key: 'compact', scale: 0.9 },
+  { key: 'default', scale: 1 },
+  { key: 'large', scale: 1.15 },
+  { key: 'xlarge', scale: 1.3 },
+];
 
 export function AppearanceSettingsPage(props: {
   themePref: ThemePreference;
@@ -342,6 +366,22 @@ export function AppearanceSettingsPage(props: {
     await persistAppearance({ palette: next });
   }
 
+  // Font sizing has no app-shell state to thread: theme.ts holds the live
+  // values, so the page seeds its selection from there and applies directly.
+  // Same apply-then-persist shape as theme/palette above.
+  const [uiFontScale, setUiFontScaleState] = useState<number>(() => getUiFontScale());
+  const [terminalFontSize, setTerminalFontSizeState] = useState<number>(() => getTerminalFontSize());
+  async function setUiFontScale(next: UiFontScale) {
+    setUiFontScaleState(next);
+    applyUiFontScale(next);
+    await persistAppearance({ uiFontScale: next });
+  }
+  async function setTerminalFontSize(next: TerminalFontSize) {
+    setTerminalFontSizeState(next);
+    applyTerminalFontSize(next);
+    await persistAppearance({ terminalFontSize: next });
+  }
+
   return (
     /* Designer audit P2-13: 显示名称/界面语言/语气偏好 are identity, not
        appearance — they render on the 通用 page (see
@@ -439,6 +479,73 @@ export function AppearanceSettingsPage(props: {
             </Grid>
           </VStack>
         ))}
+      </SettingsSection>
+      <SettingsSection
+        variant="bare"
+        titleId={FONT_SIZE_SECTION_HEADING_ID}
+        title={sections.fontSize}
+        description={sections.fontSizeHelp}
+      >
+        <VStack gap={3}>
+          <VStack gap={1.5}>
+            <Text
+              id={UI_FONT_SIZE_GROUP_LABEL_ID}
+              type="supporting"
+              size="sm"
+              color="secondary"
+              weight="medium"
+            >
+              {copy.fontSize.uiLabel}
+            </Text>
+            <Grid
+              columns={{ minWidth: 140 }}
+              gap={2}
+              role="group"
+              aria-labelledby={UI_FONT_SIZE_GROUP_LABEL_ID}
+            >
+              {UI_FONT_SCALE_OPTIONS.map((option) => (
+                <SelectableCard
+                  key={option.key}
+                  label={copy.fontSize.ui[option.key]}
+                  isSelected={uiFontScale === option.scale}
+                  onChange={() => void setUiFontScale(option.scale)}
+                  padding={2}
+                >
+                  <Text type="label" size="sm">{copy.fontSize.ui[option.key]}</Text>
+                </SelectableCard>
+              ))}
+            </Grid>
+          </VStack>
+          <VStack gap={1.5}>
+            <Text
+              id={TERMINAL_FONT_SIZE_GROUP_LABEL_ID}
+              type="supporting"
+              size="sm"
+              color="secondary"
+              weight="medium"
+            >
+              {copy.fontSize.terminalLabel}
+            </Text>
+            <Grid
+              columns={{ minWidth: 120 }}
+              gap={2}
+              role="group"
+              aria-labelledby={TERMINAL_FONT_SIZE_GROUP_LABEL_ID}
+            >
+              {TERMINAL_FONT_SIZES.map((size) => (
+                <SelectableCard
+                  key={size}
+                  label={`${size}px`}
+                  isSelected={terminalFontSize === size}
+                  onChange={() => void setTerminalFontSize(size)}
+                  padding={2}
+                >
+                  <Text type="label" size="sm">{`${size}px`}</Text>
+                </SelectableCard>
+              ))}
+            </Grid>
+          </VStack>
+        </VStack>
       </SettingsSection>
       <SettingsSection
         variant="bare"

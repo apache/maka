@@ -361,6 +361,36 @@ export function appIconForTheme(
   return appearance.appIconDark === undefined ? light : toAppIconChoice(appearance.appIconDark);
 }
 
+/**
+ * UI font scale multipliers applied to the document-root font-size. Every
+ * `--font-size-*` token is `rem`, so writing one scaled root font-size grows
+ * text, icons and rem spacing together — the deliberate "UI zoom" hook (see
+ * `maka-tokens.css`, which keeps the root at the 16px browser default at scale
+ * 1). This is NOT the old density hack removed in `makaTheme.ts`, which
+ * expressed density as a root multiplier and silently shrank the icon set.
+ *
+ * A closed allowlist, for the same fail-closed reason as `THEME_PALETTES`: a
+ * malformed persisted value normalizes back to the default rather than driving
+ * an arbitrary root size.
+ */
+export const UI_FONT_SCALES = [0.9, 1, 1.15, 1.3] as const;
+export type UiFontScale = (typeof UI_FONT_SCALES)[number];
+export const DEFAULT_UI_FONT_SCALE: UiFontScale = 1;
+export function isUiFontScale(value: unknown): value is UiFontScale {
+  return typeof value === 'number' && (UI_FONT_SCALES as readonly number[]).includes(value);
+}
+
+/**
+ * Terminal (xterm) font sizes in px, offered as a closed set for the same
+ * fail-closed reason as the palette allowlist above.
+ */
+export const TERMINAL_FONT_SIZES = [12, 14, 16, 18] as const;
+export type TerminalFontSize = (typeof TERMINAL_FONT_SIZES)[number];
+export const DEFAULT_TERMINAL_FONT_SIZE: TerminalFontSize = 12;
+export function isTerminalFontSize(value: unknown): value is TerminalFontSize {
+  return typeof value === 'number' && (TERMINAL_FONT_SIZES as readonly number[]).includes(value);
+}
+
 export interface AppearanceSettings {
   theme: ThemePreference;
   /** Optional palette override; missing values normalize to `default`. */
@@ -372,6 +402,13 @@ export interface AppearanceSettings {
    * `appIcon` is used in both.
    */
   appIconDark?: AppIconChoice;
+  /**
+   * Optional UI font scale (document-root multiplier). Missing normalizes to
+   * `DEFAULT_UI_FONT_SCALE`.
+   */
+  uiFontScale?: UiFontScale;
+  /** Optional terminal font size in px. Missing normalizes to the default. */
+  terminalFontSize?: TerminalFontSize;
 }
 
 export interface PersonalizationSettings {
@@ -678,6 +715,8 @@ export function createDefaultSettings(): AppSettings {
       theme: 'auto',
       palette: 'default',
       appIcon: DEFAULT_APP_ICON,
+      uiFontScale: DEFAULT_UI_FONT_SCALE,
+      terminalFontSize: DEFAULT_TERMINAL_FONT_SIZE,
     },
     personalization: {
       displayName: '',
@@ -864,6 +903,14 @@ export function normalizeSettings(input: unknown): AppSettings {
       appIcon: isAppIconChoice(base.appearance.appIcon)
         ? base.appearance.appIcon
         : DEFAULT_APP_ICON,
+      // Fail-closed to the default on any miss (undefined, non-number, or a
+      // value outside the closed allowlist), same rule as `palette` above.
+      uiFontScale: isUiFontScale(base.appearance.uiFontScale)
+        ? base.appearance.uiFontScale
+        : DEFAULT_UI_FONT_SCALE,
+      terminalFontSize: isTerminalFontSize(base.appearance.terminalFontSize)
+        ? base.appearance.terminalFontSize
+        : DEFAULT_TERMINAL_FONT_SIZE,
       // Cleared first, then re-set from the RAW input rather than from `base`:
       // `base` has already been merged over the defaults, which carry a dark
       // icon, so an existing settings file that predates this option would
