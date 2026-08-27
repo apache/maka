@@ -440,7 +440,8 @@ const STATIC_MODEL_METADATA: Partial<Record<ProviderType, Record<string, ModelMe
       thinkingOptions: { efforts: ['low', 'high', 'max'], toggle: true },
       modalities: { input: ['text', 'image'], output: ['text'] },
       displayName: 'DeepSeek V4 Flash Vision (Experimental)',
-      description: 'Experimental vision variant of DeepSeek V4 Flash with image input support and reasoning capabilities.',
+      description:
+        'Experimental vision variant of DeepSeek V4 Flash with image input support and reasoning capabilities.',
       lastUpdated: '2026-08-27',
     },
     'deepseek-v4-pro': {
