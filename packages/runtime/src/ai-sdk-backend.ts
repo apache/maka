@@ -2863,6 +2863,19 @@ export class AiSdkBackend implements AgentBackend {
               activeToolResultPruneDiagnosticPatch,
               midTurnCompactDiagnosticPatch,
             );
+            // Persisted alongside the live event so transcript rebuilds from
+            // stored messages keep the TUI ctx segment instead of degrading to
+            // `?/<window>` (#4019). Computed once; both writers share it.
+            const contextRemainingForUsage = (() => {
+              const contextWindow = resolveSelectedModelContextWindow(
+                this.input.connection,
+                this.input.modelId,
+              );
+              if (lastStepInputTokens !== undefined && contextWindow !== undefined) {
+                return Math.max(0, contextWindow - lastStepInputTokens);
+              }
+              return undefined;
+            })();
             const tu: TokenUsageMessage = {
               type: 'token_usage',
               id: this.newId(),
@@ -2894,6 +2907,9 @@ export class AiSdkBackend implements AgentBackend {
               requestShapeChangeReason: turnDiagnostics.requestShape.requestShapeChangeReason,
               promptSegments: turnDiagnostics.promptSegments,
               ...(contextBudgetForUsage ? { contextBudget: contextBudgetForUsage } : {}),
+              ...(contextRemainingForUsage !== undefined
+                ? { contextRemaining: contextRemainingForUsage }
+                : {}),
               ...(providerRequestTraceId ? { providerRequestTraceId } : {}),
             };
             await this.input.appendMessage(tu).catch(() => {});
@@ -2925,16 +2941,6 @@ export class AiSdkBackend implements AgentBackend {
               };
               await this.input.appendMessage(note).catch(() => {});
             }
-            const contextRemainingForUsage = (() => {
-              const contextWindow = resolveSelectedModelContextWindow(
-                this.input.connection,
-                this.input.modelId,
-              );
-              if (lastStepInputTokens !== undefined && contextWindow !== undefined) {
-                return Math.max(0, contextWindow - lastStepInputTokens);
-              }
-              return undefined;
-            })();
             queue.push({
               type: 'token_usage',
               id: this.newId(),
