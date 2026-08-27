@@ -754,9 +754,9 @@ Layer responsibilities:
 
 The Runtime host uses strict recovery stores. It does not silently turn an unreadable ledger into best-effort fallback before admitting new writes.
 
-### Managed workspace execution admission (M1.1)
+### Managed workspace execution admission and read bridge (M1.1–M1.2)
 
-The workspace plane now has a storage-owned execution-admission foundation, but it is not yet wired into the Runtime host:
+The workspace plane now has storage-owned execution admission and an owner-bound, read-only Runtime Host bridge:
 
 - baseline open returns an opaque handle bound to its `ManagedWorkspaceOwner`, never a raw cwd;
 - every admission reproves storage-root identity, the exact Git receipt/binding/HEAD/tree/ownership, and the exact SQLite canonical head; the ordinary path performs its slow Git verification first, then makes the immutable SQLite head the final durable reread before the DB identity guard and pure in-memory comparisons;
@@ -764,7 +764,7 @@ The workspace plane now has a storage-owned execution-admission foundation, but 
 - `close()` rejects new admissions and drains every active scope; a scope expires when its callback exits, with typed `managed_workspace_execution_scope_invalid` and `managed_workspace_execution_scope_expired` codes for forged and retained scopes;
 - the crash harness may enable a preliminary-verification failpoint, but that test path must still pass the final verification before any scope is issued.
 
-M1.2 adds the owner-bound storage worker bridge and its runtime-host lifecycle composition in one delivery. It limits managed execution to Read/Glob/Grep, demotes unchecked scope inspection to explicit test support, rejects reentrant owner close, keeps attached and managed profiles structurally distinct, and orders shutdown as tool operations → managed owner → root owner. Desktop and CLI do not enable it by default in this slice; Write/Edit/Format/Bash/unknown tools fail closed, and managed mode never silently falls back to the attached checkout. See [Managed Workspace Execution Admission v1](./runtime-managed-workspace-execution-admission-v1.zh-CN.md) for the detailed contract.
+M1.2 wires that authority into the owner-bound storage worker bridge and Runtime Host lifecycle composition. It limits managed execution to Read/Glob/Grep, demotes unchecked scope inspection to explicit test support, rejects reentrant owner close, keeps attached and managed profiles structurally distinct, and orders shutdown as tool operations → managed owner → root owner. Desktop and CLI do not enable it by default; Write/Edit/Format/Bash/unknown tools fail closed, and managed mode never silently falls back to the attached checkout. See [Managed Workspace Execution Admission v1](./runtime-managed-workspace-execution-admission-v1.zh-CN.md) for the detailed contract.
 
 ### Eval
 

@@ -19,8 +19,8 @@
 
 # Managed Workspace Execution Admission v1：M1.1 可撤销 scope 门
 
-- 状态：M1.1 已实现；M1.2 owner-bound worker bridge 与 runtime-host composition 当前切片；尚未由 Desktop/CLI 默认启用
-- 更新日期：2026-08-04
+- 状态：M1.1 execution admission 与 M1.2 owner-bound worker / Runtime Host composition 已实现；尚未由 Desktop/CLI 默认启用
+- 更新日期：2026-08-27
 - 主要不变量：同一个 `ManagedWorkspaceOwner` 只能用其亲自签发的进程内 execution handle 创建 active
   execution scope；一次 admission 只签发一个 scope，但同一 handle 允许多个只读 admission 并发。每次创建
   scope 前重新证明 exact SQLite workspace head 与 exact Git artifact，公共 API 永不发布 raw cwd，callback
@@ -51,8 +51,8 @@ typed `ManagedWorkspaceExecutionAuthorityError`，其稳定 code 为
 `managed_workspace_execution_scope_expired`；伪造 scope 的 code 为
 `managed_workspace_execution_scope_invalid`。
 
-本切片没有接入 Desktop、CLI 或 ToolRuntime。它只建立 host 后续接线必须消费的唯一准入 API，不同时跨越
-runtime protocol、host lifecycle 与工具 I/O 三个边界。
+M1.1 没有接入 Desktop、CLI 或 ToolRuntime，只建立 host 后续接线必须消费的唯一准入 API。M1.2 已把该
+authority 接入 Runtime Host 的只读 worker 与 lifecycle composition，但仍未由 Desktop/CLI 默认启用。
 
 ## 2. Owner、原子性边界、失败状态与回滚
 
@@ -97,8 +97,9 @@ sequenceDiagram
 
 这不是跨 SQLite/Git/filesystem 的共同事务。它关闭 cooperating Maka writer 的 proof-to-scope seam；任意外部
 进程仍可能在最后一次 filesystem observation 后制造 drift，后续 admission 会 fail closed。普通生产路径只执行
-图中的一次 final Git verification；只有配置 production-shaped crash failpoint 的测试路径才先执行一次 preliminary
-verification，以便在真实 proof 完成后 `SIGKILL`，随后仍必须再次执行 final verification 才能签发 scope。M1.2 的 worker/
+图中的一次 exact Git verification，随后以 SQLite head 作为最后一次 durable reread；只有配置 production-shaped
+crash failpoint 的测试路径才先执行一次 preliminary verification，以便在真实 proof 完成后 `SIGKILL`，随后仍必须
+再次执行 exact Git verification 并完成 final head reread 才能签发 scope。M1.2 的 worker/
 sandbox 建立实际 I/O 隔离，M2 才负责 mutating tool 产生 successor candidate 并接受新 workspace version。
 
 ## 4. Provisioning 与实际可用性边界
@@ -159,9 +160,9 @@ JavaScript finally，因此本切片的安全保证来自“只读 operation all
 | runtime-host lifecycle composition | 支持 | 支持 | 支持生命周期与 typed profile，但 managed I/O 因 worker 不可用而拒绝 |
 | power-loss durability | 不承诺 | 不承诺 | 不承诺 |
 
-## 7. 后续切片
+## 7. 已交付边界与后续切片
 
-1. M1.2：owner-bound storage worker bridge 消费 active scope 并在内部解析 cwd；公共 caller 仍不获得 path。
+1. M1.2（已实现）：owner-bound storage worker bridge 消费 active scope 并在内部解析 cwd；公共 caller 仍不获得 path。
    managed profile 在 M2 前只允许 `workspaceEffect: none` 的 Read/Glob/Grep；Write/Edit/Format/Bash/未知工具在
    worker dispatch 前 fail closed。无 ownerToken 的 inspect API 仅保留在显式 test support 中；callback 内
    reentrant `owner.close()` 由 execution-context guard 拒绝。runtime-host 使用不可混淆的 attached/managed
