@@ -44,7 +44,6 @@ export function useChatScroll(input: {
   historyLoadPendingRef.current = input.historyLoadPending;
   const canLoadEarlier = input.onLoadEarlierHistory !== undefined;
   const earlierLoadRequest = useRef<object | null>(null);
-  const requestEarlierRef = useRef<() => void>(() => {});
 
   useEffect(() => {
     earlierLoadRequest.current = null;
@@ -87,11 +86,9 @@ export function useChatScroll(input: {
     const onWheel = (event: WheelEvent): void => {
       if (event.deltaY < 0 && nearStart()) requestEarlier();
     };
-    requestEarlierRef.current = requestEarlier;
     root.addEventListener('scroll', onScroll, { passive: true });
     root.addEventListener('wheel', onWheel, { passive: true });
     return () => {
-      if (requestEarlierRef.current === requestEarlier) requestEarlierRef.current = () => {};
       root.removeEventListener('scroll', onScroll);
       root.removeEventListener('wheel', onWheel);
     };
@@ -134,8 +131,6 @@ export function useChatScroll(input: {
     let disposed = false;
     let pollTimer: number | undefined;
     let frame = 0;
-    let idle: number | undefined;
-    let idleTimer: number | undefined;
     let polls = 0;
     const finishArrival = () => {
       if (disposed) return;
@@ -149,16 +144,6 @@ export function useChatScroll(input: {
           if (disposed) return;
           root.dataset.turnWindow = 'ready';
           arrivalPin.current?.release();
-          const prefetch = () => {
-            if (root.scrollTop <= Math.max(640, root.clientHeight * 2)) {
-              requestEarlierRef.current();
-            }
-          };
-          if (typeof window.requestIdleCallback === 'function') {
-            idle = window.requestIdleCallback(prefetch, { timeout: 250 });
-          } else {
-            idleTimer = window.setTimeout(prefetch, 0);
-          }
         });
       });
     };
@@ -168,19 +153,10 @@ export function useChatScroll(input: {
     return () => {
       disposed = true;
       window.clearTimeout(pollTimer);
-      window.clearTimeout(idleTimer);
-      if (idle !== undefined) window.cancelIdleCallback(idle);
       if (frame !== 0) window.cancelAnimationFrame(frame);
       delete root.dataset.turnWindow;
     };
-  }, [
-    input.sessionId,
-    input.hasTurns,
-    input.hasOlderHistory,
-    input.scrollRef,
-    input.latestNavigationNonce,
-    canLoadEarlier,
-  ]);
+  }, [input.sessionId, input.hasTurns, input.scrollRef, input.latestNavigationNonce]);
 
   useEffect(() => {
     const target = input.target;
