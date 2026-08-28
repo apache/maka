@@ -231,7 +231,9 @@ export async function runMakaCli(
 ): Promise<number> {
   const version = await readPackageVersion();
   const command = parseMakaCliArgs(argv, version, options.cliCommand);
-  const dataRoots = resolveMakaDataRoots({ profileName: options.dataProfileName });
+  const dataRoots = resolveMakaDataRoots({
+    profileName: options.dataProfileName,
+  });
   await configureRuntimeHostPeerClient({
     cliPath: process.argv[1] ?? '',
     clientDataRoot: dataRoots.clientDataRoot,
@@ -249,7 +251,10 @@ export async function runMakaCli(
         command.args,
         { workspaceRoot: () => dataRoots.workspaceRoot },
         {},
-        { clientDataRoot: dataRoots.clientDataRoot, cliCommand: options.cliCommand },
+        {
+          clientDataRoot: dataRoots.clientDataRoot,
+          cliCommand: options.cliCommand,
+        },
       );
     }
     case 'activate': {
@@ -268,6 +273,39 @@ export async function runMakaCli(
     }
     case 'runtime-host-serve': {
       const { runRuntimeHostServiceCli } = await import('./runtime-host-service-command.js');
+      if (command.managedDeployment) {
+        const { resolveRuntimeHostManagedDeployment, resolveRuntimeHostNpmDeploymentLayout } =
+          await import('@maka/runtime-host/operator');
+        const { config } = await resolveRuntimeHostManagedDeployment(
+          command.managedDeployment.rootId,
+        );
+        const peer = config.listeners.directPeer?.enabled ? config.listeners.directPeer : undefined;
+        const packageLayout = resolveRuntimeHostNpmDeploymentLayout(
+          config.deploymentRoot,
+          config.launch.package.integrity,
+        );
+        return runRuntimeHostServiceCli({
+          rootPath: config.root.path,
+          json: command.json,
+          managedLaunchClaim: {
+            deploymentId: command.managedDeployment.deploymentId,
+            configRevision: command.managedDeployment.configRevision,
+          },
+          projectDirectoryRoots: config.projectDirectoryRoots,
+          ...(config.listeners.websocket ? { websocket: config.listeners.websocket } : {}),
+          ...(peer
+            ? {
+                peer: {
+                  nativePath: await resolveRuntimeHostPeerNativePath(packageLayout.cliPath),
+                  keyPath: peer.keyPath,
+                  expectedPeerId: peer.peerId,
+                  listenAddresses: peer.listenAddresses,
+                  coordinationRelays: peer.coordinationRelays,
+                },
+              }
+            : {}),
+        });
+      }
       if (command.managedServiceConfigPath) {
         const { effectiveRuntimeHostProjectDirectoryRoots, readRuntimeHostManagedServiceConfig } =
           await import('./runtime-host-service-manager.js');
@@ -339,6 +377,7 @@ export async function runMakaCli(
         defaultRootPath: serviceDataRoots.workspaceRoot,
         nodePath: process.execPath,
         cliPath: process.argv[1] ?? '',
+        ...(command.managedRootId ? { managedRootId: command.managedRootId } : {}),
         ...(command.rootPath ? { rootPath: command.rootPath } : {}),
         ...(command.projectDirectoryRoots
           ? { projectDirectoryRoots: command.projectDirectoryRoots }
@@ -368,6 +407,7 @@ export async function runMakaCli(
         defaultRootPath: serviceDataRoots.workspaceRoot,
         nodePath: process.execPath,
         cliPath: process.argv[1] ?? '',
+        ...(command.managedRootId ? { managedRootId: command.managedRootId } : {}),
         listenAddresses: command.listenAddresses,
         ...(command.coordinationRelays ? { coordinationRelays: command.coordinationRelays } : {}),
         ...(command.expectedTarget ? { expectedTarget: command.expectedTarget } : {}),
@@ -388,6 +428,7 @@ export async function runMakaCli(
           defaultRootPath: serviceDataRoots.workspaceRoot,
           selector: command.selector,
           expectedTarget: command.expectedTarget,
+          ...(command.managedRootId ? { managedRootId: command.managedRootId } : {}),
           ...(command.allowInterruptActiveTasks ? { allowInterruptActiveTasks: true } : {}),
         });
       }
@@ -399,6 +440,7 @@ export async function runMakaCli(
         sourcePackageRoot: fileURLToPath(new URL('..', import.meta.url)),
         version,
         expectedTarget: command.expectedTarget,
+        ...(command.managedRootId ? { managedRootId: command.managedRootId } : {}),
         ...(command.allowInterruptActiveTasks ? { allowInterruptActiveTasks: true } : {}),
       });
     }
@@ -415,6 +457,7 @@ export async function runMakaCli(
         clientDataRoot: serviceDataRoots.clientDataRoot,
         defaultRootPath: serviceDataRoots.workspaceRoot,
         selector: command.selector,
+        ...(command.managedRootId ? { managedRootId: command.managedRootId } : {}),
         ...(command.expectedTarget ? { expectedTarget: command.expectedTarget } : {}),
       });
     }
@@ -433,6 +476,7 @@ export async function runMakaCli(
           defaultRootPath: serviceDataRoots.workspaceRoot,
           ...(command.policy ? { policy: command.policy } : {}),
           ...(command.expectedTarget ? { expectedTarget: command.expectedTarget } : {}),
+          ...(command.managedRootId ? { managedRootId: command.managedRootId } : {}),
         });
       }
       return runManagedRuntimeHostUpdateReconcileCli({
@@ -441,6 +485,7 @@ export async function runMakaCli(
         clientDataRoot: serviceDataRoots.clientDataRoot,
         defaultRootPath: serviceDataRoots.workspaceRoot,
         ...(command.expectedTarget ? { expectedTarget: command.expectedTarget } : {}),
+        ...(command.managedRootId ? { managedRootId: command.managedRootId } : {}),
       });
     }
     case 'runtime-host-managed-deployment-cleanup': {
@@ -453,6 +498,7 @@ export async function runMakaCli(
       return runManagedRuntimeHostDeploymentCleanupCli({
         clientDataRoot: serviceDataRoots.clientDataRoot,
         cliPath: process.argv[1] ?? '',
+        ...(command.managedRootId ? { managedRootId: command.managedRootId } : {}),
         expectedTarget: command.expectedTarget,
       });
     }
@@ -495,7 +541,9 @@ export async function runMakaCli(
           ...(command.expectedRootId ? { expectedRootId: command.expectedRootId } : {}),
           credentialId: command.credentialId,
           ...(command.currentCredentialFingerprint
-            ? { currentCredentialFingerprint: command.currentCredentialFingerprint }
+            ? {
+                currentCredentialFingerprint: command.currentCredentialFingerprint,
+              }
             : {}),
         },
         command.framed,
@@ -600,16 +648,28 @@ function parseTuiArgs(argv: string[]): MakaCliCommand {
   for (let index = 0; index < argv.length; index += 1) {
     const option = argv[index];
     if (!option || !supported.has(option)) {
-      return { kind: 'error', message: `Unexpected argument: ${option ?? ''}`, exitCode: 2 };
+      return {
+        kind: 'error',
+        message: `Unexpected argument: ${option ?? ''}`,
+        exitCode: 2,
+      };
     }
     if (values.has(option)) {
-      return { kind: 'error', message: `Option repeated: ${option}`, exitCode: 2 };
+      return {
+        kind: 'error',
+        message: `Option repeated: ${option}`,
+        exitCode: 2,
+      };
     }
     const value = argv[index + 1];
     if (!value || value.startsWith('-')) {
       const expected =
         option === '--resume' ? 'a session id' : option === '--cwd' ? 'a directory' : 'a value';
-      return { kind: 'error', message: `${option} requires ${expected}`, exitCode: 2 };
+      return {
+        kind: 'error',
+        message: `${option} requires ${expected}`,
+        exitCode: 2,
+      };
     }
     values.set(option, value);
     index += 1;
@@ -618,7 +678,11 @@ function parseTuiArgs(argv: string[]): MakaCliCommand {
     return { kind: 'error', message: '--cwd requires --resume', exitCode: 2 };
   }
   if (values.has('--project') && values.has('--resume')) {
-    return { kind: 'error', message: '--project cannot be used with --resume', exitCode: 2 };
+    return {
+      kind: 'error',
+      message: '--project cannot be used with --resume',
+      exitCode: 2,
+    };
   }
   if (values.has('--cwd') && values.has('--host') && values.get('--host') !== 'local') {
     return {

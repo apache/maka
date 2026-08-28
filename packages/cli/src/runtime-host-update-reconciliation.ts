@@ -38,9 +38,11 @@ import {
   type RuntimeHostServiceBackend,
 } from './runtime-host-service-manager.js';
 import {
+  createPlatformRuntimeHostLifecycleProvider,
   createPlatformRuntimeHostServiceBackend,
   runtimeHostServiceSummary,
 } from './runtime-host-service-management-command.js';
+import { manageRuntimeHostManagedLifecycle } from './runtime-host-managed-lifecycle-manager.js';
 import {
   readRuntimeHostManagedUpdatePolicy,
   RuntimeHostUpdatePolicyError,
@@ -71,6 +73,7 @@ interface RuntimeHostUpdatePolicyCliOptions {
   readonly defaultRootPath: string;
   readonly policy?: RuntimeHostManagedUpdatePolicy;
   readonly expectedTarget?: RuntimeHostManagedServiceTarget;
+  readonly managedRootId?: string;
 }
 
 interface RuntimeHostUpdateReconcileCliOptions {
@@ -79,6 +82,7 @@ interface RuntimeHostUpdateReconcileCliOptions {
   readonly clientDataRoot: string;
   readonly defaultRootPath: string;
   readonly expectedTarget?: RuntimeHostManagedServiceTarget;
+  readonly managedRootId?: string;
 }
 
 interface RuntimeHostUpdateReconciliationDeps {
@@ -86,6 +90,7 @@ interface RuntimeHostUpdateReconciliationDeps {
   readonly readPolicy: typeof readRuntimeHostManagedUpdatePolicy;
   readonly writePolicy: typeof writeRuntimeHostManagedUpdatePolicy;
   readonly manage: typeof manageRuntimeHostService;
+  readonly manageLifecycle: typeof manageRuntimeHostManagedLifecycle;
   readonly createBackend: (serviceId: string, clientDataRoot: string) => RuntimeHostServiceBackend;
   readonly resolveSelection: typeof resolveManagedRuntimeHostUpdateSelection;
   readonly applySelection: typeof runManagedRuntimeHostResolvedUpdateCli;
@@ -197,6 +202,7 @@ export async function runManagedRuntimeHostUpdateReconcileCli(
       defaultRootPath: options.defaultRootPath,
       selector: policySelector(record.policy),
       expectedTarget: record.target,
+      ...(options.managedRootId ? { managedRootId: options.managedRootId } : {}),
     });
     const updatePolicy = policyResult(record);
     if (selection.outcome.kind === 'manual_action') {
@@ -231,6 +237,7 @@ export async function runManagedRuntimeHostUpdateReconcileCli(
       defaultRootPath: options.defaultRootPath,
       selector: selection.selector,
       expectedTarget: record.target,
+      ...(options.managedRootId ? { managedRootId: options.managedRootId } : {}),
     };
     const exitCode = await deps.applySelection(
       selectedOptions,
@@ -272,32 +279,45 @@ export async function runManagedRuntimeHostUpdateReconcileCli(
 function readManagedServiceStatus(
   options: Pick<
     RuntimeHostUpdatePolicyCliOptions | RuntimeHostUpdateReconcileCliOptions,
-    'clientDataRoot' | 'defaultRootPath'
+    'clientDataRoot' | 'defaultRootPath' | 'managedRootId'
   >,
   deps: RuntimeHostUpdateReconciliationDeps,
   expectedTarget?: RuntimeHostManagedServiceTarget,
 ) {
-  const serviceId = resolveRuntimeHostManagedServiceId(options.clientDataRoot);
-  return deps.manage(
-    {
-      action: 'status',
-      clientDataRoot: options.clientDataRoot,
-      defaultRootPath: options.defaultRootPath,
-      nodePath: process.execPath,
-      cliPath: process.argv[1] ?? '',
-      ...(expectedTarget ? { expectedTarget } : {}),
-    },
-    deps.createBackend(serviceId, options.clientDataRoot),
-  );
+  const statusInput = {
+    action: 'status' as const,
+    clientDataRoot: options.clientDataRoot,
+    defaultRootPath: options.defaultRootPath,
+    nodePath: process.execPath,
+    cliPath: process.argv[1] ?? '',
+    ...(expectedTarget ? { expectedTarget } : {}),
+  };
+  return options.managedRootId
+    ? deps.manageLifecycle(options.managedRootId, statusInput, {
+        createProvider: createPlatformRuntimeHostLifecycleProvider,
+      })
+    : deps.manage(
+        statusInput,
+        deps.createBackend(
+          resolveRuntimeHostManagedServiceId(options.clientDataRoot),
+          options.clientDataRoot,
+        ),
+      );
 }
 
 async function inspectUpdateScheduler(
-  options: Pick<RuntimeHostUpdatePolicyCliOptions, 'clientDataRoot'>,
+  options: Pick<RuntimeHostUpdatePolicyCliOptions, 'clientDataRoot' | 'managedRootId'>,
   status: Awaited<ReturnType<typeof readManagedServiceStatus>>,
   deps: RuntimeHostUpdateReconciliationDeps,
 ): Promise<RuntimeHostUpdateSchedulerState> {
   const config = status.service.config;
   if (!status.service.installed || !config?.managedDeploymentRoot) return 'needs_repair';
+  if (options.managedRootId) {
+    const trigger = await createPlatformRuntimeHostLifecycleProvider(
+      options.managedRootId,
+    ).reconciliationTrigger.status();
+    return trigger.installed ? (trigger.active ? 'ready' : 'inactive') : 'needs_repair';
+  }
   const backend = deps.createBackend(
     resolveRuntimeHostManagedServiceId(options.clientDataRoot),
     options.clientDataRoot,
@@ -332,6 +352,7 @@ function reconciliationDeps(
     readPolicy: readRuntimeHostManagedUpdatePolicy,
     writePolicy: writeRuntimeHostManagedUpdatePolicy,
     manage: manageRuntimeHostService,
+    manageLifecycle: manageRuntimeHostManagedLifecycle,
     createBackend: createPlatformRuntimeHostServiceBackend,
     resolveSelection: resolveManagedRuntimeHostUpdateSelection,
     applySelection: runManagedRuntimeHostResolvedUpdateCli,

@@ -152,6 +152,15 @@ export interface RuntimeHostServiceDeployment {
 export interface RuntimeHostManagedServiceStatus extends RuntimeHostServiceBackendStatus {
   readonly config: RuntimeHostManagedServiceConfig | null;
   readonly installedVersion: string | null;
+  readonly lifecycle?: {
+    readonly mode: 'on_demand' | 'supervised';
+    readonly availability: 'activation' | 'session' | 'environment' | 'machine';
+    readonly provider?: 'systemd_user' | 'launch_agent' | 'openrc_user' | 'openrc_system';
+  };
+  readonly reconciliation?: {
+    readonly trigger: 'manual' | 'activation' | 'scheduled';
+    readonly provider?: 'systemd_timer' | 'launch_agent_timer' | 'openrc_supervised_loop';
+  };
 }
 
 export type RuntimeHostManagedServiceAction =
@@ -1622,6 +1631,27 @@ async function readServiceStatus(
     ...backendStatus,
     config,
     installedVersion: config ? await readInstalledVersion(config.launch.cliPath) : null,
+    ...(config
+      ? {
+          lifecycle: {
+            mode: 'supervised' as const,
+            availability:
+              backendStatus.manager === 'systemd_user'
+                ? ('machine' as const)
+                : ('session' as const),
+            provider: backendStatus.manager,
+          },
+          reconciliation: config.managedDeploymentRoot
+            ? {
+                trigger: 'scheduled' as const,
+                provider:
+                  backendStatus.manager === 'systemd_user'
+                    ? ('systemd_timer' as const)
+                    : ('launch_agent_timer' as const),
+              }
+            : { trigger: 'manual' as const },
+        }
+      : {}),
   };
 }
 
@@ -1830,6 +1860,10 @@ async function normalizeStateRoot(requestedRoot: string): Promise<string> {
   }
 }
 
+export async function resolveRuntimeHostManagedStateRoot(requestedRoot: string): Promise<string> {
+  return normalizeStateRoot(requestedRoot);
+}
+
 async function normalizeProjectDirectoryRoots(
   roots: readonly { readonly label: string; readonly path: string }[],
 ): Promise<readonly { readonly label: string; readonly path: string }[]> {
@@ -1861,6 +1895,12 @@ async function normalizeProjectDirectoryRoots(
     );
   }
   return canonicalRoots;
+}
+
+export async function resolveRuntimeHostManagedProjectDirectoryRoots(
+  roots: readonly { readonly label: string; readonly path: string }[],
+): Promise<readonly { readonly label: string; readonly path: string }[]> {
+  return normalizeProjectDirectoryRoots(roots);
 }
 
 async function assertPersistentCliInstallation(
@@ -2384,6 +2424,10 @@ async function allocateLoopbackPort(): Promise<number> {
   });
 }
 
+export function allocateRuntimeHostLoopbackPort(): Promise<number> {
+  return allocateLoopbackPort();
+}
+
 async function allocatePeerPort(): Promise<number> {
   return new Promise((resolvePort, reject) => {
     const socket = createSocket('udp4');
@@ -2395,6 +2439,10 @@ async function allocatePeerPort(): Promise<number> {
       resolvePort(address.port);
     });
   });
+}
+
+export function allocateRuntimeHostPeerPort(): Promise<number> {
+  return allocatePeerPort();
 }
 
 function result(

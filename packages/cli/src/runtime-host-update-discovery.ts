@@ -39,9 +39,11 @@ import {
   type RuntimeHostManagedServiceTarget,
 } from './runtime-host-service-manager.js';
 import {
+  createPlatformRuntimeHostLifecycleProvider,
   createPlatformRuntimeHostServiceBackend,
   runtimeHostServiceSummary,
 } from './runtime-host-service-management-command.js';
+import { manageRuntimeHostManagedLifecycle } from './runtime-host-managed-lifecycle-manager.js';
 import { resolveRuntimeHostManagedPackageCliPath } from './runtime-host-managed-deployment.js';
 import type { RuntimeHostUpdateSelector } from './runtime-host-cli.js';
 
@@ -67,6 +69,7 @@ export interface RuntimeHostUpdateCheckOptions {
   readonly defaultRootPath: string;
   readonly selector: RuntimeHostUpdateSelector;
   readonly expectedTarget?: RuntimeHostManagedServiceTarget;
+  readonly managedRootId?: string;
 }
 
 export interface RuntimeHostUpdateCheckCliOptions extends RuntimeHostUpdateCheckOptions {
@@ -128,19 +131,24 @@ async function resolveManagedRuntimeHostUpdate(
   options: RuntimeHostUpdateCheckOptions,
   verifyDeployment: boolean,
 ): Promise<RuntimeHostUpdateSelection> {
-  const serviceId = resolveRuntimeHostManagedServiceId(options.clientDataRoot);
-  const backend = createPlatformRuntimeHostServiceBackend(serviceId, options.clientDataRoot);
-  const status = await manageRuntimeHostService(
-    {
-      action: 'status',
-      clientDataRoot: options.clientDataRoot,
-      defaultRootPath: options.defaultRootPath,
-      nodePath: process.execPath,
-      cliPath: process.argv[1] ?? '',
-      ...(options.expectedTarget ? { expectedTarget: options.expectedTarget } : {}),
-    },
-    backend,
-  );
+  const serviceId =
+    options.managedRootId ?? resolveRuntimeHostManagedServiceId(options.clientDataRoot);
+  const statusInput = {
+    action: 'status' as const,
+    clientDataRoot: options.clientDataRoot,
+    defaultRootPath: options.defaultRootPath,
+    nodePath: process.execPath,
+    cliPath: process.argv[1] ?? '',
+    ...(options.expectedTarget ? { expectedTarget: options.expectedTarget } : {}),
+  };
+  const backend = options.managedRootId
+    ? undefined
+    : createPlatformRuntimeHostServiceBackend(serviceId, options.clientDataRoot);
+  const status = options.managedRootId
+    ? await manageRuntimeHostManagedLifecycle(options.managedRootId, statusInput, {
+        createProvider: createPlatformRuntimeHostLifecycleProvider,
+      })
+    : await manageRuntimeHostService(statusInput, backend!);
   const currentVersion = status.service.installedVersion;
   const config = status.service.config;
   const service = runtimeHostServiceSummary(status);
@@ -156,7 +164,7 @@ async function resolveManagedRuntimeHostUpdate(
       'A Maka-managed Runtime Host service is required to check for updates',
     );
   }
-  if (verifyDeployment) await backend.verifyDeployment(config);
+  if (verifyDeployment && backend) await backend.verifyDeployment(config);
   const [candidate, currentCompatibility] = await Promise.all([
     resolveRuntimeHostRegistryUpdateCandidate(options.selector),
     readPackageCompatibility(config.launch.cliPath, currentVersion),

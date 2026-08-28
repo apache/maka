@@ -45,7 +45,7 @@ import {
 export const RUNTIME_HOST_MANAGED_DEPLOYMENT_CONFIG_FILE = 'runtime-host-deployment.json';
 
 const SCHEMA_VERSION = 1 as const;
-const MAX_DOCUMENT_BYTES = 64 * 1024;
+const MAX_DOCUMENT_BYTES = 256 * 1024;
 const ROOT_ID_PATTERN = /^[a-f0-9]{64}$/u;
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u;
 
@@ -110,13 +110,14 @@ const managedLaunchClaimSchema = z
   .strict();
 
 const deploymentTransitionOperationSchema = z.enum([
+  'install',
   'legacy_migration',
   'lifecycle_change',
   'provider_change',
+  'configure',
+  'update',
   'uninstall',
 ]);
-
-const deploymentTransitionEndpointSchema = managedLaunchClaimSchema.nullable();
 
 const deploymentAuthorityRootSchema = z
   .object({
@@ -165,6 +166,16 @@ const managedDeploymentConfigSchema = z
           })
           .strict()
           .optional(),
+        directPeer: z
+          .object({
+            enabled: z.boolean(),
+            keyPath: absolutePathSchema,
+            peerId: boundedText(256),
+            listenAddresses: z.array(boundedText(2_048)).min(1).max(16),
+            coordinationRelays: z.array(boundedText(2_048)).max(16),
+          })
+          .strict()
+          .optional(),
       })
       .strict(),
     lifecycle: lifecycleSchema,
@@ -177,6 +188,13 @@ const managedDeploymentConfigSchema = z
         code: 'custom',
         message: 'An on-demand deployment cannot use scheduled reconciliation',
         path: ['reconciliation'],
+      });
+    }
+    if (value.lifecycle.mode === 'on_demand' && value.listeners.directPeer?.enabled === true) {
+      context.addIssue({
+        code: 'custom',
+        message: 'An on-demand deployment cannot enable a direct peer listener',
+        path: ['listeners', 'directPeer'],
       });
     }
     if (value.lifecycle.mode === 'supervised' && value.reconciliation.trigger === 'activation') {
@@ -210,8 +228,8 @@ const managedDeploymentTransitionSchema = z
     transactionId: deploymentIdSchema,
     operation: deploymentTransitionOperationSchema,
     root: deploymentAuthorityRootSchema,
-    from: deploymentTransitionEndpointSchema,
-    to: deploymentTransitionEndpointSchema,
+    from: managedDeploymentConfigSchema.nullable(),
+    to: managedDeploymentConfigSchema.nullable(),
   })
   .strict()
   .superRefine(validateDeploymentTransitionEndpoints);
@@ -223,8 +241,8 @@ const managedDeploymentBlockedSchema = z
     transactionId: deploymentIdSchema,
     operation: deploymentTransitionOperationSchema,
     root: deploymentAuthorityRootSchema,
-    from: deploymentTransitionEndpointSchema,
-    to: deploymentTransitionEndpointSchema,
+    from: managedDeploymentConfigSchema.nullable(),
+    to: managedDeploymentConfigSchema.nullable(),
     reason: boundedText(1_024),
   })
   .strict()
@@ -239,19 +257,30 @@ const managedDeploymentAuthorityRecordSchema = z.union([
 function validateDeploymentTransitionEndpoints(
   value: {
     readonly operation: z.infer<typeof deploymentTransitionOperationSchema>;
-    readonly from: z.infer<typeof deploymentTransitionEndpointSchema>;
-    readonly to: z.infer<typeof deploymentTransitionEndpointSchema>;
+    readonly root: z.infer<typeof deploymentAuthorityRootSchema>;
+    readonly from: RuntimeHostManagedDeploymentConfig | null;
+    readonly to: RuntimeHostManagedDeploymentConfig | null;
   },
   context: z.RefinementCtx,
 ): void {
   const valid =
-    (value.operation === 'legacy_migration' && value.from === null && value.to !== null) ||
+    ((value.operation === 'install' || value.operation === 'legacy_migration') &&
+      value.from === null &&
+      value.to !== null) ||
     (value.operation === 'uninstall' && value.from !== null && value.to === null) ||
-    ((value.operation === 'lifecycle_change' || value.operation === 'provider_change') &&
+    ((value.operation === 'lifecycle_change' ||
+      value.operation === 'provider_change' ||
+      value.operation === 'configure' ||
+      value.operation === 'update') &&
       value.from !== null &&
       value.to !== null &&
       value.from.deploymentId === value.to.deploymentId &&
-      value.to.configRevision > value.from.configRevision);
+      value.to.configRevision > value.from.configRevision &&
+      [value.from, value.to].every(
+        (config) =>
+          config === null ||
+          (config.root.id === value.root.id && config.root.path === value.root.path),
+      ));
   if (!valid) {
     context.addIssue({
       code: 'custom',
@@ -562,7 +591,7 @@ export async function commitRuntimeHostManagedDeployment(
   );
   const current = await readDeploymentConfigForCapability(path, owner.capability);
   if (current !== undefined) return existingDeploymentClaim(current, canonical);
-  await writePrivateJson(path, canonical);
+  await writePrivateJson(path, canonical, options.beforeDirectorySync);
   return {
     kind: 'applied',
     config: canonical,
@@ -591,7 +620,7 @@ export async function beginRuntimeHostManagedDeploymentTransition(
   if (!isDeepStrictEqual(current, expected)) {
     throw deploymentTransactionMismatch('The managed deployment changed before transition began');
   }
-  await writePrivateJson(path, transition);
+  await writePrivateJson(path, transition, options.beforeDirectorySync);
   return { kind: 'applied', record: transition };
 }
 
@@ -649,7 +678,7 @@ export async function blockRuntimeHostManagedDeploymentTransition(
     throw deploymentTransactionMismatch('The managed deployment blocked record is invalid');
   }
   if (isDeepStrictEqual(current, record)) return { kind: 'unchanged', record };
-  await writePrivateJson(path, record);
+  await writePrivateJson(path, record, options.beforeDirectorySync);
   return { kind: 'applied', record };
 }
 
@@ -681,12 +710,11 @@ async function finishRuntimeHostManagedDeploymentTransition(
   if (current.transactionId !== transactionId) {
     throw deploymentTransactionMismatch('The managed deployment transaction identity changed');
   }
-  const claim = config ? runtimeHostManagedLaunchClaim(config) : null;
-  if (!isDeepStrictEqual(current[endpoint], claim)) {
+  if (!isDeepStrictEqual(current[endpoint], config ?? null)) {
     throw deploymentTransactionMismatch('The managed deployment transition target changed');
   }
-  if (config) await writePrivateJson(path, config);
-  else await removePrivateJson(path);
+  if (config) await writePrivateJson(path, config, options.beforeDirectorySync);
+  else await removePrivateJson(path, options.beforeDirectorySync);
   return { kind: 'applied', ...(config ? { config } : {}) };
 }
 
@@ -704,8 +732,8 @@ function deploymentTransitionRecord(
     transactionId: input.transactionId,
     operation: input.operation,
     root: { path: capability.canonicalPath, id: capability.rootId },
-    from: expected ? runtimeHostManagedLaunchClaim(expected) : null,
-    to: desired ? runtimeHostManagedLaunchClaim(desired) : null,
+    from: expected ?? null,
+    to: desired ?? null,
   });
   if (record.schemaVersion !== 2 || record.state !== 'transition') {
     throw deploymentTransactionMismatch('The managed deployment transition is invalid');
@@ -1014,7 +1042,11 @@ async function readBoundedJson(path: string): Promise<unknown | undefined> {
   }
 }
 
-async function writePrivateJson(path: string, value: unknown): Promise<void> {
+async function writePrivateJson(
+  path: string,
+  value: unknown,
+  beforeDirectorySync?: (path: string) => void | Promise<void>,
+): Promise<void> {
   const contents = JSON.stringify(value, null, 2) + '\n';
   if (Buffer.byteLength(contents, 'utf8') > MAX_DOCUMENT_BYTES) {
     throw new RuntimeHostManagedDeploymentError(
@@ -1035,6 +1067,7 @@ async function writePrivateJson(path: string, value: unknown): Promise<void> {
     if (process.platform !== 'win32') await chmod(temporaryPath, 0o600);
     await rename(temporaryPath, path);
     published = true;
+    await beforeDirectorySync?.(dirname(path));
     await syncDirectory(dirname(path));
   } catch (error) {
     if (error instanceof RuntimeHostManagedDeploymentError) throw error;
@@ -1051,11 +1084,15 @@ async function writePrivateJson(path: string, value: unknown): Promise<void> {
   }
 }
 
-async function removePrivateJson(path: string): Promise<void> {
+async function removePrivateJson(
+  path: string,
+  beforeDirectorySync?: (path: string) => void | Promise<void>,
+): Promise<void> {
   let removed = false;
   try {
     await rm(path);
     removed = true;
+    await beforeDirectorySync?.(dirname(path));
     await syncDirectory(dirname(path));
   } catch (error) {
     if (removed) {
@@ -1139,7 +1176,9 @@ function requireRootId(rootId: string): void {
 function deploymentIo(message: string, cause: unknown): RuntimeHostManagedDeploymentError {
   return cause instanceof RuntimeHostManagedDeploymentError
     ? cause
-    : new RuntimeHostManagedDeploymentError('deployment_io_failed', message, { cause });
+    : new RuntimeHostManagedDeploymentError('deployment_io_failed', message, {
+        cause,
+      });
 }
 
 function isNodeError(error: unknown, code: string): error is NodeJS.ErrnoException {

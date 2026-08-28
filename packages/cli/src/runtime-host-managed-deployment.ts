@@ -70,7 +70,7 @@ export async function prepareRuntimeHostManagedPackageDeployment(
     version: input.version,
     ...(input.packageIntegrity ? { packageIntegrity: input.packageIntegrity } : {}),
   });
-  return managedDeployment(staged, clientDataRoot);
+  return managedDeployment(staged, clientDataRoot, input.serviceId);
 }
 
 export async function openRuntimeHostManagedPackageDeployment(input: {
@@ -105,6 +105,7 @@ export async function openRuntimeHostManagedPackageDeployment(input: {
       version: input.version,
     }),
     resolve(input.clientDataRoot),
+    input.serviceId,
   );
 }
 
@@ -212,6 +213,7 @@ export async function removeRuntimeHostManagedDeployment(
 function managedDeployment(
   staged: RuntimeHostPackageDeployment,
   clientDataRoot: string,
+  managedRootId: string,
 ): RuntimeHostManagedPackageDeployment {
   const operatorPath = join(staged.root, 'operator');
   return {
@@ -220,7 +222,13 @@ function managedDeployment(
     cliPath: staged.cliPath,
     operatorPath,
     activate: () =>
-      writeOperatorLauncher(operatorPath, process.execPath, staged.cliPath, clientDataRoot),
+      writeOperatorLauncher(
+        operatorPath,
+        process.execPath,
+        staged.cliPath,
+        clientDataRoot,
+        managedRootId,
+      ),
     cleanup: staged.cleanup,
     rollback: staged.rollback,
   };
@@ -231,13 +239,14 @@ async function writeOperatorLauncher(
   nodePath: string,
   cliPath: string,
   clientDataRoot: string,
+  managedRootId: string,
 ): Promise<void> {
   const temporaryPath = `${path}.${randomUUID()}.tmp`;
   const contents = [
     '#!/bin/sh',
     'if [ "$#" -ge 1 ] && [ "$1" = "__cleanup-managed-deployment" ]; then',
     '  shift',
-    `  exec ${quotePosix(nodePath)} ${quotePosix(cliPath)} runtime-host service cleanup-deployment "$@" --client-data-root ${quotePosix(clientDataRoot)}`,
+    `  exec ${quotePosix(nodePath)} ${quotePosix(cliPath)} runtime-host service cleanup-deployment "$@" --client-data-root ${quotePosix(clientDataRoot)} --managed-root-id ${quotePosix(managedRootId)}`,
     'fi',
     'if [ "$#" -ge 1 ] && [ "$1" = "access" ]; then',
     '  shift',
@@ -247,7 +256,11 @@ async function writeOperatorLauncher(
     '  shift',
     `  exec ${quotePosix(nodePath)} ${quotePosix(cliPath)} runtime-host activate "$@"`,
     'fi',
-    `exec ${quotePosix(nodePath)} ${quotePosix(cliPath)} runtime-host service "$@" --client-data-root ${quotePosix(clientDataRoot)}`,
+    'if [ "$#" -ge 1 ] && [ "$1" = "serve" ]; then',
+    '  shift',
+    `  exec ${quotePosix(nodePath)} ${quotePosix(cliPath)} runtime-host serve "$@"`,
+    'fi',
+    `exec ${quotePosix(nodePath)} ${quotePosix(cliPath)} runtime-host service "$@" --client-data-root ${quotePosix(clientDataRoot)} --managed-root-id ${quotePosix(managedRootId)}`,
     '',
   ].join('\n');
   try {

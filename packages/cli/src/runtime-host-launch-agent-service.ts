@@ -42,6 +42,12 @@ import {
   runRuntimeHostServiceManagerCommand,
   type RuntimeHostServiceManagerCommandResult,
 } from './runtime-host-service-manager-process.js';
+import {
+  assertRuntimeHostProviderDefinition,
+  type RuntimeHostLifecycleProvider,
+  type RuntimeHostProviderDefinition,
+  type RuntimeHostSupervisorStatus,
+} from './runtime-host-lifecycle-provider.js';
 
 const SERVICE_EXIT_TIMEOUT_SECONDS = 45;
 const SERVICE_BOOTOUT_TIMEOUT_MS = (SERVICE_EXIT_TIMEOUT_SECONDS + 5) * 1_000;
@@ -227,19 +233,100 @@ export function createLaunchAgentRuntimeHostService(
     },
     uninstall: async () => {
       await removeLaunchAgentUpdateScheduler(scheduler);
-      await bootoutLaunchAgent(context);
-      await Promise.all([
-        removeRuntimeHostServiceFile(context.plistPath, 'LaunchAgent plist'),
-        removeRuntimeHostServiceFile(context.stdoutPath, 'LaunchAgent stdout log'),
-        removeRuntimeHostServiceFile(context.stderrPath, 'LaunchAgent stderr log'),
-      ]);
-      const after = await readStatus();
-      if (after.installed || after.active || after.enabled) {
-        throw new RuntimeHostServiceManagerError(
-          'uninstall_incomplete',
-          `Runtime Host LaunchAgent still has managed state: ${after.state}`,
+      await uninstallLaunchAgentSupervisor(context);
+    },
+  };
+}
+
+export function createLaunchAgentRuntimeHostLifecycleProvider(
+  serviceId: string,
+  options: Omit<LaunchAgentServiceOptions, 'serviceConfigPath'> = {},
+): RuntimeHostLifecycleProvider {
+  const homeDir = options.homeDir ?? homedir();
+  const uid = options.uid ?? process.getuid?.();
+  if (uid === undefined || !Number.isSafeInteger(uid) || uid < 0) {
+    throw new RuntimeHostServiceManagerError(
+      'service_manager_unavailable',
+      'The current macOS user identity could not be determined',
+    );
+  }
+  const runLaunchctl = options.runLaunchctl ?? defaultRunLaunchctl;
+  const isProcessAlive = options.isProcessAlive ?? defaultIsProcessAlive;
+  const label = resolveLaunchAgentLabel(serviceId);
+  const context: LaunchAgentContext = {
+    domain: `gui/${String(uid)}`,
+    label,
+    serviceTarget: `gui/${String(uid)}/${label}`,
+    plistPath: resolveLaunchAgentPath(serviceId, homeDir),
+    stdoutPath: resolveLaunchAgentLogPath(serviceId, 'stdout', homeDir),
+    stderrPath: resolveLaunchAgentLogPath(serviceId, 'stderr', homeDir),
+    runLaunchctl,
+    isProcessAlive,
+  };
+  const scheduler = resolveLaunchAgentUpdateSchedulerContext(
+    serviceId,
+    homeDir,
+    uid,
+    runLaunchctl,
+    isProcessAlive,
+  );
+  const status = async (): Promise<RuntimeHostSupervisorStatus> => {
+    const {
+      loaded: _loaded,
+      manager: _manager,
+      ...observed
+    } = await readLaunchAgentStatus(context);
+    return { provider: 'launch_agent', ...observed };
+  };
+  return {
+    supervisor: {
+      provider: 'launch_agent',
+      preflight: () => assertLaunchAgentDomain(context),
+      converge: async (definition) => {
+        assertRuntimeHostProviderDefinition(definition);
+        await bootoutLaunchAgent(context);
+        await prepareLaunchAgentLogs(context);
+        await writeRuntimeHostServiceFile(
+          context.plistPath,
+          renderLaunchAgentSupervisorDefinition(definition, context),
+          0o600,
         );
-      }
+      },
+      verify: (definition) => verifyLaunchAgentSupervisorDefinition(context, definition),
+      status,
+      activate: () => startLaunchAgent(context),
+      retire: () => bootoutLaunchAgent(context),
+      logs: async () =>
+        formatRuntimeHostServiceLogs([
+          { label: 'stdout', logs: await readLogTail(context.stdoutPath) },
+          { label: 'stderr', logs: await readLogTail(context.stderrPath) },
+        ]),
+      uninstall: () => uninstallLaunchAgentSupervisor(context),
+    },
+    reconciliationTrigger: {
+      provider: 'launch_agent_timer',
+      converge: async (definition) => {
+        assertRuntimeHostProviderDefinition(definition);
+        await bootoutLaunchAgent(scheduler);
+        await prepareLaunchAgentLogs(scheduler);
+        await writeRuntimeHostServiceFile(
+          scheduler.plistPath,
+          renderLaunchAgentReconciliationDefinition(definition, scheduler),
+          0o600,
+        );
+      },
+      verify: (definition) => verifyLaunchAgentReconciliationDefinition(scheduler, definition),
+      status: async () => {
+        const observed = await readLaunchAgentStatus(scheduler);
+        return { installed: observed.installed, active: observed.loaded };
+      },
+      activate: () => ensureLaunchAgentLoadedIfInstalled(scheduler),
+      logs: async () =>
+        formatRuntimeHostServiceLogs([
+          { label: 'stdout', logs: await readLogTail(scheduler.stdoutPath) },
+          { label: 'stderr', logs: await readLogTail(scheduler.stderrPath) },
+        ]),
+      uninstall: () => removeLaunchAgentUpdateScheduler(scheduler),
     },
   };
 }
@@ -266,6 +353,14 @@ export function renderLaunchAgentPlist(
     runtimeHostServiceLaunchArguments(config, serviceConfigPath),
     paths,
   );
+}
+
+export function renderLaunchAgentSupervisorDefinition(
+  definition: RuntimeHostProviderDefinition,
+  paths: Pick<LaunchAgentContext, 'label' | 'stdoutPath' | 'stderrPath'>,
+): string {
+  assertRuntimeHostProviderDefinition(definition);
+  return renderLaunchAgentPlistWithArguments(definition.command, paths);
 }
 
 function launchAgentPlistMatchesConfig(
@@ -328,6 +423,21 @@ export function renderLaunchAgentUpdatePlist(
 ): string {
   const args = runtimeHostUpdateReconcileLaunchArguments(config);
   if (!args) throw new TypeError('Managed deployment root is required for update scheduling');
+  return renderLaunchAgentUpdatePlistWithArguments(args, paths);
+}
+
+export function renderLaunchAgentReconciliationDefinition(
+  definition: RuntimeHostProviderDefinition,
+  paths: Pick<LaunchAgentContext, 'label' | 'stdoutPath' | 'stderrPath'>,
+): string {
+  assertRuntimeHostProviderDefinition(definition);
+  return renderLaunchAgentUpdatePlistWithArguments(definition.command, paths);
+}
+
+function renderLaunchAgentUpdatePlistWithArguments(
+  args: readonly string[],
+  paths: Pick<LaunchAgentContext, 'label' | 'stdoutPath' | 'stderrPath'>,
+): string {
   const stringEntry = (value: string) => `    <string>${escapeXml(value)}</string>`;
   return [
     '<?xml version="1.0" encoding="UTF-8"?>',
@@ -559,6 +669,62 @@ function launchAgentSchedulerMismatch(): RuntimeHostServiceManagerError {
     'target_mismatch',
     'The Runtime Host update scheduler does not match its managed deployment',
   );
+}
+
+async function verifyLaunchAgentSupervisorDefinition(
+  context: LaunchAgentContext,
+  definition: RuntimeHostProviderDefinition,
+): Promise<void> {
+  assertRuntimeHostProviderDefinition(definition);
+  const [status, plist] = await Promise.all([
+    readLaunchAgentStatus(context),
+    readFile(context.plistPath, 'utf8').catch((error: unknown) => {
+      if (isNodeError(error, 'ENOENT')) return null;
+      throw error;
+    }),
+  ]);
+  if (!status.installed || plist !== renderLaunchAgentSupervisorDefinition(definition, context)) {
+    throw new RuntimeHostServiceManagerError(
+      'target_mismatch',
+      'The LaunchAgent supervisor does not match its managed deployment',
+    );
+  }
+}
+
+async function verifyLaunchAgentReconciliationDefinition(
+  context: LaunchAgentContext,
+  definition: RuntimeHostProviderDefinition,
+): Promise<void> {
+  assertRuntimeHostProviderDefinition(definition);
+  const [status, plist] = await Promise.all([
+    readLaunchAgentStatus(context),
+    readFile(context.plistPath, 'utf8').catch((error: unknown) => {
+      if (isNodeError(error, 'ENOENT')) return null;
+      throw error;
+    }),
+  ]);
+  if (
+    !status.installed ||
+    plist !== renderLaunchAgentReconciliationDefinition(definition, context)
+  ) {
+    throw launchAgentSchedulerMismatch();
+  }
+}
+
+async function uninstallLaunchAgentSupervisor(context: LaunchAgentContext): Promise<void> {
+  await bootoutLaunchAgent(context);
+  await Promise.all([
+    removeRuntimeHostServiceFile(context.plistPath, 'LaunchAgent plist'),
+    removeRuntimeHostServiceFile(context.stdoutPath, 'LaunchAgent stdout log'),
+    removeRuntimeHostServiceFile(context.stderrPath, 'LaunchAgent stderr log'),
+  ]);
+  const after = await readLaunchAgentStatus(context);
+  if (after.installed || after.active || after.enabled) {
+    throw new RuntimeHostServiceManagerError(
+      'uninstall_incomplete',
+      `Runtime Host LaunchAgent still has managed state: ${after.state}`,
+    );
+  }
 }
 
 function isTargetMismatch(error: unknown): boolean {
