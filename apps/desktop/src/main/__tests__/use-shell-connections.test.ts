@@ -192,6 +192,7 @@ test('invalidates stale connection choices until the current refresh succeeds', 
     },
   };
   let current!: ReturnType<typeof useShellConnections>;
+  const projectionStatus = () => current.projection.status;
 
   function Probe() {
     current = useShellConnections({
@@ -211,7 +212,7 @@ test('invalidates stale connection choices until the current refresh succeeds', 
     refreshes[0]?.resolve(snapshot('stale-connection'));
     await refreshes[0]?.promise;
   });
-  assert.equal(current.hasSnapshot, true);
+  assert.equal(projectionStatus(), 'ready');
   assert.equal(current.snapshot.defaultConnection, 'stale-connection');
 
   let failedRefresh!: Promise<void>;
@@ -219,22 +220,22 @@ test('invalidates stale connection choices until the current refresh succeeds', 
     failedRefresh = current.refreshConnections();
     await Promise.resolve();
   });
-  assert.equal(current.hasSnapshot, false, 'a pending refresh must hide stale choices');
+  assert.equal(projectionStatus(), 'refreshing', 'a pending refresh must hide stale choices');
   assert.deepEqual(current.snapshot, EMPTY);
   await act(async () => {
     current.seedSnapshot(snapshot('stale-onboarding-seed'));
     await Promise.resolve();
   });
   assert.equal(
-    current.hasSnapshot,
-    false,
+    projectionStatus(),
+    'refreshing',
     'an onboarding seed must not repopulate a projection invalidated by refresh',
   );
   await act(async () => {
     refreshes[1]?.reject(new Error('refresh failed'));
     await failedRefresh;
   });
-  assert.equal(current.hasSnapshot, false, 'a failed refresh must remain unsettled');
+  assert.equal(projectionStatus(), 'refreshing', 'a failed refresh must remain unsettled');
 
   let recoveredRefresh!: Promise<void>;
   await act(async () => {
@@ -243,7 +244,7 @@ test('invalidates stale connection choices until the current refresh succeeds', 
     refreshes[2]?.resolve(snapshot('replacement-connection'));
     await recoveredRefresh;
   });
-  assert.equal(current.hasSnapshot, true);
+  assert.equal(projectionStatus(), 'ready');
   assert.equal(current.snapshot.defaultConnection, 'replacement-connection');
 });
 
@@ -293,7 +294,7 @@ test('an older failed refresh cannot erase a newer successful snapshot', async (
     refreshes[1]?.reject(new Error('older refresh failed'));
     await older;
   });
-  assert.equal(current.hasSnapshot, true);
+  assert.equal(current.projection.status, 'ready');
   assert.equal(current.snapshot.defaultConnection, 'newest-connection');
 
   await act(async () => {
@@ -337,7 +338,7 @@ test('a previous Host refresh failure cannot erase the current Host snapshot', a
     pendingA.reject(new Error('old Host failed'));
     await pendingA.promise.catch(() => undefined);
   });
-  assert.equal(current.hasSnapshot, true);
+  assert.equal(current.projection.status, 'ready');
   assert.equal(current.snapshot.defaultConnection, 'connection-b');
 });
 

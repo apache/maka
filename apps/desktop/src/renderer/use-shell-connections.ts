@@ -53,6 +53,14 @@ type ShellConnectionTarget =
   | { readonly kind: 'new-task'; readonly host?: DesktopNewTaskHostRef }
   | { readonly kind: 'session'; readonly sessionId?: string };
 
+type StoredShellConnectionProjection =
+  | { readonly status: 'refreshing' }
+  | { readonly status: 'ready'; readonly snapshot: DesktopConnectionSnapshot };
+
+export type ShellConnectionProjection =
+  | { readonly status: 'unrequested' }
+  | StoredShellConnectionProjection;
+
 /**
  * Owns one Host's atomic connection projection and refresh lifecycle.
  */
@@ -62,8 +70,7 @@ export function useShellConnections(options: {
   target: ShellConnectionTarget;
 }): {
   snapshot: DesktopConnectionSnapshot;
-  hasSnapshot: boolean;
-  hasProjectionState: boolean;
+  projection: ShellConnectionProjection;
   seedSnapshot: (next: DesktopConnectionSnapshot) => void;
   refreshConnections: () => Promise<void>;
   handleConnectionEvent: (event: ConnectionEvent) => void;
@@ -75,8 +82,8 @@ export function useShellConnections(options: {
   useLayoutEffect(() => {
     currentKey.current = snapshotKey;
   }, [snapshotKey]);
-  const [snapshots, setSnapshots] = useState(
-    () => new Map<string, DesktopConnectionSnapshot | null>(),
+  const [projections, setProjections] = useState(
+    () => new Map<string, StoredShellConnectionProjection>(),
   );
   const refreshSequence = useRef(new Map<string, number>());
 
@@ -85,8 +92,10 @@ export function useShellConnections(options: {
   }, [snapshotKey]);
 
   function seedSnapshot(next: DesktopConnectionSnapshot) {
-    setSnapshots((previous) =>
-      previous.has(snapshotKey) ? previous : new Map(previous).set(snapshotKey, next),
+    setProjections((previous) =>
+      previous.has(snapshotKey)
+        ? previous
+        : new Map(previous).set(snapshotKey, { status: 'ready', snapshot: next }),
     );
   }
 
@@ -99,7 +108,7 @@ export function useShellConnections(options: {
     // A refresh means the Host catalog may already have changed. Stop exposing
     // its previous mutation targets immediately; only a successful current read
     // may make this key settled again.
-    setSnapshots((previous) => new Map(previous).set(key, null));
+    setProjections((previous) => new Map(previous).set(key, { status: 'refreshing' }));
     try {
       let next: DesktopConnectionSnapshot;
       if (target.kind === 'session' && target.sessionId) {
@@ -114,7 +123,9 @@ export function useShellConnections(options: {
         ).value;
       } else return;
       if (refreshSequence.current.get(key) !== sequence) return;
-      setSnapshots((previous) => new Map(previous).set(key, next));
+      setProjections((previous) =>
+        new Map(previous).set(key, { status: 'ready', snapshot: next }),
+      );
     } catch (error) {
       if (
         refreshSequence.current.get(key) !== sequence ||
@@ -142,10 +153,10 @@ export function useShellConnections(options: {
     }
   }
 
+  const projection = projections.get(snapshotKey) ?? { status: 'unrequested' as const };
   return {
-    snapshot: snapshots.get(snapshotKey) ?? EMPTY_SNAPSHOT,
-    hasSnapshot: snapshots.get(snapshotKey) != null,
-    hasProjectionState: snapshots.has(snapshotKey),
+    snapshot: projection.status === 'ready' ? projection.snapshot : EMPTY_SNAPSHOT,
+    projection,
     seedSnapshot,
     refreshConnections,
     handleConnectionEvent,

@@ -64,6 +64,7 @@ import {
   type TurnFooterActionMeta,
   useToast,
   activeInteractionFor,
+  deriveComposerModelSwitchAvailability,
   deriveTitlebarProjectName,
   enqueueInteraction,
   reconcileInteractions,
@@ -562,10 +563,10 @@ function AppShellContent({
     initialOnboardingSnapshot ?? onboarding.mountedSnapshotHandoff;
   const newTaskUsesDefaultHost = taskEntry.selectors.usesDefaultHost;
   let newTaskConnectionSnapshot = newTaskConnections.snapshot;
-  if (!newTaskConnections.hasSnapshot && newTaskUsesDefaultHost) {
-    newTaskConnectionSnapshot = defaultHostConnections.hasSnapshot
+  if (newTaskConnections.projection.status !== 'ready' && newTaskUsesDefaultHost) {
+    newTaskConnectionSnapshot = defaultHostConnections.projection.status === 'ready'
       ? defaultHostConnections.snapshot
-      : !defaultHostConnections.hasProjectionState && startupConnectionSnapshot
+      : defaultHostConnections.projection.status === 'unrequested' && startupConnectionSnapshot
         ? {
             connections: startupConnectionSnapshot.connections,
             defaultConnection: startupConnectionSnapshot.defaultSlug,
@@ -867,6 +868,14 @@ function AppShellContent({
   const modelSettingsOwnsComposerHost =
     composerProfileId !== undefined &&
     composerProfileId === taskEntry.selectors.defaultProfileId;
+  const modelChangePending = activeId
+    ? pendingSessionModelBySession[activeId] === true
+    : false;
+  const modelSwitchAvailability = deriveComposerModelSwitchAvailability({
+    streaming: turnActive || activeStreamingLive,
+    sessionStatus: activeSession?.status,
+    pending: modelChangePending,
+  });
   const {
     chatModelChoices,
     activeConnection,
@@ -897,14 +906,10 @@ function AppShellContent({
     persistedComposerDefaults,
     usePersistedComposerDefaults: modelSettingsOwnsComposerHost,
     defaultThinkingLevel: taskEntry.selectors.selectedHost?.chatDefaults.thinkingLevel,
-    connectionSnapshotReady: activeId ? sessionHostConnections.hasSnapshot : true,
-    modelPickerDisabled: Boolean(
-      turnActive ||
-      activeStreamingLive ||
-      activeSession?.status === 'running' ||
-      activeSession?.status === 'waiting_for_user' ||
-      (activeId && pendingSessionModelBySession[activeId] === true)
-    ),
+    connectionSnapshotReady: activeId
+      ? sessionHostConnections.projection.status === 'ready'
+      : true,
+    modelPickerDisabled: !modelSwitchAvailability.available,
     openSettingsSection,
     openModelPicker: openComposerModelPicker,
     refreshModelChoices: sessionHostConnections.refreshConnections,
@@ -2971,7 +2976,7 @@ function AppShellContent({
                   modelSwitchHasHistory={modelSwitchHasHistory}
                   hideUnavailableCurrentModel={sessionHealthNotice?.onClickTarget === 'model_picker'}
                   renderProviderMark={(type) => <ProviderBrandMark type={type} />}
-                  modelChangePending={activeId ? pendingSessionModelBySession[activeId] === true : false}
+                  modelSwitchAvailability={modelSwitchAvailability}
                   onModelChange={(input) => setSessionModel(input)}
                   activeThinkingLevels={activeThinkingLevels}
                   activeThinkingLevel={activeThinkingLevel}
@@ -3075,7 +3080,7 @@ function AppShellContent({
                 activeProviderType={activeConnection?.providerType}
                 renderProviderMark={(type) => <ProviderLogo type={type} compact />}
                 modelChoices={chatModelChoices}
-                modelChangePending={activeId ? pendingSessionModelBySession[activeId] === true : false}
+                modelChangePending={modelChangePending}
                 onModelChange={(input) => setSessionModel(input)}
                 userLabel={userLabel}
                 memoryActive={memoryActive}

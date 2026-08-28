@@ -36,6 +36,40 @@
  * panel in isolation.
  */
 
+import type { SessionSummary } from '@maka/core/session';
+
+export type ComposerModelSwitchBlockReason =
+  | 'streaming'
+  | 'running'
+  | 'permission'
+  | 'pending';
+
+export type ComposerModelSwitchAvailability =
+  | { readonly available: true; readonly pending: false }
+  | {
+      readonly available: false;
+      readonly pending: boolean;
+      readonly reason: ComposerModelSwitchBlockReason;
+    };
+
+/** One model-picker availability contract shared by its host CTA and Composer. */
+export function deriveComposerModelSwitchAvailability(input: {
+  streaming?: boolean;
+  sessionStatus?: SessionSummary['status'];
+  pending?: boolean;
+}): ComposerModelSwitchAvailability {
+  const pending = input.pending === true;
+  if (input.streaming) return { available: false, pending, reason: 'streaming' };
+  if (input.sessionStatus === 'running') {
+    return { available: false, pending, reason: 'running' };
+  }
+  if (input.sessionStatus === 'waiting_for_user') {
+    return { available: false, pending, reason: 'permission' };
+  }
+  if (pending) return { available: false, pending: true, reason: 'pending' };
+  return { available: true, pending: false };
+}
+
 /**
  * Maximum number of characters retained for a single draft. Drafts
  * that grow past this limit keep only the trailing window so the

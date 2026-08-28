@@ -25,7 +25,12 @@ import { createRoot, type Root } from 'react-dom/client';
 import type { ChatModelChoice } from '@maka/core/chat-model-choice';
 import type { IdentifiedLlmConnection } from '@maka/core/llm-connections';
 import type { SessionSummary } from '@maka/core/session';
-import { Composer, LocaleProvider, type ComposerHandle } from '@maka/ui';
+import {
+  Composer,
+  deriveComposerModelSwitchAvailability,
+  LocaleProvider,
+  type ComposerHandle,
+} from '@maka/ui';
 import { SessionHealthRecoveryNotice } from '../../renderer/chat-recovery-notice.js';
 import { useComposerModelPickerAdapter } from '../../renderer/composer-model-picker-adapter.js';
 import { useShellChatModel } from '../../renderer/use-shell-chat-model.js';
@@ -86,12 +91,16 @@ let mountedRoot: Root | undefined;
 function RecoveryFlow(props: {
   choices: readonly ChatModelChoice[];
   snapshotReady: boolean;
-  pickerDisabled?: boolean;
+  streaming?: boolean;
   onRefresh: () => void;
   onOpenSettings: (section: string) => void;
 }) {
   const composerRef = useRef<ComposerHandle>(null);
   const openModelPicker = useComposerModelPickerAdapter(composerRef);
+  const modelSwitchAvailability = deriveComposerModelSwitchAvailability({
+    streaming: props.streaming,
+    sessionStatus: LEGACY_SESSION.status,
+  });
   const { sessionHealthNotice } = useShellChatModel({
     uiLocale: 'en',
     connections: [CONNECTION],
@@ -107,7 +116,7 @@ function RecoveryFlow(props: {
     persistedComposerDefaults: null,
     usePersistedComposerDefaults: false,
     connectionSnapshotReady: props.snapshotReady,
-    modelPickerDisabled: props.pickerDisabled ?? false,
+    modelPickerDisabled: !modelSwitchAvailability.available,
     openSettingsSection: props.onOpenSettings,
     openModelPicker,
     refreshModelChoices: props.onRefresh,
@@ -124,6 +133,8 @@ function RecoveryFlow(props: {
       createElement(Composer, {
         ref: composerRef,
         activeSession: LEGACY_SESSION,
+        streaming: props.streaming,
+        modelSwitchAvailability,
         modelChoices: [...props.choices],
         hideUnavailableCurrentModel: true,
         onModelChange: () => undefined,
@@ -208,7 +219,7 @@ test('a live-turn lock disables the recovery CTA and keeps the picker closed', a
   const flow = await renderFlow({
     choices: [CHOICE],
     snapshotReady: true,
-    pickerDisabled: true,
+    streaming: true,
     onRefresh: assert.fail,
     onOpenSettings: assert.fail,
   });

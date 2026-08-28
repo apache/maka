@@ -25,7 +25,31 @@ import { parseHTML } from 'linkedom';
 import type { ChatModelChoice } from '@maka/core/chat-model-choice';
 import type { SessionSummary } from '@maka/core/session';
 import { Composer, type ComposerHandle } from '../composer.js';
+import { deriveComposerModelSwitchAvailability } from '../composer-helpers.js';
 import { LocaleProvider } from '../locale-context.js';
+
+test('model switch availability has one priority-ordered contract', () => {
+  assert.deepEqual(
+    deriveComposerModelSwitchAvailability({ streaming: true, sessionStatus: 'running', pending: true }),
+    { available: false, pending: true, reason: 'streaming' },
+  );
+  assert.deepEqual(
+    deriveComposerModelSwitchAvailability({ sessionStatus: 'running', pending: true }),
+    { available: false, pending: true, reason: 'running' },
+  );
+  assert.deepEqual(
+    deriveComposerModelSwitchAvailability({ sessionStatus: 'waiting_for_user', pending: true }),
+    { available: false, pending: true, reason: 'permission' },
+  );
+  assert.deepEqual(
+    deriveComposerModelSwitchAvailability({ pending: true }),
+    { available: false, pending: true, reason: 'pending' },
+  );
+  assert.deepEqual(
+    deriveComposerModelSwitchAvailability({}),
+    { available: true, pending: false },
+  );
+});
 
 test('the recovery handle opens the existing exact account-and-model picker', async () => {
   const original = {
