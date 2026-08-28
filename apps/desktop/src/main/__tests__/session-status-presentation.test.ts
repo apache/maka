@@ -20,91 +20,30 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import {
-  deriveFailedTurnRecovery,
   describeTurnErrorClass,
+  deriveFailedTurnSeverity,
 } from '../../renderer/session-status-presentation.js';
 
-const outputFreeFailure = {
-  partialOutputRetained: false,
-  toolActivityCount: 0,
-  erroredToolCount: 0,
-};
-
-describe('failed turn recovery presentation', () => {
+describe('failed turn presentation', () => {
   it('presents persisted provider server errors as provider failures', () => {
-    assert.equal(describeTurnErrorClass('server_error', 'zh'), '模型服务返回错误');
-    assert.equal(describeTurnErrorClass('server_error', 'en'), 'Model service error');
+    assert.match(describeTurnErrorClass('server_error', 'zh'), /模型服务返回错误/);
+    assert.match(describeTurnErrorClass('server_error', 'en'), /model service returned an error/i);
   });
 
-  it('does not recommend a byte-identical retry after context overflow', () => {
-    assert.deepEqual(
-      deriveFailedTurnRecovery({ ...outputFreeFailure, errorClass: 'context_overflow' }, 'zh'),
-      { action: 'continue', label: '上下文仍超出限制，请减少附件或开启新任务' },
-    );
-    assert.deepEqual(
-      deriveFailedTurnRecovery({ ...outputFreeFailure, errorClass: 'context_overflow' }, 'en'),
-      {
-        action: 'continue',
-        label: 'Context is still too large; reduce attachments or start a new task',
-      },
-    );
+  it('states what to do without promising a resume the UI cannot offer', () => {
+    // The banner offers a button only for `app_restarted`; every other class
+    // has to point at the one action that always exists — send a message.
+    for (const errorClass of ['rate_limit', 'network', 'timeout', 'unknown_failure']) {
+      assert.match(describeTurnErrorClass(errorClass, 'zh'), /重新发消息|再发消息|发消息/);
+    }
   });
 
-  it('offers configuration or task recovery after runtime context exhaustion', () => {
-    assert.deepEqual(
-      deriveFailedTurnRecovery(
-        { ...outputFreeFailure, errorClass: 'context_budget_exhausted' },
-        'zh',
-      ),
-      {
-        action: 'check_connection',
-        label: '检查模型的上下文窗口设置、切换模型，或开启新任务',
-      },
-    );
-  });
-
-  it('keeps the generic retry fallback for an unknown output-free failure', () => {
-    assert.deepEqual(
-      deriveFailedTurnRecovery({ ...outputFreeFailure, errorClass: 'unknown_failure' }, 'en'),
-      { action: 'retry', label: 'No tools ran; retry directly' },
-    );
-  });
-
-  it('preserves higher-priority retained-output and tool guidance', () => {
-    assert.deepEqual(
-      deriveFailedTurnRecovery(
-        { ...outputFreeFailure, errorClass: 'context_overflow', partialOutputRetained: true },
-        'en',
-      ),
-      { action: 'continue', label: 'Partial output was retained; continue from here' },
-    );
-    assert.deepEqual(
-      deriveFailedTurnRecovery(
-        { ...outputFreeFailure, errorClass: 'context_overflow', toolActivityCount: 1 },
-        'en',
-      ),
-      { action: 'inspect_tool', label: 'Tool history was retained; inspect it before retrying' },
-    );
-    assert.deepEqual(
-      deriveFailedTurnRecovery(
-        { ...outputFreeFailure, errorClass: 'context_overflow', erroredToolCount: 1 },
-        'en',
-      ),
-      { action: 'inspect_tool', label: 'Inspect the tool result before retrying' },
-    );
-    assert.deepEqual(
-      deriveFailedTurnRecovery(
-        { ...outputFreeFailure, errorClass: 'provider_capacity', partialOutputRetained: true },
-        'en',
-      ),
-      { action: 'continue', label: 'Partial output was retained; continue from here' },
-    );
-    assert.deepEqual(
-      deriveFailedTurnRecovery(
-        { ...outputFreeFailure, errorClass: 'provider_capacity', toolActivityCount: 1 },
-        'en',
-      ),
-      { action: 'inspect_tool', label: 'Tool history was retained; inspect it before retrying' },
-    );
+  it('grades continuable outcomes below outcomes the user must act on', () => {
+    assert.equal(deriveFailedTurnSeverity('app_restarted'), 'warning');
+    assert.equal(deriveFailedTurnSeverity('tool_step_cap_reached'), 'warning');
+    assert.equal(deriveFailedTurnSeverity('permission_required'), 'warning');
+    assert.equal(deriveFailedTurnSeverity('auth'), 'error');
+    assert.equal(deriveFailedTurnSeverity('context_overflow'), 'error');
+    assert.equal(deriveFailedTurnSeverity(undefined), 'error');
   });
 });

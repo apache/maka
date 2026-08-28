@@ -22,7 +22,7 @@ import { describe, it } from 'node:test';
 
 import { describeSessionErrorReason } from '../../renderer/session-error-presentation.js';
 import { sessionEventErrorMessage } from '../../renderer/model-connection-errors.js';
-import { deriveFailedTurnRecovery, describeTurnErrorClass } from '../../renderer/session-status-presentation.js';
+import { describeTurnErrorClass } from '../../renderer/session-status-presentation.js';
 
 describe('provider capacity presentation', () => {
   it('uses capacity-specific copy instead of the unknown error fallback', () => {
@@ -31,15 +31,9 @@ describe('provider capacity presentation', () => {
   });
 
   it('does not recommend an immediate direct retry', () => {
-    const recovery = deriveFailedTurnRecovery({
-      errorClass: 'provider_capacity',
-      partialOutputRetained: false,
-      toolActivityCount: 0,
-      erroredToolCount: 0,
-    });
-    assert.equal(recovery.action, 'retry');
-    assert.match(recovery.label, /等待几分钟|切换模型/);
-    assert.doesNotMatch(recovery.label, /直接重试/);
+    const label = describeTurnErrorClass('provider_capacity');
+    assert.match(label, /等几分钟|换一个模型/);
+    assert.doesNotMatch(label, /直接重试/);
   });
 });
 

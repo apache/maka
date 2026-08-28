@@ -19,7 +19,7 @@
 
 import { memo, useEffect, useMemo, useRef, useState, type ComponentPropsWithoutRef, type ReactNode } from 'react';
 import { useMountedRef } from './use-mounted-ref.js';
-import { ICON_SIZE, AlertOctagon, Ban, Check, Copy, GitBranch, Info, Pencil, RefreshCcw, Timer } from './icons.js';
+import { ICON_SIZE, Ban, Check, Copy, GitBranch, Info, Pencil, RefreshCcw, Timer } from './icons.js';
 import { type ClipboardCopyPhase, useClipboardCopyFeedback } from './clipboard-feedback.js';
 import { Markdown } from './markdown.js';
 import {
@@ -397,12 +397,11 @@ export const TurnView = memo(function TurnView(props: {
    */
   failedReasonLabel?: string;
   /**
-   * PR-PawWork-run-incident-lite: pre-derived recovery guidance for a failed
-   * turn. Caller computes this from error class, retained partial output, and
-   * tool activity so the banner can distinguish "retry" from "inspect tool
-   * output first".
+   * How loud the failed-turn banner should be. Caller computes it from the
+   * error class; `warning` marks the outcomes the session can simply continue
+   * past. Defaults to `error` when a caller doesn't derive it.
    */
-  failedRecoveryLabel?: string;
+  failedSeverity?: 'error' | 'warning';
   safeResumeAction?: {
     pending: boolean;
     detail?: string;
@@ -660,31 +659,6 @@ export const TurnView = memo(function TurnView(props: {
                   <em>{turnAbortMarkerLabel(turn.abortSource, locale)}</em>
                 </Marker>
               )}
-              {ownsTurnChrome && turn.status === 'failed' && props.failedReasonLabel && (
-                <Marker variant="failed-banner" role="alert">
-                  <Marker as="span" variant="failed-icon" aria-hidden="true">
-                    <AlertOctagon size={ICON_SIZE.control} />
-                  </Marker>
-                  <span>{props.failedReasonLabel}</span>
-                  {(props.safeResumeAction?.detail ?? props.failedRecoveryLabel) && (
-                    <Marker as="span" variant="failed-recovery">
-                      {props.safeResumeAction?.detail ?? props.failedRecoveryLabel}
-                    </Marker>
-                  )}
-                  {props.safeResumeAction && (
-                    <UiButton
-                      variant="ghost"
-                      size="sm"
-                      className="maka-turn-failed-resume"
-                      isDisabled={props.safeResumeAction.pending}
-                      onClick={props.safeResumeAction.onResume}
-                      label={
-                        props.safeResumeAction.pending ? copy.safeResumePending : copy.safeResume
-                      }
-                    />
-                  )}
-                </Marker>
-              )}
               {/* The turn timeline is the rendering source of truth
                 (materialize.ts): each step's 深度思考 disclosure, answer bubble,
                 and Astryx tool group in the order the model produced them.
@@ -717,6 +691,38 @@ export const TurnView = memo(function TurnView(props: {
                     initialLiveContent={props.liveStreaming?.initialLiveContent}
                   />
                 ),
+              )}
+              {/* A failed turn's banner states the OUTCOME, so it belongs after
+                  the work it is the outcome of. It used to render above the
+                  timeline, where it read as a header on reasoning and tool
+                  calls that had in fact all succeeded. */}
+              {ownsTurnChrome && turn.status === 'failed' && props.failedReasonLabel && (
+                <Banner
+                  status={props.failedSeverity ?? 'error'}
+                  container="section"
+                  className="maka-turn-failed-banner"
+                  title={props.failedReasonLabel}
+                  {...(props.safeResumeAction?.detail
+                    ? { description: props.safeResumeAction.detail }
+                    : {})}
+                  {...(props.safeResumeAction
+                    ? {
+                        endContent: (
+                          <UiButton
+                            variant="ghost"
+                            size="sm"
+                            isDisabled={props.safeResumeAction.pending}
+                            onClick={props.safeResumeAction.onResume}
+                            label={
+                              props.safeResumeAction.pending
+                                ? copy.safeResumePending
+                                : copy.safeResume
+                            }
+                          />
+                        ),
+                      }
+                    : {})}
+                />
               )}
               {ownsTurnChrome && props.liveStreaming && (
                 <>
@@ -868,7 +874,7 @@ export interface TurnLineageBadge {
 export interface TurnPresentation {
   footerActionsByTurn: Record<string, ReadonlyArray<TurnFooterActionMeta>>;
   failedReasonLabels: Record<string, string>;
-  failedRecoveryLabels: Record<string, string>;
+  failedSeverities: Record<string, 'error' | 'warning'>;
   lineageBadgesByTurn: Record<string, TurnLineageBadge[]>;
   /** The turn a safe resume would restart, when the shell offers one. */
   resumeCandidateTurnId?: string;

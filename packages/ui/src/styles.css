@@ -757,8 +757,7 @@
 .maka-turn-status-icon { flex: 0 0 auto; }
 
 .maka-turn-aborted-marker,
-.maka-turn-host-origin,
-.maka-turn-failed-banner {
+.maka-turn-host-origin {
   font: var(--maka-text-supporting);
   display: inline-flex;
   width: fit-content;
@@ -787,23 +786,9 @@
   color: var(--muted-foreground);
 }
 
-.maka-turn-failed-banner {
-  flex-wrap: wrap;
-  gap: var(--space-1-5);
-  margin-block: var(--space-0-5) var(--space-1-5);
-  padding: var(--space-1) var(--space-2);
-  border: 1px solid oklch(from var(--destructive) l c h / 0.28);
-  background: oklch(from var(--destructive) l c h / 0.1);
-  color: var(--destructive);
-}
-
-.maka-turn-failed-icon { display: inline-flex; align-items: center; }
-.maka-turn-failed-recovery { color: var(--text-muted); }
-.maka-turn-failed-recovery::before {
-  margin-right: var(--space-1-5);
-  color: var(--foreground-alpha-16);
-  content: "·";
-}
+/* Astryx `Banner` paints the failed-turn surface; this only sets the block
+   rhythm between it and the timeline entry above it. */
+.maka-turn-failed-banner { margin-block: var(--space-1) var(--space-0-5); }
 
 .maka-turn-lineage-row,
 .maka-turn-footer {
