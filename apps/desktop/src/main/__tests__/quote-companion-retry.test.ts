@@ -229,6 +229,70 @@ async function renderOwnershipProbe(
   };
 }
 
+const REBOUND_MODEL: Partial<SessionSummary> = {
+  llmConnectionId: 'connection-2',
+  llmConnectionSlug: 'openai-2',
+  model: 'model-2',
+};
+
+function exactModelRebindScenario() {
+  const sourceA = session('source-session');
+  const sourceB = session('source-session', REBOUND_MODEL);
+  return {
+    sourceA,
+    sourceB,
+    forkB: session('side-conversation-b', REBOUND_MODEL),
+  };
+}
+
+function probeTree(
+  services: WorkbarServices,
+  sourceSession: SessionSummary,
+  modelChoices: readonly ChatModelChoice[] = [choiceFor(sourceSession)],
+) {
+  return createElement(WorkbarServicesProvider, {
+    services,
+    children: createElement(QuoteCompanionProbe, { sourceSession, modelChoices }),
+  });
+}
+
+async function rerenderProbeSource(
+  rendered: { root: Root; services: WorkbarServices },
+  sourceSession: SessionSummary,
+  modelChoices: readonly ChatModelChoice[] = [choiceFor(sourceSession)],
+) {
+  await act(async () => {
+    rendered.root.render(probeTree(rendered.services, sourceSession, modelChoices));
+    await Promise.resolve();
+  });
+}
+
+function ownershipProbeTree(
+  services: WorkbarServices,
+  sourceSession: SessionSummary,
+  onSend: (send: (text: string) => Promise<boolean>) => void,
+) {
+  return createElement(WorkbarServicesProvider, {
+    services,
+    children: createElement(QuoteCompanionOwnershipProbe, {
+      onSend,
+      sourceSession,
+      modelChoices: [choiceFor(sourceSession)],
+    }),
+  });
+}
+
+async function rerenderOwnershipSource(
+  rendered: { root: Root; services: WorkbarServices },
+  sourceSession: SessionSummary,
+  onSend: (send: (text: string) => Promise<boolean>) => void,
+) {
+  await act(async () => {
+    rendered.root.render(ownershipProbeTree(rendered.services, sourceSession, onSend));
+    await Promise.resolve();
+  });
+}
+
 afterEach(async () => {
   if (mountedRoot) {
     await act(async () => {
@@ -366,35 +430,14 @@ test('waits for the source model to become available before forking', async () =
   assert.equal(branchCount, 0);
   assert.equal(probe.getAttribute('data-companion-id'), '');
 
-  await act(async () => {
-    root.render(
-      createElement(WorkbarServicesProvider, {
-        services,
-        children: createElement(QuoteCompanionProbe, {
-          sourceSession: session('source-session'),
-          modelChoices: [choiceFor(session('source-session'))],
-        }),
-      }),
-    );
-    await Promise.resolve();
-  });
+  await rerenderProbeSource({ root, services }, session('source-session'));
   await waitUntil(() => probe.getAttribute('data-companion-id') === 'side-conversation');
 
   assert.equal(branchCount, 1);
 });
 
 test('replaces an empty companion whose exact model is no longer available', async () => {
-  const sourceA = session('source-session');
-  const sourceB = session('source-session', {
-    llmConnectionId: 'connection-2',
-    llmConnectionSlug: 'openai-2',
-    model: 'model-2',
-  });
-  const forkB = session('side-conversation-b', {
-    llmConnectionId: 'connection-2',
-    llmConnectionSlug: 'openai-2',
-    model: 'model-2',
-  });
+  const { sourceA, sourceB, forkB } = exactModelRebindScenario();
   let branchCount = 0;
   const cleaned: string[] = [];
   const { container, root, services } = await renderProbe(
@@ -421,18 +464,7 @@ test('replaces an empty companion whose exact model is no longer available', asy
   const probe = container.firstElementChild;
   assert.ok(probe);
 
-  await act(async () => {
-    root.render(
-      createElement(WorkbarServicesProvider, {
-        services,
-        children: createElement(QuoteCompanionProbe, {
-          sourceSession: sourceB,
-          modelChoices: [choiceFor(sourceB)],
-        }),
-      }),
-    );
-    await Promise.resolve();
-  });
+  await rerenderProbeSource({ root, services }, sourceB);
   await waitUntil(() => probe.getAttribute('data-companion-id') === forkB.id);
 
   assert.equal(branchCount, 2);
@@ -464,15 +496,7 @@ test('does not commit a fork whose model becomes unavailable during setup', asyn
   assert.ok(probe);
 
   await act(async () => {
-    root.render(
-      createElement(WorkbarServicesProvider, {
-        services,
-        children: createElement(QuoteCompanionProbe, {
-          sourceSession: source,
-          modelChoices: [],
-        }),
-      }),
-    );
+    root.render(probeTree(services, source, []));
     pendingFork.resolve(session('side-conversation-a'));
     await pendingFork.promise;
   });
@@ -483,17 +507,7 @@ test('does not commit a fork whose model becomes unavailable during setup', asyn
 });
 
 test('does not replace a fork while its send waits for observation readiness', async () => {
-  const sourceA = session('source-session');
-  const sourceB = session('source-session', {
-    llmConnectionId: 'connection-2',
-    llmConnectionSlug: 'openai-2',
-    model: 'model-2',
-  });
-  const forkB = session('side-conversation-b', {
-    llmConnectionId: 'connection-2',
-    llmConnectionSlug: 'openai-2',
-    model: 'model-2',
-  });
+  const { sourceA, sourceB, forkB } = exactModelRebindScenario();
   let branchCount = 0;
   let seedA: (() => void) | undefined;
   const cleaned: string[] = [];
@@ -532,16 +546,9 @@ test('does not replace a fork while its send waits for observation readiness', a
   await act(async () => {
     firstSend = currentSend('waiting send');
     await Promise.resolve();
-    rendered.root.render(
-      createElement(WorkbarServicesProvider, {
-        services: rendered.services,
-        children: createElement(QuoteCompanionOwnershipProbe, {
-          onSend: (send) => { currentSend = send; },
-          sourceSession: sourceB,
-          modelChoices: [choiceFor(sourceB)],
-        }),
-      }),
-    );
+    rendered.root.render(ownershipProbeTree(rendered.services, sourceB, (send) => {
+      currentSend = send;
+    }));
     await Promise.resolve();
   });
   assert.deepEqual(cleaned, [], 'the send lock must retain its fork');
@@ -564,17 +571,7 @@ test('does not replace a fork while its send waits for observation readiness', a
 });
 
 test('replaces an empty stale fork after its pending admission is retracted', async () => {
-  const sourceA = session('source-session');
-  const sourceB = session('source-session', {
-    llmConnectionId: 'connection-2',
-    llmConnectionSlug: 'openai-2',
-    model: 'model-2',
-  });
-  const forkB = session('side-conversation-b', {
-    llmConnectionId: 'connection-2',
-    llmConnectionSlug: 'openai-2',
-    model: 'model-2',
-  });
+  const { sourceA, sourceB, forkB } = exactModelRebindScenario();
   const pendingSend = deferred<{
     ok: true;
     steered: true;
@@ -615,19 +612,7 @@ test('replaces an empty stale fork after its pending admission is retracted', as
     await Promise.resolve();
   });
   await waitUntil(() => admissionId !== undefined);
-  await act(async () => {
-    rendered.root.render(
-      createElement(WorkbarServicesProvider, {
-        services: rendered.services,
-        children: createElement(QuoteCompanionOwnershipProbe, {
-          onSend: (send) => { currentSend = send; },
-          sourceSession: sourceB,
-          modelChoices: [choiceFor(sourceB)],
-        }),
-      }),
-    );
-    await Promise.resolve();
-  });
+  await rerenderOwnershipSource(rendered, sourceB, (send) => { currentSend = send; });
   assert.deepEqual(cleaned, [], 'pending admission must retain its fork');
 
   await act(async () => {
@@ -659,12 +644,7 @@ test('replaces an empty stale fork after its pending admission is retracted', as
 });
 
 test('retains an admitted fork interrupted before send settles when its model changes', async () => {
-  const sourceA = session('source-session');
-  const sourceB = session('source-session', {
-    llmConnectionId: 'connection-2',
-    llmConnectionSlug: 'openai-2',
-    model: 'model-2',
-  });
+  const { sourceA, sourceB } = exactModelRebindScenario();
   const pendingSend = deferred<{ ok: true; turnId: string }>();
   const pendingStop = deferred<undefined>();
   const cleaned: string[] = [];
@@ -724,19 +704,7 @@ test('retains an admitted fork interrupted before send settles when its model ch
   });
   await waitUntil(() => probe.getAttribute('data-live-turn-id') === '');
 
-  await act(async () => {
-    rendered.root.render(
-      createElement(WorkbarServicesProvider, {
-        services: rendered.services,
-        children: createElement(QuoteCompanionOwnershipProbe, {
-          onSend: (send) => { currentSend = send; },
-          sourceSession: sourceB,
-          modelChoices: [choiceFor(sourceB)],
-        }),
-      }),
-    );
-    await Promise.resolve();
-  });
+  await rerenderOwnershipSource(rendered, sourceB, (send) => { currentSend = send; });
   assert.equal(probe.getAttribute('data-companion-id'), 'side-conversation');
   assert.deepEqual(cleaned, [], 'Host-admitted content must never be replaced implicitly');
   assert.equal(branchCount, 1);
