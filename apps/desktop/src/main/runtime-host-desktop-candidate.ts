@@ -807,6 +807,7 @@ function connectInput(
       : { handshakeTimeoutMs: input.handshakeTimeoutMs }),
     ...(input.signal === undefined ? {} : { signal: input.signal }),
     ...(input.onExit === undefined ? {} : { onExit: input.onExit }),
+    closeOnLauncherExit: true,
   };
 }
 
