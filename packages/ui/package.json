@@ -26,14 +26,14 @@
     "@astryxdesign/core": "0.5.0",
     "@maka/core": "0.1.0",
     "clsx": "^2.1.1",
-    "lucide-react": "^1.33.0",
-    "mermaid": "^11.17.0",
+    "lucide-react": "^1.34.0",
+    "mermaid": "^11.17.1",
     "react": "^19.2.8",
     "react-dom": "^19.2.8"
   },
   "devDependencies": {
     "@types/react": "^19.2.18",
-    "@types/react-dom": "^19.2.4",
+    "@types/react-dom": "^19.2.5",
     "linkedom": "^0.18.13"
   }
 }
