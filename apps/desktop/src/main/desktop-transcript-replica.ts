@@ -275,6 +275,13 @@ export class DesktopTranscriptReplica {
     });
     await this.#withDecodedPage(page, (decoded) => {
       this.#assertOpen();
+      // `#resident` can flip to false across the `await` above (a concurrent
+      // `discard()` reclaims memory for a non-visible session while the page is
+      // in flight). Re-anchoring here would repopulate durable state and undo
+      // the eviction, resurrecting a deliberately discarded replica past its
+      // memory budget. The paged catch-up guards its own post-await callback
+      // the same way; mirror it before mutating or publishing.
+      if (!this.#resident) return;
       this.#acceptRange(decoded.messages);
       if (
         decoded.messages.length > 0 &&
@@ -359,8 +366,16 @@ export class DesktopTranscriptReplica {
         return;
       }
       if (this.#hasNewer) {
-        this.#durableThrough = target;
-        this.#publish([], [], []);
+        // The resident window was trimmed off the tail (e.g. after loading
+        // older history, `#evictToBudget(..., 'newest')` set `#hasNewer`), so
+        // `target` cannot be appended contiguously to what is resident. Bumping
+        // the watermark and publishing an empty change here silently dropped
+        // the freshly persisted message: an already-open consumer never learned
+        // about it and only a fresh subscription (the user switching sessions
+        // and back) re-read it. Re-anchor to the newest window instead — the
+        // same recovery a fresh subscription performs — so the append reaches
+        // open consumers live.
+        await this.#replaceWithRange(target, target, 512 * 1024);
         return;
       }
       let cursor: string | null = null;

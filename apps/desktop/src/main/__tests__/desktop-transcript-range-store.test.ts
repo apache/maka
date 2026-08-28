@@ -256,6 +256,158 @@ test('keeps a bounded contiguous window while moving between history and the tai
   assert.ok(replica.residentBytes <= maxResidentBytes);
 });
 
+test('delivers a mid-session tail append even while a history window is resident', async () => {
+  // Reproduces the "active session does not show the newest message until you
+  // switch away and back" bug. Once the resident window has been trimmed off
+  // the tail (hasNewer === true, e.g. after loading older history), a Host
+  // `transcript_advanced` for a freshly persisted message must still reach an
+  // already-open consumer. Before the fix, `advance()` short-circuited on
+  // hasNewer and published an empty change, so the append was silently dropped
+  // and only a fresh subscription (session switch) re-read it.
+  const messages = [0, 1, 2, 3, 4].map((sequence) => ({
+    identity: sequence,
+    message: assistantMessage(String(sequence), `assistant-${sequence}`),
+  }));
+  const appended = { identity: 5, message: assistantMessage('5', 'assistant-5') };
+  const page = (nextCursor: string | null) => ({
+    kind: 'page' as const,
+    sessionId: 'session-1',
+    source: 'durable' as const,
+    direction: 'older' as const,
+    throughSequence: 4,
+    rawBytes: 1,
+    fragments: [],
+    nextCursor,
+  });
+  const bootstrapPage = page('older');
+  const olderPage = page('older');
+  // The tail reload after the append: a fresh newest window ending at seq 5,
+  // with older history still available below it.
+  const tailPage = { ...page('older'), throughSequence: 5 };
+  const changes: { durableUpserts: readonly { sequence: number }[] }[] = [];
+  const handle = runtimeHostSessionFixture({
+    snapshot: continuitySnapshot(),
+    transcript: Promise.resolve([]),
+    events: { async *[Symbol.asyncIterator]() {} },
+    transcriptBootstrap: {
+      throughSequence: 4,
+      overlayMessageCount: 0,
+      durable: bootstrapPage,
+      overlay: { ...page(null), source: 'overlay' },
+    },
+    loadTranscriptOverlay: async () => [],
+    decodeTranscriptPage: async (candidate) => candidate === bootstrapPage
+      ? { messages: messages.slice(3), nextCursor: 'older' }
+      : candidate === tailPage
+        ? { messages: [appended], nextCursor: 'older' }
+        : { messages: messages.slice(2, 4), nextCursor: 'older' },
+    loadTranscriptPage: async (input) => input.throughSequence === 5 ? tailPage : olderPage,
+    async close() {},
+  });
+  const maxResidentBytes = Buffer.byteLength(JSON.stringify(messages[0]!.message), 'utf8') + 1;
+  const replica = await DesktopTranscriptReplica.prepare(handle, {
+    maxResidentBytes,
+    onChange: (_replica, change) => changes.push(change),
+  });
+
+  await replica.loadBefore(4, 128 * 1024);
+  assert.equal(replica.snapshot().hasNewer, true);
+  changes.splice(0);
+
+  // The Host persists a new assistant message (sequence 5) and advances.
+  await replica.advance(5);
+
+  const upserts = changes.flatMap((change) => change.durableUpserts.map(({ sequence }) => sequence));
+  assert.ok(upserts.includes(5), 'the tail append must be delivered to open consumers');
+  assert.equal(replica.durableThrough, 5);
+});
+
+test('does not resurrect a discarded replica when a tail re-anchor is in flight', async () => {
+  // Guards the concurrency edge introduced by re-anchoring on `hasNewer`: the
+  // re-anchor now awaits a page load, and `discard()` (memory reclaim for a
+  // non-visible session) can run during that await. When the page resolves the
+  // replica must stay non-resident and empty — repopulating durable state here
+  // would undo the eviction and blow the memory bound.
+  const messages = [0, 1, 2, 3, 4].map((sequence) => ({
+    identity: sequence,
+    message: assistantMessage(String(sequence), `assistant-${sequence}`),
+  }));
+  const appended = { identity: 5, message: assistantMessage('5', 'assistant-5') };
+  const page = (nextCursor: string | null) => ({
+    kind: 'page' as const,
+    sessionId: 'session-1',
+    source: 'durable' as const,
+    direction: 'older' as const,
+    throughSequence: 4,
+    rawBytes: 1,
+    fragments: [],
+    nextCursor,
+  });
+  const bootstrapPage = page('older');
+  const olderPage = page('older');
+  const tailPage = { ...page('older'), throughSequence: 5 };
+  let releaseTail: () => void = () => {};
+  const tailGate = new Promise<void>((resolve) => {
+    releaseTail = resolve;
+  });
+  let signalTailEntered: () => void = () => {};
+  const tailEntered = new Promise<void>((resolve) => {
+    signalTailEntered = resolve;
+  });
+  const changes: { durableUpserts: readonly { sequence: number }[] }[] = [];
+  const handle = runtimeHostSessionFixture({
+    snapshot: continuitySnapshot(),
+    transcript: Promise.resolve([]),
+    events: { async *[Symbol.asyncIterator]() {} },
+    transcriptBootstrap: {
+      throughSequence: 4,
+      overlayMessageCount: 0,
+      durable: bootstrapPage,
+      overlay: { ...page(null), source: 'overlay' },
+    },
+    loadTranscriptOverlay: async () => [],
+    decodeTranscriptPage: async (candidate) => candidate === bootstrapPage
+      ? { messages: messages.slice(3), nextCursor: 'older' }
+      : candidate === tailPage
+        ? { messages: [appended], nextCursor: 'older' }
+        : { messages: messages.slice(2, 4), nextCursor: 'older' },
+    loadTranscriptPage: async (input) => {
+      if (input.throughSequence === 5) {
+        // Signal that catch-up is now parked inside the re-anchor's page await,
+        // so the test can `discard()` at exactly that point.
+        signalTailEntered();
+        await tailGate;
+        return tailPage;
+      }
+      return olderPage;
+    },
+    async close() {},
+  });
+  const maxResidentBytes = Buffer.byteLength(JSON.stringify(messages[0]!.message), 'utf8') + 1;
+  const replica = await DesktopTranscriptReplica.prepare(handle, {
+    maxResidentBytes,
+    onChange: (_replica, change) => changes.push(change),
+  });
+
+  await replica.loadBefore(4, 128 * 1024);
+  assert.equal(replica.snapshot().hasNewer, true);
+  changes.splice(0);
+
+  // Start the tail re-anchor; wait until catch-up is parked inside its page
+  // await, then reclaim memory before the page resolves.
+  const advancing = replica.advance(5);
+  await tailEntered;
+  replica.discard();
+  assert.equal(replica.resident, false);
+  releaseTail();
+  await advancing;
+
+  const upserts = changes.flatMap((change) => change.durableUpserts.map(({ sequence }) => sequence));
+  assert.ok(!upserts.includes(5), 'a discarded replica must not be repopulated by an in-flight re-anchor');
+  assert.equal(replica.resident, false);
+  assert.equal(replica.residentBytes, 0);
+});
+
 test('loads a history target with newer messages available below it', async () => {
   const messages = [0, 1, 2, 3, 4].map((sequence) => ({
     identity: sequence,
