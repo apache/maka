@@ -245,16 +245,12 @@
 .maka-turn-truncation-badge { display: flex; width: fit-content; margin-top: 6px; cursor: help; }
 .maka-deep-thinking { min-width: 0; }
 /* Reasoning uses the same safe Markdown pipeline as answers, then lowers its
-   visual weight inside the disclosure. The inset rule makes a long derivation
-   scannable without turning it into a second answer bubble. */
-.maka-chat-reasoning-content {
-  margin-block-start: 4px;
-  margin-inline-start: 22px;
-  padding: 2px 0 4px 12px;
-  border-inline-start: 2px solid color-mix(in oklch, var(--link) 32%, var(--border));
-  white-space: pre-wrap;
-  word-break: break-word;
-}
+   visual weight inside the disclosure. Body layout stays with the upstream
+   Astryx atoms (secondary color, 22px inline-start indent, no rail): the
+   #2645 inset added a 2px link-tinted border that visually outweighed the
+   muted text it framed, and its padding-top/inline-start were dead code —
+   the ejected component's higher-specificity atoms already own both. */
+.maka-chat-reasoning-content { white-space: pre-wrap; word-break: break-word; }
 .maka-deep-thinking [data-maka-contract="markdown"] .astryx-markdown {
   color: var(--muted-foreground);
   font: var(--maka-text-body);
