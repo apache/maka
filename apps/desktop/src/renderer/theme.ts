@@ -32,6 +32,7 @@ import {
   type ThemePalette,
   type ThemePreference,
 } from '@maka/core/settings';
+import { TYPE_SCALE_BASE_PX } from './astryx-theme/type-scale.js';
 import { safeLocalStorageGet, safeLocalStorageSet } from './browser-storage';
 import { compositeScrimOverBackground, parseCssRgbColor } from './titlebar-dim-color.js';
 
@@ -42,12 +43,13 @@ const DARK_CLASS = 'dark';
 // frame, same rationale as `maka-theme-v1`.
 const UI_FONT_SIZE_STORAGE_KEY = 'maka-ui-font-size-v1';
 const TERMINAL_FONT_SIZE_STORAGE_KEY = 'maka-terminal-font-size-v1';
-// The renderer type scale is generated from base 14 and every --font-size-*
+// The renderer type scale is generated from TYPE_SCALE_BASE_PX (the same
+// constant makaTheme.ts feeds into expandTypeScale) and every --font-size-*
 // token is rem, so the root font-size that reproduces a chosen base px is
-// `16 * px / 14`. At 14px that is the 16px browser default (no change); larger
-// values grow text, icons and rem spacing together.
+// `16 * px / base`. At the base that is the 16px browser default (no change);
+// other values scale what is rem-derived — text and Astryx's rem icon atoms —
+// while px-literal spacing and widths stay fixed.
 const BROWSER_ROOT_FONT_SIZE_PX = 16;
-const TYPE_SCALE_BASE_PX = 14;
 
 let currentUiFontSize: number = DEFAULT_UI_FONT_SIZE;
 let currentTerminalFontSize: number = DEFAULT_TERMINAL_FONT_SIZE;

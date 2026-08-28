@@ -365,9 +365,11 @@ export function appIconForTheme(
  * UI base font size in px, exposed as a numeric stepper like Codex's
  * "UI font size". The renderer's type scale is generated from base 14
  * (`makaTheme.ts`), and every `--font-size-*` token is `rem`, so the applied
- * document-root font-size scales proportionally as `16 * uiFontSize / 14` —
- * one value grows text, icons and rem spacing together (the deliberate UI-zoom
- * hook in `maka-tokens.css`), NOT the density hack removed in `makaTheme.ts`.
+ * document-root font-size scales proportionally as `16 * uiFontSize / 14`.
+ * This scales what is rem-derived — text and Astryx's rem-based icon atoms —
+ * while px-literal spacing and control widths stay fixed, which is why the
+ * range is clamped tightly around the base rather than offered as a free
+ * zoom. It is NOT the density hack removed in `makaTheme.ts`.
  *
  * Continuous within a clamped range: a wrong-typed value fails closed to the
  * default, an out-of-range number clamps to the nearest bound (a valid intent,
