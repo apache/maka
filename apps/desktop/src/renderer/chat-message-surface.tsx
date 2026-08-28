@@ -24,8 +24,6 @@ import { type OnboardingState } from '@maka/core/onboarding';
 import { type SettingsSection } from '@maka/core/settings';
 import { Skeleton } from '@astryxdesign/core';
 import {
-  Banner,
-  Button,
   ChatView,
   useUiLocale,
   type LiveContentActivationSnapshot,
@@ -41,6 +39,7 @@ import { getDesktopConversationCopy } from './locales/conversation-copy';
 import { selectLiveTurn } from './use-app-shell-session-ui-reads';
 import { useExternalStoreSelector } from './use-external-store-selector';
 import { useDeepResearchRun } from './use-deep-research-run';
+import { ChatRecoveryNotice } from './chat-recovery-notice';
 
 const selectShellRunRecord = (state: AppShellSessionUiState, sessionId: string | undefined) =>
   sessionId ? state.shellRunUpdatesBySession[sessionId] : undefined;
@@ -137,7 +136,7 @@ export function ChatMessageSurface({
   const copy = getShellCopy(locale).app;
   const transcriptCopy = getDesktopConversationCopy(locale).actions;
   // Configuration notices share the Settings label; identity recovery supplies
-  // its own label because it opens the composer's account-and-model picker.
+  // its own label because it opens the composer's connection-and-model picker.
   const goToModelsLabel = copy.goToModels;
   const handleWorkspaceRecovery = () => {
     const target = workspaceReadinessRecovery?.target;
@@ -254,54 +253,32 @@ export function ChatMessageSurface({
         } : undefined}
       />
       {taskReadinessNotice && (
-        <div className="maka-workspace-readiness-notice">
-          <Banner
-            status={taskReadinessNotice.tone === 'destructive' ? 'error' : 'warning'}
-            className="maka-workspace-readiness-notice-alert"
-            role="status"
-            title={taskReadinessNotice.title}
-            description={taskReadinessNotice.description}
-            endContent={onTaskReadinessAction ? <Button
-              label={taskReadinessNotice.actionLabel}
-              variant="ghost"
-              size="sm"
-              onClick={onTaskReadinessAction}
-            /> : undefined} />
-        </div>
+        <ChatRecoveryNotice
+          status={taskReadinessNotice.tone === 'destructive' ? 'error' : 'warning'}
+          title={taskReadinessNotice.title}
+          description={taskReadinessNotice.description}
+          actionLabel={taskReadinessNotice.actionLabel}
+          onAction={onTaskReadinessAction}
+        />
       )}
       {workspaceReadinessRecovery && (
-        <div className="maka-workspace-readiness-notice">
-          <Banner
-            status={workspaceReadinessRecovery.tone === 'destructive' ? 'error' : 'warning'}
-            className="maka-workspace-readiness-notice-alert"
-            role="status"
-            title={workspaceReadinessRecovery.title}
-            description={workspaceReadinessRecovery.description}
-            endContent={<Button
-              label={workspaceReadinessRecovery.actionLabel}
-              variant="ghost"
-              size="sm"
-              onClick={handleWorkspaceRecovery}
-            />} />
-        </div>
+        <ChatRecoveryNotice
+          status={workspaceReadinessRecovery.tone === 'destructive' ? 'error' : 'warning'}
+          title={workspaceReadinessRecovery.title}
+          description={workspaceReadinessRecovery.description}
+          actionLabel={workspaceReadinessRecovery.actionLabel}
+          onAction={handleWorkspaceRecovery}
+        />
       )}
       {sessionHealthNotice && (
-        <div className="maka-session-health-notice">
-          <Banner
-            status={sessionHealthNotice.tone === 'destructive' ? 'error' : sessionHealthNotice.tone === 'warning' ? 'warning' : 'info'}
-            className="maka-session-health-notice-alert"
-            role="status"
-            aria-label={sessionHealthNotice.tooltip ?? sessionHealthNotice.label}
-            title={sessionHealthNotice.label}
-            description={sessionHealthNotice.tooltip}
-            endContent={<Button
-              label={sessionHealthNotice.actionLabel ?? goToModelsLabel}
-              variant="ghost"
-              size="sm"
-              isDisabled={sessionHealthNotice.actionDisabled}
-              onClick={sessionHealthNotice.onClick}
-            />} />
-        </div>
+        <ChatRecoveryNotice
+          status={sessionHealthNotice.tone === 'destructive' ? 'error' : sessionHealthNotice.tone === 'warning' ? 'warning' : 'info'}
+          title={sessionHealthNotice.label}
+          description={sessionHealthNotice.tooltip}
+          actionLabel={sessionHealthNotice.actionLabel ?? goToModelsLabel}
+          actionDisabled={sessionHealthNotice.actionDisabled}
+          onAction={sessionHealthNotice.onClick}
+        />
       )}
     </>
   );

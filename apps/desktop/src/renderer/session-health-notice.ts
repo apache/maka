@@ -126,8 +126,8 @@ function blockedNotice(
     return {
       tone: 'destructive',
       label: copy.label,
-      tooltip: healthCopy.accountChoicesLoading.tooltip,
-      actionLabel: healthCopy.accountChoicesLoading.actionLabel,
+      tooltip: healthCopy.connectionChoicesLoading.tooltip,
+      actionLabel: healthCopy.connectionChoicesLoading.actionLabel,
       onClickTarget: 'model_choices_refresh',
     };
   }

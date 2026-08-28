@@ -1002,7 +1002,7 @@ const SHELL_COPY_BY_LOCALE = {
       modelSwitchedDescription: (from, to) => `${from} → ${to}`,
       modelFailedTitle: '切换模型失败',
       modelFallback: '模型暂时无法切换，请稍后重试。',
-      modelRecoveryHint: '如果该账号需要登录或 API Key，请到 设置 · 模型 补齐后重试。',
+      modelRecoveryHint: '如果所选连接需要登录或 API Key，请到 设置 · 模型 补齐后重试。',
       thinkingUpdatedTitle: '已更新思考级别',
       thinkingDefault: '默认',
       thinkingLabels: {
@@ -1529,7 +1529,7 @@ const SHELL_COPY_BY_LOCALE = {
       modelSwitchedDescription: (from, to) => `${from} → ${to}`,
       modelFailedTitle: 'Could not change model',
       modelFallback: 'The model could not be changed. Try again later.',
-      modelRecoveryHint: 'If this account needs sign-in or an API key, complete it in Settings · Models and try again.',
+      modelRecoveryHint: 'If the selected connection needs sign-in or an API key, complete it in Settings · Models and try again.',
       thinkingUpdatedTitle: 'Thinking level updated',
       thinkingDefault: 'Default',
       thinkingLabels: {

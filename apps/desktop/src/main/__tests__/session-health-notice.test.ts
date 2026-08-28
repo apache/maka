@@ -46,28 +46,35 @@ function blocked(
   });
 }
 
-test('legacy account recovery opens the existing model picker when choices exist', () => {
+test('legacy connection recovery opens the existing model picker when choices exist', () => {
   const notice = blocked('legacy_connection_identity', true);
   assert.equal(notice?.onClickTarget, 'model_picker');
-  assert.equal(notice?.actionLabel, 'Choose account');
-  assert.match(notice?.tooltip ?? '', /existing accounts and models/);
-  assert.match(notice?.tooltip ?? '', /sign-in or key in Settings · Models/);
+  assert.equal(notice?.label, 'Choose a model connection');
+  assert.equal(notice?.actionLabel, 'Choose connection and model');
+  assert.equal(
+    notice?.tooltip,
+    'This task comes from an older version. Choose the connection and model to use.',
+  );
 });
 
-test('legacy account recovery falls back to Models settings only when no choice exists', () => {
+test('legacy connection recovery falls back to Models settings only when no choice exists', () => {
   const notice = blocked('legacy_connection_identity', false);
   assert.equal(notice?.onClickTarget, 'models');
   assert.equal(notice?.actionLabel, undefined);
-  assert.match(notice?.tooltip ?? '', /No accounts are currently available/);
+  assert.equal(
+    notice?.tooltip,
+    'No connections are currently available. Add or enable one in Settings · Models first.',
+  );
 });
 
 test('an unsettled connection snapshot offers a reload instead of an empty picker', () => {
   const notice = blocked('legacy_connection_identity', false, false);
   assert.equal(notice?.onClickTarget, 'model_choices_refresh');
-  assert.equal(notice?.actionLabel, 'Reload accounts');
+  assert.equal(notice?.actionLabel, 'Reload connections');
+  assert.equal(notice?.tooltip, 'The connection list has not loaded yet.');
 });
 
-test('a live turn disables account selection until model switching is safe', () => {
+test('a live turn disables connection selection until model switching is safe', () => {
   const notice = deriveSessionHealthNotice({
     locale: 'en',
     session: legacySession,
