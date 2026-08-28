@@ -46,6 +46,7 @@ import { MakaUriContext } from './markdown.js';
 import { useUiLocale } from './locale-context.js';
 import { getSharedUiCopy } from './shared-ui-copy.js';
 import { MermaidDiagram } from './mermaid-diagram.js';
+import { prepareMarkdownMath } from './markdown-math.js';
 
 const BASE_MARKDOWN_COMPONENTS = {
   link: MarkdownLink,
@@ -129,10 +130,11 @@ export function MarkdownBody(props: {
   settledText?: string;
   density?: 'default' | 'compact';
 }) {
-  const safeText = neutralizeUnsafeMarkdownImages(props.text);
-  const settledText = props.settledText === undefined
-    ? undefined
-    : neutralizeUnsafeMarkdownImages(props.settledText);
+  const source = neutralizeUnsafeMarkdownImages(props.text);
+  const settledSource =
+    props.settledText === undefined ? undefined : neutralizeUnsafeMarkdownImages(props.settledText);
+  const prepared = prepareMarkdownMath(source, settledSource);
+  const safeText = prepared.text;
   const budgetedText = props.streaming ? safeText : applyMermaidRenderBudget(safeText);
   const density = props.density ?? 'default';
   const components = props.streaming
@@ -174,8 +176,9 @@ export function MarkdownBody(props: {
         // the one combination neither half of the argument asks for.
         density={density}
         components={components}
+        inlinePlugins={[prepared.plugin]}
         isStreaming={props.streaming}
-        settledText={settledText}
+        settledText={prepared.settledText}
       >
         {budgetedText}
       </AstryxMarkdown>

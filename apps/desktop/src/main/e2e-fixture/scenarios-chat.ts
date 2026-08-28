@@ -86,7 +86,14 @@ export function turnMessages(now: number): StoredMessage[] {
       turnId,
       ts: now - 9 * 60_000,
       text: '当前需要重点观察截图基线是否稳定、启用模型名单是否清晰，以及完整目录是否只在搜索时出现。',
-      thinking: { text: '确认关键 UI 状态和工具执行结果。' },
+      thinking: {
+        text: [
+          '**Calculating CRT Solution**',
+          '',
+          'First combine \\( n \\equiv 3 \\pmod 7 \\) with \\( n \\equiv 5 \\pmod {11} \\).',
+          'Then solve \\( 7a \\equiv 2 \\pmod {11} \\), giving \\( a \\equiv 5 \\pmod {11} \\).',
+        ].join('\n'),
+      },
       modelId: 'glm-5.1',
     },
     {

@@ -24,6 +24,7 @@ import type {
   SandboxBoundaryRequestEvent,
   UserQuestionRequestEvent,
   SessionEvent,
+  ShellRunSnapshotResult,
   ToolOutputStream,
   ToolResultContent,
 } from '@maka/core/events';
@@ -188,6 +189,8 @@ export type MakaPiTranscriptEntry =
       expanded: boolean;
       /** An internal shell-run poll retained for correlation but not displayed. */
       suppressed?: boolean;
+      /** Local-only Runtime Resource started by `!<command>`, never a model tool call. */
+      userOwned?: boolean;
     }
   | { kind: 'notice'; level: 'info' | 'error'; text: string };
 
@@ -333,12 +336,18 @@ export function applyShellRunViewUpdateToTranscript(
   const tool = findToolEntry(state, update.sourceToolCallId);
   const wasLive = isLiveShellRunCard(tool);
   const applied = applyShellRunUpdateToTranscript(state, update.sourceToolCallId, update.result);
-  if (tool && wasLive && isSettledShellRunCard(tool) && options?.announceSettle !== false) {
+  if (
+    tool &&
+    tool.userOwned !== true &&
+    wasLive &&
+    isSettledShellRunCard(tool) &&
+    options?.announceSettle !== false
+  ) {
     pushShellRunSettledNotice(state, tool);
   }
   if (
     !tool ||
-    tool.toolName !== 'Bash' ||
+    !isShellRunToolCard(tool) ||
     tool.result?.kind !== 'shell_run' ||
     tool.result.ref !== update.result.ref ||
     tool.result.revision !== update.result.revision ||
@@ -362,9 +371,33 @@ export function applyShellRunUpdateToTranscript(
   update: Extract<ToolResultContent, { kind: 'shell_run' }>,
 ): boolean {
   const tool = findToolEntry(state, sourceToolCallId);
-  if (!tool || tool.toolName !== 'Bash') return false;
+  if (!tool || !isShellRunToolCard(tool)) return false;
   if (tool.result?.kind === 'shell_run' && tool.result.ref !== update.ref) return false;
   return applyShellRunResult(tool, update);
+}
+
+/** Adds a local-only card for a `!<command>` resource without creating a model turn. */
+export function appendUserCommandToTranscript(
+  state: MakaPiTranscriptState,
+  input: { commandId: string; command: string; result: ShellRunSnapshotResult },
+): void {
+  state.entries.push({
+    kind: 'tool',
+    toolUseId: input.commandId,
+    toolName: 'User command',
+    title: 'User command',
+    input: { command: input.command },
+    result: input.result,
+    resultVersion: 1,
+    progress: createProgressBuffer(),
+    outputDeltas: createOutputBuffer(),
+    callStatus: toolResultActivityStatus(
+      input.result.status === 'failed' || input.result.status === 'timed_out',
+      input.result,
+    ),
+    expanded: true,
+    userOwned: true,
+  });
 }
 
 export function replaceTranscriptWithStoredMessages(
@@ -381,6 +414,7 @@ export function replaceTranscriptWithStoredMessages(
   // that dropped them would erase what the client just told the user.
   const isClientLocal = (entry: MakaPiTranscriptEntry): boolean =>
     entry.kind === 'notice' ||
+    (entry.kind === 'tool' && entry.userOwned === true) ||
     (entry.kind === 'user' && entry.transient === true && !durableMessageIds.has(entry.messageId));
   // A preserved entry keeps its place relative to the durable entry it
   // followed. With no durable entry ahead of it it stays at the head, unless
@@ -443,6 +477,12 @@ function transcriptEntryId(entry: MakaPiTranscriptEntry): string | undefined {
     default:
       return undefined;
   }
+}
+
+export function hasRunningUserCommand(state: MakaPiTranscriptState): boolean {
+  return state.entries.some(
+    (entry) => entry.kind === 'tool' && entry.userOwned === true && isLiveShellRunCard(entry),
+  );
 }
 
 /**
@@ -660,7 +700,9 @@ function expansionCandidates(
   kind: ExpansionEntryKind,
 ): Array<MakaPiToolEntry | MakaPiThinkingEntry> {
   return kind === 'tool'
-    ? state.entries.filter((entry): entry is MakaPiToolEntry => entry.kind === 'tool')
+    ? state.entries.filter(
+        (entry): entry is MakaPiToolEntry => entry.kind === 'tool' && entry.userOwned !== true,
+      )
     : state.entries.filter(
         (entry): entry is MakaPiThinkingEntry =>
           entry.kind === 'thinking' && Boolean(entry.text.trim()),
@@ -1965,6 +2007,10 @@ function unsuppressToolAtTail(state: MakaPiTranscriptState, tool: MakaPiToolEntr
   if (index < 0 || index === state.entries.length - 1) return;
   state.entries.splice(index, 1);
   state.entries.push(tool);
+}
+
+function isShellRunToolCard(tool: MakaPiToolEntry): boolean {
+  return tool.toolName === 'Bash' || tool.userOwned === true;
 }
 
 function createProgressBuffer(): BoundedChunkBuffer<string> {

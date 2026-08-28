@@ -53,6 +53,7 @@ import type {
   MakaSessionSwitchOptions,
   MakaSessionSwitchResult,
   MakaSubmitMessageOptions,
+  MakaTranscriptReplacementReason,
   RewindTarget,
   SessionResumeAvailability,
 } from '../session-driver.js';
@@ -235,6 +236,7 @@ describe('Maka Pi TUI runner', () => {
     await waitFor(() => plainTerminalOutput(terminal.output()).includes('快捷键'));
     const output = plainTerminalOutput(terminal.output());
     assert.match(output, /\/compact\s+— 压缩会话上下文/);
+    assert.match(output, /!<command> — 执行一次仅用户可见的 shell 命令/);
     assert.match(output, /Ctrl\+D — 输入为空时退出/);
 
     exitMaka(terminal);
@@ -244,6 +246,268 @@ describe('Maka Pi TUI runner', () => {
         throw new Error('TUI did not close during test cleanup');
       }),
     ]);
+  });
+
+  test('!<command> runs once without opening an agent turn', async () => {
+    const terminal = new FakeTerminal();
+    const driver = new UserCommandDriver();
+    const run = runMakaPiTui({
+      title: 'Maka',
+      driver,
+      cwd: '/repo',
+      model: 'claude-sonnet-4-5',
+      connectionSlug: 'claude-subscription',
+      permissionMode: 'ask',
+      terminal,
+    });
+
+    await waitForTuiPaint(terminal);
+    terminal.input('!pwd');
+    terminal.input('\r');
+    await waitFor(() => driver.commands.includes('pwd'));
+    await waitFor(() => plainTerminalOutput(terminal.output()).includes('User command'));
+    assert.deepEqual(driver.prompts, []);
+
+    exitMaka(terminal);
+    await run;
+  });
+
+  test('a second leading bang remains part of the shell command', async () => {
+    const terminal = new FakeTerminal();
+    const driver = new UserCommandDriver();
+    const run = runMakaPiTui({
+      title: 'Maka',
+      driver,
+      cwd: '/repo',
+      model: 'claude-sonnet-4-5',
+      connectionSlug: 'claude-subscription',
+      permissionMode: 'ask',
+      terminal,
+    });
+
+    await waitForTuiPaint(terminal);
+    terminal.input('!!pwd');
+    terminal.input('\r');
+    await waitFor(() => driver.commands.includes('!pwd'));
+    assert.deepEqual(driver.prompts, []);
+
+    exitMaka(terminal);
+    await run;
+  });
+
+  test('a submitted bare ! shows usage without starting a turn', async () => {
+    const terminal = new FakeTerminal();
+    const driver = new UserCommandDriver();
+    const run = runMakaPiTui({
+      title: 'Maka',
+      locale: 'zh',
+      driver,
+      cwd: '/repo',
+      model: 'claude-sonnet-4-5',
+      connectionSlug: 'claude-subscription',
+      permissionMode: 'ask',
+      terminal,
+    });
+
+    await waitForTuiPaint(terminal);
+    terminal.input('!');
+    terminal.input('\r');
+    await waitFor(() => plainTerminalOutput(terminal.output()).includes('Usage: !<command>'));
+    assert.deepEqual(driver.commands, []);
+    assert.deepEqual(driver.prompts, []);
+
+    exitMaka(terminal);
+    await run;
+  });
+
+  test('Ctrl-C stops a running user command without exiting the TUI', async () => {
+    const terminal = new FakeTerminal();
+    const driver = new RunningUserCommandDriver();
+    const run = runMakaPiTui({
+      title: 'Maka',
+      driver,
+      cwd: '/repo',
+      model: 'claude-sonnet-4-5',
+      connectionSlug: 'claude-subscription',
+      permissionMode: 'ask',
+      terminal,
+    });
+
+    await waitForTuiPaint(terminal);
+    terminal.input('!sleep 3600');
+    terminal.input('\r');
+    await waitFor(() => plainTerminalOutput(terminal.output()).includes('User command'));
+
+    terminal.input('\x03');
+    await waitFor(() => driver.stopUserCommandCalls === 1);
+    assert.equal(terminal.stopCalls, 0);
+
+    exitMaka(terminal);
+    await run;
+  });
+
+  test('a rejected startNewSession aborts /new with identity and transcript intact (#3210 review)', async () => {
+    const terminal = new FakeTerminal();
+    const driver = new SlashCommandDriver();
+    let attempted = 0;
+    driver.startNewSession = async () => {
+      attempted += 1;
+      // Mirrors the real driver: the barrier-aware user-command stop rejected,
+      // so the identity swap must not commit.
+      throw new Error('host_draining');
+    };
+    const run = runMakaPiTui({
+      title: 'Maka',
+      driver,
+      cwd: '/repo',
+      model: 'claude-sonnet-4-5',
+      connectionSlug: 'claude-subscription',
+      permissionMode: 'ask',
+      terminal,
+      listShellRunUpdates: async () => [],
+    });
+
+    await waitForTuiPaint(terminal);
+    const transcriptBefore = plainTerminalOutput(terminal.screenOutput());
+    terminal.input('/new');
+    terminal.input('\r');
+    await waitFor(() => attempted === 1);
+    await waitFor(() => plainTerminalOutput(terminal.output()).includes('host_draining'));
+
+    // Identity untouched…
+    assert.equal(driver.getSessionId(), 'session-1');
+    // …and the transcript was not wiped by the aborted /new.
+    assert.match(plainTerminalOutput(terminal.screenOutput()), /host_draining/);
+    assert.ok(transcriptBefore.length > 0);
+
+    exitMaka(terminal);
+    await run;
+  });
+
+  test('a rejected user-command stop hands Ctrl-C back to the exit chord (#3210)', async () => {
+    const terminal = new FakeTerminal();
+    const driver = new RejectingUserCommandStopDriver();
+    const processExitCodes: number[] = [];
+    const run = runMakaPiTui({
+      title: 'Maka',
+      driver,
+      cwd: '/repo',
+      model: 'claude-sonnet-4-5',
+      connectionSlug: 'claude-subscription',
+      permissionMode: 'ask',
+      terminal,
+      onProcessExit: (exitCode) => processExitCodes.push(exitCode),
+    });
+
+    await waitForTuiPaint(terminal);
+    terminal.input('!sleep 3600');
+    terminal.input('\r');
+    await waitFor(() => plainTerminalOutput(terminal.output()).includes('User command'));
+
+    // The first Ctrl+C is captured to stop the command, but the stop rejects:
+    // no terminal update is published, so the card still reads running.
+    terminal.input('\x03');
+    await waitFor(() => plainTerminalOutput(terminal.output()).includes('host_draining'));
+    assert.equal(driver.stopUserCommandCalls, 1);
+    assert.equal(terminal.stopCalls, 0);
+
+    // The capture must disarm: the next press shows the exit prompt and the
+    // one after exits.
+    terminal.input('\x03');
+    await waitFor(() =>
+      plainTerminalOutput(terminal.screenOutput()).includes('Press Ctrl+C again to exit.'),
+    );
+    assert.equal(driver.stopUserCommandCalls, 1);
+    assert.equal(terminal.stopCalls, 0);
+
+    terminal.input('\x03');
+    await run;
+    assert.deepEqual(processExitCodes, [0]);
+  });
+
+  test('a new user command re-arms Ctrl-C after an earlier stop rejection', async () => {
+    const terminal = new FakeTerminal();
+    const driver = new RejectingUserCommandStopDriver();
+    const run = runMakaPiTui({
+      title: 'Maka',
+      driver,
+      cwd: '/repo',
+      model: 'claude-sonnet-4-5',
+      connectionSlug: 'claude-subscription',
+      permissionMode: 'ask',
+      terminal,
+    });
+
+    await waitForTuiPaint(terminal);
+    terminal.input('!first');
+    terminal.input('\r');
+    await waitFor(() => driver.commands.length === 1);
+    terminal.input('\x03');
+    await waitFor(() => driver.stopUserCommandCalls === 1);
+
+    terminal.input('!second');
+    terminal.input('\r');
+    await waitFor(() => driver.commands.length === 2);
+    terminal.input('\x03');
+    await waitFor(() => driver.stopUserCommandCalls === 2);
+    assert.equal(terminal.stopCalls, 0);
+
+    exitMaka(terminal);
+    await run;
+  });
+
+  test('same-session reconnect keeps a user-command card for its terminal update', async () => {
+    const terminal = new FakeTerminal();
+    const driver = new RunningUserCommandDriver();
+    let publishShellRun: ((update: ShellRunUpdate) => void) | undefined;
+    const run = runMakaPiTui({
+      title: 'Maka',
+      driver,
+      cwd: '/repo',
+      model: 'claude-sonnet-4-5',
+      connectionSlug: 'claude-subscription',
+      permissionMode: 'ask',
+      terminal,
+      subscribeShellRunUpdates: (listener) => {
+        publishShellRun = listener;
+        return () => {
+          publishShellRun = undefined;
+        };
+      },
+    });
+
+    await waitForTuiPaint(terminal);
+    terminal.input('!printf done');
+    terminal.input('\r');
+    await waitFor(() => plainTerminalOutput(terminal.output()).includes('User command'));
+
+    driver.publishReconnect();
+    publishShellRun?.({
+      sessionId: 'session-1',
+      ownership: { kind: 'local' },
+      sourceTurnId: 'user-command-1',
+      sourceToolCallId: 'user-command-1',
+      result: {
+        kind: 'shell_run',
+        ref: 'maka://runtime/background-tasks/user-command-1',
+        mode: 'pipes',
+        status: 'completed',
+        cwd: '/repo',
+        cmd: 'printf done',
+        startedAt: 1,
+        updatedAt: 2,
+        completedAt: 2,
+        exitCode: 0,
+        revision: 2,
+        output: pipeOutput('done\n'),
+      },
+    });
+
+    await waitFor(() => plainTerminalOutput(terminal.screenOutput()).includes('done'));
+    assert.match(plainTerminalOutput(terminal.screenOutput()), /User command/);
+
+    exitMaka(terminal);
+    await run;
   });
 
   test('disables taskbar progress on Windows and Windows Terminal by default', () => {
@@ -6994,7 +7258,9 @@ abstract class FakeSessionDriver implements MakaSessionDriver {
     throw new Error('rewind not supported in this fake');
   }
 
-  startNewSession(): void {}
+  startNewSession(): Promise<void> {
+    return Promise.resolve();
+  }
 
   getSessionId(): string | null {
     return this.sessionId;
@@ -7110,6 +7376,26 @@ class SandboxBoundaryPromptDriver extends FakeSessionDriver {
     this.boundaryResponseWaiter = null;
     waiter?.();
   }
+  async renameSession(): Promise<void> {}
+  async setModel(): Promise<void> {}
+  async setPermissionMode(): Promise<void> {}
+  async setThinkingLevel(): Promise<void> {}
+  async switchSession(sessionId: string): Promise<MakaSessionSwitchResult> {
+    return switchResult(fakeSessionSummary(sessionId));
+  }
+
+  async listRewindTargets(): Promise<RewindTarget[]> {
+    return [];
+  }
+  async rewindToTurn(): Promise<MakaSessionRewindResult> {
+    throw new Error('rewind not supported in this fake');
+  }
+  startNewSession(): Promise<void> {
+    return Promise.resolve();
+  }
+  getSessionId(): string {
+    return 'session-1';
+  }
 }
 
 class UserQuestionPromptDriver extends FakeSessionDriver {
@@ -7153,6 +7439,12 @@ class UserQuestionPromptDriver extends FakeSessionDriver {
   async rewindToTurn(): Promise<MakaSessionRewindResult> {
     throw new Error('rewind not supported');
   }
+  startNewSession(): Promise<void> {
+    return Promise.resolve();
+  }
+  getSessionId(): string {
+    return 'session-1';
+  }
 }
 
 class InterruptibleTurnDriver extends FakeSessionDriver {
@@ -7187,6 +7479,28 @@ class InterruptibleTurnDriver extends FakeSessionDriver {
     this.stopCalls += 1;
     this.releaseTurn?.();
     this.releaseTurn = null;
+  }
+
+  async respondToSandboxBoundary(_response: SandboxBoundaryResponse): Promise<void> {}
+  async renameSession(): Promise<void> {}
+  async setModel(): Promise<void> {}
+  async setPermissionMode(): Promise<void> {}
+  async setThinkingLevel(): Promise<void> {}
+  async switchSession(sessionId: string): Promise<MakaSessionSwitchResult> {
+    return switchResult(fakeSessionSummary(sessionId));
+  }
+
+  async listRewindTargets(): Promise<RewindTarget[]> {
+    return [];
+  }
+  async rewindToTurn(): Promise<MakaSessionRewindResult> {
+    throw new Error('rewind not supported in this fake');
+  }
+  startNewSession(): Promise<void> {
+    return Promise.resolve();
+  }
+  getSessionId(): string {
+    return 'session-1';
   }
 }
 
@@ -7420,6 +7734,28 @@ class ToolOutputDriver extends FakeSessionDriver {
       ts: 3,
       stopReason: 'end_turn',
     };
+  }
+
+  async stop(): Promise<void> {}
+  async respondToSandboxBoundary(_response: SandboxBoundaryResponse): Promise<void> {}
+  async renameSession(): Promise<void> {}
+  async setModel(): Promise<void> {}
+  async setPermissionMode(): Promise<void> {}
+  async setThinkingLevel(): Promise<void> {}
+  async switchSession(sessionId: string): Promise<MakaSessionSwitchResult> {
+    return switchResult(fakeSessionSummary(sessionId));
+  }
+  async listRewindTargets(): Promise<RewindTarget[]> {
+    return [];
+  }
+  async rewindToTurn(): Promise<MakaSessionRewindResult> {
+    throw new Error('rewind not supported in this fake');
+  }
+  startNewSession(): Promise<void> {
+    return Promise.resolve();
+  }
+  getSessionId(): string {
+    return 'session-1';
   }
 }
 
@@ -7817,7 +8153,7 @@ class SlashCommandDriver extends FakeSessionDriver {
   async rewindToTurn(_turnId: string): Promise<MakaSessionRewindResult> {
     throw new Error('rewind not supported in this fake');
   }
-  startNewSession(): void {
+  async startNewSession(): Promise<void> {
     this.startNewSessionCalls += 1;
     this.sessionId = 'session-new';
     this.activeBoundaryDisplayMode = undefined;
@@ -7830,6 +8166,94 @@ class SlashCommandDriver extends FakeSessionDriver {
   }
   getPermissionMode(): PermissionMode {
     return this.activeBoundaryDisplayMode ?? 'ask';
+  }
+}
+
+class UserCommandDriver extends SlashCommandDriver {
+  readonly commands: string[] = [];
+
+  async runUserCommand(command: string) {
+    this.commands.push(command);
+    return {
+      commandId: `user-command-${this.commands.length}`,
+      result: {
+        kind: 'shell_run' as const,
+        ref: `maka://runtime/background-tasks/user-command-${this.commands.length}`,
+        mode: 'pipes' as const,
+        status: 'completed' as const,
+        cwd: '/repo',
+        cmd: command,
+        startedAt: 1,
+        updatedAt: 2,
+        completedAt: 2,
+        exitCode: 0,
+        revision: 1,
+        output: pipeOutput(command),
+      },
+      takeRacedUpdate: () => undefined,
+    };
+  }
+}
+
+class RunningUserCommandDriver extends SlashCommandDriver {
+  readonly commands: string[] = [];
+  stopUserCommandCalls = 0;
+  readonly #transcriptListeners = new Set<
+    (
+      sessionId: string,
+      turnId: string,
+      messages: StoredMessage[],
+      reason: MakaTranscriptReplacementReason,
+    ) => void
+  >();
+
+  async runUserCommand(command: string) {
+    this.commands.push(command);
+    return {
+      commandId: `user-command-${this.commands.length}`,
+      result: {
+        kind: 'shell_run' as const,
+        ref: `maka://runtime/background-tasks/user-command-${this.commands.length}`,
+        mode: 'pipes' as const,
+        status: 'running' as const,
+        cwd: '/repo',
+        cmd: command,
+        startedAt: 1,
+        updatedAt: 1,
+        revision: 1,
+        output: pipeOutput(''),
+      },
+      takeRacedUpdate: () => undefined,
+    };
+  }
+
+  async stopUserCommands(): Promise<void> {
+    this.stopUserCommandCalls += 1;
+  }
+
+  subscribeTranscriptReplacements(
+    listener: (
+      sessionId: string,
+      turnId: string,
+      messages: StoredMessage[],
+      reason: MakaTranscriptReplacementReason,
+    ) => void,
+  ): () => void {
+    this.#transcriptListeners.add(listener);
+    return () => this.#transcriptListeners.delete(listener);
+  }
+
+  publishReconnect(): void {
+    for (const listener of this.#transcriptListeners) {
+      listener('session-1', 'turn-1', [], 'reconnect');
+    }
+  }
+}
+
+class RejectingUserCommandStopDriver extends RunningUserCommandDriver {
+  override async stopUserCommands(): Promise<void> {
+    this.stopUserCommandCalls += 1;
+    if (this.stopUserCommandCalls === 1) throw new Error('host_draining');
   }
 }
 
@@ -8380,6 +8804,26 @@ class DeferredControlDriver extends FakeSessionDriver {
     this.resolveSetModel?.();
     this.resolveSetModel = null;
   }
+
+  async renameSession(): Promise<void> {}
+  async setPermissionMode(): Promise<void> {}
+  async setThinkingLevel(): Promise<void> {}
+  async switchSession(sessionId: string): Promise<MakaSessionSwitchResult> {
+    return switchResult(fakeSessionSummary(sessionId));
+  }
+
+  async listRewindTargets(): Promise<RewindTarget[]> {
+    return [];
+  }
+  async rewindToTurn(): Promise<MakaSessionRewindResult> {
+    throw new Error('rewind not supported in this fake');
+  }
+  startNewSession(): Promise<void> {
+    return Promise.resolve();
+  }
+  getSessionId(): string {
+    return 'session-1';
+  }
 }
 
 class RejectingSandboxBoundaryDriver extends FakeSessionDriver {
@@ -8411,6 +8855,27 @@ class RejectingSandboxBoundaryDriver extends FakeSessionDriver {
   async respondToSandboxBoundary(response: SandboxBoundaryResponse): Promise<void> {
     this.responses.push(response);
     throw new Error('sandbox boundary response rejected');
+  }
+
+  async renameSession(): Promise<void> {}
+  async setModel(): Promise<void> {}
+  async setPermissionMode(): Promise<void> {}
+  async setThinkingLevel(): Promise<void> {}
+  async switchSession(sessionId: string): Promise<MakaSessionSwitchResult> {
+    return switchResult(fakeSessionSummary(sessionId));
+  }
+
+  async listRewindTargets(): Promise<RewindTarget[]> {
+    return [];
+  }
+  async rewindToTurn(): Promise<MakaSessionRewindResult> {
+    throw new Error('rewind not supported in this fake');
+  }
+  startNewSession(): Promise<void> {
+    return Promise.resolve();
+  }
+  getSessionId(): string {
+    return 'session-1';
   }
 }
 
@@ -8468,6 +8933,27 @@ class SandboxBoundaryThenErrorDriver extends FakeSessionDriver {
 
   async respondToSandboxBoundary(_response: SandboxBoundaryResponse): Promise<void> {
     this.respondCalls += 1;
+  }
+
+  async renameSession(): Promise<void> {}
+  async setModel(): Promise<void> {}
+  async setPermissionMode(): Promise<void> {}
+  async setThinkingLevel(): Promise<void> {}
+  async switchSession(sessionId: string): Promise<MakaSessionSwitchResult> {
+    return switchResult(fakeSessionSummary(sessionId));
+  }
+
+  async listRewindTargets(): Promise<RewindTarget[]> {
+    return [];
+  }
+  async rewindToTurn(): Promise<MakaSessionRewindResult> {
+    throw new Error('rewind not supported in this fake');
+  }
+  startNewSession(): Promise<void> {
+    return Promise.resolve();
+  }
+  getSessionId(): string {
+    return 'session-1';
   }
 }
 

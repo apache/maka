@@ -178,6 +178,7 @@ packages/ui/src/inline-rename-input.tsx
 packages/ui/src/locale-context.tsx
 packages/ui/src/maka-wordmark.tsx
 packages/ui/src/markdown-body.tsx
+packages/ui/src/markdown-math.tsx
 packages/ui/src/markdown.tsx
 packages/ui/src/mermaid-diagram.tsx
 packages/ui/src/model-picker.tsx

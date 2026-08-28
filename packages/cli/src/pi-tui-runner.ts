@@ -95,9 +95,12 @@ import { SafeBoundaryResumeParkedError } from './runtime-host-session-driver.js'
 import {
   appendExpansionCollapseConfirmation,
   appendTurnFailureToTranscript,
+  appendUserCommandToTranscript,
   appendUserPrompt,
   applyMakaSessionEventToTranscript,
+  applyShellRunUpdateToTranscript,
   createMakaPiTranscriptState,
+  hasRunningUserCommand,
   activeSandboxBoundaryRequest,
   activeUserQuestionRequest,
   applyExpansionDefaultToAll,
@@ -437,6 +440,12 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
   // matching deliberately mirrors the editor's own per-chunk includes() checks,
   // so this flag agrees with what the editor will buffer.
   let editorPastePending = false;
+  // Set once a user-command stop rejects: a rejected stop publishes no
+  // terminal update, so the card would read running for the rest of the
+  // session and the branch below would capture every later Ctrl+C, hiding
+  // the exit chord. After a failure the capture disarms and Ctrl+C falls
+  // through to the normal idle handling (#3210).
+  let userCommandStopRejected = false;
   type AttachedTurnContext =
     | { readonly kind: 'adopted'; readonly turn: MakaPreparedSessionTurn }
     | { readonly kind: 'external'; readonly turn: MakaAttachedSessionTurn };
@@ -761,10 +770,15 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
   // Control commands (model/session/permission switches) mutate session state.
   // Run them through a single serial lock so a prompt submitted mid-switch can
   // not race the switch and land on the old session/model/permission mode.
-  const runControl = async (action: () => Promise<void>): Promise<void> => {
+  const runControl = async (
+    action: () => Promise<void>,
+    options: { readonly allowWhileBusy?: boolean } = {},
+  ): Promise<void> => {
     // Refuse nested control actions: an overlay onSelect bypasses editor.onSubmit,
     // so without this guard a switch could start while a prompt is still running.
-    if (busy) return;
+    // `/new` is the deliberate exception: stopping live user-owned commands IS
+    // its first step, so it must stay reachable while one runs (#3210 review).
+    if (busy && !options.allowWhileBusy) return;
     busy = true;
     const activity = beginActivity();
     editor.disableSubmit = true;
@@ -964,6 +978,20 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     const idleMs = Date.now() - lastActivityAt;
     editor.addToHistory(prompt);
     if (handleSlashCommand(prompt, idleMs)) return;
+    const userCommand = parseUserCommand(prompt);
+    if (userCommand !== undefined) {
+      if (!userCommand) {
+        state.entries.push({ kind: 'notice', level: 'error', text: 'Usage: !<command>' });
+        requestRender();
+        return;
+      }
+      if (input.firstRun) {
+        void showSetupWizard();
+        return;
+      }
+      void runControl(() => runUserCommand(userCommand));
+      return;
+    }
     // First-run has no connection, so the wizard is the only surface. This is
     // the single choke point for idle submits (Enter, Alt+Enter, steer
     // fallback): reopen the wizard instead of opening a turn against a
@@ -1122,6 +1150,16 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
       if (prompt.trim().split(/\s+/, 1)[0] === '/transcript') {
         editor.addToHistory(prompt);
         handleSlashCommand(prompt, 0);
+        return;
+      }
+      if (parseUserCommand(prompt) !== undefined) {
+        editor.addToHistory(prompt);
+        state.entries.push({
+          kind: 'notice',
+          level: 'error',
+          text: 'Cannot run a user command while a turn is running.',
+        });
+        requestRender();
         return;
       }
       const swarmCommand = parseSwarmCommand(prompt);
@@ -1474,6 +1512,22 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
       level: 'info',
       text: nextLevel ? `Thinking: ${nextLevel}` : 'Thinking: default',
     });
+    requestRender();
+  };
+
+  const runUserCommand = async (command: string): Promise<void> => {
+    if (!input.driver.runUserCommand) {
+      throw new Error('User commands are unavailable on this session driver.');
+    }
+    const started = await input.driver.runUserCommand(command);
+    appendUserCommandToTranscript(state, { command, ...started });
+    // A previous stop failure only disarms capture for the stranded command.
+    // A newly admitted command gets a fresh Ctrl+C stop attempt.
+    userCommandStopRejected = false;
+    const racedUpdate = started.takeRacedUpdate();
+    if (racedUpdate) {
+      applyShellRunUpdateToTranscript(state, started.commandId, racedUpdate);
+    }
     requestRender();
   };
 
@@ -2485,8 +2539,24 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     );
   };
 
-  const newSession = async (): Promise<void> => {
-    input.driver.startNewSession();
+  const newSession = async (): Promise<boolean> => {
+    try {
+      await input.driver.startNewSession();
+    } catch (error) {
+      // The identity swap was aborted driver-side: the previous Session, its
+      // transcript, and every user-command card stay exactly as they were.
+      // Surface why instead of silently stranding the running commands.
+      state.entries.push({
+        kind: 'notice',
+        level: 'error',
+        text:
+          error instanceof Error && error.message.length > 0
+            ? error.message
+            : '无法开始新会话：停止本地命令失败，请稍后重试。',
+      });
+      requestRender();
+      return false;
+    }
     // A fresh session is not bound by the previous one's boundary. Falling back
     // to the *current* label would keep the previous Session's mode, including
     // Auto while a changed Host default creates with full access; the launch
@@ -2504,6 +2574,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     shellRunElapsedTicker.sync();
     await discardCurrentSidePair();
     requestRender();
+    return true;
   };
 
   // Import a foreign (Claude Code / Codex) session: read its digest, open a
@@ -2523,7 +2594,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     try {
       const digest = await input.foreignSessions.readDigest(summary);
       if (closed) return;
-      await newSession();
+      if (!(await newSession())) return;
       submitMessage(foreignSessionHandoffDisplayText(digest), 'current_turn', {
         modelText: buildForeignSessionHandoffMessage(digest),
       });
@@ -2544,15 +2615,16 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
   const showHelp = () => {
     // Derive the command list from the registry so /help never drifts from the
     // real commands. Keybindings are not commands, so they are listed by hand.
-    const commands = slashCommands
-      .map((command) => {
+    const commands = [
+      ...slashCommands.map((command) => {
         const aliasSuffix =
           command.aliases && command.aliases.length > 0
             ? ` (${command.aliases.map((alias) => `/${alias}`).join(', ')})`
             : '';
         return `  /${command.name}${aliasSuffix} — ${command.description}`;
-      })
-      .join('\n');
+      }),
+      primaryGuidance.help.userCommand,
+    ].join('\n');
     const keybindings = primaryGuidance.help.keybindings.join('\n');
     state.entries.push({
       kind: 'notice',
@@ -3174,7 +3246,12 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
       description: primaryGuidance.commands.new,
       midTurn: 'refuse',
       run: () => {
-        void runControl(async () => newSession());
+        void runControl(
+          async () => {
+            await newSession();
+          },
+          { allowWhileBusy: true },
+        );
       },
     },
     skill: {
@@ -3608,6 +3685,24 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
       else requestTurnInterrupt();
       return { consume: true };
     }
+    if (
+      !turnRunning &&
+      matchesKey(data, Key.ctrl('c')) &&
+      !userCommandStopRejected &&
+      hasRunningUserCommand(state) &&
+      input.driver.stopUserCommands
+    ) {
+      lastIdleCtrlCAt = 0;
+      void runControl(async () => {
+        try {
+          await input.driver.stopUserCommands!();
+        } catch (error) {
+          userCommandStopRejected = true;
+          reportError(error);
+        }
+      });
+      return { consume: true };
+    }
     // Double Escape interrupts the running turn. This must sit below the
     // boundary branch so Escape keeps meaning "deny" while a prompt is
     // pending, and it only arms while a prompt turn is actually running.
@@ -3941,3 +4036,9 @@ function matchesSideConversationToggle(data: string): boolean {
 // Two Escapes this close together read as one deliberate "stop the turn".
 const DOUBLE_ESCAPE_INTERRUPT_WINDOW_MS = 600;
 const DOUBLE_CTRL_C_EXIT_WINDOW_MS = 1_000;
+/** Only a leading bang opts into a local user command; ordinary prose remains a prompt. */
+function parseUserCommand(prompt: string): string | undefined {
+  const trimmed = prompt.trim();
+  if (!trimmed.startsWith('!')) return undefined;
+  return trimmed.slice(1).trim();
+}

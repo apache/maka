@@ -27,8 +27,7 @@ import {
   formatTurnDuration,
   turnAbortMarkerLabel,
 } from './chat-display-helpers.js';
-import { redactSecrets } from './redact.js';
-import { isProgressiveStreamingEnabled, isTimeDrivenMotionEnabled } from './streaming-presentation.js';
+import { isTimeDrivenMotionEnabled } from './streaming-presentation.js';
 import { computerRunningLabel } from './tool-activity/computer-action-label.js';
 import {
   Badge,
@@ -47,7 +46,6 @@ import {
   Token,
   useLightbox,
 } from '@astryxdesign/core';
-import { useStreamingText } from '@astryxdesign/core/hooks';
 import { ChatReasoning } from './astryx-chat-reasoning.js';
 import { Tooltip } from '@astryxdesign/core/Tooltip';
 import { SKILL_INVOCATION_TOKEN_SOURCE } from '@maka/core/skill-invocation-token';
@@ -75,6 +73,7 @@ import { useUiLocale } from './locale-context.js';
 import { getConversationCopy } from './conversation-copy.js';
 import { AstryxLocaleProvider } from './astryx-i18n.js';
 import { InlineReferenceText } from './inline-reference.js';
+import { redactSecrets } from './redact.js';
 
 export function LocalizedChatMessage({
   accessibleLabel,
@@ -1329,22 +1328,33 @@ function ProcessingBlock(props: {
 
 function DeepThinking(props: { text: string; live: boolean; settledText?: string; truncated?: boolean }) {
   const copy = getConversationCopy(useUiLocale()).messages;
-  const safeText = redactSecrets(props.text);
-  const displayed = useStreamingText(safeText, isProgressiveStreamingEnabled(props.live), {
-    settledText: props.settledText === undefined
-      ? undefined
-      : redactSecrets(props.settledText),
-  });
   const label = props.truncated ? `${copy.thinking} · ${copy.truncated}` : copy.thinking;
   return (
     <ChatReasoning
       className="maka-deep-thinking"
       label={label}
+      previewText={reasoningPreviewText(props.text)}
       isStreaming={props.live}
       title={props.truncated ? copy.thinkingTruncatedTitle : undefined}
       data-deep-thinking={props.live ? 'live' : undefined}
     >
-      {displayed}
+      <Markdown
+        text={props.text}
+        streaming={props.live}
+        settledText={props.settledText}
+        density="compact"
+      />
     </ChatReasoning>
   );
+}
+
+function reasoningPreviewText(text: string): string {
+  const safeText = redactSecrets(text);
+  const firstLine = safeText.split('\n').find((line) => line.trim().length > 0)?.trim() ?? '';
+  return firstLine
+    .replace(/^#{1,6}\s+/, '')
+    .replace(/\\([()[\]])/g, '')
+    .replace(/\$\$/g, '')
+    .replace(/[*_~`]+/g, '')
+    .trim();
 }

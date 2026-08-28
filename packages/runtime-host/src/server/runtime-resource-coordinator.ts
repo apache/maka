@@ -360,50 +360,102 @@ export class HostRuntimeResourceCoordinator
     const unavailable = await this.#mutableSessionFailure(input.sessionId);
     if (unavailable) return mutationFailure('runtime.resource.start', unavailable);
     try {
-      const header = await this.#sessionHeaders.readHeader(input.sessionId);
-      const shell = await this.#resolveShell();
-      const env = { ...process.env };
-      let command: string;
-      if (shell.kind === 'git-bash') {
-        env.SHELL = shell.exe;
-        env.CHERE_INVOKING = '1';
-        env.DISABLE_AUTO_UPDATE = 'true';
-        env.DISABLE_UPDATE_PROMPT = 'true';
-        command = 'exec "$SHELL" -l';
-      } else if (shell.kind === 'legacy-wsl-bash') {
-        env.DISABLE_AUTO_UPDATE = 'true';
-        env.DISABLE_UPDATE_PROMPT = 'true';
-        command = 'exec bash -l';
-      } else if (shell.kind === 'posix') {
-        env.SHELL ||= userInfo().shell || (process.platform === 'darwin' ? '/bin/zsh' : '/bin/sh');
-        env.DISABLE_AUTO_UPDATE = 'true';
-        env.DISABLE_UPDATE_PROMPT = 'true';
-        command = 'exec "$SHELL" -l';
-      } else if (shell.kind === 'cmd') {
-        command = '%ComSpec% /d /q';
-      } else {
-        const executable = (shell.exe ?? shell.displayName).replace(/'/g, "''");
-        command = `& '${executable}' -NoLogo`;
-      }
-      const launched = await this.runBackgroundBash({
-        sessionId: input.sessionId,
-        sourceTurnId: input.launchId,
-        sourceToolCallId: input.launchId,
-        cwd: header.cwd,
-        command,
-        env,
-        pty: true,
-        emitOutput: () => undefined,
-        shell,
+      // Header read, shell resolution, launch, and the initial snapshot all
+      // share ONE admission section: a concurrent `session.workspace.relocate`
+      // can otherwise commit between reading `header.cwd` and the admitted
+      // launch, admitting the command with a stale cwd (#3210 review).
+      return await this.#sessionAdmission.run(input.sessionId, async () => {
+        if (this.#draining) throw new Error('Runtime resources are draining');
+        const admittedUnavailable = await this.#mutableSessionFailure(input.sessionId);
+        if (admittedUnavailable) {
+          return mutationFailure('runtime.resource.start', admittedUnavailable);
+        }
+        const header = await this.#sessionHeaders.readHeader(input.sessionId);
+        if (this.#draining) throw new Error('Runtime resources are draining');
+        const shell = await this.#resolveShell();
+        if (this.#draining) throw new Error('Runtime resources are draining');
+        const env = { ...process.env };
+        let command: string;
+        if (input.command !== undefined) {
+          command = input.command;
+        } else if (shell.kind === 'git-bash') {
+          env.SHELL = shell.exe;
+          env.CHERE_INVOKING = '1';
+          env.DISABLE_AUTO_UPDATE = 'true';
+          env.DISABLE_UPDATE_PROMPT = 'true';
+          command = 'exec "$SHELL" -l';
+        } else if (shell.kind === 'legacy-wsl-bash') {
+          env.DISABLE_AUTO_UPDATE = 'true';
+          env.DISABLE_UPDATE_PROMPT = 'true';
+          command = 'exec bash -l';
+        } else if (shell.kind === 'posix') {
+          env.SHELL ||=
+            userInfo().shell || (process.platform === 'darwin' ? '/bin/zsh' : '/bin/sh');
+          env.DISABLE_AUTO_UPDATE = 'true';
+          env.DISABLE_UPDATE_PROMPT = 'true';
+          command = 'exec "$SHELL" -l';
+        } else if (shell.kind === 'cmd') {
+          command = '%ComSpec% /d /q';
+        } else {
+          const executable = (shell.exe ?? shell.displayName).replace(/'/g, "''");
+          command = `& '${executable}' -NoLogo`;
+        }
+        const residency = this.#acquireResidency();
+        let completed = false;
+        const complete = (): void => {
+          if (completed) return;
+          completed = true;
+          residency.release();
+        };
+        let launched: Awaited<ReturnType<ShellRunLauncher['runBackgroundBash']>>;
+        try {
+          launched = await this.#manager.runBackgroundBash({
+            sessionId: input.sessionId,
+            sourceTurnId: input.launchId,
+            sourceToolCallId: input.launchId,
+            // Only the one-shot `!<command>` resources this Client owns are
+            // hidden from the model; the Desktop interactive login shell (no
+            // `command`) keeps its prior model-visible visibility (#3210).
+            ...(input.command === undefined ? {} : { visibility: 'user' as const }),
+            cwd: header.cwd,
+            command,
+            env,
+            pty: input.command === undefined,
+            emitOutput: () => undefined,
+            shell,
+            onCompletion: complete,
+          });
+        } catch (launchError) {
+          complete();
+          throw launchError;
+        }
+        try {
+          return {
+            ok: true as const,
+            result: decodeRuntimeResourceStartResult({
+              resource: boundedRuntimeResourceSnapshot(
+                await this.#manager.inspectResource(input.sessionId, launched.ref),
+              ),
+            }),
+          };
+        } catch (inspectError) {
+          // The command is already live but the operation must not report a
+          // success it cannot honor: stop it so a client retry cannot
+          // double-execute (#3210 review). Best-effort — the surfaced error
+          // stays the inspection failure.
+          try {
+            await this.#manager.stopBackgroundTask(
+              input.sessionId,
+              launched.ref,
+              new AbortController().signal,
+              'client',
+            );
+          } catch {
+            /* keep the inspection failure as the surfaced cause */
+          }
+          throw inspectError;
+        }
       });
-      return {
-        ok: true,
-        result: decodeRuntimeResourceStartResult({
-          resource: boundedRuntimeResourceSnapshot(
-            await this.#manager.inspectResource(input.sessionId, launched.ref),
-          ),
-        }),
-      };
     } catch (error) {
       if (error instanceof ShellPreferenceError) {
         return mutationFailure('runtime.resource.start', {
@@ -539,6 +591,7 @@ export class HostRuntimeResourceCoordinator
           const controlled = await this.#manager.writeStdin({
             sessionId: input.sessionId,
             ref: input.ref,
+            caller: 'client',
             ...controlWrite(input.control),
           });
           const result = decodeRuntimeResourceControllerControlResult({
@@ -628,6 +681,7 @@ export class HostRuntimeResourceCoordinator
             input.sessionId,
             input.ref,
             new AbortController().signal,
+            'client',
           );
           this.#releaseControllerIfTerminal(input.sessionId, input.ref, result);
           return {

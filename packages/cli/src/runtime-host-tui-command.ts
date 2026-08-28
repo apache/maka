@@ -245,7 +245,7 @@ function createFirstRunSessionDriver(): MakaSessionDriver {
     switchSession: unavailable,
     listRewindTargets: async () => [],
     rewindToTurn: unavailable,
-    startNewSession: () => {},
+    startNewSession: () => Promise.resolve(),
     stop: async () => {},
   };
 }
