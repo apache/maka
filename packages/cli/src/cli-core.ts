@@ -410,6 +410,7 @@ export async function runMakaCli(
         deferPairingCommit: command.deferPairingCommit,
         bindPairingToClient: command.bindPairingToClient,
         ...(command.repairRootAfterRemount ? { repairRootAfterRemount: true } : {}),
+        updateExisting: command.updateExisting,
         ...(command.rootPath ? { rootPath: command.rootPath } : {}),
         ...(command.projectDirectoryRoots
           ? { projectDirectoryRoots: command.projectDirectoryRoots }

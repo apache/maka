@@ -186,6 +186,7 @@ function runtimeHostWslSetupCommand(
     '--lifecycle',
     'on-demand',
     '--repair-root-after-remount',
+    '--update-existing',
     ...(input.projectDirectoryRoots === undefined
       ? []
       : input.projectDirectoryRoots.length === 0

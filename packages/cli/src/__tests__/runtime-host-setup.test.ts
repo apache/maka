@@ -242,6 +242,55 @@ test('on-demand setup installs one exact deployment without a service backend', 
     'unsupported_lifecycle_configuration',
   );
 
+  const replacementIntegrity = `sha512-${Buffer.alloc(64, 9).toString('base64')}`;
+  const replacementOptions = { ...options, version: '1.2.4' } as const;
+  const replacementPackage = {
+    ...overrides,
+    resolveRegistryCandidate: async () => ({
+      kind: 'npm_registry' as const,
+      version: '1.2.4',
+      integrity: replacementIntegrity,
+    }),
+  };
+  const refused: string[] = [];
+  assert.equal(
+    await runRuntimeHostSetupCli(replacementOptions, {
+      ...replacementPackage,
+      writeOutput: (value) => refused.push(value),
+    }),
+    1,
+  );
+  const refusedReplacement = refused
+    .map(decodeRuntimeHostSetupFrame)
+    .find((frame) => frame?.kind === 'error');
+  assert.equal(
+    refusedReplacement?.kind === 'error' ? refusedReplacement.error.code : undefined,
+    'version_change_requires_update',
+  );
+
+  const replacementOutputs: string[] = [];
+  assert.equal(
+    await runRuntimeHostSetupCli(
+      { ...replacementOptions, updateExisting: true },
+      {
+        ...replacementPackage,
+        openDeployment: async () =>
+          assert.fail('a changed exact package must be staged before replacement'),
+        writeOutput: (value) => replacementOutputs.push(value),
+      },
+    ),
+    0,
+  );
+  const replaced = JSON.parse(
+    await readFile(resolveRuntimeHostManagedDeploymentConfigPath(rootId), 'utf8'),
+  ) as RuntimeHostManagedDeploymentConfig;
+  assert.equal(replaced.launch.package.version, '1.2.4');
+  assert.equal(replaced.launch.package.integrity, replacementIntegrity);
+  assert.equal(
+    replacementOutputs.map(decodeRuntimeHostSetupFrame).some((frame) => frame?.kind === 'complete'),
+    true,
+  );
+
   const uninstalled = await manageRuntimeHostManagedLifecycle(
     rootId,
     {

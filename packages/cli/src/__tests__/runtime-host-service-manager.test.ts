@@ -456,6 +456,7 @@ describe('managed Runtime Host service', () => {
         '--client-data-root',
         '/var/lib/maka-client',
         '--defer-pairing-commit',
+        '--update-existing',
         '--enable-direct-peer',
         '--coordination-relay',
         '/dns4/discovery.example/udp/443/quic-v1',
@@ -469,6 +470,7 @@ describe('managed Runtime Host service', () => {
         clientDataRoot: '/var/lib/maka-client',
         lifecycle: 'supervised',
         deferPairingCommit: true,
+        updateExisting: true,
         directPeer: {
           coordinationRelays: ['/dns4/discovery.example/udp/443/quic-v1'],
         },

@@ -132,6 +132,7 @@ export interface RuntimeHostSetupCliOptions {
   readonly deferPairingCommit?: boolean;
   readonly bindPairingToClient?: boolean;
   readonly repairRootAfterRemount?: true;
+  readonly updateExisting?: boolean;
   readonly rootPath?: string;
   readonly projectDirectoryRoots?: readonly {
     readonly label: string;
@@ -743,7 +744,8 @@ async function runRuntimeHostOnDemandSetupLocked(
   const serviceId = capability.rootId;
   const deploymentRoot =
     current?.deploymentRoot ?? resolveRuntimeHostManagedDeploymentRoot(serviceId);
-  if (current && !sameExactPackage(current, candidate)) {
+  const packageChanged = current !== undefined && !sameExactPackage(current, candidate);
+  if (current && packageChanged && !options.updateExisting) {
     throw new RuntimeHostSetupError(
       'version_change_requires_update',
       `Runtime Host ${current.launch.package.version} is already installed; changing its exact package requires the update workflow`,
@@ -801,27 +803,30 @@ async function runRuntimeHostOnDemandSetupLocked(
   await resolvedPackage.use(async (packageRoot) => {
     let committed = false;
     const created = !current;
+    let deployment: Awaited<ReturnType<typeof deps.prepareDeployment>> | undefined;
     try {
       emit({ kind: 'progress', phase: 'installing_package' });
-      const deployment = current
-        ? await deps.openDeployment({
-            serviceId,
-            clientDataRoot: options.clientDataRoot,
-            deploymentRoot,
-            cliPath: resolveRuntimeHostManagedPackageCliPath(
+      deployment =
+        current && !packageChanged
+          ? await deps.openDeployment({
+              serviceId,
+              clientDataRoot: options.clientDataRoot,
               deploymentRoot,
-              candidate.version,
-              candidate.integrity,
-            ),
-            version: candidate.version,
-          })
-        : await deps.prepareDeployment({
-            serviceId,
-            clientDataRoot: options.clientDataRoot,
-            sourcePackageRoot: packageRoot,
-            version: candidate.version,
-            packageIntegrity: candidate.integrity,
-          });
+              cliPath: resolveRuntimeHostManagedPackageCliPath(
+                deploymentRoot,
+                candidate.version,
+                candidate.integrity,
+              ),
+              version: candidate.version,
+            })
+          : await deps.prepareDeployment({
+              serviceId,
+              clientDataRoot: options.clientDataRoot,
+              sourcePackageRoot: packageRoot,
+              version: candidate.version,
+              packageIntegrity: candidate.integrity,
+              ...(current ? { deploymentRoot } : {}),
+            });
       const desiredConfig: RuntimeHostManagedDeploymentConfig = current
         ? config
         : { ...config, deploymentRoot: deployment.root };
@@ -839,11 +844,13 @@ async function runRuntimeHostOnDemandSetupLocked(
         const replacement = await deps.replaceLifecycle({
           operation: legacyToMigrate
             ? 'legacy_migration'
-            : current
-              ? isDeepStrictEqual(current.lifecycle, config.lifecycle)
-                ? 'configure'
-                : 'lifecycle_change'
-              : 'install',
+            : packageChanged
+              ? 'update'
+              : current
+                ? isDeepStrictEqual(current.lifecycle, config.lifecycle)
+                  ? 'configure'
+                  : 'lifecycle_change'
+                : 'install',
           ...(current ? { current } : {}),
           desired: desiredConfig,
           ...(legacyToMigrate && legacyBackend ? { retirementSupervisor: legacyBackend } : {}),
@@ -867,8 +874,13 @@ async function runRuntimeHostOnDemandSetupLocked(
         (await resolveRuntimeHostManagedDeployment(capability.rootId)).config,
       );
     } catch (error) {
-      if (created && !committed && canDiscardRuntimeHostLifecycleDesiredArtifacts(error)) {
-        await removeRuntimeHostManagedDeployment(deploymentRoot, serviceId).catch(() => undefined);
+      if (!committed && canDiscardRuntimeHostLifecycleDesiredArtifacts(error)) {
+        if (packageChanged && deployment) await deployment.rollback().catch(() => undefined);
+        else if (created) {
+          await removeRuntimeHostManagedDeployment(deploymentRoot, serviceId).catch(
+            () => undefined,
+          );
+        }
       }
       throw error;
     }

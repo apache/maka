@@ -118,6 +118,7 @@ export type RuntimeHostCliCommand =
       deferPairingCommit: boolean;
       bindPairingToClient?: true;
       repairRootAfterRemount?: true;
+      updateExisting?: true;
       clientDataRoot?: string;
       rootPath?: string;
       projectDirectoryRoots?: { label: string; path: string }[];
@@ -555,6 +556,7 @@ function parseSetupCommand(argv: string[]): RuntimeHostCliCommand {
   let deferPairingCommit = false;
   let bindPairingToClient = false;
   let repairRootAfterRemount = false;
+  let updateExisting = false;
   let clientDataRoot: string | undefined;
   let enableDirectPeer = false;
   const coordinationRelays: string[] = [];
@@ -603,6 +605,10 @@ function parseSetupCommand(argv: string[]): RuntimeHostCliCommand {
         if (repairRootAfterRemount) return error('Duplicate --repair-root-after-remount');
         repairRootAfterRemount = true;
       },
+      '--update-existing': () => {
+        if (updateExisting) return error('Duplicate --update-existing');
+        updateExisting = true;
+      },
     },
   });
   if ('kind' in options) return options;
@@ -625,6 +631,7 @@ function parseSetupCommand(argv: string[]): RuntimeHostCliCommand {
     deferPairingCommit,
     ...(bindPairingToClient ? { bindPairingToClient: true } : {}),
     ...(repairRootAfterRemount ? { repairRootAfterRemount: true } : {}),
+    ...(updateExisting ? { updateExisting: true } : {}),
     ...(clientDataRoot ? { clientDataRoot } : {}),
     ...(enableDirectPeer ? { directPeer: { coordinationRelays } } : {}),
   };
