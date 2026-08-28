@@ -500,7 +500,7 @@ export function RuntimeHostProfilesSection(props: {
               isDisabled={switching}
               onClick={() => setPeerMeshTarget({
                 target: { kind: 'desktop' },
-                name: copy.thisComputerRemoteAccess,
+                name: 'Local',
               })}
             />
           )}

@@ -270,6 +270,36 @@
   gap: var(--space-2);
 }
 
+.settingsPeerMeshIdentity {
+  min-height: 32px;
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-container);
+  background: var(--background-secondary);
+}
+
+.settingsPeerMeshIdentity code {
+  overflow: hidden;
+  max-width: 70%;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.settingsPeerMeshEmpty {
+  display: flex;
+  min-height: 180px;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-1);
+  text-align: center;
+}
+
+.settingsPeerMeshList {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
 .settingsPeerMeshCard {
   display: flex;
   flex-direction: column;
@@ -277,6 +307,22 @@
   padding: var(--space-3);
   border: var(--border-width-hairline) solid var(--border-soft);
   border-radius: var(--radius-container);
+}
+
+.settingsPeerMeshCardHeading > div:first-child {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.settingsPeerMeshName {
+  overflow: hidden;
+  color: var(--foreground-primary);
+  font: var(--maka-text-body);
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .settingsPeerMeshMembers {
@@ -291,12 +337,31 @@
   border-top: var(--border-width-hairline) solid var(--border-soft);
 }
 
-.settingsPeerMeshJoin,
-.settingsPeerMeshInvitation {
+.settingsPeerMeshFocusedView {
   display: flex;
   flex-direction: column;
-  align-items: flex-start;
-  gap: var(--space-2);
+  gap: var(--space-4);
+}
+
+.settingsPeerMeshFocusedView > div:first-child {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.settingsPeerMeshInvitationCode {
+  box-sizing: border-box;
+  max-height: 220px;
+  overflow: auto;
+  padding: var(--space-3);
+  border: var(--border-width-hairline) solid var(--border-soft);
+  border-radius: var(--radius-container);
+  background: var(--background-secondary);
+}
+
+.settingsPeerMeshInvitationCode code {
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
 }
 
 @media (max-height: 620px) {
