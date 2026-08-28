@@ -20,6 +20,7 @@
 import { strict as assert } from 'node:assert';
 import { describe, it } from 'node:test';
 import {
+  buildConnectionModelCatalogEntries,
   curatedCatalogFallbackModelsForProvider,
   lookupModelMetadata,
   openAiAdapterApiProtocol,
@@ -129,6 +130,46 @@ describe('deepseek v4 flash vision exp metadata regression', () => {
   it('keeps the model present in the deepseek fallback catalog', () => {
     assert.ok(
       curatedCatalogFallbackModelsForProvider('deepseek')?.includes('deepseek-v4-flash-vision-exp'),
+    );
+  });
+
+  it('returns expected metadata from lookupModelMetadata', () => {
+    const modelId = 'deepseek-v4-flash-vision-exp';
+    const metadata = lookupModelMetadata('deepseek', modelId);
+
+    assert.equal(metadata.displayName, 'DeepSeek-V4-Flash-Vision-Exp');
+    assert.equal(
+      metadata.description,
+      'Experimental DeepSeek V4 Flash model for image understanding and multimodal agent tasks',
+    );
+    assert.equal(metadata.docsUrl, 'https://api-docs.deepseek.com/guides/vision/');
+    assert.equal(metadata.contextWindow, 1_000_000);
+    assert.equal(metadata.maxOutputTokens, 384_000);
+    assert.equal(metadata.structuredOutput, true);
+    assert.equal(metadata.lastUpdated, '2026-08-21');
+    assert.deepEqual(metadata.thinkingOptions, {
+      efforts: ['low', 'high', 'max'],
+      toggle: true,
+    });
+    assert.equal(metadata.capabilities?.vision, true);
+    assert.deepEqual(metadata.modalities, { input: ['text', 'image'], output: ['text'] });
+  });
+
+  it('is recognized from a bare discovered id', () => {
+    const modelId = 'deepseek-v4-flash-vision-exp';
+    const discovered: ModelInfo[] = [{ id: modelId }];
+    const metadata = lookupModelMetadata('deepseek', modelId);
+
+    assert.equal(metadata.displayName, 'DeepSeek-V4-Flash-Vision-Exp');
+    assert.equal(metadata.capabilities?.vision, true);
+    assert.deepEqual(resolveModelInputModalities('deepseek', discovered, modelId), [
+      'text',
+      'image',
+    ]);
+    assert.equal(resolveModelVisionSupport('deepseek', discovered, modelId), true);
+    assert.equal(
+      resolveModelVisionSupport('deepseek', [{ id: 'deepseek-v4-flash' }], 'deepseek-v4-flash'),
+      false,
     );
   });
 });

@@ -439,10 +439,14 @@ const STATIC_MODEL_METADATA: Partial<Record<ProviderType, Record<string, ModelMe
       capabilities: { vision: true, ...REASONING_FUNCTION_CALLING, webSearch: true },
       thinkingOptions: { efforts: ['low', 'high', 'max'], toggle: true },
       modalities: { input: ['text', 'image'], output: ['text'] },
-      displayName: 'DeepSeek V4 Flash Vision (Experimental)',
+      displayName: 'DeepSeek-V4-Flash-Vision-Exp',
       description:
-        'Experimental vision variant of DeepSeek V4 Flash with image input support and reasoning capabilities.',
-      lastUpdated: '2026-08-27',
+        'Experimental DeepSeek V4 Flash model for image understanding and multimodal agent tasks',
+      docsUrl: 'https://api-docs.deepseek.com/guides/vision/',
+      contextWindow: 1_000_000,
+      maxOutputTokens: 384_000,
+      structuredOutput: true,
+      lastUpdated: '2026-08-21',
     },
     'deepseek-v4-pro': {
       capabilities: { ...REASONING_FUNCTION_CALLING, webSearch: true },
