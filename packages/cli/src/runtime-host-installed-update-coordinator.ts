@@ -25,6 +25,7 @@ import { pathToFileURL } from 'node:url';
 import {
   connectExistingRuntimeHost,
   prepareConnectedRuntimeHostRetirement,
+  waitForRuntimeHostReady,
   type RuntimeHostConnection,
 } from '@maka/runtime-host/client';
 import { type LocalHostDeploymentAuthorityOptions } from '@maka/runtime-host/operator';
@@ -57,13 +58,14 @@ interface RuntimeHostInstalledUpdateCoordinatorDeps {
   readonly resolveInstallation: typeof resolveRuntimeHostNpmGlobalInstallation;
   readonly resolveRoot: typeof resolveStorageRoot;
   readonly connectExisting: typeof connectExistingRuntimeHost;
+  readonly waitForReady: typeof waitForRuntimeHostReady;
   readonly prepareRetirement: typeof prepareConnectedRuntimeHostRetirement;
   readonly withArchive: typeof withVerifiedRuntimeHostUpdateArchive;
   readonly prepareStaged: typeof prepareRuntimeHostNpmGlobalStagedDeployment;
   readonly reconcile: typeof reconcilePreparedRuntimeHostNpmGlobalDeployment;
   readonly activateTarget: (
     input: RuntimeHostTargetActivationInput,
-  ) => Promise<'ready' | 'active_work' | 'operator_required'>;
+  ) => Promise<RuntimeHostTargetActivation>;
   readonly installArchive: typeof installRuntimeHostNpmGlobalArchive;
 }
 
@@ -71,8 +73,16 @@ interface RuntimeHostTargetActivationInput {
   readonly rootPath: string;
   readonly rootId: string;
   readonly staged: RuntimeHostLocalStagedDeployment;
+  readonly ownerInstallationId: string;
+  readonly target: RuntimeHostUpdateCandidate;
   readonly takeoverHostEpoch?: string;
   readonly inheritableAuthorityLeaseFd: number;
+}
+
+interface RuntimeHostTargetActivation {
+  readonly kind: 'ready' | 'active_work' | 'operator_required';
+  /** Releases the short-lived child only after durable owner settlement. */
+  settle(outcome: 'committed' | 'abort'): Promise<void>;
 }
 
 export interface RuntimeHostInstalledUpdateCoordinatorInput {
@@ -94,6 +104,7 @@ export async function runRuntimeHostInstalledUpdateCoordinator(
     resolveInstallation: resolveRuntimeHostNpmGlobalInstallation,
     resolveRoot: resolveStorageRoot,
     connectExisting: connectExistingRuntimeHost,
+    waitForReady: waitForRuntimeHostReady,
     prepareRetirement: prepareConnectedRuntimeHostRetirement,
     withArchive: withVerifiedRuntimeHostUpdateArchive,
     prepareStaged: prepareRuntimeHostNpmGlobalStagedDeployment,
@@ -130,10 +141,53 @@ export async function runRuntimeHostInstalledUpdateCoordinator(
     await preliminary.connection?.close();
     let observation: Awaited<ReturnType<typeof observeCurrentHost>> = {};
     let targetReady = false;
+    let targetActivator: RuntimeHostTargetActivation | undefined;
+    const activateExactTarget = async (
+      inheritableAuthorityLeaseFd: number,
+      takeoverHostEpoch?: string,
+    ): Promise<'target_present' | 'active_work' | 'operator_required'> => {
+      const activated = await deps.activateTarget({
+        rootPath: input.rootPath,
+        rootId: root.rootId,
+        staged,
+        ownerInstallationId: installation.owner.installationId,
+        target: input.target,
+        inheritableAuthorityLeaseFd,
+        ...(takeoverHostEpoch ? { takeoverHostEpoch } : {}),
+      });
+      if (activated.kind === 'operator_required') return 'operator_required';
+      if (activated.kind === 'active_work') return 'active_work';
+      targetActivator = activated;
+      targetReady = true;
+      return 'target_present';
+    };
     const prepare = async (inheritableAuthorityLeaseFd: number) => {
       observation = await observeCurrentHost(input.rootPath, root.rootId, deps);
       if (observation.registration && observation.registration.lifecycleMode !== 'ephemeral') {
         throw new Error('Only an ephemeral local Runtime Host can be updated by this CLI');
+      }
+      // Crash-retry after activation: the observed Host may already be this
+      // transaction's staged target (the generation is derived from the
+      // transaction id, so a retry stages the same one). Retiring it would
+      // either kill the live target or, when it holds active work, drive the
+      // handoff's active-work rollback that re-selects the retired Host while
+      // the target keeps running — durable record and reality would diverge.
+      if (observation.registration?.generation === staged.launchGeneration) {
+        if (!observation.connection) {
+          throw new Error('The exact staged Runtime Host is not connected for Ready verification');
+        }
+        try {
+          await deps.waitForReady(observation.connection);
+        } finally {
+          await observation.connection.close();
+        }
+        observation = { registration: observation.registration };
+        const activated = await activateExactTarget(inheritableAuthorityLeaseFd);
+        if (activated === 'operator_required') {
+          throw new Error('The observed Runtime Host requires its operator to perform the update');
+        }
+        if (activated === 'active_work') return { kind: 'active_work' as const };
+        return { kind: 'target_present' as const };
       }
       const takeoverHostEpoch = observation.registration?.hostEpoch;
       if (observation.connection) {
@@ -145,57 +199,59 @@ export async function runRuntimeHostInstalledUpdateCoordinator(
         await observation.connection.close();
         observation = { registration: observation.registration };
       }
-      const activated = await deps.activateTarget({
-        rootPath: input.rootPath,
-        rootId: root.rootId,
-        staged,
-        inheritableAuthorityLeaseFd,
-        ...(takeoverHostEpoch ? { takeoverHostEpoch } : {}),
-      });
+      const activated = await activateExactTarget(inheritableAuthorityLeaseFd, takeoverHostEpoch);
       if (activated === 'operator_required') {
         throw new Error('The observed Runtime Host requires its operator to perform the update');
       }
       if (activated === 'active_work') return { kind: 'active_work' as const };
-      targetReady = true;
       return { kind: 'target_present' as const };
     };
     const unreachable = async (): Promise<never> => {
       throw new Error('The exact target activator must settle local Host cutover');
     };
-    const result = await deps.reconcile(
-      {
-        rootId: root.rootId,
-        transactionId,
-        target: input.target,
-        activeWorkPolicy: input.allowInterruptActiveTasks
-          ? 'interrupt_active_work'
-          : 'refuse_active_work',
-        installation,
-        staged,
-      },
-      {
-        prepareUnownedHostCutover: (_rootId, _target, _staged, _policy, leaseFd) =>
-          prepare(leaseFd),
-        prepareHostCutover: (_rootId, _selected, _target, _staged, _policy, leaseFd) =>
-          prepare(leaseFd),
-        observeWriterRelease: unreachable,
-        activateTarget: unreachable,
-        async verifyTargetReady() {
-          if (!targetReady) throw new Error('The exact target Ready evidence is unavailable');
+    let result: Awaited<ReturnType<typeof deps.reconcile>>;
+    try {
+      result = await deps.reconcile(
+        {
+          rootId: root.rootId,
+          transactionId,
+          target: input.target,
+          activeWorkPolicy: input.allowInterruptActiveTasks
+            ? 'interrupt_active_work'
+            : 'refuse_active_work',
+          installation,
+          staged,
         },
-        async finalizeTarget(_rootId, _target, _staged, inheritableAuthorityLeaseFd) {
-          await finalizeInstalledPackage(
-            input,
-            installation,
-            archivePath,
-            installationOptions,
-            deps,
-            inheritableAuthorityLeaseFd,
-          );
+        {
+          prepareUnownedHostCutover: (_rootId, _target, _staged, _policy, leaseFd) =>
+            prepare(leaseFd),
+          prepareHostCutover: (_rootId, _selected, _target, _staged, _policy, leaseFd) =>
+            prepare(leaseFd),
+          observeWriterRelease: unreachable,
+          activateTarget: unreachable,
+          async verifyTargetReady() {
+            if (!targetReady) throw new Error('The exact target Ready evidence is unavailable');
+          },
+          async finalizeTarget(_rootId, _target, _staged, inheritableAuthorityLeaseFd) {
+            await finalizeInstalledPackage(
+              input,
+              installation,
+              archivePath,
+              installationOptions,
+              deps,
+              inheritableAuthorityLeaseFd,
+            );
+          },
         },
-      },
-      authorityOptions,
-    );
+        authorityOptions,
+      );
+      if (result.kind === 'completed' && targetActivator) {
+        await targetActivator.settle('committed');
+        targetActivator = undefined;
+      }
+    } finally {
+      if (targetActivator) await targetActivator.settle('abort').catch(() => undefined);
+    }
     if (result.kind === 'completed') {
       process.stdout.write(`Updated Maka to ${input.target.version}.\n`);
       return 0;
@@ -262,13 +318,14 @@ async function finalizeInstalledPackage(
 export async function installRuntimeHostNpmGlobalArchive(
   archivePath: string,
   inheritableAuthorityLeaseFd: number,
+  spawnProcess: typeof spawn = spawn,
 ): Promise<void> {
   // The final global switch extracts the same verified archive a second time;
   // apply the expansion budget here as well so the bound holds no matter
   // which caller reached this function.
   await assertRuntimeHostArchiveExpansionBudget(archivePath);
   return new Promise((resolve, reject) => {
-    const child = spawn(
+    const child = spawnProcess(
       'npm',
       [
         'install',
@@ -310,7 +367,7 @@ export async function installRuntimeHostNpmGlobalArchive(
 
 function launchTargetActivator(
   input: RuntimeHostTargetActivationInput,
-): Promise<'ready' | 'active_work' | 'operator_required'> {
+): Promise<RuntimeHostTargetActivation> {
   const args = [
     input.staged.cliPath,
     'runtime-host',
@@ -323,22 +380,76 @@ function launchTargetActivator(
     input.staged.launchGeneration,
     '--candidate-entrypoint',
     input.staged.candidateEntrypoint,
+    '--await-coordinator-commit',
+    'true',
+    '--expected-owner-installation-id',
+    input.ownerInstallationId,
+    '--target-version',
+    input.target.version,
+    '--target-integrity',
+    input.target.integrity,
     ...(input.takeoverHostEpoch ? ['--takeover-host-epoch', input.takeoverHostEpoch] : []),
   ];
   return new Promise((resolve, reject) => {
     const child = spawn(process.execPath, args, {
-      stdio: ['inherit', 'inherit', 'inherit', input.inheritableAuthorityLeaseFd],
+      // fd 3 is the coordinator channel; fd 4 is the inherited authority
+      // lease. The activator, not the long-lived target, owns that lease.
+      stdio: ['inherit', 'inherit', 'inherit', 'ipc', input.inheritableAuthorityLeaseFd],
       windowsHide: false,
     });
+    let ready = false;
+    let settled = false;
+    const closed = new Promise<{ code: number | null; signal: NodeJS.Signals | null }>(
+      (resolveClosed) => {
+        child.once('close', (code, signal) => resolveClosed({ code, signal }));
+      },
+    );
+    const closeError = async (): Promise<never> => {
+      const { code, signal } = await closed;
+      if (signal) throw new Error(`Maka target activator exited on ${signal}`);
+      if (code === 3) throw new Error('The activated Runtime Host still owns active work');
+      if (code === 4) throw new Error('The observed Runtime Host requires its operator');
+      throw new Error('The exact Maka target could not be activated');
+    };
+    const settle = async (outcome: 'committed' | 'abort'): Promise<void> => {
+      if (settled) return;
+      settled = true;
+      if (child.connected) {
+        await new Promise<void>((resolveSent, rejectSent) => {
+          child.send({ kind: outcome }, (error) => (error ? rejectSent(error) : resolveSent()));
+        });
+      }
+      const exited = await closed;
+      if (outcome === 'committed' && (exited.signal || exited.code !== 0)) {
+        if (exited.signal) throw new Error(`Maka target activator exited on ${exited.signal}`);
+        throw new Error('The exact Maka target activator did not confirm durable ownership');
+      }
+    };
     child.once('error', reject);
-    child.once('close', (code, signal) => {
-      if (signal) reject(new Error(`Maka target activator exited on ${signal}`));
-      else if (code === 0) resolve('ready');
-      else if (code === 3) resolve('active_work');
-      else if (code === 4) resolve('operator_required');
-      else reject(new Error('The exact Maka target could not be activated'));
+    child.on('message', (message: unknown) => {
+      if (ready || !isTargetActivatorReadyMessage(message)) return;
+      ready = true;
+      resolve({ kind: 'ready', settle });
+    });
+    void closed.then(({ code, signal }) => {
+      if (ready) return;
+      if (signal) {
+        reject(new Error(`Maka target activator exited on ${signal}`));
+      } else if (code === 3) {
+        resolve({ kind: 'active_work', settle: async () => undefined });
+      } else if (code === 4) {
+        resolve({ kind: 'operator_required', settle: async () => undefined });
+      } else {
+        void closeError().catch(reject);
+      }
     });
   });
+}
+
+function isTargetActivatorReadyMessage(value: unknown): value is { readonly kind: 'ready' } {
+  return (
+    typeof value === 'object' && value !== null && (value as { kind?: unknown }).kind === 'ready'
+  );
 }
 
 function updateTransactionId(

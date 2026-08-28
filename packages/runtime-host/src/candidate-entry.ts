@@ -23,6 +23,7 @@ import {
   candidateStartupFailureExitCode,
   classifyCandidateStartupFailure,
 } from './candidate-startup-failure.js';
+import { createRuntimeHostLaunchOwnerGuard } from './candidate-launch-owner-guard.js';
 import { parseInteractiveRuntimeHostCandidateArguments } from './candidate-cli.js';
 import { writeCandidateStartupDiagnostic } from './control/startup-diagnostic.js';
 import { installRuntimeHostLogCapture, runtimeHostLogBuffer } from './process-diagnostics.js';
@@ -56,6 +57,7 @@ export async function runExecutionCandidateEntry(
   hooks: ExecutionCandidateEntryHooks = {},
 ): Promise<never | void> {
   installRuntimeHostLogCapture();
+  const launchOwnerGuard = createRuntimeHostLaunchOwnerGuard();
 
   let result: Awaited<ReturnType<typeof startExecutionRuntimeHostCandidate>>;
   let rootId: string | undefined;
@@ -90,8 +92,12 @@ export async function runExecutionCandidateEntry(
     }
     process.exit(candidateStartupFailureExitCode(failure));
   }
-  if (result.kind === 'loser') process.exit(2);
+  if (result.kind === 'loser') {
+    await launchOwnerGuard?.dispose();
+    process.exit(2);
+  }
 
+  launchOwnerGuard?.bind(() => result.host.close());
   const stopWatch = hooks.onWon?.(result.host);
   try {
     await runRuntimeHostProcessLifecycle(result.host);
@@ -104,5 +110,6 @@ export async function runExecutionCandidateEntry(
     process.exitCode = 1;
   } finally {
     stopWatch?.();
+    await launchOwnerGuard?.dispose();
   }
 }

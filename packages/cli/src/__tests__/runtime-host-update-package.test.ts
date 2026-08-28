@@ -32,12 +32,12 @@ import {
   withVerifiedRuntimeHostUpdateArchive,
 } from '../runtime-host-update-package.js';
 
-function tarHeader(name: string, size: number): Buffer {
+function tarHeader(name: string, size: number, type = '0'): Buffer {
   const header = Buffer.alloc(512);
   header.write(name, 0, 'latin1');
   header.write('0000644\0', 100, 'latin1');
   header.write(size.toString(8).padStart(11, '0') + '\0', 124, 'latin1');
-  header.write('0', 156, 'latin1');
+  header.write(type, 156, 'latin1');
   header.write('        ', 148, 'latin1');
   let checksum = 0;
   for (const byte of header) checksum += byte;
@@ -45,11 +45,11 @@ function tarHeader(name: string, size: number): Buffer {
   return header;
 }
 
-function tgz(entries: ReadonlyArray<{ name: string; body?: Buffer }>): Buffer {
+function tgz(entries: ReadonlyArray<{ name: string; body?: Buffer; type?: string }>): Buffer {
   const blocks: Buffer[] = [];
   for (const entry of entries) {
     const body = entry.body ?? Buffer.alloc(0);
-    blocks.push(tarHeader(entry.name, body.length));
+    blocks.push(tarHeader(entry.name, body.length, entry.type));
     blocks.push(body);
     const padding = (512 - (body.length % 512)) % 512;
     if (padding > 0) blocks.push(Buffer.alloc(padding));
@@ -296,6 +296,99 @@ describe('managed Runtime Host update package acquisition', () => {
         async () => assert.fail('over-budget archive must not be consumed'),
         async () => assert.fail('over-budget archive must not reach npm'),
       ),
+      (error: unknown) =>
+        error instanceof RuntimeHostUpdatePackageError && error.code === 'invalid_package',
+    );
+  });
+
+  it('accepts entries whose payload spans multiple gunzip chunks', async (t) => {
+    const root = await mkdtemp(join(tmpdir(), 'maka-update-stream-'));
+    t.after(() => rm(root, { recursive: true, force: true }));
+    // A 128 KiB file entry spans many 16 KiB gunzip chunks; the scanner must
+    // carry the payload skip across chunk boundaries instead of reparsing
+    // payload bytes as the next header.
+    const big = tgz([
+      { name: 'package/dist/big.js', body: Buffer.alloc(128 * 1024, 65) },
+      { name: 'package/package.json', body: Buffer.from('{"name":"maka-agent"}') },
+      { name: 'package/dist/cli.js', body: Buffer.from('#!/usr/bin/env node\n') },
+    ]);
+    const archive = join(root, 'streamed.tgz');
+    await writeFile(archive, big);
+    await assertRuntimeHostArchiveExpansionBudget(archive, {
+      maxExtractedBytes: 256 * 1024,
+      maxEntries: 10,
+    });
+    // The same archive over the budget by one byte must still be caught once
+    // the whole payload has streamed through.
+    await assert.rejects(
+      assertRuntimeHostArchiveExpansionBudget(archive, {
+        maxExtractedBytes: 128 * 1024,
+        maxEntries: 10,
+      }),
+      (error: unknown) =>
+        error instanceof RuntimeHostUpdatePackageError && error.code === 'invalid_package',
+    );
+  });
+
+  it('fails closed for tar extensions that can reinterpret a raw header size', async (t) => {
+    const root = await mkdtemp(join(tmpdir(), 'maka-update-extended-tar-'));
+    t.after(() => rm(root, { recursive: true, force: true }));
+    for (const type of ['x', 'g', 'X', 'S', 'L', 'K']) {
+      const archive = join(root, `${type}.tgz`);
+      await writeFile(
+        archive,
+        tgz([
+          { name: 'extended-header', body: Buffer.from('size=4294967296\n'), type },
+          { name: 'package/package.json', body: Buffer.from('{"name":"maka-agent"}') },
+        ]),
+      );
+      await assert.rejects(
+        assertRuntimeHostArchiveExpansionBudget(archive),
+        (error: unknown) =>
+          error instanceof RuntimeHostUpdatePackageError && error.code === 'invalid_package',
+      );
+    }
+    // This is a syntactically valid POSIX PAX record: its decimal prefix is
+    // the record's complete byte length. npm would honor it to reinterpret
+    // the following raw tar header, so the staging seam must reject it before
+    // it invokes npm at all.
+    const pax = tgz([
+      { name: 'PaxHeader', body: Buffer.from('19 size=4294967296\n'), type: 'x' },
+      { name: 'package/package.json', body: Buffer.from('{"name":"maka-agent"}') },
+    ]);
+    const paxPath = join(root, 'pax.tgz');
+    await writeFile(paxPath, pax);
+    let invokedNpm = false;
+    await assert.rejects(
+      withVerifiedRuntimeHostUpdateArchive(
+        {
+          kind: 'npm_registry',
+          version: '2.0.0',
+          integrity: `sha512-${createHash('sha512').update(pax).digest('base64')}`,
+        },
+        paxPath,
+        async () => assert.fail('extended tar archive must not be consumed'),
+        async () => {
+          invokedNpm = true;
+          return 0;
+        },
+      ),
+      (error: unknown) =>
+        error instanceof RuntimeHostUpdatePackageError && error.code === 'invalid_package',
+    );
+    assert.equal(invokedNpm, false);
+  });
+
+  it('requires two consecutive zero blocks to terminate a tar stream', async (t) => {
+    const root = await mkdtemp(join(tmpdir(), 'maka-update-terminator-'));
+    t.after(() => rm(root, { recursive: true, force: true }));
+    const archive = join(root, 'single-zero.tgz');
+    await writeFile(
+      archive,
+      gzipSync(Buffer.concat([tarHeader('package/package.json', 0), Buffer.alloc(512)])),
+    );
+    await assert.rejects(
+      assertRuntimeHostArchiveExpansionBudget(archive),
       (error: unknown) =>
         error instanceof RuntimeHostUpdatePackageError && error.code === 'invalid_package',
     );

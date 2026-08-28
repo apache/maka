@@ -69,6 +69,10 @@ export type RuntimeHostCliCommand =
       generation: string;
       candidateEntrypoint: string;
       takeoverHostEpoch?: string;
+      awaitCoordinatorCommit: boolean;
+      expectedOwnerInstallationId?: string;
+      targetVersion?: string;
+      targetIntegrity?: string;
     }
   | {
       kind: 'runtime-host-serve';
@@ -419,6 +423,10 @@ function parseLocalUpdateActivate(argv: string[]): RuntimeHostCliCommand {
     '--generation',
     '--candidate-entrypoint',
     '--takeover-host-epoch',
+    '--await-coordinator-commit',
+    '--expected-owner-installation-id',
+    '--target-version',
+    '--target-integrity',
   ]);
   for (let index = 0; index < argv.length; index += 1) {
     const argument = argv[index];
@@ -434,6 +442,10 @@ function parseLocalUpdateActivate(argv: string[]): RuntimeHostCliCommand {
   const generation = values.get('--generation');
   const candidateEntrypoint = values.get('--candidate-entrypoint');
   const takeoverHostEpoch = values.get('--takeover-host-epoch');
+  const awaitCoordinatorCommit = values.get('--await-coordinator-commit') === 'true';
+  const expectedOwnerInstallationId = values.get('--expected-owner-installation-id');
+  const targetVersion = values.get('--target-version');
+  const targetIntegrity = values.get('--target-integrity');
   if (!rootPath || !expectedRootId || !generation || !candidateEntrypoint) {
     return error('runtime-host local-update-activate requires its exact target identity');
   }
@@ -444,9 +456,26 @@ function parseLocalUpdateActivate(argv: string[]): RuntimeHostCliCommand {
     return error('runtime-host local-update-activate root identity is invalid');
   }
   if (
-    [generation, takeoverHostEpoch].some((value) => value !== undefined && !isSafeIdentity(value))
+    [
+      generation,
+      takeoverHostEpoch,
+      expectedOwnerInstallationId,
+      targetVersion,
+      targetIntegrity,
+    ].some((value) => value !== undefined && !isSafeIdentity(value))
   ) {
     return error('runtime-host local-update-activate generation is invalid');
+  }
+  if (
+    (values.has('--await-coordinator-commit') && !awaitCoordinatorCommit) ||
+    (awaitCoordinatorCommit &&
+      (!expectedOwnerInstallationId || !targetVersion || !targetIntegrity)) ||
+    (!awaitCoordinatorCommit &&
+      (expectedOwnerInstallationId !== undefined ||
+        targetVersion !== undefined ||
+        targetIntegrity !== undefined))
+  ) {
+    return error('runtime-host local-update-activate coordinator expectation is invalid');
   }
   return {
     kind: 'runtime-host-local-update-activate',
@@ -454,7 +483,11 @@ function parseLocalUpdateActivate(argv: string[]): RuntimeHostCliCommand {
     expectedRootId,
     generation,
     candidateEntrypoint,
+    awaitCoordinatorCommit,
     ...(takeoverHostEpoch ? { takeoverHostEpoch } : {}),
+    ...(expectedOwnerInstallationId ? { expectedOwnerInstallationId } : {}),
+    ...(targetVersion ? { targetVersion } : {}),
+    ...(targetIntegrity ? { targetIntegrity } : {}),
   };
 }
 

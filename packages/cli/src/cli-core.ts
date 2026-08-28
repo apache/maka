@@ -347,7 +347,14 @@ export async function runMakaCli(
         expectedRootId: command.expectedRootId,
         generation: command.generation,
         candidateEntrypoint: command.candidateEntrypoint,
+        awaitCoordinatorCommit: command.awaitCoordinatorCommit,
         ...(command.takeoverHostEpoch ? { takeoverHostEpoch: command.takeoverHostEpoch } : {}),
+        ...(command.expectedOwnerInstallationId
+          ? { expectedOwnerInstallationId: command.expectedOwnerInstallationId }
+          : {}),
+        ...(command.targetVersion ? { targetVersion: command.targetVersion } : {}),
+        ...(command.targetIntegrity ? { targetIntegrity: command.targetIntegrity } : {}),
+        ...(command.awaitCoordinatorCommit ? { inheritableAuthorityLeaseFd: 4 } : {}),
       });
     }
     case 'runtime-host-setup': {

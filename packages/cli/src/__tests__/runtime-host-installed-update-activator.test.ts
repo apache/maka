@@ -99,6 +99,90 @@ test('reports active work and operator-owned lifecycle without forcing takeover'
   assert.equal(service, 4);
 });
 
+test('keeps the short-lived activator through the coordinator durable-commit boundary', async () => {
+  let closed = false;
+  let observedExpectation:
+    | {
+        readonly expectedRootId: string;
+        readonly ownerInstallationId: string;
+        readonly targetVersion: string;
+        readonly targetIntegrity: string;
+      }
+    | undefined;
+  const exitCode = await runRuntimeHostInstalledUpdateActivator(
+    {
+      rootPath: '/state',
+      expectedRootId: ROOT_ID,
+      generation: 'target-generation',
+      candidateEntrypoint: '/staged/candidate.js',
+      awaitCoordinatorCommit: true,
+      expectedOwnerInstallationId: 'npm-global:slot',
+      targetVersion: '2.0.0',
+      targetIntegrity: `sha512-${Buffer.alloc(64, 4).toString('base64')}`,
+    },
+    {
+      connectOrSpawn: async () => ({
+        kind: 'connected',
+        registration: registration({ generation: 'target-generation', pid: 84 }),
+        spawnedProcess: { pid: 84, exited: new Promise(() => undefined) },
+        connection: { close: async () => (closed = true) } as never,
+      }),
+      awaitCoordinatorCommit: async (input) => {
+        observedExpectation = {
+          expectedRootId: input.expectedRootId,
+          ownerInstallationId: input.ownerInstallationId,
+          targetVersion: input.targetVersion,
+          targetIntegrity: input.targetIntegrity,
+        };
+      },
+    },
+  );
+  assert.equal(exitCode, 0);
+  assert.equal(closed, true);
+  assert.deepEqual(observedExpectation, {
+    expectedRootId: ROOT_ID,
+    ownerInstallationId: 'npm-global:slot',
+    targetVersion: '2.0.0',
+    targetIntegrity: `sha512-${Buffer.alloc(64, 4).toString('base64')}`,
+  });
+});
+
+test('fails closed through the authenticated connection when its coordinator channel is absent', async () => {
+  let retirement:
+    | { readonly hostEpoch: string; readonly mode: 'refuse_active_work' | 'interrupt_active_work' }
+    | undefined;
+  await assert.rejects(
+    runRuntimeHostInstalledUpdateActivator(
+      {
+        rootPath: '/state',
+        expectedRootId: ROOT_ID,
+        generation: 'target-generation',
+        candidateEntrypoint: '/staged/candidate.js',
+        awaitCoordinatorCommit: true,
+        expectedOwnerInstallationId: 'npm-global:slot',
+        targetVersion: '2.0.0',
+        targetIntegrity: `sha512-${Buffer.alloc(64, 4).toString('base64')}`,
+      },
+      {
+        connectOrSpawn: async () => ({
+          kind: 'connected',
+          registration: registration({ generation: 'target-generation', pid: 84 }),
+          connection: {
+            hostEpoch: 'target-host',
+            close: async () => {},
+          } as never,
+        }),
+        retireTarget: async (connection, mode) => {
+          retirement = { hostEpoch: connection.hostEpoch, mode };
+          return { kind: 'prepared', pid: 84 };
+        },
+      },
+    ),
+    /lost its coordinator channel/u,
+  );
+  assert.deepEqual(retirement, { hostEpoch: 'target-host', mode: 'interrupt_active_work' });
+});
+
 function registration(overrides: Partial<HostRegistration> = {}): HostRegistration {
   return {
     kind: 'maka-runtime-host',

@@ -235,19 +235,46 @@ export async function assertRuntimeHostArchiveExpansionBudget(
   };
   const stream = createReadStream(archivePath).pipe(createGunzip());
   let pending = Buffer.alloc(0);
+  // Payload bytes of the current entry that have not arrived yet. Header
+  // bookkeeping advances past an entry's payload whether or not the payload
+  // is already buffered, so the deficit must be carried across chunks —
+  // otherwise the payload of any entry larger than one gunzip chunk would be
+  // reparsed as the next header.
+  let skipBytes = 0;
   let entries = 0;
   let extractedBytes = 0;
+  let zeroBlocks = 0;
   let ended = false;
   try {
     for await (const chunk of stream as AsyncIterable<Buffer>) {
       pending = Buffer.concat([pending, chunk]);
+      if (skipBytes > 0) {
+        if (pending.length <= skipBytes) {
+          skipBytes -= pending.length;
+          // The chunk is fully consumed payload; drop it before the next
+          // concat or already-skipped bytes would be counted twice.
+          pending = Buffer.alloc(0);
+          continue;
+        }
+        pending = pending.subarray(skipBytes);
+        skipBytes = 0;
+      }
       let offset = 0;
       while (pending.length - offset >= TAR_BLOCK_BYTES) {
         const header = pending.subarray(offset, offset + TAR_BLOCK_BYTES);
         if (isZeroBlock(header)) {
-          ended = true;
-          break;
+          zeroBlocks += 1;
+          offset += TAR_BLOCK_BYTES;
+          if (zeroBlocks === 2) {
+            ended = true;
+            break;
+          }
+          continue;
         }
+        // POSIX tar uses two consecutive zero blocks as its only terminator.
+        // Do not accept a stream that resumes after the first terminator block.
+        if (zeroBlocks !== 0) fail('The Maka package archive has a malformed tar terminator');
+        assertSupportedTarType(header, fail);
         const entryBytes = tarEntrySize(header, fail);
         entries += 1;
         extractedBytes += entryBytes;
@@ -255,6 +282,11 @@ export async function assertRuntimeHostArchiveExpansionBudget(
           fail('The Maka package archive exceeds its extraction budget');
         }
         offset += TAR_BLOCK_BYTES + Math.ceil(entryBytes / TAR_BLOCK_BYTES) * TAR_BLOCK_BYTES;
+        if (offset > pending.length) {
+          skipBytes = offset - pending.length;
+          offset = pending.length;
+          break;
+        }
       }
       if (ended) break;
       pending = pending.subarray(offset);
@@ -275,6 +307,32 @@ function isZeroBlock(block: Buffer): boolean {
     if (byte !== 0) return false;
   }
   return true;
+}
+
+/**
+ * This is a budget scanner, not a second tar implementation. Extended tar
+ * headers can override the raw size field that the scanner sees, so reject
+ * them rather than claiming a bound we cannot prove. Accept only standard
+ * ustar entry kinds whose payload size is carried in this header.
+ */
+function assertSupportedTarType(header: Buffer, fail: (message: string) => never): void {
+  const type = header[156] ?? 0;
+  if (
+    type === 0 ||
+    type === 48 || // regular file
+    type === 49 || // hard link
+    type === 50 || // symbolic link
+    type === 51 || // character device
+    type === 52 || // block device
+    type === 53 || // directory
+    type === 54 || // FIFO
+    type === 55 // contiguous file
+  ) {
+    return;
+  }
+  // In particular: x/g/X (PAX) and S (GNU sparse) can reinterpret payload
+  // sizes, while L/K can reinterpret paths. Refuse all extended variants.
+  fail('The Maka package archive uses an unsupported extended tar header');
 }
 
 /** Octal size field at offset 124 of a tar header; base-256 (GNU) sizes are refused. */
