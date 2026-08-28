@@ -1349,11 +1349,14 @@ mod tests {
 
     async fn close_test_stream(stream: PeerStream) {
         let (result, response) = oneshot::channel();
-        stream
+        if stream
             .commands
             .send(StreamCommand::Close { result })
             .await
-            .expect("send close");
+            .is_err()
+        {
+            return;
+        }
         if let Ok(outcome) = response.await {
             outcome.expect("close failed");
         }
