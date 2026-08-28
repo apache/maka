@@ -252,8 +252,9 @@ test('the first click of a session lands on its prompt and holds', async ({
   expect((await landing())?.offset).toBeLessThan(24);
   expect((await landing())?.tickIsCurrent).toBe(true);
 
-  // And stays: the fill runs on idle callbacks after the jump, so a jump that
-  // only wins the first frame reads as landing and then sliding away.
+  // And stays: turns keep resolving their content and remeasuring after the
+  // jump, so a jump that only wins the first frame reads as landing and then
+  // sliding away.
   await page.waitForTimeout(1_200);
   const settled = await landing();
   expect(settled?.offset).toBeGreaterThan(-24);
@@ -265,7 +266,7 @@ test('long transcripts keep a bounded mounted turn window', async ({
   promptRailWindow: page,
 }) => {
   const count = async () => page.locator('[data-virtual-turn-id]').count();
-  await page.locator('[data-chat-scroll-container="true"][data-turn-window="ready"]').waitFor();
+  await page.locator('[data-virtual-turn-id]').first().waitFor();
   await loadPromptRailBeyondVirtualWindow(page);
   expect(await page.evaluate(() => {
     const transcript = document.querySelector<HTMLElement>('.maka-chat-message-list');
@@ -288,8 +289,8 @@ test('long transcripts keep a bounded mounted turn window', async ({
 test('evicting a turn-owned sibling interaction hands focus back to the transcript', async ({
   promptRailWindow: page,
 }) => {
-  const scroller = page.locator('[data-chat-scroll-container="true"][data-turn-window="ready"]');
-  await scroller.waitFor();
+  const scroller = page.locator('[data-chat-scroll-container="true"]');
+  await page.locator('[data-virtual-turn-id]').first().waitFor();
   await loadPromptRailBeyondVirtualWindow(page);
   await scrollTranscriptTo(page, 'bottom');
   await expect(page.locator('[data-virtual-turn-id="turn-prompt-rail-120"]')).toHaveCount(1);

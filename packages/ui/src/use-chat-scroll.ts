@@ -19,7 +19,6 @@
 
 import { useEffect, useRef, useState, type RefObject } from 'react';
 import type { StoredMessage } from '@maka/core/session';
-import { createArrivalBottomPin, type ArrivalBottomPin } from './arrival-bottom-pin.js';
 
 export function useChatScroll(input: {
   scrollRef: RefObject<HTMLElement | null>;
@@ -31,10 +30,12 @@ export function useChatScroll(input: {
   hasOlderHistory?: boolean;
   historyLoadPending?: boolean;
   onLoadEarlierHistory?(): Promise<void> | void;
-  latestNavigationNonce?: number;
+  /** Astryx's auto-follow release, for the moves the reader asks for. */
+  unlockAutoFollow?(): void;
 }) {
   const [highlightedTurnId, setHighlightedTurnId] = useState<string | null>(null);
-  const arrivalPin = useRef<ArrivalBottomPin | null>(null);
+  const unlockAutoFollowRef = useRef(input.unlockAutoFollow);
+  unlockAutoFollowRef.current = input.unlockAutoFollow;
   const loadEarlierRef = useRef(input.onLoadEarlierHistory);
   loadEarlierRef.current = input.onLoadEarlierHistory;
   const historyLoadPendingRef = useRef(input.historyLoadPending);
@@ -57,7 +58,7 @@ export function useChatScroll(input: {
       if (root.scrollTop === 0) root.scrollTop = 1;
       const request = {};
       earlierLoadRequest.current = request;
-      arrivalPin.current?.release();
+      unlockAutoFollowRef.current?.();
       void Promise.resolve(loadEarlierRef.current?.()).catch(() => undefined).finally(() => {
         if (earlierLoadRequest.current === request) earlierLoadRequest.current = null;
       });
@@ -86,71 +87,12 @@ export function useChatScroll(input: {
     input.sessionId,
   ]);
 
-  // A session switch is navigation, so its initial virtual tail arrives at the
-  // bottom instead of animating there as ordinary content growth.
-  useEffect(() => {
-    const viewport = input.scrollRef.current;
-    if (!viewport) return;
-    // Nothing to arrive: keep the plain positioning this effect has always done
-    // for a transcript that is empty (or still loading its first turn), and let
-    // the pin install on the commit those turns land in.
-    if (!input.hasTurns) {
-      viewport.scrollTop = viewport.scrollHeight;
-      return;
-    }
-    const pin = createArrivalBottomPin({
-      viewport,
-      content: viewport.querySelector('.maka-chat-message-list'),
-      onStateChange: (state) => { viewport.dataset.arrivalPin = state; },
-    });
-    arrivalPin.current = pin;
-    return () => {
-      pin.dispose();
-      arrivalPin.current = null;
-      delete viewport.dataset.arrivalPin;
-    };
-  }, [input.sessionId, input.hasTurns, input.scrollRef, input.latestNavigationNonce]);
-
-  useEffect(() => {
-    const root = input.scrollRef.current;
-    if (!root || !input.hasTurns) return;
-    let disposed = false;
-    let pollTimer: number | undefined;
-    let frame = 0;
-    let polls = 0;
-    const finishArrival = () => {
-      if (disposed) return;
-      if (root.querySelector('.maka-markdown-pending') && polls < 50) {
-        polls += 1;
-        pollTimer = window.setTimeout(finishArrival, 100);
-        return;
-      }
-      frame = window.requestAnimationFrame(() => {
-        frame = window.requestAnimationFrame(() => {
-          if (disposed) return;
-          root.dataset.turnWindow = 'ready';
-          arrivalPin.current?.release();
-        });
-      });
-    };
-    const fontsReady: Promise<unknown> =
-      typeof document !== 'undefined' && document.fonts ? document.fonts.ready : Promise.resolve();
-    void fontsReady.then(finishArrival);
-    return () => {
-      disposed = true;
-      window.clearTimeout(pollTimer);
-      if (frame !== 0) window.cancelAnimationFrame(frame);
-      delete root.dataset.turnWindow;
-    };
-  }, [input.sessionId, input.hasTurns, input.scrollRef, input.latestNavigationNonce]);
-
   useEffect(() => {
     const target = input.target;
     if (!target?.turnId) return;
-    // Navigating to a turn is the reader choosing a position, so it outranks an
-    // arrival still in flight. (An upward scroll would release the pin on its
-    // own a frame later; releasing here keeps the first frame honest too.)
-    arrivalPin.current?.release();
+    // Navigating to a turn is the reader choosing a position, so it outranks
+    // following the tail.
+    unlockAutoFollowRef.current?.();
     const frame = window.requestAnimationFrame(() => {
       const root = input.scrollRef.current;
       if (!root) return;

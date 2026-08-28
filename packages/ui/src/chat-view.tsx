@@ -504,7 +504,6 @@ export function ChatView(props: {
     throw new Error('ChatView must be rendered inside ChatSurfaceLayout');
   }
   const scrollRef = chatLayout.scrollContainerRef;
-  const [latestNavigationNonce, setLatestNavigationNonce] = useState(0);
   const orderedTurnIds = useMemo(() => turns.map((turn) => turn.turnId), [turns]);
   const sessionId = props.activeSession?.id;
   const {
@@ -558,7 +557,7 @@ export function ChatView(props: {
     hasOlderHistory: props.hasOlderHistory,
     historyLoadPending: props.historyLoadPending,
     onLoadEarlierHistory: props.onLoadEarlierHistory,
-    latestNavigationNonce,
+    unlockAutoFollow: chatLayout.unlockAutoFollow,
   });
   const { quote: selectionQuote, clear: clearSelectionQuote } = useMessageSelectionQuote(
     scrollRef,
@@ -672,7 +671,7 @@ export function ChatView(props: {
           isPending={props.returnToLatest.isPending}
           onReturnToLatest={() =>
             Promise.resolve(props.returnToLatest?.onClick()).then(() => {
-              setLatestNavigationNonce((nonce) => nonce + 1);
+              chatLayout.scrollToBottom?.({ behavior: 'instant' });
             })}
         />
       ) : null}

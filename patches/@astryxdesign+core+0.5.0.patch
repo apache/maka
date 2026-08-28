@@ -1,8 +1,8 @@
 diff --git a/node_modules/@astryxdesign/core/dist/Chat/ChatContext.d.ts b/node_modules/@astryxdesign/core/dist/Chat/ChatContext.d.ts
-index d1bfeeb..b4a0e62 100644
+index d1bfeeb..757a2e2 100644
 --- a/node_modules/@astryxdesign/core/dist/Chat/ChatContext.d.ts
 +++ b/node_modules/@astryxdesign/core/dist/Chat/ChatContext.d.ts
-@@ -61,6 +61,13 @@ export interface ChatLayoutContextValue {
+@@ -61,6 +61,19 @@ export interface ChatLayoutContextValue {
      scrollContainerRef: React.RefObject<HTMLElement | null>;
      /** Callback ref for the message list content element — layout observes it for size changes. */
      contentRef: (el: HTMLElement | null) => void;
@@ -13,6 +13,12 @@ index d1bfeeb..b4a0e62 100644
 +     * changed scrollHeight and is read as a resize artefact.
 +     */
 +    unlockAutoFollow?: () => void;
++    /**
++     * Resume auto-follow and go to the newest message. The other half of
++     * `unlockAutoFollow`: a host that offers "return to latest" has to put the
++     * reader back on the tail, and no scroll it performs itself will re-lock.
++     */
++    scrollToBottom?: (options?: import("./useChatStreamScroll.js").ChatScrollToBottomOptions) => void;
  }
  export declare const ChatLayoutContext: import("react").Context<ChatLayoutContextValue | null>;
  export declare function useChatLayoutContext(): ChatLayoutContextValue | null;
@@ -33,7 +39,7 @@ index ff34874..9ec8d7a 100644
  export declare function ChatLayout({ children, composer, density, emptyState, scrollButton, scrollRef: externalScrollRef, xstyle, className, style, 'data-testid': testId, ref, ...rest }: ChatLayoutProps): import("react").JSX.Element;
  export declare namespace ChatLayout {
 diff --git a/node_modules/@astryxdesign/core/dist/Chat/ChatLayout.js b/node_modules/@astryxdesign/core/dist/Chat/ChatLayout.js
-index ff9b9fa..346e01c 100644
+index ff9b9fa..7aeb506 100644
 --- a/node_modules/@astryxdesign/core/dist/Chat/ChatLayout.js
 +++ b/node_modules/@astryxdesign/core/dist/Chat/ChatLayout.js
 @@ -28,7 +28,7 @@
@@ -53,7 +59,7 @@ index ff9b9fa..346e01c 100644
    ref,
    ...rest
  }) {
-@@ -211,6 +212,20 @@ export function ChatLayout({
+@@ -211,6 +212,25 @@ export function ChatLayout({
      isLocked: scroll.isLocked,
      onResize: scroll.scrollIfLocked
    });
@@ -68,13 +74,18 @@ index ff9b9fa..346e01c 100644
 +      return;
 +    }
 +    conversationKeyRef.current = conversationKey;
-+    scroll.lock();
++    // maka: a new conversation is a new initial fill, not content growth in
++    // the current one. `lock` alone re-enters through the spring, so the
++    // incoming transcript flies to the bottom instead of arriving there.
++    scroll.scrollToBottom({
++      behavior: 'instant'
++    });
 +    newMsgs.reset();
-+  }, [conversationKey, scroll.lock, newMsgs.reset]);
++  }, [conversationKey, scroll.scrollToBottom, newMsgs.reset]);
    const defaultScrollButton = /*#__PURE__*/_jsx(ChatLayoutScrollButton, {
      isVisible: scroll.isScrolledUp || newMsgs.hasNewMessages,
      label: newMsgs.hasNewMessages ? t('@astryx.chatLayout.newMessages') : undefined,
-@@ -223,8 +238,14 @@ export function ChatLayout({
+@@ -223,8 +243,17 @@ export function ChatLayout({
    // --- Layout context ---
    const layoutContext = useMemo(() => ({
      scrollContainerRef,
@@ -86,8 +97,11 @@ index ff9b9fa..346e01c 100644
 +    // the move was intentional: the scroll-up unlock is skipped whenever the
 +    // event arrives with a changed scrollHeight, which is exactly what a host
 +    // that mounts content before scrolling produces.
-+    unlockAutoFollow: scroll.unlock
-+  }), [scrollContainerRef, newMsgs.contentRef, scroll.unlock]);
++    unlockAutoFollow: scroll.unlock,
++    // maka: and the way back. Nothing a host does to scrollTop re-locks
++    // auto-follow, so "return to latest" needs the controller itself.
++    scrollToBottom: scroll.scrollToBottom
++  }), [scrollContainerRef, newMsgs.contentRef, scroll.unlock, scroll.scrollToBottom]);
  
    // --- Derived styles ---
    const showEmpty = !hasVisibleContent(children);
