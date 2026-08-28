@@ -45,6 +45,7 @@ import {
   prepareArtifactWriterBootstrapAuthority,
   prepareStorageRootControlDirectory,
   prepareStorageRootIdentityRepair,
+  repairStorageRootAfterRemount,
   repairStorageRootIdentity,
   resolveExistingStorageRoot,
   resolveExistingStorageRootControlDirectory,
@@ -211,6 +212,43 @@ describe('storage root authority', () => {
       assert.equal(
         (await resolveStorageRoot({ path: root, kind: 'interactive' })).rootId,
         initialized.rootId,
+      );
+    });
+  });
+
+  test('repairs a remounted device but refuses a different directory inode', async () => {
+    await withRoots(async ({ base, root }) => {
+      const initialized = await resolveStorageRoot({ path: root, kind: 'interactive' });
+      const markerPath = join(root, STORAGE_ROOT_MARKER_FILE);
+      const marker = JSON.parse(await readFile(markerPath, 'utf8')) as {
+        rootIdentity: { dev: string; ino: string };
+      };
+      marker.rootIdentity.dev = (BigInt(marker.rootIdentity.dev) + 1n).toString();
+      await writeFile(markerPath, `${JSON.stringify(marker)}\n`);
+
+      await repairStorageRootAfterRemount({
+        path: root,
+        kind: 'interactive',
+        expectedRootId: initialized.rootId,
+      });
+      assert.equal(
+        (await resolveStorageRoot({ path: root, kind: 'interactive' })).rootId,
+        initialized.rootId,
+      );
+
+      const replacement = join(base, 'replacement');
+      await mkdir(replacement);
+      const replacementMarkerPath = join(replacement, STORAGE_ROOT_MARKER_FILE);
+      const repairedMarker = JSON.parse(await readFile(markerPath, 'utf8')) as {
+        rootIdentity: { dev: string; ino: string };
+      };
+      const replacementStat = await lstat(replacement, { bigint: true });
+      repairedMarker.rootIdentity.ino = (replacementStat.ino + 1n).toString();
+      await writeFile(replacementMarkerPath, `${JSON.stringify(repairedMarker)}\n`);
+      await assert.rejects(
+        () => repairStorageRootAfterRemount({ path: replacement, kind: 'interactive' }),
+        (error: unknown) =>
+          error instanceof StorageRootAuthorityError && error.code === 'root_identity_changed',
       );
     });
   });

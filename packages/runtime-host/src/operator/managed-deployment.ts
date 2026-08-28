@@ -26,6 +26,7 @@ import {
   type StateRootOwner,
   type StorageRootCapability,
   assertStorageRootLease,
+  repairStorageRootAfterRemount,
   resolveExistingStorageRoot,
   tryAcquireStateRootOwner,
 } from '@maka/storage/root-authority';
@@ -321,6 +322,8 @@ export interface RuntimeHostManagedDeploymentTransitionInput {
 }
 
 export interface RuntimeHostManagedDeploymentAuthorityOptions {
+  /** Explicitly accept a device-only root identity change at a known remount boundary. */
+  readonly repairRootAfterRemount?: true;
   /** Test-only or embedding override. Production uses the account-local durable default. */
   readonly authorityRoot?: string;
   readonly homeDir?: string;
@@ -564,6 +567,13 @@ export async function resolveRuntimeHostManagedDeploymentAuthority(
       'invalid_config',
       'The Runtime Host managed deployment record has an invalid Root identity',
     );
+  }
+  if (options.repairRootAfterRemount) {
+    await repairStorageRootAfterRemount({
+      path: initial.root.path,
+      kind: 'interactive',
+      expectedRootId: rootId,
+    });
   }
   const capability = await resolveExistingStorageRoot({
     path: initial.root.path,

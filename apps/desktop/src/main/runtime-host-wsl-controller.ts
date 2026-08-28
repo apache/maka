@@ -185,6 +185,7 @@ function runtimeHostWslSetupCommand(
     'desktop-client',
     '--lifecycle',
     'on-demand',
+    '--repair-root-after-remount',
     ...(input.projectDirectoryRoots === undefined
       ? []
       : input.projectDirectoryRoots.length === 0

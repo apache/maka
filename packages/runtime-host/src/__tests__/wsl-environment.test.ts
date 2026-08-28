@@ -54,6 +54,7 @@ test('passes WSL target values as literal argv to the absolute operator', async 
       '--framed',
       '--root-id',
       'a'.repeat(64),
+      '--repair-root-after-remount',
     ],
   });
 });

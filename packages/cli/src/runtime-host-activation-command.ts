@@ -32,6 +32,7 @@ import { reconcileRuntimeHostUpdateOnActivation } from './runtime-host-update-re
 
 export interface RuntimeHostManagedActivationCliOptions {
   readonly rootId: string;
+  readonly repairRootAfterRemount?: true;
 }
 
 export function activateRuntimeHostManagedDeploymentWithReconciliation(
@@ -54,7 +55,12 @@ export async function runRuntimeHostManagedActivationCli(
   try {
     const result = await (
       overrides.activate ?? activateRuntimeHostManagedDeploymentWithReconciliation
-    )({ rootId: options.rootId });
+    )({
+      rootId: options.rootId,
+      ...(options.repairRootAfterRemount
+        ? { authority: { repairRootAfterRemount: true as const } }
+        : {}),
+    });
     writeOutput(encodeRuntimeHostActivationFrame(result));
     return 0;
   } catch (error) {

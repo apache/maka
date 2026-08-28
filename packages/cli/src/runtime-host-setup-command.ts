@@ -76,7 +76,7 @@ import {
   RuntimeHostUpdateDiscoveryError,
   type RuntimeHostUpdateCandidate,
 } from './runtime-host-update-discovery.js';
-import { resolveStorageRoot } from '@maka/storage/root-authority';
+import { repairStorageRootAfterRemount, resolveStorageRoot } from '@maka/storage/root-authority';
 import {
   createPlatformRuntimeHostServiceBackend,
   discoverRuntimeHostLifecycleProvider,
@@ -131,6 +131,7 @@ export interface RuntimeHostSetupCliOptions {
   readonly lifecycle?: 'supervised' | 'on_demand';
   readonly deferPairingCommit?: boolean;
   readonly bindPairingToClient?: boolean;
+  readonly repairRootAfterRemount?: true;
   readonly rootPath?: string;
   readonly projectDirectoryRoots?: readonly {
     readonly label: string;
@@ -305,17 +306,16 @@ async function resolveRuntimeHostSetupRootId(options: RuntimeHostSetupCliOptions
       throw error;
     }
   }
-  return (
-    await resolveStorageRoot({
-      path: resolve(
-        options.rootPath ??
-          legacyRootPath ??
-          options.expectedTarget?.rootPath ??
-          options.defaultRootPath,
-      ),
-      kind: 'interactive',
-    })
-  ).rootId;
+  const path = resolve(
+    options.rootPath ??
+      legacyRootPath ??
+      options.expectedTarget?.rootPath ??
+      options.defaultRootPath,
+  );
+  if (options.repairRootAfterRemount) {
+    await repairStorageRootAfterRemount({ path, kind: 'interactive' });
+  }
+  return (await resolveStorageRoot({ path, kind: 'interactive' })).rootId;
 }
 
 async function runRuntimeHostSetupLocked(

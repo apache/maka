@@ -49,6 +49,21 @@ describe('Runtime Host operator commands', () => {
       framed: true,
     });
     assert.equal(parseRuntimeHostCommand(['activate', '--root-id', rootId]).kind, 'error');
+    assert.deepEqual(
+      parseRuntimeHostCommand([
+        'connect',
+        '--framed',
+        '--root-id',
+        rootId,
+        '--repair-root-after-remount',
+      ]),
+      {
+        kind: 'runtime-host-managed-connect',
+        rootId,
+        framed: true,
+        repairRootAfterRemount: true,
+      },
+    );
 
     let output = '';
     assert.equal(

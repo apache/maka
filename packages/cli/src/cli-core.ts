@@ -248,11 +248,17 @@ export async function runMakaCli(
       const { runRuntimeHostManagedActivationCli } = await import(
         './runtime-host-activation-command.js'
       );
-      return runRuntimeHostManagedActivationCli({ rootId: command.rootId });
+      return runRuntimeHostManagedActivationCli({
+        rootId: command.rootId,
+        ...(command.repairRootAfterRemount ? { repairRootAfterRemount: true } : {}),
+      });
     }
     case 'runtime-host-managed-connect': {
       const { runRuntimeHostManagedConnectCli } = await import('./runtime-host-connect-command.js');
-      return runRuntimeHostManagedConnectCli({ rootId: command.rootId });
+      return runRuntimeHostManagedConnectCli({
+        rootId: command.rootId,
+        ...(command.repairRootAfterRemount ? { repairRootAfterRemount: true } : {}),
+      });
     }
     case 'run': {
       const { runRuntimeHostTextCli } = await import('./runtime-host-run-command.js');
@@ -403,6 +409,7 @@ export async function runMakaCli(
         lifecycle: command.lifecycle,
         deferPairingCommit: command.deferPairingCommit,
         bindPairingToClient: command.bindPairingToClient,
+        ...(command.repairRootAfterRemount ? { repairRootAfterRemount: true } : {}),
         ...(command.rootPath ? { rootPath: command.rootPath } : {}),
         ...(command.projectDirectoryRoots
           ? { projectDirectoryRoots: command.projectDirectoryRoots }

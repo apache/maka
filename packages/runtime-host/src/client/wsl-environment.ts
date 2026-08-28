@@ -93,6 +93,7 @@ export async function connectRuntimeHostWslEnvironment(
     '--framed',
     '--root-id',
     rootId,
+    '--repair-root-after-remount',
   ]);
   const resource = new WslProcessByteStream(child);
   const transport = new FramedByteStreamTransport(resource);

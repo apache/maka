@@ -44,11 +44,13 @@ export type RuntimeHostCliCommand =
       kind: 'runtime-host-managed-activate';
       rootId: string;
       framed: true;
+      repairRootAfterRemount?: true;
     }
   | {
       kind: 'runtime-host-managed-connect';
       rootId: string;
       framed: true;
+      repairRootAfterRemount?: true;
     }
   | {
       kind: 'runtime-host-installed-update';
@@ -115,6 +117,7 @@ export type RuntimeHostCliCommand =
       lifecycle: 'supervised' | 'on_demand';
       deferPairingCommit: boolean;
       bindPairingToClient?: true;
+      repairRootAfterRemount?: true;
       clientDataRoot?: string;
       rootPath?: string;
       projectDirectoryRoots?: { label: string; path: string }[];
@@ -325,6 +328,7 @@ function parseManagedRootFramedCommand(
 ): RuntimeHostCliCommand {
   let rootId: string | undefined;
   let framed = false;
+  let repairRootAfterRemount = false;
   for (let index = 0; index < argv.length; index += 1) {
     const argument = argv[index];
     if (argument === '--framed') {
@@ -339,6 +343,11 @@ function parseManagedRootFramedCommand(
       if (rootId === undefined) return error('--root-id requires a value');
       continue;
     }
+    if (argument === '--repair-root-after-remount') {
+      if (repairRootAfterRemount) return error('Duplicate --repair-root-after-remount');
+      repairRootAfterRemount = true;
+      continue;
+    }
     return error(`Unexpected runtime-host ${action} option: ${String(argument)}`);
   }
   if (!framed) return error(`runtime-host ${action} requires --framed`);
@@ -349,6 +358,7 @@ function parseManagedRootFramedCommand(
     kind: action === 'activate' ? 'runtime-host-managed-activate' : 'runtime-host-managed-connect',
     rootId,
     framed: true,
+    ...(repairRootAfterRemount ? { repairRootAfterRemount: true } : {}),
   };
 }
 
@@ -544,6 +554,7 @@ function parseSetupCommand(argv: string[]): RuntimeHostCliCommand {
   let lifecycleProvided = false;
   let deferPairingCommit = false;
   let bindPairingToClient = false;
+  let repairRootAfterRemount = false;
   let clientDataRoot: string | undefined;
   let enableDirectPeer = false;
   const coordinationRelays: string[] = [];
@@ -588,6 +599,10 @@ function parseSetupCommand(argv: string[]): RuntimeHostCliCommand {
         if (bindPairingToClient) return error('Duplicate --bind-pairing-to-client');
         bindPairingToClient = true;
       },
+      '--repair-root-after-remount': () => {
+        if (repairRootAfterRemount) return error('Duplicate --repair-root-after-remount');
+        repairRootAfterRemount = true;
+      },
     },
   });
   if ('kind' in options) return options;
@@ -609,6 +624,7 @@ function parseSetupCommand(argv: string[]): RuntimeHostCliCommand {
     lifecycle,
     deferPairingCommit,
     ...(bindPairingToClient ? { bindPairingToClient: true } : {}),
+    ...(repairRootAfterRemount ? { repairRootAfterRemount: true } : {}),
     ...(clientDataRoot ? { clientDataRoot } : {}),
     ...(enableDirectPeer ? { directPeer: { coordinationRelays } } : {}),
   };

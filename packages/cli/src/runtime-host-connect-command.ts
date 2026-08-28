@@ -23,7 +23,7 @@ import { openRuntimeHostManagedStdioBridge } from '@maka/runtime-host/client';
 import { activateRuntimeHostManagedDeploymentWithReconciliation } from './runtime-host-activation-command.js';
 
 export async function runRuntimeHostManagedConnectCli(
-  input: { readonly rootId: string },
+  input: { readonly rootId: string; readonly repairRootAfterRemount?: true },
   overrides: {
     readonly openBridge?: typeof openRuntimeHostManagedStdioBridge;
     readonly stdin?: Readable;
@@ -36,7 +36,12 @@ export async function runRuntimeHostManagedConnectCli(
   let socket: Awaited<ReturnType<typeof openRuntimeHostManagedStdioBridge>> | undefined;
   try {
     socket = await (overrides.openBridge ?? openRuntimeHostManagedStdioBridge)(
-      { rootId: input.rootId },
+      {
+        rootId: input.rootId,
+        ...(input.repairRootAfterRemount
+          ? { authority: { repairRootAfterRemount: true as const } }
+          : {}),
+      },
       { activate: activateRuntimeHostManagedDeploymentWithReconciliation },
     );
     stdin.pipe(socket);
