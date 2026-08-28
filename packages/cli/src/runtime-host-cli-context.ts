@@ -24,7 +24,7 @@ import type { ConnectionCatalogEntry, ConnectionCatalogSnapshot } from '@maka/co
 import type { ChatDefaultPermissionMode } from '@maka/core/settings';
 import {
   connectOrSpawnRuntimeHost,
-  connectRemoteRuntimeHostProfile,
+  connectRuntimeHostProfile,
   createClientRuntimeHostProfileCatalog,
   createRuntimeHostPeerClientFromEnvironment,
   createRuntimeHostReconnectingConnection,
@@ -97,7 +97,7 @@ export interface RuntimeHostCliTarget {
 
 interface RuntimeHostCliContextDeps {
   readonly connectOrSpawn: typeof connectOrSpawnRuntimeHost;
-  readonly connectRemoteProfile: typeof connectRemoteRuntimeHostProfile;
+  readonly connectProfile: typeof connectRuntimeHostProfile;
   readonly readConnectionCatalog: typeof readRuntimeHostConnectionCatalog;
   readonly loadClientInstanceId: typeof loadOrCreateRuntimeHostClientInstanceId;
   readonly executionCandidateEntrypoint: URL;
@@ -117,7 +117,7 @@ export async function connectRuntimeHostCli(
 ): Promise<RuntimeHostCliConnectionContext> {
   const deps: RuntimeHostCliContextDeps = {
     connectOrSpawn: connectOrSpawnRuntimeHost,
-    connectRemoteProfile: connectRemoteRuntimeHostProfile,
+    connectProfile: connectRuntimeHostProfile,
     readConnectionCatalog: readRuntimeHostConnectionCatalog,
     loadClientInstanceId: loadOrCreateRuntimeHostClientInstanceId,
     executionCandidateEntrypoint: new URL(
@@ -150,10 +150,10 @@ export async function connectRuntimeHostCli(
     signal?: AbortSignal,
     sshInteraction: 'batch' | 'inherit' = 'batch',
   ): Promise<RuntimeHostConnection> => {
-    if (profile.kind === 'remote') {
-      return deps.connectRemoteProfile({
+    if (profile.kind !== 'local') {
+      return deps.connectProfile({
         profile,
-        credential: resolvedProfile.credential!,
+        ...(resolvedProfile.credential ? { credential: resolvedProfile.credential } : {}),
         clientInstanceId,
         sshInteraction,
         ...(peerClient ? { peerClient } : {}),

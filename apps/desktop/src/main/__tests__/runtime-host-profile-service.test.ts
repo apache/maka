@@ -69,9 +69,15 @@ const MANAGED_PROFILE = {
   },
 };
 const MANAGED_SERVICE = {
-  id: "c".repeat(64),
-  rootPath: "/srv/maka",
-  operatorPath: "/home/operator/.local/share/maka/operator",
+  deployment: {
+    id: "c".repeat(64),
+    rootPath: "/srv/maka",
+    deploymentId: "11111111-1111-4111-8111-111111111111",
+  },
+  control: {
+    kind: "ssh_operator" as const,
+    operatorPath: "/home/operator/.local/share/maka/operator",
+  },
 };
 const READY_PROFILE = {
   id: "backup",
@@ -782,8 +788,10 @@ test("does not rotate a managed credential after its profile target changes", as
   };
   const replacementService = {
     ...MANAGED_SERVICE,
-    id: "e".repeat(64),
-    rootPath: "/srv/other-maka",
+    deployment: {
+      id: "e".repeat(64),
+      rootPath: "/srv/other-maka",
+    },
   };
   await catalog.remove(MANAGED_PROFILE.id);
   await catalog.create(replacementProfile, "other-token");

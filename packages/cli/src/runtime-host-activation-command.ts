@@ -22,14 +22,26 @@ import { generalizedErrorMessage } from '@maka/core/redaction';
 import {
   RuntimeHostManagedActivationError,
   activateRuntimeHostManagedDeployment,
+  type ActivateRuntimeHostManagedDeploymentInput,
 } from '@maka/runtime-host/client';
 import {
   RUNTIME_HOST_ACTIVATION_ERROR_MESSAGE_MAX_BYTES,
   encodeRuntimeHostActivationFrame,
 } from '@maka/runtime-host/operator';
+import { reconcileRuntimeHostUpdateOnActivation } from './runtime-host-update-reconciliation.js';
 
 export interface RuntimeHostManagedActivationCliOptions {
   readonly rootId: string;
+  readonly repairRootAfterRemount?: true;
+}
+
+export function activateRuntimeHostManagedDeploymentWithReconciliation(
+  input: ActivateRuntimeHostManagedDeploymentInput,
+  options: { readonly deploymentLockHeld?: boolean } = {},
+) {
+  return activateRuntimeHostManagedDeployment(input, {
+    reconcileActivation: (config) => reconcileRuntimeHostUpdateOnActivation(config, options),
+  });
 }
 
 export async function runRuntimeHostManagedActivationCli(
@@ -41,8 +53,13 @@ export async function runRuntimeHostManagedActivationCli(
 ): Promise<number> {
   const writeOutput = overrides.writeOutput ?? ((value: string) => process.stdout.write(value));
   try {
-    const result = await (overrides.activate ?? activateRuntimeHostManagedDeployment)({
+    const result = await (
+      overrides.activate ?? activateRuntimeHostManagedDeploymentWithReconciliation
+    )({
       rootId: options.rootId,
+      ...(options.repairRootAfterRemount
+        ? { authority: { repairRootAfterRemount: true as const } }
+        : {}),
     });
     writeOutput(encodeRuntimeHostActivationFrame(result));
     return 0;

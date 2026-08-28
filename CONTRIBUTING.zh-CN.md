@@ -25,6 +25,8 @@
 
 缺陷修复、模型供应商支持、测试、性能优化和文档最容易被合并。想找活干，从 [`help wanted`](https://github.com/apache/maka/issues?q=is%3Aissue+is%3Aopen+label%3A%22help+wanted%22) · [`good first issue`](https://github.com/apache/maka/issues?q=is%3Aissue+is%3Aopen+label%3A%22good+first+issue%22) · [`bug`](https://github.com/apache/maka/issues?q=is%3Aissue+is%3Aopen+label%3Abug) · [`enhancement`](https://github.com/apache/maka/issues?q=is%3Aissue+is%3Aopen+label%3Aenhancement) 里挑一个，留言认领。提 issue 走 **Bug report** 或 **Feature request** 模板；安全问题走 [SECURITY.md](./SECURITY.md) 的私密流程，不要开公开 issue。提问、想法和还不成熟的提案发到 [Discussions](https://github.com/apache/maka/discussions)——它会自动进到大家的邮箱，比 issue 更容易被看到。
 
+若要自助认领一个尚未分配的 issue，请单独评论 `take`（评论正文只能是这个单词）；评论 `untake` 可以解除自己的认领。其他认领文字不会触发该工作流。
+
 项目方向、治理和重大产品决策在实施前于开发邮件列表 [`dev@maka.apache.org`](https://lists.apache.org/list.html?dev@maka.apache.org) 上公开讨论；实现层面的技术决策可以在 PR 中讨论。
 
 ## 人类责任与 AI 归因

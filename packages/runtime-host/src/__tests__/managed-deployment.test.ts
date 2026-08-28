@@ -26,13 +26,19 @@ import {
   resolveRootControlNamespace,
   resolveRootOwnershipNamespace,
   resolveStorageRoot,
+  tryAcquireStateRootOwner,
 } from '@maka/storage/root-authority';
 import {
   RuntimeHostManagedDeploymentError,
+  beginRuntimeHostManagedDeploymentTransition,
+  blockRuntimeHostManagedDeploymentTransition,
   claimRuntimeHostManagedDeployment,
+  commitRuntimeHostManagedDeploymentTransition,
   decodeRuntimeHostManagedDeploymentConfig,
+  readRuntimeHostManagedDeploymentAuthorityRecord,
   readRuntimeHostManagedDeploymentConfig,
   resolveRuntimeHostManagedDeploymentConfigPath,
+  rollbackRuntimeHostManagedDeploymentTransition,
   runtimeHostManagedLaunchClaim,
   tryAcquireRuntimeHostLaunch,
   tryAcquireRuntimeHostLaunchOwner,
@@ -96,6 +102,7 @@ function createConfig(
 ): RuntimeHostManagedDeploymentConfig {
   return {
     schemaVersion: 1,
+    state: 'active',
     deploymentId: DEPLOYMENT_ID,
     configRevision: 1,
     deploymentRoot,
@@ -153,6 +160,11 @@ function launchRequest(
 test('strictly decodes every level of the canonical deployment contract', () => {
   const config = createConfig('/srv/maka/state', 'a'.repeat(64));
   assert.deepEqual(decodeRuntimeHostManagedDeploymentConfig(config), config);
+  assert.throws(
+    () => decodeRuntimeHostManagedDeploymentConfig({ ...config, state: undefined }),
+    (error: unknown) =>
+      error instanceof RuntimeHostManagedDeploymentError && error.code === 'invalid_config',
+  );
   assert.throws(
     () =>
       decodeRuntimeHostManagedDeploymentConfig({
@@ -236,6 +248,98 @@ test('claims one canonical deployment while fencing State Root ownership', async
     ),
     (error: unknown) =>
       error instanceof RuntimeHostManagedDeploymentError && error.code === 'lifecycle_owner_exists',
+  );
+});
+
+test('deployment transitions fail closed and preserve exact commit or rollback authority', async (t) => {
+  const input = await fixture(t);
+  await claimRuntimeHostManagedDeployment(input.capability, input.config, input.authority);
+  const desired: RuntimeHostManagedDeploymentConfig = {
+    ...input.config,
+    configRevision: 2,
+    lifecycle: { mode: 'supervised', provider: 'systemd_user', availability: 'machine' },
+    reconciliation: { trigger: 'scheduled', provider: 'systemd_timer' },
+  };
+
+  const rollbackTransactionId = '00000000-0000-4000-8000-000000000010';
+  const firstOwner = await tryAcquireStateRootOwner(input.capability);
+  assert.ok(firstOwner);
+  await beginRuntimeHostManagedDeploymentTransition(
+    firstOwner,
+    {
+      transactionId: rollbackTransactionId,
+      operation: 'lifecycle_change',
+      recovery: 'restore_from',
+      expected: input.config,
+      desired,
+    },
+    input.authority,
+  );
+  await firstOwner.close();
+
+  await assert.rejects(
+    tryAcquireRuntimeHostLaunch(
+      input.capability,
+      launchRequest(input.config, 'on_demand', runtimeHostManagedLaunchClaim(input.config)),
+      input.authority,
+    ),
+    { code: 'deployment_transition_in_progress' },
+  );
+  const repairOwner = await tryAcquireStateRootOwner(input.capability);
+  assert.ok(repairOwner);
+  await blockRuntimeHostManagedDeploymentTransition(
+    repairOwner,
+    rollbackTransactionId,
+    'injected provider rollback failure',
+    input.authority,
+  );
+  await repairOwner.close();
+  await assert.rejects(readRuntimeHostManagedDeploymentConfig(input.capability, input.authority), {
+    code: 'deployment_needs_repair',
+  });
+
+  const rollbackOwner = await tryAcquireStateRootOwner(input.capability);
+  assert.ok(rollbackOwner);
+  await rollbackRuntimeHostManagedDeploymentTransition(
+    rollbackOwner,
+    rollbackTransactionId,
+    input.config,
+    input.authority,
+  );
+  await rollbackOwner.close();
+  assert.deepEqual(
+    await readRuntimeHostManagedDeploymentConfig(input.capability, input.authority),
+    input.config,
+  );
+
+  const commitTransactionId = '00000000-0000-4000-8000-000000000011';
+  const commitOwner = await tryAcquireStateRootOwner(input.capability);
+  assert.ok(commitOwner);
+  await beginRuntimeHostManagedDeploymentTransition(
+    commitOwner,
+    {
+      transactionId: commitTransactionId,
+      operation: 'lifecycle_change',
+      recovery: 'restore_from',
+      expected: input.config,
+      desired,
+    },
+    input.authority,
+  );
+  await commitRuntimeHostManagedDeploymentTransition(
+    commitOwner,
+    commitTransactionId,
+    desired,
+    input.authority,
+  );
+  await commitOwner.close();
+  assert.deepEqual(
+    await readRuntimeHostManagedDeploymentConfig(input.capability, input.authority),
+    desired,
+  );
+  assert.deepEqual(
+    await readRuntimeHostManagedDeploymentAuthorityRecord(input.capability, input.authority),
+    desired,
   );
 });
 

@@ -533,6 +533,7 @@ export function RuntimeHostManagementDialog(props: {
   const uninstalled = uninstalledRoot !== undefined;
   const serviceInstalled = service !== undefined && service.state !== 'not_installed';
   const serviceActive = service?.state === 'running';
+  const supervised = service?.lifecycle?.mode === 'supervised';
   const savedPolicyChoice = updatePolicy ? updatePolicyChoiceOf(updatePolicy) : undefined;
   const updatePolicyDirty = savedPolicyChoice !== updatePolicyChoice ||
     (updatePolicyChoice === 'fixed' &&
@@ -1157,9 +1158,6 @@ export function RuntimeHostManagementDialog(props: {
                       size="sm"
                       isDisabled={loading}
                       items={[
-                        ...(profile.transport.kind === 'ssh'
-                          ? [{ label: copy.repairService, onClick: () => void run('install') }]
-                          : []),
                         ...(serviceInstalled && result?.accessManagementAvailable
                           ? [{ label: copy.manageAccess, onClick: () => void loadAccess() }]
                           : []),
@@ -1184,14 +1182,14 @@ export function RuntimeHostManagementDialog(props: {
                         isDisabled={loading}
                         onClick={() => void run('status')}
                       />
-                      {serviceInstalled && serviceActive ? (
+                      {serviceInstalled && supervised && serviceActive ? (
                         <Button
                           variant="primary"
                           label={copy.restartService}
                           isDisabled={loading}
                           onClick={() => void run('restart')}
                         />
-                      ) : serviceInstalled ? (
+                      ) : serviceInstalled && supervised ? (
                         <Button
                           variant="primary"
                           label={copy.startService}

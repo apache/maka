@@ -437,8 +437,10 @@ describe('SessionManager Plan control boundaries', () => {
     await assert.rejects(
       manager.transitionSessionConfiguration(child.id, {
         expectedRevision: 1,
+        clearConnectionBlock: false,
         configuration: {
           backend: child.backend,
+          llmConnectionId: 'test-connection-id',
           llmConnectionSlug: child.llmConnectionSlug,
           connectionLocked: true,
           model: child.model,
@@ -474,6 +476,7 @@ describe('SessionManager graph operator provisioning', () => {
       subagentCatalog: {
         list: async () => [],
         resolve: async (id) => ({
+          connectionId: '22222222-2222-4222-8222-222222222222',
           id,
           name: 'Fast graph reader',
           description: 'Cheap graph scans',
@@ -584,8 +587,10 @@ describe('SessionManager graph operator provisioning', () => {
     const transition = manager
       .transitionSessionConfiguration(parent.id, {
         expectedRevision: 1,
+        clearConnectionBlock: false,
         configuration: {
           backend: parent.backend,
+          llmConnectionId: 'test-connection-id',
           llmConnectionSlug: parent.llmConnectionSlug,
           connectionLocked: true,
           model: parent.model,
@@ -2348,6 +2353,7 @@ describe('SessionManager child-session runtime primitive', () => {
         resolve: async (id) => {
           if (id !== 'fast-reader') throw new Error('unknown preset');
           return {
+            connectionId: '33333333-3333-4333-8333-333333333333',
             id,
             name: 'Fast reader',
             description: 'Cheap scans',
@@ -2389,6 +2395,7 @@ describe('SessionManager child-session runtime primitive', () => {
     const child = await store.readHeader(result.childSessionId);
 
     expect(child.llmConnectionSlug).toBe('worker-connection');
+    expect(child.llmConnectionId).toBe('33333333-3333-4333-8333-333333333333');
     expect(child.model).toBe('worker-model');
     expect(child.thinkingLevel).toBe('low');
     expect(child.subagentRuntime?.presetId).toBe('fast-reader');
@@ -4291,6 +4298,7 @@ describe('SessionManager manual compaction and quiescent session changes', () =>
     );
     const baseConfiguration = {
       backend: session.backend,
+      llmConnectionId: 'test-connection-id',
       llmConnectionSlug: session.llmConnectionSlug,
       connectionLocked: true,
       model: session.model,
@@ -4304,6 +4312,7 @@ describe('SessionManager manual compaction and quiescent session changes', () =>
     await assert.rejects(
       manager.transitionSessionConfiguration(session.id, {
         expectedRevision: 1,
+        clearConnectionBlock: false,
         configuration: baseConfiguration,
       }),
       (error: unknown) => {
@@ -4317,6 +4326,7 @@ describe('SessionManager manual compaction and quiescent session changes', () =>
     kernel.activeRuns = false;
     const committed = await manager.transitionSessionConfiguration(session.id, {
       expectedRevision: 1,
+      clearConnectionBlock: false,
       configuration: baseConfiguration,
     });
     assert.equal(committed.revision, 2);
@@ -4326,6 +4336,7 @@ describe('SessionManager manual compaction and quiescent session changes', () =>
     await assert.rejects(
       manager.transitionSessionConfiguration(session.id, {
         expectedRevision: 2,
+        clearConnectionBlock: false,
         configuration: {
           ...baseConfiguration,
           permissionMode: 'explore',
@@ -4338,6 +4349,48 @@ describe('SessionManager manual compaction and quiescent session changes', () =>
       },
     );
     assert.deepEqual(kernel.disposed, [session.id]);
+  });
+
+  test('configuration transitions clear a connection block only on explicit Host authority', async () => {
+    const store = new VersionedConfigurationMemorySessionStore();
+    const manager = new SessionManager({
+      store,
+      backends: new BackendRegistry(),
+      newId: nextId(),
+      now: nextNow(26_425),
+    });
+    const session = await manager.createSession(makeInput());
+    await store.updateHeader(session.id, {
+      status: 'blocked',
+      blockedReason: 'NO_REAL_CONNECTION',
+    });
+    const configuration = {
+      backend: session.backend,
+      llmConnectionId: 'test-connection-id',
+      llmConnectionSlug: session.llmConnectionSlug,
+      connectionLocked: true,
+      model: session.model,
+      thinkingLevel: session.thinkingLevel,
+      permissionMode: session.permissionMode,
+      collaborationMode: session.collaborationMode ?? 'agent',
+      orchestrationMode: session.orchestrationMode ?? 'default',
+    };
+
+    const preserved = await manager.transitionSessionConfiguration(session.id, {
+      expectedRevision: 1,
+      clearConnectionBlock: false,
+      configuration,
+    });
+    assert.equal(preserved.header.blockedReason, 'NO_REAL_CONNECTION');
+    assert.equal(preserved.header.status, 'blocked');
+
+    const recovered = await manager.transitionSessionConfiguration(session.id, {
+      expectedRevision: 2,
+      clearConnectionBlock: true,
+      configuration,
+    });
+    assert.equal(recovered.header.blockedReason, undefined);
+    assert.equal(recovered.header.status, 'active');
   });
 
   test('workspace relocation uses the same quiescent revision fence as execution configuration', async () => {
@@ -4427,8 +4480,10 @@ describe('SessionManager manual compaction and quiescent session changes', () =>
     const transitionResult = await manager
       .transitionSessionConfiguration(session.id, {
         expectedRevision: 1,
+        clearConnectionBlock: false,
         configuration: {
           backend: session.backend,
+          llmConnectionId: 'test-connection-id',
           llmConnectionSlug: session.llmConnectionSlug,
           connectionLocked: true,
           model: session.model,
@@ -4478,8 +4533,10 @@ describe('SessionManager manual compaction and quiescent session changes', () =>
     };
     const transition = manager.transitionSessionConfiguration(session.id, {
       expectedRevision: 1,
+      clearConnectionBlock: false,
       configuration: {
         backend: session.backend,
+        llmConnectionId: 'test-connection-id',
         llmConnectionSlug: session.llmConnectionSlug,
         connectionLocked: true,
         model: 'new-model',
@@ -5095,7 +5152,9 @@ describe('SessionManager permission mode updates', () => {
       newId: nextId(),
       now: nextNow(6_526),
     });
-    const session = await manager.createSession(makeInput());
+    const session = await manager.createSession(
+      makeInput({ llmConnectionId: '11111111-1111-4111-8111-111111111111' }),
+    );
 
     const events = await collectSessionEvents(
       manager.sendMessage(session.id, {
@@ -5106,6 +5165,7 @@ describe('SessionManager permission mode updates', () => {
 
     expect(events.map((event) => event.type)).toEqual(['text_complete', 'complete']);
     const [run] = await runStore.listSessionRuns(session.id);
+    expect(run?.llmConnectionId).toBe('11111111-1111-4111-8111-111111111111');
     expect(run?.workspaceIdentity).toBeUndefined();
   });
 
@@ -16528,6 +16588,7 @@ class MemorySessionStore implements SessionStore {
       ...(input.revisionState ? { revisionState: input.revisionState } : {}),
       hasUnread: false,
       backend: 'ai-sdk',
+      ...(input.llmConnectionId === undefined ? {} : { llmConnectionId: input.llmConnectionId }),
       llmConnectionSlug: input.llmConnectionSlug,
       connectionLocked: input.subagentParent !== undefined,
       model: input.model ?? 'fake-model',

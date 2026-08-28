@@ -19,6 +19,7 @@
 
 import type { ProjectRecord } from '@maka/core/project';
 import type { ChatDefaultsSettings } from '@maka/core/settings';
+import type { RuntimeHostProfileKind } from '@maka/runtime-host/profile-kind';
 
 export type TaskEntryUnsubscribe = () => void;
 
@@ -40,7 +41,7 @@ export interface TaskEntryProjectCapabilities {
 export interface TaskEntryHostProfile {
   readonly id: string;
   readonly name: string;
-  readonly kind: 'local' | 'remote';
+  readonly kind: RuntimeHostProfileKind;
 }
 
 export type TaskEntryHost =

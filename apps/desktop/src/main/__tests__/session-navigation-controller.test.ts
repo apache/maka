@@ -145,6 +145,11 @@ describe('useSessionNavigationController', () => {
         profileName: 'Remote Mac',
         profileKind: 'remote',
       }),
+      session('environment', {
+        profileId: 'wsl-ubuntu',
+        profileName: 'Ubuntu',
+        profileKind: 'environment',
+      }),
       session('archived', { isArchived: true }),
       session('hidden'),
     ];
@@ -153,7 +158,7 @@ describe('useSessionNavigationController', () => {
 
     assert.deepEqual(
       controller().selectors.visibleSessions.map(({ id }) => id),
-      ['root', 'remote'],
+      ['root', 'remote', 'environment'],
     );
     assert.equal(controller().selectors.activeRowId, 'root');
     assert.equal(controller().selectors.activeParentSession?.id, 'root');
@@ -163,9 +168,10 @@ describe('useSessionNavigationController', () => {
     });
     assert.deepEqual(
       controller().selectors.groups.map(({ id }) => id),
-      ['project:project', 'runtime-host:remote-profile'],
+      ['project:project', 'runtime-host:remote-profile', 'runtime-host:wsl-ubuntu'],
     );
     assert.equal(controller().selectors.sessionMeta(sessions[2]!), 'Remote Mac');
+    assert.equal(controller().selectors.sessionMeta(sessions[3]!), 'Ubuntu');
   });
 
   it('owns Session jumps and preserves turn-target clearing semantics', async () => {

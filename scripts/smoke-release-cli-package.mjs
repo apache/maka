@@ -19,7 +19,6 @@
 
 import { execFileSync, spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { createSocket } from 'node:dgram';
 import { createServer } from 'node:http';
 import { createRequire } from 'node:module';
 import {
@@ -213,6 +212,10 @@ async function smokeRuntimeHostPeerProtocol({ packageRoot, cliEntrypoint, root }
     packageRoot,
     'node_modules/@maka/runtime-host/dist/client/index.js',
   );
+  const mesh = await importInstalled(
+    packageRoot,
+    'node_modules/@maka/runtime-host/dist/peer-mesh/index.js',
+  );
   const access = await importInstalled(packageRoot, 'dist/runtime-host-access-command.js');
   const clientDataRoot = join(root, 'peer-client');
   const hostRoot = join(root, 'peer-host');
@@ -224,7 +227,8 @@ async function smokeRuntimeHostPeerProtocol({ packageRoot, cliEntrypoint, root }
   const previousKeyPath = process.env.MAKA_RUNTIME_HOST_PEER_KEY_PATH;
   let host;
   let connection;
-  let peerClient;
+  let meshAuthorityOwner;
+  let meshMemberOwner;
   try {
     delete process.env.MAKA_RUNTIME_HOST_PEER_NATIVE_PATH;
     delete process.env.MAKA_RUNTIME_HOST_PEER_KEY_PATH;
@@ -245,14 +249,16 @@ async function smokeRuntimeHostPeerProtocol({ packageRoot, cliEntrypoint, root }
     } catch (error) {
       if (!String(error).includes('peer_identity_mismatch')) throw error;
     }
+    meshAuthorityOwner = await mesh.openRuntimeHostPeerMeshOwner({
+      nativePath,
+      keyPath: hostKeyPath,
+      expectedPeerId: peerId,
+      dataRoot: join(root, 'mesh-authority'),
+      listenAddresses: ['/ip4/127.0.0.1/udp/0/quic-v1'],
+    });
     host = await server.startExecutionRuntimeHostService({
       rootPath: hostRoot,
-      peer: {
-        nativePath,
-        keyPath: hostKeyPath,
-        expectedPeerId: peerId,
-        listenAddresses: ['/ip4/127.0.0.1/udp/0/quic-v1'],
-      },
+      peer: { client: meshAuthorityOwner.client },
     });
     const listener = host.peerListeners[0];
     if (!listener || listener.peerId !== peerId || listener.listenAddresses.length === 0) {
@@ -268,7 +274,21 @@ async function smokeRuntimeHostPeerProtocol({ packageRoot, cliEntrypoint, root }
       canUseHostPaths: false,
       preset: 'terminal-client',
     });
-    peerClient = client.createRuntimeHostPeerClientFromEnvironment(process.env);
+    const meshMemberKeyPath = join(root, 'mesh-member.key');
+    const meshMemberDataRoot = join(root, 'mesh-member');
+    meshMemberOwner = await mesh.openRuntimeHostPeerMeshOwner({
+      nativePath,
+      keyPath: meshMemberKeyPath,
+      dataRoot: meshMemberDataRoot,
+      listenAddresses: ['/ip4/127.0.0.1/udp/0/quic-v1'],
+    });
+    const meshAuthority = meshAuthorityOwner.mesh;
+    let meshMember = meshMemberOwner.mesh;
+    const created = await meshAuthority.create();
+    const joined = await meshMember.join(await meshAuthority.invite(created.roster.roster.meshId));
+    if (joined.roster.roster.members.length !== 2) {
+      throw new Error('Installed Runtime Host peer Mesh did not admit the invited peer');
+    }
     connection = await client.connectRemoteRuntimeHostProfile({
       profile: {
         id: 'release-smoke-peer',
@@ -278,13 +298,13 @@ async function smokeRuntimeHostPeerProtocol({ packageRoot, cliEntrypoint, root }
         transport: {
           kind: 'libp2p-direct',
           peerId,
-          routeHints: listener.listenAddresses,
+          routeHints: ['/ip4/127.0.0.1/udp/1/quic-v1'],
           coordinationRelays: [],
         },
       },
       credential: issued.credential,
       clientInstanceId: 'release-smoke-peer-client',
-      peerClient,
+      peerClient: meshMemberOwner.client,
       connectTimeoutMs: 10_000,
       handshakeTimeoutMs: 10_000,
       readyTimeoutMs: 10_000,
@@ -293,10 +313,47 @@ async function smokeRuntimeHostPeerProtocol({ packageRoot, cliEntrypoint, root }
     if (status.state !== 'ready') {
       throw new Error(`Installed Runtime Host direct-peer status is ${status.state}`);
     }
+    const removed = await meshAuthority.remove(
+      created.roster.roster.meshId,
+      meshMemberOwner.client.identity().peerId,
+    );
+    if (removed.roster.roster.members.length !== 1) {
+      throw new Error('Installed Runtime Host peer Mesh did not remove the invited peer');
+    }
+    await meshMemberOwner.close();
+    meshMemberOwner = await mesh.openRuntimeHostPeerMeshOwner({
+      nativePath,
+      keyPath: meshMemberKeyPath,
+      dataRoot: meshMemberDataRoot,
+      listenAddresses: ['/ip4/127.0.0.1/udp/0/quic-v1'],
+    });
+    meshMember = meshMemberOwner.mesh;
+    const stale = meshMember.status()[0];
+    if (stale?.roster.roster.revision !== joined.roster.roster.revision) {
+      throw new Error('Installed Runtime Host peer Mesh did not recover the last-known roster');
+    }
+    const rejoined = await meshMember.join(
+      await meshAuthority.invite(created.roster.roster.meshId),
+    );
+    if (
+      rejoined.roster.roster.members.length !== 2 ||
+      rejoined.roster.roster.revision <= stale.roster.roster.revision
+    ) {
+      throw new Error('Installed Runtime Host peer Mesh did not re-admit the removed peer');
+    }
+    await meshAuthority.remove(
+      created.roster.roster.meshId,
+      meshMemberOwner.client.identity().peerId,
+    );
+    await meshMember.reconcile();
+    if (meshMember.status().length !== 0) {
+      throw new Error('Installed Runtime Host peer Mesh did not propagate member removal');
+    }
   } finally {
     await connection?.close().catch(() => undefined);
-    await peerClient?.close().catch(() => undefined);
     await host?.close().catch(() => undefined);
+    await meshMemberOwner?.close().catch(() => undefined);
+    await meshAuthorityOwner?.close().catch(() => undefined);
     restoreEnvironment('MAKA_RUNTIME_HOST_PEER_NATIVE_PATH', previousNativePath);
     restoreEnvironment('MAKA_RUNTIME_HOST_PEER_KEY_PATH', previousKeyPath);
   }
@@ -503,17 +560,6 @@ async function smokeRuntimeHostService({ packageRoot, cliEntrypoint, ptySpawn, r
   const stateRoot = join(root, 'state');
   mkdirSync(clientDataRoot, { recursive: true });
   mkdirSync(stateRoot, { recursive: true });
-  const peerArtifact = await importInstalled(packageRoot, 'dist/runtime-host-peer-artifact.js');
-  const configured = await peerArtifact.configureRuntimeHostPeerClient({
-    cliPath: cliEntrypoint,
-    clientDataRoot,
-    environment,
-  });
-  if (!configured) throw new Error('Installed service could not resolve its direct-peer artifact');
-  const nativePath = environment.MAKA_RUNTIME_HOST_PEER_NATIVE_PATH;
-  if (!nativePath) throw new Error('Installed service did not configure its direct-peer artifact');
-  const keyPath = join(clientDataRoot, 'runtime-host-service.peer.key');
-  const peerId = await require(nativePath).ensurePeerIdentity(keyPath);
   const configPath = join(clientDataRoot, 'runtime-host-service.json');
   writeFileSync(
     configPath,
@@ -527,12 +573,6 @@ async function smokeRuntimeHostService({ packageRoot, cliEntrypoint, ptySpawn, r
         path: '/runtime-host',
       },
       launch: { nodePath: process.execPath, cliPath: cliEntrypoint },
-      peer: {
-        enabled: true,
-        peerId,
-        listenAddresses: [`/ip4/127.0.0.1/udp/${await allocateLoopbackUdpPort()}/quic-v1`],
-        coordinationRelays: [],
-      },
     })}\n`,
     { mode: 0o600 },
   );
@@ -571,10 +611,7 @@ async function smokeRuntimeHostService({ packageRoot, cliEntrypoint, ptySpawn, r
         ready.protocol?.version === undefined ||
         !ready.hostEpoch ||
         !ready.rootId ||
-        !ready.listeners?.some((listener) => listener.kind === 'local_ipc') ||
-        !ready.listeners?.some(
-          (listener) => listener.kind === 'libp2p_direct' && listener.peerId === peerId,
-        )
+        !ready.listeners?.some((listener) => listener.kind === 'local_ipc')
       ) {
         throw new Error('Runtime Host ready event is incomplete');
       }
@@ -594,17 +631,6 @@ async function allocateLoopbackPort() {
     server.close((error) => (error ? reject(error) : resolve())),
   );
   if (!address || typeof address === 'string') throw new Error('Unable to allocate a TCP port');
-  return address.port;
-}
-
-async function allocateLoopbackUdpPort() {
-  const socket = createSocket('udp4');
-  await new Promise((resolve, reject) => {
-    socket.once('error', reject);
-    socket.bind(0, '127.0.0.1', resolve);
-  });
-  const address = socket.address();
-  await new Promise((resolve) => socket.close(resolve));
   return address.port;
 }
 

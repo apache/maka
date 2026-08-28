@@ -26,6 +26,10 @@ import {
 } from 'react';
 import { findProjectByIdentity, type ProjectRecord } from '@maka/core/project';
 import {
+  runtimeHostProfileUsesHostWorkspace,
+  type RuntimeHostProfileKind,
+} from '@maka/runtime-host/profile-kind';
+import {
   getConversationCopy,
   type WorkspacePickerModel,
   useUiLocale,
@@ -68,7 +72,7 @@ export interface TaskEntryControllerSelectors {
     readonly profileId: string;
     readonly hostId: string;
     readonly name: string;
-    readonly kind: 'local' | 'remote';
+    readonly kind: RuntimeHostProfileKind;
     readonly chatDefaults: ReadyTaskEntryHost['chatDefaults'];
   };
   readonly selectedProfileId?: string;
@@ -412,7 +416,8 @@ export function useTaskEntryController(
     return {
       label: selectedProject ?? selectedCatalogHost?.profile.name ??
         (error ? copy.catalogUnavailable : undefined),
-      ...(selectedCatalogHost?.profile.kind === 'remote'
+      ...(selectedCatalogHost &&
+      runtimeHostProfileUsesHostWorkspace(selectedCatalogHost.profile.kind)
         ? { hostBadge: selectedCatalogHost.profile.name }
         : {}),
       branch: selectedProjectId === null ? null : selectedBranch,

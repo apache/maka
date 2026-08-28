@@ -39,6 +39,7 @@ import {
 import { openInteractiveTaskLedgerStoreForWrite } from '@maka/storage/task-ledger-authority';
 import {
   connectRuntimeHost,
+  readRuntimeHostConnectionCatalog,
   RuntimeHostOperationError,
   type RuntimeHostConnection,
 } from '../client/index.js';
@@ -270,22 +271,16 @@ test('two Clients share stable Session creation, CAS configuration, and catalog 
         desktop.request('session.configuration.update', {
           sessionId: created.id,
           expectedRevision: configurationRevision,
-          configuration: {
-            modelTarget: { kind: 'default' },
-            thinkingLevel: null,
+          patch: {
             permissionMode: 'bypass',
-            collaborationMode: 'agent',
             orchestrationMode: 'graph',
           },
         }),
         tui.request('session.configuration.update', {
           sessionId: created.id,
           expectedRevision: configurationRevision,
-          configuration: {
-            modelTarget: { kind: 'default' },
-            thinkingLevel: null,
+          patch: {
             permissionMode: 'bypass',
-            collaborationMode: 'agent',
             orchestrationMode: 'default',
           },
         }),
@@ -309,16 +304,8 @@ test('two Clients share stable Session creation, CAS configuration, and catalog 
       const unchangedConfiguration = await desktop.request('session.configuration.update', {
         sessionId: configuredSession.id,
         expectedRevision: configuredSession.revision,
-        configuration: {
-          modelTarget: {
-            kind: 'explicit',
-            connectionSlug: configuredSession.llmConnectionSlug,
-            model: configuredSession.model,
-          },
-          thinkingLevel: configuredSession.thinkingLevel ?? null,
+        patch: {
           permissionMode: configuredSession.permissionMode,
-          collaborationMode: configuredSession.collaborationMode,
-          orchestrationMode: configuredSession.orchestrationMode,
         },
       });
       assert.deepEqual(unchangedConfiguration, {
@@ -328,16 +315,8 @@ test('two Clients share stable Session creation, CAS configuration, and catalog 
       const narrowedConfiguration = await desktop.request('session.configuration.update', {
         sessionId: configuredSession.id,
         expectedRevision: configuredSession.revision,
-        configuration: {
-          modelTarget: {
-            kind: 'explicit',
-            connectionSlug: configuredSession.llmConnectionSlug,
-            model: configuredSession.model,
-          },
-          thinkingLevel: configuredSession.thinkingLevel ?? null,
+        patch: {
           permissionMode: 'explore',
-          collaborationMode: configuredSession.collaborationMode,
-          orchestrationMode: configuredSession.orchestrationMode,
         },
       });
       assert.equal(narrowedConfiguration.kind, 'committed');
@@ -400,15 +379,17 @@ test('two Clients share stable Session creation, CAS configuration, and catalog 
         desktop.request('session.configuration.update', {
           sessionId: relocatedSession.id,
           expectedRevision: relocatedSession.revision,
-          configuration: {
-            modelTarget: { kind: 'default' },
-            thinkingLevel: null,
-            permissionMode: relocatedSession.permissionMode,
-            collaborationMode: relocatedSession.collaborationMode,
-            orchestrationMode: relocatedSession.orchestrationMode,
+          patch: {
+            modelTarget: {
+              kind: 'explicit',
+              connectionId: relocatedSession.llmConnectionId!,
+              connectionSlug: relocatedSession.llmConnectionSlug,
+              model: WIRE_OVERSIZED_MODEL_ID,
+            },
           },
         }),
-        operationError('invalid_request'),
+        (error: unknown) =>
+          error instanceof RuntimeHostProtocolError && error.code === 'invalid_frame',
       );
       assert.deepEqual(await querySession(desktop, relocatedSession.id), {
         ...relocatedSession,
@@ -663,6 +644,113 @@ test('two Clients share stable Session creation, CAS configuration, and catalog 
   }
 });
 
+test('deleted account identity survives same-slug reuse until explicit recovery', {
+  skip: process.platform === 'win32' ? 'Windows SQLite shutdown lifecycle' : false,
+  timeout: 120_000,
+}, async () => {
+  const base = await mkdtemp(join(tmpdir(), 'maka-runtime-host-session-identity-'));
+  const root = join(base, 'root');
+  const capability = await resolveStorageRoot({ path: root, kind: 'interactive' });
+  const { connectionId: originalConnectionId } = await seedAuthority(root, capability);
+  let host: ExecutionHostHandle | undefined;
+  try {
+    host = await startHost(root, capability.rootId);
+    const client = await connectClient(root);
+    try {
+      const created = requireSessionProjection(
+        await client.request('session.create', {
+          sessionId: 'same-slug-recovery',
+          workspace: { kind: 'host_path', path: root },
+          modelTarget: { kind: 'default' },
+        }),
+      );
+      assert.equal(created.llmConnectionId, originalConnectionId);
+
+      const originalCatalog = await readRuntimeHostConnectionCatalog(client);
+      const original = originalCatalog.connections.find(
+        (entry) => entry.connectionId === originalConnectionId,
+      );
+      assert.ok(original);
+      if (!original) assert.fail('Original Connection must exist');
+      const removed = await client.request('connection.catalog.remove', {
+        expected: {
+          connectionId: original.connectionId,
+          revision: original.revision,
+        },
+      });
+      assert.equal(removed.kind, 'committed');
+
+      const afterRemoval = await readRuntimeHostConnectionCatalog(client);
+      const replacement = await client.request('connection.catalog.create', {
+        expectedCatalogRevision: afterRemoval.revision,
+        connection: {
+          slug: original.slug,
+          name: 'Replacement OpenAI',
+          providerType: 'openai',
+          enabled: true,
+          enabledModelIds: ['gpt-5'],
+        },
+      });
+      assert.equal(replacement.kind, 'committed');
+      if (replacement.kind !== 'committed') assert.fail('Replacement Connection must commit');
+      assert.notEqual(replacement.connection.connectionId, originalConnectionId);
+      const credential = await client.request('credential.vault.set', {
+        locator: {
+          scope: 'connection',
+          connectionId: replacement.connection.connectionId,
+          kind: 'api_key',
+        },
+        expected: null,
+        secret: 'replacement-test-key',
+      });
+      assert.equal(credential.kind, 'committed');
+
+      const preserved = await client.request('session.configuration.update', {
+        sessionId: created.id,
+        expectedRevision: created.revision,
+        patch: { permissionMode: 'bypass' },
+      });
+      assert.equal(preserved.kind, 'committed');
+      if (preserved.kind !== 'committed' || 'kind' in preserved.session) {
+        assert.fail('Permission update must preserve the deleted account identity');
+      }
+      assert.equal(preserved.session.llmConnectionId, originalConnectionId);
+
+      const recovered = await client.request('session.configuration.update', {
+        sessionId: preserved.session.id,
+        expectedRevision: preserved.session.revision,
+        patch: {
+          modelTarget: {
+            kind: 'explicit',
+            connectionId: replacement.connection.connectionId,
+            connectionSlug: original.slug,
+            model: 'gpt-5',
+          },
+        },
+      });
+      assert.equal(recovered.kind, 'committed');
+      if (recovered.kind !== 'committed' || 'kind' in recovered.session) {
+        assert.fail('Explicit replacement recovery must commit');
+      }
+      assert.equal(recovered.session.llmConnectionId, replacement.connection.connectionId);
+      assert.equal(recovered.session.llmConnectionSlug, original.slug);
+      assert.equal(recovered.session.model, 'gpt-5');
+    } finally {
+      await client.close();
+    }
+    await stopHost(host);
+    host = undefined;
+  } finally {
+    await terminateHost(host);
+    await rm(join(resolveRootControlNamespace(), capability.rootId), {
+      recursive: true,
+      force: true,
+    });
+    await removePosixEndpointDirectories(capability.rootId);
+    await rm(base, { recursive: true, force: true });
+  }
+});
+
 test('stable Session creation survives response loss and Host restart', {
   skip: process.platform === 'win32' ? 'Windows SQLite shutdown lifecycle' : false,
   timeout: 120_000,
@@ -733,6 +821,7 @@ async function seedAuthority(
     const execution = await openInteractiveExecutionStoresForWrite(owner.lease);
     const unread = await execution.sessionStore.create({
       cwd: root,
+      llmConnectionId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
       llmConnectionSlug: 'fake',
       model: 'fake-model',
       permissionMode: 'ask',
@@ -769,6 +858,7 @@ async function seedAuthority(
         'visible',
         ...Array.from({ length: 700 }, (_, index) => `label-${index}`),
       ],
+      llmConnectionId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
       llmConnectionSlug: 'fake',
       model: 'fake-model',
       permissionMode: 'ask',
@@ -776,6 +866,7 @@ async function seedAuthority(
     const oversized = await execution.sessionStore.create({
       cwd: root,
       projectId: 'p'.repeat(257),
+      llmConnectionId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
       llmConnectionSlug: 'fake',
       model: 'fake-model',
       permissionMode: 'ask',
@@ -783,6 +874,7 @@ async function seedAuthority(
     const retirement = await execution.sessionStore.create({
       cwd: root,
       name: 'Retirement sidecars',
+      llmConnectionId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
       llmConnectionSlug: 'fake',
       model: 'fake-model',
       permissionMode: 'ask',
@@ -790,6 +882,7 @@ async function seedAuthority(
     const recovery = await execution.sessionStore.create({
       cwd: root,
       name: 'Retirement recovery',
+      llmConnectionId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
       llmConnectionSlug: 'fake',
       model: 'fake-model',
       permissionMode: 'ask',

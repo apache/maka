@@ -22,6 +22,7 @@ import type { UiLocale } from '@maka/core/ui-locale';
 import { createInterface } from 'node:readline/promises';
 import { SessionActivityRegistry } from '@maka/runtime/goal-turn-lifecycle';
 import { readRuntimeHostConnectionCatalog } from '@maka/runtime-host/client';
+import { runtimeHostProfileUsesHostWorkspace } from '@maka/runtime-host/profile-kind';
 import { createForeignSessionStore } from '@maka/storage/foreign-session-store';
 import { formatMakaResumeHint } from './cli-invocation.js';
 import {
@@ -79,15 +80,23 @@ export async function runRuntimeHostTui(input: RunRuntimeHostTuiInput): Promise<
   try {
     await runMakaPiTui({
       driver: context.driver,
-      title: context.profile.kind === 'local' ? 'Maka' : `Maka — ${context.profile.name}`,
+      title: runtimeHostProfileUsesHostWorkspace(context.profile.kind)
+        ? `Maka — ${context.profile.name}`
+        : 'Maka',
       cwd: context.cwd,
       locale: input.locale,
       model: context.model,
       models: context.modelChoices
-        .filter((choice) => choice.connectionSlug === context.connectionSlug)
+        .filter(
+          (choice) =>
+            choice.connectionId === context.connectionId &&
+            choice.connectionSlug === context.connectionSlug,
+        )
         .map((choice) => choice.model),
       modelChoices: context.modelChoices,
       connectionSlug: context.connectionSlug,
+      connectionId: context.connectionId,
+      connectionIdentities: context.connectionIdentities,
       providerType: context.providerType,
       modelContextWindow: context.modelContextWindow,
       permissionMode: context.prospectivePermissionMode,
@@ -97,25 +106,27 @@ export async function runRuntimeHostTui(input: RunRuntimeHostTuiInput): Promise<
       onboarding: context.onboarding,
       ...(context.mcp ? { mcp: context.mcp } : {}),
       recap: context.recap,
-      ...(context.profile.kind === 'local'
-        ? { foreignSessions }
-        : {
+      ...(runtimeHostProfileUsesHostWorkspace(context.profile.kind)
+        ? {
             sessionListScope: 'all' as const,
             clientPathAuthority: 'none' as const,
-          }),
+          }
+        : { foreignSessions }),
       subscribeShellRunUpdates: (listener) => context.driver.subscribeShellRunUpdates(listener),
       listShellRunUpdates: (sessionId) => context.driver.listShellRunUpdates(sessionId),
       onProcessExit: input.onProcessExit,
       cliCommand: input.cliCommand,
       resumeSessionId: input.resumeSessionId,
       resumeCwd: input.resumeCwd,
-      ...(context.profile.kind === 'remote' && input.resumeSessionId
+      ...(runtimeHostProfileUsesHostWorkspace(context.profile.kind) && input.resumeSessionId
         ? { resumeFailure: 'exit' as const }
         : {}),
     });
     const sessionId = context.driver.getSessionId();
     const hint = formatMakaResumeHint(input.cliCommand, sessionId, {
-      ...(context.profile.kind === 'remote' ? { hostProfileId: context.profile.id } : {}),
+      ...(runtimeHostProfileUsesHostWorkspace(context.profile.kind)
+        ? { hostProfileId: context.profile.id }
+        : {}),
     });
     if (hint) process.stdout.write(`${hint}\n`);
     return 0;
@@ -245,7 +256,7 @@ function createFirstRunSessionDriver(): MakaSessionDriver {
     switchSession: unavailable,
     listRewindTargets: async () => [],
     rewindToTurn: unavailable,
-    startNewSession: () => {},
+    startNewSession: () => Promise.resolve(),
     stop: async () => {},
   };
 }

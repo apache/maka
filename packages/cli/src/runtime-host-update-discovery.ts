@@ -17,44 +17,49 @@
  * under the License.
  */
 
-import { spawn } from 'node:child_process';
 import { readFile } from 'node:fs/promises';
-import { homedir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { truncateUtf8 } from '@maka/core/diagnostic-log';
 import {
   compareProductReleaseVersions,
   encodeRuntimeHostServiceManagementFrame,
-  isProductReleaseVersion,
-  isSha512PackageIntegrity,
   RUNTIME_HOST_SERVICE_ERROR_CODE_MAX_BYTES,
   RUNTIME_HOST_SERVICE_ERROR_MESSAGE_MAX_BYTES,
   type RuntimeHostServiceManagementFrame,
-  type RuntimeHostNpmDeploymentIdentity,
 } from '@maka/runtime-host/operator';
 import {
   manageRuntimeHostService,
   resolveRuntimeHostManagedServiceId,
   RuntimeHostServiceManagerError,
+  withRuntimeHostManagedServiceDeploymentLock,
   type RuntimeHostManagedServiceTarget,
 } from './runtime-host-service-manager.js';
 import {
   createPlatformRuntimeHostServiceBackend,
+  resolveRuntimeHostLifecycleProvider,
   runtimeHostServiceSummary,
 } from './runtime-host-service-management-command.js';
-import { resolveRuntimeHostManagedPackageCliPath } from './runtime-host-managed-deployment.js';
+import { manageRuntimeHostManagedLifecycle } from './runtime-host-managed-lifecycle-manager.js';
+import {
+  assertRuntimeHostManagedOperatorDeployment,
+  resolveRuntimeHostManagedControlRoot,
+  resolveRuntimeHostManagedPackageCliPath,
+} from './runtime-host-managed-deployment.js';
 import type { RuntimeHostUpdateSelector } from './runtime-host-cli.js';
+import {
+  resolveRuntimeHostRegistryUpdateCandidate,
+  RuntimeHostUpdateDiscoveryError,
+  type RuntimeHostUpdateCandidate,
+} from './runtime-host-registry-update.js';
+
+export {
+  resolveRuntimeHostRegistryUpdateCandidate,
+  RuntimeHostUpdateDiscoveryError,
+  type RuntimeHostUpdateCandidate,
+} from './runtime-host-registry-update.js';
 
 const PACKAGE_NAME = 'maka-agent';
-const NPM_REGISTRY = 'https://registry.npmjs.org/';
-const COMPATIBILITY_FIELD = 'maka.managedRuntimeHostUpdateCompatibility';
-const REGISTRY_TIMEOUT_MS = 30_000;
-const REGISTRY_OUTPUT_MAX_BYTES = 64 * 1024;
 const MANIFEST_MAX_BYTES = 64 * 1024;
-
-export interface RuntimeHostUpdateCandidate extends RuntimeHostNpmDeploymentIdentity {
-  readonly compatibility?: number;
-}
 
 export type RuntimeHostUpdateCheckFrame = Extract<
   RuntimeHostServiceManagementFrame,
@@ -67,22 +72,15 @@ export interface RuntimeHostUpdateCheckOptions {
   readonly defaultRootPath: string;
   readonly selector: RuntimeHostUpdateSelector;
   readonly expectedTarget?: RuntimeHostManagedServiceTarget;
+  readonly managedRootId?: string;
+  readonly operatorDeploymentId?: string;
+  /** Internal non-reentrant lock ownership propagated by the canonical coordinator. */
+  readonly deploymentLockHeld?: boolean;
 }
 
 export interface RuntimeHostUpdateCheckCliOptions extends RuntimeHostUpdateCheckOptions {
   readonly json: boolean;
   readonly framed: boolean;
-}
-
-export class RuntimeHostUpdateDiscoveryError extends Error {
-  constructor(
-    readonly code: 'target_unavailable' | 'registry_unavailable' | 'invalid_registry_metadata',
-    message: string,
-    options?: ErrorOptions,
-  ) {
-    super(message, options);
-    this.name = 'RuntimeHostUpdateDiscoveryError';
-  }
 }
 
 export async function runManagedRuntimeHostUpdateCheckCli(
@@ -128,19 +126,41 @@ async function resolveManagedRuntimeHostUpdate(
   options: RuntimeHostUpdateCheckOptions,
   verifyDeployment: boolean,
 ): Promise<RuntimeHostUpdateSelection> {
-  const serviceId = resolveRuntimeHostManagedServiceId(options.clientDataRoot);
-  const backend = createPlatformRuntimeHostServiceBackend(serviceId, options.clientDataRoot);
-  const status = await manageRuntimeHostService(
-    {
-      action: 'status',
-      clientDataRoot: options.clientDataRoot,
-      defaultRootPath: options.defaultRootPath,
-      nodePath: process.execPath,
-      cliPath: process.argv[1] ?? '',
-      ...(options.expectedTarget ? { expectedTarget: options.expectedTarget } : {}),
-    },
-    backend,
-  );
+  const serviceId =
+    options.managedRootId ?? resolveRuntimeHostManagedServiceId(options.clientDataRoot);
+  const statusInput = {
+    action: 'status' as const,
+    clientDataRoot: options.clientDataRoot,
+    defaultRootPath: options.defaultRootPath,
+    nodePath: process.execPath,
+    cliPath: process.argv[1] ?? '',
+    ...(options.expectedTarget ? { expectedTarget: options.expectedTarget } : {}),
+  };
+  const backend = options.managedRootId
+    ? undefined
+    : createPlatformRuntimeHostServiceBackend(serviceId, options.clientDataRoot);
+  const readCanonicalStatus = async () => {
+    await assertRuntimeHostManagedOperatorDeployment(
+      options.managedRootId!,
+      options.operatorDeploymentId,
+      process.argv[1] ?? '',
+    );
+    return manageRuntimeHostManagedLifecycle(options.managedRootId!, statusInput, {
+      resolveProvider: resolveRuntimeHostLifecycleProvider,
+      operatorClaim: {
+        deploymentId: options.operatorDeploymentId,
+        cliPath: process.argv[1] ?? '',
+      },
+    });
+  };
+  const status = options.managedRootId
+    ? options.deploymentLockHeld
+      ? await readCanonicalStatus()
+      : await withRuntimeHostManagedServiceDeploymentLock(
+          resolveRuntimeHostManagedControlRoot(options.managedRootId),
+          readCanonicalStatus,
+        )
+    : await manageRuntimeHostService(statusInput, backend!);
   const currentVersion = status.service.installedVersion;
   const config = status.service.config;
   const service = runtimeHostServiceSummary(status);
@@ -156,7 +176,7 @@ async function resolveManagedRuntimeHostUpdate(
       'A Maka-managed Runtime Host service is required to check for updates',
     );
   }
-  if (verifyDeployment) await backend.verifyDeployment(config);
+  if (verifyDeployment && backend) await backend.verifyDeployment(config);
   const [candidate, currentCompatibility] = await Promise.all([
     resolveRuntimeHostRegistryUpdateCandidate(options.selector),
     readPackageCompatibility(config.launch.cliPath, currentVersion),
@@ -225,62 +245,6 @@ export function assessRuntimeHostUpdate(
     : { kind: 'manual_action', reason: 'compatibility_mismatch' };
 }
 
-export async function resolveRuntimeHostRegistryUpdateCandidate(
-  selector: RuntimeHostUpdateSelector,
-  run: (args: readonly string[]) => Promise<NpmViewResult> = runNpmView,
-): Promise<RuntimeHostUpdateCandidate> {
-  const target = selector.kind === 'channel' ? selector.channel : selector.version;
-  const result = await run([
-    'view',
-    `${PACKAGE_NAME}@${target}`,
-    'version',
-    'dist.integrity',
-    COMPATIBILITY_FIELD,
-    '--json',
-    '--registry',
-    NPM_REGISTRY,
-  ]);
-  if (result.exitCode !== 0) {
-    const failure = parseJson(result.stdout);
-    const code = isRecord(failure) && isRecord(failure.error) ? failure.error.code : undefined;
-    throw new RuntimeHostUpdateDiscoveryError(
-      code === 'E404' ? 'target_unavailable' : 'registry_unavailable',
-      code === 'E404'
-        ? `No Maka package is published for ${target}`
-        : 'The Maka package registry is unavailable',
-    );
-  }
-  let metadata: unknown;
-  try {
-    metadata = JSON.parse(result.stdout);
-  } catch (error) {
-    throw new RuntimeHostUpdateDiscoveryError(
-      'invalid_registry_metadata',
-      'The npm registry returned invalid Maka package metadata',
-      { cause: error },
-    );
-  }
-  if (!isRecord(metadata)) return invalidMetadata();
-  const version = metadata.version;
-  const integrity = metadata['dist.integrity'];
-  if (
-    typeof version !== 'string' ||
-    !isProductReleaseVersion(version) ||
-    (selector.kind === 'exact' && version !== selector.version) ||
-    typeof integrity !== 'string' ||
-    !isSha512PackageIntegrity(integrity)
-  ) {
-    return invalidMetadata();
-  }
-  const compatibility = positiveInteger(metadata[COMPATIBILITY_FIELD]);
-  return {
-    kind: 'npm_registry',
-    version,
-    integrity,
-    ...(compatibility === undefined ? {} : { compatibility }),
-  };
-}
-
 async function readPackageCompatibility(
   cliPath: string,
   expectedVersion: string,
@@ -302,46 +266,6 @@ async function readPackageCompatibility(
   } catch {
     return undefined;
   }
-}
-
-interface NpmViewResult {
-  readonly exitCode: number;
-  readonly stdout: string;
-}
-
-function runNpmView(args: readonly string[]): Promise<NpmViewResult> {
-  return new Promise((resolve, reject) => {
-    const child = spawn('npm', args, {
-      cwd: homedir(),
-      stdio: ['ignore', 'pipe', 'ignore'],
-      timeout: REGISTRY_TIMEOUT_MS,
-      killSignal: 'SIGKILL',
-    });
-    let stdout = '';
-    let bytes = 0;
-    child.stdout.setEncoding('utf8');
-    child.stdout.on('data', (chunk: string) => {
-      bytes += Buffer.byteLength(chunk, 'utf8');
-      if (bytes > REGISTRY_OUTPUT_MAX_BYTES) {
-        child.kill('SIGKILL');
-        return;
-      }
-      stdout += chunk;
-    });
-    child.once('error', reject);
-    child.once('close', (exitCode) => {
-      if (bytes > REGISTRY_OUTPUT_MAX_BYTES) {
-        reject(
-          new RuntimeHostUpdateDiscoveryError(
-            'invalid_registry_metadata',
-            'The npm registry returned oversized Maka package metadata',
-          ),
-        );
-        return;
-      }
-      resolve({ exitCode: exitCode ?? 1, stdout });
-    });
-  });
 }
 
 function writeSuccess(
@@ -400,23 +324,8 @@ function writeFailure(
   } else process.stderr.write(`${error.message}\n`);
 }
 
-function invalidMetadata(): never {
-  throw new RuntimeHostUpdateDiscoveryError(
-    'invalid_registry_metadata',
-    'The npm registry returned incomplete Maka package metadata',
-  );
-}
-
 function positiveInteger(value: unknown): number | undefined {
   return typeof value === 'number' && Number.isSafeInteger(value) && value > 0 ? value : undefined;
-}
-
-function parseJson(value: string): unknown {
-  try {
-    return JSON.parse(value);
-  } catch {
-    return undefined;
-  }
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

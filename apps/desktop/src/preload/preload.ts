@@ -18,6 +18,10 @@
  */
 
 import { contextBridge, ipcRenderer } from 'electron';
+import {
+  isRuntimeHostProfileKind,
+  type RuntimeHostProfileKind,
+} from '@maka/runtime-host/profile-kind';
 import { encodeIngestItems } from './attachment-ingest-payload.js';
 import { collectThreadSearchResponses } from './multi-host-thread-search.js';
 import { releaseSessionObservation } from './session-observation-release.js';
@@ -216,6 +220,7 @@ import type { OnboardingMilestoneId } from '@maka/core/onboarding';
 import {
   SCHEDULED_TASK_CATALOG_MAX_ITEMS,
   type OperationInput,
+  type OperationOutcome,
   type OperationOutput,
 } from '@maka/runtime-host/protocol';
 import type { AgentGraphEpochDirectory } from '@maka/runtime-host/client';
@@ -246,7 +251,11 @@ const runtimeHostScopes = new Map<string, DesktopTargetScope>();
 const runtimeHostProfiles = new Map<string, string>();
 const runtimeHostMetadata = new Map<
   string,
-  { readonly profileId: string; readonly profileName: string; readonly profileKind: 'local' | 'remote' }
+  {
+    readonly profileId: string;
+    readonly profileName: string;
+    readonly profileKind: RuntimeHostProfileKind;
+  }
 >();
 const newTaskChangeListeners = new Set<() => void>();
 let previousMainProcessInterruptionRead: Promise<boolean> | undefined;
@@ -306,7 +315,7 @@ function recordRuntimeHostIdentity(value: unknown): {
   if (
     typeof metadata.profileId !== 'string' ||
     typeof metadata.profileName !== 'string' ||
-    (metadata.profileKind !== 'local' && metadata.profileKind !== 'remote') ||
+    !isRuntimeHostProfileKind(metadata.profileKind) ||
     (metadata.readiness !== 'ready' && metadata.readiness !== 'reconnecting')
   ) {
     throw new Error('Desktop Runtime Host identity is invalid');
@@ -1258,6 +1267,9 @@ const makaBridge = {
     },
   },
   runtimeHostOnboarding: {
+    listWslDistributions(): Promise<readonly string[]> {
+      return ipcRenderer.invoke('runtime-host-onboarding:listWslDistributions');
+    },
     getSnapshot(): Promise<DesktopRuntimeHostOnboardingSnapshot> {
       return ipcRenderer.invoke('runtime-host-onboarding:getSnapshot');
     },
@@ -1642,7 +1654,7 @@ const makaBridge = {
     async act(
       coordinationSessionId: string,
       input: Omit<OperationInput<'workhub.coordination.act'>, 'create'>,
-    ): Promise<OperationOutput<'workhub.coordination.act'>> {
+    ): Promise<OperationOutcome<'workhub.coordination.act'>> {
       const scope = await resolveDesktopWorkHubCoordinationCreateScope(
         coordinationSessionId,
         runtimeHostSessionRef,
@@ -1651,14 +1663,21 @@ const makaBridge = {
         'workhub:act',
         scope,
         input,
-      ) as OperationOutput<'workhub.coordination.act'>;
-      if (result.disposition === 'answer_here' || result.disposition === 'clarify') return result;
+      ) as OperationOutcome<'workhub.coordination.act'>;
+      if (!result.ok) return result;
+      if (
+        result.result.disposition === 'answer_here' ||
+        result.result.disposition === 'clarify'
+      ) return result;
       return {
-        ...result,
-        targetSessionId: desktopSessionKey({
+        ok: true,
+        result: {
+          ...result.result,
+          targetSessionId: desktopSessionKey({
           hostId: scope.hostId,
-          sessionId: result.targetSessionId,
-        }),
+            sessionId: result.result.targetSessionId,
+          }),
+        },
       };
     },
     async createSession(
@@ -1989,7 +2008,7 @@ const makaBridge = {
     abandonPlanExecution(sessionId: string, executionId: string): Promise<PlanSessionState> {
       return invokeProjectedSessionRuntimeHost('plan-mode:abandonExecution', sessionId, executionId);
     },
-    setModel(sessionId: string, input: { llmConnectionSlug: string; model: string }): Promise<DesktopSessionSummary> {
+    setModel(sessionId: string, input: { llmConnectionId: string; llmConnectionSlug: string; model: string }): Promise<DesktopSessionSummary> {
       return invokeSessionSummary('sessions:setModel', sessionId, input);
     },
     setThinkingLevel(sessionId: string, level: ThinkingLevel | undefined | null): Promise<DesktopSessionSummary> {

@@ -171,6 +171,7 @@ function catalogSession(id: string, name: string): SessionCatalogProjection {
     hasUnread: false,
     status: 'active',
     backend: 'ai-sdk',
+    llmConnectionId: 'connection-1',
     llmConnectionSlug: 'zai-live',
     connectionLocked: true,
     model: 'glm-5.1',

@@ -53,6 +53,13 @@ const targetPlatform = cargoTarget
       ? 'darwin'
       : 'linux'
   : process.platform;
+const targetArch = cargoTarget
+  ? cargoTarget.startsWith('aarch64-')
+    ? 'arm64'
+    : cargoTarget.startsWith('x86_64-')
+      ? 'x64'
+      : undefined
+  : process.arch;
 
 const library =
   targetPlatform === 'win32'
@@ -67,7 +74,11 @@ if (targetPlatform === 'darwin' && process.platform === 'darwin') {
     ...process.env,
   });
   await run('strip', ['-x', destination], root, { ...process.env });
-} else if (targetPlatform === 'linux' && process.platform === 'linux') {
+} else if (
+  targetPlatform === 'linux' &&
+  process.platform === 'linux' &&
+  targetArch === process.arch
+) {
   await run('strip', ['--strip-unneeded', destination], root, { ...process.env });
 }
 if ((await readFile(destination)).includes(Buffer.from(root))) {

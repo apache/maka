@@ -25,6 +25,8 @@
 
 Bug fixes, model provider support, tests, performance work, and documentation merge most readily. Pick something up from [`help wanted`](https://github.com/apache/maka/issues?q=is%3Aissue+is%3Aopen+label%3A%22help+wanted%22) · [`good first issue`](https://github.com/apache/maka/issues?q=is%3Aissue+is%3Aopen+label%3A%22good+first+issue%22) · [`bug`](https://github.com/apache/maka/issues?q=is%3Aissue+is%3Aopen+label%3Abug) · [`enhancement`](https://github.com/apache/maka/issues?q=is%3Aissue+is%3Aopen+label%3Aenhancement) and claim it in a comment. Use the **Bug report** or **Feature request** template for new issues; report security problems through [SECURITY.md](./SECURITY.md), never as a public issue. Questions, ideas, and not-yet-actionable proposals belong in [Discussions](https://github.com/apache/maka/discussions), which reaches the whole team by email.
 
+To self-assign an unclaimed issue, post a comment whose entire body is exactly `take`; post `untake` to remove your assignment. Other claim text does not trigger the workflow.
+
 Project direction, governance, and material product decisions are discussed publicly on [`dev@maka.apache.org`](https://lists.apache.org/list.html?dev@maka.apache.org) before implementation; implementation-level decisions may live in the pull request.
 
 ## Human ownership and AI attribution

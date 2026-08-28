@@ -33,7 +33,37 @@ import {
   RUNTIME_HOST_OPERATOR_PEER_MANAGEMENT_CAPABILITY,
   RUNTIME_HOST_SETUP_FRAME_PREFIX,
 } from '@maka/runtime-host/operator';
-import { createDesktopRuntimeHostSshTerminal } from '../runtime-host-ssh-terminal.js';
+import {
+  createDesktopRuntimeHostSshTerminal,
+  runtimeHostDevelopmentPeerTargetFromUname,
+} from '../runtime-host-ssh-terminal.js';
+
+test('maps supported SSH uname identities to development peer targets', () => {
+  assert.equal(runtimeHostDevelopmentPeerTargetFromUname('Linux', 'x86_64'), 'linux-x64');
+  assert.equal(runtimeHostDevelopmentPeerTargetFromUname('Linux', 'aarch64'), 'linux-arm64');
+  assert.equal(runtimeHostDevelopmentPeerTargetFromUname('Darwin', 'arm64'), 'darwin-arm64');
+  assert.throws(
+    () => runtimeHostDevelopmentPeerTargetFromUname('Linux', 'riscv64'),
+    /not available/u,
+  );
+});
+
+test('detects the development peer target through the bounded SSH preflight', async () => {
+  const harness = createHarness('pending');
+  const detection = harness.terminal.resolveDevelopmentPeerTarget({
+    destination: 'operator@example.com',
+  });
+  await waitFor(() => harness.pty.hasDataListener());
+  const command = harness.launchArgs[0]?.at(-1) ?? '';
+  const marker = command.match(/__MAKA_RUNTIME_HOST_TARGET_[0-9a-f]+__/u)?.[0];
+  assert.ok(marker);
+  harness.pty.emitData(`${marker}Linux:x86_64\r\n`);
+  harness.pty.exit(0);
+
+  assert.equal(await detection, 'linux-x64');
+  assert.doesNotMatch(JSON.stringify(harness.events), /MAKA_RUNTIME_HOST_TARGET/u);
+  await harness.terminal.close();
+});
 
 test('keeps a connecting SSH prompt observable across renderer presentation changes', async () => {
   const harness = createHarness('pending');
@@ -118,6 +148,7 @@ test('keeps setup credentials out of the interactive terminal projection', async
     kind: 'complete',
     version: '0.1.0-beta.1',
     serviceId: 'b'.repeat(64),
+    deploymentId: '00000000-0000-4000-8000-000000000001',
     operatorPath: '/home/operator/.local/share/maka/operator',
     rootPath: '/home/operator/.config/Maka/workspaces/default',
     rootId: 'a'.repeat(64),
@@ -183,6 +214,7 @@ test('keeps a completed setup process owned until it exits', async () => {
     kind: 'complete',
     version: '1.2.3',
     serviceId: 'b'.repeat(64),
+    deploymentId: '00000000-0000-4000-8000-000000000001',
     operatorPath: '/home/operator/.local/share/maka/operator',
     rootPath: '/home/operator/.config/Maka/workspaces/default',
     rootId: 'a'.repeat(64),
@@ -417,6 +449,7 @@ test('runs an exact update package and reports progress before an active-work re
         serviceId: 'b'.repeat(64),
         rootPath: '/srv/maka',
         rootId: 'a'.repeat(64),
+        deploymentId: '00000000-0000-4000-8000-000000000001',
       },
     },
     (phase) => phases.push(phase),
@@ -425,6 +458,11 @@ test('runs an exact update package and reports progress before an active-work re
   const remoteCommand = harness.launchArgs.at(-1)?.at(-1) ?? '';
   assert.match(remoteCommand, /--package.*maka-agent@1\.3\.0/u);
   assert.match(remoteCommand, /runtime-host.*service.*update/u);
+  assert.match(remoteCommand, /--managed-root-id.*a{64}/u);
+  assert.match(
+    remoteCommand,
+    /--operator-deployment-id.*00000000-0000-4000-8000-000000000001/u,
+  );
   assert.match(remoteCommand, /MAKA_RUNTIME_HOST_OPERATOR_CAPABILITY_REQUEST/u);
   harness.pty.emitData('Password: ');
   harness.pty.emitData(
@@ -635,7 +673,7 @@ test('rejects a framed service result for a different action', async () => {
   await harness.terminal.close();
 });
 
-test('requires an absent operator deployment root to be absent or empty', async () => {
+test('requires an absent operator deployment root to be absent', async () => {
   const harness = createHarness('pending');
   const cleanup = harness.terminal.cleanupManagedDeployment({
     destination: 'operator@example.com',
@@ -649,7 +687,7 @@ test('requires an absent operator deployment root to be absent or empty', async 
   await waitFor(() => harness.pty.hasDataListener());
   const remoteCommand = harness.launchArgs.at(-1)?.at(-1) ?? '';
   assert.match(remoteCommand, /if \[ ! -e/u);
-  assert.match(remoteCommand, /rmdir --/u);
+  assert.doesNotMatch(remoteCommand, /rmdir --/u);
   assert.match(remoteCommand, /home\/operator\/\.local\/share\/maka/u);
   assert.match(remoteCommand, /__cleanup-managed-deployment/u);
   assert.match(remoteCommand, /--expected-service-id/u);

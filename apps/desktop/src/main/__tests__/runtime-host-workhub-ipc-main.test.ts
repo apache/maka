@@ -19,6 +19,7 @@
 
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { RuntimeHostOperationError } from '@maka/runtime-host/client';
 import { registerRuntimeHostWorkHubIpc } from '../runtime-host-workhub-ipc-main.js';
 
 test('projects WorkHub coordination resolution through its dedicated IPC domain', async () => {
@@ -111,9 +112,12 @@ test('projects WorkHub coordination resolution through its dedicated IPC domain'
       },
     }),
     {
-      disposition: 'create_new',
-      targetSessionId: createdSessionId,
-      targetTurnId: 'created-turn',
+      ok: true,
+      result: {
+        disposition: 'create_new',
+        targetSessionId: createdSessionId,
+        targetTurnId: 'created-turn',
+      },
     },
   );
   assert.deepEqual(actions, [{
@@ -125,4 +129,44 @@ test('projects WorkHub coordination resolution through its dedicated IPC domain'
     },
   }]);
   assert.deepEqual(changes, [{ reason: 'created', sessionId: createdSessionId }]);
+});
+
+test('serializes typed WorkHub action failures across Electron IPC', async () => {
+  const handlers = new Map<string, (...args: unknown[]) => unknown>();
+  registerRuntimeHostWorkHubIpc(
+    {
+      actWorkHubCoordination: async () => {
+        throw new RuntimeHostOperationError(
+          'workhub.coordination.act',
+          'operation_conflict',
+          'WorkHub action is permanently abandoned',
+        );
+      },
+    } as never,
+    {
+      handle: (channel: string, handler: (...args: unknown[]) => unknown) => {
+        handlers.set(channel, handler);
+      },
+    } as never,
+    {
+      resolveCreateProject: async () => ({ kind: 'host_path', path: '/workspace' }),
+      emitSessionsChanged: () => undefined,
+    },
+  );
+
+  assert.deepEqual(
+    await handlers.get('workhub:act')?.({}, {
+      actionId: 'abandoned-action',
+      userText: 'Continue payment work',
+      candidateSetId: `sha256:${'a'.repeat(64)}`,
+      proposal: { disposition: 'delegate_existing', candidateRef: 'candidate' },
+    }),
+    {
+      ok: false,
+      error: {
+        code: 'operation_conflict',
+        message: 'WorkHub action is permanently abandoned',
+      },
+    },
+  );
 });

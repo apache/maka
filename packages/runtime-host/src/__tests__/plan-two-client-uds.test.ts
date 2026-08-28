@@ -60,6 +60,7 @@ test('two Clients and a restarted production Host share one retry-safe Plan auth
     const planStore = await openInteractivePlanStoreForWrite(owner.lease);
     const session = await setupStores.sessionStore.create({
       cwd: root,
+      llmConnectionId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
       llmConnectionSlug: 'fake',
       model: 'fake-model',
       permissionMode: 'explore',

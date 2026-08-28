@@ -61,6 +61,7 @@ import {
 } from '../server/workspace-execution-composition.js';
 
 const require = createRequire(import.meta.url);
+const FAKE_CONNECTION_ID = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
 
 test('filesystem worker follows the candidate executable runtime', () => {
   assert.equal(runtimeHostFilesystemWorkerRuntime({ electron: '43.1.1' }), 'electron');
@@ -134,6 +135,7 @@ test('production composition closes long-term memory after a later startup failu
     const stores = await openInteractiveExecutionStoresForWrite(owner.lease);
     const session = await stores.sessionStore.create({
       cwd: root,
+      llmConnectionId: FAKE_CONNECTION_ID,
       llmConnectionSlug: 'fake',
       model: 'fake-model',
       permissionMode: 'ask',
@@ -173,12 +175,14 @@ test('production recovery preserves legacy Automation history and closes an orph
     const stores = await openInteractiveExecutionStoresForWrite(owner.lease);
     const historical = await stores.sessionStore.create({
       cwd: root,
+      llmConnectionId: FAKE_CONNECTION_ID,
       llmConnectionSlug: 'fake',
       model: 'fake-model',
       permissionMode: 'ask',
     });
     const pending = await stores.sessionStore.create({
       cwd: root,
+      llmConnectionId: FAKE_CONNECTION_ID,
       llmConnectionSlug: 'fake',
       model: 'fake-model',
       permissionMode: 'ask',
@@ -398,6 +402,7 @@ test('production composition commits automatic titles through Host-owned Session
     try {
       const session = await manager.createSession({
         cwd: root,
+        llmConnectionId: FAKE_CONNECTION_ID,
         llmConnectionSlug: 'fake',
         model: 'fake-model',
         permissionMode: 'ask',
@@ -465,6 +470,7 @@ test('production composition orphans ownerless ShellRuns before serving Resource
     const stores = await openInteractiveExecutionStoresForWrite(owner.lease);
     const session = await stores.sessionStore.create({
       cwd: root,
+      llmConnectionId: FAKE_CONNECTION_ID,
       llmConnectionSlug: 'fake',
       model: 'fake-model',
       permissionMode: 'ask',
@@ -511,6 +517,7 @@ test('production Skill catalog resolves a Graph child durable tool surface', asy
     const stores = await openInteractiveExecutionStoresForWrite(owner.lease);
     const parent = await stores.sessionStore.create({
       cwd: root,
+      llmConnectionId: FAKE_CONNECTION_ID,
       llmConnectionSlug: 'fake',
       model: 'fake-model',
       permissionMode: 'ask',
@@ -606,7 +613,7 @@ test('new Full Access Plan Skill previews use the mutating tool surface', async 
   });
 });
 
-test('Skill capability previews omit unavailable Tavily search surfaces', async () => {
+test('Skill capability previews keep a bound Session off a same-slug replacement', async () => {
   await withCompositionRoot(async ({ root, owner }) => {
     for (const [id, requiredTool] of [
       ['web-search-preview', 'WebSearch'],
@@ -669,13 +676,19 @@ test('Skill capability previews omit unavailable Tavily search surfaces', async 
     });
     assert.equal(webSearchEnabled.kind, 'committed');
     assert.equal(
-      (await policy.operations.resolveExecutionConnection(connection.slug)).kind,
+      (
+        await policy.operations.resolveExecutionConnection({
+          kind: 'catalog_slug',
+          connectionSlug: connection.slug,
+        })
+      ).kind,
       'ready',
     );
 
     const stores = await openInteractiveExecutionStoresForWrite(owner.lease);
     const session = await stores.sessionStore.create({
       cwd: root,
+      llmConnectionId: connection.connectionId,
       llmConnectionSlug: connection.slug,
       model: 'fake-model',
       permissionMode: 'bypass',
@@ -719,6 +732,93 @@ test('Skill capability previews omit unavailable Tavily search surfaces', async 
           false,
         );
       }
+
+      assert.equal(
+        (
+          await policy.credentialVault.set({
+            locator: { scope: 'web_search', provider: 'tavily', kind: 'api_key' },
+            expected: null,
+            secret: 'replacement-must-not-be-read',
+          })
+        ).kind,
+        'committed',
+      );
+      const beforeRemoval = await policy.connectionCatalog.getSnapshot();
+      const currentConnection = beforeRemoval.connections.find(
+        (candidate) => candidate.connectionId === connection.connectionId,
+      );
+      assert.ok(currentConnection);
+      if (!currentConnection) return;
+      assert.equal(
+        (
+          await policy.connectionCatalog.remove({
+            expected: {
+              connectionId: currentConnection.connectionId,
+              revision: currentConnection.revision,
+            },
+          })
+        ).kind,
+        'committed',
+      );
+      const afterRemoval = await policy.connectionCatalog.getSnapshot();
+      const replacementCreated = await policy.connectionCatalog.create({
+        expectedCatalogRevision: afterRemoval.revision,
+        connection: {
+          slug: connection.slug,
+          name: 'Same-slug replacement',
+          providerType: 'ollama',
+          enabled: true,
+          enabledModelIds: ['fake-model'],
+        },
+      });
+      assert.equal(replacementCreated.kind, 'committed');
+      if (replacementCreated.kind !== 'committed') return;
+      const replacement = replacementCreated.snapshot.connections[0];
+      assert.ok(replacement);
+      if (!replacement) return;
+      const replacementFetch = await policy.operations.beginModelFetch(replacement.connectionId);
+      assert.equal(replacementFetch.kind, 'ready');
+      if (replacementFetch.kind !== 'ready') return;
+      const replacementFetched = await policy.operations.completeModelFetch(
+        replacementFetch.ticket,
+        {
+          models: [{ id: 'fake-model' }],
+          source: 'fetched',
+          fetchedAt: Date.now(),
+        },
+      );
+      assert.equal(replacementFetched.kind, 'committed');
+      if (replacementFetched.kind !== 'committed') return;
+      assert.equal(
+        (
+          await policy.connectionCatalog.setDefaultTarget({
+            expectedCatalogRevision: replacementFetched.snapshot.revision,
+            target: { connectionId: replacement.connectionId, modelId: 'fake-model' },
+          })
+        ).kind,
+        'committed',
+      );
+
+      const boundSession = await query('session');
+      assert.equal(boundSession.ok, true);
+      if (boundSession.ok && boundSession.result.kind === 'page') {
+        assert.equal(
+          boundSession.result.items.some(
+            (item) => item.id === 'web-search-preview' || item.id === 'web-research-preview',
+          ),
+          false,
+        );
+      }
+      const replacementPreview = await query('new_session');
+      assert.equal(replacementPreview.ok, true);
+      if (replacementPreview.ok && replacementPreview.result.kind === 'page') {
+        assert.equal(
+          replacementPreview.result.items.some(
+            (item) => item.id === 'web-search-preview' || item.id === 'web-research-preview',
+          ),
+          true,
+        );
+      }
     } finally {
       await composition.close();
     }
@@ -731,6 +831,7 @@ test('production composition validates graph stop before aborting a claimed chil
     const claims = createAgentGraphControlStore(root);
     const parent = await stores.sessionStore.create({
       cwd: root,
+      llmConnectionId: FAKE_CONNECTION_ID,
       llmConnectionSlug: 'fake',
       model: 'fake-model',
       permissionMode: 'ask',
@@ -1009,6 +1110,7 @@ async function createClaimedGraphChild(input: {
   const child = await input.stores.sessionStore.createSubagent({
     cwd: input.root,
     name: `Graph operator ${input.suffix}`,
+    llmConnectionId: FAKE_CONNECTION_ID,
     llmConnectionSlug: 'fake',
     model: 'fake-model',
     permissionMode: 'explore',

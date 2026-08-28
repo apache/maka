@@ -210,36 +210,6 @@
   align-self: center;
 }
 
-/* A label, not a control: it takes no pointer events and no focus, so tabbing
-   through the rail still goes Settings -> update button as it did before. */
-.maka-sidebar-build-stamp {
-  /* The stamp yields first. At the 180px minimum width with an update button
-     present, something has to give, and it should be the label a user is
-     reading rather than the row they are aiming at — Settings keeps its text
-     and its hit target, the stamp ellipsises, and its `title` still carries
-     the full build. */
-  flex: 0 1 auto;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  color: var(--text-tertiary);
-  font-size: var(--font-size-xs);
-  font-variant-numeric: tabular-nums;
-  letter-spacing: 0.01em;
-  white-space: nowrap;
-  pointer-events: none;
-  user-select: none;
-  -webkit-app-region: no-drag;
-}
-
-/* Collapsed, the rail is 48px and the footer stacks. `v0.1.11 · a1b2c3d` does
-   not fit and would either clip or force the rail wider, so it drops — the
-   About page still carries it, and a collapsed rail is a deliberate ask for
-   less. */
-.appFrame[data-sidebar-state="collapsed"] .maka-sidebar-build-stamp {
-  display: none;
-}
-
 .maka-sidebar-update-button {
   flex: none;
   /* Astryx has no shape prop — `isIconOnly` is documented as rendering a

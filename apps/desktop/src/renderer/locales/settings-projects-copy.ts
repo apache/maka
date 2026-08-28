@@ -69,6 +69,10 @@ export type SettingsProjectsCopy = {
     setupTitle: string;
     setupDescription: string;
     setupName: string;
+    setupTarget: string;
+    sshComputer: string;
+    wslEnvironment: string;
+    wslDistribution: string;
     setupSshPort: string;
     setupDirectoryRootsDescription: string;
     setupConnect: string;
@@ -282,11 +286,11 @@ const SETTINGS_PROJECTS_COPY_BY_LOCALE = {
   zh: {
     runtimeHost: {
       title: 'Runtime Host',
-      description: 'Local 与启用的远程 Host 会同时保持连接；任务仍由其所属 Host 处理。',
+      description: 'Local 与其他已启用的 Host 会同时保持连接；任务仍由其所属 Host 处理。',
       selected: '默认 Host',
       selectedHelp: '新任务和未指定 Host 的设置使用默认 Host',
-      remoteTitle: '远程 Host',
-      remoteDescription: '通过 SSH 自动设置一台电脑，或手动连接已有 Runtime Host。',
+      remoteTitle: '其他 Host',
+      remoteDescription: '在 SSH 电脑或本地 WSL 环境中设置 Runtime Host，也可手动连接已有 Host。',
       addComputer: '添加电脑',
       useConnectionCode: '使用连接码',
       configureManually: '手动配置',
@@ -326,9 +330,13 @@ const SETTINGS_PROJECTS_COPY_BY_LOCALE = {
       interruptAndEnable: '中断任务并开启',
       interruptAndUninstall: '中断任务并移除',
       remoteAccessFailed: '远程访问操作失败',
-      setupTitle: '添加远程电脑',
-      setupDescription: '通过 SSH 安装并连接 Runtime Host',
+      setupTitle: '添加 Runtime Host',
+      setupDescription: '在 SSH 电脑或 WSL 环境中安装并连接 Runtime Host',
       setupName: '显示名称（可选）',
+      setupTarget: '运行位置',
+      sshComputer: 'SSH 计算机',
+      wslEnvironment: 'WSL 环境',
+      wslDistribution: 'WSL 发行版',
       setupSshPort: 'SSH 端口（可选）',
       setupDirectoryRootsDescription: '留空时使用远端 Home。添加目录后，只有这些目录可用于浏览并添加项目。',
       setupConnect: '连接',
@@ -340,6 +348,7 @@ const SETTINGS_PROJECTS_COPY_BY_LOCALE = {
       setupPhase: {
         preparing_cli: '正在准备本地 CLI…',
         connecting_ssh: '正在连接 SSH…',
+        connecting_wsl: '正在连接 WSL 环境…',
         checking_environment: '正在检查远程环境…',
         installing_package: '正在安装 Maka…',
         installing_service: '正在启动 Runtime Host…',
@@ -562,12 +571,12 @@ const SETTINGS_PROJECTS_COPY_BY_LOCALE = {
   en: {
     runtimeHost: {
       title: 'Runtime Host',
-      description: 'Local and enabled remote Hosts stay connected together. Each task remains owned by its Host.',
+      description: 'Local and other enabled Hosts stay connected together. Each task remains owned by its Host.',
       selected: 'Default Host',
       selectedHelp: 'New tasks and unscoped settings use the default Host',
-      remoteTitle: 'Remote Hosts',
+      remoteTitle: 'Other Hosts',
       remoteDescription:
-        'Set up a computer over SSH, or connect an existing Runtime Host manually.',
+        'Set up a Runtime Host on an SSH computer or local WSL environment, or connect an existing Host manually.',
       addComputer: 'Add computer',
       useConnectionCode: 'Use connection code',
       configureManually: 'Configure manually',
@@ -607,9 +616,13 @@ const SETTINGS_PROJECTS_COPY_BY_LOCALE = {
       interruptAndEnable: 'Interrupt and enable',
       interruptAndUninstall: 'Interrupt and remove',
       remoteAccessFailed: 'Remote access failed',
-      setupTitle: 'Add remote computer',
-      setupDescription: 'Install and connect Runtime Host over SSH',
+      setupTitle: 'Add Runtime Host',
+      setupDescription: 'Install and connect Runtime Host on an SSH computer or WSL environment',
       setupName: 'Display name (optional)',
+      setupTarget: 'Run on',
+      sshComputer: 'SSH computer',
+      wslEnvironment: 'WSL environment',
+      wslDistribution: 'WSL distribution',
       setupSshPort: 'SSH port (optional)',
       setupDirectoryRootsDescription: 'Leave empty to use the remote Home directory. When directories are added, only those locations can be browsed to add projects.',
       setupConnect: 'Connect',
@@ -621,6 +634,7 @@ const SETTINGS_PROJECTS_COPY_BY_LOCALE = {
       setupPhase: {
         preparing_cli: 'Preparing the local CLI…',
         connecting_ssh: 'Connecting over SSH…',
+        connecting_wsl: 'Connecting to the WSL environment…',
         checking_environment: 'Checking the remote environment…',
         installing_package: 'Installing Maka…',
         installing_service: 'Starting Runtime Host…',

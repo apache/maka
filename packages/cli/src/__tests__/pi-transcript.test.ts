@@ -22,14 +22,17 @@ import { describe, test } from 'node:test';
 import { visibleWidth } from '@earendil-works/pi-tui';
 import type { PipeShellOutput, PtyShellOutput } from '@maka/core/shell-run';
 import type { ShellRunToolResult } from '@maka/core/shell-run-result';
-import type { SessionEvent, ToolResultContent } from '@maka/core/events';
+import type { SessionEvent, ShellRunSnapshotResult, ToolResultContent } from '@maka/core/events';
 import type { StoredMessage } from '@maka/core/session';
 import {
+  appendUserCommandToTranscript,
   appendUserPrompt,
+  applyExpansionDefaultToAll,
   applyShellRunViewUpdateToTranscript,
   applyMakaSessionEventToTranscript,
   applyShellRunUpdateToTranscript,
   createMakaPiTranscriptState,
+  hasExpandedEntriesAboveViewport,
   renderMakaPiActivityStrip,
   renderMakaPiPendingQueue,
   renderMakaPiStatusLine,
@@ -1644,6 +1647,235 @@ describe('Maka Pi TUI transcript', () => {
     assert.match(third.kind === 'notice' ? third.text : '', /starts expanded/);
   });
 
+  test('a collapse with mixed card positions names the stranded cards and offers the second press (#4011)', () => {
+    const state = createMakaPiTranscriptState();
+    applyMakaSessionEventToTranscript(
+      state,
+      event({
+        type: 'tool_start',
+        toolUseId: 'tool-early',
+        toolName: 'Bash',
+        args: { command: 'early-build' },
+      }),
+    );
+    applyMakaSessionEventToTranscript(
+      state,
+      event({
+        type: 'tool_result',
+        toolUseId: 'tool-early',
+        isError: false,
+        content: terminalResult(
+          `early-head\n${Array.from({ length: 30 }, (_, i) => `early-row-${i}`).join('\n')}`,
+        ),
+      }),
+    );
+    applyMakaSessionEventToTranscript(
+      state,
+      event({
+        type: 'text_delta',
+        messageId: 'message-1',
+        text: Array.from({ length: 20 }, (_, i) => `filler-${i}`).join('\n\n'),
+      }),
+    );
+    applyMakaSessionEventToTranscript(
+      state,
+      event({
+        type: 'tool_start',
+        toolUseId: 'tool-late',
+        toolName: 'Bash',
+        args: { command: 'late-build' },
+      }),
+    );
+    applyMakaSessionEventToTranscript(
+      state,
+      event({
+        type: 'tool_result',
+        toolUseId: 'tool-late',
+        isError: false,
+        content: terminalResult(
+          `late-head\n${Array.from({ length: 30 }, (_, i) => `late-row-${i}`).join('\n')}`,
+        ),
+      }),
+    );
+
+    // Expand both while everything is in view, then let the viewport scroll so
+    // the early card's head sits in scrollback and only the late card remains
+    // reachable.
+    assert.equal(toggleAllToolExpansion(state), true);
+    renderMakaPiTranscript(state, meta(), 100);
+    const early = state.entries.find(
+      (entry): entry is Extract<typeof entry, { kind: 'tool' }> =>
+        entry.kind === 'tool' && entry.toolUseId === 'tool-early',
+    );
+    const late = state.entries.find(
+      (entry): entry is Extract<typeof entry, { kind: 'tool' }> =>
+        entry.kind === 'tool' && entry.toolUseId === 'tool-late',
+    );
+    assert.ok(early && late);
+    const viewportTop = state.renderGeometry.entryFirstLine?.get(late);
+    assert.ok(viewportTop !== undefined && viewportTop > 0);
+    state.renderGeometry.viewportTop = viewportTop;
+
+    // The collapse reaches the late card but strands the early one, and the
+    // notice says so instead of staying silent (#4011).
+    assert.equal(toggleAllToolExpansion(state), true);
+    assert.equal(state.expandAllTools, false);
+    assert.equal(early.expanded, true);
+    assert.equal(late.expanded, false);
+    const notice = state.entries[state.entries.length - 1];
+    assert.equal(notice.kind, 'notice');
+    const text = notice.kind === 'notice' ? notice.text : '';
+    assert.match(text, /1 tool card above the view stayed expanded/);
+    assert.match(text, /press Ctrl\+O again within 2s/);
+    assert.match(text, /starts collapsed/);
+    assert.equal(hasExpandedEntriesAboveViewport(state, 'tool'), true);
+  });
+
+  test('the confirmed second press collapses the stranded card without flipping the default (#4011)', () => {
+    const state = createMakaPiTranscriptState();
+    applyMakaSessionEventToTranscript(
+      state,
+      event({
+        type: 'tool_start',
+        toolUseId: 'tool-big',
+        toolName: 'Bash',
+        args: { command: 'big-diff' },
+      }),
+    );
+    applyMakaSessionEventToTranscript(
+      state,
+      event({
+        type: 'tool_result',
+        toolUseId: 'tool-big',
+        isError: false,
+        content: terminalResult(
+          `big-head\n${Array.from({ length: 80 }, (_, i) => `big-row-${i}`).join('\n')}`,
+        ),
+      }),
+    );
+
+    assert.equal(toggleAllToolExpansion(state), true);
+    renderMakaPiTranscript(state, meta(), 100);
+    const entry = state.entries.find(
+      (candidate): candidate is Extract<typeof candidate, { kind: 'tool' }> =>
+        candidate.kind === 'tool',
+    );
+    assert.ok(entry);
+    const firstLine = state.renderGeometry.entryFirstLine?.get(entry);
+    assert.ok(firstLine !== undefined);
+    state.renderGeometry.viewportTop = firstLine + 5;
+
+    // First press: viewport-scoped collapse strands the card; the state is
+    // confirmable (the runner owns the confirm window itself).
+    assert.equal(toggleAllToolExpansion(state), true);
+    assert.equal(state.expandAllTools, false);
+    assert.equal(entry.expanded, true);
+    assert.equal(hasExpandedEntriesAboveViewport(state, 'tool'), true);
+
+    // Confirmed second press: every candidate takes the collapsed default and
+    // the default itself does not move (a plain toggle would flip it back).
+    assert.equal(applyExpansionDefaultToAll(state, 'tool'), true);
+    assert.equal(state.expandAllTools, false);
+    assert.equal(entry.expanded, false);
+    assert.equal(hasExpandedEntriesAboveViewport(state, 'tool'), false);
+    // Idempotent once everything already matches the default.
+    assert.equal(applyExpansionDefaultToAll(state, 'tool'), false);
+  });
+
+  test('an expand toggle with collapsed cards above the viewport stays silent about them (#4011)', () => {
+    const state = createMakaPiTranscriptState();
+    applyMakaSessionEventToTranscript(
+      state,
+      event({
+        type: 'tool_start',
+        toolUseId: 'tool-early',
+        toolName: 'Bash',
+        args: { command: 'early-build' },
+      }),
+    );
+    applyMakaSessionEventToTranscript(
+      state,
+      event({
+        type: 'tool_result',
+        toolUseId: 'tool-early',
+        isError: false,
+        content: terminalResult(`early-head\nearly-row`),
+      }),
+    );
+    applyMakaSessionEventToTranscript(
+      state,
+      event({
+        type: 'text_delta',
+        messageId: 'message-1',
+        text: Array.from({ length: 20 }, (_, i) => `filler-${i}`).join('\n\n'),
+      }),
+    );
+    applyMakaSessionEventToTranscript(
+      state,
+      event({
+        type: 'tool_start',
+        toolUseId: 'tool-late',
+        toolName: 'Bash',
+        args: { command: 'late-build' },
+      }),
+    );
+    applyMakaSessionEventToTranscript(
+      state,
+      event({
+        type: 'tool_result',
+        toolUseId: 'tool-late',
+        isError: false,
+        content: terminalResult(`late-head\nlate-row`),
+      }),
+    );
+
+    renderMakaPiTranscript(state, meta(), 100);
+    const late = state.entries.find(
+      (entry): entry is Extract<typeof entry, { kind: 'tool' }> =>
+        entry.kind === 'tool' && entry.toolUseId === 'tool-late',
+    );
+    assert.ok(late);
+    const viewportTop = state.renderGeometry.entryFirstLine?.get(late);
+    assert.ok(viewportTop !== undefined && viewportTop > 0);
+    state.renderGeometry.viewportTop = viewportTop;
+
+    // Expanding the in-view card leaves the collapsed card above untouched —
+    // compact in scrollback, harmless — and offers no redraw for it.
+    assert.equal(toggleAllToolExpansion(state), true);
+    assert.equal(late.expanded, true);
+    assert.equal(
+      state.entries.some(
+        (entry) => entry.kind === 'notice' && entry.text.includes('again within 2s'),
+      ),
+      false,
+    );
+    // And nothing expanded sits above the viewport, so no confirm can arm.
+    assert.equal(hasExpandedEntriesAboveViewport(state, 'tool'), false);
+  });
+
+  test('hasExpandedEntriesAboveViewport is false while entry positions are unknown (#4011)', () => {
+    const state = createMakaPiTranscriptState();
+    applyMakaSessionEventToTranscript(
+      state,
+      event({
+        type: 'tool_start',
+        toolUseId: 'tool-1',
+        toolName: 'Bash',
+        args: { command: 'build' },
+      }),
+    );
+    const entry = state.entries.find(
+      (candidate): candidate is Extract<typeof candidate, { kind: 'tool' }> =>
+        candidate.kind === 'tool',
+    );
+    assert.ok(entry);
+    entry.expanded = true;
+    // Wholesale-replacement window: no positions recorded, viewport scrolled.
+    state.renderGeometry.entryFirstLine = undefined;
+    state.renderGeometry.viewportTop = 10;
+    assert.equal(hasExpandedEntriesAboveViewport(state, 'tool'), false);
+  });
+
   test('Ctrl+T leaves thinking entries above the live viewport untouched (#1097)', () => {
     const state = createMakaPiTranscriptState();
     applyMakaSessionEventToTranscript(
@@ -2956,6 +3188,155 @@ describe('Maka Pi TUI transcript', () => {
     );
   });
 
+  test('updates a local user command card from its Runtime Resource', () => {
+    const state = createMakaPiTranscriptState();
+    const ref = 'maka://runtime/background-tasks/user-command-1';
+    appendUserCommandToTranscript(state, {
+      commandId: 'user-command-1',
+      command: 'pwd',
+      result: shellRun({ ref, status: 'running', stdout: '' }) as ShellRunSnapshotResult,
+    });
+
+    const applied = applyShellRunViewUpdateToTranscript(state, {
+      sessionId: 'session-1',
+      ownership: { kind: 'local' },
+      sourceTurnId: 'user-command-1',
+      sourceToolCallId: 'user-command-1',
+      result: shellRun({
+        ref,
+        status: 'completed',
+        stdout: '/repo\n',
+        completedAt: 2_000,
+        exitCode: 0,
+      }),
+    });
+
+    assert.equal(applied, true);
+    const tool = state.entries.find((entry) => entry.kind === 'tool');
+    assert.equal(tool?.toolName, 'User command');
+    assert.equal(tool?.callStatus, 'completed');
+    assert.equal(tool?.expanded, true);
+    const shellResult = tool?.result;
+    assert.equal(
+      shellResult?.kind === 'shell_run' && shellResult.mode === 'pipes'
+        ? shellResult.output?.stdout
+        : '',
+      '/repo\n',
+    );
+    assert.equal(
+      state.entries.some((entry) => entry.kind === 'notice'),
+      false,
+    );
+  });
+
+  test('keeps user commands expanded and outside Ctrl+O model-tool toggles', () => {
+    const state = createMakaPiTranscriptState();
+    appendUserCommandToTranscript(state, {
+      commandId: 'user-command-1',
+      command: 'printf done',
+      result: shellRun({
+        ref: 'maka://runtime/background-tasks/user-command-1',
+        status: 'completed',
+        stdout: 'done\n',
+        completedAt: 2_000,
+        exitCode: 0,
+      }) as ShellRunSnapshotResult,
+    });
+    applyMakaSessionEventToTranscript(
+      state,
+      event({
+        type: 'tool_start',
+        toolUseId: 'model-tool-1',
+        toolName: 'Bash',
+        args: { command: 'printf model' },
+      }),
+    );
+    const tools = state.entries.filter((entry) => entry.kind === 'tool');
+    const userCommand = tools.find((entry) => entry.userOwned === true);
+    const modelTool = tools.find((entry) => entry.userOwned !== true);
+    assert.ok(userCommand && modelTool);
+    assert.equal(userCommand.expanded, true);
+    assert.equal(modelTool.expanded, false);
+
+    assert.equal(toggleAllToolExpansion(state), true);
+    assert.equal(userCommand.expanded, true);
+    assert.equal(modelTool.expanded, true);
+    assert.equal(toggleAllToolExpansion(state), true);
+    assert.equal(userCommand.expanded, true);
+    assert.equal(modelTool.expanded, false);
+  });
+
+  test('preserves local user-command cards only for same-session reconnect replacement', () => {
+    const state = createMakaPiTranscriptState();
+    appendUserCommandToTranscript(state, {
+      commandId: 'user-command-1',
+      command: 'sleep 60',
+      result: shellRun({
+        ref: 'maka://runtime/background-tasks/user-command-1',
+        status: 'running',
+        stdout: '',
+      }) as ShellRunSnapshotResult,
+    });
+
+    replaceTranscriptWithStoredMessages(state, [], { preserveClientLocalEntries: true });
+    assert.equal(
+      state.entries.some((entry) => entry.kind === 'tool' && entry.userOwned === true),
+      true,
+    );
+
+    replaceTranscriptWithStoredMessages(state, []);
+    assert.equal(
+      state.entries.some((entry) => entry.kind === 'tool' && entry.userOwned === true),
+      false,
+    );
+  });
+
+  test('reconnect re-inserts preserved user-command cards at their chronological position (#3210)', () => {
+    const state = createMakaPiTranscriptState();
+    // The command ran before the model turns that followed it.
+    appendUserCommandToTranscript(state, {
+      commandId: 'user-command-1',
+      command: 'pwd',
+      result: shellRun({
+        ref: 'maka://runtime/background-tasks/user-command-1',
+        status: 'completed',
+        stdout: '/repo\n',
+        startedAt: 1_000,
+      }) as ShellRunSnapshotResult,
+    });
+
+    replaceTranscriptWithStoredMessages(
+      state,
+      [
+        { type: 'user', id: 'message-1', turnId: 'turn-1', ts: 2_000, text: 'later prompt' },
+        {
+          type: 'assistant',
+          id: 'message-2',
+          turnId: 'turn-1',
+          ts: 3_000,
+          text: 'later answer',
+          modelId: 'model-1',
+        },
+      ],
+      { preserveClientLocalEntries: true },
+    );
+
+    const cardIndex = state.entries.findIndex(
+      (entry) => entry.kind === 'tool' && entry.userOwned === true,
+    );
+    const promptIndex = state.entries.findIndex((entry) =>
+      JSON.stringify(entry).includes('later prompt'),
+    );
+    const answerIndex = state.entries.findIndex((entry) =>
+      JSON.stringify(entry).includes('later answer'),
+    );
+    assert.notEqual(cardIndex, -1);
+    assert.notEqual(promptIndex, -1);
+    assert.notEqual(answerIndex, -1);
+    assert.ok(cardIndex < promptIndex, 'card must stay ahead of the later turn');
+    assert.ok(promptIndex < answerIndex);
+  });
+
   test('notifies a settle exactly once across a folded poll and the live update', () => {
     const state = createMakaPiTranscriptState();
     const ref = 'maka://runtime/background-tasks/bg-1';
@@ -4158,6 +4539,84 @@ describe('transcript entry render memoization', () => {
     assert.equal(latestStream(), 'stdout');
     const rendered = renderMakaPiTranscript(state, meta(), 100).map(stripAnsi).join('\n');
     assert.match(rendered, /\(2s · 2 lines\)/);
+  });
+
+  test('provider retry activity strip counts down in the client clock domain', (t) => {
+    // #3393: a subscription quota window can hand the runtime an hours-long
+    // Retry-After. The strip stamps the client-local receipt time when the
+    // event lands and ticks down from it, so the display never mixes the
+    // (possibly remote) Runtime Host clock with the client clock.
+    const start = 1_700_000_000_000;
+    t.mock.timers.enable({ apis: ['Date'], now: start });
+    const state = createMakaPiTranscriptState();
+    applyMakaSessionEventToTranscript(
+      state,
+      event({
+        type: 'provider_retry',
+        phase: 'scheduled',
+        attempt: 2,
+        maxAttempts: 10,
+        delayMs: 16_083_000,
+        reason: 'rate_limit',
+      }),
+    );
+    // Receipt is stamped on the client clock at application time.
+    assert.equal(state.providerRetry?.receivedAtMs, start);
+
+    const strip = () =>
+      stripAnsi(renderMakaPiActivityStrip({ ...meta(), providerRetry: state.providerRetry }, 120));
+
+    // Hours-long waits render as a humanized duration, not a raw second count.
+    assert.match(strip(), /Retrying in 4h 28m 3s \(2\/10\)/);
+
+    // Elapsed time ticks the countdown down; zero-value units are omitted.
+    t.mock.timers.setTime(start + 63_000);
+    assert.match(strip(), /Retrying in 4h 27m \(2\/10\)/);
+
+    // An elapsed wait floors at 1s until `started` replaces the banner.
+    t.mock.timers.setTime(start + 17_000_000);
+    assert.match(strip(), /Retrying in 1s \(2\/10\)/);
+  });
+
+  test('provider retry strip counts down from the host-authoritative remainingMs', (t) => {
+    // A host re-projection mid-wait (reconnect) sends the recomputed
+    // remainingMs duration; the strip counts THAT down from receipt instead
+    // of restarting at the full delay.
+    const start = 1_700_000_000_000;
+    t.mock.timers.enable({ apis: ['Date'], now: start });
+    const state = createMakaPiTranscriptState();
+    applyMakaSessionEventToTranscript(
+      state,
+      event({
+        type: 'provider_retry',
+        phase: 'scheduled',
+        attempt: 2,
+        maxAttempts: 10,
+        delayMs: 16_083_000,
+        remainingMs: 61_000,
+        reason: 'rate_limit',
+      }),
+    );
+    assert.match(
+      stripAnsi(renderMakaPiActivityStrip({ ...meta(), providerRetry: state.providerRetry }, 120)),
+      /Retrying in 1m 1s \(2\/10\)/,
+    );
+
+    // The started phase carries no countdown at all.
+    applyMakaSessionEventToTranscript(
+      state,
+      event({
+        type: 'provider_retry',
+        phase: 'started',
+        attempt: 2,
+        maxAttempts: 10,
+        reason: 'rate_limit',
+      }),
+    );
+    assert.match(
+      stripAnsi(renderMakaPiActivityStrip({ ...meta(), providerRetry: state.providerRetry }, 120)),
+      /^Retrying \(2\/10\)$/,
+    );
   });
 
   test('re-renders equal-length ShellRun output only when revision advances', () => {

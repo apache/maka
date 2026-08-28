@@ -2515,6 +2515,54 @@ test('production submission delegates only through the Runtime-owned candidate r
   }]);
 });
 
+test('production retry reaches durable Action Gate replay while target is waiting', async () => {
+  const actions: unknown[] = [];
+  const sessions = port([
+    session('payment', { state: 'waiting_for_user' }),
+  ]);
+  const controller = createGatedWorkHubController({
+    sessions,
+    coordination: {
+      open: async () => ({ close: async () => undefined }),
+      answer: async (input) => ({ turnId: input.turnId }),
+      record: async (input) => ({ turnId: input.turnId }),
+      candidates: async () => ({
+        candidateSetId: `sha256:${'c'.repeat(64)}`,
+        candidates: [{
+          candidateRef: 'candidate-payment',
+          sessionId: 'payment',
+          sessionName: 'payment',
+          workspace: {
+            target: { kind: 'host_path', path: '/workspace/payment' },
+            hostCwd: '/workspace/payment',
+          },
+          state: 'waiting_for_user',
+          updatedAt: 2,
+        }],
+      }),
+      act: async (input) => {
+        actions.push(input);
+        return {
+          disposition: 'delegate_existing',
+          targetSessionId: 'payment',
+          targetTurnId: 'already-committed-turn',
+        };
+      },
+    },
+  });
+
+  const result = await controller.submit({
+    requestId: 'summary-recovery-action',
+    text: '继续支付工作',
+    explicitTarget: { sessionId: 'payment' },
+    retryAction: true,
+  });
+
+  assert.equal(result.kind, 'submitted');
+  assert.equal(result.kind === 'submitted' ? result.turnId : undefined, 'already-committed-turn');
+  assert.equal(actions.length, 1);
+});
+
 test('production defers destructive correction until persistent delegation exists', async () => {
   const actions: unknown[] = [];
   const sessions = port([session('source'), session('target')]);

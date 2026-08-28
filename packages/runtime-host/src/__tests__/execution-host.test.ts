@@ -161,6 +161,56 @@ test('production Host resumes a Session through the ScheduledTask authority', {
   });
 });
 
+test('production Host fails slug-only ScheduledTask Agent runs before binding execution identity', {
+  timeout: 30_000,
+}, async () => {
+  await withExecutionRoot(async (fixture) => {
+    const host = await fixture.startHost();
+    const desktop = await connectClient(fixture.root);
+    try {
+      const created = await desktop.request('scheduled-task.mutate', {
+        kind: 'create',
+        input: {
+          title: 'legacy agent-run identity proof',
+          intentBody: 'Do not execute with a replacement account.',
+          schedule: { kind: 'once', runAt: Date.now() + 60_000 },
+          effect: {
+            kind: 'agent_run',
+            execution: {
+              cwd: fixture.root,
+              llmConnectionSlug: 'fake',
+              model: 'fake-model',
+              permissionMode: 'ask',
+              collaborationMode: 'agent',
+              orchestrationMode: 'default',
+            },
+          },
+        },
+      });
+      assert.equal(created.kind, 'task');
+      if (created.kind !== 'task') return;
+
+      const fired = await desktop.request('scheduled-task.mutate', {
+        kind: 'trigger_now',
+        taskId: created.task.id,
+      });
+      assert.equal(fired.kind, 'task');
+      if (fired.kind !== 'task') return;
+      assert.equal(
+        fired.task.lastError,
+        'ScheduledTask Agent runs require an immutable model connection identity',
+      );
+      assert.equal(fired.task.runs.length, 1);
+      assert.equal(fired.task.runs[0]?.outcome, 'failed');
+      assert.equal(fired.task.runs[0]?.sessionId, undefined);
+      assert.equal(fired.task.runs[0]?.runId, undefined);
+    } finally {
+      await desktop.close();
+      await fixture.stopHost(host);
+    }
+  });
+});
+
 test('production Host settles dispatched Client Capabilities before publishing Ready', async () => {
   await withExecutionRoot(async (fixture) => {
     const prepared = await seedDispatchedClientCapability(fixture);

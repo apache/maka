@@ -84,8 +84,11 @@ export interface ConnectOrSpawnRuntimeHostInput {
   connectTimeoutMs?: number;
   handshakeTimeoutMs?: number;
   candidateEntrypoint: string | URL;
+  candidateExecutable?: string;
   managedLaunchClaim?: RuntimeHostManagedLaunchClaim;
   signal?: AbortSignal;
+  /** Existing authority lease inherited by a launch-owner-supervised Candidate. */
+  inheritableAuthorityLeaseFd?: number;
   /** Candidate-exit sink forwarded to the launcher; the embedder owns the sink. */
   onExit?: (details: CandidateExitDetails) => void;
 }
@@ -453,10 +456,16 @@ export async function connectOrSpawnRuntimeHostWithDependencies(
             rootPath: capability.canonicalPath,
             expectedRootId: capability.rootId,
             entrypoint: input.candidateEntrypoint,
+            ...(input.candidateExecutable === undefined
+              ? {}
+              : { executable: input.candidateExecutable }),
             initialConnectionTimeoutMs: Math.ceil(remaining),
             ...(input.generation === undefined ? {} : { generation: input.generation }),
             ...(managedLaunchClaim === undefined ? {} : { managedLaunchClaim }),
             ...(input.onExit === undefined ? {} : { onExit: input.onExit }),
+            ...(input.inheritableAuthorityLeaseFd === undefined
+              ? {}
+              : { inheritableAuthorityLeaseFd: input.inheritableAuthorityLeaseFd }),
           });
           candidateLaunches.add(launch);
           const attempt = await settleBeforeDeadline(launch.spawned, deadline, input.signal);

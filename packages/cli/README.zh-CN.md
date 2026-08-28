@@ -99,13 +99,15 @@ Maka 默认会在执行高权限工具操作前询问。`maka run --yolo` 会授
 使用预发布版本时，请继续明确指定 `next`：
 
 ```sh
-npm install --global maka-agent@next
+maka update --target next
 maka --version
 ```
 
-Beta 升级不要使用不带 tag 的 `npm update --global maka-agent`：npm 的全局更新会跟随
-`latest`，可能选中不同的发布线。稳定版发布后，使用
-`npm install --global maka-agent@latest` 安装。
+更新流程会先 stage 并验证精确 release，再替换本地 Runtime Host 与 npm-global package；
+默认不会中断 active 或 durable work。只有在你确认可以安全中断后，才使用
+`--allow-interrupt-active-tasks`。`npm install --global maka-agent@next` 仍可用于修复安装；
+不要使用不带 tag 的 `npm update --global maka-agent`，因为它会跟随 `latest`，可能选中
+不同的发布线。稳定版发布后，使用 `maka update --target latest`。
 
 ## 设置远程 Runtime Host
 

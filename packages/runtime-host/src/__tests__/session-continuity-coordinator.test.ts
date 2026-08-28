@@ -1760,6 +1760,9 @@ test('keeps the current provider retry on the live Turn until the next content e
     attempt: 8,
     maxAttempts: 10,
     delayMs: 40_000,
+    // The host-clock schedule time is kept so a re-projection mid-wait can
+    // recompute the authoritative remaining duration (#3393).
+    ts: 1,
     reason: 'rate_limit' as const,
   };
   coordinator.attachConnection('connection-remount', new RecordingSink());

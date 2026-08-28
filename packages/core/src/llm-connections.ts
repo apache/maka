@@ -168,6 +168,11 @@ export interface LlmConnection extends RuntimeExecutionConnection {
   updatedAt: number;
 }
 
+/** A persisted Connection entity projected with its immutable catalog identity. */
+export interface IdentifiedLlmConnection extends LlmConnection {
+  connectionId: string;
+}
+
 /**
  * Read-time normalizer: the model ids a stored connection exposes.
  *

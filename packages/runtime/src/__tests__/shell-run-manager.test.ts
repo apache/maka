@@ -59,6 +59,80 @@ after(async () => {
 });
 
 describe('ShellRunProcessManager', () => {
+  test('keeps user-owned terminals out of the model background-task summary', async () => {
+    const store = createSqliteShellRunStore(await workspace());
+    await store.createShellRun({
+      ...record({ shellRunId: 'user-shell', status: 'running' }),
+      visibility: 'user',
+      command: 'user-private-command',
+    });
+    await store.createShellRun({
+      ...record({ shellRunId: 'model-shell', status: 'running' }),
+      command: 'model-background-command',
+    });
+
+    const summary = await createManager(store).buildContextSummary('session-1');
+
+    assert.match(summary ?? '', /model-background-command/u);
+    assert.doesNotMatch(summary ?? '', /user-private-command/u);
+  });
+
+  test('rejects a model Read of a user-owned resource while preserving client inspection', async () => {
+    const store = createSqliteShellRunStore(await workspace());
+    await store.createShellRun({
+      ...record({ shellRunId: 'user-command', status: 'completed' }),
+      visibility: 'user',
+      command: 'printf private-output',
+      output: {
+        mode: 'pipes',
+        stdout: 'private-output\n',
+        stderr: '',
+        stdoutTruncated: false,
+        stderrTruncated: false,
+        redacted: false,
+      },
+      completedAt: 2,
+      exitCode: 0,
+    });
+    const manager = createManager(store);
+    const ref = 'maka://runtime/background-tasks/user-command';
+
+    await assert.rejects(
+      () => manager.readRuntimeResource('session-1', ref, NO_ABORT),
+      (error: unknown) =>
+        error instanceof Error &&
+        (error as NodeJS.ErrnoException).code === 'ENOENT' &&
+        error.message === 'Runtime background task not found in this session',
+    );
+    await assert.rejects(
+      () => manager.stopBackgroundTask('session-1', ref, NO_ABORT),
+      (error: unknown) =>
+        error instanceof Error &&
+        (error as NodeJS.ErrnoException).code === 'ENOENT' &&
+        error.message === 'Runtime background task not found in this session',
+    );
+    await assert.rejects(
+      () =>
+        manager.writeStdin({
+          sessionId: 'session-1',
+          ref,
+          input: 'private-input',
+          abortSignal: NO_ABORT,
+        }),
+      (error: unknown) =>
+        error instanceof Error &&
+        (error as NodeJS.ErrnoException).code === 'ENOENT' &&
+        error.message === 'Runtime background task not found in this session',
+    );
+
+    const inspected = await manager.inspectResource('session-1', ref);
+    assert.equal(inspected.output.mode, 'pipes');
+    assert.equal(inspected.output.stdout, 'private-output\n');
+    const stopped = await manager.stopBackgroundTask('session-1', ref, NO_ABORT, 'client');
+    assert.equal(stopped.kind, 'shell_run');
+    assert.equal(stopped.operation?.kind, 'stop');
+  });
+
   test('rejects unprojectable provider tool-call identities before durable admission', async () => {
     const cwd = await workspace();
     const store = sqliteShellRunStore(cwd);

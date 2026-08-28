@@ -19,7 +19,7 @@
 
 import { useMemo } from 'react';
 import type { ChatModelChoice } from '@maka/core/chat-model-choice';
-import type { LlmConnection } from '@maka/core/llm-connections';
+import type { IdentifiedLlmConnection } from '@maka/core/llm-connections';
 import type { SessionSendProjection } from '@maka/core/session-send-projection';
 import type { SessionSummary } from '@maka/core/session';
 import type { SettingsSection } from '@maka/core/settings';
@@ -29,6 +29,7 @@ import {
   chatModelChoiceLabel,
   pickNewChatModel,
   type NewChatModel,
+  type NewChatModelCandidate,
 } from './shell-chat-model-selection';
 import { deriveSessionHealthNotice } from './session-health-notice';
 import type { ComposerDefaults } from './composer-defaults';
@@ -58,12 +59,12 @@ export type SessionHealthNoticeView = {
  */
 export function useShellChatModel(options: {
   uiLocale: UiLocale;
-  connections: LlmConnection[];
+  connections: IdentifiedLlmConnection[];
   chatModelChoices: ChatModelChoice[];
   sessionSendOutcome: SessionSendProjection | undefined;
   defaultConnection: string | null;
   newTaskKey: string;
-  activationCandidate?: NewChatModel;
+  activationCandidate?: NewChatModelCandidate;
   activeSession: SessionSummary | undefined;
   persistedComposerDefaults: ComposerDefaults | null;
   usePersistedComposerDefaults: boolean;
@@ -72,7 +73,7 @@ export function useShellChatModel(options: {
   openSettingsSection: (section: SettingsSection) => void;
 }): {
   chatModelChoices: ChatModelChoice[];
-  activeConnection: LlmConnection | undefined;
+  activeConnection: IdentifiedLlmConnection | undefined;
   activeConnectionLabel: string | undefined;
   activeModel: string | undefined;
   activeModelLabel: string | undefined;
@@ -82,8 +83,8 @@ export function useShellChatModel(options: {
   newChatModelLabel: string | undefined;
   newChatThinkingLevels: readonly ThinkingLevel[];
   newChatThinkingLevel: ThinkingLevel | undefined;
-  pendingNewChatModel: NewChatModel | null;
-  setPendingNewChatModel: (next: NewChatModel | null) => void;
+  pendingNewChatModel: NewChatModelCandidate | null;
+  setPendingNewChatModel: (next: NewChatModelCandidate | null) => void;
   pendingNewChatThinkingLevel: ThinkingLevel | null;
   setPendingNewChatThinkingLevel: (next: ThinkingLevel | null) => void;
   sessionHealthNotice: SessionHealthNoticeView | undefined;
@@ -91,7 +92,7 @@ export function useShellChatModel(options: {
   const { uiLocale, connections, defaultConnection, activationCandidate, activeSession, persistedComposerDefaults, openSettingsSection } = options;
   const conversationCopy = getDesktopConversationCopy(uiLocale);
   const [pendingNewChatModelChoice, setPendingNewChatModel] = useNewTaskChoice<
-    NewChatModel | null
+    NewChatModelCandidate | null
   >(
     options.newTaskKey,
   );
@@ -101,7 +102,12 @@ export function useShellChatModel(options: {
       ? persistedComposerDefaults?.model ?? null
       : null;
   const activeConnection = activeSession
-    ? connections.find((connection) => connection.slug === activeSession.llmConnectionSlug)
+    ? connections.find(
+        (connection) =>
+          activeSession.llmConnectionId !== undefined &&
+          connection.connectionId === activeSession.llmConnectionId &&
+          connection.slug === activeSession.llmConnectionSlug,
+      )
     : undefined;
   const { chatModelChoices } = options;
   // Home / empty-state composer: which model the next NEW chat starts with.
@@ -131,7 +137,11 @@ export function useShellChatModel(options: {
     (choice) => choice.connectionSlug === defaultConnection && choice.isDefault,
   );
   const catalogDefaultNewChatModel = catalogDefaultChoice
-    ? { llmConnectionSlug: catalogDefaultChoice.connectionSlug, model: catalogDefaultChoice.model }
+    ? {
+        llmConnectionId: catalogDefaultChoice.connectionId,
+        llmConnectionSlug: catalogDefaultChoice.connectionSlug,
+        model: catalogDefaultChoice.model,
+      }
     : undefined;
   const newChatModel = pickNewChatModel({
     pending: pendingNewChatModel,
@@ -154,12 +164,23 @@ export function useShellChatModel(options: {
     : activeSession?.model || activeConnection?.defaultModel;
   const activeModelLabel = isRetiredBackend
     ? undefined
-    : chatModelChoiceLabel(chatModelChoices, activeSession?.llmConnectionSlug, activeModel);
+    : activeSession?.llmConnectionId
+      ? chatModelChoiceLabel(
+          chatModelChoices,
+          activeSession.llmConnectionId,
+          activeSession.llmConnectionSlug,
+          activeModel,
+        )
+      : activeModel;
   const activeThinkingLevels = useMemo(
-    () => chatModelChoices.find(
-      (choice) => choice.connectionSlug === activeSession?.llmConnectionSlug && choice.model === activeModel,
-    )?.thinkingLevels ?? [],
-    [activeSession?.llmConnectionSlug, activeModel, chatModelChoices],
+    () =>
+      chatModelChoices.find(
+        (choice) =>
+          choice.connectionId === activeSession?.llmConnectionId &&
+          choice.connectionSlug === activeSession?.llmConnectionSlug &&
+          choice.model === activeModel,
+      )?.thinkingLevels ?? [],
+    [activeSession?.llmConnectionId, activeSession?.llmConnectionSlug, activeModel, chatModelChoices],
   );
   // Only surface a stored level when the current model still supports it;
   // if the model changed (setModel clears it) or the catalog reconfigured so
@@ -174,7 +195,10 @@ export function useShellChatModel(options: {
     () => {
       if (!newChatModel) return [];
       return chatModelChoices.find(
-        (choice) => choice.connectionSlug === newChatModel.llmConnectionSlug && choice.model === newChatModel.model,
+        (choice) =>
+          choice.connectionId === newChatModel.llmConnectionId &&
+          choice.connectionSlug === newChatModel.llmConnectionSlug &&
+          choice.model === newChatModel.model,
       )?.thinkingLevels ?? [];
     },
     [newChatModel, chatModelChoices],
@@ -185,7 +209,12 @@ export function useShellChatModel(options: {
   const newChatThinkingLevel = requestedNewChatThinkingLevel && newChatThinkingLevels.includes(requestedNewChatThinkingLevel)
     ? requestedNewChatThinkingLevel
     : undefined;
-  const newChatModelLabel = chatModelChoiceLabel(chatModelChoices, newChatModel?.llmConnectionSlug, newChatModel?.model);
+  const newChatModelLabel = chatModelChoiceLabel(
+    chatModelChoices,
+    newChatModel?.llmConnectionId,
+    newChatModel?.llmConnectionSlug,
+    newChatModel?.model,
+  );
 
   // Notice derivation is a pure function (see `session-health-notice.ts`); we
   // wrap the returned `onClickTarget` here with the Settings-jump action.

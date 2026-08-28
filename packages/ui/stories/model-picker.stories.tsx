@@ -25,7 +25,7 @@ import type { ThinkingLevel } from '@maka/core/model-thinking';
 import type { SessionSummary } from '@maka/core/session';
 import { ChatModelSwitcher, NewChatModelPicker, ThinkingLevelSelector } from '../src/chat-model-switcher.js';
 import {
-  modelChoiceValue,
+  exactModelChoiceValue,
   type ChatModelChoice,
 } from '../src/chat-model-helpers.js';
 import { ModelPicker } from '../src/model-picker.js';
@@ -49,7 +49,7 @@ function choice(
   model: string,
   label: string,
 ): ChatModelChoice {
-  return { connectionSlug, providerType, providerLabel, model, label, isDefault: false, thinkingLevels: [] };
+  return { connectionId: `connection-${connectionSlug}`, connectionSlug, providerType, providerLabel, model, label, isDefault: false, thinkingLevels: [] };
 }
 
 const CHOICES: ChatModelChoice[] = [
@@ -75,12 +75,25 @@ function providerMark(type: ProviderType) {
   return <span style={{ fontSize: 11, fontWeight: 700 }}>{labels[type] ?? 'M'}</span>;
 }
 
+function choiceValue(choice: ChatModelChoice) {
+  return exactModelChoiceValue(choice.connectionId, choice.connectionSlug, choice.model);
+}
+
 function selectedLabel(value: string) {
-  return CHOICES.find((choice) => modelChoiceValue(choice.connectionSlug, choice.model) === value)?.label ?? value;
+  return CHOICES.find((choice) => choiceValue(choice) === value)?.label ?? value;
+}
+
+function choiceForTarget(input: { llmConnectionId: string; llmConnectionSlug: string; model: string }) {
+  return CHOICES.find(
+    (choice) =>
+      choice.connectionId === input.llmConnectionId &&
+      choice.connectionSlug === input.llmConnectionSlug &&
+      choice.model === input.model,
+  );
 }
 
 function ModelPickerFrame(props: { initialValue?: string }) {
-  const [value, setValue] = useState(props.initialValue ?? 'anthropic-team:claude-sonnet-4');
+  const [value, setValue] = useState(props.initialValue ?? choiceValue(CHOICES[4]!));
   return (
     <div style={{ width: 460 }}>
       <NewChatModelPicker
@@ -89,7 +102,10 @@ function ModelPickerFrame(props: { initialValue?: string }) {
         currentValue={value}
         currentProviderType="anthropic"
         renderProviderMark={providerMark}
-        onPick={({ llmConnectionSlug, model }) => setValue(modelChoiceValue(llmConnectionSlug, model))}
+        onPick={(next) => {
+          const nextChoice = choiceForTarget(next);
+          if (nextChoice) setValue(choiceValue(nextChoice));
+        }}
       />
     </div>
   );
@@ -105,8 +121,7 @@ export const Default: Story = {
 // trigger and the new-chat picker below stay quiet.
 export const ExistingConversation: Story = {
   render: function ExistingConversationRender() {
-    const [value, setValue] = useState('anthropic-team:claude-sonnet-4');
-    const [connectionSlug, model] = value.split(':', 2);
+    const [activeChoice, setActiveChoice] = useState(CHOICES[4]!);
     const activeSession = {
       id: 'storybook-model-switch',
       name: 'Model switch warning',
@@ -116,22 +131,25 @@ export const ExistingConversation: Story = {
       hasUnread: false,
       status: 'active',
       backend: 'ai-sdk',
-      llmConnectionSlug: connectionSlug,
+      llmConnectionId: activeChoice.connectionId,
+      llmConnectionSlug: activeChoice.connectionSlug,
       connectionLocked: true,
-      model,
+      model: activeChoice.model,
       permissionMode: 'ask',
     } satisfies SessionSummary;
     return (
       <div style={{ width: 460, maxWidth: '100%' }}>
         <ChatModelSwitcher
           activeSession={activeSession}
-          activeModelLabel={selectedLabel(value)}
+          activeModelLabel={activeChoice.label}
           currentProviderType="anthropic"
           choices={CHOICES}
           hasConversationHistory
           renderProviderMark={providerMark}
-          onChange={({ llmConnectionSlug, model: nextModel }) =>
-            setValue(modelChoiceValue(llmConnectionSlug, nextModel))}
+          onChange={(next) => {
+            const nextChoice = choiceForTarget(next);
+            if (nextChoice) setActiveChoice(nextChoice);
+          }}
         />
       </div>
     );
@@ -192,6 +210,7 @@ export const EmptyConversation: Story = {
           hasUnread: false,
           status: 'active',
           backend: 'ai-sdk',
+          llmConnectionId: 'connection-anthropic-team',
           llmConnectionSlug: 'anthropic-team',
           connectionLocked: false,
           model: 'claude-sonnet-4',
@@ -243,7 +262,7 @@ export const EmptyCatalog: Story = {
 // Real path: quiet composer left footer — model + adjacent thinking menu.
 export const ThinkingLevelSeparate: Story = {
   render: function ThinkingLevelSeparateRender() {
-    const [value, setValue] = useState('anthropic-team:claude-sonnet-4');
+    const [value, setValue] = useState(choiceValue(CHOICES[4]!));
     const [thinkingLevel, setThinkingLevel] = useState<ThinkingLevel | undefined>('medium');
     return (
       <div className="maka-model-selection-controls" style={{ width: 'max-content' }}>
@@ -253,7 +272,10 @@ export const ThinkingLevelSeparate: Story = {
           currentValue={value}
           currentProviderType="anthropic"
           renderProviderMark={providerMark}
-          onPick={({ llmConnectionSlug, model }) => setValue(modelChoiceValue(llmConnectionSlug, model))}
+          onPick={(next) => {
+            const nextChoice = choiceForTarget(next);
+            if (nextChoice) setValue(choiceValue(nextChoice));
+          }}
         />
         <ThinkingLevelSelector
           levels={THINKING_LEVELS}

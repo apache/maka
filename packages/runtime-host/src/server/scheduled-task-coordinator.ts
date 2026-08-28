@@ -61,6 +61,8 @@ import type { SessionCreateInput } from '../protocol/session-catalog.js';
 
 const MAX_TIMER_DELAY_MS = 2_147_483_647;
 const NATIVE_PROVIDER_RETRY_MS = 5_000;
+const SCHEDULED_AGENT_RUN_IDENTITY_REQUIRED =
+  'ScheduledTask Agent runs require an immutable model connection identity';
 
 type ScheduledTaskSessions = Pick<ExecutionSessionWriter, 'readHeaderSnapshot'>;
 type ScheduledTaskRuntime = Pick<SessionManager, 'sendMessage'>;
@@ -582,6 +584,13 @@ export class HostScheduledTaskCoordinator implements ScheduledTaskToolAuthority 
       );
     }
 
+    // Persisted agent-run templates currently identify their model connection
+    // by reusable slug only. Do not resolve that slug to a potentially
+    // different Connection entity. #3927 will make the exact ID durable.
+    if (task.effect.kind === 'agent_run') {
+      return this.#settleFailure(claim, SCHEDULED_AGENT_RUN_IDENTITY_REQUIRED);
+    }
+
     let execution = claim.execution;
     if (!execution) {
       execution = {
@@ -628,6 +637,13 @@ export class HostScheduledTaskCoordinator implements ScheduledTaskToolAuthority 
       if (!isSessionNotFoundError(error) && !isMissingRecord(error)) throw error;
     }
     const execution = task.effect.execution;
+    const catalog = await this.#runtimePolicy.connectionCatalog.getSnapshot();
+    const connection = catalog.connections.find(
+      (candidate) => candidate.slug === execution.llmConnectionSlug,
+    );
+    if (!connection) {
+      throw new Error('ScheduledTask model connection does not exist');
+    }
     await this.#createSession({
       sessionId: identity.sessionId,
       workspace:
@@ -638,6 +654,7 @@ export class HostScheduledTaskCoordinator implements ScheduledTaskToolAuthority 
       labels: ['scheduled-task'],
       modelTarget: {
         kind: 'explicit',
+        connectionId: connection.connectionId,
         connectionSlug: execution.llmConnectionSlug,
         model: execution.model,
       },

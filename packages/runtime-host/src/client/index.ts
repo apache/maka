@@ -23,6 +23,7 @@ export {
   type ActivateRuntimeHostManagedDeploymentInput,
   type RuntimeHostManagedActivationErrorCode,
 } from './managed-activation.js';
+export { openRuntimeHostManagedStdioBridge } from './managed-stdio-bridge.js';
 export {
   connectRuntimeHost,
   connectExistingRuntimeHost,
@@ -44,11 +45,16 @@ export {
   createClientRuntimeHostProfileCatalog,
   createFileRuntimeHostProfileCatalog,
   createRuntimeHostProfileCredentialStore,
+  connectRuntimeHostProfile,
   connectRemoteRuntimeHostProfile,
+  decodeEnvironmentRuntimeHostProfile,
+  decodePersistedRuntimeHostProfile,
   decodeRemoteRuntimeHostProfile,
   remoteRuntimeHostUnavailableError,
   sameRemoteRuntimeHostProfileTarget,
   sameResolvedRuntimeHostProfileTarget,
+  type EnvironmentRuntimeHostProfile,
+  type PersistedRuntimeHostProfile,
   type RemoteRuntimeHostProfile,
   type RuntimeHostRemoteTransport,
   type ResolvedRuntimeHostProfile,
@@ -97,6 +103,15 @@ export {
   runtimeHostStartupError,
 } from './startup-error.js';
 export {
+  connectRuntimeHostWslEnvironment,
+  listRuntimeHostWslDistributions,
+  normalizeRuntimeHostWslDistribution,
+  normalizeRuntimeHostWslOperatorPath,
+  resolveSystemRuntimeHostWslExecutable,
+  type RuntimeHostWslEnvironmentInput,
+  type RuntimeHostWslProcessFactory,
+} from './wsl-environment.js';
+export {
   RuntimeHostCatalogReadError,
   readRuntimeHostConnectionCatalog,
   readRuntimeHostInvocableSkills,
@@ -114,11 +129,12 @@ export {
   type RuntimeHostElectionDiagnostic,
   type RuntimeHostSpawnedProcess,
 } from './connect-or-spawn.js';
+export { waitForRuntimeHostReady } from './wait-for-ready.js';
 export {
   createRuntimeHostCandidateLaunchBarrier,
   type RuntimeHostCandidateLaunchBarrier,
 } from './candidate-launch-barrier.js';
-export { runHostedExecution } from './hosted-execution.js';
+export { runHostedExecution, type RunHostedExecutionInput } from './hosted-execution.js';
 export { type ClientCapabilityProvider } from './client-capability.js';
 export {
   readRuntimeHostAgentGraphEpochs,

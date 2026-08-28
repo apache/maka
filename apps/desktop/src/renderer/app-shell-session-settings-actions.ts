@@ -51,7 +51,11 @@ type ToastApi = {
 
 export interface AppShellSessionSettingsActions {
   setPermissionMode(mode: PermissionMode): Promise<boolean>;
-  setSessionModel(input: { llmConnectionSlug: string; model: string }): Promise<void>;
+  setSessionModel(input: {
+    llmConnectionId: string;
+    llmConnectionSlug: string;
+    model: string;
+  }): Promise<void>;
   setSessionThinkingLevel(level: ThinkingLevel | undefined): Promise<void>;
 }
 
@@ -64,7 +68,7 @@ export function createAppShellSessionSettingsActions(deps: {
   pendingSessionModelChangesRef: RefBox<Set<string>>;
   refreshSessions: () => Promise<DesktopSessionSummary[]>;
   saveComposerDefaults: (patch: {
-    model: { llmConnectionSlug: string; model: string };
+    model: { llmConnectionId: string; llmConnectionSlug: string; model: string };
   }) => void;
   sessionsRef: RefBox<DesktopSessionSummary[]>;
   /** Persists the chat default; awaited so a failure surfaces as one. */
@@ -166,7 +170,11 @@ export function createAppShellSessionSettingsActions(deps: {
     }
   }
 
-  async function setSessionModel(input: { llmConnectionSlug: string; model: string }) {
+  async function setSessionModel(input: {
+    llmConnectionId: string;
+    llmConnectionSlug: string;
+    model: string;
+  }) {
     const sessionId = activeIdRef.current;
     if (!sessionId) return;
     const previous = sessionsRef.current.find((session) => session.id === sessionId);

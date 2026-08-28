@@ -47,6 +47,7 @@ import {
   isSessionStatus,
   isWorkHubCoordinationSessionId,
   subagentSessionRuntimeSummary,
+  WORKHUB_COORDINATION_SESSION_ID,
   WORKHUB_COORDINATION_SESSION_ROLE,
 } from '@maka/core/session';
 import { isCollaborationMode } from '@maka/core/collaboration';
@@ -82,6 +83,7 @@ import {
   type TurnRecord,
   type TurnStateMessage,
   type UserMessage,
+  type WorkHubDelegationAssignedMessage,
 } from '@maka/core/session';
 import type { MessageAdmissionStore, PendingMessageAdmission } from './message-admission-store.js';
 import {
@@ -173,6 +175,19 @@ export interface CreateStableSessionRequest {
   readonly sessionId: string;
   readonly requestFingerprint: string;
   readonly input: StableSessionCreateInput;
+}
+
+export interface WorkHubMessageAssignmentRequest {
+  readonly assignment: WorkHubDelegationAssignedMessage;
+  readonly admission: PendingMessageAdmission;
+  /** Present exactly when the assignment creates its target Session. */
+  readonly create?: CreateStableSessionRequest;
+}
+
+export interface WorkHubMessageAssignmentResult {
+  readonly kind: 'assigned' | 'existing';
+  readonly targetCreated: boolean;
+  readonly assignment: WorkHubDelegationAssignedMessage;
 }
 
 export type StableSessionCreateInput = CreateSessionInput & {
@@ -373,6 +388,11 @@ export interface SessionAuthorityStore extends SessionStore, MessageAdmissionSto
     request: CreateStableSessionRequest,
     initialBoundary?: ExecutionBoundary,
   ): Promise<CreateStableSessionResult>;
+  /** Atomically persist a WorkHub linkage and the target Message admission. */
+  assignWorkHubMessage(
+    request: WorkHubMessageAssignmentRequest,
+  ): Promise<WorkHubMessageAssignmentResult>;
+  readWorkHubAssignment(actionId: string): Promise<WorkHubDelegationAssignedMessage | undefined>;
   discardStableConversationCopy(sessionId: string, requestFingerprint: string): Promise<boolean>;
   listCatalogPage(
     filter: SessionListFilter | undefined,
@@ -574,6 +594,64 @@ class SqliteSessionStore implements SessionAuthorityStore {
     return result.kind === 'created' || result.kind === 'existing'
       ? { kind: result.kind, record: projectHeaderSnapshot(result.record) }
       : result;
+  }
+
+  async assignWorkHubMessage(
+    request: WorkHubMessageAssignmentRequest,
+  ): Promise<WorkHubMessageAssignmentResult> {
+    await this.ensureReady();
+    const create = request.create;
+    if (create) {
+      assertCoordinationIdentityPairing(create.sessionId, create.input.role);
+      if (create.sessionId !== request.assignment.targetSessionId) {
+        throw new Error('WorkHub assignment create identity does not match its target');
+      }
+    }
+    const result = await this.metadata.assignWorkHubMessage({
+      assignment: request.assignment,
+      admission: request.admission,
+      projection: projectSessionCatalogMessages([request.assignment]),
+      ...(create
+        ? {
+            create: {
+              header: buildSessionHeader(
+                this.workspaceRoot,
+                create.input,
+                create.sessionId,
+                create.input.conversationCopy,
+              ),
+              requestFingerprint: create.requestFingerprint,
+            },
+          }
+        : {}),
+    });
+    if (result.kind === 'assigned') {
+      for (const listener of this.transcriptChangeListeners) {
+        listener(WORKHUB_COORDINATION_SESSION_ID);
+      }
+    }
+    return result;
+  }
+
+  async readWorkHubAssignment(
+    actionId: string,
+  ): Promise<WorkHubDelegationAssignedMessage | undefined> {
+    await this.ensureReady();
+    const suffix = createHash('sha256').update(actionId, 'utf8').digest('hex').slice(0, 48);
+    const throughSequence = await this.metadata.readTranscriptHighWater(
+      WORKHUB_COORDINATION_SESSION_ID,
+    );
+    if (throughSequence === null) return undefined;
+    const messages = await this.metadata.readTranscriptMessages(WORKHUB_COORDINATION_SESSION_ID, {
+      messageIds: [`wha_${suffix}`],
+      throughSequence,
+      maxMessages: 1,
+      maxBytes: 768 * 1024,
+    });
+    const message = messages[0];
+    return message?.type === 'workhub_coordination' && message.kind === 'delegation_assigned'
+      ? message
+      : undefined;
   }
 
   async discardStableConversationCopy(
@@ -1154,6 +1232,7 @@ function buildSessionHeader(
     ...(input.revisionState ? { revisionState: input.revisionState } : {}),
     hasUnread: false,
     backend: 'ai-sdk',
+    ...(input.llmConnectionId === undefined ? {} : { llmConnectionId: input.llmConnectionId }),
     llmConnectionSlug: input.llmConnectionSlug,
     // A subagent Session's route is chosen by the spawn that created it and is
     // never re-targeted, so it is born frozen. Every other Session freezes on
@@ -1211,6 +1290,8 @@ export function normalizeSessionHeader(
     (header.lastReadMessageId === undefined || typeof header.lastReadMessageId === 'string') &&
     typeof header.hasUnread === 'boolean' &&
     isPersistedBackendKind(header.backend) &&
+    (header.llmConnectionId === undefined ||
+      (typeof header.llmConnectionId === 'string' && header.llmConnectionId.length > 0)) &&
     typeof header.llmConnectionSlug === 'string' &&
     typeof header.connectionLocked === 'boolean' &&
     typeof header.model === 'string' &&
@@ -1439,6 +1520,7 @@ function toSummary(header: SessionHeader, messages: StoredMessage[] = []): Sessi
     ...(header.revisionIndex !== undefined ? { revisionIndex: header.revisionIndex } : {}),
     ...(header.revisionState ? { revisionState: header.revisionState } : {}),
     backend: header.backend,
+    ...(header.llmConnectionId === undefined ? {} : { llmConnectionId: header.llmConnectionId }),
     llmConnectionSlug: header.llmConnectionSlug,
     connectionLocked: header.connectionLocked,
     model: header.model,

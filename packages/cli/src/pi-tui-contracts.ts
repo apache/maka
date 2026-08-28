@@ -23,6 +23,8 @@ import type { ThinkingLevel } from '@maka/core/model-thinking';
 import type { MakaPiTuiTurnActivity } from './pi-tui-turn.js';
 
 export interface ModelChoice {
+  /** Immutable account identity; required for a cross-connection selection. */
+  connectionId?: string;
   connectionSlug: string;
   connectionName: string;
   providerType: ProviderType;

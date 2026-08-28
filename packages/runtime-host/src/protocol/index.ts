@@ -93,16 +93,32 @@ export const RUNTIME_HOST_REGISTRATION_SCHEMA_VERSION = 1 as const;
 export const RUNTIME_HOST_PROTOCOL_VERSION = 0 as const;
 // Increment when the same protocol version no longer guarantees safe Client-Host
 // interoperability. Mismatches are rejected before domain commands are admitted.
-export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 57 as const;
-// 57: Message content carries Host-bound directory references. Older peers
+export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 62 as const;
+// 62: Message content carries Host-bound directory references. Older peers
 // reject this field and cannot preserve its identity through admission/replay.
+// 61: Session explicit model targets carry immutable Connection identity,
+// configuration updates are Host-merged patches, and projections expose the
+// required nullable binding ID. Older peers cannot preserve these invariants.
+// 60: WorkHub stores a canonical delegation assignment record. Older peers
+// cannot decode this message during transcript recovery.
+// 59: Scheduled Turn provider-retry frames may carry an optional host-clock
+// `ts`, letting a mid-wait re-projection recompute the authoritative
+// remaining duration. Older peers decode the frame with an exact key list
+// and reject the added field, so mixed peers must fail the handshake.
+// 58: `runtime.resource.start` accepts an optional one-shot `command`, and the
+// durable Shell Run record carries a `visibility` field. An epoch-57 Host
+// rejects the widened closed input, while an epoch-57 binary cannot safely
+// interpret the widened durable record.
+// 57: Parked safe-boundary resume plans preserve feature-disabled, missing
+// continuation authority, and unavailable safety-observation reasons.
+// Older peers collapse these causes and can misclassify recovery failures.
 // 56: Failed Turn snapshots preserve the structured context-budget exhaustion
 // detail. Epoch-55 peers reject the optional field on the closed snapshot shape.
 // 55: Local owners can atomically revoke every credential for one access
 // principal, closing pairing-finalize races that credential-by-ID revocation cannot.
 // 54: Client-bound pairing candidates restrict pre-claim authority and bind
 // their durable credential to the claiming Client identity; it is also reserved
-// by concurrent protocol changes in #3390 and #3935.
+// by concurrent protocol changes in #3390.
 // 53: Message admission answers `turn.message.submit` with an explicit
 // disposition, and queued Messages can be proven cancelled. Older peers read the
 // answer as a bare acknowledgement and cannot reconcile their own projection.

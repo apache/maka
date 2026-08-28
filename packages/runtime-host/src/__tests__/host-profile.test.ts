@@ -54,9 +54,29 @@ afterEach(async () => {
 });
 
 describe('Runtime Host profiles', () => {
-  test('keeps the local profile built in and profile documents remote-only', async () => {
-    const catalog = createFileRuntimeHostProfileCatalog(await profilePath(), memoryCredentials());
+  test('persists WSL environments without projecting a remote credential', async () => {
+    const path = await profilePath();
+    const catalog = createFileRuntimeHostProfileCatalog(path, memoryCredentials());
     assert.deepEqual(await catalog.read(), { schemaVersion: 2, profiles: [] });
+    await catalog.create({
+      id: 'ubuntu',
+      name: 'Ubuntu',
+      kind: 'environment',
+      provider: { kind: 'wsl', distribution: 'Ubuntu-24.04' },
+      rootId: ROOT_A,
+      operatorPath: '/home/operator/.local/share/maka/operator',
+    });
+    assert.deepEqual(await catalog.resolve('ubuntu'), {
+      profile: {
+        id: 'ubuntu',
+        name: 'Ubuntu',
+        kind: 'environment',
+        provider: { kind: 'wsl', distribution: 'Ubuntu-24.04' },
+        rootId: ROOT_A,
+        operatorPath: '/home/operator/.local/share/maka/operator',
+      },
+    });
+    assert.doesNotMatch(await readFile(path, 'utf8'), /credential/u);
     await assert.rejects(() => catalog.remove('local'), /cannot be removed/);
   });
 

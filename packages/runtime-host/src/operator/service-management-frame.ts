@@ -119,6 +119,7 @@ const MANAGED_SERVICE_TARGET_SCHEMA = z
     serviceId: z.string().regex(/^[a-f0-9]{64}$/u),
     rootPath: boundedNonEmptyString(PATH_MAX_BYTES),
     rootId: z.string().regex(/^[a-f0-9]{64}$/u),
+    deploymentId: z.string().uuid().optional(),
   })
   .strict();
 
@@ -232,6 +233,25 @@ const SERVICE_SUMMARY_SCHEMA = z
     pid: z.number().int().positive().nullable(),
     lastExitCode: z.number().int().nonnegative().nullable(),
     installedVersion: boundedString(FIELD_MAX_BYTES).nullable(),
+    lifecycle: z
+      .object({
+        mode: z.enum(['on_demand', 'supervised']),
+        availability: z.enum(['activation', 'session', 'environment', 'machine']),
+        provider: z
+          .enum(['systemd_user', 'launch_agent', 'openrc_user', 'openrc_system'])
+          .optional(),
+      })
+      .strict()
+      .optional(),
+    reconciliation: z
+      .object({
+        trigger: z.enum(['manual', 'activation', 'scheduled']),
+        provider: z
+          .enum(['systemd_timer', 'launch_agent_timer', 'openrc_supervised_loop'])
+          .optional(),
+      })
+      .strict()
+      .optional(),
     stateRoot: boundedString(PATH_MAX_BYTES).optional(),
     configurationFingerprint: z
       .string()

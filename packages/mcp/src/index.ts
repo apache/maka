@@ -46,6 +46,7 @@ import {
 import {
   isMcpStdioConfig,
   isNonLoopbackCleartextHttp,
+  mcpConfigChangeRetiresCredentials,
   resolveMcpProtocolPreference,
   type McpBoundTool,
   type McpCallResult,
@@ -444,7 +445,7 @@ export class McpClientManager {
         // retries the erase against the still-owed old config.
         const owed = current.credentialCleanupOwed
           ? current.credentialCleanupOwed
-          : remoteUrlChanged(current.config, serverConfig)
+          : mcpConfigChangeRetiresCredentials(current.config, serverConfig)
             ? current.config
             : undefined;
         if (owed) {
@@ -1596,8 +1597,11 @@ export class McpClientManager {
    * its config is removed, so a delete failure aborts the removal while
    * everything is still recoverable — instead of leaving an orphaned token
    * a same-id re-add would inherit. */
-  async forgetServerCredentials(serverId: string): Promise<void> {
-    await this.forgetAuthorization(serverId, this.connections.get(serverId)?.config);
+  async forgetServerCredentials(
+    serverId: string,
+    previousConfig = this.connections.get(serverId)?.config,
+  ): Promise<void> {
+    await this.forgetAuthorization(serverId, previousConfig);
   }
 
   /** Drops any stored OAuth record for a server that is being removed or
@@ -2569,16 +2573,6 @@ async function connectCandidate(
   } finally {
     signal.removeEventListener('abort', closeOnAbort);
   }
-}
-
-/** True when a reconfigured server no longer talks to the endpoint its
- * stored credentials were issued for: the URL changed, or the entry
- * switched between stdio and remote. A headers-only edit returns false. */
-function remoteUrlChanged(previous: McpServerConfig, next: McpServerConfig): boolean {
-  const previousStdio = isMcpStdioConfig(previous);
-  const nextStdio = isMcpStdioConfig(next);
-  if (previousStdio || nextStdio) return previousStdio !== nextStdio;
-  return previous.url !== next.url;
 }
 
 function stableConfigFingerprint(config: McpServerConfig): string {

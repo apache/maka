@@ -43,6 +43,7 @@ import { ICON_SIZE, AlertTriangle, Check, Settings } from './icons.js';
 import {
   type ChatModelChoice,
   type ModelMenuGroup,
+  exactModelChoiceValue,
   modelChoiceDescription,
   modelMenuGroups,
   modelChoiceValue,
@@ -84,7 +85,11 @@ function ModelMenuItems(props: {
   leadingOption?: { label: string; providerType?: ProviderType };
   renderProviderMark?(type: ProviderType): ReactNode;
   disabled?: boolean;
-  onPick(input: { llmConnectionSlug: string; model: string }): void | Promise<void>;
+  onPick(input: {
+    llmConnectionId: string;
+    llmConnectionSlug: string;
+    model: string;
+  }): void | Promise<void>;
 }) {
   const locale = useUiLocale();
   return (
@@ -106,7 +111,11 @@ function ModelMenuItems(props: {
             {group.heading}
           </div>
           {group.choices.map((choice) => {
-            const value = modelChoiceValue(choice.connectionSlug, choice.model);
+            const value = exactModelChoiceValue(
+              choice.connectionId,
+              choice.connectionSlug,
+              choice.model,
+            );
             return (
               <DropdownMenuItem
                 key={value}
@@ -116,7 +125,11 @@ function ModelMenuItems(props: {
                 endContent={value === props.currentValue ? currentCheck : undefined}
                 isDisabled={props.disabled}
                 onClick={() => {
-                  void props.onPick({ llmConnectionSlug: choice.connectionSlug, model: choice.model });
+                  void props.onPick({
+                    llmConnectionId: choice.connectionId,
+                    llmConnectionSlug: choice.connectionSlug,
+                    model: choice.model,
+                  });
                 }}
               />
             );
@@ -199,17 +212,31 @@ export function ChatModelSwitcher(props: {
   pending?: boolean;
   disabledReason?: string;
   renderProviderMark?(type: ProviderType): ReactNode;
-  onChange?(input: { llmConnectionSlug: string; model: string }): void | Promise<void>;
+  onChange?(input: {
+    llmConnectionId: string;
+    llmConnectionSlug: string;
+    model: string;
+  }): void | Promise<void>;
 }) {
   const locale = useUiLocale();
   const copy = getConversationCopy(locale).model;
   const currentModel = props.activeModel ?? props.activeSession.model;
-  const currentValue = modelChoiceValue(props.activeSession.llmConnectionSlug, currentModel);
+  const currentValue = props.activeSession.llmConnectionId
+    ? exactModelChoiceValue(
+        props.activeSession.llmConnectionId,
+        props.activeSession.llmConnectionSlug,
+        currentModel,
+      )
+    : undefined;
   const pending = Boolean(props.pending);
   const [menuOpen, setMenuOpen] = useState(false);
   const disabled = pending || Boolean(props.disabledReason) || !props.onChange || props.choices.length === 0;
   const grouped = modelMenuGroups(props.choices, locale);
-  const currentKnownChoice = props.choices.some((choice) => modelChoiceValue(choice.connectionSlug, choice.model) === currentValue);
+  const currentKnownChoice = props.choices.some(
+    (choice) =>
+      exactModelChoiceValue(choice.connectionId, choice.connectionSlug, choice.model) ===
+      currentValue,
+  );
   const displayLabel = props.activeModelLabel ?? currentModel;
   const title = pending
     ? `${copy.switching}…`
@@ -250,6 +277,7 @@ export function ChatModelSwitcher(props: {
           onPick={async (next) => {
             if (
               next.llmConnectionSlug === props.activeSession.llmConnectionSlug &&
+              next.llmConnectionId === props.activeSession.llmConnectionId &&
               next.model === currentModel
             ) return;
             try {
@@ -287,14 +315,20 @@ export function NewChatModelPicker(props: {
   currentValue?: string;
   currentProviderType?: ProviderType;
   renderProviderMark?(type: ProviderType): ReactNode;
-  onPick(input: { llmConnectionSlug: string; model: string }): void | Promise<void>;
+  onPick(input: {
+    llmConnectionId: string;
+    llmConnectionSlug: string;
+    model: string;
+  }): void | Promise<void>;
 }) {
   const locale = useUiLocale();
   const copy = getConversationCopy(locale).model;
   const grouped = modelMenuGroups(props.choices, locale);
   const currentValue = props.currentValue ?? '';
   const currentKnownChoice = props.choices.some(
-    (choice) => modelChoiceValue(choice.connectionSlug, choice.model) === currentValue,
+    (choice) =>
+      exactModelChoiceValue(choice.connectionId, choice.connectionSlug, choice.model) ===
+      currentValue,
   );
   return (
     <DropdownMenu

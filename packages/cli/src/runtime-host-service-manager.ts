@@ -21,7 +21,17 @@ import { createHash, randomUUID } from 'node:crypto';
 import { createSocket } from 'node:dgram';
 import { createServer } from 'node:net';
 import { realpathSync } from 'node:fs';
-import { access, mkdir, open, readFile, realpath, rename, rm, stat } from 'node:fs/promises';
+import {
+  access,
+  mkdir,
+  open,
+  readFile,
+  realpath,
+  rename,
+  rm,
+  stat,
+  unlink,
+} from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { dirname, isAbsolute, join, resolve } from 'node:path';
 import { truncateUtf8 } from '@maka/core/diagnostic-log';
@@ -34,7 +44,6 @@ import {
 } from '@maka/runtime-host/protocol';
 import {
   connectExistingRuntimeHost,
-  ensureRuntimeHostPeerIdentity,
   prepareConnectedRuntimeHostRetirement,
 } from '@maka/runtime-host/client';
 import {
@@ -60,18 +69,10 @@ import {
 } from './runtime-host-managed-deployment.js';
 import { writeRuntimeHostManagedUpdatePolicy } from './runtime-host-update-policy-store.js';
 import { isTemporaryNpxInstallation } from './runtime-host-cli-installation.js';
-import {
-  hasEphemeralRuntimeHostPeerPort,
-  resolveRuntimeHostManagedPeerKeyPath,
-  resolveRuntimeHostPeerNativePath,
-} from './runtime-host-peer-artifact.js';
 
 const SERVICE_CONFIG_FILE = 'runtime-host-service.json';
 const SERVICE_LIFECYCLE_LOCK_FILE = 'runtime-host-setup';
 const SERVICE_DEPLOYMENT_LOCK_FILE = 'runtime-host-deployment';
-const PEER_ROTATION_KEY_FILE = 'runtime-host-service.peer.rotation.key';
-const PEER_ROTATION_RECORD_FILE = 'runtime-host-service.peer.rotation.json';
-const PEER_CONFIGURATION_RECORD_FILE = 'runtime-host-service.peer.configuration.json';
 const DEFAULT_WEBSOCKET_PATH = '/runtime-host';
 const SERVICE_OPERATION_LOCK_TIMEOUT_MS = 60_000;
 const SERVICE_READY_TIMEOUT_MS = 45_000;
@@ -94,12 +95,6 @@ export interface RuntimeHostManagedServiceConfig {
     readonly nodePath: string;
     readonly cliPath: string;
   };
-  readonly peer?: {
-    readonly enabled: boolean;
-    readonly peerId: string;
-    readonly listenAddresses: readonly string[];
-    readonly coordinationRelays: readonly string[];
-  };
 }
 
 export type RuntimeHostServiceState =
@@ -109,14 +104,17 @@ export type RuntimeHostServiceState =
   | 'running'
   | 'failed';
 
-export interface RuntimeHostServiceBackendStatus {
-  readonly manager: 'systemd_user' | 'launch_agent';
+export interface RuntimeHostServiceObservedStatus {
   readonly installed: boolean;
   readonly enabled: boolean;
   readonly active: boolean;
   readonly state: RuntimeHostServiceState;
   readonly pid: number | null;
   readonly lastExitCode: number | null;
+}
+
+export interface RuntimeHostServiceBackendStatus extends RuntimeHostServiceObservedStatus {
+  readonly manager: 'systemd_user' | 'launch_agent';
 }
 
 export interface RuntimeHostServiceBackend {
@@ -149,9 +147,19 @@ export interface RuntimeHostServiceDeployment {
   rollback(): Promise<void>;
 }
 
-export interface RuntimeHostManagedServiceStatus extends RuntimeHostServiceBackendStatus {
+export interface RuntimeHostManagedServiceStatus extends RuntimeHostServiceObservedStatus {
+  readonly manager: 'systemd_user' | 'launch_agent' | 'on_demand' | 'none';
   readonly config: RuntimeHostManagedServiceConfig | null;
   readonly installedVersion: string | null;
+  readonly lifecycle?: {
+    readonly mode: 'on_demand' | 'supervised';
+    readonly availability: 'activation' | 'session' | 'environment' | 'machine';
+    readonly provider?: 'systemd_user' | 'launch_agent' | 'openrc_user' | 'openrc_system';
+  };
+  readonly reconciliation?: {
+    readonly trigger: 'manual' | 'activation' | 'scheduled';
+    readonly provider?: 'systemd_timer' | 'launch_agent_timer' | 'openrc_supervised_loop';
+  };
 }
 
 export type RuntimeHostManagedServiceAction =
@@ -216,11 +224,6 @@ export interface RuntimeHostManagedServiceInput {
   }[];
   readonly websocketPort?: number;
   readonly websocketPath?: string;
-  /** Undefined preserves the current setting, null disables it. */
-  readonly peer?: {
-    readonly listenAddresses?: readonly string[];
-    readonly coordinationRelays?: readonly string[];
-  } | null;
   readonly retainManagedDeployment?: boolean;
   readonly nodePath: string;
   readonly cliPath: string;
@@ -233,6 +236,7 @@ export interface RuntimeHostManagedServiceTarget {
   readonly serviceId: string;
   readonly rootPath: string;
   readonly rootId: string;
+  readonly deploymentId?: string;
 }
 
 export interface RuntimeHostManagedDeploymentCleanupInput {
@@ -241,32 +245,6 @@ export interface RuntimeHostManagedDeploymentCleanupInput {
   readonly expectedTarget: RuntimeHostManagedServiceTarget;
 }
 
-interface RuntimeHostManagedPeerRotationRecord {
-  readonly schemaVersion: 1;
-  readonly previousPeerId: string;
-  readonly peerId: string;
-  readonly activate: boolean;
-}
-
-interface RuntimeHostManagedPeerConfigurationRecord {
-  readonly schemaVersion: 1;
-  readonly previous: RuntimeHostManagedServiceConfig;
-  readonly desired: RuntimeHostManagedServiceConfig;
-  readonly activate: boolean;
-}
-
-export type RuntimeHostManagedPeerRotationResult =
-  | { readonly kind: 'active_tasks' }
-  | {
-      readonly kind: 'rotated';
-      readonly previousPeerId: string;
-      readonly peerId: string;
-    };
-
-export type RuntimeHostManagedPeerConfigurationResult =
-  | { readonly kind: 'active_tasks' }
-  | { readonly kind: 'configured'; readonly restarted: boolean };
-
 export interface RuntimeHostManagedServiceReplacementInput
   extends Omit<RuntimeHostManagedServiceInput, 'action' | 'expectedTarget'> {
   readonly expectedTarget: RuntimeHostManagedServiceTarget;
@@ -274,7 +252,6 @@ export interface RuntimeHostManagedServiceReplacementInput
 
 interface RuntimeHostServiceManagerDeps {
   readonly allocateLoopbackPort: () => Promise<number>;
-  readonly allocatePeerPort: () => Promise<number>;
   readonly waitForReady: (
     config: RuntimeHostManagedServiceConfig,
     backend: RuntimeHostServiceBackend,
@@ -291,10 +268,6 @@ interface RuntimeHostServiceManagerDeps {
         readonly pid: number;
       }
   >;
-  readonly ensurePeerIdentity: (input: {
-    readonly nativePath: string;
-    readonly keyPath: string;
-  }) => Promise<string>;
   readonly environment: NodeJS.ProcessEnv;
   readonly homeDir: string;
   readonly platform: NodeJS.Platform;
@@ -317,7 +290,6 @@ export class RuntimeHostServiceManagerError extends Error {
       | 'retirement_failed'
       | 'update_requires_retirement'
       | 'update_incomplete'
-      | 'peer_change_incomplete'
       | 'service_manager_operation_failed'
       | 'uninstall_incomplete',
     message: string,
@@ -333,10 +305,8 @@ function runtimeHostServiceManagerDeps(
 ): RuntimeHostServiceManagerDeps {
   return {
     allocateLoopbackPort,
-    allocatePeerPort,
     waitForReady: verifyRuntimeHostManagedServiceReady,
     prepareRetirement: prepareRuntimeHostRetirement,
-    ensurePeerIdentity: ensureRuntimeHostPeerIdentity,
     environment: process.env,
     homeDir: homedir(),
     platform: process.platform,
@@ -419,51 +389,7 @@ export async function replaceRuntimeHostManagedService(
   await mkdir(dirname(configPath), { recursive: true, mode: 0o700 });
   return withProcessLifetimeFileUpdateLock(
     configPath,
-    async () => {
-      await assertPeerMutationComplete(input.clientDataRoot);
-      return replaceRuntimeHostManagedServiceLocked(input, backend, deps, configPath);
-    },
-    SERVICE_OPERATION_LOCK_TIMEOUT_MS,
-  );
-}
-
-export async function rotateRuntimeHostManagedPeerIdentity(
-  input: Omit<RuntimeHostManagedServiceInput, 'action'> & {
-    readonly expectedTarget: RuntimeHostManagedServiceTarget;
-  },
-  backend: RuntimeHostServiceBackend,
-  overrides: Partial<RuntimeHostServiceManagerDeps> = {},
-): Promise<RuntimeHostManagedPeerRotationResult> {
-  const deps = runtimeHostServiceManagerDeps(overrides);
-  const configPath = resolveRuntimeHostManagedServiceConfigPath(input.clientDataRoot);
-  await mkdir(dirname(configPath), { recursive: true, mode: 0o700 });
-  return withProcessLifetimeFileUpdateLock(
-    configPath,
-    async () => {
-      await assertPeerRecordAbsent(resolvePeerConfigurationRecordPath(input.clientDataRoot));
-      return rotateRuntimeHostManagedPeerIdentityLocked(input, backend, deps, configPath);
-    },
-    SERVICE_OPERATION_LOCK_TIMEOUT_MS,
-  );
-}
-
-export async function configureRuntimeHostManagedPeer(
-  input: Omit<RuntimeHostManagedServiceInput, 'action' | 'peer'> & {
-    readonly expectedTarget: RuntimeHostManagedServiceTarget;
-    readonly peer: NonNullable<RuntimeHostManagedServiceInput['peer']> | null;
-  },
-  backend: RuntimeHostServiceBackend,
-  overrides: Partial<RuntimeHostServiceManagerDeps> = {},
-): Promise<RuntimeHostManagedPeerConfigurationResult> {
-  const deps = runtimeHostServiceManagerDeps(overrides);
-  const configPath = resolveRuntimeHostManagedServiceConfigPath(input.clientDataRoot);
-  await mkdir(dirname(configPath), { recursive: true, mode: 0o700 });
-  return withProcessLifetimeFileUpdateLock(
-    configPath,
-    async () => {
-      await assertPeerRecordAbsent(resolvePeerRotationRecordPath(input.clientDataRoot));
-      return configureRuntimeHostManagedPeerLocked(input, backend, deps, configPath);
-    },
+    () => replaceRuntimeHostManagedServiceLocked(input, backend, deps, configPath),
     SERVICE_OPERATION_LOCK_TIMEOUT_MS,
   );
 }
@@ -509,15 +435,6 @@ async function manageRuntimeHostServiceLocked(
 ): Promise<RuntimeHostManagedServiceResult> {
   const serviceId = resolveRuntimeHostManagedServiceId(input.clientDataRoot);
   if (input.expectedTarget) assertExpectedServiceIdentity(serviceId, input.expectedTarget);
-  if (
-    input.action === 'install' ||
-    input.action === 'configure' ||
-    input.action === 'start' ||
-    input.action === 'restart' ||
-    input.action === 'retire'
-  ) {
-    await assertPeerMutationComplete(input.clientDataRoot);
-  }
   if (input.action === 'install') {
     const previous = await readServiceConfigForRepair(configPath);
     const expectedRoot = await resolveExpectedServiceRoot(previous, input);
@@ -631,24 +548,6 @@ async function manageRuntimeHostServiceLocked(
     }
     await backend.uninstall();
     await removeRuntimeHostServiceFile(configPath, 'service config');
-    try {
-      await Promise.all([
-        rm(resolveRuntimeHostManagedPeerKeyPath(input.clientDataRoot), {
-          force: true,
-        }),
-        rm(resolvePeerRotationKeyPath(input.clientDataRoot), { force: true }),
-        rm(resolvePeerRotationRecordPath(input.clientDataRoot), {
-          force: true,
-        }),
-        rm(resolvePeerConfigurationRecordPath(input.clientDataRoot), { force: true }),
-      ]);
-    } catch (error) {
-      throw new RuntimeHostServiceManagerError(
-        'uninstall_incomplete',
-        'Unable to remove the managed Runtime Host peer identity',
-        { cause: error },
-      );
-    }
     if (managedDeploymentRoot && !input.retainManagedDeployment) {
       try {
         await removeRuntimeHostManagedDeployment(managedDeploymentRoot, serviceId);
@@ -896,348 +795,6 @@ async function replaceRuntimeHostManagedServiceLocked(
   return readServiceStatus(configPath, backend);
 }
 
-async function rotateRuntimeHostManagedPeerIdentityLocked(
-  input: Omit<RuntimeHostManagedServiceInput, 'action'> & {
-    readonly expectedTarget: RuntimeHostManagedServiceTarget;
-  },
-  backend: RuntimeHostServiceBackend,
-  deps: RuntimeHostServiceManagerDeps,
-  configPath: string,
-): Promise<RuntimeHostManagedPeerRotationResult> {
-  const serviceId = resolveRuntimeHostManagedServiceId(input.clientDataRoot);
-  assertExpectedServiceIdentity(serviceId, input.expectedTarget);
-  const before = await readServiceStatus(configPath, backend);
-  const root = await resolveExpectedServiceRoot(before.config, input);
-  const peer = before.config?.peer;
-  if (!before.installed || !before.config || !peer?.enabled || !root) {
-    throw new RuntimeHostServiceManagerError(
-      'not_installed',
-      'Direct peer is not enabled for the managed Runtime Host service',
-    );
-  }
-  const rotationPath = resolvePeerRotationRecordPath(input.clientDataRoot);
-  const stagedKeyPath = resolvePeerRotationKeyPath(input.clientDataRoot);
-  const keyPath = resolveRuntimeHostManagedPeerKeyPath(input.clientDataRoot);
-  const nativePath = await resolveRuntimeHostPeerNativePath(before.config.launch.cliPath).catch(
-    (error) => {
-      throw new RuntimeHostServiceManagerError(
-        'invalid_launch',
-        'This Maka installation does not include the direct-peer native artifact',
-        { cause: error },
-      );
-    },
-  );
-  let rotation = await readPeerRotationRecord(rotationPath);
-  if (!rotation) {
-    let previousPeerId: string;
-    try {
-      await stat(keyPath);
-      previousPeerId = await deps.ensurePeerIdentity({
-        nativePath,
-        keyPath,
-      });
-      if (previousPeerId !== peer.peerId) {
-        throw new RuntimeHostServiceManagerError(
-          'invalid_config',
-          'The managed Runtime Host peer identity does not match its configuration',
-        );
-      }
-      await rm(stagedKeyPath, { force: true });
-    } catch (error) {
-      throw new RuntimeHostServiceManagerError(
-        'invalid_config',
-        'The managed Runtime Host peer identity is unavailable',
-        { cause: error },
-      );
-    }
-    const peerId = await deps.ensurePeerIdentity({
-      nativePath,
-      keyPath: stagedKeyPath,
-    });
-    rotation = {
-      schemaVersion: 1,
-      previousPeerId,
-      peerId,
-      activate: shouldActivateService(before),
-    };
-    await writeRuntimeHostServiceFile(rotationPath, `${JSON.stringify(rotation)}\n`, 0o600);
-    const retired = await retireManagedRuntimeHostService(
-      { ...before, config: before.config },
-      root,
-      backend,
-      deps,
-      input.allowInterruptActiveTasks ?? false,
-    );
-    if (retired.retirement.kind === 'active_tasks') {
-      await rm(rotationPath, { force: true });
-      await rm(stagedKeyPath, { force: true });
-      return { kind: 'active_tasks' };
-    }
-  }
-
-  if (peer.peerId !== rotation.previousPeerId && peer.peerId !== rotation.peerId) {
-    throw invalidPeerRotationState();
-  }
-
-  const service = await readServiceStatus(configPath, backend);
-  const observedPeerId = await readPeerIdentityIfPresent(nativePath, keyPath, deps);
-  if (
-    peer.peerId === rotation.peerId &&
-    observedPeerId === rotation.peerId &&
-    shouldActivateService(service) === rotation.activate
-  ) {
-    await backend.verifyDeployment(before.config);
-    if (rotation.activate) await deps.waitForReady(before.config, backend);
-    await rm(rotationPath, { force: true });
-    await rm(stagedKeyPath, { force: true });
-    return {
-      kind: 'rotated',
-      previousPeerId: rotation.previousPeerId,
-      peerId: rotation.peerId,
-    };
-  }
-  if (shouldActivateService(service)) {
-    if (!service.config) throw invalidPeerRotationState();
-    const retired = await retireManagedRuntimeHostService(
-      { ...service, config: service.config },
-      root,
-      backend,
-      deps,
-      input.allowInterruptActiveTasks ?? false,
-    );
-    if (retired.retirement.kind === 'active_tasks') {
-      if (peer.peerId === rotation.previousPeerId) {
-        await rm(rotationPath, { force: true });
-        await rm(stagedKeyPath, { force: true });
-      }
-      return { kind: 'active_tasks' };
-    }
-  }
-
-  const updatedConfig: RuntimeHostManagedServiceConfig = {
-    ...before.config,
-    peer: { ...peer, peerId: rotation.peerId },
-  };
-  await backend.preflightDeployment();
-  await deployRuntimeHostServiceConfiguration({
-    backend,
-    deps,
-    configPath,
-    previous: before.config,
-    desired: updatedConfig,
-    activate: false,
-  });
-
-  const canonicalPeerId = await readPeerIdentityIfPresent(nativePath, keyPath, deps);
-  if (canonicalPeerId !== rotation.peerId) {
-    if (canonicalPeerId !== undefined && canonicalPeerId !== rotation.previousPeerId) {
-      throw invalidPeerRotationState();
-    }
-    const stagedPeerId = await readPeerIdentityIfPresent(nativePath, stagedKeyPath, deps);
-    if (stagedPeerId !== rotation.peerId) throw invalidPeerRotationState();
-    await rename(stagedKeyPath, keyPath);
-    await syncRuntimeHostServiceDirectory(dirname(keyPath));
-  }
-
-  if (rotation.activate) {
-    await backend.start();
-    try {
-      await deps.waitForReady(updatedConfig, backend);
-    } catch (error) {
-      await backend.stop().catch((stopError: unknown) => {
-        throw new RuntimeHostServiceManagerError(
-          'service_manager_operation_failed',
-          'Resuming the Runtime Host peer identity rotation failed and the service could not be stopped',
-          { cause: new AggregateError([error, stopError]) },
-        );
-      });
-      throw error;
-    }
-  }
-  await rm(rotationPath, { force: true });
-  await rm(stagedKeyPath, { force: true });
-  return {
-    kind: 'rotated',
-    previousPeerId: rotation.previousPeerId,
-    peerId: rotation.peerId,
-  };
-}
-
-async function configureRuntimeHostManagedPeerLocked(
-  input: Omit<RuntimeHostManagedServiceInput, 'action' | 'peer'> & {
-    readonly expectedTarget: RuntimeHostManagedServiceTarget;
-    readonly peer: NonNullable<RuntimeHostManagedServiceInput['peer']> | null;
-  },
-  backend: RuntimeHostServiceBackend,
-  deps: RuntimeHostServiceManagerDeps,
-  configPath: string,
-): Promise<RuntimeHostManagedPeerConfigurationResult> {
-  const serviceId = resolveRuntimeHostManagedServiceId(input.clientDataRoot);
-  assertExpectedServiceIdentity(serviceId, input.expectedTarget);
-  const configurationPath = resolvePeerConfigurationRecordPath(input.clientDataRoot);
-  const pending = await readPeerConfigurationRecord(
-    configurationPath,
-    serviceId,
-    input.clientDataRoot,
-  );
-  let restarted = false;
-  if (pending) {
-    const resumed = await resumeRuntimeHostManagedPeerConfiguration(
-      input,
-      pending,
-      backend,
-      deps,
-      configPath,
-      configurationPath,
-    );
-    if (resumed.kind === 'active_tasks') return resumed;
-    restarted = resumed.restarted;
-  }
-  const before = await readServiceStatus(configPath, backend);
-  const root = await resolveExpectedServiceRoot(before.config, input);
-  if (!before.installed || !before.config || !root) {
-    throw new RuntimeHostServiceManagerError(
-      'not_installed',
-      'Runtime Host service is not installed',
-    );
-  }
-  if (input.peer === null && before.config.peer?.enabled !== true) {
-    return { kind: 'configured', restarted };
-  }
-  const activate = shouldActivateService(before);
-  const desired = await prepareServiceConfig(
-    {
-      ...input,
-      rootPath: before.config.rootPath,
-      nodePath: before.config.launch.nodePath,
-      cliPath: before.config.launch.cliPath,
-    },
-    before.config,
-    deps,
-  );
-  if (sameRuntimeHostManagedServiceConfig(before.config, desired)) {
-    return { kind: 'configured', restarted };
-  }
-  await backend.preflightDeployment();
-  await backend.verifyDeployment(before.config, { acceptLegacyConfigLaunch: true });
-  const configuration: RuntimeHostManagedPeerConfigurationRecord = {
-    schemaVersion: 1,
-    previous: before.config,
-    desired,
-    activate,
-  };
-  await writeRuntimeHostServiceFile(configurationPath, `${JSON.stringify(configuration)}\n`, 0o600);
-  const retired = await retireManagedRuntimeHostService(
-    { ...before, config: before.config },
-    root,
-    backend,
-    deps,
-    input.allowInterruptActiveTasks ?? false,
-  );
-  if (retired.retirement.kind === 'active_tasks') {
-    await rm(configurationPath, { force: true });
-    return { kind: 'active_tasks' };
-  }
-  try {
-    await deployRuntimeHostServiceConfiguration({
-      backend,
-      deps,
-      configPath,
-      previous: before.config,
-      desired,
-      activate,
-    });
-    await rm(configurationPath, { force: true });
-    return { kind: 'configured', restarted: restarted || activate };
-  } catch (error) {
-    if (!activate) throw error;
-    const revision = await identifyRuntimeHostServiceConfigRevision(
-      configPath,
-      before.config,
-      desired,
-    );
-    if (revision !== 'current') throw error;
-    try {
-      await backend.verifyDeployment(before.config, { acceptLegacyConfigLaunch: true });
-    } catch {
-      throw error;
-    }
-    try {
-      await backend.start();
-      await deps.waitForReady(before.config, backend);
-    } catch (restoreError) {
-      throw new RuntimeHostServiceManagerError(
-        'service_manager_operation_failed',
-        'Changing the Runtime Host peer configuration failed and the previous service could not be restarted',
-        { cause: new AggregateError([error, restoreError]) },
-      );
-    }
-    throw error;
-  }
-}
-
-async function resumeRuntimeHostManagedPeerConfiguration(
-  input: Omit<RuntimeHostManagedServiceInput, 'action' | 'peer'> & {
-    readonly expectedTarget: RuntimeHostManagedServiceTarget;
-  },
-  configuration: RuntimeHostManagedPeerConfigurationRecord,
-  backend: RuntimeHostServiceBackend,
-  deps: RuntimeHostServiceManagerDeps,
-  configPath: string,
-  configurationPath: string,
-): Promise<RuntimeHostManagedPeerConfigurationResult> {
-  const root = await resolveExpectedServiceRoot(configuration.previous, input);
-  if (!root) throw invalidPeerConfigurationState();
-  const service = await readServiceStatus(configPath, backend);
-  if (
-    !sameRuntimeHostManagedServiceConfig(service.config, configuration.previous) &&
-    !sameRuntimeHostManagedServiceConfig(service.config, configuration.desired)
-  ) {
-    throw invalidPeerConfigurationState();
-  }
-  if (
-    sameRuntimeHostManagedServiceConfig(service.config, configuration.desired) &&
-    shouldActivateService(service) === configuration.activate
-  ) {
-    await backend.verifyDeployment(configuration.desired);
-    if (configuration.activate) await deps.waitForReady(configuration.desired, backend);
-    await rm(configurationPath, { force: true });
-    return { kind: 'configured', restarted: false };
-  }
-  if (shouldActivateService(service)) {
-    const current = service.config;
-    if (!current) throw invalidPeerConfigurationState();
-    const retired = await retireManagedRuntimeHostService(
-      { ...service, config: current },
-      root,
-      backend,
-      deps,
-      input.allowInterruptActiveTasks ?? false,
-    );
-    if (retired.retirement.kind === 'active_tasks') {
-      if (sameRuntimeHostManagedServiceConfig(current, configuration.previous)) {
-        await rm(configurationPath, { force: true });
-      }
-      return { kind: 'active_tasks' };
-    }
-  }
-  await backend.preflightDeployment();
-  await deployRuntimeHostServiceConfiguration({
-    backend,
-    deps,
-    configPath,
-    previous: configuration.previous,
-    desired: configuration.desired,
-    activate: configuration.activate,
-  });
-  await rm(configurationPath, { force: true });
-  return { kind: 'configured', restarted: configuration.activate };
-}
-
-function shouldActivateService(service: RuntimeHostServiceBackendStatus): boolean {
-  return service.active || service.pid !== null || service.state === 'starting';
-}
-
 function assertExpectedServiceIdentity(
   serviceId: string,
   expectedTarget: RuntimeHostManagedServiceTarget,
@@ -1274,143 +831,6 @@ async function resolveExpectedServiceRoot(
   }
 }
 
-function resolvePeerRotationKeyPath(clientDataRoot: string): string {
-  return join(clientDataRoot, PEER_ROTATION_KEY_FILE);
-}
-
-function resolvePeerRotationRecordPath(clientDataRoot: string): string {
-  return join(clientDataRoot, PEER_ROTATION_RECORD_FILE);
-}
-
-function resolvePeerConfigurationRecordPath(clientDataRoot: string): string {
-  return join(clientDataRoot, PEER_CONFIGURATION_RECORD_FILE);
-}
-
-export async function assertRuntimeHostManagedPeerMutationComplete(
-  clientDataRoot: string,
-): Promise<void> {
-  await assertPeerMutationComplete(clientDataRoot);
-}
-
-async function assertPeerMutationComplete(clientDataRoot: string): Promise<void> {
-  for (const path of [
-    resolvePeerRotationRecordPath(clientDataRoot),
-    resolvePeerConfigurationRecordPath(clientDataRoot),
-  ]) {
-    await assertPeerRecordAbsent(path);
-  }
-}
-
-async function assertPeerRecordAbsent(path: string): Promise<void> {
-  try {
-    await access(path);
-  } catch (error) {
-    if (isNodeError(error, 'ENOENT')) return;
-    throw error;
-  }
-  throw new RuntimeHostServiceManagerError(
-    'peer_change_incomplete',
-    'A Runtime Host peer change is incomplete; retry the peer command or uninstall the service',
-  );
-}
-
-async function readPeerConfigurationRecord(
-  path: string,
-  serviceId: string,
-  clientDataRoot: string,
-): Promise<RuntimeHostManagedPeerConfigurationRecord | undefined> {
-  let value: unknown;
-  try {
-    value = JSON.parse(await readFile(path, 'utf8'));
-  } catch (error) {
-    if (isNodeError(error, 'ENOENT')) return undefined;
-    throw invalidPeerConfigurationState(error);
-  }
-  if (!isRecord(value) || value.schemaVersion !== 1 || typeof value.activate !== 'boolean') {
-    throw invalidPeerConfigurationState();
-  }
-  try {
-    validateServiceConfig(value.previous, serviceId, clientDataRoot);
-    validateServiceConfig(value.desired, serviceId, clientDataRoot);
-  } catch (error) {
-    throw invalidPeerConfigurationState(error);
-  }
-  return {
-    schemaVersion: 1,
-    previous: value.previous,
-    desired: value.desired,
-    activate: value.activate,
-  };
-}
-
-async function readPeerRotationRecord(
-  path: string,
-): Promise<RuntimeHostManagedPeerRotationRecord | undefined> {
-  let value: unknown;
-  try {
-    value = JSON.parse(await readFile(path, 'utf8'));
-  } catch (error) {
-    if (isNodeError(error, 'ENOENT')) return undefined;
-    throw new RuntimeHostServiceManagerError(
-      'peer_change_incomplete',
-      'The Runtime Host peer identity rotation record is invalid',
-      { cause: error },
-    );
-  }
-  if (
-    !isRecord(value) ||
-    value.schemaVersion !== 1 ||
-    typeof value.previousPeerId !== 'string' ||
-    value.previousPeerId.length === 0 ||
-    hasControlCharacters(value.previousPeerId) ||
-    typeof value.peerId !== 'string' ||
-    value.peerId.length === 0 ||
-    hasControlCharacters(value.peerId) ||
-    value.previousPeerId === value.peerId ||
-    typeof value.activate !== 'boolean'
-  ) {
-    throw new RuntimeHostServiceManagerError(
-      'peer_change_incomplete',
-      'The Runtime Host peer identity rotation record is invalid',
-    );
-  }
-  return {
-    schemaVersion: 1,
-    previousPeerId: value.previousPeerId,
-    peerId: value.peerId,
-    activate: value.activate,
-  };
-}
-
-async function readPeerIdentityIfPresent(
-  nativePath: string,
-  keyPath: string,
-  deps: RuntimeHostServiceManagerDeps,
-): Promise<string | undefined> {
-  try {
-    await access(keyPath);
-  } catch (error) {
-    if (isNodeError(error, 'ENOENT')) return undefined;
-    throw error;
-  }
-  return deps.ensurePeerIdentity({ nativePath, keyPath });
-}
-
-function invalidPeerRotationState(): RuntimeHostServiceManagerError {
-  return new RuntimeHostServiceManagerError(
-    'peer_change_incomplete',
-    'The Runtime Host peer identity rotation state is inconsistent; uninstall the managed service before reinstalling it',
-  );
-}
-
-function invalidPeerConfigurationState(cause?: unknown): RuntimeHostServiceManagerError {
-  return new RuntimeHostServiceManagerError(
-    'peer_change_incomplete',
-    'The Runtime Host peer configuration change is incomplete or inconsistent',
-    cause === undefined ? undefined : { cause },
-  );
-}
-
 export function resolveRuntimeHostManagedServiceConfigPath(clientDataRoot: string): string {
   return join(clientDataRoot, SERVICE_CONFIG_FILE);
 }
@@ -1441,12 +861,26 @@ export async function writeRuntimeHostServiceFile(
 }
 
 export async function removeRuntimeHostServiceFile(path: string, label: string): Promise<void> {
+  let absent = false;
   try {
-    await rm(path, { force: true });
+    await unlink(path);
   } catch (error) {
+    if (error instanceof Error && 'code' in error && error.code === 'ENOENT') absent = true;
+    else {
+      throw new RuntimeHostServiceManagerError(
+        'uninstall_incomplete',
+        `Unable to remove Runtime Host ${label} at ${path}`,
+        { cause: error },
+      );
+    }
+  }
+  try {
+    await syncRuntimeHostServiceDirectory(dirname(path));
+  } catch (error) {
+    if (absent && error instanceof Error && 'code' in error && error.code === 'ENOENT') return;
     throw new RuntimeHostServiceManagerError(
       'uninstall_incomplete',
-      `Unable to remove Runtime Host ${label} at ${path}`,
+      `Unable to persist removal of Runtime Host ${label} at ${path}`,
       { cause: error },
     );
   }
@@ -1558,56 +992,9 @@ async function prepareServiceConfig(
     projectDirectoryRoots,
     websocket: { host: '127.0.0.1', port, path: websocketPath },
     launch: { nodePath, cliPath },
-    ...(await preparePeerConfig(input, previous, cliPath, deps)),
   };
   validateServiceConfig(config, serviceId, input.clientDataRoot);
   return config;
-}
-
-async function preparePeerConfig(
-  input: Omit<RuntimeHostManagedServiceInput, 'action'>,
-  previous: RuntimeHostManagedServiceConfig | null,
-  cliPath: string,
-  deps: RuntimeHostServiceManagerDeps,
-): Promise<Pick<RuntimeHostManagedServiceConfig, 'peer'>> {
-  if (input.peer === undefined && previous?.peer === undefined) return {};
-  if (input.peer === null && previous?.peer === undefined) return {};
-
-  const requested = input.peer ?? previous!.peer!;
-  const keyPath = resolveRuntimeHostManagedPeerKeyPath(input.clientDataRoot);
-  let peerId = previous?.peer?.peerId;
-  if (input.peer !== null) {
-    const nativePath = await resolveRuntimeHostPeerNativePath(cliPath).catch((error) => {
-      throw new RuntimeHostServiceManagerError(
-        'invalid_launch',
-        'This Maka installation does not include the direct-peer native artifact',
-        { cause: error },
-      );
-    });
-    const canonicalPeerId = await deps.ensurePeerIdentity({ nativePath, keyPath });
-    if (peerId !== undefined && peerId !== canonicalPeerId) {
-      throw new RuntimeHostServiceManagerError(
-        'invalid_config',
-        'The managed Runtime Host peer identity does not match its configuration',
-      );
-    }
-    peerId = canonicalPeerId;
-  }
-  if (!peerId) throw new RuntimeHostServiceManagerError('invalid_config', 'Missing peer identity');
-  const listenAddresses = requested.listenAddresses ??
-    previous?.peer?.listenAddresses ?? [
-      `/ip4/0.0.0.0/udp/${await deps.allocatePeerPort()}/quic-v1`,
-    ];
-  return {
-    peer: {
-      enabled: input.peer !== null && (input.peer !== undefined || previous!.peer!.enabled),
-      peerId,
-      listenAddresses: uniqueStrings(listenAddresses),
-      coordinationRelays: uniqueStrings(
-        requested.coordinationRelays ?? previous?.peer?.coordinationRelays ?? [],
-      ),
-    },
-  };
 }
 
 async function readServiceStatus(
@@ -1622,6 +1009,27 @@ async function readServiceStatus(
     ...backendStatus,
     config,
     installedVersion: config ? await readInstalledVersion(config.launch.cliPath) : null,
+    ...(config
+      ? {
+          lifecycle: {
+            mode: 'supervised' as const,
+            availability:
+              backendStatus.manager === 'systemd_user'
+                ? ('machine' as const)
+                : ('session' as const),
+            provider: backendStatus.manager === 'systemd_user' ? 'systemd_user' : 'launch_agent',
+          },
+          reconciliation: config.managedDeploymentRoot
+            ? {
+                trigger: 'scheduled' as const,
+                provider:
+                  backendStatus.manager === 'systemd_user'
+                    ? ('systemd_timer' as const)
+                    : ('launch_agent_timer' as const),
+              }
+            : { trigger: 'manual' as const },
+        }
+      : {}),
   };
 }
 
@@ -1758,10 +1166,7 @@ function validateServiceConfig(
   ) {
     throw new TypeError('Invalid websocket config');
   }
-  if (value.schemaVersion === 1 && value.peer !== undefined) {
-    throw new TypeError('Schema version 1 cannot contain peer configuration');
-  }
-  if (value.peer !== undefined) validatePeerConfig(value.peer);
+  if (value.peer !== undefined) throw new TypeError('Legacy peer configuration is unsupported');
   const launch = value.launch;
   if (
     !isRecord(launch) ||
@@ -1779,42 +1184,6 @@ function validateServiceConfig(
   }
 }
 
-function validatePeerConfig(value: unknown): void {
-  if (
-    !isRecord(value) ||
-    typeof value.enabled !== 'boolean' ||
-    typeof value.peerId !== 'string' ||
-    value.peerId.length === 0 ||
-    Buffer.byteLength(value.peerId, 'utf8') > 256 ||
-    hasControlCharacters(value.peerId) ||
-    !isStringArray(value.listenAddresses, 16) ||
-    value.listenAddresses.length === 0 ||
-    value.listenAddresses.some(hasEphemeralRuntimeHostPeerPort) ||
-    !isStringArray(value.coordinationRelays, 16)
-  ) {
-    throw new TypeError('Invalid peer config');
-  }
-}
-
-function isStringArray(value: unknown, maximumLength: number): value is string[] {
-  return (
-    Array.isArray(value) &&
-    value.length <= maximumLength &&
-    value.every(
-      (entry) =>
-        typeof entry === 'string' &&
-        entry.length > 0 &&
-        Buffer.byteLength(entry, 'utf8') <= 2_048 &&
-        !hasControlCharacters(entry),
-    ) &&
-    new Set(value).size === value.length
-  );
-}
-
-function uniqueStrings(values: readonly string[]): string[] {
-  return [...new Set(values)];
-}
-
 async function normalizeStateRoot(requestedRoot: string): Promise<string> {
   try {
     await mkdir(requestedRoot, { recursive: true, mode: 0o700 });
@@ -1828,6 +1197,10 @@ async function normalizeStateRoot(requestedRoot: string): Promise<string> {
       { cause: error },
     );
   }
+}
+
+export async function resolveRuntimeHostManagedStateRoot(requestedRoot: string): Promise<string> {
+  return normalizeStateRoot(requestedRoot);
 }
 
 async function normalizeProjectDirectoryRoots(
@@ -1861,6 +1234,12 @@ async function normalizeProjectDirectoryRoots(
     );
   }
   return canonicalRoots;
+}
+
+export async function resolveRuntimeHostManagedProjectDirectoryRoots(
+  roots: readonly { readonly label: string; readonly path: string }[],
+): Promise<readonly { readonly label: string; readonly path: string }[]> {
+  return normalizeProjectDirectoryRoots(roots);
 }
 
 async function assertPersistentCliInstallation(
@@ -2384,6 +1763,10 @@ async function allocateLoopbackPort(): Promise<number> {
   });
 }
 
+export function allocateRuntimeHostLoopbackPort(): Promise<number> {
+  return allocateLoopbackPort();
+}
+
 async function allocatePeerPort(): Promise<number> {
   return new Promise((resolvePort, reject) => {
     const socket = createSocket('udp4');
@@ -2395,6 +1778,10 @@ async function allocatePeerPort(): Promise<number> {
       resolvePort(address.port);
     });
   });
+}
+
+export function allocateRuntimeHostPeerPort(): Promise<number> {
+  return allocatePeerPort();
 }
 
 function result(

@@ -95,6 +95,11 @@ export interface ResolveExistingStorageRootInput<K extends StorageRootKind>
 export type AdoptStorageRootOnImportInput<K extends StorageRootKind> =
   ResolveExistingStorageRootInput<K>;
 
+export interface RepairStorageRootAfterRemountInput<K extends StorageRootKind>
+  extends ResolveStorageRootInput<K> {
+  expectedRootId?: string;
+}
+
 export interface StorageRootIdentityRepairCandidate<K extends StorageRootKind = StorageRootKind> {
   readonly kind: K;
   readonly canonicalPath: string;
@@ -358,6 +363,54 @@ export async function prepareStorageRootIdentityRepair<K extends StorageRootKind
       return candidate;
     },
   );
+}
+
+/**
+ * Repairs only the mount-local portion of a root identity. This is for callers
+ * that already know their execution environment remounted the same filesystem:
+ * the inode must stay unchanged, and an expected durable root id may still pin
+ * the repair to an existing Client binding.
+ */
+export async function repairStorageRootAfterRemount<K extends StorageRootKind>(
+  input: RepairStorageRootAfterRemountInput<K>,
+): Promise<StorageRootCapability<K> | undefined> {
+  let candidate: StorageRootIdentityRepairCandidate<K> | undefined;
+  try {
+    candidate = await prepareStorageRootIdentityRepair(input);
+  } catch (error) {
+    if (
+      error instanceof StorageRootAuthorityError &&
+      (error.code === 'root_not_found' || error.code === 'root_unmarked')
+    ) {
+      return undefined;
+    }
+    throw error;
+  }
+  if (!candidate) return undefined;
+  const record = storageRootIdentityRepairs.get(candidate) as
+    | StorageRootIdentityRepairRecord<K>
+    | undefined;
+  if (!record) {
+    throw new StorageRootAuthorityError(
+      'invalid_repair',
+      'Expected a prepared storage root identity repair',
+    );
+  }
+  if (input.expectedRootId !== undefined && record.rootId !== input.expectedRootId) {
+    storageRootIdentityRepairs.delete(candidate);
+    throw new StorageRootAuthorityError(
+      'root_identity_changed',
+      `Remounted storage root does not match the expected root: ${record.canonicalPath}`,
+    );
+  }
+  if (record.marker.rootIdentity.ino !== record.identity.ino.toString()) {
+    storageRootIdentityRepairs.delete(candidate);
+    throw new StorageRootAuthorityError(
+      'root_identity_changed',
+      `Storage root directory changed across remount: ${record.canonicalPath}`,
+    );
+  }
+  return repairStorageRootIdentity(candidate);
 }
 
 /**

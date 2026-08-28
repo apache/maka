@@ -49,6 +49,7 @@ import {
   type SessionHeaderSnapshot,
   type ExecutionStoresWriter,
 } from '@maka/storage/execution-stores';
+import type { CreateStableSessionRequest } from '@maka/storage/session-store';
 import type { RuntimePolicyStoresWriter } from '@maka/storage/runtime-policy-stores';
 import {
   SessionConfigurationRevisionConflictError,
@@ -117,6 +118,18 @@ type SessionConfigurationAuthority = Pick<
 >;
 type SessionContinuity = Pick<SessionContinuityCoordinator, 'refreshCanonical'>;
 
+interface ResolvedSessionConfiguration {
+  readonly backend: 'ai-sdk';
+  readonly llmConnectionId?: string;
+  readonly llmConnectionSlug: string;
+  readonly model: string;
+  readonly thinkingLevel: SessionHeader['thinkingLevel'];
+  readonly connectionLocked: boolean;
+  readonly permissionMode: SessionHeader['permissionMode'];
+  readonly collaborationMode: NonNullable<SessionHeader['collaborationMode']>;
+  readonly orchestrationMode: NonNullable<SessionHeader['orchestrationMode']>;
+}
+
 export type SessionOperationFailureCode =
   | 'operation_unavailable'
   | 'invalid_request'
@@ -144,6 +157,7 @@ export interface HostSessionCatalogCoordinatorOptions {
 }
 
 interface ResolvedSessionModel {
+  readonly connectionId: string;
   readonly connectionSlug: string;
   readonly model: string;
 }
@@ -186,6 +200,7 @@ export class HostSessionCatalogCoordinator {
       this.#readRuntimePolicy(),
     ]);
     return {
+      llmConnectionId: model.connectionId,
       llmConnectionSlug: model.connectionSlug,
       model: model.model,
       permissionMode: policy.policy.chatDefaults.permissionMode,
@@ -202,6 +217,34 @@ export class HostSessionCatalogCoordinator {
   /** WorkHub Action Gate path; callers cannot bypass the typed operation outcome. */
   createForWorkHub(input: SessionCreateInput): Promise<OperationOutcome<'session.create'>> {
     return this.#create(input);
+  }
+
+  /** Prepare external facts before WorkHub commits create + assignment atomically. */
+  async prepareWorkHubCreate(input: SessionCreateInput): Promise<CreateStableSessionRequest> {
+    const prepared = await prepareCreate(input);
+    return this.#workspaceResolver.runWithUsageRecorded(input.workspace, async (workspace) => {
+      const [model, policy] = await Promise.all([
+        this.#resolveModel(input.modelTarget, input.thinkingLevel),
+        this.#readRuntimePolicy(),
+      ]);
+      return {
+        sessionId: input.sessionId,
+        requestFingerprint: createRequestFingerprint(input, prepared),
+        input: {
+          cwd: workspace.cwd,
+          ...(workspace.projectId === null ? {} : { projectId: workspace.projectId }),
+          name: prepared.name,
+          labels: [...prepared.labels],
+          llmConnectionSlug: model.connectionSlug,
+          model: model.model,
+          ...(input.thinkingLevel === undefined ? {} : { thinkingLevel: input.thinkingLevel }),
+          ...(input.toolProfile === undefined ? {} : { toolProfile: input.toolProfile }),
+          permissionMode: prepared.permissionMode ?? policy.policy.chatDefaults.permissionMode,
+          collaborationMode: input.collaborationMode ?? 'agent',
+          orchestrationMode: input.orchestrationMode ?? 'default',
+        },
+      };
+    });
   }
 
   async #query(
@@ -381,6 +424,7 @@ export class HostSessionCatalogCoordinator {
               ...(workspace.projectId === null ? {} : { projectId: workspace.projectId }),
               name: prepared.name,
               labels: [...prepared.labels],
+              llmConnectionId: model.connectionId,
               llmConnectionSlug: model.connectionSlug,
               model: model.model,
               ...(input.thinkingLevel === undefined ? {} : { thinkingLevel: input.thinkingLevel }),
@@ -493,15 +537,11 @@ export class HostSessionCatalogCoordinator {
           );
         }
 
-        const model = await this.#resolveModel(
-          input.configuration.modelTarget,
-          input.configuration.thinkingLevel ?? undefined,
-        );
-        const clearsConnectionBlock = current.header.blockedReason === 'NO_REAL_CONNECTION';
-        if (
-          !clearsConnectionBlock &&
-          sessionConfigurationMatches(current.header, model, input.configuration)
-        ) {
+        const configuration = await this.#mergeConfigurationPatch(current.header, input.patch);
+        const clearsConnectionBlock =
+          input.patch.modelTarget !== undefined &&
+          current.header.blockedReason === 'NO_REAL_CONNECTION';
+        if (!clearsConnectionBlock && sessionConfigurationMatches(current.header, configuration)) {
           return configurationSuccess({
             kind: 'committed',
             session: projectSessionCatalogRecord(
@@ -512,16 +552,8 @@ export class HostSessionCatalogCoordinator {
         commitAttempted = true;
         await this.#manager.transitionSessionConfiguration(input.sessionId, {
           expectedRevision: input.expectedRevision,
-          configuration: {
-            backend: 'ai-sdk',
-            llmConnectionSlug: model.connectionSlug,
-            model: model.model,
-            thinkingLevel: input.configuration.thinkingLevel ?? undefined,
-            connectionLocked: true,
-            permissionMode: input.configuration.permissionMode,
-            collaborationMode: input.configuration.collaborationMode,
-            orchestrationMode: input.configuration.orchestrationMode,
-          },
+          clearConnectionBlock: input.patch.modelTarget !== undefined,
+          configuration,
         });
         return configurationSuccess(await this.#committedUpdate(input.sessionId, lease));
       } catch (error) {
@@ -722,10 +754,25 @@ export class HostSessionCatalogCoordinator {
     thinkingLevel: SessionCreateInput['thinkingLevel'],
   ): Promise<ResolvedSessionModel> {
     const selected = await this.#selectModelTarget(target);
-    const readiness = await this.#runtimePolicy.operations.resolveExecutionConnection(
-      selected.connectionSlug,
-    );
-    if (readiness.kind === 'not_found' || readiness.kind === 'disabled') {
+    const readiness = await this.#runtimePolicy.operations.resolveExecutionConnection({
+      kind: 'bound',
+      connectionId: selected.connectionId,
+      connectionSlug: selected.connectionSlug,
+    });
+    if (
+      selected.connectionId !== undefined &&
+      (readiness.kind === 'not_found' || readiness.kind === 'identity_mismatch')
+    ) {
+      throw new SessionOperationFailure(
+        'operation_conflict',
+        'Session model identity changed during selection',
+      );
+    }
+    if (
+      readiness.kind === 'not_found' ||
+      readiness.kind === 'identity_mismatch' ||
+      readiness.kind === 'disabled'
+    ) {
       throw new SessionOperationFailure(
         'invalid_request',
         'Session model connection is unavailable',
@@ -791,16 +838,21 @@ export class HostSessionCatalogCoordinator {
         `Session model does not support thinking level ${thinkingLevel}`,
       );
     }
-    return { connectionSlug: connection.slug, model: selected.modelId };
+    return {
+      connectionId: connection.connectionId,
+      connectionSlug: connection.slug,
+      model: selected.modelId,
+    };
   }
 
   async #selectModelTarget(target: SessionModelTarget): Promise<{
     readonly connectionSlug: string;
-    readonly connectionId?: string;
+    readonly connectionId: string;
     readonly modelId: string;
   }> {
     if (target.kind === 'explicit') {
       return {
+        connectionId: target.connectionId,
         connectionSlug: target.connectionSlug,
         modelId: target.model,
       };
@@ -833,6 +885,56 @@ export class HostSessionCatalogCoordinator {
     };
   }
 
+  async #mergeConfigurationPatch(
+    current: SessionHeader,
+    patch: SessionConfigurationUpdateInput['patch'],
+  ): Promise<ResolvedSessionConfiguration> {
+    if (current.llmConnectionId === undefined && patch.modelTarget === undefined) {
+      throw new SessionOperationFailure(
+        'operation_conflict',
+        'Legacy Session configuration requires an explicit account selection',
+      );
+    }
+    const thinkingLevel =
+      patch.thinkingLevel === undefined
+        ? current.thinkingLevel
+        : (patch.thinkingLevel ?? undefined);
+    let model: {
+      readonly connectionId?: string;
+      readonly connectionSlug: string;
+      readonly model: string;
+    } = {
+      ...(current.llmConnectionId === undefined ? {} : { connectionId: current.llmConnectionId }),
+      connectionSlug: current.llmConnectionSlug,
+      model: current.model,
+    };
+    if (patch.modelTarget !== undefined) {
+      model = await this.#resolveModel(patch.modelTarget, thinkingLevel);
+    } else if (patch.thinkingLevel !== undefined && current.llmConnectionId !== undefined) {
+      const connectionId = current.llmConnectionId;
+      model = await this.#resolveModel(
+        {
+          kind: 'explicit',
+          connectionId,
+          connectionSlug: current.llmConnectionSlug,
+          model: current.model,
+        },
+        thinkingLevel,
+      );
+    }
+    return {
+      backend: 'ai-sdk',
+      ...(model.connectionId === undefined ? {} : { llmConnectionId: model.connectionId }),
+      llmConnectionSlug: model.connectionSlug,
+      model: model.model,
+      thinkingLevel,
+      connectionLocked: patch.modelTarget === undefined ? current.connectionLocked : true,
+      permissionMode: patch.permissionMode ?? current.permissionMode,
+      collaborationMode: patch.collaborationMode ?? current.collaborationMode ?? 'agent',
+      orchestrationMode: patch.orchestrationMode ?? current.orchestrationMode ?? 'default',
+    };
+  }
+
   async #readRuntimePolicy(): Promise<
     Awaited<ReturnType<SessionRuntimePolicyStores['runtimePolicy']['getSnapshot']>>
   > {
@@ -846,15 +948,15 @@ export class HostSessionCatalogCoordinator {
 
 function sessionConfigurationMatches(
   header: SessionHeader,
-  model: ResolvedSessionModel,
-  configuration: SessionConfigurationUpdateInput['configuration'],
+  configuration: ResolvedSessionConfiguration,
 ): boolean {
   return (
     header.backend === 'ai-sdk' &&
-    header.llmConnectionSlug === model.connectionSlug &&
-    header.model === model.model &&
-    header.thinkingLevel === (configuration.thinkingLevel ?? undefined) &&
-    header.connectionLocked &&
+    header.llmConnectionId === configuration.llmConnectionId &&
+    header.llmConnectionSlug === configuration.llmConnectionSlug &&
+    header.model === configuration.model &&
+    header.thinkingLevel === configuration.thinkingLevel &&
+    header.connectionLocked === configuration.connectionLocked &&
     header.permissionMode === configuration.permissionMode &&
     (header.collaborationMode ?? 'agent') === configuration.collaborationMode &&
     (header.orchestrationMode ?? 'default') === configuration.orchestrationMode
@@ -905,7 +1007,12 @@ function createRequestFingerprint(
     prepared.labels,
     input.modelTarget.kind === 'default'
       ? ['default']
-      : ['explicit', input.modelTarget.connectionSlug, input.modelTarget.model],
+      : [
+          'explicit',
+          input.modelTarget.connectionId,
+          input.modelTarget.connectionSlug,
+          input.modelTarget.model,
+        ],
     input.thinkingLevel ?? null,
     input.toolProfile ?? null,
     prepared.permissionMode ?? ['runtime_default'],
@@ -978,6 +1085,7 @@ export function projectSessionCatalogRecord(
     ...(header.revisionIndex === undefined ? {} : { revisionIndex: header.revisionIndex }),
     ...(header.revisionState === undefined ? {} : { revisionState: header.revisionState }),
     backend: header.backend,
+    llmConnectionId: header.llmConnectionId ?? null,
     llmConnectionSlug: header.llmConnectionSlug,
     connectionLocked: header.connectionLocked,
     model: header.model,

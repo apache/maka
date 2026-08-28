@@ -20,6 +20,7 @@
 import { useEffect, useRef, useState } from 'react';
 import type { ProjectRecord } from '@maka/core/project';
 import type { UiLocale } from '@maka/core/ui-locale';
+import type { RuntimeHostProfileKind } from '@maka/runtime-host/profile-kind';
 import type {
   DesktopProjectCapabilities,
   DesktopRuntimeHostRef,
@@ -68,7 +69,7 @@ export function useAppShellProjectContext(options: {
   sessionId?: string;
   sessionCwd?: string;
   sessionProjectId?: string | null;
-  sessionProfileKind?: 'local' | 'remote';
+  sessionProfileKind?: RuntimeHostProfileKind;
   onProjectSelected(ownerSessionId?: string): void;
   toastApi: ToastApi;
 }): AppShellProjectActions & {

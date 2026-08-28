@@ -126,62 +126,54 @@ export function describeTurnErrorClass(errorClass: string | undefined, locale: U
   return copy.unknown;
 }
 
-export type FailedTurnRecoveryAction = 'retry' | 'continue' | 'inspect_tool' | 'check_connection';
+/**
+ * How loud a failed turn should look. `warning` is for the outcomes where the
+ * work itself survived and the session just needs another nudge — the app
+ * restarted mid-turn, the step cap stopped it, a permission prompt outlived
+ * its turn. Everything else is an `error`: the user has to fix, pay, wait, or
+ * inspect something before the next attempt can differ from this one.
+ *
+ * The two tiers exist because a single `error` red made "restarted, press
+ * continue" look as severe as "billing is blocked". Matches how the rest of
+ * the app grades its Banners (`tone === 'destructive' ? 'error' : 'warning'`).
+ */
+export type FailedTurnSeverity = 'error' | 'warning';
 
-export interface FailedTurnRecoveryPresentation {
-  action: FailedTurnRecoveryAction;
-  label: string;
+export function deriveFailedTurnSeverity(errorClass: string | undefined): FailedTurnSeverity {
+  const lower = errorClass?.toLowerCase() ?? '';
+  if (lower === SANDBOX_BOUNDARY_RESTART_CLOSURE_CLASS) return 'warning';
+  if (lower === 'app_restarted') return 'warning';
+  if (lower === 'tool_step_cap_reached') return 'warning';
+  if (lower === 'permission_required' || lower.includes('permission')) return 'warning';
+  return 'error';
 }
 
-export interface FailedTurnRecoveryInput {
-  errorClass?: string;
+export interface FailedTurnExecutionState {
   partialOutputRetained: boolean;
   toolActivityCount: number;
   erroredToolCount: number;
 }
 
 /**
- * User-facing recovery guidance for a failed turn. This intentionally
- * separates "what failed" (`describeTurnErrorClass`) from "what should I do
- * next", following the same incident-summary discipline as the runtime logs:
- * do not ask the user to blindly retry if a tool already ran or partial output
- * was retained.
+ * What this turn already did before it failed, when that changes what sending
+ * the next message costs. A tool that ran may have had side effects the retry
+ * would repeat, so the user should read its result before deciding.
+ *
+ * This is a SECOND sentence, not a replacement for `describeTurnErrorClass()`.
+ * The retired `deriveFailedTurnRecovery()` ranked the two against each other
+ * and let the tool branch win, so `auth` plus one errored tool advised
+ * "inspect the tool result" and dropped "sign in again" — the only step that
+ * could actually change the outcome. Both facts are true at once and the
+ * banner has a slot for each (`title` / `description`), so neither has to
+ * lose. Returns undefined when the turn produced nothing worth re-reading.
  */
-export function deriveFailedTurnRecovery(input: FailedTurnRecoveryInput, locale: UiLocale = 'zh'): FailedTurnRecoveryPresentation {
-  const copy = getDesktopConversationCopy(locale).turnError.recovery;
-  const lower = input.errorClass?.toLowerCase() ?? '';
-  if (lower === SANDBOX_BOUNDARY_RESTART_CLOSURE_CLASS) {
-    // Not `continue`: the request was denied and its backend generation is
-    // gone, so there is nothing to resume into — retrying the turn is the
-    // only path that lets the agent ask again.
-    return { action: 'retry', label: copy.sandboxBoundaryClosed };
-  }
-  if (lower === 'app_restarted') {
-    return { action: 'continue', label: copy.safeResume };
-  }
-  if (lower === 'tool_step_cap_reached') {
-    return { action: 'continue', label: copy.stepCap };
-  }
-  if (input.erroredToolCount > 0 || lower === 'tool_failed' || lower.includes('tool')) {
-    return { action: 'inspect_tool', label: copy.toolError };
-  }
-  if (lower === 'provider_billing' || lower === 'auth' || lower.includes('auth') || lower === '401' || lower === '403') {
-    return { action: 'check_connection', label: copy.connection };
-  }
-  if (input.partialOutputRetained) {
-    return { action: 'continue', label: copy.partial };
-  }
-  if (input.toolActivityCount > 0) {
-    return { action: 'inspect_tool', label: copy.toolRecord };
-  }
-  if (lower === 'provider_capacity') {
-    return { action: 'retry', label: copy.capacity };
-  }
-  if (lower === 'context_overflow') {
-    return { action: 'continue', label: copy.contextOverflow };
-  }
-  if (lower === 'context_budget_exhausted') {
-    return { action: 'check_connection', label: copy.contextBudgetExhausted };
-  }
-  return { action: 'retry', label: copy.retry };
+export function describeFailedTurnExecutionState(
+  state: FailedTurnExecutionState,
+  locale: UiLocale = 'zh',
+): string | undefined {
+  const copy = getDesktopConversationCopy(locale).turnError.executionState;
+  if (state.erroredToolCount > 0) return copy.erroredTool;
+  if (state.toolActivityCount > 0) return copy.toolRan;
+  if (state.partialOutputRetained) return copy.partialOutput;
+  return undefined;
 }

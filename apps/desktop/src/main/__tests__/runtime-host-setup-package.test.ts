@@ -23,17 +23,19 @@ import { join, resolve } from 'node:path';
 import { test } from 'node:test';
 import { createRuntimeHostSetupPackageResolver } from '../runtime-host-setup-package.js';
 
-test('development setup lazily builds one local CLI archive unless explicitly overridden', async () => {
+test('development setup lazily caches CLI archives by peer target unless overridden', async () => {
   const repoRoot = resolve('/workspace');
   const archive = join(repoRoot, 'packages', 'cli', 'release', 'maka-agent-dev.tgz');
   let builds = 0;
   let closes = 0;
+  const targets: string[] = [];
   const resolvePackage = createRuntimeHostSetupPackageResolver({
     isPackaged: false,
     appPath: join(repoRoot, 'apps', 'desktop'),
     environment: {},
-    startDevelopmentArchiveBuild: (resolvedRoot) => {
+    startDevelopmentArchiveBuild: (resolvedRoot, target) => {
       builds += 1;
+      targets.push(target);
       assert.equal(resolvedRoot, repoRoot);
       return {
         result: Promise.resolve(archive),
@@ -44,7 +46,11 @@ test('development setup lazily builds one local CLI archive unless explicitly ov
     },
   });
 
-  assert.deepEqual(await Promise.all([resolvePackage.resolve(), resolvePackage.resolve()]), [
+  assert.equal(resolvePackage.mode, 'development');
+  assert.deepEqual(await Promise.all([
+    resolvePackage.resolve('linux-x64'),
+    resolvePackage.resolve('linux-x64'),
+  ]), [
     {
       kind: 'development_archive',
       path: archive,
@@ -54,7 +60,9 @@ test('development setup lazily builds one local CLI archive unless explicitly ov
       path: archive,
     },
   ]);
-  assert.equal(builds, 1);
+  await resolvePackage.resolve('none');
+  assert.equal(builds, 2);
+  assert.deepEqual(targets, ['linux-x64', 'none']);
 
   const override = join(tmpdir(), 'explicit.tgz');
   const resolveOverride = createRuntimeHostSetupPackageResolver({
@@ -63,12 +71,12 @@ test('development setup lazily builds one local CLI archive unless explicitly ov
     environment: { MAKA_RUNTIME_HOST_SETUP_ARCHIVE: override },
     startDevelopmentArchiveBuild: () => assert.fail('override must bypass the local build'),
   });
-  assert.deepEqual(await resolveOverride.resolve(), {
+  assert.deepEqual(await resolveOverride.resolve('none'), {
     kind: 'development_archive',
     path: override,
   });
   await Promise.all([resolvePackage.close(), resolveOverride.close()]);
-  assert.equal(closes, 1);
+  assert.equal(closes, 2);
 });
 
 test('cancelling the last waiter closes its build before a new setup starts', async () => {
@@ -107,10 +115,10 @@ test('cancelling the last waiter closes its build before a new setup starts', as
     },
   });
 
-  const first = resolver.resolve(cancelled.signal);
+  const first = resolver.resolve('linux-x64', cancelled.signal);
   cancelled.abort(new Error('setup cancelled'));
   await closeStarted;
-  const second = resolver.resolve();
+  const second = resolver.resolve('linux-x64');
   await Promise.resolve();
   assert.equal(builds, 1);
 

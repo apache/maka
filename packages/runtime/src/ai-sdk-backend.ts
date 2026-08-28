@@ -2612,6 +2612,7 @@ export class AiSdkBackend implements AgentBackend {
                   attempt: nextAttempt,
                   maxAttempts,
                   delayMs,
+                  remainingMs: delayMs,
                   reason,
                 } satisfies ProviderRetryEvent);
                 await this.providerRetrySleep(delayMs, turnAbortController.signal);
@@ -2864,68 +2865,9 @@ export class AiSdkBackend implements AgentBackend {
               activeToolResultPruneDiagnosticPatch,
               midTurnCompactDiagnosticPatch,
             );
-            const tu: TokenUsageMessage = {
-              type: 'token_usage',
-              id: this.newId(),
-              turnId,
-              ts: this.now(),
-              input: tokenUsage.inputTokens,
-              output: tokenUsage.outputTokens,
-              cacheHitInput: tokenUsage.cacheHitInputTokens,
-              cacheMissInput: tokenUsage.cacheMissInputTokens,
-              cacheMissInputSource: tokenUsage.cacheMissInputSource,
-              cacheWriteInput: tokenUsage.cacheWriteInputTokens,
-              reasoning: tokenUsage.reasoningTokens,
-              total: tokenUsage.totalTokens,
-              ...(tokenUsage.rawFinishReason !== undefined
-                ? { rawFinishReason: tokenUsage.rawFinishReason }
-                : {}),
-              ...(runtimeSteps > 0 ? { runtimeSteps } : {}),
-              ...(tokenUsage.cachedInputTokens > 0
-                ? { cacheRead: tokenUsage.cachedInputTokens }
-                : {}),
-              ...(tokenUsage.cacheWriteInputTokens > 0
-                ? { cacheCreation: tokenUsage.cacheWriteInputTokens }
-                : {}),
-              ...(tokenUsageCostUsd !== undefined ? { costUsd: tokenUsageCostUsd } : {}),
-              systemPromptHash,
-              prefixHash: turnDiagnostics.requestShape.prefixHash,
-              prefixChangeReason: turnDiagnostics.requestShape.prefixChangeReason,
-              requestShapeHash: turnDiagnostics.requestShape.requestShapeHash,
-              requestShapeChangeReason: turnDiagnostics.requestShape.requestShapeChangeReason,
-              promptSegments: turnDiagnostics.promptSegments,
-              ...(contextBudgetForUsage ? { contextBudget: contextBudgetForUsage } : {}),
-              ...(providerRequestTraceId ? { providerRequestTraceId } : {}),
-            };
-            await this.input.appendMessage(tu).catch(() => {});
-            if (
-              !contextCompactionFailedOpenNoteWritten &&
-              shouldAppendContextCompactionFailedOpenNote(contextBudgetForUsage)
-            ) {
-              contextCompactionFailedOpenNoteWritten = true;
-              const note: SystemNoteMessage = {
-                type: 'system_note',
-                id: this.newId(),
-                turnId,
-                ts: this.now(),
-                kind: 'context_compaction_failed_open',
-              };
-              await this.input.appendMessage(note).catch(() => {});
-            }
-            if (
-              !contextCompactedNoteWritten &&
-              shouldAppendContextCompactedNote(contextBudgetForUsage)
-            ) {
-              contextCompactedNoteWritten = true;
-              const note: SystemNoteMessage = {
-                type: 'system_note',
-                id: this.newId(),
-                turnId,
-                ts: this.now(),
-                kind: 'context_compacted',
-              };
-              await this.input.appendMessage(note).catch(() => {});
-            }
+            // Persisted alongside the live event so transcript rebuilds from
+            // stored messages keep the TUI ctx segment instead of degrading to
+            // `?/<window>` (#4019). Computed once; both writers share it.
             const contextRemainingForUsage = (() => {
               const contextWindow = resolveSelectedModelContextWindow(
                 this.input.connection,
@@ -2936,11 +2878,10 @@ export class AiSdkBackend implements AgentBackend {
               }
               return undefined;
             })();
-            queue.push({
-              type: 'token_usage',
-              id: this.newId(),
-              turnId,
-              ts: this.now(),
+            // One shared usage payload for the durable message and the live
+            // event: twin per-field literals drifted before (#4019), so a field
+            // now has exactly one definition site.
+            const usageFields = {
               input: tokenUsage.inputTokens,
               output: tokenUsage.outputTokens,
               cacheHitInput: tokenUsage.cacheHitInputTokens,
@@ -2971,6 +2912,49 @@ export class AiSdkBackend implements AgentBackend {
                 ? { contextRemaining: contextRemainingForUsage }
                 : {}),
               ...(providerRequestTraceId ? { providerRequestTraceId } : {}),
+            };
+            const tu: TokenUsageMessage = {
+              type: 'token_usage',
+              id: this.newId(),
+              turnId,
+              ts: this.now(),
+              ...usageFields,
+            };
+            await this.input.appendMessage(tu).catch(() => {});
+            if (
+              !contextCompactionFailedOpenNoteWritten &&
+              shouldAppendContextCompactionFailedOpenNote(contextBudgetForUsage)
+            ) {
+              contextCompactionFailedOpenNoteWritten = true;
+              const note: SystemNoteMessage = {
+                type: 'system_note',
+                id: this.newId(),
+                turnId,
+                ts: this.now(),
+                kind: 'context_compaction_failed_open',
+              };
+              await this.input.appendMessage(note).catch(() => {});
+            }
+            if (
+              !contextCompactedNoteWritten &&
+              shouldAppendContextCompactedNote(contextBudgetForUsage)
+            ) {
+              contextCompactedNoteWritten = true;
+              const note: SystemNoteMessage = {
+                type: 'system_note',
+                id: this.newId(),
+                turnId,
+                ts: this.now(),
+                kind: 'context_compacted',
+              };
+              await this.input.appendMessage(note).catch(() => {});
+            }
+            queue.push({
+              type: 'token_usage',
+              id: this.newId(),
+              turnId,
+              ts: this.now(),
+              ...usageFields,
             } satisfies TokenUsageEvent);
           }
         } catch {
@@ -5023,6 +5007,7 @@ function memoryExtractionModelHeader(
   header: SessionHeader,
 ): MemoryExtractionSourceSnapshot['sourceHeader'] {
   return {
+    ...(header.llmConnectionId === undefined ? {} : { llmConnectionId: header.llmConnectionId }),
     llmConnectionSlug: header.llmConnectionSlug,
     model: header.model,
     ...(header.thinkingLevel !== undefined ? { thinkingLevel: header.thinkingLevel } : {}),

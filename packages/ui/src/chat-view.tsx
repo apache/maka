@@ -128,7 +128,11 @@ export function ChatView(props: {
   renderProviderMark?(type: ProviderType): ReactNode;
   modelChoices?: ChatModelChoice[];
   modelChangePending?: boolean;
-  onModelChange?(input: { llmConnectionSlug: string; model: string }): void | Promise<void>;
+  onModelChange?(input: {
+    llmConnectionId: string;
+    llmConnectionSlug: string;
+    model: string;
+  }): void | Promise<void>;
   /** Personalized user label shown on user messages. Falls back to "你". */
   userLabel?: string;
   /**
@@ -714,7 +718,10 @@ export function ChatView(props: {
                         streamingActive || props.activeSession?.status === 'running'
                       }
                       failedReasonLabel={turnPresentation?.failedReasonLabels[turn.turnId]}
-                      failedRecoveryLabel={turnPresentation?.failedRecoveryLabels[turn.turnId]}
+                      failedSeverity={turnPresentation?.failedSeverities[turn.turnId]}
+                      failedExecutionStateLabel={
+                        turnPresentation?.failedExecutionStateLabels[turn.turnId]
+                      }
                       safeResumeAction={turnPresentation?.resumeCandidateTurnId === turn.turnId
                         ? props.safeResumeAction
                         : undefined}

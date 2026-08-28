@@ -25,6 +25,23 @@ test('labels the Chinese default thinking level as default', () => {
   assert.equal(getConversationCopy('zh').model.defaultLevel, '默认');
 });
 
+test('expanded-context edit guidance coexists with current retry and recovery copy', () => {
+  const zh = getConversationCopy('zh').messages;
+  const en = getConversationCopy('en').messages;
+  assert.equal(
+    zh.editMessageDisabledTransformedText,
+    '包含已展开上下文的历史消息暂不支持编辑并重发',
+  );
+  assert.equal(
+    en.editMessageDisabledTransformedText,
+    'Edit & resend does not yet support messages with expanded context',
+  );
+  assert.equal(zh.providerRetryWaiting(2, 10), '等待重试（2/10）');
+  assert.equal(en.providerRetryWaiting(2, 10), 'Waiting to retry (2/10)');
+  assert.equal(zh.safeResume, '继续这一轮');
+  assert.equal(en.safeResume, 'Continue this turn');
+});
+
 /**
  * A subscription quota window can hand the runtime an hour-scale Retry-After;
  * the banner must count down in humanized d/h/m/s units rather than a raw

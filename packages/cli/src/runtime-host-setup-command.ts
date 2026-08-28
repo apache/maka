@@ -25,17 +25,19 @@ import { truncateUtf8 } from '@maka/core/diagnostic-log';
 import {
   activateRuntimeHostManagedDeployment,
   connectRemoteRuntimeHost,
+  ensureRuntimeHostPeerIdentity,
 } from '@maka/runtime-host/client';
 import {
-  commitRuntimeHostManagedDeployment,
-  readRuntimeHostManagedDeploymentConfig,
   RuntimeHostManagedDeploymentError as RuntimeHostDeploymentAuthorityError,
   encodeRuntimeHostSetupFrame,
+  isSha512PackageIntegrity,
+  resolveRuntimeHostManagedDeployment,
   RUNTIME_HOST_SETUP_ERROR_CODE_MAX_BYTES,
   RUNTIME_HOST_SETUP_ERROR_MESSAGE_MAX_BYTES,
   type RuntimeHostManagedDeploymentConfig,
   type RuntimeHostSetupFrame,
   type RuntimeHostSetupPhase,
+  type RuntimeHostSupervisorProvider,
 } from '@maka/runtime-host/operator';
 import {
   INTERACTIVE_RUNTIME_HOST_COMPOSITION_ID,
@@ -48,13 +50,17 @@ import {
   type RuntimeHostAccessPreset,
 } from './runtime-host-access-command.js';
 import {
-  isRuntimeHostManagedDeploymentCli,
+  convergeRuntimeHostManagedOperator,
+  verifyRuntimeHostManagedOperator,
   isRuntimeHostDevelopmentPackageVersion,
   openRuntimeHostManagedPackageDeployment,
   prepareRuntimeHostManagedPackageDeployment,
+  pruneRuntimeHostManagedPackages,
   removeRuntimeHostManagedDeployment,
   resolveRuntimeHostManagedPackageCliPath,
+  resolveRuntimeHostManagedControlRoot,
   resolveRuntimeHostManagedDeploymentRoot,
+  restoreRuntimeHostLegacyManagedOperator,
   RuntimeHostManagedDeploymentError,
 } from './runtime-host-managed-deployment.js';
 import {
@@ -62,24 +68,54 @@ import {
   withRuntimeHostRegistryUpdatePackage,
 } from './runtime-host-update-package.js';
 import {
+  readRuntimeHostManagedUpdatePolicy,
+  writeRuntimeHostManagedUpdatePolicy,
+} from './runtime-host-update-policy-store.js';
+import {
   resolveRuntimeHostRegistryUpdateCandidate,
   RuntimeHostUpdateDiscoveryError,
+  type RuntimeHostUpdateCandidate,
 } from './runtime-host-update-discovery.js';
-import { resolveStorageRoot, tryAcquireStateRootOwner } from '@maka/storage/root-authority';
-import { createPlatformRuntimeHostServiceBackend } from './runtime-host-service-management-command.js';
+import { repairStorageRootAfterRemount, resolveStorageRoot } from '@maka/storage/root-authority';
 import {
+  createPlatformRuntimeHostServiceBackend,
+  discoverRuntimeHostLifecycleProvider,
+  resolveRuntimeHostLifecycleProvider,
+} from './runtime-host-service-management-command.js';
+import {
+  allocateRuntimeHostLoopbackPort,
+  allocateRuntimeHostPeerPort,
+  effectiveRuntimeHostProjectDirectoryRoots,
   manageRuntimeHostService,
   readRuntimeHostManagedServiceConfig,
+  removeRuntimeHostServiceFile,
   resolveRuntimeHostManagedServiceConfigPath,
   resolveRuntimeHostManagedServiceId,
+  resolveRuntimeHostManagedProjectDirectoryRoots,
   RuntimeHostServiceManagerError,
   withRuntimeHostManagedServiceDeploymentLock,
   withRuntimeHostManagedServiceLifecycleLock,
   type RuntimeHostManagedServiceResult,
+  type RuntimeHostManagedServiceConfig,
   type RuntimeHostManagedServiceTarget,
   type RuntimeHostServiceBackend,
 } from './runtime-host-service-manager.js';
 import { expandWildcardListenAddresses } from './runtime-host-peer-management-command.js';
+import {
+  canDiscardRuntimeHostLifecycleDesiredArtifacts,
+  replaceRuntimeHostLifecycle,
+  resolveRecoverableRuntimeHostManagedDeployment,
+  type RuntimeHostLifecycleTransactionDeps,
+} from './runtime-host-lifecycle-transaction.js';
+import type {
+  RuntimeHostLifecycleProvider,
+  RuntimeHostLifecycleProviderOffer,
+} from './runtime-host-lifecycle-provider.js';
+import {
+  resolveRuntimeHostManagedPeerKeyPath,
+  resolveRuntimeHostPeerNativePath,
+} from './runtime-host-peer-artifact.js';
+import { activateRuntimeHostManagedDeploymentWithReconciliation } from './runtime-host-activation-command.js';
 
 const SETUP_LOCK_TIMEOUT_MS = 5 * 60_000;
 
@@ -89,13 +125,18 @@ export interface RuntimeHostSetupCliOptions {
   readonly defaultRootPath: string;
   readonly sourcePackageRoot: string;
   readonly version: string;
+  readonly sourcePackageIntegrity?: string;
   readonly principalId: string;
   readonly preset: RuntimeHostAccessPreset;
   readonly lifecycle?: 'supervised' | 'on_demand';
   readonly deferPairingCommit?: boolean;
   readonly bindPairingToClient?: boolean;
+  readonly repairRootAfterRemount?: true;
   readonly rootPath?: string;
-  readonly projectDirectoryRoots?: readonly { readonly label: string; readonly path: string }[];
+  readonly projectDirectoryRoots?: readonly {
+    readonly label: string;
+    readonly path: string;
+  }[];
   readonly websocketPort?: number;
   readonly websocketPath?: string;
   readonly directPeer?: {
@@ -107,15 +148,31 @@ export interface RuntimeHostSetupCliOptions {
 interface RuntimeHostSetupDeps {
   readonly manageService: typeof manageRuntimeHostService;
   readonly createBackend: (serviceId: string, clientDataRoot: string) => RuntimeHostServiceBackend;
+  readonly discoverLifecycleProvider: (
+    rootId: string,
+  ) => Promise<RuntimeHostLifecycleProviderOffer>;
+  readonly resolveLifecycleProvider: (
+    rootId: string,
+    provider: RuntimeHostSupervisorProvider,
+  ) => RuntimeHostLifecycleProvider;
+  readonly replaceLifecycle: typeof replaceRuntimeHostLifecycle;
   readonly openDeployment: typeof openRuntimeHostManagedPackageDeployment;
   readonly prepareDeployment: typeof prepareRuntimeHostManagedPackageDeployment;
+  readonly prunePackages: typeof pruneRuntimeHostManagedPackages;
   readonly prepareCredential: typeof prepareRuntimeHostAccessCredential;
   readonly replaceCredential: typeof replaceRuntimeHostAccessCredential;
   readonly revokeCredential: typeof revokeRuntimeHostAccessCredential;
   readonly verifyCredential: typeof verifyRuntimeHostSetupCredential;
+  readonly activateDesired: typeof activateRuntimeHostManagedDeployment;
   readonly activateManaged: typeof activateRuntimeHostManagedDeployment;
+  readonly convergeOperator: typeof convergeRuntimeHostManagedOperator;
+  readonly verifyOperator: typeof verifyRuntimeHostManagedOperator;
   readonly resolveRegistryCandidate: typeof resolveRuntimeHostRegistryUpdateCandidate;
   readonly withRegistryPackage: typeof withRuntimeHostRegistryUpdatePackage;
+  readonly ensurePeerIdentity: typeof ensureRuntimeHostPeerIdentity;
+  readonly resolvePeerNativePath: typeof resolveRuntimeHostPeerNativePath;
+  readonly allocateLoopbackPort: typeof allocateRuntimeHostLoopbackPort;
+  readonly allocatePeerPort: typeof allocateRuntimeHostPeerPort;
   readonly writeOutput: (value: string) => unknown;
   readonly writeError: (value: string) => unknown;
 }
@@ -131,6 +188,42 @@ class RuntimeHostSetupError extends Error {
   }
 }
 
+interface ResolvedRuntimeHostSetupPackage {
+  readonly candidate: RuntimeHostUpdateCandidate;
+  use<T>(operation: (packageRoot: string) => Promise<T>): Promise<T>;
+}
+
+async function resolveRuntimeHostSetupPackage(
+  options: RuntimeHostSetupCliOptions,
+  deps: Pick<RuntimeHostSetupDeps, 'resolveRegistryCandidate' | 'withRegistryPackage'>,
+): Promise<ResolvedRuntimeHostSetupPackage> {
+  if (isRuntimeHostDevelopmentPackageVersion(options.version)) {
+    const integrity = options.sourcePackageIntegrity;
+    if (typeof integrity !== 'string' || !isSha512PackageIntegrity(integrity)) {
+      throw new RuntimeHostSetupError(
+        'development_package_unverified',
+        'The Runtime Host development package is missing exact artifact evidence',
+      );
+    }
+    return {
+      candidate: {
+        kind: 'npm_registry',
+        version: options.version,
+        integrity,
+      },
+      use: (operation) => operation(options.sourcePackageRoot),
+    };
+  }
+  const candidate = await deps.resolveRegistryCandidate({
+    kind: 'exact',
+    version: options.version,
+  });
+  return {
+    candidate,
+    use: (operation) => deps.withRegistryPackage(candidate, operation),
+  };
+}
+
 export async function runRuntimeHostSetupCli(
   options: RuntimeHostSetupCliOptions,
   overrides: Partial<RuntimeHostSetupDeps> = {},
@@ -138,27 +231,56 @@ export async function runRuntimeHostSetupCli(
   const deps: RuntimeHostSetupDeps = {
     manageService: manageRuntimeHostService,
     createBackend: createPlatformRuntimeHostServiceBackend,
+    discoverLifecycleProvider: discoverRuntimeHostLifecycleProvider,
+    resolveLifecycleProvider: resolveRuntimeHostLifecycleProvider,
+    replaceLifecycle: replaceRuntimeHostLifecycle,
     openDeployment: openRuntimeHostManagedPackageDeployment,
     prepareDeployment: prepareRuntimeHostManagedPackageDeployment,
+    prunePackages: pruneRuntimeHostManagedPackages,
     prepareCredential: prepareRuntimeHostAccessCredential,
     replaceCredential: replaceRuntimeHostAccessCredential,
     revokeCredential: revokeRuntimeHostAccessCredential,
     verifyCredential: verifyRuntimeHostSetupCredential,
-    activateManaged: activateRuntimeHostManagedDeployment,
+    activateDesired: (input) =>
+      activateRuntimeHostManagedDeployment(input, {
+        reconcileActivation: async () => undefined,
+      }),
+    activateManaged: (input) =>
+      activateRuntimeHostManagedDeploymentWithReconciliation(input, {
+        deploymentLockHeld: true,
+      }),
+    convergeOperator: convergeRuntimeHostManagedOperator,
+    verifyOperator: verifyRuntimeHostManagedOperator,
     resolveRegistryCandidate: resolveRuntimeHostRegistryUpdateCandidate,
     withRegistryPackage: withRuntimeHostRegistryUpdatePackage,
+    ensurePeerIdentity: ensureRuntimeHostPeerIdentity,
+    resolvePeerNativePath: resolveRuntimeHostPeerNativePath,
+    allocateLoopbackPort: allocateRuntimeHostLoopbackPort,
+    allocatePeerPort: allocateRuntimeHostPeerPort,
     writeOutput: (value) => process.stdout.write(value),
     writeError: (value) => process.stderr.write(value),
     ...overrides,
   };
   const emit = createEmitter(options.json, deps);
   try {
+    const rootId = await resolveRuntimeHostSetupRootId(options);
+    const controlRoot = resolveRuntimeHostManagedControlRoot(rootId);
     await withRuntimeHostManagedServiceDeploymentLock(
       options.clientDataRoot,
       () =>
         withRuntimeHostManagedServiceLifecycleLock(
           options.clientDataRoot,
-          () => runRuntimeHostSetupLocked(options, deps, emit),
+          () =>
+            withRuntimeHostManagedServiceDeploymentLock(
+              controlRoot,
+              () =>
+                withRuntimeHostManagedServiceLifecycleLock(
+                  controlRoot,
+                  () => runRuntimeHostSetupLocked(options, deps, emit),
+                  SETUP_LOCK_TIMEOUT_MS,
+                ),
+              SETUP_LOCK_TIMEOUT_MS,
+            ),
           SETUP_LOCK_TIMEOUT_MS,
         ),
       SETUP_LOCK_TIMEOUT_MS,
@@ -171,6 +293,31 @@ export async function runRuntimeHostSetupCli(
   }
 }
 
+async function resolveRuntimeHostSetupRootId(options: RuntimeHostSetupCliOptions): Promise<string> {
+  let legacyRootPath: string | undefined;
+  try {
+    legacyRootPath = (
+      await readRuntimeHostManagedServiceConfig(
+        resolveRuntimeHostManagedServiceConfigPath(options.clientDataRoot),
+      )
+    ).rootPath;
+  } catch (error) {
+    if (!(error instanceof RuntimeHostServiceManagerError) || error.code !== 'not_installed') {
+      throw error;
+    }
+  }
+  const path = resolve(
+    options.rootPath ??
+      legacyRootPath ??
+      options.expectedTarget?.rootPath ??
+      options.defaultRootPath,
+  );
+  if (options.repairRootAfterRemount) {
+    await repairStorageRootAfterRemount({ path, kind: 'interactive' });
+  }
+  return (await resolveStorageRoot({ path, kind: 'interactive' })).rootId;
+}
+
 async function runRuntimeHostSetupLocked(
   options: RuntimeHostSetupCliOptions,
   deps: RuntimeHostSetupDeps,
@@ -180,98 +327,339 @@ async function runRuntimeHostSetupLocked(
     await runRuntimeHostOnDemandSetupLocked(options, deps, emit);
     return;
   }
+  const target = await runRuntimeHostSupervisedSetupLocked(options, deps, emit);
+  await pairAndVerifyRuntimeHostSetup(options, target, deps, emit);
+}
+
+async function runRuntimeHostSupervisedSetupLocked(
+  options: RuntimeHostSetupCliOptions,
+  deps: RuntimeHostSetupDeps,
+  emit: SetupEmitter,
+): Promise<{
+  readonly serviceId: string;
+  readonly deploymentId: string;
+  readonly operatorPath: string;
+  readonly rootPath: string;
+  readonly endpoint: string;
+  readonly directPeer?: {
+    readonly peerId: string;
+    readonly routeHints: readonly string[];
+    readonly coordinationRelays: readonly string[];
+  };
+}> {
   emit({ kind: 'progress', phase: 'checking_environment' });
-  const serviceId = resolveRuntimeHostManagedServiceId(options.clientDataRoot);
-  const backend = deps.createBackend(serviceId, options.clientDataRoot);
-  const common = {
+  const legacyServiceId = resolveRuntimeHostManagedServiceId(options.clientDataRoot);
+  const legacyBackend = deps.createBackend(legacyServiceId, options.clientDataRoot);
+  const legacyCommon = {
     clientDataRoot: options.clientDataRoot,
     defaultRootPath: options.defaultRootPath,
     nodePath: process.execPath,
     cliPath: join(options.sourcePackageRoot, 'dist', 'cli.js'),
-    ...(options.expectedTarget ? { expectedTarget: options.expectedTarget } : {}),
+    ...(options.expectedTarget
+      ? { expectedTarget: legacyManagedTarget(options.expectedTarget, legacyServiceId) }
+      : {}),
   } as const;
-  const status = await deps.manageService({ ...common, action: 'status' }, backend);
-  await assertCompatibleExistingVersion(status, options.version);
-  const currentPackage = currentManagedPackage(status, serviceId, options.version);
-
-  emit({ kind: 'progress', phase: 'installing_package' });
-  const deployment = currentPackage
-    ? await deps.openDeployment({
-        serviceId,
-        clientDataRoot: options.clientDataRoot,
-        deploymentRoot: currentPackage.deploymentRoot,
-        cliPath: currentPackage.cliPath,
-        version: options.version,
-      })
-    : await deps.prepareDeployment({
-        serviceId,
-        clientDataRoot: options.clientDataRoot,
-        sourcePackageRoot: options.sourcePackageRoot,
-        version: options.version,
-      });
-
-  emit({ kind: 'progress', phase: 'installing_service' });
-  let installed: RuntimeHostManagedServiceResult;
-  try {
-    installed = await deps.manageService(
-      {
-        ...common,
-        action: 'install',
-        cliPath: deployment.cliPath,
-        ...(options.rootPath ? { rootPath: options.rootPath } : {}),
-        ...(options.projectDirectoryRoots
-          ? { projectDirectoryRoots: options.projectDirectoryRoots }
-          : {}),
-        ...(options.websocketPort === undefined ? {} : { websocketPort: options.websocketPort }),
-        ...(options.websocketPath ? { websocketPath: options.websocketPath } : {}),
-        ...(options.directPeer
-          ? { peer: { coordinationRelays: options.directPeer.coordinationRelays } }
-          : {}),
-      },
-      backend,
-    );
-  } catch (error) {
-    try {
-      await deployment.rollback();
-    } catch (rollbackError) {
-      throw new RuntimeHostSetupError(
-        'deployment_failed',
-        'Runtime Host setup failed and its staged package could not be removed',
-        { cause: new AggregateError([error, rollbackError]) },
-      );
-    }
-    throw error;
-  }
-  const config = installed.service.config;
-  if (!config || !installed.service.active) {
-    throw new RuntimeHostSetupError(
-      'service_not_ready',
-      'Managed Runtime Host service did not become ready',
-    );
-  }
-  await deployment.activate();
-  await deployment.cleanup();
-
-  await pairAndVerifyRuntimeHostSetup(
-    options,
+  const legacyStatus = await deps.manageService(
+    { ...legacyCommon, action: 'status' },
+    legacyBackend,
+  );
+  const legacyConfig = legacyStatus.service.config;
+  const capability = await resolveStorageRoot({
+    path: resolve(
+      options.rootPath ??
+        legacyConfig?.rootPath ??
+        options.expectedTarget?.rootPath ??
+        options.defaultRootPath,
+    ),
+    kind: 'interactive',
+  });
+  assertCanonicalSetupTarget(options.expectedTarget, capability.rootId, capability.canonicalPath);
+  const lifecycleDeps: RuntimeHostLifecycleTransactionDeps = {
+    convergeOperator: (currentConfig, desiredConfig) =>
+      deps.convergeOperator(currentConfig, desiredConfig),
+    verifyOperator: deps.verifyOperator,
+    resolveProvider: (provider) => deps.resolveLifecycleProvider(capability.rootId, provider),
+    ...(legacyConfig
+      ? legacyMigrationDeps(legacyConfig, legacyBackend, legacyServiceId, options.clientDataRoot)
+      : {}),
+  };
+  const recovered = await resolveRecoverableRuntimeHostManagedDeployment(
+    capability.rootId,
+    lifecycleDeps,
     {
-      serviceId,
-      operatorPath: deployment.operatorPath,
-      rootPath: config.rootPath,
-      endpoint: websocketUrl(config.websocket),
-      ...(config.peer?.enabled
+      ...(legacyConfig ? { retirementSupervisor: legacyBackend } : {}),
+      ...(legacyConfig
         ? {
-            directPeer: {
-              peerId: config.peer.peerId,
-              routeHints: expandWildcardListenAddresses(config.peer.listenAddresses),
-              coordinationRelays: [...config.peer.coordinationRelays],
-            },
+            activatePrevious: () =>
+              deps
+                .manageService({ ...legacyCommon, action: 'start' }, legacyBackend)
+                .then(() => undefined),
           }
         : {}),
+      ...(options.expectedTarget ? { expectedTarget: options.expectedTarget } : {}),
     },
-    deps,
-    emit,
   );
+  const current = recovered.kind === 'active' ? recovered.config : undefined;
+  assertExpectedDeploymentGeneration(options.expectedTarget, current);
+  const legacyToMigrate = current ? null : legacyConfig;
+  if (current && legacyConfig) await assertLegacyArtifactsAbsent(legacyBackend);
+  if (legacyToMigrate) await assertCompatibleExistingVersion(legacyStatus, options.version);
+  if (current && current.launch.package.version !== options.version) {
+    throw new RuntimeHostSetupError(
+      'version_change_requires_update',
+      `Runtime Host ${current.launch.package.version} is already installed; changing to ${options.version} requires the update workflow`,
+    );
+  }
+
+  const resolvedPackage = await resolveRuntimeHostSetupPackage(options, deps);
+  const { candidate } = resolvedPackage;
+  if (current && !sameExactPackage(current, candidate)) {
+    throw new RuntimeHostSetupError(
+      'version_change_requires_update',
+      `Runtime Host ${current.launch.package.version} is already installed; changing its exact package requires the update workflow`,
+    );
+  }
+  const lifecycleOffer: RuntimeHostLifecycleProviderOffer =
+    current?.lifecycle.mode === 'supervised'
+      ? {
+          provider: deps.resolveLifecycleProvider(capability.rootId, current.lifecycle.provider),
+          availability: current.lifecycle.availability,
+        }
+      : await deps.discoverLifecycleProvider(capability.rootId);
+  return resolvedPackage.use(async (packageRoot) => {
+    emit({ kind: 'progress', phase: 'installing_package' });
+    const deployment = await deps.prepareDeployment({
+      serviceId: capability.rootId,
+      clientDataRoot: options.clientDataRoot,
+      sourcePackageRoot: packageRoot,
+      version: candidate.version,
+      packageIntegrity: candidate.integrity,
+    });
+    let committed = false;
+    try {
+      const desired = await prepareSupervisedDeploymentConfig(
+        options,
+        deps,
+        capability,
+        deployment.cliPath,
+        deployment.root,
+        candidate,
+        current,
+        legacyToMigrate,
+        lifecycleOffer,
+      );
+      if (current && !sameDesiredManagedDeployment(current, desired)) {
+        if (current.lifecycle.mode === 'supervised') {
+          throw new RuntimeHostSetupError(
+            'configuration_changed',
+            'Change an existing supervised Runtime Host through its explicit configure or update workflow',
+          );
+        }
+      }
+      emit({ kind: 'progress', phase: 'installing_service' });
+      if (legacyToMigrate) {
+        await legacyBackend.verifyDeployment(legacyToMigrate, {
+          acceptLegacyConfigLaunch: true,
+        });
+      }
+      const replacement = await deps.replaceLifecycle({
+        operation: legacyToMigrate
+          ? 'legacy_migration'
+          : current
+            ? isDeepStrictEqual(current.lifecycle, desired.lifecycle)
+              ? 'configure'
+              : 'lifecycle_change'
+            : 'install',
+        ...(current ? { current } : {}),
+        desired,
+        ...(legacyToMigrate ? { retirementSupervisor: legacyBackend } : {}),
+        ...(legacyToMigrate
+          ? {
+              activatePrevious: () =>
+                deps
+                  .manageService({ ...legacyCommon, action: 'start' }, legacyBackend)
+                  .then(() => undefined),
+            }
+          : {}),
+        deps: lifecycleDeps,
+      });
+      if (replacement.kind === 'active_tasks') {
+        throw new RuntimeHostSetupError(
+          'active_tasks',
+          'Runtime Host setup is waiting for active work to finish',
+        );
+      }
+      committed = true;
+      if (legacyConfig) {
+        await removeRuntimeHostServiceFile(
+          resolveRuntimeHostManagedServiceConfigPath(options.clientDataRoot),
+          'legacy service config',
+        );
+        if (
+          legacyConfig.managedDeploymentRoot &&
+          resolve(legacyConfig.managedDeploymentRoot) !== resolve(deployment.root)
+        ) {
+          await removeRuntimeHostManagedDeployment(
+            legacyConfig.managedDeploymentRoot,
+            legacyServiceId,
+          );
+        }
+      }
+      await deps.prunePackages(desired);
+      const websocket = desired.listeners.websocket;
+      if (!websocket) {
+        throw new RuntimeHostSetupError(
+          'service_not_ready',
+          'Supervised Runtime Host setup requires a WebSocket listener',
+        );
+      }
+      const directPeer = desired.listeners.directPeer?.enabled
+        ? desired.listeners.directPeer
+        : undefined;
+      return {
+        serviceId: capability.rootId,
+        deploymentId: desired.deploymentId,
+        operatorPath: deployment.operatorPath,
+        rootPath: capability.canonicalPath,
+        endpoint: websocketUrl(websocket),
+        ...(directPeer
+          ? {
+              directPeer: {
+                peerId: directPeer.peerId,
+                routeHints: expandWildcardListenAddresses(directPeer.listenAddresses),
+                coordinationRelays: [...directPeer.coordinationRelays],
+              },
+            }
+          : {}),
+      };
+    } catch (error) {
+      if (!current && !committed && canDiscardRuntimeHostLifecycleDesiredArtifacts(error)) {
+        await removeRuntimeHostManagedDeployment(deployment.root, capability.rootId).catch(
+          () => undefined,
+        );
+      }
+      throw error;
+    }
+  });
+}
+
+async function prepareSupervisedDeploymentConfig(
+  options: RuntimeHostSetupCliOptions,
+  deps: RuntimeHostSetupDeps,
+  capability: Awaited<ReturnType<typeof resolveStorageRoot>>,
+  cliPath: string,
+  deploymentRoot: string,
+  candidate: { readonly version: string; readonly integrity: string },
+  current: RuntimeHostManagedDeploymentConfig | undefined,
+  legacy: RuntimeHostManagedServiceConfig | null,
+  offer: RuntimeHostLifecycleProviderOffer,
+): Promise<RuntimeHostManagedDeploymentConfig> {
+  const projectDirectoryRoots = await resolveRuntimeHostManagedProjectDirectoryRoots(
+    options.projectDirectoryRoots ??
+      current?.projectDirectoryRoots ??
+      (legacy
+        ? effectiveRuntimeHostProjectDirectoryRoots(legacy)
+        : [{ label: '~', path: resolve(homedir()) }]),
+  );
+  const currentWebSocket = current?.listeners.websocket;
+  const websocketPort =
+    options.websocketPort ??
+    (currentWebSocket && currentWebSocket.port > 0
+      ? currentWebSocket.port
+      : legacy?.websocket.port) ??
+    (await deps.allocateLoopbackPort());
+  const directPeer = await prepareSupervisedDirectPeer(
+    options,
+    deps,
+    cliPath,
+    deploymentRoot,
+    current?.listeners.directPeer,
+  );
+  const draft: RuntimeHostManagedDeploymentConfig = {
+    schemaVersion: 1,
+    state: 'active',
+    deploymentId: current?.deploymentId ?? randomUUID(),
+    configRevision: current ? current.configRevision + 1 : 1,
+    deploymentRoot,
+    root: { path: capability.canonicalPath, id: capability.rootId },
+    projectDirectoryRoots: [...projectDirectoryRoots],
+    launch: {
+      kind: 'exact_package',
+      nodePath: current?.launch.nodePath ?? process.execPath,
+      package: {
+        kind: 'npm_registry',
+        version: candidate.version,
+        integrity: candidate.integrity,
+      },
+    },
+    listeners: {
+      localIpc: true,
+      websocket: {
+        host: '127.0.0.1',
+        port: websocketPort,
+        path:
+          options.websocketPath ??
+          currentWebSocket?.path ??
+          legacy?.websocket.path ??
+          '/runtime-host',
+      },
+      ...(directPeer ? { directPeer } : {}),
+    },
+    lifecycle: {
+      mode: 'supervised',
+      provider: offer.provider.supervisor.provider,
+      availability: offer.availability,
+    },
+    reconciliation: {
+      trigger: 'scheduled',
+      provider: offer.provider.reconciliationTrigger.provider,
+    },
+  };
+  return draft;
+}
+
+async function prepareSupervisedDirectPeer(
+  options: RuntimeHostSetupCliOptions,
+  deps: RuntimeHostSetupDeps,
+  cliPath: string,
+  deploymentRoot: string,
+  current: RuntimeHostManagedDeploymentConfig['listeners']['directPeer'],
+): Promise<RuntimeHostManagedDeploymentConfig['listeners']['directPeer']> {
+  if (!options.directPeer && !current) return undefined;
+  const keyPath = current?.keyPath ?? resolveRuntimeHostManagedPeerKeyPath(deploymentRoot);
+  const peerId = await deps.ensurePeerIdentity({
+    nativePath: await deps.resolvePeerNativePath(cliPath),
+    keyPath,
+  });
+  const expectedPeerId = current?.peerId;
+  if (expectedPeerId && expectedPeerId !== peerId) {
+    throw new RuntimeHostSetupError(
+      'invalid_config',
+      'The Runtime Host peer identity does not match its persisted deployment',
+    );
+  }
+  return {
+    enabled: options.directPeer ? true : (current?.enabled ?? true),
+    keyPath,
+    peerId,
+    listenAddresses: [
+      ...(current?.listenAddresses ?? [
+        `/ip4/0.0.0.0/udp/${String(await deps.allocatePeerPort())}/quic-v1`,
+      ]),
+    ],
+    coordinationRelays: [
+      ...(options.directPeer?.coordinationRelays ?? current?.coordinationRelays ?? []),
+    ],
+  };
+}
+
+function sameDesiredManagedDeployment(
+  current: RuntimeHostManagedDeploymentConfig,
+  desired: RuntimeHostManagedDeploymentConfig,
+): boolean {
+  const { configRevision: _currentRevision, ...currentState } = current;
+  const { configRevision: _desiredRevision, ...desiredState } = desired;
+  return isDeepStrictEqual(currentState, desiredState);
 }
 
 async function runRuntimeHostOnDemandSetupLocked(
@@ -279,55 +667,103 @@ async function runRuntimeHostOnDemandSetupLocked(
   deps: RuntimeHostSetupDeps,
   emit: SetupEmitter,
 ): Promise<void> {
-  if (options.expectedTarget) {
-    throw new RuntimeHostSetupError(
-      'lifecycle_owner_exists',
-      'On-demand setup cannot replace an existing managed service',
-    );
-  }
   if (options.directPeer) {
     throw new RuntimeHostSetupError(
       'unsupported_lifecycle_configuration',
       'On-demand setup does not support a Direct peer listener',
     );
   }
+  emit({ kind: 'progress', phase: 'checking_environment' });
+  const legacyServiceId = resolveRuntimeHostManagedServiceId(options.clientDataRoot);
+  const legacyConfigPath = resolveRuntimeHostManagedServiceConfigPath(options.clientDataRoot);
+  let legacyConfig: RuntimeHostManagedServiceConfig | null = null;
   try {
-    await readRuntimeHostManagedServiceConfig(
-      resolveRuntimeHostManagedServiceConfigPath(options.clientDataRoot),
-    );
-    throw new RuntimeHostSetupError(
-      'lifecycle_owner_exists',
-      'Remove or migrate the existing managed Runtime Host service before on-demand setup',
-    );
+    legacyConfig = await readRuntimeHostManagedServiceConfig(legacyConfigPath);
   } catch (error) {
     if (!(error instanceof RuntimeHostServiceManagerError) || error.code !== 'not_installed') {
       throw error;
     }
   }
-  emit({ kind: 'progress', phase: 'checking_environment' });
+  const legacyBackend = legacyConfig
+    ? deps.createBackend(legacyServiceId, options.clientDataRoot)
+    : undefined;
+  let legacyStatus: RuntimeHostManagedServiceResult | undefined;
+  if (legacyBackend) {
+    legacyStatus = await deps.manageService(
+      {
+        action: 'status',
+        clientDataRoot: options.clientDataRoot,
+        defaultRootPath: options.defaultRootPath,
+        nodePath: process.execPath,
+        cliPath: join(options.sourcePackageRoot, 'dist', 'cli.js'),
+        ...(options.expectedTarget
+          ? { expectedTarget: legacyManagedTarget(options.expectedTarget, legacyServiceId) }
+          : {}),
+      },
+      legacyBackend,
+    );
+  }
   const capability = await resolveStorageRoot({
-    path: resolve(options.rootPath ?? options.defaultRootPath),
+    path: resolve(
+      options.rootPath ??
+        legacyConfig?.rootPath ??
+        options.expectedTarget?.rootPath ??
+        options.defaultRootPath,
+    ),
     kind: 'interactive',
   });
-  const candidate = await deps.resolveRegistryCandidate({
-    kind: 'exact',
-    version: options.version,
-  });
+  assertCanonicalSetupTarget(options.expectedTarget, capability.rootId, capability.canonicalPath);
+  const recoveryDeps: RuntimeHostLifecycleTransactionDeps = {
+    convergeOperator: (currentConfig, desiredConfig) =>
+      deps.convergeOperator(currentConfig, desiredConfig),
+    verifyOperator: deps.verifyOperator,
+    resolveProvider: (requested) => deps.resolveLifecycleProvider(capability.rootId, requested),
+    ...(legacyConfig && legacyBackend
+      ? legacyMigrationDeps(legacyConfig, legacyBackend, legacyServiceId, options.clientDataRoot)
+      : {}),
+  };
+  const recovered = await resolveRecoverableRuntimeHostManagedDeployment(
+    capability.rootId,
+    recoveryDeps,
+    {
+      ...(legacyBackend ? { retirementSupervisor: legacyBackend } : {}),
+      ...(legacyBackend ? { activatePrevious: () => legacyBackend.start() } : {}),
+      ...(options.expectedTarget ? { expectedTarget: options.expectedTarget } : {}),
+    },
+  );
+  const current = recovered.kind === 'active' ? recovered.config : undefined;
+  const legacyToMigrate = current ? null : legacyConfig;
+  if (current && legacyBackend) await assertLegacyArtifactsAbsent(legacyBackend);
+  if (legacyToMigrate && legacyStatus) {
+    await assertCompatibleExistingVersion(legacyStatus, options.version);
+  }
+  assertExpectedDeploymentGeneration(options.expectedTarget, current);
+  const resolvedPackage = await resolveRuntimeHostSetupPackage(options, deps);
+  const { candidate } = resolvedPackage;
   const serviceId = capability.rootId;
-  const deploymentRoot = resolveRuntimeHostManagedDeploymentRoot(serviceId);
-  let config: RuntimeHostManagedDeploymentConfig = {
+  const deploymentRoot =
+    current?.deploymentRoot ?? resolveRuntimeHostManagedDeploymentRoot(serviceId);
+  if (current && !sameExactPackage(current, candidate)) {
+    throw new RuntimeHostSetupError(
+      'version_change_requires_update',
+      `Runtime Host ${current.launch.package.version} is already installed; changing its exact package requires the update workflow`,
+    );
+  }
+  const draft: RuntimeHostManagedDeploymentConfig = {
     schemaVersion: 1,
-    deploymentId: randomUUID(),
-    configRevision: 1,
+    state: 'active',
+    deploymentId: current?.deploymentId ?? randomUUID(),
+    configRevision: current ? current.configRevision + 1 : 1,
     deploymentRoot,
     root: { path: capability.canonicalPath, id: capability.rootId },
     projectDirectoryRoots: options.projectDirectoryRoots?.map(({ label, path }) => ({
       label,
       path: resolve(path),
-    })) ?? [{ label: '~', path: resolve(homedir()) }],
+    })) ??
+      current?.projectDirectoryRoots ?? [{ label: '~', path: resolve(homedir()) }],
     launch: {
       kind: 'exact_package',
-      nodePath: process.execPath,
+      nodePath: current?.launch.nodePath ?? process.execPath,
       package: {
         kind: 'npm_registry',
         version: candidate.version,
@@ -339,35 +775,35 @@ async function runRuntimeHostOnDemandSetupLocked(
       websocket: {
         host: '127.0.0.1',
         port: options.websocketPort ?? 0,
-        path: options.websocketPath ?? '/runtime-host',
+        path: options.websocketPath ?? current?.listeners.websocket?.path ?? '/runtime-host',
       },
+      ...(current?.listeners.directPeer
+        ? { directPeer: { ...current.listeners.directPeer, enabled: false } }
+        : {}),
     },
     lifecycle: { mode: 'on_demand', availability: 'activation' },
-    reconciliation: { trigger: 'manual' },
+    reconciliation: { trigger: 'activation' },
   };
+  const reuseCurrent =
+    current?.lifecycle.mode === 'on_demand' && sameDesiredManagedDeployment(current, draft);
+  const config = reuseCurrent ? current : draft;
   let operatorPath: string | undefined;
-  await deps.withRegistryPackage(candidate, async (packageRoot) => {
-    const owner = await tryAcquireStateRootOwner(capability);
-    if (!owner) {
-      throw new RuntimeHostSetupError(
-        'state_root_owned',
-        'The State Root must be idle before on-demand setup',
-      );
-    }
+  let activation: Awaited<ReturnType<typeof activateRuntimeHostManagedDeployment>> | undefined;
+  const lifecycleDeps: RuntimeHostLifecycleTransactionDeps = {
+    convergeOperator: (currentConfig, desiredConfig) =>
+      deps.convergeOperator(currentConfig, desiredConfig),
+    verifyOperator: deps.verifyOperator,
+    resolveProvider: (requested) => deps.resolveLifecycleProvider(serviceId, requested),
+    ...(legacyToMigrate && legacyBackend
+      ? legacyMigrationDeps(legacyToMigrate, legacyBackend, legacyServiceId, options.clientDataRoot)
+      : {}),
+  };
+  await resolvedPackage.use(async (packageRoot) => {
     let committed = false;
-    let created = false;
+    const created = !current;
     try {
       emit({ kind: 'progress', phase: 'installing_package' });
-      const existing = await readRuntimeHostManagedDeploymentConfig(capability);
-      if (existing && !sameDesiredOnDemandDeployment(existing, config)) {
-        throw new RuntimeHostSetupError(
-          'lifecycle_owner_exists',
-          'The State Root already has a different managed deployment',
-        );
-      }
-      if (existing) config = existing;
-      created = !existing;
-      const deployment = existing
+      const deployment = current
         ? await deps.openDeployment({
             serviceId,
             clientDataRoot: options.clientDataRoot,
@@ -386,36 +822,75 @@ async function runRuntimeHostOnDemandSetupLocked(
             version: candidate.version,
             packageIntegrity: candidate.integrity,
           });
+      const desiredConfig: RuntimeHostManagedDeploymentConfig = current
+        ? config
+        : { ...config, deploymentRoot: deployment.root };
       operatorPath = deployment.operatorPath;
       emit({ kind: 'progress', phase: 'installing_service' });
-      await deployment.activate();
-      await commitRuntimeHostManagedDeployment(owner, config);
+      if (legacyToMigrate && legacyBackend) {
+        await legacyBackend.verifyDeployment(legacyToMigrate, {
+          acceptLegacyConfigLaunch: true,
+        });
+      }
+      if (reuseCurrent) {
+        await deps.convergeOperator(current, current);
+        await deps.verifyOperator(current);
+      } else {
+        const replacement = await deps.replaceLifecycle({
+          operation: legacyToMigrate
+            ? 'legacy_migration'
+            : current
+              ? isDeepStrictEqual(current.lifecycle, config.lifecycle)
+                ? 'configure'
+                : 'lifecycle_change'
+              : 'install',
+          ...(current ? { current } : {}),
+          desired: desiredConfig,
+          ...(legacyToMigrate && legacyBackend ? { retirementSupervisor: legacyBackend } : {}),
+          ...(legacyToMigrate && legacyBackend
+            ? { activatePrevious: () => legacyBackend.start() }
+            : {}),
+          activateDesired: async () => {
+            await deps.activateDesired({ rootId: capability.rootId });
+          },
+          deps: lifecycleDeps,
+        });
+        if (replacement.kind === 'active_tasks') {
+          throw new RuntimeHostSetupError(
+            'active_tasks',
+            'Runtime Host setup is waiting for active work to finish',
+          );
+        }
+      }
       committed = true;
-      await deployment.cleanup();
+      await deps.prunePackages(
+        (await resolveRuntimeHostManagedDeployment(capability.rootId)).config,
+      );
     } catch (error) {
-      if (
-        created &&
-        !committed &&
-        !(
-          error instanceof RuntimeHostDeploymentAuthorityError &&
-          error.code === 'deployment_commit_unknown'
-        )
-      ) {
+      if (created && !committed && canDiscardRuntimeHostLifecycleDesiredArtifacts(error)) {
         await removeRuntimeHostManagedDeployment(deploymentRoot, serviceId).catch(() => undefined);
       }
       throw error;
-    } finally {
-      await owner.close();
     }
   });
   if (!operatorPath)
     throw new RuntimeHostSetupError('deployment_failed', 'Setup did not install an operator');
 
-  const activation = await deps.activateManaged({ rootId: capability.rootId });
+  activation = await deps.activateManaged({ rootId: capability.rootId });
+  if (legacyConfig) {
+    await removeRuntimeHostServiceFile(legacyConfigPath, 'legacy service config');
+    if (
+      legacyConfig.managedDeploymentRoot &&
+      resolve(legacyConfig.managedDeploymentRoot) !== resolve(config.deploymentRoot)
+    ) {
+      await removeRuntimeHostManagedDeployment(legacyConfig.managedDeploymentRoot, legacyServiceId);
+    }
+  }
   await pairAndVerifyRuntimeHostSetup(
     options,
     {
       serviceId,
+      deploymentId: config.deploymentId,
       operatorPath,
       rootPath: capability.canonicalPath,
       endpoint: websocketUrl({
@@ -429,10 +904,146 @@ async function runRuntimeHostOnDemandSetupLocked(
   );
 }
 
+function legacyMigrationDeps(
+  config: RuntimeHostManagedServiceConfig,
+  backend: RuntimeHostServiceBackend,
+  legacyServiceId: string,
+  clientDataRoot: string,
+): Pick<RuntimeHostLifecycleTransactionDeps, 'uninstallLegacy' | 'restoreLegacy'> {
+  return {
+    uninstallLegacy: async (transition) => {
+      await projectLegacyUpdatePolicy(config, legacyServiceId, transition.to ?? transition.from);
+      await backend.uninstall();
+    },
+    restoreLegacy: async (transition) => {
+      await removeProjectedLegacyUpdatePolicy(config, transition.to ?? transition.from);
+      if (config.managedDeploymentRoot) {
+        await restoreRuntimeHostLegacyManagedOperator({
+          deploymentRoot: config.managedDeploymentRoot,
+          nodePath: config.launch.nodePath,
+          cliPath: config.launch.cliPath,
+          clientDataRoot,
+          serviceId: legacyServiceId,
+        });
+      }
+      const restoration = await backend.stageDeployment();
+      await restoration.apply(config, false);
+    },
+  };
+}
+
+async function projectLegacyUpdatePolicy(
+  config: RuntimeHostManagedServiceConfig,
+  legacyServiceId: string,
+  desired: RuntimeHostManagedDeploymentConfig | null,
+): Promise<void> {
+  if (!config.managedDeploymentRoot || !desired) return;
+  const record = await readRuntimeHostManagedUpdatePolicy(config.managedDeploymentRoot);
+  if (record) {
+    if (
+      record.target.serviceId !== legacyServiceId ||
+      record.target.rootId !== desired.root.id ||
+      resolve(record.target.rootPath) !== resolve(desired.root.path)
+    ) {
+      throw new RuntimeHostSetupError(
+        'target_mismatch',
+        'The legacy automatic update policy does not match the Runtime Host migration target',
+      );
+    }
+    await writeRuntimeHostManagedUpdatePolicy(desired.deploymentRoot, {
+      ...record,
+      target: {
+        serviceId: desired.root.id,
+        rootId: desired.root.id,
+        rootPath: desired.root.path,
+        deploymentId: desired.deploymentId,
+      },
+    });
+  } else {
+    await writeRuntimeHostManagedUpdatePolicy(desired.deploymentRoot, null);
+  }
+}
+
+async function removeProjectedLegacyUpdatePolicy(
+  config: RuntimeHostManagedServiceConfig,
+  desired: RuntimeHostManagedDeploymentConfig | null,
+): Promise<void> {
+  if (
+    config.managedDeploymentRoot &&
+    desired &&
+    resolve(config.managedDeploymentRoot) !== resolve(desired.deploymentRoot)
+  ) {
+    await writeRuntimeHostManagedUpdatePolicy(desired.deploymentRoot, null);
+  }
+}
+
+function legacyManagedTarget(
+  target: RuntimeHostManagedServiceTarget,
+  legacyServiceId: string,
+): RuntimeHostManagedServiceTarget {
+  return {
+    serviceId: legacyServiceId,
+    rootPath: target.rootPath,
+    rootId: target.rootId,
+  };
+}
+
+function assertCanonicalSetupTarget(
+  target: RuntimeHostManagedServiceTarget | undefined,
+  rootId: string,
+  rootPath: string,
+): void {
+  if (
+    target &&
+    (target.serviceId !== rootId || target.rootId !== rootId || target.rootPath !== rootPath)
+  ) {
+    throw new RuntimeHostSetupError(
+      'target_mismatch',
+      'The managed Runtime Host does not match the expected deployment identity',
+    );
+  }
+}
+
+function assertExpectedDeploymentGeneration(
+  target: RuntimeHostManagedServiceTarget | undefined,
+  current: RuntimeHostManagedDeploymentConfig | undefined,
+): void {
+  if (
+    target?.deploymentId !== undefined &&
+    (!current || target.deploymentId !== current.deploymentId)
+  ) {
+    throw new RuntimeHostSetupError(
+      'target_mismatch',
+      'The managed Runtime Host deployment generation changed before setup',
+    );
+  }
+}
+
+async function assertLegacyArtifactsAbsent(backend: RuntimeHostServiceBackend): Promise<void> {
+  const status = await backend.status();
+  if (status.installed || status.enabled || status.active) {
+    throw new RuntimeHostSetupError(
+      'lifecycle_owner_exists',
+      'The canonical deployment is active but its legacy lifecycle artifact can still start',
+    );
+  }
+}
+
+function sameExactPackage(
+  config: RuntimeHostManagedDeploymentConfig,
+  candidate: { readonly version: string; readonly integrity: string },
+): boolean {
+  return (
+    config.launch.package.version === candidate.version &&
+    config.launch.package.integrity === candidate.integrity
+  );
+}
+
 async function pairAndVerifyRuntimeHostSetup(
   options: RuntimeHostSetupCliOptions,
   target: {
     readonly serviceId: string;
+    readonly deploymentId: string;
     readonly operatorPath: string;
     readonly rootPath: string;
     readonly endpoint: string;
@@ -480,6 +1091,7 @@ async function pairAndVerifyRuntimeHostSetup(
       kind: 'complete',
       version: options.version,
       serviceId: target.serviceId,
+      deploymentId: target.deploymentId,
       operatorPath: target.operatorPath,
       rootPath: target.rootPath,
       rootId: paired.rootId,
@@ -512,43 +1124,6 @@ async function pairAndVerifyRuntimeHostSetup(
     }
     throw error;
   }
-}
-
-function sameDesiredOnDemandDeployment(
-  current: RuntimeHostManagedDeploymentConfig,
-  requested: RuntimeHostManagedDeploymentConfig,
-): boolean {
-  const { deploymentId: _currentId, ...currentDesiredState } = current;
-  const { deploymentId: _requestedId, ...requestedDesiredState } = requested;
-  return isDeepStrictEqual(currentDesiredState, requestedDesiredState);
-}
-
-function currentManagedPackage(
-  status: RuntimeHostManagedServiceResult,
-  serviceId: string,
-  version: string,
-):
-  | {
-      readonly deploymentRoot: string;
-      readonly cliPath: string;
-    }
-  | undefined {
-  const config = status.service.config;
-  if (
-    status.service.installedVersion !== version ||
-    !config?.managedDeploymentRoot ||
-    !isRuntimeHostManagedDeploymentCli(
-      config.managedDeploymentRoot,
-      serviceId,
-      config.launch.cliPath,
-    )
-  ) {
-    return undefined;
-  }
-  return {
-    deploymentRoot: config.managedDeploymentRoot,
-    cliPath: config.launch.cliPath,
-  };
 }
 
 async function assertCompatibleExistingVersion(
@@ -593,7 +1168,10 @@ async function verifyRuntimeHostSetupCredential(input: {
     credential: input.credential,
     expectedRootId: input.rootId,
     compositionId: INTERACTIVE_RUNTIME_HOST_COMPOSITION_ID,
-    protocol: { min: RUNTIME_HOST_PROTOCOL_VERSION, max: RUNTIME_HOST_PROTOCOL_VERSION },
+    protocol: {
+      min: RUNTIME_HOST_PROTOCOL_VERSION,
+      max: RUNTIME_HOST_PROTOCOL_VERSION,
+    },
   });
   if (result.kind !== 'connected') {
     throw new RuntimeHostSetupError(
@@ -624,7 +1202,11 @@ type SetupEmitter = (
 function createEmitter(json: boolean, deps: RuntimeHostSetupDeps): SetupEmitter {
   let sequence = 0;
   return (input) => {
-    const frame = { schemaVersion: 1, sequence: sequence++, ...input } as RuntimeHostSetupFrame;
+    const frame = {
+      schemaVersion: 1,
+      sequence: sequence++,
+      ...input,
+    } as RuntimeHostSetupFrame;
     if (json) {
       deps.writeOutput(encodeRuntimeHostSetupFrame(frame));
       return;

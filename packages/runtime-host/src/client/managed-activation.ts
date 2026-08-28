@@ -126,6 +126,7 @@ export async function activateRuntimeHostManagedDeployment(
     compositionId: INTERACTIVE_RUNTIME_HOST_COMPOSITION_ID,
     clientInstanceId: randomUUID(),
     candidateEntrypoint: layout.candidateEntrypoint,
+    candidateExecutable: config.launch.nodePath,
     managedLaunchClaim: runtimeHostManagedLaunchClaim(config),
     ...(input.signal === undefined ? {} : { signal: input.signal }),
     ...(input.electionDeadlineMs === undefined

@@ -20,14 +20,14 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import type { DesktopRuntimeHostProfileAddInput } from '../../preload/bridge-contract.js';
-import type { DesktopRuntimeHostManagedService } from '../runtime-host-managed-services.js';
+import type { DesktopRuntimeHostManagedServiceTarget } from '../runtime-host-managed-services.js';
 import { createDesktopRuntimeHostOnboarding } from '../runtime-host-onboarding.js';
 
 test('persists a verified on-demand SSH profile without endpoint or credential projection', async () => {
   let setupInput: unknown;
   let saved:
     | (DesktopRuntimeHostProfileAddInput & {
-        readonly managedService?: DesktopRuntimeHostManagedService;
+        readonly managedService?: DesktopRuntimeHostManagedServiceTarget;
       })
     | undefined;
   const harness = createHarness({
@@ -42,6 +42,7 @@ test('persists a verified on-demand SSH profile without endpoint or credential p
       onProgress({ phase: 'installing_service' });
       return {
         serviceId: 'b'.repeat(64),
+        deploymentId: '00000000-0000-4000-8000-000000000001',
         rootPath: '/home/operator/.config/Maka/workspaces/default',
         operatorPath: '/home/operator/.local/share/maka/operator',
         rootId: 'a'.repeat(64),
@@ -52,6 +53,7 @@ test('persists a verified on-demand SSH profile without endpoint or credential p
   });
 
   const result = await harness.invoke('runtime-host-onboarding:start', {
+    kind: 'ssh',
     name: 'Lab',
     destination: 'operator@example.com',
     projectDirectoryRoots: [{ label: 'Work', path: '/srv/work' }],
@@ -59,7 +61,8 @@ test('persists a verified on-demand SSH profile without endpoint or credential p
 
   assert.equal((result as { kind?: string }).kind, 'complete');
   assert.equal(saved?.profile.name, 'Lab');
-  assert.deepEqual(saved?.profile.transport, {
+  if (saved?.profile.kind !== 'remote') assert.fail('expected remote profile');
+  assert.deepEqual(saved.profile.transport, {
     kind: 'ssh',
     destination: 'operator@example.com',
     activation: {
@@ -67,7 +70,17 @@ test('persists a verified on-demand SSH profile without endpoint or credential p
       operatorPath: '/home/operator/.local/share/maka/operator',
     },
   });
-  assert.equal(saved?.managedService, undefined);
+  assert.deepEqual(saved?.managedService, {
+    deployment: {
+      id: 'b'.repeat(64),
+      rootPath: '/home/operator/.config/Maka/workspaces/default',
+      deploymentId: '00000000-0000-4000-8000-000000000001',
+    },
+    control: {
+      kind: 'ssh_operator',
+      operatorPath: '/home/operator/.local/share/maka/operator',
+    },
+  });
   assert.equal(saved?.credential, 'secret-access-token');
   assert.deepEqual(
     (setupInput as { projectDirectoryRoots?: unknown }).projectDirectoryRoots,
@@ -79,10 +92,74 @@ test('persists a verified on-demand SSH profile without endpoint or credential p
   assert.equal(harness.handlers.size, 0);
 });
 
+test('onboards WSL as a credential-free environment profile', async () => {
+  let saved: DesktopRuntimeHostProfileAddInput | undefined;
+  const peerTargets: string[] = [];
+  const harness = createHarness({
+    profiles: {
+      addAndEnable: async (input) => {
+        saved = input;
+        return { kind: 'connected', snapshot: { entries: [], defaultProfileId: 'local' } };
+      },
+    },
+    runWslSetup: async (_input, _onProgress, onComplete) => {
+      onComplete();
+      return {
+        rootId: 'a'.repeat(64),
+        operatorPath: '/home/operator/.local/share/maka/operator',
+      };
+    },
+    resolveSetupPackage: (peerTarget) => {
+      peerTargets.push(peerTarget);
+      return { kind: 'npm', specifier: 'maka-agent@0.2.0' };
+    },
+  });
+
+  const result = await harness.invoke('runtime-host-onboarding:start', {
+    kind: 'wsl',
+    distribution: 'Ubuntu-24.04',
+  });
+
+  assert.equal((result as { kind?: string }).kind, 'complete');
+  assert.equal(saved?.credential, undefined);
+  assert.deepEqual(saved?.profile, {
+    id: saved?.profile.id,
+    name: 'Ubuntu-24.04',
+    kind: 'environment',
+    provider: { kind: 'wsl', distribution: 'Ubuntu-24.04' },
+    rootId: 'a'.repeat(64),
+    operatorPath: '/home/operator/.local/share/maka/operator',
+  });
+  assert.deepEqual(peerTargets, ['none']);
+  await harness.onboarding.close();
+});
+
+test('projects WSL setup failures as recoverable onboarding state', async () => {
+  const harness = createHarness({
+    runWslSetup: async () => {
+      throw new Error('WSL requires Linux Node.js');
+    },
+  });
+
+  assert.deepEqual(
+    await harness.invoke('runtime-host-onboarding:start', {
+      kind: 'wsl',
+      distribution: 'Ubuntu',
+    }),
+    {
+      kind: 'failed',
+      message: 'WSL requires Linux Node.js',
+      revision: 3,
+    },
+  );
+  await harness.onboarding.close();
+});
+
 test('projects invalid setup input as a recoverable failure', async () => {
   const harness = createHarness();
 
   const result = await harness.invoke('runtime-host-onboarding:start', {
+    kind: 'ssh',
     destination: '',
   });
   assert.deepEqual(result, {
@@ -102,6 +179,7 @@ test('rejects relative remote Project roots before starting SSH setup', async ()
   const harness = createHarness();
 
   const result = await harness.invoke('runtime-host-onboarding:start', {
+    kind: 'ssh',
     destination: 'operator@example.com',
     projectDirectoryRoots: [{ label: 'Work', path: 'srv/work' }],
   });
@@ -122,6 +200,7 @@ test('finishes Host pairing after the cancellable SSH phase has completed', asyn
   let completeReceived = false;
   let finishSetup!: (value: {
     serviceId: string;
+    deploymentId: string;
     rootPath: string;
     operatorPath: string;
     rootId: string;
@@ -130,6 +209,7 @@ test('finishes Host pairing after the cancellable SSH phase has completed', asyn
   }) => void;
   const setupDrain = new Promise<{
     serviceId: string;
+    deploymentId: string;
     rootPath: string;
     operatorPath: string;
     rootId: string;
@@ -153,6 +233,7 @@ test('finishes Host pairing after the cancellable SSH phase has completed', asyn
   });
 
   const setup = harness.invoke('runtime-host-onboarding:start', {
+    kind: 'ssh',
     destination: 'operator@example.com',
   }) as Promise<unknown>;
   while (!completeReceived) await Promise.resolve();
@@ -160,6 +241,7 @@ test('finishes Host pairing after the cancellable SSH phase has completed', asyn
 
   finishSetup({
     serviceId: 'b'.repeat(64),
+    deploymentId: '00000000-0000-4000-8000-000000000001',
     rootPath: '/home/operator/.config/Maka/workspaces/default',
     operatorPath: '/home/operator/.local/share/maka/operator',
     rootId: 'a'.repeat(64),
@@ -189,6 +271,7 @@ test('resolves the setup package only when onboarding starts', async () => {
   assert.equal(resolutions, 0);
   assert.deepEqual(
     await harness.invoke('runtime-host-onboarding:start', {
+      kind: 'ssh',
       destination: 'operator@example.com',
     }),
     {
@@ -213,11 +296,17 @@ function createHarness(overrides: HarnessOverrides = {}) {
   const onboarding = createDesktopRuntimeHostOnboarding({
     clientInstanceId: 'stable-client',
     profiles: {
+      addAndEnable: async () => assert.fail('profile must not be saved'),
       addAndEnableVerified: async () => assert.fail('profile must not be saved'),
       ...profiles,
     },
+    setupPackageMode: 'published',
+    resolveSshDevelopmentPeerTarget: async () =>
+      assert.fail('published setup must not inspect the development target'),
     resolveSetupPackage: () => ({ kind: 'npm', specifier: 'maka-agent@0.2.0' }),
     runSetup: async () => assert.fail('SSH must not start'),
+    runWslSetup: async () => assert.fail('WSL must not start'),
+    listWslDistributions: async () => [],
     ...rest,
     ipcMain: {
       handle: (channel, handler) => handlers.set(channel, handler as (...args: unknown[]) => unknown),

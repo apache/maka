@@ -104,7 +104,7 @@ import {
   type ScheduledTaskChangedFrame,
   type SessionCatalogItem,
   type SessionCatalogProjection,
-  type SessionConfiguration,
+  type SessionConfigurationPatch,
   type SessionAssistantStreamIdentity,
   type SessionContinuitySnapshot,
   type SessionTranscriptBootstrap,
@@ -143,7 +143,7 @@ const MAX_OPTIMISTIC_ATTEMPTS = 3;
 const MAX_SESSION_REVISION_ATTEMPTS = 8;
 const MAX_PRICING_SNAPSHOT_ATTEMPTS = 3;
 
-export type DesktopSessionConfigurationPatch = Partial<SessionConfiguration>;
+export type DesktopSessionConfigurationPatch = SessionConfigurationPatch;
 
 /**
  * How a remove settled. `restored` is not a failure: the task left the state
@@ -900,23 +900,7 @@ export class DesktopRuntimeHostClient {
       this.request("session.configuration.update", {
         sessionId,
         expectedRevision: current.revision,
-        configuration: {
-          // An unlocked Session still follows the Host-owned default route.
-          // Once execution or an explicit model change locks it, the resolved
-          // catalog route is the explicit target that must survive this patch.
-          modelTarget: current.connectionLocked
-            ? {
-                kind: "explicit",
-                connectionSlug: current.llmConnectionSlug,
-                model: current.model,
-              }
-            : { kind: "default" },
-          thinkingLevel: current.thinkingLevel ?? null,
-          permissionMode: current.permissionMode,
-          collaborationMode: current.collaborationMode,
-          orchestrationMode: current.orchestrationMode,
-          ...definedPatch,
-        },
+        patch: definedPatch,
       }),
     );
   }

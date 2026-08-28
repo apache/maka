@@ -159,6 +159,8 @@ export interface AgentRunHeader {
   turnId: string;
   status: AgentRunStatus;
   backendKind: PersistedBackendKind;
+  /** Immutable Connection entity identity. Optional only on legacy run headers. */
+  llmConnectionId?: string;
   llmConnectionSlug: string;
   modelId: string;
   cwd: string;
@@ -567,6 +569,7 @@ const AGENT_RUN_HEADER_SHAPE = defineObjectShape<AgentRunHeader>()(
   ],
   [
     'invocationId',
+    'llmConnectionId',
     'completedAt',
     'parentRunId',
     'resumedFromRunId',
@@ -643,6 +646,8 @@ export function decodeAgentRunHeader(value: unknown): AgentRunHeader {
     typeof value.turnId === 'string' &&
     (AGENT_RUN_STATUSES as readonly unknown[]).includes(value.status) &&
     isPersistedBackendKind(value.backendKind) &&
+    (value.llmConnectionId === undefined ||
+      (typeof value.llmConnectionId === 'string' && value.llmConnectionId.length > 0)) &&
     typeof value.llmConnectionSlug === 'string' &&
     typeof value.modelId === 'string' &&
     typeof value.cwd === 'string' &&

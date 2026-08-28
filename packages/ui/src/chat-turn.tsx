@@ -19,7 +19,7 @@
 
 import { memo, useEffect, useMemo, useRef, useState, type ComponentPropsWithoutRef, type ReactNode } from 'react';
 import { useMountedRef } from './use-mounted-ref.js';
-import { ICON_SIZE, AlertOctagon, Ban, Check, Copy, GitBranch, Info, Pencil, RefreshCcw, Timer } from './icons.js';
+import { ICON_SIZE, Ban, Check, Copy, GitBranch, Info, Pencil, RefreshCcw, Timer } from './icons.js';
 import { type ClipboardCopyPhase, useClipboardCopyFeedback } from './clipboard-feedback.js';
 import { Markdown } from './markdown.js';
 import {
@@ -27,8 +27,7 @@ import {
   formatTurnDuration,
   turnAbortMarkerLabel,
 } from './chat-display-helpers.js';
-import { redactSecrets } from './redact.js';
-import { isProgressiveStreamingEnabled, isTimeDrivenMotionEnabled } from './streaming-presentation.js';
+import { isTimeDrivenMotionEnabled } from './streaming-presentation.js';
 import { computerRunningLabel } from './tool-activity/computer-action-label.js';
 import {
   Badge,
@@ -47,18 +46,18 @@ import {
   Token,
   useLightbox,
 } from '@astryxdesign/core';
-import { useStreamingText } from '@astryxdesign/core/hooks';
 import { ChatReasoning } from './astryx-chat-reasoning.js';
 import { Tooltip } from '@astryxdesign/core/Tooltip';
 import { SKILL_INVOCATION_TOKEN_SOURCE } from '@maka/core/skill-invocation-token';
 import {
   type AttachmentRef,
   type InlineReference,
-  type ProviderRetryEvent,
   type QuoteRef,
 } from '@maka/core/events';
 import type { StoredMessage } from '@maka/core/session';
 import type { TransientUserMessageProjection } from './chat-view.js';
+import { type LiveProviderRetry } from './live-turn-projection.js';
+import { providerRetryDisplaySeconds } from '@maka/core/provider-retry-countdown';
 import {
   finalAssistantReplyText,
   type TurnTimelineItem,
@@ -75,6 +74,7 @@ import { getConversationCopy } from './conversation-copy.js';
 import { AstryxLocaleProvider } from './astryx-i18n.js';
 import { InlineReferenceText } from './inline-reference.js';
 import { DirectoryReferenceChip } from './directory-reference-chip.js';
+import { redactSecrets } from './redact.js';
 
 export function LocalizedChatMessage({
   accessibleLabel,
@@ -407,12 +407,18 @@ export const TurnView = memo(function TurnView(props: {
    */
   failedReasonLabel?: string;
   /**
-   * PR-PawWork-run-incident-lite: pre-derived recovery guidance for a failed
-   * turn. Caller computes this from error class, retained partial output, and
-   * tool activity so the banner can distinguish "retry" from "inspect tool
-   * output first".
+   * How loud the failed-turn banner should be. Caller computes it from the
+   * error class; `warning` marks the outcomes the session can simply continue
+   * past. Defaults to `error` when a caller doesn't derive it.
    */
-  failedRecoveryLabel?: string;
+  failedSeverity?: 'error' | 'warning';
+  /**
+   * What the turn already did before it failed, when that changes the cost of
+   * sending the next message (a tool that ran may have had side effects). This
+   * accompanies `failedReasonLabel` rather than competing with it: the reason
+   * is the outcome, this is the execution state, and both can be true.
+   */
+  failedExecutionStateLabel?: string;
   safeResumeAction?: {
     pending: boolean;
     detail?: string;
@@ -459,7 +465,7 @@ export const TurnView = memo(function TurnView(props: {
      * looks abandoned and the user most needs to see it is still working.
      */
     runningStatus?: boolean;
-    providerRetry?: ProviderRetryEvent;
+    providerRetry?: LiveProviderRetry;
     initialLiveContent?: ReadonlyMap<string, string>;
   };
   /**
@@ -672,31 +678,6 @@ export const TurnView = memo(function TurnView(props: {
                   <em>{turnAbortMarkerLabel(turn.abortSource, locale)}</em>
                 </Marker>
               )}
-              {ownsTurnChrome && turn.status === 'failed' && props.failedReasonLabel && (
-                <Marker variant="failed-banner" role="alert">
-                  <Marker as="span" variant="failed-icon" aria-hidden="true">
-                    <AlertOctagon size={ICON_SIZE.control} />
-                  </Marker>
-                  <span>{props.failedReasonLabel}</span>
-                  {(props.safeResumeAction?.detail ?? props.failedRecoveryLabel) && (
-                    <Marker as="span" variant="failed-recovery">
-                      {props.safeResumeAction?.detail ?? props.failedRecoveryLabel}
-                    </Marker>
-                  )}
-                  {props.safeResumeAction && (
-                    <UiButton
-                      variant="ghost"
-                      size="sm"
-                      className="maka-turn-failed-resume"
-                      isDisabled={props.safeResumeAction.pending}
-                      onClick={props.safeResumeAction.onResume}
-                      label={
-                        props.safeResumeAction.pending ? copy.safeResumePending : copy.safeResume
-                      }
-                    />
-                  )}
-                </Marker>
-              )}
               {/* The turn timeline is the rendering source of truth
                 (materialize.ts): each step's 深度思考 disclosure, answer bubble,
                 and Astryx tool group in the order the model produced them.
@@ -729,6 +710,45 @@ export const TurnView = memo(function TurnView(props: {
                     initialLiveContent={props.liveStreaming?.initialLiveContent}
                   />
                 ),
+              )}
+              {/* A failed turn's banner states the OUTCOME, so it belongs after
+                  the work it is the outcome of. It used to render above the
+                  timeline, where it read as a header on reasoning and tool
+                  calls that had in fact all succeeded.
+
+                  `description` carries the parked-resume diagnostic when there
+                  is one — it explains why the button did nothing, which
+                  outranks execution state on the one turn that can have both. */}
+              {ownsTurnChrome && turn.status === 'failed' && props.failedReasonLabel && (
+                <Banner
+                  status={props.failedSeverity ?? 'error'}
+                  container="section"
+                  className="maka-turn-failed-banner"
+                  title={props.failedReasonLabel}
+                  {...(props.safeResumeAction?.detail ?? props.failedExecutionStateLabel
+                    ? {
+                        description:
+                          props.safeResumeAction?.detail ?? props.failedExecutionStateLabel,
+                      }
+                    : {})}
+                  {...(props.safeResumeAction
+                    ? {
+                        endContent: (
+                          <UiButton
+                            variant="ghost"
+                            size="sm"
+                            isDisabled={props.safeResumeAction.pending}
+                            onClick={props.safeResumeAction.onResume}
+                            label={
+                              props.safeResumeAction.pending
+                                ? copy.safeResumePending
+                                : copy.safeResume
+                            }
+                          />
+                        ),
+                      }
+                    : {})}
+                />
               )}
               {ownsTurnChrome && props.liveStreaming && (
                 <>
@@ -880,7 +900,8 @@ export interface TurnLineageBadge {
 export interface TurnPresentation {
   footerActionsByTurn: Record<string, ReadonlyArray<TurnFooterActionMeta>>;
   failedReasonLabels: Record<string, string>;
-  failedRecoveryLabels: Record<string, string>;
+  failedSeverities: Record<string, 'error' | 'warning'>;
+  failedExecutionStateLabels: Record<string, string>;
   lineageBadgesByTurn: Record<string, TurnLineageBadge[]>;
   /** The turn a safe resume would restart, when the shell offers one. */
   resumeCandidateTurnId?: string;
@@ -1103,24 +1124,67 @@ export function TurnRunningStatus(props: {
   );
 }
 
-export function ModelProviderRetryIndicator(props: { retry: ProviderRetryEvent }) {
+export function ModelProviderRetryIndicator(props: { retry: LiveProviderRetry }) {
   const copy = getConversationCopy(useUiLocale()).messages;
-  const title =
-    props.retry.phase === 'scheduled'
+  const { event: retry, receivedAtMs } = props.retry;
+  const rootRef = useRef<HTMLDivElement>(null);
+  // Undefined until an effect measures it, so SSR and first paint render the
+  // granted delay untouched; the effect then counts down against the
+  // CLIENT-local receipt time (a single clock domain — the event's `ts`
+  // belongs to the possibly remote Runtime Host clock), taking its length
+  // from the skew-free `remainingMs` duration when the emitter provided one.
+  const [nowMs, setNowMs] = useState<number | undefined>(undefined);
+  useEffect(() => {
+    if (retry.phase !== 'scheduled') return;
+    // The initial measurement sits OUTSIDE the motion gate on purpose: under
+    // a genuine reduced-motion preference the banner must still show the
+    // correct remaining wait at mount — gating it would pin the full delay
+    // for the whole wait, the exact #3393 symptom. Only the per-second tick
+    // respects the preference (and the frozen-fixture contract).
+    setNowMs(Date.now());
+    if (!isTimeDrivenMotionEnabled(rootRef.current)) return;
+    const tick = window.setInterval(() => setNowMs(Date.now()), ELAPSED_TICK_MS);
+    return () => window.clearInterval(tick);
+  }, [retry.phase, retry.id, receivedAtMs]);
+  const displaySeconds =
+    retry.phase !== 'scheduled'
+      ? 0
+      : // nowMs undefined (SSR / first paint) reads as zero elapsed.
+        providerRetryDisplaySeconds(retry, (nowMs ?? receivedAtMs) - receivedAtMs);
+  const titleText =
+    retry.phase === 'scheduled'
       ? copy.providerRetryScheduled(
-          Math.max(1, Math.ceil(props.retry.delayMs / 1_000)),
-          props.retry.attempt,
-          props.retry.maxAttempts,
+          displaySeconds,
+          retry.attempt,
+          retry.maxAttempts,
         )
-      : copy.providerRetryStarted(props.retry.attempt, props.retry.maxAttempts);
+      : copy.providerRetryStarted(retry.attempt, retry.maxAttempts);
+  // The banner is a role="status" live region: a title that changes every
+  // second would be announced every second — for hours during a quota wait.
+  // The ticking text is aria-hidden; the region exposes a stable label that
+  // follows the running-turn indicator's pattern (the row's accessible name
+  // is the whole status, the moving text is decoration).
+  const scheduledA11y = retry.phase === 'scheduled';
   return (
     <Banner
+      ref={rootRef}
       status="warning"
       container="section"
       role="status"
       className="maka-turn-provider-retry"
-      title={title}
-      description={copy.providerRetryReason[props.retry.reason]}
+      {...(scheduledA11y
+        ? {
+            'aria-label': `${copy.providerRetryReason[retry.reason]} · ${copy.providerRetryWaiting(retry.attempt, retry.maxAttempts)}`,
+          }
+        : {})}
+      title={scheduledA11y ? <span aria-hidden="true">{titleText}</span> : titleText}
+      description={
+        scheduledA11y ? (
+          <span aria-hidden="true">{copy.providerRetryReason[retry.reason]}</span>
+        ) : (
+          copy.providerRetryReason[retry.reason]
+        )
+      }
     />
   );
 }
@@ -1297,22 +1361,33 @@ function ProcessingBlock(props: {
 
 function DeepThinking(props: { text: string; live: boolean; settledText?: string; truncated?: boolean }) {
   const copy = getConversationCopy(useUiLocale()).messages;
-  const safeText = redactSecrets(props.text);
-  const displayed = useStreamingText(safeText, isProgressiveStreamingEnabled(props.live), {
-    settledText: props.settledText === undefined
-      ? undefined
-      : redactSecrets(props.settledText),
-  });
   const label = props.truncated ? `${copy.thinking} · ${copy.truncated}` : copy.thinking;
   return (
     <ChatReasoning
       className="maka-deep-thinking"
       label={label}
+      previewText={reasoningPreviewText(props.text)}
       isStreaming={props.live}
       title={props.truncated ? copy.thinkingTruncatedTitle : undefined}
       data-deep-thinking={props.live ? 'live' : undefined}
     >
-      {displayed}
+      <Markdown
+        text={props.text}
+        streaming={props.live}
+        settledText={props.settledText}
+        density="compact"
+      />
     </ChatReasoning>
   );
+}
+
+function reasoningPreviewText(text: string): string {
+  const safeText = redactSecrets(text);
+  const firstLine = safeText.split('\n').find((line) => line.trim().length > 0)?.trim() ?? '';
+  return firstLine
+    .replace(/^#{1,6}\s+/, '')
+    .replace(/\\([()[\]])/g, '')
+    .replace(/\$\$/g, '')
+    .replace(/[*_~`]+/g, '')
+    .trim();
 }

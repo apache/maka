@@ -37,6 +37,14 @@ export type RuntimeHostProfileCommand =
       readonly expectedRootId: string;
       readonly credentialEnv?: string;
     }
+  | {
+      readonly kind: 'set-environment';
+      readonly id: string;
+      readonly name: string;
+      readonly distribution: string;
+      readonly operatorPath: string;
+      readonly expectedRootId: string;
+    }
   | { readonly kind: 'remove'; readonly id: string };
 
 export interface RuntimeHostProfileCommandDeps {
@@ -65,16 +73,27 @@ export async function runRuntimeHostProfileCommand(
     return 0;
   }
 
-  const credentialEnv = command.credentialEnv ?? DEFAULT_CREDENTIAL_ENV;
-  const suppliedCredential = deps.env[credentialEnv];
+  const environment = command.kind === 'set-environment';
+  const suppliedCredential = environment
+    ? undefined
+    : deps.env[command.credentialEnv ?? DEFAULT_CREDENTIAL_ENV];
   const document = await deps.catalog.save(
-    {
-      id: command.id,
-      name: command.name,
-      kind: 'remote',
-      transport: command.transport,
-      rootId: command.expectedRootId,
-    },
+    environment
+      ? {
+          id: command.id,
+          name: command.name,
+          kind: 'environment',
+          provider: { kind: 'wsl', distribution: command.distribution },
+          operatorPath: command.operatorPath,
+          rootId: command.expectedRootId,
+        }
+      : {
+          id: command.id,
+          name: command.name,
+          kind: 'remote',
+          transport: command.transport,
+          rootId: command.expectedRootId,
+        },
     suppliedCredential,
   );
   const profile = document.profiles.find((candidate) => candidate.id === command.id);

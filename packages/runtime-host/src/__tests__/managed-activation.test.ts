@@ -47,6 +47,7 @@ import { resolveRuntimeHostNpmDeploymentLayout } from '../operator/update-packag
 const ROOT_ID = 'a'.repeat(64);
 const config: RuntimeHostManagedDeploymentConfig = {
   schemaVersion: 1,
+  state: 'active',
   deploymentId: '00000000-0000-4000-8000-000000000001',
   configRevision: 1,
   deploymentRoot: '/opt/maka/runtime-host',

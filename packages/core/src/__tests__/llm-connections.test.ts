@@ -242,6 +242,7 @@ test('the model picker lists an enabled model a snapshot provider never listed',
   // predates — from vanishing out of every picker (#1584).
   const choices = buildChatModelChoices([
     {
+      connectionId: 'connection-1',
       slug: 'ark-plan',
       name: 'Ark Agent Plan',
       providerType: 'volcengine-agent-plan',

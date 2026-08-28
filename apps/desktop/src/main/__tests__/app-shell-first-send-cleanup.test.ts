@@ -103,6 +103,7 @@ describe('composer first-send cleanup', () => {
       const deps = {
         ...createActionsDeps(),
         newChatModel: {
+          llmConnectionId: 'connection-1',
           llmConnectionSlug: 'opencode-free',
           model: 'mimo-v2.5-free',
         },
