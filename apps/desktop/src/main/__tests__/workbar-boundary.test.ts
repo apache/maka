@@ -67,7 +67,10 @@ describe('Workbar feature boundary', () => {
   });
 
   it('is consumed outside the feature only through public entries', () => {
-    const allowed = /\/features\/workbar\/(?:index|testing)(?:\.js)?$/;
+    // `stories` joins `index` and `testing` as a public entry: the surface it
+    // exposes is only resolvable by a bundler, so Storybook can import it and
+    // the node suites behind `testing` cannot.
+    const allowed = /\/features\/workbar\/(?:index|testing|stories)(?:\.js)?$/;
     const violations: string[] = [];
     for (const root of [join(desktopRoot, 'src'), join(desktopRoot, 'stories')]) {
       for (const path of sourceFiles(root)) {

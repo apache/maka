@@ -17,14 +17,17 @@
  * under the License.
  */
 
-// `WorkbarSurface` is deliberately absent: `workbar-host` reaches it through
-// `lazy(() => import('./workbar-surface'))`, and re-exporting it here would
-// pull the surface and its five nested tool panels back into the eager chunk
-// for every importer of this barrel. Stories reach it through `stories`,
-// which nothing shipped imports.
-export { WorkbarHost } from './ui/workbar-host';
-export { WorkbarTitlebarActions } from './ui/workbar-toggle';
-export { WorkbarServicesProvider } from './services-context';
-export { useWorkbarController } from './controller/use-workbar-controller';
-export type { SessionWorkbarTabKind } from './model/workbar-tabs';
-export type { WorkbarServices } from './ports';
+/**
+ * Storybook-only entry, separate from `testing` for a reason the module graph
+ * enforces: `testing` is loaded by `node --test` against tsc output, and
+ * `workbar-surface` and its tool panels use extensionless relative specifiers
+ * that only a bundler resolves. Stories run through Vite, so they can reach
+ * the surface; the node suites cannot, and must not be made to.
+ *
+ * The production entry omits `WorkbarSurface` on top of that: `workbar-host`
+ * reaches it through `lazy()`, and a static re-export beside `WorkbarHost`
+ * would pull the surface and its five tool panels back into the eager chunk.
+ * Nothing shipped imports this module either.
+ */
+
+export { WorkbarSurface } from './ui/workbar-surface.js';
