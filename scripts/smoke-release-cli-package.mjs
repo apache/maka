@@ -19,7 +19,6 @@
 
 import { execFileSync, spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { createSocket } from 'node:dgram';
 import { createServer } from 'node:http';
 import { createRequire } from 'node:module';
 import {
@@ -575,17 +574,6 @@ async function smokeRuntimeHostService({ packageRoot, cliEntrypoint, ptySpawn, r
   const stateRoot = join(root, 'state');
   mkdirSync(clientDataRoot, { recursive: true });
   mkdirSync(stateRoot, { recursive: true });
-  const peerArtifact = await importInstalled(packageRoot, 'dist/runtime-host-peer-artifact.js');
-  const configured = await peerArtifact.configureRuntimeHostPeerClient({
-    cliPath: cliEntrypoint,
-    clientDataRoot,
-    environment,
-  });
-  if (!configured) throw new Error('Installed service could not resolve its direct-peer artifact');
-  const nativePath = environment.MAKA_RUNTIME_HOST_PEER_NATIVE_PATH;
-  if (!nativePath) throw new Error('Installed service did not configure its direct-peer artifact');
-  const keyPath = join(clientDataRoot, 'runtime-host-service.peer.key');
-  const peerId = await require(nativePath).ensurePeerIdentity(keyPath);
   const configPath = join(clientDataRoot, 'runtime-host-service.json');
   writeFileSync(
     configPath,
@@ -599,12 +587,6 @@ async function smokeRuntimeHostService({ packageRoot, cliEntrypoint, ptySpawn, r
         path: '/runtime-host',
       },
       launch: { nodePath: process.execPath, cliPath: cliEntrypoint },
-      peer: {
-        enabled: true,
-        peerId,
-        listenAddresses: [`/ip4/127.0.0.1/udp/${await allocateLoopbackUdpPort()}/quic-v1`],
-        coordinationRelays: [],
-      },
     })}\n`,
     { mode: 0o600 },
   );
@@ -643,10 +625,7 @@ async function smokeRuntimeHostService({ packageRoot, cliEntrypoint, ptySpawn, r
         ready.protocol?.version === undefined ||
         !ready.hostEpoch ||
         !ready.rootId ||
-        !ready.listeners?.some((listener) => listener.kind === 'local_ipc') ||
-        !ready.listeners?.some(
-          (listener) => listener.kind === 'libp2p_direct' && listener.peerId === peerId,
-        )
+        !ready.listeners?.some((listener) => listener.kind === 'local_ipc')
       ) {
         throw new Error('Runtime Host ready event is incomplete');
       }
@@ -666,17 +645,6 @@ async function allocateLoopbackPort() {
     server.close((error) => (error ? reject(error) : resolve())),
   );
   if (!address || typeof address === 'string') throw new Error('Unable to allocate a TCP port');
-  return address.port;
-}
-
-async function allocateLoopbackUdpPort() {
-  const socket = createSocket('udp4');
-  await new Promise((resolve, reject) => {
-    socket.once('error', reject);
-    socket.bind(0, '127.0.0.1', resolve);
-  });
-  const address = socket.address();
-  await new Promise((resolve) => socket.close(resolve));
   return address.port;
 }
 
