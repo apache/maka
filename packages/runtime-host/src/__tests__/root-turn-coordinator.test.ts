@@ -2323,8 +2323,16 @@ test('hosted linked child roots share admission, message, terminal, and stop aut
   assert.ok(owner);
   if (!owner) throw new Error('Unable to acquire test root');
 
+  let closeStores: (() => Promise<void>) | undefined;
   try {
     const stores = await openInteractiveExecutionStoresForWrite(owner.lease);
+    closeStores = async () => {
+      const lease = acquireOperationalStateDatabase(capability.canonicalPath);
+      const database = lease.database;
+      lease.close();
+      await stores.sessionStore.close?.();
+      assert.equal(database.isOpen, false, 'linked-child teardown must release every SQLite lease');
+    };
     const parent = await stores.sessionStore.create({
       cwd: capability.canonicalPath,
       llmConnectionSlug: 'fake',
@@ -2919,6 +2927,7 @@ test('hosted linked child roots share admission, message, terminal, and stop aut
     closeChildContinuity?.();
     continuity.close();
   } finally {
+    await closeStores?.();
     await owner.close();
     await rm(base, { recursive: true, force: true });
   }
