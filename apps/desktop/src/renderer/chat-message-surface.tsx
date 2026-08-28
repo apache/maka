@@ -166,13 +166,10 @@ export function ChatMessageSurface({
     seedRevision: liveContentSeedRevision,
     initialLiveContent: liveContentSeedRevision > 0 ? captureLiveContent(liveTurn) : undefined,
   }));
-  if (activation.sessionId !== activeSessionId) {
-    setActivation({
-      sessionId: activeSessionId,
-      seedRevision: liveContentSeedRevision,
-      initialLiveContent: liveContentSeedRevision > 0 ? captureLiveContent(liveTurn) : undefined,
-    });
-  } else if (activation.seedRevision !== liveContentSeedRevision) {
+  if (
+    activation.sessionId !== activeSessionId
+    || activation.seedRevision !== liveContentSeedRevision
+  ) {
     setActivation({
       sessionId: activeSessionId,
       seedRevision: liveContentSeedRevision,
@@ -240,9 +237,10 @@ export function ChatMessageSurface({
       <ChatView
         {...chatViewRest}
         liveTurn={seededLiveTurn}
-        initialLiveContentSnapshot={activation.sessionId === activeSessionId
-          ? activation.initialLiveContent
-          : liveContentSeedRevision > 0 ? captureLiveContent(liveTurn) : undefined}
+        // Every branch above reseeds `sessionId` to `activeSessionId`, and a
+        // render-phase setState re-runs this body before anything commits, so
+        // the activation reaching the DOM is always this session's.
+        initialLiveContentSnapshot={activation.initialLiveContent}
         shellRunUpdates={shellRunUpdates}
         deepResearchRun={deepResearchRun}
         emptyOverride={emptyOverride}
