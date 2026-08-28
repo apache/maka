@@ -249,7 +249,8 @@ class RuntimeHostPeerClientImpl implements RuntimeHostPeerClient {
     signal?.throwIfAborted();
     const endpoint = this.#requireEndpoint();
     const requestId = this.#allocateRequestId();
-    const discovered = this.#routeResolver?.resolveRoutes(input.peerId);
+    const discovered =
+      kind === 'application' ? this.#routeResolver?.resolveRoutes(input.peerId) : undefined;
     const connection = endpoint[kind === 'application' ? 'connect' : 'connectMeshControl']({
       ...input,
       routeHints: mergeAddresses(discovered?.routeHints ?? [], input.routeHints),
