@@ -56,8 +56,8 @@ export function runtimeHostExternalTurnUnavailableReason(
 export function runtimeHostSafeBoundaryContinuationUnavailableReason(
   header: Pick<
     SessionHeader,
-    'id' | 'role' | 'subagentParent' | 'transcriptLedgerVersion' | 'llmConnectionId'
-  > & { readonly backend?: SessionHeader['backend'] },
+    'id' | 'role' | 'subagentParent' | 'transcriptLedgerVersion' | 'llmConnectionId' | 'backend'
+  >,
 ): string | undefined {
   return (
     (isWorkHubCoordinationSessionTarget(header)
@@ -80,8 +80,8 @@ export function runtimeHostExecutionUnavailableReason(
     | 'subagentWorkspace'
     | 'transcriptLedgerVersion'
     | 'llmConnectionId'
+    | 'backend'
   > & {
-    readonly backend?: SessionHeader['backend'];
     readonly toolProfile?: SessionToolProfile;
     readonly permissionMode?: SessionHeader['permissionMode'];
     readonly orchestrationMode?: SessionHeader['orchestrationMode'];

@@ -910,14 +910,8 @@ export class HostSessionCatalogCoordinator {
     };
     if (patch.modelTarget !== undefined) {
       model = await this.#resolveModel(patch.modelTarget, thinkingLevel);
-    } else if (patch.thinkingLevel !== undefined) {
+    } else if (patch.thinkingLevel !== undefined && current.llmConnectionId !== undefined) {
       const connectionId = current.llmConnectionId;
-      if (connectionId === undefined) {
-        throw new SessionOperationFailure(
-          'operation_conflict',
-          'Legacy Session configuration requires an explicit account selection',
-        );
-      }
       model = await this.#resolveModel(
         {
           kind: 'explicit',

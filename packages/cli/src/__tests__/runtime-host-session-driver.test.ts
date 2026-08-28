@@ -408,6 +408,7 @@ describe('Runtime Host Maka Session driver', () => {
     const driver = createRuntimeHostMakaSessionDriver({
       connection: connection.value,
       cwd: '/repo',
+      llmConnectionId: 'connection-1',
       llmConnectionSlug: 'openai-main',
       model: 'gpt-5',
       newId: (() => {
@@ -449,6 +450,7 @@ describe('Runtime Host Maka Session driver', () => {
     const driver = createRuntimeHostMakaSessionDriver({
       connection: connection.value,
       cwd: '/repo',
+      llmConnectionId: 'connection-1',
       llmConnectionSlug: 'openai-main',
       model: 'gpt-5',
       newId: (() => {
@@ -521,6 +523,7 @@ describe('Runtime Host Maka Session driver', () => {
     const driver = createRuntimeHostMakaSessionDriver({
       connection: connection.value,
       cwd: '/repo',
+      llmConnectionId: 'connection-1',
       llmConnectionSlug: 'openai-main',
       model: 'gpt-5',
       newId: sequenceIds('id-1', 'id-2'),
@@ -559,6 +562,7 @@ describe('Runtime Host Maka Session driver', () => {
     const driver = createRuntimeHostMakaSessionDriver({
       connection: connection.value,
       cwd: '/repo',
+      llmConnectionId: 'connection-1',
       llmConnectionSlug: 'openai-main',
       model: 'gpt-5',
       newId: sequenceIds('id-1', 'id-2'),
@@ -599,6 +603,7 @@ describe('Runtime Host Maka Session driver', () => {
     const driver = createRuntimeHostMakaSessionDriver({
       connection: connection.value,
       cwd: '/repo',
+      llmConnectionId: 'connection-1',
       llmConnectionSlug: 'openai-main',
       model: 'gpt-5',
       newId: sequenceIds('id-1', 'id-2'),
@@ -636,6 +641,7 @@ describe('Runtime Host Maka Session driver', () => {
     const driver = createRuntimeHostMakaSessionDriver({
       connection: connection.value,
       cwd: '/repo',
+      llmConnectionId: 'connection-1',
       llmConnectionSlug: 'openai-main',
       model: 'gpt-5',
       newId: sequenceIds('id-1', 'id-2'),
@@ -685,6 +691,7 @@ describe('Runtime Host Maka Session driver', () => {
       const driver = createRuntimeHostMakaSessionDriver({
         connection: connection.value,
         cwd: root,
+        llmConnectionId: 'connection-1',
         llmConnectionSlug: 'openai-main',
         model: 'gpt-5',
         newId: sequenceIds('id-1', 'id-2'),
@@ -728,6 +735,7 @@ describe('Runtime Host Maka Session driver', () => {
     const driver = createRuntimeHostMakaSessionDriver({
       connection: connection.value,
       cwd: '/repo',
+      llmConnectionId: 'connection-1',
       llmConnectionSlug: 'openai-main',
       model: 'gpt-5',
       newId: sequenceIds('id-1', 'id-2'),
@@ -765,6 +773,7 @@ describe('Runtime Host Maka Session driver', () => {
     const driver = createRuntimeHostMakaSessionDriver({
       connection: connection.value,
       cwd: '/repo',
+      llmConnectionId: 'connection-1',
       llmConnectionSlug: 'openai-main',
       model: 'gpt-5',
       newId: sequenceIds('id-1', 'id-2'),

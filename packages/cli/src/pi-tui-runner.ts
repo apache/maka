@@ -322,6 +322,8 @@ export function safeBoundaryResumeParkedCopy(reason: TurnResumeParkReason): {
     default:
       return { level: 'error', text: `Safe-boundary resume parked: ${reason}` };
   }
+}
+
 function sessionConnectionIdentityNotice(
   session: Pick<SessionSummary, 'llmConnectionId' | 'llmConnectionSlug'>,
   identities: MakaPiTuiInput['connectionIdentities'],
