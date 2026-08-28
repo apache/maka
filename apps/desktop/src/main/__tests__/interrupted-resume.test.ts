@@ -19,6 +19,7 @@
 
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
+import { materializeTurns } from '@maka/ui';
 import { latestInterruptedResumeTurnId } from '../../renderer/interrupted-resume.js';
 
 describe('latest interrupted resume candidate', () => {
@@ -70,5 +71,34 @@ describe('latest interrupted resume candidate', () => {
       ]),
       undefined,
     );
+  });
+
+  it('rejects the mixed shape produced by materializeTurns', () => {
+    const [turn] = materializeTurns([
+      { type: 'user', id: 'user-1', turnId: 'turn-1', ts: 1, text: 'inspect' },
+      {
+        type: 'turn_state',
+        id: 'state-1',
+        turnId: 'turn-1',
+        ts: 2,
+        status: 'failed',
+        errorClass: 'timeout',
+        partialOutputRetained: false,
+      },
+      { type: 'tool_call', id: 'call-1', turnId: 'turn-1', ts: 3, toolName: 'Read', args: {} },
+      {
+        type: 'tool_result',
+        id: 'result-1',
+        turnId: 'turn-1',
+        ts: 4,
+        toolUseId: 'call-1',
+        isError: false,
+        content: { kind: 'text', text: 'ok' },
+      },
+      { type: 'tool_call', id: 'call-2', turnId: 'turn-1', ts: 5, toolName: 'Read', args: {} },
+    ]);
+
+    assert.deepEqual(turn?.tools.map((tool) => tool.status), ['completed', 'interrupted']);
+    assert.equal(latestInterruptedResumeTurnId(turn ? [turn] : []), undefined);
   });
 });
