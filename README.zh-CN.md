@@ -33,7 +33,8 @@
 </p>
 
 <p align="center">
-  <a href="https://deepwiki.com/apache/maka"><img src="https://deepwiki.com/badge.svg" alt="Ask DeepWiki" /></a> <sub>第三方 AI 文档</sub>
+  <a href="https://deepwiki.com/apache/maka"><img src="https://deepwiki.com/badge.svg" alt="Ask DeepWiki" /></a><br />
+  <sub>DeepWiki · 第三方 AI 文档</sub>
 </p>
 
 <p align="center">
