@@ -55,6 +55,8 @@ const EXIT_CODE_BY_REASON: Readonly<Record<CandidateStartupFailureReason, number
   deployment_lifecycle_mismatch: 83,
   deployment_record_invalid: 84,
   deployment_launch_mismatch: 85,
+  deployment_transition_in_progress: 86,
+  deployment_needs_repair: 87,
 };
 
 export function classifyCandidateStartupFailure(error: unknown): CandidateStartupFailure {

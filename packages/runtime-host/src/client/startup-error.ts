@@ -99,6 +99,16 @@ export function runtimeHostStartupError(
         reason,
         'The Runtime Host managed deployment record is invalid. Run deployment repair before connecting. Diagnostic code: DEPLOYMENT_RECORD_INVALID.',
       );
+    case 'deployment_transition_in_progress':
+      return new RuntimeHostStartupError(
+        reason,
+        'The Runtime Host managed deployment is changing. Retry after the lifecycle operation completes. Diagnostic code: DEPLOYMENT_TRANSITION_IN_PROGRESS.',
+      );
+    case 'deployment_needs_repair':
+      return new RuntimeHostStartupError(
+        reason,
+        'The Runtime Host managed deployment could not safely complete or roll back a lifecycle change. Run deployment repair before connecting. Diagnostic code: DEPLOYMENT_NEEDS_REPAIR.',
+      );
     case 'startup_timeout':
       return new Error(
         `No Runtime Host became ready before the startup deadline elapsed${electionDiagnosticSuffix(diagnostic)}. Retry; if this workspace needs longer to open (large workspaces can after an upgrade), set MAKA_RUNTIME_HOST_ELECTION_DEADLINE_MS to allow more time.`,
