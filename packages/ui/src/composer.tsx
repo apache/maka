@@ -21,6 +21,7 @@ import {
   forwardRef,
   useEffect,
   useImperativeHandle,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -208,6 +209,8 @@ export interface ComposerHandle {
   appendDraft?(draftKey: string, text: string): void;
   /** Move focus to the input without changing its content. */
   focus(): void;
+  /** Open the active Session's existing account-and-model picker. */
+  openModelPicker(): void;
 }
 
 export interface ComposerSendMetadata {
@@ -310,6 +313,8 @@ export const Composer = forwardRef<
     modelChoices?: ChatModelChoice[];
     /** Whether this Session already has conversation history whose provider prompt cache may be rebuilt by a switch. */
     modelSwitchHasHistory?: boolean;
+    /** Identity recovery must not present the stale target as a checked, selectable row. */
+    hideUnavailableCurrentModel?: boolean;
     /** Renders the provider brand mark beside each model option;
      *  injected by the desktop app to keep the provider SVG library out of @maka/ui. */
     renderProviderMark?(type: ProviderType): ReactNode;
@@ -482,6 +487,8 @@ export const Composer = forwardRef<
   }
   const [dragActive, setDragActive] = useState(false);
   const [sendPending, setSendPending] = useState(false);
+  const [modelPickerOpen, setModelPickerOpen] = useState(false);
+  useLayoutEffect(() => setModelPickerOpen(false), [props.activeSession?.id]);
   const [pendingImportAction, setPendingImportAction] = useState<ComposerImportActionId | null>(null);
   const composerMountedRef = useMountedRef();
   const sendPendingRef = useRef(false);
@@ -1135,6 +1142,9 @@ export const Composer = forwardRef<
       },
       focus() {
         focusInput();
+      },
+      openModelPicker() {
+        setModelPickerOpen(true);
       },
     }),
     [],
@@ -1966,6 +1976,9 @@ export const Composer = forwardRef<
                     hasConversationHistory={props.modelSwitchHasHistory}
                     pending={props.modelChangePending}
                     disabledReason={modelSwitcherDisabledReason}
+                    isMenuOpen={modelPickerOpen}
+                    onMenuOpenChange={setModelPickerOpen}
+                    hideUnavailableCurrentOption={props.hideUnavailableCurrentModel}
                     renderProviderMark={props.renderProviderMark}
                     onChange={props.onModelChange}
                   />

@@ -193,9 +193,10 @@ export function createAppShellSessionSettingsActions(deps: {
       await refreshSessions();
     } catch (error) {
       if (activeIdRef.current === sessionId) {
+        const detail = localizedShellErrorMessage(error, copy.modelFallback, uiLocale);
         toastApi.error(
           copy.modelFailedTitle,
-          localizedShellErrorMessage(error, copy.modelFallback, uiLocale),
+          `${detail} ${copy.modelRecoveryHint}`,
           undefined,
           { sessionId },
         );

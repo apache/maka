@@ -325,8 +325,14 @@ export interface DesktopConversationCopy {
   health: {
     blocked: Record<
       Extract<SessionSendProjection, { kind: 'blocked' }>['reason'],
-      { label: string; tooltip: (connection: string, model: string) => string }
+      {
+        label: string;
+        tooltip: (connection: string, model: string) => string;
+        actionLabel?: string;
+        settingsTooltip?: (connection: string, model: string) => string;
+      }
     >;
+    accountChoicesLoading: { tooltip: string; actionLabel: string };
     reauth: { label: string; tooltip: string };
     testError: { label: string; tooltip: string };
   };
@@ -634,9 +640,9 @@ const COPY = {
         fake_backend: { label: '任务已过期 · 请先配置真实模型', tooltip: () => '原任务使用旧的本地模拟连接，需要先到 设置 · 模型 添加并启用一个真实模型才能发送。' },
         provider_retired: { label: '登录方式已停用', tooltip: (name) => `任务绑定的连接 "${name}" 使用的登录方式已从 Maka 移除，发送会失败。请到 设置 · 模型 改用其他连接。` },
         missing_default_connection: { label: '未配置可用模型', tooltip: () => '当前任务没有可用的模型连接，发送会失败。请到 设置 · 模型 添加并启用一个模型。' },
-        legacy_connection_identity: { label: '需要选择账号', tooltip: () => '此任务创建于账号实体绑定之前。请显式选择一个账号后再继续。' },
-        connection_missing: { label: '原账号已删除', tooltip: () => '此任务绑定的原账号已被删除。只有显式选择新账号后才能继续。' },
-        connection_identity_mismatch: { label: '账号身份不匹配', tooltip: () => '此任务保存的账号身份与当前连接不一致。请显式选择一个账号后再继续。' },
+        legacy_connection_identity: { label: '需要确认账号', tooltip: () => '此任务来自旧版本，需要确认一次使用哪个账号。点击“选择账号”，从现有账号和模型中选择；如果切换失败，请到 设置 · 模型 检查该账号的登录或密钥后重试。', actionLabel: '选择账号', settingsTooltip: () => '此任务来自旧版本，需要确认一次使用哪个账号。当前没有可选账号，请先到 设置 · 模型 添加或启用连接。' },
+        connection_missing: { label: '原账号已删除', tooltip: () => '此任务绑定的原账号已被删除。点击“选择账号”，选择新账号和模型后继续。', actionLabel: '选择账号', settingsTooltip: () => '此任务绑定的原账号已被删除。当前没有可选账号，请先到 设置 · 模型 添加或启用连接。' },
+        connection_identity_mismatch: { label: '账号身份不匹配', tooltip: () => '此任务保存的账号身份与当前连接不一致。点击“选择账号”，重新选择账号和模型后继续。', actionLabel: '选择账号', settingsTooltip: () => '此任务保存的账号身份与当前连接不一致。当前没有可选账号，请先到 设置 · 模型 添加或启用连接。' },
         connection_disabled: { label: '连接已禁用', tooltip: (name) => `任务绑定的连接 "${name}" 已禁用，发送会失败。请到 设置 · 模型 启用它或选择其他连接。` },
         missing_api_key: { label: '连接缺少密钥', tooltip: (name) => `连接 "${name}" 未填写 API key 或未完成登录，发送会失败。请到 设置 · 模型 补齐凭据。` },
         missing_model: { label: '连接未选择模型', tooltip: (name) => `连接 "${name}" 没有默认模型，发送会失败。请到 设置 · 模型 选择一个模型。` },
@@ -644,6 +650,7 @@ const COPY = {
         model_not_enabled: { label: '任务模型未启用', tooltip: (name, model) => `模型 "${model}" 不在连接 "${name}" 的启用列表中，发送会失败。请到 设置 · 模型 重新选择。` },
         model_not_chat_capable: { label: '任务模型不支持聊天', tooltip: (name, model) => `模型 "${model}" 不能用于聊天，发送会失败。请到 设置 · 模型 选择支持聊天的模型。` },
       },
+      accountChoicesLoading: { tooltip: '账号列表尚未加载完成。点击“重新加载”，加载成功后再选择账号。', actionLabel: '重新加载账号' },
       reauth: { label: '上次连接测试鉴权失败', tooltip: '最近一次连接测试返回鉴权失败（401 / 403），密钥可能已过期或被吊销。这不会拦截发送，但若发送失败请到 设置 · 模型 重新登录。' },
       testError: { label: '上次连接测试失败', tooltip: '最近一次连接测试因网络 / 超时 / 5xx 失败。这不会拦截发送，但若问题持续请到 设置 · 模型 检查 Base URL / 代理。' },
     },
@@ -868,9 +875,9 @@ const COPY = {
         fake_backend: { label: 'Stale task · Configure a real model', tooltip: () => 'This task used the retired local simulation. Add and enable a real model in Settings · Models before sending.' },
         provider_retired: { label: 'Sign-in retired', tooltip: (name) => `The sign-in that connection "${name}" uses was removed from Maka, so sending fails. Switch to another connection in Settings · Models.` },
         missing_default_connection: { label: 'No model configured', tooltip: () => 'This task has no available model connection. Add and enable one in Settings · Models.' },
-        legacy_connection_identity: { label: 'Choose an account', tooltip: () => 'This task predates account entity binding. Explicitly choose an account to continue.' },
-        connection_missing: { label: 'Original account deleted', tooltip: () => 'The original account bound to this task was deleted. Explicitly choose a new account to continue.' },
-        connection_identity_mismatch: { label: 'Account identity mismatch', tooltip: () => 'This task\'s saved account identity no longer matches its connection. Explicitly choose an account to continue.' },
+        legacy_connection_identity: { label: 'Confirm an account', tooltip: () => 'This task comes from an older version and needs a one-time account confirmation. Choose from your existing accounts and models. If switching fails, check that account\'s sign-in or key in Settings · Models and try again.', actionLabel: 'Choose account', settingsTooltip: () => 'This task comes from an older version and needs a one-time account confirmation. No accounts are currently available; add or enable a connection in Settings · Models first.' },
+        connection_missing: { label: 'Original account deleted', tooltip: () => 'The original account bound to this task was deleted. Choose a new account and model to continue.', actionLabel: 'Choose account', settingsTooltip: () => 'The original account bound to this task was deleted. No accounts are currently available; add or enable a connection in Settings · Models first.' },
+        connection_identity_mismatch: { label: 'Account identity mismatch', tooltip: () => 'This task\'s saved account identity no longer matches its connection. Choose an account and model again to continue.', actionLabel: 'Choose account', settingsTooltip: () => 'This task\'s saved account identity no longer matches its connection. No accounts are currently available; add or enable a connection in Settings · Models first.' },
         connection_disabled: { label: 'Connection disabled', tooltip: (name) => `Connection "${name}" is disabled. Enable it or choose another connection in Settings · Models.` },
         missing_api_key: { label: 'Connection credentials missing', tooltip: (name) => `Connection "${name}" has no API key or completed sign-in. Add credentials in Settings · Models.` },
         missing_model: { label: 'No model selected', tooltip: (name) => `Connection "${name}" has no default model. Select one in Settings · Models.` },
@@ -878,6 +885,7 @@ const COPY = {
         model_not_enabled: { label: 'Task model disabled', tooltip: (name, model) => `Model "${model}" is not enabled for connection "${name}". Choose another model in Settings · Models.` },
         model_not_chat_capable: { label: 'Task model cannot chat', tooltip: (_name, model) => `Model "${model}" cannot be used for chat. Choose a chat-capable model in Settings · Models.` },
       },
+      accountChoicesLoading: { tooltip: 'The account list has not loaded yet. Reload it, then choose an account.', actionLabel: 'Reload accounts' },
       reauth: { label: 'Last connection test failed authentication', tooltip: 'The latest test returned 401 / 403. Sending is not blocked, but sign in again under Settings · Models if it fails.' },
       testError: { label: 'Last connection test failed', tooltip: 'The latest test failed because of a network, timeout, or 5xx error. Sending is not blocked; check Base URL or proxy settings if it persists.' },
     },

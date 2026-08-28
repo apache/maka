@@ -136,8 +136,8 @@ export function ChatMessageSurface({
   const locale = useUiLocale();
   const copy = getShellCopy(locale).app;
   const transcriptCopy = getDesktopConversationCopy(locale).actions;
-  // Every session-health-notice CTA routes to 设置 · 模型 (U1); this is the
-  // action button's visible label.
+  // Configuration notices share the Settings label; identity recovery supplies
+  // its own label because it opens the composer's account-and-model picker.
   const goToModelsLabel = copy.goToModels;
   const handleWorkspaceRecovery = () => {
     const target = workspaceReadinessRecovery?.target;
@@ -295,9 +295,10 @@ export function ChatMessageSurface({
             title={sessionHealthNotice.label}
             description={sessionHealthNotice.tooltip}
             endContent={<Button
-              label={goToModelsLabel}
+              label={sessionHealthNotice.actionLabel ?? goToModelsLabel}
               variant="ghost"
               size="sm"
+              isDisabled={sessionHealthNotice.actionDisabled}
               onClick={sessionHealthNotice.onClick}
             />} />
         </div>

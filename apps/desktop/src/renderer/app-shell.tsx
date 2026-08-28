@@ -770,6 +770,9 @@ function AppShellContent({
   const [helpOpen, closeHelp, openHelp] = useKeyboardHelp();
   const [paletteOpen, openPalette, closePalette] = useCommandPalette();
   const composerRef = useRef<ComposerHandle>(null);
+  const openComposerModelPicker = useCallback(() => {
+    composerRef.current?.openModelPicker();
+  }, []);
   const retractedWorkspaceReferencesRef = useRef<Record<string, InlineReference[]>>({});
   const [revisionDraft, setRevisionDraft] = useState<TurnRevisionDraft | null>(null);
   const revisionDraftRef = useRef<TurnRevisionDraft | null>(null);
@@ -895,7 +898,17 @@ function AppShellContent({
     persistedComposerDefaults,
     usePersistedComposerDefaults: modelSettingsOwnsComposerHost,
     defaultThinkingLevel: taskEntry.selectors.selectedHost?.chatDefaults.thinkingLevel,
+    connectionSnapshotReady: activeId ? sessionHostConnections.hasSnapshot : true,
+    modelPickerDisabled: Boolean(
+      turnActive ||
+      activeStreamingLive ||
+      activeSession?.status === 'running' ||
+      activeSession?.status === 'waiting_for_user' ||
+      (activeId && pendingSessionModelBySession[activeId] === true)
+    ),
     openSettingsSection,
+    openModelPicker: openComposerModelPicker,
+    refreshModelChoices: sessionHostConnections.refreshConnections,
   });
   const newChatProviderType = newChatModel
     ? connections.find((connection) => connection.slug === newChatModel.llmConnectionSlug)?.providerType
@@ -2957,6 +2970,7 @@ function AppShellContent({
                   activeProviderType={activeConnection?.providerType}
                   modelChoices={chatModelChoices}
                   modelSwitchHasHistory={modelSwitchHasHistory}
+                  hideUnavailableCurrentModel={sessionHealthNotice?.onClickTarget === 'model_picker'}
                   renderProviderMark={(type) => <ProviderBrandMark type={type} />}
                   modelChangePending={activeId ? pendingSessionModelBySession[activeId] === true : false}
                   onModelChange={(input) => setSessionModel(input)}
