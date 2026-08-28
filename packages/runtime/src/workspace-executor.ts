@@ -440,6 +440,9 @@ export class LocalWorkspaceExecutor implements WorkspaceExecutor {
   }
 
   async globFiles(input: WorkspaceGlobInput): Promise<WorkspaceGlobResult> {
+    // Node glob silently skips an unreadable root; distinguish it from no matches.
+    const directory = await fs.opendir(input.cwd);
+    await directory.close();
     const files: string[] = [];
     const limit = input.limit ?? 200;
     for await (const file of nodeGlob(input.pattern, { cwd: input.cwd })) {

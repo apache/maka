@@ -26,6 +26,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { test } from 'node:test';
 import { agentGraphIdForRootSession } from '@maka/runtime/stream-graph-coordinator';
 import { BackendRegistry, SessionManager } from '@maka/runtime/session-manager';
+import { prepareDirectoryContext } from '@maka/runtime/directory-context';
 import {
   buildRecoveredTerminalRuntimeEvent,
   classifyTerminalRuntimeLedger,
@@ -5212,6 +5213,191 @@ async function createFailureFixture(options: {
     },
   };
 }
+
+for (const entryPoint of ['idle', 'queued', 'turn.start'] as const) {
+  for (const failure of ['timeout', 'cancelled', 'foreign-host', 'external'] as const) {
+    test(`${entryPoint} directory ${failure} does not drain the Host or block subsequent messages`, async () => {
+      const entered = deferred<void>();
+      const release = deferred<void>();
+      let reads = 0;
+      const fixture = await createFailureFixture({
+        registerBackend: (backends) =>
+          backends.register(
+            'ai-sdk',
+            (context) =>
+              new (class extends FakeBackend {
+                override async *send(input: BackendSendInput): AsyncIterable<SessionEvent> {
+                  if (input.text === 'hold-directory-test') {
+                    entered.resolve();
+                    await release.promise;
+                  }
+                  yield* super.send(input);
+                }
+              })(context),
+          ),
+        prepareDirectories: async (_sessionId, content) => {
+          const controller = new AbortController();
+          return prepareDirectoryContext(content, {
+            hostId: failure === 'foreign-host' ? 'other-host' : 'host-a',
+            cwd: '/workspace',
+            boundary: { kind: failure === 'external' ? 'external' : 'bypass', revision: 0 },
+            abortSignal: controller.signal,
+            filesystem: {
+              execute: async () => {
+                reads += 1;
+                controller.abort(
+                  new DOMException(
+                    'Listing stopped',
+                    failure === 'cancelled' ? 'AbortError' : 'TimeoutError',
+                  ),
+                );
+                throw controller.signal.reason;
+              },
+            },
+          });
+        },
+      });
+      try {
+        const context = operationContext(fixture.hostEpoch, fixture.acquireResidency);
+        if (entryPoint === 'queued') {
+          assertStartedTurn(
+            await fixture.interactiveTurns.handlers['turn.start'](
+              {
+                sessionId: fixture.sessionId,
+                turnId: 'held-directory-root',
+                content: { text: 'hold-directory-test' },
+              },
+              context,
+            ),
+          );
+          await entered.promise;
+        }
+        const content = {
+          text: 'inspect directory',
+          directoryReferences: [{ hostId: 'host-a', path: '/source' }],
+        };
+        const attempt = () =>
+          entryPoint === 'turn.start'
+            ? fixture.interactiveTurns.handlers['turn.start'](
+                { sessionId: fixture.sessionId, turnId: 'directory-start', content },
+                context,
+              )
+            : fixture.messages.handlers['turn.message.submit'](
+                {
+                  originHostEpoch: fixture.hostEpoch,
+                  sessionId: fixture.sessionId,
+                  messageId: 'directory-message',
+                  content,
+                  placement: 'next_turn',
+                },
+                context,
+              );
+        if (failure === 'timeout') {
+          const result = await attempt();
+          assert.equal(result.ok, true, JSON.stringify(result));
+        } else {
+          await assert.rejects(attempt, RuntimeHostedRootUnavailableError);
+          assert.equal(
+            reads,
+            failure === 'cancelled' ? 1 : 0,
+            'invalid references must never touch the filesystem',
+          );
+          assert.equal(fixture.messages.projection(fixture.sessionId).followup.length, 0);
+        }
+        assert.equal(fixture.drainRequested(), false);
+        release.resolve();
+        await fixture.coordinator.whenIdle(fixture.sessionId);
+        if (failure === 'timeout') {
+          await waitUntil(async () =>
+            (await fixture.stores.sessionStore.readMessages(fixture.sessionId)).some(
+              (message) => message.type === 'user' && message.displayText === content.text,
+            ),
+          );
+          const user = (await fixture.stores.sessionStore.readMessages(fixture.sessionId)).find(
+            (message) => message.type === 'user' && message.displayText === content.text,
+          );
+          assert.ok(user?.type === 'user');
+          assert.match(user.text, /"status":"unavailable"/);
+          assert.match(user.text, /"reason":"timeout"/);
+          assert.equal(reads, 1);
+        }
+        const next = await fixture.messages.handlers['turn.message.submit'](
+          {
+            originHostEpoch: fixture.hostEpoch,
+            sessionId: fixture.sessionId,
+            messageId: 'ordinary-after-directory',
+            content: { text: 'ordinary message' },
+            placement: 'next_turn',
+          },
+          context,
+        );
+        assert.equal(next.ok, true, JSON.stringify(next));
+        await fixture.coordinator.whenIdle(fixture.sessionId);
+        assert.equal(fixture.drainRequested(), false);
+      } finally {
+        release.resolve();
+        await fixture.coordinator.close();
+        await fixture.messages.close();
+        await fixture.dispose();
+      }
+    });
+  }
+}
+
+test('an unwired directory preparer rejects only that request; unexpected preparer failures still drain', async () => {
+  for (const unexpectedFailure of [false, true]) {
+    const fixture = await createFailureFixture({
+      registerBackend: (backends) =>
+        backends.register('ai-sdk', (context) => new FakeBackend(context)),
+      ...(unexpectedFailure
+        ? {
+            prepareDirectories: async () => {
+              throw new Error('storage invariant failure');
+            },
+          }
+        : {}),
+    });
+    try {
+      const context = operationContext(fixture.hostEpoch, fixture.acquireResidency);
+      await assert.rejects(
+        () =>
+          fixture.messages.handlers['turn.message.submit'](
+            {
+              originHostEpoch: fixture.hostEpoch,
+              sessionId: fixture.sessionId,
+              messageId: 'directory',
+              placement: 'next_turn',
+              content: {
+                text: 'inspect',
+                directoryReferences: [{ hostId: 'host-a', path: '/source' }],
+              },
+            },
+            context,
+          ),
+        unexpectedFailure ? /storage invariant failure/ : RuntimeHostedRootUnavailableError,
+      );
+      assert.equal(fixture.drainRequested(), unexpectedFailure);
+      if (!unexpectedFailure) {
+        const result = await fixture.messages.handlers['turn.message.submit'](
+          {
+            originHostEpoch: fixture.hostEpoch,
+            sessionId: fixture.sessionId,
+            messageId: 'plain',
+            placement: 'next_turn',
+            content: { text: 'plain' },
+          },
+          context,
+        );
+        assert.equal(result.ok, true, JSON.stringify(result));
+        await fixture.coordinator.whenIdle(fixture.sessionId);
+      }
+    } finally {
+      await fixture.coordinator.close();
+      await fixture.messages.close();
+      await fixture.dispose();
+    }
+  }
+});
 
 test('directory context is prepared once and retained through durable submission and duplicate delivery', async () => {
   let preparations = 0;

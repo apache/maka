@@ -37,6 +37,7 @@ import {
   type SkillInvocationResult,
 } from '@maka/core/skill-invocation';
 import { agentGraphIdForRootSession } from '@maka/runtime/stream-graph-coordinator';
+import { DirectoryContextPreparationError } from '@maka/runtime/directory-context';
 import {
   RuntimeHostedRootConflictError,
   RuntimeHostedRootUnavailableError,
@@ -1259,8 +1260,20 @@ export class RootTurnCoordinator implements HostedExecutionAuthority {
     content: MessageContent,
   ): Promise<MessageContent> {
     if (!content.directoryReferences?.length) return content;
-    if (!this.prepareDirectories) throw new Error('Directory context is unavailable on this Host');
-    return this.prepareDirectories(sessionId, content);
+    if (!this.prepareDirectories) {
+      throw new RuntimeHostedRootUnavailableError(
+        sessionId,
+        'Directory context is unavailable on this Host',
+      );
+    }
+    try {
+      return await this.prepareDirectories(sessionId, content);
+    } catch (error) {
+      if (error instanceof DirectoryContextPreparationError) {
+        throw new RuntimeHostedRootUnavailableError(sessionId, error.message);
+      }
+      throw error;
+    }
   }
 
   claimStop(

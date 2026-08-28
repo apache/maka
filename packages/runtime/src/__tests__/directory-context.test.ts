@@ -19,7 +19,7 @@
 
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { mkdir, mkdtemp, realpath, rm, symlink, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, readdir, realpath, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { MessageContent } from '@maka/core/events';
@@ -67,6 +67,19 @@ test('managed directory context uses the real macOS filesystem worker', {
     });
     assert.equal(observations(prepared)[0]!.status, 'listed', prepared.text);
     assert.deepEqual(observations(prepared)[0]!.entries, ['README.md']);
+    // Traversal is allowed, but listing is not. Glob must not hide EACCES as [].
+    await chmod(source, 0o111);
+    try {
+      await assert.rejects(readdir(source), { code: 'EACCES' });
+      const denied = await prepare('session-1', {
+        ...content,
+        directoryReferences: [{ ...reference, path: source }],
+      });
+      assert.notEqual(observations(denied)[0]!.status, 'listed', denied.text);
+      assert.equal(observations(denied)[0]!.entries, undefined);
+    } finally {
+      await chmod(source, 0o700);
+    }
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -83,6 +96,7 @@ function observations(prepared: MessageContent): Array<{
   hostId: string;
   path: string;
   status: string;
+  reason?: string;
   entries?: string[];
   truncated?: boolean;
   message?: string;
@@ -166,6 +180,149 @@ test('truncates one-level entries by count and shares a byte budget across direc
   });
   assert.equal(observations(countBound)[0]!.entries!.length, DIRECTORY_LISTING_LIMIT);
   assert.equal(observations(countBound)[0]!.truncated, true);
+});
+
+test('counts escaped names against the shared serialized entry budget', async () => {
+  const prepared = await prepareDirectoryContext(
+    { ...content, directoryReferences: [reference, { ...reference, path: '/second' }] },
+    {
+      hostId: reference.hostId,
+      cwd: '/workspace',
+      boundary,
+      filesystem: {
+        execute: async () => ({
+          kind: 'glob',
+          files: Array.from({ length: 100 }, (_, i) => String(i) + '<>&中文'.repeat(16)),
+        }),
+      },
+    },
+  );
+  const data = prepared.text.slice(prepared.text.lastIndexOf('\n') + 1);
+  const encodedNames = [...data.matchAll(/"entries":\[([^\]]*)\]/g)].map((match) => match[1]!);
+  assert.equal(encodedNames.length, 2);
+  assert.ok(
+    encodedNames.reduce((sum, names) => sum + Buffer.byteLength(names), 0) <=
+      DIRECTORY_LISTING_MAX_BYTES,
+  );
+  assert.ok(observations(prepared).every((item) => item.truncated));
+  assert.ok(observations(prepared)[0]!.entries!.some((entry) => entry.includes('<>&中文')));
+  assert.equal(data.includes('<'), false);
+});
+
+for (const timing of ['before', 'during', 'after'] as const) {
+  test(`directory timeout ${timing} execution records unavailable without starting later reads`, async () => {
+    const controller = new AbortController();
+    const expire = () =>
+      controller.abort(new DOMException('Listing deadline reached', 'TimeoutError'));
+    if (timing === 'before') expire();
+    let calls = 0;
+    const prepared = await prepareDirectoryContext(
+      { ...content, directoryReferences: [reference, { ...reference, path: '/second' }] },
+      {
+        hostId: reference.hostId,
+        cwd: '/workspace',
+        boundary,
+        abortSignal: controller.signal,
+        filesystem: {
+          execute: async () => {
+            calls += 1;
+            expire();
+            if (timing === 'during') throw controller.signal.reason;
+            return { kind: 'glob', files: ['late.txt'] };
+          },
+        },
+      },
+    );
+    assert.equal(calls, timing === 'before' ? 0 : 1);
+    assert.deepEqual(
+      observations(prepared).map(({ status, reason, entries }) => ({ status, reason, entries })),
+      [
+        { status: 'unavailable', reason: 'timeout', entries: undefined },
+        { status: 'unavailable', reason: 'timeout', entries: undefined },
+      ],
+    );
+    assert.equal(prepared.displayText, content.text);
+  });
+}
+
+test('the production listing deadline aborts a slow worker and records unavailable', async () => {
+  let cancelled = false;
+  const prepare = createDirectoryContextPreparer({
+    hostId: reference.hostId,
+    readSession: async () => ({ cwd: process.cwd(), boundary }),
+    worker: {
+      execute: async ({ abortSignal }) => {
+        assert.ok(abortSignal);
+        await new Promise<never>((_resolve, reject) => {
+          const guard = setTimeout(
+            () => reject(new Error('Listing deadline was not enforced')),
+            7500,
+          );
+          abortSignal.addEventListener(
+            'abort',
+            () => {
+              clearTimeout(guard);
+              cancelled = true;
+              reject(abortSignal.reason);
+            },
+            { once: true },
+          );
+        });
+        throw new Error('Unreachable');
+      },
+    },
+  });
+  const result = observations(await prepare('session', content))[0]!;
+  assert.equal(cancelled, true);
+  assert.equal(result.status, 'unavailable');
+  assert.equal(result.reason, 'timeout');
+  assert.equal(result.entries, undefined);
+});
+
+test('local listing distinguishes empty directories from invalid and unreadable roots', async () => {
+  const root = await realpath(await mkdtemp(join(tmpdir(), 'maka-directory-errors-')));
+  const source = join(root, 'source');
+  try {
+    await mkdir(source);
+    await writeFile(join(root, 'file.txt'), 'not a directory');
+    const prepare = createDirectoryContextPreparer({
+      hostId: reference.hostId,
+      readSession: async () => ({ cwd: root, boundary: { kind: 'bypass', revision: 0 } }),
+    });
+    for (const [path, status] of [
+      [source, 'listed'],
+      [join(root, 'file.txt'), 'unavailable'],
+      [join(root, 'missing'), 'unavailable'],
+    ]) {
+      const result = observations(
+        await prepare('session', {
+          ...content,
+          directoryReferences: [{ ...reference, path: path! }],
+        }),
+      )[0]!;
+      assert.equal(result.status, status, path);
+      assert.deepEqual(result.entries, status === 'listed' ? [] : undefined);
+    }
+    if (process.platform !== 'win32' && process.getuid?.() !== 0) {
+      await writeFile(join(source, 'present.txt'), 'not empty');
+      await chmod(source, 0o111);
+      try {
+        await assert.rejects(readdir(source), { code: 'EACCES' });
+        const result = observations(
+          await prepare('session', {
+            ...content,
+            directoryReferences: [{ ...reference, path: source }],
+          }),
+        )[0]!;
+        assert.equal(result.status, 'unavailable');
+        assert.equal(result.entries, undefined);
+      } finally {
+        await chmod(source, 0o700);
+      }
+    }
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
 });
 
 test('does not read foreign-Host references and does not disguise denied or missing directories as empty', async () => {
