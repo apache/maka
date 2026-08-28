@@ -233,6 +233,11 @@ export class DesktopTranscriptReplica {
     });
     await this.#withDecodedPage(page, (decoded) => {
       this.#assertOpen();
+      // Same post-await `#resident` invariant as `#replaceWithRange` and the
+      // paged catch-up: a concurrent `discard()` may have reclaimed this
+      // replica while the older page was in flight. Installing the page here
+      // would repopulate durable state and undo the eviction.
+      if (!this.#resident) return;
       this.#acceptRange(decoded.messages);
       if (
         anchor !== null &&

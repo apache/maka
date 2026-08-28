@@ -408,6 +408,74 @@ test('does not resurrect a discarded replica when a tail re-anchor is in flight'
   assert.equal(replica.residentBytes, 0);
 });
 
+test('does not resurrect a discarded replica when a history load is in flight', async () => {
+  // Same post-await `#resident` invariant, exercised through `loadBefore`: a
+  // history page is in flight when `discard()` reclaims the replica. The
+  // resolved older page must not repopulate durable state or publish.
+  const messages = [0, 1, 2, 3, 4].map((sequence) => ({
+    identity: sequence,
+    message: assistantMessage(String(sequence), `assistant-${sequence}`),
+  }));
+  const page = (nextCursor: string | null) => ({
+    kind: 'page' as const,
+    sessionId: 'session-1',
+    source: 'durable' as const,
+    direction: 'older' as const,
+    throughSequence: 4,
+    rawBytes: 1,
+    fragments: [],
+    nextCursor,
+  });
+  const bootstrapPage = page('older');
+  const olderPage = page(null);
+  let releaseOlder: () => void = () => {};
+  const olderGate = new Promise<void>((resolve) => {
+    releaseOlder = resolve;
+  });
+  let signalEntered: () => void = () => {};
+  const olderEntered = new Promise<void>((resolve) => {
+    signalEntered = resolve;
+  });
+  const changes: { durableUpserts: readonly { sequence: number }[] }[] = [];
+  const handle = runtimeHostSessionFixture({
+    snapshot: continuitySnapshot(),
+    transcript: Promise.resolve([]),
+    events: { async *[Symbol.asyncIterator]() {} },
+    transcriptBootstrap: {
+      throughSequence: 4,
+      overlayMessageCount: 0,
+      durable: bootstrapPage,
+      overlay: { ...page(null), source: 'overlay' },
+    },
+    loadTranscriptOverlay: async () => [],
+    decodeTranscriptPage: async (candidate) => candidate === bootstrapPage
+      ? { messages: messages.slice(4), nextCursor: 'older' }
+      : { messages: messages.slice(2, 4), nextCursor: null },
+    loadTranscriptPage: async () => {
+      signalEntered();
+      await olderGate;
+      return olderPage;
+    },
+    async close() {},
+  });
+  const replica = await DesktopTranscriptReplica.prepare(handle, {
+    maxResidentBytes: 1024 * 1024,
+    onChange: (_replica, change) => changes.push(change),
+  });
+
+  // Load older history; reclaim memory while its page is pending.
+  const loading = replica.loadBefore(4, 128 * 1024);
+  await olderEntered;
+  replica.discard();
+  assert.equal(replica.resident, false);
+  releaseOlder();
+  await loading;
+
+  assert.equal(changes.length, 0, 'a discarded replica must not publish an in-flight history page');
+  assert.equal(replica.resident, false);
+  assert.equal(replica.residentBytes, 0);
+});
+
 test('loads a history target with newer messages available below it', async () => {
   const messages = [0, 1, 2, 3, 4].map((sequence) => ({
     identity: sequence,
