@@ -99,6 +99,7 @@ export function QuoteCompanionPanel(props: {
     panelId: props.panelId,
     pendingQuotes: props.quotes,
     sourceSession: props.sourceSession,
+    modelChoices: props.modelChoices,
     locale,
     onQuotesConsumed: props.onQuotesConsumed,
     onForkVisibilityChange: props.onForkVisibilityChange,
@@ -130,7 +131,7 @@ export function QuoteCompanionPanel(props: {
     if (
       !props.active ||
       companion.preparing ||
-      !props.sourceSession?.llmConnectionId ||
+      !companion.modelReady ||
       !prompt ||
       initialPromptStartedRef.current
     ) {
@@ -160,7 +161,7 @@ export function QuoteCompanionPanel(props: {
     props.onInitialPromptStarted,
     props.onPromptAccepted,
     props.panelId,
-    props.sourceSession?.llmConnectionId,
+    companion.modelReady,
   ]);
 
   // The companion inherits the source model and does not switch it; look up a
@@ -263,7 +264,7 @@ export function QuoteCompanionPanel(props: {
               streaming={companion.streaming}
               processing={companion.processing}
               draftKey={draftKey}
-              disabled={!props.sourceSession?.llmConnectionId || companion.preparing}
+              disabled={!companion.modelReady || companion.preparing}
               onPickAttachments={pickAttachments}
               onAttachFilePaths={attachFilePaths}
               pendingAttachments={pendingAttachments}
