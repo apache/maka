@@ -1230,7 +1230,7 @@ export async function createExecutionRuntimeHostComposition(
       continuity: continuityCoordinator,
       executions: coordinator,
       sessionActions: {
-        assign: async (input, connection) => {
+        assign: async (input) => {
           const durable = await stores.sessionStore.readWorkHubAssignment(input.actionId);
           const create =
             !durable && input.create
@@ -1249,7 +1249,6 @@ export async function createExecutionRuntimeHostComposition(
             .slice(0, 48);
           const messageId = `whm_${suffix}`;
           const content = normalizeMessageContent({ text: input.userText });
-          let wakeFailed = false;
           const persisted =
             durable ??
             (await sessionAdmission.runMany(
@@ -1307,51 +1306,20 @@ export async function createExecutionRuntimeHostComposition(
                     lease,
                   );
                   await continuityCoordinator.refreshCanonical(input.targetSessionId, lease);
-                  const outcome = await messages.submitWithAdmissionLease(
-                    {
-                      originHostEpoch: connection.hostEpoch,
-                      sessionId: result.assignment.targetSessionId,
-                      messageId: result.assignment.targetMessageId,
-                      content: normalizeMessageContent({ text: result.assignment.userText }),
-                      placement: 'current_turn',
-                    },
-                    connection,
-                    lease,
-                  );
-                  wakeFailed = !outcome.ok;
                 } catch {
-                  // The atomic assignment is already committed. Do not turn a
-                  // post-commit projection or wake failure into a rejected
-                  // WorkHub action; normal inbox recovery owns consumption.
-                  wakeFailed = true;
+                  // The atomic assignment is already committed. Projection
+                  // refresh is rebuildable and must not reject the action.
                 }
                 return result.assignment;
               },
             ));
 
-          if (durable) {
-            try {
-              const outcome = await messages.handlers['turn.message.submit'](
-                {
-                  originHostEpoch: connection.hostEpoch,
-                  sessionId: persisted.targetSessionId,
-                  messageId: persisted.targetMessageId,
-                  content: normalizeMessageContent({ text: persisted.userText }),
-                  placement: 'current_turn',
-                },
-                connection,
-              );
-              wakeFailed = !outcome.ok;
-            } catch {
-              wakeFailed = true;
-            }
-          }
-          if (wakeFailed) {
-            // Assignment is the acknowledged WorkHub outcome. The pending
-            // admission remains the target Session's durable inbox and normal
-            // Host recovery owns another consumption attempt.
-            context.requestDrain();
-          }
+          // Assignment is already the acknowledged durable outcome. Consume
+          // the exact stored admission after releasing the assignment leases;
+          // failure leaves it pending for the same normal recovery consumer.
+          void messages
+            .consumePendingAdmissions([persisted.targetSessionId])
+            .catch(() => undefined);
           return {
             turnId: persisted.targetTurnId,
             ...(persisted.steered ? { steered: true as const } : {}),
