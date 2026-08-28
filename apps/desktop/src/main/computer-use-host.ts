@@ -57,6 +57,7 @@ function readRegularFile(path: string): Buffer {
 export function createComputerUseHost(input: {
   isPackaged: boolean;
   resourcesPath: string;
+  platform?: NodeJS.Platform;
   manifestPath?: string;
   binaryPath?: string;
   compressFrame?: (
@@ -69,6 +70,7 @@ export function createComputerUseHost(input: {
   onTrace?: MakaCuBackendOptions['onTrace'];
   overlay?: CuOverlayHook;
 }): ComputerUseHostState {
+  const platform = input.platform ?? process.platform;
   const manifestPath = input.manifestPath ?? (input.isPackaged
     ? join(input.resourcesPath, 'bundled-tools.json')
     : resolve(
@@ -77,15 +79,16 @@ export function createComputerUseHost(input: {
         '..',
         'bundled-tools.json',
       ));
+  const binaryName = platform === 'win32' ? 'maka-cu.exe' : 'maka-cu';
   const binaryPath = input.binaryPath ?? (input.isPackaged
-    ? join(input.resourcesPath, 'bin', 'maka-cu')
+    ? join(input.resourcesPath, 'bin', binaryName)
     : resolve(
         dirname(fileURLToPath(import.meta.url)),
         '..',
         '..',
         'resources',
         'bin',
-        'maka-cu',
+        binaryName,
       ));
   try {
     const manifest = JSON.parse(readRegularFile(manifestPath).toString('utf8')) as {
@@ -101,7 +104,10 @@ export function createComputerUseHost(input: {
     if (!expectedBinarySha256 || !/^[a-f0-9]{64}$/.test(expectedBinarySha256)) {
       return { selected: selectComputerUseBackend() };
     }
-    accessSync(binaryPath, constants.R_OK | constants.X_OK);
+    accessSync(
+      binaryPath,
+      platform === 'win32' ? constants.R_OK : constants.R_OK | constants.X_OK,
+    );
     const actual = createHash('sha256')
       .update(readRegularFile(binaryPath))
       .digest('hex');
@@ -120,6 +126,7 @@ export function createComputerUseHost(input: {
         ...(input.screenLocked ? { screenLocked: input.screenLocked } : {}),
         ...(input.onTrace ? { onTrace: input.onTrace } : {}),
         ...(input.overlay ? { overlay: input.overlay } : {}),
+        platform,
       }),
       binaryPath,
       expectedBinarySha256,

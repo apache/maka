@@ -24,7 +24,6 @@ import type { MakaCuBackendOptions } from '../maka-cu-backend.js';
 import { selectComputerUseBackend } from '../select-backend.js';
 
 test('service invalidation producer advances Runtime to reobserve', async () => {
-  if (process.platform !== 'darwin') return;
   let invalidate:
     | ((input: { sessionId: string; reason: 'child_exit'; outcomeUnknown: boolean }) => void)
     | undefined;
@@ -48,6 +47,7 @@ test('service invalidation producer advances Runtime to reobserve', async () => 
   const selected = selectComputerUseBackend({
     binaryPath: '/tmp/fake-executor',
     expectedBinarySha256: '0'.repeat(64),
+    platform: 'darwin',
     createBackend(options) {
       invalidate = options.onSessionInvalidated as typeof invalidate;
       return backend;
@@ -79,7 +79,6 @@ test('service invalidation producer advances Runtime to reobserve', async () => 
 });
 
 test('physical input policy is passed to the selected backend', () => {
-  if (process.platform !== 'darwin') return;
   const physicalInputRecentlyActive = () => true;
   let received: MakaCuBackendOptions['physicalInputRecentlyActive'];
   const backend: CuDispatchBackend = {
@@ -93,6 +92,7 @@ test('physical input policy is passed to the selected backend', () => {
   selectComputerUseBackend({
     binaryPath: '/tmp/fake-executor',
     expectedBinarySha256: '0'.repeat(64),
+    platform: 'darwin',
     physicalInputRecentlyActive,
     createBackend(options) {
       received = options.physicalInputRecentlyActive;

@@ -18,7 +18,7 @@
  */
 
 // The `maka.cu/2` CuDispatchBackend. Speaks the host protocol (`maka-cu`'s
-// docs/HOST_PROTOCOL.md) to `maka-cu`, the native macOS executor; section
+// docs/HOST_PROTOCOL.md) to `maka-cu`, the native executor; section
 // numbers in comments refer to that document.
 //
 // The point of this backend, next to the cua-driver one, is that frame binding

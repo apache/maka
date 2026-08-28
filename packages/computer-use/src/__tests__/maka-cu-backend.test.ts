@@ -283,7 +283,7 @@ function handle(msg) {
       return;
     case 'apps.list':
       ok(id, { apps: [Object.assign({ appId: 'com.example.Fixture', pid: 4711, name: 'Fixture',
-        windowCount: 1, running: true },
+        windowCount: 1, windows: [{ windowId: 90210, title: 'Untitled' }], running: true },
         MALFORMED === 'app_no_window_count' ? { windowCount: undefined } : {})] });
       return;
     case 'window.list':
@@ -1191,7 +1191,13 @@ describe('maka-cu backend', () => {
     const { backend } = makeBackend();
     const apps = await backend.listApps!(signal());
     assert.deepEqual(apps, [
-      { appId: 'com.example.Fixture', pid: 4711, name: 'Fixture', windowCount: 1 },
+      {
+        appId: 'com.example.Fixture',
+        pid: 4711,
+        name: 'Fixture',
+        windowCount: 1,
+        windows: [{ windowId: 90210, title: 'Untitled' }],
+      },
     ]);
   });
 

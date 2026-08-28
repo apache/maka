@@ -19,7 +19,7 @@
 
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { chmod, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, it } from 'node:test';
@@ -80,17 +80,49 @@ describe('Computer Use host health', () => {
       const validForDevelopment = createComputerUseHost({
         isPackaged: false,
         resourcesPath: directory,
+        platform: 'darwin',
         manifestPath,
         binaryPath,
         physicalInputRecentlyActive: () => false,
       });
-      assert.equal(validForDevelopment.selected.backendId, process.platform === 'darwin'
-        ? 'maka-cu'
-        : 'none');
+      assert.equal(validForDevelopment.selected.backendId, 'maka-cu');
 
+      const windowsBinaryPath = join(directory, 'maka-cu.exe');
+      await writeFile(windowsBinaryPath, bytes);
+      const validForWindowsDevelopment = createComputerUseHost({
+        isPackaged: false,
+        resourcesPath: directory,
+        platform: 'win32',
+        manifestPath,
+        binaryPath: windowsBinaryPath,
+        physicalInputRecentlyActive: () => false,
+      });
+      assert.equal(validForWindowsDevelopment.selected.backendId, 'maka-cu');
+
+      const packagedWindowsResources = join(directory, 'windows-resources');
+      const packagedWindowsBinary = join(packagedWindowsResources, 'bin', 'maka-cu.exe');
+      await mkdir(join(packagedWindowsResources, 'bin'), { recursive: true });
+      await writeFile(packagedWindowsBinary, bytes);
+      await writeFile(manifestPath, JSON.stringify({
+        makaCu: { binarySha256: hash, distributionReady: true },
+      }));
+      const validForPackagedWindows = createComputerUseHost({
+        isPackaged: true,
+        resourcesPath: packagedWindowsResources,
+        platform: 'win32',
+        manifestPath,
+        physicalInputRecentlyActive: () => false,
+      });
+      assert.equal(validForPackagedWindows.selected.backendId, 'maka-cu');
+      assert.equal(validForPackagedWindows.binaryPath, packagedWindowsBinary);
+
+      await writeFile(manifestPath, JSON.stringify({
+        makaCu: { binarySha256: hash, distributionReady: false },
+      }));
       const blockedForDistribution = createComputerUseHost({
         isPackaged: true,
         resourcesPath: directory,
+        platform: 'darwin',
         manifestPath,
         binaryPath,
         physicalInputRecentlyActive: () => false,
@@ -103,13 +135,12 @@ describe('Computer Use host health', () => {
       const validForDistribution = createComputerUseHost({
         isPackaged: true,
         resourcesPath: directory,
+        platform: 'darwin',
         manifestPath,
         binaryPath,
         physicalInputRecentlyActive: () => false,
       });
-      assert.equal(validForDistribution.selected.backendId, process.platform === 'darwin'
-        ? 'maka-cu'
-        : 'none');
+      assert.equal(validForDistribution.selected.backendId, 'maka-cu');
 
       await writeFile(manifestPath, JSON.stringify({
         makaCu: {
@@ -120,6 +151,7 @@ describe('Computer Use host health', () => {
       const invalid = createComputerUseHost({
         isPackaged: false,
         resourcesPath: directory,
+        platform: 'darwin',
         manifestPath,
         binaryPath,
         physicalInputRecentlyActive: () => false,
@@ -131,6 +163,7 @@ describe('Computer Use host health', () => {
       const linked = createComputerUseHost({
         isPackaged: false,
         resourcesPath: directory,
+        platform: 'darwin',
         manifestPath,
         binaryPath: linkedBinaryPath,
         physicalInputRecentlyActive: () => false,

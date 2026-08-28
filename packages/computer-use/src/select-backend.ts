@@ -98,12 +98,15 @@ export interface MakaCuSelection {
    */
   allowCompatibilityInputDispatch?: boolean;
   createBackend?: (options: MakaCuBackendOptions) => DisposableBackend;
+  /** Test seam; production uses the current Node platform. */
+  platform?: NodeJS.Platform;
 }
 
 export type ComputerUseBackendSelection = MakaCuSelection;
 
 export function selectComputerUseBackend(deps?: MakaCuSelection): SelectedComputerUseBackend {
-  if (process.platform !== 'darwin') return NONE;
+  const platform = deps?.platform ?? process.platform;
+  if (platform !== 'darwin' && platform !== 'win32') return NONE;
   if (!deps?.binaryPath || !deps.expectedBinarySha256) return NONE;
   const binaryPath = deps.binaryPath;
   const expectedBinarySha256 = deps.expectedBinarySha256;

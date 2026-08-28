@@ -485,6 +485,7 @@ export interface MakaCuApp {
   pid: number;
   name?: string;
   windowCount: number;
+  windows?: Array<{ windowId: number; title?: string }>;
 }
 
 /** §5.7 `apps.launch`. */
@@ -795,11 +796,22 @@ export function readWindow(method: string, value: unknown): MakaCuWindow {
 export function readApp(method: string, value: unknown): MakaCuApp {
   const app = requireRecord(method, value, 'app');
   const name = optionalText(method, app.name, 'app.name');
+  const windows = app.windows === undefined
+    ? undefined
+    : requireArray(method, app.windows, 'app.windows').map((entry) => {
+        const window = requireRecord(method, entry, 'app.window');
+        const title = optionalText(method, window.title, 'app.window.title');
+        return {
+          windowId: requireNumber(method, window.windowId, 'app.window.windowId'),
+          ...(title === undefined ? {} : { title }),
+        };
+      });
   return {
     appId: requireString(method, app.appId, 'app.appId'),
     pid: requireNumber(method, app.pid, 'app.pid'),
     ...(name === undefined ? {} : { name }),
     windowCount: requireNumber(method, app.windowCount, 'app.windowCount'),
+    ...(windows === undefined ? {} : { windows }),
   };
 }
 
