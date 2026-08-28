@@ -36,7 +36,6 @@ export type SessionNavigationHostProps = Pick<
   | 'moduleMemory'
   | 'onSelect'
   | 'onOpenSettings'
-  | 'buildStamp'
   | 'updateReminder'
   | 'onOpenUpdate'
   | 'onNew'
@@ -107,7 +106,6 @@ export function SessionNavigationHost(props: SessionNavigationHostProps) {
       }}
       onSelectSession={controller.commands.openSession}
       onOpenSettings={props.onOpenSettings}
-      buildStamp={props.buildStamp}
       updateReminder={props.updateReminder}
       onOpenUpdate={props.onOpenUpdate}
       onNew={() => {
