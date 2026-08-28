@@ -40,6 +40,7 @@ type RuntimeHostBotSessionClient = Pick<
   | 'createSession'
   | 'getSession'
   | 'openSession'
+  | 'setSessionLifecycle'
   | 'startTurn'
   | 'updateSessionConfiguration'
 >;
@@ -100,9 +101,23 @@ export function createRuntimeHostBotSessionAdapter(
           });
         } catch (error) {
           throwUnavailable(error, session.id);
-          throw error;
+          // session.configuration.update carries its own post-commit
+          // uncertainty: a lost response may still have pinned explore. The
+          // caller binds nothing unless createSession resolves, so verify the
+          // stable id before deciding the Session is unusable — otherwise the
+          // next inbound message forks another conversation.
+          const reconciled = isCommitOutcomeUnknown(error)
+            ? await deps.client.getSession(session.id).catch(() => null)
+            : null;
+          if (isVerifiedExploreSession(reconciled)) {
+            session = reconciled;
+          } else {
+            await abandonUnusableBotSession(deps.client, session.id);
+            throw error;
+          }
         }
-        if (session.permissionMode !== 'explore') {
+        if (session.isArchived || session.permissionMode !== 'explore') {
+          await abandonUnusableBotSession(deps.client, session.id);
           throw new Error(
             `Bot Session could not enter explore mode: ${session.id}`,
           );
@@ -243,6 +258,32 @@ async function collectRuntimeHostBotTurn(
   }
 
   throw new Error('Runtime Host Bot Session subscription ended before the Turn settled');
+}
+
+function isCommitOutcomeUnknown(error: unknown): boolean {
+  return (
+    error instanceof RuntimeHostOperationError &&
+    error.code === 'commit_outcome_unknown'
+  );
+}
+
+function isVerifiedExploreSession(
+  session: SessionCatalogProjection | null,
+): session is SessionCatalogProjection {
+  return session !== null && !session.isArchived && session.permissionMode === 'explore';
+}
+
+// A Session that reached the Host but never got bound to a conversation is a
+// leak: the desktop session list shows it and the next inbound message
+// creates a sibling instead of reusing it. Archiving (rather than removing)
+// keeps any committed state inspectable while taking the Session out of the
+// active conversation flow. Best-effort by design — a cleanup failure must
+// not mask the original create/pin error.
+async function abandonUnusableBotSession(
+  client: RuntimeHostBotSessionClient,
+  sessionId: string,
+): Promise<void> {
+  await client.setSessionLifecycle(sessionId, 'archived').catch(() => undefined);
 }
 
 function throwUnavailable(error: unknown, sessionId: string): void {

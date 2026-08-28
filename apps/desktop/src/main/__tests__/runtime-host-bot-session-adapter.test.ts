@@ -171,6 +171,105 @@ test('reconciles an uncertain Host Session create with its stable Session identi
   );
 });
 
+test('verifies an uncertain explore pin against the Host before binding the stable Session id', async () => {
+  const lifecycle: unknown[] = [];
+  const changes: unknown[] = [];
+  const adapter = createRuntimeHostBotSessionAdapter({
+    client: botClient({
+      createSession: async (input) => session(input.sessionId, { permissionMode: 'ask' }),
+      updateSessionConfiguration: async () => {
+        throw new RuntimeHostOperationError(
+          'session.configuration.update',
+          'commit_outcome_unknown',
+          'response lost',
+        );
+      },
+      // The Host committed explore even though the update response was lost.
+      getSession: async (sessionId) => session(sessionId, { permissionMode: 'explore' }),
+      setSessionLifecycle: async (sessionId, state) => {
+        lifecycle.push([sessionId, state]);
+        return session(sessionId);
+      },
+    }),
+    resolveCreateTarget: hostPathCreateTarget,
+    emitSessionsChanged: (reason, sessionId, extra) =>
+      changes.push({ reason, sessionId, extra }),
+    newId: () => 'stable-session-id',
+  });
+
+  assert.equal(
+    await adapter.createSession({ name: 'Bot conversation', labels: ['bot'] }),
+    'stable-session-id',
+  );
+  assert.deepEqual(lifecycle, [], 'a verified explore Session must not be archived');
+  assert.deepEqual(changes, [
+    { reason: 'created', sessionId: 'stable-session-id', extra: undefined },
+  ]);
+});
+
+test('archives the orphaned Session when the explore pin definitively fails', async () => {
+  const lifecycle: unknown[] = [];
+  const changes: unknown[] = [];
+  const adapter = createRuntimeHostBotSessionAdapter({
+    client: botClient({
+      createSession: async (input) => session(input.sessionId, { permissionMode: 'ask' }),
+      updateSessionConfiguration: async () => {
+        throw new RuntimeHostOperationError(
+          'session.configuration.update',
+          'invalid_request',
+          'explore refused',
+        );
+      },
+      setSessionLifecycle: async (sessionId, state) => {
+        lifecycle.push([sessionId, state]);
+        return session(sessionId);
+      },
+    }),
+    resolveCreateTarget: hostPathCreateTarget,
+    emitSessionsChanged: (reason, sessionId, extra) =>
+      changes.push({ reason, sessionId, extra }),
+    newId: () => 'stable-session-id',
+  });
+
+  await assert.rejects(
+    adapter.createSession({ name: 'Bot conversation', labels: ['bot'] }),
+    RuntimeHostOperationError,
+  );
+  assert.deepEqual(lifecycle, [['stable-session-id', 'archived']]);
+  assert.deepEqual(changes, []);
+});
+
+test('archives the orphaned Session when an uncertain explore pin cannot be verified as committed', async () => {
+  const lifecycle: unknown[] = [];
+  const adapter = createRuntimeHostBotSessionAdapter({
+    client: botClient({
+      createSession: async (input) => session(input.sessionId, { permissionMode: 'ask' }),
+      updateSessionConfiguration: async () => {
+        throw new RuntimeHostOperationError(
+          'session.configuration.update',
+          'commit_outcome_unknown',
+          'response lost',
+        );
+      },
+      // The update never committed; the Session is still in ask mode.
+      getSession: async (sessionId) => session(sessionId, { permissionMode: 'ask' }),
+      setSessionLifecycle: async (sessionId, state) => {
+        lifecycle.push([sessionId, state]);
+        return session(sessionId);
+      },
+    }),
+    resolveCreateTarget: hostPathCreateTarget,
+    emitSessionsChanged() {},
+    newId: () => 'stable-session-id',
+  });
+
+  await assert.rejects(
+    adapter.createSession({ name: 'Bot conversation', labels: ['bot'] }),
+    RuntimeHostOperationError,
+  );
+  assert.deepEqual(lifecycle, [['stable-session-id', 'archived']]);
+});
+
 test('subscribes before Turn start and settles a fast Host reply without losing text', async () => {
   const events = new AsyncFrameQueue();
   const changes: unknown[] = [];
@@ -407,6 +506,7 @@ function botClient(overrides: Partial<BotClient>): BotClient {
     createSession: unexpected,
     getSession: unexpected,
     openSession: unexpected,
+    setSessionLifecycle: unexpected,
     startTurn: unexpected,
     updateSessionConfiguration: unexpected,
     ...overrides,
