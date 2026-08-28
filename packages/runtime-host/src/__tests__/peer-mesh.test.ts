@@ -130,11 +130,26 @@ test('reconciles changed routes, propagates removal, and recovers the verified c
     await memberB.reconcile();
     assert.deepEqual(memberB.resolveRoutes('peer-c')?.routeHints, ['/memory/peer-c-moved']);
 
+    await memberC.close();
+    await serving[2];
+    await rm(join(root, 'member-c'), { recursive: true, force: true });
     now += 6 * 60 * 1_000;
     authorityPeer.setRouteHints(['/memory/peer-a-moved']);
     await authority.reconcile();
     await memberB.reconcile();
     assert.deepEqual(memberB.resolveRoutes('peer-a')?.routeHints, ['/memory/peer-a-moved']);
+
+    memberCPeer.setRouteHints(['/memory/peer-c-rejoined']);
+    memberC = await openPeerMeshNode({
+      dataRoot: join(root, 'member-c'),
+      peer: memberCPeer,
+      now: () => now,
+    });
+    serving[2] = memberC.serve();
+    await memberC.join(await authority.invite(mesh.roster.roster.meshId));
+    assert.deepEqual(authority.resolveRoutes('peer-c')?.routeHints, ['/memory/peer-c-rejoined']);
+    await memberB.reconcile();
+    assert.deepEqual(memberB.resolveRoutes('peer-c')?.routeHints, ['/memory/peer-c-rejoined']);
 
     await authority.remove(mesh.roster.roster.meshId, 'peer-b');
     await memberC.reconcile();

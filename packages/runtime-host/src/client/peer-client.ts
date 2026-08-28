@@ -396,7 +396,7 @@ function mergeAddresses(
   primary: readonly string[],
   secondary: readonly string[] | undefined,
 ): readonly string[] {
-  return Object.freeze([...new Set([...primary, ...(secondary ?? [])])].slice(0, 16));
+  return Object.freeze([...new Set([...primary, ...(secondary ?? [])])].slice(0, 32));
 }
 
 async function cancelPeerConnect(

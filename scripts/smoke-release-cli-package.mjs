@@ -253,6 +253,7 @@ async function smokeRuntimeHostPeerProtocol({ packageRoot, cliEntrypoint, root }
     meshAuthorityOwner = await mesh.openRuntimeHostPeerMeshOwner({
       nativePath,
       keyPath: hostKeyPath,
+      expectedPeerId: peerId,
       dataRoot: join(root, 'mesh-authority'),
       listenAddresses: ['/ip4/127.0.0.1/udp/0/quic-v1'],
     });

@@ -197,9 +197,7 @@ class PeerMeshNodeImpl implements PeerMeshNode {
   }
 
   async initialize(): Promise<void> {
-    for (const state of this.#store.read()) {
-      for (const route of state.routes) this.#assertRouteSignature(route);
-    }
+    for (const route of this.#store.read().routes) this.#assertRouteSignature(route);
   }
 
   status(): readonly PeerMeshStatus[] {
@@ -208,7 +206,7 @@ class PeerMeshNodeImpl implements PeerMeshNode {
     return Object.freeze(
       this.#store
         .read()
-        .filter(
+        .meshes.filter(
           (state) =>
             state.role === 'authority' || state.roster.roster.members.includes(identity.peerId),
         )
@@ -220,7 +218,7 @@ class PeerMeshNodeImpl implements PeerMeshNode {
     return this.#admitMesh(async () => {
       const identity = this.#peer.identity();
       const state = await this.#store.mutate((current) => {
-        assertMeshCapacity(current, identity.peerId);
+        assertMeshCapacity(current.meshes, identity.peerId);
         const keys = generatePeerMeshAuthorityKeyPair();
         const roster = signPeerMeshRoster(
           canonicalPeerMeshRoster({
@@ -235,14 +233,19 @@ class PeerMeshNodeImpl implements PeerMeshNode {
         const state: PeerMeshStateV1 = {
           role: 'authority',
           roster,
-          routes: [],
           authorityPrivateKey: keys.privateKey,
           invitations: [],
         };
-        return { state: appendMesh(current, state, identity.peerId), result: state };
+        return {
+          state: { ...current, meshes: appendMesh(current.meshes, state, identity.peerId) },
+          result: state,
+        };
       });
       await this.#refreshLocalRoute();
-      return peerMeshStatus(findMesh(this.#store.read(), state.roster.roster.meshId)!, identity);
+      return peerMeshStatus(
+        findMesh(this.#store.read().meshes, state.roster.roster.meshId)!,
+        identity,
+      );
     });
   }
 
@@ -257,7 +260,7 @@ class PeerMeshNodeImpl implements PeerMeshNode {
       );
     }
     return this.#store.mutate((current) => {
-      const state = requireAuthority(current, meshId);
+      const state = requireAuthority(current.meshes, meshId);
       if (state.roster.roster.closed) throw new Error('Peer Mesh is closed');
       const invitations = state.invitations.filter(
         (invitation) => invitation.status === 'redeemed' || invitation.expiresAt > now,
@@ -280,17 +283,20 @@ class PeerMeshNodeImpl implements PeerMeshNode {
         ...target,
       };
       return {
-        state: replaceMesh(current, {
-          ...state,
-          invitations: [
-            ...invitations,
-            {
-              status: 'pending',
-              secretDigest: peerMeshInvitationSecretDigest(secret),
-              expiresAt,
-            },
-          ],
-        }),
+        state: {
+          ...current,
+          meshes: replaceMesh(current.meshes, {
+            ...state,
+            invitations: [
+              ...invitations,
+              {
+                status: 'pending',
+                secretDigest: peerMeshInvitationSecretDigest(secret),
+                expiresAt,
+              },
+            ],
+          }),
+        },
         result: Object.freeze(invitation),
       };
     });
@@ -300,12 +306,12 @@ class PeerMeshNodeImpl implements PeerMeshNode {
     return this.#admitMesh(async () => {
       const invitation = decodePeerMeshInvitation(invitationValue);
       const current = this.#store.read();
-      const existing = findMesh(current, invitation.meshId);
+      const existing = findMesh(current.meshes, invitation.meshId);
       const localPeerId = this.#peer.identity().peerId;
       if (existing?.role === 'authority') {
         throw new Error('This peer already belongs to that Peer Mesh');
       }
-      if (!existing) assertMeshCapacity(current, localPeerId);
+      if (!existing) assertMeshCapacity(current.meshes, localPeerId);
       const operationSignal = signal
         ? AbortSignal.any([signal, this.#lifetime.signal])
         : this.#lifetime.signal;
@@ -345,7 +351,6 @@ class PeerMeshNodeImpl implements PeerMeshNode {
           throw new Error('Peer Mesh authority returned an unrelated roster');
         }
         const routes = await this.#validateRoutes(response.routes, roster, this.#now());
-        const joinedRoutes = mergeRoutes(routes, [localRoute], roster, this.#now());
         const state: PeerMeshStateV1 = {
           role: 'replica',
           authority: {
@@ -354,10 +359,9 @@ class PeerMeshNodeImpl implements PeerMeshNode {
             coordinationRelays: invitation.coordinationRelays,
           },
           roster,
-          routes: joinedRoutes,
         };
         const joined = await this.#store.mutate((current) => {
-          const existing = findMesh(current, invitation.meshId);
+          const existing = findMesh(current.meshes, invitation.meshId);
           if (existing?.role === 'authority') {
             throw new Error('This peer already belongs to that Peer Mesh');
           }
@@ -368,11 +372,15 @@ class PeerMeshNodeImpl implements PeerMeshNode {
           ) {
             throw new Error('Peer Mesh invitation did not advance the existing membership');
           }
-          if (!existing) assertMeshCapacity(current, identity.peerId);
+          if (!existing) assertMeshCapacity(current.meshes, identity.peerId);
+          const meshes = existing
+            ? replaceMesh(current.meshes, state)
+            : appendMesh(current.meshes, state, identity.peerId);
           return {
-            state: existing
-              ? replaceMesh(current, state)
-              : appendMesh(current, state, identity.peerId),
+            state: {
+              meshes,
+              routes: mergeRoutes(current.routes, [...routes, localRoute], this.#now()),
+            },
             result: state,
           };
         });
@@ -408,10 +416,14 @@ class PeerMeshNodeImpl implements PeerMeshNode {
   resolveRoutes(peerId: string) {
     this.#assertOpen();
     const now = this.#now();
-    const route = this.#store
-      .read()
-      .filter((state) => isActiveMembership(state, this.#peer.identity().peerId))
-      .flatMap((state) => state.routes)
+    const stored = this.#store.read();
+    const visible = stored.meshes.some(
+      (state) =>
+        isActiveMembership(state, this.#peer.identity().peerId) &&
+        state.roster.roster.members.includes(peerId),
+    );
+    if (!visible) return undefined;
+    const route = stored.routes
       .filter(({ route }) => route.peerId === peerId && route.expiresAt > now)
       .sort((left, right) => right.route.sequence - left.route.sequence)[0]?.route;
     if (!route) return undefined;
@@ -489,9 +501,10 @@ class PeerMeshNodeImpl implements PeerMeshNode {
       string,
       { readonly meshId: string; readonly target: PeerMeshAuthorityTarget }
     >();
-    for (const state of this.#store.read()) {
+    const stored = this.#store.read();
+    for (const state of stored.meshes) {
       if (!isActiveMembership(state, identity.peerId)) continue;
-      for (const signed of state.routes) {
+      for (const signed of stored.routes) {
         const route = signed.route;
         if (
           route.peerId !== identity.peerId &&
@@ -505,8 +518,11 @@ class PeerMeshNodeImpl implements PeerMeshNode {
       }
       if (state.role === 'replica' && state.authority.peerId !== identity.peerId) {
         const key = `${state.roster.roster.meshId}\0${state.authority.peerId}`;
-        if (!targets.has(key))
-          targets.set(key, { meshId: state.roster.roster.meshId, target: state.authority });
+        const learned = targets.get(key)?.target;
+        targets.set(key, {
+          meshId: state.roster.roster.meshId,
+          target: learned ? mergeTargets(learned, state.authority) : state.authority,
+        });
       }
     }
     for (const { meshId, target } of targets.values()) {
@@ -525,10 +541,11 @@ class PeerMeshNodeImpl implements PeerMeshNode {
     signal: AbortSignal,
   ): Promise<void> {
     for (let page = 0; page <= Math.ceil(PEER_MESH_MAX_MEMBERS / ROUTE_PAGE_SIZE); page += 1) {
-      const state = findMesh(this.#store.read(), meshId);
+      const stored = this.#store.read();
+      const state = findMesh(stored.meshes, meshId);
       const localPeerId = this.#peer.identity().peerId;
       if (!state || !isActiveMembership(state, localPeerId)) return;
-      const route = state.routes.find((candidate) => candidate.route.peerId === localPeerId);
+      const route = stored.routes.find((candidate) => candidate.route.peerId === localPeerId);
       if (!route) throw new Error('Peer Mesh local route is unavailable');
       const stream = await this.#peer.connectMeshControl(
         {
@@ -547,7 +564,7 @@ class PeerMeshNodeImpl implements PeerMeshNode {
             meshId,
             roster: state.roster,
             route,
-            knownRoutes: routeSequences(state.routes, this.#now()),
+            knownRoutes: routeSequences(stored.routes, state.roster, this.#now()),
           },
           decodeSyncResponse,
           signal,
@@ -574,10 +591,9 @@ class PeerMeshNodeImpl implements PeerMeshNode {
   async #refreshLocalRouteOnce(): Promise<SignedPeerMeshRouteRecordV1 | undefined> {
     const identity = this.#peer.identity();
     const current = this.#store.read();
-    const active = current.filter((state) => isActiveMembership(state, identity.peerId));
+    const active = current.meshes.filter((state) => isActiveMembership(state, identity.peerId));
     if (active.length === 0) return undefined;
-    const existing = active
-      .flatMap((state) => state.routes)
+    const existing = current.routes
       .filter(({ route }) => route.peerId === identity.peerId)
       .sort((left, right) => right.route.sequence - left.route.sequence)[0];
     const now = this.#now();
@@ -587,27 +603,11 @@ class PeerMeshNodeImpl implements PeerMeshNode {
       sameAddresses(existing.route.routeHints, identity.listenAddresses) &&
       sameAddresses(existing.route.coordinationRelays, identity.coordinationRelays)
     ) {
-      if (
-        active.every((state) =>
-          state.routes.some((candidate) => sameSignedRoute(candidate, existing)),
-        )
-      ) {
-        return existing;
-      }
+      return existing;
     }
-    const route =
-      existing &&
-      existing.route.expiresAt > now + ROUTE_REFRESH_LEAD_MS &&
-      sameAddresses(existing.route.routeHints, identity.listenAddresses) &&
-      sameAddresses(existing.route.coordinationRelays, identity.coordinationRelays)
-        ? existing
-        : await this.#signLocalRoute((existing?.route.sequence ?? 0) + 1);
+    const route = await this.#signLocalRoute((existing?.route.sequence ?? 0) + 1);
     await this.#store.mutate((states) => ({
-      state: states.map((state) =>
-        isActiveMembership(state, identity.peerId)
-          ? { ...state, routes: mergeRoutes(state.routes, [route], state.roster, now) }
-          : state,
-      ),
+      state: { ...states, routes: mergeRoutes(states.routes, [route], now) },
       result: undefined,
     }));
     return route;
@@ -617,8 +617,7 @@ class PeerMeshNodeImpl implements PeerMeshNode {
     const identity = this.#peer.identity();
     const maxSequence = this.#store
       .read()
-      .flatMap((state) => state.routes)
-      .filter(({ route }) => route.peerId === identity.peerId)
+      .routes.filter(({ route }) => route.peerId === identity.peerId)
       .reduce((maximum, { route }) => Math.max(maximum, route.sequence), 0);
     const route = canonicalPeerMeshRouteRecord({
       version: 1,
@@ -697,7 +696,7 @@ class PeerMeshNodeImpl implements PeerMeshNode {
     const routes = this.#validateRoutes(routeValues, roster, this.#now());
     const localPeerId = this.#peer.identity().peerId;
     await this.#store.mutate((current) => {
-      const state = findMesh(current, meshId);
+      const state = findMesh(current.meshes, meshId);
       if (!state || state.roster.authorityPublicKey !== roster.authorityPublicKey) {
         throw new Error('Peer Mesh synchronization has the wrong authority');
       }
@@ -705,12 +704,17 @@ class PeerMeshNodeImpl implements PeerMeshNode {
       const next = {
         ...state,
         roster: nextRoster,
-        routes:
-          nextRoster.roster.closed || !nextRoster.roster.members.includes(localPeerId)
-            ? []
-            : mergeRoutes(state.routes, routes, nextRoster, this.#now()),
       };
-      return { state: replaceMesh(current, next), result: undefined };
+      return {
+        state: {
+          meshes: replaceMesh(current.meshes, next),
+          routes:
+            nextRoster.roster.closed || !nextRoster.roster.members.includes(localPeerId)
+              ? current.routes
+              : mergeRoutes(current.routes, routes, this.#now()),
+        },
+        result: undefined,
+      };
     });
   }
 
@@ -727,7 +731,7 @@ class PeerMeshNodeImpl implements PeerMeshNode {
     },
   ): Promise<PeerMeshStatus> {
     return this.#store.mutate((current) => {
-      const state = requireAuthority(current, meshId);
+      const state = requireAuthority(current.meshes, meshId);
       if (state.roster.roster.closed) {
         if (closedIsSuccess) {
           return { state: current, result: peerMeshStatus(state, this.#peer.identity()) };
@@ -748,9 +752,6 @@ class PeerMeshNodeImpl implements PeerMeshNode {
       const updated = {
         ...state,
         roster,
-        routes: next.closed
-          ? []
-          : state.routes.filter(({ route }) => next.members.includes(route.peerId)),
         invitations: next.closed
           ? state.invitations.filter(({ status }) => status === 'redeemed')
           : state.invitations.filter(
@@ -759,7 +760,7 @@ class PeerMeshNodeImpl implements PeerMeshNode {
             ),
       };
       return {
-        state: replaceMesh(current, updated),
+        state: { ...current, meshes: replaceMesh(current.meshes, updated) },
         result: peerMeshStatus(updated, this.#peer.identity()),
       };
     });
@@ -828,7 +829,7 @@ class PeerMeshNodeImpl implements PeerMeshNode {
   ): Promise<RedeemInvitationResponse> {
     const now = this.#now();
     return this.#store.mutate<RedeemInvitationResponse>((current) => {
-      const state = findMesh(current, request.meshId);
+      const state = findMesh(current.meshes, request.meshId);
       if (!state || state.role !== 'authority')
         return { state: current, result: rejected('invalid') };
       const invitation = state.invitations.find(({ secretDigest }) =>
@@ -846,15 +847,16 @@ class PeerMeshNodeImpl implements PeerMeshNode {
         }
         const updated = {
           ...state,
-          routes: mergeAuthenticatedRoute(state.routes, remoteRoute, state.roster, now),
         };
+        const routes = mergeAuthenticatedRoute(current.routes, remoteRoute, now);
         return {
-          state: replaceMesh(current, updated),
+          state: { meshes: replaceMesh(current.meshes, updated), routes },
           result: {
             kind: 'invitation-redeemed',
             roster: updated.roster,
             routes: responseRoutes(
               updated,
+              routes,
               [{ peerId: remotePeerId, sequence: Number.MAX_SAFE_INTEGER }],
               now,
             ).routes,
@@ -867,13 +869,19 @@ class PeerMeshNodeImpl implements PeerMeshNode {
       );
       if (invitation.expiresAt <= now) {
         return {
-          state: replaceMesh(current, { ...state, invitations: remaining }),
+          state: {
+            ...current,
+            meshes: replaceMesh(current.meshes, { ...state, invitations: remaining }),
+          },
           result: rejected('expired'),
         };
       }
       if (state.roster.roster.closed) {
         return {
-          state: replaceMesh(current, { ...state, invitations: remaining }),
+          state: {
+            ...current,
+            meshes: replaceMesh(current.meshes, { ...state, invitations: remaining }),
+          },
           result: rejected('closed'),
         };
       }
@@ -882,14 +890,16 @@ class PeerMeshNodeImpl implements PeerMeshNode {
         state.roster.roster.members.length >= PEER_MESH_MAX_MEMBERS
       ) {
         return {
-          state: replaceMesh(current, { ...state, invitations: remaining }),
+          state: {
+            ...current,
+            meshes: replaceMesh(current.meshes, { ...state, invitations: remaining }),
+          },
           result: rejected('full'),
         };
       }
       if (state.roster.roster.members.includes(remotePeerId)) {
         const updated = {
           ...state,
-          routes: mergeAuthenticatedRoute(state.routes, remoteRoute, state.roster, now),
           invitations: [
             ...remaining.filter(
               (record) => record.status === 'pending' || record.peerId !== remotePeerId,
@@ -897,13 +907,15 @@ class PeerMeshNodeImpl implements PeerMeshNode {
             redeemedInvitation(invitation, remotePeerId),
           ],
         };
+        const routes = mergeAuthenticatedRoute(current.routes, remoteRoute, now);
         return {
-          state: replaceMesh(current, updated),
+          state: { meshes: replaceMesh(current.meshes, updated), routes },
           result: {
             kind: 'invitation-redeemed',
             roster: state.roster,
             routes: responseRoutes(
               updated,
+              routes,
               [{ peerId: remotePeerId, sequence: Number.MAX_SAFE_INTEGER }],
               now,
             ).routes,
@@ -922,7 +934,6 @@ class PeerMeshNodeImpl implements PeerMeshNode {
       const updated = {
         ...state,
         roster,
-        routes: mergeRoutes(state.routes, [remoteRoute], roster, now),
         invitations: [
           ...remaining.filter(
             (record) => record.status === 'pending' || record.peerId !== remotePeerId,
@@ -930,13 +941,15 @@ class PeerMeshNodeImpl implements PeerMeshNode {
           redeemedInvitation(invitation, remotePeerId),
         ],
       };
+      const routes = mergeRoutes(current.routes, [remoteRoute], now);
       return {
-        state: replaceMesh(current, updated),
+        state: { meshes: replaceMesh(current.meshes, updated), routes },
         result: {
           kind: 'invitation-redeemed',
           roster,
           routes: responseRoutes(
             updated,
+            routes,
             [{ peerId: remotePeerId, sequence: Number.MAX_SAFE_INTEGER }],
             now,
           ).routes,
@@ -950,7 +963,7 @@ class PeerMeshNodeImpl implements PeerMeshNode {
     await this.#refreshLocalRoute();
     const incomingRoster = decodeSignedPeerMeshRoster(request.roster);
     return this.#store.mutate<SyncPeerMeshResponse>((current) => {
-      const state = findMesh(current, request.meshId);
+      const state = findMesh(current.meshes, request.meshId);
       if (!state || state.roster.authorityPublicKey !== incomingRoster.authorityPublicKey) {
         return { state: current, result: { kind: 'sync-rejected', reason: 'unknown' } as const };
       }
@@ -961,13 +974,14 @@ class PeerMeshNodeImpl implements PeerMeshNode {
       const updated = {
         ...state,
         roster,
-        routes: localMember
-          ? mergeRoutes(state.routes, remoteMember ? [remoteRoute] : [], roster, this.#now())
-          : [],
       };
+      const routes =
+        localMember && remoteMember
+          ? mergeRoutes(current.routes, [remoteRoute], this.#now())
+          : current.routes;
       if (!localMember || !remoteMember) {
         return {
-          state: replaceMesh(current, updated),
+          state: { meshes: replaceMesh(current.meshes, updated), routes },
           result: {
             kind: 'sync-result',
             roster,
@@ -976,9 +990,9 @@ class PeerMeshNodeImpl implements PeerMeshNode {
           } as const,
         };
       }
-      const page = responseRoutes(updated, request.knownRoutes, this.#now());
+      const page = responseRoutes(updated, routes, request.knownRoutes, this.#now());
       return {
-        state: replaceMesh(current, updated),
+        state: { meshes: replaceMesh(current.meshes, updated), routes },
         result: {
           kind: 'sync-result',
           roster,
@@ -1097,23 +1111,17 @@ function selectRoster(
 function mergeRoutes(
   current: readonly SignedPeerMeshRouteRecordV1[],
   candidates: readonly SignedPeerMeshRouteRecordV1[],
-  roster: SignedPeerMeshRosterV1,
   now: number,
 ): readonly SignedPeerMeshRouteRecordV1[] {
-  const routes = new Map(
-    current
-      .filter(({ route }) => roster.roster.members.includes(route.peerId))
-      .map((route) => [route.route.peerId, route] as const),
-  );
+  const routes = new Map(current.map((route) => [route.route.peerId, route] as const));
   for (const candidate of candidates) {
-    if (
-      candidate.route.expiresAt <= now ||
-      !roster.roster.members.includes(candidate.route.peerId)
-    ) {
-      continue;
-    }
+    if (candidate.route.expiresAt <= now) continue;
     const existing = routes.get(candidate.route.peerId);
-    if (!existing || candidate.route.sequence > existing.route.sequence) {
+    if (
+      !existing ||
+      existing.route.expiresAt <= now ||
+      candidate.route.sequence > existing.route.sequence
+    ) {
       routes.set(candidate.route.peerId, candidate);
       continue;
     }
@@ -1132,28 +1140,31 @@ function mergeRoutes(
 function mergeAuthenticatedRoute(
   current: readonly SignedPeerMeshRouteRecordV1[],
   candidate: SignedPeerMeshRouteRecordV1,
-  roster: SignedPeerMeshRosterV1,
   now: number,
 ): readonly SignedPeerMeshRouteRecordV1[] {
   const existing = current.find(({ route }) => route.peerId === candidate.route.peerId);
-  if (existing && existing.route.sequence > candidate.route.sequence) {
-    return mergeRoutes(current, [], roster, now);
+  if (
+    existing &&
+    existing.route.expiresAt > now &&
+    existing.route.sequence > candidate.route.sequence
+  ) {
+    return current;
   }
   return mergeRoutes(
     current.filter(({ route }) => route.peerId !== candidate.route.peerId),
     [candidate],
-    roster,
     now,
   );
 }
 
 function routeSequences(
   routes: readonly SignedPeerMeshRouteRecordV1[],
+  roster: SignedPeerMeshRosterV1,
   now: number,
 ): readonly PeerMeshRouteSequence[] {
   return Object.freeze(
     routes
-      .filter(({ route }) => route.expiresAt > now)
+      .filter(({ route }) => route.expiresAt > now && roster.roster.members.includes(route.peerId))
       .map(({ route }) => Object.freeze({ peerId: route.peerId, sequence: route.sequence }))
       .sort((left, right) => left.peerId.localeCompare(right.peerId)),
   );
@@ -1161,11 +1172,12 @@ function routeSequences(
 
 function responseRoutes(
   state: PeerMeshStateV1,
+  routes: readonly SignedPeerMeshRouteRecordV1[],
   knownRoutes: readonly PeerMeshRouteSequence[],
   now: number,
 ): { readonly routes: readonly SignedPeerMeshRouteRecordV1[]; readonly more: boolean } {
   const known = new Map(knownRoutes.map(({ peerId, sequence }) => [peerId, sequence]));
-  const missing = state.routes.filter(
+  const missing = routes.filter(
     ({ route }) =>
       route.expiresAt > now &&
       state.roster.roster.members.includes(route.peerId) &&
@@ -1181,11 +1193,17 @@ function sameAddresses(left: readonly string[], right: readonly string[]): boole
   return left.length === right.length && left.every((address, index) => address === right[index]);
 }
 
-function sameSignedRoute(
-  left: SignedPeerMeshRouteRecordV1,
-  right: SignedPeerMeshRouteRecordV1,
-): boolean {
-  return JSON.stringify(left) === JSON.stringify(right);
+function mergeTargets(
+  primary: PeerMeshAuthorityTarget,
+  fallback: PeerMeshAuthorityTarget,
+): PeerMeshAuthorityTarget {
+  return Object.freeze({
+    peerId: primary.peerId,
+    routeHints: Object.freeze([...new Set([...primary.routeHints, ...fallback.routeHints])]),
+    coordinationRelays: Object.freeze([
+      ...new Set([...primary.coordinationRelays, ...fallback.coordinationRelays]),
+    ]),
+  });
 }
 
 async function exchangeControl<Request, Response>(

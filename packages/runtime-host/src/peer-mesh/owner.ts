@@ -30,6 +30,7 @@ export interface RuntimeHostPeerMeshOwner {
 export async function openRuntimeHostPeerMeshOwner(input: {
   readonly nativePath: string;
   readonly keyPath: string;
+  readonly expectedPeerId?: string;
   readonly dataRoot: string;
   readonly listenAddresses?: readonly string[];
   readonly coordinationRelays?: readonly string[];
@@ -38,6 +39,7 @@ export async function openRuntimeHostPeerMeshOwner(input: {
   const client = createRuntimeHostPeerClient({
     nativePath: input.nativePath,
     keyPath: input.keyPath,
+    ...(input.expectedPeerId ? { expectedPeerId: input.expectedPeerId } : {}),
     ...(input.listenAddresses ? { listenAddresses: input.listenAddresses } : {}),
     ...(input.coordinationRelays ? { coordinationRelays: input.coordinationRelays } : {}),
     routeResolver: { resolveRoutes: (peerId) => mesh?.resolveRoutes(peerId) },
