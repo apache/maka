@@ -55,8 +55,6 @@ export function useAppShellSessionWorkspace(toastApi: ToastApi) {
   );
   const transcriptRangeRef = useRef<DesktopTranscriptRangeController | undefined>(undefined);
   const [messageLoadPending, setMessageLoadPending] = useState(false);
-  const messageRetryPendingRef = useRef<Set<string>>(new Set());
-  const stopPendingRef = useRef<Set<string>>(new Set());
 
   const actionsRef = useRef<SessionWorkspaceActions | null>(null);
   // Every dep below is a ref box, a state setter, or a method of the
@@ -69,8 +67,6 @@ export function useAppShellSessionWorkspace(toastApi: ToastApi) {
     transientMessagesBySessionRef,
     transcriptRangeRef,
     selectionRevisionRef,
-    messageRetryPendingRef,
-    stopPendingRef,
     setActiveIdState,
     setMessagesState: setMessages,
     setTransientMessagesState: setTransientMessages,
@@ -99,21 +95,19 @@ export function useAppShellSessionWorkspace(toastApi: ToastApi) {
     transcriptRangeRef,
     messageLoadPending,
     setMessageLoadPending,
-    messageRetryPendingRef,
-    stopPendingRef,
     sessionUiController: sessionUi.controller,
     liveTurnBySessionRef: sessionUi.liveTurnBySessionRef,
     sessionEventHealthBySessionRef: sessionUi.sessionEventHealthBySessionRef,
     setMessageLoadErrorBySession: sessionUi.setMessageLoadErrorBySession,
-    setMessageRetryPendingBySession: sessionUi.setMessageRetryPendingBySession,
-    setStopPendingBySession: sessionUi.setStopPendingBySession,
+    messageRetryPending: sessionUi.messageRetryPending,
+    stopPending: sessionUi.stopPending,
+    permissionModePending: sessionUi.permissionModePending,
+    sessionModelPending: sessionUi.sessionModelPending,
     setLiveTurnBySession: sessionUi.setLiveTurnBySession,
     setShellRunUpdatesBySession: sessionUi.setShellRunUpdatesBySession,
     setInteractionBySession: sessionUi.setInteractionBySession,
     setMessageQueueBySession: sessionUi.setMessageQueueBySession,
     setSessionEventHealthBySession: sessionUi.setSessionEventHealthBySession,
-    setPendingPermissionModeBySession: sessionUi.setPendingPermissionModeBySession,
-    setPendingSessionModelBySession: sessionUi.setPendingSessionModelBySession,
     confirmLiveTurn: sessionUi.confirmLiveTurn,
   };
 }

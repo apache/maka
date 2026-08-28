@@ -71,8 +71,6 @@ export function createSessionWorkspaceActions(deps: {
   transientMessagesBySessionRef: RefBox<Map<string, Map<string, TransientUserMessage>>>;
   transcriptRangeRef: RefBox<DesktopTranscriptRangeController | undefined>;
   selectionRevisionRef: RefBox<number>;
-  messageRetryPendingRef: RefBox<Set<string>>;
-  stopPendingRef: RefBox<Set<string>>;
   setActiveIdState: (next: string | undefined) => void;
   setMessagesState: (next: StoredMessage[]) => void;
   setTransientMessagesState: (next: TransientUserMessage[]) => void;
@@ -85,8 +83,6 @@ export function createSessionWorkspaceActions(deps: {
     transientMessagesBySessionRef,
     transcriptRangeRef,
     selectionRevisionRef,
-    messageRetryPendingRef,
-    stopPendingRef,
     setActiveIdState,
     setMessagesState,
     setTransientMessagesState,
@@ -220,8 +216,6 @@ export function createSessionWorkspaceActions(deps: {
   }
 
   function clearOwnedSessionState(sessionId: string): void {
-    messageRetryPendingRef.current.delete(sessionId);
-    stopPendingRef.current.delete(sessionId);
     transientMessagesBySessionRef.current.delete(sessionId);
     if (activeIdRef.current === sessionId) setTransientMessagesState([]);
     clearSessionUiState(sessionId);

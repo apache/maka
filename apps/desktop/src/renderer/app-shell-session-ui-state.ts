@@ -46,6 +46,20 @@ export interface MessageQueueUiState {
 
 type AppShellSessionUiStateMapKey = keyof AppShellSessionUiState;
 
+/** The maps that record nothing but "an action is in flight for this key". */
+type BooleanMapKey =
+  | 'messageRetryPendingBySession'
+  | 'stopPendingBySession'
+  | 'pendingPermissionModeBySession'
+  | 'pendingSessionModelBySession';
+
+export interface SessionPendingClaim {
+  /** Marks `key` in flight. Returns false — a no-op — if it already was. */
+  claim(key: string): boolean;
+  /** Gives the claim back. Safe to call for a key that never held one. */
+  release(key: string): void;
+}
+
 const SESSION_UI_MAP_KEYS = [
   'messageLoadErrorBySession',
   'messageRetryPendingBySession',
@@ -169,14 +183,41 @@ export function createAppShellSessionUiStateController(
     return (updater) => updateMap(key, updater);
   }
 
+  /**
+   * The in-flight claim on one of the pending maps: `claim` marks a key and
+   * reports whether it won, `release` gives it back.
+   *
+   * Both read and write the same map, which is what makes this the only
+   * representation of "an action is in flight". Each of these four used to be a
+   * `Set` ref for the duplicate guard beside a map for the rendered flag,
+   * synchronized by hand at every add and every `finally`, and cleared by two
+   * separate teardown paths that stayed aligned only by ordering. Nothing
+   * needed the ref: state replacement is synchronous, so a claim is visible to
+   * the next `getState()` in the same task.
+   */
+  function createPendingClaim(key: BooleanMapKey): SessionPendingClaim {
+    return {
+      claim(claimKey: string): boolean {
+        if (currentState[key][claimKey] === true) return false;
+        updateMap(key, (current) => ({ ...current, [claimKey]: true }));
+        return true;
+      },
+      release(claimKey: string): void {
+        updateMap(key, (current) => omitSessionKey(current, claimKey));
+      },
+    };
+  }
+
   return {
     getState: () => currentState,
     subscribe,
     liveTurnBySessionRef,
     sessionEventHealthBySessionRef,
     setMessageLoadErrorBySession: createMapSetter('messageLoadErrorBySession'),
-    setMessageRetryPendingBySession: createMapSetter('messageRetryPendingBySession'),
-    setStopPendingBySession: createMapSetter('stopPendingBySession'),
+    messageRetryPending: createPendingClaim('messageRetryPendingBySession'),
+    stopPending: createPendingClaim('stopPendingBySession'),
+    permissionModePending: createPendingClaim('pendingPermissionModeBySession'),
+    sessionModelPending: createPendingClaim('pendingSessionModelBySession'),
     setLiveTurnBySession: createMapSetter('liveTurnBySession'),
     setShellRunUpdatesBySession: createMapSetter('shellRunUpdatesBySession'),
     setInteractionBySession: createMapSetter('interactionBySession'),
@@ -184,8 +225,6 @@ export function createAppShellSessionUiStateController(
     setSessionEventHealthBySession: ((updater) => {
       sessionEventHealthBySessionRef.current = updater(sessionEventHealthBySessionRef.current);
     }) satisfies StateUpdater<Record<string, SessionEventStreamSnapshot>>,
-    setPendingPermissionModeBySession: createMapSetter('pendingPermissionModeBySession'),
-    setPendingSessionModelBySession: createMapSetter('pendingSessionModelBySession'),
     /**
      * The authority said something about `turnId` — it started, failed to
      * start, or ended. Drop that arm's `unconfirmed` claim so a session list
@@ -239,15 +278,15 @@ export function useAppShellSessionUiState() {
     liveTurnBySessionRef: controller.liveTurnBySessionRef,
     sessionEventHealthBySessionRef: controller.sessionEventHealthBySessionRef,
     setMessageLoadErrorBySession: controller.setMessageLoadErrorBySession,
-    setMessageRetryPendingBySession: controller.setMessageRetryPendingBySession,
-    setStopPendingBySession: controller.setStopPendingBySession,
+    messageRetryPending: controller.messageRetryPending,
+    stopPending: controller.stopPending,
+    permissionModePending: controller.permissionModePending,
+    sessionModelPending: controller.sessionModelPending,
     setLiveTurnBySession: controller.setLiveTurnBySession,
     setShellRunUpdatesBySession: controller.setShellRunUpdatesBySession,
     setInteractionBySession: controller.setInteractionBySession,
     setMessageQueueBySession: controller.setMessageQueueBySession,
     setSessionEventHealthBySession: controller.setSessionEventHealthBySession,
-    setPendingPermissionModeBySession: controller.setPendingPermissionModeBySession,
-    setPendingSessionModelBySession: controller.setPendingSessionModelBySession,
     confirmLiveTurn: controller.confirmLiveTurn,
     clearSessionUiState: controller.clearSessionUiState,
     clearTurnTransientStateIfCurrent: controller.clearTurnTransientStateIfCurrent,
