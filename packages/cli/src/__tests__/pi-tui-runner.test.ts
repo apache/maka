@@ -3438,6 +3438,58 @@ describe('Maka Pi TUI runner', () => {
     await run;
   });
 
+  test('/resume excludes foreign sessions when none is attached', async () => {
+    const terminal = new FakeTerminal();
+    const driver = new SlashCommandDriver([]);
+    (driver as unknown as { sessionId: string | null }).sessionId = null;
+    const foreignSession = {
+      source: 'claude-code' as const,
+      id: 'foreign-resume',
+      title: 'Foreign interrupted work',
+      cwd: '/repo',
+      updatedAtMs: Date.now(),
+      transcriptPath: '/home/u/.claude/projects/-repo/foreign-resume.jsonl',
+    };
+    let listSessionsCalls = 0;
+    let readDigestCalls = 0;
+    const foreignSessions = {
+      availableSources: async () => ['claude-code' as const],
+      listSessions: async () => {
+        listSessionsCalls += 1;
+        return [foreignSession];
+      },
+      readDigest: async () => {
+        readDigestCalls += 1;
+        throw new Error('foreign import must not run from /resume');
+      },
+    };
+    const run = runMakaPiTui({
+      title: 'Maka',
+      driver,
+      cwd: '/repo',
+      model: 'm',
+      connectionSlug: 'c',
+      permissionMode: 'bypass',
+      terminal,
+      foreignSessions,
+    });
+
+    terminal.input('/resume');
+    terminal.input('\r');
+    await waitFor(() => plainTerminalOutput(terminal.output()).includes('Resume Session Current'));
+    const output = plainTerminalOutput(terminal.output());
+    assert.doesNotMatch(output, /Foreign interrupted work/);
+    assert.equal(listSessionsCalls, 0);
+
+    terminal.input('\x1b');
+    terminal.input('/exit');
+    terminal.input('\r');
+    await run;
+    assert.equal(readDigestCalls, 0);
+    assert.equal(driver.startNewSessionCalls, 0);
+    assert.equal(driver.prompts.length, 0);
+  });
+
   test('/session keeps attachable rows when resume discovery fails for another session', async () => {
     const terminal = new FakeTerminal();
     const attachable = fakeSessionSummary('attachable', '/repo');

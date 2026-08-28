@@ -2313,7 +2313,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
       // Session and hands off a turn, which cannot detach from the running
       // one (#3380). Skip the scan mid-turn instead of offering rows whose
       // selection would silently no-op on importForeignSession's busy guard.
-      input.foreignSessions && !turnRunning
+      !options.onlyResumable && input.foreignSessions && !turnRunning
         ? input.foreignSessions.listSessions({ cwd }).then(
             (summaries) => ({ summaries }),
             (error: unknown) => ({ error }),
@@ -2365,14 +2365,16 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
               : `${shortSessionId(session.id)}${statusDetail}${location}${childDetail} ${session.llmConnectionSlug} ${session.model}`,
         };
       });
-      // Foreign sessions are cwd-scoped; show them in both scope views (they
-      // belong to this project) so a Tab toggle never makes them vanish.
-      for (const [value, summary] of foreignByValue) {
-        items.push({
-          value,
-          label: summary.title,
-          description: `↩ resume from ${foreignSourceLabel(summary.source)}`,
-        });
+      if (!options.onlyResumable) {
+        // Foreign sessions are cwd-scoped; show them in both scope views (they
+        // belong to this project) so a Tab toggle never makes them vanish.
+        for (const [value, summary] of foreignByValue) {
+          items.push({
+            value,
+            label: summary.title,
+            description: `↩ resume from ${foreignSourceLabel(summary.source)}`,
+          });
+        }
       }
       const list = new SelectList(items, 10, selectListTheme(), {
         minPrimaryColumnWidth: 20,
