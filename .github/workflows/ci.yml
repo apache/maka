@@ -87,6 +87,9 @@ jobs:
       - name: Test AX tree audit contract
         run: node --test scripts/ax-tree-audit.test.mjs
 
+      - name: Test script entrypoint contracts
+        run: node --test scripts/script-entrypoints.test.mjs
+
       - name: Verify ASF npm preflight policy
         run: npm run check:asf-npm
 
