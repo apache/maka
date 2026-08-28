@@ -37,7 +37,7 @@ import {
   withRuntimeHostManagedServiceLifecycleLock,
   type RuntimeHostManagedServiceTarget,
 } from './runtime-host-service-manager.js';
-import { createPlatformRuntimeHostLifecycleProvider } from './runtime-host-service-management-command.js';
+import { resolveRuntimeHostLifecycleProvider } from './runtime-host-service-management-command.js';
 import {
   canDiscardRuntimeHostLifecycleDesiredArtifacts,
   replaceRuntimeHostLifecycle,
@@ -112,20 +112,11 @@ async function runCanonicalRuntimeHostPeerManagementLocked(
   deps: RuntimeHostPeerManagementCliDeps,
 ): Promise<number> {
   const rootId = options.managedRootId;
-  const provider = createPlatformRuntimeHostLifecycleProvider(rootId);
   const lifecycleDeps: RuntimeHostLifecycleTransactionDeps = {
     convergeOperator: (currentConfig, desiredConfig) =>
       convergeRuntimeHostManagedOperator(currentConfig, desiredConfig),
     verifyOperator: verifyRuntimeHostManagedOperator,
-    resolveProvider: (requested) => {
-      if (requested !== provider.supervisor.provider) {
-        throw new RuntimeHostServiceManagerError(
-          'target_mismatch',
-          `The persisted Runtime Host provider ${requested} is unavailable`,
-        );
-      }
-      return provider;
-    },
+    resolveProvider: (requested) => resolveRuntimeHostLifecycleProvider(rootId, requested),
   };
   const resolved = await resolveRecoverableRuntimeHostManagedDeployment(rootId, lifecycleDeps, {
     ...(options.expectedTarget ? { expectedTarget: options.expectedTarget } : {}),
@@ -328,7 +319,7 @@ async function readCanonicalPeerStatus(
       cliPath: options.cliPath,
       ...(options.expectedTarget ? { expectedTarget: options.expectedTarget } : {}),
     },
-    { createProvider: createPlatformRuntimeHostLifecycleProvider },
+    { resolveProvider: resolveRuntimeHostLifecycleProvider },
   );
   const peer = config.listeners.directPeer;
   if (!peer) {

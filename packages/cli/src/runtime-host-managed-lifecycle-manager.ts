@@ -17,8 +17,11 @@
  * under the License.
  */
 
-import { resolveRuntimeHostNpmDeploymentLayout } from '@maka/runtime-host/operator';
-import { type RuntimeHostManagedDeploymentConfig } from '@maka/runtime-host/operator';
+import {
+  resolveRuntimeHostNpmDeploymentLayout,
+  type RuntimeHostManagedDeploymentConfig,
+  type RuntimeHostSupervisorProvider,
+} from '@maka/runtime-host/operator';
 import { connectExistingRuntimeHost } from '@maka/runtime-host/client';
 import { RUNTIME_HOST_PROTOCOL_VERSION } from '@maka/runtime-host/protocol';
 import {
@@ -52,7 +55,10 @@ import {
 } from './runtime-host-service-manager.js';
 
 export interface RuntimeHostManagedLifecycleManagerDeps {
-  readonly createProvider: (rootId: string) => RuntimeHostLifecycleProvider;
+  readonly resolveProvider: (
+    rootId: string,
+    provider: RuntimeHostSupervisorProvider,
+  ) => RuntimeHostLifecycleProvider;
   readonly operatorClaim?: {
     readonly deploymentId?: string;
     readonly cliPath: string;
@@ -68,16 +74,7 @@ export async function manageRuntimeHostManagedLifecycle(
     convergeOperator: (currentConfig, desiredConfig) =>
       convergeRuntimeHostManagedOperator(currentConfig, desiredConfig),
     verifyOperator: verifyRuntimeHostManagedOperator,
-    resolveProvider: (requested) => {
-      const provider = dependencies.createProvider(rootId);
-      if (requested !== provider.supervisor.provider) {
-        throw new RuntimeHostServiceManagerError(
-          'target_mismatch',
-          `The persisted Runtime Host provider ${requested} is unavailable`,
-        );
-      }
-      return provider;
-    },
+    resolveProvider: (requested) => dependencies.resolveProvider(rootId, requested),
   };
   const resolved = await resolveRecoverableRuntimeHostManagedDeployment(rootId, lifecycleDeps, {
     ...(input.expectedTarget ? { expectedTarget: input.expectedTarget } : {}),
@@ -103,13 +100,9 @@ export async function manageRuntimeHostManagedLifecycle(
     );
   }
   const supervisedLifecycle = config.lifecycle.mode === 'supervised' ? config.lifecycle : undefined;
-  const provider = supervisedLifecycle ? dependencies.createProvider(rootId) : undefined;
-  if (provider && provider.supervisor.provider !== supervisedLifecycle?.provider) {
-    throw new RuntimeHostServiceManagerError(
-      'target_mismatch',
-      `The persisted Runtime Host provider ${supervisedLifecycle?.provider} is unavailable`,
-    );
-  }
+  const provider = supervisedLifecycle
+    ? dependencies.resolveProvider(rootId, supervisedLifecycle.provider)
+    : undefined;
   if (input.action === 'install') {
     throw new RuntimeHostServiceManagerError(
       'target_mismatch',

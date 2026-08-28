@@ -36,6 +36,7 @@ import {
   type RuntimeHostManagedDeploymentConfig,
   type RuntimeHostSetupFrame,
   type RuntimeHostSetupPhase,
+  type RuntimeHostSupervisorProvider,
 } from '@maka/runtime-host/operator';
 import {
   INTERACTIVE_RUNTIME_HOST_COMPOSITION_ID,
@@ -75,8 +76,9 @@ import {
 } from './runtime-host-update-discovery.js';
 import { resolveStorageRoot } from '@maka/storage/root-authority';
 import {
-  createPlatformRuntimeHostLifecycleProvider,
   createPlatformRuntimeHostServiceBackend,
+  discoverRuntimeHostLifecycleProvider,
+  resolveRuntimeHostLifecycleProvider,
 } from './runtime-host-service-management-command.js';
 import {
   allocateRuntimeHostLoopbackPort,
@@ -103,7 +105,10 @@ import {
   resolveRecoverableRuntimeHostManagedDeployment,
   type RuntimeHostLifecycleTransactionDeps,
 } from './runtime-host-lifecycle-transaction.js';
-import type { RuntimeHostLifecycleProvider } from './runtime-host-lifecycle-provider.js';
+import type {
+  RuntimeHostLifecycleProvider,
+  RuntimeHostLifecycleProviderOffer,
+} from './runtime-host-lifecycle-provider.js';
 import {
   resolveRuntimeHostManagedPeerKeyPath,
   resolveRuntimeHostPeerNativePath,
@@ -139,7 +144,13 @@ export interface RuntimeHostSetupCliOptions {
 interface RuntimeHostSetupDeps {
   readonly manageService: typeof manageRuntimeHostService;
   readonly createBackend: (serviceId: string, clientDataRoot: string) => RuntimeHostServiceBackend;
-  readonly createLifecycleProvider: (rootId: string) => RuntimeHostLifecycleProvider;
+  readonly discoverLifecycleProvider: (
+    rootId: string,
+  ) => Promise<RuntimeHostLifecycleProviderOffer>;
+  readonly resolveLifecycleProvider: (
+    rootId: string,
+    provider: RuntimeHostSupervisorProvider,
+  ) => RuntimeHostLifecycleProvider;
   readonly replaceLifecycle: typeof replaceRuntimeHostLifecycle;
   readonly openDeployment: typeof openRuntimeHostManagedPackageDeployment;
   readonly prepareDeployment: typeof prepareRuntimeHostManagedPackageDeployment;
@@ -180,7 +191,8 @@ export async function runRuntimeHostSetupCli(
   const deps: RuntimeHostSetupDeps = {
     manageService: manageRuntimeHostService,
     createBackend: createPlatformRuntimeHostServiceBackend,
-    createLifecycleProvider: createPlatformRuntimeHostLifecycleProvider,
+    discoverLifecycleProvider: discoverRuntimeHostLifecycleProvider,
+    resolveLifecycleProvider: resolveRuntimeHostLifecycleProvider,
     replaceLifecycle: replaceRuntimeHostLifecycle,
     openDeployment: openRuntimeHostManagedPackageDeployment,
     prepareDeployment: prepareRuntimeHostManagedPackageDeployment,
@@ -323,20 +335,11 @@ async function runRuntimeHostSupervisedSetupLocked(
     kind: 'interactive',
   });
   assertCanonicalSetupTarget(options.expectedTarget, capability.rootId, capability.canonicalPath);
-  const lifecycleProvider = deps.createLifecycleProvider(capability.rootId);
   const lifecycleDeps: RuntimeHostLifecycleTransactionDeps = {
     convergeOperator: (currentConfig, desiredConfig) =>
       deps.convergeOperator(currentConfig, desiredConfig),
     verifyOperator: deps.verifyOperator,
-    resolveProvider: (provider) => {
-      if (provider !== lifecycleProvider.supervisor.provider) {
-        throw new RuntimeHostSetupError(
-          'unsupported_lifecycle_configuration',
-          `The persisted Runtime Host provider ${provider} is unavailable on this computer`,
-        );
-      }
-      return lifecycleProvider;
-    },
+    resolveProvider: (provider) => deps.resolveLifecycleProvider(capability.rootId, provider),
     ...(legacyConfig
       ? legacyMigrationDeps(legacyConfig, legacyBackend, legacyServiceId, options.clientDataRoot)
       : {}),
@@ -379,6 +382,13 @@ async function runRuntimeHostSupervisedSetupLocked(
       `Runtime Host ${current.launch.package.version} is already installed; changing its exact package requires the update workflow`,
     );
   }
+  const lifecycleOffer: RuntimeHostLifecycleProviderOffer =
+    current?.lifecycle.mode === 'supervised'
+      ? {
+          provider: deps.resolveLifecycleProvider(capability.rootId, current.lifecycle.provider),
+          availability: current.lifecycle.availability,
+        }
+      : await deps.discoverLifecycleProvider(capability.rootId);
   return deps.withRegistryPackage(candidate, async (packageRoot) => {
     emit({ kind: 'progress', phase: 'installing_package' });
     const deployment = await deps.prepareDeployment({
@@ -399,7 +409,7 @@ async function runRuntimeHostSupervisedSetupLocked(
         candidate,
         current,
         legacyToMigrate,
-        lifecycleProvider,
+        lifecycleOffer,
       );
       if (current && !sameDesiredManagedDeployment(current, desired)) {
         if (current.lifecycle.mode === 'supervised') {
@@ -505,7 +515,7 @@ async function prepareSupervisedDeploymentConfig(
   candidate: { readonly version: string; readonly integrity: string },
   current: RuntimeHostManagedDeploymentConfig | undefined,
   legacy: RuntimeHostManagedServiceConfig | null,
-  provider: RuntimeHostLifecycleProvider,
+  offer: RuntimeHostLifecycleProviderOffer,
 ): Promise<RuntimeHostManagedDeploymentConfig> {
   const projectDirectoryRoots = await resolveRuntimeHostManagedProjectDirectoryRoots(
     options.projectDirectoryRoots ??
@@ -530,6 +540,7 @@ async function prepareSupervisedDeploymentConfig(
   );
   const draft: RuntimeHostManagedDeploymentConfig = {
     schemaVersion: 1,
+    state: 'active',
     deploymentId: current?.deploymentId ?? randomUUID(),
     configRevision: current ? current.configRevision + 1 : 1,
     deploymentRoot,
@@ -559,12 +570,12 @@ async function prepareSupervisedDeploymentConfig(
     },
     lifecycle: {
       mode: 'supervised',
-      provider: provider.supervisor.provider,
-      availability: provider.supervisor.provider === 'systemd_user' ? 'machine' : 'session',
+      provider: offer.provider.supervisor.provider,
+      availability: offer.availability,
     },
     reconciliation: {
       trigger: 'scheduled',
-      provider: provider.reconciliationTrigger.provider,
+      provider: offer.provider.reconciliationTrigger.provider,
     },
   };
   return draft;
@@ -665,20 +676,11 @@ async function runRuntimeHostOnDemandSetupLocked(
     kind: 'interactive',
   });
   assertCanonicalSetupTarget(options.expectedTarget, capability.rootId, capability.canonicalPath);
-  const recoveryProvider = deps.createLifecycleProvider(capability.rootId);
   const recoveryDeps: RuntimeHostLifecycleTransactionDeps = {
     convergeOperator: (currentConfig, desiredConfig) =>
       deps.convergeOperator(currentConfig, desiredConfig),
     verifyOperator: deps.verifyOperator,
-    resolveProvider: (requested) => {
-      if (requested !== recoveryProvider.supervisor.provider) {
-        throw new RuntimeHostSetupError(
-          'unsupported_lifecycle_configuration',
-          `The persisted Runtime Host provider ${requested} is unavailable on this computer`,
-        );
-      }
-      return recoveryProvider;
-    },
+    resolveProvider: (requested) => deps.resolveLifecycleProvider(capability.rootId, requested),
     ...(legacyConfig && legacyBackend
       ? legacyMigrationDeps(legacyConfig, legacyBackend, legacyServiceId, options.clientDataRoot)
       : {}),
@@ -714,6 +716,7 @@ async function runRuntimeHostOnDemandSetupLocked(
   }
   const draft: RuntimeHostManagedDeploymentConfig = {
     schemaVersion: 1,
+    state: 'active',
     deploymentId: current?.deploymentId ?? randomUUID(),
     configRevision: current ? current.configRevision + 1 : 1,
     deploymentRoot,
@@ -751,21 +754,11 @@ async function runRuntimeHostOnDemandSetupLocked(
   const config = reuseCurrent ? current : draft;
   let operatorPath: string | undefined;
   let activation: Awaited<ReturnType<typeof activateRuntimeHostManagedDeployment>> | undefined;
-  const currentProvider =
-    current?.lifecycle.mode === 'supervised' ? deps.createLifecycleProvider(serviceId) : undefined;
   const lifecycleDeps: RuntimeHostLifecycleTransactionDeps = {
     convergeOperator: (currentConfig, desiredConfig) =>
       deps.convergeOperator(currentConfig, desiredConfig),
     verifyOperator: deps.verifyOperator,
-    resolveProvider: (requested) => {
-      if (!currentProvider || requested !== currentProvider.supervisor.provider) {
-        throw new RuntimeHostSetupError(
-          'unsupported_lifecycle_configuration',
-          `The persisted Runtime Host provider ${requested} is unavailable on this computer`,
-        );
-      }
-      return currentProvider;
-    },
+    resolveProvider: (requested) => deps.resolveLifecycleProvider(serviceId, requested),
     ...(legacyToMigrate && legacyBackend
       ? legacyMigrationDeps(legacyToMigrate, legacyBackend, legacyServiceId, options.clientDataRoot)
       : {}),

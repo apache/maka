@@ -32,6 +32,7 @@ import {
   type RuntimeHostOperatorCapability,
   type RuntimeHostServiceManagementFrame,
   type RuntimeHostServiceSummary,
+  type RuntimeHostSupervisorProvider,
 } from '@maka/runtime-host/operator';
 import { resolveExistingStorageRoot, tryAcquireStateRootOwner } from '@maka/storage/root-authority';
 import {
@@ -56,7 +57,10 @@ import {
   createSystemdUserRuntimeHostLifecycleProvider,
   createSystemdUserRuntimeHostService,
 } from './runtime-host-systemd-service.js';
-import type { RuntimeHostLifecycleProvider } from './runtime-host-lifecycle-provider.js';
+import type {
+  RuntimeHostLifecycleProvider,
+  RuntimeHostLifecycleProviderOffer,
+} from './runtime-host-lifecycle-provider.js';
 import { manageRuntimeHostManagedLifecycle } from './runtime-host-managed-lifecycle-manager.js';
 import {
   acknowledgeRuntimeHostManagedDeploymentCleanup,
@@ -129,7 +133,7 @@ export async function runManagedRuntimeHostServiceCli(
     const manage = () =>
       options.managedRootId
         ? deps.manageLifecycle(options.managedRootId, input, {
-            createProvider: createPlatformRuntimeHostLifecycleProvider,
+            resolveProvider: resolveRuntimeHostLifecycleProvider,
             operatorClaim: {
               deploymentId: options.operatorDeploymentId,
               cliPath: options.cliPath,
@@ -475,16 +479,59 @@ export function createPlatformRuntimeHostServiceBackend(
   );
 }
 
-export function createPlatformRuntimeHostLifecycleProvider(
+export async function discoverRuntimeHostLifecycleProvider(
   rootId: string,
-  platform: NodeJS.Platform = process.platform,
-): RuntimeHostLifecycleProvider {
-  if (platform === 'linux') return createSystemdUserRuntimeHostLifecycleProvider(rootId, {});
-  if (platform === 'darwin') return createLaunchAgentRuntimeHostLifecycleProvider(rootId);
+  options: {
+    readonly platform?: NodeJS.Platform;
+    readonly environment?: NodeJS.ProcessEnv;
+  } = {},
+): Promise<RuntimeHostLifecycleProviderOffer> {
+  const selection = selectRuntimeHostLifecycleProvider({
+    platform: options.platform ?? process.platform,
+    environment: options.environment ?? process.env,
+  });
+  const provider = resolveRuntimeHostLifecycleProvider(rootId, selection.provider);
+  await provider.supervisor.preflight();
+  return { provider, availability: selection.availability };
+}
+
+export function selectRuntimeHostLifecycleProvider(options: {
+  readonly platform: NodeJS.Platform;
+  readonly environment: NodeJS.ProcessEnv;
+}): {
+  readonly provider: RuntimeHostSupervisorProvider;
+  readonly availability: RuntimeHostLifecycleProviderOffer['availability'];
+} {
+  if (options.platform === 'linux') {
+    return {
+      provider: 'systemd_user',
+      availability: isWslEnvironment(options.environment) ? 'environment' : 'machine',
+    };
+  }
+  if (options.platform === 'darwin') {
+    return { provider: 'launch_agent', availability: 'session' };
+  }
   throw new RuntimeHostServiceManagerError(
     'unsupported_platform',
     'Supervised Runtime Host deployments currently require Linux or macOS',
   );
+}
+
+/** Resolves only the provider identity already persisted by the deployment authority. */
+export function resolveRuntimeHostLifecycleProvider(
+  rootId: string,
+  provider: RuntimeHostSupervisorProvider,
+): RuntimeHostLifecycleProvider {
+  if (provider === 'systemd_user') return createSystemdUserRuntimeHostLifecycleProvider(rootId, {});
+  if (provider === 'launch_agent') return createLaunchAgentRuntimeHostLifecycleProvider(rootId);
+  throw new RuntimeHostServiceManagerError(
+    'service_manager_unavailable',
+    `The persisted Runtime Host provider ${provider} is unavailable`,
+  );
+}
+
+function isWslEnvironment(environment: NodeJS.ProcessEnv): boolean {
+  return Boolean(environment.WSL_DISTRO_NAME?.trim() || environment.WSL_INTEROP?.trim());
 }
 
 function websocketUrl(service: RuntimeHostManagedServiceResult['service']): string {

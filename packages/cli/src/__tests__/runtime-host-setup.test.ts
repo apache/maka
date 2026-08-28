@@ -60,7 +60,12 @@ import {
 import { runRuntimeHostSetupCli } from '../runtime-host-setup-command.js';
 import { manageRuntimeHostManagedLifecycle } from '../runtime-host-managed-lifecycle-manager.js';
 import {
+  resolveRuntimeHostLifecycleProvider,
+  selectRuntimeHostLifecycleProvider,
+} from '../runtime-host-service-management-command.js';
+import {
   resolveRuntimeHostManagedServiceId,
+  RuntimeHostServiceManagerError,
   type RuntimeHostServiceBackend,
 } from '../runtime-host-service-manager.js';
 
@@ -253,7 +258,7 @@ test('on-demand setup installs one exact deployment without a service backend', 
       },
     },
     {
-      createProvider: () => assert.fail('on-demand uninstall must not create a provider'),
+      resolveProvider: () => assert.fail('on-demand uninstall must not resolve a provider'),
     },
   );
   assert.equal(uninstalled.action, 'uninstall');
@@ -288,6 +293,22 @@ test('managed setup frames reject malformed machine output', () => {
       ).toString('base64url')}\n`,
     ),
     undefined,
+  );
+});
+
+test('lifecycle discovery records environment scope and persisted providers are never reselected', () => {
+  assert.deepEqual(
+    selectRuntimeHostLifecycleProvider({
+      platform: 'linux',
+      environment: { WSL_DISTRO_NAME: 'Ubuntu' },
+    }),
+    { provider: 'systemd_user', availability: 'environment' },
+  );
+  assert.throws(
+    () => resolveRuntimeHostLifecycleProvider('a'.repeat(64), 'openrc_user'),
+    (error: unknown) =>
+      error instanceof RuntimeHostServiceManagerError &&
+      error.code === 'service_manager_unavailable',
   );
 });
 
@@ -506,6 +527,7 @@ test('registry package identity avoids local content and recovers an interrupted
   );
   const currentConfig: RuntimeHostManagedDeploymentConfig = {
     schemaVersion: 1,
+    state: 'active',
     deploymentId: '00000000-0000-4000-8000-000000000002',
     configRevision: 1,
     deploymentRoot: currentDeploymentRoot,
@@ -600,6 +622,7 @@ test('managed operator binds its Client Data Root and routes deployment cleanup'
   );
   const config: RuntimeHostManagedDeploymentConfig = {
     schemaVersion: 1,
+    state: 'active',
     deploymentId: '00000000-0000-4000-8000-000000000001',
     configRevision: 1,
     deploymentRoot: deployment.root,

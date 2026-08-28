@@ -456,7 +456,7 @@ export async function assertRuntimeHostManagedOperatorDeployment(
   );
   if (!authority && options.allowAbsent) return;
   const record = authority?.record;
-  const endpoints = record?.schemaVersion === 1 ? [record] : record ? [record.from, record.to] : [];
+  const endpoints = record?.state === 'active' ? [record] : record ? [record.from, record.to] : [];
   if (
     !endpoints.some(
       (config) =>

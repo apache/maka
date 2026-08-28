@@ -263,7 +263,7 @@ test('one authority record recovers provider cutover failures without a journal'
             capability,
             authority,
           );
-          if (published?.schemaVersion === 1 && published.lifecycle.mode === 'supervised') {
+          if (published?.state === 'active' && published.lifecycle.mode === 'supervised') {
             throw new Error('Injected directory sync failure');
           }
         },
@@ -509,6 +509,7 @@ function config(
   const supervised = lifecycle !== 'on_demand';
   return {
     schemaVersion: 1,
+    state: 'active',
     deploymentId: '00000000-0000-4000-8000-000000000001',
     configRevision: revision,
     deploymentRoot: '/opt/maka/runtime-host',

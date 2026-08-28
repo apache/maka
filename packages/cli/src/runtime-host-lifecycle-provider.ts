@@ -74,6 +74,14 @@ export interface RuntimeHostLifecycleProvider {
   readonly reconciliationTrigger: RuntimeHostReconciliationTrigger;
 }
 
+export type RuntimeHostSupervisedAvailability = 'session' | 'environment' | 'machine';
+
+/** A provider selected during installation together with the availability it can actually offer. */
+export interface RuntimeHostLifecycleProviderOffer {
+  readonly provider: RuntimeHostLifecycleProvider;
+  readonly availability: RuntimeHostSupervisedAvailability;
+}
+
 export function assertRuntimeHostProviderDefinition(value: RuntimeHostProviderDefinition): void {
   if (
     value.command.length === 0 ||

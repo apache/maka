@@ -40,8 +40,8 @@ import {
   type RuntimeHostServiceBackend,
 } from './runtime-host-service-manager.js';
 import {
-  createPlatformRuntimeHostLifecycleProvider,
   createPlatformRuntimeHostServiceBackend,
+  resolveRuntimeHostLifecycleProvider,
   runtimeHostServiceSummary,
 } from './runtime-host-service-management-command.js';
 import { manageRuntimeHostManagedLifecycle } from './runtime-host-managed-lifecycle-manager.js';
@@ -405,7 +405,7 @@ function readManagedServiceStatus(
   };
   return options.managedRootId
     ? deps.manageLifecycle(options.managedRootId, statusInput, {
-        createProvider: createPlatformRuntimeHostLifecycleProvider,
+        resolveProvider: resolveRuntimeHostLifecycleProvider,
         operatorClaim: {
           deploymentId: options.operatorDeploymentId,
           cliPath: process.argv[1] ?? '',
@@ -430,8 +430,11 @@ async function inspectUpdateScheduler(
   if (options.managedRootId) {
     if (status.service.reconciliation?.trigger === 'activation') return 'ready';
     if (status.service.reconciliation?.trigger !== 'scheduled') return 'needs_repair';
-    const trigger = await createPlatformRuntimeHostLifecycleProvider(
+    const provider = status.service.lifecycle?.provider;
+    if (status.service.lifecycle?.mode !== 'supervised' || !provider) return 'needs_repair';
+    const trigger = await resolveRuntimeHostLifecycleProvider(
       options.managedRootId,
+      provider,
     ).reconciliationTrigger.status();
     return trigger.installed ? (trigger.active ? 'ready' : 'inactive') : 'needs_repair';
   }

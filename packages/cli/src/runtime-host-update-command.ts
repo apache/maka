@@ -61,7 +61,7 @@ import {
 } from './runtime-host-service-manager.js';
 import {
   createPlatformRuntimeHostServiceBackend,
-  createPlatformRuntimeHostLifecycleProvider,
+  resolveRuntimeHostLifecycleProvider,
   runtimeHostServiceSummary,
 } from './runtime-host-service-management-command.js';
 import {
@@ -563,20 +563,12 @@ async function runCanonicalRuntimeHostUpdate(
         if (rejection) {
           throw new RuntimeHostUpdateSelectionError(rejection.code, rejection.message);
         }
-        const provider = createPlatformRuntimeHostLifecycleProvider(options.managedRootId);
         const lifecycleDeps: RuntimeHostLifecycleTransactionDeps = {
           convergeOperator: (currentConfig, desiredConfig) =>
             convergeRuntimeHostManagedOperator(currentConfig, desiredConfig),
           verifyOperator: verifyRuntimeHostManagedOperator,
-          resolveProvider: (requested) => {
-            if (requested !== provider.supervisor.provider) {
-              throw new RuntimeHostServiceManagerError(
-                'target_mismatch',
-                `The persisted Runtime Host provider ${requested} is unavailable`,
-              );
-            }
-            return provider;
-          },
+          resolveProvider: (requested) =>
+            resolveRuntimeHostLifecycleProvider(options.managedRootId, requested),
         };
         const recovered = await resolveRecoverableRuntimeHostManagedDeployment(
           options.managedRootId,
@@ -605,7 +597,7 @@ async function runCanonicalRuntimeHostUpdate(
             cliPath: process.argv[1] ?? '',
             expectedTarget: options.expectedTarget,
           },
-          { createProvider: createPlatformRuntimeHostLifecycleProvider },
+          { resolveProvider: resolveRuntimeHostLifecycleProvider },
         );
         const targetIntegrity =
           options.registrySelection?.integrity ??
@@ -716,7 +708,7 @@ async function runCanonicalRuntimeHostUpdate(
             cliPath: process.argv[1] ?? '',
             expectedTarget: options.expectedTarget,
           },
-          { createProvider: createPlatformRuntimeHostLifecycleProvider },
+          { resolveProvider: resolveRuntimeHostLifecycleProvider },
         );
         emit({
           schemaVersion: 1,

@@ -130,6 +130,7 @@ const deploymentAuthorityRootSchema = z
 const managedDeploymentConfigSchema = z
   .object({
     schemaVersion: z.literal(SCHEMA_VERSION),
+    state: z.literal('active'),
     deploymentId: deploymentIdSchema,
     configRevision: configRevisionSchema,
     deploymentRoot: absolutePathSchema,
@@ -224,7 +225,7 @@ const managedDeploymentConfigSchema = z
 
 const managedDeploymentTransitionSchema = z
   .object({
-    schemaVersion: z.literal(2),
+    schemaVersion: z.literal(SCHEMA_VERSION),
     state: z.literal('transition'),
     transactionId: deploymentIdSchema,
     operation: deploymentTransitionOperationSchema,
@@ -238,7 +239,7 @@ const managedDeploymentTransitionSchema = z
 
 const managedDeploymentBlockedSchema = z
   .object({
-    schemaVersion: z.literal(2),
+    schemaVersion: z.literal(SCHEMA_VERSION),
     state: z.literal('blocked'),
     transactionId: deploymentIdSchema,
     operation: deploymentTransitionOperationSchema,
@@ -537,7 +538,7 @@ export async function resolveRuntimeHostManagedDeployment(
     );
   }
   const { capability, record } = resolved;
-  if (record.schemaVersion !== 1) {
+  if (record.state !== 'active') {
     throw transitionStateError(record);
   }
   return { capability, config: record };
@@ -659,7 +660,7 @@ export async function beginRuntimeHostManagedDeploymentTransition(
   await assertManagedDeploymentOwner(owner);
   const path = await prepareManagedDeploymentAuthorityPath(owner.capability.rootId, options);
   const current = await readDeploymentAuthorityForCapability(path, owner.capability);
-  if (current?.schemaVersion === 2) {
+  if (current && current.state !== 'active') {
     if (current.state === 'blocked') throw deploymentNeedsRepair(current);
     if (isDeepStrictEqual(current, transition)) return { kind: 'unchanged', record: current };
     throw deploymentTransactionMismatch('A different managed deployment transition is active');
@@ -714,7 +715,7 @@ export async function blockRuntimeHostManagedDeploymentTransition(
   await assertManagedDeploymentOwner(owner);
   const path = await prepareManagedDeploymentAuthorityPath(owner.capability.rootId, options);
   const current = await readDeploymentAuthorityForCapability(path, owner.capability);
-  if (!current || current.schemaVersion !== 2 || current.transactionId !== transactionId) {
+  if (!current || current.state === 'active' || current.transactionId !== transactionId) {
     throw deploymentTransactionMismatch('The managed deployment transition is no longer current');
   }
   const record = decodeRuntimeHostManagedDeploymentAuthorityRecord({
@@ -722,7 +723,7 @@ export async function blockRuntimeHostManagedDeploymentTransition(
     state: 'blocked',
     reason,
   });
-  if (record.schemaVersion !== 2 || record.state !== 'blocked') {
+  if (record.state !== 'blocked') {
     throw deploymentTransactionMismatch('The managed deployment blocked record is invalid');
   }
   if (isDeepStrictEqual(current, record)) return { kind: 'unchanged', record };
@@ -749,7 +750,7 @@ async function finishRuntimeHostManagedDeploymentTransition(
     if (config === undefined) return { kind: 'unchanged' };
     throw deploymentTransactionMismatch('The managed deployment transition record is missing');
   }
-  if (current.schemaVersion === 1) {
+  if (current.state === 'active') {
     if (config && isDeepStrictEqual(current, config)) {
       return { kind: 'unchanged', config: current };
     }
@@ -775,7 +776,7 @@ function deploymentTransitionRecord(
   if (expected) assertConfigTargetsCapability(expected, capability);
   if (desired) assertConfigTargetsCapability(desired, capability);
   const record = decodeRuntimeHostManagedDeploymentAuthorityRecord({
-    schemaVersion: 2,
+    schemaVersion: SCHEMA_VERSION,
     state: 'transition',
     transactionId: input.transactionId,
     operation: input.operation,
@@ -784,7 +785,7 @@ function deploymentTransitionRecord(
     from: expected ?? null,
     to: desired ?? null,
   });
-  if (record.schemaVersion !== 2 || record.state !== 'transition') {
+  if (record.state !== 'transition') {
     throw deploymentTransactionMismatch('The managed deployment transition is invalid');
   }
   return record;
@@ -952,7 +953,7 @@ async function readDeploymentConfigForCapability(
   capability: StorageRootCapability<'interactive'>,
 ): Promise<RuntimeHostManagedDeploymentConfig | undefined> {
   const record = await readDeploymentAuthorityForCapability(path, capability);
-  if (record === undefined || record.schemaVersion === 1) return record;
+  if (record === undefined || record.state === 'active') return record;
   throw transitionStateError(record);
 }
 

@@ -102,6 +102,7 @@ function createConfig(
 ): RuntimeHostManagedDeploymentConfig {
   return {
     schemaVersion: 1,
+    state: 'active',
     deploymentId: DEPLOYMENT_ID,
     configRevision: 1,
     deploymentRoot,
@@ -159,6 +160,11 @@ function launchRequest(
 test('strictly decodes every level of the canonical deployment contract', () => {
   const config = createConfig('/srv/maka/state', 'a'.repeat(64));
   assert.deepEqual(decodeRuntimeHostManagedDeploymentConfig(config), config);
+  assert.throws(
+    () => decodeRuntimeHostManagedDeploymentConfig({ ...config, state: undefined }),
+    (error: unknown) =>
+      error instanceof RuntimeHostManagedDeploymentError && error.code === 'invalid_config',
+  );
   assert.throws(
     () =>
       decodeRuntimeHostManagedDeploymentConfig({

@@ -150,7 +150,7 @@ export async function applyRetiredRuntimeHostLifecycleTransition(input: {
         input.owner.capability,
       );
       previousAuthorityRestored = current
-        ? authority?.schemaVersion === 1 && isDeepStrictEqual(authority, current)
+        ? authority?.state === 'active' && isDeepStrictEqual(authority, current)
         : authority === undefined;
       if (!previousAuthorityRestored && !isCommitUnknown(error)) {
         transitionError = new RuntimeHostLifecycleTransactionError(
@@ -210,7 +210,7 @@ export async function resolveRecoverableRuntimeHostManagedDeployment(
   const resolved = await resolveRuntimeHostManagedDeploymentAuthority(rootId);
   if (!resolved) return { kind: 'absent' };
   assertRecoveryTarget(options.expectedTarget, rootId, resolved.record);
-  if (resolved.record.schemaVersion === 1) {
+  if (resolved.record.state === 'active') {
     if (options.ensureAvailable) {
       await activateRuntimeHostLifecycle(resolved.record, deps);
       await verifyRuntimeHostLifecycleReady(resolved.record, deps);
@@ -247,8 +247,8 @@ export async function resolveRecoverableRuntimeHostManagedDeployment(
     } catch (error) {
       targetError = error;
     }
-    if (record?.schemaVersion === 1) current = record;
-    else if (!targetError && record && record.schemaVersion === 2) {
+    if (record?.state === 'active') current = record;
+    else if (!targetError && record) {
       recovered = await recoverRuntimeHostLifecycleTransition(retirement.owner, record, deps);
     }
   } finally {
@@ -287,7 +287,7 @@ function assertRecoveryTarget(
     | RuntimeHostManagedDeploymentBlocked,
 ): void {
   if (!expected) return;
-  const endpoint = record.schemaVersion === 1 ? record : (record.from ?? record.to)!;
+  const endpoint = record.state === 'active' ? record : (record.from ?? record.to)!;
   if (
     expected.serviceId !== rootId ||
     expected.rootId !== rootId ||
@@ -602,7 +602,7 @@ export async function recoverRuntimeHostLifecycleTransition(
     owner.capability,
     authorityOptions,
   );
-  if (record?.schemaVersion !== 2 || record.transactionId !== expected.transactionId) {
+  if (!record || record.state === 'active' || record.transactionId !== expected.transactionId) {
     throw new RuntimeHostManagedDeploymentError(
       'deployment_transaction_mismatch',
       'The Runtime Host lifecycle transition changed before recovery',

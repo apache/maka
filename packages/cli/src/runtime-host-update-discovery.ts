@@ -40,8 +40,8 @@ import {
   type RuntimeHostManagedServiceTarget,
 } from './runtime-host-service-manager.js';
 import {
-  createPlatformRuntimeHostLifecycleProvider,
   createPlatformRuntimeHostServiceBackend,
+  resolveRuntimeHostLifecycleProvider,
   runtimeHostServiceSummary,
 } from './runtime-host-service-management-command.js';
 import { manageRuntimeHostManagedLifecycle } from './runtime-host-managed-lifecycle-manager.js';
@@ -159,7 +159,7 @@ async function resolveManagedRuntimeHostUpdate(
       process.argv[1] ?? '',
     );
     return manageRuntimeHostManagedLifecycle(options.managedRootId!, statusInput, {
-      createProvider: createPlatformRuntimeHostLifecycleProvider,
+      resolveProvider: resolveRuntimeHostLifecycleProvider,
       operatorClaim: {
         deploymentId: options.operatorDeploymentId,
         cliPath: process.argv[1] ?? '',
