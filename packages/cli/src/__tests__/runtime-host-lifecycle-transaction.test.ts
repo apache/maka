@@ -353,6 +353,59 @@ test('replacement reactivates a proven previous authority after a pre-commit fai
   }
 });
 
+test('failed on-demand candidate activation restores the known-good package authority', async (t) => {
+  const stateRoot = await mkdtemp(join(tmpdir(), 'maka-lifecycle-on-demand-update-'));
+  const capability = await resolveStorageRoot({ path: stateRoot, kind: 'interactive' });
+  const authorityDirectory = dirname(
+    resolveRuntimeHostManagedDeploymentConfigPath(capability.rootId),
+  );
+  t.after(() => rm(stateRoot, { recursive: true, force: true }));
+  t.after(() => rm(authorityDirectory, { recursive: true, force: true }));
+
+  const current = config(capability.canonicalPath, capability.rootId, 1, 'on_demand');
+  const desired = {
+    ...current,
+    configRevision: 2,
+    launch: {
+      ...current.launch,
+      package: {
+        kind: 'npm_registry' as const,
+        version: '2.0.0',
+        integrity: UPDATED_INTEGRITY,
+      },
+    },
+  };
+  await claimRuntimeHostManagedDeployment(capability, current);
+  let operatorProjection = current;
+
+  await assert.rejects(
+    replaceRuntimeHostLifecycle({
+      operation: 'update',
+      current,
+      desired,
+      activateDesired: async () => {
+        throw new Error('Injected candidate activation failure');
+      },
+      deps: {
+        convergeOperator: async (_previous, next) => {
+          if (next) operatorProjection = next;
+        },
+        verifyOperator: async () => undefined,
+        resolveProvider: () => {
+          throw new Error('On-demand replacement must not resolve a supervisor');
+        },
+      },
+    }),
+    { code: 'transition_failed' },
+  );
+
+  const restored = await readRuntimeHostManagedDeploymentAuthorityRecord(capability);
+  assert.equal(restored?.state, 'active');
+  assert.equal(restored?.configRevision, 3);
+  assert.deepEqual(restored?.launch, current.launch);
+  assert.deepEqual(operatorProjection.launch, current.launch);
+});
+
 test('interrupted activation compensation completes the previous semantics', async (t) => {
   const stateRoot = await mkdtemp(join(tmpdir(), 'maka-lifecycle-compensation-root-'));
   const authorityRoot = await mkdtemp(join(tmpdir(), 'maka-lifecycle-compensation-authority-'));

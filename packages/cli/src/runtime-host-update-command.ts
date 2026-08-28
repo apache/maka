@@ -20,6 +20,7 @@
 import { spawn } from 'node:child_process';
 import { dirname, join, resolve } from 'node:path';
 import { truncateUtf8 } from '@maka/core/diagnostic-log';
+import { activateRuntimeHostManagedDeployment } from '@maka/runtime-host/client';
 import {
   decodeRuntimeHostServiceManagementFrame,
   encodeRuntimeHostServiceManagementFrame,
@@ -117,6 +118,7 @@ interface RuntimeHostUpdateCliDeps {
   readonly openDeployment: typeof openRuntimeHostManagedPackageDeployment;
   readonly prepareDeployment: typeof prepareRuntimeHostManagedPackageDeployment;
   readonly prunePackages: typeof pruneRuntimeHostManagedPackages;
+  readonly activateDesired: typeof activateRuntimeHostManagedDeployment;
   readonly withLifecycleLock: typeof withRuntimeHostManagedServiceLifecycleLock;
   readonly withDeploymentLock: typeof withRuntimeHostManagedServiceDeploymentLock;
   readonly withLegacyOperatorLeases: typeof withRuntimeHostManagedServiceLegacyOperatorLeases;
@@ -182,6 +184,10 @@ export async function runManagedRuntimeHostUpdateCli(
     openDeployment: openRuntimeHostManagedPackageDeployment,
     prepareDeployment: prepareRuntimeHostManagedPackageDeployment,
     prunePackages: pruneRuntimeHostManagedPackages,
+    activateDesired: (input) =>
+      activateRuntimeHostManagedDeployment(input, {
+        reconcileActivation: async () => undefined,
+      }),
     withLifecycleLock: withRuntimeHostManagedServiceLifecycleLock,
     withDeploymentLock: withRuntimeHostManagedServiceDeploymentLock,
     withLegacyOperatorLeases: withRuntimeHostManagedServiceLegacyOperatorLeases,
@@ -677,6 +683,13 @@ async function runCanonicalRuntimeHostUpdate(
           current,
           desired,
           allowInterruptActiveTasks: options.allowInterruptActiveTasks ?? false,
+          ...(desired.lifecycle.mode === 'on_demand'
+            ? {
+                activateDesired: async () => {
+                  await deps.activateDesired({ rootId: options.managedRootId });
+                },
+              }
+            : {}),
           deps: lifecycleDeps,
         });
         if (replacement.kind === 'active_tasks') {
