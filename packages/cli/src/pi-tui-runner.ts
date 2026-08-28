@@ -299,7 +299,10 @@ export function safeBoundaryResumeParkedCopy(reason: TurnResumeParkReason): {
         text: 'Safe-boundary resume is not enabled on this runtime (set MAKA_RUNTIME_SAFE_BOUNDARY_RESUME=1 to enable).',
       };
     case 'resume_candidate_missing':
-      return { level: 'info', text: 'Nothing to resume: no interrupted run exists in this session.' };
+      return {
+        level: 'info',
+        text: 'Nothing to resume: no interrupted run exists in this session.',
+      };
     case 'session_busy':
       return { level: 'info', text: 'Cannot resume: the session already has an active turn.' };
     default:

@@ -513,7 +513,7 @@ Runtime Host 负责把 Runtime planner 的 rejection reasons 投影成封闭的
 `resume_feature_disabled`、`resume_candidate_missing` 和 `session_busy`。authority、safety
 以及其他恢复失败仍显示为红色错误，并保留原始 reason 供诊断。
 
-这是不兼容的封闭协议变更，因此 Runtime Host compatibility epoch 推进到 54；旧 Client/Host
+这是不兼容的封闭协议变更，因此 Runtime Host compatibility epoch 推进到 57；旧 Client/Host
 组合会在握手阶段被拒绝，而不是把新的 failure reason 误判成“功能未开启”。这次变更只修正
 Host 投影和 CLI 展示，不改变 planner、durable continuation claim 或 feature flag 的 owner。
 
