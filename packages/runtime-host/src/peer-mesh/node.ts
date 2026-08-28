@@ -49,6 +49,7 @@ import {
   authorityKeys,
   openPeerMeshStateStore,
   type PeerMeshAuthorityStateV1,
+  type PeerMeshReplicaStateV1,
   type PeerMeshStateStore,
   type PeerMeshStateV1,
 } from './store.js';
@@ -142,7 +143,6 @@ export interface PeerMeshNode {
 
 export interface PeerMeshStatus {
   readonly role: 'authority' | 'member';
-  readonly localPeerId: string;
   readonly authority: PeerMeshAuthorityTarget;
   readonly roster: SignedPeerMeshRosterV1;
   readonly pendingInvitationCount: number;
@@ -452,7 +452,8 @@ class PeerMeshNodeImpl implements PeerMeshNode {
 
   leave(meshId: string, signal?: AbortSignal): Promise<void> {
     return this.#admitMesh(async () => {
-      const state = findMesh(this.#store.read().meshes, meshId);
+      const stored = this.#store.read();
+      const state = findMesh(stored.meshes, meshId);
       const localPeerId = this.#peer.identity().peerId;
       if (!state || !isActiveMembership(state, localPeerId)) {
         throw new Error('This peer does not belong to that Peer Mesh');
@@ -465,9 +466,7 @@ class PeerMeshNodeImpl implements PeerMeshNode {
         : this.#lifetime.signal;
       const stream = await this.#peer.connectMeshControl(
         {
-          peerId: state.authority.peerId,
-          routeHints: state.authority.routeHints,
-          coordinationRelays: state.authority.coordinationRelays,
+          ...currentAuthorityTarget(state, stored.routes),
           directDeadlineMs: CONNECT_DEADLINE_MS,
         },
         operationSignal,
@@ -581,35 +580,28 @@ class PeerMeshNodeImpl implements PeerMeshNode {
     lifetimeSignal.throwIfAborted();
     await this.#refreshLocalRoute();
     const identity = this.#peer.identity();
-    const targets = new Map<
-      string,
-      { readonly meshId: string; readonly target: PeerMeshAuthorityTarget }
-    >();
     const stored = this.#store.read();
-    for (const state of stored.meshes) {
-      if (!isActiveMembership(state, identity.peerId)) continue;
-      for (const signed of stored.routes) {
-        const route = signed.route;
-        if (
-          route.peerId !== identity.peerId &&
-          state.roster.roster.members.includes(route.peerId)
-        ) {
-          targets.set(`${state.roster.roster.meshId}\0${route.peerId}`, {
-            meshId: state.roster.roster.meshId,
-            target: route,
-          });
-        }
-      }
-      if (state.role === 'replica' && state.authority.peerId !== identity.peerId) {
-        const key = `${state.roster.roster.meshId}\0${state.authority.peerId}`;
-        const learned = targets.get(key)?.target;
-        targets.set(key, {
-          meshId: state.roster.roster.meshId,
-          target: learned ? mergeTargets(learned, state.authority) : state.authority,
+    const memberships = stored.meshes.filter(
+      (state): state is PeerMeshReplicaStateV1 =>
+        state.role === 'replica' && isActiveMembership(state, identity.peerId),
+    );
+    const pending: Array<{
+      readonly meshId: string;
+      readonly targets: readonly PeerMeshAuthorityTarget[];
+    }> = [];
+    for (const [index, state] of memberships.entries()) {
+      const targets = [currentAuthorityTarget(state, stored.routes)];
+      const gossipRoutes = state.roster.roster.members
+        .filter((peerId) => peerId !== identity.peerId && peerId !== state.authority.peerId)
+        .flatMap((peerId) => {
+          const route = stored.routes.find((candidate) => candidate.route.peerId === peerId)?.route;
+          return route ? [route] : [];
         });
+      if (gossipRoutes.length > 0) {
+        targets.push(gossipRoutes[(this.#reconcileCursor + index) % gossipRoutes.length]!);
       }
+      pending.push({ meshId: state.roster.roster.meshId, targets });
     }
-    const pending = [...targets.values()];
     if (pending.length === 0) return;
     const start = this.#reconcileCursor % pending.length;
     const deadline = AbortSignal.timeout(RECONCILE_DEADLINE_MS);
@@ -620,12 +612,16 @@ class PeerMeshNodeImpl implements PeerMeshNode {
         const offset = next;
         next += 1;
         if (offset >= pending.length) return;
-        const { meshId, target } = pending[(start + offset) % pending.length]!;
+        const { meshId, targets } = pending[(start + offset) % pending.length]!;
+        const attempt = new AbortController();
         try {
-          await this.#syncPeer(meshId, target, operationSignal);
+          const attemptSignal = AbortSignal.any([operationSignal, attempt.signal]);
+          await Promise.any(targets.map((target) => this.#syncPeer(meshId, target, attemptSignal)));
         } catch {
           if (lifetimeSignal.aborted) lifetimeSignal.throwIfAborted();
           if (deadline.aborted) return;
+        } finally {
+          attempt.abort();
         }
       }
     };
@@ -1173,7 +1169,6 @@ function peerMeshStatus(
 ): PeerMeshStatus {
   return Object.freeze({
     role: state.role === 'authority' ? 'authority' : 'member',
-    localPeerId: identity.peerId,
     authority: state.role === 'authority' ? authorityTarget(identity) : state.authority,
     roster: state.roster,
     pendingInvitationCount:
@@ -1201,6 +1196,14 @@ function peerMeshStatus(
       }),
     ),
   });
+}
+
+function currentAuthorityTarget(
+  state: PeerMeshReplicaStateV1,
+  routes: readonly SignedPeerMeshRouteRecordV1[],
+): PeerMeshAuthorityTarget {
+  const learned = routes.find(({ route }) => route.peerId === state.authority.peerId)?.route;
+  return learned ? mergeTargets(learned, state.authority) : state.authority;
 }
 
 function requireAuthority(

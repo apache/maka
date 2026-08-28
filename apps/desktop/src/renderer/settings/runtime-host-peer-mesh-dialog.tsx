@@ -400,7 +400,7 @@ function MeshCard(props: {
               {member.peerId === mesh.authorityPeerId ? (
                 <Badge variant="neutral" label={copy.authority} />
               ) : null}
-              {mesh.role === 'authority' && member.peerId !== mesh.localPeerId && !mesh.closed ? (
+              {mesh.role === 'authority' && member.state !== 'local' && !mesh.closed ? (
                 <MoreMenu
                   label={copy.memberActions(member.peerId)}
                   size="sm"

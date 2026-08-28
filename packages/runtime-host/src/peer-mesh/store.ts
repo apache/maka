@@ -106,6 +106,14 @@ export async function openPeerMeshStateStore(
   }
 }
 
+export async function hasActivePeerMeshMembership(
+  dataRoot: string,
+  localPeerId: string,
+): Promise<boolean> {
+  const state = await readState(join(dataRoot, STATE_FILE), localPeerId);
+  return state.meshes.some((mesh) => !isRetired(mesh, localPeerId));
+}
+
 class PeerMeshStateStoreImpl implements PeerMeshStateStore {
   readonly #path: string;
   readonly terminalFailure: Promise<never>;

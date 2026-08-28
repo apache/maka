@@ -49,7 +49,6 @@ export interface PeerMeshInvitationV1 {
 export interface PeerMeshProjection {
   readonly meshId: string;
   readonly role: 'authority' | 'member';
-  readonly localPeerId: string;
   readonly authorityPeerId: string;
   readonly revision: number;
   readonly closed: boolean;
@@ -284,7 +283,6 @@ export function decodePeerMeshProjection(value: unknown): PeerMeshProjection {
   const record = requireExactRecord(value, 'Peer Mesh projection', [
     'meshId',
     'role',
-    'localPeerId',
     'authorityPeerId',
     'revision',
     'closed',
@@ -306,7 +304,6 @@ export function decodePeerMeshProjection(value: unknown): PeerMeshProjection {
   return {
     meshId: requireString(record.meshId, 'Peer Mesh meshId', MESH_ID_MAX_BYTES),
     role: record.role,
-    localPeerId: requireString(record.localPeerId, 'Peer Mesh localPeerId', PEER_ID_MAX_BYTES),
     authorityPeerId: requireString(
       record.authorityPeerId,
       'Peer Mesh authorityPeerId',

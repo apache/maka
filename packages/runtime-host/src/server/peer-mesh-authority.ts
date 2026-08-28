@@ -153,7 +153,6 @@ export function projectPeerMeshStatus(status: PeerMeshStatus): PeerMeshProjectio
   return Object.freeze({
     meshId: status.roster.roster.meshId,
     role: status.role,
-    localPeerId: status.localPeerId,
     authorityPeerId: status.authority.peerId,
     revision: status.roster.roster.revision,
     closed: status.roster.roster.closed,

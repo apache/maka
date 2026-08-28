@@ -30,6 +30,7 @@ import {
   type RuntimeHostPeerStatus,
 } from '@maka/runtime-host/operator';
 import { ensureRuntimeHostPeerIdentity } from '@maka/runtime-host/client';
+import { hasActivePeerMeshMembership } from '@maka/runtime-host/peer-mesh';
 import {
   allocateRuntimeHostPeerPort,
   RuntimeHostServiceManagerError,
@@ -164,6 +165,17 @@ async function runCanonicalRuntimeHostPeerManagementLocked(
       throw new RuntimeHostServiceManagerError(
         'not_installed',
         'Direct peer is not enabled for the managed Runtime Host deployment',
+      );
+    }
+    if (
+      await hasActivePeerMeshMembership(
+        join(config.deploymentRoot, 'peer-mesh', current.peerId),
+        current.peerId,
+      )
+    ) {
+      throw new RuntimeHostServiceManagerError(
+        'invalid_config',
+        'Close or leave every active Peer Mesh before rotating the Direct peer identity',
       );
     }
     previousPeerId = current.peerId;

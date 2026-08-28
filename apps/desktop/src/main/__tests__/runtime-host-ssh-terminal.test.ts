@@ -674,7 +674,6 @@ test('sends a Mesh invitation only after the authenticated remote operator reque
           {
             meshId: 'mesh-id',
             role: 'member',
-            localPeerId: 'peer-b',
             authorityPeerId: 'peer-a',
             revision: 2,
             closed: false,
