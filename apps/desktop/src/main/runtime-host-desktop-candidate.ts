@@ -48,7 +48,6 @@ import {
 import {
   INTERACTIVE_RUNTIME_HOST_COMPOSITION_ID,
   RUNTIME_HOST_PROTOCOL_VERSION,
-  type HostRegistration,
   type WorkspaceTarget,
 } from "@maka/runtime-host/protocol";
 import type { AttachmentApprovalRegistry } from "./attachment-approval.js";
@@ -164,6 +163,8 @@ export interface DesktopRuntimeHostCandidateControls {
   refreshClientCapabilities(): Promise<void>;
 }
 
+export type DesktopRuntimeHostOwnership = 'owned_ephemeral' | 'supervised' | 'external';
+
 export interface DesktopRuntimeHostCandidateStartInput
   extends Omit<DesktopRuntimeHostCandidateDeps, "ipcMain"> {
   readonly ipcMain: CandidateIpcMain;
@@ -198,7 +199,7 @@ export interface DesktopRuntimeHostCandidate {
   readonly botIncoming: BotIncomingMainService;
   readonly client: DesktopRuntimeHostClient;
   readonly closed: Promise<void>;
-  readonly hostLifecycleMode: HostRegistration["lifecycleMode"] | "environment" | "remote";
+  readonly hostOwnership: DesktopRuntimeHostOwnership;
   readonly hostPid?: number;
   stopSession(sessionId: string): Promise<void>;
   close(): Promise<void>;
@@ -208,7 +209,7 @@ class DesktopRuntimeHostCandidateImpl implements DesktopRuntimeHostCandidate {
   readonly botIncoming: BotIncomingMainService;
   readonly client: DesktopRuntimeHostClient;
   readonly closed: Promise<void>;
-  readonly hostLifecycleMode: HostRegistration["lifecycleMode"] | "environment" | "remote";
+  readonly hostOwnership: DesktopRuntimeHostOwnership;
   readonly hostPid: number | undefined;
   readonly #client: DesktopRuntimeHostClient;
   readonly #observer: RuntimeHostSessionObserver;
@@ -234,7 +235,7 @@ class DesktopRuntimeHostCandidateImpl implements DesktopRuntimeHostCandidate {
     detachSessionObservations: () => void;
     closeSessionObservations: () => Promise<void>;
     connectionClosed: Promise<void>;
-    hostLifecycleMode: HostRegistration["lifecycleMode"] | "environment" | "remote";
+    hostOwnership: DesktopRuntimeHostOwnership;
     hostPid?: number;
     hasRegisteredCapabilities: () => boolean;
     stopSession: (sessionId: string) => Promise<void>;
@@ -252,7 +253,7 @@ class DesktopRuntimeHostCandidateImpl implements DesktopRuntimeHostCandidate {
     this.#hasRegisteredCapabilities = input.hasRegisteredCapabilities;
     this.#stopSession = input.stopSession;
     this.botIncoming = input.botIncoming;
-    this.hostLifecycleMode = input.hostLifecycleMode;
+    this.hostOwnership = input.hostOwnership;
     this.hostPid = input.hostPid;
     this.closed = input.connectionClosed.then(() => this.close());
   }
@@ -317,7 +318,9 @@ export async function startDesktopRuntimeHostCandidate(
         connection.connection,
         { ...input, ipcMain },
         observationRegistry,
-        connection.registration.lifecycleMode,
+        connection.registration.lifecycleMode === 'ephemeral'
+          ? 'owned_ephemeral'
+          : 'supervised',
         "local",
         connection.registration.pid,
       ),
@@ -412,7 +415,7 @@ async function startProfileDesktopRuntimeHostCandidate(
         connection,
         { ...input, ipcMain },
         observationRegistry,
-        profileTarget.profile.kind,
+        'external',
         profileTarget.profile.kind,
       ),
     };
@@ -426,7 +429,7 @@ export async function createDesktopRuntimeHostCandidate(
   connection: RuntimeHostConnection,
   deps: DesktopRuntimeHostCandidateDeps,
   observationRegistry: RuntimeHostSessionObservationRegistry | undefined,
-  hostLifecycleMode: HostRegistration["lifecycleMode"] | "environment" | "remote",
+  hostOwnership: DesktopRuntimeHostOwnership,
   targetKind: DesktopRuntimeHostTargetPolicy["kind"],
   hostPid?: number,
 ): Promise<DesktopRuntimeHostCandidate> {
@@ -755,7 +758,7 @@ export async function createDesktopRuntimeHostCandidate(
           ? sessionObservations.close()
           : Promise.resolve(),
       connectionClosed: connection.closed,
-      hostLifecycleMode,
+      hostOwnership,
       ...(hostPid === undefined ? {} : { hostPid }),
       hasRegisteredCapabilities: () => capabilitiesRegistered,
       stopSession,

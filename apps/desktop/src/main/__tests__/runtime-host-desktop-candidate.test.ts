@@ -143,7 +143,7 @@ function createDesktopRuntimeHostCandidate(
     connection,
     candidateDeps,
     observationRegistry,
-    'ephemeral',
+    'owned_ephemeral',
     'local',
   );
 }
@@ -244,7 +244,7 @@ test('rejects a stale target generation when two profiles share one Host', async
     first.connection,
     deps(ipc),
     undefined,
-    'ephemeral',
+    'owned_ephemeral',
     'local',
   );
   await firstCandidate.close();
@@ -255,7 +255,7 @@ test('rejects a stale target generation when two profiles share one Host', async
     second.connection,
     deps(ipc),
     undefined,
-    'ephemeral',
+    'owned_ephemeral',
     'local',
   );
 

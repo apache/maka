@@ -45,8 +45,13 @@ import {
   RUNTIME_HOST_WSL_STDERR_MAX_BYTES,
   spawnRuntimeHostWslProcess,
   waitForRuntimeHostWslProcess,
+  type RuntimeHostWslOutput,
   type RuntimeHostWslProcessFactory,
 } from './wsl-control.js';
+import { RuntimeHostPermanentReconnectError } from './reconnect-lifecycle.js';
+
+const DEFAULT_RUNTIME_HOST_WSL_STARTUP_TIMEOUT_MS = 45_000;
+const DEFAULT_RUNTIME_HOST_WSL_READY_TIMEOUT_MS = 45_000;
 
 export {
   listRuntimeHostWslDistributions,
@@ -90,12 +95,13 @@ export async function connectRuntimeHostWslEnvironment(
     rootId,
   ]);
   const resource = new WslProcessByteStream(child);
-  const abort = () => resource.abort(input.signal?.reason as Error | undefined);
+  const transport = new FramedByteStreamTransport(resource);
+  const abort = () => transport.abort(abortReason(input.signal));
   input.signal?.addEventListener('abort', abort, { once: true });
   if (input.signal?.aborted) abort();
   try {
     const connected = await connectRuntimeHostMessageTransport({
-      transport: new FramedByteStreamTransport(resource),
+      transport,
       connectionResource: resource,
       expectedRootId: rootId,
       compositionId: INTERACTIVE_RUNTIME_HOST_COMPOSITION_ID,
@@ -104,9 +110,7 @@ export async function connectRuntimeHostWslEnvironment(
         max: RUNTIME_HOST_PROTOCOL_VERSION,
       },
       clientInstanceId: input.clientInstanceId,
-      ...(input.handshakeTimeoutMs === undefined
-        ? {}
-        : { handshakeTimeoutMs: input.handshakeTimeoutMs }),
+      handshakeTimeoutMs: input.handshakeTimeoutMs ?? DEFAULT_RUNTIME_HOST_WSL_STARTUP_TIMEOUT_MS,
     });
     if (connected.kind === 'incompatible') {
       throw new RuntimeHostRemoteCompatibilityError(distribution, connected.handshake);
@@ -124,7 +128,7 @@ export async function connectRuntimeHostWslEnvironment(
       input.signal?.throwIfAborted();
       await (overrides.waitForReady ?? waitForRuntimeHostReady)(
         connected.connection,
-        input.readyTimeoutMs ?? 45_000,
+        input.readyTimeoutMs ?? DEFAULT_RUNTIME_HOST_WSL_READY_TIMEOUT_MS,
         input.signal,
       );
       return connected.connection;
@@ -139,7 +143,7 @@ export async function connectRuntimeHostWslEnvironment(
 
 class WslProcessByteStream implements RuntimeHostByteStream, RuntimeHostConnectionResource {
   readonly closed: Promise<void>;
-  readonly #stderr: Promise<Buffer>;
+  readonly #stderr: Promise<RuntimeHostWslOutput>;
   #closing = false;
 
   constructor(private readonly child: ChildProcessWithoutNullStreams) {
@@ -175,9 +179,10 @@ class WslProcessByteStream implements RuntimeHostByteStream, RuntimeHostConnecti
     this.child.stdin.end();
   }
 
-  abort(error?: Error): void {
+  abort(_error?: Error): void {
+    if (this.#closing) return;
     this.#closing = true;
-    this.child.stdin.destroy(error);
+    this.child.stdin.destroy();
     this.child.kill();
   }
 
@@ -199,11 +204,21 @@ function wslRuntimeHostUnavailableError(
   subject: string,
   reason: Extract<ConnectRemoteRuntimeHostResult, { kind: 'unavailable' }>['reason'],
 ): Error {
-  return new Error(
-    reason === 'root_mismatch'
-      ? `${subject} connected to an unexpected State Root`
-      : reason === 'composition_mismatch'
-        ? `${subject} has an incompatible Host composition`
-        : `${subject} is unavailable (${reason})`,
-  );
+  if (reason === 'root_mismatch') {
+    return new RuntimeHostPermanentReconnectError(
+      `${subject} connected to an unexpected State Root`,
+    );
+  }
+  if (reason === 'composition_mismatch') {
+    return new RuntimeHostPermanentReconnectError(
+      `${subject} has an incompatible Host composition`,
+    );
+  }
+  return new Error(`${subject} is unavailable (${reason})`);
+}
+
+function abortReason(signal: AbortSignal | undefined): Error {
+  return signal?.reason instanceof Error
+    ? signal.reason
+    : new Error('WSL Runtime Host connection was aborted');
 }

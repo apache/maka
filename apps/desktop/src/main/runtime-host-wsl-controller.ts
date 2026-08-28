@@ -21,6 +21,7 @@ import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { createReadStream } from 'node:fs';
 import { realpath, stat } from 'node:fs/promises';
+import type { Readable } from 'node:stream';
 import {
   normalizeRuntimeHostWslDistribution,
   resolveSystemRuntimeHostWslExecutable,
@@ -115,7 +116,10 @@ export async function runDesktopRuntimeHostWslSetup(
   });
   const stderr = collectBounded(child.stderr, WSL_SETUP_STDERR_MAX_BYTES);
   const timeout = setTimeout(() => child.kill(), WSL_SETUP_TIMEOUT_MS);
-  const exit = await childExit(child).finally(() => {
+  const [exit, capturedStderr] = await Promise.all([
+    childExit(child),
+    stderr,
+  ]).finally(() => {
     clearTimeout(timeout);
     input.signal?.removeEventListener('abort', abort);
   });
@@ -123,7 +127,7 @@ export async function runDesktopRuntimeHostWslSetup(
   input.signal?.throwIfAborted();
   if (failure) throw failure;
   if (!complete) {
-    const diagnostic = (await stderr).toString('utf8').trim();
+    const diagnostic = formatBoundedDiagnostic(capturedStderr);
     throw new Error(
       `WSL Maka setup exited with code ${String(exit.code)} without a result${diagnostic ? `: ${diagnostic}` : ''}`,
     );
@@ -151,10 +155,14 @@ async function resolveWslPackageSpecifier(
   child.stdin.end();
   const stdout = collectBounded(child.stdout, 4 * 1024);
   const stderr = collectBounded(child.stderr, WSL_SETUP_STDERR_MAX_BYTES);
-  const exit = await childExit(child);
-  const path = (await stdout).toString('utf8').trim();
+  const [exit, capturedStdout, capturedStderr] = await Promise.all([
+    childExit(child),
+    stdout,
+    stderr,
+  ]);
+  const path = requireBoundedOutput(capturedStdout).toString('utf8').trim();
   if (exit.code !== 0 || !path.startsWith('/')) {
-    const diagnostic = (await stderr).toString('utf8').trim();
+    const diagnostic = formatBoundedDiagnostic(capturedStderr);
     throw new Error(`WSL could not resolve the setup package path${diagnostic ? `: ${diagnostic}` : ''}`);
   }
   return { specifier: path, integrity: await sha512Integrity(archive) };
@@ -230,20 +238,42 @@ function childExit(child: ChildProcessWithoutNullStreams): Promise<{
   });
 }
 
-function collectBounded(stream: NodeJS.ReadableStream, maxBytes: number): Promise<Buffer> {
-  return new Promise((resolve, reject) => {
-    const chunks: Buffer[] = [];
-    let bytes = 0;
-    stream.on('data', (value: Buffer | string) => {
+interface BoundedOutput {
+  readonly bytes: Buffer;
+  readonly complete: boolean;
+}
+
+async function collectBounded(stream: Readable, maxBytes: number): Promise<BoundedOutput> {
+  const chunks: Buffer[] = [];
+  let bytes = 0;
+  let complete = true;
+  try {
+    for await (const value of stream) {
       const chunk = typeof value === 'string' ? Buffer.from(value) : value;
-      bytes += chunk.byteLength;
-      if (bytes > maxBytes) {
-        reject(new Error('WSL process output exceeded its byte limit'));
-        return;
+      const remaining = Math.max(0, maxBytes - bytes);
+      if (remaining > 0) {
+        chunks.push(chunk.subarray(0, remaining));
+        bytes += Math.min(chunk.byteLength, remaining);
       }
-      chunks.push(chunk);
-    });
-    stream.once('end', () => resolve(Buffer.concat(chunks)));
-    stream.once('error', reject);
-  });
+      if (chunk.byteLength > remaining) complete = false;
+    }
+  } catch {
+    complete = false;
+  }
+  return { bytes: Buffer.concat(chunks), complete };
+}
+
+function requireBoundedOutput(output: BoundedOutput): Buffer {
+  if (!output.complete) {
+    throw new Error('WSL process output exceeded its byte limit or could not be read');
+  }
+  return output.bytes;
+}
+
+function formatBoundedDiagnostic(output: BoundedOutput): string {
+  const message = output.bytes.toString('utf8').trim();
+  return [
+    ...(message ? [message] : []),
+    ...(!output.complete ? ['<stderr truncated or unavailable>'] : []),
+  ].join('\n');
 }

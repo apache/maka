@@ -18,6 +18,7 @@
  */
 
 import assert from 'node:assert/strict';
+import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import test from 'node:test';
 import { connectRuntimeHostWslEnvironment } from '../client/wsl-environment.js';
 
@@ -55,4 +56,58 @@ test('passes WSL target values as literal argv to the absolute operator', async 
       'a'.repeat(64),
     ],
   });
+});
+
+test('owns WSL bridge cancellation without emitting a child-stream error', async () => {
+  const abort = new AbortController();
+  const cancellation = new Error('cancelled by test');
+  let child: ChildProcessWithoutNullStreams | undefined;
+  const connection = connectRuntimeHostWslEnvironment(
+    {
+      distribution: 'Ubuntu',
+      operatorPath: '/opt/maka/operator',
+      rootId: 'a'.repeat(64),
+      clientInstanceId: 'desktop-test',
+      signal: abort.signal,
+      handshakeTimeoutMs: 10_000,
+    },
+    {
+      wslExecutable: 'C:\\Windows\\System32\\wsl.exe',
+      processFactory: () => {
+        child = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 10_000)'], {
+          stdio: ['pipe', 'pipe', 'pipe'],
+        });
+        return child;
+      },
+    },
+  );
+
+  abort.abort(cancellation);
+  await assert.rejects(connection, /handshake_failed/u);
+  assert.ok(child);
+  assert.ok(child.exitCode !== null || child.signalCode !== null);
+});
+
+test('contains oversized WSL bridge diagnostics inside the connection failure', async () => {
+  await assert.rejects(
+    connectRuntimeHostWslEnvironment(
+      {
+        distribution: 'Ubuntu',
+        operatorPath: '/opt/maka/operator',
+        rootId: 'a'.repeat(64),
+        clientInstanceId: 'desktop-test',
+        handshakeTimeoutMs: 10_000,
+      },
+      {
+        wslExecutable: 'C:\\Windows\\System32\\wsl.exe',
+        processFactory: () =>
+          spawn(
+            process.execPath,
+            ['-e', "process.stderr.write('x'.repeat(9_000)); process.exit(7)"],
+            { stdio: ['pipe', 'pipe', 'pipe'] },
+          ),
+      },
+    ),
+    /handshake_failed/u,
+  );
 });

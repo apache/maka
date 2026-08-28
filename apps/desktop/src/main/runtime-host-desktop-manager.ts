@@ -529,7 +529,7 @@ class RuntimeHostDesktopManagerImpl implements RuntimeHostDesktopManager {
       );
       const quiescence = await lifecycle.quiesce();
       try {
-        if (quiescence.current.hostLifecycleMode !== 'service') {
+        if (quiescence.current.hostOwnership !== 'supervised') {
           throw new Error('The Local Runtime Host is not managed by a background service');
         }
         return await change();
@@ -590,11 +590,7 @@ class RuntimeHostDesktopManagerImpl implements RuntimeHostDesktopManager {
       quiescence.resume();
     };
     try {
-      if (
-        quiescence.current.hostLifecycleMode === 'service' ||
-        quiescence.current.hostLifecycleMode === 'remote' ||
-        quiescence.current.hostLifecycleMode === 'environment'
-      ) {
+      if (quiescence.current.hostOwnership !== 'owned_ephemeral') {
         resume();
         return { kind: 'not_owned' };
       }

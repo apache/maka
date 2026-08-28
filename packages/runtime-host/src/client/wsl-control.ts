@@ -19,9 +19,15 @@
 
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { win32 } from 'node:path';
+import type { Readable } from 'node:stream';
 
 const WSL_CONTROL_OUTPUT_MAX_BYTES = 64 * 1024;
 export const RUNTIME_HOST_WSL_STDERR_MAX_BYTES = 8 * 1024;
+
+export interface RuntimeHostWslOutput {
+  readonly bytes: Buffer;
+  readonly complete: boolean;
+}
 
 export type RuntimeHostWslProcessFactory = (
   executable: string,
@@ -41,13 +47,19 @@ export async function listRuntimeHostWslDistributions(
   child.stdin.end();
   const stdout = collectRuntimeHostWslOutput(child.stdout, WSL_CONTROL_OUTPUT_MAX_BYTES);
   const stderr = collectRuntimeHostWslOutput(child.stderr, RUNTIME_HOST_WSL_STDERR_MAX_BYTES);
-  const exit = await waitForRuntimeHostWslProcess(child);
+  const [exit, capturedStdout, capturedStderr] = await Promise.all([
+    waitForRuntimeHostWslProcess(child),
+    stdout,
+    stderr,
+  ]);
   if (exit.code !== 0) {
     throw new Error(
-      `wsl.exe could not enumerate distributions${formatRuntimeHostWslStderr(await stderr)}`,
+      `wsl.exe could not enumerate distributions${formatRuntimeHostWslStderr(capturedStderr)}`,
     );
   }
-  const decoded = new TextDecoder('utf-16le', { fatal: true }).decode(await stdout);
+  const decoded = new TextDecoder('utf-16le', { fatal: true }).decode(
+    requireRuntimeHostWslOutput(capturedStdout),
+  );
   return Object.freeze(
     decoded
       .replace(/^\uFEFF/u, '')
@@ -106,28 +118,41 @@ export function waitForRuntimeHostWslProcess(
   });
 }
 
-export function collectRuntimeHostWslOutput(
-  stream: NodeJS.ReadableStream,
+export async function collectRuntimeHostWslOutput(
+  stream: Readable,
   maxBytes: number,
-): Promise<Buffer> {
-  return new Promise((resolve, reject) => {
-    const chunks: Buffer[] = [];
-    let bytes = 0;
-    stream.on('data', (value: Buffer | string) => {
+): Promise<RuntimeHostWslOutput> {
+  const chunks: Buffer[] = [];
+  let bytes = 0;
+  let complete = true;
+  try {
+    for await (const value of stream) {
       const chunk = typeof value === 'string' ? Buffer.from(value) : value;
-      bytes += chunk.byteLength;
-      if (bytes > maxBytes) {
-        reject(new Error('wsl.exe output exceeded its byte limit'));
-        return;
+      const remaining = Math.max(0, maxBytes - bytes);
+      if (remaining > 0) {
+        chunks.push(chunk.subarray(0, remaining));
+        bytes += Math.min(chunk.byteLength, remaining);
       }
-      chunks.push(chunk);
-    });
-    stream.once('end', () => resolve(Buffer.concat(chunks)));
-    stream.once('error', reject);
-  });
+      if (chunk.byteLength > remaining) complete = false;
+    }
+  } catch {
+    complete = false;
+  }
+  return { bytes: Buffer.concat(chunks), complete };
 }
 
-export function formatRuntimeHostWslStderr(stderr: Buffer): string {
-  const message = stderr.toString('utf8').trim();
-  return message ? `: ${message}` : '';
+export function requireRuntimeHostWslOutput(output: RuntimeHostWslOutput): Buffer {
+  if (!output.complete) {
+    throw new Error('wsl.exe output exceeded its byte limit or could not be read');
+  }
+  return output.bytes;
+}
+
+export function formatRuntimeHostWslStderr(stderr: RuntimeHostWslOutput): string {
+  const message = stderr.bytes.toString('utf8').trim();
+  const details = [
+    ...(message ? [message] : []),
+    ...(!stderr.complete ? ['<stderr truncated or unavailable>'] : []),
+  ].join('\n');
+  return details ? `: ${details}` : '';
 }
