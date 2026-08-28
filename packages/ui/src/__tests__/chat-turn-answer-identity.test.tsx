@@ -106,7 +106,7 @@ const RUNNING_TOOL: TurnTimelineItem = {
   items: [{ toolUseId: 'tool-1', toolName: 'read', status: 'running', args: {} }],
 };
 
-test('renders an aborted turn outcome with the neutral status badge', async () => {
+test('renders an aborted turn outcome as an inline system status notice', async () => {
   const { container, root } = domRoot();
   await renderTurn(root, {
     ...turnWith([{ ...ANSWER, live: false }]),
@@ -114,9 +114,10 @@ test('renders an aborted turn outcome with the neutral status badge', async () =
     abortSource: 'renderer.stop_button',
   });
 
-  const outcome = container.querySelector('.astryx-badge[role="status"]');
-  assert.ok(outcome, 'the aborted outcome remains announced as a status Badge');
-  assert.equal(outcome.getAttribute('data-variant'), 'neutral');
+  const outcome = container.querySelector('.astryx-chat-system-message[role="status"]');
+  assert.ok(outcome, 'the aborted outcome is announced through the Chat status-notice primitive');
+  assert.equal(outcome.getAttribute('data-variant'), 'default');
+  assert.equal(outcome.textContent, 'Interrupted \u00b7 Stop button');
 });
 
 test('places the aborted turn outcome after its timeline content', async () => {
@@ -126,12 +127,11 @@ test('places the aborted turn outcome after its timeline content', async () => {
     status: 'aborted',
   });
 
-  const content = container.querySelector('.maka-assistant-answer-content');
   const answer = container.querySelector('.maka-chat-message-bubble-assistant');
-  const outcome = container.querySelector('.astryx-badge[role="status"]');
-  assert.ok(content && answer && outcome);
-  const children = [...content.children];
-  assert.ok(children.indexOf(outcome) > children.indexOf(answer));
+  const assistantMessage = container.querySelector('.maka-assistant-answer');
+  const outcome = container.querySelector('.astryx-chat-system-message[role="status"]');
+  assert.ok(answer && assistantMessage && outcome);
+  assert.equal(assistantMessage.nextElementSibling?.isSameNode(outcome), true);
 });
 
 /**

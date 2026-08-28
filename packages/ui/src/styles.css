@@ -761,8 +761,6 @@
   border-radius: var(--radius-control);
 }
 
-.maka-turn-aborted-badge { align-self: flex-start; }
-
 .maka-turn-host-origin {
   align-self: flex-end;
   gap: var(--space-1);

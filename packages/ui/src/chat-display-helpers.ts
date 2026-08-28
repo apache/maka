@@ -84,7 +84,7 @@ export function formatTurnDuration(ms: number): string {
   return `${Math.floor(totalSeconds / 60)}m ${totalSeconds % 60}s`;
 }
 
-export function turnAbortMarkerLabel(abortSource: string | undefined, locale: UiLocale): string {
+export function turnAbortStatusLabel(abortSource: string | undefined, locale: UiLocale): string {
   const copy = getConversationCopy(locale).messages;
   switch (abortSource) {
     case 'renderer.stop_button': return copy.abortedByStop;
