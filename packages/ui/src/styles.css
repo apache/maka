@@ -764,14 +764,12 @@
 
 .maka-turn-aborted-marker {
   gap: var(--space-1);
-  margin-block: var(--space-0-5) var(--space-1);
+  margin-block: var(--space-1) var(--space-0-5);
   padding: var(--space-0-5) var(--space-1-5);
   background: var(--foreground-5);
   color: var(--foreground-secondary);
   font-style: italic;
 }
-
-.maka-turn-aborted-marker em { font-style: italic; }
 
 .maka-turn-host-origin {
   align-self: flex-end;
