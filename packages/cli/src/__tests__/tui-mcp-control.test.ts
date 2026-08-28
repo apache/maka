@@ -18,6 +18,9 @@
  */
 
 import assert from 'node:assert/strict';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import test from 'node:test';
 import type { McpConfigFile, McpServerStatus, McpToolSnapshot } from '@maka/core/mcp';
 import type { McpClientManager } from '@maka/mcp';
@@ -25,6 +28,7 @@ import type {
   ClientCapabilityProvider,
   RuntimeHostConnectionAvailability,
 } from '@maka/runtime-host/client';
+import { createMcpConfigStore } from '@maka/storage/mcp-config-store';
 import { createTuiMcpController } from '../tui-mcp-control.js';
 
 test('TUI MCP startup stays backgrounded and publishes the discovered snapshot', async () => {
@@ -205,7 +209,7 @@ test('TUI MCP add commits before manager synchronization and reports Host conver
   });
 
   assert.deepEqual(result, { status: 'applied', effect: 'published' });
-  assert.deepEqual(order, ['get', 'transform', 'sync']);
+  assert.deepEqual(order, ['transform', 'sync']);
   assert.deepEqual((await store.store.get()).mcpServers.docs, {
     enabled: true,
     url: 'https://docs.example/mcp',
@@ -244,7 +248,7 @@ test('TUI MCP retires endpoint credentials before persistence and aborts on clea
   });
 
   assert.deepEqual(result, { status: 'failed', reason: 'credential-cleanup-failed' });
-  assert.deepEqual(order, ['get', 'forget:docs']);
+  assert.deepEqual(order, ['transform', 'forget:docs']);
   const stored = (await store.store.get()).mcpServers.docs;
   assert.ok(stored && 'url' in stored);
   assert.equal(stored.url, 'https://old.example/mcp');
@@ -277,7 +281,7 @@ test('TUI MCP rejects an invalid endpoint before retiring the previous credentia
     }),
     { status: 'failed', reason: 'invalid-config' },
   );
-  assert.deepEqual(order, ['get']);
+  assert.deepEqual(order, ['transform']);
   await controller.close();
 });
 
@@ -307,7 +311,7 @@ test('TUI MCP edit rejects a stale revision without touching credentials or disk
   });
 
   assert.deepEqual(result, { status: 'conflict', reason: 'stale_edit' });
-  assert.deepEqual(order, ['get']);
+  assert.deepEqual(order, ['transform']);
   await controller.close();
 });
 
@@ -416,17 +420,23 @@ test('TUI MCP reports a committed action as pending while the Host is unavailabl
 });
 
 test('TUI MCP close fences an admitted mutation before persistence', async () => {
-  const actionRead = deferredValue<McpConfigFile>();
+  const transactionAdmission = deferred();
   let reads = 0;
   let transforms = 0;
+  let writes = 0;
   const store = {
     get: async () => {
       reads += 1;
-      return reads === 1 ? emptyConfig() : actionRead.promise;
+      return emptyConfig();
     },
-    transform: async (apply: (current: McpConfigFile) => McpConfigFile) => {
+    transform: async (
+      apply: (current: McpConfigFile) => McpConfigFile | Promise<McpConfigFile>,
+    ) => {
       transforms += 1;
-      return apply(emptyConfig());
+      await transactionAdmission.promise;
+      const next = await apply(emptyConfig());
+      writes += 1;
+      return next;
     },
   };
   const manager = managementManager([]);
@@ -441,13 +451,14 @@ test('TUI MCP close fences an admitted mutation before persistence', async () =>
     serverId: 'late',
     config: { command: 'server' },
   });
-  await waitFor(() => reads === 2);
+  await waitFor(() => transforms === 1);
   const closing = controller.close();
-  actionRead.resolve(emptyConfig());
+  transactionAdmission.resolve();
 
   assert.deepEqual(await executing, { status: 'failed', reason: 'closed' });
   await closing;
-  assert.equal(transforms, 0);
+  assert.equal(reads, 1);
+  assert.equal(writes, 0);
 });
 
 test('TUI MCP waits for manager synchronization before publishing an action snapshot', async () => {
@@ -507,8 +518,10 @@ test('TUI MCP rebases an action over an unrelated concurrent config edit', async
   };
   const store = {
     get: async () => structuredClone(config),
-    transform: async (apply: (current: McpConfigFile) => McpConfigFile) => {
-      config = apply({
+    transform: async (
+      apply: (current: McpConfigFile) => McpConfigFile | Promise<McpConfigFile>,
+    ) => {
+      config = await apply({
         version: 3,
         mcpServers: { existing: { command: 'concurrent' } },
       });
@@ -532,6 +545,102 @@ test('TUI MCP rebases an action over an unrelated concurrent config edit', async
   assert.equal(existing.command, 'concurrent');
   assert.ok(config.mcpServers.local);
   await controller.close();
+});
+
+test('independent TUI controllers preserve concurrent additions in one workspace', async (t) => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-tui-mcp-concurrent-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  await createMcpConfigStore(root).transform((current) => current);
+  const left = createTuiMcpController(
+    { workspaceRoot: root, connection: connectionHarness().connection },
+    {
+      configStore: createMcpConfigStore(root),
+      manager: managementManager([]).manager,
+      createProvider: () => undefined,
+    },
+  );
+  const right = createTuiMcpController(
+    { workspaceRoot: root, connection: connectionHarness().connection },
+    {
+      configStore: createMcpConfigStore(root),
+      manager: managementManager([]).manager,
+      createProvider: () => undefined,
+    },
+  );
+  await waitFor(
+    () => left.snapshot().initialization === 'ready' && right.snapshot().initialization === 'ready',
+  );
+
+  const [leftResult, rightResult] = await Promise.all([
+    left.execute({ kind: 'add', serverId: 'left', config: { command: 'left-server' } }),
+    right.execute({ kind: 'add', serverId: 'right', config: { command: 'right-server' } }),
+  ]);
+
+  assert.equal(leftResult.status, 'applied');
+  assert.equal(rightResult.status, 'applied');
+  const saved = await createMcpConfigStore(root).get();
+  assert.ok(saved.mcpServers.left);
+  assert.ok(saved.mcpServers.right);
+  await Promise.all([left.close(), right.close()]);
+});
+
+test('same-server credential retirement stays inside the shared config transaction', async (t) => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-tui-mcp-retirement-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  await createMcpConfigStore(root).upsert('docs', { url: 'https://old.example/mcp' });
+  const retirement = deferred();
+  const leftOrder: string[] = [];
+  const rightOrder: string[] = [];
+  const left = createTuiMcpController(
+    { workspaceRoot: root, connection: connectionHarness().connection },
+    {
+      configStore: createMcpConfigStore(root),
+      manager: managementManager(leftOrder, { credentialWait: retirement.promise }).manager,
+      createProvider: () => undefined,
+    },
+  );
+  const right = createTuiMcpController(
+    { workspaceRoot: root, connection: connectionHarness().connection },
+    {
+      configStore: createMcpConfigStore(root),
+      manager: managementManager(rightOrder).manager,
+      createProvider: () => undefined,
+    },
+  );
+  await waitFor(
+    () => left.snapshot().initialization === 'ready' && right.snapshot().initialization === 'ready',
+  );
+  const leftEdit = left.configForEdit('docs');
+  const rightEdit = right.configForEdit('docs');
+  assert.ok(leftEdit);
+  assert.ok(rightEdit);
+
+  const first = left.execute({
+    kind: 'edit',
+    serverId: 'docs',
+    expectedRevision: leftEdit.revision,
+    config: { url: 'https://left.example/mcp' },
+  });
+  await waitFor(() => leftOrder.includes('forget:docs'));
+  const second = right.execute({
+    kind: 'edit',
+    serverId: 'docs',
+    expectedRevision: rightEdit.revision,
+    config: { url: 'https://right.example/mcp' },
+  });
+  for (let attempt = 0; attempt < 10; attempt += 1) {
+    await new Promise<void>((resolve) => setImmediate(resolve));
+  }
+  assert.equal(rightOrder.includes('forget:docs'), false);
+
+  retirement.resolve();
+  assert.deepEqual(await first, { status: 'applied', effect: 'published' });
+  assert.deepEqual(await second, { status: 'conflict', reason: 'stale_edit' });
+  assert.equal(rightOrder.includes('forget:docs'), false);
+  const saved = (await createMcpConfigStore(root).get()).mcpServers.docs;
+  assert.ok(saved && 'url' in saved);
+  assert.equal(saved.url, 'https://left.example/mcp');
+  await Promise.all([left.close(), right.close()]);
 });
 
 test('TUI MCP manages enabled state, tests, reconnects, and removes through one lane', async () => {
@@ -582,9 +691,11 @@ function mutableConfigStore(initial: McpConfigFile, order: string[]) {
       order.push('get');
       return structuredClone(config);
     },
-    transform: async (apply: (current: McpConfigFile) => McpConfigFile) => {
+    transform: async (
+      apply: (current: McpConfigFile) => McpConfigFile | Promise<McpConfigFile>,
+    ) => {
       order.push('transform');
-      config = structuredClone(apply(structuredClone(config)));
+      config = structuredClone(await apply(structuredClone(config)));
       return structuredClone(config);
     },
   };
@@ -598,7 +709,7 @@ function mutableConfigStore(initial: McpConfigFile, order: string[]) {
 
 function managementManager(
   order: string[],
-  options: { readonly credentialFailure?: boolean } = {},
+  options: { readonly credentialFailure?: boolean; readonly credentialWait?: Promise<void> } = {},
 ) {
   let listener: (() => void) | undefined;
   let syncFailure = false;
@@ -628,6 +739,7 @@ function managementManager(
     forgetServerCredentials: async (serverId: string) => {
       order.push(`forget:${serverId}`);
       if (options.credentialFailure) throw new Error('credential cleanup failed');
+      await options.credentialWait;
     },
     onChange: (next: () => void) => {
       listener = next;
@@ -778,7 +890,8 @@ function emptyConfig(): McpConfigFile {
 function configStoreHarness(get: () => Promise<McpConfigFile>) {
   return {
     get,
-    transform: async (apply: (current: McpConfigFile) => McpConfigFile) => apply(await get()),
+    transform: async (apply: (current: McpConfigFile) => McpConfigFile | Promise<McpConfigFile>) =>
+      apply(await get()),
   };
 }
 

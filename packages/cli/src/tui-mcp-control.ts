@@ -393,54 +393,39 @@ class TuiMcpControllerImpl implements TuiMcpController {
   async #commitMutation(
     action: Exclude<TuiMcpAction, { kind: 'test' | 'reconnect' }>,
   ): Promise<TuiMcpActionResult> {
-    let current: McpConfigFile;
-    try {
-      current = await this.#deps.configStore.get();
-    } catch {
-      return { status: 'failed', reason: 'persist-failed' };
-    }
-    if (this.#closed) return { status: 'failed', reason: 'closed' };
-    const prepared = this.#prepareMutation(current, action);
-    if ('status' in prepared) return prepared;
-    const { next } = prepared;
-    try {
-      assertMcpEndpointPolicyOnChanges(current, next);
-    } catch {
-      return { status: 'failed', reason: 'invalid-config' };
-    }
-    const retirements = Object.entries(current.mcpServers)
-      .filter(([serverId, previous]) =>
-        mcpConfigChangeRetiresCredentials(previous, next.mcpServers[serverId]),
-      )
-      .map(([serverId]) => serverId);
-    try {
-      for (const serverId of retirements) {
-        await this.#deps.manager.forgetServerCredentials(serverId, current.mcpServers[serverId]);
-        if (this.#closed) return { status: 'failed', reason: 'closed' };
-      }
-    } catch {
-      return { status: 'failed', reason: 'credential-cleanup-failed' };
-    }
-    const affectedServerIds = this.#affectedServerIds(action);
-    const basis = new Map(
-      affectedServerIds.map((serverId) => [serverId, configRevision(current.mcpServers[serverId])]),
-    );
     let committed: McpConfigFile;
     try {
-      committed = await this.#deps.configStore.transform((actual) => {
-        for (const [serverId, revision] of basis) {
-          if (configRevision(actual.mcpServers[serverId]) !== revision) {
-            throw new TuiMcpConfigDriftError();
-          }
+      committed = await this.#deps.configStore.transform(async (current) => {
+        if (this.#closed) {
+          throw new TuiMcpMutationError({ status: 'failed', reason: 'closed' });
         }
-        const rebased = this.#prepareMutation(actual, action);
-        if ('status' in rebased) throw new TuiMcpConfigDriftError();
-        return rebased.next;
+        const prepared = this.#prepareMutation(current, action);
+        if ('status' in prepared) throw new TuiMcpMutationError(prepared);
+        const { next } = prepared;
+        try {
+          assertMcpEndpointPolicyOnChanges(current, next);
+        } catch {
+          throw new TuiMcpMutationError({ status: 'failed', reason: 'invalid-config' });
+        }
+        try {
+          for (const [serverId, previous] of Object.entries(current.mcpServers)) {
+            if (!mcpConfigChangeRetiresCredentials(previous, next.mcpServers[serverId])) continue;
+            await this.#deps.manager.forgetServerCredentials(serverId, previous);
+            if (this.#closed) {
+              throw new TuiMcpMutationError({ status: 'failed', reason: 'closed' });
+            }
+          }
+        } catch (error) {
+          if (error instanceof TuiMcpMutationError) throw error;
+          throw new TuiMcpMutationError({
+            status: 'failed',
+            reason: 'credential-cleanup-failed',
+          });
+        }
+        return next;
       });
     } catch (error) {
-      if (error instanceof TuiMcpConfigDriftError) {
-        return { status: 'conflict', reason: mutationConflictReason(action) };
-      }
+      if (error instanceof TuiMcpMutationError) return error.result;
       return { status: 'failed', reason: 'persist-failed' };
     }
     if (this.#closed) return { status: 'failed', reason: 'closed' };
@@ -463,11 +448,6 @@ class TuiMcpControllerImpl implements TuiMcpController {
     this.#updateSnapshot({ configuration: 'ready' });
     this.#refreshManagerSnapshot();
     return { status: 'applied', effect: await this.#settlePublication() };
-  }
-
-  #affectedServerIds(action: Exclude<TuiMcpAction, { kind: 'test' | 'reconnect' }>): string[] {
-    if (action.kind !== 'commit_import') return [action.serverId];
-    return [...(this.#preparedImport?.basis.keys() ?? [])];
   }
 
   #prepareMutation(
@@ -699,12 +679,8 @@ function configRevision(config: McpConfigFile | McpServerConfig | undefined): st
   return createHash('sha256').update(JSON.stringify(config)).digest('hex');
 }
 
-function mutationConflictReason(
-  action: Exclude<TuiMcpAction, { kind: 'test' | 'reconnect' }>,
-): Extract<TuiMcpActionResult, { status: 'conflict' }>['reason'] {
-  if (action.kind === 'commit_import') return 'stale_import';
-  if (action.kind === 'edit') return 'stale_edit';
-  return 'stale_config';
+class TuiMcpMutationError extends Error {
+  constructor(readonly result: Extract<TuiMcpActionResult, { status: 'conflict' | 'failed' }>) {
+    super(result.reason);
+  }
 }
-
-class TuiMcpConfigDriftError extends Error {}

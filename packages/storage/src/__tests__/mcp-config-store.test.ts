@@ -218,7 +218,8 @@ test('allows SSE only with an omitted or explicit legacy protocol', () => {
 test('transform sees the latest committed config, not a caller snapshot', async () => {
   // The restore-plus-mutation seam: a marker-bearing write that derived its
   // restores from a stale snapshot could roll a rotated secret back. Inside
-  // transform, apply() must observe the concurrent writer's commit.
+  // transform, apply() must observe the concurrent writer's commit under the
+  // shared file transaction.
   const root = await tempRoot();
   const store = createMcpConfigStore(root);
   await store.upsert('local', { command: 'npx', env: { TOKEN: 'v1' } });
@@ -234,6 +235,32 @@ test('transform sees the latest committed config, not a caller snapshot', async 
   const final = (await store.get()).mcpServers.local;
   assert.ok(final && 'command' in final);
   assert.equal(final.env?.TOKEN, 'v2-rotated');
+});
+
+test('two independent stores preserve concurrent additions to one workspace', async () => {
+  const root = await tempRoot();
+  await createMcpConfigStore(root).get();
+  const desktop = createMcpConfigStore(root);
+  const tui = createMcpConfigStore(root);
+
+  await Promise.all([
+    desktop.upsert('desktop', { command: 'desktop-server' }),
+    tui.upsert('tui', { command: 'tui-server' }),
+  ]);
+
+  const saved = await createMcpConfigStore(root).get();
+  assert.equal(
+    saved.mcpServers.desktop && 'command' in saved.mcpServers.desktop
+      ? saved.mcpServers.desktop.command
+      : undefined,
+    'desktop-server',
+  );
+  assert.equal(
+    saved.mcpServers.tui && 'command' in saved.mcpServers.tui
+      ? saved.mcpServers.tui.command
+      : undefined,
+    'tui-server',
+  );
 });
 
 test('serializes concurrent updates without corrupting the file', async () => {
