@@ -138,6 +138,9 @@ export type SettingsProjectsCopy = {
     directPeerDisable: string;
     directPeerAddProfile: string;
     directPeerActionFailed: string;
+    peerMesh: string;
+    peerMeshHelp: string;
+    managePeerMesh: string;
     installedVersion: string;
     operatingSystem: string;
     processId: string;
@@ -424,6 +427,9 @@ const SETTINGS_PROJECTS_COPY_BY_LOCALE = {
       directPeerDisable: '停用',
       directPeerAddProfile: '添加到 Desktop',
       directPeerActionFailed: 'Direct peer 操作失败',
+      peerMesh: 'Peer Mesh',
+      peerMeshHelp: '管理本 Desktop peer 的私有 Mesh membership 和邀请',
+      managePeerMesh: '管理 Peer Mesh',
       installedVersion: '版本',
       operatingSystem: '系统',
       processId: '进程 ID',
@@ -710,6 +716,9 @@ const SETTINGS_PROJECTS_COPY_BY_LOCALE = {
       directPeerDisable: 'Disable',
       directPeerAddProfile: 'Add to Desktop',
       directPeerActionFailed: 'Direct peer action failed',
+      peerMesh: 'Peer Mesh',
+      peerMeshHelp: 'Manage private Mesh memberships and invitations for this Desktop peer',
+      managePeerMesh: 'Manage Peer Mesh',
       installedVersion: 'Version',
       operatingSystem: 'System',
       processId: 'Process ID',

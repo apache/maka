@@ -149,8 +149,9 @@ class PeerMeshStateStoreImpl implements PeerMeshStateStore {
         if (error instanceof PeerMeshPostCommitError) {
           this.#state = canonical;
           this.#failure = error;
+          throw error;
         }
-        throw error;
+        throw new PeerMeshPersistenceError(error);
       }
       return updated.result;
     });
@@ -320,7 +321,10 @@ async function readState(
     );
   } catch (error) {
     if (isNodeError(error, 'ENOENT')) {
-      return Object.freeze({ meshes: Object.freeze([]), routes: Object.freeze([]) });
+      return Object.freeze({
+        meshes: Object.freeze([]),
+        routes: Object.freeze([]),
+      });
     }
     throw error;
   }
@@ -360,7 +364,13 @@ async function writeState(
   }
 }
 
-class PeerMeshPostCommitError extends Error {
+export class PeerMeshPersistenceError extends Error {
+  constructor(cause: unknown) {
+    super('Peer Mesh state could not be persisted', { cause });
+  }
+}
+
+export class PeerMeshPostCommitError extends Error {
   constructor(cause: unknown) {
     super('Peer Mesh state was replaced but its durability could not be confirmed; reopen it', {
       cause,
@@ -387,7 +397,11 @@ function decodeInvitations(value: unknown): PeerMeshInvitationRecord[] {
       if (!Number.isSafeInteger(expiresAt) || (expiresAt as number) < 1) {
         throw new Error('Invalid Peer Mesh invitation expiry');
       }
-      return Object.freeze({ status: 'pending' as const, ...base, expiresAt: expiresAt as number });
+      return Object.freeze({
+        status: 'pending' as const,
+        ...base,
+        expiresAt: expiresAt as number,
+      });
     }
     if (
       record.status === 'redeemed' &&

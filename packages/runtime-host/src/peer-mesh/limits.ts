@@ -17,20 +17,9 @@
  * under the License.
  */
 
-export {
-  RuntimeHostKernel,
-  type RuntimeHostComposition,
-} from './host-kernel.js';
-export { defineInteractiveRuntimeHostComposition } from './host-composition.js';
-export { createUnavailableDomainOperationHandlers } from './operation-dispatcher.js';
-export { startExecutionRuntimeHostService } from './execution-service.js';
-export { runRuntimeHostProcessLifecycle } from './process-lifecycle.js';
-export {
-  createPeerMeshOperationHandlers,
-  projectPeerMeshStatus,
-} from './peer-mesh-authority.js';
-export { installRuntimeHostLogCapture } from '../process-diagnostics.js';
-export {
-  readRuntimeHostAccessCredentialMetadata,
-  type RuntimeHostAccessCredentialMetadata,
-} from './access-credential-metadata.js';
+export const PEER_MESH_MAX_MEMBERS = 64;
+export const PEER_MESH_MAX_MESHES = 16;
+export const PEER_MESH_MAX_PENDING_INVITATIONS = 32;
+export const PEER_MESH_MAX_INVITATION_RECORDS = PEER_MESH_MAX_PENDING_INVITATIONS * 3;
+export const PEER_MESH_MAX_ROUTE_HINTS = 16;
+export const PEER_MESH_ROUTE_RECORD_MAX_BYTES = 4 * 1024;

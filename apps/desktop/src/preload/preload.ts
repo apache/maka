@@ -1374,6 +1374,22 @@ const makaBridge = {
       );
     },
   },
+  runtimeHostPeerMesh: {
+    execute(
+      target: import('./bridge-contract.js').DesktopRuntimeHostPeerMeshTarget,
+      action: import('./bridge-contract.js').DesktopRuntimeHostPeerMeshAction,
+      input: { readonly meshId?: string; readonly peerId?: string; readonly invitation?: string } = {},
+    ) {
+      return ipcRenderer.invoke(
+        'runtime-host-peer-mesh:execute',
+        target,
+        action,
+        input.meshId,
+        input.peerId,
+        input.invitation,
+      );
+    },
+  },
   newTasks: {
     getCatalog(): Promise<DesktopNewTaskCatalog> {
       return loadNewTaskCatalog();

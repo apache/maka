@@ -18,12 +18,12 @@
  */
 
 import { createRuntimeHostPeerClient, type RuntimeHostPeerClient } from '../client/peer-client.js';
+import { join } from 'node:path';
 import { openPeerMeshNode, type PeerMeshNode } from './node.js';
 
 export interface RuntimeHostPeerMeshOwner {
   readonly client: RuntimeHostPeerClient;
   readonly mesh: PeerMeshNode;
-  readonly closed: Promise<void>;
   close(): Promise<void>;
 }
 
@@ -45,7 +45,10 @@ export async function openRuntimeHostPeerMeshOwner(input: {
     routeResolver: { resolveRoutes: (peerId) => mesh?.resolveRoutes(peerId) },
   });
   try {
-    mesh = await openPeerMeshNode({ dataRoot: input.dataRoot, peer: client });
+    mesh = await openPeerMeshNode({
+      dataRoot: join(input.dataRoot, client.identity().peerId),
+      peer: client,
+    });
   } catch (error) {
     await client.close().catch(() => undefined);
     throw error;
@@ -56,12 +59,10 @@ export async function openRuntimeHostPeerMeshOwner(input: {
     closeTask ??= closeOwner(mesh!, client, serving);
     return closeTask;
   };
-  const closed = serving.then(close, close);
-  void closed.catch(() => undefined);
+  void serving.then(close, close).catch(() => undefined);
   return Object.freeze({
     client,
     mesh,
-    closed,
     close,
   });
 }

@@ -41,6 +41,42 @@ const projectRootA = process.platform === 'win32' ? 'C:\\srv\\projects' : '/srv/
 const projectRootB = process.platform === 'win32' ? 'D:\\data' : '/mnt/data';
 
 describe('Runtime Host operator commands', () => {
+  test('parses resident Peer Mesh management without accepting invitations in argv', () => {
+    const target = {
+      serviceId: 'b'.repeat(64),
+      rootPath: '/srv/maka',
+      rootId: 'a'.repeat(64),
+      deploymentId: '00000000-0000-4000-8000-000000000001',
+    };
+    const base = [
+      '--managed-root-id',
+      target.rootId,
+      '--operator-deployment-id',
+      target.deploymentId,
+      '--expected-service-id',
+      target.serviceId,
+      '--expected-root-path',
+      target.rootPath,
+      '--expected-root-id',
+      target.rootId,
+      '--expected-deployment-id',
+      target.deploymentId,
+    ];
+    assert.deepEqual(parseRuntimeHostCommand(['service', 'mesh', 'join', '--framed', ...base]), {
+      kind: 'runtime-host-service-peer-mesh',
+      action: 'join',
+      json: false,
+      framed: true,
+      managedRootId: target.rootId,
+      operatorDeploymentId: target.deploymentId,
+      expectedTarget: target,
+    });
+    assert.equal(
+      parseRuntimeHostCommand(['service', 'mesh', 'join', '--invitation', 'secret', ...base]).kind,
+      'error',
+    );
+  });
+
   test('parses and emits the stable framed managed activation contract', async () => {
     const rootId = 'a'.repeat(64);
     assert.deepEqual(parseRuntimeHostCommand(['activate', '--framed', '--root-id', rootId]), {
@@ -336,6 +372,14 @@ describe('Runtime Host operator commands', () => {
         'host.upgrade.prepare',
         'hosted.execution.cancel',
         'hosted.execution.start',
+        'peer.mesh.close',
+        'peer.mesh.create',
+        'peer.mesh.invite',
+        'peer.mesh.join',
+        'peer.mesh.leave',
+        'peer.mesh.query',
+        'peer.mesh.reconcile',
+        'peer.mesh.remove',
       ],
     );
   });

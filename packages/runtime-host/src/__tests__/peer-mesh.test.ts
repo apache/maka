@@ -62,6 +62,10 @@ test('authenticates three peers, consumes invitations once, and keeps authority 
     await authority.remove(mesh.roster.roster.meshId, 'peer-b');
     assert.deepEqual(authority.status()[0]?.roster.roster.members, ['peer-a', 'peer-c']);
 
+    await memberC.leave(mesh.roster.roster.meshId);
+    assert.deepEqual(memberC.status(), []);
+    assert.deepEqual(authority.status()[0]?.roster.roster.members, ['peer-a']);
+
     const closing = authority.close();
     await assert.rejects(authority.invite(mesh.roster.roster.meshId), /closed/u);
     await closing;

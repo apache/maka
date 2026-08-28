@@ -48,11 +48,11 @@ import {
   createClientRuntimeHostCredentialStore,
   createClientRuntimeHostProfileCatalog,
   createRuntimeHostCandidateLaunchBarrier,
-  createRuntimeHostPeerClientFromEnvironment,
   LOCAL_RUNTIME_HOST_PROFILE,
   loadOrCreateRuntimeHostClientInstanceId,
   listRuntimeHostWslDistributions,
 } from "@maka/runtime-host/client";
+import { openRuntimeHostPeerMeshOwner } from '@maka/runtime-host/peer-mesh';
 import type { WorkspaceTarget } from "@maka/runtime-host/protocol";
 import { runtimeHostProfileUsesHostWorkspace } from "@maka/runtime-host/profile-kind";
 import { createCredentialMcpOAuthStorage, McpClientManager } from "@maka/mcp";
@@ -181,6 +181,7 @@ import { createDesktopRuntimeHostLocalOperator } from './runtime-host-local-oper
 import { createDesktopLocalRuntimeHostRemoteAccess } from './runtime-host-local-remote-access.js';
 import { createDesktopRuntimeHostOnboarding } from "./runtime-host-onboarding.js";
 import { createDesktopRuntimeHostManagement } from "./runtime-host-management.js";
+import { createDesktopRuntimeHostPeerMeshManagement } from './runtime-host-peer-mesh-management.js';
 import { registerRuntimeHostOAuthIpc } from "./runtime-host-oauth-ipc-main.js";
 import { RuntimeHostOAuthPresentation } from "./runtime-host-oauth-presentation.js";
 import { registerRuntimeHostPermissionsIpc } from "./runtime-host-permissions-ipc-main.js";
@@ -221,15 +222,20 @@ await resolveShellEnv();
 const MANAGED_UPDATE_RECONNECT_TIMEOUT_MS = 10_000;
 const buildInfo = resolveBuildInfo(app.isPackaged, app.getAppPath());
 const userDataDir = app.getPath("userData");
-const runtimeHostDirectPeerAvailable = await configureDesktopRuntimeHostPeerClient({
+const runtimeHostPeerConfiguration = await configureDesktopRuntimeHostPeerClient({
   isPackaged: app.isPackaged,
   appPath: app.getAppPath(),
   resourcesPath: process.resourcesPath,
   clientDataRoot: userDataDir,
 });
-const runtimeHostPeerClient = runtimeHostDirectPeerAvailable
-  ? createRuntimeHostPeerClientFromEnvironment()
+const runtimeHostPeerOwner = runtimeHostPeerConfiguration
+  ? await openRuntimeHostPeerMeshOwner({
+      ...runtimeHostPeerConfiguration,
+      dataRoot: join(userDataDir, 'peer-mesh'),
+    })
   : undefined;
+const runtimeHostPeerClient = runtimeHostPeerOwner?.client;
+const runtimeHostDirectPeerAvailable = runtimeHostPeerOwner !== undefined;
 const runtimeHostClientInstanceId = await loadOrCreateRuntimeHostClientInstanceId(
   join(userDataDir, "runtime-host-client.json"),
 );
@@ -541,6 +547,12 @@ const runtimeHostManagement = createDesktopRuntimeHostManagement({
     mainWindowController.send("runtime-host-management:progress", progress),
   runAccessManagement: runtimeHostSshTerminal.runAccessManagement,
   cleanupManagedDeployment: runtimeHostSshTerminal.cleanupManagedDeployment,
+});
+const runtimeHostPeerMeshManagement = createDesktopRuntimeHostPeerMeshManagement({
+  ipcMain,
+  localMesh: runtimeHostPeerOwner?.mesh,
+  profiles: runtimeHostProfileService,
+  runRemote: runtimeHostSshTerminal.runPeerMeshManagement,
 });
 const defaultRuntimeHostRecovery = createRuntimeHostDefaultRecovery({
   defaultProfileId: () =>
@@ -1646,7 +1658,9 @@ async function closeRuntimeHostDesktop(): Promise<void> {
   permissionOverlay.dismiss();
   const results = await Promise.allSettled([
     Promise.resolve().then(() => runtimeHostManagement.close()),
+    Promise.resolve().then(() => runtimeHostPeerMeshManagement.close()),
     runtimeHostManager?.close(),
+    runtimeHostPeerOwner?.close(),
     runtimeHostOnboarding.close(),
     localRuntimeHostRemoteAccess.close(),
     runtimeHostSetupPackage.close(),

@@ -27,13 +27,20 @@ import {
   timingSafeEqual,
   verify,
 } from 'node:crypto';
+import {
+  PEER_MESH_MAX_MEMBERS,
+  PEER_MESH_MAX_ROUTE_HINTS,
+  PEER_MESH_ROUTE_RECORD_MAX_BYTES,
+} from './limits.js';
 
-export const PEER_MESH_MAX_MEMBERS = 64;
-export const PEER_MESH_MAX_MESHES = 16;
-export const PEER_MESH_MAX_PENDING_INVITATIONS = 32;
-export const PEER_MESH_MAX_INVITATION_RECORDS = PEER_MESH_MAX_PENDING_INVITATIONS * 3;
-export const PEER_MESH_MAX_ROUTE_HINTS = 16;
-export const PEER_MESH_ROUTE_RECORD_MAX_BYTES = 4 * 1024;
+export {
+  PEER_MESH_MAX_INVITATION_RECORDS,
+  PEER_MESH_MAX_MEMBERS,
+  PEER_MESH_MAX_MESHES,
+  PEER_MESH_MAX_PENDING_INVITATIONS,
+  PEER_MESH_MAX_ROUTE_HINTS,
+  PEER_MESH_ROUTE_RECORD_MAX_BYTES,
+} from './limits.js';
 
 export interface PeerMeshRosterV1 {
   readonly version: 1;
@@ -60,6 +67,7 @@ export interface PeerMeshInvitationV1 extends PeerMeshAuthorityTarget {
   readonly meshId: string;
   readonly authorityPublicKey: string;
   readonly secret: string;
+  readonly expiresAt: number;
 }
 
 export interface PeerMeshAuthorityKeyPair {
@@ -179,6 +187,7 @@ export function decodePeerMeshInvitation(value: unknown): PeerMeshInvitationV1 {
     'meshId',
     'authorityPublicKey',
     'secret',
+    'expiresAt',
     'peerId',
     'routeHints',
     'coordinationRelays',
@@ -194,6 +203,7 @@ export function decodePeerMeshInvitation(value: unknown): PeerMeshInvitationV1 {
     meshId,
     authorityPublicKey,
     secret: validateSecret(record.secret),
+    expiresAt: integer(record.expiresAt, 'expiresAt', 1),
     ...decodeAuthorityTarget({
       peerId: record.peerId,
       routeHints: record.routeHints,

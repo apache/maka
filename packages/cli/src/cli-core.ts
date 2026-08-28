@@ -147,6 +147,7 @@ function helpText(cliCommand: string): string {
     `  ${cliCommand} runtime-host service status|start|stop|restart|logs [--json]`,
     `  ${cliCommand} runtime-host service uninstall --expected-service-id <id> --expected-root-path <path> --expected-root-id <id> [--allow-interrupt-active-tasks]`,
     `  ${cliCommand} runtime-host service peer enable|disable|status|rotate|descriptor [options]`,
+    `  ${cliCommand} runtime-host service mesh status|create|invite|join|remove|leave|close|reconcile [options]`,
     `  ${cliCommand} runtime-host service retire --expected-service-id <id> --expected-root-path <path> --expected-root-id <id> [--allow-interrupt-active-tasks]`,
     `  ${cliCommand} runtime-host service check-update --target <latest|next|version> [--json]`,
     `  ${cliCommand} runtime-host service update [--target <latest|next|version>] --expected-service-id <id> --expected-root-path <path> --expected-root-id <id> [--allow-interrupt-active-tasks]`,
@@ -316,6 +317,7 @@ export async function runMakaCli(
                   expectedPeerId: peer.peerId,
                   listenAddresses: peer.listenAddresses,
                   coordinationRelays: peer.coordinationRelays,
+                  meshDataRoot: join(config.deploymentRoot, 'peer-mesh'),
                 },
               }
             : {}),
@@ -474,6 +476,23 @@ export async function runMakaCli(
         ...(command.coordinationRelays ? { coordinationRelays: command.coordinationRelays } : {}),
         ...(command.expectedTarget ? { expectedTarget: command.expectedTarget } : {}),
         ...(command.allowInterruptActiveTasks ? { allowInterruptActiveTasks: true } : {}),
+      });
+    }
+    case 'runtime-host-service-peer-mesh': {
+      const { runRuntimeHostPeerMeshManagementCli } = await import(
+        './runtime-host-peer-mesh-management-command.js'
+      );
+      return runRuntimeHostPeerMeshManagementCli({
+        action: command.action,
+        json: command.json,
+        framed: command.framed ?? false,
+        managedRootId: command.managedRootId,
+        operatorDeploymentId: command.operatorDeploymentId,
+        cliPath: process.argv[1] ?? '',
+        expectedTarget: command.expectedTarget,
+        ...(command.meshId ? { meshId: command.meshId } : {}),
+        ...(command.peerId ? { peerId: command.peerId } : {}),
+        ...(command.ttlMs === undefined ? {} : { ttlMs: command.ttlMs }),
       });
     }
     case 'runtime-host-service-update': {

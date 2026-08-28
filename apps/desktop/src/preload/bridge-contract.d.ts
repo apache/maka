@@ -520,6 +520,18 @@ export interface DesktopRuntimeHostDirectPeerSnapshot {
   readonly managementAvailable: boolean;
 }
 
+export type DesktopRuntimeHostPeerMeshTarget =
+  | { readonly kind: 'desktop' }
+  | { readonly kind: 'managed_host'; readonly profileId: string };
+
+export type DesktopRuntimeHostPeerMeshAction =
+  import('@maka/runtime-host/operator').RuntimeHostPeerMeshManagementAction;
+
+export type DesktopRuntimeHostPeerMeshResult =
+  | import('@maka/runtime-host/protocol').PeerMeshQueryResult
+  | import('@maka/runtime-host/protocol').PeerMeshProjection
+  | import('@maka/runtime-host/protocol').PeerMeshInvitationV1;
+
 type RuntimeHostUpdatePolicyResult = Extract<
   RuntimeHostServiceManagementFrame,
   { kind: 'result'; action: 'update_policy' }
@@ -727,6 +739,14 @@ export interface MakaBridge {
       profileId: string,
       credentialId: string,
     ): Promise<DesktopRuntimeHostAccessSnapshot>;
+  };
+
+  runtimeHostPeerMesh: {
+    execute(
+      target: DesktopRuntimeHostPeerMeshTarget,
+      action: DesktopRuntimeHostPeerMeshAction,
+      input?: { readonly meshId?: string; readonly peerId?: string; readonly invitation?: string },
+    ): Promise<DesktopRuntimeHostPeerMeshResult>;
   };
 
   newTasks: {

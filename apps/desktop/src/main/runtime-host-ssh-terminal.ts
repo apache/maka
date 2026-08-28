@@ -39,6 +39,7 @@ import {
   decodeRuntimeHostActivationFrame,
   decodeRuntimeHostAccessManagementFrame,
   decodeRuntimeHostPeerManagementFrame,
+  decodeRuntimeHostPeerMeshManagementFrame,
   decodeRuntimeHostServiceManagementFrame,
   decodeRuntimeHostSetupFrame,
   RUNTIME_HOST_ACTIVATION_FRAME_MAX_BYTES,
@@ -49,6 +50,8 @@ import {
   RUNTIME_HOST_OPERATOR_PROJECT_DIRECTORY_CONFIGURATION_REQUEST_ENV,
   RUNTIME_HOST_OPERATOR_UPDATE_SCHEDULER_CAPABILITY,
   RUNTIME_HOST_PEER_MANAGEMENT_FRAME_PREFIX,
+  RUNTIME_HOST_PEER_MESH_MANAGEMENT_FRAME_MAX_BYTES,
+  RUNTIME_HOST_PEER_MESH_MANAGEMENT_FRAME_PREFIX,
   RUNTIME_HOST_SERVICE_MANAGEMENT_FRAME_PREFIX,
   RUNTIME_HOST_SETUP_FRAME_PREFIX,
   type RuntimeHostAccessManagementFrame,
@@ -56,6 +59,8 @@ import {
   type RuntimeHostManagedUpdatePolicy,
   type RuntimeHostPeerManagementAction,
   type RuntimeHostPeerManagementFrame,
+  type RuntimeHostPeerMeshManagementAction,
+  type RuntimeHostPeerMeshManagementFrame,
   type RuntimeHostOperatorCapability,
   type RuntimeHostServiceManagementAction,
   type RuntimeHostServiceManagementFrame,
@@ -173,6 +178,19 @@ export interface DesktopRuntimeHostSshPeerManagementInput {
   readonly signal?: AbortSignal;
 }
 
+export interface DesktopRuntimeHostSshPeerMeshManagementInput {
+  readonly destination: string;
+  readonly sshPort?: number;
+  readonly operatorPath: string;
+  readonly action: RuntimeHostPeerMeshManagementAction;
+  readonly expectedTarget: DesktopRuntimeHostSshManagementInput['expectedTarget'];
+  readonly meshId?: string;
+  readonly peerId?: string;
+  readonly ttlMs?: number;
+  readonly invitation?: string;
+  readonly signal?: AbortSignal;
+}
+
 export interface DesktopRuntimeHostSshCleanupInput {
   readonly destination: string;
   readonly sshPort?: number;
@@ -271,6 +289,9 @@ export function createDesktopRuntimeHostSshTerminal(input: {
   runPeerManagement(
     input: DesktopRuntimeHostSshPeerManagementInput,
   ): Promise<RuntimeHostPeerManagementFrame>;
+  runPeerMeshManagement(
+    input: DesktopRuntimeHostSshPeerMeshManagementInput,
+  ): Promise<Exclude<RuntimeHostPeerMeshManagementFrame, { kind: 'input' }>>;
   cleanupManagedDeployment(input: DesktopRuntimeHostSshCleanupInput): Promise<void>;
   close(): Promise<void>;
 } {
@@ -510,6 +531,7 @@ export function createDesktopRuntimeHostSshTerminal(input: {
     readonly frameAction: (frame: Frame) => string;
     readonly isTerminalFrame?: (frame: Frame) => boolean;
     readonly onProgress?: (frame: Frame) => void;
+    readonly inputLine?: string;
     readonly label: string;
     readonly timeoutMs?: number;
   }): Promise<Frame> => {
@@ -521,6 +543,12 @@ export function createDesktopRuntimeHostSshTerminal(input: {
     let failure: Error | undefined;
     let activeTerminal: ActiveTerminal | undefined;
     let receivedProgress = false;
+    let inputSent = false;
+    const sendInput = () => {
+      if (inputSent || options.inputLine === undefined || !activeTerminal) return;
+      inputSent = true;
+      activeTerminal.pty.write(`${options.inputLine}\r`);
+    };
     const filter = createRuntimeHostFramedOutputFilter({
       prefix: options.prefix,
       pendingMaxBytes: options.pendingMaxBytes,
@@ -536,6 +564,7 @@ export function createDesktopRuntimeHostSshTerminal(input: {
           receivedProgress = true;
           if (activeTerminal) suppressPresentation(activeTerminal);
           options.onProgress?.(next);
+          sendInput();
           return;
         }
         if (frame) {
@@ -556,6 +585,7 @@ export function createDesktopRuntimeHostSshTerminal(input: {
       true,
     );
     activeTerminal = terminal;
+    if (receivedProgress) sendInput();
     if (frame) completePresentation(terminal);
     else if (receivedProgress) suppressPresentation(terminal);
     const wait = await waitForTerminalProcess(process, {
@@ -861,6 +891,24 @@ export function createDesktopRuntimeHostSshTerminal(input: {
         frameAction: (frame) => frame.action,
         label: 'Remote Runtime Host direct-peer management',
       }),
+    runPeerMeshManagement: async (meshInput) => {
+      const frame = await runFramedManagement({
+        ...meshInput,
+        remoteCommand: runtimeHostPeerMeshManagementRemoteCommand(meshInput),
+        prefix: RUNTIME_HOST_PEER_MESH_MANAGEMENT_FRAME_PREFIX,
+        pendingMaxBytes: RUNTIME_HOST_PEER_MESH_MANAGEMENT_FRAME_MAX_BYTES,
+        decode: decodeRuntimeHostPeerMeshManagementFrame,
+        action: meshInput.action,
+        frameAction: (candidate) => candidate.action,
+        isTerminalFrame: (candidate) => candidate.kind !== 'input',
+        ...(meshInput.invitation ? { inputLine: meshInput.invitation } : {}),
+        label: 'Remote Runtime Host Peer Mesh management',
+      });
+      if (frame.kind === 'input') {
+        throw new Error('Remote Runtime Host Peer Mesh management ended before its result');
+      }
+      return frame;
+    },
     cleanupManagedDeployment: async (cleanupInput) => {
       if (closed) throw new Error('Runtime Host SSH terminal is closed');
       cleanupInput.signal?.throwIfAborted();
@@ -1301,6 +1349,22 @@ function runtimeHostPeerManagementRemoteCommand(
         ? ['--clear-coordination-relays']
         : input.coordinationRelays.flatMap((relay) => ['--coordination-relay', relay])
       : []),
+    ...managedServiceTargetArgs(input.expectedTarget),
+  ].map(quotePosix).join(' ');
+  return `exec "\${SHELL:-/bin/sh}" -lic ${quotePosix(`exec ${command}`)}`;
+}
+
+function runtimeHostPeerMeshManagementRemoteCommand(
+  input: DesktopRuntimeHostSshPeerMeshManagementInput,
+): string {
+  const command = [
+    input.operatorPath,
+    'mesh',
+    input.action,
+    '--framed',
+    ...(input.meshId ? ['--mesh', input.meshId] : []),
+    ...(input.peerId ? ['--peer', input.peerId] : []),
+    ...(input.ttlMs === undefined ? [] : ['--ttl-ms', String(input.ttlMs)]),
     ...managedServiceTargetArgs(input.expectedTarget),
   ].map(quotePosix).join(' ');
   return `exec "\${SHELL:-/bin/sh}" -lic ${quotePosix(`exec ${command}`)}`;

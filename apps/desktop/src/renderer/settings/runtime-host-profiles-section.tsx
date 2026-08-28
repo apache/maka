@@ -29,6 +29,7 @@ import {
 } from "@astryxdesign/core";
 import type {
   DesktopLocalRuntimeHostRemoteAccessSnapshot,
+  DesktopRuntimeHostPeerMeshTarget,
 } from '../../preload/bridge-contract.js';
 import type {
   RemoteRuntimeHostProfile,
@@ -53,6 +54,7 @@ import { SettingsField, SettingsRow, SettingsSection } from "./settings-section.
 import { RuntimeHostOnboardingDialog } from './runtime-host-onboarding-dialog.js';
 import { RuntimeHostManagementDialog } from './runtime-host-management-dialog.js';
 import { RuntimeHostConnectionCodeDialog } from './runtime-host-connection-code-dialog.js';
+import { RuntimeHostPeerMeshDialog } from './runtime-host-peer-mesh-dialog.js';
 
 type RemoteTransportKind = RuntimeHostRemoteTransport["kind"];
 
@@ -89,6 +91,10 @@ export function RuntimeHostProfilesSection(props: {
   const [connectionCodeDialog, setConnectionCodeDialog] = useState<
     { readonly mode: 'import' } | { readonly mode: 'share'; readonly connectionCode: string }
   >();
+  const [peerMeshTarget, setPeerMeshTarget] = useState<{
+    readonly target: DesktopRuntimeHostPeerMeshTarget;
+    readonly name: string;
+  }>();
   const [switching, setSwitching] = useState(false);
   const [draft, setDraft] = useState(createRemoteHostDraft);
 
@@ -483,6 +489,22 @@ export function RuntimeHostProfilesSection(props: {
             </HStack>
           )}
         />
+        <SettingsRow
+          label={copy.peerMesh}
+          description={copy.peerMeshHelp}
+          end={(
+            <Button
+              variant="secondary"
+              size="sm"
+              label={copy.managePeerMesh}
+              isDisabled={switching}
+              onClick={() => setPeerMeshTarget({
+                target: { kind: 'desktop' },
+                name: copy.thisComputerRemoteAccess,
+              })}
+            />
+          )}
+        />
       </SettingsSection>
 
       <SettingsSection
@@ -668,6 +690,13 @@ export function RuntimeHostProfilesSection(props: {
                                 label: copy.manage,
                                 isDisabled: switching,
                                 onClick: () => setManagedProfile(profile),
+                              }, {
+                                label: copy.managePeerMesh,
+                                isDisabled: switching,
+                                onClick: () => setPeerMeshTarget({
+                                  target: { kind: 'managed_host', profileId: profile.id },
+                                  name: profile.name,
+                                }),
                               }]
                             : []),
                           {
@@ -704,6 +733,13 @@ export function RuntimeHostProfilesSection(props: {
           void reload();
         }}
       />
+      {peerMeshTarget ? (
+        <RuntimeHostPeerMeshDialog
+          target={peerMeshTarget.target}
+          targetName={peerMeshTarget.name}
+          onClose={() => setPeerMeshTarget(undefined)}
+        />
+      ) : null}
       {connectionCodeDialog?.mode === 'import' ? (
         <RuntimeHostConnectionCodeDialog
           mode="import"

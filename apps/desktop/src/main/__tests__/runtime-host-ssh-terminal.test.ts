@@ -29,6 +29,7 @@ import {
   encodeRuntimeHostAccessManagementFrame,
   encodeRuntimeHostServiceManagementFrame,
   encodeRuntimeHostSetupFrame,
+  encodeRuntimeHostPeerMeshManagementFrame,
   runtimeHostAccessCredentialFingerprint,
   RUNTIME_HOST_OPERATOR_PEER_MANAGEMENT_CAPABILITY,
   RUNTIME_HOST_SETUP_FRAME_PREFIX,
@@ -637,6 +638,58 @@ test('keeps a prepared access credential out of the SSH terminal projection', as
   await harness.terminal.close();
 });
 
+test('sends a Mesh invitation only after the authenticated remote operator requests it', async () => {
+  const harness = createHarness('pending');
+  const invitation = JSON.stringify({ secret: 'one-time-mesh-secret' });
+  const management = harness.terminal.runPeerMeshManagement({
+    destination: 'operator@example.com',
+    operatorPath: '/home/operator/.local/share/maka/operator',
+    action: 'join',
+    invitation,
+    expectedTarget: {
+      serviceId: 'b'.repeat(64),
+      rootPath: '/srv/maka',
+      rootId: 'a'.repeat(64),
+      deploymentId: '00000000-0000-4000-8000-000000000001',
+    },
+  });
+  await waitFor(() => harness.pty.hasDataListener());
+  const command = harness.launchArgs.at(-1)?.at(-1) ?? '';
+  assert.match(command, /mesh.*join.*--framed/u);
+  assert.doesNotMatch(command, /one-time-mesh-secret/u);
+  assert.deepEqual(harness.pty.writes, []);
+
+  harness.pty.emitData(
+    encodeRuntimeHostPeerMeshManagementFrame({ kind: 'input', action: 'join' }),
+  );
+  assert.deepEqual(harness.pty.writes, [`${invitation}\r`]);
+  harness.pty.emitData(
+    encodeRuntimeHostPeerMeshManagementFrame({
+      kind: 'result',
+      action: 'join',
+      result: {
+        meshId: 'mesh-id',
+        role: 'member',
+        localPeerId: 'peer-b',
+        authorityPeerId: 'peer-a',
+        revision: 2,
+        closed: false,
+        members: ['peer-a', 'peer-b'],
+        memberRoutes: [
+          { peerId: 'peer-a', state: 'route_available', expiresAt: Date.now() + 60_000 },
+          { peerId: 'peer-b', state: 'local' },
+        ],
+        pendingInvitationCount: 0,
+      },
+    }),
+  );
+  harness.pty.exit(0);
+
+  assert.equal((await management).kind, 'result');
+  assert.doesNotMatch(JSON.stringify(harness.events), /one-time-mesh-secret/u);
+  await harness.terminal.close();
+});
+
 test('rejects a framed service result for a different action', async () => {
   const harness = createHarness('pending');
   const management = harness.terminal.runServiceManagement({
@@ -886,6 +939,7 @@ class FakePty {
   deferKill = false;
   exitOnForceKill = false;
   readonly killSignals: Array<string | undefined> = [];
+  readonly writes: string[] = [];
   readonly #dataListeners = new Set<(data: string) => void>();
   readonly #exitListeners = new Set<(event: { exitCode: number; signal: number }) => void>();
   #resolveExit!: () => void;
@@ -922,7 +976,9 @@ class FakePty {
     this.#resolveExit();
   }
 
-  write(): void {}
+  write(data: string): void {
+    this.writes.push(data);
+  }
   resize(): void {}
   kill(signal?: string): void {
     this.killSignals.push(signal);

@@ -33,6 +33,8 @@ import {
 } from '../protocol/index.js';
 import { HOST_BOOTSTRAP_OPERATION_SPECS } from '../protocol/host-status.js';
 import { ACCESS_AUTHORITY_OPERATION_SPECS } from '../protocol/access-authority.js';
+import { PEER_MESH_OPERATION_SPECS } from '../protocol/peer-mesh.js';
+import { createPeerMeshOperationHandlers } from './peer-mesh-authority.js';
 
 export interface ConnectionContext {
   hostEpoch: string;
@@ -58,7 +60,8 @@ export type OperationHandlerMap = {
 
 export type HostCoreOperationKey =
   | keyof typeof HOST_BOOTSTRAP_OPERATION_SPECS
-  | keyof typeof ACCESS_AUTHORITY_OPERATION_SPECS;
+  | keyof typeof ACCESS_AUTHORITY_OPERATION_SPECS
+  | keyof typeof PEER_MESH_OPERATION_SPECS;
 export type DomainOperationKey = Exclude<OperationKey, HostCoreOperationKey>;
 export type TurnOperationKey = Extract<
   OperationKey,
@@ -215,6 +218,8 @@ export type AccessAuthorityOperationHandlerMap = Pick<
   OperationHandlerMap,
   keyof typeof ACCESS_AUTHORITY_OPERATION_SPECS
 >;
+export type HostCoreUnavailableOperationHandlerMap = AccessAuthorityOperationHandlerMap &
+  Pick<OperationHandlerMap, keyof typeof PEER_MESH_OPERATION_SPECS>;
 
 export function composeOperationHandlers(
   ...handlerMaps: readonly Partial<OperationHandlerMap>[]
@@ -247,7 +252,8 @@ export function createUnavailableDomainOperationHandlers(): DomainOperationHandl
   for (const operation of Object.keys(HOST_OPERATION_SPECS) as OperationKey[]) {
     if (
       Object.hasOwn(HOST_BOOTSTRAP_OPERATION_SPECS, operation) ||
-      Object.hasOwn(ACCESS_AUTHORITY_OPERATION_SPECS, operation)
+      Object.hasOwn(ACCESS_AUTHORITY_OPERATION_SPECS, operation) ||
+      Object.hasOwn(PEER_MESH_OPERATION_SPECS, operation)
     ) {
       continue;
     }
@@ -326,6 +332,13 @@ export function createUnavailableAccessAuthorityOperationHandlers(): AccessAutho
         message: 'Runtime Host access credentials are unavailable',
       },
     }),
+  };
+}
+
+export function createUnavailableHostCoreOperationHandlers(): HostCoreUnavailableOperationHandlerMap {
+  return {
+    ...createUnavailableAccessAuthorityOperationHandlers(),
+    ...createPeerMeshOperationHandlers(undefined),
   };
 }
 
