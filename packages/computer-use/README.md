@@ -51,7 +51,7 @@ The shipped selector enables Computer Use only when all of these conditions
 hold:
 
 1. the host platform is macOS (`process.platform === 'darwin'`);
-2. the composition supplies an absolute `maka-cu` executable path; and
+2. the composition supplies a `maka-cu` executable path; and
 3. the composition supplies the executable's expected SHA-256 digest.
 
 On another platform, with missing inputs, or when backend construction fails,
