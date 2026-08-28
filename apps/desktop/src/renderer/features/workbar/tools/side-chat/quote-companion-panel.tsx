@@ -31,7 +31,7 @@ import {
   type ChatModelChoice,
   type ComposerHandle,
 } from '@maka/ui';
-import type { ComposerProps } from '../../../../../../../../packages/ui/dist/composer.d.ts';
+import type { ComposerProps } from '@maka/ui';
 import type { SessionSummary } from '@maka/core/session';
 import { useQuoteCompanion } from './use-quote-companion';
 import { useComposerAttachments } from '../../../../use-composer-attachments';

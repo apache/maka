@@ -22,7 +22,7 @@ import { Card } from '@astryxdesign/core/Card';
 import { ResizeHandle, type ResizableProps } from '@astryxdesign/core/Resizable';
 import { Spinner } from '@astryxdesign/core/Spinner';
 import { Composer, useUiLocale } from '@maka/ui';
-import type { ComposerProps } from '../../../../../../../packages/ui/dist/composer.d.ts';
+import type { ComposerProps } from '@maka/ui';
 import type { ChatModelChoice } from '@maka/core/chat-model-choice';
 import type { SessionSummary } from '@maka/core/session';
 import { getShellCopy } from '../../../locales/shell-copy';
