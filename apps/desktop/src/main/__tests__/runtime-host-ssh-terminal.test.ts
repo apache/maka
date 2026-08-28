@@ -668,18 +668,23 @@ test('sends a Mesh invitation only after the authenticated remote operator reque
       kind: 'result',
       action: 'join',
       result: {
-        meshId: 'mesh-id',
-        role: 'member',
         localPeerId: 'peer-b',
-        authorityPeerId: 'peer-a',
-        revision: 2,
-        closed: false,
-        members: ['peer-a', 'peer-b'],
-        memberRoutes: [
-          { peerId: 'peer-a', state: 'route_available', expiresAt: Date.now() + 60_000 },
-          { peerId: 'peer-b', state: 'local' },
+        available: true,
+        meshes: [
+          {
+            meshId: 'mesh-id',
+            role: 'member',
+            localPeerId: 'peer-b',
+            authorityPeerId: 'peer-a',
+            revision: 2,
+            closed: false,
+            members: [
+              { peerId: 'peer-a', state: 'route_available', expiresAt: Date.now() + 60_000 },
+              { peerId: 'peer-b', state: 'local' },
+            ],
+            pendingInvitationCount: 0,
+          },
         ],
-        pendingInvitationCount: 0,
       },
     }),
   );

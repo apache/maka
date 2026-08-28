@@ -19,11 +19,9 @@
 
 import { z } from 'zod';
 import {
-  decodePeerMeshInvitation,
-  decodePeerMeshProjection,
+  decodePeerMeshInvitationResult,
   decodePeerMeshQueryResult,
-  type PeerMeshInvitationV1,
-  type PeerMeshProjection,
+  type PeerMeshInvitationResult,
   type PeerMeshQueryResult,
 } from '../protocol/peer-mesh.js';
 
@@ -71,18 +69,13 @@ export type RuntimeHostPeerMeshManagementFrame =
   | { readonly kind: 'input'; readonly action: 'join' }
   | {
       readonly kind: 'result';
-      readonly action: 'status' | 'leave' | 'reconcile';
+      readonly action: 'status' | 'create' | 'join' | 'remove' | 'leave' | 'close' | 'reconcile';
       readonly result: PeerMeshQueryResult;
     }
   | {
       readonly kind: 'result';
-      readonly action: 'create' | 'join' | 'remove' | 'close';
-      readonly result: PeerMeshProjection;
-    }
-  | {
-      readonly kind: 'result';
       readonly action: 'invite';
-      readonly result: PeerMeshInvitationV1;
+      readonly result: PeerMeshInvitationResult;
     }
   | {
       readonly kind: 'error';
@@ -137,14 +130,18 @@ function decodeFrame(value: unknown): RuntimeHostPeerMeshManagementFrame {
         result: decodePeerMeshQueryResult(frame.result),
       };
     case 'invite':
-      return { kind: 'result', action: 'invite', result: decodePeerMeshInvitation(frame.result) };
+      return {
+        kind: 'result',
+        action: 'invite',
+        result: decodePeerMeshInvitationResult(frame.result),
+      };
     case 'create':
-      return { kind: 'result', action: 'create', result: decodePeerMeshProjection(frame.result) };
+      return { kind: 'result', action: 'create', result: decodePeerMeshQueryResult(frame.result) };
     case 'join':
-      return { kind: 'result', action: 'join', result: decodePeerMeshProjection(frame.result) };
+      return { kind: 'result', action: 'join', result: decodePeerMeshQueryResult(frame.result) };
     case 'remove':
-      return { kind: 'result', action: 'remove', result: decodePeerMeshProjection(frame.result) };
+      return { kind: 'result', action: 'remove', result: decodePeerMeshQueryResult(frame.result) };
     case 'close':
-      return { kind: 'result', action: 'close', result: decodePeerMeshProjection(frame.result) };
+      return { kind: 'result', action: 'close', result: decodePeerMeshQueryResult(frame.result) };
   }
 }

@@ -94,10 +94,10 @@ export function createPeerMeshOperationHandlers(
     'peer.mesh.query': async () => ({ ok: true, result: query() }),
     'peer.mesh.create': async () => {
       if (!mesh) return unavailable();
-      return mutate(async () => ({
-        ok: true,
-        result: projectPeerMeshStatus(await mesh.create()),
-      }));
+      return mutate(async () => {
+        await mesh.create();
+        return { ok: true, result: query() };
+      });
     },
     'peer.mesh.invite': async (input) => {
       if (!mesh) return unavailable();
@@ -105,24 +105,25 @@ export function createPeerMeshOperationHandlers(
         ok: true,
         result: {
           invitation: await mesh.invite(input.meshId, {
-            ...(input.ttlMs ? { ttlMs: input.ttlMs } : {}),
+            ...(input.ttlMs === undefined ? {} : { ttlMs: input.ttlMs }),
           }),
+          snapshot: query(),
         },
       }));
     },
     'peer.mesh.join': async (input) => {
       if (!mesh) return unavailable();
-      return mutate(async () => ({
-        ok: true,
-        result: projectPeerMeshStatus(await mesh.join(input.invitation)),
-      }));
+      return mutate(async () => {
+        await mesh.join(input.invitation);
+        return { ok: true, result: query() };
+      });
     },
     'peer.mesh.remove': async (input) => {
       if (!mesh) return unavailable();
-      return mutate(async () => ({
-        ok: true,
-        result: projectPeerMeshStatus(await mesh.remove(input.meshId, input.peerId)),
-      }));
+      return mutate(async () => {
+        await mesh.remove(input.meshId, input.peerId);
+        return { ok: true, result: query() };
+      });
     },
     'peer.mesh.leave': async (input) => {
       if (!mesh) return unavailable();
@@ -133,10 +134,10 @@ export function createPeerMeshOperationHandlers(
     },
     'peer.mesh.close': async (input) => {
       if (!mesh) return unavailable();
-      return mutate(async () => ({
-        ok: true,
-        result: projectPeerMeshStatus(await mesh.closeMesh(input.meshId)),
-      }));
+      return mutate(async () => {
+        await mesh.closeMesh(input.meshId);
+        return { ok: true, result: query() };
+      });
     },
     'peer.mesh.reconcile': async () => {
       if (!mesh) return unavailable();
@@ -156,8 +157,7 @@ export function projectPeerMeshStatus(status: PeerMeshStatus): PeerMeshProjectio
     authorityPeerId: status.authority.peerId,
     revision: status.roster.roster.revision,
     closed: status.roster.roster.closed,
-    members: Object.freeze([...status.roster.roster.members]),
-    memberRoutes: Object.freeze(status.memberRoutes.map((route) => Object.freeze({ ...route }))),
+    members: Object.freeze(status.memberRoutes.map((member) => Object.freeze({ ...member }))),
     pendingInvitationCount: status.pendingInvitationCount,
   });
 }

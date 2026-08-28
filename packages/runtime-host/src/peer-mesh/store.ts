@@ -79,6 +79,7 @@ export interface PeerMeshStoredStateV1 {
 }
 
 export interface PeerMeshStateStore {
+  readonly terminalFailure: Promise<never>;
   read(): PeerMeshStoredStateV1;
   mutate<T>(
     operation: (state: PeerMeshStoredStateV1) => {
@@ -107,6 +108,8 @@ export async function openPeerMeshStateStore(
 
 class PeerMeshStateStoreImpl implements PeerMeshStateStore {
   readonly #path: string;
+  readonly terminalFailure: Promise<never>;
+  readonly #rejectTerminalFailure: (error: unknown) => void;
   #state: PeerMeshStoredStateV1;
   #tail = Promise.resolve();
   #failure: Error | undefined;
@@ -121,6 +124,12 @@ class PeerMeshStateStoreImpl implements PeerMeshStateStore {
   ) {
     this.#path = join(dataRoot, STATE_FILE);
     this.#state = state;
+    let rejectTerminalFailure!: (error: unknown) => void;
+    this.terminalFailure = new Promise<never>((_resolve, reject) => {
+      rejectTerminalFailure = reject;
+    });
+    this.#rejectTerminalFailure = rejectTerminalFailure;
+    void this.terminalFailure.catch(() => undefined);
   }
 
   read(): PeerMeshStoredStateV1 {
@@ -149,6 +158,7 @@ class PeerMeshStateStoreImpl implements PeerMeshStateStore {
         if (error instanceof PeerMeshPostCommitError) {
           this.#state = canonical;
           this.#failure = error;
+          this.#rejectTerminalFailure(error);
           throw error;
         }
         throw new PeerMeshPersistenceError(error);

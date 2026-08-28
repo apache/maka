@@ -93,12 +93,19 @@ export async function startExecutionRuntimeHostService(
   let peerOwner: RuntimeHostPeerMeshOwner | undefined;
   let host: RuntimeHostKernel | undefined;
   try {
-    peerOwner = options.peer?.meshDataRoot
-      ? await openRuntimeHostPeerMeshOwner({
+    if (options.peer?.meshDataRoot) {
+      try {
+        peerOwner = await openRuntimeHostPeerMeshOwner({
           ...options.peer,
           dataRoot: options.peer.meshDataRoot,
-        })
-      : undefined;
+        });
+      } catch (error) {
+        console.error(
+          '[runtime-host] Peer Mesh is unavailable; continuing with Direct peer:',
+          error,
+        );
+      }
+    }
     let peerTermination: { readonly error: unknown } | undefined;
     if (peerOwner) {
       const terminate = (error: unknown) => {

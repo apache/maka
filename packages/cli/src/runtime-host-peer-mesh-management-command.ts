@@ -83,6 +83,10 @@ export async function runRuntimeHostPeerMeshManagementCli(
     ...overrides,
   };
   try {
+    const manualInvitation =
+      options.action === 'join' && !options.framed
+        ? await readJoinInvitation(options, deps)
+        : undefined;
     const controlRoot = resolveRuntimeHostManagedControlRoot(options.managedRootId);
     const result = await withRuntimeHostManagedServiceDeploymentLock(controlRoot, () =>
       withRuntimeHostManagedServiceLifecycleLock(controlRoot, async () => {
@@ -112,7 +116,7 @@ export async function runRuntimeHostPeerMeshManagementCli(
           options.operatorDeploymentId,
           options.cliPath,
         );
-        if (!resolved.config.listeners.directPeer?.enabled) {
+        if (options.action !== 'status' && !resolved.config.listeners.directPeer?.enabled) {
           throw new Error('Direct peer is not enabled for this Runtime Host');
         }
         const connection = await deps.connect(resolved.config.root.path);
@@ -121,7 +125,9 @@ export async function runRuntimeHostPeerMeshManagementCli(
             throw new Error('Runtime Host service is bound to a different State Root');
           }
           const invitation =
-            options.action === 'join' ? await readJoinInvitation(options, deps) : undefined;
+            options.action === 'join'
+              ? (manualInvitation ?? (await readJoinInvitation(options, deps)))
+              : undefined;
           return await executePeerMeshAction(connection, options, invitation);
         } finally {
           await connection.close();
@@ -154,12 +160,10 @@ async function executePeerMeshAction(
       return {
         kind: 'result',
         action: 'invite',
-        result: (
-          await request('peer.mesh.invite', {
-            meshId: requiredOption(options.meshId, 'Mesh ID'),
-            ...(options.ttlMs === undefined ? {} : { ttlMs: options.ttlMs }),
-          })
-        ).invitation,
+        result: await request('peer.mesh.invite', {
+          meshId: requiredOption(options.meshId, 'Mesh ID'),
+          ...(options.ttlMs === undefined ? {} : { ttlMs: options.ttlMs }),
+        }),
       };
     case 'join':
       return {
@@ -280,7 +284,10 @@ function writeResult(
     deps.writeStdout(encodeRuntimeHostPeerMeshManagementFrame(result));
     return;
   }
-  deps.writeStdout(`${JSON.stringify(result.result, null, options.json ? undefined : 2)}\n`);
+  const output = result.action === 'invite' ? result.result.invitation : result.result;
+  deps.writeStdout(
+    `${JSON.stringify(output, null, options.json || result.action === 'invite' ? undefined : 2)}\n`,
+  );
 }
 
 type PeerMeshResultFrame = Extract<RuntimeHostPeerMeshManagementFrame, { readonly kind: 'result' }>;

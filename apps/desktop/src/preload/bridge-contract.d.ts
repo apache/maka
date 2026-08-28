@@ -529,8 +529,7 @@ export type DesktopRuntimeHostPeerMeshAction =
 
 export type DesktopRuntimeHostPeerMeshResult =
   | import('@maka/runtime-host/protocol').PeerMeshQueryResult
-  | import('@maka/runtime-host/protocol').PeerMeshProjection
-  | import('@maka/runtime-host/protocol').PeerMeshInvitationV1;
+  | import('@maka/runtime-host/protocol').PeerMeshInvitationResult;
 
 type RuntimeHostUpdatePolicyResult = Extract<
   RuntimeHostServiceManagementFrame,

@@ -53,12 +53,11 @@ export interface PeerMeshProjection {
   readonly authorityPeerId: string;
   readonly revision: number;
   readonly closed: boolean;
-  readonly members: readonly string[];
-  readonly memberRoutes: readonly PeerMeshMemberRouteProjection[];
+  readonly members: readonly PeerMeshMemberProjection[];
   readonly pendingInvitationCount: number;
 }
 
-export interface PeerMeshMemberRouteProjection {
+export interface PeerMeshMemberProjection {
   readonly peerId: string;
   readonly state: 'local' | 'route_available' | 'coordination_only' | 'stale' | 'unknown';
   readonly expiresAt?: number;
@@ -88,6 +87,7 @@ export interface PeerMeshRemoveInput extends PeerMeshTargetInput {
 
 export interface PeerMeshInvitationResult {
   readonly invitation: PeerMeshInvitationV1;
+  readonly snapshot: PeerMeshQueryResult;
 }
 
 const MUTATION_ERRORS = [
@@ -111,7 +111,7 @@ export const PEER_MESH_OPERATION_SPECS = {
     availability: 'ready',
     errors: MUTATION_ERRORS,
     decodeInput: decodeEmptyInput,
-    decodeOutput: decodePeerMeshProjection,
+    decodeOutput: decodePeerMeshQueryResult,
   }),
   'peer.mesh.invite': defineOperation({
     mode: 'command',
@@ -125,14 +125,14 @@ export const PEER_MESH_OPERATION_SPECS = {
     availability: 'ready',
     errors: MUTATION_ERRORS,
     decodeInput: decodePeerMeshJoinInput,
-    decodeOutput: decodePeerMeshProjection,
+    decodeOutput: decodePeerMeshQueryResult,
   }),
   'peer.mesh.remove': defineOperation({
     mode: 'command',
     availability: 'ready',
     errors: MUTATION_ERRORS,
     decodeInput: decodePeerMeshRemoveInput,
-    decodeOutput: decodePeerMeshProjection,
+    decodeOutput: decodePeerMeshQueryResult,
   }),
   'peer.mesh.leave': defineOperation({
     mode: 'command',
@@ -146,7 +146,7 @@ export const PEER_MESH_OPERATION_SPECS = {
     availability: 'ready',
     errors: MUTATION_ERRORS,
     decodeInput: decodePeerMeshTargetInput,
-    decodeOutput: decodePeerMeshProjection,
+    decodeOutput: decodePeerMeshQueryResult,
   }),
   'peer.mesh.reconcile': defineOperation({
     mode: 'command',
@@ -289,29 +289,19 @@ export function decodePeerMeshProjection(value: unknown): PeerMeshProjection {
     'revision',
     'closed',
     'members',
-    'memberRoutes',
     'pendingInvitationCount',
   ]);
   if (
     (record.role !== 'authority' && record.role !== 'member') ||
     typeof record.closed !== 'boolean' ||
     !Array.isArray(record.members) ||
-    record.members.length > PEER_MESH_MAX_MEMBERS ||
-    !Array.isArray(record.memberRoutes) ||
-    record.memberRoutes.length > PEER_MESH_MAX_MEMBERS
+    record.members.length > PEER_MESH_MAX_MEMBERS
   ) {
     throw new Error('Invalid Peer Mesh projection');
   }
-  const members = record.members.map((member) =>
-    requireString(member, 'Peer Mesh member peerId', PEER_ID_MAX_BYTES),
-  );
-  if (new Set(members).size !== members.length) throw new Error('Duplicate Peer Mesh member');
-  const memberRoutes = record.memberRoutes.map(decodePeerMeshMemberRouteProjection);
-  if (
-    memberRoutes.length !== members.length ||
-    memberRoutes.some((route, index) => route.peerId !== members[index])
-  ) {
-    throw new Error('Peer Mesh member routes do not match the roster');
+  const members = record.members.map(decodePeerMeshMemberProjection);
+  if (new Set(members.map(({ peerId }) => peerId)).size !== members.length) {
+    throw new Error('Duplicate Peer Mesh member');
   }
   return {
     meshId: requireString(record.meshId, 'Peer Mesh meshId', MESH_ID_MAX_BYTES),
@@ -325,7 +315,6 @@ export function decodePeerMeshProjection(value: unknown): PeerMeshProjection {
     revision: requireCount(record.revision, 'Peer Mesh revision'),
     closed: record.closed,
     members: Object.freeze(members),
-    memberRoutes: Object.freeze(memberRoutes),
     pendingInvitationCount: requireCount(
       record.pendingInvitationCount,
       'Peer Mesh pendingInvitationCount',
@@ -333,7 +322,7 @@ export function decodePeerMeshProjection(value: unknown): PeerMeshProjection {
   };
 }
 
-function decodePeerMeshMemberRouteProjection(value: unknown): PeerMeshMemberRouteProjection {
+function decodePeerMeshMemberProjection(value: unknown): PeerMeshMemberProjection {
   const record = requireRecord(value, 'Peer Mesh member route');
   assertExactKeys(
     record,
@@ -358,7 +347,13 @@ function decodePeerMeshMemberRouteProjection(value: unknown): PeerMeshMemberRout
   };
 }
 
-function decodePeerMeshInvitationResult(value: unknown): PeerMeshInvitationResult {
-  const record = requireExactRecord(value, 'Peer Mesh invitation result', ['invitation']);
-  return { invitation: decodePeerMeshInvitation(record.invitation) };
+export function decodePeerMeshInvitationResult(value: unknown): PeerMeshInvitationResult {
+  const record = requireExactRecord(value, 'Peer Mesh invitation result', [
+    'invitation',
+    'snapshot',
+  ]);
+  return {
+    invitation: decodePeerMeshInvitation(record.invitation),
+    snapshot: decodePeerMeshQueryResult(record.snapshot),
+  };
 }

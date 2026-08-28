@@ -22,9 +22,17 @@ import { Banner } from '@astryxdesign/core';
 import { Dialog, DialogHeader } from '@astryxdesign/core/Dialog';
 import { Layout, LayoutContent, LayoutFooter } from '@astryxdesign/core/Layout';
 import type { PeerMeshProjection, PeerMeshQueryResult } from '@maka/runtime-host/protocol';
-import { Badge, Button, MoreMenu, Text, TextArea, useToast, useUiLocale } from '@maka/ui';
+import {
+  Badge,
+  Button,
+  MoreMenu,
+  redactSecrets,
+  Text,
+  TextArea,
+  useToast,
+  useUiLocale,
+} from '@maka/ui';
 import type { DesktopRuntimeHostPeerMeshTarget } from '../../preload/bridge-contract.js';
-import { settingsActionErrorMessage } from './settings-error-copy.js';
 
 export function RuntimeHostPeerMeshDialog(props: {
   readonly target: DesktopRuntimeHostPeerMeshTarget;
@@ -51,17 +59,18 @@ export function RuntimeHostPeerMeshDialog(props: {
   }, [copy.invalidResult, props.target]);
 
   useEffect(() => {
-    void refresh().catch((failure) => setError(settingsActionErrorMessage(failure, locale)));
-  }, [locale, refresh]);
+    void refresh().catch((failure) => setError(peerMeshErrorMessage(failure, copy.unknownError)));
+  }, [copy.unknownError, refresh]);
 
   async function run(action: 'create' | 'reconcile'): Promise<void> {
     setWorking(true);
     setError(undefined);
     try {
-      await window.maka.runtimeHostPeerMesh.execute(props.target, action);
-      await refresh();
+      const result = await window.maka.runtimeHostPeerMesh.execute(props.target, action);
+      if (!isSnapshot(result)) throw new Error(copy.invalidResult);
+      setSnapshot(result);
     } catch (failure) {
-      setError(settingsActionErrorMessage(failure, locale));
+      setError(peerMeshErrorMessage(failure, copy.unknownError));
     } finally {
       setWorking(false);
     }
@@ -71,13 +80,14 @@ export function RuntimeHostPeerMeshDialog(props: {
     setWorking(true);
     setError(undefined);
     try {
-      await window.maka.runtimeHostPeerMesh.execute(props.target, 'join', {
+      const result = await window.maka.runtimeHostPeerMesh.execute(props.target, 'join', {
         invitation: joinDraft.trim(),
       });
+      if (!isSnapshot(result)) throw new Error(copy.invalidResult);
       setJoinDraft('');
-      await refresh();
+      setSnapshot(result);
     } catch (failure) {
-      setError(settingsActionErrorMessage(failure, locale));
+      setError(peerMeshErrorMessage(failure, copy.unknownError));
     } finally {
       setWorking(false);
     }
@@ -90,11 +100,15 @@ export function RuntimeHostPeerMeshDialog(props: {
       const result = await window.maka.runtimeHostPeerMesh.execute(props.target, 'invite', {
         meshId,
       });
-      if (!('expiresAt' in result)) throw new Error(copy.invalidResult);
-      setInvitation({ meshId, code: JSON.stringify(result), expiresAt: result.expiresAt });
-      await refresh();
+      if (!isInvitationResult(result)) throw new Error(copy.invalidResult);
+      setInvitation({
+        meshId,
+        code: JSON.stringify(result.invitation),
+        expiresAt: result.invitation.expiresAt,
+      });
+      setSnapshot(result.snapshot);
     } catch (failure) {
-      setError(settingsActionErrorMessage(failure, locale));
+      setError(peerMeshErrorMessage(failure, copy.unknownError));
     } finally {
       setWorking(false);
     }
@@ -115,11 +129,15 @@ export function RuntimeHostPeerMeshDialog(props: {
     setWorking(true);
     setError(undefined);
     try {
-      await window.maka.runtimeHostPeerMesh.execute(props.target, action, { meshId, peerId });
+      const result = await window.maka.runtimeHostPeerMesh.execute(props.target, action, {
+        meshId,
+        peerId,
+      });
+      if (!isSnapshot(result)) throw new Error(copy.invalidResult);
       if (action === 'close' && invitation?.meshId === meshId) setInvitation(undefined);
-      await refresh();
+      setSnapshot(result);
     } catch (failure) {
-      setError(settingsActionErrorMessage(failure, locale));
+      setError(peerMeshErrorMessage(failure, copy.unknownError));
     } finally {
       setWorking(false);
     }
@@ -131,7 +149,7 @@ export function RuntimeHostPeerMeshDialog(props: {
       await navigator.clipboard.writeText(invitation.code);
       toast.success(copy.invitationCopied);
     } catch (failure) {
-      setError(settingsActionErrorMessage(failure, locale));
+      setError(peerMeshErrorMessage(failure, copy.unknownError));
     }
   }
 
@@ -232,7 +250,7 @@ export function RuntimeHostPeerMeshDialog(props: {
             <Button
               variant="secondary"
               label={copy.refresh}
-              isDisabled={working || !snapshot?.available}
+              isDisabled={working}
               onClick={() => void run('reconcile')}
             />
             <Button
@@ -274,23 +292,26 @@ function MeshCard(props: {
         />
       </div>
       <div className="settingsPeerMeshMembers">
-        {mesh.members.map((peerId) => (
-          <div className="settingsPeerMeshMember" key={peerId}>
-            <code title={peerId}>{abbreviate(peerId)}</code>
+        {mesh.members.map((member) => (
+          <div className="settingsPeerMeshMember" key={member.peerId}>
+            <code title={member.peerId}>{abbreviate(member.peerId)}</code>
             <div className="settingsPeerMeshMemberActions">
-              <Badge
-                variant="neutral"
-                label={copy.routeState[
-                  mesh.memberRoutes.find((route) => route.peerId === peerId)?.state ?? 'unknown'
-                ]}
-              />
-              {peerId === mesh.localPeerId ? <Badge variant="neutral" label={copy.you} /> : null}
-              {peerId === mesh.authorityPeerId ? <Badge variant="neutral" label={copy.authority} /> : null}
-              {mesh.role === 'authority' && peerId !== mesh.localPeerId && !mesh.closed ? (
+              <Badge variant="neutral" label={copy.routeState[member.state]} />
+              {member.peerId === mesh.localPeerId ? (
+                <Badge variant="neutral" label={copy.you} />
+              ) : null}
+              {member.peerId === mesh.authorityPeerId ? (
+                <Badge variant="neutral" label={copy.authority} />
+              ) : null}
+              {mesh.role === 'authority' && member.peerId !== mesh.localPeerId && !mesh.closed ? (
                 <MoreMenu
-                  label={copy.memberActions(peerId)}
+                  label={copy.memberActions(member.peerId)}
                   size="sm"
-                  items={[{ label: copy.remove, isDisabled: props.working, onClick: () => props.onRemove(peerId) }]}
+                  items={[{
+                    label: copy.remove,
+                    isDisabled: props.working,
+                    onClick: () => props.onRemove(member.peerId),
+                  }]}
                 />
               ) : null}
             </div>
@@ -321,6 +342,23 @@ function isSnapshot(value: unknown): value is PeerMeshQueryResult {
   return Boolean(value && typeof value === 'object' && 'available' in value && 'meshes' in value);
 }
 
+function isInvitationResult(
+  value: unknown,
+): value is import('@maka/runtime-host/protocol').PeerMeshInvitationResult {
+  return Boolean(
+    value &&
+      typeof value === 'object' &&
+      'invitation' in value &&
+      'snapshot' in value &&
+      isSnapshot((value as { readonly snapshot: unknown }).snapshot),
+  );
+}
+
+function peerMeshErrorMessage(error: unknown, fallback: string): string {
+  const raw = error instanceof Error ? error.message : typeof error === 'string' ? error : '';
+  return redactSecrets(raw).trim() || fallback;
+}
+
 function fingerprint(meshId: string): string {
   return meshId.length <= 16 ? meshId : `${meshId.slice(0, 8)}…${meshId.slice(-6)}`;
 }
@@ -332,7 +370,7 @@ function abbreviate(peerId: string): string {
 function peerMeshCopy(locale: string) {
   const zh = locale.startsWith('zh');
   return zh ? {
-    title: 'Peer Mesh（实验性）', failed: 'Peer Mesh 操作失败', invalidResult: 'Peer Mesh 返回了无效结果',
+    title: 'Peer Mesh（实验性）', failed: 'Peer Mesh 操作失败', invalidResult: 'Peer Mesh 返回了无效结果', unknownError: 'Peer Mesh 操作失败',
     unavailable: '当前 endpoint 不支持 Peer Mesh', thisPeer: '当前 Peer', empty: '尚未加入任何 Mesh',
     mesh: 'Mesh', authority: '管理者', member: '成员', closed: '已关闭', you: '本机',
     revision: (value: number) => `版本 ${value}`, memberCount: (value: number) => `${value} 个成员`,
@@ -346,7 +384,7 @@ function peerMeshCopy(locale: string) {
     closeConfirm: '关闭这个 Mesh？', leaveConfirm: '退出这个 Mesh？', removeConfirm: '移除这个成员？',
     meshActions: 'Mesh 操作', memberActions: (peerId: string) => `${peerId} 的操作`,
   } : {
-    title: 'Peer Mesh (experimental)', failed: 'Peer Mesh operation failed', invalidResult: 'Peer Mesh returned an invalid result',
+    title: 'Peer Mesh (experimental)', failed: 'Peer Mesh operation failed', invalidResult: 'Peer Mesh returned an invalid result', unknownError: 'Peer Mesh operation failed',
     unavailable: 'Peer Mesh is unavailable for this endpoint', thisPeer: 'This peer', empty: 'Not a member of any Mesh yet',
     mesh: 'Mesh', authority: 'Authority', member: 'Member', closed: 'Closed', you: 'This peer',
     revision: (value: number) => `Revision ${value}`, memberCount: (value: number) => `${value} members`,

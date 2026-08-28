@@ -21,8 +21,7 @@ import type { IpcMain } from 'electron';
 import type { PeerMeshNode } from '@maka/runtime-host/peer-mesh';
 import {
   decodePeerMeshInvitation,
-  type PeerMeshInvitationV1,
-  type PeerMeshProjection,
+  type PeerMeshInvitationResult,
   type PeerMeshQueryResult,
 } from '@maka/runtime-host/protocol';
 import { projectPeerMeshStatus } from '@maka/runtime-host/server';
@@ -40,7 +39,7 @@ type PeerMeshAction = DesktopRuntimeHostSshPeerMeshManagementInput['action'];
 
 export function createDesktopRuntimeHostPeerMeshManagement(input: {
   readonly ipcMain: Pick<IpcMain, 'handle' | 'removeHandler'>;
-  readonly localMesh?: PeerMeshNode;
+  readonly localMesh?: () => PeerMeshNode | undefined;
   readonly profiles: Pick<DesktopRuntimeHostProfileService, 'resolveManagedService'>;
   readonly runRemote: SshTerminal['runPeerMeshManagement'];
 }): { close(): void } {
@@ -50,14 +49,14 @@ export function createDesktopRuntimeHostPeerMeshManagement(input: {
     meshIdValue?: unknown,
     peerIdValue?: unknown,
     invitationValue?: unknown,
-  ): Promise<PeerMeshQueryResult | PeerMeshProjection | PeerMeshInvitationV1> => {
+  ): Promise<PeerMeshQueryResult | PeerMeshInvitationResult> => {
     const target = requireTarget(targetValue);
     const action = requireAction(actionValue);
     const meshId = actionNeedsMesh(action) ? requireIdentifier(meshIdValue, 'Mesh ID') : undefined;
     const peerId = action === 'remove' ? requireIdentifier(peerIdValue, 'Peer ID') : undefined;
     const invitation = action === 'join' ? requireInvitation(invitationValue) : undefined;
     if (target.kind === 'desktop') {
-      return executeLocal(input.localMesh, action, meshId, peerId, invitation);
+      return executeLocal(input.localMesh?.(), action, meshId, peerId, invitation);
     }
     const managed = await input.profiles.resolveManagedService(target.profileId);
     if (
@@ -105,7 +104,7 @@ async function executeLocal(
   meshId: string | undefined,
   peerId: string | undefined,
   invitation: ReturnType<typeof decodePeerMeshInvitation> | undefined,
-): Promise<PeerMeshQueryResult | PeerMeshProjection | PeerMeshInvitationV1> {
+): Promise<PeerMeshQueryResult | PeerMeshInvitationResult> {
   if (!mesh) {
     if (action === 'status') return { available: false, meshes: [] };
     throw new Error('This Desktop build does not include Direct peer support');
@@ -119,22 +118,24 @@ async function executeLocal(
     case 'status':
       return snapshot();
     case 'create':
-      return projectPeerMeshStatus(await mesh.create());
-    case 'invite':
-      return mesh.invite(requiredValue(meshId, 'Mesh ID'));
+      await mesh.create();
+      return snapshot();
+    case 'invite': {
+      const created = await mesh.invite(requiredValue(meshId, 'Mesh ID'));
+      return { invitation: created, snapshot: snapshot() };
+    }
     case 'join':
-      return projectPeerMeshStatus(
-        await mesh.join(requiredValue(invitation, 'Peer Mesh invitation')),
-      );
+      await mesh.join(requiredValue(invitation, 'Peer Mesh invitation'));
+      return snapshot();
     case 'remove':
-      return projectPeerMeshStatus(
-        await mesh.remove(requiredValue(meshId, 'Mesh ID'), requiredValue(peerId, 'Peer ID')),
-      );
+      await mesh.remove(requiredValue(meshId, 'Mesh ID'), requiredValue(peerId, 'Peer ID'));
+      return snapshot();
     case 'leave':
       await mesh.leave(requiredValue(meshId, 'Mesh ID'));
       return snapshot();
     case 'close':
-      return projectPeerMeshStatus(await mesh.closeMesh(requiredValue(meshId, 'Mesh ID')));
+      await mesh.closeMesh(requiredValue(meshId, 'Mesh ID'));
+      return snapshot();
     case 'reconcile':
       await mesh.reconcile();
       return snapshot();

@@ -60,7 +60,12 @@ export async function openRuntimeHostPeerMeshOwner(input: {
     closeTask ??= closeOwner(mesh!, client, serving);
     return closeTask;
   };
-  const closed = serving.then(close, close);
+  const closed = serving.then(
+    () =>
+      closeTask ??
+      stopUnexpectedOwner(mesh!, new Error('Runtime Host Peer Mesh owner stopped unexpectedly')),
+    (error: unknown) => closeTask ?? stopUnexpectedOwner(mesh!, error),
+  );
   void closed.catch(() => undefined);
   return Object.freeze({
     client,
@@ -68,6 +73,15 @@ export async function openRuntimeHostPeerMeshOwner(input: {
     closed,
     close,
   });
+}
+
+async function stopUnexpectedOwner(mesh: PeerMeshNode, error: unknown): Promise<never> {
+  try {
+    await mesh.close();
+  } catch (closeError) {
+    throw new AggregateError([error, closeError], 'Runtime Host Peer Mesh owner failed to stop');
+  }
+  throw error;
 }
 
 async function closeOwner(

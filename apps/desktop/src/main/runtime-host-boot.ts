@@ -230,6 +230,7 @@ const runtimeHostPeerConfiguration = await configureDesktopRuntimeHostPeerClient
   clientDataRoot: userDataDir,
 });
 let runtimeHostPeerOwner: Awaited<ReturnType<typeof openRuntimeHostPeerMeshOwner>> | undefined;
+let runtimeHostPeerMesh: Awaited<ReturnType<typeof openRuntimeHostPeerMeshOwner>>['mesh'] | undefined;
 let runtimeHostPeerClient:
   | ReturnType<typeof createRuntimeHostPeerClientFromEnvironment>
   | undefined;
@@ -240,6 +241,11 @@ if (runtimeHostPeerConfiguration) {
       dataRoot: join(userDataDir, 'peer-mesh'),
     });
     runtimeHostPeerClient = runtimeHostPeerOwner.client;
+    runtimeHostPeerMesh = runtimeHostPeerOwner.mesh;
+    void runtimeHostPeerOwner.closed.catch((error) => {
+      runtimeHostPeerMesh = undefined;
+      console.error('[runtime-host] Peer Mesh stopped; Direct peer remains available:', error);
+    });
   } catch (error) {
     console.error('[runtime-host] Peer Mesh is unavailable; continuing with Direct peer:', error);
     runtimeHostPeerClient = createRuntimeHostPeerClientFromEnvironment();
@@ -560,7 +566,7 @@ const runtimeHostManagement = createDesktopRuntimeHostManagement({
 });
 const runtimeHostPeerMeshManagement = createDesktopRuntimeHostPeerMeshManagement({
   ipcMain,
-  localMesh: runtimeHostPeerOwner?.mesh,
+  localMesh: () => runtimeHostPeerMesh,
   profiles: runtimeHostProfileService,
   runRemote: runtimeHostSshTerminal.runPeerMeshManagement,
 });

@@ -63,6 +63,8 @@ const ROUTE_TTL_MS = 5 * 60 * 1_000;
 const ROUTE_REFRESH_LEAD_MS = 60 * 1_000;
 const ROUTE_MAX_FUTURE_MS = 10 * 60 * 1_000;
 const ROUTE_PAGE_SIZE = 8;
+const RECONCILE_CONCURRENCY = 4;
+const RECONCILE_DEADLINE_MS = 60 * 1_000;
 const RECONCILE_INTERVAL_MS = 30 * 1_000;
 
 interface RedeemInvitationRequest {
@@ -200,6 +202,7 @@ class PeerMeshNodeImpl implements PeerMeshNode {
   readonly #lifetime = new AbortController();
   #admissionTail = Promise.resolve();
   #reconcileTail = Promise.resolve();
+  #reconcileCursor = 0;
   #routeRefreshTask: Promise<SignedPeerMeshRouteRecordV1 | undefined> | undefined;
   #serveTask: Promise<void> | undefined;
   #closeTask: Promise<void> | undefined;
@@ -533,7 +536,7 @@ class PeerMeshNodeImpl implements PeerMeshNode {
     const reconciliation = this.#runReconciliation(signal);
     const serving = (async () => {
       try {
-        await inbound;
+        await Promise.race([inbound, this.#store.terminalFailure]);
         if (!signal.aborted) throw new Error('Peer Mesh control transport stopped unexpectedly');
       } finally {
         serveLifetime.abort();
@@ -572,10 +575,10 @@ class PeerMeshNodeImpl implements PeerMeshNode {
   }
 
   async #reconcile(signal?: AbortSignal): Promise<void> {
-    const operationSignal = signal
+    const lifetimeSignal = signal
       ? AbortSignal.any([signal, this.#lifetime.signal])
       : this.#lifetime.signal;
-    operationSignal.throwIfAborted();
+    lifetimeSignal.throwIfAborted();
     await this.#refreshLocalRoute();
     const identity = this.#peer.identity();
     const targets = new Map<
@@ -606,14 +609,31 @@ class PeerMeshNodeImpl implements PeerMeshNode {
         });
       }
     }
-    for (const { meshId, target } of targets.values()) {
-      operationSignal.throwIfAborted();
-      try {
-        await this.#syncPeer(meshId, target, operationSignal);
-      } catch {
-        if (operationSignal.aborted) operationSignal.throwIfAborted();
+    const pending = [...targets.values()];
+    if (pending.length === 0) return;
+    const start = this.#reconcileCursor % pending.length;
+    const deadline = AbortSignal.timeout(RECONCILE_DEADLINE_MS);
+    const operationSignal = AbortSignal.any([lifetimeSignal, deadline]);
+    let next = 0;
+    const worker = async () => {
+      while (!operationSignal.aborted) {
+        const offset = next;
+        next += 1;
+        if (offset >= pending.length) return;
+        const { meshId, target } = pending[(start + offset) % pending.length]!;
+        try {
+          await this.#syncPeer(meshId, target, operationSignal);
+        } catch {
+          if (lifetimeSignal.aborted) lifetimeSignal.throwIfAborted();
+          if (deadline.aborted) return;
+        }
       }
-    }
+    };
+    await Promise.all(
+      Array.from({ length: Math.min(RECONCILE_CONCURRENCY, pending.length) }, worker),
+    );
+    this.#reconcileCursor = (start + Math.min(next, pending.length)) % pending.length;
+    lifetimeSignal.throwIfAborted();
   }
 
   async #syncPeer(
