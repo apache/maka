@@ -25,11 +25,8 @@ import { createReadStream } from 'node:fs';
 
 const PRODUCT_REPOSITORY = 'apache/maka';
 const PRODUCT_RELEASE_WORKFLOW = '.github/workflows/release-cli-finalize.yml';
-const PRODUCT_RELEASE_SIGNER = new RegExp(
-  `^https://github\\.com/${PRODUCT_REPOSITORY.replace('/', '\\/')}/${PRODUCT_RELEASE_WORKFLOW.replaceAll('.', '\\.')}` +
-    '@refs/heads/main$',
-  'u',
-);
+const PRODUCT_NIGHTLY_WORKFLOW = '.github/workflows/desktop-nightly.yml';
+const PRODUCT_NIGHTLY_BASE_URL = 'https://nightlies.apache.org/maka/desktop';
 const GITHUB_ACTIONS_OIDC_ISSUER = 'https://token.actions.githubusercontent.com';
 const IN_TOTO_STATEMENT_V1 = 'https://in-toto.io/Statement/v1';
 const SLSA_PROVENANCE_V1 = 'https://slsa.dev/provenance/v1';
@@ -56,12 +53,35 @@ export type DownloadedUpdateAttestationVerifier = (
 ) => Promise<void>;
 
 type VerifyDownloadedUpdateAttestationOptions = DownloadedUpdateAttestationInput & {
+  readonly channel?: DesktopUpdateChannel;
   readonly trustRootCacheDirectory: string;
   readonly platform?: NodeJS.Platform;
   readonly arch?: string;
   readonly fetchBundle?: (url: string) => Promise<Uint8Array>;
   readonly verifyBundle?: (bundle: Bundle) => Promise<void>;
 };
+
+export type DesktopUpdateChannel = 'release' | 'nightly';
+
+export function desktopUpdateChannelFromManifest(manifest: unknown): DesktopUpdateChannel {
+  const channel =
+    manifest && typeof manifest === 'object'
+      ? (manifest as { makaUpdateChannel?: unknown }).makaUpdateChannel
+      : undefined;
+  if (channel !== 'release' && channel !== 'nightly') {
+    throw new Error('Packaged Desktop does not declare a trusted update channel');
+  }
+  return channel;
+}
+
+function productWorkflowSigner(channel: DesktopUpdateChannel): RegExp {
+  const workflow = channel === 'nightly' ? PRODUCT_NIGHTLY_WORKFLOW : PRODUCT_RELEASE_WORKFLOW;
+  return new RegExp(
+    `^https://github\\.com/${PRODUCT_REPOSITORY.replace('/', '\\/')}/${workflow.replaceAll('.', '\\.')}` +
+      '@refs/heads/main$',
+    'u',
+  );
+}
 
 function exactDesktopUpdateArtifactName(
   version: string,
@@ -80,9 +100,15 @@ function productReleaseAttestationName(version: string): string {
   return `Maka-${version}-attestation.sigstore.json`;
 }
 
-function productReleaseAttestationUrl(version: string): string {
-  const tag = `v${version}`;
+function productReleaseAttestationUrl(
+  version: string,
+  channel: DesktopUpdateChannel,
+): string {
   const name = productReleaseAttestationName(version);
+  if (channel === 'nightly') {
+    return `${PRODUCT_NIGHTLY_BASE_URL}/versions/${encodeURIComponent(version)}/${encodeURIComponent(name)}`;
+  }
+  const tag = `v${version}`;
   return `https://github.com/${PRODUCT_REPOSITORY}/releases/download/${encodeURIComponent(tag)}/${encodeURIComponent(name)}`;
 }
 
@@ -193,9 +219,10 @@ export async function verifyDownloadedUpdateAttestation(
     options.platform ?? process.platform,
     options.arch ?? process.arch,
   );
+  const channel = options.channel ?? 'release';
   const [artifactSha256, bundleBytes] = await Promise.all([
     sha256File(options.downloadedFile),
-    (options.fetchBundle ?? fetchBytesCapped)(productReleaseAttestationUrl(version)),
+    (options.fetchBundle ?? fetchBytesCapped)(productReleaseAttestationUrl(version, channel)),
   ]);
   const bundle = parseBundle(bundleBytes);
 
@@ -208,7 +235,7 @@ export async function verifyDownloadedUpdateAttestation(
     });
     const verifier = new Verifier(toTrustMaterial(trustedRoot));
     verifier.verify(toSignedEntity(bundle), {
-      subjectAlternativeName: PRODUCT_RELEASE_SIGNER,
+      subjectAlternativeName: productWorkflowSigner(channel),
       extensions: { issuer: GITHUB_ACTIONS_OIDC_ISSUER },
     });
   }

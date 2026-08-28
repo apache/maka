@@ -192,6 +192,7 @@ test('Desktop packaging derives the Runtime Host setup package from product mani
   const checkedRootManifest = JSON.parse(await readFile(join(repoRoot, 'package.json'), 'utf8'));
   assert.deepEqual(desktopBuilderConfig.extraMetadata, {
     runtimeHostSetupPackage: `maka-agent@${checkedRootManifest.version}`,
+    makaUpdateChannel: 'release',
   });
   assert.deepEqual(desktopBuilderConfig.publish, [
     { provider: 'github', owner: 'apache', repo: 'maka' },
@@ -257,7 +258,7 @@ test('platform package verifiers keep Git checks out of current artifacts', asyn
   );
   assert.match(
     windowsSource,
-    /if \(requiresCurrentContract\) \{\s*await assertPackagedUpdateConfiguration\(resources\);\s*await assertPackagedDependencyClosure\(resources\);\s*\}\s*else await requirePath\(join\(resources, ['"]git['"]/u,
+    /if \(requiresCurrentContract\) \{\s*await assertPackagedUpdateConfiguration\(resources, \{\s*channel: environment\.MAKA_DESKTOP_NIGHTLY_VERSION \? ['"]nightly['"] : ['"]release['"],\s*\}\);\s*await assertPackagedDependencyClosure\(resources\);\s*\}\s*else await requirePath\(join\(resources, ['"]git['"]/u,
   );
 
   const macosSource = await readFile(

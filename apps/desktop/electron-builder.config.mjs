@@ -18,24 +18,29 @@
  */
 
 import { readFileSync } from 'node:fs';
+import {
+  DESKTOP_NIGHTLY_FEED_URL,
+  resolveDesktopBuildVersion,
+} from '../../scripts/desktop-nightly.mjs';
 import { resolveProductManifestIdentity } from '../../scripts/product-release-identity.mjs';
 
 function readManifest(relativePath) {
   return JSON.parse(readFileSync(new URL(relativePath, import.meta.url), 'utf8'));
 }
 
+const rootManifest = readManifest('../../package.json');
 const { runtimeHostSetupPackage } = resolveProductManifestIdentity({
-  rootManifest: readManifest('../../package.json'),
+  rootManifest,
   desktopManifest: readManifest('./package.json'),
   cliManifest: readManifest('../../packages/cli/package.json'),
 });
 
-export default {
+const baseDesktopBuilderConfig = {
   appId: 'com.maka.desktop',
   productName: 'Maka',
   artifactName: 'Maka-${version}-mac-${arch}.${ext}',
   asar: true,
-  extraMetadata: { runtimeHostSetupPackage },
+  extraMetadata: { runtimeHostSetupPackage, makaUpdateChannel: 'release' },
   directories: {
     output: 'release',
   },
@@ -249,3 +254,20 @@ export default {
     },
   ],
 };
+
+export function resolveDesktopBuilderConfig(environment = process.env) {
+  const nightlyVersion = environment.MAKA_DESKTOP_NIGHTLY_VERSION?.trim();
+  if (!nightlyVersion) return baseDesktopBuilderConfig;
+  const version = resolveDesktopBuildVersion(rootManifest.version, environment);
+  return {
+    ...baseDesktopBuilderConfig,
+    extraMetadata: {
+      ...baseDesktopBuilderConfig.extraMetadata,
+      version,
+      makaUpdateChannel: 'nightly',
+    },
+    publish: [{ provider: 'generic', url: DESKTOP_NIGHTLY_FEED_URL }],
+  };
+}
+
+export default resolveDesktopBuilderConfig();
