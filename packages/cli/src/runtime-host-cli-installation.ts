@@ -24,10 +24,8 @@ import { open, realpath, stat } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import {
-  isProductReleaseVersion,
-  type RuntimeHostInstallationOwner,
-} from '@maka/runtime-host/operator';
+import type { RuntimeHostInstallationOwner } from '@maka/runtime-host/operator';
+import { isProductReleaseVersion } from '@maka/runtime-host/operator/update-package-evidence';
 
 const PACKAGE_NAME = 'maka-agent';
 const MANIFEST_MAX_BYTES = 64 * 1024;

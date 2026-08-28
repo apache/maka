@@ -25,6 +25,10 @@ import {
   candidateStartupFailureForExitCode,
   type CandidateStartupFailureReport,
 } from '../candidate-startup-failure.js';
+import {
+  RUNTIME_HOST_LAUNCH_OWNER_LEASE_FD_ENV,
+  runtimeHostLaunchOwnerReleaseMessage,
+} from '../candidate-launch-owner-guard.js';
 import type { RuntimeHostManagedLaunchClaim } from '../operator/managed-deployment.js';
 import { RUNTIME_HOST_STDERR_PIPE_ENV } from '../process-diagnostics.js';
 
@@ -47,6 +51,8 @@ export interface DetachedCandidateInput {
   executable?: string;
   entrypoint: string | URL;
   env?: NodeJS.ProcessEnv;
+  /** Existing authority lease inherited only by a launch-owner-supervised Candidate. */
+  inheritableAuthorityLeaseFd?: number;
   /** Called with the candidate's exit details; the embedder owns the sink. */
   readonly onExit?: (details: CandidateExitDetails) => void;
 }
@@ -80,7 +86,7 @@ export function launchDetachedRuntimeHostCandidate(
   input: DetachedCandidateInput,
 ): DetachedCandidateLaunch {
   const startupAttemptId = randomUUID();
-  const child = spawnCandidate(input, true, startupAttemptId);
+  const child = spawnCandidate(input, true, startupAttemptId, false);
   const exited = observeCandidateExit(child);
   notifyCandidateExit(child, exited, input.onExit);
   const startupFailure = readStartupFailure(exited, startupAttemptId);
@@ -95,10 +101,12 @@ export function launchOwnedRuntimeHostCandidate(input: DetachedCandidateInput): 
   readonly spawned: Promise<OwnedCandidateAttempt>;
 } {
   const startupAttemptId = randomUUID();
-  const child = spawnCandidate(input, false, startupAttemptId);
+  const guarded = input.inheritableAuthorityLeaseFd !== undefined;
+  const child = spawnCandidate(input, false, startupAttemptId, guarded);
   const exited = observeCandidateExit(child);
   notifyCandidateExit(child, exited, input.onExit);
   const startupFailure = readStartupFailure(exited, startupAttemptId);
+  let released = false;
   return {
     spawned: spawnedPid(child).then(({ pid }) => ({
       pid,
@@ -106,7 +114,16 @@ export function launchOwnedRuntimeHostCandidate(input: DetachedCandidateInput): 
       exited,
       startupFailure,
       releaseToEnvironment(): void {
-        child.unref();
+        if (released) return;
+        released = true;
+        if (!guarded || !child.connected) {
+          child.unref();
+          return;
+        }
+        child.send(runtimeHostLaunchOwnerReleaseMessage(), () => {
+          if (child.connected) child.disconnect();
+          child.unref();
+        });
       },
       async settle(timeoutMs: number): Promise<boolean> {
         const result = await within(exited, timeoutMs);
@@ -123,6 +140,7 @@ function spawnCandidate(
   input: DetachedCandidateInput,
   detached: boolean,
   startupAttemptId: string,
+  guarded: boolean,
 ): ChildProcess {
   const executable = input.executable ?? process.execPath;
   const args = [
@@ -144,16 +162,23 @@ function spawnCandidate(
   }
 
   // spawn() commits the side effect synchronously; spawned only reports that commit's outcome.
+  const inheritedLeaseFd = input.inheritableAuthorityLeaseFd;
+  const childLeaseFd = guarded ? 4 : undefined;
   const child = spawn(executable, args, {
     cwd: dirname(isAbsolute(executable) ? executable : process.execPath),
     detached,
-    stdio: ['ignore', 'ignore', 'pipe'],
+    stdio: guarded
+      ? ['ignore', 'ignore', 'pipe', 'ipc', inheritedLeaseFd!]
+      : ['ignore', 'ignore', 'pipe'],
     windowsHide: true,
     env: {
       ...process.env,
       ...(process.versions.electron ? { ELECTRON_RUN_AS_NODE: '1' } : {}),
       ...input.env,
       [RUNTIME_HOST_STDERR_PIPE_ENV]: '1',
+      ...(childLeaseFd === undefined
+        ? {}
+        : { [RUNTIME_HOST_LAUNCH_OWNER_LEASE_FD_ENV]: String(childLeaseFd) }),
     },
   });
   const stderr = child.stderr as (NodeJS.ReadableStream & { unref?: () => void }) | null;

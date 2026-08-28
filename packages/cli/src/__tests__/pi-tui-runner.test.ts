@@ -41,7 +41,7 @@ import type {
 } from '@maka/runtime-host/protocol';
 import { SessionActivityRegistry } from '@maka/runtime/goal-turn-lifecycle';
 import { type ContextDiagnostics } from '@maka/runtime/context-diagnostics';
-import type { GoalProjection } from '@maka/runtime-host/protocol';
+import type { GoalProjection, TurnResumeParkReason } from '@maka/runtime-host/protocol';
 import type {
   MakaPreparePromptOptions,
   MakaPreparedSessionTurn,
@@ -58,6 +58,7 @@ import type {
   SessionResumeAvailability,
 } from '../session-driver.js';
 import { skillInvocationBlockedMessage } from '../session-driver.js';
+import { SafeBoundaryResumeParkedError } from '../runtime-host-session-driver.js';
 import { listApiKeyOnboardableProviders } from '../onboarding-catalog.js';
 import type {
   MakaOnboardingSurface,
@@ -75,6 +76,7 @@ import {
 } from '../pi-tui-runner.js';
 import { AUTO_RECAP_IDLE_MS } from '../session-recap.js';
 import { BUSY_SPINNER_FRAMES } from '../tui-attention.js';
+import { EXPANSION_COLLAPSE_CONFIRM_WINDOW_MS } from '../pi-transcript.js';
 import {
   autocompleteSuggestionLines,
   assertBottomPickerPlacement,
@@ -1827,6 +1829,112 @@ describe('Maka Pi TUI runner', () => {
     terminal.input('z');
     await waitFor(() => editorInputText(terminal) === 'z');
     assert.equal(plainTerminalOutput(terminal.screenOutput()).includes('(31 lines)'), false);
+
+    exitMaka(terminal);
+    await Promise.race([
+      run,
+      delay(CLOSE_BUDGET_MS).then(() => {
+        throw new Error('TUI did not close during test cleanup');
+      }),
+    ]);
+  });
+
+  test('a confirmed second Ctrl+T collapses a head-scrolled block with one full redraw (#4011)', async () => {
+    const terminal = new FakeTerminal();
+    const driver = new ThinkingDriver();
+    const run = runMakaPiTui({
+      title: 'Maka',
+      driver,
+      cwd: '/repo',
+      model: 'claude-sonnet-4-5',
+      connectionSlug: 'claude-subscription',
+      permissionMode: 'ask',
+      terminal,
+    });
+
+    terminal.input('run');
+    terminal.input('\r');
+    await waitFor(() => terminal.output().includes('Thinking…'));
+
+    // Expand: the 80-line thinking block renders in full and pushes its own
+    // head above the 24-row viewport.
+    terminal.input('\x14');
+    await waitFor(() => terminal.output().includes('reason-row-0'));
+    assert.equal(terminal.output().includes('\x1b[3J'), false);
+
+    // First collapse press: the block's head is stranded in scrollback, so the
+    // toggle flips the default, names the stranded block, offers the second
+    // press — and does NOT redraw. (Match a wrap-safe early fragment: the
+    // notice line wraps at 80 columns.)
+    terminal.input('\x14');
+    await waitFor(() =>
+      plainTerminalOutput(terminal.output()).includes('stayed expanded in scrollback'),
+    );
+    assert.equal(terminal.output().includes('\x1b[3J'), false);
+
+    // Confirmed second press inside the window: one deliberate
+    // scrollback-clearing full redraw collapses the stranded block.
+    terminal.input('\x14');
+    await waitFor(() => plainTerminalOutput(terminal.screenOutput()).includes('Thinking…'));
+    assert.equal(terminal.output().includes('\x1b[3J'), true);
+
+    exitMaka(terminal);
+    await Promise.race([
+      run,
+      delay(CLOSE_BUDGET_MS).then(() => {
+        throw new Error('TUI did not close during test cleanup');
+      }),
+    ]);
+  });
+
+  test('an expired Ctrl+T confirmation re-offers collapse instead of reversing it (#4011)', async (t) => {
+    const terminal = new FakeTerminal();
+    const driver = new ThinkingDriver();
+    const run = runMakaPiTui({
+      title: 'Maka',
+      driver,
+      cwd: '/repo',
+      model: 'claude-sonnet-4-5',
+      connectionSlug: 'claude-subscription',
+      permissionMode: 'ask',
+      terminal,
+    });
+
+    terminal.input('run');
+    terminal.input('\r');
+    await waitFor(() => terminal.output().includes('Thinking…'));
+
+    terminal.input('\x14');
+    await waitFor(() => terminal.output().includes('reason-row-0'));
+    terminal.input('\x14');
+    await waitFor(() =>
+      plainTerminalOutput(terminal.output()).includes('stayed expanded in scrollback'),
+    );
+
+    const beforeExpiredPress = terminal.output().length;
+    t.mock.timers.enable({ apis: ['Date'], now: Date.now() });
+    t.mock.timers.tick(EXPANSION_COLLAPSE_CONFIRM_WINDOW_MS + 1);
+    terminal.input('\x14');
+    t.mock.timers.reset();
+
+    await waitFor(() => terminal.output().length > beforeExpiredPress);
+    const expiredPressOutput = terminal.output().slice(beforeExpiredPress);
+    assert.equal(expiredPressOutput.includes('\x1b[3J'), false);
+    assert.equal(
+      plainTerminalOutput(expiredPressOutput).includes('stayed expanded in scrollback'),
+      true,
+    );
+    assert.equal(plainTerminalOutput(terminal.screenOutput()).includes('reason-row-0'), false);
+    assert.equal(
+      plainTerminalOutput(terminal.screenOutput()).includes('stayed expanded in scrollback'),
+      true,
+    );
+
+    // The new offer arms a fresh window. This second press is the only one
+    // that clears scrollback and collapses the above-viewport block.
+    terminal.input('\x14');
+    await waitFor(() => terminal.output().slice(beforeExpiredPress).includes('\x1b[3J'));
+    assert.equal(plainTerminalOutput(terminal.screenOutput()).includes('Thinking…'), true);
 
     exitMaka(terminal);
     await Promise.race([
@@ -5731,6 +5839,144 @@ describe('Maka Pi TUI runner', () => {
       await run;
     });
 
+    test('/resume parked by the host is informational, not a red error', async () => {
+      const terminal = new FakeTerminal();
+      const driver = new SlashCommandDriver();
+      driver.parkedResumeReason = 'resume_feature_disabled';
+      const run = runMakaPiTui({
+        title: 'Maka',
+        driver,
+        cwd: '/repo',
+        model: 'm',
+        connectionSlug: 'c',
+        permissionMode: 'bypass',
+        terminal,
+      });
+
+      // Attach a session first so the driver actually has one to resume.
+      terminal.input('/session');
+      terminal.input('\r');
+      await waitFor(() => plainTerminalOutput(terminal.output()).includes('Resume Session'));
+      terminal.input('\r');
+      await waitFor(() => driver.sessionIds.length === 1);
+
+      terminal.input('/resume');
+      terminal.input('\r');
+      await waitFor(() =>
+        plainTerminalOutput(terminal.output()).includes(
+          'Safe-boundary resume is not enabled on this runtime',
+        ),
+      );
+      assert.equal(driver.resumeCalls, 1);
+
+      terminal.input('/exit');
+      terminal.input('\r');
+      await run;
+    });
+
+    test('/resume with no interrupted run explains there is nothing to resume', async () => {
+      const terminal = new FakeTerminal();
+      const driver = new SlashCommandDriver();
+      driver.parkedResumeReason = 'resume_candidate_missing';
+      const run = runMakaPiTui({
+        title: 'Maka',
+        driver,
+        cwd: '/repo',
+        model: 'm',
+        connectionSlug: 'c',
+        permissionMode: 'bypass',
+        terminal,
+      });
+
+      terminal.input('/session');
+      terminal.input('\r');
+      await waitFor(() => plainTerminalOutput(terminal.output()).includes('Resume Session'));
+      terminal.input('\r');
+      await waitFor(() => driver.sessionIds.length === 1);
+
+      terminal.input('/resume');
+      terminal.input('\r');
+      await waitFor(() =>
+        plainTerminalOutput(terminal.output()).includes(
+          'Nothing to resume: no interrupted run exists in this session.',
+        ),
+      );
+
+      terminal.input('/exit');
+      terminal.input('\r');
+      await run;
+    });
+
+    test('/resume keeps genuine parked recovery failures red', async () => {
+      const terminal = new FakeTerminal();
+      const driver = new SlashCommandDriver();
+      driver.parkedResumeReason = 'safety_check_failed';
+      const run = runMakaPiTui({
+        title: 'Maka',
+        driver,
+        cwd: '/repo',
+        model: 'm',
+        connectionSlug: 'c',
+        permissionMode: 'bypass',
+        terminal,
+      });
+
+      terminal.input('/session');
+      terminal.input('\r');
+      await waitFor(() => plainTerminalOutput(terminal.output()).includes('Resume Session'));
+      terminal.input('\r');
+      await waitFor(() => driver.sessionIds.length === 1);
+
+      terminal.input('/resume');
+      terminal.input('\r');
+      await waitFor(() =>
+        plainTerminalOutput(terminal.output()).includes(
+          'Error: Safe-boundary resume parked: safety_check_failed',
+        ),
+      );
+
+      terminal.input('/exit');
+      terminal.input('\r');
+      await run;
+    });
+
+    for (const reason of [
+      'continuation_authority_unavailable',
+      'safety_observation_unavailable',
+    ] as const) {
+      test(`/resume keeps ${reason} red`, async () => {
+        const terminal = new FakeTerminal();
+        const driver = new SlashCommandDriver();
+        driver.parkedResumeReason = reason;
+        const run = runMakaPiTui({
+          title: 'Maka',
+          driver,
+          cwd: '/repo',
+          model: 'm',
+          connectionSlug: 'c',
+          permissionMode: 'bypass',
+          terminal,
+        });
+
+        terminal.input('/session');
+        terminal.input('\r');
+        await waitFor(() => plainTerminalOutput(terminal.output()).includes('Resume Session'));
+        terminal.input('\r');
+        await waitFor(() => driver.sessionIds.length === 1);
+
+        terminal.input('/resume');
+        terminal.input('\r');
+        await waitFor(() =>
+          plainTerminalOutput(terminal.output()).includes(
+            `Error: Safe-boundary resume parked: ${reason}`,
+          ),
+        );
+
+        terminal.input('/exit');
+        terminal.input('\r');
+        await run;
+      });
+    }
     test('/model refuses instead of opening the picker behind the running turn', async () => {
       const terminal = new FakeTerminal();
       const driver = new SteeringTurnDriver();
@@ -7513,6 +7759,28 @@ class ToolOutputDriver extends FakeSessionDriver {
   }
 }
 
+// #4011: an 80-line thinking block renders in full when expanded, so one
+// Ctrl+T pushes its head above the 24-row viewport into scrollback.
+class ThinkingDriver extends ToolOutputDriver {
+  override async *promptEvents(_prompt: string): AsyncIterable<SessionEvent> {
+    yield {
+      type: 'thinking_delta',
+      id: 'event-thinking-1',
+      turnId: 'turn-1',
+      ts: 1,
+      messageId: 'message-1',
+      text: Array.from({ length: 80 }, (_, i) => `reason-row-${i}`).join('\n'),
+    };
+    yield {
+      type: 'complete',
+      id: 'event-complete',
+      turnId: 'turn-1',
+      ts: 2,
+      stopReason: 'end_turn',
+    };
+  }
+}
+
 class BackgroundShellRunDriver extends ToolOutputDriver {
   override async *promptEvents(_prompt: string): AsyncIterable<SessionEvent> {
     yield {
@@ -7692,6 +7960,8 @@ class SlashCommandDriver extends FakeSessionDriver {
   readonly moves: string[] = [];
   startNewSessionCalls = 0;
   resumeCalls = 0;
+  /** When set, resumeLatest throws SafeBoundaryResumeParkedError with this reason. */
+  parkedResumeReason: TurnResumeParkReason | undefined;
   contextDiagnosticsRequests = 0;
   goal: GoalProjection | null = null;
   readonly goalListeners = new Set<(goal: GoalProjection | null) => void>();
@@ -7816,6 +8086,9 @@ class SlashCommandDriver extends FakeSessionDriver {
 
   async *resumeLatest(): AsyncIterable<SessionEvent> {
     this.resumeCalls += 1;
+    if (this.parkedResumeReason !== undefined) {
+      throw new SafeBoundaryResumeParkedError(this.parkedResumeReason);
+    }
     yield {
       type: 'text_complete',
       id: 'event-resume-text',

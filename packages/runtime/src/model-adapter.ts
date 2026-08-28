@@ -81,6 +81,7 @@ import {
   type OpenAiResponsesTransportState,
 } from './openai-responses-websocket.js';
 import { openAiApplyPatchProviderTool } from './openai-apply-patch.js';
+import { TOOL_SEARCH_NAME, TOOL_SEARCH_PROVIDER_NAME } from './tool-availability.js';
 
 /**
  * Build an ai-sdk LanguageModel from a single input object.
@@ -254,7 +255,16 @@ export class ModelAdapter {
           },
         })
       : input.model;
+    const usesOpenAiResponsesAdapter = hasOpenAiResponsesAdapter(this.runtime);
+    const providerToolName = (name: string): string =>
+      usesOpenAiResponsesAdapter && name === TOOL_SEARCH_NAME ? TOOL_SEARCH_PROVIDER_NAME : name;
+    const runtimeToolName = (name: string): string =>
+      usesOpenAiResponsesAdapter && name === TOOL_SEARCH_PROVIDER_NAME ? TOOL_SEARCH_NAME : name;
     const sdkTools = lowerModelTools(input.tools);
+    if (usesOpenAiResponsesAdapter && sdkTools[TOOL_SEARCH_NAME] !== undefined) {
+      sdkTools[TOOL_SEARCH_PROVIDER_NAME] = sdkTools[TOOL_SEARCH_NAME];
+      delete sdkTools[TOOL_SEARCH_NAME];
+    }
     const fullMessages = input.messages;
     const responsesLane =
       input.continuationKey && usesNativeOpenAiResponses(this.input.connection, this.runtime)
@@ -266,6 +276,10 @@ export class ModelAdapter {
           this.openAiResponsesTransportState.semanticBaseline(responsesLane),
         )
       : { messages: fullMessages };
+    const providerMessages = remapModelMessageToolNames(continuation.messages, providerToolName);
+    const providerSystem = input.system
+      ? remapProviderToolNamesInText(input.system, providerToolName)
+      : undefined;
     const providerOptions = usesNativeOpenAiResponses(this.input.connection, this.runtime)
       ? mergeOpenAiResponsesProviderOptions(
           this.input.providerOptions,
@@ -275,9 +289,9 @@ export class ModelAdapter {
       : this.input.providerOptions;
     const sdkResult = streamText({
       model: trackedModel,
-      messages: continuation.messages,
+      messages: providerMessages,
       tools: sdkTools,
-      activeTools: input.activeTools,
+      activeTools: input.activeTools.map(providerToolName),
       // An empty active set is an authoritative tool-free request (not merely
       // an empty provider schema).  Some OpenAI-compatible models, including
       // DeepSeek, otherwise keep emitting their native tool-call envelope as
@@ -285,8 +299,20 @@ export class ModelAdapter {
       // The child-agent finalization step relies on this boundary to spend its
       // last budgeted request on a summary instead of one more unusable call.
       ...(input.activeTools.length === 0 ? { toolChoice: 'none' } : {}),
-      repairToolCall: input.repairToolCall,
-      ...(input.system ? { instructions: input.system } : {}),
+      repairToolCall: async ({
+        toolCall,
+        error,
+      }: {
+        toolCall: RepairableAiSdkToolCall;
+        error: unknown;
+      }) => {
+        const repaired = await input.repairToolCall({
+          toolCall: { ...toolCall, toolName: runtimeToolName(toolCall.toolName) },
+          error,
+        });
+        return repaired ? { ...repaired, toolName: providerToolName(repaired.toolName) } : repaired;
+      },
+      ...(providerSystem ? { instructions: providerSystem } : {}),
       ...(maxOutputTokens !== undefined ? { maxOutputTokens } : {}),
       providerOptions,
       ...(responsesLane ? { headers: { [OPENAI_RESPONSES_LANE_HEADER]: responsesLane } } : {}),
@@ -308,6 +334,7 @@ export class ModelAdapter {
       ...(responsesLane ? { lane: responsesLane } : {}),
       requestMessages: fullMessages,
       abortSignal: input.abortSignal,
+      runtimeToolName,
     });
   }
 
@@ -320,7 +347,12 @@ export class ModelAdapter {
   private toModelStreamResult(
     sdk: SdkStreamResult,
     onStreamActivity: () => void,
-    continuation: { lane?: string; requestMessages: ModelMessage[]; abortSignal: AbortSignal },
+    continuation: {
+      lane?: string;
+      requestMessages: ModelMessage[];
+      abortSignal: AbortSignal;
+      runtimeToolName?: (name: string) => string;
+    },
   ): ModelStreamResult {
     const openAiChatReasoningTransportState =
       this.runtime.reasoningReplay.kind === 'openai-chat-plaintext'
@@ -340,7 +372,11 @@ export class ModelAdapter {
         try {
           for await (const chunk of sdk.stream as AsyncIterable<AiSdkStreamChunk>) {
             onStreamActivity();
-            for (const event of translateChunk(chunk, openAiChatReasoningTransportState)) {
+            for (const event of translateChunk(
+              chunk,
+              openAiChatReasoningTransportState,
+              continuation.runtimeToolName,
+            )) {
               if (event.kind === 'error') failure = event.failure;
               if (event.kind === 'finish') sawFinish = true;
               if (event.kind === 'finish' || event.kind === 'step-finish') {
@@ -573,6 +609,14 @@ function usesNativeOpenAiResponses(
   return connection.providerType === 'openai' && runtime.wire === 'openai-responses';
 }
 
+function hasOpenAiResponsesAdapter(runtime: ResolvedModelRuntime): boolean {
+  return (
+    runtime.wire === 'openai-responses' &&
+    runtime.reasoningReplay.kind === 'responses' &&
+    runtime.reasoningReplay.contract.adapter === 'openai'
+  );
+}
+
 function fixedAnthropicThinkingBudget(
   providerOptions: Record<string, unknown> | undefined,
 ): number {
@@ -697,6 +741,7 @@ function openAiResponsesReasoningProviderOptionsFromChunk(
 function translateChunk(
   chunk: AiSdkStreamChunk,
   openAiChatReasoningTransportState?: OpenAiChatReasoningTransportState,
+  runtimeToolName?: (name: string) => string,
 ): ModelStreamEvent[] {
   switch (chunk.type) {
     case 'text-start':
@@ -801,7 +846,7 @@ function translateChunk(
         {
           kind: 'provider-tool-result',
           toolCallId: chunk.toolCallId,
-          toolName: chunk.toolName,
+          toolName: runtimeToolName?.(chunk.toolName) ?? chunk.toolName,
           output: chunk.type === 'tool-error' ? chunk.error : (chunk.output ?? chunk.result),
           ...(chunk.type === 'tool-error' || chunk.isError === true ? { isError: true } : {}),
         },
@@ -812,7 +857,7 @@ function translateChunk(
       const toolCall: ToolCallPart = {
         type: 'tool-call',
         toolCallId: chunk.toolCallId,
-        toolName: chunk.toolName,
+        toolName: runtimeToolName?.(chunk.toolName) ?? chunk.toolName,
         input:
           chunk.providerExecuted === true
             ? parseProviderExecutedToolInput(chunk.input ?? chunk.args)
@@ -831,6 +876,58 @@ function translateChunk(
     default:
       return [];
   }
+}
+
+/**
+ * OpenAI Responses reserves the provider name `tool_search`. Keep Maka's
+ * persisted/history name intact and translate only the provider-bound copy.
+ */
+function remapModelMessageToolNames(
+  messages: readonly ModelMessage[],
+  providerToolName: (name: string) => string,
+): ModelMessage[] {
+  const remapContent = <T extends { type: string }>(content: readonly T[]): T[] =>
+    content.map((part) => {
+      if (
+        (part.type === 'tool-call' || part.type === 'tool-result') &&
+        'toolName' in part &&
+        typeof part.toolName === 'string'
+      ) {
+        const remapped = { ...part, toolName: providerToolName(part.toolName) } as T & {
+          output?: { type?: string; value?: unknown };
+        };
+        if (part.type === 'tool-result' && remapped.output) {
+          if (
+            (remapped.output.type === 'text' || remapped.output.type === 'error-text') &&
+            typeof remapped.output.value === 'string'
+          ) {
+            remapped.output = {
+              ...remapped.output,
+              value: remapProviderToolNamesInText(remapped.output.value, providerToolName),
+            };
+          }
+        }
+        return remapped as T;
+      }
+      return part;
+    });
+
+  return messages.map((message) => {
+    if (message.role === 'assistant' && Array.isArray(message.content)) {
+      return { ...message, content: remapContent(message.content) };
+    }
+    if (message.role === 'tool') {
+      return { ...message, content: remapContent(message.content) };
+    }
+    return message;
+  });
+}
+
+function remapProviderToolNamesInText(
+  text: string,
+  providerToolName: (name: string) => string,
+): string {
+  return text.replace(/\btool_search\b/gu, providerToolName(TOOL_SEARCH_NAME));
 }
 
 function parseProviderExecutedToolInput(input: unknown): unknown {

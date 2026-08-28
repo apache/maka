@@ -52,9 +52,11 @@ use peer_stream::spawn_stream;
 pub use peer_stream::{PeerStream, StreamCommand};
 
 const APPLICATION_PROTOCOL: &str = "/maka/runtime-host/peer/1";
+const MESH_CONTROL_PROTOCOL: &str = "/maka/runtime-host/mesh-control/1";
 const IDENTIFY_PROTOCOL: &str = "/maka/runtime-host/peer-identify/1";
 const COMMAND_CAPACITY: usize = 32;
 const INCOMING_STREAM_CAPACITY: usize = 16;
+const MESH_INCOMING_STREAM_CAPACITY: usize = 32;
 const MAX_PENDING_INCOMING_CONNECTIONS: u32 = 32;
 const MAX_PENDING_OUTGOING_CONNECTIONS: u32 = 1024;
 const MAX_ESTABLISHED_INCOMING_CONNECTIONS: u32 = 32;
@@ -62,6 +64,7 @@ const MAX_ESTABLISHED_CONNECTIONS: u32 = 1024;
 const MAX_CONNECTIONS_PER_PEER: u32 = 4;
 const LISTENER_ADDRESS_QUIET_PERIOD: Duration = Duration::from_millis(250);
 const COORDINATION_RETRY_INTERVAL: Duration = Duration::from_secs(1);
+const IDLE_CONNECTION_TIMEOUT: Duration = Duration::from_secs(10);
 
 #[derive(Clone)]
 pub struct StartOptions {
@@ -76,6 +79,7 @@ pub struct StartedEndpoint {
     pub listen_addresses: Vec<Multiaddr>,
     pub commands: mpsc::Sender<EngineCommand>,
     pub incoming: mpsc::Receiver<PeerStream>,
+    pub mesh_incoming: mpsc::Receiver<PeerStream>,
     pub terminal: mpsc::Receiver<PeerError>,
     pub thread: thread::JoinHandle<()>,
 }
@@ -91,6 +95,7 @@ pub struct ConnectOptions {
 pub enum EngineCommand {
     Connect {
         options: ConnectOptions,
+        stream_kind: StreamKind,
         result: oneshot::Sender<Result<PeerStream, PeerError>>,
     },
     CancelConnect {
@@ -125,11 +130,13 @@ struct Behaviour {
     identify: identify::Behaviour,
     ping: ping::Behaviour,
     application_stream: application_stream::Behaviour,
+    mesh_control: application_stream::Behaviour,
 }
 
 struct PendingConnect {
     peer_id: PeerId,
     result: oneshot::Sender<Result<PeerStream, PeerError>>,
+    stream_kind: StreamKind,
     deadline: Instant,
     opening: Option<tokio::task::JoinHandle<()>>,
     dials: HashMap<ConnectionId, DialOrigin>,
@@ -137,13 +144,19 @@ struct PendingConnect {
     coordination_relays: Vec<Multiaddr>,
     coordination_relay_peers: Vec<PeerId>,
     next_route_attempt: Instant,
+    retry_coordination: bool,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
-enum DialOrigin {
+pub enum StreamKind {
+    Application,
+    MeshControl,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum DialOrigin {
     DirectRoute,
     CoordinationRoute,
-    DirectConnection,
 }
 
 struct StartedConnect {
@@ -156,7 +169,6 @@ struct DirectConnectState {
     pending: HashMap<u32, PendingConnect>,
     active: HashMap<PeerId, ConnectionId>,
     retiring_connections: HashSet<ConnectionId>,
-    outbound_hole_punch_peers: HashSet<PeerId>,
 }
 
 struct CoordinationRelay {
@@ -215,7 +227,19 @@ impl CoordinationRelay {
 
 struct OpenedStream {
     request_id: u32,
-    result: Result<application_stream::OpenedApplicationStream, String>,
+    result: Result<application_stream::OpenedStream, String>,
+}
+
+pub(super) enum StreamCompletion {
+    Application(ConnectionId),
+    MeshControl {
+        coordination_relay_peers: Vec<PeerId>,
+    },
+}
+
+pub(super) struct CompletedStream {
+    kind: StreamCompletion,
+    acknowledged: oneshot::Sender<()>,
 }
 
 pub async fn ensure_identity(key_path: PathBuf) -> Result<PeerId, PeerError> {
@@ -229,11 +253,18 @@ pub fn start(options: StartOptions) -> Result<StartedEndpoint, PeerError> {
     let (ready_tx, ready_rx) = std::sync::mpsc::sync_channel(1);
     let (command_tx, command_rx) = mpsc::channel(COMMAND_CAPACITY);
     let (incoming_tx, incoming_rx) = mpsc::channel(INCOMING_STREAM_CAPACITY);
+    let (mesh_incoming_tx, mesh_incoming_rx) = mpsc::channel(MESH_INCOMING_STREAM_CAPACITY);
     let (terminal_tx, terminal_rx) = mpsc::channel(1);
     let thread = thread::Builder::new()
         .name("maka-runtime-host-peer".to_owned())
         .spawn(move || {
-            let result = run_endpoint(options, command_rx, incoming_tx, ready_tx.clone());
+            let result = run_endpoint(
+                options,
+                command_rx,
+                incoming_tx,
+                mesh_incoming_tx,
+                ready_tx.clone(),
+            );
             if let Err(error) = result {
                 let _ = ready_tx.send(Err(error.clone()));
                 let _ = terminal_tx.blocking_send(error);
@@ -248,6 +279,7 @@ pub fn start(options: StartOptions) -> Result<StartedEndpoint, PeerError> {
         listen_addresses: ready.1,
         commands: command_tx,
         incoming: incoming_rx,
+        mesh_incoming: mesh_incoming_rx,
         terminal: terminal_rx,
         thread,
     })
@@ -257,6 +289,7 @@ fn run_endpoint(
     options: StartOptions,
     commands: mpsc::Receiver<EngineCommand>,
     incoming_tx: mpsc::Sender<PeerStream>,
+    mesh_incoming_tx: mpsc::Sender<PeerStream>,
     ready_tx: std::sync::mpsc::SyncSender<Result<(PeerId, Vec<Multiaddr>), PeerError>>,
 ) -> Result<(), PeerError> {
     let runtime = tokio::runtime::Builder::new_multi_thread()
@@ -264,13 +297,20 @@ fn run_endpoint(
         .thread_name("maka-peer-io")
         .build()
         .map_err(|error| PeerError::new("peer_native_failed", error.to_string()))?;
-    runtime.block_on(run_endpoint_async(options, commands, incoming_tx, ready_tx))
+    runtime.block_on(run_endpoint_async(
+        options,
+        commands,
+        incoming_tx,
+        mesh_incoming_tx,
+        ready_tx,
+    ))
 }
 
 async fn run_endpoint_async(
     options: StartOptions,
     mut commands: mpsc::Receiver<EngineCommand>,
     incoming_tx: mpsc::Sender<PeerStream>,
+    mesh_incoming_tx: mpsc::Sender<PeerStream>,
     ready_tx: std::sync::mpsc::SyncSender<Result<(PeerId, Vec<Multiaddr>), PeerError>>,
 ) -> Result<(), PeerError> {
     let key = match options.expected_peer_id {
@@ -287,7 +327,8 @@ async fn run_endpoint_async(
         None => load_or_create_key(&options.key_path).await?,
     };
     let local_peer_id = PeerId::from(key.public());
-    let (mut swarm, stream_control, mut incoming_streams) = build_swarm(key)?;
+    let (mut swarm, stream_control, mut incoming_streams, mesh_control, mut mesh_incoming) =
+        build_swarm(key)?;
 
     let listen_addresses = if options.listen_addresses.is_empty() {
         vec![
@@ -355,8 +396,8 @@ async fn run_endpoint_async(
     let _ = ready_tx.send(Ok((local_peer_id, bound_addresses)));
 
     let (opened_tx, mut opened_rx) = mpsc::channel::<OpenedStream>(COMMAND_CAPACITY);
-    let (close_connection_tx, mut close_connection_rx) =
-        mpsc::channel::<ConnectionId>(MAX_ESTABLISHED_CONNECTIONS as usize);
+    let (stream_completed_tx, mut stream_completed_rx) =
+        mpsc::channel::<CompletedStream>(MAX_ESTABLISHED_CONNECTIONS as usize);
     let mut direct = DirectConnectState::default();
     let mut relayed = HashMap::<PeerId, HashSet<ConnectionId>>::new();
     let mut external_candidate_ready = startup_external_candidate_ready;
@@ -366,10 +407,11 @@ async fn run_endpoint_async(
     loop {
         tokio::select! {
             command = commands.recv() => match command {
-                Some(EngineCommand::Connect { options, result }) => {
+                Some(EngineCommand::Connect { options, stream_kind, result }) => {
                     if direct.pending.contains_key(&options.request_id)
                         || direct.pending.values().any(|connect| connect.peer_id == options.peer_id)
-                        || direct.active.contains_key(&options.peer_id)
+                        || (stream_kind == StreamKind::Application
+                            && direct.active.contains_key(&options.peer_id))
                     {
                         let _ = result.send(Err(PeerError::new(
                             "peer_connect_in_progress",
@@ -382,6 +424,7 @@ async fn run_endpoint_async(
                         &mut coordination_relays,
                         &options,
                         local_peer_id,
+                        stream_kind,
                     ) {
                         Ok(peers) => peers,
                         Err(error) => {
@@ -390,14 +433,14 @@ async fn run_endpoint_async(
                         }
                     };
                     let request_id = options.request_id;
-                    let can_hole_punch = !options.coordination_relays.is_empty()
-                        || options.route_hints.iter().any(is_relayed_address);
-                    if can_hole_punch {
-                        direct.outbound_hole_punch_peers.insert(options.peer_id);
-                    }
+                    let retry_coordination = stream_kind == StreamKind::Application
+                        && relayed
+                            .get(&options.peer_id)
+                            .is_some_and(|connections| !connections.is_empty());
                     direct.pending.insert(request_id, PendingConnect {
                         peer_id: options.peer_id,
                         result,
+                        stream_kind,
                         deadline: Instant::now() + options.deadline,
                         opening: None,
                         dials: HashMap::new(),
@@ -405,6 +448,7 @@ async fn run_endpoint_async(
                         coordination_relays: options.coordination_relays,
                         coordination_relay_peers: started.coordination_relay_peers,
                         next_route_attempt: Instant::now(),
+                        retry_coordination,
                     });
                     retry_connect_routes(
                         &mut swarm,
@@ -415,11 +459,12 @@ async fn run_endpoint_async(
                         external_candidate_ready,
                         Instant::now(),
                     );
-                    maybe_open_direct_stream(
+                    maybe_open_peer_stream(
                         request_id,
                         &mut direct.pending,
                         &direct.retiring_connections,
                         stream_control.clone(),
+                        mesh_control.clone(),
                         opened_tx.clone(),
                     );
                 }
@@ -457,38 +502,81 @@ async fn run_endpoint_async(
                 None => return Ok(()),
             },
             Some(stream) = incoming_streams.recv() => {
-                let peer_stream = spawn_stream(
-                    stream.stream,
-                    Some((stream.connection_id, close_connection_tx.clone())),
-                );
+                let peer_stream = spawn_stream(stream.peer_id, stream.stream, None);
                 if incoming_tx.try_send(peer_stream).is_err() {
                     // Dropping the stream closes it. A slow Host cannot create an unbounded queue.
                 }
             }
-            Some(connection_id) = close_connection_rx.recv() => {
-                direct.active.retain(|_, active| *active != connection_id);
-                retire_established_connection(
-                    &mut swarm,
-                    &mut direct.retiring_connections,
-                    connection_id,
-                );
+            Some(stream) = mesh_incoming.recv() => {
+                let peer_stream = spawn_stream(stream.peer_id, stream.stream, None);
+                if mesh_incoming_tx.try_send(peer_stream).is_err() {
+                    // Dropping the stream applies bounded backpressure to Mesh control callers.
+                }
+            }
+            Some(completed) = stream_completed_rx.recv() => {
+                match completed.kind {
+                    StreamCompletion::Application(connection_id) => {
+                        direct.active.retain(|_, active| *active != connection_id);
+                    }
+                    StreamCompletion::MeshControl { coordination_relay_peers } => {
+                        release_coordination_relays(
+                            &mut swarm,
+                            &mut coordination_relays,
+                            &coordination_relay_peers,
+                            &direct.active,
+                        );
+                    }
+                }
+                let _ = completed.acknowledged.send(());
             }
             Some(opened) = opened_rx.recv() => {
                 if let Some(waiter) = direct.pending.remove(&opened.request_id) {
                     let result = match opened.result {
-                        Ok(opened) => {
-                            retire_direct_dials(
-                                &mut swarm,
-                                &mut direct.retiring_connections,
-                                waiter.dials,
-                                Some(opened.connection_id),
-                            );
-                            direct.active.insert(waiter.peer_id, opened.connection_id);
-                            Ok(spawn_stream(
-                                opened.stream,
-                                Some((opened.connection_id, close_connection_tx.clone())),
-                            ))
-                        }
+                        Ok(opened) => match waiter.stream_kind {
+                            StreamKind::Application => {
+                                let connection_id = opened.connection_id;
+                                retire_direct_dials(
+                                    &mut swarm,
+                                    &mut direct.retiring_connections,
+                                    waiter.dials,
+                                    Some(connection_id),
+                                );
+                                direct.active.insert(waiter.peer_id, connection_id);
+                                release_coordination_relays(
+                                    &mut swarm,
+                                    &mut coordination_relays,
+                                    &waiter.coordination_relay_peers,
+                                    &direct.active,
+                                );
+                                Ok(spawn_stream(
+                                    waiter.peer_id,
+                                    opened.stream,
+                                    Some((
+                                        StreamCompletion::Application(connection_id),
+                                        stream_completed_tx.clone(),
+                                    )),
+                                ))
+                            }
+                            StreamKind::MeshControl => {
+                                retire_direct_dials(
+                                    &mut swarm,
+                                    &mut direct.retiring_connections,
+                                    waiter.dials,
+                                    None,
+                                );
+                                Ok(spawn_stream(
+                                    waiter.peer_id,
+                                    opened.stream,
+                                    Some((
+                                        StreamCompletion::MeshControl {
+                                            coordination_relay_peers: waiter
+                                                .coordination_relay_peers,
+                                        },
+                                        stream_completed_tx.clone(),
+                                    )),
+                                ))
+                            }
+                        },
                         Err(message) => {
                             retire_direct_dials(
                                 &mut swarm,
@@ -496,22 +584,20 @@ async fn run_endpoint_async(
                                 waiter.dials,
                                 None,
                             );
-                            Err(PeerError::new("direct_path_unavailable", message))
+                            release_coordination_relays(
+                                &mut swarm,
+                                &mut coordination_relays,
+                                &waiter.coordination_relay_peers,
+                                &direct.active,
+                            );
+                            let code = match waiter.stream_kind {
+                                StreamKind::Application => "direct_path_unavailable",
+                                StreamKind::MeshControl => "mesh_control_unavailable",
+                            };
+                            Err(PeerError::new(code, message))
                         }
                     };
-                    release_coordination_relays(
-                        &mut swarm,
-                        &mut coordination_relays,
-                        &waiter.coordination_relay_peers,
-                        &direct.active,
-                    );
                     let _ = waiter.result.send(result);
-                } else if let Ok(opened) = opened.result {
-                    retire_established_connection(
-                        &mut swarm,
-                        &mut direct.retiring_connections,
-                        opened.connection_id,
-                    );
                 }
             }
             event = swarm.select_next_some() => {
@@ -531,11 +617,12 @@ async fn run_endpoint_async(
                 );
                 let requests = direct.pending.keys().copied().collect::<Vec<_>>();
                 for request_id in requests {
-                    maybe_open_direct_stream(
+                    maybe_open_peer_stream(
                         request_id,
                         &mut direct.pending,
                         &direct.retiring_connections,
                         stream_control.clone(),
+                        mesh_control.clone(),
                         opened_tx.clone(),
                     );
                 }
@@ -577,10 +664,17 @@ async fn run_endpoint_async(
                             &waiter.coordination_relay_peers,
                             &direct.active,
                         );
-                        let _ = waiter.result.send(Err(PeerError::new(
-                            "direct_path_unavailable",
-                            "no direct path was established before the deadline",
-                        )));
+                        let (code, message) = match waiter.stream_kind {
+                            StreamKind::Application => (
+                                "direct_path_unavailable",
+                                "no direct path was established before the deadline",
+                            ),
+                            StreamKind::MeshControl => (
+                                "mesh_control_unavailable",
+                                "no Mesh control path was established before the deadline",
+                            ),
+                        };
+                        let _ = waiter.result.send(Err(PeerError::new(code, message)));
                     }
                 }
             }
@@ -592,12 +686,20 @@ type BuiltSwarm = (
     Swarm<Behaviour>,
     application_stream::Control,
     mpsc::Receiver<application_stream::InboundStream>,
+    application_stream::Control,
+    mpsc::Receiver<application_stream::InboundStream>,
 );
 
 fn build_swarm(key: identity::Keypair) -> Result<BuiltSwarm, PeerError> {
     let (application_stream, control, incoming) = application_stream::Behaviour::new(
         StreamProtocol::new(APPLICATION_PROTOCOL),
         INCOMING_STREAM_CAPACITY,
+        true,
+    );
+    let (mesh_stream, mesh_control, mesh_incoming) = application_stream::Behaviour::new(
+        StreamProtocol::new(MESH_CONTROL_PROTOCOL),
+        MESH_INCOMING_STREAM_CAPACITY,
+        false,
     );
     let swarm = SwarmBuilder::with_existing_identity(key)
         .with_tokio()
@@ -630,10 +732,16 @@ fn build_swarm(key: identity::Keypair) -> Result<BuiltSwarm, PeerError> {
             )),
             ping: ping::Behaviour::new(ping::Config::new()),
             application_stream,
+            mesh_control: mesh_stream,
         })
         .map_err(native_error)
+        .map(|builder| {
+            builder.with_swarm_config(|config| {
+                config.with_idle_connection_timeout(IDLE_CONNECTION_TIMEOUT)
+            })
+        })
         .map(|builder| builder.build())?;
-    Ok((swarm, control, incoming))
+    Ok((swarm, control, incoming, mesh_control, mesh_incoming))
 }
 
 fn start_connect(
@@ -641,10 +749,15 @@ fn start_connect(
     coordination_relays: &mut HashMap<PeerId, CoordinationRelay>,
     options: &ConnectOptions,
     local_peer_id: PeerId,
+    stream_kind: StreamKind,
 ) -> Result<StartedConnect, PeerError> {
     if options.route_hints.is_empty() && options.coordination_relays.is_empty() {
+        let code = match stream_kind {
+            StreamKind::Application => "direct_path_unavailable",
+            StreamKind::MeshControl => "mesh_control_unavailable",
+        };
         return Err(PeerError::new(
-            "direct_path_unavailable",
+            code,
             "the peer profile has no route hints or coordination relays",
         ));
     }
@@ -691,22 +804,34 @@ fn start_connect(
     })
 }
 
-fn maybe_open_direct_stream(
+fn maybe_open_peer_stream(
     request_id: u32,
     pending: &mut HashMap<u32, PendingConnect>,
     retiring_connections: &HashSet<ConnectionId>,
-    mut control: application_stream::Control,
+    mut application_control: application_stream::Control,
+    mut mesh_control: application_stream::Control,
     opened_tx: mpsc::Sender<OpenedStream>,
 ) {
     let Some(waiter) = pending.get_mut(&request_id) else {
         return;
     };
     let peer_id = waiter.peer_id;
-    if waiter.opening.is_some() || !control.has_connection(peer_id, retiring_connections) {
+    let available = match waiter.stream_kind {
+        StreamKind::Application => {
+            application_control.has_connection(peer_id, retiring_connections)
+        }
+        StreamKind::MeshControl => mesh_control.has_connection(peer_id, retiring_connections),
+    };
+    if waiter.opening.is_some() || !available {
         return;
     }
+    let stream_kind = waiter.stream_kind;
     let retiring_connections = retiring_connections.clone();
     waiter.opening = Some(tokio::spawn(async move {
+        let control = match stream_kind {
+            StreamKind::Application => &mut application_control,
+            StreamKind::MeshControl => &mut mesh_control,
+        };
         let result = control
             .open_stream(peer_id, &retiring_connections)
             .await
@@ -744,24 +869,11 @@ fn handle_swarm_event(
                     let _ = swarm.close_connection(connection_id);
                 }
             }
+            for connect in direct.pending.values_mut() {
+                connect.dials.remove(&connection_id);
+            }
             if endpoint.is_relayed() {
                 relayed.entry(peer_id).or_default().insert(connection_id);
-            } else {
-                if let Some(connect) = direct
-                    .pending
-                    .values_mut()
-                    .find(|connect| connect.peer_id == peer_id)
-                {
-                    connect
-                        .dials
-                        .entry(connection_id)
-                        .or_insert(DialOrigin::DirectConnection);
-                }
-                if let Some(ids) = relayed.get(&peer_id) {
-                    for id in ids.iter().copied().collect::<Vec<_>>() {
-                        swarm.close_connection(id);
-                    }
-                }
             }
         }
         SwarmEvent::ConnectionClosed {
@@ -800,43 +912,16 @@ fn handle_swarm_event(
         }
         SwarmEvent::Behaviour(BehaviourEvent::Dcutr(dcutr::Event {
             remote_peer_id,
-            result: Ok(connection_id),
-        })) => {
-            if let Some(connect) = direct
-                .pending
-                .values_mut()
-                .find(|connect| connect.peer_id == remote_peer_id)
-            {
-                connect
-                    .dials
-                    .entry(connection_id)
-                    .or_insert(DialOrigin::DirectConnection);
-            } else if direct.active.get(&remote_peer_id) != Some(&connection_id)
-                && (direct.active.contains_key(&remote_peer_id)
-                    || direct.outbound_hole_punch_peers.contains(&remote_peer_id))
-            {
-                retire_established_connection(
-                    swarm,
-                    &mut direct.retiring_connections,
-                    connection_id,
-                );
-            }
-        }
-        SwarmEvent::Behaviour(BehaviourEvent::Dcutr(dcutr::Event {
-            remote_peer_id,
             result: Err(_),
         })) => {
-            if direct
-                .pending
-                .values()
-                .any(|connect| connect.peer_id == remote_peer_id)
-                && let Some(connection_ids) = relayed.remove(&remote_peer_id)
-            {
-                for connection_id in connection_ids {
-                    let _ = swarm.close_connection(connection_id);
-                }
+            for connect in direct.pending.values_mut().filter(|connect| {
+                connect.peer_id == remote_peer_id && connect.stream_kind == StreamKind::Application
+            }) {
+                connect.retry_coordination = true;
+                connect.next_route_attempt = Instant::now();
             }
         }
+        SwarmEvent::Behaviour(BehaviourEvent::Dcutr(_)) => {}
         SwarmEvent::Behaviour(BehaviourEvent::Identify(identify::Event::Received {
             peer_id,
             ..
@@ -1058,7 +1143,8 @@ fn retry_connect_routes(
             .dials
             .values()
             .any(|origin| *origin == DialOrigin::CoordinationRoute)
-            || relayed.get(&peer_id).is_some_and(|ids| !ids.is_empty())
+            || (!connect.retry_coordination
+                && relayed.get(&peer_id).is_some_and(|ids| !ids.is_empty()))
         {
             continue;
         }
@@ -1084,6 +1170,7 @@ fn retry_connect_routes(
             connect
                 .dials
                 .insert(connection_id, DialOrigin::CoordinationRoute);
+            connect.retry_coordination = false;
         }
     }
 }
@@ -1119,16 +1206,6 @@ fn retire_direct_dials(
     }
 }
 
-fn retire_established_connection(
-    swarm: &mut Swarm<Behaviour>,
-    retiring: &mut HashSet<ConnectionId>,
-    connection_id: ConnectionId,
-) {
-    if swarm.close_connection(connection_id) {
-        retiring.insert(connection_id);
-    }
-}
-
 fn remove_connection(
     connections: &mut HashMap<PeerId, HashSet<ConnectionId>>,
     peer_id: PeerId,
@@ -1150,6 +1227,151 @@ fn native_error(error: impl std::fmt::Display) -> PeerError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn mesh_control_survives_repeated_application_streams_on_one_endpoint() {
+        let root = std::env::temp_dir().join(format!("maka-peer-test-{}", PeerId::random()));
+        std::fs::create_dir_all(&root).expect("create test root");
+        let left = start(test_endpoint_options(root.join("left.key"))).expect("start left");
+        let mut right = start(test_endpoint_options(root.join("right.key"))).expect("start right");
+        let route = right
+            .listen_addresses
+            .first()
+            .expect("right listen address")
+            .clone();
+
+        let mesh_left = connect_test_stream(
+            &left,
+            right.peer_id,
+            route.clone(),
+            1,
+            StreamKind::MeshControl,
+        )
+        .await;
+        let mut mesh_right =
+            tokio::time::timeout(Duration::from_secs(5), right.mesh_incoming.recv())
+                .await
+                .expect("Mesh inbound timeout")
+                .expect("Mesh inbound stream");
+
+        for request_id in 2..=3 {
+            let application_left = connect_test_stream(
+                &left,
+                right.peer_id,
+                route.clone(),
+                request_id,
+                StreamKind::Application,
+            )
+            .await;
+            let application_right =
+                tokio::time::timeout(Duration::from_secs(5), right.incoming.recv())
+                    .await
+                    .expect("application inbound timeout")
+                    .expect("application inbound stream");
+            close_test_stream(application_left).await;
+            close_test_stream(application_right).await;
+        }
+
+        write_test_stream(&mesh_left, b"still-open").await;
+        assert_eq!(
+            tokio::time::timeout(Duration::from_secs(5), mesh_right.incoming.recv())
+                .await
+                .expect("Mesh read timeout")
+                .expect("Mesh stream ended")
+                .expect("Mesh read failed"),
+            b"still-open",
+        );
+        close_test_stream(mesh_left).await;
+        close_test_stream(mesh_right).await;
+        stop_test_endpoint(left).await;
+        stop_test_endpoint(right).await;
+        std::fs::remove_dir_all(root).expect("remove test root");
+    }
+
+    fn test_endpoint_options(key_path: PathBuf) -> StartOptions {
+        StartOptions {
+            key_path,
+            expected_peer_id: None,
+            listen_addresses: vec![
+                "/ip4/127.0.0.1/udp/0/quic-v1"
+                    .parse()
+                    .expect("test listen address"),
+            ],
+            coordination_relays: Vec::new(),
+        }
+    }
+
+    async fn connect_test_stream(
+        endpoint: &StartedEndpoint,
+        peer_id: PeerId,
+        route: Multiaddr,
+        request_id: u32,
+        stream_kind: StreamKind,
+    ) -> PeerStream {
+        let (result, response) = oneshot::channel();
+        endpoint
+            .commands
+            .send(EngineCommand::Connect {
+                options: ConnectOptions {
+                    request_id,
+                    peer_id,
+                    route_hints: vec![route],
+                    coordination_relays: Vec::new(),
+                    deadline: Duration::from_secs(5),
+                },
+                stream_kind,
+                result,
+            })
+            .await
+            .expect("send connect");
+        tokio::time::timeout(Duration::from_secs(5), response)
+            .await
+            .expect("connect timeout")
+            .expect("connect response")
+            .expect("connect failed")
+    }
+
+    async fn write_test_stream(stream: &PeerStream, bytes: &[u8]) {
+        let (result, response) = oneshot::channel();
+        stream
+            .commands
+            .send(StreamCommand::Write {
+                bytes: bytes.to_vec(),
+                result,
+            })
+            .await
+            .expect("send write");
+        response
+            .await
+            .expect("write response")
+            .expect("write failed");
+    }
+
+    async fn close_test_stream(stream: PeerStream) {
+        let (result, response) = oneshot::channel();
+        if stream
+            .commands
+            .send(StreamCommand::Close { result })
+            .await
+            .is_err()
+        {
+            return;
+        }
+        if let Ok(outcome) = response.await {
+            outcome.expect("close failed");
+        }
+    }
+
+    async fn stop_test_endpoint(endpoint: StartedEndpoint) {
+        let (result, response) = oneshot::channel();
+        endpoint
+            .commands
+            .send(EngineCommand::Stop { result })
+            .await
+            .expect("send stop");
+        response.await.expect("stop response");
+        endpoint.thread.join().expect("join endpoint thread");
+    }
 
     #[test]
     fn coordination_reservation_can_be_recreated_after_its_lifecycle_ends() {

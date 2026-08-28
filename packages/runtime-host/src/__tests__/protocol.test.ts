@@ -1035,6 +1035,25 @@ describe('Runtime Host bootstrap protocol', () => {
       },
     };
     assert.deepEqual(decodeHostFrame(parked), parked);
+    for (const reason of [
+      'resume_feature_disabled',
+      'continuation_authority_unavailable',
+      'safety_observation_unavailable',
+    ] as const) {
+      const unavailable = {
+        ...parked,
+        result: { ...parked.result, reason },
+      };
+      assert.deepEqual(decodeHostFrame(unavailable), unavailable);
+    }
+    assert.throws(
+      () =>
+        decodeHostFrame({
+          ...parked,
+          result: { ...parked.result, reason: 'continuation_unavailable' },
+        }),
+      isInvalidFrame,
+    );
     assert.throws(
       () =>
         decodeHostFrame({

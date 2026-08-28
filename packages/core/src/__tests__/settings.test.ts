@@ -24,10 +24,15 @@ import {
   createDefaultSettings,
   DEFAULT_APP_ICON,
   DEFAULT_APP_ICON_DARK,
+  DEFAULT_TERMINAL_FONT_SIZE,
+  DEFAULT_UI_FONT_SIZE,
   mergeSettings,
   normalizeSettings,
   startupAppIcon,
+  TERMINAL_FONT_SIZE_MAX,
   toAppIconChoice,
+  UI_FONT_SIZE_MAX,
+  UI_FONT_SIZE_MIN,
 } from '../settings.js';
 
 test('normalizes user-approved subagent presets without widening the catalog', () => {
@@ -147,6 +152,45 @@ test('an app icon the build does not ship falls back without disturbing the them
   expect(
     normalizeSettings({ appearance: { theme: 'auto', appIcon: 'mono' } }).appearance.appIcon,
   ).toBe('mono');
+});
+
+test('font-size appearance defaults, with wrong types failing closed and out-of-range clamped', () => {
+  expect(createDefaultSettings().appearance.uiFontSize).toBe(DEFAULT_UI_FONT_SIZE);
+  expect(createDefaultSettings().appearance.terminalFontSize).toBe(DEFAULT_TERMINAL_FONT_SIZE);
+
+  // A wrong-typed value must not reach the renderer as an arbitrary root /
+  // xterm size — it drops to the default, and, like the app-icon guard above,
+  // does not disturb the theme.
+  for (const bad of [undefined, '14', null, Number.NaN, {}]) {
+    const normalized = normalizeSettings({
+      appearance: { theme: 'dark', uiFontSize: bad, terminalFontSize: bad } as never,
+    });
+    expect(normalized.appearance.uiFontSize).toBe(DEFAULT_UI_FONT_SIZE);
+    expect(normalized.appearance.terminalFontSize).toBe(DEFAULT_TERMINAL_FONT_SIZE);
+    expect(normalized.appearance.theme).toBe('dark');
+  }
+
+  // Out-of-range numbers clamp to the nearest bound rather than resetting, so a
+  // large persisted value is honored up to the cap instead of snapping back.
+  expect(
+    normalizeSettings({ appearance: { theme: 'auto', uiFontSize: 999 } as never }).appearance
+      .uiFontSize,
+  ).toBe(UI_FONT_SIZE_MAX);
+  expect(
+    normalizeSettings({ appearance: { theme: 'auto', uiFontSize: 1 } as never }).appearance
+      .uiFontSize,
+  ).toBe(UI_FONT_SIZE_MIN);
+  expect(
+    normalizeSettings({ appearance: { theme: 'auto', terminalFontSize: 999 } as never }).appearance
+      .terminalFontSize,
+  ).toBe(TERMINAL_FONT_SIZE_MAX);
+
+  // A value in range survives, rounded to an integer px.
+  const kept = normalizeSettings({
+    appearance: { theme: 'auto', uiFontSize: 16, terminalFontSize: 15 } as never,
+  });
+  expect(kept.appearance.uiFontSize).toBe(16);
+  expect(kept.appearance.terminalFontSize).toBe(15);
 });
 
 test('imported app icons normalize by id shape, never by path', () => {

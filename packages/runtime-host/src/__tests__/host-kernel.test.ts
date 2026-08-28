@@ -1814,6 +1814,37 @@ describe('non-serving Runtime Host kernel', () => {
     });
   });
 
+  test('an authority-supervised Candidate exits if its launch owner is killed', async () => {
+    await withHostPaths(async (paths) => {
+      const capability = await resolveStorageRoot({ path: paths.root, kind: 'interactive' });
+      const launcher = paths.resources.trackChild(
+        fork(
+          new URL('./fixtures/owned-authority-launcher.js', import.meta.url),
+          [paths.root, capability.rootId, join(paths.base, 'authority-lease-probe')],
+          { stdio: ['ignore', 'ignore', 'inherit', 'ipc'] },
+        ),
+      );
+      const launchedPid = paths.resources.trackPid(await waitForLaunch(launcher));
+      let connected = await retryConnect(paths, CURRENT_PROTOCOL);
+      if (connected.kind !== 'connected') {
+        connected = await retryConnect(paths, CURRENT_PROTOCOL);
+      }
+      assert.equal(connected.kind, 'connected');
+      if (connected.kind !== 'connected') return;
+      assert.equal(connected.registration.pid, launchedPid);
+
+      launcher.kill('SIGKILL');
+      await waitForExit(launcher);
+      await withTimeout(
+        connected.connection.closed,
+        5_000,
+        'authority-supervised Candidate survived its launch owner',
+      );
+      await waitForProcessExit(launchedPid);
+      paths.resources.forgetPid(launchedPid);
+    });
+  });
+
   test('a detached Candidate survives writing stderr after its launcher exits', async () => {
     await withHostPaths(async (paths) => {
       const capability = await resolveStorageRoot({ path: paths.root, kind: 'interactive' });

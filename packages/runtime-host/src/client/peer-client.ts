@@ -33,15 +33,32 @@ export interface RuntimeHostPeerConnectInput {
 }
 
 export interface RuntimeHostPeerClient {
+  identity(): Readonly<{
+    peerId: string;
+    listenAddresses: readonly string[];
+    coordinationRelays: readonly string[];
+  }>;
   connect(
     input: RuntimeHostPeerConnectInput,
     signal?: AbortSignal,
   ): Promise<RuntimeHostPeerNativeStream>;
+  connectMeshControl(
+    input: RuntimeHostPeerConnectInput,
+    signal?: AbortSignal,
+  ): Promise<RuntimeHostPeerNativeStream>;
+  serveMeshControl(
+    onStream: (stream: RuntimeHostPeerNativeStream) => void,
+    signal: AbortSignal,
+  ): Promise<void>;
   close(): Promise<void>;
 }
 
 export function createRuntimeHostPeerClientFromEnvironment(
   environment: NodeJS.ProcessEnv = process.env,
+  options: {
+    readonly listenAddresses?: readonly string[];
+    readonly coordinationRelays?: readonly string[];
+  } = {},
 ): RuntimeHostPeerClient {
   const nativePath = environment.MAKA_RUNTIME_HOST_PEER_NATIVE_PATH;
   const keyPath = environment.MAKA_RUNTIME_HOST_PEER_KEY_PATH;
@@ -51,12 +68,14 @@ export function createRuntimeHostPeerClientFromEnvironment(
       'Experimental direct peer requires MAKA_RUNTIME_HOST_PEER_NATIVE_PATH and MAKA_RUNTIME_HOST_PEER_KEY_PATH',
     );
   }
-  return createRuntimeHostPeerClient({ nativePath, keyPath });
+  return createRuntimeHostPeerClient({ nativePath, keyPath, ...options });
 }
 
 export function createRuntimeHostPeerClient(input: {
   readonly nativePath: string;
   readonly keyPath: string;
+  readonly listenAddresses?: readonly string[];
+  readonly coordinationRelays?: readonly string[];
 }): RuntimeHostPeerClient {
   return new RuntimeHostPeerClientImpl(input);
 }
@@ -64,26 +83,104 @@ export function createRuntimeHostPeerClient(input: {
 class RuntimeHostPeerClientImpl implements RuntimeHostPeerClient {
   readonly #nativePath: string;
   readonly #keyPath: string;
+  readonly #listenAddresses: readonly string[] | undefined;
+  readonly #coordinationRelays: readonly string[] | undefined;
   #endpoint: RuntimeHostPeerNativeEndpoint | undefined;
   #draining: Promise<void> | undefined;
+  #meshDraining: Promise<void> | undefined;
+  #meshConsumer:
+    | {
+        readonly onStream: (stream: RuntimeHostPeerNativeStream) => void;
+        readonly resolve: () => void;
+        readonly reject: (error: Error) => void;
+      }
+    | undefined;
   #terminalError: Error | undefined;
   #nextRequestId = 1;
   #closed = false;
   #closeTask: Promise<void> | undefined;
 
-  constructor(input: { readonly nativePath: string; readonly keyPath: string }) {
+  constructor(input: {
+    readonly nativePath: string;
+    readonly keyPath: string;
+    readonly listenAddresses?: readonly string[];
+    readonly coordinationRelays?: readonly string[];
+  }) {
     this.#nativePath = input.nativePath;
     this.#keyPath = input.keyPath;
+    this.#listenAddresses = input.listenAddresses;
+    this.#coordinationRelays = input.coordinationRelays;
+  }
+
+  identity(): Readonly<{
+    peerId: string;
+    listenAddresses: readonly string[];
+    coordinationRelays: readonly string[];
+  }> {
+    const endpoint = this.#requireEndpoint();
+    return Object.freeze({
+      peerId: endpoint.peerId,
+      listenAddresses: Object.freeze([...endpoint.listenAddresses]),
+      coordinationRelays: Object.freeze([...(this.#coordinationRelays ?? [])]),
+    });
   }
 
   async connect(
     input: RuntimeHostPeerConnectInput,
     signal?: AbortSignal,
   ): Promise<RuntimeHostPeerNativeStream> {
+    return this.#connect(input, signal, 'application');
+  }
+
+  async connectMeshControl(
+    input: RuntimeHostPeerConnectInput,
+    signal?: AbortSignal,
+  ): Promise<RuntimeHostPeerNativeStream> {
+    return this.#connect(input, signal, 'mesh-control');
+  }
+
+  serveMeshControl(
+    onStream: (stream: RuntimeHostPeerNativeStream) => void,
+    signal: AbortSignal,
+  ): Promise<void> {
+    signal.throwIfAborted();
+    if (this.#meshConsumer) {
+      return Promise.reject(new Error('Runtime Host peer Mesh control is already being served'));
+    }
+    this.#requireEndpoint();
+    let resolve!: () => void;
+    let reject!: (error: Error) => void;
+    const serving = new Promise<void>((resolvePromise, rejectPromise) => {
+      resolve = resolvePromise;
+      reject = rejectPromise;
+    });
+    const consumer = { onStream, resolve, reject };
+    this.#meshConsumer = consumer;
+    const stop = () => {
+      if (this.#meshConsumer !== consumer) return;
+      this.#meshConsumer = undefined;
+      resolve();
+    };
+    signal.addEventListener('abort', stop, { once: true });
+    if (signal.aborted) stop();
+    return serving.finally(() => {
+      signal.removeEventListener('abort', stop);
+      if (this.#meshConsumer === consumer) this.#meshConsumer = undefined;
+    });
+  }
+
+  async #connect(
+    input: RuntimeHostPeerConnectInput,
+    signal: AbortSignal | undefined,
+    kind: 'application' | 'mesh-control',
+  ): Promise<RuntimeHostPeerNativeStream> {
     signal?.throwIfAborted();
     const endpoint = this.#requireEndpoint();
     const requestId = this.#allocateRequestId();
-    const connection = endpoint.connect({ ...input, requestId });
+    const connection = endpoint[kind === 'application' ? 'connect' : 'connectMeshControl']({
+      ...input,
+      requestId,
+    });
     let settled = false;
     const cancel = () => {
       void cancelPeerConnect(endpoint, requestId, () => settled);
@@ -125,9 +222,12 @@ class RuntimeHostPeerClientImpl implements RuntimeHostPeerClient {
     const endpoint = startRuntimeHostPeerEndpoint({
       nativePath: this.#nativePath,
       keyPath: this.#keyPath,
+      ...(this.#listenAddresses ? { listenAddresses: this.#listenAddresses } : {}),
+      ...(this.#coordinationRelays ? { coordinationRelays: this.#coordinationRelays } : {}),
     });
     this.#endpoint = endpoint;
     this.#draining = this.#drainInbound(endpoint);
+    this.#meshDraining = this.#drainMeshInbound(endpoint);
     return endpoint;
   }
 
@@ -150,6 +250,35 @@ class RuntimeHostPeerClientImpl implements RuntimeHostPeerClient {
     }
   }
 
+  async #drainMeshInbound(endpoint: RuntimeHostPeerNativeEndpoint): Promise<void> {
+    try {
+      while (true) {
+        const stream = await endpoint.acceptMeshControl();
+        if (!stream) {
+          const error = new Error('Runtime Host peer networking stopped unexpectedly');
+          if (!this.#closed) this.#terminalError = error;
+          this.#finishMeshConsumer(this.#closed ? undefined : error);
+          return;
+        }
+        const consumer = this.#meshConsumer;
+        if (consumer) consumer.onStream(stream);
+        else stream.abort();
+      }
+    } catch (error) {
+      const failure = error instanceof Error ? error : new Error(String(error));
+      if (!this.#closed) this.#terminalError = failure;
+      this.#finishMeshConsumer(this.#closed ? undefined : failure);
+    }
+  }
+
+  #finishMeshConsumer(error?: Error): void {
+    const consumer = this.#meshConsumer;
+    if (!consumer) return;
+    this.#meshConsumer = undefined;
+    if (error) consumer.reject(error);
+    else consumer.resolve();
+  }
+
   async #close(): Promise<void> {
     this.#closed = true;
     const endpoint = this.#endpoint;
@@ -163,7 +292,7 @@ class RuntimeHostPeerClientImpl implements RuntimeHostPeerClient {
       closeFailed = true;
       closeError = error;
     }
-    await this.#draining;
+    await Promise.all([this.#draining, this.#meshDraining]);
     if (closeFailed) throw closeError;
   }
 
