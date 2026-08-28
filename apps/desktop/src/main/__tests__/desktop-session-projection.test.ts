@@ -205,11 +205,11 @@ test('projects durable WorkHub delegation targets into the Desktop host namespac
     { hostId: 'remote-root' },
     {
       type: 'workhub_coordination',
-      id: 'delegation-commit-message',
+      id: 'delegation-assignment-message',
       turnId: 'coordination-turn',
       ts: 2,
       schemaVersion: 1,
-      kind: 'delegation_committed',
+      kind: 'delegation_assigned',
       actionId: 'action-id',
       actionFingerprint: `sha256:${'a'.repeat(64)}`,
       coordinationTurnId: 'coordination-turn',
@@ -218,6 +218,8 @@ test('projects durable WorkHub delegation targets into the Desktop host namespac
       userText: 'Continue payment work',
       delegationId: 'delegation-id',
       targetTurnId: 'payments-turn',
+      targetMessageId: 'payments-message',
+      targetSessionName: 'Payments',
     },
   );
 

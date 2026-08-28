@@ -347,6 +347,20 @@ export class HostMessageCoordinator implements RuntimeMessageAuthority {
     'turn.interrupt': (input) => this.interrupt(input),
   };
 
+  /**
+   * Submit while reusing a caller-owned Session admission. WorkHub uses this
+   * after atomically committing its assignment and target admission so the
+   * active root cannot turn over between the durable decision and its first
+   * in-memory wake attempt.
+   */
+  submitWithAdmissionLease(
+    input: TurnMessageSubmitInput,
+    context: ConnectionContext,
+    admission: SessionAdmissionLease,
+  ): Promise<MessageOutcome<TurnMessageSubmitResult>> {
+    return this.submit(input, context, admission);
+  }
+
   readonly #hostEpoch: string;
   readonly #root: HostMessageRootPort;
   readonly #durableProof: HostMessageDurableProofReader;
@@ -774,6 +788,7 @@ export class HostMessageCoordinator implements RuntimeMessageAuthority {
   private submit(
     input: TurnMessageSubmitInput,
     context: ConnectionContext,
+    admission?: SessionAdmissionLease,
   ): Promise<MessageOutcome<TurnMessageSubmitResult>> {
     const payload = canonicalSubmitPayload(input);
     const isCurrentEpoch = input.originHostEpoch === this.#hostEpoch;
@@ -790,9 +805,11 @@ export class HostMessageCoordinator implements RuntimeMessageAuthority {
     if (this.#failStopped) {
       return Promise.resolve(failure('host_draining', 'Runtime Host message authority has failed'));
     }
-    if (!isCurrentEpoch) return this.#submitAdmitted(input, payload, context.connectionId);
+    if (!isCurrentEpoch) {
+      return this.#submitAdmitted(input, payload, context.connectionId, admission);
+    }
     const key = operationKey(input.sessionId, input.messageId);
-    const result = this.#submitAdmitted(input, payload, context.connectionId);
+    const result = this.#submitAdmitted(input, payload, context.connectionId, admission);
     this.#pendingSubmits.set(key, { payload, result });
     void result.then(
       () => this.#deletePendingSubmit(key, result),
@@ -805,8 +822,11 @@ export class HostMessageCoordinator implements RuntimeMessageAuthority {
     input: TurnMessageSubmitInput,
     payload: CanonicalSubmitPayload,
     initiatingConnectionId: string,
+    admittedLease?: SessionAdmissionLease,
   ): Promise<MessageOutcome<TurnMessageSubmitResult>> {
-    return this.#sessionAdmission.run(input.sessionId, async (admission) => {
+    const execute = async (
+      admission: SessionAdmissionLease,
+    ): Promise<MessageOutcome<TurnMessageSubmitResult>> => {
       if (this.#failStopped) {
         return failure('host_draining', 'Runtime Host message authority has failed');
       }
@@ -1074,7 +1094,12 @@ export class HostMessageCoordinator implements RuntimeMessageAuthority {
         );
         return success(result);
       }
-    });
+    };
+    return admittedLease
+      ? this.#sessionAdmission.runAdmitted(input.sessionId, admittedLease, () =>
+          execute(admittedLease),
+        )
+      : this.#sessionAdmission.run(input.sessionId, execute);
   }
 
   private retract(input: QueueRetractInput): Promise<MessageOutcome<QueueRetractResult>> {

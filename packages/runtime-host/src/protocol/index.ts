@@ -93,7 +93,9 @@ export const RUNTIME_HOST_REGISTRATION_SCHEMA_VERSION = 1 as const;
 export const RUNTIME_HOST_PROTOCOL_VERSION = 0 as const;
 // Increment when the same protocol version no longer guarantees safe Client-Host
 // interoperability. Mismatches are rejected before domain commands are admitted.
-export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 59 as const;
+export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 60 as const;
+// 60: WorkHub stores a canonical delegation assignment record. Older peers
+// cannot decode this message during transcript recovery.
 // 59: Scheduled Turn provider-retry frames may carry an optional host-clock
 // `ts`, letting a mid-wait re-projection recompute the authoritative
 // remaining duration. Older peers decode the frame with an exact key list
@@ -110,9 +112,8 @@ export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 59 as const;
 // 55: Local owners can atomically revoke every credential for one access
 // principal, closing pairing-finalize races that credential-by-ID revocation cannot.
 // 54: Client-bound pairing candidates restrict pre-claim authority and bind
-// their durable credential to the claiming Client identity. WorkHub also stores
-// strict durable delegation intent, commit, and abandonment records that older
-// peers cannot decode during transcript recovery.
+// their durable credential to the claiming Client identity; it is also reserved
+// by concurrent protocol changes in #3390.
 // 53: Message admission answers `turn.message.submit` with an explicit
 // disposition, and queued Messages can be proven cancelled. Older peers read the
 // answer as a bare acknowledgement and cannot reconcile their own projection.

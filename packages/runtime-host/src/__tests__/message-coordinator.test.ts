@@ -44,6 +44,42 @@ import { SessionAdmissionGate } from '../server/session-admission-gate.js';
 
 const ROOT = { sessionId: 'session-1', turnId: 'turn-1', runId: 'run-1' } as const;
 
+test('a caller-owned admission can atomically commit and wake steering', async () => {
+  const fixture = createFixture();
+  fixture.coordinator.reserveRootTurn(ROOT);
+  fixture.coordinator.bindRun(ROOT);
+  const content = { text: 'atomic WorkHub assignment' };
+  await fixture.admissions.commitMessageAdmission({
+    ...ROOT,
+    messageId: 'workhub-message',
+    content,
+    submittedContentDigest: messageContentDigest(content),
+    submittedPlacement: 'current_turn',
+    placement: 'current_turn',
+    disposition: 'steering',
+    admittedAt: 10,
+  });
+
+  const outcome = await fixture.sessionAdmission.runMany(
+    ['maka_workhub_coordination', ROOT.sessionId],
+    (lease) =>
+      fixture.coordinator.submitWithAdmissionLease(
+        {
+          originHostEpoch: 'epoch-1',
+          sessionId: ROOT.sessionId,
+          messageId: 'workhub-message',
+          content,
+          placement: 'current_turn',
+        },
+        operationContext(),
+        lease,
+      ),
+  );
+
+  assert.equal(outcome.ok, true);
+  assert.equal(fixture.coordinator.projection(ROOT.sessionId).steering.length, 1);
+});
+
 test('idle submit starts exactly one root Turn and retry identity is connection-independent', async () => {
   const fixture = createFixture();
   fixture.setRootState({ kind: 'idle' });
@@ -2278,6 +2314,7 @@ function createFixture(
     }
   >();
   const admissions = memoryMessageAdmissionStore(messageAdmissions);
+  const sessionAdmission = new SessionAdmissionGate();
   const stopClaimed = deferred<void>();
   const terminal = deferred<TurnSnapshot>();
   let coordinator: HostMessageCoordinator;
@@ -2384,7 +2421,7 @@ function createFixture(
       },
     },
     admissions,
-    sessionAdmission: new SessionAdmissionGate(),
+    sessionAdmission,
     acquireResidency: () => {
       liveResidencies += 1;
       let released = false;
@@ -2407,6 +2444,7 @@ function createFixture(
   return {
     coordinator,
     admissions,
+    sessionAdmission,
     setRootState: (state: HostMessageRootState) => {
       rootState = state;
     },

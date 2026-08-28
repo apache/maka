@@ -49,6 +49,7 @@ import {
   type SessionHeaderSnapshot,
   type ExecutionStoresWriter,
 } from '@maka/storage/execution-stores';
+import type { CreateStableSessionRequest } from '@maka/storage/session-store';
 import type { RuntimePolicyStoresWriter } from '@maka/storage/runtime-policy-stores';
 import {
   SessionConfigurationRevisionConflictError,
@@ -148,10 +149,6 @@ interface ResolvedSessionModel {
   readonly model: string;
 }
 
-// Stable Session creation owns revision 1; any later metadata or execution
-// mutation advances it and therefore revokes WorkHub's empty-Session cleanup.
-const STABLE_SESSION_INITIAL_REVISION = 1;
-
 /** Host-owned Session catalog, creation, and configuration authority. */
 export class HostSessionCatalogCoordinator {
   readonly handlers: SessionCatalogOperationHandlerMap = {
@@ -204,29 +201,36 @@ export class HostSessionCatalogCoordinator {
   }
 
   /** WorkHub Action Gate path; callers cannot bypass the typed operation outcome. */
-  async createForWorkHub(input: SessionCreateInput): Promise<{
-    readonly outcome: OperationOutcome<'session.create'>;
-    readonly discardRevision?: number;
-    readonly retired?: true;
-  }> {
-    let discardRevision: number | undefined;
-    let retired: true | undefined;
-    const rememberDiscardRevision = (revision: number) => {
-      discardRevision = revision;
-    };
-    const outcome = await this.#create(
-      input,
-      rememberDiscardRevision,
-      rememberDiscardRevision,
-      () => {
-        retired = true;
-      },
-    );
-    return {
-      outcome,
-      ...(discardRevision === undefined ? {} : { discardRevision }),
-      ...(retired ? { retired } : {}),
-    };
+  createForWorkHub(input: SessionCreateInput): Promise<OperationOutcome<'session.create'>> {
+    return this.#create(input);
+  }
+
+  /** Prepare external facts before WorkHub commits create + assignment atomically. */
+  async prepareWorkHubCreate(input: SessionCreateInput): Promise<CreateStableSessionRequest> {
+    const prepared = await prepareCreate(input);
+    return this.#workspaceResolver.runWithUsageRecorded(input.workspace, async (workspace) => {
+      const [model, policy] = await Promise.all([
+        this.#resolveModel(input.modelTarget, input.thinkingLevel),
+        this.#readRuntimePolicy(),
+      ]);
+      return {
+        sessionId: input.sessionId,
+        requestFingerprint: createRequestFingerprint(input, prepared),
+        input: {
+          cwd: workspace.cwd,
+          ...(workspace.projectId === null ? {} : { projectId: workspace.projectId }),
+          name: prepared.name,
+          labels: [...prepared.labels],
+          llmConnectionSlug: model.connectionSlug,
+          model: model.model,
+          ...(input.thinkingLevel === undefined ? {} : { thinkingLevel: input.thinkingLevel }),
+          ...(input.toolProfile === undefined ? {} : { toolProfile: input.toolProfile }),
+          permissionMode: prepared.permissionMode ?? policy.policy.chatDefaults.permissionMode,
+          collaborationMode: input.collaborationMode ?? 'agent',
+          orchestrationMode: input.orchestrationMode ?? 'default',
+        },
+      };
+    });
   }
 
   async #query(
@@ -361,12 +365,7 @@ export class HostSessionCatalogCoordinator {
     }
   }
 
-  async #create(
-    input: SessionCreateInput,
-    onCreated?: (revision: number) => void,
-    onPristineReplay?: (revision: number) => void,
-    onRetiredReplay?: () => void,
-  ): Promise<OperationOutcome<'session.create'>> {
+  async #create(input: SessionCreateInput): Promise<OperationOutcome<'session.create'>> {
     if (isWorkHubCoordinationSessionId(input.sessionId)) {
       return createFailure(
         'operation_conflict',
@@ -389,15 +388,11 @@ export class HostSessionCatalogCoordinator {
           requestFingerprint,
         );
         if (probe.kind === 'existing') {
-          if (probe.record.revision === STABLE_SESSION_INITIAL_REVISION) {
-            onPristineReplay?.(probe.record.revision);
-          }
           return createSuccess(
             projectSessionCatalogRecord(await this.#stores.readCatalogRecord(input.sessionId)),
           );
         }
         if (probe.kind === 'conflict') {
-          if (probe.reason === 'removed') onRetiredReplay?.();
           return createFailure(
             'operation_conflict',
             'Session identity belongs to a different create request',
@@ -430,18 +425,10 @@ export class HostSessionCatalogCoordinator {
               input: createInput,
             });
             if (result.kind === 'conflict') {
-              if (result.reason === 'removed') onRetiredReplay?.();
               return createFailure(
                 'operation_conflict',
                 'Session identity belongs to a different create request',
               );
-            }
-            if (result.kind === 'created') onCreated?.(result.record.revision);
-            else if (
-              result.kind === 'existing' &&
-              result.record.revision === STABLE_SESSION_INITIAL_REVISION
-            ) {
-              onPristineReplay?.(result.record.revision);
             }
             await this.#continuity.refreshCanonical(input.sessionId, lease);
             return createSuccess(

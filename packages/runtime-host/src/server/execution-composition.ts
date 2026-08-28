@@ -18,7 +18,7 @@
  */
 
 import { createHash, randomUUID } from 'node:crypto';
-import { normalizeMessageContent } from '@maka/core/events';
+import { messageContentDigest, normalizeMessageContent } from '@maka/core/events';
 import {
   describeChatConfigurationReason,
   NO_REAL_CONNECTION_CODE,
@@ -27,7 +27,7 @@ import type { RuntimeExecutionConnection } from '@maka/core/llm-connections';
 import { generalizedErrorMessage } from '@maka/core/redaction';
 import { emptyPlanSessionState } from '@maka/core/plan';
 import type { PermissionMode } from '@maka/core/permission';
-import { isDeepResearchSession } from '@maka/core/session';
+import { isDeepResearchSession, WORKHUB_COORDINATION_SESSION_ID } from '@maka/core/session';
 import { filterModelVisibleTaskLedgerTasks } from '@maka/core/task-ledger';
 import { AgentGraphCoordinator } from '@maka/runtime/stream-graph-coordinator';
 import { AgentGraphSupervisorWakeCoordinator } from '@maka/runtime/agent-graph-supervisor-wake';
@@ -88,7 +88,6 @@ import {
   createHostChildAgentToolComposition,
 } from './child-agent-composition.js';
 import { HostCanonicalPermissionOutcomeReader } from './canonical-permission-outcome-reader.js';
-import { recoverWorkHubTargetSubmission } from './workhub-target-submission-recovery.js';
 import { HostArtifactCoordinator } from './artifact-coordinator.js';
 import { HostAgentGraphCoordinator } from './agent-graph-coordinator.js';
 import { HostAgentGraphExecutionCoordinator } from './agent-graph-execution-coordinator.js';
@@ -469,7 +468,6 @@ export async function createExecutionRuntimeHostComposition(
     let goal: HostGoalCoordinator | undefined;
     let deepResearch: HostDeepResearchCoordinator | undefined;
     let dailyReview: HostDailyReviewCoordinator | undefined;
-    let sessionRetirement: HostSessionRetirementCoordinator | undefined;
     const rootPort: HostMessageRootPort = {
       readSessionHeader: (sessionId) =>
         requireRootCoordinator(rootCoordinator).readSessionHeader(sessionId),
@@ -1232,100 +1230,132 @@ export async function createExecutionRuntimeHostComposition(
       continuity: continuityCoordinator,
       executions: coordinator,
       sessionActions: {
-        create: async (input) => {
-          const created = await sessionCatalog.createForWorkHub({
-            sessionId: input.sessionId,
-            workspace: input.workspace,
-            name: input.title,
-            modelTarget: { kind: 'default' },
-            collaborationMode: 'agent',
-            orchestrationMode: 'default',
-          });
-          const { outcome } = created;
-          if (created.retired) return { kind: 'retired' as const };
-          if (!outcome.ok) {
-            throw new WorkHubActionEffectFailure(
-              outcome.error.code === 'invalid_request' ? 'operation_conflict' : outcome.error.code,
-              outcome.error.message,
-            );
+        assign: async (input, connection) => {
+          const durable = await stores.sessionStore.readWorkHubAssignment(input.actionId);
+          const create =
+            !durable && input.create
+              ? await sessionCatalog.prepareWorkHubCreate({
+                  sessionId: input.targetSessionId,
+                  workspace: input.create.workspace,
+                  name: input.create.title,
+                  modelTarget: { kind: 'default' },
+                  collaborationMode: 'agent',
+                  orchestrationMode: 'default',
+                })
+              : undefined;
+          const suffix = createHash('sha256')
+            .update(input.actionId, 'utf8')
+            .digest('hex')
+            .slice(0, 48);
+          const messageId = `whm_${suffix}`;
+          const content = normalizeMessageContent({ text: input.userText });
+          let wakeFailed = false;
+          const persisted =
+            durable ??
+            (await sessionAdmission.runMany(
+              [WORKHUB_COORDINATION_SESSION_ID, input.targetSessionId],
+              async (lease) => {
+                const rootState = coordinator.readRootState(input.targetSessionId);
+                if (!create && rootState.kind === 'reserved') {
+                  throw new WorkHubActionEffectFailure(
+                    'session_busy',
+                    'A target root Turn is being admitted',
+                  );
+                }
+                const steered = rootState.kind === 'active';
+                const turnId = steered ? rootState.turnId : `wht_${suffix}`;
+                const runId = steered ? rootState.runId : `whr_${suffix}`;
+                const assignedAt = Date.now();
+                const result = await stores.sessionStore.assignWorkHubMessage({
+                  assignment: {
+                    type: 'workhub_coordination',
+                    id: `wha_${suffix}`,
+                    turnId: input.actionId,
+                    ts: assignedAt,
+                    schemaVersion: 1,
+                    kind: 'delegation_assigned',
+                    actionId: input.actionId,
+                    actionFingerprint: input.actionFingerprint,
+                    coordinationTurnId: input.actionId,
+                    targetSessionId: input.targetSessionId,
+                    targetSessionName: input.targetSessionName,
+                    targetTurnId: turnId,
+                    targetMessageId: messageId,
+                    delegationId: `whd_${suffix}`,
+                    disposition: input.disposition,
+                    userText: input.userText,
+                    ...(steered ? { steered: true as const } : {}),
+                    ...(input.create ? { create: input.create } : {}),
+                  },
+                  admission: {
+                    sessionId: input.targetSessionId,
+                    turnId,
+                    runId,
+                    messageId,
+                    content,
+                    submittedContentDigest: messageContentDigest(content),
+                    submittedPlacement: 'current_turn',
+                    placement: 'current_turn',
+                    disposition: 'steering',
+                    admittedAt: assignedAt,
+                  },
+                  ...(create ? { create } : {}),
+                });
+                try {
+                  await continuityCoordinator.refreshCanonical(
+                    WORKHUB_COORDINATION_SESSION_ID,
+                    lease,
+                  );
+                  await continuityCoordinator.refreshCanonical(input.targetSessionId, lease);
+                  const outcome = await messages.submitWithAdmissionLease(
+                    {
+                      originHostEpoch: connection.hostEpoch,
+                      sessionId: result.assignment.targetSessionId,
+                      messageId: result.assignment.targetMessageId,
+                      content: normalizeMessageContent({ text: result.assignment.userText }),
+                      placement: 'current_turn',
+                    },
+                    connection,
+                    lease,
+                  );
+                  wakeFailed = !outcome.ok;
+                } catch {
+                  // The atomic assignment is already committed. Do not turn a
+                  // post-commit projection or wake failure into a rejected
+                  // WorkHub action; normal inbox recovery owns consumption.
+                  wakeFailed = true;
+                }
+                return result.assignment;
+              },
+            ));
+
+          if (durable) {
+            try {
+              const outcome = await messages.handlers['turn.message.submit'](
+                {
+                  originHostEpoch: connection.hostEpoch,
+                  sessionId: persisted.targetSessionId,
+                  messageId: persisted.targetMessageId,
+                  content: normalizeMessageContent({ text: persisted.userText }),
+                  placement: 'current_turn',
+                },
+                connection,
+              );
+              wakeFailed = !outcome.ok;
+            } catch {
+              wakeFailed = true;
+            }
           }
-          return created.discardRevision === undefined
-            ? { kind: 'available' as const }
-            : { kind: 'available' as const, discardRevision: created.discardRevision };
-        },
-        discardCreated: async (input, connection) => {
-          const outcome = await requireSessionRetirement(sessionRetirement).handlers[
-            'session.remove'
-          ](
-            {
-              sessionId: input.sessionId,
-              expectedRevision: input.expectedRevision,
-            },
-            connection,
-          );
-          if (!outcome.ok) {
-            if (outcome.error.code === 'not_found') return;
-            throw new WorkHubActionEffectFailure(outcome.error.code, outcome.error.message);
+          if (wakeFailed) {
+            // Assignment is the acknowledged WorkHub outcome. The pending
+            // admission remains the target Session's durable inbox and normal
+            // Host recovery owns another consumption attempt.
+            context.requestDrain();
           }
-          if (outcome.result.kind !== 'removed') {
-            throw new WorkHubActionEffectFailure(
-              'operation_conflict',
-              'WorkHub empty created Session changed before retirement',
-            );
-          }
-        },
-        submit: async (input, connection) => {
-          const outcome = await messages.handlers['turn.message.submit'](
-            {
-              originHostEpoch: connection.hostEpoch,
-              sessionId: input.sessionId,
-              messageId: input.messageId,
-              content: normalizeMessageContent({ text: input.text }),
-              placement: 'current_turn',
-            },
-            connection,
-          );
-          if (!outcome.ok) {
-            throw new WorkHubActionEffectFailure(
-              outcome.error.code === 'outcome_unknown'
-                ? 'commit_outcome_unknown'
-                : outcome.error.code,
-              outcome.error.message,
-            );
-          }
-          if (outcome.result.disposition === 'turn_started') {
-            return { turnId: outcome.result.turnId };
-          }
-          try {
-            const admission = await stores.sessionStore.readMessageAdmission(
-              input.sessionId,
-              input.messageId,
-            );
-            if (admission) return { turnId: admission.turnId, steered: true as const };
-          } catch {
-            // The submit already settled; losing its exact Turn identity makes
-            // the WorkHub linkage outcome uncertain rather than retryable.
-          }
-          context.requestDrain();
-          throw new WorkHubActionEffectFailure(
-            'commit_outcome_unknown',
-            'WorkHub target Turn identity could not be proven',
-          );
-        },
-        recoverSubmission: async (input) => {
-          return recoverWorkHubTargetSubmission(
-            {
-              readRootTurnSourceMessageReceipt: (sessionId, messageId) =>
-                stores.agentRunStore.readRootTurnSourceMessageReceipt(sessionId, messageId),
-              readMessageAdmission: (sessionId, messageId) =>
-                stores.sessionStore.readMessageAdmission(sessionId, messageId),
-              readRootTurnAdmission: (sessionId, turnId) =>
-                stores.agentRunStore.readRootTurnAdmission(sessionId, turnId),
-              readImmutableSteeringMessageProof: (sessionId, messageId) =>
-                stores.runtimeEventStore.readImmutableSteeringMessageProof(sessionId, messageId),
-            },
-            input,
-          );
+          return {
+            turnId: persisted.targetTurnId,
+            ...(persisted.steered ? { steered: true as const } : {}),
+          };
         },
       },
       resolveCreateTarget: async () => {
@@ -1398,7 +1428,7 @@ export async function createExecutionRuntimeHostComposition(
       isSessionActive: (sessionId) => coordinator.readRootState(sessionId).kind !== 'idle',
       requestDrain: context.requestDrain,
     });
-    sessionRetirement = new HostSessionRetirementCoordinator({
+    const sessionRetirement = new HostSessionRetirementCoordinator({
       stores: stores.sessionStore,
       admission: sessionAdmission,
       root: coordinator,
@@ -1778,13 +1808,6 @@ export async function createExecutionRuntimeHostComposition(
 
 function requireRootCoordinator(coordinator: RootTurnCoordinator | undefined): RootTurnCoordinator {
   if (!coordinator) throw new Error('Runtime Host root coordinator is not composed');
-  return coordinator;
-}
-
-function requireSessionRetirement(
-  coordinator: HostSessionRetirementCoordinator | undefined,
-): HostSessionRetirementCoordinator {
-  if (!coordinator) throw new Error('Session retirement authority is unavailable');
   return coordinator;
 }
 

@@ -3325,23 +3325,15 @@ const makaBridge = {
 // exposeInMainWorld: the bridge is cloned into the main world at expose time,
 // and the exposed clone is sealed against later patching.
 if (process.env.MAKA_E2E === '1' && process.env.MAKA_E2E_USER_DATA_DIR) {
-  type LatchKey =
-    | 'newTasks.listInvocableSkills'
-    | 'sessions.list'
-    | 'settings.chunk'
-    | 'workHub.record';
+  type LatchKey = 'newTasks.listInvocableSkills' | 'sessions.list' | 'settings.chunk';
   const gates = new Map<LatchKey, { promise: Promise<void>; oneShot: boolean }>();
   const releases = new Map<LatchKey, { resolve: () => void; reject: (error: Error) => void }>();
   let nextSessionObservationError: Error | undefined;
-  const callWaiters = new Map<LatchKey, Array<() => void>>();
   const invocableSkillsWaiters = new Map<string, Array<() => void>>();
   const waitForLatch = async (key: LatchKey): Promise<void> => {
     const gate = gates.get(key);
     if (!gate) return;
     if (gate.oneShot) gates.delete(key);
-    const waiter = callWaiters.get(key)?.shift();
-    if (callWaiters.get(key)?.length === 0) callWaiters.delete(key);
-    waiter?.();
     await gate.promise;
   };
   const wrapLatched = <Args extends unknown[], Result>(
@@ -3386,10 +3378,6 @@ if (process.env.MAKA_E2E === '1' && process.env.MAKA_E2E_USER_DATA_DIR) {
       disposed = true;
     };
   };
-  makaBridge.workHub.record = wrapLatched(
-    makaBridge.workHub.record.bind(makaBridge.workHub),
-    'workHub.record',
-  );
   const listInvocableSkills = makaBridge.skills.listInvocable.bind(makaBridge.skills);
   makaBridge.skills.listInvocable = async (...args) => {
     try {
@@ -3421,13 +3409,6 @@ if (process.env.MAKA_E2E === '1' && process.env.MAKA_E2E_USER_DATA_DIR) {
     },
     wait(key: 'settings.chunk') {
       return waitForLatch(key);
-    },
-    waitForCall(key: LatchKey) {
-      return new Promise<void>((resolve) => {
-        const waiters = callWaiters.get(key) ?? [];
-        waiters.push(resolve);
-        callWaiters.set(key, waiters);
-      });
     },
     waitForInvocableSkillsCall(sessionId: string) {
       return new Promise<void>((resolve) => {

@@ -78,6 +78,10 @@ export interface WorkHubCoordinationTurn {
   text: string;
   state: WorkHubProjectedTurnState;
   result?: string;
+  assignment?: {
+    readonly targetSessionId: string;
+    readonly targetSessionName: string;
+  };
   updatedAt: number;
 }
 

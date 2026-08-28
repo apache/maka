@@ -548,7 +548,9 @@ export function collectSearchableText(message: StoredMessage): string | undefine
     case 'turn_state':
     case 'workhub_coordination':
     case 'system_note':
-      // Excluded — not user-typed / not user-visible content.
+      // Coordination records are rendered by WorkHub, but the reserved
+      // Coordination Session is intentionally outside general thread search.
+      // The remaining cases are not user-typed / not user-visible content.
       return undefined;
   }
 }

@@ -161,7 +161,15 @@ export async function submitAndRecordWorkHubSurfaceInput(input: {
   // Waiting is a local, retryable admission result: the request has not been
   // accepted and must not consume the immutable Coordination summary owned by
   // this action identity. A later same-identity retry may still be admitted.
-  if (result.kind === 'discussion' || result.kind === 'waiting') return result;
+  // Delegations project directly from the Host's atomic delegation_assigned
+  // record. Only local clarification still needs the generic summary path.
+  if (
+    result.kind === 'discussion' ||
+    result.kind === 'waiting' ||
+    result.kind === 'submitted'
+  ) {
+    return result;
+  }
   try {
     await input.controller.recordConversationTurn({
       turnId: input.request.requestId,
@@ -182,18 +190,15 @@ export async function submitLeasedWorkHubSurfaceInput(input: {
   preserveDraft?: boolean;
   submit(attempt: WorkHubSendAttempt): Promise<WorkHubSubmission | undefined>;
 }): Promise<boolean> {
-  const attempt = input.lease.acquireAttempt(input.text, {
-    preserveDraft: input.preserveDraft,
-  });
-  if (input.preserveDraft && attempt.text !== input.text) return false;
+  const attempt = input.lease.acquireAttempt(input.text);
   const result = await input.submit(attempt);
   if (!result) return false;
   const clearsDraft = input.lease.settle(
     attempt.requestId,
+    attempt.text,
     workHubSubmissionClearsDraft(result),
   );
   if (input.preserveDraft && clearsDraft) {
-    input.lease.write('workhub', '');
     return false;
   }
   return clearsDraft;
@@ -295,13 +300,9 @@ export function WorkHubSurface(props: {
           controller: props.controller,
           request: input,
           recordedUserText,
-          summary: (result) => sendLease.summary(
-            input.requestId,
-            () => workHubCoordinationSummary(result, projection, copy),
-          ),
-          // The ordinary Session admission may already have settled. A failed
-          // Coordination summary keeps this send incomplete so the retry
-          // reuses its durable Action Gate identity before filling the gap.
+          summary: (result) => workHubCoordinationSummary(result, projection, copy),
+          // Clarification remains a local transcript write; delegated sends
+          // are projected directly from the Host-owned assignment record.
           onSummaryError: () => setConversationError(true),
         });
         setTurns((current) => current.map((turn) =>
@@ -549,7 +550,11 @@ function CoordinationTurnView(props: {
 }) {
   return (
     <WorkHubMessageFrame text={props.turn.text} state={props.turn.state} projected>
-      {props.turn.result ? (
+      {props.turn.assignment ? (
+        <p className="workhub-result">
+          {props.copy.sentTo} {props.turn.assignment.targetSessionName} · {props.copy.accepted}
+        </p>
+      ) : props.turn.result ? (
         <p className="workhub-result">{props.turn.result}</p>
       ) : props.turn.state === 'running' ? (
         <p className="workhub-status" role="status">{props.copy.answering}</p>

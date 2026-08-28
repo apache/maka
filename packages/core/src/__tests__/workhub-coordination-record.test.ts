@@ -24,79 +24,71 @@ import { decodeCanonicalMessage } from '../session.js';
 const FINGERPRINT = `sha256:${'a'.repeat(64)}`;
 
 describe('WorkHub Coordination stored records', () => {
-  test('decodes exact delegation intent, commit, and abandonment records', () => {
-    const intent = {
+  test('decodes one exact atomic delegation assignment', () => {
+    const assigned = {
       type: 'workhub_coordination',
-      id: 'intent-id',
+      id: 'assignment-id',
       turnId: 'coordination-turn',
       ts: 1,
       schemaVersion: 1,
-      kind: 'delegation_intent',
+      kind: 'delegation_assigned',
       actionId: 'action-id',
       actionFingerprint: FINGERPRINT,
       coordinationTurnId: 'coordination-turn',
       targetSessionId: 'payments',
       disposition: 'delegate_existing',
       userText: 'Continue payment work',
-    } as const;
-    const committed = {
-      ...intent,
-      id: 'commit-id',
-      ts: 2,
-      kind: 'delegation_committed',
       delegationId: 'delegation-id',
       targetTurnId: 'target-turn',
+      targetMessageId: 'target-message',
+      targetSessionName: 'Payments',
       steered: true,
     } as const;
-    const abandoned = {
-      ...intent,
-      id: 'abandoned-id',
-      ts: 3,
-      kind: 'delegation_abandoned',
-      reason: 'target_rejected',
-    } as const;
 
-    assert.deepEqual(decodeCanonicalMessage(intent), intent);
-    assert.deepEqual(decodeCanonicalMessage(committed), committed);
-    assert.deepEqual(decodeCanonicalMessage(abandoned), abandoned);
+    assert.deepEqual(decodeCanonicalMessage(assigned), assigned);
   });
 
   test('rejects malformed or widened coordination records', () => {
     const base = {
       type: 'workhub_coordination',
-      id: 'intent-id',
+      id: 'assignment-id',
       turnId: 'coordination-turn',
       ts: 1,
       schemaVersion: 1,
-      kind: 'delegation_intent',
+      kind: 'delegation_assigned',
       actionId: 'action-id',
       actionFingerprint: FINGERPRINT,
       coordinationTurnId: 'coordination-turn',
       targetSessionId: 'payments',
       disposition: 'delegate_existing',
+      userText: 'Continue payment work',
+      delegationId: 'delegation-id',
+      targetTurnId: 'target-turn',
+      targetMessageId: 'target-message',
+      targetSessionName: 'Payments',
     } as const;
 
     for (const invalid of [
       { ...base, coordinationTurnId: 'different-turn' },
       { ...base, actionFingerprint: 'not-a-digest' },
       { ...base, disposition: 'replace' },
-      { ...base, userText: undefined },
+      { ...base, targetMessageId: undefined },
       { ...base, sourceSessionId: 'injected' },
-      { ...base, kind: 'delegation_committed' },
+      { ...base, kind: 'delegation_intent' },
       { ...base, schemaVersion: 2 },
     ]) {
       assert.throws(() => decodeCanonicalMessage(invalid), /Invalid stored message schema/u);
     }
   });
 
-  test('requires a complete create payload only for create_new intents', () => {
+  test('requires a complete create payload only for create_new assignments', () => {
     const create = {
       type: 'workhub_coordination',
-      id: 'create-intent-id',
+      id: 'create-assignment-id',
       turnId: 'coordination-turn',
       ts: 1,
       schemaVersion: 1,
-      kind: 'delegation_intent',
+      kind: 'delegation_assigned',
       actionId: 'action-id',
       actionFingerprint: FINGERPRINT,
       coordinationTurnId: 'coordination-turn',
@@ -107,6 +99,10 @@ describe('WorkHub Coordination stored records', () => {
         title: 'Login audit',
         workspace: { kind: 'project', projectId: 'project-maka' },
       },
+      delegationId: 'delegation-id',
+      targetTurnId: 'target-turn',
+      targetMessageId: 'target-message',
+      targetSessionName: 'Login audit',
     } as const;
 
     assert.deepEqual(decodeCanonicalMessage(create), create);

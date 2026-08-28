@@ -18,12 +18,17 @@
  */
 
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { mkdtemp, rm, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { describe, test } from 'node:test';
-import type { MessageContent } from '@maka/core/events';
+import {
+  messageContentDigest,
+  normalizeMessageContent,
+  type MessageContent,
+} from '@maka/core/events';
 import {
   WORKHUB_COORDINATION_SESSION_ID,
   WORKHUB_COORDINATION_SESSION_ROLE,
@@ -493,15 +498,12 @@ describe('Host WorkHub Coordination coordinator', () => {
         model: 'test-model',
         permissionMode: 'ask',
       });
-      const submissions: Array<{ sessionId: string; messageId: string; text: string }> = [];
+      const assignments: string[] = [];
       const first = coordinator(root, store, () => undefined, undefined, undefined, undefined, {
-        create: async () => ({ kind: 'available' }),
-        discardCreated: async () => undefined,
-        submit: async (input) => {
-          submissions.push(input);
-          return { turnId: 'payments-turn' };
+        assign: async (input) => {
+          assignments.push(input.actionId);
+          return persistTestAssignment(store, input, 'payments-turn');
         },
-        recoverSubmission: async () => undefined,
       });
       assert.equal((await first.handlers['workhub.coordination.resolve']({}, CONTEXT)).ok, true);
       const candidates = await first.handlers['workhub.coordination.candidates']({}, CONTEXT);
@@ -531,18 +533,13 @@ describe('Host WorkHub Coordination coordinator', () => {
           .map(({ kind, actionId, targetSessionId }) => ({ kind, actionId, targetSessionId })),
         [
           {
-            kind: 'delegation_intent',
-            actionId: 'payments-action',
-            targetSessionId: candidates.result.candidates[0]!.sessionId,
-          },
-          {
-            kind: 'delegation_committed',
+            kind: 'delegation_assigned',
             actionId: 'payments-action',
             targetSessionId: candidates.result.candidates[0]!.sessionId,
           },
         ],
       );
-      assert.equal(submissions.length, 1);
+      assert.equal(assignments.length, 1);
     } finally {
       await store.close?.();
     }
@@ -550,11 +547,7 @@ describe('Host WorkHub Coordination coordinator', () => {
     store = createSessionStore(root);
     try {
       const restarted = coordinator(root, store, () => undefined, undefined, undefined, undefined, {
-        create: async () => assert.fail('durable replay must not create a Session'),
-        discardCreated: async () => assert.fail('durable replay must not discard a Session'),
-        submit: async () => assert.fail('durable replay must not submit another Turn'),
-        recoverSubmission: async () =>
-          assert.fail('durable replay must not recover an already committed Turn'),
+        assign: (input) => persistTestAssignment(store, input, 'payments-turn'),
       });
       const candidates = await restarted.handlers['workhub.coordination.candidates']({}, CONTEXT);
       assert.equal(candidates.ok, true);
@@ -718,14 +711,8 @@ function coordinator(
     hasRootTurnAdmission: async () => false,
   },
   admission: SessionAdmissionGate = new SessionAdmissionGate(),
-  sessionActions: Pick<
-    WorkHubActionGateEffects,
-    'create' | 'discardCreated' | 'submit' | 'recoverSubmission'
-  > = {
-    create: async () => ({ kind: 'available' }),
-    discardCreated: async () => undefined,
-    submit: async ({ sessionId }) => ({ turnId: `turn-${sessionId}` }),
-    recoverSubmission: async () => undefined,
+  sessionActions: Pick<WorkHubActionGateEffects, 'assign'> = {
+    assign: async ({ targetSessionId }) => ({ turnId: `turn-${targetSessionId}` }),
   },
 ) {
   return new HostWorkHubCoordinationCoordinator({
@@ -746,4 +733,47 @@ function coordinator(
       })),
     requestDrain,
   });
+}
+
+async function persistTestAssignment(
+  store: SessionAuthorityStore,
+  input: Parameters<WorkHubActionGateEffects['assign']>[0],
+  targetTurnId: string,
+): Promise<{ turnId: string }> {
+  const suffix = createHash('sha256').update(input.actionId, 'utf8').digest('hex').slice(0, 48);
+  const content = normalizeMessageContent({ text: input.userText });
+  const result = await store.assignWorkHubMessage({
+    assignment: {
+      type: 'workhub_coordination',
+      id: `wha_${suffix}`,
+      turnId: input.actionId,
+      ts: Date.now(),
+      schemaVersion: 1,
+      kind: 'delegation_assigned',
+      actionId: input.actionId,
+      actionFingerprint: input.actionFingerprint,
+      coordinationTurnId: input.actionId,
+      targetSessionId: input.targetSessionId,
+      targetSessionName: input.targetSessionName,
+      targetTurnId,
+      targetMessageId: `whm_${suffix}`,
+      delegationId: `whd_${suffix}`,
+      disposition: input.disposition,
+      userText: input.userText,
+      ...(input.create ? { create: input.create } : {}),
+    },
+    admission: {
+      sessionId: input.targetSessionId,
+      turnId: targetTurnId,
+      runId: `whr_${suffix}`,
+      messageId: `whm_${suffix}`,
+      content,
+      submittedContentDigest: messageContentDigest(content),
+      submittedPlacement: 'current_turn',
+      placement: 'current_turn',
+      disposition: 'steering',
+      admittedAt: Date.now(),
+    },
+  });
+  return { turnId: result.assignment.targetTurnId };
 }

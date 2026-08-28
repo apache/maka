@@ -85,9 +85,9 @@ Every WorkHub input resolves to exactly one proposed **disposition**:
 All model and routing output is advisory. Before any write, a deterministic
 **Action Gate** admits or rejects the proposed disposition and operation. The gate
 enforces Runtime Host and target validity, archive and waiting state, self-route
-exclusion, explicit `create_new`, expected-Turn ownership for Stop, confirmation
-requirements, and existing tool and permission ceilings. Neither a model nor a
-routing policy can directly authorize a write or expand execution authority.
+exclusion, explicit `create_new`, and existing tool and permission ceilings.
+Replacement, supersession, and Stop ownership remain deferred. Neither a model
+nor a routing policy can directly authorize a write or expand execution authority.
 
 ## Delegation links rather than copies transcripts
 
@@ -100,59 +100,42 @@ coordinationTurnId
 targetSessionId
 targetTurnId
 disposition
-status
 ```
 
-`status` describes only whether the coordination-owned link is `active` or
-`superseded`; it never mirrors the target Turn's execution lifecycle. Target
-acceptance, running, waiting, completion, failure, abort, and recovery state remain
-ordinary Session facts. WorkHub derives those states as read-only projections and
-does not persist them as independent Coordination Session truth.
+The initial assignment link does not mirror the target Turn's execution lifecycle.
+Target acceptance, running, waiting, completion, failure, abort, and recovery state
+remain ordinary Session facts. WorkHub derives those states as read-only
+projections and does not persist them as independent Coordination Session truth.
+Future replacement support may add coordination-owned `active` / `superseded`
+linkage without turning target execution status into WorkHub-owned state.
 
 The ordinary Session records the delegated request, tools, side effects, and
 authoritative result. WorkHub may display a bounded projection or record a
 coordination summary, but it does not copy the ordinary Session's complete
 transcript into the Coordination Session.
 
-Delegation linkage uses closed, typed `workhub_coordination` records in the
-existing Coordination Session transcript. An immutable `delegation_intent` is
-appended before the target Session effect so an opaque candidate remains
-recoverable after the candidate set changes or the Runtime Host restarts. A
-`delegation_committed` record then binds that intent to the accepted target Turn
-and acts as the durable action-replay result. A mutually exclusive
-`delegation_abandoned` record spends an identity whose target effect was
-definitively rejected; for `create_new`, it also closes a retired deterministic
-Session id. The records carry an action fingerprint to reject conflicting reuse
-of an action identity. They do not form a general workflow state machine and do
-not persist target execution lifecycle.
+Delegation linkage uses one closed, typed `delegation_assigned` record in the
+existing Coordination Session transcript. Under the Coordination and target
+Session admission authorities, one `runtime.sqlite` transaction commits that
+record together with the target pending-message admission. For `create_new`, the
+target Session metadata is created in the same transaction. The record carries the
+exact user text, resolved target and target Message/Turn identities, creation
+context, and stable display name. Its action fingerprint rejects conflicting reuse
+of an action identity.
 
-The renderer persists the Composer draft and its in-flight action as separate
-fields in local storage until both target admission and its Coordination summary
-settle. Draft edits cannot revoke an admitted action, and the identity survives a
-renderer reload or full application relaunch. The lease is scoped by Coordination
-Session, so switching Runtime Hosts cannot move or retire another Host's action
-identity. Retry therefore reuses the same identity instead of treating retained
-text as new work; `waiting_for_user` does not retire that identity, and the first
-generated Coordination summary remains bound to the action across draft changes.
-The durable fingerprint covers stable user intent, not snapshot-scoped candidate
-ids; once prepared, the intent owns the resolved target, exact user text, and any
-`create_new` title/workspace context.
+The transaction is the user-visible assignment boundary. Before commit neither
+Session observes the work; after commit both the WorkHub linkage and target input
+exist. Waking or continuing the in-memory executor happens only after commit. A
+Host crash between commit and wake is handled by ordinary pending-message recovery,
+so WorkHub does not own a second recovery state machine or compensation chain.
+The `delegation_assigned` record itself projects the visible WorkHub turn; the
+renderer does not append a second summary.
 
-Recovery accepts the target Session's existing root receipt, pending admission, or
-immutable steering proof as durable evidence, and checks that evidence before a
-retry submits again. A waiting result is local and retryable: it neither consumes
-the action's immutable Coordination summary nor records a false acceptance. A
-definitive `create_new` submit rejection compensates through the ordinary
-Session-retirement authority. The exact stable create may expose its revision again
-only while the Session remains at the initial revision, so an uncertain retirement
-can be retried without granting cleanup authority over a subsequently mutated
-Session. `not_found` is successful cleanup, while revision, busy, and other
-definitive cleanup failures stay local to the action; only an already-uncertain
-commit path may request Runtime Host drain. An unknown submit outcome never removes
-a possibly admitted Session.
-Recovery is deliberately driven by explicit caller retry rather than an autonomous
-startup scan: the latter would execute user work without a live request context and
-turn this journal into a background workflow engine.
+The renderer persists only a Host-scoped action id until acknowledgement. Composer
+draft text uses a separate storage key and lifecycle. A reload therefore preserves
+idempotency without freezing old text or coupling draft edits to Host authority.
+`waiting_for_user` remains a local, retryable result because no assignment has yet
+been committed.
 
 ## Consequences, costs, and reevaluation
 
@@ -165,10 +148,8 @@ turn this journal into a background workflow engine.
   other Host's Sessions.
 - The special Session role adds provisioning, lookup, recovery, retention, and UI
   obligations even though it deliberately reuses the existing Session substrate.
-- Every delegated Coordination turn adds two invisible journal messages (intent
-  plus committed or abandoned) beside its three visible transcript messages.
-  Message-count page limits therefore retain up to roughly 40% fewer visible
-  delegated turns than an answer-only Coordination history.
+- Every delegated Coordination turn adds one typed assignment record, which is
+  also its visible timeline source.
 - Whether Work is 1:1 with Session, 1:N over Sessions, or an independent durable
   entity remains unresolved.
 - Cross-Runtime-Host coordination remains deferred.

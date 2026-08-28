@@ -121,6 +121,20 @@ export function projectWorkHubCoordinationTurns(
   const latestUserIndexByTurnId = new Map<string, number>();
 
   for (const message of messages) {
+    if (message.type === 'workhub_coordination' && message.kind === 'delegation_assigned') {
+      turns.push({
+        messageId: message.id,
+        turnId: message.coordinationTurnId,
+        text: boundedWorkHubTimelineText(message.userText),
+        state: 'completed',
+        assignment: {
+          targetSessionId: message.targetSessionId,
+          targetSessionName: message.targetSessionName,
+        },
+        updatedAt: message.ts,
+      });
+      continue;
+    }
     if (message.type === 'user') {
       const text = boundedWorkHubTimelineText(userFacingText(message));
       if (!text) continue;

@@ -940,29 +940,19 @@ interface WorkHubCoordinationMessageEnvelope {
   create?: WorkHubDelegationCreateSpec;
 }
 
-/** Durable target choice written before a delegated Session effect is attempted. */
-export interface WorkHubDelegationIntentMessage extends WorkHubCoordinationMessageEnvelope {
-  kind: 'delegation_intent';
-}
-
-/** Durable proof that one Coordination action owns one accepted target Turn. */
-export interface WorkHubDelegationCommittedMessage extends WorkHubCoordinationMessageEnvelope {
-  kind: 'delegation_committed';
+/**
+ * Atomic proof that one Coordination action and one target Message admission
+ * were committed together by the Runtime Host.
+ */
+export interface WorkHubDelegationAssignedMessage extends WorkHubCoordinationMessageEnvelope {
+  kind: 'delegation_assigned';
   delegationId: string;
   targetTurnId: string;
+  targetMessageId: string;
+  targetSessionName: string;
   steered?: true;
 }
-
-/** Durable terminal proof that an action cannot be executed or retried. */
-export interface WorkHubDelegationAbandonedMessage extends WorkHubCoordinationMessageEnvelope {
-  kind: 'delegation_abandoned';
-  reason: 'target_rejected' | 'created_session_retired';
-}
-
-export type WorkHubCoordinationMessage =
-  | WorkHubDelegationIntentMessage
-  | WorkHubDelegationCommittedMessage
-  | WorkHubDelegationAbandonedMessage;
+export type WorkHubCoordinationMessage = WorkHubDelegationAssignedMessage;
 
 export interface TurnRecord {
   turnId: string;
@@ -1086,25 +1076,8 @@ const TURN_STATE_MESSAGE_SHAPE = defineObjectShape<TurnStateMessage>()(
     'errorClass',
   ],
 );
-const WORKHUB_DELEGATION_INTENT_MESSAGE_SHAPE = defineObjectShape<WorkHubDelegationIntentMessage>()(
-  [
-    'type',
-    'id',
-    'turnId',
-    'ts',
-    'schemaVersion',
-    'kind',
-    'actionId',
-    'actionFingerprint',
-    'coordinationTurnId',
-    'targetSessionId',
-    'disposition',
-    'userText',
-  ],
-  ['create'],
-);
-const WORKHUB_DELEGATION_COMMITTED_MESSAGE_SHAPE =
-  defineObjectShape<WorkHubDelegationCommittedMessage>()(
+const WORKHUB_DELEGATION_ASSIGNED_MESSAGE_SHAPE =
+  defineObjectShape<WorkHubDelegationAssignedMessage>()(
     [
       'type',
       'id',
@@ -1120,27 +1093,10 @@ const WORKHUB_DELEGATION_COMMITTED_MESSAGE_SHAPE =
       'userText',
       'delegationId',
       'targetTurnId',
+      'targetMessageId',
+      'targetSessionName',
     ],
     ['create', 'steered'],
-  );
-const WORKHUB_DELEGATION_ABANDONED_MESSAGE_SHAPE =
-  defineObjectShape<WorkHubDelegationAbandonedMessage>()(
-    [
-      'type',
-      'id',
-      'turnId',
-      'ts',
-      'schemaVersion',
-      'kind',
-      'actionId',
-      'actionFingerprint',
-      'coordinationTurnId',
-      'targetSessionId',
-      'disposition',
-      'userText',
-      'reason',
-    ],
-    ['create'],
   );
 const WORKHUB_DELEGATION_CREATE_SHAPE = defineObjectShape<WorkHubDelegationCreateSpec>()(
   ['title', 'workspace'],
@@ -1333,20 +1289,14 @@ function isWorkHubCoordinationMessage(message: Record<string, unknown>): boolean
       (message.disposition === 'create_new' && isWorkHubDelegationCreateSpec(message.create))) &&
     (message.disposition === 'delegate_existing' || message.disposition === 'create_new');
   if (!common) return false;
-  if (message.kind === 'delegation_intent') {
-    return hasExactShape(message, WORKHUB_DELEGATION_INTENT_MESSAGE_SHAPE);
-  }
-  if (message.kind === 'delegation_abandoned') {
-    return (
-      hasExactShape(message, WORKHUB_DELEGATION_ABANDONED_MESSAGE_SHAPE) &&
-      (message.reason === 'target_rejected' || message.reason === 'created_session_retired')
-    );
-  }
   return (
-    message.kind === 'delegation_committed' &&
-    hasExactShape(message, WORKHUB_DELEGATION_COMMITTED_MESSAGE_SHAPE) &&
+    message.kind === 'delegation_assigned' &&
+    hasExactShape(message, WORKHUB_DELEGATION_ASSIGNED_MESSAGE_SHAPE) &&
     typeof message.delegationId === 'string' &&
     typeof message.targetTurnId === 'string' &&
+    typeof message.targetMessageId === 'string' &&
+    typeof message.targetSessionName === 'string' &&
+    message.targetSessionName.trim().length > 0 &&
     (message.steered === undefined || message.steered === true)
   );
 }

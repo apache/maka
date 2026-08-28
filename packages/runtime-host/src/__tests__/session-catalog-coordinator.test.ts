@@ -478,57 +478,6 @@ test('ordinary creation rejects the reserved WorkHub Coordination Session identi
   assert.equal(fixture.drainRequests(), 0);
 });
 
-test('WorkHub creation reports a discard revision for creation and a pristine replay', async () => {
-  let creates = 0;
-  const header = sessionHeader('session-1', []);
-  const fixture = createFixture({
-    stores: {
-      createStableSession: async () => {
-        creates += 1;
-        return creates === 1
-          ? { kind: 'created', record: headerSnapshot(header, 1) }
-          : { kind: 'existing', record: headerSnapshot(header, creates === 2 ? 1 : 2) };
-      },
-      readCatalogRecord: async () => catalogRecord(header, 1),
-    },
-  });
-  const input = {
-    sessionId: fixture.sessionId,
-    workspace: { kind: 'host_path' as const, path: process.cwd() },
-    modelTarget: { kind: 'default' as const },
-  };
-
-  const created = await fixture.coordinator.createForWorkHub(input);
-  const replayed = await fixture.coordinator.createForWorkHub(input);
-  const mutated = await fixture.coordinator.createForWorkHub(input);
-
-  assert.equal(created.outcome.ok, true);
-  assert.equal(created.discardRevision, 1);
-  assert.equal(replayed.outcome.ok, true);
-  assert.equal(replayed.discardRevision, 1);
-  assert.equal(mutated.outcome.ok, true);
-  assert.equal(mutated.discardRevision, undefined);
-});
-
-test('WorkHub creation distinguishes a retired deterministic Session identity', async () => {
-  const fixture = createFixture({
-    stores: {
-      probeStableSessionCreate: async () => ({ kind: 'conflict', reason: 'removed' }),
-    },
-  });
-
-  const retired = await fixture.coordinator.createForWorkHub({
-    sessionId: fixture.sessionId,
-    workspace: { kind: 'host_path', path: process.cwd() },
-    modelTarget: { kind: 'default' },
-  });
-
-  assert.equal(retired.outcome.ok, false);
-  assert.equal(retired.retired, true);
-  assert.equal(retired.discardRevision, undefined);
-  assert.equal(fixture.drainRequests(), 0);
-});
-
 test('ordinary configuration rejects the WorkHub Coordination Session identity', async () => {
   let reads = 0;
   const fixture = createFixture({

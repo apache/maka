@@ -55,7 +55,6 @@ import {
   WorkHubCoordinationActionGate,
   type WorkHubActionGateEffects,
 } from './workhub-coordination-action-gate.js';
-import { WorkHubDelegationJournal } from './workhub-delegation-journal.js';
 
 const CREATE_FINGERPRINT = `sha256:${createHash('sha256')
   .update('maka:workhub-coordination-session:v1', 'utf8')
@@ -83,6 +82,7 @@ type CoordinationStores = Pick<
   | 'listHeaders'
   | 'probeStableSessionCreate'
   | 'readHeaderSnapshot'
+  | 'readWorkHubAssignment'
   | 'readTranscriptHighWaterSnapshot'
   | 'readTranscriptMessagesSnapshot'
   | 'updateHeaderVersioned'
@@ -101,10 +101,7 @@ export interface HostWorkHubCoordinationCoordinatorOptions {
   readonly admission: SessionAdmissionGate;
   readonly continuity: Pick<SessionContinuityCoordinator, 'refreshCanonical'>;
   readonly executions: CoordinationExecutions;
-  readonly sessionActions: Pick<
-    WorkHubActionGateEffects,
-    'create' | 'discardCreated' | 'submit' | 'recoverSubmission'
-  >;
+  readonly sessionActions: Pick<WorkHubActionGateEffects, 'assign'>;
   readonly resolveCreateTarget: () => Promise<CoordinationCreateTarget>;
   readonly requestDrain: () => void;
 }
@@ -127,7 +124,6 @@ export class HostWorkHubCoordinationCoordinator {
   readonly #resolveCreateTarget: () => Promise<CoordinationCreateTarget>;
   readonly #requestDrain: () => void;
   readonly #actionGate: WorkHubCoordinationActionGate;
-  readonly #delegations: WorkHubDelegationJournal;
 
   constructor(options: HostWorkHubCoordinationCoordinatorOptions) {
     this.#coordinationCwd = join(options.stateRoot, COORDINATION_CWD_DIRECTORY);
@@ -137,14 +133,9 @@ export class HostWorkHubCoordinationCoordinator {
     this.#executions = options.executions;
     this.#resolveCreateTarget = options.resolveCreateTarget;
     this.#requestDrain = options.requestDrain;
-    this.#delegations = new WorkHubDelegationJournal({
-      stores: options.stores,
-      admission: options.admission,
-      continuity: options.continuity,
-      requestDrain: options.requestDrain,
-    });
     this.#actionGate = new WorkHubCoordinationActionGate({
       listSessions: () => this.#stores.listHeaders(),
+      readAssignment: (actionId) => this.#stores.readWorkHubAssignment(actionId),
       answer: async (input, context) => {
         const outcome = await this.#answer({ turnId: input.turnId, text: input.text }, context);
         if (!outcome.ok) {
@@ -161,14 +152,7 @@ export class HostWorkHubCoordinationCoordinator {
           throw new WorkHubActionEffectFailure(outcome.error.code, outcome.error.message);
         }
       },
-      create: options.sessionActions.create,
-      discardCreated: options.sessionActions.discardCreated,
-      submit: options.sessionActions.submit,
-      recoverSubmission: options.sessionActions.recoverSubmission,
-      readDelegation: (actionId) => this.#delegations.read(actionId),
-      prepareDelegation: (intent) => this.#delegations.prepare(intent),
-      commitDelegation: (commit) => this.#delegations.commit(commit),
-      abandonDelegation: (abandoned) => this.#delegations.abandon(abandoned),
+      assign: options.sessionActions.assign,
     });
   }
 
