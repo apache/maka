@@ -263,6 +263,14 @@ export function formatToolInvocationLine(
     return parts.join(' · ');
   }
 
+  if (name === 'deep_research_start') {
+    const objective = stringField(args, 'objective');
+    if (objective) {
+      const scopeLevel = stringField(args, 'scope_level');
+      return redactSecrets(scopeLevel ? `${objective} (${scopeLevel})` : objective);
+    }
+  }
+
   // Session task ledger and other structured-args tools: the generic key:value
   // fallback renders their nested payloads as `tasks:` / `questions:` dumps, so
   // give the row the one fact a reader needs — the first subject / question,
@@ -374,8 +382,12 @@ const ARGS_PREVIEW_SCALAR_KEYS = [
   'status',
   'id',
   'ref',
-  'input',
 ] as const;
+
+// This tool's objective is the compact row's durable headline. Keep it
+// explicit rather than widening the generic wire allowlist with a broad key
+// such as `input`: non-WriteStdin tools otherwise retain arbitrary payloads.
+const DEEP_RESEARCH_START_PREVIEW_SCALAR_KEYS = ['objective', 'scope_level'] as const;
 
 const ARGS_PREVIEW_NUMBER_KEYS = ['offset', 'limit'] as const;
 
@@ -459,9 +471,13 @@ export function projectToolArgsPreview(
   // Apply the canonical activity projection first so WriteStdin's inputPreview
   // shape (bounded, display-safe) is what the whitelist picks up.
   const projected = asRecord(projectToolActivityArgs(toolName, args)) ?? record;
+  const scalarKeys =
+    toolName === 'deep_research_start'
+      ? [...ARGS_PREVIEW_SCALAR_KEYS, ...DEEP_RESEARCH_START_PREVIEW_SCALAR_KEYS]
+      : ARGS_PREVIEW_SCALAR_KEYS;
 
   const picked = new Map<string, unknown>();
-  for (const key of ARGS_PREVIEW_SCALAR_KEYS) {
+  for (const key of scalarKeys) {
     if (isSensitiveKey(key)) continue;
     const value = previewStringField(projected, key);
     if (value !== undefined) picked.set(key, value);
@@ -470,10 +486,15 @@ export function projectToolArgsPreview(
     const value = numberField(projected, key);
     if (value !== undefined) picked.set(key, value);
   }
-  const inputPreview = previewInputPreview(projected.inputPreview);
-  if (inputPreview) picked.set('inputPreview', inputPreview);
-  const size = previewSize(projected.size);
-  if (size) picked.set('size', size);
+  // Only WriteStdin owns these shapes. Other tools retain arbitrary args, so
+  // accepting a caller-supplied inputPreview here would reopen a generic free-
+  // text payload path around its canonical safe-text projection.
+  if (toolName === 'WriteStdin') {
+    const inputPreview = previewInputPreview(projected.inputPreview);
+    if (inputPreview) picked.set('inputPreview', inputPreview);
+    const size = previewSize(projected.size);
+    if (size) picked.set('size', size);
+  }
   const tasks = previewListSubjects(projected, 'tasks', 'subject');
   if (tasks) {
     picked.set('tasks', tasks.items);
@@ -490,7 +511,7 @@ export function projectToolArgsPreview(
   // Enforce the whole-preview budget by dropping lowest-priority fields; the
   // first picked (highest-priority) field always survives.
   const keysByPriority = [
-    ...ARGS_PREVIEW_SCALAR_KEYS,
+    ...scalarKeys,
     ...ARGS_PREVIEW_NUMBER_KEYS,
     'inputPreview',
     'size',

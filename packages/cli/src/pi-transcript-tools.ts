@@ -19,6 +19,7 @@
 
 import type { ToolOutputStream, ToolResultContent } from '@maka/core/events';
 import { formatQuietJsonValue, formatToolInvocationLine } from '@maka/core/tool-quiet-preview';
+import { redactSecrets } from '@maka/core/redaction';
 import {
   isActiveShellRunStatus,
   type PtyShellOutput,
@@ -691,7 +692,7 @@ function renderShellRunResult(
   const inputShowsFullCommand =
     typeof command === 'string' && command.trim() !== '' && !command.includes('\n');
   if (!inputShowsFullCommand) {
-    lines.push(...renderIndented(ansi.dim(`$ ${content.cmd}`), width, 2));
+    lines.push(...renderIndented(ansi.dim(`$ ${redactSecrets(content.cmd)}`), width, 2));
   }
   lines.push(...renderIndented(ansi.dim(`cwd: ${content.cwd}`), width, 2));
   const settled = !isActiveShellRunStatus(content.status) && content.status !== 'completed';
@@ -768,7 +769,7 @@ function toolInputSummary(entry: MakaPiToolEntry): string {
           .split('\n')
           .map((line) => line.trim())
           .find((line) => line !== '' && !line.startsWith('#'));
-        return `$ ${firstRealLine ?? command.split('\n')[0]!.trim()}`;
+        return `$ ${redactSecrets(firstRealLine ?? command.split('\n')[0]!.trim())}`;
       }
       break;
     }

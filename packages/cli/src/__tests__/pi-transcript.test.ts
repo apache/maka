@@ -4286,6 +4286,40 @@ describe('Maka Pi TUI transcript', () => {
     assert.doesNotMatch(rendered, /\(no output\)/);
   });
 
+  test('never renders a secret Bash command from the durable shell_run result', () => {
+    const state = createMakaPiTranscriptState();
+    const secret = 'super-secret-token-value';
+    const command = `# preserve the multiline result-side path\ncurl -H \"Authorization: Bearer ${secret}\" https://example.com`;
+    applyMakaSessionEventToTranscript(
+      state,
+      event({
+        type: 'tool_start',
+        toolUseId: 'bash-durable-redaction',
+        toolName: 'Bash',
+        args: { command },
+      }),
+    );
+    applyMakaSessionEventToTranscript(
+      state,
+      event({
+        type: 'tool_result',
+        toolUseId: 'bash-durable-redaction',
+        isError: false,
+        content: shellRun({
+          cmd: command,
+          status: 'completed',
+          completedAt: 2_000,
+          exitCode: 0,
+        }),
+      }),
+    );
+    assert.equal(toggleAllToolExpansion(state), true);
+
+    const rendered = renderMakaPiTranscript(state, meta(), 100).map(stripAnsi).join('\n');
+    assert.doesNotMatch(rendered, new RegExp(secret));
+    assert.match(rendered, /redacted/i);
+  });
+
   test('keeps the no-output placeholder when the row cannot name the call', () => {
     const state = createMakaPiTranscriptState();
     applyMakaSessionEventToTranscript(
