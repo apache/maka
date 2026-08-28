@@ -147,3 +147,33 @@ export function deriveFailedTurnSeverity(errorClass: string | undefined): Failed
   if (lower === 'permission_required' || lower.includes('permission')) return 'warning';
   return 'error';
 }
+
+export interface FailedTurnExecutionState {
+  partialOutputRetained: boolean;
+  toolActivityCount: number;
+  erroredToolCount: number;
+}
+
+/**
+ * What this turn already did before it failed, when that changes what sending
+ * the next message costs. A tool that ran may have had side effects the retry
+ * would repeat, so the user should read its result before deciding.
+ *
+ * This is a SECOND sentence, not a replacement for `describeTurnErrorClass()`.
+ * The retired `deriveFailedTurnRecovery()` ranked the two against each other
+ * and let the tool branch win, so `auth` plus one errored tool advised
+ * "inspect the tool result" and dropped "sign in again" — the only step that
+ * could actually change the outcome. Both facts are true at once and the
+ * banner has a slot for each (`title` / `description`), so neither has to
+ * lose. Returns undefined when the turn produced nothing worth re-reading.
+ */
+export function describeFailedTurnExecutionState(
+  state: FailedTurnExecutionState,
+  locale: UiLocale = 'zh',
+): string | undefined {
+  const copy = getDesktopConversationCopy(locale).turnError.executionState;
+  if (state.erroredToolCount > 0) return copy.erroredTool;
+  if (state.toolActivityCount > 0) return copy.toolRan;
+  if (state.partialOutputRetained) return copy.partialOutput;
+  return undefined;
+}

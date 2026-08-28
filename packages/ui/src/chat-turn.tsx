@@ -402,6 +402,13 @@ export const TurnView = memo(function TurnView(props: {
    * past. Defaults to `error` when a caller doesn't derive it.
    */
   failedSeverity?: 'error' | 'warning';
+  /**
+   * What the turn already did before it failed, when that changes the cost of
+   * sending the next message (a tool that ran may have had side effects). This
+   * accompanies `failedReasonLabel` rather than competing with it: the reason
+   * is the outcome, this is the execution state, and both can be true.
+   */
+  failedExecutionStateLabel?: string;
   safeResumeAction?: {
     pending: boolean;
     detail?: string;
@@ -695,15 +702,22 @@ export const TurnView = memo(function TurnView(props: {
               {/* A failed turn's banner states the OUTCOME, so it belongs after
                   the work it is the outcome of. It used to render above the
                   timeline, where it read as a header on reasoning and tool
-                  calls that had in fact all succeeded. */}
+                  calls that had in fact all succeeded.
+
+                  `description` carries the parked-resume diagnostic when there
+                  is one — it explains why the button did nothing, which
+                  outranks execution state on the one turn that can have both. */}
               {ownsTurnChrome && turn.status === 'failed' && props.failedReasonLabel && (
                 <Banner
                   status={props.failedSeverity ?? 'error'}
                   container="section"
                   className="maka-turn-failed-banner"
                   title={props.failedReasonLabel}
-                  {...(props.safeResumeAction?.detail
-                    ? { description: props.safeResumeAction.detail }
+                  {...(props.safeResumeAction?.detail ?? props.failedExecutionStateLabel
+                    ? {
+                        description:
+                          props.safeResumeAction?.detail ?? props.failedExecutionStateLabel,
+                      }
                     : {})}
                   {...(props.safeResumeAction
                     ? {
@@ -875,6 +889,7 @@ export interface TurnPresentation {
   footerActionsByTurn: Record<string, ReadonlyArray<TurnFooterActionMeta>>;
   failedReasonLabels: Record<string, string>;
   failedSeverities: Record<string, 'error' | 'warning'>;
+  failedExecutionStateLabels: Record<string, string>;
   lineageBadgesByTurn: Record<string, TurnLineageBadge[]>;
   /** The turn a safe resume would restart, when the shell offers one. */
   resumeCandidateTurnId?: string;

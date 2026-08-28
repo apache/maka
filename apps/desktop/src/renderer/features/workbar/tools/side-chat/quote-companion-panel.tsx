@@ -196,6 +196,7 @@ export function QuoteCompanionPanel(props: {
       ),
       failedReasonLabels: {},
       failedSeverities: {},
+      failedExecutionStateLabels: {},
       lineageBadgesByTurn: {},
     }),
     [companion.regeneratePendingTurnId, locale],

@@ -20,9 +20,16 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import {
+  describeFailedTurnExecutionState,
   describeTurnErrorClass,
   deriveFailedTurnSeverity,
 } from '../../renderer/session-status-presentation.js';
+
+const NOTHING_RAN = {
+  partialOutputRetained: false,
+  toolActivityCount: 0,
+  erroredToolCount: 0,
+};
 
 describe('failed turn presentation', () => {
   it('presents persisted provider server errors as provider failures', () => {
@@ -45,5 +52,46 @@ describe('failed turn presentation', () => {
     assert.equal(deriveFailedTurnSeverity('auth'), 'error');
     assert.equal(deriveFailedTurnSeverity('context_overflow'), 'error');
     assert.equal(deriveFailedTurnSeverity(undefined), 'error');
+  });
+});
+
+describe('failed turn execution state', () => {
+  it('warns that a completed tool may already have taken effect', () => {
+    // A blind resend after a side-effecting tool can repeat that effect, so
+    // this has to survive alongside a transport failure like `timeout`.
+    const zh = describeFailedTurnExecutionState({ ...NOTHING_RAN, toolActivityCount: 1 }, 'zh');
+    assert.match(zh ?? '', /执行过工具|实际改动/);
+    const en = describeFailedTurnExecutionState({ ...NOTHING_RAN, toolActivityCount: 1 }, 'en');
+    assert.match(en ?? '', /tools already ran/i);
+  });
+
+  it('does not let execution state displace the error class', () => {
+    // The retired recovery derivation ranked these against each other and let
+    // the tool branch win, so `auth` plus an errored tool advised "inspect the
+    // tool result" and dropped the sign-in step. They are separate slots now.
+    const state = { ...NOTHING_RAN, toolActivityCount: 1, erroredToolCount: 1 };
+    assert.match(describeTurnErrorClass('auth', 'zh'), /重新连接或登录/);
+    assert.match(describeFailedTurnExecutionState(state, 'zh') ?? '', /工具执行出错/);
+    assert.match(describeTurnErrorClass('context_overflow', 'zh'), /减少附件|开启新任务/);
+  });
+
+  it('reports nothing when the turn left nothing to re-read', () => {
+    assert.equal(describeFailedTurnExecutionState(NOTHING_RAN, 'zh'), undefined);
+  });
+
+  it('prefers the most specific state the turn reached', () => {
+    const all = { partialOutputRetained: true, toolActivityCount: 2, erroredToolCount: 1 };
+    assert.match(describeFailedTurnExecutionState(all, 'zh') ?? '', /工具执行出错/);
+    assert.match(
+      describeFailedTurnExecutionState({ ...all, erroredToolCount: 0 }, 'zh') ?? '',
+      /执行过工具/,
+    );
+    assert.match(
+      describeFailedTurnExecutionState(
+        { ...NOTHING_RAN, partialOutputRetained: true },
+        'zh',
+      ) ?? '',
+      /部分回答/,
+    );
   });
 });

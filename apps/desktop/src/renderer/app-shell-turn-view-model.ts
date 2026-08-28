@@ -32,6 +32,7 @@ import {
 } from '@maka/ui';
 import {
   type FailedTurnSeverity,
+  describeFailedTurnExecutionState,
   describeTurnErrorClass,
   deriveFailedTurnSeverity,
 } from './session-status-presentation.js';
@@ -57,6 +58,7 @@ interface TurnPresentationEntry {
   lineageBadges?: TurnLineageBadge[];
   failedReasonLabel?: string;
   failedSeverity?: FailedTurnSeverity;
+  failedExecutionStateLabel?: string;
 }
 
 const PENDING_ACTION_IDS = ['regenerate', 'branch', 'copy'] as const;
@@ -120,6 +122,7 @@ export function createAppShellTurnPresentationDerivation(): AppShellTurnPresenta
     const footerActionsByTurn: Record<string, ReadonlyArray<TurnFooterActionMeta>> = {};
     const failedReasonLabels: Record<string, string> = {};
     const failedSeverities: Record<string, FailedTurnSeverity> = {};
+    const failedExecutionStateLabels: Record<string, string> = {};
     const lineageBadgesByTurn: Record<string, TurnLineageBadge[]> = {};
 
     for (const turn of turns) {
@@ -159,6 +162,9 @@ export function createAppShellTurnPresentationDerivation(): AppShellTurnPresenta
       if (entry.lineageBadges) lineageBadgesByTurn[turn.turnId] = entry.lineageBadges;
       if (entry.failedReasonLabel !== undefined) failedReasonLabels[turn.turnId] = entry.failedReasonLabel;
       if (entry.failedSeverity !== undefined) failedSeverities[turn.turnId] = entry.failedSeverity;
+      if (entry.failedExecutionStateLabel !== undefined) {
+        failedExecutionStateLabels[turn.turnId] = entry.failedExecutionStateLabel;
+      }
     }
 
     const resumeCandidateTurnId = latestInterruptedResumeTurnId(turns);
@@ -170,6 +176,7 @@ export function createAppShellTurnPresentationDerivation(): AppShellTurnPresenta
       footerActionsByTurn,
       failedReasonLabels,
       failedSeverities,
+      failedExecutionStateLabels,
       lineageBadgesByTurn,
       ...(resumeCandidateTurnId ? { resumeCandidateTurnId } : {}),
     };
@@ -213,6 +220,12 @@ function deriveTurnPresentationEntry(input: {
   if (turn.status === 'failed' && !isSandboxOnlyToolFailure(turn)) {
     entry.failedReasonLabel = describeTurnErrorClass(turn.errorClass, uiLocale);
     entry.failedSeverity = deriveFailedTurnSeverity(turn.errorClass);
+    const executionState = describeFailedTurnExecutionState({
+      partialOutputRetained: turn.partialOutputRetained,
+      toolActivityCount: turn.tools.length,
+      erroredToolCount: turn.tools.filter((tool) => tool.status === 'errored').length,
+    }, uiLocale);
+    if (executionState) entry.failedExecutionStateLabel = executionState;
   }
 
   const lineageBadges = deriveTurnLineageBadges({
