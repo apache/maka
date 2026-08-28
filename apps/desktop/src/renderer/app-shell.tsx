@@ -564,7 +564,7 @@ function AppShellContent({
   if (!newTaskConnections.hasSnapshot && newTaskUsesDefaultHost) {
     newTaskConnectionSnapshot = defaultHostConnections.hasSnapshot
       ? defaultHostConnections.snapshot
-      : startupConnectionSnapshot
+      : !defaultHostConnections.hasProjectionState && startupConnectionSnapshot
         ? {
             connections: startupConnectionSnapshot.connections,
             defaultConnection: startupConnectionSnapshot.defaultSlug,

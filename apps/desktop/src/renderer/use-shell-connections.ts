@@ -63,6 +63,7 @@ export function useShellConnections(options: {
 }): {
   snapshot: DesktopConnectionSnapshot;
   hasSnapshot: boolean;
+  hasProjectionState: boolean;
   seedSnapshot: (next: DesktopConnectionSnapshot) => void;
   refreshConnections: () => Promise<void>;
   handleConnectionEvent: (event: ConnectionEvent) => void;
@@ -75,7 +76,7 @@ export function useShellConnections(options: {
     currentKey.current = snapshotKey;
   }, [snapshotKey]);
   const [snapshots, setSnapshots] = useState(
-    () => new Map<string, DesktopConnectionSnapshot>(),
+    () => new Map<string, DesktopConnectionSnapshot | null>(),
   );
   const refreshSequence = useRef(new Map<string, number>());
 
@@ -95,6 +96,10 @@ export function useShellConnections(options: {
     if (key === NO_HOST_KEY) return;
     const sequence = (refreshSequence.current.get(key) ?? 0) + 1;
     refreshSequence.current.set(key, sequence);
+    // A refresh means the Host catalog may already have changed. Stop exposing
+    // its previous mutation targets immediately; only a successful current read
+    // may make this key settled again.
+    setSnapshots((previous) => new Map(previous).set(key, null));
     try {
       let next: DesktopConnectionSnapshot;
       if (target.kind === 'session' && target.sessionId) {
@@ -139,7 +144,8 @@ export function useShellConnections(options: {
 
   return {
     snapshot: snapshots.get(snapshotKey) ?? EMPTY_SNAPSHOT,
-    hasSnapshot: snapshots.has(snapshotKey),
+    hasSnapshot: snapshots.get(snapshotKey) != null,
+    hasProjectionState: snapshots.has(snapshotKey),
     seedSnapshot,
     refreshConnections,
     handleConnectionEvent,
