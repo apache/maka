@@ -302,6 +302,7 @@ export function createAppShellSessionEventHandlers(options: {
               ts: event.ts,
               text: entry.content.displayText ?? entry.content.text,
               ...(entry.content.attachments ? { attachments: [...entry.content.attachments] } : {}),
+              ...(entry.content.directoryReferences ? { directoryReferences: [...entry.content.directoryReferences] } : {}),
               ...(entry.content.quotes ? { quotes: [...entry.content.quotes] } : {}),
               ...(entry.content.inlineReferences
                 ? { inlineReferences: [...entry.content.inlineReferences] }

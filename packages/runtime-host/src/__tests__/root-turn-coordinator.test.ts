@@ -55,7 +55,7 @@ import type {
   BackendCompactHistoryInput,
   BackendSendInput,
 } from '@maka/core/backend-types';
-import type { SessionEvent } from '@maka/core/events';
+import type { MessageContent, SessionEvent } from '@maka/core/events';
 import {
   WORKHUB_COORDINATION_SESSION_ID,
   WORKHUB_COORDINATION_SESSION_ROLE,
@@ -4896,6 +4896,7 @@ async function registerSessionCapability(
 
 async function createFailureFixture(options: {
   registerBackend(backends: BackendRegistry): void;
+  prepareDirectories?(sessionId: string, content: MessageContent): Promise<MessageContent>;
   corruptSessionRole?: boolean;
   childTools?: MakaTool[];
   wrapAdmissionStore?(store: RootTurnAdmissionStore): RootTurnAdmissionStore;
@@ -5099,6 +5100,8 @@ async function createFailureFixture(options: {
       artifactAuthority,
       options.prepareSkillInvocation,
       options.agentGraphEpochs,
+      undefined,
+      options.prepareDirectories,
     );
   coordinator = createCoordinator(rootAdmissionOwner);
   const contextOperations = new HostContextCoordinator({
@@ -5172,6 +5175,202 @@ async function createFailureFixture(options: {
     },
   };
 }
+
+test('directory context is prepared once and retained through durable submission and duplicate delivery', async () => {
+  let preparations = 0;
+  const reference = { hostId: 'host-a', path: '/workspace/source' };
+  const fixture = await createFailureFixture({
+    registerBackend: (backends) =>
+      backends.register('ai-sdk', (context) => new FakeBackend(context)),
+    prepareDirectories: async (_sessionId, content) => {
+      preparations += 1;
+      return {
+        ...content,
+        displayText: content.text,
+        text: content.text + '\nlisting-' + preparations,
+      };
+    },
+  });
+  try {
+    const input = {
+      originHostEpoch: fixture.hostEpoch,
+      sessionId: fixture.sessionId,
+      messageId: 'directory-message',
+      content: { text: 'inspect', directoryReferences: [reference] },
+      placement: 'next_turn' as const,
+    };
+    const context = operationContext(fixture.hostEpoch, fixture.acquireResidency);
+    const first = await fixture.messages.handlers['turn.message.submit'](input, context);
+    assert.equal(first.ok, true, JSON.stringify(first));
+    await fixture.coordinator.whenIdle(fixture.sessionId);
+    assert.deepEqual(await fixture.messages.handlers['turn.message.submit'](input, context), first);
+    assert.equal(preparations, 1);
+    const users = (await fixture.stores.sessionStore.readMessages(fixture.sessionId)).filter(
+      (message) => message.type === 'user',
+    );
+    assert.equal(users.length, 1);
+    assert.equal(users[0]!.text, 'inspect\nlisting-1');
+    assert.equal(users[0]!.displayText, 'inspect');
+    assert.deepEqual(users[0]!.directoryReferences, [reference]);
+    const header = await fixture.stores.sessionStore.readHeaderSnapshot(fixture.sessionId);
+    assert.notEqual(header.cwd, reference.path, 'a directory reference must not change cwd');
+  } finally {
+    await fixture.coordinator.close();
+    await fixture.messages.close();
+    await fixture.dispose();
+  }
+});
+
+test('turn.start prepares directory context once and replay keeps the saved observation', async () => {
+  let preparations = 0;
+  const reference = { hostId: 'host-a', path: '/workspace/source' };
+  const fixture = await createFailureFixture({
+    registerBackend: (backends) =>
+      backends.register('ai-sdk', (context) => new FakeBackend(context)),
+    prepareDirectories: async (_sessionId, content) => {
+      preparations += 1;
+      return {
+        ...content,
+        displayText: content.text,
+        text: content.text + '\nlisting-' + preparations,
+      };
+    },
+  });
+  try {
+    const input = {
+      sessionId: fixture.sessionId,
+      turnId: 'directory-start',
+      content: { text: 'inspect', directoryReferences: [reference] },
+    };
+    const context = operationContext(fixture.hostEpoch, fixture.acquireResidency);
+    assertStartedTurn(await fixture.interactiveTurns.handlers['turn.start'](input, context));
+    await fixture.coordinator.whenIdle(fixture.sessionId);
+    assertStartedTurn(await fixture.interactiveTurns.handlers['turn.start'](input, context));
+    assert.equal(preparations, 1);
+    const user = (await fixture.stores.sessionStore.readMessages(fixture.sessionId)).find(
+      (message) => message.type === 'user',
+    );
+    assert.equal(user?.type, 'user');
+    if (user?.type !== 'user') throw new Error('Expected user message');
+    assert.equal(user.text, 'inspect\nlisting-1');
+    assert.deepEqual(user.directoryReferences, [reference]);
+    const regeneratedOutcome = await fixture.interactiveTurns.handlers['turn.regenerate'](
+      {
+        sessionId: fixture.sessionId,
+        sourceTurnId: input.turnId,
+        turnId: 'directory-regenerated',
+      },
+      context,
+    );
+    assert.equal(regeneratedOutcome.ok, true, JSON.stringify(regeneratedOutcome));
+    await fixture.coordinator.whenIdle(fixture.sessionId);
+    assert.equal(preparations, 1, 'regeneration must reuse the stored directory observation');
+    const regenerated = (await fixture.stores.sessionStore.readMessages(fixture.sessionId)).find(
+      (message) => message.type === 'user' && message.turnId === 'directory-regenerated',
+    );
+    assert.equal(regenerated?.type, 'user');
+    if (regenerated?.type !== 'user') throw new Error('Expected regenerated user message');
+    assert.equal(regenerated.text, 'inspect\nlisting-1');
+    assert.deepEqual(regenerated.directoryReferences, [reference]);
+  } finally {
+    await fixture.coordinator.close();
+    await fixture.messages.close();
+    await fixture.dispose();
+  }
+});
+
+test('queued directory observations survive text editing and next-Turn delivery without another scan', async () => {
+  const entered = deferred<void>();
+  const release = deferred<void>();
+  let preparations = 0;
+  const reference = { hostId: 'host-a', path: '/workspace/source' };
+  const fixture = await createFailureFixture({
+    registerBackend: (backends) =>
+      backends.register(
+        'ai-sdk',
+        (context) =>
+          new (class extends FakeBackend {
+            override async *send(input: BackendSendInput): AsyncIterable<SessionEvent> {
+              if (input.text === 'hold-directory-test') {
+                entered.resolve();
+                await release.promise;
+              }
+              yield* super.send(input);
+            }
+          })(context),
+      ),
+    prepareDirectories: async (_sessionId, content) => {
+      preparations += 1;
+      return {
+        ...content,
+        displayText: content.text,
+        text: content.text + '\nlisting-' + preparations,
+      };
+    },
+  });
+  try {
+    const context = operationContext(fixture.hostEpoch, fixture.acquireResidency);
+    assertStartedTurn(
+      await fixture.interactiveTurns.handlers['turn.start'](
+        {
+          sessionId: fixture.sessionId,
+          turnId: 'held-directory-root',
+          content: { text: 'hold-directory-test' },
+        },
+        context,
+      ),
+    );
+    await entered.promise;
+    const submitted = await fixture.messages.handlers['turn.message.submit'](
+      {
+        originHostEpoch: fixture.hostEpoch,
+        sessionId: fixture.sessionId,
+        messageId: 'queued-directory',
+        content: { text: 'inspect queued', directoryReferences: [reference] },
+        placement: 'next_turn',
+      },
+      context,
+    );
+    assert.equal(submitted.ok && submitted.result.disposition, 'followup');
+    const queue = fixture.messages.projection(fixture.sessionId);
+    assert.equal(queue.followup.length, 1);
+    const entry = queue.followup[0]!;
+    assert.deepEqual(entry.content.directoryReferences, [reference]);
+    const edited = await fixture.messages.handlers['queue.entry.update'](
+      {
+        originHostEpoch: fixture.hostEpoch,
+        sessionId: fixture.sessionId,
+        entryId: entry.entryId,
+        updateId: 'edit-directory',
+        expectedQueueRevision: queue.queueRevision,
+        text: 'edited inspection',
+      },
+      context,
+    );
+    assert.equal(edited.ok, true, JSON.stringify(edited));
+    assert.equal(preparations, 2, 'an explicit edit prepares one new observation');
+    release.resolve();
+    await fixture.coordinator.whenIdle(fixture.sessionId);
+    await waitUntil(async () =>
+      (await fixture.stores.sessionStore.readMessages(fixture.sessionId)).some(
+        (message) => message.type === 'user' && message.displayText === 'edited inspection',
+      ),
+    );
+    assert.equal(preparations, 2, 'delivery must consume the saved observation');
+    const user = (await fixture.stores.sessionStore.readMessages(fixture.sessionId)).find(
+      (message) => message.type === 'user' && message.displayText === 'edited inspection',
+    );
+    assert.equal(user?.type, 'user');
+    if (user?.type !== 'user') throw new Error('Expected queued user');
+    assert.equal(user.text, 'edited inspection\nlisting-2');
+    assert.deepEqual(user.directoryReferences, [reference]);
+  } finally {
+    release.resolve();
+    await fixture.coordinator.close();
+    await fixture.messages.close();
+    await fixture.dispose();
+  }
+});
 
 function requireCoordinator(coordinator: RootTurnCoordinator | undefined): RootTurnCoordinator {
   if (!coordinator) throw new Error('RootTurnCoordinator is not composed');

@@ -90,17 +90,23 @@ export class HostInteractiveTurnCoordinator {
         context,
       );
     }
+    const hasDirectoryReferences = (content.directoryReferences?.length ?? 0) > 0;
     const outcome = await this.#executions.startInteractiveRootMessage(
       {
         sessionId: input.sessionId,
         turnId: input.turnId,
         execution: {
           kind: 'external_message',
+          ...(hasDirectoryReferences
+            ? { inputDigest: hostedExternalInputDigest(content, []) }
+            : {}),
           ...(input.maxSteps !== undefined ? { maxSteps: input.maxSteps } : {}),
         },
         ...(input.turnOrchestration ? { turnOrchestration: { ...input.turnOrchestration } } : {}),
         archivedMessage: 'Cannot start a new Turn in an archived Session',
-        content,
+        ...(hasDirectoryReferences
+          ? { prepareFreshContent: async () => ({ kind: 'ready' as const, content }) }
+          : { content }),
       },
       context,
     );

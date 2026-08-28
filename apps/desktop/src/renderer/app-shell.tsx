@@ -204,6 +204,7 @@ import {
 import { loadComposerDefaults, saveComposerDefaults } from './composer-defaults';
 import { useKeyedPendingRegistry } from './use-pending-action-registry';
 import { useComposerAttachments } from './use-composer-attachments';
+import { useComposerDirectories } from './use-composer-directories';
 import { useAppShellComposerQuotes } from './use-app-shell-composer-quotes';
 import { useComposerMentions } from './use-composer-mentions';
 import { useAppShellSessionWorkspace } from './use-app-shell-session-workspace';
@@ -812,6 +813,22 @@ function AppShellContent({
   const activeMessageQueue = activeId ? messageQueueBySession[activeId] : undefined;
   const activeMessageSubmitting = transientMessages.length > 0;
   const activeDesktopSession = activeSession;
+  const directoryHostId = activeId
+    ? (activeDesktopSession?.profileKind === 'local' ? activeDesktopSession.runtimeHostId : undefined)
+    : (taskEntry.selectors.selectedHost?.kind === 'local'
+        ? taskEntry.selectors.target?.hostId
+        : undefined);
+  const {
+    pendingDirectories,
+    pickDirectory,
+    removeDirectory,
+    clearSubmittedDirectories,
+  } = useComposerDirectories({
+    draftKey: activeId ?? `new-task-directories:${directoryHostId ?? 'unresolved'}`,
+    hostId: directoryHostId,
+    pick: window.maka.attachments.pickDirectory,
+    toastApi,
+  });
   // The shell's reading of the active live turn: streaming/settled flags, the
   // in-flight tool signal, and the #646 turn-wait cues, all derived from the
   // semantic snapshot rather than the projection (#1985).
@@ -1819,7 +1836,7 @@ function AppShellContent({
     activeIdRef,
     composerRef,
     messages,
-    hasPendingAttachments: () => pendingAttachments.length > 0,
+    hasPendingAttachments: () => pendingAttachments.length > 0 || pendingDirectories.length > 0,
     openSessionInChat,
     refreshMessages,
     refreshSessions,
@@ -1871,6 +1888,7 @@ function AppShellContent({
         mode === 'steer' ? 'current_turn' : 'next_turn',
         pending,
         {
+          ...(pendingDirectories.length ? { directoryReferences: [...pendingDirectories] } : {}),
           ...(quotes ? { quotes: [...quotes] } : {}),
           ...(metadata?.workspaceFileReferences?.length
             ? { workspaceFileReferences: [...metadata.workspaceFileReferences] }
@@ -1882,6 +1900,7 @@ function AppShellContent({
       if (!sent) return false;
       if (pending) clearSubmittedAttachments(pending);
       if (quotes) clearQuotes();
+      clearSubmittedDirectories(pendingDirectories);
       return true;
     } catch (error) {
       if (activeIdRef.current === sessionId) {
@@ -1937,7 +1956,8 @@ function AppShellContent({
       revisionSend &&
       revision &&
       text.trim() === revision.originalText.trim() &&
-      pendingAttachments.length === 0
+      pendingAttachments.length === 0 &&
+      pendingDirectories.length === 0
     ) {
       const actionCopy = getDesktopConversationCopy(uiLocale).actions;
       toastApi.info(actionCopy.revisionReadyTitle, actionCopy.revisionUnchanged);
@@ -1945,7 +1965,7 @@ function AppShellContent({
     }
     if (revisionSend && revision) {
       const actionCopy = getDesktopConversationCopy(uiLocale).actions;
-      if (pendingAttachments.length > 0) {
+      if (pendingAttachments.length > 0 || pendingDirectories.length > 0) {
         toastApi.info(actionCopy.revisionUnavailableTitle, actionCopy.revisionAttachmentsUnsupported);
         return false;
       }
@@ -1990,6 +2010,7 @@ function AppShellContent({
       }
       if (
         pendingAttachments.length > 0 ||
+        pendingDirectories.length > 0 ||
         pendingQuotes.length > 0 ||
         (metadata?.workspaceFileReferences?.length ?? 0) > 0
       ) {
@@ -2032,6 +2053,7 @@ function AppShellContent({
       const quotes = pendingQuotes.length > 0 ? pendingQuotes : undefined;
       const ok = await send(swarmCommand.task, pending, {
         turnOrchestration: { mode: 'swarm', source: 'slash_command' },
+        ...(pendingDirectories.length ? { directoryReferences: [...pendingDirectories] } : {}),
         ...(quotes ? { quotes } : {}),
         ...(metadata?.workspaceFileReferences?.length
           ? {
@@ -2045,6 +2067,7 @@ function AppShellContent({
       });
       if (ok !== false && pending) clearSubmittedAttachments(pending);
       if (ok !== false && quotes) clearQuotes();
+      if (ok !== false) clearSubmittedDirectories(pendingDirectories);
       return ok;
     }
     if (slashCommand?.kind === 'graph') {
@@ -2077,6 +2100,7 @@ function AppShellContent({
       const quotes = pendingQuotes.length > 0 ? pendingQuotes : undefined;
       const ok = await send(graphCommand.task, pending, {
         turnOrchestration: { mode: 'graph', source: 'slash_command' },
+        ...(pendingDirectories.length ? { directoryReferences: [...pendingDirectories] } : {}),
         ...(quotes ? { quotes } : {}),
         ...(metadata?.workspaceFileReferences?.length
           ? {
@@ -2090,6 +2114,7 @@ function AppShellContent({
       });
       if (ok !== false && pending) clearSubmittedAttachments(pending);
       if (ok !== false && quotes) clearQuotes();
+      if (ok !== false) clearSubmittedDirectories(pendingDirectories);
       return ok;
     }
     const pending = pendingAttachments.length > 0 ? pendingAttachments : undefined;
@@ -2098,6 +2123,7 @@ function AppShellContent({
       : undefined;
     const quotes = pendingQuotes.length > 0 ? pendingQuotes : undefined;
     const ok = await send(text, pending, {
+      ...(pendingDirectories.length ? { directoryReferences: [...pendingDirectories] } : {}),
       ...(quotes ? { quotes } : {}),
       ...(workspaceFileReferences.length > 0
         ? { workspaceFileReferences }
@@ -2105,6 +2131,7 @@ function AppShellContent({
     });
     if (ok !== false && pending) clearSubmittedAttachments(pending);
     if (ok !== false && quotes) clearQuotes();
+    if (ok !== false) clearSubmittedDirectories(pendingDirectories);
     if (ok !== false && sessionId) {
       delete retractedWorkspaceReferencesRef.current[sessionId];
     }
@@ -2908,6 +2935,13 @@ function AppShellContent({
                   mentionSkillsLoading={mentionSkillsLoading}
                   slashCommands={desktopSlashCommands}
                   onSearchMentionFiles={searchMentionFiles}
+                  pendingDirectories={pendingDirectories}
+                  onRemoveDirectory={removeDirectory}
+                  onPickDirectory={
+                    canStageComposerContext && directoryHostId && !revisionDraft
+                      ? pickDirectory
+                      : undefined
+                  }
                   pendingAttachments={pendingAttachments}
                   onRemoveAttachment={removeAttachment}
                   pendingQuotes={pendingQuotes}

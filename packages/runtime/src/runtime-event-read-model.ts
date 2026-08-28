@@ -1493,6 +1493,7 @@ function semanticMessage(message: StoredMessage): unknown {
         displayText: message.displayText,
         origin: message.origin,
         attachments: message.attachments ?? [],
+        directoryReferences: message.directoryReferences,
         quotes: message.quotes ?? [],
       };
     case 'assistant':

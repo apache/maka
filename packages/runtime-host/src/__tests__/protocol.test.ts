@@ -1387,7 +1387,7 @@ describe('Runtime Host bootstrap protocol', () => {
     );
   });
 
-  test('bounds canonical MessageContent attachments and quotes', () => {
+  test('bounds canonical MessageContent attachments, directory references and quotes', () => {
     const submit = (content: unknown) =>
       decodeClientFrame({
         requestId: 'submit-bounds',
@@ -1400,6 +1400,17 @@ describe('Runtime Host bootstrap protocol', () => {
           placement: 'next_turn',
         },
       });
+    const directory = { hostId: 'host-a', path: '/workspace/source' };
+    assert.ok(RUNTIME_HOST_COMPATIBILITY_EPOCH > 56);
+    assert.doesNotThrow(() => submit({ text: 'valid', directoryReferences: [directory] }));
+    for (const directoryReferences of [
+      Array.from({ length: 5 }, () => directory),
+      [{ ...directory, path: '../outside' }],
+      [{ ...directory, hostId: '' }],
+      [{ ...directory, permissions: 'read' }],
+    ]) {
+      assert.throws(() => submit({ text: 'valid', directoryReferences }), isInvalidFrame);
+    }
     assert.doesNotThrow(() =>
       submit({
         text: 'valid',

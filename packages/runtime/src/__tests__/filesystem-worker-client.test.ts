@@ -36,6 +36,7 @@ import { createManagedExecutionBoundary } from '@maka/core/sandbox-boundary';
 import { createWorkspaceWritePermissionProfile } from '@maka/core/permission-profile';
 import { MAX_READ_IMAGE_BYTES } from '@maka/core/attachments';
 import {
+  canReadPath,
   canWritePath,
   createReadOnlyPermissionProfile,
   type PermissionProfile,
@@ -302,6 +303,55 @@ describe('filesystem worker client Grep target scope', () => {
 });
 
 describe('filesystem worker operation-scoped Seatbelt profile', () => {
+  test('rebases only the Glob worker cwd after authorizing against the original Session roots', async () => {
+    const workspace = await temporaryDirectory('maka-worker-glob-cwd-');
+    const outside = await temporaryDirectory('maka-worker-glob-outside-');
+    const { client, requests, transforms, processInputs } = fakeClient();
+    const profile: PermissionProfile = {
+      type: 'managed',
+      name: 'custom',
+      fileSystem: {
+        kind: 'restricted',
+        entries: [{ kind: 'special', access: 'read', special: ':workspace_roots' }],
+      },
+      network: { kind: 'restricted' },
+    };
+    await assert.rejects(
+      client.execute({
+        operation: { kind: 'glob', path: outside, pattern: '*' },
+        cwd: workspace,
+        executionBoundary: createManagedExecutionBoundary(profile, 0),
+      }),
+      (error: unknown) =>
+        error instanceof FilesystemWorkerClientError &&
+        error.reason === 'sandbox_boundary_required',
+    );
+    assert.equal(requests.length, 0);
+    assert.equal(transforms.length, 0);
+
+    assert.equal(profile.fileSystem.kind, 'restricted');
+    if (profile.fileSystem.kind !== 'restricted') throw new Error('Expected restricted profile');
+    const granted: PermissionProfile = {
+      ...profile,
+      fileSystem: {
+        ...profile.fileSystem,
+        entries: [...profile.fileSystem.entries, { kind: 'path', access: 'read', path: outside }],
+      },
+    };
+    await client.execute({
+      operation: { kind: 'glob', path: outside, pattern: '*' },
+      cwd: workspace,
+      executionBoundary: createManagedExecutionBoundary(granted, 1),
+    });
+    assert.equal(requests[0]?.operation.cwd, outside);
+    assert.equal(processInputs[0]?.cwd, outside);
+    const command = transforms[0]!.command;
+    assert.deepEqual(command.pathContext?.workspaceRoots, [workspace]);
+    assert.equal(canReadPath(command.profile, outside, command.pathContext), true);
+    assert.equal(canReadPath(command.profile, workspace, command.pathContext), false);
+    assert.equal(canWritePath(command.profile, outside, command.pathContext), false);
+  });
+
   test('narrows a write worker to the exact target while preserving the base policy', async () => {
     const workspace = await temporaryDirectory('maka-worker-client-operation-profile-');
     const target = join(workspace, 'target.txt');

@@ -19,6 +19,7 @@
 
 import { createHash, randomUUID } from 'node:crypto';
 import { normalizeMessageContent } from '@maka/core/events';
+import { createDirectoryContextPreparer } from '@maka/runtime/directory-context';
 import {
   describeChatConfigurationReason,
   NO_REAL_CONNECTION_CODE,
@@ -1106,6 +1107,17 @@ export async function createExecutionRuntimeHostComposition(
           ).graphId,
       },
       (input) => sessionEffectCoordinator.nameSessionFromRootMessage(input),
+      createDirectoryContextPreparer({
+        hostId: context.owner.capability.rootId,
+        ...(filesystemWorker ? { worker: filesystemWorker } : {}),
+        readSession: async (sessionId) => {
+          const [header, boundary] = await Promise.all([
+            stores.sessionStore.readHeaderSnapshot(sessionId),
+            stores.sessionStore.readExecutionBoundary(sessionId),
+          ]);
+          return { cwd: header.cwd, boundary };
+        },
+      }),
     );
     const coordinator = rootCoordinator;
     const contextOperations = new HostContextCoordinator({

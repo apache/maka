@@ -350,6 +350,10 @@ export class FilesystemWorkerClient {
     const operation = FilesystemWorkerOperationSchema.parse({
       ...parsedOperation.data,
       path: target.enforcementPath,
+      // Glob only needs its authorised search root. The narrowed worker must
+      // not canonicalise an unrelated Session cwd before listing that root.
+      // Profile evaluation above still uses canonicalCwd as :workspace_roots.
+      ...(parsedOperation.data.kind === 'glob' ? { cwd: target.enforcementPath } : {}),
     });
     const request = {
       version: FILESYSTEM_WORKER_PROTOCOL_VERSION,
@@ -446,7 +450,10 @@ export class FilesystemWorkerClient {
         command: {
           program: launch.spec.program,
           args: launch.spec.args,
-          cwd: canonicalCwd,
+          // Node's Glob also consults process.cwd() internally, even with an
+          // absolute search root. Keep this disposable worker at that root;
+          // the Session cwd and permission pathContext remain unchanged.
+          cwd: operation.kind === 'glob' ? operation.cwd : canonicalCwd,
           env: launch.spec.env,
           profile: workerProfile,
           pathContext: {

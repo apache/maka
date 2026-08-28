@@ -20,7 +20,7 @@
 import type { ChatDefaultPermissionMode } from '@maka/core/settings';
 import type { CollaborationMode } from '@maka/core/collaboration';
 import type { DesktopNewTaskTarget } from '../preload/bridge-contract.js';
-import type { InlineReference, QuoteRef } from '@maka/core/events';
+import type { DirectoryReference, InlineReference, QuoteRef } from '@maka/core/events';
 import type { OrchestrationMode } from '@maka/core/orchestration';
 import type { SandboxBoundaryResponse } from '@maka/core/sandbox-boundary';
 import type { SkillInvocationResult } from '@maka/runtime/skill-invocation';
@@ -108,6 +108,7 @@ export interface AppShellChatActions {
     pending?: readonly PendingAttachment[],
     options?: {
       turnOrchestration?: TurnOrchestration;
+      directoryReferences?: readonly DirectoryReference[];
       quotes?: readonly QuoteRef[];
       workspaceFileReferences?: readonly WorkspaceFileReferencePosition[];
       displayText?: string;
@@ -125,6 +126,7 @@ export interface AppShellChatActions {
     placement: 'current_turn' | 'next_turn',
     pending?: readonly PendingAttachment[],
     options?: {
+      directoryReferences?: readonly DirectoryReference[];
       quotes?: readonly QuoteRef[];
       workspaceFileReferences?: readonly WorkspaceFileReferencePosition[];
     },
@@ -248,16 +250,19 @@ export function createAppShellChatActions(deps: {
       placement?: TransientUserMessageProjection['transientPlacement'];
       hostTurnId?: string;
       updateOnly?: boolean;
+      directoryReferences?: readonly DirectoryReference[];
       quotes?: readonly QuoteRef[];
       inlineReferences?: readonly InlineReference[];
     } = {},
   ): void {
+    const directoryReferences = options.directoryReferences;
     const quotes = options.quotes ?? [];
     const next: TransientUserMessageProjection = {
       id: messageId,
       ts: Date.now(),
       text,
       ...(attachments.length > 0 ? { attachments: [...attachments] } : {}),
+      ...(directoryReferences?.length ? { directoryReferences: [...directoryReferences] } : {}),
       ...(quotes.length > 0 ? { quotes: [...quotes] } : {}),
       inlineReferences: [...(options.inlineReferences ?? [])],
       transientPlacement: options.placement ?? 'current_turn',
@@ -349,6 +354,7 @@ export function createAppShellChatActions(deps: {
     isSurfaceVisible?: () => boolean;
   }): Promise<SubmittedMessage> {
     const { sessionId, messageId, placement } = input;
+    const directoryReferences = input.command.directoryReferences;
     const quotes = input.quotes ?? [];
     const result = await window.maka.sessions.submitMessage(sessionId, placement, {
       ...input.command,
@@ -396,6 +402,7 @@ export function createAppShellChatActions(deps: {
         updateOnly: true,
         placement,
         ...(result.turnId ? { hostTurnId: result.turnId } : {}),
+        ...(directoryReferences?.length ? { directoryReferences: [...directoryReferences] } : {}),
         ...(quotes.length > 0 ? { quotes } : {}),
         inlineReferences: result.inlineReferences ?? [],
       },
@@ -412,12 +419,14 @@ export function createAppShellChatActions(deps: {
     pending?: readonly PendingAttachment[],
     options: {
       turnOrchestration?: TurnOrchestration;
+      directoryReferences?: readonly DirectoryReference[];
       quotes?: readonly QuoteRef[];
       workspaceFileReferences?: readonly WorkspaceFileReferencePosition[];
       displayText?: string;
       onSessionResolved?: (sessionId: string) => void;
     } = {},
   ): Promise<boolean> {
+    const directoryReferences = options.directoryReferences;
     const quotes = options.quotes;
     const exactTurn = options.turnOrchestration !== undefined;
     const initialSessionId = activeIdRef.current;
@@ -494,6 +503,7 @@ export function createAppShellChatActions(deps: {
           options.displayText ?? text,
           [],
           {
+            ...(directoryReferences?.length ? { directoryReferences: [...directoryReferences] } : {}),
             ...(quotes && quotes.length > 0 ? { quotes } : {}),
             inlineReferences: [],
           },
@@ -514,6 +524,7 @@ export function createAppShellChatActions(deps: {
           ...(retainedAttachments && retainedAttachments.length > 0
             ? { retainedAttachments }
             : {}),
+          ...(directoryReferences?.length ? { directoryReferences: [...directoryReferences] } : {}),
           ...(quotes && quotes.length > 0 ? { quotes: [...quotes] } : {}),
           ...(options.workspaceFileReferences && options.workspaceFileReferences.length > 0
             ? { workspaceFileReferences: [...options.workspaceFileReferences] }
@@ -569,6 +580,7 @@ export function createAppShellChatActions(deps: {
         options.displayText ?? text,
         [],
         {
+          ...(directoryReferences?.length ? { directoryReferences: [...directoryReferences] } : {}),
           ...(quotes && quotes.length > 0 ? { quotes } : {}),
           inlineReferences: [],
         },
@@ -589,6 +601,7 @@ export function createAppShellChatActions(deps: {
         ...(retainedAttachments && retainedAttachments.length > 0
           ? { retainedAttachments }
           : {}),
+        ...(directoryReferences?.length ? { directoryReferences: [...directoryReferences] } : {}),
         ...(quotes && quotes.length > 0 ? { quotes: [...quotes] } : {}),
         ...(options.workspaceFileReferences && options.workspaceFileReferences.length > 0
           ? { workspaceFileReferences: [...options.workspaceFileReferences] }
@@ -679,14 +692,17 @@ export function createAppShellChatActions(deps: {
     placement: 'current_turn' | 'next_turn',
     pending?: readonly PendingAttachment[],
     options: {
+      directoryReferences?: readonly DirectoryReference[];
       quotes?: readonly QuoteRef[];
       workspaceFileReferences?: readonly WorkspaceFileReferencePosition[];
     } = {},
   ): Promise<boolean> {
     const messageId = crypto.randomUUID();
+    const directoryReferences = options.directoryReferences;
     const quotes = options.quotes ?? [];
     showTransientUserMessage(sessionId, messageId, text, retainedAttachmentRefs(pending ?? []), {
       placement,
+      ...(directoryReferences?.length ? { directoryReferences: [...directoryReferences] } : {}),
       ...(quotes.length > 0 ? { quotes } : {}),
       inlineReferences: [],
     });
@@ -701,6 +717,7 @@ export function createAppShellChatActions(deps: {
           text,
           ...(attachmentItems.length > 0 ? { attachmentItems } : {}),
           ...(retainedAttachments.length > 0 ? { retainedAttachments } : {}),
+          ...(directoryReferences?.length ? { directoryReferences: [...directoryReferences] } : {}),
           ...(quotes.length > 0 ? { quotes: [...quotes] } : {}),
           ...(options.workspaceFileReferences?.length
             ? { workspaceFileReferences: [...options.workspaceFileReferences] }

@@ -340,6 +340,7 @@ export function registerRuntimeHostSessionExecutionIpc(
             ? { displayText: command.displayText }
             : {}),
           ...(attachments.length > 0 ? { attachments } : {}),
+          ...(command.directoryReferences ? { directoryReferences: command.directoryReferences } : {}),
           ...(command.quotes ? { quotes: command.quotes } : {}),
           inlineReferences,
         },
@@ -461,6 +462,7 @@ export function registerRuntimeHostSessionExecutionIpc(
             ? { displayText: command.displayText }
             : {}),
           ...(attachments.length > 0 ? { attachments } : {}),
+          ...(command.directoryReferences ? { directoryReferences: command.directoryReferences } : {}),
           ...(command.quotes ? { quotes: command.quotes } : {}),
           inlineReferences,
         },

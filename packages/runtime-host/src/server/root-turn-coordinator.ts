@@ -335,6 +335,10 @@ export class RootTurnCoordinator implements HostedExecutionAuthority {
       sessionId: string;
       content: MessageContent;
     }) => void,
+    private readonly prepareDirectories?: (
+      sessionId: string,
+      content: MessageContent,
+    ) => Promise<MessageContent>,
   ) {
     this.stores = authenticateExecutionStoresWriter(stores, 'interactive');
     this.executionProjection = new HostedExecutionProjectionReader(this.stores);
@@ -1075,7 +1079,9 @@ export class RootTurnCoordinator implements HostedExecutionAuthority {
               : prepared.outcome.error.message,
           };
         }
-        const canonicalContent = preflightRootMessageContent(prepared.content);
+        const canonicalContent = preflightRootMessageContent(
+          await this.prepareDirectoryReferences(input.sessionId, prepared.content),
+        );
         if (!canonicalContent.ok)
           return { error: 'Prepared message content exceeds durable limits' };
         const binding = prepared.commitCapabilityBinding
@@ -1223,14 +1229,38 @@ export class RootTurnCoordinator implements HostedExecutionAuthority {
     return this.runCommand(async () => {
       const content = normalizeMessageContent(input.content);
       if (parseSkillInvocationTokens(content.text).length === 0) {
-        return { kind: 'ready', content };
+        return {
+          kind: 'ready',
+          content: await this.prepareDirectoryReferences(input.sessionId, content),
+        };
       }
-      const prepare = () =>
-        this.prepareSkillInvocationContent(input.sessionId, input.turnId, content, []);
+      const prepare = async () => {
+        const prepared = await this.prepareSkillInvocationContent(
+          input.sessionId,
+          input.turnId,
+          content,
+          [],
+        );
+        return prepared.kind === 'ready'
+          ? {
+              ...prepared,
+              content: await this.prepareDirectoryReferences(input.sessionId, prepared.content),
+            }
+          : prepared;
+      };
       if (input.placement === 'current_turn') return prepare();
       const preview = await this.previewCapabilityBinding(input.sessionId, '', prepare);
       return preview.ok ? preview.value : { kind: 'rejected', error: preview.message };
     });
+  }
+
+  private async prepareDirectoryReferences(
+    sessionId: string,
+    content: MessageContent,
+  ): Promise<MessageContent> {
+    if (!content.directoryReferences?.length) return content;
+    if (!this.prepareDirectories) throw new Error('Directory context is unavailable on this Host');
+    return this.prepareDirectories(sessionId, content);
   }
 
   claimStop(
@@ -1498,7 +1528,11 @@ export class RootTurnCoordinator implements HostedExecutionAuthority {
 
         const prepared = await this.prepareRootMessageContent(request, lease);
         if (prepared.kind === 'rejected') return completedStart(prepared.outcome);
-        const canonicalContent = preflightRootMessageContent(prepared.content);
+        const canonicalContent = preflightRootMessageContent(
+          'prepareFreshContent' in request
+            ? await this.prepareDirectoryReferences(request.sessionId, prepared.content)
+            : prepared.content,
+        );
         if (!canonicalContent.ok) return completedStart(canonicalContent.outcome);
         const attachments = canonicalContent.content.attachments ?? [];
         if (attachments.length > 0 && !this.attachmentValidator) {
