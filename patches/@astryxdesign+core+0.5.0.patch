@@ -39,7 +39,7 @@ index ff34874..9ec8d7a 100644
  export declare function ChatLayout({ children, composer, density, emptyState, scrollButton, scrollRef: externalScrollRef, xstyle, className, style, 'data-testid': testId, ref, ...rest }: ChatLayoutProps): import("react").JSX.Element;
  export declare namespace ChatLayout {
 diff --git a/node_modules/@astryxdesign/core/dist/Chat/ChatLayout.js b/node_modules/@astryxdesign/core/dist/Chat/ChatLayout.js
-index ff9b9fa..7aeb506 100644
+index ff9b9fa..9869942 100644
 --- a/node_modules/@astryxdesign/core/dist/Chat/ChatLayout.js
 +++ b/node_modules/@astryxdesign/core/dist/Chat/ChatLayout.js
 @@ -28,7 +28,7 @@
@@ -59,7 +59,7 @@ index ff9b9fa..7aeb506 100644
    ref,
    ...rest
  }) {
-@@ -211,6 +212,25 @@ export function ChatLayout({
+@@ -211,6 +212,29 @@ export function ChatLayout({
      isLocked: scroll.isLocked,
      onResize: scroll.scrollIfLocked
    });
@@ -77,15 +77,19 @@ index ff9b9fa..7aeb506 100644
 +    // maka: a new conversation is a new initial fill, not content growth in
 +    // the current one. `lock` alone re-enters through the spring, so the
 +    // incoming transcript flies to the bottom instead of arriving there.
++    // The jump handles a transcript that is already mounted; arming the fill
++    // again handles the usual case, where the host clears the transcript in
++    // the same update that changes the key and fills it a few frames later.
 +    scroll.scrollToBottom({
 +      behavior: 'instant'
 +    });
++    scroll.resetInitialFill();
 +    newMsgs.reset();
-+  }, [conversationKey, scroll.scrollToBottom, newMsgs.reset]);
++  }, [conversationKey, scroll.scrollToBottom, scroll.resetInitialFill, newMsgs.reset]);
    const defaultScrollButton = /*#__PURE__*/_jsx(ChatLayoutScrollButton, {
      isVisible: scroll.isScrolledUp || newMsgs.hasNewMessages,
      label: newMsgs.hasNewMessages ? t('@astryx.chatLayout.newMessages') : undefined,
-@@ -223,8 +243,17 @@ export function ChatLayout({
+@@ -223,8 +247,17 @@ export function ChatLayout({
    // --- Layout context ---
    const layoutContext = useMemo(() => ({
      scrollContainerRef,
@@ -143,6 +147,53 @@ index 8c509bc..4b09993 100644
      dismiss,
 +    reset,
      contentRef
+   };
+ }
+\ No newline at end of file
+diff --git a/node_modules/@astryxdesign/core/dist/Chat/useChatStreamScroll.d.ts b/node_modules/@astryxdesign/core/dist/Chat/useChatStreamScroll.d.ts
+index d279277..c13ade0 100644
+--- a/node_modules/@astryxdesign/core/dist/Chat/useChatStreamScroll.d.ts
++++ b/node_modules/@astryxdesign/core/dist/Chat/useChatStreamScroll.d.ts
+@@ -65,6 +65,13 @@ export interface UseChatStreamScrollReturn {
+     scrollIfLocked: () => void;
+     /** Scroll to the last message in the container. */
+     scrollToLastMessage: () => void;
++    /**
++     * Arm the first fill again, for a host that swaps conversations in one
++     * container. The next scrollable content positions in a single frame
++     * instead of springing from the top, which is what the swap needs when it
++     * happens against an empty, still-loading scroller.
++     */
++    resetInitialFill: () => void;
+ }
+ export declare function useChatStreamScroll({ scrollRef, enabled, lockThreshold, buttonThreshold, damping, stiffness, mass, }: UseChatStreamScrollOptions): UseChatStreamScrollReturn;
+ //# sourceMappingURL=useChatStreamScroll.d.ts.map
+\ No newline at end of file
+diff --git a/node_modules/@astryxdesign/core/dist/Chat/useChatStreamScroll.js b/node_modules/@astryxdesign/core/dist/Chat/useChatStreamScroll.js
+index d9f2bed..c63df62 100644
+--- a/node_modules/@astryxdesign/core/dist/Chat/useChatStreamScroll.js
++++ b/node_modules/@astryxdesign/core/dist/Chat/useChatStreamScroll.js
+@@ -178,6 +178,13 @@ export function useChatStreamScroll({
+     animatingRef.current = false;
+     setIsLocked(false);
+   }, []);
++  // maka: arm the first fill again. A host that swaps conversations in this
++  // container gets a new initial fill, not growth of the current one — and it
++  // usually swaps to an empty, still-loading scroller, so the jump cannot be
++  // taken now and the arriving content must not enter through the spring.
++  const resetInitialFill = useCallback(() => {
++    initialFillPendingRef.current = true;
++  }, []);
+   const scrollIfLocked = useCallback(() => {
+     if (!enabled) {
+       return;
+@@ -303,6 +310,7 @@ export function useChatStreamScroll({
+     lock,
+     unlock,
+     scrollIfLocked,
+-    scrollToLastMessage
++    scrollToLastMessage,
++    resetInitialFill
    };
  }
 \ No newline at end of file
