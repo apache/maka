@@ -34,7 +34,7 @@
 
 <p align="center">
   <a href="https://deepwiki.com/apache/maka"><img src="https://deepwiki.com/badge.svg" alt="Ask DeepWiki" /></a><br />
-  <sub>第三方 AI 生成文档 · <a href="./docs/README.md">非权威来源</a></sub>
+  <sub>非官方 AI 生成文档</sub>
 </p>
 
 <p align="center">

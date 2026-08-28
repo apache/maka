@@ -34,7 +34,7 @@
 
 <p align="center">
   <a href="https://deepwiki.com/apache/maka"><img src="https://deepwiki.com/badge.svg" alt="Ask DeepWiki" /></a><br />
-  <sub>Third-party AI-generated docs · <a href="./docs/README.md">non-authoritative</a></sub>
+  <sub>Unofficial AI-generated docs</sub>
 </p>
 
 <p align="center">
