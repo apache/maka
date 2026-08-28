@@ -391,7 +391,7 @@ Compaction 跨越 token estimation、LLM call、schema construction、durable ap
 | 失败位置 | 当前行为 | 不允许发生的事 |
 |---|---|---|
 | 未超过 high water | 保持原投影或普通预算裁剪 | 为了“提前优化”制造无来源摘要 |
-| LLM 返回空 summary | 不记录新 checkpoint；初次 compact 只保留安全 raw tail | 把空 projection 当作 covered history |
+| LLM 返回空 summary | 不记录新 checkpoint。自动 pre-turn compaction 保留原有的 source-derived projection；如果它仍然超出预算，则以 `context_budget_exhausted` 结束且不写入失败 note；手动 compaction 则记录一次可见的 `context_compaction_failed_open` note | 把空 projection 当作 covered history |
 | Text summary 格式不合法 | 只进行一次更严格的 repair，之后以细分 reason fail open；同一失败 fingerprint 不再 dispatch | 持久化不完整结构，或在相同 doomed input 上循环 |
 | Codex 没有返回唯一且合法的 compact item | 不记录新 checkpoint，走同一 fail-open 路径 | 持久化残缺或有歧义的 provider state |
 | Compaction input 在有界省略 Tool Result 后仍无法容纳 | 不发送 compaction request，走同一 fail-open 路径 | 要求 provider 压缩一条已经超出容量的请求 |
@@ -402,7 +402,7 @@ Compaction 跨越 token estimation、LLM call、schema construction、durable ap
 | Bounded projection 损坏 | 从 canonical AgentRun ledger 恢复并修复 projection | 把缓存当成唯一事实源 |
 | 用户停止 manual compaction | 中止 summarizer/write 链路，不污染下一 Turn | 让迟到结果写入或复用 abort state |
 
-这里的 fail-open 不是“无论如何发送完整历史”。当历史已经超过模型预算时，完整 raw prefix 本身可能不可发送。V2 初次 summary 失败会保留 bounded raw tail，并写入一次可见的 `context_compaction_failed_open` note；rolling failure 可以复用旧 checkpoint，但绝不会扩大它的 coverage claim。
+这里的 fail-open 不是“无论如何发送完整历史”。当历史已经超过模型预算时，完整 raw prefix 本身可能不可发送。自动 pre-turn 的 V2 初次 summary 失败会原样保留 source-derived projection；如果该 projection 仍然超出预算，backend 会在失败 note 路径之前以 `context_budget_exhausted` 结束。手动 compaction 对同一失败结果写入一次可见的 `context_compaction_failed_open` note。Rolling failure 可以复用旧 checkpoint，但绝不会扩大它的 coverage claim。
 
 正确理解是：
 

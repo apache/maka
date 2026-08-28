@@ -391,7 +391,7 @@ Compaction crosses token estimation, an LLM call, schema construction, durable a
 | Failure point | Current behavior | What must not happen |
 |---|---|---|
 | Below high water | Keep the existing projection or apply ordinary budget selection | Create an unsourced summary as a speculative optimization |
-| LLM returns an empty summary | Record no new checkpoint; on the first compact, retain only a safe raw tail | Treat an empty projection as covered history |
+| LLM returns an empty summary | Record no new checkpoint. Automatic pre-turn compaction keeps the original source-derived projection and, if it remains over budget, terminates with `context_budget_exhausted` without writing a failure note; manual compaction records one visible `context_compaction_failed_open` note | Treat an empty projection as covered history |
 | Text summary is malformed | Spend one stricter repair attempt, then fail open with a granular reason; do not redispatch an unchanged failed fingerprint | Persist incomplete structure or loop on the same doomed compaction input |
 | Codex returns no unique valid compact item | Record no new checkpoint and use the same fail-open path | Persist partial or ambiguous provider state |
 | Compaction input cannot fit after bounded Tool Result omission | Do not dispatch the compaction request; use the same fail-open path | Ask the provider to compact an already over-capacity request |
@@ -402,7 +402,7 @@ Compaction crosses token estimation, an LLM call, schema construction, durable a
 | Bounded projection is damaged | Recover from canonical AgentRun ledgers and repair the projection | Treat the cache as the only source of truth |
 | User stops manual compaction | Abort the summarizer/write path without poisoning the next Turn | Persist a late result or reuse aborted state |
 
-Fail-open here does not mean “always send the complete raw history.” Once history exceeds the model budget, the full raw prefix may itself be impossible to send. An initial V2 summary failure keeps a bounded raw tail and emits one visible `context_compaction_failed_open` note. A rolling failure may reuse the old checkpoint, but it never expands that checkpoint's coverage claim.
+Fail-open here does not mean “always send the complete raw history.” Once history exceeds the model budget, the full raw prefix may itself be impossible to send. An automatic pre-turn initial V2 summary failure leaves the original source-derived projection untouched; if that projection still exceeds the budget, the backend terminates with `context_budget_exhausted` before the failure-note path. Manual compaction records one visible `context_compaction_failed_open` note for the same failed outcome. A rolling failure may reuse the old checkpoint, but it never expands that checkpoint's coverage claim.
 
 The correct interpretation is:
 
