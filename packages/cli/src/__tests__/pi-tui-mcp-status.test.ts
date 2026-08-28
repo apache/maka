@@ -19,13 +19,13 @@
 
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
-import { McpStatusOverlay } from '../pi-tui-mcp-status.js';
-import type { TuiMcpSnapshot, TuiMcpSurface } from '../tui-mcp-control.js';
+import { McpManagementOverlay } from '../pi-tui-mcp-status.js';
+import type { TuiMcpManagement, TuiMcpSnapshot } from '../tui-mcp-control.js';
 import { stripAnsi } from '../tui-ansi.js';
 
-describe('MCP status overlay', () => {
+describe('MCP management overlay', () => {
   test('renders the local publication and negotiated server status', () => {
-    const overlay = new McpStatusOverlay({
+    const overlay = new McpManagementOverlay({
       locale: 'en',
       surface: surface({
         initialization: 'ready',
@@ -55,7 +55,7 @@ describe('MCP status overlay', () => {
   });
 
   test('states the remote limitation instead of implying an empty local config', () => {
-    const overlay = new McpStatusOverlay({
+    const overlay = new McpManagementOverlay({
       locale: 'zh',
       viewportRows: () => 6,
       onClose: () => undefined,
@@ -69,7 +69,7 @@ describe('MCP status overlay', () => {
   });
 
   test('localizes manager states without changing their source values', () => {
-    const overlay = new McpStatusOverlay({
+    const overlay = new McpManagementOverlay({
       locale: 'zh',
       surface: surface({
         initialization: 'ready',
@@ -114,7 +114,7 @@ describe('MCP status overlay', () => {
         disposed += 1;
       };
     };
-    const overlay = new McpStatusOverlay({
+    const overlay = new McpManagementOverlay({
       locale: 'en',
       surface: mcp,
       viewportRows: () => 6,
@@ -133,9 +133,13 @@ describe('MCP status overlay', () => {
 
 function surface(
   snapshot: TuiMcpSnapshot,
-): TuiMcpSurface & { subscribe(listener: () => void): () => void } {
+): TuiMcpManagement & { subscribe(listener: () => void): () => void } {
   return {
     snapshot: () => snapshot,
     subscribe: () => () => undefined,
+    configForEdit: () => undefined,
+    previewImport: () => ({ status: 'invalid', reason: 'invalid-config' }),
+    discardImportPreview: () => undefined,
+    execute: async () => ({ status: 'failed', reason: 'manager-failed' }),
   };
 }

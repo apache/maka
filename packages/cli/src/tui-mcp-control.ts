@@ -33,6 +33,7 @@ import { createCredentialMcpOAuthStorage, McpClientManager } from '@maka/mcp';
 import { createFileCredentialStore } from '@maka/storage/credential-store';
 import {
   createMcpConfigStore,
+  assertMcpEndpointPolicyOnChanges,
   McpConfigSourceError,
   normalizeMcpConfig,
   normalizeMcpImport,
@@ -59,7 +60,10 @@ export interface TuiMcpServerSnapshot {
   readonly serverId: string;
   readonly configured: boolean;
   readonly synchronized: boolean;
-  readonly state: McpServerStatus['state'];
+  readonly enabled?: boolean;
+  readonly configuredTransport?: 'stdio' | 'remote';
+  readonly configuredProtocol?: McpProtocolPreference;
+  readonly state?: McpServerStatus['state'];
   readonly transport?: McpServerStatus['transport'];
   readonly negotiatedProtocol?: McpServerStatus['negotiatedProtocol'];
   readonly toolCount: number;
@@ -143,6 +147,7 @@ export type TuiMcpActionResult =
 export interface TuiMcpManagement extends TuiMcpSurface {
   configForEdit(serverId: string): TuiMcpEditConfig | undefined;
   previewImport(source: string): TuiMcpImportPreviewResult;
+  discardImportPreview(previewId: string): void;
   execute(action: TuiMcpAction): Promise<TuiMcpActionResult>;
 }
 
@@ -308,6 +313,10 @@ class TuiMcpControllerImpl implements TuiMcpController {
     };
   }
 
+  discardImportPreview(previewId: string): void {
+    if (this.#preparedImport?.previewId === previewId) this.#preparedImport = undefined;
+  }
+
   execute(action: TuiMcpAction): Promise<TuiMcpActionResult> {
     if (this.#closed) return Promise.resolve({ status: 'failed', reason: 'closed' });
     return this.#serializeAction(() => this.#executeAction(action));
@@ -376,7 +385,9 @@ class TuiMcpControllerImpl implements TuiMcpController {
         return { status: 'failed', reason: 'manager-failed' };
       }
     }
-    return this.#commitMutation(action);
+    const result = await this.#commitMutation(action);
+    if (action.kind === 'commit_import') this.discardImportPreview(action.previewId);
+    return result;
   }
 
   async #commitMutation(
@@ -392,6 +403,11 @@ class TuiMcpControllerImpl implements TuiMcpController {
     const prepared = this.#prepareMutation(current, action);
     if ('status' in prepared) return prepared;
     const { next } = prepared;
+    try {
+      assertMcpEndpointPolicyOnChanges(current, next);
+    } catch {
+      return { status: 'failed', reason: 'invalid-config' };
+    }
     const retirements = Object.entries(current.mcpServers)
       .filter(([serverId, previous]) =>
         mcpConfigChangeRetiresCredentials(previous, next.mcpServers[serverId]),
@@ -399,7 +415,7 @@ class TuiMcpControllerImpl implements TuiMcpController {
       .map(([serverId]) => serverId);
     try {
       for (const serverId of retirements) {
-        await this.#deps.manager.forgetServerCredentials(serverId);
+        await this.#deps.manager.forgetServerCredentials(serverId, current.mcpServers[serverId]);
         if (this.#closed) return { status: 'failed', reason: 'closed' };
       }
     } catch {
@@ -531,7 +547,7 @@ class TuiMcpControllerImpl implements TuiMcpController {
         .map((serverId) =>
           projectServerStatus(
             serverId,
-            this.#config?.mcpServers[serverId] !== undefined,
+            this.#config?.mcpServers[serverId],
             statusById.get(serverId),
             configuration === 'ready',
           ),
@@ -630,15 +646,22 @@ class TuiMcpControllerImpl implements TuiMcpController {
 
 function projectServerStatus(
   serverId: string,
-  configured: boolean,
+  config: McpServerConfig | undefined,
   status: McpServerStatus | undefined,
   configurationSynchronized: boolean,
 ): TuiMcpServerSnapshot {
   return {
     serverId,
-    configured,
-    synchronized: configurationSynchronized && configured && status !== undefined,
-    state: status?.state ?? 'disconnected',
+    configured: config !== undefined,
+    synchronized: configurationSynchronized && config !== undefined && status !== undefined,
+    ...(config
+      ? {
+          enabled: config.enabled !== false,
+          configuredTransport: 'command' in config ? ('stdio' as const) : ('remote' as const),
+          configuredProtocol: resolveMcpProtocolPreference(config),
+        }
+      : {}),
+    ...(status ? { state: status.state } : {}),
     ...(status?.transport ? { transport: status.transport } : {}),
     ...(status?.negotiatedProtocol ? { negotiatedProtocol: status.negotiatedProtocol } : {}),
     toolCount: status?.toolCount ?? 0,

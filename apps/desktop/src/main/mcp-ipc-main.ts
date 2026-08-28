@@ -29,6 +29,7 @@ import {
 } from '@maka/core/mcp';
 import type { McpClientManager } from '@maka/mcp';
 import {
+  assertMcpEndpointPolicyOnChanges,
   McpServerExistsError,
   McpConfigSourceError,
   normalizeMcpConfig,
@@ -110,6 +111,7 @@ export function registerMcpIpcMain(deps: McpIpcMainDeps): void {
   ): Promise<McpConfigFile> => {
     const current = await deps.store.get();
     const next = mutate(current);
+    assertMcpEndpointPolicyOnChanges(current, next);
     // The authoritative gate: every server this commit semantically touches
     // is re-checked INSIDE the lane. The handler-entry checks are advisory
     // fast-fails; this one cannot race a login claim, because claims travel

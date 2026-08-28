@@ -136,7 +136,7 @@ class FileMcpConfigStore implements McpConfigStore {
     return this.serial(async () => {
       const current = await this.readOrCreate();
       const next = normalizeMcpConfig(apply(current));
-      enforceEndpointPolicyOnChanges(current, next);
+      assertMcpEndpointPolicyOnChanges(current, next);
       await this.write(next);
       return next;
     });
@@ -150,7 +150,7 @@ class FileMcpConfigStore implements McpConfigStore {
         version: MCP_CONFIG_VERSION,
         mcpServers: { ...current.mcpServers, [serverId]: config },
       });
-      enforceEndpointPolicyOnChanges(current, next);
+      assertMcpEndpointPolicyOnChanges(current, next);
       await this.write(next);
       return next;
     });
@@ -234,7 +234,7 @@ export function assertMcpEndpointPolicy(server: McpServerConfig, serverId: strin
   }
 }
 
-function enforceEndpointPolicyOnChanges(
+export function assertMcpEndpointPolicyOnChanges(
   previous: McpConfigFile | undefined,
   next: McpConfigFile,
 ): void {

@@ -492,6 +492,15 @@ test('a URL change retires the old endpoint credentials before the write, and an
   assert.ok(kept && 'url' in kept);
   assert.equal(kept.url, 'https://old.example.com/mcp');
 
+  // Policy failures are known before the credential-first transaction: an
+  // invalid replacement must not log the user out when it cannot be saved.
+  calls.length = 0;
+  await assert.rejects(
+    upsert({}, 'remote', { url: 'http://public.example.com/mcp' }),
+    /must use https/u,
+  );
+  assert.deepEqual(calls, []);
+
   // Same repoint with a healthy credential store: erase strictly precedes
   // the write. An unchanged-URL upsert afterwards does not erase at all.
   eraseFails = false;

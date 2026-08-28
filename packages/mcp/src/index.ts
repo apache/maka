@@ -1597,8 +1597,11 @@ export class McpClientManager {
    * its config is removed, so a delete failure aborts the removal while
    * everything is still recoverable — instead of leaving an orphaned token
    * a same-id re-add would inherit. */
-  async forgetServerCredentials(serverId: string): Promise<void> {
-    await this.forgetAuthorization(serverId, this.connections.get(serverId)?.config);
+  async forgetServerCredentials(
+    serverId: string,
+    previousConfig = this.connections.get(serverId)?.config,
+  ): Promise<void> {
+    await this.forgetAuthorization(serverId, previousConfig);
   }
 
   /** Drops any stored OAuth record for a server that is being removed or

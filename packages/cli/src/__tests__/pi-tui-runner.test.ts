@@ -77,6 +77,7 @@ import {
 import { AUTO_RECAP_IDLE_MS } from '../session-recap.js';
 import { BUSY_SPINNER_FRAMES } from '../tui-attention.js';
 import { EXPANSION_COLLAPSE_CONFIRM_WINDOW_MS } from '../pi-transcript.js';
+import type { TuiMcpAction, TuiMcpManagement } from '../tui-mcp-control.js';
 import {
   autocompleteSuggestionLines,
   assertBottomPickerPlacement,
@@ -2235,6 +2236,10 @@ describe('Maka Pi TUI runner', () => {
           ],
         }),
         subscribe: () => () => undefined,
+        configForEdit: () => undefined,
+        previewImport: () => ({ status: 'invalid', reason: 'invalid-config' }),
+        discardImportPreview: () => undefined,
+        execute: async () => ({ status: 'failed', reason: 'manager-failed' }),
       },
     });
 
@@ -2244,6 +2249,185 @@ describe('Maka Pi TUI runner', () => {
     assert.match(plainTerminalOutput(terminal.screenOutput()), /filesystem/u);
     terminal.input('q');
     await waitFor(() => !plainTerminalOutput(terminal.screenOutput()).includes('MCP SERVERS'));
+    exitMaka(terminal);
+    await run;
+  });
+
+  test('/mcp previews pasted JSON and completes guided setup in-frame', async () => {
+    const terminal = new FakeTerminal();
+    const driver = new SlashCommandDriver();
+    const actions: TuiMcpAction[] = [];
+    const discardedPreviews: string[] = [];
+    let previewSource = '';
+    const mcp: TuiMcpManagement = {
+      snapshot: () => ({
+        initialization: 'ready',
+        configuration: 'ready',
+        publication: 'not_published',
+        toolCount: 0,
+        servers: [],
+      }),
+      subscribe: () => () => undefined,
+      configForEdit: () => undefined,
+      previewImport: (source) => {
+        previewSource = source;
+        return {
+          status: 'ready',
+          preview: {
+            previewId: 'preview-1',
+            entries: [
+              {
+                serverId: 'docs',
+                change: 'add',
+                transport: 'remote',
+                protocol: 'auto',
+              },
+            ],
+          },
+        };
+      },
+      discardImportPreview: (previewId) => discardedPreviews.push(previewId),
+      execute: async (action) => {
+        actions.push(action);
+        return { status: 'applied', effect: 'published' };
+      },
+    };
+    const run = runMakaPiTui({
+      title: 'Maka',
+      driver,
+      cwd: '/repo',
+      model: 'deepseek-v4-flash',
+      connectionSlug: 'deepseek',
+      permissionMode: 'ask',
+      terminal,
+      mcp,
+    });
+
+    terminal.input('/mcp');
+    terminal.input('\r');
+    await waitFor(() => plainTerminalOutput(terminal.screenOutput()).includes('MCP SERVERS'));
+    terminal.input('a');
+    terminal.input('j');
+    terminal.input('secret-draft');
+    await waitFor(() => plainTerminalOutput(terminal.screenOutput()).includes('secret-draft'));
+    terminal.input('\x1b');
+    await waitFor(() => !plainTerminalOutput(terminal.screenOutput()).includes('secret-draft'));
+    terminal.input('a');
+    terminal.input('j');
+    terminal.input('\x1f');
+    await delay(0);
+    assert.doesNotMatch(plainTerminalOutput(terminal.screenOutput()), /secret-draft/u);
+    terminal.input('{"docs":{"url":"https://docs.example/mcp","protocol":"auto"}}');
+    terminal.input('\r');
+    await waitFor(() =>
+      plainTerminalOutput(terminal.screenOutput()).includes('Import MCP servers?'),
+    );
+    assert.equal(actions.length, 0);
+    assert.equal(previewSource.includes('docs.example'), true);
+    terminal.input('\x1b');
+    assert.deepEqual(discardedPreviews, ['preview-1']);
+    terminal.input('a');
+    terminal.input('j');
+    terminal.input('{"docs":{"url":"https://docs.example/mcp","protocol":"auto"}}');
+    terminal.input('\r');
+    await waitFor(() =>
+      plainTerminalOutput(terminal.screenOutput()).includes('Import MCP servers?'),
+    );
+    terminal.input('y');
+    await waitFor(() => actions.length === 1);
+    assert.deepEqual(actions[0], { kind: 'commit_import', previewId: 'preview-1' });
+    await waitFor(() => plainTerminalOutput(terminal.screenOutput()).includes('tools refreshed'));
+
+    terminal.input('a');
+    terminal.input('g');
+    terminal.input('local');
+    terminal.input('\r');
+    terminal.input('1');
+    terminal.input('mcp-server');
+    terminal.input('\r');
+    terminal.input('[]');
+    terminal.input('\r');
+    terminal.input('3');
+    terminal.input('\r');
+    terminal.input('{}');
+    terminal.input('\r');
+    await waitFor(() =>
+      plainTerminalOutput(terminal.screenOutput()).includes('Add this MCP server?'),
+    );
+    terminal.input('y');
+    await waitFor(() => actions.length === 2);
+    assert.deepEqual(actions[1], {
+      kind: 'add',
+      serverId: 'local',
+      config: {
+        enabled: true,
+        command: 'mcp-server',
+        args: [],
+        env: {},
+        protocol: '2026-07-28',
+      },
+    });
+    terminal.input('q');
+    exitMaka(terminal);
+    await run;
+  });
+
+  test('/mcp ignores a late action result after the user cancels its busy view', async () => {
+    const terminal = new FakeTerminal();
+    const driver = new SlashCommandDriver();
+    const result = deferred<Awaited<ReturnType<TuiMcpManagement['execute']>>>();
+    const actions: TuiMcpAction[] = [];
+    const mcp: TuiMcpManagement = {
+      snapshot: () => ({
+        initialization: 'ready',
+        configuration: 'ready',
+        publication: 'not_published',
+        toolCount: 0,
+        servers: [
+          {
+            serverId: 'docs',
+            configured: true,
+            synchronized: true,
+            enabled: false,
+            configuredTransport: 'remote',
+            configuredProtocol: 'auto',
+            state: 'disabled',
+            toolCount: 0,
+          },
+        ],
+      }),
+      subscribe: () => () => undefined,
+      configForEdit: () => undefined,
+      previewImport: () => ({ status: 'invalid', reason: 'invalid-config' }),
+      discardImportPreview: () => undefined,
+      execute: async (action) => {
+        actions.push(action);
+        return result.promise;
+      },
+    };
+    const run = runMakaPiTui({
+      title: 'Maka',
+      driver,
+      cwd: '/repo',
+      model: 'deepseek-v4-flash',
+      connectionSlug: 'deepseek',
+      permissionMode: 'ask',
+      terminal,
+      mcp,
+    });
+
+    terminal.input('/mcp');
+    terminal.input('\r');
+    await waitFor(() => plainTerminalOutput(terminal.screenOutput()).includes('docs'));
+    terminal.input(' ');
+    await waitFor(() => actions.length === 1);
+    assert.deepEqual(actions[0], { kind: 'set_enabled', serverId: 'docs', enabled: true });
+    terminal.input('\x1b');
+    await waitFor(() => plainTerminalOutput(terminal.screenOutput()).includes('docs'));
+    result.resolve({ status: 'failed', reason: 'manager-failed' });
+    await delay(0);
+    assert.doesNotMatch(plainTerminalOutput(terminal.screenOutput()), /connection action failed/u);
+    terminal.input('q');
     exitMaka(terminal);
     await run;
   });

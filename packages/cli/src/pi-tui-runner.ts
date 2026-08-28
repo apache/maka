@@ -122,8 +122,8 @@ import { runMakaPiTuiTurn, type MakaPiTuiTurnRequest } from './pi-tui-turn.js';
 import { editorTheme, selectListTheme } from './tui-ansi.js';
 import { MakaAutocompleteAboveEditorComponent } from './tui-autocomplete-layout.js';
 import { TranscriptViewerOverlay } from './pi-tui-transcript-viewer.js';
-import { McpStatusOverlay } from './pi-tui-mcp-status.js';
-import type { TuiMcpSurface } from './tui-mcp-control.js';
+import { McpManagementOverlay } from './pi-tui-mcp-status.js';
+import type { TuiMcpManagement } from './tui-mcp-control.js';
 import { createShellRunElapsedTicker } from './shell-run-elapsed-ticker.js';
 import { createShellRunHydrationController } from './shell-run-hydration.js';
 import { sessionStatusBadge } from './tui-session-status.js';
@@ -230,8 +230,8 @@ export interface MakaPiTuiInput {
    *  whose listProviders/verify/save calls persist the connection + curated models
    *  via the host-owned stores. */
   onboarding?: MakaOnboardingSurface;
-  /** Client-owned MCP status and publication projection. Local TUI only in PR1. */
-  mcp?: TuiMcpSurface;
+  /** Client-owned MCP management and publication surface. Local TUI only. */
+  mcp?: TuiMcpManagement;
   /** First-run mode: auto-open the onboarding wizard on launch instead of
    *  waiting for /setup (used when the CLI starts with no configured connection). */
   firstRun?: boolean;
@@ -2652,9 +2652,11 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
 
   const showMcpStatus = (): void => {
     let overlay: OverlayHandle | undefined;
-    const viewer = new McpStatusOverlay({
+    const viewer = new McpManagementOverlay({
       locale,
+      tui,
       ...(input.mcp ? { surface: input.mcp } : {}),
+      canManage: () => !busy,
       viewportRows: () => terminal.rows,
       onClose: () => overlay?.hide(),
       onChange: () => tui.requestRender(),

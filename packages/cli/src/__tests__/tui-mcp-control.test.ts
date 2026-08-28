@@ -251,6 +251,36 @@ test('TUI MCP retires endpoint credentials before persistence and aborts on clea
   await controller.close();
 });
 
+test('TUI MCP rejects an invalid endpoint before retiring the previous credentials', async () => {
+  const order: string[] = [];
+  const store = mutableConfigStore(
+    { version: 3, mcpServers: { docs: { url: 'https://old.example/mcp' } } },
+    order,
+  );
+  const manager = managementManager(order);
+  const connection = connectionHarness();
+  const controller = createTuiMcpController(
+    { workspaceRoot: '/unused', connection: connection.connection },
+    { configStore: store.store, manager: manager.manager, createProvider: () => undefined },
+  );
+  await waitFor(() => controller.snapshot().initialization === 'ready');
+  const edit = controller.configForEdit('docs');
+  assert.ok(edit);
+  order.length = 0;
+
+  assert.deepEqual(
+    await controller.execute({
+      kind: 'edit',
+      serverId: 'docs',
+      expectedRevision: edit.revision,
+      config: { url: 'http://public.example/mcp' },
+    }),
+    { status: 'failed', reason: 'invalid-config' },
+  );
+  assert.deepEqual(order, ['get']);
+  await controller.close();
+});
+
 test('TUI MCP edit rejects a stale revision without touching credentials or disk', async () => {
   const order: string[] = [];
   const store = mutableConfigStore(
@@ -357,7 +387,9 @@ test('TUI MCP keeps a durable mutation visible when manager synchronization fail
     serverId: 'local',
     configured: true,
     synchronized: false,
-    state: 'disconnected',
+    enabled: true,
+    configuredTransport: 'stdio',
+    configuredProtocol: 'legacy',
     toolCount: 0,
   });
   assert.ok((await store.store.get()).mcpServers.local);
@@ -502,6 +534,47 @@ test('TUI MCP rebases an action over an unrelated concurrent config edit', async
   await controller.close();
 });
 
+test('TUI MCP manages enabled state, tests, reconnects, and removes through one lane', async () => {
+  const order: string[] = [];
+  const store = mutableConfigStore(
+    {
+      version: 3,
+      mcpServers: { docs: { enabled: false, url: 'https://docs.example/mcp' } },
+    },
+    order,
+  );
+  const manager = managementManager(order);
+  const connection = connectionHarness();
+  const controller = createTuiMcpController(
+    { workspaceRoot: '/unused', connection: connection.connection },
+    { configStore: store.store, manager: manager.manager, createProvider: () => undefined },
+  );
+  await waitFor(() => controller.snapshot().initialization === 'ready');
+  order.length = 0;
+
+  assert.deepEqual(
+    await controller.execute({ kind: 'set_enabled', serverId: 'docs', enabled: true }),
+    { status: 'applied', effect: 'published' },
+  );
+  assert.equal((await store.store.get()).mcpServers.docs?.enabled, true);
+  const tested = await controller.execute({ kind: 'test', serverId: 'docs' });
+  assert.equal(tested.status, 'tested');
+  assert.deepEqual(await controller.execute({ kind: 'reconnect', serverId: 'docs' }), {
+    status: 'applied',
+    effect: 'published',
+  });
+  assert.deepEqual(await controller.execute({ kind: 'remove', serverId: 'docs' }), {
+    status: 'applied',
+    effect: 'published',
+  });
+  assert.deepEqual(
+    order.filter((entry) => entry.startsWith('test') || entry.startsWith('reconnect')),
+    ['test:docs', 'reconnect:docs'],
+  );
+  assert.equal((await store.store.get()).mcpServers.docs, undefined);
+  await controller.close();
+});
+
 function mutableConfigStore(initial: McpConfigFile, order: string[]) {
   let config = structuredClone(initial);
   const store = {
@@ -544,12 +617,14 @@ function managementManager(
     statuses: () => statuses,
     toolSnapshot: () => ({ revision, tools: [] }) as McpToolSnapshot,
     callTool: async () => ({ content: [] }),
-    test: async (serverId: string) => ({
-      ok: true,
-      status: connectedStatus(serverId, 0),
-      latencyMs: 1,
-    }),
-    reconnect: async (serverId: string) => connectedStatus(serverId, 0),
+    test: async (serverId: string) => {
+      order.push(`test:${serverId}`);
+      return { ok: true, status: connectedStatus(serverId, 0), latencyMs: 1 };
+    },
+    reconnect: async (serverId: string) => {
+      order.push(`reconnect:${serverId}`);
+      return connectedStatus(serverId, 0);
+    },
     forgetServerCredentials: async (serverId: string) => {
       order.push(`forget:${serverId}`);
       if (options.credentialFailure) throw new Error('credential cleanup failed');
