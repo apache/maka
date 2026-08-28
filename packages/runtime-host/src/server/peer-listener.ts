@@ -22,11 +22,10 @@ import {
   readRuntimeHostPeerAuthentication,
   RUNTIME_HOST_PEER_AUTHENTICATION_TIMEOUT_MS,
   RuntimeHostPeerByteStream,
-  startRuntimeHostPeerEndpoint,
   writeRuntimeHostPeerAuthenticationResult,
-  type RuntimeHostPeerNativeEndpoint,
   type RuntimeHostPeerNativeStream,
 } from '../transport/peer-native.js';
+import { createRuntimeHostPeerClient, type RuntimeHostPeerClient } from '../client/peer-client.js';
 import type { RuntimeHostAccessAuthority } from './access-authority.js';
 import type {
   RuntimeHostListenerConnection,
@@ -37,29 +36,45 @@ const MAX_PENDING_AUTHENTICATIONS = 16;
 const MAX_ACTIVE_STREAMS = 64;
 const MAX_ACTIVE_STREAMS_PER_PEER = 4;
 
-export interface StartRuntimeHostPeerListenerOptions {
+export interface RuntimeHostPeerListenerConfiguration {
   readonly nativePath: string;
   readonly keyPath: string;
   readonly expectedPeerId?: string;
   readonly listenAddresses?: readonly string[];
   readonly coordinationRelays?: readonly string[];
+}
+
+export type RuntimeHostPeerListenerEndpointOptions =
+  | RuntimeHostPeerListenerConfiguration
+  | { readonly client: RuntimeHostPeerClient };
+
+export type StartRuntimeHostPeerListenerOptions = RuntimeHostPeerListenerEndpointOptions & {
   readonly accessAuthority: RuntimeHostAccessAuthority;
   readonly accept: (connection: RuntimeHostListenerConnection) => void;
-}
+};
 
 export function startRuntimeHostPeerListener(
   options: StartRuntimeHostPeerListenerOptions,
 ): RuntimeHostPeerListenerContract {
-  const endpoint = startRuntimeHostPeerEndpoint(options);
-  return createRuntimeHostPeerListener(endpoint, options.accessAuthority, options.accept);
+  if ('client' in options) {
+    return createRuntimeHostPeerListener(
+      options.client,
+      options.accessAuthority,
+      options.accept,
+      false,
+    );
+  }
+  const client = createRuntimeHostPeerClient(options);
+  return createRuntimeHostPeerListener(client, options.accessAuthority, options.accept, true);
 }
 
 export function createRuntimeHostPeerListener(
-  endpoint: RuntimeHostPeerNativeEndpoint,
+  client: RuntimeHostPeerClient,
   accessAuthority: RuntimeHostAccessAuthority,
   accept: (connection: RuntimeHostListenerConnection) => void,
+  ownsClient = false,
 ): RuntimeHostPeerListenerContract {
-  return new RuntimeHostPeerListener(endpoint, accessAuthority, accept);
+  return new RuntimeHostPeerListener(client, accessAuthority, accept, ownsClient);
 }
 
 class RuntimeHostPeerListener implements RuntimeHostPeerListenerContract {
@@ -67,36 +82,40 @@ class RuntimeHostPeerListener implements RuntimeHostPeerListenerContract {
   readonly endpoint: string;
   readonly peerId: string;
   readonly listenAddresses: readonly string[];
-  readonly #endpoint: RuntimeHostPeerNativeEndpoint;
+  readonly #client: RuntimeHostPeerClient;
+  readonly #ownsClient: boolean;
   readonly #accessAuthority: RuntimeHostAccessAuthority;
   readonly #accept: (connection: RuntimeHostListenerConnection) => void;
   readonly #transports = new Set<FramedByteStreamTransport>();
   readonly #streams = new Set<RuntimeHostPeerNativeStream>();
   readonly #authentications = new Map<RuntimeHostPeerNativeStream, Promise<void>>();
-  readonly #acceptTasks: readonly Promise<void>[];
+  readonly #serving: Promise<void>;
+  readonly #serveLifetime = new AbortController();
   #acceptFailure: unknown;
   #admitting = true;
   #closeAdmissionTask: Promise<void> | undefined;
   #cleanupTask: Promise<void> | undefined;
 
   constructor(
-    endpoint: RuntimeHostPeerNativeEndpoint,
+    client: RuntimeHostPeerClient,
     accessAuthority: RuntimeHostAccessAuthority,
     accept: (connection: RuntimeHostListenerConnection) => void,
+    ownsClient: boolean,
   ) {
-    this.endpoint = endpoint.peerId;
-    this.peerId = endpoint.peerId;
-    this.listenAddresses = Object.freeze([...endpoint.listenAddresses]);
-    this.#endpoint = endpoint;
+    const identity = client.identity();
+    this.endpoint = identity.peerId;
+    this.peerId = identity.peerId;
+    this.listenAddresses = Object.freeze([...identity.listenAddresses]);
+    this.#client = client;
+    this.#ownsClient = ownsClient;
     this.#accessAuthority = accessAuthority;
     this.#accept = accept;
     const captureFailure = (error: unknown) => {
       this.#acceptFailure ??= error;
     };
-    this.#acceptTasks = [
-      this.#acceptStreams().catch(captureFailure),
-      this.#discardMeshStreams().catch(captureFailure),
-    ];
+    this.#serving = client
+      .serveApplication((stream) => this.#acceptStream(stream), this.#serveLifetime.signal)
+      .catch(captureFailure);
   }
 
   closeAdmission(): Promise<void> {
@@ -112,59 +131,33 @@ class RuntimeHostPeerListener implements RuntimeHostPeerListenerContract {
     this.#cleanupTask ??= (async () => {
       await this.closeAdmission();
       for (const transport of this.#transports) transport.abort();
-      await this.#endpoint.close();
-      await Promise.all(this.#acceptTasks);
+      this.#serveLifetime.abort();
+      await this.#serving;
+      if (this.#ownsClient) await this.#client.close();
       if (this.#acceptFailure) throw this.#acceptFailure;
     })();
     return this.#cleanupTask;
   }
 
-  async #acceptStreams(): Promise<void> {
-    while (true) {
-      let stream: RuntimeHostPeerNativeStream | null;
-      try {
-        stream = await this.#endpoint.accept();
-      } catch (error) {
-        if (this.#cleanupTask) return;
-        throw error;
-      }
-      if (!stream) return;
-      if (!this.#admitting) {
-        stream.abort();
-        continue;
-      }
-      if (this.#authentications.size >= MAX_PENDING_AUTHENTICATIONS) {
-        stream.abort();
-        continue;
-      }
-      let peerStreams = 0;
-      for (const admitted of this.#streams) {
-        if (admitted.peerId === stream.peerId) peerStreams += 1;
-      }
-      if (this.#streams.size >= MAX_ACTIVE_STREAMS || peerStreams >= MAX_ACTIVE_STREAMS_PER_PEER) {
-        stream.abort();
-        continue;
-      }
-      this.#streams.add(stream);
-      const task = this.#authenticateAndAccept(stream).finally(() => {
-        this.#authentications.delete(stream);
-      });
-      this.#authentications.set(stream, task);
-      void task;
+  #acceptStream(stream: RuntimeHostPeerNativeStream): void {
+    if (!this.#admitting || this.#authentications.size >= MAX_PENDING_AUTHENTICATIONS) {
+      stream.abort();
+      return;
     }
-  }
-
-  async #discardMeshStreams(): Promise<void> {
-    while (true) {
-      try {
-        const stream = await this.#endpoint.acceptMeshControl();
-        if (!stream) return;
-        stream.abort();
-      } catch (error) {
-        if (this.#cleanupTask) return;
-        throw error;
-      }
+    let peerStreams = 0;
+    for (const admitted of this.#streams) {
+      if (admitted.peerId === stream.peerId) peerStreams += 1;
     }
+    if (this.#streams.size >= MAX_ACTIVE_STREAMS || peerStreams >= MAX_ACTIVE_STREAMS_PER_PEER) {
+      stream.abort();
+      return;
+    }
+    this.#streams.add(stream);
+    const task = this.#authenticateAndAccept(stream).finally(() => {
+      this.#authentications.delete(stream);
+    });
+    this.#authentications.set(stream, task);
+    void task;
   }
 
   async #authenticateAndAccept(stream: RuntimeHostPeerNativeStream): Promise<void> {

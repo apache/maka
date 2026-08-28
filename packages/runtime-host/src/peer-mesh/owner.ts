@@ -49,16 +49,18 @@ export async function openRuntimeHostPeerMeshOwner(input: {
     throw error;
   }
   const serving = mesh.serve();
-  void serving.catch(() => undefined);
   let closeTask: Promise<void> | undefined;
+  const close = () => {
+    closeTask ??= closeOwner(mesh!, client, serving);
+    return closeTask;
+  };
+  const closed = serving.then(close, close);
+  void closed.catch(() => undefined);
   return Object.freeze({
     client,
     mesh,
-    closed: serving,
-    close: () => {
-      closeTask ??= closeOwner(mesh!, client, serving);
-      return closeTask;
-    },
+    closed,
+    close,
   });
 }
 

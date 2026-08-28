@@ -34,7 +34,7 @@ import { openRuntimeHostAccessAuthority } from './access-authority.js';
 import { startRuntimeHostAuthenticatedListenerSet } from './listener-set.js';
 import type { StartRuntimeHostWebSocketListenerOptions } from './websocket-listener.js';
 import type { PublishedProjectDirectoryRoot } from './project-directory-authority.js';
-import type { StartRuntimeHostPeerListenerOptions } from './peer-listener.js';
+import type { RuntimeHostPeerListenerEndpointOptions } from './peer-listener.js';
 
 export interface ExecutionRuntimeHostServiceOptions {
   readonly rootPath: string;
@@ -46,7 +46,7 @@ export interface ExecutionRuntimeHostServiceOptions {
     StartRuntimeHostWebSocketListenerOptions,
     'accessAuthority' | 'accept' | 'isReady'
   >;
-  readonly peer?: Omit<StartRuntimeHostPeerListenerOptions, 'accessAuthority' | 'accept'>;
+  readonly peer?: RuntimeHostPeerListenerEndpointOptions;
 }
 
 export interface ExecutionRuntimeHostServiceDependencies

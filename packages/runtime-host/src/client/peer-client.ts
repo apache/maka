@@ -60,6 +60,10 @@ export interface RuntimeHostPeerClient {
     input: RuntimeHostPeerConnectInput,
     signal?: AbortSignal,
   ): Promise<RuntimeHostPeerNativeStream>;
+  serveApplication(
+    onStream: (stream: RuntimeHostPeerNativeStream) => void,
+    signal: AbortSignal,
+  ): Promise<void>;
   serveMeshControl(
     onStream: (stream: RuntimeHostPeerNativeStream) => void,
     signal: AbortSignal,
@@ -89,6 +93,7 @@ export function createRuntimeHostPeerClientFromEnvironment(
 export function createRuntimeHostPeerClient(input: {
   readonly nativePath: string;
   readonly keyPath: string;
+  readonly expectedPeerId?: string;
   readonly listenAddresses?: readonly string[];
   readonly coordinationRelays?: readonly string[];
   readonly routeResolver?: RuntimeHostPeerRouteResolver;
@@ -99,19 +104,15 @@ export function createRuntimeHostPeerClient(input: {
 class RuntimeHostPeerClientImpl implements RuntimeHostPeerClient {
   readonly #nativePath: string;
   readonly #keyPath: string;
+  readonly #expectedPeerId: string | undefined;
   readonly #listenAddresses: readonly string[] | undefined;
   readonly #coordinationRelays: readonly string[] | undefined;
   readonly #routeResolver: RuntimeHostPeerRouteResolver | undefined;
   #endpoint: RuntimeHostPeerNativeEndpoint | undefined;
   #draining: Promise<void> | undefined;
   #meshDraining: Promise<void> | undefined;
-  #meshConsumer:
-    | {
-        readonly onStream: (stream: RuntimeHostPeerNativeStream) => void;
-        readonly resolve: () => void;
-        readonly reject: (error: Error) => void;
-      }
-    | undefined;
+  #applicationConsumer: InboundConsumer | undefined;
+  #meshConsumer: InboundConsumer | undefined;
   #terminalError: Error | undefined;
   #nextRequestId = 1;
   #closed = false;
@@ -120,12 +121,14 @@ class RuntimeHostPeerClientImpl implements RuntimeHostPeerClient {
   constructor(input: {
     readonly nativePath: string;
     readonly keyPath: string;
+    readonly expectedPeerId?: string;
     readonly listenAddresses?: readonly string[];
     readonly coordinationRelays?: readonly string[];
     readonly routeResolver?: RuntimeHostPeerRouteResolver;
   }) {
     this.#nativePath = input.nativePath;
     this.#keyPath = input.keyPath;
+    this.#expectedPeerId = input.expectedPeerId;
     this.#listenAddresses = input.listenAddresses;
     this.#coordinationRelays = input.coordinationRelays;
     this.#routeResolver = input.routeResolver;
@@ -178,13 +181,34 @@ class RuntimeHostPeerClientImpl implements RuntimeHostPeerClient {
     return this.#connect(input, signal, 'mesh-control');
   }
 
+  serveApplication(
+    onStream: (stream: RuntimeHostPeerNativeStream) => void,
+    signal: AbortSignal,
+  ): Promise<void> {
+    return this.#serve('application', onStream, signal);
+  }
+
   serveMeshControl(
     onStream: (stream: RuntimeHostPeerNativeStream) => void,
     signal: AbortSignal,
   ): Promise<void> {
+    return this.#serve('mesh', onStream, signal);
+  }
+
+  #serve(
+    kind: 'application' | 'mesh',
+    onStream: (stream: RuntimeHostPeerNativeStream) => void,
+    signal: AbortSignal,
+  ): Promise<void> {
     signal.throwIfAborted();
-    if (this.#meshConsumer) {
-      return Promise.reject(new Error('Runtime Host peer Mesh control is already being served'));
+    if (kind === 'application' ? this.#applicationConsumer : this.#meshConsumer) {
+      return Promise.reject(
+        new Error(
+          kind === 'application'
+            ? 'Runtime Host peer application traffic is already being served'
+            : 'Runtime Host peer Mesh control is already being served',
+        ),
+      );
     }
     this.#requireEndpoint();
     let resolve!: () => void;
@@ -194,17 +218,26 @@ class RuntimeHostPeerClientImpl implements RuntimeHostPeerClient {
       reject = rejectPromise;
     });
     const consumer = { onStream, resolve, reject };
-    this.#meshConsumer = consumer;
+    if (kind === 'application') this.#applicationConsumer = consumer;
+    else this.#meshConsumer = consumer;
     const stop = () => {
-      if (this.#meshConsumer !== consumer) return;
-      this.#meshConsumer = undefined;
+      if (kind === 'application') {
+        if (this.#applicationConsumer !== consumer) return;
+        this.#applicationConsumer = undefined;
+      } else {
+        if (this.#meshConsumer !== consumer) return;
+        this.#meshConsumer = undefined;
+      }
       resolve();
     };
     signal.addEventListener('abort', stop, { once: true });
     if (signal.aborted) stop();
     return serving.finally(() => {
       signal.removeEventListener('abort', stop);
-      if (this.#meshConsumer === consumer) this.#meshConsumer = undefined;
+      if (kind === 'application' && this.#applicationConsumer === consumer) {
+        this.#applicationConsumer = undefined;
+      }
+      if (kind === 'mesh' && this.#meshConsumer === consumer) this.#meshConsumer = undefined;
     });
   }
 
@@ -219,10 +252,10 @@ class RuntimeHostPeerClientImpl implements RuntimeHostPeerClient {
     const discovered = this.#routeResolver?.resolveRoutes(input.peerId);
     const connection = endpoint[kind === 'application' ? 'connect' : 'connectMeshControl']({
       ...input,
-      routeHints: mergeAddresses(input.routeHints, discovered?.routeHints),
+      routeHints: mergeAddresses(discovered?.routeHints ?? [], input.routeHints),
       coordinationRelays: mergeAddresses(
-        input.coordinationRelays ?? [],
-        discovered?.coordinationRelays,
+        discovered?.coordinationRelays ?? [],
+        input.coordinationRelays,
       ),
       requestId,
     });
@@ -267,6 +300,7 @@ class RuntimeHostPeerClientImpl implements RuntimeHostPeerClient {
     const endpoint = startRuntimeHostPeerEndpoint({
       nativePath: this.#nativePath,
       keyPath: this.#keyPath,
+      ...(this.#expectedPeerId ? { expectedPeerId: this.#expectedPeerId } : {}),
       ...(this.#listenAddresses ? { listenAddresses: this.#listenAddresses } : {}),
       ...(this.#coordinationRelays ? { coordinationRelays: this.#coordinationRelays } : {}),
     });
@@ -281,17 +315,20 @@ class RuntimeHostPeerClientImpl implements RuntimeHostPeerClient {
       while (true) {
         const stream = await endpoint.accept();
         if (!stream) {
-          if (!this.#closed) {
-            this.#terminalError = new Error('Runtime Host peer networking stopped unexpectedly');
-          }
+          const error = new Error('Runtime Host peer networking stopped unexpectedly');
+          if (!this.#closed) this.#terminalError = error;
+          this.#finishConsumer('application', this.#closed ? undefined : error);
           return;
         }
-        stream.abort();
+        const consumer = this.#applicationConsumer;
+        if (consumer) consumer.onStream(stream);
+        else stream.abort();
       }
     } catch (error) {
       // Connection attempts and streams expose a terminal native failure to
       // their existing reconnect owners. This owner never replaces its Swarm.
       this.#terminalError = error instanceof Error ? error : new Error(String(error));
+      this.#finishConsumer('application', this.#closed ? undefined : this.#terminalError);
     }
   }
 
@@ -302,7 +339,7 @@ class RuntimeHostPeerClientImpl implements RuntimeHostPeerClient {
         if (!stream) {
           const error = new Error('Runtime Host peer networking stopped unexpectedly');
           if (!this.#closed) this.#terminalError = error;
-          this.#finishMeshConsumer(this.#closed ? undefined : error);
+          this.#finishConsumer('mesh', this.#closed ? undefined : error);
           return;
         }
         const consumer = this.#meshConsumer;
@@ -312,14 +349,15 @@ class RuntimeHostPeerClientImpl implements RuntimeHostPeerClient {
     } catch (error) {
       const failure = error instanceof Error ? error : new Error(String(error));
       if (!this.#closed) this.#terminalError = failure;
-      this.#finishMeshConsumer(this.#closed ? undefined : failure);
+      this.#finishConsumer('mesh', this.#closed ? undefined : failure);
     }
   }
 
-  #finishMeshConsumer(error?: Error): void {
-    const consumer = this.#meshConsumer;
+  #finishConsumer(kind: 'application' | 'mesh', error?: Error): void {
+    const consumer = kind === 'application' ? this.#applicationConsumer : this.#meshConsumer;
     if (!consumer) return;
-    this.#meshConsumer = undefined;
+    if (kind === 'application') this.#applicationConsumer = undefined;
+    else this.#meshConsumer = undefined;
     if (error) consumer.reject(error);
     else consumer.resolve();
   }
@@ -346,6 +384,12 @@ class RuntimeHostPeerClientImpl implements RuntimeHostPeerClient {
     this.#nextRequestId = requestId === 0xffff_ffff ? 1 : requestId + 1;
     return requestId;
   }
+}
+
+interface InboundConsumer {
+  readonly onStream: (stream: RuntimeHostPeerNativeStream) => void;
+  readonly resolve: () => void;
+  readonly reject: (error: Error) => void;
 }
 
 function mergeAddresses(

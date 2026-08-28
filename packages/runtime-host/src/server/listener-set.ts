@@ -20,9 +20,10 @@
 import { startLocalIpcRuntimeHostListener } from './local-ipc-listener.js';
 import type { RuntimeHostMessageTransport } from '../transport/message-transport.js';
 import type { RuntimeHostConnectionAuthority } from './connection-authority.js';
+import type { RuntimeHostAccessAuthority } from './access-authority.js';
 import {
   startRuntimeHostPeerListener,
-  type StartRuntimeHostPeerListenerOptions,
+  type RuntimeHostPeerListenerEndpointOptions,
 } from './peer-listener.js';
 import {
   startRuntimeHostWebSocketListener,
@@ -85,7 +86,9 @@ export async function startRuntimeHostAuthenticatedListenerSet(
   input: RuntimeHostListenerSetFactoryInput,
   options: {
     readonly websocket?: Omit<StartRuntimeHostWebSocketListenerOptions, 'accept' | 'isReady'>;
-    readonly peer?: Omit<StartRuntimeHostPeerListenerOptions, 'accept'>;
+    readonly peer?: RuntimeHostPeerListenerEndpointOptions & {
+      readonly accessAuthority: RuntimeHostAccessAuthority;
+    };
   },
 ): Promise<RuntimeHostListenerSet> {
   const local = await startLocalIpcRuntimeHostListener(input);

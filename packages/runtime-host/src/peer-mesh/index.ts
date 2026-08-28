@@ -29,8 +29,6 @@ export {
 export {
   openPeerMeshNode,
   type PeerMeshNode,
-  type PeerMeshReconcileResult,
-  type PeerMeshResolvedRoutes,
   type PeerMeshStatus,
   type PeerMeshTransport,
 } from './node.js';

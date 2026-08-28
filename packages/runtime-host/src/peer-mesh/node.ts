@@ -116,26 +116,15 @@ export interface PeerMeshNode {
   join(invitation: PeerMeshInvitationV1, signal?: AbortSignal): Promise<PeerMeshStatus>;
   remove(meshId: string, peerId: string): Promise<PeerMeshStatus>;
   closeMesh(meshId: string): Promise<PeerMeshStatus>;
-  resolveRoutes(peerId: string): PeerMeshResolvedRoutes | undefined;
-  reconcile(signal?: AbortSignal): Promise<PeerMeshReconcileResult>;
+  resolveRoutes(peerId: string):
+    | {
+        readonly routeHints: readonly string[];
+        readonly coordinationRelays: readonly string[];
+      }
+    | undefined;
+  reconcile(signal?: AbortSignal): Promise<void>;
   serve(): Promise<void>;
   close(): Promise<void>;
-}
-
-export interface PeerMeshResolvedRoutes {
-  readonly routeHints: readonly string[];
-  readonly coordinationRelays: readonly string[];
-  readonly expiresAt: number;
-}
-
-export interface PeerMeshReconcileResult {
-  readonly attempted: number;
-  readonly synchronized: number;
-  readonly failures: readonly {
-    readonly meshId: string;
-    readonly peerId: string;
-    readonly message: string;
-  }[];
 }
 
 export interface PeerMeshStatus {
@@ -211,10 +200,6 @@ class PeerMeshNodeImpl implements PeerMeshNode {
     for (const state of this.#store.read()) {
       for (const route of state.routes) this.#assertRouteSignature(route);
     }
-    await this.#store.mutate((current) => ({
-      state: current.map((state) => pruneRoutes(state, this.#now())),
-      result: undefined,
-    }));
   }
 
   status(): readonly PeerMeshStatus[] {
@@ -420,7 +405,7 @@ class PeerMeshNodeImpl implements PeerMeshNode {
     }));
   }
 
-  resolveRoutes(peerId: string): PeerMeshResolvedRoutes | undefined {
+  resolveRoutes(peerId: string) {
     this.#assertOpen();
     const now = this.#now();
     const route = this.#store
@@ -433,11 +418,10 @@ class PeerMeshNodeImpl implements PeerMeshNode {
     return Object.freeze({
       routeHints: route.routeHints,
       coordinationRelays: route.coordinationRelays,
-      expiresAt: route.expiresAt,
     });
   }
 
-  reconcile(signal?: AbortSignal): Promise<PeerMeshReconcileResult> {
+  reconcile(signal?: AbortSignal): Promise<void> {
     if (this.#lifetime.signal.aborted) return Promise.reject(new Error('Peer Mesh node is closed'));
     const task = this.#reconcileTail.then(() => this.#reconcile(signal));
     this.#reconcileTail = task.then(
@@ -450,16 +434,22 @@ class PeerMeshNodeImpl implements PeerMeshNode {
   async serve(): Promise<void> {
     if (this.#lifetime.signal.aborted) throw new Error('Peer Mesh node is closed');
     if (this.#serveTask) throw new Error('Peer Mesh node is already serving');
-    const inbound = this.#peer.serveMeshControl(
-      (stream) => this.#acceptIncoming(stream),
-      this.#lifetime.signal,
-    );
-    const serving = Promise.all([inbound, this.#runReconciliation()]).then(() => undefined);
+    const serveLifetime = new AbortController();
+    const signal = AbortSignal.any([this.#lifetime.signal, serveLifetime.signal]);
+    const inbound = this.#peer.serveMeshControl((stream) => this.#acceptIncoming(stream), signal);
+    const reconciliation = this.#runReconciliation(signal);
+    const serving = (async () => {
+      try {
+        await inbound;
+        if (!signal.aborted) throw new Error('Peer Mesh control transport stopped unexpectedly');
+      } finally {
+        serveLifetime.abort();
+        await reconciliation;
+      }
+    })();
     this.#serveTask = serving;
     try {
       await serving;
-      if (!this.#lifetime.signal.aborted)
-        throw new Error('Peer Mesh control transport stopped unexpectedly');
     } finally {
       if (this.#serveTask === serving) {
         this.#serveTask = undefined;
@@ -481,16 +471,14 @@ class PeerMeshNodeImpl implements PeerMeshNode {
     return this.#store.close();
   }
 
-  async #runReconciliation(): Promise<void> {
-    while (!this.#lifetime.signal.aborted) {
-      await this.reconcile(this.#lifetime.signal).catch(() => undefined);
-      await delay(RECONCILE_INTERVAL_MS, undefined, { signal: this.#lifetime.signal }).catch(
-        () => undefined,
-      );
+  async #runReconciliation(signal: AbortSignal): Promise<void> {
+    while (!signal.aborted) {
+      await this.reconcile(signal).catch(() => undefined);
+      await delay(RECONCILE_INTERVAL_MS, undefined, { signal }).catch(() => undefined);
     }
   }
 
-  async #reconcile(signal?: AbortSignal): Promise<PeerMeshReconcileResult> {
+  async #reconcile(signal?: AbortSignal): Promise<void> {
     const operationSignal = signal
       ? AbortSignal.any([signal, this.#lifetime.signal])
       : this.#lifetime.signal;
@@ -507,7 +495,6 @@ class PeerMeshNodeImpl implements PeerMeshNode {
         const route = signed.route;
         if (
           route.peerId !== identity.peerId &&
-          route.expiresAt > this.#now() &&
           state.roster.roster.members.includes(route.peerId)
         ) {
           targets.set(`${state.roster.roster.meshId}\0${route.peerId}`, {
@@ -522,27 +509,14 @@ class PeerMeshNodeImpl implements PeerMeshNode {
           targets.set(key, { meshId: state.roster.roster.meshId, target: state.authority });
       }
     }
-    const failures: Array<{ meshId: string; peerId: string; message: string }> = [];
-    let synchronized = 0;
     for (const { meshId, target } of targets.values()) {
       operationSignal.throwIfAborted();
       try {
         await this.#syncPeer(meshId, target, operationSignal);
-        synchronized += 1;
-      } catch (error) {
+      } catch {
         if (operationSignal.aborted) operationSignal.throwIfAborted();
-        failures.push({
-          meshId,
-          peerId: target.peerId,
-          message: boundedErrorMessage(error),
-        });
       }
     }
-    return Object.freeze({
-      attempted: targets.size,
-      synchronized,
-      failures: Object.freeze(failures.map((failure) => Object.freeze(failure))),
-    });
   }
 
   async #syncPeer(
@@ -613,9 +587,21 @@ class PeerMeshNodeImpl implements PeerMeshNode {
       sameAddresses(existing.route.routeHints, identity.listenAddresses) &&
       sameAddresses(existing.route.coordinationRelays, identity.coordinationRelays)
     ) {
-      return existing;
+      if (
+        active.every((state) =>
+          state.routes.some((candidate) => sameSignedRoute(candidate, existing)),
+        )
+      ) {
+        return existing;
+      }
     }
-    const route = await this.#signLocalRoute((existing?.route.sequence ?? 0) + 1);
+    const route =
+      existing &&
+      existing.route.expiresAt > now + ROUTE_REFRESH_LEAD_MS &&
+      sameAddresses(existing.route.routeHints, identity.listenAddresses) &&
+      sameAddresses(existing.route.coordinationRelays, identity.coordinationRelays)
+        ? existing
+        : await this.#signLocalRoute((existing?.route.sequence ?? 0) + 1);
     await this.#store.mutate((states) => ({
       state: states.map((state) =>
         isActiveMembership(state, identity.peerId)
@@ -970,16 +956,16 @@ class PeerMeshNodeImpl implements PeerMeshNode {
       }
       const roster = selectRoster(state.roster, incomingRoster);
       const localPeerId = this.#peer.identity().peerId;
-      const bothMembers =
-        !roster.roster.closed &&
-        roster.roster.members.includes(localPeerId) &&
-        roster.roster.members.includes(remotePeerId);
+      const localMember = !roster.roster.closed && roster.roster.members.includes(localPeerId);
+      const remoteMember = !roster.roster.closed && roster.roster.members.includes(remotePeerId);
       const updated = {
         ...state,
         roster,
-        routes: bothMembers ? mergeRoutes(state.routes, [remoteRoute], roster, this.#now()) : [],
+        routes: localMember
+          ? mergeRoutes(state.routes, remoteMember ? [remoteRoute] : [], roster, this.#now())
+          : [],
       };
-      if (!bothMembers) {
+      if (!localMember || !remoteMember) {
         return {
           state: replaceMesh(current, updated),
           result: {
@@ -1116,7 +1102,7 @@ function mergeRoutes(
 ): readonly SignedPeerMeshRouteRecordV1[] {
   const routes = new Map(
     current
-      .filter(({ route }) => route.expiresAt > now && roster.roster.members.includes(route.peerId))
+      .filter(({ route }) => roster.roster.members.includes(route.peerId))
       .map((route) => [route.route.peerId, route] as const),
   );
   for (const candidate of candidates) {
@@ -1161,11 +1147,6 @@ function mergeAuthenticatedRoute(
   );
 }
 
-function pruneRoutes<State extends PeerMeshStateV1>(state: State, now: number): State {
-  const routes = mergeRoutes(state.routes, [], state.roster, now);
-  return (routes.length === state.routes.length ? state : { ...state, routes }) as State;
-}
-
 function routeSequences(
   routes: readonly SignedPeerMeshRouteRecordV1[],
   now: number,
@@ -1200,9 +1181,11 @@ function sameAddresses(left: readonly string[], right: readonly string[]): boole
   return left.length === right.length && left.every((address, index) => address === right[index]);
 }
 
-function boundedErrorMessage(error: unknown): string {
-  const message = error instanceof Error ? error.message : String(error);
-  return message.length <= 512 ? message : `${message.slice(0, 509)}...`;
+function sameSignedRoute(
+  left: SignedPeerMeshRouteRecordV1,
+  right: SignedPeerMeshRouteRecordV1,
+): boolean {
+  return JSON.stringify(left) === JSON.stringify(right);
 }
 
 async function exchangeControl<Request, Response>(

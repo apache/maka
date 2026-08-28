@@ -108,13 +108,13 @@ module.exports = {
         {
           requestId: 1,
           peerId: 'pending',
-          routeHints: ['/memory/1', '/memory/discovered'],
+          routeHints: ['/memory/discovered', '/memory/1'],
           coordinationRelays: ['/memory/relay'],
         },
         {
           requestId: 2,
           peerId: 'ready',
-          routeHints: ['/memory/1', '/memory/discovered'],
+          routeHints: ['/memory/discovered', '/memory/1'],
           coordinationRelays: ['/memory/relay'],
         },
       ],
