@@ -49,18 +49,20 @@ module.exports = {
   stats,
   failEndpoint: () => { finishAccept?.(null); finishMeshAccept?.(null); },
   ensurePeerIdentity: async () => 'client',
+  signPeerIdentity: async () => ({ publicKey: Buffer.from('public'), signature: Buffer.from('signature') }),
+  verifyPeerIdentity: () => true,
   startPeerEndpoint: () => {
     stats.starts += 1;
     return {
       peerId: 'client',
       listenAddresses: [],
-      connect: ({ requestId, peerId }) => {
-        stats.requests.push(requestId);
+      connect: ({ requestId, peerId, routeHints, coordinationRelays }) => {
+        stats.requests.push({ requestId, peerId, routeHints, coordinationRelays });
         if (peerId === 'ready') return Promise.resolve(stream);
         return new Promise((_resolve, reject) => pending.set(requestId, reject));
       },
-      connectMeshControl: ({ requestId, peerId }) => {
-        stats.requests.push(requestId);
+      connectMeshControl: ({ requestId, peerId, routeHints, coordinationRelays }) => {
+        stats.requests.push({ requestId, peerId, routeHints, coordinationRelays });
         if (peerId === 'ready') return Promise.resolve(stream);
         return new Promise((_resolve, reject) => pending.set(requestId, reject));
       },
@@ -85,6 +87,12 @@ module.exports = {
     const client = createRuntimeHostPeerClient({
       nativePath,
       keyPath: join(directory, 'peer.key'),
+      routeResolver: {
+        resolveRoutes: () => ({
+          routeHints: ['/memory/discovered'],
+          coordinationRelays: ['/memory/relay'],
+        }),
+      },
     });
     const abort = new AbortController();
     const pending = client.connect(peerConnectInput('pending'), abort.signal);
@@ -96,7 +104,20 @@ module.exports = {
     assert.deepEqual(native.default.stats, {
       starts: 1,
       closes: 0,
-      requests: [1, 2],
+      requests: [
+        {
+          requestId: 1,
+          peerId: 'pending',
+          routeHints: ['/memory/1', '/memory/discovered'],
+          coordinationRelays: ['/memory/relay'],
+        },
+        {
+          requestId: 2,
+          peerId: 'ready',
+          routeHints: ['/memory/1', '/memory/discovered'],
+          coordinationRelays: ['/memory/relay'],
+        },
+      ],
       cancellations: [1, 1],
     });
 
@@ -121,7 +142,7 @@ test('rejects an incomplete endpoint API and loads a compatible relative native 
     const incompletePath = join(directory, 'incomplete.cjs');
     await writeFile(
       incompletePath,
-      'module.exports = { ensurePeerIdentity: async () => "peer", startPeerEndpoint: () => ({ peerId: "peer", listenAddresses: [] }) };\n',
+      'module.exports = { ensurePeerIdentity: async () => "peer", signPeerIdentity: async () => ({ publicKey: Buffer.from("public"), signature: Buffer.from("signature") }), verifyPeerIdentity: () => true, startPeerEndpoint: () => ({ peerId: "peer", listenAddresses: [] }) };\n',
     );
     assert.throws(
       () =>
@@ -139,6 +160,8 @@ test('rejects an incomplete endpoint API and loads a compatible relative native 
       `const stream = { read: async () => null, write: async () => {}, close: async () => {}, abort: () => {} };
 module.exports = {
   ensurePeerIdentity: async () => 'peer',
+  signPeerIdentity: async () => ({ publicKey: Buffer.from('public'), signature: Buffer.from('signature') }),
+  verifyPeerIdentity: () => true,
   startPeerEndpoint: () => ({
     peerId: 'peer',
     listenAddresses: [],

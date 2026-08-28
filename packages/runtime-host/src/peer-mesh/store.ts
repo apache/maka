@@ -26,12 +26,15 @@ import {
 import {
   decodeAuthorityTarget,
   decodeSignedPeerMeshRoster,
+  decodeSignedPeerMeshRouteRecord,
   PEER_MESH_MAX_INVITATION_RECORDS,
+  PEER_MESH_MAX_MEMBERS,
   PEER_MESH_MAX_MESHES,
   PEER_MESH_MAX_PENDING_INVITATIONS,
   type PeerMeshAuthorityKeyPair,
   type PeerMeshAuthorityTarget,
   type SignedPeerMeshRosterV1,
+  type SignedPeerMeshRouteRecordV1,
   validatePeerMeshAuthorityKeyPair,
 } from './model.js';
 
@@ -55,6 +58,7 @@ interface RedeemedPeerMeshInvitation {
 
 interface PeerMeshStateBase {
   readonly roster: SignedPeerMeshRosterV1;
+  readonly routes: readonly SignedPeerMeshRouteRecordV1[];
 }
 
 export interface PeerMeshAuthorityStateV1 extends PeerMeshStateBase {
@@ -176,8 +180,8 @@ export function decodePeerMeshState(value: unknown, localPeerId: string): PeerMe
   const record = value as Record<string, unknown>;
   const expectedKeys =
     record.role === 'authority'
-      ? ['role', 'roster', 'authorityPrivateKey', 'invitations']
-      : ['role', 'roster', 'authority'];
+      ? ['role', 'roster', 'routes', 'authorityPrivateKey', 'invitations']
+      : ['role', 'roster', 'routes', 'authority'];
   if (
     Object.keys(record).length !== expectedKeys.length ||
     expectedKeys.some((key) => !Object.hasOwn(record, key))
@@ -188,6 +192,7 @@ export function decodePeerMeshState(value: unknown, localPeerId: string): PeerMe
     throw new Error('Unsupported Peer Mesh state');
   }
   const roster = decodeSignedPeerMeshRoster(record.roster);
+  const routes = decodeRoutes(record.routes, roster);
   if (record.role === 'authority') {
     if (!roster.roster.members.includes(localPeerId)) {
       throw new Error('Peer Mesh authority is not present in its roster');
@@ -200,6 +205,7 @@ export function decodePeerMeshState(value: unknown, localPeerId: string): PeerMe
     return Object.freeze({
       role: 'authority',
       roster,
+      routes,
       authorityPrivateKey: privateKey,
       invitations: Object.freeze(decodeInvitations(record.invitations)),
     });
@@ -212,6 +218,7 @@ export function decodePeerMeshState(value: unknown, localPeerId: string): PeerMe
     role: 'replica',
     authority,
     roster,
+    routes,
   });
 }
 
@@ -289,7 +296,7 @@ async function readState(
     }
     const record = document as Record<string, unknown>;
     if (
-      record.version !== 1 ||
+      (record.version !== 1 && record.version !== 2) ||
       Object.keys(record).length !== 3 ||
       !Object.hasOwn(record, 'localPeerId') ||
       !Object.hasOwn(record, 'meshes')
@@ -299,7 +306,8 @@ async function readState(
     if (boundedString(record.localPeerId, 'localPeerId', 256) !== expectedLocalPeerId) {
       throw new Error('Peer Mesh state belongs to a different peer identity');
     }
-    return decodePeerMeshStates(record.meshes, expectedLocalPeerId);
+    const meshes = record.version === 1 ? migratePeerMeshStateV1(record.meshes) : record.meshes;
+    return decodePeerMeshStates(meshes, expectedLocalPeerId);
   } catch (error) {
     if (isNodeError(error, 'ENOENT')) return Object.freeze([]);
     throw error;
@@ -311,7 +319,7 @@ async function writeState(
   localPeerId: string,
   state: readonly PeerMeshStateV1[],
 ): Promise<void> {
-  const document = `${JSON.stringify({ version: 1, localPeerId, meshes: state }, null, 2)}\n`;
+  const document = `${JSON.stringify({ version: 2, localPeerId, meshes: state }, null, 2)}\n`;
   if (Buffer.byteLength(document) > MAX_STATE_BYTES)
     throw new Error('Peer Mesh state is too large');
   const temporary = `${path}.tmp`;
@@ -392,6 +400,32 @@ function decodeInvitations(value: unknown): PeerMeshInvitationRecord[] {
     throw new Error('Too many pending Peer Mesh invitations');
   }
   return invitations;
+}
+
+function decodeRoutes(
+  value: unknown,
+  roster: SignedPeerMeshRosterV1,
+): readonly SignedPeerMeshRouteRecordV1[] {
+  if (!Array.isArray(value) || value.length > PEER_MESH_MAX_MEMBERS) {
+    throw new Error('Invalid Peer Mesh routes');
+  }
+  const routes = value.map(decodeSignedPeerMeshRouteRecord);
+  const peerIds = routes.map(({ route }) => route.peerId);
+  if (
+    new Set(peerIds).size !== peerIds.length ||
+    peerIds.some((peerId) => !roster.roster.members.includes(peerId))
+  ) {
+    throw new Error('Invalid Peer Mesh routes');
+  }
+  return Object.freeze(routes);
+}
+
+function migratePeerMeshStateV1(value: unknown): unknown {
+  if (!Array.isArray(value)) return value;
+  return value.map((entry) => {
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return entry;
+    return { ...(entry as Record<string, unknown>), routes: [] };
+  });
 }
 
 function boundedString(value: unknown, label: string, max: number): string {

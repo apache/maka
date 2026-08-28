@@ -19,7 +19,10 @@
 
 import {
   RuntimeHostPeerError,
+  signRuntimeHostPeerIdentity,
   startRuntimeHostPeerEndpoint,
+  verifyRuntimeHostPeerIdentity,
+  type RuntimeHostPeerIdentityProof,
   type RuntimeHostPeerNativeEndpoint,
   type RuntimeHostPeerNativeStream,
 } from '../transport/peer-native.js';
@@ -32,12 +35,23 @@ export interface RuntimeHostPeerConnectInput {
   readonly directDeadlineMs: number;
 }
 
+export interface RuntimeHostPeerRouteResolver {
+  resolveRoutes(peerId: string):
+    | {
+        readonly routeHints: readonly string[];
+        readonly coordinationRelays: readonly string[];
+      }
+    | undefined;
+}
+
 export interface RuntimeHostPeerClient {
   identity(): Readonly<{
     peerId: string;
     listenAddresses: readonly string[];
     coordinationRelays: readonly string[];
   }>;
+  signIdentity(payload: Buffer): Promise<RuntimeHostPeerIdentityProof>;
+  verifyIdentity(peerId: string, payload: Buffer, proof: RuntimeHostPeerIdentityProof): boolean;
   connect(
     input: RuntimeHostPeerConnectInput,
     signal?: AbortSignal,
@@ -58,6 +72,7 @@ export function createRuntimeHostPeerClientFromEnvironment(
   options: {
     readonly listenAddresses?: readonly string[];
     readonly coordinationRelays?: readonly string[];
+    readonly routeResolver?: RuntimeHostPeerRouteResolver;
   } = {},
 ): RuntimeHostPeerClient {
   const nativePath = environment.MAKA_RUNTIME_HOST_PEER_NATIVE_PATH;
@@ -76,6 +91,7 @@ export function createRuntimeHostPeerClient(input: {
   readonly keyPath: string;
   readonly listenAddresses?: readonly string[];
   readonly coordinationRelays?: readonly string[];
+  readonly routeResolver?: RuntimeHostPeerRouteResolver;
 }): RuntimeHostPeerClient {
   return new RuntimeHostPeerClientImpl(input);
 }
@@ -85,6 +101,7 @@ class RuntimeHostPeerClientImpl implements RuntimeHostPeerClient {
   readonly #keyPath: string;
   readonly #listenAddresses: readonly string[] | undefined;
   readonly #coordinationRelays: readonly string[] | undefined;
+  readonly #routeResolver: RuntimeHostPeerRouteResolver | undefined;
   #endpoint: RuntimeHostPeerNativeEndpoint | undefined;
   #draining: Promise<void> | undefined;
   #meshDraining: Promise<void> | undefined;
@@ -105,11 +122,13 @@ class RuntimeHostPeerClientImpl implements RuntimeHostPeerClient {
     readonly keyPath: string;
     readonly listenAddresses?: readonly string[];
     readonly coordinationRelays?: readonly string[];
+    readonly routeResolver?: RuntimeHostPeerRouteResolver;
   }) {
     this.#nativePath = input.nativePath;
     this.#keyPath = input.keyPath;
     this.#listenAddresses = input.listenAddresses;
     this.#coordinationRelays = input.coordinationRelays;
+    this.#routeResolver = input.routeResolver;
   }
 
   identity(): Readonly<{
@@ -122,6 +141,26 @@ class RuntimeHostPeerClientImpl implements RuntimeHostPeerClient {
       peerId: endpoint.peerId,
       listenAddresses: Object.freeze([...endpoint.listenAddresses]),
       coordinationRelays: Object.freeze([...(this.#coordinationRelays ?? [])]),
+    });
+  }
+
+  signIdentity(payload: Buffer): Promise<RuntimeHostPeerIdentityProof> {
+    const peerId = this.#requireEndpoint().peerId;
+    return signRuntimeHostPeerIdentity({
+      nativePath: this.#nativePath,
+      keyPath: this.#keyPath,
+      expectedPeerId: peerId,
+      payload,
+    });
+  }
+
+  verifyIdentity(peerId: string, payload: Buffer, proof: RuntimeHostPeerIdentityProof): boolean {
+    return verifyRuntimeHostPeerIdentity({
+      nativePath: this.#nativePath,
+      peerId,
+      payload,
+      publicKey: proof.publicKey,
+      signature: proof.signature,
     });
   }
 
@@ -177,8 +216,14 @@ class RuntimeHostPeerClientImpl implements RuntimeHostPeerClient {
     signal?.throwIfAborted();
     const endpoint = this.#requireEndpoint();
     const requestId = this.#allocateRequestId();
+    const discovered = this.#routeResolver?.resolveRoutes(input.peerId);
     const connection = endpoint[kind === 'application' ? 'connect' : 'connectMeshControl']({
       ...input,
+      routeHints: mergeAddresses(input.routeHints, discovered?.routeHints),
+      coordinationRelays: mergeAddresses(
+        input.coordinationRelays ?? [],
+        discovered?.coordinationRelays,
+      ),
       requestId,
     });
     let settled = false;
@@ -301,6 +346,13 @@ class RuntimeHostPeerClientImpl implements RuntimeHostPeerClient {
     this.#nextRequestId = requestId === 0xffff_ffff ? 1 : requestId + 1;
     return requestId;
   }
+}
+
+function mergeAddresses(
+  primary: readonly string[],
+  secondary: readonly string[] | undefined,
+): readonly string[] {
+  return Object.freeze([...new Set([...primary, ...(secondary ?? [])])].slice(0, 16));
 }
 
 async function cancelPeerConnect(

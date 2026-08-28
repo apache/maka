@@ -17,24 +17,33 @@
  * under the License.
  */
 
-import type { RuntimeHostPeerNativeStream } from '../transport/peer-native.js';
+import type {
+  RuntimeHostPeerIdentityProof,
+  RuntimeHostPeerNativeStream,
+} from '../transport/peer-native.js';
+import { setTimeout as delay } from 'node:timers/promises';
 import {
   canonicalPeerMeshRoster,
+  canonicalPeerMeshRouteRecord,
   createPeerMeshInvitationSecret,
   decodePeerMeshInvitation,
   decodeSignedPeerMeshRoster,
+  decodeSignedPeerMeshRouteRecord,
   generatePeerMeshAuthorityKeyPair,
   matchesPeerMeshInvitationSecret,
   PEER_MESH_MAX_MEMBERS,
   PEER_MESH_MAX_MESHES,
   PEER_MESH_MAX_INVITATION_RECORDS,
   PEER_MESH_MAX_PENDING_INVITATIONS,
+  peerMeshRouteRecordSigningBytes,
   peerMeshId,
   peerMeshInvitationSecretDigest,
   signPeerMeshRoster,
   type PeerMeshAuthorityTarget,
   type PeerMeshInvitationV1,
+  type PeerMeshRouteRecordV1,
   type SignedPeerMeshRosterV1,
+  type SignedPeerMeshRouteRecordV1,
 } from './model.js';
 import {
   authorityKeys,
@@ -50,17 +59,24 @@ const CONNECT_DEADLINE_MS = 30_000;
 const CONTROL_REQUEST_DEADLINE_MS = 10_000;
 const MAX_ACTIVE_CONTROL_STREAMS = 32;
 const MAX_ACTIVE_CONTROL_STREAMS_PER_PEER = 2;
+const ROUTE_TTL_MS = 5 * 60 * 1_000;
+const ROUTE_REFRESH_LEAD_MS = 60 * 1_000;
+const ROUTE_MAX_FUTURE_MS = 10 * 60 * 1_000;
+const ROUTE_PAGE_SIZE = 8;
+const RECONCILE_INTERVAL_MS = 30 * 1_000;
 
 interface RedeemInvitationRequest {
   readonly kind: 'redeem-invitation';
   readonly meshId: string;
   readonly secret: string;
+  readonly route: SignedPeerMeshRouteRecordV1;
 }
 
 type RedeemInvitationResponse =
   | {
       readonly kind: 'invitation-redeemed';
       readonly roster: SignedPeerMeshRosterV1;
+      readonly routes: readonly SignedPeerMeshRouteRecordV1[];
     }
   | {
       readonly kind: 'invitation-rejected';
@@ -69,6 +85,30 @@ type RedeemInvitationResponse =
 
 type RedeemInvitationRejectionReason = 'invalid' | 'expired' | 'closed' | 'full';
 
+interface PeerMeshRouteSequence {
+  readonly peerId: string;
+  readonly sequence: number;
+}
+
+interface SyncPeerMeshRequest {
+  readonly kind: 'sync';
+  readonly meshId: string;
+  readonly roster: SignedPeerMeshRosterV1;
+  readonly route: SignedPeerMeshRouteRecordV1;
+  readonly knownRoutes: readonly PeerMeshRouteSequence[];
+}
+
+type SyncPeerMeshResponse =
+  | {
+      readonly kind: 'sync-result';
+      readonly roster: SignedPeerMeshRosterV1;
+      readonly routes: readonly SignedPeerMeshRouteRecordV1[];
+      readonly more: boolean;
+    }
+  | { readonly kind: 'sync-rejected'; readonly reason: 'unknown' };
+
+type PeerMeshControlRequest = RedeemInvitationRequest | SyncPeerMeshRequest;
+
 export interface PeerMeshNode {
   status(): readonly PeerMeshStatus[];
   create(): Promise<PeerMeshStatus>;
@@ -76,8 +116,26 @@ export interface PeerMeshNode {
   join(invitation: PeerMeshInvitationV1, signal?: AbortSignal): Promise<PeerMeshStatus>;
   remove(meshId: string, peerId: string): Promise<PeerMeshStatus>;
   closeMesh(meshId: string): Promise<PeerMeshStatus>;
+  resolveRoutes(peerId: string): PeerMeshResolvedRoutes | undefined;
+  reconcile(signal?: AbortSignal): Promise<PeerMeshReconcileResult>;
   serve(): Promise<void>;
   close(): Promise<void>;
+}
+
+export interface PeerMeshResolvedRoutes {
+  readonly routeHints: readonly string[];
+  readonly coordinationRelays: readonly string[];
+  readonly expiresAt: number;
+}
+
+export interface PeerMeshReconcileResult {
+  readonly attempted: number;
+  readonly synchronized: number;
+  readonly failures: readonly {
+    readonly meshId: string;
+    readonly peerId: string;
+    readonly message: string;
+  }[];
 }
 
 export interface PeerMeshStatus {
@@ -94,6 +152,8 @@ export interface PeerMeshTransport {
     listenAddresses: readonly string[];
     coordinationRelays: readonly string[];
   }>;
+  signIdentity(payload: Buffer): Promise<RuntimeHostPeerIdentityProof>;
+  verifyIdentity(peerId: string, payload: Buffer, proof: RuntimeHostPeerIdentityProof): boolean;
   connectMeshControl(
     input: {
       readonly peerId: string;
@@ -115,7 +175,14 @@ export async function openPeerMeshNode(input: {
   readonly now?: () => number;
 }): Promise<PeerMeshNode> {
   const store = await openPeerMeshStateStore(input.dataRoot, input.peer.identity().peerId);
-  return new PeerMeshNodeImpl({ ...input, store });
+  const node = new PeerMeshNodeImpl({ ...input, store });
+  try {
+    await node.initialize();
+    return node;
+  } catch (error) {
+    await node.close().catch(() => undefined);
+    throw error;
+  }
 }
 
 class PeerMeshNodeImpl implements PeerMeshNode {
@@ -125,6 +192,8 @@ class PeerMeshNodeImpl implements PeerMeshNode {
   readonly #activeControlStreams = new Set<RuntimeHostPeerNativeStream>();
   readonly #lifetime = new AbortController();
   #admissionTail = Promise.resolve();
+  #reconcileTail = Promise.resolve();
+  #routeRefreshTask: Promise<SignedPeerMeshRouteRecordV1 | undefined> | undefined;
   #serveTask: Promise<void> | undefined;
   #closeTask: Promise<void> | undefined;
 
@@ -136,6 +205,16 @@ class PeerMeshNodeImpl implements PeerMeshNode {
     this.#store = input.store;
     this.#peer = input.peer;
     this.#now = input.now ?? Date.now;
+  }
+
+  async initialize(): Promise<void> {
+    for (const state of this.#store.read()) {
+      for (const route of state.routes) this.#assertRouteSignature(route);
+    }
+    await this.#store.mutate((current) => ({
+      state: current.map((state) => pruneRoutes(state, this.#now())),
+      result: undefined,
+    }));
   }
 
   status(): readonly PeerMeshStatus[] {
@@ -171,12 +250,14 @@ class PeerMeshNodeImpl implements PeerMeshNode {
         const state: PeerMeshStateV1 = {
           role: 'authority',
           roster,
+          routes: [],
           authorityPrivateKey: keys.privateKey,
           invitations: [],
         };
         return { state: appendMesh(current, state, identity.peerId), result: state };
       });
-      return peerMeshStatus(state, identity);
+      await this.#refreshLocalRoute();
+      return peerMeshStatus(findMesh(this.#store.read(), state.roster.roster.meshId)!, identity);
     });
   }
 
@@ -253,12 +334,19 @@ class PeerMeshNodeImpl implements PeerMeshNode {
         operationSignal,
       );
       try {
+        const localRoute = await this.#signLocalRoute();
         const request: RedeemInvitationRequest = {
           kind: 'redeem-invitation',
           meshId: invitation.meshId,
           secret: invitation.secret,
+          route: localRoute,
         };
-        const response = await exchangeControl(stream, request, operationSignal);
+        const response = await exchangeControl(
+          stream,
+          request,
+          decodeRedeemResponse,
+          operationSignal,
+        );
         if (response.kind === 'invitation-rejected') {
           throw new Error(`Peer Mesh invitation was rejected: ${response.reason}`);
         }
@@ -271,6 +359,8 @@ class PeerMeshNodeImpl implements PeerMeshNode {
         ) {
           throw new Error('Peer Mesh authority returned an unrelated roster');
         }
+        const routes = await this.#validateRoutes(response.routes, roster, this.#now());
+        const joinedRoutes = mergeRoutes(routes, [localRoute], roster, this.#now());
         const state: PeerMeshStateV1 = {
           role: 'replica',
           authority: {
@@ -279,6 +369,7 @@ class PeerMeshNodeImpl implements PeerMeshNode {
             coordinationRelays: invitation.coordinationRelays,
           },
           roster,
+          routes: joinedRoutes,
         };
         const joined = await this.#store.mutate((current) => {
           const existing = findMesh(current, invitation.meshId);
@@ -329,13 +420,41 @@ class PeerMeshNodeImpl implements PeerMeshNode {
     }));
   }
 
+  resolveRoutes(peerId: string): PeerMeshResolvedRoutes | undefined {
+    this.#assertOpen();
+    const now = this.#now();
+    const route = this.#store
+      .read()
+      .filter((state) => isActiveMembership(state, this.#peer.identity().peerId))
+      .flatMap((state) => state.routes)
+      .filter(({ route }) => route.peerId === peerId && route.expiresAt > now)
+      .sort((left, right) => right.route.sequence - left.route.sequence)[0]?.route;
+    if (!route) return undefined;
+    return Object.freeze({
+      routeHints: route.routeHints,
+      coordinationRelays: route.coordinationRelays,
+      expiresAt: route.expiresAt,
+    });
+  }
+
+  reconcile(signal?: AbortSignal): Promise<PeerMeshReconcileResult> {
+    if (this.#lifetime.signal.aborted) return Promise.reject(new Error('Peer Mesh node is closed'));
+    const task = this.#reconcileTail.then(() => this.#reconcile(signal));
+    this.#reconcileTail = task.then(
+      () => undefined,
+      () => undefined,
+    );
+    return task;
+  }
+
   async serve(): Promise<void> {
     if (this.#lifetime.signal.aborted) throw new Error('Peer Mesh node is closed');
     if (this.#serveTask) throw new Error('Peer Mesh node is already serving');
-    const serving = this.#peer.serveMeshControl(
+    const inbound = this.#peer.serveMeshControl(
       (stream) => this.#acceptIncoming(stream),
       this.#lifetime.signal,
     );
+    const serving = Promise.all([inbound, this.#runReconciliation()]).then(() => undefined);
     this.#serveTask = serving;
     try {
       await serving;
@@ -358,8 +477,255 @@ class PeerMeshNodeImpl implements PeerMeshNode {
     await this.#serveTask?.catch(() => undefined);
     for (const stream of this.#activeControlStreams) stream.abort();
     this.#activeControlStreams.clear();
-    await this.#admissionTail;
+    await Promise.all([this.#admissionTail, this.#reconcileTail]);
     return this.#store.close();
+  }
+
+  async #runReconciliation(): Promise<void> {
+    while (!this.#lifetime.signal.aborted) {
+      await this.reconcile(this.#lifetime.signal).catch(() => undefined);
+      await delay(RECONCILE_INTERVAL_MS, undefined, { signal: this.#lifetime.signal }).catch(
+        () => undefined,
+      );
+    }
+  }
+
+  async #reconcile(signal?: AbortSignal): Promise<PeerMeshReconcileResult> {
+    const operationSignal = signal
+      ? AbortSignal.any([signal, this.#lifetime.signal])
+      : this.#lifetime.signal;
+    operationSignal.throwIfAborted();
+    await this.#refreshLocalRoute();
+    const identity = this.#peer.identity();
+    const targets = new Map<
+      string,
+      { readonly meshId: string; readonly target: PeerMeshAuthorityTarget }
+    >();
+    for (const state of this.#store.read()) {
+      if (!isActiveMembership(state, identity.peerId)) continue;
+      for (const signed of state.routes) {
+        const route = signed.route;
+        if (
+          route.peerId !== identity.peerId &&
+          route.expiresAt > this.#now() &&
+          state.roster.roster.members.includes(route.peerId)
+        ) {
+          targets.set(`${state.roster.roster.meshId}\0${route.peerId}`, {
+            meshId: state.roster.roster.meshId,
+            target: route,
+          });
+        }
+      }
+      if (state.role === 'replica' && state.authority.peerId !== identity.peerId) {
+        const key = `${state.roster.roster.meshId}\0${state.authority.peerId}`;
+        if (!targets.has(key))
+          targets.set(key, { meshId: state.roster.roster.meshId, target: state.authority });
+      }
+    }
+    const failures: Array<{ meshId: string; peerId: string; message: string }> = [];
+    let synchronized = 0;
+    for (const { meshId, target } of targets.values()) {
+      operationSignal.throwIfAborted();
+      try {
+        await this.#syncPeer(meshId, target, operationSignal);
+        synchronized += 1;
+      } catch (error) {
+        if (operationSignal.aborted) operationSignal.throwIfAborted();
+        failures.push({
+          meshId,
+          peerId: target.peerId,
+          message: boundedErrorMessage(error),
+        });
+      }
+    }
+    return Object.freeze({
+      attempted: targets.size,
+      synchronized,
+      failures: Object.freeze(failures.map((failure) => Object.freeze(failure))),
+    });
+  }
+
+  async #syncPeer(
+    meshId: string,
+    target: PeerMeshAuthorityTarget,
+    signal: AbortSignal,
+  ): Promise<void> {
+    for (let page = 0; page <= Math.ceil(PEER_MESH_MAX_MEMBERS / ROUTE_PAGE_SIZE); page += 1) {
+      const state = findMesh(this.#store.read(), meshId);
+      const localPeerId = this.#peer.identity().peerId;
+      if (!state || !isActiveMembership(state, localPeerId)) return;
+      const route = state.routes.find((candidate) => candidate.route.peerId === localPeerId);
+      if (!route) throw new Error('Peer Mesh local route is unavailable');
+      const stream = await this.#peer.connectMeshControl(
+        {
+          peerId: target.peerId,
+          routeHints: target.routeHints,
+          coordinationRelays: target.coordinationRelays,
+          directDeadlineMs: CONNECT_DEADLINE_MS,
+        },
+        signal,
+      );
+      try {
+        const response = await exchangeControl(
+          stream,
+          {
+            kind: 'sync',
+            meshId,
+            roster: state.roster,
+            route,
+            knownRoutes: routeSequences(state.routes, this.#now()),
+          },
+          decodeSyncResponse,
+          signal,
+        );
+        if (response.kind === 'sync-rejected') {
+          throw new Error(`Peer Mesh synchronization was rejected: ${response.reason}`);
+        }
+        await this.#applySync(meshId, response.roster, response.routes);
+        if (!response.more) return;
+      } finally {
+        await stream.close().catch(() => undefined);
+      }
+    }
+    throw new Error('Peer Mesh synchronization exceeded its page bound');
+  }
+
+  #refreshLocalRoute(): Promise<SignedPeerMeshRouteRecordV1 | undefined> {
+    this.#routeRefreshTask ??= this.#refreshLocalRouteOnce().finally(() => {
+      this.#routeRefreshTask = undefined;
+    });
+    return this.#routeRefreshTask;
+  }
+
+  async #refreshLocalRouteOnce(): Promise<SignedPeerMeshRouteRecordV1 | undefined> {
+    const identity = this.#peer.identity();
+    const current = this.#store.read();
+    const active = current.filter((state) => isActiveMembership(state, identity.peerId));
+    if (active.length === 0) return undefined;
+    const existing = active
+      .flatMap((state) => state.routes)
+      .filter(({ route }) => route.peerId === identity.peerId)
+      .sort((left, right) => right.route.sequence - left.route.sequence)[0];
+    const now = this.#now();
+    if (
+      existing &&
+      existing.route.expiresAt > now + ROUTE_REFRESH_LEAD_MS &&
+      sameAddresses(existing.route.routeHints, identity.listenAddresses) &&
+      sameAddresses(existing.route.coordinationRelays, identity.coordinationRelays)
+    ) {
+      return existing;
+    }
+    const route = await this.#signLocalRoute((existing?.route.sequence ?? 0) + 1);
+    await this.#store.mutate((states) => ({
+      state: states.map((state) =>
+        isActiveMembership(state, identity.peerId)
+          ? { ...state, routes: mergeRoutes(state.routes, [route], state.roster, now) }
+          : state,
+      ),
+      result: undefined,
+    }));
+    return route;
+  }
+
+  async #signLocalRoute(sequence?: number): Promise<SignedPeerMeshRouteRecordV1> {
+    const identity = this.#peer.identity();
+    const maxSequence = this.#store
+      .read()
+      .flatMap((state) => state.routes)
+      .filter(({ route }) => route.peerId === identity.peerId)
+      .reduce((maximum, { route }) => Math.max(maximum, route.sequence), 0);
+    const route = canonicalPeerMeshRouteRecord({
+      version: 1,
+      peerId: identity.peerId,
+      sequence: sequence ?? maxSequence + 1,
+      expiresAt: this.#now() + ROUTE_TTL_MS,
+      routeHints: identity.listenAddresses,
+      coordinationRelays: identity.coordinationRelays,
+    });
+    const proof = await this.#peer.signIdentity(peerMeshRouteRecordSigningBytes(route));
+    const signed = decodeSignedPeerMeshRouteRecord({
+      route,
+      publicKey: proof.publicKey.toString('base64url'),
+      signature: proof.signature.toString('base64url'),
+    });
+    this.#assertRouteSignature(signed);
+    return signed;
+  }
+
+  #validateRoutes(
+    values: readonly SignedPeerMeshRouteRecordV1[],
+    roster: SignedPeerMeshRosterV1,
+    now: number,
+  ): readonly SignedPeerMeshRouteRecordV1[] {
+    if (values.length > PEER_MESH_MAX_MEMBERS) throw new Error('Too many Peer Mesh routes');
+    const routes = values.map(decodeSignedPeerMeshRouteRecord);
+    if (new Set(routes.map(({ route }) => route.peerId)).size !== routes.length) {
+      throw new Error('Duplicate Peer Mesh routes');
+    }
+    for (const signed of routes) {
+      if (!roster.roster.members.includes(signed.route.peerId)) {
+        throw new Error('Peer Mesh route is outside the active roster or lifetime');
+      }
+      this.#validateRemoteRoute(signed, signed.route.peerId, now);
+    }
+    return Object.freeze(routes);
+  }
+
+  #validateRemoteRoute(
+    value: SignedPeerMeshRouteRecordV1,
+    expectedPeerId: string,
+    now = this.#now(),
+  ): SignedPeerMeshRouteRecordV1 {
+    const signed = decodeSignedPeerMeshRouteRecord(value);
+    if (
+      signed.route.peerId !== expectedPeerId ||
+      signed.route.expiresAt <= now ||
+      signed.route.expiresAt > now + ROUTE_MAX_FUTURE_MS
+    ) {
+      throw new Error('Peer Mesh route is outside the authenticated peer or lifetime');
+    }
+    this.#assertRouteSignature(signed);
+    return signed;
+  }
+
+  #assertRouteSignature(signedValue: SignedPeerMeshRouteRecordV1): void {
+    const signed = decodeSignedPeerMeshRouteRecord(signedValue);
+    const valid = this.#peer.verifyIdentity(
+      signed.route.peerId,
+      peerMeshRouteRecordSigningBytes(signed.route),
+      {
+        publicKey: Buffer.from(signed.publicKey, 'base64url'),
+        signature: Buffer.from(signed.signature, 'base64url'),
+      },
+    );
+    if (!valid) throw new Error('Peer Mesh route signature is invalid');
+  }
+
+  async #applySync(
+    meshId: string,
+    rosterValue: SignedPeerMeshRosterV1,
+    routeValues: readonly SignedPeerMeshRouteRecordV1[],
+  ): Promise<void> {
+    const roster = decodeSignedPeerMeshRoster(rosterValue);
+    if (roster.roster.meshId !== meshId) throw new Error('Peer Mesh synchronization changed Mesh');
+    const routes = this.#validateRoutes(routeValues, roster, this.#now());
+    const localPeerId = this.#peer.identity().peerId;
+    await this.#store.mutate((current) => {
+      const state = findMesh(current, meshId);
+      if (!state || state.roster.authorityPublicKey !== roster.authorityPublicKey) {
+        throw new Error('Peer Mesh synchronization has the wrong authority');
+      }
+      const nextRoster = selectRoster(state.roster, roster);
+      const next = {
+        ...state,
+        roster: nextRoster,
+        routes:
+          nextRoster.roster.closed || !nextRoster.roster.members.includes(localPeerId)
+            ? []
+            : mergeRoutes(state.routes, routes, nextRoster, this.#now()),
+      };
+      return { state: replaceMesh(current, next), result: undefined };
+    });
   }
 
   #assertOpen(): void {
@@ -396,6 +762,9 @@ class PeerMeshNodeImpl implements PeerMeshNode {
       const updated = {
         ...state,
         roster,
+        routes: next.closed
+          ? []
+          : state.routes.filter(({ route }) => next.members.includes(route.peerId)),
         invitations: next.closed
           ? state.invitations.filter(({ status }) => status === 'redeemed')
           : state.invitations.filter(
@@ -445,8 +814,18 @@ class PeerMeshNodeImpl implements PeerMeshNode {
   async #handleIncoming(stream: RuntimeHostPeerNativeStream): Promise<void> {
     const deadline = setTimeout(() => stream.abort(), CONTROL_REQUEST_DEADLINE_MS);
     try {
-      const request = decodeRedeemRequest(await readFrame(stream));
-      const response = await this.#redeem(request, stream.peerId);
+      const request = decodeControlRequest(await readFrame(stream));
+      let response: RedeemInvitationResponse | SyncPeerMeshResponse;
+      if (request.kind === 'redeem-invitation') {
+        await this.#refreshLocalRoute();
+        response = await this.#redeem(
+          request,
+          stream.peerId,
+          this.#validateRemoteRoute(request.route, stream.peerId),
+        );
+      } else {
+        response = await this.#sync(request, stream.peerId);
+      }
       await writeFrame(stream, response);
       await stream.close();
     } catch {
@@ -459,6 +838,7 @@ class PeerMeshNodeImpl implements PeerMeshNode {
   #redeem(
     request: RedeemInvitationRequest,
     remotePeerId: string,
+    remoteRoute: SignedPeerMeshRouteRecordV1,
   ): Promise<RedeemInvitationResponse> {
     const now = this.#now();
     return this.#store.mutate<RedeemInvitationResponse>((current) => {
@@ -478,9 +858,21 @@ class PeerMeshNodeImpl implements PeerMeshNode {
         ) {
           return { state: current, result: rejected('invalid') };
         }
+        const updated = {
+          ...state,
+          routes: mergeAuthenticatedRoute(state.routes, remoteRoute, state.roster, now),
+        };
         return {
-          state: current,
-          result: { kind: 'invitation-redeemed', roster: state.roster },
+          state: replaceMesh(current, updated),
+          result: {
+            kind: 'invitation-redeemed',
+            roster: updated.roster,
+            routes: responseRoutes(
+              updated,
+              [{ peerId: remotePeerId, sequence: Number.MAX_SAFE_INTEGER }],
+              now,
+            ).routes,
+          },
         };
       }
       const remaining = state.invitations.filter(
@@ -509,17 +901,27 @@ class PeerMeshNodeImpl implements PeerMeshNode {
         };
       }
       if (state.roster.roster.members.includes(remotePeerId)) {
+        const updated = {
+          ...state,
+          routes: mergeAuthenticatedRoute(state.routes, remoteRoute, state.roster, now),
+          invitations: [
+            ...remaining.filter(
+              (record) => record.status === 'pending' || record.peerId !== remotePeerId,
+            ),
+            redeemedInvitation(invitation, remotePeerId),
+          ],
+        };
         return {
-          state: replaceMesh(current, {
-            ...state,
-            invitations: [
-              ...remaining.filter(
-                (record) => record.status === 'pending' || record.peerId !== remotePeerId,
-              ),
-              redeemedInvitation(invitation, remotePeerId),
-            ],
-          }),
-          result: { kind: 'invitation-redeemed', roster: state.roster },
+          state: replaceMesh(current, updated),
+          result: {
+            kind: 'invitation-redeemed',
+            roster: state.roster,
+            routes: responseRoutes(
+              updated,
+              [{ peerId: remotePeerId, sequence: Number.MAX_SAFE_INTEGER }],
+              now,
+            ).routes,
+          },
         };
       }
       const members = [...state.roster.roster.members, remotePeerId].sort();
@@ -531,18 +933,72 @@ class PeerMeshNodeImpl implements PeerMeshNode {
         },
         authorityKeys(state),
       );
+      const updated = {
+        ...state,
+        roster,
+        routes: mergeRoutes(state.routes, [remoteRoute], roster, now),
+        invitations: [
+          ...remaining.filter(
+            (record) => record.status === 'pending' || record.peerId !== remotePeerId,
+          ),
+          redeemedInvitation(invitation, remotePeerId),
+        ],
+      };
       return {
-        state: replaceMesh(current, {
-          ...state,
+        state: replaceMesh(current, updated),
+        result: {
+          kind: 'invitation-redeemed',
           roster,
-          invitations: [
-            ...remaining.filter(
-              (record) => record.status === 'pending' || record.peerId !== remotePeerId,
-            ),
-            redeemedInvitation(invitation, remotePeerId),
-          ],
-        }),
-        result: { kind: 'invitation-redeemed', roster },
+          routes: responseRoutes(
+            updated,
+            [{ peerId: remotePeerId, sequence: Number.MAX_SAFE_INTEGER }],
+            now,
+          ).routes,
+        },
+      };
+    });
+  }
+
+  async #sync(request: SyncPeerMeshRequest, remotePeerId: string): Promise<SyncPeerMeshResponse> {
+    const remoteRoute = this.#validateRemoteRoute(request.route, remotePeerId);
+    await this.#refreshLocalRoute();
+    const incomingRoster = decodeSignedPeerMeshRoster(request.roster);
+    return this.#store.mutate<SyncPeerMeshResponse>((current) => {
+      const state = findMesh(current, request.meshId);
+      if (!state || state.roster.authorityPublicKey !== incomingRoster.authorityPublicKey) {
+        return { state: current, result: { kind: 'sync-rejected', reason: 'unknown' } as const };
+      }
+      const roster = selectRoster(state.roster, incomingRoster);
+      const localPeerId = this.#peer.identity().peerId;
+      const bothMembers =
+        !roster.roster.closed &&
+        roster.roster.members.includes(localPeerId) &&
+        roster.roster.members.includes(remotePeerId);
+      const updated = {
+        ...state,
+        roster,
+        routes: bothMembers ? mergeRoutes(state.routes, [remoteRoute], roster, this.#now()) : [],
+      };
+      if (!bothMembers) {
+        return {
+          state: replaceMesh(current, updated),
+          result: {
+            kind: 'sync-result',
+            roster,
+            routes: [],
+            more: false,
+          } as const,
+        };
+      }
+      const page = responseRoutes(updated, request.knownRoutes, this.#now());
+      return {
+        state: replaceMesh(current, updated),
+        result: {
+          kind: 'sync-result',
+          roster,
+          routes: page.routes,
+          more: page.more,
+        } as const,
       };
     });
   }
@@ -632,11 +1088,129 @@ function isActiveMembership(state: PeerMeshStateV1, localPeerId: string): boolea
   return !state.roster.roster.closed && state.roster.roster.members.includes(localPeerId);
 }
 
-async function exchangeControl(
+function selectRoster(
+  current: SignedPeerMeshRosterV1,
+  candidate: SignedPeerMeshRosterV1,
+): SignedPeerMeshRosterV1 {
+  if (
+    current.roster.meshId !== candidate.roster.meshId ||
+    current.authorityPublicKey !== candidate.authorityPublicKey
+  ) {
+    throw new Error('Peer Mesh roster has the wrong authority');
+  }
+  if (candidate.roster.revision < current.roster.revision) return current;
+  if (candidate.roster.revision === current.roster.revision) {
+    if (JSON.stringify(candidate) !== JSON.stringify(current)) {
+      throw new Error('Peer Mesh roster revision identifies conflicting facts');
+    }
+    return current;
+  }
+  return candidate;
+}
+
+function mergeRoutes(
+  current: readonly SignedPeerMeshRouteRecordV1[],
+  candidates: readonly SignedPeerMeshRouteRecordV1[],
+  roster: SignedPeerMeshRosterV1,
+  now: number,
+): readonly SignedPeerMeshRouteRecordV1[] {
+  const routes = new Map(
+    current
+      .filter(({ route }) => route.expiresAt > now && roster.roster.members.includes(route.peerId))
+      .map((route) => [route.route.peerId, route] as const),
+  );
+  for (const candidate of candidates) {
+    if (
+      candidate.route.expiresAt <= now ||
+      !roster.roster.members.includes(candidate.route.peerId)
+    ) {
+      continue;
+    }
+    const existing = routes.get(candidate.route.peerId);
+    if (!existing || candidate.route.sequence > existing.route.sequence) {
+      routes.set(candidate.route.peerId, candidate);
+      continue;
+    }
+    if (
+      candidate.route.sequence === existing.route.sequence &&
+      JSON.stringify(candidate) !== JSON.stringify(existing)
+    ) {
+      throw new Error('Peer Mesh route sequence identifies conflicting facts');
+    }
+  }
+  return Object.freeze(
+    [...routes.values()].sort((left, right) => left.route.peerId.localeCompare(right.route.peerId)),
+  );
+}
+
+function mergeAuthenticatedRoute(
+  current: readonly SignedPeerMeshRouteRecordV1[],
+  candidate: SignedPeerMeshRouteRecordV1,
+  roster: SignedPeerMeshRosterV1,
+  now: number,
+): readonly SignedPeerMeshRouteRecordV1[] {
+  const existing = current.find(({ route }) => route.peerId === candidate.route.peerId);
+  if (existing && existing.route.sequence > candidate.route.sequence) {
+    return mergeRoutes(current, [], roster, now);
+  }
+  return mergeRoutes(
+    current.filter(({ route }) => route.peerId !== candidate.route.peerId),
+    [candidate],
+    roster,
+    now,
+  );
+}
+
+function pruneRoutes<State extends PeerMeshStateV1>(state: State, now: number): State {
+  const routes = mergeRoutes(state.routes, [], state.roster, now);
+  return (routes.length === state.routes.length ? state : { ...state, routes }) as State;
+}
+
+function routeSequences(
+  routes: readonly SignedPeerMeshRouteRecordV1[],
+  now: number,
+): readonly PeerMeshRouteSequence[] {
+  return Object.freeze(
+    routes
+      .filter(({ route }) => route.expiresAt > now)
+      .map(({ route }) => Object.freeze({ peerId: route.peerId, sequence: route.sequence }))
+      .sort((left, right) => left.peerId.localeCompare(right.peerId)),
+  );
+}
+
+function responseRoutes(
+  state: PeerMeshStateV1,
+  knownRoutes: readonly PeerMeshRouteSequence[],
+  now: number,
+): { readonly routes: readonly SignedPeerMeshRouteRecordV1[]; readonly more: boolean } {
+  const known = new Map(knownRoutes.map(({ peerId, sequence }) => [peerId, sequence]));
+  const missing = state.routes.filter(
+    ({ route }) =>
+      route.expiresAt > now &&
+      state.roster.roster.members.includes(route.peerId) &&
+      route.sequence > (known.get(route.peerId) ?? 0),
+  );
+  return Object.freeze({
+    routes: Object.freeze(missing.slice(0, ROUTE_PAGE_SIZE)),
+    more: missing.length > ROUTE_PAGE_SIZE,
+  });
+}
+
+function sameAddresses(left: readonly string[], right: readonly string[]): boolean {
+  return left.length === right.length && left.every((address, index) => address === right[index]);
+}
+
+function boundedErrorMessage(error: unknown): string {
+  const message = error instanceof Error ? error.message : String(error);
+  return message.length <= 512 ? message : `${message.slice(0, 509)}...`;
+}
+
+async function exchangeControl<Request, Response>(
   stream: RuntimeHostPeerNativeStream,
-  request: RedeemInvitationRequest,
+  request: Request,
+  decode: (value: unknown) => Response,
   signal?: AbortSignal,
-): Promise<RedeemInvitationResponse> {
+): Promise<Response> {
   const timeout = AbortSignal.timeout(CONTROL_REQUEST_DEADLINE_MS);
   const operationSignal = signal ? AbortSignal.any([signal, timeout]) : timeout;
   const abort = () => stream.abort();
@@ -645,7 +1219,7 @@ async function exchangeControl(
   try {
     operationSignal.throwIfAborted();
     await writeFrame(stream, request);
-    const response = decodeRedeemResponse(await readFrame(stream));
+    const response = decode(await readFrame(stream));
     operationSignal.throwIfAborted();
     return response;
   } catch (error) {
@@ -656,24 +1230,41 @@ async function exchangeControl(
   }
 }
 
-function decodeRedeemRequest(value: unknown): RedeemInvitationRequest {
+function decodeControlRequest(value: unknown): PeerMeshControlRequest {
   const record = recordValue(value);
-  if (record.kind !== 'redeem-invitation' || !hasExactKeys(record, ['kind', 'meshId', 'secret'])) {
-    throw new Error('Unsupported Peer Mesh control request');
+  if (
+    record.kind === 'redeem-invitation' &&
+    hasExactKeys(record, ['kind', 'meshId', 'secret', 'route'])
+  ) {
+    return {
+      kind: 'redeem-invitation',
+      meshId: requiredString(record.meshId, 128),
+      secret: requiredString(record.secret, 64),
+      route: decodeSignedPeerMeshRouteRecord(record.route),
+    };
   }
-  return {
-    kind: 'redeem-invitation',
-    meshId: requiredString(record.meshId, 128),
-    secret: requiredString(record.secret, 64),
-  };
+  if (
+    record.kind === 'sync' &&
+    hasExactKeys(record, ['kind', 'meshId', 'roster', 'route', 'knownRoutes'])
+  ) {
+    return {
+      kind: 'sync',
+      meshId: requiredString(record.meshId, 128),
+      roster: decodeSignedPeerMeshRoster(record.roster),
+      route: decodeSignedPeerMeshRouteRecord(record.route),
+      knownRoutes: decodeRouteSequences(record.knownRoutes),
+    };
+  }
+  throw new Error('Unsupported Peer Mesh control request');
 }
 
 function decodeRedeemResponse(value: unknown): RedeemInvitationResponse {
   const record = recordValue(value);
-  if (record.kind === 'invitation-redeemed' && hasExactKeys(record, ['kind', 'roster'])) {
+  if (record.kind === 'invitation-redeemed' && hasExactKeys(record, ['kind', 'roster', 'routes'])) {
     return {
       kind: 'invitation-redeemed',
       roster: decodeSignedPeerMeshRoster(record.roster),
+      routes: decodeRoutePage(record.routes),
     };
   }
   if (
@@ -687,6 +1278,61 @@ function decodeRedeemResponse(value: unknown): RedeemInvitationResponse {
     return { kind: 'invitation-rejected', reason: record.reason };
   }
   throw new Error('Invalid Peer Mesh control response');
+}
+
+function decodeSyncResponse(value: unknown): SyncPeerMeshResponse {
+  const record = recordValue(value);
+  if (
+    record.kind === 'sync-result' &&
+    hasExactKeys(record, ['kind', 'roster', 'routes', 'more']) &&
+    typeof record.more === 'boolean'
+  ) {
+    return {
+      kind: 'sync-result',
+      roster: decodeSignedPeerMeshRoster(record.roster),
+      routes: decodeRoutePage(record.routes),
+      more: record.more,
+    };
+  }
+  if (
+    record.kind === 'sync-rejected' &&
+    hasExactKeys(record, ['kind', 'reason']) &&
+    record.reason === 'unknown'
+  ) {
+    return { kind: 'sync-rejected', reason: record.reason };
+  }
+  throw new Error('Invalid Peer Mesh synchronization response');
+}
+
+function decodeRoutePage(value: unknown): readonly SignedPeerMeshRouteRecordV1[] {
+  if (!Array.isArray(value) || value.length > ROUTE_PAGE_SIZE) {
+    throw new Error('Invalid Peer Mesh route page');
+  }
+  return Object.freeze(value.map(decodeSignedPeerMeshRouteRecord));
+}
+
+function decodeRouteSequences(value: unknown): readonly PeerMeshRouteSequence[] {
+  if (!Array.isArray(value) || value.length > PEER_MESH_MAX_MEMBERS) {
+    throw new Error('Invalid Peer Mesh route sequences');
+  }
+  const sequences = value.map((entry) => {
+    const record = recordValue(entry);
+    if (!hasExactKeys(record, ['peerId', 'sequence'])) {
+      throw new Error('Invalid Peer Mesh route sequence');
+    }
+    const sequence = record.sequence;
+    if (!Number.isSafeInteger(sequence) || (sequence as number) < 1) {
+      throw new Error('Invalid Peer Mesh route sequence');
+    }
+    return Object.freeze({
+      peerId: requiredString(record.peerId, 256),
+      sequence: sequence as number,
+    });
+  });
+  if (new Set(sequences.map(({ peerId }) => peerId)).size !== sequences.length) {
+    throw new Error('Duplicate Peer Mesh route sequence');
+  }
+  return Object.freeze(sequences);
 }
 
 async function writeFrame(stream: RuntimeHostPeerNativeStream, value: unknown): Promise<void> {

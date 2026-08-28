@@ -21,6 +21,6 @@ mod bindings;
 mod engine;
 
 pub use bindings::{
-    ConnectPeerOptions, PeerEndpoint, PeerStream, StartPeerEndpointOptions, ensure_peer_identity,
-    start_peer_endpoint,
+    ConnectPeerOptions, PeerEndpoint, PeerIdentitySignature, PeerStream, StartPeerEndpointOptions,
+    ensure_peer_identity, sign_peer_identity, start_peer_endpoint, verify_peer_identity,
 };

@@ -31,6 +31,7 @@ use tokio::sync::{Mutex as AsyncMutex, mpsc, oneshot, watch};
 use crate::engine::{self, EngineCommand, PeerError, StreamCommand};
 
 type IncomingStreamReceiver = mpsc::Receiver<std::result::Result<Vec<u8>, PeerError>>;
+const IDENTITY_PAYLOAD_MAX_BYTES: usize = 8 * 1024;
 
 #[napi(object)]
 pub struct StartPeerEndpointOptions {
@@ -47,6 +48,12 @@ pub struct ConnectPeerOptions {
     pub route_hints: Vec<String>,
     pub coordination_relays: Option<Vec<String>>,
     pub direct_deadline_ms: u32,
+}
+
+#[napi(object)]
+pub struct PeerIdentitySignature {
+    pub public_key: Buffer,
+    pub signature: Buffer,
 }
 
 #[napi]
@@ -301,6 +308,38 @@ pub async fn ensure_peer_identity(key_path: String) -> Result<String> {
         .map_err(peer_error)
 }
 
+#[napi]
+pub async fn sign_peer_identity(
+    key_path: String,
+    expected_peer_id: String,
+    payload: Buffer,
+) -> Result<PeerIdentitySignature> {
+    validate_identity_payload(&payload)?;
+    let signed = engine::sign_identity(
+        PathBuf::from(key_path),
+        parse_peer_id(&expected_peer_id)?,
+        &payload,
+    )
+    .await
+    .map_err(peer_error)?;
+    Ok(PeerIdentitySignature {
+        public_key: signed.public_key.into(),
+        signature: signed.signature.into(),
+    })
+}
+
+#[napi]
+pub fn verify_peer_identity(
+    peer_id: String,
+    public_key: Buffer,
+    payload: Buffer,
+    signature: Buffer,
+) -> Result<bool> {
+    validate_identity_payload(&payload)?;
+    engine::verify_identity(parse_peer_id(&peer_id)?, &public_key, &payload, &signature)
+        .map_err(peer_error)
+}
+
 fn wrap_stream(stream: engine::PeerStream) -> Result<PeerStream> {
     Ok(PeerStream {
         peer_id: stream.peer_id.to_string(),
@@ -325,6 +364,16 @@ fn parse_addresses(values: Vec<String>, label: &str) -> Result<Vec<Multiaddr>> {
             })
         })
         .collect()
+}
+
+fn validate_identity_payload(payload: &[u8]) -> Result<()> {
+    if payload.is_empty() || payload.len() > IDENTITY_PAYLOAD_MAX_BYTES {
+        return Err(Error::new(
+            Status::InvalidArg,
+            "identity payload must be between 1 and 8192 bytes",
+        ));
+    }
+    Ok(())
 }
 
 fn peer_error(error: PeerError) -> Error {

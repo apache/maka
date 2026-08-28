@@ -22,11 +22,19 @@ export {
   type PeerMeshAuthorityTarget,
   type PeerMeshInvitationV1,
   type PeerMeshRosterV1,
+  type PeerMeshRouteRecordV1,
   type SignedPeerMeshRosterV1,
+  type SignedPeerMeshRouteRecordV1,
 } from './model.js';
 export {
   openPeerMeshNode,
   type PeerMeshNode,
+  type PeerMeshReconcileResult,
+  type PeerMeshResolvedRoutes,
   type PeerMeshStatus,
   type PeerMeshTransport,
 } from './node.js';
+export {
+  openRuntimeHostPeerMeshOwner,
+  type RuntimeHostPeerMeshOwner,
+} from './owner.js';

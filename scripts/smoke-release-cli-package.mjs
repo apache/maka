@@ -229,11 +229,8 @@ async function smokeRuntimeHostPeerProtocol({ packageRoot, cliEntrypoint, root }
   let host;
   let connection;
   let peerClient;
-  let meshAuthority;
-  let meshMember;
-  let meshAuthorityPeer;
-  let meshMemberPeer;
-  let meshServing;
+  let meshAuthorityOwner;
+  let meshMemberOwner;
   try {
     delete process.env.MAKA_RUNTIME_HOST_PEER_NATIVE_PATH;
     delete process.env.MAKA_RUNTIME_HOST_PEER_KEY_PATH;
@@ -305,25 +302,20 @@ async function smokeRuntimeHostPeerProtocol({ packageRoot, cliEntrypoint, root }
 
     const meshMemberKeyPath = join(root, 'mesh-member.key');
     const meshMemberDataRoot = join(root, 'mesh-member');
-    meshAuthorityPeer = client.createRuntimeHostPeerClient({
+    meshAuthorityOwner = await mesh.openRuntimeHostPeerMeshOwner({
       nativePath,
       keyPath: join(root, 'mesh-authority.key'),
+      dataRoot: join(root, 'mesh-authority'),
       listenAddresses: ['/ip4/127.0.0.1/udp/0/quic-v1'],
     });
-    meshMemberPeer = client.createRuntimeHostPeerClient({
+    meshMemberOwner = await mesh.openRuntimeHostPeerMeshOwner({
       nativePath,
       keyPath: meshMemberKeyPath,
+      dataRoot: meshMemberDataRoot,
       listenAddresses: ['/ip4/127.0.0.1/udp/0/quic-v1'],
     });
-    meshAuthority = await mesh.openPeerMeshNode({
-      dataRoot: join(root, 'mesh-authority'),
-      peer: meshAuthorityPeer,
-    });
-    meshMember = await mesh.openPeerMeshNode({
-      dataRoot: meshMemberDataRoot,
-      peer: meshMemberPeer,
-    });
-    meshServing = meshAuthority.serve();
+    const meshAuthority = meshAuthorityOwner.mesh;
+    let meshMember = meshMemberOwner.mesh;
     const created = await meshAuthority.create();
     const joined = await meshMember.join(await meshAuthority.invite(created.roster.roster.meshId));
     if (joined.roster.roster.members.length !== 2) {
@@ -331,22 +323,19 @@ async function smokeRuntimeHostPeerProtocol({ packageRoot, cliEntrypoint, root }
     }
     const removed = await meshAuthority.remove(
       created.roster.roster.meshId,
-      meshMemberPeer.identity().peerId,
+      meshMemberOwner.client.identity().peerId,
     );
     if (removed.roster.roster.members.length !== 1) {
       throw new Error('Installed Runtime Host peer Mesh did not remove the invited peer');
     }
-    await meshMember.close();
-    await meshMemberPeer.close();
-    meshMemberPeer = client.createRuntimeHostPeerClient({
+    await meshMemberOwner.close();
+    meshMemberOwner = await mesh.openRuntimeHostPeerMeshOwner({
       nativePath,
       keyPath: meshMemberKeyPath,
+      dataRoot: meshMemberDataRoot,
       listenAddresses: ['/ip4/127.0.0.1/udp/0/quic-v1'],
     });
-    meshMember = await mesh.openPeerMeshNode({
-      dataRoot: meshMemberDataRoot,
-      peer: meshMemberPeer,
-    });
+    meshMember = meshMemberOwner.mesh;
     const stale = meshMember.status()[0];
     if (stale?.roster.roster.revision !== joined.roster.roster.revision) {
       throw new Error('Installed Runtime Host peer Mesh did not recover the last-known roster');
@@ -360,12 +349,17 @@ async function smokeRuntimeHostPeerProtocol({ packageRoot, cliEntrypoint, root }
     ) {
       throw new Error('Installed Runtime Host peer Mesh did not re-admit the removed peer');
     }
+    await meshAuthority.remove(
+      created.roster.roster.meshId,
+      meshMemberOwner.client.identity().peerId,
+    );
+    await meshMember.reconcile();
+    if (meshMember.status().length !== 0) {
+      throw new Error('Installed Runtime Host peer Mesh did not propagate member removal');
+    }
   } finally {
-    await meshAuthority?.close().catch(() => undefined);
-    await meshMember?.close().catch(() => undefined);
-    await meshServing?.catch(() => undefined);
-    await meshAuthorityPeer?.close().catch(() => undefined);
-    await meshMemberPeer?.close().catch(() => undefined);
+    await meshMemberOwner?.close().catch(() => undefined);
+    await meshAuthorityOwner?.close().catch(() => undefined);
     await connection?.close().catch(() => undefined);
     await peerClient?.close().catch(() => undefined);
     await host?.close().catch(() => undefined);

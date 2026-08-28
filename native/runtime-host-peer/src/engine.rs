@@ -84,6 +84,11 @@ pub struct StartedEndpoint {
     pub thread: thread::JoinHandle<()>,
 }
 
+pub struct IdentitySignature {
+    pub public_key: Vec<u8>,
+    pub signature: Vec<u8>,
+}
+
 pub struct ConnectOptions {
     pub request_id: u32,
     pub peer_id: PeerId,
@@ -247,6 +252,37 @@ pub async fn ensure_identity(key_path: PathBuf) -> Result<PeerId, PeerError> {
         .await?
         .public()
         .to_peer_id())
+}
+
+pub async fn sign_identity(
+    key_path: PathBuf,
+    expected_peer_id: PeerId,
+    payload: &[u8],
+) -> Result<IdentitySignature, PeerError> {
+    let key = identity_store::load_key(&key_path).await?;
+    if PeerId::from(key.public()) != expected_peer_id {
+        return Err(PeerError::new(
+            "peer_identity_mismatch",
+            "the persisted peer identity does not match the expected PeerId",
+        ));
+    }
+    Ok(IdentitySignature {
+        public_key: key.public().encode_protobuf(),
+        signature: key
+            .sign(payload)
+            .map_err(|error| PeerError::new("peer_native_failed", error.to_string()))?,
+    })
+}
+
+pub fn verify_identity(
+    peer_id: PeerId,
+    public_key: &[u8],
+    payload: &[u8],
+    signature: &[u8],
+) -> Result<bool, PeerError> {
+    let public_key = identity::PublicKey::try_decode_protobuf(public_key)
+        .map_err(|error| PeerError::new("peer_native_failed", error.to_string()))?;
+    Ok(PeerId::from(&public_key) == peer_id && public_key.verify(payload, signature))
 }
 
 pub fn start(options: StartOptions) -> Result<StartedEndpoint, PeerError> {
@@ -1227,6 +1263,38 @@ fn native_error(error: impl std::fmt::Display) -> PeerError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn identity_signature_is_bound_to_peer_and_payload() {
+        let root = std::env::temp_dir().join(format!("maka-peer-signature-{}", PeerId::random()));
+        std::fs::create_dir_all(&root).expect("create test root");
+        let key_path = root.join("peer.key");
+        let peer_id = ensure_identity(key_path.clone())
+            .await
+            .expect("create identity");
+        let proof = sign_identity(key_path, peer_id, b"route")
+            .await
+            .expect("sign payload");
+
+        assert!(
+            verify_identity(peer_id, &proof.public_key, b"route", &proof.signature)
+                .expect("verify signature")
+        );
+        assert!(
+            !verify_identity(peer_id, &proof.public_key, b"other", &proof.signature)
+                .expect("reject changed payload")
+        );
+        assert!(
+            !verify_identity(
+                PeerId::random(),
+                &proof.public_key,
+                b"route",
+                &proof.signature,
+            )
+            .expect("reject changed peer")
+        );
+        std::fs::remove_dir_all(root).expect("remove test root");
+    }
 
     #[tokio::test(flavor = "multi_thread")]
     async fn mesh_control_survives_repeated_application_streams_on_one_endpoint() {
