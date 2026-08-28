@@ -67,6 +67,7 @@ import type {
   DesktopRuntimeHostSshTerminalSnapshot,
 } from '../preload/bridge-contract.js';
 import { createRuntimeHostFramedOutputFilter } from './runtime-host-framed-output.js';
+import type { DesktopRuntimeHostDevelopmentPeerTarget } from './runtime-host-setup-package.js';
 
 interface ActiveTerminal {
   readonly sessionId: string;
@@ -102,6 +103,12 @@ export interface DesktopRuntimeHostSshSetupInput {
   readonly principalId: string;
   readonly lifecycle?: 'supervised' | 'on_demand';
   readonly projectDirectoryRoots?: readonly { readonly label: string; readonly path: string }[];
+  readonly signal?: AbortSignal;
+}
+
+export interface DesktopRuntimeHostSshTargetInput {
+  readonly destination: string;
+  readonly sshPort?: number;
   readonly signal?: AbortSignal;
 }
 
@@ -236,6 +243,9 @@ export function createDesktopRuntimeHostSshTerminal(input: {
     input: RuntimeHostSshOperatorActivationInput,
   ): Promise<RuntimeHostActivationResult>;
   openSshTunnel(input: RuntimeHostSshTunnelInput): Promise<RuntimeHostSshTunnel>;
+  resolveDevelopmentPeerTarget(
+    input: DesktopRuntimeHostSshTargetInput,
+  ): Promise<Exclude<DesktopRuntimeHostDevelopmentPeerTarget, 'none'>>;
   runSetup(
     input: DesktopRuntimeHostSshSetupInput,
     onProgress: (frame: Extract<RuntimeHostSetupFrame, { kind: 'progress' }>) => void,
@@ -603,6 +613,66 @@ export function createDesktopRuntimeHostSshTerminal(input: {
       }
       return tunnel;
     },
+    resolveDevelopmentPeerTarget: async (targetInput) => {
+      if (closed) throw new Error('Runtime Host SSH terminal is closed');
+      targetInput.signal?.throwIfAborted();
+      const destination = normalizeRuntimeHostSshDestination(targetInput.destination);
+      const sshPort = targetInput.sshPort === undefined
+        ? undefined
+        : requireSetupPort(targetInput.sshPort);
+      const marker = `__MAKA_RUNTIME_HOST_TARGET_${randomUUID().replaceAll('-', '')}__`;
+      const remoteCommand = `printf '${marker}%s:%s\\n' "$(uname -s)" "$(uname -m)"`;
+      let target: Exclude<DesktopRuntimeHostDevelopmentPeerTarget, 'none'> | undefined;
+      let failure: Error | undefined;
+      const filter = createRuntimeHostFramedOutputFilter({
+        prefix: marker,
+        pendingMaxBytes: 256,
+        decode: (line) => line.slice(marker.length).replaceAll('\r', '').trimEnd(),
+        label: 'Remote Runtime Host target detection',
+        onFrame: (identity) => {
+          if (target) {
+            failure = new Error('Remote Runtime Host target detection returned multiple results');
+            return;
+          }
+          const [system, machine, ...extra] = identity.split(':');
+          if (!system || !machine || extra.length > 0) {
+            failure = new Error('Remote Runtime Host target detection returned an invalid result');
+            return;
+          }
+          try {
+            target = runtimeHostDevelopmentPeerTargetFromUname(system, machine);
+          } catch (error) {
+            failure = error instanceof Error ? error : new Error(String(error));
+          }
+        },
+        onError: (error) => {
+          failure = error;
+        },
+      });
+      const { process, terminal } = startTerminalProcess(
+        'ssh',
+        sshRemoteCommandArgs(destination, sshPort, remoteCommand),
+        filter.push,
+        true,
+      );
+      const wait = await waitForTerminalProcess(process, {
+        signal: targetInput.signal,
+        timeoutMs: input.managementTimeoutMs ?? MANAGEMENT_TIMEOUT_MS,
+        stopGraceMs: input.processStopGraceMs,
+        onAbort: () => dismissPresentation(terminal),
+      }, input.terminateProcessTree);
+      if (wait.timedOut) throw new Error('Remote Runtime Host target detection timed out');
+      if (wait.exit.code !== 0) {
+        throw new Error(
+          `Remote Runtime Host target detection exited with code ${String(wait.exit.code)}`,
+        );
+      }
+      filter.finish();
+      if (failure) throw failure;
+      completePresentation(terminal);
+      if (!target) throw new Error('Remote Runtime Host target detection returned no result');
+      return target;
+    },
     runSetup: async (setupInput, onProgress, onComplete) => {
       if (closed) throw new Error('Runtime Host SSH terminal is closed');
       setupInput.signal?.throwIfAborted();
@@ -840,6 +910,21 @@ export function createDesktopRuntimeHostSshTerminal(input: {
       ).catch(() => undefined);
     },
   };
+}
+
+export function runtimeHostDevelopmentPeerTargetFromUname(
+  system: string,
+  machine: string,
+): Exclude<DesktopRuntimeHostDevelopmentPeerTarget, 'none'> {
+  const normalizedMachine = machine.toLowerCase();
+  if (system === 'Darwin' && normalizedMachine === 'arm64') return 'darwin-arm64';
+  if (system === 'Linux') {
+    if (normalizedMachine === 'x86_64') return 'linux-x64';
+    if (normalizedMachine === 'aarch64' || normalizedMachine === 'arm64') {
+      return 'linux-arm64';
+    }
+  }
+  throw new Error(`Direct peer is not available on ${system}/${machine}`);
 }
 
 function cancellableUntilComplete(signal: AbortSignal | undefined): {

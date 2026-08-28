@@ -36,33 +36,68 @@ interface DevelopmentArchiveBuild {
   close(): Promise<void>;
 }
 
+interface DevelopmentBuildState {
+  readonly task: DevelopmentArchiveBuild;
+  readonly result: Promise<DesktopRuntimeHostSetupPackage>;
+  waiters: number;
+  settled: boolean;
+  closing?: Promise<void>;
+}
+
+export type DesktopRuntimeHostDevelopmentPeerTarget =
+  | 'none'
+  | 'darwin-arm64'
+  | 'linux-arm64'
+  | 'linux-x64'
+  | 'win32-x64';
+
 export interface RuntimeHostSetupPackageResolver {
-  resolve(signal?: AbortSignal): Promise<DesktopRuntimeHostSetupPackage>;
+  readonly mode: 'published' | 'development';
+  resolve(
+    peerTarget: DesktopRuntimeHostDevelopmentPeerTarget,
+    signal?: AbortSignal,
+  ): Promise<DesktopRuntimeHostSetupPackage>;
   close(): Promise<void>;
+}
+
+export function desktopRuntimeHostDevelopmentPeerTarget(
+  platform: NodeJS.Platform = process.platform,
+  arch: string = process.arch,
+): Exclude<DesktopRuntimeHostDevelopmentPeerTarget, 'none'> {
+  const target = `${platform}-${arch}`;
+  if (
+    target !== 'darwin-arm64' &&
+    target !== 'linux-arm64' &&
+    target !== 'linux-x64' &&
+    target !== 'win32-x64'
+  ) {
+    throw new Error(`Direct peer is not available on ${target}`);
+  }
+  return target;
 }
 
 export function createRuntimeHostSetupPackageResolver(input: {
   readonly isPackaged: boolean;
   readonly appPath: string;
   readonly environment: NodeJS.ProcessEnv;
-  readonly startDevelopmentArchiveBuild?: (repoRoot: string) => DevelopmentArchiveBuild;
+  readonly startDevelopmentArchiveBuild?: (
+    repoRoot: string,
+    peerTarget: DesktopRuntimeHostDevelopmentPeerTarget,
+  ) => DevelopmentArchiveBuild;
 }): RuntimeHostSetupPackageResolver {
   let closed = false;
-  let developmentBuild:
-    | {
-        readonly task: DevelopmentArchiveBuild;
-        readonly result: Promise<DesktopRuntimeHostSetupPackage>;
-        waiters: number;
-        settled: boolean;
-        closing?: Promise<void>;
-      }
-    | undefined;
+  const developmentBuilds = new Map<
+    DesktopRuntimeHostDevelopmentPeerTarget,
+    DevelopmentBuildState
+  >();
 
-  const startBuild = () => {
+  const startBuild = (
+    peerTarget: DesktopRuntimeHostDevelopmentPeerTarget,
+  ): DevelopmentBuildState => {
     const repoRoot = resolve(input.appPath, '..', '..');
-    const task = input.startDevelopmentArchiveBuild?.(repoRoot) ??
-      startDevelopmentArchiveBuild(repoRoot, input.environment);
-    const build = {
+    const task = input.startDevelopmentArchiveBuild?.(repoRoot, peerTarget) ??
+      startDevelopmentArchiveBuild(repoRoot, input.environment, peerTarget);
+    const build: DevelopmentBuildState = {
       task,
       result: task.result.then((path) => ({
         kind: 'development_archive' as const,
@@ -71,62 +106,71 @@ export function createRuntimeHostSetupPackageResolver(input: {
       waiters: 0,
       settled: false,
     };
-    developmentBuild = build;
+    developmentBuilds.set(peerTarget, build);
     void build.result.then(
       () => {
         build.settled = true;
       },
       () => {
         build.settled = true;
-        if (developmentBuild === build) developmentBuild = undefined;
+        if (developmentBuilds.get(peerTarget) === build) {
+          developmentBuilds.delete(peerTarget);
+        }
       },
     );
     return build;
   };
 
-  const stopBuild = async (build: NonNullable<typeof developmentBuild>) => {
+  const stopBuild = async (
+    peerTarget: DesktopRuntimeHostDevelopmentPeerTarget,
+    build: DevelopmentBuildState,
+  ) => {
     build.closing ??= build.task.close().finally(() => {
-      if (developmentBuild === build) developmentBuild = undefined;
+      if (developmentBuilds.get(peerTarget) === build) developmentBuilds.delete(peerTarget);
     });
     await build.closing;
     await build.result.catch(() => undefined);
   };
 
-  const acquireBuild = async (signal?: AbortSignal) => {
+  const acquireBuild = async (
+    peerTarget: DesktopRuntimeHostDevelopmentPeerTarget,
+    signal?: AbortSignal,
+  ) => {
     while (true) {
       if (closed) throw new Error('Runtime Host setup package resolver is closed');
-      const build = developmentBuild;
-      if (!build) return startBuild();
+      const build = developmentBuilds.get(peerTarget);
+      if (!build) return startBuild(peerTarget);
       if (!build.closing) return build;
       await waitForPackage(build.closing, signal);
     }
   };
 
   return {
-    async resolve(signal) {
+    mode: input.isPackaged ? 'published' : 'development',
+    async resolve(peerTarget, signal) {
       if (closed) throw new Error('Runtime Host setup package resolver is closed');
       if (input.isPackaged) return packagedSetupPackage(input.appPath);
 
       const override = input.environment[DEVELOPMENT_ARCHIVE_ENV];
       if (override) return { kind: 'development_archive', path: override };
 
-      const build = await acquireBuild(signal);
+      const build = await acquireBuild(peerTarget, signal);
       build.waiters += 1;
       try {
         return await waitForPackage(build.result, signal);
       } finally {
         build.waiters -= 1;
         if (signal?.aborted && build.waiters === 0 && !build.settled) {
-          await stopBuild(build);
+          await stopBuild(peerTarget, build);
         }
       }
     },
     async close() {
       if (closed) return;
       closed = true;
-      const build = developmentBuild;
-      developmentBuild = undefined;
-      if (build) await stopBuild(build);
+      const builds = [...developmentBuilds.entries()];
+      developmentBuilds.clear();
+      await Promise.all(builds.map(([peerTarget, build]) => stopBuild(peerTarget, build)));
     },
   };
 }
@@ -144,6 +188,7 @@ function packagedSetupPackage(appPath: string): DesktopRuntimeHostSetupPackage {
 function startDevelopmentArchiveBuild(
   repoRoot: string,
   environment: NodeJS.ProcessEnv,
+  peerTarget: DesktopRuntimeHostDevelopmentPeerTarget,
 ): DevelopmentArchiveBuild {
   const script = join(repoRoot, 'scripts', 'release-cli-package.mjs');
   const nodeExecutable = environment.npm_node_execpath?.trim() || 'node';
@@ -153,7 +198,11 @@ function startDevelopmentArchiveBuild(
   const child = spawn(nodeExecutable, [script, '--development'], {
     cwd: repoRoot,
     detached: process.platform !== 'win32',
-    env: { ...environment, MAKA_CLI_DEVELOPMENT_OUTPUT_ROOT: outputRoot },
+    env: {
+      ...environment,
+      MAKA_CLI_DEVELOPMENT_OUTPUT_ROOT: outputRoot,
+      MAKA_CLI_DEVELOPMENT_PEER_TARGET: peerTarget,
+    },
     stdio: ['ignore', 'pipe', 'pipe'],
     windowsHide: true,
   });

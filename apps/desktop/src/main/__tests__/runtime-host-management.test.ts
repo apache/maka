@@ -425,6 +425,9 @@ test('publishes update progress and waits for the managed profile to reconnect',
     runUpdatePolicy: async () => assert.fail('update policy is not expected'),
     runUpdateReconciliation: async () =>
       assert.fail('update reconciliation is not expected'),
+    setupPackageMode: 'published',
+    resolveSshDevelopmentPeerTarget: async () =>
+      assert.fail('published update must not inspect the development target'),
     resolveUpdatePackage: () => ({ kind: 'npm', specifier: 'maka-agent@1.3.0' }),
     currentHostEpoch: () => 'host-before-update',
     awaitUpdatedConnection: async (...args) => {
@@ -1175,6 +1178,9 @@ function unusedUpdateDependencies() {
     runPeerManagement: async (): Promise<never> =>
       assert.fail('direct peer management is not expected'),
     directPeerClientAvailable: false,
+    setupPackageMode: 'published' as const,
+    resolveSshDevelopmentPeerTarget: async (): Promise<never> =>
+      assert.fail('published update must not inspect the development target'),
     resolveUpdatePackage: () => ({ kind: 'npm', specifier: 'maka-agent@1.2.3' } as const),
     currentHostEpoch: () => undefined,
     awaitUpdatedConnection: async () => undefined,

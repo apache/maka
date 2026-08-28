@@ -54,6 +54,7 @@ import type {
   RuntimeHostServiceUpdateReconciliationTerminalFrame,
   RuntimeHostServiceUpdateTerminalFrame,
 } from './runtime-host-ssh-terminal.js';
+import type { DesktopRuntimeHostDevelopmentPeerTarget } from './runtime-host-setup-package.js';
 
 const MANAGEMENT_ACTIONS = new Set<DesktopRuntimeHostManagementAction>([
   'status',
@@ -104,7 +105,15 @@ export function createDesktopRuntimeHostManagement(input: {
     input: DesktopRuntimeHostSshUpdateReconciliationInput,
     onProgress: (phase: DesktopRuntimeHostManagementProgress['phase']) => void,
   ) => Promise<RuntimeHostServiceUpdateReconciliationTerminalFrame>;
-  readonly resolveUpdatePackage: () =>
+  readonly setupPackageMode: 'published' | 'development';
+  readonly resolveSshDevelopmentPeerTarget: (input: {
+    readonly destination: string;
+    readonly sshPort?: number;
+    readonly signal?: AbortSignal;
+  }) => Promise<Exclude<DesktopRuntimeHostDevelopmentPeerTarget, 'none'>>;
+  readonly resolveUpdatePackage: (
+    peerTarget: DesktopRuntimeHostDevelopmentPeerTarget,
+  ) =>
     | DesktopRuntimeHostSetupPackage
     | Promise<DesktopRuntimeHostSetupPackage>;
   readonly currentHostEpoch: (profileId: string) => string | undefined;
@@ -466,7 +475,13 @@ export function createDesktopRuntimeHostManagement(input: {
       await managedMutationTarget(profileIdValue);
     const previousHostEpoch = input.currentHostEpoch(profileId);
     input.sendProgress({ profileId, phase: 'preparing_cli' });
-    const setupPackage = await input.resolveUpdatePackage();
+    const peerTarget = input.setupPackageMode === 'development'
+      ? await input.resolveSshDevelopmentPeerTarget({
+          destination: transport.destination,
+          ...(transport.sshPort === undefined ? {} : { sshPort: transport.sshPort }),
+        })
+      : 'none';
+    const setupPackage = await input.resolveUpdatePackage(peerTarget);
     const response = await input.runUpdate(
       {
         destination: transport.destination,

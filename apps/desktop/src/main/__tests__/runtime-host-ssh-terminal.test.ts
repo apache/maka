@@ -33,7 +33,37 @@ import {
   RUNTIME_HOST_OPERATOR_PEER_MANAGEMENT_CAPABILITY,
   RUNTIME_HOST_SETUP_FRAME_PREFIX,
 } from '@maka/runtime-host/operator';
-import { createDesktopRuntimeHostSshTerminal } from '../runtime-host-ssh-terminal.js';
+import {
+  createDesktopRuntimeHostSshTerminal,
+  runtimeHostDevelopmentPeerTargetFromUname,
+} from '../runtime-host-ssh-terminal.js';
+
+test('maps supported SSH uname identities to development peer targets', () => {
+  assert.equal(runtimeHostDevelopmentPeerTargetFromUname('Linux', 'x86_64'), 'linux-x64');
+  assert.equal(runtimeHostDevelopmentPeerTargetFromUname('Linux', 'aarch64'), 'linux-arm64');
+  assert.equal(runtimeHostDevelopmentPeerTargetFromUname('Darwin', 'arm64'), 'darwin-arm64');
+  assert.throws(
+    () => runtimeHostDevelopmentPeerTargetFromUname('Linux', 'riscv64'),
+    /not available/u,
+  );
+});
+
+test('detects the development peer target through the bounded SSH preflight', async () => {
+  const harness = createHarness('pending');
+  const detection = harness.terminal.resolveDevelopmentPeerTarget({
+    destination: 'operator@example.com',
+  });
+  await waitFor(() => harness.pty.hasDataListener());
+  const command = harness.launchArgs[0]?.at(-1) ?? '';
+  const marker = command.match(/__MAKA_RUNTIME_HOST_TARGET_[0-9a-f]+__/u)?.[0];
+  assert.ok(marker);
+  harness.pty.emitData(`${marker}Linux:x86_64\r\n`);
+  harness.pty.exit(0);
+
+  assert.equal(await detection, 'linux-x64');
+  assert.doesNotMatch(JSON.stringify(harness.events), /MAKA_RUNTIME_HOST_TARGET/u);
+  await harness.terminal.close();
+});
 
 test('keeps a connecting SSH prompt observable across renderer presentation changes', async () => {
   const harness = createHarness('pending');

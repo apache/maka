@@ -172,7 +172,10 @@ import {
   createDesktopRuntimeHostSshTerminal,
 } from "./runtime-host-ssh-terminal.js";
 import { runDesktopRuntimeHostWslSetup } from './runtime-host-wsl-controller.js';
-import { createRuntimeHostSetupPackageResolver } from "./runtime-host-setup-package.js";
+import {
+  createRuntimeHostSetupPackageResolver,
+  desktopRuntimeHostDevelopmentPeerTarget,
+} from "./runtime-host-setup-package.js";
 import { configureDesktopRuntimeHostPeerClient } from './runtime-host-peer-client.js';
 import { createDesktopRuntimeHostLocalOperator } from './runtime-host-local-operator.js';
 import { createDesktopLocalRuntimeHostRemoteAccess } from './runtime-host-local-remote-access.js';
@@ -399,7 +402,10 @@ const localRuntimeHostRemoteAccess = createDesktopLocalRuntimeHostRemoteAccess({
   rootId: startupLocalStorageRoot.rootId,
   directPeerAvailable: runtimeHostDirectPeerAvailable,
   manager: () => runtimeHostManager,
-  resolveSetupPackage: runtimeHostSetupPackage.resolve,
+  resolveSetupPackage: (signal) => runtimeHostSetupPackage.resolve(
+    desktopRuntimeHostDevelopmentPeerTarget(),
+    signal,
+  ),
   operator: localRuntimeHostOperator,
 });
 const native = assembleDesktopNativeCapabilities({
@@ -474,6 +480,8 @@ const runtimeHostOnboarding = createDesktopRuntimeHostOnboarding({
   runSetup: runtimeHostSshTerminal.runSetup,
   runWslSetup: runDesktopRuntimeHostWslSetup,
   listWslDistributions: listRuntimeHostWslDistributions,
+  setupPackageMode: runtimeHostSetupPackage.mode,
+  resolveSshDevelopmentPeerTarget: runtimeHostSshTerminal.resolveDevelopmentPeerTarget,
   resolveSetupPackage: runtimeHostSetupPackage.resolve,
   send: (snapshot) =>
     mainWindowController.send("runtime-host-onboarding:changed", snapshot),
@@ -487,6 +495,8 @@ const runtimeHostManagement = createDesktopRuntimeHostManagement({
   runUpdate: runtimeHostSshTerminal.runUpdate,
   runUpdatePolicy: runtimeHostSshTerminal.runUpdatePolicy,
   runUpdateReconciliation: runtimeHostSshTerminal.runUpdateReconciliation,
+  setupPackageMode: runtimeHostSetupPackage.mode,
+  resolveSshDevelopmentPeerTarget: runtimeHostSshTerminal.resolveDevelopmentPeerTarget,
   resolveUpdatePackage: runtimeHostSetupPackage.resolve,
   currentHostEpoch: (profileId) =>
     runtimeHostManager?.current(profileId)?.candidate?.client.hostEpoch,

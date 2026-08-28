@@ -94,6 +94,7 @@ test('persists a verified on-demand SSH profile without endpoint or credential p
 
 test('onboards WSL as a credential-free environment profile', async () => {
   let saved: DesktopRuntimeHostProfileAddInput | undefined;
+  const peerTargets: string[] = [];
   const harness = createHarness({
     profiles: {
       addAndEnable: async (input) => {
@@ -107,6 +108,10 @@ test('onboards WSL as a credential-free environment profile', async () => {
         rootId: 'a'.repeat(64),
         operatorPath: '/home/operator/.local/share/maka/operator',
       };
+    },
+    resolveSetupPackage: (peerTarget) => {
+      peerTargets.push(peerTarget);
+      return { kind: 'npm', specifier: 'maka-agent@0.2.0' };
     },
   });
 
@@ -125,6 +130,7 @@ test('onboards WSL as a credential-free environment profile', async () => {
     rootId: 'a'.repeat(64),
     operatorPath: '/home/operator/.local/share/maka/operator',
   });
+  assert.deepEqual(peerTargets, ['none']);
   await harness.onboarding.close();
 });
 
@@ -294,6 +300,9 @@ function createHarness(overrides: HarnessOverrides = {}) {
       addAndEnableVerified: async () => assert.fail('profile must not be saved'),
       ...profiles,
     },
+    setupPackageMode: 'published',
+    resolveSshDevelopmentPeerTarget: async () =>
+      assert.fail('published setup must not inspect the development target'),
     resolveSetupPackage: () => ({ kind: 'npm', specifier: 'maka-agent@0.2.0' }),
     runSetup: async () => assert.fail('SSH must not start'),
     runWslSetup: async () => assert.fail('WSL must not start'),
