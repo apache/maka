@@ -23,15 +23,13 @@ import { expect, fn, userEvent, waitFor, within } from 'storybook/test';
 import type { ArtifactDescriptor } from '@maka/core/artifacts';
 import { ToastProvider } from '@maka/ui';
 import {
-  WorkbarSurface,
-} from '../src/renderer/features/workbar';
-import {
   createFakeWorkbarServices,
   createSessionWorkbarPanelsState,
   createSessionWorkbarTabsState,
   openStaticSessionWorkbarTab,
   terminalSessionWorkbarTabId,
   WorkbarServicesProvider,
+  WorkbarSurface,
   type WorkbarServices,
 } from '../src/renderer/features/workbar/testing';
 import { RemoteProjectDirectoryDialog } from '../src/renderer/remote-project-directory-dialog';

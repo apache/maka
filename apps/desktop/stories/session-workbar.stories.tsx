@@ -28,12 +28,10 @@ import type { Task } from '@maka/core/task-ledger';
 import type { SessionTrace } from '@maka/core/session-trace';
 import type { ContextDiagnosticsResult } from '@maka/runtime-host/protocol';
 import { ToastProvider } from '@maka/ui';
-import {
-  WorkbarServicesProvider,
-  WorkbarSurface,
-} from '../src/renderer/features/workbar';
+import { WorkbarServicesProvider } from '../src/renderer/features/workbar';
 import {
   createFakeWorkbarServices,
+  WorkbarSurface,
   createSessionWorkbarPanelsState,
   createSessionWorkbarTabsState,
   openStaticSessionWorkbarTab,

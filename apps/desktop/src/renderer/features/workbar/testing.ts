@@ -44,6 +44,11 @@ export * from './tools/terminal/session-terminal-frame.js';
 export * from './tools/inspector/use-session-trace.js';
 export * from './controller/use-workbar-controller.js';
 export { SideChatCloseConfirmation } from './ui/side-chat-close-confirmation.js';
+// The production entry deliberately omits `WorkbarSurface`: `workbar-host`
+// reaches it through `lazy()`, and a static re-export beside `WorkbarHost`
+// would pull the surface and its five tool panels back into the eager chunk.
+// Nothing shipped imports this module, so the boundary holds here.
+export { WorkbarSurface } from './ui/workbar-surface.js';
 
 const noopSubscription = (): (() => void) => () => undefined;
 
