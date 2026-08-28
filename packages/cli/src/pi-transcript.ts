@@ -555,6 +555,28 @@ export function hasExpandedEntriesAboveViewport(
 }
 
 /**
+ * Appends the visible, explicit offer for the one deliberate full-redraw
+ * escape hatch. The runner owns the time window; this helper keeps both the
+ * first offer and an expired offer on the same copy authority.
+ */
+export function appendExpansionCollapseConfirmation(
+  state: MakaPiTranscriptState,
+  kind: ExpansionEntryKind,
+): boolean {
+  if (!hasExpandedEntriesAboveViewport(state, kind)) return false;
+  const copy = EXPANSION_KIND_COPY[kind];
+  const stuck = expansionCandidates(state, kind).filter(
+    (entry) => entry.expanded && !entryInLiveViewport(state, entry),
+  );
+  state.entries.push({
+    kind: 'notice',
+    level: 'info',
+    text: `${stuck.length} ${stuck.length === 1 ? copy.singular : copy.plural} above the view stayed expanded in scrollback — press ${copy.key} again within ${EXPANSION_COLLAPSE_CONFIRM_WINDOW_MS / 1000}s to collapse them too (this redraws the screen and clears pre-session scrollback). New ${copy.newOutput} starts collapsed.`,
+  });
+  return true;
+}
+
+/**
  * Apply the current expansion default to every entry of the kind, including
  * entries above the live viewport whose rendered lines sit in scrollback.
  * This is #4011's confirmed second press: a true return means lines above
@@ -563,6 +585,9 @@ export function hasExpandedEntriesAboveViewport(
  * the viewport at the tail. (The differential path would reach the same
  * redraw via `firstChanged < viewportTop`; forcing it keeps renderer and the
  * layout's viewport shadow in agreement by construction.)
+ * This is intentionally the only expansion mutation that bypasses the
+ * unknown-geometry guard: its caller immediately forces that wholesale
+ * redraw, which resets the renderer's prior geometry before it re-renders.
  */
 export function applyExpansionDefaultToAll(
   state: MakaPiTranscriptState,
@@ -644,11 +669,7 @@ function toggleExpansion(state: MakaPiTranscriptState, kind: ExpansionEntryKind)
   // and harmless in scrollback — and arming on expand would make a quick
   // expand-then-collapse pair read the second press as "expand everything".
   if (!expand && stuck.length > 0) {
-    state.entries.push({
-      kind: 'notice',
-      level: 'info',
-      text: `${stuck.length} ${stuck.length === 1 ? copy.singular : copy.plural} above the view stayed expanded in scrollback — press ${copy.key} again within ${EXPANSION_COLLAPSE_CONFIRM_WINDOW_MS / 1000}s to collapse them too (this redraws the screen and clears pre-session scrollback). New ${copy.newOutput} starts collapsed.`,
-    });
+    appendExpansionCollapseConfirmation(state, kind);
   } else if (targets.length === 0) {
     state.entries.push({ kind: 'notice', level: 'info', text: copy.noTargetsNotice(expand) });
   }

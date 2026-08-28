@@ -74,6 +74,7 @@ import {
 } from '../pi-tui-runner.js';
 import { AUTO_RECAP_IDLE_MS } from '../session-recap.js';
 import { BUSY_SPINNER_FRAMES } from '../tui-attention.js';
+import { EXPANSION_COLLAPSE_CONFIRM_WINDOW_MS } from '../pi-transcript.js';
 import {
   autocompleteSuggestionLines,
   assertBottomPickerPlacement,
@@ -1611,6 +1612,64 @@ describe('Maka Pi TUI runner', () => {
     terminal.input('\x14');
     await waitFor(() => plainTerminalOutput(terminal.screenOutput()).includes('Thinking…'));
     assert.equal(terminal.output().includes('\x1b[3J'), true);
+
+    exitMaka(terminal);
+    await Promise.race([
+      run,
+      delay(CLOSE_BUDGET_MS).then(() => {
+        throw new Error('TUI did not close during test cleanup');
+      }),
+    ]);
+  });
+
+  test('an expired Ctrl+T confirmation re-offers collapse instead of reversing it (#4011)', async (t) => {
+    const terminal = new FakeTerminal();
+    const driver = new ThinkingDriver();
+    const run = runMakaPiTui({
+      title: 'Maka',
+      driver,
+      cwd: '/repo',
+      model: 'claude-sonnet-4-5',
+      connectionSlug: 'claude-subscription',
+      permissionMode: 'ask',
+      terminal,
+    });
+
+    terminal.input('run');
+    terminal.input('\r');
+    await waitFor(() => terminal.output().includes('Thinking…'));
+
+    terminal.input('\x14');
+    await waitFor(() => terminal.output().includes('reason-row-0'));
+    terminal.input('\x14');
+    await waitFor(() =>
+      plainTerminalOutput(terminal.output()).includes('stayed expanded in scrollback'),
+    );
+
+    const beforeExpiredPress = terminal.output().length;
+    t.mock.timers.enable({ apis: ['Date'], now: Date.now() });
+    t.mock.timers.tick(EXPANSION_COLLAPSE_CONFIRM_WINDOW_MS + 1);
+    terminal.input('\x14');
+    t.mock.timers.reset();
+
+    await waitFor(() => terminal.output().length > beforeExpiredPress);
+    const expiredPressOutput = terminal.output().slice(beforeExpiredPress);
+    assert.equal(expiredPressOutput.includes('\x1b[3J'), false);
+    assert.equal(
+      plainTerminalOutput(expiredPressOutput).includes('stayed expanded in scrollback'),
+      true,
+    );
+    assert.equal(plainTerminalOutput(terminal.screenOutput()).includes('reason-row-0'), false);
+    assert.equal(
+      plainTerminalOutput(terminal.screenOutput()).includes('stayed expanded in scrollback'),
+      true,
+    );
+
+    // The new offer arms a fresh window. This second press is the only one
+    // that clears scrollback and collapses the above-viewport block.
+    terminal.input('\x14');
+    await waitFor(() => terminal.output().slice(beforeExpiredPress).includes('\x1b[3J'));
+    assert.equal(plainTerminalOutput(terminal.screenOutput()).includes('Thinking…'), true);
 
     exitMaka(terminal);
     await Promise.race([

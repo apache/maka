@@ -88,6 +88,7 @@ import {
   type MakaSessionSwitchResult,
 } from './session-driver.js';
 import {
+  appendExpansionCollapseConfirmation,
   appendTurnFailureToTranscript,
   appendUserPrompt,
   applyMakaSessionEventToTranscript,
@@ -291,6 +292,9 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
   };
   const tui = new TuiMainScreen(terminal);
   const state = createMakaPiTranscriptState();
+  // A pending confirmation is meaningful only for the exact transcript whose
+  // geometry produced it; reconnect/session replacement starts fresh.
+  let expansionCollapseConfirm: { kind: ExpansionEntryKind; at: number } | undefined;
   let transcriptLastUsedModel: string | undefined;
   const rememberTranscriptModel = (messages: readonly StoredMessage[]): void => {
     transcriptLastUsedModel = latestAssistantModelId(messages);
@@ -299,6 +303,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     messages: readonly StoredMessage[],
     options: { preserveClientLocalEntries?: boolean } = {},
   ): void => {
+    expansionCollapseConfirm = undefined;
     rememberTranscriptModel(messages);
     replaceTranscriptWithStoredMessages(state, messages, options);
   };
@@ -3412,16 +3417,25 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
   // one scrollback-clearing full redraw to collapse those blocks too. The
   // window (not a latch on other keys) is the only expiry, matching the
   // double-Escape interrupt pattern.
-  let expansionCollapseConfirm: { kind: ExpansionEntryKind; at: number } | undefined;
   const handleExpansionToggleKey = (kind: ExpansionEntryKind): boolean => {
     const armed = expansionCollapseConfirm;
     expansionCollapseConfirm = undefined;
-    if (armed?.kind === kind && Date.now() - armed.at <= EXPANSION_COLLAPSE_CONFIRM_WINDOW_MS) {
-      // The confirmed second press: apply the (collapsed) default to every
-      // entry, including the ones above the viewport, and pay the deliberate
-      // full redraw the notice announced.
-      if (applyExpansionDefaultToAll(state, kind)) requestRender(true);
-      return true;
+    if (armed?.kind === kind) {
+      if (Date.now() - armed.at <= EXPANSION_COLLAPSE_CONFIRM_WINDOW_MS) {
+        // The confirmed second press: apply the (collapsed) default to every
+        // entry, including the ones above the viewport, and pay the deliberate
+        // full redraw the notice announced.
+        if (applyExpansionDefaultToAll(state, kind)) requestRender(true);
+        return true;
+      }
+      // A reader can reasonably miss the short window. Keep the already
+      // collapsed default and make the explicit choice visible again instead
+      // of falling through to the opposite ordinary toggle.
+      if (appendExpansionCollapseConfirmation(state, kind)) {
+        expansionCollapseConfirm = { kind, at: Date.now() };
+        requestRender();
+        return true;
+      }
     }
     const toggled =
       kind === 'tool' ? toggleAllToolExpansion(state) : toggleAllThinkingExpansion(state);
