@@ -54,6 +54,17 @@ describe('latest interrupted resume candidate', () => {
           turnId: 'turn-1',
           status: 'failed',
           errorClass: 'timeout',
+          tools: [{ status: 'completed' }, { status: 'interrupted' }],
+        },
+      ]),
+      undefined,
+    );
+    assert.equal(
+      latestInterruptedResumeTurnId([
+        {
+          turnId: 'turn-1',
+          status: 'failed',
+          errorClass: 'timeout',
           tools: [{ status: 'errored' }],
         },
       ]),

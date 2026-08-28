@@ -34,7 +34,9 @@ export function latestInterruptedResumeTurnId(
   if (errorClass === 'app_restarted') return latestTurn.turnId;
   if (
     errorClass?.includes('timeout') &&
-    latestTurn.tools?.some((tool) => tool.status === 'completed')
+    latestTurn.tools !== undefined &&
+    latestTurn.tools.length > 0 &&
+    latestTurn.tools.every((tool) => tool.status === 'completed')
   ) {
     return latestTurn.turnId;
   }
