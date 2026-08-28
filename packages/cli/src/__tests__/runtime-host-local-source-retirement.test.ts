@@ -111,6 +111,15 @@ test('keeps service Hosts under operator authority', async () => {
   );
 });
 
+test('does not misclassify an unavailable source Host as operator-owned', async () => {
+  await assert.rejects(
+    runRuntimeHostLocalSourceRetirement(INPUT, {
+      connectExisting: async () => ({ kind: 'unavailable', reason: 'not_registered' }),
+    }),
+    /cannot control the observed Runtime Host/u,
+  );
+});
+
 function registration(overrides: Partial<HostRegistration> = {}): HostRegistration {
   return {
     kind: 'maka-runtime-host',

@@ -58,7 +58,7 @@ export async function runRuntimeHostLocalSourceRetirement(
     compositionId: INTERACTIVE_RUNTIME_HOST_COMPOSITION_ID,
   });
   if (connected.kind !== 'connected') {
-    if (connected.registration?.lifecycleMode !== 'ephemeral') return 4;
+    if (connected.registration && connected.registration.lifecycleMode !== 'ephemeral') return 4;
     throw new Error('The selected source package cannot control the observed Runtime Host');
   }
   try {
