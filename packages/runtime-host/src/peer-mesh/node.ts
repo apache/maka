@@ -605,7 +605,7 @@ class PeerMeshNodeImpl implements PeerMeshNode {
     ) {
       return existing;
     }
-    const route = await this.#signLocalRoute((existing?.route.sequence ?? 0) + 1);
+    const route = await this.#signLocalRoute();
     await this.#store.mutate((states) => ({
       state: { ...states, routes: mergeRoutes(states.routes, [route], now) },
       result: undefined,
@@ -613,7 +613,7 @@ class PeerMeshNodeImpl implements PeerMeshNode {
     return route;
   }
 
-  async #signLocalRoute(sequence?: number): Promise<SignedPeerMeshRouteRecordV1> {
+  async #signLocalRoute(): Promise<SignedPeerMeshRouteRecordV1> {
     const identity = this.#peer.identity();
     const maxSequence = this.#store
       .read()
@@ -622,7 +622,7 @@ class PeerMeshNodeImpl implements PeerMeshNode {
     const route = canonicalPeerMeshRouteRecord({
       version: 1,
       peerId: identity.peerId,
-      sequence: sequence ?? maxSequence + 1,
+      sequence: maxSequence + 1,
       expiresAt: this.#now() + ROUTE_TTL_MS,
       routeHints: identity.listenAddresses,
       coordinationRelays: identity.coordinationRelays,
