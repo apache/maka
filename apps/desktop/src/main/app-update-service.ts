@@ -20,6 +20,8 @@
 import electronUpdater from 'electron-updater';
 import type { AppUpdater, UpdateCheckResult } from 'electron-updater';
 import type { ProgressInfo, UpdateInfo } from 'electron-updater';
+import type { DownloadedUpdateAttestationVerifier } from './app-update-attestation.js';
+import { resolveUpdateFeedOverride } from './app-update-test-context.js';
 
 export type AppUpdateProgress = {
   percent: number;
@@ -43,6 +45,7 @@ export type AppUpdateStatus =
       latestVersion: string;
       progress: AppUpdateProgress;
     }
+  | { state: 'verifying'; currentVersion: string; latestVersion: string }
   | {
       state: 'downloaded';
       currentVersion: string;
@@ -94,6 +97,7 @@ interface AppUpdateServiceDeps {
   mockLatestVersion?: string;
   mockState?: 'available' | 'downloading' | 'downloaded';
   onStatusChange?: (status: AppUpdateStatus) => void;
+  verifyDownloadedUpdate: DownloadedUpdateAttestationVerifier;
   prepareInstall: (
     input: AppUpdateInstallRequest,
   ) => Promise<
@@ -136,39 +140,9 @@ const UPDATE_CHECK_ON_FOCUS_MIN_INTERVAL_MS = 15 * 60 * 1000;
  * capability across any privilege boundary. Loopback-only keeps even that
  * same-user surface minimal: the feed must be a process listening on this
  * machine. With the variable unset the feed configuration is byte-identical
- * to production, and update signature verification (once a certificate
- * exists) applies to overridden feeds exactly as it does to the GitHub feed —
- * nothing here relaxes it.
+ * to production. The application composition root deliberately bypasses
+ * release provenance only for this synthetic-byte transport harness.
  */
-export function resolveUpdateFeedOverride(
-  raw: string | undefined,
-): { provider: 'generic'; url: string } | undefined {
-  if (raw === undefined || raw === '') return undefined;
-  let url: URL;
-  try {
-    url = new URL(raw);
-  } catch {
-    throw new TypeError(
-      `MAKA_UPDATE_TEST_FEED is not a URL: ${JSON.stringify(raw)}`,
-    );
-  }
-  if (
-    url.protocol !== 'http:' ||
-    url.hostname !== '127.0.0.1' ||
-    url.port === '' ||
-    url.username !== '' ||
-    url.password !== '' ||
-    url.search !== '' ||
-    url.hash !== ''
-  ) {
-    throw new TypeError(
-      'MAKA_UPDATE_TEST_FEED must be http://127.0.0.1:<port>[/path] ' +
-        `(got ${JSON.stringify(raw)})`,
-    );
-  }
-  return { provider: 'generic', url: url.toString() };
-}
-
 function normalizeVersion(version: string): string {
   return version.trim().replace(/^v/i, '');
 }
@@ -244,6 +218,7 @@ export function createAppUpdateService(deps: AppUpdateServiceDeps): AppUpdateSer
     cancellationToken?: UpdateCheckResult['cancellationToken'];
     cancelledForRetry: boolean;
   } | undefined;
+  let activeVerification: Promise<void> | undefined;
   let checkTimer: unknown;
   let installHandoff: { rollback(): void } | undefined;
   let started = false;
@@ -268,7 +243,7 @@ export function createAppUpdateService(deps: AppUpdateServiceDeps): AppUpdateSer
   const currentStatus = (): AppUpdateStatus => status;
 
   const latestVersion = () =>
-    status.state === 'available' || status.state === 'downloading' || status.state === 'downloaded' ||
+    status.state === 'available' || status.state === 'downloading' || status.state === 'verifying' || status.state === 'downloaded' ||
     status.state === 'installing' || status.state === 'error'
       ? status.latestVersion
       : updateInfoVersion(latestInfo);
@@ -352,16 +327,35 @@ export function createAppUpdateService(deps: AppUpdateServiceDeps): AppUpdateSer
   });
   updater.on('update-downloaded', (event) => {
     latestInfo = event;
-    publish({
-      state: 'downloaded',
-      currentVersion: deps.currentVersion,
-      latestVersion: updateInfoVersion(event) ?? latestVersion() ?? deps.currentVersion,
-    });
+    const version = updateInfoVersion(event) ?? latestVersion() ?? deps.currentVersion;
+    publish({ state: 'verifying', currentVersion: deps.currentVersion, latestVersion: version });
+    const verification = Promise.resolve().then(() =>
+      deps.verifyDownloadedUpdate({
+        downloadedFile: event.downloadedFile,
+        version,
+      }),
+    );
+    activeVerification = verification;
+    void verification
+      .then(() => {
+        if (activeVerification !== verification) return;
+        publish({
+          state: 'downloaded',
+          currentVersion: deps.currentVersion,
+          latestVersion: version,
+        });
+      })
+      .catch((error) => {
+        if (activeVerification === verification) publishError('download', error);
+      })
+      .finally(() => {
+        if (activeVerification === verification) activeVerification = undefined;
+      });
   });
   updater.on('error', (error) => {
     const operation = status.state === 'installing'
       ? 'install'
-      : status.state === 'available' || status.state === 'downloading'
+      : status.state === 'available' || status.state === 'downloading' || status.state === 'verifying'
         ? 'download'
         : 'check';
     if (operation === 'install') rollbackInstallHandoff();
@@ -375,15 +369,17 @@ export function createAppUpdateService(deps: AppUpdateServiceDeps): AppUpdateSer
     if (!deps.isPackaged) {
       return publish({ state: 'not-available', currentVersion: deps.currentVersion });
     }
-    if (status.state === 'downloaded' || status.state === 'installing') return status;
+    if (status.state === 'verifying' || status.state === 'downloaded' || status.state === 'installing') return status;
     if (status.state === 'downloading' && !allowDuringDownload) return status;
     if (activeDownload && !allowDuringDownload) return status;
     if (checkInFlight) return checkInFlight;
     lastCheckStartedAt = now();
     checkInFlight = updater
       .checkForUpdates()
-      .then((result) => {
+      .then(async (result) => {
         trackAutoDownload(result);
+        const verification = activeVerification;
+        if (verification) await verification.catch(() => undefined);
         return status;
       })
       .catch((error) => status.state === 'error' ? status : publishError('check', error))
@@ -423,7 +419,7 @@ export function createAppUpdateService(deps: AppUpdateServiceDeps): AppUpdateSer
     if (deps.mockLatestVersion) {
       return publish(mockStatus(deps.currentVersion, deps.mockLatestVersion, 'downloaded'));
     }
-    if (!deps.isPackaged || status.state === 'downloaded' || status.state === 'installing') {
+    if (!deps.isPackaged || status.state === 'verifying' || status.state === 'downloaded' || status.state === 'installing') {
       return status;
     }
     if (checkInFlight) await checkInFlight;

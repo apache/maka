@@ -23,6 +23,9 @@
 
 本文档是发布 `maka-agent` npm 安装渠道的操作权威。根目录 `package.json` 仍是 Maka 唯一产品版本权威，`packages/cli/package.json` 必须与其一致。每个公开 npm 版本都必须来自 Stage workflow 验证过的同一个精确 tarball。
 
+ASF 分发基础设施上经 IPMC 批准的源码归档才是 Apache release。npm、Desktop 安装包和
+GitHub Release assets 都是从该源码身份构建的便利包，不是额外的 ASF release artifacts。
+
 source RC 阶段的 [npm 预检](../.github/ASF_NPM_RELEASE.md) 是更早执行、且不持有发布凭据的兼容性检查；其 tarball 不会进入正式发布。source release 获批后，Stage 从位于同一获批 commit 的最终产品 tag 重新构建，并成为 npm staging 与 registry 验证所使用的字节权威。这与 Apache OpenDAL 孵化期的实践一致，同时保留了 Maka 更严格的受保护 Environment、staged publishing、2FA 与 Finalize 控制。
 
 ## 发布不变量
@@ -30,7 +33,8 @@ source RC 阶段的 [npm 预检](../.github/ASF_NPM_RELEASE.md) 是更早执行�
 - 产品 Release workflow 只能从已批准的 ASF source candidate tag dispatch；npm Stage 只能从随后创建的产品 `v<version>` tag dispatch，npm Finalize 只能从 `main` dispatch；
 - 预发布版本使用 `next`，稳定版本使用 `latest`；`next` 不得指向比 `latest` 更旧的版本；没有
   更新的预发布版本时，两个 tag 都指向稳定版；
-- 不创建 npm 专属 Git tag 或 GitHub Release；产品 `v<version>` tag 与 GitHub Release 只由 `Release` workflow 管理，并且必须先于 npm staging 存在；
+- 不创建 npm 专属 Git tag 或 GitHub Release；`Release` workflow 在 npm staging 前创建产品
+  `v<version>` tag 与 Draft，Finalize 是该 Draft 唯一的发布者；
 - 在 npm Finalize 与 Desktop 远程 Runtime Host 验收成功前，GitHub Release 必须保持 Draft；
   Draft 为 npm 提供产品身份，发布 Draft 是最终的产品发布动作；
 - 不运行 `npm publish`。GitHub Actions 只能运行 `npm stage publish`，由人工 package
@@ -42,23 +46,27 @@ source RC 阶段的 [npm 预检](../.github/ASF_NPM_RELEASE.md) 是更早执行�
 
 1. [Stage CLI npm release](../.github/workflows/release-cli-stage.yml) 解析已有的产品 tag 与 GitHub
    Release，checkout 该产品的精确 commit，构建并验证一个 immutable tarball，记录这个唯一的 tag commit 与 workflow run，进入受保护的 `npm-release` Environment，然后通过 OIDC 提交到 npm staging；
-2. [Finalize CLI npm channel](../.github/workflows/release-cli-finalize.yml) 只接受精确的成功 Stage run 和 attempt，并验证公共 registry 字节、signature、provenance 和 dist-tag；它不创建 tag 或 GitHub Release。
+2. [Finalize product release](../.github/workflows/release-cli-finalize.yml) 只接受精确的成功
+   Stage run、Release build run 及其自包含 publication record；`main` 上当前已审查的 verifier
+   验证公共 registry 字节、signature、provenance、dist-tag、不可变 build artifacts 与 live Draft
+   digest，然后等待受保护的 `product-release` Environment；独立 Desktop 验收完成并批准后，它会
+   用受保护 workflow 的身份证明精确便利包，并在同一个操作中发布 GitHub Release 及其 Stable/Latest 分类。
 
 ## 一次性控制面配置
 
 ### GitHub Environment
 
-仓库中的 `.asf.yaml` 是 `npm-release` Environment 的权威。该配置进入 `main` 后，确认 ASF
+仓库中的 `.asf.yaml` 是 `npm-release` 和 `product-release` Environment 的权威。该配置进入 `main` 后，确认 ASF
 同步出的 live 配置满足：
 
-- 使用匹配 `v*` 的 selected deployment tag rule，不配置 branch rule；
+- `npm-release` 使用 selected `v*` tag rule，`product-release` 使用 selected `main` branch rule；
 - required reviewer 为 `M4n5ter`；
 - 禁止 self-review；
-- 仓库策略允许时禁用 administrator bypass；
-- 不配置 environment secret 或 variable。
+- 仓库策略允许时禁用 administrator bypass。
 
 检查或修复同步结果需要仓库 administration 权限；不要再在 GitHub UI 中维护第二套手工
-Environment policy。workflow 使用 GitHub OIDC，不读取 npm token。
+Environment policy。Finalize 使用 GitHub Actions OIDC 为精确便利包生成 Sigstore provenance，
+并把离线验证 bundle 与便利包放在一起；不需要仓库 administration credential、签名私钥或 npm token。
 
 ### npm Trusted Publisher
 
@@ -171,15 +179,19 @@ npm dist-tag add "maka-agent@$version" next --registry https://registry.npmjs.or
 npm Trusted Publishing 只认证 `npm publish` 和 `npm stage publish`，不认证 dist-tag 变更，而
 release workflow 不得获得长期 npm token。
 
-## Finalize 公共 npm 渠道
+## Finalize 产品发布
 
 npm 显示该版本已经公开后：
 
-1. 在 `main` 上打开 **Actions → Finalize CLI npm channel → Run workflow**；
-2. 输入成功 Stage 的 run ID、精确 run attempt 和 version；
+1. 在 `main` 上打开 **Actions → Finalize product release → Run workflow**；
+2. 输入成功 Stage 的 run ID 与精确 attempt、成功 Release build 的 run ID 与精确 attempt，以及
+   version；
 3. 让 inspection job 验证公共 tarball 字节、checksum、inventory、npm signature、Trusted
    Publishing provenance、发布 dist-tag，并确认 `next` 不比 `latest` 更旧；
-4. 确认 workflow 将验证后的公开包保存为 Actions artifact，且没有创建或修改任何 Git tag 或 GitHub Release。
+4. publication job 等待 `product-release` 批准期间，针对 Draft 完成产品检查清单中的跨机器验收；
+5. 批准 Environment，并确认 workflow 将每个 live Draft digest 与精确 Release attempt 的
+   publication record 对比，生成并上传 `Maka-<version>-attestation.sigstore.json`，发布便利包
+   Release；stable release 会同时成为 Latest，不再需要单独人工操作。
 
 检查最终 registry 状态：
 
@@ -192,8 +204,7 @@ npm view maka-agent dist-tags --json
 最后，在每个发布平台安装精确的公共版本，并完成一次真实的 TUI/model turn。在支持的 Eval
 host 上完成至少一个真实 experiment cell，检查 score、usage、cost 和 artifacts。
 
-回到[产品发布检查清单](../.github/RELEASE_CHECKLIST.md)，使用打包后的 Desktop 应用完成远程
-Runtime Host setup 验收，再发布 GitHub Release。
+[产品发布检查清单](../.github/RELEASE_CHECKLIST.md)仍是批准发布前所需验收证据的权威。
 
 ## 失败恢复
 
@@ -222,11 +233,14 @@ npm stage reject "$stage_id" --registry https://registry.npmjs.org/
 
 ### npm approval 成功，但 Finalize 失败
 
-npm 版本此时已经 immutable，不要再次 publish 或 approve。保留 Stage run ID、attempt、version
-和 artifacts。如果 package 字节与 provenance 有效，在 `main` 修复当前 Finalize verifier，
-然后针对同一个成功 Stage identity 重新运行 Finalize。
+npm 版本此时已经 immutable，不要再次 publish 或 approve。保留 Stage run ID、attempt、version，
+以及 Release run ID、attempt、publication record 和 artifacts。如果这些字节与 provenance
+有效，在 `main` 修复 Finalize verifier，然后针对同一组不可变 Stage 与 Release 证据重新运行。
 
-Finalize 对产品发布状态只读。如果 npm 包版本、字节、dist-tag、签名、provenance 或记录的 Stage identity 不一致，立即停止并调查；不要修改产品 tag 或 GitHub Release 来让 npm 验证通过。
+inspection job 只读；只有受保护的 publication job 可以执行一次 Draft-to-published 转换并证明其字节。如果
+npm identity、build evidence 或 Draft 不一致，立即停止并调查；不要修改产品 tag 或 GitHub
+Release 来让验证通过。如果错误发生在 publication request 之后，先检查精确 Release；已经成功
+完成的发布不得重复执行。
 
 ### 公共版本存在缺陷
 

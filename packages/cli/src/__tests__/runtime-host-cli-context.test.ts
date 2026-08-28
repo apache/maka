@@ -263,7 +263,7 @@ test('remote CLI profiles pin root identity and resolve credential outside the p
       },
       profileCatalog: {
         read: async () => ({
-          schemaVersion: 1,
+          schemaVersion: 2,
           profiles: [
             {
               id: 'office',
@@ -545,7 +545,7 @@ function incompatibleRemoteHandshake(overrides: Partial<HostIncompatible> = {}):
 
 function singleRemoteProfileCatalog(profile: RemoteRuntimeHostProfile): RuntimeHostProfileCatalog {
   return {
-    read: async () => ({ schemaVersion: 1, profiles: [profile] }),
+    read: async () => ({ schemaVersion: 2, profiles: [profile] }),
     resolve: async (profileId) => {
       assert.equal(profileId, profile.id);
       return { profile, credential: 'opaque-token' };

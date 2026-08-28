@@ -243,6 +243,10 @@ async function writeOperatorLauncher(
     '  shift',
     `  exec ${quotePosix(nodePath)} ${quotePosix(cliPath)} runtime-host access "$@"`,
     'fi',
+    'if [ "$#" -ge 1 ] && [ "$1" = "activate" ]; then',
+    '  shift',
+    `  exec ${quotePosix(nodePath)} ${quotePosix(cliPath)} runtime-host activate "$@"`,
+    'fi',
     `exec ${quotePosix(nodePath)} ${quotePosix(cliPath)} runtime-host service "$@" --client-data-root ${quotePosix(clientDataRoot)}`,
     '',
   ].join('\n');

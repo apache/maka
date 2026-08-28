@@ -18,7 +18,10 @@
  */
 
 import { isAbsolute } from 'node:path';
-import { isProductReleaseVersion } from '@maka/runtime-host/operator';
+import {
+  isProductReleaseVersion,
+  isSha512PackageIntegrity,
+} from '@maka/runtime-host/operator/update-package-evidence';
 import type { RuntimeHostManagedUpdatePolicy } from '@maka/runtime-host/operator';
 import {
   canonicalProjectDirectoryRootSpec,
@@ -37,6 +40,40 @@ export type RuntimeHostUpdateSelector =
   | { readonly kind: 'exact'; readonly version: string };
 
 export type RuntimeHostCliCommand =
+  | {
+      kind: 'runtime-host-managed-activate';
+      rootId: string;
+      framed: true;
+    }
+  | {
+      kind: 'runtime-host-installed-update';
+      selector: RuntimeHostUpdateSelector;
+      allowInterruptActiveTasks: boolean;
+    }
+  | {
+      kind: 'runtime-host-local-update-apply';
+      rootPath: string;
+      archivePath: string;
+      installedPackageRoot: string;
+      installedCliPath: string;
+      currentVersion: string;
+      targetVersion: string;
+      targetIntegrity: string;
+      targetCompatibility?: number;
+      allowInterruptActiveTasks: boolean;
+    }
+  | {
+      kind: 'runtime-host-local-update-activate';
+      rootPath: string;
+      expectedRootId: string;
+      generation: string;
+      candidateEntrypoint: string;
+      takeoverHostEpoch?: string;
+      awaitCoordinatorCommit: boolean;
+      expectedOwnerInstallationId?: string;
+      targetVersion?: string;
+      targetIntegrity?: string;
+    }
   | {
       kind: 'runtime-host-serve';
       rootPath?: string;
@@ -65,6 +102,7 @@ export type RuntimeHostCliCommand =
       json: boolean;
       principalId: string;
       preset: 'desktop-client' | 'terminal-client';
+      lifecycle: 'supervised' | 'on_demand';
       deferPairingCommit: boolean;
       bindPairingToClient?: true;
       clientDataRoot?: string;
@@ -227,6 +265,9 @@ export type RuntimeHostCliCommand =
   | RuntimeHostCliError;
 
 export function parseRuntimeHostCommand(argv: string[]): RuntimeHostCliCommand {
+  if (argv[0] === 'activate') return parseManagedActivationCommand(argv.slice(1));
+  if (argv[0] === 'local-update-apply') return parseLocalUpdateApply(argv.slice(1));
+  if (argv[0] === 'local-update-activate') return parseLocalUpdateActivate(argv.slice(1));
   if (argv[0] === 'serve') return parseServeCommand(argv.slice(1));
   if (argv[0] === 'setup') return parseSetupCommand(argv.slice(1));
   if (argv[0] === 'service') return parseServiceManagementCommand(argv.slice(1));
@@ -239,13 +280,226 @@ export function parseRuntimeHostCommand(argv: string[]): RuntimeHostCliCommand {
   return error(
     argv[0]
       ? `Unexpected runtime-host command: ${argv[0]}`
-      : 'runtime-host requires the serve, setup, service, access, project, profile, or capability-provider command',
+      : 'runtime-host requires the activate, serve, setup, service, access, project, profile, or capability-provider command',
   );
+}
+
+function parseManagedActivationCommand(argv: string[]): RuntimeHostCliCommand {
+  let rootId: string | undefined;
+  let framed = false;
+  for (let index = 0; index < argv.length; index += 1) {
+    const argument = argv[index];
+    if (argument === '--framed') {
+      if (framed) return error('Duplicate --framed');
+      framed = true;
+      continue;
+    }
+    if (argument === '--root-id') {
+      if (rootId !== undefined) return error('Duplicate --root-id');
+      rootId = argv[index + 1];
+      index += 1;
+      if (rootId === undefined) return error('--root-id requires a value');
+      continue;
+    }
+    return error(`Unexpected runtime-host activate option: ${String(argument)}`);
+  }
+  if (!framed) return error('runtime-host activate requires --framed');
+  if (!rootId || !/^[a-f0-9]{64}$/u.test(rootId)) {
+    return error('runtime-host activate requires a valid --root-id');
+  }
+  return { kind: 'runtime-host-managed-activate', rootId, framed: true };
+}
+
+export function parseRuntimeHostInstalledUpdateCommand(argv: string[]): RuntimeHostCliCommand {
+  let target: string | undefined;
+  let allowInterruptActiveTasks = false;
+  for (let index = 0; index < argv.length; index += 1) {
+    const argument = argv[index];
+    if (argument === '--target') {
+      const parsed = optionValue(argv, index, argument);
+      if (typeof parsed !== 'string') return parsed;
+      if (target !== undefined) return error('Duplicate --target');
+      target = parsed;
+      index += 1;
+      continue;
+    }
+    if (argument === '--allow-interrupt-active-tasks') {
+      if (allowInterruptActiveTasks) {
+        return error('Duplicate --allow-interrupt-active-tasks');
+      }
+      allowInterruptActiveTasks = true;
+      continue;
+    }
+    return error(`Unexpected argument: ${argument ?? ''}`);
+  }
+  if (!target) return error('update requires --target <latest|next|version>');
+  const selector = parseUpdateSelector(target, 'update');
+  if ('kind' in selector && selector.kind === 'error') return selector;
+  return { kind: 'runtime-host-installed-update', selector, allowInterruptActiveTasks };
+}
+
+function parseLocalUpdateApply(argv: string[]): RuntimeHostCliCommand {
+  const values = new Map<string, string>();
+  let allowInterruptActiveTasks = false;
+  const valueOptions = new Set([
+    '--root',
+    '--archive',
+    '--installed-package-root',
+    '--installed-cli-path',
+    '--current-version',
+    '--target-version',
+    '--target-integrity',
+    '--target-compatibility',
+  ]);
+  for (let index = 0; index < argv.length; index += 1) {
+    const argument = argv[index];
+    if (argument === '--allow-interrupt-active-tasks') {
+      if (allowInterruptActiveTasks) return error(`Duplicate ${argument}`);
+      allowInterruptActiveTasks = true;
+      continue;
+    }
+    if (!argument || !valueOptions.has(argument))
+      return error(`Unexpected argument: ${argument ?? ''}`);
+    if (values.has(argument)) return error(`Duplicate ${argument}`);
+    const parsed = optionValue(argv, index, argument);
+    if (typeof parsed !== 'string') return parsed;
+    values.set(argument, parsed);
+    index += 1;
+  }
+  const required = (name: string): string | RuntimeHostCliError => {
+    const value = values.get(name);
+    return value ? value : error(`runtime-host local-update-apply requires ${name}`);
+  };
+  const rootPath = required('--root');
+  if (typeof rootPath !== 'string') return rootPath;
+  const archivePath = required('--archive');
+  if (typeof archivePath !== 'string') return archivePath;
+  const installedPackageRoot = required('--installed-package-root');
+  if (typeof installedPackageRoot !== 'string') return installedPackageRoot;
+  const installedCliPath = required('--installed-cli-path');
+  if (typeof installedCliPath !== 'string') return installedCliPath;
+  if (![rootPath, archivePath, installedPackageRoot, installedCliPath].every(isSafeAbsolutePath)) {
+    return error('runtime-host local-update-apply paths must be absolute');
+  }
+  const currentVersion = required('--current-version');
+  if (typeof currentVersion !== 'string') return currentVersion;
+  const targetVersion = required('--target-version');
+  if (typeof targetVersion !== 'string') return targetVersion;
+  const targetIntegrity = required('--target-integrity');
+  if (typeof targetIntegrity !== 'string') return targetIntegrity;
+  if (!isProductReleaseVersion(currentVersion) || !isProductReleaseVersion(targetVersion)) {
+    return error('runtime-host local-update-apply versions are invalid');
+  }
+  if (!isSha512PackageIntegrity(targetIntegrity)) {
+    return error('runtime-host local-update-apply integrity is invalid');
+  }
+  const rawCompatibility = values.get('--target-compatibility');
+  const targetCompatibility = rawCompatibility === undefined ? undefined : Number(rawCompatibility);
+  if (
+    targetCompatibility !== undefined &&
+    (!Number.isSafeInteger(targetCompatibility) || targetCompatibility <= 0)
+  ) {
+    return error('runtime-host local-update-apply compatibility is invalid');
+  }
+  return {
+    kind: 'runtime-host-local-update-apply',
+    rootPath,
+    archivePath,
+    installedPackageRoot,
+    installedCliPath,
+    currentVersion,
+    targetVersion,
+    targetIntegrity,
+    ...(targetCompatibility === undefined ? {} : { targetCompatibility }),
+    allowInterruptActiveTasks,
+  };
+}
+
+function parseLocalUpdateActivate(argv: string[]): RuntimeHostCliCommand {
+  const values = new Map<string, string>();
+  const options = new Set([
+    '--root',
+    '--expected-root-id',
+    '--generation',
+    '--candidate-entrypoint',
+    '--takeover-host-epoch',
+    '--await-coordinator-commit',
+    '--expected-owner-installation-id',
+    '--target-version',
+    '--target-integrity',
+  ]);
+  for (let index = 0; index < argv.length; index += 1) {
+    const argument = argv[index];
+    if (!argument || !options.has(argument)) return error(`Unexpected argument: ${argument ?? ''}`);
+    if (values.has(argument)) return error(`Duplicate ${argument}`);
+    const parsed = optionValue(argv, index, argument);
+    if (typeof parsed !== 'string') return parsed;
+    values.set(argument, parsed);
+    index += 1;
+  }
+  const rootPath = values.get('--root');
+  const expectedRootId = values.get('--expected-root-id');
+  const generation = values.get('--generation');
+  const candidateEntrypoint = values.get('--candidate-entrypoint');
+  const takeoverHostEpoch = values.get('--takeover-host-epoch');
+  const awaitCoordinatorCommit = values.get('--await-coordinator-commit') === 'true';
+  const expectedOwnerInstallationId = values.get('--expected-owner-installation-id');
+  const targetVersion = values.get('--target-version');
+  const targetIntegrity = values.get('--target-integrity');
+  if (!rootPath || !expectedRootId || !generation || !candidateEntrypoint) {
+    return error('runtime-host local-update-activate requires its exact target identity');
+  }
+  if (!isSafeAbsolutePath(rootPath) || !isSafeAbsolutePath(candidateEntrypoint)) {
+    return error('runtime-host local-update-activate paths must be absolute');
+  }
+  if (!/^[a-f0-9]{64}$/u.test(expectedRootId)) {
+    return error('runtime-host local-update-activate root identity is invalid');
+  }
+  if (
+    [
+      generation,
+      takeoverHostEpoch,
+      expectedOwnerInstallationId,
+      targetVersion,
+      targetIntegrity,
+    ].some((value) => value !== undefined && !isSafeIdentity(value))
+  ) {
+    return error('runtime-host local-update-activate generation is invalid');
+  }
+  if (
+    (values.has('--await-coordinator-commit') && !awaitCoordinatorCommit) ||
+    (awaitCoordinatorCommit &&
+      (!expectedOwnerInstallationId || !targetVersion || !targetIntegrity)) ||
+    (!awaitCoordinatorCommit &&
+      (expectedOwnerInstallationId !== undefined ||
+        targetVersion !== undefined ||
+        targetIntegrity !== undefined))
+  ) {
+    return error('runtime-host local-update-activate coordinator expectation is invalid');
+  }
+  return {
+    kind: 'runtime-host-local-update-activate',
+    rootPath,
+    expectedRootId,
+    generation,
+    candidateEntrypoint,
+    awaitCoordinatorCommit,
+    ...(takeoverHostEpoch ? { takeoverHostEpoch } : {}),
+    ...(expectedOwnerInstallationId ? { expectedOwnerInstallationId } : {}),
+    ...(targetVersion ? { targetVersion } : {}),
+    ...(targetIntegrity ? { targetIntegrity } : {}),
+  };
+}
+
+function isSafeIdentity(value: string): boolean {
+  return value.length <= 512 && !/[\u0000-\u001f\u007f]/u.test(value);
 }
 
 function parseSetupCommand(argv: string[]): RuntimeHostCliCommand {
   let principalId: string | undefined;
   let preset: 'desktop-client' | 'terminal-client' | undefined;
+  let lifecycle: 'supervised' | 'on_demand' = 'supervised';
+  let lifecycleProvided = false;
   let deferPairingCommit = false;
   let bindPairingToClient = false;
   let clientDataRoot: string | undefined;
@@ -269,6 +523,14 @@ function parseSetupCommand(argv: string[]): RuntimeHostCliCommand {
           return error('--preset must be desktop-client or terminal-client');
         }
         preset = value;
+      },
+      '--lifecycle': (value) => {
+        if (lifecycleProvided) return error('Duplicate --lifecycle');
+        if (value !== 'supervised' && value !== 'on-demand') {
+          return error('--lifecycle must be supervised or on-demand');
+        }
+        lifecycleProvided = true;
+        lifecycle = value === 'on-demand' ? 'on_demand' : 'supervised';
       },
     },
     flagOptions: {
@@ -302,6 +564,7 @@ function parseSetupCommand(argv: string[]): RuntimeHostCliCommand {
     ...options,
     principalId,
     preset,
+    lifecycle,
     deferPairingCommit,
     ...(bindPairingToClient ? { bindPairingToClient: true } : {}),
     ...(clientDataRoot ? { clientDataRoot } : {}),

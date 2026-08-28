@@ -35,6 +35,7 @@ const FULL_SUITE_FILES = new Set([
 ]);
 
 const RELEASE_CONTRACT_FILES = new Set([
+  'apps/desktop/src/main/app-update-test-context.ts',
   'apps/desktop/build/entitlements.mac.inherit.plist',
   'apps/desktop/build/entitlements.mac.plist',
   'apps/desktop/bundled-tools.json',
@@ -47,6 +48,7 @@ const RELEASE_CONTRACT_FILES = new Set([
   '.github/workflows/release.yml',
   '.github/workflows/release-windows-check.yml',
   'scripts/package-macos-arm64.mjs',
+  'scripts/package-macos-autoupdate-next.mjs',
   'scripts/package-macos-arm64-cli.mjs',
   'scripts/package-windows-autoupdate-next.mjs',
   'scripts/package-windows-x64.mjs',
@@ -58,6 +60,8 @@ const RELEASE_CONTRACT_FILES = new Set([
   'scripts/release-version.mjs',
   'scripts/verify-macos-arm64-cli.mjs',
   'scripts/verify-macos-arm64-dmg.mjs',
+  'scripts/verify-macos-autoupdate.mjs',
+  'scripts/desktop-update-contract.mjs',
   'scripts/verify-packaged-app.mjs',
   'scripts/verify-windows-autoupdate.mjs',
   'scripts/verify-windows-installer-lifecycle.mjs',

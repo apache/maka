@@ -130,6 +130,7 @@ test('source legal authority and generated provenance select the ASF source gate
 
 test('release authority changes select their dedicated contract gate', () => {
   for (const path of [
+    'apps/desktop/src/main/app-update-test-context.ts',
     'apps/desktop/build/entitlements.mac.plist',
     'apps/desktop/electron-builder.config.mjs',
     'apps/desktop/package.json',
@@ -138,11 +139,11 @@ test('release authority changes select their dedicated contract gate', () => {
     '.github/workflows/release-cli-stage.yml',
     '.github/workflows/release.yml',
     'scripts/package-macos-arm64.mjs',
+    'scripts/package-macos-autoupdate-next.mjs',
     'scripts/package-macos-arm64-cli.mjs',
     'scripts/package-windows-x64.mjs',
     'scripts/prepare-windows-upgrade-baseline.mjs',
     'scripts/product-release-artifacts.mjs',
-    'scripts/product-release-artifacts.test.mjs',
     'scripts/product-release-authority.mjs',
     'scripts/product-release-authority.test.mjs',
     'scripts/product-release-identity.mjs',
@@ -153,6 +154,8 @@ test('release authority changes select their dedicated contract gate', () => {
     'scripts/release-cli-publication.test.mjs',
     'scripts/verify-macos-arm64-cli.mjs',
     'scripts/verify-macos-arm64-dmg.mjs',
+    'scripts/verify-macos-autoupdate.mjs',
+    'scripts/desktop-update-contract.mjs',
     'scripts/verify-packaged-app.mjs',
     'scripts/verify-windows-x64.mjs',
     'scripts/windows-upgrade-baseline.json',

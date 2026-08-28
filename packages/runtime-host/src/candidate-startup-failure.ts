@@ -17,11 +17,21 @@
  * under the License.
  */
 
-export type CandidateStartupFailureReason =
-  | 'stored_data_incompatible'
-  | 'operational_state_migration_blocked'
-  | 'local_ipc_security_failed'
-  | 'internal_startup_failure';
+import { RUNTIME_HOST_MANAGED_LAUNCH_REJECTIONS } from './operator/managed-deployment.js';
+
+export const CANDIDATE_STARTUP_FAILURE_REASONS = [
+  'stored_data_incompatible',
+  'operational_state_migration_blocked',
+  'local_ipc_security_failed',
+  'internal_startup_failure',
+  ...RUNTIME_HOST_MANAGED_LAUNCH_REJECTIONS,
+] as const;
+
+export type CandidateStartupFailureReason = (typeof CANDIDATE_STARTUP_FAILURE_REASONS)[number];
+export type PermanentCandidateStartupFailureReason = Exclude<
+  CandidateStartupFailureReason,
+  'local_ipc_security_failed' | 'internal_startup_failure'
+>;
 
 export interface CandidateStartupFailure {
   readonly reason: CandidateStartupFailureReason;
@@ -39,6 +49,12 @@ const EXIT_CODE_BY_REASON: Readonly<Record<CandidateStartupFailureReason, number
   operational_state_migration_blocked: 78,
   local_ipc_security_failed: 77,
   internal_startup_failure: 70,
+  managed_root_requires_operator: 80,
+  deployment_record_missing: 81,
+  deployment_claim_mismatch: 82,
+  deployment_lifecycle_mismatch: 83,
+  deployment_record_invalid: 84,
+  deployment_launch_mismatch: 85,
 };
 
 export function classifyCandidateStartupFailure(error: unknown): CandidateStartupFailure {
@@ -52,17 +68,21 @@ export function classifyCandidateStartupFailure(error: unknown): CandidateStartu
   if (errors.some((candidate) => errorCode(candidate) === 'insecure_endpoint_directory')) {
     return { reason: 'local_ipc_security_failed' };
   }
+  for (const reason of RUNTIME_HOST_MANAGED_LAUNCH_REJECTIONS) {
+    if (errors.some((candidate) => errorCode(candidate) === reason)) return { reason };
+  }
   return { reason: 'internal_startup_failure' };
 }
 
 export function isPermanentCandidateStartupFailure(
   failure: CandidateStartupFailure | undefined,
 ): failure is CandidateStartupFailure & {
-  readonly reason: 'stored_data_incompatible' | 'operational_state_migration_blocked';
+  readonly reason: PermanentCandidateStartupFailureReason;
 } {
   return (
-    failure?.reason === 'stored_data_incompatible' ||
-    failure?.reason === 'operational_state_migration_blocked'
+    failure !== undefined &&
+    failure.reason !== 'local_ipc_security_failed' &&
+    failure.reason !== 'internal_startup_failure'
   );
 }
 

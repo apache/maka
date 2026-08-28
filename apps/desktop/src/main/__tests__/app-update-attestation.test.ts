@@ -1,0 +1,106 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
+import type { Bundle } from '@sigstore/bundle';
+import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { test } from 'node:test';
+import { verifyDownloadedUpdateAttestation } from '../app-update-attestation.js';
+
+function provenanceBundle(name: string, sha256: string): Bundle {
+  const statement = {
+    _type: 'https://in-toto.io/Statement/v1',
+    subject: [{ name, digest: { sha256 } }],
+    predicateType: 'https://slsa.dev/provenance/v1',
+    predicate: {},
+  };
+  return {
+    mediaType: 'application/vnd.dev.sigstore.bundle.v0.3+json',
+    verificationMaterial: {
+      content: undefined,
+      tlogEntries: [],
+      timestampVerificationData: undefined,
+    },
+    content: {
+      $case: 'dsseEnvelope',
+      dsseEnvelope: {
+        payloadType: 'application/vnd.in-toto+json',
+        payload: Buffer.from(JSON.stringify(statement)),
+        signatures: [],
+      },
+    },
+  } as unknown as Bundle;
+}
+
+test('download verification accepts only a trusted exact artifact subject', async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), 'maka-update-attestation-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const artifact = join(directory, 'cached-update.zip');
+  const bytes = Buffer.from('attested update bytes');
+  await writeFile(artifact, bytes);
+  const digest = createHash('sha256').update(bytes).digest('hex');
+  const bundle = provenanceBundle('Maka-1.2.3-mac-arm64.zip', digest);
+  const bundleBytes = Buffer.from(JSON.stringify({
+    mediaType: bundle.mediaType,
+    verificationMaterial: {
+      certificate: { rawBytes: Buffer.from('fixture certificate').toString('base64') },
+      tlogEntries: [],
+    },
+    dsseEnvelope: {
+      payloadType: bundle.content.$case === 'dsseEnvelope'
+        ? bundle.content.dsseEnvelope.payloadType
+        : '',
+      payload: bundle.content.$case === 'dsseEnvelope'
+        ? Buffer.from(bundle.content.dsseEnvelope.payload).toString('base64')
+        : '',
+      signatures: [{ sig: Buffer.from('fixture signature').toString('base64') }],
+    },
+  }));
+  const options = {
+    downloadedFile: artifact,
+    version: '1.2.3',
+    platform: 'darwin' as const,
+    arch: 'arm64',
+    trustRootCacheDirectory: join(directory, 'trust'),
+    fetchBundle: async () => bundleBytes,
+    verifyBundle: async () => {},
+  };
+
+  await verifyDownloadedUpdateAttestation(options);
+  await assert.rejects(
+    verifyDownloadedUpdateAttestation({ ...options, platform: 'win32', arch: 'x64' }),
+    /does not identify/u,
+  );
+
+  await writeFile(artifact, 'different update bytes');
+  await assert.rejects(verifyDownloadedUpdateAttestation(options), /does not identify/u);
+
+  await assert.rejects(
+    verifyDownloadedUpdateAttestation({
+      ...options,
+      verifyBundle: () => {
+        throw new Error('untrusted workflow identity');
+      },
+    }),
+    /untrusted workflow identity/u,
+  );
+});

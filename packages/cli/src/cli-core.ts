@@ -26,7 +26,11 @@ import {
   resolveRuntimeHostManagedPeerKeyPath,
   resolveRuntimeHostPeerNativePath,
 } from './runtime-host-peer-artifact.js';
-import { parseRuntimeHostCommand, type RuntimeHostCliCommand } from './runtime-host-cli.js';
+import {
+  parseRuntimeHostCommand,
+  parseRuntimeHostInstalledUpdateCommand,
+  type RuntimeHostCliCommand,
+} from './runtime-host-cli.js';
 import { resolveCliUiLocale } from './cli-ui-locale.js';
 
 export type MakaCliCommand =
@@ -81,6 +85,7 @@ export function parseMakaCliArgs(
   if (first === 'run' || first === '-p') return { kind: 'run', args: argv.slice(1) };
   if (first === 'activate') return { kind: 'activate', args: argv.slice(1) };
   if (first === 'eval') return { kind: 'eval', args: argv.slice(1) };
+  if (first === 'update') return parseRuntimeHostInstalledUpdateCommand(argv.slice(1));
   if (first === 'runtime-host') return parseRuntimeHostCommand(argv.slice(1));
   return {
     kind: 'error',
@@ -134,7 +139,9 @@ function helpText(cliCommand: string): string {
     `  ${cliCommand} activate ... Run one Cloud Session activation and emit JSONL`,
     `  ${cliCommand} -p ...       Alias for ${cliCommand} run`,
     `  ${cliCommand} eval ...     Run one declarative multi-arm experiment`,
+    `  ${cliCommand} update --target <latest|next|version>  Update this npm-global CLI and its local Runtime Host`,
     `  ${cliCommand} runtime-host serve [options]  Run a Runtime Host service`,
+    `  ${cliCommand} runtime-host activate --framed --root-id <id>`,
     `  ${cliCommand} runtime-host setup --principal <id> --preset <desktop-client|terminal-client> [options]`,
     `  ${cliCommand} runtime-host service install [options]`,
     `  ${cliCommand} runtime-host service configure (--project-root <label>=<path> ... | --no-project-roots) --expected-config-fingerprint <sha256:...> --expected-service-id <id> --expected-root-path <path> --expected-root-id <id> [--allow-interrupt-active-tasks]`,
@@ -236,6 +243,12 @@ export async function runMakaCli(
     clientDataRoot: dataRoots.clientDataRoot,
   });
   switch (command.kind) {
+    case 'runtime-host-managed-activate': {
+      const { runRuntimeHostManagedActivationCli } = await import(
+        './runtime-host-activation-command.js'
+      );
+      return runRuntimeHostManagedActivationCli({ rootId: command.rootId });
+    }
     case 'run': {
       const { runRuntimeHostTextCli } = await import('./runtime-host-run-command.js');
       return runRuntimeHostTextCli(
@@ -294,6 +307,56 @@ export async function runMakaCli(
         ...(command.peer ? { peer: command.peer } : {}),
       });
     }
+    case 'runtime-host-installed-update': {
+      const { runRuntimeHostInstalledUpdateBootstrap } = await import(
+        './runtime-host-installed-update-bootstrap.js'
+      );
+      return runRuntimeHostInstalledUpdateBootstrap({
+        rootPath: dataRoots.workspaceRoot,
+        selector: command.selector,
+        allowInterruptActiveTasks: command.allowInterruptActiveTasks,
+      });
+    }
+    case 'runtime-host-local-update-apply': {
+      const { runRuntimeHostInstalledUpdateCoordinator } = await import(
+        './runtime-host-installed-update-coordinator.js'
+      );
+      return runRuntimeHostInstalledUpdateCoordinator({
+        rootPath: command.rootPath,
+        archivePath: command.archivePath,
+        installedPackageRoot: command.installedPackageRoot,
+        installedCliPath: command.installedCliPath,
+        currentVersion: command.currentVersion,
+        target: {
+          kind: 'npm_registry',
+          version: command.targetVersion,
+          integrity: command.targetIntegrity,
+          ...(command.targetCompatibility === undefined
+            ? {}
+            : { compatibility: command.targetCompatibility }),
+        },
+        allowInterruptActiveTasks: command.allowInterruptActiveTasks,
+      });
+    }
+    case 'runtime-host-local-update-activate': {
+      const { runRuntimeHostInstalledUpdateActivator } = await import(
+        './runtime-host-installed-update-activator.js'
+      );
+      return runRuntimeHostInstalledUpdateActivator({
+        rootPath: command.rootPath,
+        expectedRootId: command.expectedRootId,
+        generation: command.generation,
+        candidateEntrypoint: command.candidateEntrypoint,
+        awaitCoordinatorCommit: command.awaitCoordinatorCommit,
+        ...(command.takeoverHostEpoch ? { takeoverHostEpoch: command.takeoverHostEpoch } : {}),
+        ...(command.expectedOwnerInstallationId
+          ? { expectedOwnerInstallationId: command.expectedOwnerInstallationId }
+          : {}),
+        ...(command.targetVersion ? { targetVersion: command.targetVersion } : {}),
+        ...(command.targetIntegrity ? { targetIntegrity: command.targetIntegrity } : {}),
+        ...(command.awaitCoordinatorCommit ? { inheritableAuthorityLeaseFd: 4 } : {}),
+      });
+    }
     case 'runtime-host-setup': {
       const { runRuntimeHostSetupCli } = await import('./runtime-host-setup-command.js');
       return runRuntimeHostSetupCli({
@@ -304,6 +367,7 @@ export async function runMakaCli(
         version,
         principalId: command.principalId,
         preset: command.preset,
+        lifecycle: command.lifecycle,
         deferPairingCommit: command.deferPairingCommit,
         bindPairingToClient: command.bindPairingToClient,
         ...(command.rootPath ? { rootPath: command.rootPath } : {}),

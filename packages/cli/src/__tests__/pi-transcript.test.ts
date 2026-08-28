@@ -26,10 +26,12 @@ import type { SessionEvent, ToolResultContent } from '@maka/core/events';
 import type { StoredMessage } from '@maka/core/session';
 import {
   appendUserPrompt,
+  applyExpansionDefaultToAll,
   applyShellRunViewUpdateToTranscript,
   applyMakaSessionEventToTranscript,
   applyShellRunUpdateToTranscript,
   createMakaPiTranscriptState,
+  hasExpandedEntriesAboveViewport,
   renderMakaPiActivityStrip,
   renderMakaPiPendingQueue,
   renderMakaPiStatusLine,
@@ -1642,6 +1644,235 @@ describe('Maka Pi TUI transcript', () => {
     assert.equal(state.expandAllTools, true);
     const third = state.entries[state.entries.length - 1];
     assert.match(third.kind === 'notice' ? third.text : '', /starts expanded/);
+  });
+
+  test('a collapse with mixed card positions names the stranded cards and offers the second press (#4011)', () => {
+    const state = createMakaPiTranscriptState();
+    applyMakaSessionEventToTranscript(
+      state,
+      event({
+        type: 'tool_start',
+        toolUseId: 'tool-early',
+        toolName: 'Bash',
+        args: { command: 'early-build' },
+      }),
+    );
+    applyMakaSessionEventToTranscript(
+      state,
+      event({
+        type: 'tool_result',
+        toolUseId: 'tool-early',
+        isError: false,
+        content: terminalResult(
+          `early-head\n${Array.from({ length: 30 }, (_, i) => `early-row-${i}`).join('\n')}`,
+        ),
+      }),
+    );
+    applyMakaSessionEventToTranscript(
+      state,
+      event({
+        type: 'text_delta',
+        messageId: 'message-1',
+        text: Array.from({ length: 20 }, (_, i) => `filler-${i}`).join('\n\n'),
+      }),
+    );
+    applyMakaSessionEventToTranscript(
+      state,
+      event({
+        type: 'tool_start',
+        toolUseId: 'tool-late',
+        toolName: 'Bash',
+        args: { command: 'late-build' },
+      }),
+    );
+    applyMakaSessionEventToTranscript(
+      state,
+      event({
+        type: 'tool_result',
+        toolUseId: 'tool-late',
+        isError: false,
+        content: terminalResult(
+          `late-head\n${Array.from({ length: 30 }, (_, i) => `late-row-${i}`).join('\n')}`,
+        ),
+      }),
+    );
+
+    // Expand both while everything is in view, then let the viewport scroll so
+    // the early card's head sits in scrollback and only the late card remains
+    // reachable.
+    assert.equal(toggleAllToolExpansion(state), true);
+    renderMakaPiTranscript(state, meta(), 100);
+    const early = state.entries.find(
+      (entry): entry is Extract<typeof entry, { kind: 'tool' }> =>
+        entry.kind === 'tool' && entry.toolUseId === 'tool-early',
+    );
+    const late = state.entries.find(
+      (entry): entry is Extract<typeof entry, { kind: 'tool' }> =>
+        entry.kind === 'tool' && entry.toolUseId === 'tool-late',
+    );
+    assert.ok(early && late);
+    const viewportTop = state.renderGeometry.entryFirstLine?.get(late);
+    assert.ok(viewportTop !== undefined && viewportTop > 0);
+    state.renderGeometry.viewportTop = viewportTop;
+
+    // The collapse reaches the late card but strands the early one, and the
+    // notice says so instead of staying silent (#4011).
+    assert.equal(toggleAllToolExpansion(state), true);
+    assert.equal(state.expandAllTools, false);
+    assert.equal(early.expanded, true);
+    assert.equal(late.expanded, false);
+    const notice = state.entries[state.entries.length - 1];
+    assert.equal(notice.kind, 'notice');
+    const text = notice.kind === 'notice' ? notice.text : '';
+    assert.match(text, /1 tool card above the view stayed expanded/);
+    assert.match(text, /press Ctrl\+O again within 2s/);
+    assert.match(text, /starts collapsed/);
+    assert.equal(hasExpandedEntriesAboveViewport(state, 'tool'), true);
+  });
+
+  test('the confirmed second press collapses the stranded card without flipping the default (#4011)', () => {
+    const state = createMakaPiTranscriptState();
+    applyMakaSessionEventToTranscript(
+      state,
+      event({
+        type: 'tool_start',
+        toolUseId: 'tool-big',
+        toolName: 'Bash',
+        args: { command: 'big-diff' },
+      }),
+    );
+    applyMakaSessionEventToTranscript(
+      state,
+      event({
+        type: 'tool_result',
+        toolUseId: 'tool-big',
+        isError: false,
+        content: terminalResult(
+          `big-head\n${Array.from({ length: 80 }, (_, i) => `big-row-${i}`).join('\n')}`,
+        ),
+      }),
+    );
+
+    assert.equal(toggleAllToolExpansion(state), true);
+    renderMakaPiTranscript(state, meta(), 100);
+    const entry = state.entries.find(
+      (candidate): candidate is Extract<typeof candidate, { kind: 'tool' }> =>
+        candidate.kind === 'tool',
+    );
+    assert.ok(entry);
+    const firstLine = state.renderGeometry.entryFirstLine?.get(entry);
+    assert.ok(firstLine !== undefined);
+    state.renderGeometry.viewportTop = firstLine + 5;
+
+    // First press: viewport-scoped collapse strands the card; the state is
+    // confirmable (the runner owns the confirm window itself).
+    assert.equal(toggleAllToolExpansion(state), true);
+    assert.equal(state.expandAllTools, false);
+    assert.equal(entry.expanded, true);
+    assert.equal(hasExpandedEntriesAboveViewport(state, 'tool'), true);
+
+    // Confirmed second press: every candidate takes the collapsed default and
+    // the default itself does not move (a plain toggle would flip it back).
+    assert.equal(applyExpansionDefaultToAll(state, 'tool'), true);
+    assert.equal(state.expandAllTools, false);
+    assert.equal(entry.expanded, false);
+    assert.equal(hasExpandedEntriesAboveViewport(state, 'tool'), false);
+    // Idempotent once everything already matches the default.
+    assert.equal(applyExpansionDefaultToAll(state, 'tool'), false);
+  });
+
+  test('an expand toggle with collapsed cards above the viewport stays silent about them (#4011)', () => {
+    const state = createMakaPiTranscriptState();
+    applyMakaSessionEventToTranscript(
+      state,
+      event({
+        type: 'tool_start',
+        toolUseId: 'tool-early',
+        toolName: 'Bash',
+        args: { command: 'early-build' },
+      }),
+    );
+    applyMakaSessionEventToTranscript(
+      state,
+      event({
+        type: 'tool_result',
+        toolUseId: 'tool-early',
+        isError: false,
+        content: terminalResult(`early-head\nearly-row`),
+      }),
+    );
+    applyMakaSessionEventToTranscript(
+      state,
+      event({
+        type: 'text_delta',
+        messageId: 'message-1',
+        text: Array.from({ length: 20 }, (_, i) => `filler-${i}`).join('\n\n'),
+      }),
+    );
+    applyMakaSessionEventToTranscript(
+      state,
+      event({
+        type: 'tool_start',
+        toolUseId: 'tool-late',
+        toolName: 'Bash',
+        args: { command: 'late-build' },
+      }),
+    );
+    applyMakaSessionEventToTranscript(
+      state,
+      event({
+        type: 'tool_result',
+        toolUseId: 'tool-late',
+        isError: false,
+        content: terminalResult(`late-head\nlate-row`),
+      }),
+    );
+
+    renderMakaPiTranscript(state, meta(), 100);
+    const late = state.entries.find(
+      (entry): entry is Extract<typeof entry, { kind: 'tool' }> =>
+        entry.kind === 'tool' && entry.toolUseId === 'tool-late',
+    );
+    assert.ok(late);
+    const viewportTop = state.renderGeometry.entryFirstLine?.get(late);
+    assert.ok(viewportTop !== undefined && viewportTop > 0);
+    state.renderGeometry.viewportTop = viewportTop;
+
+    // Expanding the in-view card leaves the collapsed card above untouched —
+    // compact in scrollback, harmless — and offers no redraw for it.
+    assert.equal(toggleAllToolExpansion(state), true);
+    assert.equal(late.expanded, true);
+    assert.equal(
+      state.entries.some(
+        (entry) => entry.kind === 'notice' && entry.text.includes('again within 2s'),
+      ),
+      false,
+    );
+    // And nothing expanded sits above the viewport, so no confirm can arm.
+    assert.equal(hasExpandedEntriesAboveViewport(state, 'tool'), false);
+  });
+
+  test('hasExpandedEntriesAboveViewport is false while entry positions are unknown (#4011)', () => {
+    const state = createMakaPiTranscriptState();
+    applyMakaSessionEventToTranscript(
+      state,
+      event({
+        type: 'tool_start',
+        toolUseId: 'tool-1',
+        toolName: 'Bash',
+        args: { command: 'build' },
+      }),
+    );
+    const entry = state.entries.find(
+      (candidate): candidate is Extract<typeof candidate, { kind: 'tool' }> =>
+        candidate.kind === 'tool',
+    );
+    assert.ok(entry);
+    entry.expanded = true;
+    // Wholesale-replacement window: no positions recorded, viewport scrolled.
+    state.renderGeometry.entryFirstLine = undefined;
+    state.renderGeometry.viewportTop = 10;
+    assert.equal(hasExpandedEntriesAboveViewport(state, 'tool'), false);
   });
 
   test('Ctrl+T leaves thinking entries above the live viewport untouched (#1097)', () => {

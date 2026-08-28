@@ -270,6 +270,7 @@ export type AppUpdateStatus =
         total?: number;
       };
     }
+  | { state: 'verifying'; currentVersion: string; latestVersion: string }
   | {
       state: 'downloaded';
       currentVersion: string;

@@ -17,7 +17,10 @@
  * under the License.
  */
 
-import type { CandidateStartupFailureReason } from '../candidate-startup-failure.js';
+import type {
+  CandidateStartupFailureReason,
+  PermanentCandidateStartupFailureReason,
+} from '../candidate-startup-failure.js';
 import type { RuntimeHostElectionDiagnostic } from './connect-or-spawn.js';
 import { RuntimeHostPermanentReconnectError } from './reconnect-lifecycle.js';
 
@@ -31,10 +34,7 @@ export class RuntimeHostStartupError extends RuntimeHostPermanentReconnectError 
   readonly name = 'RuntimeHostStartupError';
 
   constructor(
-    readonly reason:
-      | 'stored_data_incompatible'
-      | 'operational_state_migration_blocked'
-      | 'composition_mismatch',
+    readonly reason: PermanentCandidateStartupFailureReason | 'composition_mismatch',
     message: string,
   ) {
     super(message);
@@ -68,6 +68,36 @@ export function runtimeHostStartupError(
       return new RuntimeHostStartupError(
         reason,
         'This workspace belongs to a different Runtime Host composition. Diagnostic code: COMPOSITION_MISMATCH.',
+      );
+    case 'managed_root_requires_operator':
+      return new RuntimeHostStartupError(
+        reason,
+        'This workspace is managed by a Runtime Host operator. Activate it through the configured Host profile. Diagnostic code: MANAGED_ROOT_REQUIRES_OPERATOR.',
+      );
+    case 'deployment_record_missing':
+      return new RuntimeHostStartupError(
+        reason,
+        'The Runtime Host operator refers to a managed deployment that is not installed. Repair the deployment before connecting. Diagnostic code: DEPLOYMENT_RECORD_MISSING.',
+      );
+    case 'deployment_claim_mismatch':
+      return new RuntimeHostStartupError(
+        reason,
+        'The Runtime Host operator does not match the managed deployment. Repair or explicitly migrate the deployment. Diagnostic code: DEPLOYMENT_CLAIM_MISMATCH.',
+      );
+    case 'deployment_lifecycle_mismatch':
+      return new RuntimeHostStartupError(
+        reason,
+        'The Runtime Host launch path cannot honor the configured lifecycle. Use the deployment operator. Diagnostic code: DEPLOYMENT_LIFECYCLE_MISMATCH.',
+      );
+    case 'deployment_launch_mismatch':
+      return new RuntimeHostStartupError(
+        reason,
+        'The Runtime Host process does not match the exact package selected by the managed deployment. Repair or explicitly migrate the deployment. Diagnostic code: DEPLOYMENT_LAUNCH_MISMATCH.',
+      );
+    case 'deployment_record_invalid':
+      return new RuntimeHostStartupError(
+        reason,
+        'The Runtime Host managed deployment record is invalid. Run deployment repair before connecting. Diagnostic code: DEPLOYMENT_RECORD_INVALID.',
       );
     case 'startup_timeout':
       return new Error(

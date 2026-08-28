@@ -23,6 +23,10 @@
 
 This runbook is the operational authority for publishing the `maka-agent` npm installation channel. The root `package.json` remains the sole Maka product-version authority, and `packages/cli/package.json` must match it. Every public npm version must come from the exact tarball validated by the Stage workflow.
 
+The IPMC-approved source archive on ASF distribution infrastructure is the Apache release. npm,
+Desktop installers, and GitHub Release assets are convenience packages built from that approved
+source identity; they are not additional ASF release artifacts.
+
 The source-RC [npm preflight](../.github/ASF_NPM_RELEASE.md) is an earlier, credential-free
 compatibility check. Its tarball is not carried into publication. After source approval, Stage
 rebuilds from the final product tag at the same approved commit and becomes the byte authority for
@@ -32,11 +36,12 @@ retaining Maka's stronger protected-Environment, staged-publishing, 2FA, and Fin
 ## Release invariants
 
 - Dispatch the product Release workflow only from the exact approved ASF source candidate tag.
-  Dispatch npm Stage only from the resulting product `v<version>` tag and npm Finalize from `main`.
+  Dispatch npm Stage from the resulting product `v<version>` tag and product Finalize from `main`.
 - Publish prereleases under `next` and stable versions under `latest`. `next` must never resolve to
   a version older than `latest`; when no newer prerelease exists, both tags point to the stable
   version.
-- Do not create an npm-specific Git tag or GitHub Release. The product `v<version>` tag and GitHub Release are owned only by the `Release` workflow, and must already exist before npm staging.
+- Do not create an npm-specific Git tag or GitHub Release. The `Release` workflow creates the
+  product `v<version>` tag and Draft before npm staging; Finalize is the sole publisher of that Draft.
 - Keep that GitHub Release in Draft until npm Finalize and Desktop remote Runtime Host acceptance
   succeed. The Draft supplies npm's product identity; its publication is the final product action.
 - Do not run `npm publish`. GitHub Actions may only run `npm stage publish`; a human package
@@ -50,24 +55,32 @@ The two workflow boundaries are:
    tag and GitHub Release, checks out that exact product commit, builds and validates one immutable
    tarball, records that single tag commit and workflow run, enters the protected `npm-release`
    Environment, and submits it to npm staging through OIDC.
-2. [Finalize CLI npm channel](../.github/workflows/release-cli-finalize.yml) accepts only the exact successful Stage run and attempt, then verifies the public registry bytes, signature, provenance, and dist-tag. It creates no tag or GitHub Release.
+2. [Finalize product release](../.github/workflows/release-cli-finalize.yml) accepts only the exact
+   successful Stage run, Release build run, and self-contained publication record. The current
+   reviewed verifier on `main` checks the public registry bytes, signature, provenance, dist-tag,
+   immutable build artifacts, and live Draft digests, then waits at the protected `product-release`
+  Environment. After independent Desktop acceptance, approval attests the exact convenience
+  artifacts with the protected workflow identity, publishes the GitHub Release, and applies its
+  Stable/Latest classification in one operation.
 
 ## One-time control-plane configuration
 
 ### GitHub Environment
 
-The checked-in `.asf.yaml` is the authority for the `npm-release` Environment. After it reaches
+The checked-in `.asf.yaml` is the authority for the `npm-release` and `product-release`
+Environments. After it reaches
 `main`, confirm ASF reconciliation produced:
 
-- a selected deployment tag rule matching `v*`, with no branch rule;
+- a selected `v*` tag rule for `npm-release` and a selected `main` branch rule for
+  `product-release`;
 - `M4n5ter` as the required reviewer;
 - self-review disabled;
-- administrator bypass disabled where repository policy permits it;
-- no environment secrets or variables.
+- administrator bypass disabled where repository policy permits it.
 
 Repository administration permission is required to inspect or repair reconciliation. Do not maintain
-a second manual Environment policy in GitHub. The workflow itself uses GitHub OIDC and does not read
-an npm token.
+a second manual Environment policy in GitHub. Finalize uses GitHub Actions OIDC to create Sigstore
+provenance for the exact convenience artifacts and stores the offline verification bundle beside
+them. It requires no repository-administration credential, signing key, or npm token.
 
 ### npm Trusted Publisher
 
@@ -189,15 +202,21 @@ Do not change `next` when it already points to a newer version such as `0.2.0-be
 intentionally manual: npm Trusted Publishing authenticates `npm publish` and `npm stage publish`,
 not dist-tag mutations, and the release workflows must not gain a long-lived npm token.
 
-## Finalize the public npm channel
+## Finalize the product release
 
 After npm reports the version as public:
 
-1. Open **Actions → Finalize CLI npm channel → Run workflow** on `main`.
-2. Enter the successful Stage run ID, its exact run attempt, and the version.
+1. Open **Actions → Finalize product release → Run workflow** on `main`.
+2. Enter the successful Stage run ID and attempt, the successful Release build run ID and attempt,
+   and the version.
 3. Let the inspection job verify the public tarball bytes, checksum, inventory, npm signature,
    Trusted Publishing provenance, the release dist-tag, and that `next` is not older than `latest`.
-4. Confirm the workflow preserved the verified public package as an Actions artifact and did not create or modify any Git tag or GitHub Release.
+4. While the publication job waits for `product-release` approval, complete the product checklist's
+   cross-machine acceptance against the Draft.
+5. Approve the Environment. Confirm the workflow matches every live Draft digest to the exact
+   Release attempt's publication record, creates and uploads
+   `Maka-<version>-attestation.sigstore.json`, publishes the convenience Release, and makes a stable
+   release Latest without a separate manual action.
 
 Check the resulting registry state:
 
@@ -211,8 +230,8 @@ Finally, install the exact public version on each release platform and complete 
 turn. On the supported Eval host, complete at least one real experiment cell and inspect score,
 usage, cost, and artifacts.
 
-Return to the [product release checklist](../.github/RELEASE_CHECKLIST.md) and exercise remote Runtime
-Host setup from the packaged Desktop apps before publishing the GitHub Release.
+The [product release checklist](../.github/RELEASE_CHECKLIST.md) remains the authority for the
+acceptance evidence required before approving publication.
 
 ## Failure recovery
 
@@ -243,10 +262,15 @@ Reject the stage, fix the problem on `main`, increment the product version, crea
 ### npm approval succeeded but Finalize failed
 
 The npm version is already immutable. Do not publish or approve it again. Preserve the Stage run ID,
-attempt, version, and artifacts. If the package bytes and provenance are valid, fix the current
-Finalize verifier on `main` and rerun Finalize against that same successful Stage identity.
+attempt, version, and the Release run ID, attempt, publication record, and artifacts. If those bytes
+and provenance are valid, fix the Finalize verifier on `main` and rerun it against the same immutable
+Stage and Release evidence.
 
-Finalize is read-only with respect to product release state. If the npm package version, bytes, dist-tag, signature, provenance, or recorded Stage identity differ, stop and investigate; do not modify the product tag or GitHub Release to make npm verification pass.
+The inspection job is read-only. Only the protected publication job may perform the single
+Draft-to-published transition and attest its bytes. If npm identity, build evidence, or the Draft differs, stop and
+investigate; do not modify the product tag or GitHub Release to make verification pass. If failure is
+reported after the publication request, inspect the exact Release first: a successful publication
+must not be repeated.
 
 ### The public version is defective
 

@@ -17,9 +17,19 @@
  * under the License.
  */
 
-import { resolveExistingStorageRoot, tryAcquireStateRootOwner } from '@maka/storage/root-authority';
+import { resolveExistingStorageRoot } from '@maka/storage/root-authority';
+import {
+  currentRuntimeHostProcessLaunch,
+  tryAcquireRuntimeHostLaunch,
+  type RuntimeHostManagedDeploymentAuthorityOptions,
+  type RuntimeHostManagedDeploymentConfig,
+  type RuntimeHostManagedLaunchClaim,
+  type RuntimeHostManagedProcessLaunch,
+} from '../operator/managed-deployment.js';
 import type { RuntimeHostCompositionSource } from './host-composition.js';
 import { RuntimeHostKernel } from './host-kernel.js';
+import { openRuntimeHostAccessAuthority } from './access-authority.js';
+import { startRuntimeHostAuthenticatedListenerSet } from './listener-set.js';
 
 export interface InteractiveRuntimeHostCandidateOptions {
   rootPath: string;
@@ -28,31 +38,72 @@ export interface InteractiveRuntimeHostCandidateOptions {
   idleGraceMs?: number;
   handshakeTimeoutMs?: number;
   generation?: string;
+  managedLaunchClaim?: RuntimeHostManagedLaunchClaim;
+}
+
+export interface InteractiveRuntimeHostCandidateDependencies {
+  /** Test-only authority-location override. */
+  readonly managedDeploymentAuthority?: RuntimeHostManagedDeploymentAuthorityOptions;
+  /** Test-only process-identity override. Production derives this from the running process. */
+  readonly processLaunch?: RuntimeHostManagedProcessLaunch;
 }
 
 export type InteractiveRuntimeHostCandidateResult =
   | { kind: 'loser' }
   | { kind: 'winner'; host: RuntimeHostKernel };
 
+export type InteractiveRuntimeHostCompositionFactory = (
+  managedConfig: RuntimeHostManagedDeploymentConfig | undefined,
+) => RuntimeHostCompositionSource | Promise<RuntimeHostCompositionSource>;
+
 export async function startInteractiveRuntimeHostCandidate(
   options: InteractiveRuntimeHostCandidateOptions,
-  composition: RuntimeHostCompositionSource,
+  createComposition: InteractiveRuntimeHostCompositionFactory,
+  dependencies: InteractiveRuntimeHostCandidateDependencies = {},
 ): Promise<InteractiveRuntimeHostCandidateResult> {
   const capability = await resolveExistingStorageRoot({
     path: options.rootPath,
     kind: 'interactive',
     expectedRootId: options.expectedRootId,
   });
-  const owner = await tryAcquireStateRootOwner(capability);
-  if (!owner) return { kind: 'loser' };
-  const host = await RuntimeHostKernel.start({
-    owner,
-    lifecycleMode: 'ephemeral',
-    initialConnectionTimeoutMs: options.initialConnectionTimeoutMs,
-    idleGraceMs: options.idleGraceMs,
-    handshakeTimeoutMs: options.handshakeTimeoutMs,
-    generation: options.generation,
-    composition,
-  });
-  return { kind: 'winner', host };
+  const ownership = await tryAcquireRuntimeHostLaunch(
+    capability,
+    {
+      lifecycleMode: 'on_demand',
+      claim: options.managedLaunchClaim,
+      processLaunch: dependencies.processLaunch ?? currentRuntimeHostProcessLaunch(),
+    },
+    dependencies.managedDeploymentAuthority,
+  );
+  if (!ownership) return { kind: 'loser' };
+  const { owner, managedConfig } = ownership;
+  try {
+    const composition = await createComposition(managedConfig);
+    const websocket = managedConfig?.listeners.websocket;
+    const accessAuthority = websocket
+      ? await openRuntimeHostAccessAuthority(owner.controlDirectory)
+      : undefined;
+    const host = await RuntimeHostKernel.start({
+      owner,
+      lifecycleMode: 'ephemeral',
+      initialConnectionTimeoutMs: options.initialConnectionTimeoutMs,
+      idleGraceMs: options.idleGraceMs,
+      handshakeTimeoutMs: options.handshakeTimeoutMs,
+      generation: options.generation,
+      composition,
+      ...(accessAuthority ? { accessAuthority } : {}),
+      ...(websocket && accessAuthority
+        ? {
+            listenerSetFactory: (input) =>
+              startRuntimeHostAuthenticatedListenerSet(input, {
+                websocket: { ...websocket, accessAuthority },
+              }),
+          }
+        : {}),
+    });
+    return { kind: 'winner', host };
+  } catch (error) {
+    if (!owner.closed) await owner.close();
+    throw error;
+  }
 }

@@ -121,7 +121,9 @@ export const TURN_RESUME_PARK_REASONS = [
   'continuation_already_exists',
   'continuation_repair_required',
   'continuation_started_indeterminate',
-  'continuation_unavailable',
+  'resume_feature_disabled',
+  'continuation_authority_unavailable',
+  'safety_observation_unavailable',
   'session_busy',
 ] as const;
 

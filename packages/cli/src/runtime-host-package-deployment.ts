@@ -17,10 +17,10 @@
  * under the License.
  */
 
-import { createHash, randomUUID } from 'node:crypto';
+import { randomUUID } from 'node:crypto';
 import { cp, mkdir, readFile, readdir, realpath, rename, rm, stat } from 'node:fs/promises';
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
-import { isSha512PackageIntegrity } from '@maka/runtime-host/operator';
+import { resolveRuntimeHostNpmDeploymentLayout } from '@maka/runtime-host/operator';
 
 const PACKAGE_NAME = 'maka-agent';
 
@@ -50,8 +50,9 @@ export function resolveRuntimeHostPackageCliPath(
   packageIntegrity?: string,
 ): string {
   assertVersion(version);
-  const packageDirectory = packageIntegrity ? registryPackageDirectory(packageIntegrity) : version;
-  return join(resolve(deploymentRoot), 'versions', packageDirectory, 'dist', 'cli.js');
+  return packageIntegrity
+    ? registryPackageLayout(deploymentRoot, packageIntegrity).cliPath
+    : join(resolve(deploymentRoot), 'versions', version, 'dist', 'cli.js');
 }
 
 export async function prepareRuntimeHostPackageDeployment(input: {
@@ -65,15 +66,14 @@ export async function prepareRuntimeHostPackageDeployment(input: {
   await mkdir(join(input.deploymentRoot, 'versions'), { recursive: true, mode: 0o700 });
   const deploymentRoot = await realpath(resolve(input.deploymentRoot));
   const versionsRoot = join(deploymentRoot, 'versions');
-  const packageDirectory = input.packageIntegrity
-    ? registryPackageDirectory(input.packageIntegrity)
-    : input.version;
-  const packageRoot = join(versionsRoot, packageDirectory);
-  const cliPath = resolveRuntimeHostPackageCliPath(
-    deploymentRoot,
-    input.version,
-    input.packageIntegrity,
-  );
+  const layout = input.packageIntegrity
+    ? registryPackageLayout(deploymentRoot, input.packageIntegrity)
+    : {
+        packageRoot: join(versionsRoot, input.version),
+        cliPath: join(versionsRoot, input.version, 'dist', 'cli.js'),
+      };
+  const { packageRoot, cliPath } = layout;
+  const packageDirectory = basename(packageRoot);
   if (await pathExists(packageRoot)) {
     await validatePackage(packageRoot, input.version);
     return deployment(input.version, deploymentRoot, packageRoot, cliPath, false);
@@ -254,14 +254,16 @@ async function removePackageAtomically(versionsRoot: string, packageName: string
   }
 }
 
-function registryPackageDirectory(integrity: string): string {
-  if (!isSha512PackageIntegrity(integrity)) {
+function registryPackageLayout(deploymentRoot: string, integrity: string) {
+  try {
+    return resolveRuntimeHostNpmDeploymentLayout(deploymentRoot, integrity);
+  } catch (error) {
     throw new RuntimeHostPackageDeploymentError(
       'invalid_package',
       'The Runtime Host package integrity is invalid',
+      { cause: error },
     );
   }
-  return `registry-${createHash('sha256').update(integrity).digest('hex')}`;
 }
 
 function assertVersion(version: string): void {

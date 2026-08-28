@@ -110,6 +110,17 @@ github:
         policies:
           - name: "v*"
             type: tag
+    product-release:
+      required_reviewers:
+        - id: M4n5ter
+          type: User
+      wait_timer: 0
+      prevent_self_review: true
+      deployment_branch_policy:
+        protected_branches: false
+        policies:
+          - name: main
+            type: branch
 
 notifications:
   commits:      commits@maka.apache.org

@@ -491,6 +491,29 @@ sequenceDiagram
 
 CLI/TUI `/resume` uses the same `SessionManager` plan/execute seam. Desktop startup auto-resume also reuses it.
 
+### Current parked-reason boundary
+
+Runtime Host projects Runtime planner rejection reasons into the closed
+`TurnResumeParkReason` wire union. A CLI must not infer the Host's internal
+state again. The current Host preserves three previously conflated causes:
+
+- `resume_feature_disabled`: the feature flag is off;
+- `continuation_authority_unavailable`: the Host cannot obtain continuation authority;
+- `safety_observation_unavailable`: the Host cannot obtain authoritative safety observations.
+
+The current wire contract no longer contains `continuation_unavailable`. The
+`/resume` driver carries the exact reason in `SafeBoundaryResumeParkedError`.
+The TUI renders only expected user states as informational notices:
+`resume_feature_disabled`, `resume_candidate_missing`, and `session_busy`.
+Authority, safety, and other recovery failures remain red errors with the raw
+reason preserved for diagnosis.
+
+Because this changes a closed protocol union, Runtime Host compatibility epoch
+57 rejects mixed old/new Client-Host pairs during handshake instead of letting
+a Client misclassify a recovery failure as a disabled feature. This change only
+corrects Host projection and CLI presentation; it does not move ownership of
+the planner, durable continuation claim, or feature flag.
+
 ## Why continuation does not duplicate the user message
 
 A normal Run creates an initial user RuntimeEvent. A continuation already has a validated source history, so it:

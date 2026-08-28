@@ -18,6 +18,12 @@
  */
 
 export {
+  RuntimeHostManagedActivationError,
+  activateRuntimeHostManagedDeployment,
+  type ActivateRuntimeHostManagedDeploymentInput,
+  type RuntimeHostManagedActivationErrorCode,
+} from './managed-activation.js';
+export {
   connectRuntimeHost,
   connectExistingRuntimeHost,
   connectRemoteRuntimeHost,
@@ -56,6 +62,11 @@ export {
   type RuntimeHostConnectionAvailability,
   type RuntimeHostReconnectingConnection,
 } from './reconnecting-connection.js';
+export {
+  RuntimeHostSshOperatorActivationError,
+  activateRuntimeHostSshOperator,
+  type RuntimeHostSshOperatorActivationInput,
+} from './ssh-operator-activation.js';
 export {
   normalizeRuntimeHostSshDestination,
   openRuntimeHostSshTunnel,
@@ -103,6 +114,7 @@ export {
   type RuntimeHostElectionDiagnostic,
   type RuntimeHostSpawnedProcess,
 } from './connect-or-spawn.js';
+export { waitForRuntimeHostReady } from './wait-for-ready.js';
 export {
   createRuntimeHostCandidateLaunchBarrier,
   type RuntimeHostCandidateLaunchBarrier,
@@ -126,6 +138,12 @@ export {
   type RuntimeHostOwnerConnectionCode,
 } from './owner-connection-code.js';
 export { ensureRuntimeHostPeerIdentity } from '../transport/peer-native.js';
+export {
+  createRuntimeHostPeerClient,
+  createRuntimeHostPeerClientFromEnvironment,
+  type RuntimeHostPeerClient,
+  type RuntimeHostPeerConnectInput,
+} from './peer-client.js';
 export {
   createOAuthPresentationClientProvider,
   type OAuthPresentationBackend,

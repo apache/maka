@@ -323,12 +323,13 @@ export async function applyLocalHostDeploymentTransition(
 
 /**
  * Holds the one deployment-authority lock while a caller coordinates a complete
- * owner transition. The callback receives the only mutation capability so it
- * cannot accidentally acquire a second lock for the same record.
+ * owner transition. The callback receives the only mutation capability and an
+ * inheritable lease descriptor, so an exact child finalizer can keep the same
+ * authority serialized if its parent exits.
  */
 export async function withLocalHostDeploymentAuthority<T>(
   rootId: string,
-  operation: (authority: LocalHostDeploymentAuthority) => Promise<T>,
+  operation: (authority: LocalHostDeploymentAuthority, inheritableLeaseFd: number) => Promise<T>,
   options: LocalHostDeploymentAuthorityOptions = {},
 ): Promise<T> {
   assertRootId(rootId);
@@ -339,7 +340,7 @@ export async function withLocalHostDeploymentAuthority<T>(
   try {
     return await withProcessLifetimeFileUpdateLock(
       path,
-      async () => {
+      async (inheritableLeaseFd) => {
         await removeAbandonedRecordWorkspaces(authorityRoot, rootId, options);
         const authority: LocalHostDeploymentAuthority = {
           read: () => readRecord(path, rootId),
@@ -357,7 +358,7 @@ export async function withLocalHostDeploymentAuthority<T>(
             return result;
           },
         };
-        return operation(authority);
+        return operation(authority, inheritableLeaseFd);
       },
       AUTHORITY_LOCK_TIMEOUT_MS,
     );

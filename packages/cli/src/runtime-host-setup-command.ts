@@ -17,13 +17,23 @@
  * under the License.
  */
 
-import { join } from 'node:path';
+import { randomUUID } from 'node:crypto';
+import { homedir } from 'node:os';
+import { join, resolve } from 'node:path';
+import { isDeepStrictEqual } from 'node:util';
 import { truncateUtf8 } from '@maka/core/diagnostic-log';
-import { connectRemoteRuntimeHost } from '@maka/runtime-host/client';
 import {
+  activateRuntimeHostManagedDeployment,
+  connectRemoteRuntimeHost,
+} from '@maka/runtime-host/client';
+import {
+  commitRuntimeHostManagedDeployment,
+  readRuntimeHostManagedDeploymentConfig,
+  RuntimeHostManagedDeploymentError as RuntimeHostDeploymentAuthorityError,
   encodeRuntimeHostSetupFrame,
   RUNTIME_HOST_SETUP_ERROR_CODE_MAX_BYTES,
   RUNTIME_HOST_SETUP_ERROR_MESSAGE_MAX_BYTES,
+  type RuntimeHostManagedDeploymentConfig,
   type RuntimeHostSetupFrame,
   type RuntimeHostSetupPhase,
 } from '@maka/runtime-host/operator';
@@ -42,11 +52,25 @@ import {
   isRuntimeHostDevelopmentPackageVersion,
   openRuntimeHostManagedPackageDeployment,
   prepareRuntimeHostManagedPackageDeployment,
+  removeRuntimeHostManagedDeployment,
+  resolveRuntimeHostManagedPackageCliPath,
+  resolveRuntimeHostManagedDeploymentRoot,
   RuntimeHostManagedDeploymentError,
 } from './runtime-host-managed-deployment.js';
+import {
+  RuntimeHostUpdatePackageError,
+  withRuntimeHostRegistryUpdatePackage,
+} from './runtime-host-update-package.js';
+import {
+  resolveRuntimeHostRegistryUpdateCandidate,
+  RuntimeHostUpdateDiscoveryError,
+} from './runtime-host-update-discovery.js';
+import { resolveStorageRoot, tryAcquireStateRootOwner } from '@maka/storage/root-authority';
 import { createPlatformRuntimeHostServiceBackend } from './runtime-host-service-management-command.js';
 import {
   manageRuntimeHostService,
+  readRuntimeHostManagedServiceConfig,
+  resolveRuntimeHostManagedServiceConfigPath,
   resolveRuntimeHostManagedServiceId,
   RuntimeHostServiceManagerError,
   withRuntimeHostManagedServiceDeploymentLock,
@@ -67,6 +91,7 @@ export interface RuntimeHostSetupCliOptions {
   readonly version: string;
   readonly principalId: string;
   readonly preset: RuntimeHostAccessPreset;
+  readonly lifecycle?: 'supervised' | 'on_demand';
   readonly deferPairingCommit?: boolean;
   readonly bindPairingToClient?: boolean;
   readonly rootPath?: string;
@@ -88,6 +113,9 @@ interface RuntimeHostSetupDeps {
   readonly replaceCredential: typeof replaceRuntimeHostAccessCredential;
   readonly revokeCredential: typeof revokeRuntimeHostAccessCredential;
   readonly verifyCredential: typeof verifyRuntimeHostSetupCredential;
+  readonly activateManaged: typeof activateRuntimeHostManagedDeployment;
+  readonly resolveRegistryCandidate: typeof resolveRuntimeHostRegistryUpdateCandidate;
+  readonly withRegistryPackage: typeof withRuntimeHostRegistryUpdatePackage;
   readonly writeOutput: (value: string) => unknown;
   readonly writeError: (value: string) => unknown;
 }
@@ -116,6 +144,9 @@ export async function runRuntimeHostSetupCli(
     replaceCredential: replaceRuntimeHostAccessCredential,
     revokeCredential: revokeRuntimeHostAccessCredential,
     verifyCredential: verifyRuntimeHostSetupCredential,
+    activateManaged: activateRuntimeHostManagedDeployment,
+    resolveRegistryCandidate: resolveRuntimeHostRegistryUpdateCandidate,
+    withRegistryPackage: withRuntimeHostRegistryUpdatePackage,
     writeOutput: (value) => process.stdout.write(value),
     writeError: (value) => process.stderr.write(value),
     ...overrides,
@@ -145,6 +176,10 @@ async function runRuntimeHostSetupLocked(
   deps: RuntimeHostSetupDeps,
   emit: SetupEmitter,
 ): Promise<void> {
+  if (options.lifecycle === 'on_demand') {
+    await runRuntimeHostOnDemandSetupLocked(options, deps, emit);
+    return;
+  }
   emit({ kind: 'progress', phase: 'checking_environment' });
   const serviceId = resolveRuntimeHostManagedServiceId(options.clientDataRoot);
   const backend = deps.createBackend(serviceId, options.clientDataRoot);
@@ -217,6 +252,199 @@ async function runRuntimeHostSetupLocked(
   await deployment.activate();
   await deployment.cleanup();
 
+  await pairAndVerifyRuntimeHostSetup(
+    options,
+    {
+      serviceId,
+      operatorPath: deployment.operatorPath,
+      rootPath: config.rootPath,
+      endpoint: websocketUrl(config.websocket),
+      ...(config.peer?.enabled
+        ? {
+            directPeer: {
+              peerId: config.peer.peerId,
+              routeHints: expandWildcardListenAddresses(config.peer.listenAddresses),
+              coordinationRelays: [...config.peer.coordinationRelays],
+            },
+          }
+        : {}),
+    },
+    deps,
+    emit,
+  );
+}
+
+async function runRuntimeHostOnDemandSetupLocked(
+  options: RuntimeHostSetupCliOptions,
+  deps: RuntimeHostSetupDeps,
+  emit: SetupEmitter,
+): Promise<void> {
+  if (options.expectedTarget) {
+    throw new RuntimeHostSetupError(
+      'lifecycle_owner_exists',
+      'On-demand setup cannot replace an existing managed service',
+    );
+  }
+  if (options.directPeer) {
+    throw new RuntimeHostSetupError(
+      'unsupported_lifecycle_configuration',
+      'On-demand setup does not support a Direct peer listener',
+    );
+  }
+  try {
+    await readRuntimeHostManagedServiceConfig(
+      resolveRuntimeHostManagedServiceConfigPath(options.clientDataRoot),
+    );
+    throw new RuntimeHostSetupError(
+      'lifecycle_owner_exists',
+      'Remove or migrate the existing managed Runtime Host service before on-demand setup',
+    );
+  } catch (error) {
+    if (!(error instanceof RuntimeHostServiceManagerError) || error.code !== 'not_installed') {
+      throw error;
+    }
+  }
+  emit({ kind: 'progress', phase: 'checking_environment' });
+  const capability = await resolveStorageRoot({
+    path: resolve(options.rootPath ?? options.defaultRootPath),
+    kind: 'interactive',
+  });
+  const candidate = await deps.resolveRegistryCandidate({
+    kind: 'exact',
+    version: options.version,
+  });
+  const serviceId = capability.rootId;
+  const deploymentRoot = resolveRuntimeHostManagedDeploymentRoot(serviceId);
+  let config: RuntimeHostManagedDeploymentConfig = {
+    schemaVersion: 1,
+    deploymentId: randomUUID(),
+    configRevision: 1,
+    deploymentRoot,
+    root: { path: capability.canonicalPath, id: capability.rootId },
+    projectDirectoryRoots: options.projectDirectoryRoots?.map(({ label, path }) => ({
+      label,
+      path: resolve(path),
+    })) ?? [{ label: '~', path: resolve(homedir()) }],
+    launch: {
+      kind: 'exact_package',
+      nodePath: process.execPath,
+      package: {
+        kind: 'npm_registry',
+        version: candidate.version,
+        integrity: candidate.integrity,
+      },
+    },
+    listeners: {
+      localIpc: true,
+      websocket: {
+        host: '127.0.0.1',
+        port: options.websocketPort ?? 0,
+        path: options.websocketPath ?? '/runtime-host',
+      },
+    },
+    lifecycle: { mode: 'on_demand', availability: 'activation' },
+    reconciliation: { trigger: 'manual' },
+  };
+  let operatorPath: string | undefined;
+  await deps.withRegistryPackage(candidate, async (packageRoot) => {
+    const owner = await tryAcquireStateRootOwner(capability);
+    if (!owner) {
+      throw new RuntimeHostSetupError(
+        'state_root_owned',
+        'The State Root must be idle before on-demand setup',
+      );
+    }
+    let committed = false;
+    let created = false;
+    try {
+      emit({ kind: 'progress', phase: 'installing_package' });
+      const existing = await readRuntimeHostManagedDeploymentConfig(capability);
+      if (existing && !sameDesiredOnDemandDeployment(existing, config)) {
+        throw new RuntimeHostSetupError(
+          'lifecycle_owner_exists',
+          'The State Root already has a different managed deployment',
+        );
+      }
+      if (existing) config = existing;
+      created = !existing;
+      const deployment = existing
+        ? await deps.openDeployment({
+            serviceId,
+            clientDataRoot: options.clientDataRoot,
+            deploymentRoot,
+            cliPath: resolveRuntimeHostManagedPackageCliPath(
+              deploymentRoot,
+              candidate.version,
+              candidate.integrity,
+            ),
+            version: candidate.version,
+          })
+        : await deps.prepareDeployment({
+            serviceId,
+            clientDataRoot: options.clientDataRoot,
+            sourcePackageRoot: packageRoot,
+            version: candidate.version,
+            packageIntegrity: candidate.integrity,
+          });
+      operatorPath = deployment.operatorPath;
+      emit({ kind: 'progress', phase: 'installing_service' });
+      await deployment.activate();
+      await commitRuntimeHostManagedDeployment(owner, config);
+      committed = true;
+      await deployment.cleanup();
+    } catch (error) {
+      if (
+        created &&
+        !committed &&
+        !(
+          error instanceof RuntimeHostDeploymentAuthorityError &&
+          error.code === 'deployment_commit_unknown'
+        )
+      ) {
+        await removeRuntimeHostManagedDeployment(deploymentRoot, serviceId).catch(() => undefined);
+      }
+      throw error;
+    } finally {
+      await owner.close();
+    }
+  });
+  if (!operatorPath)
+    throw new RuntimeHostSetupError('deployment_failed', 'Setup did not install an operator');
+
+  const activation = await deps.activateManaged({ rootId: capability.rootId });
+  await pairAndVerifyRuntimeHostSetup(
+    options,
+    {
+      serviceId,
+      operatorPath,
+      rootPath: capability.canonicalPath,
+      endpoint: websocketUrl({
+        host: activation.endpoint.host,
+        port: activation.endpoint.port,
+        path: activation.endpoint.websocketPath,
+      }),
+    },
+    deps,
+    emit,
+  );
+}
+
+async function pairAndVerifyRuntimeHostSetup(
+  options: RuntimeHostSetupCliOptions,
+  target: {
+    readonly serviceId: string;
+    readonly operatorPath: string;
+    readonly rootPath: string;
+    readonly endpoint: string;
+    readonly directPeer?: {
+      readonly peerId: string;
+      readonly routeHints: readonly string[];
+      readonly coordinationRelays: readonly string[];
+    };
+  },
+  deps: RuntimeHostSetupDeps,
+  emit: SetupEmitter,
+): Promise<void> {
   emit({ kind: 'progress', phase: 'pairing_client' });
   let paired: Awaited<ReturnType<typeof prepareRuntimeHostAccessCredential>>;
   try {
@@ -224,7 +452,7 @@ async function runRuntimeHostSetupLocked(
       ? deps.prepareCredential
       : deps.replaceCredential;
     paired = await pairCredential({
-      rootPath: config.rootPath,
+      rootPath: target.rootPath,
       principalKind: 'remote_owner',
       principalId: options.principalId,
       operationGrants: [],
@@ -241,30 +469,29 @@ async function runRuntimeHostSetupLocked(
     );
   }
 
-  const endpoint = websocketUrl(config.websocket);
   emit({ kind: 'progress', phase: 'verifying_connection' });
   try {
     await deps.verifyCredential({
-      endpoint,
+      endpoint: target.endpoint,
       rootId: paired.rootId,
       credential: paired.credential,
     });
     emit({
       kind: 'complete',
       version: options.version,
-      serviceId,
-      operatorPath: deployment.operatorPath,
-      rootPath: config.rootPath,
+      serviceId: target.serviceId,
+      operatorPath: target.operatorPath,
+      rootPath: target.rootPath,
       rootId: paired.rootId,
-      endpoint,
+      endpoint: target.endpoint,
       credentialId: paired.credentialId,
       credential: paired.credential,
-      ...(config.peer?.enabled
+      ...(target.directPeer
         ? {
             directPeer: {
-              peerId: config.peer.peerId,
-              routeHints: expandWildcardListenAddresses(config.peer.listenAddresses),
-              coordinationRelays: [...config.peer.coordinationRelays],
+              peerId: target.directPeer.peerId,
+              routeHints: [...target.directPeer.routeHints],
+              coordinationRelays: [...target.directPeer.coordinationRelays],
             },
           }
         : {}),
@@ -273,7 +500,7 @@ async function runRuntimeHostSetupLocked(
     if (options.deferPairingCommit) {
       try {
         await deps.revokeCredential({
-          rootPath: config.rootPath,
+          rootPath: target.rootPath,
           credentialId: paired.credentialId,
         });
       } catch (rollbackError) {
@@ -285,6 +512,15 @@ async function runRuntimeHostSetupLocked(
     }
     throw error;
   }
+}
+
+function sameDesiredOnDemandDeployment(
+  current: RuntimeHostManagedDeploymentConfig,
+  requested: RuntimeHostManagedDeploymentConfig,
+): boolean {
+  const { deploymentId: _currentId, ...currentDesiredState } = current;
+  const { deploymentId: _requestedId, ...requestedDesiredState } = requested;
+  return isDeepStrictEqual(currentDesiredState, requestedDesiredState);
 }
 
 function currentManagedPackage(
@@ -409,7 +645,10 @@ function setupFailure(error: unknown): { code: string; message: string } {
   if (
     error instanceof RuntimeHostSetupError ||
     error instanceof RuntimeHostServiceManagerError ||
-    error instanceof RuntimeHostManagedDeploymentError
+    error instanceof RuntimeHostManagedDeploymentError ||
+    error instanceof RuntimeHostDeploymentAuthorityError ||
+    error instanceof RuntimeHostUpdateDiscoveryError ||
+    error instanceof RuntimeHostUpdatePackageError
   ) {
     code = error.code;
     message = error.message;
@@ -437,7 +676,7 @@ function humanPhase(phase: RuntimeHostSetupPhase): string {
     case 'installing_package':
       return 'Installing the managed Maka package...';
     case 'installing_service':
-      return 'Installing the Runtime Host service...';
+      return 'Installing the Runtime Host deployment...';
     case 'pairing_client':
       return 'Pairing the Client...';
     case 'verifying_connection':

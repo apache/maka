@@ -18,92 +18,157 @@
  */
 
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import test from 'node:test';
-import {
-  assertDraftProductRelease,
-  verifyDraftProductRelease,
-} from './product-release-authority.mjs';
+import { publishDraftProductRelease } from './product-release-authority.mjs';
+import { createProductReleasePublicationRecord } from './product-release-artifacts.mjs';
 
-test('Draft state and prerelease classification are one product Release contract', () => {
-  for (const [tag, isPrerelease] of [
-    ['v1.2.3', false],
-    ['v1.2.3-beta.1', true],
-  ]) {
-    assert.equal(
-      assertDraftProductRelease({ tagName: tag, isDraft: true, isPrerelease }, tag).tagName,
-      tag,
-    );
-  }
-  assert.throws(
-    () =>
-      assertDraftProductRelease(
-        { tagName: 'v1.2.3', isDraft: false, isPrerelease: false },
-        'v1.2.3',
-      ),
-    /must remain a Draft/u,
-  );
-  assert.throws(
-    () =>
-      assertDraftProductRelease(
-        { tagName: 'v1.2.3-beta.1', isDraft: true, isPrerelease: false },
-        'v1.2.3-beta.1',
-      ),
-    /prerelease state must be true/u,
-  );
-});
+function updateMetadata(version, artifactName, bytes) {
+  const sha512 = createHash('sha512').update(bytes).digest('base64');
+  return [
+    `version: ${version}`,
+    'files:',
+    `  - url: ${artifactName}`,
+    `    sha512: ${sha512}`,
+    `    size: ${bytes.length}`,
+    `path: ${artifactName}`,
+    `sha512: ${sha512}`,
+    '',
+  ].join('\n');
+}
 
-test('the live authority verifier binds the tag, main ancestry, and Draft Release', async () => {
+test('publication verifies live asset digests before one Stable/Latest mutation', async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), 'maka-publish-authority-'));
+  const recordDirectory = await mkdtemp(join(tmpdir(), 'maka-publish-record-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  t.after(() => rm(recordDirectory, { recursive: true, force: true }));
+  const version = '1.2.3';
+  const macZip = `Maka-${version}-mac-arm64.zip`;
+  const exe = `Maka-${version}-win-x64.exe`;
+  const macBytes = Buffer.from('mac application');
+  const windowsBytes = Buffer.from('windows application');
+  const names = [
+    macZip,
+    `${macZip}.blockmap`,
+    'latest-mac.yml',
+    exe,
+    `${exe}.blockmap`,
+    'latest.yml',
+  ];
+  await Promise.all([
+    writeFile(join(directory, macZip), macBytes),
+    writeFile(join(directory, `${macZip}.blockmap`), 'mac blockmap'),
+    writeFile(join(directory, 'latest-mac.yml'), updateMetadata(version, macZip, macBytes)),
+    writeFile(join(directory, exe), windowsBytes),
+    writeFile(join(directory, `${exe}.blockmap`), 'windows blockmap'),
+    writeFile(join(directory, 'latest.yml'), updateMetadata(version, exe, windowsBytes)),
+  ]);
   const sourceCommit = 'a'.repeat(40);
+  const record = await createProductReleasePublicationRecord({
+    artifactDirectory: directory,
+    identity: {
+      version,
+      isPrerelease: false,
+      tag: `v${version}`,
+      sourceReferenceTag: `v${version}-incubating-rc1`,
+      sourceCommit,
+      exe,
+      artifacts: { test: names },
+    },
+    repository: 'apache/maka',
+    runId: '123',
+    runAttempt: '2',
+  });
+  const attestationContents = Buffer.from('sigstore bundle');
+  const attestationBundlePath = join(recordDirectory, 'Maka-1.2.3-attestation.sigstore.json');
+  await writeFile(attestationBundlePath, attestationContents);
+  const attestation = {
+    name: 'Maka-1.2.3-attestation.sigstore.json',
+    size: attestationContents.length,
+    digest: `sha256:${createHash('sha256').update(attestationContents).digest('hex')}`,
+  };
+  const publicationRecordPath = join(recordDirectory, 'product-release.json');
+  await writeFile(publicationRecordPath, `${JSON.stringify(record)}\n`);
   const calls = [];
+  let latestReads = 0;
+  let attestationUploaded = false;
   const run = async (command, args) => {
     calls.push([command, args]);
-    if (args[0] === 'ls-remote') {
+    if (command === 'git' && args[0] === 'ls-remote') {
       return { stdout: `${sourceCommit}\trefs/tags/v1.2.3\n` };
     }
-    if (command === 'gh') {
+    if (command === 'gh' && args[0] === 'release' && args[1] === 'upload') {
+      attestationUploaded = true;
+      return { stdout: '' };
+    }
+    if (command === 'gh' && args[0] === 'release') {
       return {
         stdout: JSON.stringify({
+          databaseId: 42,
           tagName: 'v1.2.3',
           isDraft: true,
           isPrerelease: false,
+          assets: [...record.assets, ...(attestationUploaded ? [attestation] : [])],
         }),
       };
+    }
+    if (command === 'gh' && args.includes('PATCH')) {
+      return {
+        stdout: JSON.stringify({
+          id: 42,
+          tag_name: 'v1.2.3',
+          draft: false,
+          prerelease: false,
+          assets: [...record.assets, attestation],
+        }),
+      };
+    }
+    if (command === 'gh' && args.includes('repos/apache/maka/releases/latest')) {
+      latestReads += 1;
+      return { stdout: JSON.stringify({ tag_name: latestReads === 1 ? 'v1.2.2' : 'v1.2.3' }) };
     }
     return { stdout: '' };
   };
 
-  await verifyDraftProductRelease({
+  const publication = {
     tag: 'v1.2.3',
     sourceCommit,
     repository: 'apache/maka',
+    artifactDirectory: directory,
+    publicationRecordPath,
+    sourceReferenceTag: 'v1.2.3-incubating-rc1',
+    releaseRunId: '123',
+    releaseRunAttempt: '2',
+    attestationBundlePath,
+    pause: async () => {},
+  };
+  await writeFile(join(directory, macZip), 'tampered mac application');
+  await assert.rejects(
+    publishDraftProductRelease({
+      ...publication,
+      run: async () => {
+        throw new Error('network must not be reached for invalid local evidence');
+      },
+    }),
+    /do not match the immutable publication record/u,
+  );
+  await writeFile(join(directory, macZip), macBytes);
+
+  await publishDraftProductRelease({
+    ...publication,
     run,
   });
 
-  assert.deepEqual(
-    calls.map(([command, args]) => [command, args[0]]),
-    [
-      ['git', 'ls-remote'],
-      ['git', 'fetch'],
-      ['git', 'merge-base'],
-      ['gh', 'release'],
-    ],
-  );
-  assert.deepEqual(calls.at(-1)[1].slice(-2), ['--json', 'tagName,isDraft,isPrerelease']);
-});
-
-test('the live authority verifier rejects product tag drift before later checks', async () => {
-  const calls = [];
-  await assert.rejects(
-    verifyDraftProductRelease({
-      tag: 'v1.2.3',
-      sourceCommit: 'a'.repeat(40),
-      repository: 'apache/maka',
-      run: async (command, args) => {
-        calls.push([command, args]);
-        return { stdout: `${'b'.repeat(40)}\trefs/tags/v1.2.3\n` };
-      },
-    }),
-    /points to .* instead of/u,
-  );
-  assert.equal(calls.length, 1);
+  const patchCall = calls.find(([, args]) => args.includes('PATCH'));
+  assert.ok(patchCall);
+  assert.ok(patchCall[1].includes('draft=false'));
+  assert.ok(patchCall[1].includes('prerelease=false'));
+  assert.ok(patchCall[1].includes('make_latest=true'));
+  const uploadCall = calls.find(([, args]) => args[0] === 'release' && args[1] === 'upload');
+  assert.ok(uploadCall);
+  assert.ok(calls.indexOf(uploadCall) < calls.indexOf(patchCall));
+  assert.equal(latestReads, 2);
 });

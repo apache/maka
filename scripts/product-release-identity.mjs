@@ -68,6 +68,10 @@ export function parseAsfSourceReferenceTag(tag) {
 
 export function resolveProductManifestIdentity({ rootManifest, desktopManifest, cliManifest }) {
   const { version, prerelease } = parseProductReleaseVersion(rootManifest.version);
+  const channel = prerelease[0];
+  if (channel !== undefined && channel !== 'alpha' && channel !== 'beta') {
+    throw new Error('Product prerelease channel must be alpha or beta');
+  }
   for (const [label, manifest] of [
     ['Desktop', desktopManifest],
     ['CLI', cliManifest],

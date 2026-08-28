@@ -497,7 +497,25 @@ sequenceDiagram
   end
 ```
 
-CLI/TUI 的 `/resume` 走同一个 `SessionManager` plan/execute seam，只是把 park 作为命令错误展示。Desktop startup auto-resume 也复用同一 planner 和 execution path，不维护第三套恢复逻辑。
+CLI/TUI 的 `/resume` 走同一个 `SessionManager` plan/execute seam。Desktop startup auto-resume 也复用同一 planner 和 execution path，不维护第三套恢复逻辑。
+
+### 当前的 parked 原因边界
+
+Runtime Host 负责把 Runtime planner 的 rejection reasons 投影成封闭的
+`TurnResumeParkReason` wire union；CLI 不能重新推断 Host 内部状态。当前 Host 会保留三种容易混淆的原因：
+
+- `resume_feature_disabled`：feature flag 未开启；
+- `continuation_authority_unavailable`：Host 无法取得 continuation authority；
+- `safety_observation_unavailable`：Host 无法取得安全观测事实。
+
+旧的 `continuation_unavailable` 不再出现在当前 wire contract 中。`/resume` driver 通过
+`SafeBoundaryResumeParkedError` 原样携带原因，TUI 只把预期的用户状态显示为普通提示：
+`resume_feature_disabled`、`resume_candidate_missing` 和 `session_busy`。authority、safety
+以及其他恢复失败仍显示为红色错误，并保留原始 reason 供诊断。
+
+这是不兼容的封闭协议变更，因此 Runtime Host compatibility epoch 推进到 57；旧 Client/Host
+组合会在握手阶段被拒绝，而不是把新的 failure reason 误判成“功能未开启”。这次变更只修正
+Host 投影和 CLI 展示，不改变 planner、durable continuation claim 或 feature flag 的 owner。
 
 ## 为什么 Continuation 不复制原用户消息
 

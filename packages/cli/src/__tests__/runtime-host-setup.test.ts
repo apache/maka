@@ -37,8 +37,13 @@ import { promisify } from 'node:util';
 import {
   decodeRuntimeHostSetupFrame,
   encodeRuntimeHostSetupFrame,
+  resolveRuntimeHostManagedDeploymentConfigPath,
   RUNTIME_HOST_SETUP_FRAME_PREFIX,
 } from '@maka/runtime-host/operator';
+import {
+  resolveRootControlNamespace,
+  resolveRootOwnershipNamespace,
+} from '@maka/storage/root-authority';
 import {
   prepareRuntimeHostManagedPackageDeployment,
   resolveRuntimeHostManagedDeploymentRoot,
@@ -54,6 +59,122 @@ import {
 
 const execFile = promisify(execFileCallback);
 const PACKAGE_INTEGRITY = `sha512-${Buffer.alloc(64, 7).toString('base64')}`;
+
+test('on-demand setup installs one exact deployment without a service backend', async (t) => {
+  const base = await mkdtemp(join(tmpdir(), 'maka-runtime-host-on-demand-setup-'));
+  const stateRoot = join(base, 'state');
+  const clientDataRoot = join(base, 'client');
+  const outputs: string[] = [];
+  let rootId = '';
+  let prepareCount = 0;
+  t.after(async () => {
+    await Promise.all([
+      rm(base, { recursive: true, force: true }),
+      rootId
+        ? rm(dirname(resolveRuntimeHostManagedDeploymentConfigPath(rootId)), {
+            recursive: true,
+            force: true,
+          })
+        : Promise.resolve(),
+      rootId
+        ? rm(join(resolveRootControlNamespace(), rootId), { recursive: true, force: true })
+        : Promise.resolve(),
+      rootId
+        ? rm(join(resolveRootOwnershipNamespace(), `${rootId}.lock`), { force: true })
+        : Promise.resolve(),
+    ]);
+  });
+
+  const options = {
+    json: true,
+    lifecycle: 'on_demand',
+    clientDataRoot,
+    defaultRootPath: stateRoot,
+    sourcePackageRoot: base,
+    version: '1.2.3',
+    principalId: 'desktop:client-1',
+    preset: 'desktop-client',
+  } as const;
+  const deployment = (serviceId: string) => ({
+    version: '1.2.3',
+    root: resolveRuntimeHostManagedDeploymentRoot(serviceId),
+    cliPath: '/verified/package/dist/cli.js',
+    operatorPath: '/opt/maka/operator',
+    activate: async () => undefined,
+    cleanup: async () => undefined,
+    rollback: async () => undefined,
+  });
+  const overrides = {
+    createBackend: () => assert.fail('on-demand setup must not create a service backend'),
+    manageService: async () => assert.fail('on-demand setup must not manage a service'),
+    resolveRegistryCandidate: async () => ({
+      kind: 'npm_registry',
+      version: '1.2.3',
+      integrity: PACKAGE_INTEGRITY,
+    }),
+    withRegistryPackage: async (_candidate, use) => use('/verified/package'),
+    prepareDeployment: async (input) => {
+      prepareCount += 1;
+      return deployment(input.serviceId);
+    },
+    activateManaged: async (input) => {
+      rootId = input.rootId;
+      return {
+        schemaVersion: 1,
+        kind: 'result',
+        deploymentId: `${rootId.slice(0, 8)}-${rootId.slice(8, 12)}-4${rootId.slice(13, 16)}-8${rootId.slice(17, 20)}-${rootId.slice(20, 32)}`,
+        configRevision: 1,
+        rootId,
+        hostEpoch: 'host-epoch',
+        pid: 1234,
+        protocolVersion: 1,
+        endpoint: { host: '127.0.0.1', port: 43_210, websocketPath: '/runtime-host' },
+      };
+    },
+    replaceCredential: async () => ({
+      rootId,
+      credential: 'secret-token',
+      credentialId: 'credential-1',
+      principalKind: 'remote_owner' as const,
+      principalId: 'desktop:client-1',
+      operationGrants: [] as const,
+      canPublishClientCapabilities: false,
+      canUseHostPaths: false,
+    }),
+    verifyCredential: async ({ endpoint, rootId: expectedRootId }) => {
+      assert.equal(endpoint, 'ws://127.0.0.1:43210/runtime-host');
+      assert.equal(expectedRootId, rootId);
+    },
+    writeOutput: (value) => outputs.push(value),
+  } satisfies NonNullable<Parameters<typeof runRuntimeHostSetupCli>[1]>;
+  assert.equal(await runRuntimeHostSetupCli(options, overrides), 0);
+  assert.equal(prepareCount, 1);
+  const complete = outputs
+    .map(decodeRuntimeHostSetupFrame)
+    .find((frame) => frame?.kind === 'complete');
+  assert.equal(complete?.kind, 'complete');
+  const persisted = JSON.parse(
+    await readFile(resolveRuntimeHostManagedDeploymentConfigPath(rootId), 'utf8'),
+  ) as { lifecycle: { mode: string }; listeners: { websocket: { port: number } } };
+  assert.equal(persisted.lifecycle.mode, 'on_demand');
+  assert.equal(persisted.listeners.websocket.port, 0);
+
+  const rejected: string[] = [];
+  assert.equal(
+    await runRuntimeHostSetupCli(
+      { ...options, directPeer: { coordinationRelays: [] } },
+      { ...overrides, writeOutput: (value) => rejected.push(value) },
+    ),
+    1,
+  );
+  const failure = rejected
+    .map(decodeRuntimeHostSetupFrame)
+    .find((frame) => frame?.kind === 'error');
+  assert.equal(
+    failure?.kind === 'error' ? failure.error.code : undefined,
+    'unsupported_lifecycle_configuration',
+  );
+});
 
 test('managed setup converges on one exact package and verified Client pairing', async (t) => {
   const base = await mkdtemp(join(tmpdir(), 'maka-runtime-host-setup-'));
@@ -539,6 +660,17 @@ test('managed operator binds its Client Data Root and routes deployment cleanup'
     '--root',
     '/runtime-root',
     '--framed',
+  ]);
+
+  await execFile(deployment.operatorPath, ['activate', '--framed', '--root-id', 'a'.repeat(64)], {
+    env: { ...process.env, MAKA_TEST_OUTPUT: invocationPath },
+  });
+  assert.deepEqual(JSON.parse(await readFile(invocationPath, 'utf8')), [
+    'runtime-host',
+    'activate',
+    '--framed',
+    '--root-id',
+    'a'.repeat(64),
   ]);
 
   await execFile(

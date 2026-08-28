@@ -19,9 +19,10 @@
 
 # Product release checklist
 
-The `Release` workflow is Maka's convenience-artifact release entry point. Desktop and CLI/TUI are
+The IPMC-approved source archive on ASF distribution infrastructure is the Apache release. The
+`Release` workflow is Maka's convenience-artifact distribution entry point. Desktop and CLI/TUI are
 built from the exact IPMC-approved ASF source candidate commit. They share that source commit, the
-root product version, one convenience tag, one GitHub Release, one Draft decision, and one release
+root product version, one convenience tag, one GitHub Release, one Draft decision, and one distribution
 gate. The workflow creates no Draft until every required artifact job succeeds.
 
 Phase 1 requires:
@@ -31,7 +32,7 @@ Phase 1 requires:
 - the signed, notarized, relocatable Apple Silicon CLI/TUI ZIP;
 - checksums generated after each artifact reaches its final form.
 
-The ASF Desktop artifacts must not contain a Git runtime, a bundled-Git manifest, or Git/Dugite
+The convenience Desktop artifacts must not contain a Git runtime, a bundled-Git manifest, or Git/Dugite
 redistribution notices. Managed-workspace execution remains unavailable until a separately reviewed,
 ASF-compatible verified runtime is connected before admission/T1.
 
@@ -60,10 +61,13 @@ must never be exposed to fork or ordinary pull-request jobs.
 Before the first product release, confirm the checked-in `.asf.yaml` has reconciled the live repository:
 
 - the `Immutable release tags` ruleset blocks updates, force-pushes, and deletions of `v*` tags;
-- the `release` and `npm-release` Environments accept only their declared tag patterns and require a reviewer other than the triggering user;
-- enable immutable releases so assets and the associated tag cannot change after publication.
+- the `release` and `npm-release` Environments accept only their declared tag patterns,
+  `product-release` accepts only `main`, and each requires a reviewer other than the triggering user.
 
-These controls close the check-to-upload and check-to-stage windows. Keep the Release in Draft while assets and acceptance are incomplete; publishing early must make subsequent mutation fail closed.
+These controls close the check-to-upload and check-to-stage windows. Finalize uses GitHub Actions
+OIDC rather than a stored signing key to attest every convenience artifact. Keep the Release in
+Draft while assets and acceptance are incomplete; Desktop rejects downloaded updates whose exact
+bytes and expected filename are not covered by that protected workflow identity.
 
 ## Create the complete Draft
 
@@ -106,17 +110,21 @@ then rerun. If only the tag exists, the retry creates the missing Draft.
 
 Follow [the npm release runbook](../docs/cli-npm-release.md) against the exact product tag and Draft:
 
-1. Run **Stage CLI npm release** from `v<version>` and record its successful run ID and attempt.
+1. Record the successful **Release** workflow run ID and attempt that built the Draft assets. Run
+   **Stage CLI npm release** from `v<version>` and record its successful run ID and attempt.
 2. Inspect the staged tarball and provenance, then approve that exact stage with npm 2FA.
-3. Run **Finalize CLI npm channel** from `main` and confirm it verifies the public package bytes,
-   provenance, signature, and release dist-tag.
+3. Run **Finalize product release** from `main`. Its first job verifies the public package
+   bytes, provenance, signature, and release dist-tag.
 4. Install the exact public version on each release platform and complete the npm acceptance steps.
 
-Keep the GitHub Release in Draft throughout this sequence. A failed or rejected npm candidate
-requires a new product version; never publish the Draft to work around npm state.
-
-When every npm and cross-machine acceptance check has passed, publish the Draft. Mark a stable
-release as Latest at that final publication boundary; prereleases must remain non-Latest.
+Keep the GitHub Release in Draft throughout this sequence. The final workflow job waits at the
+`product-release` Environment. Approve it only after every npm and cross-machine acceptance check
+has passed. It verifies the live Draft digests against the immutable publication record from the
+exact successful Release run, creates Sigstore provenance and an offline
+`Maka-<version>-attestation.sigstore.json` bundle, then publishes the convenience Release and makes a
+stable release Latest in the same GitHub operation; prereleases remain non-Latest. Do not publish or
+change the Latest designation manually. A failed or rejected npm candidate requires a new product
+version; never publish the Draft to work around npm state.
 
 ## Acceptance on another Apple Silicon Mac
 
@@ -155,8 +163,20 @@ Download the installer, Windows Desktop ZIP, and both checksum files through a b
 7. Add a clean remote Runtime Host from the packaged Desktop app. Confirm setup installs the exact
    public `maka-agent@<version>` package and the remote session completes one model turn.
 
-Immediately before publication, reverify that the approved ASF candidate tag and convenience
-`v<version>` tag still resolve to the same recorded commit. Publish only after npm Finalize and both
-independent-machine acceptance passes. If any required artifact, npm step, or
+Immediately before approving the `product-release` Environment, reverify that the approved ASF
+candidate tag and convenience `v<version>` tag still resolve to the same recorded commit. Approve
+only after npm verification and both independent-machine acceptance passes. If any required artifact, npm step, or
 acceptance step fails, keep the Draft unpublished, fix the issue, increment the root product
 version, and run the full workflow again. Never replace an existing release identity.
+
+After Finalize publishes the convenience Release, download its attestation bundle and verify each
+installer or archive independently:
+
+```sh
+gh attestation verify path/to/Maka-<version>-mac-arm64.zip \
+  --bundle path/to/Maka-<version>-attestation.sigstore.json \
+  --repo apache/maka \
+  --signer-workflow apache/maka/.github/workflows/release-cli-finalize.yml
+```
+
+Desktop performs the same trust decision before exposing a downloaded update for installation.

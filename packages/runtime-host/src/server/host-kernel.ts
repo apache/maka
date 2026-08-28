@@ -949,6 +949,9 @@ export class RuntimeHostKernel {
       rootId: this.#options.owner.capability.rootId,
       hostEpoch: this.hostEpoch,
       endpoint: this.endpoint,
+      ...(this.websocketEndpoints.length === 0
+        ? {}
+        : { websocketEndpoints: this.websocketEndpoints }),
       protocolMin: HOST_PROTOCOL.min,
       protocolMax: HOST_PROTOCOL.max,
       compatibilityEpoch: RUNTIME_HOST_COMPATIBILITY_EPOCH,

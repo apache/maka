@@ -106,13 +106,16 @@ modify.
 While using prereleases, keep the `next` tag explicit:
 
 ```sh
-npm install --global maka-agent@next
+maka update --target next
 maka --version
 ```
 
-Do not use a bare `npm update --global maka-agent` for beta upgrades: global npm updates follow the
-`latest` tag and may select a different release line. After a stable release is available, install it
-with `npm install --global maka-agent@latest`.
+The update stages and verifies the exact release before replacing the local Runtime Host or the
+npm-global package. It refuses to interrupt active or durable work by default. Use
+`--allow-interrupt-active-tasks` only after deciding that interruption is safe. A direct
+`npm install --global maka-agent@next` remains available for installation repair; do not use a bare
+`npm update --global maka-agent`, because it follows `latest` and may select a different release
+line. After a stable release is available, select it with `maka update --target latest`.
 
 ## Remote Runtime Host setup
 

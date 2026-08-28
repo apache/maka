@@ -9401,6 +9401,108 @@ describe('AiSdkBackend RunTrace', () => {
     );
   });
 
+  test('persists contextRemaining on the stored token_usage message (#4019)', async () => {
+    const messages: StoredMessage[] = [];
+    const model = new MockLanguageModelV4({
+      doStream: async () => ({
+        stream: simulateReadableStream({
+          chunks: [
+            { type: 'stream-start', warnings: [] },
+            {
+              type: 'finish',
+              finishReason: { unified: 'stop', raw: 'stop' },
+              usage: {
+                inputTokens: { total: 4, noCache: 4, cacheRead: 0, cacheWrite: undefined },
+                outputTokens: { total: 2, text: 2, reasoning: 0 },
+              },
+            },
+          ],
+          initialDelayInMs: null,
+          chunkDelayInMs: null,
+        }),
+      }),
+    });
+    const backend = createTestAiSdkBackend({
+      sessionId: 'session-1',
+      header: header(),
+      appendMessage: async (message: StoredMessage) => {
+        messages.push(message);
+      },
+      connection: {
+        ...connection(),
+        models: [{ id: 'mock-model-id', contextWindow: 200_000 }],
+      },
+      apiKey: '[redacted]',
+      modelId: 'mock-model-id',
+      modelFactory: () => model,
+      tools: [],
+      newId: idGenerator(),
+      now: monotonicClock(),
+    });
+
+    const events: SessionEvent[] = [];
+    for await (const event of backend.send({ turnId: 'turn-1', text: 'hi', context: [] })) {
+      events.push(event);
+    }
+
+    // The single step consumed 4 prompt tokens of the 200k window.
+    const expected = 200_000 - 4;
+    const stored = messages.find((message) => message.type === 'token_usage');
+    assert.equal(
+      stored?.type === 'token_usage' ? stored.contextRemaining : undefined,
+      expected,
+      'stored TokenUsageMessage must carry contextRemaining so transcript rebuilds keep the ctx segment',
+    );
+    const live = events.find((event) => event.type === 'token_usage');
+    assert.equal(live?.contextRemaining, expected);
+  });
+
+  test('omits contextRemaining from the stored token_usage message when the window is unknown', async () => {
+    const messages: StoredMessage[] = [];
+    const model = new MockLanguageModelV4({
+      doStream: async () => ({
+        stream: simulateReadableStream({
+          chunks: [
+            { type: 'stream-start', warnings: [] },
+            {
+              type: 'finish',
+              finishReason: { unified: 'stop', raw: 'stop' },
+              usage: {
+                inputTokens: { total: 4, noCache: 4, cacheRead: 0, cacheWrite: undefined },
+                outputTokens: { total: 2, text: 2, reasoning: 0 },
+              },
+            },
+          ],
+          initialDelayInMs: null,
+          chunkDelayInMs: null,
+        }),
+      }),
+    });
+    const backend = createTestAiSdkBackend({
+      sessionId: 'session-1',
+      header: header(),
+      appendMessage: async (message: StoredMessage) => {
+        messages.push(message);
+      },
+      // No declared/fetched window for mock-model-id: degrade, never invent one.
+      connection: connection(),
+      apiKey: '[redacted]',
+      modelId: 'mock-model-id',
+      modelFactory: () => model,
+      tools: [],
+      newId: idGenerator(),
+      now: monotonicClock(),
+    });
+
+    for await (const event of backend.send({ turnId: 'turn-1', text: 'hi', context: [] })) {
+      void event;
+    }
+
+    const stored = messages.find((message) => message.type === 'token_usage');
+    assert.equal(stored?.type, 'token_usage');
+    assert.equal(stored?.type === 'token_usage' && 'contextRemaining' in stored, false);
+  });
+
   test('does not call the provider when prepared-request persistence fails', async () => {
     const model = completionModel();
     const backend = createTestAiSdkBackend({

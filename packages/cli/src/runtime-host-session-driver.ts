@@ -71,11 +71,10 @@ import {
   type GoalControlAction,
   type GoalProjection,
   type SessionContinuitySnapshot,
+  type TurnResumeParkReason,
 } from '@maka/runtime-host/protocol';
-import {
-  RuntimeHostSessionChannel,
-  type RuntimeHostSessionChannelOpenResult,
-} from './runtime-host-session-channel.js';
+import { RuntimeHostSessionChannel } from './runtime-host-session-channel.js';
+import type { RuntimeHostSessionChannelOpenResult } from './runtime-host-session-channel.js';
 import type {
   InspectCwdChanges,
   MakaAttachedSessionTurn,
@@ -109,6 +108,21 @@ import {
 const decodeStoredMessage = (value: unknown): StoredMessage =>
   decodePersistedStoredMessage(markPersisted<StoredMessage>(value));
 const MAX_CATALOG_ATTEMPTS = 3;
+
+/**
+ * The host declined to start a safe-boundary continuation and explained why.
+ * `reason` is the durable park reason from the `turn.resume` protocol, so
+ * surfaces can tell "nothing to resume" from a real failure.
+ */
+export class SafeBoundaryResumeParkedError extends Error {
+  readonly reason: TurnResumeParkReason;
+
+  constructor(reason: TurnResumeParkReason) {
+    super(`Safe-boundary resume parked: ${reason}`);
+    this.name = 'SafeBoundaryResumeParkedError';
+    this.reason = reason;
+  }
+}
 
 /** Optimistic-control retries for goal pause/resume/clear (mirrors the desktop client). */
 const GOAL_CONTROL_MAX_ATTEMPTS = 3;
@@ -370,7 +384,7 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
     const sessionId = this.#requireSession('resume');
     const plan = await this.#request('turn.resume.query', { sessionId });
     if (plan.disposition !== 'ready') {
-      throw new Error(`Safe-boundary resume parked: ${plan.reason}`);
+      throw new SafeBoundaryResumeParkedError(plan.reason);
     }
     const channel = await this.#ensureChannel(sessionId);
     const turnId = this.#newId();
@@ -384,7 +398,7 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
         sourceRuntimeEventHighWater: plan.sourceRuntimeEventHighWater,
       });
       if (result.kind !== 'started') {
-        channel.failTurn(turnId, new Error(`Safe-boundary resume parked: ${result.plan.reason}`));
+        channel.failTurn(turnId, new SafeBoundaryResumeParkedError(result.plan.reason));
       }
     } catch (error) {
       channel.failTurn(turnId, error);

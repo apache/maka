@@ -17,14 +17,21 @@
  * under the License.
  */
 
-import { resolveStorageRoot, tryAcquireStateRootOwner } from '@maka/storage/root-authority';
+import { resolveStorageRoot } from '@maka/storage/root-authority';
 import {
   createExecutionRuntimeHostCompositionSource,
   type ExecutionRuntimeHostCompositionDependencies,
 } from './execution-composition-factory.js';
+import {
+  currentRuntimeHostProcessLaunch,
+  tryAcquireRuntimeHostLaunch,
+  type RuntimeHostManagedDeploymentAuthorityOptions,
+  type RuntimeHostManagedLaunchClaim,
+  type RuntimeHostManagedProcessLaunch,
+} from '../operator/managed-deployment.js';
 import { RuntimeHostKernel } from './host-kernel.js';
 import { openRuntimeHostAccessAuthority } from './access-authority.js';
-import { startRuntimeHostServiceListenerSet } from './listener-set.js';
+import { startRuntimeHostAuthenticatedListenerSet } from './listener-set.js';
 import type { StartRuntimeHostWebSocketListenerOptions } from './websocket-listener.js';
 import type { PublishedProjectDirectoryRoot } from './project-directory-authority.js';
 import type { StartRuntimeHostPeerListenerOptions } from './peer-listener.js';
@@ -34,6 +41,7 @@ export interface ExecutionRuntimeHostServiceOptions {
   readonly projectDirectoryRoots?: readonly PublishedProjectDirectoryRoot[];
   readonly handshakeTimeoutMs?: number;
   readonly shutdownGraceMs?: number;
+  readonly managedLaunchClaim?: RuntimeHostManagedLaunchClaim;
   readonly websocket?: Omit<
     StartRuntimeHostWebSocketListenerOptions,
     'accessAuthority' | 'accept' | 'isReady'
@@ -41,7 +49,13 @@ export interface ExecutionRuntimeHostServiceOptions {
   readonly peer?: Omit<StartRuntimeHostPeerListenerOptions, 'accessAuthority' | 'accept'>;
 }
 
-export type ExecutionRuntimeHostServiceDependencies = ExecutionRuntimeHostCompositionDependencies;
+export interface ExecutionRuntimeHostServiceDependencies
+  extends ExecutionRuntimeHostCompositionDependencies {
+  /** Test-only authority-location override. */
+  readonly managedDeploymentAuthority?: RuntimeHostManagedDeploymentAuthorityOptions;
+  /** Test-only process-identity override. Production derives this from the running process. */
+  readonly processLaunch?: RuntimeHostManagedProcessLaunch;
+}
 
 export class RuntimeHostRootAlreadyOwnedError extends Error {
   readonly code = 'root_already_owned';
@@ -58,8 +72,17 @@ export async function startExecutionRuntimeHostService(
 ): Promise<RuntimeHostKernel> {
   const composition = await createExecutionRuntimeHostCompositionSource(options, dependencies);
   const capability = await resolveStorageRoot({ path: options.rootPath, kind: 'interactive' });
-  const owner = await tryAcquireStateRootOwner(capability);
-  if (!owner) throw new RuntimeHostRootAlreadyOwnedError(capability.canonicalPath);
+  const ownership = await tryAcquireRuntimeHostLaunch(
+    capability,
+    {
+      lifecycleMode: 'supervised',
+      claim: options.managedLaunchClaim,
+      processLaunch: dependencies.processLaunch ?? currentRuntimeHostProcessLaunch(),
+    },
+    dependencies.managedDeploymentAuthority,
+  );
+  if (!ownership) throw new RuntimeHostRootAlreadyOwnedError(capability.canonicalPath);
+  const { owner } = ownership;
   try {
     const accessAuthority = await openRuntimeHostAccessAuthority(owner.controlDirectory);
     return await RuntimeHostKernel.start({
@@ -72,7 +95,7 @@ export async function startExecutionRuntimeHostService(
       ...(options.websocket || options.peer
         ? {
             listenerSetFactory: (input) =>
-              startRuntimeHostServiceListenerSet(input, {
+              startRuntimeHostAuthenticatedListenerSet(input, {
                 ...(options.websocket
                   ? { websocket: { ...options.websocket, accessAuthority } }
                   : {}),

@@ -408,7 +408,9 @@ export class RootTurnCoordinator implements HostedExecutionAuthority {
         if (continuation?.disposition === 'parked') {
           if (
             continuation.plan.reason === 'safety_check_failed' ||
-            continuation.plan.reason === 'continuation_unavailable'
+            continuation.plan.reason === 'resume_feature_disabled' ||
+            continuation.plan.reason === 'continuation_authority_unavailable' ||
+            continuation.plan.reason === 'safety_observation_unavailable'
           ) {
             this.parkContinuationAdmission(admission);
             return undefined;
@@ -2854,12 +2856,12 @@ function projectTurnResumePlan(
     reason = 'continuation_started_indeterminate';
   } else if (reasons.has('continuation_claim_repair_required')) {
     reason = 'continuation_repair_required';
-  } else if (
-    reasons.has('resume_feature_disabled') ||
-    reasons.has('continuation_authority_unavailable') ||
-    reasons.has('safety_observation_unavailable')
-  ) {
-    reason = 'continuation_unavailable';
+  } else if (reasons.has('resume_feature_disabled')) {
+    reason = 'resume_feature_disabled';
+  } else if (reasons.has('continuation_authority_unavailable')) {
+    reason = 'continuation_authority_unavailable';
+  } else if (reasons.has('safety_observation_unavailable')) {
+    reason = 'safety_observation_unavailable';
   } else {
     reason = 'safety_check_failed';
   }

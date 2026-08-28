@@ -60,6 +60,7 @@ import {
   type RequestFrame,
   type ResponseFrame,
 } from './operations.js';
+import { isCanonicalRuntimeHostWebSocketPath } from './websocket-path.js';
 
 export * from './access-authority.js';
 export * from './agent-graph.js';
@@ -92,11 +93,14 @@ export const RUNTIME_HOST_REGISTRATION_SCHEMA_VERSION = 1 as const;
 export const RUNTIME_HOST_PROTOCOL_VERSION = 0 as const;
 // Increment when the same protocol version no longer guarantees safe Client-Host
 // interoperability. Mismatches are rejected before domain commands are admitted.
-export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 57 as const;
-// 57: Scheduled Turn provider-retry frames may carry an optional host-clock
+export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 58 as const;
+// 58: Scheduled Turn provider-retry frames may carry an optional host-clock
 // `ts`, letting a mid-wait re-projection recompute the authoritative
 // remaining duration. Older peers decode the frame with an exact key list
 // and reject the added field, so mixed peers must fail the handshake.
+// 57: Parked safe-boundary resume plans preserve feature-disabled, missing
+// continuation authority, and unavailable safety-observation reasons.
+// Older peers collapse these causes and can misclassify recovery failures.
 // 56: Failed Turn snapshots preserve the structured context-budget exhaustion
 // detail. Epoch-55 peers reject the optional field on the closed snapshot shape.
 // 55: Local owners can atomically revoke every credential for one access
@@ -243,6 +247,7 @@ export interface HostRegistration {
   rootId: string;
   hostEpoch: string;
   endpoint: string;
+  websocketEndpoints?: readonly string[];
   protocolMin: number;
   protocolMax: number;
   compatibilityEpoch: number;
@@ -378,6 +383,7 @@ export function decodeHostRegistration(value: unknown): HostRegistration {
   const protocolMax = requireProtocolVersion(registration.protocolMax, 'protocolMax');
   validateProtocolRange({ min: protocolMin, max: protocolMax });
   const rootId = requireHostRootId(registration.rootId);
+  const websocketEndpoints = decodeRegistrationWebSocketEndpoints(registration.websocketEndpoints);
   const pid = requireCount(registration.pid, 'pid');
   if (pid === 0) throw invalidProtocolFrame('Invalid pid');
   return {
@@ -386,6 +392,7 @@ export function decodeHostRegistration(value: unknown): HostRegistration {
     rootId,
     hostEpoch: requireId(registration.hostEpoch, 'hostEpoch'),
     endpoint: requireString(registration.endpoint, 'endpoint', 512),
+    ...(websocketEndpoints === undefined ? {} : { websocketEndpoints }),
     protocolMin,
     protocolMax,
     compatibilityEpoch:
@@ -404,6 +411,39 @@ export function decodeHostRegistration(value: unknown): HostRegistration {
     pid,
     createdAt: requireString(registration.createdAt, 'createdAt', 64),
   };
+}
+
+function decodeRegistrationWebSocketEndpoints(value: unknown): readonly string[] | undefined {
+  if (value === undefined) return undefined;
+  if (!Array.isArray(value) || value.length === 0 || value.length > 4) {
+    throw invalidProtocolFrame('Invalid Runtime Host registration WebSocket endpoints');
+  }
+  const endpoints = value.map((entry) => {
+    const endpoint = requireString(entry, 'Runtime Host WebSocket endpoint', 2_048);
+    let url: URL;
+    try {
+      url = new URL(endpoint);
+    } catch {
+      throw invalidProtocolFrame('Invalid Runtime Host registration WebSocket endpoint');
+    }
+    if (
+      url.protocol !== 'ws:' ||
+      url.hostname !== '127.0.0.1' ||
+      url.username ||
+      url.password ||
+      url.port === '' ||
+      url.search ||
+      url.hash ||
+      !isCanonicalRuntimeHostWebSocketPath(url.pathname)
+    ) {
+      throw invalidProtocolFrame('Invalid Runtime Host registration WebSocket endpoint');
+    }
+    return url.toString();
+  });
+  if (new Set(endpoints).size !== endpoints.length) {
+    throw invalidProtocolFrame('Duplicate Runtime Host registration WebSocket endpoint');
+  }
+  return Object.freeze(endpoints);
 }
 
 function requireHostLifecycleMode(value: unknown): 'ephemeral' | 'service' {

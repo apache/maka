@@ -25,8 +25,10 @@ import type { CreateSessionRequestInput } from '@maka/core/runtime-inputs';
 import type { SessionChangedEvent, SessionChangedReason } from '@maka/core/session';
 import type { BotRegistry } from '@maka/runtime/bots';
 import {
+  type RuntimeHostSshOperatorActivationInput,
   connectOrSpawnRuntimeHost,
   connectRemoteRuntimeHostProfile,
+  type RuntimeHostPeerClient,
   type RuntimeHostSshInteraction,
   type RuntimeHostSshTunnel,
   type RuntimeHostSshTunnelInput,
@@ -38,6 +40,7 @@ import {
   type RemoteRuntimeHostProfile,
   type CandidateExitDetails,
 } from "@maka/runtime-host/client";
+import type { RuntimeHostActivationResult } from "@maka/runtime-host/operator";
 import {
   INTERACTIVE_RUNTIME_HOST_COMPOSITION_ID,
   RUNTIME_HOST_PROTOCOL_VERSION,
@@ -125,6 +128,9 @@ export interface DesktopRuntimeHostCandidateDeps {
   readonly openSshTunnel?: (
     input: RuntimeHostSshTunnelInput,
   ) => Promise<RuntimeHostSshTunnel>;
+  readonly activateSshOperator?: (
+    input: RuntimeHostSshOperatorActivationInput,
+  ) => Promise<RuntimeHostActivationResult>;
   readonly createSessionCopyCleanup: (input: {
     removeSession: (sessionId: string) => Promise<SessionCopyCleanupDisposition>;
     resumeSessionCopy: (input: {
@@ -171,6 +177,7 @@ export interface DesktopRuntimeHostCandidateStartInput
   /** Candidate-exit sink forwarded to the launcher; the Desktop owns the sink. */
   readonly onExit?: (details: CandidateExitDetails) => void;
   readonly candidateLaunchBarrier?: RuntimeHostCandidateLaunchBarrier;
+  readonly peerClient?: RuntimeHostPeerClient;
   readonly remote?: {
     readonly profile: RemoteRuntimeHostProfile;
     readonly credential: string;
@@ -383,12 +390,16 @@ async function startRemoteDesktopRuntimeHostCandidate(
       ? {}
       : { handshakeTimeoutMs: input.handshakeTimeoutMs }),
     readyTimeoutMs: input.electionDeadlineMs ?? 45_000,
+    ...(input.peerClient === undefined ? {} : { peerClient: input.peerClient }),
     ...(remote.sshInteraction === undefined
       ? {}
       : { sshInteraction: remote.sshInteraction }),
   },
   {
     ...(input.openSshTunnel ? { openSshTunnel: input.openSshTunnel } : {}),
+    ...(input.activateSshOperator
+      ? { activateSshOperator: input.activateSshOperator }
+      : {}),
   });
   try {
     return {

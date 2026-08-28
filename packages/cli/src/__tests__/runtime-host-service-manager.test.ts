@@ -468,6 +468,7 @@ describe('managed Runtime Host service', () => {
         principalId: 'desktop.client-1',
         preset: 'desktop-client',
         clientDataRoot: '/var/lib/maka-client',
+        lifecycle: 'supervised',
         deferPairingCommit: true,
         directPeer: {
           coordinationRelays: ['/dns4/discovery.example/udp/443/quic-v1'],

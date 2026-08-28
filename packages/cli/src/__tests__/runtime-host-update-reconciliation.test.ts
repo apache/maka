@@ -61,6 +61,48 @@ const SERVICE = {
 };
 
 describe('managed Runtime Host update reconciliation', () => {
+  it('parses the coordinator-supervised installed-update activator contract', () => {
+    const argv = [
+      'local-update-activate',
+      '--root',
+      '/srv/maka',
+      '--expected-root-id',
+      TARGET.rootId,
+      '--generation',
+      'update-generation',
+      '--candidate-entrypoint',
+      '/srv/staged/host.js',
+      '--await-coordinator-commit',
+      'true',
+      '--expected-owner-installation-id',
+      'npm-global:slot',
+      '--target-version',
+      '2.0.0',
+      '--target-integrity',
+      INTEGRITY,
+    ];
+    assert.deepEqual(parseRuntimeHostCommand(argv), {
+      kind: 'runtime-host-local-update-activate',
+      rootPath: '/srv/maka',
+      expectedRootId: TARGET.rootId,
+      generation: 'update-generation',
+      candidateEntrypoint: '/srv/staged/host.js',
+      awaitCoordinatorCommit: true,
+      expectedOwnerInstallationId: 'npm-global:slot',
+      targetVersion: '2.0.0',
+      targetIntegrity: INTEGRITY,
+    });
+    const disabled = [...argv];
+    disabled[disabled.indexOf('true')] = 'false';
+    for (const invalid of [
+      argv.filter((value) => value !== '--target-integrity' && value !== INTEGRITY),
+      disabled,
+      ['local-update-activate', ...argv.slice(1), '--target-version', '2.0.0'],
+    ]) {
+      assert.equal(parseRuntimeHostCommand(invalid).kind, 'error');
+    }
+  });
+
   it('parses update policy and reconciliation commands against an optional expected target', () => {
     assert.deepEqual(
       parseRuntimeHostCommand([

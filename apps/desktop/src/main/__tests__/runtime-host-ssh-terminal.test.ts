@@ -23,10 +23,9 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import type { IPty } from 'node-pty';
+import { type RuntimeHostSshProcessFactory } from '@maka/runtime-host/client';
 import {
-  type RuntimeHostSshProcessFactory,
-} from '@maka/runtime-host/client';
-import {
+  encodeRuntimeHostActivationFrame,
   encodeRuntimeHostAccessManagementFrame,
   encodeRuntimeHostServiceManagementFrame,
   encodeRuntimeHostSetupFrame,
@@ -687,6 +686,39 @@ test('does not launch a management process after the terminal owner closes', asy
     /terminal is closed/u,
   );
   assert.equal(launches.length, 0);
+});
+
+test('runs interactive operator activation as one strict framed SSH command', async () => {
+  const harness = createHarness('pending');
+  const rootId = 'a'.repeat(64);
+  const activation = harness.terminal.activateSshOperator({
+    destination: 'operator@example.com',
+    operatorPath: '/home/operator/.local/share/maka/operator',
+    rootId,
+    interaction: 'terminal',
+  });
+  await waitFor(() => harness.pty.hasDataListener());
+  harness.pty.emitData(
+    encodeRuntimeHostActivationFrame({
+      schemaVersion: 1,
+      kind: 'result',
+      deploymentId: '00000000-0000-4000-8000-000000000001',
+      configRevision: 1,
+      rootId,
+      hostEpoch: 'host-epoch',
+      pid: 1234,
+      protocolVersion: 1,
+      endpoint: { host: '127.0.0.1', port: 43_210, websocketPath: '/runtime-host' },
+    }),
+  );
+  harness.pty.exit(0);
+
+  assert.equal((await activation).pid, 1234);
+  const remoteCommand = harness.launchArgs[0]?.at(-1) ?? '';
+  assert.match(remoteCommand, /'activate' '--framed' '--root-id'/u);
+  assert.match(remoteCommand, new RegExp(rootId, 'u'));
+  assert.doesNotMatch(remoteCommand, /credential|token/u);
+  await harness.terminal.close();
 });
 
 test('uploads a development release archive before running the same remote setup', async (t) => {

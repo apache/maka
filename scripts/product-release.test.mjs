@@ -157,6 +157,30 @@ test('the product identity classifies prereleases once for every publication sur
   assert.equal(identity.tag, `v${version}`);
 });
 
+test('product prereleases use only updater-compatible alpha and beta channels', () => {
+  for (const version of ['1.2.3-alpha.1', '1.2.3-beta.2']) {
+    assert.equal(
+      resolveProductManifestIdentity({
+        rootManifest: { ...rootManifest, version },
+        desktopManifest: { version },
+        cliManifest: { version, bin: { maka: './dist/cli.js' } },
+      }).isPrerelease,
+      true,
+    );
+  }
+  for (const version of ['1.2.3-rc.1', '1.2.3-dev.1']) {
+    assert.throws(
+      () =>
+        resolveProductManifestIdentity({
+          rootManifest: { ...rootManifest, version },
+          desktopManifest: { version },
+          cliManifest: { version, bin: { maka: './dist/cli.js' } },
+        }),
+      /prerelease channel must be alpha or beta/u,
+    );
+  }
+});
+
 test('Desktop packaging derives the Runtime Host setup package from product manifests', async () => {
   const manifestIdentity = resolveProductManifestIdentity({
     rootManifest,
@@ -233,7 +257,7 @@ test('platform package verifiers keep Git checks out of current artifacts', asyn
   );
   assert.match(
     windowsSource,
-    /if \(requiresCurrentContract\) await assertPackagedDependencyClosure\(resources\);\s*else await requirePath\(join\(resources, ['"]git['"]/u,
+    /if \(requiresCurrentContract\) \{\s*await assertPackagedUpdateConfiguration\(resources\);\s*await assertPackagedDependencyClosure\(resources\);\s*\}\s*else await requirePath\(join\(resources, ['"]git['"]/u,
   );
 
   const macosSource = await readFile(
@@ -677,7 +701,6 @@ test('one product workflow gates one draft release on every required artifact', 
   ).run;
   assert.match(verifyArtifacts, /product-release-artifacts\.mjs verify release-assets/u);
   assert.doesNotMatch(verifyArtifacts, /required=\(|Maka-\*|latest\*\.yml/u);
-
   const commands = Object.values(jobs)
     .flatMap((job) => job.steps ?? [])
     .map((step) => step.run)
@@ -722,13 +745,14 @@ test('one product workflow gates one draft release on every required artifact', 
   assert.doesNotMatch(commands, /cli-v|npm (?:stage )?publish/u);
 });
 
-test('repository control plane admits only reviewed immutable release tags', async () => {
+test('repository control plane admits only each release phase owner ref', async () => {
   const config = parseYaml(await readFile(new URL('../.asf.yaml', import.meta.url), 'utf8'));
   assert.deepEqual(config.github.protected_branches.main.required_status_checks.contexts, ['test']);
   const environments = config.github.environments;
-  for (const [name, tagPattern] of [
-    ['release', 'v*-incubating-rc*'],
-    ['npm-release', 'v*'],
+  for (const [name, pattern, type] of [
+    ['release', 'v*-incubating-rc*', 'tag'],
+    ['npm-release', 'v*', 'tag'],
+    ['product-release', 'main', 'branch'],
   ]) {
     assert.deepEqual(environments[name], {
       required_reviewers: [{ id: 'M4n5ter', type: 'User' }],
@@ -736,7 +760,7 @@ test('repository control plane admits only reviewed immutable release tags', asy
       prevent_self_review: true,
       deployment_branch_policy: {
         protected_branches: false,
-        policies: [{ name: tagPattern, type: 'tag' }],
+        policies: [{ name: pattern, type }],
       },
     });
   }

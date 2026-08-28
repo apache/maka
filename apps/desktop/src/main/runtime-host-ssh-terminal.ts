@@ -26,18 +26,23 @@ import type { IPty } from 'node-pty';
 import { spawn as spawnPty } from 'node-pty';
 import { terminateProcessTree } from '@maka/runtime/process-tree-terminator';
 import {
+  activateRuntimeHostSshOperator,
   normalizeRuntimeHostSshDestination,
   openRuntimeHostSshTunnel,
+  type RuntimeHostSshOperatorActivationInput,
   type RuntimeHostSshProcess,
   type RuntimeHostSshProcessFactory,
   type RuntimeHostSshTunnel,
   type RuntimeHostSshTunnelInput,
 } from '@maka/runtime-host/client';
 import {
+  decodeRuntimeHostActivationFrame,
   decodeRuntimeHostAccessManagementFrame,
   decodeRuntimeHostPeerManagementFrame,
   decodeRuntimeHostServiceManagementFrame,
   decodeRuntimeHostSetupFrame,
+  RUNTIME_HOST_ACTIVATION_FRAME_MAX_BYTES,
+  RUNTIME_HOST_ACTIVATION_FRAME_PREFIX,
   RUNTIME_HOST_ACCESS_MANAGEMENT_FRAME_PREFIX,
   RUNTIME_HOST_OPERATOR_ACCESS_MANAGEMENT_CAPABILITY,
   RUNTIME_HOST_OPERATOR_CAPABILITY_REQUEST_ENV,
@@ -47,6 +52,7 @@ import {
   RUNTIME_HOST_SERVICE_MANAGEMENT_FRAME_PREFIX,
   RUNTIME_HOST_SETUP_FRAME_PREFIX,
   type RuntimeHostAccessManagementFrame,
+  type RuntimeHostActivationResult,
   type RuntimeHostManagedUpdatePolicy,
   type RuntimeHostPeerManagementAction,
   type RuntimeHostPeerManagementFrame,
@@ -94,6 +100,7 @@ export interface DesktopRuntimeHostSshSetupInput {
   readonly sshPort?: number;
   readonly setupPackage: DesktopRuntimeHostSetupPackage;
   readonly principalId: string;
+  readonly lifecycle?: 'supervised' | 'on_demand';
   readonly projectDirectoryRoots?: readonly { readonly label: string; readonly path: string }[];
   readonly signal?: AbortSignal;
 }
@@ -217,11 +224,15 @@ export function createDesktopRuntimeHostSshTerminal(input: {
   readonly send: (channel: string, event: DesktopRuntimeHostSshTerminalEvent) => void;
   readonly spawnPty?: typeof spawnPty;
   readonly openSshTunnel?: typeof openRuntimeHostSshTunnel;
+  readonly activateSshOperator?: typeof activateRuntimeHostSshOperator;
   readonly revealDelayMs?: number;
   readonly managementTimeoutMs?: number;
   readonly processStopGraceMs?: number;
   readonly terminateProcessTree?: typeof terminateProcessTree;
 }): {
+  activateSshOperator(
+    input: RuntimeHostSshOperatorActivationInput,
+  ): Promise<RuntimeHostActivationResult>;
   openSshTunnel(input: RuntimeHostSshTunnelInput): Promise<RuntimeHostSshTunnel>;
   runSetup(
     input: DesktopRuntimeHostSshSetupInput,
@@ -557,6 +568,27 @@ export function createDesktopRuntimeHostSshTerminal(input: {
   };
 
   return {
+    activateSshOperator: async (activationInput) => {
+      if (activationInput.interaction !== 'terminal') {
+        return (input.activateSshOperator ?? activateRuntimeHostSshOperator)(activationInput);
+      }
+      const frame = await runFramedManagement({
+        ...activationInput,
+        remoteCommand: runtimeHostActivationRemoteCommand(activationInput),
+        prefix: RUNTIME_HOST_ACTIVATION_FRAME_PREFIX,
+        pendingMaxBytes: RUNTIME_HOST_ACTIVATION_FRAME_MAX_BYTES,
+        decode: decodeRuntimeHostActivationFrame,
+        action: 'activate',
+        frameAction: () => 'activate',
+        label: 'Remote Runtime Host activation',
+        timeoutMs: activationInput.timeoutMs,
+      });
+      if (frame.kind === 'error') throw new Error(frame.error.message);
+      if (frame.rootId !== activationInput.rootId) {
+        throw new Error('Remote Runtime Host activation returned an inconsistent root');
+      }
+      return frame;
+    },
     openSshTunnel: async (tunnelInput) => {
       if (closed) throw new Error('Runtime Host SSH terminal is closed');
       const openSshTunnel = input.openSshTunnel ?? openRuntimeHostSshTunnel;
@@ -997,7 +1029,10 @@ async function settlesWithin(promise: Promise<unknown>, timeoutMs: number): Prom
 
 function runtimeHostSetupRemoteCommand(
   setupPackage: PreparedSetupPackage,
-  input: Pick<DesktopRuntimeHostSshSetupInput, 'principalId' | 'projectDirectoryRoots'>,
+  input: Pick<
+    DesktopRuntimeHostSshSetupInput,
+    'principalId' | 'projectDirectoryRoots' | 'lifecycle'
+  >,
 ): string {
   if (!/^[A-Za-z0-9_.:-]{1,128}$/u.test(input.principalId)) {
     throw new Error('Runtime Host setup principal is invalid');
@@ -1009,6 +1044,8 @@ function runtimeHostSetupRemoteCommand(
     input.principalId,
     '--preset',
     'desktop-client',
+    '--lifecycle',
+    input.lifecycle === 'on_demand' ? 'on-demand' : 'supervised',
     '--defer-pairing-commit',
     ...(input.projectDirectoryRoots === undefined
       ? []
@@ -1020,6 +1057,21 @@ function runtimeHostSetupRemoteCommand(
           ])),
     '--json',
   ]);
+}
+
+function runtimeHostActivationRemoteCommand(
+  input: RuntimeHostSshOperatorActivationInput,
+): string {
+  if (!pathPosix.isAbsolute(input.operatorPath)) {
+    throw new Error('Runtime Host operator path must be absolute');
+  }
+  return [
+    input.operatorPath,
+    'activate',
+    '--framed',
+    '--root-id',
+    input.rootId,
+  ].map(quotePosix).join(' ');
 }
 
 function runtimeHostServiceManagementRemoteCommand(

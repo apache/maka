@@ -25,6 +25,7 @@ import { redactSecrets } from '@maka/core/redaction';
 import { resolveRootControlNamespace } from '@maka/storage/root-authority';
 import { z } from 'zod';
 import {
+  CANDIDATE_STARTUP_FAILURE_REASONS,
   isCandidateStartupAttemptId,
   type CandidateStartupFailure,
 } from '../candidate-startup-failure.js';
@@ -59,12 +60,7 @@ const candidateStartupDiagnosticSchema = z
     capturedAt: boundedStringSchema(MAX_LABEL_BYTES).refine((value) =>
       Number.isFinite(Date.parse(value)),
     ),
-    reason: z.enum([
-      'stored_data_incompatible',
-      'operational_state_migration_blocked',
-      'local_ipc_security_failed',
-      'internal_startup_failure',
-    ]),
+    reason: z.enum(CANDIDATE_STARTUP_FAILURE_REASONS),
     errorChain: z.array(candidateStartupErrorSummarySchema).min(1).max(MAX_ERROR_CHAIN_ENTRIES),
     logs: z.array(boundedStringSchema(MAX_LOG_TEXT_BYTES)).max(MAX_LOG_ENTRIES),
   })
