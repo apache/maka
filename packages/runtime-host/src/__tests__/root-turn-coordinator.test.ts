@@ -68,7 +68,10 @@ import {
   type RootTurnAdmissionStore,
 } from '@maka/storage/execution-stores';
 import { openInteractiveArtifactStoreForWrite } from '@maka/storage/artifact-stores';
-import { OPERATIONAL_STATE_DATABASE_NAME } from '@maka/storage/operational-state-store';
+import {
+  acquireOperationalStateDatabase,
+  OPERATIONAL_STATE_DATABASE_NAME,
+} from '@maka/storage/operational-state-store';
 import { resolveStorageRoot, tryAcquireInteractiveRootOwner } from '@maka/storage/root-authority';
 import type { SubscriptionFrame, TurnSnapshot } from '../protocol/index.js';
 import { HostAgentGraphExecutionCoordinator } from '../server/agent-graph-execution-coordinator.js';
@@ -4894,6 +4897,29 @@ async function registerSessionCapability(
   assert.equal(replaced.ok, true);
 }
 
+for (const withArtifacts of [false, true]) {
+  test(`fixture teardown closes SQLite before removing its root (artifacts: ${withArtifacts})`, async () => {
+    const fixture = await createFailureFixture({
+      registerBackend: (backends) =>
+        backends.register('ai-sdk', (context) => new FakeBackend(context)),
+      withArtifacts,
+    });
+    const header = await fixture.stores.sessionStore.readHeaderSnapshot(fixture.sessionId);
+    const lease = acquireOperationalStateDatabase(header.cwd);
+    const database = lease.database;
+    lease.close();
+    try {
+      assert.equal(database.isOpen, true, 'the fixture must still own its database');
+      await fixture.dispose();
+      assert.equal(database.isOpen, false, 'teardown must release every SQLite store lease');
+    } finally {
+      fixture.artifacts?.close();
+      await fixture.stores.sessionStore.close?.();
+      await fixture.dispose();
+    }
+  });
+}
+
 async function createFailureFixture(options: {
   registerBackend(backends: BackendRegistry): void;
   prepareDirectories?(sessionId: string, content: MessageContent): Promise<MessageContent>;
@@ -5170,6 +5196,8 @@ async function createFailureFixture(options: {
     drainRequested: () => drainRequested,
     dispose: async () => {
       requireContinuity(continuity).close();
+      artifacts?.close();
+      await stores.sessionStore.close?.();
       await owner.close();
       await rm(base, { recursive: true, force: true });
     },

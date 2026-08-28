@@ -79,7 +79,12 @@ test('Read image payloads fit within the filesystem worker response limit', () =
 });
 
 describe('filesystem worker client permission snapshots', () => {
-  test('authorizes delete against the symlink entry', async () => {
+  test('authorizes delete against the symlink entry', {
+    skip:
+      process.platform === 'win32'
+        ? 'Windows file-symlink permissions are not guaranteed in CI'
+        : false,
+  }, async () => {
     const workspace = await temporaryDirectory('maka-worker-client-delete-link-');
     const target = join(workspace, 'target.txt');
     const link = join(workspace, 'link.txt');
@@ -480,7 +485,12 @@ describe('filesystem worker Linux path context', () => {
     assert.ok(hasArgTriple(processInput.argv, '--ro-bind', `/proc/self/fd/${pinned.fd}`, target));
   });
 
-  test('pins the writable parent of a missing exact target', async () => {
+  test('pins the writable parent of a missing exact target', {
+    skip:
+      process.platform === 'win32'
+        ? 'Linux bind mounts require POSIX paths and directory file descriptors'
+        : false,
+  }, async () => {
     const workspace = await temporaryDirectory('maka-linux-worker-parent-pin-');
     const parent = join(workspace, 'output');
     const target = join(parent, 'new.txt');
