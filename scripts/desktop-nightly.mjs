@@ -17,7 +17,6 @@
  * under the License.
  */
 
-import { createHash } from 'node:crypto';
 import {
   appendFile,
   copyFile,
@@ -30,7 +29,6 @@ import {
 } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { parse, stringify } from 'yaml';
 import { verifyDesktopUpdateArtifacts } from './desktop-update-contract.mjs';
 import { parseProductReleaseVersion } from './release-version.mjs';
 
@@ -62,18 +60,6 @@ export function resolveDesktopBuildVersion(productVersion, environment = process
     : productVersion;
 }
 
-function assertStandaloneNightlyVersion(version) {
-  const parsed = parseProductReleaseVersion(version);
-  if (
-    parsed.prerelease.length !== 3 ||
-    parsed.prerelease[0] !== 'dev' ||
-    !/^\d{8}$/u.test(parsed.prerelease[1]) ||
-    !/^[1-9]\d*$/u.test(parsed.prerelease[2])
-  ) {
-    throw new Error(`Desktop Nightly version is invalid: ${version}`);
-  }
-}
-
 function nightlyArtifactNames(version) {
   return {
     macZip: `Maka-${version}-mac-arm64.zip`,
@@ -83,13 +69,8 @@ function nightlyArtifactNames(version) {
   };
 }
 
-async function sha256(path) {
-  return createHash('sha256')
-    .update(await readFile(path))
-    .digest('hex');
-}
-
 async function rewriteNightlyMetadata(source, destination, version) {
+  const { parse, stringify } = await import('yaml');
   const metadata = parse(await readFile(source, 'utf8'));
   const prefix = `versions/${version}/`;
   metadata.path = `${prefix}${metadata.path}`;
@@ -113,7 +94,7 @@ function nightlyIndex(version, sourceCommit, names) {
 <li><a href="versions/${version}/${names.macDmg}">Download for macOS arm64</a></li>
 <li><a href="versions/${version}/${names.windowsExe}">Download for Windows x64</a> (unsigned preview)</li>
 </ul>
-<p>Installed Nightly builds update automatically from this channel. See <a href="nightly.json">nightly.json</a> for the machine-readable identity.</p>
+<p>Installed Nightly builds update automatically from this channel.</p>
 </main>
 </body>
 </html>
@@ -126,7 +107,8 @@ export async function stageDesktopNightly({
   version,
   sourceCommit,
 }) {
-  assertStandaloneNightlyVersion(version);
+  const productManifest = JSON.parse(await readFile(join(repoRoot, 'package.json'), 'utf8'));
+  assertDesktopNightlyVersion(version, productManifest.version);
   if (typeof sourceCommit !== 'string' || !/^[0-9a-f]{40}$/u.test(sourceCommit)) {
     throw new Error('Desktop Nightly requires an exact source commit');
   }
@@ -165,7 +147,11 @@ export async function stageDesktopNightly({
 
   await rm(outputDirectory, { recursive: true, force: true });
   const versionDirectory = join(outputDirectory, 'versions', version);
-  await mkdir(versionDirectory, { recursive: true });
+  const feedDirectory = join(outputDirectory, 'feed');
+  await Promise.all([
+    mkdir(versionDirectory, { recursive: true }),
+    mkdir(feedDirectory, { recursive: true }),
+  ]);
   await Promise.all(
     payloads.map(async (name) => {
       const source = join(inputDirectory, name);
@@ -174,36 +160,19 @@ export async function stageDesktopNightly({
       await copyFile(source, join(versionDirectory, name));
     }),
   );
-  for (const name of [names.macDmg, names.macZip, names.windowsExe, names.windowsZip]) {
-    await writeFile(
-      join(versionDirectory, `${name}.sha256`),
-      `${await sha256(join(versionDirectory, name))}  ${name}\n`,
-      'utf8',
-    );
-  }
   await Promise.all([
     rewriteNightlyMetadata(
       join(inputDirectory, 'latest-mac.yml'),
-      join(outputDirectory, 'latest-mac.yml'),
+      join(feedDirectory, 'latest-mac.yml'),
       version,
     ),
     rewriteNightlyMetadata(
       join(inputDirectory, 'latest.yml'),
-      join(outputDirectory, 'latest.yml'),
+      join(feedDirectory, 'latest.yml'),
       version,
     ),
   ]);
-  await writeFile(
-    join(outputDirectory, 'nightly.json'),
-    `${JSON.stringify({ version, sourceCommit, artifacts: payloads }, null, 2)}\n`,
-    'utf8',
-  );
-  await writeFile(
-    join(outputDirectory, 'index.html'),
-    nightlyIndex(version, sourceCommit, names),
-    'utf8',
-  );
-  return { versionDirectory, payloads };
+  await writeFile(join(feedDirectory, 'index.html'), nightlyIndex(version, sourceCommit, names));
 }
 
 async function main(args, environment = process.env) {
@@ -228,16 +197,12 @@ async function main(args, environment = process.env) {
   }
   if (command === 'stage' && rest.length === 4) {
     const [inputDirectory, outputDirectory, version, sourceCommit] = rest;
-    console.log(
-      JSON.stringify(
-        await stageDesktopNightly({
-          inputDirectory,
-          outputDirectory,
-          version,
-          sourceCommit,
-        }),
-      ),
-    );
+    await stageDesktopNightly({
+      inputDirectory,
+      outputDirectory,
+      version,
+      sourceCommit,
+    });
     return;
   }
   throw new Error(

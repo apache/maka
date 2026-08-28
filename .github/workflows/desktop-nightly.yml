@@ -31,7 +31,7 @@ concurrency:
 
 jobs:
   identity:
-    if: vars.DESKTOP_NIGHTLY_ENABLED == 'true'
+    if: vars.DESKTOP_NIGHTLY_ENABLED == 'true' && github.run_attempt == 1
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     outputs:
@@ -57,6 +57,7 @@ jobs:
         run: node scripts/desktop-nightly.mjs identity
 
   desktop:
+    if: github.run_attempt == 1
     needs: identity
     strategy:
       fail-fast: false
@@ -168,15 +169,17 @@ jobs:
       - name: Preserve the verified Nightly artifacts
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: desktop-nightly-${{ matrix.platform }}-${{ github.run_attempt }}
+          name: desktop-nightly-${{ matrix.platform }}
           path: ${{ runner.temp }}/desktop-nightly
           if-no-files-found: error
           compression-level: 0
           retention-days: 30
 
   publish:
+    if: github.run_attempt == 1
     needs: [identity, desktop]
     runs-on: ubuntu-24.04
+    environment: nightly
     timeout-minutes: 20
     permissions:
       artifact-metadata: write
@@ -202,8 +205,8 @@ jobs:
       - name: Download both verified Desktop builds
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          pattern: desktop-nightly-*-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/desktop-nightly-input
+          pattern: desktop-nightly-*
+          path: ${{ github.workspace }}/.nightly-input
           merge-multiple: true
 
       - name: Stage the versioned Nightly site
@@ -212,23 +215,16 @@ jobs:
           SOURCE_COMMIT: ${{ needs.identity.outputs.source_commit }}
         run: |
           node scripts/desktop-nightly.mjs stage \
-            "$RUNNER_TEMP/desktop-nightly-input" \
-            "$RUNNER_TEMP/desktop-nightly-site" \
+            "$GITHUB_WORKSPACE/.nightly-input" \
+            "$GITHUB_WORKSPACE/.nightly-publish" \
             "$NIGHTLY_VERSION" \
             "$SOURCE_COMMIT"
-          mkdir "$RUNNER_TEMP/desktop-nightly-feed"
-          cp -- \
-            "$RUNNER_TEMP/desktop-nightly-site/latest-mac.yml" \
-            "$RUNNER_TEMP/desktop-nightly-site/latest.yml" \
-            "$RUNNER_TEMP/desktop-nightly-site/nightly.json" \
-            "$RUNNER_TEMP/desktop-nightly-site/index.html" \
-            "$RUNNER_TEMP/desktop-nightly-feed/"
 
       - name: Attest the exact Nightly payloads
         id: attest
         uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.0.0
         with:
-          subject-path: ${{ runner.temp }}/desktop-nightly-site/versions/${{ needs.identity.outputs.version }}/*
+          subject-path: ${{ github.workspace }}/.nightly-publish/versions/${{ needs.identity.outputs.version }}/*
 
       - name: Verify the issued Nightly provenance
         env:
@@ -245,7 +241,7 @@ jobs:
               --cert-identity "$CERTIFICATE_IDENTITY" \
               --cert-oidc-issuer https://token.actions.githubusercontent.com
             verified=$((verified + 1))
-          done < <(find "$RUNNER_TEMP/desktop-nightly-site/versions/$NIGHTLY_VERSION" -maxdepth 1 -type f -print0)
+          done < <(find "$GITHUB_WORKSPACE/.nightly-publish/versions/$NIGHTLY_VERSION" -maxdepth 1 -type f -print0)
           if (( verified == 0 )); then
             echo "No Desktop Nightly artifacts were verified" >&2
             exit 1
@@ -257,26 +253,40 @@ jobs:
           NIGHTLY_VERSION: ${{ needs.identity.outputs.version }}
         run: >-
           cp -- "$ATTESTATION_BUNDLE"
-          "$RUNNER_TEMP/desktop-nightly-site/versions/$NIGHTLY_VERSION/Maka-$NIGHTLY_VERSION-attestation.sigstore.json"
+          "$GITHUB_WORKSPACE/.nightly-publish/versions/$NIGHTLY_VERSION/Maka-$NIGHTLY_VERSION-attestation.sigstore.json"
+
+      - name: Prepare authenticated Nightlies SSH transport
+        env:
+          NIGHTLIES_RSYNC_HOST: ${{ secrets.NIGHTLIES_RSYNC_HOST }}
+          NIGHTLIES_RSYNC_KEY: ${{ secrets.NIGHTLIES_RSYNC_KEY }}
+          NIGHTLIES_RSYNC_KNOWN_HOSTS: ${{ secrets.NIGHTLIES_RSYNC_KNOWN_HOSTS }}
+          NIGHTLIES_RSYNC_PATH: ${{ secrets.NIGHTLIES_RSYNC_PATH }}
+          NIGHTLIES_RSYNC_PORT: ${{ secrets.NIGHTLIES_RSYNC_PORT }}
+          NIGHTLIES_RSYNC_USER: ${{ secrets.NIGHTLIES_RSYNC_USER }}
+        run: |
+          test -n "$NIGHTLIES_RSYNC_HOST"
+          test -n "$NIGHTLIES_RSYNC_KEY"
+          test -n "$NIGHTLIES_RSYNC_KNOWN_HOSTS"
+          test -n "$NIGHTLIES_RSYNC_PATH"
+          test -n "$NIGHTLIES_RSYNC_USER"
+          [[ "$NIGHTLIES_RSYNC_PORT" =~ ^[0-9]{1,5}$ ]]
+          (( NIGHTLIES_RSYNC_PORT >= 1 && NIGHTLIES_RSYNC_PORT <= 65535 ))
+          ssh_directory="$RUNNER_TEMP/nightlies-ssh"
+          install -m 700 -d "$ssh_directory"
+          umask 077
+          printf '%s\n' "$NIGHTLIES_RSYNC_KEY" > "$ssh_directory/key"
+          printf '%s\n' "$NIGHTLIES_RSYNC_KNOWN_HOSTS" > "$ssh_directory/known_hosts"
+          {
+            echo "NIGHTLIES_RSYNC_TARGET=$NIGHTLIES_RSYNC_USER@$NIGHTLIES_RSYNC_HOST:${NIGHTLIES_RSYNC_PATH%/}/maka/desktop"
+            echo "RSYNC_RSH=ssh -i $ssh_directory/key -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=$ssh_directory/known_hosts -p $NIGHTLIES_RSYNC_PORT"
+          } >> "$GITHUB_ENV"
 
       - name: Publish immutable Nightly payloads
-        uses: burnett01/rsync-deployments@53581dff6de0d8511d74864451aacee4846bdf39 # v8.0.2
-        with:
-          switches: -rlptDvz --delete
-          path: ${{ runner.temp }}/desktop-nightly-site/versions/
-          remote_path: ${{ secrets.NIGHTLIES_RSYNC_PATH }}/maka/desktop/versions
-          remote_host: ${{ secrets.NIGHTLIES_RSYNC_HOST }}
-          remote_port: ${{ secrets.NIGHTLIES_RSYNC_PORT }}
-          remote_user: ${{ secrets.NIGHTLIES_RSYNC_USER }}
-          remote_key: ${{ secrets.NIGHTLIES_RSYNC_KEY }}
+        run: rsync -rlptDvz --protect-args .nightly-publish/versions/ "$NIGHTLIES_RSYNC_TARGET/versions/"
 
       - name: Advance the Nightly update feed last
-        uses: burnett01/rsync-deployments@53581dff6de0d8511d74864451aacee4846bdf39 # v8.0.2
-        with:
-          switches: -rlptDvz
-          path: ${{ runner.temp }}/desktop-nightly-feed/*
-          remote_path: ${{ secrets.NIGHTLIES_RSYNC_PATH }}/maka/desktop
-          remote_host: ${{ secrets.NIGHTLIES_RSYNC_HOST }}
-          remote_port: ${{ secrets.NIGHTLIES_RSYNC_PORT }}
-          remote_user: ${{ secrets.NIGHTLIES_RSYNC_USER }}
-          remote_key: ${{ secrets.NIGHTLIES_RSYNC_KEY }}
+        run: rsync -rlptDvz --protect-args .nightly-publish/feed/ "$NIGHTLIES_RSYNC_TARGET/"
+
+      - name: Remove the temporary Nightlies credentials
+        if: always()
+        run: rm -f "$RUNNER_TEMP/nightlies-ssh/key" "$RUNNER_TEMP/nightlies-ssh/known_hosts"

@@ -19,7 +19,7 @@
 
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
@@ -46,7 +46,7 @@ async function writeUpdateSet(directory, version, platform) {
   );
 }
 
-test('staging publishes immutable payloads before versioned Nightly metadata', async (t) => {
+test('staging separates append-only payloads from the mutable Nightly feed', async (t) => {
   const root = await mkdtemp(join(tmpdir(), 'maka-desktop-nightly-'));
   t.after(() => rm(root, { recursive: true, force: true }));
   const input = join(root, 'input');
@@ -68,21 +68,29 @@ test('staging publishes immutable payloads before versioned Nightly metadata', a
   });
 
   const macMetadata = (await import('yaml')).parse(
-    await readFile(join(output, 'latest-mac.yml'), 'utf8'),
+    await readFile(join(output, 'feed', 'latest-mac.yml'), 'utf8'),
   );
   const windowsMetadata = (await import('yaml')).parse(
-    await readFile(join(output, 'latest.yml'), 'utf8'),
+    await readFile(join(output, 'feed', 'latest.yml'), 'utf8'),
   );
   assert.equal(macMetadata.files[0].url, `versions/${version}/Maka-${version}-mac-arm64.zip`);
   assert.equal(windowsMetadata.path, `versions/${version}/Maka-${version}-win-x64.exe`);
-  assert.equal(
-    JSON.parse(await readFile(join(output, 'nightly.json'), 'utf8')).sourceCommit,
-    'a'.repeat(40),
-  );
-  const index = await readFile(join(output, 'index.html'), 'utf8');
+  const index = await readFile(join(output, 'feed', 'index.html'), 'utf8');
   assert.match(index, /Desktop Nightly is a developer snapshot, not an Apache release/u);
+  assert.match(index, new RegExp(`source commit <code>${'a'.repeat(40)}</code>`, 'u'));
   assert.match(index, new RegExp(`versions/${version}/Maka-${version}-mac-arm64\.dmg`, 'u'));
   assert.match(index, new RegExp(`versions/${version}/Maka-${version}-win-x64\.exe`, 'u'));
-  await readFile(join(output, 'versions', version, `Maka-${version}-mac-arm64.zip`));
-  await readFile(join(output, 'versions', version, `Maka-${version}-win-x64.exe`));
+  assert.deepEqual((await readdir(join(output, 'feed'))).sort(), [
+    'index.html',
+    'latest-mac.yml',
+    'latest.yml',
+  ]);
+  assert.deepEqual((await readdir(join(output, 'versions', version))).sort(), [
+    `Maka-${version}-mac-arm64.dmg`,
+    `Maka-${version}-mac-arm64.zip`,
+    `Maka-${version}-mac-arm64.zip.blockmap`,
+    `Maka-${version}-win-x64.exe`,
+    `Maka-${version}-win-x64.exe.blockmap`,
+    `Maka-${version}-win-x64.zip`,
+  ]);
 });

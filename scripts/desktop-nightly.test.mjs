@@ -18,9 +18,18 @@
  */
 
 import assert from 'node:assert/strict';
+import { execFile } from 'node:child_process';
+import { copyFile, mkdir, mkdtemp, rm } from 'node:fs/promises';
+import { promisify } from 'node:util';
+import { tmpdir } from 'node:os';
+import { dirname, join } from 'node:path';
 import { test } from 'node:test';
+import { fileURLToPath } from 'node:url';
 import { resolveDesktopBuilderConfig } from '../apps/desktop/electron-builder.config.mjs';
 import { desktopNightlyIdentity, resolveDesktopBuildVersion } from './desktop-nightly.mjs';
+
+const run = promisify(execFile);
+const repoRoot = dirname(dirname(fileURLToPath(import.meta.url)));
 
 test('a nightly identity is a dev build of the checked-in product version', () => {
   assert.deepEqual(
@@ -35,6 +44,40 @@ test('a nightly identity is a dev build of the checked-in product version', () =
       sourceCommit: 'a'.repeat(40),
     },
   );
+});
+
+test('the identity entrypoint runs before repository dependencies are installed', async (t) => {
+  const fixture = await mkdtemp(join(tmpdir(), 'maka-nightly-identity-'));
+  t.after(() => rm(fixture, { recursive: true, force: true }));
+  await mkdir(join(fixture, 'scripts'));
+  await Promise.all([
+    copyFile(join(repoRoot, 'package.json'), join(fixture, 'package.json')),
+    copyFile(
+      join(repoRoot, 'scripts', 'desktop-nightly.mjs'),
+      join(fixture, 'scripts', 'desktop-nightly.mjs'),
+    ),
+    copyFile(
+      join(repoRoot, 'scripts', 'desktop-update-contract.mjs'),
+      join(fixture, 'scripts', 'desktop-update-contract.mjs'),
+    ),
+    copyFile(
+      join(repoRoot, 'scripts', 'release-version.mjs'),
+      join(fixture, 'scripts', 'release-version.mjs'),
+    ),
+  ]);
+
+  const { stdout } = await run(process.execPath, ['scripts/desktop-nightly.mjs', 'identity'], {
+    cwd: fixture,
+    env: {
+      GITHUB_RUN_NUMBER: '42',
+      GITHUB_SHA: 'a'.repeat(40),
+      NIGHTLY_BUILD_DATE: '2026-08-29T18:17:00Z',
+    },
+  });
+  assert.deepEqual(JSON.parse(stdout), {
+    version: '0.2.0-dev.20260829.42',
+    sourceCommit: 'a'.repeat(40),
+  });
 });
 
 test('a nightly package embeds only the Apache Nightlies update authority', () => {
