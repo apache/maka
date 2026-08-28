@@ -18,25 +18,79 @@
  */
 
 import assert from 'node:assert/strict';
-import { readFile } from 'node:fs/promises';
+import {
+  chmod,
+  mkdir,
+  mkdtemp,
+  readFile,
+  realpath,
+  rm,
+  symlink,
+  writeFile,
+} from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { test } from 'node:test';
 
 import { requireComputerUseLabRoot } from './lab-root.mjs';
 
-test('returns the configured Computer Use Lab root', () => {
-  assert.equal(
-    requireComputerUseLabRoot({ MAKA_CU_AX_MODEL_LAB_ROOT: '/tmp/codex-cua-lab' }),
-    '/tmp/codex-cua-lab',
-  );
+test('rejects missing and invalid Computer Use Lab roots', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-cu-lab-root-invalid-'));
+  try {
+    assert.throws(
+      () => requireComputerUseLabRoot({}),
+      new Error(
+        'MAKA_CU_AX_MODEL_LAB_ROOT is required: point it at a local checkout of the Codex CUA Lab fixture',
+      ),
+    );
+    assert.throws(
+      () => requireComputerUseLabRoot({ MAKA_CU_AX_MODEL_LAB_ROOT: '   ' }),
+      /MAKA_CU_AX_MODEL_LAB_ROOT is required/,
+    );
+    assert.throws(
+      () => requireComputerUseLabRoot({ MAKA_CU_AX_MODEL_LAB_ROOT: 'relative/lab' }),
+      /MAKA_CU_AX_MODEL_LAB_ROOT must be an absolute path/,
+    );
+    assert.throws(
+      () => requireComputerUseLabRoot({ MAKA_CU_AX_MODEL_LAB_ROOT: join(root, 'missing') }),
+      /MAKA_CU_AX_MODEL_LAB_ROOT must point to an existing directory/,
+    );
+    assert.throws(
+      () => requireComputerUseLabRoot({ MAKA_CU_AX_MODEL_LAB_ROOT: root }),
+      /MAKA_CU_AX_MODEL_LAB_ROOT must contain an executable test-app\/launch\.sh/,
+    );
+    const nonExecutableRoot = join(root, 'non-executable');
+    const launcherPath = join(nonExecutableRoot, 'test-app', 'launch.sh');
+    await mkdir(join(nonExecutableRoot, 'test-app'), { recursive: true });
+    await writeFile(launcherPath, '#!/usr/bin/env bash\n');
+    await chmod(launcherPath, 0o644);
+    assert.throws(
+      () => requireComputerUseLabRoot({ MAKA_CU_AX_MODEL_LAB_ROOT: nonExecutableRoot }),
+      /MAKA_CU_AX_MODEL_LAB_ROOT must contain an executable test-app\/launch\.sh/,
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
 });
 
-test('rejects a missing Computer Use Lab root', () => {
-  assert.throws(
-    () => requireComputerUseLabRoot({}),
-    new Error(
-      'MAKA_CU_AX_MODEL_LAB_ROOT is required: point it at a local checkout of the Codex CUA Lab fixture',
-    ),
-  );
+test('canonicalizes a valid Computer Use Lab root', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-cu-lab-root-valid-'));
+  try {
+    const fixtureRoot = join(root, 'fixture');
+    const linkedRoot = join(root, 'fixture-link');
+    const launcherPath = join(fixtureRoot, 'test-app', 'launch.sh');
+    await mkdir(join(fixtureRoot, 'test-app'), { recursive: true });
+    await writeFile(launcherPath, '#!/usr/bin/env bash\n');
+    await chmod(launcherPath, 0o755);
+    await symlink(fixtureRoot, linkedRoot);
+
+    assert.equal(
+      requireComputerUseLabRoot({ MAKA_CU_AX_MODEL_LAB_ROOT: linkedRoot }),
+      await realpath(fixtureRoot),
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
 });
 
 test('Lab-backed entry points require the configured root', async () => {
