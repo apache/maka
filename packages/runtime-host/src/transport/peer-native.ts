@@ -29,6 +29,7 @@ const require = createRequire(import.meta.url);
 export type RuntimeHostPeerErrorCode =
   | 'peer_identity_mismatch'
   | 'direct_path_unavailable'
+  | 'mesh_control_unavailable'
   | 'coordination_unavailable'
   | 'peer_native_unavailable'
   | 'peer_native_failed'
@@ -46,6 +47,7 @@ export class RuntimeHostPeerError extends Error {
 }
 
 export interface RuntimeHostPeerNativeStream {
+  readonly peerId: string;
   read(): Promise<Buffer | null>;
   write(bytes: Buffer): Promise<void>;
   close(): Promise<void>;
@@ -62,8 +64,16 @@ export interface RuntimeHostPeerNativeEndpoint {
     readonly coordinationRelays?: readonly string[];
     readonly directDeadlineMs: number;
   }): Promise<RuntimeHostPeerNativeStream>;
+  connectMeshControl(options: {
+    readonly requestId: number;
+    readonly peerId: string;
+    readonly routeHints: readonly string[];
+    readonly coordinationRelays?: readonly string[];
+    readonly directDeadlineMs: number;
+  }): Promise<RuntimeHostPeerNativeStream>;
   cancelConnect(requestId: number): Promise<boolean>;
   accept(): Promise<RuntimeHostPeerNativeStream | null>;
+  acceptMeshControl(): Promise<RuntimeHostPeerNativeStream | null>;
   close(): Promise<void>;
 }
 
@@ -74,7 +84,7 @@ interface RuntimeHostPeerNativeModule {
     readonly expectedPeerId?: string;
     readonly listenAddresses?: readonly string[];
     readonly coordinationRelays?: readonly string[];
-  }): RuntimeHostPeerNativeEndpoint;
+  }): unknown;
 }
 
 export async function ensureRuntimeHostPeerIdentity(input: {
@@ -100,12 +110,19 @@ export function startRuntimeHostPeerEndpoint(input: {
   readonly coordinationRelays?: readonly string[];
 }): RuntimeHostPeerNativeEndpoint {
   try {
-    return loadNativeModule(input.nativePath).startPeerEndpoint({
+    const endpoint = loadNativeModule(input.nativePath).startPeerEndpoint({
       keyPath: input.keyPath,
       ...(input.expectedPeerId ? { expectedPeerId: input.expectedPeerId } : {}),
       ...(input.listenAddresses ? { listenAddresses: input.listenAddresses } : {}),
       ...(input.coordinationRelays ? { coordinationRelays: input.coordinationRelays } : {}),
     });
+    if (!isPeerNativeEndpoint(endpoint)) {
+      throw new RuntimeHostPeerError(
+        'peer_native_unavailable',
+        'Runtime Host peer native endpoint has an incompatible API',
+      );
+    }
+    return endpoint;
   } catch (error) {
     throw normalizePeerError(error);
   }
@@ -314,9 +331,10 @@ export class RuntimeHostPeerByteStream implements RuntimeHostByteStream {
 export function normalizePeerError(error: unknown): RuntimeHostPeerError {
   if (error instanceof RuntimeHostPeerError) return error;
   const cause = asError(error);
-  const match = /^(peer_[a-z_]+|direct_path_unavailable|coordination_unavailable):\s*(.*)$/su.exec(
-    cause.message,
-  );
+  const match =
+    /^(peer_[a-z_]+|direct_path_unavailable|mesh_control_unavailable|coordination_unavailable):\s*(.*)$/su.exec(
+      cause.message,
+    );
   if (match && isPeerErrorCode(match[1])) {
     return new RuntimeHostPeerError(match[1], match[2] || match[1], { cause });
   }
@@ -331,6 +349,30 @@ function isPeerNativeModule(value: unknown): value is RuntimeHostPeerNativeModul
     typeof value.ensurePeerIdentity === 'function' &&
     'startPeerEndpoint' in value &&
     typeof value.startPeerEndpoint === 'function'
+  );
+}
+
+function isPeerNativeEndpoint(value: unknown): value is RuntimeHostPeerNativeEndpoint {
+  return (
+    typeof value === 'object' &&
+    value !== null &&
+    'peerId' in value &&
+    isPeerId(value.peerId) &&
+    'listenAddresses' in value &&
+    Array.isArray(value.listenAddresses) &&
+    value.listenAddresses.every((address) => typeof address === 'string') &&
+    'connect' in value &&
+    typeof value.connect === 'function' &&
+    'connectMeshControl' in value &&
+    typeof value.connectMeshControl === 'function' &&
+    'cancelConnect' in value &&
+    typeof value.cancelConnect === 'function' &&
+    'accept' in value &&
+    typeof value.accept === 'function' &&
+    'acceptMeshControl' in value &&
+    typeof value.acceptMeshControl === 'function' &&
+    'close' in value &&
+    typeof value.close === 'function'
   );
 }
 
@@ -388,6 +430,7 @@ function isPeerErrorCode(value: string | undefined): value is RuntimeHostPeerErr
   return (
     value === 'peer_identity_mismatch' ||
     value === 'direct_path_unavailable' ||
+    value === 'mesh_control_unavailable' ||
     value === 'coordination_unavailable' ||
     value === 'peer_native_unavailable' ||
     value === 'peer_native_failed' ||

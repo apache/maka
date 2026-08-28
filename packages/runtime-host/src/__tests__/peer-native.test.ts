@@ -40,13 +40,14 @@ test('shares one peer endpoint while cancelling connection attempts independentl
     await writeFile(
       nativePath,
       `let finishAccept;
+let finishMeshAccept;
 const pending = new Map();
 const stats = { starts: 0, closes: 0, requests: [], cancellations: [] };
 let missFirstCancellation = true;
 const stream = { read: async () => null, write: async () => {}, close: async () => {}, abort: () => {} };
 module.exports = {
   stats,
-  failEndpoint: () => finishAccept?.(null),
+  failEndpoint: () => { finishAccept?.(null); finishMeshAccept?.(null); },
   ensurePeerIdentity: async () => 'client',
   startPeerEndpoint: () => {
     stats.starts += 1;
@@ -54,6 +55,11 @@ module.exports = {
       peerId: 'client',
       listenAddresses: [],
       connect: ({ requestId, peerId }) => {
+        stats.requests.push(requestId);
+        if (peerId === 'ready') return Promise.resolve(stream);
+        return new Promise((_resolve, reject) => pending.set(requestId, reject));
+      },
+      connectMeshControl: ({ requestId, peerId }) => {
         stats.requests.push(requestId);
         if (peerId === 'ready') return Promise.resolve(stream);
         return new Promise((_resolve, reject) => pending.set(requestId, reject));
@@ -69,7 +75,8 @@ module.exports = {
         return true;
       },
       accept: () => new Promise((resolve) => { finishAccept = resolve; }),
-      close: async () => { stats.closes += 1; finishAccept?.(null); },
+      acceptMeshControl: () => new Promise((resolve) => { finishMeshAccept = resolve; }),
+      close: async () => { stats.closes += 1; finishAccept?.(null); finishMeshAccept?.(null); },
     };
   },
 };
@@ -108,13 +115,42 @@ module.exports = {
   }
 });
 
-test('loads a relative native module path from the process working directory', async () => {
+test('rejects an incomplete endpoint API and loads a compatible relative native module', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'maka-peer-native-'));
   try {
+    const incompletePath = join(directory, 'incomplete.cjs');
+    await writeFile(
+      incompletePath,
+      'module.exports = { ensurePeerIdentity: async () => "peer", startPeerEndpoint: () => ({ peerId: "peer", listenAddresses: [] }) };\n',
+    );
+    assert.throws(
+      () =>
+        startRuntimeHostPeerEndpoint({
+          nativePath: relative(process.cwd(), incompletePath),
+          keyPath: 'unused',
+        }),
+      (error: unknown) =>
+        error instanceof RuntimeHostPeerError && error.code === 'peer_native_unavailable',
+    );
+
     const modulePath = join(directory, 'peer.cjs');
     await writeFile(
       modulePath,
-      'module.exports = { ensurePeerIdentity: async () => "peer", startPeerEndpoint: () => ({ peerId: "peer", listenAddresses: [] }) };\n',
+      `const stream = { read: async () => null, write: async () => {}, close: async () => {}, abort: () => {} };
+module.exports = {
+  ensurePeerIdentity: async () => 'peer',
+  startPeerEndpoint: () => ({
+    peerId: 'peer',
+    listenAddresses: [],
+    connect: async () => stream,
+    connectMeshControl: async () => stream,
+    cancelConnect: async () => true,
+    accept: async () => null,
+    acceptMeshControl: async () => null,
+    close: async () => {},
+  }),
+};
+`,
     );
     const endpoint = startRuntimeHostPeerEndpoint({
       nativePath: relative(process.cwd(), modulePath),
@@ -156,6 +192,7 @@ test('bounds and separates the peer credential preface from Runtime Host frames'
 function streamWith(chunk: Buffer): RuntimeHostPeerNativeStream {
   let pending: Buffer | null = chunk;
   return {
+    peerId: 'remote-peer',
     read: async () => {
       const value = pending;
       pending = null;
