@@ -88,6 +88,7 @@ export class McpManagementOverlay implements Component {
   private documentRows = 0;
   private bodyRows = 0;
   private selected = 0;
+  private serverRows: { start: number; end: number }[] = [];
   private phase: McpOverlayPhase = { kind: 'list' };
   private notice: { level: 'info' | 'error'; text: string } | undefined;
   private readonly dispose: () => void;
@@ -165,6 +166,7 @@ export class McpManagementOverlay implements Component {
     this.bodyRows = Math.max(0, viewportRows - (showFooter ? CHROME_ROWS : 1));
     const document = this.document(safeWidth);
     this.documentRows = document.length;
+    this.keepSelectionVisible();
     this.top = clamp(this.top, 0, this.maxTop());
     const visible = document.slice(this.top, this.top + this.bodyRows);
     const start = visible.length === 0 ? 0 : this.top + 1;
@@ -194,10 +196,12 @@ export class McpManagementOverlay implements Component {
       this.selected = clamp(this.selected - 1, 0, servers.length - 1);
     } else if (matchesKey(data, Key.down)) {
       this.selected = clamp(this.selected + 1, 0, servers.length - 1);
-    } else if (matchesKey(data, Key.pageUp)) this.scrollBy(-Math.max(1, this.bodyRows));
-    else if (matchesKey(data, Key.pageDown)) this.scrollBy(Math.max(1, this.bodyRows));
-    else if (matchesKey(data, Key.home)) this.scrollTo(0);
-    else if (matchesKey(data, Key.end)) this.scrollTo(this.maxTop());
+    } else if (matchesKey(data, Key.pageUp)) {
+      this.moveSelectionByPage(-1, servers.length);
+    } else if (matchesKey(data, Key.pageDown)) {
+      this.moveSelectionByPage(1, servers.length);
+    } else if (matchesKey(data, Key.home)) this.selected = 0;
+    else if (matchesKey(data, Key.end)) this.selected = Math.max(0, servers.length - 1);
     else if (matchesKey(data, 'a') && this.management()) this.phase = { kind: 'add_choice' };
     else {
       const server = servers[this.selected];
@@ -371,6 +375,7 @@ export class McpManagementOverlay implements Component {
   }
 
   private document(width: number): string[] {
+    this.serverRows = [];
     const snapshot = this.input.surface?.snapshot();
     if (!snapshot) return unavailableDocument(this.input.locale);
     if (this.phase.kind === 'input') return this.inputDocument(width);
@@ -436,7 +441,10 @@ export class McpManagementOverlay implements Component {
     lines.push('');
     this.selected = clamp(this.selected, 0, snapshot.servers.length - 1);
     snapshot.servers.forEach((server, index) => {
-      lines.push(...serverLines(server, this.input.locale, index === this.selected));
+      const rows = serverLines(server, this.input.locale, index === this.selected);
+      const start = lines.length;
+      lines.push(...rows);
+      this.serverRows.push({ start, end: lines.length - 1 });
     });
     return lines;
   }
@@ -493,13 +501,35 @@ export class McpManagementOverlay implements Component {
     this.input.onClose();
   }
 
-  private scrollBy(delta: number): void {
-    this.scrollTo(this.top + delta);
+  private keepSelectionVisible(): void {
+    const rows = this.serverRows[this.selected];
+    if (!rows || this.bodyRows <= 0) return;
+    if (rows.end - rows.start + 1 > this.bodyRows || rows.start < this.top) {
+      this.top = rows.start;
+    } else if (rows.end >= this.top + this.bodyRows) {
+      this.top = rows.end - this.bodyRows + 1;
+    }
   }
 
-  private scrollTo(next: number): void {
-    this.top = clamp(next, 0, this.maxTop());
-    this.input.onChange();
+  private moveSelectionByPage(direction: -1 | 1, serverCount: number): void {
+    if (serverCount === 0) {
+      this.selected = 0;
+      return;
+    }
+    const current = this.serverRows[this.selected];
+    if (!current || this.serverRows.length !== serverCount) {
+      this.selected = clamp(
+        this.selected + direction * Math.max(1, this.bodyRows),
+        0,
+        serverCount - 1,
+      );
+      return;
+    }
+    const targetRow = current.start + direction * Math.max(1, this.bodyRows);
+    const target = this.serverRows.findIndex(
+      (rows) => targetRow >= rows.start && targetRow <= rows.end,
+    );
+    this.selected = target < 0 ? (direction < 0 ? 0 : Math.max(0, serverCount - 1)) : target;
   }
 
   private maxTop(): number {
