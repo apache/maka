@@ -45,15 +45,12 @@ import {
   buildUpdatePlanTool,
 } from '@maka/runtime/plan-tools';
 import { buildExploreAgentTool } from '@maka/runtime/explore-agent-tool';
-import {
-  buildHostCapabilitiesFromBinding,
-  projectEffectiveProductToolSurface,
-} from '@maka/runtime/tool-catalog-derive';
 import { buildParentAgentTools } from '@maka/runtime/subagent-tools';
 import { buildPersonalizationPromptFragment } from '@maka/runtime/system-prompt/personalization-prompt';
 import { buildRequestSandboxBoundaryTool } from '@maka/runtime/sandbox-boundary-tool';
 import { buildSessionEnvironmentPromptFragment } from '@maka/runtime/system-prompt/session-environment-prompt';
 import {
+  buildHostCapabilitiesFromBinding,
   buildSkillAgentToolFromInventory,
   buildSkillSearchAgentToolFromInventory,
   buildSkillsPromptFragmentFromInventoryWithReport,
@@ -75,7 +72,7 @@ import { resolveProjectGitInfo } from '@maka/runtime/system-prompt/project-conte
 import { routeWebFetchTools } from '@maka/runtime/web-fetch-tool';
 import { routeWebSearchTools } from '@maka/runtime/native-web-search-tool';
 import { type MakaTool } from '@maka/runtime/tool-runtime';
-import { type ToolAvailabilityConfig, type ToolGroup } from '@maka/runtime/tool-availability';
+import { type ToolGroup } from '@maka/runtime/tool-availability';
 import {
   resolveTurnShellPlan,
   type TurnShellPlan,
@@ -183,23 +180,21 @@ export function createInteractiveRunComposer(input: InteractiveRunComposerInput)
         fullAccess: input.plan.permissionMode === 'bypass',
       })
     : candidateTools;
-  const productSurface = projectEffectiveProductToolSurface({
-    host: 'runtime-host',
-    tools: selectedTools,
-  });
   // A bound tool list is an exact child/local activation ceiling. Dynamic
-  // capabilities must be included by the authority that constructs that list.
-  const tools = [...productSurface.tools];
+  // capabilities must be included by the authority that constructs that
+  // list. The ceiling is also an exact wire contract: no deferred search
+  // groups inside it, so the bound tools stay fully visible.
+  const tools = [...selectedTools];
   assertUniqueToolNames(tools);
-  const toolAvailability = mergeToolAvailability(
-    productSurface.toolAvailability,
-    hasToolCeiling
-      ? []
-      : filterToolGroups(
+  const hostCapabilities = buildHostCapabilitiesFromBinding(tools.map(({ name }) => name));
+  const toolAvailability = hasToolCeiling
+    ? undefined
+    : {
+        groups: filterToolGroups(
           input.clientCapabilities?.groups ?? [],
           new Set(tools.map(({ name }) => name)),
         ),
-  );
+      };
   const childInstruction = input.childInstruction?.trim();
   const runProfile = hostedExecutionRunProfile(input.toolProfile);
   const resolvedSystemPrompts = new Map<string, Promise<ResolvedRunPrompt>>();
@@ -222,7 +217,7 @@ export function createInteractiveRunComposer(input: InteractiveRunComposerInput)
       .then(async ([promptState, inventory]) => {
         const skills = buildSkillsPromptFragmentFromInventoryWithReport(
           inventory.inventory,
-          productSurface.hostCapabilities,
+          hostCapabilities,
           input.skillBudget,
         );
         context.emitSkillCatalogTrace?.('Skill catalog selection completed', {
@@ -491,23 +486,6 @@ export function createInteractiveRunComposerFactory(
   };
 }
 
-function mergeToolAvailability(
-  product: ToolAvailabilityConfig,
-  clientGroups: readonly ToolGroup[],
-): ToolAvailabilityConfig {
-  if (clientGroups.length === 0) return product;
-  const groupIds = new Set((product.groups ?? []).map((group) => group.id));
-  for (const group of clientGroups) {
-    if (groupIds.has(group.id)) {
-      throw new Error(`Client Capability tool group collision: ${group.id}`);
-    }
-    groupIds.add(group.id);
-  }
-  return {
-    groups: [...(product.groups ?? []), ...clientGroups],
-  };
-}
-
 function assertUniqueToolNames(tools: readonly MakaTool[]): void {
   const names = new Set<string>();
   for (const tool of tools) {
@@ -609,7 +587,12 @@ function renderPlanTail(
 }
 
 function filterToolGroups(groups: readonly ToolGroup[], names: ReadonlySet<string>): ToolGroup[] {
+  const seenIds = new Set<string>();
   return groups.flatMap((group) => {
+    if (seenIds.has(group.id)) {
+      throw new Error(`Client Capability tool group collision: ${group.id}`);
+    }
+    seenIds.add(group.id);
     const toolNames = group.toolNames.filter((name) => names.has(name));
     return toolNames.length > 0 ? [{ ...group, toolNames }] : [];
   });
@@ -725,11 +708,13 @@ function renderTaskLedgerTail(
   const rendered = renderTaskLedgerPromptText(tasks);
   if (!rendered.text) return undefined;
   return [
-    'Current task ledger (current-turn context only; maintain it with task_create, task_update, task_list, and task_get):',
+    'Current task ledger (current-turn context only; maintain it with task_create, task_update, task_list, and task_get — activate them via tool_search first when they are not already visible):',
     '<task-ledger>',
     rendered.text,
     ...(rendered.omittedCount > 0
-      ? [`omitted=${rendered.omittedCount} (use task_list/task_get for the complete ledger)`]
+      ? [
+          `omitted=${rendered.omittedCount} (use task_list/task_get via tool_search for the complete ledger)`,
+        ]
       : []),
     '</task-ledger>',
   ].join('\n');

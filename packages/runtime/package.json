@@ -106,7 +106,6 @@
     "./tavily-search": "./dist/tavily-search.js",
     "./terminal-run-commit": "./dist/terminal-run-commit.js",
     "./tool-availability": "./dist/tool-availability.js",
-    "./tool-catalog-derive": "./dist/tool-catalog-derive.js",
     "./tool-free-model-call": "./dist/tool-free-model-call.js",
     "./tool-result-archive": "./dist/tool-result-archive.js",
     "./tool-result-archive-capability": "./dist/tool-result-archive-capability.js",

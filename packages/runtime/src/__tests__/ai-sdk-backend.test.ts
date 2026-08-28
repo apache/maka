@@ -530,6 +530,38 @@ describe('AiSdkBackend ApplyPatch routing', () => {
   });
 });
 
+/** Deferred memory triggers need one tool_search step before the model may call them. */
+function memorySearchChunks(searchToolName: string): LanguageModelV4StreamPart[] {
+  return [
+    { type: 'stream-start', warnings: [] },
+    {
+      type: 'tool-call',
+      toolCallId: 'memory-search',
+      toolName: searchToolName,
+      input: JSON.stringify({ query: 'memory' }),
+    },
+    {
+      type: 'finish',
+      finishReason: { unified: 'tool-calls', raw: 'tool_calls' },
+      usage: emptyUsage(),
+    },
+  ];
+}
+
+function memoryFinishTextChunks(delta: string): LanguageModelV4StreamPart[] {
+  return [
+    { type: 'stream-start', warnings: [] },
+    { type: 'text-start', id: 'text-1' },
+    { type: 'text-delta', id: 'text-1', delta },
+    { type: 'text-end', id: 'text-1' },
+    {
+      type: 'finish',
+      finishReason: { unified: 'stop', raw: 'stop' },
+      usage: emptyUsage(),
+    },
+  ];
+}
+
 describe('AiSdkBackend Memory Extraction triggers', () => {
   test('dispatches a pre-turn Compaction recipe without projecting history or awaiting it', async () => {
     const model = completionModel();
@@ -832,8 +864,30 @@ describe('AiSdkBackend Memory Extraction triggers', () => {
   });
 
   test('exposes explicitly unsupported Memory triggers on the native OpenAI Responses lane', async () => {
-    const model = completionModel();
+    let modelCalls = 0;
     let memoryCalled = false;
+    const model = new MockLanguageModelV4({
+      doStream: async () => {
+        modelCalls += 1;
+        return {
+          stream: simulateReadableStream({
+            chunks: (modelCalls === 1
+              ? memorySearchChunks('maka_tool_search')
+              : [
+                  { type: 'stream-start', warnings: [] },
+                  {
+                    type: 'finish',
+                    finishReason: { unified: 'stop', raw: 'stop' },
+                    usage: emptyUsage(),
+                  },
+                ]) as LanguageModelV4StreamPart[],
+            initialDelayInMs: null,
+            chunkDelayInMs: null,
+          }),
+        };
+      },
+    });
+    const durable = durableTurnHarness('turn-1', 'hello');
     const backend = createTestAiSdkBackend({
       sessionId: 'session-1',
       header: header(),
@@ -843,6 +897,8 @@ describe('AiSdkBackend Memory Extraction triggers', () => {
       modelId: 'gpt-5.4',
       modelFactory: () => model,
       tools: [],
+      toolAvailability: {},
+      loadTurnRuntimeEvents: durable.loadTurnRuntimeEvents,
       memoryExtraction: {
         gate: async () => ({ allowed: true }),
         remember: async () => {
@@ -857,14 +913,20 @@ describe('AiSdkBackend Memory Extraction triggers', () => {
       now: monotonicClock(),
     });
 
-    await drain(backend.send({ turnId: 'turn-1', text: 'hello', context: [] }));
-
-    assert.equal(
-      model.doStreamCalls[0]?.tools?.some(
-        (tool) => tool.name === 'memory_remember' || tool.name === 'memory_extract',
-      ) ?? false,
-      true,
+    await drainDurably(
+      backend.send(durable.input({ runId: 'run-1', invocationId: 'invocation-1' })),
+      durable,
     );
+
+    const stepZeroToolNames = model.doStreamCalls[0]?.tools?.map((tool) => tool.name) ?? [];
+    assert.equal(
+      stepZeroToolNames.some((name) => name === 'memory_remember' || name === 'memory_extract'),
+      false,
+    );
+    assert.ok(stepZeroToolNames.includes('maka_tool_search'));
+    const searchedToolNames = model.doStreamCalls[1]?.tools?.map((tool) => tool.name) ?? [];
+    assert.ok(searchedToolNames.includes('memory_remember'));
+    assert.ok(searchedToolNames.includes('memory_extract'));
     assert.equal(memoryCalled, false);
   });
 
@@ -877,31 +939,23 @@ describe('AiSdkBackend Memory Extraction triggers', () => {
         return {
           stream: simulateReadableStream({
             chunks: (modelCalls === 1
-              ? [
-                  { type: 'stream-start', warnings: [] },
-                  {
-                    type: 'tool-call',
-                    toolCallId: 'remember-call',
-                    toolName: 'memory_remember',
-                    input: '{}',
-                  },
-                  {
-                    type: 'finish',
-                    finishReason: { unified: 'tool-calls', raw: 'tool_calls' },
-                    usage: emptyUsage(),
-                  },
-                ]
-              : [
-                  { type: 'stream-start', warnings: [] },
-                  { type: 'text-start', id: 'text-1' },
-                  { type: 'text-delta', id: 'text-1', delta: 'Remembered.' },
-                  { type: 'text-end', id: 'text-1' },
-                  {
-                    type: 'finish',
-                    finishReason: { unified: 'stop', raw: 'stop' },
-                    usage: emptyUsage(),
-                  },
-                ]) as LanguageModelV4StreamPart[],
+              ? memorySearchChunks(TOOL_SEARCH_NAME)
+              : modelCalls === 2
+                ? [
+                    { type: 'stream-start', warnings: [] },
+                    {
+                      type: 'tool-call',
+                      toolCallId: 'remember-call',
+                      toolName: 'memory_remember',
+                      input: '{}',
+                    },
+                    {
+                      type: 'finish',
+                      finishReason: { unified: 'tool-calls', raw: 'tool_calls' },
+                      usage: emptyUsage(),
+                    },
+                  ]
+                : memoryFinishTextChunks('Remembered.')) as LanguageModelV4StreamPart[],
             initialDelayInMs: null,
             chunkDelayInMs: null,
           }),
@@ -918,6 +972,7 @@ describe('AiSdkBackend Memory Extraction triggers', () => {
       modelId: 'mock-model-id',
       modelFactory: () => model,
       tools: [],
+      toolAvailability: {},
       loadTurnRuntimeEvents: durable.loadTurnRuntimeEvents,
       memoryExtraction: {
         gate: async () => ({ allowed: true }),
@@ -946,7 +1001,7 @@ describe('AiSdkBackend Memory Extraction triggers', () => {
     );
     assert.ok(sourceUserEvent);
     assert.deepEqual(snapshot?.sourceEventMessagePositions?.[sourceUserEvent.id], [0]);
-    assert.match(JSON.stringify(model.doStreamCalls[1]?.prompt), /User prefers concise Chinese/);
+    assert.match(JSON.stringify(model.doStreamCalls[2]?.prompt), /User prefers concise Chinese/);
   });
 
   test('keeps the complete frozen provider context while evidence authority remains user-only', async () => {
@@ -972,31 +1027,23 @@ describe('AiSdkBackend Memory Extraction triggers', () => {
                 },
               ]
             : modelCalls === 2
-              ? [
-                  { type: 'stream-start', warnings: [] },
-                  {
-                    type: 'tool-call',
-                    toolCallId: 'remember-call',
-                    toolName: 'memory_remember',
-                    input: '{}',
-                  },
-                  {
-                    type: 'finish',
-                    finishReason: { unified: 'tool-calls', raw: 'tool_calls' },
-                    usage: emptyUsage(),
-                  },
-                ]
-              : [
-                  { type: 'stream-start', warnings: [] },
-                  { type: 'text-start', id: 'text-1' },
-                  { type: 'text-delta', id: 'text-1', delta: 'Remembered.' },
-                  { type: 'text-end', id: 'text-1' },
-                  {
-                    type: 'finish',
-                    finishReason: { unified: 'stop', raw: 'stop' },
-                    usage: emptyUsage(),
-                  },
-                ];
+              ? memorySearchChunks(TOOL_SEARCH_NAME)
+              : modelCalls === 3
+                ? [
+                    { type: 'stream-start', warnings: [] },
+                    {
+                      type: 'tool-call',
+                      toolCallId: 'remember-call',
+                      toolName: 'memory_remember',
+                      input: '{}',
+                    },
+                    {
+                      type: 'finish',
+                      finishReason: { unified: 'tool-calls', raw: 'tool_calls' },
+                      usage: emptyUsage(),
+                    },
+                  ]
+                : memoryFinishTextChunks('Remembered.');
         return {
           stream: simulateReadableStream({
             chunks,
@@ -1023,6 +1070,7 @@ describe('AiSdkBackend Memory Extraction triggers', () => {
           impl: async () => ({ value: 'TOOL-ONLY-SECRET' }),
         },
       ],
+      toolAvailability: {},
       loadTurnRuntimeEvents: durable.loadTurnRuntimeEvents,
       memoryExtraction: {
         gate: async () => ({ allowed: true }),
@@ -1065,31 +1113,23 @@ describe('AiSdkBackend Memory Extraction triggers', () => {
         return {
           stream: simulateReadableStream({
             chunks: (modelCalls === 1
-              ? [
-                  { type: 'stream-start', warnings: [] },
-                  {
-                    type: 'tool-call',
-                    toolCallId: 'extract-call',
-                    toolName: 'memory_extract',
-                    input: '{}',
-                  },
-                  {
-                    type: 'finish',
-                    finishReason: { unified: 'tool-calls', raw: 'tool_calls' },
-                    usage: emptyUsage(),
-                  },
-                ]
-              : [
-                  { type: 'stream-start', warnings: [] },
-                  { type: 'text-start', id: 'text-1' },
-                  { type: 'text-delta', id: 'text-1', delta: 'Done.' },
-                  { type: 'text-end', id: 'text-1' },
-                  {
-                    type: 'finish',
-                    finishReason: { unified: 'stop', raw: 'stop' },
-                    usage: emptyUsage(),
-                  },
-                ]) as LanguageModelV4StreamPart[],
+              ? memorySearchChunks(TOOL_SEARCH_NAME)
+              : modelCalls === 2
+                ? [
+                    { type: 'stream-start', warnings: [] },
+                    {
+                      type: 'tool-call',
+                      toolCallId: 'extract-call',
+                      toolName: 'memory_extract',
+                      input: '{}',
+                    },
+                    {
+                      type: 'finish',
+                      finishReason: { unified: 'tool-calls', raw: 'tool_calls' },
+                      usage: emptyUsage(),
+                    },
+                  ]
+                : memoryFinishTextChunks('Done.')) as LanguageModelV4StreamPart[],
             initialDelayInMs: null,
             chunkDelayInMs: null,
           }),
@@ -1106,6 +1146,7 @@ describe('AiSdkBackend Memory Extraction triggers', () => {
       modelId: 'mock-model-id',
       modelFactory: () => model,
       tools: [],
+      toolAvailability: {},
       loadTurnRuntimeEvents: durable.loadTurnRuntimeEvents,
       memoryExtraction: {
         gate: async () => ({ allowed: true }),
@@ -1124,7 +1165,7 @@ describe('AiSdkBackend Memory Extraction triggers', () => {
     );
     await new Promise<void>((resolve) => setImmediate(resolve));
 
-    assert.equal(modelCalls, 2);
+    assert.equal(modelCalls, 3);
     assert.ok(
       durable.ledger.some(
         (event) =>

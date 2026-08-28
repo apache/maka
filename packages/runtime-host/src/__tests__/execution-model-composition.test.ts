@@ -1484,40 +1484,21 @@ test('production Host executes a canonical ai-sdk Session against a real provide
     assert.match(requestText, /HOSTED_MEMORY_SENTINEL/);
     assert.match(JSON.stringify(mainRequests[1]?.body), /HOSTED_SKILL_BODY_MUST_STAY_LAZY/);
     // Tavily is selected but no web-search credential exists, so the provider
-    // must never see WebSearch in the effective root tool surface.
+    // must never see WebSearch in the effective root tool surface. Non-direct
+    // bound tools stay deferred behind tool_search until activated.
     assert.deepEqual(toolNames(request?.body), [
       'ArchiveRead',
       'AskUserQuestion',
       'Bash',
       'Edit',
-      'ExploreAgent',
-      'FormatJson',
       'Glob',
-      'GoalClear',
-      'GoalPause',
-      'GoalResume',
-      'GoalSet',
-      'GoalStatus',
       'Grep',
-      'MakaSettingsGet',
-      'MakaSettingsUpdate',
       'Read',
-      'ReadHistory',
-      'ScheduledTask',
-      'SearchHistory',
       'Skill',
       'SkillSearch',
       'StopBackgroundTask',
       'WebFetch',
       'Write',
-      'WriteStdin',
-      'memory_extract',
-      'memory_remember',
-      'request_sandbox_boundary',
-      'task_create',
-      'task_get',
-      'task_list',
-      'task_update',
       'tool_search',
     ]);
     assert.match(JSON.stringify(compactRequests[0]?.body), /context summarization assistant/);
@@ -3257,7 +3238,7 @@ test('a bound tool ceiling excludes dynamic Client Capability tools', () => {
 
   assert.deepEqual(composition.tools, [boundTool]);
   assert.equal(
-    composition.toolAvailability.groups?.some((group) => group.id === 'client_fixture'),
+    composition.toolAvailability?.groups?.some((group) => group.id === 'client_fixture') ?? false,
     false,
   );
 });
@@ -3291,7 +3272,7 @@ test('the headless coding profile freezes the Eval prompt and tool ceiling', asy
     composition.tools.map(({ name }) => name),
     ['Bash', 'Read', 'Write', 'Edit', 'Glob', 'Grep', 'apply_patch'],
   );
-  assert.deepEqual(composition.toolAvailability.groups, []);
+  assert.equal(composition.toolAvailability, undefined);
   assert.equal(
     (
       await composition.resolveSystemPrompt({

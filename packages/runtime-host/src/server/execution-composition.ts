@@ -41,10 +41,10 @@ import {
   type BackendFactory,
 } from '@maka/runtime/session-manager';
 import { buildToolsForAgentDefinition } from '@maka/runtime/agent-catalog';
-import { buildHostCapabilitiesFromBinding } from '@maka/runtime/tool-catalog-derive';
 import { buildHistoryTools } from '@maka/runtime/history-tools';
 import { createLocalContinuationSafetyInspector } from '@maka/runtime/continuation-safety';
 import { createConfiguredSubagentCatalog } from '@maka/runtime/configured-subagent-catalog';
+import { buildHostCapabilitiesFromBinding } from '@maka/runtime/skills';
 import {
   createBuiltinSandboxManager,
   createSandboxDiagnosticsProvider,
