@@ -1,0 +1,367 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
+import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
+import test, { type TestContext } from 'node:test';
+import { CONTEXT_OFFLOAD_OWNER_MAX_BYTES } from '@maka/core/context-offload';
+import {
+  CONTEXT_OFFLOAD_DATABASE_NAME,
+  SqliteContextOffloadStore,
+} from '../sqlite-context-offload-store.js';
+
+test('creates the dedicated WAL schema with incremental auto-vacuum', async (t) => {
+  const fixture = await createFixture(t);
+  fixture.store.close();
+  const database = new DatabaseSync(fixture.path);
+  t.after(() => database.close());
+
+  assert.equal(pragmaNumber(database, 'user_version'), 1);
+  assert.equal(pragmaNumber(database, 'auto_vacuum'), 2);
+  assert.equal(pragmaText(database, 'journal_mode'), 'wal');
+  assert.deepEqual(
+    database
+      .prepare(
+        `SELECT name FROM sqlite_schema
+         WHERE type = 'table' AND name LIKE 'context_%'
+         ORDER BY name`,
+      )
+      .all()
+      .map((row) => row.name),
+    ['context_blobs', 'context_refs', 'context_session_usage', 'context_store_usage'],
+  );
+});
+
+test('atomically persists one idempotent owner identity and verifies reads', async (t) => {
+  const fixture = await createFixture(t, {
+    sessionLogicalBytes: 64,
+    workspacePhysicalBytes: 64,
+  });
+  const bytes = new TextEncoder().encode('snapshot');
+  const expectedSha256 = sha256(bytes);
+  const input = {
+    sessionId: 'session-1',
+    owner: { kind: 'read_image_snapshot' as const, ownerId: 'read-call-1' },
+    bytes,
+    mediaType: 'image/png',
+    expectedSha256,
+  };
+
+  const first = await fixture.store.put(input);
+  const retried = await fixture.store.put(input);
+  assert.equal(first.ok, true);
+  assert.deepEqual(retried, first);
+  if (!first.ok) return;
+  assert.equal(first.record.blobId, expectedSha256);
+  assert.deepEqual(
+    await fixture.store.read({
+      sessionId: input.sessionId,
+      refId: first.record.refId,
+      maxBytes: bytes.byteLength,
+    }),
+    {
+      ok: true,
+      record: first.record,
+      bytes,
+    },
+  );
+  assert.deepEqual(await fixture.store.usage('session-1'), {
+    references: 1,
+    logicalBytes: bytes.byteLength,
+    physicalBytes: bytes.byteLength,
+  });
+
+  assert.deepEqual(
+    await fixture.store.put({ ...input, bytes: new TextEncoder().encode('changed') }),
+    {
+      ok: false,
+      reason: 'identity_conflict',
+    },
+  );
+  assert.deepEqual(await fixture.store.put({ ...input, expectedSha256: '0'.repeat(64) }), {
+    ok: false,
+    reason: 'identity_conflict',
+  });
+});
+
+test('reopens durable records and preserves owner idempotency', async (t) => {
+  const fixture = await createFixture(t);
+  const bytes = new TextEncoder().encode('durable');
+  const first = await fixture.store.put(putInput('session-1', 'archive-1', bytes));
+  assert.equal(first.ok, true);
+  if (!first.ok) return;
+  fixture.store.close();
+
+  const reopened = new SqliteContextOffloadStore(fixture.path, {
+    limits: fixture.limits,
+    now: () => 2_000,
+    idFactory: () => 'unexpected-new-reference',
+  });
+  t.after(() => reopened.close());
+  assert.deepEqual(await reopened.put(putInput('session-1', 'archive-1', bytes)), first);
+  assert.deepEqual(
+    await reopened.read({
+      sessionId: 'session-1',
+      refId: first.record.refId,
+      maxBytes: bytes.byteLength,
+    }),
+    { ok: true, record: first.record, bytes },
+  );
+});
+
+test('rejects a database schema newer than this authority understands', async (t) => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-context-offload-newer-'));
+  const path = join(root, CONTEXT_OFFLOAD_DATABASE_NAME);
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const database = new DatabaseSync(path);
+  database.exec('PRAGMA user_version = 2');
+  database.close();
+
+  assert.throws(
+    () =>
+      new SqliteContextOffloadStore(path, {
+        limits: { sessionLogicalBytes: 1, workspacePhysicalBytes: 1 },
+      }),
+    /schema 2 is newer than supported version 1/u,
+  );
+});
+
+test('rejects a current schema missing a query-required index', async (t) => {
+  const fixture = await createFixture(t);
+  fixture.store.close();
+  const database = new DatabaseSync(fixture.path);
+  database.exec('DROP INDEX context_refs_session');
+  database.close();
+
+  assert.throws(
+    () => new SqliteContextOffloadStore(fixture.path, { limits: fixture.limits }),
+    /missing index context_refs_session/u,
+  );
+});
+
+test('deduplicates physical bytes while quotas count each Session reference logically', async (t) => {
+  const fixture = await createFixture(t, {
+    sessionLogicalBytes: 8,
+    workspacePhysicalBytes: 4,
+  });
+  const bytes = new TextEncoder().encode('same');
+
+  const first = await fixture.store.put(putInput('session-1', 'owner-1', bytes));
+  const crossSession = await fixture.store.put(putInput('session-2', 'owner-2', bytes));
+  const secondReference = await fixture.store.put(putInput('session-1', 'owner-3', bytes));
+  assert.equal(first.ok, true);
+  assert.equal(crossSession.ok, true);
+  assert.equal(secondReference.ok, true);
+  assert.deepEqual(await fixture.store.usage('session-1'), {
+    references: 2,
+    logicalBytes: 8,
+    physicalBytes: 4,
+  });
+  assert.deepEqual(await fixture.store.usage('session-2'), {
+    references: 1,
+    logicalBytes: 4,
+    physicalBytes: 4,
+  });
+
+  assert.deepEqual(await fixture.store.put(putInput('session-1', 'owner-4', bytes)), {
+    ok: false,
+    reason: 'session_quota_exceeded',
+  });
+  assert.deepEqual(
+    await fixture.store.put(putInput('session-2', 'owner-5', new TextEncoder().encode('else'))),
+    { ok: false, reason: 'workspace_quota_exceeded' },
+  );
+});
+
+test('fails closed before returning bytes for Session mismatch and size limits', async (t) => {
+  const fixture = await createFixture(t);
+  const stored = await fixture.store.put(
+    putInput('session-1', 'archive-1', new TextEncoder().encode('archive')),
+  );
+  assert.equal(stored.ok, true);
+  if (!stored.ok) return;
+
+  assert.deepEqual(
+    await fixture.store.read({
+      sessionId: 'session-2',
+      refId: stored.record.refId,
+      maxBytes: 100,
+    }),
+    { ok: false, reason: 'session_mismatch' },
+  );
+  assert.deepEqual(
+    await fixture.store.read({
+      sessionId: 'session-1',
+      refId: stored.record.refId,
+      maxBytes: 3,
+    }),
+    { ok: false, reason: 'too_large' },
+  );
+  assert.deepEqual(
+    await fixture.store.read({
+      sessionId: 'session-1',
+      refId: 'missing',
+      maxBytes: 100,
+    }),
+    { ok: false, reason: 'not_found' },
+  );
+});
+
+test('enforces owner hard caps before commit', async (t) => {
+  const imageLimit = CONTEXT_OFFLOAD_OWNER_MAX_BYTES.read_image_snapshot;
+  const archiveLimit = CONTEXT_OFFLOAD_OWNER_MAX_BYTES.tool_result_archive;
+  const fixture = await createFixture(t, {
+    sessionLogicalBytes: imageLimit * 2,
+    workspacePhysicalBytes: imageLimit * 2,
+  });
+
+  assert.deepEqual(
+    await fixture.store.put({
+      ...putInput('session-1', 'large-image', new Uint8Array(imageLimit + 1)),
+      owner: { kind: 'read_image_snapshot', ownerId: 'large-image' },
+    }),
+    { ok: false, reason: 'too_large' },
+  );
+  assert.deepEqual(
+    await fixture.store.put({
+      ...putInput('session-1', 'large-archive', new Uint8Array(archiveLimit + 1)),
+      owner: { kind: 'tool_result_archive', ownerId: 'large-archive' },
+    }),
+    { ok: false, reason: 'too_large' },
+  );
+  assert.deepEqual(await fixture.store.usage(), {
+    references: 0,
+    logicalBytes: 0,
+    physicalBytes: 0,
+  });
+});
+
+test('detects payload corruption instead of returning unverified bytes', async (t) => {
+  const fixture = await createFixture(t);
+  const stored = await fixture.store.put(
+    putInput('session-1', 'archive-1', new TextEncoder().encode('original')),
+  );
+  assert.equal(stored.ok, true);
+  if (!stored.ok) return;
+
+  const database = new DatabaseSync(fixture.path);
+  database
+    .prepare('UPDATE context_blobs SET payload = ?')
+    .run(new TextEncoder().encode('tampered'));
+  database.close();
+
+  assert.deepEqual(
+    await fixture.store.read({
+      sessionId: 'session-1',
+      refId: stored.record.refId,
+      maxBytes: 100,
+    }),
+    { ok: false, reason: 'corrupt' },
+  );
+});
+
+test('rolls back blob and reference together when publication fails', async (t) => {
+  const fixture = await createFixture(t, undefined, (point) => {
+    if (point === 'after_ref_insert') throw new Error('injected publication failure');
+  });
+
+  assert.deepEqual(
+    await fixture.store.put(
+      putInput('session-1', 'archive-1', new TextEncoder().encode('archive')),
+    ),
+    { ok: false, reason: 'unavailable' },
+  );
+  assert.deepEqual(await fixture.store.usage(), {
+    references: 0,
+    logicalBytes: 0,
+    physicalBytes: 0,
+  });
+});
+
+test('releases only the authorized Session reference without deleting shared bytes', async (t) => {
+  const fixture = await createFixture(t);
+  const bytes = new TextEncoder().encode('shared');
+  const first = await fixture.store.put(putInput('session-1', 'owner-1', bytes));
+  const second = await fixture.store.put(putInput('session-2', 'owner-2', bytes));
+  assert.equal(first.ok, true);
+  assert.equal(second.ok, true);
+  if (!first.ok) return;
+
+  await fixture.store.releaseReference({ sessionId: 'session-2', refId: first.record.refId });
+  assert.equal((await fixture.store.usage('session-1')).references, 1);
+  await fixture.store.releaseReference({ sessionId: 'session-1', refId: first.record.refId });
+  await fixture.store.releaseReference({ sessionId: 'session-1', refId: first.record.refId });
+  assert.deepEqual(await fixture.store.usage('session-1'), {
+    references: 0,
+    logicalBytes: 0,
+    physicalBytes: bytes.byteLength,
+  });
+});
+
+function putInput(sessionId: string, ownerId: string, bytes: Uint8Array) {
+  return {
+    sessionId,
+    owner: { kind: 'tool_result_archive' as const, ownerId },
+    bytes,
+    mediaType: 'application/json',
+  };
+}
+
+async function createFixture(
+  t: TestContext,
+  limits = { sessionLogicalBytes: 16 * 1024 * 1024, workspacePhysicalBytes: 32 * 1024 * 1024 },
+  failpoint?: ConstructorParameters<typeof SqliteContextOffloadStore>[1]['failpoint'],
+) {
+  const root = await mkdtemp(join(tmpdir(), 'maka-context-offload-'));
+  const path = join(root, CONTEXT_OFFLOAD_DATABASE_NAME);
+  let nextId = 1;
+  const store = new SqliteContextOffloadStore(path, {
+    limits,
+    now: () => 1_000,
+    idFactory: () => `ref-${nextId++}`,
+    failpoint,
+  });
+  t.after(async () => {
+    store.close();
+    await rm(root, { recursive: true, force: true });
+  });
+  return { limits, path, store };
+}
+
+function sha256(bytes: Uint8Array): string {
+  return createHash('sha256').update(bytes).digest('hex');
+}
+
+function pragmaNumber(database: DatabaseSync, name: string): number {
+  const row = database.prepare(`PRAGMA ${name}`).get() as Record<string, unknown>;
+  const value = row[name];
+  if (typeof value !== 'number') throw new Error(`Expected numeric PRAGMA ${name}`);
+  return value;
+}
+
+function pragmaText(database: DatabaseSync, name: string): string {
+  const row = database.prepare(`PRAGMA ${name}`).get() as Record<string, unknown>;
+  const value = row[name];
+  if (typeof value !== 'string') throw new Error(`Expected text PRAGMA ${name}`);
+  return value;
+}

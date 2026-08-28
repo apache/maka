@@ -47,6 +47,7 @@
     "./permission-profile-compiler": "./dist/permission-profile-compiler.js",
     "./user-question": "./dist/user-question.js",
     "./connections": "./dist/connections.js",
+    "./context-offload": "./dist/context-offload.js",
     "./attachments": "./dist/attachments.js",
     "./artifacts": "./dist/artifacts.js",
     "./pet": "./dist/pet.js",
