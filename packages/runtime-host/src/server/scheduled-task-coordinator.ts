@@ -61,6 +61,8 @@ import type { SessionCreateInput } from '../protocol/session-catalog.js';
 
 const MAX_TIMER_DELAY_MS = 2_147_483_647;
 const NATIVE_PROVIDER_RETRY_MS = 5_000;
+const SCHEDULED_AGENT_RUN_IDENTITY_REQUIRED =
+  'ScheduledTask Agent runs require an immutable model connection identity';
 
 type ScheduledTaskSessions = Pick<ExecutionSessionWriter, 'readHeaderSnapshot'>;
 type ScheduledTaskRuntime = Pick<SessionManager, 'sendMessage'>;
@@ -580,6 +582,13 @@ export class HostScheduledTaskCoordinator implements ScheduledTaskToolAuthority 
           : `已投递到 ${botDisplayLabel(task.effect.platform)}。`,
         'fired',
       );
+    }
+
+    // Persisted agent-run templates currently identify their model connection
+    // by reusable slug only. Do not resolve that slug to a potentially
+    // different Connection entity. #3927 will make the exact ID durable.
+    if (task.effect.kind === 'agent_run') {
+      return this.#settleFailure(claim, SCHEDULED_AGENT_RUN_IDENTITY_REQUIRED);
     }
 
     let execution = claim.execution;
