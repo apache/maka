@@ -18,13 +18,13 @@
  */
 
 import { connectExistingRuntimeHost, type RuntimeHostConnection } from '@maka/runtime-host/client';
-import { decodePeerMeshInvitation } from '@maka/runtime-host/peer-mesh';
 import {
   encodeRuntimeHostPeerMeshManagementFrame,
   type RuntimeHostPeerMeshManagementAction,
   type RuntimeHostPeerMeshManagementFrame,
 } from '@maka/runtime-host/operator';
 import {
+  decodePeerMeshInvitation,
   RUNTIME_HOST_PROTOCOL_VERSION,
   type OperationInput,
   type OperationOutput,
@@ -83,8 +83,6 @@ export async function runRuntimeHostPeerMeshManagementCli(
     ...overrides,
   };
   try {
-    const invitation =
-      options.action === 'join' ? await readJoinInvitation(options, deps) : undefined;
     const controlRoot = resolveRuntimeHostManagedControlRoot(options.managedRootId);
     const result = await withRuntimeHostManagedServiceDeploymentLock(controlRoot, () =>
       withRuntimeHostManagedServiceLifecycleLock(controlRoot, async () => {
@@ -122,6 +120,8 @@ export async function runRuntimeHostPeerMeshManagementCli(
           if (connection.rootId !== options.managedRootId) {
             throw new Error('Runtime Host service is bound to a different State Root');
           }
+          const invitation =
+            options.action === 'join' ? await readJoinInvitation(options, deps) : undefined;
           return await executePeerMeshAction(connection, options, invitation);
         } finally {
           await connection.close();

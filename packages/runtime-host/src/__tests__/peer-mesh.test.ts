@@ -32,6 +32,39 @@ import {
   signPeerMeshRoster,
 } from '../peer-mesh/model.js';
 import { openPeerMeshNode, type PeerMeshNode, type PeerMeshTransport } from '../peer-mesh/node.js';
+import { PeerMeshPersistenceError, PeerMeshPostCommitError } from '../peer-mesh/store.js';
+import { createPeerMeshOperationHandlers } from '../server/peer-mesh-authority.js';
+
+test('preserves durable Mesh mutation outcomes and drains after an unknown commit', async () => {
+  let drains = 0;
+  const postCommit = createPeerMeshOperationHandlers(
+    {
+      create: () => Promise.reject(new PeerMeshPostCommitError(new Error('fsync failed'))),
+    } as PeerMeshNode,
+    { requestDrain: () => drains++ },
+  );
+  const created = await postCommit['peer.mesh.create']({}, undefined as never);
+  assert.deepEqual(created, {
+    ok: false,
+    error: {
+      code: 'commit_outcome_unknown',
+      message: 'Peer Mesh changed, but its durable commit could not be confirmed',
+    },
+  });
+  assert.equal(drains, 1);
+
+  const persistence = createPeerMeshOperationHandlers({
+    reconcile: () => Promise.reject(new PeerMeshPersistenceError(new Error('write failed'))),
+  } as PeerMeshNode);
+  const reconciled = await persistence['peer.mesh.reconcile']({}, undefined as never);
+  assert.deepEqual(reconciled, {
+    ok: false,
+    error: {
+      code: 'persistence_failed',
+      message: 'Peer Mesh state could not be saved',
+    },
+  });
+});
 
 test('authenticates three peers, consumes invitations once, and keeps authority state private', async () => {
   const root = await mkdtemp(join(tmpdir(), 'maka-peer-mesh-'));

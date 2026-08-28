@@ -24,6 +24,7 @@ import { openPeerMeshNode, type PeerMeshNode } from './node.js';
 export interface RuntimeHostPeerMeshOwner {
   readonly client: RuntimeHostPeerClient;
   readonly mesh: PeerMeshNode;
+  readonly closed: Promise<void>;
   close(): Promise<void>;
 }
 
@@ -59,10 +60,12 @@ export async function openRuntimeHostPeerMeshOwner(input: {
     closeTask ??= closeOwner(mesh!, client, serving);
     return closeTask;
   };
-  void serving.then(close, close).catch(() => undefined);
+  const closed = serving.then(close, close);
+  void closed.catch(() => undefined);
   return Object.freeze({
     client,
     mesh,
+    closed,
     close,
   });
 }

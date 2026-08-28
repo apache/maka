@@ -18,11 +18,12 @@
  */
 
 import type { IpcMain } from 'electron';
-import { decodePeerMeshInvitation, type PeerMeshNode } from '@maka/runtime-host/peer-mesh';
-import type {
-  PeerMeshInvitationV1,
-  PeerMeshProjection,
-  PeerMeshQueryResult,
+import type { PeerMeshNode } from '@maka/runtime-host/peer-mesh';
+import {
+  decodePeerMeshInvitation,
+  type PeerMeshInvitationV1,
+  type PeerMeshProjection,
+  type PeerMeshQueryResult,
 } from '@maka/runtime-host/protocol';
 import { projectPeerMeshStatus } from '@maka/runtime-host/server';
 import type {

@@ -28,6 +28,10 @@ import {
   verify,
 } from 'node:crypto';
 import {
+  decodePeerMeshInvitation as decodePeerMeshInvitationWire,
+  type PeerMeshInvitationV1,
+} from '../protocol/peer-mesh.js';
+import {
   PEER_MESH_MAX_MEMBERS,
   PEER_MESH_MAX_ROUTE_HINTS,
   PEER_MESH_ROUTE_RECORD_MAX_BYTES,
@@ -60,14 +64,6 @@ export interface PeerMeshAuthorityTarget {
   readonly peerId: string;
   readonly routeHints: readonly string[];
   readonly coordinationRelays: readonly string[];
-}
-
-export interface PeerMeshInvitationV1 extends PeerMeshAuthorityTarget {
-  readonly version: 1;
-  readonly meshId: string;
-  readonly authorityPublicKey: string;
-  readonly secret: string;
-  readonly expiresAt: number;
 }
 
 export interface PeerMeshAuthorityKeyPair {
@@ -181,34 +177,16 @@ export function matchesPeerMeshInvitationSecret(secret: string, expectedDigest: 
   return actual.length === expected.length && timingSafeEqual(actual, expected);
 }
 
-export function decodePeerMeshInvitation(value: unknown): PeerMeshInvitationV1 {
-  const record = exactObject(value, 'Peer Mesh invitation', [
-    'version',
-    'meshId',
-    'authorityPublicKey',
-    'secret',
-    'expiresAt',
-    'peerId',
-    'routeHints',
-    'coordinationRelays',
-  ]);
-  if (record.version !== 1) throw new Error('Unsupported Peer Mesh invitation version');
-  const authorityPublicKey = string(record.authorityPublicKey, 'authorityPublicKey', 256);
-  const meshId = string(record.meshId, 'meshId', 128);
+export function validatePeerMeshInvitation(value: unknown): PeerMeshInvitationV1 {
+  const invitation = decodePeerMeshInvitationWire(value);
+  const authorityPublicKey = invitation.authorityPublicKey;
+  const meshId = invitation.meshId;
   if (meshId !== peerMeshId(authorityPublicKey)) {
     throw new Error('Peer Mesh invitation has the wrong authority');
   }
   return Object.freeze({
-    version: 1,
-    meshId,
-    authorityPublicKey,
-    secret: validateSecret(record.secret),
-    expiresAt: integer(record.expiresAt, 'expiresAt', 1),
-    ...decodeAuthorityTarget({
-      peerId: record.peerId,
-      routeHints: record.routeHints,
-      coordinationRelays: record.coordinationRelays,
-    }),
+    ...invitation,
+    secret: validateSecret(invitation.secret),
   });
 }
 

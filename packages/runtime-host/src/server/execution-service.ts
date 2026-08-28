@@ -91,6 +91,7 @@ export async function startExecutionRuntimeHostService(
   if (!ownership) throw new RuntimeHostRootAlreadyOwnedError(capability.canonicalPath);
   const { owner } = ownership;
   let peerOwner: RuntimeHostPeerMeshOwner | undefined;
+  let host: RuntimeHostKernel | undefined;
   try {
     peerOwner = options.peer?.meshDataRoot
       ? await openRuntimeHostPeerMeshOwner({
@@ -98,8 +99,19 @@ export async function startExecutionRuntimeHostService(
           dataRoot: options.peer.meshDataRoot,
         })
       : undefined;
+    let peerTermination: { readonly error: unknown } | undefined;
+    if (peerOwner) {
+      const terminate = (error: unknown) => {
+        peerTermination ??= { error };
+        void host?.close().catch(() => undefined);
+      };
+      void peerOwner.closed.then(
+        () => terminate(new Error('Runtime Host Peer Mesh owner stopped unexpectedly')),
+        terminate,
+      );
+    }
     const accessAuthority = await openRuntimeHostAccessAuthority(owner.controlDirectory);
-    return await RuntimeHostKernel.start({
+    host = await RuntimeHostKernel.start({
       owner,
       lifecycleMode: 'service',
       handshakeTimeoutMs: options.handshakeTimeoutMs,
@@ -127,7 +139,13 @@ export async function startExecutionRuntimeHostService(
           }
         : {}),
     });
+    if (peerTermination) {
+      await host.close().catch(() => undefined);
+      throw peerTermination.error;
+    }
+    return host;
   } catch (error) {
+    await host?.close().catch(() => undefined);
     await peerOwner?.close().catch(() => undefined);
     if (!owner.closed) await owner.close();
     throw error;

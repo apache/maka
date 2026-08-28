@@ -151,7 +151,7 @@ export const PEER_MESH_OPERATION_SPECS = {
   'peer.mesh.reconcile': defineOperation({
     mode: 'command',
     availability: 'ready',
-    errors: ['operation_unavailable', 'internal_failure'] as const,
+    errors: MUTATION_ERRORS,
     decodeInput: decodeEmptyInput,
     decodeOutput: decodePeerMeshQueryResult,
   }),

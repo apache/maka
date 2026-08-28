@@ -26,7 +26,7 @@ import {
   canonicalPeerMeshRoster,
   canonicalPeerMeshRouteRecord,
   createPeerMeshInvitationSecret,
-  decodePeerMeshInvitation,
+  validatePeerMeshInvitation,
   decodeSignedPeerMeshRoster,
   decodeSignedPeerMeshRouteRecord,
   generatePeerMeshAuthorityKeyPair,
@@ -40,11 +40,11 @@ import {
   peerMeshInvitationSecretDigest,
   signPeerMeshRoster,
   type PeerMeshAuthorityTarget,
-  type PeerMeshInvitationV1,
   type PeerMeshRouteRecordV1,
   type SignedPeerMeshRosterV1,
   type SignedPeerMeshRouteRecordV1,
 } from './model.js';
+import type { PeerMeshInvitationV1 } from '../protocol/peer-mesh.js';
 import {
   authorityKeys,
   openPeerMeshStateStore,
@@ -240,37 +240,49 @@ class PeerMeshNodeImpl implements PeerMeshNode {
   create(): Promise<PeerMeshStatus> {
     return this.#admitMesh(async () => {
       const identity = this.#peer.identity();
-      const state = await this.#store.mutate((current) => {
+      const keys = generatePeerMeshAuthorityKeyPair();
+      const roster = signPeerMeshRoster(
+        canonicalPeerMeshRoster({
+          version: 1,
+          meshId: peerMeshId(keys.publicKey),
+          revision: 1,
+          members: [identity.peerId],
+          closed: false,
+        }),
+        keys,
+      );
+      const state: PeerMeshStateV1 = {
+        role: 'authority',
+        roster,
+        authorityPrivateKey: keys.privateKey,
+        invitations: [],
+      };
+      const signedRoute = await this.#signLocalRoute();
+      const now = this.#now();
+      await this.#store.mutate((current) => {
         assertMeshCapacity(current.meshes, identity.peerId);
-        const keys = generatePeerMeshAuthorityKeyPair();
-        const roster = signPeerMeshRoster(
-          canonicalPeerMeshRoster({
-            version: 1,
-            meshId: peerMeshId(keys.publicKey),
-            revision: 1,
-            members: [identity.peerId],
-            closed: false,
-          }),
-          keys,
-        );
-        const state: PeerMeshStateV1 = {
-          role: 'authority',
-          roster,
-          authorityPrivateKey: keys.privateKey,
-          invitations: [],
-        };
+        const currentLocalRoute = current.routes
+          .filter(({ route }) => route.peerId === identity.peerId)
+          .sort((left, right) => right.route.sequence - left.route.sequence)[0];
+        const localRoute =
+          currentLocalRoute && currentLocalRoute.route.sequence >= signedRoute.route.sequence
+            ? currentLocalRoute
+            : signedRoute;
         return {
           state: {
             ...current,
             meshes: appendMesh(current.meshes, state, identity.peerId),
+            routes: mergeRoutes(current.routes, [localRoute], now),
           },
-          result: state,
+          result: undefined,
         };
       });
-      await this.#refreshLocalRoute();
+      const stored = this.#store.read();
       return peerMeshStatus(
-        findMesh(this.#store.read().meshes, state.roster.roster.meshId)!,
+        findMesh(stored.meshes, state.roster.roster.meshId)!,
         identity,
+        stored.routes,
+        now,
       );
     });
   }
@@ -331,7 +343,7 @@ class PeerMeshNodeImpl implements PeerMeshNode {
 
   join(invitationValue: PeerMeshInvitationV1, signal?: AbortSignal): Promise<PeerMeshStatus> {
     return this.#admitMesh(async () => {
-      const invitation = decodePeerMeshInvitation(invitationValue);
+      const invitation = validatePeerMeshInvitation(invitationValue);
       if (invitation.expiresAt <= this.#now()) {
         throw new Error('Peer Mesh invitation has expired');
       }

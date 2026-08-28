@@ -692,7 +692,9 @@ export class RuntimeHostKernel {
             ),
           ),
       },
-      createPeerMeshOperationHandlers(this.#options.peerMesh),
+      createPeerMeshOperationHandlers(this.#options.peerMesh, {
+        requestDrain: () => this.#requestDrain(),
+      }),
       domainHandlers,
     );
   }

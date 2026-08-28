@@ -48,6 +48,7 @@ import {
   createClientRuntimeHostCredentialStore,
   createClientRuntimeHostProfileCatalog,
   createRuntimeHostCandidateLaunchBarrier,
+  createRuntimeHostPeerClientFromEnvironment,
   LOCAL_RUNTIME_HOST_PROFILE,
   loadOrCreateRuntimeHostClientInstanceId,
   listRuntimeHostWslDistributions,
@@ -228,14 +229,23 @@ const runtimeHostPeerConfiguration = await configureDesktopRuntimeHostPeerClient
   resourcesPath: process.resourcesPath,
   clientDataRoot: userDataDir,
 });
-const runtimeHostPeerOwner = runtimeHostPeerConfiguration
-  ? await openRuntimeHostPeerMeshOwner({
+let runtimeHostPeerOwner: Awaited<ReturnType<typeof openRuntimeHostPeerMeshOwner>> | undefined;
+let runtimeHostPeerClient:
+  | ReturnType<typeof createRuntimeHostPeerClientFromEnvironment>
+  | undefined;
+if (runtimeHostPeerConfiguration) {
+  try {
+    runtimeHostPeerOwner = await openRuntimeHostPeerMeshOwner({
       ...runtimeHostPeerConfiguration,
       dataRoot: join(userDataDir, 'peer-mesh'),
-    })
-  : undefined;
-const runtimeHostPeerClient = runtimeHostPeerOwner?.client;
-const runtimeHostDirectPeerAvailable = runtimeHostPeerOwner !== undefined;
+    });
+    runtimeHostPeerClient = runtimeHostPeerOwner.client;
+  } catch (error) {
+    console.error('[runtime-host] Peer Mesh is unavailable; continuing with Direct peer:', error);
+    runtimeHostPeerClient = createRuntimeHostPeerClientFromEnvironment();
+  }
+}
+const runtimeHostDirectPeerAvailable = runtimeHostPeerClient !== undefined;
 const runtimeHostClientInstanceId = await loadOrCreateRuntimeHostClientInstanceId(
   join(userDataDir, "runtime-host-client.json"),
 );
@@ -1660,7 +1670,7 @@ async function closeRuntimeHostDesktop(): Promise<void> {
     Promise.resolve().then(() => runtimeHostManagement.close()),
     Promise.resolve().then(() => runtimeHostPeerMeshManagement.close()),
     runtimeHostManager?.close(),
-    runtimeHostPeerOwner?.close(),
+    runtimeHostPeerOwner?.close() ?? runtimeHostPeerClient?.close(),
     runtimeHostOnboarding.close(),
     localRuntimeHostRemoteAccess.close(),
     runtimeHostSetupPackage.close(),

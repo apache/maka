@@ -37,6 +37,7 @@ export type PeerMeshOperationHandlers = Pick<
 
 export function createPeerMeshOperationHandlers(
   mesh: PeerMeshNode | undefined,
+  options: { readonly requestDrain?: () => void } = {},
 ): PeerMeshOperationHandlers {
   const query = (): PeerMeshQueryResult =>
     mesh
@@ -61,6 +62,7 @@ export function createPeerMeshOperationHandlers(
       return await operation();
     } catch (error) {
       if (error instanceof PeerMeshPostCommitError) {
+        options.requestDrain?.();
         return {
           ok: false,
           error: {
@@ -138,18 +140,10 @@ export function createPeerMeshOperationHandlers(
     },
     'peer.mesh.reconcile': async () => {
       if (!mesh) return unavailable();
-      try {
+      return mutate(async () => {
         await mesh.reconcile();
         return { ok: true, result: query() };
-      } catch {
-        return {
-          ok: false,
-          error: {
-            code: 'operation_unavailable',
-            message: 'Peer Mesh could not reach any current route',
-          },
-        };
-      }
+      });
     },
   };
 }
