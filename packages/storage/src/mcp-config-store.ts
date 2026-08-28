@@ -32,7 +32,7 @@ import {
   type McpServerConfig,
   type McpStdioServerConfig,
 } from '@maka/core/mcp';
-import { withFileUpdateLock } from './file-update-lock.js';
+import { withProcessLifetimeFileUpdateLock } from './process-lifetime-file-update-lock.js';
 
 const MAX_SERVERS = 100;
 const MAX_ID_LENGTH = 128;
@@ -127,6 +127,8 @@ export function normalizeMcpImport(source: string): McpConfigFile {
 }
 
 class FileMcpConfigStore implements McpConfigStore {
+  private directoryReady: Promise<void> | undefined;
+
   constructor(private readonly path: string) {}
 
   async get(): Promise<McpConfigFile> {
@@ -188,16 +190,13 @@ class FileMcpConfigStore implements McpConfigStore {
   }
 
   private async withUpdateLock<T>(operation: () => Promise<T>): Promise<T> {
-    const dir = dirname(this.path);
-    await mkdir(dir, { recursive: true, mode: 0o700 });
-    if (process.platform !== 'win32') await chmod(dir, 0o700);
-    return withFileUpdateLock(this.path, operation);
+    await this.ensureDirectory();
+    return withProcessLifetimeFileUpdateLock(this.path, operation);
   }
 
   private async write(config: McpConfigFile): Promise<void> {
     const dir = dirname(this.path);
-    await mkdir(dir, { recursive: true, mode: 0o700 });
-    if (process.platform !== 'win32') await chmod(dir, 0o700);
+    await this.ensureDirectory();
     const tempPath = join(dir, `.mcp-${randomUUID()}.tmp`);
     try {
       await writeFile(tempPath, `${JSON.stringify(config, null, 2)}\n`, {
@@ -211,6 +210,20 @@ class FileMcpConfigStore implements McpConfigStore {
     } finally {
       await rm(tempPath, { force: true }).catch(() => {});
     }
+  }
+
+  private ensureDirectory(): Promise<void> {
+    if (this.directoryReady) return this.directoryReady;
+    const dir = dirname(this.path);
+    const ready = (async () => {
+      await mkdir(dir, { recursive: true, mode: 0o700 });
+      if (process.platform !== 'win32') await chmod(dir, 0o700);
+    })();
+    this.directoryReady = ready;
+    void ready.catch(() => {
+      if (this.directoryReady === ready) this.directoryReady = undefined;
+    });
+    return ready;
   }
 }
 

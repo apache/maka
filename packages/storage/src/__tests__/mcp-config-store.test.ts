@@ -18,6 +18,7 @@
  */
 
 import assert from 'node:assert/strict';
+import { fork } from 'node:child_process';
 import { mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -261,6 +262,39 @@ test('two independent stores preserve concurrent additions to one workspace', as
       : undefined,
     'tui-server',
   );
+});
+
+test('a new store commits after a killed MCP config writer releases its native lock', async (t) => {
+  const root = await tempRoot();
+  const holder = fork(new URL('./fixtures/mcp-config-lock-holder.js', import.meta.url), [root], {
+    stdio: ['ignore', 'ignore', 'inherit', 'ipc'],
+  });
+  t.after(() => {
+    if (holder.exitCode === null && holder.signalCode === null) holder.kill('SIGKILL');
+  });
+  await new Promise<void>((resolve, reject) => {
+    holder.once('message', (message) => {
+      if (message === 'locked') resolve();
+      else reject(new Error(`Unexpected child message: ${String(message)}`));
+    });
+    holder.once('error', reject);
+    holder.once('exit', (code, signal) => {
+      reject(new Error(`MCP config lock holder exited early (${String(code)}, ${signal})`));
+    });
+  });
+
+  holder.kill('SIGKILL');
+  await new Promise<void>((resolve) => holder.once('exit', () => resolve()));
+
+  const saved = await createMcpConfigStore(root).upsert('recovered', {
+    command: 'recovered-server',
+  });
+  const recovered = saved.mcpServers.recovered;
+  assert.ok(recovered && 'command' in recovered);
+  assert.equal(recovered.command, 'recovered-server');
+  const reopened = (await createMcpConfigStore(root).get()).mcpServers.recovered;
+  assert.ok(reopened && 'command' in reopened);
+  assert.equal(reopened.command, 'recovered-server');
 });
 
 test('serializes concurrent updates without corrupting the file', async () => {
