@@ -550,7 +550,6 @@ export function ChatView(props: {
   const { highlightedTurnId } = useChatScroll({
     scrollRef,
     sessionId: props.activeSession?.id,
-    hasTurns: turns.length > 0,
     messages: props.messages,
     target: props.scrollTargetTurn,
     behavior: props.scrollBehavior,
@@ -669,10 +668,7 @@ export function ChatView(props: {
           title={props.returnToLatest.title}
           actionLabel={props.returnToLatest.label}
           isPending={props.returnToLatest.isPending}
-          onReturnToLatest={() =>
-            Promise.resolve(props.returnToLatest?.onClick()).then(() => {
-              chatLayout.scrollToBottom?.({ behavior: 'instant' });
-            })}
+          onReturnToLatest={() => props.returnToLatest?.onClick()}
         />
       ) : null}
       <SessionContextLayer

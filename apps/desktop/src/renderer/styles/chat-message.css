@@ -38,14 +38,17 @@
   opacity: 1;
 }
 
-/* Inserting earlier turns above the reader must not move what they are
-   reading. The browser's scroll anchoring does exactly that, so state the
-   dependency rather than inheriting the `auto` default: Maka reads no
-   geometry and restores no position of its own. It does not compensate at
-   `scrollTop === 0`, which is why the earlier-history request keeps the
-   viewport off the very top. */
 .maka-chat-message-list {
   width: 100%;
+}
+
+/* Inserting earlier turns above the reader must not move what they are
+   reading. The browser's scroll anchoring does exactly that, so state the
+   dependency on the scroller that runs it rather than inheriting the `auto`
+   default: Maka reads no geometry and restores no position of its own. The
+   one case anchoring declines is a scroller sitting at zero, compensated in
+   useChatScroll after the turns land. */
+[data-chat-scroll-container='true'] {
   overflow-anchor: auto;
 }
 

@@ -1,8 +1,8 @@
 diff --git a/node_modules/@astryxdesign/core/dist/Chat/ChatContext.d.ts b/node_modules/@astryxdesign/core/dist/Chat/ChatContext.d.ts
-index d1bfeeb..757a2e2 100644
+index d1bfeeb..b4a0e62 100644
 --- a/node_modules/@astryxdesign/core/dist/Chat/ChatContext.d.ts
 +++ b/node_modules/@astryxdesign/core/dist/Chat/ChatContext.d.ts
-@@ -61,6 +61,19 @@ export interface ChatLayoutContextValue {
+@@ -61,6 +61,13 @@ export interface ChatLayoutContextValue {
      scrollContainerRef: React.RefObject<HTMLElement | null>;
      /** Callback ref for the message list content element — layout observes it for size changes. */
      contentRef: (el: HTMLElement | null) => void;
@@ -13,12 +13,6 @@ index d1bfeeb..757a2e2 100644
 +     * changed scrollHeight and is read as a resize artefact.
 +     */
 +    unlockAutoFollow?: () => void;
-+    /**
-+     * Resume auto-follow and go to the newest message. The other half of
-+     * `unlockAutoFollow`: a host that offers "return to latest" has to put the
-+     * reader back on the tail, and no scroll it performs itself will re-lock.
-+     */
-+    scrollToBottom?: (options?: import("./useChatStreamScroll.js").ChatScrollToBottomOptions) => void;
  }
  export declare const ChatLayoutContext: import("react").Context<ChatLayoutContextValue | null>;
  export declare function useChatLayoutContext(): ChatLayoutContextValue | null;
@@ -39,7 +33,7 @@ index ff34874..9ec8d7a 100644
  export declare function ChatLayout({ children, composer, density, emptyState, scrollButton, scrollRef: externalScrollRef, xstyle, className, style, 'data-testid': testId, ref, ...rest }: ChatLayoutProps): import("react").JSX.Element;
  export declare namespace ChatLayout {
 diff --git a/node_modules/@astryxdesign/core/dist/Chat/ChatLayout.js b/node_modules/@astryxdesign/core/dist/Chat/ChatLayout.js
-index ff9b9fa..9869942 100644
+index ff9b9fa..6d427d0 100644
 --- a/node_modules/@astryxdesign/core/dist/Chat/ChatLayout.js
 +++ b/node_modules/@astryxdesign/core/dist/Chat/ChatLayout.js
 @@ -28,7 +28,7 @@
@@ -89,7 +83,7 @@ index ff9b9fa..9869942 100644
    const defaultScrollButton = /*#__PURE__*/_jsx(ChatLayoutScrollButton, {
      isVisible: scroll.isScrolledUp || newMsgs.hasNewMessages,
      label: newMsgs.hasNewMessages ? t('@astryx.chatLayout.newMessages') : undefined,
-@@ -223,8 +247,17 @@ export function ChatLayout({
+@@ -223,8 +247,14 @@ export function ChatLayout({
    // --- Layout context ---
    const layoutContext = useMemo(() => ({
      scrollContainerRef,
@@ -101,11 +95,8 @@ index ff9b9fa..9869942 100644
 +    // the move was intentional: the scroll-up unlock is skipped whenever the
 +    // event arrives with a changed scrollHeight, which is exactly what a host
 +    // that mounts content before scrolling produces.
-+    unlockAutoFollow: scroll.unlock,
-+    // maka: and the way back. Nothing a host does to scrollTop re-locks
-+    // auto-follow, so "return to latest" needs the controller itself.
-+    scrollToBottom: scroll.scrollToBottom
-+  }), [scrollContainerRef, newMsgs.contentRef, scroll.unlock, scroll.scrollToBottom]);
++    unlockAutoFollow: scroll.unlock
++  }), [scrollContainerRef, newMsgs.contentRef, scroll.unlock]);
  
    // --- Derived styles ---
    const showEmpty = !hasVisibleContent(children);
@@ -170,7 +161,7 @@ index d279277..c13ade0 100644
  //# sourceMappingURL=useChatStreamScroll.d.ts.map
 \ No newline at end of file
 diff --git a/node_modules/@astryxdesign/core/dist/Chat/useChatStreamScroll.js b/node_modules/@astryxdesign/core/dist/Chat/useChatStreamScroll.js
-index d9f2bed..c63df62 100644
+index d9f2bed..d7b6817 100644
 --- a/node_modules/@astryxdesign/core/dist/Chat/useChatStreamScroll.js
 +++ b/node_modules/@astryxdesign/core/dist/Chat/useChatStreamScroll.js
 @@ -178,6 +178,13 @@ export function useChatStreamScroll({
@@ -187,7 +178,29 @@ index d9f2bed..c63df62 100644
    const scrollIfLocked = useCallback(() => {
      if (!enabled) {
        return;
-@@ -303,6 +310,7 @@ export function useChatStreamScroll({
+@@ -253,8 +260,11 @@ export function useChatStreamScroll({
+     // Wheel up while animating — interrupt immediately.
+     // onScroll direction detection covers most cases, but wheel fires
+     // before the scroll position updates so we can react faster.
++    // maka: the predicate is "are we following", not "is a spring running".
++    // Under prefers-reduced-motion following never animates, so gating on
++    // animatingRef made both gesture releases dead code for those readers.
+     const onWheel = e => {
+-      if (e.deltaY < 0 && animatingRef.current) {
++      if (e.deltaY < 0 && lockedRef.current) {
+         lockedRef.current = false;
+         animatingRef.current = false;
+         setIsLocked(false);
+@@ -263,7 +273,7 @@ export function useChatStreamScroll({
+ 
+     // Touch move — user is dragging, take control
+     const onTouchMove = () => {
+-      if (animatingRef.current) {
++      if (lockedRef.current) {
+         lockedRef.current = false;
+         animatingRef.current = false;
+         setIsLocked(false);
+@@ -303,6 +313,7 @@ export function useChatStreamScroll({
      lock,
      unlock,
      scrollIfLocked,

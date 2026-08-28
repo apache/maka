@@ -59,6 +59,7 @@ afterEach(async () => {
 
 function mountTranscript(options: {
   scrollTop: number;
+  scrollHeight?: number;
   hasOlderHistory?: boolean;
   target?: { turnId: string; nonce: number };
   onLoadEarlierHistory?(): void;
@@ -70,9 +71,10 @@ function mountTranscript(options: {
   const scroller = document.querySelector<HTMLElement>('#root');
   assert.ok(scroller);
   let scrollTop = options.scrollTop;
+  let scrollHeight = options.scrollHeight ?? 9_000;
   Object.defineProperties(scroller, {
     clientHeight: { value: 600 },
-    scrollHeight: { value: 9_000 },
+    scrollHeight: { get: () => scrollHeight },
     scrollTop: {
       get: () => scrollTop,
       set: (value: number) => {
@@ -98,7 +100,6 @@ function mountTranscript(options: {
     useChatScroll({
       scrollRef,
       sessionId: 'session-1',
-      hasTurns: true,
       messages: [],
       behavior: 'auto',
       target: options.target,
@@ -109,7 +110,14 @@ function mountTranscript(options: {
     return null;
   }
 
-  return { scroller, document, Harness };
+  return {
+    scroller,
+    document,
+    Harness,
+    grow(by: number) {
+      scrollHeight += by;
+    },
+  };
 }
 
 test('jumping to a turn the reader picked releases auto-follow', async () => {
@@ -134,7 +142,7 @@ test('jumping to a turn the reader picked releases auto-follow', async () => {
 test('loading earlier history releases auto-follow and keeps the anchor off the top', async () => {
   let unlocked = 0;
   let loaded = 0;
-  const { scroller, document, Harness } = mountTranscript({
+  const { scroller, document, Harness, grow } = mountTranscript({
     scrollTop: 0,
     hasOlderHistory: true,
     onLoadEarlierHistory: () => {
@@ -159,7 +167,41 @@ test('loading earlier history releases auto-follow and keeps the anchor off the 
 
   assert.equal(loaded, 1);
   assert.equal(unlocked, 1);
-  // Scroll anchoring does nothing at the very top, so the incoming turns would
-  // push the reader down by their own height.
-  assert.equal(scroller.scrollTop, 1);
+  // Scroll anchoring does nothing while the scroller sits at the very top, so
+  // the turns that land above the reader are compensated here instead — after
+  // they are on screen, which is the only moment their height is known.
+  grow(3_000);
+  await act(async () => {
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  });
+  assert.equal(scroller.scrollTop, 3_000);
+});
+
+test('a chosen turn releases auto-follow once, not on every transcript update', async () => {
+  let unlocked = 0;
+  const target = { turnId: 'turn-1', nonce: 1 };
+  const { document, Harness } = mountTranscript({
+    scrollTop: 8_400,
+    target,
+    unlockAutoFollow: () => {
+      unlocked += 1;
+    },
+  });
+
+  const host = document.createElement('div');
+  await act(async () => {
+    mountedRoot = createRoot(host);
+    mountedRoot.render(<Harness />);
+  });
+
+  // The effect re-runs on every transcript update so a target that arrives
+  // before its turn still lands. Releasing is persistent, though: repeating it
+  // would drop the reader off the tail for the rest of the session.
+  for (let update = 0; update < 3; update += 1) {
+    await act(async () => {
+      mountedRoot?.render(<Harness />);
+    });
+  }
+
+  assert.equal(unlocked, 1);
 });

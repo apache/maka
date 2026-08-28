@@ -23,7 +23,6 @@ import type { StoredMessage } from '@maka/core/session';
 export function useChatScroll(input: {
   scrollRef: RefObject<HTMLElement | null>;
   sessionId?: string;
-  hasTurns: boolean;
   messages: readonly StoredMessage[];
   target?: { turnId: string; nonce: number };
   behavior: ScrollBehavior;
@@ -42,6 +41,7 @@ export function useChatScroll(input: {
   historyLoadPendingRef.current = input.historyLoadPending;
   const canLoadEarlier = input.onLoadEarlierHistory !== undefined;
   const earlierLoadRequest = useRef<object | null>(null);
+  const releasedForTarget = useRef<string | null>(null);
 
   useEffect(() => {
     earlierLoadRequest.current = null;
@@ -53,14 +53,22 @@ export function useChatScroll(input: {
     let previousScrollTop = root.scrollTop;
     const requestEarlier = (): void => {
       if (historyLoadPendingRef.current || earlierLoadRequest.current) return;
-      // Scroll anchoring is suppressed at the very top, so give it something
-      // to anchor against before the turns land above the reader.
-      if (root.scrollTop === 0) root.scrollTop = 1;
+      const scrollHeight = root.scrollHeight;
       const request = {};
       earlierLoadRequest.current = request;
       unlockAutoFollowRef.current?.();
       void Promise.resolve(loadEarlierRef.current?.()).catch(() => undefined).finally(() => {
-        if (earlierLoadRequest.current === request) earlierLoadRequest.current = null;
+        // Compensate after the turns are on screen, not when they were asked
+        // for: the reader usually coasts to the top during the load, and the
+        // browser declines to anchor only while the scroller sits at zero.
+        // That one hole is this branch; everything else layout already fixed.
+        window.requestAnimationFrame(() => {
+          if (earlierLoadRequest.current !== request) return;
+          if (root.isConnected && root.scrollTop === 0) {
+            root.scrollTop += root.scrollHeight - scrollHeight;
+          }
+          earlierLoadRequest.current = null;
+        });
       });
     };
     const nearStart = (): boolean =>
@@ -91,8 +99,15 @@ export function useChatScroll(input: {
     const target = input.target;
     if (!target?.turnId) return;
     // Navigating to a turn is the reader choosing a position, so it outranks
-    // following the tail.
-    unlockAutoFollowRef.current?.();
+    // following the tail. Releasing is a persistent state change, and this
+    // effect also re-runs on every transcript update so a target that arrives
+    // before its turn still lands — so release once per chosen target, not
+    // once per run, or the reader loses the tail for the rest of the session.
+    const chosen = `${input.sessionId ?? ''}:${target.turnId}:${target.nonce}`;
+    if (releasedForTarget.current !== chosen) {
+      releasedForTarget.current = chosen;
+      unlockAutoFollowRef.current?.();
+    }
     const frame = window.requestAnimationFrame(() => {
       const root = input.scrollRef.current;
       if (!root) return;
