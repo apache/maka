@@ -354,19 +354,6 @@ function AppShellContent({
     messageLoadPending,
     setMessageLoadPending,
     sessionUiController,
-    liveTurnBySessionRef,
-    sessionEventHealthBySessionRef,
-    setMessageLoadErrorBySession,
-    messageRetryPending,
-    stopPending,
-    permissionModePending,
-    sessionModelPending,
-    setLiveTurnBySession,
-    confirmLiveTurn,
-    setShellRunUpdatesBySession,
-    setInteractionBySession,
-    setMessageQueueBySession,
-    setSessionEventHealthBySession,
   } = useAppShellSessionWorkspace(toastApi);
   const interactionHydrationEpochRef = useRef(new Map<string, number>());
   const markInteractionChanged = useCallback((sessionId: string) => {
@@ -918,8 +905,8 @@ function AppShellContent({
     activeIdRef,
     connections,
     messages,
-    permissionModePending,
-    sessionModelPending,
+    permissionModePending: sessionUiController.permissionModePending,
+    sessionModelPending: sessionUiController.sessionModelPending,
     refreshSessions,
     saveComposerDefaults,
     sessionsRef,
@@ -1202,22 +1189,22 @@ function AppShellContent({
         ) {
           return;
         }
-        setInteractionBySession((current) => reconcileInteractions(current, activeId, requests));
+        sessionUiController.setInteractionBySession((current) => reconcileInteractions(current, activeId, requests));
       })
       .catch(() => {});
     return () => {
       cancelled = true;
     };
-  }, [activeId, setInteractionBySession]);
+  }, [activeId, sessionUiController.setInteractionBySession]);
   useEffect(
     () =>
       window.maka.sessions.subscribeActiveInteractions(({ sessionId, interactions }) => {
         markInteractionChanged(sessionId);
-        setInteractionBySession((current) =>
+        sessionUiController.setInteractionBySession((current) =>
           reconcileInteractions(current, sessionId, interactions),
         );
       }),
-    [markInteractionChanged, setInteractionBySession],
+    [markInteractionChanged, sessionUiController.setInteractionBySession],
   );
   const activeBoundarySurface = deriveDesktopExecutionBoundarySurface(
     activeId,
@@ -1721,18 +1708,18 @@ function AppShellContent({
     checkTaskSubmissionReadiness: taskSubmissionReadyAtSend,
     isNewChatSendSurfaceActive,
     isShellSurfaceOwnerActive,
-    messageRetryPending,
+    messageRetryPending: sessionUiController.messageRetryPending,
     refreshSessions,
     activateSessionForFirstSend,
     setActiveId,
-    setMessageLoadErrorBySession,
+    setMessageLoadErrorBySession: sessionUiController.setMessageLoadErrorBySession,
     setMessages,
     addTransientMessage,
     updateTransientMessage,
     removeTransientMessage,
     transcriptRangeRef,
-    setLiveTurnBySession,
-    setInteractionBySession,
+    setLiveTurnBySession: sessionUiController.setLiveTurnBySession,
+    setInteractionBySession: sessionUiController.setInteractionBySession,
     onInteractionChanged: markInteractionChanged,
     onExecutionBoundaryChanged: reloadActiveExecutionBoundary,
     showModelSetupToast,
@@ -1874,7 +1861,7 @@ function AppShellContent({
       metadata?.workspaceFileReferences,
       sessionId ? retractedWorkspaceReferencesRef.current[sessionId] : undefined,
     );
-    const liveTurn = sessionId ? liveTurnBySessionRef.current[sessionId] : undefined;
+    const liveTurn = sessionId ? sessionUiController.liveTurnBySessionRef.current[sessionId] : undefined;
     const runningTurnIds = sessionId
       ? sessionsRef.current.find((session) => session.id === sessionId)?.runningTurnIds
       : undefined;
@@ -2136,7 +2123,7 @@ function AppShellContent({
   const stop = createAppShellStopAction({
     uiLocale,
     activeIdRef,
-    stopPending,
+    stopPending: sessionUiController.stopPending,
     removeTransientMessage,
     toastApi,
   });
@@ -2153,12 +2140,12 @@ function AppShellContent({
   } = useStableActions(createAppShellSessionEventHandlers, {
     uiLocale,
     activeIdRef,
-    liveTurnBySessionRef,
+    liveTurnBySessionRef: sessionUiController.liveTurnBySessionRef,
     refreshMessages,
     refreshSessions,
-    setLiveTurnBySession,
-    setInteractionBySession,
-    setMessageQueueBySession,
+    setLiveTurnBySession: sessionUiController.setLiveTurnBySession,
+    setInteractionBySession: sessionUiController.setInteractionBySession,
+    setMessageQueueBySession: sessionUiController.setMessageQueueBySession,
     projectQueuedTransientMessages,
     removeTransientMessage,
     displayBatch: sessionDisplayBatch,
@@ -2206,7 +2193,7 @@ function AppShellContent({
     applyE2eFixture,
     bootstrapSessions,
     clearPendingTurnActionsForSession: turnActionRegistry.clearForSession,
-    confirmLiveTurn,
+    confirmLiveTurn: sessionUiController.confirmLiveTurn,
     clearSessionRendererState,
     createSession,
     handleConnectionEvent,
@@ -2224,7 +2211,7 @@ function AppShellContent({
     rendererMountedRef,
     setActiveId,
     setMessages,
-    setSessionEventHealthBySession,
+    setSessionEventHealthBySession: sessionUiController.setSessionEventHealthBySession,
     toastApi,
   });
   useAppShellPersistenceEffects({
@@ -2266,11 +2253,11 @@ function AppShellContent({
     handleEvent,
     beginObservationSeed,
     completeObservationSeed,
-    setMessageLoadErrorBySession,
+    setMessageLoadErrorBySession: sessionUiController.setMessageLoadErrorBySession,
     setMessageLoadPending,
     setMessages,
     transcriptRangeRef,
-    setSessionEventHealthBySession,
+    setSessionEventHealthBySession: sessionUiController.setSessionEventHealthBySession,
     toastApi,
   });
   let newestDurablePromptSequence: number | null = null;
@@ -2329,7 +2316,7 @@ function AppShellContent({
       })
       .catch((error) => {
         if (disposed || activeIdRef.current !== target.sessionId) return;
-        setMessageLoadErrorBySession((current) => ({
+        sessionUiController.setMessageLoadErrorBySession((current) => ({
           ...current,
           [target.sessionId]: localizedShellErrorMessage(
             error,
@@ -2342,7 +2329,10 @@ function AppShellContent({
       disposed = true;
     };
   }, [activeId, searchScrollTarget?.nonce]);
-  useShellRunUpdates({ activeId, setShellRunUpdatesBySession });
+  useShellRunUpdates({
+    activeId,
+    setShellRunUpdatesBySession: sessionUiController.setShellRunUpdatesBySession,
+  });
   useSessionEventHealthPolling({
     activeId,
     activeInteraction,
@@ -2351,8 +2341,8 @@ function AppShellContent({
     hasInFlightLiveTools,
     refreshMessages,
     refreshSessions,
-    sessionEventHealthBySessionRef,
-    setSessionEventHealthBySession,
+    sessionEventHealthBySessionRef: sessionUiController.sessionEventHealthBySessionRef,
+    setSessionEventHealthBySession: sessionUiController.setSessionEventHealthBySession,
   });
   function captureComposerImportOwner(): ComposerImportOwner {
     return {

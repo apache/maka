@@ -39,11 +39,11 @@ type TransientUserMessage = TransientUserMessageProjection;
 export function useAppShellSessionWorkspace(toastApi: ToastApi) {
   const [activeId, setActiveIdState] = useState<string | undefined>();
   const activeIdRef = useRef<string | undefined>(undefined);
-  const sessionUi = useAppShellSessionUiState();
+  const sessionUiController = useAppShellSessionUiState();
   const sessionList = useAppShellSessionList(toastApi, {
     activeIdRef,
-    liveTurnBySessionRef: sessionUi.liveTurnBySessionRef,
-    clearTurnTransientStateIfCurrent: sessionUi.clearTurnTransientStateIfCurrent,
+    liveTurnBySessionRef: sessionUiController.liveTurnBySessionRef,
+    clearTurnTransientStateIfCurrent: sessionUiController.clearTurnTransientStateIfCurrent,
   });
   const selectionRevisionRef = useRef(0);
   const bootstrapSelectionLeaseRef = useRef<ReturnType<typeof createBootstrapSelectionLease> | null>(null);
@@ -71,7 +71,7 @@ export function useAppShellSessionWorkspace(toastApi: ToastApi) {
     setMessagesState: setMessages,
     setTransientMessagesState: setTransientMessages,
     setMessageLoadPending,
-    clearSessionUiState: sessionUi.clearSessionUiState,
+    clearSessionUiState: sessionUiController.clearSessionUiState,
   });
   const actions = actionsRef.current;
 
@@ -95,19 +95,8 @@ export function useAppShellSessionWorkspace(toastApi: ToastApi) {
     transcriptRangeRef,
     messageLoadPending,
     setMessageLoadPending,
-    sessionUiController: sessionUi.controller,
-    liveTurnBySessionRef: sessionUi.liveTurnBySessionRef,
-    sessionEventHealthBySessionRef: sessionUi.sessionEventHealthBySessionRef,
-    setMessageLoadErrorBySession: sessionUi.setMessageLoadErrorBySession,
-    messageRetryPending: sessionUi.messageRetryPending,
-    stopPending: sessionUi.stopPending,
-    permissionModePending: sessionUi.permissionModePending,
-    sessionModelPending: sessionUi.sessionModelPending,
-    setLiveTurnBySession: sessionUi.setLiveTurnBySession,
-    setShellRunUpdatesBySession: sessionUi.setShellRunUpdatesBySession,
-    setInteractionBySession: sessionUi.setInteractionBySession,
-    setMessageQueueBySession: sessionUi.setMessageQueueBySession,
-    setSessionEventHealthBySession: sessionUi.setSessionEventHealthBySession,
-    confirmLiveTurn: sessionUi.confirmLiveTurn,
+    // The store's own surface, not a copy of it. Consumers reach setters and
+    // claims through the controller.
+    sessionUiController,
   };
 }

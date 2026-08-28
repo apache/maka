@@ -263,32 +263,14 @@ export type AppShellSessionUiStateController = ReturnType<typeof createAppShellS
  * subscribe: readers select what they need through
  * `useAppShellSessionUiSelector`, so no single component re-renders for every
  * write to the store (#1985).
+ *
+ * Returns the controller itself rather than a bag of its members. The bag had
+ * to name every setter, so did the workspace hook above it, and so did
+ * AppShell's destructure — three places to edit for one new map, and three
+ * chances for them to disagree about what the store offers.
  */
-export function useAppShellSessionUiState() {
+export function useAppShellSessionUiState(): AppShellSessionUiStateController {
   const controllerRef = useRef<AppShellSessionUiStateController | null>(null);
-
-  if (!controllerRef.current) {
-    controllerRef.current = createAppShellSessionUiStateController();
-  }
-
-  const controller = controllerRef.current;
-
-  return {
-    controller,
-    liveTurnBySessionRef: controller.liveTurnBySessionRef,
-    sessionEventHealthBySessionRef: controller.sessionEventHealthBySessionRef,
-    setMessageLoadErrorBySession: controller.setMessageLoadErrorBySession,
-    messageRetryPending: controller.messageRetryPending,
-    stopPending: controller.stopPending,
-    permissionModePending: controller.permissionModePending,
-    sessionModelPending: controller.sessionModelPending,
-    setLiveTurnBySession: controller.setLiveTurnBySession,
-    setShellRunUpdatesBySession: controller.setShellRunUpdatesBySession,
-    setInteractionBySession: controller.setInteractionBySession,
-    setMessageQueueBySession: controller.setMessageQueueBySession,
-    setSessionEventHealthBySession: controller.setSessionEventHealthBySession,
-    confirmLiveTurn: controller.confirmLiveTurn,
-    clearSessionUiState: controller.clearSessionUiState,
-    clearTurnTransientStateIfCurrent: controller.clearTurnTransientStateIfCurrent,
-  };
+  controllerRef.current ??= createAppShellSessionUiStateController();
+  return controllerRef.current;
 }
