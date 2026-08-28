@@ -33,19 +33,27 @@ import { tmpdir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
 import { afterEach, test } from 'node:test';
 import {
+  createFileSessionSnapshotStagingCleanupAuthority,
   createFileQuiescentSessionSnapshotCoordinator,
   type SessionSnapshotCancellation,
   SessionSnapshotError,
   type SessionSnapshotQuiescenceAuthority,
   type SessionSnapshotStatePreparer,
+  type SessionSnapshotStagingCleanupAuthority,
   type SessionSnapshotWorkspacePreparation,
   type SessionSnapshotWorkspacePreparer,
   SESSION_SNAPSHOT_WORKSPACE_POLICY_V1,
 } from '../quiescent-session-snapshot.js';
+import {
+  acquireProcessLifetimeOwner,
+  type ProcessLifetimeOwner,
+} from '../process-lifetime-owner.js';
 
 const roots: string[] = [];
+const processLifetimeOwners: ProcessLifetimeOwner[] = [];
 
 afterEach(async () => {
+  await Promise.all(processLifetimeOwners.splice(0).map((owner) => owner.close()));
   await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
 });
 
@@ -58,6 +66,7 @@ test('prepares state and workspace under one quiescence boundary, then releases 
 
   const handle = await createFileQuiescentSessionSnapshotCoordinator({
     stagingParent: fixture.stagingParent,
+    stagingCleanup: fixture.stagingCleanup,
     privateStagingRootAuthority,
     quiescence: {
       async runQuiescent(_input, operation) {
@@ -148,6 +157,7 @@ test('serializes concurrent preparations for the same Session through the author
 
   const coordinator = createFileQuiescentSessionSnapshotCoordinator({
     stagingParent: fixture.stagingParent,
+    stagingCleanup: fixture.stagingCleanup,
     privateStagingRootAuthority,
     quiescence: authority,
     state: {
@@ -191,6 +201,7 @@ test('does not globally serialize preparations for different Sessions', async ()
   const allowFirstWorkspace = deferred<void>();
   const coordinator = createFileQuiescentSessionSnapshotCoordinator({
     stagingParent: fixture.stagingParent,
+    stagingCleanup: fixture.stagingCleanup,
     privateStagingRootAuthority,
     quiescence: authority,
     state: directoryStatePreparer,
@@ -227,6 +238,7 @@ test('removes partial staging and preserves a stable policy rejection', async ()
   );
   const coordinator = createFileQuiescentSessionSnapshotCoordinator({
     stagingParent: fixture.stagingParent,
+    stagingCleanup: fixture.stagingCleanup,
     privateStagingRootAuthority,
     quiescence: immediateAuthority,
     state: {
@@ -256,6 +268,7 @@ test('failure cleanup refuses a staging root replaced by an unrelated directory'
   let unrelatedFile = '';
   const coordinator = createFileQuiescentSessionSnapshotCoordinator({
     stagingParent: fixture.stagingParent,
+    stagingCleanup: fixture.stagingCleanup,
     privateStagingRootAuthority,
     quiescence: immediateAuthority,
     state: directoryStatePreparer,
@@ -273,7 +286,13 @@ test('failure cleanup refuses a staging root replaced by an unrelated directory'
 
   await assert.rejects(
     coordinator.prepare({ makaSessionId: 'failure-cleanup-owner' }),
-    isSnapshotError('cleanup_failed'),
+    (error: unknown) => {
+      assert.equal(error instanceof SessionSnapshotError && error.code, 'io_failure');
+      assert.deepEqual(error instanceof SessionSnapshotError && error.details, {
+        cleanupFailed: true,
+      });
+      return true;
+    },
   );
   assert.equal(await readFile(unrelatedFile, 'utf8'), 'keep');
 });
@@ -282,6 +301,7 @@ test('cleans a published snapshot when the authority fails while releasing quies
   const fixture = await createFixture();
   const coordinator = createFileQuiescentSessionSnapshotCoordinator({
     stagingParent: fixture.stagingParent,
+    stagingCleanup: fixture.stagingCleanup,
     privateStagingRootAuthority,
     quiescence: {
       async runQuiescent(_input, operation) {
@@ -308,6 +328,7 @@ test('cancellation and an expired deadline stop before staging begins', async ()
   let authorityCalls = 0;
   const coordinator = createFileQuiescentSessionSnapshotCoordinator({
     stagingParent: fixture.stagingParent,
+    stagingCleanup: fixture.stagingCleanup,
     privateStagingRootAuthority,
     now: () => 10_000,
     quiescence: {
@@ -341,6 +362,7 @@ test('a deadline beyond the Node timer limit is rescheduled until the absolute t
   let cancellationSignal: AbortSignal | undefined;
   const coordinator = createFileQuiescentSessionSnapshotCoordinator({
     stagingParent: fixture.stagingParent,
+    stagingCleanup: fixture.stagingCleanup,
     privateStagingRootAuthority,
     now: Date.now,
     quiescence: {
@@ -375,6 +397,7 @@ test('cancellation while waiting for quiescence is propagated as snapshot_cancel
   const controller = new AbortController();
   const coordinator = createFileQuiescentSessionSnapshotCoordinator({
     stagingParent: fixture.stagingParent,
+    stagingCleanup: fixture.stagingCleanup,
     privateStagingRootAuthority,
     quiescence: {
       async runQuiescent(input) {
@@ -399,6 +422,7 @@ test('cancellation while leaving quiescence cleans the published snapshot', asyn
   const controller = new AbortController();
   const coordinator = createFileQuiescentSessionSnapshotCoordinator({
     stagingParent: fixture.stagingParent,
+    stagingCleanup: fixture.stagingCleanup,
     privateStagingRootAuthority,
     quiescence: {
       async runQuiescent(_input, operation) {
@@ -418,10 +442,40 @@ test('cancellation while leaving quiescence cleans the published snapshot', asyn
   assert.deepEqual(await readdir(fixture.stagingParent), []);
 });
 
+test('an I/O failure racing cancellation remains an I/O failure', async () => {
+  const fixture = await createFixture();
+  const controller = new AbortController();
+  const coordinator = createFileQuiescentSessionSnapshotCoordinator({
+    stagingParent: fixture.stagingParent,
+    stagingCleanup: fixture.stagingCleanup,
+    privateStagingRootAuthority,
+    quiescence: immediateAuthority,
+    state: directoryStatePreparer,
+    workspace: {
+      async prepareWorkspace(input) {
+        await mkdir(input.destinationRoot);
+        controller.abort();
+        throw Object.assign(new Error('workspace disk failed'), { code: 'EIO' });
+      },
+    },
+  });
+
+  await assert.rejects(
+    coordinator.prepare({ makaSessionId: 'io-racing-cancel', signal: controller.signal }),
+    (error: unknown) =>
+      error instanceof SessionSnapshotError &&
+      error.code === 'io_failure' &&
+      error.cause instanceof Error &&
+      error.cause.message === 'workspace disk failed',
+  );
+  assert.deepEqual(await readdir(fixture.stagingParent), []);
+});
+
 test('release refuses a replacement directory and remains retryable for its owned root', async () => {
   const fixture = await createFixture();
   const handle = await createFileQuiescentSessionSnapshotCoordinator({
     stagingParent: fixture.stagingParent,
+    stagingCleanup: fixture.stagingCleanup,
     privateStagingRootAuthority,
     quiescence: immediateAuthority,
     state: directoryStatePreparer,
@@ -447,6 +501,7 @@ test('release resumes an interrupted partial cleanup using the external ownershi
   const fixture = await createFixture();
   const handle = await createFileQuiescentSessionSnapshotCoordinator({
     stagingParent: fixture.stagingParent,
+    stagingCleanup: fixture.stagingCleanup,
     privateStagingRootAuthority,
     quiescence: immediateAuthority,
     state: directoryStatePreparer,
@@ -468,6 +523,66 @@ test('release resumes an interrupted partial cleanup using the external ownershi
   assert.deepEqual(await readdir(fixture.stagingParent), []);
 });
 
+test('a successor process recovers staging owned by a released process lifetime', async () => {
+  const fixture = await createFixture();
+  const handle = await createFileQuiescentSessionSnapshotCoordinator({
+    stagingParent: fixture.stagingParent,
+    stagingCleanup: fixture.stagingCleanup,
+    privateStagingRootAuthority,
+    quiescence: immediateAuthority,
+    state: directoryStatePreparer,
+    workspace: directoryWorkspacePreparer,
+  }).prepare({ makaSessionId: 'orphan-recovery' });
+  const publishedRoot = dirname(handle.snapshot.stateRoot);
+  const snapshotId = basename(publishedRoot).slice('snapshot-'.length);
+
+  await fixture.processLifetimeOwner.close();
+  const successorOwner = await acquireProcessLifetimeOwner(join(fixture.root, 'cleanup-owners'));
+  processLifetimeOwners.push(successorOwner);
+  const successor = createFileSessionSnapshotStagingCleanupAuthority({
+    cleanupStateRoot: join(fixture.root, 'snapshot-cleanup-state'),
+    stagingParent: fixture.stagingParent,
+    processLifetimeOwner: successorOwner,
+    privateStagingRootAuthority,
+  });
+
+  assert.deepEqual(await successor.recover(), { removed: [snapshotId], failed: [] });
+  assert.deepEqual(await readdir(fixture.stagingParent), []);
+});
+
+test('recovery removes an exact preparing root left before its owner record was written', async () => {
+  const fixture = await createFixture();
+  const lease = {
+    snapshotId: '00000000-0000-4000-8000-000000000002',
+    ownerToken: '00000000-0000-4000-8000-000000000003',
+    makaSessionId: 'orphaned-preparing-root',
+  };
+  const preparingRoot = join(fixture.stagingParent, `.snapshot-${lease.snapshotId}.preparing`);
+  await assert.rejects(
+    fixture.stagingCleanup.ownCreation(lease, async () => {
+      await mkdir(preparingRoot, { mode: 0o700 });
+      throw new Error('simulated process exit before owner record');
+    }),
+    /simulated process exit/u,
+  );
+
+  await fixture.processLifetimeOwner.close();
+  const successorOwner = await acquireProcessLifetimeOwner(join(fixture.root, 'cleanup-owners'));
+  processLifetimeOwners.push(successorOwner);
+  const successor = createFileSessionSnapshotStagingCleanupAuthority({
+    cleanupStateRoot: join(fixture.root, 'snapshot-cleanup-state'),
+    stagingParent: fixture.stagingParent,
+    processLifetimeOwner: successorOwner,
+    privateStagingRootAuthority,
+  });
+
+  assert.deepEqual(await successor.recover(), {
+    removed: [lease.snapshotId],
+    failed: [],
+  });
+  assert.deepEqual(await readdir(fixture.stagingParent), []);
+});
+
 test('creation failure cleans only the inode it created and preserves a colliding owner file', async () => {
   const fixture = await createFixture();
   const snapshotId = '00000000-0000-4000-8000-000000000001';
@@ -475,6 +590,7 @@ test('creation failure cleans only the inode it created and preserves a collidin
   await writeFile(ownerFile, 'unrelated', 'utf8');
   const coordinator = createFileQuiescentSessionSnapshotCoordinator({
     stagingParent: fixture.stagingParent,
+    stagingCleanup: fixture.stagingCleanup,
     privateStagingRootAuthority,
     newSnapshotId: () => snapshotId,
     quiescence: immediateAuthority,
@@ -496,6 +612,7 @@ test('rejects a caller-supplied workspace policy override instead of downgrading
     () =>
       createFileQuiescentSessionSnapshotCoordinator({
         stagingParent: fixture.stagingParent,
+        stagingCleanup: fixture.stagingCleanup,
         privateStagingRootAuthority,
         quiescence: immediateAuthority,
         state: directoryStatePreparer,
@@ -513,6 +630,7 @@ test('binds private-root verification to the exact canonical staging path', asyn
   const fixture = await createFixture();
   const coordinator = createFileQuiescentSessionSnapshotCoordinator({
     stagingParent: fixture.stagingParent,
+    stagingCleanup: fixture.stagingCleanup,
     privateStagingRootAuthority: {
       async verifyPrivateStagingRoot() {
         return { canonicalPath: fixture.root };
@@ -535,6 +653,7 @@ test('verifies and cleans each newly created snapshot directory when platform pr
   let verificationCalls = 0;
   const coordinator = createFileQuiescentSessionSnapshotCoordinator({
     stagingParent: fixture.stagingParent,
+    stagingCleanup: fixture.stagingCleanup,
     privateStagingRootAuthority: {
       async verifyPrivateStagingRoot(input) {
         verificationCalls += 1;
@@ -562,6 +681,7 @@ test('requires a caller-provided Windows ACL verifier', {
   const fixture = await createFixture();
   const coordinator = createFileQuiescentSessionSnapshotCoordinator({
     stagingParent: fixture.stagingParent,
+    stagingCleanup: fixture.stagingCleanup,
     quiescence: immediateAuthority,
     state: directoryStatePreparer,
     workspace: directoryWorkspacePreparer,
@@ -580,8 +700,16 @@ test('requires a private staging parent on POSIX', {
   roots.push(root);
   const stagingParent = join(root, 'staging');
   await mkdir(stagingParent, { mode: 0o755 });
+  const processLifetimeOwner = await acquireProcessLifetimeOwner(join(root, 'cleanup-owners'));
+  processLifetimeOwners.push(processLifetimeOwner);
+  const stagingCleanup = createFileSessionSnapshotStagingCleanupAuthority({
+    cleanupStateRoot: join(root, 'snapshot-cleanup-state'),
+    stagingParent,
+    processLifetimeOwner,
+  });
   const coordinator = createFileQuiescentSessionSnapshotCoordinator({
     stagingParent,
+    stagingCleanup,
     quiescence: immediateAuthority,
     state: directoryStatePreparer,
     workspace: directoryWorkspacePreparer,
@@ -713,6 +841,7 @@ test('binds explicit control-plane confirmation to the Session, policy and subtr
   }> = [];
   const handle = await createFileQuiescentSessionSnapshotCoordinator({
     stagingParent: fixture.stagingParent,
+    stagingCleanup: fixture.stagingCleanup,
     privateStagingRootAuthority,
     quiescence: immediateAuthority,
     state: directoryStatePreparer,
@@ -767,6 +896,7 @@ test('rejects a malformed control-plane confirmation grant before quiescence', a
   let enteredQuiescence = false;
   const coordinator = createFileQuiescentSessionSnapshotCoordinator({
     stagingParent: fixture.stagingParent,
+    stagingCleanup: fixture.stagingCleanup,
     privateStagingRootAuthority,
     quiescence: {
       async runQuiescent(_input, operation) {
@@ -791,6 +921,7 @@ test('fails closed and cleans staging when a suspected path has no explicit conf
   let authorityCalls = 0;
   const coordinator = createFileQuiescentSessionSnapshotCoordinator({
     stagingParent: fixture.stagingParent,
+    stagingCleanup: fixture.stagingCleanup,
     privateStagingRootAuthority,
     quiescence: immediateAuthority,
     state: directoryStatePreparer,
@@ -824,6 +955,7 @@ test('applies an explicit control-plane exclusion with bounded diagnostics', asy
   const fixture = await createFixture();
   const handle = await createFileQuiescentSessionSnapshotCoordinator({
     stagingParent: fixture.stagingParent,
+    stagingCleanup: fixture.stagingCleanup,
     privateStagingRootAuthority,
     quiescence: immediateAuthority,
     state: directoryStatePreparer,
@@ -918,6 +1050,8 @@ function workspaceResult(
 async function createFixture(): Promise<{
   root: string;
   stagingParent: string;
+  stagingCleanup: SessionSnapshotStagingCleanupAuthority;
+  processLifetimeOwner: ProcessLifetimeOwner;
   liveStateRoot: string;
   liveWorkspaceRoot: string;
 }> {
@@ -931,7 +1065,22 @@ async function createFixture(): Promise<{
     mkdir(liveStateRoot),
     mkdir(liveWorkspaceRoot),
   ]);
-  return { root, stagingParent, liveStateRoot, liveWorkspaceRoot };
+  const processLifetimeOwner = await acquireProcessLifetimeOwner(join(root, 'cleanup-owners'));
+  processLifetimeOwners.push(processLifetimeOwner);
+  const stagingCleanup = createFileSessionSnapshotStagingCleanupAuthority({
+    cleanupStateRoot: join(root, 'snapshot-cleanup-state'),
+    stagingParent,
+    processLifetimeOwner,
+    privateStagingRootAuthority,
+  });
+  return {
+    root,
+    stagingParent,
+    stagingCleanup,
+    processLifetimeOwner,
+    liveStateRoot,
+    liveWorkspaceRoot,
+  };
 }
 
 function deferred<T>(): {

@@ -27,13 +27,17 @@ import type {
   PreparedSessionBundleSnapshot,
 } from './session-bundle-contract.js';
 import { isSessionBundleUstarPathV1 } from './session-bundle-ustar.js';
+import { createSessionCopyCleanupAuthority } from './session-copy-cleanup.js';
 import { isSafeSessionId } from './session-store.js';
+import type { ProcessLifetimeOwner } from './process-lifetime-owner.js';
 
 export const SESSION_SNAPSHOT_POLICY_VERSION = 1 as const;
 export const SESSION_SNAPSHOT_STAGING_SCHEMA_VERSION = 1 as const;
 
 const SNAPSHOT_ID_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u;
+const SNAPSHOT_CLEANUP_ID_PATTERN =
+  /^snapshot-([0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})-([0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})$/u;
 const CONFIRMATION_GRANT_ID_PATTERN = /^[A-Za-z0-9_-]{1,128}$/u;
 const MAX_OWNER_RECORD_BYTES = 1_024;
 const MAX_TIMER_DELAY_MS = 2_147_483_647;
@@ -324,6 +328,8 @@ export type SessionSnapshotPhase =
 
 export interface SessionSnapshotErrorDetails {
   readonly phase?: SessionSnapshotPhase;
+  /** Cleanup also failed; the top-level code still classifies the primary failure. */
+  readonly cleanupFailed?: true;
   readonly policyCategory?:
     | SessionSnapshotWorkspaceRejectionCategory
     | SessionSnapshotWorkspaceConfirmationCategory;
@@ -360,12 +366,122 @@ export interface FileQuiescentSessionSnapshotCoordinatorOptions {
   readonly quiescence: SessionSnapshotQuiescenceAuthority;
   readonly state: SessionSnapshotStatePreparer;
   readonly workspace: SessionSnapshotWorkspacePreparer;
+  /** Persistent owner/recovery authority for every private staging root. */
+  readonly stagingCleanup: SessionSnapshotStagingCleanupAuthority;
   /** Optional control-plane lookup; suspected paths fail closed when absent. */
   readonly confirmationAuthority?: SessionSnapshotWorkspaceConfirmationAuthority;
   /** Required on Windows; optional additional verification on POSIX platforms. */
   readonly privateStagingRootAuthority?: SessionSnapshotPrivateStagingRootAuthority;
   readonly now?: () => number;
   readonly newSnapshotId?: () => string;
+}
+
+export interface SessionSnapshotStagingLease {
+  readonly snapshotId: string;
+  readonly ownerToken: string;
+  readonly makaSessionId: string;
+}
+
+export interface SessionSnapshotStagingCleanupRecovery {
+  readonly removed: string[];
+  readonly failed: Array<{ readonly snapshotId: string; readonly error: unknown }>;
+}
+
+/**
+ * Persistent lifetime authority for snapshot staging. Production startup must
+ * call `recover()` after acquiring its ProcessLifetimeOwner and before serving
+ * snapshot requests.
+ */
+export interface SessionSnapshotStagingCleanupAuthority {
+  /** Absolute staging parent this authority's persisted leases are bound to. */
+  readonly stagingParent: string;
+  ownCreation<T>(lease: SessionSnapshotStagingLease, operation: () => Promise<T>): Promise<T>;
+  cleanup(lease: SessionSnapshotStagingLease): Promise<void>;
+  recover(): Promise<SessionSnapshotStagingCleanupRecovery>;
+}
+
+/**
+ * Reuses the Session-copy persisted cleanup lease engine in a separate
+ * operational-state root. The separate root prevents either recovery domain
+ * from interpreting and deleting the other domain's resources.
+ */
+export function createFileSessionSnapshotStagingCleanupAuthority(input: {
+  readonly cleanupStateRoot: string;
+  readonly stagingParent: string;
+  readonly processLifetimeOwner: ProcessLifetimeOwner;
+  readonly privateStagingRootAuthority?: SessionSnapshotPrivateStagingRootAuthority;
+}): SessionSnapshotStagingCleanupAuthority {
+  if (!isAbsolute(input.cleanupStateRoot)) {
+    throw new TypeError('Session snapshot cleanupStateRoot must be absolute');
+  }
+  if (!isAbsolute(input.stagingParent)) {
+    throw new TypeError('Session snapshot stagingParent must be absolute');
+  }
+  return new FileSessionSnapshotStagingCleanupAuthority({
+    cleanupStateRoot: resolve(input.cleanupStateRoot),
+    stagingParent: resolve(input.stagingParent),
+    processLifetimeOwner: input.processLifetimeOwner,
+    privateStagingRootAuthority: input.privateStagingRootAuthority,
+  });
+}
+
+class FileSessionSnapshotStagingCleanupAuthority implements SessionSnapshotStagingCleanupAuthority {
+  readonly stagingParent: string;
+  readonly #cleanup: ReturnType<typeof createSessionCopyCleanupAuthority>;
+
+  constructor(input: {
+    cleanupStateRoot: string;
+    stagingParent: string;
+    processLifetimeOwner: ProcessLifetimeOwner;
+    privateStagingRootAuthority: SessionSnapshotPrivateStagingRootAuthority | undefined;
+  }) {
+    this.stagingParent = input.stagingParent;
+    this.#cleanup = createSessionCopyCleanupAuthority({
+      workspaceRoot: input.cleanupStateRoot,
+      processLifetimeOwner: input.processLifetimeOwner,
+      // A creating snapshot already has enough durable identity to be removed;
+      // unlike a Session copy, it has no remote creation protocol to resume.
+      resumeSessionCopy: async () => {},
+      removeSession: async (cleanupId) => {
+        const lease = decodeSnapshotCleanupId(cleanupId);
+        await removePersistedSnapshotStaging({
+          parent: input.stagingParent,
+          snapshotId: lease.snapshotId,
+          ownerToken: lease.ownerToken,
+          privateRootAuthority: input.privateStagingRootAuthority,
+        });
+      },
+    });
+  }
+
+  ownCreation<T>(lease: SessionSnapshotStagingLease, operation: () => Promise<T>): Promise<T> {
+    const normalized = normalizeSnapshotStagingLease(lease);
+    return this.#cleanup.ownCreation(
+      {
+        sessionId: encodeSnapshotCleanupId(normalized),
+        kind: 'revision',
+        sourceSessionId: normalized.makaSessionId,
+        sourceTurnId: normalized.snapshotId,
+        ownerId: `snapshot:${normalized.ownerToken}`,
+      },
+      operation,
+    );
+  }
+
+  cleanup(lease: SessionSnapshotStagingLease): Promise<void> {
+    return this.#cleanup.cleanup(encodeSnapshotCleanupId(normalizeSnapshotStagingLease(lease)));
+  }
+
+  async recover(): Promise<SessionSnapshotStagingCleanupRecovery> {
+    const recovery = await this.#cleanup.recover();
+    return {
+      removed: recovery.removed.map((cleanupId) => decodeSnapshotCleanupId(cleanupId).snapshotId),
+      failed: recovery.failed.map(({ sessionId, error }) => ({
+        snapshotId: decodeSnapshotCleanupId(sessionId).snapshotId,
+        error,
+      })),
+    };
+  }
 }
 
 export function createFileQuiescentSessionSnapshotCoordinator(
@@ -376,6 +492,7 @@ export function createFileQuiescentSessionSnapshotCoordinator(
 
 class FileQuiescentSessionSnapshotCoordinator implements QuiescentSessionSnapshotCoordinator {
   readonly #stagingParent: string;
+  readonly #stagingCleanup: SessionSnapshotStagingCleanupAuthority;
   readonly #quiescence: SessionSnapshotQuiescenceAuthority;
   readonly #state: SessionSnapshotStatePreparer;
   readonly #workspace: SessionSnapshotWorkspacePreparer;
@@ -392,6 +509,10 @@ class FileQuiescentSessionSnapshotCoordinator implements QuiescentSessionSnapsho
       throw new TypeError('Session snapshot V1 safety policy cannot be overridden');
     }
     this.#stagingParent = resolve(options.stagingParent);
+    if (resolve(options.stagingCleanup.stagingParent) !== this.#stagingParent) {
+      throw new TypeError('Session snapshot staging cleanup authority is bound to another parent');
+    }
+    this.#stagingCleanup = options.stagingCleanup;
     this.#quiescence = options.quiescence;
     this.#state = options.state;
     this.#workspace = options.workspace;
@@ -406,6 +527,8 @@ class FileQuiescentSessionSnapshotCoordinator implements QuiescentSessionSnapsho
     const confirmationGrantId = requireOptionalConfirmationGrantId(input.confirmationGrantId);
     const cancellation = createCancellation(input, this.#now);
     let prepared: OwnedPreparedSessionBundleHandle | undefined;
+    let stagingLease: SessionSnapshotStagingLease | undefined;
+    let stagingLeaseOwned = false;
     let operationStarted = false;
     try {
       cancellation.assertActive();
@@ -421,13 +544,20 @@ class FileQuiescentSessionSnapshotCoordinator implements QuiescentSessionSnapsho
           }
           operationStarted = true;
           cancellation.assertActive();
-          const staging = await OwnedSnapshotStaging.create(
-            this.#stagingParent,
-            requireSnapshotId(this.#newSnapshotId()),
-            this.#privateStagingRootAuthority,
-          );
-          try {
+          stagingLease = {
+            snapshotId: requireSnapshotId(this.#newSnapshotId()),
+            ownerToken: randomUUID(),
+            makaSessionId,
+          };
+          return this.#stagingCleanup.ownCreation(stagingLease, async () => {
+            stagingLeaseOwned = true;
             cancellation.assertActive();
+            const staging = await OwnedSnapshotStaging.create(
+              this.#stagingParent,
+              stagingLease!.snapshotId,
+              stagingLease!.ownerToken,
+              this.#privateStagingRootAuthority,
+            );
             const stateIdentity = copyOpaqueStateIdentityDescriptor(
               await this.#state.prepareState({
                 makaSessionId,
@@ -463,12 +593,12 @@ class FileQuiescentSessionSnapshotCoordinator implements QuiescentSessionSnapsho
               stateIdentity,
               workspace,
               SESSION_SNAPSHOT_POLICY_VERSION,
+              this.#stagingCleanup,
+              stagingLease!,
             );
             prepared = handle;
             return handle;
-          } catch (error) {
-            return cleanupAfterPreparationFailure(staging, error);
-          }
+          });
         },
       );
       cancellation.assertActive();
@@ -481,14 +611,16 @@ class FileQuiescentSessionSnapshotCoordinator implements QuiescentSessionSnapsho
       }
       return result;
     } catch (error) {
-      if (prepared) {
+      const primaryError = normalizePreparationError(error);
+      if (prepared || (stagingLease && stagingLeaseOwned)) {
         try {
-          await prepared.release();
+          if (prepared) await prepared.release();
+          else await this.#stagingCleanup.cleanup(stagingLease!);
         } catch (cleanupError) {
-          throw cleanupFailure(new AggregateError([error, cleanupError]));
+          throw primaryErrorWithCleanupFailure(primaryError, cleanupError);
         }
       }
-      throw normalizePreparationError(error, cancellation.value.signal);
+      throw primaryError;
     } finally {
       cancellation.close();
     }
@@ -554,10 +686,11 @@ class OwnedSnapshotStaging {
   static async create(
     parent: string,
     snapshotId: string,
+    ownerToken: string,
     privateRootAuthority: SessionSnapshotPrivateStagingRootAuthority | undefined,
   ): Promise<OwnedSnapshotStaging> {
     const canonicalParent = await preparePrivateStagingParent(parent, privateRootAuthority);
-    const staging = new OwnedSnapshotStaging(canonicalParent, snapshotId, randomUUID());
+    const staging = new OwnedSnapshotStaging(canonicalParent, snapshotId, ownerToken);
     let rootCreated = false;
     try {
       await assertMissing(staging.#preparingRoot);
@@ -589,6 +722,7 @@ class OwnedSnapshotStaging {
       );
       return staging;
     } catch (error) {
+      const primaryError = normalizeStagingCreationError(error);
       if (rootCreated && staging.#identity) {
         try {
           await removeDirectoryBoundToIdentity({
@@ -598,18 +732,15 @@ class OwnedSnapshotStaging {
             identity: staging.#identity,
           });
         } catch (cleanupError) {
-          throw cleanupFailure(new AggregateError([error, cleanupError]));
+          throw primaryErrorWithCleanupFailure(primaryError, cleanupError);
         }
       } else if (rootCreated) {
-        throw cleanupFailure(
-          new AggregateError([error, new Error('Snapshot root identity is unavailable')]),
+        throw primaryErrorWithCleanupFailure(
+          primaryError,
+          new Error('Snapshot root identity is unavailable'),
         );
       }
-      if (error instanceof SessionSnapshotError) throw error;
-      throw new SessionSnapshotError('io_failure', 'Unable to create Session snapshot staging', {
-        cause: error,
-        details: { phase: 'staging' },
-      });
+      throw primaryError;
     }
   }
 
@@ -651,31 +782,14 @@ class OwnedSnapshotStaging {
       });
     }
   }
-
-  async discard(): Promise<void> {
-    const root = this.#published ? this.#publishedRoot : this.#preparingRoot;
-    try {
-      if (!this.#identity || !this.#owner) {
-        throw new Error('Snapshot ownership is unavailable');
-      }
-      await removeOwnedSnapshotDirectory({
-        parent: dirname(root),
-        root,
-        cleanupRoot: this.#cleanupRoot,
-        owner: this.#owner,
-        identity: this.#identity,
-      });
-    } catch (error) {
-      throw cleanupFailure(error);
-    }
-  }
 }
 
 class OwnedPreparedSessionBundleHandle implements PreparedSessionBundleHandle {
   readonly snapshot: PreparedSessionBundleSnapshot;
   readonly workspace: SessionSnapshotWorkspacePreparation;
   readonly policyVersion: typeof SESSION_SNAPSHOT_POLICY_VERSION;
-  readonly #staging: PublishedSnapshotStaging;
+  readonly #stagingCleanup: SessionSnapshotStagingCleanupAuthority;
+  readonly #stagingLease: SessionSnapshotStagingLease;
   #releaseTask: Promise<void> | undefined;
   #released = false;
 
@@ -684,8 +798,11 @@ class OwnedPreparedSessionBundleHandle implements PreparedSessionBundleHandle {
     stateIdentity: OpaqueStateIdentityDescriptor,
     workspace: SessionSnapshotWorkspacePreparation,
     policyVersion: typeof SESSION_SNAPSHOT_POLICY_VERSION,
+    stagingCleanup: SessionSnapshotStagingCleanupAuthority,
+    stagingLease: SessionSnapshotStagingLease,
   ) {
-    this.#staging = staging;
+    this.#stagingCleanup = stagingCleanup;
+    this.#stagingLease = stagingLease;
     this.snapshot = Object.freeze({
       stateRoot: staging.stateRoot,
       workspaceRoot: staging.workspaceRoot,
@@ -710,13 +827,7 @@ class OwnedPreparedSessionBundleHandle implements PreparedSessionBundleHandle {
 
   async #releaseOnce(): Promise<void> {
     try {
-      await removeOwnedSnapshotDirectory({
-        parent: this.#staging.parent,
-        root: this.#staging.root,
-        cleanupRoot: this.#staging.cleanupRoot,
-        owner: this.#staging.owner,
-        identity: this.#staging.identity,
-      });
+      await this.#stagingCleanup.cleanup(this.#stagingLease);
     } catch (error) {
       throw cleanupFailure(error);
     }
@@ -895,6 +1006,38 @@ function requireSnapshotId(value: unknown): string {
     });
   }
   return value;
+}
+
+function normalizeSnapshotStagingLease(
+  value: SessionSnapshotStagingLease,
+): SessionSnapshotStagingLease {
+  return Object.freeze({
+    snapshotId: requireSnapshotId(value.snapshotId),
+    ownerToken: requireSnapshotOwnerToken(value.ownerToken),
+    makaSessionId: requireMakaSessionId(value.makaSessionId),
+  });
+}
+
+function requireSnapshotOwnerToken(value: unknown): string {
+  if (typeof value !== 'string' || !SNAPSHOT_ID_PATTERN.test(value)) {
+    throw new SessionSnapshotError('io_failure', 'Session snapshot owner identity is invalid', {
+      details: { phase: 'staging' },
+    });
+  }
+  return value;
+}
+
+function encodeSnapshotCleanupId(lease: SessionSnapshotStagingLease): string {
+  return `snapshot-${lease.snapshotId}-${lease.ownerToken}`;
+}
+
+function decodeSnapshotCleanupId(cleanupId: string): {
+  readonly snapshotId: string;
+  readonly ownerToken: string;
+} {
+  const match = SNAPSHOT_CLEANUP_ID_PATTERN.exec(cleanupId);
+  if (!match) throw new Error('Invalid Session snapshot cleanup identity');
+  return { snapshotId: match[1]!, ownerToken: match[2]! };
 }
 
 function normalizeWorkspacePreparation(
@@ -1142,7 +1285,12 @@ async function writeOwnerRecord(
       identity,
     });
   } catch (cleanupError) {
-    throw cleanupFailure(new AggregateError([failure, cleanupError]));
+    const primaryError = new SessionSnapshotError(
+      'io_failure',
+      'Unable to write Session snapshot ownership record',
+      { cause: failure, details: { phase: 'staging' } },
+    );
+    throw primaryErrorWithCleanupFailure(primaryError, cleanupError);
   }
   throw failure;
 }
@@ -1251,6 +1399,131 @@ async function removeOwnedSnapshotDirectory(input: {
   await assertOwnedRoot(input.cleanupRoot, input.owner, input.identity);
   await rm(input.cleanupRoot, { recursive: true, force: false });
   await removeOwnerRecord(input.owner);
+}
+
+async function removePersistedSnapshotStaging(input: {
+  parent: string;
+  snapshotId: string;
+  ownerToken: string;
+  privateRootAuthority: SessionSnapshotPrivateStagingRootAuthority | undefined;
+}): Promise<void> {
+  const parent = await preparePrivateStagingParent(input.parent, input.privateRootAuthority);
+  const preparingRoot = join(parent, `.snapshot-${input.snapshotId}.preparing`);
+  const publishedRoot = join(parent, `snapshot-${input.snapshotId}`);
+  const cleanupRoot = join(parent, `.snapshot-${input.snapshotId}.${input.ownerToken}.cleanup`);
+  const owner = await readPersistedSnapshotOwnerBinding({
+    parent,
+    snapshotId: input.snapshotId,
+    ownerToken: input.ownerToken,
+  });
+  const [preparingIdentity, publishedIdentity, cleanupIdentity] = await Promise.all([
+    readOptionalDirectoryIdentity(preparingRoot),
+    readOptionalDirectoryIdentity(publishedRoot),
+    readOptionalDirectoryIdentity(cleanupRoot),
+  ]);
+
+  if (preparingIdentity && publishedIdentity) {
+    throw new Error('Session snapshot staging has conflicting preparation and publication roots');
+  }
+  if (!owner) {
+    if (publishedIdentity) {
+      throw new Error('Published Session snapshot has no ownership record');
+    }
+    if (preparingIdentity && cleanupIdentity) {
+      throw new Error('Unbound Session snapshot cleanup paths conflict');
+    }
+    const identity = preparingIdentity ?? cleanupIdentity;
+    if (!identity) return;
+    // The persisted ProcessLifetimeOwner lease authenticates this exact UUID
+    // during the small create-to-owner-record crash window.
+    await removeDirectoryBoundToIdentity({
+      parent,
+      root: preparingRoot,
+      cleanupRoot,
+      identity,
+    });
+    return;
+  }
+
+  const identity = snapshotRootIdentity(owner.record);
+  await removeOwnedSnapshotDirectory({
+    parent,
+    root: preparingIdentity ? preparingRoot : publishedIdentity ? publishedRoot : preparingRoot,
+    cleanupRoot,
+    owner,
+    identity,
+  });
+}
+
+async function readPersistedSnapshotOwnerBinding(input: {
+  parent: string;
+  snapshotId: string;
+  ownerToken: string;
+}): Promise<SnapshotOwnerBinding | undefined> {
+  const path = join(input.parent, `.snapshot-${input.snapshotId}.owner.json`);
+  const cleanupPath = join(
+    input.parent,
+    `.snapshot-${input.snapshotId}.${input.ownerToken}.owner-cleanup`,
+  );
+  const [pathIdentity, cleanupIdentity] = await Promise.all([
+    readOptionalFileIdentity(path),
+    readOptionalFileIdentity(cleanupPath),
+  ]);
+  if (pathIdentity && cleanupIdentity) {
+    throw new Error('Snapshot ownership cleanup paths conflict');
+  }
+  const identity = pathIdentity ?? cleanupIdentity;
+  if (!identity) return undefined;
+  const actualPath = pathIdentity ? path : cleanupPath;
+  const handle = await open(actualPath, fsConstants.O_RDONLY | NO_FOLLOW_OPEN_FLAG);
+  let record: SnapshotOwnerRecord;
+  try {
+    const info = await handle.stat({ bigint: true });
+    if (
+      !info.isFile() ||
+      info.isSymbolicLink() ||
+      info.nlink !== 1n ||
+      info.size > BigInt(MAX_OWNER_RECORD_BYTES) ||
+      !sameFilesystemIdentity({ dev: info.dev, ino: info.ino }, identity)
+    ) {
+      throw new Error('Snapshot ownership record is invalid');
+    }
+    const value = JSON.parse(await handle.readFile('utf8')) as unknown;
+    if (!isSnapshotOwnerRecord(value, input.snapshotId, input.ownerToken)) {
+      throw new Error('Snapshot ownership record changed');
+    }
+    record = value;
+  } finally {
+    await handle.close();
+  }
+  const currentIdentity = await readFileIdentity(actualPath);
+  if (!sameFilesystemIdentity(currentIdentity, identity)) {
+    throw new Error('Snapshot ownership record path changed');
+  }
+  return { path, cleanupPath, record, identity };
+}
+
+function isSnapshotOwnerRecord(
+  value: unknown,
+  snapshotId: string,
+  ownerToken: string,
+): value is SnapshotOwnerRecord {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const record = value as Record<string, unknown>;
+  return (
+    Object.keys(record).length === 5 &&
+    record.schemaVersion === SESSION_SNAPSHOT_STAGING_SCHEMA_VERSION &&
+    record.snapshotId === snapshotId &&
+    record.ownerToken === ownerToken &&
+    typeof record.rootDev === 'string' &&
+    /^(?:0|[1-9][0-9]*)$/u.test(record.rootDev) &&
+    typeof record.rootIno === 'string' &&
+    /^(?:0|[1-9][0-9]*)$/u.test(record.rootIno)
+  );
+}
+
+function snapshotRootIdentity(record: SnapshotOwnerRecord): FilesystemIdentity {
+  return { dev: BigInt(record.rootDev), ino: BigInt(record.rootIno) };
 }
 
 async function removeOwnerRecord(owner: SnapshotOwnerBinding): Promise<void> {
@@ -1398,21 +1671,9 @@ function sameOwnerRecord(value: unknown, expected: SnapshotOwnerRecord): boolean
   );
 }
 
-async function cleanupAfterPreparationFailure(
-  staging: OwnedSnapshotStaging,
-  primaryError: unknown,
-): Promise<never> {
-  try {
-    await staging.discard();
-  } catch (cleanupError) {
-    throw cleanupFailure(new AggregateError([primaryError, cleanupError]));
-  }
-  throw primaryError;
-}
-
-function normalizePreparationError(error: unknown, signal: AbortSignal): SessionSnapshotError {
+function normalizePreparationError(error: unknown): SessionSnapshotError {
   if (error instanceof SessionSnapshotError) return error;
-  if (signal.aborted || isAbortError(error)) {
+  if (isAbortError(error)) {
     return new SessionSnapshotError(
       'snapshot_cancelled',
       'Session snapshot preparation was cancelled',
@@ -1421,6 +1682,24 @@ function normalizePreparationError(error: unknown, signal: AbortSignal): Session
   }
   return new SessionSnapshotError('io_failure', 'Session snapshot preparation failed', {
     cause: error,
+  });
+}
+
+function normalizeStagingCreationError(error: unknown): SessionSnapshotError {
+  if (error instanceof SessionSnapshotError) return error;
+  return new SessionSnapshotError('io_failure', 'Unable to create Session snapshot staging', {
+    cause: error,
+    details: { phase: 'staging' },
+  });
+}
+
+function primaryErrorWithCleanupFailure(
+  primaryError: SessionSnapshotError,
+  cleanupError: unknown,
+): SessionSnapshotError {
+  return new SessionSnapshotError(primaryError.code, primaryError.message, {
+    cause: new AggregateError([primaryError, cleanupError]),
+    details: { ...primaryError.details, cleanupFailed: true },
   });
 }
 
