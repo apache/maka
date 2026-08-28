@@ -338,8 +338,7 @@ test('explicit npm-global restart claims an exact staged legacy takeover', async
         launchedEntrypoint = input.staged.candidateEntrypoint;
         return {
           kind: 'ready',
-          settle: async (outcome) => {
-            assert.equal(outcome, 'committed');
+          settle: async () => {
             closed += 1;
           },
         };
@@ -445,8 +444,8 @@ test('external npm replacement retires through the exact source package and comm
         events.push('target-ready');
         return {
           kind: 'ready',
-          settle: async (outcome) => {
-            events.push(outcome);
+          settle: async () => {
+            events.push('settled');
           },
         };
       },
@@ -454,7 +453,7 @@ test('external npm replacement retires through the exact source package and comm
   );
 
   assert.equal(result.kind, 'completed');
-  assert.deepEqual(events, ['source-retired', 'target-ready', 'committed']);
+  assert.deepEqual(events, ['source-retired', 'target-ready', 'settled']);
   const record = await readLocalHostDeploymentRecord(ROOT_ID, { authorityRoot });
   assert.equal(record?.state.kind, 'owned');
   assert.deepEqual(record?.state.selected, TARGET);
@@ -665,7 +664,7 @@ test('a Host epoch change after confirmation cannot retire the replacement proce
   );
 });
 
-test('external reconciliation aborts the guarded target when npm changes again', async (t) => {
+test('external reconciliation asks the activator to adjudicate when npm changes again', async (t) => {
   const base = await mkdtemp(join(tmpdir(), 'maka-local-external-installation-race-'));
   t.after(() => rm(base, { recursive: true, force: true }));
   const sourcePackageRoot = await selfContainedPackage(base, PREVIOUS.version, {
@@ -680,7 +679,7 @@ test('external reconciliation aborts the guarded target when npm changes again',
     { authorityRoot },
   );
   let installationReads = 0;
-  let settlement = '';
+  let settlementRequested = false;
 
   const result = await restartRuntimeHostNpmGlobalDeployment(
     {
@@ -711,8 +710,8 @@ test('external reconciliation aborts the guarded target when npm changes again',
       retireSource: async () => 'prepared',
       activateTarget: async () => ({
         kind: 'ready',
-        settle: async (outcome) => {
-          settlement = outcome;
+        settle: async () => {
+          settlementRequested = true;
         },
       }),
     },
@@ -720,7 +719,7 @@ test('external reconciliation aborts the guarded target when npm changes again',
 
   assert.equal(result.kind, 'recovery_required');
   assert.equal(result.kind === 'recovery_required' ? result.phase : undefined, 'finalize_target');
-  assert.equal(settlement, 'abort');
+  assert.equal(settlementRequested, true);
   assert.equal(
     (await readLocalHostDeploymentRecord(ROOT_ID, { authorityRoot }))?.state.kind,
     'handoff',
@@ -775,6 +774,39 @@ test('committed target conflicting with the observed Host fails closed', async (
     (error: unknown) =>
       error instanceof RuntimeHostLocalHandoffError &&
       error.code === 'selected_target_observation_conflict',
+  );
+});
+
+test('external npm replacement rejects a different durable source owner before staging', async (t) => {
+  const base = await mkdtemp(join(tmpdir(), 'maka-local-external-owner-mismatch-'));
+  t.after(() => rm(base, { recursive: true, force: true }));
+  const authorityRoot = join(base, 'authority');
+  await applyLocalHostDeploymentTransition(
+    ROOT_ID,
+    { kind: 'claim', owner: DESKTOP_OWNER, selected: PREVIOUS },
+    { authorityRoot },
+  );
+
+  await assert.rejects(
+    restartRuntimeHostNpmGlobalDeployment(
+      { rootPath: join(base, 'root'), registration: hostRegistration() },
+      { authorityRoot },
+      {
+        resolveInstallation: async () => ({
+          owner: CLI_OWNER,
+          observedRelease: {
+            version: TARGET.version,
+            packageRoot: base,
+            cliPath: join(base, 'dist', 'cli.js'),
+          },
+        }),
+        resolveCandidate: async () => assert.fail('cross-owner replacement must not resolve'),
+        withPackage: async () => assert.fail('cross-owner replacement must not stage a target'),
+        connectExisting: async () => assert.fail('cross-owner replacement must not observe a Host'),
+      },
+    ),
+    (error: unknown) =>
+      error instanceof RuntimeHostLocalHandoffError && error.code === 'source_owner_mismatch',
   );
 });
 

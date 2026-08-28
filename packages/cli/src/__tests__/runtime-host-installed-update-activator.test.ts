@@ -26,7 +26,10 @@ import {
   RUNTIME_HOST_REGISTRATION_SCHEMA_VERSION,
   type HostRegistration,
 } from '@maka/runtime-host/protocol';
-import { runRuntimeHostInstalledUpdateActivator } from '../runtime-host-installed-update-activator.js';
+import {
+  runRuntimeHostInstalledUpdateActivator,
+  settleTargetFromDurableAuthority,
+} from '../runtime-host-installed-update-activator.js';
 
 const ROOT_ID = 'a'.repeat(64);
 
@@ -176,11 +179,108 @@ test('fails closed through the authenticated connection when its coordinator cha
           retirement = { hostEpoch: connection.hostEpoch, mode };
           return { kind: 'prepared', pid: 84 };
         },
+        readRecord: async () => undefined,
       },
     ),
-    /lost its coordinator channel/u,
+    /lost its coordinator before ownership committed/u,
   );
   assert.deepEqual(retirement, { hostEpoch: 'target-host', mode: 'interrupt_active_work' });
+});
+
+test('durable committed ownership releases the launch barrier after an ambiguous record read', async () => {
+  const events: string[] = [];
+  let reads = 0;
+  const settlement = await settleTargetFromDurableAuthority(
+    {
+      connection: {} as never,
+      expectedRootId: ROOT_ID,
+      ownerInstallationId: 'npm-global:slot',
+      targetVersion: '2.0.0',
+      targetIntegrity: `sha512-${Buffer.alloc(64, 4).toString('base64')}`,
+      ownsCandidate: true,
+      launchBarrier: {
+        connect: async () => assert.fail('settlement must not connect'),
+        pause: () => events.push('pause'),
+        retireExcept: async () => {
+          events.push('retire');
+        },
+        resume: () => events.push('resume'),
+        release: () => events.push('release'),
+      },
+      retireTarget: async () => assert.fail('an owned committed target must not retire'),
+      readRecord: async () => {
+        reads += 1;
+        if (reads === 1) throw new Error('fsync confirmation unavailable');
+        return {
+          schemaVersion: 1,
+          rootId: ROOT_ID,
+          revision: '00000000-0000-4000-8000-000000000000',
+          state: {
+            kind: 'owned',
+            owner: { kind: 'cli', installationId: 'npm-global:slot' },
+            selected: {
+              kind: 'npm_registry',
+              version: '2.0.0',
+              integrity: `sha512-${Buffer.alloc(64, 4).toString('base64')}`,
+            },
+          },
+        };
+      },
+    },
+    async () => {
+      events.push('retry-read');
+    },
+  );
+
+  assert.equal(settlement, 'committed');
+  assert.equal(reads, 2);
+  assert.deepEqual(events, ['retry-read', 'release']);
+});
+
+test('a readable uncommitted handoff retires the guarded target', async () => {
+  const events: string[] = [];
+  const settlement = await settleTargetFromDurableAuthority({
+    connection: {} as never,
+    expectedRootId: ROOT_ID,
+    ownerInstallationId: 'npm-global:slot',
+    targetVersion: '2.0.0',
+    targetIntegrity: `sha512-${Buffer.alloc(64, 4).toString('base64')}`,
+    ownsCandidate: true,
+    launchBarrier: {
+      connect: async () => assert.fail('settlement must not connect'),
+      pause: () => events.push('pause'),
+      retireExcept: async () => {
+        events.push('retire');
+      },
+      resume: () => events.push('resume'),
+      release: () => events.push('release'),
+    },
+    retireTarget: async () => assert.fail('the launch barrier owns this candidate'),
+    readRecord: async () => ({
+      schemaVersion: 1,
+      rootId: ROOT_ID,
+      revision: '00000000-0000-4000-8000-000000000000',
+      state: {
+        kind: 'handoff',
+        transactionId: 'transaction',
+        from: { kind: 'cli', installationId: 'npm-global:slot' },
+        to: { kind: 'cli', installationId: 'npm-global:slot' },
+        selected: {
+          kind: 'npm_registry',
+          version: '1.0.0',
+          integrity: `sha512-${Buffer.alloc(64, 3).toString('base64')}`,
+        },
+        target: {
+          kind: 'npm_registry',
+          version: '2.0.0',
+          integrity: `sha512-${Buffer.alloc(64, 4).toString('base64')}`,
+        },
+      },
+    }),
+  });
+
+  assert.equal(settlement, 'retired');
+  assert.deepEqual(events, ['pause', 'retire']);
 });
 
 function registration(overrides: Partial<HostRegistration> = {}): HostRegistration {

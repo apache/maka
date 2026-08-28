@@ -32,6 +32,8 @@ import {
   RUNTIME_HOST_PROTOCOL_VERSION,
 } from '@maka/runtime-host/protocol';
 
+const DURABLE_SETTLEMENT_RETRY_MS = 100;
+
 export async function runRuntimeHostInstalledUpdateActivator(
   input: {
     readonly rootPath: string;
@@ -39,7 +41,7 @@ export async function runRuntimeHostInstalledUpdateActivator(
     readonly generation: string;
     readonly candidateEntrypoint: string;
     readonly takeoverHostEpoch?: string;
-    /** The coordinator keeps this short-lived activator alive through durable commit. */
+    /** The short-lived activator adjudicates the durable owner record before exiting. */
     readonly awaitCoordinatorCommit?: boolean;
     readonly expectedOwnerInstallationId?: string;
     readonly targetVersion?: string;
@@ -72,7 +74,7 @@ export async function runRuntimeHostInstalledUpdateActivator(
   });
   if (result.kind === 'connected') {
     let exactTarget = false;
-    let commitWaitOwnsAbort = false;
+    let durableSettlementOwnsRetirement = false;
     try {
       if (
         result.registration.rootId !== input.expectedRootId ||
@@ -87,9 +89,8 @@ export async function runRuntimeHostInstalledUpdateActivator(
         if (!input.expectedOwnerInstallationId || !input.targetVersion || !input.targetIntegrity) {
           throw new Error('The activator is missing its exact durable commit expectation');
         }
-        commitWaitOwnsAbort = true;
+        durableSettlementOwnsRetirement = true;
         await (overrides.awaitCoordinatorCommit ?? awaitCoordinatorCommit)({
-          registration: result.registration,
           connection: result.connection,
           expectedRootId: input.expectedRootId,
           ownerInstallationId: input.expectedOwnerInstallationId,
@@ -105,7 +106,7 @@ export async function runRuntimeHostInstalledUpdateActivator(
       }
       return 0;
     } catch (error) {
-      if (exactTarget && !commitWaitOwnsAbort) {
+      if (exactTarget && !durableSettlementOwnsRetirement) {
         await retireUncommittedTarget({
           connection: result.connection,
           ownsCandidate: result.spawnedProcess !== undefined,
@@ -127,7 +128,6 @@ export async function runRuntimeHostInstalledUpdateActivator(
 }
 
 interface CoordinatorCommitWaitInput {
-  readonly registration: { readonly pid: number };
   readonly connection: RuntimeHostConnection;
   readonly expectedRootId: string;
   readonly ownerInstallationId: string;
@@ -153,8 +153,13 @@ type UncommittedTargetInput = Pick<
  */
 async function awaitCoordinatorCommit(input: CoordinatorCommitWaitInput): Promise<void> {
   if (typeof process.send !== 'function' || !process.connected) {
-    await retireUncommittedTarget(input);
-    throw new Error('The installed update activator lost its coordinator channel');
+    const settlement = await settleTargetFromDurableAuthority(input);
+    if (settlement === 'retired') {
+      throw new Error(
+        'The installed update activator lost its coordinator before ownership committed',
+      );
+    }
+    return;
   }
   await new Promise<void>((resolve, reject) => {
     let settled = false;
@@ -170,33 +175,19 @@ async function awaitCoordinatorCommit(input: CoordinatorCommitWaitInput): Promis
     };
     const onMessage = (message: unknown) => {
       if (!isCoordinatorMessage(message)) return;
-      if (message.kind === 'committed') {
-        settle(async () => {
-          if (!(await isCommittedTarget(input))) {
-            await retireUncommittedTarget(input);
-            throw new Error(
-              'The target activation was acknowledged before durable ownership committed',
-            );
-          }
-          input.launchBarrier.release();
-        });
-      }
-      if (message.kind === 'abort') {
-        settle(async () => {
-          await retireUncommittedTarget(input);
-          throw new Error(
-            'The installed update coordinator aborted before durable ownership committed',
-          );
-        });
-      }
+      settle(async () => {
+        const settlement = await settleTargetFromDurableAuthority(input);
+        if (settlement === 'retired') {
+          throw new Error('The installed update coordinator settled without durable ownership');
+        }
+      });
     };
     const onDisconnect = () => {
       settle(async () => {
-        if (await isCommittedTarget(input)) return;
-        await retireUncommittedTarget(input);
-        throw new Error(
-          'The installed update coordinator exited before durable ownership committed',
-        );
+        const settlement = await settleTargetFromDurableAuthority(input);
+        if (settlement === 'retired') {
+          throw new Error('The installed update coordinator exited before ownership committed');
+        }
       });
     };
     process.on('message', onMessage);
@@ -205,18 +196,44 @@ async function awaitCoordinatorCommit(input: CoordinatorCommitWaitInput): Promis
   });
 }
 
-function isCoordinatorMessage(value: unknown): value is { readonly kind: 'committed' | 'abort' } {
+function isCoordinatorMessage(value: unknown): value is { readonly kind: 'settle' } {
   return (
-    typeof value === 'object' &&
-    value !== null &&
-    (value as { kind?: unknown }).kind !== undefined &&
-    ((value as { kind?: unknown }).kind === 'committed' ||
-      (value as { kind?: unknown }).kind === 'abort')
+    typeof value === 'object' && value !== null && (value as { kind?: unknown }).kind === 'settle'
   );
 }
 
-async function isCommittedTarget(input: CoordinatorCommitWaitInput): Promise<boolean> {
-  const record = await input.readRecord(input.expectedRootId);
+/**
+ * Makes the activator the only authority for target release versus retirement.
+ * Read failures are ambiguous, so retain the launch barrier and inherited lease
+ * until the durable record becomes readable instead of guessing from the
+ * coordinator's observation.
+ */
+export async function settleTargetFromDurableAuthority(
+  input: CoordinatorCommitWaitInput,
+  retryRead: () => Promise<void> = () =>
+    new Promise((resolve) => setTimeout(resolve, DURABLE_SETTLEMENT_RETRY_MS)),
+): Promise<'committed' | 'retired'> {
+  let record: Awaited<ReturnType<typeof input.readRecord>>;
+  for (;;) {
+    try {
+      record = await input.readRecord(input.expectedRootId);
+      break;
+    } catch {
+      await retryRead();
+    }
+  }
+  if (isCommittedTarget(record, input)) {
+    input.launchBarrier.release();
+    return 'committed';
+  }
+  await retireUncommittedTarget(input);
+  return 'retired';
+}
+
+function isCommittedTarget(
+  record: Awaited<ReturnType<typeof readLocalHostDeploymentRecord>>,
+  input: CoordinatorCommitWaitInput,
+): boolean {
   return (
     record?.state.kind === 'owned' &&
     record.state.owner.kind === 'cli' &&

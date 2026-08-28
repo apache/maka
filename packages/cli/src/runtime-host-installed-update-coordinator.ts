@@ -197,7 +197,7 @@ export async function runRuntimeHostInstalledUpdateCoordinator(
     const unreachable = async (): Promise<never> => {
       throw new Error('The exact target activator must settle local Host cutover');
     };
-    let result: Awaited<ReturnType<typeof deps.reconcile>>;
+    let result: Awaited<ReturnType<typeof deps.reconcile>> | undefined;
     try {
       result = await deps.reconcile(
         {
@@ -233,13 +233,14 @@ export async function runRuntimeHostInstalledUpdateCoordinator(
         },
         authorityOptions,
       );
-      if (result.kind === 'completed' && targetActivator) {
-        await targetActivator.settle('committed');
-        targetActivator = undefined;
-      }
     } finally {
-      if (targetActivator) await targetActivator.settle('abort').catch(() => undefined);
+      if (targetActivator) {
+        const settlement = targetActivator.settle();
+        if (result?.kind === 'completed') await settlement;
+        else await settlement.catch(() => undefined);
+      }
     }
+    if (!result) throw new Error('The installed update transaction produced no result');
     if (result.kind === 'completed') {
       process.stdout.write(`Updated Maka to ${input.target.version}.\n`);
       return 0;

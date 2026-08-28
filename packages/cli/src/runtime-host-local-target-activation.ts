@@ -33,8 +33,8 @@ export interface RuntimeHostTargetActivationInput {
 
 export interface RuntimeHostTargetActivation {
   readonly kind: 'ready' | 'active_work' | 'operator_required';
-  /** Releases the short-lived child only after durable owner settlement. */
-  settle(outcome: 'committed' | 'abort'): Promise<void>;
+  /** Asks the short-lived child to adjudicate the durable owner record. */
+  settle(): Promise<void>;
 }
 
 /**
@@ -87,16 +87,16 @@ export function launchRuntimeHostTargetActivator(
       if (code === 4) throw new Error('The observed Runtime Host requires its operator');
       throw new Error('The exact Maka target could not be activated');
     };
-    const settle = async (outcome: 'committed' | 'abort'): Promise<void> => {
+    const settle = async (): Promise<void> => {
       if (settled) return;
       settled = true;
       if (child.connected) {
         await new Promise<void>((resolveSent, rejectSent) => {
-          child.send({ kind: outcome }, (error) => (error ? rejectSent(error) : resolveSent()));
+          child.send({ kind: 'settle' }, (error) => (error ? rejectSent(error) : resolveSent()));
         });
       }
       const exited = await closed;
-      if (outcome === 'committed' && (exited.signal || exited.code !== 0)) {
+      if (exited.signal || exited.code !== 0) {
         if (exited.signal) throw new Error(`Maka target activator exited on ${exited.signal}`);
         throw new Error('The exact Maka target activator did not confirm durable ownership');
       }

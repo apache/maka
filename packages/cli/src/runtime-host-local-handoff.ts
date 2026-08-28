@@ -83,6 +83,7 @@ export class RuntimeHostLocalHandoffError extends Error {
       | 'installed_release_mismatch'
       | 'root_changed'
       | 'selected_target_observation_conflict'
+      | 'source_owner_mismatch'
       | 'unsupported_downgrade',
     message: string,
   ) {
@@ -177,11 +178,18 @@ export async function restartRuntimeHostNpmGlobalDeployment(
     ...overrides,
   };
   const installation = await deps.resolveInstallation(input.installationOptions);
+  const current = await deps.readRecord(input.registration.rootId, authorityOptions);
+  const sourceOwner = current?.state.kind === 'handoff' ? current.state.from : current?.state.owner;
+  if (sourceOwner && !sameOwner(sourceOwner, installation.owner)) {
+    throw new RuntimeHostLocalHandoffError(
+      'source_owner_mismatch',
+      'External npm replacement can reconcile only the same durable npm-global installation owner',
+    );
+  }
   const target = await deps.resolveCandidate({
     kind: 'exact',
     version: installation.observedRelease.version,
   });
-  const current = await deps.readRecord(input.registration.rootId, authorityOptions);
   if (
     current?.state.kind === 'owned' &&
     current.state.owner.kind === installation.owner.kind &&
@@ -350,7 +358,10 @@ export async function restartRuntimeHostNpmGlobalDeployment(
   const unreachable = async (): Promise<never> => {
     throw new Error('Local restart must converge through its exact target activator');
   };
-  let result: LocalHostProcessDeploymentClaimResult | LocalHostProcessDeploymentHandoffResult;
+  let result:
+    | LocalHostProcessDeploymentClaimResult
+    | LocalHostProcessDeploymentHandoffResult
+    | undefined;
   try {
     result = await reconcilePreparedRuntimeHostNpmGlobalDeployment(
       {
@@ -392,13 +403,13 @@ export async function restartRuntimeHostNpmGlobalDeployment(
       authorityOptions,
       deps,
     );
-    if (result.kind === 'completed' && targetActivator) {
-      await targetActivator.settle('committed');
-      targetActivator = undefined;
-    }
     return result;
   } finally {
-    if (targetActivator) await targetActivator.settle('abort').catch(() => undefined);
+    if (targetActivator) {
+      const settlement = targetActivator.settle();
+      if (result?.kind === 'completed') await settlement;
+      else await settlement.catch(() => undefined);
+    }
   }
 }
 
@@ -649,6 +660,13 @@ function sameDeployment(
   return (
     left.kind === right.kind && left.version === right.version && left.integrity === right.integrity
   );
+}
+
+function sameOwner(
+  left: RuntimeHostInstallationOwner,
+  right: RuntimeHostInstallationOwner,
+): boolean {
+  return left.kind === right.kind && left.installationId === right.installationId;
 }
 
 function launchGeneration(transactionId: string, target: RuntimeHostUpdateCandidate): string {
