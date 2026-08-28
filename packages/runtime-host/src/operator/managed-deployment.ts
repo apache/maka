@@ -118,6 +118,7 @@ const deploymentTransitionOperationSchema = z.enum([
   'update',
   'uninstall',
 ]);
+const deploymentTransitionRecoverySchema = z.enum(['restore_from', 'complete_to']);
 
 const deploymentAuthorityRootSchema = z
   .object({
@@ -227,6 +228,7 @@ const managedDeploymentTransitionSchema = z
     state: z.literal('transition'),
     transactionId: deploymentIdSchema,
     operation: deploymentTransitionOperationSchema,
+    recovery: deploymentTransitionRecoverySchema,
     root: deploymentAuthorityRootSchema,
     from: managedDeploymentConfigSchema.nullable(),
     to: managedDeploymentConfigSchema.nullable(),
@@ -240,6 +242,7 @@ const managedDeploymentBlockedSchema = z
     state: z.literal('blocked'),
     transactionId: deploymentIdSchema,
     operation: deploymentTransitionOperationSchema,
+    recovery: deploymentTransitionRecoverySchema,
     root: deploymentAuthorityRootSchema,
     from: managedDeploymentConfigSchema.nullable(),
     to: managedDeploymentConfigSchema.nullable(),
@@ -263,11 +266,11 @@ function validateDeploymentTransitionEndpoints(
   },
   context: z.RefinementCtx,
 ): void {
-  const valid =
-    ((value.operation === 'install' || value.operation === 'legacy_migration') &&
-      value.from === null &&
-      value.to !== null) ||
+  const operationShapeValid =
+    (value.operation === 'install' && value.from === null && value.to !== null) ||
     (value.operation === 'uninstall' && value.from !== null && value.to === null) ||
+    (value.operation === 'legacy_migration' &&
+      ((value.from === null && value.to !== null) || (value.from !== null && value.to === null))) ||
     ((value.operation === 'lifecycle_change' ||
       value.operation === 'provider_change' ||
       value.operation === 'configure' ||
@@ -275,13 +278,12 @@ function validateDeploymentTransitionEndpoints(
       value.from !== null &&
       value.to !== null &&
       value.from.deploymentId === value.to.deploymentId &&
-      value.to.configRevision > value.from.configRevision &&
-      [value.from, value.to].every(
-        (config) =>
-          config === null ||
-          (config.root.id === value.root.id && config.root.path === value.root.path),
-      ));
-  if (!valid) {
+      value.to.configRevision > value.from.configRevision);
+  const endpointsTargetAuthority = [value.from, value.to].every(
+    (config) =>
+      config === null || (config.root.id === value.root.id && config.root.path === value.root.path),
+  );
+  if (!operationShapeValid || !endpointsTargetAuthority) {
     context.addIssue({
       code: 'custom',
       message: 'The managed deployment transition endpoints do not match its operation',
@@ -297,6 +299,9 @@ export type RuntimeHostManagedLaunchClaim = z.infer<typeof managedLaunchClaimSch
 export type RuntimeHostManagedDeploymentTransitionOperation = z.infer<
   typeof deploymentTransitionOperationSchema
 >;
+export type RuntimeHostManagedDeploymentTransitionRecovery = z.infer<
+  typeof deploymentTransitionRecoverySchema
+>;
 export type RuntimeHostManagedDeploymentTransition = z.infer<
   typeof managedDeploymentTransitionSchema
 >;
@@ -309,6 +314,7 @@ export type RuntimeHostManagedDeploymentAuthorityRecord =
 export interface RuntimeHostManagedDeploymentTransitionInput {
   readonly transactionId: string;
   readonly operation: RuntimeHostManagedDeploymentTransitionOperation;
+  readonly recovery: RuntimeHostManagedDeploymentTransitionRecovery;
   readonly expected?: RuntimeHostManagedDeploymentConfig;
   readonly desired?: RuntimeHostManagedDeploymentConfig;
 }
@@ -488,6 +494,34 @@ export async function readRuntimeHostManagedDeploymentAuthorityRecord(
   );
 }
 
+export async function assertRuntimeHostManagedDeploymentAuthorityDurablyAbsent(
+  owner: StateRootOwner<'interactive'>,
+  options: RuntimeHostManagedDeploymentAuthorityOptions = {},
+): Promise<void> {
+  if (owner.closed) {
+    throw new RuntimeHostManagedDeploymentError(
+      'state_root_owned',
+      'The State Root deployment owner is no longer active',
+    );
+  }
+  await assertStorageRootLease(owner.lease, 'interactive', 'write');
+  const path = resolveRuntimeHostManagedDeploymentConfigPath(owner.capability.rootId, options);
+  if ((await readDeploymentAuthorityForCapability(path, owner.capability)) !== undefined) {
+    throw new RuntimeHostManagedDeploymentError(
+      'lifecycle_owner_exists',
+      'Runtime Host lifecycle authority still exists',
+    );
+  }
+  await options.beforeDirectorySync?.(dirname(path));
+  await syncDirectory(dirname(path));
+  if ((await readDeploymentAuthorityForCapability(path, owner.capability)) !== undefined) {
+    throw new RuntimeHostManagedDeploymentError(
+      'lifecycle_owner_exists',
+      'Runtime Host lifecycle authority reappeared while confirming its removal',
+    );
+  }
+}
+
 export async function resolveRuntimeHostManagedDeployment(
   rootId: string,
   options: RuntimeHostManagedDeploymentAuthorityOptions = {},
@@ -495,15 +529,34 @@ export async function resolveRuntimeHostManagedDeployment(
   readonly capability: StorageRootCapability<'interactive'>;
   readonly config: RuntimeHostManagedDeploymentConfig;
 }> {
-  requireRootId(rootId);
-  const path = resolveRuntimeHostManagedDeploymentConfigPath(rootId, options);
-  const value = await readBoundedJson(path);
-  if (value === undefined) {
+  const resolved = await resolveRuntimeHostManagedDeploymentAuthority(rootId, options);
+  if (!resolved) {
     throw new RuntimeHostManagedDeploymentError(
       'deployment_record_missing',
       'The managed Runtime Host deployment is not installed',
     );
   }
+  const { capability, record } = resolved;
+  if (record.schemaVersion !== 1) {
+    throw transitionStateError(record);
+  }
+  return { capability, config: record };
+}
+
+export async function resolveRuntimeHostManagedDeploymentAuthority(
+  rootId: string,
+  options: RuntimeHostManagedDeploymentAuthorityOptions = {},
+): Promise<
+  | {
+      readonly capability: StorageRootCapability<'interactive'>;
+      readonly record: RuntimeHostManagedDeploymentAuthorityRecord;
+    }
+  | undefined
+> {
+  requireRootId(rootId);
+  const path = resolveRuntimeHostManagedDeploymentConfigPath(rootId, options);
+  const value = await readBoundedJson(path);
+  if (value === undefined) return undefined;
   const initial = decodeRuntimeHostManagedDeploymentAuthorityRecord(value);
   if (initial.root.id !== rootId) {
     throw new RuntimeHostManagedDeploymentError(
@@ -516,14 +569,9 @@ export async function resolveRuntimeHostManagedDeployment(
     kind: 'interactive',
     expectedRootId: rootId,
   });
-  const config = await readDeploymentConfigForCapability(path, capability);
-  if (config === undefined) {
-    throw new RuntimeHostManagedDeploymentError(
-      'deployment_record_missing',
-      'The managed Runtime Host deployment disappeared during activation',
-    );
-  }
-  return { capability, config };
+  const record = await readRuntimeHostManagedDeploymentAuthorityRecord(capability, options);
+  if (!record) return undefined;
+  return { capability, record };
 }
 
 export async function claimRuntimeHostManagedDeployment(
@@ -731,6 +779,7 @@ function deploymentTransitionRecord(
     state: 'transition',
     transactionId: input.transactionId,
     operation: input.operation,
+    recovery: input.recovery,
     root: { path: capability.canonicalPath, id: capability.rootId },
     from: expected ?? null,
     to: desired ?? null,
@@ -776,6 +825,17 @@ function deploymentNeedsRepair(
     'deployment_needs_repair',
     `The managed deployment transaction ${record.transactionId} requires repair`,
   );
+}
+
+function transitionStateError(
+  record: RuntimeHostManagedDeploymentTransition | RuntimeHostManagedDeploymentBlocked,
+): RuntimeHostManagedDeploymentError {
+  return record.state === 'transition'
+    ? new RuntimeHostManagedDeploymentError(
+        'deployment_transition_in_progress',
+        `The managed deployment transaction ${record.transactionId} is in progress`,
+      )
+    : deploymentNeedsRepair(record);
 }
 
 export interface RuntimeHostLaunchOwnership {
@@ -893,13 +953,7 @@ async function readDeploymentConfigForCapability(
 ): Promise<RuntimeHostManagedDeploymentConfig | undefined> {
   const record = await readDeploymentAuthorityForCapability(path, capability);
   if (record === undefined || record.schemaVersion === 1) return record;
-  if (record.state === 'transition') {
-    throw new RuntimeHostManagedDeploymentError(
-      'deployment_transition_in_progress',
-      `The managed deployment transaction ${record.transactionId} is in progress`,
-    );
-  }
-  throw deploymentNeedsRepair(record);
+  throw transitionStateError(record);
 }
 
 async function readDeploymentAuthorityForCapability(

@@ -56,6 +56,7 @@ export interface DesktopRuntimeHostLocalServiceTarget {
   readonly serviceId: string;
   readonly rootPath: string;
   readonly rootId: string;
+  readonly deploymentId?: string;
 }
 
 export interface DesktopRuntimeHostLocalSetupInput {
@@ -160,6 +161,7 @@ export function createDesktopRuntimeHostLocalOperator(input: {
   cleanupManagedDeployment(input: {
     readonly operatorPath: string;
     readonly target: DesktopRuntimeHostLocalServiceTarget;
+    readonly finalize?: boolean;
     readonly signal?: AbortSignal;
   }): Promise<void>;
   close(): Promise<void>;
@@ -293,7 +295,11 @@ export function createDesktopRuntimeHostLocalOperator(input: {
       await runExitProcess({
         command: {
           executable: command.operatorPath,
-          args: ['__cleanup-managed-deployment', ...managedTargetArgs(command.target)],
+          args: [
+            '__cleanup-managed-deployment',
+            ...(command.finalize ? ['--finalize'] : []),
+            ...managedTargetArgs(command.target),
+          ],
         },
         label: 'Local Runtime Host deployment cleanup',
         environment: input.environment ?? process.env,
@@ -381,6 +387,9 @@ function managedTargetArgs(target: DesktopRuntimeHostLocalServiceTarget): string
     target.rootPath,
     '--expected-root-id',
     target.rootId,
+    ...(target.deploymentId
+      ? ['--expected-deployment-id', target.deploymentId]
+      : []),
   ];
 }
 

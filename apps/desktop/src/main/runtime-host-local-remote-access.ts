@@ -26,7 +26,6 @@ import {
   consumeAccessCredentialDelivery,
   encodeRuntimeHostOwnerConnectionCode,
 } from '@maka/runtime-host/client';
-import { resolveRuntimeHostManagedServiceId } from '@maka/runtime-host/operator';
 import { REMOTE_OWNER_OPERATION_GRANTS } from '@maka/runtime-host/protocol';
 import type {
   DesktopLocalRuntimeHostRemoteAccessEnableResult,
@@ -43,6 +42,8 @@ import type { DesktopRuntimeHostSetupPackage } from './runtime-host-ssh-terminal
 const LIFECYCLE_FILE = 'runtime-host-local-service.json';
 const SERVICE_ID_PATTERN = /^[a-f0-9]{64}$/u;
 const ROOT_ID_PATTERN = /^[a-f0-9]{64}$/u;
+const DEPLOYMENT_ID_PATTERN =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
 const ADDRESS_MAX_BYTES = 2 * 1024;
 const ADDRESS_MAX_COUNT = 16;
 const LOCAL_REMOTE_ACCESS_PRINCIPAL_ID = 'desktop-owner:local-runtime-host-sharing';
@@ -50,12 +51,12 @@ const LOCAL_REMOTE_ACCESS_PRINCIPAL_ID = 'desktop-owner:local-runtime-host-shari
 interface LocalServiceTarget extends DesktopRuntimeHostLocalServiceTarget {
   readonly schemaVersion: 1;
   readonly operatorPath: string;
+  readonly deploymentId: string;
 }
 
 interface LocalServiceHandoff {
   readonly schemaVersion: 1;
   readonly state: 'handoff';
-  readonly serviceId: string;
   readonly rootPath: string;
   readonly rootId: string;
   readonly coordinationRelays: readonly string[];
@@ -201,7 +202,6 @@ export function createDesktopLocalRuntimeHostRemoteAccess(input: {
       const handoff: LocalServiceHandoff = {
         schemaVersion: 1,
         state: 'handoff',
-        serviceId: resolveRuntimeHostManagedServiceId(input.clientDataRoot),
         rootPath: input.rootPath,
         rootId: input.rootId,
         coordinationRelays: request.coordinationRelays,
@@ -254,15 +254,20 @@ export function createDesktopLocalRuntimeHostRemoteAccess(input: {
           rootPath: handoff.rootPath,
           principalId: LOCAL_REMOTE_ACCESS_PRINCIPAL_ID,
           coordinationRelays: handoff.coordinationRelays,
-          expectedTarget: handoff,
+          expectedTarget: {
+            serviceId: handoff.rootId,
+            rootPath: handoff.rootPath,
+            rootId: handoff.rootId,
+          },
           signal: closing.signal,
         },
         () => undefined,
       );
       if (
-        complete.serviceId !== handoff.serviceId ||
+        complete.serviceId !== handoff.rootId ||
         complete.rootPath !== handoff.rootPath ||
         complete.rootId !== handoff.rootId ||
+        !DEPLOYMENT_ID_PATTERN.test(complete.deploymentId) ||
         !complete.directPeer
       ) {
         throw new Error('Local Runtime Host setup returned an unrelated service');
@@ -274,6 +279,7 @@ export function createDesktopLocalRuntimeHostRemoteAccess(input: {
           operatorPath: complete.operatorPath,
           rootPath: complete.rootPath,
           rootId: complete.rootId,
+          deploymentId: complete.deploymentId,
         },
         handoff.rootPath,
       );
@@ -433,6 +439,12 @@ export function createDesktopLocalRuntimeHostRemoteAccess(input: {
     await input.operator.cleanupManagedDeployment({
       operatorPath: intent.operatorPath,
       target: intent,
+      signal: closing.signal,
+    });
+    await input.operator.cleanupManagedDeployment({
+      operatorPath: intent.operatorPath,
+      target: intent,
+      finalize: true,
       signal: closing.signal,
     });
     await removeDocument(lifecyclePath);
@@ -657,6 +669,8 @@ function requireServiceTarget(value: unknown, rootPath: string): LocalServiceTar
     !SERVICE_ID_PATTERN.test(value.serviceId) ||
     typeof value.rootId !== 'string' ||
     !ROOT_ID_PATTERN.test(value.rootId) ||
+    typeof value.deploymentId !== 'string' ||
+    !DEPLOYMENT_ID_PATTERN.test(value.deploymentId) ||
     value.rootPath !== rootPath ||
     typeof value.operatorPath !== 'string' ||
     !isAbsolute(value.operatorPath)
@@ -669,6 +683,7 @@ function requireServiceTarget(value: unknown, rootPath: string): LocalServiceTar
     rootPath,
     rootId: value.rootId,
     operatorPath: value.operatorPath,
+    deploymentId: value.deploymentId,
   };
 }
 
@@ -687,6 +702,7 @@ function managedLifecycle(intent: LocalServiceTarget): LocalServiceManaged {
     operatorPath: intent.operatorPath,
     rootPath: intent.rootPath,
     rootId: intent.rootId,
+    deploymentId: intent.deploymentId,
   };
 }
 
@@ -714,15 +730,12 @@ async function readLifecycle(
     assertExactKeys(value, [
       'schemaVersion',
       'state',
-      'serviceId',
       'rootPath',
       'rootId',
       'coordinationRelays',
       'allowInterruptActiveTasks',
     ]);
     if (
-      typeof value.serviceId !== 'string' ||
-      !SERVICE_ID_PATTERN.test(value.serviceId) ||
       typeof value.allowInterruptActiveTasks !== 'boolean'
     ) {
       throw new Error('Local Runtime Host handoff intent is invalid');
@@ -730,7 +743,6 @@ async function readLifecycle(
     return {
       schemaVersion: 1,
       state: 'handoff',
-      serviceId: value.serviceId,
       rootPath,
       rootId,
       coordinationRelays: requireAddresses(value.coordinationRelays),
@@ -738,36 +750,28 @@ async function readLifecycle(
     };
   }
   const target = requireServiceTarget(value, rootPath);
+  const targetKeys = [
+    'schemaVersion',
+    'state',
+    'serviceId',
+    'operatorPath',
+    'rootPath',
+    'rootId',
+    'deploymentId',
+  ];
   assertExactKeys(
     value,
     value.state === 'managed'
-      ? [
-          'schemaVersion',
-          'state',
-          'serviceId',
-          'operatorPath',
-          'rootPath',
-          'rootId',
-        ]
+      ? targetKeys
       : value.state === 'peerChanging'
         ? [
-            'schemaVersion',
-            'state',
-            'serviceId',
-            'operatorPath',
-            'rootPath',
-            'rootId',
+            ...targetKeys,
             'peerEnabled',
             'coordinationRelays',
             'allowInterruptActiveTasks',
           ]
         : [
-            'schemaVersion',
-            'state',
-            'serviceId',
-            'operatorPath',
-            'rootPath',
-            'rootId',
+            ...targetKeys,
             'allowInterruptActiveTasks',
           ],
   );

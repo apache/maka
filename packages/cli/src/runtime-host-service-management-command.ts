@@ -20,8 +20,8 @@
 import { truncateUtf8 } from '@maka/core/diagnostic-log';
 import { release } from 'node:os';
 import {
+  assertRuntimeHostManagedDeploymentAuthorityDurablyAbsent,
   encodeRuntimeHostServiceManagementFrame,
-  readRuntimeHostManagedDeploymentAuthorityRecord,
   RUNTIME_HOST_OPERATOR_ACCESS_MANAGEMENT_CAPABILITY,
   RUNTIME_HOST_OPERATOR_CAPABILITY_REQUEST_ENV,
   RUNTIME_HOST_OPERATOR_PEER_MANAGEMENT_CAPABILITY,
@@ -33,11 +33,12 @@ import {
   type RuntimeHostServiceManagementFrame,
   type RuntimeHostServiceSummary,
 } from '@maka/runtime-host/operator';
-import { resolveExistingStorageRoot } from '@maka/storage/root-authority';
+import { resolveExistingStorageRoot, tryAcquireStateRootOwner } from '@maka/storage/root-authority';
 import {
   cleanupRuntimeHostManagedDeployment,
   effectiveRuntimeHostProjectDirectoryRoots,
   manageRuntimeHostService,
+  removeRuntimeHostServiceFile,
   resolveRuntimeHostManagedServiceConfigPath,
   resolveRuntimeHostManagedServiceId,
   runtimeHostManagedServiceConfigFingerprint,
@@ -58,7 +59,12 @@ import {
 import type { RuntimeHostLifecycleProvider } from './runtime-host-lifecycle-provider.js';
 import { manageRuntimeHostManagedLifecycle } from './runtime-host-managed-lifecycle-manager.js';
 import {
+  acknowledgeRuntimeHostManagedDeploymentCleanup,
+  assertRuntimeHostManagedOperatorDeployment,
+  clearRuntimeHostManagedDeploymentCleanupReceipt,
+  readRuntimeHostManagedDeploymentCleanupReceipt,
   removeRuntimeHostManagedDeployment,
+  resolveRuntimeHostManagedControlRoot,
   resolveRuntimeHostManagedDeploymentForCli,
 } from './runtime-host-managed-deployment.js';
 
@@ -68,6 +74,7 @@ export interface RuntimeHostServiceManagementCliOptions
   readonly json: boolean;
   readonly framed?: boolean;
   readonly managedRootId?: string;
+  readonly operatorDeploymentId?: string;
 }
 
 export interface RuntimeHostServiceManagementCliDeps {
@@ -95,28 +102,99 @@ export async function runManagedRuntimeHostServiceCli(
     ...overrides,
   };
   try {
+    if (
+      options.managedRootId &&
+      options.operatorDeploymentId !== undefined &&
+      options.expectedTarget?.deploymentId !== undefined &&
+      options.expectedTarget.deploymentId !== options.operatorDeploymentId
+    ) {
+      throw new RuntimeHostServiceManagerError(
+        'target_mismatch',
+        'The managed Runtime Host deployment generation changed before the operation',
+      );
+    }
+    if (
+      options.managedRootId &&
+      options.action === 'uninstall' &&
+      !options.retainManagedDeployment &&
+      !options.operatorDeploymentId
+    ) {
+      throw new RuntimeHostServiceManagerError(
+        'target_mismatch',
+        'Canonical deployment cleanup must run through its generation-bound operator',
+      );
+    }
     const { json: _json, framed: _framed, ...input } = options;
     const serviceId = resolveRuntimeHostManagedServiceId(options.clientDataRoot);
     const manage = () =>
       options.managedRootId
         ? deps.manageLifecycle(options.managedRootId, input, {
             createProvider: createPlatformRuntimeHostLifecycleProvider,
+            operatorClaim: {
+              deploymentId: options.operatorDeploymentId,
+              cliPath: options.cliPath,
+            },
           })
         : deps.manage(input, deps.createBackend(serviceId, options.clientDataRoot));
+    const controlRoot = options.managedRootId
+      ? resolveRuntimeHostManagedControlRoot(options.managedRootId)
+      : options.clientDataRoot;
     const mutate = () =>
-      deps.withDeploymentLock(options.clientDataRoot, () =>
-        deps.withLifecycleLock(options.clientDataRoot, manage),
+      deps.withDeploymentLock(controlRoot, () =>
+        deps.withLifecycleLock(controlRoot, async () => {
+          if (options.managedRootId) {
+            await assertRuntimeHostManagedOperatorDeployment(
+              options.managedRootId,
+              options.operatorDeploymentId,
+              options.cliPath,
+              { allowAbsent: options.action === 'uninstall' },
+            );
+          }
+          return manage();
+        }),
       );
     const result =
       options.action === 'status' || options.action === 'logs'
-        ? await manage()
-        : options.action === 'retire'
-          ? await deps.withLifecycleLock(options.clientDataRoot, manage)
-          : await mutate();
+        ? options.managedRootId
+          ? await mutate()
+          : await manage()
+        : await mutate();
     const blocked =
       (result.action === 'retire' && result.retirement.kind === 'active_tasks') ||
       (result.action === 'uninstall' && result.retirement.kind === 'active_tasks') ||
       (result.action === 'configure' && result.configuration.kind === 'active_tasks');
+    if (
+      options.managedRootId &&
+      result.action === 'uninstall' &&
+      result.retirement.kind === 'stopped' &&
+      !options.retainManagedDeployment &&
+      result.retainedStateRoot
+    ) {
+      await deps.withDeploymentLock(controlRoot, () =>
+        deps.withLifecycleLock(controlRoot, () =>
+          cleanupCanonicalRuntimeHostManagedDeployment({
+            cliPath: options.cliPath,
+            clientDataRoot: options.clientDataRoot,
+            managedRootId: options.managedRootId!,
+            operatorDeploymentId: options.operatorDeploymentId,
+            expectedTarget: options.expectedTarget!,
+            finalize: false,
+          }),
+        ),
+      );
+      await deps.withDeploymentLock(controlRoot, () =>
+        deps.withLifecycleLock(controlRoot, () =>
+          cleanupCanonicalRuntimeHostManagedDeployment({
+            cliPath: options.cliPath,
+            clientDataRoot: options.clientDataRoot,
+            managedRootId: options.managedRootId!,
+            operatorDeploymentId: options.operatorDeploymentId,
+            expectedTarget: options.expectedTarget!,
+            finalize: true,
+          }),
+        ),
+      );
+    }
     if (options.framed) {
       deps.writeOutput(encodeRuntimeHostServiceManagementFrame(successFrame(result)));
     } else if (options.json) {
@@ -162,14 +240,22 @@ export async function runManagedRuntimeHostDeploymentCleanupCli(options: {
   readonly clientDataRoot: string;
   readonly cliPath: string;
   readonly managedRootId?: string;
+  readonly operatorDeploymentId?: string;
+  readonly finalize?: boolean;
   readonly expectedTarget: RuntimeHostManagedServiceTarget;
 }): Promise<number> {
   try {
     if (options.managedRootId) {
-      await cleanupCanonicalRuntimeHostManagedDeployment({
-        ...options,
-        managedRootId: options.managedRootId,
-      });
+      const controlRoot = resolveRuntimeHostManagedControlRoot(options.managedRootId);
+      await withRuntimeHostManagedServiceDeploymentLock(controlRoot, () =>
+        withRuntimeHostManagedServiceLifecycleLock(controlRoot, () =>
+          cleanupCanonicalRuntimeHostManagedDeployment({
+            ...options,
+            managedRootId: options.managedRootId!,
+            finalize: options.finalize ?? false,
+          }),
+        ),
+      );
       return 0;
     }
     const serviceId = resolveRuntimeHostManagedServiceId(options.clientDataRoot);
@@ -185,9 +271,12 @@ export async function runManagedRuntimeHostDeploymentCleanupCli(options: {
 }
 
 async function cleanupCanonicalRuntimeHostManagedDeployment(options: {
+  readonly clientDataRoot: string;
   readonly cliPath: string;
   readonly managedRootId: string;
+  readonly operatorDeploymentId?: string;
   readonly expectedTarget: RuntimeHostManagedServiceTarget;
+  readonly finalize: boolean;
 }): Promise<void> {
   const { managedRootId: rootId, expectedTarget } = options;
   if (expectedTarget.serviceId !== rootId || expectedTarget.rootId !== rootId) {
@@ -196,42 +285,68 @@ async function cleanupCanonicalRuntimeHostManagedDeployment(options: {
       'The managed Runtime Host does not match the expected deployment identity',
     );
   }
+  if (
+    expectedTarget.deploymentId !== undefined &&
+    expectedTarget.deploymentId !== options.operatorDeploymentId
+  ) {
+    throw new RuntimeHostServiceManagerError(
+      'target_mismatch',
+      'The managed Runtime Host deployment generation changed before cleanup',
+    );
+  }
   const capability = await resolveExistingStorageRoot({
     path: expectedTarget.rootPath,
     kind: 'interactive',
     expectedRootId: rootId,
   });
-  if ((await readRuntimeHostManagedDeploymentAuthorityRecord(capability)) !== undefined) {
+  const owner = await tryAcquireStateRootOwner(capability);
+  if (!owner) {
     throw new RuntimeHostServiceManagerError(
       'uninstall_incomplete',
-      'Runtime Host lifecycle authority still exists; refusing to remove its package',
+      'Runtime Host still owns the State Root; refusing to remove its package',
     );
   }
-  const provider = createPlatformRuntimeHostLifecycleProvider(rootId);
-  const [supervisor, trigger] = await Promise.all([
-    provider.supervisor.status(),
-    provider.reconciliationTrigger.status(),
-  ]);
-  if (
-    supervisor.installed ||
-    supervisor.enabled ||
-    supervisor.active ||
-    trigger.installed ||
-    trigger.active
-  ) {
-    throw new RuntimeHostServiceManagerError(
-      'uninstall_incomplete',
-      'Runtime Host lifecycle artifacts still exist; refusing to remove their package',
-    );
+  try {
+    await assertRuntimeHostManagedDeploymentAuthorityDurablyAbsent(owner);
+    const deploymentRoot = resolveRuntimeHostManagedDeploymentForCli(rootId, options.cliPath);
+    if (!deploymentRoot) {
+      throw new RuntimeHostServiceManagerError(
+        'invalid_launch',
+        'The Runtime Host operator does not belong to the expected managed deployment',
+      );
+    }
+    if (!options.operatorDeploymentId) {
+      throw new RuntimeHostServiceManagerError(
+        'target_mismatch',
+        'Canonical deployment cleanup requires a generation-bound operator',
+      );
+    }
+    if (!options.finalize) {
+      await acknowledgeRuntimeHostManagedDeploymentCleanup({
+        serviceId: rootId,
+        deploymentId: options.operatorDeploymentId,
+        deploymentRoot,
+        stateRootPath: expectedTarget.rootPath,
+      });
+      return;
+    }
+    const receipt = await readRuntimeHostManagedDeploymentCleanupReceipt(rootId);
+    if (
+      !receipt ||
+      receipt.deploymentId !== options.operatorDeploymentId ||
+      receipt.deploymentRoot !== deploymentRoot
+    ) {
+      throw new RuntimeHostServiceManagerError(
+        'uninstall_incomplete',
+        'The managed Runtime Host deployment has not acknowledged cleanup',
+      );
+    }
+    // Canonical peer keys are deployment-scoped, including rotated UUID paths.
+    await removeRuntimeHostManagedDeployment(deploymentRoot, rootId);
+    await clearRuntimeHostManagedDeploymentCleanupReceipt(rootId);
+  } finally {
+    await owner.close();
   }
-  const deploymentRoot = resolveRuntimeHostManagedDeploymentForCli(rootId, options.cliPath);
-  if (!deploymentRoot) {
-    throw new RuntimeHostServiceManagerError(
-      'invalid_launch',
-      'The Runtime Host operator does not belong to the expected managed deployment',
-    );
-  }
-  await removeRuntimeHostManagedDeployment(deploymentRoot, rootId);
 }
 
 function formatHumanResult(result: RuntimeHostManagedServiceResult): string {

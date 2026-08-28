@@ -84,6 +84,7 @@ export interface ConnectOrSpawnRuntimeHostInput {
   connectTimeoutMs?: number;
   handshakeTimeoutMs?: number;
   candidateEntrypoint: string | URL;
+  candidateExecutable?: string;
   managedLaunchClaim?: RuntimeHostManagedLaunchClaim;
   signal?: AbortSignal;
   /** Candidate-exit sink forwarded to the launcher; the embedder owns the sink. */
@@ -453,6 +454,9 @@ export async function connectOrSpawnRuntimeHostWithDependencies(
             rootPath: capability.canonicalPath,
             expectedRootId: capability.rootId,
             entrypoint: input.candidateEntrypoint,
+            ...(input.candidateExecutable === undefined
+              ? {}
+              : { executable: input.candidateExecutable }),
             initialConnectionTimeoutMs: Math.ceil(remaining),
             ...(input.generation === undefined ? {} : { generation: input.generation }),
             ...(managedLaunchClaim === undefined ? {} : { managedLaunchClaim }),

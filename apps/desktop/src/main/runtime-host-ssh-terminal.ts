@@ -117,6 +117,7 @@ export interface DesktopRuntimeHostSshManagementInput {
     readonly serviceId: string;
     readonly rootPath: string;
     readonly rootId: string;
+    readonly deploymentId?: string;
   };
   readonly rootPath?: string;
   readonly websocketPort?: number;
@@ -170,6 +171,7 @@ export interface DesktopRuntimeHostSshCleanupInput {
   readonly sshPort?: number;
   readonly operatorPath: string;
   readonly expectedTarget: DesktopRuntimeHostSshManagementInput['expectedTarget'];
+  readonly finalize?: boolean;
   readonly signal?: AbortSignal;
 }
 
@@ -1112,6 +1114,10 @@ function runtimeHostUpdateRemoteCommand(
   setupPackage: PreparedSetupPackage,
   input: DesktopRuntimeHostSshUpdateInput,
 ): string {
+  const deploymentId = input.expectedTarget.deploymentId;
+  if (!deploymentId) {
+    throw new Error('Runtime Host update requires a deployment generation');
+  }
   return runtimeHostPackageRemoteCommand(
     setupPackage,
     [
@@ -1119,6 +1125,10 @@ function runtimeHostUpdateRemoteCommand(
       'service',
       'update',
       '--framed',
+      '--managed-root-id',
+      input.expectedTarget.rootId,
+      '--operator-deployment-id',
+      deploymentId,
       ...managedServiceTargetArgs(input.expectedTarget),
       ...(input.allowInterruptActiveTasks ? ['--allow-interrupt-active-tasks'] : []),
     ],
@@ -1219,12 +1229,13 @@ function runtimeHostManagedDeploymentCleanupRemoteCommand(
   const cleanup = [
     input.operatorPath,
     '__cleanup-managed-deployment',
+    ...(input.finalize ? ['--finalize'] : []),
     ...managedServiceTargetArgs(input.expectedTarget),
   ].map(quotePosix).join(' ');
   const invocation =
     `if [ ! -e ${operator} ]; then ` +
     `if [ ! -e ${deploymentRoot} ]; then exit 0; fi; ` +
-    `exec rmdir -- ${deploymentRoot}; fi; ` +
+    `exit 1; fi; ` +
     `exec ${cleanup}`;
   return `exec "\${SHELL:-/bin/sh}" -lic ${quotePosix(invocation)}`;
 }
@@ -1233,11 +1244,13 @@ function managedServiceTargetArgs(input: {
   readonly serviceId: string;
   readonly rootPath: string;
   readonly rootId: string;
+  readonly deploymentId?: string;
 }): string[] {
   return [
     '--expected-service-id', input.serviceId,
     '--expected-root-path', input.rootPath,
     '--expected-root-id', input.rootId,
+    ...(input.deploymentId ? ['--expected-deployment-id', input.deploymentId] : []),
   ];
 }
 

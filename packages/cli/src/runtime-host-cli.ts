@@ -104,6 +104,7 @@ export type RuntimeHostCliCommand =
       framed?: true;
       clientDataRoot?: string;
       managedRootId?: string;
+      operatorDeploymentId?: string;
       rootPath?: string;
       projectDirectoryRoots?: { label: string; path: string }[];
       websocketPort?: number;
@@ -119,7 +120,8 @@ export type RuntimeHostCliCommand =
       json: boolean;
       framed?: true;
       clientDataRoot?: string;
-      managedRootId?: string;
+      managedRootId: string;
+      operatorDeploymentId: string;
       listenAddresses: string[];
       coordinationRelays?: string[];
       expectedTarget?: RuntimeHostManagedServiceTarget;
@@ -131,6 +133,7 @@ export type RuntimeHostCliCommand =
       framed?: true;
       clientDataRoot?: string;
       managedRootId?: string;
+      operatorDeploymentId?: string;
       selector: RuntimeHostUpdateSelector;
       expectedTarget?: RuntimeHostManagedServiceTarget;
     }
@@ -140,6 +143,7 @@ export type RuntimeHostCliCommand =
       framed?: true;
       clientDataRoot?: string;
       managedRootId?: string;
+      operatorDeploymentId?: string;
       expectedTarget: RuntimeHostManagedServiceTarget;
       selector?: RuntimeHostUpdateSelector;
       allowInterruptActiveTasks?: true;
@@ -150,6 +154,7 @@ export type RuntimeHostCliCommand =
       framed?: true;
       clientDataRoot?: string;
       managedRootId?: string;
+      operatorDeploymentId?: string;
       policy?: RuntimeHostManagedUpdatePolicy;
       expectedTarget?: RuntimeHostManagedServiceTarget;
     }
@@ -159,12 +164,15 @@ export type RuntimeHostCliCommand =
       framed?: true;
       clientDataRoot?: string;
       managedRootId?: string;
+      operatorDeploymentId?: string;
       expectedTarget?: RuntimeHostManagedServiceTarget;
     }
   | {
       kind: 'runtime-host-managed-deployment-cleanup';
       clientDataRoot?: string;
       managedRootId?: string;
+      operatorDeploymentId?: string;
+      finalize?: true;
       expectedTarget: RuntimeHostManagedServiceTarget;
     }
   | {
@@ -370,8 +378,15 @@ function parseServiceManagementCommand(argv: string[]): RuntimeHostCliCommand {
   if (action === 'peer') return parseServicePeerCommand(argv.slice(1));
   if (action === 'cleanup-deployment') {
     let clientDataRoot: string | undefined;
+    let finalize = false;
     const options = parseManagedServiceOptions(argv.slice(1), {
       allowConfiguration: false,
+      flagOptions: {
+        '--finalize': () => {
+          if (finalize) return error('Duplicate --finalize');
+          finalize = true;
+        },
+      },
       valueOptions: {
         '--client-data-root': (value) => {
           if (clientDataRoot !== undefined) return error('Duplicate --client-data-root');
@@ -390,6 +405,10 @@ function parseServiceManagementCommand(argv: string[]): RuntimeHostCliCommand {
       kind: 'runtime-host-managed-deployment-cleanup',
       ...(clientDataRoot ? { clientDataRoot } : {}),
       ...(options.managedRootId ? { managedRootId: options.managedRootId } : {}),
+      ...(options.operatorDeploymentId
+        ? { operatorDeploymentId: options.operatorDeploymentId }
+        : {}),
+      ...(finalize ? { finalize: true } : {}),
       expectedTarget: options.expectedTarget,
     };
   }
@@ -507,6 +526,9 @@ function parseServiceManagementCommand(argv: string[]): RuntimeHostCliCommand {
       ...(options.framed ? { framed: true } : {}),
       ...(clientDataRoot ? { clientDataRoot } : {}),
       ...(options.managedRootId ? { managedRootId: options.managedRootId } : {}),
+      ...(options.operatorDeploymentId
+        ? { operatorDeploymentId: options.operatorDeploymentId }
+        : {}),
       ...(policy ? { policy } : {}),
       ...(options.expectedTarget ? { expectedTarget: options.expectedTarget } : {}),
     };
@@ -518,6 +540,9 @@ function parseServiceManagementCommand(argv: string[]): RuntimeHostCliCommand {
       ...(options.framed ? { framed: true } : {}),
       ...(clientDataRoot ? { clientDataRoot } : {}),
       ...(options.managedRootId ? { managedRootId: options.managedRootId } : {}),
+      ...(options.operatorDeploymentId
+        ? { operatorDeploymentId: options.operatorDeploymentId }
+        : {}),
       ...(options.expectedTarget ? { expectedTarget: options.expectedTarget } : {}),
     };
   }
@@ -530,6 +555,9 @@ function parseServiceManagementCommand(argv: string[]): RuntimeHostCliCommand {
       ...(options.framed ? { framed: true } : {}),
       ...(clientDataRoot ? { clientDataRoot } : {}),
       ...(options.managedRootId ? { managedRootId: options.managedRootId } : {}),
+      ...(options.operatorDeploymentId
+        ? { operatorDeploymentId: options.operatorDeploymentId }
+        : {}),
       selector,
       ...(options.expectedTarget ? { expectedTarget: options.expectedTarget } : {}),
     };
@@ -544,6 +572,9 @@ function parseServiceManagementCommand(argv: string[]): RuntimeHostCliCommand {
       ...(options.framed ? { framed: true } : {}),
       ...(clientDataRoot ? { clientDataRoot } : {}),
       ...(options.managedRootId ? { managedRootId: options.managedRootId } : {}),
+      ...(options.operatorDeploymentId
+        ? { operatorDeploymentId: options.operatorDeploymentId }
+        : {}),
       expectedTarget: options.expectedTarget!,
       ...(selector ? { selector } : {}),
       ...(allowInterruptActiveTasks ? { allowInterruptActiveTasks: true } : {}),
@@ -634,6 +665,11 @@ function parseServicePeerCommand(argv: string[]): RuntimeHostCliCommand {
   if (allowInterruptActiveTasks && action !== 'enable' && action !== 'disable') {
     return error('--allow-interrupt-active-tasks is only valid with peer enable or peer disable');
   }
+  if (!options.managedRootId || !options.operatorDeploymentId) {
+    return error(
+      'runtime-host service peer requires --managed-root-id and --operator-deployment-id',
+    );
+  }
   if (
     (action === 'enable' ||
       action === 'disable' ||
@@ -649,7 +685,8 @@ function parseServicePeerCommand(argv: string[]): RuntimeHostCliCommand {
     json: options.json,
     ...(options.framed ? { framed: true as const } : {}),
     ...(clientDataRoot ? { clientDataRoot } : {}),
-    ...(options.managedRootId ? { managedRootId: options.managedRootId } : {}),
+    managedRootId: options.managedRootId,
+    operatorDeploymentId: options.operatorDeploymentId,
     listenAddresses,
     ...(clearCoordinationRelays
       ? { coordinationRelays: [] }
@@ -686,6 +723,7 @@ interface ManagedServiceOptions {
   readonly json: boolean;
   readonly framed?: true;
   readonly managedRootId?: string;
+  readonly operatorDeploymentId?: string;
   readonly rootPath?: string;
   readonly projectDirectoryRoots?: {
     readonly label: string;
@@ -713,7 +751,9 @@ function parseManagedServiceOptions(
   let expectedServiceId: string | undefined;
   let expectedRootPath: string | undefined;
   let expectedRootId: string | undefined;
+  let expectedDeploymentId: string | undefined;
   let managedRootId: string | undefined;
+  let operatorDeploymentId: string | undefined;
   let projectDirectoryPolicySpecified = false;
   const projectDirectoryRoots: { label: string; path: string }[] = [];
   for (let index = 0; index < argv.length; index += 1) {
@@ -748,6 +788,8 @@ function parseManagedServiceOptions(
       argument === '--expected-service-id' ||
       argument === '--expected-root-path' ||
       argument === '--expected-root-id' ||
+      argument === '--expected-deployment-id' ||
+      argument === '--operator-deployment-id' ||
       argument === '--managed-root-id';
     const isExplicitlyAllowedOption = Object.hasOwn(input.valueOptions ?? {}, argument ?? '');
     if (input.allowConfiguration === false && !isTargetOption && !isExplicitlyAllowedOption) {
@@ -762,6 +804,8 @@ function parseManagedServiceOptions(
       argument === '--expected-service-id' ||
       argument === '--expected-root-path' ||
       argument === '--expected-root-id' ||
+      argument === '--expected-deployment-id' ||
+      argument === '--operator-deployment-id' ||
       argument === '--managed-root-id' ||
       Object.hasOwn(input.valueOptions ?? {}, argument ?? '')
     ) {
@@ -773,6 +817,8 @@ function parseManagedServiceOptions(
       else if (argument === '--expected-service-id') expectedServiceId = parsed;
       else if (argument === '--expected-root-path') expectedRootPath = parsed;
       else if (argument === '--expected-root-id') expectedRootId = parsed;
+      else if (argument === '--expected-deployment-id') expectedDeploymentId = parsed;
+      else if (argument === '--operator-deployment-id') operatorDeploymentId = parsed;
       else if (argument === '--managed-root-id') managedRootId = parsed;
       else if (argument === '--project-root' || argument === '--project-root-json') {
         if (projectDirectoryPolicySpecified && projectDirectoryRoots.length === 0) {
@@ -817,8 +863,24 @@ function parseManagedServiceOptions(
   if (expectedRootId !== undefined && !/^[a-f0-9]{64}$/u.test(expectedRootId)) {
     return error('--expected-root-id must be a Runtime Host State Root identity');
   }
+  if (
+    expectedDeploymentId !== undefined &&
+    !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu.test(
+      expectedDeploymentId,
+    )
+  ) {
+    return error('--expected-deployment-id must be a Runtime Host deployment identity');
+  }
   if (managedRootId !== undefined && !/^[a-f0-9]{64}$/u.test(managedRootId)) {
     return error('--managed-root-id must be a Runtime Host State Root identity');
+  }
+  if (
+    operatorDeploymentId !== undefined &&
+    !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu.test(
+      operatorDeploymentId,
+    )
+  ) {
+    return error('--operator-deployment-id must be a Runtime Host deployment identity');
   }
   if (
     expectedRootPath !== undefined &&
@@ -831,7 +893,8 @@ function parseManagedServiceOptions(
   const hasExpectedTarget =
     expectedServiceId !== undefined ||
     expectedRootPath !== undefined ||
-    expectedRootId !== undefined;
+    expectedRootId !== undefined ||
+    expectedDeploymentId !== undefined;
   if (hasExpectedTarget && (!expectedServiceId || !expectedRootPath || !expectedRootId)) {
     return error(
       '--expected-service-id, --expected-root-path, and --expected-root-id must be provided together',
@@ -841,6 +904,7 @@ function parseManagedServiceOptions(
     json,
     ...(framed ? { framed: true as const } : {}),
     ...(managedRootId ? { managedRootId } : {}),
+    ...(operatorDeploymentId ? { operatorDeploymentId } : {}),
     ...(rootPath ? { rootPath } : {}),
     ...(projectDirectoryPolicySpecified ? { projectDirectoryRoots } : {}),
     ...(websocketPort === undefined ? {} : { websocketPort }),
@@ -852,6 +916,7 @@ function parseManagedServiceOptions(
             serviceId: expectedServiceId,
             rootPath: expectedRootPath!,
             rootId: expectedRootId!,
+            ...(expectedDeploymentId ? { deploymentId: expectedDeploymentId } : {}),
           },
         }),
   };

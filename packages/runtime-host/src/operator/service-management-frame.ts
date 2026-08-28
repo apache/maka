@@ -119,6 +119,7 @@ const MANAGED_SERVICE_TARGET_SCHEMA = z
     serviceId: z.string().regex(/^[a-f0-9]{64}$/u),
     rootPath: boundedNonEmptyString(PATH_MAX_BYTES),
     rootId: z.string().regex(/^[a-f0-9]{64}$/u),
+    deploymentId: z.string().uuid().optional(),
   })
   .strict();
 

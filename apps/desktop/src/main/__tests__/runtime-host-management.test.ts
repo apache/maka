@@ -34,6 +34,8 @@ import type {
   DesktopRuntimeHostSshUpdateReconciliationInput,
 } from '../runtime-host-ssh-terminal.js';
 
+const DEPLOYMENT_ID = '11111111-1111-4111-8111-111111111111';
+
 test('identifies, rotates, and revokes managed credentials without exposing secrets', async () => {
   const handlers = new Map<string, (...args: unknown[]) => unknown>();
   const profile = {
@@ -83,7 +85,11 @@ test('identifies, rotates, and revokes managed credentials without exposing secr
       }),
       rotateManagedCredential: async (expected, credential) => {
         assert.equal(expected.profile, profile);
-        assert.deepEqual(expected.deployment, { id: service.id, rootPath: service.rootPath });
+        assert.deepEqual(expected.deployment, {
+          id: service.id,
+          rootPath: service.rootPath,
+          deploymentId: DEPLOYMENT_ID,
+        });
         assert.deepEqual(expected.control, {
           kind: 'ssh_operator',
           operatorPath: service.operatorPath,
@@ -296,6 +302,7 @@ test('manages only the service identity bound by Desktop onboarding', async () =
       serviceId: managedService.id,
       rootPath: managedService.rootPath,
       rootId: managedProfile.rootId,
+      deploymentId: DEPLOYMENT_ID,
     },
   });
 
@@ -320,17 +327,32 @@ test('manages only the service identity bound by Desktop onboarding', async () =
     'uninstall-service',
     'mark-cleanup-pending',
     'cleanup-deployment',
+    'cleanup-deployment',
     'clear-binding',
   ]);
-  assert.deepEqual(cleanupInputs, [{
-    destination: managedProfile.transport.destination,
-    operatorPath: managedService.operatorPath,
-    expectedTarget: {
-      serviceId: managedService.id,
-      rootPath: managedService.rootPath,
-      rootId: managedProfile.rootId,
+  assert.deepEqual(cleanupInputs, [
+    {
+      destination: managedProfile.transport.destination,
+      operatorPath: managedService.operatorPath,
+      expectedTarget: {
+        serviceId: managedService.id,
+        rootPath: managedService.rootPath,
+        rootId: managedProfile.rootId,
+        deploymentId: DEPLOYMENT_ID,
+      },
     },
-  }]);
+    {
+      destination: managedProfile.transport.destination,
+      operatorPath: managedService.operatorPath,
+      expectedTarget: {
+        serviceId: managedService.id,
+        rootPath: managedService.rootPath,
+        rootId: managedProfile.rootId,
+        deploymentId: DEPLOYMENT_ID,
+      },
+      finalize: true,
+    },
+  ]);
   management.close();
   assert.equal(handlers.size, 0);
 });
@@ -425,6 +447,7 @@ test('publishes update progress and waits for the managed profile to reconnect',
       serviceId: service.id,
       rootPath: service.rootPath,
       rootId: profile.rootId,
+      deploymentId: DEPLOYMENT_ID,
     },
   }]);
   assert.deepEqual(progress, [
@@ -634,6 +657,7 @@ test('manages one Host update policy and reconciles it through the bound operato
             serviceId: service.id,
             rootPath: service.rootPath,
             rootId: profile.rootId,
+            deploymentId: DEPLOYMENT_ID,
           },
         },
         service: serviceSummary('1.3.0'),
@@ -670,6 +694,7 @@ test('manages one Host update policy and reconciles it through the bound operato
         serviceId: service.id,
         rootPath: service.rootPath,
         rootId: profile.rootId,
+        deploymentId: DEPLOYMENT_ID,
       },
       schedulingState: 'ready',
     },
@@ -683,6 +708,7 @@ test('manages one Host update policy and reconciles it through the bound operato
       serviceId: service.id,
       rootPath: service.rootPath,
       rootId: profile.rootId,
+      deploymentId: DEPLOYMENT_ID,
     });
   }
   assert.deepEqual(reconciliationInputs, []);
@@ -707,13 +733,14 @@ test('manages one Host update policy and reconciles it through the bound operato
       serviceId: service.id,
       rootPath: service.rootPath,
       rootId: profile.rootId,
+      deploymentId: DEPLOYMENT_ID,
     },
   }]);
   assert.deepEqual(progress, [{ profileId: profile.id, phase: 'replacing' }]);
   assert.deepEqual(connections, [[profile.id, profile.rootId, 'host-before-update', true]]);
 });
 
-test('resumes deployment cleanup without invoking the removed operator', async () => {
+test('retries acknowledged deployment cleanup without repeating uninstall', async () => {
   const handlers = new Map<string, (...args: unknown[]) => unknown>();
   const profile = {
     id: 'office',
@@ -733,8 +760,6 @@ test('resumes deployment cleanup without invoking the removed operator', async (
     operatorPath: '/home/operator/.local/share/maka/operator',
   };
   const calls: DesktopRuntimeHostSshManagementInput[] = [];
-  let cleanups = 0;
-  let state: 'active' | 'uninstalling' | 'cleanup_pending' = 'active';
   let clearAttempts = 0;
   createDesktopRuntimeHostManagement({
     ...unusedUpdateDependencies(),
@@ -744,16 +769,21 @@ test('resumes deployment cleanup without invoking the removed operator', async (
     },
     profiles: {
       ...unusedDirectPeerProfileDependencies(),
-      resolveManagedService: async () => managedBinding(profile, service, state),
+      resolveManagedService: async () => {
+        const binding = managedBinding(profile, service, 'cleanup_pending');
+        return {
+          ...binding,
+          deployment: {
+            id: binding.deployment.id,
+            rootPath: binding.deployment.rootPath,
+          },
+        };
+      },
       resolveManagedAccess: async () => undefined,
-      markManagedServiceUninstalling: async (binding) => {
-        state = 'uninstalling';
-        return { ...binding, state };
-      },
-      markManagedServiceCleanupPending: async (binding) => {
-        state = 'cleanup_pending';
-        return { ...binding, state };
-      },
+      markManagedServiceUninstalling: async () =>
+        assert.fail('remote uninstall must not repeat'),
+      markManagedServiceCleanupPending: async () =>
+        assert.fail('cleanup intent is already acknowledged'),
       clearManagedServiceBinding: async () => {
         clearAttempts += 1;
         if (clearAttempts === 1) throw new Error('local metadata is unavailable');
@@ -765,9 +795,7 @@ test('resumes deployment cleanup without invoking the removed operator', async (
       return serviceResult(input.action);
     },
     runAccessManagement: async () => assert.fail('access management is not expected'),
-    cleanupManagedDeployment: async () => {
-      cleanups += 1;
-    },
+    cleanupManagedDeployment: async () => undefined,
   });
 
   const run = handlers.get('runtime-host-management:run');
@@ -776,14 +804,12 @@ test('resumes deployment cleanup without invoking the removed operator', async (
     run({}, profile.id, 'uninstall') as Promise<unknown>,
     /local metadata is unavailable/u,
   );
-  assert.equal(calls.length, 1);
-  assert.equal(calls[0]?.retainManagedDeployment, true);
+  assert.equal(calls.length, 0);
   assert.deepEqual(await run({}, profile.id, 'uninstall'), {
     kind: 'uninstalled',
     retainedStateRoot: service.rootPath,
   });
-  assert.equal(calls.length, 1);
-  assert.equal(cleanups, 2);
+  assert.equal(calls.length, 0);
 });
 
 test('rechecks uninstall intent before retrying the remote service', async () => {
@@ -797,26 +823,35 @@ test('rechecks uninstall intent before retrying the remote service', async () =>
     },
     profiles: {
       ...unusedDirectPeerProfileDependencies(),
-      resolveManagedService: async () => managedBinding(
-        {
-          id: 'office',
-          name: 'Office',
-          kind: 'remote' as const,
-          rootId: 'a'.repeat(64),
-          transport: {
-            kind: 'ssh' as const,
-            destination: 'operator@example.com',
-            remotePort: 7443,
-            websocketPath: '/runtime-host',
+      resolveManagedService: async () => {
+        const binding = managedBinding(
+          {
+            id: 'office',
+            name: 'Office',
+            kind: 'remote' as const,
+            rootId: 'a'.repeat(64),
+            transport: {
+              kind: 'ssh' as const,
+              destination: 'operator@example.com',
+              remotePort: 7443,
+              websocketPath: '/runtime-host',
+            },
           },
-        },
-        {
-          id: 'b'.repeat(64),
-          rootPath: '/srv/maka',
-          operatorPath: '/home/operator/.local/share/maka/operator',
-        },
-        'uninstalling',
-      ),
+          {
+            id: 'b'.repeat(64),
+            rootPath: '/srv/maka',
+            operatorPath: '/home/operator/.local/share/maka/operator',
+          },
+          'uninstalling',
+        );
+        return {
+          ...binding,
+          deployment: {
+            id: binding.deployment.id,
+            rootPath: binding.deployment.rootPath,
+          },
+        };
+      },
       resolveManagedAccess: async () => undefined,
       markManagedServiceUninstalling: async (binding) => {
         marked = true;
@@ -1080,7 +1115,7 @@ function managedBinding<
 >(profile: Profile, service: Service, state: State) {
   return {
     profile,
-    deployment: { id: service.id, rootPath: service.rootPath },
+    deployment: { id: service.id, rootPath: service.rootPath, deploymentId: DEPLOYMENT_ID },
     control: { kind: 'ssh_operator' as const, operatorPath: service.operatorPath },
     state,
   };

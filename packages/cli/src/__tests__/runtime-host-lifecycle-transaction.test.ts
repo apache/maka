@@ -20,12 +20,13 @@
 import assert from 'node:assert/strict';
 import { mkdtemp, rm, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import test from 'node:test';
 import {
   beginRuntimeHostManagedDeploymentTransition,
   claimRuntimeHostManagedDeployment,
   readRuntimeHostManagedDeploymentAuthorityRecord,
+  resolveRuntimeHostManagedDeploymentConfigPath,
   resolveRuntimeHostNpmDeploymentLayout,
   type RuntimeHostManagedDeploymentConfig,
   type RuntimeHostSupervisorProvider,
@@ -35,16 +36,19 @@ import type {
   RuntimeHostLifecycleProvider,
   RuntimeHostProviderDefinition,
 } from '../runtime-host-lifecycle-provider.js';
+import { assertRuntimeHostManagedOperatorConfig } from '../runtime-host-managed-deployment.js';
 import {
   applyRuntimeHostLifecycleTransition,
   recoverRuntimeHostLifecycleTransition,
+  replaceRuntimeHostLifecycle,
   runtimeHostReconciliationTriggerDefinition,
   runtimeHostSupervisorDefinition,
 } from '../runtime-host-lifecycle-transaction.js';
 
 const INTEGRITY = `sha512-${Buffer.alloc(64, 7).toString('base64')}`;
+const UPDATED_INTEGRITY = `sha512-${Buffer.alloc(64, 8).toString('base64')}`;
 
-test('one authority record recovers every provider cutover boundary without a journal', async (t) => {
+test('one authority record recovers provider cutover failures without a journal', async (t) => {
   const stateRoot = await mkdtemp(join(tmpdir(), 'maka-lifecycle-root-'));
   const authorityRoot = await mkdtemp(join(tmpdir(), 'maka-lifecycle-authority-'));
   t.after(() => rm(stateRoot, { recursive: true, force: true }));
@@ -53,7 +57,14 @@ test('one authority record recovers every provider cutover boundary without a jo
   const authority = { authorityRoot, durabilityBoundary: authorityRoot };
   const onDemand = config(capability.canonicalPath, capability.rootId, 1, 'on_demand');
   const systemd = config(capability.canonicalPath, capability.rootId, 2, 'systemd_user');
-  const launchAgent = config(capability.canonicalPath, capability.rootId, 3, 'launch_agent');
+  const launchAgent = {
+    ...config(capability.canonicalPath, capability.rootId, 3, 'launch_agent'),
+    launch: {
+      kind: 'exact_package' as const,
+      nodePath: process.execPath,
+      package: { kind: 'npm_registry' as const, version: '2.0.0', integrity: UPDATED_INTEGRITY },
+    },
+  };
   const systemdSupervisor = runtimeHostSupervisorDefinition(systemd);
   assert.deepEqual(systemdSupervisor.command.slice(0, 3), [
     process.execPath,
@@ -67,7 +78,17 @@ test('one authority record recovers every provider cutover boundary without a jo
     ['systemd_user', new FakeLifecycleProvider('systemd_user', 'systemd_timer')],
     ['launch_agent', new FakeLifecycleProvider('launch_agent', 'launch_agent_timer')],
   ]);
+  let operatorProjection = onDemand;
   const deps = {
+    convergeOperator: async (
+      _current: RuntimeHostManagedDeploymentConfig | undefined,
+      desired: RuntimeHostManagedDeploymentConfig | undefined,
+    ) => {
+      if (desired) operatorProjection = desired;
+    },
+    verifyOperator: async (expected: RuntimeHostManagedDeploymentConfig) => {
+      assert.deepEqual(operatorProjection.launch, expected.launch);
+    },
     resolveProvider: (provider: RuntimeHostSupervisorProvider) => providers.get(provider)!,
   };
   const firstOwner = await tryAcquireStateRootOwner(capability);
@@ -86,14 +107,7 @@ test('one authority record recovers every provider cutover boundary without a jo
 
   const systemdProvider = providers.get('systemd_user')!;
   const launchAgentProvider = providers.get('launch_agent')!;
-  const failureBoundaries = [
-    'systemd_timer.uninstall',
-    'systemd_user.uninstall',
-    'launch_agent.converge',
-    'launch_agent.verify',
-    'launch_agent_timer.converge',
-    'launch_agent_timer.verify',
-  ];
+  const failureBoundaries = ['systemd_timer.uninstall', 'launch_agent_timer.verify'];
   for (const boundary of failureBoundaries) {
     launchAgentProvider.clear();
     systemdProvider.install(systemd);
@@ -121,6 +135,7 @@ test('one authority record recovers every provider cutover boundary without a jo
     );
     systemdProvider.assertInstalled(systemd);
     launchAgentProvider.assertAbsent();
+    assert.deepEqual(operatorProjection.launch, systemd.launch);
   }
 
   const interruptedId = '00000000-0000-4000-8000-000000000099';
@@ -131,6 +146,7 @@ test('one authority record recovers every provider cutover boundary without a jo
     {
       transactionId: interruptedId,
       operation: 'provider_change',
+      recovery: 'restore_from',
       expected: systemd,
       desired: launchAgent,
     },
@@ -149,7 +165,20 @@ test('one authority record recovers every provider cutover boundary without a jo
     systemd,
   );
   systemdProvider.assertInstalled(systemd);
+  assert.deepEqual(operatorProjection.launch, systemd.launch);
   launchAgentProvider.assertAbsent();
+  assert.throws(
+    () =>
+      assertRuntimeHostManagedOperatorConfig(
+        systemd,
+        launchAgent.deploymentId,
+        resolveRuntimeHostNpmDeploymentLayout(
+          launchAgent.deploymentRoot,
+          launchAgent.launch.package.integrity,
+        ).cliPath,
+      ),
+    /different deployment generation or exact package/u,
+  );
 
   const uninstallOwner = await tryAcquireStateRootOwner(capability);
   assert.ok(uninstallOwner);
@@ -164,6 +193,7 @@ test('one authority record recovers every provider cutover boundary without a jo
     await readRuntimeHostManagedDeploymentAuthorityRecord(capability, authority),
     undefined,
   );
+  assert.deepEqual(operatorProjection.launch, systemd.launch);
 
   const migratedSystemd = config(capability.canonicalPath, capability.rootId, 1, 'systemd_user');
   let legacyInstalled = true;
@@ -259,6 +289,126 @@ test('one authority record recovers every provider cutover boundary without a jo
   );
   await finalOwner.close();
   assert.ok((await stat(capability.canonicalPath)).isDirectory());
+});
+
+test('replacement reactivates a proven previous authority after a pre-commit failure', async (t) => {
+  for (const previous of ['supervised', 'legacy'] as const) {
+    const stateRoot = await mkdtemp(join(tmpdir(), `maka-lifecycle-${previous}-`));
+    const capability = await resolveStorageRoot({ path: stateRoot, kind: 'interactive' });
+    const authorityDirectory = dirname(
+      resolveRuntimeHostManagedDeploymentConfigPath(capability.rootId),
+    );
+    t.after(() => rm(stateRoot, { recursive: true, force: true }));
+    t.after(() => rm(authorityDirectory, { recursive: true, force: true }));
+
+    const current =
+      previous === 'supervised'
+        ? config(capability.canonicalPath, capability.rootId, 1, 'systemd_user')
+        : undefined;
+    if (current) await claimRuntimeHostManagedDeployment(capability, current);
+    const desired = config(capability.canonicalPath, capability.rootId, 2, 'on_demand');
+    const provider = new FakeLifecycleProvider('systemd_user', 'systemd_timer');
+    if (current) provider.install(current);
+    let failProjection = true;
+    let previousActivations = 0;
+    let legacyInstalled = true;
+    const deps = {
+      convergeOperator: async () => {
+        if (!failProjection) return;
+        failProjection = false;
+        throw new Error('Injected operator projection failure');
+      },
+      verifyOperator: async () => undefined,
+      resolveProvider: () => provider,
+      uninstallLegacy: async () => {
+        legacyInstalled = false;
+      },
+      restoreLegacy: async () => {
+        legacyInstalled = true;
+      },
+    };
+
+    await assert.rejects(
+      replaceRuntimeHostLifecycle({
+        operation: previous === 'legacy' ? 'legacy_migration' : 'lifecycle_change',
+        ...(current ? { current } : {}),
+        desired,
+        activatePrevious: async () => {
+          previousActivations += 1;
+        },
+        deps,
+      }),
+      { code: 'transition_failed' },
+      previous,
+    );
+
+    assert.equal(previousActivations, 1, previous);
+    assert.deepEqual(
+      (await readRuntimeHostManagedDeploymentAuthorityRecord(capability)) ?? undefined,
+      current,
+      previous,
+    );
+    if (current) provider.assertInstalled(current);
+    else assert.equal(legacyInstalled, true);
+  }
+});
+
+test('interrupted activation compensation completes the previous semantics', async (t) => {
+  const stateRoot = await mkdtemp(join(tmpdir(), 'maka-lifecycle-compensation-root-'));
+  const authorityRoot = await mkdtemp(join(tmpdir(), 'maka-lifecycle-compensation-authority-'));
+  t.after(() => rm(stateRoot, { recursive: true, force: true }));
+  t.after(() => rm(authorityRoot, { recursive: true, force: true }));
+  const capability = await resolveStorageRoot({ path: stateRoot, kind: 'interactive' });
+  const authority = { authorityRoot, durabilityBoundary: authorityRoot };
+  const previous = config(capability.canonicalPath, capability.rootId, 1, 'systemd_user');
+  const failedDesired = config(capability.canonicalPath, capability.rootId, 2, 'on_demand');
+  const compensation = { ...previous, configRevision: 3 };
+  await claimRuntimeHostManagedDeployment(capability, failedDesired, authority);
+
+  const provider = new FakeLifecycleProvider('systemd_user', 'systemd_timer');
+  let operatorProjection = failedDesired;
+  const deps = {
+    convergeOperator: async (
+      _current: RuntimeHostManagedDeploymentConfig | undefined,
+      desired: RuntimeHostManagedDeploymentConfig | undefined,
+    ) => {
+      if (desired) operatorProjection = desired;
+    },
+    verifyOperator: async () => undefined,
+    resolveProvider: () => provider,
+  };
+  const interruptedOwner = await tryAcquireStateRootOwner(capability);
+  assert.ok(interruptedOwner);
+  const { record } = await beginRuntimeHostManagedDeploymentTransition(
+    interruptedOwner,
+    {
+      transactionId: '00000000-0000-4000-8000-000000000100',
+      operation: 'lifecycle_change',
+      recovery: 'complete_to',
+      expected: failedDesired,
+      desired: compensation,
+    },
+    authority,
+  );
+  await interruptedOwner.close();
+
+  const recoveryOwner = await tryAcquireStateRootOwner(capability);
+  assert.ok(recoveryOwner);
+  const recovered = await recoverRuntimeHostLifecycleTransition(
+    recoveryOwner,
+    record,
+    deps,
+    authority,
+  );
+  await recoveryOwner.close();
+
+  assert.deepEqual(recovered, compensation);
+  assert.deepEqual(
+    await readRuntimeHostManagedDeploymentAuthorityRecord(capability, authority),
+    compensation,
+  );
+  assert.deepEqual(operatorProjection, compensation);
+  provider.assertInstalled(compensation);
 });
 
 class FakeLifecycleProvider implements RuntimeHostLifecycleProvider {

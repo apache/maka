@@ -263,6 +263,7 @@ test('deployment transitions fail closed and preserve exact commit or rollback a
     {
       transactionId: rollbackTransactionId,
       operation: 'lifecycle_change',
+      recovery: 'restore_from',
       expected: input.config,
       desired,
     },
@@ -313,6 +314,7 @@ test('deployment transitions fail closed and preserve exact commit or rollback a
     {
       transactionId: commitTransactionId,
       operation: 'lifecycle_change',
+      recovery: 'restore_from',
       expected: input.config,
       desired,
     },

@@ -21,6 +21,7 @@ import { mkdir, open, readFile, stat } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { RUNTIME_HOST_SERVICE_LOG_MAX_BYTES } from '@maka/runtime-host/operator';
+import { readStableBoundedFile } from '@maka/storage/stable-storage';
 import {
   formatRuntimeHostServiceLogs,
   removeRuntimeHostServiceFile,
@@ -275,7 +276,7 @@ export function createLaunchAgentRuntimeHostLifecycleProvider(
       loaded: _loaded,
       manager: _manager,
       ...observed
-    } = await readLaunchAgentStatus(context);
+    } = await readCanonicalLaunchAgentStatus(context);
     return { provider: 'launch_agent', ...observed };
   };
   return {
@@ -291,6 +292,7 @@ export function createLaunchAgentRuntimeHostLifecycleProvider(
           renderLaunchAgentSupervisorDefinition(definition, context),
           0o600,
         );
+        await enableLaunchAgent(context);
       },
       verify: (definition) => verifyLaunchAgentSupervisorDefinition(context, definition),
       status,
@@ -314,6 +316,7 @@ export function createLaunchAgentRuntimeHostLifecycleProvider(
           renderLaunchAgentReconciliationDefinition(definition, scheduler),
           0o600,
         );
+        await enableLaunchAgent(scheduler);
       },
       verify: (definition) => verifyLaunchAgentReconciliationDefinition(scheduler, definition),
       status: async () => {
@@ -676,14 +679,12 @@ async function verifyLaunchAgentSupervisorDefinition(
   definition: RuntimeHostProviderDefinition,
 ): Promise<void> {
   assertRuntimeHostProviderDefinition(definition);
+  const expected = renderLaunchAgentSupervisorDefinition(definition, context);
   const [status, plist] = await Promise.all([
-    readLaunchAgentStatus(context),
-    readFile(context.plistPath, 'utf8').catch((error: unknown) => {
-      if (isNodeError(error, 'ENOENT')) return null;
-      throw error;
-    }),
+    readCanonicalLaunchAgentStatus(context),
+    readExpectedManagedProviderDefinition(context.plistPath, expected),
   ]);
-  if (!status.installed || plist !== renderLaunchAgentSupervisorDefinition(definition, context)) {
+  if (!status.installed || !status.enabled || plist !== expected) {
     throw new RuntimeHostServiceManagerError(
       'target_mismatch',
       'The LaunchAgent supervisor does not match its managed deployment',
@@ -696,19 +697,43 @@ async function verifyLaunchAgentReconciliationDefinition(
   definition: RuntimeHostProviderDefinition,
 ): Promise<void> {
   assertRuntimeHostProviderDefinition(definition);
+  const expected = renderLaunchAgentReconciliationDefinition(definition, context);
   const [status, plist] = await Promise.all([
-    readLaunchAgentStatus(context),
-    readFile(context.plistPath, 'utf8').catch((error: unknown) => {
-      if (isNodeError(error, 'ENOENT')) return null;
-      throw error;
-    }),
+    readCanonicalLaunchAgentStatus(context),
+    readExpectedManagedProviderDefinition(context.plistPath, expected),
   ]);
-  if (
-    !status.installed ||
-    plist !== renderLaunchAgentReconciliationDefinition(definition, context)
-  ) {
+  if (!status.installed || !status.enabled || plist !== expected) {
     throw launchAgentSchedulerMismatch();
   }
+}
+
+async function readExpectedManagedProviderDefinition(
+  path: string,
+  expected: string,
+): Promise<string | null> {
+  return readStableBoundedFile({
+    path,
+    maxBytes: Buffer.byteLength(expected),
+    invalidFile: () =>
+      new RuntimeHostServiceManagerError(
+        'target_mismatch',
+        'The managed LaunchAgent definition is not a stable regular file',
+      ),
+  })
+    .then((contents) => {
+      try {
+        return new TextDecoder('utf-8', { fatal: true }).decode(contents);
+      } catch {
+        throw new RuntimeHostServiceManagerError(
+          'target_mismatch',
+          'The managed LaunchAgent definition is not valid UTF-8',
+        );
+      }
+    })
+    .catch((error: unknown) => {
+      if (isNodeError(error, 'ENOENT')) return null;
+      throw error;
+    });
 }
 
 async function uninstallLaunchAgentSupervisor(context: LaunchAgentContext): Promise<void> {
@@ -937,6 +962,43 @@ async function readLaunchAgentStatus(context: LaunchAgentContext): Promise<Launc
   };
 }
 
+async function readCanonicalLaunchAgentStatus(
+  context: LaunchAgentContext,
+): Promise<LaunchAgentStatus> {
+  const observed = await readLaunchAgentStatus(context);
+  if (!observed.enabled) return observed;
+  return { ...observed, enabled: !(await isLaunchAgentDisabled(context)) };
+}
+
+async function isLaunchAgentDisabled(context: LaunchAgentContext): Promise<boolean> {
+  const result = await context.runLaunchctl(['print-disabled', context.domain]).catch((error) => {
+    throw new RuntimeHostServiceManagerError(
+      'service_manager_unavailable',
+      'Unable to query the macOS LaunchAgent enablement state',
+      { cause: error },
+    );
+  });
+  if (result.exitCode !== 0) {
+    throw managerError('Reading the macOS LaunchAgent enablement state failed', result);
+  }
+  for (const line of result.stdout.split('\n')) {
+    if (!line.includes(`"${context.label}"`)) continue;
+    const entry = /^\s*"([^"]+)"\s*=>\s*(\S+)\s*$/u.exec(line);
+    if (entry?.[1] !== context.label) throw invalidLaunchAgentEnablementState();
+    if (entry[2] === 'true' || entry[2] === 'disabled') return true;
+    if (entry[2] === 'false' || entry[2] === 'enabled') return false;
+    throw invalidLaunchAgentEnablementState();
+  }
+  return false;
+}
+
+function invalidLaunchAgentEnablementState(): RuntimeHostServiceManagerError {
+  return new RuntimeHostServiceManagerError(
+    'service_manager_operation_failed',
+    'The macOS LaunchAgent enablement state is invalid',
+  );
+}
+
 async function assertLaunchAgentDomain(context: LaunchAgentContext): Promise<void> {
   const result = await context.runLaunchctl(['print', context.domain]).catch((error: unknown) => {
     throw new RuntimeHostServiceManagerError(
@@ -959,6 +1021,14 @@ async function bootstrapLaunchAgent(context: LaunchAgentContext): Promise<void> 
     context,
     ['bootstrap', context.domain, context.plistPath],
     'Starting the Runtime Host LaunchAgent failed',
+  );
+}
+
+async function enableLaunchAgent(context: LaunchAgentContext): Promise<void> {
+  await requireLaunchctl(
+    context,
+    ['enable', context.serviceTarget],
+    'Enabling the Runtime Host LaunchAgent failed',
   );
 }
 

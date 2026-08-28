@@ -17,16 +17,15 @@
  * under the License.
  */
 
-import { rm } from 'node:fs/promises';
 import { resolveRuntimeHostNpmDeploymentLayout } from '@maka/runtime-host/operator';
+import { type RuntimeHostManagedDeploymentConfig } from '@maka/runtime-host/operator';
+import { connectExistingRuntimeHost } from '@maka/runtime-host/client';
+import { RUNTIME_HOST_PROTOCOL_VERSION } from '@maka/runtime-host/protocol';
 import {
-  resolveRuntimeHostManagedDeployment,
-  type RuntimeHostManagedDeploymentConfig,
-} from '@maka/runtime-host/operator';
-import {
-  applyRuntimeHostLifecycleTransition,
+  applyRetiredRuntimeHostLifecycleTransition,
   activateRuntimeHostLifecycle,
   replaceRuntimeHostLifecycle,
+  resolveRecoverableRuntimeHostManagedDeployment,
   retireRuntimeHostLifecycleOwner,
   runtimeHostReconciliationTriggerDefinition,
   runtimeHostSupervisorDefinition,
@@ -35,7 +34,13 @@ import {
 } from './runtime-host-lifecycle-transaction.js';
 import type { RuntimeHostLifecycleProvider } from './runtime-host-lifecycle-provider.js';
 import {
+  assertRuntimeHostManagedOperatorConfig,
+  convergeRuntimeHostManagedOperator,
+  verifyRuntimeHostManagedOperator,
+} from './runtime-host-managed-deployment.js';
+import {
   effectiveRuntimeHostProjectDirectoryRoots,
+  formatRuntimeHostServiceLogs,
   resolveRuntimeHostManagedProjectDirectoryRoots,
   runtimeHostManagedServiceConfigFingerprint,
   RuntimeHostServiceManagerError,
@@ -48,11 +53,10 @@ import {
 
 export interface RuntimeHostManagedLifecycleManagerDeps {
   readonly createProvider: (rootId: string) => RuntimeHostLifecycleProvider;
-  readonly applyTransition?: typeof applyRuntimeHostLifecycleTransition;
-  readonly activate?: typeof activateRuntimeHostLifecycle;
-  readonly verifyReady?: typeof verifyRuntimeHostLifecycleReady;
-  readonly retire?: typeof retireRuntimeHostLifecycleOwner;
-  readonly replace?: typeof replaceRuntimeHostLifecycle;
+  readonly operatorClaim?: {
+    readonly deploymentId?: string;
+    readonly cliPath: string;
+  };
 }
 
 export async function manageRuntimeHostManagedLifecycle(
@@ -60,23 +64,12 @@ export async function manageRuntimeHostManagedLifecycle(
   input: RuntimeHostManagedServiceInput,
   dependencies: RuntimeHostManagedLifecycleManagerDeps,
 ): Promise<RuntimeHostManagedServiceResult> {
-  const { config } = await resolveRuntimeHostManagedDeployment(rootId);
-  if (input.expectedTarget) assertExpectedTarget(input.expectedTarget, config);
-  if (config.lifecycle.mode !== 'supervised') {
-    throw new RuntimeHostServiceManagerError(
-      'target_mismatch',
-      'This managed Runtime Host uses on-demand lifecycle activation',
-    );
-  }
-  const provider = dependencies.createProvider(rootId);
-  if (provider.supervisor.provider !== config.lifecycle.provider) {
-    throw new RuntimeHostServiceManagerError(
-      'target_mismatch',
-      `The persisted Runtime Host provider ${config.lifecycle.provider} is unavailable`,
-    );
-  }
   const lifecycleDeps: RuntimeHostLifecycleTransactionDeps = {
+    convergeOperator: (currentConfig, desiredConfig) =>
+      convergeRuntimeHostManagedOperator(currentConfig, desiredConfig),
+    verifyOperator: verifyRuntimeHostManagedOperator,
     resolveProvider: (requested) => {
+      const provider = dependencies.createProvider(rootId);
       if (requested !== provider.supervisor.provider) {
         throw new RuntimeHostServiceManagerError(
           'target_mismatch',
@@ -86,12 +79,37 @@ export async function manageRuntimeHostManagedLifecycle(
       return provider;
     },
   };
-  const applyTransition = dependencies.applyTransition ?? applyRuntimeHostLifecycleTransition;
-  const activate = dependencies.activate ?? activateRuntimeHostLifecycle;
-  const verifyReady = dependencies.verifyReady ?? verifyRuntimeHostLifecycleReady;
-  const retire = dependencies.retire ?? retireRuntimeHostLifecycleOwner;
-  const replace = dependencies.replace ?? replaceRuntimeHostLifecycle;
-
+  const resolved = await resolveRecoverableRuntimeHostManagedDeployment(rootId, lifecycleDeps, {
+    ...(input.expectedTarget ? { expectedTarget: input.expectedTarget } : {}),
+  });
+  if (resolved.kind === 'absent') {
+    if (input.action === 'uninstall' && input.expectedTarget) {
+      return {
+        ...resultWithRetirement('uninstall', unknownAbsentStatus(), { kind: 'stopped' }),
+        retainedStateRoot: input.expectedTarget.rootPath,
+      };
+    }
+    throw new RuntimeHostServiceManagerError(
+      'not_installed',
+      'The managed Runtime Host deployment is not installed',
+    );
+  }
+  const config = resolved.config;
+  if (dependencies.operatorClaim) {
+    assertRuntimeHostManagedOperatorConfig(
+      config,
+      dependencies.operatorClaim.deploymentId,
+      dependencies.operatorClaim.cliPath,
+    );
+  }
+  const supervisedLifecycle = config.lifecycle.mode === 'supervised' ? config.lifecycle : undefined;
+  const provider = supervisedLifecycle ? dependencies.createProvider(rootId) : undefined;
+  if (provider && provider.supervisor.provider !== supervisedLifecycle?.provider) {
+    throw new RuntimeHostServiceManagerError(
+      'target_mismatch',
+      `The persisted Runtime Host provider ${supervisedLifecycle?.provider} is unavailable`,
+    );
+  }
   if (input.action === 'install') {
     throw new RuntimeHostServiceManagerError(
       'target_mismatch',
@@ -99,23 +117,35 @@ export async function manageRuntimeHostManagedLifecycle(
     );
   }
   if (input.action === 'status') {
-    await verifyProviderDefinitions(config, provider);
+    await lifecycleDeps.verifyOperator(config);
+    if (provider) await verifyProviderDefinitions(config, provider);
     return result('status', await status(config, provider));
   }
   if (input.action === 'logs') {
-    await verifyProviderDefinitions(config, provider);
-    const [host, reconciliation] = await Promise.all([
-      provider.supervisor.logs(),
-      provider.reconciliationTrigger.logs(),
-    ]);
+    await lifecycleDeps.verifyOperator(config);
+    if (provider) await verifyProviderDefinitions(config, provider);
+    const host = provider ? await provider.supervisor.logs() : '';
+    const reconciliation =
+      provider && config.reconciliation.trigger === 'scheduled'
+        ? await provider.reconciliationTrigger.logs()
+        : '';
     return {
       ...result('logs', await status(config, provider)),
-      logs: [host, reconciliation].filter(Boolean).join('\n'),
+      logs: formatRuntimeHostServiceLogs([
+        { label: 'host', logs: host },
+        { label: 'reconciliation', logs: reconciliation },
+      ]),
     };
   }
   if (input.action === 'start' || input.action === 'restart') {
+    if (!provider) {
+      throw new RuntimeHostServiceManagerError(
+        'target_mismatch',
+        'Start an on-demand Runtime Host with operator activate',
+      );
+    }
     if (input.action === 'restart') {
-      const retirement = await retire({
+      const retirement = await retireRuntimeHostLifecycleOwner({
         rootPath: config.root.path,
         rootId,
         supervisor: provider.supervisor,
@@ -124,15 +154,30 @@ export async function manageRuntimeHostManagedLifecycle(
       if (retirement.kind === 'active_tasks') throw new Error('Unexpected active-task refusal');
       await retirement.owner.close();
     }
-    await activate(config, lifecycleDeps);
-    await verifyReady(config, lifecycleDeps);
+    try {
+      await activateRuntimeHostLifecycle(config, lifecycleDeps);
+      await verifyRuntimeHostLifecycleReady(config, lifecycleDeps);
+    } catch (activationError) {
+      try {
+        const recovery = await retireRuntimeHostLifecycleOwner({
+          rootPath: config.root.path,
+          rootId,
+          supervisor: provider.supervisor,
+          allowInterruptActiveTasks: true,
+        });
+        if (recovery.kind === 'retired') await recovery.owner.close();
+      } catch (retirementError) {
+        throw new AggregateError([activationError, retirementError]);
+      }
+      throw activationError;
+    }
     return result(input.action, await status(config, provider));
   }
   if (input.action === 'stop' || input.action === 'retire') {
-    const retirement = await retire({
+    const retirement = await retireRuntimeHostLifecycleOwner({
       rootPath: config.root.path,
       rootId,
-      supervisor: provider.supervisor,
+      ...(provider ? { supervisor: provider.supervisor } : {}),
       allowInterruptActiveTasks: input.allowInterruptActiveTasks ?? false,
     });
     if (retirement.kind === 'active_tasks') {
@@ -173,14 +218,16 @@ export async function manageRuntimeHostManagedLifecycle(
         effectiveRuntimeHostProjectDirectoryRoots(currentStatus.config!),
     );
     if (JSON.stringify(projectDirectoryRoots) === JSON.stringify(config.projectDirectoryRoots)) {
-      return configurationResult('unchanged', currentStatus);
+      await activateRuntimeHostLifecycle(config, lifecycleDeps);
+      await verifyRuntimeHostLifecycleReady(config, lifecycleDeps);
+      return configurationResult('unchanged', await status(config, provider));
     }
     const desired: RuntimeHostManagedDeploymentConfig = {
       ...config,
       configRevision: config.configRevision + 1,
       projectDirectoryRoots: [...projectDirectoryRoots],
     };
-    const replacement = await replace({
+    const replacement = await replaceRuntimeHostLifecycle({
       operation: 'configure',
       current: config,
       desired,
@@ -193,10 +240,10 @@ export async function manageRuntimeHostManagedLifecycle(
     return configurationResult('configured', await status(desired, provider));
   }
   if (input.action === 'uninstall') {
-    const retirement = await retire({
+    const retirement = await retireRuntimeHostLifecycleOwner({
       rootPath: config.root.path,
       rootId,
-      supervisor: provider.supervisor,
+      ...(provider ? { supervisor: provider.supervisor } : {}),
       allowInterruptActiveTasks: input.allowInterruptActiveTasks ?? false,
     });
     if (retirement.kind === 'active_tasks') {
@@ -205,18 +252,12 @@ export async function manageRuntimeHostManagedLifecycle(
         retainedStateRoot: config.root.path,
       };
     }
-    try {
-      await applyTransition(
-        retirement.owner,
-        { operation: 'uninstall', current: config },
-        lifecycleDeps,
-      );
-    } finally {
-      await retirement.owner.close();
-    }
-    if (config.listeners.directPeer) {
-      await rm(config.listeners.directPeer.keyPath, { force: true });
-    }
+    await applyRetiredRuntimeHostLifecycleTransition({
+      owner: retirement.owner,
+      operation: 'uninstall',
+      current: config,
+      deps: lifecycleDeps,
+    });
     return {
       ...resultWithRetirement('uninstall', absentStatus(config), {
         kind: 'stopped',
@@ -242,11 +283,12 @@ async function verifyProviderDefinitions(
 
 async function status(
   config: RuntimeHostManagedDeploymentConfig,
-  provider: RuntimeHostLifecycleProvider,
+  provider: RuntimeHostLifecycleProvider | undefined,
 ): Promise<RuntimeHostManagedServiceStatus> {
+  if (!provider) return onDemandStatus(config);
   const observed = await provider.supervisor.status();
   return {
-    manager: observed.provider === 'systemd_user' ? 'systemd_user' : 'launch_agent',
+    manager: presentationManager(config),
     installed: observed.installed,
     enabled: observed.enabled,
     active: observed.active,
@@ -260,12 +302,53 @@ async function status(
   };
 }
 
+async function onDemandStatus(
+  config: RuntimeHostManagedDeploymentConfig,
+): Promise<RuntimeHostManagedServiceStatus> {
+  let pid: number | null = null;
+  const connected = await connectExistingRuntimeHost({
+    rootPath: config.root.path,
+    protocol: { min: RUNTIME_HOST_PROTOCOL_VERSION, max: RUNTIME_HOST_PROTOCOL_VERSION },
+  }).catch(() => undefined);
+  if (connected?.kind === 'connected') {
+    try {
+      pid = (await connected.connection.request('host.diagnostics.query', {})).pid;
+    } finally {
+      await connected.connection.close().catch(() => undefined);
+    }
+  }
+  return {
+    manager: presentationManager(config),
+    installed: true,
+    enabled: false,
+    active: pid !== null,
+    state: pid === null ? 'stopped' : 'running',
+    pid,
+    lastExitCode: null,
+    config: projectLegacyConfig(config),
+    installedVersion: config.launch.package.version,
+    lifecycle: { ...config.lifecycle },
+    reconciliation: { ...config.reconciliation },
+  };
+}
+
+function unknownAbsentStatus(): RuntimeHostManagedServiceStatus {
+  return {
+    manager: 'none',
+    installed: false,
+    enabled: false,
+    active: false,
+    state: 'not_installed',
+    pid: null,
+    lastExitCode: null,
+    config: null,
+    installedVersion: null,
+  };
+}
+
 function absentStatus(config: RuntimeHostManagedDeploymentConfig): RuntimeHostManagedServiceStatus {
   return {
-    manager:
-      config.lifecycle.mode === 'supervised' && config.lifecycle.provider === 'systemd_user'
-        ? 'systemd_user'
-        : 'launch_agent',
+    manager: presentationManager(config),
     installed: false,
     enabled: false,
     active: false,
@@ -279,6 +362,13 @@ function absentStatus(config: RuntimeHostManagedDeploymentConfig): RuntimeHostMa
   };
 }
 
+function presentationManager(
+  config: RuntimeHostManagedDeploymentConfig,
+): Exclude<RuntimeHostManagedServiceStatus['manager'], 'none'> {
+  if (config.lifecycle.mode === 'on_demand') return 'on_demand';
+  return config.lifecycle.provider === 'systemd_user' ? 'systemd_user' : 'launch_agent';
+}
+
 function projectLegacyConfig(
   config: RuntimeHostManagedDeploymentConfig,
 ): RuntimeHostManagedServiceConfig {
@@ -287,13 +377,12 @@ function projectLegacyConfig(
     config.launch.package.integrity,
   );
   const websocket = config.listeners.websocket;
-  if (!websocket || websocket.port === 0) {
+  if (!websocket || (config.lifecycle.mode === 'supervised' && websocket.port === 0)) {
     throw new RuntimeHostServiceManagerError(
       'invalid_config',
       'A supervised Runtime Host requires a stable WebSocket endpoint',
     );
   }
-  const peer = config.listeners.directPeer;
   return {
     schemaVersion: 2,
     managedDeploymentRoot: config.deploymentRoot,
@@ -301,33 +390,7 @@ function projectLegacyConfig(
     projectDirectoryRoots: [...config.projectDirectoryRoots],
     websocket,
     launch: { nodePath: config.launch.nodePath, cliPath: layout.cliPath },
-    ...(peer
-      ? {
-          peer: {
-            enabled: peer.enabled,
-            peerId: peer.peerId,
-            listenAddresses: [...peer.listenAddresses],
-            coordinationRelays: [...peer.coordinationRelays],
-          },
-        }
-      : {}),
   };
-}
-
-function assertExpectedTarget(
-  expected: NonNullable<RuntimeHostManagedServiceInput['expectedTarget']>,
-  config: RuntimeHostManagedDeploymentConfig,
-): void {
-  if (
-    expected.serviceId !== config.root.id ||
-    expected.rootId !== config.root.id ||
-    expected.rootPath !== config.root.path
-  ) {
-    throw new RuntimeHostServiceManagerError(
-      'target_mismatch',
-      'The managed Runtime Host does not match the expected deployment identity',
-    );
-  }
 }
 
 function result(

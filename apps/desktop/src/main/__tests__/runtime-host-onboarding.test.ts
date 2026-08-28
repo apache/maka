@@ -20,14 +20,14 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import type { DesktopRuntimeHostProfileAddInput } from '../../preload/bridge-contract.js';
-import type { DesktopRuntimeHostManagedService } from '../runtime-host-managed-services.js';
+import type { DesktopRuntimeHostManagedServiceTarget } from '../runtime-host-managed-services.js';
 import { createDesktopRuntimeHostOnboarding } from '../runtime-host-onboarding.js';
 
 test('persists a verified on-demand SSH profile without endpoint or credential projection', async () => {
   let setupInput: unknown;
   let saved:
     | (DesktopRuntimeHostProfileAddInput & {
-        readonly managedService?: DesktopRuntimeHostManagedService;
+        readonly managedService?: DesktopRuntimeHostManagedServiceTarget;
       })
     | undefined;
   const harness = createHarness({
@@ -42,6 +42,7 @@ test('persists a verified on-demand SSH profile without endpoint or credential p
       onProgress({ phase: 'installing_service' });
       return {
         serviceId: 'b'.repeat(64),
+        deploymentId: '00000000-0000-4000-8000-000000000001',
         rootPath: '/home/operator/.config/Maka/workspaces/default',
         operatorPath: '/home/operator/.local/share/maka/operator',
         rootId: 'a'.repeat(64),
@@ -67,7 +68,17 @@ test('persists a verified on-demand SSH profile without endpoint or credential p
       operatorPath: '/home/operator/.local/share/maka/operator',
     },
   });
-  assert.equal(saved?.managedService, undefined);
+  assert.deepEqual(saved?.managedService, {
+    deployment: {
+      id: 'b'.repeat(64),
+      rootPath: '/home/operator/.config/Maka/workspaces/default',
+      deploymentId: '00000000-0000-4000-8000-000000000001',
+    },
+    control: {
+      kind: 'ssh_operator',
+      operatorPath: '/home/operator/.local/share/maka/operator',
+    },
+  });
   assert.equal(saved?.credential, 'secret-access-token');
   assert.deepEqual(
     (setupInput as { projectDirectoryRoots?: unknown }).projectDirectoryRoots,
@@ -122,6 +133,7 @@ test('finishes Host pairing after the cancellable SSH phase has completed', asyn
   let completeReceived = false;
   let finishSetup!: (value: {
     serviceId: string;
+    deploymentId: string;
     rootPath: string;
     operatorPath: string;
     rootId: string;
@@ -130,6 +142,7 @@ test('finishes Host pairing after the cancellable SSH phase has completed', asyn
   }) => void;
   const setupDrain = new Promise<{
     serviceId: string;
+    deploymentId: string;
     rootPath: string;
     operatorPath: string;
     rootId: string;
@@ -160,6 +173,7 @@ test('finishes Host pairing after the cancellable SSH phase has completed', asyn
 
   finishSetup({
     serviceId: 'b'.repeat(64),
+    deploymentId: '00000000-0000-4000-8000-000000000001',
     rootPath: '/home/operator/.config/Maka/workspaces/default',
     operatorPath: '/home/operator/.local/share/maka/operator',
     rootId: 'a'.repeat(64),

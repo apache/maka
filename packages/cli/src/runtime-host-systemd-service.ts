@@ -21,6 +21,7 @@ import { readFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { resolveXdgConfigHome } from '@maka/storage/workspace-root';
+import { readStableBoundedFile } from '@maka/storage/stable-storage';
 import {
   formatRuntimeHostServiceLogs,
   removeRuntimeHostServiceFile,
@@ -104,7 +105,7 @@ export function createSystemdUserRuntimeHostService(
     return {
       manager: 'systemd_user',
       installed: raw.loadState !== 'not-found',
-      enabled: raw.unitFileState === 'enabled' || raw.unitFileState === 'enabled-runtime',
+      enabled: raw.unitFileState === 'enabled',
       active: raw.activeState === 'active',
       state: systemdServiceState(raw.loadState, raw.activeState),
       pid: positiveInteger(raw.mainPid),
@@ -270,7 +271,7 @@ export function createSystemdUserRuntimeHostLifecycleProvider(
     return {
       provider: 'systemd_user',
       installed: raw.loadState !== 'not-found',
-      enabled: raw.unitFileState === 'enabled' || raw.unitFileState === 'enabled-runtime',
+      enabled: raw.unitFileState === 'enabled',
       active: raw.activeState === 'active',
       state: systemdServiceState(raw.loadState, raw.activeState),
       pid: positiveInteger(raw.mainPid),
@@ -320,7 +321,10 @@ export function createSystemdUserRuntimeHostLifecycleProvider(
       },
       verify: (definition) => verifySystemdSupervisorDefinition(context, definition),
       status,
-      activate: () => runLifecycleAction(context, 'start'),
+      activate: async () => {
+        await context.runSystemctl(['reset-failed', context.unitName]);
+        await runLifecycleAction(context, 'start');
+      },
       retire: () => runLifecycleAction(context, 'stop'),
       logs: () => readJournal(context.unitName),
       uninstall: () => uninstallSystemdSupervisor(context),
@@ -741,6 +745,8 @@ async function ensureSystemdUpdateSchedulerStartedIfInstalled(
 ): Promise<void> {
   const status = await readSystemdStatus(context.timer);
   if (status.loadState !== 'not-found' && !isSystemdUnitRunning(status)) {
+    await context.timer.runSystemctl(['reset-failed', context.service.unitName]);
+    await context.timer.runSystemctl(['reset-failed', context.timer.unitName]);
     await requireSystemctl(
       context.timer.runSystemctl,
       ['start', context.timer.unitName],
@@ -867,14 +873,15 @@ async function verifySystemdSupervisorDefinition(
   definition: RuntimeHostProviderDefinition,
 ): Promise<void> {
   assertRuntimeHostProviderDefinition(definition);
+  const expected = renderSystemdSupervisorDefinition(definition);
   const [unit, status] = await Promise.all([
-    readOptionalFile(context.unitPath),
+    readExpectedManagedProviderDefinition(context.unitPath, expected),
     readSystemdStatus(context),
   ]);
   if (
-    unit !== renderSystemdSupervisorDefinition(definition) ||
+    unit !== expected ||
     !isLoadedManagedSystemdUnit(status, context.unitPath) ||
-    (status.unitFileState !== 'enabled' && status.unitFileState !== 'enabled-runtime')
+    status.unitFileState !== 'enabled'
   ) {
     throw new RuntimeHostServiceManagerError(
       'target_mismatch',
@@ -888,18 +895,20 @@ async function verifySystemdReconciliationDefinition(
   definition: RuntimeHostProviderDefinition,
 ): Promise<void> {
   assertRuntimeHostProviderDefinition(definition);
+  const expectedService = renderSystemdReconciliationService(definition);
+  const expectedTimer = renderSystemdUpdateTimer(context.serviceId);
   const [serviceUnit, timerUnit, serviceStatus, timerStatus] = await Promise.all([
-    readOptionalFile(context.service.unitPath),
-    readOptionalFile(context.timer.unitPath),
+    readExpectedManagedProviderDefinition(context.service.unitPath, expectedService),
+    readExpectedManagedProviderDefinition(context.timer.unitPath, expectedTimer),
     readSystemdStatus(context.service),
     readSystemdStatus(context.timer),
   ]);
   if (
-    serviceUnit !== renderSystemdReconciliationService(definition) ||
-    timerUnit !== renderSystemdUpdateTimer(context.serviceId) ||
+    serviceUnit !== expectedService ||
+    timerUnit !== expectedTimer ||
     !isLoadedManagedSystemdUnit(serviceStatus, context.service.unitPath) ||
     !isLoadedManagedSystemdUnit(timerStatus, context.timer.unitPath) ||
-    (timerStatus.unitFileState !== 'enabled' && timerStatus.unitFileState !== 'enabled-runtime')
+    timerStatus.unitFileState !== 'enabled'
   ) {
     throw schedulerMismatch();
   }
@@ -962,6 +971,35 @@ async function readOptionalFile(path: string): Promise<string | null> {
     if (isNodeError(error, 'ENOENT')) return null;
     throw error;
   });
+}
+
+async function readExpectedManagedProviderDefinition(
+  path: string,
+  expected: string,
+): Promise<string | null> {
+  return readStableBoundedFile({
+    path,
+    maxBytes: Buffer.byteLength(expected),
+    invalidFile: () =>
+      new RuntimeHostServiceManagerError(
+        'target_mismatch',
+        'The managed systemd definition is not a stable regular file',
+      ),
+  })
+    .then((contents) => {
+      try {
+        return new TextDecoder('utf-8', { fatal: true }).decode(contents);
+      } catch {
+        throw new RuntimeHostServiceManagerError(
+          'target_mismatch',
+          'The managed systemd definition is not valid UTF-8',
+        );
+      }
+    })
+    .catch((error: unknown) => {
+      if (isNodeError(error, 'ENOENT')) return null;
+      throw error;
+    });
 }
 
 async function captureSystemdDeployment(

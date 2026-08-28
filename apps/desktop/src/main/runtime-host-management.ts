@@ -144,6 +144,16 @@ export function createDesktopRuntimeHostManagement(input: {
     if (managed.state !== 'active' && managementAction !== 'uninstall') {
       throw new Error('Finish uninstalling this Runtime Host service before managing it');
     }
+    if (
+      managementAction !== 'status' &&
+      managementAction !== 'logs' &&
+      !deployment.deploymentId &&
+      !(managementAction === 'uninstall' && managed.state !== 'active')
+    ) {
+      throw new Error(
+        'Re-onboard this Runtime Host before changing it; its legacy binding has no deployment generation',
+      );
+    }
     const managementInput: DesktopRuntimeHostSshManagementInput = {
       destination: profile.transport.destination,
       ...(profile.transport.sshPort === undefined ? {} : { sshPort: profile.transport.sshPort }),
@@ -153,6 +163,7 @@ export function createDesktopRuntimeHostManagement(input: {
         serviceId: deployment.id,
         rootPath: deployment.rootPath,
         rootId: profile.rootId,
+        ...(deployment.deploymentId ? { deploymentId: deployment.deploymentId } : {}),
       },
       ...(managementAction === 'install'
         ? {
@@ -200,6 +211,15 @@ export function createDesktopRuntimeHostManagement(input: {
         : { sshPort: managementInput.sshPort }),
       operatorPath: managementInput.operatorPath,
       expectedTarget: managementInput.expectedTarget,
+    });
+    await input.cleanupManagedDeployment({
+      destination: managementInput.destination,
+      ...(managementInput.sshPort === undefined
+        ? {}
+        : { sshPort: managementInput.sshPort }),
+      operatorPath: managementInput.operatorPath,
+      expectedTarget: managementInput.expectedTarget,
+      finalize: true,
     });
     await input.profiles.clearManagedServiceBinding(pending);
     return { kind: 'uninstalled', retainedStateRoot: deployment.rootPath };
@@ -260,6 +280,11 @@ export function createDesktopRuntimeHostManagement(input: {
     if (managed.state !== 'active' || transport.kind !== 'ssh') {
       throw new Error('This Runtime Host profile is not available for managed service changes');
     }
+    if (!managed.deployment.deploymentId) {
+      throw new Error(
+        'Re-onboard this Runtime Host before changing it; its legacy binding has no deployment generation',
+      );
+    }
     return {
       profileId,
       managed,
@@ -268,6 +293,7 @@ export function createDesktopRuntimeHostManagement(input: {
         serviceId: managed.deployment.id,
         rootPath: managed.deployment.rootPath,
         rootId: managed.profile.rootId,
+        deploymentId: managed.deployment.deploymentId,
       },
     };
   };

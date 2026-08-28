@@ -36,6 +36,7 @@ import {
   manageRuntimeHostService,
   resolveRuntimeHostManagedServiceId,
   RuntimeHostServiceManagerError,
+  withRuntimeHostManagedServiceDeploymentLock,
   type RuntimeHostManagedServiceTarget,
 } from './runtime-host-service-manager.js';
 import {
@@ -44,7 +45,11 @@ import {
   runtimeHostServiceSummary,
 } from './runtime-host-service-management-command.js';
 import { manageRuntimeHostManagedLifecycle } from './runtime-host-managed-lifecycle-manager.js';
-import { resolveRuntimeHostManagedPackageCliPath } from './runtime-host-managed-deployment.js';
+import {
+  assertRuntimeHostManagedOperatorDeployment,
+  resolveRuntimeHostManagedControlRoot,
+  resolveRuntimeHostManagedPackageCliPath,
+} from './runtime-host-managed-deployment.js';
 import type { RuntimeHostUpdateSelector } from './runtime-host-cli.js';
 
 const PACKAGE_NAME = 'maka-agent';
@@ -70,6 +75,9 @@ export interface RuntimeHostUpdateCheckOptions {
   readonly selector: RuntimeHostUpdateSelector;
   readonly expectedTarget?: RuntimeHostManagedServiceTarget;
   readonly managedRootId?: string;
+  readonly operatorDeploymentId?: string;
+  /** Internal non-reentrant lock ownership propagated by the canonical coordinator. */
+  readonly deploymentLockHeld?: boolean;
 }
 
 export interface RuntimeHostUpdateCheckCliOptions extends RuntimeHostUpdateCheckOptions {
@@ -144,10 +152,27 @@ async function resolveManagedRuntimeHostUpdate(
   const backend = options.managedRootId
     ? undefined
     : createPlatformRuntimeHostServiceBackend(serviceId, options.clientDataRoot);
+  const readCanonicalStatus = async () => {
+    await assertRuntimeHostManagedOperatorDeployment(
+      options.managedRootId!,
+      options.operatorDeploymentId,
+      process.argv[1] ?? '',
+    );
+    return manageRuntimeHostManagedLifecycle(options.managedRootId!, statusInput, {
+      createProvider: createPlatformRuntimeHostLifecycleProvider,
+      operatorClaim: {
+        deploymentId: options.operatorDeploymentId,
+        cliPath: process.argv[1] ?? '',
+      },
+    });
+  };
   const status = options.managedRootId
-    ? await manageRuntimeHostManagedLifecycle(options.managedRootId, statusInput, {
-        createProvider: createPlatformRuntimeHostLifecycleProvider,
-      })
+    ? options.deploymentLockHeld
+      ? await readCanonicalStatus()
+      : await withRuntimeHostManagedServiceDeploymentLock(
+          resolveRuntimeHostManagedControlRoot(options.managedRootId),
+          readCanonicalStatus,
+        )
     : await manageRuntimeHostService(statusInput, backend!);
   const currentVersion = status.service.installedVersion;
   const config = status.service.config;

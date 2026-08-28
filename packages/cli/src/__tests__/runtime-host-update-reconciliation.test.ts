@@ -48,6 +48,7 @@ const TARGET = {
   rootPath: '/srv/maka-link',
   rootId: 'a'.repeat(64),
 };
+const OPERATOR_DEPLOYMENT_ID = '00000000-0000-4000-8000-000000000001';
 const SERVICE = {
   platform: 'linux',
   arch: 'x64',
@@ -74,12 +75,15 @@ describe('managed Runtime Host update reconciliation', () => {
         TARGET.rootPath,
         '--expected-root-id',
         TARGET.rootId,
+        '--operator-deployment-id',
+        OPERATOR_DEPLOYMENT_ID,
       ]),
       {
         kind: 'runtime-host-service-update-policy',
         json: false,
         policy: { kind: 'channel', channel: 'next' },
         expectedTarget: TARGET,
+        operatorDeploymentId: OPERATOR_DEPLOYMENT_ID,
       },
     );
     assert.deepEqual(
@@ -93,11 +97,14 @@ describe('managed Runtime Host update reconciliation', () => {
         TARGET.rootPath,
         '--expected-root-id',
         TARGET.rootId,
+        '--operator-deployment-id',
+        OPERATOR_DEPLOYMENT_ID,
       ]),
       {
         kind: 'runtime-host-service-reconcile-update',
         json: true,
         expectedTarget: TARGET,
+        operatorDeploymentId: OPERATOR_DEPLOYMENT_ID,
       },
     );
     assert.deepEqual(
@@ -124,6 +131,19 @@ describe('managed Runtime Host update reconciliation', () => {
       parseRuntimeHostCommand(['service', 'update-policy', '--target', 'latest']).kind,
       'error',
     );
+    assert.equal(
+      (
+        parseRuntimeHostCommand([
+          'service',
+          'check-update',
+          '--target',
+          'latest',
+          '--operator-deployment-id',
+          OPERATOR_DEPLOYMENT_ID,
+        ]) as { readonly operatorDeploymentId?: string }
+      ).operatorDeploymentId,
+      OPERATOR_DEPLOYMENT_ID,
+    );
   });
 
   it('persists an automatic policy against the canonical managed target and removes manual state', async (t) => {
@@ -135,6 +155,7 @@ describe('managed Runtime Host update reconciliation', () => {
       framed: false,
       clientDataRoot,
       defaultRootPath: '/workspace',
+      operatorDeploymentId: OPERATOR_DEPLOYMENT_ID,
     };
     let output = '';
     const manage = async () => managedStatus(deploymentRoot);
@@ -159,7 +180,11 @@ describe('managed Runtime Host update reconciliation', () => {
     assert.deepEqual(await readRuntimeHostManagedUpdatePolicy(deploymentRoot), {
       schemaVersion: 1,
       policy: { kind: 'fixed', version: '2.0.0' },
-      target: { ...TARGET, rootPath: '/srv/maka' },
+      target: {
+        ...TARGET,
+        rootPath: '/srv/maka',
+        deploymentId: OPERATOR_DEPLOYMENT_ID,
+      },
     });
     assert.equal(JSON.parse(output).updatePolicy.policy.kind, 'fixed');
 

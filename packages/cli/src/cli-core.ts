@@ -18,12 +18,11 @@
  */
 
 import { readFile } from 'node:fs/promises';
-import { dirname, join } from 'node:path';
+import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { deriveMakaDataRoots, resolveMakaDataRoots } from './workspace-root.js';
 import {
   configureRuntimeHostPeerClient,
-  resolveRuntimeHostManagedPeerKeyPath,
   resolveRuntimeHostPeerNativePath,
 } from './runtime-host-peer-artifact.js';
 import { parseRuntimeHostCommand, type RuntimeHostCliCommand } from './runtime-host-cli.js';
@@ -310,23 +309,11 @@ export async function runMakaCli(
         const { effectiveRuntimeHostProjectDirectoryRoots, readRuntimeHostManagedServiceConfig } =
           await import('./runtime-host-service-manager.js');
         const config = await readRuntimeHostManagedServiceConfig(command.managedServiceConfigPath);
-        const peer = config.peer?.enabled
-          ? {
-              nativePath: await resolveRuntimeHostPeerNativePath(config.launch.cliPath),
-              keyPath: resolveRuntimeHostManagedPeerKeyPath(
-                dirname(command.managedServiceConfigPath),
-              ),
-              expectedPeerId: config.peer.peerId,
-              listenAddresses: config.peer.listenAddresses,
-              coordinationRelays: config.peer.coordinationRelays,
-            }
-          : undefined;
         return runRuntimeHostServiceCli({
           rootPath: config.rootPath,
           json: command.json,
           projectDirectoryRoots: effectiveRuntimeHostProjectDirectoryRoots(config),
           websocket: config.websocket,
-          ...(peer ? { peer } : {}),
         });
       }
       return runRuntimeHostServiceCli({
@@ -378,6 +365,9 @@ export async function runMakaCli(
         nodePath: process.execPath,
         cliPath: process.argv[1] ?? '',
         ...(command.managedRootId ? { managedRootId: command.managedRootId } : {}),
+        ...(command.operatorDeploymentId
+          ? { operatorDeploymentId: command.operatorDeploymentId }
+          : {}),
         ...(command.rootPath ? { rootPath: command.rootPath } : {}),
         ...(command.projectDirectoryRoots
           ? { projectDirectoryRoots: command.projectDirectoryRoots }
@@ -407,7 +397,8 @@ export async function runMakaCli(
         defaultRootPath: serviceDataRoots.workspaceRoot,
         nodePath: process.execPath,
         cliPath: process.argv[1] ?? '',
-        ...(command.managedRootId ? { managedRootId: command.managedRootId } : {}),
+        managedRootId: command.managedRootId,
+        operatorDeploymentId: command.operatorDeploymentId,
         listenAddresses: command.listenAddresses,
         ...(command.coordinationRelays ? { coordinationRelays: command.coordinationRelays } : {}),
         ...(command.expectedTarget ? { expectedTarget: command.expectedTarget } : {}),
@@ -429,6 +420,9 @@ export async function runMakaCli(
           selector: command.selector,
           expectedTarget: command.expectedTarget,
           ...(command.managedRootId ? { managedRootId: command.managedRootId } : {}),
+          ...(command.operatorDeploymentId
+            ? { operatorDeploymentId: command.operatorDeploymentId }
+            : {}),
           ...(command.allowInterruptActiveTasks ? { allowInterruptActiveTasks: true } : {}),
         });
       }
@@ -441,6 +435,9 @@ export async function runMakaCli(
         version,
         expectedTarget: command.expectedTarget,
         ...(command.managedRootId ? { managedRootId: command.managedRootId } : {}),
+        ...(command.operatorDeploymentId
+          ? { operatorDeploymentId: command.operatorDeploymentId }
+          : {}),
         ...(command.allowInterruptActiveTasks ? { allowInterruptActiveTasks: true } : {}),
       });
     }
@@ -458,6 +455,9 @@ export async function runMakaCli(
         defaultRootPath: serviceDataRoots.workspaceRoot,
         selector: command.selector,
         ...(command.managedRootId ? { managedRootId: command.managedRootId } : {}),
+        ...(command.operatorDeploymentId
+          ? { operatorDeploymentId: command.operatorDeploymentId }
+          : {}),
         ...(command.expectedTarget ? { expectedTarget: command.expectedTarget } : {}),
       });
     }
@@ -477,6 +477,9 @@ export async function runMakaCli(
           ...(command.policy ? { policy: command.policy } : {}),
           ...(command.expectedTarget ? { expectedTarget: command.expectedTarget } : {}),
           ...(command.managedRootId ? { managedRootId: command.managedRootId } : {}),
+          ...(command.operatorDeploymentId
+            ? { operatorDeploymentId: command.operatorDeploymentId }
+            : {}),
         });
       }
       return runManagedRuntimeHostUpdateReconcileCli({
@@ -486,6 +489,9 @@ export async function runMakaCli(
         defaultRootPath: serviceDataRoots.workspaceRoot,
         ...(command.expectedTarget ? { expectedTarget: command.expectedTarget } : {}),
         ...(command.managedRootId ? { managedRootId: command.managedRootId } : {}),
+        ...(command.operatorDeploymentId
+          ? { operatorDeploymentId: command.operatorDeploymentId }
+          : {}),
       });
     }
     case 'runtime-host-managed-deployment-cleanup': {
@@ -499,6 +505,10 @@ export async function runMakaCli(
         clientDataRoot: serviceDataRoots.clientDataRoot,
         cliPath: process.argv[1] ?? '',
         ...(command.managedRootId ? { managedRootId: command.managedRootId } : {}),
+        ...(command.operatorDeploymentId
+          ? { operatorDeploymentId: command.operatorDeploymentId }
+          : {}),
+        ...(command.finalize ? { finalize: true } : {}),
         expectedTarget: command.expectedTarget,
       });
     }

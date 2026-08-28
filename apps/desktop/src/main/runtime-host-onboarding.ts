@@ -52,6 +52,7 @@ export function createDesktopRuntimeHostOnboarding(input: {
     readonly rootId: string;
     readonly rootPath: string;
     readonly serviceId: string;
+    readonly deploymentId: string;
     readonly operatorPath: string;
     readonly endpoint: string;
     readonly credential: string;
@@ -169,15 +170,17 @@ export function createDesktopRuntimeHostOnboarding(input: {
           },
         },
         credential: complete.credential,
-        ...(lifecycle === 'supervised'
-          ? {
-              managedService: {
-                id: complete.serviceId,
-                rootPath: complete.rootPath,
-                operatorPath: complete.operatorPath,
-              },
-            }
-          : {}),
+        managedService: {
+          deployment: {
+            id: complete.serviceId,
+            rootPath: complete.rootPath,
+            deploymentId: complete.deploymentId,
+          },
+          control: {
+            kind: 'ssh_operator',
+            operatorPath: complete.operatorPath,
+          },
+        },
       });
       return publish({
         kind: 'complete',

@@ -31,26 +31,34 @@ import {
 } from '@maka/runtime-host/operator';
 import { ensureRuntimeHostPeerIdentity } from '@maka/runtime-host/client';
 import {
-  configureRuntimeHostManagedPeer,
-  manageRuntimeHostService,
   allocateRuntimeHostPeerPort,
-  assertRuntimeHostManagedPeerMutationComplete,
-  resolveRuntimeHostManagedServiceId,
-  rotateRuntimeHostManagedPeerIdentity,
   RuntimeHostServiceManagerError,
   withRuntimeHostManagedServiceDeploymentLock,
   withRuntimeHostManagedServiceLifecycleLock,
-  type RuntimeHostServiceManagerOverrides,
   type RuntimeHostManagedServiceTarget,
 } from './runtime-host-service-manager.js';
-import { createPlatformRuntimeHostServiceBackend } from './runtime-host-service-management-command.js';
 import { createPlatformRuntimeHostLifecycleProvider } from './runtime-host-service-management-command.js';
-import { replaceRuntimeHostLifecycle } from './runtime-host-lifecycle-transaction.js';
+import {
+  canDiscardRuntimeHostLifecycleDesiredArtifacts,
+  replaceRuntimeHostLifecycle,
+  resolveRecoverableRuntimeHostManagedDeployment,
+  activateRuntimeHostLifecycle,
+  verifyRuntimeHostLifecycleReady,
+  type RuntimeHostLifecycleTransactionDeps,
+} from './runtime-host-lifecycle-transaction.js';
 import { manageRuntimeHostManagedLifecycle } from './runtime-host-managed-lifecycle-manager.js';
 import {
   resolveRuntimeHostManagedPeerKeyPath,
   resolveRuntimeHostPeerNativePath,
 } from './runtime-host-peer-artifact.js';
+import {
+  assertRuntimeHostManagedOperatorConfig,
+  assertRuntimeHostManagedOperatorDeployment,
+  convergeRuntimeHostManagedOperator,
+  pruneRuntimeHostManagedPeerKeys,
+  resolveRuntimeHostManagedControlRoot,
+  verifyRuntimeHostManagedOperator,
+} from './runtime-host-managed-deployment.js';
 
 export interface RuntimeHostPeerManagementCliOptions {
   readonly action: 'enable' | 'disable' | 'status' | 'rotate' | 'descriptor';
@@ -60,7 +68,8 @@ export interface RuntimeHostPeerManagementCliOptions {
   readonly defaultRootPath: string;
   readonly nodePath: string;
   readonly cliPath: string;
-  readonly managedRootId?: string;
+  readonly managedRootId: string;
+  readonly operatorDeploymentId: string;
   readonly listenAddresses: readonly string[];
   readonly coordinationRelays?: readonly string[];
   readonly expectedTarget?: RuntimeHostManagedServiceTarget;
@@ -68,8 +77,6 @@ export interface RuntimeHostPeerManagementCliOptions {
 }
 
 interface RuntimeHostPeerManagementCliDeps {
-  readonly createBackend: typeof createPlatformRuntimeHostServiceBackend;
-  readonly managerOverrides: RuntimeHostServiceManagerOverrides;
   readonly writeStdout: (text: string) => void;
   readonly writeStderr: (text: string) => void;
 }
@@ -79,29 +86,19 @@ export async function runRuntimeHostPeerManagementCli(
   overrides: Partial<RuntimeHostPeerManagementCliDeps> = {},
 ): Promise<number> {
   const deps: RuntimeHostPeerManagementCliDeps = {
-    createBackend: createPlatformRuntimeHostServiceBackend,
-    managerOverrides: {},
     writeStdout: (text) => process.stdout.write(text),
     writeStderr: (text) => process.stderr.write(text),
     ...overrides,
   };
   try {
-    if (options.managedRootId) {
-      const canonicalOptions = {
-        ...options,
-        managedRootId: options.managedRootId,
-      };
-      return await withRuntimeHostManagedServiceDeploymentLock(options.clientDataRoot, () =>
-        withRuntimeHostManagedServiceLifecycleLock(options.clientDataRoot, () =>
-          runCanonicalRuntimeHostPeerManagementLocked(canonicalOptions, deps),
-        ),
-      );
-    }
-    const serviceId = resolveRuntimeHostManagedServiceId(options.clientDataRoot);
-    const backend = deps.createBackend(serviceId, options.clientDataRoot);
-    return await withRuntimeHostManagedServiceDeploymentLock(options.clientDataRoot, () =>
-      withRuntimeHostManagedServiceLifecycleLock(options.clientDataRoot, () =>
-        runRuntimeHostPeerManagementLocked(options, backend, deps),
+    const controlRoot = resolveRuntimeHostManagedControlRoot(options.managedRootId);
+    return await withRuntimeHostManagedServiceDeploymentLock(controlRoot, () =>
+      withRuntimeHostManagedServiceLifecycleLock(controlRoot, () =>
+        assertRuntimeHostManagedOperatorDeployment(
+          options.managedRootId,
+          options.operatorDeploymentId,
+          options.cliPath,
+        ).then(() => runCanonicalRuntimeHostPeerManagementLocked(options, deps)),
       ),
     );
   } catch (error) {
@@ -111,33 +108,16 @@ export async function runRuntimeHostPeerManagementCli(
 }
 
 async function runCanonicalRuntimeHostPeerManagementLocked(
-  options: RuntimeHostPeerManagementCliOptions & {
-    readonly managedRootId: string;
-  },
+  options: RuntimeHostPeerManagementCliOptions,
   deps: RuntimeHostPeerManagementCliDeps,
 ): Promise<number> {
   const rootId = options.managedRootId;
-  const { config } = await resolveRuntimeHostManagedDeployment(rootId);
-  if (
-    options.expectedTarget &&
-    (options.expectedTarget.serviceId !== rootId ||
-      options.expectedTarget.rootId !== rootId ||
-      options.expectedTarget.rootPath !== config.root.path)
-  ) {
-    throw new RuntimeHostServiceManagerError(
-      'target_mismatch',
-      'The managed Runtime Host does not match the expected deployment identity',
-    );
-  }
-  if (config.lifecycle.mode !== 'supervised') {
-    throw new RuntimeHostServiceManagerError(
-      'target_mismatch',
-      'Direct peer management requires a supervised Runtime Host deployment',
-    );
-  }
   const provider = createPlatformRuntimeHostLifecycleProvider(rootId);
-  const lifecycleDeps = {
-    resolveProvider: (requested: typeof config.lifecycle.provider) => {
+  const lifecycleDeps: RuntimeHostLifecycleTransactionDeps = {
+    convergeOperator: (currentConfig, desiredConfig) =>
+      convergeRuntimeHostManagedOperator(currentConfig, desiredConfig),
+    verifyOperator: verifyRuntimeHostManagedOperator,
+    resolveProvider: (requested) => {
       if (requested !== provider.supervisor.provider) {
         throw new RuntimeHostServiceManagerError(
           'target_mismatch',
@@ -147,17 +127,37 @@ async function runCanonicalRuntimeHostPeerManagementLocked(
       return provider;
     },
   };
+  const resolved = await resolveRecoverableRuntimeHostManagedDeployment(rootId, lifecycleDeps, {
+    ...(options.expectedTarget ? { expectedTarget: options.expectedTarget } : {}),
+  });
+  if (resolved.kind === 'absent') {
+    throw new RuntimeHostServiceManagerError(
+      'not_installed',
+      'The managed Runtime Host deployment is not installed',
+    );
+  }
+  const config = resolved.config;
+  assertRuntimeHostManagedOperatorConfig(config, options.operatorDeploymentId, options.cliPath);
+  if (config.lifecycle.mode !== 'supervised') {
+    throw new RuntimeHostServiceManagerError(
+      'target_mismatch',
+      'Direct peer management requires a supervised Runtime Host deployment',
+    );
+  }
+  await pruneRuntimeHostManagedPeerKeys(config);
   let desired = config;
   let stagedKeyPath: string | undefined;
   let previousPeerId: string | undefined;
   let restarted: boolean | undefined;
   if (options.action === 'enable') {
     const peer = await prepareCanonicalPeer(options, config, config.listeners.directPeer);
-    desired = {
-      ...config,
-      configRevision: config.configRevision + 1,
-      listeners: { ...config.listeners, directPeer: peer },
-    };
+    if (!isDeepStrictEqual(peer, config.listeners.directPeer)) {
+      desired = {
+        ...config,
+        configRevision: config.configRevision + 1,
+        listeners: { ...config.listeners, directPeer: peer },
+      };
+    }
   } else if (options.action === 'disable' && config.listeners.directPeer?.enabled) {
     desired = {
       ...config,
@@ -203,7 +203,9 @@ async function runCanonicalRuntimeHostPeerManagementLocked(
       allowInterruptActiveTasks: options.allowInterruptActiveTasks ?? false,
       deps: lifecycleDeps,
     }).catch(async (error: unknown) => {
-      if (stagedKeyPath) await rm(stagedKeyPath, { force: true }).catch(() => undefined);
+      if (stagedKeyPath && canDiscardRuntimeHostLifecycleDesiredArtifacts(error)) {
+        await rm(stagedKeyPath, { force: true }).catch(() => undefined);
+      }
       throw error;
     });
     if (replacement.kind === 'active_tasks') {
@@ -217,10 +219,10 @@ async function runCanonicalRuntimeHostPeerManagementLocked(
       );
     }
     restarted = true;
-    if (options.action === 'rotate' && config.listeners.directPeer) {
-      await rm(config.listeners.directPeer.keyPath, { force: true }).catch(() => undefined);
-    }
+    await pruneRuntimeHostManagedPeerKeys(desired);
   } else if (options.action === 'enable' || options.action === 'disable') {
+    await activateRuntimeHostLifecycle(config, lifecycleDeps);
+    await verifyRuntimeHostLifecycleReady(config, lifecycleDeps);
     restarted = false;
   }
 
@@ -280,7 +282,7 @@ async function prepareCanonicalPeer(
     config.deploymentRoot,
     config.launch.package.integrity,
   );
-  const keyPath = current?.keyPath ?? resolveRuntimeHostManagedPeerKeyPath(options.clientDataRoot);
+  const keyPath = current?.keyPath ?? resolveRuntimeHostManagedPeerKeyPath(config.deploymentRoot);
   const peerId = await ensureRuntimeHostPeerIdentity({
     nativePath: await resolveRuntimeHostPeerNativePath(layout.cliPath),
     keyPath,
@@ -347,115 +349,6 @@ async function readCanonicalPeerStatus(
   };
 }
 
-async function runRuntimeHostPeerManagementLocked(
-  options: RuntimeHostPeerManagementCliOptions,
-  backend: ReturnType<typeof createPlatformRuntimeHostServiceBackend>,
-  deps: RuntimeHostPeerManagementCliDeps,
-): Promise<number> {
-  let restarted: boolean | undefined;
-  if (options.action === 'enable' || options.action === 'disable') {
-    const result = await configureRuntimeHostManagedPeer(
-      {
-        clientDataRoot: options.clientDataRoot,
-        defaultRootPath: options.defaultRootPath,
-        nodePath: options.nodePath,
-        cliPath: options.cliPath,
-        expectedTarget: options.expectedTarget!,
-        allowInterruptActiveTasks: options.allowInterruptActiveTasks ?? false,
-        peer:
-          options.action === 'disable'
-            ? null
-            : {
-                ...(options.listenAddresses.length > 0
-                  ? { listenAddresses: options.listenAddresses }
-                  : {}),
-                ...(options.coordinationRelays
-                  ? { coordinationRelays: options.coordinationRelays }
-                  : {}),
-              },
-      },
-      backend,
-      deps.managerOverrides,
-    );
-    if (result.kind === 'active_tasks') {
-      return writePeerActiveTasks(
-        options,
-        'Runtime Host still owns active work; direct-peer configuration was not changed.',
-        deps,
-      );
-    }
-    restarted = result.restarted;
-  } else if (options.action === 'rotate') {
-    const result = await rotateRuntimeHostManagedPeerIdentity(
-      {
-        clientDataRoot: options.clientDataRoot,
-        defaultRootPath: options.defaultRootPath,
-        nodePath: options.nodePath,
-        cliPath: options.cliPath,
-        expectedTarget: options.expectedTarget!,
-      },
-      backend,
-      deps.managerOverrides,
-    );
-    if (result.kind === 'active_tasks') {
-      return writePeerActiveTasks(
-        options,
-        'Runtime Host still owns active work; its peer identity was not rotated.',
-        deps,
-      );
-    }
-    if (options.json) {
-      deps.writeStdout(
-        `${JSON.stringify({
-          schemaVersion: 1,
-          ok: true,
-          action: options.action,
-          previousPeerId: result.previousPeerId,
-          peerId: result.peerId,
-        })}\n`,
-      );
-    } else {
-      deps.writeStdout(
-        `Direct peer identity changed: ${result.previousPeerId} -> ${result.peerId}.\n`,
-      );
-    }
-    return 0;
-  }
-
-  const status = await readPeerStatus(options, backend, deps.managerOverrides);
-  if (options.action === 'descriptor' && status.state !== 'enabled') {
-    throw new RuntimeHostServiceManagerError(
-      'not_installed',
-      'Direct peer is not enabled for the managed Runtime Host service',
-    );
-  }
-  if (options.framed) {
-    if (options.action === 'descriptor') {
-      throw new TypeError('Direct-peer descriptor does not support framed output');
-    }
-    writePeerFrame(
-      options.action === 'status'
-        ? { kind: 'result', action: options.action, status }
-        : {
-            kind: 'result',
-            action: options.action,
-            status,
-            restarted: restarted!,
-          },
-      deps,
-    );
-  } else if (options.json) {
-    deps.writeStdout(
-      `${JSON.stringify({ schemaVersion: 1, ...status, ok: true, action: options.action })}\n`,
-    );
-  } else if (options.action === 'descriptor') {
-    deps.writeStdout(`${JSON.stringify({ schemaVersion: 1, ...status })}\n`);
-  } else {
-    deps.writeStdout(formatPeerStatus(status));
-  }
-  return 0;
-}
-
 function writePeerActiveTasks(
   options: RuntimeHostPeerManagementCliOptions,
   message: string,
@@ -508,43 +401,6 @@ function writePeerFrame(
   deps: Pick<RuntimeHostPeerManagementCliDeps, 'writeStdout'>,
 ): void {
   deps.writeStdout(encodeRuntimeHostPeerManagementFrame(frame));
-}
-
-async function readPeerStatus(
-  options: RuntimeHostPeerManagementCliOptions,
-  backend: ReturnType<typeof createPlatformRuntimeHostServiceBackend>,
-  managerOverrides: RuntimeHostServiceManagerOverrides,
-): Promise<RuntimeHostPeerStatus> {
-  await assertRuntimeHostManagedPeerMutationComplete(options.clientDataRoot);
-  const result = await manageRuntimeHostService(
-    {
-      action: 'status',
-      clientDataRoot: options.clientDataRoot,
-      defaultRootPath: options.defaultRootPath,
-      nodePath: options.nodePath,
-      cliPath: options.cliPath,
-      ...(options.expectedTarget ? { expectedTarget: options.expectedTarget } : {}),
-    },
-    backend,
-    managerOverrides,
-  );
-  const peer = result.service.config?.peer;
-  if (!peer) {
-    return {
-      state: 'not_configured',
-      serviceState: result.service.state,
-      routeHints: [],
-      coordinationRelays: [],
-    };
-  }
-  return {
-    state: peer.enabled ? 'enabled' : 'disabled',
-    serviceState: result.service.state,
-    peerId: peer.peerId,
-    ...(options.expectedTarget ? { rootId: options.expectedTarget.rootId } : {}),
-    routeHints: expandWildcardListenAddresses(peer.listenAddresses),
-    coordinationRelays: [...peer.coordinationRelays],
-  };
 }
 
 export function expandWildcardListenAddresses(addresses: readonly string[]): string[] {
