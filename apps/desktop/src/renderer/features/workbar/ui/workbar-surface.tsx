@@ -49,7 +49,7 @@ import {
   useUiLocale,
   type ChatModelChoice,
 } from '@maka/ui';
-import type { ComposerProps } from '../../../../../../../packages/ui/dist/composer.d.ts';
+import type { ComposerProps } from '@maka/ui';
 import {
   ICON_SIZE,
   Activity,

@@ -29,8 +29,7 @@ import {
 import type { QuoteRef } from '@maka/core/events';
 import type { SessionSummary } from '@maka/core/session';
 import { Composer, useUiLocale } from '@maka/ui';
-import type { ChatModelChoice } from '@maka/ui';
-import type { ComposerProps } from '../../../../../../../packages/ui/dist/composer.d.ts';
+import type { ChatModelChoice, ComposerProps } from '@maka/ui';
 import { safeLocalStorageGet, safeLocalStorageSet } from '../../../browser-storage.js';
 import { getDesktopConversationCopy } from '../../../locales/conversation-copy.js';
 import { localizedShellErrorMessage } from '../../../locales/shell-copy.js';
