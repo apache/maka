@@ -472,6 +472,13 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
       if (!currentSourceSession) {
         return Promise.resolve({ status: 'error', code: 'fork_setup_failed' });
       }
+      // A legacy source without an exact Connection entity cannot execute, and
+      // a child copied now would keep that stale identity after the source is
+      // repaired. Wait for the source model selection, then fork from the
+      // refreshed Session summary instead.
+      if (!currentSourceSession.llmConnectionId) {
+        return Promise.resolve({ status: 'error', code: 'fork_setup_failed' });
+      }
 
       const showPreparing = options.showPreparing ?? true;
       if (showPreparing) setPreparing(true);
@@ -527,8 +534,13 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
   );
 
   useEffect(() => {
-    if (sourceSessionId) void ensureFork(copyRef.current.defaultName);
-  }, [ensureFork, sourceSessionId]);
+    if (!sourceSessionId) return;
+    if (!sourceSession?.llmConnectionId) {
+      setPreparing(false);
+      return;
+    }
+    void ensureFork(copyRef.current.defaultName);
+  }, [ensureFork, sourceSession?.llmConnectionId, sourceSessionId]);
 
   useEffect(() => {
     if (!sourceSessionId || !forkRetryPending) return;

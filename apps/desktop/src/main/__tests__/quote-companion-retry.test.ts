@@ -334,6 +334,45 @@ test('does not restart foreground setup when the source Session object refreshes
   assert.equal(probe.getAttribute('data-preparing'), 'false');
 });
 
+test('waits for a legacy source Session to bind an exact Connection before forking', async () => {
+  let branchCount = 0;
+  const legacySource = session('source-session');
+  delete legacySource.llmConnectionId;
+  const { container, root, services } = await renderProbe(
+    {
+      listTurns: async () => [settledTurn('settled-turn')],
+      branchFromTurn: async () => {
+        branchCount += 1;
+        return { ok: true as const, session: session('side-conversation') };
+      },
+    },
+    {
+      sourceSession: legacySource,
+      ready: (current) =>
+        current.firstElementChild?.getAttribute('data-preparing') === 'false',
+    },
+  );
+  const probe = container.firstElementChild;
+  assert.ok(probe);
+  assert.equal(branchCount, 0);
+  assert.equal(probe.getAttribute('data-companion-id'), '');
+
+  await act(async () => {
+    root.render(
+      createElement(WorkbarServicesProvider, {
+        services,
+        children: createElement(QuoteCompanionProbe, {
+          sourceSession: session('source-session'),
+        }),
+      }),
+    );
+    await Promise.resolve();
+  });
+  await waitUntil(() => probe.getAttribute('data-companion-id') === 'side-conversation');
+
+  assert.equal(branchCount, 1);
+});
+
 test('keeps Side Conversation events owned by the Host-admitted turn across an admission race', async () => {
   const pendingSend = deferred<{ ok: true; turnId: string }>();
   const { container, emit, send } = await renderOwnershipProbe({
@@ -1163,6 +1202,7 @@ function session(id: string): SessionSummary {
     hasUnread: false,
     status: 'active',
     backend: 'ai-sdk',
+    llmConnectionId: 'connection-1',
     llmConnectionSlug: 'test',
     connectionLocked: false,
     model: 'test-model',
