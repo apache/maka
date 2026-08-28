@@ -30,6 +30,7 @@ import {
 import {
   RuntimeHostManagedDeploymentError as RuntimeHostDeploymentAuthorityError,
   encodeRuntimeHostSetupFrame,
+  isSha512PackageIntegrity,
   resolveRuntimeHostManagedDeployment,
   RUNTIME_HOST_SETUP_ERROR_CODE_MAX_BYTES,
   RUNTIME_HOST_SETUP_ERROR_MESSAGE_MAX_BYTES,
@@ -73,6 +74,7 @@ import {
 import {
   resolveRuntimeHostRegistryUpdateCandidate,
   RuntimeHostUpdateDiscoveryError,
+  type RuntimeHostUpdateCandidate,
 } from './runtime-host-update-discovery.js';
 import { resolveStorageRoot } from '@maka/storage/root-authority';
 import {
@@ -123,6 +125,7 @@ export interface RuntimeHostSetupCliOptions {
   readonly defaultRootPath: string;
   readonly sourcePackageRoot: string;
   readonly version: string;
+  readonly sourcePackageIntegrity?: string;
   readonly principalId: string;
   readonly preset: RuntimeHostAccessPreset;
   readonly lifecycle?: 'supervised' | 'on_demand';
@@ -182,6 +185,42 @@ class RuntimeHostSetupError extends Error {
     super(message, options);
     this.name = 'RuntimeHostSetupError';
   }
+}
+
+interface ResolvedRuntimeHostSetupPackage {
+  readonly candidate: RuntimeHostUpdateCandidate;
+  use<T>(operation: (packageRoot: string) => Promise<T>): Promise<T>;
+}
+
+async function resolveRuntimeHostSetupPackage(
+  options: RuntimeHostSetupCliOptions,
+  deps: Pick<RuntimeHostSetupDeps, 'resolveRegistryCandidate' | 'withRegistryPackage'>,
+): Promise<ResolvedRuntimeHostSetupPackage> {
+  if (isRuntimeHostDevelopmentPackageVersion(options.version)) {
+    const integrity = options.sourcePackageIntegrity;
+    if (typeof integrity !== 'string' || !isSha512PackageIntegrity(integrity)) {
+      throw new RuntimeHostSetupError(
+        'development_package_unverified',
+        'The Runtime Host development package is missing exact artifact evidence',
+      );
+    }
+    return {
+      candidate: {
+        kind: 'npm_registry',
+        version: options.version,
+        integrity,
+      },
+      use: (operation) => operation(options.sourcePackageRoot),
+    };
+  }
+  const candidate = await deps.resolveRegistryCandidate({
+    kind: 'exact',
+    version: options.version,
+  });
+  return {
+    candidate,
+    use: (operation) => deps.withRegistryPackage(candidate, operation),
+  };
 }
 
 export async function runRuntimeHostSetupCli(
@@ -372,10 +411,8 @@ async function runRuntimeHostSupervisedSetupLocked(
     );
   }
 
-  const candidate = await deps.resolveRegistryCandidate({
-    kind: 'exact',
-    version: options.version,
-  });
+  const resolvedPackage = await resolveRuntimeHostSetupPackage(options, deps);
+  const { candidate } = resolvedPackage;
   if (current && !sameExactPackage(current, candidate)) {
     throw new RuntimeHostSetupError(
       'version_change_requires_update',
@@ -389,7 +426,7 @@ async function runRuntimeHostSupervisedSetupLocked(
           availability: current.lifecycle.availability,
         }
       : await deps.discoverLifecycleProvider(capability.rootId);
-  return deps.withRegistryPackage(candidate, async (packageRoot) => {
+  return resolvedPackage.use(async (packageRoot) => {
     emit({ kind: 'progress', phase: 'installing_package' });
     const deployment = await deps.prepareDeployment({
       serviceId: capability.rootId,
@@ -701,10 +738,8 @@ async function runRuntimeHostOnDemandSetupLocked(
     await assertCompatibleExistingVersion(legacyStatus, options.version);
   }
   assertExpectedDeploymentGeneration(options.expectedTarget, current);
-  const candidate = await deps.resolveRegistryCandidate({
-    kind: 'exact',
-    version: options.version,
-  });
+  const resolvedPackage = await resolveRuntimeHostSetupPackage(options, deps);
+  const { candidate } = resolvedPackage;
   const serviceId = capability.rootId;
   const deploymentRoot =
     current?.deploymentRoot ?? resolveRuntimeHostManagedDeploymentRoot(serviceId);
@@ -763,7 +798,7 @@ async function runRuntimeHostOnDemandSetupLocked(
       ? legacyMigrationDeps(legacyToMigrate, legacyBackend, legacyServiceId, options.clientDataRoot)
       : {}),
   };
-  await deps.withRegistryPackage(candidate, async (packageRoot) => {
+  await resolvedPackage.use(async (packageRoot) => {
     let committed = false;
     const created = !current;
     try {

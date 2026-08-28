@@ -31,6 +31,7 @@ import {
   type RuntimeHostConnection,
   type RuntimeHostProfile,
 } from '@maka/runtime-host/client';
+import { runtimeHostProfileUsesHostWorkspace } from '@maka/runtime-host/profile-kind';
 import type { InteractionPendingSnapshot, SessionCatalogItem } from '@maka/runtime-host/protocol';
 import {
   runMakaTextCliCore,
@@ -206,7 +207,7 @@ async function prepareRuntimeHostRunInput(
   cliCommand: string,
 ): Promise<Parameters<MakaRunDeps['createContext']>[0]> {
   let projectId = input.projectId;
-  if (profile.kind === 'remote' && !input.resumeSessionId) {
+  if (runtimeHostProfileUsesHostWorkspace(profile.kind) && !input.resumeSessionId) {
     if (!projectId) {
       throw new Error(`Runtime Host profile ${profile.id} requires --project for a new Session`);
     }
@@ -221,7 +222,9 @@ async function prepareRuntimeHostRunInput(
     connection,
     catalog,
     cwd: preparedInput.cwd,
-    ...(profile.kind === 'remote' ? { workspaceState: 'ready' as const } : {}),
+    ...(runtimeHostProfileUsesHostWorkspace(profile.kind)
+      ? { workspaceState: 'ready' as const }
+      : {}),
     ...(preparedInput.requestedConnectionSlug
       ? { connectionSlug: preparedInput.requestedConnectionSlug }
       : {}),

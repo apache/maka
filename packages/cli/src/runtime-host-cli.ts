@@ -46,6 +46,11 @@ export type RuntimeHostCliCommand =
       framed: true;
     }
   | {
+      kind: 'runtime-host-managed-connect';
+      rootId: string;
+      framed: true;
+    }
+  | {
       kind: 'runtime-host-installed-update';
       selector: RuntimeHostUpdateSelector;
       allowInterruptActiveTasks: boolean;
@@ -281,11 +286,21 @@ export type RuntimeHostCliCommand =
       expectedRootId: string;
       credentialEnv?: string;
     }
+  | {
+      kind: 'runtime-host-profile-set-environment';
+      id: string;
+      name: string;
+      distribution: string;
+      operatorPath: string;
+      expectedRootId: string;
+    }
   | { kind: 'runtime-host-profile-remove'; id: string }
   | RuntimeHostCliError;
 
 export function parseRuntimeHostCommand(argv: string[]): RuntimeHostCliCommand {
-  if (argv[0] === 'activate') return parseManagedActivationCommand(argv.slice(1));
+  if (argv[0] === 'activate' || argv[0] === 'connect') {
+    return parseManagedRootFramedCommand(argv[0], argv.slice(1));
+  }
   if (argv[0] === 'local-update-apply') return parseLocalUpdateApply(argv.slice(1));
   if (argv[0] === 'local-update-activate') return parseLocalUpdateActivate(argv.slice(1));
   if (argv[0] === 'serve') return parseServeCommand(argv.slice(1));
@@ -300,11 +315,14 @@ export function parseRuntimeHostCommand(argv: string[]): RuntimeHostCliCommand {
   return error(
     argv[0]
       ? `Unexpected runtime-host command: ${argv[0]}`
-      : 'runtime-host requires the activate, serve, setup, service, access, project, profile, or capability-provider command',
+      : 'runtime-host requires the activate, connect, serve, setup, service, access, project, profile, or capability-provider command',
   );
 }
 
-function parseManagedActivationCommand(argv: string[]): RuntimeHostCliCommand {
+function parseManagedRootFramedCommand(
+  action: 'activate' | 'connect',
+  argv: string[],
+): RuntimeHostCliCommand {
   let rootId: string | undefined;
   let framed = false;
   for (let index = 0; index < argv.length; index += 1) {
@@ -321,13 +339,17 @@ function parseManagedActivationCommand(argv: string[]): RuntimeHostCliCommand {
       if (rootId === undefined) return error('--root-id requires a value');
       continue;
     }
-    return error(`Unexpected runtime-host activate option: ${String(argument)}`);
+    return error(`Unexpected runtime-host ${action} option: ${String(argument)}`);
   }
-  if (!framed) return error('runtime-host activate requires --framed');
+  if (!framed) return error(`runtime-host ${action} requires --framed`);
   if (!rootId || !/^[a-f0-9]{64}$/u.test(rootId)) {
-    return error('runtime-host activate requires a valid --root-id');
+    return error(`runtime-host ${action} requires a valid --root-id`);
   }
-  return { kind: 'runtime-host-managed-activate', rootId, framed: true };
+  return {
+    kind: action === 'activate' ? 'runtime-host-managed-activate' : 'runtime-host-managed-connect',
+    rootId,
+    framed: true,
+  };
 }
 
 export function parseRuntimeHostInstalledUpdateCommand(argv: string[]): RuntimeHostCliCommand {
@@ -1224,6 +1246,8 @@ function parseProfileCommand(argv: string[]): RuntimeHostCliCommand {
   let sshWebSocketPath = '/runtime-host';
   let sshWebSocketPathConfigured = false;
   let peerId: string | undefined;
+  let wslDistribution: string | undefined;
+  let operatorPath: string | undefined;
   const peerRouteHints: string[] = [];
   const peerCoordinationRelays: string[] = [];
   let expectedRootId: string | undefined;
@@ -1242,6 +1266,8 @@ function parseProfileCommand(argv: string[]): RuntimeHostCliCommand {
       argument !== '--peer-id' &&
       argument !== '--peer-route' &&
       argument !== '--peer-coordination-relay' &&
+      argument !== '--wsl-distribution' &&
+      argument !== '--operator-path' &&
       argument !== '--expected-root' &&
       argument !== '--credential-env' &&
       argument !== '--acknowledge-plaintext'
@@ -1268,6 +1294,8 @@ function parseProfileCommand(argv: string[]): RuntimeHostCliCommand {
     if (argument === '--peer-id') peerId = parsed;
     if (argument === '--peer-route') peerRouteHints.push(parsed);
     if (argument === '--peer-coordination-relay') peerCoordinationRelays.push(parsed);
+    if (argument === '--wsl-distribution') wslDistribution = parsed;
+    if (argument === '--operator-path') operatorPath = parsed;
     if (argument === '--expected-root') expectedRootId = parsed;
     if (argument === '--credential-env') credentialEnv = parsed;
     index += 1;
@@ -1275,12 +1303,25 @@ function parseProfileCommand(argv: string[]): RuntimeHostCliCommand {
   if (!id) return error('--id is required');
   if (!name) return error('--name is required');
   if (
-    (tlsUrl ? 1 : 0) + (plaintextUrl ? 1 : 0) + (sshDestination ? 1 : 0) + (peerId ? 1 : 0) !==
+    (tlsUrl ? 1 : 0) +
+      (plaintextUrl ? 1 : 0) +
+      (sshDestination ? 1 : 0) +
+      (peerId ? 1 : 0) +
+      (wslDistribution ? 1 : 0) !==
     1
   ) {
     return error(
-      'exactly one of --tls-url, --plaintext-url, --ssh-destination, or --peer-id is required',
+      'exactly one of --tls-url, --plaintext-url, --ssh-destination, --peer-id, or --wsl-distribution is required',
     );
+  }
+  if (wslDistribution && !operatorPath) {
+    return error('--wsl-distribution requires --operator-path');
+  }
+  if (!wslDistribution && operatorPath) {
+    return error('--operator-path requires --wsl-distribution');
+  }
+  if (wslDistribution && credentialEnv) {
+    return error('WSL environment profiles do not accept --credential-env');
   }
   if (plaintextUrl && !acknowledgePlaintext) {
     return error('--plaintext-url requires --acknowledge-plaintext');
@@ -1313,6 +1354,16 @@ function parseProfileCommand(argv: string[]): RuntimeHostCliCommand {
     return error('--ssh-remote-port must be an integer between 1 and 65535');
   }
   if (!expectedRootId) return error('--expected-root is required');
+  if (wslDistribution) {
+    return {
+      kind: 'runtime-host-profile-set-environment',
+      id,
+      name,
+      distribution: wslDistribution,
+      operatorPath: operatorPath!,
+      expectedRootId,
+    };
+  }
   return {
     kind: 'runtime-host-profile-set',
     id,

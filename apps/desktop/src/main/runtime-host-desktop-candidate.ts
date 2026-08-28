@@ -27,7 +27,7 @@ import type { BotRegistry } from '@maka/runtime/bots';
 import {
   type RuntimeHostSshOperatorActivationInput,
   connectOrSpawnRuntimeHost,
-  connectRemoteRuntimeHostProfile,
+  connectRuntimeHostProfile,
   type RuntimeHostPeerClient,
   type RuntimeHostSshInteraction,
   type RuntimeHostSshTunnel,
@@ -37,10 +37,14 @@ import {
   type RuntimeHostConnection,
   type RuntimeHostCandidateLaunchBarrier,
   type RuntimeHostSpawnedProcess,
-  type RemoteRuntimeHostProfile,
+  type PersistedRuntimeHostProfile,
   type CandidateExitDetails,
 } from "@maka/runtime-host/client";
 import type { RuntimeHostActivationResult } from "@maka/runtime-host/operator";
+import {
+  runtimeHostProfileUsesHostWorkspace,
+  type RuntimeHostProfileKind,
+} from "@maka/runtime-host/profile-kind";
 import {
   INTERACTIVE_RUNTIME_HOST_COMPOSITION_ID,
   RUNTIME_HOST_PROTOCOL_VERSION,
@@ -151,12 +155,10 @@ export interface DesktopRuntimeHostCandidateDeps {
   ) => void | (() => void | Promise<void>);
 }
 
-export type DesktopRuntimeHostTargetPolicy =
-  | { readonly kind: "local"; readonly rootId: string }
-  | {
-      readonly kind: "remote";
-      readonly rootId: string;
-    };
+export interface DesktopRuntimeHostTargetPolicy {
+  readonly kind: RuntimeHostProfileKind;
+  readonly rootId: string;
+}
 
 export interface DesktopRuntimeHostCandidateControls {
   refreshClientCapabilities(): Promise<void>;
@@ -178,9 +180,9 @@ export interface DesktopRuntimeHostCandidateStartInput
   readonly onExit?: (details: CandidateExitDetails) => void;
   readonly candidateLaunchBarrier?: RuntimeHostCandidateLaunchBarrier;
   readonly peerClient?: RuntimeHostPeerClient;
-  readonly remote?: {
-    readonly profile: RemoteRuntimeHostProfile;
-    readonly credential: string;
+  readonly profileTarget?: {
+    readonly profile: PersistedRuntimeHostProfile;
+    readonly credential?: string;
     readonly sshInteraction?: RuntimeHostSshInteraction;
   };
 }
@@ -196,7 +198,7 @@ export interface DesktopRuntimeHostCandidate {
   readonly botIncoming: BotIncomingMainService;
   readonly client: DesktopRuntimeHostClient;
   readonly closed: Promise<void>;
-  readonly hostLifecycleMode: HostRegistration["lifecycleMode"] | "remote";
+  readonly hostLifecycleMode: HostRegistration["lifecycleMode"] | "environment" | "remote";
   readonly hostPid?: number;
   stopSession(sessionId: string): Promise<void>;
   close(): Promise<void>;
@@ -206,7 +208,7 @@ class DesktopRuntimeHostCandidateImpl implements DesktopRuntimeHostCandidate {
   readonly botIncoming: BotIncomingMainService;
   readonly client: DesktopRuntimeHostClient;
   readonly closed: Promise<void>;
-  readonly hostLifecycleMode: HostRegistration["lifecycleMode"] | "remote";
+  readonly hostLifecycleMode: HostRegistration["lifecycleMode"] | "environment" | "remote";
   readonly hostPid: number | undefined;
   readonly #client: DesktopRuntimeHostClient;
   readonly #observer: RuntimeHostSessionObserver;
@@ -232,7 +234,7 @@ class DesktopRuntimeHostCandidateImpl implements DesktopRuntimeHostCandidate {
     detachSessionObservations: () => void;
     closeSessionObservations: () => Promise<void>;
     connectionClosed: Promise<void>;
-    hostLifecycleMode: HostRegistration["lifecycleMode"] | "remote";
+    hostLifecycleMode: HostRegistration["lifecycleMode"] | "environment" | "remote";
     hostPid?: number;
     hasRegisteredCapabilities: () => boolean;
     stopSession: (sessionId: string) => Promise<void>;
@@ -295,10 +297,10 @@ export async function startDesktopRuntimeHostCandidate(
   observationRegistry?: RuntimeHostSessionObservationRegistry,
 ): Promise<DesktopRuntimeHostCandidateStartResult> {
   const ipcMain = requireTargetIpcMain(input.ipcMain);
-  if (input.remote) {
-    return startRemoteDesktopRuntimeHostCandidate(
+  if (input.profileTarget) {
+    return startProfileDesktopRuntimeHostCandidate(
       input,
-      input.remote,
+      input.profileTarget,
       observationRegistry,
       ipcMain,
     );
@@ -372,15 +374,17 @@ function redactRuntimeHostStderr(stderr: string): string {
   return redacted.replace(/\S+/gu, (token) => redactSecrets(token));
 }
 
-async function startRemoteDesktopRuntimeHostCandidate(
+async function startProfileDesktopRuntimeHostCandidate(
   input: DesktopRuntimeHostCandidateStartInput,
-  remote: NonNullable<DesktopRuntimeHostCandidateStartInput["remote"]>,
+  profileTarget: NonNullable<DesktopRuntimeHostCandidateStartInput["profileTarget"]>,
   observationRegistry: RuntimeHostSessionObservationRegistry | undefined,
   ipcMain: RuntimeHostTargetIpcMain,
 ): Promise<DesktopRuntimeHostCandidateStartResult> {
-  const connection = await connectRemoteRuntimeHostProfile({
-    profile: remote.profile,
-    credential: remote.credential,
+  const connection = await connectRuntimeHostProfile({
+    profile: profileTarget.profile,
+    ...(profileTarget.credential === undefined
+      ? {}
+      : { credential: profileTarget.credential }),
     clientInstanceId: input.clientInstanceId ?? randomUUID(),
     ...(input.signal === undefined ? {} : { signal: input.signal }),
     ...(input.connectTimeoutMs === undefined
@@ -391,9 +395,9 @@ async function startRemoteDesktopRuntimeHostCandidate(
       : { handshakeTimeoutMs: input.handshakeTimeoutMs }),
     readyTimeoutMs: input.electionDeadlineMs ?? 45_000,
     ...(input.peerClient === undefined ? {} : { peerClient: input.peerClient }),
-    ...(remote.sshInteraction === undefined
+    ...(profileTarget.sshInteraction === undefined
       ? {}
-      : { sshInteraction: remote.sshInteraction }),
+      : { sshInteraction: profileTarget.sshInteraction }),
   },
   {
     ...(input.openSshTunnel ? { openSshTunnel: input.openSshTunnel } : {}),
@@ -408,8 +412,8 @@ async function startRemoteDesktopRuntimeHostCandidate(
         connection,
         { ...input, ipcMain },
         observationRegistry,
-        "remote",
-        "remote",
+        profileTarget.profile.kind,
+        profileTarget.profile.kind,
       ),
     };
   } catch (error) {
@@ -422,7 +426,7 @@ export async function createDesktopRuntimeHostCandidate(
   connection: RuntimeHostConnection,
   deps: DesktopRuntimeHostCandidateDeps,
   observationRegistry: RuntimeHostSessionObservationRegistry | undefined,
-  hostLifecycleMode: HostRegistration["lifecycleMode"] | "remote",
+  hostLifecycleMode: HostRegistration["lifecycleMode"] | "environment" | "remote",
   targetKind: DesktopRuntimeHostTargetPolicy["kind"],
   hostPid?: number,
 ): Promise<DesktopRuntimeHostCandidate> {
@@ -610,11 +614,12 @@ export async function createDesktopRuntimeHostCandidate(
     };
     const createNativeProvider = (): DesktopNativeCapabilityProvider => {
       let provider: DesktopNativeCapabilityProvider;
+      const usesHostWorkspace = runtimeHostProfileUsesHostWorkspace(target.kind);
       provider = createDesktopNativeCapabilityProvider(
         deps.nativeCapabilities,
         {
-          hostPathAccess: target.kind === "local" ? "cwd" : "none",
-          ...(target.kind === "remote" ? { clientCwd: deps.workspaceRoot } : {}),
+          hostPathAccess: usesHostWorkspace ? "none" : "cwd",
+          ...(usesHostWorkspace ? { clientCwd: deps.workspaceRoot } : {}),
           releaseResourcesOnClose: false,
           targetScope: scope,
           nativeSessionId: (sessionId) =>

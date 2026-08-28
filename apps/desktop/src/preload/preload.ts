@@ -18,6 +18,10 @@
  */
 
 import { contextBridge, ipcRenderer } from 'electron';
+import {
+  isRuntimeHostProfileKind,
+  type RuntimeHostProfileKind,
+} from '@maka/runtime-host/profile-kind';
 import { encodeIngestItems } from './attachment-ingest-payload.js';
 import { collectThreadSearchResponses } from './multi-host-thread-search.js';
 import { releaseSessionObservation } from './session-observation-release.js';
@@ -247,7 +251,11 @@ const runtimeHostScopes = new Map<string, DesktopTargetScope>();
 const runtimeHostProfiles = new Map<string, string>();
 const runtimeHostMetadata = new Map<
   string,
-  { readonly profileId: string; readonly profileName: string; readonly profileKind: 'local' | 'remote' }
+  {
+    readonly profileId: string;
+    readonly profileName: string;
+    readonly profileKind: RuntimeHostProfileKind;
+  }
 >();
 const newTaskChangeListeners = new Set<() => void>();
 let previousMainProcessInterruptionRead: Promise<boolean> | undefined;
@@ -307,7 +315,7 @@ function recordRuntimeHostIdentity(value: unknown): {
   if (
     typeof metadata.profileId !== 'string' ||
     typeof metadata.profileName !== 'string' ||
-    (metadata.profileKind !== 'local' && metadata.profileKind !== 'remote') ||
+    !isRuntimeHostProfileKind(metadata.profileKind) ||
     (metadata.readiness !== 'ready' && metadata.readiness !== 'reconnecting')
   ) {
     throw new Error('Desktop Runtime Host identity is invalid');
@@ -1259,6 +1267,9 @@ const makaBridge = {
     },
   },
   runtimeHostOnboarding: {
+    listWslDistributions(): Promise<readonly string[]> {
+      return ipcRenderer.invoke('runtime-host-onboarding:listWslDistributions');
+    },
     getSnapshot(): Promise<DesktopRuntimeHostOnboardingSnapshot> {
       return ipcRenderer.invoke('runtime-host-onboarding:getSnapshot');
     },

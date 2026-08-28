@@ -41,6 +41,7 @@ import {
   type RuntimeHostConnection,
   type RuntimeHostProfile,
 } from '@maka/runtime-host/client';
+import { runtimeHostProfileUsesHostWorkspace } from '@maka/runtime-host/profile-kind';
 import type { AgentGraphClientSnapshot, WorkspaceTarget } from '@maka/runtime-host/protocol';
 import {
   connectRuntimeHostCli,
@@ -144,13 +145,14 @@ export async function createRuntimeHostTuiContext(
       prospectivePermissionMode,
       sessionCopyCleanupRoot,
       sessionCopyCleanupOwner: owner,
-      executionLocation:
-        connected.profile.kind === 'local' ? { kind: 'client_path' } : { kind: 'host' },
+      executionLocation: runtimeHostProfileUsesHostWorkspace(connected.profile.kind)
+        ? { kind: 'host' }
+        : { kind: 'client_path' },
       ...(workspace ? { workspace } : {}),
     };
     const driver = createRuntimeHostMakaSessionDriver(driverInput);
     await driver.recoverSideConversations();
-    if (connected.profile.kind === 'local') {
+    if (!runtimeHostProfileUsesHostWorkspace(connected.profile.kind)) {
       if (!isRuntimeHostReconnectingConnection(connection)) {
         throw new Error('Local Runtime Host TUI connection is not reconnectable');
       }
@@ -177,7 +179,9 @@ export async function createRuntimeHostTuiContext(
           connection,
           driver.getSessionId(),
           workspace ??
-            (connected.profile.kind === 'local' ? { kind: 'host_path', path: cwd } : undefined),
+            (runtimeHostProfileUsesHostWorkspace(connected.profile.kind)
+              ? undefined
+              : { kind: 'host_path', path: cwd }),
           driver.getPermissionMode?.() ?? prospectivePermissionMode,
         ),
       agentGraphHistory: createRuntimeHostAgentGraphHistory(connection),
@@ -276,7 +280,7 @@ export async function resolveRuntimeHostTuiWorkspace(
   input: Pick<CreateRuntimeHostTuiContextInput, 'resumeSessionId' | 'projectId'>,
 ): Promise<WorkspaceTarget | undefined> {
   if (input.resumeSessionId) return undefined;
-  if (profile.kind === 'local') {
+  if (!runtimeHostProfileUsesHostWorkspace(profile.kind)) {
     return input.projectId ? { kind: 'project', projectId: input.projectId } : undefined;
   }
   if (!input.projectId) {

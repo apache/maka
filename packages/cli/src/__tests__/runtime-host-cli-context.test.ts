@@ -24,7 +24,7 @@ import { basename, join } from 'node:path';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import {
-  connectRemoteRuntimeHostProfile,
+  connectRuntimeHostProfile,
   createClientRuntimeHostProfileCatalog,
   RuntimeHostRemoteCompatibilityError,
   RuntimeHostStartupError,
@@ -237,7 +237,7 @@ test('CLI reports an actionable stored-data startup failure', async () => {
 
 test('remote CLI profiles pin root identity and resolve credential outside the profile', async () => {
   const rootId = 'a'.repeat(64);
-  let remoteInput: Parameters<typeof connectRemoteRuntimeHostProfile>[0] | undefined;
+  let remoteInput: Parameters<typeof connectRuntimeHostProfile>[0] | undefined;
   const connection = {
     rootId,
     hostEpoch: 'host-remote',
@@ -257,7 +257,7 @@ test('remote CLI profiles pin root identity and resolve credential outside the p
       connectOrSpawn: async () => {
         throw new Error('remote profile must not use local discovery');
       },
-      connectRemoteProfile: async (input) => {
+      connectProfile: async (input) => {
         remoteInput = input;
         return connection;
       },
@@ -353,7 +353,7 @@ test('remote CLI profile state and Client identity use the explicit Client Data 
       connectOrSpawn: async () => {
         throw new Error('remote profile must not use local discovery');
       },
-      connectRemoteProfile: async (input) => {
+      connectProfile: async (input) => {
         credential = input.credential;
         return connection;
       },
@@ -404,7 +404,7 @@ test('remote CLI enables SSH prompts only for an explicitly interactive TTY', as
         ...(interactiveSsh === undefined ? {} : { interactiveSsh }),
       },
       {
-        connectRemoteProfile: async (input) => {
+        connectProfile: async (input) => {
           assert.ok(input.sshInteraction);
           sshInteractions.push(input.sshInteraction);
           return {
@@ -471,8 +471,8 @@ test('remote profiles preserve shared compatibility errors', async () => {
         connectRuntimeHostCli(
           { rootPath: '/unused-local-root', profileId: profile.id },
           {
-            connectRemoteProfile: (input) =>
-              connectRemoteRuntimeHostProfile(input, {
+            connectProfile: (input) =>
+              connectRuntimeHostProfile(input, {
                 connect: async () => ({ kind: 'incompatible', handshake }),
               }),
             profileCatalog: singleRemoteProfileCatalog(profile),

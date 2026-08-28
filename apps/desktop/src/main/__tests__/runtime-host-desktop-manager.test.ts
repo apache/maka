@@ -59,7 +59,7 @@ test('replaces a disconnected Runtime Host generation', { timeout: 10_000 }, asy
   const owner = await startRuntimeHostDesktopManager({} as DesktopRuntimeHostCandidateStartInput, {
     startCandidate: async (input) => {
       starts += 1;
-      interactions.push(input.remote?.sshInteraction);
+      interactions.push(input.profileTarget?.sshInteraction);
       if (starts === 2) {
         resolveSecondStart();
         await secondReleased;
@@ -1273,7 +1273,7 @@ function ready(candidate: DesktopRuntimeHostCandidate): DesktopRuntimeHostCandid
 function remoteTarget(
   id: string,
   target = 'default',
-): NonNullable<DesktopRuntimeHostCandidateStartInput['remote']> {
+): NonNullable<DesktopRuntimeHostCandidateStartInput['profileTarget']> {
   return {
     profile: {
       id,

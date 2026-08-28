@@ -23,6 +23,7 @@ export {
   type ActivateRuntimeHostManagedDeploymentInput,
   type RuntimeHostManagedActivationErrorCode,
 } from './managed-activation.js';
+export { openRuntimeHostManagedStdioBridge } from './managed-stdio-bridge.js';
 export {
   connectRuntimeHost,
   connectExistingRuntimeHost,
@@ -44,11 +45,16 @@ export {
   createClientRuntimeHostProfileCatalog,
   createFileRuntimeHostProfileCatalog,
   createRuntimeHostProfileCredentialStore,
+  connectRuntimeHostProfile,
   connectRemoteRuntimeHostProfile,
+  decodeEnvironmentRuntimeHostProfile,
+  decodePersistedRuntimeHostProfile,
   decodeRemoteRuntimeHostProfile,
   remoteRuntimeHostUnavailableError,
   sameRemoteRuntimeHostProfileTarget,
   sameResolvedRuntimeHostProfileTarget,
+  type EnvironmentRuntimeHostProfile,
+  type PersistedRuntimeHostProfile,
   type RemoteRuntimeHostProfile,
   type RuntimeHostRemoteTransport,
   type ResolvedRuntimeHostProfile,
@@ -96,6 +102,15 @@ export {
   RuntimeHostStartupError,
   runtimeHostStartupError,
 } from './startup-error.js';
+export {
+  connectRuntimeHostWslEnvironment,
+  listRuntimeHostWslDistributions,
+  normalizeRuntimeHostWslDistribution,
+  normalizeRuntimeHostWslOperatorPath,
+  resolveSystemRuntimeHostWslExecutable,
+  type RuntimeHostWslEnvironmentInput,
+  type RuntimeHostWslProcessFactory,
+} from './wsl-environment.js';
 export {
   RuntimeHostCatalogReadError,
   readRuntimeHostConnectionCatalog,

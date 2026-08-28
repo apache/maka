@@ -250,6 +250,10 @@ export async function runMakaCli(
       );
       return runRuntimeHostManagedActivationCli({ rootId: command.rootId });
     }
+    case 'runtime-host-managed-connect': {
+      const { runRuntimeHostManagedConnectCli } = await import('./runtime-host-connect-command.js');
+      return runRuntimeHostManagedConnectCli({ rootId: command.rootId });
+    }
     case 'run': {
       const { runRuntimeHostTextCli } = await import('./runtime-host-run-command.js');
       return runRuntimeHostTextCli(
@@ -384,12 +388,16 @@ export async function runMakaCli(
     }
     case 'runtime-host-setup': {
       const { runRuntimeHostSetupCli } = await import('./runtime-host-setup-command.js');
+      const { RUNTIME_HOST_SETUP_SOURCE_PACKAGE_INTEGRITY_ENV } = await import(
+        '@maka/runtime-host/operator'
+      );
       return runRuntimeHostSetupCli({
         json: command.json,
         clientDataRoot: command.clientDataRoot ?? dataRoots.clientDataRoot,
         defaultRootPath: dataRoots.workspaceRoot,
         sourcePackageRoot: fileURLToPath(new URL('..', import.meta.url)),
         version,
+        sourcePackageIntegrity: process.env[RUNTIME_HOST_SETUP_SOURCE_PACKAGE_INTEGRITY_ENV],
         principalId: command.principalId,
         preset: command.preset,
         lifecycle: command.lifecycle,
@@ -650,6 +658,7 @@ export async function runMakaCli(
     }
     case 'runtime-host-profile-list':
     case 'runtime-host-profile-set':
+    case 'runtime-host-profile-set-environment':
     case 'runtime-host-profile-remove': {
       const { runRuntimeHostProfileCommand } = await import('./runtime-host-profile-command.js');
       const profileOptions = { clientDataRoot: dataRoots.clientDataRoot };
@@ -658,6 +667,20 @@ export async function runMakaCli(
       }
       if (command.kind === 'runtime-host-profile-remove') {
         return runRuntimeHostProfileCommand({ kind: 'remove', id: command.id }, {}, profileOptions);
+      }
+      if (command.kind === 'runtime-host-profile-set-environment') {
+        return runRuntimeHostProfileCommand(
+          {
+            kind: 'set-environment',
+            id: command.id,
+            name: command.name,
+            distribution: command.distribution,
+            operatorPath: command.operatorPath,
+            expectedRootId: command.expectedRootId,
+          },
+          {},
+          profileOptions,
+        );
       }
       return runRuntimeHostProfileCommand(
         {

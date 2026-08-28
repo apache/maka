@@ -30,6 +30,7 @@ import {
 } from 'react';
 import type { ProjectRecord } from '@maka/core/project';
 import type { SessionSummary } from '@maka/core/session';
+import { runtimeHostProfileUsesHostWorkspace } from '@maka/runtime-host/profile-kind';
 import type { SideNavImperativeCollapseHandle } from '@astryxdesign/core/SideNav';
 import { useUiLocale, type SessionHistoryGroup, type SessionViewMode } from '@maka/ui';
 import { safeLocalStorageSet } from '../../../browser-storage.js';
@@ -217,7 +218,9 @@ export function useSessionNavigationController(
   const worktreeSessionIds = useMemo(
     () =>
       deriveWorktreeSessionIds(
-        rail.sessions.filter((session) => session.profileKind !== 'remote'),
+        rail.sessions.filter(
+          (session) => !runtimeHostProfileUsesHostWorkspace(session.profileKind),
+        ),
         input.projects,
       ),
     [input.projects, rail.sessions],
@@ -240,7 +243,7 @@ export function useSessionNavigationController(
   const sessionMeta = useCallback(
     (session: SessionSummary): string | undefined => {
       const projected = sessionById.get(session.id);
-      return projected?.profileKind === 'remote'
+      return projected && runtimeHostProfileUsesHostWorkspace(projected.profileKind)
         ? projected.profileName
         : undefined;
     },

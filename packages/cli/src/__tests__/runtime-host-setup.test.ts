@@ -714,6 +714,17 @@ test('managed operator binds its Client Data Root and routes deployment cleanup'
     'a'.repeat(64),
   ]);
 
+  await execFile(deployment.operatorPath, ['connect', '--framed', '--root-id', 'a'.repeat(64)], {
+    env: { ...process.env, MAKA_TEST_OUTPUT: invocationPath },
+  });
+  assert.deepEqual(JSON.parse(await readFile(invocationPath, 'utf8')), [
+    'runtime-host',
+    'connect',
+    '--framed',
+    '--root-id',
+    'a'.repeat(64),
+  ]);
+
   await execFile(
     deployment.operatorPath,
     [

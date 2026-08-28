@@ -80,6 +80,7 @@ export {
   type RuntimeHostSetupPhase,
 } from './setup-frame.js';
 export {
+  RUNTIME_HOST_SETUP_SOURCE_PACKAGE_INTEGRITY_ENV,
   compareProductReleaseVersions,
   isProductReleaseVersion,
   isRuntimeHostNpmDeploymentIdentity,

@@ -140,13 +140,15 @@ function packageCli(publishable) {
   writeReleaseManifest(cli, publishable);
   validateStaging(publishable);
 
-  const [pack] = JSON.parse(
+  const packOutput = JSON.parse(
     runNpm(['pack', stageRoot, '--json', '--pack-destination', artifactRoot], {
       encoding: 'utf8',
       maxBuffer: 64 * 1024 * 1024,
     }),
   );
-  if (!pack?.filename || !Array.isArray(pack.files)) {
+  const packs = Array.isArray(packOutput) ? packOutput : Object.values(packOutput);
+  const [pack] = packs;
+  if (packs.length !== 1 || !pack?.filename || !Array.isArray(pack.files)) {
     throw new Error('npm pack did not return one JSON package result');
   }
   validateCliReleaseArtifactMetrics({
@@ -795,7 +797,7 @@ function validatePackedFiles(files, expectedDependencyManifests) {
     }
   }
   const bin = files.find((file) => file.path === 'dist/cli.js');
-  if (!bin || (bin.mode & 0o111) === 0) {
+  if (!bin || (process.platform !== 'win32' && (bin.mode & 0o111) === 0)) {
     throw new Error('The packed CLI entrypoint is not executable');
   }
 }

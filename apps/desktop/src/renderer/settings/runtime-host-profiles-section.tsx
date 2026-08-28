@@ -376,7 +376,7 @@ export function RuntimeHostProfilesSection(props: {
     }
   }
 
-  const remoteEntries = snapshot?.entries.filter((entry) => entry.profile.kind === "remote") ?? [];
+  const connectedEntries = snapshot?.entries.filter((entry) => entry.profile.kind !== 'local') ?? [];
   const profileOptions = (snapshot?.entries ?? [])
     .filter((entry) => entry.enabled)
     .map((entry) => ({
@@ -618,23 +618,25 @@ export function RuntimeHostProfilesSection(props: {
             />
           </>
         ) : null}
-        {remoteEntries.length === 0 && !showAdd ? (
+        {connectedEntries.length === 0 && !showAdd ? (
           <SettingsRow label={copy.empty} />
         ) : (
           <List density="balanced" hasDividers aria-label={copy.remoteTitle}>
-            {remoteEntries.map((entry) => {
+            {connectedEntries.map((entry) => {
               const profile = entry.profile;
-              if (profile.kind !== "remote") return null;
+              if (profile.kind === 'local') return null;
               return (
                 <ListItem
                   key={profile.id}
                   label={profile.name}
                   description={
-                    profile.transport.kind === "ssh"
-                      ? profile.transport.destination
-                      : profile.transport.kind === "libp2p-direct"
-                        ? abbreviatePeerId(profile.transport.peerId)
-                        : profile.transport.url
+                    profile.kind === 'environment'
+                      ? profile.provider.distribution
+                      : profile.transport.kind === "ssh"
+                        ? profile.transport.destination
+                        : profile.transport.kind === "libp2p-direct"
+                          ? abbreviatePeerId(profile.transport.peerId)
+                          : profile.transport.url
                   }
                   startContent={<Cpu size={ICON_SIZE.control} aria-hidden="true" />}
                   endContent={
@@ -642,7 +644,7 @@ export function RuntimeHostProfilesSection(props: {
                       {entry.isDefault ? (
                         <Badge variant="neutral" label={copy.defaultBadge} />
                       ) : null}
-                      {profile.transport.kind === 'libp2p-direct' ? (
+                      {profile.kind === 'remote' && profile.transport.kind === 'libp2p-direct' ? (
                         <Badge variant="warning" label={copy.experimentalBadge} />
                       ) : null}
                       {entry.readiness === "unavailable" ? (
@@ -660,7 +662,8 @@ export function RuntimeHostProfilesSection(props: {
                         label={copy.moreActions(profile.name)}
                         size="sm"
                         items={[
-                          ...(profile.transport.kind === "ssh" && entry.managedService
+                          ...(profile.kind === 'remote' &&
+                          profile.transport.kind === "ssh" && entry.managedService
                             ? [{
                                 label: copy.manage,
                                 isDisabled: switching,

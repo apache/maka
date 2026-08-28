@@ -19,6 +19,7 @@
 
 import { strict as assert } from 'node:assert';
 import { describe, it } from 'node:test';
+import type { RuntimeHostProfileKind } from '@maka/runtime-host/profile-kind';
 import { UNRESOLVED_NEW_TASK_DRAFT_KEY } from '../../renderer/new-task-reload-intent.js';
 import {
   resolveProjectSelection,
@@ -44,19 +45,18 @@ function project(
 
 function readyHost(input: {
   id: string;
-  kind?: 'local' | 'remote';
+  kind?: RuntimeHostProfileKind;
   selectedProjectId?: string | null;
   defaultProjectId?: string;
   selectNoProject?: boolean;
   projects?: ReturnType<typeof project>[];
 }): Extract<TaskEntryHost, { state: 'available' }> {
-  const profile = input.kind === 'remote'
-    ? {
-        id: input.id,
-        name: input.id,
-        kind: 'remote' as const,
-      }
-    : { id: 'local' as const, name: 'Local' as const, kind: 'local' as const };
+  const kind = input.kind ?? 'local';
+  const profile = {
+    id: kind === 'local' ? 'local' : input.id,
+    name: kind === 'local' ? 'Local' : input.id,
+    kind,
+  };
   return {
     profile,
     hostId: `host-${input.id}`,

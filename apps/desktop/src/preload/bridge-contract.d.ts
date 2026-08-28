@@ -51,6 +51,7 @@ import type {
   ShellRunUpdate,
 } from '@maka/core/events';
 import type { UserQuestionResponse } from '@maka/core/user-question';
+import type { RuntimeHostProfileKind } from '@maka/runtime-host/profile-kind';
 import type { PermissionMode } from '@maka/core/permission';
 import type { CollaborationMode } from '@maka/core/collaboration';
 import type { OrchestrationMode } from '@maka/core/orchestration';
@@ -187,7 +188,7 @@ import type { BundledSkillCatalogEntry, ManagedSkillSourceEntry, ManagedSkillUpd
 import type { ConfigCategory } from '@maka/storage/config-transfer';
 import type { OnboardingMilestone, OnboardingMilestoneId, OnboardingState } from '@maka/core/onboarding';
 import type {
-  RemoteRuntimeHostProfile,
+  PersistedRuntimeHostProfile,
   RuntimeHostProfile,
 } from '@maka/runtime-host/client';
 export interface OnboardingSnapshot {
@@ -357,7 +358,7 @@ export interface DesktopNewTaskCatalog {
 }
 
 export interface DesktopRuntimeHostProfileAddInput {
-  readonly profile: RemoteRuntimeHostProfile;
+  readonly profile: PersistedRuntimeHostProfile;
   readonly credential?: string;
 }
 
@@ -376,7 +377,7 @@ export interface DesktopRuntimeHostProfileChangedEvent {
   readonly epoch: string;
   readonly profileId: string;
   readonly profileName: string;
-  readonly profileKind: 'local' | 'remote';
+  readonly profileKind: RuntimeHostProfileKind;
   readonly readiness: 'connecting' | 'ready' | 'reconnecting' | 'unavailable';
   readonly hostId?: string;
   readonly isDefault: boolean;
@@ -434,16 +435,25 @@ export type DesktopRuntimeHostSshTerminalSnapshot =
       readonly signal: string | null;
     };
 
-export interface DesktopRuntimeHostOnboardingInput {
-  readonly name?: string;
-  readonly destination: string;
-  readonly sshPort?: number;
-  readonly projectDirectoryRoots?: readonly { readonly label: string; readonly path: string }[];
-}
+export type DesktopRuntimeHostOnboardingInput =
+  | {
+      readonly kind: 'ssh';
+      readonly name?: string;
+      readonly destination: string;
+      readonly sshPort?: number;
+      readonly projectDirectoryRoots?: readonly { readonly label: string; readonly path: string }[];
+    }
+  | {
+      readonly kind: 'wsl';
+      readonly name?: string;
+      readonly distribution: string;
+      readonly projectDirectoryRoots?: readonly { readonly label: string; readonly path: string }[];
+    };
 
 export type DesktopRuntimeHostOnboardingPhase =
   | 'preparing_cli'
   | 'connecting_ssh'
+  | 'connecting_wsl'
   | RuntimeHostSetupPhase
   | 'connecting_host';
 
@@ -673,6 +683,7 @@ export interface MakaBridge {
   };
 
   runtimeHostOnboarding: {
+    listWslDistributions(): Promise<readonly string[]>;
     getSnapshot(): Promise<DesktopRuntimeHostOnboardingSnapshot>;
     start(input: DesktopRuntimeHostOnboardingInput): Promise<DesktopRuntimeHostOnboardingSnapshot>;
     cancel(): Promise<boolean>;

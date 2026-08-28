@@ -20,6 +20,9 @@
 import { createHash } from 'node:crypto';
 import { join, resolve } from 'node:path';
 
+export const RUNTIME_HOST_SETUP_SOURCE_PACKAGE_INTEGRITY_ENV =
+  'MAKA_RUNTIME_HOST_SETUP_SOURCE_PACKAGE_INTEGRITY';
+
 interface ProductReleaseVersion {
   readonly core: readonly [bigint, bigint, bigint];
   readonly prerelease: readonly string[];
