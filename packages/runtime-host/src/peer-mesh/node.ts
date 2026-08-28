@@ -325,7 +325,7 @@ class PeerMeshNodeImpl implements PeerMeshNode {
         operationSignal,
       );
       try {
-        const localRoute = await this.#signLocalRoute();
+        const localRoute = (await this.#refreshLocalRoute()) ?? (await this.#signLocalRoute());
         const request: RedeemInvitationRequest = {
           kind: 'redeem-invitation',
           meshId: invitation.meshId,
