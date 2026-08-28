@@ -34,6 +34,7 @@ export const SESSION_SNAPSHOT_STAGING_SCHEMA_VERSION = 1 as const;
 
 const SNAPSHOT_ID_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u;
+const CONFIRMATION_GRANT_ID_PATTERN = /^[A-Za-z0-9_-]{1,128}$/u;
 const MAX_OWNER_RECORD_BYTES = 1_024;
 const MAX_TIMER_DELAY_MS = 2_147_483_647;
 const NO_FOLLOW_OPEN_FLAG = process.platform === 'win32' ? 0 : fsConstants.O_NOFOLLOW;
@@ -45,7 +46,10 @@ export type SessionSnapshotWorkspaceExclusionCategory =
   | 'source_control'
   | 'cache'
   | 'log'
-  | 'runtime_scratch';
+  | 'runtime_scratch'
+  | 'confirmed_secret_path';
+
+export type SessionSnapshotWorkspaceConfirmationCategory = 'suspected_secret_path';
 
 export type SessionSnapshotWorkspaceRejectionCategory =
   | 'known_secret_file'
@@ -57,6 +61,12 @@ export type SessionSnapshotWorkspacePolicyDecision =
   | {
       readonly kind: 'exclude';
       readonly category: SessionSnapshotWorkspaceExclusionCategory;
+    }
+  | {
+      readonly kind: 'confirm';
+      readonly category: SessionSnapshotWorkspaceConfirmationCategory;
+      /** Normalized topmost directory whose complete subtree the decision covers. */
+      readonly confirmationPath: string;
     }
   | {
       readonly kind: 'reject';
@@ -73,7 +83,9 @@ export interface SessionSnapshotWorkspacePolicy {
   readonly version: typeof SESSION_SNAPSHOT_POLICY_VERSION;
   /**
    * Receives normalized relative paths. A preparer must stop descending as
-   * soon as a directory is excluded; descendant entries are not counted.
+   * soon as a directory is excluded, including by a confirmed exclusion;
+   * descendant entries are not counted. A confirmed include permits descent
+   * but does not override later high-confidence secret rejections.
    */
   classify(entry: SessionSnapshotWorkspaceEntry): SessionSnapshotWorkspacePolicyDecision;
 }
@@ -85,12 +97,8 @@ const INCLUDE = Object.freeze({ kind: 'include' } as const);
 // names that identify known secret material; public certificate encodings and
 // other ambiguous formats are not rejected by extension alone.
 const PUBLIC_ENV_TEMPLATE_PATTERN = /^\.env\.(?:example|sample|template)$/i;
-const KNOWN_SECRET_WORKSPACE_DIRECTORY_NAMES = new Set([
-  '.ssh',
-  'credentials',
-  'private',
-  'secrets',
-]);
+const KNOWN_SECRET_WORKSPACE_DIRECTORY_NAMES = new Set(['.ssh']);
+const SUSPECTED_SECRET_WORKSPACE_DIRECTORY_NAMES = new Set(['credentials', 'private', 'secrets']);
 const KNOWN_SECRET_WORKSPACE_FILE_PATTERNS = [
   /^\.env(?:\..*)?$/i,
   /^\.(?:npmrc|netrc|pypirc|terraformrc)$/i,
@@ -135,6 +143,10 @@ export const SESSION_SNAPSHOT_WORKSPACE_POLICY_V1: SessionSnapshotWorkspacePolic
     }
     if (isKnownSecretEntry(entry.kind, lowerSegments, lowerName)) {
       return { kind: 'reject', category: 'known_secret_file' };
+    }
+    const confirmationPath = findSuspectedSecretDirectoryPath(entry.kind, segments, lowerSegments);
+    if (confirmationPath !== undefined) {
+      return { kind: 'confirm', category: 'suspected_secret_path', confirmationPath };
     }
     if (
       lowerSegments.includes('logs') ||
@@ -196,11 +208,50 @@ export interface SessionSnapshotWorkspacePreparation {
   readonly payloadBytes: number;
 }
 
+export type SessionSnapshotWorkspaceConfirmationAction = 'include' | 'exclude';
+
+/**
+ * Trusted control-plane lookup for a previously recorded explicit user choice.
+ *
+ * Implementations must authenticate the principal, verify ownership of the
+ * Maka Session, and bind the grant to the exact policy version, normalized
+ * confirmation path and current Workspace source revision/digest. Decisions
+ * live outside Session state, workspaces, staging roots and Session Bundles.
+ * This lookup must not wait for interactive user input while the Session is
+ * quiescent; an absent or stale decision returns `undefined` and fails snapshot
+ * preparation closed.
+ */
+export interface SessionSnapshotWorkspaceConfirmationAuthority {
+  resolveConfirmation(input: {
+    readonly makaSessionId: string;
+    readonly confirmationGrantId: string;
+    readonly policyVersion: typeof SESSION_SNAPSHOT_POLICY_VERSION;
+    readonly category: SessionSnapshotWorkspaceConfirmationCategory;
+    readonly confirmationPath: string;
+    readonly cancellation: SessionSnapshotCancellation;
+  }): Promise<{ readonly action: SessionSnapshotWorkspaceConfirmationAction } | undefined>;
+}
+
+export interface SessionSnapshotWorkspaceConfirmationResolver {
+  /**
+   * Resolves the policy's confirmation decision into a final include/exclude
+   * decision. Repeated descendants of one confirmed directory reuse the same
+   * control-plane lookup for this preparation.
+   */
+  resolve(
+    entry: SessionSnapshotWorkspaceEntry,
+  ): Promise<
+    | { readonly kind: 'include' }
+    | { readonly kind: 'exclude'; readonly category: 'confirmed_secret_path' }
+  >;
+}
+
 export interface SessionSnapshotWorkspacePreparer {
   /**
    * Trusted enforcement point for the supplied workspace policy. Creates the
    * exact, previously absent root, applies every policy decision without
-   * downgrading it, and closes every source/destination handle. The coordinator
+   * downgrading it, resolves every `confirm` decision before copying or
+   * descending, and closes every source/destination handle. The coordinator
    * validates the returned root and bounded counters, but does not independently
    * traverse the result to prove that the policy was applied.
    */
@@ -208,6 +259,7 @@ export interface SessionSnapshotWorkspacePreparer {
     readonly makaSessionId: string;
     readonly destinationRoot: string;
     readonly policy: SessionSnapshotWorkspacePolicy;
+    readonly confirmation: SessionSnapshotWorkspaceConfirmationResolver;
     readonly cancellation: SessionSnapshotCancellation;
   }): Promise<SessionSnapshotWorkspacePreparation>;
 }
@@ -226,6 +278,8 @@ export interface SessionSnapshotPrivateStagingRootAuthority {
 
 export interface PrepareQuiescentSessionSnapshotInput {
   readonly makaSessionId: string;
+  /** Opaque, control-plane-issued grant; never persisted in the Session Bundle. */
+  readonly confirmationGrantId?: string;
   readonly signal?: AbortSignal;
   /** Absolute Unix time in milliseconds. */
   readonly deadlineAt?: number;
@@ -270,7 +324,9 @@ export type SessionSnapshotPhase =
 
 export interface SessionSnapshotErrorDetails {
   readonly phase?: SessionSnapshotPhase;
-  readonly policyCategory?: SessionSnapshotWorkspaceRejectionCategory;
+  readonly policyCategory?:
+    | SessionSnapshotWorkspaceRejectionCategory
+    | SessionSnapshotWorkspaceConfirmationCategory;
   readonly limit?: number;
   readonly observed?: number;
 }
@@ -304,6 +360,8 @@ export interface FileQuiescentSessionSnapshotCoordinatorOptions {
   readonly quiescence: SessionSnapshotQuiescenceAuthority;
   readonly state: SessionSnapshotStatePreparer;
   readonly workspace: SessionSnapshotWorkspacePreparer;
+  /** Optional control-plane lookup; suspected paths fail closed when absent. */
+  readonly confirmationAuthority?: SessionSnapshotWorkspaceConfirmationAuthority;
   /** Required on Windows; optional additional verification on POSIX platforms. */
   readonly privateStagingRootAuthority?: SessionSnapshotPrivateStagingRootAuthority;
   readonly now?: () => number;
@@ -321,6 +379,7 @@ class FileQuiescentSessionSnapshotCoordinator implements QuiescentSessionSnapsho
   readonly #quiescence: SessionSnapshotQuiescenceAuthority;
   readonly #state: SessionSnapshotStatePreparer;
   readonly #workspace: SessionSnapshotWorkspacePreparer;
+  readonly #confirmationAuthority: SessionSnapshotWorkspaceConfirmationAuthority | undefined;
   readonly #privateStagingRootAuthority: SessionSnapshotPrivateStagingRootAuthority | undefined;
   readonly #now: () => number;
   readonly #newSnapshotId: () => string;
@@ -336,6 +395,7 @@ class FileQuiescentSessionSnapshotCoordinator implements QuiescentSessionSnapsho
     this.#quiescence = options.quiescence;
     this.#state = options.state;
     this.#workspace = options.workspace;
+    this.#confirmationAuthority = options.confirmationAuthority;
     this.#privateStagingRootAuthority = options.privateStagingRootAuthority;
     this.#now = options.now ?? Date.now;
     this.#newSnapshotId = options.newSnapshotId ?? randomUUID;
@@ -343,6 +403,7 @@ class FileQuiescentSessionSnapshotCoordinator implements QuiescentSessionSnapsho
 
   async prepare(input: PrepareQuiescentSessionSnapshotInput): Promise<PreparedSessionBundleHandle> {
     const makaSessionId = requireMakaSessionId(input.makaSessionId);
+    const confirmationGrantId = requireOptionalConfirmationGrantId(input.confirmationGrantId);
     const cancellation = createCancellation(input, this.#now);
     let prepared: OwnedPreparedSessionBundleHandle | undefined;
     let operationStarted = false;
@@ -382,6 +443,12 @@ class FileQuiescentSessionSnapshotCoordinator implements QuiescentSessionSnapsho
                 makaSessionId,
                 destinationRoot: staging.workspaceRoot,
                 policy: SESSION_SNAPSHOT_WORKSPACE_POLICY_V1,
+                confirmation: createWorkspaceConfirmationResolver({
+                  makaSessionId,
+                  confirmationGrantId,
+                  authority: this.#confirmationAuthority,
+                  cancellation: cancellation.value,
+                }),
                 cancellation: cancellation.value,
               }),
             );
@@ -708,11 +775,115 @@ function isKnownSecretEntry(
   );
 }
 
+function findSuspectedSecretDirectoryPath(
+  kind: SessionSnapshotWorkspaceEntryKind,
+  segments: readonly string[],
+  lowerSegments: readonly string[],
+): string | undefined {
+  const directorySegmentCount =
+    kind === 'directory' ? lowerSegments.length : lowerSegments.length - 1;
+  const index = lowerSegments
+    .slice(0, directorySegmentCount)
+    .findIndex((segment) => SUSPECTED_SECRET_WORKSPACE_DIRECTORY_NAMES.has(segment));
+  return index < 0 ? undefined : segments.slice(0, index + 1).join('/');
+}
+
+function createWorkspaceConfirmationResolver(input: {
+  readonly makaSessionId: string;
+  readonly confirmationGrantId: string | undefined;
+  readonly authority: SessionSnapshotWorkspaceConfirmationAuthority | undefined;
+  readonly cancellation: SessionSnapshotCancellation;
+}): SessionSnapshotWorkspaceConfirmationResolver {
+  const resolutions = new Map<
+    string,
+    Promise<
+      | { readonly kind: 'include' }
+      | { readonly kind: 'exclude'; readonly category: 'confirmed_secret_path' }
+    >
+  >();
+
+  return Object.freeze({
+    resolve(entry: SessionSnapshotWorkspaceEntry) {
+      const decision = SESSION_SNAPSHOT_WORKSPACE_POLICY_V1.classify(entry);
+      if (decision.kind !== 'confirm') {
+        throw new TypeError('Workspace entry does not require control-plane confirmation');
+      }
+      const key = `${decision.category}\0${decision.confirmationPath}`;
+      const existing = resolutions.get(key);
+      if (existing !== undefined) return existing;
+      const resolution = resolveWorkspaceConfirmation({
+        ...input,
+        category: decision.category,
+        confirmationPath: decision.confirmationPath,
+      });
+      resolutions.set(key, resolution);
+      return resolution;
+    },
+  });
+}
+
+async function resolveWorkspaceConfirmation(input: {
+  readonly makaSessionId: string;
+  readonly confirmationGrantId: string | undefined;
+  readonly authority: SessionSnapshotWorkspaceConfirmationAuthority | undefined;
+  readonly category: SessionSnapshotWorkspaceConfirmationCategory;
+  readonly confirmationPath: string;
+  readonly cancellation: SessionSnapshotCancellation;
+}): Promise<
+  | { readonly kind: 'include' }
+  | { readonly kind: 'exclude'; readonly category: 'confirmed_secret_path' }
+> {
+  input.cancellation.signal.throwIfAborted();
+  if (input.confirmationGrantId === undefined) throw confirmationRequired(input.category);
+  if (input.authority === undefined) throw confirmationRequired(input.category);
+  const resolution = await input.authority.resolveConfirmation({
+    makaSessionId: input.makaSessionId,
+    confirmationGrantId: input.confirmationGrantId,
+    policyVersion: SESSION_SNAPSHOT_POLICY_VERSION,
+    category: input.category,
+    confirmationPath: input.confirmationPath,
+    cancellation: input.cancellation,
+  });
+  input.cancellation.signal.throwIfAborted();
+  if (resolution === undefined) throw confirmationRequired(input.category);
+  if (resolution.action === 'include') return INCLUDE;
+  if (resolution.action === 'exclude') {
+    return { kind: 'exclude', category: 'confirmed_secret_path' };
+  }
+  throw new SessionSnapshotError(
+    'io_failure',
+    'Session snapshot control-plane confirmation is invalid',
+    { details: { phase: 'workspace' } },
+  );
+}
+
+function confirmationRequired(
+  category: SessionSnapshotWorkspaceConfirmationCategory,
+): SessionSnapshotError {
+  return new SessionSnapshotError(
+    'policy_rejected',
+    'Session snapshot requires an explicit control-plane confirmation',
+    { details: { phase: 'workspace', policyCategory: category } },
+  );
+}
+
 function requireMakaSessionId(value: unknown): string {
   if (typeof value !== 'string' || !isSafeSessionId(value)) {
     throw new SessionSnapshotError('invalid_input', 'Maka Session identity is invalid', {
       details: { phase: 'admission' },
     });
+  }
+  return value;
+}
+
+function requireOptionalConfirmationGrantId(value: unknown): string | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value !== 'string' || !CONFIRMATION_GRANT_ID_PATTERN.test(value)) {
+    throw new SessionSnapshotError(
+      'invalid_input',
+      'Session snapshot confirmation grant identity is invalid',
+      { details: { phase: 'admission' } },
+    );
   }
   return value;
 }
@@ -765,6 +936,7 @@ const WORKSPACE_EXCLUSION_CATEGORIES = [
   'cache',
   'log',
   'runtime_scratch',
+  'confirmed_secret_path',
 ] as const satisfies readonly SessionSnapshotWorkspaceExclusionCategory[];
 
 function normalizeExclusionCounts(

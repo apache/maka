@@ -623,6 +623,7 @@ test('V1 workspace policy includes portable inputs, excludes rebuildable data, a
     ['secrets.json', 'file', { kind: 'reject', category: 'known_secret_file' }],
     ['src/secrets.ts', 'file', { kind: 'include' }],
     ['docs/secrets.md', 'file', { kind: 'include' }],
+    ['private', 'file', { kind: 'include' }],
     ['.terraformrc', 'file', { kind: 'reject', category: 'known_secret_file' }],
     ['.git-credentials.lock', 'file', { kind: 'reject', category: 'known_secret_file' }],
     ['keys/client-private-key.pem', 'file', { kind: 'reject', category: 'known_secret_file' }],
@@ -635,10 +636,45 @@ test('V1 workspace policy includes portable inputs, excludes rebuildable data, a
     ['privkey.pem', 'file', { kind: 'reject', category: 'known_secret_file' }],
     ['private.pem', 'file', { kind: 'reject', category: 'known_secret_file' }],
     ['keys/service-account.json', 'file', { kind: 'reject', category: 'known_secret_file' }],
-    ['secrets', 'directory', { kind: 'reject', category: 'known_secret_file' }],
-    ['secrets/token', 'file', { kind: 'reject', category: 'known_secret_file' }],
-    ['credentials/oauth.json', 'file', { kind: 'reject', category: 'known_secret_file' }],
-    ['private/token', 'file', { kind: 'reject', category: 'known_secret_file' }],
+    [
+      'secrets',
+      'directory',
+      { kind: 'confirm', category: 'suspected_secret_path', confirmationPath: 'secrets' },
+    ],
+    [
+      'secrets/token',
+      'file',
+      { kind: 'confirm', category: 'suspected_secret_path', confirmationPath: 'secrets' },
+    ],
+    [
+      'credentials/oauth.json',
+      'file',
+      { kind: 'confirm', category: 'suspected_secret_path', confirmationPath: 'credentials' },
+    ],
+    [
+      'private/token',
+      'file',
+      { kind: 'confirm', category: 'suspected_secret_path', confirmationPath: 'private' },
+    ],
+    [
+      'config/credentials/production.yml.enc',
+      'file',
+      {
+        kind: 'confirm',
+        category: 'suspected_secret_path',
+        confirmationPath: 'config/credentials',
+      },
+    ],
+    [
+      'include/private/header.h',
+      'file',
+      {
+        kind: 'confirm',
+        category: 'suspected_secret_path',
+        confirmationPath: 'include/private',
+      },
+    ],
+    ['include/private/id_ed25519', 'file', { kind: 'reject', category: 'known_secret_file' }],
     ['.ssh/config', 'file', { kind: 'reject', category: 'known_secret_file' }],
     ['.aws/credentials', 'file', { kind: 'reject', category: 'known_secret_file' }],
     ['.cargo/credentials', 'file', { kind: 'reject', category: 'known_secret_file' }],
@@ -664,6 +700,167 @@ test('V1 workspace policy includes portable inputs, excludes rebuildable data, a
       expected,
     );
   }
+});
+
+test('binds explicit control-plane confirmation to the Session, policy and subtree', async () => {
+  const fixture = await createFixture();
+  const requests: Array<{
+    makaSessionId: string;
+    confirmationGrantId: string;
+    policyVersion: number;
+    category: string;
+    confirmationPath: string;
+  }> = [];
+  const handle = await createFileQuiescentSessionSnapshotCoordinator({
+    stagingParent: fixture.stagingParent,
+    privateStagingRootAuthority,
+    quiescence: immediateAuthority,
+    state: directoryStatePreparer,
+    confirmationAuthority: {
+      async resolveConfirmation(input) {
+        requests.push({
+          makaSessionId: input.makaSessionId,
+          confirmationGrantId: input.confirmationGrantId,
+          policyVersion: input.policyVersion,
+          category: input.category,
+          confirmationPath: input.confirmationPath,
+        });
+        return { action: 'include' };
+      },
+    },
+    workspace: {
+      async prepareWorkspace(input) {
+        assert.deepEqual(
+          await input.confirmation.resolve({
+            relativePath: 'config/credentials',
+            kind: 'directory',
+          }),
+          { kind: 'include' },
+        );
+        assert.deepEqual(
+          await input.confirmation.resolve({
+            relativePath: 'config/credentials/production.yml.enc',
+            kind: 'file',
+          }),
+          { kind: 'include' },
+        );
+        await mkdir(input.destinationRoot);
+        return workspaceResult({ includedEntries: 2 });
+      },
+    },
+  }).prepare({ makaSessionId: 'confirmed-session', confirmationGrantId: 'grant-1' });
+
+  assert.deepEqual(requests, [
+    {
+      makaSessionId: 'confirmed-session',
+      confirmationGrantId: 'grant-1',
+      policyVersion: 1,
+      category: 'suspected_secret_path',
+      confirmationPath: 'config/credentials',
+    },
+  ]);
+  await handle.release();
+});
+
+test('rejects a malformed control-plane confirmation grant before quiescence', async () => {
+  const fixture = await createFixture();
+  let enteredQuiescence = false;
+  const coordinator = createFileQuiescentSessionSnapshotCoordinator({
+    stagingParent: fixture.stagingParent,
+    privateStagingRootAuthority,
+    quiescence: {
+      async runQuiescent(_input, operation) {
+        enteredQuiescence = true;
+        return operation();
+      },
+    },
+    state: directoryStatePreparer,
+    workspace: directoryWorkspacePreparer,
+  });
+
+  await assert.rejects(
+    coordinator.prepare({ makaSessionId: 'confirmed-session', confirmationGrantId: '../grant' }),
+    isSnapshotError('invalid_input'),
+  );
+  assert.equal(enteredQuiescence, false);
+  assert.deepEqual(await readdir(fixture.stagingParent), []);
+});
+
+test('fails closed and cleans staging when a suspected path has no explicit confirmation', async () => {
+  const fixture = await createFixture();
+  let authorityCalls = 0;
+  const coordinator = createFileQuiescentSessionSnapshotCoordinator({
+    stagingParent: fixture.stagingParent,
+    privateStagingRootAuthority,
+    quiescence: immediateAuthority,
+    state: directoryStatePreparer,
+    confirmationAuthority: {
+      async resolveConfirmation() {
+        authorityCalls += 1;
+        return { action: 'include' };
+      },
+    },
+    workspace: {
+      async prepareWorkspace(input) {
+        await input.confirmation.resolve({ relativePath: 'include/private', kind: 'directory' });
+        throw new Error('unreachable');
+      },
+    },
+  });
+
+  await assert.rejects(coordinator.prepare({ makaSessionId: 'unconfirmed-session' }), (error) => {
+    assert.equal(error instanceof SessionSnapshotError && error.code, 'policy_rejected');
+    assert.deepEqual(error instanceof SessionSnapshotError && error.details, {
+      phase: 'workspace',
+      policyCategory: 'suspected_secret_path',
+    });
+    return true;
+  });
+  assert.equal(authorityCalls, 0);
+  assert.deepEqual(await readdir(fixture.stagingParent), []);
+});
+
+test('applies an explicit control-plane exclusion with bounded diagnostics', async () => {
+  const fixture = await createFixture();
+  const handle = await createFileQuiescentSessionSnapshotCoordinator({
+    stagingParent: fixture.stagingParent,
+    privateStagingRootAuthority,
+    quiescence: immediateAuthority,
+    state: directoryStatePreparer,
+    confirmationAuthority: {
+      async resolveConfirmation() {
+        return { action: 'exclude' };
+      },
+    },
+    workspace: {
+      async prepareWorkspace(input) {
+        assert.deepEqual(
+          await input.confirmation.resolve({ relativePath: 'secrets', kind: 'directory' }),
+          { kind: 'exclude', category: 'confirmed_secret_path' },
+        );
+        await mkdir(input.destinationRoot);
+        return workspaceResult({
+          excludedEntries: 1,
+          excludedEntriesByCategory: {
+            ...workspaceResult().excludedEntriesByCategory,
+            confirmed_secret_path: 1,
+          },
+        });
+      },
+    },
+  }).prepare({ makaSessionId: 'excluded-session', confirmationGrantId: 'grant-2' });
+
+  assert.deepEqual(
+    handle.workspace.excludedEntriesByCategory,
+    workspaceResult({
+      excludedEntries: 1,
+      excludedEntriesByCategory: {
+        ...workspaceResult().excludedEntriesByCategory,
+        confirmed_secret_path: 1,
+      },
+    }).excludedEntriesByCategory,
+  );
+  await handle.release();
 });
 
 const immediateAuthority: SessionSnapshotQuiescenceAuthority = {
@@ -711,6 +908,7 @@ function workspaceResult(
       cache: 0,
       log: 0,
       runtime_scratch: 0,
+      confirmed_secret_path: 0,
     },
     payloadBytes: 0,
     ...overrides,
