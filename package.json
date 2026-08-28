@@ -31,6 +31,7 @@
     "lint": "biome lint .",
     "format": "biome format --write .",
     "format:check": "biome format .",
+    "check:renderer-architecture": "npm --workspace @maka/desktop run check:architecture --",
     "typecheck": "npm run typecheck --workspaces --if-present",
     "test": "npm run build:test && node scripts/run-workspace-tests-parallel.mjs --concurrency=3",
     "test:dist": "node scripts/run-workspace-tests-parallel.mjs --concurrency=3",
@@ -98,6 +99,7 @@
     "smoke:windows:dist": "node scripts/windows-smoke.mjs"
   },
   "devDependencies": {
+    "@babel/parser": "7.29.7",
     "@ai-sdk/provider-utils": "5.0.28",
     "@electron/asar": "4.3.0",
     "@astryxdesign/cli": "0.4.5",
