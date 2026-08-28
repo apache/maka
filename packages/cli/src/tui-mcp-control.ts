@@ -17,10 +17,27 @@
  * under the License.
  */
 
-import type { McpServerStatus } from '@maka/core/mcp';
+import { createHash, randomUUID } from 'node:crypto';
+import {
+  MCP_CONFIG_VERSION,
+  mcpConfigChangeRetiresCredentials,
+  resolveMcpProtocolPreference,
+  type McpConfigFile,
+  type McpConfigSourceFailureReason,
+  type McpProtocolPreference,
+  type McpServerConfig,
+  type McpServerStatus,
+  type McpTestResult,
+} from '@maka/core/mcp';
 import { createCredentialMcpOAuthStorage, McpClientManager } from '@maka/mcp';
 import { createFileCredentialStore } from '@maka/storage/credential-store';
-import { createMcpConfigStore, type McpConfigStore } from '@maka/storage/mcp-config-store';
+import {
+  createMcpConfigStore,
+  McpConfigSourceError,
+  normalizeMcpConfig,
+  normalizeMcpImport,
+  type McpConfigStore,
+} from '@maka/storage/mcp-config-store';
 import type {
   ClientCapabilityProvider,
   RuntimeHostConnectionAvailability,
@@ -40,6 +57,8 @@ export type TuiMcpPublicationState =
 
 export interface TuiMcpServerSnapshot {
   readonly serverId: string;
+  readonly configured: boolean;
+  readonly synchronized: boolean;
   readonly state: McpServerStatus['state'];
   readonly transport?: McpServerStatus['transport'];
   readonly negotiatedProtocol?: McpServerStatus['negotiatedProtocol'];
@@ -49,6 +68,7 @@ export interface TuiMcpServerSnapshot {
 
 export interface TuiMcpSnapshot {
   readonly initialization: 'loading' | 'ready' | 'error';
+  readonly configuration: 'ready' | 'synchronizing' | 'out_of_sync';
   readonly publication: TuiMcpPublicationState;
   readonly toolCount: number;
   readonly servers: readonly TuiMcpServerSnapshot[];
@@ -59,13 +79,88 @@ export interface TuiMcpSurface {
   subscribe(listener: () => void): () => void;
 }
 
-export interface TuiMcpController extends TuiMcpSurface {
+export interface TuiMcpEditConfig {
+  readonly config: McpServerConfig;
+  readonly revision: string;
+}
+
+export interface TuiMcpImportEntry {
+  readonly serverId: string;
+  readonly change: 'add' | 'replace';
+  readonly transport: 'stdio' | 'remote';
+  readonly protocol: McpProtocolPreference;
+}
+
+export interface TuiMcpImportPreview {
+  readonly previewId: string;
+  readonly entries: readonly TuiMcpImportEntry[];
+}
+
+export type TuiMcpImportPreviewResult =
+  | { readonly status: 'ready'; readonly preview: TuiMcpImportPreview }
+  | {
+      readonly status: 'invalid';
+      readonly reason: McpConfigSourceFailureReason | 'invalid-config' | 'not-ready';
+    };
+
+export type TuiMcpAction =
+  | { readonly kind: 'add'; readonly serverId: string; readonly config: McpServerConfig }
+  | {
+      readonly kind: 'edit';
+      readonly serverId: string;
+      readonly config: McpServerConfig;
+      readonly expectedRevision: string;
+    }
+  | { readonly kind: 'commit_import'; readonly previewId: string }
+  | { readonly kind: 'set_enabled'; readonly serverId: string; readonly enabled: boolean }
+  | { readonly kind: 'remove'; readonly serverId: string }
+  | { readonly kind: 'test'; readonly serverId: string }
+  | { readonly kind: 'reconnect'; readonly serverId: string };
+
+export type TuiMcpActionEffect =
+  | 'published'
+  | 'pending_host'
+  | 'sync_failed'
+  | 'publication_failed';
+
+export type TuiMcpActionResult =
+  | { readonly status: 'applied'; readonly effect: TuiMcpActionEffect }
+  | { readonly status: 'tested'; readonly test: McpTestResult; readonly effect: TuiMcpActionEffect }
+  | {
+      readonly status: 'conflict';
+      readonly reason: 'exists' | 'stale_config' | 'stale_edit' | 'stale_import' | 'missing';
+    }
+  | {
+      readonly status: 'failed';
+      readonly reason:
+        | 'closed'
+        | 'invalid-config'
+        | 'credential-cleanup-failed'
+        | 'persist-failed'
+        | 'manager-failed';
+    };
+
+export interface TuiMcpManagement extends TuiMcpSurface {
+  configForEdit(serverId: string): TuiMcpEditConfig | undefined;
+  previewImport(source: string): TuiMcpImportPreviewResult;
+  execute(action: TuiMcpAction): Promise<TuiMcpActionResult>;
+}
+
+export interface TuiMcpController extends TuiMcpManagement {
   close(): Promise<void>;
 }
 
 type TuiMcpManager = Pick<
   McpClientManager,
-  'sync' | 'statuses' | 'toolSnapshot' | 'callTool' | 'onChange' | 'close'
+  | 'sync'
+  | 'statuses'
+  | 'toolSnapshot'
+  | 'callTool'
+  | 'onChange'
+  | 'test'
+  | 'reconnect'
+  | 'forgetServerCredentials'
+  | 'close'
 >;
 
 type TuiMcpConnection = Pick<
@@ -74,7 +169,7 @@ type TuiMcpConnection = Pick<
 >;
 
 interface TuiMcpControllerDeps {
-  readonly configStore: Pick<McpConfigStore, 'get'>;
+  readonly configStore: Pick<McpConfigStore, 'get' | 'transform'>;
   readonly manager: TuiMcpManager;
   readonly createProvider: (manager: TuiMcpManager) => ClientCapabilityProvider | undefined;
 }
@@ -109,6 +204,16 @@ class TuiMcpControllerImpl implements TuiMcpController {
   readonly #initialization: Promise<void>;
   #availability: RuntimeHostConnectionAvailability = { kind: 'unavailable' };
   #closed = false;
+  #config: McpConfigFile | undefined;
+  #preparedImport:
+    | {
+        readonly previewId: string;
+        readonly imported: McpConfigFile;
+        readonly basis: ReadonlyMap<string, string>;
+      }
+    | undefined;
+  #actionLane: Promise<void> = Promise.resolve();
+  #publicationSuppressed = false;
   #publicationRequested = false;
   #publicationTask: Promise<void> | undefined;
   #published:
@@ -120,6 +225,7 @@ class TuiMcpControllerImpl implements TuiMcpController {
     | undefined;
   #snapshot: TuiMcpSnapshot = freezeSnapshot({
     initialization: 'loading',
+    configuration: 'synchronizing',
     publication: 'waiting',
     toolCount: 0,
     servers: [],
@@ -131,7 +237,9 @@ class TuiMcpControllerImpl implements TuiMcpController {
     this.#disposeManagerChange = deps.manager.onChange(() => {
       try {
         this.#refreshManagerSnapshot();
-        if (this.#snapshot.initialization === 'ready') this.#requestPublication();
+        if (this.#snapshot.initialization === 'ready' && !this.#publicationSuppressed) {
+          this.#requestPublication();
+        }
       } catch {
         // An observation must never break the MCP manager's state transition.
       }
@@ -160,18 +268,68 @@ class TuiMcpControllerImpl implements TuiMcpController {
     return () => this.#listeners.delete(listener);
   }
 
+  configForEdit(serverId: string): TuiMcpEditConfig | undefined {
+    const config = this.#config?.mcpServers[serverId];
+    if (!config) return undefined;
+    return { config: structuredClone(config), revision: configRevision(config) };
+  }
+
+  previewImport(source: string): TuiMcpImportPreviewResult {
+    const current = this.#config;
+    if (this.#closed || !current || this.#snapshot.initialization !== 'ready') {
+      return { status: 'invalid', reason: 'not-ready' };
+    }
+    let imported: McpConfigFile;
+    try {
+      imported = normalizeMcpImport(source);
+    } catch (error) {
+      this.#preparedImport = undefined;
+      return {
+        status: 'invalid',
+        reason: error instanceof McpConfigSourceError ? error.reason : 'invalid-config',
+      };
+    }
+    const previewId = randomUUID();
+    const basis = new Map<string, string>();
+    const entries = Object.entries(imported.mcpServers).map(([serverId, config]) => {
+      const previous = current.mcpServers[serverId];
+      basis.set(serverId, configRevision(previous));
+      return Object.freeze({
+        serverId,
+        change: previous ? ('replace' as const) : ('add' as const),
+        transport: 'command' in config ? ('stdio' as const) : ('remote' as const),
+        protocol: resolveMcpProtocolPreference(config),
+      });
+    });
+    this.#preparedImport = { previewId, imported, basis };
+    return {
+      status: 'ready',
+      preview: Object.freeze({ previewId, entries: Object.freeze(entries) }),
+    };
+  }
+
+  execute(action: TuiMcpAction): Promise<TuiMcpActionResult> {
+    if (this.#closed) return Promise.resolve({ status: 'failed', reason: 'closed' });
+    return this.#serializeAction(() => this.#executeAction(action));
+  }
+
   async close(): Promise<void> {
     if (this.#closed) return;
     this.#closed = true;
     this.#disposeManagerChange();
     this.#disposeConnectionAvailability();
     this.#listeners.clear();
+    this.#preparedImport = undefined;
+    this.#publicationRequested = false;
+    const managerClosing = this.#deps.manager.close();
+    await this.#actionLane.catch(() => undefined);
+    this.#config = undefined;
     await this.#publicationTask?.catch(() => undefined);
     if (this.#availability.kind === 'connected') {
       await this.#connection.unregisterClientCapabilities().catch(() => undefined);
     }
     this.#published = undefined;
-    await this.#deps.manager.close();
+    await managerClosing;
     await this.#initialization.catch(() => undefined);
   }
 
@@ -181,7 +339,8 @@ class TuiMcpControllerImpl implements TuiMcpController {
       if (this.#closed) return;
       await this.#deps.manager.sync(config);
       if (this.#closed) return;
-      this.#refreshManagerSnapshot('ready');
+      this.#config = cloneConfig(config);
+      this.#refreshManagerSnapshot('ready', 'ready');
       this.#requestPublication();
     } catch {
       if (this.#closed) return;
@@ -189,19 +348,204 @@ class TuiMcpControllerImpl implements TuiMcpController {
     }
   }
 
-  #refreshManagerSnapshot(initialization = this.#snapshot.initialization): void {
+  #serializeAction(work: () => Promise<TuiMcpActionResult>): Promise<TuiMcpActionResult> {
+    const run = this.#actionLane.then(work, work);
+    this.#actionLane = run.then(
+      () => undefined,
+      () => undefined,
+    );
+    return run;
+  }
+
+  async #executeAction(action: TuiMcpAction): Promise<TuiMcpActionResult> {
+    if (this.#closed) return { status: 'failed', reason: 'closed' };
+    if (action.kind === 'test') {
+      try {
+        const test = await this.#deps.manager.test(action.serverId);
+        return { status: 'tested', test, effect: await this.#settlePublication() };
+      } catch {
+        return { status: 'failed', reason: 'manager-failed' };
+      }
+    }
+    if (action.kind === 'reconnect') {
+      try {
+        await this.#deps.manager.reconnect(action.serverId);
+        return { status: 'applied', effect: await this.#settlePublication() };
+      } catch {
+        this.#refreshManagerSnapshot();
+        return { status: 'failed', reason: 'manager-failed' };
+      }
+    }
+    return this.#commitMutation(action);
+  }
+
+  async #commitMutation(
+    action: Exclude<TuiMcpAction, { kind: 'test' | 'reconnect' }>,
+  ): Promise<TuiMcpActionResult> {
+    let current: McpConfigFile;
+    try {
+      current = await this.#deps.configStore.get();
+    } catch {
+      return { status: 'failed', reason: 'persist-failed' };
+    }
+    if (this.#closed) return { status: 'failed', reason: 'closed' };
+    const prepared = this.#prepareMutation(current, action);
+    if ('status' in prepared) return prepared;
+    const { next } = prepared;
+    const retirements = Object.entries(current.mcpServers)
+      .filter(([serverId, previous]) =>
+        mcpConfigChangeRetiresCredentials(previous, next.mcpServers[serverId]),
+      )
+      .map(([serverId]) => serverId);
+    try {
+      for (const serverId of retirements) {
+        await this.#deps.manager.forgetServerCredentials(serverId);
+        if (this.#closed) return { status: 'failed', reason: 'closed' };
+      }
+    } catch {
+      return { status: 'failed', reason: 'credential-cleanup-failed' };
+    }
+    const affectedServerIds = this.#affectedServerIds(action);
+    const basis = new Map(
+      affectedServerIds.map((serverId) => [serverId, configRevision(current.mcpServers[serverId])]),
+    );
+    let committed: McpConfigFile;
+    try {
+      committed = await this.#deps.configStore.transform((actual) => {
+        for (const [serverId, revision] of basis) {
+          if (configRevision(actual.mcpServers[serverId]) !== revision) {
+            throw new TuiMcpConfigDriftError();
+          }
+        }
+        const rebased = this.#prepareMutation(actual, action);
+        if ('status' in rebased) throw new TuiMcpConfigDriftError();
+        return rebased.next;
+      });
+    } catch (error) {
+      if (error instanceof TuiMcpConfigDriftError) {
+        return { status: 'conflict', reason: mutationConflictReason(action) };
+      }
+      return { status: 'failed', reason: 'persist-failed' };
+    }
+    if (this.#closed) return { status: 'failed', reason: 'closed' };
+    this.#preparedImport = undefined;
+    this.#config = cloneConfig(committed);
+    this.#updateSnapshot({ configuration: 'synchronizing' });
+    this.#refreshManagerSnapshot();
+    this.#publicationSuppressed = true;
+    try {
+      await this.#deps.manager.sync(committed);
+    } catch {
+      this.#publicationSuppressed = false;
+      this.#updateSnapshot({ configuration: 'out_of_sync' });
+      this.#refreshManagerSnapshot();
+      await this.#settlePublication();
+      return { status: 'applied', effect: 'sync_failed' };
+    }
+    this.#publicationSuppressed = false;
+    if (this.#closed) return { status: 'failed', reason: 'closed' };
+    this.#updateSnapshot({ configuration: 'ready' });
+    this.#refreshManagerSnapshot();
+    return { status: 'applied', effect: await this.#settlePublication() };
+  }
+
+  #affectedServerIds(action: Exclude<TuiMcpAction, { kind: 'test' | 'reconnect' }>): string[] {
+    if (action.kind !== 'commit_import') return [action.serverId];
+    return [...(this.#preparedImport?.basis.keys() ?? [])];
+  }
+
+  #prepareMutation(
+    current: McpConfigFile,
+    action: Exclude<TuiMcpAction, { kind: 'test' | 'reconnect' }>,
+  ):
+    | { readonly next: McpConfigFile }
+    | Extract<TuiMcpActionResult, { status: 'conflict' | 'failed' }> {
+    const servers = { ...current.mcpServers };
+    if (action.kind === 'add') {
+      if (Object.hasOwn(servers, action.serverId)) return { status: 'conflict', reason: 'exists' };
+      servers[action.serverId] = action.config;
+    } else if (action.kind === 'edit') {
+      const previous = servers[action.serverId];
+      if (!previous) return { status: 'conflict', reason: 'missing' };
+      if (configRevision(previous) !== action.expectedRevision) {
+        return { status: 'conflict', reason: 'stale_edit' };
+      }
+      servers[action.serverId] = action.config;
+    } else if (action.kind === 'set_enabled') {
+      const previous = servers[action.serverId];
+      if (!previous) return { status: 'conflict', reason: 'missing' };
+      servers[action.serverId] = { ...previous, enabled: action.enabled };
+    } else if (action.kind === 'remove') {
+      if (!Object.hasOwn(servers, action.serverId)) {
+        return { status: 'conflict', reason: 'missing' };
+      }
+      delete servers[action.serverId];
+    } else {
+      const prepared = this.#preparedImport;
+      if (!prepared || prepared.previewId !== action.previewId) {
+        return { status: 'conflict', reason: 'stale_import' };
+      }
+      for (const [serverId, revision] of prepared.basis) {
+        if (configRevision(servers[serverId]) !== revision) {
+          return { status: 'conflict', reason: 'stale_import' };
+        }
+      }
+      Object.assign(servers, prepared.imported.mcpServers);
+    }
+    try {
+      return {
+        next: normalizeMcpConfig({ version: MCP_CONFIG_VERSION, mcpServers: servers }),
+      };
+    } catch {
+      return { status: 'failed', reason: 'invalid-config' };
+    }
+  }
+
+  async #settlePublication(): Promise<TuiMcpActionEffect> {
+    this.#requestPublication();
+    while (!this.#closed && (this.#publicationTask || this.#publicationRequested)) {
+      await this.#publicationTask?.catch(() => undefined);
+    }
+    if (this.#snapshot.publication === 'error') return 'publication_failed';
+    if (this.#snapshot.publication === 'host_unavailable') return 'pending_host';
+    return 'published';
+  }
+
+  #refreshManagerSnapshot(
+    initialization = this.#snapshot.initialization,
+    configuration = this.#snapshot.configuration,
+  ): void {
     const statuses = this.#deps.manager.statuses();
+    const statusById = new Map(statuses.map((status) => [status.serverId, status]));
+    const serverIds = new Set([
+      ...Object.keys(this.#config?.mcpServers ?? {}),
+      ...statuses.map((status) => status.serverId),
+    ]);
     this.#snapshot = freezeSnapshot({
       initialization,
+      configuration,
       publication: this.#snapshot.publication,
       toolCount: this.#deps.manager.toolSnapshot().tools.length,
-      servers: statuses.map(projectServerStatus),
+      servers: [...serverIds]
+        .sort((left, right) => left.localeCompare(right))
+        .map((serverId) =>
+          projectServerStatus(
+            serverId,
+            this.#config?.mcpServers[serverId] !== undefined,
+            statusById.get(serverId),
+            configuration === 'ready',
+          ),
+        ),
     });
     this.#notify();
   }
 
   #requestPublication(): void {
-    if (this.#closed || this.#snapshot.initialization !== 'ready') return;
+    if (this.#closed) {
+      this.#publicationRequested = false;
+      return;
+    }
+    if (this.#snapshot.initialization !== 'ready' || this.#publicationSuppressed) return;
     this.#publicationRequested = true;
     if (this.#publicationTask) return;
     this.#publicationTask = this.#runPublicationQueue().finally(() => {
@@ -266,7 +610,9 @@ class TuiMcpControllerImpl implements TuiMcpController {
     );
   }
 
-  #updateSnapshot(update: Partial<Pick<TuiMcpSnapshot, 'initialization' | 'publication'>>): void {
+  #updateSnapshot(
+    update: Partial<Pick<TuiMcpSnapshot, 'initialization' | 'configuration' | 'publication'>>,
+  ): void {
     this.#snapshot = freezeSnapshot({ ...this.#snapshot, ...update });
     this.#notify();
   }
@@ -282,14 +628,21 @@ class TuiMcpControllerImpl implements TuiMcpController {
   }
 }
 
-function projectServerStatus(status: McpServerStatus): TuiMcpServerSnapshot {
+function projectServerStatus(
+  serverId: string,
+  configured: boolean,
+  status: McpServerStatus | undefined,
+  configurationSynchronized: boolean,
+): TuiMcpServerSnapshot {
   return {
-    serverId: status.serverId,
-    state: status.state,
-    ...(status.transport ? { transport: status.transport } : {}),
-    ...(status.negotiatedProtocol ? { negotiatedProtocol: status.negotiatedProtocol } : {}),
-    toolCount: status.toolCount,
-    ...(status.error ? { error: status.error } : {}),
+    serverId,
+    configured,
+    synchronized: configurationSynchronized && configured && status !== undefined,
+    state: status?.state ?? 'disconnected',
+    ...(status?.transport ? { transport: status.transport } : {}),
+    ...(status?.negotiatedProtocol ? { negotiatedProtocol: status.negotiatedProtocol } : {}),
+    toolCount: status?.toolCount ?? 0,
+    ...(status?.error ? { error: status.error } : {}),
   };
 }
 
@@ -313,3 +666,22 @@ async function closeProvider(provider: ClientCapabilityProvider | undefined): Pr
     // A rejected provider never crossed into Host ownership.
   }
 }
+
+function cloneConfig(config: McpConfigFile): McpConfigFile {
+  return structuredClone(config);
+}
+
+function configRevision(config: McpConfigFile | McpServerConfig | undefined): string {
+  if (!config) return 'missing';
+  return createHash('sha256').update(JSON.stringify(config)).digest('hex');
+}
+
+function mutationConflictReason(
+  action: Exclude<TuiMcpAction, { kind: 'test' | 'reconnect' }>,
+): Extract<TuiMcpActionResult, { status: 'conflict' }>['reason'] {
+  if (action.kind === 'commit_import') return 'stale_import';
+  if (action.kind === 'edit') return 'stale_edit';
+  return 'stale_config';
+}
+
+class TuiMcpConfigDriftError extends Error {}

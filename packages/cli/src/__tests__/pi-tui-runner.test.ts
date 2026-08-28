@@ -2219,11 +2219,14 @@ describe('Maka Pi TUI runner', () => {
       mcp: {
         snapshot: () => ({
           initialization: 'ready',
+          configuration: 'ready',
           publication: 'published',
           toolCount: 1,
           servers: [
             {
               serverId: 'filesystem',
+              configured: true,
+              synchronized: true,
               state: 'connected',
               transport: 'stdio',
               negotiatedProtocol: { era: 'modern', revision: '2026-07-28' },

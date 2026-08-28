@@ -29,11 +29,14 @@ describe('MCP status overlay', () => {
       locale: 'en',
       surface: surface({
         initialization: 'ready',
+        configuration: 'ready',
         publication: 'published',
         toolCount: 2,
         servers: [
           {
             serverId: 'filesystem',
+            configured: true,
+            synchronized: true,
             state: 'connected',
             transport: 'stdio',
             negotiatedProtocol: { era: 'modern', revision: '2026-07-28' },
@@ -70,10 +73,18 @@ describe('MCP status overlay', () => {
       locale: 'zh',
       surface: surface({
         initialization: 'ready',
+        configuration: 'ready',
         publication: 'not_published',
         toolCount: 0,
         servers: [
-          { serverId: 'oauth', state: 'needs-auth', transport: 'streamable-http', toolCount: 0 },
+          {
+            serverId: 'oauth',
+            configured: true,
+            synchronized: true,
+            state: 'needs-auth',
+            transport: 'streamable-http',
+            toolCount: 0,
+          },
         ],
       }),
       viewportRows: () => 6,
@@ -92,6 +103,7 @@ describe('MCP status overlay', () => {
     let closed = 0;
     const mcp = surface({
       initialization: 'ready',
+      configuration: 'ready',
       publication: 'not_published',
       toolCount: 0,
       servers: [],

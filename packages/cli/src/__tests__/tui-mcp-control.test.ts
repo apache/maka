@@ -34,7 +34,7 @@ test('TUI MCP startup stays backgrounded and publishes the discovered snapshot',
   const controller = createTuiMcpController(
     { workspaceRoot: '/unused', connection: connection.connection },
     {
-      configStore: { get: () => config.promise },
+      configStore: configStoreHarness(() => config.promise),
       manager: manager.manager,
       createProvider: () => provider('provider-1'),
     },
@@ -49,6 +49,8 @@ test('TUI MCP startup stays backgrounded and publishes the discovered snapshot',
   assert.deepEqual(controller.snapshot().servers, [
     {
       serverId: 'local',
+      configured: false,
+      synchronized: false,
       state: 'connected',
       transport: 'stdio',
       negotiatedProtocol: { era: 'legacy', revision: '2024-11-05' },
@@ -73,7 +75,7 @@ test('TUI MCP publication coalesces a discovery change behind the in-flight revi
   const controller = createTuiMcpController(
     { workspaceRoot: '/unused', connection: connection.connection },
     {
-      configStore: { get: async () => emptyConfig() },
+      configStore: configStoreHarness(async () => emptyConfig()),
       manager: manager.manager,
       createProvider: () => {
         const id = `provider-${providers.length + 1}`;
@@ -98,7 +100,7 @@ test('TUI MCP invalidates a lost generation and republishes on its replacement',
   const controller = createTuiMcpController(
     { workspaceRoot: '/unused', connection: connection.connection },
     {
-      configStore: { get: async () => emptyConfig() },
+      configStore: configStoreHarness(async () => emptyConfig()),
       manager: manager.manager,
       createProvider: () => provider(`provider-${connection.replacements.length + 1}`),
     },
@@ -119,7 +121,7 @@ test('TUI MCP unregisters the current generation when discovery removes every to
   const controller = createTuiMcpController(
     { workspaceRoot: '/unused', connection: connection.connection },
     {
-      configStore: { get: async () => emptyConfig() },
+      configStore: configStoreHarness(async () => emptyConfig()),
       manager: manager.manager,
       createProvider: (current) =>
         current.toolSnapshot().tools.length === 0 ? undefined : provider('provider'),
@@ -140,11 +142,9 @@ test('TUI MCP fails closed when its saved config cannot be read', async () => {
   const controller = createTuiMcpController(
     { workspaceRoot: '/unused', connection: connection.connection },
     {
-      configStore: {
-        get: async () => {
-          throw new Error('config contains secret-value');
-        },
-      },
+      configStore: configStoreHarness(async () => {
+        throw new Error('config contains secret-value');
+      }),
       manager: manager.manager,
       createProvider: () => provider('must-not-publish'),
     },
@@ -168,7 +168,7 @@ test('TUI MCP unregisters a publication that settles while close is waiting', as
   const controller = createTuiMcpController(
     { workspaceRoot: '/unused', connection: connection.connection },
     {
-      configStore: { get: async () => emptyConfig() },
+      configStore: configStoreHarness(async () => emptyConfig()),
       manager: manager.manager,
       createProvider: () => provider('provider'),
     },
@@ -181,6 +181,405 @@ test('TUI MCP unregisters a publication that settles while close is waiting', as
   assert.equal(connection.unregisters, 1);
   assert.equal(manager.closed, 1);
 });
+
+test('TUI MCP add commits before manager synchronization and reports Host convergence', async () => {
+  const order: string[] = [];
+  const store = mutableConfigStore(emptyConfig(), order);
+  const manager = managementManager(order);
+  const connection = connectionHarness();
+  const controller = createTuiMcpController(
+    { workspaceRoot: '/unused', connection: connection.connection },
+    {
+      configStore: store.store,
+      manager: manager.manager,
+      createProvider: () => undefined,
+    },
+  );
+  await waitFor(() => controller.snapshot().initialization === 'ready');
+  order.length = 0;
+
+  const result = await controller.execute({
+    kind: 'add',
+    serverId: 'docs',
+    config: { url: 'https://docs.example/mcp', protocol: 'auto' },
+  });
+
+  assert.deepEqual(result, { status: 'applied', effect: 'published' });
+  assert.deepEqual(order, ['get', 'transform', 'sync']);
+  assert.deepEqual((await store.store.get()).mcpServers.docs, {
+    enabled: true,
+    url: 'https://docs.example/mcp',
+    transport: 'auto',
+    protocol: 'auto',
+  });
+  assert.equal(controller.snapshot().configuration, 'ready');
+  await controller.close();
+});
+
+test('TUI MCP retires endpoint credentials before persistence and aborts on cleanup failure', async () => {
+  const order: string[] = [];
+  const store = mutableConfigStore(
+    {
+      version: 3,
+      mcpServers: { docs: { url: 'https://old.example/mcp' } },
+    },
+    order,
+  );
+  const manager = managementManager(order, { credentialFailure: true });
+  const connection = connectionHarness();
+  const controller = createTuiMcpController(
+    { workspaceRoot: '/unused', connection: connection.connection },
+    { configStore: store.store, manager: manager.manager, createProvider: () => undefined },
+  );
+  await waitFor(() => controller.snapshot().initialization === 'ready');
+  order.length = 0;
+  const edit = controller.configForEdit('docs');
+  assert.ok(edit);
+
+  const result = await controller.execute({
+    kind: 'edit',
+    serverId: 'docs',
+    expectedRevision: edit.revision,
+    config: { url: 'https://new.example/mcp' },
+  });
+
+  assert.deepEqual(result, { status: 'failed', reason: 'credential-cleanup-failed' });
+  assert.deepEqual(order, ['get', 'forget:docs']);
+  const stored = (await store.store.get()).mcpServers.docs;
+  assert.ok(stored && 'url' in stored);
+  assert.equal(stored.url, 'https://old.example/mcp');
+  await controller.close();
+});
+
+test('TUI MCP edit rejects a stale revision without touching credentials or disk', async () => {
+  const order: string[] = [];
+  const store = mutableConfigStore(
+    { version: 3, mcpServers: { docs: { url: 'https://one.example/mcp' } } },
+    order,
+  );
+  const manager = managementManager(order);
+  const connection = connectionHarness();
+  const controller = createTuiMcpController(
+    { workspaceRoot: '/unused', connection: connection.connection },
+    { configStore: store.store, manager: manager.manager, createProvider: () => undefined },
+  );
+  await waitFor(() => controller.snapshot().initialization === 'ready');
+  const edit = controller.configForEdit('docs');
+  assert.ok(edit);
+  store.replace({ version: 3, mcpServers: { docs: { url: 'https://other.example/mcp' } } });
+  order.length = 0;
+
+  const result = await controller.execute({
+    kind: 'edit',
+    serverId: 'docs',
+    expectedRevision: edit.revision,
+    config: { url: 'https://new.example/mcp' },
+  });
+
+  assert.deepEqual(result, { status: 'conflict', reason: 'stale_edit' });
+  assert.deepEqual(order, ['get']);
+  await controller.close();
+});
+
+test('TUI MCP import preserves unrelated external edits and rejects changed preview entries', async () => {
+  const order: string[] = [];
+  const store = mutableConfigStore(
+    { version: 3, mcpServers: { existing: { command: 'one' } } },
+    order,
+  );
+  const manager = managementManager(order);
+  const connection = connectionHarness();
+  const controller = createTuiMcpController(
+    { workspaceRoot: '/unused', connection: connection.connection },
+    { configStore: store.store, manager: manager.manager, createProvider: () => undefined },
+  );
+  await waitFor(() => controller.snapshot().initialization === 'ready');
+  const preview = controller.previewImport('{"docs":{"url":"https://docs.example/mcp"}}');
+  assert.equal(preview.status, 'ready');
+  if (preview.status !== 'ready') throw new Error('preview did not prepare');
+  store.replace({
+    version: 3,
+    mcpServers: { existing: { command: 'externally-edited' } },
+  });
+
+  assert.deepEqual(
+    await controller.execute({ kind: 'commit_import', previewId: preview.preview.previewId }),
+    {
+      status: 'applied',
+      effect: 'published',
+    },
+  );
+  const existing = (await store.store.get()).mcpServers.existing;
+  assert.ok(existing && 'command' in existing);
+  assert.equal(existing.command, 'externally-edited');
+
+  const stale = controller.previewImport('{"docs":{"url":"https://replacement.example/mcp"}}');
+  assert.equal(stale.status, 'ready');
+  if (stale.status !== 'ready') throw new Error('preview did not prepare');
+  store.replace({
+    version: 3,
+    mcpServers: {
+      ...(await store.store.get()).mcpServers,
+      docs: { url: 'https://concurrent.example/mcp' },
+    },
+  });
+  assert.deepEqual(
+    await controller.execute({ kind: 'commit_import', previewId: stale.preview.previewId }),
+    {
+      status: 'conflict',
+      reason: 'stale_import',
+    },
+  );
+  await controller.close();
+});
+
+test('TUI MCP keeps a durable mutation visible when manager synchronization fails', async () => {
+  const order: string[] = [];
+  const store = mutableConfigStore(emptyConfig(), order);
+  const manager = managementManager(order);
+  const connection = connectionHarness();
+  const controller = createTuiMcpController(
+    { workspaceRoot: '/unused', connection: connection.connection },
+    { configStore: store.store, manager: manager.manager, createProvider: () => undefined },
+  );
+  await waitFor(() => controller.snapshot().initialization === 'ready');
+  manager.failNextSync();
+
+  const result = await controller.execute({
+    kind: 'add',
+    serverId: 'local',
+    config: { command: 'server' },
+  });
+
+  assert.deepEqual(result, { status: 'applied', effect: 'sync_failed' });
+  assert.equal(controller.snapshot().configuration, 'out_of_sync');
+  assert.deepEqual(controller.snapshot().servers[0], {
+    serverId: 'local',
+    configured: true,
+    synchronized: false,
+    state: 'disconnected',
+    toolCount: 0,
+  });
+  assert.ok((await store.store.get()).mcpServers.local);
+  await controller.close();
+});
+
+test('TUI MCP reports a committed action as pending while the Host is unavailable', async () => {
+  const order: string[] = [];
+  const store = mutableConfigStore(emptyConfig(), order);
+  const manager = managementManager(order);
+  const connection = connectionHarness();
+  connection.emit({ kind: 'unavailable' });
+  const controller = createTuiMcpController(
+    { workspaceRoot: '/unused', connection: connection.connection },
+    { configStore: store.store, manager: manager.manager, createProvider: () => undefined },
+  );
+  await waitFor(() => controller.snapshot().initialization === 'ready');
+
+  assert.deepEqual(
+    await controller.execute({ kind: 'add', serverId: 'local', config: { command: 'server' } }),
+    { status: 'applied', effect: 'pending_host' },
+  );
+  await controller.close();
+});
+
+test('TUI MCP close fences an admitted mutation before persistence', async () => {
+  const actionRead = deferredValue<McpConfigFile>();
+  let reads = 0;
+  let transforms = 0;
+  const store = {
+    get: async () => {
+      reads += 1;
+      return reads === 1 ? emptyConfig() : actionRead.promise;
+    },
+    transform: async (apply: (current: McpConfigFile) => McpConfigFile) => {
+      transforms += 1;
+      return apply(emptyConfig());
+    },
+  };
+  const manager = managementManager([]);
+  const connection = connectionHarness();
+  const controller = createTuiMcpController(
+    { workspaceRoot: '/unused', connection: connection.connection },
+    { configStore: store, manager: manager.manager, createProvider: () => undefined },
+  );
+  await waitFor(() => controller.snapshot().initialization === 'ready');
+  const executing = controller.execute({
+    kind: 'add',
+    serverId: 'late',
+    config: { command: 'server' },
+  });
+  await waitFor(() => reads === 2);
+  const closing = controller.close();
+  actionRead.resolve(emptyConfig());
+
+  assert.deepEqual(await executing, { status: 'failed', reason: 'closed' });
+  await closing;
+  assert.equal(transforms, 0);
+});
+
+test('TUI MCP waits for manager synchronization before publishing an action snapshot', async () => {
+  const store = mutableConfigStore(emptyConfig(), []);
+  const actionSync = deferred();
+  let syncCount = 0;
+  let listener: (() => void) | undefined;
+  let revision = 0;
+  const manager = {
+    sync: async () => {
+      syncCount += 1;
+      revision += 1;
+      listener?.();
+      if (syncCount === 2) await actionSync.promise;
+    },
+    statuses: () => [],
+    toolSnapshot: () => ({ revision, tools: [{}] }) as unknown as McpToolSnapshot,
+    callTool: async () => ({ content: [] }),
+    test: async () => ({ ok: true, status: connectedStatus('local', 1), latencyMs: 1 }),
+    reconnect: async () => connectedStatus('local', 1),
+    forgetServerCredentials: async () => undefined,
+    onChange: (next: () => void) => {
+      listener = next;
+      return () => {
+        listener = undefined;
+      };
+    },
+    close: async () => undefined,
+  } as unknown as ReturnType<typeof managementManager>['manager'];
+  const connection = connectionHarness();
+  const controller = createTuiMcpController(
+    { workspaceRoot: '/unused', connection: connection.connection },
+    { configStore: store.store, manager, createProvider: () => provider('provider') },
+  );
+  await waitFor(() => controller.snapshot().publication === 'published');
+  connection.replacements.length = 0;
+
+  const executing = controller.execute({
+    kind: 'add',
+    serverId: 'local',
+    config: { command: 'server' },
+  });
+  await waitFor(() => syncCount === 2);
+  assert.equal(connection.replacements.length, 0);
+  assert.equal(controller.snapshot().configuration, 'synchronizing');
+  actionSync.resolve();
+
+  assert.deepEqual(await executing, { status: 'applied', effect: 'published' });
+  assert.equal(connection.replacements.length, 1);
+  await controller.close();
+});
+
+test('TUI MCP rebases an action over an unrelated concurrent config edit', async () => {
+  let config: McpConfigFile = {
+    version: 3,
+    mcpServers: { existing: { command: 'before' } },
+  };
+  const store = {
+    get: async () => structuredClone(config),
+    transform: async (apply: (current: McpConfigFile) => McpConfigFile) => {
+      config = apply({
+        version: 3,
+        mcpServers: { existing: { command: 'concurrent' } },
+      });
+      return structuredClone(config);
+    },
+  };
+  const manager = managementManager([]);
+  const connection = connectionHarness();
+  const controller = createTuiMcpController(
+    { workspaceRoot: '/unused', connection: connection.connection },
+    { configStore: store, manager: manager.manager, createProvider: () => undefined },
+  );
+  await waitFor(() => controller.snapshot().initialization === 'ready');
+
+  assert.deepEqual(
+    await controller.execute({ kind: 'add', serverId: 'local', config: { command: 'server' } }),
+    { status: 'applied', effect: 'published' },
+  );
+  const existing = config.mcpServers.existing;
+  assert.ok(existing && 'command' in existing);
+  assert.equal(existing.command, 'concurrent');
+  assert.ok(config.mcpServers.local);
+  await controller.close();
+});
+
+function mutableConfigStore(initial: McpConfigFile, order: string[]) {
+  let config = structuredClone(initial);
+  const store = {
+    get: async () => {
+      order.push('get');
+      return structuredClone(config);
+    },
+    transform: async (apply: (current: McpConfigFile) => McpConfigFile) => {
+      order.push('transform');
+      config = structuredClone(apply(structuredClone(config)));
+      return structuredClone(config);
+    },
+  };
+  return {
+    store,
+    replace(next: McpConfigFile) {
+      config = structuredClone(next);
+    },
+  };
+}
+
+function managementManager(
+  order: string[],
+  options: { readonly credentialFailure?: boolean } = {},
+) {
+  let listener: (() => void) | undefined;
+  let syncFailure = false;
+  let revision = 0;
+  const statuses: McpServerStatus[] = [];
+  const manager = {
+    sync: async () => {
+      order.push('sync');
+      if (syncFailure) {
+        syncFailure = false;
+        throw new Error('sync failed');
+      }
+      revision += 1;
+      listener?.();
+    },
+    statuses: () => statuses,
+    toolSnapshot: () => ({ revision, tools: [] }) as McpToolSnapshot,
+    callTool: async () => ({ content: [] }),
+    test: async (serverId: string) => ({
+      ok: true,
+      status: connectedStatus(serverId, 0),
+      latencyMs: 1,
+    }),
+    reconnect: async (serverId: string) => connectedStatus(serverId, 0),
+    forgetServerCredentials: async (serverId: string) => {
+      order.push(`forget:${serverId}`);
+      if (options.credentialFailure) throw new Error('credential cleanup failed');
+    },
+    onChange: (next: () => void) => {
+      listener = next;
+      return () => {
+        if (listener === next) listener = undefined;
+      };
+    },
+    close: async () => undefined,
+  } as unknown as Pick<
+    McpClientManager,
+    | 'sync'
+    | 'statuses'
+    | 'toolSnapshot'
+    | 'callTool'
+    | 'test'
+    | 'reconnect'
+    | 'forgetServerCredentials'
+    | 'onChange'
+    | 'close'
+  >;
+  return {
+    manager,
+    failNextSync() {
+      syncFailure = true;
+    },
+  };
+}
 
 function managerHarness(revision: number, statuses: McpServerStatus[]) {
   let currentRevision = revision;
@@ -196,6 +595,9 @@ function managerHarness(revision: number, statuses: McpServerStatus[]) {
         tools: new Array(toolCount).fill({}),
       }) as McpToolSnapshot,
     callTool: async () => ({ content: [] }),
+    test: async () => ({ ok: true, status: connectedStatus('local', 1), latencyMs: 1 }),
+    reconnect: async () => connectedStatus('local', 1),
+    forgetServerCredentials: async () => undefined,
     onChange: (next: () => void) => {
       listener = next;
       return () => {
@@ -207,7 +609,15 @@ function managerHarness(revision: number, statuses: McpServerStatus[]) {
     },
   } as unknown as Pick<
     McpClientManager,
-    'sync' | 'statuses' | 'toolSnapshot' | 'callTool' | 'onChange' | 'close'
+    | 'sync'
+    | 'statuses'
+    | 'toolSnapshot'
+    | 'callTool'
+    | 'onChange'
+    | 'test'
+    | 'reconnect'
+    | 'forgetServerCredentials'
+    | 'close'
   >;
   return {
     manager,
@@ -288,6 +698,13 @@ function connectedStatus(serverId: string, toolCount: number): McpServerStatus {
 
 function emptyConfig(): McpConfigFile {
   return { version: 3, mcpServers: {} };
+}
+
+function configStoreHarness(get: () => Promise<McpConfigFile>) {
+  return {
+    get,
+    transform: async (apply: (current: McpConfigFile) => McpConfigFile) => apply(await get()),
+  };
 }
 
 async function waitFor(condition: () => boolean): Promise<void> {
