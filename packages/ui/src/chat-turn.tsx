@@ -699,10 +699,13 @@ export const TurnView = memo(function TurnView(props: {
                   timeline, where they read as a header on reasoning and tool
                   calls that had in fact all succeeded. */}
               {ownsTurnChrome && turn.status === 'aborted' && (
-                <Marker variant="aborted" role="status">
-                  <Ban size={ICON_SIZE.meta} aria-hidden="true" />
-                  <em>{turnAbortMarkerLabel(turn.abortSource, locale)}</em>
-                </Marker>
+                <Badge
+                  variant="neutral"
+                  role="status"
+                  className="maka-turn-aborted-badge"
+                  icon={<Ban size={ICON_SIZE.meta} aria-hidden="true" />}
+                  label={turnAbortMarkerLabel(turn.abortSource, locale)}
+                />
               )}
               {/* `description` carries the parked-resume diagnostic when there
                   is one — it explains why the button did nothing, which

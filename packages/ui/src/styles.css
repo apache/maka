@@ -752,7 +752,6 @@
 .maka-sandbox-blocked-copy[data-copy-feedback="failed"] { border-color: oklch(from var(--destructive) l c h / 0.35); color: var(--destructive); }
 .maka-turn-status-icon { flex: 0 0 auto; }
 
-.maka-turn-aborted-marker,
 .maka-turn-host-origin {
   font: var(--maka-text-supporting);
   display: inline-flex;
@@ -762,14 +761,7 @@
   border-radius: var(--radius-control);
 }
 
-.maka-turn-aborted-marker {
-  gap: var(--space-1);
-  margin-block: var(--space-1) var(--space-0-5);
-  padding: var(--space-0-5) var(--space-1-5);
-  background: var(--foreground-5);
-  color: var(--foreground-secondary);
-  font-style: italic;
-}
+.maka-turn-aborted-badge { align-self: flex-start; }
 
 .maka-turn-host-origin {
   align-self: flex-end;

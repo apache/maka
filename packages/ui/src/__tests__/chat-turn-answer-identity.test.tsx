@@ -106,6 +106,34 @@ const RUNNING_TOOL: TurnTimelineItem = {
   items: [{ toolUseId: 'tool-1', toolName: 'read', status: 'running', args: {} }],
 };
 
+test('renders an aborted turn outcome with the neutral status badge', async () => {
+  const { container, root } = domRoot();
+  await renderTurn(root, {
+    ...turnWith([{ ...ANSWER, live: false }]),
+    status: 'aborted',
+    abortSource: 'renderer.stop_button',
+  });
+
+  const outcome = container.querySelector('.astryx-badge[role="status"]');
+  assert.ok(outcome, 'the aborted outcome remains announced as a status Badge');
+  assert.equal(outcome.getAttribute('data-variant'), 'neutral');
+});
+
+test('places the aborted turn outcome after its timeline content', async () => {
+  const { container, root } = domRoot();
+  await renderTurn(root, {
+    ...turnWith([{ ...ANSWER, live: false }]),
+    status: 'aborted',
+  });
+
+  const content = container.querySelector('.maka-assistant-answer-content');
+  const answer = container.querySelector('.maka-chat-message-bubble-assistant');
+  const outcome = container.querySelector('.astryx-badge[role="status"]');
+  assert.ok(content && answer && outcome);
+  const children = [...content.children];
+  assert.ok(children.indexOf(outcome) > children.indexOf(answer));
+});
+
 /**
  * Keying the answer by its first timeline entry made the key change whenever
  * that entry did, so React unmounted the answer and mounted a copy — taking
