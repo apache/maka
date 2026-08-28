@@ -476,6 +476,85 @@ test('does not resurrect a discarded replica when a history load is in flight', 
   assert.equal(replica.residentBytes, 0);
 });
 
+test('does not drive a discarded replica terminal when a contiguous catch-up is in flight', async () => {
+  // Same post-await `#resident` invariant on the ordinary contiguous catch-up
+  // path: another observed session's LRU `discard()` reclaims this replica while
+  // a `direction: 'newer'` page is pending. The per-page callback already returns
+  // early, but without the post-loop guard the watermark check would throw
+  // `correlation_changed` and drive the session terminal. A discarded replica has
+  // no watermark to meet — catch-up must return cleanly, not reject.
+  const messages = [0, 1, 2, 3, 4].map((sequence) => ({
+    identity: sequence,
+    message: assistantMessage(String(sequence), `assistant-${sequence}`),
+  }));
+  const appended = { identity: 5, message: assistantMessage('5', 'assistant-5') };
+  const page = (nextCursor: string | null, throughSequence: number) => ({
+    kind: 'page' as const,
+    sessionId: 'session-1',
+    source: 'durable' as const,
+    direction: 'newer' as const,
+    throughSequence,
+    rawBytes: 1,
+    fragments: [],
+    nextCursor,
+  });
+  const bootstrapPage = page(null, 4);
+  const newerPage = page(null, 5);
+  let releaseNewer: () => void = () => {};
+  const newerGate = new Promise<void>((resolve) => {
+    releaseNewer = resolve;
+  });
+  let signalEntered: () => void = () => {};
+  const newerEntered = new Promise<void>((resolve) => {
+    signalEntered = resolve;
+  });
+  const changes: { durableUpserts: readonly { sequence: number }[] }[] = [];
+  const handle = runtimeHostSessionFixture({
+    snapshot: continuitySnapshot(),
+    transcript: Promise.resolve([]),
+    events: { async *[Symbol.asyncIterator]() {} },
+    transcriptBootstrap: {
+      throughSequence: 4,
+      overlayMessageCount: 0,
+      durable: bootstrapPage,
+      overlay: { ...page(null, 4), source: 'overlay' },
+    },
+    loadTranscriptOverlay: async () => [],
+    decodeTranscriptPage: async (candidate) => candidate === bootstrapPage
+      ? { messages, nextCursor: null }
+      : { messages: [appended], nextCursor: null },
+    loadTranscriptPage: async () => {
+      // Park catch-up inside the contiguous newer-page await so the test can
+      // reclaim memory at exactly that point.
+      signalEntered();
+      await newerGate;
+      return newerPage;
+    },
+    async close() {},
+  });
+  const replica = await DesktopTranscriptReplica.prepare(handle, {
+    maxResidentBytes: 1024 * 1024,
+    onChange: (_replica, change) => changes.push(change),
+  });
+  // A large budget keeps the whole bootstrap resident, so the tail is contiguous
+  // (`hasNewer` false) and `advance` takes the paged catch-up, not the re-anchor.
+  assert.equal(replica.snapshot().hasNewer, false);
+
+  // Advance the watermark contiguously; reclaim memory while the newer page is
+  // pending. Before the fix `advancing` rejects with `correlation_changed`.
+  const advancing = replica.advance(5);
+  await newerEntered;
+  replica.discard();
+  assert.equal(replica.resident, false);
+  releaseNewer();
+  await advancing;
+
+  const upserts = changes.flatMap((change) => change.durableUpserts.map(({ sequence }) => sequence));
+  assert.ok(!upserts.includes(5), 'a discarded replica must not be repopulated by an in-flight catch-up');
+  assert.equal(replica.resident, false);
+  assert.equal(replica.residentBytes, 0);
+});
+
 test('loads a history target with newer messages available below it', async () => {
   const messages = [0, 1, 2, 3, 4].map((sequence) => ({
     identity: sequence,

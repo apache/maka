@@ -418,6 +418,14 @@ export class DesktopTranscriptReplica {
           cursor = decoded.nextCursor;
         });
       } while (cursor !== null);
+      // A concurrent `discard()` (LRU reclaim for another observed session) can
+      // flip `#resident` to false across any page `await` above. The per-page
+      // callback already returns early in that case, so `expectedSequence` is
+      // left short of the watermark. Without this guard the check below would
+      // turn a benign memory reclaim into a fatal `correlation_changed` that
+      // drives the session terminal. A discarded replica has no watermark to
+      // meet, so return cleanly and let a later resume re-catch-up.
+      if (!this.#resident) return;
       if (expectedSequence !== target + 1) {
         throw correlationError('Desktop transcript catch-up ended before its watermark');
       }
