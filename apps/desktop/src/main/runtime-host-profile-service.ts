@@ -70,6 +70,16 @@ const PREFERENCES_SCHEMA_VERSION = 2;
 const PREFERENCES_FILE = "runtime-host-profile-selection.json";
 const PROFILE_FILE = "runtime-host-profiles.json";
 
+function serviceFromBinding(
+  binding: DesktopRuntimeHostManagedServiceBinding,
+): DesktopRuntimeHostManagedService {
+  return {
+    id: binding.deployment.id,
+    rootPath: binding.deployment.rootPath,
+    operatorPath: binding.control.operatorPath,
+  };
+}
+
 export interface DesktopRuntimeHostPreferences {
   readonly schemaVersion: 2;
   readonly defaultProfileId: string;
@@ -950,7 +960,7 @@ export function createDesktopRuntimeHostProfileService(input: {
         if (
           !(await managedServices.markUninstallingIfCurrent(
             expected.profile,
-            expected.service,
+            serviceFromBinding(expected),
           ))
         ) {
           throw new Error('Runtime Host managed service binding changed during uninstall');
@@ -969,7 +979,7 @@ export function createDesktopRuntimeHostProfileService(input: {
           !sameRemoteRuntimeHostProfileTarget(current, expected.profile) ||
           !(await managedServices.markCleanupPendingIfCurrent(
             expected.profile,
-            expected.service,
+            serviceFromBinding(expected),
           ))
         ) {
           throw new Error('Runtime Host managed service binding changed during uninstall');
@@ -988,7 +998,7 @@ export function createDesktopRuntimeHostProfileService(input: {
           !sameRemoteRuntimeHostProfileTarget(current, expected.profile) ||
           !(await managedServices.removeCleanupPendingIfCurrent(
             expected.profile,
-            expected.service,
+            serviceFromBinding(expected),
           ))
         ) {
           throw new Error('Runtime Host managed service binding changed during uninstall');
@@ -1127,7 +1137,7 @@ export function createDesktopRuntimeHostProfileService(input: {
         await catalog.remove(profileId);
         if (managedBinding) {
           await managedServices
-            .removeIfCurrent(profile, managedBinding.service)
+            .removeIfCurrent(profile, serviceFromBinding(managedBinding))
             .catch((error) =>
               console.error("[runtime-host] removed Profile left stale service metadata:", error),
             );

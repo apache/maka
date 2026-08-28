@@ -75,17 +75,19 @@ test('identifies, rotates, and revokes managed credentials without exposing secr
     },
     profiles: {
       ...unusedDirectPeerProfileDependencies(),
-      resolveManagedService: async () => ({ profile, service, state: 'active' as const }),
+      resolveManagedService: async () => managedBinding(profile, service, 'active'),
       resolveManagedAccess: async () => ({
-        profile,
-        service,
-        state: 'active' as const,
+        ...managedBinding(profile, service, 'active'),
         credentialFingerprint: currentFingerprint,
         enabled: profileEnabled,
       }),
       rotateManagedCredential: async (expected, credential) => {
         assert.equal(expected.profile, profile);
-        assert.equal(expected.service, service);
+        assert.deepEqual(expected.deployment, { id: service.id, rootPath: service.rootPath });
+        assert.deepEqual(expected.control, {
+          kind: 'ssh_operator',
+          operatorPath: service.operatorPath,
+        });
         assert.equal(expected.credentialFingerprint, currentFingerprint);
         assert.equal(credential, replacement);
       },
@@ -220,7 +222,7 @@ test('manages only the service identity bound by Desktop onboarding', async () =
       ...unusedDirectPeerProfileDependencies(),
       resolveManagedService: async (profileId) =>
         profileId === managedProfile.id
-          ? { profile: managedProfile, service: managedService, state: 'active' as const }
+          ? managedBinding(managedProfile, managedService, 'active')
           : undefined,
       resolveManagedAccess: async () => undefined,
       markManagedServiceUninstalling: async (binding) => {
@@ -366,7 +368,7 @@ test('publishes update progress and waits for the managed profile to reconnect',
     profiles: {
       ...unusedDirectPeerProfileDependencies(),
       resolveManagedService: async () =>
-        bindingPresent ? { profile, service, state: 'active' as const } : undefined,
+        bindingPresent ? managedBinding(profile, service, 'active') : undefined,
       resolveManagedAccess: async () => undefined,
       rotateManagedCredential: async () => assert.fail('credential rotation is not expected'),
       markManagedServiceUninstalling: async (binding) => binding,
@@ -488,7 +490,7 @@ test('configures Project roots with CAS and reconnects only after a committed cu
     },
     profiles: {
       ...unusedDirectPeerProfileDependencies(),
-      resolveManagedService: async () => ({ profile, service, state: 'active' as const }),
+      resolveManagedService: async () => managedBinding(profile, service, 'active'),
       resolveManagedAccess: async () => undefined,
       rotateManagedCredential: async () => assert.fail('credential rotation is not expected'),
       markManagedServiceUninstalling: async (binding) => binding,
@@ -596,7 +598,7 @@ test('manages one Host update policy and reconciles it through the bound operato
     },
     profiles: {
       ...unusedDirectPeerProfileDependencies(),
-      resolveManagedService: async () => ({ profile, service, state: 'active' as const }),
+      resolveManagedService: async () => managedBinding(profile, service, 'active'),
       resolveManagedAccess: async () => undefined,
       rotateManagedCredential: async () => assert.fail('credential rotation is not expected'),
       markManagedServiceUninstalling: async (binding) => binding,
@@ -742,7 +744,7 @@ test('resumes deployment cleanup without invoking the removed operator', async (
     },
     profiles: {
       ...unusedDirectPeerProfileDependencies(),
-      resolveManagedService: async () => ({ profile, service, state }),
+      resolveManagedService: async () => managedBinding(profile, service, state),
       resolveManagedAccess: async () => undefined,
       markManagedServiceUninstalling: async (binding) => {
         state = 'uninstalling';
@@ -795,8 +797,8 @@ test('rechecks uninstall intent before retrying the remote service', async () =>
     },
     profiles: {
       ...unusedDirectPeerProfileDependencies(),
-      resolveManagedService: async () => ({
-        profile: {
+      resolveManagedService: async () => managedBinding(
+        {
           id: 'office',
           name: 'Office',
           kind: 'remote' as const,
@@ -808,13 +810,13 @@ test('rechecks uninstall intent before retrying the remote service', async () =>
             websocketPath: '/runtime-host',
           },
         },
-        service: {
+        {
           id: 'b'.repeat(64),
           rootPath: '/srv/maka',
           operatorPath: '/home/operator/.local/share/maka/operator',
         },
-        state: 'uninstalling' as const,
-      }),
+        'uninstalling',
+      ),
       resolveManagedAccess: async () => undefined,
       markManagedServiceUninstalling: async (binding) => {
         marked = true;
@@ -874,7 +876,7 @@ test('keeps the SSH profile while adding and removing its managed Direct peer', 
     },
     profiles: {
       ...unusedDirectPeerProfileDependencies(),
-      resolveManagedService: async () => ({ profile, service, state: 'active' as const }),
+      resolveManagedService: async () => managedBinding(profile, service, 'active'),
       resolveManagedAccess: async () => undefined,
       rotateManagedCredential: async () => assert.fail('credential rotation is not expected'),
       markManagedServiceUninstalling: async (binding) => binding,
@@ -1049,8 +1051,8 @@ test('does not invoke peer management when the remote operator lacks its capabil
 });
 
 function managedSshBinding() {
-  return {
-    profile: {
+  return managedBinding(
+    {
       id: 'office',
       name: 'Office',
       kind: 'remote' as const,
@@ -1062,12 +1064,25 @@ function managedSshBinding() {
         websocketPath: '/runtime-host',
       },
     },
-    service: {
+    {
       id: 'b'.repeat(64),
       rootPath: '/srv/maka',
       operatorPath: '/home/operator/.local/share/maka/operator',
     },
-    state: 'active' as const,
+    'active',
+  );
+}
+
+function managedBinding<
+  Profile,
+  Service extends { readonly id: string; readonly rootPath: string; readonly operatorPath: string },
+  State extends 'active' | 'uninstalling' | 'cleanup_pending',
+>(profile: Profile, service: Service, state: State) {
+  return {
+    profile,
+    deployment: { id: service.id, rootPath: service.rootPath },
+    control: { kind: 'ssh_operator' as const, operatorPath: service.operatorPath },
+    state,
   };
 }
 

@@ -18,7 +18,7 @@
  */
 
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, test } from "node:test";
@@ -48,16 +48,30 @@ const service = {
 };
 
 afterEach(async () => {
-  await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true })));
+  await Promise.all(
+    roots.splice(0).map((root) => rm(root, { recursive: true })),
+  );
 });
 
 test("keeps Desktop service bindings outside the shared profile catalog", async () => {
   const root = await mkdtemp(join(tmpdir(), "maka-managed-host-services-"));
   roots.push(root);
   const catalog = createClientRuntimeHostProfileCatalog(root);
+  await writeFile(
+    join(root, "runtime-host-managed-services.json"),
+    `${JSON.stringify({
+      schemaVersion: 1,
+      bindings: [{ profile, service, state: "active" }],
+    })}\n`,
+  );
   const managedServices = createDesktopRuntimeHostManagedServiceStore(root);
   const concurrentStore = createDesktopRuntimeHostManagedServiceStore(root);
   await catalog.create(profile, "secret");
+
+  assert.equal((await managedServices.read()).bindings[0]?.deployment.id, service.id);
+  await assert.rejects(readFile(join(root, "runtime-host-managed-services.json"), "utf8"), {
+    code: "ENOENT",
+  });
 
   await Promise.all([
     managedServices.save(profile, service),
@@ -72,28 +86,60 @@ test("keeps Desktop service bindings outside the shared profile catalog", async 
     /managedService/u,
   );
   assert.deepEqual(
-    findDesktopRuntimeHostManagedServiceBinding(await managedServices.read(), profile),
-    { profile: { ...profile, transport: { ...profile.transport } }, service, state: "active" },
+    findDesktopRuntimeHostManagedServiceBinding(
+      await managedServices.read(),
+      profile,
+    ),
+    {
+      profile: { ...profile, transport: { ...profile.transport } },
+      deployment: { id: service.id, rootPath: service.rootPath },
+      control: { kind: "ssh_operator", operatorPath: service.operatorPath },
+      state: "active",
+    },
   );
   assert.equal((await managedServices.read()).bindings.length, 2);
   assert.equal(
     findDesktopRuntimeHostManagedServiceBinding(await managedServices.read(), {
       ...profile,
-      transport: { ...profile.transport, destination: "operator@new.example.com" },
+      transport: {
+        ...profile.transport,
+        destination: "operator@new.example.com",
+      },
     }),
     undefined,
   );
-  assert.equal(await managedServices.markUninstallingIfCurrent(profile, service), true);
   assert.equal(
-    findDesktopRuntimeHostManagedServiceBinding(await managedServices.read(), profile)?.state,
+    await managedServices.markUninstallingIfCurrent(profile, service),
+    true,
+  );
+  assert.equal(
+    findDesktopRuntimeHostManagedServiceBinding(
+      await managedServices.read(),
+      profile,
+    )?.state,
     "uninstalling",
   );
-  assert.equal(await managedServices.removeCleanupPendingIfCurrent(profile, service), false);
-  assert.equal(await managedServices.markCleanupPendingIfCurrent(profile, service), true);
   assert.equal(
-    findDesktopRuntimeHostManagedServiceBinding(await managedServices.read(), profile)?.state,
+    await managedServices.removeCleanupPendingIfCurrent(profile, service),
+    false,
+  );
+  assert.equal(
+    await managedServices.markCleanupPendingIfCurrent(profile, service),
+    true,
+  );
+  assert.equal(
+    findDesktopRuntimeHostManagedServiceBinding(
+      await managedServices.read(),
+      profile,
+    )?.state,
     "cleanup_pending",
   );
-  assert.equal(await managedServices.markUninstallingIfCurrent(profile, service), false);
-  assert.equal(await managedServices.removeCleanupPendingIfCurrent(profile, service), true);
+  assert.equal(
+    await managedServices.markUninstallingIfCurrent(profile, service),
+    false,
+  );
+  assert.equal(
+    await managedServices.removeCleanupPendingIfCurrent(profile, service),
+    true,
+  );
 });
