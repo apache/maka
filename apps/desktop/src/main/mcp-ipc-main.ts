@@ -20,7 +20,7 @@
 import type { IpcMain } from 'electron';
 import {
   MCP_CONFIG_VERSION,
-  isMcpStdioConfig,
+  mcpConfigChangeRetiresCredentials,
   type McpConfigAddResult,
   type McpConfigFile,
   type McpConfigImportResult,
@@ -369,12 +369,7 @@ function credentialRetirements(current: McpConfigFile, next: McpConfigFile): str
     const incoming = Object.hasOwn(next.mcpServers, serverId)
       ? next.mcpServers[serverId]
       : undefined;
-    if (!incoming) {
-      retired.push(serverId);
-      continue;
-    }
-    if (isMcpStdioConfig(server)) continue;
-    if (isMcpStdioConfig(incoming) || incoming.url !== server.url) retired.push(serverId);
+    if (mcpConfigChangeRetiresCredentials(server, incoming)) retired.push(serverId);
   }
   return retired;
 }

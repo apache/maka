@@ -46,6 +46,7 @@ import {
 import {
   isMcpStdioConfig,
   isNonLoopbackCleartextHttp,
+  mcpConfigChangeRetiresCredentials,
   resolveMcpProtocolPreference,
   type McpBoundTool,
   type McpCallResult,
@@ -444,7 +445,7 @@ export class McpClientManager {
         // retries the erase against the still-owed old config.
         const owed = current.credentialCleanupOwed
           ? current.credentialCleanupOwed
-          : remoteUrlChanged(current.config, serverConfig)
+          : mcpConfigChangeRetiresCredentials(current.config, serverConfig)
             ? current.config
             : undefined;
         if (owed) {
@@ -2569,16 +2570,6 @@ async function connectCandidate(
   } finally {
     signal.removeEventListener('abort', closeOnAbort);
   }
-}
-
-/** True when a reconfigured server no longer talks to the endpoint its
- * stored credentials were issued for: the URL changed, or the entry
- * switched between stdio and remote. A headers-only edit returns false. */
-function remoteUrlChanged(previous: McpServerConfig, next: McpServerConfig): boolean {
-  const previousStdio = isMcpStdioConfig(previous);
-  const nextStdio = isMcpStdioConfig(next);
-  if (previousStdio || nextStdio) return previousStdio !== nextStdio;
-  return previous.url !== next.url;
 }
 
 function stableConfigFingerprint(config: McpServerConfig): string {
