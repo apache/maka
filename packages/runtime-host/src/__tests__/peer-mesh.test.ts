@@ -176,6 +176,47 @@ test('reconciles changed routes, propagates removal, and recovers the verified c
   }
 });
 
+test('refreshes its route after earlier peers consume the proof lifetime', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-peer-mesh-route-refresh-'));
+  let now = Date.now();
+  const network = new MemoryPeerNetwork(() => {
+    now += 31_000;
+  });
+  const peers = Array.from({ length: 14 }, (_, index) =>
+    network.create(`peer-${String.fromCharCode('a'.charCodeAt(0) + index)}`),
+  );
+  const nodes: PeerMeshNode[] = [];
+  const serving: Promise<void>[] = [];
+  try {
+    for (const [index, peer] of peers.entries()) {
+      const node = await openPeerMeshNode({
+        dataRoot: join(root, String(index)),
+        peer,
+        now: () => now,
+      });
+      nodes.push(node);
+      serving.push(node.serve());
+    }
+    const authority = nodes[0]!;
+    const healthy = nodes[12]!;
+    const mesh = await authority.create();
+    for (const node of nodes.slice(1)) {
+      await node.join(await authority.invite(mesh.roster.roster.meshId));
+    }
+    assert.equal(healthy.status()[0]?.roster.roster.revision, 13);
+
+    for (const peer of peers.slice(1, 12)) peer.setReachable(false);
+    await authority.reconcile();
+
+    assert.equal(healthy.status()[0]?.roster.roster.revision, 14);
+  } finally {
+    await Promise.allSettled(nodes.map((node) => node.close()));
+    await Promise.allSettled(serving);
+    await Promise.allSettled(peers.map((peer) => peer.close()));
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test('closed Mesh records do not permanently consume membership capacity', async () => {
   const root = await mkdtemp(join(tmpdir(), 'maka-peer-mesh-capacity-'));
   const peer = new MemoryPeerNetwork().create('peer-a');
@@ -279,8 +320,10 @@ test('cancels a redemption stalled after the control connection opens', async ()
 class MemoryPeerNetwork {
   readonly #peers = new Map<string, MemoryPeerClient>();
 
+  constructor(private readonly onUnreachable?: () => void) {}
+
   create(peerId: string): MemoryPeerClient {
-    const peer = new MemoryPeerClient(peerId, this.#peers);
+    const peer = new MemoryPeerClient(peerId, this.#peers, this.onUnreachable);
     this.#peers.set(peerId, peer);
     return peer;
   }
@@ -302,6 +345,7 @@ class MemoryPeerClient implements PeerMeshTransport {
   constructor(
     private readonly peerId: string,
     private readonly peers: ReadonlyMap<string, MemoryPeerClient>,
+    private readonly onUnreachable?: () => void,
   ) {
     this.#routeHints = [`/memory/${peerId}`];
   }
@@ -344,7 +388,10 @@ class MemoryPeerClient implements PeerMeshTransport {
     readonly peerId: string;
   }): Promise<RuntimeHostPeerNativeStream> {
     const remote = this.peers.get(input.peerId);
-    if (!remote || !remote.#reachable) throw new Error('Peer is unavailable');
+    if (!remote || !remote.#reachable) {
+      this.onUnreachable?.();
+      throw new Error('Peer is unavailable');
+    }
     const [localStream, remoteStream] = memoryStreamPair(this.peerId, input.peerId);
     if (remote.#failNextResponse) {
       remote.#failNextResponse = false;

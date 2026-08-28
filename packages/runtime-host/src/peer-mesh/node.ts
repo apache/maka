@@ -541,6 +541,7 @@ class PeerMeshNodeImpl implements PeerMeshNode {
     signal: AbortSignal,
   ): Promise<void> {
     for (let page = 0; page <= Math.ceil(PEER_MESH_MAX_MEMBERS / ROUTE_PAGE_SIZE); page += 1) {
+      await this.#refreshLocalRoute();
       const stored = this.#store.read();
       const state = findMesh(stored.meshes, meshId);
       const localPeerId = this.#peer.identity().peerId;
