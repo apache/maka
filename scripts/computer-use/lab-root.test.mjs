@@ -18,6 +18,7 @@
  */
 
 import assert from 'node:assert/strict';
+import { readFile } from 'node:fs/promises';
 import { test } from 'node:test';
 
 import { requireComputerUseLabRoot } from './lab-root.mjs';
@@ -36,4 +37,27 @@ test('rejects a missing Computer Use Lab root', () => {
       'MAKA_CU_AX_MODEL_LAB_ROOT is required: point it at a local checkout of the Codex CUA Lab fixture',
     ),
   );
+});
+
+test('Lab-backed entry points require the configured root', async () => {
+  const entryPoints = [
+    'process-restart-harness.mjs',
+    'process-restart-launcher.mjs',
+    'real-ax-harness.mjs',
+    'real-ax-launcher.mjs',
+  ];
+
+  for (const entryPoint of entryPoints) {
+    const source = await readFile(new URL(entryPoint, import.meta.url), 'utf8');
+    assert.match(
+      source,
+      /const labRoot = requireComputerUseLabRoot\(\);/,
+      `${entryPoint} must require the configured Lab root`,
+    );
+    assert.doesNotMatch(
+      source,
+      /codex-computer-use-lab/i,
+      `${entryPoint} must not embed a contributor-specific Lab checkout`,
+    );
+  }
 });
