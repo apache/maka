@@ -93,7 +93,11 @@ export const RUNTIME_HOST_REGISTRATION_SCHEMA_VERSION = 1 as const;
 export const RUNTIME_HOST_PROTOCOL_VERSION = 0 as const;
 // Increment when the same protocol version no longer guarantees safe Client-Host
 // interoperability. Mismatches are rejected before domain commands are admitted.
-export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 56 as const;
+export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 57 as const;
+// 57: `runtime.resource.start` accepts an optional one-shot `command`, and the
+// durable Shell Run record carries a `visibility` field. An epoch-56 Host
+// rejects the widened closed input, while an epoch-56 binary cannot safely
+// interpret the widened durable record.
 // 56: Failed Turn snapshots preserve the structured context-budget exhaustion
 // detail. Epoch-55 peers reject the optional field on the closed snapshot shape.
 // 55: Local owners can atomically revoke every credential for one access

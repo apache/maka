@@ -280,6 +280,7 @@ describe('Host Runtime Resource coordinator', () => {
         sessionId: harness.lastBackgroundInput.sessionId,
         sourceTurnId: harness.lastBackgroundInput.sourceTurnId,
         sourceToolCallId: harness.lastBackgroundInput.sourceToolCallId,
+        visibility: harness.lastBackgroundInput.visibility,
         cwd: harness.lastBackgroundInput.cwd,
         pty: harness.lastBackgroundInput.pty,
       },
@@ -287,6 +288,9 @@ describe('Host Runtime Resource coordinator', () => {
         sessionId: SESSION_ID,
         sourceTurnId: 'desktop-launch-1',
         sourceToolCallId: 'desktop-launch-1',
+        // The interactive login shell carries no `command`, so it keeps its
+        // prior model-visible visibility (#3210).
+        visibility: undefined,
         cwd: '/workspace',
         pty: true,
       },
@@ -313,6 +317,23 @@ describe('Host Runtime Resource coordinator', () => {
     assert.equal(harness.lastBackgroundInput?.env?.SHELL, shell.exe);
     assert.equal(harness.lastBackgroundInput?.env?.CHERE_INVOKING, '1');
     harness.finishBackground({ successful: true });
+  });
+
+  test('stops a launched one-shot command when the initial inspection fails', async () => {
+    // The command is live once runBackgroundBash returns; if the post-launch
+    // snapshot then fails, the operation must report failure AND stop the
+    // process, so a client retry cannot double-execute (#3210 review).
+    const harness = createHarness();
+    harness.inspectFailure = new Error('snapshot encode failed');
+    const started = await harness.coordinator.handlers['runtime.resource.start'](
+      { sessionId: SESSION_ID, launchId: 'user-command-1', command: 'sleep 3600' },
+      connection('connection-1'),
+    );
+
+    assert.equal(started.ok, false);
+    assert.ok(harness.lastBackgroundInput);
+    assert.equal(harness.stopCount, 1);
+    harness.finishBackground({ successful: false });
   });
 
   test('starts the legacy WSL shim with a Linux-visible login shell', async () => {
@@ -418,6 +439,65 @@ describe('Host Runtime Resource coordinator', () => {
 
     await assert.rejects(foreground, /Runtime resources are draining/);
     assert.equal(harness.lastForegroundInput, undefined);
+  });
+
+  test('starts a one-shot user command in pipes without exposing it to the model', async () => {
+    const harness = createHarness();
+    const started = await harness.coordinator.handlers['runtime.resource.start'](
+      { sessionId: SESSION_ID, launchId: 'user-command-1', command: 'printf user-command' },
+      connection('connection-1'),
+    );
+
+    assert.equal(started.ok, true);
+    assert.equal(started.ok && started.result.resource.mode, 'pipes');
+    assert.deepEqual(
+      harness.lastBackgroundInput && {
+        sessionId: harness.lastBackgroundInput.sessionId,
+        sourceTurnId: harness.lastBackgroundInput.sourceTurnId,
+        sourceToolCallId: harness.lastBackgroundInput.sourceToolCallId,
+        visibility: harness.lastBackgroundInput.visibility,
+        cwd: harness.lastBackgroundInput.cwd,
+        command: harness.lastBackgroundInput.command,
+        pty: harness.lastBackgroundInput.pty,
+      },
+      {
+        sessionId: SESSION_ID,
+        sourceTurnId: 'user-command-1',
+        sourceToolCallId: 'user-command-1',
+        visibility: 'user',
+        cwd: '/workspace',
+        command: 'printf user-command',
+        pty: false,
+      },
+    );
+    harness.finishBackground({ successful: true });
+  });
+
+  test('rechecks Session activity after queued start admission', async () => {
+    const harness = createHarness();
+    let releaseAdmission!: () => void;
+    const blocker = harness.sessionAdmission.run(
+      SESSION_ID,
+      () =>
+        new Promise<void>((resolve) => {
+          releaseAdmission = resolve;
+        }),
+    );
+    await new Promise<void>((resolve) => setImmediate(resolve));
+
+    const starting = harness.coordinator.handlers['runtime.resource.start'](
+      { sessionId: SESSION_ID, launchId: 'user-command-race', command: 'pwd' },
+      connection('connection-1'),
+    );
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    harness.sessionState = 'archived';
+    releaseAdmission();
+    await blocker;
+
+    const result = await starting;
+    assert.equal(result.ok, false);
+    assert.equal(!result.ok && result.error.code, 'session_archived');
+    assert.equal(harness.lastBackgroundInput, undefined);
   });
 
   test('lets stop bypass the controller, releases terminal ownership, and keeps control replay safe', async () => {
@@ -561,6 +641,7 @@ describe('Host Runtime Resource coordinator', () => {
 function createHarness(options: Pick<HostRuntimeResourceCoordinatorInput, 'resolveShell'> = {}) {
   let backgroundCompletion: ShellRunBashInput['onCompletion'];
   let currentSnapshot = ptySnapshot();
+  let lastStartedSnapshot: ShellRunSnapshotResult | undefined;
   const state = {
     updates: [resourceUpdate(0)],
     sessionState: 'active' as 'active' | 'archived' | 'missing',
@@ -571,6 +652,7 @@ function createHarness(options: Pick<HostRuntimeResourceCoordinatorInput, 'resol
     listReadCount: 0,
     pointReadCount: 0,
     stateReadFailure: undefined as Error | undefined,
+    inspectFailure: undefined as Error | undefined,
     activeResidencies: 0,
     lastBackgroundInput: undefined as ShellRunBashInput | undefined,
     lastForegroundInput: undefined as ShellRunBashInput | undefined,
@@ -587,9 +669,11 @@ function createHarness(options: Pick<HostRuntimeResourceCoordinatorInput, 'resol
       state.lastBackgroundInput = input;
       backgroundCompletion = input.onCompletion;
       if (input.pty) {
+        lastStartedSnapshot = currentSnapshot;
         const { output: _output, ...snapshot } = currentSnapshot;
         return snapshot;
       }
+      lastStartedSnapshot = { ...pipeSnapshot(0), cmd: input.command };
       return compactState(0);
     },
     readRuntimeResource: async () => currentSnapshot,
@@ -638,7 +722,10 @@ function createHarness(options: Pick<HostRuntimeResourceCoordinatorInput, 'resol
         },
       };
     },
-    inspectResource: async () => structuredClone(currentSnapshot),
+    inspectResource: async () => {
+      if (state.inspectFailure) throw state.inspectFailure;
+      return structuredClone(lastStartedSnapshot ?? currentSnapshot);
+    },
     getLivePtySnapshot: (sessionId, ref) => ({
       sessionId,
       ref,
