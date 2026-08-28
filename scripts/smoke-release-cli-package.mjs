@@ -303,6 +303,8 @@ async function smokeRuntimeHostPeerProtocol({ packageRoot, cliEntrypoint, root }
       throw new Error(`Installed Runtime Host direct-peer status is ${status.state}`);
     }
 
+    const meshMemberKeyPath = join(root, 'mesh-member.key');
+    const meshMemberDataRoot = join(root, 'mesh-member');
     meshAuthorityPeer = client.createRuntimeHostPeerClient({
       nativePath,
       keyPath: join(root, 'mesh-authority.key'),
@@ -310,7 +312,7 @@ async function smokeRuntimeHostPeerProtocol({ packageRoot, cliEntrypoint, root }
     });
     meshMemberPeer = client.createRuntimeHostPeerClient({
       nativePath,
-      keyPath: join(root, 'mesh-member.key'),
+      keyPath: meshMemberKeyPath,
       listenAddresses: ['/ip4/127.0.0.1/udp/0/quic-v1'],
     });
     meshAuthority = await mesh.openPeerMeshNode({
@@ -318,7 +320,7 @@ async function smokeRuntimeHostPeerProtocol({ packageRoot, cliEntrypoint, root }
       peer: meshAuthorityPeer,
     });
     meshMember = await mesh.openPeerMeshNode({
-      dataRoot: join(root, 'mesh-member'),
+      dataRoot: meshMemberDataRoot,
       peer: meshMemberPeer,
     });
     meshServing = meshAuthority.serve();
@@ -333,6 +335,30 @@ async function smokeRuntimeHostPeerProtocol({ packageRoot, cliEntrypoint, root }
     );
     if (removed.roster.roster.members.length !== 1) {
       throw new Error('Installed Runtime Host peer Mesh did not remove the invited peer');
+    }
+    await meshMember.close();
+    await meshMemberPeer.close();
+    meshMemberPeer = client.createRuntimeHostPeerClient({
+      nativePath,
+      keyPath: meshMemberKeyPath,
+      listenAddresses: ['/ip4/127.0.0.1/udp/0/quic-v1'],
+    });
+    meshMember = await mesh.openPeerMeshNode({
+      dataRoot: meshMemberDataRoot,
+      peer: meshMemberPeer,
+    });
+    const stale = meshMember.status()[0];
+    if (stale?.roster.roster.revision !== joined.roster.roster.revision) {
+      throw new Error('Installed Runtime Host peer Mesh did not recover the last-known roster');
+    }
+    const rejoined = await meshMember.join(
+      await meshAuthority.invite(created.roster.roster.meshId),
+    );
+    if (
+      rejoined.roster.roster.members.length !== 2 ||
+      rejoined.roster.roster.revision <= stale.roster.roster.revision
+    ) {
+      throw new Error('Installed Runtime Host peer Mesh did not re-admit the removed peer');
     }
   } finally {
     await meshAuthority?.close().catch(() => undefined);

@@ -236,10 +236,10 @@ class PeerMeshNodeImpl implements PeerMeshNode {
       const current = this.#store.read();
       const existing = findMesh(current, invitation.meshId);
       const localPeerId = this.#peer.identity().peerId;
-      if (existing && isActiveMembership(existing, localPeerId)) {
+      if (existing?.role === 'authority') {
         throw new Error('This peer already belongs to that Peer Mesh');
       }
-      assertMeshCapacity(current, localPeerId);
+      if (!existing) assertMeshCapacity(current, localPeerId);
       const operationSignal = signal
         ? AbortSignal.any([signal, this.#lifetime.signal])
         : this.#lifetime.signal;
@@ -282,10 +282,17 @@ class PeerMeshNodeImpl implements PeerMeshNode {
         };
         const joined = await this.#store.mutate((current) => {
           const existing = findMesh(current, invitation.meshId);
-          if (existing && isActiveMembership(existing, identity.peerId)) {
+          if (existing?.role === 'authority') {
             throw new Error('This peer already belongs to that Peer Mesh');
           }
-          assertMeshCapacity(current, identity.peerId);
+          if (
+            existing &&
+            (existing.roster.authorityPublicKey !== roster.authorityPublicKey ||
+              roster.roster.revision <= existing.roster.roster.revision)
+          ) {
+            throw new Error('Peer Mesh invitation did not advance the existing membership');
+          }
+          if (!existing) assertMeshCapacity(current, identity.peerId);
           return {
             state: existing
               ? replaceMesh(current, state)
