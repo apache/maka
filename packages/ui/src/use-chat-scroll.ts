@@ -20,7 +20,6 @@
 import { useEffect, useRef, useState, type RefObject } from 'react';
 import type { StoredMessage } from '@maka/core/session';
 import { createArrivalBottomPin, type ArrivalBottomPin } from './arrival-bottom-pin.js';
-import { captureChatScrollAnchor, restoreChatScrollAnchor } from './chat-scroll-anchor.js';
 
 export function useChatScroll(input: {
   scrollRef: RefObject<HTMLElement | null>;
@@ -38,8 +37,6 @@ export function useChatScroll(input: {
   const arrivalPin = useRef<ArrivalBottomPin | null>(null);
   const loadEarlierRef = useRef(input.onLoadEarlierHistory);
   loadEarlierRef.current = input.onLoadEarlierHistory;
-  const sessionIdRef = useRef(input.sessionId);
-  sessionIdRef.current = input.sessionId;
   const historyLoadPendingRef = useRef(input.historyLoadPending);
   historyLoadPendingRef.current = input.historyLoadPending;
   const canLoadEarlier = input.onLoadEarlierHistory !== undefined;
@@ -55,25 +52,14 @@ export function useChatScroll(input: {
     let previousScrollTop = root.scrollTop;
     const requestEarlier = (): void => {
       if (historyLoadPendingRef.current || earlierLoadRequest.current) return;
-      const scrollHeight = root.scrollHeight;
-      const anchor = captureChatScrollAnchor(root);
-      const sessionId = sessionIdRef.current;
+      // Scroll anchoring is suppressed at the very top, so give it something
+      // to anchor against before the turns land above the reader.
+      if (root.scrollTop === 0) root.scrollTop = 1;
       const request = {};
       earlierLoadRequest.current = request;
       arrivalPin.current?.release();
       void Promise.resolve(loadEarlierRef.current?.()).catch(() => undefined).finally(() => {
-        window.requestAnimationFrame(() => {
-          if (
-            earlierLoadRequest.current === request &&
-            sessionIdRef.current === sessionId &&
-            input.scrollRef.current === root &&
-            root.isConnected &&
-            !restoreChatScrollAnchor(root, anchor)
-          ) {
-            root.scrollTop += root.scrollHeight - scrollHeight;
-          }
-          if (earlierLoadRequest.current === request) earlierLoadRequest.current = null;
-        });
+        if (earlierLoadRequest.current === request) earlierLoadRequest.current = null;
       });
     };
     const nearStart = (): boolean =>
