@@ -72,9 +72,7 @@ export interface PeerMeshTargetInput {
   readonly meshId: string;
 }
 
-export interface PeerMeshInviteInput extends PeerMeshTargetInput {
-  readonly ttlMs?: number;
-}
+export type PeerMeshInviteInput = PeerMeshTargetInput;
 
 export interface PeerMeshJoinInput {
   readonly invitation: PeerMeshInvitationV1;
@@ -169,17 +167,7 @@ function decodePeerMeshTargetInput(value: unknown): PeerMeshTargetInput {
 }
 
 function decodePeerMeshInviteInput(value: unknown): PeerMeshInviteInput {
-  const record = requireRecord(value, 'Peer Mesh invitation input');
-  assertExactKeys(
-    record,
-    'Peer Mesh invitation input',
-    record.ttlMs === undefined ? ['meshId'] : ['meshId', 'ttlMs'],
-  );
-  const ttlMs = record.ttlMs;
-  return {
-    meshId: requireString(record.meshId, 'Peer Mesh meshId', MESH_ID_MAX_BYTES),
-    ...(ttlMs === undefined ? {} : { ttlMs: requireCount(ttlMs, 'Peer Mesh invitation ttlMs') }),
-  };
+  return decodePeerMeshTargetInput(value);
 }
 
 function decodePeerMeshJoinInput(value: unknown): PeerMeshJoinInput {

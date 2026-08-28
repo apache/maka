@@ -114,6 +114,30 @@ export async function hasActivePeerMeshMembership(
   return state.meshes.some((mesh) => !isRetired(mesh, localPeerId));
 }
 
+export async function migrateLegacyPeerMeshState(
+  dataRoot: string,
+  localPeerId: string,
+): Promise<void> {
+  const legacyPath = join(dataRoot, STATE_FILE);
+  const targetRoot = join(dataRoot, localPeerId);
+  const targetPath = join(targetRoot, STATE_FILE);
+  if (await pathExists(targetPath)) {
+    if (await pathExists(legacyPath)) {
+      await unlink(legacyPath);
+      await syncDirectory(dataRoot);
+    }
+    return;
+  }
+  if (!(await pathExists(legacyPath))) return;
+
+  const state = await readState(legacyPath, localPeerId);
+  await mkdir(targetRoot, { recursive: true, mode: 0o700 });
+  if (process.platform !== 'win32') await chmod(targetRoot, 0o700);
+  await writeState(targetPath, localPeerId, state);
+  await unlink(legacyPath);
+  await syncDirectory(dataRoot);
+}
+
 class PeerMeshStateStoreImpl implements PeerMeshStateStore {
   readonly #path: string;
   readonly terminalFailure: Promise<never>;
@@ -344,6 +368,16 @@ async function readState(
         routes: Object.freeze([]),
       });
     }
+    throw error;
+  }
+}
+
+async function pathExists(path: string): Promise<boolean> {
+  try {
+    await lstat(path);
+    return true;
+  } catch (error) {
+    if (isNodeError(error, 'ENOENT')) return false;
     throw error;
   }
 }

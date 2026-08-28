@@ -104,9 +104,7 @@ export function createPeerMeshOperationHandlers(
       return mutate(async () => ({
         ok: true,
         result: {
-          invitation: await mesh.invite(input.meshId, {
-            ...(input.ttlMs === undefined ? {} : { ttlMs: input.ttlMs }),
-          }),
+          invitation: await mesh.invite(input.meshId),
           snapshot: query(),
         },
       }));

@@ -34,6 +34,7 @@ import {
 import { openPeerMeshNode, type PeerMeshNode, type PeerMeshTransport } from '../peer-mesh/node.js';
 import {
   hasActivePeerMeshMembership,
+  migrateLegacyPeerMeshState,
   PeerMeshPersistenceError,
   PeerMeshPostCommitError,
 } from '../peer-mesh/store.js';
@@ -193,10 +194,13 @@ test('reconciles changed routes, propagates removal, and recovers the verified c
     assert.deepEqual(memberB.resolveRoutes('peer-c')?.routeHints, ['/memory/peer-c-rejoined']);
 
     await authority.remove(mesh.roster.roster.meshId, 'peer-b');
+    authorityPeer.setResponseDelay(25);
+    await memberB.reconcile();
+    assert.deepEqual(memberB.status(), []);
+    authorityPeer.setResponseDelay(0);
     await memberC.reconcile();
     authorityPeer.setReachable(false);
     await memberB.reconcile();
-    assert.deepEqual(memberB.status(), []);
     assert.equal(memberB.resolveRoutes('peer-c'), undefined);
     assert.deepEqual(memberC.status()[0]?.roster.roster.members, ['peer-a', 'peer-c']);
     assert.deepEqual(memberC.resolveRoutes('peer-a')?.routeHints, ['/memory/peer-a-moved']);
@@ -230,6 +234,23 @@ test('closed Mesh records do not permanently consume membership capacity', async
     }
     assert.equal((await node.create()).roster.roster.closed, false);
     assert.equal(node.status().length, 16);
+  } finally {
+    await node.close();
+    await peer.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('migrates legacy Mesh state into the peer identity root', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-peer-mesh-migration-'));
+  const peer = new MemoryPeerNetwork().create('peer-a');
+  let node = await openPeerMeshNode({ dataRoot: root, peer });
+  try {
+    const created = await node.create();
+    await node.close();
+    await migrateLegacyPeerMeshState(root, 'peer-a');
+    node = await openPeerMeshNode({ dataRoot: join(root, 'peer-a'), peer });
+    assert.equal(node.status()[0]?.roster.roster.meshId, created.roster.roster.meshId);
   } finally {
     await node.close();
     await peer.close();
@@ -339,6 +360,7 @@ class MemoryPeerClient implements PeerMeshTransport {
   #closed = false;
   #failNextResponse = false;
   #stallNextControl = false;
+  #responseDelayMs = 0;
   #reachable = true;
   #routeHints: readonly string[];
 
@@ -363,6 +385,10 @@ class MemoryPeerClient implements PeerMeshTransport {
 
   setReachable(reachable: boolean): void {
     this.#reachable = reachable;
+  }
+
+  setResponseDelay(delayMs: number): void {
+    this.#responseDelayMs = delayMs;
   }
 
   signIdentity(payload: Buffer) {
@@ -438,7 +464,9 @@ class MemoryPeerClient implements PeerMeshTransport {
       return;
     }
     const server = this.#meshServer;
-    if (server) server.onStream(stream);
+    if (server && this.#responseDelayMs > 0) {
+      setTimeout(() => server.onStream(stream), this.#responseDelayMs);
+    } else if (server) server.onStream(stream);
     else stream.abort();
   }
 }

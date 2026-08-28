@@ -177,7 +177,6 @@ export type RuntimeHostCliCommand =
       expectedTarget: RuntimeHostManagedServiceTarget;
       meshId?: string;
       peerId?: string;
-      ttlMs?: number;
     }
   | {
       kind: 'runtime-host-service-check-update';
@@ -988,7 +987,6 @@ function parseServicePeerMeshCommand(argv: string[]): RuntimeHostCliCommand {
   }
   let meshId: string | undefined;
   let peerId: string | undefined;
-  let ttlMs: number | undefined;
   const options = parseManagedServiceOptions(argv.slice(1), {
     allowConfiguration: false,
     allowFramed: true,
@@ -1002,14 +1000,6 @@ function parseServicePeerMeshCommand(argv: string[]): RuntimeHostCliCommand {
         if (peerId !== undefined) return error('Duplicate --peer');
         if (!value || value.length > 256) return error('--peer requires a valid Peer ID');
         peerId = value;
-      },
-      '--ttl-ms': (value) => {
-        if (ttlMs !== undefined) return error('Duplicate --ttl-ms');
-        const parsed = Number(value);
-        if (!Number.isSafeInteger(parsed) || parsed < 1_000 || parsed > 86_400_000) {
-          return error('--ttl-ms must be between 1000 and 86400000');
-        }
-        ttlMs = parsed;
       },
     },
   });
@@ -1035,9 +1025,6 @@ function parseServicePeerMeshCommand(argv: string[]): RuntimeHostCliCommand {
         : '--peer is only valid with mesh remove',
     );
   }
-  if (ttlMs !== undefined && action !== 'invite') {
-    return error('--ttl-ms is only valid with mesh invite');
-  }
   return {
     kind: 'runtime-host-service-peer-mesh',
     action,
@@ -1048,7 +1035,6 @@ function parseServicePeerMeshCommand(argv: string[]): RuntimeHostCliCommand {
     expectedTarget: options.expectedTarget,
     ...(meshId ? { meshId } : {}),
     ...(peerId ? { peerId } : {}),
-    ...(ttlMs === undefined ? {} : { ttlMs }),
   };
 }
 

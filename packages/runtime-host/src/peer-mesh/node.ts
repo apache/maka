@@ -203,6 +203,7 @@ class PeerMeshNodeImpl implements PeerMeshNode {
   #admissionTail = Promise.resolve();
   #reconcileTail = Promise.resolve();
   #reconcileCursor = 0;
+  #gossipCursor = 0;
   #routeRefreshTask: Promise<SignedPeerMeshRouteRecordV1 | undefined> | undefined;
   #serveTask: Promise<void> | undefined;
   #closeTask: Promise<void> | undefined;
@@ -589,6 +590,8 @@ class PeerMeshNodeImpl implements PeerMeshNode {
       readonly meshId: string;
       readonly targets: readonly PeerMeshAuthorityTarget[];
     }> = [];
+    const gossipCursor = this.#gossipCursor;
+    this.#gossipCursor = (this.#gossipCursor + 1) % PEER_MESH_MAX_MEMBERS;
     for (const [index, state] of memberships.entries()) {
       const targets = [currentAuthorityTarget(state, stored.routes)];
       const gossipRoutes = state.roster.roster.members
@@ -598,7 +601,7 @@ class PeerMeshNodeImpl implements PeerMeshNode {
           return route ? [route] : [];
         });
       if (gossipRoutes.length > 0) {
-        targets.push(gossipRoutes[(this.#reconcileCursor + index) % gossipRoutes.length]!);
+        targets.push(gossipRoutes[(gossipCursor + index) % gossipRoutes.length]!);
       }
       pending.push({ meshId: state.roster.roster.meshId, targets });
     }
@@ -613,15 +616,19 @@ class PeerMeshNodeImpl implements PeerMeshNode {
         next += 1;
         if (offset >= pending.length) return;
         const { meshId, targets } = pending[(start + offset) % pending.length]!;
-        const attempt = new AbortController();
         try {
-          const attemptSignal = AbortSignal.any([operationSignal, attempt.signal]);
-          await Promise.any(targets.map((target) => this.#syncPeer(meshId, target, attemptSignal)));
+          const outcomes = await Promise.allSettled(
+            targets.map((target) => this.#syncPeer(meshId, target, operationSignal)),
+          );
+          if (!outcomes.some(({ status }) => status === 'fulfilled')) {
+            const failure = outcomes.find(
+              (outcome): outcome is PromiseRejectedResult => outcome.status === 'rejected',
+            );
+            throw failure?.reason ?? new Error('Peer Mesh synchronization failed');
+          }
         } catch {
           if (lifetimeSignal.aborted) lifetimeSignal.throwIfAborted();
           if (deadline.aborted) return;
-        } finally {
-          attempt.abort();
         }
       }
     };
@@ -1183,7 +1190,11 @@ function peerMeshStatus(
         const route = routes.find((candidate) => candidate.route.peerId === peerId)?.route;
         if (!route) return Object.freeze({ peerId, state: 'unknown' as const });
         if (route.expiresAt <= now) {
-          return Object.freeze({ peerId, state: 'stale' as const, expiresAt: route.expiresAt });
+          return Object.freeze({
+            peerId,
+            state: 'stale' as const,
+            expiresAt: route.expiresAt,
+          });
         }
         return Object.freeze({
           peerId,

@@ -61,7 +61,6 @@ export interface RuntimeHostPeerMeshManagementCliOptions {
   readonly expectedTarget: RuntimeHostManagedServiceTarget;
   readonly meshId?: string;
   readonly peerId?: string;
-  readonly ttlMs?: number;
 }
 
 interface RuntimeHostPeerMeshManagementCliDeps {
@@ -162,7 +161,6 @@ async function executePeerMeshAction(
         action: 'invite',
         result: await request('peer.mesh.invite', {
           meshId: requiredOption(options.meshId, 'Mesh ID'),
-          ...(options.ttlMs === undefined ? {} : { ttlMs: options.ttlMs }),
         }),
       };
     case 'join':

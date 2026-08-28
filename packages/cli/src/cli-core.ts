@@ -492,7 +492,6 @@ export async function runMakaCli(
         expectedTarget: command.expectedTarget,
         ...(command.meshId ? { meshId: command.meshId } : {}),
         ...(command.peerId ? { peerId: command.peerId } : {}),
-        ...(command.ttlMs === undefined ? {} : { ttlMs: command.ttlMs }),
       });
     }
     case 'runtime-host-service-update': {
