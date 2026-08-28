@@ -30,16 +30,16 @@ import {
   pickNewChatModel,
   type NewChatModel,
   type NewChatModelCandidate,
-} from './shell-chat-model-selection';
+} from './shell-chat-model-selection.js';
 import {
   deriveSessionHealthNotice,
   type SessionHealthNoticeTarget,
-} from './session-health-notice';
-import type { ComposerDefaults } from './composer-defaults';
+} from './session-health-notice.js';
+import type { ComposerDefaults } from './composer-defaults.js';
 import { getDesktopConversationCopy } from './locales/conversation-copy.js';
 import { useNewTaskChoice } from './use-new-task-choice.js';
 
-export type { NewChatModel } from './shell-chat-model-selection';
+export type { NewChatModel } from './shell-chat-model-selection.js';
 
 export type SessionHealthNoticeView = {
   tone: 'info' | 'warning' | 'destructive';

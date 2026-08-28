@@ -22,6 +22,7 @@ import test from 'node:test';
 import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { ChatRecoveryNotice } from '../../renderer/chat-recovery-notice.js';
+import { SessionHealthRecoveryNotice } from '../../renderer/chat-recovery-notice.js';
 
 test('composer recovery notices share one wrapper and secondary disabled action', () => {
   const markup = renderToStaticMarkup(createElement(ChatRecoveryNotice, {
@@ -50,4 +51,38 @@ test('composer recovery notices omit the action when no handler exists', () => {
   }));
 
   assert.doesNotMatch(markup, /<button/);
+});
+
+test('Session recovery disables only a hidden model-picker action', () => {
+  const markup = renderToStaticMarkup(createElement(SessionHealthRecoveryNotice, {
+    notice: {
+      tone: 'destructive',
+      label: 'Choose a model connection',
+      actionLabel: 'Choose connection and model',
+      actionDisabled: false,
+      onClickTarget: 'model_picker',
+      onClick: () => undefined,
+    },
+    fallbackActionLabel: 'Open model settings',
+    modelPickerAvailable: false,
+  }));
+
+  assert.match(markup, /disabled=""/);
+});
+
+test('a hidden model picker does not disable reload or Settings recovery', () => {
+  for (const onClickTarget of ['model_choices_refresh', 'models'] as const) {
+    const markup = renderToStaticMarkup(createElement(SessionHealthRecoveryNotice, {
+      notice: {
+        tone: 'destructive',
+        label: 'Connection unavailable',
+        actionLabel: 'Recover',
+        onClickTarget,
+        onClick: () => undefined,
+      },
+      fallbackActionLabel: 'Open model settings',
+      modelPickerAvailable: false,
+    }));
+    assert.doesNotMatch(markup, /disabled=""/);
+  }
 });

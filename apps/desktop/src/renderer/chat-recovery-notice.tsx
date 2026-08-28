@@ -19,6 +19,7 @@
 
 import type { ReactNode } from 'react';
 import { Banner, Button } from '@maka/ui';
+import type { SessionHealthNoticeView } from './use-shell-chat-model';
 
 /** One composer-adjacent recovery surface: shared placement and action hierarchy. */
 export function ChatRecoveryNotice(props: {
@@ -48,5 +49,27 @@ export function ChatRecoveryNotice(props: {
         ) : undefined}
       />
     </div>
+  );
+}
+
+/** Production adapter from Session health routing to the shared notice surface. */
+export function SessionHealthRecoveryNotice(props: {
+  notice: SessionHealthNoticeView;
+  fallbackActionLabel: string;
+  modelPickerAvailable: boolean;
+}) {
+  const { notice } = props;
+  const actionDisabled =
+    notice.actionDisabled ||
+    (notice.onClickTarget === 'model_picker' && !props.modelPickerAvailable);
+  return (
+    <ChatRecoveryNotice
+      status={notice.tone === 'destructive' ? 'error' : notice.tone}
+      title={notice.label}
+      description={notice.tooltip}
+      actionLabel={notice.actionLabel ?? props.fallbackActionLabel}
+      actionDisabled={actionDisabled}
+      onAction={notice.onClick}
+    />
   );
 }

@@ -39,7 +39,7 @@ import { getDesktopConversationCopy } from './locales/conversation-copy';
 import { selectLiveTurn } from './use-app-shell-session-ui-reads';
 import { useExternalStoreSelector } from './use-external-store-selector';
 import { useDeepResearchRun } from './use-deep-research-run';
-import { ChatRecoveryNotice } from './chat-recovery-notice';
+import { ChatRecoveryNotice, SessionHealthRecoveryNotice } from './chat-recovery-notice';
 
 const selectShellRunRecord = (state: AppShellSessionUiState, sessionId: string | undefined) =>
   sessionId ? state.shellRunUpdatesBySession[sessionId] : undefined;
@@ -74,6 +74,7 @@ interface ChatMessageSurfaceProps extends Omit<
   /** Advances after the active session's current observation generation finishes seeding. */
   liveContentSeedRevision: number;
   sessionHealthNotice?: SessionHealthNoticeView;
+  sessionHealthModelPickerAvailable: boolean;
   workspaceReadinessRecovery?: WorkspaceReadinessRecovery;
   taskReadinessNotice?: TaskReadinessNotice;
   onTaskReadinessAction?: () => void;
@@ -112,6 +113,7 @@ export function ChatMessageSurface({
   activeSessionId,
   liveContentSeedRevision,
   sessionHealthNotice,
+  sessionHealthModelPickerAvailable,
   workspaceReadinessRecovery,
   taskReadinessNotice,
   onTaskReadinessAction,
@@ -271,13 +273,10 @@ export function ChatMessageSurface({
         />
       )}
       {sessionHealthNotice && (
-        <ChatRecoveryNotice
-          status={sessionHealthNotice.tone === 'destructive' ? 'error' : sessionHealthNotice.tone === 'warning' ? 'warning' : 'info'}
-          title={sessionHealthNotice.label}
-          description={sessionHealthNotice.tooltip}
-          actionLabel={sessionHealthNotice.actionLabel ?? goToModelsLabel}
-          actionDisabled={sessionHealthNotice.actionDisabled}
-          onAction={sessionHealthNotice.onClick}
+        <SessionHealthRecoveryNotice
+          notice={sessionHealthNotice}
+          fallbackActionLabel={goToModelsLabel}
+          modelPickerAvailable={sessionHealthModelPickerAvailable}
         />
       )}
     </>

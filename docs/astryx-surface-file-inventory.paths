@@ -7,6 +7,7 @@ apps/desktop/src/renderer/app.tsx
 apps/desktop/src/renderer/cascade-layers.css
 apps/desktop/src/renderer/chat-composer-region.tsx
 apps/desktop/src/renderer/chat-message-surface.tsx
+apps/desktop/src/renderer/chat-recovery-notice.tsx
 apps/desktop/src/renderer/command-palette.tsx
 apps/desktop/src/renderer/composer-mentions.tsx
 apps/desktop/src/renderer/custom-pet-companion.tsx
