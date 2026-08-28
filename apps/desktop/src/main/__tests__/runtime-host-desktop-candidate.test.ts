@@ -937,6 +937,18 @@ function connectionHarness(
       if (operation === 'session.create') {
         return session((input as { sessionId: string }).sessionId);
       }
+      if (operation === 'session.configuration.update') {
+        // The Bot adapter pins explore after create; commit it like the
+        // real Host would instead of falling through to the unexpected-
+        // operation guard below.
+        return {
+          kind: 'committed',
+          session: {
+            ...session((input as { sessionId: string }).sessionId),
+            permissionMode: 'explore',
+          },
+        };
+      }
       if (operation === 'external-session.source.query') {
         return { adapterIds: ['codex'] };
       }
