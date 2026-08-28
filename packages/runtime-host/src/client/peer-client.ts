@@ -114,6 +114,7 @@ class RuntimeHostPeerClientImpl implements RuntimeHostPeerClient {
   #applicationConsumer: InboundConsumer | undefined;
   #meshConsumer: InboundConsumer | undefined;
   #terminalError: Error | undefined;
+  readonly #connectTails = new Map<string, Promise<void>>();
   #nextRequestId = 1;
   #closed = false;
   #closeTask: Promise<void> | undefined;
@@ -242,6 +243,29 @@ class RuntimeHostPeerClientImpl implements RuntimeHostPeerClient {
   }
 
   async #connect(
+    input: RuntimeHostPeerConnectInput,
+    signal: AbortSignal | undefined,
+    kind: 'application' | 'mesh-control',
+  ): Promise<RuntimeHostPeerNativeStream> {
+    const previous = this.#connectTails.get(input.peerId) ?? Promise.resolve();
+    let release!: () => void;
+    const turn = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const tail = previous.then(() => turn);
+    this.#connectTails.set(input.peerId, tail);
+    try {
+      await waitForPeerConnectTurn(previous, signal);
+      return await this.#startConnect(input, signal, kind);
+    } finally {
+      release();
+      void tail.then(() => {
+        if (this.#connectTails.get(input.peerId) === tail) this.#connectTails.delete(input.peerId);
+      });
+    }
+  }
+
+  async #startConnect(
     input: RuntimeHostPeerConnectInput,
     signal: AbortSignal | undefined,
     kind: 'application' | 'mesh-control',
@@ -391,6 +415,22 @@ interface InboundConsumer {
   readonly onStream: (stream: RuntimeHostPeerNativeStream) => void;
   readonly resolve: () => void;
   readonly reject: (error: Error) => void;
+}
+
+function waitForPeerConnectTurn(previous: Promise<void>, signal?: AbortSignal): Promise<void> {
+  if (!signal) return previous;
+  if (signal.aborted) return Promise.reject(signal.reason);
+  return new Promise((resolve, reject) => {
+    const onAbort = () => {
+      signal.removeEventListener('abort', onAbort);
+      reject(signal.reason);
+    };
+    signal.addEventListener('abort', onAbort, { once: true });
+    void previous.then(() => {
+      signal.removeEventListener('abort', onAbort);
+      resolve();
+    });
+  });
 }
 
 function mergeAddresses(

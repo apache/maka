@@ -33,7 +33,7 @@ import {
   type RuntimeHostPeerNativeStream,
 } from '../transport/peer-native.js';
 
-test('shares one peer endpoint while cancelling connection attempts independently', async () => {
+test('shares one peer endpoint, serializes same-peer connects, and cancels independently', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'maka-peer-abort-'));
   const nativePath = join(directory, 'peer.cjs');
   try {
@@ -47,6 +47,10 @@ let missFirstCancellation = true;
 const stream = { read: async () => null, write: async () => {}, close: async () => {}, abort: () => {} };
 module.exports = {
   stats,
+  resolveConnect: (requestId) => {
+    pending.get(requestId)?.resolve(stream);
+    pending.delete(requestId);
+  },
   failEndpoint: () => { finishAccept?.(null); finishMeshAccept?.(null); },
   ensurePeerIdentity: async () => 'client',
   signPeerIdentity: async () => ({ publicKey: Buffer.from('public'), signature: Buffer.from('signature') }),
@@ -59,12 +63,12 @@ module.exports = {
       connect: ({ requestId, peerId, routeHints, coordinationRelays }) => {
         stats.requests.push({ requestId, peerId, routeHints, coordinationRelays });
         if (peerId === 'ready') return Promise.resolve(stream);
-        return new Promise((_resolve, reject) => pending.set(requestId, reject));
+        return new Promise((resolve, reject) => pending.set(requestId, { resolve, reject }));
       },
       connectMeshControl: ({ requestId, peerId, routeHints, coordinationRelays }) => {
         stats.requests.push({ requestId, peerId, routeHints, coordinationRelays });
         if (peerId === 'ready') return Promise.resolve(stream);
-        return new Promise((_resolve, reject) => pending.set(requestId, reject));
+        return new Promise((resolve, reject) => pending.set(requestId, { resolve, reject }));
       },
       cancelConnect: async (requestId) => {
         stats.cancellations.push(requestId);
@@ -72,7 +76,7 @@ module.exports = {
           missFirstCancellation = false;
           return false;
         }
-        pending.get(requestId)?.(new Error('peer_connect_cancelled: cancelled'));
+        pending.get(requestId)?.reject(new Error('peer_connect_cancelled: cancelled'));
         pending.delete(requestId);
         return true;
       },
@@ -94,13 +98,30 @@ module.exports = {
         }),
       },
     });
+    const native = await import(nativePath);
     const abort = new AbortController();
     const pending = client.connect(peerConnectInput('pending'), abort.signal);
+    await waitForRequestCount(native.default.stats, 1);
     abort.abort();
     await assert.rejects(pending, /aborted/u);
 
+    const application = client.connect(peerConnectInput('shared'));
+    await waitForRequestCount(native.default.stats, 2);
+    const queuedAbort = new AbortController();
+    const cancelled = client.connectMeshControl(peerConnectInput('shared'), queuedAbort.signal);
+    queuedAbort.abort();
+    await assert.rejects(cancelled, /aborted/u);
+    const control = client.connectMeshControl(peerConnectInput('shared'));
+    await waitForImmediate();
+    assert.equal(native.default.stats.requests.length, 2);
+    native.default.resolveConnect(2);
+    await application;
+    await waitForRequestCount(native.default.stats, 3);
+    assert.equal(native.default.stats.requests.length, 3);
+    native.default.resolveConnect(3);
+    await control;
+
     await client.connect(peerConnectInput('ready'));
-    const native = await import(nativePath);
     assert.deepEqual(native.default.stats, {
       starts: 1,
       closes: 0,
@@ -113,6 +134,18 @@ module.exports = {
         },
         {
           requestId: 2,
+          peerId: 'shared',
+          routeHints: ['/memory/discovered', '/memory/1'],
+          coordinationRelays: ['/memory/relay'],
+        },
+        {
+          requestId: 3,
+          peerId: 'shared',
+          routeHints: ['/memory/1'],
+          coordinationRelays: [],
+        },
+        {
+          requestId: 4,
           peerId: 'ready',
           routeHints: ['/memory/discovered', '/memory/1'],
           coordinationRelays: ['/memory/relay'],
@@ -211,6 +244,16 @@ test('bounds and separates the peer credential preface from Runtime Host frames'
   assert.equal(result.accepted, true);
   assert.deepEqual(result.remainder, frame);
 });
+
+async function waitForRequestCount(
+  stats: { readonly requests: readonly unknown[] },
+  expected: number,
+): Promise<void> {
+  for (let attempt = 0; attempt < 10 && stats.requests.length < expected; attempt += 1) {
+    await waitForImmediate();
+  }
+  assert.equal(stats.requests.length, expected);
+}
 
 function streamWith(chunk: Buffer): RuntimeHostPeerNativeStream {
   let pending: Buffer | null = chunk;
