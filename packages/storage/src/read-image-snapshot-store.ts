@@ -31,12 +31,14 @@ import {
 /** Derives the Read image domain contract from the authenticated byte authority. */
 export function createReadImageSnapshotStore(
   writer: InteractiveContextOffloadWriter,
+  sessionId: string,
 ): ReadImageSnapshotStore {
   const store = authenticateInteractiveContextOffloadWriter(writer);
+  if (!sessionId) throw new Error('Read image snapshot Session id is required');
   const facade: ReadImageSnapshotStore = {
     async snapshot(input) {
       const accepted = Object.freeze({
-        sessionId: input.sessionId,
+        sessionId,
         ownerId: input.ownerId,
         bytes: new Uint8Array(input.bytes),
         mimeType: input.mimeType,
@@ -52,7 +54,6 @@ export function createReadImageSnapshotStore(
         owner: { kind: 'read_image_snapshot', ownerId: accepted.ownerId },
         bytes: accepted.bytes,
         mediaType: accepted.mimeType,
-        storageKind: 'managed_file',
       });
       if (!result.ok) throw new ReadImageSnapshotStoreError(result.reason);
       const { record } = result;
@@ -73,8 +74,9 @@ export function createReadImageSnapshotStore(
     },
 
     async read(input): Promise<ContextOffloadReadResult> {
+      if (input.sessionId !== sessionId) return { ok: false, reason: 'session_mismatch' };
       const result = await store.read({
-        sessionId: input.sessionId,
+        sessionId,
         refId: input.refId,
         maxBytes: MAX_READ_IMAGE_BYTES,
       });

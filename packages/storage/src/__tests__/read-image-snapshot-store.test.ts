@@ -43,22 +43,20 @@ after(removeTrackedControlDirectories);
 
 test('derives Read image storage only from an authentic context writer', () => {
   assert.throws(
-    () => createReadImageSnapshotStore({} as InteractiveContextOffloadWriter),
+    () => createReadImageSnapshotStore({} as InteractiveContextOffloadWriter, 'session-1'),
     /authentic interactive context-offload writer/u,
   );
 });
 
 test('snapshots one stable Read image identity and authorizes reads by Session', async () => {
-  await withReadImageStore(defaultLimits(), async (images) => {
+  await withReadImageStore(defaultLimits(), async (images, writer) => {
     const bytes = new TextEncoder().encode('image');
     const input = {
-      sessionId: 'session-1',
       ownerId: 'read-call-1',
       bytes,
       mimeType: 'image/png',
     };
     const snapshotting = images.snapshot(input);
-    input.sessionId = 'mutated-session';
     input.ownerId = 'mutated-owner';
     input.mimeType = 'image/jpeg';
     bytes.fill(0x78);
@@ -71,7 +69,6 @@ test('snapshots one stable Read image identity and authorizes reads by Session',
     });
     assert.deepEqual(
       await images.snapshot({
-        sessionId: 'session-1',
         ownerId: 'read-call-1',
         bytes: new TextEncoder().encode('image'),
         mimeType: 'image/png',
@@ -89,10 +86,14 @@ test('snapshots one stable Read image identity and authorizes reads by Session',
       ok: false,
       reason: 'session_mismatch',
     });
+    const sessionTwoImages = createReadImageSnapshotStore(writer, 'session-2');
+    assert.deepEqual(await sessionTwoImages.read(ref), {
+      ok: false,
+      reason: 'session_mismatch',
+    });
 
     await assert.rejects(
       images.snapshot({
-        sessionId: 'session-1',
         ownerId: 'read-call-1',
         bytes: new TextEncoder().encode('changed'),
         mimeType: 'image/png',
@@ -102,7 +103,6 @@ test('snapshots one stable Read image identity and authorizes reads by Session',
     );
     await assert.rejects(
       images.snapshot({
-        sessionId: 'session-1',
         ownerId: 'read-call-1',
         bytes: new TextEncoder().encode('image'),
         mimeType: 'image/jpeg',
@@ -112,7 +112,6 @@ test('snapshots one stable Read image identity and authorizes reads by Session',
     );
     await assert.rejects(
       images.snapshot({
-        sessionId: 'session-1',
         ownerId: 'not-an-image',
         bytes: new Uint8Array([1]),
         mimeType: 'text/plain',
@@ -135,7 +134,6 @@ test('maps configured quota failures and rejects non-image owner references', as
     async (images, writer) => {
       await assert.rejects(
         images.snapshot({
-          sessionId: 'session-1',
           ownerId: 'over-configured-limit',
           bytes: new Uint8Array(5),
           mimeType: 'image/png',
@@ -175,7 +173,6 @@ test('enforces the Read image product cap before touching storage', async () => 
   await withReadImageStore(limits, async (images, writer) => {
     await assert.rejects(
       images.snapshot({
-        sessionId: 'session-1',
         ownerId: 'over-product-limit',
         bytes: new Uint8Array(MAX_READ_IMAGE_BYTES + 1),
         mimeType: 'image/png',
@@ -211,7 +208,7 @@ async function withReadImageStore(
   await withInteractiveOwner(async (owner) => {
     const writer = await openInteractiveContextOffloadStoreForWrite(owner.lease, { limits });
     try {
-      await run(createReadImageSnapshotStore(writer), writer);
+      await run(createReadImageSnapshotStore(writer, 'session-1'), writer);
     } finally {
       await writer.close();
     }

@@ -33,14 +33,18 @@ import {
   type ContextOffloadRecord,
   type ContextOffloadRetirementResult,
   type ContextOffloadStore,
-  type ContextOffloadStorageKind,
   type ContextOffloadUsage,
 } from '@maka/core/context-offload';
 import {
   configureSqliteContextOffloadDatabase,
   migrateSqliteContextOffloadDatabase,
 } from './sqlite-context-offload-schema.js';
-import { readStableBoundedFile, syncDirectory, syncDirectoryChain } from './stable-storage.js';
+import {
+  readStableBoundedFile,
+  syncDirectory,
+  syncDirectoryChain,
+  syncFile,
+} from './stable-storage.js';
 
 const MAX_ID_CODE_POINTS = 512;
 const MAX_MEDIA_TYPE_CODE_POINTS = 256;
@@ -54,6 +58,7 @@ export const CONTEXT_OFFLOAD_VALUES_DIRECTORY_NAME = 'context-offload-values';
 export type SqliteContextOffloadStoreFailpoint =
   | 'after_blob_insert'
   | 'after_ref_insert'
+  | 'after_managed_file_staging'
   | 'after_managed_file_publish'
   | 'after_gc_blob_delete';
 
@@ -104,6 +109,8 @@ interface GarbageCandidateRow {
 interface ManagedFilePublication {
   readonly locator: string;
 }
+
+type ContextBlobStorageKind = 'inline' | 'managed_file';
 
 type PreparedContextRead =
   | ContextOffloadReadResult
@@ -156,7 +163,6 @@ export class SqliteContextOffloadStore implements ContextOffloadStore {
     readonly owner: ContextOffloadOwner;
     readonly bytes: Uint8Array;
     readonly mediaType: string;
-    readonly storageKind?: ContextOffloadStorageKind;
     readonly expectedSha256?: string;
   }): Promise<ContextOffloadPutResult> {
     assertBoundedIdentity(input.sessionId, 'Session id');
@@ -168,8 +174,6 @@ export class SqliteContextOffloadStore implements ContextOffloadStore {
     if (input.expectedSha256 !== undefined && !SHA256_PATTERN.test(input.expectedSha256)) {
       throw new Error('Expected context SHA-256 must be canonical lowercase hexadecimal');
     }
-    const storageKind = input.storageKind ?? 'inline';
-    assertStorageKind(storageKind);
     if (input.bytes.byteLength > this.#limits.ownerMaxBytes[input.owner.kind]) {
       return { ok: false, reason: 'too_large' };
     }
@@ -183,11 +187,19 @@ export class SqliteContextOffloadStore implements ContextOffloadStore {
 
     const operation = async (): Promise<ContextOffloadPutResult> => {
       let publication: ManagedFilePublication | undefined;
+      let deletionIntentLocator: string | undefined;
       try {
         this.#assertOpen();
+        const existingStorageKind = this.#readBlobStorageKind(blobId);
+        const storageKind =
+          preferredStorageKind(input.owner) === 'managed_file' ||
+          existingStorageKind === 'managed_file'
+            ? 'managed_file'
+            : 'inline';
         if (storageKind === 'managed_file') {
           const locator = managedFileLocator(blobId);
           this.#recordManagedFileDeletionIntent(locator, bytes.byteLength);
+          deletionIntentLocator = locator;
           publication = await this.#publishManagedFile(locator, blobId, bytes);
           this.#failpoint?.('after_managed_file_publish');
         }
@@ -199,14 +211,14 @@ export class SqliteContextOffloadStore implements ContextOffloadStore {
         }
         return result;
       } catch (error) {
-        if (storageKind === 'managed_file') {
-          await this.#drainFileDeletion(managedFileLocator(blobId)).catch(() => undefined);
+        if (deletionIntentLocator) {
+          await this.#drainFileDeletion(deletionIntentLocator).catch(() => undefined);
         }
         this.#onUnavailable?.(error);
         return { ok: false, reason: 'unavailable' };
       }
     };
-    return storageKind === 'managed_file' ? this.#runManagedValueMutation(operation) : operation();
+    return this.#runManagedValueMutation(operation);
   }
 
   async read(input: {
@@ -374,7 +386,14 @@ export class SqliteContextOffloadStore implements ContextOffloadStore {
     }
     return this.#runManagedValueMutation(async () => {
       this.#assertOpen();
-      await this.#drainPendingFileDeletions(input.maxBlobs);
+      if (this.#hasPendingFileDeletions()) {
+        await this.#drainPendingFileDeletions(input.maxBlobs);
+        return {
+          deletedBlobs: 0,
+          deletedBytes: 0,
+          hasMore: this.#hasPendingFileDeletions() || this.#hasEligibleGarbage(input.olderThan),
+        };
+      }
       const collected = this.#writeTransaction(() => {
         const rows = this.#database
           .prepare(
@@ -392,6 +411,7 @@ export class SqliteContextOffloadStore implements ContextOffloadStore {
           readonly managedLocator?: string;
         }> = [];
         let deletedBytes = 0;
+        let inlineDeletedBytes = 0;
         for (const row of rows) {
           if (selected.length === input.maxBlobs) break;
           const blobId = decodeBlobId(row.blob_id);
@@ -414,6 +434,13 @@ export class SqliteContextOffloadStore implements ContextOffloadStore {
             sizeBytes: row.size_bytes,
             ...(value.kind === 'managed_file' ? { managedLocator: value.locator } : {}),
           });
+          if (value.kind === 'inline') {
+            inlineDeletedBytes = addSafeInteger(
+              inlineDeletedBytes,
+              row.size_bytes,
+              'Collected inline context bytes',
+            );
+          }
         }
         const deleteBlob = this.#database.prepare(
           `DELETE FROM context_blobs
@@ -446,7 +473,7 @@ export class SqliteContextOffloadStore implements ContextOffloadStore {
              SET blob_count = blob_count - ?, physical_bytes = physical_bytes - ?
              WHERE singleton = 1`,
             )
-            .run(selected.length, deletedBytes);
+            .run(selected.length, inlineDeletedBytes);
           if (updated.changes !== 1) throw new Error('Missing context store usage row');
         }
         return {
@@ -456,7 +483,10 @@ export class SqliteContextOffloadStore implements ContextOffloadStore {
         };
       });
       await this.#drainPendingFileDeletions(input.maxBlobs);
-      return collected;
+      return {
+        ...collected,
+        hasMore: collected.hasMore || this.#hasPendingFileDeletions(),
+      };
     });
   }
 
@@ -486,13 +516,24 @@ export class SqliteContextOffloadStore implements ContextOffloadStore {
     this.#database.close();
   }
 
+  #readBlobStorageKind(blobId: string): ContextBlobStorageKind | undefined {
+    const row = this.#database
+      .prepare('SELECT storage_kind FROM context_blobs WHERE blob_id = ?')
+      .get(Buffer.from(blobId, 'hex')) as { storage_kind?: unknown } | undefined;
+    if (!row) return undefined;
+    if (row.storage_kind !== 'inline' && row.storage_kind !== 'managed_file') {
+      throw new Error('Invalid context blob storage kind');
+    }
+    return row.storage_kind;
+  }
+
   #put(input: {
     readonly sessionId: string;
     readonly owner: ContextOffloadOwner;
     readonly bytes: Uint8Array;
     readonly mediaType: string;
     readonly blobId: string;
-    readonly storageKind: ContextOffloadStorageKind;
+    readonly storageKind: ContextBlobStorageKind;
     readonly publication?: ManagedFilePublication;
   }): ContextOffloadPutResult {
     const existingReference = this.#readReferenceByOwner(input.sessionId, input.owner);
@@ -537,9 +578,15 @@ export class SqliteContextOffloadStore implements ContextOffloadStore {
         this.#readStoreUsage().physical_bytes,
         'Workspace physical bytes',
       );
-      if (
-        exceedsLimit(physicalBytes, input.bytes.byteLength, this.#limits.workspacePhysicalBytes)
-      ) {
+      const exceedsWorkspaceQuota =
+        input.storageKind === 'managed_file'
+          ? physicalBytes > this.#limits.workspacePhysicalBytes
+          : exceedsLimit(
+              physicalBytes,
+              input.bytes.byteLength,
+              this.#limits.workspacePhysicalBytes,
+            );
+      if (exceedsWorkspaceQuota) {
         return { ok: false, reason: 'workspace_quota_exceeded' };
       }
     }
@@ -617,7 +664,7 @@ export class SqliteContextOffloadStore implements ContextOffloadStore {
   #promoteToManagedFile(
     existingBlob: ContextBlobRow | undefined,
     input: {
-      readonly storageKind: ContextOffloadStorageKind;
+      readonly storageKind: ContextBlobStorageKind;
       readonly publication?: ManagedFilePublication;
     },
     blobId: Uint8Array,
@@ -645,7 +692,11 @@ export class SqliteContextOffloadStore implements ContextOffloadStore {
     if (row.size_bytes !== sizeBytes) {
       throw new Error('Pending context file deletion has an inconsistent size');
     }
-    this.#database.prepare('DELETE FROM context_file_deletions WHERE locator = ?').run(locator);
+    const deleted = this.#database
+      .prepare('DELETE FROM context_file_deletions WHERE locator = ?')
+      .run(locator);
+    if (deleted.changes !== 1) throw new Error('Pending context file deletion disappeared');
+    this.#releasePendingFileBytes(sizeBytes);
   }
 
   #copyReferences(input: {
@@ -868,14 +919,21 @@ export class SqliteContextOffloadStore implements ContextOffloadStore {
     const storageRoot = this.#storageRoot;
     if (!storageRoot) throw new Error('Managed context files require a durable Storage Root');
     await this.#ensureManagedDirectory(targetDirectory);
-    const temporary = join(targetDirectory, `.${blobId}.${randomUUID()}.tmp`);
+    const temporary = managedFileStagingPath(target, blobId);
     let handle: Awaited<ReturnType<typeof open>> | undefined;
     try {
+      await unlink(temporary).then(
+        () => syncDirectory(targetDirectory),
+        (error: unknown) => {
+          if (!isNodeError(error, 'ENOENT')) throw error;
+        },
+      );
       handle = await open(temporary, 'wx', 0o600);
       await handle.writeFile(bytes);
       await handle.sync();
       await handle.close();
       handle = undefined;
+      this.#failpoint?.('after_managed_file_staging');
       try {
         await link(temporary, target);
         await this.#assertManagedDirectory(targetDirectory);
@@ -883,12 +941,18 @@ export class SqliteContextOffloadStore implements ContextOffloadStore {
       } catch (error) {
         if (!isNodeError(error, 'EEXIST')) throw error;
         await this.#verifyManagedFile(target, blobId, bytes.byteLength);
+        await syncFile(target);
+        await this.#assertManagedDirectory(targetDirectory);
+        await syncDirectoryChain(targetDirectory, storageRoot);
       }
     } finally {
       await handle?.close().catch(() => undefined);
-      await unlink(temporary).catch((error: unknown) => {
-        if (!isNodeError(error, 'ENOENT')) throw error;
-      });
+      await unlink(temporary).then(
+        () => syncDirectory(targetDirectory),
+        (error: unknown) => {
+          if (!isNodeError(error, 'ENOENT')) throw error;
+        },
+      );
     }
     return { locator };
   }
@@ -911,13 +975,23 @@ export class SqliteContextOffloadStore implements ContextOffloadStore {
   #recordManagedFileDeletionIntent(locator: string, sizeBytes: number): void {
     const locatorBytes = Buffer.from(locator, 'utf8');
     this.#writeTransaction(() => {
-      this.#database
+      const inserted = this.#database
         .prepare(
           `INSERT INTO context_file_deletions(locator, size_bytes, enqueued_at)
            VALUES (?, ?, ?)
            ON CONFLICT(locator) DO NOTHING`,
         )
         .run(locatorBytes, sizeBytes, this.#readNow());
+      if (inserted.changes === 1) {
+        const updated = this.#database
+          .prepare(
+            `UPDATE context_store_usage
+             SET physical_bytes = physical_bytes + ?
+             WHERE singleton = 1`,
+          )
+          .run(sizeBytes);
+        if (updated.changes !== 1) throw new Error('Missing context store usage row');
+      }
       const row = this.#database
         .prepare('SELECT size_bytes FROM context_file_deletions WHERE locator = ?')
         .get(locatorBytes) as { size_bytes?: unknown } | undefined;
@@ -938,6 +1012,25 @@ export class SqliteContextOffloadStore implements ContextOffloadStore {
     }
   }
 
+  #hasPendingFileDeletions(): boolean {
+    return Boolean(
+      this.#database.prepare('SELECT 1 AS present FROM context_file_deletions LIMIT 1').get(),
+    );
+  }
+
+  #hasEligibleGarbage(olderThan: number): boolean {
+    return Boolean(
+      this.#database
+        .prepare(
+          `SELECT 1 AS present
+           FROM context_gc_candidates INDEXED BY context_gc_candidates_eligible
+           WHERE unreferenced_at < ?
+           LIMIT 1`,
+        )
+        .get(olderThan),
+    );
+  }
+
   async #drainFileDeletion(locator: string): Promise<void> {
     const locatorBytes = Buffer.from(locator, 'utf8');
     const live = this.#database
@@ -946,20 +1039,54 @@ export class SqliteContextOffloadStore implements ContextOffloadStore {
          WHERE storage_kind = 'managed_file' AND payload = ? LIMIT 1`,
       )
       .get(locatorBytes) as { present?: unknown } | undefined;
-    if (live?.present !== 1) await this.#deleteManagedFile(locator);
+    await this.#deleteManagedFile(locator, live?.present !== 1);
     this.#writeTransaction(() => {
-      this.#database
+      const row = this.#database
+        .prepare('SELECT size_bytes FROM context_file_deletions WHERE locator = ?')
+        .get(locatorBytes) as { size_bytes?: unknown } | undefined;
+      if (!row) return;
+      const sizeBytes = readNonNegativeInteger(
+        row.size_bytes,
+        'Pending context file deletion bytes',
+      );
+      const deleted = this.#database
         .prepare('DELETE FROM context_file_deletions WHERE locator = ?')
         .run(locatorBytes);
+      if (deleted.changes !== 1) throw new Error('Pending context file deletion disappeared');
+      this.#releasePendingFileBytes(sizeBytes);
     });
   }
 
-  async #deleteManagedFile(locator: string): Promise<void> {
+  #releasePendingFileBytes(sizeBytes: number): void {
+    const updated = this.#database
+      .prepare(
+        `UPDATE context_store_usage
+         SET physical_bytes = physical_bytes - ?
+         WHERE singleton = 1 AND physical_bytes >= ?`,
+      )
+      .run(sizeBytes, sizeBytes);
+    if (updated.changes !== 1) throw new Error('Context physical byte accounting underflow');
+  }
+
+  async #deleteManagedFile(locator: string, deleteTarget: boolean): Promise<void> {
     const path = this.#managedFilePath(locator);
+    const blobId = MANAGED_FILE_LOCATOR_PATTERN.exec(locator)?.[2];
+    if (!blobId) throw new InvalidManagedContextFileError();
+    const staging = managedFileStagingPath(path, blobId);
     try {
       await this.#assertManagedDirectory(dirname(path));
-      await unlink(path);
-      await syncDirectory(dirname(path));
+      let deleted = false;
+      for (const candidate of deleteTarget ? [path, staging] : [staging]) {
+        await unlink(candidate).then(
+          () => {
+            deleted = true;
+          },
+          (error: unknown) => {
+            if (!isNodeError(error, 'ENOENT')) throw error;
+          },
+        );
+      }
+      if (deleted) await syncDirectory(dirname(path));
     } catch (error) {
       if (!isNodeError(error, 'ENOENT')) throw error;
     }
@@ -1228,10 +1355,12 @@ function assertOwner(owner: ContextOffloadOwner): void {
   assertBoundedIdentity(owner.ownerId, 'Context owner id');
 }
 
-function assertStorageKind(value: unknown): asserts value is ContextOffloadStorageKind {
-  if (value !== 'inline' && value !== 'managed_file') {
-    throw new Error(`Unsupported context storage kind: ${String(value)}`);
-  }
+function preferredStorageKind(owner: ContextOffloadOwner): ContextBlobStorageKind {
+  return owner.kind === 'read_image_snapshot' ? 'managed_file' : 'inline';
+}
+
+function managedFileStagingPath(target: string, blobId: string): string {
+  return join(dirname(target), `.${blobId}.publish.tmp`);
 }
 
 function isOwnerKind(value: unknown): value is ContextOffloadOwner['kind'] {

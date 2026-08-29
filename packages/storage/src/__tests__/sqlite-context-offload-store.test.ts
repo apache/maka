@@ -20,7 +20,7 @@
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { mkdtemp, readFile, readdir, rm, stat, symlink, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, readdir, rm, stat, symlink, unlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
@@ -134,7 +134,6 @@ test('stores managed binary values as durable file locators instead of SQLite pa
     owner: { kind: 'read_image_snapshot', ownerId: 'read-call-1' },
     bytes,
     mediaType: 'image/png',
-    storageKind: 'managed_file',
   });
   assert.equal(stored.ok, true);
   if (!stored.ok) return;
@@ -209,6 +208,52 @@ test('stores managed binary values as durable file locators instead of SQLite pa
   afterGc.close();
 });
 
+test('repairs a missing managed blob when an inline owner retries identical bytes', async (t) => {
+  const fixture = await createFixture(t);
+  const bytes = new TextEncoder().encode('shared-value');
+  const tool = await fixture.store.put({
+    sessionId: 'session-1',
+    owner: { kind: 'tool_result_archive', ownerId: 'tool-1' },
+    bytes,
+    mediaType: 'application/octet-stream',
+  });
+  const image = await fixture.store.put({
+    sessionId: 'session-1',
+    owner: { kind: 'read_image_snapshot', ownerId: 'read-1' },
+    bytes,
+    mediaType: 'image/png',
+  });
+  assert.equal(tool.ok, true);
+  assert.equal(image.ok, true);
+  if (!tool.ok || !image.ok) return;
+
+  const blobId = sha256(bytes);
+  const valuePath = join(
+    fixture.root,
+    CONTEXT_OFFLOAD_VALUES_DIRECTORY_NAME,
+    `sha256/${blobId.slice(0, 2)}/${blobId}`,
+  );
+  await unlink(valuePath);
+
+  assert.deepEqual(
+    await fixture.store.put({
+      sessionId: 'session-1',
+      owner: { kind: 'tool_result_archive', ownerId: 'tool-1' },
+      bytes,
+      mediaType: 'application/octet-stream',
+    }),
+    tool,
+  );
+  assert.deepEqual(
+    await fixture.store.read({
+      sessionId: 'session-1',
+      refId: tool.record.refId,
+      maxBytes: bytes.byteLength,
+    }),
+    { ok: true, record: tool.record, bytes },
+  );
+});
+
 test('removes managed publication state when quota admission fails', async (t) => {
   const fixture = await createFixture(t, {
     ownerMaxBytes: TEST_OWNER_MAX_BYTES,
@@ -223,7 +268,6 @@ test('removes managed publication state when quota admission fails', async (t) =
       owner: { kind: 'read_image_snapshot', ownerId: 'read-call-1' },
       bytes,
       mediaType: 'image/png',
-      storageKind: 'managed_file',
     }),
     { ok: false, reason: 'workspace_quota_exceeded' },
   );
@@ -301,6 +345,83 @@ test('recovers a durable managed-file publication intent after process exit', as
   afterRecovery.close();
 });
 
+test('recovers deterministic managed-file staging after process exit', async (t) => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-context-offload-staging-crash-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  await assert.rejects(
+    execFileAsync(process.execPath, [managedPublicationCrashChild], {
+      env: {
+        ...process.env,
+        MAKA_CONTEXT_OFFLOAD_CRASH_ROOT: root,
+        MAKA_CONTEXT_OFFLOAD_CRASH_POINT: 'after_managed_file_staging',
+        NODE_NO_WARNINGS: '1',
+      },
+      windowsHide: true,
+    }),
+    (error: unknown) => error instanceof Error && 'code' in error && Number(error.code) === 73,
+  );
+
+  const bytes = new TextEncoder().encode('crash-safe-managed-value');
+  const blobId = sha256(bytes);
+  const directory = join(
+    root,
+    CONTEXT_OFFLOAD_VALUES_DIRECTORY_NAME,
+    `sha256/${blobId.slice(0, 2)}`,
+  );
+  const stagingPath = join(directory, `.${blobId}.publish.tmp`);
+  assert.deepEqual(new Uint8Array(await readFile(stagingPath)), bytes);
+
+  const path = join(root, CONTEXT_OFFLOAD_DATABASE_NAME);
+  const recovered = new SqliteContextOffloadStore(path, { limits: defaultLimits() });
+  t.after(() => recovered.close());
+  assert.deepEqual(await recovered.usage(), {
+    references: 0,
+    logicalBytes: 0,
+    physicalBytes: bytes.byteLength,
+  });
+  assert.deepEqual(
+    await recovered.collectGarbage({ olderThan: 1, maxBlobs: 1, maxBytes: bytes.byteLength }),
+    { deletedBlobs: 0, deletedBytes: 0, hasMore: false },
+  );
+  await assert.rejects(stat(stagingPath), (error) => isNodeError(error, 'ENOENT'));
+  assert.equal((await recovered.usage()).physicalBytes, 0);
+});
+
+test('reports continuation while pending managed-file deletions remain', async (t) => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-context-offload-pending-files-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const values = ['pending-one', 'pending-two', 'pending-three'];
+  for (const [index, value] of values.entries()) {
+    await assert.rejects(
+      execFileAsync(process.execPath, [managedPublicationCrashChild], {
+        env: {
+          ...process.env,
+          MAKA_CONTEXT_OFFLOAD_CRASH_ROOT: root,
+          MAKA_CONTEXT_OFFLOAD_CRASH_POINT: 'after_managed_file_staging',
+          MAKA_CONTEXT_OFFLOAD_OWNER_ID: `read-${index}`,
+          MAKA_CONTEXT_OFFLOAD_VALUE: value,
+          NODE_NO_WARNINGS: '1',
+        },
+        windowsHide: true,
+      }),
+      (error: unknown) => error instanceof Error && 'code' in error && Number(error.code) === 73,
+    );
+  }
+
+  const path = join(root, CONTEXT_OFFLOAD_DATABASE_NAME);
+  const recovered = new SqliteContextOffloadStore(path, { limits: defaultLimits() });
+  t.after(() => recovered.close());
+  const totalBytes = values.reduce((total, value) => total + Buffer.byteLength(value), 0);
+  assert.equal((await recovered.usage()).physicalBytes, totalBytes);
+  for (const hasMore of [true, true, false]) {
+    assert.deepEqual(
+      await recovered.collectGarbage({ olderThan: 1, maxBlobs: 1, maxBytes: totalBytes }),
+      { deletedBlobs: 0, deletedBytes: 0, hasMore },
+    );
+  }
+  assert.equal((await recovered.usage()).physicalBytes, 0);
+});
+
 test('rejects a managed-value directory that resolves outside the Storage Root', async (t) => {
   const fixture = await createFixture(t);
   const outside = await mkdtemp(join(tmpdir(), 'maka-context-offload-outside-'));
@@ -317,7 +438,6 @@ test('rejects a managed-value directory that resolves outside the Storage Root',
       owner: { kind: 'read_image_snapshot', ownerId: 'read-call-1' },
       bytes: new TextEncoder().encode('image'),
       mediaType: 'image/png',
-      storageKind: 'managed_file',
     }),
     { ok: false, reason: 'unavailable' },
   );

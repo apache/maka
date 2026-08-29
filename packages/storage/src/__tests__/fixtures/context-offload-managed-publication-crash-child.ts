@@ -36,15 +36,20 @@ const store = new SqliteContextOffloadStore(join(root, CONTEXT_OFFLOAD_DATABASE_
     workspacePhysicalBytes: 32 * 1024 * 1024,
   },
   failpoint(point) {
-    if (point === 'after_managed_file_publish') process.exit(73);
+    const requested = process.env.MAKA_CONTEXT_OFFLOAD_CRASH_POINT ?? 'after_managed_file_publish';
+    if (point === requested) process.exit(73);
   },
 });
 
 await store.put({
   sessionId: 'session-1',
-  owner: { kind: 'read_image_snapshot', ownerId: 'read-call-1' },
-  bytes: new TextEncoder().encode('crash-safe-managed-value'),
+  owner: {
+    kind: 'read_image_snapshot',
+    ownerId: process.env.MAKA_CONTEXT_OFFLOAD_OWNER_ID ?? 'read-call-1',
+  },
+  bytes: new TextEncoder().encode(
+    process.env.MAKA_CONTEXT_OFFLOAD_VALUE ?? 'crash-safe-managed-value',
+  ),
   mediaType: 'image/png',
-  storageKind: 'managed_file',
 });
 throw new Error('Managed-file publication crash failpoint was not reached');
