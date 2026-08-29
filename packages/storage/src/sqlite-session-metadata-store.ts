@@ -93,6 +93,7 @@ import {
   type StoredMessage,
   type SubagentSessionParent,
   type WorkHubDelegationAssignedMessage,
+  type WorkHubDelegationSupersededMessage,
   WORKHUB_COORDINATION_SESSION_ID,
   WORKHUB_COORDINATION_SESSION_ROLE,
   decodeCanonicalMessage,
@@ -226,6 +227,7 @@ export interface SqliteWorkHubMessageAssignmentRequest {
   readonly assignment: WorkHubDelegationAssignedMessage;
   readonly admission: PendingMessageAdmission;
   readonly projection: SessionCatalogMessageProjection;
+  readonly supersession?: WorkHubDelegationSupersededMessage;
   readonly create?: {
     readonly header: SessionHeader;
     readonly requestFingerprint: string;
@@ -1694,6 +1696,12 @@ export class SqliteSessionMetadataStore {
   ): Promise<SqliteWorkHubMessageAssignmentResult> {
     const assignmentJson = JSON.stringify(request.assignment);
     const assignment = decodeCanonicalMessage(JSON.parse(assignmentJson) as unknown);
+    const supersessionJson = request.supersession
+      ? JSON.stringify(request.supersession)
+      : undefined;
+    const supersession = supersessionJson
+      ? decodeCanonicalMessage(JSON.parse(supersessionJson) as unknown)
+      : undefined;
     const admission = normalizePendingMessageAdmission(request.admission);
     const suffix = createHash('sha256')
       .update(request.assignment.actionId)
@@ -1718,6 +1726,28 @@ export class SqliteSessionMetadataStore {
       admission.disposition !== 'steering'
     ) {
       throw new SessionMetadataConflictError('Invalid WorkHub assignment identity');
+    }
+    if (
+      (assignment.replacesActionId === undefined) !==
+        (assignment.replacesDelegationId === undefined) ||
+      (assignment.replacesDelegationId === undefined) !== (supersession === undefined) ||
+      (supersession !== undefined &&
+        (supersession.type !== 'workhub_coordination' ||
+          supersession.kind !== 'delegation_superseded' ||
+          supersession.actionId !== assignment.actionId ||
+          supersession.actionFingerprint !== assignment.actionFingerprint ||
+          supersession.coordinationTurnId !== assignment.coordinationTurnId ||
+          supersession.turnId !== assignment.coordinationTurnId ||
+          supersession.supersededActionId !== assignment.replacesActionId ||
+          supersession.supersededDelegationId !== assignment.replacesDelegationId ||
+          supersession.replacementDelegationId !== assignment.delegationId ||
+          supersession.id !==
+            `whx_${createHash('sha256')
+              .update(supersession.supersededDelegationId)
+              .digest('hex')
+              .slice(0, 48)}`))
+    ) {
+      throw new SessionMetadataConflictError('Invalid WorkHub supersession identity');
     }
     const create = request.create
       ? {
@@ -1767,6 +1797,31 @@ export class SqliteSessionMetadataStore {
           targetCreated: false,
           assignment: existingAssignment,
         };
+      }
+
+      if (supersession && assignment.replacesActionId && assignment.replacesDelegationId) {
+        const replacedSuffix = createHash('sha256')
+          .update(assignment.replacesActionId)
+          .digest('hex')
+          .slice(0, 48);
+        const replaced = this.readMessageByIdSync(
+          WORKHUB_COORDINATION_SESSION_ID,
+          `wha_${replacedSuffix}`,
+        );
+        if (
+          replaced?.type !== 'workhub_coordination' ||
+          replaced.kind !== 'delegation_assigned' ||
+          replaced.delegationId !== assignment.replacesDelegationId
+        ) {
+          throw new SessionMetadataConflictError('WorkHub supersession source is unavailable');
+        }
+        const existingSupersession = this.readMessageByIdSync(
+          WORKHUB_COORDINATION_SESSION_ID,
+          supersession.id,
+        );
+        if (existingSupersession) {
+          throw new SessionMetadataConflictError('WorkHub delegation is already superseded');
+        }
       }
 
       let targetCreated = false;
@@ -1827,7 +1882,12 @@ export class SqliteSessionMetadataStore {
       this.insertSessionMessagesSync(
         WORKHUB_COORDINATION_SESSION_ID,
         sequenceRow.last_sequence + 1,
-        [{ message: assignment, json: assignmentJson }],
+        [
+          { message: assignment, json: assignmentJson },
+          ...(supersession && supersessionJson
+            ? [{ message: supersession, json: supersessionJson }]
+            : []),
+        ],
       );
       this.updateCatalogProjectionSync(WORKHUB_COORDINATION_SESSION_ID, request.projection, false);
       return { kind: 'assigned' as const, targetCreated, assignment };
@@ -6829,6 +6889,8 @@ function sameWorkHubAssignmentRequest(
       disposition: existing.disposition,
       userText: existing.userText,
       create: existing.create,
+      replacesActionId: existing.replacesActionId,
+      replacesDelegationId: existing.replacesDelegationId,
     },
     {
       actionId: requested.actionId,
@@ -6838,6 +6900,8 @@ function sameWorkHubAssignmentRequest(
       disposition: requested.disposition,
       userText: requested.userText,
       create: requested.create,
+      replacesActionId: requested.replacesActionId,
+      replacesDelegationId: requested.replacesDelegationId,
     },
   );
 }

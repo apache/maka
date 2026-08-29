@@ -28,6 +28,7 @@ import {
   WORKHUB_COORDINATION_SESSION_ID,
   WORKHUB_COORDINATION_SESSION_ROLE,
   type WorkHubDelegationAssignedMessage,
+  type WorkHubDelegationSupersededMessage,
 } from '@maka/core/session';
 import { createSessionStore, isSessionNotFoundError } from '../session-store.js';
 
@@ -129,6 +130,86 @@ test('rolls create_new Session back when assignment validation fails', async () 
       isSessionNotFoundError(error),
     );
     assert.deepEqual(await store.readMessagesSnapshot(WORKHUB_COORDINATION_SESSION_ID), []);
+  } finally {
+    await store.close?.();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('atomically commits a replacement assignment with the old-link supersession', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-workhub-replacement-'));
+  const store = createSessionStore(root);
+  try {
+    await createCoordinationSession(store, root);
+    const source = await store.create({
+      cwd: root,
+      name: 'Payments',
+      llmConnectionSlug: 'test',
+      model: 'test',
+      permissionMode: 'ask',
+    });
+    const destination = await store.create({
+      cwd: root,
+      name: 'Login',
+      llmConnectionSlug: 'test',
+      model: 'test',
+      permissionMode: 'ask',
+    });
+    const original = assignmentRequest('original-action', source.id, 'Payments', 'source-turn');
+    await store.assignWorkHubMessage(original);
+
+    const base = assignmentRequest(
+      'replacement-action',
+      destination.id,
+      'Login',
+      'destination-turn',
+    );
+    const assignment: WorkHubDelegationAssignedMessage = {
+      ...base.assignment,
+      schemaVersion: 2,
+      replacesActionId: original.assignment.actionId,
+      replacesDelegationId: original.assignment.delegationId,
+    };
+    const supersession: WorkHubDelegationSupersededMessage = {
+      type: 'workhub_coordination',
+      id: `whx_${createHash('sha256')
+        .update(original.assignment.delegationId)
+        .digest('hex')
+        .slice(0, 48)}`,
+      turnId: assignment.actionId,
+      ts: assignment.ts,
+      schemaVersion: 2,
+      kind: 'delegation_superseded',
+      actionId: assignment.actionId,
+      actionFingerprint: assignment.actionFingerprint,
+      coordinationTurnId: assignment.coordinationTurnId,
+      supersededActionId: original.assignment.actionId,
+      supersededDelegationId: original.assignment.delegationId,
+      replacementDelegationId: assignment.delegationId,
+    };
+
+    const committed = await store.assignWorkHubMessage({
+      ...base,
+      assignment,
+      supersession,
+    });
+
+    assert.equal(committed.kind, 'assigned');
+    assert.deepEqual(
+      await store.readWorkHubSupersession(original.assignment.delegationId),
+      supersession,
+    );
+    assert.deepEqual(await store.readWorkHubAssignment(assignment.actionId), assignment);
+    assert.deepEqual(
+      await store.readMessageAdmission(destination.id, assignment.targetMessageId),
+      base.admission,
+    );
+    assert.deepEqual(
+      (await store.readMessagesSnapshot(WORKHUB_COORDINATION_SESSION_ID))
+        .filter((message) => message.type === 'workhub_coordination')
+        .map((message) => message.kind),
+      ['delegation_assigned', 'delegation_assigned', 'delegation_superseded'],
+    );
   } finally {
     await store.close?.();
     await rm(root, { recursive: true, force: true });

@@ -76,7 +76,7 @@ test('WorkHub rebuilds delegated execution feedback after navigating away and ba
   ).toHaveText('已完成');
 });
 
-test('WorkHub defers destructive correction until linked delegation exists', async ({
+test('WorkHub replaces the exact linked delegation across Sessions', async ({
   window: page,
 }) => {
   const sourceSessionName = '检查支付回调重复投递时的幂等性';
@@ -122,8 +122,16 @@ test('WorkHub defers destructive correction until linked delegation exists', asy
   const correctionTurn = page.locator('.workhub-turn', {
     hasText: '不是这个，换成登录稳定性，补充刷新令牌失败判定。',
   });
-  await expect(correctionTurn.locator('.workhub-error')).toContainText(
-    '跨 Session 更正将在持久委托关联完成后开放',
+  await expect(
+    correctionTurn.locator('.workhub-submitted-session strong'),
+  ).toHaveText('登录稳定性');
+  await expect(correctionTurn.locator('.workhub-error')).toHaveCount(0);
+  await expect(
+    continuedTurn.locator('.workhub-submitted-state'),
+  ).toHaveText('已中止');
+  await expect(
+    correctionTurn.locator('.workhub-submitted-state'),
+  ).toContainText(
+    /^(?:活跃|运行中|等待中|已完成)$/u,
   );
-  await expect(correctionTurn.locator('.workhub-submitted')).toHaveCount(0);
 });

@@ -19,7 +19,7 @@
 
 import type { DatabaseSync } from 'node:sqlite';
 
-export const SQLITE_SESSION_METADATA_SCHEMA_VERSION = 35;
+export const SQLITE_SESSION_METADATA_SCHEMA_VERSION = 36;
 export const SQLITE_SESSION_MESSAGE_CHUNK_BYTES = 64 * 1024;
 export const SQLITE_SESSION_MESSAGE_CHUNK_MARKER = '{"$maka":"session-message-chunks-v1"}';
 
@@ -1231,6 +1231,15 @@ const MIGRATIONS: ReadonlyMap<number, string> = new Map([
     ALTER TABLE message_admissions
       ADD COLUMN skill_invocation_json TEXT NOT NULL
       DEFAULT '{"loaded":[],"failed":[],"receipts":[]}';
+  `,
+  ],
+  [
+    36,
+    `
+    -- WorkHub replacement intent and atomic supersession records require the
+    -- schema-v2 canonical message decoder. Prevent older builds from opening
+    -- a profile after either record has been committed.
+    SELECT 1;
   `,
   ],
 ]);

@@ -482,6 +482,26 @@ test('message query reports only durable cancellation proof', async () => {
   });
 });
 
+test('exact pending cancellation removes only the linked Message', async () => {
+  const fixture = createFixture();
+  fixture.coordinator.reserveRootTurn(ROOT);
+  await submit(fixture, 'linked-message', 'wrong delegation', 'next_turn');
+  await submit(fixture, 'unrelated-message', 'keep this queued', 'next_turn');
+
+  assert.deepEqual(
+    await fixture.coordinator.cancelMessageIfPending(ROOT.sessionId, 'linked-message'),
+    { kind: 'cancelled' },
+  );
+  assert.deepEqual(
+    fixture.coordinator.projection(ROOT.sessionId).followup.map((entry) => entry.messageId),
+    ['unrelated-message'],
+  );
+  assert.deepEqual(
+    await fixture.coordinator.cancelMessageIfPending(ROOT.sessionId, 'linked-message'),
+    { kind: 'cancelled' },
+  );
+});
+
 test('message execution query reports the Turn that durably owns each Message', async () => {
   const fixture = createFixture();
   const pendingContent = { text: 'not handed off yet' };

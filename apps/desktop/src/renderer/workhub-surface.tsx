@@ -110,7 +110,7 @@ export function workHubSurfaceFailure(error: unknown): WorkHubSurfaceFailure {
   ) {
     return 'candidates_changed';
   }
-  if (/linked correction requires persistent delegation support/iu.test(message)) {
+  if (/linked correction requires (?:persistent delegation support|an active durable delegation)/iu.test(message)) {
     return 'linked_correction_unavailable';
   }
   if (/waiting for user input/iu.test(message)) return 'target_waiting';

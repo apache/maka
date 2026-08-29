@@ -57,7 +57,7 @@ test('surface turns Action Gate rejections into safe actionable failures', () =>
   );
   assert.equal(
     workHubSurfaceFailure(
-      new Error('WorkHub linked correction requires persistent delegation support'),
+      new Error('WorkHub linked correction requires an active durable delegation'),
     ),
     'linked_correction_unavailable',
   );
@@ -127,12 +127,14 @@ test('durable delegation renders every projected target state as a navigable res
       text: 'Continue payments',
       state: 'completed',
       assignment: {
+        actionId: 'action-1',
         delegationId: 'delegation-1',
         targetSessionId: 'payment',
         targetSessionName: 'Payments',
         targetMessageId: 'payment-message',
         targetTurnId: 'payment-turn',
         feedbackState: state,
+        linkState: 'active',
       },
       updatedAt: 10,
     };
@@ -408,6 +410,37 @@ test('real Session projection creates new guide topics and preserves origin ambi
           return {
             disposition: 'create_new',
             targetSessionId: target.id,
+            targetTurnId: admitted.turnId,
+          };
+        }
+        if (input.proposal.disposition === 'replace') {
+          if (input.proposal.target.disposition === 'create_new') {
+            const target = await createSession({ name: input.proposal.target.title });
+            const admitted = await send(target.id, {
+              type: 'send',
+              turnId: input.actionId,
+              text: input.userText,
+            });
+            return {
+              disposition: 'replace',
+              replacementDisposition: 'create_new',
+              targetSessionId: target.id,
+              targetTurnId: admitted.turnId,
+            };
+          }
+          const targetSessionId = input.proposal.target.candidateRef.replace(
+            /^candidate-/u,
+            '',
+          );
+          const admitted = await send(targetSessionId, {
+            type: 'send',
+            turnId: input.actionId,
+            text: input.userText,
+          });
+          return {
+            disposition: 'replace',
+            replacementDisposition: 'delegate_existing',
+            targetSessionId,
             targetTurnId: admitted.turnId,
           };
         }

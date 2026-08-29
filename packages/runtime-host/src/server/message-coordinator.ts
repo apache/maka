@@ -178,6 +178,11 @@ export interface HostMessageStopFence {
   deliverStop(): Promise<void>;
 }
 
+export type HostMessageCancellationDisposition =
+  | { readonly kind: 'cancelled' }
+  | { readonly kind: 'owned'; readonly turnId: string; readonly runId: string }
+  | { readonly kind: 'recovering' };
+
 /** Root execution operations that must share the message coordinator's Session gate. */
 export interface HostMessageRootPort {
   readSessionHeader(sessionId: string): Promise<HostMessageSessionHeader | null>;
@@ -499,6 +504,83 @@ export class HostMessageCoordinator implements RuntimeMessageAuthority {
       }
     }
     return success({ resolutions });
+  }
+
+  /**
+   * Cancels exactly one durable pending Message, or returns the Turn that has
+   * already consumed it. This is the target Session's ordinary Message
+   * authority; WorkHub never edits the queue or admission tables directly.
+   */
+  cancelMessageIfPending(
+    sessionId: string,
+    messageId: string,
+  ): Promise<HostMessageCancellationDisposition> {
+    return this.#sessionAdmission.run(sessionId, async () => {
+      const receipt = await this.#durableProof.readRootTurnSourceMessageReceipt(
+        sessionId,
+        messageId,
+      );
+      if (
+        receipt?.admission.sessionId === sessionId &&
+        receipt.sourceMessage.messageId === messageId
+      ) {
+        return {
+          kind: 'owned',
+          turnId: receipt.admission.turnId,
+          runId: receipt.admission.runId,
+        };
+      }
+      const steering = await this.#durableProof.readImmutableSteeringMessageProof(
+        sessionId,
+        messageId,
+      );
+      if (
+        steering?.event.sessionId === sessionId &&
+        steering.event.refs?.providerEventId === messageId
+      ) {
+        return {
+          kind: 'owned',
+          turnId: steering.event.turnId,
+          runId: steering.event.runId,
+        };
+      }
+      if (await this.#admissions.hasCancelledMessageAdmission(sessionId, messageId)) {
+        return { kind: 'cancelled' };
+      }
+      const pending = await this.#admissions.readMessageAdmission(sessionId, messageId);
+      if (!pending || pending.sessionId !== sessionId) return { kind: 'recovering' };
+
+      const state = this.#sessions.get(sessionId);
+      const inFlight =
+        state && [...state.inFlight.values()].some((entry) => entry.messageId === messageId);
+      if (inFlight) return { kind: 'recovering' };
+      const steeringIndex =
+        state?.steering.findIndex((entry) => entry.messageId === messageId) ?? -1;
+      const followupIndex =
+        state?.followup.findIndex((entry) => entry.messageId === messageId) ?? -1;
+      if (
+        state?.transition &&
+        state.transition.entries.some((entry) => entry.messageId === messageId)
+      ) {
+        return { kind: 'recovering' };
+      }
+
+      await this.#admissions.cancelMessageAdmissions(sessionId, [messageId]);
+      if (state && steeringIndex >= 0) {
+        const [entry] = state.steering.splice(steeringIndex, 1);
+        if (entry) this.#releaseEntry(entry);
+        this.#mutated(state);
+        this.#maybeReclaim(sessionId, state);
+      } else if (state && followupIndex >= 0) {
+        const [entry] = state.followup.splice(followupIndex, 1);
+        if (entry) this.#releaseEntry(entry);
+        this.#mutated(state);
+        this.#maybeReclaim(sessionId, state);
+      } else {
+        this.#onProjectionChanged(sessionId);
+      }
+      return { kind: 'cancelled' };
+    });
   }
 
   retireSessions(sessionIds: readonly string[]): void {

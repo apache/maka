@@ -33,6 +33,7 @@ import {
   isDeepResearchSession,
   type SessionHeader,
   WORKHUB_COORDINATION_SESSION_ID,
+  WORKHUB_COORDINATION_REPLACEMENT_SCHEMA_VERSION,
 } from '@maka/core/session';
 import { AgentGraphCoordinator } from '@maka/runtime/stream-graph-coordinator';
 import { AgentGraphSupervisorWakeCoordinator } from '@maka/runtime/agent-graph-supervisor-wake';
@@ -1281,6 +1282,25 @@ export async function createExecutionRuntimeHostComposition(
       continuity: continuityCoordinator,
       executions: coordinator,
       sessionActions: {
+        retireDelegation: async (assignment) => {
+          const disposition = await messages.cancelMessageIfPending(
+            assignment.targetSessionId,
+            assignment.targetMessageId,
+          );
+          if (disposition.kind === 'recovering') {
+            throw new WorkHubActionEffectFailure(
+              'operation_unavailable',
+              'WorkHub is still resolving the delegated Message owner',
+            );
+          }
+          if (disposition.kind === 'owned') {
+            await coordinator.stopRoot({
+              sessionId: assignment.targetSessionId,
+              turnId: disposition.turnId,
+              runId: disposition.runId,
+            });
+          }
+        },
         assign: async (input) => {
           const durable = await stores.sessionStore.readWorkHubAssignment(input.actionId);
           if (durable) {
@@ -1319,13 +1339,36 @@ export async function createExecutionRuntimeHostComposition(
                 const turnId = steered ? rootState.turnId : `wht_${suffix}`;
                 const runId = steered ? rootState.runId : `whr_${suffix}`;
                 const assignedAt = Date.now();
+                const delegationId = `whd_${suffix}`;
+                const supersession =
+                  input.replacesActionId && input.replacesDelegationId
+                    ? {
+                        type: 'workhub_coordination' as const,
+                        id: `whx_${createHash('sha256')
+                          .update(input.replacesDelegationId, 'utf8')
+                          .digest('hex')
+                          .slice(0, 48)}`,
+                        turnId: input.actionId,
+                        ts: assignedAt,
+                        schemaVersion: WORKHUB_COORDINATION_REPLACEMENT_SCHEMA_VERSION,
+                        kind: 'delegation_superseded' as const,
+                        actionId: input.actionId,
+                        actionFingerprint: input.actionFingerprint,
+                        coordinationTurnId: input.actionId,
+                        supersededActionId: input.replacesActionId,
+                        supersededDelegationId: input.replacesDelegationId,
+                        replacementDelegationId: delegationId,
+                      }
+                    : undefined;
                 const result = await stores.sessionStore.assignWorkHubMessage({
                   assignment: {
                     type: 'workhub_coordination',
                     id: `wha_${suffix}`,
                     turnId: input.actionId,
                     ts: assignedAt,
-                    schemaVersion: 1,
+                    schemaVersion: supersession
+                      ? WORKHUB_COORDINATION_REPLACEMENT_SCHEMA_VERSION
+                      : 1,
                     kind: 'delegation_assigned',
                     actionId: input.actionId,
                     actionFingerprint: input.actionFingerprint,
@@ -1334,11 +1377,17 @@ export async function createExecutionRuntimeHostComposition(
                     targetSessionName: input.targetSessionName,
                     targetTurnId: turnId,
                     targetMessageId: messageId,
-                    delegationId: `whd_${suffix}`,
+                    delegationId,
                     disposition: input.disposition,
                     userText: input.userText,
                     ...(steered ? { steered: true as const } : {}),
                     ...(input.create ? { create: input.create } : {}),
+                    ...(input.replacesActionId && input.replacesDelegationId
+                      ? {
+                          replacesActionId: input.replacesActionId,
+                          replacesDelegationId: input.replacesDelegationId,
+                        }
+                      : {}),
                   },
                   admission: {
                     sessionId: input.targetSessionId,
@@ -1354,6 +1403,7 @@ export async function createExecutionRuntimeHostComposition(
                     admittedAt: assignedAt,
                   },
                   ...(create ? { create } : {}),
+                  ...(supersession ? { supersession } : {}),
                 });
                 // Keep the durable steering identity and its live queue owner
                 // under one Session admission. A terminal transition must not

@@ -19,6 +19,11 @@
 
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
+import type {
+  WorkHubDelegationAssignedMessage,
+  WorkHubDelegationReplacementRequestedMessage,
+  WorkHubDelegationSupersededMessage,
+} from '@maka/core/session';
 import {
   WorkHubActionEffectFailure,
   WorkHubActionGateFailure,
@@ -26,6 +31,7 @@ import {
   type WorkHubActionGateEffects,
   type WorkHubActionGateSession,
   type WorkHubDelegationAssignmentInput,
+  type WorkHubDelegationReplacementInput,
 } from '../server/workhub-coordination-action-gate.js';
 import type { ConnectionContext } from '../server/operation-dispatcher.js';
 
@@ -306,6 +312,194 @@ describe('WorkHub Coordination Action Gate', () => {
     assert.deepEqual(replay, first);
     assert.equal(effects.assignments.length, 1);
   });
+
+  test('replaces only an explicitly confirmed durable delegation', async () => {
+    const effects = fakeEffects([session('source'), session('destination')]);
+    effects.assignmentRecords.set(
+      'source-action',
+      assignmentRecord(
+        {
+          actionId: 'source-action',
+          actionFingerprint: `sha256:${'a'.repeat(64)}`,
+          targetSessionId: 'source',
+          targetSessionName: 'source',
+          disposition: 'delegate_existing',
+          userText: 'Wrong target',
+        },
+        'source-turn',
+      ),
+    );
+    const gate = new WorkHubCoordinationActionGate(effects);
+    const snapshot = await gate.candidates();
+    const destination = snapshot.candidates.find(
+      (candidate) => candidate.sessionId === 'destination',
+    )!;
+    const input = {
+      actionId: 'replacement-action',
+      userText: 'No, send this to destination',
+      candidateSetId: snapshot.candidateSetId,
+      proposal: {
+        disposition: 'replace' as const,
+        replacesActionId: 'source-action',
+        target: {
+          disposition: 'delegate_existing' as const,
+          candidateRef: destination.candidateRef,
+        },
+      },
+    };
+
+    await assert.rejects(
+      gate.act(input, CONTEXT),
+      (error) => error instanceof WorkHubActionGateFailure && error.code === 'action_conflict',
+    );
+    await assert.rejects(
+      gate.act(
+        {
+          ...input,
+          userText: 'Send this to destination',
+          confirmation: { kind: 'user_correction' as const },
+        },
+        CONTEXT,
+      ),
+      (error) => error instanceof WorkHubActionGateFailure && error.code === 'action_conflict',
+    );
+    await assert.rejects(
+      gate.act(
+        {
+          ...input,
+          userText: 'No, keep going with the current work',
+          confirmation: { kind: 'user_correction' as const },
+        },
+        CONTEXT,
+      ),
+      (error) => error instanceof WorkHubActionGateFailure && error.code === 'action_conflict',
+    );
+    const result = await gate.act(
+      { ...input, confirmation: { kind: 'user_correction' as const } },
+      CONTEXT,
+    );
+
+    assert.deepEqual(result, {
+      disposition: 'replace',
+      replacementDisposition: 'delegate_existing',
+      targetSessionId: 'destination',
+      targetTurnId: 'turn-replacement-action',
+    });
+    assert.equal(effects.replacements.size, 1);
+    assert.equal(effects.retirements[0]?.actionId, 'source-action');
+    assert.equal(effects.assignments[0]?.replacesActionId, 'source-action');
+    assert.equal(
+      effects.supersessions.get('delegation-source-action')?.actionId,
+      'replacement-action',
+    );
+  });
+
+  test('recovers a prepared replacement after retirement and before assignment', async () => {
+    const effects = fakeEffects([session('source'), session('destination')]);
+    effects.assignmentRecords.set(
+      'source-action',
+      assignmentRecord(
+        {
+          actionId: 'source-action',
+          actionFingerprint: `sha256:${'b'.repeat(64)}`,
+          targetSessionId: 'source',
+          targetSessionName: 'source',
+          disposition: 'delegate_existing',
+          userText: 'Wrong target',
+        },
+        'source-turn',
+      ),
+    );
+    const snapshot = await new WorkHubCoordinationActionGate(effects).candidates();
+    const input = {
+      actionId: 'recover-replacement',
+      userText: 'No, move this to destination',
+      candidateSetId: snapshot.candidateSetId,
+      confirmation: { kind: 'user_correction' as const },
+      proposal: {
+        disposition: 'replace' as const,
+        replacesActionId: 'source-action',
+        target: {
+          disposition: 'delegate_existing' as const,
+          candidateRef: snapshot.candidates.find(
+            (candidate) => candidate.sessionId === 'destination',
+          )!.candidateRef,
+        },
+      },
+    };
+    const assign = effects.assign;
+    effects.assign = async () => {
+      throw new WorkHubActionEffectFailure('internal_failure', 'simulated crash seam');
+    };
+
+    await assert.rejects(new WorkHubCoordinationActionGate(effects).act(input, CONTEXT));
+    assert.equal(effects.replacements.has('delegation-source-action'), true);
+    assert.equal(effects.retirements.length, 1);
+    assert.equal(effects.assignmentRecords.has(input.actionId), false);
+
+    effects.assign = assign;
+    const recovered = await new WorkHubCoordinationActionGate(effects).act(input, CONTEXT);
+    assert.equal(recovered.disposition, 'replace');
+    assert.equal(effects.retirements.length, 2);
+    assert.equal(effects.assignmentRecords.has(input.actionId), true);
+    assert.equal(effects.supersessions.has('delegation-source-action'), true);
+  });
+
+  test('the first durable correction intent owns a delegation', async () => {
+    const effects = fakeEffects([session('source'), session('first'), session('second')]);
+    effects.assignmentRecords.set(
+      'source-action',
+      assignmentRecord(
+        {
+          actionId: 'source-action',
+          actionFingerprint: `sha256:${'c'.repeat(64)}`,
+          targetSessionId: 'source',
+          targetSessionName: 'source',
+          disposition: 'delegate_existing',
+          userText: 'Start source work',
+        },
+        'source-turn',
+      ),
+    );
+    const snapshot = await new WorkHubCoordinationActionGate(effects).candidates();
+    const inputFor = (actionId: string, targetId: string) => ({
+      actionId,
+      userText: `No, use ${targetId} instead`,
+      candidateSetId: snapshot.candidateSetId,
+      confirmation: { kind: 'user_correction' as const },
+      proposal: {
+        disposition: 'replace' as const,
+        replacesActionId: 'source-action',
+        target: {
+          disposition: 'delegate_existing' as const,
+          candidateRef: snapshot.candidates.find((candidate) => candidate.sessionId === targetId)!
+            .candidateRef,
+        },
+      },
+    });
+    const assign = effects.assign;
+    effects.assign = async () => {
+      throw new WorkHubActionEffectFailure('internal_failure', 'hold after durable intent');
+    };
+    await assert.rejects(
+      new WorkHubCoordinationActionGate(effects).act(
+        inputFor('first-correction', 'first'),
+        CONTEXT,
+      ),
+    );
+    effects.assign = assign;
+    await assert.rejects(
+      new WorkHubCoordinationActionGate(effects).act(
+        inputFor('second-correction', 'second'),
+        CONTEXT,
+      ),
+      (error) => error instanceof WorkHubActionGateFailure && error.code === 'action_conflict',
+    );
+    assert.equal(
+      effects.replacements.get('delegation-source-action')?.actionId,
+      'first-correction',
+    );
+  });
 });
 
 function session(
@@ -332,6 +526,9 @@ function fakeEffects(initialSessions: WorkHubActionGateSession[]) {
     string,
     { input: WorkHubDelegationAssignmentInput; result: { turnId: string } }
   >();
+  const assignmentRecords = new Map<string, WorkHubDelegationAssignedMessage>();
+  const replacements = new Map<string, WorkHubDelegationReplacementRequestedMessage>();
+  const supersessions = new Map<string, WorkHubDelegationSupersededMessage>();
   return {
     sessions: [...initialSessions],
     answers: [] as Array<{ turnId: string; text: string }>,
@@ -341,11 +538,21 @@ function fakeEffects(initialSessions: WorkHubActionGateSession[]) {
       assistantText: string;
     }>,
     assignments: [] as WorkHubDelegationAssignmentInput[],
+    assignmentRecords,
+    replacements,
+    supersessions,
+    retirements: [] as WorkHubDelegationAssignedMessage[],
     async listSessions() {
       return this.sessions;
     },
-    async readAssignment() {
-      return undefined;
+    async readAssignment(actionId: string) {
+      return assignmentRecords.get(actionId);
+    },
+    async readReplacement(delegationId: string) {
+      return replacements.get(delegationId);
+    },
+    async readSupersession(delegationId: string) {
+      return supersessions.get(delegationId);
     },
     async answer(input: { turnId: string; text: string }) {
       this.answers.push(input);
@@ -362,12 +569,90 @@ function fakeEffects(initialSessions: WorkHubActionGateSession[]) {
       }
       const result = { turnId: `turn-${input.actionId}` };
       durable.set(input.actionId, { input, result });
+      const record = assignmentRecord(input, result.turnId);
+      assignmentRecords.set(input.actionId, record);
+      if (input.replacesDelegationId) {
+        supersessions.set(input.replacesDelegationId, {
+          type: 'workhub_coordination',
+          id: `superseded-${input.actionId}`,
+          turnId: input.actionId,
+          ts: 3,
+          schemaVersion: 2,
+          kind: 'delegation_superseded',
+          actionId: input.actionId,
+          actionFingerprint: input.actionFingerprint,
+          coordinationTurnId: input.actionId,
+          supersededActionId: input.replacesActionId!,
+          supersededDelegationId: input.replacesDelegationId,
+          replacementDelegationId: record.delegationId,
+        });
+      }
       return result;
+    },
+    async prepareReplacement(input: WorkHubDelegationReplacementInput) {
+      const existing = replacements.get(input.replacesDelegationId);
+      if (existing) return existing;
+      const replacement: WorkHubDelegationReplacementRequestedMessage = {
+        type: 'workhub_coordination',
+        id: `replacement-${input.actionId}`,
+        turnId: input.actionId,
+        ts: 2,
+        schemaVersion: 2,
+        kind: 'delegation_replacement_requested',
+        actionId: input.actionId,
+        actionFingerprint: input.actionFingerprint,
+        coordinationTurnId: input.actionId,
+        targetSessionId: input.targetSessionId,
+        targetSessionName: input.targetSessionName,
+        disposition: input.disposition,
+        userText: input.userText,
+        ...(input.create ? { create: input.create } : {}),
+        replacesActionId: input.replacesActionId,
+        replacesDelegationId: input.replacesDelegationId,
+        replacedTargetSessionId: input.replacedTargetSessionId,
+        replacedTargetMessageId: input.replacedTargetMessageId,
+      };
+      replacements.set(input.replacesDelegationId, replacement);
+      return replacement;
+    },
+    async retireDelegation(assignment: WorkHubDelegationAssignedMessage) {
+      this.retirements.push(assignment);
     },
   } satisfies WorkHubActionGateEffects & {
     sessions: WorkHubActionGateSession[];
     answers: Array<{ turnId: string; text: string }>;
     clarifications: Array<{ turnId: string; userText: string; assistantText: string }>;
     assignments: WorkHubDelegationAssignmentInput[];
+    assignmentRecords: Map<string, WorkHubDelegationAssignedMessage>;
+    replacements: Map<string, WorkHubDelegationReplacementRequestedMessage>;
+    supersessions: Map<string, WorkHubDelegationSupersededMessage>;
+    retirements: WorkHubDelegationAssignedMessage[];
+  };
+}
+
+function assignmentRecord(
+  input: WorkHubDelegationAssignmentInput,
+  targetTurnId: string,
+): WorkHubDelegationAssignedMessage {
+  return {
+    type: 'workhub_coordination',
+    id: `assignment-${input.actionId}`,
+    turnId: input.actionId,
+    ts: 1,
+    schemaVersion: input.replacesDelegationId ? 2 : 1,
+    kind: 'delegation_assigned',
+    actionId: input.actionId,
+    actionFingerprint: input.actionFingerprint,
+    coordinationTurnId: input.actionId,
+    targetSessionId: input.targetSessionId,
+    targetSessionName: input.targetSessionName,
+    targetTurnId,
+    targetMessageId: `message-${input.actionId}`,
+    delegationId: `delegation-${input.actionId}`,
+    disposition: input.disposition,
+    userText: input.userText,
+    ...(input.create ? { create: input.create } : {}),
+    ...(input.replacesActionId ? { replacesActionId: input.replacesActionId } : {}),
+    ...(input.replacesDelegationId ? { replacesDelegationId: input.replacesDelegationId } : {}),
   };
 }

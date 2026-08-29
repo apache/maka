@@ -42,7 +42,7 @@ export type WorkHubRouteDecision =
       correctedFrom?: WorkHubSessionTarget;
     }
   | { kind: 'discussion' }
-  | { kind: 'new_session' };
+  | { kind: 'new_session'; correctedFrom?: WorkHubSessionTarget };
 
 export interface WorkHubRoutePolicy {
   resolve(input: {
@@ -116,6 +116,9 @@ function createWorkHubRoutePolicyVisit(): WorkHubRoutePolicy {
         return { kind: 'target', target: correctedFrom, evidence: 'recent_focus' };
       }
       if (correctionText && correctedFrom) {
+        if (looksLikeCorrectionCreation(text)) {
+          return { kind: 'new_session', correctedFrom };
+        }
         const alternatives = sessions.filter((session) =>
           session.target.sessionId !== correctedFrom.sessionId);
         const exactCorrection = rankExactSessions(correctionText, alternatives);
@@ -367,6 +370,12 @@ function naturalCorrectionTargetText(value: string): string | undefined {
   return value.match(
     /\b(?:not\s+(?:(?:this|that|the\s+current)(?:\s+(?:one|session|work|task))?|[^,.;\n]{1,32}\s+(?:session|work|task))|wrong\s+(?:one|session|work|task))\b[,.;\s]{0,4}(?:use|switch\s+to|change\s+to|move\s+to)\s+(.{2,})$/iu,
   )?.[1]?.trim();
+}
+
+function looksLikeCorrectionCreation(value: string): boolean {
+  return /(?:创建|新建|新开|开一个)(?:一个)?(?:全新的?|新的?)?(?:普通)?\s*(?:Session|会话|工作|任务)|\b(?:create|start|open)\s+(?:a\s+)?(?:brand[- ]new|new)\s+(?:session|work|task)\b/iu.test(
+    value,
+  );
 }
 
 function looksLikeContentReplacement(value: string): boolean {

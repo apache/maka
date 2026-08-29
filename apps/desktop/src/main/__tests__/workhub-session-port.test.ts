@@ -29,6 +29,7 @@ import {
 } from '../../renderer/workhub-session-port.js';
 import {
   createDesktopWorkHubCoordinationPort,
+  projectWorkHubActiveDelegations,
   projectWorkHubCoordinationTurns,
 } from '../../renderer/workhub-coordination-port.js';
 
@@ -106,7 +107,7 @@ function transcriptsWith(messages: readonly StoredMessage[]) {
 }
 
 test('projects the durable Coordination transcript into the WorkHub conversation', () => {
-  assert.deepEqual(projectWorkHubCoordinationTurns([
+  const messages: StoredMessage[] = [
     { type: 'user', id: 'user-1', turnId: 'turn-1', ts: 10, text: 'What is next?' },
     {
       type: 'assistant',
@@ -142,7 +143,8 @@ test('projects the durable Coordination transcript into the WorkHub conversation
       disposition: 'delegate_existing',
       userText: 'Continue payments',
     },
-  ]), [{
+  ];
+  assert.deepEqual(projectWorkHubCoordinationTurns(messages), [{
     messageId: 'user-1',
     turnId: 'turn-1',
     text: 'What is next?',
@@ -155,14 +157,66 @@ test('projects the durable Coordination transcript into the WorkHub conversation
     text: 'Continue payments',
     state: 'completed',
     assignment: {
+      actionId: 'action-1',
       delegationId: 'payments-delegation',
       targetSessionId: 'payments',
       targetSessionName: 'Payments',
       targetMessageId: 'payments-message',
       targetTurnId: 'payments-turn',
       feedbackState: 'accepted',
+      linkState: 'active',
     },
     updatedAt: 20,
+  }]);
+  assert.deepEqual(projectWorkHubActiveDelegations(
+    messages.map((message, sequence) => ({ message, sequence })),
+  ), [{
+    actionId: 'action-1',
+    targetSessionId: 'payments',
+    sequence: 3,
+  }]);
+});
+
+test('rebuilds active linkage outside the bounded visible timeline in transcript order', () => {
+  const assignment: StoredMessage = {
+    type: 'workhub_coordination',
+    id: 'assignment-old',
+    turnId: 'action-old',
+    ts: 100,
+    schemaVersion: 1,
+    kind: 'delegation_assigned',
+    actionId: 'action-old',
+    actionFingerprint: `sha256:${'a'.repeat(64)}`,
+    coordinationTurnId: 'action-old',
+    targetSessionId: 'payments',
+    targetSessionName: 'Payments',
+    targetTurnId: 'payments-turn',
+    targetMessageId: 'payments-message',
+    delegationId: 'payments-delegation',
+    disposition: 'delegate_existing',
+    userText: 'Continue payments',
+  };
+  const messages: StoredMessage[] = [
+    assignment,
+    ...Array.from({ length: 45 }, (_, index): StoredMessage => ({
+      type: 'user',
+      id: `later-${index}`,
+      turnId: `later-${index}`,
+      ts: 100,
+      text: `Later coordination ${index}`,
+    })),
+  ];
+
+  assert.equal(
+    projectWorkHubCoordinationTurns(messages).some((turn) => turn.messageId === assignment.id),
+    false,
+  );
+  assert.deepEqual(projectWorkHubActiveDelegations(
+    messages.map((message, sequence) => ({ message, sequence })),
+  ), [{
+    actionId: 'action-old',
+    targetSessionId: 'payments',
+    sequence: 0,
   }]);
 });
 
@@ -214,8 +268,11 @@ test('Coordination transcript adapter emits an initial empty ready snapshot and 
     }),
   });
 
-  const handle = await adapter.open((turns) => snapshots.push(turns), () => {});
-  assert.deepEqual(snapshots, [[]]);
+  const handle = await adapter.open(
+    (turns, activeDelegations) => snapshots.push([turns, activeDelegations]),
+    () => {},
+  );
+  assert.deepEqual(snapshots, [[[], []]]);
   await handle.close();
   assert.equal(closes, 1);
 });

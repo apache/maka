@@ -20,6 +20,7 @@
 import assert from 'node:assert/strict';
 import { existsSync, readFileSync } from 'node:fs';
 import test from 'node:test';
+import type { WorkHubCoordinationActInput } from '@maka/runtime-host/protocol';
 import {
   createWorkHubController as createGatedWorkHubController,
   WORKHUB_ROUTING_STRATEGY_ID,
@@ -153,6 +154,33 @@ function createWorkHubController({ sessions }: { sessions: TestSessionPort }) {
             ...(admitted.steered ? { steered: true as const } : {}),
           };
         }
+        if (input.proposal.disposition === 'replace') {
+          if (input.proposal.target.disposition === 'create_new') {
+            const created = await sessions.create({ name: input.proposal.target.title });
+            const admitted = await sessions.submit(created.target, input.userText, input.actionId);
+            return {
+              disposition: 'replace',
+              replacementDisposition: 'create_new',
+              targetSessionId: created.target.sessionId,
+              targetTurnId: admitted.turnId,
+              ...(admitted.steered ? { steered: true as const } : {}),
+            };
+          }
+          const replacementTarget = candidateByRef.get(input.proposal.target.candidateRef);
+          if (!replacementTarget) throw new Error('unknown test replacement candidate');
+          const admitted = await sessions.submit(
+            replacementTarget.target,
+            input.userText,
+            input.actionId,
+          );
+          return {
+            disposition: 'replace',
+            replacementDisposition: 'delegate_existing',
+            targetSessionId: replacementTarget.target.sessionId,
+            targetTurnId: admitted.turnId,
+            ...(admitted.steered ? { steered: true as const } : {}),
+          };
+        }
         const target = candidateByRef.get(input.proposal.candidateRef);
         if (!target) throw new Error('unknown test candidate');
         const admitted = await sessions.submit(target.target, input.userText, input.actionId);
@@ -174,12 +202,14 @@ function coordinationAssignmentTurn(): WorkHubCoordinationTurn {
     text: 'Continue payments',
     state: 'completed',
     assignment: {
+      actionId: 'action-1',
       delegationId: 'delegation-1',
       targetSessionId: 'payment',
       targetSessionName: 'Payments',
       targetMessageId: 'payment-message',
       targetTurnId: 'payment-turn',
       feedbackState: 'accepted',
+      linkState: 'active',
     },
     updatedAt: 10,
   };
@@ -203,7 +233,11 @@ test('conversation acknowledges a durable assignment before projecting target ex
     sessions,
     coordination: {
       open: async (handler) => {
-        handler([assignment]);
+        handler([assignment], [{
+          actionId: assignment.assignment!.actionId,
+          targetSessionId: assignment.assignment!.targetSessionId,
+          sequence: 0,
+        }]);
         return { close: async () => undefined };
       },
       record: async (input) => ({ turnId: input.turnId }),
@@ -247,7 +281,12 @@ test('conversation feedback never lets an older refresh overwrite newer target s
     sessions,
     coordination: {
       open: async (handler) => {
-        handler([coordinationAssignmentTurn()]);
+        const assignment = coordinationAssignmentTurn();
+        handler([assignment], [{
+          actionId: assignment.assignment!.actionId,
+          targetSessionId: assignment.assignment!.targetSessionId,
+          sequence: 0,
+        }]);
         return { close: async () => undefined };
       },
       record: async (input) => ({ turnId: input.turnId }),
@@ -1428,7 +1467,7 @@ test('production retry reaches durable Action Gate replay while target is waitin
   assert.equal(actions.length, 1);
 });
 
-test('production defers destructive correction until persistent delegation exists', async () => {
+test('production sends an explicit correction as a linked replacement', async () => {
   const actions: unknown[] = [];
   const sessions = port([session('source'), session('target')]);
   const controller = createGatedWorkHubController({
@@ -1465,21 +1504,40 @@ test('production defers destructive correction until persistent delegation exist
       }),
       act: async (input) => {
         actions.push(input);
-        throw new Error('incomplete correction must not reach the Action Gate');
+        return {
+          disposition: 'replace',
+          replacementDisposition: 'delegate_existing',
+          targetSessionId: 'target',
+          targetTurnId: 'replacement-turn',
+        };
       },
     },
   });
 
-  await assert.rejects(
-    controller.submit({
-      requestId: 'deferred-correction',
-      text: 'No, use target instead',
-      explicitTarget: { sessionId: 'target' },
-      correction: { from: { sessionId: 'source' }, turnId: 'source-turn' },
-    }),
-    /linked correction requires persistent delegation support/u,
-  );
-  assert.deepEqual(actions, []);
+  const result = await controller.submit({
+    requestId: 'linked-correction',
+    text: 'No, use target instead',
+    explicitTarget: { sessionId: 'target' },
+    correction: { from: { sessionId: 'source' }, sourceActionId: 'source-action' },
+  });
+
+  assert.equal(result.kind, 'submitted');
+  assert.deepEqual(actions, [
+    {
+      actionId: 'linked-correction',
+      userText: 'No, use target instead',
+      candidateSetId: `sha256:${'d'.repeat(64)}`,
+      confirmation: { kind: 'user_correction' },
+      proposal: {
+        disposition: 'replace',
+        replacesActionId: 'source-action',
+        target: {
+          disposition: 'delegate_existing',
+          candidateRef: 'candidate-target',
+        },
+      },
+    },
+  ]);
 });
 
 const PRODUCTION_CORRECTION_CREATION_CASES = [
@@ -1497,8 +1555,8 @@ const PRODUCTION_CORRECTION_CREATION_CASES = [
   ['production-correction-with-alternate-cue-zh', '不对，创建一个新会话叫Login'],
 ] as const;
 
-test('production natural-language correction fails closed before a second delegation', async () => {
-  const actions: unknown[] = [];
+test('production natural-language corrections retain the prior delegation link', async () => {
+  const actions: WorkHubCoordinationActInput[] = [];
   const sessions = port([
     session('login', {
       sessionName: '登录稳定性',
@@ -1544,10 +1602,30 @@ test('production natural-language correction fails closed before a second delega
       candidates: async () => ({ candidateSetId, candidates }),
       act: async (input) => {
         actions.push(input);
+        if (input.proposal.disposition === 'replace') {
+          if (input.proposal.target.disposition === 'create_new') {
+            return {
+              disposition: 'replace',
+              replacementDisposition: 'create_new',
+              targetSessionId: `created-${input.actionId}`,
+              targetTurnId: `turn-${input.actionId}`,
+            };
+          }
+          return {
+            disposition: 'replace',
+            replacementDisposition: 'delegate_existing',
+            targetSessionId: input.proposal.target.candidateRef === 'candidate-login'
+              ? 'login'
+              : 'payment',
+            targetTurnId: 'runtime-login-turn',
+          };
+        }
+        if (input.proposal.disposition !== 'delegate_existing') {
+          throw new Error('unexpected test disposition');
+        }
         return {
           disposition: 'delegate_existing',
-          targetSessionId: input.proposal.disposition === 'delegate_existing' &&
-              input.proposal.candidateRef === 'candidate-login'
+          targetSessionId: input.proposal.candidateRef === 'candidate-login'
             ? 'login'
             : 'payment',
           targetTurnId: input.actionId === 'production-wrong-payment'
@@ -1563,30 +1641,37 @@ test('production natural-language correction fails closed before a second delega
     text: '继续这个工作，补充验收项',
   });
 
-  await assert.rejects(
-    controller.submit({
-      requestId: 'production-natural-correction',
-      text: '不是这个，换成登录那个，补充刷新令牌失败判定',
-    }),
-    /linked correction requires persistent delegation support/u,
+  const corrected = await controller.submit({
+    requestId: 'production-natural-correction',
+    text: '不是这个，换成登录那个，补充刷新令牌失败判定',
+  });
+  assert.equal(corrected.kind, 'submitted');
+
+  const [creationRequestId, creationText] = PRODUCTION_CORRECTION_CREATION_CASES[0];
+  assert.equal(
+    (await controller.submit({ requestId: creationRequestId, text: creationText })).kind,
+    'submitted',
   );
 
-  for (const [requestId, text] of PRODUCTION_CORRECTION_CREATION_CASES) {
-    await assert.rejects(
-      controller.submit({ requestId, text }),
-      /linked correction requires persistent delegation support/u,
-    );
-  }
-
-  assert.deepEqual(actions, [{
-    actionId: 'production-wrong-payment',
-    userText: '继续这个工作，补充验收项',
+  assert.equal(actions.length, 3);
+  assert.deepEqual(actions[1], {
+    actionId: 'production-natural-correction',
+    userText: '不是这个，换成登录那个，补充刷新令牌失败判定',
     candidateSetId,
+    confirmation: { kind: 'user_correction' },
     proposal: {
-      disposition: 'delegate_existing',
-      candidateRef: 'candidate-payment',
+      disposition: 'replace',
+      replacesActionId: 'production-wrong-payment',
+      target: {
+        disposition: 'delegate_existing',
+        candidateRef: 'candidate-login',
+      },
     },
-  }]);
+  });
+  assert.deepEqual(
+    actions.slice(2).map((action) => action.proposal.disposition),
+    ['replace'],
+  );
 });
 
 test('production correction-shaped creation stays create_new without an existing focus', async () => {

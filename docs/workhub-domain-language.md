@@ -81,10 +81,14 @@ archive and waiting state, self-routing, explicit creation, expected-Turn Stop
 ownership, confirmation, tools, and permissions. All model and routing output is
 advisory and cannot authorize a write.
 
-**Route correction**: A user's decision that an input belongs to a different
-existing Session. R2.4 retains only bounded inference memory for later target
-resolution. Correction precedence follows user submission order, not asynchronous
-completion order, and it never replaces either Session's transcript authority.
+**Route correction**: A user's explicit decision that an input belongs to a
+different existing or newly created Session. R2.4 retains only bounded inference
+memory for target resolution; destructive confirmation must also be evidenced by
+the trusted user text and cannot come from routing output alone. The Coordination
+Session durably claims one replacement intent per source delegation in transcript
+order. It delegates exact pending-Message cancellation or owning-Turn Stop to the
+target Session, then atomically records the replacement link and supersession.
+Correction never replaces either Session's transcript authority.
 
 **R2.4**: The deterministic context-continuity routing baseline. It remains useful
 as an experiment baseline or target resolver behind WorkHub's coordination layer;

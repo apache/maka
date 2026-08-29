@@ -24,6 +24,8 @@ import type {
   WorkHubDelegationAssignedMessage,
   WorkHubDelegationCreateSpec,
   WorkHubDelegationDisposition,
+  WorkHubDelegationReplacementRequestedMessage,
+  WorkHubDelegationSupersededMessage,
 } from '@maka/core/session';
 import {
   WORKHUB_COORDINATION_SESSION_ID,
@@ -62,6 +64,10 @@ export type WorkHubActionGateSession = Pick<
 export interface WorkHubActionGateEffects {
   listSessions(): Promise<readonly WorkHubActionGateSession[]>;
   readAssignment(actionId: string): Promise<WorkHubDelegationAssignedMessage | undefined>;
+  readReplacement(
+    delegationId: string,
+  ): Promise<WorkHubDelegationReplacementRequestedMessage | undefined>;
+  readSupersession(delegationId: string): Promise<WorkHubDelegationSupersededMessage | undefined>;
   answer(
     input: { readonly turnId: string; readonly text: string },
     context: ConnectionContext,
@@ -75,6 +81,10 @@ export interface WorkHubActionGateEffects {
     input: WorkHubDelegationAssignmentInput,
     context: ConnectionContext,
   ): Promise<{ readonly turnId: string; readonly steered?: true }>;
+  prepareReplacement(
+    input: WorkHubDelegationReplacementInput,
+  ): Promise<WorkHubDelegationReplacementRequestedMessage>;
+  retireDelegation(assignment: WorkHubDelegationAssignedMessage): Promise<void>;
 }
 
 export interface WorkHubDelegationAssignmentInput {
@@ -85,6 +95,15 @@ export interface WorkHubDelegationAssignmentInput {
   readonly disposition: WorkHubDelegationDisposition;
   readonly userText: string;
   readonly create?: WorkHubDelegationCreateSpec;
+  readonly replacesActionId?: string;
+  readonly replacesDelegationId?: string;
+}
+
+export interface WorkHubDelegationReplacementInput extends WorkHubDelegationAssignmentInput {
+  readonly replacesActionId: string;
+  readonly replacesDelegationId: string;
+  readonly replacedTargetSessionId: string;
+  readonly replacedTargetMessageId: string;
 }
 
 export type WorkHubActionEffectFailureCode =
@@ -239,6 +258,44 @@ export class WorkHubCoordinationActionGate {
       );
     }
 
+    if (proposal.disposition === 'replace') {
+      if (
+        input.confirmation?.kind !== 'user_correction' ||
+        !isExplicitWorkHubCorrectionText(input.userText)
+      ) {
+        throw new WorkHubActionGateFailure(
+          'action_conflict',
+          'WorkHub replacement requires explicit correction in trusted user text',
+        );
+      }
+      const replaced = await this.#effects.readAssignment(proposal.replacesActionId);
+      if (!replaced) {
+        throw new WorkHubActionGateFailure(
+          'action_conflict',
+          'WorkHub can replace only a durable delegation it owns',
+        );
+      }
+      if (await this.#effects.readSupersession(replaced.delegationId)) {
+        throw new WorkHubActionGateFailure(
+          'action_conflict',
+          'WorkHub delegation has already been superseded',
+        );
+      }
+      const prepared = await this.#effects.readReplacement(replaced.delegationId);
+      if (prepared) {
+        if (prepared.actionId !== input.actionId || prepared.actionFingerprint !== fingerprint) {
+          throw new WorkHubActionGateFailure(
+            'action_conflict',
+            'WorkHub delegation already has a different replacement intent',
+          );
+        }
+        return this.#replace(prepared, context);
+      }
+      const replacement = await this.#replacementAssignment(input, fingerprint, replaced);
+      const intent = await this.#effects.prepareReplacement(replacement);
+      return this.#replace(intent, context);
+    }
+
     const candidates = await this.candidates();
     if (candidates.candidateSetId !== input.candidateSetId) {
       throw new WorkHubActionGateFailure(
@@ -263,11 +320,134 @@ export class WorkHubCoordinationActionGate {
     );
   }
 
+  async #replacementAssignment(
+    input: WorkHubCoordinationActInput,
+    fingerprint: `sha256:${string}`,
+    replaced: WorkHubDelegationAssignedMessage,
+  ): Promise<WorkHubDelegationReplacementInput> {
+    if (input.proposal.disposition !== 'replace') {
+      throw new WorkHubActionGateFailure('action_conflict', 'Invalid WorkHub replacement');
+    }
+    const target = input.proposal.target;
+    if (target.disposition === 'create_new') {
+      if (!input.create) {
+        throw new WorkHubActionGateFailure(
+          'action_conflict',
+          'WorkHub replacement creation context is unavailable',
+        );
+      }
+      const targetSessionId = workHubCreatedSessionId(input.actionId);
+      return {
+        actionId: input.actionId,
+        actionFingerprint: fingerprint,
+        targetSessionId,
+        targetSessionName: target.title,
+        disposition: 'create_new',
+        userText: input.userText,
+        create: { title: target.title, workspace: input.create.workspace },
+        replacesActionId: replaced.actionId,
+        replacesDelegationId: replaced.delegationId,
+        replacedTargetSessionId: replaced.targetSessionId,
+        replacedTargetMessageId: replaced.targetMessageId,
+      };
+    }
+    const candidates = await this.candidates();
+    if (candidates.candidateSetId !== input.candidateSetId) {
+      throw new WorkHubActionGateFailure(
+        'candidate_set_stale',
+        'WorkHub Session candidates changed; refresh before replacing',
+      );
+    }
+    const destination = candidates.candidates.find(
+      (candidate) => candidate.candidateRef === target.candidateRef,
+    );
+    if (!destination) {
+      throw new WorkHubActionGateFailure(
+        'candidate_unavailable',
+        'WorkHub replacement target is not in the admitted candidate set',
+      );
+    }
+    this.#assertTarget(destination);
+    if (destination.sessionId === replaced.targetSessionId) {
+      throw new WorkHubActionGateFailure(
+        'action_conflict',
+        'WorkHub replacement must choose a different Session',
+      );
+    }
+    return {
+      actionId: input.actionId,
+      actionFingerprint: fingerprint,
+      targetSessionId: destination.sessionId,
+      targetSessionName: destination.sessionName,
+      disposition: 'delegate_existing',
+      userText: input.userText,
+      replacesActionId: replaced.actionId,
+      replacesDelegationId: replaced.delegationId,
+      replacedTargetSessionId: replaced.targetSessionId,
+      replacedTargetMessageId: replaced.targetMessageId,
+    };
+  }
+
+  async #replace(
+    replacement: WorkHubDelegationReplacementRequestedMessage,
+    context: ConnectionContext,
+  ): Promise<WorkHubCoordinationActResult> {
+    const superseded = await this.#effects.readSupersession(replacement.replacesDelegationId);
+    if (superseded) {
+      throw new WorkHubActionGateFailure(
+        'action_conflict',
+        'WorkHub delegation has already been superseded',
+      );
+    }
+    const source = await this.#effects.readAssignment(replacement.replacesActionId);
+    if (
+      !source ||
+      source.delegationId !== replacement.replacesDelegationId ||
+      source.targetSessionId !== replacement.replacedTargetSessionId ||
+      source.targetMessageId !== replacement.replacedTargetMessageId
+    ) {
+      throw new WorkHubActionGateFailure(
+        'action_conflict',
+        'WorkHub replacement source identity changed',
+      );
+    }
+    if (replacement.disposition === 'delegate_existing') {
+      const target = (await this.#effects.listSessions()).find(
+        (session) => session.id === replacement.targetSessionId,
+      );
+      if (!target || !isCandidateSession(target)) {
+        throw new WorkHubActionGateFailure(
+          'candidate_unavailable',
+          'WorkHub replacement target is unavailable',
+        );
+      }
+      this.#assertTarget({
+        candidateRef: 'prepared',
+        sessionId: target.id,
+        sessionName: target.name,
+        workspace: workspaceProjection(target),
+        state: candidateState(target.status),
+        updatedAt: updatedAt(target),
+      });
+    }
+    await this.#effects.retireDelegation(source);
+    return this.#assign(assignmentInputFromReplacement(replacement), context);
+  }
+
   async #assign(
     assignment: WorkHubDelegationAssignmentInput,
     context: ConnectionContext,
   ): Promise<WorkHubCoordinationActResult> {
     const admitted = await this.#effects.assign(assignment, context);
+    if (assignment.replacesDelegationId) {
+      return {
+        disposition: 'replace',
+        replacementDisposition: assignment.disposition,
+        targetSessionId: assignment.targetSessionId,
+        targetTurnId: admitted.turnId,
+        ...(admitted.steered ? { steered: true as const } : {}),
+      };
+    }
     return {
       disposition: assignment.disposition,
       targetSessionId: assignment.targetSessionId,
@@ -423,6 +603,15 @@ function actionFingerprint(input: WorkHubCoordinationActInput): `sha256:${string
     ...(input.proposal.disposition === 'clarify'
       ? { assistantText: input.proposal.assistantText }
       : {}),
+    ...(input.proposal.disposition === 'replace'
+      ? {
+          replacesActionId: input.proposal.replacesActionId,
+          target: input.proposal.target,
+          ...(input.proposal.target.disposition === 'create_new'
+            ? { workspace: input.create?.workspace }
+            : {}),
+        }
+      : {}),
   });
 }
 
@@ -437,9 +626,56 @@ function assignmentInputFromRecord(
     disposition: assignment.disposition,
     userText: assignment.userText,
     ...(assignment.create ? { create: assignment.create } : {}),
+    ...(assignment.replacesActionId && assignment.replacesDelegationId
+      ? {
+          replacesActionId: assignment.replacesActionId,
+          replacesDelegationId: assignment.replacesDelegationId,
+        }
+      : {}),
+  };
+}
+
+function assignmentInputFromReplacement(
+  replacement: WorkHubDelegationReplacementRequestedMessage,
+): WorkHubDelegationAssignmentInput {
+  return {
+    actionId: replacement.actionId,
+    actionFingerprint: replacement.actionFingerprint,
+    targetSessionId: replacement.targetSessionId,
+    targetSessionName: replacement.targetSessionName,
+    disposition: replacement.disposition,
+    userText: replacement.userText,
+    ...(replacement.create ? { create: replacement.create } : {}),
+    replacesActionId: replacement.replacesActionId,
+    replacesDelegationId: replacement.replacesDelegationId,
   };
 }
 
 function hash(value: string): string {
   return createHash('sha256').update(value, 'utf8').digest('hex');
+}
+
+/**
+ * Destructive replacement needs evidence in the user-originated text itself;
+ * a strategy-provided replacement proposal and confirmation marker are not
+ * sufficient authority. Keep this deliberately narrower than route inference.
+ */
+export function isExplicitWorkHubCorrectionText(value: string): boolean {
+  return (
+    /(?:^|[，,。；;\s])(?:不是|不要再继续)\s*(?:这个|那个|当前这个|刚才那个)(?:工作|任务|Session|会话)?/iu.test(
+      value,
+    ) ||
+    /(?:^|[，,。；;\s])(?:这个|那个|当前这个|刚才那个)(?:工作|任务|Session|会话)?\s*(?:不对|搞错了|弄错了)/iu.test(
+      value,
+    ) ||
+    /^\s*(?:不对|错了|搞错了|弄错了)[\s\p{P}\p{S}]+(?:(?:请|麻烦|帮我)\s*)?(?:应该|而是|改成|改为|换成|换到|切到|转到|用|创建|新建|新开|开一个)/iu.test(
+      value,
+    ) ||
+    /^\s*(?:no|nope)\b[^.\n]{0,40}\b(?:use|switch|change|move|send|create|start|open)\b/iu.test(
+      value,
+    ) ||
+    /\b(?:not\s+(?:this|that|the\s+current)(?:\s+(?:one|session|work|task))?|wrong\s+(?:one|session|work|task))\b/iu.test(
+      value,
+    )
+  );
 }

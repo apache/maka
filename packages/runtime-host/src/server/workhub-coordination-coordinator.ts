@@ -20,15 +20,18 @@
 import { createHash } from 'node:crypto';
 import { mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
+import { isDeepStrictEqual } from 'node:util';
 import { normalizeMessageContent } from '@maka/core/events';
 import type { CreateSessionInput } from '@maka/core/runtime-inputs';
 import {
   WORKHUB_COORDINATION_SESSION_ID,
   WORKHUB_COORDINATION_SESSION_ROLE,
+  WORKHUB_COORDINATION_REPLACEMENT_SCHEMA_VERSION,
   isWorkHubCoordinationSession,
   isWorkHubCoordinationSessionId,
   type SessionHeader,
   type StoredMessage,
+  type WorkHubDelegationReplacementRequestedMessage,
 } from '@maka/core/session';
 import type { SessionAuthorityStore, SessionHeaderSnapshot } from '@maka/storage/session-store';
 import type {
@@ -83,6 +86,8 @@ type CoordinationStores = Pick<
   | 'probeStableSessionCreate'
   | 'readHeaderSnapshot'
   | 'readWorkHubAssignment'
+  | 'readWorkHubReplacement'
+  | 'readWorkHubSupersession'
   | 'readTranscriptHighWaterSnapshot'
   | 'readTranscriptMessagesSnapshot'
   | 'updateHeaderVersioned'
@@ -101,7 +106,7 @@ export interface HostWorkHubCoordinationCoordinatorOptions {
   readonly admission: SessionAdmissionGate;
   readonly continuity: Pick<SessionContinuityCoordinator, 'refreshCanonical'>;
   readonly executions: CoordinationExecutions;
-  readonly sessionActions: Pick<WorkHubActionGateEffects, 'assign'>;
+  readonly sessionActions: Pick<WorkHubActionGateEffects, 'assign' | 'retireDelegation'>;
   readonly resolveCreateTarget: () => Promise<CoordinationCreateTarget>;
   readonly requestDrain: () => void;
 }
@@ -136,6 +141,8 @@ export class HostWorkHubCoordinationCoordinator {
     this.#actionGate = new WorkHubCoordinationActionGate({
       listSessions: () => this.#stores.listHeaders(),
       readAssignment: (actionId) => this.#stores.readWorkHubAssignment(actionId),
+      readReplacement: (delegationId) => this.#stores.readWorkHubReplacement(delegationId),
+      readSupersession: (delegationId) => this.#stores.readWorkHubSupersession(delegationId),
       answer: async (input, context) => {
         const outcome = await this.#answer({ turnId: input.turnId, text: input.text }, context);
         if (!outcome.ok) {
@@ -153,6 +160,71 @@ export class HostWorkHubCoordinationCoordinator {
         }
       },
       assign: options.sessionActions.assign,
+      prepareReplacement: (input) => this.#prepareReplacement(input),
+      retireDelegation: options.sessionActions.retireDelegation,
+    });
+  }
+
+  #prepareReplacement(
+    input: Parameters<WorkHubActionGateEffects['prepareReplacement']>[0],
+  ): Promise<WorkHubDelegationReplacementRequestedMessage> {
+    return this.#admission.run(WORKHUB_COORDINATION_SESSION_ID, async (lease) => {
+      const existing = await this.#stores.readWorkHubReplacement(input.replacesDelegationId);
+      const suffix = createHash('sha256')
+        .update(input.replacesDelegationId, 'utf8')
+        .digest('hex')
+        .slice(0, 48);
+      const requested: WorkHubDelegationReplacementRequestedMessage = {
+        type: 'workhub_coordination',
+        id: `whp_${suffix}`,
+        turnId: input.actionId,
+        ts: existing?.ts ?? Date.now(),
+        schemaVersion: WORKHUB_COORDINATION_REPLACEMENT_SCHEMA_VERSION,
+        kind: 'delegation_replacement_requested',
+        actionId: input.actionId,
+        actionFingerprint: input.actionFingerprint,
+        coordinationTurnId: input.actionId,
+        targetSessionId: input.targetSessionId,
+        targetSessionName: input.targetSessionName,
+        disposition: input.disposition,
+        userText: input.userText,
+        replacesActionId: input.replacesActionId,
+        replacesDelegationId: input.replacesDelegationId,
+        replacedTargetSessionId: input.replacedTargetSessionId,
+        replacedTargetMessageId: input.replacedTargetMessageId,
+        ...(input.create ? { create: input.create } : {}),
+      };
+      if (existing) {
+        if (!isDeepStrictEqual(existing, requested)) {
+          throw new WorkHubActionGateFailure(
+            'action_conflict',
+            'WorkHub action identity belongs to a different replacement',
+          );
+        }
+        return existing;
+      }
+      const header = await this.#stores.readHeaderSnapshot(WORKHUB_COORDINATION_SESSION_ID);
+      if (!validCoordinationHeader(header)) {
+        throw new WorkHubActionEffectFailure(
+          'operation_conflict',
+          'WorkHub Coordination Session identity is unavailable',
+        );
+      }
+      try {
+        await this.#stores.appendMessages(WORKHUB_COORDINATION_SESSION_ID, [requested]);
+        await this.#continuity.refreshCanonical(WORKHUB_COORDINATION_SESSION_ID, lease);
+        return requested;
+      } catch (error) {
+        const replay = await this.#stores
+          .readWorkHubReplacement(input.replacesDelegationId)
+          .catch(() => undefined);
+        if (replay && isDeepStrictEqual(replay, requested)) return replay;
+        this.#requestDrain();
+        throw new WorkHubActionEffectFailure(
+          'commit_outcome_unknown',
+          'WorkHub replacement intent outcome is unknown',
+        );
+      }
     });
   }
 
