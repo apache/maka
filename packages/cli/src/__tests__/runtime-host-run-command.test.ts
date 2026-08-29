@@ -28,6 +28,7 @@ import {
 import { LOCAL_RUNTIME_HOST_PROFILE, type RuntimeHostConnection } from '@maka/runtime-host/client';
 import {
   SESSION_CONTINUITY_SCHEMA_VERSION,
+  type GoalProjection,
   type InteractionPendingSnapshot,
   type SessionCatalogProjection,
   type SessionContinuitySnapshot,
@@ -412,6 +413,50 @@ describe('Runtime Host maka run adapter', () => {
     assert.equal(observed.length, 2);
     assert.equal(observed.at(-1)?.outcomeId, 'turn-2');
     assert.equal(observed.at(-1)?.finalOutput, 'Final graph answer');
+  });
+
+  test('waits for a self-armed Goal and reports its final Turn', async () => {
+    const stdout: string[] = [];
+    const goalWaitStarted = deferred<void>();
+    const fixture = runFixture({
+      goal: goalProjection(),
+      onGoalWaitStarted: () => goalWaitStarted.resolve(),
+      initialMessages: goalMessages(),
+    });
+    const command = runFixtureCommand(fixture, ['arm a goal'], (text) => stdout.push(text));
+
+    const firstBoundary = await Promise.race([
+      command.then(() => 'returned' as const),
+      goalWaitStarted.promise.then(() => 'waiting' as const),
+    ]);
+    assert.equal(firstBoundary, 'waiting', 'maka run returned while its Goal was active');
+
+    fixture.publishGoal(goalProjection({ revision: 2, status: 'achieved', achievedAt: 10 }));
+
+    assert.equal(await command, 0);
+    assert.equal(stdout.join(''), 'Final Goal answer\n');
+  });
+
+  test('releases a pending Goal wait when the run context closes', async () => {
+    const goalWaitStarted = deferred<void>();
+    const fixture = runFixture({
+      goal: goalProjection(),
+      onGoalWaitStarted: () => goalWaitStarted.resolve(),
+    });
+    const context = fixture.context;
+    const session = await context.runtime.createSession({
+      cwd: '/workspace',
+      llmConnectionSlug: 'openai-main',
+      model: 'gpt-5',
+      permissionMode: 'ask',
+    });
+    const waiting = context.goal?.waitForCompletion(session.id);
+    assert.ok(waiting);
+    await goalWaitStarted.promise;
+
+    await context.close();
+
+    await assert.rejects(waiting, new Error('Runtime Host run context closed'));
   });
 
   test('uses the durable Graph supervisor outcome independently of live projection', async () => {
@@ -868,6 +913,8 @@ function runFixture(input: {
   onGraphStop?: () => void;
   initialMessages?: StoredMessage[];
   finalMessages?: StoredMessage[];
+  goal?: GoalProjection | null;
+  onGoalWaitStarted?: () => void;
 }) {
   const switches: string[] = [];
   const moves: string[] = [];
@@ -876,6 +923,7 @@ function runFixture(input: {
   const sandboxResponses: { requestId: string; decision: 'deny' }[] = [];
   let turnStops = 0;
   const pendingInteractionListeners = new Set<(pending: InteractionPendingSnapshot) => void>();
+  const goalListeners = new Set<(goal: GoalProjection | null) => void>();
   const transcriptListeners = new Set<
     (
       sessionId: string,
@@ -885,6 +933,7 @@ function runFixture(input: {
     ) => void
   >();
   let messageReads = 0;
+  let currentGoal = input.goal ?? null;
   const preparedMaxSteps: Array<number | undefined> = [];
   const driver = {
     createSession: async () => sessionSummary('session-created'),
@@ -933,6 +982,12 @@ function runFixture(input: {
         }
       }
       return () => pendingInteractionListeners.delete(listener);
+    },
+    getGoal: () => structuredClone(currentGoal),
+    subscribeGoalChanges: (listener: (goal: GoalProjection | null) => void) => {
+      goalListeners.add(listener);
+      input.onGoalWaitStarted?.();
+      return () => goalListeners.delete(listener);
     },
     switchSession: async (sessionId: string) => {
       switches.push(sessionId);
@@ -1002,6 +1057,9 @@ function runFixture(input: {
         await input.graphQueryGate;
         return { status: input.graphQueryStatus ?? 'completed' };
       }
+      if (operation === 'goal.query') {
+        return { sessionId: 'session-created', goal: structuredClone(currentGoal) };
+      }
       if (operation === 'agent.graph.stop') {
         graphStops.push(String(requestInput.rootSessionId));
         input.onGraphStop?.();
@@ -1061,6 +1119,10 @@ function runFixture(input: {
       for (const listener of transcriptListeners) {
         listener('session-created', turnId, structuredClone(messages), reason);
       }
+    },
+    publishGoal(goal: GoalProjection | null) {
+      currentGoal = structuredClone(goal);
+      for (const listener of goalListeners) listener(structuredClone(goal));
     },
     get turnStops() {
       return turnStops;
@@ -1325,6 +1387,56 @@ function graphMessages(includeTerminal = true): StoredMessage[] {
     });
   }
   return messages;
+}
+
+function goalProjection(overrides: Partial<GoalProjection> = {}): GoalProjection {
+  return {
+    goalId: 'goal-1',
+    revision: 1,
+    sessionId: 'session-created',
+    condition: 'Finish the work',
+    status: 'active',
+    setAt: 1,
+    iterations: 0,
+    maxIterations: 50,
+    consecutiveNoProgress: 0,
+    blockCap: 8,
+    tokenBudget: null,
+    tokensSpent: 0,
+    lastReason: null,
+    achievedAt: null,
+    pausedAt: null,
+    ...overrides,
+  };
+}
+
+function goalMessages(): StoredMessage[] {
+  return [
+    {
+      type: 'user',
+      id: 'user-goal-turn',
+      turnId: 'turn-goal',
+      ts: 3,
+      text: '[Goal continuation] Keep working.',
+      origin: { kind: 'goal', goalId: 'goal-1' },
+    },
+    {
+      type: 'assistant',
+      id: 'assistant-goal-turn',
+      turnId: 'turn-goal',
+      ts: 4,
+      text: 'Final Goal answer',
+      modelId: 'gpt-5',
+    },
+    {
+      type: 'turn_state',
+      id: 'state-goal-turn',
+      turnId: 'turn-goal',
+      ts: 5,
+      status: 'completed',
+      partialOutputRetained: false,
+    },
+  ];
 }
 
 function sandboxBoundaryMessages(

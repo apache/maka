@@ -70,6 +70,9 @@ export interface MakaRunRuntime {
 export interface MakaRunContext {
   runtime: MakaRunRuntime;
   target: { connection: { slug: string }; model: string };
+  goal?: {
+    waitForCompletion(sessionId: string): Promise<void>;
+  };
   agentGraph?: {
     reserveActivity(sessionId: string): { release(): void };
     waitForCompletion(sessionId: string): Promise<void>;
@@ -425,6 +428,9 @@ export async function runMakaTextCliCore(
     graphActivity?.release();
     if (parsed.options.graph && outcome?.status === 'completed') {
       await Promise.race([context.agentGraph!.waitForCompletion(session.id), stopSignal]);
+    }
+    if (outcome?.status === 'completed' && context.goal) {
+      await Promise.race([context.goal.waitForCompletion(session.id), stopSignal]);
     }
     await stopPromise;
   } catch (error) {

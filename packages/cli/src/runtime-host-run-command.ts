@@ -33,6 +33,8 @@ import {
 } from '@maka/runtime-host/client';
 import { runtimeHostProfileUsesHostWorkspace } from '@maka/runtime-host/profile-kind';
 import type { InteractionPendingSnapshot, SessionCatalogItem } from '@maka/runtime-host/protocol';
+import type { GoalProjection } from '@maka/runtime-host/protocol';
+import { TERMINAL_GOAL_STATUSES } from '@maka/runtime/goal-state';
 import {
   runMakaTextCliCore,
   type MakaRunContext,
@@ -188,6 +190,9 @@ export function createRuntimeHostRunContext(
   return {
     runtime,
     target: { connection: { slug: target.connection.slug }, model: target.model },
+    goal: {
+      waitForCompletion: (sessionId: string) => runtime.waitForGoalCompletion(sessionId),
+    },
     ...(input.enableAgentGraph
       ? {
           agentGraph: {
@@ -269,6 +274,10 @@ class RuntimeHostRunRuntime implements MakaRunRuntime {
       timer: ReturnType<typeof setTimeout>;
     }>
   >();
+  readonly #goalWaiters = new Set<{
+    reject(error: Error): void;
+    unsubscribe(): void;
+  }>();
 
   constructor(
     connection: RuntimeHostConnection,
@@ -415,11 +424,28 @@ class RuntimeHostRunRuntime implements MakaRunRuntime {
     if (outcome) await this.#observer?.(outcome);
   }
 
+  async waitForGoalCompletion(sessionId: string): Promise<void> {
+    await this.#attach(sessionId);
+    const current = (await this.#connection.request('goal.query', { sessionId })).goal;
+    if (!current || TERMINAL_GOAL_STATUSES.has(current.status)) return;
+
+    await this.#waitForGoalTerminal(sessionId, current.goalId);
+    const messages = await this.#driver.readMessages();
+    const turnId = lastGoalTurnId(messages, current.goalId);
+    if (!turnId) return;
+    const outcome = outcomeFromStoredTurn(messages, turnId);
+    if (!outcome) {
+      throw new Error('Goal final Turn did not reach a durable terminal boundary');
+    }
+    await this.#observer?.(outcome);
+  }
+
   close(): Promise<void> {
     this.#closed = true;
     this.#interactions.close();
     this.#unsubscribeTranscriptReplacements();
     this.#cancelGraphTerminalWaiters(new Error('Runtime Host run context closed'));
+    this.#cancelGoalWaiters(new Error('Runtime Host run context closed'));
     return Promise.resolve();
   }
 
@@ -521,6 +547,44 @@ class RuntimeHostRunRuntime implements MakaRunRuntime {
     });
   }
 
+  #waitForGoalTerminal(sessionId: string, goalId: string): Promise<GoalProjection | null> {
+    if (this.#closed) return Promise.reject(new Error('Runtime Host run context closed'));
+    const subscribe = this.#driver.subscribeGoalChanges;
+    if (!subscribe) return Promise.reject(new Error('Runtime Host Goal updates are unavailable'));
+
+    return new Promise<GoalProjection | null>((resolve, reject) => {
+      let settled = false;
+      let unsubscribe = () => {};
+      const waiter = {
+        reject: (error: Error) => finish(undefined, error),
+        unsubscribe: () => unsubscribe(),
+      };
+      const finish = (goal: GoalProjection | null | undefined, error?: Error) => {
+        if (settled) return;
+        settled = true;
+        unsubscribe();
+        this.#goalWaiters.delete(waiter);
+        if (error) reject(error);
+        else resolve(goal ?? null);
+      };
+      const accept = (goal: GoalProjection | null) => {
+        if (goal?.goalId === goalId && !TERMINAL_GOAL_STATUSES.has(goal.status)) return;
+        finish(goal);
+      };
+
+      unsubscribe = subscribe.call(this.#driver, accept);
+      if (settled) {
+        unsubscribe();
+        return;
+      }
+      this.#goalWaiters.add(waiter);
+      void this.#connection.request('goal.query', { sessionId }).then(
+        (result) => accept(result.goal),
+        (error) => finish(undefined, error instanceof Error ? error : new Error(String(error))),
+      );
+    });
+  }
+
   async #stopForInteraction(pending: InteractionPendingSnapshot): Promise<void> {
     this.#stopRequested = true;
     const stops: Promise<unknown>[] = [
@@ -546,6 +610,11 @@ class RuntimeHostRunRuntime implements MakaRunRuntime {
       }
     }
     this.#graphTerminalWaiters.clear();
+  }
+
+  #cancelGoalWaiters(error: Error): void {
+    for (const waiter of [...this.#goalWaiters]) waiter.reject(error);
+    this.#goalWaiters.clear();
   }
 }
 
@@ -799,6 +868,17 @@ function lastNewGraphSupervisorTurnId(
         message.type === 'user' &&
         message.origin?.kind === 'agent_graph' &&
         !admissionTurnIds.has(message.turnId),
+    )?.turnId;
+}
+
+function lastGoalTurnId(messages: readonly StoredMessage[], goalId: string): string | undefined {
+  return [...messages]
+    .reverse()
+    .find(
+      (message) =>
+        message.type === 'user' &&
+        message.origin?.kind === 'goal' &&
+        message.origin.goalId === goalId,
     )?.turnId;
 }
 
