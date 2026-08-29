@@ -20,7 +20,9 @@
 import { MAX_ATTACHMENT_BYTES, MAX_ATTACHMENT_COUNT } from '@maka/core/attachments';
 import {
   decodeMessageContent as decodeCanonicalMessageContent,
+  isContextBudgetExhaustedDetail,
   isCanonicalAttachmentRef,
+  type ContextBudgetExhaustedDetail,
   type ContextCompactionOutcome,
   type MessageContent,
   type ProviderRetryReason,
@@ -119,7 +121,9 @@ export const TURN_RESUME_PARK_REASONS = [
   'continuation_already_exists',
   'continuation_repair_required',
   'continuation_started_indeterminate',
-  'continuation_unavailable',
+  'resume_feature_disabled',
+  'continuation_authority_unavailable',
+  'safety_observation_unavailable',
   'session_busy',
 ] as const;
 
@@ -167,6 +171,12 @@ export type TurnProviderRetry =
       attempt: number;
       maxAttempts: number;
       delayMs: number;
+      /**
+       * Host-clock time the wait was scheduled at, kept so a re-projection
+       * mid-wait can recompute the authoritative remaining duration. Absent
+       * from snapshots written by older runtimes.
+       */
+      ts?: number;
       reason: ProviderRetryReason;
     }
   | {
@@ -193,6 +203,7 @@ export type TurnSnapshot =
       terminalEventId: string;
       failureClass: string;
       failureMessage?: string;
+      contextBudgetExhaustedDetail?: ContextBudgetExhaustedDetail;
     })
   | (TurnSnapshotBase & {
       status: 'cancelled';
@@ -660,7 +671,7 @@ export function decodeTurnSnapshot(value: unknown): TurnSnapshot {
       record,
       'failed Turn snapshot',
       ['sessionId', 'turnId', 'runId', 'status', 'terminalEventId', 'failureClass'],
-      ['failureMessage'],
+      ['failureMessage', 'contextBudgetExhaustedDetail'],
     );
     return {
       ...base,
@@ -674,6 +685,13 @@ export function decodeTurnSnapshot(value: unknown): TurnSnapshot {
               'failureMessage',
               TURN_FAILURE_MESSAGE_MAX_BYTES,
               false,
+            ),
+          }
+        : {}),
+      ...(record.contextBudgetExhaustedDetail !== undefined
+        ? {
+            contextBudgetExhaustedDetail: requireContextBudgetExhaustedDetail(
+              record.contextBudgetExhaustedDetail,
             ),
           }
         : {}),
@@ -710,6 +728,11 @@ export function decodeTurnSnapshot(value: unknown): TurnSnapshot {
   };
 }
 
+function requireContextBudgetExhaustedDetail(value: unknown): ContextBudgetExhaustedDetail {
+  if (isContextBudgetExhaustedDetail(value)) return value;
+  throw invalidProtocolFrame('Invalid context budget exhausted detail');
+}
+
 export function decodeContextCompactionOutcome(value: unknown): ContextCompactionOutcome {
   const record = requireRecord(value, 'Context compaction outcome');
   const kind = requireString(record.kind, 'kind', 32);
@@ -732,18 +755,18 @@ export function decodeTurnProviderRetry(value: unknown): TurnProviderRetry {
   if (attempt > maxAttempts) throw invalidProtocolFrame('Invalid Turn provider retry');
   const reason = requireProviderRetryReason(record.reason);
   if (phase === 'scheduled') {
-    assertExactKeys(record, 'scheduled Turn provider retry', [
-      'phase',
-      'attempt',
-      'maxAttempts',
-      'delayMs',
-      'reason',
-    ]);
+    const requiredKeys = ['phase', 'attempt', 'maxAttempts', 'delayMs', 'reason'] as const;
+    assertExactKeys(
+      record,
+      'scheduled Turn provider retry',
+      record.ts === undefined ? requiredKeys : [...requiredKeys, 'ts'],
+    );
     return {
       phase,
       attempt,
       maxAttempts,
       delayMs: requireCount(record.delayMs, 'delayMs'),
+      ...(record.ts !== undefined ? { ts: requireCount(record.ts, 'ts') } : {}),
       reason,
     };
   }

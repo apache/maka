@@ -427,6 +427,7 @@ export class HostConnectionEffectCoordinator {
     if (!isOAuthSubscriptionProvider(prepared.connection.providerType)) return material.secret;
     const binding = this.#oauthCredentials.bind({
       providerType: prepared.connection.providerType,
+      connectionId: prepared.connection.connectionId,
       connectionSlug: prepared.connection.slug,
       material,
       createRefreshTransport: () => this.#createTransport(proxy),

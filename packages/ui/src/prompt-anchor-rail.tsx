@@ -216,6 +216,27 @@ export interface PromptAnchorRailTurn {
   sequence?: number;
 }
 
+export function mergePromptAnchorRailTurns(
+  loadedTurns: ReadonlyArray<{ turnId: string; label: string; reply: string }>,
+  index?: ReadonlyArray<{ turnId: string; sequence: number; label: string }>,
+): PromptAnchorRailTurn[] {
+  if (!index || index.length === 0) {
+    return loadedTurns.map((turn) => ({ ...turn }));
+  }
+  const loadedByTurnId = new Map(loadedTurns.map((turn) => [turn.turnId, turn]));
+  return index.map((landmark) => {
+    const loaded = loadedByTurnId.get(landmark.turnId);
+    return {
+      ...(loaded ?? {
+        turnId: landmark.turnId,
+        label: landmark.label,
+        reply: '',
+      }),
+      sequence: landmark.sequence,
+    };
+  });
+}
+
 export interface PromptAnchorRailProps {
   turns: readonly PromptAnchorRailTurn[];
   scrollRef: RefObject<HTMLElement | null>;

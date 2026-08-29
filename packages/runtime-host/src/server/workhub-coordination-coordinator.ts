@@ -82,6 +82,7 @@ type CoordinationStores = Pick<
   | 'listHeaders'
   | 'probeStableSessionCreate'
   | 'readHeaderSnapshot'
+  | 'readWorkHubAssignment'
   | 'readTranscriptHighWaterSnapshot'
   | 'readTranscriptMessagesSnapshot'
   | 'updateHeaderVersioned'
@@ -100,7 +101,7 @@ export interface HostWorkHubCoordinationCoordinatorOptions {
   readonly admission: SessionAdmissionGate;
   readonly continuity: Pick<SessionContinuityCoordinator, 'refreshCanonical'>;
   readonly executions: CoordinationExecutions;
-  readonly sessionActions: Pick<WorkHubActionGateEffects, 'create' | 'submit'>;
+  readonly sessionActions: Pick<WorkHubActionGateEffects, 'assign'>;
   readonly resolveCreateTarget: () => Promise<CoordinationCreateTarget>;
   readonly requestDrain: () => void;
 }
@@ -134,6 +135,7 @@ export class HostWorkHubCoordinationCoordinator {
     this.#requestDrain = options.requestDrain;
     this.#actionGate = new WorkHubCoordinationActionGate({
       listSessions: () => this.#stores.listHeaders(),
+      readAssignment: (actionId) => this.#stores.readWorkHubAssignment(actionId),
       answer: async (input, context) => {
         const outcome = await this.#answer({ turnId: input.turnId, text: input.text }, context);
         if (!outcome.ok) {
@@ -150,8 +152,7 @@ export class HostWorkHubCoordinationCoordinator {
           throw new WorkHubActionEffectFailure(outcome.error.code, outcome.error.message);
         }
       },
-      create: options.sessionActions.create,
-      submit: options.sessionActions.submit,
+      assign: options.sessionActions.assign,
     });
   }
 

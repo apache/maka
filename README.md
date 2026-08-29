@@ -30,6 +30,7 @@
   <img src="https://img.shields.io/badge/macOS-arm64-4C8DFF?style=flat&logo=apple&logoColor=white" alt="macOS Apple Silicon" />
   <img src="https://img.shields.io/badge/Windows-preview-9BB8F0?style=flat&logo=windows&logoColor=white" alt="Windows unsigned preview" />
   <img src="https://img.shields.io/badge/Linux-soon-D0D4DA?style=flat&logo=linux&logoColor=6B7280" alt="Linux not yet supported" />
+  <a href="https://deepwiki.com/apache/maka"><img src="https://img.shields.io/badge/DeepWiki-third--party%20AI%20docs-9BB8F0?style=flat" alt="DeepWiki: third-party AI-generated docs" /></a>
 </p>
 
 <p align="center">
@@ -121,6 +122,15 @@ npm run dev
 
 ```sh
 npm run dev:full
+```
+
+Direct Peer and Peer Mesh development additionally requires Rust stable 1.98 or newer and the
+platform linker (Xcode Command Line Tools on macOS, MSVC Build Tools on Windows). Use the
+peer-enabled entry point so the native addon is built before Desktop starts:
+
+```sh
+npm run dev:peer       # HMR
+npm run dev:full:peer  # full build
 ```
 
 If dependencies were installed with `ELECTRON_SKIP_BINARY_DOWNLOAD=1`, install the Electron platform binary before starting:

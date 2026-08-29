@@ -51,12 +51,34 @@ describe('Maka CLI args', () => {
     assert.match(help.text, /^  maka run /m);
     assert.match(help.text, /^  maka activate /m);
     assert.match(help.text, /^  maka eval /m);
+    assert.match(help.text, /^  maka update --target /m);
     assert.match(
       help.text,
       /^  maka --acp      Serve ACP v1 over stdio \(initialize only; session support in progress\)$/m,
     );
     assert.match(help.text, /^  maka runtime-host serve /m);
     assert.doesNotMatch(help.text, /cli:dev/);
+  });
+
+  test('requires an explicit installed update target and interruption choice', () => {
+    assert.deepEqual(parseMakaCliArgs(['update', '--target', 'next'], '0.1.0'), {
+      kind: 'runtime-host-installed-update',
+      selector: { kind: 'channel', channel: 'next' },
+      allowInterruptActiveTasks: false,
+    });
+    assert.deepEqual(
+      parseMakaCliArgs(['update', '--target', '1.2.3', '--allow-interrupt-active-tasks'], '0.1.0'),
+      {
+        kind: 'runtime-host-installed-update',
+        selector: { kind: 'exact', version: '1.2.3' },
+        allowInterruptActiveTasks: true,
+      },
+    );
+    assert.deepEqual(parseMakaCliArgs(['update'], '0.1.0'), {
+      kind: 'error',
+      message: 'update requires --target <latest|next|version>',
+      exitCode: 2,
+    });
   });
 
   test('selects a Runtime Host and Project for TUI startup', () => {

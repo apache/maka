@@ -35,6 +35,11 @@ import type {
   WorkHubSubmission,
   WorkHubSubmitInput,
 } from './workhub-controller.js';
+import {
+  WorkHubSendLease,
+  type WorkHubSendAttempt,
+} from './workhub-send-lease.js';
+import { WorkHubCoordinationFailure } from './workhub-coordination-port.js';
 
 export interface WorkHubConversationTurn {
   requestId: string;
@@ -89,6 +94,14 @@ export function workHubSubmissionClearsDraft(
 }
 
 export function workHubSurfaceFailure(error: unknown): WorkHubSurfaceFailure {
+  if (error instanceof WorkHubCoordinationFailure) {
+    if (error.code === 'operation_conflict') return 'action_changed';
+    if (error.code === 'not_found' || error.code === 'session_archived') {
+      return 'candidates_changed';
+    }
+    if (error.code === 'session_busy') return 'target_waiting';
+    return 'delivery_failed';
+  }
   const message = error instanceof Error ? error.message : '';
   if (
     /candidates changed|not in the admitted candidate set|source or target is not in/iu.test(
@@ -134,12 +147,70 @@ export async function submitWorkHubSurfaceInput(input: {
   return input.controller.submit(input.input);
 }
 
+export async function submitAndRecordWorkHubSurfaceInput(input: {
+  controller: WorkHubController;
+  request: WorkHubSubmitInput;
+  recordedUserText: string;
+  summary(result: Exclude<WorkHubSubmission, { kind: 'discussion' }>): string;
+  onSummaryError(): void;
+}): Promise<WorkHubSubmission> {
+  const result = await submitWorkHubSurfaceInput({
+    controller: input.controller,
+    input: input.request,
+  });
+  // Waiting is a local, retryable admission result: the request has not been
+  // accepted and must not consume the immutable Coordination summary owned by
+  // this action identity. A later same-identity retry may still be admitted.
+  // Delegations project directly from the Host's atomic delegation_assigned
+  // record. Only local clarification still needs the generic summary path.
+  if (
+    result.kind === 'discussion' ||
+    result.kind === 'waiting' ||
+    result.kind === 'submitted'
+  ) {
+    return result;
+  }
+  try {
+    await input.controller.recordConversationTurn({
+      turnId: input.request.requestId,
+      userText: input.recordedUserText,
+      assistantText: input.summary(result),
+      disposition: result.kind === 'clarification' ? 'clarify' : 'summary',
+    });
+  } catch (error) {
+    input.onSummaryError();
+    throw error;
+  }
+  return result;
+}
+
+export async function submitLeasedWorkHubSurfaceInput(input: {
+  lease: WorkHubSendLease;
+  text: string;
+  preserveDraft?: boolean;
+  submit(attempt: WorkHubSendAttempt): Promise<WorkHubSubmission | undefined>;
+}): Promise<boolean> {
+  const attempt = input.lease.acquireAttempt(input.text);
+  const result = await input.submit(attempt);
+  if (!result) return false;
+  const clearsDraft = input.lease.settle(
+    attempt.requestId,
+    attempt.text,
+    workHubSubmissionClearsDraft(result),
+  );
+  if (input.preserveDraft && clearsDraft) {
+    return false;
+  }
+  return clearsDraft;
+}
+
 /**
  * The persistent Coordination Session transcript is the primary conversation.
  * Ordinary Sessions remain a read-only status/routing projection.
  */
 export function WorkHubSurface(props: {
   controller: WorkHubController;
+  leaseScope: string;
   locale: UiLocale;
   initialFocusSessionId?: string;
   onOpenSession(sessionId: string): void;
@@ -155,6 +226,7 @@ export function WorkHubSurface(props: {
   // a rerender can disable Composer and clarification controls.
   const routeGate = useRef(new WorkHubSurfaceRouteGate()).current;
   const refreshGate = useRef(new WorkHubProjectionRefreshGate()).current;
+  const sendLease = useRef(new WorkHubSendLease({ scope: props.leaseScope })).current;
   const [loadError, setLoadError] = useState(false);
   const [conversationError, setConversationError] = useState(false);
   const refresh = useCallback(async (focusSessionId?: string) => {
@@ -224,24 +296,15 @@ export function WorkHubSurface(props: {
           : turn,
       ));
       try {
-        const result = await submitWorkHubSurfaceInput({
+        const result = await submitAndRecordWorkHubSurfaceInput({
           controller: props.controller,
-          input,
+          request: input,
+          recordedUserText,
+          summary: (result) => workHubCoordinationSummary(result, projection, copy),
+          // Clarification remains a local transcript write; delegated sends
+          // are projected directly from the Host-owned assignment record.
+          onSummaryError: () => setConversationError(true),
         });
-        if (result.kind !== 'discussion') {
-          try {
-            await props.controller.recordConversationTurn({
-              turnId: input.requestId,
-              userText: recordedUserText,
-              assistantText: workHubCoordinationSummary(result, projection, copy),
-              disposition: result.kind === 'clarification' ? 'clarify' : 'summary',
-            });
-          } catch {
-            // The ordinary Session admission has already settled. A failed
-            // Coordination summary must not make retry duplicate that work.
-            setConversationError(true);
-          }
-        }
         setTurns((current) => current.map((turn) =>
           turn.requestId === localRequestId
             ? { ...turn, state: 'settled', outcome: result }
@@ -250,6 +313,9 @@ export function WorkHubSurface(props: {
         if (result.kind === 'submitted') await refresh();
         return result;
       } catch (error) {
+        if (isTerminalWorkHubSurfaceFailure(error)) {
+          sendLease.abandon(input.requestId);
+        }
         setTurns((current) => current.map((turn) =>
           turn.requestId === localRequestId
             ? {
@@ -270,13 +336,24 @@ export function WorkHubSurface(props: {
   const send = useCallback(async (value: string) => {
     const text = value.trim();
     if (!text || !initialLoadSettled || !conversationReady || routeGate.pending) return false;
-    const requestId = crypto.randomUUID();
-    setTurns((current) => [...current, { requestId, text, state: 'routing' }]);
-    const result = await route({ requestId, text });
-    // Composer clears only accepted drafts. Waiting, delivery failures, and a
-    // ref-blocked duplicate keep the exact text available for retry.
-    return workHubSubmissionClearsDraft(result);
-  }, [conversationReady, initialLoadSettled, route, routeGate]);
+    return submitLeasedWorkHubSurfaceInput({
+      lease: sendLease,
+      text,
+      submit: async (attempt) => {
+        const { requestId } = attempt;
+        setTurns((current) => current.some((turn) => turn.requestId === requestId)
+          ? current.map((turn) => turn.requestId === requestId
+            ? { requestId, text: attempt.text, state: 'routing' }
+            : turn)
+          : [...current, { requestId, text: attempt.text, state: 'routing' }]);
+        return route({
+          requestId,
+          text: attempt.text,
+          ...(attempt.retrying ? { retryAction: true as const } : {}),
+        });
+      },
+    });
+  }, [conversationReady, initialLoadSettled, route, routeGate, sendLease]);
   const visible = visibleWorkHubConversation(coordinationTurns, turns);
   const visibleCoordinationTurns = visible.coordination;
   const visibleLocalTurns = visible.local;
@@ -290,6 +367,7 @@ export function WorkHubSurface(props: {
       composer={(
         <Composer
           draftKey="workhub"
+          draftPersistence={sendLease}
           onSend={send}
           onStop={() => {}}
           sendBlocked={pending || !surfaceReady}
@@ -345,14 +423,22 @@ export function WorkHubSurface(props: {
                       const selected = projection.sessions.find(
                         (session) => session.target.sessionId === target.sessionId,
                       );
-                      void route({
-                        requestId: crypto.randomUUID(),
+                      void submitLeasedWorkHubSurfaceInput({
+                        lease: sendLease,
                         text: turn.text,
-                        explicitTarget: target,
-                        ...(turn.outcome?.kind === 'clarification' && turn.outcome.correction
-                          ? { correction: turn.outcome.correction }
-                          : {}),
-                      }, turn.requestId, copy.choseWork(selected?.sessionName ?? copy.sessionFallback));
+                        preserveDraft: true,
+                        submit: (attempt) => route({
+                          requestId: attempt.requestId,
+                          text: attempt.text,
+                          explicitTarget: target,
+                          ...(attempt.retrying ? { retryAction: true as const } : {}),
+                          ...(turn.outcome?.kind === 'clarification' && turn.outcome.correction
+                            ? { correction: turn.outcome.correction }
+                            : {}),
+                        }, turn.requestId, copy.choseWork(
+                          selected?.sessionName ?? copy.sessionFallback,
+                        )),
+                      });
                     }}
                     onOpenSession={props.onOpenSession}
                   />
@@ -363,6 +449,16 @@ export function WorkHubSurface(props: {
         </div>
       </main>
     </ChatSurfaceLayout>
+  );
+}
+
+function isTerminalWorkHubSurfaceFailure(error: unknown): boolean {
+  return (
+    error instanceof WorkHubCoordinationFailure &&
+    (error.code === 'operation_conflict' ||
+      error.code === 'not_found' ||
+      error.code === 'session_archived' ||
+      error.code === 'unauthorized')
   );
 }
 
@@ -454,7 +550,11 @@ function CoordinationTurnView(props: {
 }) {
   return (
     <WorkHubMessageFrame text={props.turn.text} state={props.turn.state} projected>
-      {props.turn.result ? (
+      {props.turn.assignment ? (
+        <p className="workhub-result">
+          {props.copy.sentTo} {props.turn.assignment.targetSessionName} · {props.copy.accepted}
+        </p>
+      ) : props.turn.result ? (
         <p className="workhub-result">{props.turn.result}</p>
       ) : props.turn.state === 'running' ? (
         <p className="workhub-status" role="status">{props.copy.answering}</p>

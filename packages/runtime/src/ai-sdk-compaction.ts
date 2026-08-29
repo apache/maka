@@ -36,7 +36,11 @@ import type {
 } from '@maka/core/backend-types';
 import type { ContextBudgetDiagnostic } from '@maka/core/usage-stats/types';
 
-import type { AiSdkCompactionCapabilities } from './ai-sdk-compaction-contract.js';
+import type {
+  AiSdkCompactionCapabilities,
+  HistoryCompactSummarizer,
+  HistoryCompactSummaryInput,
+} from './ai-sdk-compaction-contract.js';
 import { compactionDecisionDiagnosticPatch } from './compaction-boundary.js';
 import {
   ARCHIVED_TOOL_RESULT_REWRITE_VERSION,
@@ -58,8 +62,13 @@ import {
   projectHistoryCompactCheckpointReplay,
   type HistoryCompactCheckpoint,
   type HistoryCompactMemoryExtractionBoundary,
+  type HistoryCompactProviderState,
 } from './history-compact-checkpoint.js';
-
+import {
+  HistoryCompactSummarizerError,
+  isMalformedHistoryCompactSummaryReason,
+  type MalformedHistoryCompactSummaryReason,
+} from './history-compact-error.js';
 import { createHash } from 'node:crypto';
 import type { ModelMessage } from './model-protocol.js';
 import type { ModelAdapter } from './model-adapter.js';
@@ -197,6 +206,15 @@ export class AiSdkCompaction {
     turnTailPrompt?: string,
   ) => ModelMessage['content'];
   private historyCompactAbortController: AbortController | null = null;
+  /**
+   * Session-scoped circuit for exact malformed compaction inputs. A retry or
+   * regeneration on the same backend must not dispatch the same doomed call;
+   * changed source/configuration fingerprints remain eligible.
+   */
+  private readonly malformedSummaryFailures = new Map<
+    string,
+    MalformedHistoryCompactSummaryReason
+  >();
 
   constructor(deps: AiSdkCompactionDeps) {
     this.input = deps.input;
@@ -316,22 +334,20 @@ export class AiSdkCompaction {
         ...(automaticMemoryBoundary ? { memoryExtractionBoundary: automaticMemoryBoundary } : {}),
         ...(previousCheckpoint ? { previousCheckpoint } : {}),
         summarize: async ({ coveredRuntimeEvents, newlyFoldedRuntimeEvents, previousCheckpoint }) =>
-          await Promise.resolve(
-            summarizer({
-              sessionId: this.sessionId,
-              turnId: input.turnId,
-              source: { foldedRuntimeEvents: [...coveredRuntimeEvents] },
-              newlyFoldedRuntimeEvents: [...newlyFoldedRuntimeEvents],
-              ...(previousCheckpoint ? { previousCheckpoint } : {}),
-              inputBudget: {
-                maxEstimatedTokens: policy.maxHistoryEstimatedTokens ?? estimatedTokensBefore,
-                charsPerToken,
-              },
-              ...(requestShapeHashBefore ? { requestShapeHashBefore } : {}),
-              abortSignal: historyCompactAbortController.signal,
-              ...(tracker ? { providerRequestTracker: tracker } : {}),
-            }),
-          ),
+          await this.summarizeWithFailureCircuit(summarizer, {
+            sessionId: this.sessionId,
+            turnId: input.turnId,
+            source: { foldedRuntimeEvents: [...coveredRuntimeEvents] },
+            newlyFoldedRuntimeEvents: [...newlyFoldedRuntimeEvents],
+            ...(previousCheckpoint ? { previousCheckpoint } : {}),
+            inputBudget: {
+              maxEstimatedTokens: policy.maxHistoryEstimatedTokens ?? estimatedTokensBefore,
+              charsPerToken,
+            },
+            ...(requestShapeHashBefore ? { requestShapeHashBefore } : {}),
+            abortSignal: historyCompactAbortController.signal,
+            ...(tracker ? { providerRequestTracker: tracker } : {}),
+          }),
       });
       if (historyCompactAbortController.signal.aborted) {
         return { outcome: { kind: 'failed', reason: 'aborted' } };
@@ -430,6 +446,45 @@ export class AiSdkCompaction {
 
   public hasHistoryCompactCheckpointWriter(): boolean {
     return Boolean(this.input.summarizeHistoryCompact && this.input.recordHistoryCompactCheckpoint);
+  }
+
+  private async summarizeWithFailureCircuit(
+    summarizer: HistoryCompactSummarizer,
+    input: HistoryCompactSummaryInput,
+  ): Promise<string | HistoryCompactProviderState | undefined> {
+    const fingerprint = sha256(
+      stableStringifyForSignature({
+        version: 1,
+        connection: this.input.connection,
+        modelId: this.input.modelId,
+        historyCompactRoute: this.input.historyCompactRoute,
+        contextBudget: this.input.contextBudget,
+        inputBudget: input.inputBudget,
+        requestShapeHashBefore: input.requestShapeHashBefore,
+        previousCheckpointId: input.previousCheckpoint?.checkpointId,
+        foldedRuntimeEvents: input.source.foldedRuntimeEvents,
+      }),
+    );
+    const priorFailure = this.malformedSummaryFailures.get(fingerprint);
+    if (priorFailure) throw new HistoryCompactSummarizerError(priorFailure);
+
+    try {
+      return await Promise.resolve(summarizer(input));
+    } catch (error) {
+      if (
+        error instanceof HistoryCompactSummarizerError &&
+        isMalformedHistoryCompactSummaryReason(error.reason)
+      ) {
+        this.malformedSummaryFailures.delete(fingerprint);
+        this.malformedSummaryFailures.set(fingerprint, error.reason);
+        while (this.malformedSummaryFailures.size > 16) {
+          const oldest = this.malformedSummaryFailures.keys().next().value;
+          if (oldest === undefined) break;
+          this.malformedSummaryFailures.delete(oldest);
+        }
+      }
+      throw error;
+    }
   }
 
   public async prepareContextBudgetPolicy(runtimeContext: readonly RuntimeEvent[]): Promise<{
@@ -830,6 +885,13 @@ export class AiSdkCompaction {
       turnTailPrompt,
       abortSignal,
     } = input;
+    if (state.malformedSummaryFailure) {
+      return {
+        decision: 'fail',
+        detail: state.malformedSummaryFailure,
+        diagnosticReason: state.malformedSummaryFailure,
+      };
+    }
     const summarizer = this.input.summarizeHistoryCompact!;
     const midTurnTracker = this.createProviderRequestTracker({
       turnId,
@@ -937,29 +999,33 @@ export class AiSdkCompaction {
           }
         : {}),
       summarize: async ({ coveredRuntimeEvents, newlyFoldedRuntimeEvents, previousCheckpoint }) => {
-        return await Promise.resolve(
-          summarizer({
-            sessionId: this.sessionId,
-            turnId,
-            source: { foldedRuntimeEvents: [...coveredRuntimeEvents] },
-            ...(previousCheckpoint ? { previousCheckpoint } : {}),
-            newlyFoldedRuntimeEvents: [...newlyFoldedRuntimeEvents],
-            inputBudget: {
-              maxEstimatedTokens: Math.max(1, state.capacity.tokens - reserveTokens),
-              charsPerToken,
-            },
-            ...(abortSignal ? { abortSignal } : {}),
-            ...(midTurnTracker ? { providerRequestTracker: midTurnTracker } : {}),
-          }),
-        );
+        return await this.summarizeWithFailureCircuit(summarizer, {
+          sessionId: this.sessionId,
+          turnId,
+          source: { foldedRuntimeEvents: [...coveredRuntimeEvents] },
+          ...(previousCheckpoint ? { previousCheckpoint } : {}),
+          newlyFoldedRuntimeEvents: [...newlyFoldedRuntimeEvents],
+          inputBudget: {
+            maxEstimatedTokens: Math.max(1, state.capacity.tokens - reserveTokens),
+            charsPerToken,
+          },
+          ...(abortSignal ? { abortSignal } : {}),
+          ...(midTurnTracker ? { providerRequestTracker: midTurnTracker } : {}),
+        });
       },
     });
 
     if (plan.decision === 'fail_open') {
+      const diagnosticReason = plan.diagnosticReason ?? plan.reason;
+      if (isMalformedHistoryCompactSummaryReason(diagnosticReason)) {
+        state.malformedSummaryFailure = diagnosticReason;
+      }
       return {
         decision: 'fail',
-        detail: plan.reason,
-        diagnosticReason: plan.diagnosticReason ?? plan.reason,
+        detail: isMalformedHistoryCompactSummaryReason(diagnosticReason)
+          ? diagnosticReason
+          : plan.reason,
+        diagnosticReason,
       };
     }
 
@@ -1519,6 +1585,8 @@ export class MidTurnCapacityCompactState {
         diagnosticReason: string;
       }
     | undefined;
+  /** Malformed summaries spend one bounded repair budget for this whole Turn. */
+  malformedSummaryFailure: MalformedHistoryCompactSummaryReason | undefined;
 
   constructor(
     readonly headAnchor: RuntimeEvent,

@@ -39,6 +39,7 @@ import {
   WORK_BOARD_DEFAULT_PAGE_SIZE,
   WORK_BOARD_PROJECT_ID_MAX_CHARS,
 } from '@maka/core/work-board';
+import { SQLITE_WORKFLOW_SCHEMA_VERSION } from '../sqlite-workflow-schema.js';
 
 describe('Work Board store', () => {
   test('persists items across reopen', async () => {
@@ -664,7 +665,7 @@ describe('Work Board store', () => {
     });
   });
 
-  test('migrates a real workflow schema 8 database to version 9 with the board table', async () => {
+  test('migrates a real workflow schema 8 database through event-only version 10', async () => {
     const base = await mkdtemp(join(tmpdir(), 'maka-work-board-schema8-'));
     const stateRoot = join(base, 'state');
     const databasePath = join(stateRoot, 'runtime.sqlite');
@@ -683,7 +684,7 @@ describe('Work Board store', () => {
           ),
         );
         // The released v0.1.6 fixture ships an Automation definition; clearing
-        // it keeps the fixture focused on the workflow 8 -> 9 upgrade while
+        // it keeps the fixture focused on the workflow 8 -> current upgrade while
         // leaving every released table and row otherwise intact.
         v8.exec('DELETE FROM automation_definitions; DELETE FROM automation_pending_fires;');
         v8.prepare(
@@ -699,11 +700,19 @@ describe('Work Board store', () => {
         const version = database
           .prepare("SELECT version FROM operational_schema_migrations WHERE scope = 'workflow'")
           .get() as { version?: unknown } | undefined;
-        assert.equal(version?.version, 9);
+        assert.equal(version?.version, SQLITE_WORKFLOW_SCHEMA_VERSION);
         assert.ok(
           database
             .prepare("SELECT 1 FROM sqlite_schema WHERE name = 'workflow_work_board_items'")
             .get(),
+        );
+        assert.equal(
+          database
+            .prepare(
+              "SELECT 1 FROM sqlite_schema WHERE name IN ('workflow_task_ledger_projections', 'workflow_plan_projections') LIMIT 1",
+            )
+            .get(),
+          undefined,
         );
         assert.ok(
           database

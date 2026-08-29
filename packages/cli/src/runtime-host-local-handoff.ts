@@ -38,7 +38,10 @@ import {
   RUNTIME_HOST_PROTOCOL_VERSION,
   type HostRegistration,
 } from '@maka/runtime-host/protocol';
-import { resolveRuntimeHostNpmGlobalInstallation } from './runtime-host-cli-installation.js';
+import {
+  resolveRuntimeHostNpmGlobalInstallation,
+  type RuntimeHostNpmGlobalInstallation,
+} from './runtime-host-cli-installation.js';
 import {
   prepareRuntimeHostPackageDeployment,
   type RuntimeHostPackageDeployment,
@@ -286,24 +289,58 @@ export async function reconcileRuntimeHostNpmGlobalDeployment(
       `The installed Maka release changed from ${request.target.version} to ${installation.observedRelease.version} before local Host reconciliation`,
     );
   }
-  const stageTarget = (target: RuntimeHostUpdateCandidate, transactionId: string) =>
-    stageRuntimeHostNpmGlobalDeploymentTarget(
-      {
-        rootId: request.rootId,
-        owner: installation.owner,
-        target,
-        transactionId,
-      },
-      request.deploymentPathOptions,
-      deps,
-    );
-  const current = await deps.readRecord(request.rootId, authorityOptions);
+  const staged = await stageRuntimeHostNpmGlobalDeploymentTarget(
+    {
+      rootId: request.rootId,
+      owner: installation.owner,
+      target: request.target,
+      transactionId: request.transactionId,
+    },
+    request.deploymentPathOptions,
+    deps,
+  );
+  return reconcilePreparedRuntimeHostNpmGlobalDeployment(
+    { ...request, installation, staged },
+    lifecycle,
+    authorityOptions,
+    deps,
+  );
+}
+
+export async function reconcilePreparedRuntimeHostNpmGlobalDeployment(
+  request: RuntimeHostNpmGlobalReconciliationRequest & {
+    readonly installation: RuntimeHostNpmGlobalInstallation;
+    readonly staged: RuntimeHostLocalStagedDeployment;
+  },
+  lifecycle: RuntimeHostLocalProcessLifecycleAdapter,
+  authorityOptions: LocalHostDeploymentAuthorityOptions = {},
+  overrides: Pick<RuntimeHostLocalHandoffDeps, 'readRecord' | 'claim' | 'handoff'> = {
+    readRecord: readLocalHostDeploymentRecord,
+    claim: claimLocalHostProcessDeployment,
+    handoff: handoffLocalHostProcessDeployment,
+  },
+): Promise<LocalHostProcessDeploymentClaimResult | LocalHostProcessDeploymentHandoffResult> {
+  const stageTarget = async (target: RuntimeHostUpdateCandidate, transactionId: string) => {
+    if (
+      transactionId !== request.transactionId ||
+      target.kind !== request.target.kind ||
+      target.version !== request.target.version ||
+      target.integrity !== request.target.integrity
+    ) {
+      throw new RuntimeHostLocalHandoffError(
+        'selected_target_observation_conflict',
+        'The prepared local Host target does not match its owner transaction',
+      );
+    }
+    return request.staged;
+  };
+  const current = await overrides.readRecord(request.rootId, authorityOptions);
   if (!current) {
-    return deps.claim(
+    return overrides.claim(
       {
         rootId: request.rootId,
         transactionId: request.transactionId,
-        owner: installation.owner,
+        owner: request.installation.owner,
         target: request.target,
         activeWorkPolicy: request.activeWorkPolicy,
       },
@@ -311,14 +348,14 @@ export async function reconcileRuntimeHostNpmGlobalDeployment(
       authorityOptions,
     );
   }
-  return deps.handoff(
+  return overrides.handoff(
     {
       rootId: request.rootId,
       expectedRevision: current.revision,
       transactionId:
         current.state.kind === 'handoff' ? current.state.transactionId : request.transactionId,
       from: current.state.kind === 'handoff' ? current.state.from : current.state.owner,
-      to: installation.owner,
+      to: request.installation.owner,
       target: request.target,
       activeWorkPolicy: request.activeWorkPolicy,
     },
@@ -343,25 +380,43 @@ export async function stageRuntimeHostNpmGlobalDeploymentTarget(
     prepareDeployment: prepareRuntimeHostPackageDeployment,
   },
 ): Promise<RuntimeHostLocalStagedDeployment> {
+  return overrides.withPackage(input.target, async (sourcePackageRoot) => {
+    return prepareRuntimeHostNpmGlobalStagedDeployment(
+      { ...input, sourcePackageRoot },
+      pathOptions,
+      overrides.prepareDeployment,
+    );
+  });
+}
+
+export async function prepareRuntimeHostNpmGlobalStagedDeployment(
+  input: {
+    readonly rootId: string;
+    readonly owner: RuntimeHostInstallationOwner & { readonly kind: 'cli' };
+    readonly target: RuntimeHostUpdateCandidate;
+    readonly transactionId: string;
+    readonly sourcePackageRoot: string;
+  },
+  pathOptions: RuntimeHostLocalDeploymentPathOptions = {},
+  prepareDeployment: typeof prepareRuntimeHostPackageDeployment = prepareRuntimeHostPackageDeployment,
+): Promise<RuntimeHostLocalStagedDeployment> {
   const deploymentRoot = resolveRuntimeHostLocalCliDeploymentRoot(
     input.rootId,
     input.owner,
     pathOptions,
   );
-  return overrides.withPackage(input.target, async (sourcePackageRoot) => {
-    const staged = await overrides.prepareDeployment({
-      deploymentRoot,
-      sourcePackageRoot,
-      version: input.target.version,
-      packageIntegrity: input.target.integrity,
-    });
-    const candidateEntrypoint = await requireCandidateEntrypoint(staged.packageRoot);
-    return {
-      ...staged,
-      candidateEntrypoint,
-      launchGeneration: launchGeneration(input.transactionId, input.target),
-    };
+  const staged = await prepareDeployment({
+    deploymentRoot,
+    sourcePackageRoot: input.sourcePackageRoot,
+    version: input.target.version,
+    packageIntegrity: input.target.integrity,
   });
+  const candidateEntrypoint = await requireCandidateEntrypoint(staged.packageRoot);
+  return {
+    ...staged,
+    candidateEntrypoint,
+    launchGeneration: launchGeneration(input.transactionId, input.target),
+  };
 }
 
 export function resolveRuntimeHostLocalCliDeploymentRoot(

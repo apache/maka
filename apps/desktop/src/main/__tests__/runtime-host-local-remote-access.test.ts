@@ -23,8 +23,9 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 import { decodeRuntimeHostOwnerConnectionCode } from '@maka/runtime-host/client';
-import { resolveRuntimeHostManagedServiceId } from '@maka/runtime-host/operator';
 import type { RuntimeHostDesktopManager } from '../runtime-host-desktop-manager.js';
+
+const RECOVERY_DEPLOYMENT_ID = '33333333-3333-4333-8333-333333333333';
 import { createDesktopLocalRuntimeHostRemoteAccess } from '../runtime-host-local-remote-access.js';
 import type { createDesktopRuntimeHostLocalOperator } from '../runtime-host-local-operator.js';
 
@@ -33,7 +34,6 @@ test('enabling remote access hands the same root to one managed service before D
   t.after(() => rm(base, { recursive: true, force: true }));
   const clientDataRoot = join(base, 'client');
   const rootPath = join(clientDataRoot, 'workspaces', 'default');
-  const serviceId = resolveRuntimeHostManagedServiceId(clientDataRoot);
   await mkdir(rootPath, { recursive: true });
   const handlers = new Map<string, Parameters<Electron.IpcMain['handle']>[1]>();
   let retired = false;
@@ -49,16 +49,27 @@ test('enabling remote access hands the same root to one managed service before D
     routeHints: ['/ip4/192.0.2.1/udp/41000/quic-v1'],
     coordinationRelays: [],
   };
+  const deploymentId = '11111111-1111-4111-8111-111111111111';
   const operator = {
-    async runSetup(input: { readonly rootPath: string; readonly principalId: string }) {
+    async runSetup(input: {
+      readonly rootPath: string;
+      readonly principalId: string;
+      readonly expectedTarget: { readonly serviceId: string; readonly rootId: string };
+    }) {
       assert.equal(retired, true);
       assert.equal(input.rootPath, rootPath);
       assert.equal(input.principalId, 'desktop-owner:local-runtime-host-sharing');
+      assert.deepEqual(input.expectedTarget, {
+        serviceId: 'a'.repeat(64),
+        rootPath,
+        rootId: 'a'.repeat(64),
+      });
       return {
-        serviceId,
+        serviceId: 'a'.repeat(64),
         operatorPath: join(base, 'operator'),
         rootPath,
         rootId: 'a'.repeat(64),
+        deploymentId,
         credential: 'pending-credential',
         directPeer: peer,
       };
@@ -109,11 +120,12 @@ test('enabling remote access hands the same root to one managed service before D
     transport: { kind: 'libp2p-direct', ...peer },
     credential: 'pending-credential',
   });
-  assert.equal(
-    JSON.parse(await readFile(join(clientDataRoot, 'runtime-host-local-service.json'), 'utf8'))
-      .state,
-    'managed',
-  );
+  const lifecycle = JSON.parse(
+    await readFile(join(clientDataRoot, 'runtime-host-local-service.json'), 'utf8'),
+  ) as { readonly state: string; readonly deploymentId: string };
+  assert.equal(lifecycle.state, 'managed');
+  assert.equal((lifecycle as { serviceId?: string }).serviceId, 'a'.repeat(64));
+  assert.equal(lifecycle.deploymentId, deploymentId);
 });
 
 test('revokes the one Local sharing authority without changing peer connectivity', async (t) => {
@@ -192,14 +204,12 @@ test('an interrupted Local Host handoff converges to its exact managed service',
   const clientDataRoot = join(base, 'client');
   const rootPath = join(clientDataRoot, 'workspaces', 'default');
   const rootId = 'a'.repeat(64);
-  const serviceId = resolveRuntimeHostManagedServiceId(clientDataRoot);
   await mkdir(rootPath, { recursive: true });
   await writeFile(
     join(clientDataRoot, 'runtime-host-local-service.json'),
     `${JSON.stringify({
       schemaVersion: 1,
       state: 'handoff',
-      serviceId,
       rootPath,
       rootId,
       coordinationRelays: [],
@@ -225,10 +235,11 @@ test('an interrupted Local Host handoff converges to its exact managed service',
       async runSetup() {
         setupCalls += 1;
         return {
-          serviceId,
+          serviceId: rootId,
           operatorPath: join(base, 'operator'),
           rootPath,
           rootId,
+          deploymentId: '22222222-2222-4222-8222-222222222222',
           credential: 'unused-pending-credential',
           directPeer: {
             peerId: '12D3KooWpeer',
@@ -268,6 +279,7 @@ test('startup replays the persisted peer intent instead of gating recovery on st
       operatorPath: join(clientDataRoot, 'operator'),
       rootPath,
       rootId,
+      deploymentId: RECOVERY_DEPLOYMENT_ID,
       peerEnabled: true,
       coordinationRelays: ['/dns4/discovery.example/udp/443/quic-v1'],
       allowInterruptActiveTasks: false,
@@ -401,10 +413,12 @@ test('startup completes an exact persisted uninstall intent after Desktop interr
       operatorPath: join(base, 'operator'),
       rootPath,
       rootId,
+      deploymentId: RECOVERY_DEPLOYMENT_ID,
       allowInterruptActiveTasks: false,
     })}\n`,
   );
   const actions: string[] = [];
+  const cleanupPhases: boolean[] = [];
   const service = createDesktopLocalRuntimeHostRemoteAccess({
     ipcMain: { handle() {}, removeHandler() {} },
     clientDataRoot,
@@ -433,8 +447,9 @@ test('startup completes an exact persisted uninstall intent after Desktop interr
           service: { state: 'not_installed' },
         };
       },
-      async cleanupManagedDeployment() {
+      async cleanupManagedDeployment(input: { readonly finalize?: boolean }) {
         actions.push('cleanup');
+        cleanupPhases.push(input.finalize ?? false);
       },
       async close() {},
     } as unknown as ReturnType<typeof createDesktopRuntimeHostLocalOperator>,
@@ -442,7 +457,8 @@ test('startup completes an exact persisted uninstall intent after Desktop interr
   t.after(() => service.close());
 
   await service.recover();
-  assert.deepEqual(actions, ['uninstall', 'cleanup']);
+  assert.deepEqual(actions, ['uninstall', 'cleanup', 'cleanup']);
+  assert.deepEqual(cleanupPhases, [false, true]);
   await assert.rejects(readFile(join(clientDataRoot, 'runtime-host-local-service.json'), 'utf8'), {
     code: 'ENOENT',
   });
@@ -463,6 +479,7 @@ test('startup resumes deployment cleanup without repeating a completed uninstall
       operatorPath: join(base, 'operator'),
       rootPath,
       rootId: 'a'.repeat(64),
+      deploymentId: RECOVERY_DEPLOYMENT_ID,
       allowInterruptActiveTasks: false,
     })}\n`,
   );
@@ -508,6 +525,7 @@ async function writeManagedLifecycle(
       operatorPath: join(clientDataRoot, 'operator'),
       rootPath,
       rootId,
+      deploymentId: RECOVERY_DEPLOYMENT_ID,
     })}\n`,
   );
 }

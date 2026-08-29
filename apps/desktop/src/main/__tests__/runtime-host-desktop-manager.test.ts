@@ -59,7 +59,7 @@ test('replaces a disconnected Runtime Host generation', { timeout: 10_000 }, asy
   const owner = await startRuntimeHostDesktopManager({} as DesktopRuntimeHostCandidateStartInput, {
     startCandidate: async (input) => {
       starts += 1;
-      interactions.push(input.remote?.sshInteraction);
+      interactions.push(input.profileTarget?.sshInteraction);
       if (starts === 2) {
         resolveSecondStart();
         await secondReleased;
@@ -142,9 +142,9 @@ test('quiesces reconnect and waits for the Host process before update install', 
 });
 
 test('quiesces Local reconnect while a managed service changes', async () => {
-  const current = candidateHarness({ lifecycleMode: 'service' });
+  const current = candidateHarness({ ownership: 'supervised' });
   const replacement = candidateHarness({
-    lifecycleMode: 'service',
+    ownership: 'supervised',
     hostEpoch: 'service-after',
   });
   let starts = 0;
@@ -477,12 +477,12 @@ test('keeps active-task confirmation bound to the current Host', async () => {
   await owner.close();
 });
 
-for (const lifecycleMode of ['service', 'remote'] as const) {
-  test(`does not retire a ${lifecycleMode} Host for a Desktop update`, async () => {
-    const current = candidateHarness({ lifecycleMode });
+for (const ownership of ['supervised', 'external'] as const) {
+  test(`leaves ${ownership} Host ownership intact during a Desktop update`, async () => {
+    const current = candidateHarness({ ownership });
     const owner = await startRuntimeHostDesktopManager({} as DesktopRuntimeHostCandidateStartInput, {
       startCandidate: async () => ready(current.candidate),
-      waitForHostExit: async () => assert.fail(`${lifecycleMode} Host exit must not be awaited`),
+      waitForHostExit: async () => assert.fail(`${ownership} Host exit must not be awaited`),
     });
 
     const retirement = await owner.retireOwnedLocalHost('refuse_active_work');
@@ -496,7 +496,7 @@ for (const lifecycleMode of ['service', 'remote'] as const) {
 
 test('keeps Local and remote Hosts active and routes work by owning Host', async () => {
   const local = candidateHarness({ hostId: 'host-a' });
-  const remote = candidateHarness({ hostId: 'host-b', lifecycleMode: 'remote' });
+  const remote = candidateHarness({ hostId: 'host-b', ownership: 'external' });
   let starts = 0;
   const manager = await startRuntimeHostDesktopManager(
     {} as DesktopRuntimeHostCandidateStartInput,
@@ -757,7 +757,7 @@ test('bounds an in-flight pairing finalization and preserves its unknown outcome
 
 test('coalesces concurrent enable requests for one remote profile', async () => {
   const local = candidateHarness({ hostId: 'host-a' });
-  const remote = candidateHarness({ hostId: 'host-b', lifecycleMode: 'remote' });
+  const remote = candidateHarness({ hostId: 'host-b', ownership: 'external' });
   let starts = 0;
   let releaseRemote!: () => void;
   const remoteReady = new Promise<void>((resolve) => {
@@ -787,7 +787,7 @@ test('coalesces concurrent enable requests for one remote profile', async () => 
 
 test('waits for an in-flight remote enable before closing', async () => {
   const local = candidateHarness({ hostId: 'host-a' });
-  const remote = candidateHarness({ hostId: 'host-b', lifecycleMode: 'remote' });
+  const remote = candidateHarness({ hostId: 'host-b', ownership: 'external' });
   let starts = 0;
   let releaseRemote!: () => void;
   const remoteReady = new Promise<void>((resolve) => {
@@ -1159,7 +1159,7 @@ function candidateHarness(
     delayDisconnect?: boolean;
     disconnectOnPrepare?: boolean;
     activeTasks?: boolean | 'always';
-    lifecycleMode?: 'ephemeral' | 'service' | 'remote';
+    ownership?: 'owned_ephemeral' | 'supervised' | 'external';
     hostId?: string;
     hostEpoch?: string;
     finalizeFailures?: Error[];
@@ -1182,7 +1182,7 @@ function candidateHarness(
   const retirementModes: string[] = [];
   const candidate = {
     closed,
-    hostLifecycleMode: options.lifecycleMode ?? 'ephemeral',
+    hostOwnership: options.ownership ?? 'owned_ephemeral',
     hostPid: 42,
     client: {
       hostId: options.hostId ?? 'test-host',
@@ -1273,7 +1273,7 @@ function ready(candidate: DesktopRuntimeHostCandidate): DesktopRuntimeHostCandid
 function remoteTarget(
   id: string,
   target = 'default',
-): NonNullable<DesktopRuntimeHostCandidateStartInput['remote']> {
+): NonNullable<DesktopRuntimeHostCandidateStartInput['profileTarget']> {
   return {
     profile: {
       id,

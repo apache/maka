@@ -25,6 +25,7 @@ import {
   WorkHubCoordinationActionGate,
   type WorkHubActionGateEffects,
   type WorkHubActionGateSession,
+  type WorkHubDelegationAssignmentInput,
 } from '../server/workhub-coordination-action-gate.js';
 import type { ConnectionContext } from '../server/operation-dispatcher.js';
 
@@ -36,7 +37,7 @@ const CONTEXT: ConnectionContext = {
 };
 
 describe('WorkHub Coordination Action Gate', () => {
-  test('exposes only bounded ordinary candidates and proposals use opaque refs', async () => {
+  test('exposes only bounded ordinary candidates and opaque refs', async () => {
     const effects = fakeEffects([
       session('ordinary'),
       session('archived', { isArchived: true }),
@@ -53,7 +54,6 @@ describe('WorkHub Coordination Action Gate', () => {
       session('maka_workhub_coordination', { role: 'workhub_coordination' }),
     ]);
     const result = await new WorkHubCoordinationActionGate(effects).candidates();
-
     assert.deepEqual(
       result.candidates.map(({ sessionId }) => sessionId),
       ['ordinary', 'waiting'],
@@ -67,16 +67,15 @@ describe('WorkHub Coordination Action Gate', () => {
     assert.equal(bounded.candidates.length, 32);
   });
 
-  test('rejects stale and invented candidates before any Session effect', async () => {
+  test('rejects stale candidates before assignment', async () => {
     const effects = fakeEffects([session('payments')]);
     const gate = new WorkHubCoordinationActionGate(effects);
     const snapshot = await gate.candidates();
-    effects.sessions[0] = session('payments', { statusUpdatedAt: 9 });
-
+    effects.sessions[0] = session('payments', { lastMessageAt: 9 });
     await assert.rejects(
       gate.act(
         {
-          actionId: 'stale-action',
+          actionId: 'stale',
           userText: 'Continue payments',
           candidateSetId: snapshot.candidateSetId,
           proposal: {
@@ -88,12 +87,12 @@ describe('WorkHub Coordination Action Gate', () => {
       ),
       (error) => error instanceof WorkHubActionGateFailure && error.code === 'candidate_set_stale',
     );
-    assert.deepEqual(effects.submissions, []);
+    assert.equal(effects.assignments.length, 0);
 
     const refreshed = await gate.candidates();
     const retried = await gate.act(
       {
-        actionId: 'stale-action',
+        actionId: 'stale',
         userText: 'Continue payments',
         candidateSetId: refreshed.candidateSetId,
         proposal: {
@@ -104,13 +103,12 @@ describe('WorkHub Coordination Action Gate', () => {
       CONTEXT,
     );
     assert.equal(retried.disposition, 'delegate_existing');
-    effects.submissions.length = 0;
 
     const current = await gate.candidates();
     await assert.rejects(
       gate.act(
         {
-          actionId: 'invented-action',
+          actionId: 'invented',
           userText: 'Continue payments',
           candidateSetId: current.candidateSetId,
           proposal: { disposition: 'delegate_existing', candidateRef: 'invented_candidate' },
@@ -120,19 +118,18 @@ describe('WorkHub Coordination Action Gate', () => {
       (error) =>
         error instanceof WorkHubActionGateFailure && error.code === 'candidate_unavailable',
     );
-    assert.deepEqual(effects.submissions, []);
+    assert.equal(effects.assignments.length, 1);
   });
 
   test('rejects waiting targets independently of strategy behavior', async () => {
     const effects = fakeEffects([session('waiting', { status: 'waiting_for_user' })]);
     const gate = new WorkHubCoordinationActionGate(effects);
     const snapshot = await gate.candidates();
-
     await assert.rejects(
       gate.act(
         {
-          actionId: 'waiting-action',
-          userText: 'Do another thing',
+          actionId: 'waiting',
+          userText: 'Continue',
           candidateSetId: snapshot.candidateSetId,
           proposal: {
             disposition: 'delegate_existing',
@@ -144,40 +141,55 @@ describe('WorkHub Coordination Action Gate', () => {
       (error) =>
         error instanceof WorkHubActionGateFailure && error.code === 'target_waiting_for_user',
     );
-    assert.deepEqual(effects.submissions, []);
   });
 
-  test('answers and clarifies only through the Coordination transcript effects', async () => {
+  test('answers and clarifies only through Coordination effects', async () => {
     const effects = fakeEffects([session('ordinary')]);
     const gate = new WorkHubCoordinationActionGate(effects);
-
-    const answered = await gate.act(
+    await gate.act(
+      { actionId: 'answer', userText: 'Summarize', proposal: { disposition: 'answer_here' } },
+      CONTEXT,
+    );
+    await gate.act(
       {
-        actionId: 'answer-action',
-        userText: 'What is useMemo?',
-        proposal: { disposition: 'answer_here' },
+        actionId: 'clarify',
+        userText: 'Which one?',
+        proposal: { disposition: 'clarify', assistantText: 'Choose a Session' },
       },
       CONTEXT,
     );
-    const clarified = await gate.act(
-      {
-        actionId: 'clarify-action',
-        userText: 'Continue that task',
-        proposal: { disposition: 'clarify', assistantText: 'Which task do you mean?' },
-      },
-      CONTEXT,
-    );
-
-    assert.equal(answered.disposition, 'answer_here');
-    assert.equal(clarified.disposition, 'clarify');
     assert.equal(effects.answers.length, 1);
     assert.equal(effects.clarifications.length, 1);
-    assert.deepEqual(effects.submissions, []);
-    assert.equal(effects.creations.length, 0);
+    assert.equal(effects.assignments.length, 0);
   });
 
-  test('only create_new creates and retries the exact action idempotently', async () => {
-    const effects = fakeEffects([session('ordinary')]);
+  test('delegates through one assignment effect', async () => {
+    const effects = fakeEffects([session('payments', { name: 'Payments' })]);
+    const gate = new WorkHubCoordinationActionGate(effects);
+    const snapshot = await gate.candidates();
+    const result = await gate.act(
+      {
+        actionId: 'delegate',
+        userText: 'Continue payments',
+        candidateSetId: snapshot.candidateSetId,
+        proposal: {
+          disposition: 'delegate_existing',
+          candidateRef: snapshot.candidates[0]!.candidateRef,
+        },
+      },
+      CONTEXT,
+    );
+    assert.deepEqual(result, {
+      disposition: 'delegate_existing',
+      targetSessionId: 'payments',
+      targetTurnId: 'turn-delegate',
+    });
+    assert.equal(effects.assignments[0]!.targetSessionName, 'Payments');
+    assert.equal(effects.assignments[0]!.userText, 'Continue payments');
+  });
+
+  test('create_new carries creation context into the same assignment', async () => {
+    const effects = fakeEffects([]);
     const gate = new WorkHubCoordinationActionGate(effects);
     await assert.rejects(
       gate.act(
@@ -190,72 +202,97 @@ describe('WorkHub Coordination Action Gate', () => {
       ),
       (error) => error instanceof WorkHubActionGateFailure && error.code === 'action_conflict',
     );
-    assert.equal(effects.creations.length, 0);
     const input = {
-      actionId: 'create-action',
+      actionId: 'create',
       userText: 'Create an accessibility audit',
       proposal: { disposition: 'create_new' as const, title: 'Accessibility audit' },
-      create: {
-        workspace: { kind: 'host_path' as const, path: '/workspace' },
-      },
+      create: { workspace: { kind: 'host_path' as const, path: '/workspace' } },
     };
-
     const first = await gate.act(input, CONTEXT);
     const replay = await gate.act(input, CONTEXT);
-
     assert.deepEqual(replay, first);
-    assert.equal(effects.creations.length, 1);
-    assert.equal(effects.submissions.length, 1);
-    assert.match(effects.creations[0]?.sessionId ?? '', /^whs_[a-f0-9]{48}$/u);
-    assert.equal(first.disposition, 'create_new');
-    if (first.disposition === 'create_new') {
-      assert.equal(first.targetSessionId, effects.creations[0]?.sessionId);
-    }
-    assert.deepEqual(Object.keys(effects.creations[0]!).sort(), [
-      'sessionId',
-      'title',
-      'workspace',
-    ]);
+    assert.equal(effects.assignments.length, 1);
+    const restartedReplay = await new WorkHubCoordinationActionGate(effects).act(input, CONTEXT);
+    assert.deepEqual(restartedReplay, first);
+    assert.equal(effects.assignments.length, 2);
+    assert.deepEqual(effects.assignments[0], effects.assignments[1]);
+    assert.match(effects.assignments[0]!.targetSessionId, /^whs_[a-f0-9]{48}$/u);
+    assert.deepEqual(effects.assignments[0]!.create, {
+      title: 'Accessibility audit',
+      workspace: input.create.workspace,
+    });
     await assert.rejects(
       gate.act({ ...input, proposal: { disposition: 'create_new', title: 'Different' } }, CONTEXT),
       (error) => error instanceof WorkHubActionGateFailure && error.code === 'action_conflict',
     );
-    assert.equal(effects.creations.length, 1);
+    assert.equal(effects.assignments.length, 2);
   });
 
-  test('effect rejection grants no root ownership and releases the action identity', async () => {
-    const effects = fakeEffects([session('ordinary')]);
+  test('one in-memory action identity cannot change payload', async () => {
+    const effects = fakeEffects([session('payments'), session('login', { lastMessageAt: 1 })]);
     const gate = new WorkHubCoordinationActionGate(effects);
     const snapshot = await gate.candidates();
-    const submit = effects.submit;
-    effects.submit = async () => {
-      throw new WorkHubActionEffectFailure('unauthorized', 'Target permission denied');
-    };
     const input = {
-      actionId: 'permission-rejected-action',
-      userText: 'Continue ordinary work',
+      actionId: 'same-action',
+      userText: 'Continue payments',
       candidateSetId: snapshot.candidateSetId,
       proposal: {
         disposition: 'delegate_existing' as const,
         candidateRef: snapshot.candidates[0]!.candidateRef,
       },
     };
+    await gate.act(input, CONTEXT);
+    await assert.rejects(
+      gate.act({ ...input, userText: 'Different work' }, CONTEXT),
+      (error) => error instanceof WorkHubActionGateFailure && error.code === 'action_conflict',
+    );
+    await assert.rejects(
+      gate.act(
+        {
+          ...input,
+          proposal: {
+            disposition: 'delegate_existing',
+            candidateRef: snapshot.candidates[1]!.candidateRef,
+          },
+        },
+        CONTEXT,
+      ),
+      (error) => error instanceof WorkHubActionGateFailure && error.code === 'action_conflict',
+    );
+  });
 
+  test('an assignment rejection releases the action identity for retry', async () => {
+    const effects = fakeEffects([session('payments')]);
+    const gate = new WorkHubCoordinationActionGate(effects);
+    const snapshot = await gate.candidates();
+    const input = {
+      actionId: 'permission-rejected',
+      userText: 'Continue payments',
+      candidateSetId: snapshot.candidateSetId,
+      proposal: {
+        disposition: 'delegate_existing' as const,
+        candidateRef: snapshot.candidates[0]!.candidateRef,
+      },
+    };
+    const assign = effects.assign;
+    effects.assign = async () => {
+      throw new WorkHubActionEffectFailure('unauthorized', 'Target permission denied');
+    };
     await assert.rejects(
       gate.act(input, CONTEXT),
       (error) => error instanceof WorkHubActionEffectFailure && error.code === 'unauthorized',
     );
-    effects.submit = submit;
+    effects.assign = assign;
     assert.equal((await gate.act(input, CONTEXT)).disposition, 'delegate_existing');
   });
 
-  test('replays an ordinary delegation without submitting twice', async () => {
-    const effects = fakeEffects([session('ordinary')]);
+  test('replays an ordinary delegation without assigning twice', async () => {
+    const effects = fakeEffects([session('payments')]);
     const gate = new WorkHubCoordinationActionGate(effects);
     const snapshot = await gate.candidates();
     const input = {
-      actionId: 'delegate-action',
-      userText: 'Continue ordinary work',
+      actionId: 'delegate-replay',
+      userText: 'Continue payments',
       candidateSetId: snapshot.candidateSetId,
       proposal: {
         disposition: 'delegate_existing' as const,
@@ -267,8 +304,7 @@ describe('WorkHub Coordination Action Gate', () => {
     const replay = await gate.act(input, CONTEXT);
 
     assert.deepEqual(replay, first);
-    assert.equal(effects.submissions.length, 1);
-    assert.equal(effects.submissions[0]?.sessionId, 'ordinary');
+    assert.equal(effects.assignments.length, 1);
   });
 });
 
@@ -278,19 +314,25 @@ function session(
 ): WorkHubActionGateSession {
   return {
     id,
-    cwd: `/workspace/${id}`,
+    cwd: '/workspace',
     projectId: null,
     createdAt: 1,
+    lastMessageAt: 2,
     name: id,
     labels: [],
     isArchived: false,
     status: 'active',
+    statusUpdatedAt: 2,
     ...patch,
   };
 }
 
 function fakeEffects(initialSessions: WorkHubActionGateSession[]) {
-  const state = {
+  const durable = new Map<
+    string,
+    { input: WorkHubDelegationAssignmentInput; result: { turnId: string } }
+  >();
+  return {
     sessions: [...initialSessions],
     answers: [] as Array<{ turnId: string; text: string }>,
     clarifications: [] as Array<{
@@ -298,14 +340,12 @@ function fakeEffects(initialSessions: WorkHubActionGateSession[]) {
       userText: string;
       assistantText: string;
     }>,
-    creations: [] as Array<{
-      sessionId: string;
-      workspace: { kind: 'project'; projectId: string } | { kind: 'host_path'; path: string };
-      title: string;
-    }>,
-    submissions: [] as Array<{ sessionId: string; messageId: string; text: string }>,
+    assignments: [] as WorkHubDelegationAssignmentInput[],
     async listSessions() {
       return this.sessions;
+    },
+    async readAssignment() {
+      return undefined;
     },
     async answer(input: { turnId: string; text: string }) {
       this.answers.push(input);
@@ -313,27 +353,21 @@ function fakeEffects(initialSessions: WorkHubActionGateSession[]) {
     async clarify(input: { turnId: string; userText: string; assistantText: string }) {
       this.clarifications.push(input);
     },
-    async create(input: {
-      sessionId: string;
-      workspace: { kind: 'project'; projectId: string } | { kind: 'host_path'; path: string };
-      title: string;
-    }) {
-      this.creations.push(input);
-    },
-    async submit(input: { sessionId: string; messageId: string; text: string }) {
-      this.submissions.push(input);
-      return { turnId: `turn-${input.sessionId}` };
+    async assign(input: WorkHubDelegationAssignmentInput) {
+      this.assignments.push(input);
+      const existing = durable.get(input.actionId);
+      if (existing) {
+        assert.deepEqual(existing.input, input);
+        return existing.result;
+      }
+      const result = { turnId: `turn-${input.actionId}` };
+      durable.set(input.actionId, { input, result });
+      return result;
     },
   } satisfies WorkHubActionGateEffects & {
     sessions: WorkHubActionGateSession[];
     answers: Array<{ turnId: string; text: string }>;
     clarifications: Array<{ turnId: string; userText: string; assistantText: string }>;
-    creations: Array<{
-      sessionId: string;
-      workspace: { kind: 'project'; projectId: string } | { kind: 'host_path'; path: string };
-      title: string;
-    }>;
-    submissions: Array<{ sessionId: string; messageId: string; text: string }>;
+    assignments: WorkHubDelegationAssignmentInput[];
   };
-  return state;
 }

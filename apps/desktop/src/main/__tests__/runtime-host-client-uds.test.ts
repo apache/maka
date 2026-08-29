@@ -175,15 +175,22 @@ test('drives the renderer Session catalog facade through real UDS framing', asyn
           'session.configuration.update': async (input) => {
             assert.ok(projected);
             assert.equal(input.expectedRevision, projected.revision);
+            const { thinkingLevel: _thinkingLevel, ...withoutThinkingLevel } = projected;
             projected = session(projected.id, {
-              ...projected,
+              ...(input.patch.thinkingLevel === null ? withoutThinkingLevel : projected),
               revision: projected.revision + 1,
-              permissionMode: input.configuration.permissionMode,
-              collaborationMode: input.configuration.collaborationMode,
-              orchestrationMode: input.configuration.orchestrationMode,
-              ...(input.configuration.thinkingLevel === null
+              ...(input.patch.permissionMode === undefined
                 ? {}
-                : { thinkingLevel: input.configuration.thinkingLevel }),
+                : { permissionMode: input.patch.permissionMode }),
+              ...(input.patch.collaborationMode === undefined
+                ? {}
+                : { collaborationMode: input.patch.collaborationMode }),
+              ...(input.patch.orchestrationMode === undefined
+                ? {}
+                : { orchestrationMode: input.patch.orchestrationMode }),
+              ...(input.patch.thinkingLevel === null || input.patch.thinkingLevel === undefined
+                ? {}
+                : { thinkingLevel: input.patch.thinkingLevel }),
             });
             return { ok: true, result: { kind: 'committed', session: projected } };
           },
@@ -607,6 +614,7 @@ function session(
     hasUnread: false,
     status: 'active',
     backend: 'ai-sdk',
+    llmConnectionId: 'connection-1',
     llmConnectionSlug: 'test-connection',
     connectionLocked: true,
     model: 'test-model',

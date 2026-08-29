@@ -165,6 +165,28 @@ async function seedE2eLocale(userDataDir: string, locale: 'zh' | 'en'): Promise<
   });
 }
 
+/** Rows for the rail-render contract: enough that a stray render is loud. */
+export const RAIL_RENDER_SESSION_COUNT = 12;
+
+async function seedRailRenderSessions(userDataDir: string): Promise<void> {
+  const workspaceRoot = path.join(userDataDir, 'workspaces', 'default');
+  const store = createSessionStore(workspaceRoot);
+  try {
+    for (let index = 0; index < RAIL_RENDER_SESSION_COUNT; index += 1) {
+      await store.create({
+        cwd: path.join(userDataDir, 'project'),
+        llmConnectionSlug: 'e2e',
+        model: 'claude-sonnet-4-5-20250929',
+        permissionMode: 'ask',
+        name: `Rail row ${index}`,
+        labels: [],
+      });
+    }
+  } finally {
+    await store.close?.();
+  }
+}
+
 async function seedParentRemovalSessions(userDataDir: string): Promise<void> {
   const workspaceRoot = path.join(userDataDir, 'workspaces', 'default');
   const store = createSessionStore(workspaceRoot);
@@ -354,6 +376,7 @@ async function withE2eWindow(
     invocableSkills,
     gitReviewExtraFiles,
     parentRemovalSessions,
+    railRenderSessions,
     newTaskProject,
   }: {
     seed: boolean;
@@ -369,6 +392,7 @@ async function withE2eWindow(
     invocableSkills?: boolean;
     gitReviewExtraFiles?: number;
     parentRemovalSessions?: boolean;
+    railRenderSessions?: boolean;
     newTaskProject?: boolean;
   },
   use: (page: Page, context: { userDataDir: string }) => Promise<void>,
@@ -384,6 +408,7 @@ async function withE2eWindow(
   try {
     if (seed) await seedE2eConnection(userDataDir);
     if (parentRemovalSessions) await seedParentRemovalSessions(userDataDir);
+    if (railRenderSessions) await seedRailRenderSessions(userDataDir);
     if (invocableSkills) await seedE2eInvocableSkills(userDataDir);
     if (gitReviewExtraFiles !== undefined) {
       await seedE2eGitReviewProject(userDataDir, gitReviewExtraFiles);
@@ -455,7 +480,9 @@ export const test = base.extend<{
   linkColorWindow: Page;
   projectSidebarWindow: Page;
   parentRemovalWindow: Page;
+  railRenderWindow: Page;
   promptRailWindow: Page;
+  partialHistoryWindow: Page;
   promptRailMotionWindow: Page;
   requestHeaderRowWindow: Page;
   newTaskTargetWindow: Page;
@@ -537,6 +564,17 @@ export const test = base.extend<{
       use,
     );
   },
+  railRenderWindow: async ({}, use) => {
+    await withE2eWindow(
+      {
+        seed: true,
+        readinessSelector: COMPOSER_INPUT,
+        locale: 'zh',
+        railRenderSessions: true,
+      },
+      use,
+    );
+  },
   // A multi-prompt transcript for the prompt anchor rail. Shown, because every
   // assertion in prompt-rail.spec.ts is geometry the compositor has to settle.
   promptRailWindow: async ({}, use) => {
@@ -548,6 +586,17 @@ export const test = base.extend<{
       // assertion that names it.
       readinessSelector: '[data-turn-id]',
       e2eFixtureScenario: 'chat-prompt-rail',
+      showWindow: true,
+    }, use);
+  },
+  // A transcript larger than the bounded Desktop range. Clicking an unloaded
+  // prompt exercises the real load-around path and its partial-history UI.
+  partialHistoryWindow: async ({}, use) => {
+    await withE2eWindow({
+      seed: false,
+      readinessSelector: '[data-turn-id]',
+      e2eFixtureScenario: 'chat-partial-history',
+      locale: 'zh',
       showWindow: true,
     }, use);
   },

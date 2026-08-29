@@ -18,115 +18,181 @@
  */
 
 import { spawn, type ChildProcess } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import { createReadStream, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { copyFile, mkdtemp, realpath, rm, stat } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
 import { isAbsolute, join, relative, resolve } from 'node:path';
 import {
   DEFAULT_PROCESS_TERMINATION_GRACE_MS,
   terminateChildProcessTree,
 } from '@maka/runtime/process-tree-terminator';
-import {
-  isExactRuntimeHostSetupPackageSpecifier,
-  type DesktopRuntimeHostSetupPackage,
-} from './runtime-host-ssh-terminal.js';
-
 const DEVELOPMENT_ARCHIVE_ENV = 'MAKA_RUNTIME_HOST_SETUP_ARCHIVE';
+
+export type DesktopRuntimeHostSetupPackage =
+  | { readonly kind: 'npm'; readonly specifier: string }
+  | {
+      readonly kind: 'development_archive';
+      readonly path: string;
+      readonly integrity: string;
+    };
+
+function isExactRuntimeHostSetupPackageSpecifier(value: unknown): value is string {
+  return typeof value === 'string' && /^maka-agent@[0-9][0-9A-Za-z.+-]*$/u.test(value);
+}
 
 interface DevelopmentArchiveBuild {
   readonly result: Promise<string>;
   close(): Promise<void>;
 }
 
+interface DevelopmentBuildState {
+  readonly task: DevelopmentArchiveBuild;
+  readonly result: Promise<DesktopRuntimeHostSetupPackage>;
+  waiters: number;
+  settled: boolean;
+  closing?: Promise<void>;
+}
+
+export type DesktopRuntimeHostDevelopmentPeerTarget =
+  | 'none'
+  | 'darwin-arm64'
+  | 'linux-arm64'
+  | 'linux-x64'
+  | 'win32-x64';
+
 export interface RuntimeHostSetupPackageResolver {
-  resolve(signal?: AbortSignal): Promise<DesktopRuntimeHostSetupPackage>;
+  readonly mode: 'published' | 'development';
+  resolve(
+    peerTarget: DesktopRuntimeHostDevelopmentPeerTarget,
+    signal?: AbortSignal,
+  ): Promise<DesktopRuntimeHostSetupPackage>;
   close(): Promise<void>;
+}
+
+export function desktopRuntimeHostDevelopmentPeerTarget(
+  platform: NodeJS.Platform = process.platform,
+  arch: string = process.arch,
+): Exclude<DesktopRuntimeHostDevelopmentPeerTarget, 'none'> {
+  const target = `${platform}-${arch}`;
+  if (
+    target !== 'darwin-arm64' &&
+    target !== 'linux-arm64' &&
+    target !== 'linux-x64' &&
+    target !== 'win32-x64'
+  ) {
+    throw new Error(`Direct peer is not available on ${target}`);
+  }
+  return target;
 }
 
 export function createRuntimeHostSetupPackageResolver(input: {
   readonly isPackaged: boolean;
   readonly appPath: string;
   readonly environment: NodeJS.ProcessEnv;
-  readonly startDevelopmentArchiveBuild?: (repoRoot: string) => DevelopmentArchiveBuild;
+  readonly startDevelopmentArchiveBuild?: (
+    repoRoot: string,
+    peerTarget: DesktopRuntimeHostDevelopmentPeerTarget,
+  ) => DevelopmentArchiveBuild;
 }): RuntimeHostSetupPackageResolver {
   let closed = false;
-  let developmentBuild:
-    | {
-        readonly task: DevelopmentArchiveBuild;
-        readonly result: Promise<DesktopRuntimeHostSetupPackage>;
-        waiters: number;
-        settled: boolean;
-        closing?: Promise<void>;
-      }
-    | undefined;
+  const developmentBuilds = new Map<
+    DesktopRuntimeHostDevelopmentPeerTarget,
+    DevelopmentBuildState
+  >();
+  let overrideSnapshot: ReturnType<typeof snapshotDevelopmentSetupPackage> | undefined;
 
-  const startBuild = () => {
+  const resolveOverrideSnapshot = (path: string) => {
+    overrideSnapshot ??= snapshotDevelopmentSetupPackage(path).catch((error: unknown) => {
+      overrideSnapshot = undefined;
+      throw error;
+    });
+    return overrideSnapshot;
+  };
+
+  const startBuild = (
+    peerTarget: DesktopRuntimeHostDevelopmentPeerTarget,
+  ): DevelopmentBuildState => {
     const repoRoot = resolve(input.appPath, '..', '..');
-    const task = input.startDevelopmentArchiveBuild?.(repoRoot) ??
-      startDevelopmentArchiveBuild(repoRoot, input.environment);
-    const build = {
+    const task = input.startDevelopmentArchiveBuild?.(repoRoot, peerTarget) ??
+      startDevelopmentArchiveBuild(repoRoot, input.environment, peerTarget);
+    const build: DevelopmentBuildState = {
       task,
-      result: task.result.then((path) => ({
-        kind: 'development_archive' as const,
-        path,
-      })),
+      result: task.result.then(developmentSetupPackage),
       waiters: 0,
       settled: false,
     };
-    developmentBuild = build;
+    developmentBuilds.set(peerTarget, build);
     void build.result.then(
       () => {
         build.settled = true;
       },
       () => {
         build.settled = true;
-        if (developmentBuild === build) developmentBuild = undefined;
+        if (developmentBuilds.get(peerTarget) === build) {
+          developmentBuilds.delete(peerTarget);
+        }
+        void stopBuild(peerTarget, build).catch(() => undefined);
       },
     );
     return build;
   };
 
-  const stopBuild = async (build: NonNullable<typeof developmentBuild>) => {
+  const stopBuild = async (
+    peerTarget: DesktopRuntimeHostDevelopmentPeerTarget,
+    build: DevelopmentBuildState,
+  ) => {
     build.closing ??= build.task.close().finally(() => {
-      if (developmentBuild === build) developmentBuild = undefined;
+      if (developmentBuilds.get(peerTarget) === build) developmentBuilds.delete(peerTarget);
     });
     await build.closing;
     await build.result.catch(() => undefined);
   };
 
-  const acquireBuild = async (signal?: AbortSignal) => {
+  const acquireBuild = async (
+    peerTarget: DesktopRuntimeHostDevelopmentPeerTarget,
+    signal?: AbortSignal,
+  ) => {
     while (true) {
       if (closed) throw new Error('Runtime Host setup package resolver is closed');
-      const build = developmentBuild;
-      if (!build) return startBuild();
+      const build = developmentBuilds.get(peerTarget);
+      if (!build) return startBuild(peerTarget);
       if (!build.closing) return build;
       await waitForPackage(build.closing, signal);
     }
   };
 
   return {
-    async resolve(signal) {
+    mode: input.isPackaged ? 'published' : 'development',
+    async resolve(peerTarget, signal) {
       if (closed) throw new Error('Runtime Host setup package resolver is closed');
       if (input.isPackaged) return packagedSetupPackage(input.appPath);
 
       const override = input.environment[DEVELOPMENT_ARCHIVE_ENV];
-      if (override) return { kind: 'development_archive', path: override };
+      if (override) {
+        const snapshot = await waitForPackage(resolveOverrideSnapshot(override), signal);
+        return snapshot.setupPackage;
+      }
 
-      const build = await acquireBuild(signal);
+      const build = await acquireBuild(peerTarget, signal);
       build.waiters += 1;
       try {
         return await waitForPackage(build.result, signal);
       } finally {
         build.waiters -= 1;
         if (signal?.aborted && build.waiters === 0 && !build.settled) {
-          await stopBuild(build);
+          await stopBuild(peerTarget, build);
         }
       }
     },
     async close() {
       if (closed) return;
       closed = true;
-      const build = developmentBuild;
-      developmentBuild = undefined;
-      if (build) await stopBuild(build);
+      const builds = [...developmentBuilds.entries()];
+      developmentBuilds.clear();
+      await Promise.all(builds.map(([peerTarget, build]) => stopBuild(peerTarget, build)));
+      const snapshot = await overrideSnapshot?.catch(() => undefined);
+      if (snapshot) await rm(snapshot.root, { recursive: true, force: true });
     },
   };
 }
@@ -144,6 +210,7 @@ function packagedSetupPackage(appPath: string): DesktopRuntimeHostSetupPackage {
 function startDevelopmentArchiveBuild(
   repoRoot: string,
   environment: NodeJS.ProcessEnv,
+  peerTarget: DesktopRuntimeHostDevelopmentPeerTarget,
 ): DevelopmentArchiveBuild {
   const script = join(repoRoot, 'scripts', 'release-cli-package.mjs');
   const nodeExecutable = environment.npm_node_execpath?.trim() || 'node';
@@ -153,7 +220,11 @@ function startDevelopmentArchiveBuild(
   const child = spawn(nodeExecutable, [script, '--development'], {
     cwd: repoRoot,
     detached: process.platform !== 'win32',
-    env: { ...environment, MAKA_CLI_DEVELOPMENT_OUTPUT_ROOT: outputRoot },
+    env: {
+      ...environment,
+      MAKA_CLI_DEVELOPMENT_OUTPUT_ROOT: outputRoot,
+      MAKA_CLI_DEVELOPMENT_PEER_TARGET: peerTarget,
+    },
     stdio: ['ignore', 'pipe', 'pipe'],
     windowsHide: true,
   });
@@ -223,6 +294,47 @@ function startDevelopmentArchiveBuild(
       return closing;
     },
   };
+}
+
+async function developmentSetupPackage(path: string): Promise<DesktopRuntimeHostSetupPackage> {
+  const archive = await realpath(path);
+  if (!(await stat(archive)).isFile() || !archive.endsWith('.tgz')) {
+    throw new Error('Runtime Host development package must be a .tgz file');
+  }
+  return {
+    kind: 'development_archive',
+    path: archive,
+    integrity: await sha512Integrity(archive),
+  };
+}
+
+async function snapshotDevelopmentSetupPackage(path: string): Promise<{
+  readonly root: string;
+  readonly setupPackage: DesktopRuntimeHostSetupPackage;
+}> {
+  const source = await realpath(path);
+  if (!(await stat(source)).isFile() || !source.endsWith('.tgz')) {
+    throw new Error('Runtime Host development package must be a .tgz file');
+  }
+  const root = await mkdtemp(join(tmpdir(), 'maka-runtime-host-setup-override-'));
+  const snapshot = join(root, 'package.tgz');
+  try {
+    await copyFile(source, snapshot);
+    return { root, setupPackage: await developmentSetupPackage(snapshot) };
+  } catch (error) {
+    await rm(root, { recursive: true, force: true });
+    throw error;
+  }
+}
+
+function sha512Integrity(path: string): Promise<string> {
+  return new Promise((resolveIntegrity, reject) => {
+    const hash = createHash('sha512');
+    const stream = createReadStream(path);
+    stream.on('data', (chunk) => hash.update(chunk));
+    stream.once('error', reject);
+    stream.once('end', () => resolveIntegrity(`sha512-${hash.digest('base64')}`));
+  });
 }
 
 function waitForPackage<T>(promise: Promise<T>, signal?: AbortSignal): Promise<T> {

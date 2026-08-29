@@ -19,11 +19,13 @@
 
 import { RuntimeHostProtocolError } from '../protocol/errors.js';
 import assert from 'node:assert/strict';
+import { execFile } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, test } from 'node:test';
+import { promisify } from 'node:util';
 import {
   BUNDLED_SKILL_CATALOG,
   buildStarterSkillTemplate,
@@ -47,6 +49,7 @@ import {
 } from '../server/skill-catalog-transaction.js';
 
 const roots = new Set<string>();
+const execFileAsync = promisify(execFile);
 
 afterEach(async () => {
   await Promise.all([...roots].map((root) => rm(root, { recursive: true, force: true })));
@@ -317,7 +320,7 @@ test('noncanonical external ids remain wire-safe governance entries', async () =
   );
   await createSkill(
     join(fixture.project, '.maka', 'skills'),
-    'bad\nskill',
+    'bad\u007Fskill',
     skillBody('Control Skill', 'control directory id'),
   );
   const repository = fixture.repository();
@@ -444,10 +447,9 @@ test('repository preserves filesystem-safe ids and codec preserves the 256-byte 
 });
 
 test('managed source read failures are not projected as an empty catalog', async () => {
-  if (process.platform === 'win32') return;
   const fixture = await createFixture();
   await createSkill(fixture.sources, 'restricted', skillBody('Restricted', 'unreadable'));
-  await chmod(fixture.sources, 0o000);
+  const restoreReadAccess = await makeUnreadable(fixture.sources, 0o700);
   try {
     await assert.rejects(
       start(fixture.repository(), fixture.project, 'managed_sources'),
@@ -458,12 +460,11 @@ test('managed source read failures are not projected as an empty catalog', async
       },
     );
   } finally {
-    await chmod(fixture.sources, 0o700);
+    await restoreReadAccess();
   }
 });
 
 test('one unreadable managed source child makes the Host catalog fail closed', async () => {
-  if (process.platform === 'win32') return;
   const fixture = await createFixture();
   await createSkill(fixture.sources, 'readable', skillBody('Readable', 'valid source'));
   const unreadable = await createSkill(
@@ -472,7 +473,7 @@ test('one unreadable managed source child makes the Host catalog fail closed', a
     skillBody('Unreadable', 'restricted source'),
   );
   const unreadableFile = join(unreadable, 'SKILL.md');
-  await chmod(unreadableFile, 0o000);
+  const restoreReadAccess = await makeUnreadable(unreadableFile, 0o600);
   try {
     await assert.rejects(
       start(fixture.repository(), fixture.project, 'managed_sources'),
@@ -483,7 +484,7 @@ test('one unreadable managed source child makes the Host catalog fail closed', a
       },
     );
   } finally {
-    await chmod(unreadableFile, 0o600);
+    await restoreReadAccess();
   }
 });
 
@@ -1224,6 +1225,19 @@ async function tempDirectory(prefix: string): Promise<string> {
   const root = await mkdtemp(join(tmpdir(), prefix));
   roots.add(root);
   return root;
+}
+
+async function makeUnreadable(target: string, restoreMode: number): Promise<() => Promise<void>> {
+  if (process.platform !== 'win32') {
+    await chmod(target, 0o000);
+    return () => chmod(target, restoreMode);
+  }
+  const principal = process.env.USERNAME;
+  assert.ok(principal, 'Windows test identity must be available');
+  await execFileAsync('icacls.exe', [target, '/deny', `${principal}:(R)`]);
+  return async () => {
+    await execFileAsync('icacls.exe', [target, '/remove:d', principal]);
+  };
 }
 
 async function createSkill(parent: string, id: string, content: string): Promise<string> {

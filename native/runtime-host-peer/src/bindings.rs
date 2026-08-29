@@ -19,18 +19,19 @@
 
 use std::{
     path::PathBuf,
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex, RwLock},
     time::Duration,
 };
 
 use libp2p::{Multiaddr, PeerId};
 use napi::bindgen_prelude::{Buffer, Error, Result, Status};
 use napi_derive::napi;
-use tokio::sync::{Mutex as AsyncMutex, mpsc, oneshot};
+use tokio::sync::{Mutex as AsyncMutex, mpsc, oneshot, watch};
 
 use crate::engine::{self, EngineCommand, PeerError, StreamCommand};
 
 type IncomingStreamReceiver = mpsc::Receiver<std::result::Result<Vec<u8>, PeerError>>;
+const IDENTITY_PAYLOAD_MAX_BYTES: usize = 8 * 1024;
 
 #[napi(object)]
 pub struct StartPeerEndpointOptions {
@@ -38,22 +39,32 @@ pub struct StartPeerEndpointOptions {
     pub expected_peer_id: Option<String>,
     pub listen_addresses: Option<Vec<String>>,
     pub coordination_relays: Option<Vec<String>>,
+    pub automatic_relay_discovery: Option<bool>,
 }
 
 #[napi(object)]
 pub struct ConnectPeerOptions {
+    pub request_id: u32,
     pub peer_id: String,
     pub route_hints: Vec<String>,
     pub coordination_relays: Option<Vec<String>>,
     pub direct_deadline_ms: u32,
 }
 
+#[napi(object)]
+pub struct PeerIdentitySignature {
+    pub public_key: Buffer,
+    pub signature: Buffer,
+}
+
 #[napi]
 pub struct PeerEndpoint {
     peer_id: String,
     listen_addresses: Vec<String>,
+    active_coordination_relays: Arc<RwLock<Vec<Multiaddr>>>,
     commands: mpsc::Sender<EngineCommand>,
     incoming: Arc<AsyncMutex<mpsc::Receiver<engine::PeerStream>>>,
+    mesh_incoming: Arc<AsyncMutex<mpsc::Receiver<engine::PeerStream>>>,
     terminal: Arc<AsyncMutex<mpsc::Receiver<PeerError>>>,
     thread: Arc<Mutex<Option<std::thread::JoinHandle<()>>>>,
 }
@@ -70,44 +81,46 @@ impl PeerEndpoint {
         self.listen_addresses.clone()
     }
 
+    #[napi(getter)]
+    pub fn active_coordination_relays(&self) -> Vec<String> {
+        self.active_coordination_relays
+            .read()
+            .map(|addresses| addresses.iter().map(ToString::to_string).collect())
+            .unwrap_or_default()
+    }
+
     #[napi]
     pub async fn connect(&self, options: ConnectPeerOptions) -> Result<PeerStream> {
-        let peer_id = parse_peer_id(&options.peer_id)?;
-        let route_hints = parse_addresses(options.route_hints, "route hint")?;
-        let coordination_relays = parse_addresses(
-            options.coordination_relays.unwrap_or_default(),
-            "coordination relay",
-        )?;
-        if !(1..=120_000).contains(&options.direct_deadline_ms) {
-            return Err(Error::new(
-                Status::InvalidArg,
-                "direct deadline must be between 1 and 120000 milliseconds",
-            ));
-        }
+        connect_peer(self, options, engine::StreamKind::Application).await
+    }
+
+    #[napi]
+    pub async fn connect_mesh_control(&self, options: ConnectPeerOptions) -> Result<PeerStream> {
+        connect_peer(self, options, engine::StreamKind::MeshControl).await
+    }
+
+    #[napi]
+    pub async fn accept_mesh_control(&self) -> Result<Option<PeerStream>> {
+        self.mesh_incoming
+            .lock()
+            .await
+            .recv()
+            .await
+            .map(wrap_stream)
+            .transpose()
+    }
+
+    #[napi]
+    pub async fn cancel_connect(&self, request_id: u32) -> Result<bool> {
         let (result_tx, result_rx) = oneshot::channel();
         self.commands
-            .send(EngineCommand::Connect {
-                options: engine::ConnectOptions {
-                    peer_id,
-                    route_hints,
-                    coordination_relays,
-                    deadline: Duration::from_millis(u64::from(options.direct_deadline_ms)),
-                },
+            .send(EngineCommand::CancelConnect {
+                request_id,
                 result: result_tx,
             })
             .await
-            .map_err(|_| {
-                peer_error(PeerError {
-                    code: "peer_native_failed",
-                    message: "peer endpoint is closed".to_owned(),
-                })
-            })?;
-        wrap_stream(
-            result_rx
-                .await
-                .map_err(|_| native_closed_error())?
-                .map_err(peer_error)?,
-        )
+            .map_err(|_| native_closed_error())?;
+        result_rx.await.map_err(|_| native_closed_error())
     }
 
     #[napi]
@@ -149,6 +162,52 @@ impl PeerEndpoint {
     }
 }
 
+async fn connect_peer(
+    endpoint: &PeerEndpoint,
+    options: ConnectPeerOptions,
+    stream_kind: engine::StreamKind,
+) -> Result<PeerStream> {
+    let peer_id = parse_peer_id(&options.peer_id)?;
+    let route_hints = parse_addresses(options.route_hints, "route hint")?;
+    let coordination_relays = parse_addresses(
+        options.coordination_relays.unwrap_or_default(),
+        "coordination relay",
+    )?;
+    if !(1..=120_000).contains(&options.direct_deadline_ms) {
+        return Err(Error::new(
+            Status::InvalidArg,
+            "direct deadline must be between 1 and 120000 milliseconds",
+        ));
+    }
+    let (result_tx, result_rx) = oneshot::channel();
+    endpoint
+        .commands
+        .send(EngineCommand::Connect {
+            options: engine::ConnectOptions {
+                request_id: options.request_id,
+                peer_id,
+                route_hints,
+                coordination_relays,
+                deadline: Duration::from_millis(u64::from(options.direct_deadline_ms)),
+            },
+            stream_kind,
+            result: result_tx,
+        })
+        .await
+        .map_err(|_| {
+            peer_error(PeerError {
+                code: "peer_native_failed",
+                message: "peer endpoint is closed".to_owned(),
+            })
+        })?;
+    wrap_stream(
+        result_rx
+            .await
+            .map_err(|_| native_closed_error())?
+            .map_err(peer_error)?,
+    )
+}
+
 impl Drop for PeerEndpoint {
     fn drop(&mut self) {
         if Arc::strong_count(&self.thread) == 1 {
@@ -160,12 +219,19 @@ impl Drop for PeerEndpoint {
 
 #[napi]
 pub struct PeerStream {
+    peer_id: String,
     incoming: Arc<AsyncMutex<IncomingStreamReceiver>>,
     commands: mpsc::Sender<StreamCommand>,
+    abort: watch::Sender<bool>,
 }
 
 #[napi]
 impl PeerStream {
+    #[napi(getter)]
+    pub fn peer_id(&self) -> String {
+        self.peer_id.clone()
+    }
+
     #[napi]
     pub async fn read(&self) -> Result<Option<Buffer>> {
         match self.incoming.lock().await.recv().await {
@@ -210,7 +276,7 @@ impl PeerStream {
 
     #[napi]
     pub fn abort(&self) {
-        let _ = self.commands.try_send(StreamCommand::Abort);
+        self.abort.send_replace(true);
     }
 }
 
@@ -227,6 +293,7 @@ pub fn start_peer_endpoint(options: StartPeerEndpointOptions) -> Result<PeerEndp
             options.coordination_relays.unwrap_or_default(),
             "coordination relay",
         )?,
+        automatic_relay_discovery: options.automatic_relay_discovery.unwrap_or(false),
     })
     .map_err(peer_error)?;
     Ok(PeerEndpoint {
@@ -236,8 +303,10 @@ pub fn start_peer_endpoint(options: StartPeerEndpointOptions) -> Result<PeerEndp
             .into_iter()
             .map(|address| address.to_string())
             .collect(),
+        active_coordination_relays: started.active_coordination_relays,
         commands: started.commands,
         incoming: Arc::new(AsyncMutex::new(started.incoming)),
+        mesh_incoming: Arc::new(AsyncMutex::new(started.mesh_incoming)),
         terminal: Arc::new(AsyncMutex::new(started.terminal)),
         thread: Arc::new(Mutex::new(Some(started.thread))),
     })
@@ -251,10 +320,44 @@ pub async fn ensure_peer_identity(key_path: String) -> Result<String> {
         .map_err(peer_error)
 }
 
+#[napi]
+pub async fn sign_peer_identity(
+    key_path: String,
+    expected_peer_id: String,
+    payload: Buffer,
+) -> Result<PeerIdentitySignature> {
+    validate_identity_payload(&payload)?;
+    let signed = engine::sign_identity(
+        PathBuf::from(key_path),
+        parse_peer_id(&expected_peer_id)?,
+        &payload,
+    )
+    .await
+    .map_err(peer_error)?;
+    Ok(PeerIdentitySignature {
+        public_key: signed.public_key.into(),
+        signature: signed.signature.into(),
+    })
+}
+
+#[napi]
+pub fn verify_peer_identity(
+    peer_id: String,
+    public_key: Buffer,
+    payload: Buffer,
+    signature: Buffer,
+) -> Result<bool> {
+    validate_identity_payload(&payload)?;
+    engine::verify_identity(parse_peer_id(&peer_id)?, &public_key, &payload, &signature)
+        .map_err(peer_error)
+}
+
 fn wrap_stream(stream: engine::PeerStream) -> Result<PeerStream> {
     Ok(PeerStream {
+        peer_id: stream.peer_id.to_string(),
         incoming: Arc::new(AsyncMutex::new(stream.incoming)),
         commands: stream.commands,
+        abort: stream.abort,
     })
 }
 
@@ -273,6 +376,16 @@ fn parse_addresses(values: Vec<String>, label: &str) -> Result<Vec<Multiaddr>> {
             })
         })
         .collect()
+}
+
+fn validate_identity_payload(payload: &[u8]) -> Result<()> {
+    if payload.is_empty() || payload.len() > IDENTITY_PAYLOAD_MAX_BYTES {
+        return Err(Error::new(
+            Status::InvalidArg,
+            "identity payload must be between 1 and 8192 bytes",
+        ));
+    }
+    Ok(())
 }
 
 fn peer_error(error: PeerError) -> Error {

@@ -28,13 +28,12 @@ import { buildComputerUseTools } from '../../packages/runtime/dist/computer-use-
 import { getAIModel } from '../../packages/runtime/dist/model-factory.js';
 import { createMakaCuBackend } from '../../packages/computer-use/dist/index.js';
 import { createDirectRuntimeTurnLedger } from './direct-runtime-ledger.mjs';
+import { requireComputerUseLabRoot } from './lab-root.mjs';
 import { sanitizeCuDirectReport } from './report-sanitize.mjs';
 
 const repoRoot = new URL('../..', import.meta.url).pathname;
 const binaryPath = join(repoRoot, 'apps/desktop/resources/bin/maka-cu');
-const labRoot =
-  process.env.MAKA_CU_AX_MODEL_LAB_ROOT ??
-  '/Users/haoqing/Documents/Learning/codex-computer-use-lab';
+const labRoot = requireComputerUseLabRoot();
 const expectedAppPath = join(labRoot, 'test-app/build/Codex CUA Lab.app');
 const statePath = join(labRoot, 'test-app/runtime/state.json');
 const fixturePID = Number(process.env.MAKA_CU_AX_MODEL_FIXTURE_PID);

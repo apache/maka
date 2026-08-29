@@ -17,6 +17,8 @@
  * under the License.
  */
 
+@import 'katex/dist/katex.min.css';
+
 /* Maka product compositions shared across desktop renderer surfaces. Astryx
    owns generic component chrome; these selectors own only product semantics. */
 
@@ -242,13 +244,37 @@
    bubble, so it needs its own line and the gap above it. */
 .maka-turn-truncation-badge { display: flex; width: fit-content; margin-top: 6px; cursor: help; }
 .maka-deep-thinking { min-width: 0; }
-/* The reasoning body inside the Astryx ChatReasoning disclosure. The official
-   atoms own no white-space (the shell assumes children are pre-rendered), so
-   the inherited `white-space: normal` collapses every newline in thinking
-   text. Restore the pre-wrap reading contract the pre-Astryx disclosure had
-   (dropped in the #1748 migration). `word-break` keeps long tokens from
-   overflowing the box, as the old body did. */
+/* Reasoning uses the same safe Markdown pipeline as answers, then lowers its
+   visual weight inside the disclosure. Body layout stays with the upstream
+   Astryx atoms (secondary color, 22px inline-start indent, no rail): the
+   #2645 inset added a 2px link-tinted border that visually outweighed the
+   muted text it framed, and its padding-top/inline-start were dead code —
+   the ejected component's higher-specificity atoms already own both. */
 .maka-chat-reasoning-content { white-space: pre-wrap; word-break: break-word; }
+.maka-deep-thinking [data-maka-contract="markdown"] .astryx-markdown {
+  color: var(--muted-foreground);
+  font: var(--maka-text-body);
+}
+.maka-deep-thinking [data-maka-contract="markdown"] .astryx-markdown-heading,
+.maka-deep-thinking [data-maka-contract="markdown"] strong {
+  color: color-mix(in oklch, var(--link) 28%, var(--foreground-secondary));
+}
+.maka-deep-thinking [data-maka-contract="markdown"] .astryx-markdown-heading {
+  font: var(--maka-text-label);
+}
+.maka-math {
+  max-width: 100%;
+  color: inherit;
+}
+.maka-math-inline {
+  display: inline;
+}
+.maka-math-display {
+  display: block;
+  overflow-x: auto;
+  overflow-y: hidden;
+  padding-block: 2px;
+}
 
 @keyframes maka-spin { to { transform: rotate(360deg); } }
 .maka-spin { animation: maka-spin 1s linear infinite; }
@@ -726,9 +752,7 @@
 .maka-sandbox-blocked-copy[data-copy-feedback="failed"] { border-color: oklch(from var(--destructive) l c h / 0.35); color: var(--destructive); }
 .maka-turn-status-icon { flex: 0 0 auto; }
 
-.maka-turn-aborted-marker,
-.maka-turn-host-origin,
-.maka-turn-failed-banner {
+.maka-turn-host-origin {
   font: var(--maka-text-supporting);
   display: inline-flex;
   width: fit-content;
@@ -736,17 +760,6 @@
   margin-inline: 0;
   border-radius: var(--radius-control);
 }
-
-.maka-turn-aborted-marker {
-  gap: var(--space-1);
-  margin-block: var(--space-0-5) var(--space-1);
-  padding: var(--space-0-5) var(--space-1-5);
-  background: var(--foreground-5);
-  color: var(--foreground-secondary);
-  font-style: italic;
-}
-
-.maka-turn-aborted-marker em { font-style: italic; }
 
 .maka-turn-host-origin {
   align-self: flex-end;
@@ -757,23 +770,9 @@
   color: var(--muted-foreground);
 }
 
-.maka-turn-failed-banner {
-  flex-wrap: wrap;
-  gap: var(--space-1-5);
-  margin-block: var(--space-0-5) var(--space-1-5);
-  padding: var(--space-1) var(--space-2);
-  border: 1px solid oklch(from var(--destructive) l c h / 0.28);
-  background: oklch(from var(--destructive) l c h / 0.1);
-  color: var(--destructive);
-}
-
-.maka-turn-failed-icon { display: inline-flex; align-items: center; }
-.maka-turn-failed-recovery { color: var(--text-muted); }
-.maka-turn-failed-recovery::before {
-  margin-right: var(--space-1-5);
-  color: var(--foreground-alpha-16);
-  content: "·";
-}
+/* Astryx `Banner` paints the failed-turn surface; this only sets the block
+   rhythm between it and the timeline entry above it. */
+.maka-turn-failed-banner { margin-block: var(--space-1) var(--space-0-5); }
 
 .maka-turn-lineage-row,
 .maka-turn-footer {

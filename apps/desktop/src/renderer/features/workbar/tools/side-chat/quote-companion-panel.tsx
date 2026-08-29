@@ -31,10 +31,10 @@ import {
   type ChatModelChoice,
   type ComposerHandle,
 } from '@maka/ui';
-import type { ComposerProps } from '../../../../../../../../packages/ui/dist/composer.d.ts';
 import type { SessionSummary } from '@maka/core/session';
 import { useQuoteCompanion } from './use-quote-companion';
 import { useComposerAttachments } from '../../../../use-composer-attachments';
+import { useComposerMentionsContext } from '../../../../composer-mentions.js';
 import { preflightAttachmentItems } from '../../../../attachment-preflight';
 import { toComposerIngestItems } from '../../../../composer-attachments';
 import { getDesktopConversationCopy } from '../../../../locales/conversation-copy.js';
@@ -67,10 +67,6 @@ export function QuoteCompanionPanel(props: {
   sourceSession: SessionSummary | undefined;
   /** Shared global choice list, only used to render the inherited model's label. */
   modelChoices: readonly ChatModelChoice[];
-  mentionSkills?: ComposerProps['mentionSkills'];
-  mentionSkillsUnavailable?: ComposerProps['mentionSkillsUnavailable'];
-  mentionSkillsLoading?: ComposerProps['mentionSkillsLoading'];
-  onSearchMentionFiles?: ComposerProps['onSearchMentionFiles'];
   onQuotesConsumed: (snapshot: CompanionQuoteSnapshot) => void;
   onRemoveQuote?: (target: CompanionQuoteTarget) => void;
   onForkVisibilityChange?: (event: CompanionForkVisibilityEvent) => void;
@@ -81,6 +77,7 @@ export function QuoteCompanionPanel(props: {
   onActivityStateChange?: (panelId: string, active: boolean) => void;
 }) {
   const { attachments } = useWorkbarServices();
+  const mentions = useComposerMentionsContext();
   const locale = useUiLocale();
   const toast = useToast();
   const copy = getDesktopConversationCopy(locale).quoteCompanion;
@@ -195,7 +192,8 @@ export function QuoteCompanionPanel(props: {
         ]),
       ),
       failedReasonLabels: {},
-      failedRecoveryLabels: {},
+      failedSeverities: {},
+      failedExecutionStateLabels: {},
       lineageBadgesByTurn: {},
     }),
     [companion.regeneratePendingTurnId, locale],
@@ -268,11 +266,11 @@ export function QuoteCompanionPanel(props: {
               onAttachFilePaths={attachFilePaths}
               pendingAttachments={pendingAttachments}
               onRemoveAttachment={removeAttachment}
-              mentionSkills={props.mentionSkills}
-              onSearchMentionFiles={props.onSearchMentionFiles}
+              mentionSkills={mentions?.mentionSkills}
+              onSearchMentionFiles={mentions?.searchMentionFiles}
               pendingQuotes={props.quotes.map((quote) => quote.value)}
-              mentionSkillsUnavailable={props.mentionSkillsUnavailable}
-              mentionSkillsLoading={props.mentionSkillsLoading}
+              mentionSkillsUnavailable={mentions?.mentionSkillsUnavailable}
+              mentionSkillsLoading={mentions?.mentionSkillsLoading}
               contextDrawerDefaultCollapsed
               showStaticModelUnavailableStatus={false}
               onRemoveQuote={(index) => {

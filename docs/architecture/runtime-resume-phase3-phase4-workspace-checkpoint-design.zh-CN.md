@@ -577,14 +577,15 @@ baseline open 中。
 
 M1 拆成独立不变量，避免一次 PR 同时跨越 host lifecycle、runtime protocol 与 platform I/O：
 
-1. **M1.1 execution scope admission（当前切片）**：M0 只返回 owner-bound opaque handle；同一 owner 每次
+1. **M1.1 execution scope admission（已合并）**：M0 只返回 owner-bound opaque handle；同一 owner 每次
    execution 都在 drain residency 内重新证明 canonical head、Git receipt、HEAD/tree/ownership 与 root
    identity，最后只签发 callback 生命周期内有效的 opaque scope，不公开 raw cwd。provisioning 固定为
    `canonical_tree_only_v1`，`workspaceEffect` 固定为 `none`。同一 handle 可以并发多个只读 admission，
-   `close()` 必须等待全部 active scope drain；普通生产 admission 只做一次最终 Git verification，preliminary
-   verification 仅存在于配置 crash failpoint 的 production-shaped 测试路径；过期或伪造 scope 通过 typed
+   `close()` 必须等待全部 active scope drain；普通 production admission 先做一次 exact Git verification，再以
+   SQLite head 作为最后一次 durable reread；preliminary verification 仅存在于配置 crash failpoint 的
+   production-shaped 测试路径；过期或伪造 scope 通过 typed
    `ManagedWorkspaceExecutionAuthorityError` 的稳定 code fail closed；
-2. **M1.2 owner-bound worker 与 runtime-host composition**：storage-internal bridge 只能用同 owner 的 active
+2. **M1.2 owner-bound worker 与 runtime-host composition（已合并）**：storage-internal bridge 只能用同 owner 的 active
    scope 解析 cwd，M2 前只允许 Read/Glob/Grep；建立不可混淆的 managed/attached typed profile 与
    startup/drain/shutdown 顺序，关闭顺序固定为 tool operations → managed owner → root owner；
 3. **M1.3 environment provisioning**：单独设计 ignored dependency、secret 与 scratch overlay。M1.1 不复制
@@ -639,8 +640,8 @@ M0.1 Git artifact owner (merged)
   + M0.2 workspace version authority (merged)
   + M0.3 managed owner lifecycle (merged)
   └─> M0.4 baseline open bundle (merged)
-       └─> M1.1 execution scope admission (current)
-            └─> M1.2 runtime-host composition
+       └─> M1.1 execution scope admission (merged)
+            └─> M1.2 runtime-host composition (merged)
                  └─> M1.3 explicit environment provisioning
                       └─> M2 mutation version acceptance
                            └─> M3 workspace-bound continuation

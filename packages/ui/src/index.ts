@@ -25,7 +25,11 @@ export * from './use-mounted-ref.js';
 export * from './components.js';
 export type { ComposerProps } from './components.js';
 export type { SandboxBoundaryPromptProps } from './sandbox-boundary-prompt.js';
-export type { SessionHistoryGroup } from './session-history-list.js';
+export type {
+  ProjectRowActions,
+  SessionHistoryGroup,
+  SessionRowActions,
+} from './session-history-list.js';
 export * from './session-status-presentation.js';
 export * from './composer-helpers.js';
 export * from './conversation-copy.js';

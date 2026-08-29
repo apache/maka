@@ -17,6 +17,7 @@
     "./encrypted-file-managed-secret-store": "./dist/encrypted-file-managed-secret-store.js",
     "./execution-stores": "./dist/execution-stores.js",
     "./external-sessions": "./dist/external-sessions.js",
+    "./file-lifetime-owner": "./dist/file-lifetime-owner.js",
     "./file-update-lock": "./dist/file-update-lock.js",
     "./foreign-session-store": "./dist/foreign-session-store.js",
     "./git-worktree-child-executor": "./dist/git-worktree-child-executor.js",

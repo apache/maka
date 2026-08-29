@@ -23,9 +23,6 @@ import { expect, fn, userEvent, waitFor, within } from 'storybook/test';
 import type { ArtifactDescriptor } from '@maka/core/artifacts';
 import { ToastProvider } from '@maka/ui';
 import {
-  WorkbarSurface,
-} from '../src/renderer/features/workbar';
-import {
   createFakeWorkbarServices,
   createSessionWorkbarPanelsState,
   createSessionWorkbarTabsState,
@@ -34,6 +31,7 @@ import {
   WorkbarServicesProvider,
   type WorkbarServices,
 } from '../src/renderer/features/workbar/testing';
+import { WorkbarSurface } from '../src/renderer/features/workbar/stories';
 import { RemoteProjectDirectoryDialog } from '../src/renderer/remote-project-directory-dialog';
 import { RuntimeHostSshTerminalDialog } from '../src/renderer/settings/runtime-host-ssh-terminal-dialog';
 import { withScopedMakaBridge } from './maka-bridge';

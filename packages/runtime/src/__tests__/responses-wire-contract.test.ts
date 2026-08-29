@@ -21,10 +21,13 @@ import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 import type { LlmConnection } from '@maka/core/llm-connections';
 import type { RuntimeEvent } from '@maka/core/runtime-event';
+import { z } from 'zod';
 import { modelMetadataIdsForProvider } from '@maka/core/model-metadata';
 import { PROVIDER_REGISTRY } from '@maka/core/llm-connections';
 import { thinkingVariantsForModel } from '@maka/core/model-thinking';
 import { buildProviderOptions, getAIModel } from '../model-factory.js';
+import { ModelAdapter } from '../model-adapter.js';
+import { TOOL_SEARCH_PROVIDER_NAME } from '../tool-availability.js';
 import { resolveModelRuntime } from '../model-runtime.js';
 import { lowerModelTools } from '../model-adapter.js';
 import { openAiCodexCompactionMessages } from '../openai-codex-history-compactor.js';
@@ -51,6 +54,89 @@ function openAiNamespace(options: Record<string, unknown>): Record<string, unkno
 }
 
 describe('responses wire contract', () => {
+  test('does not route Maka tool_search history through OpenAI native tool_search validation', async () => {
+    const connection = conn('openai-codex', 'codex-subscription');
+    connection.defaultModel = 'gpt-5.6-sol';
+    const requestBodies: Record<string, unknown>[] = [];
+    const fetch = (async (_url: string | URL | Request, init?: RequestInit) => {
+      requestBodies.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
+      return Response.json({
+        id: 'response-tool-search-alias',
+        object: 'response',
+        status: 'completed',
+        output: [],
+        usage: { input_tokens: 1, output_tokens: 1 },
+      });
+    }) as unknown as typeof globalThis.fetch;
+    const adapter = new ModelAdapter({
+      connection,
+      apiKey: 'test-token',
+      modelId: connection.defaultModel,
+      modelFactory: (input) =>
+        getAIModel({
+          connection,
+          apiKey: input.apiKey,
+          modelId: connection.defaultModel,
+          fetch,
+        }),
+      newId: () => 'test-id',
+      now: () => 0,
+    });
+    const result = await adapter.startStream({
+      model: adapter.resolveModel(),
+      messages: [
+        {
+          role: 'assistant',
+          content: [
+            {
+              type: 'tool-call',
+              toolCallId: 'search-call',
+              toolName: 'tool_search',
+              input: { query: 'browser' },
+            },
+          ],
+        },
+        {
+          role: 'tool',
+          content: [
+            {
+              type: 'tool-result',
+              toolCallId: 'search-call',
+              toolName: 'tool_search',
+              output: { type: 'json', value: { activated: ['browser_click'] } },
+            },
+          ],
+        },
+      ],
+      tools: {
+        tool_search: {
+          description: 'Search Maka deferred tools',
+          inputSchema: z.object({ query: z.string() }),
+        },
+      },
+      activeTools: ['tool_search'],
+      system: 'Call tool_search; keep existing maka_tool_search text unchanged.',
+      onStreamActivity: () => {},
+      abortSignal: new AbortController().signal,
+      repairToolCall: async () => null,
+    });
+    for await (const _event of result.events) void _event;
+    const body = requestBodies[0];
+    const input = body?.input as Array<Record<string, unknown>>;
+    assert.equal(
+      input?.find((item) => item.type === 'function_call')?.name,
+      TOOL_SEARCH_PROVIDER_NAME,
+    );
+    assert.equal(
+      input?.find((item) => item.type === 'function_call_output')?.call_id,
+      'search-call',
+    );
+    assert.equal(
+      input?.find((item) => item.role === 'developer')?.content,
+      'Call maka_tool_search; keep existing maka_tool_search text unchanged.',
+    );
+  });
+
   test('keeps Qwen3.8 Max on Token Plan Chat until the provider adapter supports Responses', () => {
     for (const providerType of ['alibaba-token-plan-cn', 'alibaba-token-plan'] as const) {
       assert.equal(

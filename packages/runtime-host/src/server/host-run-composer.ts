@@ -46,7 +46,7 @@ export interface HostRunComposer {
   readonly composerId: string;
   readonly composerRevision: string;
   readonly tools: readonly MakaTool[];
-  readonly toolAvailability: ToolAvailabilityConfig;
+  readonly toolAvailability?: ToolAvailabilityConfig;
   readonly resolveSystemPrompt: (context: HostModelPromptContext) => Promise<ResolvedRunPrompt>;
   readonly turnTailPrompt: (context: HostModelPromptContext) => Promise<string>;
   readonly planTraceContext?: AiSdkBackendInput['planTraceContext'];

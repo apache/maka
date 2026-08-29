@@ -1403,10 +1403,33 @@ describe('SQLite SessionStore', () => {
     try {
       const [header] = await reopened.listHeaders();
       assert.equal(header?.backend, 'fake');
+      assert.equal(header?.llmConnectionId, undefined);
       assert.equal(header?.llmConnectionSlug, 'fake');
       assert.equal((await reopened.readHeaderSnapshot(sessionId)).backend, 'fake');
     } finally {
       await reopened.close?.();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test('persists an immutable Connection identity when supplied by Host admission', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'maka-session-connection-identity-'));
+    const store = createSessionStore(root);
+    try {
+      const created = await store.create(
+        makeInput({ llmConnectionId: '11111111-1111-4111-8111-111111111111' }),
+      );
+      assert.equal(created.llmConnectionId, '11111111-1111-4111-8111-111111111111');
+      assert.equal(
+        (await store.readHeader(created.id)).llmConnectionId,
+        '11111111-1111-4111-8111-111111111111',
+      );
+      assert.equal(
+        (await store.readCatalogRecord(created.id)).summary.llmConnectionId,
+        '11111111-1111-4111-8111-111111111111',
+      );
+    } finally {
+      await store.close?.();
       await rm(root, { recursive: true, force: true });
     }
   });

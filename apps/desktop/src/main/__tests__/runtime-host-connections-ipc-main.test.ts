@@ -290,6 +290,7 @@ test('projects the Host default target without inventing a second Connection aut
 
   assert.deepEqual(connections, [
     {
+      connectionId: 'connection-1',
       slug: 'openrouter',
       name: 'OpenRouter',
       providerType: 'openai-compatible',

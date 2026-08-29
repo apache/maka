@@ -968,6 +968,25 @@ function defineMidTurnSuite(consumer: ConsumerMode): void {
     assert.equal(failedOpen?.failOpenReason, 'malformed_summary_missing_section');
   });
 
+  test('bounds malformed-summary attempts across later steps in the same turn', async () => {
+    const fixture = buildFixture({
+      rollingOverflow: true,
+      summarize: () => {
+        throw new HistoryCompactSummarizerError('malformed_summary_missing_section');
+      },
+    });
+
+    await runFixtureTurn(fixture, consumer);
+
+    assert.equal(fixture.summarizerCalls, 1);
+    assert.equal(fixture.recorded.length, 0);
+    const complete = fixture.events.find((event) => event.type === 'complete');
+    assert.equal(complete?.type, 'complete');
+    if (complete?.type !== 'complete') return;
+    assert.equal(complete.stopReason, 'context_budget_exhausted');
+    assert.equal(complete.contextBudgetExhaustedDetail, 'malformed_summary_missing_section');
+  });
+
   test('exhausts with write_failed in the durable diagnostics when the write fails over the window', async () => {
     // Big priors make folding rescue the over-window estimate, so the plan
     // compacts and the failure happens AT the recorder — over the window that

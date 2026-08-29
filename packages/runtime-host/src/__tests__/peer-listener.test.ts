@@ -21,14 +21,12 @@ import assert from 'node:assert/strict';
 import { setImmediate as waitForImmediate } from 'node:timers/promises';
 import { test } from 'node:test';
 import { createRuntimeHostPeerListener } from '../server/peer-listener.js';
-import type {
-  RuntimeHostPeerNativeEndpoint,
-  RuntimeHostPeerNativeStream,
-} from '../transport/peer-native.js';
+import type { RuntimeHostPeerClient } from '../client/peer-client.js';
+import type { RuntimeHostPeerNativeStream } from '../transport/peer-native.js';
 
 test('bounds and aborts pending peer authentication', async () => {
-  const streams = Array.from({ length: 17 }, () => pendingStream());
-  const listener = createRuntimeHostPeerListener(endpointWith([...streams]), {} as never, () => {});
+  const streams = Array.from({ length: 17 }, (_, index) => pendingStream(`remote-peer-${index}`));
+  const listener = createRuntimeHostPeerListener(peerWith([...streams]), {} as never, () => {});
   await waitForImmediate();
 
   assert.equal(streams.filter((stream) => stream.aborted).length, 1);
@@ -43,7 +41,7 @@ test('bounds and aborts pending peer authentication', async () => {
 test('expires a peer that does not send its credential', async (context) => {
   context.mock.timers.enable({ apis: ['setTimeout'] });
   const stream = pendingStream();
-  const listener = createRuntimeHostPeerListener(endpointWith([stream]), {} as never, () => {});
+  const listener = createRuntimeHostPeerListener(peerWith([stream]), {} as never, () => {});
   await waitForImmediate();
 
   context.mock.timers.tick(5_000);
@@ -55,7 +53,7 @@ test('expires a peer that does not send its credential', async (context) => {
 test('reports an explicit authentication rejection before closing the stream', async () => {
   const stream = recordingStream(Buffer.from('{"v":1,"credential":"rejected"}\n'));
   const listener = createRuntimeHostPeerListener(
-    endpointWith([stream]),
+    peerWith([stream]),
     { authenticate: () => null } as never,
     () => {},
   );
@@ -75,6 +73,7 @@ test('rechecks peer authority at admission after the authentication response is 
   let aborted = false;
   let reads = 0;
   const stream: RuntimeHostPeerNativeStream = {
+    peerId: 'remote-peer',
     read: async () => (reads++ === 0 ? Buffer.from('{"v":1,"credential":"revoked"}\n') : null),
     write: async () => writeReleased,
     close: async () => undefined,
@@ -85,7 +84,7 @@ test('rechecks peer authority at admission after the authentication response is 
   let authentications = 0;
   let accepted = false;
   const listener = createRuntimeHostPeerListener(
-    endpointWith([stream]),
+    peerWith([stream]),
     {
       authenticate: () => (authentications++ === 0 ? { operationGrants: 'all' } : null),
     } as never,
@@ -105,31 +104,96 @@ test('rechecks peer authority at admission after the authentication response is 
   await listener.cleanup();
 });
 
-function endpointWith(streams: RuntimeHostPeerNativeStream[]): RuntimeHostPeerNativeEndpoint {
+test('bounds active application streams from one authenticated peer', async () => {
+  const streams = Array.from({ length: 5 }, () => authenticatedPendingStream('remote-peer'));
+  let accepted = 0;
+  const listener = createRuntimeHostPeerListener(
+    peerWith([...streams]),
+    { authenticate: () => ({ operationGrants: 'all' }) } as never,
+    () => {
+      accepted += 1;
+    },
+  );
+  await waitForImmediate();
+  await waitForImmediate();
+
+  assert.equal(accepted, 4);
+  assert.equal(streams[4]?.aborted, true);
+  await listener.cleanup();
+});
+
+function peerWith(streams: RuntimeHostPeerNativeStream[]): RuntimeHostPeerClient {
   return {
-    peerId: 'peer',
-    listenAddresses: [],
+    identity: () => ({ peerId: 'peer', listenAddresses: [], coordinationRelays: [] }),
+    signIdentity: async () => {
+      throw new Error('not used');
+    },
+    verifyIdentity: () => false,
     connect: async () => {
       throw new Error('not used');
     },
-    accept: async () => streams.shift() ?? null,
+    connectMeshControl: async () => {
+      throw new Error('not used');
+    },
+    serveApplication: async (onStream, signal) => {
+      for (const stream of streams) onStream(stream);
+      await new Promise<void>((resolve) =>
+        signal.addEventListener('abort', () => resolve(), { once: true }),
+      );
+    },
+    serveMeshControl: async () => {
+      throw new Error('not used');
+    },
     close: async () => undefined,
   };
 }
 
-function pendingStream(): RuntimeHostPeerNativeStream & { readonly aborted: boolean } {
+function pendingStream(
+  peerId = 'remote-peer',
+): RuntimeHostPeerNativeStream & { readonly aborted: boolean } {
   let finish!: (value: null) => void;
   const read = new Promise<null>((resolve) => {
     finish = resolve;
   });
   let aborted = false;
   return {
+    peerId,
     get aborted() {
       return aborted;
     },
     read: () => read,
     write: async () => undefined,
     close: async () => undefined,
+    abort: () => {
+      aborted = true;
+      finish(null);
+    },
+  };
+}
+
+function authenticatedPendingStream(
+  peerId: string,
+): RuntimeHostPeerNativeStream & { readonly aborted: boolean } {
+  let finish!: (value: null) => void;
+  const pending = new Promise<null>((resolve) => {
+    finish = resolve;
+  });
+  let first = true;
+  let aborted = false;
+  return {
+    peerId,
+    get aborted() {
+      return aborted;
+    },
+    read: async () => {
+      if (first) {
+        first = false;
+        return Buffer.from('{"v":1,"credential":"accepted"}\n');
+      }
+      return pending;
+    },
+    write: async () => undefined,
+    close: async () => finish(null),
     abort: () => {
       aborted = true;
       finish(null);
@@ -145,6 +209,7 @@ function recordingStream(initial: Buffer): RuntimeHostPeerNativeStream & {
   let closed = false;
   const writes: Buffer[] = [];
   return {
+    peerId: 'remote-peer',
     get writes() {
       return writes;
     },

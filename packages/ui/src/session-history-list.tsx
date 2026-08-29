@@ -44,7 +44,7 @@ import {
   Trash2,
 } from './icons.js';
 import { RelativeTime } from './relative-time.js';
-import { formatAbsoluteTimestamp } from './chat-display-helpers.js';
+import { formatAbsoluteTimestamp } from '@maka/core/relative-time';
 import { Badge } from '@astryxdesign/core/Badge';
 import { MoreMenu } from '@astryxdesign/core/MoreMenu';
 import {
@@ -56,6 +56,7 @@ import { StatusDot, type StatusDotVariant } from '@astryxdesign/core/StatusDot';
 import { describeBlockedReason, presentSessionStatus } from './session-status-presentation.js';
 import { dotForStatus } from './status-vocabulary.js';
 import { SessionRenameDialog, type SessionRenameTarget } from './session-rename-dialog.js';
+import { useSessionRailData } from './session-rail-context.js';
 import { useUiLocale } from './locale-context.js';
 import { getConversationCopy } from './conversation-copy.js';
 
@@ -86,19 +87,8 @@ export interface SessionHistoryGroup {
   project?: ProjectRecord;
 }
 
-export function SessionHistoryList(props: {
-  sessions: SessionSummary[];
-  activeId?: string;
-  streamingSessionIds?: Set<string>;
-  staleSessionIds?: Set<string>;
-  groups?: ReadonlyArray<SessionHistoryGroup>;
-  worktreeSessionIds?: ReadonlySet<string>;
-  sessionMeta?(session: SessionSummary): string | undefined;
-  projectActions?: ProjectRowActions;
-  groupVariant?: SessionHistoryGroupVariant;
-  onSelectSession(sessionId: string): void;
-  rowActions?: SessionRowActions;
-}) {
+export function SessionHistoryList() {
+  const rail = useSessionRailData();
   const locale = useUiLocale();
 
   function handleListKeyDown(event: KeyboardEvent<HTMLDivElement>) {
@@ -111,9 +101,9 @@ export function SessionHistoryList(props: {
     const sessionId =
       row?.dataset.sessionId ??
       row?.querySelector<HTMLElement>('[data-session-id]')?.dataset.sessionId;
-    if (sessionId && props.rowActions) {
+    if (sessionId && rail.rowActions) {
       event.preventDefault();
-      void props.rowActions.onDelete(sessionId);
+      void rail.rowActions.onDelete(sessionId);
     }
   }
 
@@ -126,28 +116,19 @@ export function SessionHistoryList(props: {
     <div className="maka-session-list" onKeyDown={handleListKeyDown}>
       <SessionListGroups
         groups={
-          props.groups
-            ? props.groups.map((g) => ({
+          rail.groups
+            ? rail.groups.map((g) => ({
                 key: g.id,
                 label: g.label,
                 sessions: g.sessions,
                 project: g.project,
               }))
-            : groupSessionsForHistory(props.sessions, locale).map((g) => ({
+            : groupSessionsForHistory(rail.sessions, locale).map((g) => ({
                 key: g.id,
                 label: g.label,
                 sessions: g.sessions,
               }))
         }
-        groupVariant={props.groupVariant ?? 'conversation'}
-        activeId={props.activeId}
-        streamingSessionIds={props.streamingSessionIds}
-        staleSessionIds={props.staleSessionIds}
-        worktreeSessionIds={props.worktreeSessionIds}
-        sessionMeta={props.sessionMeta}
-        onSelectSession={props.onSelectSession}
-        rowActions={props.rowActions}
-        projectActions={props.projectActions}
       />
     </div>
   );
@@ -160,16 +141,8 @@ function SessionListGroups(props: {
     sessions: SessionSummary[];
     project?: ProjectRecord;
   }>;
-  groupVariant: SessionHistoryGroupVariant;
-  activeId?: string;
-  streamingSessionIds?: Set<string>;
-  staleSessionIds?: Set<string>;
-  worktreeSessionIds?: ReadonlySet<string>;
-  sessionMeta?(session: SessionSummary): string | undefined;
-  onSelectSession(sessionId: string): void;
-  rowActions?: SessionRowActions;
-  projectActions?: ProjectRowActions;
 }) {
+  const rail = useSessionRailData();
   const copy = getConversationCopy(useUiLocale()).sessions;
   const [renameTarget, setRenameTarget] = useState<SessionRenameTarget | null>(null);
   /**
@@ -208,7 +181,7 @@ function SessionListGroups(props: {
 
   function commitRename(target: SessionRenameTarget, name: string) {
     const rename =
-      target.kind === 'project' ? props.projectActions?.onRename : props.rowActions?.onRename;
+      target.kind === 'project' ? rail.projectActions?.onRename : rail.rowActions?.onRename;
     if (!rename) return;
     void Promise.resolve(rename(target.id, name)).catch(() => {
       // AppShell owns visible rename failure feedback.
@@ -217,31 +190,27 @@ function SessionListGroups(props: {
 
   // Linked subagent sessions open in the main chat column, not as nested
   // sidebar rows. The host passes only root/user sessions here.
+  //
+  // Two dependencies, not eight. The eight were one value — everything a row is
+  // drawn from — spelled out because it arrived as eight separate props, and
+  // any one of them changing identity upstream rebuilt every row. It arrives as
+  // `rail` now, so this array says what it always meant (#4109).
   const renderSessionRow = useCallback(
     (session: SessionSummary): ReactNode => (
       <SessionNavRow
         key={session.id}
         session={session}
-        active={session.id === props.activeId}
-        streaming={props.streamingSessionIds?.has(session.id) ?? false}
-        stale={props.staleSessionIds?.has(session.id) ?? false}
-        worktree={props.worktreeSessionIds?.has(session.id) ?? false}
-        meta={props.sessionMeta?.(session)}
-        onSelectSession={props.onSelectSession}
-        actions={props.rowActions}
+        active={session.id === rail.activeId}
+        streaming={rail.streamingSessionIds?.has(session.id) ?? false}
+        stale={rail.staleSessionIds?.has(session.id) ?? false}
+        worktree={rail.worktreeSessionIds?.has(session.id) ?? false}
+        meta={rail.sessionMeta?.(session)}
+        onSelectSession={rail.onSelectSession}
+        actions={rail.rowActions}
         onStartRename={startRename}
       />
     ),
-    [
-      startRename,
-      props.activeId,
-      props.onSelectSession,
-      props.rowActions,
-      props.sessionMeta,
-      props.staleSessionIds,
-      props.streamingSessionIds,
-      props.worktreeSessionIds,
-    ],
+    [rail, startRename],
   );
 
   // Keyed per target so the field seeds from the name that row carries now,
@@ -257,7 +226,7 @@ function SessionListGroups(props: {
     />
   ) : null;
 
-  if (props.groupVariant === 'project') {
+  if (rail.groupVariant === 'project') {
     const activeGroups = props.groups.filter((group) => group.project?.archivedAt === undefined);
     const archivedGroups = props.groups.filter((group) => group.project?.archivedAt !== undefined);
 
@@ -272,7 +241,7 @@ function SessionListGroups(props: {
           label={group.label}
           project={project}
           sessions={group.sessions}
-          projectActions={props.projectActions}
+          projectActions={rail.projectActions}
           onStartRename={(opener) => {
             if (project) {
               startRename({ kind: 'project', id: project.id, name: project.name }, opener);
@@ -833,7 +802,10 @@ interface SessionGroup {
   sessions: SessionSummary[];
 }
 
-function groupSessionsForHistory(sessions: SessionSummary[], locale: UiLocale): SessionGroup[] {
+function groupSessionsForHistory(
+  sessions: readonly SessionSummary[],
+  locale: UiLocale,
+): SessionGroup[] {
   const copy = getConversationCopy(locale).sessions;
   const ordered = [...sessions].sort((a, b) => {
     const timestampDelta = (b.lastMessageAt ?? 0) - (a.lastMessageAt ?? 0);

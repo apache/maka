@@ -130,19 +130,22 @@ test('source legal authority and generated provenance select the ASF source gate
 
 test('release authority changes select their dedicated contract gate', () => {
   for (const path of [
+    'apps/desktop/src/main/app-update-test-context.ts',
     'apps/desktop/build/entitlements.mac.plist',
     'apps/desktop/electron-builder.config.mjs',
     'apps/desktop/package.json',
     '.github/workflows/cli-package-validation.yml',
+    '.github/workflows/desktop-nightly.yml',
+    '.github/workflows/npm-publication.yml',
     '.github/workflows/release-cli-finalize.yml',
     '.github/workflows/release-cli-stage.yml',
     '.github/workflows/release.yml',
     'scripts/package-macos-arm64.mjs',
+    'scripts/package-macos-autoupdate-next.mjs',
     'scripts/package-macos-arm64-cli.mjs',
     'scripts/package-windows-x64.mjs',
     'scripts/prepare-windows-upgrade-baseline.mjs',
     'scripts/product-release-artifacts.mjs',
-    'scripts/product-release-artifacts.test.mjs',
     'scripts/product-release-authority.mjs',
     'scripts/product-release-authority.test.mjs',
     'scripts/product-release-identity.mjs',
@@ -153,6 +156,8 @@ test('release authority changes select their dedicated contract gate', () => {
     'scripts/release-cli-publication.test.mjs',
     'scripts/verify-macos-arm64-cli.mjs',
     'scripts/verify-macos-arm64-dmg.mjs',
+    'scripts/verify-macos-autoupdate.mjs',
+    'scripts/desktop-update-contract.mjs',
     'scripts/verify-packaged-app.mjs',
     'scripts/verify-windows-x64.mjs',
     'scripts/windows-upgrade-baseline.json',
@@ -162,6 +167,21 @@ test('release authority changes select their dedicated contract gate', () => {
     assert.equal(planTests([path], { graph }).releaseContract, true, path);
   }
   assert.equal(planTests(['.github/RELEASE_CHECKLIST.md'], { graph }).releaseContract, false);
+});
+
+test('Product Nightly authority changes select the release contract gate', () => {
+  for (const path of [
+    '.github/workflows/desktop-nightly.yml',
+    '.github/workflows/npm-publication.yml',
+    'scripts/desktop-nightly.mjs',
+    'scripts/desktop-nightly.test.mjs',
+    'scripts/desktop-nightly-stage.test.mjs',
+    'scripts/desktop-nightly-workflow-policy.test.mjs',
+    'scripts/product-nightly.mjs',
+    'scripts/product-nightly.test.mjs',
+  ]) {
+    assert.equal(planTests([path], { graph }).releaseContract, true, path);
+  }
 });
 
 // Both notices are committed generator output. A hand edit or a merge-conflict
@@ -616,6 +636,19 @@ test('Windows recovery executes the root initialization replacement race', () =>
   assert.match(recovery, /packages\/storage\/dist\/__tests__\/root-authority\.test\.js/u);
   assert.match(recovery, /# tests 1/u);
   assert.match(recovery, /# pass 1/u);
+  assert.match(recovery, /# skipped 0/u);
+});
+
+test('Windows recovery executes the complete Skill catalog suite', () => {
+  const recovery = readWorkflow('windows-recovery.yml');
+
+  assert.match(recovery, /skill-catalog-coordinator\.test\.js/u);
+  assert.match(recovery, /skill-catalog-protocol\.test\.js/u);
+  assert.match(recovery, /skill-catalog-repository\.test\.js/u);
+  assert.match(recovery, /skill-catalog-transaction\.test\.js/u);
+  assert.match(recovery, /skill-catalog-two-client-uds\.test\.js/u);
+  assert.match(recovery, /# tests 90/u);
+  assert.match(recovery, /# pass 90/u);
   assert.match(recovery, /# skipped 0/u);
 });
 

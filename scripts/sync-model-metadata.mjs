@@ -496,8 +496,8 @@ async function assertGeneratedOutputs(metadataPath, pricingPath, source) {
   );
 }
 
-async function loadTypeScriptModule(source) {
-  const javascript = stripTypeScriptTypes(source, { mode: 'transform' });
+export async function loadTypeScriptModule(source) {
+  const javascript = stripTypeScriptTypes(source, { mode: 'strip' });
   return import(`data:text/javascript;base64,${Buffer.from(javascript).toString('base64')}`);
 }
 

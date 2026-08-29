@@ -22,7 +22,7 @@ import { mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
-import { main, PROVIDERS } from './sync-model-metadata.mjs';
+import { loadTypeScriptModule, main, PROVIDERS } from './sync-model-metadata.mjs';
 
 function fixtureCatalog() {
   const catalog = {};
@@ -45,6 +45,24 @@ function fixtureCatalog() {
   catalog.unused = { id: 'unused', name: 'Unused', doc: 'https://example.test/unused', models: {} };
   return catalog;
 }
+
+test('loads the committed generated TypeScript modules', async () => {
+  const [metadataSource, pricingSource] = await Promise.all([
+    readFile(new URL('../packages/core/src/model-metadata.generated.ts', import.meta.url), 'utf8'),
+    readFile(
+      new URL('../packages/runtime/src/telemetry/model-pricing.generated.ts', import.meta.url),
+      'utf8',
+    ),
+  ]);
+  const [metadataModule, pricingModule] = await Promise.all([
+    loadTypeScriptModule(metadataSource),
+    loadTypeScriptModule(pricingSource),
+  ]);
+
+  assert.ok(Object.keys(metadataModule.GENERATED_MODELS_DEV_METADATA).length > 0);
+  assert.ok(Array.isArray(pricingModule.GENERATED_MODEL_PRICING));
+  assert.ok(pricingModule.GENERATED_MODEL_PRICING.length > 0);
+});
 
 test('a refresh persists the exact selected input and check fails on stale output', async () => {
   const root = await mkdtemp(join(tmpdir(), 'maka-model-snapshot-'));

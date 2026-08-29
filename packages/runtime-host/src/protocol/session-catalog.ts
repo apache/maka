@@ -101,6 +101,7 @@ const PROJECTION_REQUIRED_FIELDS = [
   'hasUnread',
   'status',
   'backend',
+  'llmConnectionId',
   'llmConnectionSlug',
   'connectionLocked',
   'model',
@@ -142,6 +143,7 @@ export type SessionModelTarget =
   | { readonly kind: 'default' }
   | {
       readonly kind: 'explicit';
+      readonly connectionId: string;
       readonly connectionSlug: string;
       readonly model: string;
     };
@@ -172,18 +174,18 @@ export interface SessionMetadataUpdateInput {
   readonly patch: SessionMetadataPatch;
 }
 
-export interface SessionConfiguration {
-  readonly modelTarget: SessionModelTarget;
-  readonly thinkingLevel: ThinkingLevel | null;
-  readonly permissionMode: PermissionMode;
-  readonly collaborationMode: CollaborationMode;
-  readonly orchestrationMode: OrchestrationMode;
+export interface SessionConfigurationPatch {
+  readonly modelTarget?: Extract<SessionModelTarget, { readonly kind: 'explicit' }>;
+  readonly thinkingLevel?: ThinkingLevel | null;
+  readonly permissionMode?: PermissionMode;
+  readonly collaborationMode?: CollaborationMode;
+  readonly orchestrationMode?: OrchestrationMode;
 }
 
 export interface SessionConfigurationUpdateInput {
   readonly sessionId: string;
   readonly expectedRevision: number;
-  readonly configuration: SessionConfiguration;
+  readonly patch: SessionConfigurationPatch;
 }
 
 export interface SessionWorkspaceRelocateInput {
@@ -234,6 +236,7 @@ export interface SessionCatalogProjection {
   readonly revisionIndex?: number;
   readonly revisionState?: 'preparing' | 'committed';
   readonly backend: PersistedBackendKind;
+  readonly llmConnectionId: string | null;
   readonly llmConnectionSlug: string;
   readonly connectionLocked: boolean;
   readonly model: string;
@@ -516,25 +519,38 @@ export function decodeSessionConfigurationUpdateInput(
   const input = requireExactRecord(value, 'Session configuration update input', [
     'sessionId',
     'expectedRevision',
-    'configuration',
+    'patch',
   ]);
-  const configuration = requireExactRecord(input.configuration, 'Session configuration', [
-    'modelTarget',
-    'thinkingLevel',
-    'permissionMode',
-    'collaborationMode',
-    'orchestrationMode',
-  ]);
+  const patch = requireShapedRecord(
+    input.patch,
+    'Session configuration patch',
+    [],
+    ['modelTarget', 'thinkingLevel', 'permissionMode', 'collaborationMode', 'orchestrationMode'],
+  );
+  if (Object.keys(patch).length === 0) {
+    throw invalidProtocolFrame('Session configuration patch is empty');
+  }
   return {
     sessionId: requireEntityId(input.sessionId, 'sessionId'),
     expectedRevision: positiveRevision(input.expectedRevision, 'expected Session revision'),
-    configuration: {
-      modelTarget: modelTarget(configuration.modelTarget),
-      thinkingLevel:
-        configuration.thinkingLevel === null ? null : thinkingLevel(configuration.thinkingLevel),
-      permissionMode: permissionMode(configuration.permissionMode),
-      collaborationMode: collaborationMode(configuration.collaborationMode),
-      orchestrationMode: orchestrationMode(configuration.orchestrationMode),
+    patch: {
+      ...(Object.hasOwn(patch, 'modelTarget')
+        ? { modelTarget: explicitModelTarget(patch.modelTarget) }
+        : {}),
+      ...(Object.hasOwn(patch, 'thinkingLevel')
+        ? {
+            thinkingLevel: patch.thinkingLevel === null ? null : thinkingLevel(patch.thinkingLevel),
+          }
+        : {}),
+      ...(Object.hasOwn(patch, 'permissionMode')
+        ? { permissionMode: permissionMode(patch.permissionMode) }
+        : {}),
+      ...(Object.hasOwn(patch, 'collaborationMode')
+        ? { collaborationMode: collaborationMode(patch.collaborationMode) }
+        : {}),
+      ...(Object.hasOwn(patch, 'orchestrationMode')
+        ? { orchestrationMode: orchestrationMode(patch.orchestrationMode) }
+        : {}),
     },
   };
 }
@@ -669,6 +685,10 @@ export function decodeSessionCatalogProjection(value: unknown): SessionCatalogPr
     ...optionalRevisionIndex(record),
     ...optionalRevisionState(record),
     backend: backend(record.backend),
+    llmConnectionId:
+      record.llmConnectionId === null
+        ? null
+        : requireEntityId(record.llmConnectionId, 'Session Connection id'),
     llmConnectionSlug: requireUtf8String(
       record.llmConnectionSlug,
       'Session connection slug',
@@ -720,11 +740,13 @@ function modelTarget(value: unknown): SessionModelTarget {
   if (target.kind === 'explicit') {
     const exact = requireExactRecord(target, 'explicit Session model target', [
       'kind',
+      'connectionId',
       'connectionSlug',
       'model',
     ]);
     return {
       kind: 'explicit',
+      connectionId: requireEntityId(exact.connectionId, 'Session Connection id'),
       connectionSlug: requireUtf8String(
         exact.connectionSlug,
         'Session connection slug',
@@ -734,6 +756,16 @@ function modelTarget(value: unknown): SessionModelTarget {
     };
   }
   throw invalidProtocolFrame('Invalid Session model target');
+}
+
+function explicitModelTarget(
+  value: unknown,
+): Extract<SessionModelTarget, { readonly kind: 'explicit' }> {
+  const target = modelTarget(value);
+  if (target.kind !== 'explicit') {
+    throw invalidProtocolFrame('Session configuration model target must be explicit');
+  }
+  return target;
 }
 
 function labels(value: unknown): readonly string[] {

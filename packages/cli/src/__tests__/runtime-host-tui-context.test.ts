@@ -29,16 +29,27 @@ const REMOTE_PROFILE: RuntimeHostProfile = {
   transport: { kind: 'tls', url: 'wss://runtime.example.com/runtime-host' },
   rootId: 'a'.repeat(64),
 };
+const ENVIRONMENT_PROFILE: RuntimeHostProfile = {
+  id: 'ubuntu',
+  name: 'Ubuntu',
+  kind: 'environment',
+  provider: { kind: 'wsl', distribution: 'Ubuntu' },
+  rootId: 'b'.repeat(64),
+  operatorPath: '/opt/maka/operator',
+};
+const HOST_WORKSPACE_PROFILES = [REMOTE_PROFILE, ENVIRONMENT_PROFILE] as const;
 
 describe('Runtime Host TUI workspace selection', () => {
-  test('requires an existing Host Project for a new remote Session', async () => {
-    await assert.rejects(
-      () => resolveRuntimeHostTuiWorkspace({} as RuntimeHostConnection, REMOTE_PROFILE, {}),
-      /requires --project/,
-    );
+  test('requires an existing Host Project for a new Host-workspace Session', async () => {
+    for (const profile of HOST_WORKSPACE_PROFILES) {
+      await assert.rejects(
+        () => resolveRuntimeHostTuiWorkspace({} as RuntimeHostConnection, profile, {}),
+        /requires --project/,
+      );
+    }
   });
 
-  test('canonicalizes a remote Project alias without reading a Client path', async () => {
+  test('canonicalizes a Host Project alias without reading a Client path', async () => {
     const connection = {
       request: async (operation: string) => {
         assert.equal(operation, 'project.catalog.query');
@@ -71,11 +82,13 @@ describe('Runtime Host TUI workspace selection', () => {
       },
     } as unknown as RuntimeHostConnection;
 
-    assert.deepEqual(
-      await resolveRuntimeHostTuiWorkspace(connection, REMOTE_PROFILE, {
-        projectId: 'project-old',
-      }),
-      { kind: 'project', projectId: 'project-1' },
-    );
+    for (const profile of HOST_WORKSPACE_PROFILES) {
+      assert.deepEqual(
+        await resolveRuntimeHostTuiWorkspace(connection, profile, {
+          projectId: 'project-old',
+        }),
+        { kind: 'project', projectId: 'project-1' },
+      );
+    }
   });
 });

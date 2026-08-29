@@ -1146,6 +1146,16 @@ export interface ProviderRetryScheduledEvent extends BaseEvent {
   attempt: number;
   maxAttempts: number;
   delayMs: number;
+  /**
+   * Authoritative remaining wait at emission, as a DURATION — unlike `ts`,
+   * it carries no clock domain, so a client on another machine (remote
+   * Runtime Host) can count it down from its own receipt time without being
+   * skewed against the host clock. Runtime sets it to `delayMs` at
+   * scheduling; a host re-projection mid-wait recomputes it from the stored
+   * schedule time. Absent from older emitters; clients fall back to
+   * `delayMs`.
+   */
+  remainingMs?: number;
   reason: ProviderRetryReason;
 }
 
@@ -1195,10 +1205,22 @@ export type ContextCompactionOutcome =
   | { kind: 'unchanged'; reason: string }
   | { kind: 'failed'; reason: string };
 
-export type ContextBudgetExhaustedDetail =
-  | 'no_safe_completed_span'
-  | 'summarizer_failed'
-  | 'head_anchor_exceeds_capacity';
+export const CONTEXT_BUDGET_EXHAUSTED_DETAILS = [
+  'no_safe_completed_span',
+  'summarizer_failed',
+  'malformed_summary_missing_section',
+  'malformed_summary_truncated',
+  'malformed_summary_too_small_for_fold',
+  'head_anchor_exceeds_capacity',
+] as const;
+
+export type ContextBudgetExhaustedDetail = (typeof CONTEXT_BUDGET_EXHAUSTED_DETAILS)[number];
+
+export function isContextBudgetExhaustedDetail(
+  value: unknown,
+): value is ContextBudgetExhaustedDetail {
+  return CONTEXT_BUDGET_EXHAUSTED_DETAILS.includes(value as ContextBudgetExhaustedDetail);
+}
 
 export type CompleteStopReason = CompleteEvent['stopReason'];
 

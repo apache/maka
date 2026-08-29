@@ -63,7 +63,7 @@ export interface RuntimeHostDesktopManager {
   ): void;
   unobserveSession(observerId: string): Promise<void>;
   enable(
-    remote: DesktopRuntimeHostCandidateStartInput['remote'],
+    profileTarget: DesktopRuntimeHostCandidateStartInput['profileTarget'],
   ): Promise<void>;
   disable(profileId: string): Promise<void>;
   waitUntilReady(
@@ -205,7 +205,7 @@ export async function startRuntimeHostDesktopManager(
     onDefaultProfileChanged?: (profileId: string) => void;
   } = {},
 ): Promise<RuntimeHostDesktopManager> {
-  if (input.remote) throw new Error('Desktop Runtime Host manager must start with Local');
+  if (input.profileTarget) throw new Error('Desktop Runtime Host manager must start with Local');
   const manager = new RuntimeHostDesktopManagerImpl(
     input,
     options.startCandidate ?? startDesktopRuntimeHostCandidate,
@@ -430,37 +430,37 @@ class RuntimeHostDesktopManagerImpl implements RuntimeHostDesktopManager {
   }
 
   async enable(
-    remote: DesktopRuntimeHostCandidateStartInput['remote'],
+    profileTarget: DesktopRuntimeHostCandidateStartInput['profileTarget'],
   ): Promise<void> {
-    if (!remote) throw new Error('A remote Runtime Host profile is required');
-    return this.#mutateTarget(remote.profile.id, () => this.#enable(remote));
+    if (!profileTarget) throw new Error('A non-local Runtime Host profile is required');
+    return this.#mutateTarget(profileTarget.profile.id, () => this.#enable(profileTarget));
   }
 
   async #enable(
-    remote: NonNullable<DesktopRuntimeHostCandidateStartInput['remote']>,
+    profileTarget: NonNullable<DesktopRuntimeHostCandidateStartInput['profileTarget']>,
   ): Promise<void> {
     if (this.#closed) throw new Error('Desktop Runtime Host manager is closed');
-    const profileId = remote.profile.id;
+    const profileId = profileTarget.profile.id;
     if (profileId === LOCAL_RUNTIME_HOST_PROFILE.id) {
       throw new Error('Local Runtime Host is already enabled');
     }
     for (const target of this.#targets.values()) {
       if (target.target.profile.id === profileId) continue;
-      const rootId = target.target.profile.kind === 'remote'
+      const rootId = target.target.profile.kind !== 'local'
         ? target.target.profile.rootId
         : target.hostId;
-      if (rootId === remote.profile.rootId) {
-        throw new Error(`Runtime Host ${remote.profile.rootId} is already enabled`);
+      if (rootId === profileTarget.profile.rootId) {
+        throw new Error(`Runtime Host ${profileTarget.profile.rootId} is already enabled`);
       }
     }
     const existing = this.#targets.get(profileId);
     if (
       existing?.valid &&
-      sameResolvedRuntimeHostProfileTarget(existing.target, remote)
+      sameResolvedRuntimeHostProfileTarget(existing.target, profileTarget)
     ) return;
     if (existing) await this.#removeTarget(existing);
 
-    const target = this.#createTarget(withRuntimeHostTarget(this.#baseInput, remote));
+    const target = this.#createTarget(withRuntimeHostTarget(this.#baseInput, profileTarget));
     this.#targets.set(profileId, target);
     this.#publishState(target, {
       epoch: target.epoch,
@@ -529,7 +529,7 @@ class RuntimeHostDesktopManagerImpl implements RuntimeHostDesktopManager {
       );
       const quiescence = await lifecycle.quiesce();
       try {
-        if (quiescence.current.hostLifecycleMode !== 'service') {
+        if (quiescence.current.hostOwnership !== 'supervised') {
           throw new Error('The Local Runtime Host is not managed by a background service');
         }
         return await change();
@@ -590,10 +590,7 @@ class RuntimeHostDesktopManagerImpl implements RuntimeHostDesktopManager {
       quiescence.resume();
     };
     try {
-      if (
-        quiescence.current.hostLifecycleMode === 'service' ||
-        quiescence.current.hostLifecycleMode === 'remote'
-      ) {
+      if (quiescence.current.hostOwnership !== 'owned_ephemeral') {
         resume();
         return { kind: 'not_owned' };
       }
@@ -662,9 +659,12 @@ class RuntimeHostDesktopManagerImpl implements RuntimeHostDesktopManager {
     const results = await Promise.allSettled(
       [...this.#targets.values()].map((target) => this.#removeTarget(target)),
     );
+    const peerResults = await Promise.allSettled(
+      this.#baseInput.peerClient ? [this.#baseInput.peerClient.close()] : [],
+    );
     this.#baseInput.candidateLaunchBarrier?.release();
     this.#ipcMain.close();
-    const failures = results.filter(
+    const failures = [...results, ...peerResults].filter(
       (result): result is PromiseRejectedResult => result.status === 'rejected',
     );
     if (failures.length > 0) {
@@ -686,7 +686,7 @@ class RuntimeHostDesktopManagerImpl implements RuntimeHostDesktopManager {
           this.connect(
             target,
             signal,
-            starting ? target.input.remote?.sshInteraction : 'batch',
+            starting ? target.input.profileTarget?.sshInteraction : 'batch',
           ),
         onReconnectError: (error) => {
           console.warn('[runtime-host] reconnect attempt failed:', error);
@@ -725,10 +725,10 @@ class RuntimeHostDesktopManagerImpl implements RuntimeHostDesktopManager {
         {
           ...target.input,
           onExit: (details) => this.#reportCandidateExit(inheritedExit, details),
-          ...(target.input.remote
+          ...(target.input.profileTarget
             ? {
-                remote: {
-                  ...target.input.remote,
+                profileTarget: {
+                  ...target.input.profileTarget,
                   ...(sshInteraction === undefined ? {} : { sshInteraction }),
                 },
               }
@@ -835,10 +835,12 @@ class RuntimeHostDesktopManagerImpl implements RuntimeHostDesktopManager {
     observations = new RuntimeHostSessionObservationRegistry((error) => input.onError?.(error)),
   ): DesktopRuntimeHostTargetGeneration {
     this.#observationRegistries.add(observations);
-    const target = input.remote
+    const target = input.profileTarget
       ? {
-          profile: input.remote.profile,
-          credential: input.remote.credential,
+          profile: input.profileTarget.profile,
+          ...(input.profileTarget.credential === undefined
+            ? {}
+            : { credential: input.profileTarget.credential }),
         }
       : { profile: LOCAL_RUNTIME_HOST_PROFILE };
     const epoch = randomUUID();
@@ -999,10 +1001,10 @@ function pairingFinalizeTimedOut(error: unknown): boolean {
 
 function withRuntimeHostTarget(
   input: DesktopRuntimeHostCandidateStartInput,
-  remote: DesktopRuntimeHostCandidateStartInput['remote'],
+  profileTarget: DesktopRuntimeHostCandidateStartInput['profileTarget'],
 ): DesktopRuntimeHostCandidateStartInput {
-  const { remote: _previousRemote, ...base } = input;
-  return remote ? { ...base, remote } : base;
+  const { profileTarget: _previousProfileTarget, ...base } = input;
+  return profileTarget ? { ...base, profileTarget } : base;
 }
 
 function waitForAbortableDelay(ms: number, signal: AbortSignal): Promise<void> {

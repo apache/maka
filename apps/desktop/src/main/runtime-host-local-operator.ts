@@ -18,7 +18,7 @@
  */
 
 import { spawn, type ChildProcess } from 'node:child_process';
-import { mkdtemp, realpath, rm, rmdir, stat } from 'node:fs/promises';
+import { mkdtemp, rm, rmdir, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { redactSecrets } from '@maka/core/redaction';
@@ -35,16 +35,14 @@ import {
   RUNTIME_HOST_PEER_MANAGEMENT_FRAME_PREFIX,
   RUNTIME_HOST_SERVICE_MANAGEMENT_FRAME_PREFIX,
   RUNTIME_HOST_SETUP_FRAME_PREFIX,
+  RUNTIME_HOST_SETUP_SOURCE_PACKAGE_INTEGRITY_ENV,
   type RuntimeHostAccessManagementFrame,
   type RuntimeHostPeerManagementFrame,
   type RuntimeHostServiceManagementFrame,
   type RuntimeHostSetupFrame,
 } from '@maka/runtime-host/operator';
 import { createRuntimeHostFramedOutputFilter } from './runtime-host-framed-output.js';
-import {
-  isExactRuntimeHostSetupPackageSpecifier,
-  type DesktopRuntimeHostSetupPackage,
-} from './runtime-host-ssh-terminal.js';
+import type { DesktopRuntimeHostSetupPackage } from './runtime-host-setup-package.js';
 
 const SETUP_TIMEOUT_MS = 10 * 60_000;
 const SETUP_FRAME_PENDING_MAX = 20 * 1024;
@@ -56,6 +54,7 @@ export interface DesktopRuntimeHostLocalServiceTarget {
   readonly serviceId: string;
   readonly rootPath: string;
   readonly rootId: string;
+  readonly deploymentId?: string;
 }
 
 export interface DesktopRuntimeHostLocalSetupInput {
@@ -160,6 +159,7 @@ export function createDesktopRuntimeHostLocalOperator(input: {
   cleanupManagedDeployment(input: {
     readonly operatorPath: string;
     readonly target: DesktopRuntimeHostLocalServiceTarget;
+    readonly finalize?: boolean;
     readonly signal?: AbortSignal;
   }): Promise<void>;
   close(): Promise<void>;
@@ -173,8 +173,11 @@ export function createDesktopRuntimeHostLocalOperator(input: {
     async runSetup(setup, onProgress) {
       if (closed) throw new Error('Local Runtime Host operator is closed');
       setup.signal?.throwIfAborted();
-      const packageSpecifier = await resolveLocalSetupPackage(setup.setupPackage);
-      const command = runtimeHostLocalSetupCommand({ ...setup, packageSpecifier });
+      const setupPackage = await resolveLocalSetupPackage(setup.setupPackage);
+      const command = runtimeHostLocalSetupCommand({
+        ...setup,
+        packageSpecifier: setupPackage.specifier,
+      });
       const workingDirectory = await mkdtemp(join(tmpdir(), 'maka-runtime-host-local-setup-'));
       try {
         if (closed) throw new Error('Local Runtime Host operator is closed');
@@ -183,7 +186,15 @@ export function createDesktopRuntimeHostLocalOperator(input: {
         return await runSetupProcess({
           command,
           cwd: workingDirectory,
-          environment: input.environment ?? process.env,
+          environment: {
+            ...(input.environment ?? process.env),
+            ...(setupPackage.integrity
+              ? {
+                  [RUNTIME_HOST_SETUP_SOURCE_PACKAGE_INTEGRITY_ENV]:
+                    setupPackage.integrity,
+                }
+              : {}),
+          },
           spawnProcess: input.spawnProcess ?? spawn,
           timeoutMs: input.setupTimeoutMs ?? SETUP_TIMEOUT_MS,
           terminate,
@@ -293,7 +304,11 @@ export function createDesktopRuntimeHostLocalOperator(input: {
       await runExitProcess({
         command: {
           executable: command.operatorPath,
-          args: ['__cleanup-managed-deployment', ...managedTargetArgs(command.target)],
+          args: [
+            '__cleanup-managed-deployment',
+            ...(command.finalize ? ['--finalize'] : []),
+            ...managedTargetArgs(command.target),
+          ],
         },
         label: 'Local Runtime Host deployment cleanup',
         environment: input.environment ?? process.env,
@@ -357,20 +372,13 @@ function combinedSignal(
   return operation ? AbortSignal.any([operation, closing]) : closing;
 }
 
-async function resolveLocalSetupPackage(
+function resolveLocalSetupPackage(
   setupPackage: DesktopRuntimeHostSetupPackage,
-): Promise<string> {
+): { readonly specifier: string; readonly integrity?: string } {
   if (setupPackage.kind === 'npm') {
-    if (!isExactRuntimeHostSetupPackageSpecifier(setupPackage.specifier)) {
-      throw new Error('Runtime Host setup package is invalid');
-    }
-    return setupPackage.specifier;
+    return { specifier: setupPackage.specifier };
   }
-  const archive = await realpath(setupPackage.path);
-  if (!(await stat(archive)).isFile() || !archive.endsWith('.tgz')) {
-    throw new Error('Runtime Host development package must be a .tgz file');
-  }
-  return archive;
+  return { specifier: setupPackage.path, integrity: setupPackage.integrity };
 }
 
 function managedTargetArgs(target: DesktopRuntimeHostLocalServiceTarget): string[] {
@@ -381,6 +389,9 @@ function managedTargetArgs(target: DesktopRuntimeHostLocalServiceTarget): string
     target.rootPath,
     '--expected-root-id',
     target.rootId,
+    ...(target.deploymentId
+      ? ['--expected-deployment-id', target.deploymentId]
+      : []),
   ];
 }
 

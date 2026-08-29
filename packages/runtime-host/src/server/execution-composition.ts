@@ -18,7 +18,7 @@
  */
 
 import { createHash, randomUUID } from 'node:crypto';
-import { normalizeMessageContent } from '@maka/core/events';
+import { messageContentDigest, normalizeMessageContent } from '@maka/core/events';
 import {
   describeChatConfigurationReason,
   NO_REAL_CONNECTION_CODE,
@@ -27,7 +27,11 @@ import type { RuntimeExecutionConnection } from '@maka/core/llm-connections';
 import { generalizedErrorMessage } from '@maka/core/redaction';
 import { emptyPlanSessionState } from '@maka/core/plan';
 import type { PermissionMode } from '@maka/core/permission';
-import { isDeepResearchSession } from '@maka/core/session';
+import {
+  isDeepResearchSession,
+  type SessionHeader,
+  WORKHUB_COORDINATION_SESSION_ID,
+} from '@maka/core/session';
 import { filterModelVisibleTaskLedgerTasks } from '@maka/core/task-ledger';
 import { AgentGraphCoordinator } from '@maka/runtime/stream-graph-coordinator';
 import { AgentGraphSupervisorWakeCoordinator } from '@maka/runtime/agent-graph-supervisor-wake';
@@ -37,10 +41,10 @@ import {
   type BackendFactory,
 } from '@maka/runtime/session-manager';
 import { buildToolsForAgentDefinition } from '@maka/runtime/agent-catalog';
-import { buildHostCapabilitiesFromBinding } from '@maka/runtime/tool-catalog-derive';
 import { buildHistoryTools } from '@maka/runtime/history-tools';
 import { createLocalContinuationSafetyInspector } from '@maka/runtime/continuation-safety';
 import { createConfiguredSubagentCatalog } from '@maka/runtime/configured-subagent-catalog';
+import { buildHostCapabilitiesFromBinding } from '@maka/runtime/skills';
 import {
   createBuiltinSandboxManager,
   createSandboxDiagnosticsProvider,
@@ -80,6 +84,7 @@ import { createExternalSessionAdapterRegistry } from '@maka/storage/external-ses
 import { createGitWorktreeChildExecutor } from '@maka/storage/git-worktree-child-executor';
 import { runWithStorageRootLease } from '@maka/storage/root-authority';
 import { openStorageWriterComposition } from '@maka/storage/storage-writer-composition';
+import type { RuntimePolicyStoresWriter } from '@maka/storage/runtime-policy-stores';
 import { resolveWorkspaceIdentity } from '@maka/storage/workspace-identity';
 import { type ManagedWorkspaceFilesystemWorker } from '@maka/storage/managed-workspace-owner';
 import { CanonicalSessionProjectionReader } from './canonical-session-projection.js';
@@ -106,6 +111,7 @@ import {
   createInteractiveRunComposerFactory,
   routeInteractiveRunToolSurface,
 } from './interactive-run-composer.js';
+
 import {
   createHostGoalEvaluator,
   createHostDailyReviewModel,
@@ -168,6 +174,10 @@ import { HostUsagePricingCoordinator } from './usage-pricing-coordinator.js';
 import { HostWebSearchCoordinator } from './web-search-coordinator.js';
 import { HostWorkHubCoordinationCoordinator } from './workhub-coordination-coordinator.js';
 import { WorkHubActionEffectFailure } from './workhub-coordination-action-gate.js';
+
+type ExecutionConnectionRef = Parameters<
+  RuntimePolicyStoresWriter['operations']['resolveExecutionConnection']
+>[0];
 import {
   createHostWebSearchService,
   createHostWebSearchToolFromService,
@@ -682,7 +692,7 @@ export async function createExecutionRuntimeHostComposition(
         requireRootCoordinator(rootCoordinator).stopSession(sessionId, input),
     };
     const resolveInteractiveToolSurface = async (input: {
-      readonly connectionSlug?: string;
+      readonly connectionRef?: ExecutionConnectionRef;
       readonly modelId: string;
       readonly hostTools: readonly MakaTool[];
       readonly boundTools?: readonly MakaTool[];
@@ -691,8 +701,8 @@ export async function createExecutionRuntimeHostComposition(
     }) => {
       const [runtimePolicy, resolved] = await Promise.all([
         runtimePolicyStores.runtimePolicy.getSnapshot(),
-        input.connectionSlug
-          ? runtimePolicyStores.operations.resolveExecutionConnection(input.connectionSlug)
+        input.connectionRef
+          ? runtimePolicyStores.operations.resolveExecutionConnection(input.connectionRef)
           : Promise.resolve(undefined),
       ]);
       let connection: RuntimeExecutionConnection | undefined;
@@ -739,7 +749,7 @@ export async function createExecutionRuntimeHostComposition(
           throw new Error('Subagent runtime tool snapshot is unavailable');
         }
         const { surface } = await resolveInteractiveToolSurface({
-          connectionSlug: header.llmConnectionSlug,
+          connectionRef: sessionExecutionConnectionRef(header),
           modelId: header.model,
           hostTools: [],
           boundTools: tools,
@@ -757,7 +767,7 @@ export async function createExecutionRuntimeHostComposition(
           openedPlanStore.readState(sessionId),
         ]);
         const { runtimePolicy, surface } = await resolveInteractiveToolSurface({
-          connectionSlug: header.llmConnectionSlug,
+          connectionRef: sessionExecutionConnectionRef(header),
           modelId: header.model,
           hostTools: [...hostTools, ...graphTools],
           childTools: childAgentTools.childTools,
@@ -815,7 +825,15 @@ export async function createExecutionRuntimeHostComposition(
               )
             : undefined;
           const { runtimePolicy, surface } = await resolveInteractiveToolSurface({
-            ...(connection ? { connectionSlug: connection.slug } : {}),
+            ...(connection
+              ? {
+                  connectionRef: {
+                    kind: 'bound' as const,
+                    connectionId: connection.connectionId,
+                    connectionSlug: connection.slug,
+                  },
+                }
+              : {}),
             modelId: target?.modelId ?? '',
             hostTools,
             childTools: childAgentTools.childTools,
@@ -883,7 +901,7 @@ export async function createExecutionRuntimeHostComposition(
         worktreePatchWriteBackAvailable: true,
       }).childTools;
       const { surface } = await resolveInteractiveToolSurface({
-        connectionSlug: header.llmConnectionSlug,
+        connectionRef: sessionExecutionConnectionRef(header),
         modelId: header.model,
         hostTools: [],
         childTools,
@@ -1074,7 +1092,8 @@ export async function createExecutionRuntimeHostComposition(
       context.requestDrain,
       clientCapabilities,
       () => requireGoal(goal),
-      (admission) => requireScheduledTasks(scheduledTasks).assertRecoveryAdmission(admission),
+      (admission, state) =>
+        requireScheduledTasks(scheduledTasks).assertRecoveryAdmission(admission, state),
       artifacts,
       async ({ sessionId, text, skillIds }) => {
         const header = await stores.sessionStore.readHeaderSnapshot(sessionId);
@@ -1230,44 +1249,100 @@ export async function createExecutionRuntimeHostComposition(
       continuity: continuityCoordinator,
       executions: coordinator,
       sessionActions: {
-        create: async (input) => {
-          const outcome = await sessionCatalog.createForWorkHub({
-            sessionId: input.sessionId,
-            workspace: input.workspace,
-            name: input.title,
-            modelTarget: { kind: 'default' },
-            collaborationMode: 'agent',
-            orchestrationMode: 'default',
-          });
-          if (!outcome.ok) {
-            throw new WorkHubActionEffectFailure(
-              outcome.error.code === 'invalid_request' ? 'operation_conflict' : outcome.error.code,
-              outcome.error.message,
-            );
-          }
-        },
-        submit: async (input, connection) => {
-          const outcome = await messages.handlers['turn.message.submit'](
-            {
-              originHostEpoch: connection.hostEpoch,
-              sessionId: input.sessionId,
-              messageId: input.messageId,
-              content: normalizeMessageContent({ text: input.text }),
-              placement: 'current_turn',
-            },
-            connection,
-          );
-          if (!outcome.ok) {
-            throw new WorkHubActionEffectFailure(
-              outcome.error.code === 'outcome_unknown'
-                ? 'commit_outcome_unknown'
-                : outcome.error.code,
-              outcome.error.message,
-            );
-          }
-          return outcome.result.disposition === 'turn_started'
-            ? { turnId: outcome.result.turnId }
-            : { turnId: input.messageId, steered: true as const };
+        assign: async (input) => {
+          const durable = await stores.sessionStore.readWorkHubAssignment(input.actionId);
+          const create =
+            !durable && input.create
+              ? await sessionCatalog.prepareWorkHubCreate({
+                  sessionId: input.targetSessionId,
+                  workspace: input.create.workspace,
+                  name: input.create.title,
+                  modelTarget: { kind: 'default' },
+                  collaborationMode: 'agent',
+                  orchestrationMode: 'default',
+                })
+              : undefined;
+          const suffix = createHash('sha256')
+            .update(input.actionId, 'utf8')
+            .digest('hex')
+            .slice(0, 48);
+          const messageId = `whm_${suffix}`;
+          const content = normalizeMessageContent({ text: input.userText });
+          const persisted =
+            durable ??
+            (await sessionAdmission.runMany(
+              [WORKHUB_COORDINATION_SESSION_ID, input.targetSessionId],
+              async (lease) => {
+                const rootState = coordinator.readRootState(input.targetSessionId);
+                if (!create && rootState.kind === 'reserved') {
+                  throw new WorkHubActionEffectFailure(
+                    'session_busy',
+                    'A target root Turn is being admitted',
+                  );
+                }
+                const steered = rootState.kind === 'active';
+                const turnId = steered ? rootState.turnId : `wht_${suffix}`;
+                const runId = steered ? rootState.runId : `whr_${suffix}`;
+                const assignedAt = Date.now();
+                const result = await stores.sessionStore.assignWorkHubMessage({
+                  assignment: {
+                    type: 'workhub_coordination',
+                    id: `wha_${suffix}`,
+                    turnId: input.actionId,
+                    ts: assignedAt,
+                    schemaVersion: 1,
+                    kind: 'delegation_assigned',
+                    actionId: input.actionId,
+                    actionFingerprint: input.actionFingerprint,
+                    coordinationTurnId: input.actionId,
+                    targetSessionId: input.targetSessionId,
+                    targetSessionName: input.targetSessionName,
+                    targetTurnId: turnId,
+                    targetMessageId: messageId,
+                    delegationId: `whd_${suffix}`,
+                    disposition: input.disposition,
+                    userText: input.userText,
+                    ...(steered ? { steered: true as const } : {}),
+                    ...(input.create ? { create: input.create } : {}),
+                  },
+                  admission: {
+                    sessionId: input.targetSessionId,
+                    turnId,
+                    runId,
+                    messageId,
+                    content,
+                    submittedContentDigest: messageContentDigest(content),
+                    submittedPlacement: 'current_turn',
+                    placement: 'current_turn',
+                    disposition: 'steering',
+                    admittedAt: assignedAt,
+                  },
+                  ...(create ? { create } : {}),
+                });
+                try {
+                  await continuityCoordinator.refreshCanonical(
+                    WORKHUB_COORDINATION_SESSION_ID,
+                    lease,
+                  );
+                  await continuityCoordinator.refreshCanonical(input.targetSessionId, lease);
+                } catch {
+                  // The atomic assignment is already committed. Projection
+                  // refresh is rebuildable and must not reject the action.
+                }
+                return result.assignment;
+              },
+            ));
+
+          // Assignment is already the acknowledged durable outcome. Consume
+          // the exact stored admission after releasing the assignment leases;
+          // failure leaves it pending for the same normal recovery consumer.
+          void messages
+            .consumePendingAdmissions([persisted.targetSessionId])
+            .catch(() => undefined);
+          return {
+            turnId: persisted.targetTurnId,
+            ...(persisted.steered ? { steered: true as const } : {}),
+          };
         },
       },
       resolveCreateTarget: async () => {
@@ -1716,6 +1791,18 @@ export async function createExecutionRuntimeHostComposition(
     if (errors.length === 1) throw error;
     throw new AggregateError(errors, 'Unable to clean up Runtime Host execution composition');
   }
+}
+
+function sessionExecutionConnectionRef(
+  header: Pick<SessionHeader, 'llmConnectionId' | 'llmConnectionSlug'>,
+): ExecutionConnectionRef {
+  return header.llmConnectionId === undefined
+    ? { kind: 'catalog_slug', connectionSlug: header.llmConnectionSlug }
+    : {
+        kind: 'bound',
+        connectionId: header.llmConnectionId,
+        connectionSlug: header.llmConnectionSlug,
+      };
 }
 
 function requireRootCoordinator(coordinator: RootTurnCoordinator | undefined): RootTurnCoordinator {

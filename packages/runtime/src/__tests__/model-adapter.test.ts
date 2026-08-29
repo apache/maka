@@ -598,6 +598,14 @@ describe('ModelAdapter stream and error normalization', () => {
         .reason,
       'timeout',
     );
+    assert.equal(
+      adapter.makeErrorEvent(
+        'turn-1',
+        new Error('Model stream idle timeout after 120000ms'),
+        'model_after_tool_timeout',
+      ).reason,
+      'model_after_tool_timeout',
+    );
     assert.equal(adapter.mapFinishReason('stop'), 'end_turn');
     assert.equal(adapter.mapFinishReason('length'), 'max_tokens');
     assert.equal(adapter.mapFinishReason('tool-calls'), 'end_turn');

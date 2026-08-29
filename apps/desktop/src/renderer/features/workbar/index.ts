@@ -17,8 +17,12 @@
  * under the License.
  */
 
+// `WorkbarSurface` is deliberately absent: `workbar-host` reaches it through
+// `lazy(() => import('./workbar-surface'))`, and re-exporting it here would
+// pull the surface and its five nested tool panels back into the eager chunk
+// for every importer of this barrel. Stories reach it through `stories`,
+// which nothing shipped imports.
 export { WorkbarHost } from './ui/workbar-host';
-export { WorkbarSurface } from './ui/workbar-surface';
 export { WorkbarTitlebarActions } from './ui/workbar-toggle';
 export { WorkbarServicesProvider } from './services-context';
 export { useWorkbarController } from './controller/use-workbar-controller';

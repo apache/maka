@@ -69,6 +69,10 @@ export type SettingsProjectsCopy = {
     setupTitle: string;
     setupDescription: string;
     setupName: string;
+    setupTarget: string;
+    sshComputer: string;
+    wslEnvironment: string;
+    wslDistribution: string;
     setupSshPort: string;
     setupDirectoryRootsDescription: string;
     setupConnect: string;
@@ -130,10 +134,16 @@ export type SettingsProjectsCopy = {
     directPeerRoutes: string;
     directPeerCoordinationRelays: string;
     directPeerCoordinationRelaysPlaceholder: string;
+    directPeerAdvancedCoordination: string;
+    directPeerAutomaticRelayDiscovery: string;
+    directPeerAutomaticRelayDiscoveryHelp: string;
     directPeerEnable: string;
     directPeerDisable: string;
     directPeerAddProfile: string;
     directPeerActionFailed: string;
+    peerMesh: string;
+    peerMeshHelp: string;
+    managePeerMesh: string;
     installedVersion: string;
     operatingSystem: string;
     processId: string;
@@ -282,16 +292,16 @@ const SETTINGS_PROJECTS_COPY_BY_LOCALE = {
   zh: {
     runtimeHost: {
       title: 'Runtime Host',
-      description: 'Local 与启用的远程 Host 会同时保持连接；任务仍由其所属 Host 处理。',
+      description: 'Local 与其他已启用的 Host 会同时保持连接；任务仍由其所属 Host 处理。',
       selected: '默认 Host',
       selectedHelp: '新任务和未指定 Host 的设置使用默认 Host',
-      remoteTitle: '远程 Host',
-      remoteDescription: '通过 SSH 自动设置一台电脑，或手动连接已有 Runtime Host。',
+      remoteTitle: '其他 Host',
+      remoteDescription: '在 SSH 电脑或本地 WSL 环境中设置 Runtime Host，也可手动连接已有 Host。',
       addComputer: '添加电脑',
       useConnectionCode: '使用连接码',
       configureManually: '手动配置',
       thisComputerRemoteAccess: '远程访问',
-      thisComputerRemoteAccessHelp: '让其他 Maka Desktop 通过实验性 Direct peer 连接此 Host',
+      thisComputerRemoteAccessHelp: '通过实验性端到端直连访问此 Host；可自动发现公共协调节点来辅助打洞',
       remoteAccessOn: '已开启',
       remoteAccessOff: '未开启',
       enableRemoteAccess: '开启',
@@ -326,9 +336,13 @@ const SETTINGS_PROJECTS_COPY_BY_LOCALE = {
       interruptAndEnable: '中断任务并开启',
       interruptAndUninstall: '中断任务并移除',
       remoteAccessFailed: '远程访问操作失败',
-      setupTitle: '添加远程电脑',
-      setupDescription: '通过 SSH 安装并连接 Runtime Host',
+      setupTitle: '添加 Runtime Host',
+      setupDescription: '在 SSH 电脑或 WSL 环境中安装并连接 Runtime Host',
       setupName: '显示名称（可选）',
+      setupTarget: '运行位置',
+      sshComputer: 'SSH 计算机',
+      wslEnvironment: 'WSL 环境',
+      wslDistribution: 'WSL 发行版',
       setupSshPort: 'SSH 端口（可选）',
       setupDirectoryRootsDescription: '留空时使用远端 Home。添加目录后，只有这些目录可用于浏览并添加项目。',
       setupConnect: '连接',
@@ -340,6 +354,7 @@ const SETTINGS_PROJECTS_COPY_BY_LOCALE = {
       setupPhase: {
         preparing_cli: '正在准备本地 CLI…',
         connecting_ssh: '正在连接 SSH…',
+        connecting_wsl: '正在连接 WSL 环境…',
         checking_environment: '正在检查远程环境…',
         installing_package: '正在安装 Maka…',
         installing_service: '正在启动 Runtime Host…',
@@ -395,7 +410,7 @@ const SETTINGS_PROJECTS_COPY_BY_LOCALE = {
         failed: '启动失败',
       },
       directPeer: 'Direct peer（实验性）',
-      directPeerDescription: '创建独立的实验性 Direct profile。受限 NAT 或被阻止的 UDP 可能使其不可达，且不会自动回退；保留 SSH profile 用于手动恢复。',
+      directPeerDescription: '创建独立的实验性 Direct profile。可自动发现或手动指定协调节点来辅助打洞；受限 NAT 或被阻止的 UDP 仍可能使其不可达，且不会回退到中继传输。保留 SSH profile 用于手动恢复。',
       directPeerState: {
         unsupported: '需要更新',
         not_configured: '未配置',
@@ -411,10 +426,17 @@ const SETTINGS_PROJECTS_COPY_BY_LOCALE = {
       directPeerRoutes: '可用路径',
       directPeerCoordinationRelays: '连接协调节点（可选）',
       directPeerCoordinationRelaysPlaceholder: '多个地址用逗号分隔',
+      directPeerAdvancedCoordination: '手动设置协调节点',
+      directPeerAutomaticRelayDiscovery: '自动发现协调节点',
+      directPeerAutomaticRelayDiscoveryHelp:
+        '协调节点使用 Circuit Relay v2 协议，仅帮助建立端到端直连，不承载应用流量。Maka 会通过公共 IPFS 网络尽力发现可用节点；手动设置的节点优先。',
       directPeerEnable: '启用并添加',
       directPeerDisable: '停用',
       directPeerAddProfile: '添加到 Desktop',
       directPeerActionFailed: 'Direct peer 操作失败',
+      peerMesh: 'Peer Mesh',
+      peerMeshHelp: '管理本 Desktop peer 的私有 Mesh membership 和邀请',
+      managePeerMesh: '管理 Peer Mesh',
       installedVersion: '版本',
       operatingSystem: '系统',
       processId: '进程 ID',
@@ -562,17 +584,17 @@ const SETTINGS_PROJECTS_COPY_BY_LOCALE = {
   en: {
     runtimeHost: {
       title: 'Runtime Host',
-      description: 'Local and enabled remote Hosts stay connected together. Each task remains owned by its Host.',
+      description: 'Local and other enabled Hosts stay connected together. Each task remains owned by its Host.',
       selected: 'Default Host',
       selectedHelp: 'New tasks and unscoped settings use the default Host',
-      remoteTitle: 'Remote Hosts',
+      remoteTitle: 'Other Hosts',
       remoteDescription:
-        'Set up a computer over SSH, or connect an existing Runtime Host manually.',
+        'Set up a Runtime Host on an SSH computer or local WSL environment, or connect an existing Host manually.',
       addComputer: 'Add computer',
       useConnectionCode: 'Use connection code',
       configureManually: 'Configure manually',
       thisComputerRemoteAccess: 'Remote access',
-      thisComputerRemoteAccessHelp: 'Let another Maka Desktop reach this Host through experimental Direct peer',
+      thisComputerRemoteAccessHelp: 'Reach this Host through experimental end-to-end direct connections, with automatic public coordination discovery',
       remoteAccessOn: 'On',
       remoteAccessOff: 'Off',
       enableRemoteAccess: 'Enable',
@@ -607,9 +629,13 @@ const SETTINGS_PROJECTS_COPY_BY_LOCALE = {
       interruptAndEnable: 'Interrupt and enable',
       interruptAndUninstall: 'Interrupt and remove',
       remoteAccessFailed: 'Remote access failed',
-      setupTitle: 'Add remote computer',
-      setupDescription: 'Install and connect Runtime Host over SSH',
+      setupTitle: 'Add Runtime Host',
+      setupDescription: 'Install and connect Runtime Host on an SSH computer or WSL environment',
       setupName: 'Display name (optional)',
+      setupTarget: 'Run on',
+      sshComputer: 'SSH computer',
+      wslEnvironment: 'WSL environment',
+      wslDistribution: 'WSL distribution',
       setupSshPort: 'SSH port (optional)',
       setupDirectoryRootsDescription: 'Leave empty to use the remote Home directory. When directories are added, only those locations can be browsed to add projects.',
       setupConnect: 'Connect',
@@ -621,6 +647,7 @@ const SETTINGS_PROJECTS_COPY_BY_LOCALE = {
       setupPhase: {
         preparing_cli: 'Preparing the local CLI…',
         connecting_ssh: 'Connecting over SSH…',
+        connecting_wsl: 'Connecting to the WSL environment…',
         checking_environment: 'Checking the remote environment…',
         installing_package: 'Installing Maka…',
         installing_service: 'Starting Runtime Host…',
@@ -676,7 +703,7 @@ const SETTINGS_PROJECTS_COPY_BY_LOCALE = {
         failed: 'Failed',
       },
       directPeer: 'Direct peer (experimental)',
-      directPeerDescription: 'Create an independent experimental Direct profile. Restrictive NAT or blocked UDP may make it unreachable, and it does not fall back automatically; keep the SSH profile for manual recovery.',
+      directPeerDescription: 'Create an independent experimental Direct profile. Discover coordination peers automatically or provide them manually to assist hole punching; restrictive NAT or blocked UDP may still make it unreachable, and traffic does not fall back to a relay. Keep the SSH profile for manual recovery.',
       directPeerState: {
         unsupported: 'Update required',
         not_configured: 'Not configured',
@@ -692,10 +719,17 @@ const SETTINGS_PROJECTS_COPY_BY_LOCALE = {
       directPeerRoutes: 'Routes',
       directPeerCoordinationRelays: 'Connection coordination peers (optional)',
       directPeerCoordinationRelaysPlaceholder: 'Separate multiple addresses with commas',
+      directPeerAdvancedCoordination: 'Set coordination peers manually',
+      directPeerAutomaticRelayDiscovery: 'Discover coordination peers automatically',
+      directPeerAutomaticRelayDiscoveryHelp:
+        'Coordination peers use Circuit Relay v2 only to establish an end-to-end direct connection; they never carry application traffic. Maka discovers candidates through the public IPFS network on a best-effort basis, while manually configured peers remain preferred.',
       directPeerEnable: 'Enable and add',
       directPeerDisable: 'Disable',
       directPeerAddProfile: 'Add to Desktop',
       directPeerActionFailed: 'Direct peer action failed',
+      peerMesh: 'Peer Mesh',
+      peerMeshHelp: 'Manage private Mesh memberships and invitations for this Desktop peer',
+      managePeerMesh: 'Manage Peer Mesh',
       installedVersion: 'Version',
       operatingSystem: 'System',
       processId: 'Process ID',

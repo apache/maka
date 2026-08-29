@@ -29,8 +29,6 @@ type ShellControlsCopy = {
     automations: string;
     extensions: string;
     settings: string;
-    /** Accessible name for the build stamp; the visible text is the stamp itself. */
-    buildStamp: (stamp: string) => string;
     updateDownloaded(version: string): string;
     updateFailed(version: string): string;
     pendingTasks(count: number): string;
@@ -64,7 +62,6 @@ const SHELL_CONTROLS_COPY_BY_LOCALE = {
       automations: '定时任务',
       extensions: '扩展',
       settings: '设置',
-      buildStamp: (stamp: string) => `当前版本 ${stamp}`,
       updateDownloaded: (version: string) => `新版本 ${version} 已下载，重启后安装`,
       updateFailed: (version: string) => `新版本 ${version} 更新失败，点击重试或手动下载`,
       pendingTasks: (count: number) => `定时任务，${count} 条进行中`,
@@ -96,7 +93,6 @@ const SHELL_CONTROLS_COPY_BY_LOCALE = {
       automations: 'Scheduled tasks',
       extensions: 'Extensions',
       settings: 'Settings',
-      buildStamp: (stamp: string) => `Current build ${stamp}`,
       updateDownloaded: (version: string) => `Update ${version} downloaded. Restart to install.`,
       updateFailed: (version: string) => `Update ${version} failed. Click to retry or download manually.`,
       pendingTasks: (count: number) => `Scheduled tasks, ${count} active`,

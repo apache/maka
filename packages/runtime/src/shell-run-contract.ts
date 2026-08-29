@@ -90,6 +90,8 @@ export interface ShellRunBashInput {
   sourceRunId?: string;
   sourceTurnId: string;
   sourceToolCallId: string;
+  /** User-owned terminals stay outside model context summaries. */
+  visibility?: 'model' | 'user';
   cwd: string;
   command: string;
   /** Final executable argv. When present, bypasses host-shell parsing. */
@@ -115,6 +117,8 @@ export interface ShellRunWriteInput {
   actions?: readonly TerminalInputAction[];
   size?: { cols: number; rows: number };
   abortSignal?: AbortSignal;
+  /** Client control may reach user-owned resources; model tools may not. */
+  caller?: 'model' | 'client';
 }
 
 export interface ShellRunPtyDataEvent {
@@ -145,6 +149,7 @@ export interface BackgroundTaskStopper {
     sessionId: string,
     ref: string,
     abortSignal: AbortSignal,
+    caller?: 'model' | 'client',
   ): Promise<ToolResultContent>;
 }
 

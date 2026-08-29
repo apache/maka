@@ -42,7 +42,7 @@
  * stays silent.
  */
 
-import { type LlmConnection } from '@maka/core/llm-connections';
+import { type IdentifiedLlmConnection } from '@maka/core/llm-connections';
 
 import { type SessionSendProjection, type SessionSendProjectionSession } from '@maka/core/session-send-projection';
 
@@ -61,7 +61,7 @@ export interface SessionHealthNoticeInput {
   /** Main-process projection from the latest onboarding snapshot. */
   outcome: SessionSendProjection | undefined;
   /** Persisted connections are used only to name a blocked session's own connection. */
-  connections: readonly LlmConnection[];
+  connections: readonly IdentifiedLlmConnection[];
   /**
    * The session's own connection's most recent credential test result.
    * Advisory reminder only — never interpreted as a send block (E4).
@@ -91,7 +91,6 @@ export function deriveSessionHealthNotice(
   if (!session || !outcome) return undefined;
 
   if (outcome.kind === 'blocked') return blockedNotice(outcome, input);
-  if (outcome.kind === 'rebind') return undefined;
   return credentialReminderNotice(input.lastTestStatus, input.locale);
 }
 
@@ -100,7 +99,11 @@ function blockedNotice(
   input: SessionHealthNoticeInput,
 ): SessionHealthNotice {
   const session = input.session!;
-  const own = input.connections.find((connection) => connection.slug === session.llmConnectionSlug);
+  const own = input.connections.find(
+    (connection) =>
+      connection.connectionId === session.llmConnectionId &&
+      connection.slug === session.llmConnectionSlug,
+  );
   const name = own?.name ?? session.llmConnectionSlug;
   const copy = getDesktopConversationCopy(input.locale).health.blocked[outcome.reason];
   return {

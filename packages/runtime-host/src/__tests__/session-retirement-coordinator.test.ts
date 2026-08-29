@@ -1319,6 +1319,7 @@ function sessionInput(
 ): CreateSessionInput {
   return {
     cwd: '/workspace',
+    llmConnectionId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
     llmConnectionSlug: 'fake',
     model: 'fake-model',
     permissionMode: 'ask',

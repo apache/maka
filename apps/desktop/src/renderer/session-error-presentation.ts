@@ -30,7 +30,11 @@ export function describeSessionErrorReason(reason: string | undefined, locale: U
   switch (reason?.toLowerCase()) {
     case 'context_overflow':
       return copy.contextOverflow;
+    case 'context_budget_exhausted':
+      return copy.contextBudgetExhausted;
     case 'timeout':
+      return copy.timeout;
+    case 'model_after_tool_timeout':
       return copy.timeout;
     case 'auth':
       return copy.auth;

@@ -97,6 +97,7 @@ export function projectRuntimeHostModelChoices(catalog: ConnectionCatalogSnapsho
     }
     for (const model of ids) {
       choices.push({
+        connectionId: connection.connectionId,
         connectionSlug: connection.slug,
         connectionName: connection.name,
         providerType: connection.providerType,

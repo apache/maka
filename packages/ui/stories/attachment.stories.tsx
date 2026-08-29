@@ -57,7 +57,7 @@ type ComposerProps = ComponentProps<typeof Composer>;
 type ChatViewProps = ComponentProps<typeof ChatView>;
 
 const modelChoices: ChatModelChoice[] = [
-  { connectionSlug: 'anthropic-main', providerType: 'anthropic', providerLabel: 'Anthropic', model: 'claude-sonnet-4-5', label: 'Claude Sonnet 4.5', isDefault: true, thinkingLevels: [] },
+  { connectionId: 'connection-anthropic-main', connectionSlug: 'anthropic-main', providerType: 'anthropic', providerLabel: 'Anthropic', model: 'claude-sonnet-4-5', label: 'Claude Sonnet 4.5', isDefault: true, thinkingLevels: [] },
 ];
 
 function noop() {
@@ -76,6 +76,7 @@ function session(o: Partial<SessionSummary> = {}): SessionSummary {
     lastMessagePreview: '帮我看下这几个文件。',
     status: 'active',
     backend: 'ai-sdk',
+    llmConnectionId: 'connection-anthropic-main',
     llmConnectionSlug: 'anthropic-main',
     connectionLocked: false,
     model: 'claude-sonnet-4-5',

@@ -20,6 +20,7 @@
 import { useCallback, useMemo, useState } from 'react';
 import type { ProjectRecord } from '@maka/core/project';
 import { formatCompactTimestamp } from '@maka/core/relative-time';
+import { runtimeHostProfileUsesHostWorkspace } from '@maka/runtime-host/profile-kind';
 import { Button, EmptyState, MoreMenu, useMountedRef, useToast, useUiLocale } from '@maka/ui';
 import { Archive, ICON_SIZE, Search } from '@maka/ui/icons';
 import { HStack, StackItem } from '@astryxdesign/core';
@@ -93,7 +94,7 @@ export function TasksSettingsPage(props: ArchivedTasksBridge) {
    */
   const projectLabelOf = useCallback(
     (session: DesktopSessionSummary): string | undefined => {
-      if (session.profileKind === 'remote') return session.profileName;
+      if (runtimeHostProfileUsesHostWorkspace(session.profileKind)) return session.profileName;
       return session.projectId ? projectNames.get(session.projectId) : copy.noProject;
     },
     [copy.noProject, projectNames],

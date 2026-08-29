@@ -36,6 +36,7 @@ test('peer management frames preserve a bounded machine-readable descriptor', ()
       rootId: 'a'.repeat(64),
       routeHints: ['/ip4/192.0.2.1/udp/41000/quic-v1'],
       coordinationRelays: [],
+      automaticRelayDiscovery: true,
     },
   };
   assert.deepEqual(

@@ -26,6 +26,7 @@ import {
 import { app, clipboard, dialog, ipcMain } from 'electron';
 import { join } from 'node:path';
 import { resolveBuildInfo } from './build-info.js';
+import { resolveUpdateTestUserDataDirectory } from './app-update-test-context.js';
 import {
   captureDesktopDiagnosticEnvironment,
   copyDesktopDiagnosticReport,
@@ -55,6 +56,15 @@ installMainProcessLogCapture(mainProcessLogBuffer, () => recoveryJournal?.markDi
 // socket/pipe namespace, and single-instance lock) without touching any
 // path logic. See https://github.com/maka-agent/maka-agent/issues/2252.
 app.setName(app.isPackaged ? 'Maka' : 'Maka Dev');
+
+const updateTestUserData = resolveUpdateTestUserDataDirectory({
+  feedUrl: process.env.MAKA_UPDATE_TEST_FEED,
+  explicitDirectory: process.env.MAKA_UPDATE_TEST_USER_DATA_DIR,
+  isPackaged: app.isPackaged,
+  appPath: app.getAppPath(),
+  executablePath: process.execPath,
+});
+if (updateTestUserData) app.setPath('userData', updateTestUserData);
 
 // E2E isolation: redirect userData BEFORE the single-instance lock so the
 // lock judges the throwaway dir, not the real user data — otherwise a

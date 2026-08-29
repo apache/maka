@@ -8,6 +8,7 @@ apps/desktop/src/renderer/cascade-layers.css
 apps/desktop/src/renderer/chat-composer-region.tsx
 apps/desktop/src/renderer/chat-message-surface.tsx
 apps/desktop/src/renderer/command-palette.tsx
+apps/desktop/src/renderer/composer-mentions.tsx
 apps/desktop/src/renderer/custom-pet-companion.tsx
 apps/desktop/src/renderer/error-boundary.tsx
 apps/desktop/src/renderer/features/goals/services-context.tsx
@@ -16,7 +17,9 @@ apps/desktop/src/renderer/features/goals/ui/goal-host.tsx
 apps/desktop/src/renderer/features/module-hub/services-context.tsx
 apps/desktop/src/renderer/features/module-hub/ui/module-hub-host.tsx
 apps/desktop/src/renderer/features/session-navigation/services-context.tsx
-apps/desktop/src/renderer/features/session-navigation/ui/session-navigation-host.tsx
+apps/desktop/src/renderer/features/session-navigation/ui/session-navigation-provider.tsx
+apps/desktop/src/renderer/features/task-entry/services-context.tsx
+apps/desktop/src/renderer/features/task-entry/ui/task-entry-host.tsx
 apps/desktop/src/renderer/features/workbar/services-context.tsx
 apps/desktop/src/renderer/features/workbar/tools/artifacts/artifact-pane.tsx
 apps/desktop/src/renderer/features/workbar/tools/artifacts/artifact-preview-registry-shell.tsx
@@ -74,6 +77,7 @@ apps/desktop/src/renderer/settings/runtime-host-connection-code-dialog.tsx
 apps/desktop/src/renderer/settings/runtime-host-interaction-boundary.tsx
 apps/desktop/src/renderer/settings/runtime-host-management-dialog.tsx
 apps/desktop/src/renderer/settings/runtime-host-onboarding-dialog.tsx
+apps/desktop/src/renderer/settings/runtime-host-peer-mesh-dialog.tsx
 apps/desktop/src/renderer/settings/runtime-host-profiles-section.tsx
 apps/desktop/src/renderer/settings/runtime-host-project-directory-editor.tsx
 apps/desktop/src/renderer/settings/runtime-host-settings-target.tsx
@@ -176,6 +180,7 @@ packages/ui/src/inline-rename-input.tsx
 packages/ui/src/locale-context.tsx
 packages/ui/src/maka-wordmark.tsx
 packages/ui/src/markdown-body.tsx
+packages/ui/src/markdown-math.tsx
 packages/ui/src/markdown.tsx
 packages/ui/src/mermaid-diagram.tsx
 packages/ui/src/model-picker.tsx
@@ -197,6 +202,7 @@ packages/ui/src/search-modal.tsx
 packages/ui/src/session-context-layer.tsx
 packages/ui/src/session-history-list.tsx
 packages/ui/src/session-list-panel.tsx
+packages/ui/src/session-rail-context.tsx
 packages/ui/src/session-rename-dialog.tsx
 packages/ui/src/session-sidebar-nav.tsx
 packages/ui/src/skill-inspector.tsx

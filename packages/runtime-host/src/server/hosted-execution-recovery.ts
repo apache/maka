@@ -42,7 +42,10 @@ export interface PrepareHostedExecutionRecoveryInput {
   readonly rootAdmissions: RootAdmissionOwner;
   readonly projection: HostedExecutionProjectionReader;
   readonly runtime: Pick<SessionManager, 'closePendingHostedAdmission'>;
-  readonly assertScheduledTaskAdmission?: (admission: RootTurnAdmission) => Promise<void>;
+  readonly assertScheduledTaskAdmission?: (
+    admission: RootTurnAdmission,
+    state: 'pending_fire_required' | 'run_recorded',
+  ) => Promise<void>;
 }
 
 /** Validates and repairs durable admission/message relationships before execution replay. */
@@ -83,7 +86,10 @@ export async function prepareHostedExecutionRecovery(
             'ScheduledTask recovery admission has no canonical authority validator',
           );
         }
-        await input.assertScheduledTaskAdmission(admission);
+        await input.assertScheduledTaskAdmission(
+          admission,
+          run === undefined ? 'pending_fire_required' : 'run_recorded',
+        );
       }
       if (!executionContract.allowsQueueSources && admission.sourceMessages.length !== 0) {
         throw new Error(

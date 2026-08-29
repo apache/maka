@@ -214,8 +214,8 @@ function createProfileCatalogCapture(): {
   catalog: RuntimeHostProfileCatalog;
   saved: Array<{ profile: RemoteRuntimeHostProfile; credential?: string }>;
 } {
-  const state = {
-    document: { schemaVersion: 1, profiles: [] } as RuntimeHostProfileDocument,
+  const state: { document: RuntimeHostProfileDocument } = {
+    document: { schemaVersion: 2, profiles: [] },
   };
   const saved: Array<{ profile: RemoteRuntimeHostProfile; credential?: string }> = [];
   const catalog: RuntimeHostProfileCatalog = {
@@ -225,7 +225,7 @@ function createProfileCatalogCapture(): {
     save: async (profile: RemoteRuntimeHostProfile, credential?: string) => {
       saved.push({ profile, credential });
       state.document = {
-        schemaVersion: 1,
+        schemaVersion: 2,
         profiles: [
           ...state.document.profiles.filter((candidate) => candidate.id !== profile.id),
           profile,

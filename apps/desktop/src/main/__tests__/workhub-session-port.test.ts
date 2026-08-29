@@ -117,6 +117,24 @@ test('projects the durable Coordination transcript into the WorkHub conversation
       status: 'completed',
       partialOutputRetained: true,
     },
+    {
+      type: 'workhub_coordination',
+      id: 'assignment-1',
+      turnId: 'action-1',
+      ts: 20,
+      schemaVersion: 1,
+      kind: 'delegation_assigned',
+      actionId: 'action-1',
+      actionFingerprint: `sha256:${'a'.repeat(64)}`,
+      coordinationTurnId: 'action-1',
+      targetSessionId: 'payments',
+      targetSessionName: 'Payments',
+      targetTurnId: 'payments-turn',
+      targetMessageId: 'payments-message',
+      delegationId: 'payments-delegation',
+      disposition: 'delegate_existing',
+      userText: 'Continue payments',
+    },
   ]), [{
     messageId: 'user-1',
     turnId: 'turn-1',
@@ -124,6 +142,16 @@ test('projects the durable Coordination transcript into the WorkHub conversation
     result: 'Slice 3 is next.',
     state: 'completed',
     updatedAt: 11,
+  }, {
+    messageId: 'assignment-1',
+    turnId: 'action-1',
+    text: 'Continue payments',
+    state: 'completed',
+    assignment: {
+      targetSessionId: 'payments',
+      targetSessionName: 'Payments',
+    },
+    updatedAt: 20,
   }]);
 });
 
@@ -168,8 +196,11 @@ test('Coordination transcript adapter emits an initial empty ready snapshot and 
       candidates: [],
     }),
     act: async () => ({
-      disposition: 'answer_here',
-      coordinationTurnId: 'coordination-turn',
+      ok: true,
+      result: {
+        disposition: 'answer_here',
+        coordinationTurnId: 'coordination-turn',
+      },
     }),
   });
 

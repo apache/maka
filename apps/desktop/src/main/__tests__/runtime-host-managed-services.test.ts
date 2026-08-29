@@ -18,7 +18,7 @@
  */
 
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, test } from "node:test";
@@ -27,6 +27,10 @@ import {
   createDesktopRuntimeHostManagedServiceStore,
   findDesktopRuntimeHostManagedServiceBinding,
 } from "../runtime-host-managed-services.js";
+import {
+  createDesktopRuntimeHostProfileService,
+  resolveDesktopRuntimeHostStartup,
+} from "../runtime-host-profile-service.js";
 
 const roots: string[] = [];
 const profile = {
@@ -46,24 +50,75 @@ const service = {
   rootPath: "/srv/maka",
   operatorPath: "/home/operator/.local/share/maka/operator",
 };
+const deploymentId = "11111111-1111-4111-8111-111111111111";
+const deployedService = {
+  deployment: { id: service.id, rootPath: service.rootPath, deploymentId },
+  control: { kind: "ssh_operator" as const, operatorPath: service.operatorPath },
+};
 
 afterEach(async () => {
-  await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true })));
+  await Promise.all(
+    roots.splice(0).map((root) => rm(root, { recursive: true })),
+  );
 });
 
 test("keeps Desktop service bindings outside the shared profile catalog", async () => {
   const root = await mkdtemp(join(tmpdir(), "maka-managed-host-services-"));
   roots.push(root);
   const catalog = createClientRuntimeHostProfileCatalog(root);
+  const legacyPath = join(root, "runtime-host-managed-services.json");
+  const legacyDocument = `${JSON.stringify({
+    schemaVersion: 1,
+    bindings: [{ profile, service, state: "uninstalling" }],
+  })}\n`;
+  await writeFile(
+    legacyPath,
+    legacyDocument,
+  );
   const managedServices = createDesktopRuntimeHostManagedServiceStore(root);
   const concurrentStore = createDesktopRuntimeHostManagedServiceStore(root);
   await catalog.create(profile, "secret");
 
+  assert.equal((await managedServices.read()).bindings[0]?.deployment.id, service.id);
+  await assert.rejects(readFile(legacyPath, "utf8"), {
+    code: "ENOENT",
+  });
+  await writeFile(legacyPath, legacyDocument);
+  await managedServices.read();
+  await assert.rejects(readFile(legacyPath, "utf8"), { code: "ENOENT" });
+
+  const profileService = createDesktopRuntimeHostProfileService({
+    clientDataRoot: root,
+    startup: await resolveDesktopRuntimeHostStartup(root, { catalog }),
+    catalog,
+    managedServices,
+    states: () => [],
+    enable: async () => undefined,
+    disable: async () => undefined,
+    setDefault: () => undefined,
+    finalizePairing: async () => undefined,
+  });
+  const legacyUninstall = await profileService.resolveManagedService(profile.id);
+  assert.ok(legacyUninstall);
+  assert.equal(legacyUninstall.deployment.deploymentId, undefined);
+  assert.equal(legacyUninstall.state, "uninstalling");
+  assert.equal(
+    (await profileService.markManagedServiceUninstalling(legacyUninstall)).state,
+    "uninstalling",
+  );
+
   await Promise.all([
-    managedServices.save(profile, service),
+    managedServices.save(profile, deployedService),
     concurrentStore.save(
       { ...profile, id: "lab", rootId: "d".repeat(64) },
-      { ...service, id: "e".repeat(64) },
+      {
+        ...deployedService,
+        deployment: {
+          ...deployedService.deployment,
+          id: "e".repeat(64),
+          deploymentId: "22222222-2222-4222-8222-222222222222",
+        },
+      },
     ),
   ]);
 
@@ -72,28 +127,62 @@ test("keeps Desktop service bindings outside the shared profile catalog", async 
     /managedService/u,
   );
   assert.deepEqual(
-    findDesktopRuntimeHostManagedServiceBinding(await managedServices.read(), profile),
-    { profile: { ...profile, transport: { ...profile.transport } }, service, state: "active" },
+    findDesktopRuntimeHostManagedServiceBinding(
+      await managedServices.read(),
+      profile,
+    ),
+    {
+      profile: { ...profile, transport: { ...profile.transport } },
+      deployment: { id: service.id, rootPath: service.rootPath, deploymentId },
+      control: { kind: "ssh_operator", operatorPath: service.operatorPath },
+      state: "active",
+    },
   );
   assert.equal((await managedServices.read()).bindings.length, 2);
   assert.equal(
     findDesktopRuntimeHostManagedServiceBinding(await managedServices.read(), {
       ...profile,
-      transport: { ...profile.transport, destination: "operator@new.example.com" },
+      transport: {
+        ...profile.transport,
+        destination: "operator@new.example.com",
+      },
     }),
     undefined,
   );
-  assert.equal(await managedServices.markUninstallingIfCurrent(profile, service), true);
+  const binding = findDesktopRuntimeHostManagedServiceBinding(
+    await managedServices.read(),
+    profile,
+  );
+  assert.ok(binding);
+  assert.equal(await managedServices.markUninstallingIfCurrent(binding), true);
   assert.equal(
-    findDesktopRuntimeHostManagedServiceBinding(await managedServices.read(), profile)?.state,
+    findDesktopRuntimeHostManagedServiceBinding(
+      await managedServices.read(),
+      profile,
+    )?.state,
     "uninstalling",
   );
-  assert.equal(await managedServices.removeCleanupPendingIfCurrent(profile, service), false);
-  assert.equal(await managedServices.markCleanupPendingIfCurrent(profile, service), true);
   assert.equal(
-    findDesktopRuntimeHostManagedServiceBinding(await managedServices.read(), profile)?.state,
+    await managedServices.removeCleanupPendingIfCurrent(binding),
+    false,
+  );
+  assert.equal(
+    await managedServices.markCleanupPendingIfCurrent(binding),
+    true,
+  );
+  assert.equal(
+    findDesktopRuntimeHostManagedServiceBinding(
+      await managedServices.read(),
+      profile,
+    )?.state,
     "cleanup_pending",
   );
-  assert.equal(await managedServices.markUninstallingIfCurrent(profile, service), false);
-  assert.equal(await managedServices.removeCleanupPendingIfCurrent(profile, service), true);
+  assert.equal(
+    await managedServices.markUninstallingIfCurrent(binding),
+    false,
+  );
+  assert.equal(
+    await managedServices.removeCleanupPendingIfCurrent(binding),
+    true,
+  );
 });

@@ -72,6 +72,10 @@ import {
   agentGraphRevisionAdmissionSessionIds,
   prepareAgentGraphRevisionReferences,
 } from './session-revision-graph-references.js';
+import {
+  conversationCopyCommitFailureDiagnostic,
+  conversationCopyCommitFailureMessage,
+} from './session-revision-diagnostics.js';
 import { purgeSessionSidecars } from './session-sidecar-purge.js';
 
 type ConversationCopyKind = 'branch' | 'revision';
@@ -562,12 +566,15 @@ export class HostSessionRevisionCoordinator {
           await this.#stores.sessionStore.readCatalogRecord(input.targetSessionId),
         ),
       });
-    } catch {
+    } catch (error) {
+      console.error(
+        `[runtime-host] ${kind} conversation copy commit failed (${input.sourceSessionId} -> ${input.targetSessionId}): ${conversationCopyCommitFailureDiagnostic(error)}`,
+      );
       return this.#rollbackIncompleteCopy(
         kind,
         input,
         requestFingerprint,
-        'Session conversation copy could not be committed',
+        conversationCopyCommitFailureMessage(error),
       );
     }
   }
@@ -640,6 +647,7 @@ export class HostSessionRevisionCoordinator {
     const common: ConversationCopyCreateInput = {
       cwd: source.cwd,
       ...(source.projectId !== undefined ? { projectId: source.projectId } : {}),
+      ...(source.llmConnectionId === undefined ? {} : { llmConnectionId: source.llmConnectionId }),
       llmConnectionSlug: source.llmConnectionSlug,
       model: source.model,
       ...(source.thinkingLevel !== undefined ? { thinkingLevel: source.thinkingLevel } : {}),

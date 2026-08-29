@@ -17,31 +17,49 @@
  * under the License.
  */
 
-import { resolveStorageRoot, tryAcquireStateRootOwner } from '@maka/storage/root-authority';
+import { resolveStorageRoot } from '@maka/storage/root-authority';
 import {
   createExecutionRuntimeHostCompositionSource,
   type ExecutionRuntimeHostCompositionDependencies,
 } from './execution-composition-factory.js';
+import {
+  currentRuntimeHostProcessLaunch,
+  tryAcquireRuntimeHostLaunch,
+  type RuntimeHostManagedDeploymentAuthorityOptions,
+  type RuntimeHostManagedLaunchClaim,
+  type RuntimeHostManagedProcessLaunch,
+} from '../operator/managed-deployment.js';
 import { RuntimeHostKernel } from './host-kernel.js';
 import { openRuntimeHostAccessAuthority } from './access-authority.js';
-import { startRuntimeHostServiceListenerSet } from './listener-set.js';
+import {
+  startRuntimeHostAuthenticatedListenerSet,
+  type RuntimeHostListenerSet,
+} from './listener-set.js';
 import type { StartRuntimeHostWebSocketListenerOptions } from './websocket-listener.js';
 import type { PublishedProjectDirectoryRoot } from './project-directory-authority.js';
-import type { StartRuntimeHostPeerListenerOptions } from './peer-listener.js';
+import type { RuntimeHostPeerListenerConfiguration } from './peer-listener.js';
+import { openRuntimeHostPeerMeshOwner, type RuntimeHostPeerMeshOwner } from '../peer-mesh/owner.js';
 
 export interface ExecutionRuntimeHostServiceOptions {
   readonly rootPath: string;
   readonly projectDirectoryRoots?: readonly PublishedProjectDirectoryRoot[];
   readonly handshakeTimeoutMs?: number;
   readonly shutdownGraceMs?: number;
+  readonly managedLaunchClaim?: RuntimeHostManagedLaunchClaim;
   readonly websocket?: Omit<
     StartRuntimeHostWebSocketListenerOptions,
     'accessAuthority' | 'accept' | 'isReady'
   >;
-  readonly peer?: Omit<StartRuntimeHostPeerListenerOptions, 'accessAuthority' | 'accept'>;
+  readonly peer?: RuntimeHostPeerListenerConfiguration & { readonly meshDataRoot?: string };
 }
 
-export type ExecutionRuntimeHostServiceDependencies = ExecutionRuntimeHostCompositionDependencies;
+export interface ExecutionRuntimeHostServiceDependencies
+  extends ExecutionRuntimeHostCompositionDependencies {
+  /** Test-only authority-location override. */
+  readonly managedDeploymentAuthority?: RuntimeHostManagedDeploymentAuthorityOptions;
+  /** Test-only process-identity override. Production derives this from the running process. */
+  readonly processLaunch?: RuntimeHostManagedProcessLaunch;
+}
 
 export class RuntimeHostRootAlreadyOwnedError extends Error {
   readonly code = 'root_already_owned';
@@ -57,32 +75,104 @@ export async function startExecutionRuntimeHostService(
   dependencies: ExecutionRuntimeHostServiceDependencies = {},
 ): Promise<RuntimeHostKernel> {
   const composition = await createExecutionRuntimeHostCompositionSource(options, dependencies);
-  const capability = await resolveStorageRoot({ path: options.rootPath, kind: 'interactive' });
-  const owner = await tryAcquireStateRootOwner(capability);
-  if (!owner) throw new RuntimeHostRootAlreadyOwnedError(capability.canonicalPath);
+  const capability = await resolveStorageRoot({
+    path: options.rootPath,
+    kind: 'interactive',
+  });
+  const ownership = await tryAcquireRuntimeHostLaunch(
+    capability,
+    {
+      lifecycleMode: 'supervised',
+      claim: options.managedLaunchClaim,
+      processLaunch: dependencies.processLaunch ?? currentRuntimeHostProcessLaunch(),
+    },
+    dependencies.managedDeploymentAuthority,
+  );
+  if (!ownership) throw new RuntimeHostRootAlreadyOwnedError(capability.canonicalPath);
+  const { owner } = ownership;
+  let peerOwner: RuntimeHostPeerMeshOwner | undefined;
+  let host: RuntimeHostKernel | undefined;
   try {
+    if (options.peer?.meshDataRoot) {
+      try {
+        peerOwner = await openRuntimeHostPeerMeshOwner({
+          ...options.peer,
+          dataRoot: options.peer.meshDataRoot,
+        });
+      } catch (error) {
+        console.error(
+          '[runtime-host] Peer Mesh is unavailable; continuing with Direct peer:',
+          error,
+        );
+      }
+    }
+    let peerTermination: { readonly error: unknown } | undefined;
+    if (peerOwner) {
+      const terminate = (error: unknown) => {
+        peerTermination ??= { error };
+        void host?.close().catch(() => undefined);
+      };
+      void peerOwner.closed.then(
+        () => terminate(new Error('Runtime Host Peer Mesh owner stopped unexpectedly')),
+        terminate,
+      );
+    }
     const accessAuthority = await openRuntimeHostAccessAuthority(owner.controlDirectory);
-    return await RuntimeHostKernel.start({
+    host = await RuntimeHostKernel.start({
       owner,
       lifecycleMode: 'service',
       handshakeTimeoutMs: options.handshakeTimeoutMs,
       shutdownGraceMs: options.shutdownGraceMs,
       composition,
       accessAuthority,
+      ...(peerOwner ? { peerMesh: peerOwner.mesh } : {}),
       ...(options.websocket || options.peer
         ? {
             listenerSetFactory: (input) =>
-              startRuntimeHostServiceListenerSet(input, {
+              startRuntimeHostAuthenticatedListenerSet(input, {
                 ...(options.websocket
                   ? { websocket: { ...options.websocket, accessAuthority } }
                   : {}),
-                ...(options.peer ? { peer: { ...options.peer, accessAuthority } } : {}),
-              }),
+                ...(options.peer
+                  ? {
+                      peer: peerOwner
+                        ? { client: peerOwner.client, accessAuthority }
+                        : { ...options.peer, accessAuthority },
+                    }
+                  : {}),
+              }).then((listeners) =>
+                peerOwner ? attachPeerOwnerCleanup(listeners, peerOwner) : listeners,
+              ),
           }
         : {}),
     });
+    if (peerTermination) {
+      await host.close().catch(() => undefined);
+      throw peerTermination.error;
+    }
+    return host;
   } catch (error) {
+    await host?.close().catch(() => undefined);
+    await peerOwner?.close().catch(() => undefined);
     if (!owner.closed) await owner.close();
     throw error;
   }
+}
+
+function attachPeerOwnerCleanup(
+  listeners: RuntimeHostListenerSet,
+  owner: RuntimeHostPeerMeshOwner,
+): RuntimeHostListenerSet {
+  return {
+    ...listeners,
+    cleanup: async () => {
+      const errors: unknown[] = [];
+      await listeners.cleanup().catch((error: unknown) => errors.push(error));
+      await owner.close().catch((error: unknown) => errors.push(error));
+      if (errors.length === 1) throw errors[0];
+      if (errors.length > 1) {
+        throw new AggregateError(errors, 'Unable to close Runtime Host Direct peer resources');
+      }
+    },
+  };
 }

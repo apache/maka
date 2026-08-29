@@ -23,6 +23,7 @@ import type { LlmConnection } from '@maka/core/llm-connections';
 import type { StoredMessage } from '@maka/core/session';
 import type { DesktopSessionSummary } from '../../preload/bridge-contract.js';
 import { createAppShellSessionSettingsActions } from '../../renderer/app-shell-session-settings-actions.js';
+import type { SessionPendingClaim } from '../../renderer/app-shell-session-ui-state.js';
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
@@ -44,6 +45,7 @@ function session(id: string): DesktopSessionSummary {
     hasUnread: false,
     status: 'active',
     backend: 'fake',
+    llmConnectionId: 'connection-1',
     llmConnectionSlug: 'e2e',
     connectionLocked: true,
     model: 'claude-sonnet',
@@ -52,6 +54,20 @@ function session(id: string): DesktopSessionSummary {
     profileId: 'local',
     profileName: 'Local',
     profileKind: 'local',
+  };
+}
+
+/** The store's claim semantics over a plain map the assertions can read. */
+function pendingClaimOver(state: Record<string, boolean>): SessionPendingClaim {
+  return {
+    claim(key) {
+      if (state[key] === true) return false;
+      state[key] = true;
+      return true;
+    },
+    release(key) {
+      delete state[key];
+    },
   };
 }
 
@@ -64,8 +80,8 @@ function createHarness(options: {
   const activeIdRef = { current: 'session-a' as string | undefined };
   const sessions = [session('session-a'), session('session-b')];
   const sessionsRef = { current: sessions };
-  const pending = new Set<string>();
-  const pendingBySession: Record<string, boolean> = {};
+  const permissionModePending: Record<string, boolean> = {};
+  const sessionModelPending: Record<string, boolean> = {};
   const modelCalls: string[] = [];
   const permissionCalls: string[] = [];
   const thinkingCalls: string[] = [];
@@ -106,18 +122,12 @@ function createHarness(options: {
     activeIdRef,
     connections: options.connections ?? ([{ slug: 'e2e', name: 'E2E' }] as LlmConnection[]),
     messages: options.messages ?? [],
-    pendingPermissionModeChangesRef: { current: new Set() },
-    pendingSessionModelChangesRef: { current: pending },
+    permissionModePending: pendingClaimOver(permissionModePending),
+    sessionModelPending: pendingClaimOver(sessionModelPending),
     refreshSessions: async () => sessions,
     saveComposerDefaults: () => undefined,
     sessionsRef,
     setNewTaskPermissionMode: (mode) => void newTaskPermissionModes.push(mode),
-    setPendingPermissionModeBySession: () => undefined,
-    setPendingSessionModelBySession: (update) => {
-      const next = update(pendingBySession);
-      for (const key of Object.keys(pendingBySession)) delete pendingBySession[key];
-      Object.assign(pendingBySession, next);
-    },
     toastApi: {
       success: (title, description) => successes.push({ title, description }),
       error: (title, _description, _details, target) => {
@@ -136,8 +146,8 @@ function createHarness(options: {
     modelCalls,
     modelResult,
     newTaskPermissionModes,
-    pending,
-    pendingBySession,
+    permissionModePending,
+    sessionModelPending,
     permissionCalls,
     sessionsRef,
     thinkingCalls,
@@ -216,6 +226,7 @@ describe('AppShell session settings actions', () => {
     const harness = createHarness();
 
     const modelChange = harness.actions.setSessionModel({
+      llmConnectionId: 'connection-1',
       llmConnectionSlug: 'e2e',
       model: 'claude-opus',
     });
@@ -223,7 +234,7 @@ describe('AppShell session settings actions', () => {
 
     assert.deepEqual(harness.modelCalls, ['session-a']);
     assert.deepEqual(harness.thinkingCalls, []);
-    assert.equal(harness.pendingBySession['session-a'], true);
+    assert.equal(harness.sessionModelPending['session-a'], true);
 
     harness.modelResult.resolve(session('session-a'));
     await modelChange;
@@ -242,6 +253,7 @@ describe('AppShell session settings actions', () => {
     });
 
     const modelChange = harness.actions.setSessionModel({
+      llmConnectionId: 'connection-1',
       llmConnectionSlug: 'e2e',
       model: 'claude-opus',
     });
@@ -260,6 +272,7 @@ describe('AppShell session settings actions', () => {
     const harness = createHarness();
 
     const modelChange = harness.actions.setSessionModel({
+      llmConnectionId: 'connection-1',
       llmConnectionSlug: 'e2e',
       model: 'claude-opus',
     });
@@ -278,11 +291,13 @@ describe('AppShell session settings actions', () => {
     });
 
     const modelChange = harness.actions.setSessionModel({
+      llmConnectionId: 'connection-1',
       llmConnectionSlug: 'relay',
       model: 'claude-sonnet',
     });
     harness.modelResult.resolve({
       ...session('session-a'),
+      llmConnectionId: 'connection-1',
       llmConnectionSlug: 'relay',
     });
     await modelChange;
@@ -297,6 +312,7 @@ describe('AppShell session settings actions', () => {
     const harness = createHarness();
 
     const modelChange = harness.actions.setSessionModel({
+      llmConnectionId: 'connection-1',
       llmConnectionSlug: 'e2e',
       model: 'claude-opus',
     });
@@ -305,7 +321,7 @@ describe('AppShell session settings actions', () => {
 
     assert.deepEqual(harness.modelCalls, ['session-a']);
     assert.deepEqual(harness.thinkingCalls, ['session-b']);
-    assert.deepEqual(harness.pending, new Set(['session-a', 'session-b']));
+    assert.deepEqual(Object.keys(harness.sessionModelPending), ['session-a', 'session-b']);
 
     harness.thinkingResult.resolve(session('session-b'));
     await thinkingChange;
@@ -318,17 +334,18 @@ describe('AppShell session settings actions', () => {
 
     const thinkingChange = harness.actions.setSessionThinkingLevel('high');
     await harness.actions.setSessionModel({
+      llmConnectionId: 'connection-1',
       llmConnectionSlug: 'e2e',
       model: 'claude-opus',
     });
 
     assert.deepEqual(harness.thinkingCalls, ['session-a']);
     assert.deepEqual(harness.modelCalls, []);
-    assert.equal(harness.pendingBySession['session-a'], true);
+    assert.equal(harness.sessionModelPending['session-a'], true);
 
     harness.thinkingResult.resolve(session('session-a'));
     await thinkingChange;
-    assert.equal(harness.pendingBySession['session-a'], undefined);
+    assert.equal(harness.sessionModelPending['session-a'], undefined);
   });
 
   it('releases the session owner after a failed mutation so the next action can run', async () => {
@@ -338,12 +355,12 @@ describe('AppShell session settings actions', () => {
     harness.thinkingResult.reject(new Error('fixture failure'));
     await thinkingChange;
 
-    assert.equal(harness.pending.has('session-a'), false);
-    assert.equal(harness.pendingBySession['session-a'], undefined);
+    assert.equal(harness.sessionModelPending['session-a'], undefined);
     assert.equal(harness.errors.length, 1);
     assert.deepEqual(harness.errorTargets, [{ sessionId: 'session-a' }]);
 
     const modelChange = harness.actions.setSessionModel({
+      llmConnectionId: 'connection-1',
       llmConnectionSlug: 'e2e',
       model: 'claude-opus',
     });

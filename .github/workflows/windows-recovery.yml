@@ -145,6 +145,24 @@ jobs:
           node.exe --test packages/runtime-host/dist/__tests__/control-endpoint.test.js
           ./scripts/windows-runtime-host-local-ipc-trust.ps1
 
+      - name: Verify Skill catalog on Windows
+        shell: pwsh
+        run: |
+          node.exe --test --test-reporter=tap --test-concurrency=1 `
+            packages/runtime-host/dist/__tests__/skill-catalog-coordinator.test.js `
+            packages/runtime-host/dist/__tests__/skill-catalog-protocol.test.js `
+            packages/runtime-host/dist/__tests__/skill-catalog-repository.test.js `
+            packages/runtime-host/dist/__tests__/skill-catalog-transaction.test.js `
+            packages/runtime-host/dist/__tests__/skill-catalog-two-client-uds.test.js `
+            2>&1 | Tee-Object -FilePath "$env:RUNNER_TEMP/skill-catalog.tap"
+          $exitCode = $LASTEXITCODE
+          if ($exitCode -ne 0) { exit $exitCode }
+          $output = Get-Content "$env:RUNNER_TEMP/skill-catalog.tap"
+          if ($output -notcontains '# tests 90' -or $output -notcontains '# pass 90' -or $output -notcontains '# skipped 0') {
+            Write-Error 'Skill catalog gate did not run exactly 90 passing Windows tests'
+            exit 1
+          }
+
       - name: Verify SQLite crash recovery
         shell: pwsh
         run: |

@@ -47,6 +47,9 @@ const RETIRED_OPERATION_GRANTS = new Set([
   // Retired with the Claude subscription provider, whose client identity the
   // usage report required.
   'oauth.account.usage.fetch',
+  // Retired with the second execution-inspection contract; no shipped surface
+  // called execution.inspect.resolve, so a stored grant is released on decode.
+  'execution.inspect.resolve',
 ]);
 
 export const ACCESS_FILE_NAME = 'runtime-host-access.json';

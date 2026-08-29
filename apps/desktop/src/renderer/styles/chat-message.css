@@ -318,8 +318,6 @@
   padding: var(--space-0-5) var(--space-1-5);
 }
 .maka-transcript-history-controls {
-  display: flex;
-  justify-content: center;
-  gap: 8px;
-  padding: 8px 0;
+  width: min(var(--maka-reading-measure), calc(100% - (2 * var(--space-6))));
+  margin: var(--space-2) auto 0;
 }

@@ -19,7 +19,7 @@
 
 import type { DatabaseSync } from 'node:sqlite';
 
-export const SQLITE_SESSION_METADATA_SCHEMA_VERSION = 33;
+export const SQLITE_SESSION_METADATA_SCHEMA_VERSION = 34;
 export const SQLITE_SESSION_MESSAGE_CHUNK_BYTES = 64 * 1024;
 export const SQLITE_SESSION_MESSAGE_CHUNK_MARKER = '{"$maka":"session-message-chunks-v1"}';
 
@@ -1214,6 +1214,15 @@ const MIGRATIONS: ReadonlyMap<number, string> = new Map([
     WHERE
       json_extract(payload_json, '$.connectionLocked') = 0
       AND json_extract(payload_json, '$.subagentParent') IS NOT NULL;
+  `,
+  ],
+  [
+    34,
+    `
+    -- WorkHub delegation_assigned records are decoded by schema-aware builds.
+    -- Advancing the profile schema prevents an older build from opening a
+    -- transcript containing this new canonical message type.
+    SELECT 1;
   `,
   ],
 ]);

@@ -333,11 +333,19 @@ test('preflights the worst-case failed Turn before accepting more queued content
         Number.MAX_SAFE_INTEGER,
       ),
     );
+    const worstCaseFailedTurn = worstCaseFailedTurnSnapshot(capacityCanonical.rootTurn!);
+    assert.equal(worstCaseFailedTurn.status, 'failed');
+    if (worstCaseFailedTurn.status === 'failed') {
+      assert.equal(
+        worstCaseFailedTurn.contextBudgetExhaustedDetail,
+        'malformed_summary_too_small_for_fold',
+      );
+    }
     assert.throws(() =>
       createSessionContinuitySnapshot(
         {
           ...capacityCanonical,
-          rootTurn: worstCaseFailedTurnSnapshot(capacityCanonical.rootTurn!),
+          rootTurn: worstCaseFailedTurn,
           queue: currentQueue,
         },
         Number.MAX_SAFE_INTEGER,
@@ -416,6 +424,65 @@ test('projects a failed Turn message from the canonical terminal event', async (
       assert.equal(
         canonical.rootTurn.failureMessage,
         'canonical provider failure api_key=[redacted]',
+      );
+    }
+  });
+});
+
+test('projects context-budget exhaustion detail from the canonical terminal event', async () => {
+  await withStores(async (root, stores) => {
+    const { sessionId, rootAdmissions } = await createRunningRoot(root, stores);
+    const context = {
+      sessionId,
+      invocationId: 'run-1',
+      runId: 'run-1',
+      turnId: 'turn-1',
+      source: 'test',
+      startedAt: 10,
+      request: {
+        sessionId,
+        invocationId: 'run-1',
+        runId: 'run-1',
+        turnId: 'turn-1',
+        text: 'hello',
+        source: 'test',
+      },
+      newId: () => 'unused',
+      now: () => 12,
+    } as const;
+    const terminalEvent = mapSessionEventToRuntimeEvent(
+      {
+        type: 'complete',
+        id: 'terminal-context-budget-1',
+        turnId: 'turn-1',
+        ts: 13,
+        stopReason: 'context_budget_exhausted',
+        contextBudgetExhaustedDetail: 'malformed_summary_missing_section',
+      },
+      context,
+      createSessionEventMapMemory(),
+    );
+    await stores.runtimeEventStore.appendRuntimeEvent(sessionId, 'run-1', terminalEvent);
+    await stores.agentRunStore.updateRun(sessionId, 'run-1', {
+      status: 'failed',
+      updatedAt: 13,
+      completedAt: 13,
+      failureClass: 'context_budget_exhausted',
+    });
+
+    const reader = new CanonicalSessionProjectionReader({
+      stores,
+      rootAdmissions,
+      messages: {
+        projection: () => ({ hostEpoch: 'epoch-1', queueRevision: 0, steering: [], followup: [] }),
+      },
+    });
+    const canonical = await reader.read(sessionId);
+    assert.equal(canonical?.rootTurn?.status, 'failed');
+    if (canonical?.rootTurn?.status === 'failed') {
+      assert.equal(
+        canonical.rootTurn.contextBudgetExhaustedDetail,
+        'malformed_summary_missing_section',
       );
     }
   });
@@ -556,6 +623,7 @@ function sessionInput(root: string) {
   return {
     cwd: root,
     backend: 'fake' as const,
+    llmConnectionId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
     llmConnectionSlug: 'fake',
     model: 'fake-model',
     permissionMode: 'ask' as const,
@@ -570,6 +638,7 @@ function runHeader(sessionId: string): AgentRunHeader {
     turnId: 'turn-1',
     status: 'created',
     backendKind: 'fake',
+    llmConnectionId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
     llmConnectionSlug: 'fake',
     modelId: 'fake-model',
     cwd: '/private/runtime-cwd',

@@ -137,6 +137,7 @@ import type {
   SubagentWorktreeExecutor,
 } from '@maka/core/subagent-workspace';
 import type { SubagentPreset } from '@maka/core/subagent-settings';
+import type { ResolvedSubagentPreset } from './configured-subagent-catalog.js';
 import { AGENT_GRAPH_OPERATOR_PROVISION_SCHEMA_VERSION } from '@maka/core/agent-graph-topology';
 import {
   classifyRuntimeEventTerminalFact,
@@ -327,7 +328,7 @@ export interface SpawnChildSessionInput {
 }
 
 type ResolvedSpawnChildSessionInput = SpawnChildSessionInput & {
-  resolvedPreset?: SubagentPreset;
+  resolvedPreset?: ResolvedSubagentPreset;
 };
 
 export interface SpawnChildSessionResult extends SpawnChildAgentResult {
@@ -573,6 +574,7 @@ export interface SessionConfigurationStoreUpdate {
   readonly expectedVersion: number;
   readonly configuration: {
     readonly backend: SessionHeader['backend'];
+    readonly llmConnectionId?: string;
     readonly llmConnectionSlug: string;
     readonly connectionLocked: boolean;
     readonly model: string;
@@ -589,6 +591,7 @@ export interface SessionConfigurationStoreUpdate {
 
 export interface SessionConfigurationTransitionRequest {
   readonly expectedRevision: number;
+  readonly clearConnectionBlock: boolean;
   readonly configuration: Omit<SessionConfigurationStoreUpdate['configuration'], 'labels'>;
 }
 
@@ -824,7 +827,7 @@ interface SessionManagerBaseDeps {
   /** Host-owned user catalog. Runtime receives ids from models, never raw model targets. */
   subagentCatalog?: {
     list(): Promise<SubagentPresetListItem[]>;
-    resolve(id: string): Promise<SubagentPreset>;
+    resolve(id: string): Promise<ResolvedSubagentPreset>;
   };
   /** Host-owned filesystem isolation for worktree-backed child Sessions. */
   worktreeChildExecutor?: SubagentWorktreeExecutor;
@@ -1175,7 +1178,7 @@ export class SessionManager {
               labels,
             },
             lifecycle:
-              current.header.blockedReason === 'NO_REAL_CONNECTION'
+              input.clearConnectionBlock && current.header.blockedReason === 'NO_REAL_CONNECTION'
                 ? {
                     kind: 'clear_connection_block',
                     statusUpdatedAt: this.deps.now(),
@@ -2513,6 +2516,11 @@ export class SessionManager {
         cwd: workspace?.worktreePath ?? parentHeader.cwd,
         ...(parentHeader.projectId !== undefined ? { projectId: parentHeader.projectId } : {}),
         name: resolvedPreset?.name ?? definition.name,
+        ...(resolvedPreset
+          ? { llmConnectionId: resolvedPreset.connectionId }
+          : parentHeader.llmConnectionId === undefined
+            ? {}
+            : { llmConnectionId: parentHeader.llmConnectionId }),
         llmConnectionSlug: resolvedPreset?.connectionSlug ?? parentHeader.llmConnectionSlug,
         model: resolvedPreset?.model ?? parentHeader.model,
         ...(resolvedPreset
@@ -3051,6 +3059,11 @@ export class SessionManager {
         cwd: workspace?.worktreePath ?? parentHeader.cwd,
         ...(parentHeader.projectId !== undefined ? { projectId: parentHeader.projectId } : {}),
         name: input.name ?? input.resolvedPreset?.name ?? definition.name,
+        ...(input.resolvedPreset
+          ? { llmConnectionId: input.resolvedPreset.connectionId }
+          : parentHeader.llmConnectionId === undefined
+            ? {}
+            : { llmConnectionId: parentHeader.llmConnectionId }),
         llmConnectionSlug: input.resolvedPreset?.connectionSlug ?? parentHeader.llmConnectionSlug,
         model: input.resolvedPreset?.model ?? parentHeader.model,
         ...(input.resolvedPreset
@@ -3386,6 +3399,8 @@ export class SessionManager {
       }
       if (
         cursor.backendKind !== sessionHeader.backend ||
+        (cursor.llmConnectionId !== undefined &&
+          cursor.llmConnectionId !== sessionHeader.llmConnectionId) ||
         cursor.llmConnectionSlug !== sessionHeader.llmConnectionSlug ||
         cursor.modelId !== sessionHeader.model ||
         cursor.cwd !== sessionHeader.cwd ||
@@ -3525,6 +3540,8 @@ export class SessionManager {
       }
       if (
         cursor.backendKind !== child.backend ||
+        (cursor.llmConnectionId !== undefined &&
+          cursor.llmConnectionId !== child.llmConnectionId) ||
         cursor.llmConnectionSlug !== child.llmConnectionSlug ||
         cursor.modelId !== child.model ||
         cursor.cwd !== child.cwd ||
@@ -4666,6 +4683,9 @@ export class SessionManager {
       turnId: input.turnId,
       status: 'created',
       backendKind: session.backend,
+      ...(session.llmConnectionId === undefined
+        ? {}
+        : { llmConnectionId: session.llmConnectionId }),
       llmConnectionSlug: session.llmConnectionSlug,
       modelId: session.model,
       cwd: session.cwd,
@@ -4897,6 +4917,9 @@ export class SessionManager {
       {
         cwd: header.cwd,
         ...(header.projectId !== undefined ? { projectId: header.projectId } : {}),
+        ...(header.llmConnectionId === undefined
+          ? {}
+          : { llmConnectionId: header.llmConnectionId }),
         llmConnectionSlug: header.llmConnectionSlug,
         model: header.model,
         thinkingLevel: header.thinkingLevel,
@@ -4959,6 +4982,9 @@ export class SessionManager {
       {
         cwd: header.cwd,
         ...(header.projectId !== undefined ? { projectId: header.projectId } : {}),
+        ...(header.llmConnectionId === undefined
+          ? {}
+          : { llmConnectionId: header.llmConnectionId }),
         llmConnectionSlug: header.llmConnectionSlug,
         model: header.model,
         thinkingLevel: header.thinkingLevel,
@@ -6132,6 +6158,7 @@ export function headerToSummary(h: SessionHeader): SessionSummary {
     ...(h.revisionIndex !== undefined ? { revisionIndex: h.revisionIndex } : {}),
     ...(h.revisionState ? { revisionState: h.revisionState } : {}),
     backend: h.backend,
+    ...(h.llmConnectionId === undefined ? {} : { llmConnectionId: h.llmConnectionId }),
     llmConnectionSlug: h.llmConnectionSlug,
     connectionLocked: h.connectionLocked,
     model: h.model,

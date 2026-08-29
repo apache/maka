@@ -39,7 +39,7 @@ import type { TaskReadinessNotice } from './task-readiness-notice';
 import { getShellCopy } from './locales/shell-copy';
 import { getDesktopConversationCopy } from './locales/conversation-copy';
 import { selectLiveTurn } from './use-app-shell-session-ui-reads';
-import { useAppShellSessionUiSelector } from './use-app-shell-session-ui-selector';
+import { useExternalStoreSelector } from './use-external-store-selector';
 import { useDeepResearchRun } from './use-deep-research-run';
 
 const selectShellRunRecord = (state: AppShellSessionUiState, sessionId: string | undefined) =>
@@ -159,20 +159,17 @@ export function ChatMessageSurface({
     activeSession?.id,
     isDeepResearchSession(activeSession?.labels),
   );
-  const liveTurn = useAppShellSessionUiSelector(sessionUiController, selectLiveTurn, activeSessionId);
+  const liveTurn = useExternalStoreSelector(sessionUiController, selectLiveTurn, activeSessionId);
   const seededLiveTurn = liveContentSeedRevision > 0 ? liveTurn : undefined;
   const [activation, setActivation] = useState(() => ({
     sessionId: activeSessionId,
     seedRevision: liveContentSeedRevision,
     initialLiveContent: liveContentSeedRevision > 0 ? captureLiveContent(liveTurn) : undefined,
   }));
-  if (activation.sessionId !== activeSessionId) {
-    setActivation({
-      sessionId: activeSessionId,
-      seedRevision: liveContentSeedRevision,
-      initialLiveContent: liveContentSeedRevision > 0 ? captureLiveContent(liveTurn) : undefined,
-    });
-  } else if (activation.seedRevision !== liveContentSeedRevision) {
+  if (
+    activation.sessionId !== activeSessionId
+    || activation.seedRevision !== liveContentSeedRevision
+  ) {
     setActivation({
       sessionId: activeSessionId,
       seedRevision: liveContentSeedRevision,
@@ -196,7 +193,7 @@ export function ChatMessageSurface({
   // change to any OTHER map cannot rebuild the array. Deriving it in the
   // selector would need a comparator to say the same thing, and would still
   // recompute once per store change.
-  const shellRunUpdateRecord = useAppShellSessionUiSelector(
+  const shellRunUpdateRecord = useExternalStoreSelector(
     sessionUiController,
     selectShellRunRecord,
     activeSessionId,
@@ -240,9 +237,10 @@ export function ChatMessageSurface({
       <ChatView
         {...chatViewRest}
         liveTurn={seededLiveTurn}
-        initialLiveContentSnapshot={activation.sessionId === activeSessionId
-          ? activation.initialLiveContent
-          : liveContentSeedRevision > 0 ? captureLiveContent(liveTurn) : undefined}
+        // Every branch above reseeds `sessionId` to `activeSessionId`, and a
+        // render-phase setState re-runs this body before anything commits, so
+        // the activation reaching the DOM is always this session's.
+        initialLiveContentSnapshot={activation.initialLiveContent}
         shellRunUpdates={shellRunUpdates}
         deepResearchRun={deepResearchRun}
         emptyOverride={emptyOverride}
@@ -250,6 +248,7 @@ export function ChatMessageSurface({
         historyLoadPending={historyLoadPending}
         onLoadEarlierHistory={onLoadEarlierHistory}
         returnToLatest={hasNewerHistory ? {
+          title: transcriptCopy.partialHistoryTitle,
           label: transcriptCopy.returnLatest,
           isPending: historyLoadPending,
           onClick: onReturnToLatestHistory,

@@ -20,9 +20,11 @@
 import { Markdown, visibleWidth } from '@earendil-works/pi-tui';
 import type {
   ProviderRetryEvent,
+  ProviderRetryScheduledEvent,
   SandboxBoundaryRequestEvent,
   UserQuestionRequestEvent,
   SessionEvent,
+  ShellRunSnapshotResult,
   ToolOutputStream,
   ToolResultContent,
 } from '@maka/core/events';
@@ -33,6 +35,7 @@ import {
   type SystemNoteMessage,
 } from '@maka/core/session';
 import type { ContextBudgetDiagnostic } from '@maka/core/usage-stats/types';
+import { providerRetryDisplaySeconds } from '@maka/core/provider-retry-countdown';
 import type { ThinkingLevel } from '@maka/core/model-thinking';
 import type { UiLocale } from '@maka/core/ui-locale';
 import { isActiveShellRunStatus } from '@maka/core/shell-run';
@@ -85,8 +88,11 @@ export interface MakaPiTranscriptState {
    * live viewport and flips the default for entries created later. Entries
    * above the viewport keep their state — their rendered lines sit in terminal
    * scrollback, which cannot be rewritten, so resizing one would force pi-tui
-   * into a scrollback-clearing full redraw (#1097). In-memory only; never
-   * persisted to storage. Resume resets both to collapsed.
+   * into a scrollback-clearing full redraw (#1097). The deliberate exception:
+   * a second press within 2s of a collapse that stranded expanded entries
+   * above the viewport applies the default to them too and pays one such
+   * redraw knowingly (#4011, applyExpansionDefaultToAll). In-memory only;
+   * never persisted to storage. Resume resets both to collapsed.
    */
   expandAllTools: boolean;
   expandAllThinking: boolean;
@@ -108,10 +114,22 @@ export interface MakaPiTranscriptState {
   steering: string[];
   followup: string[];
   /** Current non-durable provider retry progress for the activity strip. */
-  providerRetry?: ProviderRetryEvent;
+  providerRetry?: ProviderRetryCountdown;
 }
 
 export type MakaPiPendingInteraction = SandboxBoundaryRequestEvent | UserQuestionRequestEvent;
+
+/**
+ * A provider retry event plus the CLIENT-local time it was applied. Counting
+ * down from `receivedAtMs` keeps the whole countdown in one clock domain —
+ * the event's own `ts` is stamped on the (possibly remote) Runtime Host
+ * clock, so subtracting it from a client clock would skew the display by the
+ * clock offset between the two machines.
+ */
+export interface ProviderRetryCountdown {
+  event: ProviderRetryEvent;
+  receivedAtMs: number;
+}
 
 export interface MakaPiRenderGeometry {
   /**
@@ -171,6 +189,8 @@ export type MakaPiTranscriptEntry =
       expanded: boolean;
       /** An internal shell-run poll retained for correlation but not displayed. */
       suppressed?: boolean;
+      /** Local-only Runtime Resource started by `!<command>`, never a model tool call. */
+      userOwned?: boolean;
     }
   | { kind: 'notice'; level: 'info' | 'error'; text: string };
 
@@ -190,7 +210,7 @@ export interface MakaPiTranscriptMetadata {
   modelContextWindow?: number;
   /** Elapsed milliseconds of the running agent turn, for the activity strip. */
   turnElapsedMs?: number;
-  providerRetry?: ProviderRetryEvent;
+  providerRetry?: ProviderRetryCountdown;
   /** Resolved locale for primary TUI guidance. Defaults to English for direct embeddings. */
   uiLocale?: UiLocale;
   /**
@@ -316,12 +336,18 @@ export function applyShellRunViewUpdateToTranscript(
   const tool = findToolEntry(state, update.sourceToolCallId);
   const wasLive = isLiveShellRunCard(tool);
   const applied = applyShellRunUpdateToTranscript(state, update.sourceToolCallId, update.result);
-  if (tool && wasLive && isSettledShellRunCard(tool) && options?.announceSettle !== false) {
+  if (
+    tool &&
+    tool.userOwned !== true &&
+    wasLive &&
+    isSettledShellRunCard(tool) &&
+    options?.announceSettle !== false
+  ) {
     pushShellRunSettledNotice(state, tool);
   }
   if (
     !tool ||
-    tool.toolName !== 'Bash' ||
+    !isShellRunToolCard(tool) ||
     tool.result?.kind !== 'shell_run' ||
     tool.result.ref !== update.result.ref ||
     tool.result.revision !== update.result.revision ||
@@ -345,9 +371,33 @@ export function applyShellRunUpdateToTranscript(
   update: Extract<ToolResultContent, { kind: 'shell_run' }>,
 ): boolean {
   const tool = findToolEntry(state, sourceToolCallId);
-  if (!tool || tool.toolName !== 'Bash') return false;
+  if (!tool || !isShellRunToolCard(tool)) return false;
   if (tool.result?.kind === 'shell_run' && tool.result.ref !== update.ref) return false;
   return applyShellRunResult(tool, update);
+}
+
+/** Adds a local-only card for a `!<command>` resource without creating a model turn. */
+export function appendUserCommandToTranscript(
+  state: MakaPiTranscriptState,
+  input: { commandId: string; command: string; result: ShellRunSnapshotResult },
+): void {
+  state.entries.push({
+    kind: 'tool',
+    toolUseId: input.commandId,
+    toolName: 'User command',
+    title: 'User command',
+    input: { command: input.command },
+    result: input.result,
+    resultVersion: 1,
+    progress: createProgressBuffer(),
+    outputDeltas: createOutputBuffer(),
+    callStatus: toolResultActivityStatus(
+      input.result.status === 'failed' || input.result.status === 'timed_out',
+      input.result,
+    ),
+    expanded: true,
+    userOwned: true,
+  });
 }
 
 export function replaceTranscriptWithStoredMessages(
@@ -364,6 +414,7 @@ export function replaceTranscriptWithStoredMessages(
   // that dropped them would erase what the client just told the user.
   const isClientLocal = (entry: MakaPiTranscriptEntry): boolean =>
     entry.kind === 'notice' ||
+    (entry.kind === 'tool' && entry.userOwned === true) ||
     (entry.kind === 'user' && entry.transient === true && !durableMessageIds.has(entry.messageId));
   // A preserved entry keeps its place relative to the durable entry it
   // followed. With no durable entry ahead of it it stays at the head, unless
@@ -426,6 +477,12 @@ function transcriptEntryId(entry: MakaPiTranscriptEntry): string | undefined {
     default:
       return undefined;
   }
+}
+
+export function hasRunningUserCommand(state: MakaPiTranscriptState): boolean {
+  return state.entries.some(
+    (entry) => entry.kind === 'tool' && entry.userOwned === true && isLiveShellRunCard(entry),
+  );
 }
 
 /**
@@ -516,52 +573,161 @@ function togglesInert(state: MakaPiTranscriptState): boolean {
  * future cards; false when the session has no tool card at all or the toggles
  * are inert pending a render.
  *
- * When every card sits above the viewport (e.g. a block whose own expansion
- * pushed its head into scrollback, #1134), nothing visible can change — those
- * lines are immutable short of a scrollback-clearing full redraw — so the
- * toggle still flips the default and appends a notice saying why.
+ * A collapse that strands expanded cards above the viewport (their heads sit
+ * in scrollback, #1134) appends a notice naming them and offering the #4011
+ * second-press escape: the runner arms a confirm window whenever
+ * hasExpandedEntriesAboveViewport still holds after the toggle. A partial
+ * collapse says so too — the keypress is never silent about what it skipped.
  */
 export function toggleAllToolExpansion(state: MakaPiTranscriptState): boolean {
-  if (togglesInert(state)) return false;
-  const candidates = state.entries.filter(
-    (entry): entry is MakaPiToolEntry => entry.kind === 'tool',
-  );
-  if (candidates.length === 0) return false;
-  state.expandAllTools = !state.expandAllTools;
-  const targets = candidates.filter((entry) => entryInLiveViewport(state, entry));
-  for (const entry of targets) entry.expanded = state.expandAllTools;
-  if (targets.length === 0) {
-    state.entries.push({
-      kind: 'notice',
-      level: 'info',
-      text: `No tool card in view to toggle — cards above stay as rendered in scrollback. New tool output starts ${state.expandAllTools ? 'expanded' : 'collapsed'}.`,
-    });
-  }
-  return true;
+  return toggleExpansion(state, 'tool');
 }
 
 /**
  * Toggle every thinking entry in the live viewport at once and flip the
  * default for future entries; false when there is no thinking at all or the
- * toggles are inert pending a render. Same head-scrolled contract as
- * toggleAllToolExpansion (#1134).
+ * toggles are inert pending a render. Same head-scrolled contract and #4011
+ * second-press escape as toggleAllToolExpansion.
  */
 export function toggleAllThinkingExpansion(state: MakaPiTranscriptState): boolean {
+  return toggleExpansion(state, 'thinking');
+}
+
+/**
+ * True when an entry of the kind above the live viewport remains expanded —
+ * the stranded blocks the #4011 confirmed collapse exists for. False while
+ * the toggles are inert (positions unknown after a wholesale replacement).
+ */
+export function hasExpandedEntriesAboveViewport(
+  state: MakaPiTranscriptState,
+  kind: ExpansionEntryKind,
+): boolean {
   if (togglesInert(state)) return false;
-  const candidates = state.entries.filter(
-    (entry): entry is MakaPiThinkingEntry =>
-      entry.kind === 'thinking' && Boolean(entry.text.trim()),
+  return expansionCandidates(state, kind).some(
+    (entry) => entry.expanded && !entryInLiveViewport(state, entry),
   );
+}
+
+/**
+ * Appends the visible, explicit offer for the one deliberate full-redraw
+ * escape hatch. The runner owns the time window; this helper keeps both the
+ * first offer and an expired offer on the same copy authority.
+ */
+export function appendExpansionCollapseConfirmation(
+  state: MakaPiTranscriptState,
+  kind: ExpansionEntryKind,
+): boolean {
+  if (!hasExpandedEntriesAboveViewport(state, kind)) return false;
+  const copy = EXPANSION_KIND_COPY[kind];
+  const stuck = expansionCandidates(state, kind).filter(
+    (entry) => entry.expanded && !entryInLiveViewport(state, entry),
+  );
+  state.entries.push({
+    kind: 'notice',
+    level: 'info',
+    text: `${stuck.length} ${stuck.length === 1 ? copy.singular : copy.plural} above the view stayed expanded in scrollback — press ${copy.key} again within ${EXPANSION_COLLAPSE_CONFIRM_WINDOW_MS / 1000}s to collapse them too (this redraws the screen and clears pre-session scrollback). New ${copy.newOutput} starts collapsed.`,
+  });
+  return true;
+}
+
+/**
+ * Apply the current expansion default to every entry of the kind, including
+ * entries above the live viewport whose rendered lines sit in scrollback.
+ * This is #4011's confirmed second press: a true return means lines above
+ * the viewport change, so the caller MUST follow with pi-tui's
+ * `requestRender(true)` — a scrollback-clearing full redraw that re-anchors
+ * the viewport at the tail. (The differential path would reach the same
+ * redraw via `firstChanged < viewportTop`; forcing it keeps renderer and the
+ * layout's viewport shadow in agreement by construction.)
+ * This is intentionally the only expansion mutation that bypasses the
+ * unknown-geometry guard: its caller immediately forces that wholesale
+ * redraw, which resets the renderer's prior geometry before it re-renders.
+ */
+export function applyExpansionDefaultToAll(
+  state: MakaPiTranscriptState,
+  kind: ExpansionEntryKind,
+): boolean {
+  const expanded = kind === 'tool' ? state.expandAllTools : state.expandAllThinking;
+  let changed = false;
+  for (const entry of expansionCandidates(state, kind)) {
+    if (entry.expanded === expanded) continue;
+    entry.expanded = expanded;
+    changed = true;
+  }
+  return changed;
+}
+
+export type ExpansionEntryKind = 'tool' | 'thinking';
+
+/**
+ * How close together two identical expansion-toggle presses read as the
+ * confirmed "collapse the stranded blocks above the viewport" gesture (#4011).
+ * Lives beside the notice copy so the offer text and the runner's confirm
+ * window share one authority and cannot drift.
+ */
+export const EXPANSION_COLLAPSE_CONFIRM_WINDOW_MS = 2_000;
+
+const EXPANSION_KIND_COPY: Record<
+  ExpansionEntryKind,
+  {
+    key: string;
+    singular: string;
+    plural: string;
+    noTargetsNotice: (expand: boolean) => string;
+    newOutput: string;
+  }
+> = {
+  tool: {
+    key: 'Ctrl+O',
+    singular: 'tool card',
+    plural: 'tool cards',
+    newOutput: 'tool output',
+    noTargetsNotice: (expand) =>
+      `No tool card in view to toggle — cards above stay as rendered in scrollback. New tool output starts ${expand ? 'expanded' : 'collapsed'}.`,
+  },
+  thinking: {
+    key: 'Ctrl+T',
+    singular: 'thinking block',
+    plural: 'thinking blocks',
+    newOutput: 'thinking',
+    noTargetsNotice: (expand) =>
+      `No thinking in view to toggle — thinking above stays as rendered in scrollback. New thinking starts ${expand ? 'expanded' : 'collapsed'}.`,
+  },
+};
+
+function expansionCandidates(
+  state: MakaPiTranscriptState,
+  kind: ExpansionEntryKind,
+): Array<MakaPiToolEntry | MakaPiThinkingEntry> {
+  return kind === 'tool'
+    ? state.entries.filter(
+        (entry): entry is MakaPiToolEntry => entry.kind === 'tool' && entry.userOwned !== true,
+      )
+    : state.entries.filter(
+        (entry): entry is MakaPiThinkingEntry =>
+          entry.kind === 'thinking' && Boolean(entry.text.trim()),
+      );
+}
+
+function toggleExpansion(state: MakaPiTranscriptState, kind: ExpansionEntryKind): boolean {
+  if (togglesInert(state)) return false;
+  const candidates = expansionCandidates(state, kind);
   if (candidates.length === 0) return false;
-  state.expandAllThinking = !state.expandAllThinking;
+  const expand = kind === 'tool' ? !state.expandAllTools : !state.expandAllThinking;
+  if (kind === 'tool') state.expandAllTools = expand;
+  else state.expandAllThinking = expand;
   const targets = candidates.filter((entry) => entryInLiveViewport(state, entry));
-  for (const entry of targets) entry.expanded = state.expandAllThinking;
-  if (targets.length === 0) {
-    state.entries.push({
-      kind: 'notice',
-      level: 'info',
-      text: `No thinking in view to toggle — thinking above stays as rendered in scrollback. New thinking starts ${state.expandAllThinking ? 'expanded' : 'collapsed'}.`,
-    });
+  for (const entry of targets) entry.expanded = expand;
+  const stuck = candidates.filter((entry) => entry.expanded !== expand);
+  const copy = EXPANSION_KIND_COPY[kind];
+  // The confirm offer exists for collapses only: expanded-above blocks are the
+  // screen-reclaiming pain (#4011), while collapsed-above blocks are compact
+  // and harmless in scrollback — and arming on expand would make a quick
+  // expand-then-collapse pair read the second press as "expand everything".
+  if (!expand && stuck.length > 0) {
+    appendExpansionCollapseConfirmation(state, kind);
+  } else if (targets.length === 0) {
+    state.entries.push({ kind: 'notice', level: 'info', text: copy.noTargetsNotice(expand) });
   }
   return true;
 }
@@ -819,7 +985,7 @@ export function applyMakaSessionEventToTranscript(
       break;
 
     case 'provider_retry':
-      state.providerRetry = event;
+      state.providerRetry = { event, receivedAtMs: Date.now() };
       break;
 
     case 'token_usage': {
@@ -1646,10 +1812,10 @@ export function renderMakaPiActivityStrip(
 ): string {
   const safeWidth = Math.max(1, width);
   if (metadata.providerRetry) {
-    const retry = metadata.providerRetry;
+    const { event: retry, receivedAtMs } = metadata.providerRetry;
     const text =
       retry.phase === 'scheduled'
-        ? `Retrying in ${formatRetryDuration(retry.delayMs)} (${retry.attempt}/${retry.maxAttempts})`
+        ? `Retrying in ${formatRetryCountdown(retry, receivedAtMs)} (${retry.attempt}/${retry.maxAttempts})`
         : `Retrying (${retry.attempt}/${retry.maxAttempts})`;
     return fitLine(ansi.dim(text), safeWidth);
   }
@@ -1657,18 +1823,18 @@ export function renderMakaPiActivityStrip(
   return fitLine(ansi.dim(`Working… ${formatElapsedDuration(metadata.turnElapsedMs)}`), safeWidth);
 }
 
-function formatRetryDuration(delayMs: number): string {
-  let s = Math.max(1, Math.ceil(delayMs / 1_000));
-  const d = Math.floor(s / 86_400);
-  const h = Math.floor((s % 86_400) / 3_600);
-  const m = Math.floor((s % 3_600) / 60);
-  const sec = s % 60;
-  const parts: string[] = [];
-  if (d > 0) parts.push(`${d}d`);
-  if (h > 0) parts.push(`${h}h`);
-  if (m > 0) parts.push(`${m}m`);
-  if (sec > 0 || parts.length === 0) parts.push(`${sec}s`);
-  return parts.join(' ');
+/**
+ * Remaining wait for a scheduled provider retry, ticked against the client's
+ * own receipt time so the strip counts down on the 1s heartbeat instead of
+ * pinning the original delay for the whole sleep. The computation itself is
+ * shared with the desktop banner in `@maka/core/provider-retry-countdown`.
+ * Long provider-mandated waits (a subscription quota window can be hours)
+ * render as `4h 28m 3s` via the shared duration formatter rather than a raw
+ * five-digit second count.
+ */
+function formatRetryCountdown(retry: ProviderRetryScheduledEvent, receivedAtMs: number): string {
+  const seconds = providerRetryDisplaySeconds(retry, Date.now() - receivedAtMs);
+  return formatElapsedDuration(seconds * 1_000);
 }
 
 function formatElapsedDuration(elapsedMs: number): string {
@@ -1841,6 +2007,10 @@ function unsuppressToolAtTail(state: MakaPiTranscriptState, tool: MakaPiToolEntr
   if (index < 0 || index === state.entries.length - 1) return;
   state.entries.splice(index, 1);
   state.entries.push(tool);
+}
+
+function isShellRunToolCard(tool: MakaPiToolEntry): boolean {
+  return tool.toolName === 'Bash' || tool.userOwned === true;
 }
 
 function createProgressBuffer(): BoundedChunkBuffer<string> {

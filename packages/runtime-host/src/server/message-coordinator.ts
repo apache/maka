@@ -647,106 +647,118 @@ export class HostMessageCoordinator implements RuntimeMessageAuthority {
   }
 
   async recoverPendingAfterHostRestart(sessionIds: readonly string[]): Promise<void> {
-    for (const sessionId of sessionIds) {
-      const admissions = await this.#admissions.listMessageAdmissions(sessionId);
-      if (admissions.length === 0) continue;
-      const pending = [] as PendingMessageAdmission[];
-      for (const admission of admissions) {
-        const source = await this.#durableProof.readRootTurnSourceMessageReceipt(
+    await this.consumePendingAdmissions(sessionIds);
+  }
+
+  /** Consume canonical pending admissions without creating a second admission. */
+  async consumePendingAdmissions(sessionIds: readonly string[]): Promise<void> {
+    for (const sessionId of new Set(sessionIds)) {
+      await this.#sessionAdmission.run(sessionId, (admission) =>
+        this.#consumePendingAdmissions(sessionId, admission),
+      );
+    }
+  }
+
+  async #consumePendingAdmissions(
+    sessionId: string,
+    admissionLease: SessionAdmissionLease,
+  ): Promise<void> {
+    const admissions = await this.#admissions.listMessageAdmissions(sessionId);
+    if (admissions.length === 0) return;
+    const pending = [] as PendingMessageAdmission[];
+    for (const admission of admissions) {
+      const source = await this.#durableProof.readRootTurnSourceMessageReceipt(
+        sessionId,
+        admission.messageId,
+      );
+      if (
+        source?.admission.turnId === admission.turnId &&
+        source.admission.runId === admission.runId &&
+        source.sourceMessage.messageId === admission.messageId
+      ) {
+        await this.materializeMessageHandoffsForRun({
+          sessionId,
+          turnId: source.admission.turnId,
+          runId: source.admission.runId,
+          messageIds: [admission.messageId],
+        });
+      } else {
+        const steering = await this.#durableProof.readImmutableSteeringMessageProof(
           sessionId,
           admission.messageId,
         );
         if (
-          source?.admission.turnId === admission.turnId &&
-          source.admission.runId === admission.runId &&
-          source.sourceMessage.messageId === admission.messageId
+          steering?.event.turnId === admission.turnId &&
+          steering.event.runId === admission.runId
         ) {
           await this.materializeMessageHandoffsForRun({
             sessionId,
-            turnId: source.admission.turnId,
-            runId: source.admission.runId,
+            turnId: admission.turnId,
+            runId: admission.runId,
             messageIds: [admission.messageId],
           });
         } else {
-          const steering = await this.#durableProof.readImmutableSteeringMessageProof(
-            sessionId,
-            admission.messageId,
-          );
-          if (
-            steering?.event.turnId === admission.turnId &&
-            steering.event.runId === admission.runId
-          ) {
-            await this.materializeMessageHandoffsForRun({
-              sessionId,
-              turnId: admission.turnId,
-              runId: admission.runId,
-              messageIds: [admission.messageId],
-            });
-          } else {
-            pending.push(admission);
-          }
+          pending.push(admission);
         }
       }
-      if (pending.length === 0) continue;
-      const rootState = await this.#root.readRootState(sessionId);
-      if (rootState.kind !== 'active') {
-        if (rootState.kind !== 'idle') continue;
-        if (!this.#root.startRecoveredMessages) {
-          throw new RuntimeMessageAuthorityInvariantError(
-            'Message recovery authority is unavailable',
-          );
-        }
-        const started = await this.#sessionAdmission.run(sessionId, (admission) =>
-          this.#root.startRecoveredMessages!(
-            {
-              sessionId,
-              content: aggregateMessageContents(pending.map((entry) => entry.content)),
-              submittedContent: aggregateMessageContents(pending.map((entry) => entry.content)),
-              sources: pending.map(pendingMessageSource),
-              ...(pending.length === 1 && pending[0]!.submittedIntent
-                ? { submittedIntent: pending[0]!.submittedIntent }
-                : {}),
-            },
-            admission,
-          ),
+    }
+    if (pending.length === 0) return;
+    const rootState = await this.#root.readRootState(sessionId);
+    if (rootState.kind !== 'active') {
+      if (rootState.kind !== 'idle') return;
+      if (!this.#root.startRecoveredMessages) {
+        throw new RuntimeMessageAuthorityInvariantError(
+          'Message recovery authority is unavailable',
         );
-        if ('error' in started) {
-          throw new RuntimeMessageAuthorityInvariantError(
-            `Durable Message recovery failed: ${started.error}`,
-          );
-        }
-        continue;
       }
-      if (!this.#sessions.has(sessionId)) this.#state(sessionId);
-      const state = this.#requireState(sessionId);
-      if (!state.reservedRoot) this.reserveRootTurn(rootState);
-      if (!sameRun(state.reservedRoot!, rootState)) continue;
-      for (const admission of pending) {
-        if (admission.turnId !== rootState.turnId || admission.runId !== rootState.runId) continue;
-        const existing = allLiveEntries(state).find(
-          (entry) => entry.messageId === admission.messageId,
+      const started = await this.#root.startRecoveredMessages(
+        {
+          sessionId,
+          content: aggregateMessageContents(pending.map((entry) => entry.content)),
+          submittedContent: aggregateMessageContents(pending.map((entry) => entry.content)),
+          sources: pending.map(pendingMessageSource),
+          ...(pending.length === 1 && pending[0]!.submittedIntent
+            ? { submittedIntent: pending[0]!.submittedIntent }
+            : {}),
+        },
+        admissionLease,
+      );
+      if ('error' in started) {
+        throw new RuntimeMessageAuthorityInvariantError(
+          `Durable Message recovery failed: ${started.error}`,
         );
-        if (existing) continue;
-        const residency = this.#acquireResidency();
-        const entry: LiveEntry = {
-          entryId: this.#createId(),
-          messageId: admission.messageId,
-          turnId: admission.turnId,
-          runId: admission.runId,
-          admittedAt: admission.admittedAt,
-          content: submittedProjectionContent(admission.content),
-          modelContent: admission.content,
-          submittedContentDigest: admission.submittedContentDigest,
-          placement: admission.placement,
-          disposition: admission.disposition,
-          generation: state.generation,
-          residency,
-          state: 'queued',
-        };
-        if (entry.disposition === 'steering') state.steering.push(entry);
-        else state.followup.push(entry);
-        this.#mutated(state);
       }
+      return;
+    }
+    if (!this.#sessions.has(sessionId)) this.#state(sessionId);
+    const state = this.#requireState(sessionId);
+    if (!state.reservedRoot) this.reserveRootTurn(rootState);
+    if (!sameRun(state.reservedRoot!, rootState)) return;
+    for (const admission of pending) {
+      if (admission.turnId !== rootState.turnId || admission.runId !== rootState.runId) continue;
+      const existing = allLiveEntries(state).find(
+        (entry) => entry.messageId === admission.messageId,
+      );
+      if (existing) continue;
+      const residency = this.#acquireResidency();
+      const entry: LiveEntry = {
+        entryId: this.#createId(),
+        messageId: admission.messageId,
+        turnId: admission.turnId,
+        runId: admission.runId,
+        admittedAt: admission.admittedAt,
+        content: submittedProjectionContent(admission.content),
+        modelContent: admission.content,
+        submittedContentDigest: admission.submittedContentDigest,
+        placement: admission.placement,
+        disposition: admission.disposition,
+        generation: state.generation,
+        residency,
+        state: 'queued',
+      };
+      if (entry.disposition === 'steering') state.steering.push(entry);
+      else state.followup.push(entry);
+      this.#mutated(state);
     }
   }
 
@@ -774,6 +786,7 @@ export class HostMessageCoordinator implements RuntimeMessageAuthority {
   private submit(
     input: TurnMessageSubmitInput,
     context: ConnectionContext,
+    admission?: SessionAdmissionLease,
   ): Promise<MessageOutcome<TurnMessageSubmitResult>> {
     const payload = canonicalSubmitPayload(input);
     const isCurrentEpoch = input.originHostEpoch === this.#hostEpoch;
@@ -790,9 +803,11 @@ export class HostMessageCoordinator implements RuntimeMessageAuthority {
     if (this.#failStopped) {
       return Promise.resolve(failure('host_draining', 'Runtime Host message authority has failed'));
     }
-    if (!isCurrentEpoch) return this.#submitAdmitted(input, payload, context.connectionId);
+    if (!isCurrentEpoch) {
+      return this.#submitAdmitted(input, payload, context.connectionId, admission);
+    }
     const key = operationKey(input.sessionId, input.messageId);
-    const result = this.#submitAdmitted(input, payload, context.connectionId);
+    const result = this.#submitAdmitted(input, payload, context.connectionId, admission);
     this.#pendingSubmits.set(key, { payload, result });
     void result.then(
       () => this.#deletePendingSubmit(key, result),
@@ -805,8 +820,11 @@ export class HostMessageCoordinator implements RuntimeMessageAuthority {
     input: TurnMessageSubmitInput,
     payload: CanonicalSubmitPayload,
     initiatingConnectionId: string,
+    admittedLease?: SessionAdmissionLease,
   ): Promise<MessageOutcome<TurnMessageSubmitResult>> {
-    return this.#sessionAdmission.run(input.sessionId, async (admission) => {
+    const execute = async (
+      admission: SessionAdmissionLease,
+    ): Promise<MessageOutcome<TurnMessageSubmitResult>> => {
       if (this.#failStopped) {
         return failure('host_draining', 'Runtime Host message authority has failed');
       }
@@ -1074,7 +1092,12 @@ export class HostMessageCoordinator implements RuntimeMessageAuthority {
         );
         return success(result);
       }
-    });
+    };
+    return admittedLease
+      ? this.#sessionAdmission.runAdmitted(input.sessionId, admittedLease, () =>
+          execute(admittedLease),
+        )
+      : this.#sessionAdmission.run(input.sessionId, execute);
   }
 
   private retract(input: QueueRetractInput): Promise<MessageOutcome<QueueRetractResult>> {

@@ -17,9 +17,8 @@
  * under the License.
  */
 
-import type { ScheduledTask } from '@maka/core/scheduled-task';
 import { AlertCircle, Blocks, Download, Network, Settings, SquarePen, Timer } from './icons.js';
-import type { NavModuleMemory, NavSelection } from './nav-selection.js';
+import { useSessionRailChrome } from './session-rail-context.js';
 import { useUiLocale } from './locale-context.js';
 import { getShellControlsCopy } from './shell-controls-copy.js';
 import { Icon } from '@astryxdesign/core/Icon';
@@ -27,18 +26,8 @@ import { IconButton } from '@astryxdesign/core/IconButton';
 import { SideNavItem, SideNavSection } from '@astryxdesign/core/SideNav';
 import { Tooltip } from '@astryxdesign/core/Tooltip';
 
-export function SessionSidebarNav(props: {
-  selection: NavSelection;
-  scheduledTasks?: readonly ScheduledTask[];
-  moduleMemory?: NavModuleMemory;
-  onSelect(selection: NavSelection): void;
-  onNew(): void;
-  workHubEntry?: {
-    active: boolean;
-    label: string;
-    onSelect(): void;
-  };
-}) {
+export function SessionSidebarNav() {
+  const props = useSessionRailChrome();
   const locale = useUiLocale();
   const copy = getShellControlsCopy(locale).navigation;
   const extensionsActive = props.selection.section === 'extensions';
@@ -122,40 +111,11 @@ export type SidebarUpdateReminder = {
   latestVersion: string;
 };
 
-/**
- * What build is running, shown where the user already looks to reach Settings.
- *
- * The About page has carried this since `PR-BUILD-HYGIENE-0`, but reaching it
- * takes two clicks and a scroll — so the question it answers ("is this the
- * release or the tree I just built?") is asked in the wrong place to be
- * answered by it. On the rail it costs a glance.
- *
- * `commit` is present only on a dev build (`build-info.ts` resolves it from
- * `.git/HEAD` and returns null once packaged), which is exactly when the
- * version number alone cannot distinguish two builds.
- */
-export type SidebarBuildStamp = {
-  version: string;
-  commit?: string | null;
-};
-
-export function SessionSidebarFooter(props: {
-  buildStamp?: SidebarBuildStamp;
-  updateReminder?: SidebarUpdateReminder;
-  onOpenSettings(): void;
-  onOpenUpdate?(): void;
-}) {
+export function SessionSidebarFooter() {
+  const props = useSessionRailChrome();
   const locale = useUiLocale();
   const copy = getShellControlsCopy(locale).navigation;
   const reminder = props.updateReminder;
-  // `v0.1.11` on a release, `v0.1.11 · a1b2c3d` on a dev build. Seven hex
-  // characters is what `git log --oneline` shows and what a commit is quoted
-  // as in review, so it is the form a reader can act on without reformatting.
-  const stamp = props.buildStamp
-    ? `v${props.buildStamp.version}${
-        props.buildStamp.commit ? ` · ${props.buildStamp.commit.slice(0, 7)}` : ''
-      }`
-    : undefined;
   const updateAction = reminder && props.onOpenUpdate
     ? {
         // One sentence, serving as both the tooltip and the accessible name.
@@ -202,15 +162,6 @@ export function SessionSidebarFooter(props: {
             onClick={props.onOpenSettings}
           />
         </div>
-        {stamp && (
-          // Between Settings and the update button, not after it: the update
-          // button is an action and keeps the edge, where a control is
-          // reached. The stamp is a label — it reads on the way to that edge
-          // and never moves when the button appears or goes away.
-          <span className="maka-sidebar-build-stamp" title={copy.buildStamp(stamp)}>
-            {stamp}
-          </span>
-        )}
         {updateAction && (
           <Tooltip content={updateAction.label}>
             <IconButton

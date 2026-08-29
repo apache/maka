@@ -201,7 +201,6 @@ export interface DurableAgentRunStore
   extends AgentRunStore,
     RootTurnAdmissionStore,
     RootTurnStartRejectionStore {
-  findRunsById(runId: string, limit: number): Promise<AgentRunIdentitySearchResult>;
   listSessionRunsBounded(sessionId: string, limit: number): Promise<AgentRunIdentitySearchResult>;
   listSessionRunsPage(sessionId: string, input: AgentRunPageInput): Promise<AgentRunPageResult>;
   readEventsBounded(
@@ -417,28 +416,6 @@ class SqliteAgentRunStore implements DurableAgentRunStore {
 
   async listSessionRuns(sessionId: string): Promise<AgentRunHeader[]> {
     return this.listSessionRunsForRecovery(sessionId);
-  }
-
-  async findRunsById(runId: string, limit: number): Promise<AgentRunIdentitySearchResult> {
-    assertSafeId(runId, 'Invalid run id');
-    assertIdentitySearchLimit(limit);
-    const rows = this.#lease.database
-      .prepare(`
-        SELECT session_id, record_json
-        FROM core_agent_runs
-        WHERE run_id = ?
-        ORDER BY session_id
-        LIMIT ?
-      `)
-      .all(runId, limit + 1) as Array<{ session_id?: unknown; record_json?: unknown }>;
-    const truncated = rows.length > limit;
-    const runs = rows.slice(0, limit).map((row) => {
-      if (typeof row.session_id !== 'string' || typeof row.record_json !== 'string') {
-        throw new Error('Invalid SQLite AgentRun identity row');
-      }
-      return decodePersistedAgentRunHeader(JSON.parse(row.record_json), row.session_id, runId);
-    });
-    return { runs, truncated };
   }
 
   async listSessionRunsBounded(

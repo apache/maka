@@ -22,7 +22,6 @@ import { Card } from '@astryxdesign/core/Card';
 import { ResizeHandle, type ResizableProps } from '@astryxdesign/core/Resizable';
 import { Spinner } from '@astryxdesign/core/Spinner';
 import { Composer, useUiLocale } from '@maka/ui';
-import type { ComposerProps } from '../../../../../../../packages/ui/dist/composer.d.ts';
 import type { ChatModelChoice } from '@maka/core/chat-model-choice';
 import type { SessionSummary } from '@maka/core/session';
 import { getShellCopy } from '../../../locales/shell-copy';
@@ -128,10 +127,6 @@ export interface WorkbarHostModel {
   activeSideChatPanelIds?: ReadonlySet<string>;
   sourceSession?: SessionSummary;
   modelChoices?: readonly ChatModelChoice[];
-  mentionSkills?: ComposerProps['mentionSkills'];
-  mentionSkillsUnavailable?: ComposerProps['mentionSkillsUnavailable'];
-  mentionSkillsLoading?: ComposerProps['mentionSkillsLoading'];
-  onSearchMentionFiles?: ComposerProps['onSearchMentionFiles'];
   closeConfirmation: {
     key: string;
     open: boolean;
@@ -215,10 +210,6 @@ export function WorkbarHost({ model: props }: { model: WorkbarHostModel }) {
               activeSideChatPanelIds={props.activeSideChatPanelIds}
               sourceSession={props.sourceSession}
               modelChoices={props.modelChoices}
-              mentionSkills={props.mentionSkills}
-              mentionSkillsUnavailable={props.mentionSkillsUnavailable}
-              mentionSkillsLoading={props.mentionSkillsLoading}
-              onSearchMentionFiles={props.onSearchMentionFiles}
             />
           </Suspense>
         </div>

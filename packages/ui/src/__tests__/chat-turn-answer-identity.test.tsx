@@ -18,6 +18,8 @@
  */
 
 import assert from 'node:assert/strict';
+import { readFile } from 'node:fs/promises';
+import { resolve } from 'node:path';
 import { afterEach, test } from 'node:test';
 import { act } from 'react';
 import { createRoot } from 'react-dom/client';
@@ -104,6 +106,34 @@ const RUNNING_TOOL: TurnTimelineItem = {
   items: [{ toolUseId: 'tool-1', toolName: 'read', status: 'running', args: {} }],
 };
 
+test('renders an aborted turn outcome as an inline system status notice', async () => {
+  const { container, root } = domRoot();
+  await renderTurn(root, {
+    ...turnWith([{ ...ANSWER, live: false }]),
+    status: 'aborted',
+    abortSource: 'renderer.stop_button',
+  });
+
+  const outcome = container.querySelector('.astryx-chat-system-message[role="status"]');
+  assert.ok(outcome, 'the aborted outcome is announced through the Chat status-notice primitive');
+  assert.equal(outcome.getAttribute('data-variant'), 'default');
+  assert.equal(outcome.textContent, 'Interrupted \u00b7 Stop button');
+});
+
+test('places the aborted turn outcome after its timeline content', async () => {
+  const { container, root } = domRoot();
+  await renderTurn(root, {
+    ...turnWith([{ ...ANSWER, live: false }]),
+    status: 'aborted',
+  });
+
+  const answer = container.querySelector('.maka-chat-message-bubble-assistant');
+  const assistantMessage = container.querySelector('.maka-assistant-answer');
+  const outcome = container.querySelector('.astryx-chat-system-message[role="status"]');
+  assert.ok(answer && assistantMessage && outcome);
+  assert.equal(assistantMessage.nextElementSibling?.isSameNode(outcome), true);
+});
+
 /**
  * Keying the answer by its first timeline entry made the key change whenever
  * that entry did, so React unmounted the answer and mounted a copy — taking
@@ -137,6 +167,64 @@ test('keeps the assistant answer element as a turn settles around it', async () 
     settledBubble.isSameNode(streamingBubble),
     true,
     'the answer bubble survives the turn settling',
+  );
+});
+
+test('redacts secrets before rendering a settled collapsed reasoning preview', async () => {
+  const { container, root } = domRoot();
+  await renderTurn(root, turnWith([
+    {
+      kind: 'thinking',
+      text: 'Authorization: Bearer sk-live-1234567890abcdef\n\nSafe detail',
+      messageId: 'thinking-1',
+      live: false,
+    },
+  ]));
+
+  const header = container.querySelector('[data-slot="activity-card-header"]');
+  assert.ok(header);
+  assert.match(header.textContent ?? '', /<redacted>/);
+  assert.doesNotMatch(header.textContent ?? '', /sk-live-1234567890abcdef/);
+});
+
+test('preserves currency in a settled collapsed reasoning preview', async () => {
+  const { container, root } = domRoot();
+  await renderTurn(root, turnWith([
+    {
+      kind: 'thinking',
+      text: 'The estimated cost is $5, not $$x + 1$$.',
+      messageId: 'thinking-1',
+      live: false,
+    },
+  ]));
+
+  const header = container.querySelector('[data-slot="activity-card-header"]');
+  assert.ok(header);
+  assert.match(header.textContent ?? '', /cost is \$5, not x \+ 1/);
+});
+
+test('preserves a model-authored single newline in plain reasoning', async () => {
+  const { container, root } = domRoot();
+  await renderTurn(root, turnWith([
+    {
+      kind: 'thinking',
+      text: 'First observation\nSecond observation',
+      messageId: 'thinking-1',
+      live: false,
+    },
+  ]));
+
+  const body = container.querySelector('.maka-chat-reasoning-content');
+  assert.ok(body);
+  assert.match(body.textContent ?? '', /First observation\nSecond observation/);
+
+  const css = await readFile(resolve(import.meta.dirname, '..', '..', 'src', 'styles.css'), 'utf8');
+  const rule = /\.maka-chat-reasoning-content\s*\{([^}]*)\}/.exec(css);
+  assert.ok(rule, 'the reasoning body style contract is missing');
+  assert.match(
+    rule[1] ?? '',
+    /white-space\s*:\s*pre-wrap/,
+    'single model-authored newlines must remain visible after Markdown renders a soft break',
   );
 });
 

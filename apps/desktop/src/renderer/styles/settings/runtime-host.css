@@ -43,7 +43,7 @@
   font: var(--maka-text-supporting);
 }
 
-.settingsRuntimeHostTransport [role="radiogroup"] {
+.settingsRuntimeHostTransport [role='radiogroup'] {
   max-width: 100%;
 }
 
@@ -177,6 +177,36 @@
   justify-content: flex-end;
 }
 
+.settingsRuntimeHostDirectPeerDiscovery {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+}
+
+.settingsRuntimeHostDirectPeerDiscovery > div {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  min-width: 0;
+}
+
+.settingsRuntimeHostDirectPeerAdvanced {
+  display: grid;
+  gap: var(--space-2);
+}
+
+.settingsRuntimeHostDirectPeerAdvanced summary {
+  width: fit-content;
+  color: var(--foreground-secondary);
+  cursor: pointer;
+  font: var(--maka-text-supporting);
+}
+
+.settingsRuntimeHostDirectPeerAdvanced[open] summary {
+  margin-bottom: var(--space-2);
+}
+
 .settingsRuntimeHostManagementLogs {
   overflow-wrap: anywhere;
   color: var(--foreground-secondary);
@@ -251,6 +281,239 @@
   flex-wrap: wrap;
   justify-content: flex-end;
   gap: var(--space-2);
+}
+
+.settingsPeerMesh {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+.settingsPeerMeshIdentity,
+.settingsPeerMeshToolbar,
+.settingsPeerMeshCardHeading,
+.settingsPeerMeshMembersHeading,
+.settingsPeerMeshMember,
+.settingsPeerMeshMemberActions,
+.settingsPeerMeshInvitationLabel {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+}
+
+.settingsPeerMeshIdentity {
+  min-height: 48px;
+  padding: var(--space-2);
+  border-radius: var(--radius-container);
+  background: var(--background-secondary);
+}
+
+.settingsPeerMeshIdentity > div,
+.settingsPeerMeshToolbar > div:first-child,
+.settingsPeerMeshCardIdentity > div,
+.settingsPeerMeshMemberIdentity > div,
+.settingsPeerMeshFocusedHeading > div {
+  display: flex;
+  min-width: 0;
+  flex: 1;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.settingsPeerMeshIdentityIcon,
+.settingsPeerMeshCardIcon,
+.settingsPeerMeshFocusedIcon,
+.settingsPeerMeshEmptyIcon {
+  display: grid;
+  flex: 0 0 auto;
+  place-items: center;
+  color: var(--accent);
+  background: oklch(from var(--accent) l c h / 0.1);
+}
+
+.settingsPeerMeshIdentityIcon,
+.settingsPeerMeshCardIcon {
+  width: 32px;
+  height: 32px;
+  border-radius: var(--radius-control);
+}
+
+.settingsPeerMeshIdentity code {
+  overflow: hidden;
+  max-width: 100%;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.settingsPeerMeshEmpty {
+  display: flex;
+  min-height: 240px;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-2);
+  padding: var(--space-5);
+  text-align: center;
+}
+
+.settingsPeerMeshEmpty > p {
+  max-width: 360px;
+}
+
+.settingsPeerMeshEmpty > div:last-child {
+  margin-top: var(--space-2);
+}
+
+.settingsPeerMeshEmptyIcon {
+  width: 56px;
+  height: 56px;
+  margin-bottom: var(--space-2);
+  border-radius: 18px;
+}
+
+.settingsPeerMeshList {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.settingsPeerMeshCard {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-4);
+  border: var(--border-width-hairline) solid var(--border-soft);
+  border-radius: var(--radius-container);
+  background: var(--background-secondary);
+}
+
+.settingsPeerMeshCardIdentity,
+.settingsPeerMeshCardControls,
+.settingsPeerMeshMemberIdentity,
+.settingsPeerMeshFocusedHeading,
+.settingsPeerMeshInvitationNote {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.settingsPeerMeshCardControls {
+  flex: 0 0 auto;
+}
+
+.settingsPeerMeshCardIdentity {
+  min-width: 0;
+}
+
+.settingsPeerMeshName {
+  overflow: hidden;
+  color: var(--foreground-primary);
+  font: var(--maka-text-body);
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.settingsPeerMeshMembersHeading {
+  margin-top: var(--space-1);
+  padding-block: var(--space-1);
+  border-bottom: var(--border-width-hairline) solid var(--border-soft);
+}
+
+.settingsPeerMeshMembers {
+  display: flex;
+  flex-direction: column;
+}
+
+.settingsPeerMeshMember {
+  padding-block: var(--space-2);
+}
+
+.settingsPeerMeshMember + .settingsPeerMeshMember {
+  border-top: var(--border-width-hairline) solid var(--border-soft);
+}
+
+.settingsPeerMeshMemberState {
+  width: 8px;
+  height: 8px;
+  flex: 0 0 auto;
+  border-radius: 50%;
+  background: var(--foreground-alpha-16);
+}
+
+.settingsPeerMeshMemberState-local,
+.settingsPeerMeshMemberState-route_available {
+  background: var(--success);
+}
+
+.settingsPeerMeshMemberState-coordination_only {
+  background: var(--warning);
+}
+
+.settingsPeerMeshMemberIdentity code {
+  overflow: hidden;
+  max-width: min(360px, 55vw);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.settingsPeerMeshFocusedView {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-5);
+  min-height: 280px;
+}
+
+.settingsPeerMeshFocusedIcon {
+  width: 36px;
+  height: 36px;
+  border-radius: 13px;
+}
+
+.settingsPeerMeshInvitation {
+  display: grid;
+  gap: var(--space-2);
+}
+
+.settingsPeerMeshInvitationLabel {
+  min-width: 0;
+}
+
+.settingsPeerMeshInvitationCode {
+  box-sizing: border-box;
+  max-height: 200px;
+  overflow: auto;
+  padding: var(--space-4);
+  border: var(--border-width-hairline) solid var(--border-soft);
+  border-radius: var(--radius-container);
+  background: var(--foreground-2);
+}
+
+.settingsPeerMeshInvitationCode code {
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+.settingsPeerMeshInvitationNote {
+  align-items: flex-start;
+  padding: 0 var(--space-1);
+}
+
+.settingsPeerMeshInvitationNote svg {
+  margin-top: 2px;
+  color: var(--foreground-secondary);
+}
+
+@media (max-width: 620px) {
+  .settingsPeerMeshToolbar {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .settingsPeerMeshToolbar > div:last-child {
+    align-self: stretch;
+  }
 }
 
 @media (max-height: 620px) {

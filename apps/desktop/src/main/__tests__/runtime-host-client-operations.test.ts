@@ -228,7 +228,7 @@ test('settles revision cleanup when abandon observes an already absent target', 
   assert.equal(await client.removeSessionCopy('revision-copy'), 'removed');
 });
 
-test('merges a configuration patch into each fresh CAS projection', async () => {
+test('replays one exact model patch across fresh CAS projections', async () => {
   const { client, requests } = clientWithResponses([
     { kind: 'session', session: session('session-1', 10) },
     { kind: 'revision_conflict', expectedRevision: 10, actualRevision: 11 },
@@ -240,16 +240,22 @@ test('merges a configuration patch into each fresh CAS projection', async () => 
       kind: 'committed',
       session: session('session-1', 12, {
         collaborationMode: 'plan',
-        permissionMode: 'ask',
+        llmConnectionId: 'connection-b',
+        model: 'model-b',
       }),
     },
   ]);
 
   const updated = await client.updateSessionConfiguration('session-1', {
-    permissionMode: 'ask',
+    modelTarget: {
+      kind: 'explicit',
+      connectionId: 'connection-b',
+      connectionSlug: 'test-connection',
+      model: 'model-b',
+    },
   });
 
-  assert.equal(updated.permissionMode, 'ask');
+  assert.equal(updated.llmConnectionId, 'connection-b');
   assert.equal(updated.collaborationMode, 'plan');
   assert.deepEqual(
     requests
@@ -259,31 +265,25 @@ test('merges a configuration patch into each fresh CAS projection', async () => 
       {
         sessionId: 'session-1',
         expectedRevision: 10,
-        configuration: {
+        patch: {
           modelTarget: {
             kind: 'explicit',
+            connectionId: 'connection-b',
             connectionSlug: 'test-connection',
-            model: 'test-model',
+            model: 'model-b',
           },
-          thinkingLevel: null,
-          permissionMode: 'ask',
-          collaborationMode: 'agent',
-          orchestrationMode: 'default',
         },
       },
       {
         sessionId: 'session-1',
         expectedRevision: 11,
-        configuration: {
+        patch: {
           modelTarget: {
             kind: 'explicit',
+            connectionId: 'connection-b',
             connectionSlug: 'test-connection',
-            model: 'test-model',
+            model: 'model-b',
           },
-          thinkingLevel: null,
-          permissionMode: 'ask',
-          collaborationMode: 'plan',
-          orchestrationMode: 'default',
         },
       },
     ],
@@ -1002,6 +1002,7 @@ function session(
     hasUnread: false,
     status: 'active',
     backend: 'ai-sdk',
+    llmConnectionId: 'connection-1',
     llmConnectionSlug: 'test-connection',
     connectionLocked: true,
     model: 'test-model',
