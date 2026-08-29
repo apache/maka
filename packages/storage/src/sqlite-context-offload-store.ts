@@ -90,6 +90,7 @@ interface GarbageCandidateRow {
   size_bytes: unknown;
 }
 
+/** Low-level implementation; production callers must use the Storage Root authority facade. */
 export class SqliteContextOffloadStore implements ContextOffloadStore {
   readonly #database: DatabaseSync;
   readonly #limits: ContextOffloadLimits;
