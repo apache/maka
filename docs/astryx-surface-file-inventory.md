@@ -204,7 +204,7 @@ Wiki bar: Design Conventions · API Use-the-System · Theming · Container Paddi
 | `packages/ui/src/components.tsx` | ui-composition | none | aligned — no raw controls; no Astryx JSX usage | aligned |
 | `packages/ui/src/composer-message-queue.tsx` | shell-chrome-or-panel | Button, IconButton, List, ListItem | raw `<textarea` (API Use-the-System) | polish |
 | `packages/ui/src/composer.tsx` | shell-chrome-or-panel | Button, ChatComposer, IconButton, Lightbox, Token, Tooltip | aligned — uses Astryx (Button, ChatComposer, IconButton, Lightbox, Token, Tooltip) | aligned |
-| `packages/ui/src/daily-review-panel.tsx` | shell-chrome-or-panel | Banner, Button, EmptyState, Heading, IconButton, List, ListItem, SegmentedControl, SegmentedControlItem, Spinner, Text | aligned — uses Astryx (Banner, Button, EmptyState, Heading, IconButton, List, ListItem, SegmentedControl) | aligned |
+| `packages/ui/src/daily-review-panel.tsx` | shell-chrome-or-panel | Button, EmptyState, Heading, IconButton, List, ListItem, SegmentedControl, SegmentedControlItem, Spinner, Text | aligned — uses Astryx (Button, EmptyState, Heading, IconButton, List, ListItem, SegmentedControl, SegmentedControlItem) | aligned |
 | `packages/ui/src/icons.tsx` | ui-composition | none | aligned — no raw controls; no Astryx JSX usage | aligned |
 | `packages/ui/src/inline-reference.tsx` | ui-composition | none | aligned — no raw controls; no Astryx JSX usage | aligned |
 | `packages/ui/src/inline-rename-input.tsx` | ui-composition | TextInput | aligned — uses Astryx (TextInput) | aligned |
