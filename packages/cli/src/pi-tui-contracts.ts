@@ -93,8 +93,19 @@ export interface OnboardingSaveInput {
   models: readonly ModelInfo[];
 }
 
+export interface OnboardingSavedConnection {
+  connectionId: string;
+  revision: number;
+  slug: string;
+  providerType: ProviderType;
+}
+
 export type OnboardingSaveResult =
-  | { kind: 'ok'; modelChoices: ModelChoice[] }
+  | {
+      kind: 'ok';
+      connection: OnboardingSavedConnection;
+      refresh: { kind: 'ok'; modelChoices: ModelChoice[] } | { kind: 'failed'; warning: string };
+    }
   | { kind: 'error'; text: string };
 
 export interface MakaOnboardingSurface {

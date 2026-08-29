@@ -20,7 +20,12 @@
 import { describe, test } from 'node:test';
 import assert from 'node:assert/strict';
 import type { ConnectionCatalogSnapshot } from '@maka/core/runtime-policy';
-import { projectProviders, projectRuntimeHostModelChoices } from '../runtime-host-onboarding.js';
+import type { RuntimeHostConnection } from '@maka/runtime-host/client';
+import {
+  createRuntimeHostOnboardingSurface,
+  projectProviders,
+  projectRuntimeHostModelChoices,
+} from '../runtime-host-onboarding.js';
 
 function catalog(connections: ConnectionCatalogSnapshot['connections']): ConnectionCatalogSnapshot {
   return { revision: 1, defaultTarget: null, connections };
@@ -36,6 +41,44 @@ const live = {
   enabledModelIds: ['gpt-5-mini'],
   models: [{ id: 'gpt-5-mini', displayName: 'GPT-5 Mini' }],
 } as const;
+
+describe('createRuntimeHostOnboardingSurface', () => {
+  test('keeps the committed Connection when the follow-up catalog refresh fails', async () => {
+    const committed = {
+      connectionId: 'committed-openai-id',
+      revision: 3,
+      slug: 'openai-2',
+      providerType: 'openai',
+    } as const;
+    const connection = {
+      request: async (operation: string) => {
+        if (operation === 'connection.onboarding.save') {
+          return { kind: 'saved', connection: committed };
+        }
+        if (operation === 'connection.catalog.query') {
+          throw new Error('transient catalog failure');
+        }
+        throw new Error(`Unexpected operation ${operation}`);
+      },
+    } as unknown as RuntimeHostConnection;
+
+    const result = await createRuntimeHostOnboardingSurface(connection).save({
+      target: { kind: 'create', providerType: 'openai' },
+      apiKey: 'sk-test',
+      enabledModelIds: ['gpt-5-mini'],
+      models: [{ id: 'gpt-5-mini' }],
+    });
+
+    assert.deepEqual(result, {
+      kind: 'ok',
+      connection: committed,
+      refresh: {
+        kind: 'failed',
+        warning: '账号已保存，但模型列表暂未刷新。重启 Maka 后会重新载入。',
+      },
+    });
+  });
+});
 
 describe('projectRuntimeHostModelChoices', () => {
   test('a retained retired connection contributes no /model choices', () => {

@@ -207,7 +207,39 @@ function fakeOnboardingSurface(opts: FakeOnboardingOpts = {}): MakaOnboardingSur
     verify:
       opts.verify ??
       (async () => ({ kind: 'ok', models: [{ id: 'gpt-5.5' }, { id: 'gpt-5.5-mini' }] })),
-    save: opts.save ?? (async () => ({ kind: 'ok', modelChoices: [] })),
+    save: opts.save ?? (async () => savedOnboardingResult()),
+  };
+}
+
+function savedOnboardingResult(
+  modelChoices: ModelChoice[] = [],
+  connectionId = 'saved-connection-id',
+): OnboardingSaveResult {
+  return {
+    kind: 'ok',
+    connection: {
+      connectionId,
+      revision: 1,
+      slug: 'openai',
+      providerType: 'openai',
+    },
+    refresh: { kind: 'ok', modelChoices },
+  };
+}
+
+function savedOnboardingRefreshFailed(connectionId = 'saved-connection-id'): OnboardingSaveResult {
+  return {
+    kind: 'ok',
+    connection: {
+      connectionId,
+      revision: 1,
+      slug: 'openai',
+      providerType: 'openai',
+    },
+    refresh: {
+      kind: 'failed',
+      warning: '账号已保存，但模型列表暂未刷新。重启 Maka 后会重新载入。',
+    },
   };
 }
 
@@ -861,7 +893,7 @@ describe('Maka Pi TUI runner', () => {
         },
         save: async (input) => {
           saveCalls.push(input);
-          return { kind: 'ok', modelChoices: [] };
+          return savedOnboardingResult([], 'connection-openai-2');
         },
       }),
     });
@@ -1023,7 +1055,7 @@ describe('Maka Pi TUI runner', () => {
           throw new Error('storage read failed');
         },
         verify: async () => ({ kind: 'ok', models: [] }),
-        save: async () => ({ kind: 'ok', modelChoices: [] }),
+        save: async () => savedOnboardingResult(),
       },
     });
 
@@ -1141,10 +1173,10 @@ describe('Maka Pi TUI runner', () => {
     ]);
   });
 
-  test('wizard ignores a save result from an abandoned attempt', async () => {
+  test('an abandoned create save keeps its committed identity for retry', async () => {
     const terminal = new FakeTerminal();
     const driver = new SlashCommandDriver();
-    const saveCalls: Array<{ enabledModelIds: readonly string[] }> = [];
+    const saveCalls: OnboardingSaveInput[] = [];
     let resolveFirstSave!: (value: OnboardingSaveResult) => void;
     const run = runMakaPiTui({
       title: 'Maka',
@@ -1161,7 +1193,7 @@ describe('Maka Pi TUI runner', () => {
             ? new Promise<OnboardingSaveResult>((r) => {
                 resolveFirstSave = r;
               })
-            : Promise.resolve<OnboardingSaveResult>({ kind: 'ok', modelChoices: [] });
+            : Promise.resolve(savedOnboardingResult([], 'committed-openai-id'));
         },
       }),
     });
@@ -1206,14 +1238,87 @@ describe('Maka Pi TUI runner', () => {
         return false;
       }
     });
-    // A's save now resolves ok. It must not show success or refresh choices.
-    resolveFirstSave({ kind: 'ok', modelChoices: [] });
+    // A's durable create succeeds but its follow-up catalog refresh fails. The
+    // abandoned attempt must not show stale success, while its exact committed
+    // identity must still replace the create target for a later submit.
+    resolveFirstSave(savedOnboardingRefreshFailed('committed-openai-id'));
     // Sentinel render: typing into the key field forces a repaint that lands
     // after A's settled save continuation, so a wrongly-shown success frame
     // would be in this exact frame.
     terminal.input('sk-z');
     await waitFor(() => plainTerminalOutput(terminal.screenOutput()).includes('sk-z'));
     assert.doesNotMatch(plainTerminalOutput(terminal.screenOutput()), /已启用/);
+
+    terminal.input('\r'); // verify the now-existing Connection
+    await waitFor(() => plainTerminalOutput(terminal.screenOutput()).includes('3/3'));
+    terminal.input('\r'); // preserve the prior selection and save again
+    await waitFor(() => saveCalls.length === 2);
+    assert.deepEqual(saveCalls[1]?.target, {
+      kind: 'existing',
+      connectionId: 'committed-openai-id',
+    });
+
+    process.emit('SIGTERM');
+    await Promise.race([
+      run,
+      delay(CLOSE_BUDGET_MS).then(() => {
+        throw new Error('TUI did not close after SIGTERM');
+      }),
+    ]);
+  });
+
+  test('a late save cannot rebind a reselected create row', async () => {
+    const terminal = new FakeTerminal();
+    const driver = new SlashCommandDriver();
+    const saveCalls: OnboardingSaveInput[] = [];
+    let resolveFirstSave!: (value: OnboardingSaveResult) => void;
+    const run = runMakaPiTui({
+      title: 'Maka',
+      driver,
+      cwd: '/repo',
+      model: 'claude-sonnet-4-5',
+      connectionSlug: 'claude-subscription',
+      permissionMode: 'bypass',
+      terminal,
+      onboarding: fakeOnboardingSurface({
+        save: (input) => {
+          saveCalls.push(input);
+          return saveCalls.length === 1
+            ? new Promise<OnboardingSaveResult>((resolve) => {
+                resolveFirstSave = resolve;
+              })
+            : Promise.resolve(savedOnboardingResult([], 'second-account-id'));
+        },
+      }),
+    });
+
+    await waitForTuiPaint(terminal);
+    terminal.input('/setup');
+    terminal.input('\r');
+    await waitFor(() => plainTerminalOutput(terminal.screenOutput()).includes('Set Up Provider'));
+    terminal.input('\r');
+    await waitFor(() => plainTerminalOutput(terminal.screenOutput()).includes('API key'));
+    terminal.input('sk-a');
+    terminal.input('\r');
+    await waitFor(() => plainTerminalOutput(terminal.screenOutput()).includes('3/3'));
+    terminal.input(' ');
+    terminal.input('\r');
+    await waitFor(() => saveCalls.length === 1);
+
+    terminal.input('\x1b'); // models -> key
+    terminal.input('\x1b'); // key -> provider search
+    await waitFor(() => plainTerminalOutput(terminal.screenOutput()).includes('1/3'));
+    terminal.input('\r'); // reselect the same add-account row as a new intent
+    await waitFor(() => plainTerminalOutput(terminal.screenOutput()).includes('API key'));
+    resolveFirstSave(savedOnboardingRefreshFailed('first-account-id'));
+    terminal.input('sk-b');
+    terminal.input('\r');
+    await waitFor(() => plainTerminalOutput(terminal.screenOutput()).includes('3/3'));
+    terminal.input(' ');
+    terminal.input('\r');
+    await waitFor(() => saveCalls.length === 2);
+    assert.deepEqual(saveCalls[1]?.target, saveCalls[0]?.target);
+    assert.equal(saveCalls[1]?.target.kind, 'create');
 
     process.emit('SIGTERM');
     await Promise.race([
@@ -1244,7 +1349,7 @@ describe('Maka Pi TUI runner', () => {
         },
         save: async (input) => {
           saveCalls.push(input);
-          return { kind: 'ok', modelChoices: [] };
+          return savedOnboardingRefreshFailed('relay-connection-id');
         },
       }),
     });
@@ -1289,6 +1394,7 @@ describe('Maka Pi TUI runner', () => {
     await waitFor(() => saveCalls.length === 1);
     assert.equal(saveCalls[0]?.baseUrl, 'https://relay.example.test/v1');
     await waitFor(() => plainTerminalOutput(terminal.screenOutput()).includes('已启用'));
+    assert.match(plainTerminalOutput(terminal.screenOutput()), /账号已保存，但模型列表暂未刷新/);
 
     process.emit('SIGTERM');
     await Promise.race([
@@ -1299,7 +1405,7 @@ describe('Maka Pi TUI runner', () => {
     ]);
   });
 
-  test('save refreshes the running model choices even when the user backs out during saving', async () => {
+  test('a late abandoned save cannot replace the running model choices', async () => {
     const terminal = new FakeTerminal();
     const driver = new SlashCommandDriver();
     let resolveFirstSave!: (value: OnboardingSaveResult) => void;
@@ -1359,12 +1465,10 @@ describe('Maka Pi TUI runner', () => {
     // The wizard frame leaving the screen proves the overlay released input
     // focus, so the next line routes to the editor.
     await waitFor(() => !plainTerminalOutput(terminal.screenOutput()).includes('2/3'));
-    // The save completes after the user left. The running TUI's ready model
-    // choices are still authoritatively refreshed — abandoning the wizard only
-    // drops the in-frame success UI, not the background state sync.
-    resolveFirstSave({
-      kind: 'ok',
-      modelChoices: [
+    // The save completes after the user left. Its projection may be older than
+    // a newer attempt, so it must not replace the running model choices.
+    resolveFirstSave(
+      savedOnboardingResult([
         {
           connectionSlug: 'openai',
           connectionName: 'OpenAI',
@@ -1372,15 +1476,14 @@ describe('Maka Pi TUI runner', () => {
           model: 'gpt-5.5-new',
           isDefaultConnection: true,
         },
-      ],
-    });
-    // The refresh (`modelChoices = result.modelChoices`) lands in the save
-    // promise's first continuation; one macrotask turn runs strictly after
-    // every queued microtask, so the choices are applied by the time it fires.
+      ]),
+    );
+    // One macrotask turn lands after the save continuation.
     await delay(0);
     terminal.input('/model');
     terminal.input('\r');
-    await waitFor(() => plainTerminalOutput(terminal.screenOutput()).includes('gpt-5.5-new'));
+    await waitFor(() => plainTerminalOutput(terminal.screenOutput()).includes('Select Model'));
+    assert.doesNotMatch(plainTerminalOutput(terminal.screenOutput()), /gpt-5\.5-new/);
     assert.deepEqual(driver.models, []);
 
     process.emit('SIGTERM');
@@ -1456,6 +1559,41 @@ describe('Maka Pi TUI runner', () => {
         throw new Error('TUI did not close after SIGTERM');
       }),
     ]);
+  });
+
+  test('first-run closes after a durable save even when catalog refresh fails', async () => {
+    const terminal = new FakeTerminal();
+    const driver = new SlashCommandDriver();
+    const run = runMakaPiTui({
+      title: 'Maka',
+      driver,
+      cwd: '/repo',
+      model: '',
+      connectionSlug: '',
+      permissionMode: 'bypass',
+      terminal,
+      firstRun: true,
+      onboarding: fakeOnboardingSurface({
+        save: async () => savedOnboardingRefreshFailed('first-run-connection-id'),
+      }),
+    });
+
+    await waitFor(() => plainTerminalOutput(terminal.screenOutput()).includes('Set Up Provider'));
+    terminal.input('\r');
+    await waitFor(() => plainTerminalOutput(terminal.screenOutput()).includes('API key'));
+    terminal.input('sk-test');
+    terminal.input('\r');
+    await waitFor(() => plainTerminalOutput(terminal.screenOutput()).includes('3/3'));
+    terminal.input(' ');
+    terminal.input('\r');
+
+    await Promise.race([
+      run,
+      delay(CLOSE_BUDGET_MS).then(() => {
+        throw new Error('first-run TUI did not close after the committed save');
+      }),
+    ]);
+    assert.equal(terminal.stopCalls, 1);
   });
 
   test('freezes and preserves the editor draft while a boundary request owns input', async () => {

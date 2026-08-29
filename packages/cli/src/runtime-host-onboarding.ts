@@ -66,12 +66,30 @@ export function createRuntimeHostOnboardingSurface(
         if (result.kind !== 'saved') {
           return { kind: 'error', text: onboardingFailureText(result) };
         }
-        return {
-          kind: 'ok',
-          modelChoices: projectRuntimeHostModelChoices(
-            await readRuntimeHostConnectionCatalog(connection),
-          ),
-        };
+        try {
+          return {
+            kind: 'ok',
+            connection: result.connection,
+            refresh: {
+              kind: 'ok',
+              modelChoices: projectRuntimeHostModelChoices(
+                await readRuntimeHostConnectionCatalog(connection),
+              ),
+            },
+          };
+        } catch {
+          // Saving and refreshing are separate outcomes. The Host has already
+          // committed this exact Connection, so a transient catalog read must
+          // never turn a successful create into a retryable create failure.
+          return {
+            kind: 'ok',
+            connection: result.connection,
+            refresh: {
+              kind: 'failed',
+              warning: '账号已保存，但模型列表暂未刷新。重启 Maka 后会重新载入。',
+            },
+          };
+        }
       } catch (error) {
         return { kind: 'error', text: errorText(error) };
       }

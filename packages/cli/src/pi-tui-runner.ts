@@ -2183,18 +2183,30 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
             requestRender();
             return;
           }
-          // Authoritatively refresh the running TUI's ready model choices so the
-          // newly configured models are immediately available from /model — even
-          // if the user abandoned the wizard mid-save. Abandonment only drops the
-          // in-frame success UI, not the background state sync. The active
-          // session is not switched.
-          modelChoices = result.modelChoices;
+          // The durable save may finish after the user backed out of the models
+          // step. Preserve the Host-assigned identity while this wizard still
+          // points at the same target, so submitting it again edits that exact
+          // Connection instead of allocating a duplicate account.
+          if (wizard === targetWizard && wizardTarget === target) {
+            wizardTarget = {
+              kind: 'existing',
+              connectionId: result.connection.connectionId,
+            };
+          }
           if (closed || wizard !== targetWizard || attempt !== wizardAttempt) return;
+          // Catalog projection is attempt-scoped: a late save from an abandoned
+          // attempt must not overwrite choices refreshed by a newer save.
+          if (result.refresh.kind === 'ok') {
+            modelChoices = result.refresh.modelChoices;
+          }
           if (input.firstRun) {
             beginClose();
             return;
           }
-          wizard.setSuccess(enabledModelIds.length);
+          wizard.setSuccess(
+            enabledModelIds.length,
+            result.refresh.kind === 'failed' ? result.refresh.warning : undefined,
+          );
           requestRender();
         },
         (error) => {
@@ -2244,7 +2256,10 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     wizard = new OnboardingWizard(tui, {
       providers,
       onPickProvider: (provider) => {
-        wizardTarget = provider.target;
+        // Each picker selection is a new logical intent, even when the user
+        // reselects the same catalog row. A late save may converge only the
+        // exact target object captured by its own submit.
+        wizardTarget = { ...provider.target };
         wizardApiKey = '';
         wizardBaseUrl = '';
         wizardModels = [];

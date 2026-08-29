@@ -953,6 +953,7 @@ export class OnboardingWizard implements Component {
   private modelHighlight = 0;
   private modelScroll = 0;
   private successCount = 0;
+  private successWarning: string | undefined;
 
   constructor(
     private readonly tui: TUI,
@@ -1136,9 +1137,10 @@ export class OnboardingWizard implements Component {
   }
 
   /** Runner hook: save succeeded — show the enabled-model count in-frame. */
-  setSuccess(enabledCount: number): void {
+  setSuccess(enabledCount: number, warning?: string): void {
     this.phase = 'success';
     this.successCount = enabledCount;
+    this.successWarning = warning;
     this.status = { kind: 'prompt' };
   }
 
@@ -1472,6 +1474,7 @@ export class OnboardingWizard implements Component {
     return [
       padLine(`Set Up Provider ${ansi.dim('· 完成')} ${ansi.accent(label)}`, width),
       padLine(ansi.green(`✓ 已启用 ${this.successCount} 个模型`), width),
+      ...(this.successWarning ? [padLine(ansi.yellow(this.successWarning), width)] : []),
       padLine('', width),
       padLine(ansi.dim('Enter 关闭'), width),
       padLine(ansi.accent('-'.repeat(width)), width),
