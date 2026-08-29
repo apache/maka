@@ -17,8 +17,6 @@
  * under the License.
  */
 
-import { MAX_READ_IMAGE_BYTES } from './attachments.js';
-
 export interface SessionContextRef {
   readonly kind: 'session_context';
   readonly sessionId: string;
@@ -35,11 +33,6 @@ export type ContextOffloadOwner =
       readonly ownerId: string;
     };
 
-export const CONTEXT_OFFLOAD_OWNER_MAX_BYTES = Object.freeze({
-  read_image_snapshot: MAX_READ_IMAGE_BYTES,
-  tool_result_archive: 4 * 1024 * 1024,
-}) satisfies Readonly<Record<ContextOffloadOwner['kind'], number>>;
-
 export interface ContextOffloadRecord {
   readonly refId: string;
   readonly sessionId: string;
@@ -52,6 +45,8 @@ export interface ContextOffloadRecord {
 }
 
 export interface ContextOffloadLimits {
+  /** Whole-object byte limit selected by each typed owner contract. */
+  readonly ownerMaxBytes: Readonly<Record<ContextOffloadOwner['kind'], number>>;
   /** Logical bytes referenced by one Session, counting shared blobs once per reference. */
   readonly sessionLogicalBytes: number;
   /** Physical bytes stored by the workspace, counting each content-addressed blob once. */

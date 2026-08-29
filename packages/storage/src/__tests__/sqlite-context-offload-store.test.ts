@@ -24,7 +24,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import test, { type TestContext } from 'node:test';
-import { CONTEXT_OFFLOAD_OWNER_MAX_BYTES } from '@maka/core/context-offload';
+import type { ContextOffloadLimits } from '@maka/core/context-offload';
 import {
   CONTEXT_OFFLOAD_DATABASE_NAME,
   SqliteContextOffloadStore,
@@ -54,6 +54,7 @@ test('creates the dedicated WAL schema with incremental auto-vacuum', async (t) 
 
 test('atomically persists one idempotent owner identity and verifies reads', async (t) => {
   const fixture = await createFixture(t, {
+    ownerMaxBytes: TEST_OWNER_MAX_BYTES,
     sessionLogicalBytes: 64,
     workspacePhysicalBytes: 64,
   });
@@ -140,7 +141,11 @@ test('rejects a database schema newer than this authority understands', async (t
   assert.throws(
     () =>
       new SqliteContextOffloadStore(path, {
-        limits: { sessionLogicalBytes: 1, workspacePhysicalBytes: 1 },
+        limits: {
+          ownerMaxBytes: TEST_OWNER_MAX_BYTES,
+          sessionLogicalBytes: 1,
+          workspacePhysicalBytes: 1,
+        },
       }),
     /schema 2 is newer than supported version 1/u,
   );
@@ -161,6 +166,7 @@ test('rejects a current schema missing a query-required index', async (t) => {
 
 test('deduplicates physical bytes while quotas count each Session reference logically', async (t) => {
   const fixture = await createFixture(t, {
+    ownerMaxBytes: TEST_OWNER_MAX_BYTES,
     sessionLogicalBytes: 8,
     workspacePhysicalBytes: 4,
   });
@@ -227,24 +233,35 @@ test('fails closed before returning bytes for Session mismatch and size limits',
   );
 });
 
-test('enforces owner hard caps before commit', async (t) => {
-  const imageLimit = CONTEXT_OFFLOAD_OWNER_MAX_BYTES.read_image_snapshot;
-  const archiveLimit = CONTEXT_OFFLOAD_OWNER_MAX_BYTES.tool_result_archive;
+test('enforces configured owner hard caps before commit and return', async (t) => {
+  const ownerMaxBytes = {
+    read_image_snapshot: 5,
+    tool_result_archive: 7,
+  } as const;
   const fixture = await createFixture(t, {
-    sessionLogicalBytes: imageLimit * 2,
-    workspacePhysicalBytes: imageLimit * 2,
+    ownerMaxBytes,
+    sessionLogicalBytes: 32,
+    workspacePhysicalBytes: 32,
   });
 
   assert.deepEqual(
     await fixture.store.put({
-      ...putInput('session-1', 'large-image', new Uint8Array(imageLimit + 1)),
+      ...putInput(
+        'session-1',
+        'large-image',
+        new Uint8Array(ownerMaxBytes.read_image_snapshot + 1),
+      ),
       owner: { kind: 'read_image_snapshot', ownerId: 'large-image' },
     }),
     { ok: false, reason: 'too_large' },
   );
   assert.deepEqual(
     await fixture.store.put({
-      ...putInput('session-1', 'large-archive', new Uint8Array(archiveLimit + 1)),
+      ...putInput(
+        'session-1',
+        'large-archive',
+        new Uint8Array(ownerMaxBytes.tool_result_archive + 1),
+      ),
       owner: { kind: 'tool_result_archive', ownerId: 'large-archive' },
     }),
     { ok: false, reason: 'too_large' },
@@ -254,6 +271,29 @@ test('enforces owner hard caps before commit', async (t) => {
     logicalBytes: 0,
     physicalBytes: 0,
   });
+
+  const accepted = await fixture.store.put(
+    putInput('session-1', 'accepted-archive', new Uint8Array(ownerMaxBytes.tool_result_archive)),
+  );
+  assert.equal(accepted.ok, true);
+  if (!accepted.ok) return;
+  fixture.store.close();
+
+  const lowerReadLimit = new SqliteContextOffloadStore(fixture.path, {
+    limits: {
+      ...fixture.limits,
+      ownerMaxBytes: { ...ownerMaxBytes, tool_result_archive: 6 },
+    },
+  });
+  t.after(() => lowerReadLimit.close());
+  assert.deepEqual(
+    await lowerReadLimit.read({
+      sessionId: 'session-1',
+      refId: accepted.record.refId,
+      maxBytes: ownerMaxBytes.tool_result_archive,
+    }),
+    { ok: false, reason: 'too_large' },
+  );
 });
 
 test('detects payload corruption instead of returning unverified bytes', async (t) => {
@@ -329,7 +369,11 @@ function putInput(sessionId: string, ownerId: string, bytes: Uint8Array) {
 
 async function createFixture(
   t: TestContext,
-  limits = { sessionLogicalBytes: 16 * 1024 * 1024, workspacePhysicalBytes: 32 * 1024 * 1024 },
+  limits: ContextOffloadLimits = {
+    ownerMaxBytes: TEST_OWNER_MAX_BYTES,
+    sessionLogicalBytes: 16 * 1024 * 1024,
+    workspacePhysicalBytes: 32 * 1024 * 1024,
+  },
   failpoint?: ConstructorParameters<typeof SqliteContextOffloadStore>[1]['failpoint'],
 ) {
   const root = await mkdtemp(join(tmpdir(), 'maka-context-offload-'));
@@ -347,6 +391,11 @@ async function createFixture(
   });
   return { limits, path, store };
 }
+
+const TEST_OWNER_MAX_BYTES = Object.freeze({
+  read_image_snapshot: 5 * 1024 * 1024,
+  tool_result_archive: 8 * 1024 * 1024,
+});
 
 function sha256(bytes: Uint8Array): string {
   return createHash('sha256').update(bytes).digest('hex');

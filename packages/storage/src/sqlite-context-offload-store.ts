@@ -23,7 +23,6 @@ import { createRequire } from 'node:module';
 import { dirname } from 'node:path';
 import type { DatabaseSync } from 'node:sqlite';
 import {
-  CONTEXT_OFFLOAD_OWNER_MAX_BYTES,
   type ContextOffloadLimits,
   type ContextOffloadOwner,
   type ContextOffloadPutResult,
@@ -125,7 +124,7 @@ export class SqliteContextOffloadStore implements ContextOffloadStore {
     if (input.expectedSha256 !== undefined && !SHA256_PATTERN.test(input.expectedSha256)) {
       throw new Error('Expected context SHA-256 must be canonical lowercase hexadecimal');
     }
-    if (input.bytes.byteLength > CONTEXT_OFFLOAD_OWNER_MAX_BYTES[input.owner.kind]) {
+    if (input.bytes.byteLength > this.#limits.ownerMaxBytes[input.owner.kind]) {
       return { ok: false, reason: 'too_large' };
     }
 
@@ -357,7 +356,7 @@ export class SqliteContextOffloadStore implements ContextOffloadStore {
     if (record.sessionId !== input.sessionId) return { ok: false, reason: 'session_mismatch' };
     if (
       record.sizeBytes > input.maxBytes ||
-      record.sizeBytes > CONTEXT_OFFLOAD_OWNER_MAX_BYTES[record.owner.kind]
+      record.sizeBytes > this.#limits.ownerMaxBytes[record.owner.kind]
     ) {
       return { ok: false, reason: 'too_large' };
     }
@@ -508,9 +507,19 @@ function usageFromRows(session: SessionUsageRow, store: StoreUsageRow): ContextO
 }
 
 function validateLimits(limits: ContextOffloadLimits): ContextOffloadLimits {
+  const ownerMaxBytes = {
+    read_image_snapshot: limits.ownerMaxBytes?.read_image_snapshot,
+    tool_result_archive: limits.ownerMaxBytes?.tool_result_archive,
+  };
+  assertNonNegativeSafeInteger(ownerMaxBytes.read_image_snapshot, 'Read image snapshot byte limit');
+  assertNonNegativeSafeInteger(ownerMaxBytes.tool_result_archive, 'Tool Result archive byte limit');
   assertNonNegativeSafeInteger(limits.sessionLogicalBytes, 'Session context quota');
   assertNonNegativeSafeInteger(limits.workspacePhysicalBytes, 'Workspace context quota');
-  return Object.freeze({ ...limits });
+  return Object.freeze({
+    ownerMaxBytes: Object.freeze(ownerMaxBytes),
+    sessionLogicalBytes: limits.sessionLogicalBytes,
+    workspacePhysicalBytes: limits.workspacePhysicalBytes,
+  });
 }
 
 function assertOwner(owner: ContextOffloadOwner): void {
