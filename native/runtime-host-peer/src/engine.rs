@@ -670,13 +670,19 @@ async fn run_endpoint_async(
                     policy,
                     result,
                 }) => {
-                    configure_transit(
+                    let revoked_relays = configure_transit(
                         &mut swarm,
                         &stream_control,
                         &mut coordination_relays,
                         &mut transit,
                         policy,
                         local_peer_id,
+                    );
+                    cancel_revoked_transit_connects(
+                        &mut swarm,
+                        &mut direct,
+                        &mut coordination_relays,
+                        &revoked_relays,
                     );
                     let _ = result.send(());
                 }
@@ -1449,7 +1455,7 @@ fn configure_transit(
     transit: &mut TransitRuntime,
     policy: TransitPolicy,
     local_peer_id: PeerId,
-) {
+) -> HashSet<PeerId> {
     let TransitPolicy {
         allowed_peers,
         relays,
@@ -1477,14 +1483,20 @@ fn configure_transit(
                 .collect::<Vec<_>>()
         })
         .unwrap_or_default();
-    let changed_relays = transit
+    let (changed_relays, revoked_relays) = transit
         .trusted_relays
         .read()
         .map(|current| {
-            current
-                .symmetric_difference(&trusted_relays)
-                .copied()
-                .collect::<HashSet<_>>()
+            (
+                current
+                    .symmetric_difference(&trusted_relays)
+                    .copied()
+                    .collect::<HashSet<_>>(),
+                current
+                    .difference(&trusted_relays)
+                    .copied()
+                    .collect::<HashSet<_>>(),
+            )
         })
         .unwrap_or_default();
     if let Ok(mut current) = transit.allowed_peers.write() {
@@ -1517,6 +1529,43 @@ fn configure_transit(
     }
     reconcile_transit_reservations(swarm, coordination_relays, relays, local_peer_id);
     publish_transit_snapshot(transit);
+    revoked_relays
+}
+
+fn cancel_revoked_transit_connects(
+    swarm: &mut Swarm<Behaviour>,
+    direct: &mut DirectConnectState,
+    coordination_relays: &mut HashMap<PeerId, CoordinationRelay>,
+    revoked_relays: &HashSet<PeerId>,
+) {
+    let requests = direct
+        .pending
+        .iter()
+        .filter_map(|(request_id, waiter)| {
+            (waiter.stream_kind == StreamKind::Application
+                && !waiter.transit_relay_peers.is_disjoint(revoked_relays))
+            .then_some(*request_id)
+        })
+        .collect::<Vec<_>>();
+    for request_id in requests {
+        let Some(mut waiter) = direct.pending.remove(&request_id) else {
+            continue;
+        };
+        if let Some(opening) = waiter.opening.take() {
+            opening.abort();
+        }
+        retire_direct_dials(swarm, &mut direct.retiring_connections, waiter.dials, None);
+        release_coordination_relays(
+            swarm,
+            coordination_relays,
+            &waiter.coordination_relay_peers,
+            &direct.active,
+        );
+        let _ = waiter.result.send(Err(PeerError::new(
+            "transit_unavailable",
+            "transit policy changed while the peer connection was pending",
+        )));
+    }
 }
 
 fn reconcile_transit_reservations(
@@ -2341,6 +2390,33 @@ mod tests {
                 "revoked transit stream remained writable",
             );
         }
+
+        let (result, response) = oneshot::channel();
+        source
+            .commands
+            .send(EngineCommand::Connect {
+                options: ConnectOptions {
+                    request_id: 2,
+                    peer_id: PeerId::random(),
+                    route_hints: Vec::new(),
+                    coordination_relays: Vec::new(),
+                    transit_relay_peers: vec![relay.peer_id],
+                    deadline: Duration::from_secs(10),
+                },
+                stream_kind: StreamKind::Application,
+                result,
+            })
+            .await
+            .expect("send pending transit connect");
+        configure_test_transit(&source, HashSet::new()).await;
+        let result = tokio::time::timeout(Duration::from_secs(2), response)
+            .await
+            .expect("revoked pending connect timeout")
+            .expect("revoked pending connect response");
+        let Err(error) = result else {
+            panic!("revoked pending transit connect succeeded");
+        };
+        assert_eq!(error.code, "transit_unavailable");
 
         close_test_stream(source_stream).await;
         close_test_stream(target_stream).await;
