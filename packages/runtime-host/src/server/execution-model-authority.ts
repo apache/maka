@@ -73,13 +73,12 @@ import type {
   BedrockSsoExecutionAuthority,
   BedrockSsoExecutionBinding,
 } from './bedrock-sso-execution-authority.js';
-import { resolveAdmittedConnectionModel } from './connection-model-admission.js';
 
 export interface HostGoalEvaluatorInput {
   readonly runtimePolicy: RuntimePolicyStoresWriter;
   readonly oauthCredentials: HostOAuthExecutionAuthority;
   readonly bedrockCredentials?: BedrockSsoExecutionAuthority;
-  readonly claudeDeviceId: string;
+  readonly claudeDeviceId?: string;
   readonly usage: InteractiveUsageStoresWriter;
   readonly requestDrain: () => void;
   readonly readSessionHeader: (sessionId: string) => Promise<SessionHeader>;
@@ -380,7 +379,7 @@ interface AuxiliaryModelCallAuthority {
   readonly runtimePolicy: RuntimePolicyStoresWriter;
   readonly oauthCredentials: HostOAuthExecutionAuthority;
   readonly bedrockCredentials?: BedrockSsoExecutionAuthority;
-  readonly claudeDeviceId: string;
+  readonly claudeDeviceId?: string;
   readonly usage: InteractiveUsageStoresWriter;
   readonly createFetchTransport: (proxy: ProxiedFetchProxy | null) => ProxiedFetchTransport;
   readonly telemetry: {

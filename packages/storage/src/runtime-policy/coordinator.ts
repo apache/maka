@@ -409,12 +409,12 @@ export class RuntimePolicyCoordinator {
         }
         if (
           authority === 'client' &&
-          ((locator.kind === 'oauth_token' && connection.providerType !== 'github-copilot') ||
-            locator.kind === 'aws_sso')
+          locator.kind === 'oauth_token' &&
+          connection.providerType !== 'github-copilot'
         ) {
           throw codecError(
             'invalid_credential_input',
-            'Client-supplied account credentials are not accepted for this provider',
+            'Client-supplied OAuth credentials are only accepted for GitHub Copilot',
           );
         }
       }
@@ -775,12 +775,6 @@ export class RuntimePolicyCoordinator {
         return deepFreeze({ kind: 'connection_not_found' as const });
       }
       assertConnectionIsWritable(connection);
-      if (connection.providerType === 'amazon-bedrock' && updates.length > 0) {
-        throw codecError(
-          'invalid_credential_input',
-          'Amazon Bedrock does not support custom request headers',
-        );
-      }
 
       const locator = connectionRequestHeadersLocator(connectionId);
       const vault = await this.vault.read(root);
@@ -1081,7 +1075,7 @@ export class RuntimePolicyCoordinator {
       // Onboarding guards the api_key credential slot; a provider whose auth
       // never uses one has no business here (the Host gates on the same
       // predicate, this keeps the storage API honest on its own).
-      if (!providerAuthSupportsApiKey(providerType)) {
+      if (!providerAuthSupportsApiKey(providerType) && providerType !== 'amazon-bedrock') {
         return deepFreeze({ kind: 'provider_unsupported' as const });
       }
       if (
@@ -1111,31 +1105,6 @@ export class RuntimePolicyCoordinator {
         credential = credentialStatus(vault, locator);
         if (existing) {
           storedSecret = findCredential(vault, locator)?.secret ?? null;
-      const connectionId = existing?.connectionId ?? randomUUID();
-      let invalidateLastTest = false;
-      if (input.suppliedSecret !== null) {
-        const locator = {
-          scope: 'connection',
-          connectionId,
-          kind: input.providerType === 'amazon-bedrock' ? 'aws_sso' : 'api_key',
-        } as const;
-        const vault = await this.vault.read(root);
-        const credential = findCredential(vault, locator);
-        if (credential?.secret !== input.suppliedSecret) {
-          invalidateLastTest = true;
-          const prepared = this.vault.prepareSet(vault, {
-            locator,
-            expected: credential
-              ? { credentialId: credential.credentialId, revision: credential.revision }
-              : null,
-            secret: input.suppliedSecret,
-          });
-          if (prepared.kind !== 'ready') {
-            throw codecError(
-              'invalid_document',
-              `Onboarding credential preflight returned ${prepared.kind}`,
-            );
-          }
         }
       }
       // Discovery must probe with the same header customization the models
@@ -1193,14 +1162,6 @@ export class RuntimePolicyCoordinator {
       throw codecError(
         'invalid_connection_input',
         'Expected an authentic available connection onboarding ticket',
-      const catalogPreflight = this.catalog.prepareOnboardingUpsert(
-        catalog,
-        intent.connectionId,
-        intent.providerType,
-        intent.enabledModelIds,
-        intent.discovery,
-        intent.invalidateLastTest,
-        intent.bedrock,
       );
     }
     record.state = 'in_flight';
@@ -1322,7 +1283,7 @@ export class RuntimePolicyCoordinator {
       const locator = {
         scope: 'connection',
         connectionId,
-        kind: 'api_key',
+        kind: candidate.providerType === 'amazon-bedrock' ? 'aws_sso' : 'api_key',
       } as const;
       const vault = await this.vault.read(root);
       const credential = findCredential(vault, locator);
@@ -1360,6 +1321,7 @@ export class RuntimePolicyCoordinator {
       intent.enabledModelIds,
       intent.discovery,
       intent.invalidateLastTest,
+      intent.bedrock,
     );
     if (catalogPreflight.kind === 'slug_conflict') {
       return deepFreeze({ kind: 'superseded' as const, changed: ['connection'] as const });
@@ -1751,6 +1713,7 @@ export class RuntimePolicyCoordinator {
       intent.enabledModelIds,
       intent.discovery,
       intent.invalidateLastTest,
+      intent.bedrock,
     );
     if (prepared.kind === 'slug_conflict') {
       throw codecError(
@@ -1790,20 +1753,6 @@ export class RuntimePolicyCoordinator {
       }
     }
 
-    const catalog = await this.catalog.read(root);
-    const prepared = this.catalog.prepareOnboardingUpsert(
-      catalog,
-      intent.connectionId,
-      intent.providerType,
-      intent.baseUrl,
-      intent.enabledModelIds,
-      intent.discovery,
-      intent.invalidateLastTest,
-      intent.bedrock,
-    );
-    if (prepared.kind === 'slug_conflict') {
-      throw codecError('invalid_document', 'Onboarding intent conflicts with the connection slug');
-    }
     const snapshot = await this.catalog.commitPreparedOnboarding(root, prepared);
     const connection = snapshot.connections.find(
       (candidate) => candidate.connectionId === intent.connectionId,

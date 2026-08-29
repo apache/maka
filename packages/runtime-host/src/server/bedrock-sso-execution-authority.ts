@@ -193,7 +193,10 @@ export class BedrockSsoExecutionAuthority {
     readonly credentialId: string;
     readonly revision: number;
   }> {
-    const resolved = await this.stores.operations.resolveExecutionConnection(state.connectionSlug);
+    const resolved = await this.stores.operations.resolveExecutionConnection({
+      kind: 'catalog_slug',
+      connectionSlug: state.connectionSlug,
+    });
     const material = resolved.kind === 'ready' ? resolved.secretMaterial.connection : undefined;
     if (
       !material ||

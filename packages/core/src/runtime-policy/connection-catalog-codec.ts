@@ -151,9 +151,6 @@ export function normalizeConnectionCatalogEntryDraft(value: unknown): Connection
       ? {}
       : nonEmptyRelayProfiles(item.relayModelProfiles, enabledModelIds);
   assertProfileFieldsFitProvider(profiles.relayModelProfiles, providerType);
-  if (profiles.relayModelProfiles !== undefined) {
-    rejectForeignProfiles(providerType);
-  }
   const slug = decodeConnectionSlug(item.slug);
   if (providerType === 'amazon-bedrock' && slug !== 'amazon-bedrock') {
     throw domainError('Amazon Bedrock connection must use the stable amazon-bedrock slug');
@@ -231,11 +228,6 @@ export function normalizeConnectionCatalogEntryUpdateForProvider(
   const update = normalizeConnectionCatalogEntryUpdate(value);
   const baseUrl = normalizeCatalogConnectionBaseUrl(update.baseUrl, providerType);
   assertProfileFieldsFitProvider(update.relayModelProfiles, providerType);
-  // A `null` (clear stale data) or absent (untouched) instruction is legal on
-  // any provider; only a non-empty table is relay-only.
-  if (update.relayModelProfiles !== undefined && update.relayModelProfiles !== null) {
-    rejectForeignProfiles(providerType);
-  }
   if (providerType === 'amazon-bedrock' && update.requestBodyOverlay) {
     throw domainError('Amazon Bedrock does not support request body customization');
   }

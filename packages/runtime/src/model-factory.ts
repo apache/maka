@@ -60,7 +60,7 @@ import {
 import { createOpenResponsesCompatibilityFinalizer } from './open-responses-compatibility.js';
 import { resolveModelRuntime, type ResolvedModelRuntime } from './model-runtime.js';
 import { runtimeProviderName, type RuntimeProviderAdapter } from './provider-runtime-policy.js';
-import { openAiCodexHeaders } from './subscription-auth.js';
+import { claudeSubscriptionHeaders, openAiCodexHeaders } from './subscription-auth.js';
 import { createRequestCustomizationFetch } from './request-customization-fetch.js';
 
 export interface AwsCredentialIdentity {
@@ -142,6 +142,14 @@ export function getAIModel(input: ModelFactoryInput): LanguageModelV4 {
       // filter it out and `resolveModelRuntime` refuses earlier; this is the
       // backstop that keeps a stored connection from silently sending.
       throw new Error('This provider is retired and can no longer be used to send.');
+
+    case 'claude-subscription':
+      return createAnthropic({
+        authToken: apiKey,
+        baseURL: anthropicV1BaseUrl(baseURL),
+        fetch: requestFetch,
+        headers: claudeSubscriptionHeaders(),
+      }).chat(modelId);
 
     case 'openai-codex':
       return createOpenAI({

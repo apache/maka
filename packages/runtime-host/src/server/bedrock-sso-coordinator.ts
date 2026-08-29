@@ -368,8 +368,14 @@ export class HostBedrockSsoCoordinator {
     }
     try {
       return await this.activation.runMutation(async () => {
-        const committed = await this.stores.operations.commitConnectionOnboarding({
-          providerType: 'amazon-bedrock',
+        const begun = await this.stores.operations.beginConnectionOnboarding({
+          target: { kind: 'create', providerType: 'amazon-bedrock' },
+          baseUrl: null,
+        });
+        if (begun.kind !== 'ready') {
+          return failure('persistence_failed', 'Amazon Bedrock connection could not be prepared');
+        }
+        const committed = await this.stores.operations.completeConnectionOnboarding(begun.ticket, {
           suppliedSecret: this.dependencies.serializeSession(attempt.session!),
           enabledModelIds,
           discovery: { models: attempt.models!, source: 'fetched', fetchedAt: this.now() },

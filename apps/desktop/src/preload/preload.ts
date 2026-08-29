@@ -161,6 +161,7 @@ import type { CapabilitySnapshotCollection, PermissionSnapshot } from '@maka/cor
 import type { LocalMemoryState } from '@maka/core/local-memory';
 import type {
   AuthorizationUrlPayload,
+  SubscriptionAccountState,
   SubscriptionActionResult,
 } from '@maka/core/oauth-subscription';
 import type { CreateScheduledTaskInput, ScheduledTask, UpdateScheduledTaskInput } from '@maka/core/scheduled-task';

@@ -730,8 +730,6 @@ function classifyProviderFacts(facts: ProviderErrorFacts): string {
   ) {
     return 'ProviderCapacity';
   }
-  if (statusCode === '402' || code === '402') return 'ProviderBilling';
-  if (statusCode === '429' || code === '429') return 'RateLimit';
   if (
     structuredCodes.some((value) =>
       /^(?:accessdenied|access_denied|accessdeniedexception|forbiddenexception)$/.test(value),
@@ -746,8 +744,6 @@ function classifyProviderFacts(facts: ProviderErrorFacts): string {
   ) {
     return 'Configuration';
   }
-  if (statusCode === '401' || statusCode === '403' || code === '401' || code === '403')
-    return 'Auth';
   // Structured provider evidence: the parsed error JSON's code/type is the
   // only unconditional signal for a context overflow.
   if (structuredCodes.some((c) => CONTEXT_OVERFLOW_PROVIDER_CODES.has(c))) return 'ContextLength';

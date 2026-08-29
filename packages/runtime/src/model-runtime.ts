@@ -211,6 +211,8 @@ function resolveModelRuntimeWire(
       // pickers filtering it out; failing here beats sending on a wire we
       // cannot name.
       throw new Error('This provider has no Runtime adapter and cannot resolve a wire.');
+    case 'claude-subscription':
+      return 'anthropic-messages';
     case 'openai-codex':
       return 'openai-responses';
     case 'github-copilot':

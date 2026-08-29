@@ -20,11 +20,11 @@
 import { unlink } from 'node:fs/promises';
 import { join } from 'node:path';
 import {
+  decodeBedrockConfig,
   decodeProviderType,
   decodeConnectionSlug,
   decodeRuntimePolicyEntityId,
   normalizeCatalogConnectionBaseUrl,
-  decodeBedrockConfig,
   normalizeConnectionCatalogEntryUpdateForProvider,
   normalizeConnectionModelDiscoveryResult,
   normalizeCredentialSecret,
@@ -34,7 +34,6 @@ import {
   deriveConnectionSlug,
   PROVIDER_DEFAULTS,
   providerAuthSupportsApiKey,
-  type BedrockConnectionConfig,
   type ProviderType,
 } from '@maka/core/llm-connections';
 import { syncDirectory } from '../stable-storage.js';
@@ -75,7 +74,7 @@ export interface ConnectionOnboardingIntent {
   readonly enabledModelIds: readonly string[];
   readonly discovery: ConnectionModelDiscoveryResult;
   readonly invalidateLastTest: boolean;
-  readonly bedrock?: BedrockConnectionConfig;
+  readonly bedrock?: ReturnType<typeof decodeBedrockConfig>;
 }
 
 export type CurrentConnectionOnboardingIntent = ConnectionOnboardingIntent & {
@@ -92,15 +91,7 @@ export function prepareConnectionOnboardingIntent(
   if (!providerAuthSupportsApiKey(providerType) && providerType !== 'amazon-bedrock') {
     throw codecError(
       source === 'persisted' ? 'invalid_document' : 'invalid_connection_input',
-      'Onboarding requires an API-key or Amazon Bedrock provider',
-    );
-  }
-  const bedrock =
-    input.bedrock === undefined ? undefined : decode(() => decodeBedrockConfig(input.bedrock));
-  if ((providerType === 'amazon-bedrock') !== (bedrock !== undefined)) {
-    throw codecError(
-      source === 'persisted' ? 'invalid_document' : 'invalid_connection_input',
-      'Amazon Bedrock onboarding configuration does not match the provider',
+      'Onboarding requires an API-key provider',
     );
   }
   const definition = PROVIDER_DEFAULTS[providerType];
@@ -128,7 +119,7 @@ export function prepareConnectionOnboardingIntent(
         ...((baseUrl ?? definition.baseUrl) ? { baseUrl: baseUrl ?? definition.baseUrl } : {}),
         enabled: true,
         enabledModelIds: input.enabledModelIds,
-        ...(bedrock ? { bedrock } : {}),
+        ...(input.bedrock === undefined ? {} : { bedrock: input.bedrock }),
       },
       providerType,
     ),
@@ -165,7 +156,7 @@ export function prepareConnectionOnboardingIntent(
     enabledModelIds: normalized.enabledModelIds,
     discovery,
     invalidateLastTest: input.invalidateLastTest,
-    ...(bedrock ? { bedrock } : {}),
+    ...(normalized.bedrock === undefined ? {} : { bedrock: normalized.bedrock }),
   };
 }
 
@@ -186,9 +177,6 @@ export async function readConnectionOnboardingIntent(
       'providerType',
       'suppliedSecret',
       'baseUrl',
-      'enabledModelIds',
-      'discovery',
-      'invalidateLastTest',
       'enabledModelIds',
       'discovery',
       'invalidateLastTest',

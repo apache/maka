@@ -43,8 +43,7 @@ import {
 import { runtimeHostOAuthLoginBridge } from './runtime-host-settings-bridge.js';
 import { BedrockSsoSetup } from './bedrock-sso-setup';
 
-export type OAuthCardId = 'codex' | 'github-copilot' | 'xai';
-export type OAuthCardId = 'bedrock' | 'claude' | 'codex' | 'github-copilot' | 'xai';
+export type OAuthCardId = 'bedrock' | 'codex' | 'github-copilot' | 'xai';
 
 export interface OAuthCard {
   id: OAuthCardId;
@@ -59,6 +58,7 @@ export interface OAuthCard {
 
 function emptyOAuthCardStates(): Record<OAuthCardId, SubscriptionSnapshot | null> {
   return {
+    bedrock: null,
     codex: null,
     'github-copilot': null,
     xai: null,
@@ -93,13 +93,6 @@ export function useOAuthCards(props: { query?: string }) {
   // re-fetched whenever a login step closes (success OR
   // cancel — the user may have signed out from inside it).
   const [cardStates, setCardStates] = useState(emptyOAuthCardStates);
-  const [cardStates, setCardStates] = useState<Record<OAuthCardId, SubscriptionSnapshot | null>>({
-    bedrock: null,
-    claude: null,
-    codex: null,
-    'github-copilot': null,
-    xai: null,
-  });
   const [refreshError, setRefreshError] = useState<string | null>(null);
   const normalizedQuery = props.query?.trim().toLocaleLowerCase() ?? '';
 
@@ -203,9 +196,6 @@ function OAuthLoginPanelForCurrentGeneration(props: {
   if (props.cardId === 'bedrock') {
     return <BedrockSsoSetup onCancel={() => undefined} onCreated={props.onLoginSuccess} />;
   }
-  if (props.cardId === 'claude') {
-    return <ClaudeSubscriptionCard onLoginSuccess={props.onLoginSuccess} />;
-  }
   if (props.cardId === 'github-copilot') {
     return <GitHubCopilotLoginPanel onLoginSuccess={props.onLoginSuccess} />;
   }
@@ -215,7 +205,6 @@ function OAuthLoginPanelForCurrentGeneration(props: {
 /** The subtitle the setup level's header shows above each login panel. */
 export function oauthPanelSubtitle(cardId: OAuthCardId, copy: ProviderSettingsCopy['oauthSection']): string {
   if (cardId === 'bedrock') return 'AWS IAM Identity Center · Bedrock Converse';
-  if (cardId === 'claude') return copy.claudeSubtitle;
   if (cardId === 'github-copilot') return copy.copilotSubtitle;
   if (cardId === 'xai') return copy.xaiDetail;
   return copy.codexDetail;
@@ -229,7 +218,6 @@ function modelOAuthCards(copy: ProviderSettingsCopy['oauthSection']): ReadonlyAr
 }> {
   return [
     { id: 'bedrock', providerType: 'amazon-bedrock', name: 'Amazon Bedrock', description: 'AWS IAM Identity Center · Converse' },
-    { id: 'claude', providerType: 'claude-subscription', name: 'Claude Code', description: copy.claudeDescription },
     { id: 'codex', providerType: 'openai-codex', name: 'OpenAI Codex', description: copy.codexDescription },
     { id: 'github-copilot', providerType: 'github-copilot', name: 'GitHub Copilot', description: copy.copilotDescription },
     { id: 'xai', providerType: 'xai-oauth', name: 'xAI Grok', description: copy.xaiDescription },
@@ -348,14 +336,6 @@ async function getSubscriptionSnapshot(
       email: state.accountId
         ? `••••${state.accountId.slice(-4)} · ${state.roleName ?? ''} · ${state.region ?? ''}`
         : undefined,
-    };
-  }
-  if (serviceId === 'claude') {
-    const state = await window.maka.claudeSubscription.getAccountState(host);
-    return {
-      runtimeState: state.runtimeState,
-      email: state.profile?.email,
-      errorMessage: state.errorMessage,
     };
   }
   if (serviceId === 'github-copilot') {

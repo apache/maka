@@ -223,6 +223,8 @@ async function testConnectionModel(
       // Unreachable: the guard above returns first. The arm keeps the switch
       // exhaustive so a newly retired provider cannot slip past it.
       return retiredProviderTestResult(connection.providerType);
+    case 'claude-subscription':
+      return await probeAnthropic(connection, baseUrl, secret, testModel, t0, fetchFn);
     case 'openai':
       return wire === 'openai-responses'
         ? await probeOpenAIResponses(baseUrl, secret, testModel, t0, fetchFn)
@@ -329,6 +331,9 @@ async function probeAnthropic(
   t0: number,
   fetchFn: ConnectionEffectFetch | undefined,
 ): Promise<ConnectionTestResult> {
+  if (connection.providerType === 'claude-subscription') {
+    return { ok: true, latencyMs: Date.now() - t0, modelTested: model };
+  }
   const headers: Record<string, string> = {
     'x-api-key': secret,
     'anthropic-version': '2023-06-01',

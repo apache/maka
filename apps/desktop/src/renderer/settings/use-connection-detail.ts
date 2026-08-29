@@ -145,17 +145,16 @@ export function useConnectionDetail(props: ConnectionDetailProps) {
   const toast = useToast();
   const reportHostError = useRuntimeHostSettingsErrorReporter();
   const supportsApiKey = providerAuthSupportsApiKey(connection.providerType);
-  const needsOAuth = defaults.authKind === 'oauth_token';
+  const needsOAuth = defaults.authKind === 'oauth_token' || defaults.authKind === 'aws_sso';
   // A retired provider still has its credential on disk, so `hasSecret` is true
   // and the generic notice told these users to "reauthorize under account
   // connections" — an instruction whose only destination is the retirement
   // notice itself.
   const retired = isRetiredProvider(connection.providerType);
-  const oauthLoginService = needsOAuth && !retired
-  const needsOAuth = defaults.authKind === 'oauth_token' || defaults.authKind === 'aws_sso';
-  const oauthLoginService = defaults.authKind === 'oauth_token'
-    ? oauthLoginServiceFor(connection.providerType, host)
-    : null;
+  const oauthLoginService =
+    defaults.authKind === 'oauth_token' && !retired
+      ? oauthLoginServiceFor(connection.providerType, host)
+      : null;
   const usesGitHubCopilotLogin = connection.providerType === 'github-copilot';
   const supportsRemoteDiscovery = providerSupportsModelDiscovery(connection.providerType);
   const requiresCredential = providerAuthRequiresSecret(connection.providerType);

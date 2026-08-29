@@ -110,8 +110,11 @@ const APACHE_TEXT_OVERRIDE_KEYS = new Set([
   '@sigstore/verify@4.1.2',
   '@ai-sdk/provider-utils@5.0.27',
   '@aws-sdk/credential-provider-http@3.972.71',
+  '@aws-sdk/credential-provider-http@3.972.72',
   '@aws-sdk/credential-provider-login@3.972.76',
+  '@aws-sdk/credential-provider-login@3.972.77',
   '@aws-sdk/nested-clients@3.997.43',
+  '@aws-sdk/nested-clients@3.997.44',
 ]);
 const EMBEDDED_COMPONENT_LICENSES = new Map([
   [

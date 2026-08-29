@@ -42,7 +42,8 @@ function fixture(input?: {
   let activeResidencies = 0;
   const stores = {
     operations: {
-      commitConnectionOnboarding: async () => {
+      beginConnectionOnboarding: async () => ({ kind: 'ready', ticket: {} }),
+      completeConnectionOnboarding: async () => {
         commits += 1;
         return {
           kind: 'committed',
