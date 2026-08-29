@@ -18,10 +18,10 @@
  */
 
 import { createHash, randomUUID } from 'node:crypto';
-import { mkdirSync } from 'node:fs';
-import { link, mkdir, open, unlink } from 'node:fs/promises';
+import { mkdirSync, realpathSync } from 'node:fs';
+import { link, lstat, mkdir, open, realpath, unlink } from 'node:fs/promises';
 import { createRequire } from 'node:module';
-import { dirname, join } from 'node:path';
+import { dirname, isAbsolute, join, relative, sep } from 'node:path';
 import type { DatabaseSync } from 'node:sqlite';
 import {
   type ContextOffloadCopyResult,
@@ -54,6 +54,7 @@ export const CONTEXT_OFFLOAD_VALUES_DIRECTORY_NAME = 'context-offload-values';
 export type SqliteContextOffloadStoreFailpoint =
   | 'after_blob_insert'
   | 'after_ref_insert'
+  | 'after_managed_file_publish'
   | 'after_gc_blob_delete';
 
 export interface SqliteContextOffloadStoreOptions {
@@ -102,7 +103,6 @@ interface GarbageCandidateRow {
 
 interface ManagedFilePublication {
   readonly locator: string;
-  readonly created: boolean;
 }
 
 type PreparedContextRead =
@@ -133,11 +133,12 @@ export class SqliteContextOffloadStore implements ContextOffloadStore {
     this.#idFactory = options.idFactory ?? randomUUID;
     this.#failpoint = options.failpoint;
     this.#onUnavailable = options.onUnavailable;
-    this.#storageRoot = path === ':memory:' ? undefined : dirname(path);
+    const storageRoot = path === ':memory:' ? undefined : dirname(path);
+    if (storageRoot) mkdirSync(storageRoot, { recursive: true });
+    this.#storageRoot = storageRoot ? realpathSync(storageRoot) : undefined;
     this.#valueRoot = this.#storageRoot
       ? join(this.#storageRoot, CONTEXT_OFFLOAD_VALUES_DIRECTORY_NAME)
       : undefined;
-    if (this.#storageRoot) mkdirSync(this.#storageRoot, { recursive: true });
     const Database = loadDatabaseSync();
     this.#database = new Database(path);
     try {
@@ -185,18 +186,21 @@ export class SqliteContextOffloadStore implements ContextOffloadStore {
       try {
         this.#assertOpen();
         if (storageKind === 'managed_file') {
-          publication = await this.#publishManagedFile(blobId, bytes);
+          const locator = managedFileLocator(blobId);
+          this.#recordManagedFileDeletionIntent(locator, bytes.byteLength);
+          publication = await this.#publishManagedFile(locator, blobId, bytes);
+          this.#failpoint?.('after_managed_file_publish');
         }
         const result = this.#writeTransaction(() =>
           this.#put({ ...input, bytes, blobId, storageKind, publication }),
         );
-        if (!result.ok && publication?.created) {
-          await this.#removePublicationIfUnreferenced(publication);
+        if (!result.ok && publication) {
+          await this.#drainFileDeletion(publication.locator).catch(() => undefined);
         }
         return result;
       } catch (error) {
-        if (publication?.created) {
-          await this.#removePublicationIfUnreferenced(publication).catch(() => undefined);
+        if (storageKind === 'managed_file') {
+          await this.#drainFileDeletion(managedFileLocator(blobId)).catch(() => undefined);
         }
         this.#onUnavailable?.(error);
         return { ok: false, reason: 'unavailable' };
@@ -683,14 +687,16 @@ export class SqliteContextOffloadStore implements ContextOffloadStore {
       const ownerKey = `${reference.targetOwner.kind}\0${reference.targetOwner.ownerId}`;
       const pending = pendingByOwner.get(ownerKey);
       if (pending) {
-        if (pending.blobId !== source.blobId) return { ok: false, reason: 'identity_conflict' };
+        if (pending.blobId !== source.blobId || pending.mediaType !== source.mediaType) {
+          return { ok: false, reason: 'identity_conflict' };
+        }
         copied.push({ sourceRefId: reference.sourceRefId, targetRefId: pending.refId });
         continue;
       }
 
       const existing = this.#readReferenceByOwner(input.targetSessionId, reference.targetOwner);
       if (existing) {
-        if (existing.blobId !== source.blobId) {
+        if (existing.blobId !== source.blobId || existing.mediaType !== source.mediaType) {
           return { ok: false, reason: 'identity_conflict' };
         }
         pendingByOwner.set(ownerKey, {
@@ -831,13 +837,14 @@ export class SqliteContextOffloadStore implements ContextOffloadStore {
     let bytes: Uint8Array;
     try {
       const path = this.#managedFilePath(input.locator, input.record.blobId);
+      await this.#assertManagedDirectory(dirname(path));
       bytes = await readStableBoundedFile({
         path,
         maxBytes: input.record.sizeBytes,
         invalidFile: () => new InvalidManagedContextFileError(),
       });
     } catch (error) {
-      if (error instanceof InvalidManagedContextFileError) {
+      if (error instanceof InvalidManagedContextFileError || isNodeError(error, 'ENOENT')) {
         return { ok: false, reason: 'corrupt' };
       }
       throw error;
@@ -851,16 +858,18 @@ export class SqliteContextOffloadStore implements ContextOffloadStore {
     return { ok: true, record: input.record, bytes: new Uint8Array(bytes) };
   }
 
-  async #publishManagedFile(blobId: string, bytes: Uint8Array): Promise<ManagedFilePublication> {
-    const locator = managedFileLocator(blobId);
+  async #publishManagedFile(
+    locator: string,
+    blobId: string,
+    bytes: Uint8Array,
+  ): Promise<ManagedFilePublication> {
     const target = this.#managedFilePath(locator, blobId);
     const targetDirectory = dirname(target);
     const storageRoot = this.#storageRoot;
     if (!storageRoot) throw new Error('Managed context files require a durable Storage Root');
-    await mkdir(targetDirectory, { recursive: true });
+    await this.#ensureManagedDirectory(targetDirectory);
     const temporary = join(targetDirectory, `.${blobId}.${randomUUID()}.tmp`);
     let handle: Awaited<ReturnType<typeof open>> | undefined;
-    let created = false;
     try {
       handle = await open(temporary, 'wx', 0o600);
       await handle.writeFile(bytes);
@@ -869,7 +878,7 @@ export class SqliteContextOffloadStore implements ContextOffloadStore {
       handle = undefined;
       try {
         await link(temporary, target);
-        created = true;
+        await this.#assertManagedDirectory(targetDirectory);
         await syncDirectoryChain(targetDirectory, storageRoot);
       } catch (error) {
         if (!isNodeError(error, 'EEXIST')) throw error;
@@ -881,10 +890,11 @@ export class SqliteContextOffloadStore implements ContextOffloadStore {
         if (!isNodeError(error, 'ENOENT')) throw error;
       });
     }
-    return { locator, created };
+    return { locator };
   }
 
   async #verifyManagedFile(path: string, blobId: string, sizeBytes: number): Promise<void> {
+    await this.#assertManagedDirectory(dirname(path));
     const bytes = await readStableBoundedFile({
       path,
       maxBytes: sizeBytes,
@@ -898,15 +908,23 @@ export class SqliteContextOffloadStore implements ContextOffloadStore {
     }
   }
 
-  async #removePublicationIfUnreferenced(publication: ManagedFilePublication): Promise<void> {
-    const row = this.#database
-      .prepare(
-        `SELECT 1 AS present FROM context_blobs
-         WHERE storage_kind = 'managed_file' AND payload = ? LIMIT 1`,
-      )
-      .get(Buffer.from(publication.locator, 'utf8')) as { present?: unknown } | undefined;
-    if (row?.present === 1) return;
-    await this.#deleteManagedFile(publication.locator);
+  #recordManagedFileDeletionIntent(locator: string, sizeBytes: number): void {
+    const locatorBytes = Buffer.from(locator, 'utf8');
+    this.#writeTransaction(() => {
+      this.#database
+        .prepare(
+          `INSERT INTO context_file_deletions(locator, size_bytes, enqueued_at)
+           VALUES (?, ?, ?)
+           ON CONFLICT(locator) DO NOTHING`,
+        )
+        .run(locatorBytes, sizeBytes, this.#readNow());
+      const row = this.#database
+        .prepare('SELECT size_bytes FROM context_file_deletions WHERE locator = ?')
+        .get(locatorBytes) as { size_bytes?: unknown } | undefined;
+      if (row?.size_bytes !== sizeBytes) {
+        throw new Error('Pending context file deletion has an inconsistent size');
+      }
+    });
   }
 
   async #drainPendingFileDeletions(limit: number): Promise<void> {
@@ -916,37 +934,87 @@ export class SqliteContextOffloadStore implements ContextOffloadStore {
     for (const row of rows) {
       const locator = decodeManagedFileLocator(row.locator);
       if (!locator) throw new Error('Invalid pending context file deletion locator');
-      const locatorBytes = Buffer.from(locator, 'utf8');
-      const live = this.#database
-        .prepare(
-          `SELECT 1 AS present FROM context_blobs
-           WHERE storage_kind = 'managed_file' AND payload = ? LIMIT 1`,
-        )
-        .get(locatorBytes) as { present?: unknown } | undefined;
-      if (live?.present === 1) {
-        this.#writeTransaction(() => {
-          this.#database
-            .prepare('DELETE FROM context_file_deletions WHERE locator = ?')
-            .run(locatorBytes);
-        });
-        continue;
-      }
-      await this.#deleteManagedFile(locator);
-      this.#writeTransaction(() => {
-        this.#database
-          .prepare('DELETE FROM context_file_deletions WHERE locator = ?')
-          .run(locatorBytes);
-      });
+      await this.#drainFileDeletion(locator);
     }
+  }
+
+  async #drainFileDeletion(locator: string): Promise<void> {
+    const locatorBytes = Buffer.from(locator, 'utf8');
+    const live = this.#database
+      .prepare(
+        `SELECT 1 AS present FROM context_blobs
+         WHERE storage_kind = 'managed_file' AND payload = ? LIMIT 1`,
+      )
+      .get(locatorBytes) as { present?: unknown } | undefined;
+    if (live?.present !== 1) await this.#deleteManagedFile(locator);
+    this.#writeTransaction(() => {
+      this.#database
+        .prepare('DELETE FROM context_file_deletions WHERE locator = ?')
+        .run(locatorBytes);
+    });
   }
 
   async #deleteManagedFile(locator: string): Promise<void> {
     const path = this.#managedFilePath(locator);
     try {
+      await this.#assertManagedDirectory(dirname(path));
       await unlink(path);
       await syncDirectory(dirname(path));
     } catch (error) {
       if (!isNodeError(error, 'ENOENT')) throw error;
+    }
+  }
+
+  async #ensureManagedDirectory(directory: string): Promise<void> {
+    for (const path of this.#managedDirectoryChain(directory)) {
+      try {
+        await mkdir(path, { mode: 0o700 });
+      } catch (error) {
+        if (!isNodeError(error, 'EEXIST')) throw error;
+      }
+      await this.#assertManagedDirectoryEntry(path);
+    }
+  }
+
+  async #assertManagedDirectory(directory: string): Promise<void> {
+    for (const path of this.#managedDirectoryChain(directory)) {
+      await this.#assertManagedDirectoryEntry(path);
+    }
+  }
+
+  #managedDirectoryChain(directory: string): readonly string[] {
+    const valueRoot = this.#valueRoot;
+    if (!valueRoot) throw new Error('Managed context files require a durable Storage Root');
+    const shaRoot = join(valueRoot, 'sha256');
+    const shard = relative(shaRoot, directory);
+    if (!/^[0-9a-f]{2}$/u.test(shard) || isAbsolute(shard) || shard.includes(sep)) {
+      throw new InvalidManagedContextFileError();
+    }
+    return [valueRoot, shaRoot, directory];
+  }
+
+  async #assertManagedDirectoryEntry(path: string): Promise<void> {
+    const storageRoot = this.#storageRoot;
+    if (!storageRoot) throw new Error('Managed context files require a durable Storage Root');
+    let entry: Awaited<ReturnType<typeof lstat>>;
+    let resolved: string;
+    try {
+      [entry, resolved] = await Promise.all([lstat(path), realpath(path)]);
+    } catch (error) {
+      if (isNodeError(error, 'ENOTDIR')) {
+        throw new InvalidManagedContextFileError();
+      }
+      throw error;
+    }
+    const fromRoot = relative(storageRoot, resolved);
+    if (
+      !entry.isDirectory() ||
+      entry.isSymbolicLink() ||
+      fromRoot === '..' ||
+      fromRoot.startsWith(`..${sep}`) ||
+      isAbsolute(fromRoot)
+    ) {
+      throw new InvalidManagedContextFileError();
     }
   }
 

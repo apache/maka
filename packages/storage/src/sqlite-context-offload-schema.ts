@@ -71,6 +71,9 @@ const INITIAL_SCHEMA = `
     enqueued_at INTEGER NOT NULL CHECK(enqueued_at >= 0)
   );
 
+  CREATE INDEX context_file_deletions_pending
+    ON context_file_deletions(enqueued_at, locator);
+
   CREATE TABLE context_session_usage (
     session_id TEXT PRIMARY KEY,
     reference_count INTEGER NOT NULL CHECK(reference_count >= 0),
@@ -169,6 +172,9 @@ const SCHEMA_V3_MIGRATION = `
     size_bytes INTEGER NOT NULL CHECK(size_bytes >= 0),
     enqueued_at INTEGER NOT NULL CHECK(enqueued_at >= 0)
   );
+
+  CREATE INDEX context_file_deletions_pending
+    ON context_file_deletions(enqueued_at, locator);
 `;
 
 const REQUIRED_SCHEMA_OBJECTS = Object.freeze([
@@ -181,6 +187,7 @@ const REQUIRED_SCHEMA_OBJECTS = Object.freeze([
   ['index', 'context_refs_session'],
   ['index', 'context_refs_blob'],
   ['index', 'context_gc_candidates_eligible'],
+  ['index', 'context_file_deletions_pending'],
 ] as const);
 
 const REQUIRED_TABLE_COLUMNS = Object.freeze({
@@ -204,6 +211,7 @@ const REQUIRED_INDEX_COLUMNS = Object.freeze({
   context_refs_session: ['session_id', 'created_at', 'ref_id'],
   context_refs_blob: ['blob_id'],
   context_gc_candidates_eligible: ['unreferenced_at', 'blob_id'],
+  context_file_deletions_pending: ['enqueued_at', 'locator'],
 } as const);
 
 export function configureSqliteContextOffloadDatabase(db: DatabaseSync): void {
