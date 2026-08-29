@@ -1280,6 +1280,9 @@ export async function createExecutionRuntimeHostComposition(
       sessionActions: {
         assign: async (input) => {
           const durable = await stores.sessionStore.readWorkHubAssignment(input.actionId);
+          if (durable) {
+            await messages.consumePendingAdmissions([durable.targetSessionId]);
+          }
           const create =
             !durable && input.create
               ? await sessionCatalog.prepareWorkHubCreate({
@@ -1348,6 +1351,10 @@ export async function createExecutionRuntimeHostComposition(
                   },
                   ...(create ? { create } : {}),
                 });
+                // Keep the durable steering identity and its live queue owner
+                // under one Session admission. A terminal transition must not
+                // observe the committed Message before the queue does.
+                await messages.consumePendingAdmissionsAdmitted(input.targetSessionId, lease);
                 try {
                   await continuityCoordinator.refreshCanonical(
                     WORKHUB_COORDINATION_SESSION_ID,
@@ -1362,12 +1369,6 @@ export async function createExecutionRuntimeHostComposition(
               },
             ));
 
-          // Assignment is already the acknowledged durable outcome. Consume
-          // the exact stored admission after releasing the assignment leases;
-          // failure leaves it pending for the same normal recovery consumer.
-          void messages
-            .consumePendingAdmissions([persisted.targetSessionId])
-            .catch(() => undefined);
           return {
             turnId: persisted.targetTurnId,
             ...(persisted.steered ? { steered: true as const } : {}),
