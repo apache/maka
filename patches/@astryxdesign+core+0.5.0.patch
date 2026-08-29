@@ -178,29 +178,7 @@ index d9f2bed..d7b6817 100644
    const scrollIfLocked = useCallback(() => {
      if (!enabled) {
        return;
-@@ -253,8 +260,11 @@ export function useChatStreamScroll({
-     // Wheel up while animating — interrupt immediately.
-     // onScroll direction detection covers most cases, but wheel fires
-     // before the scroll position updates so we can react faster.
-+    // maka: the predicate is "are we following", not "is a spring running".
-+    // Under prefers-reduced-motion following never animates, so gating on
-+    // animatingRef made both gesture releases dead code for those readers.
-     const onWheel = e => {
--      if (e.deltaY < 0 && animatingRef.current) {
-+      if (e.deltaY < 0 && lockedRef.current) {
-         lockedRef.current = false;
-         animatingRef.current = false;
-         setIsLocked(false);
-@@ -263,7 +273,7 @@ export function useChatStreamScroll({
- 
-     // Touch move — user is dragging, take control
-     const onTouchMove = () => {
--      if (animatingRef.current) {
-+      if (lockedRef.current) {
-         lockedRef.current = false;
-         animatingRef.current = false;
-         setIsLocked(false);
-@@ -303,6 +313,7 @@ export function useChatStreamScroll({
+@@ -303,6 +310,7 @@ export function useChatStreamScroll({
      lock,
      unlock,
      scrollIfLocked,
