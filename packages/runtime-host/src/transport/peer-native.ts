@@ -93,7 +93,6 @@ export interface RuntimeHostPeerNativeEndpoint {
 
 export interface RuntimeHostPeerTransitSnapshot {
   readonly allowedPeerCount: number;
-  readonly trustedRelayCount: number;
   readonly activeReservationCount: number;
   readonly activeCircuitCount: number;
 }
@@ -491,8 +490,6 @@ function isPeerTransitSnapshot(value: unknown): value is RuntimeHostPeerTransitS
     value !== null &&
     'allowedPeerCount' in value &&
     isCount(value.allowedPeerCount) &&
-    'trustedRelayCount' in value &&
-    isCount(value.trustedRelayCount) &&
     'activeReservationCount' in value &&
     isCount(value.activeReservationCount) &&
     'activeCircuitCount' in value &&

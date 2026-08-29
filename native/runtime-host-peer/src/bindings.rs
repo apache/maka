@@ -63,7 +63,6 @@ pub struct ConfigurePeerTransitOptions {
 #[napi(object)]
 pub struct PeerTransitSnapshot {
     pub allowed_peer_count: u32,
-    pub trusted_relay_count: u32,
     pub active_reservation_count: u32,
     pub active_circuit_count: u32,
 }
@@ -116,7 +115,6 @@ impl PeerEndpoint {
             .unwrap_or_default();
         PeerTransitSnapshot {
             allowed_peer_count: snapshot.allowed_peer_count as u32,
-            trusted_relay_count: snapshot.trusted_relay_count as u32,
             active_reservation_count: snapshot.active_reservation_count as u32,
             active_circuit_count: snapshot.active_circuit_count as u32,
         }

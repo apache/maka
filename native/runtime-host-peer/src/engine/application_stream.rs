@@ -96,10 +96,11 @@ impl Behaviour {
                     .unwrap_or(false)
             })
         {
+            lock(&self.shared).insert(connection_id, peer_id, relay_peer_id, None);
             return Handler::relayed();
         }
         let (sender, receiver) = mpsc::channel(OUTBOUND_COMMAND_CAPACITY);
-        lock(&self.shared).insert(connection_id, peer_id, relay_peer_id, sender);
+        lock(&self.shared).insert(connection_id, peer_id, relay_peer_id, Some(sender));
         Handler::direct(
             peer_id,
             self.protocol.clone(),
@@ -260,7 +261,7 @@ struct DirectConnections {
 struct DirectConnection {
     peer_id: PeerId,
     relay_peer_id: Option<PeerId>,
-    sender: mpsc::Sender<NewStream>,
+    sender: Option<mpsc::Sender<NewStream>>,
 }
 
 impl DirectConnections {
@@ -269,7 +270,7 @@ impl DirectConnections {
         connection_id: ConnectionId,
         peer_id: PeerId,
         relay_peer_id: Option<PeerId>,
-        sender: mpsc::Sender<NewStream>,
+        sender: Option<mpsc::Sender<NewStream>>,
     ) {
         self.connections.insert(
             connection_id,
@@ -293,20 +294,15 @@ impl DirectConnections {
     ) -> Option<(ConnectionId, Option<PeerId>, mpsc::Sender<NewStream>)> {
         self.connections
             .iter()
-            .find(|(connection_id, connection)| {
-                connection.peer_id == peer_id
+            .find_map(|(connection_id, connection)| {
+                let sender = connection.sender.as_ref()?;
+                (connection.peer_id == peer_id
                     && !excluded.contains(connection_id)
                     && connection
                         .relay_peer_id
                         .is_none_or(|relay| allowed_relays.contains(&relay))
-                    && !connection.sender.is_closed()
-            })
-            .map(|(connection_id, connection)| {
-                (
-                    *connection_id,
-                    connection.relay_peer_id,
-                    connection.sender.clone(),
-                )
+                    && !sender.is_closed())
+                .then(|| (*connection_id, connection.relay_peer_id, sender.clone()))
             })
     }
 }
@@ -555,10 +551,10 @@ mod tests {
             vec![protocol.clone()]
         );
         assert!(control.has_connection(peer_id, &HashSet::new(), &HashSet::from([relay_peer_id]),));
-        assert_eq!(
-            control.connections_via(&HashSet::from([relay_peer_id])),
-            vec![ConnectionId::new_unchecked(2)],
-        );
+        let relay_connections = control.connections_via(&HashSet::from([relay_peer_id]));
+        assert_eq!(relay_connections.len(), 2);
+        assert!(relay_connections.contains(&ConnectionId::new_unchecked(1)));
+        assert!(relay_connections.contains(&ConnectionId::new_unchecked(2)));
 
         let direct = behaviour
             .handle_established_outbound_connection(

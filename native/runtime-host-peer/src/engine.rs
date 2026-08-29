@@ -137,7 +137,6 @@ pub enum EngineCommand {
 #[derive(Clone, Default)]
 pub struct TransitSnapshot {
     pub allowed_peer_count: usize,
-    pub trusted_relay_count: usize,
     pub active_reservation_count: usize,
     pub active_circuit_count: usize,
 }
@@ -1465,12 +1464,12 @@ fn configure_transit(
                 .collect::<Vec<_>>()
         })
         .unwrap_or_default();
-    let removed_relays = transit
+    let changed_relays = transit
         .trusted_relays
         .read()
         .map(|current| {
             current
-                .difference(&trusted_relays)
+                .symmetric_difference(&trusted_relays)
                 .copied()
                 .collect::<HashSet<_>>()
         })
@@ -1500,7 +1499,7 @@ fn configure_transit(
     for peer_id in removed {
         let _ = swarm.disconnect_peer_id(peer_id);
     }
-    for connection_id in application_stream.connections_via(&removed_relays) {
+    for connection_id in application_stream.connections_via(&changed_relays) {
         let _ = swarm.close_connection(connection_id);
     }
     publish_transit_snapshot(transit);
@@ -1547,15 +1546,9 @@ fn publish_transit_snapshot(transit: &TransitRuntime) {
         .read()
         .map(|peers| peers.len())
         .unwrap_or_default();
-    let trusted_relay_count = transit
-        .trusted_relays
-        .read()
-        .map(|peers| peers.len())
-        .unwrap_or_default();
     if let Ok(mut snapshot) = transit.snapshot.write() {
         *snapshot = TransitSnapshot {
             allowed_peer_count,
-            trusted_relay_count,
             active_reservation_count: transit.reservations.len(),
             active_circuit_count: transit.circuits.values().sum(),
         };
