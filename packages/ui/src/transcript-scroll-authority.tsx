@@ -77,6 +77,16 @@ export interface TranscriptScrollAuthority {
    * why a command cannot race the policy.
    */
   releasePin(): void;
+  /**
+   * Called when the reader moved the scroller, and only then. Growth, native
+   * anchoring and this authority's own writes all move `scrollTop` without
+   * saying anything about what the reader wants, and none of them reach here.
+   *
+   * It exists so nothing else keeps a second reading of the raw `scroll` event:
+   * whoever needs "the reader is near the start" asks the position, and this
+   * says when asking means anything.
+   */
+  subscribeToReaderScroll(listener: () => void): () => void;
   subscribe(listener: () => void): () => void;
   getSnapshot(): TranscriptScrollSnapshot;
 }
@@ -95,8 +105,19 @@ export function createTranscriptScrollAuthority(): TranscriptScrollAuthority {
    * else.
    */
   let lastWrittenTop: number | undefined;
+  /**
+   * The scroll geometry the last event saw.
+   *
+   * Both numbers move `scrollTop` without the reader touching anything: content
+   * lands and native anchoring compensates, or the viewport changes size and
+   * the browser clamps the offset to the new end. Comparing them is how a
+   * gesture is told from everything else that writes.
+   */
+  let lastScrollHeight = 0;
+  let lastClientHeight = 0;
   let snapshot: TranscriptScrollSnapshot = { pinned, awayFromTail };
   const listeners = new Set<() => void>();
+  const readerListeners = new Set<() => void>();
 
   const publish = (): void => {
     if (snapshot.pinned === pinned && snapshot.awayFromTail === awayFromTail) return;
@@ -110,9 +131,11 @@ export function createTranscriptScrollAuthority(): TranscriptScrollAuthority {
   const writeToTail = (): void => {
     if (!root) return;
     root.scrollTop = root.scrollHeight;
-    // Read it back: the browser clamps the write to the end of the scroller,
-    // and the clamped value is what the event will carry.
+    // Read them back: the browser clamps the write to the end of the scroller,
+    // and the clamped offset is what the event will carry.
     lastWrittenTop = root.scrollTop;
+    lastScrollHeight = root.scrollHeight;
+    lastClientHeight = root.clientHeight;
     awayFromTail = false;
     publish();
   };
@@ -130,13 +153,35 @@ export function createTranscriptScrollAuthority(): TranscriptScrollAuthority {
         // `scroll` does not bubble, and there is no `wheel` listener to catch
         // instead.
         if (lastWrittenTop !== undefined && Math.abs(target.scrollTop - lastWrittenTop) < 1) {
+          lastScrollHeight = target.scrollHeight;
+          lastClientHeight = target.clientHeight;
           return;
         }
+        // An event that arrives with the scroll geometry changed is the content
+        // or the viewport moving under the reader, not the reader moving:
+        // anchoring holding them still as turns land above, growth that outran
+        // this authority's own write, or a resize the browser answered by
+        // clamping the offset. Their offset changed and their intent did not,
+        // so the pin — which is that intent — must not be re-derived from where
+        // they now are, and nobody may be told the reader asked for anything.
+        // The affordance still follows the new distance, because that is a fact
+        // about the viewport rather than about them.
+        const moved =
+          target.scrollHeight !== lastScrollHeight || target.clientHeight !== lastClientHeight;
+        lastScrollHeight = target.scrollHeight;
+        lastClientHeight = target.clientHeight;
         const distance = distanceToTail();
-        pinned = distance <= PIN_THRESHOLD_PX;
         awayFromTail = distance > BUTTON_THRESHOLD_PX;
+        if (moved) {
+          publish();
+          return;
+        }
+        pinned = distance <= PIN_THRESHOLD_PX;
         publish();
+        for (const listener of [...readerListeners]) listener();
       };
+      lastScrollHeight = target.scrollHeight;
+      lastClientHeight = target.clientHeight;
       target.addEventListener('scroll', onScroll, { passive: true });
       // The tail moves when the viewport shrinks, not only when the content
       // grows: a window resize, a composer that gains a line, a dock that
@@ -173,6 +218,12 @@ export function createTranscriptScrollAuthority(): TranscriptScrollAuthority {
       pinned = false;
       awayFromTail = distanceToTail() > BUTTON_THRESHOLD_PX;
       publish();
+    },
+    subscribeToReaderScroll(listener) {
+      readerListeners.add(listener);
+      return () => {
+        readerListeners.delete(listener);
+      };
     },
     subscribe(listener) {
       listeners.add(listener);

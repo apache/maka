@@ -211,3 +211,82 @@ test('a scroll event that arrives late is still this authority\'s own write', ()
     assert.equal(root.scrollTop, 2_702);
   });
 });
+
+test('growth that outruns the write does not read as the reader scrolling up', () => {
+  withResizeObserver(() => {
+    const root = fakeRoot();
+    const authority = createTranscriptScrollAuthority();
+    authority.attach(root as unknown as HTMLElement);
+    assert.equal(root.scrollTop, 2_400);
+
+    // The transcript grew, and the scroll event for it arrives before this
+    // authority has been told to follow it. The offset is 302px from a tail
+    // that moved — identical, as a position, to a reader who scrolled up.
+    root.grow(302);
+    root.scrollTop = 2_402;
+    root.emitScroll();
+    assert.equal(authority.getSnapshot().pinned, true);
+
+    // The affordance still knows how far the tail now is, and the next growth
+    // signal takes the reader back to it.
+    assert.equal(authority.getSnapshot().awayFromTail, true);
+    authority.notifyContentResize();
+    assert.equal(root.scrollTop, 2_702);
+  });
+});
+
+test('content landing above a released reader does not re-pin them', () => {
+  withResizeObserver(() => {
+    const root = fakeRoot();
+    const authority = createTranscriptScrollAuthority();
+    authority.attach(root as unknown as HTMLElement);
+
+    // The reader is at the tail and asks for what is above them: a wheel the
+    // scroller cannot act on, so only the command says so.
+    authority.releasePin();
+    assert.equal(authority.getSnapshot().pinned, false);
+
+    // History lands above them and native anchoring moves the offset to keep
+    // them still. Distance to the tail is unchanged — which is exactly the
+    // reading that used to put the pin back and scroll the new turns away.
+    root.grow(4_000);
+    root.scrollTop = 6_400;
+    root.emitScroll();
+    assert.equal(authority.getSnapshot().pinned, false);
+
+    authority.notifyContentResize();
+    assert.equal(root.scrollTop, 6_400);
+  });
+});
+
+test('only the reader\'s own movement reaches a reader-scroll listener', () => {
+  withResizeObserver(() => {
+    const root = fakeRoot();
+    const authority = createTranscriptScrollAuthority();
+    let heard = 0;
+    const stop = authority.subscribeToReaderScroll(() => {
+      heard += 1;
+    });
+    authority.attach(root as unknown as HTMLElement);
+
+    // This authority's own write, echoed back late.
+    root.emitScroll();
+    assert.equal(heard, 0);
+
+    // Content arriving, with anchoring moving the offset to hold the reader.
+    root.grow(500);
+    root.scrollTop = 2_900;
+    root.emitScroll();
+    assert.equal(heard, 0);
+
+    // The reader, at last.
+    root.scrollTop = 900;
+    root.emitScroll();
+    assert.equal(heard, 1);
+
+    stop();
+    root.scrollTop = 400;
+    root.emitScroll();
+    assert.equal(heard, 1);
+  });
+});

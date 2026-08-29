@@ -406,3 +406,80 @@ test('history asked for at the very top of the scroller still lands above the re
   }, SCROLLER);
   expect(offset).toBeGreaterThanOrEqual(1);
 });
+
+/**
+ * A transcript shorter than about three viewports has its tail inside the band
+ * that asks for earlier history, so "near the start" cannot mean the reader
+ * wants it.
+ *
+ * The other half of that rule — a wheel the scroller cannot act on releases the
+ * pin, because it is the reader asking for what is above them — has no assertion
+ * here, and not for want of trying. Its only observable consequence is that a
+ * later arrival does not take the reader back down, and in this fixture the
+ * reader who asks is already at the tail: anchoring holds them at the same
+ * distance from it, the session takes no new turns, and a viewport change moves
+ * them the same way pinned or not. An assertion that passes either way is worse
+ * than none. `transcript-scroll-authority.test.ts` covers the state machine it
+ * turns on.
+ */
+test('following the tail does not ask for the history above it', async ({
+  promptRailWindow: page,
+}) => {
+  const loadedTurns = () =>
+    page
+      .locator('.maka-chat-message-list')
+      .getAttribute('data-turn-source-count')
+      .then((value) => Number(value));
+  const loadedBefore = await loadedTurns();
+
+  // Tall enough that the tail sits inside `max(640, clientHeight * 2)`. The
+  // resize itself is a growth signal, so the pin writes the tail and that write
+  // dispatches the scroll event this test is about.
+  await page.setViewportSize({ width: 900, height: 1500 });
+  await waitForPaintedFrames(page, 6);
+
+  const settled = await scrollMetrics(page);
+  expect(settled.distance, JSON.stringify(settled)).toBeLessThanOrEqual(4);
+  expect(
+    settled.scrollTop,
+    `the tail must be inside the load band for this test to mean anything: ${JSON.stringify(settled)}`,
+  ).toBeLessThanOrEqual(Math.max(640, settled.clientHeight * 2));
+
+  // Nothing arrived that the reader did not ask for.
+  await waitForPaintedFrames(page, 12);
+  expect(await loadedTurns()).toBe(loadedBefore);
+});
+
+test('a wheel the scroller cannot act on still asks for history', async ({
+  promptRailWindow: page,
+}) => {
+  const loadedTurns = () =>
+    page
+      .locator('.maka-chat-message-list')
+      .getAttribute('data-turn-source-count')
+      .then((value) => Number(value));
+  const loadedBefore = await loadedTurns();
+
+  await page.setViewportSize({ width: 900, height: 1500 });
+  await waitForPaintedFrames(page, 6);
+  const asked = await scrollMetrics(page);
+  expect(asked.distance, JSON.stringify(asked)).toBeLessThanOrEqual(4);
+
+  // Dispatched rather than driven, and that is the point: the case is a wheel
+  // the scroller cannot act on — already at zero, or too short to move — where
+  // no scroll follows and the authority never learns the reader asked. A real
+  // `mouse.wheel` would scroll, and the scroll alone would carry the request.
+  await page.evaluate((selector) => {
+    const root = document.querySelector(selector);
+    if (!root) throw new Error('the chat scroll container is missing');
+    root.dispatchEvent(new WheelEvent('wheel', { deltaY: -120, bubbles: true }));
+  }, SCROLLER);
+
+  await expect.poll(loadedTurns, { timeout: 20_000 }).toBeGreaterThan(loadedBefore);
+
+  // And it landed above the reader: they are where they were, with more above
+  // them than before.
+  const after = await scrollMetrics(page);
+  expect(after.scrollTop, `${JSON.stringify(asked)} then ${JSON.stringify(after)}`)
+    .toBeGreaterThan(asked.scrollTop);
+});

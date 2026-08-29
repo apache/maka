@@ -21,12 +21,15 @@
  * The transcript's scroll commands, and the seam that hands the scroller to the
  * authority that owns it (`transcript-scroll-authority.ts`).
  *
- * A command is one-shot: jump to a turn the reader picked, or ask for earlier
- * history. Each releases the pin first, and the authority writes nothing while
- * the pin is released — so a command cannot be fighting a policy, which is the
- * shape every previous round of this code had. Nothing here compensates for
- * content that lands above the reader; `overflow-anchor: auto` does that
- * continuously, and for free.
+ * A command is one-shot — jump to a turn the reader picked, ask for the history
+ * above them — and it releases the pin first, because the authority writes
+ * nothing while the pin is released and so a command can never be fighting a
+ * policy. That was the shape every previous round of this code had.
+ *
+ * What decides whether the reader wants either thing is never re-derived here.
+ * "They have left the tail" is the pin, and the pin has one owner. Nothing here
+ * compensates for content that lands above them either; `overflow-anchor: auto`
+ * does that continuously, and for free.
  */
 
 import { useEffect, useRef, useState, type RefObject } from 'react';
@@ -69,12 +72,6 @@ export function useChatScroll(input: {
     // request while one is in flight, and asking for history the reader
     // already has is idempotent anyway.
     const requestEarlier = (): void => {
-      // Nothing here touches the pin. Asking for history is not a decision
-      // about where the viewport belongs: if the reader scrolled up to ask,
-      // the authority already saw that scroll and released; if the transcript
-      // is merely short enough that its tail is also near its start, they are
-      // still following it and must keep following it.
-      //
       // The browser anchors the reader against everything that lands above
       // them, with one exception: it declines while the scroller sits at zero,
       // which is exactly where a wheel asks for history. One pixel is the whole
@@ -83,24 +80,34 @@ export function useChatScroll(input: {
       if (root.scrollTop < 1) root.scrollTop = 1;
       void Promise.resolve(loadEarlierRef.current?.()).catch(() => undefined);
     };
-    // Position, not direction: a shrinking transcript also lowers `scrollTop`.
+    /** Close enough to the start that the reader is about to reach it. */
     const nearStart = (): boolean =>
       root.scrollTop <= Math.max(640, root.clientHeight * 2);
-    const onScroll = (): void => {
+    // Nearness alone does not mean the reader wants history — on a transcript
+    // shorter than about three viewports the tail is inside this band too, so
+    // following it would ask on every write, and content landing above would
+    // ask again on every anchoring correction until there was no history left.
+    // Which movements were the reader's is not re-derived here; the authority
+    // watches the scroller and says so.
+    const stopWatchingReader = authority.subscribeToReaderScroll(() => {
       if (nearStart()) requestEarlier();
-    };
-    // At `scrollTop === 0` there is no scroll event left to fire, so the wheel
-    // is the only way the reader can ask for more.
+    });
+    // A wheel is the reader asking to go up, which at `scrollTop === 0` is the
+    // only way they can: the scroller cannot move, so no scroll event follows
+    // and the authority never sees the gesture. Releasing here is what tells it
+    // — a reader who asked for what is above them is no longer following what
+    // is below.
     const onWheel = (event: WheelEvent): void => {
-      if (event.deltaY < 0 && nearStart()) requestEarlier();
+      if (event.deltaY >= 0 || !nearStart()) return;
+      authority.releasePin();
+      requestEarlier();
     };
-    root.addEventListener('scroll', onScroll, { passive: true });
     root.addEventListener('wheel', onWheel, { passive: true });
     return () => {
-      root.removeEventListener('scroll', onScroll);
+      stopWatchingReader();
       root.removeEventListener('wheel', onWheel);
     };
-  }, [input.hasOlderHistory, canLoadEarlier, input.scrollRef, input.sessionId]);
+  }, [authority, input.hasOlderHistory, canLoadEarlier, input.scrollRef, input.sessionId]);
 
   useEffect(() => {
     const target = input.target;
