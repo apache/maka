@@ -57,6 +57,7 @@ test('ScheduledTask recovery distinguishes a settled fire from a newer pending f
           execution: {
             cwd: '/workspace',
             backend: 'ai-sdk',
+            llmConnectionId: 'connection-default',
             llmConnectionSlug: 'default',
             model: 'test-model',
             permissionMode: 'ask',
