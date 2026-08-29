@@ -65,6 +65,7 @@ apps/desktop/src/renderer/settings/bot-wechat-login.tsx
 apps/desktop/src/renderer/settings/custom-pet-settings-section.tsx
 apps/desktop/src/renderer/settings/daily-review-settings-page.tsx
 apps/desktop/src/renderer/settings/data-settings-page.tsx
+apps/desktop/src/renderer/settings/default-working-directory-row.tsx
 apps/desktop/src/renderer/settings/general-settings-page.tsx
 apps/desktop/src/renderer/settings/health-center-page.tsx
 apps/desktop/src/renderer/settings/import-tasks-settings-page.tsx

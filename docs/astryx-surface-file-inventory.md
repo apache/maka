@@ -6,7 +6,7 @@ Generated against `@astryxdesign/core@0.5.2` (194 component exports).
 
 Wiki bar: Design Conventions · API Use-the-System · Theming · Container Padding.
 
-**Totals:** 236 files — blocker 0, reimplementation 0, polish 1, aligned 235.
+**Totals:** 237 files — blocker 0, reimplementation 0, polish 1, aligned 236.
 
 ## Exclusions (explicit)
 
@@ -94,6 +94,7 @@ Wiki bar: Design Conventions · API Use-the-System · Theming · Container Paddi
 | `apps/desktop/src/renderer/settings/custom-pet-settings-section.tsx` | settings-module | Badge, Button, EmptyState | aligned — uses Astryx (Badge, Button, EmptyState) | aligned |
 | `apps/desktop/src/renderer/settings/daily-review-settings-page.tsx` | settings-page | Banner, Selector, Switch, TextInput | aligned — uses Astryx (Banner, Selector, Switch, TextInput) | aligned |
 | `apps/desktop/src/renderer/settings/data-settings-page.tsx` | settings-page | Banner, Button, Selector, Switch | aligned — uses Astryx (Banner, Button, Selector, Switch) | aligned |
+| `apps/desktop/src/renderer/settings/default-working-directory-row.tsx` | settings-module | Button | aligned — uses Astryx (Button) | aligned |
 | `apps/desktop/src/renderer/settings/general-settings-page.tsx` | settings-page | Banner, Button, FormLayout, NumberInput, Selector, Switch, TextInput | aligned — uses Astryx (Banner, Button, FormLayout, NumberInput, Selector, Switch, TextInput) | aligned |
 | `apps/desktop/src/renderer/settings/health-center-page.tsx` | settings-page | Banner, Button, StatusDot, Text, VStack | aligned — uses Astryx (Banner, Button, StatusDot, Text, VStack) | aligned |
 | `apps/desktop/src/renderer/settings/import-tasks-settings-page.tsx` | settings-page | Banner, Button, CheckboxInput, EmptyState, HStack, List, ListItem, SegmentedControl, SegmentedControlItem, Spinner, TextInput, VStack | aligned — uses Astryx (Banner, Button, CheckboxInput, EmptyState, HStack, List, ListItem, SegmentedControl) | aligned |
