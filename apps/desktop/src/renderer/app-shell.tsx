@@ -38,7 +38,6 @@ import type {
 import type { SessionSummary } from '@maka/core/session';
 import type { OrchestrationMode } from '@maka/core/orchestration';
 import type { ChatDefaultPermissionMode } from '@maka/core/settings';
-import type { ScheduledTaskEffect } from '@maka/core/scheduled-task';
 import type { SlashCommandIdForSurface } from '@maka/core/slash-command-catalog';
 import type { UiLocale, UiLocalePreference } from '@maka/core/ui-locale';
 import { collapseSessionRevisions } from '@maka/core/session-revisions';
@@ -84,6 +83,7 @@ import {
 } from './task-readiness-notice';
 import { deriveWorkspaceReadinessRecovery } from './workspace-readiness-recovery';
 import { LiveTurnReconciler } from './live-turn-reconciler';
+import { resolveScheduledTaskAgentRunTemplate } from './scheduled-task-template-effect';
 import { useAppShellSessionUiReads } from './use-app-shell-session-ui-reads';
 import { AgentGraphPanel } from './agent-graph-panel';
 import { ChatComposerRegion } from './chat-composer-region';
@@ -1480,24 +1480,19 @@ function AppShellContent({
     ...(projectCapabilities.viewClientPath ? { openSkillsFolder } : {}),
     useSkillInChat,
     openSession: openSessionInChat,
-    ...(newChatModel && taskEntry.selectors.projectPath && taskEntry.selectors.target
-      ? {
-          agentRunTemplateEffect: {
-            kind: 'agent_run',
-            execution: {
-              cwd: taskEntry.selectors.projectPath,
-              projectId: taskEntry.selectors.target.projectId,
-              llmConnectionId: newChatModel.llmConnectionId,
-              llmConnectionSlug: newChatModel.llmConnectionSlug,
-              model: newChatModel.model,
-              ...(newChatThinkingLevel ? { thinkingLevel: newChatThinkingLevel } : {}),
-              permissionMode: newTaskPermissionMode,
-              collaborationMode: newChatPlanModeActive ? 'plan' : 'agent',
-              orchestrationMode: newChatOrchestrationMode,
-            },
-          } satisfies Extract<ScheduledTaskEffect, { kind: 'agent_run' }>,
-        }
-      : {}),
+    ...(() => {
+      const agentRunTemplateEffect = resolveScheduledTaskAgentRunTemplate({
+        usesDefaultHost: taskEntry.selectors.usesDefaultHost,
+        projectPath: taskEntry.selectors.projectPath,
+        projectId: taskEntry.selectors.target?.projectId,
+        model: newChatModel,
+        thinkingLevel: newChatThinkingLevel,
+        permissionMode: newTaskPermissionMode,
+        collaborationMode: newChatPlanModeActive ? 'plan' : 'agent',
+        orchestrationMode: newChatOrchestrationMode,
+      });
+      return agentRunTemplateEffect ? { agentRunTemplateEffect } : {};
+    })(),
   });
   refreshProjectSkillsRef.current = moduleHub.commands.refreshProjectSkills;
   const workHubProjectsRef = useRef(projects);
