@@ -37,17 +37,22 @@ import type {
 
 const DEPLOYMENT_ID = '11111111-1111-4111-8111-111111111111';
 
-test('routes built-in Local management through its provider with explicit interruption authority', async () => {
+test('requires explicit interruption authority before a provider restarts active work', async () => {
   const handlers = new Map<string, (...args: unknown[]) => unknown>();
-  const calls: unknown[] = [];
   const provider = {
     profileId: 'local',
-    run: async (action: string, allowInterruptActiveTasks?: boolean) => {
-      calls.push([action, allowInterruptActiveTasks]);
-      return action === 'uninstall'
-        ? { kind: 'uninstalled' as const, retainedStateRoot: '/state' }
+    accessManagementAvailable: false,
+    run: async (action: string, allowInterruptActiveTasks: boolean) => {
+      return action === 'restart' && !allowInterruptActiveTasks
+        ? {
+            schemaVersion: 1 as const,
+            kind: 'error' as const,
+            action: 'restart' as const,
+            error: { code: 'active_tasks', message: 'Runtime Host still owns active work' },
+          }
         : serviceResult(action as DesktopRuntimeHostSshManagementInput['action']);
     },
+    uninstall: async () => ({ kind: 'uninstalled' as const, retainedStateRoot: '/state' }),
   } as unknown as DesktopRuntimeHostManagementProvider;
   createDesktopRuntimeHostManagement({
     ...unusedUpdateDependencies(),
@@ -72,12 +77,13 @@ test('routes built-in Local management through its provider with explicit interr
 
   const run = handlers.get('runtime-host-management:run');
   assert.ok(run);
-  await run({}, 'local', 'status');
-  await run({}, 'local', 'uninstall', true);
+  const blocked = await run({}, 'local', 'restart');
+  const restarted = await run({}, 'local', 'restart', true);
 
-  assert.deepEqual(calls, [['status', false], ['uninstall', true]]);
+  assert.equal((blocked as { kind: string }).kind, 'error');
+  assert.equal((restarted as { kind: string }).kind, 'result');
   assert.throws(
-    () => run({}, 'local', 'restart', true),
+    () => run({}, 'local', 'status', true),
     /authority is not valid for this action/u,
   );
 });

@@ -544,14 +544,14 @@ class RuntimeHostDesktopManagerImpl implements RuntimeHostDesktopManager {
       const lifecycle = this.#requireLifecycle(
         this.#requireTarget(LOCAL_RUNTIME_HOST_PROFILE.id),
       );
-      const quiescence = await lifecycle.quiesce();
+      const suspension = await lifecycle.suspend();
       try {
-        if (quiescence.current.hostOwnership !== 'supervised') {
+        if (suspension.current?.hostOwnership === 'owned_ephemeral') {
           throw new Error('The Local Runtime Host is not managed by a background service');
         }
         return await change();
       } finally {
-        quiescence.resume();
+        suspension.resume();
       }
     });
   }

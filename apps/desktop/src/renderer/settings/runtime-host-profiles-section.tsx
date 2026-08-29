@@ -398,9 +398,7 @@ export function RuntimeHostProfilesSection(props: {
                 variant="neutral"
                 label={localAccess?.state === 'on' ? copy.remoteAccessOn : copy.remoteAccessOff}
               />
-              {localManagementTarget &&
-              (localAccess?.state === 'on' ||
-                (localAccess?.state === 'off' && localAccess.managedService)) ? (
+              {localManagementTarget && localAccess?.managedService ? (
                 <Button
                   variant="secondary"
                   size="sm"
@@ -624,6 +622,12 @@ export function RuntimeHostProfilesSection(props: {
             {connectedEntries.map((entry) => {
               const profile = entry.profile;
               if (profile.kind === 'local') return null;
+              const managedSshDestination =
+                profile.kind === 'remote' &&
+                profile.transport.kind === 'ssh' &&
+                entry.managedService
+                  ? profile.transport.destination
+                  : undefined;
               return (
                 <ListItem
                   key={profile.id}
@@ -661,15 +665,14 @@ export function RuntimeHostProfilesSection(props: {
                         label={copy.moreActions(profile.name)}
                         size="sm"
                         items={[
-                          ...(profile.kind === 'remote' &&
-                          profile.transport.kind === "ssh" && entry.managedService
+                          ...(managedSshDestination
                             ? [{
                                 label: copy.manage,
                                 isDisabled: switching,
                                 onClick: () => setManagedTarget({
                                   id: profile.id,
                                   name: profile.name,
-                                  subtitle: profile.transport.destination,
+                                  subtitle: managedSshDestination,
                                   directPeerManagement: true,
                                 }),
                               }, {

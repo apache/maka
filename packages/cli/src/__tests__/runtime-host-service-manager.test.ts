@@ -153,6 +153,16 @@ describe('managed Runtime Host service', () => {
       framed: true,
     });
     assert.deepEqual(
+      parseRuntimeHostCommand(['service', 'restart', '--framed', '--allow-interrupt-active-tasks']),
+      {
+        kind: 'runtime-host-service-manage',
+        action: 'restart',
+        json: false,
+        framed: true,
+        allowInterruptActiveTasks: true,
+      },
+    );
+    assert.deepEqual(
       parseRuntimeHostCommand([
         'service',
         'peer',
@@ -1928,6 +1938,7 @@ describe('managed Runtime Host service', () => {
   it('stops partial deployment state when start or restart fails', async (t) => {
     const base = await mkdtemp(join(tmpdir(), 'maka-runtime-host-service-start-failure-'));
     t.after(() => rm(base, { recursive: true, force: true }));
+    const root = await resolveStorageRoot({ path: join(base, 'state'), kind: 'interactive' });
     const cliPath = join(base, 'cli.js');
     await writeFile(cliPath, '#!/usr/bin/env node\n', 'utf8');
     let stops = 0;
@@ -1939,6 +1950,15 @@ describe('managed Runtime Host service', () => {
       ...createReadyBackend(),
       start: failedAction,
       restart: failedAction,
+      status: async () => ({
+        manager: 'systemd_user',
+        installed: true,
+        enabled: true,
+        active: false,
+        state: 'stopped',
+        pid: null,
+        lastExitCode: 0,
+      }),
       stop: async () => {
         stops += 1;
         if (stopFails) throw new Error('partial deployment stop failed');
@@ -1946,7 +1966,7 @@ describe('managed Runtime Host service', () => {
     };
     const common = {
       clientDataRoot: join(base, 'config'),
-      defaultRootPath: join(base, 'state'),
+      defaultRootPath: root.canonicalPath,
       nodePath: process.execPath,
       cliPath,
     } as const;
@@ -1982,6 +2002,7 @@ describe('managed Runtime Host service', () => {
     let serviceState: 'running' | 'starting' | 'stopped' = 'running';
     let startingPid: number | null = null;
     let stops = 0;
+    let cleanupStops = 0;
     let observedStartingFence = false;
     let publishPidlessSuccessor = false;
     const backend: RuntimeHostServiceBackend = {
@@ -2002,6 +2023,10 @@ describe('managed Runtime Host service', () => {
           observedStartingFence = contender === undefined;
           await contender?.close();
         }
+        serviceState = 'stopped';
+      },
+      stop: async () => {
+        cleanupStops += 1;
         serviceState = 'stopped';
       },
     };
@@ -2057,6 +2082,14 @@ describe('managed Runtime Host service', () => {
     assert.deepEqual(blockedUninstall.retirement, { kind: 'active_tasks' });
     assert.equal(blockedUninstall.service.installed, true);
     assert.equal(stops, 0);
+
+    await assert.rejects(
+      manageRuntimeHostService({ ...common, action: 'restart', expectedTarget }, backend, deps),
+      (error: unknown) =>
+        error instanceof RuntimeHostServiceManagerError && error.code === 'active_tasks',
+    );
+    assert.equal(stops, 0);
+    assert.equal(cleanupStops, 0);
 
     const retired = await manageRuntimeHostService(
       {

@@ -57,7 +57,10 @@ import type {
   DesktopRuntimeHostDevelopmentPeerTarget,
   DesktopRuntimeHostSetupPackage,
 } from './runtime-host-setup-package.js';
-import type { DesktopRuntimeHostManagementProvider } from './runtime-host-management-provider.js';
+import type {
+  DesktopRuntimeHostManagementProvider,
+  DesktopRuntimeHostManagementTerminalFrame,
+} from './runtime-host-management-provider.js';
 
 const MANAGEMENT_ACTIONS = new Set<DesktopRuntimeHostManagementAction>([
   'status',
@@ -147,6 +150,23 @@ export function createDesktopRuntimeHostManagement(input: {
     return managed;
   };
 
+  const activeTasks = (
+    action: DesktopRuntimeHostManagementAction,
+  ): DesktopRuntimeHostManagementResponse => ({
+    schemaVersion: 1,
+    kind: 'error',
+    action,
+    error: { code: 'active_tasks', message: 'Runtime Host still owns active work' },
+  });
+
+  const projectManagementFrame = (
+    frame: Exclude<RuntimeHostServiceManagementFrame, { kind: 'progress' }>,
+    accessManagementAvailable: boolean,
+  ): DesktopRuntimeHostManagementResponse =>
+    (frame.kind === 'result'
+      ? { ...frame, accessManagementAvailable }
+      : frame) as DesktopRuntimeHostManagementResponse;
+
   const statusRequests = new Map<string, Promise<DesktopRuntimeHostManagementResponse>>();
   const runManagedAction = async (
     profileId: string,
@@ -189,7 +209,8 @@ export function createDesktopRuntimeHostManagement(input: {
             websocketPath: profile.transport.websocketPath,
           }
         : {}),
-      ...(managementAction === 'uninstall' && allowInterruptActiveTasks
+      ...((managementAction === 'uninstall' || managementAction === 'restart') &&
+      allowInterruptActiveTasks
         ? { allowInterruptActiveTasks: true }
         : {}),
     };
@@ -198,16 +219,13 @@ export function createDesktopRuntimeHostManagement(input: {
       if (response.action !== managementAction) {
         throw new Error('Remote Runtime Host returned a different management action');
       }
-      return response.kind === 'result'
-        ? {
-            ...response,
-            action: managementAction,
-            accessManagementAvailable:
-              response.operatorCapabilities?.includes(
-                RUNTIME_HOST_OPERATOR_ACCESS_MANAGEMENT_CAPABILITY,
-              ) ?? false,
-          }
-        : { ...response, action: managementAction };
+      return projectManagementFrame(
+        response,
+        response.kind === 'result' &&
+          (response.operatorCapabilities?.includes(
+            RUNTIME_HOST_OPERATOR_ACCESS_MANAGEMENT_CAPABILITY,
+          ) ?? false),
+      );
     }
 
     let pending = managed;
@@ -257,13 +275,30 @@ export function createDesktopRuntimeHostManagement(input: {
     if (typeof allowInterruptActiveTasksValue !== 'boolean') {
       throw new Error('Runtime Host interruption authority is invalid');
     }
-    if (managementAction !== 'uninstall' && allowInterruptActiveTasksValue) {
+    if (
+      managementAction !== 'uninstall' &&
+      managementAction !== 'restart' &&
+      allowInterruptActiveTasksValue
+    ) {
       throw new Error('Runtime Host interruption authority is not valid for this action');
     }
     const provider = providers.get(profileId);
-    const execute = () => provider
-      ? provider.run(managementAction, allowInterruptActiveTasksValue)
-      : runManagedAction(profileId, managementAction, allowInterruptActiveTasksValue);
+    const execute = async (): Promise<DesktopRuntimeHostManagementResponse> => {
+      if (!provider) {
+        return runManagedAction(profileId, managementAction, allowInterruptActiveTasksValue);
+      }
+      if (managementAction === 'uninstall') {
+        const response = await provider.uninstall(allowInterruptActiveTasksValue);
+        return response.kind === 'active_tasks'
+          ? activeTasks(managementAction)
+          : { kind: 'uninstalled', retainedStateRoot: response.retainedStateRoot };
+      }
+      const frame = requireManagementFrame(
+        await provider.run(managementAction, allowInterruptActiveTasksValue),
+        managementAction,
+      );
+      return projectManagementFrame(frame, provider.accessManagementAvailable);
+    };
     if (managementAction !== 'status') return execute();
     const existing = statusRequests.get(profileId);
     if (existing) return existing;
@@ -329,6 +364,23 @@ export function createDesktopRuntimeHostManagement(input: {
     };
   };
 
+  const reconnectManagedTarget = (
+    profileId: string,
+    managed: Awaited<ReturnType<typeof resolveManagedService>>,
+    previousHostEpoch: string | undefined,
+  ): (() => Promise<void>) => async () => {
+    const current = await input.profiles.resolveManagedService(profileId);
+    if (!current || !sameDesktopRuntimeHostManagedServiceBinding(current, managed)) {
+      throw new Error('Runtime Host profile changed while its service was updating');
+    }
+    await input.awaitUpdatedConnection(
+      profileId,
+      managed.profile.rootId,
+      previousHostEpoch,
+      true,
+    );
+  };
+
   const peerSnapshot = async (
     profileId: string,
     status: RuntimeHostPeerStatus,
@@ -390,14 +442,6 @@ export function createDesktopRuntimeHostManagement(input: {
   const getDirectPeer = async (
     profileIdValue: unknown,
   ): Promise<DesktopRuntimeHostDirectPeerSnapshot> => {
-    const providerProfileId = requireProfileId(profileIdValue);
-    const provider = providers.get(providerProfileId);
-    if (provider) {
-      if (!provider.directPeer) {
-        throw new Error('Direct peer management is not available for this Runtime Host');
-      }
-      return provider.directPeer.get();
-    }
     const { profileId, managed, transport, expectedTarget, available } =
       await peerManagementTarget(profileIdValue);
     if (!available) return unavailablePeerSnapshot(profileId);
@@ -430,18 +474,6 @@ export function createDesktopRuntimeHostManagement(input: {
     const coordinationRelays = requireCoordinationRelays(coordinationRelaysValue);
     if (typeof automaticRelayDiscoveryValue !== 'boolean') {
       throw new Error('Runtime Host relay discovery state is invalid');
-    }
-    const providerProfileId = requireProfileId(profileIdValue);
-    const provider = providers.get(providerProfileId);
-    if (provider) {
-      if (!provider.directPeer) {
-        throw new Error('Direct peer management is not available for this Runtime Host');
-      }
-      return provider.directPeer.configure(
-        enabledValue,
-        coordinationRelays,
-        automaticRelayDiscoveryValue,
-      );
     }
     const { profileId, managed, transport, expectedTarget, available } =
       await peerManagementTarget(profileIdValue);
@@ -520,49 +552,59 @@ export function createDesktopRuntimeHostManagement(input: {
     if (typeof allowInterruptActiveTasksValue !== 'boolean') {
       throw new Error('Runtime Host update interruption authority is invalid');
     }
-    const providerProfileId = requireProfileId(profileIdValue);
-    const provider = providers.get(providerProfileId);
-    if (provider) return provider.update(allowInterruptActiveTasksValue);
-    const { profileId, managed, transport, expectedTarget } =
-      await managedMutationTarget(profileIdValue);
-    const previousHostEpoch = input.currentHostEpoch(profileId);
-    input.sendProgress({ profileId, phase: 'preparing_cli' });
-    const peerTarget = input.setupPackageMode === 'development'
-      ? await input.resolveSshDevelopmentPeerTarget({
+    const profileId = requireProfileId(profileIdValue);
+    const provider = providers.get(profileId);
+    let execute: () => Promise<DesktopRuntimeHostManagementTerminalFrame>;
+    let reconnect: () => Promise<void>;
+    if (provider) {
+      const previousHostEpoch = provider.currentHostEpoch();
+      input.sendProgress({ profileId, phase: 'preparing_cli' });
+      execute = () => provider.update(
+          allowInterruptActiveTasksValue,
+          (phase) => input.sendProgress({ profileId, phase }),
+        );
+      reconnect = () => provider.awaitUpdatedConnection(previousHostEpoch, true);
+    } else {
+      const { managed, transport, expectedTarget } = await managedMutationTarget(profileId);
+      const previousHostEpoch = input.currentHostEpoch(profileId);
+      input.sendProgress({ profileId, phase: 'preparing_cli' });
+      const peerTarget = input.setupPackageMode === 'development'
+        ? await input.resolveSshDevelopmentPeerTarget({
           destination: transport.destination,
           ...(transport.sshPort === undefined ? {} : { sshPort: transport.sshPort }),
         })
-      : 'none';
-    const setupPackage = await input.resolveUpdatePackage(peerTarget);
-    const response = await input.runUpdate(
-      {
-        destination: transport.destination,
-        ...(transport.sshPort === undefined ? {} : { sshPort: transport.sshPort }),
-        setupPackage,
-        expectedTarget,
-        ...(allowInterruptActiveTasksValue ? { allowInterruptActiveTasks: true } : {}),
-      },
-      (phase) => input.sendProgress({ profileId, phase }),
-    );
+        : 'none';
+      const setupPackage = await input.resolveUpdatePackage(peerTarget);
+      execute = () => input.runUpdate(
+        {
+          destination: transport.destination,
+          ...(transport.sshPort === undefined ? {} : { sshPort: transport.sshPort }),
+          setupPackage,
+          expectedTarget,
+          ...(allowInterruptActiveTasksValue ? { allowInterruptActiveTasks: true } : {}),
+        },
+        (phase) => input.sendProgress({ profileId, phase }),
+      );
+      reconnect = reconnectManagedTarget(profileId, managed, previousHostEpoch);
+    }
+    const response = requireManagementFrame(await execute(), 'update');
     const reconnectError =
-      response.kind === 'result' && response.update.kind !== 'active_tasks'
-        ? await reconnectUpdatedTarget(
-        profileId,
-        managed,
-        previousHostEpoch,
-        response.update.kind !== 'already_current',
-      )
+      response.kind === 'result' &&
+      response.update.kind !== 'active_tasks' &&
+      response.update.kind !== 'already_current'
+        ? await reconnectChangedTarget(reconnect)
         : undefined;
-    return response.kind === 'result'
-      ? {
-          ...response,
-          ...(reconnectError ? { reconnectError } : {}),
-          accessManagementAvailable:
-            response.operatorCapabilities?.includes(
-              RUNTIME_HOST_OPERATOR_ACCESS_MANAGEMENT_CAPABILITY,
-            ) ?? false,
-        }
-      : response;
+    const projected = projectManagementFrame(
+      response,
+      provider?.accessManagementAvailable ??
+        (response.kind === 'result' &&
+          (response.operatorCapabilities?.includes(
+            RUNTIME_HOST_OPERATOR_ACCESS_MANAGEMENT_CAPABILITY,
+          ) ?? false)),
+    );
+    return projected.kind === 'result' && reconnectError
+      ? { ...projected, reconnectError }
+      : projected;
   };
 
   const configureProjectDirectories = async (
@@ -581,69 +623,56 @@ export function createDesktopRuntimeHostManagement(input: {
     if (typeof allowInterruptActiveTasksValue !== 'boolean') {
       throw new Error('Runtime Host configuration interruption authority is invalid');
     }
-    const providerProfileId = requireProfileId(profileIdValue);
-    const provider = providers.get(providerProfileId);
+    const profileId = requireProfileId(profileIdValue);
+    const provider = providers.get(profileId);
+    let execute: () => Promise<DesktopRuntimeHostManagementTerminalFrame>;
+    let reconnect: () => Promise<void>;
     if (provider) {
-      return provider.configureProjectDirectories(
-        roots,
-        expectedConfigFingerprintValue,
-        allowInterruptActiveTasksValue,
-      );
+      const previousHostEpoch = provider.currentHostEpoch();
+      execute = () => provider.configureProjectDirectories(
+          roots,
+          expectedConfigFingerprintValue,
+          allowInterruptActiveTasksValue,
+        );
+      reconnect = () => provider.awaitUpdatedConnection(previousHostEpoch, true);
+    } else {
+      const { managed, transport, expectedTarget } = await managedMutationTarget(profileId);
+      const previousHostEpoch = input.currentHostEpoch(profileId);
+      execute = () => input.runServiceManagement({
+        destination: transport.destination,
+        ...(transport.sshPort === undefined ? {} : { sshPort: transport.sshPort }),
+        operatorPath: managed.control.operatorPath,
+        action: 'configure',
+        expectedTarget,
+        projectDirectoryRoots: roots,
+        expectedConfigFingerprint: expectedConfigFingerprintValue,
+        ...(allowInterruptActiveTasksValue ? { allowInterruptActiveTasks: true } : {}),
+      });
+      reconnect = reconnectManagedTarget(profileId, managed, previousHostEpoch);
     }
-    const { profileId, managed, transport, expectedTarget } =
-      await managedMutationTarget(profileIdValue);
-    const previousHostEpoch = input.currentHostEpoch(profileId);
-    const response = await input.runServiceManagement({
-      destination: transport.destination,
-      ...(transport.sshPort === undefined ? {} : { sshPort: transport.sshPort }),
-      operatorPath: managed.control.operatorPath,
-      action: 'configure',
-      expectedTarget,
-      projectDirectoryRoots: roots,
-      expectedConfigFingerprint: expectedConfigFingerprintValue,
-      ...(allowInterruptActiveTasksValue ? { allowInterruptActiveTasks: true } : {}),
-    });
-    if (response.action !== 'configure') {
-      throw new Error('Remote Runtime Host returned a different management action');
-    }
+    const response = requireManagementFrame(await execute(), 'configure');
     const reconnectError =
       response.kind === 'result' && response.configuration.kind === 'configured'
-        ? await reconnectUpdatedTarget(
-        profileId,
-        managed,
-        previousHostEpoch,
-        true,
-      )
+        ? await reconnectChangedTarget(reconnect)
         : undefined;
-    return response.kind === 'result'
-      ? {
-          ...response,
-          ...(reconnectError ? { reconnectError } : {}),
-          accessManagementAvailable:
-            response.operatorCapabilities?.includes(
-              RUNTIME_HOST_OPERATOR_ACCESS_MANAGEMENT_CAPABILITY,
-            ) ?? false,
-        }
-      : { ...response, action: 'configure' };
+    const projected = projectManagementFrame(
+      response,
+      provider?.accessManagementAvailable ??
+        (response.kind === 'result' &&
+          (response.operatorCapabilities?.includes(
+            RUNTIME_HOST_OPERATOR_ACCESS_MANAGEMENT_CAPABILITY,
+          ) ?? false)),
+    );
+    return projected.kind === 'result' && reconnectError
+      ? { ...projected, reconnectError }
+      : projected;
   };
 
-  const reconnectUpdatedTarget = async (
-    profileId: string,
-    managed: Awaited<ReturnType<typeof resolveManagedService>>,
-    previousHostEpoch: string | undefined,
-    replacementExpected: boolean,
+  const reconnectChangedTarget = async (
+    reconnect: () => Promise<void>,
   ): Promise<{ readonly code: string; readonly message: string } | undefined> => {
     try {
-      const current = await input.profiles.resolveManagedService(profileId);
-      if (!current || !sameDesktopRuntimeHostManagedServiceBinding(current, managed)) {
-        throw new Error('Runtime Host profile changed while its service was updating');
-      }
-      await input.awaitUpdatedConnection(
-        profileId,
-        managed.profile.rootId,
-        previousHostEpoch,
-        replacementExpected,
-      );
+      await reconnect();
       return undefined;
     } catch (error) {
       return {
@@ -662,22 +691,28 @@ export function createDesktopRuntimeHostManagement(input: {
     const policy = policyValue === undefined ? undefined : requireUpdatePolicy(policyValue);
     const providerProfileId = requireProfileId(profileIdValue);
     const provider = providers.get(providerProfileId);
-    if (provider) {
-      return policy === undefined
-        ? provider.getUpdatePolicy()
-        : provider.setUpdatePolicy(policy);
-    }
-    const { managed, transport, expectedTarget } = await managedMutationTarget(profileIdValue);
-    const common = {
-      destination: transport.destination,
-      ...(transport.sshPort === undefined
-        ? {}
-        : { sshPort: transport.sshPort }),
-      operatorPath: managed.control.operatorPath,
-      expectedTarget,
-    };
+    const execute = provider
+      ? async (next?: RuntimeHostManagedUpdatePolicy) =>
+          requireManagementFrame(await provider.updatePolicy(next), 'update_policy')
+      : await (async () => {
+          const { managed, transport, expectedTarget } =
+            await managedMutationTarget(profileIdValue);
+          const common = {
+            destination: transport.destination,
+            ...(transport.sshPort === undefined
+              ? {}
+              : { sshPort: transport.sshPort }),
+            operatorPath: managed.control.operatorPath,
+            expectedTarget,
+          };
+          return async (next?: RuntimeHostManagedUpdatePolicy) =>
+            input.runUpdatePolicy({
+              ...common,
+              ...(next ? { policy: next } : {}),
+            });
+        })();
     if (policy && policy.kind !== 'manual') {
-      const current = await input.runUpdatePolicy(common);
+      const current = await execute();
       if (current.kind === 'error') throw new Error(current.error.message);
       if (current.updateSchedulerState === undefined) {
         throw new Error(
@@ -685,10 +720,7 @@ export function createDesktopRuntimeHostManagement(input: {
         );
       }
     }
-    const response = await input.runUpdatePolicy({
-      ...common,
-      ...(policy ? { policy } : {}),
-    });
+    const response = await execute(policy);
     if (response.kind === 'error') throw new Error(response.error.message);
     return projectUpdatePolicy(response);
   };
@@ -696,28 +728,35 @@ export function createDesktopRuntimeHostManagement(input: {
   const reconcileUpdate = async (
     profileIdValue: unknown,
   ): Promise<DesktopRuntimeHostUpdateReconciliationResponse> => {
-    const providerProfileId = requireProfileId(profileIdValue);
-    const provider = providers.get(providerProfileId);
-    if (provider) return provider.reconcileUpdate();
-    const { profileId, managed, transport, expectedTarget } =
-      await managedMutationTarget(profileIdValue);
-    const previousHostEpoch = input.currentHostEpoch(profileId);
-    const response = await input.runUpdateReconciliation(
-      {
-        destination: transport.destination,
-        ...(transport.sshPort === undefined
-          ? {}
-        : { sshPort: transport.sshPort }),
-      operatorPath: managed.control.operatorPath,
-        expectedTarget,
-      },
-      (phase) => input.sendProgress({ profileId, phase }),
-    );
+    const profileId = requireProfileId(profileIdValue);
+    const provider = providers.get(profileId);
+    let execute: () => Promise<DesktopRuntimeHostManagementTerminalFrame>;
+    let reconnect: () => Promise<void>;
+    if (provider) {
+      const previousHostEpoch = provider.currentHostEpoch();
+      execute = () => provider.reconcileUpdate((phase) =>
+        input.sendProgress({ profileId, phase }));
+      reconnect = () => provider.awaitUpdatedConnection(previousHostEpoch, true);
+    } else {
+      const { managed, transport, expectedTarget } = await managedMutationTarget(profileId);
+      const previousHostEpoch = input.currentHostEpoch(profileId);
+      execute = () => input.runUpdateReconciliation(
+        {
+          destination: transport.destination,
+          ...(transport.sshPort === undefined ? {} : { sshPort: transport.sshPort }),
+          operatorPath: managed.control.operatorPath,
+          expectedTarget,
+        },
+        (phase) => input.sendProgress({ profileId, phase }),
+      );
+      reconnect = reconnectManagedTarget(profileId, managed, previousHostEpoch);
+    }
+    const response = requireManagementFrame(await execute(), 'reconcile_update');
     const reconnectError =
       response.kind === 'result' &&
       (response.reconciliation.kind === 'updated' ||
         response.reconciliation.kind === 'repaired')
-        ? await reconnectUpdatedTarget(profileId, managed, previousHostEpoch, true)
+        ? await reconnectChangedTarget(reconnect)
         : undefined;
     return response.kind === 'result'
       ? {
@@ -753,14 +792,6 @@ export function createDesktopRuntimeHostManagement(input: {
   const listCredentials = async (
     profileId: unknown,
   ): Promise<DesktopRuntimeHostAccessSnapshot> => {
-    const resolvedProfileId = requireProfileId(profileId);
-    const provider = providers.get(resolvedProfileId);
-    if (provider) {
-      if (!provider.access) {
-        throw new Error('Credential management is not available for this Runtime Host');
-      }
-      return provider.access.list();
-    }
     const access = await resolveAccess(profileId);
     const response = await input.runAccessManagement({
       ...access.target,
@@ -780,14 +811,6 @@ export function createDesktopRuntimeHostManagement(input: {
   const rotateCredential = async (
     profileId: unknown,
   ): Promise<DesktopRuntimeHostAccessSnapshot> => {
-    const resolvedProfileId = requireProfileId(profileId);
-    const provider = providers.get(resolvedProfileId);
-    if (provider) {
-      if (!provider.access) {
-        throw new Error('Credential management is not available for this Runtime Host');
-      }
-      return provider.access.rotate();
-    }
     const access = await resolveAccess(profileId);
     if (!access.canRotate) {
       throw new Error('Enable this Runtime Host before rotating its access credential');
@@ -842,14 +865,6 @@ export function createDesktopRuntimeHostManagement(input: {
   ): Promise<DesktopRuntimeHostAccessSnapshot> => {
     if (typeof credentialId !== 'string' || credentialId.length === 0 || credentialId.length > 128) {
       throw new Error('Runtime Host access credential ID is invalid');
-    }
-    const resolvedProfileId = requireProfileId(profileId);
-    const provider = providers.get(resolvedProfileId);
-    if (provider) {
-      if (!provider.access) {
-        throw new Error('Credential management is not available for this Runtime Host');
-      }
-      return provider.access.revoke(credentialId);
     }
     const access = await resolveAccess(profileId);
     const response = await input.runAccessManagement({
@@ -972,6 +987,23 @@ function requireCoordinationRelays(value: unknown): readonly string[] {
     throw new Error('Runtime Host coordination relay list is invalid');
   }
   return value;
+}
+
+function requireManagementFrame<
+  Action extends RuntimeHostServiceManagementFrame['action'],
+>(
+  frame: Exclude<RuntimeHostServiceManagementFrame, { readonly kind: 'progress' }>,
+  action: Action,
+): Exclude<RuntimeHostServiceManagementFrame, { readonly kind: 'progress' }> & {
+  readonly action: Action;
+} {
+  if (frame.action !== action) {
+    throw new Error('Runtime Host returned an unrelated management result');
+  }
+  return frame as Exclude<
+    RuntimeHostServiceManagementFrame,
+    { readonly kind: 'progress' }
+  > & { readonly action: Action };
 }
 
 function projectUpdatePolicy(

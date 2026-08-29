@@ -531,8 +531,6 @@ const localRuntimeHostManagement = createDesktopRuntimeHostLocalManagement({
       AbortSignal.timeout(MANAGED_UPDATE_RECONNECT_TIMEOUT_MS),
     );
   },
-  sendProgress: (progress) =>
-    mainWindowController.send('runtime-host-management:progress', progress),
 });
 const runtimeHostManagement = createDesktopRuntimeHostManagement({
   ipcMain,
@@ -804,6 +802,7 @@ registerNotificationsIpc({
 });
 
 const sessionCopyOwnerProcessId = randomUUID();
+await localRuntimeHostRemoteAccess.recoverBeforeLocalHostStart();
 runtimeHostManager = await startRuntimeHostDesktopManager(
   {
     rootPath: workspaceRoot,
@@ -1013,7 +1012,7 @@ runtimeHostManager = await startRuntimeHostDesktopManager(
         isDefault: true,
       });
     },
-    recoverLocalHost: (signal) => localRuntimeHostRemoteAccess.recoverManagedSetup(signal),
+    recoverLocalHost: (signal) => localRuntimeHostRemoteAccess.recoverBeforeLocalHostStart(signal),
     onFatalError: (error, target) => {
       if (error instanceof RuntimeHostUpgradeCancelledError) {
         if (target.profile.kind === "local") app.quit();

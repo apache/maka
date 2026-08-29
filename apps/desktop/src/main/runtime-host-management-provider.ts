@@ -17,42 +17,48 @@
  * under the License.
  */
 
-import type { RuntimeHostManagedUpdatePolicy } from '@maka/runtime-host/operator';
 import type {
-  DesktopRuntimeHostAccessSnapshot,
-  DesktopRuntimeHostDirectPeerSnapshot,
+  RuntimeHostManagedUpdatePolicy,
+  RuntimeHostServiceManagementFrame,
+  RuntimeHostServiceUpdatePhase,
+} from '@maka/runtime-host/operator';
+import type {
   DesktopRuntimeHostManagementAction,
-  DesktopRuntimeHostManagementResponse,
-  DesktopRuntimeHostUpdatePolicySnapshot,
-  DesktopRuntimeHostUpdateReconciliationResponse,
 } from '../preload/bridge-contract.js';
+
+export type DesktopRuntimeHostManagementTerminalFrame = Exclude<
+  RuntimeHostServiceManagementFrame,
+  { readonly kind: 'progress' }
+>;
 
 export interface DesktopRuntimeHostManagementProvider {
   readonly profileId: string;
+  readonly accessManagementAvailable: boolean;
   run(
-    action: DesktopRuntimeHostManagementAction,
-    allowInterruptActiveTasks?: boolean,
-  ): Promise<DesktopRuntimeHostManagementResponse>;
-  update(allowInterruptActiveTasks: boolean): Promise<DesktopRuntimeHostManagementResponse>;
+    action: Exclude<DesktopRuntimeHostManagementAction, 'uninstall'>,
+    allowInterruptActiveTasks: boolean,
+  ): Promise<DesktopRuntimeHostManagementTerminalFrame>;
+  uninstall(
+    allowInterruptActiveTasks: boolean,
+  ): Promise<{ readonly kind: 'active_tasks' | 'uninstalled'; readonly retainedStateRoot: string }>;
+  update(
+    allowInterruptActiveTasks: boolean,
+    onProgress: (phase: RuntimeHostServiceUpdatePhase) => void,
+  ): Promise<DesktopRuntimeHostManagementTerminalFrame>;
   configureProjectDirectories(
     roots: readonly { readonly label: string; readonly path: string }[],
     expectedConfigFingerprint: string,
     allowInterruptActiveTasks: boolean,
-  ): Promise<DesktopRuntimeHostManagementResponse>;
-  getUpdatePolicy(): Promise<DesktopRuntimeHostUpdatePolicySnapshot>;
-  setUpdatePolicy(policy: RuntimeHostManagedUpdatePolicy): Promise<DesktopRuntimeHostUpdatePolicySnapshot>;
-  reconcileUpdate(): Promise<DesktopRuntimeHostUpdateReconciliationResponse>;
-  readonly directPeer?: {
-    get(): Promise<DesktopRuntimeHostDirectPeerSnapshot>;
-    configure(
-      enabled: boolean,
-      coordinationRelays: readonly string[],
-      automaticRelayDiscovery: boolean,
-    ): Promise<DesktopRuntimeHostDirectPeerSnapshot>;
-  };
-  readonly access?: {
-    list(): Promise<DesktopRuntimeHostAccessSnapshot>;
-    rotate(): Promise<DesktopRuntimeHostAccessSnapshot>;
-    revoke(credentialId: string): Promise<DesktopRuntimeHostAccessSnapshot>;
-  };
+  ): Promise<DesktopRuntimeHostManagementTerminalFrame>;
+  updatePolicy(
+    policy?: RuntimeHostManagedUpdatePolicy,
+  ): Promise<DesktopRuntimeHostManagementTerminalFrame>;
+  reconcileUpdate(
+    onProgress: (phase: RuntimeHostServiceUpdatePhase) => void,
+  ): Promise<DesktopRuntimeHostManagementTerminalFrame>;
+  currentHostEpoch(): string | undefined;
+  awaitUpdatedConnection(
+    previousHostEpoch: string | undefined,
+    replacementExpected: boolean,
+  ): Promise<void>;
 }

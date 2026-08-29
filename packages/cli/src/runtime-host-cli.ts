@@ -731,7 +731,7 @@ function parseServiceManagementCommand(argv: string[]): RuntimeHostCliCommand {
             allowInterruptActiveTasks = true;
           },
         }
-      : action === 'retire' || action === 'update' || action === 'configure'
+      : action === 'restart' || action === 'retire' || action === 'update' || action === 'configure'
         ? {
             '--allow-interrupt-active-tasks': () => {
               if (allowInterruptActiveTasks) {

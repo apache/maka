@@ -61,6 +61,7 @@ import {
 
 type RuntimeHostManagementConfirmation =
   | { readonly kind: 'uninstall'; readonly allowInterruptActiveTasks: boolean }
+  | { readonly kind: 'restart' }
   | { readonly kind: 'update' }
   | { readonly kind: 'configureDirectories' }
   | { readonly kind: 'rotate' }
@@ -208,6 +209,11 @@ export function RuntimeHostManagementDialog(props: {
           setConfirmation({ kind: 'uninstall', allowInterruptActiveTasks: true });
           return;
         }
+        if (action === 'restart' && response.error.code === 'active_tasks') {
+          setError(undefined);
+          setConfirmation({ kind: 'restart' });
+          return;
+        }
         setUpdatePolicy(undefined);
         setError(response.error.message);
         toast.error(copy.managementActionFailed, response.error.message);
@@ -220,6 +226,7 @@ export function RuntimeHostManagementDialog(props: {
         setConfirmation(undefined);
         return;
       }
+      setConfirmation(undefined);
       setResult(response);
       reconcileDirectoryPolicy(response.service);
       if (response.service.state === 'not_installed') setUpdatePolicy(undefined);
@@ -632,6 +639,13 @@ export function RuntimeHostManagementDialog(props: {
                   status="warning"
                   title={copy.updateBlockedTitle}
                   description={copy.updateBlockedBody}
+                />
+              ) : null}
+              {confirmation?.kind === 'restart' ? (
+                <Banner
+                  status="warning"
+                  title={copy.directoryRootsActiveTasks}
+                  description={copy.restartActiveTasksDescription}
                 />
               ) : null}
               {confirmation?.kind === 'rotate' ? (
@@ -1135,6 +1149,21 @@ export function RuntimeHostManagementDialog(props: {
                     label={copy.updateInterrupt}
                     isDisabled={loading}
                     onClick={() => void update(true)}
+                  />
+                </>
+              ) : confirmation?.kind === 'restart' ? (
+                <>
+                  <Button
+                    variant="secondary"
+                    label={copy.cancel}
+                    isDisabled={loading}
+                    onClick={() => setConfirmation(undefined)}
+                  />
+                  <Button
+                    variant="destructive"
+                    label={copy.restartInterrupt}
+                    isDisabled={loading}
+                    onClick={() => void run('restart', true)}
                   />
                 </>
               ) : confirmation?.kind === 'configureDirectories' ? (

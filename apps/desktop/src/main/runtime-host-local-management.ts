@@ -17,18 +17,12 @@
  * under the License.
  */
 
+import { LOCAL_RUNTIME_HOST_PROFILE } from '@maka/runtime-host/client';
+import type { RuntimeHostServiceManagementFrame } from '@maka/runtime-host/operator';
 import type {
-  RuntimeHostManagedUpdatePolicy,
-  RuntimeHostServiceManagementFrame,
-} from '@maka/runtime-host/operator';
-import type {
-  DesktopRuntimeHostManagementAction,
-  DesktopRuntimeHostManagementProgress,
-  DesktopRuntimeHostManagementResponse,
-  DesktopRuntimeHostUpdatePolicySnapshot,
-  DesktopRuntimeHostUpdateReconciliationResponse,
-} from '../preload/bridge-contract.js';
-import type { DesktopLocalRuntimeHostRemoteAccess } from './runtime-host-local-remote-access.js';
+  DesktopLocalRuntimeHostRemoteAccess,
+  DesktopRuntimeHostLocalManagementTarget,
+} from './runtime-host-local-remote-access.js';
 import type { createDesktopRuntimeHostLocalOperator } from './runtime-host-local-operator.js';
 import type { DesktopRuntimeHostManagementProvider } from './runtime-host-management-provider.js';
 import type { DesktopRuntimeHostSetupPackage } from './runtime-host-setup-package.js';
@@ -47,238 +41,85 @@ export function createDesktopRuntimeHostLocalManagement(input: {
     previousHostEpoch: string | undefined,
     replacementExpected: boolean,
   ) => Promise<void>;
-  readonly sendProgress: (progress: DesktopRuntimeHostManagementProgress) => void;
 }): DesktopRuntimeHostManagementProvider {
-  const withAccessFlag = (
-    frame: Exclude<RuntimeHostServiceManagementFrame, { kind: 'progress' }>,
-  ): DesktopRuntimeHostManagementResponse => {
-    if (
-      frame.action !== 'status' &&
-      frame.action !== 'start' &&
-      frame.action !== 'restart' &&
-      frame.action !== 'logs' &&
-      frame.action !== 'install' &&
-      frame.action !== 'uninstall' &&
-      frame.action !== 'configure' &&
-      frame.action !== 'update'
-    ) {
-      throw new Error('Local Runtime Host returned an unrelated management result');
-    }
-    return (frame.kind === 'result'
-      ? { ...frame, accessManagementAvailable: false }
-      : frame) as DesktopRuntimeHostManagementResponse;
-  };
-
-  const activeTasks = (
-    action: DesktopRuntimeHostManagementAction | 'configure' | 'update',
-  ): DesktopRuntimeHostManagementResponse => ({
-    schemaVersion: 1,
-    kind: 'error',
-    action,
-    error: {
-      code: 'active_tasks',
-      message: 'Runtime Host still owns active work',
-    },
-  });
-
-  const runService = async (
-    action: Exclude<DesktopRuntimeHostManagementAction, 'uninstall'>,
-  ): Promise<DesktopRuntimeHostManagementResponse> => {
-    const changed = await input.remoteAccess.manage(
-      action === 'status' || action === 'logs' ? undefined : false,
-      (target) => input.operator.runService({
-        operatorPath: target.operatorPath,
-        action,
-        target,
-      }),
-    );
-    if (changed.kind === 'active_tasks') return activeTasks(action);
-    const frame = requireTerminalFrame(changed.value, action);
-    return withAccessFlag(frame);
-  };
-
-  const reconnect = async (
-    response: DesktopRuntimeHostManagementResponse,
-    previousHostEpoch: string | undefined,
-    replacementExpected: boolean,
-  ): Promise<DesktopRuntimeHostManagementResponse> => {
-    if (response.kind !== 'result') return response;
-    try {
-      await input.awaitUpdatedConnection(previousHostEpoch, replacementExpected);
-      return response;
-    } catch (error) {
-      return {
-        ...response,
-        reconnectError: {
-          code: 'desktop_reconnect_failed',
-          message:
-            'The Runtime Host change was applied, but Desktop could not reconnect: ' +
-            (error instanceof Error ? error.message : String(error)),
-        },
-      };
-    }
-  };
-
-  const updatePolicy = async (
-    policy?: RuntimeHostManagedUpdatePolicy,
-  ): Promise<DesktopRuntimeHostUpdatePolicySnapshot> => {
-    const managed = await input.remoteAccess.manage(undefined, async (target) => {
-      if (policy && policy.kind !== 'manual') {
-        const current = requireTerminalFrame(
-          await input.operator.runUpdatePolicy({
-            operatorPath: target.operatorPath,
-            target,
-          }),
-          'update_policy',
-        );
-        if (current.kind === 'error') throw new Error(current.error.message);
-        if (current.updateSchedulerState === undefined) {
-          throw new Error('Update or repair this Runtime Host before enabling automatic updates');
-        }
-      }
-      return requireTerminalFrame(
-        await input.operator.runUpdatePolicy({
-          operatorPath: target.operatorPath,
-          target,
-          ...(policy ? { policy } : {}),
-        }),
-        'update_policy',
-      );
-    });
-    if (managed.kind === 'active_tasks') throw new Error('Runtime Host still owns active work');
-    if (managed.value.kind === 'error') throw new Error(managed.value.error.message);
-    return projectUpdatePolicy(managed.value);
-  };
-
   return {
-    profileId: 'local',
-    run: async (action, allowInterruptActiveTasks = false) => {
-      if (action !== 'uninstall') return runService(action);
+    profileId: LOCAL_RUNTIME_HOST_PROFILE.id,
+    accessManagementAvailable: false,
+    run: (action, allowInterruptActiveTasks) => {
+      const execute = (target: DesktopRuntimeHostLocalManagementTarget) =>
+        input.operator.runService({
+          operatorPath: target.operatorPath,
+          action,
+          target,
+          ...(allowInterruptActiveTasks ? { allowInterruptActiveTasks: true } : {}),
+        }).then((frame) => requireLocalFrame(frame, action));
+      return action === 'status' || action === 'logs'
+        ? input.remoteAccess.inspectManaged(execute)
+        : input.remoteAccess.changeManaged(execute);
+    },
+    uninstall: async (allowInterruptActiveTasks) => {
       const result = await input.remoteAccess.uninstall({ allowInterruptActiveTasks });
-      return result.kind === 'active_tasks'
-        ? activeTasks(action)
-        : { kind: 'uninstalled', retainedStateRoot: input.rootPath };
+      return { kind: result.kind, retainedStateRoot: input.rootPath };
     },
-    update: async (allowInterruptActiveTasks) => {
-      const previousHostEpoch = input.currentHostEpoch();
-      input.sendProgress({ profileId: 'local', phase: 'preparing_cli' });
+    update: async (allowInterruptActiveTasks, onProgress) => {
       const setupPackage = await input.resolveUpdatePackage();
-      const changed = await input.remoteAccess.manage(
-        allowInterruptActiveTasks,
-        (target) => input.operator.runUpdate(
-          {
-            setupPackage,
-            target,
-            ...(allowInterruptActiveTasks ? { allowInterruptActiveTasks: true } : {}),
-          },
-          (phase) => input.sendProgress({ profileId: 'local', phase }),
-        ),
+      return input.remoteAccess.changeManaged(
+        (target) =>
+          input.operator.runUpdate(
+            {
+              setupPackage,
+              target,
+              ...(allowInterruptActiveTasks ? { allowInterruptActiveTasks: true } : {}),
+            },
+            onProgress,
+          ).then((frame) => requireLocalFrame(frame, 'update')),
       );
-      if (changed.kind === 'active_tasks') return activeTasks('update');
-      const frame = requireTerminalFrame(changed.value, 'update');
-      const response = withAccessFlag(frame);
-      const replacementExpected =
-        frame.kind === 'result' &&
-        frame.action === 'update' &&
-        frame.update.kind !== 'active_tasks' &&
-        frame.update.kind !== 'already_current';
-      return replacementExpected
-        ? reconnect(response, previousHostEpoch, true)
-        : response;
     },
-    configureProjectDirectories: async (
+    configureProjectDirectories: (
       roots,
       expectedConfigFingerprint,
       allowInterruptActiveTasks,
-    ) => {
-      const previousHostEpoch = input.currentHostEpoch();
-      const changed = await input.remoteAccess.manage(
-        allowInterruptActiveTasks,
-        (target) => input.operator.runService({
+    ) =>
+      input.remoteAccess.changeManaged(
+        (target) =>
+          input.operator.runService({
+            operatorPath: target.operatorPath,
+            action: 'configure',
+            target,
+            projectDirectoryRoots: roots,
+            expectedConfigFingerprint,
+            ...(allowInterruptActiveTasks ? { allowInterruptActiveTasks: true } : {}),
+          }).then((frame) => requireLocalFrame(frame, 'configure')),
+      ),
+    updatePolicy: (policy) =>
+      input.remoteAccess.inspectManaged((target) =>
+        input.operator.runUpdatePolicy({
           operatorPath: target.operatorPath,
-          action: 'configure',
           target,
-          projectDirectoryRoots: roots,
-          expectedConfigFingerprint,
-          ...(allowInterruptActiveTasks ? { allowInterruptActiveTasks: true } : {}),
-        }),
-      );
-      if (changed.kind === 'active_tasks') return activeTasks('configure');
-      const frame = requireTerminalFrame(changed.value, 'configure');
-      const response = withAccessFlag(frame);
-      return frame.kind === 'result' &&
-        frame.action === 'configure' &&
-        frame.configuration.kind === 'configured'
-        ? reconnect(response, previousHostEpoch, true)
-        : response;
-    },
-    getUpdatePolicy: () => updatePolicy(),
-    setUpdatePolicy: (policy) => updatePolicy(policy),
-    reconcileUpdate: async (): Promise<DesktopRuntimeHostUpdateReconciliationResponse> => {
-      const previousHostEpoch = input.currentHostEpoch();
-      const changed = await input.remoteAccess.manage(false, (target) =>
+          ...(policy ? { policy } : {}),
+        }).then((frame) => requireLocalFrame(frame, 'update_policy'))),
+    reconcileUpdate: (onProgress) =>
+      input.remoteAccess.changeManaged((target) =>
         input.operator.runUpdateReconciliation(
           { operatorPath: target.operatorPath, target },
-          (phase) => input.sendProgress({ profileId: 'local', phase }),
-        ));
-      if (changed.kind === 'active_tasks') {
-        return {
-          kind: 'error',
-          error: { code: 'active_tasks', message: 'Runtime Host still owns active work' },
-        };
-      }
-      const frame = requireTerminalFrame(changed.value, 'reconcile_update');
-      if (frame.kind === 'error') return { kind: 'error', error: frame.error };
-      const response: DesktopRuntimeHostUpdateReconciliationResponse = {
-        kind: 'result',
-        updatePolicy: projectUpdatePolicy(frame),
-        reconciliation: frame.reconciliation,
-        ...(frame.service ? { service: frame.service } : {}),
-      };
-      if (
-        frame.reconciliation.kind !== 'updated' &&
-        frame.reconciliation.kind !== 'repaired'
-      ) {
-        return response;
-      }
-      try {
-        await input.awaitUpdatedConnection(previousHostEpoch, true);
-        return response;
-      } catch (error) {
-        return {
-          ...response,
-          reconnectError: {
-            code: 'desktop_reconnect_failed',
-            message:
-              'The Runtime Host change was applied, but Desktop could not reconnect: ' +
-              (error instanceof Error ? error.message : String(error)),
-          },
-        };
-      }
-    },
+          onProgress,
+        ).then((frame) => requireLocalFrame(frame, 'reconcile_update'))),
+    currentHostEpoch: input.currentHostEpoch,
+    awaitUpdatedConnection: input.awaitUpdatedConnection,
   };
 }
 
-function requireTerminalFrame<Action extends RuntimeHostServiceManagementFrame['action']>(
+function requireLocalFrame<Action extends RuntimeHostServiceManagementFrame['action']>(
   frame: RuntimeHostServiceManagementFrame,
   action: Action,
-): Exclude<RuntimeHostServiceManagementFrame, { kind: 'progress' }> & { readonly action: Action } {
+): Exclude<RuntimeHostServiceManagementFrame, { readonly kind: 'progress' }> & {
+  readonly action: Action;
+} {
   if (frame.kind === 'progress' || frame.action !== action) {
     throw new Error('Local Runtime Host returned an unrelated management result');
   }
-  return frame as Exclude<RuntimeHostServiceManagementFrame, { kind: 'progress' }> & {
-    readonly action: Action;
-  };
-}
-
-function projectUpdatePolicy(
-  frame: Extract<RuntimeHostServiceManagementFrame, {
-    readonly kind: 'result';
-    readonly action: 'update_policy' | 'reconcile_update';
-  }>,
-): DesktopRuntimeHostUpdatePolicySnapshot {
-  if (frame.updateSchedulerState === undefined) {
-    return { ...frame.updatePolicy, schedulingState: 'unsupported' };
-  }
-  return { ...frame.updatePolicy, schedulingState: frame.updateSchedulerState };
+  return frame as Exclude<
+    RuntimeHostServiceManagementFrame,
+    { readonly kind: 'progress' }
+  > & { readonly action: Action };
 }
