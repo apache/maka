@@ -248,9 +248,7 @@ class PeerMeshNodeImpl implements PeerMeshNode {
     return Object.freeze(
       stored.meshes
         .filter((state) => isActiveMembership(state, identity.peerId))
-        .map((state) =>
-          peerMeshStatus(state, identity, stored.routes, stored.transitMeshId, this.#now()),
-        ),
+        .map((state) => peerMeshStatus(state, identity, stored.routes, this.#now())),
     );
   }
 
