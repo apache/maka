@@ -752,8 +752,9 @@ async fn run_endpoint_async(
             }
             Some(opened) = opened_rx.recv() => {
                 if let Some(waiter) = direct.pending.remove(&opened.request_id) {
-                    let result = match opened.result {
-                        Ok(opened) => match waiter.stream_kind {
+                    match opened.result {
+                        Ok(opened) => {
+                            let result = match waiter.stream_kind {
                             StreamKind::Application => {
                                 let connection_id = opened.connection_id;
                                 let transit_relay_peer = opened.relay_peer_id;
@@ -807,20 +808,10 @@ async fn run_endpoint_async(
                                     )),
                                 ))
                             }
-                        },
+                            };
+                            let _ = waiter.result.send(result);
+                        }
                         Err(message) => {
-                            retire_direct_dials(
-                                &mut swarm,
-                                &mut direct.retiring_connections,
-                                waiter.dials,
-                                None,
-                            );
-                            release_coordination_relays(
-                                &mut swarm,
-                                &mut coordination_relays,
-                                &waiter.coordination_relay_peers,
-                                &direct.active,
-                            );
                             let code = match waiter.stream_kind {
                                 StreamKind::Application if !waiter.transit_relays.is_empty() => {
                                     "transit_unavailable"
@@ -828,10 +819,15 @@ async fn run_endpoint_async(
                                 StreamKind::Application => "direct_path_unavailable",
                                 StreamKind::MeshControl => "mesh_control_unavailable",
                             };
-                            Err(PeerError::new(code, message))
+                            fail_pending_connect(
+                                &mut swarm,
+                                &mut direct,
+                                &mut coordination_relays,
+                                waiter,
+                                PeerError::new(code, message),
+                            );
                         }
-                    };
-                    let _ = waiter.result.send(result);
+                    }
                 }
             }
             event = swarm.select_next_some() => {
