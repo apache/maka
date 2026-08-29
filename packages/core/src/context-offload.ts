@@ -53,16 +53,21 @@ export interface ContextOffloadLimits {
   readonly workspacePhysicalBytes: number;
 }
 
+/** Physical representation selected by a typed context owner. */
+export type ContextOffloadStorageKind = 'inline' | 'managed_file';
+
+export type ContextOffloadPutFailureReason =
+  | 'too_large'
+  | 'session_quota_exceeded'
+  | 'workspace_quota_exceeded'
+  | 'identity_conflict'
+  | 'unavailable';
+
 export type ContextOffloadPutResult =
   | { readonly ok: true; readonly record: ContextOffloadRecord }
   | {
       readonly ok: false;
-      readonly reason:
-        | 'too_large'
-        | 'session_quota_exceeded'
-        | 'workspace_quota_exceeded'
-        | 'identity_conflict'
-        | 'unavailable';
+      readonly reason: ContextOffloadPutFailureReason;
     };
 
 export type ContextOffloadReadResult =
@@ -106,6 +111,25 @@ export interface ContextOffloadGarbageCollectionResult {
   readonly hasMore: boolean;
 }
 
+export class ReadImageSnapshotStoreError extends Error {
+  constructor(readonly reason: ContextOffloadPutFailureReason) {
+    super(`Read image snapshot storage failed: ${reason}`);
+    this.name = 'ReadImageSnapshotStoreError';
+  }
+}
+
+export interface ReadImageSnapshotStore {
+  snapshot(input: {
+    readonly sessionId: string;
+    /** Stable identity of the Read result within its Session. */
+    readonly ownerId: string;
+    readonly bytes: Uint8Array;
+    readonly mimeType: string;
+  }): Promise<SessionContextRef>;
+
+  read(input: SessionContextRef): Promise<ContextOffloadReadResult>;
+}
+
 /**
  * Storage contract for capped, whole-object Agent context offload.
  *
@@ -118,6 +142,8 @@ export interface ContextOffloadStore {
     readonly owner: ContextOffloadOwner;
     readonly bytes: Uint8Array;
     readonly mediaType: string;
+    /** Defaults to inline. Binary/intermediate-file owners should select managed_file. */
+    readonly storageKind?: ContextOffloadStorageKind;
     readonly expectedSha256?: string;
   }): Promise<ContextOffloadPutResult>;
 

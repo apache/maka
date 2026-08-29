@@ -19,8 +19,9 @@
 
 import { createHash, randomUUID } from 'node:crypto';
 import { mkdirSync } from 'node:fs';
+import { link, mkdir, open, unlink } from 'node:fs/promises';
 import { createRequire } from 'node:module';
-import { dirname } from 'node:path';
+import { dirname, join } from 'node:path';
 import type { DatabaseSync } from 'node:sqlite';
 import {
   type ContextOffloadCopyResult,
@@ -32,19 +33,23 @@ import {
   type ContextOffloadRecord,
   type ContextOffloadRetirementResult,
   type ContextOffloadStore,
+  type ContextOffloadStorageKind,
   type ContextOffloadUsage,
 } from '@maka/core/context-offload';
 import {
   configureSqliteContextOffloadDatabase,
   migrateSqliteContextOffloadDatabase,
 } from './sqlite-context-offload-schema.js';
+import { readStableBoundedFile, syncDirectory, syncDirectoryChain } from './stable-storage.js';
 
 const MAX_ID_CODE_POINTS = 512;
 const MAX_MEDIA_TYPE_CODE_POINTS = 256;
 const SHA256_PATTERN = /^[0-9a-f]{64}$/;
+const MANAGED_FILE_LOCATOR_PATTERN = /^sha256\/([0-9a-f]{2})\/([0-9a-f]{64})$/;
 const require = createRequire(import.meta.url);
 
 export const CONTEXT_OFFLOAD_DATABASE_NAME = 'context-offload.sqlite';
+export const CONTEXT_OFFLOAD_VALUES_DIRECTORY_NAME = 'context-offload-values';
 
 export type SqliteContextOffloadStoreFailpoint =
   | 'after_blob_insert'
@@ -68,9 +73,12 @@ interface ContextReferenceRow {
   size_bytes: unknown;
   media_type: unknown;
   created_at: unknown;
+  storage_kind?: unknown;
+  payload?: unknown;
 }
 
 interface ContextBlobRow {
+  storage_kind: unknown;
   payload: unknown;
   size_bytes: unknown;
 }
@@ -88,7 +96,22 @@ interface StoreUsageRow {
 interface GarbageCandidateRow {
   blob_id: unknown;
   size_bytes: unknown;
+  storage_kind: unknown;
+  payload: unknown;
 }
+
+interface ManagedFilePublication {
+  readonly locator: string;
+  readonly created: boolean;
+}
+
+type PreparedContextRead =
+  | ContextOffloadReadResult
+  | {
+      readonly kind: 'managed_file';
+      readonly record: ContextOffloadRecord;
+      readonly locator: string;
+    };
 
 /** Low-level implementation; production callers must use the Storage Root authority facade. */
 export class SqliteContextOffloadStore implements ContextOffloadStore {
@@ -98,6 +121,9 @@ export class SqliteContextOffloadStore implements ContextOffloadStore {
   readonly #idFactory: () => string;
   readonly #failpoint?: (point: SqliteContextOffloadStoreFailpoint) => void;
   readonly #onUnavailable?: (error: unknown) => void;
+  readonly #storageRoot: string | undefined;
+  readonly #valueRoot: string | undefined;
+  #managedValueMutationTail: Promise<void> = Promise.resolve();
   #closed = false;
 
   constructor(path: string, options: SqliteContextOffloadStoreOptions) {
@@ -107,7 +133,11 @@ export class SqliteContextOffloadStore implements ContextOffloadStore {
     this.#idFactory = options.idFactory ?? randomUUID;
     this.#failpoint = options.failpoint;
     this.#onUnavailable = options.onUnavailable;
-    if (path !== ':memory:') mkdirSync(dirname(path), { recursive: true });
+    this.#storageRoot = path === ':memory:' ? undefined : dirname(path);
+    this.#valueRoot = this.#storageRoot
+      ? join(this.#storageRoot, CONTEXT_OFFLOAD_VALUES_DIRECTORY_NAME)
+      : undefined;
+    if (this.#storageRoot) mkdirSync(this.#storageRoot, { recursive: true });
     const Database = loadDatabaseSync();
     this.#database = new Database(path);
     try {
@@ -125,6 +155,7 @@ export class SqliteContextOffloadStore implements ContextOffloadStore {
     readonly owner: ContextOffloadOwner;
     readonly bytes: Uint8Array;
     readonly mediaType: string;
+    readonly storageKind?: ContextOffloadStorageKind;
     readonly expectedSha256?: string;
   }): Promise<ContextOffloadPutResult> {
     assertBoundedIdentity(input.sessionId, 'Session id');
@@ -136,6 +167,8 @@ export class SqliteContextOffloadStore implements ContextOffloadStore {
     if (input.expectedSha256 !== undefined && !SHA256_PATTERN.test(input.expectedSha256)) {
       throw new Error('Expected context SHA-256 must be canonical lowercase hexadecimal');
     }
+    const storageKind = input.storageKind ?? 'inline';
+    assertStorageKind(storageKind);
     if (input.bytes.byteLength > this.#limits.ownerMaxBytes[input.owner.kind]) {
       return { ok: false, reason: 'too_large' };
     }
@@ -147,13 +180,29 @@ export class SqliteContextOffloadStore implements ContextOffloadStore {
       return { ok: false, reason: 'identity_conflict' };
     }
 
-    try {
-      this.#assertOpen();
-      return this.#writeTransaction(() => this.#put({ ...input, bytes, blobId }));
-    } catch (error) {
-      this.#onUnavailable?.(error);
-      return { ok: false, reason: 'unavailable' };
-    }
+    const operation = async (): Promise<ContextOffloadPutResult> => {
+      let publication: ManagedFilePublication | undefined;
+      try {
+        this.#assertOpen();
+        if (storageKind === 'managed_file') {
+          publication = await this.#publishManagedFile(blobId, bytes);
+        }
+        const result = this.#writeTransaction(() =>
+          this.#put({ ...input, bytes, blobId, storageKind, publication }),
+        );
+        if (!result.ok && publication?.created) {
+          await this.#removePublicationIfUnreferenced(publication);
+        }
+        return result;
+      } catch (error) {
+        if (publication?.created) {
+          await this.#removePublicationIfUnreferenced(publication).catch(() => undefined);
+        }
+        this.#onUnavailable?.(error);
+        return { ok: false, reason: 'unavailable' };
+      }
+    };
+    return storageKind === 'managed_file' ? this.#runManagedValueMutation(operation) : operation();
   }
 
   async read(input: {
@@ -166,7 +215,9 @@ export class SqliteContextOffloadStore implements ContextOffloadStore {
     assertNonNegativeSafeInteger(input.maxBytes, 'Context read byte limit');
     try {
       this.#assertOpen();
-      return this.#readTransaction(() => this.#read(input));
+      const prepared = this.#readTransaction(() => this.#prepareRead(input));
+      if ('ok' in prepared) return prepared;
+      return await this.#readManagedFile(prepared);
     } catch (error) {
       this.#onUnavailable?.(error);
       return { ok: false, reason: 'unavailable' };
@@ -317,64 +368,91 @@ export class SqliteContextOffloadStore implements ContextOffloadStore {
     if (input.maxBlobs === Number.MAX_SAFE_INTEGER) {
       throw new Error('Context garbage blob limit is too large');
     }
-    this.#assertOpen();
-    return this.#writeTransaction(() => {
-      const rows = this.#database
-        .prepare(
-          `SELECT c.blob_id, b.size_bytes
+    return this.#runManagedValueMutation(async () => {
+      this.#assertOpen();
+      await this.#drainPendingFileDeletions(input.maxBlobs);
+      const collected = this.#writeTransaction(() => {
+        const rows = this.#database
+          .prepare(
+            `SELECT c.blob_id, b.size_bytes, b.storage_kind, b.payload
            FROM context_gc_candidates c INDEXED BY context_gc_candidates_eligible
            JOIN context_blobs b ON b.blob_id = c.blob_id
            WHERE c.unreferenced_at < ?
            ORDER BY c.unreferenced_at, c.blob_id
            LIMIT ?`,
-        )
-        .all(input.olderThan, input.maxBlobs + 1) as unknown as GarbageCandidateRow[];
-      const selected: Uint8Array[] = [];
-      let deletedBytes = 0;
-      for (const row of rows) {
-        if (selected.length === input.maxBlobs) break;
-        const blobId = decodeBlobId(row.blob_id);
-        if (!blobId || !isNonNegativeSafeInteger(row.size_bytes)) {
-          throw new Error('Invalid context garbage candidate');
-        }
-        if (exceedsLimit(deletedBytes, row.size_bytes, input.maxBytes)) {
-          if (selected.length === 0) {
-            throw new Error(
-              `Context garbage byte limit ${input.maxBytes} cannot fit eligible blob of ${row.size_bytes} bytes`,
-            );
+          )
+          .all(input.olderThan, input.maxBlobs + 1) as unknown as GarbageCandidateRow[];
+        const selected: Array<{
+          readonly blobId: Uint8Array;
+          readonly sizeBytes: number;
+          readonly managedLocator?: string;
+        }> = [];
+        let deletedBytes = 0;
+        for (const row of rows) {
+          if (selected.length === input.maxBlobs) break;
+          const blobId = decodeBlobId(row.blob_id);
+          if (!blobId || !isNonNegativeSafeInteger(row.size_bytes)) {
+            throw new Error('Invalid context garbage candidate');
           }
-          break;
+          const value = decodeBlobValue(row, Buffer.from(blobId).toString('hex'));
+          if (!value) throw new Error('Invalid context garbage candidate value');
+          if (exceedsLimit(deletedBytes, row.size_bytes, input.maxBytes)) {
+            if (selected.length === 0) {
+              throw new Error(
+                `Context garbage byte limit ${input.maxBytes} cannot fit eligible blob of ${row.size_bytes} bytes`,
+              );
+            }
+            break;
+          }
+          deletedBytes = addSafeInteger(deletedBytes, row.size_bytes, 'Collected context bytes');
+          selected.push({
+            blobId,
+            sizeBytes: row.size_bytes,
+            ...(value.kind === 'managed_file' ? { managedLocator: value.locator } : {}),
+          });
         }
-        deletedBytes = addSafeInteger(deletedBytes, row.size_bytes, 'Collected context bytes');
-        selected.push(blobId);
-      }
-      const deleteBlob = this.#database.prepare(
-        `DELETE FROM context_blobs
+        const deleteBlob = this.#database.prepare(
+          `DELETE FROM context_blobs
          WHERE blob_id = ?
            AND NOT EXISTS (SELECT 1 FROM context_refs WHERE blob_id = ?)`,
-      );
-      for (const blobId of selected) {
-        const deleted = deleteBlob.run(blobId, blobId);
-        if (deleted.changes !== 1) {
-          throw new Error('Context garbage candidate is still referenced or missing');
+        );
+        const enqueueFileDeletion = this.#database.prepare(
+          `INSERT INTO context_file_deletions(locator, size_bytes, enqueued_at)
+         VALUES (?, ?, ?)
+         ON CONFLICT(locator) DO NOTHING`,
+        );
+        for (const selectedBlob of selected) {
+          if (selectedBlob.managedLocator) {
+            enqueueFileDeletion.run(
+              Buffer.from(selectedBlob.managedLocator, 'utf8'),
+              selectedBlob.sizeBytes,
+              this.#readNow(),
+            );
+          }
+          const deleted = deleteBlob.run(selectedBlob.blobId, selectedBlob.blobId);
+          if (deleted.changes !== 1) {
+            throw new Error('Context garbage candidate is still referenced or missing');
+          }
+          this.#failpoint?.('after_gc_blob_delete');
         }
-        this.#failpoint?.('after_gc_blob_delete');
-      }
-      if (selected.length > 0) {
-        const updated = this.#database
-          .prepare(
-            `UPDATE context_store_usage
+        if (selected.length > 0) {
+          const updated = this.#database
+            .prepare(
+              `UPDATE context_store_usage
              SET blob_count = blob_count - ?, physical_bytes = physical_bytes - ?
              WHERE singleton = 1`,
-          )
-          .run(selected.length, deletedBytes);
-        if (updated.changes !== 1) throw new Error('Missing context store usage row');
-      }
-      return {
-        deletedBlobs: selected.length,
-        deletedBytes,
-        hasMore: rows.length > selected.length,
-      };
+            )
+            .run(selected.length, deletedBytes);
+          if (updated.changes !== 1) throw new Error('Missing context store usage row');
+        }
+        return {
+          deletedBlobs: selected.length,
+          deletedBytes,
+          hasMore: rows.length > selected.length,
+        };
+      });
+      await this.#drainPendingFileDeletions(input.maxBlobs);
+      return collected;
     });
   }
 
@@ -410,15 +488,35 @@ export class SqliteContextOffloadStore implements ContextOffloadStore {
     readonly bytes: Uint8Array;
     readonly mediaType: string;
     readonly blobId: string;
+    readonly storageKind: ContextOffloadStorageKind;
+    readonly publication?: ManagedFilePublication;
   }): ContextOffloadPutResult {
     const existingReference = this.#readReferenceByOwner(input.sessionId, input.owner);
     if (existingReference) {
-      if (existingReference.blobId !== input.blobId) {
+      if (
+        existingReference.blobId !== input.blobId ||
+        existingReference.mediaType !== input.mediaType
+      ) {
         return { ok: false, reason: 'identity_conflict' };
       }
-      if (!this.#verifyBlob(input.blobId, input.bytes)) {
-        throw new Error(`Context blob failed integrity verification: ${input.blobId}`);
+    }
+
+    const blobIdBytes = Buffer.from(input.blobId, 'hex');
+    const existingBlob = this.#database
+      .prepare('SELECT storage_kind, payload, size_bytes FROM context_blobs WHERE blob_id = ?')
+      .get(blobIdBytes) as ContextBlobRow | undefined;
+    if (existingBlob) {
+      if (!blobMatchesInput(existingBlob, input.blobId, input.bytes)) {
+        throw new Error(`Context blob identity is inconsistent: ${input.blobId}`);
       }
+    }
+
+    if (input.storageKind === 'managed_file' && !input.publication) {
+      throw new Error('Managed context value was not durably published');
+    }
+    if (existingReference) {
+      this.#cancelPendingFileDeletion(input.publication, input.bytes.byteLength);
+      this.#promoteToManagedFile(existingBlob, input, blobIdBytes);
       return { ok: true, record: existingReference };
     }
 
@@ -430,19 +528,9 @@ export class SqliteContextOffloadStore implements ContextOffloadStore {
     if (exceedsLimit(logicalBytes, input.bytes.byteLength, this.#limits.sessionLogicalBytes)) {
       return { ok: false, reason: 'session_quota_exceeded' };
     }
-
-    const blobIdBytes = Buffer.from(input.blobId, 'hex');
-    const existingBlob = this.#database
-      .prepare('SELECT payload, size_bytes FROM context_blobs WHERE blob_id = ?')
-      .get(blobIdBytes) as ContextBlobRow | undefined;
-    const storeUsage = this.#readStoreUsage();
-    if (existingBlob) {
-      if (!blobMatches(existingBlob, input.blobId, input.bytes)) {
-        throw new Error(`Context blob identity is inconsistent: ${input.blobId}`);
-      }
-    } else {
+    if (!existingBlob) {
       const physicalBytes = readNonNegativeInteger(
-        storeUsage.physical_bytes,
+        this.#readStoreUsage().physical_bytes,
         'Workspace physical bytes',
       );
       if (
@@ -451,6 +539,8 @@ export class SqliteContextOffloadStore implements ContextOffloadStore {
         return { ok: false, reason: 'workspace_quota_exceeded' };
       }
     }
+    this.#cancelPendingFileDeletion(input.publication, input.bytes.byteLength);
+    this.#promoteToManagedFile(existingBlob, input, blobIdBytes);
 
     const createdAt = this.#readNow();
     const refId = this.#idFactory();
@@ -458,10 +548,18 @@ export class SqliteContextOffloadStore implements ContextOffloadStore {
     if (!existingBlob) {
       this.#database
         .prepare(
-          `INSERT INTO context_blobs(blob_id, payload, size_bytes, created_at)
-           VALUES (?, ?, ?, ?)`,
+          `INSERT INTO context_blobs(blob_id, storage_kind, payload, size_bytes, created_at)
+           VALUES (?, ?, ?, ?, ?)`,
         )
-        .run(blobIdBytes, input.bytes, input.bytes.byteLength, createdAt);
+        .run(
+          blobIdBytes,
+          input.storageKind,
+          input.storageKind === 'inline'
+            ? input.bytes
+            : Buffer.from(input.publication?.locator ?? '', 'utf8'),
+          input.bytes.byteLength,
+          createdAt,
+        );
       this.#database
         .prepare(
           `UPDATE context_store_usage
@@ -510,6 +608,40 @@ export class SqliteContextOffloadStore implements ContextOffloadStore {
         createdAt,
       },
     };
+  }
+
+  #promoteToManagedFile(
+    existingBlob: ContextBlobRow | undefined,
+    input: {
+      readonly storageKind: ContextOffloadStorageKind;
+      readonly publication?: ManagedFilePublication;
+    },
+    blobId: Uint8Array,
+  ): void {
+    if (existingBlob?.storage_kind !== 'inline' || input.storageKind !== 'managed_file') return;
+    this.#database
+      .prepare(
+        `UPDATE context_blobs
+         SET storage_kind = 'managed_file', payload = ?
+         WHERE blob_id = ? AND storage_kind = 'inline'`,
+      )
+      .run(Buffer.from(input.publication?.locator ?? '', 'utf8'), blobId);
+  }
+
+  #cancelPendingFileDeletion(
+    publication: ManagedFilePublication | undefined,
+    sizeBytes: number,
+  ): void {
+    if (!publication) return;
+    const locator = Buffer.from(publication.locator, 'utf8');
+    const row = this.#database
+      .prepare('SELECT size_bytes FROM context_file_deletions WHERE locator = ?')
+      .get(locator) as { size_bytes?: unknown } | undefined;
+    if (!row) return;
+    if (row.size_bytes !== sizeBytes) {
+      throw new Error('Pending context file deletion has an inconsistent size');
+    }
+    this.#database.prepare('DELETE FROM context_file_deletions WHERE locator = ?').run(locator);
   }
 
   #copyReferences(input: {
@@ -636,20 +768,20 @@ export class SqliteContextOffloadStore implements ContextOffloadStore {
     return { ok: true, copied };
   }
 
-  #read(input: {
+  #prepareRead(input: {
     readonly sessionId: string;
     readonly refId: string;
     readonly maxBytes: number;
-  }): ContextOffloadReadResult {
+  }): PreparedContextRead {
     const row = this.#database
       .prepare(
         `SELECT r.ref_id, r.session_id, r.owner_kind, r.owner_id, r.blob_id,
-                b.size_bytes, r.media_type, r.created_at
+                b.size_bytes, b.storage_kind, b.payload, r.media_type, r.created_at
          FROM context_refs r
          JOIN context_blobs b ON b.blob_id = r.blob_id
          WHERE r.ref_id = ?`,
       )
-      .get(input.refId) as ContextReferenceRow | undefined;
+      .get(input.refId) as (ContextReferenceRow & ContextBlobRow) | undefined;
     if (!row) return { ok: false, reason: 'not_found' };
     const record = decodeReferenceRow(row);
     if (!record) return { ok: false, reason: 'corrupt' };
@@ -660,20 +792,17 @@ export class SqliteContextOffloadStore implements ContextOffloadStore {
     ) {
       return { ok: false, reason: 'too_large' };
     }
-    const blob = this.#database
-      .prepare('SELECT payload, size_bytes FROM context_blobs WHERE blob_id = ?')
-      .get(Buffer.from(record.blobId, 'hex')) as ContextBlobRow | undefined;
-    if (!blob) return { ok: false, reason: 'corrupt' };
-    const bytes = decodeBytes(blob.payload);
-    if (
-      !bytes ||
-      blob.size_bytes !== record.sizeBytes ||
-      bytes.byteLength !== record.sizeBytes ||
-      createHash('sha256').update(bytes).digest('hex') !== record.blobId
-    ) {
+    const value = decodeBlobValue(row, record.blobId);
+    if (!value || row.size_bytes !== record.sizeBytes) {
       return { ok: false, reason: 'corrupt' };
     }
-    return { ok: true, record, bytes };
+    if (value.kind === 'managed_file') {
+      return { kind: 'managed_file', record, locator: value.locator };
+    }
+    if (createHash('sha256').update(value.bytes).digest('hex') !== record.blobId) {
+      return { ok: false, reason: 'corrupt' };
+    }
+    return { ok: true, record, bytes: value.bytes };
   }
 
   #readReferenceByOwner(
@@ -695,11 +824,153 @@ export class SqliteContextOffloadStore implements ContextOffloadStore {
     return record;
   }
 
-  #verifyBlob(blobId: string, bytes: Uint8Array): boolean {
-    const blob = this.#database
-      .prepare('SELECT payload, size_bytes FROM context_blobs WHERE blob_id = ?')
-      .get(Buffer.from(blobId, 'hex')) as ContextBlobRow | undefined;
-    return blob !== undefined && blobMatches(blob, blobId, bytes);
+  async #readManagedFile(input: {
+    readonly record: ContextOffloadRecord;
+    readonly locator: string;
+  }): Promise<ContextOffloadReadResult> {
+    let bytes: Uint8Array;
+    try {
+      const path = this.#managedFilePath(input.locator, input.record.blobId);
+      bytes = await readStableBoundedFile({
+        path,
+        maxBytes: input.record.sizeBytes,
+        invalidFile: () => new InvalidManagedContextFileError(),
+      });
+    } catch (error) {
+      if (error instanceof InvalidManagedContextFileError) {
+        return { ok: false, reason: 'corrupt' };
+      }
+      throw error;
+    }
+    if (
+      bytes.byteLength !== input.record.sizeBytes ||
+      createHash('sha256').update(bytes).digest('hex') !== input.record.blobId
+    ) {
+      return { ok: false, reason: 'corrupt' };
+    }
+    return { ok: true, record: input.record, bytes: new Uint8Array(bytes) };
+  }
+
+  async #publishManagedFile(blobId: string, bytes: Uint8Array): Promise<ManagedFilePublication> {
+    const locator = managedFileLocator(blobId);
+    const target = this.#managedFilePath(locator, blobId);
+    const targetDirectory = dirname(target);
+    const storageRoot = this.#storageRoot;
+    if (!storageRoot) throw new Error('Managed context files require a durable Storage Root');
+    await mkdir(targetDirectory, { recursive: true });
+    const temporary = join(targetDirectory, `.${blobId}.${randomUUID()}.tmp`);
+    let handle: Awaited<ReturnType<typeof open>> | undefined;
+    let created = false;
+    try {
+      handle = await open(temporary, 'wx', 0o600);
+      await handle.writeFile(bytes);
+      await handle.sync();
+      await handle.close();
+      handle = undefined;
+      try {
+        await link(temporary, target);
+        created = true;
+        await syncDirectoryChain(targetDirectory, storageRoot);
+      } catch (error) {
+        if (!isNodeError(error, 'EEXIST')) throw error;
+        await this.#verifyManagedFile(target, blobId, bytes.byteLength);
+      }
+    } finally {
+      await handle?.close().catch(() => undefined);
+      await unlink(temporary).catch((error: unknown) => {
+        if (!isNodeError(error, 'ENOENT')) throw error;
+      });
+    }
+    return { locator, created };
+  }
+
+  async #verifyManagedFile(path: string, blobId: string, sizeBytes: number): Promise<void> {
+    const bytes = await readStableBoundedFile({
+      path,
+      maxBytes: sizeBytes,
+      invalidFile: () => new InvalidManagedContextFileError(),
+    });
+    if (
+      bytes.byteLength !== sizeBytes ||
+      createHash('sha256').update(bytes).digest('hex') !== blobId
+    ) {
+      throw new InvalidManagedContextFileError();
+    }
+  }
+
+  async #removePublicationIfUnreferenced(publication: ManagedFilePublication): Promise<void> {
+    const row = this.#database
+      .prepare(
+        `SELECT 1 AS present FROM context_blobs
+         WHERE storage_kind = 'managed_file' AND payload = ? LIMIT 1`,
+      )
+      .get(Buffer.from(publication.locator, 'utf8')) as { present?: unknown } | undefined;
+    if (row?.present === 1) return;
+    await this.#deleteManagedFile(publication.locator);
+  }
+
+  async #drainPendingFileDeletions(limit: number): Promise<void> {
+    const rows = this.#database
+      .prepare('SELECT locator FROM context_file_deletions ORDER BY enqueued_at, locator LIMIT ?')
+      .all(limit) as Array<{ locator?: unknown }>;
+    for (const row of rows) {
+      const locator = decodeManagedFileLocator(row.locator);
+      if (!locator) throw new Error('Invalid pending context file deletion locator');
+      const locatorBytes = Buffer.from(locator, 'utf8');
+      const live = this.#database
+        .prepare(
+          `SELECT 1 AS present FROM context_blobs
+           WHERE storage_kind = 'managed_file' AND payload = ? LIMIT 1`,
+        )
+        .get(locatorBytes) as { present?: unknown } | undefined;
+      if (live?.present === 1) {
+        this.#writeTransaction(() => {
+          this.#database
+            .prepare('DELETE FROM context_file_deletions WHERE locator = ?')
+            .run(locatorBytes);
+        });
+        continue;
+      }
+      await this.#deleteManagedFile(locator);
+      this.#writeTransaction(() => {
+        this.#database
+          .prepare('DELETE FROM context_file_deletions WHERE locator = ?')
+          .run(locatorBytes);
+      });
+    }
+  }
+
+  async #deleteManagedFile(locator: string): Promise<void> {
+    const path = this.#managedFilePath(locator);
+    try {
+      await unlink(path);
+      await syncDirectory(dirname(path));
+    } catch (error) {
+      if (!isNodeError(error, 'ENOENT')) throw error;
+    }
+  }
+
+  #managedFilePath(locator: string, expectedBlobId?: string): string {
+    const valueRoot = this.#valueRoot;
+    if (!valueRoot) throw new Error('Managed context files require a durable Storage Root');
+    const match = MANAGED_FILE_LOCATOR_PATTERN.exec(locator);
+    const blobId = match?.[2];
+    if (!match || !blobId || match[1] !== blobId.slice(0, 2)) {
+      throw new InvalidManagedContextFileError();
+    }
+    if (expectedBlobId !== undefined && blobId !== expectedBlobId) {
+      throw new InvalidManagedContextFileError();
+    }
+    return join(valueRoot, 'sha256', match[1], blobId);
+  }
+
+  #runManagedValueMutation<T>(operation: () => Promise<T>): Promise<T> {
+    const pending = this.#managedValueMutationTail.then(operation, operation);
+    this.#managedValueMutationTail = pending.then(
+      () => undefined,
+      () => undefined,
+    );
+    return pending;
   }
 
   #markBlobUnreferencedIfEligible(blobId: Uint8Array, unreferencedAt: number): void {
@@ -800,14 +1071,39 @@ function decodeReferenceRow(row: ContextReferenceRow): ContextOffloadRecord | un
   };
 }
 
-function blobMatches(row: ContextBlobRow, blobId: string, expectedBytes: Uint8Array): boolean {
-  const storedBytes = decodeBytes(row.payload);
+type DecodedBlobValue =
+  | { readonly kind: 'inline'; readonly bytes: Uint8Array }
+  | { readonly kind: 'managed_file'; readonly locator: string };
+
+function decodeBlobValue(
+  row: ContextBlobRow,
+  expectedBlobId?: string,
+): DecodedBlobValue | undefined {
+  if (!isNonNegativeSafeInteger(row.size_bytes)) return undefined;
+  if (row.storage_kind === 'inline') {
+    const bytes = decodeBytes(row.payload);
+    return bytes?.byteLength === row.size_bytes ? { kind: 'inline', bytes } : undefined;
+  }
+  if (row.storage_kind !== 'managed_file') return undefined;
+  const locator = decodeManagedFileLocator(row.payload);
+  if (!locator) return undefined;
+  const blobId = MANAGED_FILE_LOCATOR_PATTERN.exec(locator)?.[2];
+  if (expectedBlobId !== undefined && blobId !== expectedBlobId) return undefined;
+  return { kind: 'managed_file', locator };
+}
+
+function blobMatchesInput(row: ContextBlobRow, blobId: string, expectedBytes: Uint8Array): boolean {
+  if (
+    row.size_bytes !== expectedBytes.byteLength ||
+    createHash('sha256').update(expectedBytes).digest('hex') !== blobId
+  ) {
+    return false;
+  }
+  const value = decodeBlobValue(row, blobId);
   return (
-    storedBytes !== undefined &&
-    isNonNegativeSafeInteger(row.size_bytes) &&
-    row.size_bytes === expectedBytes.byteLength &&
-    storedBytes.byteLength === expectedBytes.byteLength &&
-    createHash('sha256').update(storedBytes).digest('hex') === blobId
+    value !== undefined &&
+    (value.kind === 'managed_file' ||
+      createHash('sha256').update(value.bytes).digest('hex') === blobId)
   );
 }
 
@@ -818,6 +1114,21 @@ function decodeBytes(value: unknown): Uint8Array | undefined {
 function decodeBlobId(value: unknown): Uint8Array | undefined {
   const bytes = decodeBytes(value);
   return bytes?.byteLength === 32 ? bytes : undefined;
+}
+
+function managedFileLocator(blobId: string): string {
+  if (!SHA256_PATTERN.test(blobId)) throw new Error('Invalid managed context blob identity');
+  return `sha256/${blobId.slice(0, 2)}/${blobId}`;
+}
+
+function decodeManagedFileLocator(value: unknown): string | undefined {
+  const bytes = decodeBytes(value);
+  if (!bytes || bytes.byteLength === 0 || bytes.byteLength > 512) return undefined;
+  const locator = Buffer.from(bytes).toString('utf8');
+  if (!Buffer.from(locator, 'utf8').equals(Buffer.from(bytes))) return undefined;
+  const match = MANAGED_FILE_LOCATOR_PATTERN.exec(locator);
+  const blobId = match?.[2];
+  return match && blobId && match[1] === blobId.slice(0, 2) ? locator : undefined;
 }
 
 function usageFromRows(session: SessionUsageRow, store: StoreUsageRow): ContextOffloadUsage {
@@ -847,6 +1158,12 @@ function validateLimits(limits: ContextOffloadLimits): ContextOffloadLimits {
 function assertOwner(owner: ContextOffloadOwner): void {
   if (!isOwnerKind(owner.kind)) throw new Error(`Unsupported context owner: ${String(owner.kind)}`);
   assertBoundedIdentity(owner.ownerId, 'Context owner id');
+}
+
+function assertStorageKind(value: unknown): asserts value is ContextOffloadStorageKind {
+  if (value !== 'inline' && value !== 'managed_file') {
+    throw new Error(`Unsupported context storage kind: ${String(value)}`);
+  }
 }
 
 function isOwnerKind(value: unknown): value is ContextOffloadOwner['kind'] {
@@ -905,3 +1222,9 @@ function rollback(database: DatabaseSync): void {
     // Preserve the operation failure that triggered rollback.
   }
 }
+
+function isNodeError(error: unknown, code: string): error is NodeJS.ErrnoException {
+  return error instanceof Error && 'code' in error && error.code === code;
+}
+
+class InvalidManagedContextFileError extends Error {}

@@ -166,6 +166,7 @@ function createWriterFacade(
         owner: Object.freeze({ ...input.owner }),
         bytes: new Uint8Array(input.bytes),
         mediaType: input.mediaType,
+        ...(input.storageKind === undefined ? {} : { storageKind: input.storageKind }),
         ...(input.expectedSha256 === undefined ? {} : { expectedSha256: input.expectedSha256 }),
       });
       return run(() => store.put(accepted));

@@ -19,7 +19,7 @@
 
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
@@ -27,6 +27,7 @@ import test, { type TestContext } from 'node:test';
 import type { ContextOffloadLimits } from '@maka/core/context-offload';
 import {
   CONTEXT_OFFLOAD_DATABASE_NAME,
+  CONTEXT_OFFLOAD_VALUES_DIRECTORY_NAME,
   SqliteContextOffloadStore,
 } from '../sqlite-context-offload-store.js';
 
@@ -36,7 +37,7 @@ test('creates the dedicated WAL schema with incremental auto-vacuum', async (t) 
   const database = new DatabaseSync(fixture.path);
   t.after(() => database.close());
 
-  assert.equal(pragmaNumber(database, 'user_version'), 2);
+  assert.equal(pragmaNumber(database, 'user_version'), 3);
   assert.equal(pragmaNumber(database, 'auto_vacuum'), 2);
   assert.equal(pragmaText(database, 'journal_mode'), 'wal');
   assert.deepEqual(
@@ -50,6 +51,7 @@ test('creates the dedicated WAL schema with incremental auto-vacuum', async (t) 
       .map((row) => row.name),
     [
       'context_blobs',
+      'context_file_deletions',
       'context_gc_candidates',
       'context_refs',
       'context_session_usage',
@@ -109,6 +111,86 @@ test('atomically persists one idempotent owner identity and verifies reads', asy
     ok: false,
     reason: 'identity_conflict',
   });
+  assert.deepEqual(await fixture.store.put({ ...input, mediaType: 'image/jpeg' }), {
+    ok: false,
+    reason: 'identity_conflict',
+  });
+});
+
+test('stores managed binary values as durable file locators instead of SQLite payloads', async (t) => {
+  const fixture = await createFixture(t);
+  const bytes = new Uint8Array(1_024).fill(0x5a);
+  const blobId = sha256(bytes);
+  const stored = await fixture.store.put({
+    sessionId: 'session-1',
+    owner: { kind: 'read_image_snapshot', ownerId: 'read-call-1' },
+    bytes,
+    mediaType: 'image/png',
+    storageKind: 'managed_file',
+  });
+  assert.equal(stored.ok, true);
+  if (!stored.ok) return;
+
+  const database = new DatabaseSync(fixture.path);
+  const row = database
+    .prepare('SELECT storage_kind, payload, size_bytes FROM context_blobs WHERE blob_id = ?')
+    .get(Buffer.from(blobId, 'hex')) as {
+    storage_kind: string;
+    payload: Uint8Array;
+    size_bytes: number;
+  };
+  database.close();
+  const locator = Buffer.from(row.payload).toString('utf8');
+  assert.equal(row.storage_kind, 'managed_file');
+  assert.equal(row.size_bytes, bytes.byteLength);
+  assert.equal(locator, `sha256/${blobId.slice(0, 2)}/${blobId}`);
+  assert.ok(row.payload.byteLength < bytes.byteLength);
+
+  const valuePath = join(fixture.root, CONTEXT_OFFLOAD_VALUES_DIRECTORY_NAME, locator);
+  assert.deepEqual(new Uint8Array(await readFile(valuePath)), bytes);
+  assert.equal((await stat(valuePath)).isFile(), true);
+  assert.deepEqual(
+    await fixture.store.read({
+      sessionId: 'session-1',
+      refId: stored.record.refId,
+      maxBytes: bytes.byteLength,
+    }),
+    { ok: true, record: stored.record, bytes },
+  );
+
+  await writeFile(valuePath, new Uint8Array(bytes.byteLength));
+  assert.deepEqual(
+    await fixture.store.read({
+      sessionId: 'session-1',
+      refId: stored.record.refId,
+      maxBytes: bytes.byteLength,
+    }),
+    { ok: false, reason: 'corrupt' },
+  );
+
+  await fixture.store.releaseReference({
+    sessionId: 'session-1',
+    refId: stored.record.refId,
+  });
+  assert.deepEqual(
+    await fixture.store.collectGarbage({
+      olderThan: 1_001,
+      maxBlobs: 1,
+      maxBytes: bytes.byteLength,
+    }),
+    { deletedBlobs: 1, deletedBytes: bytes.byteLength, hasMore: false },
+  );
+  await assert.rejects(stat(valuePath), (error) => isNodeError(error, 'ENOENT'));
+  const afterGc = new DatabaseSync(fixture.path);
+  assert.equal(
+    (
+      afterGc.prepare('SELECT COUNT(*) AS count FROM context_file_deletions').get() as {
+        count: number;
+      }
+    ).count,
+    0,
+  );
+  afterGc.close();
 });
 
 test('reopens durable records and preserves owner idempotency', async (t) => {
@@ -141,7 +223,7 @@ test('rejects a database schema newer than this authority understands', async (t
   const path = join(root, CONTEXT_OFFLOAD_DATABASE_NAME);
   t.after(() => rm(root, { recursive: true, force: true }));
   const database = new DatabaseSync(path);
-  database.exec('PRAGMA user_version = 3');
+  database.exec('PRAGMA user_version = 4');
   database.close();
 
   assert.throws(
@@ -153,7 +235,7 @@ test('rejects a database schema newer than this authority understands', async (t
           workspacePhysicalBytes: 1,
         },
       }),
-    /schema 3 is newer than supported version 2/u,
+    /schema 4 is newer than supported version 3/u,
   );
 });
 
@@ -532,7 +614,9 @@ test('migrates v1 orphan blobs into the indexed garbage candidate set', async (t
   fixture.store.close();
 
   const database = new DatabaseSync(fixture.path);
-  database.exec('DROP TABLE context_gc_candidates; PRAGMA user_version = 1');
+  database.exec(
+    'DROP TABLE context_gc_candidates; DROP TABLE context_file_deletions; PRAGMA user_version = 1',
+  );
   database.close();
   const migrated = new SqliteContextOffloadStore(fixture.path, { limits: fixture.limits });
   t.after(() => migrated.close());
@@ -606,7 +690,7 @@ async function createFixture(
     store.close();
     await rm(root, { recursive: true, force: true });
   });
-  return { limits, path, store };
+  return { limits, path, root, store };
 }
 
 const TEST_OWNER_MAX_BYTES = Object.freeze({
@@ -616,6 +700,10 @@ const TEST_OWNER_MAX_BYTES = Object.freeze({
 
 function sha256(bytes: Uint8Array): string {
   return createHash('sha256').update(bytes).digest('hex');
+}
+
+function isNodeError(error: unknown, code: string): error is NodeJS.ErrnoException {
+  return error instanceof Error && 'code' in error && error.code === code;
 }
 
 function pragmaNumber(database: DatabaseSync, name: string): number {
