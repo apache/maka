@@ -353,3 +353,35 @@ test('earlier history lands above the turn the reader is on', async ({
   // while putting the reader somewhere else entirely.
   expect(Math.abs((await turnTop(page, anchor.turnId)) - anchor.top)).toBeLessThanOrEqual(4);
 });
+
+test('history asked for at the very top of the scroller still lands above the reader', async ({
+  promptRailWindow: page,
+}) => {
+  const loadedTurns = () =>
+    page
+      .locator('.maka-chat-message-list')
+      .getAttribute('data-turn-source-count')
+      .then((value) => Number(value));
+  const loadedBefore = await loadedTurns();
+
+  // The one position where the browser declines to anchor, and the one the
+  // wheel-to-load path puts the reader in.
+  await page.evaluate((selector) => {
+    const root = document.querySelector(selector);
+    if (!root) throw new Error('the chat scroll container is missing');
+    root.scrollTop = 0;
+  }, SCROLLER);
+
+  await expect.poll(loadedTurns, { timeout: 20_000 }).toBeGreaterThan(loadedBefore);
+  await waitForPaintedFrames(page);
+
+  // Anchoring resumes at an offset of one pixel, so the offset itself is the
+  // evidence: left at zero the browser holds the scroller at the top and every
+  // turn that arrives pushes the reader's content down the viewport instead.
+  const offset = await page.evaluate((selector) => {
+    const root = document.querySelector(selector);
+    if (!root) throw new Error('the chat scroll container is missing');
+    return root.scrollTop;
+  }, SCROLLER);
+  expect(offset).toBeGreaterThanOrEqual(1);
+});

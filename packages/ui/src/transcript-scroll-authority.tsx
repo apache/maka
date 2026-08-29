@@ -47,7 +47,6 @@ import {
   type ReactNode,
 } from 'react';
 import { ChatLayoutScrollButton } from '@astryxdesign/core/Chat';
-import { restoreChatScrollAnchor, type ChatScrollAnchor } from './chat-scroll-anchor.js';
 
 /** Astryx's own thresholds, so the affordance keeps the feel readers learnt. */
 const PIN_THRESHOLD_PX = 10;
@@ -71,19 +70,6 @@ export interface TranscriptScrollAuthority {
   /** One-shot: put the tail back under the reader and follow it again. */
   pinToTail(): void;
   /**
-   * Keep `anchor` at the viewport offset it had, through whatever arrives
-   * next. `overflow-anchor: auto` already does this continuously and for free,
-   * with one exception — the browser declines to anchor while the scroller sits
-   * at zero, which is precisely where loading earlier history puts the reader.
-   *
-   * The hold lasts until the reader scrolls, which is the moment it stops being
-   * true that they want to stay put. It runs on the same growth signal the pin
-   * does, so the correction lands in the frame the content arrived rather than
-   * after the virtual window has already been recomputed around the old
-   * position.
-   */
-  holdAnchor(anchor: ChatScrollAnchor | undefined): void;
-  /**
    * The reader chose a position, so stop following. A command that moves the
    * viewport itself calls this first; afterwards nothing here writes, which is
    * why a command cannot race the policy.
@@ -99,7 +85,6 @@ export function createTranscriptScrollAuthority(): TranscriptScrollAuthority {
   let awayFromTail = false;
   let writing = false;
   let writingFrame = 0;
-  let anchor: ChatScrollAnchor | undefined;
   let snapshot: TranscriptScrollSnapshot = { pinned, awayFromTail };
   const listeners = new Set<() => void>();
 
@@ -143,8 +128,6 @@ export function createTranscriptScrollAuthority(): TranscriptScrollAuthority {
         // output box, a terminal) never reach here at all: `scroll` does not
         // bubble, and there is no `wheel` listener to catch instead.
         if (writing) return;
-        // The reader moved, so they are no longer asking to stay put.
-        anchor = undefined;
         const distance = distanceToTail();
         pinned = distance <= PIN_THRESHOLD_PX;
         awayFromTail = distance > BUTTON_THRESHOLD_PX;
@@ -154,7 +137,6 @@ export function createTranscriptScrollAuthority(): TranscriptScrollAuthority {
       if (pinned) writeToTail();
       return () => {
         target.removeEventListener('scroll', onScroll);
-        anchor = undefined;
         if (writingFrame !== 0) {
           window.cancelAnimationFrame(writingFrame);
           writingFrame = 0;
@@ -169,21 +151,13 @@ export function createTranscriptScrollAuthority(): TranscriptScrollAuthority {
         writeToTail();
         return;
       }
-      if (anchor) {
-        markWriting();
-        restoreChatScrollAnchor(root, anchor);
-      }
       awayFromTail = distanceToTail() > BUTTON_THRESHOLD_PX;
       publish();
     },
     pinToTail() {
       pinned = true;
-      anchor = undefined;
       writeToTail();
       publish();
-    },
-    holdAnchor(next) {
-      anchor = next;
     },
     releasePin() {
       pinned = false;

@@ -21,15 +21,16 @@
  * The transcript's scroll commands, and the seam that hands the scroller to the
  * authority that owns it (`transcript-scroll-authority.ts`).
  *
- * A command is one-shot: jump to a turn the reader picked, and compensate the
- * earlier history that lands above them. Each releases the pin first, and the
- * authority writes nothing while the pin is released — so a command cannot be
- * fighting a policy, which is the shape every previous round of this code had.
+ * A command is one-shot: jump to a turn the reader picked, or ask for earlier
+ * history. Each releases the pin first, and the authority writes nothing while
+ * the pin is released — so a command cannot be fighting a policy, which is the
+ * shape every previous round of this code had. Nothing here compensates for
+ * content that lands above the reader; `overflow-anchor: auto` does that
+ * continuously, and for free.
  */
 
 import { useEffect, useRef, useState, type RefObject } from 'react';
 import type { StoredMessage } from '@maka/core/session';
-import { captureChatScrollAnchor } from './chat-scroll-anchor.js';
 import { useTranscriptScrollAuthority } from './transcript-scroll-authority.js';
 
 export function useChatScroll(input: {
@@ -81,12 +82,13 @@ export function useChatScroll(input: {
       if (historyLoadPendingRef.current || earlierLoadRequest.current) return;
       const request = {};
       earlierLoadRequest.current = request;
-      const authority = authorityRef.current;
-      authority?.releasePin();
-      // Where the reader is, not how tall the transcript was. A height delta
-      // counts growth below them too, and counts a load that returned nothing
-      // as a push; an element moves by exactly what the reader would see.
-      authority?.holdAnchor(captureChatScrollAnchor(root));
+      authorityRef.current?.releasePin();
+      // The browser anchors the reader against everything that lands above
+      // them, with one exception: it declines while the scroller sits at zero,
+      // which is exactly where a wheel asks for history. One pixel is the whole
+      // fix — measured in Chromium, an insert of 501px above the reader moves
+      // `scrollTop` by 501 at an offset of 1 and by 0 at an offset of 0.
+      if (root.scrollTop < 1) root.scrollTop = 1;
       void Promise.resolve(loadEarlierRef.current?.()).catch(() => undefined).finally(() => {
         if (earlierLoadRequest.current === request) earlierLoadRequest.current = null;
       });
