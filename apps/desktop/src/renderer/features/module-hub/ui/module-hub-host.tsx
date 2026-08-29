@@ -93,7 +93,9 @@ export function ModuleHubHost(props: { model: ModuleHubHostModel }) {
             ? () => model.scheduledTasks.openCreate('daily-review')
             : undefined}
           onManageSchedule={task ? () => model.scheduledTasks.openInspect(task.id) : undefined}
-          onRunNow={task ? () => model.scheduledTasks.triggerNow(task.id) : undefined}
+          onRunNow={task
+            ? (intentBody) => model.scheduledTasks.triggerNow(task.id, intentBody)
+            : undefined}
           onSelectSession={model.openSession}
         />
       );

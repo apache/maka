@@ -131,7 +131,7 @@ export function DailyReviewPage(props: {
   canSetUp: boolean;
   onSetUp?(): void;
   onManageSchedule?(): void;
-  onRunNow?(): Promise<void> | void;
+  onRunNow?(intentBody: string): Promise<void> | void;
   onSelectSession?(sessionId: string): void;
 }) {
   const copy = getSharedUiCopy(useUiLocale()).moduleHubs.automations;

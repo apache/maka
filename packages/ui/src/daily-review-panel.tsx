@@ -44,6 +44,7 @@ import { ModulePage } from './primitives/module-page.js';
 import { StatTile } from './primitives/stat-tile.js';
 import {
   dailyReviewRangeBounds,
+  dailyReviewManualIntent,
   type DailyReviewRange,
   type DailyReviewViewState,
 } from './daily-review-view-state.js';
@@ -61,7 +62,7 @@ export function DailyReviewPanel(props: {
   canSetUp: boolean;
   onSetUp?(): void;
   onManageSchedule?(): void;
-  onRunNow?(): Promise<void> | void;
+  onRunNow?(intentBody: string): Promise<void> | void;
   onSelectSession?(sessionId: string): void;
 }) {
   const locale = useUiLocale();
@@ -100,7 +101,7 @@ export function DailyReviewPanel(props: {
     if (!props.onRunNow || runPending) return;
     setRunPending(true);
     try {
-      await props.onRunNow();
+      await props.onRunNow(dailyReviewManualIntent(range, Date.now(), offsetDays));
       if (mountedRef.current) await load();
     } finally {
       if (mountedRef.current) setRunPending(false);

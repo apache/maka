@@ -56,7 +56,9 @@ legacy tables are retired. New review executions use `agent_run`; their transcri
 artifacts therefore have the same owners as any other Session. If the old configuration cannot yet
 resolve an immutable model Connection, report projection remains idempotent but retirement waits;
 the inert legacy rows are retried on a later Host start after model setup and are never scheduled or
-written by the new runtime.
+written by the new runtime. When an enabled legacy configuration upgrades after its local execution
+time and yesterday's report is absent, migration makes the system task due once before retiring the
+old snapshot. The ordinary scheduler then admits that catch-up fire; no legacy scheduler survives.
 
 ### UI
 
@@ -71,6 +73,9 @@ runtime domain:
   current Agent execution template.
 - Enablement, recurrence, next run, retry history, and manual trigger come from that
   `ScheduledTask`.
+- A manual review snapshots the selected 1/7/30-day calendar range as a one-shot intent on the
+  ordinary fire claim; it does not rewrite the task's recurring intent. Manually firing a paused
+  task leaves its schedule paused after the run.
 - The 1/7/30 day overview and its earlier/later navigation read ordinary Session activity and the
   canonical model-call usage ledger for the selected local-calendar range.
 - Report history filters the Session catalog by the generic `scheduled-task:<taskId>` relation;
@@ -97,7 +102,8 @@ Before an effect crosses its irreversible boundary, the Store persists one uniqu
 task. For `agent_run`, it also persists the stable Session/Turn/Run/message identity before Session
 creation or execution admission. Recovery can therefore reconcile the exact Host execution
 without creating a duplicate Session. Native delivery claims are not replayed after an unknown
-outcome.
+outcome. New Agent-created tasks must freeze an immutable Connection ID at creation; older
+persisted tasks without one remain decodable but fail closed before execution.
 
 ### Runtime boundary
 

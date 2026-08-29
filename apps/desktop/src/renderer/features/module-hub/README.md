@@ -78,6 +78,9 @@ only selects and mounts that leaf; moving MCP internals is a separate change.
   transcript, artifact storage, archive store, or IPC protocol. Its setup and
   run actions delegate to Scheduled Tasks; manage selects the backing task's
   ordinary inspector; opening a report selects the normal Session conversation.
+- A manual review snapshots the selected calendar range onto that one
+  ScheduledTask fire without rewriting its recurring prompt; a paused schedule
+  stays paused after the manual run.
 - Earlier/later activity ranges remain available through exact-range reads of
   the Session catalog and shared usage ledger. Report quote/copy/save behavior
   comes from the ordinary transcript and Artifact surfaces rather than a

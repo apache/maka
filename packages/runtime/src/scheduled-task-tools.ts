@@ -178,6 +178,9 @@ export function buildAgentScheduledTaskCreatePayload(input: {
   if (input.effect === 'agent_run' && !input.execution) {
     return { error: 'agent_run requires a frozen execution template from the creator session' };
   }
+  if (input.effect === 'agent_run' && !input.execution?.llmConnectionId) {
+    return { error: 'agent_run requires immutable Connection identity from the creator session' };
+  }
   const schedule =
     input.schedule.kind === 'once'
       ? input.schedule

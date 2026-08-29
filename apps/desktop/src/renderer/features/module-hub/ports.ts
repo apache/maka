@@ -180,7 +180,11 @@ export interface ModuleHubScheduledTasksService {
     enabled: boolean,
     host: ModuleHubRuntimeHostRef,
   ): Promise<ScheduledTask>;
-  triggerNow(id: string, host: ModuleHubRuntimeHostRef): Promise<ScheduledTask>;
+  triggerNow(
+    id: string,
+    host: ModuleHubRuntimeHostRef,
+    intentBody?: string,
+  ): Promise<ScheduledTask>;
   snooze(id: string, host: ModuleHubRuntimeHostRef): Promise<ScheduledTask>;
   clearRunHistory(id: string, host: ModuleHubRuntimeHostRef): Promise<ScheduledTask>;
   delete(id: string, host: ModuleHubRuntimeHostRef): Promise<void>;

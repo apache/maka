@@ -1483,7 +1483,11 @@ export interface MakaBridge {
       host?: DesktopRuntimeHostRef,
     ): Promise<ScheduledTask>;
     setEnabled(id: string, enabled: boolean, host?: DesktopRuntimeHostRef): Promise<ScheduledTask>;
-    triggerNow(id: string, host?: DesktopRuntimeHostRef): Promise<ScheduledTask>;
+    triggerNow(
+      id: string,
+      host?: DesktopRuntimeHostRef,
+      intentBody?: string,
+    ): Promise<ScheduledTask>;
     snooze(id: string, host?: DesktopRuntimeHostRef): Promise<ScheduledTask>;
     clearRunHistory(id: string, host?: DesktopRuntimeHostRef): Promise<ScheduledTask>;
     delete(id: string, host?: DesktopRuntimeHostRef): Promise<void>;

@@ -2776,8 +2776,12 @@ const makaBridge = {
         taskId: id,
       }, host);
     },
-    triggerNow(id: string, host?: DesktopRuntimeHostRef): Promise<ScheduledTask> {
-      return mutateScheduledTask({ kind: 'trigger_now', taskId: id }, host);
+    triggerNow(
+      id: string,
+      host?: DesktopRuntimeHostRef,
+      intentBody?: string,
+    ): Promise<ScheduledTask> {
+      return mutateScheduledTask({ kind: 'trigger_now', taskId: id, ...(intentBody ? { intentBody } : {}) }, host);
     },
     snooze(id: string, host?: DesktopRuntimeHostRef): Promise<ScheduledTask> {
       return mutateScheduledTask({

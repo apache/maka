@@ -63,6 +63,19 @@ export function dailyReviewRangeBounds(
   return { from: start.getTime(), to: end.getTime() };
 }
 
+export function dailyReviewManualIntent(
+  range: DailyReviewRange,
+  now = Date.now(),
+  offsetDays = 0,
+): string {
+  const bounds = dailyReviewRangeBounds(range, now, offsetDays);
+  return [
+    `Review Maka work across exactly ${range} local calendar day${range === 1 ? '' : 's'} using ordinary Session history whose activity timestamp is in [${bounds.from}, ${bounds.to}).`,
+    'Identify completed work, unfinished or missed follow-ups, and useful patterns.',
+    'Write a concise report and save it as a normal Markdown Artifact in the Session.',
+  ].join(' ');
+}
+
 export function projectDailyReviewView(input: {
   readonly task?: ScheduledTask;
   readonly sessions: readonly SessionSummary[];

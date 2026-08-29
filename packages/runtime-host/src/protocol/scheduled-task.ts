@@ -97,10 +97,8 @@ export type ScheduledTaskMutateInput =
       readonly input: Omit<CreateScheduledTaskInput, 'createdBy'>;
     }
   | { readonly kind: 'update'; readonly taskId: string; readonly patch: UpdateScheduledTaskInput }
-  | {
-      readonly kind: 'pause' | 'resume' | 'clear_history' | 'trigger_now' | 'delete';
-      readonly taskId: string;
-    }
+  | { readonly kind: 'pause' | 'resume' | 'clear_history' | 'delete'; readonly taskId: string }
+  | { readonly kind: 'trigger_now'; readonly taskId: string; readonly intentBody?: string }
   | { readonly kind: 'snooze'; readonly taskId: string; readonly delayMs: number };
 
 export type ScheduledTaskMutateResult =
@@ -243,11 +241,31 @@ export function decodeScheduledTaskMutateInput(value: unknown): ScheduledTaskMut
       patch: decodeUpdateInput(input.patch),
     };
   }
+  if (record.kind === 'trigger_now') {
+    const input = requireShapedRecord(
+      record,
+      'ScheduledTask trigger input',
+      ['kind', 'taskId'],
+      ['intentBody'],
+    );
+    return {
+      kind: 'trigger_now',
+      taskId: requireEntityId(input.taskId, 'ScheduledTask id'),
+      ...(input.intentBody === undefined
+        ? {}
+        : {
+            intentBody: boundedText(
+              input.intentBody,
+              'ScheduledTask manual intent body',
+              SCHEDULED_TASK_INTENT_MAX_CHARS,
+            ),
+          }),
+    };
+  }
   if (
     record.kind === 'pause' ||
     record.kind === 'resume' ||
     record.kind === 'clear_history' ||
-    record.kind === 'trigger_now' ||
     record.kind === 'delete'
   ) {
     const input = requireExactRecord(record, 'ScheduledTask mutation input', ['kind', 'taskId']);

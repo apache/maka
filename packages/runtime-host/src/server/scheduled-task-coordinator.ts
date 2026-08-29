@@ -407,7 +407,7 @@ export class HostScheduledTaskCoordinator implements ScheduledTaskToolAuthority 
       if (input.kind === 'trigger_now') {
         return taskSuccess(
           await this.#exclusive(async () => {
-            const claim = await this.#store.claimNow(input.taskId, this.#now());
+            const claim = await this.#store.claimNow(input.taskId, this.#now(), input.intentBody);
             await this.#refreshResidency();
             const task = await this.#fulfill(claim, false);
             if (!task) throw new ScheduledTaskNativeUnavailableError();

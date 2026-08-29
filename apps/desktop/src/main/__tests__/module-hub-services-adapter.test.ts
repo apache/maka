@@ -148,7 +148,7 @@ describe('createDesktopModuleHubServices', () => {
     await services.scheduledTasks.create(createInput, host);
     await services.scheduledTasks.update('task', updateInput, host);
     await services.scheduledTasks.setEnabled('task', true, host);
-    await services.scheduledTasks.triggerNow('task', host);
+    await services.scheduledTasks.triggerNow('task', host, 'Manual range');
     await services.scheduledTasks.snooze('task', host);
     await services.scheduledTasks.clearRunHistory('task', host);
     await services.scheduledTasks.delete('task', host);
@@ -170,7 +170,7 @@ describe('createDesktopModuleHubServices', () => {
       { name: 'scheduledTasks.create', args: [createInput, host] },
       { name: 'scheduledTasks.update', args: ['task', updateInput, host] },
       { name: 'scheduledTasks.setEnabled', args: ['task', true, host] },
-      { name: 'scheduledTasks.triggerNow', args: ['task', host] },
+      { name: 'scheduledTasks.triggerNow', args: ['task', host, 'Manual range'] },
       { name: 'scheduledTasks.snooze', args: ['task', host] },
       { name: 'scheduledTasks.clearRunHistory', args: ['task', host] },
       { name: 'scheduledTasks.delete', args: ['task', host] },

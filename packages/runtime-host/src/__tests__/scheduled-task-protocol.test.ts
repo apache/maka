@@ -61,6 +61,28 @@ describe('ScheduledTask protocol', () => {
     }
   });
 
+  test('bounds an optional one-shot intent on manual trigger', () => {
+    assert.deepEqual(
+      decodeScheduledTaskMutateInput({
+        kind: 'trigger_now',
+        taskId: 'task-1',
+        intentBody: 'Review the exact selected range.',
+      }),
+      {
+        kind: 'trigger_now',
+        taskId: 'task-1',
+        intentBody: 'Review the exact selected range.',
+      },
+    );
+    assert.throws(() =>
+      decodeScheduledTaskMutateInput({
+        kind: 'trigger_now',
+        taskId: 'task-1',
+        intentBody: 'x'.repeat(8_001),
+      }),
+    );
+  });
+
   test('requires Host-path authority only when a mutation submits a Host path', () => {
     const authority = createRuntimeHostConnectionAuthority({
       principalKind: 'remote_owner',

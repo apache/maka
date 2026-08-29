@@ -22,6 +22,7 @@ import test from 'node:test';
 import { scheduledTaskSessionLabel, type ScheduledTask } from '@maka/core/scheduled-task';
 import type { SessionSummary } from '@maka/core/session';
 import {
+  dailyReviewManualIntent,
   dailyReviewRangeBounds,
   projectDailyReviewView,
 } from './daily-review-view-state.js';
@@ -172,4 +173,14 @@ test('uses local calendar-day boundaries for 1, 7, and 30 day activity views', (
     from: expectedWeekStart.getTime(),
     to: expectedWeekEnd.getTime(),
   });
+});
+
+test('builds a one-shot manual intent for the exact selected local range', () => {
+  const now = new Date(2026, 7, 29, 15, 45).getTime();
+  const intent = dailyReviewManualIntent(7, now, -2);
+  const bounds = dailyReviewRangeBounds(7, now, -2);
+  assert.match(intent, new RegExp(`\\[${bounds.from}, ${bounds.to}\\)`, 'u'));
+  assert.match(intent, /7 local calendar days/u);
+  assert.match(intent, /ordinary Session history/u);
+  assert.match(intent, /Markdown Artifact/u);
 });

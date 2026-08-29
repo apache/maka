@@ -84,7 +84,8 @@ export function createDesktopModuleHubServices(
         bridge.scheduledTasks.update(id, patch, host),
       setEnabled: (id, enabled, host) =>
         bridge.scheduledTasks.setEnabled(id, enabled, host),
-      triggerNow: (id, host) => bridge.scheduledTasks.triggerNow(id, host),
+      triggerNow: (id, host, intentBody) =>
+        bridge.scheduledTasks.triggerNow(id, host, intentBody),
       snooze: (id, host) => bridge.scheduledTasks.snooze(id, host),
       clearRunHistory: (id, host) =>
         bridge.scheduledTasks.clearRunHistory(id, host),

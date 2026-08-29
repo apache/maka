@@ -141,6 +141,9 @@ export async function migrateLegacyDailyReview(input: {
   if (!snapshot.config.enabled && task.status === 'active') {
     await input.scheduledTasks.pause(task.id, now);
   }
+  if (needsLegacyCatchUp(snapshot, now)) {
+    await input.scheduledTasks.makeDueNow(task.id, now);
+  }
   if (!(await input.legacy.retire(snapshot.token))) {
     throw new Error('Legacy Daily Review state disappeared during migration');
   }
@@ -354,6 +357,23 @@ function localAnchorAt(now: number, executeTime: string): number {
   const anchor = new Date(now);
   anchor.setHours(hours ?? 8, minutes ?? 0, 0, 0);
   return anchor.getTime();
+}
+
+function needsLegacyCatchUp(snapshot: LegacyDailyReviewMigrationSnapshot, now: number): boolean {
+  if (!snapshot.config.enabled || !scheduledTimeHasPassed(now, snapshot.config.executeTime)) {
+    return false;
+  }
+  const previousDay = new Date(now);
+  previousDay.setHours(0, 0, 0, 0);
+  previousDay.setDate(previousDay.getDate() - 1);
+  const archiveId = `${previousDay.getFullYear()}-${String(previousDay.getMonth() + 1).padStart(2, '0')}-${String(previousDay.getDate()).padStart(2, '0')}-1d`;
+  return !snapshot.archives.some((archive) => archive.id === archiveId);
+}
+
+function scheduledTimeHasPassed(now: number, executeTime: string): boolean {
+  const current = new Date(now);
+  const [hours, minutes] = executeTime.split(':').map(Number);
+  return current.getHours() * 60 + current.getMinutes() >= (hours ?? 0) * 60 + (minutes ?? 0);
 }
 
 function archiveTitle(archive: LegacyDailyReviewArchive): string {

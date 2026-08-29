@@ -71,11 +71,12 @@ interface ScheduledTaskStore {
   update(id: string, patch: unknown, now?: number): Promise<ScheduledTask>;
   pause(id: string, now?: number): Promise<ScheduledTask>;
   resume(id: string, now?: number): Promise<ScheduledTask>;
+  makeDueNow(id: string, now?: number): Promise<ScheduledTask>;
   snooze(id: string, delayMs: number, now?: number): Promise<ScheduledTask>;
   clearRunHistory(id: string, now?: number): Promise<ScheduledTask>;
   remove(id: string): Promise<void>;
   claimNextDue(now?: number): Promise<ScheduledTaskDueScan>;
-  claimNow(id: string, now?: number): Promise<ScheduledTaskFireClaim>;
+  claimNow(id: string, now?: number, intentBody?: string): Promise<ScheduledTaskFireClaim>;
   listPendingFires(): Promise<ScheduledTaskFireClaim[]>;
   bindFireExecution(
     claimId: string,
@@ -204,11 +205,12 @@ function createWriterFacade(
     update: (id, patch, now) => run(() => store.update(id, patch, now)),
     pause: (id, now) => run(() => store.pause(id, now)),
     resume: (id, now) => run(() => store.resume(id, now)),
+    makeDueNow: (id, now) => run(() => store.makeDueNow(id, now)),
     snooze: (id, delayMs, now) => run(() => store.snooze(id, delayMs, now)),
     clearRunHistory: (id, now) => run(() => store.clearRunHistory(id, now)),
     remove: (id) => run(() => store.remove(id)),
     claimNextDue: (now) => run(() => store.claimNextDue(now)),
-    claimNow: (id, now) => run(() => store.claimNow(id, now)),
+    claimNow: (id, now, intentBody) => run(() => store.claimNow(id, now, intentBody)),
     listPendingFires: () => run(() => store.listPendingFires()),
     bindFireExecution: (claimId, execution) =>
       run(() => store.bindFireExecution(claimId, execution)),
@@ -446,6 +448,24 @@ class SqliteScheduledTaskStore implements ScheduledTaskStore {
     return updated;
   }
 
+  async makeDueNow(id: string, now = Date.now()): Promise<ScheduledTask> {
+    let updated: ScheduledTask | undefined;
+    await this.mutate((state) => ({
+      ...state,
+      tasks: state.tasks.map((task) => {
+        if (task.id !== id) return task;
+        assertNoPendingClaim(state.claims, id);
+        if (task.status !== 'active') {
+          throw storeError('operation_conflict', 'Only active scheduled tasks can be made due');
+        }
+        updated = { ...task, nextFireAt: now, updatedAt: now };
+        return updated;
+      }),
+    }));
+    if (!updated) throw storeError('not_found', `No such scheduled task: ${id}`);
+    return updated;
+  }
+
   async clearRunHistory(id: string, now = Date.now()): Promise<ScheduledTask> {
     let updated: ScheduledTask | undefined;
     await this.mutate((state) => ({
@@ -502,19 +522,32 @@ class SqliteScheduledTaskStore implements ScheduledTaskStore {
     return { claim: claimed ?? null, expired };
   }
 
-  async claimNow(id: string, now = Date.now()): Promise<ScheduledTaskFireClaim> {
+  async claimNow(
+    id: string,
+    now = Date.now(),
+    intentBody?: string,
+  ): Promise<ScheduledTaskFireClaim> {
+    const normalizedIntent =
+      intentBody === undefined ? undefined : normalizeUpdateScheduledTaskInput({ intentBody }, now);
+    if (normalizedIntent && !normalizedIntent.ok) {
+      throw storeError('invalid_input', normalizedIntent.message);
+    }
     let claimed: ScheduledTaskFireClaim | undefined;
     await this.mutate((state) => {
       const task = state.tasks.find((entry) => entry.id === id);
       if (!task) throw storeError('not_found', `No such scheduled task: ${id}`);
       assertNoPendingClaim(state.claims, id);
-      if (task.status !== 'active') {
-        throw storeError('operation_conflict', 'Only active tasks can be triggered now');
+      if (task.status !== 'active' && task.status !== 'paused') {
+        throw storeError('operation_conflict', 'Only active or paused tasks can be triggered now');
       }
       if (task.expiresAt !== null && now >= task.expiresAt) {
         throw storeError('operation_conflict', 'Scheduled task has expired');
       }
-      claimed = createClaim(task, now, now);
+      const manualIntent = normalizedIntent?.ok ? normalizedIntent.value.intentBody : undefined;
+      if (manualIntent !== undefined && task.effect.kind !== 'notify' && !manualIntent.trim()) {
+        throw storeError('invalid_input', 'Agent intent body is required');
+      }
+      claimed = createClaim(task, now, now, manualIntent);
       return { ...state, claims: [...state.claims, claimed] };
     });
     return claimed!;
@@ -716,13 +749,16 @@ function createClaim(
   task: ScheduledTask,
   scheduledFor: number,
   claimedAt: number,
+  intentBody?: string,
 ): ScheduledTaskFireClaim {
   return {
     id: randomUUID(),
     taskId: task.id,
     scheduledFor,
     claimedAt,
-    task: structuredClone(task),
+    task: structuredClone(
+      intentBody === undefined ? task : { ...task, intent: { kind: 'text', body: intentBody } },
+    ),
   };
 }
 

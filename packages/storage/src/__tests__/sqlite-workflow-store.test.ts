@@ -749,6 +749,47 @@ describe('SQLite workflow stores', () => {
     });
   });
 
+  test('manual fire snapshots a one-shot intent and keeps a paused schedule paused', async () => {
+    await withRoot(async (root) => {
+      const now = Date.now();
+      const { owner, open } = await scheduledTaskStoreRoot(root);
+      const store = await open();
+      const task = await store.create(
+        {
+          title: 'Daily Review',
+          intentBody: 'Review the previous local day.',
+          schedule: { kind: 'interval', everySeconds: 86_400, startAt: now + 1_000 },
+          effect: { kind: 'notify', channel: 'local' },
+          createdBy: { kind: 'user' },
+        },
+        now,
+      );
+      await store.pause(task.id, now + 1);
+
+      const claim = await store.claimNow(
+        task.id,
+        now + 2,
+        'Review the exact selected seven-day range.',
+      );
+      assert.equal(claim.task.intent.body, 'Review the exact selected seven-day range.');
+      assert.equal(claim.task.status, 'paused');
+      assert.equal((await store.get(task.id))?.intent.body, 'Review the previous local day.');
+
+      await store.settleFire(claim.id, {
+        at: now + 3,
+        outcome: 'ok',
+        message: 'done',
+      });
+      const settled = await store.get(task.id);
+      assert.equal(settled?.status, 'paused');
+      assert.equal(settled?.nextFireAt, null);
+      assert.equal(settled?.intent.body, 'Review the previous local day.');
+      assert.equal(settled?.fireCount, 1);
+      store.close();
+      await owner.close();
+    });
+  });
+
   test('persists the exact ScheduledTask Agent execution identity before admission', async () => {
     await withRoot(async (root) => {
       const now = Date.now();

@@ -166,12 +166,18 @@ test('production Host migrates Daily Review into ScheduledTask Session and Artif
   timeout: 30_000,
 }, async () => {
   await withExecutionRoot(async (fixture) => {
+    const archiveDay = new Date();
+    archiveDay.setHours(0, 0, 0, 0);
+    archiveDay.setDate(archiveDay.getDate() - 2);
+    const archiveDayEnd = new Date(archiveDay);
+    archiveDayEnd.setDate(archiveDayEnd.getDate() + 1);
+    const archiveDate = `${archiveDay.getFullYear()}-${String(archiveDay.getMonth() + 1).padStart(2, '0')}-${String(archiveDay.getDate()).padStart(2, '0')}`;
     const archive = {
-      id: '2026-08-28-1d',
-      day: { fromMs: 1_772_140_800_000, toMs: 1_772_227_200_000 },
+      id: `${archiveDate}-1d`,
+      day: { fromMs: archiveDay.getTime(), toMs: archiveDayEnd.getTime() },
       range: 1,
       status: 'ok',
-      generatedAt: 1_772_227_200_001,
+      generatedAt: archiveDayEnd.getTime() + 1,
       trigger: 'cron',
       modelKey: '',
       sections: { summary: 'A migrated report.' },
@@ -207,7 +213,7 @@ test('production Host migrates Daily Review into ScheduledTask Session and Artif
       .run(
         JSON.stringify({
           enabled: true,
-          executeTime: '23:58',
+          executeTime: '00:00',
           modelKey: 'fake::fake-model',
         }),
       );
@@ -232,7 +238,7 @@ test('production Host migrates Daily Review into ScheduledTask Session and Artif
       );
       const artifacts = await unresolvedDesktop.request('artifact.query', {
         kind: 'list_start',
-        sessionId: 'daily-review-archive-2026-08-28-1d',
+        sessionId: `daily-review-archive-${archive.id}`,
       });
       assert.equal(artifacts.kind, 'page');
       if (artifacts.kind !== 'page') return;
@@ -314,11 +320,14 @@ test('production Host migrates Daily Review into ScheduledTask Session and Artif
         const anchor = new Date(task.schedule.anchorAt);
         assert.equal(
           `${anchor.getHours()}:${String(anchor.getMinutes()).padStart(2, '0')}`,
-          '23:58',
+          '0:00',
         );
       }
+      assert.equal(task?.fireCount, 1);
+      assert.equal(task?.runs.length, 1);
+      assert.ok(task?.runs[0]?.sessionId, task?.runs[0]?.message);
 
-      const sessionId = 'daily-review-archive-2026-08-28-1d';
+      const sessionId = `daily-review-archive-${archive.id}`;
       const session = await desktop.request('session.catalog.query', { kind: 'get', sessionId });
       assert.equal(session.kind, 'session');
       assert.equal(session.session?.id, sessionId);
@@ -331,7 +340,7 @@ test('production Host migrates Daily Review into ScheduledTask Session and Artif
       if (artifacts.kind !== 'page') return;
       assert.equal(artifacts.artifacts.length, 1);
       const artifact = artifacts.artifacts[0];
-      assert.equal(artifact?.id, 'daily-review-report-2026-08-28-1d');
+      assert.equal(artifact?.id, `daily-review-report-${archive.id}`);
       const report = await desktop.request('artifact.query', {
         kind: 'read_text',
         sessionId,
@@ -340,10 +349,10 @@ test('production Host migrates Daily Review into ScheduledTask Session and Artif
       assert.equal(report.kind, 'text');
       if (report.kind !== 'text' || !report.preview.ok) return;
       assert.match(report.preview.text, /A migrated report\./u);
-      assert.match(report.preview.text, /Archive ID: 2026-08-28-1d/u);
+      assert.match(report.preview.text, new RegExp(`Archive ID: ${archive.id}`, 'u'));
       assert.match(report.preview.text, /Trigger: cron/u);
       assert.match(report.preview.text, /Model: \(default\)/u);
-      assert.match(report.preview.text, /Generated at: 1772227200001/u);
+      assert.match(report.preview.text, new RegExp(`Generated at: ${archive.generatedAt}`, 'u'));
 
       const fired = await desktop.request('scheduled-task.mutate', {
         kind: 'trigger_now',
@@ -351,19 +360,19 @@ test('production Host migrates Daily Review into ScheduledTask Session and Artif
       });
       assert.equal(fired.kind, 'task');
       if (fired.kind !== 'task') return;
-      assert.equal(fired.task.runs.length, 1);
-      assert.ok(fired.task.runs[0]?.sessionId);
-      assert.ok(fired.task.runs[0]?.runId);
+      assert.equal(fired.task.runs.length, 2);
+      assert.ok(fired.task.runs[1]?.sessionId);
+      assert.ok(fired.task.runs[1]?.runId);
       const runSession = await desktop.request('session.catalog.query', {
         kind: 'get',
-        sessionId: fired.task.runs[0]!.sessionId!,
+        sessionId: fired.task.runs[1]!.sessionId!,
       });
       assert.equal(runSession.kind, 'session');
       assert.ok(
         runSession.session && !('kind' in runSession.session),
         `${fired.task.lastError ?? 'ScheduledTask Session missing'}: ${JSON.stringify(runSession)}`,
       );
-      assert.equal(runSession.session?.id, fired.task.runs[0]?.sessionId);
+      assert.equal(runSession.session?.id, fired.task.runs[1]?.sessionId);
     } finally {
       await desktop.close();
       await fixture.stopHost(host);
@@ -376,7 +385,7 @@ test('production Host migrates Daily Review into ScheduledTask Session and Artif
     try {
       stores = await openInteractiveExecutionStoresForWrite(owner.lease);
       const messages = await stores.sessionStore.readMessagesSnapshot(
-        'daily-review-archive-2026-08-28-1d',
+        `daily-review-archive-${archive.id}`,
       );
       assert.equal(messages.length, 1);
       assert.equal(messages[0]?.type, 'assistant');
@@ -410,7 +419,7 @@ test('production Host migrates Daily Review into ScheduledTask Session and Artif
       );
       const artifacts = await restartedDesktop.request('artifact.query', {
         kind: 'list_start',
-        sessionId: 'daily-review-archive-2026-08-28-1d',
+        sessionId: `daily-review-archive-${archive.id}`,
       });
       assert.equal(artifacts.kind, 'page');
       if (artifacts.kind !== 'page') return;

@@ -332,6 +332,9 @@ export function nextScheduledTaskStateAfterFire(
   if (task.expiresAt !== null && run.at >= task.expiresAt) {
     return { ...base, status: 'expired', nextFireAt: null };
   }
+  if (task.status === 'paused') {
+    return { ...base, status: 'paused', nextFireAt: null };
+  }
   const nextFireAt = computeNextFireAt(task.schedule, run.at);
   if (nextFireAt === null) {
     return { ...base, status: 'completed', nextFireAt: null };

@@ -322,8 +322,8 @@ test('mutations keep titles current, preserve refreshes, and fence confirm conti
         calls.push('list');
         return listed;
       },
-      triggerNow: async (id) => {
-        calls.push(`trigger:${id}`);
+      triggerNow: async (id, _host, intentBody) => {
+        calls.push(`trigger:${id}:${intentBody ?? ''}`);
         return listed[0]!;
       },
       delete: async (id) => {
@@ -341,8 +341,8 @@ test('mutations keep titles current, preserve refreshes, and fence confirm conti
   };
   await act(async () => renderController(root, services, activeProps));
   await act(async () => controller().refresh());
-  await act(async () => controller().triggerNow('task-a'));
-  assert.deepEqual(calls, ['list', 'trigger:task-a', 'list']);
+  await act(async () => controller().triggerNow('task-a', 'Manual range'));
+  assert.deepEqual(calls, ['list', 'trigger:task-a:Manual range', 'list']);
   assert.ok(
     records.some(
       (record) => record.kind === 'success' && record.detail === 'Latest title',

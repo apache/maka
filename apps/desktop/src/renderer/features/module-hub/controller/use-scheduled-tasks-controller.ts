@@ -52,7 +52,7 @@ export interface ScheduledTasksController {
   create(input: ScheduledTaskCreateInput): Promise<boolean>;
   update(id: string, patch: UpdateScheduledTaskInput): Promise<boolean>;
   toggle(id: string, enabled: boolean): Promise<void>;
-  triggerNow(id: string): Promise<void>;
+  triggerNow(id: string, intentBody?: string): Promise<void>;
   snooze(id: string): Promise<void>;
   clearRunHistory(id: string): Promise<void>;
   delete(id: string): Promise<void>;
@@ -293,10 +293,10 @@ export function useScheduledTasksController(options: {
         errorFallback: copy.updateFallback,
       });
     },
-    async triggerNow(id) {
+    async triggerNow(id, intentBody) {
       const task = scheduledTasksRef.current.find((entry) => entry.id === id);
       await runMutation({
-        run: (host) => services.scheduledTasks.triggerNow(id, host),
+        run: (host) => services.scheduledTasks.triggerNow(id, host, intentBody),
         successTitle: copy.triggered,
         successDetail: task?.title,
         errorTitle: copy.triggerFailed,
