@@ -21,6 +21,18 @@
 
 状态：建立在 Gitoxide repository admission/source import 之上的 enabling infrastructure。
 
+最小因果主线是：
+
+```text
+accepted A
+  -> 基于 A 生成 immutable staged candidate B
+  -> 用 operation-specific ref + MustNotExist CAS 发布 B
+  -> 后续 SQLite acceptance owner 决定是否 promote A -> B
+```
+
+本切片只拥有 stage，不拥有 promote；任何 candidate 路径都不得推进 `refs/maka/accepted` 或签发新的
+accepted capability。
+
 ## 1. 主要不变量
 
 本切片只证明：
@@ -50,7 +62,9 @@ SQLite accepted head 仍由后续 mutation authority 拥有。本切片不提供
 - direct read 沿 accepted tree 的 exact path 加载并重验 tree/blob object identity，只返回最多 8 MiB 的
   UTF-8 内容；它不读取 projection filesystem；
 - 每个公开入口都复用 admission 时捕获的 helper capability，并在短生命周期 helper 启动前重新验证
-  artifact identity。
+  artifact identity，同时要求 release claim 明确 attest 本次实际调用的 operation；
+- candidate fresh self-check 与 exact retry 都必须实际加载 result blob，在 64 MiB 上限内验证 kind 与
+  checksum，不能只相信 candidate tree 中记录的 OID edge。
 
 ## 3. 失败与回滚
 

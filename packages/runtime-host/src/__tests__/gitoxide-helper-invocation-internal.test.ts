@@ -26,6 +26,7 @@ import { join } from 'node:path';
 import test, { type TestContext } from 'node:test';
 import {
   admitGitoxideHelperArtifactInternal,
+  GitoxideHelperArtifactAuthorityError,
   type GitoxideHelperInvocationCapability,
   issueGitoxideHelperReleaseArtifactClaimInternal,
 } from '../server/gitoxide-helper-artifact-authority-internal.js';
@@ -68,6 +69,103 @@ test('bounds preflight work with the same absolute operation deadline', async ()
       error.code === 'gitoxide_helper_invocation_timed_out',
   );
   assert.ok(performance.now() - startedAt < 1_000);
+});
+
+test('rejects repository inspection when the helper did not attest that operation', async (t) => {
+  const helper = await admitHelperPath(process.execPath, ['import_source_head']);
+  const repositoryPath = await createRepository(t, 'sha1');
+
+  await assert.rejects(
+    inspectRepositoryWithGitoxideHelperInternal({ ...helper, repositoryPath }),
+    (error) =>
+      error instanceof GitoxideHelperArtifactAuthorityError &&
+      error.code === 'gitoxide_helper_release_claim_unsupported',
+  );
+});
+
+test('rejects source import when the helper did not attest that operation', async (t) => {
+  const helper = await admitHelperPath(process.execPath, [
+    'inspect_repository',
+    'create_candidate',
+    'read_tree_file',
+  ]);
+  const sourceRepositoryPath = await createRepository(t, 'sha1');
+  await writeFile(join(sourceRepositoryPath, 'source.txt'), 'source\n');
+  git(sourceRepositoryPath, ['add', 'source.txt']);
+  git(sourceRepositoryPath, [
+    '-c',
+    'user.name=Maka Test',
+    '-c',
+    'user.email=maka@example.invalid',
+    'commit',
+    '--quiet',
+    '-m',
+    'fixture',
+  ]);
+  const destinationRepositoryPath = join(sourceRepositoryPath, 'must-not-exist.git');
+
+  await assert.rejects(
+    importSourceHeadWithGitoxideHelperInternal({
+      ...helper,
+      sourceRepositoryPath,
+      expectedSourceHeadCommitOid: git(sourceRepositoryPath, ['rev-parse', 'HEAD']),
+      destinationRepositoryPath,
+      baselineRef: 'refs/maka/accepted',
+      managedTreePolicyVersion: 3,
+    }),
+    (error) =>
+      error instanceof GitoxideHelperArtifactAuthorityError &&
+      error.code === 'gitoxide_helper_release_claim_unsupported',
+  );
+  await assert.rejects(stat(destinationRepositoryPath), { code: 'ENOENT' });
+});
+
+test('rejects candidate creation when the helper did not attest that operation', async (t) => {
+  const helper = await admitHelperPath(process.execPath, [
+    'inspect_repository',
+    'import_source_head',
+    'read_tree_file',
+  ]);
+  const repositoryPath = await createRepository(t, 'sha1');
+
+  await assert.rejects(
+    createCandidateWithGitoxideHelperInternal({
+      ...helper,
+      repositoryPath,
+      acceptedRef: 'refs/maka/accepted',
+      expectedBaseCommitOid: 'a'.repeat(40),
+      expectedBaseTreeOid: 'b'.repeat(40),
+      candidateRef: `refs/maka/candidates/${'c'.repeat(64)}`,
+      path: 'result.txt',
+      content: 'result\n',
+      managedTreePolicyVersion: 3,
+    }),
+    (error) =>
+      error instanceof GitoxideHelperArtifactAuthorityError &&
+      error.code === 'gitoxide_helper_release_claim_unsupported',
+  );
+});
+
+test('rejects accepted-tree reads when the helper did not attest that operation', async (t) => {
+  const helper = await admitHelperPath(process.execPath, [
+    'inspect_repository',
+    'import_source_head',
+    'create_candidate',
+  ]);
+  const repositoryPath = await createRepository(t, 'sha1');
+
+  await assert.rejects(
+    readTreeFileWithGitoxideHelperInternal({
+      ...helper,
+      repositoryPath,
+      acceptedCommitOid: 'a'.repeat(40),
+      path: 'result.txt',
+      managedTreePolicyVersion: 3,
+    }),
+    (error) =>
+      error instanceof GitoxideHelperArtifactAuthorityError &&
+      error.code === 'gitoxide_helper_release_claim_unsupported',
+  );
 });
 
 test('waits for helper process identity by elapsed time instead of scheduler turns', async (t) => {

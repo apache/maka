@@ -1115,6 +1115,16 @@ fn verify_existing_candidate_receipt(
     if result_entry.1 != expected_result_blob_oid {
         return Err("candidate_ref_target_invalid");
     }
+    load_verified_object(
+        repository,
+        expected_result_blob_oid,
+        gix::objs::Kind::Blob,
+        MAX_IMPORT_FILE_BYTES,
+        "candidate_ref_target_invalid",
+        "candidate_ref_target_invalid",
+        "candidate_ref_target_invalid",
+        "candidate_ref_target_invalid",
+    )?;
     Ok(candidate_tree)
 }
 
@@ -1350,6 +1360,16 @@ fn verify_candidate_commit_and_result(
     if result_entry.1 != expected_result_blob_oid {
         return Err("tree_write_failed");
     }
+    load_verified_object(
+        repository,
+        expected_result_blob_oid,
+        gix::objs::Kind::Blob,
+        MAX_IMPORT_FILE_BYTES,
+        "blob_write_failed",
+        "blob_write_failed",
+        "successor_content_limit_exceeded",
+        "blob_write_failed",
+    )?;
     Ok(())
 }
 
@@ -2032,6 +2052,87 @@ mod tests {
                 result_blob,
             ),
             Err("tree_edit_failed")
+        );
+    }
+
+    #[test]
+    fn candidate_self_check_rejects_a_corrupt_result_blob() {
+        use gix::bstr::ByteSlice;
+
+        let root = tempfile::tempdir().unwrap();
+        run_git(root.path(), ["init", "--quiet"]);
+        fs::write(root.path().join("base.txt"), b"base\n").unwrap();
+        run_git(root.path(), ["add", "base.txt"]);
+        run_git(
+            root.path(),
+            [
+                "-c",
+                "user.name=Maka Test",
+                "-c",
+                "user.email=maka@example.invalid",
+                "commit",
+                "--quiet",
+                "-m",
+                "base",
+            ],
+        );
+        let base_commit = run_git_output(root.path(), ["rev-parse", "HEAD"]);
+        let base_tree = run_git_output(root.path(), ["rev-parse", "HEAD^{tree}"]);
+        let repository = managed_open_options()
+            .open(root.path())
+            .unwrap()
+            .to_thread_local();
+        let base_commit_oid = gix::hash::ObjectId::from_hex(base_commit.as_bytes()).unwrap();
+        let base_tree_oid = gix::hash::ObjectId::from_hex(base_tree.as_bytes()).unwrap();
+        let result_blob_oid = repository.write_blob(b"result\n").unwrap().detach();
+        let candidate_tree_oid = write_candidate_tree_from_verified_base(
+            &repository,
+            base_tree_oid,
+            "result.txt",
+            gix::objs::tree::EntryKind::Blob,
+            result_blob_oid,
+        )
+        .unwrap();
+        let request_digest = "0".repeat(64);
+        let signature = gix::actor::SignatureRef {
+            name: b"Maka Workspace Service".as_bstr(),
+            email: b"workspace@maka.invalid".as_bstr(),
+            time: "946684800 +0000",
+        };
+        let candidate_commit_oid = repository
+            .new_commit_as(
+                signature,
+                signature,
+                format!("maka managed workspace candidate v3\nrequest-sha256 {request_digest}"),
+                candidate_tree_oid,
+                [base_commit_oid],
+            )
+            .unwrap()
+            .id()
+            .detach();
+        let replacement_blob_oid = repository.write_blob(b"replacement\n").unwrap().detach();
+        drop(repository);
+        fs::copy(
+            loose_object_path(root.path(), &replacement_blob_oid.to_string()),
+            loose_object_path(root.path(), &result_blob_oid.to_string()),
+        )
+        .unwrap();
+        let repository = managed_open_options()
+            .open(root.path())
+            .unwrap()
+            .to_thread_local();
+
+        assert_eq!(
+            verify_candidate_commit_and_result(
+                &repository,
+                candidate_commit_oid,
+                base_commit_oid,
+                candidate_tree_oid,
+                "result.txt",
+                result_blob_oid,
+                &request_digest,
+            ),
+            Err("blob_write_failed")
         );
     }
 

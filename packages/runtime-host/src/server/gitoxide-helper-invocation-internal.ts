@@ -24,6 +24,7 @@ import { dirname, isAbsolute } from 'node:path';
 import { manageChildProcessLifecycle } from '@maka/runtime/child-process-lifecycle';
 import {
   type GitoxideHelperInvocationCapability,
+  requireGitoxideHelperOperationsInternal,
   verifyGitoxideHelperArtifactForInvocationInternal,
 } from './gitoxide-helper-artifact-authority-internal.js';
 
@@ -277,6 +278,9 @@ export async function inspectCanonicalRepositoryWithGitoxideHelperInternal(input
     deadlineAt: input.deadlineAt,
     abortSignal: input.abortSignal,
     operation: async () => {
+      requireGitoxideHelperOperationsInternal(input.invocationOwnerToken, input.capability, [
+        'inspect_repository',
+      ]);
       if (!isAbsolute(input.repositoryPath)) {
         throw new GitoxideHelperInvocationError(
           'gitoxide_helper_invocation_invalid',
@@ -389,6 +393,9 @@ export async function importSourceHeadWithGitoxideHelperInternal(input: {
     deadlineAt,
     abortSignal: input.abortSignal,
     operation: async () => {
+      requireGitoxideHelperOperationsInternal(input.invocationOwnerToken, input.capability, [
+        'import_source_head',
+      ]);
       if (
         !isAbsolute(input.sourceRepositoryPath) ||
         !isAbsolute(input.destinationRepositoryPath) ||
@@ -465,6 +472,9 @@ export async function createCandidateWithGitoxideHelperInternal(input: {
     deadlineAt,
     abortSignal: input.abortSignal,
     operation: async () => {
+      requireGitoxideHelperOperationsInternal(input.invocationOwnerToken, input.capability, [
+        'create_candidate',
+      ]);
       if (
         !isAbsolute(input.repositoryPath) ||
         !SHA1_OID_PATTERN.test(input.expectedBaseCommitOid) ||
@@ -592,6 +602,9 @@ async function prepareAcceptedTreeInvocation(input: {
     deadlineAt: input.deadlineAt,
     abortSignal: input.abortSignal,
     operation: async () => {
+      requireGitoxideHelperOperationsInternal(input.invocationOwnerToken, input.capability, [
+        'read_tree_file',
+      ]);
       if (
         !isAbsolute(input.repositoryPath) ||
         !SHA1_OID_PATTERN.test(input.acceptedCommitOid) ||

@@ -595,6 +595,70 @@ fn publishes_and_exactly_retries_an_operation_candidate_without_advancing_accept
 }
 
 #[test]
+fn rejects_an_exact_candidate_retry_when_the_result_blob_is_missing() {
+    let fixture = RepositoryFixture::sha1_with_commit();
+    let source_head = fixture.git_output(["rev-parse", "HEAD"]);
+    let destination = fixture.root.join("candidate-missing-result-blob.git");
+    let imported = invoke_import(&fixture.root, &source_head, &destination);
+    let imported: serde_json::Value = serde_json::from_slice(&imported.stdout).unwrap();
+    let request = serde_json::json!({
+        "protocolVersion": 1,
+        "operation": "create_candidate",
+        "repositoryPath": destination,
+        "acceptedRef": "refs/maka/baseline",
+        "expectedBaseCommitOid": imported["baselineCommitOid"],
+        "expectedBaseTreeOid": imported["baselineTreeOid"],
+        "candidateRef": "refs/maka/candidates/1212121212121212121212121212121212121212121212121212121212121212",
+        "path": "docs/result.txt",
+        "contentBase64": "bWlzc2luZyBibG9iCg==",
+        "managedTreePolicyVersion": 3,
+    });
+    let published = invoke_request(request.clone());
+    assert!(published.status.success());
+    let published: serde_json::Value = serde_json::from_slice(&published.stdout).unwrap();
+    fs::remove_file(loose_object_path(
+        &destination,
+        published["resultBlobOid"].as_str().unwrap(),
+    ))
+    .unwrap();
+
+    let retry = invoke_request(request);
+    assert_helper_error(&retry, "candidate_ref_target_invalid");
+}
+
+#[test]
+fn rejects_an_exact_candidate_retry_when_the_result_blob_is_corrupt() {
+    let fixture = RepositoryFixture::sha1_with_commit();
+    let source_head = fixture.git_output(["rev-parse", "HEAD"]);
+    let destination = fixture.root.join("candidate-corrupt-result-blob.git");
+    let imported = invoke_import(&fixture.root, &source_head, &destination);
+    let imported: serde_json::Value = serde_json::from_slice(&imported.stdout).unwrap();
+    let request = serde_json::json!({
+        "protocolVersion": 1,
+        "operation": "create_candidate",
+        "repositoryPath": destination,
+        "acceptedRef": "refs/maka/baseline",
+        "expectedBaseCommitOid": imported["baselineCommitOid"],
+        "expectedBaseTreeOid": imported["baselineTreeOid"],
+        "candidateRef": "refs/maka/candidates/1313131313131313131313131313131313131313131313131313131313131313",
+        "path": "docs/result.txt",
+        "contentBase64": "Y29ycnVwdCBibG9iCg==",
+        "managedTreePolicyVersion": 3,
+    });
+    let published = invoke_request(request.clone());
+    assert!(published.status.success());
+    let published: serde_json::Value = serde_json::from_slice(&published.stdout).unwrap();
+    fs::write(
+        loose_object_path(&destination, published["resultBlobOid"].as_str().unwrap()),
+        b"not a zlib object",
+    )
+    .unwrap();
+
+    let retry = invoke_request(request);
+    assert_helper_error(&retry, "candidate_ref_target_invalid");
+}
+
+#[test]
 fn rejects_a_symbolic_candidate_ref_during_exact_retry() {
     let fixture = RepositoryFixture::sha1_with_commit();
     let source_head = fixture.git_output(["rev-parse", "HEAD"]);
