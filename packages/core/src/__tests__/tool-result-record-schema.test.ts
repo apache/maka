@@ -193,6 +193,45 @@ describe('retired permission modes in stored subagent results', () => {
   });
 });
 
+describe('retired ExploreAgent results in stored transcripts', () => {
+  const stored = {
+    kind: 'explore_agent',
+    ok: true,
+    mode: 'read_only',
+    objective: 'Trace the session lifecycle.',
+    roots: ['packages/runtime'],
+    queries: ['SessionManager'],
+    filesInspected: 3,
+    filesSkipped: 1,
+    bytesRead: 512,
+    progress: ['Inspected the runtime entry point.'],
+    candidateFiles: [],
+    matches: [],
+    notes: [],
+    report: 'SessionManager owns the lifecycle.',
+  } as const;
+
+  test('folds the legacy result to ordinary historical text at every persisted read boundary', () => {
+    const expected = { kind: 'text', text: 'SessionManager owns the lifecycle.' };
+
+    assert.deepEqual(
+      decodePersistedToolResultContent(
+        markPersisted<ToolResultContent>(stored as unknown as ToolResultContent),
+      ),
+      expected,
+    );
+    assert.deepEqual(toolResultContent(decodePersistedMessage(storedToolResult(stored))), expected);
+  });
+
+  test('rejects the retired result kind at canonical live boundaries', () => {
+    assert.throws(() => decodeCanonicalToolResultContent(stored), /Invalid tool result content/);
+    assert.throws(
+      () => decodeCanonicalMessage(storedToolResult(stored)),
+      /Invalid tool result content/,
+    );
+  });
+});
+
 function storedToolResult(content: unknown) {
   return {
     type: 'tool_result',

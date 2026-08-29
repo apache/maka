@@ -128,6 +128,7 @@ async function withTempRoot(fn: (root: string) => Promise<void>): Promise<void> 
 
 describe('Deep Research runtime tools', () => {
   it('admits only the explicit Deep Research tool surface', () => {
+    const standardResearchNames = ['AskUserQuestion', 'Read', 'Glob', 'Grep', 'WebSearch'];
     const canonicalNames = [
       DEEP_RESEARCH_START_TOOL_NAME,
       DEEP_RESEARCH_SAVE_ARTIFACT_TOOL_NAME,
@@ -138,7 +139,9 @@ describe('Deep Research runtime tools', () => {
       DEEP_RESEARCH_STATUS_TOOL_NAME,
       DEEP_RESEARCH_COMPLETE_TOOL_NAME,
     ];
+    assert.ok(standardResearchNames.every((name) => isDeepResearchToolAllowed({ name })));
     assert.ok(canonicalNames.every((name) => isDeepResearchToolAllowed({ name })));
+    assert.equal(isDeepResearchToolAllowed({ name: 'ExploreAgent' }), false);
     assert.equal(isDeepResearchToolAllowed({ name: 'deep_research_unsafe_fixture' }), false);
   });
 

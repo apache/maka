@@ -214,7 +214,6 @@ packages/ui/src/task-ledger-panel.tsx
 packages/ui/src/titlebar-session-identity.tsx
 packages/ui/src/toast.tsx
 packages/ui/src/tool-activity.tsx
-packages/ui/src/tool-activity/agent-preview.tsx
 packages/ui/src/tool-activity/diff-code-preview.tsx
 packages/ui/src/tool-activity/tool-code-block.tsx
 packages/ui/src/tool-activity/tool-result-preview.tsx

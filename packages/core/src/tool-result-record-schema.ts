@@ -36,9 +36,46 @@ import {
 } from './record-schema.js';
 
 type Result<K extends ToolResultContent['kind']> = Extract<ToolResultContent, { kind: K }>;
-type ExploreResult = Result<'explore_agent'>;
 type AgentSwarmResult = Result<'agent_swarm'>;
 type RiveResult = Result<'rive_workflow'>;
+
+interface LegacyExploreResult {
+  kind: 'explore_agent';
+  ok: boolean;
+  partial?: boolean;
+  terminalStatus?: 'completed' | 'completed_empty' | 'failed' | 'canceled' | 'canceled_partial';
+  mode: 'read_only';
+  objective: string;
+  roots: string[];
+  queries: string[];
+  ignoredPaths?: string[];
+  stoppingCondition?: string;
+  limitReasons?: Array<'candidate_budget' | 'file_budget' | 'match_budget' | 'byte_budget'>;
+  filesDiscovered?: number;
+  filesInspected: number;
+  filesSkipped: number;
+  sensitiveFilesSkipped?: number;
+  bytesRead: number;
+  startedAt?: number;
+  completedAt?: number;
+  durationMs?: number;
+  progress: string[];
+  recentEvents?: Array<{ type: string; at: number; message: string }>;
+  evidence?: Array<{
+    type: 'match' | 'candidate';
+    path: string;
+    line?: number;
+    label: string;
+    score?: number;
+  }>;
+  summary?: string;
+  report?: string;
+  candidateFiles: Array<{ path: string; score: number; reasons: string[] }>;
+  matches: Array<{ path: string; line: number; query: string; snippet: string }>;
+  notes: string[];
+  reason?: 'invalid_objective' | 'invalid_root' | 'no_readable_roots' | 'aborted';
+  message?: string;
+}
 
 const TEXT_SHAPE = defineObjectShape<Result<'text'>>()(
   ['kind', 'text'],
@@ -86,7 +123,7 @@ const WEB_SEARCH_ERROR_SHAPE = defineObjectShape<Result<'web_search_error'>>()(
   ['kind', 'ok', 'provider', 'reason', 'message'],
   ['query', 'credentialSource'],
 );
-const EXPLORE_SHAPE = defineObjectShape<ExploreResult>()(
+const EXPLORE_SHAPE = defineObjectShape<LegacyExploreResult>()(
   [
     'kind',
     'ok',
@@ -121,10 +158,10 @@ const EXPLORE_SHAPE = defineObjectShape<ExploreResult>()(
     'message',
   ],
 );
-type ExploreRecentEvent = NonNullable<ExploreResult['recentEvents']>[number];
-type ExploreEvidence = NonNullable<ExploreResult['evidence']>[number];
-type ExploreCandidate = ExploreResult['candidateFiles'][number];
-type ExploreMatch = ExploreResult['matches'][number];
+type ExploreRecentEvent = NonNullable<LegacyExploreResult['recentEvents']>[number];
+type ExploreEvidence = NonNullable<LegacyExploreResult['evidence']>[number];
+type ExploreCandidate = LegacyExploreResult['candidateFiles'][number];
+type ExploreMatch = LegacyExploreResult['matches'][number];
 const EXPLORE_RECENT_EVENT_SHAPE = defineObjectShape<ExploreRecentEvent>()(
   ['type', 'at', 'message'],
   [],
@@ -223,6 +260,14 @@ export function decodePersistedToolResultContent(
   persisted: PersistedValue<ToolResultContent>,
 ): ToolResultContent {
   const value = persisted as unknown;
+  if (isRecord(value) && value.kind === 'explore_agent') {
+    if (!isExploreResult(value)) throw new Error('Invalid tool result content');
+    return {
+      kind: 'text',
+      text:
+        value.report ?? value.summary ?? value.message ?? `Inspected ${value.filesInspected} files`,
+    };
+  }
   if (!isRecord(value) || value.kind !== 'subagent') {
     return decodeCanonicalToolResultContent(value);
   }
@@ -313,8 +358,6 @@ function isNonShellToolResultContent(value: unknown): value is ToolResultContent
         typeof value.message === 'string' &&
         isOptionalString(value.credentialSource)
       );
-    case 'explore_agent':
-      return isExploreResult(value);
     case 'subagent':
       return (
         hasValidSubagentResultFields(value) &&
@@ -387,8 +430,9 @@ function isAgentSwarmItem(value: unknown): value is AgentSwarmItem {
   );
 }
 
-function isExploreResult(value: Record<string, unknown>): value is ExploreResult {
+function isExploreResult(value: unknown): value is LegacyExploreResult {
   return (
+    isRecord(value) &&
     hasExactShape(value, EXPLORE_SHAPE) &&
     typeof value.ok === 'boolean' &&
     (value.partial === undefined || typeof value.partial === 'boolean') &&

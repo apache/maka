@@ -5,7 +5,7 @@ Each row is one on-disk product surface file. Regenerated inventory must stay in
 
 Wiki bar: Design Conventions · API Use-the-System · Theming · Container Padding.
 
-**Totals:** 224 files — blocker 0, polish 1, aligned 223.
+**Totals:** 223 files — blocker 0, polish 1, aligned 222.
 
 ## Exclusions (explicit)
 
@@ -242,7 +242,6 @@ Wiki bar: Design Conventions · API Use-the-System · Theming · Container Paddi
 | `packages/ui/src/titlebar-session-identity.tsx` | shell-chrome-or-panel | BreadcrumbItem, Breadcrumbs | aligned — uses Astryx (BreadcrumbItem, Breadcrumbs) | aligned |
 | `packages/ui/src/toast.tsx` | ui-composition | Button, HStack, Text, VStack | aligned — uses Astryx (Button, HStack, Text, VStack) | aligned |
 | `packages/ui/src/tool-activity.tsx` | ui-composition | Banner, Button, ChatToolCalls, List, ListItem, Text | aligned — uses Astryx (Banner, Button, ChatToolCalls, List, ListItem, Text) | aligned |
-| `packages/ui/src/tool-activity/agent-preview.tsx` | ui-composition | Button | aligned — uses Astryx (Button) | aligned |
 | `packages/ui/src/tool-activity/diff-code-preview.tsx` | ui-composition | none | aligned — no raw controls; no Astryx JSX usage | aligned |
 | `packages/ui/src/tool-activity/tool-code-block.tsx` | ui-composition | none | aligned — no raw controls; no Astryx JSX usage | aligned |
 | `packages/ui/src/tool-activity/tool-result-preview.tsx` | ui-composition | Button | aligned — uses Astryx (Button) | aligned |

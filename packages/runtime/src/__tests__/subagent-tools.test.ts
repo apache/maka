@@ -321,13 +321,6 @@ describe('subagent tools', () => {
         categoryHint: 'web_read',
         impl: async () => ({}),
       },
-      {
-        name: 'ExploreAgent',
-        description: 'deterministic exploration',
-        parameters: {},
-        categoryHint: 'subagent',
-        impl: async () => ({}),
-      },
     ]);
 
     expect(tools.map((tool) => tool.name)).toEqual([

@@ -11302,7 +11302,7 @@ describe('AiSdkBackend tool execution', () => {
     assert.equal(completion?.type === 'complete' ? completion.stopReason : undefined, 'end_turn');
   });
 
-  test('caps concurrent read-only subagent tools in one turn', async () => {
+  test('caps concurrent subagent tools in one turn', async () => {
     const messages: unknown[] = [];
     const events: SessionEvent[] = [];
     const backend = createTestAiSdkBackend({
@@ -11322,7 +11322,7 @@ describe('AiSdkBackend tool execution', () => {
     let implStarted = 0;
     const release: Array<() => void> = [];
     const tool: MakaTool = {
-      name: 'ExploreAgent',
+      name: 'agent_spawn',
       description: 'read-only worker',
       parameters: {},
       categoryHint: 'subagent',
@@ -11351,7 +11351,7 @@ describe('AiSdkBackend tool execution', () => {
       { toolCallId: 'tool-overflow', abortSignal: new AbortController().signal },
     );
     assert.deepEqual(rejected, {
-      error: '只读探索并发过多：同一轮最多 5 个子代理。请等待已有探索完成后再继续。',
+      error: '子代理并发过多：同一轮最多 5 个子代理。请等待已有任务完成后再继续。',
     });
     assert.equal(implStarted, MAX_ACTIVE_SUBAGENT_TOOLS_PER_TURN);
     assert.equal(
@@ -11365,96 +11365,6 @@ describe('AiSdkBackend tool execution', () => {
 
     release.forEach((resume) => resume());
     await Promise.all(pending);
-  });
-
-  test('maps structured subagent terminal states to persisted tool status', async () => {
-    const messages: unknown[] = [];
-    const events: SessionEvent[] = [];
-    const telemetry: Array<{ status: string; toolCallId?: string }> = [];
-    const backend = createTestAiSdkBackend({
-      sessionId: 'session-1',
-      header: header('explore'),
-      appendMessage: async (message) => {
-        messages.push(message);
-      },
-      connection: connection(),
-      apiKey: 'sk-test',
-      modelId: 'claude-sonnet-4-5-20250929',
-      modelFactory: () => ({}),
-      tools: [],
-      newId: idGenerator(),
-      now: () => 1,
-      recordToolInvocation: (record) => {
-        telemetry.push({ status: record.status, toolCallId: record.toolCallId });
-      },
-    });
-    const tool: MakaTool = {
-      name: 'ExploreAgent',
-      description: 'read-only worker',
-      parameters: {},
-      categoryHint: 'subagent',
-      impl: async (args: unknown) => {
-        const input = args as { reason?: string };
-        return {
-          kind: 'explore_agent',
-          ok: false,
-          mode: 'read_only',
-          objective: 'bad scope',
-          roots: [],
-          queries: [],
-          filesInspected: 0,
-          filesSkipped: 0,
-          bytesRead: 0,
-          progress: [],
-          candidateFiles: [],
-          matches: [],
-          notes: [],
-          reason: input.reason === 'aborted' ? 'aborted' : 'invalid_root',
-          message: input.reason === 'aborted' ? '只读探索已取消。' : '范围无效。',
-        };
-      },
-    };
-    const execute = runtimeExecute(backend, tool, 'turn-1', {
-      push: (event) => events.push(event),
-    });
-
-    await execute(
-      { objective: 'bad scope' },
-      {
-        toolCallId: 'tool-failed',
-        abortSignal: new AbortController().signal,
-      },
-    );
-    await execute(
-      { objective: 'cancelled', reason: 'aborted' },
-      {
-        toolCallId: 'tool-aborted',
-        abortSignal: new AbortController().signal,
-      },
-    );
-
-    assert.equal(
-      (
-        messages.find(
-          (message) =>
-            (message as { type?: string; toolUseId?: string }).type === 'tool_result' &&
-            (message as { toolUseId?: string }).toolUseId === 'tool-failed',
-        ) as { isError?: boolean } | undefined
-      )?.isError,
-      true,
-    );
-    assert.equal(
-      (
-        events.find(
-          (event) => event.type === 'tool_result' && event.toolUseId === 'tool-aborted',
-        ) as { isError?: boolean } | undefined
-      )?.isError,
-      true,
-    );
-    assert.deepEqual(telemetry, [
-      { status: 'error', toolCallId: 'tool-failed' },
-      { status: 'aborted', toolCallId: 'tool-aborted' },
-    ]);
   });
 
   test('maps foreground subagent terminal states to persisted tool status', async () => {
