@@ -591,16 +591,57 @@ export function modelPickerItems(
  * caller maps it back to the {@link ModelChoice}. The description carries the
  * owning connection so identical model ids on different providers are readable.
  */
+export function modelChoiceConnectionLabels(choices: readonly ModelChoice[]): Map<string, string> {
+  const connectionBySlug = new Map<
+    string,
+    Pick<ModelChoice, 'connectionId' | 'connectionName' | 'connectionSlug'>
+  >();
+  for (const choice of choices) {
+    if (!connectionBySlug.has(choice.connectionSlug)) {
+      connectionBySlug.set(choice.connectionSlug, choice);
+    }
+  }
+  const connections = [...connectionBySlug.values()]
+    .map((choice) => ({
+      ...choice,
+      base: choice.connectionName.trim()
+        ? `${choice.connectionName.trim()} · ${choice.connectionSlug}`
+        : choice.connectionSlug,
+    }))
+    .sort(
+      (left, right) =>
+        left.base.localeCompare(right.base) ||
+        left.connectionSlug.localeCompare(right.connectionSlug),
+    );
+  const used = new Set<string>();
+  const labels = new Map<string, string>();
+  for (const connection of connections) {
+    let label = connection.base;
+    if (used.has(label) && connection.connectionId) {
+      label = `${connection.base} · ${connection.connectionId}`;
+    }
+    let suffix = 2;
+    while (used.has(label)) {
+      label = `${connection.base} · ${connection.connectionId ?? connection.connectionSlug} · ${suffix}`;
+      suffix += 1;
+    }
+    used.add(label);
+    labels.set(connection.connectionSlug, label);
+  }
+  return labels;
+}
+
 function modelChoicePickerItems(
   choices: readonly ModelChoice[],
   current: { model: string; connectionId?: string; connectionSlug: string },
 ): SelectItem[] {
+  const connectionLabels = modelChoiceConnectionLabels(choices);
   return choices.map((choice, index) => {
     const isCurrent =
       choice.model === current.model &&
       choice.connectionId === current.connectionId &&
       choice.connectionSlug === current.connectionSlug;
-    const tags = [choice.connectionName || choice.connectionSlug];
+    const tags = [connectionLabels.get(choice.connectionSlug) ?? choice.connectionSlug];
     if (isCurrent) tags.push('current');
     else if (choice.isDefaultConnection) tags.push('default');
     return {
@@ -797,12 +838,19 @@ export function onboardingProviderPickerItems(
   providers: readonly OnboardingProviderEntry[],
 ): SelectItem[] {
   return providers.map((provider) => ({
-    value: provider.providerType,
+    value: onboardingProviderKey(provider),
     label: provider.label,
-    description: provider.hasConnection
-      ? `${provider.providerType} · 已设置`
-      : provider.providerType,
+    description:
+      'connectionSlug' in provider
+        ? `${provider.providerType} · ${provider.connectionSlug} · 已设置`
+        : `${provider.providerType} · 添加账号`,
   }));
+}
+
+function onboardingProviderKey(provider: OnboardingProviderEntry): string {
+  return provider.target.kind === 'existing'
+    ? provider.target.connectionId
+    : `create:${provider.target.providerType}`;
 }
 
 const THINKING_LEVEL_LABELS: Record<ThinkingLevel, string> = {
@@ -857,7 +905,7 @@ export interface OnboardingWizardInput {
   /** search→key: the user picked a provider. The runner records it — and the
    *   existing connection's identity, when the catalog resolved one — for
    *   verify/save, so saving edits that connection in place. */
-  onPickProvider: (providerType: ProviderType, existingConnectionId: string | undefined) => void;
+  onPickProvider: (provider: OnboardingProviderEntry) => void;
   /** baseUrl submit (only for `requiresBaseUrl` providers). Empty means "reuse
    *   the existing connection's persisted endpoint"; the wizard has already
    *   rejected an empty value for a provider with no connection. */
@@ -905,6 +953,7 @@ export class OnboardingWizard implements Component {
   private modelHighlight = 0;
   private modelScroll = 0;
   private successCount = 0;
+  private successWarning: string | undefined;
 
   constructor(
     private readonly tui: TUI,
@@ -943,7 +992,9 @@ export class OnboardingWizard implements Component {
       { minPrimaryColumnWidth: 16, maxPrimaryColumnWidth: 32 },
     );
     list.onSelect = (item) => {
-      const provider = this.filtered.find((p) => p.providerType === item.value);
+      const provider = this.filtered.find(
+        (candidate) => onboardingProviderKey(candidate) === item.value,
+      );
       if (!provider) return;
       this.enterKeyPhase(provider);
     };
@@ -968,7 +1019,7 @@ export class OnboardingWizard implements Component {
     this.modelHighlight = 0;
     this.modelScroll = 0;
     this.modelsSearchEditor.setText('');
-    this.input.onPickProvider(provider.providerType, provider.connectionId);
+    this.input.onPickProvider(provider);
   }
 
   private submitBaseUrl(value: string): void {
@@ -991,7 +1042,7 @@ export class OnboardingWizard implements Component {
    */
   private validateBaseUrl(trimmed: string): string | null {
     if (!trimmed) {
-      return this.picked?.hasConnection ? null : '需要填写 Base URL';
+      return this.picked?.target.kind === 'existing' ? null : '需要填写 Base URL';
     }
     let parsed: URL;
     try {
@@ -1086,9 +1137,10 @@ export class OnboardingWizard implements Component {
   }
 
   /** Runner hook: save succeeded — show the enabled-model count in-frame. */
-  setSuccess(enabledCount: number): void {
+  setSuccess(enabledCount: number, warning?: string): void {
     this.phase = 'success';
     this.successCount = enabledCount;
+    this.successWarning = warning;
     this.status = { kind: 'prompt' };
   }
 
@@ -1286,9 +1338,10 @@ export class OnboardingWizard implements Component {
     this.keyEditor.focused = false;
     this.modelsSearchEditor.focused = false;
     const label = this.picked?.label ?? '';
-    const hint = this.picked?.hasConnection
-      ? '留空复用已保存的 Base URL，或输入新地址替换 · Esc 返回选择服务商'
-      : '输入中转站的 Base URL（http/https）· Esc 返回选择服务商';
+    const hint =
+      this.picked?.target.kind === 'existing'
+        ? '留空复用已保存的 Base URL，或输入新地址替换 · Esc 返回选择服务商'
+        : '输入中转站的 Base URL（http/https）· Esc 返回选择服务商';
     return [
       padLine(`Set Up Provider ${ansi.dim(`· ${this.step(2)}`)} ${ansi.accent(label)}`, width),
       padLine(ansi.dim(hint), width),
@@ -1331,9 +1384,10 @@ export class OnboardingWizard implements Component {
     this.modelsSearchEditor.focused = false;
     const label = this.picked?.label ?? '';
     const backTarget = this.picked?.requiresBaseUrl ? 'Esc 返回 Base URL' : 'Esc 返回选择服务商';
-    const hint = this.picked?.hasConnection
-      ? `留空复用已保存的 key，或输入新 key 轮换 · ${backTarget}`
-      : `输入 API key · 仅本机存储 · ${backTarget}`;
+    const hint =
+      this.picked?.target.kind === 'existing'
+        ? `留空复用已保存的 key，或输入新 key 轮换 · ${backTarget}`
+        : `输入 API key · 仅本机存储 · ${backTarget}`;
     return [
       padLine(
         `Set Up Provider ${ansi.dim(`· ${this.step(this.picked?.requiresBaseUrl ? 3 : 2)}`)} ${ansi.accent(label)}`,
@@ -1420,6 +1474,7 @@ export class OnboardingWizard implements Component {
     return [
       padLine(`Set Up Provider ${ansi.dim('· 完成')} ${ansi.accent(label)}`, width),
       padLine(ansi.green(`✓ 已启用 ${this.successCount} 个模型`), width),
+      ...(this.successWarning ? [padLine(ansi.yellow(this.successWarning), width)] : []),
       padLine('', width),
       padLine(ansi.dim('Enter 关闭'), width),
       padLine(ansi.accent('-'.repeat(width)), width),

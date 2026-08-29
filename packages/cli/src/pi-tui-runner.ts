@@ -149,6 +149,7 @@ import {
   OnboardingWizard,
   PickerOverlay,
   UserQuestionOverlay,
+  modelChoiceConnectionLabels,
   modelPickerItems,
   permissionModePickerItems,
   skillPickerItems,
@@ -1159,7 +1160,6 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
   // success notice beside the input field instead of the transcript entry flow.
   let wizardOverlay: OverlayHandle | undefined;
   let wizard: OnboardingWizard | undefined;
-  let wizardProviderType: ProviderType | undefined;
   // The user's supplied key from the key step ('' reuses the stored secret for an
   // existing connection) and the models from the last verify (cached on save).
   // The runner holds them so the wizard stays UI-only; the secret never crosses
@@ -1169,7 +1169,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
   let wizardBaseUrl = '';
   // The existing connection the picked provider resolved to, so saving edits
   // it in place (a Desktop-created relay may live under a custom slug).
-  let wizardConnectionId: string | undefined;
+  let wizardTarget: OnboardingProviderEntry['target'] | undefined;
   let wizardModels: readonly ModelInfo[] = [];
   // Authoritative ready model choices for `/model`. A startup snapshot refreshed
   // in place after `/setup` saves so newly configured models are immediately
@@ -1551,10 +1551,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     }
     const previousModel = transcriptLastUsedModel ?? model;
     const previousConnectionSlug = connectionSlug;
-    const previousChoice = modelChoices?.find(
-      (candidate) =>
-        candidate.model === previousModel && candidate.connectionSlug === previousConnectionSlug,
-    );
+    const connectionLabels = modelChoiceConnectionLabels(modelChoices ?? [choice]);
     await input.driver.setModel(choice.model, choice.connectionSlug, choice.connectionId);
     model = choice.model;
     connectionId = choice.connectionId;
@@ -1570,7 +1567,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
       text:
         previousConnectionSlug === choice.connectionSlug
           ? `Model changed: ${previousModel} → ${choice.model}`
-          : `Model changed: ${previousModel} (${previousChoice?.connectionName || previousConnectionSlug}) → ${choice.model} (${choice.connectionName || choice.connectionSlug})`,
+          : `Model changed: ${previousModel} (${connectionLabels.get(previousConnectionSlug) ?? previousConnectionSlug}) → ${choice.model} (${connectionLabels.get(choice.connectionSlug) ?? choice.connectionSlug})`,
     });
     requestRender();
   };
@@ -2101,10 +2098,9 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     wizardOverlay?.hide();
     wizardOverlay = undefined;
     wizard = undefined;
-    wizardProviderType = undefined;
     wizardApiKey = '';
     wizardBaseUrl = '';
-    wizardConnectionId = undefined;
+    wizardTarget = undefined;
     wizardModels = [];
   };
 
@@ -2112,8 +2108,8 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
   // still escapes the wizard) instead of being stored as an API key; every
   // in-flight state stays inside the wizard overlay, never the transcript.
   const submitWizardKey = (apiKey: string): void => {
-    const providerType = wizardProviderType;
-    if (!providerType || !wizard) return;
+    const target = wizardTarget;
+    if (!target || !wizard) return;
     if (apiKey.startsWith('/')) {
       closeWizard();
       handleSlashCommand(apiKey, 0);
@@ -2129,32 +2125,30 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     const attempt = ++wizardAttempt;
     targetWizard.setVerifying();
     requestRender();
-    void input.onboarding
-      .verify({ providerType, connectionId: wizardConnectionId, apiKey, baseUrl: wizardBaseUrl })
-      .then(
-        (result) => {
-          if (closed || wizard !== targetWizard || attempt !== wizardAttempt) return;
-          if (result.kind === 'error') {
-            // Probe failed: re-arm the key field in place. The host stores nothing
-            // during verify, so retrying with a corrected key is clean.
-            // A stale snapshot (the targeted connection is gone) is not a key
-            // problem — retyping cannot fix it, so skip that framing.
-            wizard.setKeyError(
-              result.stale ? result.text : `API key 验证失败：${result.text}。请检查后重新输入。`,
-            );
-            requestRender();
-            return;
-          }
-          wizardModels = result.models;
-          wizard.setModels(result.models); // advance to the models step
+    void input.onboarding.verify({ target, apiKey, baseUrl: wizardBaseUrl }).then(
+      (result) => {
+        if (closed || wizard !== targetWizard || attempt !== wizardAttempt) return;
+        if (result.kind === 'error') {
+          // Probe failed: re-arm the key field in place. The host stores nothing
+          // during verify, so retrying with a corrected key is clean.
+          // A stale snapshot (the targeted connection is gone) is not a key
+          // problem — retyping cannot fix it, so skip that framing.
+          wizard.setKeyError(
+            result.stale ? result.text : `API key 验证失败：${result.text}。请检查后重新输入。`,
+          );
           requestRender();
-        },
-        (error) => {
-          if (closed || wizard !== targetWizard || attempt !== wizardAttempt) return;
-          wizard.setKeyError(`配置失败：${error instanceof Error ? error.message : String(error)}`);
-          requestRender();
-        },
-      );
+          return;
+        }
+        wizardModels = result.models;
+        wizard.setModels(result.models); // advance to the models step
+        requestRender();
+      },
+      (error) => {
+        if (closed || wizard !== targetWizard || attempt !== wizardAttempt) return;
+        wizard.setKeyError(`配置失败：${error instanceof Error ? error.message : String(error)}`);
+        requestRender();
+      },
+    );
   };
 
   // Models submit from the wizard: persist the curated enabled set, refresh the
@@ -2162,8 +2156,8 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
   // success (first-run closes the TUI so the host re-resolves the new default).
   // Setup never appends a transcript Note and never switches the active session.
   const submitWizardModels = (enabledModelIds: readonly string[]): void => {
-    const providerType = wizardProviderType;
-    if (!providerType || !wizard) return;
+    const target = wizardTarget;
+    if (!target || !wizard) return;
     if (!input.onboarding) {
       wizard.setModelError('Onboarding 不可用：当前运行环境未提供配置入口。');
       requestRender();
@@ -2175,8 +2169,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     requestRender();
     void input.onboarding
       .save({
-        providerType,
-        connectionId: wizardConnectionId,
+        target,
         apiKey: wizardApiKey,
         baseUrl: wizardBaseUrl,
         enabledModelIds,
@@ -2190,18 +2183,30 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
             requestRender();
             return;
           }
-          // Authoritatively refresh the running TUI's ready model choices so the
-          // newly configured models are immediately available from /model — even
-          // if the user abandoned the wizard mid-save. Abandonment only drops the
-          // in-frame success UI, not the background state sync. The active
-          // session is not switched.
-          modelChoices = result.modelChoices;
+          // The durable save may finish after the user backed out of the models
+          // step. Preserve the Host-assigned identity while this wizard still
+          // points at the same target, so submitting it again edits that exact
+          // Connection instead of allocating a duplicate account.
+          if (wizard === targetWizard && wizardTarget === target) {
+            wizardTarget = {
+              kind: 'existing',
+              connectionId: result.connection.connectionId,
+            };
+          }
           if (closed || wizard !== targetWizard || attempt !== wizardAttempt) return;
+          // Catalog projection is attempt-scoped: a late save from an abandoned
+          // attempt must not overwrite choices refreshed by a newer save.
+          if (result.refresh.kind === 'ok') {
+            modelChoices = result.refresh.modelChoices;
+          }
           if (input.firstRun) {
             beginClose();
             return;
           }
-          wizard.setSuccess(enabledModelIds.length);
+          wizard.setSuccess(
+            enabledModelIds.length,
+            result.refresh.kind === 'failed' ? result.refresh.warning : undefined,
+          );
           requestRender();
         },
         (error) => {
@@ -2233,7 +2238,8 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
       // wizard can report unavailability in-frame at submit instead of throwing.
       providers = listApiKeyOnboardableProviders().map((provider) => ({
         ...provider,
-        hasConnection: false,
+        target: { kind: 'create' as const, providerType: provider.providerType },
+        label: `${provider.label} · 添加账号`,
         enabledModelIds: [],
       }));
     }
@@ -2249,11 +2255,13 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     wizardOverlay?.hide();
     wizard = new OnboardingWizard(tui, {
       providers,
-      onPickProvider: (providerType, existingConnectionId) => {
-        wizardProviderType = providerType;
+      onPickProvider: (provider) => {
+        // Each picker selection is a new logical intent, even when the user
+        // reselects the same catalog row. A late save may converge only the
+        // exact target object captured by its own submit.
+        wizardTarget = { ...provider.target };
         wizardApiKey = '';
         wizardBaseUrl = '';
-        wizardConnectionId = existingConnectionId;
         wizardModels = [];
         wizardAttempt += 1; // a new pick supersedes any in-flight attempt
         requestRender();

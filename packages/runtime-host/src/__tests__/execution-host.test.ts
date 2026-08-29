@@ -492,6 +492,82 @@ test('two UDS Clients share one Runtime Policy authority and CAS winner', async 
   });
 });
 
+test('two UDS Clients serialize same-provider account creation through one Host lane', async () => {
+  const provider = await startConnectionEffectProvider({ responseDelayMs: 50 });
+  try {
+    await withExecutionRoot(async (fixture) => {
+      const host = await fixture.startHost();
+      const desktop = await connectClient(fixture.root);
+      const tui = await connectClient(fixture.root);
+      const secrets = ['desktop-account-secret', 'tui-account-secret'] as const;
+      let identities: Array<{ connectionId: string; slug: string }> = [];
+      try {
+        const results = await Promise.all(
+          [desktop, tui].map((client, index) =>
+            client.request('connection.onboarding.save', {
+              target: { kind: 'create', providerType: 'openai-compatible' },
+              apiKey: secrets[index]!,
+              baseUrl: provider.baseUrl,
+              enabledModelIds: [CONNECTION_EFFECT_MODEL_IDS[0]!],
+            }),
+          ),
+        );
+        assert.ok(results.every((result) => result.kind === 'saved'));
+        identities = results.map((result) => {
+          if (result.kind !== 'saved') throw new Error('Onboarding did not save');
+          return {
+            connectionId: result.connection.connectionId,
+            slug: result.connection.slug,
+          };
+        });
+        assert.notEqual(identities[0]?.connectionId, identities[1]?.connectionId);
+        assert.deepEqual(identities.map(({ slug }) => slug).sort(), [
+          'openai-compatible',
+          'openai-compatible-2',
+        ]);
+      } finally {
+        await Promise.allSettled([desktop.close(), tui.close()]);
+        await fixture.stopHost(host);
+      }
+
+      const owner = await tryAcquireInteractiveRootOwner(fixture.capability);
+      assert.ok(owner);
+      if (!owner) return;
+      try {
+        const stores = await openInteractiveRuntimePolicyStoresForWrite(owner.lease);
+        const catalog = await stores.connectionCatalog.getSnapshot();
+        assert.deepEqual(
+          catalog.connections
+            .filter(({ providerType }) => providerType === 'openai-compatible')
+            .map(({ connectionId, slug }) => ({ connectionId, slug }))
+            .sort((left, right) => left.slug.localeCompare(right.slug)),
+          [...identities].sort((left, right) => left.slug.localeCompare(right.slug)),
+        );
+        for (const [index, identity] of identities.entries()) {
+          assert.equal(
+            (
+              await stores.operations.exportCredentialMaterial({
+                scope: 'connection',
+                connectionId: identity.connectionId,
+                kind: 'api_key',
+              })
+            )?.secret,
+            secrets[index],
+          );
+        }
+      } finally {
+        await owner.close();
+      }
+      assert.deepEqual(
+        provider.requests.map(({ authorization }) => authorization).sort(),
+        secrets.map((secret) => `Bearer ${secret}`).sort(),
+      );
+    });
+  } finally {
+    await provider.close();
+  }
+});
+
 test('two UDS Clients await slow connection effects against one canonical catalog', async () => {
   const provider = await startConnectionEffectProvider({ responseDelayMs: 2_100 });
   try {

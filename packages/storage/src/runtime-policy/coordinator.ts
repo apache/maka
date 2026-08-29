@@ -19,8 +19,10 @@
 
 import { randomUUID } from 'node:crypto';
 import {
+  CONNECTION_CATALOG_MAX_CONNECTIONS,
   decodeConnectionModelId,
   decodeConnectionSlug,
+  decodeProviderType,
   decodeRuntimePolicyEntityId,
   decodeCredentialLocator,
   normalizeDeleteCredentialInput,
@@ -32,6 +34,7 @@ import {
   serializeRequestHeaders,
   RequestCustomizationValidationError,
   normalizeCredentialSecret,
+  normalizeCatalogConnectionBaseUrl,
   type ConnectionCatalogEntry,
   type ConnectionCatalogSnapshot,
   type ConnectionVersionBasis,
@@ -192,10 +195,24 @@ interface ConnectionTicketRecord {
  * the connection revision stands in for every catalog-visible property of an
  * existing target — a swapped endpoint bumps it.
  */
-interface ConnectionOnboardingBasis {
-  readonly providerType: ProviderType;
+interface ConnectionOnboardingCandidateIdentity {
+  readonly connectionId: string;
   readonly slug: string;
-  readonly target: { readonly connectionId: string; readonly revision: number } | null;
+  readonly providerType: ProviderType;
+}
+
+interface ConnectionOnboardingBasis {
+  readonly target:
+    | {
+        readonly kind: 'create';
+        readonly candidate: ConnectionOnboardingCandidateIdentity;
+      }
+    | {
+        readonly kind: 'existing';
+        readonly candidate: ConnectionOnboardingCandidateIdentity;
+        readonly revision: number;
+      };
+  readonly baseUrl: string | null;
   readonly credential: CredentialStatus | null;
   readonly requestHeadersCredential: CredentialStatus | null;
   readonly effectiveProxy: EffectiveProxyConfigurationBasis;
@@ -983,19 +1000,62 @@ export class RuntimePolicyCoordinator {
     input: BeginConnectionOnboardingInput,
   ): Promise<BeginConnectionOnboardingResult> {
     return this.inLane(async (root) => {
+      const catalog = await this.catalog.read(root);
+      let existing: ConnectionCatalogEntry | undefined;
+      let target: ConnectionOnboardingBasis['target'];
+      const requestedTarget = input.target;
+      if (requestedTarget.kind === 'create') {
+        const providerType = decodeConnectionInput(() =>
+          decodeProviderType(requestedTarget.providerType),
+        );
+        target = {
+          kind: 'create',
+          candidate: {
+            connectionId: randomUUID(),
+            slug: deriveConnectionSlug(
+              providerType,
+              catalog.connections.map((connection) => connection.slug),
+            ),
+            providerType,
+          },
+        };
+      } else if (requestedTarget.kind === 'existing') {
+        const connectionId = decodeConnectionInput(() =>
+          decodeRuntimePolicyEntityId(requestedTarget.connectionId),
+        );
+        existing = findConnection(catalog, { connectionId });
+        if (!existing) return deepFreeze({ kind: 'target_missing' as const });
+        target = {
+          kind: 'existing',
+          candidate: {
+            connectionId: existing.connectionId,
+            slug: existing.slug,
+            providerType: existing.providerType,
+          },
+          revision: existing.revision,
+        };
+      } else {
+        throw codecError('invalid_connection_input', 'Unknown connection onboarding target');
+      }
+      const providerType = target.candidate.providerType;
       // Onboarding guards the api_key credential slot; a provider whose auth
       // never uses one has no business here (the Host gates on the same
       // predicate, this keeps the storage API honest on its own).
-      if (!providerAuthSupportsApiKey(input.providerType)) {
-        throw codecError(
-          'invalid_connection_input',
-          'Connection onboarding requires an API-key provider',
-        );
+      if (!providerAuthSupportsApiKey(providerType)) {
+        return deepFreeze({ kind: 'provider_unsupported' as const });
       }
-      const catalog = await this.catalog.read(root);
-      const located = locateOnboardingTarget(catalog, input.providerType, input.connectionId);
-      if (located.kind !== 'ready') return deepFreeze({ kind: located.kind });
-      const existing = located.existing;
+      if (
+        target.kind === 'create' &&
+        catalog.connections.length >= CONNECTION_CATALOG_MAX_CONNECTIONS
+      ) {
+        return deepFreeze({ kind: 'catalog_full' as const });
+      }
+      const baseUrl =
+        input.baseUrl === null
+          ? null
+          : (decodeConnectionInput(() =>
+              normalizeCatalogConnectionBaseUrl(input.baseUrl, providerType),
+            ) ?? null);
       const policy = await this.policy.read(root);
       const networkProxy = structuredClone(policy.policy.networkProxy);
       const vault = await this.vault.read(root);
@@ -1003,20 +1063,21 @@ export class RuntimePolicyCoordinator {
       let storedSecret: string | null = null;
       let requestHeadersCredential: CredentialStatus | null = null;
       let requestHeadersSecret: string | null = null;
-      if (existing) {
-        const locator = connectionCredentialLocator(
-          existing.connectionId,
-          PROVIDER_DEFAULTS[existing.providerType].authKind,
-        );
-        if (locator) {
-          credential = credentialStatus(vault, locator);
+      const locator = connectionCredentialLocator(
+        target.candidate.connectionId,
+        PROVIDER_DEFAULTS[providerType].authKind,
+      );
+      if (locator) {
+        credential = credentialStatus(vault, locator);
+        if (existing) {
           storedSecret = findCredential(vault, locator)?.secret ?? null;
         }
-        // Discovery must probe with the same header customization the models
-        // path applies, so the secret is pinned for the probe and its status
-        // joins the basis the commit revalidates.
-        const headersLocator = connectionRequestHeadersLocator(existing.connectionId);
-        requestHeadersCredential = credentialStatus(vault, headersLocator);
+      }
+      // Discovery must probe with the same header customization the models
+      // path applies, so even absence is pinned for a new candidate.
+      const headersLocator = connectionRequestHeadersLocator(target.candidate.connectionId);
+      requestHeadersCredential = credentialStatus(vault, headersLocator);
+      if (existing) {
         requestHeadersSecret = findCredential(vault, headersLocator)?.secret ?? null;
       }
       // The proxy discovery will run through is pinned HERE, like
@@ -1034,11 +1095,8 @@ export class RuntimePolicyCoordinator {
       this.tickets.set(ticket, {
         kind: 'connection_onboarding',
         basis: {
-          providerType: input.providerType,
-          slug: deriveConnectionSlug(input.providerType),
-          target: existing
-            ? { connectionId: existing.connectionId, revision: existing.revision }
-            : null,
+          target,
+          baseUrl,
           credential,
           requestHeadersCredential,
           effectiveProxy: effectiveProxyConfigurationBasis(networkProxy),
@@ -1049,7 +1107,9 @@ export class RuntimePolicyCoordinator {
       return deepFreeze({
         kind: 'ready' as const,
         ticket: ticket as ConnectionOnboardingTicket,
-        connection: existing ? structuredClone(existing) : null,
+        candidate: structuredClone(target.candidate),
+        existingConnection: existing ? structuredClone(existing) : null,
+        baseUrl,
         storedSecret,
         requestHeadersSecret,
         networkProxy,
@@ -1079,13 +1139,16 @@ export class RuntimePolicyCoordinator {
         // from, not whatever a concurrent policy update left behind.
         const checked = await this.checkOnboardingBasis(root, catalog, record.basis);
         if (checked.kind !== 'unchanged') {
+          if (checked.kind === 'catalog_full') {
+            return deepFreeze({ kind: 'catalog_full' as const });
+          }
           return deepFreeze(
             checked.kind === 'target_missing'
               ? { kind: 'target_missing' as const }
               : { kind: 'superseded' as const, changed: checked.changed },
           );
         }
-        return this.commitConnectionOnboardingInLane(root, catalog, input);
+        return this.commitConnectionOnboardingInLane(root, catalog, record.basis, input);
       }),
     );
   }
@@ -1097,19 +1160,26 @@ export class RuntimePolicyCoordinator {
   ): Promise<
     | { readonly kind: 'unchanged' }
     | { readonly kind: 'target_missing' }
+    | { readonly kind: 'catalog_full' }
     | { readonly kind: 'superseded'; readonly changed: ConnectionEffectChangedDomain[] }
   > {
     const changed: ConnectionEffectChangedDomain[] = [];
     // One vault read serves every credential-status compare below.
     const vault = await this.vault.read(root);
-    if (basis.target) {
-      const connection = findConnection(catalog, { connectionId: basis.target.connectionId });
+    if (basis.target.kind === 'existing') {
+      const connection = findConnection(catalog, {
+        connectionId: basis.target.candidate.connectionId,
+      });
       // A vanished target is its own answer — "the connection is gone" beats
       // "the connection changed" — while a survived one is compared by
       // revision, which covers every catalog-visible property, endpoint
       // included.
       if (!connection) return { kind: 'target_missing' };
-      if (connection.revision !== basis.target.revision) {
+      if (
+        connection.revision !== basis.target.revision ||
+        connection.slug !== basis.target.candidate.slug ||
+        connection.providerType !== basis.target.candidate.providerType
+      ) {
         changed.push('connection');
       } else if (
         basis.credential &&
@@ -1117,10 +1187,16 @@ export class RuntimePolicyCoordinator {
       ) {
         changed.push('credential');
       }
-    } else if (catalog.connections.some((connection) => connection.slug === basis.slug)) {
-      // Discovery ran for a first-time creation; any connection that appeared
-      // at the canonical slug since supersedes it.
+    } else if (
+      catalog.connections.some(
+        (connection) =>
+          connection.connectionId === basis.target.candidate.connectionId ||
+          connection.slug === basis.target.candidate.slug,
+      )
+    ) {
       changed.push('connection');
+    } else if (catalog.connections.length >= CONNECTION_CATALOG_MAX_CONNECTIONS) {
+      return { kind: 'catalog_full' };
     }
     if (
       basis.requestHeadersCredential &&
@@ -1159,12 +1235,15 @@ export class RuntimePolicyCoordinator {
   private async commitConnectionOnboardingInLane(
     root: string,
     catalog: Awaited<ReturnType<ConnectionCatalogDocumentOwner['read']>>,
+    basis: ConnectionOnboardingBasis,
     input: CommitConnectionOnboardingInput,
   ): Promise<CommitConnectionOnboardingResult> {
-    const located = locateOnboardingTarget(catalog, input.providerType, input.connectionId);
-    if (located.kind !== 'ready') return deepFreeze({ kind: located.kind });
-    const existing = located.existing;
-    const connectionId = existing?.connectionId ?? randomUUID();
+    const candidate = basis.target.candidate;
+    const existing =
+      basis.target.kind === 'existing'
+        ? findConnection(catalog, { connectionId: candidate.connectionId })
+        : undefined;
+    const connectionId = candidate.connectionId;
     let invalidateLastTest = false;
     if (input.suppliedSecret !== null) {
       const locator = {
@@ -1194,11 +1273,15 @@ export class RuntimePolicyCoordinator {
     const intent = prepareConnectionOnboardingIntent({
       ...input,
       connectionId,
+      slug: candidate.slug,
+      providerType: candidate.providerType,
+      baseUrl: basis.baseUrl,
       invalidateLastTest,
     });
     const catalogPreflight = this.catalog.prepareOnboardingUpsert(
       catalog,
       intent.connectionId,
+      intent.slug,
       intent.providerType,
       intent.baseUrl,
       intent.enabledModelIds,
@@ -1206,7 +1289,10 @@ export class RuntimePolicyCoordinator {
       intent.invalidateLastTest,
     );
     if (catalogPreflight.kind === 'slug_conflict') {
-      return deepFreeze({ kind: 'slug_conflict' as const });
+      return deepFreeze({ kind: 'superseded' as const, changed: ['connection'] as const });
+    }
+    if (catalogPreflight.kind === 'catalog_full') {
+      return deepFreeze({ kind: 'catalog_full' as const });
     }
     try {
       await writeConnectionOnboardingIntent(root, intent);
@@ -1567,8 +1653,43 @@ export class RuntimePolicyCoordinator {
   private async applyConnectionOnboarding(
     root: string,
     intent: ConnectionOnboardingIntent,
-  ): Promise<{ readonly snapshot: ConnectionCatalogSnapshot; readonly changed: boolean }> {
+  ): Promise<{
+    readonly snapshot: ConnectionCatalogSnapshot;
+    readonly changed: boolean;
+    readonly connection: Pick<
+      ConnectionCatalogEntry,
+      'connectionId' | 'slug' | 'providerType' | 'revision'
+    >;
+  }> {
     let changed = false;
+    const catalog = await this.catalog.read(root);
+    const existingConnection = findConnection(catalog, { connectionId: intent.connectionId });
+    const slug =
+      intent.slug ?? existingConnection?.slug ?? deriveConnectionSlug(intent.providerType);
+    // Validate the durable identity and final catalog shape before touching
+    // the vault. A damaged v2 intent must not rotate a real connection's
+    // credential before discovering that its ID/slug pair cannot commit.
+    const prepared = this.catalog.prepareOnboardingUpsert(
+      catalog,
+      intent.connectionId,
+      slug,
+      intent.providerType,
+      intent.baseUrl,
+      intent.enabledModelIds,
+      intent.discovery,
+      intent.invalidateLastTest,
+    );
+    if (prepared.kind === 'slug_conflict') {
+      throw codecError(
+        'invalid_document',
+        intent.schemaVersion === 1
+          ? 'Legacy onboarding intent conflicts with the connection id'
+          : 'Onboarding intent conflicts with the connection slug',
+      );
+    }
+    if (prepared.kind === 'catalog_full') {
+      throw codecError('invalid_document', 'Onboarding intent exceeds the connection catalog');
+    }
     if (intent.suppliedSecret !== null) {
       const locator = {
         scope: 'connection',
@@ -1596,21 +1717,22 @@ export class RuntimePolicyCoordinator {
       }
     }
 
-    const catalog = await this.catalog.read(root);
-    const prepared = this.catalog.prepareOnboardingUpsert(
-      catalog,
-      intent.connectionId,
-      intent.providerType,
-      intent.baseUrl,
-      intent.enabledModelIds,
-      intent.discovery,
-      intent.invalidateLastTest,
-    );
-    if (prepared.kind === 'slug_conflict') {
-      throw codecError('invalid_document', 'Onboarding intent conflicts with the connection slug');
-    }
     const snapshot = await this.catalog.commitPreparedOnboarding(root, prepared);
-    return { snapshot, changed: changed || prepared.changed };
+    const connection = snapshot.connections.find(
+      (candidate) => candidate.connectionId === intent.connectionId,
+    );
+    if (!connection)
+      throw codecError('invalid_document', 'Onboarding commit omitted its connection');
+    return {
+      snapshot,
+      changed: changed || prepared.changed,
+      connection: {
+        connectionId: connection.connectionId,
+        slug: connection.slug,
+        providerType: connection.providerType,
+        revision: connection.revision,
+      },
+    };
   }
 
   private inLane<T>(operation: (root: string) => Promise<T>): Promise<T> {
@@ -1629,38 +1751,8 @@ function isObsoleteConnectionOnboardingIntent(error: unknown): boolean {
   return (
     error instanceof RuntimePolicyStoreError &&
     error.code === 'invalid_document' &&
-    error.message === 'Onboarding intent conflicts with the connection id'
+    error.message === 'Legacy onboarding intent conflicts with the connection id'
   );
-}
-
-/**
- * The single target-location rule onboarding begin and commit share: an
- * explicit connectionId names the connection to edit in place (any slug);
- * null targets the canonical slug, creating there when free.
- */
-function locateOnboardingTarget(
-  catalog: { readonly connections: readonly ConnectionCatalogEntry[] },
-  providerType: ProviderType,
-  connectionId: string | null,
-):
-  | { readonly kind: 'target_missing' }
-  | { readonly kind: 'slug_conflict' }
-  | { readonly kind: 'ready'; readonly existing: ConnectionCatalogEntry | undefined } {
-  if (connectionId) {
-    const existing = catalog.connections.find(
-      (connection) => connection.connectionId === connectionId,
-    );
-    if (!existing || existing.providerType !== providerType) {
-      return { kind: 'target_missing' };
-    }
-    return { kind: 'ready', existing };
-  }
-  const slug = deriveConnectionSlug(providerType);
-  const existing = catalog.connections.find((connection) => connection.slug === slug);
-  if (existing && existing.providerType !== providerType) {
-    return { kind: 'slug_conflict' };
-  }
-  return { kind: 'ready', existing };
 }
 
 function commonSemanticConnectionBasis(

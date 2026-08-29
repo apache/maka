@@ -3469,6 +3469,183 @@ describe('runtime policy stores', () => {
     });
   });
 
+  test('recovers a v1 onboarding intent by identity before deriving a canonical slug', async () => {
+    await withInteractiveRoot(async ({ root, capability }) => {
+      const owner = await tryAcquireInteractiveRootOwner(capability);
+      assert.ok(owner);
+      if (!owner) return;
+      let connectionId = '';
+      try {
+        const stores = await openInteractiveRuntimePolicyStoresForWrite(owner.lease);
+        const connection = await createConnection(stores, 0, {
+          ...connectionDraft('my-relay', 'openai-compatible', 'Custom relay'),
+          baseUrl: 'https://relay.example.test/v1',
+        });
+        connectionId = connection.connectionId;
+        await writeFile(
+          join(root, 'runtime-policy-onboarding.json'),
+          `${JSON.stringify({
+            schemaVersion: 1,
+            connectionId,
+            providerType: connection.providerType,
+            suppliedSecret: null,
+            baseUrl: connection.baseUrl,
+            enabledModelIds: ['relay/new'],
+            discovery: {
+              models: [{ id: 'relay/new' }],
+              source: 'fetched',
+              fetchedAt: 1_800_000_000_001,
+            },
+            invalidateLastTest: false,
+          })}\n`,
+        );
+      } finally {
+        await owner.close();
+      }
+
+      const successor = await tryAcquireInteractiveRootOwner(capability);
+      assert.ok(successor);
+      if (!successor) return;
+      try {
+        const stores = await openInteractiveRuntimePolicyStoresForWrite(successor.lease);
+        const catalog = await stores.connectionCatalog.getSnapshot();
+        assert.deepEqual(
+          catalog.connections.map(({ connectionId: id, slug }) => ({ id, slug })),
+          [{ id: connectionId, slug: 'my-relay' }],
+        );
+        // Recovery follows the ordinary onboarding merge rule: the newly
+        // selected model is enabled while a declaration the wizard never
+        // offered remains intact.
+        assert.deepEqual(catalog.connections[0]?.enabledModelIds, ['relay/new', 'gpt-5']);
+        assert.equal(existsSync(join(root, 'runtime-policy-onboarding.json')), false);
+      } finally {
+        await successor.close();
+      }
+    });
+  });
+
+  test('recovers a v2 create intent with its preallocated dynamic identity', async () => {
+    await withInteractiveRoot(async ({ root, capability }) => {
+      const owner = await tryAcquireInteractiveRootOwner(capability);
+      assert.ok(owner);
+      if (!owner) return;
+      const connectionId = '22222222-2222-4222-8222-222222222222';
+      let firstConnectionId = '';
+      try {
+        const stores = await openInteractiveRuntimePolicyStoresForWrite(owner.lease);
+        firstConnectionId = (
+          await createConnection(stores, 0, connectionDraft('openai', 'openai', 'OpenAI'))
+        ).connectionId;
+        await writeFile(
+          join(root, 'runtime-policy-onboarding.json'),
+          `${JSON.stringify({
+            schemaVersion: 2,
+            connectionId,
+            slug: 'openai-2',
+            providerType: 'openai',
+            suppliedSecret: 'second-account-secret',
+            baseUrl: null,
+            enabledModelIds: ['gpt-5'],
+            discovery: {
+              models: [{ id: 'gpt-5' }],
+              source: 'fetched',
+              fetchedAt: 1_800_000_000_002,
+            },
+            invalidateLastTest: false,
+          })}\n`,
+        );
+      } finally {
+        await owner.close();
+      }
+
+      const successor = await tryAcquireInteractiveRootOwner(capability);
+      assert.ok(successor);
+      if (!successor) return;
+      try {
+        const stores = await openInteractiveRuntimePolicyStoresForWrite(successor.lease);
+        const catalog = await stores.connectionCatalog.getSnapshot();
+        assert.deepEqual(
+          catalog.connections.map(({ connectionId: id, slug }) => ({ id, slug })),
+          [
+            { id: firstConnectionId, slug: 'openai' },
+            { id: connectionId, slug: 'openai-2' },
+          ],
+        );
+        assert.equal(
+          (
+            await stores.operations.exportCredentialMaterial({
+              scope: 'connection',
+              connectionId,
+              kind: 'api_key',
+            })
+          )?.secret,
+          'second-account-secret',
+        );
+        assert.equal(existsSync(join(root, 'runtime-policy-onboarding.json')), false);
+      } finally {
+        await successor.close();
+      }
+    });
+  });
+
+  test('fails closed when a v2 onboarding intent rebinds an existing id to another slug', async () => {
+    await withInteractiveRoot(async ({ root, capability }) => {
+      const owner = await tryAcquireInteractiveRootOwner(capability);
+      assert.ok(owner);
+      if (!owner) return;
+      let vaultBefore = '';
+      try {
+        const stores = await openInteractiveRuntimePolicyStoresForWrite(owner.lease);
+        const connection = await createConnection(
+          stores,
+          0,
+          connectionDraft('my-relay', 'openai-compatible', 'Custom relay'),
+        );
+        const credential = await stores.credentialVault.set({
+          locator: connectionCredential(connection, 'api_key'),
+          expected: null,
+          secret: 'original-secret',
+        });
+        assert.equal(credential.kind, 'committed');
+        vaultBefore = await readFile(join(root, 'credential-vault.json'), 'utf8');
+        await writeFile(
+          join(root, 'runtime-policy-onboarding.json'),
+          `${JSON.stringify({
+            schemaVersion: 2,
+            connectionId: connection.connectionId,
+            slug: 'openai-compatible',
+            providerType: connection.providerType,
+            suppliedSecret: 'must-not-replace-original',
+            baseUrl: connection.baseUrl,
+            enabledModelIds: ['gpt-5'],
+            discovery: {
+              models: [{ id: 'gpt-5' }],
+              source: 'fetched',
+              fetchedAt: 1_800_000_000_002,
+            },
+            invalidateLastTest: false,
+          })}\n`,
+        );
+      } finally {
+        await owner.close();
+      }
+
+      const successor = await tryAcquireInteractiveRootOwner(capability);
+      assert.ok(successor);
+      if (!successor) return;
+      try {
+        await assert.rejects(
+          openInteractiveRuntimePolicyStoresForWrite(successor.lease),
+          isStoreError('commit_outcome_unknown'),
+        );
+        assert.equal(existsSync(join(root, 'runtime-policy-onboarding.json')), true);
+        assert.equal(await readFile(join(root, 'credential-vault.json'), 'utf8'), vaultBefore);
+      } finally {
+        await successor.close();
+      }
+    });
+  });
+
   test('interactive OAuth login commits only against its frozen connection and credential basis', async () => {
     await withInteractiveOwner(async ({ root, stores }) => {
       const claude = await createConnection(
