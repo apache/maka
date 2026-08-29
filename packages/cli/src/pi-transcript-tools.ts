@@ -19,7 +19,7 @@
 
 import type { ToolOutputStream, ToolResultContent } from '@maka/core/events';
 import { formatQuietJsonValue, formatToolInvocationLine } from '@maka/core/tool-quiet-preview';
-import { redactSecrets } from '@maka/core/redaction';
+import { redactSecrets } from '@maka/core/display-redaction';
 import {
   isActiveShellRunStatus,
   type PtyShellOutput,

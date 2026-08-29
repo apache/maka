@@ -4295,13 +4295,13 @@ describe('Maka Pi TUI transcript', () => {
         toolUseId: 'explore-intent',
         toolName: 'ExploreAgent',
         args: undefined,
-        intent: '  inspect   render entry with sk-secret-value  ',
+        intent: '  inspect   render entry with sk-1234567890abcdef  ',
       }),
     );
 
     const rendered = renderMakaPiTranscript(state, meta(), 100).map(stripAnsi).join('\n');
-    assert.match(rendered, /inspect render entry with \[redacted\]/);
-    assert.doesNotMatch(rendered, /sk-secret-value/);
+    assert.match(rendered, /inspect render entry with <redacted>/);
+    assert.doesNotMatch(rendered, /sk-1234567890abcdef/);
   });
 
   test('never renders a secret Bash command from the durable shell_run result', () => {
