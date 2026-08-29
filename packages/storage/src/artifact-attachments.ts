@@ -24,7 +24,7 @@ import {
   type AttachmentByteReader,
 } from '@maka/core/attachments';
 import { type StorageRef, type ToolResultContent } from '@maka/core/events';
-import type { ReadImageSnapshotStore } from '@maka/core/context-offload';
+import type { ReadImageSnapshotReader } from '@maka/core/context-offload';
 import type {
   ArtifactAuthorityStore,
   ArtifactStore,
@@ -87,14 +87,20 @@ export function createArtifactAttachmentResourceReader(input: {
 export function createAttachmentByteReader(input: {
   artifactStore: DurableArtifactAttachmentReader;
   sessionId: string;
-  readImageSnapshots?: ReadImageSnapshotStore;
+  readImageSnapshots?: ReadImageSnapshotReader;
+  readImageSnapshotsUnavailable?: boolean;
   maxBytes?: number;
 }): AttachmentByteReader {
   const maxBytes = input.maxBytes ?? MAX_ATTACHMENT_BYTES;
   return async (ref) => {
     if (ref.kind === 'session_context') {
       if (ref.sessionId !== input.sessionId) return { ok: false, reason: 'session_mismatch' };
-      if (!input.readImageSnapshots) return { ok: false, reason: 'unsupported_ref_kind' };
+      if (!input.readImageSnapshots) {
+        return {
+          ok: false,
+          reason: input.readImageSnapshotsUnavailable ? 'unavailable' : 'unsupported_ref_kind',
+        };
+      }
       const result = await input.readImageSnapshots.read(ref);
       return result.ok
         ? { ok: true, bytes: new Uint8Array(result.bytes) }

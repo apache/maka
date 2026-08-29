@@ -118,15 +118,17 @@ export class ReadImageSnapshotStoreError extends Error {
   }
 }
 
-export interface ReadImageSnapshotStore {
+export interface ReadImageSnapshotReader {
+  read(input: SessionContextRef): Promise<ContextOffloadReadResult>;
+}
+
+export interface ReadImageSnapshotStore extends ReadImageSnapshotReader {
   snapshot(input: {
     /** Stable identity of the Read result within its Session. */
     readonly ownerId: string;
     readonly bytes: Uint8Array;
     readonly mimeType: string;
   }): Promise<SessionContextRef>;
-
-  read(input: SessionContextRef): Promise<ContextOffloadReadResult>;
 }
 
 /**

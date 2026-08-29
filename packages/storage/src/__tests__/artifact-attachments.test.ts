@@ -23,7 +23,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, test } from 'node:test';
 import { MAX_ATTACHMENT_BYTES } from '@maka/core/attachments';
-import type { ReadImageSnapshotStore } from '@maka/core/context-offload';
+import type { ReadImageSnapshotReader } from '@maka/core/context-offload';
 import { type StorageRef } from '@maka/core/events';
 import {
   createArtifactAttachmentResourceReader,
@@ -122,16 +122,22 @@ describe('artifact attachment authority', () => {
         ok: false,
         reason: 'too_large',
       });
+      const unavailableReader = createAttachmentByteReader({
+        artifactStore: store,
+        sessionId: 'session-1',
+        readImageSnapshotsUnavailable: true,
+      });
+      assert.deepEqual(await unavailableReader(sessionContextRef('ref-1')), {
+        ok: false,
+        reason: 'unavailable',
+      });
     });
   });
 
   test('routes durable context refs through the Session-bound snapshot reader', async () => {
     await withStore(async (store) => {
       const reads: string[] = [];
-      const readImageSnapshots: ReadImageSnapshotStore = {
-        async snapshot() {
-          throw new Error('not used by the reader path');
-        },
+      const readImageSnapshots: ReadImageSnapshotReader = {
         async read(ref) {
           reads.push(ref.refId);
           if (ref.refId === 'missing') return { ok: false, reason: 'not_found' };

@@ -1510,6 +1510,10 @@ function rewriteStorageRef(
   ref: StorageRef,
   references: ConversationCopyArtifactReferenceMap,
 ): StorageRef {
+  if (ref.kind === 'session_context' && ref.sessionId === references.sourceSessionId) {
+    if (references.mode === 'preserve_external') return ref;
+    throw new Error('Conversation copy does not support Session context references yet');
+  }
   if (ref.kind !== 'session_file' || ref.sessionId !== references.sourceSessionId) return ref;
   if (references.mode === 'preserve_external') return ref;
   const artifactId = references.artifactIds.get(ref.relativePath);

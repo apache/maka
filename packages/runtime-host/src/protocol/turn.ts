@@ -355,7 +355,7 @@ function decodeTurnStartInput(value: unknown): TurnStartInput {
   return {
     sessionId: requireEntityId(record.sessionId, 'sessionId'),
     turnId: requireEntityId(record.turnId, 'turnId'),
-    content: decodeMessageContent(record.content, skillIds.length > 0),
+    content: decodeMessageAdmissionContent(record.content, skillIds.length > 0),
     ...(skillIds.length > 0 ? { skillIds } : {}),
     ...(record.turnOrchestration !== undefined
       ? { turnOrchestration: decodeTurnOrchestration(record.turnOrchestration) }
@@ -455,6 +455,18 @@ export function decodeMessageContent(value: unknown, allowEmptyText = false): Me
     }
   }
   requireEncodedByteLimit(content, 'Message content', TURN_MESSAGE_CONTENT_MAX_BYTES);
+  return content;
+}
+
+/** Client-authored Messages cannot claim Host-owned Session context references. */
+export function decodeMessageAdmissionContent(
+  value: unknown,
+  allowEmptyText = false,
+): MessageContent {
+  const content = decodeMessageContent(value, allowEmptyText);
+  if (content.attachments?.some((attachment) => attachment.ref.kind === 'session_context')) {
+    throw invalidProtocolFrame('Session context references are Host-owned');
+  }
   return content;
 }
 

@@ -59,6 +59,7 @@ import {
   TURN_MESSAGE_QUOTE_MAX_COUNT,
   TURN_MESSAGE_QUOTE_TEXT_MAX_LENGTH,
   TURN_FAILURE_MESSAGE_MAX_BYTES,
+  decodeMessageContent,
   TURN_SKILL_ID_MAX_COUNT,
   TURN_SKILL_ID_MAX_LENGTH,
 } from '../protocol/turn.js';
@@ -1546,18 +1547,18 @@ describe('Runtime Host bootstrap protocol', () => {
         ),
       }),
     );
-    assert.doesNotThrow(() =>
-      submit({
-        text: 'valid context ref',
-        attachments: [
-          attachmentRef({
-            kind: 'session_context',
-            sessionId: 'session-1',
-            refId: 'read-image:owner-1',
-          }),
-        ],
-      }),
-    );
+    const contextContent = {
+      text: 'valid context ref',
+      attachments: [
+        attachmentRef({
+          kind: 'session_context' as const,
+          sessionId: 'session-1',
+          refId: 'read-image:owner-1',
+        }),
+      ],
+    };
+    assert.throws(() => submit(contextContent), isInvalidFrame);
+    assert.deepEqual(decodeMessageContent(contextContent), contextContent);
     assert.throws(
       () =>
         submit({

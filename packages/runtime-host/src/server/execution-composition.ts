@@ -81,10 +81,14 @@ import {
   createArtifactAttachmentResourceReader,
   createReadImageSnapshotter,
 } from '@maka/storage/artifact-stores';
-import { isSessionNotFoundError } from '@maka/storage/execution-stores';
+import {
+  isSessionNotFoundError,
+  SessionMetadataConflictError,
+} from '@maka/storage/execution-stores';
 import { createExternalSessionAdapterRegistry } from '@maka/storage/external-sessions';
 import { createGitWorktreeChildExecutor } from '@maka/storage/git-worktree-child-executor';
 import { runWithStorageRootLease } from '@maka/storage/root-authority';
+import { createInteractiveContextOffloadReader } from '@maka/storage/context-offload-store';
 import { openStorageWriterComposition } from '@maka/storage/storage-writer-composition';
 import type { RuntimePolicyStoresWriter } from '@maka/storage/runtime-policy-stores';
 import { resolveWorkspaceIdentity } from '@maka/storage/workspace-identity';
@@ -278,6 +282,9 @@ export async function createExecutionRuntimeHostComposition(
     const taskLedgerStore = storage.taskLedger;
     const openedArtifactStore = storage.artifacts;
     const openedContextOffloadStore = storage.contextOffload;
+    const openedContextOffloadReader = openedContextOffloadStore
+      ? createInteractiveContextOffloadReader(openedContextOffloadStore)
+      : undefined;
     const openedUsageStores = storage.usage;
     const openedShellRunStore = storage.shellRuns;
     const worktreeChildExecutor = createGitWorktreeChildExecutor({
@@ -692,7 +699,8 @@ export async function createExecutionRuntimeHostComposition(
               ? {}
               : { memoryExtraction }),
             artifacts: openedArtifactStore,
-            ...(openedContextOffloadStore ? { contextOffload: openedContextOffloadStore } : {}),
+            ...(openedContextOffloadReader ? { contextOffload: openedContextOffloadReader } : {}),
+            ...(storage.contextOffloadUnavailable ? { contextOffloadUnavailable: true } : {}),
             executionArtifacts,
             usage: openedUsageStores,
             childAgents: bindHostChildAgentBackend(
@@ -1453,6 +1461,20 @@ export async function createExecutionRuntimeHostComposition(
       continuity: continuityCoordinator,
       artifacts: openedArtifactStore,
       taskLedger: taskLedgerStore,
+      assertNoContextOffloadReferences: async (sessionIds) => {
+        if (!openedContextOffloadStore) {
+          throw new Error('Context-offload reader is unavailable during Session removal', {
+            cause: storage.contextOffloadUnavailable?.cause,
+          });
+        }
+        for (const sessionId of sessionIds) {
+          if ((await openedContextOffloadStore.usage(sessionId)).references > 0) {
+            throw new SessionMetadataConflictError(
+              'Session removal does not support Session context references yet',
+            );
+          }
+        }
+      },
       purgeOperationalState: async (sessionId) => {
         await stores.purgeConversationOperationalState(sessionId);
         await openedPlanStore.purgeSessionState(sessionId);
