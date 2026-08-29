@@ -63,23 +63,23 @@ test('single-flights one limit-bound writer and snapshots admitted inputs', asyn
     const opening = openInteractiveContextOffloadStoreForWrite(owner.lease, {
       limits: mutableLimits,
     });
+    const concurrentOpening = openInteractiveContextOffloadStoreForWrite(owner.lease, {
+      limits: testLimits(),
+    });
+    const conflictingOpening = assert.rejects(
+      openInteractiveContextOffloadStoreForWrite(owner.lease, {
+        limits: { ...testLimits(), workspacePhysicalBytes: 63 },
+      }),
+      /different limits/u,
+    );
     (mutableLimits.ownerMaxBytes as { tool_result_archive: number }).tool_result_archive = 0;
     (mutableLimits as { sessionLogicalBytes: number }).sessionLogicalBytes = 0;
-    const first = await opening;
+    const [first, second] = await Promise.all([opening, concurrentOpening]);
     try {
-      const second = await openInteractiveContextOffloadStoreForWrite(owner.lease, {
-        limits: testLimits(),
-      });
+      await conflictingOpening;
       assert.strictEqual(second, first);
       assert.strictEqual(authenticateInteractiveContextOffloadWriter(first), first);
       assert.equal((await stat(join(root, CONTEXT_OFFLOAD_DATABASE_NAME))).isFile(), true);
-      await assert.rejects(
-        () =>
-          openInteractiveContextOffloadStoreForWrite(owner.lease, {
-            limits: { ...testLimits(), workspacePhysicalBytes: 63 },
-          }),
-        /different limits/u,
-      );
 
       const bytes = new TextEncoder().encode('safe');
       const input = {
