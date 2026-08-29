@@ -81,6 +81,7 @@ export * from './operations.js';
 export * from './runtime-resource.js';
 export * from './session-continuity.js';
 export * from './session-catalog-change.js';
+export * from './session-collaboration.js';
 export * from './scheduled-task-change.js';
 export * from './session-retirement.js';
 export * from './session-transcript.js';
@@ -94,7 +95,10 @@ export const RUNTIME_HOST_REGISTRATION_SCHEMA_VERSION = 1 as const;
 export const RUNTIME_HOST_PROTOCOL_VERSION = 0 as const;
 // Increment when the same protocol version no longer guarantees safe Client-Host
 // interoperability. Mismatches are rejected before domain commands are admitted.
-export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 68 as const;
+export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 69 as const;
+// 69: Runtime Host access authority recognizes restricted Session Guest
+// principals and typed Session collaboration grants. Older Hosts would either
+// reject the new operations or misclassify the authenticated principal.
 // 68: Connection onboarding replaces nullable canonical-slug targeting with
 // explicit create/existing identity and returns the committed Connection.
 // Older peers reject the closed target and saved-result shapes.

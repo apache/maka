@@ -30,7 +30,14 @@ import type { OperationKey } from './operations.js';
 
 export const ACCESS_CREDENTIAL_MAX_GRANTS = 256;
 
-export type AccessCredentialPrincipalKind = 'remote_owner' | 'capability_provider';
+export type AccessCredentialPrincipalKind =
+  | 'remote_owner'
+  | 'capability_provider'
+  | 'session_guest';
+export type ManagedAccessCredentialPrincipalKind = Exclude<
+  AccessCredentialPrincipalKind,
+  'session_guest'
+>;
 
 const ACCESS_ERRORS = [
   'host_not_ready',
@@ -43,7 +50,7 @@ const ACCESS_ERRORS = [
 ] as const;
 
 export interface AccessCredentialIssueInput {
-  readonly principalKind: AccessCredentialPrincipalKind;
+  readonly principalKind: ManagedAccessCredentialPrincipalKind;
   readonly principalId: string;
   readonly operationGrants: readonly OperationKey[];
   readonly canPublishClientCapabilities: boolean;
@@ -53,7 +60,7 @@ export interface AccessCredentialIssueInput {
 export interface AccessCredentialIssueResult {
   readonly credentialId: string;
   readonly deliveryId: string;
-  readonly principalKind: AccessCredentialPrincipalKind;
+  readonly principalKind: ManagedAccessCredentialPrincipalKind;
   readonly principalId: string;
   readonly operationGrants: readonly OperationKey[];
   readonly canPublishClientCapabilities: boolean;
@@ -266,8 +273,15 @@ export function decodeAccessCredentialIssueResult(value: unknown): AccessCredent
   };
 }
 
-function principalKind(value: unknown): AccessCredentialPrincipalKind {
+function principalKind(value: unknown): ManagedAccessCredentialPrincipalKind {
   if (value !== 'remote_owner' && value !== 'capability_provider') {
+    throw invalidProtocolFrame('Invalid access credential principalKind');
+  }
+  return value;
+}
+
+function revocablePrincipalKind(value: unknown): AccessCredentialPrincipalKind {
+  if (value !== 'remote_owner' && value !== 'capability_provider' && value !== 'session_guest') {
     throw invalidProtocolFrame('Invalid access credential principalKind');
   }
   return value;
@@ -284,7 +298,7 @@ export function decodeAccessPrincipalRevokeInput(value: unknown): AccessPrincipa
     'principalId',
   ]);
   return {
-    principalKind: principalKind(record.principalKind),
+    principalKind: revocablePrincipalKind(record.principalKind),
     principalId: principalId(record.principalId),
   };
 }

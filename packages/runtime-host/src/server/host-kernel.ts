@@ -60,12 +60,15 @@ import {
 import {
   issueAccessCredential,
   finalizeAccessCredential,
+  prepareCollaborationInvitation,
   prepareAccessCredential,
   prepareAccessCredentialRotation,
   replaceAccessCredential,
   revokeAccessCredential,
   revokeAccessPrincipal,
   revokeAccessCredentialRotation,
+  revokeCollaborationGrant,
+  revokeCollaborationPrincipal,
   type RuntimeHostAccessAuthority,
 } from './access-authority.js';
 import type { RuntimeHostConnectionAuthority } from './connection-authority.js';
@@ -690,6 +693,28 @@ export class RuntimeHostKernel {
               context.credentialId,
               context.clientInstanceId,
             ),
+          ),
+        'collaboration.invitation.prepare': async (input) =>
+          this.#settleAccessCredentialMutation(
+            prepareCollaborationInvitation(this.#options.accessAuthority, this.rootId, input),
+          ),
+        'collaboration.access.query': async (input) =>
+          this.#options.accessAuthority
+            ? { ok: true, result: this.#options.accessAuthority.queryCollaborationAccess(input) }
+            : {
+                ok: false,
+                error: {
+                  code: 'operation_unavailable',
+                  message: 'Runtime Host collaboration authority is unavailable',
+                },
+              },
+        'collaboration.grant.revoke': async (input) =>
+          this.#settleAccessCredentialMutation(
+            revokeCollaborationGrant(this.#options.accessAuthority, input),
+          ),
+        'collaboration.principal.revoke': async (input) =>
+          this.#settleAccessCredentialMutation(
+            revokeCollaborationPrincipal(this.#options.accessAuthority, input.principalId),
           ),
       },
       createPeerMeshOperationHandlers(this.#options.peerMesh, {

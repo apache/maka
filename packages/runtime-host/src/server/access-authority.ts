@@ -36,6 +36,16 @@ import {
   type AccessCredentialRotationRevokeResult,
   type AccessPrincipalRevokeInput,
   type AccessPrincipalRevokeResult,
+  type CollaborationAccessQueryInput,
+  type CollaborationAccessQueryResult,
+  type CollaborationGrantRevokeInput,
+  type CollaborationGrantRevokeResult,
+  type CollaborationInvitationPrepareInput,
+  type CollaborationInvitationPrepareResult,
+  type CollaborationPrincipalRevokeResult,
+  encodeCollaborationInvitationCode,
+  type SessionCollaborationGrant,
+  type SessionCollaborationGrantKind,
 } from '../protocol/index.js';
 import {
   createRuntimeHostConnectionAuthority,
@@ -57,6 +67,7 @@ import {
   RuntimeHostAccessInputError,
   type AccessCredentialFile,
   type StoredAccessCredential,
+  SESSION_GUEST_OPERATION_GRANTS,
   writeAccessCredentialFile,
 } from './access-credential-store.js';
 
@@ -82,7 +93,22 @@ export interface RuntimeHostAccessAuthority {
     input: AccessCredentialRotationRevokeInput,
   ): Promise<AccessCredentialRotationRevokeResult>;
   finalize(credentialId: string, clientInstanceId: string): Promise<AccessCredentialFinalizeResult>;
+  prepareCollaborationInvitation(
+    rootId: string,
+    input: CollaborationInvitationPrepareInput,
+  ): Promise<CollaborationInvitationPrepareResult>;
+  queryCollaborationAccess(input: CollaborationAccessQueryInput): CollaborationAccessQueryResult;
+  revokeCollaborationGrant(
+    input: CollaborationGrantRevokeInput,
+  ): Promise<CollaborationGrantRevokeResult>;
+  revokeCollaborationPrincipal(principalId: string): Promise<CollaborationPrincipalRevokeResult>;
+  activeSessionGrant(
+    principalId: string,
+    sessionId: string,
+    kind: SessionCollaborationGrantKind,
+  ): SessionCollaborationGrant | undefined;
   subscribeRevocations(listener: (credentialId: string) => void): () => void;
+  subscribeGrantRevocations(listener: (grant: SessionCollaborationGrant) => void): () => void;
   close(): Promise<void>;
 }
 
@@ -111,6 +137,7 @@ class FileRuntimeHostAccessAuthority implements RuntimeHostAccessAuthority {
   #expiryTimer: NodeJS.Timeout | undefined;
   #closed = false;
   readonly #revocationListeners = new Set<(credentialId: string) => void>();
+  readonly #grantRevocationListeners = new Set<(grant: SessionCollaborationGrant) => void>();
 
   constructor(
     controlDirectory: string,
@@ -169,6 +196,122 @@ class FileRuntimeHostAccessAuthority implements RuntimeHostAccessAuthority {
     return this.#issue(input, 'prepare');
   }
 
+  prepareCollaborationInvitation(
+    rootId: string,
+    input: CollaborationInvitationPrepareInput,
+  ): Promise<CollaborationInvitationPrepareResult> {
+    return this.#mutate(async () => {
+      const principalId = `session_guest:${randomUUID()}`;
+      const credentialId = randomUUID();
+      const credential = `${ACCESS_CREDENTIAL_PREFIX}${randomBytes(32).toString('base64url')}`;
+      const created = new Date();
+      const createdAt = created.toISOString();
+      const expiresAt = new Date(created.getTime() + PENDING_CREDENTIAL_LIFETIME_MS).toISOString();
+      const stored: StoredAccessCredential = {
+        credentialId,
+        credentialHash: runtimeHostAccessCredentialHash(credential).toString('hex'),
+        principalId,
+        principalKind: 'session_guest',
+        status: 'pending',
+        operationGrants: SESSION_GUEST_OPERATION_GRANTS,
+        canPublishClientCapabilities: false,
+        canUseHostPaths: false,
+        createdAt,
+        expiresAt,
+        bindClientInstanceOnFinalize: true,
+      };
+      const grants = input.grantKinds.map(
+        (kind): SessionCollaborationGrant => ({
+          kind,
+          grantId: randomUUID(),
+          principalId,
+          sessionId: input.sessionId,
+          createdAt,
+        }),
+      );
+      const nextFile = createAccessCredentialFile(
+        [...this.#file.credentials, stored],
+        [...this.#file.sessionGrants, ...grants],
+      );
+      assertAccessCredentialFileCapacity(nextFile);
+      await this.#commit(nextFile);
+      return {
+        invitationCode: encodeCollaborationInvitationCode({
+          schemaVersion: 1,
+          rootId,
+          credential,
+        }),
+        principalId,
+        expiresAt,
+        grants,
+      };
+    });
+  }
+
+  queryCollaborationAccess(input: CollaborationAccessQueryInput): CollaborationAccessQueryResult {
+    const grants = this.#file.sessionGrants.filter(
+      (grant) => input.sessionId === undefined || grant.sessionId === input.sessionId,
+    );
+    const now = Date.now();
+    const principals = [...new Set(grants.map((grant) => grant.principalId))].flatMap(
+      (principalId) => {
+        const credentials = this.#file.credentials.filter(
+          (candidate) =>
+            candidate.principalKind === 'session_guest' &&
+            candidate.principalId === principalId &&
+            (candidate.status === 'active' ||
+              (candidate.status === 'pending' && Date.parse(candidate.expiresAt!) > now)),
+        );
+        const credential =
+          credentials.find((candidate) => candidate.status === 'active') ?? credentials[0];
+        return credential
+          ? [
+              {
+                principalId,
+                status: credential.status as 'active' | 'pending',
+                createdAt: credential.createdAt,
+                ...(credential.expiresAt ? { expiresAt: credential.expiresAt } : {}),
+              },
+            ]
+          : [];
+      },
+    );
+    return { principals, grants };
+  }
+
+  revokeCollaborationGrant(
+    input: CollaborationGrantRevokeInput,
+  ): Promise<CollaborationGrantRevokeResult> {
+    return this.#mutate(async () => {
+      const current = this.#file.sessionGrants.find((grant) => grant.grantId === input.grantId);
+      if (!current) return { revoked: false };
+      await this.#commit(
+        createAccessCredentialFile(
+          this.#file.credentials,
+          this.#file.sessionGrants.filter((grant) => grant !== current),
+        ),
+        [],
+        [current],
+      );
+      return { revoked: true };
+    });
+  }
+
+  revokeCollaborationPrincipal(principalId: string): Promise<CollaborationPrincipalRevokeResult> {
+    return this.revokePrincipal({ principalKind: 'session_guest', principalId });
+  }
+
+  activeSessionGrant(
+    principalId: string,
+    sessionId: string,
+    kind: SessionCollaborationGrantKind,
+  ): SessionCollaborationGrant | undefined {
+    return this.#file.sessionGrants.find(
+      (grant) =>
+        grant.principalId === principalId && grant.sessionId === sessionId && grant.kind === kind,
+    );
+  }
+
   prepareRotation(
     input: AccessCredentialRotationPrepareInput,
   ): Promise<AccessCredentialRotationPrepareResult> {
@@ -181,7 +324,21 @@ class FileRuntimeHostAccessAuthority implements RuntimeHostAccessAuthority {
       if (!current) {
         throw new RuntimeHostAccessInputError('The credential being rotated is no longer active');
       }
-      return this.#createCredential(current, 'prepare', current.operationGrants);
+      if (current.principalKind !== 'remote_owner') {
+        throw new RuntimeHostAccessInputError('This credential cannot use owner rotation');
+      }
+      return this.#createCredential(
+        {
+          principalId: current.principalId,
+          principalKind: current.principalKind,
+          operationGrants: current.operationGrants,
+          canPublishClientCapabilities: current.canPublishClientCapabilities,
+          canUseHostPaths: current.canUseHostPaths,
+          bindClientInstance: current.bindClientInstanceOnFinalize === true,
+        },
+        'prepare',
+        current.operationGrants,
+      );
     });
   }
 
@@ -248,7 +405,7 @@ class FileRuntimeHostAccessAuthority implements RuntimeHostAccessAuthority {
       replaced.length === 0
         ? this.#file.credentials
         : this.#file.credentials.filter((candidate) => !replaced.includes(candidate));
-    const nextFile = createAccessCredentialFile([...retained, stored]);
+    const nextFile = createAccessCredentialFile([...retained, stored], this.#file.sessionGrants);
     assertAccessCredentialFileCapacity(nextFile);
     const deliveryId = await createAccessCredentialDelivery(
       this.#controlDirectory,
@@ -268,7 +425,7 @@ class FileRuntimeHostAccessAuthority implements RuntimeHostAccessAuthority {
       credentialId,
       deliveryId,
       principalId: stored.principalId,
-      principalKind: stored.principalKind,
+      principalKind: input.principalKind,
       operationGrants,
       canPublishClientCapabilities: stored.canPublishClientCapabilities,
       canUseHostPaths: stored.canUseHostPaths,
@@ -289,7 +446,11 @@ class FileRuntimeHostAccessAuthority implements RuntimeHostAccessAuthority {
           credential.principalKind === input.principalKind &&
           credential.principalId === input.principalId,
       );
-      if (matches.length === 0) return { revoked: false };
+      const activeGrants =
+        input.principalKind === 'session_guest'
+          ? this.#file.sessionGrants.filter((grant) => grant.principalId === input.principalId)
+          : [];
+      if (matches.length === 0 && activeGrants.length === 0) return { revoked: false };
 
       const matchedIds = new Set(matches.map((credential) => credential.credentialId));
       const revokedAt = new Date().toISOString();
@@ -299,7 +460,14 @@ class FileRuntimeHostAccessAuthority implements RuntimeHostAccessAuthority {
         const { clientInstanceId: _clientInstanceId, ...revoked } = credential;
         return [{ ...revoked, status: 'revoked' as const, revokedAt }];
       });
-      await this.#commit(createAccessCredentialFile(credentials), [...matchedIds]);
+      await this.#commit(
+        createAccessCredentialFile(
+          credentials,
+          this.#file.sessionGrants.filter((grant) => !activeGrants.includes(grant)),
+        ),
+        [...matchedIds],
+        activeGrants,
+      );
       return { revoked: true };
     });
   }
@@ -355,7 +523,7 @@ class FileRuntimeHostAccessAuthority implements RuntimeHostAccessAuthority {
               };
             });
     await this.#commit(
-      createAccessCredentialFile(credentials),
+      createAccessCredentialFile(credentials, this.#file.sessionGrants),
       [current, ...pendingForPrincipal].map((credential) => credential.credentialId),
     );
     return { credentialId, revoked: true };
@@ -372,40 +540,48 @@ class FileRuntimeHostAccessAuthority implements RuntimeHostAccessAuthority {
       if (!retained || retained.status === 'revoked') {
         throw new RuntimeHostAccessInputError('The current access credential is no longer active');
       }
-      if (retained.status === 'active') {
-        if (retained.clientInstanceId && retained.clientInstanceId !== clientInstanceId) {
-          throw new RuntimeHostAccessInputError(
-            'The pairing candidate was claimed by another Client',
-          );
-        }
-        return { reconnectRequired: retained.clientInstanceId !== undefined };
-      }
-      if (Date.parse(retained.expiresAt!) <= Date.now()) {
-        await this.#expirePending();
-        throw new RuntimeHostAccessInputError('The pairing candidate has expired');
-      }
-      const revoked = this.#file.credentials.filter(
-        (credential) =>
-          credential.credentialId !== credentialId &&
-          credential.status === 'active' &&
-          credential.principalKind === retained.principalKind &&
-          credential.principalId === retained.principalId,
-      );
-      const finalized = createAccessCredentialFile(
-        this.#file.credentials
-          .filter((credential) => !revoked.includes(credential))
-          .map((credential) =>
-            credential === retained
-              ? activatePendingCredential(credential, clientInstanceId)
-              : credential,
-          ),
-      );
-      await this.#commit(
-        finalized,
-        revoked.map((credential) => credential.credentialId),
-      );
-      return { reconnectRequired: retained.bindClientInstanceOnFinalize === true };
+      return this.#finalize(retained, clientInstanceId);
     });
+  }
+
+  async #finalize(
+    retained: StoredAccessCredential,
+    clientInstanceId: string,
+  ): Promise<AccessCredentialFinalizeResult> {
+    if (retained.status === 'active') {
+      if (retained.clientInstanceId && retained.clientInstanceId !== clientInstanceId) {
+        throw new RuntimeHostAccessInputError(
+          'The pairing candidate was claimed by another Client',
+        );
+      }
+      return { reconnectRequired: retained.clientInstanceId !== undefined };
+    }
+    if (Date.parse(retained.expiresAt!) <= Date.now()) {
+      await this.#expirePending();
+      throw new RuntimeHostAccessInputError('The pairing candidate has expired');
+    }
+    const revoked = this.#file.credentials.filter(
+      (credential) =>
+        credential.credentialId !== retained.credentialId &&
+        credential.status === 'active' &&
+        credential.principalKind === retained.principalKind &&
+        credential.principalId === retained.principalId,
+    );
+    const finalized = createAccessCredentialFile(
+      this.#file.credentials
+        .filter((credential) => !revoked.includes(credential))
+        .map((credential) =>
+          credential === retained
+            ? activatePendingCredential(credential, clientInstanceId)
+            : credential,
+        ),
+      this.#file.sessionGrants,
+    );
+    await this.#commit(
+      finalized,
+      revoked.map((credential) => credential.credentialId),
+    );
+    return { reconnectRequired: retained.bindClientInstanceOnFinalize === true };
   }
 
   subscribeRevocations(listener: (credentialId: string) => void): () => void {
@@ -414,12 +590,19 @@ class FileRuntimeHostAccessAuthority implements RuntimeHostAccessAuthority {
     return () => this.#revocationListeners.delete(listener);
   }
 
+  subscribeGrantRevocations(listener: (grant: SessionCollaborationGrant) => void): () => void {
+    if (this.#closed) return () => undefined;
+    this.#grantRevocationListeners.add(listener);
+    return () => this.#grantRevocationListeners.delete(listener);
+  }
+
   close(): Promise<void> {
     if (!this.#closed) {
       this.#closed = true;
       if (this.#expiryTimer) clearTimeout(this.#expiryTimer);
       this.#expiryTimer = undefined;
       this.#revocationListeners.clear();
+      this.#grantRevocationListeners.clear();
     }
     return this.#mutation;
   }
@@ -439,6 +622,7 @@ class FileRuntimeHostAccessAuthority implements RuntimeHostAccessAuthority {
   async #commit(
     file: AccessCredentialFile,
     revokedCredentialIds: readonly string[] = [],
+    revokedGrants: readonly SessionCollaborationGrant[] = [],
   ): Promise<void> {
     let outcomeUnknown: RuntimeHostAccessCommitOutcomeUnknownError | undefined;
     try {
@@ -450,6 +634,7 @@ class FileRuntimeHostAccessAuthority implements RuntimeHostAccessAuthority {
     this.#file = file;
     this.#schedulePendingExpiry();
     for (const credentialId of revokedCredentialIds) this.#publishRevocation(credentialId);
+    for (const grant of revokedGrants) this.#publishGrantRevocation(grant);
     if (outcomeUnknown) throw outcomeUnknown;
   }
 
@@ -462,11 +647,21 @@ class FileRuntimeHostAccessAuthority implements RuntimeHostAccessAuthority {
       this.#schedulePendingExpiry();
       return;
     }
+    const expiredGuestPrincipals = new Set(
+      expired
+        .filter((credential) => credential.principalKind === 'session_guest')
+        .map((credential) => credential.principalId),
+    );
+    const expiredGrants = this.#file.sessionGrants.filter((grant) =>
+      expiredGuestPrincipals.has(grant.principalId),
+    );
     await this.#commit(
       createAccessCredentialFile(
         this.#file.credentials.filter((credential) => !expired.includes(credential)),
+        this.#file.sessionGrants.filter((grant) => !expiredGrants.includes(grant)),
       ),
       expired.map((credential) => credential.credentialId),
+      expiredGrants,
     );
   }
 
@@ -503,6 +698,16 @@ class FileRuntimeHostAccessAuthority implements RuntimeHostAccessAuthority {
         listener(credentialId);
       } catch {
         // Revocation is already durable; an observer cannot roll it back.
+      }
+    }
+  }
+
+  #publishGrantRevocation(grant: SessionCollaborationGrant): void {
+    for (const listener of this.#grantRevocationListeners) {
+      try {
+        listener(grant);
+      } catch {
+        // The revocation is already durable; an observer cannot roll it back.
       }
     }
   }
@@ -700,6 +905,73 @@ export async function finalizeAccessCredential(
       'Access credential pairing could not be finalized',
     );
   }
+}
+
+export async function prepareCollaborationInvitation(
+  authority: RuntimeHostAccessAuthority | undefined,
+  rootId: string,
+  input: CollaborationInvitationPrepareInput,
+): Promise<OperationOutcome<'collaboration.invitation.prepare'>> {
+  if (!authority) return collaborationUnavailable('collaboration.invitation.prepare');
+  try {
+    return { ok: true, result: await authority.prepareCollaborationInvitation(rootId, input) };
+  } catch (error) {
+    if (error instanceof RuntimeHostAccessInputError) {
+      return { ok: false, error: { code: 'invalid_request', message: error.message } };
+    }
+    return accessPersistenceFailure(
+      error,
+      'Collaboration invitation outcome is unknown',
+      'Collaboration invitation could not be created',
+    );
+  }
+}
+
+export async function revokeCollaborationGrant(
+  authority: RuntimeHostAccessAuthority | undefined,
+  input: CollaborationGrantRevokeInput,
+): Promise<OperationOutcome<'collaboration.grant.revoke'>> {
+  if (!authority) return collaborationUnavailable('collaboration.grant.revoke');
+  try {
+    return { ok: true, result: await authority.revokeCollaborationGrant(input) };
+  } catch (error) {
+    return accessPersistenceFailure(
+      error,
+      'Collaboration grant revocation outcome is unknown',
+      'Collaboration grant could not be revoked',
+    );
+  }
+}
+
+export async function revokeCollaborationPrincipal(
+  authority: RuntimeHostAccessAuthority | undefined,
+  principalId: string,
+): Promise<OperationOutcome<'collaboration.principal.revoke'>> {
+  if (!authority) return collaborationUnavailable('collaboration.principal.revoke');
+  try {
+    return { ok: true, result: await authority.revokeCollaborationPrincipal(principalId) };
+  } catch (error) {
+    return accessPersistenceFailure(
+      error,
+      'Collaboration Guest revocation outcome is unknown',
+      'Collaboration Guest could not be revoked',
+    );
+  }
+}
+
+function collaborationUnavailable<
+  K extends
+    | 'collaboration.invitation.prepare'
+    | 'collaboration.grant.revoke'
+    | 'collaboration.principal.revoke',
+>(operation: K): OperationOutcome<K> {
+  return {
+    ok: false,
+    error: {
+      code: 'operation_unavailable',
+      message: 'Runtime Host collaboration authority is unavailable',
+    },
+  } as OperationOutcome<K>;
 }
 
 function accessPersistenceFailure(error: unknown, unknownMessage: string, failureMessage: string) {
