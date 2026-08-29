@@ -151,10 +151,10 @@ export class ErrorBoundary extends Component<{ children: ReactNode; locale: UiLo
   }
 }
 
-// The fallback face, split out of the class so its four `copyState` values and
-// the repeat-error path can be rendered directly in Storybook — the crash
-// surface is otherwise reachable only by actually crashing the renderer (and
-// the failed-copy state only by additionally failing the clipboard bridge).
+// The fallback face, split out of the class so its four `copyState` values can
+// be rendered directly in Storybook — the crash surface is otherwise reachable
+// only by actually crashing the renderer (and the failed-copy state only by
+// additionally failing the clipboard bridge).
 // The class owns all state and side effects; this component only paints.
 export function ErrorBoundaryFallback({
   error,

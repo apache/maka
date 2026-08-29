@@ -39,8 +39,8 @@ const onCopyReport = fn();
 const onReset = fn();
 const onReload = fn();
 
-// A representative renderer crash: a real Error carrying a synthetic renderer
-// stack + React component stack, the same shape componentDidCatch hands render().
+// Explicitly synthetic diagnostics used only to exercise the fallback layout.
+// The generic fixture names do not represent a Maka product call chain.
 function buildRendererError(name: string, message: string, frames: string[]): Error {
   const error = new Error(message);
   error.name = name;
@@ -48,42 +48,23 @@ function buildRendererError(name: string, message: string, frames: string[]): Er
   return error;
 }
 
-const transcriptError = buildRendererError(
+const syntheticError = buildRendererError(
   'TypeError',
   "Cannot read properties of undefined (reading 'messages')",
   [
-    'SessionTranscript (src/renderer/features/workbar/session-transcript.tsx:142:31)',
+    'SyntheticCrashFixture (<synthetic-storybook-fixture>:42:7)',
     'renderWithHooks (react-dom.development.js:15486:18)',
     'mountIndeterminateComponent (react-dom.development.js:20103:13)',
     'beginWork (react-dom.development.js:21626:16)',
   ],
 );
 
-const transcriptComponentStack: ErrorInfo = {
+const syntheticComponentStack: ErrorInfo = {
   componentStack: [
     '',
-    '    at SessionTranscript (src/renderer/features/workbar/session-transcript.tsx:142:31)',
-    '    at WorkbarPanel',
-    '    at AppShell',
-    '    at ErrorBoundary (src/renderer/error-boundary.tsx:73:1)',
-  ].join('\n'),
-};
-
-// A second, different error — what the boundary catches when the still-broken
-// subtree throws again after 重试.
-const retryError = buildRendererError('RangeError', 'Maximum call stack size exceeded', [
-  'toTreeNode (src/renderer/features/workbar/plan-tree.tsx:88:12)',
-  'toTreeNode (src/renderer/features/workbar/plan-tree.tsx:91:20)',
-  'toTreeNode (src/renderer/features/workbar/plan-tree.tsx:91:20)',
-]);
-
-const retryComponentStack: ErrorInfo = {
-  componentStack: [
-    '',
-    '    at PlanTree (src/renderer/features/workbar/plan-tree.tsx:88:12)',
-    '    at WorkbarPanel',
-    '    at AppShell',
-    '    at ErrorBoundary (src/renderer/error-boundary.tsx:73:1)',
+    '    at SyntheticCrashFixture (<synthetic-storybook-fixture>:42:7)',
+    '    at SyntheticParentFixture (<synthetic-storybook-fixture>:18:3)',
+    '    at ErrorBoundary',
   ].join('\n'),
 };
 
@@ -103,36 +84,23 @@ function fallback(copyState: ErrorBoundaryCopyState, error: Error, errorInfo: Er
   );
 }
 
-// Real path: the renderer throws during render; ErrorBoundary.getDerivedStateFromError
-// + componentDidCatch capture the error and React component stack, and render() paints
-// this fallback with copyState 'idle'.
+// Visual snapshot of the fallback's idle state. In production, ErrorBoundary supplies
+// this Error/ErrorInfo shape after catching a renderer crash.
 export const DefaultFallback: Story = {
-  render: fallback('idle', transcriptError, transcriptComponentStack),
+  render: fallback('idle', syntheticError, syntheticComponentStack),
 };
 
-// Real path: on the crash screen the user clicks 复制诊断信息; handleCopyReport sets
-// copyState 'pending' while window.maka.diagnostics.copyReport is in flight, disabling
-// the button (isDisabled + aria-busy).
+// Visual snapshot of the fallback's pending state; it does not exercise the copy transition.
 export const CopyPending: Story = {
-  render: fallback('pending', transcriptError, transcriptComponentStack),
+  render: fallback('pending', syntheticError, syntheticComponentStack),
 };
 
-// Real path: continues from copy pending — diagnostics.copyReport resolves, handleCopyReport
-// sets copyState 'copied' and the copy button swaps to the check glyph.
+// Visual snapshot of the fallback's copied state; it does not exercise the copy transition.
 export const Copied: Story = {
-  render: fallback('copied', transcriptError, transcriptComponentStack),
+  render: fallback('copied', syntheticError, syntheticComponentStack),
 };
 
-// Real path: continues from copy pending — the clipboard bridge (diagnostics.copyReport, or
-// the navigator.clipboard fallback) rejects, handleCopyReport sets copyState 'failed', and the
-// manual-select hint appears below the actions.
+// Visual snapshot of the fallback's failed state; it does not exercise the copy transition.
 export const CopyFailed: Story = {
-  render: fallback('failed', transcriptError, transcriptComponentStack),
-};
-
-// Real path: after 重试 (handleReset clears the error) the still-broken subtree throws a
-// second, different error; the boundary re-catches and render() shows the new report — proving
-// the fallback reflects the current error, not the first one.
-export const RepeatError: Story = {
-  render: fallback('idle', retryError, retryComponentStack),
+  render: fallback('failed', syntheticError, syntheticComponentStack),
 };
