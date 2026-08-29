@@ -336,7 +336,14 @@ export class SqliteContextOffloadStore implements ContextOffloadStore {
         if (!blobId || !isNonNegativeSafeInteger(row.size_bytes)) {
           throw new Error('Invalid context garbage candidate');
         }
-        if (exceedsLimit(deletedBytes, row.size_bytes, input.maxBytes)) break;
+        if (exceedsLimit(deletedBytes, row.size_bytes, input.maxBytes)) {
+          if (selected.length === 0) {
+            throw new Error(
+              `Context garbage byte limit ${input.maxBytes} cannot fit eligible blob of ${row.size_bytes} bytes`,
+            );
+          }
+          break;
+        }
         deletedBytes = addSafeInteger(deletedBytes, row.size_bytes, 'Collected context bytes');
         selected.push(blobId);
       }

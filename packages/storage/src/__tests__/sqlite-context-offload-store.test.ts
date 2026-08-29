@@ -491,7 +491,7 @@ test('garbage collection obeys both batch limits and rolls back failed deletion'
   const bytes = new TextEncoder().encode('four');
   const first = await fixture.store.put(putInput('session-1', 'owner-1', bytes));
   const second = await fixture.store.put(
-    putInput('session-1', 'owner-2', new TextEncoder().encode('five')),
+    putInput('session-1', 'owner-2', new TextEncoder().encode('fives')),
   );
   assert.equal(first.ok, true);
   assert.equal(second.ok, true);
@@ -503,16 +503,21 @@ test('garbage collection obeys both batch limits and rolls back failed deletion'
     await fixture.store.collectGarbage({ olderThan: 1_001, maxBlobs: 2, maxBytes: 4 }),
     { deletedBlobs: 1, deletedBytes: 4, hasMore: true },
   );
+  await assert.rejects(
+    fixture.store.collectGarbage({ olderThan: 1_001, maxBlobs: 1, maxBytes: 4 }),
+    /byte limit 4 cannot fit eligible blob of 5 bytes/u,
+  );
+  assert.equal((await fixture.store.usage()).physicalBytes, 5);
   failGc = true;
   await assert.rejects(
     fixture.store.collectGarbage({ olderThan: 1_001, maxBlobs: 1, maxBytes: 8 }),
     /injected GC failure/u,
   );
-  assert.equal((await fixture.store.usage()).physicalBytes, 4);
+  assert.equal((await fixture.store.usage()).physicalBytes, 5);
   failGc = false;
   assert.deepEqual(
     await fixture.store.collectGarbage({ olderThan: 1_001, maxBlobs: 1, maxBytes: 8 }),
-    { deletedBlobs: 1, deletedBytes: 4, hasMore: false },
+    { deletedBlobs: 1, deletedBytes: 5, hasMore: false },
   );
 });
 
