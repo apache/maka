@@ -39,13 +39,6 @@ import {
   type SessionNavigationRowActions,
 } from './session-row-actions.js';
 
-export type SessionNavigationSearchTarget = {
-  sessionId: string;
-  turnId: string;
-  sequence?: number;
-  nonce: number;
-};
-
 export type SessionNavigationToastApi = {
   success(title: string, description?: string): void;
   error(
