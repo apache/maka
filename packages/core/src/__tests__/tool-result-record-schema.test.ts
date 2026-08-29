@@ -223,6 +223,35 @@ describe('retired ExploreAgent results in stored transcripts', () => {
     assert.deepEqual(toolResultContent(decodePersistedMessage(storedToolResult(stored))), expected);
   });
 
+  test('accepts the earliest persisted shape before progress was added', () => {
+    const earliest = {
+      kind: 'explore_agent',
+      ok: true,
+      mode: 'read_only',
+      objective: 'Trace the session lifecycle.',
+      roots: ['packages/runtime'],
+      queries: ['SessionManager'],
+      filesInspected: 3,
+      filesSkipped: 1,
+      bytesRead: 512,
+      candidateFiles: [],
+      matches: [],
+      notes: [],
+    } as const;
+    const expected = { kind: 'text', text: 'Inspected 3 files' };
+
+    assert.deepEqual(
+      decodePersistedToolResultContent(
+        markPersisted<ToolResultContent>(earliest as unknown as ToolResultContent),
+      ),
+      expected,
+    );
+    assert.deepEqual(
+      toolResultContent(decodePersistedMessage(storedToolResult(earliest))),
+      expected,
+    );
+  });
+
   test('uses a non-empty failure summary when the legacy report is empty', () => {
     const failed = {
       ...stored,
@@ -239,6 +268,38 @@ describe('retired ExploreAgent results in stored transcripts', () => {
         markPersisted<ToolResultContent>(failed as unknown as ToolResultContent),
       ),
       { kind: 'text', text: '未完成：目标无效。' },
+    );
+  });
+
+  test('ignores retired structured detail after establishing legacy provenance', () => {
+    const malformedDetails = {
+      ...stored,
+      report: undefined,
+      progress: { invalid: true },
+      matches: 'not an array',
+      filesInspected: undefined,
+      removedInLaterVersions: true,
+    };
+
+    assert.deepEqual(
+      decodePersistedToolResultContent(
+        markPersisted<ToolResultContent>(malformedDetails as unknown as ToolResultContent),
+      ),
+      { kind: 'text', text: 'Historical repository scan result' },
+    );
+  });
+
+  test('requires stable legacy provenance at persisted read boundaries', () => {
+    assert.throws(
+      () =>
+        decodePersistedToolResultContent(
+          markPersisted<ToolResultContent>({
+            kind: 'explore_agent',
+            ok: true,
+            mode: 'write_enabled',
+          } as unknown as ToolResultContent),
+        ),
+      /Invalid tool result content/,
     );
   });
 

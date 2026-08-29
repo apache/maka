@@ -700,7 +700,6 @@ describe('projectRuntimeEventsToStoredMessages', () => {
       filesInspected: 0,
       filesSkipped: 0,
       bytesRead: 0,
-      progress: [],
       candidateFiles: [],
       matches: [],
       notes: [],
