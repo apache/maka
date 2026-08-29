@@ -409,27 +409,24 @@ class PeerMeshNodeImpl implements PeerMeshNode {
           throw new Error('Peer Mesh authority returned an unrelated roster');
         }
         const routes = await this.#validateRoutes(response.routes, roster, this.#now());
-        const state: PeerMeshStateV1 = {
-          role: 'replica',
-          authority: {
-            peerId: invitation.peerId,
-            routeHints: invitation.routeHints,
-            coordinationRelays: invitation.coordinationRelays,
-          },
-          roster,
-        };
         await this.#store.mutate((current) => {
           const existing = findMesh(current.meshes, invitation.meshId);
           if (existing?.role === 'authority') {
             throw new Error('This peer already belongs to that Peer Mesh');
           }
-          if (
-            existing &&
-            (existing.roster.authorityPublicKey !== roster.authorityPublicKey ||
-              roster.roster.revision <= existing.roster.roster.revision)
-          ) {
-            throw new Error('Peer Mesh invitation did not advance the existing membership');
+          const selectedRoster = existing ? selectRoster(existing.roster, roster) : roster;
+          if (!selectedRoster.roster.members.includes(identity.peerId)) {
+            throw new Error('Peer Mesh invitation did not establish an active membership');
           }
+          const state: PeerMeshStateV1 = {
+            role: 'replica',
+            authority: {
+              peerId: invitation.peerId,
+              routeHints: invitation.routeHints,
+              coordinationRelays: invitation.coordinationRelays,
+            },
+            roster: selectedRoster,
+          };
           if (!existing) assertMeshCapacity(current.meshes, identity.peerId);
           const meshes = existing
             ? replaceMesh(current.meshes, state)
@@ -569,7 +566,13 @@ class PeerMeshNodeImpl implements PeerMeshNode {
           candidate.peerId !== peerId &&
           candidate.expiresAt > now &&
           candidate.transitMeshId !== undefined &&
-          sharedMeshIds.includes(candidate.transitMeshId),
+          sharedMeshIds.includes(candidate.transitMeshId) &&
+          isActiveMeshMember(
+            stored.meshes,
+            candidate.transitMeshId,
+            localPeerId,
+            candidate.peerId,
+          ),
       )
       .sort((left, right) => left.route.peerId.localeCompare(right.route.peerId))
       .flatMap(({ route: candidate }) => candidate.routeHints);
@@ -1267,11 +1270,11 @@ class PeerMeshNodeImpl implements PeerMeshNode {
         ) {
           return false;
         }
-        return stored.meshes.some(
-          (mesh) =>
-            mesh.roster.roster.meshId === route.transitMeshId &&
-            isActiveMembership(mesh, localPeerId) &&
-            mesh.roster.roster.members.includes(route.peerId),
+        return isActiveMeshMember(
+          stored.meshes,
+          route.transitMeshId,
+          localPeerId,
+          route.peerId,
         );
       })
       .sort((left, right) => left.route.peerId.localeCompare(right.route.peerId));
@@ -1283,6 +1286,20 @@ class PeerMeshNodeImpl implements PeerMeshNode {
       reservationRelays: eligibleRelays.flatMap(({ route }) => route.routeHints),
     });
   }
+}
+
+function isActiveMeshMember(
+  meshes: readonly PeerMeshStateV1[],
+  meshId: string,
+  localPeerId: string,
+  peerId: string,
+): boolean {
+  return meshes.some(
+    (mesh) =>
+      mesh.roster.roster.meshId === meshId &&
+      isActiveMembership(mesh, localPeerId) &&
+      mesh.roster.roster.members.includes(peerId),
+  );
 }
 
 function peerMeshStatus(
