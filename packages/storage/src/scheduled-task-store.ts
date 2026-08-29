@@ -276,7 +276,15 @@ class SqliteScheduledTaskStore implements ScheduledTaskStore {
       runs: [],
       lastError: null,
     };
-    await this.mutate((state) => ({ ...state, tasks: [...state.tasks, task] }));
+    await this.mutate((state) => {
+      if (
+        value.presetId === 'daily-review' &&
+        state.tasks.some((candidate) => candidate.presetId === value.presetId)
+      ) {
+        throw storeError('operation_conflict', 'Daily Review ScheduledTask already exists');
+      }
+      return { ...state, tasks: [...state.tasks, task] };
+    });
     return task;
   }
 
@@ -291,12 +299,19 @@ class SqliteScheduledTaskStore implements ScheduledTaskStore {
     }
     let result: ScheduledTask | undefined;
     await this.mutate((state) => {
-      const existing = state.tasks.find((task) => task.id === id);
-      if (existing) {
-        if (existing.createdBy.kind !== 'system') {
+      const existingById = state.tasks.find((task) => task.id === id);
+      if (existingById) {
+        if (existingById.createdBy.kind !== 'system') {
           throw storeError('operation_conflict', `Scheduled task id is already owned: ${id}`);
         }
-        result = existing;
+        result = existingById;
+        return state;
+      }
+      const presetId = normalized.value.presetId;
+      const existingByPreset =
+        presetId === undefined ? undefined : state.tasks.find((task) => task.presetId === presetId);
+      if (existingByPreset) {
+        result = existingByPreset;
         return state;
       }
       const value = normalized.value;

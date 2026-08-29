@@ -174,15 +174,25 @@ const RELEASED_LEGACY_RETIREMENT_DDL: ReadonlyMap<string, string> = new Map([
   ],
 ]);
 
-const DAILY_REVIEW_MIGRATION_TABLES = new Set([
+const DAILY_REVIEW_MIGRATION_REQUIRED_TABLES = new Set([
   'workflow_daily_review_state',
-  'workflow_daily_review_authority_state',
   'workflow_daily_review_archives',
 ]);
 
+const DAILY_REVIEW_MIGRATION_OPTIONAL_TABLES = new Set(['workflow_daily_review_authority_state']);
+
+const DAILY_REVIEW_MIGRATION_TABLES = new Set([
+  ...DAILY_REVIEW_MIGRATION_REQUIRED_TABLES,
+  ...DAILY_REVIEW_MIGRATION_OPTIONAL_TABLES,
+]);
+
 export function assertReleasedDailyReviewMigrationShape(database: DatabaseSync): void {
-  for (const table of DAILY_REVIEW_MIGRATION_TABLES) {
+  for (const table of DAILY_REVIEW_MIGRATION_REQUIRED_TABLES) {
     assertReleasedLegacyRetirementShape(database, table);
+  }
+  const presentTables = new Set(readSchemaObjects(database).map((object) => object.tableName));
+  for (const table of DAILY_REVIEW_MIGRATION_OPTIONAL_TABLES) {
+    if (presentTables.has(table)) assertReleasedLegacyRetirementShape(database, table);
   }
 }
 

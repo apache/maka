@@ -101,6 +101,44 @@ test('reads released Daily Review config and archives without changing legacy ro
   }
 });
 
+test('retires the released two-table Daily Review layout', async () => {
+  const base = await mkdtemp(join(tmpdir(), 'maka-daily-review-two-table-'));
+  const root = join(base, 'root');
+  const capability = trackControlDirectory(
+    await resolveStorageRoot({ path: root, kind: 'interactive' }),
+  );
+  const owner = await tryAcquireInteractiveRootOwner(capability);
+  assert.ok(owner);
+  if (!owner) return;
+  const scheduledTasks = await openInteractiveScheduledTaskStoreForWrite(owner.lease);
+  const database = new DatabaseSync(join(root, 'runtime.sqlite'));
+  try {
+    installLegacyDailyReviewTables(database, { authority: false });
+    const config = { enabled: false, executeTime: '08:00', modelKey: '' };
+    database
+      .prepare('INSERT INTO workflow_daily_review_state(singleton, config_json) VALUES (1, ?)')
+      .run(JSON.stringify(config));
+
+    const migration = await openLegacyDailyReviewMigrationForWrite(owner.lease);
+    const snapshot = await migration.read();
+
+    assert.deepEqual(snapshot?.config, config);
+    assert.equal(snapshot?.archives.length, 0);
+    assert.ok(snapshot);
+    if (!snapshot) return;
+    assert.equal(await migration.retire(snapshot.token), true);
+    assert.equal(await migration.read(), null);
+    assert.equal(tableExists(database, 'workflow_daily_review_state'), false);
+    assert.equal(tableExists(database, 'workflow_daily_review_archives'), false);
+    migration.close();
+  } finally {
+    database.close();
+    scheduledTasks.close();
+    await owner.close();
+    await rm(base, { recursive: true, force: true });
+  }
+});
+
 test('retires legacy tables only for the exact migrated snapshot', async () => {
   const base = await mkdtemp(join(tmpdir(), 'maka-daily-review-retirement-'));
   const root = join(base, 'root');
@@ -189,15 +227,14 @@ function tableExists(database: DatabaseSync, table: string): boolean {
   );
 }
 
-function installLegacyDailyReviewTables(database: DatabaseSync): void {
+function installLegacyDailyReviewTables(
+  database: DatabaseSync,
+  options: { readonly authority?: boolean } = {},
+): void {
   database.exec(`
     CREATE TABLE IF NOT EXISTS workflow_daily_review_state (
       singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
       config_json TEXT NOT NULL
-    );
-    CREATE TABLE IF NOT EXISTS workflow_daily_review_authority_state (
-      singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
-      revision INTEGER NOT NULL CHECK (revision >= 0)
     );
     CREATE TABLE IF NOT EXISTS workflow_daily_review_archives (
       archive_id TEXT PRIMARY KEY,
@@ -208,4 +245,12 @@ function installLegacyDailyReviewTables(database: DatabaseSync): void {
     CREATE INDEX IF NOT EXISTS workflow_daily_review_archives_order
       ON workflow_daily_review_archives(generated_at DESC, day_from_ms DESC, archive_id);
   `);
+  if (options.authority !== false) {
+    database.exec(`
+      CREATE TABLE IF NOT EXISTS workflow_daily_review_authority_state (
+        singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+        revision INTEGER NOT NULL CHECK (revision >= 0)
+      );
+    `);
+  }
 }

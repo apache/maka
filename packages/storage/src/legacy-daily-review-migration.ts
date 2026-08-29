@@ -37,11 +37,12 @@ export const DAILY_REVIEW_SYSTEM_TASK_ID = 'system-daily-review';
 
 export const DAILY_REVIEW_SCHEDULED_TASK_INTENT = `Review the previous local day of Maka work using ordinary Session history. Identify completed work, unfinished or missed follow-ups, and useful patterns. Write a concise Markdown report and save it as a normal Session artifact. Do not use a dedicated Daily Review store or archive.`;
 
-const LEGACY_TABLES = [
+const LEGACY_REQUIRED_TABLES = [
   'workflow_daily_review_state',
-  'workflow_daily_review_authority_state',
   'workflow_daily_review_archives',
 ] as const;
+
+const LEGACY_TABLES = [...LEGACY_REQUIRED_TABLES, 'workflow_daily_review_authority_state'] as const;
 
 export interface LegacyDailyReviewConfig {
   readonly enabled: boolean;
@@ -101,8 +102,19 @@ export async function migrateLegacyDailyReview(input: {
   if (snapshot === null) return false;
   const now = input.now?.() ?? Date.now();
   const target = await resolveExecutionTarget(snapshot.config.modelKey, input.runtimePolicy);
+  // Keep an enabled legacy configuration entirely authoritative until it can
+  // be replaced in one pass. Exposing replayable Sessions or Artifacts while
+  // the source must remain retryable would let ordinary user deletion collide
+  // with the next Host recovery.
+  if (snapshot.config.enabled && target === undefined) return false;
   for (const archive of snapshot.archives) {
     await migrateArchive(input, archive);
+  }
+  if (!snapshot.config.enabled) {
+    if (!(await input.legacy.retire(snapshot.token))) {
+      throw new Error('Legacy Daily Review state disappeared during migration');
+    }
+    return true;
   }
   // The legacy scheduler accepted an enabled configuration before a model was
   // configured. Do not turn that recoverable state into a permanently broken
@@ -139,9 +151,6 @@ export async function migrateLegacyDailyReview(input: {
     },
     now,
   );
-  if (!snapshot.config.enabled && task.status === 'active') {
-    await input.scheduledTasks.pause(task.id, now);
-  }
   if (needsLegacyCatchUp(snapshot, now)) {
     await input.scheduledTasks.makeDueNow(task.id, now);
   }
@@ -178,9 +187,9 @@ export async function openLegacyDailyReviewMigrationForWrite(
         }
         database.exec(`
           DROP INDEX IF EXISTS workflow_daily_review_archives_order;
-          DROP TABLE workflow_daily_review_archives;
-          DROP TABLE workflow_daily_review_authority_state;
-          DROP TABLE workflow_daily_review_state;
+          DROP TABLE IF EXISTS workflow_daily_review_archives;
+          DROP TABLE IF EXISTS workflow_daily_review_authority_state;
+          DROP TABLE IF EXISTS workflow_daily_review_state;
         `);
         return true;
       }),
@@ -193,7 +202,7 @@ export async function openLegacyDailyReviewMigrationForWrite(
 function readSnapshot(database: DatabaseSync): LegacyDailyReviewMigrationSnapshot | null {
   const present = LEGACY_TABLES.filter((table) => tableExists(database, table));
   if (present.length === 0) return null;
-  if (present.length !== LEGACY_TABLES.length) {
+  if (LEGACY_REQUIRED_TABLES.some((table) => !present.includes(table))) {
     throw new Error('Legacy Daily Review tables are incomplete');
   }
   assertReleasedDailyReviewMigrationShape(database);
@@ -203,9 +212,11 @@ function readSnapshot(database: DatabaseSync): LegacyDailyReviewMigrationSnapsho
       'SELECT config_json AS configJson FROM workflow_daily_review_state WHERE singleton = 1',
     )
     .get() as { configJson?: unknown } | undefined;
-  const revisionRow = database
-    .prepare('SELECT revision FROM workflow_daily_review_authority_state WHERE singleton = 1')
-    .get() as { revision?: unknown } | undefined;
+  const revisionRow = present.includes('workflow_daily_review_authority_state')
+    ? (database
+        .prepare('SELECT revision FROM workflow_daily_review_authority_state WHERE singleton = 1')
+        .get() as { revision?: unknown } | undefined)
+    : undefined;
   const archiveRows = database
     .prepare(
       `SELECT archive_id AS archiveId, generated_at AS generatedAt,

@@ -236,13 +236,13 @@ test('production Host migrates Daily Review into ScheduledTask Session and Artif
         taskPage.tasks.some((candidate) => candidate.id === 'system-daily-review'),
         false,
       );
-      const artifacts = await unresolvedDesktop.request('artifact.query', {
-        kind: 'list_start',
-        sessionId: `daily-review-archive-${archive.id}`,
-      });
-      assert.equal(artifacts.kind, 'page');
-      if (artifacts.kind !== 'page') return;
-      assert.equal(artifacts.artifacts.length, 1);
+      await assert.rejects(
+        unresolvedDesktop.request('artifact.query', {
+          kind: 'list_start',
+          sessionId: `daily-review-archive-${archive.id}`,
+        }),
+        /Session was not found/u,
+      );
     } finally {
       await unresolvedDesktop.close();
       await fixture.stopHost(unresolvedHost);
@@ -428,6 +428,94 @@ test('production Host migrates Daily Review into ScheduledTask Session and Artif
     } finally {
       await restartedDesktop.close();
       await fixture.stopHost(restartedHost);
+    }
+  });
+});
+
+test('production Host retires disabled Daily Review after projecting its reports', {
+  timeout: 30_000,
+}, async () => {
+  await withExecutionRoot(async (fixture) => {
+    const archive = {
+      id: '2026-08-20-1d',
+      day: { fromMs: 1_771_132_800_000, toMs: 1_771_219_200_000 },
+      range: 1,
+      status: 'ok',
+      generatedAt: 1_771_219_200_001,
+      trigger: 'cron',
+      modelKey: '',
+      sections: { summary: 'A disabled review report.' },
+      totals: {
+        sessionCount: 1,
+        requestCount: 1,
+        totalTokens: 1,
+        costUsd: 0,
+        errorCount: 0,
+      },
+    } as const;
+    const database = new DatabaseSync(join(fixture.root, 'runtime.sqlite'));
+    database.exec(`
+      CREATE TABLE workflow_daily_review_state (
+        singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+        config_json TEXT NOT NULL
+      );
+      CREATE TABLE workflow_daily_review_authority_state (
+        singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+        revision INTEGER NOT NULL CHECK (revision >= 0)
+      );
+      CREATE TABLE workflow_daily_review_archives (
+        archive_id TEXT PRIMARY KEY,
+        generated_at INTEGER NOT NULL,
+        day_from_ms INTEGER NOT NULL,
+        record_json TEXT NOT NULL
+      );
+      CREATE INDEX workflow_daily_review_archives_order
+        ON workflow_daily_review_archives(generated_at DESC, day_from_ms DESC, archive_id);
+    `);
+    database
+      .prepare('INSERT INTO workflow_daily_review_state(singleton, config_json) VALUES (1, ?)')
+      .run(JSON.stringify({ enabled: false, executeTime: '08:00', modelKey: '' }));
+    database
+      .prepare(
+        `INSERT INTO workflow_daily_review_archives(
+          archive_id, generated_at, day_from_ms, record_json
+        ) VALUES (?, ?, ?, ?)`,
+      )
+      .run(archive.id, archive.generatedAt, archive.day.fromMs, JSON.stringify(archive));
+    database.close();
+
+    const host = await fixture.startHost();
+    const desktop = await connectClient(fixture.root);
+    try {
+      const taskPage = await desktop.request('scheduled-task.query', { kind: 'list' });
+      assert.equal(taskPage.kind, 'page');
+      if (taskPage.kind !== 'page') return;
+      assert.equal(
+        taskPage.tasks.some((candidate) => candidate.id === 'system-daily-review'),
+        false,
+      );
+      const artifacts = await desktop.request('artifact.query', {
+        kind: 'list_start',
+        sessionId: `daily-review-archive-${archive.id}`,
+      });
+      assert.equal(artifacts.kind, 'page');
+      if (artifacts.kind !== 'page') return;
+      assert.equal(artifacts.artifacts.length, 1);
+    } finally {
+      await desktop.close();
+      await fixture.stopHost(host);
+    }
+
+    const retired = new DatabaseSync(join(fixture.root, 'runtime.sqlite'), { readOnly: true });
+    try {
+      const tables = retired
+        .prepare(
+          "SELECT name FROM sqlite_schema WHERE type = 'table' AND name LIKE 'workflow_daily_review_%'",
+        )
+        .all();
+      assert.deepEqual(tables, []);
+    } finally {
+      retired.close();
     }
   });
 });

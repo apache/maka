@@ -749,6 +749,71 @@ describe('SQLite workflow stores', () => {
     });
   });
 
+  test('system task migration adopts an existing preset task', async () => {
+    await withRoot(async (root) => {
+      const now = Date.now();
+      const { owner, open } = await scheduledTaskStoreRoot(root);
+      const store = await open();
+      try {
+        const existing = await store.create(
+          {
+            presetId: 'daily-review',
+            title: 'User Daily Review',
+            intentBody: 'Review the previous local day.',
+            schedule: { kind: 'interval', everySeconds: 86_400, startAt: now + 1_000 },
+            effect: { kind: 'notify', channel: 'local' },
+            createdBy: { kind: 'user' },
+          },
+          now,
+        );
+
+        const ensured = await store.ensureSystemTask(
+          'system-daily-review',
+          {
+            presetId: 'daily-review',
+            title: 'Daily Review',
+            intentBody: 'Review the previous local day.',
+            schedule: { kind: 'interval', everySeconds: 86_400, startAt: now + 1_000 },
+            effect: { kind: 'notify', channel: 'local' },
+            createdBy: { kind: 'system' },
+          },
+          now,
+        );
+
+        assert.equal(ensured.id, existing.id);
+        assert.equal(ensured.createdBy.kind, 'user');
+        assert.equal((await store.list()).length, 1);
+      } finally {
+        store.close();
+        await owner.close();
+      }
+    });
+  });
+
+  test('rejects a second Daily Review preset task', async () => {
+    await withRoot(async (root) => {
+      const now = Date.now();
+      const { owner, open } = await scheduledTaskStoreRoot(root);
+      const store = await open();
+      const input = {
+        presetId: 'daily-review',
+        title: 'Daily Review',
+        intentBody: 'Review the previous local day.',
+        schedule: { kind: 'interval' as const, everySeconds: 86_400, startAt: now + 1_000 },
+        effect: { kind: 'notify' as const, channel: 'local' as const },
+        createdBy: { kind: 'user' as const },
+      };
+      try {
+        await store.create(input, now);
+        await assert.rejects(() => store.create(input, now + 1), /already exists/u);
+        assert.equal((await store.list()).length, 1);
+      } finally {
+        store.close();
+        await owner.close();
+      }
+    });
+  });
+
   test('manual fire snapshots a one-shot intent and keeps a paused schedule paused', async () => {
     await withRoot(async (root) => {
       const now = Date.now();
