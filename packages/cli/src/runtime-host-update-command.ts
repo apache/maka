@@ -208,6 +208,18 @@ export async function runManagedRuntimeHostUpdateCli(
   let retired = false;
   const emit =
     frameSink ?? ((frame: RuntimeHostUpdateFrame) => presentUpdateFrame(frame, options, deps));
+  if (options.expectedHost && !options.managedRootId) {
+    emit({
+      schemaVersion: 1,
+      kind: 'error',
+      action: 'update',
+      error: {
+        code: 'target_mismatch',
+        message: 'A Host identity fence requires canonical managed deployment authority',
+      },
+    });
+    return 1;
+  }
   if (options.managedRootId) {
     return runCanonicalRuntimeHostUpdate(
       { ...options, managedRootId: options.managedRootId },

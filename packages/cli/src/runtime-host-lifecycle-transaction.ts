@@ -305,6 +305,10 @@ export async function retireRuntimeHostLifecycleOwner(input: {
   readonly rootPath: string;
   readonly rootId: string;
   readonly allowInterruptActiveTasks?: boolean;
+  /**
+   * Freshness fence evaluated before a canonical supervised-deployment retirement is admitted.
+   * The deployment lock and provider identity remain the mutation authority after admission.
+   */
   readonly expectedOwner?: { readonly hostEpoch: string; readonly pid: number };
   readonly supervisor?: {
     status(): Promise<{
@@ -316,6 +320,12 @@ export async function retireRuntimeHostLifecycleOwner(input: {
   readonly timeoutMs?: number;
   readonly retireIdleSupervisor?: boolean;
 }): Promise<RuntimeHostLifecycleRetirement> {
+  if (input.expectedOwner && !input.supervisor) {
+    throw new RuntimeHostLifecycleTransactionError(
+      'owner_changed',
+      'A Runtime Host identity fence requires a supervised deployment',
+    );
+  }
   const capability = await resolveExistingStorageRoot({
     path: input.rootPath,
     kind: 'interactive',
@@ -373,6 +383,9 @@ export async function retireRuntimeHostLifecycleOwner(input: {
         'The supervisor and State Root report different Runtime Host processes',
       );
     }
+    // The exact Root owner and canonical supervisor now agree while the deployment lock is held.
+    // This admits retirement of that deployment; a later same-deployment restart is not a new
+    // authority, but it must not acquire the Root before the supervisor is retired.
     const prepared = await prepareConnectedRuntimeHostRetirement(
       connected.connection,
       input.allowInterruptActiveTasks ? 'interrupt_active_work' : 'refuse_active_work',
@@ -384,11 +397,20 @@ export async function retireRuntimeHostLifecycleOwner(input: {
         'The Runtime Host process changed while retirement was prepared',
       );
     }
-    await input.supervisor?.retire();
+    const retirement = await waitForRuntimeHostLifecycleOwner(
+      capability,
+      input.timeoutMs ?? 45_000,
+    );
+    try {
+      await input.supervisor?.retire();
+      return retirement;
+    } catch (error) {
+      await retirement.owner.close().catch(() => undefined);
+      throw error;
+    }
   } finally {
     await connected.connection.close().catch(() => undefined);
   }
-  return waitForRuntimeHostLifecycleOwner(capability, input.timeoutMs ?? 45_000);
 }
 
 function assertExpectedRuntimeHostOwner(

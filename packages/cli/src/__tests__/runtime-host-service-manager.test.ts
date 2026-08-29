@@ -117,6 +117,21 @@ describe('managed Runtime Host service', () => {
         websocketPort: 7443,
       },
     );
+    assert.equal(
+      parseRuntimeHostCommand([
+        'service',
+        'update',
+        '--expected-host-json',
+        JSON.stringify({ hostEpoch: 'older-host', pid: 42 }),
+        '--expected-service-id',
+        'b'.repeat(64),
+        '--expected-root-path',
+        '/srv/maka',
+        '--expected-root-id',
+        'a'.repeat(64),
+      ]).kind,
+      'error',
+    );
     assert.deepEqual(
       parseRuntimeHostCommand([
         'service',
@@ -218,6 +233,8 @@ describe('managed Runtime Host service', () => {
         '/srv/maka',
         '--expected-root-id',
         'a'.repeat(64),
+        '--managed-root-id',
+        'a'.repeat(64),
       ]),
       {
         kind: 'runtime-host-service-update',
@@ -229,6 +246,7 @@ describe('managed Runtime Host service', () => {
           rootId: 'a'.repeat(64),
         },
         expectedHost: { hostEpoch: 'older-host', pid: 42 },
+        managedRootId: 'a'.repeat(64),
         selector: { kind: 'exact', version: '0.2.0' },
         allowInterruptActiveTasks: true,
       },

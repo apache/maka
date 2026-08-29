@@ -40,6 +40,7 @@ export type RuntimeHostUpdateSelector =
   | { readonly kind: 'exact'; readonly version: string };
 
 export interface RuntimeHostExpectedHost {
+  /** Freshness fence for admitting a canonical supervised-deployment mutation. */
   readonly hostEpoch: string;
   readonly pid: number;
 }
@@ -867,6 +868,9 @@ function parseServiceManagementCommand(argv: string[]): RuntimeHostCliCommand {
     };
   }
   if (action === 'update') {
+    if (expectedHost && !options.managedRootId) {
+      return error('--expected-host-json requires --managed-root-id');
+    }
     const selector =
       updateTarget === undefined ? undefined : parseUpdateSelector(updateTarget, 'update');
     if (selector && 'kind' in selector && selector.kind === 'error') return selector;
