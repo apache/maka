@@ -1887,6 +1887,7 @@ test('live tool_start never forwards a generic input payload as argsPreview', as
       input: 'short private body',
       inputPreview: { text: 'forged private body', bytes: 19, truncated: false },
       size: { cols: 80, rows: 24 },
+      questions: [{ question: 'forged private question' }],
     },
   });
   await delayImmediate();
@@ -1898,6 +1899,7 @@ test('live tool_start never forwards a generic input payload as argsPreview', as
   if (event.type !== 'tool_start') return;
   assert.equal(event.argsPreview, undefined);
   assert.doesNotMatch(JSON.stringify(event), /private body/);
+  assert.doesNotMatch(JSON.stringify(event), /private question/);
 
   connection.abort(opened.subscriptionId);
   coordinator.close();

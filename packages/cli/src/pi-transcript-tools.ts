@@ -756,6 +756,10 @@ function formatPtyControlOperation(
 }
 
 function toolInputSummary(entry: MakaPiToolEntry): string {
+  if (entry.intent) {
+    const safe = redactSecrets(entry.intent.replace(/\s+/g, ' ').trim());
+    if (safe) return safe.length > 240 ? `${safe.slice(0, 240)}…` : safe;
+  }
   const input = entry.input;
   const obj =
     input !== null && typeof input === 'object' ? (input as Record<string, unknown>) : undefined;

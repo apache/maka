@@ -4286,6 +4286,24 @@ describe('Maka Pi TUI transcript', () => {
     assert.doesNotMatch(rendered, /\(no output\)/);
   });
 
+  test('prefers a redacted runtime intent for a live compact row', () => {
+    const state = createMakaPiTranscriptState();
+    applyMakaSessionEventToTranscript(
+      state,
+      event({
+        type: 'tool_start',
+        toolUseId: 'explore-intent',
+        toolName: 'ExploreAgent',
+        args: undefined,
+        intent: '  inspect   render entry with sk-secret-value  ',
+      }),
+    );
+
+    const rendered = renderMakaPiTranscript(state, meta(), 100).map(stripAnsi).join('\n');
+    assert.match(rendered, /inspect render entry with \[redacted\]/);
+    assert.doesNotMatch(rendered, /sk-secret-value/);
+  });
+
   test('never renders a secret Bash command from the durable shell_run result', () => {
     const state = createMakaPiTranscriptState();
     const secret = 'super-secret-token-value';

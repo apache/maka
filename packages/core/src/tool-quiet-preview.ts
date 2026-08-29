@@ -467,10 +467,14 @@ export function projectToolArgsPreview(
     const size = previewSize(projected.size);
     if (size) picked.set('size', size);
   }
-  const questions = previewQuestions(projected);
-  if (questions) {
-    picked.set('questions', questions.items);
-    if (questions.total > questions.items.length) picked.set('questionsTotal', questions.total);
+  // Only the built-in interaction tool owns this free-text shape. Arbitrary
+  // third-party tools may use the same field names for private payloads.
+  if (toolName === 'AskUserQuestion') {
+    const questions = previewQuestions(projected);
+    if (questions) {
+      picked.set('questions', questions.items);
+      if (questions.total > questions.items.length) picked.set('questionsTotal', questions.total);
+    }
   }
 
   if (picked.size === 0) return undefined;

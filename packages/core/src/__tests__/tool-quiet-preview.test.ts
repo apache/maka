@@ -155,6 +155,15 @@ describe('projectToolArgsPreview', () => {
     assert.equal(projectToolArgsPreview('task_get', { id: 'T1' }), undefined);
   });
 
+  it('does not accept forged question payloads from third-party tools', () => {
+    assert.equal(
+      projectToolArgsPreview('third_party_tool', {
+        questions: [{ question: 'private body' }],
+      }),
+      undefined,
+    );
+  });
+
   it('preserves the WriteStdin projected inputPreview shape', () => {
     const projected = projectToolActivityArgs('WriteStdin', {
       ref: 'maka://runtime/background-tasks/1',

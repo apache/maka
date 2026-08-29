@@ -173,6 +173,8 @@ export type MakaPiTranscriptEntry =
       toolUseId: string;
       toolName: string;
       title?: string;
+      /** Runtime-authored, bounded description of the live call's purpose. */
+      intent?: string;
       input: unknown;
       /** Structured result returned by the tool. */
       result?: ToolResultContent;
@@ -821,6 +823,7 @@ export function applyMakaSessionEventToTranscript(
         toolUseId: event.toolUseId,
         toolName: event.toolName,
         ...(event.displayName ? { title: event.displayName } : {}),
+        ...(event.intent ? { intent: event.intent } : {}),
         // Live Runtime Host frames omit full args; the bounded wire preview
         // still lets the compact row name the call. The turn-end reconcile
         // replaces it with the durable full args.
