@@ -29,6 +29,7 @@ import {
   EPOCH_FILE,
   epochAtRevision,
   evaluateEpochCheck,
+  evaluateStagedEpochCheck,
   extractCompatibilityEpoch,
   isHeaderOnlyChange,
 } from './protocol-epoch-check.mjs';
@@ -203,6 +204,37 @@ test('passes when nothing under the protocol directory changed', () => {
   for (const headEpoch of [27, 28]) {
     const verdict = evaluateEpochCheck({ baseEpoch: 27, headEpoch, changedProtocolFiles: [] });
     assert.equal(verdict.ok, true);
+  }
+});
+
+test('checks staged protocol changes against the current HEAD epoch', () => {
+  const repo = mkdtempSync(join(tmpdir(), 'maka-protocol-epoch-staged-'));
+  const epochPath = join(repo, EPOCH_FILE);
+  const protocolFile = join(dirname(epochPath), 'example.ts');
+  const runGit = (...args) => execFileSync('git', args, { cwd: repo, encoding: 'utf8' });
+  const runInFixture = (file, args, options) =>
+    execFileSync(file, args, { ...options, cwd: repo, encoding: 'utf8' });
+
+  try {
+    runGit('init', '--initial-branch=main');
+    runGit('config', 'user.email', 'epoch-guard@example.invalid');
+    runGit('config', 'user.name', 'Epoch Guard Test');
+    runGit('config', 'commit.gpgSign', 'false');
+    mkdirSync(dirname(epochPath), { recursive: true });
+    writeFileSync(epochPath, 'export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 27 as const;\n');
+    writeFileSync(protocolFile, 'export const example = 1;\n');
+    runGit('add', '.');
+    runGit('commit', '-m', 'base');
+
+    writeFileSync(protocolFile, 'export const example = 2;\n');
+    runGit('add', protocolFile);
+    assert.equal(evaluateStagedEpochCheck(runInFixture).ok, false);
+
+    writeFileSync(epochPath, 'export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 28 as const;\n');
+    runGit('add', epochPath);
+    assert.equal(evaluateStagedEpochCheck(runInFixture).ok, true);
+  } finally {
+    rmSync(repo, { recursive: true, force: true });
   }
 });
 
