@@ -2121,6 +2121,8 @@ test('run settlement hands off only steering admissions with immutable proof', a
   fixture.coordinator.reserveRootTurn(ROOT);
   const owner = fixture.coordinator.bindRun(ROOT);
   await submit(fixture, 'steer-proved', 'provider must see this', 'current_turn');
+  const admittedAt = fixture.readMessageAdmission('steer-proved')?.admittedAt;
+  assert.ok(admittedAt);
   const [lease] = owner.pull();
   assert.ok(lease);
   owner.ack([lease.id]);
@@ -2140,6 +2142,16 @@ test('run settlement hands off only steering admissions with immutable proof', a
       sessionId: ROOT.sessionId,
       messageIds: ['steer-proved'],
       turnId: ROOT.turnId,
+      provenSteeringMessages: [
+        {
+          messageId: 'steer-proved',
+          admissionTurnId: ROOT.turnId,
+          admissionRunId: ROOT.runId,
+          executionTurnId: ROOT.turnId,
+          content: { text: 'provider must see this' },
+          admittedAt,
+        },
+      ],
     },
   ]);
   const batch = fixture.coordinator.beginTerminalTransition(ROOT);

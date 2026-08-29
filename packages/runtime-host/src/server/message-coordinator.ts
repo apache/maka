@@ -669,6 +669,9 @@ export class HostMessageCoordinator implements RuntimeMessageAuthority {
     const provenRootMessages: Array<
       NonNullable<MarkMessagesHandedOffInput['provenRootMessages']>[number]
     > = [];
+    const provenSteeringMessages: Array<
+      NonNullable<MarkMessagesHandedOffInput['provenSteeringMessages']>[number]
+    > = [];
     const admissions = await this.#admissions.listMessageAdmissions(input.sessionId);
     for (const messageId of new Set(input.messageIds)) {
       messageIds.add(messageId);
@@ -684,6 +687,14 @@ export class HostMessageCoordinator implements RuntimeMessageAuthority {
       );
       if (proof?.event.turnId === input.turnId && proof.event.runId === input.runId) {
         messageIds.add(admission.messageId);
+        provenSteeringMessages.push({
+          messageId: admission.messageId,
+          admissionTurnId: admission.turnId,
+          admissionRunId: admission.runId,
+          executionTurnId: proof.event.turnId,
+          content: admission.content,
+          admittedAt: admission.admittedAt,
+        });
       }
     }
     await this.#admissions.markMessagesHandedOff({
@@ -691,6 +702,7 @@ export class HostMessageCoordinator implements RuntimeMessageAuthority {
       messageIds: [...messageIds],
       turnId: input.turnId,
       ...(provenRootMessages.length > 0 ? { provenRootMessages } : {}),
+      ...(provenSteeringMessages.length > 0 ? { provenSteeringMessages } : {}),
     });
   }
 
