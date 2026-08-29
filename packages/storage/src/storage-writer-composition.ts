@@ -58,6 +58,8 @@ export interface StorageWriterComposition {
   readonly taskLedger: Awaited<ReturnType<typeof openInteractiveTaskLedgerStoreForWrite>>;
   readonly artifacts: Awaited<ReturnType<typeof openInteractiveArtifactStoreForWrite>>;
   readonly contextOffload?: Awaited<ReturnType<typeof openInteractiveContextOffloadStoreForWrite>>;
+  /** Present when the optional context-offload capability could not be opened. */
+  readonly contextOffloadUnavailable?: { readonly cause: unknown };
   readonly usage: Awaited<ReturnType<typeof openInteractiveUsageStoresForWrite>>;
   readonly shellRuns: Awaited<ReturnType<typeof openInteractiveShellRunStoreForWrite>>;
   close(): Promise<void>;
@@ -159,15 +161,21 @@ async function createComposition(
     closeWriter,
   );
   const contextOffloadLimits = options.contextOffloadLimits;
-  const contextOffload = contextOffloadLimits
-    ? await openWriter(
-        () =>
-          openInteractiveContextOffloadStoreForWrite(lease, {
-            limits: contextOffloadLimits,
-          }),
-        closeWriter,
-      )
-    : undefined;
+  let contextOffload:
+    | Awaited<ReturnType<typeof openInteractiveContextOffloadStoreForWrite>>
+    | undefined;
+  let contextOffloadUnavailable: { readonly cause: unknown } | undefined;
+  if (contextOffloadLimits) {
+    try {
+      const openedContextOffload = await openInteractiveContextOffloadStoreForWrite(lease, {
+        limits: contextOffloadLimits,
+      });
+      contextOffload = openedContextOffload;
+      closes.push(() => closeWriter(openedContextOffload));
+    } catch (cause) {
+      contextOffloadUnavailable = Object.freeze({ cause });
+    }
+  }
   const usage = await openWriter(() => openInteractiveUsageStoresForWrite(lease), closeWriter);
   const shellRuns = await openWriter(
     () => openInteractiveShellRunStoreForWrite(lease),
@@ -187,6 +195,7 @@ async function createComposition(
     taskLedger,
     artifacts,
     ...(contextOffload ? { contextOffload } : {}),
+    ...(contextOffloadUnavailable ? { contextOffloadUnavailable } : {}),
     usage,
     shellRuns,
     close,

@@ -249,6 +249,11 @@ export async function createExecutionRuntimeHostComposition(
       }
     },
   });
+  if (storage.contextOffloadUnavailable) {
+    console.error(
+      `[runtime-host] optional context-offload reader could not be opened: ${generalizedErrorMessage(storage.contextOffloadUnavailable.cause)}`,
+    );
+  }
   const stores = storage.execution;
   let graphControlStore: ReturnType<typeof createAgentGraphControlStore> | undefined;
   let graphClient: HostAgentGraphCoordinator | undefined;
@@ -273,9 +278,6 @@ export async function createExecutionRuntimeHostComposition(
     const taskLedgerStore = storage.taskLedger;
     const openedArtifactStore = storage.artifacts;
     const openedContextOffloadStore = storage.contextOffload;
-    if (!openedContextOffloadStore) {
-      throw new Error('Runtime Host context-offload reader authority is unavailable');
-    }
     const openedUsageStores = storage.usage;
     const openedShellRunStore = storage.shellRuns;
     const worktreeChildExecutor = createGitWorktreeChildExecutor({
@@ -690,7 +692,7 @@ export async function createExecutionRuntimeHostComposition(
               ? {}
               : { memoryExtraction }),
             artifacts: openedArtifactStore,
-            contextOffload: openedContextOffloadStore,
+            ...(openedContextOffloadStore ? { contextOffload: openedContextOffloadStore } : {}),
             executionArtifacts,
             usage: openedUsageStores,
             childAgents: bindHostChildAgentBackend(

@@ -18,12 +18,13 @@
  */
 
 import assert from 'node:assert/strict';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, test } from 'node:test';
 import type { ContextOffloadLimits } from '@maka/core/context-offload';
 import { acquireOperationalStateDatabase } from '../operational-state-store.js';
+import { CONTEXT_OFFLOAD_DATABASE_NAME } from '../sqlite-context-offload-store.js';
 import { openStorageWriterComposition } from '../storage-writer-composition.js';
 import {
   resolveStorageRoot,
@@ -127,6 +128,33 @@ test('context-offload authority is optional and participates in composition clos
       });
       assert.ok(reopened.contextOffload);
       await reopened.close();
+    } finally {
+      await owner.close();
+    }
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('an unavailable context-offload authority does not fail the storage composition', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-storage-context-unavailable-'));
+  try {
+    await mkdir(join(root, CONTEXT_OFFLOAD_DATABASE_NAME));
+    const capability = trackControlDirectory(
+      await resolveStorageRoot({ path: root, kind: 'interactive' }),
+    );
+    const owner = await tryAcquireInteractiveRootOwner(capability);
+    assert.ok(owner);
+    try {
+      const composition = await openStorageWriterComposition(owner.lease, {
+        contextOffloadLimits,
+      });
+      assert.equal(composition.contextOffload, undefined);
+      assert.ok(composition.contextOffloadUnavailable);
+      assert.ok(composition.contextOffloadUnavailable.cause instanceof Error);
+      await composition.execution.sessionStore.list();
+      await composition.artifacts.listPage('session-1', { offset: 0, limit: 1 });
+      await composition.close();
     } finally {
       await owner.close();
     }
