@@ -1277,12 +1277,7 @@ class PeerMeshNodeImpl implements PeerMeshNode {
         ) {
           return false;
         }
-        return isActiveMeshMember(
-          stored.meshes,
-          route.transitMeshId,
-          localPeerId,
-          route.peerId,
-        );
+        return isActiveMeshMember(stored.meshes, route.transitMeshId, localPeerId, route.peerId);
       })
       .sort((left, right) => left.route.peerId.localeCompare(right.route.peerId));
     const relayCandidates = transitRelayCandidates(eligibleRelays);

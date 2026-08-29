@@ -165,9 +165,7 @@ test('reconciles changed routes, propagates removal, and recovers the verified c
     await memberC.join(await authority.invite(mesh.roster.roster.meshId));
 
     await memberB.reconcile();
-    assert.deepEqual(memberB.resolveRoutes('peer-c')?.routeHints, [
-      '/memory/peer-c/p2p/peer-c',
-    ]);
+    assert.deepEqual(memberB.resolveRoutes('peer-c')?.routeHints, ['/memory/peer-c/p2p/peer-c']);
 
     memberCPeer.setRouteHints(['/memory/peer-c-moved/p2p/peer-c']);
     await memberC.reconcile();
