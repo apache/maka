@@ -21,7 +21,13 @@ import assert from 'node:assert/strict';
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import test from 'node:test';
 
-import { formatGitHubOutputs, loadWorkspaceGraph, planTests } from './ci-test-plan.mjs';
+import {
+  changedFilesBetween,
+  formatGitHubOutputs,
+  loadWorkspaceGraph,
+  planTests,
+  requiresHeavyValidation,
+} from './ci-test-plan.mjs';
 
 const dirs = [
   'packages/core',
@@ -53,7 +59,73 @@ test('documentation-only changes do not select code validation', () => {
   assert.equal(plan.code, false);
   assert.equal(plan.asfSource, false);
   assert.equal(plan.astryxSurface, false);
+  assert.equal(requiresHeavyValidation(plan), false);
   assert.deepEqual(plan.workspaces, []);
+});
+
+test('documentation inside workspaces does not select heavy validation', () => {
+  for (const path of ['packages/runtime/README.md', 'apps/desktop/README.md']) {
+    const plan = planTests([path], { graph });
+
+    assert.equal(plan.code, false, path);
+    assert.equal(requiresHeavyValidation(plan), false, path);
+    assert.deepEqual(plan.workspaces, [], path);
+  }
+});
+
+test('mixed documentation and code changes still select heavy validation', () => {
+  const plan = planTests(['README.md', 'packages/core/src/index.ts'], { graph });
+
+  assert.equal(plan.code, true);
+  assert.equal(requiresHeavyValidation(plan), true);
+});
+
+test('documentation with a dedicated contract still selects heavy validation', () => {
+  for (const path of [
+    'LICENSE',
+    'docs/astryx-surface-file-inventory.md',
+    'apps/desktop/resources/licenses/renderer/SIMPLE_ICONS_LICENSE.md',
+  ]) {
+    const plan = planTests([path], { graph });
+
+    assert.equal(plan.code, false, path);
+    assert.equal(requiresHeavyValidation(plan), true, path);
+  }
+});
+
+test('changed files are derived from the PR merge base', () => {
+  const calls = [];
+  const exec = (_command, args) => {
+    calls.push(args);
+    if (args[0] === 'merge-base') return 'fork-point\n';
+    if (args.at(-2) === 'fork-point') return 'packages/runtime/README.md\n';
+    if (args.at(-2) === 'main-now') {
+      return 'packages/core/src/main-only.ts\npackages/runtime/README.md\n';
+    }
+    throw new Error(`Unexpected git invocation: ${args.join(' ')}`);
+  };
+
+  const changedFiles = changedFilesBetween('main-now', 'pr-head', exec);
+
+  assert.deepEqual(changedFiles, ['packages/runtime/README.md']);
+  assert.equal(requiresHeavyValidation(planTests(changedFiles, { graph })), false);
+  assert.deepEqual(calls, [
+    ['merge-base', 'main-now', 'pr-head'],
+    ['diff', '--no-renames', '--name-only', '--diff-filter=ACMRDT', 'fork-point', 'pr-head'],
+  ]);
+});
+
+test('type changes remain in the PR-owned delta', () => {
+  const exec = (_command, args) => {
+    if (args[0] === 'merge-base') return 'fork-point\n';
+    assert.ok(args.includes('--diff-filter=ACMRDT'));
+    return 'packages/runtime/src/runtime.ts\n';
+  };
+
+  const changedFiles = changedFilesBetween('main-now', 'pr-head', exec);
+
+  assert.deepEqual(changedFiles, ['packages/runtime/src/runtime.ts']);
+  assert.equal(requiresHeavyValidation(planTests(changedFiles, { graph })), true);
 });
 
 test('the Astryx inventory can run without selecting the code suite', () => {
@@ -300,11 +372,51 @@ test('GitHub output matches the selections consumed by CI', () => {
   const output = formatGitHubOutputs(planTests([], { graph, forceFull: true }));
   const outputKeys = new Set(output.split('\n').map((line) => line.split('=', 1)[0]));
   const workflow = readWorkflow('ci.yml');
+  const declaredOutputs = new Map(
+    [
+      ...workflow.matchAll(/^ {6}([a-z0-9_]+): \$\{\{ steps\.plan\.outputs\.([a-z0-9_]+) \}\}$/gmu),
+    ].map((match) => [match[1], match[2]]),
+  );
+  assert.deepEqual(new Set(declaredOutputs.keys()), outputKeys);
+  for (const [name, source] of declaredOutputs) assert.equal(source, name);
+
   const consumedKeys = new Set(
-    [...workflow.matchAll(/steps\.plan\.outputs\.([a-z0-9_]+)/gu)].map((match) => match[1]),
+    [...workflow.matchAll(/needs\.plan\.outputs\.([a-z0-9_]+)/gu)].map((match) => match[1]),
   );
 
   assert.deepEqual(outputKeys, consumedKeys);
+});
+
+test('core CI always reports the required test after optional heavy validation', () => {
+  const workflow = readWorkflow('ci.yml');
+
+  assert.doesNotMatch(triggerBlock('ci.yml'), /\bpaths(-ignore)?:/u);
+  assert.match(
+    workflow,
+    /\n {2}heavy:\n {4}needs: plan\n {4}if: needs\.plan\.outputs\.heavy == 'true'/u,
+  );
+  assert.match(workflow, /\n {2}test:\n {4}needs: \[plan, heavy\]\n {4}if: always\(\)/u);
+  assert.match(workflow, /PLAN_RESULT: \$\{\{ needs\.plan\.result \}\}/u);
+  assert.match(workflow, /HEAVY_RESULT: \$\{\{ needs\.heavy\.result \}\}/u);
+  assert.match(workflow, /if \[\[ "\$PLAN_RESULT" != "success" \]\]/u);
+  assert.match(workflow, /if \[\[ "\$HEAVY_RESULT" != "success" \]\]/u);
+  assert.match(workflow, /if \[\[ "\$HEAVY_RESULT" != "skipped" \]\]/u);
+});
+
+test('heavy CI consumes planner outputs through the plan job', () => {
+  const workflow = readWorkflow('ci.yml');
+  const heavyStart = workflow.indexOf('\n  heavy:\n');
+  const testStart = workflow.indexOf('\n  test:\n', heavyStart);
+
+  assert.ok(heavyStart >= 0);
+  assert.ok(testStart > heavyStart);
+  const heavy = workflow.slice(heavyStart, testStart);
+
+  assert.doesNotMatch(heavy, /steps\.plan\.outputs/u);
+  assert.match(
+    heavy,
+    /- name: Check renderer architecture\n\s+if: needs\.plan\.outputs\.code == 'true'/u,
+  );
 });
 
 test('core CI validates pull requests and the resulting main branch state', () => {
@@ -364,7 +476,7 @@ test('core CI checks the Astryx inventory for every code change before building'
   const inventoryStep = workflow.slice(inventoryStart, inventoryEnd);
   assert.match(
     inventoryStep,
-    /if: steps\.plan\.outputs\.code == 'true' \|\| steps\.plan\.outputs\.astryx_surface == 'true'/u,
+    /if: needs\.plan\.outputs\.code == 'true' \|\| needs\.plan\.outputs\.astryx_surface == 'true'/u,
   );
   assert.doesNotMatch(inventoryStep, /continue-on-error/u);
 });
@@ -380,17 +492,17 @@ test('CI installs dependencies whenever the Astryx surface inventory runs', () =
   const stepStart = workflow.lastIndexOf('\n      - name:', npmCi) + 1;
   const stepEnd = workflow.indexOf('\n      - ', npmCi);
   const installStep = workflow.slice(stepStart, stepEnd);
-  assert.match(installStep, /steps\.plan\.outputs\.astryx_surface == 'true'/u);
+  assert.match(installStep, /needs\.plan\.outputs\.astryx_surface == 'true'/u);
 });
 
-test('core CI validates affected installed CLI packages on its existing runner', () => {
+test('core CI validates affected installed CLI packages on the heavy runner', () => {
   const workflow = readWorkflow('ci.yml');
   const toolchain = workflow.indexOf(
     'npm install --global --no-audit --no-fund "$(node -p \'require("./package.json").packageManager\')"',
   );
   const pack = workflow.indexOf('run: npm run release:cli:pack');
 
-  assert.match(workflow, /if: steps\.plan\.outputs\.cli_package == 'true'/u);
+  assert.match(workflow, /if: needs\.plan\.outputs\.cli_package == 'true'/u);
   assert.ok(toolchain >= 0);
   assert.ok(toolchain < pack);
   assert.match(workflow, /run: npm run release:cli:smoke/u);
@@ -436,7 +548,7 @@ test('release contracts run against built CLI outputs', () => {
   assert.ok(buildIndex < releaseIndex);
   assert.match(
     workflow.slice(releaseIndex),
-    /if: steps\.plan\.outputs\.release_contract == 'true'/u,
+    /if: needs\.plan\.outputs\.release_contract == 'true'/u,
   );
 });
 
@@ -769,7 +881,7 @@ test('core CI runs the live Eval proxy lifecycle when Eval is selected', () => {
 
   assert.match(
     workflow,
-    /if: contains\(steps\.plan\.outputs\.standard_workspaces, 'packages\/eval'\)/u,
+    /if: contains\(needs\.plan\.outputs\.standard_workspaces, 'packages\/eval'\)/u,
   );
   assert.match(workflow, /MAKA_EVAL_EGRESS_PROXY_TEST: '1'/u);
   assert.match(workflow, /docker build[\s\S]*maka-eval-egress-proxy:12\.2\.3/u);
