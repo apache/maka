@@ -640,26 +640,17 @@ async fn run_endpoint_async(
                     );
                 }
                 Some(EngineCommand::CancelConnect { request_id, result }) => {
-                    let cancelled = if let Some(mut waiter) = direct.pending.remove(&request_id) {
-                        if let Some(opening) = waiter.opening.take() {
-                            opening.abort();
-                        }
-                        retire_direct_dials(
+                    let cancelled = if let Some(waiter) = direct.pending.remove(&request_id) {
+                        fail_pending_connect(
                             &mut swarm,
-                            &mut direct.retiring_connections,
-                            waiter.dials,
-                            None,
-                        );
-                        release_coordination_relays(
-                            &mut swarm,
+                            &mut direct,
                             &mut coordination_relays,
-                            &waiter.coordination_relay_peers,
-                            &direct.active,
+                            waiter,
+                            PeerError::new(
+                                "peer_connect_cancelled",
+                                "the peer connection request was cancelled",
+                            ),
                         );
-                        let _ = waiter.result.send(Err(PeerError::new(
-                            "peer_connect_cancelled",
-                            "the peer connection request was cancelled",
-                        )));
                         true
                     } else {
                         false
@@ -907,22 +898,7 @@ async fn run_endpoint_async(
                     .filter_map(|(request_id, item)| (item.deadline <= now).then_some(*request_id))
                     .collect::<Vec<_>>();
                 for request_id in expired {
-                    if let Some(mut waiter) = direct.pending.remove(&request_id) {
-                        if let Some(opening) = waiter.opening.take() {
-                            opening.abort();
-                        }
-                        retire_direct_dials(
-                            &mut swarm,
-                            &mut direct.retiring_connections,
-                            waiter.dials,
-                            None,
-                        );
-                        release_coordination_relays(
-                            &mut swarm,
-                            &mut coordination_relays,
-                            &waiter.coordination_relay_peers,
-                            &direct.active,
-                        );
+                    if let Some(waiter) = direct.pending.remove(&request_id) {
                         let (code, message) = match waiter.stream_kind {
                             StreamKind::Application if !waiter.transit_relays.is_empty() => (
                                 "transit_unavailable",
@@ -937,7 +913,13 @@ async fn run_endpoint_async(
                                 "no Mesh control path was established before the deadline",
                             ),
                         };
-                        let _ = waiter.result.send(Err(PeerError::new(code, message)));
+                        fail_pending_connect(
+                            &mut swarm,
+                            &mut direct,
+                            &mut coordination_relays,
+                            waiter,
+                            PeerError::new(code, message),
+                        );
                     }
                 }
             }
@@ -1548,24 +1530,40 @@ fn cancel_revoked_transit_connects(
         })
         .collect::<Vec<_>>();
     for request_id in requests {
-        let Some(mut waiter) = direct.pending.remove(&request_id) else {
+        let Some(waiter) = direct.pending.remove(&request_id) else {
             continue;
         };
-        if let Some(opening) = waiter.opening.take() {
-            opening.abort();
-        }
-        retire_direct_dials(swarm, &mut direct.retiring_connections, waiter.dials, None);
-        release_coordination_relays(
+        fail_pending_connect(
             swarm,
+            direct,
             coordination_relays,
-            &waiter.coordination_relay_peers,
-            &direct.active,
+            waiter,
+            PeerError::new(
+                "transit_unavailable",
+                "transit policy changed while the peer connection was pending",
+            ),
         );
-        let _ = waiter.result.send(Err(PeerError::new(
-            "transit_unavailable",
-            "transit policy changed while the peer connection was pending",
-        )));
     }
+}
+
+fn fail_pending_connect(
+    swarm: &mut Swarm<Behaviour>,
+    direct: &mut DirectConnectState,
+    coordination_relays: &mut HashMap<PeerId, CoordinationRelay>,
+    mut waiter: PendingConnect,
+    error: PeerError,
+) {
+    if let Some(opening) = waiter.opening.take() {
+        opening.abort();
+    }
+    retire_direct_dials(swarm, &mut direct.retiring_connections, waiter.dials, None);
+    release_coordination_relays(
+        swarm,
+        coordination_relays,
+        &waiter.coordination_relay_peers,
+        &direct.active,
+    );
+    let _ = waiter.result.send(Err(error));
 }
 
 fn reconcile_transit_reservations(
