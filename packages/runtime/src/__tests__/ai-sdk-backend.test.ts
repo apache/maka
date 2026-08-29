@@ -10102,6 +10102,164 @@ describe('AiSdkBackend RunTrace', () => {
     assert.equal(events.find((event) => event.type === 'complete')?.stopReason, 'error');
   });
 
+  test('retries post-tool continuation once without re-running the durable tool result', async () => {
+    const timers = manualWatchdogTimer();
+    const durable = durableTurnHarness('turn-1', 'read notes');
+    let providerCalls = 0;
+    let toolCalls = 0;
+    const model = new MockLanguageModelV4({
+      doStream: async (options) => {
+        providerCalls += 1;
+        if (providerCalls === 1) {
+          return {
+            stream: simulateReadableStream({
+              chunks: [
+                { type: 'stream-start', warnings: [] },
+                {
+                  type: 'tool-call',
+                  toolCallId: 'read-1',
+                  toolName: 'Read',
+                  input: JSON.stringify({ path: 'notes.md' }),
+                },
+                {
+                  type: 'finish',
+                  finishReason: { unified: 'tool-calls', raw: 'tool_calls' },
+                  usage: emptyUsage(),
+                },
+              ],
+              initialDelayInMs: null,
+              chunkDelayInMs: null,
+            }),
+          };
+        }
+        return {
+          stream: hangingProviderStream(
+            [{ type: 'stream-start', warnings: [] }],
+            options.abortSignal,
+          ),
+        };
+      },
+    });
+    const readTool: MakaTool = {
+      name: 'Read',
+      description: 'Read notes',
+      parameters: z.object({ path: z.string() }),
+      impl: async () => {
+        toolCalls += 1;
+        return 'notes contents';
+      },
+    };
+    const backend = createTestAiSdkBackend({
+      sessionId: 'session-1',
+      header: header(),
+      appendMessage: async () => {},
+      connection: connection(),
+      apiKey: 'sk-test',
+      modelId: 'mock-model-id',
+      modelFactory: () => model,
+      tools: [readTool],
+      loadTurnRuntimeEvents: durable.loadTurnRuntimeEvents,
+      newId: idGenerator(),
+      now: monotonicClock(),
+      streamWatchdogTimer: timers.clock,
+      providerRetrySleep: async () => {},
+    });
+
+    const events: SessionEvent[] = [];
+    const eventsPromise = collectEvents(backend.send(durable.input()), events, durable.record);
+    await waitFor(() => providerCalls === 2);
+    timers.fire();
+    await waitFor(() => providerCalls === 3);
+    timers.fire();
+    await eventsPromise;
+
+    assert.equal(providerCalls, 3);
+    assert.equal(toolCalls, 1);
+    assert.equal(events.filter((event) => event.type === 'tool_result').length, 1);
+    assert.equal(
+      durable.ledger.filter((event) => event.content?.kind === 'function_response').length,
+      1,
+    );
+    assert.equal(
+      events.filter((event) => event.type === 'provider_retry' && event.phase === 'scheduled')
+        .length,
+      1,
+    );
+    assert.equal(
+      events.find((event) => event.type === 'error')?.reason,
+      'model_after_tool_timeout',
+    );
+    assert.equal(events.find((event) => event.type === 'complete')?.stopReason, 'error');
+  });
+
+  test('keeps a projection timeout as a generic timeout before continuation dispatch', async () => {
+    const durable = durableTurnHarness('turn-1', 'read notes');
+    let providerCalls = 0;
+    let toolCalls = 0;
+    const model = new MockLanguageModelV4({
+      doStream: async () => {
+        providerCalls += 1;
+        return {
+          stream: simulateReadableStream({
+            chunks: [
+              { type: 'stream-start', warnings: [] },
+              {
+                type: 'tool-call',
+                toolCallId: 'read-1',
+                toolName: 'Read',
+                input: JSON.stringify({ path: 'notes.md' }),
+              },
+              {
+                type: 'finish',
+                finishReason: { unified: 'tool-calls', raw: 'tool_calls' },
+                usage: emptyUsage(),
+              },
+            ],
+            initialDelayInMs: null,
+            chunkDelayInMs: null,
+          }),
+        };
+      },
+    });
+    const backend = createTestAiSdkBackend({
+      sessionId: 'session-1',
+      header: header(),
+      appendMessage: async () => {},
+      connection: connection(),
+      apiKey: 'sk-test',
+      modelId: 'mock-model-id',
+      modelFactory: () => model,
+      tools: [
+        {
+          name: 'Read',
+          description: 'Read notes',
+          parameters: z.object({ path: z.string() }),
+          impl: async () => {
+            toolCalls += 1;
+            return 'notes contents';
+          },
+        },
+      ],
+      loadTurnRuntimeEvents: async (turnId) => {
+        if (durable.ledger.some((event) => event.content?.kind === 'function_response')) {
+          throw Object.assign(new Error('durable projection timeout'), { name: 'TimeoutError' });
+        }
+        return durable.loadTurnRuntimeEvents(turnId);
+      },
+      newId: idGenerator(),
+      now: monotonicClock(),
+    });
+
+    const events: SessionEvent[] = [];
+    await collectEvents(backend.send(durable.input()), events, durable.record);
+
+    assert.equal(providerCalls, 1);
+    assert.equal(toolCalls, 1);
+    assert.equal(events.filter((event) => event.type === 'tool_result').length, 1);
+    assert.equal(events.find((event) => event.type === 'error')?.reason, 'timeout');
+    assert.equal(events.find((event) => event.type === 'complete')?.stopReason, 'error');
+  });
+
   test('does not retry an idle watchdog timeout after partial answer text', async () => {
     const timers = manualWatchdogTimer();
     const traces: RunTraceEvent[] = [];

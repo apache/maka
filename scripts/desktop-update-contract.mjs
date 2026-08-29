@@ -30,6 +30,11 @@ export const DESKTOP_UPDATE_PROVIDER = Object.freeze({
   repo: 'maka',
   updaterCacheDirName: '@makadesktop-updater',
 });
+export const DESKTOP_NIGHTLY_UPDATE_PROVIDER = Object.freeze({
+  provider: 'generic',
+  url: 'https://nightlies.apache.org/maka/desktop/',
+  updaterCacheDirName: '@makadesktop-updater',
+});
 
 /** A stable successor lets stable, alpha, and beta candidates use one feed contract. */
 export function bumpedAutoupdateVersion(candidateVersion) {
@@ -58,7 +63,10 @@ function requireExactObject(actual, expected, subject) {
 }
 
 /** Proves that a packaged client points at the one production release authority. */
-export async function assertPackagedUpdateConfiguration(resourcesPath, { read = readFile } = {}) {
+export async function assertPackagedUpdateConfiguration(
+  resourcesPath,
+  { channel = 'release', read = readFile } = {},
+) {
   const path = join(resourcesPath, 'app-update.yml');
   let configuration;
   try {
@@ -66,7 +74,9 @@ export async function assertPackagedUpdateConfiguration(resourcesPath, { read = 
   } catch (error) {
     throw new Error(`Packaged update configuration is unreadable: ${path}`, { cause: error });
   }
-  requireExactObject(configuration, DESKTOP_UPDATE_PROVIDER, 'Packaged update configuration');
+  const expected =
+    channel === 'nightly' ? DESKTOP_NIGHTLY_UPDATE_PROVIDER : DESKTOP_UPDATE_PROVIDER;
+  requireExactObject(configuration, expected, 'Packaged update configuration');
   return configuration;
 }
 

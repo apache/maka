@@ -130,6 +130,7 @@ function createHarness(input: {
   mockLatestVersion?: string;
   mockState?: 'available' | 'downloading' | 'downloaded';
   testFeedUrl?: string;
+  updateChannel?: 'release' | 'nightly';
   verifyDownloadedUpdate?: DownloadedUpdateAttestationVerifier;
 } = {}) {
   const updater = input.updater ?? new FakeUpdater();
@@ -137,6 +138,7 @@ function createHarness(input: {
   const service = createAppUpdateService({
     currentVersion: '1.0.0',
     isPackaged: input.isPackaged ?? true,
+    updateChannel: input.updateChannel ?? 'release',
     updater: updater as unknown as AppUpdater,
     clock,
     onStatusChange: input.onStatusChange,
@@ -176,13 +178,15 @@ describe('AppUpdateService', () => {
     assert.equal(clock.pending().length, 0);
   });
 
-  test('preserves electron-updater channel policy derived from the app version', () => {
-    for (const allowPrerelease of [false, true]) {
-      const updater = new FakeUpdater();
-      updater.allowPrerelease = allowPrerelease;
-      createHarness({ updater });
-      assert.equal(updater.allowPrerelease, allowPrerelease);
-    }
+  test('accepts dev updates only in packaged Nightly builds', () => {
+    const releaseUpdater = new FakeUpdater();
+    const nightlyUpdater = new FakeUpdater();
+
+    createHarness({ updater: releaseUpdater, updateChannel: 'release' });
+    createHarness({ updater: nightlyUpdater, updateChannel: 'nightly' });
+
+    assert.equal(releaseUpdater.allowPrerelease, false);
+    assert.equal(nightlyUpdater.allowPrerelease, true);
   });
 
   test('routes the feed to a loopback generic provider when the test override is set', () => {

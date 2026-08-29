@@ -956,6 +956,19 @@ function AppShellContent({
     setPendingBySession?.((current) => omitSessionKey(current, sessionId));
   }
 
+  // A hoisted declaration on purpose: `dropDisplayEvents` is destructured
+  // hundreds of lines below, and the rail does not need this identity held
+  // still — the rail's controller reads it through `portsRef`.
+  function clearSessionRendererState(sessionId: string): void {
+    dropDisplayEvents(sessionId);
+    clearOwnedSessionState(sessionId);
+    turnActionRegistry.clearForSession(sessionId);
+    permissionModeChangeRegistry.keysRef.current.delete(sessionId);
+    planModeIntent.clear(sessionId);
+    orchestrationModeIntent.clear(sessionId);
+    sessionModelChangeRegistry.keysRef.current.delete(sessionId);
+  }
+
   const {
     setPermissionMode,
     setSessionModel,
@@ -1012,22 +1025,6 @@ function AppShellContent({
 
   // Stable: the rail's row actions are built from it, and it only reaches
   // registries and refs that are themselves stable (#4109).
-  const clearSessionRendererState = useCallback((sessionId: string): void => {
-    clearOwnedSessionState(sessionId);
-    turnActionRegistry.clearForSession(sessionId);
-    permissionModeChangeRegistry.keysRef.current.delete(sessionId);
-    planModeIntent.clear(sessionId);
-    orchestrationModeIntent.clear(sessionId);
-    sessionModelChangeRegistry.keysRef.current.delete(sessionId);
-  }, [
-    clearOwnedSessionState,
-    orchestrationModeIntent,
-    permissionModeChangeRegistry.keysRef,
-    planModeIntent,
-    sessionModelChangeRegistry.keysRef,
-    turnActionRegistry,
-  ]);
-
   /**
    * Enter or leave Plan for one Session — the only path that writes
    * `collaborationMode`, and it writes nothing else.
@@ -2280,6 +2277,7 @@ function AppShellContent({
     reconcilePersistedMessages,
     settleAssistantStreaming,
     flushDisplayEvents,
+    dropDisplayEvents,
     markDisplayPending,
     markDisplayReady,
   } = useStableActions(createAppShellSessionEventHandlers, {

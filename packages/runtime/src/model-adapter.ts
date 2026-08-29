@@ -466,7 +466,7 @@ export class ModelAdapter {
     );
   }
 
-  makeErrorEvent(turnId: string, err: unknown): ErrorEvent {
+  makeErrorEvent(turnId: string, err: unknown, reasonOverride?: string): ErrorEvent {
     const failure = normalizeModelFailure(err);
     return {
       type: 'error',
@@ -475,7 +475,11 @@ export class ModelAdapter {
       ts: this.input.now(),
       recoverable: false,
       ...(failure.code !== undefined ? { code: failure.code } : {}),
-      ...(failure.kind !== 'abort' && failure.kind !== 'unknown' ? { reason: failure.kind } : {}),
+      ...(reasonOverride !== undefined
+        ? { reason: reasonOverride }
+        : failure.kind !== 'abort' && failure.kind !== 'unknown'
+          ? { reason: failure.kind }
+          : {}),
       message: failure.message,
     };
   }

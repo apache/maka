@@ -1905,6 +1905,8 @@ export class AiSdkBackend implements AgentBackend {
         watchdogTimeoutState.current = null;
         return timeout;
       };
+      let lastCompletedStepHadToolResult = false;
+      let terminalProviderErrorReason: string | undefined;
       try {
         const startWatchdog = (): void => {
           watchdogState.current?.stop();
@@ -2519,6 +2521,10 @@ export class AiSdkBackend implements AgentBackend {
                   : providerOutcome.failure;
               if (scope.loopStopRequested) {
                 terminalProviderError = settledWatchdogTimeout?.error ?? failure;
+                terminalProviderErrorReason =
+                  lastCompletedStepHadToolResult && failure.kind === 'timeout'
+                    ? 'model_after_tool_timeout'
+                    : undefined;
                 break agentLoop;
               }
               // A retry is a fresh provider request that would run at least one
@@ -2634,6 +2640,10 @@ export class AiSdkBackend implements AgentBackend {
               // handler after settling any authoritative usage — never a
               // fabricated success.
               terminalProviderError = settledWatchdogTimeout?.error ?? failure;
+              terminalProviderErrorReason =
+                lastCompletedStepHadToolResult && failure.kind === 'timeout'
+                  ? 'model_after_tool_timeout'
+                  : undefined;
               break agentLoop;
             }
             break;
@@ -2788,6 +2798,7 @@ export class AiSdkBackend implements AgentBackend {
             toolCalls: returnedToolCalls,
             ...(providerStepUsage ? { usage: providerStepUsage } : {}),
           });
+          lastCompletedStepHadToolResult = returnedToolCalls.length > 0;
           const stepLimitReached = maxSteps !== undefined && runtimeSteps >= maxSteps;
           if (
             sandboxBoundaryFinalizationStep ||
@@ -3030,7 +3041,7 @@ export class AiSdkBackend implements AgentBackend {
           } satisfies CompleteEvent);
         } else {
           const terminalError = currentWatchdogTimeout()?.error ?? err;
-          queue.push(this.makeErrorEvent(turnId, terminalError));
+          queue.push(this.makeErrorEvent(turnId, terminalError, terminalProviderErrorReason));
           trace.modelStreamFailed(
             streamErrorClass,
             terminalError,
@@ -3344,8 +3355,8 @@ export class AiSdkBackend implements AgentBackend {
     return this.modelAdapter.mapFinishReason(reason);
   }
 
-  private makeErrorEvent(turnId: string, err: unknown): ErrorEvent {
-    return this.modelAdapter.makeErrorEvent(turnId, err);
+  private makeErrorEvent(turnId: string, err: unknown, reasonOverride?: string): ErrorEvent {
+    return this.modelAdapter.makeErrorEvent(turnId, err, reasonOverride);
   }
 
   private computeTokenUsageCostUsd(usage: NormalizedAiSdkUsage): number | undefined {

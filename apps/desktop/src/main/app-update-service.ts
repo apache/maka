@@ -21,6 +21,7 @@ import electronUpdater from 'electron-updater';
 import type { AppUpdater, UpdateCheckResult } from 'electron-updater';
 import type { ProgressInfo, UpdateInfo } from 'electron-updater';
 import type { DownloadedUpdateAttestationVerifier } from './app-update-attestation.js';
+import type { DesktopUpdateChannel } from './app-update-attestation.js';
 import { resolveUpdateFeedOverride } from './app-update-test-context.js';
 
 export type AppUpdateProgress = {
@@ -88,6 +89,7 @@ export interface AppUpdateService {
 interface AppUpdateServiceDeps {
   currentVersion: string;
   isPackaged: boolean;
+  updateChannel?: DesktopUpdateChannel;
   updater?: AppUpdater;
   /**
    * Harness-only feed override (`MAKA_UPDATE_TEST_FEED`); see
@@ -290,6 +292,7 @@ export function createAppUpdateService(deps: AppUpdateServiceDeps): AppUpdateSer
 
   updater.autoDownload = true;
   updater.autoInstallOnAppQuit = false;
+  updater.allowPrerelease = deps.updateChannel === 'nightly';
   updater.logger = null;
   const testFeed = resolveUpdateFeedOverride(deps.testFeedUrl);
   // Production reads electron-builder's packaged app-update.yml. Only the

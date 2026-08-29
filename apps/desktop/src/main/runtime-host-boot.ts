@@ -29,6 +29,7 @@ import {
   type MessageBoxReturnValue,
 } from "electron";
 import { randomUUID } from "node:crypto";
+import { readFileSync } from "node:fs";
 import { basename, join } from "node:path";
 import { type ConnectionEvent } from '@maka/core/connections';
 import { type SessionChangedEvent, type SessionChangedReason } from '@maka/core/session';
@@ -66,7 +67,10 @@ import { resolveStorageRoot } from "@maka/storage/root-authority";
 import { createMcpOAuthController } from "./mcp-oauth-controller.js";
 import { registerAppClientIpc, registerAppIpc } from "./app-ipc-main.js";
 import { createAppQuitCoordinator } from "./app-quit-coordinator.js";
-import { verifyDownloadedUpdateAttestation } from "./app-update-attestation.js";
+import {
+  desktopUpdateChannelFromManifest,
+  verifyDownloadedUpdateAttestation,
+} from "./app-update-attestation.js";
 import { createAppUpdateService } from "./app-update-service.js";
 import { createAttachmentApprovalRegistry } from "./attachment-approval.js";
 import { renderAttachmentPreview, resizeImageForAttachment } from "./attachment-resize-native.js";
@@ -710,9 +714,15 @@ const updateMockState =
     ? process.env.MAKA_UPDATE_MOCK_STATE
     : undefined;
 const updateTestFeed = process.env.MAKA_UPDATE_TEST_FEED;
+const desktopUpdateChannel = app.isPackaged
+  ? desktopUpdateChannelFromManifest(
+      JSON.parse(readFileSync(join(app.getAppPath(), "package.json"), "utf8")),
+    )
+  : "release";
 const updateService = createAppUpdateService({
   currentVersion: app.getVersion(),
   isPackaged: app.isPackaged,
+  updateChannel: desktopUpdateChannel,
   testFeedUrl: updateTestFeed,
   mockLatestVersion: process.env.MAKA_UPDATE_MOCK_VERSION,
   mockState: updateMockState,
@@ -726,6 +736,7 @@ const updateService = createAppUpdateService({
     ? async () => {}
     : ({ downloadedFile, version }) =>
         verifyDownloadedUpdateAttestation({
+          channel: desktopUpdateChannel,
           downloadedFile,
           version,
           trustRootCacheDirectory: join(userDataDir, "update-trust", "sigstore"),

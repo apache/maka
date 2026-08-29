@@ -25,7 +25,7 @@ import { join } from 'node:path';
 import test from 'node:test';
 import { promisify } from 'node:util';
 import { parse as parseYaml } from 'yaml';
-import desktopBuilderConfig from '../apps/desktop/electron-builder.config.mjs';
+import { resolveDesktopBuilderConfig } from '../apps/desktop/electron-builder.config.mjs';
 import {
   parseAsfSourceReferenceTag,
   resolveProductManifestIdentity,
@@ -56,6 +56,7 @@ import { ensureProductTag } from './product-release-tag.mjs';
 
 const execFileAsync = promisify(execFile);
 const repoRoot = join(import.meta.dirname, '..');
+const desktopBuilderConfig = resolveDesktopBuilderConfig({});
 
 const rootManifest = {
   version: '1.2.3',
@@ -192,6 +193,7 @@ test('Desktop packaging derives the Runtime Host setup package from product mani
   const checkedRootManifest = JSON.parse(await readFile(join(repoRoot, 'package.json'), 'utf8'));
   assert.deepEqual(desktopBuilderConfig.extraMetadata, {
     runtimeHostSetupPackage: `maka-agent@${checkedRootManifest.version}`,
+    makaUpdateChannel: 'release',
   });
   assert.deepEqual(desktopBuilderConfig.publish, [
     { provider: 'github', owner: 'apache', repo: 'maka' },
@@ -257,7 +259,7 @@ test('platform package verifiers keep Git checks out of current artifacts', asyn
   );
   assert.match(
     windowsSource,
-    /if \(requiresCurrentContract\) \{\s*await assertPackagedUpdateConfiguration\(resources\);\s*await assertPackagedDependencyClosure\(resources\);\s*\}\s*else await requirePath\(join\(resources, ['"]git['"]/u,
+    /if \(requiresCurrentContract\) \{\s*await assertPackagedUpdateConfiguration\(resources, \{\s*channel: environment\.MAKA_DESKTOP_NIGHTLY_VERSION \? ['"]nightly['"] : ['"]release['"],\s*\}\);\s*await assertPackagedDependencyClosure\(resources\);\s*\}\s*else await requirePath\(join\(resources, ['"]git['"]/u,
   );
 
   const macosSource = await readFile(

@@ -22,6 +22,7 @@ import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 import { MAX_ATTACHMENT_BYTES, MAX_ATTACHMENT_COUNT } from '@maka/core/attachments';
 import { CONTEXT_BUDGET_EXHAUSTED_DETAILS, TOOL_OUTPUT_DELTA_MAX_CHARS } from '@maka/core/events';
+import { CONNECTION_CATALOG_MAX_ENABLED_MODEL_IDS } from '@maka/core/runtime-policy';
 import {
   decodeClientCapabilityReplaceInput,
   decodeClientFrame,
@@ -799,6 +800,35 @@ describe('Runtime Host bootstrap protocol', () => {
       () =>
         exportCredentials.decodeOutput({
           credential: { locator: apiKeyLocator, secretBase64 },
+        }),
+      isInvalidFrame,
+    );
+  });
+
+  test('keeps the connection update model limit aligned with the catalog', () => {
+    const updateConnection = RUNTIME_POLICY_OPERATION_SPECS['connection.catalog.update'];
+    const enabledModelIds = Array.from(
+      { length: CONNECTION_CATALOG_MAX_ENABLED_MODEL_IDS },
+      (_, index) => `model-${index}`,
+    );
+    const input = {
+      expected: { connectionId: '00000000-0000-4000-8000-000000000001', revision: 1 },
+      changes: {
+        name: 'OpenRouter',
+        enabled: true,
+        enabledModelIds,
+      },
+    };
+
+    assert.doesNotThrow(() => updateConnection.decodeInput(input));
+    assert.throws(
+      () =>
+        updateConnection.decodeInput({
+          ...input,
+          changes: {
+            ...input.changes,
+            enabledModelIds: [...enabledModelIds, 'model-too-many'],
+          },
         }),
       isInvalidFrame,
     );
