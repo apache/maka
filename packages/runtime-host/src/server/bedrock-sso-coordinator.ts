@@ -28,6 +28,29 @@ import { toRuntimePolicyProxy } from './runtime-policy-proxy.js';
 
 const ATTEMPT_TTL_MS = 15 * 60_000;
 
+type StartAuthorization = typeof startBedrockSsoDeviceAuthorization;
+type PollAuthorization = typeof pollBedrockSsoDeviceAuthorization;
+type GetRoleCredentials = typeof getBedrockSsoRoleCredentials;
+type DiscoverModels = typeof discoverBedrockModels;
+type SerializeSession = typeof serializeBedrockSsoSession;
+
+export interface BedrockSsoCoordinatorDependencies {
+  readonly startAuthorization: StartAuthorization;
+  readonly pollAuthorization: PollAuthorization;
+  readonly getRoleCredentials: GetRoleCredentials;
+  readonly discoverModels: DiscoverModels;
+  readonly serializeSession: SerializeSession;
+  readonly withFetch?: <T>(run: (fetchFn: typeof fetch) => Promise<T>) => Promise<T>;
+}
+
+const DEFAULT_DEPENDENCIES: BedrockSsoCoordinatorDependencies = {
+  startAuthorization: startBedrockSsoDeviceAuthorization,
+  pollAuthorization: pollBedrockSsoDeviceAuthorization,
+  getRoleCredentials: getBedrockSsoRoleCredentials,
+  discoverModels: discoverBedrockModels,
+  serializeSession: serializeBedrockSsoSession,
+};
+
 interface Attempt {
   readonly attemptId: string;
   readonly initiatingConnectionId: string;
@@ -66,6 +89,7 @@ export class HostBedrockSsoCoordinator {
   readonly #committed = new Map<string, { connectionId: string; slug: string }>();
   #active: Attempt | undefined;
   #accepting = true;
+  #startAdmission = Promise.resolve();
 
   constructor(
     private readonly stores: RuntimePolicyStoresWriter,
@@ -74,6 +98,7 @@ export class HostBedrockSsoCoordinator {
     private readonly acquireResidency: () => RuntimeHostResidency,
     private readonly invalidateBackends: () => Promise<void>,
     private readonly now: () => number = Date.now,
+    private readonly dependencies: BedrockSsoCoordinatorDependencies = DEFAULT_DEPENDENCIES,
   ) {}
 
   beginDrain(): void {
@@ -83,12 +108,30 @@ export class HostBedrockSsoCoordinator {
 
   async close(): Promise<void> {
     this.beginDrain();
+    await this.#startAdmission;
     await Promise.all([...this.#attempts.values()].map((attempt) => attempt.settlement));
     this.#attempts.clear();
     this.#committed.clear();
   }
 
   async #start(
+    input: { attemptId: string; ssoStartUrl: string; ssoRegion: string; region: string },
+    initiatingConnectionId: string,
+  ): Promise<OperationOutcome<'bedrock.sso.login.start'>> {
+    const precedingAdmission = this.#startAdmission;
+    let releaseAdmission!: () => void;
+    this.#startAdmission = new Promise<void>((resolve) => {
+      releaseAdmission = resolve;
+    });
+    await precedingAdmission;
+    try {
+      return await this.#startAdmitted(input, initiatingConnectionId);
+    } finally {
+      releaseAdmission();
+    }
+  }
+
+  async #startAdmitted(
     input: { attemptId: string; ssoStartUrl: string; ssoRegion: string; region: string },
     initiatingConnectionId: string,
   ): Promise<OperationOutcome<'bedrock.sso.login.start'>> {
@@ -145,7 +188,7 @@ export class HostBedrockSsoCoordinator {
     this.#active = attempt;
     try {
       const authorization = await this.#withFetch((fetchFn) =>
-        startBedrockSsoDeviceAuthorization({
+        this.dependencies.startAuthorization({
           ssoStartUrl: attempt.ssoStartUrl,
           ssoRegion: attempt.ssoRegion,
           fetchFn,
@@ -183,7 +226,7 @@ export class HostBedrockSsoCoordinator {
   ): Promise<void> {
     try {
       attempt.session = await this.#withFetch((fetchFn) =>
-        pollBedrockSsoDeviceAuthorization({
+        this.dependencies.pollAuthorization({
           authorization,
           ssoRegion: attempt.ssoRegion,
           fetchFn,
@@ -270,7 +313,7 @@ export class HostBedrockSsoCoordinator {
     if (!attempt) return failure('not_found', 'Authenticated Bedrock SSO attempt was not found');
     try {
       const { credentials, models } = await this.#withFetch(async (fetchFn) => {
-        const credentials = await getBedrockSsoRoleCredentials({
+        const credentials = await this.dependencies.getRoleCredentials({
           accessToken: attempt.session!.accessToken,
           accountId,
           roleName,
@@ -278,7 +321,7 @@ export class HostBedrockSsoCoordinator {
           fetchFn,
         });
         const credentialProvider = async () => credentials;
-        const models = await discoverBedrockModels({
+        const models = await this.dependencies.discoverModels({
           region: attempt.region,
           credentialProvider,
           fetchFn,
@@ -324,10 +367,10 @@ export class HostBedrockSsoCoordinator {
       );
     }
     try {
-      const committed = await this.activation.runMutation(() =>
-        this.stores.operations.commitConnectionOnboarding({
+      return await this.activation.runMutation(async () => {
+        const committed = await this.stores.operations.commitConnectionOnboarding({
           providerType: 'amazon-bedrock',
-          suppliedSecret: serializeBedrockSsoSession(attempt.session!),
+          suppliedSecret: this.dependencies.serializeSession(attempt.session!),
           enabledModelIds,
           discovery: { models: attempt.models!, source: 'fetched', fetchedAt: this.now() },
           bedrock: {
@@ -337,23 +380,32 @@ export class HostBedrockSsoCoordinator {
             accountId: attempt.accountId!,
             roleName: attempt.roleName!,
           },
-        }),
-      );
-      if (committed.kind !== 'committed') {
-        return failure('persistence_failed', 'Amazon Bedrock connection could not be committed');
-      }
-      await this.invalidateBackends();
-      const connection = committed.snapshot.connections.find(
-        (candidate) => candidate.providerType === 'amazon-bedrock',
-      );
-      if (!connection)
-        return failure('internal_failure', 'Committed Bedrock connection is missing');
-      this.#attempts.delete(attemptId);
-      if (attempt.expiryTimer) clearTimeout(attempt.expiryTimer);
-      const result = { connectionId: connection.connectionId, slug: connection.slug };
-      this.#committed.set(attemptId, result);
-      for (const stale of [...this.#committed.keys()].slice(0, -256)) this.#committed.delete(stale);
-      return { ok: true, result };
+        });
+        if (committed.kind !== 'committed') {
+          return failure('persistence_failed', 'Amazon Bedrock connection could not be committed');
+        }
+        const connection = committed.snapshot.connections.find(
+          (candidate) => candidate.providerType === 'amazon-bedrock',
+        );
+        if (!connection) {
+          this.activation.poison();
+          return failure('internal_failure', 'Committed Bedrock connection is missing');
+        }
+        this.#attempts.delete(attemptId);
+        if (attempt.expiryTimer) clearTimeout(attempt.expiryTimer);
+        const result = { connectionId: connection.connectionId, slug: connection.slug };
+        this.#committed.set(attemptId, result);
+        for (const stale of [...this.#committed.keys()].slice(0, -256))
+          this.#committed.delete(stale);
+        try {
+          await this.invalidateBackends();
+        } catch {
+          // Persistence is already durable and remains authoritative. Prevent any
+          // later activation from selecting a backend that invalidation did not retire.
+          this.activation.poison();
+        }
+        return { ok: true, result };
+      });
     } catch {
       return failure('persistence_failed', 'Amazon Bedrock connection could not be committed');
     }
@@ -383,6 +435,7 @@ export class HostBedrockSsoCoordinator {
   }
 
   async #withFetch<T>(run: (fetchFn: typeof fetch) => Promise<T>): Promise<T> {
+    if (this.dependencies.withFetch) return this.dependencies.withFetch(run);
     const proxy = await this.stores.operations.resolveNetworkProxyExecution();
     if (proxy.kind !== 'ready') throw new Error('Network proxy credential is unavailable');
     const transport = createProxiedFetchTransport(
