@@ -28,6 +28,16 @@ type RefBox<T> = { current: T };
 /** What `sessions.remove` settled on. `restored` means the task is still there. */
 type SessionRemoveDisposition = 'removed' | 'restored';
 
+/**
+ * How a delete settled together with the count the Host actually archived.
+ * `archivedSubtaskCount` is the Host's executed number — 0 when the delete was
+ * called off (`restored`) — so the toast reports a fact, not a renderer guess.
+ */
+type SessionRemoveOutcome = {
+  disposition: SessionRemoveDisposition;
+  archivedSubtaskCount: number;
+};
+
 type ToastApi = {
   success(title: string, description?: string): void;
   error(
@@ -52,6 +62,12 @@ type ToastApi = {
 export interface SessionPurgeOutcome {
   /** Tasks confirmed gone. */
   removed: number;
+  /**
+   * Linked subtasks the Host moved to the archive across the sweep, summed from
+   * each removal's executed count. Reported so a bulk purge does not silently
+   * archive active subtasks.
+   */
+  archivedSubtasks: number;
   /** Tasks the catalog still reports. Empty when `verified` is false. */
   remaining: string[];
   /**
@@ -164,9 +180,30 @@ export function createSessionNavigationRowActions(deps: {
     return runSessionRowAction(sessionId, 'delete', copy.deleteFailedTitle, async () => {
       const session = sessionsRef.current.find((entry) => entry.id === sessionId);
       const name = session?.name ?? copy.currentConversation;
+      // Ask the Host how many subtasks the delete would archive. It owns the
+      // removal plan; the renderer's catalog projection lacks the operator
+      // marker and copy state, so a renderer estimate would over-promise (e.g.
+      // claim archival for a parent whose only children are graph operators).
+      // A preview failure is not silence: fall back to an uncertain warning so
+      // the confirm never hides that subtasks may survive. The toast still
+      // reports the real executed count afterwards.
+      let previewSubtaskCount: number | undefined;
+      try {
+        previewSubtaskCount = await service.previewRemoval(sessionId);
+      } catch {
+        previewSubtaskCount = undefined;
+      }
+      const subtaskNote =
+        previewSubtaskCount === undefined
+          ? copy.deleteSubtaskNoteUncertain()
+          : previewSubtaskCount > 0
+            ? copy.deleteSubtaskNote()
+            : undefined;
       const ok = await toastApi.confirm({
         title: copy.deleteTitle(name),
-        description: copy.deleteDescription,
+        description: subtaskNote
+          ? `${copy.deleteDescription} ${subtaskNote}`
+          : copy.deleteDescription,
         confirmLabel: copy.deleteLabel,
         cancelLabel: copy.cancelLabel,
         destructive: true,
@@ -174,12 +211,18 @@ export function createSessionNavigationRowActions(deps: {
       if (!ok) return;
       // The confirm named an archived task, so a restore revokes it. An active
       // task has no such premise to lose.
-      const disposition = await removeSessionFamily(sessionId, {
+      const { disposition, archivedSubtaskCount } = await removeSessionFamily(sessionId, {
         requireArchived: session?.isArchived === true,
       });
       await refreshSessions();
+      // `restored` means nothing was deleted, so no subtask moved either. On a
+      // real delete the count is the Host's executed number, not an estimate.
       if (disposition === 'restored') toastApi.success(copy.deleteRestoredTitle(name));
-      else toastApi.success(copy.deletedTitle(name));
+      else
+        toastApi.success(
+          copy.deletedTitle(name),
+          archivedSubtaskCount > 0 ? copy.deletedSubtaskNote(archivedSubtaskCount) : undefined,
+        );
     });
   }
 
@@ -193,21 +236,21 @@ export function createSessionNavigationRowActions(deps: {
   async function removeSessionFamily(
     sessionId: string,
     options: { requireArchived: boolean },
-  ): Promise<SessionRemoveDisposition> {
+  ): Promise<SessionRemoveOutcome> {
     // Read before the write: the family comes off the live catalog, which no
     // longer lists it afterwards.
     const familyIds = revisionFamilySessionIds(sessionsRef.current, sessionId);
-    const disposition = await service.remove(sessionId, {
+    const outcome = await service.remove(sessionId, {
       revisionFamily: true,
       requireArchived: options.requireArchived,
     });
-    if (disposition === 'restored') return disposition;
+    if (outcome.disposition === 'restored') return outcome;
     if (activeIdRef.current && familyIds.includes(activeIdRef.current)) {
       setActiveId(undefined);
       clearActiveMessages();
     }
     for (const id of familyIds) clearSessionRendererState(id);
-    return disposition;
+    return outcome;
   }
 
   /**
@@ -239,6 +282,7 @@ export function createSessionNavigationRowActions(deps: {
     const restored: string[] = [];
     let firstFailure: SessionPurgeOutcome['firstFailure'];
     let removed = 0;
+    let archivedSubtasks = 0;
     for (const sessionId of sessionIds) {
       const key = `${sessionId}:delete`;
       if (
@@ -251,9 +295,14 @@ export function createSessionNavigationRowActions(deps: {
       }
       pendingSessionRowActionsRef.current.add(key);
       try {
-        const disposition = await removeSessionFamily(sessionId, { requireArchived: true });
+        const { disposition, archivedSubtaskCount } = await removeSessionFamily(sessionId, {
+          requireArchived: true,
+        });
         if (disposition === 'restored') restored.push(sessionId);
-        else removed += 1;
+        else {
+          removed += 1;
+          archivedSubtasks += archivedSubtaskCount;
+        }
       } catch (error) {
         unsettled.push(sessionId);
         firstFailure ??= { error, sessionId };
@@ -265,6 +314,7 @@ export function createSessionNavigationRowActions(deps: {
       await refreshSessions();
       return {
         removed,
+        archivedSubtasks,
         remaining: [],
         restored,
         verified: true,
@@ -281,6 +331,7 @@ export function createSessionNavigationRowActions(deps: {
     if (!listed) {
       return {
         removed,
+        archivedSubtasks,
         remaining: [],
         restored,
         verified: false,
@@ -291,6 +342,7 @@ export function createSessionNavigationRowActions(deps: {
     const remaining = unsettled.filter((sessionId) => present.has(sessionId));
     return {
       removed: removed + (unsettled.length - remaining.length),
+      archivedSubtasks,
       remaining,
       restored,
       verified: true,

@@ -165,6 +165,17 @@ export type DesktopSessionConfigurationPatch = SessionConfigurationPatch;
  */
 export type SessionRemoveDisposition = "removed" | "restored";
 
+/**
+ * How a remove settled together with what it archived. `archivedSubtaskCount`
+ * is the Host's executed count of ordinary linked subtasks moved to the archive
+ * — 0 when the delete was called off (`restored`) or archived nothing — so the
+ * renderer's toast reports a fact rather than a renderer-side estimate.
+ */
+export interface SessionRemoveOutcome {
+  readonly disposition: SessionRemoveDisposition;
+  readonly archivedSubtaskCount: number;
+}
+
 export type DesktopRuntimeHostClientErrorCode =
   | "catalog_unstable"
   | "client_closed"
@@ -1020,17 +1031,32 @@ export class DesktopRuntimeHostClient {
   async removeSession(
     sessionId: string,
     options: { requireArchived?: boolean } = {},
-  ): Promise<SessionRemoveDisposition> {
+  ): Promise<SessionRemoveOutcome> {
     for (let attempt = 0; attempt < MAX_SESSION_REVISION_ATTEMPTS; attempt += 1) {
       const current = await this.#requireSession(sessionId);
-      if (options.requireArchived && !current.isArchived) return "restored";
+      if (options.requireArchived && !current.isArchived) {
+        return { disposition: "restored", archivedSubtaskCount: 0 };
+      }
       const result = await this.request("session.remove", {
         sessionId,
         expectedRevision: current.revision,
       });
-      if (result.kind === "removed") return "removed";
+      if (result.kind === "removed") {
+        return { disposition: "removed", archivedSubtaskCount: result.archivedSubtaskCount ?? 0 };
+      }
     }
     throw revisionConflict("remove", sessionId);
+  }
+
+  /**
+   * How many linked subtasks a delete of this parent would move to the archive,
+   * per the Host's own removal plan. The delete confirm warns off this so the
+   * renderer never re-derives the plan from a catalog projection that omits the
+   * operator marker and copy state.
+   */
+  async previewSessionRemoval(sessionId: string): Promise<number> {
+    const result = await this.request("session.remove.preview", { sessionId });
+    return result.archivableSubtaskCount;
   }
 
   async removeSessionCopy(sessionId: string): Promise<'removed' | 'retained'> {

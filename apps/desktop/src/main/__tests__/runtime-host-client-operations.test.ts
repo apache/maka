@@ -332,7 +332,10 @@ test('abandons a remove whose task was restored under it', async () => {
     { kind: 'removed' },
   ]);
 
-  assert.equal(await client.removeSession('session-1', { requireArchived: true }), 'restored');
+  assert.deepEqual(await client.removeSession('session-1', { requireArchived: true }), {
+    disposition: 'restored',
+    archivedSubtaskCount: 0,
+  });
   assert.deepEqual(
     requests.map(({ operation }) => operation),
     ['session.catalog.query', 'session.remove', 'session.catalog.query'],
@@ -346,10 +349,14 @@ test('retries a remove through revision churn that left the task archived', asyn
     { kind: 'session', session: session('session-1', 4, { isArchived: true }) },
     { kind: 'revision_conflict', expectedRevision: 4, actualRevision: 5 },
     { kind: 'session', session: session('session-1', 5, { isArchived: true }) },
-    { kind: 'removed' },
+    // The Host reports what it archived; the client surfaces it verbatim.
+    { kind: 'removed', archivedSubtaskCount: 2 },
   ]);
 
-  assert.equal(await client.removeSession('session-1', { requireArchived: true }), 'removed');
+  assert.deepEqual(await client.removeSession('session-1', { requireArchived: true }), {
+    disposition: 'removed',
+    archivedSubtaskCount: 2,
+  });
   assert.deepEqual(
     requests.filter(({ operation }) => operation === 'session.remove').map(({ input }) => input),
     [
@@ -367,7 +374,10 @@ test('removes a task that was never archived when no premise was stated', async 
     { kind: 'removed' },
   ]);
 
-  assert.equal(await client.removeSession('session-1'), 'removed');
+  assert.deepEqual(await client.removeSession('session-1'), {
+    disposition: 'removed',
+    archivedSubtaskCount: 0,
+  });
 });
 
 test('rebuilds a Runtime Policy mutation from each fresh CAS projection', async () => {

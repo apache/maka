@@ -22,6 +22,16 @@ import type { RuntimeHostProfileKind } from '@maka/runtime-host/profile-kind';
 
 export type SessionNavigationRemoveDisposition = 'removed' | 'restored';
 
+/**
+ * How a delete settled together with the count the Host actually archived.
+ * `archivedSubtaskCount` is the Host's executed number — 0 when the delete was
+ * called off (`restored`) — so the toast reports a fact, not a renderer guess.
+ */
+export interface SessionNavigationRemoveOutcome {
+  readonly disposition: SessionNavigationRemoveDisposition;
+  readonly archivedSubtaskCount: number;
+}
+
 export interface SessionNavigationSession extends SessionSummary {
   readonly profileId: string;
   readonly profileName: string;
@@ -52,7 +62,13 @@ export interface SessionNavigationSessionService {
   remove(
     sessionId: string,
     options: { revisionFamily: true; requireArchived: boolean },
-  ): Promise<SessionNavigationRemoveDisposition>;
+  ): Promise<SessionNavigationRemoveOutcome>;
+  /**
+   * How many linked subtasks a delete of this parent would move to the archive,
+   * per the Host's removal plan. The delete confirm warns off this instead of
+   * estimating from the catalog projection.
+   */
+  previewRemoval(sessionId: string): Promise<number>;
 }
 
 export interface SessionNavigationServices {

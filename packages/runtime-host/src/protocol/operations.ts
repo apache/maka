@@ -313,6 +313,7 @@ export const REMOTE_OWNER_OPERATION_GRANTS = Object.freeze([
   'session.read_marker.set',
   'session.recap.generate',
   'session.remove',
+  'session.remove.preview',
   'session.revision.abandon',
   'session.revision.create',
   'session.transcript.page',

@@ -311,13 +311,16 @@ test('drives the renderer Session catalog facade through real UDS framing', asyn
     // A purge sweep asks for the task it saw archived. Restored under it, the
     // deletion is called off rather than replayed at the fresh revision (#3050).
     restoreUnderNextRemove = true;
-    assert.equal(
+    assert.deepEqual(
       await ipc.invoke('sessions:remove', 'session-ipc', { revisionFamily: true, requireArchived: true }),
-      'restored',
+      { disposition: 'restored', archivedSubtaskCount: 0 },
     );
     assert.equal((await ipc.invoke('sessions:list') as Array<{ isArchived: boolean }>)[0]?.isArchived, false);
     await ipc.invoke('sessions:archive', 'session-ipc');
-    assert.equal(await ipc.invoke('sessions:remove', 'session-ipc'), 'removed');
+    assert.deepEqual(await ipc.invoke('sessions:remove', 'session-ipc'), {
+      disposition: 'removed',
+      archivedSubtaskCount: 0,
+    });
     assert.deepEqual(await ipc.invoke('sessions:list'), []);
     // Nothing was retired for the restored task: no `deleted` between the two
     // archives, and the renderer keeps everything it holds for it.

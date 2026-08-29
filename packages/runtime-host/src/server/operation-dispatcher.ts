@@ -125,7 +125,7 @@ export type SessionRevisionOperationKey = Extract<
 >;
 export type SessionRetirementOperationKey = Extract<
   OperationKey,
-  'session.lifecycle.set' | 'session.remove'
+  'session.lifecycle.set' | 'session.remove' | 'session.remove.preview'
 >;
 export type SessionEffectOperationKey = Extract<OperationKey, 'session.recap.generate'>;
 export type SessionTodoOperationKey = Extract<OperationKey, 'session.todo.query'>;

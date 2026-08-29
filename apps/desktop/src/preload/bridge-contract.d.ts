@@ -1220,12 +1220,20 @@ export interface MakaBridge {
     setThinkingLevel(sessionId: string, level: ThinkingLevel | undefined | null): Promise<DesktopSessionSummary>;
     /**
      * `requireArchived` holds the caller's premise through the deletion: a task
-     * restored meanwhile answers `restored` and is kept.
+     * restored meanwhile answers `restored` and is kept. `archivedSubtaskCount`
+     * is the Host's executed count of ordinary linked subtasks moved to the
+     * archive — 0 when restored or when nothing was archived.
      */
     remove(
       sessionId: string,
       options?: { revisionFamily?: boolean; requireArchived?: boolean },
-    ): Promise<'removed' | 'restored'>;
+    ): Promise<{ disposition: 'removed' | 'restored'; archivedSubtaskCount: number }>;
+    /**
+     * How many linked subtasks a delete of this parent would move to the
+     * archive, per the Host's removal plan. The confirm warns off this instead
+     * of estimating from the catalog projection.
+     */
+    previewRemoval(sessionId: string): Promise<number>;
     cleanupSessionCopy(sessionId: string): Promise<void>;
     abandonSessionCopy(sourceSessionId: string, copyId: string): Promise<void>;
   };
