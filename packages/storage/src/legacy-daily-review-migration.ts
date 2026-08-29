@@ -119,6 +119,7 @@ export async function migrateLegacyDailyReview(input: {
         kind: 'calendar',
         recurrence: 'daily',
         anchorAt: localAnchorAt(now, snapshot.config.executeTime),
+        catchUp: 'once',
       },
       effect: {
         kind: 'agent_run',

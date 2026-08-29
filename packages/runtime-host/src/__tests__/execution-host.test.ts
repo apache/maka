@@ -315,6 +315,7 @@ test('production Host migrates Daily Review into ScheduledTask Session and Artif
         kind: 'calendar',
         recurrence: 'daily',
         anchorAt: task?.schedule.kind === 'calendar' ? task.schedule.anchorAt : -1,
+        catchUp: 'once',
       });
       if (task?.schedule.kind === 'calendar') {
         const anchor = new Date(task.schedule.anchorAt);

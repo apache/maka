@@ -58,7 +58,9 @@ resolve an immutable model Connection, report projection remains idempotent but 
 the inert legacy rows are retried on a later Host start after model setup and are never scheduled or
 written by the new runtime. When an enabled legacy configuration upgrades after its local execution
 time and yesterday's report is absent, migration makes the system task due once before retiring the
-old snapshot. The ordinary scheduler then admits that catch-up fire; no legacy scheduler survives.
+old snapshot. Migrated calendar tasks also carry ScheduledTask's generic `catchUp: once` policy, so
+resuming a previously disabled task admits at most its latest missed occurrence. The ordinary
+scheduler owns both catch-up paths; no legacy scheduler survives.
 
 ### UI
 

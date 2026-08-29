@@ -83,6 +83,29 @@ describe('ScheduledTask protocol', () => {
     );
   });
 
+  test('round-trips calendar catch-up policy through the schedule authority', () => {
+    const decoded = decodeScheduledTaskMutateInput({
+      kind: 'create',
+      input: {
+        title: 'Daily Review',
+        intentBody: '',
+        schedule: {
+          kind: 'calendar',
+          recurrence: 'daily',
+          anchorAt: 1_000,
+          catchUp: 'once',
+        },
+        effect: { kind: 'notify', channel: 'local' },
+      },
+    });
+    assert.equal(
+      decoded.kind === 'create' && decoded.input.schedule.kind === 'calendar'
+        ? decoded.input.schedule.catchUp
+        : undefined,
+      'once',
+    );
+  });
+
   test('requires Host-path authority only when a mutation submits a Host path', () => {
     const authority = createRuntimeHostConnectionAuthority({
       principalKind: 'remote_owner',

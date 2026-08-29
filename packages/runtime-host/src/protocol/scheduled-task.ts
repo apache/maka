@@ -460,11 +460,12 @@ function decodeSchedule(value: unknown): ScheduledTaskSchedule {
     };
   }
   if (schedule.kind === 'calendar') {
-    const exact = requireExactRecord(schedule, 'ScheduledTask calendar schedule', [
-      'kind',
-      'recurrence',
-      'anchorAt',
-    ]);
+    const exact = requireShapedRecord(
+      schedule,
+      'ScheduledTask calendar schedule',
+      ['kind', 'recurrence', 'anchorAt'],
+      ['catchUp'],
+    );
     if (
       exact.recurrence !== 'daily' &&
       exact.recurrence !== 'weekly' &&
@@ -472,10 +473,14 @@ function decodeSchedule(value: unknown): ScheduledTaskSchedule {
     ) {
       throw invalidProtocolFrame('Invalid ScheduledTask calendar recurrence');
     }
+    if (exact.catchUp !== undefined && exact.catchUp !== 'once') {
+      throw invalidProtocolFrame('Invalid ScheduledTask calendar catch-up policy');
+    }
     return {
       kind: 'calendar',
       recurrence: exact.recurrence,
       anchorAt: requireCount(exact.anchorAt, 'ScheduledTask anchorAt'),
+      ...(exact.catchUp === 'once' ? { catchUp: 'once' as const } : {}),
     };
   }
   if (schedule.kind === 'cron') {

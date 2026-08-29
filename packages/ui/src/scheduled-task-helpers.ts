@@ -43,6 +43,7 @@ import type {
   ScheduledTaskSchedule,
   ScheduledTaskStatus,
 } from '@maka/core/scheduled-task';
+import { computeNextFireAt } from '@maka/core/scheduled-task';
 
 import type { UiLocale } from '@maka/core/ui-locale';
 import { BOT_DELIVERY_PROVIDERS } from '@maka/core/bot-chat-settings';
@@ -193,11 +194,12 @@ export function scheduledTaskRunRangeStart(range: 'day' | 'week' | 'month' | 'al
 
 export function scheduledTaskEditableRunAt(task: ScheduledTask, now: number = Date.now()): number {
   if (task.nextFireAt !== null && task.nextFireAt > now) return task.nextFireAt;
+  if (task.schedule.kind === 'calendar') {
+    return computeNextFireAt(task.schedule, now) ?? now + 60 * 60 * 1000;
+  }
   const scheduledAt = task.schedule.kind === 'once'
     ? task.schedule.runAt
-    : task.schedule.kind === 'calendar'
-      ? task.schedule.anchorAt
-      : task.schedule.startAt;
+    : task.schedule.startAt;
   return scheduledAt > now ? scheduledAt : now + 60 * 60 * 1000;
 }
 
@@ -282,6 +284,8 @@ export interface ScheduledTaskFormSeed {
   runAtLocal: string;
   recurrence: ScheduledTaskRecurrence;
   cronExpression: string;
+  /** Generic calendar recovery policy; preserved when editing and set by eligible presets. */
+  calendarCatchUp?: 'once';
   deliveryMethod: ScheduledTaskDeliveryMethod;
   deliveryPlatform: BotProvider;
   deliveryChatId: string;
@@ -350,6 +354,7 @@ export function scheduledTaskTemplateSeed(
     note: template.note,
     recurrence: template.recurrence,
     cronExpression: template.cronExpression,
+    ...(template.id === 'daily-review' ? { calendarCatchUp: 'once' as const } : {}),
     runAtLocal: toScheduledTaskLocalDateTimeValue(scheduledTaskTemplateNextRunAt(template, now)),
     ...(template.agentRun
       ? { deliveryMethod: 'agent_run' as const, lockedEffect: agentRunEffect }
@@ -366,6 +371,9 @@ function scheduledTaskFormSeedFromTask(task: ScheduledTask): ScheduledTaskFormSe
     runAtLocal: toScheduledTaskLocalDateTimeValue(scheduledTaskEditableRunAt(task)),
     recurrence: scheduledTaskRecurrenceValue(task),
     cronExpression: task.schedule.kind === 'cron' ? task.schedule.expression : '0 9 * * 1-5',
+    ...(task.schedule.kind === 'calendar' && task.schedule.catchUp === 'once'
+      ? { calendarCatchUp: 'once' as const }
+      : {}),
     deliveryMethod: task.effect.kind === 'notify' ? task.effect.channel : 'agent_run',
     ...(task.effect.kind === 'notify' && task.effect.channel === 'bot'
       ? { deliveryPlatform: task.effect.platform, deliveryChatId: task.effect.chatId }

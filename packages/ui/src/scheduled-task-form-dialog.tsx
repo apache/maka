@@ -103,6 +103,7 @@ export function ScheduledTaskFormDialog(props: {
   const [runAtLocal, setRunAtLocal] = useState(props.seed.runAtLocal);
   const [recurrence, setRecurrence] = useState<ScheduledTaskRecurrence>(props.seed.recurrence);
   const [cronExpression, setCronExpression] = useState(props.seed.cronExpression);
+  const [calendarCatchUp, setCalendarCatchUp] = useState(props.seed.calendarCatchUp);
   const [deliveryMethod, setDeliveryMethod] = useState<ScheduledTaskDeliveryMethod>(props.seed.deliveryMethod);
   const [deliveryPlatform, setDeliveryPlatform] = useState<BotProvider>(props.seed.deliveryPlatform);
   const [deliveryChatId, setDeliveryChatId] = useState(props.seed.deliveryChatId);
@@ -157,6 +158,7 @@ export function ScheduledTaskFormDialog(props: {
     setNote('');
     setRecurrence('none');
     setCronExpression('0 9 * * 1-5');
+    setCalendarCatchUp(undefined);
     setDeliveryMethod('local');
     setDeliveryPlatform('telegram');
     setDeliveryChatId('');
@@ -180,6 +182,7 @@ export function ScheduledTaskFormDialog(props: {
     setRunAtLocal(seed.runAtLocal);
     setRecurrence(seed.recurrence);
     setCronExpression(seed.cronExpression);
+    setCalendarCatchUp(seed.calendarCatchUp);
     setDeliveryMethod(seed.deliveryMethod);
     setDeliveryPlatform(seed.deliveryPlatform);
     setDeliveryChatId(seed.deliveryChatId);
@@ -199,7 +202,12 @@ export function ScheduledTaskFormDialog(props: {
     } else if (recurrence === 'cron') {
       schedule = { kind: 'cron', expression: cronExpression.trim(), startAt: parsedRunAt };
     } else {
-      schedule = { kind: 'calendar', recurrence, anchorAt: parsedRunAt };
+      schedule = {
+        kind: 'calendar',
+        recurrence,
+        anchorAt: parsedRunAt,
+        ...(calendarCatchUp === 'once' ? { catchUp: 'once' as const } : {}),
+      };
     }
     submitPendingRef.current = true;
     const input = {

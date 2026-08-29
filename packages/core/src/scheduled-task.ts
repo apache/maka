@@ -69,6 +69,8 @@ export type ScheduledTaskSchedule =
       kind: 'calendar';
       recurrence: 'daily' | 'weekly' | 'monthly';
       anchorAt: number;
+      /** On resume, admit at most the latest missed calendar occurrence. */
+      catchUp?: 'once';
     }
   | { kind: 'cron'; expression: string; startAt: number };
 
@@ -171,6 +173,9 @@ export function normalizeCreateScheduledTaskInput(
   if (!schedule.ok) return schedule;
   const effect = normalizeEffect(input.effect);
   if (!effect.ok) return effect;
+  if (effect.value.kind === 'agent_run' && !effect.value.execution.llmConnectionId) {
+    return fail('Agent execution requires immutable Connection identity');
+  }
   const intentBody = normalizeIntent(input.intentBody ?? input.intent?.body, {
     required: effect.value.kind !== 'notify',
   });
@@ -241,6 +246,9 @@ export function normalizeUpdateScheduledTaskInput(
   if (input.effect !== undefined) {
     const effect = normalizeEffect(input.effect);
     if (!effect.ok) return effect;
+    if (effect.value.kind === 'agent_run' && !effect.value.execution.llmConnectionId) {
+      return fail('Agent execution requires immutable Connection identity');
+    }
     patch.effect = effect.value;
   }
   if (Object.prototype.hasOwnProperty.call(input, 'maxFires')) {
@@ -375,6 +383,21 @@ export function resumeScheduledTask(
     };
   }
   const nextFireAt = computeNextFireAt(task.schedule, now);
+  if (
+    task.schedule.kind === 'calendar' &&
+    task.schedule.catchUp === 'once' &&
+    task.schedule.anchorAt <= now
+  ) {
+    const latestMissed = latestCalendarFireAt(task.schedule, now);
+    if (task.lastFireAt === null || task.lastFireAt < latestMissed) {
+      return {
+        ...task,
+        status: 'active',
+        nextFireAt: now,
+        updatedAt: now,
+      };
+    }
+  }
   if (nextFireAt === null) {
     return { error: 'Schedule has no remaining fire' };
   }
@@ -475,9 +498,17 @@ function normalizeSchedule(
     }
     const anchorAt = asFiniteNumber(value.anchorAt);
     if (anchorAt === null) return fail('calendar schedule requires anchorAt');
+    if (value.catchUp !== undefined && value.catchUp !== 'once') {
+      return fail('calendar catchUp must be once');
+    }
     return {
       ok: true,
-      value: { kind: 'calendar', recurrence: value.recurrence, anchorAt },
+      value: {
+        kind: 'calendar',
+        recurrence: value.recurrence,
+        anchorAt,
+        ...(value.catchUp === 'once' ? { catchUp: 'once' as const } : {}),
+      },
     };
   }
   if (value.kind === 'cron') {
@@ -676,6 +707,38 @@ function nextCalendarFireAt(
     if (candidate > after) return candidate;
   }
   return addMonthsClamped(anchor, afterDate, 481);
+}
+
+function latestCalendarFireAt(
+  schedule: Extract<ScheduledTaskSchedule, { kind: 'calendar' }>,
+  at: number,
+): number {
+  const anchor = new Date(schedule.anchorAt);
+  const current = new Date(at);
+  if (schedule.recurrence === 'daily') {
+    current.setHours(
+      anchor.getHours(),
+      anchor.getMinutes(),
+      anchor.getSeconds(),
+      anchor.getMilliseconds(),
+    );
+    if (current.getTime() > at) current.setDate(current.getDate() - 1);
+    return current.getTime();
+  }
+  if (schedule.recurrence === 'weekly') {
+    current.setHours(
+      anchor.getHours(),
+      anchor.getMinutes(),
+      anchor.getSeconds(),
+      anchor.getMilliseconds(),
+    );
+    const dayDelta = (current.getDay() - anchor.getDay() + 7) % 7;
+    current.setDate(current.getDate() - dayDelta);
+    if (current.getTime() > at) current.setDate(current.getDate() - 7);
+    return current.getTime();
+  }
+  const candidate = addMonthsClamped(anchor, current, 0);
+  return candidate <= at ? candidate : addMonthsClamped(anchor, current, -1);
 }
 
 function addMonthsClamped(anchor: Date, base: Date, offset: number): number {

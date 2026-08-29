@@ -805,6 +805,7 @@ describe('SQLite workflow stores', () => {
             execution: {
               cwd: '/workspace',
               backend: 'ai-sdk',
+              llmConnectionId: 'connection-default',
               llmConnectionSlug: 'default',
               model: 'test-model',
               permissionMode: 'ask',
@@ -878,6 +879,7 @@ describe('SQLite workflow stores', () => {
             kind: 'agent_run',
             execution: {
               cwd: '/workspace',
+              llmConnectionId: 'connection-default',
               llmConnectionSlug: 'default',
               model: 'test-model',
               permissionMode: 'ask',

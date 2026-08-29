@@ -26,6 +26,7 @@ import {
   isScheduledTaskDue,
   nextScheduledTaskStateAfterFire,
   normalizeCreateScheduledTaskInput,
+  normalizeUpdateScheduledTaskInput,
   pauseScheduledTask,
   resumeScheduledTask,
   type ScheduledTask,
@@ -93,6 +94,47 @@ describe('scheduled-task catalog', () => {
     if ('error' in resumed) return;
     assert.equal(resumed.status, 'active');
     assert.ok(typeof resumed.nextFireAt === 'number');
+  });
+
+  it('fires one missed calendar occurrence when catch-up is requested', () => {
+    const now = new Date(2026, 7, 29, 12, 0).getTime();
+    const anchorAt = new Date(2026, 7, 29, 8, 0).getTime();
+    const normalized = normalizeCreateScheduledTaskInput(
+      {
+        title: 'Daily Review',
+        intentBody: '',
+        schedule: { kind: 'calendar', recurrence: 'daily', anchorAt, catchUp: 'once' },
+        effect: { kind: 'notify', channel: 'local' },
+        createdBy: { kind: 'system' },
+      },
+      now,
+    );
+    assert.equal(normalized.ok, true);
+    if (!normalized.ok) return;
+    assert.ok(normalized.value.nextFireAt > now);
+
+    const task: ScheduledTask = {
+      id: 'daily-review',
+      title: normalized.value.title,
+      intent: { kind: 'text', body: normalized.value.intentBody },
+      schedule: normalized.value.schedule,
+      effect: normalized.value.effect,
+      status: 'paused',
+      nextFireAt: null,
+      lastFireAt: null,
+      fireCount: 0,
+      maxFires: null,
+      expiresAt: null,
+      createdBy: normalized.value.createdBy,
+      createdAt: now,
+      updatedAt: now,
+      runs: [],
+      lastError: null,
+    };
+    const resumed = resumeScheduledTask(task, now + 86_400_000);
+    assert.ok(!('error' in resumed));
+    if ('error' in resumed) return;
+    assert.equal(resumed.nextFireAt, now + 86_400_000);
   });
 
   it('does not resume a task whose fire budget is already spent', () => {
@@ -231,6 +273,53 @@ describe('scheduled-task catalog', () => {
     }
   });
 
+  it('requires immutable Connection identity for new Agent tasks', () => {
+    const now = Date.UTC(2026, 0, 5, 8, 0, 0);
+    const result = normalizeCreateScheduledTaskInput(
+      {
+        title: 'Legacy creator Session',
+        intentBody: 'run',
+        schedule: { kind: 'once', runAt: now + 60_000 },
+        effect: {
+          kind: 'agent_run',
+          execution: {
+            cwd: '/repo',
+            llmConnectionSlug: 'legacy',
+            model: 'legacy-model',
+            permissionMode: 'ask',
+            collaborationMode: 'agent',
+            orchestrationMode: 'default',
+          },
+        },
+        createdBy: { kind: 'user' },
+      },
+      now,
+    );
+    assert.deepEqual(result, {
+      ok: false,
+      message: 'Agent execution requires immutable Connection identity',
+    });
+    assert.deepEqual(
+      normalizeUpdateScheduledTaskInput(
+        {
+          effect: {
+            kind: 'agent_run',
+            execution: {
+              cwd: '/repo',
+              llmConnectionSlug: 'legacy',
+              model: 'legacy-model',
+              permissionMode: 'ask',
+              collaborationMode: 'agent',
+              orchestrationMode: 'default',
+            },
+          },
+        },
+        now,
+      ),
+      { ok: false, message: 'Agent execution requires immutable Connection identity' },
+    );
+  });
+
   it('rejects future recurrence anchors outside the scheduling horizon', () => {
     const now = Date.UTC(2026, 0, 5, 8, 0, 0);
     for (const schedule of [
@@ -299,6 +388,13 @@ describe('decodePersistedScheduledTask', () => {
 
   it('returns the same task when nothing needs folding', () => {
     assert.equal(decodePersistedScheduledTask(markPersisted<ScheduledTask>(base)), base);
+  });
+
+  it('keeps older persisted Agent tasks without Connection identity decodable', () => {
+    if (base.effect.kind !== 'agent_run') return;
+    const { llmConnectionId: _, ...execution } = base.effect.execution;
+    const stored = { ...base, effect: { kind: 'agent_run' as const, execution } };
+    assert.equal(decodePersistedScheduledTask(markPersisted<ScheduledTask>(stored)), stored);
   });
 
   it('leaves effects without an execution template alone', () => {
