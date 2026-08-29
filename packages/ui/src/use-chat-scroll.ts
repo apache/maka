@@ -17,8 +17,20 @@
  * under the License.
  */
 
+/**
+ * The transcript's scroll commands, and the seam that hands the scroller to the
+ * authority that owns it (`transcript-scroll-authority.ts`).
+ *
+ * A command is one-shot: jump to a turn the reader picked, and compensate the
+ * earlier history that lands above them. Each releases the pin first, and the
+ * authority writes nothing while the pin is released — so a command cannot be
+ * fighting a policy, which is the shape every previous round of this code had.
+ */
+
 import { useEffect, useRef, useState, type RefObject } from 'react';
 import type { StoredMessage } from '@maka/core/session';
+import { captureChatScrollAnchor } from './chat-scroll-anchor.js';
+import { useTranscriptScrollAuthority } from './transcript-scroll-authority.js';
 
 export function useChatScroll(input: {
   scrollRef: RefObject<HTMLElement | null>;
@@ -29,19 +41,34 @@ export function useChatScroll(input: {
   hasOlderHistory?: boolean;
   historyLoadPending?: boolean;
   onLoadEarlierHistory?(): Promise<void> | void;
-  /** Astryx's auto-follow release, for the moves the reader asks for. */
-  unlockAutoFollow?(): void;
 }) {
   const [highlightedTurnId, setHighlightedTurnId] = useState<string | null>(null);
-  const unlockAutoFollowRef = useRef(input.unlockAutoFollow);
-  unlockAutoFollowRef.current = input.unlockAutoFollow;
+  const authority = useTranscriptScrollAuthority();
+  const authorityRef = useRef(authority);
+  authorityRef.current = authority;
   const loadEarlierRef = useRef(input.onLoadEarlierHistory);
   loadEarlierRef.current = input.onLoadEarlierHistory;
   const historyLoadPendingRef = useRef(input.historyLoadPending);
   historyLoadPendingRef.current = input.historyLoadPending;
   const canLoadEarlier = input.onLoadEarlierHistory !== undefined;
   const earlierLoadRequest = useRef<object | null>(null);
-  const releasedForTarget = useRef<string | null>(null);
+  const handledTarget = useRef<string | null>(null);
+
+  // A passive effect, not a layout one: the scroller is Astryx's layout root,
+  // an ancestor, and React attaches a parent's ref after its children's layout
+  // effects have already run. The growth signal is a ResizeObserver delivery,
+  // which lands after passive effects, so this is still installed in time.
+  useEffect(() => {
+    if (!authority) return;
+    return authority.attach(input.scrollRef.current);
+  }, [authority, input.scrollRef]);
+
+  // A new conversation arrives at its tail. Nothing special positions it: the
+  // pin is set here and the first fill is growth like any other, so it takes
+  // the one path instead of a first-fill path of its own.
+  useEffect(() => {
+    authorityRef.current?.pinToTail();
+  }, [input.sessionId]);
 
   useEffect(() => {
     earlierLoadRequest.current = null;
@@ -50,34 +77,29 @@ export function useChatScroll(input: {
   useEffect(() => {
     const root = input.scrollRef.current;
     if (!root || !input.hasOlderHistory || !canLoadEarlier) return;
-    let previousScrollTop = root.scrollTop;
     const requestEarlier = (): void => {
       if (historyLoadPendingRef.current || earlierLoadRequest.current) return;
-      const scrollHeight = root.scrollHeight;
       const request = {};
       earlierLoadRequest.current = request;
-      unlockAutoFollowRef.current?.();
+      const authority = authorityRef.current;
+      authority?.releasePin();
+      // Where the reader is, not how tall the transcript was. A height delta
+      // counts growth below them too, and counts a load that returned nothing
+      // as a push; an element moves by exactly what the reader would see.
+      authority?.holdAnchor(captureChatScrollAnchor(root));
       void Promise.resolve(loadEarlierRef.current?.()).catch(() => undefined).finally(() => {
-        // Compensate after the turns are on screen, not when they were asked
-        // for: the reader usually coasts to the top during the load, and the
-        // browser declines to anchor only while the scroller sits at zero.
-        // That one hole is this branch; everything else layout already fixed.
-        window.requestAnimationFrame(() => {
-          if (earlierLoadRequest.current !== request) return;
-          if (root.isConnected && root.scrollTop === 0) {
-            root.scrollTop += root.scrollHeight - scrollHeight;
-          }
-          earlierLoadRequest.current = null;
-        });
+        if (earlierLoadRequest.current === request) earlierLoadRequest.current = null;
       });
     };
+    // Position, not direction: a shrinking transcript also lowers `scrollTop`,
+    // and asking for history the reader already has is idempotent anyway.
     const nearStart = (): boolean =>
       root.scrollTop <= Math.max(640, root.clientHeight * 2);
     const onScroll = (): void => {
-      const nextScrollTop = root.scrollTop;
-      if (nextScrollTop < previousScrollTop && nearStart()) requestEarlier();
-      previousScrollTop = nextScrollTop;
+      if (nearStart()) requestEarlier();
     };
+    // At `scrollTop === 0` there is no scroll event left to fire, so the wheel
+    // is the only way the reader can ask for more.
     const onWheel = (event: WheelEvent): void => {
       if (event.deltaY < 0 && nearStart()) requestEarlier();
     };
@@ -98,21 +120,19 @@ export function useChatScroll(input: {
   useEffect(() => {
     const target = input.target;
     if (!target?.turnId) return;
-    // Navigating to a turn is the reader choosing a position, so it outranks
-    // following the tail. Releasing is a persistent state change, and this
-    // effect also re-runs on every transcript update so a target that arrives
-    // before its turn still lands — so release once per chosen target, not
-    // once per run, or the reader loses the tail for the rest of the session.
+    // This effect re-runs on every transcript update so a target that arrives
+    // before its turn still lands. It stops for good once the turn is on
+    // screen — repeating the release afterwards would take the tail away from
+    // a reader who had already scrolled back to it.
     const chosen = `${input.sessionId ?? ''}:${target.turnId}:${target.nonce}`;
-    if (releasedForTarget.current !== chosen) {
-      releasedForTarget.current = chosen;
-      unlockAutoFollowRef.current?.();
-    }
+    if (handledTarget.current === chosen) return;
+    authorityRef.current?.releasePin();
     const frame = window.requestAnimationFrame(() => {
       const root = input.scrollRef.current;
       if (!root) return;
       const element = root.querySelector(`[data-turn-id="${CSS.escape(target.turnId)}"]`);
       if (!element || !('scrollIntoView' in element)) return;
+      handledTarget.current = chosen;
       const targetElement = element as HTMLElement;
       targetElement.setAttribute('tabindex', '-1');
       targetElement.scrollIntoView({

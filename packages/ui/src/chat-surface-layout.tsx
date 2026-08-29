@@ -20,27 +20,41 @@
 import { useMemo, type ComponentProps } from 'react';
 import { ChatLayout } from '@astryxdesign/core/Chat';
 import { AstryxLocaleProvider } from './astryx-i18n.js';
+import {
+  TranscriptScrollAuthorityProvider,
+  TranscriptScrollButton,
+} from './transcript-scroll-authority.js';
 import { cn } from './utils.js';
 
 /**
- * Stock ChatLayoutProps plus the patch-package conversationKey seam
- * (`patches/@astryxdesign+core+0.3.0.patch`): resets scroll / unread state when
- * the host switches conversations in place without remounting the composer.
+ * Stock ChatLayoutProps plus the patch-package `autoScroll` seam
+ * (`patches/@astryxdesign+core+0.5.0.patch`), which forwards Astryx's own
+ * published `enabled` option down to `useChatStreamScroll`.
  *
  * Intersection is explicit because some TS resolutions only see the published
- * Astryx destructure list (which omits conversationKey) via ComponentProps.
+ * Astryx destructure list (which omits autoScroll) via ComponentProps.
  */
 export type ChatSurfaceLayoutProps = ComponentProps<typeof ChatLayout> & {
-  conversationKey?: string | number;
+  autoScroll?: boolean;
+  /**
+   * Who positions this transcript.
+   *
+   * `astryx` keeps the library's auto-follow, for the surfaces that render
+   * their own content rather than a `ChatView`. `host` turns Astryx's scroll
+   * layer off entirely — no listeners, no spring — and hands `scrollTop` to
+   * Maka's single authority, which is what a `ChatView` transcript needs: it
+   * knows turn identity, the virtual window and the navigation the reader
+   * asked for, none of which a generic scroll container can see.
+   */
+  scrollOwner?: 'astryx' | 'host';
   scrollToBottomLabel?: string;
 };
 
 /**
  * Maka's product seam for the Astryx chat page shell.
  *
- * Astryx owns scrolling, new-message following, the bottom dock, and the
- * scroll-to-bottom affordance. Maka supplies only transcript and composer
- * content through the published ChatLayout slots.
+ * Astryx owns the bottom dock and the message area. Whether it also owns
+ * scrolling is `scrollOwner`'s answer, and there is never more than one owner.
  *
  * The density default drops a `compact` override and lets Astryx's own default
  * (`balanced`) stand. Compact spends spacing-2 on the dock's gutters — 8px
@@ -56,10 +70,11 @@ export type ChatSurfaceLayoutProps = ComponentProps<typeof ChatLayout> & {
 export function ChatSurfaceLayout({
   className,
   density = 'balanced',
-  conversationKey,
+  scrollOwner = 'astryx',
   scrollToBottomLabel,
   ...props
 }: ChatSurfaceLayoutProps) {
+  const hostOwned = scrollOwner === 'host';
   const astryxOverrides = useMemo(
     () =>
       scrollToBottomLabel
@@ -72,15 +87,23 @@ export function ChatSurfaceLayout({
   const layout = (
     <ChatLayout
       {...props}
-      conversationKey={conversationKey}
+      autoScroll={!hostOwned}
+      // Astryx's default button reads `isScrolledUp`, which stops updating the
+      // moment its scroll layer is off. Maka's reads Maka's pin instead.
+      scrollButton={hostOwned ? <TranscriptScrollButton /> : props.scrollButton}
       density={density}
       className={cn('maka-chat-layout', className)}
       data-chat-scroll-container="true"
     />
   );
-  return astryxOverrides ? (
+  const localized = astryxOverrides ? (
     <AstryxLocaleProvider overrides={astryxOverrides}>{layout}</AstryxLocaleProvider>
   ) : (
     layout
+  );
+  return hostOwned ? (
+    <TranscriptScrollAuthorityProvider>{localized}</TranscriptScrollAuthorityProvider>
+  ) : (
+    localized
   );
 }

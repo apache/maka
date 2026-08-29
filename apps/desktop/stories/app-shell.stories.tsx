@@ -456,6 +456,7 @@ function ComposedShell(props: {
             (<div className="maka-detail-with-artifacts">
               <div className="mainColumn">
               <ChatSurfaceLayout
+                scrollOwner="host"
                 composer={
                   <Composer
                     {...baseComposerProps}

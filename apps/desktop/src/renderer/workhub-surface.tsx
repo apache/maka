@@ -363,7 +363,6 @@ export function WorkHubSurface(props: {
   return (
     <ChatSurfaceLayout
       className="workhub-surface"
-      conversationKey="workhub"
       composer={(
         <Composer
           draftKey="workhub"
@@ -473,7 +472,6 @@ export function WorkHubCoordinationStatus(props: {
   return (
     <ChatSurfaceLayout
       className="workhub-surface"
-      conversationKey="workhub-coordination-status"
       composer={(
         <Composer
           draftKey="workhub"

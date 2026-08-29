@@ -1,39 +1,25 @@
-diff --git a/node_modules/@astryxdesign/core/dist/Chat/ChatContext.d.ts b/node_modules/@astryxdesign/core/dist/Chat/ChatContext.d.ts
-index d1bfeeb..b4a0e62 100644
---- a/node_modules/@astryxdesign/core/dist/Chat/ChatContext.d.ts
-+++ b/node_modules/@astryxdesign/core/dist/Chat/ChatContext.d.ts
-@@ -61,6 +61,13 @@ export interface ChatLayoutContextValue {
-     scrollContainerRef: React.RefObject<HTMLElement | null>;
-     /** Callback ref for the message list content element — layout observes it for size changes. */
-     contentRef: (el: HTMLElement | null) => void;
-+    /**
-+     * Release auto-follow because the host is navigating the transcript
-+     * itself. The scroll-direction unlock cannot see such a move when the
-+     * host mounts content before scrolling: that scroll event carries a
-+     * changed scrollHeight and is read as a resize artefact.
-+     */
-+    unlockAutoFollow?: () => void;
- }
- export declare const ChatLayoutContext: import("react").Context<ChatLayoutContextValue | null>;
- export declare function useChatLayoutContext(): ChatLayoutContextValue | null;
 diff --git a/node_modules/@astryxdesign/core/dist/Chat/ChatLayout.d.ts b/node_modules/@astryxdesign/core/dist/Chat/ChatLayout.d.ts
-index ff34874..9ec8d7a 100644
+index ff34874..0f5ae14 100644
 --- a/node_modules/@astryxdesign/core/dist/Chat/ChatLayout.d.ts
 +++ b/node_modules/@astryxdesign/core/dist/Chat/ChatLayout.d.ts
-@@ -69,6 +69,11 @@ export interface ChatLayoutProps extends BaseProps<HTMLDivElement> {
+@@ -69,6 +69,15 @@ export interface ChatLayoutProps extends BaseProps<HTMLDivElement> {
       * @default 'balanced'
       */
      density?: Density;
 +    /**
-+     * Per-conversation identity for hosts that switch conversations in place.
-+     * Resets scroll and unread state without remounting composer content.
++     * Whether the layout's own auto-follow runs. Forwards `useChatStreamScroll`'s
++     * published `enabled` option, for hosts that position the transcript
++     * themselves; off, the layout installs no scroll listeners and never writes
++     * `scrollTop`, so the host is the only writer.
++     *
++     * @default true
 +     */
-+    conversationKey?: string | number;
++    autoScroll?: boolean;
  }
  export declare function ChatLayout({ children, composer, density, emptyState, scrollButton, scrollRef: externalScrollRef, xstyle, className, style, 'data-testid': testId, ref, ...rest }: ChatLayoutProps): import("react").JSX.Element;
  export declare namespace ChatLayout {
 diff --git a/node_modules/@astryxdesign/core/dist/Chat/ChatLayout.js b/node_modules/@astryxdesign/core/dist/Chat/ChatLayout.js
-index ff9b9fa..6d427d0 100644
+index ff9b9fa..6d4df27 100644
 --- a/node_modules/@astryxdesign/core/dist/Chat/ChatLayout.js
 +++ b/node_modules/@astryxdesign/core/dist/Chat/ChatLayout.js
 @@ -28,7 +28,7 @@
@@ -49,11 +35,22 @@ index ff9b9fa..6d427d0 100644
    className,
    style,
    'data-testid': testId,
-+  conversationKey,
++  autoScroll = true,
    ref,
    ...rest
  }) {
-@@ -211,6 +212,29 @@ export function ChatLayout({
+@@ -205,12 +206,21 @@ export function ChatLayout({
+ 
+   // --- Default scroll behavior ---
+   const scroll = useChatStreamScroll({
+-    scrollRef: scrollContainerRef
++    scrollRef: scrollContainerRef,
++    // maka: forward the hook's own published switch. Off, it installs no
++    // listeners and moves nothing, which is what a host needs when the host is
++    // the one positioning the transcript.
++    enabled: autoScroll
+   });
+   const newMsgs = useChatNewMessages({
      isLocked: scroll.isLocked,
      onResize: scroll.scrollIfLocked
    });
@@ -62,44 +59,9 @@ index ff9b9fa..6d427d0 100644
 +      newMsgs.dismiss();
 +    }
 +  }, [scroll.isLocked, newMsgs.dismiss]);
-+  const conversationKeyRef = useRef(conversationKey);
-+  useEffect(() => {
-+    if (conversationKey === conversationKeyRef.current) {
-+      return;
-+    }
-+    conversationKeyRef.current = conversationKey;
-+    // maka: a new conversation is a new initial fill, not content growth in
-+    // the current one. `lock` alone re-enters through the spring, so the
-+    // incoming transcript flies to the bottom instead of arriving there.
-+    // The jump handles a transcript that is already mounted; arming the fill
-+    // again handles the usual case, where the host clears the transcript in
-+    // the same update that changes the key and fills it a few frames later.
-+    scroll.scrollToBottom({
-+      behavior: 'instant'
-+    });
-+    scroll.resetInitialFill();
-+    newMsgs.reset();
-+  }, [conversationKey, scroll.scrollToBottom, scroll.resetInitialFill, newMsgs.reset]);
    const defaultScrollButton = /*#__PURE__*/_jsx(ChatLayoutScrollButton, {
      isVisible: scroll.isScrolledUp || newMsgs.hasNewMessages,
      label: newMsgs.hasNewMessages ? t('@astryx.chatLayout.newMessages') : undefined,
-@@ -223,8 +247,14 @@ export function ChatLayout({
-   // --- Layout context ---
-   const layoutContext = useMemo(() => ({
-     scrollContainerRef,
--    contentRef: newMsgs.contentRef
--  }), [scrollContainerRef, newMsgs.contentRef]);
-+    contentRef: newMsgs.contentRef,
-+    // maka: programmatic navigation seam. A host that scrolls the transcript
-+    // itself (jumping to an earlier turn) has no way to tell auto-follow that
-+    // the move was intentional: the scroll-up unlock is skipped whenever the
-+    // event arrives with a changed scrollHeight, which is exactly what a host
-+    // that mounts content before scrolling produces.
-+    unlockAutoFollow: scroll.unlock
-+  }), [scrollContainerRef, newMsgs.contentRef, scroll.unlock]);
- 
-   // --- Derived styles ---
-   const showEmpty = !hasVisibleContent(children);
 diff --git a/node_modules/@astryxdesign/core/dist/Chat/ChatToolCalls.js b/node_modules/@astryxdesign/core/dist/Chat/ChatToolCalls.js
 index 889970f..459e6e8 100644
 --- a/node_modules/@astryxdesign/core/dist/Chat/ChatToolCalls.js
@@ -113,7 +75,7 @@ index 889970f..459e6e8 100644
      "aria-controls": hasDetail && isDetailOpen ? detailId : undefined,
      onClick: toggleDetail,
 diff --git a/node_modules/@astryxdesign/core/dist/Chat/useChatNewMessages.js b/node_modules/@astryxdesign/core/dist/Chat/useChatNewMessages.js
-index 8c509bc..4b09993 100644
+index 8c509bc..5f46785 100644
 --- a/node_modules/@astryxdesign/core/dist/Chat/useChatNewMessages.js
 +++ b/node_modules/@astryxdesign/core/dist/Chat/useChatNewMessages.js
 @@ -49,6 +49,8 @@ export function useChatNewMessages({
@@ -125,69 +87,6 @@ index 8c509bc..4b09993 100644
      observeResize(el, () => {
        onResizeRef.current?.();
        const messages = el.getElementsByClassName('astryx-chat-message');
-@@ -90,9 +92,14 @@ export function useChatNewMessages({
-   const dismiss = useCallback(() => {
-     setHasNewMessages(false);
-   }, []);
-+  const reset = useCallback(() => {
-+    lastMessageRef.current = null;
-+    setHasNewMessages(false);
-+  }, []);
-   return {
-     hasNewMessages,
-     dismiss,
-+    reset,
-     contentRef
-   };
- }
-\ No newline at end of file
-diff --git a/node_modules/@astryxdesign/core/dist/Chat/useChatStreamScroll.d.ts b/node_modules/@astryxdesign/core/dist/Chat/useChatStreamScroll.d.ts
-index d279277..c13ade0 100644
---- a/node_modules/@astryxdesign/core/dist/Chat/useChatStreamScroll.d.ts
-+++ b/node_modules/@astryxdesign/core/dist/Chat/useChatStreamScroll.d.ts
-@@ -65,6 +65,13 @@ export interface UseChatStreamScrollReturn {
-     scrollIfLocked: () => void;
-     /** Scroll to the last message in the container. */
-     scrollToLastMessage: () => void;
-+    /**
-+     * Arm the first fill again, for a host that swaps conversations in one
-+     * container. The next scrollable content positions in a single frame
-+     * instead of springing from the top, which is what the swap needs when it
-+     * happens against an empty, still-loading scroller.
-+     */
-+    resetInitialFill: () => void;
- }
- export declare function useChatStreamScroll({ scrollRef, enabled, lockThreshold, buttonThreshold, damping, stiffness, mass, }: UseChatStreamScrollOptions): UseChatStreamScrollReturn;
- //# sourceMappingURL=useChatStreamScroll.d.ts.map
-\ No newline at end of file
-diff --git a/node_modules/@astryxdesign/core/dist/Chat/useChatStreamScroll.js b/node_modules/@astryxdesign/core/dist/Chat/useChatStreamScroll.js
-index d9f2bed..d7b6817 100644
---- a/node_modules/@astryxdesign/core/dist/Chat/useChatStreamScroll.js
-+++ b/node_modules/@astryxdesign/core/dist/Chat/useChatStreamScroll.js
-@@ -178,6 +178,13 @@ export function useChatStreamScroll({
-     animatingRef.current = false;
-     setIsLocked(false);
-   }, []);
-+  // maka: arm the first fill again. A host that swaps conversations in this
-+  // container gets a new initial fill, not growth of the current one — and it
-+  // usually swaps to an empty, still-loading scroller, so the jump cannot be
-+  // taken now and the arriving content must not enter through the spring.
-+  const resetInitialFill = useCallback(() => {
-+    initialFillPendingRef.current = true;
-+  }, []);
-   const scrollIfLocked = useCallback(() => {
-     if (!enabled) {
-       return;
-@@ -303,6 +310,7 @@ export function useChatStreamScroll({
-     lock,
-     unlock,
-     scrollIfLocked,
--    scrollToLastMessage
-+    scrollToLastMessage,
-+    resetInitialFill
-   };
- }
-\ No newline at end of file
 diff --git a/node_modules/@astryxdesign/core/dist/DropdownMenu/DropdownMenuItem.d.ts b/node_modules/@astryxdesign/core/dist/DropdownMenu/DropdownMenuItem.d.ts
 index 82ae62c..a97eff5 100644
 --- a/node_modules/@astryxdesign/core/dist/DropdownMenu/DropdownMenuItem.d.ts

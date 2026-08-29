@@ -58,6 +58,7 @@ import {
   type TurnPresentationDeriver,
 } from './chat-turn.js';
 import { useChatScroll } from './use-chat-scroll.js';
+import { useTranscriptScrollAuthority } from './transcript-scroll-authority.js';
 import { useTurnVirtualizer } from './use-turn-virtualizer.js';
 import { placeChatConversationItems } from './chat-conversation-items.js';
 import { useUiLocale } from './locale-context.js';
@@ -504,6 +505,7 @@ export function ChatView(props: {
     throw new Error('ChatView must be rendered inside ChatSurfaceLayout');
   }
   const scrollRef = chatLayout.scrollContainerRef;
+  const scrollAuthority = useTranscriptScrollAuthority();
   const orderedTurnIds = useMemo(() => turns.map((turn) => turn.turnId), [turns]);
   const sessionId = props.activeSession?.id;
   const {
@@ -518,6 +520,7 @@ export function ChatView(props: {
     scrollRef,
     targetTurnId: props.scrollTargetTurn?.turnId,
     targetKey: props.scrollTargetTurn?.nonce,
+    onContentResize: scrollAuthority?.notifyContentResize,
   });
   const navigatePromptRailFallback = useCallback((turn: PromptAnchorRailTurn) => {
     if (turnIdsRef.current.has(turn.turnId)) revealTurn(turn.turnId);
@@ -556,7 +559,6 @@ export function ChatView(props: {
     hasOlderHistory: props.hasOlderHistory,
     historyLoadPending: props.historyLoadPending,
     onLoadEarlierHistory: props.onLoadEarlierHistory,
-    unlockAutoFollow: chatLayout.unlockAutoFollow,
   });
   const { quote: selectionQuote, clear: clearSelectionQuote } = useMessageSelectionQuote(
     scrollRef,
@@ -668,7 +670,14 @@ export function ChatView(props: {
           title={props.returnToLatest.title}
           actionLabel={props.returnToLatest.label}
           isPending={props.returnToLatest.isPending}
-          onReturnToLatest={() => props.returnToLatest?.onClick()}
+          onReturnToLatest={async () => {
+            // Loading the latest range is the shell's job; putting the viewport
+            // on it is this view's, and setting the pin is the whole of it —
+            // the range that arrives afterwards is growth, and growth is
+            // already followed.
+            await props.returnToLatest?.onClick();
+            scrollAuthority?.pinToTail();
+          }}
         />
       ) : null}
       <SessionContextLayer
@@ -698,7 +707,7 @@ export function ChatView(props: {
           turns={promptRailTurns}
           scrollRef={scrollRef}
           onNavigateFallback={navigatePromptRailFallback}
-          onNavigateStart={chatLayout.unlockAutoFollow}
+          onNavigateStart={scrollAuthority?.releasePin}
         />
         <ChatMessageList
           className="maka-chat-message-list maka-chatContent"
