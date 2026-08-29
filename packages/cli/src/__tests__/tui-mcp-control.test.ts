@@ -30,6 +30,7 @@ import type {
 } from '@maka/runtime-host/client';
 import { createMcpConfigStore } from '@maka/storage/mcp-config-store';
 import { createTuiMcpController } from '../tui-mcp-control.js';
+import { waitFor } from './tui-terminal-mock.js';
 
 test('TUI MCP startup stays backgrounded and publishes the discovered snapshot', async () => {
   const config = deferredValue<McpConfigFile>();
@@ -621,7 +622,10 @@ test('same-server credential retirement stays inside the shared config transacti
     expectedRevision: leftEdit.revision,
     config: { url: 'https://left.example/mcp' },
   });
-  await waitFor(() => leftOrder.includes('forget:docs'));
+  await waitFor(
+    () => leftOrder.includes('forget:docs'),
+    'same-server credential retirement inside the shared config transaction',
+  );
   const second = right.execute({
     kind: 'edit',
     serverId: 'docs',
@@ -893,13 +897,6 @@ function configStoreHarness(get: () => Promise<McpConfigFile>) {
     transform: async (apply: (current: McpConfigFile) => McpConfigFile | Promise<McpConfigFile>) =>
       apply(await get()),
   };
-}
-
-async function waitFor(condition: () => boolean): Promise<void> {
-  for (let attempt = 0; attempt < 1_000 && !condition(); attempt += 1) {
-    await new Promise<void>((resolve) => setImmediate(resolve));
-  }
-  assert.ok(condition());
 }
 
 function deferred() {
