@@ -175,6 +175,20 @@ const tasks: Task[] = [
   }),
 ];
 
+// An eight-level parent→child chain, all still active, to exercise the task
+// panel's depth clamp (`Math.min(depth, 6)`): a level-8 row indents no further
+// than level 7.
+const deepTaskChain: Task[] = Array.from({ length: 8 }, (_, index) => {
+  const level = index + 1;
+  return task({
+    id: `td-${level}`,
+    key: `T${Array.from({ length: level }, () => '1').join('.')}`,
+    subject: `第 ${level} 层子任务，验证深层缩进仍可完整显示`,
+    parentId: level === 1 ? undefined : `td-${level - 1}`,
+    status: level === 8 ? 'in_progress' : 'pending',
+  });
+});
+
 const artifacts: ArtifactRecord[] = [
   {
     id: 'artifact-patch',
@@ -887,6 +901,99 @@ export const TasksEmpty: Story = {
 export const TasksLoadFailed: Story = {
   decorators: [bridge({ tasksFail: true })],
   render: () => <Workbar tab="tasks" />,
+};
+
+// Real path: 任务工作栏 → 任务 after a run finished with mixed outcomes. The
+// 最近结束 section (collapsed by default) holds the terminal tasks — a failed
+// one with its reason and a cancelled one — and caps at three, so a fourth
+// finished task is dropped rather than growing the list.
+export const TasksRecentlyFinished: Story = {
+  decorators: [
+    bridge({
+      tasks: [
+        task({
+          id: 'trf-active',
+          key: 'T1',
+          subject: '巡检发布前检查项',
+          status: 'in_progress',
+          owner: { actor: 'main_agent', runId: 'run-trf' },
+        }),
+        task({
+          id: 'trf-old',
+          key: 'T2',
+          subject: '归档上一轮实验数据',
+          status: 'completed',
+          completionEvidence: '已归档到对象存储。',
+          endedAt: NOW - 300_000,
+          updatedAt: NOW - 300_000,
+        }),
+        task({
+          id: 'trf-notes',
+          key: 'T3',
+          subject: '生成变更说明',
+          status: 'completed',
+          endedAt: NOW - 120_000,
+          updatedAt: NOW - 120_000,
+        }),
+        task({
+          id: 'trf-smoke',
+          key: 'T4',
+          subject: '回归冒烟用例',
+          status: 'failed',
+          failureReason: '两个用例在 CI 上超时，任务标记为失败。',
+          endedAt: NOW - 90_000,
+          updatedAt: NOW - 90_000,
+        }),
+        task({
+          id: 'trf-dupe',
+          key: 'T5',
+          subject: '取消重复的部署任务',
+          status: 'cancelled',
+          endedAt: NOW - 30_000,
+          updatedAt: NOW - 30_000,
+        }),
+      ],
+    }),
+  ],
+  render: () => <Workbar tab="tasks" />,
+  play: async ({ canvasElement }) => {
+    // Four terminal tasks, but the recent section freezes its count at three.
+    const trigger = await waitFor(() => {
+      const el = canvasElement.querySelector<HTMLElement>('.maka-task-ledger-terminal-trigger');
+      if (!el) throw new Error('recent-finished trigger not rendered yet');
+      return el;
+    });
+    await expect(trigger.textContent).toContain('3');
+    await userEvent.click(trigger);
+    await waitFor(() => {
+      // Failed and cancelled outcomes both render, with the failed reason…
+      const failed = canvasElement.querySelector('.maka-task-ledger-row[data-status="failed"]');
+      expect(failed?.textContent).toContain('两个用例在 CI 上超时');
+      expect(
+        canvasElement.querySelector('.maka-task-ledger-row[data-status="cancelled"]'),
+      ).not.toBeNull();
+      // …and the oldest finished task is the one the cap dropped.
+      expect(canvasElement.textContent).not.toContain('归档上一轮实验数据');
+    });
+  },
+};
+
+// Real path: 任务工作栏 → 任务 on a deeply decomposed task. The row indent is
+// clamped at depth 6, so an eighth-level subtask stays legible instead of
+// marching off the panel.
+export const TasksDeepNesting: Story = {
+  decorators: [bridge({ tasks: deepTaskChain })],
+  render: () => <Workbar tab="tasks" />,
+  play: async ({ canvasElement }) => {
+    // The eight-level chain renders down to its deepest row (reachability). The
+    // exact indent clamp (`--task-depth`) is a computed-style contract left to
+    // focused tests, not asserted here (review feedback).
+    await waitFor(() =>
+      expect(
+        canvasElement.querySelector('.maka-task-ledger-row[aria-level="8"]'),
+      ).not.toBeNull(),
+    );
+  },
 };
 
 // Storybook cannot host the native WebContentsView, so these pin what the panel
