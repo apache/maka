@@ -33,6 +33,7 @@ import { type SessionEvent, type ShellRunUpdate } from '@maka/core/events';
 import { type SandboxBoundaryResponse } from '@maka/core/sandbox-boundary';
 import { type SessionSummary, type StoredMessage } from '@maka/core/session';
 import { type ThinkingLevel } from '@maka/core/model-thinking';
+import type { ConnectionCatalogSnapshot } from '@maka/core/runtime-policy';
 import { type UserQuestionResponse } from '@maka/core/user-question';
 import type { SkillInvocationResult } from '@maka/core/skill-invocation';
 import type {
@@ -60,15 +61,18 @@ import type {
 import { skillInvocationBlockedMessage } from '../session-driver.js';
 import { SafeBoundaryResumeParkedError } from '../runtime-host-session-driver.js';
 import { listApiKeyOnboardableProviders } from '../onboarding-catalog.js';
+import { projectRuntimeHostModelChoices } from '../runtime-host-onboarding.js';
+import { modelChoiceConnectionLabels } from '../pi-tui-pickers.js';
 import type {
   MakaOnboardingSurface,
   MakaPiTuiTurnActivitySurface,
   ModelChoice,
   OnboardingProviderEntry,
+  OnboardingSaveInput,
   OnboardingSaveResult,
+  OnboardingVerifyInput,
   OnboardingVerifyResult,
 } from '../pi-tui-contracts.js';
-import type { ModelInfo, ProviderType } from '@maka/core/llm-connections';
 import {
   resolveTaskbarProgress,
   runMakaPiTui as runMakaPiTuiImpl,
@@ -181,25 +185,16 @@ function historicalGraphSnapshot(graphId: string): AgentGraphClientSnapshot {
 function defaultOnboardingProviders(): OnboardingProviderEntry[] {
   return listApiKeyOnboardableProviders().map((provider) => ({
     ...provider,
-    hasConnection: false,
+    target: { kind: 'create', providerType: provider.providerType },
+    label: `${provider.label} · 添加账号`,
     enabledModelIds: [],
   }));
 }
 
 interface FakeOnboardingOpts {
   providers?: OnboardingProviderEntry[];
-  verify?: (input: {
-    providerType: ProviderType;
-    apiKey?: string;
-    baseUrl?: string;
-  }) => Promise<OnboardingVerifyResult>;
-  save?: (input: {
-    providerType: ProviderType;
-    apiKey?: string;
-    baseUrl?: string;
-    enabledModelIds: readonly string[];
-    models: readonly ModelInfo[];
-  }) => Promise<OnboardingSaveResult>;
+  verify?: (input: OnboardingVerifyInput) => Promise<OnboardingVerifyResult>;
+  save?: (input: OnboardingSaveInput) => Promise<OnboardingSaveResult>;
 }
 
 /** A controllable `/setup` surface: the wizard calls `listProviders` to open,
@@ -3495,7 +3490,7 @@ describe('Maka Pi TUI runner', () => {
     assert.deepEqual(driver.modelConnections, ['zai']);
     await waitFor(() =>
       plainTerminalOutput(terminal.screenOutput()).includes(
-        'Model changed: gpt-5.5 (OpenAI) → glm-5.2 (Z.ai)',
+        'Model changed: gpt-5.5 (OpenAI · openai) → glm-5.2 (Z.ai · zai)',
       ),
     );
     // The status line now reflects both the new model and the new connection.
@@ -3567,7 +3562,6 @@ describe('Maka Pi TUI runner', () => {
       plainTerminalOutput(terminal.screenOutput()),
       /切换模型可能需要重建提示缓存/,
     );
-
     // Each query isolates exactly one of the five match criteria named by #1098
     // (model id, connection name, connection slug, provider type, provider
     // label) and keeps only its matching choice. The fixture's three distinct
@@ -3650,7 +3644,6 @@ describe('Maka Pi TUI runner', () => {
       plainTerminalOutput(terminal.screenOutput()),
       /切换模型可能需要重建提示缓存/,
     );
-
     terminal.input('\x1b[B');
     terminal.input('\r');
     await waitFor(() => driver.models.length === 1);
@@ -3669,6 +3662,7 @@ describe('Maka Pi TUI runner', () => {
 
   test('names both connections when the model id stays the same', async () => {
     const terminal = new FakeTerminal();
+    terminal.resize(120, 40);
     const driver = new SlashCommandDriver();
     const run = runMakaPiTui({
       title: 'Maka',
@@ -3711,7 +3705,7 @@ describe('Maka Pi TUI runner', () => {
     assert.deepEqual(driver.modelConnections, ['relay']);
     await waitFor(() =>
       plainTerminalOutput(terminal.screenOutput()).includes(
-        'Model changed: shared-model (Primary) → shared-model (Relay)',
+        'Model changed: shared-model (Primary · primary) → shared-model (Relay · relay)',
       ),
     );
 
@@ -3722,6 +3716,136 @@ describe('Maka Pi TUI runner', () => {
         throw new Error('TUI did not close during test cleanup');
       }),
     ]);
+  });
+
+  test('disambiguates same-name onboarded accounts and selects the exact slug', async () => {
+    const terminal = new FakeTerminal();
+    terminal.resize(180, 40);
+    const driver = new SlashCommandDriver();
+    const catalog: ConnectionCatalogSnapshot = {
+      revision: 2,
+      defaultTarget: { connectionId: 'openai-account-1', modelId: 'shared-model' },
+      connections: [
+        {
+          connectionId: 'openai-account-1',
+          revision: 1,
+          slug: 'openai',
+          name: 'OpenAI',
+          providerType: 'openai',
+          enabled: true,
+          enabledModelIds: ['shared-model'],
+          models: [{ id: 'shared-model' }],
+        },
+        {
+          connectionId: 'openai-account-2',
+          revision: 1,
+          slug: 'openai-2',
+          name: 'OpenAI',
+          providerType: 'openai',
+          enabled: true,
+          enabledModelIds: ['shared-model'],
+          models: [{ id: 'shared-model' }],
+        },
+      ],
+    };
+    const modelChoices = projectRuntimeHostModelChoices(catalog);
+    const run = runMakaPiTui({
+      title: 'Maka',
+      driver,
+      cwd: '/repo',
+      model: 'shared-model',
+      connectionSlug: 'openai',
+      providerType: 'openai',
+      modelChoices,
+      permissionMode: 'ask',
+      terminal,
+    });
+
+    await waitForTuiPaint(terminal);
+    terminal.input('/model');
+    terminal.input('\r');
+    await waitFor(() => {
+      const output = plainTerminalOutput(terminal.screenOutput());
+      return output.includes('OpenAI · openai') && output.includes('OpenAI · openai-2');
+    });
+    terminal.input('\x1b[B');
+    terminal.input('\r');
+
+    await waitFor(() => driver.modelConnections.length === 1);
+    assert.deepEqual(driver.modelConnections, ['openai-2']);
+    await waitFor(() =>
+      plainTerminalOutput(terminal.screenOutput()).includes(
+        'Model changed: shared-model (OpenAI · openai) → shared-model (OpenAI · openai-2)',
+      ),
+    );
+
+    exitMaka(terminal);
+    await Promise.race([
+      run,
+      delay(CLOSE_BUDGET_MS).then(() => {
+        throw new Error('TUI did not close during test cleanup');
+      }),
+    ]);
+  });
+
+  test('disambiguates a connection name that collides with another fallback slug', () => {
+    assert.deepEqual(
+      [
+        ...modelChoiceConnectionLabels([
+          {
+            connectionSlug: 'openai',
+            connectionName: 'openai-2',
+            providerType: 'openai',
+            model: 'model-a',
+            isDefaultConnection: true,
+          },
+          {
+            connectionSlug: 'openai-2',
+            connectionName: '   ',
+            providerType: 'openai',
+            model: 'model-b',
+            isDefaultConnection: false,
+          },
+        ]),
+      ],
+      [
+        ['openai-2', 'openai-2'],
+        ['openai', 'openai-2 · openai'],
+      ],
+    );
+  });
+
+  test('keeps final account labels globally unique after formatting collisions', () => {
+    const labels = modelChoiceConnectionLabels([
+      {
+        connectionId: 'connection-a',
+        connectionSlug: 'openai',
+        connectionName: 'OpenAI',
+        providerType: 'openai',
+        model: 'model-a',
+        isDefaultConnection: true,
+      },
+      {
+        connectionId: 'connection-b',
+        connectionSlug: 'openai-2',
+        connectionName: 'OpenAI',
+        providerType: 'openai',
+        model: 'model-b',
+        isDefaultConnection: false,
+      },
+      {
+        connectionId: 'connection-c',
+        connectionSlug: 'relay',
+        connectionName: 'OpenAI · openai',
+        providerType: 'openai',
+        model: 'model-c',
+        isDefaultConnection: false,
+      },
+    ]);
+
+    assert.equal(new Set(labels.values()).size, 3);
+    assert.equal(labels.get('openai'), 'OpenAI · openai');
+    assert.equal(labels.get('relay'), 'OpenAI · openai · relay');
   });
 
   test('ignores a delayed title refresh after switching sessions', async () => {

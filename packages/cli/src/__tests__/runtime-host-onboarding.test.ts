@@ -92,31 +92,39 @@ describe('projectProviders', () => {
     models: [{ id: 'relay/model' }],
   } as const;
 
-  test('a Desktop-created relay under a custom slug reads as the existing connection', () => {
-    // Identity must survive the projection: a sole connection of the provider
-    // type is "the" one to edit even off the canonical slug, or saving would
-    // duplicate it there (#3467 review).
-    const entry = projectProviders(catalog([relay])).find(
+  test('a Desktop-created relay and add-account action are both explicit', () => {
+    const entries = projectProviders(catalog([relay])).filter(
       ({ providerType }) => providerType === 'openai-compatible',
     );
-    assert.equal(entry?.hasConnection, true);
-    assert.equal(entry?.connectionId, 'relay-custom-id');
+    const entry = entries.find(({ target }) => target.kind === 'existing');
+    assert.deepEqual(entry?.target, { kind: 'existing', connectionId: 'relay-custom-id' });
+    assert.equal(entry && 'connectionSlug' in entry ? entry.connectionSlug : undefined, 'my-relay');
     assert.deepEqual(entry?.enabledModelIds, ['relay/model']);
+    assert.deepEqual(entries.find(({ target }) => target.kind === 'create')?.target, {
+      kind: 'create',
+      providerType: 'openai-compatible',
+    });
   });
 
-  test('several non-canonical connections resolve to none — the wizard offers a fresh setup', () => {
-    const entry = projectProviders(
+  test('several non-canonical connections remain independently editable', () => {
+    const entries = projectProviders(
       catalog([relay, { ...relay, connectionId: 'relay-2-id', slug: 'my-relay-2' }]),
-    ).find(({ providerType }) => providerType === 'openai-compatible');
-    assert.equal(entry?.hasConnection, false);
-    assert.equal(entry?.connectionId, undefined);
+    ).filter(({ providerType }) => providerType === 'openai-compatible');
+    assert.deepEqual(
+      entries.flatMap(({ target }) => (target.kind === 'existing' ? [target.connectionId] : [])),
+      ['relay-custom-id', 'relay-2-id'],
+    );
   });
 
-  test('the canonical-slug connection wins over other connections of the type', () => {
+  test('a canonical connection does not hide another account', () => {
     const canonical = { ...relay, connectionId: 'canonical-id', slug: 'openai-compatible' };
-    const entry = projectProviders(catalog([relay, canonical])).find(
-      ({ providerType }) => providerType === 'openai-compatible',
+    const entries = projectProviders(catalog([relay, canonical])).filter(
+      ({ providerType, target }) =>
+        providerType === 'openai-compatible' && target.kind === 'existing',
     );
-    assert.equal(entry?.connectionId, 'canonical-id');
+    assert.deepEqual(
+      entries.flatMap(({ target }) => (target.kind === 'existing' ? [target.connectionId] : [])),
+      ['relay-custom-id', 'canonical-id'],
+    );
   });
 });

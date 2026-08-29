@@ -20,6 +20,7 @@
 import type { ForeignSessionDigest, ForeignSessionSummary } from '@maka/core/foreign-session';
 import type { ModelInfo, ProviderType } from '@maka/core/llm-connections';
 import type { ThinkingLevel } from '@maka/core/model-thinking';
+import type { ConnectionOnboardingTarget } from '@maka/core/runtime-policy';
 import type { MakaPiTuiTurnActivity } from './pi-tui-turn.js';
 
 export interface ModelChoice {
@@ -52,17 +53,21 @@ export interface OnboardableProvider {
   fallbackModels: readonly string[];
 }
 
-export interface OnboardingProviderEntry extends OnboardableProvider {
-  hasConnection: boolean;
-  /** The existing connection's identity, so saving edits it in place. */
-  connectionId?: string;
-  enabledModelIds: readonly string[];
-}
+export type OnboardingProviderEntry = OnboardableProvider &
+  (
+    | {
+        target: Extract<ConnectionOnboardingTarget, { readonly kind: 'create' }>;
+        enabledModelIds: readonly string[];
+      }
+    | {
+        target: Extract<ConnectionOnboardingTarget, { readonly kind: 'existing' }>;
+        connectionSlug: string;
+        enabledModelIds: readonly string[];
+      }
+  );
 
 export interface OnboardingVerifyInput {
-  providerType: ProviderType;
-  /** The existing connection this edit targets; absent creates/updates the canonical-slug one. */
-  connectionId?: string;
+  target: ConnectionOnboardingTarget;
   apiKey?: string;
   /** Endpoint for `requiresBaseUrl` providers; blank reuses the persisted one. */
   baseUrl?: string;
@@ -80,9 +85,7 @@ export type OnboardingVerifyResult =
     };
 
 export interface OnboardingSaveInput {
-  providerType: ProviderType;
-  /** The existing connection this edit targets; absent creates/updates the canonical-slug one. */
-  connectionId?: string;
+  target: ConnectionOnboardingTarget;
   apiKey?: string;
   /** Endpoint for `requiresBaseUrl` providers; blank reuses the persisted one. */
   baseUrl?: string;

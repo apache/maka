@@ -17,7 +17,6 @@
  * under the License.
  */
 
-import { deriveConnectionSlug } from '@maka/core/llm-connections';
 import { isRetiredProvider } from '@maka/core/provider-registry';
 import type { ConnectionCatalogSnapshot } from '@maka/core/runtime-policy';
 import {
@@ -40,8 +39,7 @@ export function createRuntimeHostOnboardingSurface(
     verify: async (input) => {
       try {
         const result = await connection.request('connection.onboarding.verify', {
-          providerType: input.providerType,
-          connectionId: input.connectionId ?? null,
+          target: input.target,
           apiKey: trimmedOrNull(input.apiKey),
           baseUrl: trimmedOrNull(input.baseUrl),
         });
@@ -60,8 +58,7 @@ export function createRuntimeHostOnboardingSurface(
     save: async (input) => {
       try {
         const result = await connection.request('connection.onboarding.save', {
-          providerType: input.providerType,
-          connectionId: input.connectionId ?? null,
+          target: input.target,
           apiKey: trimmedOrNull(input.apiKey),
           baseUrl: trimmedOrNull(input.baseUrl),
           enabledModelIds: [...input.enabledModelIds],
@@ -112,31 +109,26 @@ export function projectRuntimeHostModelChoices(catalog: ConnectionCatalogSnapsho
 }
 
 export function projectProviders(catalog: ConnectionCatalogSnapshot): OnboardingProviderEntry[] {
-  const bySlug = new Map(catalog.connections.map((connection) => [connection.slug, connection]));
-  return listApiKeyOnboardableProviders().map((provider) => {
-    // Prefer the canonical-slug connection; failing that, a provider's sole
-    // connection is unambiguously "the" one to edit — a Desktop-created relay
-    // under a custom slug must read as configured here, or saving would
-    // duplicate it at the canonical slug. With several non-canonical
-    // connections there is no honest single answer, so the wizard offers a
-    // fresh canonical-slug setup.
-    const canonical = bySlug.get(deriveConnectionSlug(provider.providerType));
-    const ofType = catalog.connections.filter(
-      (connection) => connection.providerType === provider.providerType,
-    );
-    const existing =
-      canonical?.providerType === provider.providerType
-        ? canonical
-        : ofType.length === 1
-          ? ofType[0]
-          : undefined;
-    return {
+  const entries: OnboardingProviderEntry[] = [];
+  for (const provider of listApiKeyOnboardableProviders()) {
+    for (const connection of catalog.connections) {
+      if (connection.providerType !== provider.providerType) continue;
+      entries.push({
+        ...provider,
+        target: { kind: 'existing', connectionId: connection.connectionId },
+        label: `${connection.name} · ${connection.slug}`,
+        connectionSlug: connection.slug,
+        enabledModelIds: [...connection.enabledModelIds],
+      });
+    }
+    entries.push({
       ...provider,
-      hasConnection: existing !== undefined,
-      ...(existing ? { connectionId: existing.connectionId } : {}),
-      enabledModelIds: existing ? [...existing.enabledModelIds] : [],
-    };
-  });
+      target: { kind: 'create', providerType: provider.providerType },
+      label: `${provider.label} · 添加账号`,
+      enabledModelIds: [],
+    });
+  }
+  return entries;
 }
 
 function trimmedOrNull(value: string | undefined): string | null {
@@ -161,8 +153,8 @@ function onboardingFailureText(input: {
       return 'The connection changed while onboarding — reopen /setup and try again';
     case 'provider_unsupported':
       return 'This provider does not support API-key onboarding';
-    case 'slug_conflict':
-      return 'The provider connection name is already used by another provider';
+    case 'catalog_full':
+      return 'The connection catalog is full';
     case 'model_unavailable':
       return 'The selected model is no longer available';
     default:
