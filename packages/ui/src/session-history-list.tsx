@@ -44,7 +44,7 @@ import {
   Trash2,
 } from './icons.js';
 import { RelativeTime } from './relative-time.js';
-import { formatAbsoluteTimestamp } from './chat-display-helpers.js';
+import { formatAbsoluteTimestamp } from '@maka/core/relative-time';
 import { Badge } from '@astryxdesign/core/Badge';
 import { MoreMenu } from '@astryxdesign/core/MoreMenu';
 import {

@@ -17,7 +17,7 @@ apps/desktop/src/renderer/features/goals/ui/goal-host.tsx
 apps/desktop/src/renderer/features/module-hub/services-context.tsx
 apps/desktop/src/renderer/features/module-hub/ui/module-hub-host.tsx
 apps/desktop/src/renderer/features/session-navigation/services-context.tsx
-apps/desktop/src/renderer/features/session-navigation/ui/session-navigation-host.tsx
+apps/desktop/src/renderer/features/session-navigation/ui/session-navigation-provider.tsx
 apps/desktop/src/renderer/features/task-entry/services-context.tsx
 apps/desktop/src/renderer/features/task-entry/ui/task-entry-host.tsx
 apps/desktop/src/renderer/features/workbar/services-context.tsx
@@ -202,6 +202,7 @@ packages/ui/src/search-modal.tsx
 packages/ui/src/session-context-layer.tsx
 packages/ui/src/session-history-list.tsx
 packages/ui/src/session-list-panel.tsx
+packages/ui/src/session-rail-context.tsx
 packages/ui/src/session-rename-dialog.tsx
 packages/ui/src/session-sidebar-nav.tsx
 packages/ui/src/skill-inspector.tsx

@@ -203,13 +203,19 @@ export function SessionInspectorPanel(props: { sessionId: string; active: boolea
                   />
                 ))}
               </ol>
-              {snapshot.nextCursor && (
+              {(snapshot.nextCursor || snapshot.canHideEarlier) && (
                 <Button
                   variant="ghost"
                   size="sm"
-                  label={snapshot.loadingEarlier ? copy.loadingEarlier : copy.loadEarlier}
+                  label={
+                    snapshot.canHideEarlier
+                      ? copy.hideEarlier
+                      : snapshot.loadingEarlier
+                        ? copy.loadingEarlier
+                        : copy.loadEarlier
+                  }
                   isDisabled={snapshot.loading || snapshot.loadingEarlier}
-                  onClick={snapshot.loadEarlier}
+                  onClick={snapshot.canHideEarlier ? snapshot.hideEarlier : snapshot.loadEarlier}
                 />
               )}
             </VStack>

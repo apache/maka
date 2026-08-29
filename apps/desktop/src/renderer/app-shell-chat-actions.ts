@@ -67,6 +67,7 @@ import {
   noRealConnectionSetupDescription,
 } from './model-connection-errors.js';
 import type { RefreshMessagesOptions } from './session-message-settlement.js';
+import type { MessageListUpdater } from './session-workspace-actions.js';
 
 export type { RefreshMessagesOptions };
 
@@ -81,7 +82,6 @@ type BooleanRecordUpdater = (updater: (current: Record<string, boolean>) => Reco
 type LiveTurnRecordUpdater = (
   updater: (current: Record<string, LiveTurnProjection>) => Record<string, LiveTurnProjection>,
 ) => void;
-type MessageListUpdater = (next: StoredMessage[] | ((current: StoredMessage[]) => StoredMessage[])) => void;
 type MessageLoadErrorUpdater = (updater: (current: Record<string, string>) => Record<string, string>) => void;
 type InteractionQueueUpdater = (updater: (current: InteractionQueues) => InteractionQueues) => void;
 

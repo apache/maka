@@ -23,11 +23,11 @@ import { getDesktopConversationCopy } from './locales/conversation-copy.js';
 import { localizedShellErrorMessage } from './locales/shell-copy.js';
 import {
   normalizeSessionSummaryForDisplay,
-} from './session-status-presentation';
+} from './session-status-presentation.js';
 import {
   createSessionListRefresher,
   type SessionListRefresher,
-} from './session-read-state';
+} from './session-read-state.js';
 import { reconcileSettledSessionTransients } from './settled-session-transients.js';
 import {
   selectAuthoritativeSessionIds,
@@ -105,22 +105,26 @@ export function useAppShellSessionList(
     });
   }
 
-  // Stable: the rail's row actions are built once from it, and a refresher that
-  // changed identity per render invalidated that whole chain (#4109).
-  const refreshSessions = useCallback(
-    async (): Promise<DesktopSessionSummary[]> => refresherRef.current!.refresh(),
-    [],
-  );
-
-  function seedSessions(
-    snapshotSessions: readonly DesktopSessionSummary[],
-  ): DesktopSessionSummary[] {
-    const next = snapshotSessions.map(normalizeSessionSummaryForDisplay);
-    commitSessions(next);
-    return next;
-  }
-
-
+  // Fixed identities for the renderer's lifetime: both close over ref boxes and
+  // a state setter only, and consumers list them in dep arrays and hand them
+  // down as props (see `session-workspace-actions.ts`).
+  const actionsRef = useRef<{
+    refreshSessions(): Promise<DesktopSessionSummary[]>;
+    seedSessions(
+      snapshotSessions: readonly DesktopSessionSummary[],
+    ): DesktopSessionSummary[];
+  } | null>(null);
+  actionsRef.current ??= {
+    async refreshSessions() {
+      return refresherRef.current!.refresh();
+    },
+    seedSessions(snapshotSessions) {
+      const next = snapshotSessions.map(normalizeSessionSummaryForDisplay);
+      commitSessions(next);
+      return next;
+    },
+  };
+  const { refreshSessions, seedSessions } = actionsRef.current;
 
   return {
     sessions,

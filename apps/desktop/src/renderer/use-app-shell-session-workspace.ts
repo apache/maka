@@ -17,37 +17,27 @@
  * under the License.
  */
 
-import { useCallback, useRef, useState } from 'react';
+import { useRef, useState } from 'react';
 import type { StoredMessage } from '@maka/core/session';
 import type { TransientUserMessageProjection } from '@maka/ui';
-import { MESSAGE_QUEUE_MAX_ENTRIES } from '@maka/runtime-host/protocol';
-import { useAppShellSessionUiState } from './app-shell-session-ui-state';
+import { useAppShellSessionUiState } from './app-shell-session-ui-state.js';
 import {
   selectActiveSessionId,
   useSessionCatalogController,
 } from './session-catalog-state.js';
 import { useExternalStoreSelector } from './use-external-store-selector.js';
-import { useAppShellSessionList } from './use-app-shell-session-list';
-import { createBootstrapSelectionLease } from './bootstrap-selection-lease';
-import {
-  clearNewTaskReloadIntent,
-  hasNewTaskReloadIntent,
-  markNewTaskReloadIntent,
-} from './new-task-reload-intent';
+import { useAppShellSessionList } from './use-app-shell-session-list.js';
+import { createBootstrapSelectionLease } from './bootstrap-selection-lease.js';
+import { hasNewTaskReloadIntent } from './new-task-reload-intent.js';
 import type { DesktopTranscriptRangeController } from './desktop-transcript-range-store.js';
 import {
-  mergeTransientMessageProjection,
-  projectQueuedTransientMessages as applyQueuedTransientProjection,
-  reconcileTransientMessages,
-} from './transient-message-projection.js';
+  createSessionWorkspaceActions,
+  type SessionWorkspaceActions,
+} from './session-workspace-actions.js';
 
 type ToastApi = {
   error(title: string, description?: string): void;
 };
-
-type MessageListUpdater = (
-  next: StoredMessage[] | ((current: StoredMessage[]) => StoredMessage[]),
-) => void;
 
 type TransientUserMessage = TransientUserMessageProjection;
 
@@ -78,155 +68,38 @@ export function useAppShellSessionWorkspace(toastApi: ToastApi) {
   const messageRetryPendingRef = useRef<Set<string>>(new Set());
   const stopPendingRef = useRef<Set<string>>(new Set());
 
-  // Reads only refs, so it can be created once. Row actions and the selection
-  // are built from it, and a factory that changed identity per render was what
-  // put the whole rail back on the shell's render (#4109).
-  const projectTransientMessages = useCallback((
-    sessionId: string,
-    durable: readonly StoredMessage[],
-  ): TransientUserMessage[] => {
-    const pending = transientMessagesBySessionRef.current.get(sessionId);
-    if (!pending || pending.size === 0) return [];
-    let includeTransient = true;
-    try {
-      const range = transcriptRangeRef.current?.store.range();
-      includeTransient = range?.sessionId !== sessionId || !range.hasNewer;
-    } catch {
-      // An unopened transcript has no historical range to hide the live tail from.
-    }
-    const projected = reconcileTransientMessages(pending, durable, { includeTransient });
-    if (pending.size === 0) {
-      transientMessagesBySessionRef.current.delete(sessionId);
-    }
-    return projected;
-  }, []);
-
-  // Stable, like `setActiveId`: the rail's row actions clear the active
-  // transcript through it, and a per-render identity there rebuilt them and
-  // every row under them (#4109).
-  const setMessagesForActiveSession = useCallback<MessageListUpdater>((next) => {
-    const projected = typeof next === 'function' ? next([...messagesRef.current]) : next;
-    messagesRef.current = projected;
-    setMessages(projected);
-    const sessionId = activeIdRef.current;
-    setTransientMessages(sessionId ? projectTransientMessages(sessionId, projected) : []);
-  }, [projectTransientMessages]);
-
-  function addTransientMessage(sessionId: string, message: TransientUserMessage): void {
-    let pending = transientMessagesBySessionRef.current.get(sessionId);
-    if (!pending) {
-      pending = new Map();
-      transientMessagesBySessionRef.current.set(sessionId, pending);
-    }
-    pending.set(message.id, message);
-    if (activeIdRef.current === sessionId) {
-      setTransientMessages(projectTransientMessages(sessionId, messagesRef.current));
-    }
-  }
-
-  function updateTransientMessage(sessionId: string, message: TransientUserMessage): void {
-    const pending = transientMessagesBySessionRef.current.get(sessionId);
-    const current = pending?.get(message.id);
-    if (!pending || !current) return;
-    pending.set(message.id, mergeTransientMessageProjection(current, message));
-    if (activeIdRef.current === sessionId) {
-      setTransientMessages(projectTransientMessages(sessionId, messagesRef.current));
-    }
-  }
-
-  function projectQueuedTransientMessages(
-    sessionId: string,
-    messages: readonly TransientUserMessage[],
-  ): void {
-    let pending = transientMessagesBySessionRef.current.get(sessionId);
-    if (!pending && messages.length === 0) return;
-    if (!pending) {
-      pending = new Map();
-      transientMessagesBySessionRef.current.set(sessionId, pending);
-    }
-    applyQueuedTransientProjection(pending, messages);
-    if (activeIdRef.current === sessionId) {
-      setTransientMessages(projectTransientMessages(sessionId, messagesRef.current));
-    }
-  }
-
-  async function retireCancelledTransientMessages(sessionId: string): Promise<void> {
-    const pending = transientMessagesBySessionRef.current.get(sessionId);
-    if (!pending || pending.size === 0) return;
-    try {
-      // A legal Host queue already fills the protocol's per-query cap, and an
-      // unreconciled root Message sits beside it, so asking about every row at
-      // once fails the whole proof and retires nothing.
-      const messageIds = [...pending.keys()];
-      const cancelled: string[] = [];
-      for (let from = 0; from < messageIds.length; from += MESSAGE_QUEUE_MAX_ENTRIES) {
-        const result = await window.maka.sessions.queryCancelledMessages(
-          sessionId,
-          messageIds.slice(from, from + MESSAGE_QUEUE_MAX_ENTRIES),
-        );
-        cancelled.push(...result.cancelledMessageIds);
-      }
-      const current = transientMessagesBySessionRef.current.get(sessionId);
-      if (!current) return;
-      for (const messageId of cancelled) current.delete(messageId);
-      if (current.size === 0) transientMessagesBySessionRef.current.delete(sessionId);
-      if (activeIdRef.current === sessionId) {
-        setTransientMessages(projectTransientMessages(sessionId, messagesRef.current));
-      }
-    } catch {
-      // A failed proof query leaves presentation intact until canonical proof arrives.
-    }
-  }
-
-  function removeTransientMessage(sessionId: string, messageId: string): void {
-    const pending = transientMessagesBySessionRef.current.get(sessionId);
-    if (!pending?.delete(messageId)) return;
-    if (pending.size === 0) transientMessagesBySessionRef.current.delete(sessionId);
-    if (activeIdRef.current === sessionId) {
-      setTransientMessages(projectTransientMessages(sessionId, messagesRef.current));
-    }
-  }
-
-  const setActiveId = useCallback((next: string | undefined): void => {
-    selectionRevisionRef.current += 1;
-    // Clear here, not in the read effect: a layout-effect clear would wipe an
-    // optimistic first message before the first paint.
-    if (!next) {
-      setMessageLoadPending(false);
-    } else if (next !== activeIdRef.current) {
-      messagesRef.current = [];
-      setMessages([]);
-      setTransientMessages(projectTransientMessages(next, []));
-      setMessageLoadPending(true);
-    }
-    activeIdRef.current = next;
-    if (next) clearNewTaskReloadIntent();
-    catalog.setActiveSessionId(next);
-  }, [catalog, projectTransientMessages]);
+  const actionsRef = useRef<SessionWorkspaceActions | null>(null);
+  // Every dep below is a ref box, a state setter, or a method of the
+  // once-created session-UI controller, so one instance serves the renderer's
+  // lifetime. Consumers list these in dep arrays and pass them as props; a
+  // per-render identity there is what defeated the Session rail's memo.
+  actionsRef.current ??= createSessionWorkspaceActions({
+    activeIdRef,
+    messagesRef,
+    transientMessagesBySessionRef,
+    transcriptRangeRef,
+    selectionRevisionRef,
+    messageRetryPendingRef,
+    stopPendingRef,
+    // The store is the authority for the selection, so the factory's single
+    // write point goes to it rather than to a `useState` beside it. The
+    // controller is created once per renderer, so this identity is fixed and
+    // the once-created factory may capture it.
+    setActiveIdState: catalog.setActiveSessionId,
+    setMessagesState: setMessages,
+    setTransientMessagesState: setTransientMessages,
+    setMessageLoadPending,
+    clearSessionUiState: sessionUi.clearSessionUiState,
+  });
+  const actions = actionsRef.current;
 
   if (!bootstrapSelectionLeaseRef.current) {
     bootstrapSelectionLeaseRef.current = createBootstrapSelectionLease({
       readActiveId: () => activeIdRef.current,
       readSelectionRevision: () => selectionRevisionRef.current,
-      select: setActiveId,
+      select: actions.setActiveId,
     });
     if (hasNewTaskReloadIntent()) bootstrapSelectionLeaseRef.current.release();
-  }
-
-  const startNewSession = useCallback((): void => {
-    markNewTaskReloadIntent();
-    setActiveId(undefined);
-    messagesRef.current = [];
-    setMessages([]);
-    setTransientMessages([]);
-  }, [setActiveId]);
-
-  function clearOwnedSessionState(sessionId: string): void {
-    messageRetryPendingRef.current.delete(sessionId);
-    stopPendingRef.current.delete(sessionId);
-    transientMessagesBySessionRef.current.delete(sessionId);
-    if (activeIdRef.current === sessionId) setTransientMessages([]);
-    sessionUi.clearSessionUiState(sessionId);
   }
 
   return {
@@ -235,17 +108,9 @@ export function useAppShellSessionWorkspace(toastApi: ToastApi) {
     activeId,
     activeIdRef,
     bootstrapSelectionLease: bootstrapSelectionLeaseRef.current,
-    setActiveId,
-    startNewSession,
-    clearOwnedSessionState,
+    ...actions,
     messages,
     transientMessages,
-    setMessages: setMessagesForActiveSession,
-    addTransientMessage,
-    updateTransientMessage,
-    projectQueuedTransientMessages,
-    retireCancelledTransientMessages,
-    removeTransientMessage,
     transcriptRangeRef,
     messageLoadPending,
     setMessageLoadPending,

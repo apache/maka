@@ -205,6 +205,7 @@ export interface DesktopConversationCopy {
     costUnavailable: string;
     costEstimateHelp: string;
     loadEarlier: string;
+    hideEarlier: string;
     loadingEarlier: string;
     loadingTrace: string;
     loadingSummary: string;
@@ -556,6 +557,7 @@ const COPY = {
       costUnavailable: '费用未知',
       costEstimateHelp: '基于已记录用量和定价估算；缺失或未定价的调用可能未计入。',
       loadEarlier: '加载更早记录',
+      hideEarlier: '隐藏所有更早记录',
       loadingEarlier: '正在加载…',
       loadingTrace: '正在读取时间线…',
       loadingSummary: '正在估算完整会话用量…',
@@ -785,6 +787,7 @@ const COPY = {
       costUnavailable: 'cost unknown',
       costEstimateHelp: 'Estimated from recorded usage and pricing; missing or unpriced calls may be excluded.',
       loadEarlier: 'Load earlier records',
+      hideEarlier: 'Hide all earlier records',
       loadingEarlier: 'Loading…',
       loadingTrace: 'Loading timeline…',
       loadingSummary: 'Estimating full-session usage…',
