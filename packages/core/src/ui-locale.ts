@@ -17,6 +17,8 @@
  * under the License.
  */
 
+import { IntlMessageFormat } from 'intl-messageformat';
+
 /** Resolved locales supported by human-facing Maka clients. */
 export const UI_LOCALES = ['zh', 'en'] as const;
 
@@ -29,6 +31,95 @@ export const UI_LOCALE_PREFERENCES = ['auto', ...UI_LOCALES] as const;
 
 /** A catalog must carry copy for every supported resolved locale. */
 export type UiCatalog<T> = Record<UiLocale, T>;
+
+type DeepPartial<T> = T extends readonly unknown[]
+  ? T
+  : T extends object
+    ? { readonly [Key in keyof T]?: DeepPartial<T[Key]> }
+    : T;
+
+export type UiMessageCatalog<T> = {
+  readonly en: T;
+} & Partial<{
+  readonly [Locale in Exclude<UiLocale, 'en'>]: DeepPartial<T>;
+}>;
+
+type ExactMessageShape<Actual, Expected> = Actual extends readonly unknown[]
+  ? NonNullable<Expected> extends readonly unknown[]
+    ? Actual
+    : never
+  : Actual extends object
+    ? Exclude<keyof Actual, keyof NonNullable<Expected>> extends never
+      ? {
+          readonly [Key in keyof Actual]: ExactMessageShape<
+            Actual[Key],
+            NonNullable<Expected>[Key & keyof NonNullable<Expected>]
+          >;
+        }
+      : never
+    : Actual;
+
+const messageFormatters = new Map<string, IntlMessageFormat>();
+
+export function defineUiMessageCatalog<Expected>() {
+  return <Catalog extends UiMessageCatalog<Expected>>(
+    catalog: Catalog & {
+      readonly en: ExactMessageShape<Catalog['en'], Expected>;
+    } & {
+      readonly [Locale in Exclude<UiLocale, 'en'>]?: ExactMessageShape<
+        NonNullable<Catalog[Locale]>,
+        DeepPartial<Expected>
+      >;
+    },
+  ): UiMessageCatalog<Expected> => catalog;
+}
+
+export function resolveUiMessageCatalog<T>(catalog: UiMessageCatalog<T>): UiCatalog<T> {
+  return Object.fromEntries(
+    UI_LOCALES.map((locale) => [
+      locale,
+      locale === 'en'
+        ? catalog.en
+        : mergeUiMessages(catalog.en, catalog[locale] as DeepPartial<T> | undefined),
+    ]),
+  ) as UiCatalog<T>;
+}
+
+export function formatUiMessage(
+  template: string,
+  values: Readonly<Record<string, string | number | bigint | boolean | Date | null | undefined>>,
+  locale: UiLocale,
+): string {
+  try {
+    const intlLocale = uiLocaleToIntlLocale(locale);
+    const cacheKey = `${intlLocale}\u0000${template}`;
+    let formatter = messageFormatters.get(cacheKey);
+    if (!formatter) {
+      formatter = new IntlMessageFormat(template, intlLocale);
+      messageFormatters.set(cacheKey, formatter);
+    }
+    const safeValues = Object.assign(Object.create(null) as Record<string, unknown>, values);
+    const formatted = formatter.format(safeValues);
+    return Array.isArray(formatted) ? formatted.join('') : String(formatted);
+  } catch {
+    return template;
+  }
+}
+
+function mergeUiMessages<T>(fallback: T, translation: DeepPartial<T> | undefined): T {
+  if (translation === undefined) return fallback;
+  if (!isMessageRecord(fallback) || !isMessageRecord(translation)) return translation as T;
+  return Object.fromEntries(
+    Object.entries(fallback).map(([key, value]) => [
+      key,
+      mergeUiMessages(value, Object.hasOwn(translation, key) ? translation[key] : undefined),
+    ]),
+  ) as T;
+}
+
+function isMessageRecord(value: unknown): value is Readonly<Record<string, unknown>> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
 
 export function isUiLocale(value: unknown): value is UiLocale {
   return value === 'zh' || value === 'en';
