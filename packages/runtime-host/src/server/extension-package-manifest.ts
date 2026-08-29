@@ -61,6 +61,7 @@ export interface ExtensionPackageRuntime {
 
 export interface ExtensionPackageComposition {
   readonly patch: string;
+  readonly structuralDependencies: readonly string[];
 }
 
 export class ExtensionPackageManifestError extends Error {
@@ -123,8 +124,15 @@ export function decodeExtensionPackageManifest(value: unknown): ExtensionPackage
 function decodeComposition(value: unknown): ExtensionPackageComposition | undefined {
   if (value === undefined) return undefined;
   const composition = record(value, 'composition');
-  exactOptional(composition, ['patch'], []);
-  return Object.freeze({ patch: packagePath(composition.patch, 'composition.patch') });
+  exactOptional(composition, ['patch'], ['structuralDependencies']);
+  const structuralDependencies = decodeExtensionIds(
+    composition.structuralDependencies,
+    'composition.structuralDependencies',
+  );
+  return Object.freeze({
+    patch: packagePath(composition.patch, 'composition.patch'),
+    structuralDependencies,
+  });
 }
 
 function decodeRuntime(value: unknown): ExtensionPackageRuntime | undefined {
@@ -193,6 +201,14 @@ function decodeDependencies(value: unknown): readonly ExtensionPackageDependency
     return Object.freeze({ id });
   });
   return Object.freeze(dependencies.sort((left, right) => left.id.localeCompare(right.id)));
+}
+
+function decodeExtensionIds(value: unknown, label: string): readonly string[] {
+  if (value === undefined) return Object.freeze([]);
+  if (!Array.isArray(value) || value.length > 64) throw invalid(`${label} is invalid`);
+  const ids = value.map((item) => extensionId(item));
+  if (new Set(ids).size !== ids.length) throw invalid(`${label} repeats an identity`);
+  return Object.freeze(ids.sort((left, right) => left.localeCompare(right)));
 }
 
 function decodeConfigurationSchema(value: unknown): ExtensionConfigurationSchema {

@@ -50,7 +50,7 @@ export async function exportExtensionBundle(sourceRoot: string, targetPath: stri
   const files = await readDirectory(sourceRoot);
   const document: ExtensionBundleDocument = Object.freeze({
     schemaVersion: 1,
-    digest: packageDigest(files),
+    digest: extensionPackageContentDigest(files),
     files: Object.freeze(
       files.map((file) =>
         Object.freeze({
@@ -215,7 +215,7 @@ function decodeBundle(value: unknown): ExtensionBundleDocument {
     }
     return { path, content };
   });
-  if (typeof record.digest !== 'string' || packageDigest(files) !== record.digest)
+  if (typeof record.digest !== 'string' || extensionPackageContentDigest(files) !== record.digest)
     throw invalid('Extension bundle digest is invalid');
   return Object.freeze({
     schemaVersion: 1,
@@ -232,7 +232,9 @@ function decodeBundle(value: unknown): ExtensionBundleDocument {
   });
 }
 
-function packageDigest(files: readonly { path: string; content: Buffer }[]): string {
+export function extensionPackageContentDigest(
+  files: readonly { path: string; content: Buffer }[],
+): string {
   const hash = createHash('sha256');
   for (const file of files) {
     const path = Buffer.from(file.path, 'utf8');

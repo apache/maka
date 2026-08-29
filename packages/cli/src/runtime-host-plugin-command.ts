@@ -38,11 +38,12 @@ export interface RuntimeHostPluginCommand {
     | 'uninstall'
     | 'reload'
     | 'export'
-    | 'apply';
+    | 'apply'
+    | 'reconcile';
   readonly subject?: string;
   readonly targetPath?: string;
   readonly rootId?: string;
-  readonly cursor?: number;
+  readonly cursor?: string;
   readonly limit?: number;
 }
 
@@ -110,6 +111,8 @@ async function execute(
       const decoded = JSON.parse(await readText(resolve(requireSubject(command)))) as unknown;
       return await connection.request('plugin.composition.apply', decoded as never);
     }
+    case 'reconcile':
+      return await connection.request('plugin.platform.reconcile', {});
   }
 }
 

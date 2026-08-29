@@ -45,6 +45,7 @@ const QUERY_ERRORS = [
   'invalid_request',
   'persistence_failed',
   'internal_failure',
+  'stale_cursor',
 ] as const;
 const MUTATE_ERRORS = [
   ...QUERY_ERRORS,
@@ -55,42 +56,69 @@ const MUTATE_ERRORS = [
 const MAX_FRAME_BYTES = 512 * 1024;
 export const PLUGIN_PLATFORM_QUERY_RESULT_MAX_BYTES = 480 * 1024;
 
+export type PluginPlatformPhase =
+  | 'new'
+  | 'recovering'
+  | 'ready'
+  | 'degraded'
+  | 'fenced'
+  | 'draining'
+  | 'closed';
+
+export type PluginPlatformConvergence = 'unknown' | 'converged' | 'diverged';
+
+export interface PluginMutationReceipt {
+  readonly authorityEpoch: number;
+  readonly durability: 'committed';
+  readonly convergence: Exclude<PluginPlatformConvergence, 'unknown'>;
+  readonly cleanup: 'complete' | 'pending';
+  readonly failures: readonly PluginPlatformFailureProjection[];
+}
+
 export interface PluginPackageProjection {
   readonly extensionId: string;
+  readonly contentDigest: string;
   readonly displayName: string;
   readonly description?: string;
   readonly dependencies: readonly string[];
+  readonly structuralDependencies: readonly string[];
+  readonly requiredBy: readonly string[];
 }
 
 export interface PluginPlatformQueryInput {
   readonly view: 'status' | 'packages' | 'entries' | 'failures';
   readonly rootId?: MakaPluginRootId;
-  readonly cursor?: number;
+  readonly cursor?: string;
   readonly limit?: number;
 }
 
 export type PluginPlatformQueryResult =
   | {
       readonly view: 'status';
-      readonly generation: number;
-      readonly packageCount: number;
-      readonly entryCount: number;
+      readonly phase: PluginPlatformPhase;
+      readonly authorityEpoch: number;
+      readonly convergence: PluginPlatformConvergence;
+      readonly installedPackageCount: number;
+      readonly layeredPackageCount: number;
+      readonly desiredEntryCount: number;
+      readonly liveEntryCount: number;
       readonly failureCount: number;
+      readonly fenceDiagnostic: string | null;
     }
   | {
       readonly view: 'packages';
       readonly items: readonly PluginPackageProjection[];
-      readonly nextCursor: number | null;
+      readonly nextCursor: string | null;
     }
   | {
       readonly view: 'entries';
       readonly items: readonly MakaCompositionEntryInspection[];
-      readonly nextCursor: number | null;
+      readonly nextCursor: string | null;
     }
   | {
       readonly view: 'failures';
       readonly items: readonly PluginPlatformFailureProjection[];
-      readonly nextCursor: number | null;
+      readonly nextCursor: string | null;
     };
 
 export interface PluginPlatformFailureProjection {
@@ -103,7 +131,7 @@ export interface PluginPackageInstallInput {
   readonly sourcePath: string;
 }
 
-export interface PluginPackageInstallResult {
+export interface PluginPackageInstallResult extends PluginMutationReceipt {
   readonly extensionId: string;
 }
 
@@ -119,9 +147,8 @@ export interface PluginPackageExportResult {
   readonly targetPath: string;
 }
 
-export interface PluginCompositionApplyResult {
-  readonly generation: number;
-}
+export type PluginPackageMutationResult = PluginMutationReceipt;
+export type PluginCompositionApplyResult = PluginMutationReceipt;
 
 export const PLUGIN_PLATFORM_OPERATION_SPECS = {
   'plugin.platform.query': defineOperation<
@@ -151,31 +178,25 @@ export const PLUGIN_PLATFORM_OPERATION_SPECS = {
   }),
   'plugin.package.uninstall': defineOperation<
     PluginPackageUninstallInput,
-    Record<string, never>,
+    PluginPackageMutationResult,
     (typeof MUTATE_ERRORS)[number]
   >({
     mode: 'command',
     availability: 'ready',
     errors: MUTATE_ERRORS,
     decodeInput: decodePluginPackageUninstallInput,
-    decodeOutput: (value) => {
-      requireExactRecord(value, 'Plugin package uninstall result', []);
-      return {};
-    },
+    decodeOutput: decodePluginMutationReceipt,
   }),
   'plugin.package.reload': defineOperation<
     PluginPackageUninstallInput,
-    Record<string, never>,
+    PluginPackageMutationResult,
     (typeof MUTATE_ERRORS)[number]
   >({
     mode: 'command',
     availability: 'ready',
     errors: MUTATE_ERRORS,
     decodeInput: decodePluginPackageUninstallInput,
-    decodeOutput: (value) => {
-      requireExactRecord(value, 'Plugin package reload result', []);
-      return {};
-    },
+    decodeOutput: decodePluginMutationReceipt,
   }),
   'plugin.package.export': defineHostPathOperation<
     PluginPackageExportInput,
@@ -209,10 +230,21 @@ export const PLUGIN_PLATFORM_OPERATION_SPECS = {
     availability: 'ready',
     errors: MUTATE_ERRORS,
     decodeInput: decodePluginCompositionApplyInput,
-    decodeOutput: (value) => {
-      const output = requireExactRecord(value, 'Plugin composition apply result', ['generation']);
-      return { generation: requireCount(output.generation, 'Plugin composition generation') };
+    decodeOutput: decodePluginMutationReceipt,
+  }),
+  'plugin.platform.reconcile': defineOperation<
+    Record<string, never>,
+    PluginMutationReceipt,
+    (typeof MUTATE_ERRORS)[number]
+  >({
+    mode: 'command',
+    availability: 'ready',
+    errors: MUTATE_ERRORS,
+    decodeInput: (value) => {
+      requireExactRecord(value, 'Plugin Platform reconcile input', []);
+      return {};
     },
+    decodeOutput: decodePluginMutationReceipt,
   }),
 } as const;
 
@@ -230,7 +262,7 @@ function decodePluginPlatformQueryInput(value: unknown): PluginPlatformQueryInpu
   const cursor =
     input.cursor === undefined
       ? undefined
-      : requireCount(input.cursor, 'Plugin Platform query cursor');
+      : requireString(input.cursor, 'Plugin Platform query cursor', 4096);
   const limit =
     input.limit === undefined
       ? undefined
@@ -272,17 +304,41 @@ function decodePluginPlatformQueryResult(value: unknown): PluginPlatformQueryRes
   if (view === 'status') {
     const output = requireExactRecord(record, 'Plugin Platform status result', [
       'view',
-      'generation',
-      'packageCount',
-      'entryCount',
+      'phase',
+      'authorityEpoch',
+      'convergence',
+      'installedPackageCount',
+      'layeredPackageCount',
+      'desiredEntryCount',
+      'liveEntryCount',
       'failureCount',
+      'fenceDiagnostic',
     ]);
+    if (
+      !['new', 'recovering', 'ready', 'degraded', 'fenced', 'draining', 'closed'].includes(
+        output.phase as string,
+      ) ||
+      !['unknown', 'converged', 'diverged'].includes(output.convergence as string)
+    ) {
+      throw invalidProtocolFrame('Invalid Plugin Platform status');
+    }
     decoded = {
       view,
-      generation: requireCount(output.generation, 'Plugin composition generation'),
-      packageCount: requireCount(output.packageCount, 'Plugin package count'),
-      entryCount: requireCount(output.entryCount, 'Plugin Entry count'),
+      phase: output.phase as PluginPlatformPhase,
+      authorityEpoch: requireCount(output.authorityEpoch, 'Plugin authority epoch'),
+      convergence: output.convergence as PluginPlatformConvergence,
+      installedPackageCount: requireCount(
+        output.installedPackageCount,
+        'Installed Plugin package count',
+      ),
+      layeredPackageCount: requireCount(output.layeredPackageCount, 'Layered Plugin package count'),
+      desiredEntryCount: requireCount(output.desiredEntryCount, 'Desired Plugin Entry count'),
+      liveEntryCount: requireCount(output.liveEntryCount, 'Live Plugin Entry count'),
       failureCount: requireCount(output.failureCount, 'Plugin failure count'),
+      fenceDiagnostic:
+        output.fenceDiagnostic === null
+          ? null
+          : requireString(output.fenceDiagnostic, 'Plugin fence diagnostic', 4096),
     };
   } else {
     const output = requireExactRecord(record, 'Plugin Platform page result', [
@@ -300,7 +356,7 @@ function decodePluginPlatformQueryResult(value: unknown): PluginPlatformQueryRes
     const nextCursor =
       output.nextCursor === null
         ? null
-        : requireCount(output.nextCursor, 'Plugin Platform next cursor');
+        : requireString(output.nextCursor, 'Plugin Platform next cursor', 4096);
     decoded =
       view === 'packages'
         ? { view, items: output.items.map(decodePackageProjection), nextCursor }
@@ -341,12 +397,26 @@ function decodePackageProjection(value: unknown): PluginPackageProjection {
   const item = requireShapedRecord(
     value,
     'Plugin package projection',
-    ['extensionId', 'displayName', 'dependencies'],
+    [
+      'extensionId',
+      'contentDigest',
+      'displayName',
+      'dependencies',
+      'structuralDependencies',
+      'requiredBy',
+    ],
     ['description'],
   );
-  if (!Array.isArray(item.dependencies)) throw invalidProtocolFrame('Invalid Plugin dependencies');
+  if (
+    !Array.isArray(item.dependencies) ||
+    !Array.isArray(item.structuralDependencies) ||
+    !Array.isArray(item.requiredBy)
+  ) {
+    throw invalidProtocolFrame('Invalid Plugin dependencies');
+  }
   return {
     extensionId: requireId(item.extensionId, 'Plugin package identity'),
+    contentDigest: requireDigest(item.contentDigest, 'Plugin package content digest'),
     displayName: requireString(item.displayName, 'Plugin display name', 512),
     ...(item.description === undefined
       ? {}
@@ -354,12 +424,60 @@ function decodePackageProjection(value: unknown): PluginPackageProjection {
     dependencies: item.dependencies.map((dependency) =>
       requireId(dependency, 'Plugin dependency identity'),
     ),
+    structuralDependencies: item.structuralDependencies.map((dependency) =>
+      requireId(dependency, 'Plugin structural dependency identity'),
+    ),
+    requiredBy: item.requiredBy.map((dependency) =>
+      requireId(dependency, 'Plugin dependent identity'),
+    ),
   };
 }
 
 function decodePluginPackageInstallResult(value: unknown): PluginPackageInstallResult {
-  const output = requireExactRecord(value, 'Plugin package install result', ['extensionId']);
-  return { extensionId: requireId(output.extensionId, 'Plugin package identity') };
+  const output = requireExactRecord(value, 'Plugin package install result', [
+    'extensionId',
+    'authorityEpoch',
+    'durability',
+    'convergence',
+    'cleanup',
+    'failures',
+  ]);
+  const receipt = decodePluginMutationReceipt({
+    authorityEpoch: output.authorityEpoch,
+    durability: output.durability,
+    convergence: output.convergence,
+    cleanup: output.cleanup,
+    failures: output.failures,
+  });
+  return {
+    extensionId: requireId(output.extensionId, 'Plugin package identity'),
+    ...receipt,
+  };
+}
+
+function decodePluginMutationReceipt(value: unknown): PluginMutationReceipt {
+  const output = requireExactRecord(value, 'Plugin mutation receipt', [
+    'authorityEpoch',
+    'durability',
+    'convergence',
+    'cleanup',
+    'failures',
+  ]);
+  if (
+    output.durability !== 'committed' ||
+    !['converged', 'diverged'].includes(output.convergence as string) ||
+    !['complete', 'pending'].includes(output.cleanup as string) ||
+    !Array.isArray(output.failures)
+  ) {
+    throw invalidProtocolFrame('Invalid Plugin mutation receipt');
+  }
+  return {
+    authorityEpoch: requireCount(output.authorityEpoch, 'Plugin authority epoch'),
+    durability: 'committed',
+    convergence: output.convergence as PluginMutationReceipt['convergence'],
+    cleanup: output.cleanup as PluginMutationReceipt['cleanup'],
+    failures: output.failures.map(decodePlatformFailure),
+  };
 }
 
 function decodePluginPackageUninstallInput(value: unknown): PluginPackageUninstallInput {
@@ -617,4 +735,10 @@ function decodeScalarRecord(
 function requireBoolean(value: unknown): boolean {
   if (typeof value !== 'boolean') throw invalidProtocolFrame('Invalid Plugin Entry disabled flag');
   return value;
+}
+
+function requireDigest(value: unknown, label: string): string {
+  const digest = requireString(value, label, 80);
+  if (!/^sha256-[a-f0-9]{64}$/u.test(digest)) throw invalidProtocolFrame(`Invalid ${label}`);
+  return digest;
 }

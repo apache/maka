@@ -59,21 +59,8 @@ export {
   loadPluginCompositionPatch,
 } from './plugin-composition-patch.js';
 export {
-  HostPluginCompositionStore,
-  HostPluginCompositionStoreError,
-  type PersistedPluginComposition,
-} from './plugin-composition-store.js';
-export { PluginPackageLoaderError, TrustedPluginPackageLoader } from './plugin-package-loader.js';
-export {
-  PluginPackageStore,
-  PluginPackageStoreError,
-  type InstalledPluginPackage,
-  type PreparedPluginPackageInstall,
-} from './plugin-package-store.js';
-export {
   HostPluginPlatform,
   HostPluginPlatformError,
   type HostPluginPlatformFailure,
-  type HostPluginPlatformOptions,
 } from './plugin-platform.js';
 export { HostPluginPlatformCoordinator } from './plugin-platform-coordinator.js';

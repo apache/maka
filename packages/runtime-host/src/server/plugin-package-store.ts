@@ -22,7 +22,11 @@ import type { Dirent } from 'node:fs';
 import { mkdir, open, readFile, readdir, realpath, rename, rm, stat } from 'node:fs/promises';
 import { dirname, join, posix } from 'node:path';
 import { isCanonicalExtensionId } from '@maka/runtime/plugin-runtime';
-import { exportExtensionBundle, materializeExtensionPackage } from './extension-bundle.js';
+import {
+  exportExtensionBundle,
+  extensionPackageContentDigest,
+  materializeExtensionPackage,
+} from './extension-bundle.js';
 import {
   EXTENSION_PACKAGE_MANIFEST_FILE,
   type ExtensionPackageManifest,
@@ -41,6 +45,7 @@ interface PackageFile {
 
 export interface InstalledPluginPackage {
   readonly extensionId: string;
+  readonly contentDigest: string;
   readonly root: string;
   readonly entry: string;
   readonly manifest: ExtensionPackageManifest;
@@ -84,13 +89,6 @@ export class PluginPackageStore {
   constructor(controlDirectory: string) {
     this.#controlDirectory = controlDirectory;
     this.root = join(controlDirectory, STORE_DIRECTORY);
-  }
-
-  async install(sourcePath: string): Promise<InstalledPluginPackage> {
-    const prepared = await this.prepareInstall(sourcePath);
-    await prepared.publish(0, 1);
-    await prepared.commit();
-    return await this.load(prepared.installed.extensionId);
   }
 
   /** Repairs or removes package-store transaction remnants after owner death. */
@@ -451,7 +449,11 @@ async function exists(path: string): Promise<boolean> {
 async function decodePackage(
   root: string,
   files: readonly PackageFile[],
-): Promise<{ readonly manifest: ExtensionPackageManifest; readonly entry: string }> {
+): Promise<{
+  readonly manifest: ExtensionPackageManifest;
+  readonly entry: string;
+  readonly contentDigest: string;
+}> {
   if (!files.some((file) => file.path === EXTENSION_PACKAGE_MANIFEST_FILE)) {
     throw invalid(`Plugin package is missing ${EXTENSION_PACKAGE_MANIFEST_FILE}`);
   }
@@ -464,7 +466,11 @@ async function decodePackage(
   if (manifest.composition && !files.some((file) => file.path === manifest.composition!.patch)) {
     throw invalid(`Plugin Composition patch does not exist: ${manifest.composition.patch}`);
   }
-  return Object.freeze({ manifest, entry: manifest.runtime.entry });
+  return Object.freeze({
+    manifest,
+    entry: manifest.runtime.entry,
+    contentDigest: extensionPackageContentDigest(files),
+  });
 }
 
 async function readPackage(rootValue: string): Promise<readonly PackageFile[]> {
@@ -552,10 +558,15 @@ async function syncDirectory(directory: string): Promise<void> {
 
 function freezeInstalled(
   root: string,
-  decoded: { readonly manifest: ExtensionPackageManifest; readonly entry: string },
+  decoded: {
+    readonly manifest: ExtensionPackageManifest;
+    readonly entry: string;
+    readonly contentDigest: string;
+  },
 ): InstalledPluginPackage {
   return Object.freeze({
     extensionId: decoded.manifest.id,
+    contentDigest: decoded.contentDigest,
     root,
     entry: join(root, ...decoded.entry.split('/')),
     manifest: decoded.manifest,

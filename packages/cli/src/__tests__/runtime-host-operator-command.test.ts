@@ -159,11 +159,21 @@ describe('Runtime Host operator commands', () => {
       },
     );
     assert.deepEqual(
-      parseRuntimeHostCommand(['plugin', 'inspect', '--scope', 'profile', '--limit', '16']),
+      parseRuntimeHostCommand([
+        'plugin',
+        'inspect',
+        '--scope',
+        'profile',
+        '--cursor',
+        'opaque-cursor',
+        '--limit',
+        '16',
+      ]),
       {
         kind: 'runtime-host-plugin',
         action: 'inspect',
         rootId: 'profile',
+        cursor: 'opaque-cursor',
         limit: 16,
       },
     );
@@ -320,6 +330,8 @@ describe('Runtime Host operator commands', () => {
       assert.equal(resolved.operationGrants.includes('access.credential.rotation.prepare'), false);
       assert.equal(resolved.operationGrants.includes('access.credential.rotation.revoke'), false);
       assert.equal(resolved.operationGrants.includes('host.upgrade.prepare'), false);
+      assert.equal(resolved.operationGrants.includes('plugin.platform.query'), false);
+      assert.equal(resolved.operationGrants.includes('plugin.package.install'), false);
       assert.equal(resolved.operationGrants.includes('turn.start'), true);
       assert.equal(resolved.operationGrants.includes('project.catalog.query'), true);
     }
@@ -451,6 +463,13 @@ describe('Runtime Host operator commands', () => {
         'peer.mesh.remove',
         'peer.mesh.rename',
         'peer.mesh.transit.set',
+        'plugin.composition.apply',
+        'plugin.package.export',
+        'plugin.package.install',
+        'plugin.package.reload',
+        'plugin.package.uninstall',
+        'plugin.platform.query',
+        'plugin.platform.reconcile',
       ],
     );
   });
@@ -585,6 +604,7 @@ describe('Runtime Host operator commands', () => {
         targetPath: './plugin.maka-extension',
       },
       { rootPath: '/srv/maka', action: 'apply' as const, subject: './operations.json' },
+      { rootPath: '/srv/maka', action: 'reconcile' as const },
     ];
     for (const command of commands) {
       assert.equal(await runRuntimeHostPluginCli(command, overrides), 0);
@@ -601,6 +621,7 @@ describe('Runtime Host operator commands', () => {
         'plugin.package.reload',
         'plugin.package.export',
         'plugin.composition.apply',
+        'plugin.platform.reconcile',
       ],
     );
     assert.equal(closeCount, commands.length);

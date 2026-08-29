@@ -313,11 +313,12 @@ export type RuntimeHostCliCommand =
         | 'uninstall'
         | 'reload'
         | 'export'
-        | 'apply';
+        | 'apply'
+        | 'reconcile';
       subject?: string;
       targetPath?: string;
       rootId?: string;
-      cursor?: number;
+      cursor?: string;
       limit?: number;
     }
   | {
@@ -1577,6 +1578,7 @@ function parsePluginCommand(argv: string[]): RuntimeHostCliCommand {
     'reload',
     'export',
     'apply',
+    'reconcile',
   ] as const;
   if (!actions.includes(action as (typeof actions)[number])) {
     return error(
@@ -1587,7 +1589,7 @@ function parsePluginCommand(argv: string[]): RuntimeHostCliCommand {
   }
   let rootPath: string | undefined;
   let rootId: string | undefined;
-  let cursor: number | undefined;
+  let cursor: string | undefined;
   let limit: number | undefined;
   const positional: string[] = [];
   for (let index = 1; index < argv.length; index += 1) {
@@ -1602,17 +1604,13 @@ function parsePluginCommand(argv: string[]): RuntimeHostCliCommand {
       if (typeof parsed !== 'string') return parsed;
       if (argument === '--root') rootPath = parsed;
       else if (argument === '--scope') rootId = parsed;
+      else if (argument === '--cursor') cursor = parsed;
       else {
         const numeric = Number(parsed);
-        if (
-          !Number.isSafeInteger(numeric) ||
-          numeric < 0 ||
-          (argument === '--limit' && (numeric < 1 || numeric > 64))
-        ) {
-          return error(`${argument} requires a non-negative integer`);
+        if (!Number.isSafeInteger(numeric) || numeric < 0 || numeric < 1 || numeric > 64) {
+          return error('--limit requires an integer between 1 and 64');
         }
-        if (argument === '--cursor') cursor = numeric;
-        else limit = numeric;
+        limit = numeric;
       }
       index += 1;
       continue;
@@ -1645,7 +1643,7 @@ function parsePluginCommand(argv: string[]): RuntimeHostCliCommand {
     ...(positional[0] ? { subject: positional[0] } : {}),
     ...(positional[1] ? { targetPath: positional[1] } : {}),
     ...(rootId ? { rootId } : {}),
-    ...(cursor === undefined ? {} : { cursor }),
+    ...(cursor ? { cursor } : {}),
     ...(limit === undefined ? {} : { limit }),
   };
 }

@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { createHash } from 'node:crypto';
 import {
   MakaPluginRuntimeError,
   type MakaCompositionApplyInput,
@@ -49,6 +50,7 @@ export class HostPluginPlatformCoordinator {
     'plugin.package.reload': (input) => this.#reload(input),
     'plugin.package.export': (input) => this.#export(input),
     'plugin.composition.apply': (input) => this.#apply(input),
+    'plugin.platform.reconcile': () => this.#reconcile(),
   };
 
   constructor(readonly platform: HostPluginPlatform) {}
@@ -58,18 +60,13 @@ export class HostPluginPlatformCoordinator {
   ): Promise<OperationOutcome<'plugin.platform.query'>> {
     try {
       return await this.platform.read(async () => {
-        const identities = await this.platform.packages.identities();
         const failures = this.platform.failures();
         if (input.view === 'status') {
-          const entryCount = countInspections(this.platform.inspect());
           return {
             ok: true,
             result: {
               view: 'status',
-              generation: this.platform.desiredComposition().generation,
-              packageCount: identities.length,
-              entryCount,
-              failureCount: failures.length,
+              ...(await this.platform.status()),
             },
           };
         }
@@ -80,16 +77,7 @@ export class HostPluginPlatformCoordinator {
         if (input.view === 'failures') {
           return { ok: true, result: boundedPage('failures', failures, input) };
         }
-        const packages = [];
-        for (const extensionId of identities) {
-          const { manifest } = await this.platform.packages.load(extensionId);
-          packages.push({
-            extensionId,
-            displayName: manifest.displayName,
-            ...(manifest.description ? { description: manifest.description } : {}),
-            dependencies: manifest.dependencies.map(({ id }) => id),
-          });
-        }
+        const packages = await this.platform.packageProjections();
         return {
           ok: true,
           result: boundedPage('packages', packages, input),
@@ -114,8 +102,7 @@ export class HostPluginPlatformCoordinator {
     input: PluginPackageUninstallInput,
   ): Promise<OperationOutcome<'plugin.package.uninstall'>> {
     try {
-      await this.platform.uninstallPackage(input.extensionId);
-      return { ok: true, result: {} };
+      return { ok: true, result: await this.platform.uninstallPackage(input.extensionId) };
     } catch (error) {
       return failure(error);
     }
@@ -125,8 +112,7 @@ export class HostPluginPlatformCoordinator {
     input: PluginPackageUninstallInput,
   ): Promise<OperationOutcome<'plugin.package.reload'>> {
     try {
-      await this.platform.reloadPackage(input.extensionId);
-      return { ok: true, result: {} };
+      return { ok: true, result: await this.platform.reloadPackage(input.extensionId) };
     } catch (error) {
       return failure(error);
     }
@@ -136,9 +122,7 @@ export class HostPluginPlatformCoordinator {
     input: PluginPackageExportInput,
   ): Promise<OperationOutcome<'plugin.package.export'>> {
     try {
-      await this.platform.read(() =>
-        this.platform.packages.export(input.extensionId, input.targetPath),
-      );
+      await this.platform.exportPackage(input.extensionId, input.targetPath);
       return { ok: true, result: { targetPath: input.targetPath } };
     } catch (error) {
       return failure(error);
@@ -149,22 +133,19 @@ export class HostPluginPlatformCoordinator {
     input: MakaCompositionApplyInput,
   ): Promise<OperationOutcome<'plugin.composition.apply'>> {
     try {
-      await this.platform.apply(input);
-      return {
-        ok: true,
-        result: { generation: this.platform.desiredComposition().generation },
-      };
+      return { ok: true, result: await this.platform.apply(input) };
     } catch (error) {
       return failure(error);
     }
   }
-}
 
-function countInspections(inspections: readonly MakaCompositionEntryInspection[]): number {
-  return inspections.reduce(
-    (total, inspection) => total + 1 + countInspections(inspection.children),
-    0,
-  );
+  async #reconcile(): Promise<OperationOutcome<'plugin.platform.reconcile'>> {
+    try {
+      return { ok: true, result: await this.platform.reconcile() };
+    } catch (error) {
+      return failure(error);
+    }
+  }
 }
 
 function flattenInspections(
@@ -201,16 +182,24 @@ function boundedPage<T>(
   values: readonly T[],
   input: PluginPlatformQueryInput,
 ): PluginPlatformQueryResult {
-  const cursor = input.cursor ?? 0;
+  const digest = pageDigest(view, input.rootId, values);
+  const cursor =
+    input.cursor === undefined ? 0 : decodeCursor(input.cursor, view, input.rootId, digest);
   const limit = input.limit ?? 32;
   if (cursor > values.length)
-    throw new MakaPluginRuntimeError('invalid_entry', 'Invalid query cursor');
+    throw new HostPluginPlatformError('stale_cursor', 'Plugin Platform query cursor is stale');
   const items: T[] = [];
   for (let index = cursor; index < values.length && items.length < limit; index += 1) {
     const candidate = [...items, values[index] as T];
     if (
-      Buffer.byteLength(JSON.stringify({ view, items: candidate, nextCursor: index + 1 }), 'utf8') >
-      PLUGIN_PLATFORM_QUERY_RESULT_MAX_BYTES
+      Buffer.byteLength(
+        JSON.stringify({
+          view,
+          items: candidate,
+          nextCursor: encodeCursor(view, input.rootId, digest, index + 1),
+        }),
+        'utf8',
+      ) > PLUGIN_PLATFORM_QUERY_RESULT_MAX_BYTES
     ) {
       break;
     }
@@ -223,14 +212,66 @@ function boundedPage<T>(
   return Object.freeze({
     view,
     items: Object.freeze(items),
-    nextCursor: next < values.length ? next : null,
+    nextCursor: next < values.length ? encodeCursor(view, input.rootId, digest, next) : null,
   }) as PluginPlatformQueryResult;
+}
+
+interface PageCursor {
+  readonly version: 1;
+  readonly view: 'packages' | 'entries' | 'failures';
+  readonly rootId?: string;
+  readonly digest: string;
+  readonly offset: number;
+}
+
+function pageDigest(view: string, rootId: string | undefined, values: readonly unknown[]): string {
+  return createHash('sha256')
+    .update(JSON.stringify({ view, rootId: rootId ?? null, values }))
+    .digest('base64url');
+}
+
+function encodeCursor(
+  view: PageCursor['view'],
+  rootId: string | undefined,
+  digest: string,
+  offset: number,
+): string {
+  return Buffer.from(
+    JSON.stringify({ version: 1, view, ...(rootId ? { rootId } : {}), digest, offset }),
+    'utf8',
+  ).toString('base64url');
+}
+
+function decodeCursor(
+  encoded: string,
+  view: PageCursor['view'],
+  rootId: string | undefined,
+  digest: string,
+): number {
+  try {
+    const cursor = JSON.parse(Buffer.from(encoded, 'base64url').toString('utf8')) as PageCursor;
+    if (
+      cursor.version !== 1 ||
+      cursor.view !== view ||
+      cursor.rootId !== rootId ||
+      cursor.digest !== digest ||
+      !Number.isSafeInteger(cursor.offset) ||
+      cursor.offset < 0
+    ) {
+      throw new Error('mismatch');
+    }
+    return cursor.offset;
+  } catch {
+    throw new HostPluginPlatformError('stale_cursor', 'Plugin Platform query cursor is stale');
+  }
 }
 
 function failure<K extends keyof PluginPlatformOperationHandlerMap>(
   error: unknown,
 ): OperationOutcome<K> {
   if (error instanceof HostPluginPlatformError) {
+    if (error.code === 'not_ready') return failed('host_not_ready', error.message);
+    if (error.code === 'stale_cursor') return failed('stale_cursor', error.message);
     if (error.code === 'closed') return failed('host_draining', error.message);
     if (error.code === 'persistence_failed') return failed('persistence_failed', error.message);
     if (error.code === 'recovery_failed') return failed('persistence_failed', error.message);
