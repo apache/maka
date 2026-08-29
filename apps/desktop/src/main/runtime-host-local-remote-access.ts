@@ -79,6 +79,10 @@ interface LocalServiceManaged extends LocalServiceTarget {
   readonly state: 'managed';
 }
 
+type LocalManagedDeploymentAuthority =
+  | { readonly kind: 'active'; readonly target: LocalServiceTarget }
+  | { readonly kind: 'transition' };
+
 interface LocalServicePeerChanging extends LocalServiceTarget {
   readonly state: 'peerChanging';
   readonly peerEnabled: boolean;
@@ -123,7 +127,9 @@ export function createDesktopLocalRuntimeHostRemoteAccess(input: {
     signal?: AbortSignal,
   ) => DesktopRuntimeHostSetupPackage | Promise<DesktopRuntimeHostSetupPackage>;
   readonly operator: DesktopRuntimeHostLocalOperator;
-  readonly hasManagedDeploymentAuthority?: (rootId: string) => Promise<boolean>;
+  readonly resolveManagedDeploymentAuthority?: (
+    rootId: string,
+  ) => Promise<LocalManagedDeploymentAuthority | undefined>;
 }): {
   recoverManagedSetup(signal?: AbortSignal): Promise<boolean>;
   recover(): Promise<void>;
@@ -140,10 +146,41 @@ export function createDesktopLocalRuntimeHostRemoteAccess(input: {
     );
     return result;
   };
-  const hasManagedDeploymentAuthority =
-    input.hasManagedDeploymentAuthority ??
-    (async (rootId: string) =>
-      (await resolveRuntimeHostManagedDeploymentAuthority(rootId)) !== undefined);
+  const resolveManagedDeploymentAuthority =
+    input.resolveManagedDeploymentAuthority ??
+    (async (rootId: string): Promise<LocalManagedDeploymentAuthority | undefined> => {
+      const authority = await resolveRuntimeHostManagedDeploymentAuthority(rootId);
+      if (!authority) return undefined;
+      if (authority.record.state !== 'active') return { kind: 'transition' };
+      return {
+        kind: 'active',
+        target: requireServiceTarget(
+          {
+            schemaVersion: 1,
+            serviceId: authority.record.root.id,
+            operatorPath: join(authority.record.deploymentRoot, 'operator'),
+            rootPath: authority.record.root.path,
+            rootId: authority.record.root.id,
+            deploymentId: authority.record.deploymentId,
+          },
+          input.rootPath,
+        ),
+      };
+    });
+
+  const adoptCommittedSetup = async (
+    setup: LocalServiceSetupPending,
+  ): Promise<
+    | { readonly kind: 'absent' | 'transition' }
+    | { readonly kind: 'managed'; readonly managed: LocalServiceManaged }
+  > => {
+    const authority = await resolveManagedDeploymentAuthority(setup.rootId);
+    if (!authority) return { kind: 'absent' };
+    if (authority.kind === 'transition') return authority;
+    const managed = managedLifecycle(authority.target);
+    await writeDocument(lifecyclePath, managed);
+    return { kind: 'managed', managed };
+  };
 
   const getSnapshot = (): Promise<DesktopLocalRuntimeHostRemoteAccessSnapshot> =>
     serialize(async () => {
@@ -200,9 +237,14 @@ export function createDesktopLocalRuntimeHostRemoteAccess(input: {
         lifecycle = recovered.managed;
       }
       if (lifecycle?.state === 'setupPending') {
-        const recovered = await finishSetup(lifecycle, 'recovery');
-        if (recovered.kind === 'active_tasks') return recovered;
-        lifecycle = recovered.managed;
+        const committed = await adoptCommittedSetup(lifecycle);
+        if (committed.kind === 'managed') {
+          lifecycle = committed.managed;
+        } else {
+          const recovered = await finishSetup(lifecycle, 'recovery');
+          if (recovered.kind === 'active_tasks') return recovered;
+          lifecycle = recovered.managed;
+        }
       }
       if (lifecycle?.state === 'managed') {
         const manager = requireManager(input.manager);
@@ -358,15 +400,14 @@ export function createDesktopLocalRuntimeHostRemoteAccess(input: {
   ): Promise<
     | { readonly kind: 'active_tasks' }
     | { readonly kind: 'external' }
-    | {
-        readonly kind: 'complete';
-        readonly managed: LocalServiceManaged;
-        readonly peer: LocalPeerDescriptor;
-        readonly credential: string;
-      }
+    | { readonly kind: 'complete'; readonly managed: LocalServiceManaged }
   > => {
     const pending = pendingSetup(legacy);
-    if (await hasManagedDeploymentAuthority(legacy.rootId)) {
+    const authority = await adoptCommittedSetup(pending);
+    if (authority.kind === 'managed') {
+      return { kind: 'complete', managed: authority.managed };
+    }
+    if (authority.kind === 'transition') {
       await writeDocument(lifecyclePath, pending);
       return finishSetup(pending, 'recovery');
     }
@@ -376,12 +417,15 @@ export function createDesktopLocalRuntimeHostRemoteAccess(input: {
       legacy.allowInterruptActiveTasks ? 'interrupt_active_work' : 'refuse_active_work',
     );
     if (retirement.kind === 'active_tasks') return { kind: 'active_tasks' };
-    if (
-      retirement.kind === 'not_owned' &&
-      !(await hasManagedDeploymentAuthority(legacy.rootId))
-    ) {
-      await removeDocument(lifecyclePath);
-      return { kind: 'external' };
+    if (retirement.kind === 'not_owned') {
+      const raced = await adoptCommittedSetup(pending);
+      if (raced.kind === 'managed') {
+        return { kind: 'complete', managed: raced.managed };
+      }
+      if (raced.kind === 'absent') {
+        await removeDocument(lifecyclePath);
+        return { kind: 'external' };
+      }
     }
 
     try {
@@ -585,8 +629,10 @@ export function createDesktopLocalRuntimeHostRemoteAccess(input: {
         operationSignal.throwIfAborted();
         const pending = await readLifecycle(lifecyclePath, input.rootPath, input.rootId);
         if (pending?.state !== 'setupPending' && pending?.state !== 'handoff') return false;
-        if (!(await hasManagedDeploymentAuthority(pending.rootId))) return false;
         const committed = pendingSetup(pending);
+        const authority = await adoptCommittedSetup(committed);
+        if (authority.kind === 'absent') return false;
+        if (authority.kind === 'managed') return true;
         if (pending.state === 'handoff') await writeDocument(lifecyclePath, committed);
         const setupPackage = await input.resolveSetupPackage(operationSignal);
         await reconcileSetup(committed, setupPackage, operationSignal);
@@ -603,7 +649,8 @@ export function createDesktopLocalRuntimeHostRemoteAccess(input: {
           return;
         }
         if (lifecycle.state === 'setupPending') {
-          await finishSetup(lifecycle, 'recovery');
+          const committed = await adoptCommittedSetup(lifecycle);
+          if (committed.kind !== 'managed') await finishSetup(lifecycle, 'recovery');
           return;
         }
         if (lifecycle.state === 'uninstalling') {
