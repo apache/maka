@@ -132,7 +132,8 @@ export function registerRuntimeHostSessionCatalogIpc(
       sessionId: newId(),
       workspace,
       ...(request.mode === undefined ? {} : { mode: request.mode }),
-      ...(request.mode === undefined ? { name: request.name } : {}),
+      // A nameless mode (`bot`) keeps the caller's name, so always forward it.
+      name: request.name,
       ...(request.labels === undefined ? {} : { labels: request.labels }),
       modelTarget: normalizeModelTarget(input),
       ...normalizeCreateThinkingLevel(input?.thinkingLevel),
