@@ -1110,6 +1110,75 @@ describe('ImportTasksSettingsPage source switching', () => {
 
     await act(async () => harness.root.unmount());
   });
+
+  it('publishes a recovered import to the current view after leaving and returning to its source', async () => {
+    let settleImport: ((r: { ok: false; reason: 'commit_outcome_unknown' }) => void) | undefined;
+    const importResult = new Promise<{ ok: false; reason: 'commit_outcome_unknown' }>((resolve) => {
+      settleImport = resolve;
+    });
+    const codexRecovered = externalSession({
+      id: 's-codex',
+      name: 'Codex conv',
+      importState: { importedCount: 1, importedSessionIds: ['codex-task'], isImporting: false },
+    });
+    // The revisit's own background refresh never resolves, so recovery is the only
+    // thing that can update the screen — proving recovery publishes rather than
+    // leaving the view to wait on a slow refresh.
+    const codexRevisitPending = new Promise<CatalogResult>(() => {});
+    const harness = await renderPage({
+      adapterIds: ['codex', 'claude-code'],
+      bySource: {
+        // [mount, revisit background refresh (pending), recovery readCatalogWindow]
+        codex: [
+          { sessions: [externalSession({ id: 's-codex', name: 'Codex conv' })], nextCursor: null },
+          codexRevisitPending,
+          { sessions: [codexRecovered], nextCursor: null },
+        ],
+        'claude-code': [catalog(externalSession({ id: 's-cc', name: 'CC conv' }))],
+      },
+      importResult,
+    });
+
+    const importButton = harness.container.querySelector<HTMLButtonElement>(
+      'button[aria-label="Import Codex conv"]',
+    );
+    assert.ok(importButton);
+    await act(async () => importButton.click());
+
+    // Switch to claude-code, then back to codex — all before the import resolves.
+    await act(async () => {
+      segment(harness.container, 'claude-code')!.click();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    await act(async () => {
+      segment(harness.container, 'codex')!.click();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    assert.match(harness.container.textContent, /Codex conv/, 'back on codex, pre-import rows shown');
+    assert.doesNotMatch(harness.container.textContent, /Imported once/, 'not recovered yet');
+
+    // Recovery lands. codex is the current selection again, but at a *newer*
+    // generation than when the import started, so a generation check would refuse
+    // to publish. Matching the selection tuple, recovery must still reach the
+    // screen — not just the cache — even though the revisit refresh is pending.
+    await act(async () => {
+      settleImport?.({ ok: false, reason: 'commit_outcome_unknown' });
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    assert.match(harness.container.textContent, /The imported task is available now/);
+    assert.match(
+      harness.container.textContent,
+      /Imported once/,
+      'recovery publishes to the returned-to view, not only the cache',
+    );
+
+    await act(async () => harness.root.unmount());
+  });
 });
 
 function externalSession(

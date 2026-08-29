@@ -144,7 +144,6 @@ type ImportAttempt = {
   importedCountBefore: number;
   latestImportedSessionIdBefore: string | undefined;
   loadedCatalogItemCountBefore: number;
-  catalogSelectionGeneration: number;
 };
 
 type ImportRecovery =
@@ -499,15 +498,21 @@ export function ImportTasksSettingsPage(props: {
           recoveredState,
         );
 
+        // Publish to screen whenever the user is currently viewing the same
+        // selection tuple this attempt came from. Match the tuple, not the
+        // generation captured at import time: navigating A→B→A lands back on the
+        // same selection with a *newer* generation, and a generation check would
+        // refuse to publish there — leaving a clickable "Import" on a row that
+        // already imported until a slow background refresh happened to catch up.
         const currentSelection = catalogSelectionRef.current;
         if (
           currentSelection.adapterId === attempt.adapterId &&
           currentSelection.includeArchived === attempt.includeArchived &&
-          currentSelection.generation === attempt.catalogSelectionGeneration
+          currentSelection.search === attempt.text
         ) {
           // Recovery is the newest authoritative read for this exact catalog
-          // selection. Retire an older poll/load-more response before publishing
-          // it so that response cannot put pre-import state back on screen.
+          // selection. Retire an older poll/load-more/revisit response before
+          // publishing it so that response cannot put pre-import state back up.
           requestGeneration.current += 1;
           setCatalogLoading(false);
           setLoadingMore(false);
@@ -565,7 +570,6 @@ export function ImportTasksSettingsPage(props: {
         importedCountBefore: session.importState.importedCount,
         latestImportedSessionIdBefore: session.importState.importedSessionIds[0],
         loadedCatalogItemCountBefore: catalog.sessions.length,
-        catalogSelectionGeneration: catalogSelectionRef.current.generation,
       };
       setActiveImport(attempt);
       setImportError(null);
