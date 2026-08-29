@@ -29,7 +29,8 @@ import type { PermissionMode } from './permission.js';
  * keep in agreement.
  */
 export interface SessionStartModeSpec {
-  readonly name: string;
+  /** Omitted where the mode keeps the caller's name, as `bot` does. */
+  readonly name?: string;
   readonly labels: readonly string[];
   readonly permissionMode: PermissionMode;
 }
@@ -38,6 +39,10 @@ export const SESSION_START_MODE_SPECS = {
   deep_research: {
     name: 'Deep Research',
     labels: ['mode:deep_research'],
+    permissionMode: 'explore',
+  },
+  bot: {
+    labels: ['mode:bot'],
     permissionMode: 'explore',
   },
 } as const satisfies Record<string, SessionStartModeSpec>;
