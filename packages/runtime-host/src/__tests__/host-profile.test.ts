@@ -433,15 +433,33 @@ describe('Runtime Host profiles', () => {
       /credential is invalid/,
     );
     await credentials.set(targetA, 'owner-a', 'provider-a');
+    assert.equal(await credentials.get(targetA, 'owner-b'), null);
     await credentials.set(targetA, 'owner-b', 'provider-b');
     await credentials.set(targetB, 'owner-a', 'provider-other-target');
 
-    assert.equal(await credentials.get(targetA, 'owner-a'), 'provider-a');
+    assert.equal(await credentials.get(targetA, 'owner-a'), null);
     assert.equal(await credentials.get(targetA, 'owner-b'), 'provider-b');
     assert.equal(await credentials.get(targetB, 'owner-a'), 'provider-other-target');
     await credentials.delete(targetA, 'owner-a');
     assert.equal(await credentials.get(targetA, 'owner-a'), null);
     assert.equal(await credentials.get(targetA, 'owner-b'), 'provider-b');
+  });
+
+  test('removing a profile retires its terminal and provider credentials together', async () => {
+    const path = await profilePath();
+    const credentialStore = createFileCredentialStore(join(dirname(path), 'credentials'));
+    const catalog = createFileRuntimeHostProfileCatalog(
+      path,
+      createRuntimeHostProfileCredentialStore(credentialStore),
+    );
+    const providers = createRuntimeHostCapabilityProviderCredentialStore(credentialStore);
+    const profile = remoteProfile('office', 'wss://a.example.com', ROOT_A);
+    await catalog.save(profile, 'terminal-token');
+    await providers.set(profile, 'owner-a', 'provider-token');
+
+    await catalog.remove(profile.id);
+
+    assert.equal(await providers.get(profile, 'owner-a'), null);
   });
 
   test('pins a direct-peer profile to its PeerId while allowing route discovery to change', () => {

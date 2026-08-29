@@ -92,6 +92,14 @@ test('remote TUI publication keeps its owner association across reconnect and re
       secondOwner.credentialId,
       'terminal-b-mcp',
     );
+    assert.deepEqual(firstProvider.capabilityOwner, {
+      principalId: 'terminal-a',
+      clientInstanceId: 'terminal-a',
+    });
+    assert.deepEqual(secondProvider.capabilityOwner, {
+      principalId: 'terminal-b',
+      clientInstanceId: 'terminal-b',
+    });
     otherProvider = await connectRemote(
       host.websocketEndpoints[0]!,
       capability.rootId,
@@ -236,7 +244,11 @@ async function provisionProvider(
   rootPath: string,
   ownerCredentialId: string,
   principalId: string,
-): Promise<{ readonly credentialId: string; readonly credential: string }> {
+): Promise<{
+  readonly credentialId: string;
+  readonly credential: string;
+  readonly capabilityOwner?: { readonly principalId: string; readonly clientInstanceId: string };
+}> {
   const issued = await local.request('access.credential.issue', {
     principalKind: 'capability_provider',
     principalId,
@@ -247,6 +259,7 @@ async function provisionProvider(
   });
   return {
     credentialId: issued.credentialId,
+    capabilityOwner: issued.capabilityOwner,
     credential: await consumeAccessCredentialDelivery(
       rootPath,
       issued.deliveryId,

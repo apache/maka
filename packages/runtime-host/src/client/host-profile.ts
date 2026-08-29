@@ -286,8 +286,7 @@ export function createRuntimeHostProfileCredentialStore(
         credential,
       );
     },
-    delete: (profile) =>
-      credentials.deleteSecret(profileCredentialSlot(profile), 'runtime_host_access'),
+    delete: (profile) => credentials.deleteSecret(profileCredentialSlot(profile)),
   };
 }
 
@@ -295,28 +294,30 @@ export function createRuntimeHostCapabilityProviderCredentialStore(
   credentials: Pick<CredentialStore, 'getSecret' | 'setSecret' | 'deleteSecret'>,
 ): RuntimeHostCapabilityProviderCredentialStore {
   return {
-    get: (profile, ownerClientInstanceId) =>
-      credentials.getSecret(
-        capabilityProviderCredentialSlot(profile, ownerClientInstanceId),
+    get: async (profile, ownerClientInstanceId) => {
+      const stored = await credentials.getSecret(
+        profileCredentialSlot(profile),
         'runtime_host_capability_provider',
-      ),
-    set: (profile, ownerClientInstanceId, credential) => {
-      try {
-        requireRuntimeHostAccessCredential(credential);
-      } catch (error) {
-        return Promise.reject(error);
-      }
-      return credentials.setSecret(
-        capabilityProviderCredentialSlot(profile, ownerClientInstanceId),
+      );
+      if (stored === null) return null;
+      const decoded = decodeCapabilityProviderCredential(stored);
+      return decoded.ownerClientInstanceId === requireClientInstanceId(ownerClientInstanceId)
+        ? decoded.credential
+        : null;
+    },
+    set: async (profile, ownerClientInstanceId, credential) => {
+      await credentials.setSecret(
+        profileCredentialSlot(profile),
         'runtime_host_capability_provider',
-        credential,
+        JSON.stringify({
+          schemaVersion: 1,
+          ownerClientInstanceId: requireClientInstanceId(ownerClientInstanceId),
+          credential: requireRuntimeHostAccessCredential(credential),
+        }),
       );
     },
     delete: (profile, ownerClientInstanceId) =>
-      credentials.deleteSecret(
-        capabilityProviderCredentialSlot(profile, ownerClientInstanceId),
-        'runtime_host_capability_provider',
-      ),
+      deleteCapabilityProviderCredential(credentials, profile, ownerClientInstanceId),
   };
 }
 
@@ -1155,16 +1156,49 @@ function profileCredentialSlot(profile: RemoteRuntimeHostProfile): string {
   return `runtime-host-profile:${requireProfileId(profile.id)}:${profileCredentialBinding(profile)}`;
 }
 
-function capabilityProviderCredentialSlot(
+async function deleteCapabilityProviderCredential(
+  credentials: Pick<CredentialStore, 'getSecret' | 'deleteSecret'>,
   profile: RemoteRuntimeHostProfile,
   ownerClientInstanceId: string,
-): string {
-  return [
-    'runtime-host-profile-capability-provider',
-    requireProfileId(profile.id),
-    profileCredentialBinding(profile),
-    createHash('sha256').update(requireClientInstanceId(ownerClientInstanceId)).digest('hex'),
-  ].join(':');
+): Promise<void> {
+  const slot = profileCredentialSlot(profile);
+  const stored = await credentials.getSecret(slot, 'runtime_host_capability_provider');
+  if (stored === null) return;
+  const decoded = decodeCapabilityProviderCredential(stored);
+  if (decoded.ownerClientInstanceId !== requireClientInstanceId(ownerClientInstanceId)) return;
+  await credentials.deleteSecret(slot, 'runtime_host_capability_provider');
+}
+
+function decodeCapabilityProviderCredential(value: string): {
+  readonly ownerClientInstanceId: string;
+  readonly credential: string;
+} {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(value);
+  } catch (error) {
+    throw new Error('Runtime Host capability-provider credential is invalid', { cause: error });
+  }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    throw new Error('Runtime Host capability-provider credential is invalid');
+  }
+  const record = parsed as Record<string, unknown>;
+  if (
+    record.schemaVersion !== 1 ||
+    Object.keys(record).some(
+      (key) => !['schemaVersion', 'ownerClientInstanceId', 'credential'].includes(key),
+    )
+  ) {
+    throw new Error('Runtime Host capability-provider credential is invalid');
+  }
+  try {
+    return {
+      ownerClientInstanceId: requireClientInstanceId(record.ownerClientInstanceId),
+      credential: requireRuntimeHostAccessCredential(record.credential as string),
+    };
+  } catch (error) {
+    throw new Error('Runtime Host capability-provider credential is invalid', { cause: error });
+  }
 }
 
 function requireRuntimeHostAccessCredential(credential: string): string {

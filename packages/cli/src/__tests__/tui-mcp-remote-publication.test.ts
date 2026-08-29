@@ -123,6 +123,35 @@ test('remote TUI publication surfaces rejected credentials without a retry autho
   await target.closePublication?.();
 });
 
+test('remote TUI publication aborts an in-flight connection before closing', async () => {
+  const credentials = credentialHarness('provider-secret');
+  let observedSignal: AbortSignal | undefined;
+  const target = createRemoteTuiMcpPublicationTarget(
+    {
+      clientDataRoot: '/client-data',
+      profile: PROFILE,
+      ownerClientInstanceId: 'terminal-client',
+    },
+    {
+      credentials: credentials.store,
+      loadClientInstanceId: async () => 'provider-client',
+      connectProfile: async (input) => {
+        observedSignal = input.signal;
+        return new Promise<RuntimeHostConnection>((_resolve, reject) => {
+          input.signal?.addEventListener('abort', () => reject(input.signal?.reason), {
+            once: true,
+          });
+        });
+      },
+    },
+  );
+  await waitFor(() => observedSignal !== undefined, 'provider connection attempt to start');
+
+  await target.closePublication?.();
+
+  assert.equal(observedSignal?.aborted, true);
+});
+
 async function availability(target: ReturnType<typeof createRemoteTuiMcpPublicationTarget>) {
   let current: Parameters<Parameters<typeof target.subscribeConnectionAvailability>[0]>[0] = {
     kind: 'unavailable',

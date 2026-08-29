@@ -80,12 +80,13 @@ class RemoteTuiMcpPublicationTarget implements TuiMcpPublicationTarget {
   readonly #listeners = new Set<(availability: TuiMcpPublicationAvailability) => void>();
   #availability: TuiMcpPublicationAvailability = {
     kind: 'unavailable',
-    reason: 'credential_required',
+    reason: 'host_unavailable',
   };
   #connection: RuntimeHostReconnectingConnection | undefined;
   #disposeAvailability: (() => void) | undefined;
   #peerClient: RuntimeHostPeerClient | undefined;
   #operation = Promise.resolve();
+  #connectAbort: AbortController | undefined;
   #generation = 0;
   #closed = false;
   #closeTask: Promise<void> | undefined;
@@ -108,6 +109,8 @@ class RemoteTuiMcpPublicationTarget implements TuiMcpPublicationTarget {
         return;
       }
       await this.#connect(credential);
+    }).catch(() => {
+      if (!this.#closed) this.#setUnavailable('host_unavailable');
     });
   }
 
@@ -132,6 +135,7 @@ class RemoteTuiMcpPublicationTarget implements TuiMcpPublicationTarget {
   }
 
   setCredential(credential: string): Promise<void> {
+    this.#cancelConnect();
     return this.#serialize(async () => {
       if (this.#closed) throw new Error('Remote MCP publication is closed');
       await this.#deps.credentials.set(
@@ -145,6 +149,7 @@ class RemoteTuiMcpPublicationTarget implements TuiMcpPublicationTarget {
   }
 
   removeCredential(): Promise<void> {
+    this.#cancelConnect();
     return this.#serialize(async () => {
       if (this.#closed) throw new Error('Remote MCP publication is closed');
       await this.#disconnect();
@@ -154,6 +159,7 @@ class RemoteTuiMcpPublicationTarget implements TuiMcpPublicationTarget {
   }
 
   closePublication(): Promise<void> {
+    this.#cancelConnect();
     this.#closeTask ??= this.#close();
     return this.#closeTask;
   }
@@ -169,6 +175,8 @@ class RemoteTuiMcpPublicationTarget implements TuiMcpPublicationTarget {
 
   async #connect(credential: string): Promise<void> {
     const generation = ++this.#generation;
+    const abort = new AbortController();
+    this.#connectAbort = abort;
     this.#setUnavailable('host_unavailable');
     try {
       const clientInstanceId = await this.#deps.loadClientInstanceId(
@@ -186,7 +194,7 @@ class RemoteTuiMcpPublicationTarget implements TuiMcpPublicationTarget {
           clientInstanceId,
           sshInteraction: 'batch',
           ...(peerClient ? { peerClient } : {}),
-          ...(signal ? { signal } : {}),
+          signal: signal ? AbortSignal.any([abort.signal, signal]) : abort.signal,
         });
       const initial = await connect();
       if (this.#closed || generation !== this.#generation) {
@@ -223,10 +231,13 @@ class RemoteTuiMcpPublicationTarget implements TuiMcpPublicationTarget {
       }
       await this.#peerClient?.close().catch(() => undefined);
       this.#peerClient = undefined;
+    } finally {
+      if (this.#connectAbort === abort) this.#connectAbort = undefined;
     }
   }
 
   async #disconnect(): Promise<void> {
+    this.#cancelConnect();
     this.#generation += 1;
     this.#disposeAvailability?.();
     this.#disposeAvailability = undefined;
@@ -249,6 +260,10 @@ class RemoteTuiMcpPublicationTarget implements TuiMcpPublicationTarget {
   #requireConnection(): RuntimeHostReconnectingConnection {
     if (this.#connection && this.#availability.kind === 'connected') return this.#connection;
     throw new RuntimeHostPermanentReconnectError('Remote MCP publication is unavailable');
+  }
+
+  #cancelConnect(): void {
+    this.#connectAbort?.abort(new Error('Remote MCP publication target changed'));
   }
 
   #setUnavailable(reason: TuiMcpPublicationUnavailableReason): void {
