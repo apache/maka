@@ -18,10 +18,7 @@
  */
 
 import { parseDesktopSessionKey } from '../shared/runtime-host-identity.js';
-import type {
-  WorkHubCoordinationHostSessionCreator,
-  WorkHubDesktopSessionBridge,
-} from './workhub-session-port.js';
+import type { WorkHubDesktopSessionBridge } from './workhub-session-port.js';
 
 export interface WorkHubCoordinationHostAuthority {
   readonly sessionId: string | undefined;
@@ -29,11 +26,10 @@ export interface WorkHubCoordinationHostAuthority {
   readonly isCurrent: () => boolean;
 }
 
-/** Restricts the transitional WorkHub router to the Coordination Session's Host. */
+/** Restricts WorkHub's read-only Session projection to the Coordination Session's Host. */
 export function scopeWorkHubSessionsToCoordinationHost(
   sessions: WorkHubDesktopSessionBridge,
   coordination: WorkHubCoordinationHostAuthority,
-  createOnCoordinationHost: WorkHubCoordinationHostSessionCreator,
 ): WorkHubDesktopSessionBridge {
   const coordinationSessionId = coordination.sessionId;
   const hostId = (() => {
@@ -77,21 +73,6 @@ export function scopeWorkHubSessionsToCoordinationHost(
     async queryMessageExecutions(sessionId: string, messageIds: readonly string[]) {
       requireTargetHost(sessionId);
       return await sessions.queryMessageExecutions(sessionId, messageIds);
-    },
-    async create(input: { name: string }) {
-      requireHost();
-      return await createOnCoordinationHost(coordinationSessionId!, input);
-    },
-    async send(sessionId: string, command: { type: 'send'; turnId: string; text: string }) {
-      requireTargetHost(sessionId);
-      return sessions.send(sessionId, command);
-    },
-    async stop(
-      sessionId: string,
-      input?: { source?: 'stop_button'; expectedTurnId?: string },
-    ) {
-      requireTargetHost(sessionId);
-      await sessions.stop(sessionId, input);
     },
     subscribeChanges: (handler: () => void) => sessions.subscribeChanges(handler),
   } satisfies WorkHubDesktopSessionBridge;

@@ -31,7 +31,6 @@ import {
   createDesktopWorkHubCoordinationPort,
   projectWorkHubCoordinationTurns,
 } from '../../renderer/workhub-coordination-port.js';
-import { WorkHubSessionSubmitError } from '../../renderer/workhub-controller.js';
 
 function desktopSession(
   id: string,
@@ -201,7 +200,6 @@ test('Coordination transcript adapter emits an initial empty ready snapshot and 
         };
       },
     },
-    answer: async (input) => ({ turnId: input.turnId }),
     record: async (input) => ({ turnId: input.turnId }),
     candidates: async () => ({
       candidateSetId: `sha256:${'a'.repeat(64)}`,
@@ -355,7 +353,6 @@ test('desktop adapter rebuilds recent turns from the Session transcript and clos
       },
     },
     projectName: () => 'Maka',
-    newTurnId: () => 'unused',
   });
 
   assert.deepEqual(await adapter.recentTurns([{ sessionId }]), [{
@@ -417,7 +414,6 @@ test('desktop adapter cancels an unavailable transcript without hiding ready Ses
       },
     },
     projectName: () => 'Maka',
-    newTurnId: () => 'unused',
   });
 
   const turns = adapter.recentTurns([
@@ -473,7 +469,6 @@ test('desktop adapter projects Session catalog facts without owning copies', asy
       subscribeChanges: () => () => {},
     },
     projectName: (projectId) => projectId === 'project-maka' ? 'Maka' : undefined,
-    newTurnId: () => 'unused',
   });
 
   assert.deepEqual(await adapter.list(), [
@@ -525,6 +520,8 @@ test('desktop adapter rebuilds delegation feedback from the Message-owned execut
   const sessions = [
     desktopSession('accepted'),
     desktopSession('running', { status: 'running', runningTurnIds: ['turn-running'] }),
+    desktopSession('stale-running'),
+    desktopSession('recorded-running-only', { runningTurnIds: undefined }),
     desktopSession('waiting', {
       status: 'waiting_for_user',
       runningTurnIds: ['turn-waiting'],
@@ -544,6 +541,16 @@ test('desktop adapter rebuilds delegation feedback from the Message-owned execut
     statusSource: 'recorded';
   }>>([
     ['running', [{ turnId: 'turn-running', status: 'running', statusSource: 'recorded' }]],
+    ['stale-running', [{
+      turnId: 'turn-stale-running',
+      status: 'running',
+      statusSource: 'recorded',
+    }]],
+    ['recorded-running-only', [{
+      turnId: 'turn-recorded-running-only',
+      status: 'running',
+      statusSource: 'recorded',
+    }]],
     ['waiting', [{ turnId: 'turn-waiting', status: 'running', statusSource: 'recorded' }]],
     ['completed', [{ turnId: 'turn-completed', status: 'completed', statusSource: 'recorded' }]],
     ['failed', [{ turnId: 'turn-failed', status: 'failed', statusSource: 'recorded' }]],
@@ -577,11 +584,12 @@ test('desktop adapter rebuilds delegation feedback from the Message-owned execut
       subscribeChanges: () => () => {},
     },
     projectName: () => 'Maka',
-    newTurnId: () => 'unused',
   });
   const references = [
     ['accepted', 'turn-accepted'],
     ['running', 'turn-running'],
+    ['stale-running', 'turn-stale-running'],
+    ['recorded-running-only', 'turn-recorded-running-only'],
     ['waiting', 'turn-waiting'],
     ['completed', 'turn-completed'],
     ['failed', 'turn-failed'],
@@ -600,6 +608,8 @@ test('desktop adapter rebuilds delegation feedback from the Message-owned execut
   assert.deepEqual(feedback.map(({ delegationId, state }) => ({ delegationId, state })), [
     { delegationId: 'delegation-accepted', state: 'accepted' },
     { delegationId: 'delegation-running', state: 'running' },
+    { delegationId: 'delegation-stale-running', state: 'accepted' },
+    { delegationId: 'delegation-recorded-running-only', state: 'running' },
     { delegationId: 'delegation-waiting', state: 'waiting_for_user' },
     { delegationId: 'delegation-completed', state: 'completed' },
     { delegationId: 'delegation-failed', state: 'failed' },
@@ -651,7 +661,6 @@ test('desktop adapter follows a delegated Message into its successor Turn', asyn
       subscribeChanges: () => () => {},
     },
     projectName: () => 'Maka',
-    newTurnId: () => 'unused',
   });
 
   const references = [{
@@ -664,274 +673,6 @@ test('desktop adapter follows a delegated Message into its successor Turn', asyn
     delegationId: 'payment-delegation',
     state: 'running',
   }]);
-});
-
-test('desktop adapter preserves per-Host catalog coverage for ownership reconciliation', async () => {
-  const localSessionId = desktopSessionKey({ hostId: 'local-host', sessionId: 'local' });
-  const adapter = createDesktopWorkHubSessionPort({
-    transcripts: unusedTranscripts,
-    sessions: {
-      list: async () => [],
-      listWithCoverage: async () => ({
-        sessions: [desktopSession(localSessionId)],
-        completeHostIds: ['local-host'],
-      }),
-      listTurns: async () => [],
-      queryMessageExecutions: noMessageExecutions,
-      create: async () => { throw new Error('not used'); },
-      send: async () => { throw new Error('not used'); },
-      stop: async () => {},
-      subscribeChanges: () => () => {},
-    },
-    projectName: () => 'Maka',
-    newTurnId: () => 'unused',
-  });
-
-  const catalog = await adapter.listCatalog?.();
-  assert.ok(catalog);
-  assert.equal(catalog.sessions[0]?.target.sessionId, localSessionId);
-  assert.equal(catalog.isCompleteFor({ sessionId: localSessionId }), true);
-  assert.equal(catalog.isCompleteFor({
-    sessionId: desktopSessionKey({ hostId: 'remote-host', sessionId: 'remote' }),
-  }), false);
-});
-
-test('desktop adapter delegates create, send, and invalidation to Session APIs', async () => {
-  const calls: unknown[] = [];
-  let onChanged: (() => void) | undefined;
-  const adapter = createDesktopWorkHubSessionPort({
-    transcripts: unusedTranscripts,
-    sessions: {
-      list: async () => [desktopSession('created', {
-        status: 'running',
-        runningTurnIds: ['turn-new'],
-      })],
-      listTurns: async () => [],
-      queryMessageExecutions: noMessageExecutions,
-      create: async (input) => {
-        calls.push(['create', input]);
-        return desktopSession('created', { name: input.name });
-      },
-      send: async (sessionId, command) => {
-        calls.push(['send', sessionId, command]);
-        return { ok: true, turnId: command.turnId };
-      },
-      stop: async (sessionId, input) => {
-        calls.push(['stop', sessionId, input]);
-      },
-      subscribeChanges: (handler) => {
-        onChanged = handler;
-        return () => calls.push(['unsubscribe']);
-      },
-    },
-    projectName: () => 'Maka',
-    newTurnId: () => 'turn-new',
-  });
-
-  const created = await adapter.create({ name: '实现导出发票 PDF 功能' });
-  const turnId = adapter.reserveTurnId();
-  const turn = await adapter.submit(created.target, '实现导出发票 PDF 功能', turnId);
-  await adapter.stop(created.target, 'turn-new');
-  let invalidations = 0;
-  const unsubscribe = adapter.subscribe(() => {
-    invalidations += 1;
-  });
-  onChanged?.();
-  unsubscribe();
-
-  assert.equal(created.kind, 'ordinary');
-  assert.deepEqual(turn, { turnId: 'turn-new' });
-  assert.equal(invalidations, 1);
-  assert.deepEqual(calls, [
-    ['create', { name: '实现导出发票 PDF 功能' }],
-    ['send', 'created', { type: 'send', turnId: 'turn-new', text: '实现导出发票 PDF 功能' }],
-    ['stop', 'created', { source: 'stop_button', expectedTurnId: 'turn-new' }],
-    ['unsubscribe'],
-  ]);
-});
-
-test('desktop adapter preserves when Session delivery steered an existing root Turn', async () => {
-  const adapter = createDesktopWorkHubSessionPort({
-    transcripts: unusedTranscripts,
-    sessions: {
-      list: async () => [],
-      listTurns: async () => [],
-      queryMessageExecutions: noMessageExecutions,
-      create: async () => {
-        throw new Error('not used');
-      },
-      send: async (_sessionId, command) => ({
-        ok: true,
-        turnId: command.turnId,
-        steered: true,
-      }),
-      stop: async () => {},
-      subscribeChanges: () => () => {},
-    },
-    projectName: () => 'Maka',
-    newTurnId: () => 'turn-steered',
-  });
-
-  assert.deepEqual(
-    await adapter.submit(
-      { sessionId: 'busy' },
-      '补充已有执行流',
-      adapter.reserveTurnId(),
-    ),
-    { turnId: 'turn-steered', steered: true },
-  );
-});
-
-test('desktop adapter distinguishes definite rejection from an unknown delivery outcome', async () => {
-  let outcome: 'throw' | 'unknown' | 'reject' = 'throw';
-  const adapter = createDesktopWorkHubSessionPort({
-    transcripts: unusedTranscripts,
-    sessions: {
-      list: async () => [],
-      listTurns: async () => [],
-      queryMessageExecutions: noMessageExecutions,
-      create: async () => { throw new Error('not used'); },
-      send: async () => {
-        if (outcome === 'throw') throw new Error('transport disconnected');
-        if (outcome === 'unknown') {
-          return {
-            ok: false as const,
-            reason: 'outcome_unknown' as const,
-            messageId: 'reserved-turn',
-            skillInvocation: { loaded: [], failed: [], receipts: [] },
-          };
-        }
-        return {
-          ok: false as const,
-          reason: 'skill_invocation_failed' as const,
-          skillInvocation: {
-            loaded: [],
-            failed: [{ request: 'missing', reason: 'not_found' as const }],
-            receipts: [],
-          },
-        };
-      },
-      stop: async () => {},
-      subscribeChanges: () => () => {},
-    },
-    projectName: () => 'Maka',
-    newTurnId: () => 'reserved-turn',
-  });
-
-  await assert.rejects(
-    adapter.submit({ sessionId: 'payment' }, '继续支付', 'reserved-turn'),
-    (error) => error instanceof WorkHubSessionSubmitError && error.admission === 'unknown',
-  );
-  // The Host declining to prove the outcome must stay reconcilable; only a
-  // Host-owned refusal releases the reserved root.
-  outcome = 'unknown';
-  await assert.rejects(
-    adapter.submit({ sessionId: 'payment' }, '继续支付', 'reserved-turn'),
-    (error) => error instanceof WorkHubSessionSubmitError && error.admission === 'unknown',
-  );
-  outcome = 'reject';
-  await assert.rejects(
-    adapter.submit({ sessionId: 'payment' }, '继续支付', 'reserved-turn'),
-    (error) => error instanceof WorkHubSessionSubmitError && error.admission === 'rejected',
-  );
-});
-
-test('desktop adapter reconciles lost replies from authoritative transcript identity', async () => {
-  const cases: Array<{
-    name: string;
-    message: StoredMessage;
-    expected: { kind: 'root'; turnId: string } | { kind: 'steered' } | { kind: 'unknown' };
-  }> = [
-    {
-      name: 'direct root',
-      message: {
-        type: 'user', id: 'user-root', turnId: 'reserved-turn', ts: 1, text: '开始支付',
-      },
-      expected: { kind: 'root', turnId: 'reserved-turn' },
-    },
-    {
-      name: 'busy-race root',
-      message: {
-        type: 'user', id: 'reserved-turn', turnId: 'host-root', ts: 1, text: '开始支付',
-      },
-      expected: { kind: 'root', turnId: 'host-root' },
-    },
-    {
-      name: 'steering',
-      message: {
-        type: 'user',
-        id: 'reserved-turn',
-        turnId: 'pre-existing-root',
-        steeringEventId: 'steering-event',
-        ts: 1,
-        text: '补充支付测试',
-      },
-      expected: { kind: 'steered' },
-    },
-    {
-      name: 'unrelated message',
-      message: {
-        type: 'user', id: 'other-message', turnId: 'other-root', ts: 1, text: '其他工作',
-      },
-      expected: { kind: 'unknown' },
-    },
-  ];
-
-  for (const fixture of cases) {
-    const adapter = createDesktopWorkHubSessionPort({
-      transcripts: transcriptsWith([fixture.message]),
-      sessions: {
-        list: async () => [],
-        listTurns: async () => [],
-        queryMessageExecutions: noMessageExecutions,
-        create: async () => { throw new Error('not used'); },
-        send: async () => { throw new Error('not used'); },
-        stop: async () => {},
-        subscribeChanges: () => () => {},
-      },
-      projectName: () => 'Maka',
-      newTurnId: () => 'reserved-turn',
-    });
-
-    assert.deepEqual(
-      await adapter.reconcileSubmission({
-        sessionId: desktopSessionKey({ hostId: 'local-host', sessionId: fixture.name }),
-      }, 'reserved-turn'),
-      fixture.expected,
-      fixture.name,
-    );
-  }
-});
-
-test('desktop adapter binds stop to the root Turn owned by the WorkHub submission', async () => {
-  const stopped: unknown[] = [];
-  const adapter = createDesktopWorkHubSessionPort({
-    transcripts: unusedTranscripts,
-    sessions: {
-      list: async () => [],
-      listTurns: async () => [],
-      queryMessageExecutions: noMessageExecutions,
-      create: async () => {
-        throw new Error('not used');
-      },
-      send: async () => {
-        throw new Error('not used');
-      },
-      stop: async (sessionId, input) => {
-        stopped.push([sessionId, input]);
-      },
-      subscribeChanges: () => () => {},
-    },
-    projectName: () => 'Maka',
-    newTurnId: () => 'unused',
-  });
-
-  await adapter.stop({ sessionId: 'payment' }, 'turn-workhub');
-
-  assert.deepEqual(stopped, [[
-    'payment',
-    { source: 'stop_button', expectedTurnId: 'turn-workhub' },
-  ]]);
 });
 
 test('desktop adapter derives stable origin evidence from the existing Session log', async () => {
@@ -959,7 +700,6 @@ test('desktop adapter derives stable origin evidence from the existing Session l
       subscribeChanges: () => () => {},
     },
     projectName: () => 'Maka',
-    newTurnId: () => 'unused',
   });
 
   const first = await adapter.routingEvidence([{ sessionId: 'payment' }]);

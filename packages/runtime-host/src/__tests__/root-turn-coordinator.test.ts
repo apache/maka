@@ -179,62 +179,6 @@ test('turn.start rejects the reserved WorkHub Coordination Session identity', as
   }
 });
 
-test('recovered Messages retain their durably assigned root identity', async () => {
-  const fixture = await createFailureFixture({
-    registerBackend: (backends) =>
-      backends.register('ai-sdk', (context) => new FakeBackend(context)),
-  });
-  const turnId = 'workhub-linked-turn';
-  const runId = 'workhub-linked-run';
-  const messageId = 'workhub-linked-message';
-  const content = { text: 'continue the linked assignment' };
-  const source = {
-    messageId,
-    content,
-    submittedContentDigest: messageContentDigest(content),
-    placement: 'current_turn' as const,
-    disposition: 'steering' as const,
-  };
-  try {
-    await fixture.stores.sessionStore.commitMessageAdmission({
-      sessionId: fixture.sessionId,
-      turnId,
-      runId,
-      messageId,
-      content,
-      submittedContentDigest: source.submittedContentDigest,
-      submittedPlacement: 'current_turn',
-      placement: source.placement,
-      disposition: source.disposition,
-      admittedAt: 1,
-    });
-
-    const outcome = await fixture.sessionAdmission.run(fixture.sessionId, (lease) =>
-      fixture.coordinator.startRecoveredMessages(
-        {
-          sessionId: fixture.sessionId,
-          content,
-          submittedContent: content,
-          sources: [source],
-          rootIdentity: { turnId, runId },
-        },
-        lease,
-      ),
-    );
-
-    assert.deepEqual(outcome, { turnId });
-    const admission = await fixture.stores.agentRunStore.readRootTurnAdmission(
-      fixture.sessionId,
-      turnId,
-    );
-    assert.equal(admission?.runId, runId);
-  } finally {
-    await fixture.coordinator.close();
-    await fixture.messages.close();
-    await fixture.dispose();
-  }
-});
-
 test('turn.start rejects a corrupt Coordination role on an ordinary identity', async () => {
   const fixture = await createFailureFixture({
     registerBackend: (backends) =>

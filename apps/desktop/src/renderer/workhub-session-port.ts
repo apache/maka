@@ -37,10 +37,7 @@ import type {
   WorkHubSessionState,
   WorkHubSessionTarget,
 } from './workhub-controller.js';
-import {
-  boundedWorkHubTimelineText,
-  WorkHubSessionSubmitError,
-} from './workhub-controller.js';
+import { boundedWorkHubTimelineText } from './workhub-controller.js';
 
 export interface WorkHubDesktopSession {
   id: string;
@@ -76,24 +73,8 @@ export interface WorkHubDesktopSessionBridge {
       | { messageId: string; state: 'owned'; turnId: string; runId: string }
     )[];
   }>;
-  create(input: { name: string }): Promise<WorkHubDesktopSession>;
-  send(
-    sessionId: string,
-    command: { type: 'send'; turnId: string; text: string },
-  ): Promise<
-    { ok: true; turnId: string; steered?: true } | { ok: false; reason: string }
-  >;
-  stop(
-    sessionId: string,
-    input?: { source?: 'stop_button'; expectedTurnId?: string },
-  ): Promise<unknown>;
   subscribeChanges(handler: () => void): () => void;
 }
-
-export type WorkHubCoordinationHostSessionCreator = (
-  coordinationSessionId: string,
-  input: { name: string },
-) => Promise<WorkHubDesktopSession>;
 
 export interface WorkHubDesktopTranscriptBridge {
   open(
@@ -107,11 +88,12 @@ const WORKHUB_TIMELINE_SESSION_LIMIT = 10;
 const WORKHUB_TIMELINE_TURN_LIMIT = 40;
 const WORKHUB_TRANSCRIPT_READY_TIMEOUT_MS = 5_000;
 
-export function createDesktopWorkHubSessionPort(deps: {
-  sessions: WorkHubDesktopSessionBridge;
+export function createDesktopWorkHubSessionPort<
+  Sessions extends WorkHubDesktopSessionBridge,
+>(deps: {
+  sessions: Sessions;
   transcripts: WorkHubDesktopTranscriptBridge;
   projectName(projectId: string): string | undefined;
-  newTurnId(): string;
 }): WorkHubSessionPort {
   // The first prompt is immutable Session-log evidence. This cache is only a
   // rebuildable read optimization; it is never an authority or a write path.
@@ -163,9 +145,6 @@ export function createDesktopWorkHubSessionPort(deps: {
   return {
     async list() {
       return (await projectCatalog()).sessions;
-    },
-    listCatalog() {
-      return projectCatalog();
     },
     async recentTurns(targets) {
       const turnsBySession = await Promise.all(
@@ -283,72 +262,6 @@ export function createDesktopWorkHubSessionPort(deps: {
         }
       }));
     },
-    async create({ name }) {
-      return projectSession(await deps.sessions.create({ name }));
-    },
-    reserveTurnId() {
-      return deps.newTurnId();
-    },
-    async submit(target: WorkHubSessionTarget, text: string, turnId: string) {
-      let result: Awaited<ReturnType<WorkHubDesktopSessionBridge['send']>>;
-      try {
-        result = await deps.sessions.send(target.sessionId, {
-          type: 'send',
-          turnId,
-          text,
-        });
-      } catch (cause) {
-        throw new WorkHubSessionSubmitError(
-          'WorkHub Session delivery outcome is unknown',
-          'unknown',
-          { cause },
-        );
-      }
-      if (!result.ok) {
-        // `outcome_unknown` is the Host declining to prove what happened, not a
-        // refusal: the Message may already be running, so it stays reachable
-        // for reconciliation rather than being released.
-        throw new WorkHubSessionSubmitError(
-          `WorkHub Session send failed: ${result.reason}`,
-          result.reason === 'outcome_unknown' ? 'unknown' : 'rejected',
-        );
-      }
-      return {
-        turnId: result.turnId,
-        ...(result.steered ? { steered: true as const } : {}),
-      };
-    },
-    async reconcileSubmission(target, reservedTurnId) {
-      try {
-        const messages = await readWorkHubSessionMessages(deps.transcripts, target);
-        let message: Extract<StoredMessage, { type: 'user' }> | undefined;
-        for (let index = messages.length - 1; index >= 0; index -= 1) {
-          const entry = messages[index];
-          if (
-            entry?.type === 'user' &&
-            (entry.turnId === reservedTurnId || entry.id === reservedTurnId)
-          ) {
-            message = entry;
-            break;
-          }
-        }
-        if (!message) return { kind: 'unknown' };
-        if (message.turnId === reservedTurnId) {
-          return { kind: 'root', turnId: message.turnId };
-        }
-        return message.steeringEventId
-          ? { kind: 'steered' }
-          : { kind: 'root', turnId: message.turnId };
-      } catch {
-        return { kind: 'unknown' };
-      }
-    },
-    async stop(target, expectedTurnId) {
-      await deps.sessions.stop(target.sessionId, {
-        source: 'stop_button',
-        expectedTurnId,
-      });
-    },
     subscribe(handler) {
       return deps.sessions.subscribeChanges(handler);
     },
@@ -465,9 +378,11 @@ function projectDelegationExecutionState(input: {
   if (turn?.statusSource === 'recorded' && turn.status && turn.status !== 'running') {
     return turn.status;
   }
-  const ownsLiveTurn = session?.runningTurnIds?.includes(executionTurnId) === true;
+  const liveTurnIds = session?.runningTurnIds;
+  const ownsLiveTurn = liveTurnIds?.includes(executionTurnId) === true;
   if (ownsLiveTurn && session?.state === 'waiting_for_user') return 'waiting_for_user';
-  if (ownsLiveTurn || (turn?.statusSource === 'recorded' && turn.status === 'running')) {
+  if (ownsLiveTurn) return 'running';
+  if (liveTurnIds === undefined && turn?.statusSource === 'recorded' && turn.status === 'running') {
     return 'running';
   }
   if (input.turnReadFailed || !session) return 'recovering';

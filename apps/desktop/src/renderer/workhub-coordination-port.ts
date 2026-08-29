@@ -54,7 +54,6 @@ export class WorkHubCoordinationFailure extends Error {
 export function createDesktopWorkHubCoordinationPort(deps: {
   sessionId: string;
   transcripts: WorkHubDesktopTranscriptBridge;
-  answer(input: { turnId: string; text: string }): Promise<{ turnId: string }>;
   record(input: {
     turnId: string;
     userText: string;
@@ -66,7 +65,6 @@ export function createDesktopWorkHubCoordinationPort(deps: {
   ): Promise<OperationOutcome<'workhub.coordination.act'>>;
 }): WorkHubCoordinationPort {
   return {
-    answer: deps.answer,
     record: deps.record,
     candidates: deps.candidates,
     async act(input) {

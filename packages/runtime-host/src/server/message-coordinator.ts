@@ -129,17 +129,6 @@ export interface HostMessageRecoveryBatch {
   readonly submittedContent: MessageContent;
   readonly sources: readonly RootTurnSourceMessage[];
   /**
-   * A root identity durably chosen with the pending Messages. Recovery must
-   * preserve it so immutable links to the exact Turn keep naming the execution
-   * that is actually admitted. A batch only carries one when every pending
-   * current-Turn steering Message names the same root; next-Turn follow-ups
-   * name their predecessor and must receive a new successor identity.
-   */
-  readonly rootIdentity?: {
-    readonly turnId: string;
-    readonly runId: string;
-  };
-  /**
    * What the recovered Message asked of its Turn. Only a lone Message can
    * carry one — exact-Turn intent needs an idle Session and opens its own root
    * Turn — and without it the recovered Turn silently runs under the Session
@@ -788,14 +777,12 @@ export class HostMessageCoordinator implements RuntimeMessageAuthority {
           'Message recovery authority is unavailable',
         );
       }
-      const rootIdentity = sharedPendingRootIdentity(pending);
       const started = await this.#root.startRecoveredMessages(
         {
           sessionId,
           content: aggregateMessageContents(pending.map((entry) => entry.content)),
           submittedContent: aggregateMessageContents(pending.map((entry) => entry.content)),
           sources: pending.map(pendingMessageSource),
-          ...(rootIdentity ? { rootIdentity } : {}),
           ...(pending.length === 1 && pending[0]!.submittedIntent
             ? { submittedIntent: pending[0]!.submittedIntent }
             : {}),
@@ -2294,24 +2281,6 @@ function pendingMessageSource(admission: PendingMessageAdmission): RootTurnSourc
     placement: admission.placement,
     disposition: admission.disposition,
   };
-}
-
-function sharedPendingRootIdentity(
-  admissions: readonly PendingMessageAdmission[],
-): HostMessageRecoveryBatch['rootIdentity'] {
-  const first = admissions[0];
-  if (!first || first.placement !== 'current_turn' || first.disposition !== 'steering') {
-    return undefined;
-  }
-  return admissions.every(
-    (admission) =>
-      admission.placement === 'current_turn' &&
-      admission.disposition === 'steering' &&
-      admission.turnId === first.turnId &&
-      admission.runId === first.runId,
-  )
-    ? { turnId: first.turnId, runId: first.runId }
-    : undefined;
 }
 
 function submittedProjectionContent(content: MessageContent): MessageContent {

@@ -35,7 +35,7 @@ import {
   workHubSubmissionClearsDraft,
 } from '../../renderer/workhub-surface.js';
 import {
-  createLegacyWorkHubControllerForTests as createWorkHubController,
+  createWorkHubController,
   WORKHUB_ROUTING_STRATEGY_ID,
   type WorkHubController,
   type WorkHubCoordinationTurn,
@@ -325,6 +325,34 @@ test('real Session projection creates new guide topics and preserves origin ambi
     ],
   ]);
   const created: string[] = [];
+  const createSession = async ({ name }: { name: string }) => {
+    const id = name.includes('支付回调') ? 'payment' : 'layout';
+    const createdSession: WorkHubDesktopSession = {
+      id,
+      name: id === 'payment' ? '支付回调幂等性' : '移动端窄屏布局',
+      labels: [],
+      isArchived: false,
+      status: 'active',
+      projectId: 'project-maka',
+      lastMessageAt: ++clock,
+    };
+    created.push(id);
+    sessions.push(createdSession);
+    prompts.set(id, []);
+    return createdSession;
+  };
+  const send = async (
+    sessionId: string,
+    command: { type: 'send'; turnId: string; text: string },
+  ) => {
+    prompts.get(sessionId)?.push(command.text);
+    const target = sessions.find((candidate) => candidate.id === sessionId);
+    if (target) {
+      target.lastMessageAt = ++clock;
+      target.lastMessagePreview = command.text;
+    }
+    return { ok: true as const, turnId: command.turnId };
+  };
   const port = createDesktopWorkHubSessionPort({
     transcripts: {
       open: async () => {
@@ -336,39 +364,67 @@ test('real Session projection creates new guide topics and preserves origin ambi
       listTurns: async (sessionId) =>
         (prompts.get(sessionId) ?? []).map((userPromptPreview) => ({ userPromptPreview })),
       queryMessageExecutions: async () => ({ resolutions: [] }),
-      create: async ({ name }) => {
-        const id = name.includes('支付回调') ? 'payment' : 'layout';
-        const session: WorkHubDesktopSession = {
-          id,
-          name: id === 'payment' ? '支付回调幂等性' : '移动端窄屏布局',
-          labels: [],
-          isArchived: false,
-          status: 'active',
-          projectId: 'project-maka',
-          lastMessageAt: ++clock,
-        };
-        created.push(id);
-        sessions.push(session);
-        prompts.set(id, []);
-        return session;
-      },
-      send: async (sessionId, command) => {
-        prompts.get(sessionId)?.push(command.text);
-        const session = sessions.find((candidate) => candidate.id === sessionId);
-        if (session) {
-          session.lastMessageAt = ++clock;
-          session.lastMessagePreview = command.text;
-        }
-        return { ok: true, turnId: command.turnId };
-      },
+      create: createSession,
+      send,
       stop: async () => {},
       subscribeChanges: () => () => {},
     },
     projectName: (projectId) =>
       projectId === 'project-router' ? 'maka-workhub-session-router' : 'maka-agent',
-    newTurnId: () => `turn-${clock + 1}`,
   });
-  const controller = createWorkHubController({ sessions: port });
+  const controller = createWorkHubController({
+    sessions: port,
+    coordination: {
+      open: async () => ({ close: async () => undefined }),
+      record: async (input) => ({ turnId: input.turnId }),
+      candidates: async () => ({
+        candidateSetId: `sha256:${'a'.repeat(64)}`,
+        candidates: sessions.map((entry) => ({
+          candidateRef: `candidate-${entry.id}`,
+          sessionId: entry.id,
+          sessionName: entry.name,
+          workspace: {
+            target: { kind: 'host_path' as const, path: `/workspace/${entry.id}` },
+            hostCwd: `/workspace/${entry.id}`,
+          },
+          state: entry.status,
+          updatedAt: entry.lastMessageAt ?? 0,
+        })),
+      }),
+      act: async (input) => {
+        if (input.proposal.disposition === 'answer_here') {
+          return { disposition: 'answer_here', coordinationTurnId: input.actionId };
+        }
+        if (input.proposal.disposition === 'clarify') {
+          return { disposition: 'clarify', coordinationTurnId: input.actionId };
+        }
+        if (input.proposal.disposition === 'create_new') {
+          const target = await createSession({ name: input.proposal.title });
+          const admitted = await send(target.id, {
+            type: 'send',
+            turnId: input.actionId,
+            text: input.userText,
+          });
+          return {
+            disposition: 'create_new',
+            targetSessionId: target.id,
+            targetTurnId: admitted.turnId,
+          };
+        }
+        const targetSessionId = input.proposal.candidateRef.replace(/^candidate-/u, '');
+        const admitted = await send(targetSessionId, {
+          type: 'send',
+          turnId: input.actionId,
+          text: input.userText,
+        });
+        return {
+          disposition: 'delegate_existing',
+          targetSessionId,
+          targetTurnId: admitted.turnId,
+        };
+      },
+    },
+  });
 
   const payment = await controller.submit({
     requestId: 'setup-payment',

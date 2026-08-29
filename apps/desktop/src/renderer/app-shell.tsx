@@ -1492,8 +1492,6 @@ function AppShellContent({
       coordination: createDesktopWorkHubCoordinationPort({
         sessionId: workHubCoordinationSessionId ?? 'workhub-coordination-unresolved',
         transcripts: window.maka.transcripts,
-        answer: (input) =>
-          window.maka.workHub.answer(workHubCoordinationSessionId!, input),
         record: (input) =>
           window.maka.workHub.record(workHubCoordinationSessionId!, input),
         candidates: () =>
@@ -1510,13 +1508,10 @@ function AppShellContent({
               workHubCoordinationGenerationRef.current === workHubCoordinationGeneration &&
               workHubCoordinationSessionIdRef.current === workHubCoordinationSessionId,
           },
-          (coordinationSessionId, input) =>
-            window.maka.workHub.createSession(coordinationSessionId, input),
         ),
         transcripts: window.maka.transcripts,
         projectName: (projectId) =>
           workHubProjectsRef.current.find((project) => project.id === projectId)?.name,
-        newTurnId: () => crypto.randomUUID(),
       }),
     }),
     [workHubCoordinationGeneration, workHubCoordinationSessionId],
