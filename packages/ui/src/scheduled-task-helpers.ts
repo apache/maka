@@ -276,6 +276,7 @@ export function formatScheduledTaskDeliveryTargetLabel(effect: ScheduledTaskEffe
  */
 export interface ScheduledTaskFormSeed {
   editingId: string | null;
+  presetId?: string;
   title: string;
   note: string;
   runAtLocal: string;
@@ -344,6 +345,7 @@ export function scheduledTaskTemplateSeed(
   }
   return {
     ...createScheduledTaskFormSeed(now),
+    presetId: template.id,
     title: template.title,
     note: template.note,
     recurrence: template.recurrence,
@@ -358,6 +360,7 @@ export function scheduledTaskTemplateSeed(
 function scheduledTaskFormSeedFromTask(task: ScheduledTask): ScheduledTaskFormSeed {
   return {
     editingId: task.id,
+    ...(task.presetId === undefined ? {} : { presetId: task.presetId }),
     title: task.title,
     note: task.intent.body,
     runAtLocal: toScheduledTaskLocalDateTimeValue(scheduledTaskEditableRunAt(task)),

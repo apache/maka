@@ -40,8 +40,13 @@ import {
 export interface ScheduledTasksController {
   readonly scheduledTasks: ScheduledTask[];
   readonly createRequestNonce: number;
-  openCreate(): void;
+  readonly createRequestTemplateId?: string;
+  readonly inspectRequestNonce: number;
+  readonly inspectRequestTaskId?: string;
+  openCreate(templateId?: string): void;
   handleCreateRequest(): void;
+  openInspect(taskId: string): void;
+  handleInspectRequest(): void;
   refresh(options?: { shouldShowError?: () => boolean }): Promise<void>;
   refreshSurface(): Promise<void>;
   create(input: ScheduledTaskCreateInput): Promise<boolean>;
@@ -72,6 +77,9 @@ export function useScheduledTasksController(options: {
   const notificationsCopy = getShellRemainingCopy(uiLocale).notifications;
   const [scheduledTasks, setScheduledTasks] = useState<ScheduledTask[]>([]);
   const [createRequestNonce, setCreateRequestNonce] = useState(0);
+  const [createRequestTemplateId, setCreateRequestTemplateId] = useState<string>();
+  const [inspectRequestNonce, setInspectRequestNonce] = useState(0);
+  const [inspectRequestTaskId, setInspectRequestTaskId] = useState<string>();
   const refreshGenerationRef = useRef(0);
   const scheduledTasksRef = useRef<readonly ScheduledTask[]>(scheduledTasks);
   const selectionRef = useRef(options.selection);
@@ -224,15 +232,32 @@ export function useScheduledTasksController(options: {
   return {
     scheduledTasks,
     createRequestNonce,
-    openCreate() {
+    createRequestTemplateId,
+    inspectRequestNonce,
+    inspectRequestTaskId,
+    openCreate(templateId) {
       selectModuleRef.current({
         section: 'automations',
         module: 'scheduled-tasks',
       });
+      setCreateRequestTemplateId(templateId);
       setCreateRequestNonce((current) => current + 1);
     },
     handleCreateRequest() {
       setCreateRequestNonce(0);
+      setCreateRequestTemplateId(undefined);
+    },
+    openInspect(taskId) {
+      selectModuleRef.current({
+        section: 'automations',
+        module: 'scheduled-tasks',
+      });
+      setInspectRequestTaskId(taskId);
+      setInspectRequestNonce((current) => current + 1);
+    },
+    handleInspectRequest() {
+      setInspectRequestNonce(0);
+      setInspectRequestTaskId(undefined);
     },
     refresh,
     refreshSurface() {

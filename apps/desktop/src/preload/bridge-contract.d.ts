@@ -78,6 +78,7 @@ import type {
   ArtifactSaveResult,
   ArtifactTextReadResult,
 } from '@maka/core/artifacts';
+import type { TimeRange } from '@maka/core/usage-stats/types';
 import type { CapabilitySnapshotCollection, PermissionSnapshot } from '@maka/core/capabilities';
 import type { LocalMemoryState } from '@maka/core/local-memory';
 import type {
@@ -1324,7 +1325,7 @@ export interface MakaBridge {
     subscribeExternalChanged(handler: () => void, host?: DesktopRuntimeHostRef): () => void;
     testNetworkProxy(input?: TestProxyInput, host?: DesktopRuntimeHostRef): Promise<SettingsTestResult>;
     testBotChannel(provider: BotProvider): Promise<SettingsTestResult>;
-    usageStats(range?: UsageRange, host?: DesktopRuntimeHostRef): Promise<UsageStats>;
+    usageStats(range?: UsageRange | TimeRange, host?: DesktopRuntimeHostRef): Promise<UsageStats>;
     bots: {
       listStatuses(): Promise<Record<BotProvider, BotStatus>>;
       restart(provider: BotProvider): Promise<BotStatus>;

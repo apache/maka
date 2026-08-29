@@ -34,6 +34,33 @@ import {
 import { decodeScheduledTaskMutateInput } from '../protocol/scheduled-task.js';
 
 describe('ScheduledTask protocol', () => {
+  test('round-trips canonical preset provenance and rejects authority-like values', () => {
+    const task = { ...scheduledTask('task-1'), presetId: 'daily-review' };
+    const decoded = decodeScheduledTaskQueryResult({ kind: 'task', task });
+    assert.equal(decoded.kind === 'task' ? decoded.task?.presetId : undefined, 'daily-review');
+
+    const created = decodeScheduledTaskMutateInput({
+      kind: 'create',
+      input: {
+        title: 'Daily Review',
+        presetId: 'daily-review',
+        intentBody: 'Review ordinary Session history.',
+        schedule: { kind: 'once', runAt: 1 },
+        effect: { kind: 'notify', channel: 'local' },
+      },
+    });
+    assert.equal(created.kind === 'create' ? created.input.presetId : undefined, 'daily-review');
+
+    for (const presetId of ['DailyReview', 'daily review', 'daily-review:system']) {
+      assert.throws(() =>
+        decodeScheduledTaskQueryResult({
+          kind: 'task',
+          task: { ...task, presetId },
+        }),
+      );
+    }
+  });
+
   test('requires Host-path authority only when a mutation submits a Host path', () => {
     const authority = createRuntimeHostConnectionAuthority({
       principalKind: 'remote_owner',

@@ -189,7 +189,11 @@ function model(
   return { id, capabilities, contextWindow };
 }
 
-export async function writeScheduledTasks(workspaceRoot: string, now: number): Promise<void> {
+export async function writeScheduledTasks(
+  workspaceRoot: string,
+  now: number,
+  scenario: E2eFixtureScenario = 'scheduled-tasks',
+): Promise<void> {
   const scheduledRunAt = Date.UTC(2026, 11, 18, 3, 0, 0);
   const pausedRunAt = Date.UTC(2026, 11, 20, 3, 0, 0);
   // The panel's default 创建时间倒序 sort keys on `createdAt` and only falls
@@ -220,6 +224,42 @@ export async function writeScheduledTasks(workspaceRoot: string, now: number): P
       at,
     );
   try {
+    if (scenario === 'module-daily-review') {
+      const runtimePolicy = await openInteractiveRuntimePolicyStoresForWrite(owner.lease);
+      const catalog = await runtimePolicy.connectionCatalog.getSnapshot();
+      const target = catalog.defaultTarget;
+      const connection = target
+        ? catalog.connections.find((candidate) => candidate.connectionId === target.connectionId)
+        : undefined;
+      if (!target || !connection) throw new Error('Daily Review fixture model target is missing');
+      const anchorAt = new Date(now);
+      anchorAt.setHours(18, 0, 0, 0);
+      if (anchorAt.getTime() <= now) anchorAt.setDate(anchorAt.getDate() + 1);
+      await store.ensureSystemTask(
+        'system-daily-review',
+        {
+          title: 'Daily Review',
+          presetId: 'daily-review',
+          intentBody: 'Review ordinary Session history and save a Markdown report as an Artifact.',
+          schedule: { kind: 'calendar', recurrence: 'daily', anchorAt: anchorAt.getTime() },
+          effect: {
+            kind: 'agent_run',
+            execution: {
+              cwd: workspaceRoot,
+              projectId: null,
+              llmConnectionId: connection.connectionId,
+              llmConnectionSlug: connection.slug,
+              model: target.modelId,
+              permissionMode: 'ask',
+              collaborationMode: 'agent',
+              orchestrationMode: 'default',
+            },
+          },
+          createdBy: { kind: 'system' },
+        },
+        now - 9 * 60_000,
+      );
+    }
     await create(
       '同步项目风险',
       '提醒我整理 Sidebar gate、搜索接入和计划任务剩余风险。',

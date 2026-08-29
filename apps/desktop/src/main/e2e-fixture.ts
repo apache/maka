@@ -48,7 +48,7 @@ import {
   turnSession,
 } from './e2e-fixture/scenarios-chat.js';
 import { seedMcpFixture, seedSkillsMarketFixture } from './e2e-fixture/scenarios-modules.js';
-import { longSidebarSessions } from './e2e-fixture/scenarios-sessions.js';
+import { dailyReviewSessions, longSidebarSessions } from './e2e-fixture/scenarios-sessions.js';
 import {
   writeConnections,
   writeScheduledTasks,
@@ -69,6 +69,7 @@ const E2E_FIXTURE_SCENARIOS = new Set<E2eFixtureScenario>([
   'settings-usage',
   'module-skills',
   'module-mcp',
+  'module-daily-review',
   'scheduled-tasks',
   'sidebar-search-modal-open',
 ]);
@@ -197,6 +198,8 @@ export function getE2eFixtureState(fixture: E2eFixture | null): E2eFixtureState 
       return { ...state, activeSessionId: TURN_SESSION_ID, sidebarSection: 'skills', sidebarCollapsed: false };
     case 'module-mcp':
       return { ...state, activeSessionId: TURN_SESSION_ID, sidebarSection: 'mcp', sidebarCollapsed: false };
+    case 'module-daily-review':
+      return { ...state, activeSessionId: TURN_SESSION_ID, sidebarSection: 'daily-review', sidebarCollapsed: false };
     case 'scheduled-tasks':
       return { ...state, activeSessionId: TURN_SESSION_ID, sidebarSection: 'automations', sidebarCollapsed: false };
     case 'sidebar-search-modal-open':
@@ -249,7 +252,14 @@ export async function seedE2eFixture(input: {
       catalog.close();
     }
   }
-  if (scenario === 'scheduled-tasks') await writeScheduledTasks(input.workspaceRoot, now);
+  if (scenario === 'module-daily-review') {
+    for (const seed of dailyReviewSessions(now)) {
+      await writeSession(input.workspaceRoot, seed.header, seed.messages);
+    }
+  }
+  if (scenario === 'scheduled-tasks' || scenario === 'module-daily-review') {
+    await writeScheduledTasks(input.workspaceRoot, now, scenario);
+  }
   if (scenario === 'module-skills') await seedSkillsMarketFixture(input.workspaceRoot);
   if (scenario === 'module-mcp') await seedMcpFixture(input.workspaceRoot);
   if (scenario === 'settings-usage') {

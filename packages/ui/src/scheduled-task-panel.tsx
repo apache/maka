@@ -39,6 +39,7 @@ import {
   scheduledTaskMatchesSearch,
   scheduledTaskRunRangeStart,
   scheduledTaskStatusLabel,
+  scheduledTaskTemplateSeed,
   runStatusLabel,
 } from './scheduled-task-helpers.js';
 import { scheduledTaskStatusDotVariant, scheduledTaskRunStatusDotVariant } from './scheduled-task-status.js';
@@ -77,7 +78,11 @@ export function ScheduledTaskPanel(props: {
   tasks: ScheduledTask[];
   agentRunTemplateEffect?: Extract<ScheduledTask['effect'], { kind: 'agent_run' }>;
   createRequestNonce?: number;
+  createRequestTemplateId?: string;
   onCreateRequestHandled?: () => void;
+  inspectRequestNonce?: number;
+  inspectRequestTaskId?: string;
+  onInspectRequestHandled?: () => void;
   hubHeader?: ModuleHubHeader;
   /**
    * Current persisted 保持系统唤醒 state. `undefined` means the capability is
@@ -202,9 +207,25 @@ export function ScheduledTaskPanel(props: {
 
   useEffect(() => {
     if (!props.createRequestNonce) return;
-    openTaskDialog(createScheduledTaskFormSeed());
+    const template = props.createRequestTemplateId
+      ? copy.templates.find((candidate) => candidate.id === props.createRequestTemplateId)
+      : undefined;
+    openTaskDialog(
+      template
+        ? scheduledTaskTemplateSeed(template, Date.now(), props.agentRunTemplateEffect)
+        : createScheduledTaskFormSeed(),
+    );
     props.onCreateRequestHandled?.();
   }, [props.createRequestNonce]);
+
+  useEffect(() => {
+    if (!props.inspectRequestNonce || !props.inspectRequestTaskId) return;
+    setTaskView('tasks');
+    setListFilter('all');
+    setListQuery('');
+    setSelectedTaskId(props.inspectRequestTaskId);
+    props.onInspectRequestHandled?.();
+  }, [props.inspectRequestNonce]);
 
   // Astryx's Dialog does restore focus on close, but it captures the opener in
   // an Effect — after the commit that opened the dialog — and by then the

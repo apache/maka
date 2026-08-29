@@ -18,6 +18,7 @@
  */
 
 import type { CreateScheduledTaskInput, ScheduledTaskEffect, UpdateScheduledTaskInput } from '@maka/core/scheduled-task';
+import type { DailyReviewRange, DailyReviewViewState } from './daily-review-view-state.js';
 
 export interface SkillEntry {
   kind?: 'skill' | 'discovery_diagnostic';
@@ -150,3 +151,8 @@ export type ScheduledTaskRecurrence =
   | 'cron';
 export type ScheduledTaskDelivery = Extract<ScheduledTaskEffect, { kind: 'notify' }>;
 export type ScheduledTaskDeliveryMethod = ScheduledTaskDelivery['channel'] | 'agent_run';
+
+/** UI-only projection over ordinary Session catalog and shared usage facts. */
+export interface DailyReviewProjectionBridge {
+  load(range: DailyReviewRange, offsetDays?: number): Promise<DailyReviewViewState>;
+}

@@ -21,12 +21,12 @@ import type { MakaBridge } from '../../../preload/bridge-contract.js';
 import type { ModuleHubServices } from '../../features/module-hub/index.js';
 
 type DesktopModuleHubSettingsBridge = Partial<
-  Pick<MakaBridge['settings'], 'getClient' | 'updateClient' | 'subscribeClientChanged'>
+  Pick<MakaBridge['settings'], 'getClient' | 'updateClient' | 'subscribeClientChanged' | 'usageStats'>
 >;
 
 export type DesktopModuleHubBridge = Pick<
   MakaBridge,
-  'runtimeHostProfiles' | 'scheduledTasks' | 'skills'
+  'runtimeHostProfiles' | 'scheduledTasks' | 'sessions' | 'skills'
 > & {
   /** Optional at runtime so a renderer can coexist with an older preload. */
   readonly settings?: DesktopModuleHubSettingsBridge;
@@ -39,6 +39,7 @@ export function createDesktopModuleHubServices(
   const getClientSettings = bridge.settings?.getClient;
   const updateClientSettings = bridge.settings?.updateClient;
   const subscribeClientSettings = bridge.settings?.subscribeClientChanged;
+  const readUsageStats = bridge.settings?.usageStats;
   const clientSettingsSupported =
     typeof getClientSettings === 'function' &&
     typeof updateClientSettings === 'function';
@@ -91,6 +92,22 @@ export function createDesktopModuleHubServices(
       subscribeChanges: (handler) =>
         bridge.scheduledTasks.subscribeChanges(handler),
       subscribeDue: (handler) => bridge.scheduledTasks.subscribeDue(handler),
+    },
+    dailyReview: {
+      async listSessions(host) {
+        const sessions = await bridge.sessions.list();
+        return sessions.filter((session) => session.runtimeHostId === host.hostId);
+      },
+      async readUsage(range, host) {
+        if (!readUsageStats) throw new Error('Usage statistics are unavailable');
+        const stats = await readUsageStats.call(bridge.settings, range, host);
+        return {
+          totalRequests: stats.summary.totalRequests,
+          totalTokens: stats.summary.totalTokens,
+          totalCostUsd: stats.summary.totalCostUsd,
+        };
+      },
+      subscribeChanges: (handler) => bridge.sessions.subscribeChanges(() => handler()),
     },
     clientSettings: {
       supported: clientSettingsSupported,

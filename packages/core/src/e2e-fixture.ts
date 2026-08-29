@@ -35,6 +35,7 @@ export type E2eFixtureScenario =
   | 'settings-usage'
   | 'module-skills'
   | 'module-mcp'
+  | 'module-daily-review'
   | 'scheduled-tasks'
   | 'sidebar-search-modal-open';
 
@@ -55,7 +56,7 @@ export interface E2eFixtureState {
   locale?: UiLocale;
   timezone?: string;
   searchModalOpen?: boolean;
-  sidebarSection?: 'sessions' | 'automations' | 'skills' | 'mcp';
+  sidebarSection?: 'sessions' | 'automations' | 'skills' | 'mcp' | 'daily-review';
   sidebarCollapsed?: boolean;
   workbarCollapsed?: boolean;
   workbarTab?: 'review' | 'terminal' | 'tasks' | 'browser' | 'files' | 'inspector';

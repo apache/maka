@@ -257,6 +257,7 @@ class SqliteScheduledTaskStore implements ScheduledTaskStore {
     const value = normalized.value;
     const task: ScheduledTask = {
       id: randomUUID(),
+      ...(value.presetId === undefined ? {} : { presetId: value.presetId }),
       title: value.title,
       intent: { kind: 'text', body: value.intentBody },
       schedule: value.schedule,
@@ -299,6 +300,7 @@ class SqliteScheduledTaskStore implements ScheduledTaskStore {
       const value = normalized.value;
       const task: ScheduledTask = {
         id,
+        ...(value.presetId === undefined ? {} : { presetId: value.presetId }),
         title: value.title,
         intent: { kind: 'text', body: value.intentBody },
         schedule: value.schedule,

@@ -145,6 +145,30 @@ describe('scheduled-task catalog', () => {
     }
   });
 
+  it('keeps preset provenance presentation-only and canonical', () => {
+    const now = Date.UTC(2026, 0, 5, 8, 0, 0);
+    const input = {
+      title: 'Daily Review',
+      intentBody: 'Review ordinary Session history.',
+      schedule: { kind: 'once', runAt: now + 60_000 },
+      effect: { kind: 'notify', channel: 'local' },
+      createdBy: { kind: 'user' },
+    };
+    const normalized = normalizeCreateScheduledTaskInput(
+      { ...input, presetId: 'daily-review' },
+      now,
+    );
+    assert.equal(normalized.ok, true);
+    if (!normalized.ok) return;
+    assert.equal(normalized.value.presetId, 'daily-review');
+    assert.deepEqual(normalized.value.schedule, input.schedule);
+    assert.deepEqual(normalized.value.effect, input.effect);
+
+    for (const presetId of ['', 'DailyReview', 'daily review', 'daily-review:system']) {
+      assert.equal(normalizeCreateScheduledTaskInput({ ...input, presetId }, now).ok, false);
+    }
+  });
+
   it('clamps monthly recurrence to the last calendar day', () => {
     const runAt = new Date(2026, 0, 31, 9, 30).getTime();
     const monthly = { kind: 'calendar' as const, recurrence: 'monthly' as const, anchorAt: runAt };

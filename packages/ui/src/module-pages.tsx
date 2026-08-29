@@ -27,6 +27,7 @@ import { getSkillsCopy } from './skills-copy.js';
 import type { ModuleHubHeader } from './module-hub-selector.js';
 import type {
   BundledSkillCatalogEntry,
+  DailyReviewProjectionBridge,
   ManagedSkillSourceEntry,
   ManagedSkillUpdatePreview,
   ScheduledTaskDraftInput,
@@ -35,6 +36,7 @@ import type {
 } from './module-panel-types.js';
 
 const SkillsModuleMain = lazy(() => import('./skills-panel.js').then((module) => ({ default: module.SkillsModuleMain })));
+const DailyReviewPanel = lazy(() => import('./daily-review-panel.js').then((module) => ({ default: module.DailyReviewPanel })));
 const ScheduledTaskPanel = lazy(() => import('./scheduled-task-panel.js').then((module) => ({ default: module.ScheduledTaskPanel })));
 
 /** Skills renders its own labelled region inside the lazy chunk, so its fallback must too. */
@@ -94,7 +96,11 @@ export function ScheduledTasksPage(props: {
   tasks?: ScheduledTask[];
   agentRunTemplateEffect?: Extract<ScheduledTaskEffect, { kind: 'agent_run' }>;
   createRequestNonce?: number;
+  createRequestTemplateId?: string;
   onCreateRequestHandled?: () => void;
+  inspectRequestNonce?: number;
+  inspectRequestTaskId?: string;
+  onInspectRequestHandled?: () => void;
   keepSystemAwake?: boolean;
   onKeepSystemAwakeChange?: (next: boolean) => Promise<void>;
   onRefresh?: () => void | Promise<void>;
@@ -112,6 +118,32 @@ export function ScheduledTasksPage(props: {
     <section className="maka-main detailPane maka-module-main agents-chat-panel" data-page-shell="layout" data-module="scheduled-tasks" aria-label={label}>
       <Suspense fallback={<ModulePanelFallback message={copy.loadingAutomations} />}>
         <ScheduledTaskPanel {...props} tasks={props.tasks ?? []} />
+      </Suspense>
+    </section>
+  );
+}
+
+export function DailyReviewPage(props: {
+  bridge: DailyReviewProjectionBridge;
+  revision?: number;
+  task?: ScheduledTask;
+  hubHeader?: ModuleHubHeader;
+  canSetUp: boolean;
+  onSetUp?(): void;
+  onManageSchedule?(): void;
+  onRunNow?(): Promise<void> | void;
+  onSelectSession?(sessionId: string): void;
+}) {
+  const copy = getSharedUiCopy(useUiLocale()).moduleHubs.automations;
+  return (
+    <section
+      className="maka-main detailPane maka-module-main agents-chat-panel"
+      data-page-shell="layout"
+      data-module="daily-review"
+      aria-label={copy.dailyReview}
+    >
+      <Suspense fallback={<ModulePanelFallback message={copy.dailyReview} />}>
+        <DailyReviewPanel {...props} />
       </Suspense>
     </section>
   );

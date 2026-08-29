@@ -194,15 +194,14 @@ export function ScheduledTaskInspector(props: {
       </VStack>
       <Divider />
       <HStack gap={2} wrap="wrap">
+        <Button
+          size="sm"
+          variant="secondary"
+          label={copy.page.edit}
+          isDisabled={pending || isTerminal}
+          onClick={props.onEdit}
+        />
         {!isAgentTask ? (
-          <>
-            <Button
-              size="sm"
-              variant="secondary"
-              label={copy.page.edit}
-              isDisabled={pending || isTerminal}
-              onClick={props.onEdit}
-            />
             <Button
               size="sm"
               variant="secondary"
@@ -210,7 +209,6 @@ export function ScheduledTaskInspector(props: {
               isDisabled={pending}
               onClick={props.onDuplicate}
             />
-          </>
         ) : null}
         <StackItem size="fill" />
         <Button

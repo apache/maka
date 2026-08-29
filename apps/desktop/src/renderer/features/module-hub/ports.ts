@@ -22,6 +22,8 @@ import type {
   ScheduledTask,
   UpdateScheduledTaskInput,
 } from '@maka/core/scheduled-task';
+import type { SessionSummary } from '@maka/core/session';
+import type { DailyReviewUsageSummary } from '@maka/ui';
 import type {
   BundledSkillCatalogEntry,
   ManagedSkillSourceEntry,
@@ -202,10 +204,20 @@ export interface ModuleHubClientSettingsService {
   subscribeChanges(handler: () => void): ModuleHubUnsubscribe;
 }
 
+export interface ModuleHubDailyReviewService {
+  listSessions(host: ModuleHubRuntimeHostRef): Promise<SessionSummary[]>;
+  readUsage(
+    range: { readonly from: number; readonly to: number },
+    host: ModuleHubRuntimeHostRef,
+  ): Promise<DailyReviewUsageSummary>;
+  subscribeChanges(handler: () => void): ModuleHubUnsubscribe;
+}
+
 /** Environment capabilities owned by the Module Hub feature slice. */
 export interface ModuleHubServices {
   runtimeHosts: ModuleHubRuntimeHostsService;
   skills: ModuleHubSkillsService;
   scheduledTasks: ModuleHubScheduledTasksService;
+  dailyReview: ModuleHubDailyReviewService;
   clientSettings: ModuleHubClientSettingsService;
 }

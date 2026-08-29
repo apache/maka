@@ -102,7 +102,7 @@ export async function migrateLegacyDailyReview(input: {
   const now = input.now?.() ?? Date.now();
   const target = await resolveExecutionTarget(snapshot.config.modelKey, input.runtimePolicy);
   for (const archive of snapshot.archives) {
-    await migrateArchive(input, archive, target);
+    await migrateArchive(input, archive);
   }
   // The legacy scheduler accepted an enabled configuration before a model was
   // configured. Do not turn that recoverable state into a permanently broken
@@ -113,6 +113,7 @@ export async function migrateLegacyDailyReview(input: {
     DAILY_REVIEW_SYSTEM_TASK_ID,
     {
       title: 'Daily Review',
+      presetId: 'daily-review',
       intentBody: DAILY_REVIEW_SCHEDULED_TASK_INTENT,
       schedule: {
         kind: 'calendar',
@@ -240,13 +241,6 @@ function readSnapshot(database: DatabaseSync): LegacyDailyReviewMigrationSnapsho
 async function migrateArchive(
   input: Parameters<typeof migrateLegacyDailyReview>[0],
   archive: LegacyDailyReviewArchive,
-  fallbackTarget:
-    | {
-        readonly connectionId: string;
-        readonly connectionSlug: string;
-        readonly model: string;
-      }
-    | undefined,
 ): Promise<void> {
   const sessionId = `daily-review-archive-${archive.id}`;
   const turnId = `legacy-daily-review-${archive.id}`;
@@ -258,11 +252,13 @@ async function migrateArchive(
       workspace: input.workspaceRoot,
     }),
   );
-  const archiveTarget = parseModelKey(archive.modelKey) ??
-    fallbackTarget ?? {
-      connectionSlug: 'legacy-daily-review-unconfigured',
-      model: 'legacy-daily-review-unconfigured',
-    };
+  // Archive provenance is immutable. In particular, do not backfill a report
+  // that used the legacy default with whichever Connection happens to exist on
+  // a later retry: that would make the same migration identity change shape.
+  const archiveTarget = parseModelKey(archive.modelKey) ?? {
+    connectionSlug: 'legacy-daily-review-unconfigured',
+    model: 'legacy-daily-review-unconfigured',
+  };
   const created = await input.sessions.createStableSession({
     sessionId,
     requestFingerprint: fingerprint,
@@ -271,9 +267,6 @@ async function migrateArchive(
       projectId: null,
       name: archiveTitle(archive),
       labels: ['migrated:daily-review'],
-      ...(fallbackTarget && archiveTarget.connectionSlug === fallbackTarget.connectionSlug
-        ? { llmConnectionId: fallbackTarget.connectionId }
-        : {}),
       llmConnectionSlug: archiveTarget.connectionSlug,
       model: archiveTarget.model,
       permissionMode: 'ask',

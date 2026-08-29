@@ -36,6 +36,8 @@ export * from './conversation-copy.js';
 export * from './shared-ui-copy.js';
 export * from './skills-copy.js';
 export * from './scheduled-task-copy.js';
+export * from './daily-review-copy.js';
+export * from './daily-review-view-state.js';
 export * from './tool-activity/copy.js';
 export * from './tool-activity/sandbox-denial.js';
 export * from './chat-input-behavior.js';

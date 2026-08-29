@@ -22,7 +22,7 @@ import { describe, it } from 'node:test';
 import { parseNavigationState } from '../../renderer/nav-selection.js';
 
 describe('Navigation selection persistence', () => {
-  it('redirects retired Daily Review module memory to Scheduled Tasks', () => {
+  it('preserves Daily Review as an Automations presentation route', () => {
     assert.deepEqual(
       parseNavigationState(
         JSON.stringify({
@@ -37,7 +37,7 @@ describe('Navigation selection persistence', () => {
         selection: { section: 'extensions', module: 'mcp' },
         moduleMemory: {
           extensions: 'mcp',
-          automations: 'scheduled-tasks',
+          automations: 'daily-review',
         },
       },
     );

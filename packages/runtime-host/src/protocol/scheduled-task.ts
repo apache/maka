@@ -29,6 +29,7 @@ import {
   SCHEDULED_TASK_MAX_DELAY_MS,
   SCHEDULED_TASK_MAX_INTERVAL_SECONDS,
   SCHEDULED_TASK_MIN_INTERVAL_SECONDS,
+  SCHEDULED_TASK_PRESET_ID_MAX_CHARS,
   SCHEDULED_TASK_RUN_HISTORY_LIMIT,
   SCHEDULED_TASK_RUN_MESSAGE_MAX_CHARS,
   SCHEDULED_TASK_SESSION_ID_MAX_CHARS,
@@ -289,24 +290,29 @@ export function decodeScheduledTaskMutateResult(value: unknown): ScheduledTaskMu
 }
 
 export function decodeScheduledTask(value: unknown): ScheduledTask {
-  const task = requireExactRecord(value, 'ScheduledTask', [
-    'id',
-    'title',
-    'intent',
-    'schedule',
-    'effect',
-    'status',
-    'nextFireAt',
-    'lastFireAt',
-    'fireCount',
-    'maxFires',
-    'expiresAt',
-    'createdBy',
-    'createdAt',
-    'updatedAt',
-    'runs',
-    'lastError',
-  ]);
+  const task = requireShapedRecord(
+    value,
+    'ScheduledTask',
+    [
+      'id',
+      'title',
+      'intent',
+      'schedule',
+      'effect',
+      'status',
+      'nextFireAt',
+      'lastFireAt',
+      'fireCount',
+      'maxFires',
+      'expiresAt',
+      'createdBy',
+      'createdAt',
+      'updatedAt',
+      'runs',
+      'lastError',
+    ],
+    ['presetId'],
+  );
   const intent = requireExactRecord(task.intent, 'ScheduledTask intent', ['kind', 'body']);
   if (intent.kind !== 'text') throw invalidProtocolFrame('Invalid ScheduledTask intent');
   if (!isScheduledTaskStatus(task.status))
@@ -316,6 +322,7 @@ export function decodeScheduledTask(value: unknown): ScheduledTask {
   }
   return {
     id: requireEntityId(task.id, 'ScheduledTask id'),
+    ...(Object.hasOwn(task, 'presetId') ? { presetId: decodePresetId(task.presetId) } : {}),
     title: boundedText(task.title, 'ScheduledTask title', SCHEDULED_TASK_TITLE_MAX_CHARS, true),
     intent: {
       kind: 'text',
@@ -349,10 +356,11 @@ function decodeCreateInput(value: unknown): Omit<CreateScheduledTaskInput, 'crea
     value,
     'ScheduledTask create payload',
     ['title', 'intentBody', 'schedule', 'effect'],
-    ['maxFires', 'expiresAt'],
+    ['presetId', 'maxFires', 'expiresAt'],
   );
   return {
     title: boundedText(input.title, 'ScheduledTask title', SCHEDULED_TASK_TITLE_MAX_CHARS, true),
+    ...(Object.hasOwn(input, 'presetId') ? { presetId: decodePresetId(input.presetId) } : {}),
     intentBody: boundedText(
       input.intentBody,
       'ScheduledTask intent body',
@@ -642,6 +650,19 @@ function decodeCursor(value: unknown): string {
   const cursor = requireEntityId(value, 'ScheduledTask cursor');
   if (!/^\d+$/.test(cursor)) throw invalidProtocolFrame('Invalid ScheduledTask cursor');
   return cursor;
+}
+
+function decodePresetId(value: unknown): string {
+  const presetId = boundedText(
+    value,
+    'ScheduledTask preset id',
+    SCHEDULED_TASK_PRESET_ID_MAX_CHARS,
+    true,
+  );
+  if (!/^[a-z0-9]+(?:-[a-z0-9]+)*$/u.test(presetId)) {
+    throw invalidProtocolFrame('Invalid ScheduledTask preset id');
+  }
+  return presetId;
 }
 
 function boundedText(value: unknown, label: string, maxChars: number, nonblank = false): string {

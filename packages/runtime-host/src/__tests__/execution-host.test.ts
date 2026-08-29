@@ -173,7 +173,7 @@ test('production Host migrates Daily Review into ScheduledTask Session and Artif
       status: 'ok',
       generatedAt: 1_772_227_200_001,
       trigger: 'cron',
-      modelKey: 'fake::fake-model',
+      modelKey: '',
       sections: { summary: 'A migrated report.' },
       totals: {
         sessionCount: 2,
@@ -208,7 +208,7 @@ test('production Host migrates Daily Review into ScheduledTask Session and Artif
         JSON.stringify({
           enabled: true,
           executeTime: '23:58',
-          modelKey: archive.modelKey,
+          modelKey: 'fake::fake-model',
         }),
       );
     database
@@ -299,6 +299,7 @@ test('production Host migrates Daily Review into ScheduledTask Session and Artif
       const task = taskPage.tasks.find((candidate) => candidate.id === 'system-daily-review');
       assert.ok(task);
       assert.equal(task?.createdBy.kind, 'system');
+      assert.equal(task?.presetId, 'daily-review');
       assert.equal(task?.status, 'active');
       assert.equal(
         task?.effect.kind === 'agent_run' ? task.effect.execution.llmConnectionId : undefined,
@@ -341,7 +342,7 @@ test('production Host migrates Daily Review into ScheduledTask Session and Artif
       assert.match(report.preview.text, /A migrated report\./u);
       assert.match(report.preview.text, /Archive ID: 2026-08-28-1d/u);
       assert.match(report.preview.text, /Trigger: cron/u);
-      assert.match(report.preview.text, /Model: fake::fake-model/u);
+      assert.match(report.preview.text, /Model: \(default\)/u);
       assert.match(report.preview.text, /Generated at: 1772227200001/u);
 
       const fired = await desktop.request('scheduled-task.mutate', {
@@ -499,7 +500,13 @@ test('production Host starts ScheduledTask Agent runs in an ordinary Session', {
       });
       assert.equal(session.kind, 'session');
       assert.ok(session.session, fired.task.lastError ?? 'ScheduledTask Session was not created');
+      assert.ok(session.session && !('kind' in session.session));
+      if (!session.session || 'kind' in session.session) return;
       assert.equal(session.session?.id, sessionId);
+      assert.deepEqual(session.session?.labels, [
+        'scheduled-task',
+        `scheduled-task:${created.task.id}`,
+      ]);
     } finally {
       await desktop.close();
       await fixture.stopHost(host);

@@ -157,6 +157,7 @@ import type {
   ArtifactSaveResult,
   ArtifactTextReadResult,
 } from '@maka/core/artifacts';
+import type { TimeRange } from '@maka/core/usage-stats/types';
 import type { CapabilitySnapshotCollection, PermissionSnapshot } from '@maka/core/capabilities';
 import type { LocalMemoryState } from '@maka/core/local-memory';
 import type {
@@ -2831,7 +2832,7 @@ const makaBridge = {
     testBotChannel(provider: BotProvider): Promise<SettingsTestResult> {
       return ipcRenderer.invoke('settings:testBotChannel', provider);
     },
-    async usageStats(range?: UsageRange, host?: DesktopRuntimeHostRef): Promise<UsageStats> {
+    async usageStats(range?: UsageRange | TimeRange, host?: DesktopRuntimeHostRef): Promise<UsageStats> {
       const scope = await selectedRuntimeHostScope(host);
       const stats = await ipcRenderer.invoke('settings:usageStats', scope, range) as UsageStats;
       return projectDesktopUsageStats(scope, stats);

@@ -21,7 +21,11 @@ import { randomUUID } from 'node:crypto';
 import { botDisplayLabel } from '@maka/core/bot-events';
 import { isBotDeliveryProvider } from '@maka/core/bot-chat-settings';
 import { messageContentsEqual } from '@maka/core/events';
-import { type ScheduledTask, type ScheduledTaskExecutionTemplate } from '@maka/core/scheduled-task';
+import {
+  scheduledTaskSessionLabel,
+  type ScheduledTask,
+  type ScheduledTaskExecutionTemplate,
+} from '@maka/core/scheduled-task';
 import type { SessionHeader } from '@maka/core/session';
 import {
   buildAgentScheduledTaskCreatePayload,
@@ -659,7 +663,7 @@ export class HostScheduledTaskCoordinator implements ScheduledTaskToolAuthority 
           ? { kind: 'project', projectId: execution.projectId }
           : { kind: 'host_path', path: execution.cwd },
       name: task.title,
-      labels: ['scheduled-task'],
+      labels: ['scheduled-task', scheduledTaskSessionLabel(task.id)],
       modelTarget: {
         kind: 'explicit',
         connectionId: connection.connectionId,

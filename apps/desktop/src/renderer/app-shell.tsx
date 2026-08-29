@@ -1479,6 +1479,7 @@ function AppShellContent({
     selectModule: setNavSelection,
     ...(projectCapabilities.viewClientPath ? { openSkillsFolder } : {}),
     useSkillInChat,
+    openSession: openSessionInChat,
     ...(newChatModel && taskEntry.selectors.projectPath && taskEntry.selectors.target
       ? {
           agentRunTemplateEffect: {

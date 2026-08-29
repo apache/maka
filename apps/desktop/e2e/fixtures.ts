@@ -501,10 +501,19 @@ export const test = base.extend<{
   promptRailMotionWindow: Page;
   requestHeaderRowWindow: Page;
   newTaskTargetWindow: Page;
+  dailyReviewWindow: Page;
 }>({
   // Seeded: a pre-staged connection clears onboarding so the composer is ready.
   window: async ({}, use) => {
     await withE2eWindow({ seed: true, readinessSelector: COMPOSER_INPUT, locale: 'zh' }, use);
+  },
+  dailyReviewWindow: async ({}, use) => {
+    await withE2eWindow({
+      seed: false,
+      readinessSelector: '[data-module="daily-review"]',
+      e2eFixtureScenario: 'module-daily-review',
+      locale: 'zh',
+    }, use);
   },
   onboardingWindow: async ({}, use) => {
     await withE2eWindow({

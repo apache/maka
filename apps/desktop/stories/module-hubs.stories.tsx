@@ -350,6 +350,21 @@ const CONFIGURED_TASKS: ScheduledTask[] = ([
   },
 ] satisfies StoryScheduledTask[]).map(storyScheduledTask);
 
+const DAILY_REVIEW_TASK = storyScheduledTask({
+  id: 'system-daily-review',
+  presetId: 'daily-review',
+  title: 'Daily Review',
+  intent: { kind: 'text', body: '回顾普通任务历史，并把 Markdown 报告保存为 Artifact。' },
+  schedule: { kind: 'calendar', anchorAt: TASK_NOW - 86_400_000, recurrence: 'daily' },
+  effect: { kind: 'notify', channel: 'local' },
+  status: 'active',
+  createdAt: TASK_NOW - 30 * 86_400_000,
+  updatedAt: TASK_NOW - 86_400_000,
+  nextFireAt: TASK_NOW + 14 * 3_600_000,
+  runs: [CONFIGURED_CRON_LAST_RUN],
+  fireCount: 12,
+});
+
 const LONG_CONTENT_TASKS: ScheduledTask[] = ([
   {
     id: 'task-hostile-content',
@@ -573,7 +588,7 @@ function ExtensionsSkillsSurface(props: {
         hubHeader={{
           title: copy.title,
           subtitle: copy.description,
-          badge: <ModuleHubSelector value="skills" onChange={() => {}} />,
+          badge: <ModuleHubSelector hub="extensions" value="skills" onChange={() => {}} />,
         }}
         skills={props.skills ?? []}
         managedSkillSources={[]}
@@ -605,7 +620,7 @@ function ExtensionsMcpSurface() {
         hubHeader={{
           title: copy.title,
           subtitle: copy.description,
-          badge: <ModuleHubSelector value="mcp" onChange={() => {}} />,
+          badge: <ModuleHubSelector hub="extensions" value="mcp" onChange={() => {}} />,
         }}
       />
     </ModuleSurface>
@@ -647,7 +662,7 @@ function ScheduledTasksSurface(props: {
 function ModuleHubHostSurface(props: {
   selection:
     | { section: 'extensions'; module: 'skills' | 'mcp' }
-    | { section: 'automations'; module: 'scheduled-tasks' };
+    | { section: 'automations'; module: 'scheduled-tasks' | 'daily-review' };
 }) {
   const base = createFakeModuleHubHostModel(props.selection);
   const model = {
@@ -659,7 +674,38 @@ function ModuleHubHostSurface(props: {
     },
     scheduledTasks: {
       ...base.scheduledTasks,
-      scheduledTasks: CONFIGURED_TASKS,
+      scheduledTasks: [...CONFIGURED_TASKS, DAILY_REVIEW_TASK],
+    },
+    dailyReview: {
+      bridge: {
+        load: async () => ({
+          totals: {
+            sessionCount: 18,
+            totalRequests: 42,
+            totalTokens: 128_400,
+            totalCostUsd: 1.23,
+          },
+          reports: [
+            {
+              sessionId: 'report-today',
+              title: 'Daily Review · 7月1日',
+              generatedAt: NOW,
+              preview: '合并了三个 PR，并保留两个待跟进事项。',
+              migrated: false,
+            },
+            {
+              sessionId: 'report-migrated',
+              title: 'Daily Review · 2026-06-30 · 1d',
+              generatedAt: NOW - 86_400_000,
+              preview: '旧报告已迁移为普通任务与 Artifact。',
+              migrated: true,
+            },
+          ],
+          hasMigratedReports: true,
+        }),
+      },
+      revision: 0,
+      task: DAILY_REVIEW_TASK,
     },
   };
   const agentsView = props.selection.section === 'extensions'
@@ -731,6 +777,16 @@ export const HostAutomationsScheduledTasks: Story = {
   render: () => (
     <ModuleHubHostSurface
       selection={{ section: 'automations', module: 'scheduled-tasks' }}
+    />
+  ),
+};
+
+// Daily Review remains a first-class Automations experience while reading the
+// ordinary Session catalog and shared usage ledger through the production Host.
+export const HostAutomationsDailyReview: Story = {
+  render: () => (
+    <ModuleHubHostSurface
+      selection={{ section: 'automations', module: 'daily-review' }}
     />
   ),
 };

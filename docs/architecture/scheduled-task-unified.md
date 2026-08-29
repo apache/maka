@@ -64,6 +64,29 @@ The scheduled-task panel consumes `ScheduledTask` directly. Its preload facade u
 `runtime-host:query` / `runtime-host:command` transport and the canonical Host protocol codecs.
 Host change frames are signals only; Desktop re-queries the canonical record.
 
+Daily Review remains visible under Automations, but it is now a product projection rather than a
+runtime domain:
+
+- Setup opens the ordinary Scheduled Task dialog with the Daily Review preset and freezes the
+  current Agent execution template.
+- Enablement, recurrence, next run, retry history, and manual trigger come from that
+  `ScheduledTask`.
+- The 1/7/30 day overview and its earlier/later navigation read ordinary Session activity and the
+  canonical model-call usage ledger for the selected local-calendar range.
+- Report history filters the Session catalog by the generic `scheduled-task:<taskId>` relation;
+  migrated reports use the temporary `migrated:daily-review` provenance label.
+- Opening a report enters the ordinary Session transcript, where its Markdown report is available
+  as a normal Artifact. Existing transcript quoting and Artifact preview/copy/save actions replace
+  the former report-only export controls.
+- Managing the schedule selects the backing task directly in the Scheduled Tasks inspector. Agent
+  tasks keep their frozen execution target while allowing their title, prompt, recurrence, and
+  next fire time to be edited through the ordinary task form.
+
+The migration banner is a retirement aid, not a permanent compatibility path. Once the legacy
+snapshot has been materialized and its exact revision is still current, the migration drops the
+old tables. New code never reads or writes them again, so there is no ongoing dual-read or
+dual-write state.
+
 ### Authority invariant
 
 Runtime Host is the only catalog writer, scheduler, clock, and fire admission authority. No

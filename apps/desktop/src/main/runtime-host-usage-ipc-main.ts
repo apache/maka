@@ -66,7 +66,7 @@ export function registerRuntimeHostUsageIpc(
   handleReconnectableRead(
     deps.ipcMain,
     "settings:usageStats",
-    (_event, range: UsageRange = "24h") =>
+    (_event, range: TimeRange = "24h") =>
       loadUsageStats(deps.client, normalizeUsageRange(range)),
   );
   handleReconnectableRead(
@@ -158,7 +158,7 @@ export function registerRuntimeHostUsageIpc(
 
 async function loadUsageStats(
   client: DesktopRuntimeHostClient,
-  range: UsageRange,
+  range: TimeRange,
 ): Promise<UsageStats> {
   const query = { range: resolveUsageRange(range, Date.now()) } satisfies UsageQuery;
   const [summaryResult, llmResult, toolResult, pricing] = await Promise.all([
@@ -422,10 +422,23 @@ function toLlmQuery(query: UsageQuery) {
   return llmQuery;
 }
 
-function normalizeUsageRange(range: unknown): UsageRange {
-  return range === "24h" || range === "7d" || range === "30d" || range === "all"
-    ? range
-    : "24h";
+function normalizeUsageRange(range: unknown): TimeRange {
+  if (range === "24h" || range === "7d" || range === "30d" || range === "all") return range;
+  if (
+    typeof range === "object" &&
+    range !== null &&
+    !Array.isArray(range) &&
+    Number.isFinite((range as { from?: unknown }).from) &&
+    Number.isFinite((range as { to?: unknown }).to) &&
+    (range as { from: number }).from >= 0 &&
+    (range as { from: number; to: number }).to > (range as { from: number }).from
+  ) {
+    return {
+      from: (range as { from: number }).from,
+      to: (range as { to: number }).to,
+    };
+  }
+  return "24h";
 }
 
 function toToolQuery(query: UsageQuery) {

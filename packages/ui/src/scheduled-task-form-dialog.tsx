@@ -98,6 +98,7 @@ export function ScheduledTaskFormDialog(props: {
   const copy = catalog.form;
   const templates = catalog.templates;
   const [title, setTitle] = useState(props.seed.title);
+  const [presetId, setPresetId] = useState(props.seed.presetId);
   const [note, setNote] = useState(props.seed.note);
   const [runAtLocal, setRunAtLocal] = useState(props.seed.runAtLocal);
   const [recurrence, setRecurrence] = useState<ScheduledTaskRecurrence>(props.seed.recurrence);
@@ -152,6 +153,7 @@ export function ScheduledTaskFormDialog(props: {
 
   function resetForm() {
     setTitle('');
+    setPresetId(undefined);
     setNote('');
     setRecurrence('none');
     setCronExpression('0 9 * * 1-5');
@@ -173,6 +175,7 @@ export function ScheduledTaskFormDialog(props: {
   function applyTemplate(template: ScheduledTaskExampleTemplate) {
     const seed = scheduledTaskTemplateSeed(template, Date.now(), props.agentRunTemplateEffect);
     setTitle(seed.title);
+    setPresetId(seed.presetId);
     setNote(seed.note);
     setRunAtLocal(seed.runAtLocal);
     setRecurrence(seed.recurrence);
@@ -201,6 +204,7 @@ export function ScheduledTaskFormDialog(props: {
     submitPendingRef.current = true;
     const input = {
       title: title.trim(),
+      ...(!editingId && presetId ? { presetId } : {}),
       intentBody: note.trim(),
       schedule,
       effect,

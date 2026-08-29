@@ -35,6 +35,10 @@ export {
   type ScheduledTasksController,
   type ScheduledTasksToastApi,
 } from "./controller/use-scheduled-tasks-controller.js";
+export {
+  useDailyReviewController,
+  type DailyReviewController,
+} from "./controller/use-daily-review-controller.js";
 export type {
   ModuleHubRuntimeHostChangedEvent,
   ModuleHubRuntimeHostRef,
@@ -78,8 +82,13 @@ export function createFakeModuleHubHostModel(
     scheduledTasks: {
       scheduledTasks: [],
       createRequestNonce: 0,
+      createRequestTemplateId: undefined,
+      inspectRequestNonce: 0,
+      inspectRequestTaskId: undefined,
       openCreate: () => undefined,
       handleCreateRequest: () => undefined,
+      openInspect: () => undefined,
+      handleInspectRequest: () => undefined,
       refresh: async () => undefined,
       refreshSurface: async () => undefined,
       create: async () => false,
@@ -90,11 +99,23 @@ export function createFakeModuleHubHostModel(
       clearRunHistory: async () => undefined,
       delete: async () => undefined,
     },
+    dailyReview: {
+      bridge: {
+        load: async () => ({
+          totals: { sessionCount: 0, totalRequests: 0, totalTokens: 0, totalCostUsd: 0 },
+          reports: [],
+          hasMigratedReports: false,
+        }),
+      },
+      revision: 0,
+      task: undefined,
+    },
     keepSystemAwake: {
       supported: false,
       keepSystemAwake: undefined,
       setKeepSystemAwake: async () => undefined,
     },
+    openSession: () => undefined,
     ...overrides,
   };
 }
@@ -135,6 +156,11 @@ export function createFakeModuleHubServices(
       delete: async () => notConfigured("scheduledTasks.delete"),
       subscribeChanges: noopSubscription,
       subscribeDue: noopSubscription,
+    },
+    dailyReview: {
+      listSessions: async () => [],
+      readUsage: async () => ({ totalRequests: 0, totalTokens: 0, totalCostUsd: 0 }),
+      subscribeChanges: noopSubscription,
     },
     clientSettings: {
       supported: true,

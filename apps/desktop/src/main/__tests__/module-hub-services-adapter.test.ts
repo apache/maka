@@ -44,6 +44,67 @@ function methodRecorder(calls: Call[], prefix: string) {
 }
 
 describe('createDesktopModuleHubServices', () => {
+  it('projects Daily Review from the ordinary Session catalog and shared usage ledger', async () => {
+    const host: ModuleHubRuntimeHostRef = {
+      profileId: 'remote-a',
+      hostId: 'host-a',
+    };
+    const sessions = [
+      { id: 'local-session', runtimeHostId: 'host-a' },
+      { id: 'other-session', runtimeHostId: 'host-b' },
+    ];
+    const ranges: unknown[] = [];
+    const usageHosts: unknown[] = [];
+    let sessionChanged: (() => void) | undefined;
+    let notifications = 0;
+    const bridge = {
+      runtimeHostProfiles: {
+        getDefaultHost: async () => host,
+        subscribeChanges: () => () => undefined,
+      },
+      skills: Object.assign(methodRecorder([], 'skills'), {
+        sources: methodRecorder([], 'skills.sources'),
+        catalog: methodRecorder([], 'skills.catalog'),
+      }),
+      scheduledTasks: methodRecorder([], 'scheduledTasks'),
+      sessions: {
+        list: async () => sessions,
+        subscribeChanges(handler: () => void) {
+          sessionChanged = handler;
+          return () => undefined;
+        },
+      },
+      settings: {
+        usageStats: async (range: unknown, requestedHost: unknown) => {
+          ranges.push(range);
+          usageHosts.push(requestedHost);
+          return {
+            summary: {
+              totalRequests: 5,
+              totalTokens: 500,
+              totalCostUsd: 0.05,
+            },
+          };
+        },
+      },
+    } as unknown as DesktopModuleHubBridge;
+    const services = createDesktopModuleHubServices(bridge);
+    const range = { from: 100, to: 200 };
+
+    assert.deepEqual(await services.dailyReview.listSessions(host), [sessions[0]]);
+    assert.deepEqual(await services.dailyReview.readUsage(range, host), {
+      totalRequests: 5,
+      totalTokens: 500,
+      totalCostUsd: 0.05,
+    });
+    services.dailyReview.subscribeChanges(() => { notifications += 1; });
+    sessionChanged?.();
+
+    assert.deepEqual(ranges, [range]);
+    assert.deepEqual(usageHosts, [host]);
+    assert.equal(notifications, 1);
+  });
+
   it('maps host-scoped Skills and Scheduled Tasks operations', async () => {
     const calls: Call[] = [];
     const host: ModuleHubRuntimeHostRef = {

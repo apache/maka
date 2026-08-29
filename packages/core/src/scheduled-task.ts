@@ -37,6 +37,7 @@ import { isBotDeliveryProvider, type BotProvider } from './bot-chat-settings.js'
 import type { PersistedValue } from './persisted-value.js';
 
 export const SCHEDULED_TASK_TITLE_MAX_CHARS = 120;
+export const SCHEDULED_TASK_PRESET_ID_MAX_CHARS = 80;
 export const SCHEDULED_TASK_INTENT_MAX_CHARS = 8_000;
 export const SCHEDULED_TASK_CRON_MAX_CHARS = 80;
 export const SCHEDULED_TASK_CHAT_ID_MAX_CHARS = 160;
@@ -46,6 +47,12 @@ export const SCHEDULED_TASK_RUN_MESSAGE_MAX_CHARS = 1_024;
 export const SCHEDULED_TASK_MAX_DELAY_MS = 366 * 24 * 60 * 60 * 1000;
 export const SCHEDULED_TASK_MIN_INTERVAL_SECONDS = 10;
 export const SCHEDULED_TASK_MAX_INTERVAL_SECONDS = 366 * 86_400;
+export const SCHEDULED_TASK_SESSION_LABEL_PREFIX = 'scheduled-task:';
+
+/** Stable Session-catalog relation for ordinary Sessions started by a task. */
+export function scheduledTaskSessionLabel(taskId: string): string {
+  return `${SCHEDULED_TASK_SESSION_LABEL_PREFIX}${taskId}`;
+}
 
 export const SCHEDULED_TASK_STATUSES = ['active', 'paused', 'completed', 'expired'] as const;
 export type ScheduledTaskStatus = (typeof SCHEDULED_TASK_STATUSES)[number];
@@ -102,6 +109,8 @@ export interface ScheduledTaskCreatedBy {
 
 export interface ScheduledTask {
   id: string;
+  /** Optional immutable UI provenance; it never affects scheduling or execution. */
+  presetId?: string;
   title: string;
   intent: { kind: 'text'; body: string };
   schedule: ScheduledTaskSchedule;
@@ -121,6 +130,7 @@ export interface ScheduledTask {
 
 export interface CreateScheduledTaskInput {
   title: string;
+  presetId?: string;
   intentBody: string;
   schedule: ScheduledTaskSchedule;
   effect: ScheduledTaskEffect;
@@ -155,6 +165,8 @@ export function normalizeCreateScheduledTaskInput(
   if (!isObject(input)) return fail('Scheduled task input must be an object');
   const title = normalizeTitle(input.title);
   if (!title.ok) return title;
+  const presetId = normalizePresetId(input.presetId);
+  if (!presetId.ok) return presetId;
   const schedule = normalizeSchedule(input.schedule, now);
   if (!schedule.ok) return schedule;
   const effect = normalizeEffect(input.effect);
@@ -180,6 +192,7 @@ export function normalizeCreateScheduledTaskInput(
     ok: true,
     value: {
       title: title.value,
+      ...(presetId.value === undefined ? {} : { presetId: presetId.value }),
       intentBody: intentBody.value,
       schedule: schedule.value,
       effect: effect.value,
@@ -189,6 +202,19 @@ export function normalizeCreateScheduledTaskInput(
       nextFireAt,
     },
   };
+}
+
+function normalizePresetId(value: unknown): ScheduledTaskNormalizeResult<string | undefined> {
+  if (value === undefined) return { ok: true, value: undefined };
+  if (
+    typeof value !== 'string' ||
+    value.length === 0 ||
+    [...value].length > SCHEDULED_TASK_PRESET_ID_MAX_CHARS ||
+    !/^[a-z0-9]+(?:-[a-z0-9]+)*$/u.test(value)
+  ) {
+    return fail('presetId must be a lowercase kebab-case identifier');
+  }
+  return { ok: true, value };
 }
 
 export function normalizeUpdateScheduledTaskInput(

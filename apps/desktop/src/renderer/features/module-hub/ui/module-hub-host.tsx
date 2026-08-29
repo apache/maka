@@ -18,6 +18,7 @@
  */
 
 import {
+  DailyReviewPage,
   ModuleHubSelector,
   ScheduledTasksPage,
   SkillsPage,
@@ -42,6 +43,7 @@ export function ModuleHubHost(props: { model: ModuleHubHostModel }) {
       subtitle: copy.extensions.description,
       badge: (
         <ModuleHubSelector
+          hub="extensions"
           value={route}
           onChange={(module) =>
             model.selectModule({ section: 'extensions', module })
@@ -63,12 +65,39 @@ export function ModuleHubHost(props: { model: ModuleHubHostModel }) {
     );
   }
 
-  if (route === 'scheduled-tasks') {
+  if (route === 'scheduled-tasks' || route === 'daily-review') {
     const header: ModuleHubHeader = {
       title: copy.automations.title,
       subtitle: copy.automations.description,
-      badge: null,
+      badge: (
+        <ModuleHubSelector
+          hub="automations"
+          value={route}
+          onChange={(module) =>
+            model.selectModule({ section: 'automations', module })
+          }
+        />
+      ),
     };
+    if (route === 'daily-review') {
+      const dailyReview = model.dailyReview;
+      const task = dailyReview.task;
+      return (
+        <DailyReviewPage
+          hubHeader={header}
+          bridge={dailyReview.bridge}
+          revision={dailyReview.revision}
+          task={task}
+          canSetUp={model.agentRunTemplateEffect !== undefined}
+          onSetUp={model.agentRunTemplateEffect
+            ? () => model.scheduledTasks.openCreate('daily-review')
+            : undefined}
+          onManageSchedule={task ? () => model.scheduledTasks.openInspect(task.id) : undefined}
+          onRunNow={task ? () => model.scheduledTasks.triggerNow(task.id) : undefined}
+          onSelectSession={model.openSession}
+        />
+      );
+    }
     const keepAwake = model.keepSystemAwake;
     const tasks = model.scheduledTasks;
     return (
@@ -77,7 +106,11 @@ export function ModuleHubHost(props: { model: ModuleHubHostModel }) {
         tasks={tasks.scheduledTasks}
         agentRunTemplateEffect={model.agentRunTemplateEffect}
         createRequestNonce={tasks.createRequestNonce}
+        createRequestTemplateId={tasks.createRequestTemplateId}
         onCreateRequestHandled={tasks.handleCreateRequest}
+        inspectRequestNonce={tasks.inspectRequestNonce}
+        inspectRequestTaskId={tasks.inspectRequestTaskId}
+        onInspectRequestHandled={tasks.handleInspectRequest}
         keepSystemAwake={keepAwake.supported ? keepAwake.keepSystemAwake : undefined}
         onKeepSystemAwakeChange={
           keepAwake.supported ? keepAwake.setKeepSystemAwake : undefined

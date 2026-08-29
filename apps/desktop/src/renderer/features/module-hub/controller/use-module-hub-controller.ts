@@ -32,6 +32,10 @@ import {
   type ScheduledTasksController,
 } from './use-scheduled-tasks-controller.js';
 import {
+  useDailyReviewController,
+  type DailyReviewController,
+} from './use-daily-review-controller.js';
+import {
   useSkillsController,
   type SkillsHostModel,
 } from './use-skills-controller.js';
@@ -41,8 +45,10 @@ export interface ModuleHubHostModel {
   readonly selectModule: (selection: NavSelection) => void;
   readonly skills: SkillsHostModel;
   readonly scheduledTasks: ScheduledTasksController;
+  readonly dailyReview: DailyReviewController;
   readonly keepSystemAwake: KeepSystemAwakeController;
   readonly agentRunTemplateEffect?: Extract<ScheduledTaskEffect, { kind: 'agent_run' }>;
+  readonly openSession: (sessionId: string) => void;
 }
 
 export interface ModuleHubController {
@@ -63,6 +69,7 @@ export interface UseModuleHubControllerInput {
   readonly selectModule: (selection: NavSelection) => void;
   readonly openSkillsFolder?: () => void | Promise<void>;
   readonly useSkillInChat: (skillId: string, skillName: string) => void;
+  readonly openSession: (sessionId: string) => void;
   readonly agentRunTemplateEffect?: Extract<ScheduledTaskEffect, { kind: 'agent_run' }>;
 }
 
@@ -89,6 +96,10 @@ export function useModuleHubController(
     selection: input.selection,
     selectModule: input.selectModule,
   });
+  const dailyReview = useDailyReviewController({
+    services,
+    tasks: scheduledTasks.scheduledTasks,
+  });
   const keepSystemAwake = useKeepSystemAwakeController(services);
   const refreshProjectSkillsRef = useRef(skills.refreshProjectSkills);
   const refreshScheduledTasksRef = useRef(scheduledTasks.refresh);
@@ -110,8 +121,10 @@ export function useModuleHubController(
         selectModule: input.selectModule,
         skills: skills.host,
         scheduledTasks,
+        dailyReview,
         keepSystemAwake,
         agentRunTemplateEffect: input.agentRunTemplateEffect,
+        openSession: input.openSession,
       },
       commands: {
         refreshProjectSkills: skills.refreshProjectSkills,
@@ -126,6 +139,8 @@ export function useModuleHubController(
       input.selectModule,
       input.selection,
       input.agentRunTemplateEffect,
+      input.openSession,
+      dailyReview,
       keepSystemAwake,
       scheduledTasks,
       skills.host,
