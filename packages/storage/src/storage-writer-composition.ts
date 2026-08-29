@@ -20,11 +20,11 @@
 import { openInteractiveArtifactStoreForWrite } from './artifact-stores.js';
 import type { ContextOffloadLimits } from '@maka/core/context-offload';
 import { openInteractiveContextOffloadStoreForWrite } from './context-offload-store.js';
-import { openInteractiveDailyReviewAuthorityForWrite } from './daily-review-authority.js';
 import { openInteractiveDeepResearchStoreForWrite } from './deep-research-authority.js';
 import { openInteractiveExecutionStoresForWrite } from './execution-stores.js';
 import { openInteractiveGoalAuthorityForWrite } from './goal-authority.js';
 import { openInteractiveLongTermMemoryStoreForWrite } from './long-term-memory-store.js';
+import { openLegacyDailyReviewMigrationForWrite } from './legacy-daily-review-migration.js';
 import { openInteractiveMemoryBundleStoreForWrite } from './memory-bundle-store.js';
 import { openInteractivePlanStoreForWrite } from './plan-authority.js';
 import { openInteractiveProjectCatalogForWrite } from './project-catalog-authority.js';
@@ -51,7 +51,7 @@ export interface StorageWriterComposition {
   readonly scheduledTasks: Awaited<ReturnType<typeof openInteractiveScheduledTaskStoreForWrite>>;
   readonly plan: Awaited<ReturnType<typeof openInteractivePlanStoreForWrite>>;
   readonly deepResearch: Awaited<ReturnType<typeof openInteractiveDeepResearchStoreForWrite>>;
-  readonly dailyReview: Awaited<ReturnType<typeof openInteractiveDailyReviewAuthorityForWrite>>;
+  readonly legacyDailyReview: Awaited<ReturnType<typeof openLegacyDailyReviewMigrationForWrite>>;
   readonly goal: Awaited<ReturnType<typeof openInteractiveGoalAuthorityForWrite>>;
   readonly memoryBundle: Awaited<ReturnType<typeof openInteractiveMemoryBundleStoreForWrite>>;
   readonly longTermMemory: Awaited<ReturnType<typeof openInteractiveLongTermMemoryStoreForWrite>>;
@@ -142,8 +142,8 @@ async function createComposition(
     () => openInteractiveDeepResearchStoreForWrite(lease),
     closeWriter,
   );
-  const dailyReview = await openWriter(
-    () => openInteractiveDailyReviewAuthorityForWrite(lease),
+  const legacyDailyReview = await openWriter(
+    () => openLegacyDailyReviewMigrationForWrite(lease),
     closeWriter,
   );
   const goal = await openWriter(() => openInteractiveGoalAuthorityForWrite(lease), closeWriter);
@@ -188,7 +188,7 @@ async function createComposition(
     scheduledTasks,
     plan,
     deepResearch,
-    dailyReview,
+    legacyDailyReview,
     goal,
     memoryBundle,
     longTermMemory,

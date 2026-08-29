@@ -91,19 +91,8 @@ test('module pages and global overlays expose named actionable controls', async 
   await assertAxHealth(cdp, 'extensions/mcp');
 
   await navigation.getByRole('button', { name: /定时任务/ }).click();
-  const automationsNavigation = page.getByRole('navigation', { name: /定时任务内容/ });
-  await expect(
-    automationsNavigation.getByRole('button', { name: '定时任务', exact: true }),
-  ).toHaveAttribute('aria-current', 'true');
+  await expect(page.locator('[data-module="scheduled-tasks"]')).toBeVisible();
   await assertAxHealth(cdp, 'automations/scheduled-tasks');
-  const dailyReviewButton = automationsNavigation.getByRole('button', {
-    name: '每日回顾',
-    exact: true,
-  });
-  await dailyReviewButton.click();
-  await expect(dailyReviewButton).toHaveAttribute('aria-current', 'true');
-  await assertAxHealth(cdp, 'automations/daily-review');
-
   await page.keyboard.press('Shift+Slash');
   const keyboardHelpDialog = page.getByRole('dialog', { name: '键盘快捷键' });
   await expect(keyboardHelpDialog).toBeVisible();

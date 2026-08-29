@@ -23,7 +23,7 @@ type AppShellDetailPanelProps = Omit<
   ComponentPropsWithoutRef<'div'>,
   'className' | 'data-agents-view'
 > & {
-  agentsView: 'skills' | 'mcp' | 'cron' | 'daily-review' | 'im_hub';
+  agentsView: 'skills' | 'mcp' | 'cron' | 'im_hub';
 };
 
 export function AppShellDetailPanel({

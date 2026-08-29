@@ -28,6 +28,7 @@ export const MODEL_CALL_KINDS = [
   'goal_evaluation',
   'session_title',
   'session_recap',
+  // Decode-only historical ledger fact; new reviews are ordinary Session calls.
   'daily_review',
   'memory_extraction',
 ] as const;

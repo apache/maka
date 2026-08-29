@@ -334,7 +334,14 @@ export function createScheduledTaskFormSeed(now: number = Date.now()): Scheduled
 }
 
 /** Create-mode seed prefilled from an example template. */
-export function scheduledTaskTemplateSeed(template: ScheduledTaskExampleTemplate, now: number = Date.now()): ScheduledTaskFormSeed {
+export function scheduledTaskTemplateSeed(
+  template: ScheduledTaskExampleTemplate,
+  now: number = Date.now(),
+  agentRunEffect?: Extract<ScheduledTaskEffect, { kind: 'agent_run' }>,
+): ScheduledTaskFormSeed {
+  if (template.agentRun && agentRunEffect === undefined) {
+    throw new Error('Agent-run ScheduledTask template requires a frozen execution effect');
+  }
   return {
     ...createScheduledTaskFormSeed(now),
     title: template.title,
@@ -342,6 +349,9 @@ export function scheduledTaskTemplateSeed(template: ScheduledTaskExampleTemplate
     recurrence: template.recurrence,
     cronExpression: template.cronExpression,
     runAtLocal: toScheduledTaskLocalDateTimeValue(scheduledTaskTemplateNextRunAt(template, now)),
+    ...(template.agentRun
+      ? { deliveryMethod: 'agent_run' as const, lockedEffect: agentRunEffect }
+      : {}),
   };
 }
 

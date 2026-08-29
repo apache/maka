@@ -22,7 +22,7 @@
 // The shared implementation for "big number + label (+ detail)" stat tiles. Before
 // this, four near-identical recipes lived in page CSS (permission summary,
 // health summary — literal twins — plus the filled MetricCard and the
-// daily-review totals cell).
+// usage totals cell).
 //
 // Recipe decisions (union of the twins):
 //   - value is tabular-nums ALWAYS (tabular-nums-converge contract);

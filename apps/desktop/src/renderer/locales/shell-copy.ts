@@ -44,15 +44,11 @@ export const STATIC_COMMAND_IDS = [
   'nav:automations',
   'nav:skills',
   'nav:mcp',
-  'nav:daily-review',
   'diag:open-workspace',
   'diag:open-project-folder',
   'diag:open-skills',
   'diag:export-conversation',
   'diag:save-conversation-file',
-  'diag:copy-today-daily-review',
-  'diag:paste-today-daily-review',
-  'diag:save-today-daily-review',
   'diag:copy-diagnostics',
   'diag:test-network-proxy',
   'diag:open-local-memory',
@@ -90,7 +86,6 @@ const STATIC_COMMAND_KEYWORDS: Record<StaticCommandId, readonly string[]> = {
   'nav:automations': ['automations', 'plan', 'task', 'schedule', 'cron', '定时任务', '计划', '提醒'],
   'nav:skills': ['skills', '技能'],
   'nav:mcp': ['mcp', 'server', 'tools', '扩展', '工具'],
-  'nav:daily-review': ['daily', 'review', 'today', '每日', '回顾', '今天'],
   'diag:open-workspace': ['workspace', 'folder', 'open', 'finder', '工作区', '文件夹', '目录'],
   'diag:open-project-folder': ['project', 'folder', 'open', 'finder', '项目', '目录', '文件夹'],
   'diag:open-skills': ['skills', 'folder', 'open', 'finder', '技能', '文件夹'],
@@ -106,21 +101,6 @@ const STATIC_COMMAND_KEYWORDS: Record<StaticCommandId, readonly string[]> = {
     '任务',
     '导出',
     'md',
-  ],
-  'diag:copy-today-daily-review': ['daily', 'review', 'today', 'copy', 'markdown', '今日', '回顾', '复制', '剪贴板'],
-  'diag:paste-today-daily-review': ['daily', 'review', 'paste', 'composer', '今日', '回顾', '粘贴', '输入框'],
-  'diag:save-today-daily-review': [
-    'daily',
-    'review',
-    'save',
-    'file',
-    'export',
-    'markdown',
-    '今日',
-    '回顾',
-    '保存',
-    '文件',
-    '导出',
   ],
   'diag:copy-diagnostics': [
     'env',
@@ -234,16 +214,7 @@ type ShellCopy = {
     openFailedTitle: string;
     memoryOpenFallback: string;
     today: string;
-    reviewCopiedTitle: string;
-    reviewSummary(sessions: number, requests: number): string;
-    reviewCopyFallback: string;
-    reviewPastedTitle: string;
-    reviewCopied(label: string): string;
-    reviewPasted(label: string): string;
-    reviewSaved(label: string): string;
-    reviewSaveFallback: string;
     pasteFailedTitle: string;
-    reviewUnavailable: string;
     diagnosticsCopiedTitle: string;
     diagnosticsCopiedDescription: string;
     clipboardDenied: string;
@@ -555,7 +526,6 @@ const ZH_STATIC_COMMANDS: Record<StaticCommandId, CommandCopy> = {
   'nav:automations': { label: '侧栏 · 定时任务', group: '导航' },
   'nav:skills': { label: '打开 · 技能', group: '导航' },
   'nav:mcp': { label: '打开 · MCP', group: '导航' },
-  'nav:daily-review': { label: '打开 · 每日回顾', group: '导航' },
   'diag:open-workspace': {
     label: '打开工作区文件夹',
     hint: 'Finder',
@@ -578,21 +548,6 @@ const ZH_STATIC_COMMANDS: Record<StaticCommandId, CommandCopy> = {
   },
   'diag:save-conversation-file': {
     label: '保存当前任务为 .md 文件',
-    hint: '用系统保存对话框',
-    group: '诊断',
-  },
-  'diag:copy-today-daily-review': {
-    label: '复制今日回顾为 Markdown',
-    hint: '复制到剪贴板',
-    group: '诊断',
-  },
-  'diag:paste-today-daily-review': {
-    label: '把今日回顾粘到 composer',
-    hint: '不进剪贴板',
-    group: '诊断',
-  },
-  'diag:save-today-daily-review': {
-    label: '保存今日回顾为 .md 文件',
     hint: '用系统保存对话框',
     group: '诊断',
   },
@@ -651,7 +606,6 @@ const EN_STATIC_COMMANDS: Record<StaticCommandId, CommandCopy> = {
   'nav:automations': { label: 'Sidebar · Automations', group: 'Navigation' },
   'nav:skills': { label: 'Open · Skills', group: 'Navigation' },
   'nav:mcp': { label: 'Open · MCP', group: 'Navigation' },
-  'nav:daily-review': { label: 'Open · Daily Review', group: 'Navigation' },
   'diag:open-workspace': {
     label: 'Open workspace folder',
     hint: 'Finder',
@@ -674,21 +628,6 @@ const EN_STATIC_COMMANDS: Record<StaticCommandId, CommandCopy> = {
   },
   'diag:save-conversation-file': {
     label: 'Save task as an .md file',
-    hint: 'Use the system save dialog',
-    group: 'Diagnostics',
-  },
-  'diag:copy-today-daily-review': {
-    label: "Copy today's review as Markdown",
-    hint: 'Copy to clipboard',
-    group: 'Diagnostics',
-  },
-  'diag:paste-today-daily-review': {
-    label: "Paste today's review into the composer",
-    hint: 'Skip the clipboard',
-    group: 'Diagnostics',
-  },
-  'diag:save-today-daily-review': {
-    label: "Save today's review as an .md file",
     hint: 'Use the system save dialog',
     group: 'Diagnostics',
   },
@@ -719,7 +658,6 @@ const ZH_SETTINGS_SECTIONS: Record<SettingsSection, string> = {
   'archived-tasks': '已归档任务',
   'import-tasks': '导入任务',
   memory: '记忆',
-  'daily-review': '每日回顾',
   'bot-chat': '远程接入',
   search: '联网搜索',
   data: '数据',
@@ -738,7 +676,6 @@ const EN_SETTINGS_SECTIONS: Record<SettingsSection, string> = {
   'archived-tasks': 'Archived tasks',
   'import-tasks': 'Import tasks',
   memory: 'Memory',
-  'daily-review': 'Daily Review',
   'bot-chat': 'Remote Access',
   search: 'Web Search',
   data: 'Data',
@@ -860,16 +797,7 @@ const SHELL_COPY_BY_LOCALE = {
       openFailedTitle: '打开失败',
       memoryOpenFallback: '无法打开 MEMORY.md，请稍后重试。',
       today: '今天',
-      reviewCopiedTitle: '已复制今日回顾为 Markdown',
-      reviewSummary: (sessions: number, requests: number) => `${sessions} 个任务 · ${requests} 个请求`,
-      reviewCopyFallback: '今日回顾暂时不可用，或剪贴板被系统拒绝。',
-      reviewPastedTitle: '已追加今日回顾到输入框',
-      reviewCopied: (label: string) => `已复制${label}回顾`,
-      reviewPasted: (label: string) => `已追加${label}回顾到输入框`,
-      reviewSaved: (label: string) => `已保存${label}回顾`,
-      reviewSaveFallback: '保存每日回顾失败，请稍后重试。',
       pasteFailedTitle: '粘贴失败',
-      reviewUnavailable: '今日回顾暂时不可用，请稍后重试。',
       diagnosticsCopiedTitle: '已复制诊断信息',
       diagnosticsCopiedDescription: '检查内容后，可直接粘贴到问题报告',
       clipboardDenied: '剪贴板不可用或被系统拒绝',
@@ -1385,16 +1313,7 @@ const SHELL_COPY_BY_LOCALE = {
       openFailedTitle: 'Open failed',
       memoryOpenFallback: 'MEMORY.md could not be opened. Try again later.',
       today: 'Today',
-      reviewCopiedTitle: "Today's review copied as Markdown",
-      reviewSummary: (sessions: number, requests: number) => `${sessions} tasks · ${requests} requests`,
-      reviewCopyFallback: "Today's review is unavailable, or the clipboard was denied.",
-      reviewPastedTitle: "Today's review added to the composer",
-      reviewCopied: (label: string) => `${label} review copied`,
-      reviewPasted: (label: string) => `${label} review added to the composer`,
-      reviewSaved: (label: string) => `${label} review saved`,
-      reviewSaveFallback: 'The Daily Review could not be saved. Try again later.',
       pasteFailedTitle: 'Paste failed',
-      reviewUnavailable: "Today's review is temporarily unavailable. Try again later.",
       diagnosticsCopiedTitle: 'Diagnostics copied',
       diagnosticsCopiedDescription: 'Review the contents, then paste them into the issue report',
       clipboardDenied: 'The clipboard is unavailable or was denied',

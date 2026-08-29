@@ -35,7 +35,7 @@ export type {
   SessionViewMode,
 } from './session-rail-context.js';
 export type { SidebarUpdateReminder } from './session-sidebar-nav.js';
-export type { BundledSkillCatalogEntry, DailyReviewMarkdownActionInput, ManagedSkillSourceEntry, ManagedSkillUpdatePreview, SkillEntry, SkillGovernanceDetails } from './module-panel-types.js';
+export type { BundledSkillCatalogEntry, ManagedSkillSourceEntry, ManagedSkillUpdatePreview, SkillEntry, SkillGovernanceDetails } from './module-panel-types.js';
 export { describeLoadToolResult, formatRedactedJson, formatToolIntent, loadToolDisplayName } from './tool-format.js';
 export { formatBytes, ToolCallDetail, ToolTrow } from './tool-activity.js';
 export { ToolResultPreview } from './tool-activity/tool-result-preview.js';
@@ -63,7 +63,7 @@ export type {
   TurnPresentation,
   TurnPresentationDeriver,
 } from './chat-turn.js';
-export { ScheduledTasksPage, DailyReviewPage, SkillsPage } from './module-pages.js';
+export { ScheduledTasksPage, SkillsPage } from './module-pages.js';
 export { Composer } from './composer.js';
 export type {
   ComposerProps,

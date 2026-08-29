@@ -48,7 +48,7 @@ Aligned core: app-shell family, chat-message-surface, chat-composer-region, chat
 
 ### Modules / packages/ui
 
-Aligned: skills-panel, scheduled-task-*, daily-review-panel, module-pages, composer, chat-view (loading now Spinner), prompt rail, quote chip, session sidebar/history/list, search-modal, model/permission pickers, mermaid, toast, tool-activity shell.
+Aligned: skills-panel, scheduled-task-*, module-pages, composer, chat-view (loading now Spinner), prompt rail, quote chip, session sidebar/history/list, search-modal, model/permission pickers, mermaid, toast, tool-activity shell.
 
 ## Fixed in this pass
 
@@ -59,7 +59,6 @@ Aligned: skills-panel, scheduled-task-*, daily-review-panel, module-pages, compo
 | task-ledger | error → `Banner` |
 | web-search | live error → `Banner`; no results → `EmptyState` |
 | memory settings | warning callouts → `Banner`; dead CSS removed |
-| daily-review settings | loading → `SettingsSkeletonStack` |
 | permission center | error wrap in `SettingsPage` |
 | provider oauth | error → `Banner` |
 | custom pet | empty → `EmptyState isCompact` |
@@ -93,7 +92,6 @@ Aligned: skills-panel, scheduled-task-*, daily-review-panel, module-pages, compo
 - workbar launcher shortcut → `Kbd`.
 - keyboard-help headings → `Heading`/`Text`.
 - web tool result links → Astryx `Link`.
-- daily-review metrics → optional `StatTile`.
 
 ### P3 — CSS chrome debt
 

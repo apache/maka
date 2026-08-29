@@ -261,8 +261,8 @@ test('connection catalogs preserve user-choice provenance without inventing avai
 });
 
 test('every picker sees a model the user enabled but no catalog describes', () => {
-  // The projection lives in the builder, not in one caller: chat, Daily Review
-  // and the settings selectors all read it. `deepseek-v4-pro-beta` is enabled
+  // The projection lives in the builder, not in one caller: chat and the
+  // settings selectors both read it. `deepseek-v4-pro-beta` is enabled
   // but absent from the snapshot this build shipped, and the entry it gets is
   // selectable — that is the whole of #1584 seen from the picker side.
   const entries = buildConnectionModelCatalogEntries({

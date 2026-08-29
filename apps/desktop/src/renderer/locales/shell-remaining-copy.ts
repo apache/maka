@@ -61,15 +61,6 @@ const zhCopy = {
     deleteFailed: "删除计划失败",
     deleteFallback: "删除定时任务失败，请稍后重试。",
   },
-  dailyReview: {
-    yesterday: "昨天",
-    today: "今天",
-    followSettings: "跟随设置",
-    unavailable: "每日回顾生成暂不可用",
-    historyUnavailable: "每日回顾历史暂不可用",
-    archiveMissing: "找不到每日回顾报告",
-    settingsUnavailable: "每日回顾设置暂不可用",
-  },
   connections: {
     refreshFailed: "刷新模型连接失败",
     refreshFallback: "模型连接暂时无法刷新，请稍后重试。",
@@ -140,15 +131,6 @@ const enCopy: ShellRemainingCopy = {
     deleted: "Scheduled task deleted",
     deleteFailed: "Failed to delete task",
     deleteFallback: "The scheduled task could not be deleted. Try again later.",
-  },
-  dailyReview: {
-    yesterday: "Yesterday",
-    today: "Today",
-    followSettings: "Follow Settings",
-    unavailable: "Daily Review generation is unavailable",
-    historyUnavailable: "Daily Review history is unavailable",
-    archiveMissing: "Daily Review report not found",
-    settingsUnavailable: "Daily Review settings are unavailable",
   },
   connections: {
     refreshFailed: "Failed to refresh model connections",

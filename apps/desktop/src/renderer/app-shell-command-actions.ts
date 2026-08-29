@@ -90,9 +90,6 @@ export interface AppShellCommandListOptions {
   openSkillsFolder: () => Promise<void>;
   openWorkspaceFolder: () => Promise<void>;
   refreshConnections: () => Promise<void>;
-  copyTodayDailyReview: () => Promise<void>;
-  pasteTodayDailyReview: () => Promise<void>;
-  saveTodayDailyReview: () => Promise<void>;
   setNavSelection: (selection: NavSelection) => void;
   setPermissionMode: (mode: PermissionMode) => Promise<boolean>;
   setThemePref: (themePref: ThemePreference) => void;
@@ -320,9 +317,6 @@ export function buildAppShellCommandList(
         }
       : undefined,
     activePermissionMode: options.activePermissionMode,
-    onCopyTodayDailyReview: () => optionsRef.current.copyTodayDailyReview(),
-    onPasteTodayDailyReviewIntoComposer: () => optionsRef.current.pasteTodayDailyReview(),
-    onSaveTodayDailyReviewToFile: () => optionsRef.current.saveTodayDailyReview(),
     onCopyDiagnostics: async () => {
       const {
         captureComposerImportOwner,

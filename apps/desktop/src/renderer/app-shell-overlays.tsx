@@ -84,7 +84,6 @@ export function AppShellOverlays(props: {
   settingsProviderCatalogOpen: boolean;
   settingsConnectionDetailSlug: string | undefined;
   settingsCreateProviderType: ProviderType | undefined;
-  onOpenDailyReview(): void;
   onOpenKeyboardHelp(): void;
   onOpenSettingsSession(sessionId: string): void;
   archivedTasks: ArchivedTasksBridge;
@@ -187,7 +186,6 @@ export function AppShellOverlays(props: {
             openProviderCatalog={settingsProviderCatalogOpen}
             initialConnectionSlug={settingsConnectionDetailSlug}
             initialCreateProviderType={settingsCreateProviderType}
-            onOpenDailyReview={props.onOpenDailyReview}
             onOpenKeyboardHelp={props.onOpenKeyboardHelp}
             onOpenSession={props.onOpenSettingsSession}
             archivedTasks={props.archivedTasks}

@@ -17,13 +17,6 @@
  * under the License.
  */
 
-import type {
-  DailyReviewArchive,
-  DailyReviewArchiveSummary,
-  DailyReviewRange,
-  DailyReviewSummary,
-} from '@maka/core/daily-review';
-
 import type { CreateScheduledTaskInput, ScheduledTaskEffect, UpdateScheduledTaskInput } from '@maka/core/scheduled-task';
 
 export interface SkillEntry {
@@ -157,35 +150,3 @@ export type ScheduledTaskRecurrence =
   | 'cron';
 export type ScheduledTaskDelivery = Extract<ScheduledTaskEffect, { kind: 'notify' }>;
 export type ScheduledTaskDeliveryMethod = ScheduledTaskDelivery['channel'] | 'agent_run';
-
-/**
- * PR-DAILY-REVIEW-MVP-0: bridge handed in by `main.tsx`. Keeps
- * `@maka/ui` independent of desktop preload globals — the renderer wires a
- * host-injected daily-review reader, and the UI layer stays reusable in fixtures,
- * e2e-fixture tests, and future surfaces
- * (e.g. a desktop notification renderer).
- */
-export interface DailyReviewBridge {
-  fetchDay(offsetDays: number, daySpan?: number): Promise<DailyReviewSummary>;
-  /**
-   * PR-DAILY-REVIEW-FULL-0 — optional pipeline methods. Renderer checks
-   * for presence before exposing the matching UI. When undefined, the
-   * panel still works as the MVP telemetry view.
-   */
-  runOnce?(opts: { range: DailyReviewRange; offsetDays?: number }): Promise<{ archiveId: string }>;
-  listArchives?(): Promise<DailyReviewArchiveSummary[]>;
-  getArchive?(archiveId: string): Promise<DailyReviewArchive>;
-}
-
-/**
- * Markdown generated from a Daily Review range. The range and resolved day are
- * carried separately from the localized label so save actions never infer
- * identity from presentation text.
- */
-export type DailyReviewMarkdownActionInput = {
-  day: DailyReviewArchive['day'];
-  range: DailyReviewRange;
-  totals: DailyReviewArchive['totals'];
-  markdown: string;
-  label: string;
-};

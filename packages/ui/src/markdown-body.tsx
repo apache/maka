@@ -176,7 +176,7 @@ export function MarkdownBody(props: {
         // one into its own visual slab. That is the same argument that
         // flattens transcript heading SIZES in styles/chat-message.css — and
         // that rule is scoped to `.maka-turn` precisely because the other
-        // caller, the Daily Review panel, renders a report, which is a
+        // caller renders a report Artifact, which is a
         // document. Hardcoding `compact` here contradicted that scoping: the
         // review kept full heading sizes but got transcript block spacing,
         // the one combination neither half of the argument asks for.

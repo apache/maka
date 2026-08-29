@@ -155,7 +155,7 @@ const PERMISSION_CENTER_COPY = {
     osPermissions: {
       accessibility: { label: 'Accessibility', purpose: 'Computer Use needs it to read window focus and simulate keyboard or mouse input.', impact: 'Computer Use · automated keyboard and mouse input' },
       screen_recording: { label: 'Screen Recording', purpose: 'Computer Use needs it to read window contents; future screen activity recording will use it too.', impact: 'Computer Use · screenshot context' },
-      notifications: { label: 'Notifications', purpose: 'System alerts use it for permission requests and completed reviews.', impact: 'Permission alerts · Daily Review completion' },
+      notifications: { label: 'Notifications', purpose: 'System alerts use it for permission requests and Scheduled Task delivery.', impact: 'Permission alerts · Scheduled Task notifications' },
       automation: { label: 'Automation (Apple Events)', purpose: 'Computer Use needs per-target authorization to control other apps.', impact: 'Computer Use · cross-app automation' },
     },
     osStates: {

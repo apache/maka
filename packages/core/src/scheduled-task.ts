@@ -75,6 +75,8 @@ export type ScheduledTaskEffect =
 export interface ScheduledTaskExecutionTemplate {
   readonly cwd: string;
   readonly projectId?: string | null;
+  /** Immutable Connection entity identity. Absent only on tasks written by older builds. */
+  readonly llmConnectionId?: string;
   readonly llmConnectionSlug: string;
   readonly model: string;
   readonly thinkingLevel?: ThinkingLevel;
@@ -513,6 +515,12 @@ function normalizeExecution(
   if (typeof value.llmConnectionSlug !== 'string' || !value.llmConnectionSlug.trim()) {
     return fail('execution.llmConnectionSlug is required');
   }
+  if (
+    value.llmConnectionId !== undefined &&
+    (typeof value.llmConnectionId !== 'string' || !value.llmConnectionId.trim())
+  ) {
+    return fail('execution.llmConnectionId is invalid');
+  }
   if (typeof value.model !== 'string' || !value.model.trim()) {
     return fail('execution.model is required');
   }
@@ -541,6 +549,9 @@ function normalizeExecution(
     value: {
       cwd: value.cwd.trim(),
       ...(projectId === undefined ? {} : { projectId }),
+      ...(value.llmConnectionId === undefined
+        ? {}
+        : { llmConnectionId: value.llmConnectionId.trim() }),
       llmConnectionSlug: value.llmConnectionSlug.trim(),
       model: value.model.trim(),
       ...(value.thinkingLevel === undefined ? {} : { thinkingLevel: value.thinkingLevel }),

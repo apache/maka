@@ -171,6 +171,10 @@ describe('Runtime Host bootstrap protocol', () => {
     assert.ok(RUNTIME_HOST_COMPATIBILITY_EPOCH > 33);
   });
 
+  test('publishes a new compatibility epoch for retired Daily Review operations', () => {
+    assert.ok(RUNTIME_HOST_COMPATIBILITY_EPOCH > 64);
+  });
+
   test('publishes a new compatibility epoch for Session trace pagination', () => {
     // Epoch 34 peers cannot exchange the paged trace and usage frames. Also a
     // floor, for the same reason as above.

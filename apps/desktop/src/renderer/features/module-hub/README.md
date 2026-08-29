@@ -27,9 +27,7 @@ Automations:
 - Scheduled Tasks projection, mutations, due/change subscriptions, and the
   create-dialog request nonce;
 - the keep-system-awake client setting shown by Scheduled Tasks;
-- Daily Review page bridge, page actions, and Command Palette commands;
-- selection and header composition for Skills, MCP, Scheduled Tasks, and Daily
-  Review.
+- selection and header composition for Skills, MCP, and Scheduled Tasks.
 
 `AppShell` still owns top-level `NavSelection`, module-memory persistence,
 Session/Project navigation, and the Composer. Those capabilities cross the
@@ -69,12 +67,6 @@ only selects and mounts that leaf; moving MCP internals is a separate change.
 - Keep-awake reads, external updates, and writes share a generation so a slow
   completion cannot overwrite newer confirmed settings; failed writes still
   reject for the panel's optimistic revert.
-- The Daily Review page bridge is stable for one services/locale pair. Page
-  feedback is live-surface fenced, while Command Palette commands remain usable
-  off-page.
-- Daily Review paste captures the active Composer before its first await and
-  validates the Session, navigation owner, and Composer handle before append and
-  feedback.
 - Opening Scheduled Task creation selects the page and increments the request
   nonce; the page acknowledgement resets it to zero.
 

@@ -131,8 +131,8 @@ describe('Module Hub feature boundary', () => {
     );
     assert.equal(commands.includes('dailyReviewBridge'), false);
     assert.equal(commands.includes('saveDailyReviewMarkdown'), false);
-    assert.equal(commands.includes('copyTodayDailyReview()'), true);
-    assert.equal(commands.includes('pasteTodayDailyReview()'), true);
-    assert.equal(commands.includes('saveTodayDailyReview()'), true);
+    assert.equal(commands.includes('copyTodayDailyReview()'), false);
+    assert.equal(commands.includes('pasteTodayDailyReview()'), false);
+    assert.equal(commands.includes('saveTodayDailyReview()'), false);
   });
 });

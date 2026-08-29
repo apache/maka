@@ -87,6 +87,7 @@ import {
 } from '@maka/storage/execution-stores';
 import { createExternalSessionAdapterRegistry } from '@maka/storage/external-sessions';
 import { createGitWorktreeChildExecutor } from '@maka/storage/git-worktree-child-executor';
+import { migrateLegacyDailyReview } from '@maka/storage/legacy-daily-review-migration';
 import { runWithStorageRootLease } from '@maka/storage/root-authority';
 import { createInteractiveContextOffloadReader } from '@maka/storage/context-offload-store';
 import { openStorageWriterComposition } from '@maka/storage/storage-writer-composition';
@@ -109,7 +110,6 @@ import { HostConfigurationCoordinator } from './configuration-coordinator.js';
 import { HostContextCoordinator } from './context-coordinator.js';
 import { HostClientCapabilityCoordinator } from './client-capability-coordinator.js';
 import { HostDeepResearchCoordinator } from './deep-research-coordinator.js';
-import { HostDailyReviewCoordinator } from './daily-review-coordinator.js';
 import { createHostAiSdkBackend } from './execution-model-composition.js';
 import {
   createInteractiveRunComposer,
@@ -119,7 +119,6 @@ import {
 
 import {
   createHostGoalEvaluator,
-  createHostDailyReviewModel,
   createHostMemoryExtractionModel,
   createHostSessionEffectModel,
 } from './execution-model-authority.js';
@@ -276,7 +275,7 @@ export async function createExecutionRuntimeHostComposition(
     const openedScheduledTaskStore = storage.scheduledTasks;
     const openedPlanStore = storage.plan;
     const openedDeepResearchStore = storage.deepResearch;
-    const openedDailyReviewStore = storage.dailyReview;
+    const legacyDailyReview = storage.legacyDailyReview;
     const openedGoalStore = storage.goal;
     const memoryStore = storage.memoryBundle;
     const longTermMemoryStore = storage.longTermMemory;
@@ -510,7 +509,6 @@ export async function createExecutionRuntimeHostComposition(
     let scheduledTaskTool: MakaTool | undefined;
     let goal: HostGoalCoordinator | undefined;
     let deepResearch: HostDeepResearchCoordinator | undefined;
-    let dailyReview: HostDailyReviewCoordinator | undefined;
     const rootPort: HostMessageRootPort = {
       readSessionHeader: (sessionId) =>
         requireRootCoordinator(rootCoordinator).readSessionHeader(sessionId),
@@ -581,19 +579,6 @@ export async function createExecutionRuntimeHostComposition(
       sessionAdmission,
       onProjectionChanged: (sessionId) =>
         continuityCoordinator.enqueueSessionDomainChanged(sessionId, 'deep_research'),
-    });
-    dailyReview = new HostDailyReviewCoordinator({
-      store: openedDailyReviewStore,
-      usage: openedUsageStores,
-      sessions: stores.sessionStore,
-      model: createHostDailyReviewModel({
-        runtimePolicy: runtimePolicyStores,
-        oauthCredentials,
-        usage: openedUsageStores,
-        requestDrain: context.requestDrain,
-      }),
-      acquireResidency: () => context.acquireResidency('daily-review'),
-      requestDrain: context.requestDrain,
     });
     let poisonFailure: Error | undefined;
     let draining = false;
@@ -1612,6 +1597,14 @@ export async function createExecutionRuntimeHostComposition(
           state: async () => {
             await skills.recover();
             await openedArtifactStore.recover();
+            await migrateLegacyDailyReview({
+              legacy: legacyDailyReview,
+              scheduledTasks: openedScheduledTaskStore,
+              sessions: stores.sessionStore,
+              artifacts: openedArtifactStore,
+              runtimePolicy: runtimePolicyStores,
+              workspaceRoot: context.owner.capability.canonicalPath,
+            });
           },
         },
         drain: [
@@ -1650,16 +1643,6 @@ export async function createExecutionRuntimeHostComposition(
         id: 'deep-research',
         handlers: [requireDeepResearch(deepResearch).handlers],
         close: [() => deepResearch?.close()],
-      }),
-      createRuntimeHostDomainModule({
-        id: 'daily-review',
-        handlers: [requireDailyReview(dailyReview).handlers],
-        recovery: {
-          domains: () => requireDailyReview(dailyReview).prepareRecovery(),
-          schedulers: () => requireDailyReview(dailyReview).start(),
-        },
-        drain: [() => dailyReview?.beginDrain()],
-        close: [() => requireDailyReview(dailyReview).close()],
       }),
       createRuntimeHostDomainModule({
         id: 'scheduled-task',
@@ -1987,13 +1970,6 @@ function requireDeepResearch(
   coordinator: HostDeepResearchCoordinator | undefined,
 ): HostDeepResearchCoordinator {
   if (!coordinator) throw new Error('Runtime Host Deep Research coordinator is not composed');
-  return coordinator;
-}
-
-function requireDailyReview(
-  coordinator: HostDailyReviewCoordinator | undefined,
-): HostDailyReviewCoordinator {
-  if (!coordinator) throw new Error('Runtime Host Daily Review coordinator is not composed');
   return coordinator;
 }
 

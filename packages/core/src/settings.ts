@@ -72,7 +72,6 @@ export const SETTINGS_SECTIONS = [
   'appearance',
   'projects',
   'memory',
-  'daily-review',
   'models',
   'subagents',
   'usage',

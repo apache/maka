@@ -47,7 +47,6 @@ import { buildChatModelChoices } from '@maka/core/chat-model-choice';
 import type { LocalMemoryBackupInfo, LocalMemoryEntryPreview, LocalMemoryState } from '@maka/core/local-memory';
 import { buildHealthSnapshot } from '@maka/core/health';
 import { createDefaultSettings, mergeSettings } from '@maka/core/settings';
-import { DEFAULT_DAILY_REVIEW_CONFIG } from '@maka/core/daily-review';
 import { SettingsSurface } from '../../src/renderer/settings/settings-surface';
 import { createUiLocaleUpdateGate } from '../../src/renderer/settings/ui-locale-update-gate';
 import {
@@ -63,7 +62,6 @@ import type {
   DesktopSessionSummary,
 } from '../../src/preload/bridge-contract.js';
 import { withScopedMakaBridge } from '../maka-bridge';
-import { getDailyReviewSettingsCopy } from '../../src/renderer/locales/settings-daily-review-copy';
 import { getUsageSettingsCopy } from '../../src/renderer/locales/settings-usage-copy';
 
 /**
@@ -73,7 +71,6 @@ import { getUsageSettingsCopy } from '../../src/renderer/locales/settings-usage-
  * function, so CI could not tell us. A story that drives the UI by its visible
  * text has to source that text where the UI does.
  */
-const DAILY_REVIEW_DEFAULT_MODEL_LABEL = getDailyReviewSettingsCopy('zh').defaultModel;
 /** A 1×1 transparent PNG: the picker needs a valid data URL, not real art. */
 const STORY_ICON_PREVIEW =
   'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==';
@@ -869,14 +866,6 @@ const makaBridge = {
   capabilities: {
     getSnapshot: async () => capabilitySnapshot,
   },
-  dailyReview: {
-    getConfig: async () => DEFAULT_DAILY_REVIEW_CONFIG,
-    setConfig: async (patch: Record<string, unknown>) => ({
-      ...DEFAULT_DAILY_REVIEW_CONFIG,
-      ...patch,
-    }),
-    runOnce: async () => ({ ok: true }),
-  },
   e2eFixture: {
     getState: async () => null,
   },
@@ -1617,7 +1606,6 @@ function SettingsStoryFrame(props: SettingsStoryProps) {
           openProviderCatalog={props.openProviderCatalog}
           initialConnectionSlug={props.initialConnectionSlug}
           initialFocusRef={initialFocusRef}
-          onOpenDailyReview={noop}
           onOpenSession={noop}
           archivedTasks={archivedTasks}
           onTaskImported={noop}
@@ -1650,19 +1638,6 @@ async function waitForStoryCondition(predicate: () => boolean, errorMessage: str
     await new Promise((resolve) => globalThis.setTimeout(resolve, 20));
   }
   throw new Error(errorMessage);
-}
-
-async function openDailyReviewModelSelector(canvasElement: HTMLElement): Promise<HTMLButtonElement> {
-  const selector = await waitForStoryButton(
-    canvasElement,
-    (candidate) => candidate.textContent?.includes(DAILY_REVIEW_DEFAULT_MODEL_LABEL) === true,
-  );
-  await userEvent.click(selector);
-  await waitForStoryCondition(
-    () => selector.getAttribute('aria-expanded') === 'true',
-    'Daily Review model selector did not open',
-  );
-  return selector;
 }
 
 // Real path: sidebar footer 设置 → 模型.
@@ -2127,29 +2102,6 @@ export const BotChatNeedsAttention: Story = {
   decorators: [withBotAttentionBridge],
   render: () => <SettingsStory section="bot-chat" />,
 };
-// Real path: 设置 → 每日回顾.
-export const DailyReview: Story = {
-  decorators: [withSettingsBridge],
-  render: () => <SettingsStory section="daily-review" />,
-};
-
-// Real path at a narrow desktop window.
-// Real path: Settings → Daily Review at a narrow window.
-export const DailyReviewNarrow: Story = {
-  ...DailyReview,
-  parameters: { viewport: { defaultViewport: 'mobile2' } },
-};
-
-// Real path with the Astryx model selector expanded.
-// Real path: Settings → Daily Review → Analysis model.
-export const DailyReviewModelSelectorOpen: Story = {
-  decorators: [withSettingsBridge],
-  render: () => <SettingsStory section="daily-review" />,
-  play: async ({ canvasElement }) => {
-    await openDailyReviewModelSelector(canvasElement);
-  },
-};
-
 // Real path: 设置 → 数据.
 export const Data: Story = {
   decorators: [withSettingsBridge],

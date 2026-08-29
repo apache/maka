@@ -35,9 +35,9 @@ are not measured here; they require separate accessibility testing.
 
 | Surface | Runtime states | Semantic actions and effects |
 |---|---|---|
-| Settings | Every current top-level navigation entry is enumerated from the running UI; provider list/detail/catalog/add, subagent editor, memory populated, permission diagnostics, import empty/ready, usage variants, Daily Review selector and narrow states are in Storybook | Navigation exposes `aria-current`; focused nested stories exercise dialogs, disclosures, selectors and editors |
+| Settings | Every current top-level navigation entry is enumerated from the running UI; provider list/detail/catalog/add, subagent editor, memory populated, permission diagnostics, import empty/ready, and usage variants are in Storybook | Navigation exposes `aria-current`; focused nested stories exercise dialogs, disclosures, selectors and editors |
 | Extensions | Skills empty/installed/bundled/update/disabled/narrow/inspector; MCP setup/marketplace/configured/inspector/editor/failure/narrow | Page selection, inspector/editor opening and actionable-node identity |
-| Scheduled work | Empty/configured/long/narrow/task inspector; Daily Review loading/error/refreshing/report | Task selection, dialog focus, selector state and report actions |
+| Scheduled work | Empty/configured/long/narrow/task inspector, including the Daily Review preset | Task selection, dialog focus, template selection, and ordinary run-history actions |
 | Conversation shell | New task, settled conversation, streaming, permission wait, native conversation, modes, context and inline completion | Composer submit effect, unique per-task and per-turn actions, current regions and workbar selection |
 | Workbar | Launcher plus side chat, changes, active terminal, browser chrome, files, tasks and trace states | Selected tabs, terminal input reaches the PTY bridge, browser navigation reaches the browser bridge |
 | Dialogs and overlays | Rename, scheduled-task form, Mermaid fullscreen, side-chat close, onboarding QR, WeChat QR, Runtime Host SSH and remote directory chooser | Dialog naming/focus, rename callback, close confirmation, SSH input, directory navigation and registration |

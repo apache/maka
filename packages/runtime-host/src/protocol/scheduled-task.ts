@@ -543,7 +543,7 @@ function decodeExecution(value: unknown): ScheduledTaskExecutionTemplate {
       'collaborationMode',
       'orchestrationMode',
     ],
-    ['projectId', 'thinkingLevel', 'backend'],
+    ['projectId', 'llmConnectionId', 'thinkingLevel', 'backend'],
   );
   if (!isPermissionMode(execution.permissionMode)) {
     throw invalidProtocolFrame('Invalid ScheduledTask permission mode');
@@ -568,6 +568,16 @@ function decodeExecution(value: unknown): ScheduledTaskExecutionTemplate {
     cwd: boundedText(execution.cwd, 'ScheduledTask cwd', 4_096, true),
     ...(Object.hasOwn(execution, 'projectId')
       ? { projectId: execution.projectId as string | null }
+      : {}),
+    ...(Object.hasOwn(execution, 'llmConnectionId')
+      ? {
+          llmConnectionId: boundedText(
+            execution.llmConnectionId,
+            'ScheduledTask connection id',
+            256,
+            true,
+          ),
+        }
       : {}),
     llmConnectionSlug: boundedText(
       execution.llmConnectionSlug,

@@ -23,7 +23,6 @@ import {
   BarChart3,
   Bot,
   Brain,
-  CalendarDays,
   Cpu,
   Database,
   FolderOpen,
@@ -76,9 +75,6 @@ type AccountSecretProbeResult =
 // node:test without a DOM / React.
 export type { SettingsNavGroup };
 
-// PR-SETTINGS-IA-CONSOLIDATE-0 + PR-SETTINGS-REVIEW-0: WAWQAQ msg
-// `886f6406` rolled back the 记忆+回顾 merge — the combined page was
-// too dense. 记忆 and 每日回顾 are separate nav items again.
 export const SETTINGS_NAV: SettingsNavItem[] = [
   { id: 'general', Icon: SettingsIcon, enabled: true, group: 'preferences' },
   { id: 'appearance', Icon: Palette, enabled: true, group: 'preferences' },
@@ -91,7 +87,6 @@ export const SETTINGS_NAV: SettingsNavItem[] = [
   { id: 'usage', Icon: BarChart3, enabled: true, group: 'activity' },
   { id: 'archived-tasks', Icon: ListTodo, enabled: true, group: 'activity' },
   { id: 'import-tasks', Icon: Upload, enabled: true, group: 'activity' },
-  { id: 'daily-review', Icon: CalendarDays, enabled: true, group: 'activity' },
   { id: 'data', Icon: Database, enabled: true, group: 'system' },
   { id: 'permissions', Icon: ShieldCheck, enabled: true, group: 'system' },
   { id: 'health', Icon: Activity, enabled: true, group: 'system' },
@@ -113,7 +108,6 @@ const SETTINGS_SECTION_SCOPES: Record<
   usage: 'runtime-host',
   'archived-tasks': 'client',
   'import-tasks': 'runtime-host',
-  'daily-review': 'runtime-host',
   data: 'mixed',
   permissions: 'runtime-host',
   health: 'runtime-host',

@@ -367,7 +367,7 @@ export interface DesktopConversationCopy {
  * The call-kind tables are typed against the core union, so a kind added to the
  * runtime fails this file at compile time instead of reaching a Chinese panel
  * as `daily_review`. The table also labels decode-only historical kinds such as
- * `semantic_compact`; the Runtime no longer emits them.
+ * `semantic_compact` and `daily_review`; the Runtime no longer emits them.
  */
 type CallKindCopy = Record<Exclude<ModelCallKind, 'main'>, string>;
 

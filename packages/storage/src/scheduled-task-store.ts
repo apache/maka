@@ -67,6 +67,7 @@ interface ScheduledTaskStore {
   list(): Promise<ScheduledTask[]>;
   get(id: string): Promise<ScheduledTask | undefined>;
   create(input: unknown, now?: number): Promise<ScheduledTask>;
+  ensureSystemTask(id: string, input: unknown, now?: number): Promise<ScheduledTask>;
   update(id: string, patch: unknown, now?: number): Promise<ScheduledTask>;
   pause(id: string, now?: number): Promise<ScheduledTask>;
   resume(id: string, now?: number): Promise<ScheduledTask>;
@@ -199,6 +200,7 @@ function createWriterFacade(
     list: () => run(() => store.list()),
     get: (id) => run(() => store.get(id)),
     create: (input, now) => run(() => store.create(input, now)),
+    ensureSystemTask: (id, input, now) => run(() => store.ensureSystemTask(id, input, now)),
     update: (id, patch, now) => run(() => store.update(id, patch, now)),
     pause: (id, now) => run(() => store.pause(id, now)),
     resume: (id, now) => run(() => store.resume(id, now)),
@@ -273,6 +275,50 @@ class SqliteScheduledTaskStore implements ScheduledTaskStore {
     };
     await this.mutate((state) => ({ ...state, tasks: [...state.tasks, task] }));
     return task;
+  }
+
+  async ensureSystemTask(id: string, input: unknown, now = Date.now()): Promise<ScheduledTask> {
+    if (!/^[A-Za-z0-9_-]{1,160}$/u.test(id)) {
+      throw storeError('invalid_input', 'Scheduled system task id is invalid');
+    }
+    const normalized = normalizeCreateScheduledTaskInput(input, now);
+    if (!normalized.ok) throw storeError('invalid_input', normalized.message);
+    if (normalized.value.createdBy.kind !== 'system') {
+      throw storeError('invalid_input', 'Scheduled system task must be created by system');
+    }
+    let result: ScheduledTask | undefined;
+    await this.mutate((state) => {
+      const existing = state.tasks.find((task) => task.id === id);
+      if (existing) {
+        if (existing.createdBy.kind !== 'system') {
+          throw storeError('operation_conflict', `Scheduled task id is already owned: ${id}`);
+        }
+        result = existing;
+        return state;
+      }
+      const value = normalized.value;
+      const task: ScheduledTask = {
+        id,
+        title: value.title,
+        intent: { kind: 'text', body: value.intentBody },
+        schedule: value.schedule,
+        effect: value.effect,
+        status: 'active',
+        nextFireAt: value.nextFireAt,
+        lastFireAt: null,
+        fireCount: 0,
+        maxFires: value.maxFires ?? null,
+        expiresAt: value.expiresAt ?? null,
+        createdBy: value.createdBy,
+        createdAt: now,
+        updatedAt: now,
+        runs: [],
+        lastError: null,
+      };
+      result = task;
+      return { ...state, tasks: [...state.tasks, task] };
+    });
+    return result!;
   }
 
   async update(id: string, patch: unknown, now = Date.now()): Promise<ScheduledTask> {

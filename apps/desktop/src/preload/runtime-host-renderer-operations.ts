@@ -24,13 +24,11 @@ export const RENDERER_RUNTIME_HOST_QUERY_OPERATIONS = [
   // made of" for `/context` (#1580, #2323). Admitted on the same terms as the
   // inspect query beside it: it reads a projection and writes nothing.
   'context.diagnostics.query',
-  'daily-review.query',
   'execution.inspect.query',
   'scheduled-task.query',
 ] as const satisfies readonly (keyof OperationSpecMap)[];
 
 export const RENDERER_RUNTIME_HOST_COMMAND_OPERATIONS = [
-  'daily-review.mutate',
   'scheduled-task.mutate',
   'web-search.execute',
 ] as const satisfies readonly (keyof OperationSpecMap)[];

@@ -18,10 +18,7 @@
  */
 
 import type { MakaBridge } from '../../../preload/bridge-contract.js';
-import type {
-  ModuleHubClipboardService,
-  ModuleHubServices,
-} from '../../features/module-hub/index.js';
+import type { ModuleHubServices } from '../../features/module-hub/index.js';
 
 type DesktopModuleHubSettingsBridge = Partial<
   Pick<MakaBridge['settings'], 'getClient' | 'updateClient' | 'subscribeClientChanged'>
@@ -29,20 +26,15 @@ type DesktopModuleHubSettingsBridge = Partial<
 
 export type DesktopModuleHubBridge = Pick<
   MakaBridge,
-  'dailyReview' | 'runtimeHostProfiles' | 'scheduledTasks' | 'skills'
+  'runtimeHostProfiles' | 'scheduledTasks' | 'skills'
 > & {
   /** Optional at runtime so a renderer can coexist with an older preload. */
   readonly settings?: DesktopModuleHubSettingsBridge;
 };
 
-export interface DesktopModuleHubServiceDependencies {
-  readonly clipboard?: ModuleHubClipboardService;
-}
-
 /** The only Desktop-to-Module-Hub adapter. */
 export function createDesktopModuleHubServices(
   bridge: DesktopModuleHubBridge = window.maka,
-  dependencies: DesktopModuleHubServiceDependencies = {},
 ): ModuleHubServices {
   const getClientSettings = bridge.settings?.getClient;
   const updateClientSettings = bridge.settings?.updateClient;
@@ -121,33 +113,6 @@ export function createDesktopModuleHubServices(
       subscribeChanges(handler) {
         if (!subscribeClientSettings) return () => undefined;
         return subscribeClientSettings.call(bridge.settings, handler);
-      },
-    },
-    dailyReview: {
-      day: (offsetDays, daySpan, host) =>
-        bridge.dailyReview.day(offsetDays, daySpan, host),
-      runOnce: (input) => {
-        const runOnce = bridge.dailyReview.runOnce;
-        if (!runOnce) throw new Error('Daily Review run is unavailable');
-        return runOnce(input);
-      },
-      listArchives: () => {
-        const listArchives = bridge.dailyReview.listArchives;
-        if (!listArchives) throw new Error('Daily Review history is unavailable');
-        return listArchives();
-      },
-      getArchive: (archiveId) => {
-        const getArchive = bridge.dailyReview.getArchive;
-        if (!getArchive) throw new Error('Daily Review history is unavailable');
-        return getArchive(archiveId);
-      },
-      saveMarkdownToFile: (input) =>
-        bridge.dailyReview.saveMarkdownToFile(input),
-    },
-    clipboard: {
-      writeText(text) {
-        const clipboard = dependencies.clipboard ?? navigator.clipboard;
-        return clipboard.writeText(text);
       },
     },
   };

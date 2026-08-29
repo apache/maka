@@ -80,7 +80,7 @@ Acceptance criteria:
 - Model choices, headings, provider logos, and active/new-chat thinking levels remain correct.
 - OnboardingHero still shows the four recommended providers with their names, descriptions, and logos.
 - Adding, changing, or removing a connection refreshes model choices and thinking levels through the snapshot flow.
-- Model management, Daily Review, and provider catalog behavior in SettingsModal does not regress.
+- Model management and provider catalog behavior in SettingsModal does not regress.
 - Before/after measurements record the median of ten cold starts and startup JavaScript parse/evaluation time to verify a real improvement.
 
 ## Alternatives or workarounds
@@ -153,7 +153,7 @@ Session health notice 在 event 触发的异步刷新完成前继续使用上一
 - model picker 的模型、heading、provider logo，以及 active/new-chat thinking level 选项保持正确。
 - OnboardingHero 正常显示 4 个推荐 provider 的名称、描述和 logo。
 - connection 增删改后，model choices 和 thinking levels 随 snapshot 刷新。
-- SettingsModal 中的模型管理、Daily Review 和 provider catalog 功能不回归。
+- SettingsModal 中的模型管理和 provider catalog 功能不回归。
 - 记录改动前后 10 次冷启动中位数，以及首屏 JavaScript 解析/执行时间，验证优化是否产生实际收益。
 
 ## 备选方案或变通方法

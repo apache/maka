@@ -27,11 +27,6 @@ export { startModuleHubLifecycle } from "./controller/module-hub-lifecycle.js";
 export { resolveModuleHubHostRoute } from "./controller/module-hub-route.js";
 export type { ModuleHubHostModel } from "./controller/use-module-hub-controller.js";
 export {
-  createDailyReviewBridge,
-  useDailyReviewController,
-  type DailyReviewController,
-} from "./controller/use-daily-review-controller.js";
-export {
   useKeepSystemAwakeController,
   type KeepSystemAwakeController,
 } from "./controller/use-keep-system-awake-controller.js";
@@ -100,18 +95,6 @@ export function createFakeModuleHubHostModel(
       keepSystemAwake: undefined,
       setKeepSystemAwake: async () => undefined,
     },
-    dailyReview: {
-      bridge: {
-        fetchDay: async () => notConfigured("dailyReview.fetchDay"),
-      },
-      copyMarkdown: async () => undefined,
-      appendMarkdown: () => undefined,
-      saveMarkdown: async () => undefined,
-      copyToday: async () => undefined,
-      pasteToday: async () => undefined,
-      saveToday: async () => undefined,
-    },
-    openSession: () => undefined,
     ...overrides,
   };
 }
@@ -158,17 +141,6 @@ export function createFakeModuleHubServices(
       getKeepSystemAwake: async () => false,
       setKeepSystemAwake: async (next) => next,
       subscribeChanges: noopSubscription,
-    },
-    dailyReview: {
-      day: async () => notConfigured("dailyReview.day"),
-      runOnce: async () => notConfigured("dailyReview.runOnce"),
-      listArchives: async () => [],
-      getArchive: async () => null,
-      saveMarkdownToFile: async () =>
-        notConfigured("dailyReview.saveMarkdownToFile"),
-    },
-    clipboard: {
-      writeText: async () => undefined,
     },
     ...overrides,
   };

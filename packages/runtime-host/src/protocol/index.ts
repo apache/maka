@@ -65,7 +65,6 @@ import { isCanonicalRuntimeHostWebSocketPath } from './websocket-path.js';
 export * from './access-authority.js';
 export * from './agent-graph.js';
 export * from './interaction.js';
-export * from './daily-review.js';
 export * from './client-capability.js';
 export * from './configuration-change.js';
 export * from './goal.js';
@@ -95,7 +94,10 @@ export const RUNTIME_HOST_REGISTRATION_SCHEMA_VERSION = 1 as const;
 export const RUNTIME_HOST_PROTOCOL_VERSION = 0 as const;
 // Increment when the same protocol version no longer guarantees safe Client-Host
 // interoperability. Mismatches are rejected before domain commands are admitted.
-export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 73 as const;
+export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 74 as const;
+// 74: Daily Review operations retire, and ScheduledTask agent templates may
+// carry immutable Connection identity. Older peers expose the retired domain
+// and cannot preserve the execution binding, so mixed peers fail at handshake.
 // 73: Transcript pages carry a Host-owned Turn range boundary. Older peers
 // cannot preserve both the complete edge Turn and the bounded projection.
 // 71: Session Guests can submit durable exact Turn access requests and Owners

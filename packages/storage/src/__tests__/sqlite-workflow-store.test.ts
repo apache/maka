@@ -106,7 +106,7 @@ describe('SQLite workflow stores', () => {
     });
   });
 
-  test('migrates released workflow schema 9 projections to event-only schema 10', async () => {
+  test('migrates released workflow schema 9 projections to the current event-only schema', async () => {
     await withRoot(async (root) => {
       const taskStore = createSqliteTaskLedgerStore(root);
       await taskStore.create(SESSION_ID, [{ subject: 'Preserve event authority' }]);

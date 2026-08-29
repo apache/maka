@@ -25,7 +25,6 @@
 
 import {
   Blocks,
-  CalendarDays,
   Clock,
   Clipboard,
   Download,
@@ -95,12 +94,6 @@ export function buildCommandList(args: {
    */
   onSaveActiveConversationToFile?(): Promise<void> | void;
   /**
-   * PR-CMD-PALETTE-COPY-DAILY-REVIEW-0: copy today's Daily Review
-   * as Markdown from anywhere via ⌘K. Same Markdown formatter
-   * `<DailyReviewPanel>` uses; renderer wires the bridge.
-   */
-  onCopyTodayDailyReview?(): Promise<void> | void;
-  /**
    * PR-CMD-PALETTE-OPEN-MEMORY-0: open the local MEMORY.md file in
    * the OS default editor from anywhere via ⌘K. The renderer wires
    * this to `window.maka.memory.openFile()`.
@@ -115,19 +108,6 @@ export function buildCommandList(args: {
    */
   onSetPermissionMode?(mode: ChatDefaultPermissionMode): Promise<void> | void;
   activePermissionMode?: PermissionMode;
-  /**
-   * PR-CMD-PALETTE-PASTE-DAILY-REVIEW-0: fetch today's review and
-   * paste the Markdown into the composer instead of the clipboard.
-   * Useful when the user wants to ask the model "summarize my day"
-   * without leaving the chat.
-   */
-  onPasteTodayDailyReviewIntoComposer?(): Promise<void> | void;
-  /**
-   * PR-DAILY-REVIEW-EXPORT-FILE-0: save today's review as a Markdown
-   * file via the native save dialog. Persistent archive without
-   * round-tripping the clipboard.
-   */
-  onSaveTodayDailyReviewToFile?(): Promise<void> | void;
   /** Copy redacted Desktop and active Runtime Host diagnostics for issue reports. */
   onCopyDiagnostics?(): Promise<void> | void;
   /**
@@ -275,14 +255,6 @@ export function buildCommandList(args: {
       keywords: [...copy.staticKeywords['nav:mcp']],
       run: () => select({ section: 'extensions', module: 'mcp' }),
     });
-    cmds.push({
-      id: 'nav:daily-review',
-      kind: 'action',
-      ...staticCopy('nav:daily-review'),
-      Icon: CalendarDays,
-      keywords: [...copy.staticKeywords['nav:daily-review']],
-      run: () => select({ section: 'automations', module: 'daily-review' }),
-    });
   }
 
   // One palette command per Settings section so ⌘K → label lands the user
@@ -351,36 +323,6 @@ export function buildCommandList(args: {
       Icon: Download,
       keywords: [...copy.staticKeywords['diag:save-conversation-file']],
       run: () => args.onSaveActiveConversationToFile!(),
-    });
-  }
-  if (args.onCopyTodayDailyReview) {
-    cmds.push({
-      id: 'diag:copy-today-daily-review',
-      kind: 'action',
-      ...staticCopy('diag:copy-today-daily-review'),
-      Icon: CalendarDays,
-      keywords: [...copy.staticKeywords['diag:copy-today-daily-review']],
-      run: () => args.onCopyTodayDailyReview!(),
-    });
-  }
-  if (args.onPasteTodayDailyReviewIntoComposer && args.activeSessionId) {
-    cmds.push({
-      id: 'diag:paste-today-daily-review',
-      kind: 'action',
-      ...staticCopy('diag:paste-today-daily-review'),
-      Icon: CalendarDays,
-      keywords: [...copy.staticKeywords['diag:paste-today-daily-review']],
-      run: () => args.onPasteTodayDailyReviewIntoComposer!(),
-    });
-  }
-  if (args.onSaveTodayDailyReviewToFile) {
-    cmds.push({
-      id: 'diag:save-today-daily-review',
-      kind: 'action',
-      ...staticCopy('diag:save-today-daily-review'),
-      Icon: CalendarDays,
-      keywords: [...copy.staticKeywords['diag:save-today-daily-review']],
-      run: () => args.onSaveTodayDailyReviewToFile!(),
     });
   }
   if (args.onCopyDiagnostics) {

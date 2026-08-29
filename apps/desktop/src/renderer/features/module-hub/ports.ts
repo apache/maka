@@ -18,13 +18,6 @@
  */
 
 import type {
-  DailyReviewArchive,
-  DailyReviewArchiveSummary,
-  DailyReviewRange,
-  DailyReviewSummary,
-} from '@maka/core/daily-review';
-import type { Result } from '@maka/core/result';
-import type {
   CreateScheduledTaskInput,
   ScheduledTask,
   UpdateScheduledTaskInput,
@@ -209,38 +202,10 @@ export interface ModuleHubClientSettingsService {
   subscribeChanges(handler: () => void): ModuleHubUnsubscribe;
 }
 
-export interface ModuleHubDailyReviewService {
-  day(
-    offsetDays: number,
-    daySpan: number | undefined,
-    host: ModuleHubRuntimeHostRef,
-  ): Promise<Result<DailyReviewSummary>>;
-  runOnce(input: {
-    range: DailyReviewRange;
-    offsetDays?: number;
-    modelKey?: string;
-  }): Promise<{ archiveId: string }>;
-  listArchives(): Promise<DailyReviewArchiveSummary[]>;
-  getArchive(archiveId: string): Promise<DailyReviewArchive | null>;
-  saveMarkdownToFile(input: {
-    markdown: string;
-    defaultName: string;
-  }): Promise<
-    | { ok: true; path: string }
-    | { ok: false; reason: 'canceled' | 'write_failed' | 'invalid_input' }
-  >;
-}
-
-export interface ModuleHubClipboardService {
-  writeText(text: string): Promise<void>;
-}
-
 /** Environment capabilities owned by the Module Hub feature slice. */
 export interface ModuleHubServices {
   runtimeHosts: ModuleHubRuntimeHostsService;
   skills: ModuleHubSkillsService;
   scheduledTasks: ModuleHubScheduledTasksService;
   clientSettings: ModuleHubClientSettingsService;
-  dailyReview: ModuleHubDailyReviewService;
-  clipboard: ModuleHubClipboardService;
 }

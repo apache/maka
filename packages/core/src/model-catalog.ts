@@ -77,6 +77,7 @@ export type ModelCatalogUserChoiceSource =
   | 'connection_default'
   | 'saved_model'
   | 'session_model'
+  // Decode-only provenance for catalogs persisted by the retired product path.
   | 'daily_review_model';
 
 export type SavedModelChoice =

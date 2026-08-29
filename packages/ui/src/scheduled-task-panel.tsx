@@ -75,6 +75,7 @@ import { useUiLocale } from './locale-context.js';
 
 export function ScheduledTaskPanel(props: {
   tasks: ScheduledTask[];
+  agentRunTemplateEffect?: Extract<ScheduledTask['effect'], { kind: 'agent_run' }>;
   createRequestNonce?: number;
   onCreateRequestHandled?: () => void;
   hubHeader?: ModuleHubHeader;
@@ -601,6 +602,7 @@ export function ScheduledTaskPanel(props: {
         open={formDialogOpen}
         seed={formSeed}
         tasks={props.tasks}
+        agentRunTemplateEffect={props.agentRunTemplateEffect}
         onOpenChange={setFormDialogOpen}
         onCreate={props.onCreate}
         onUpdate={props.onUpdate}

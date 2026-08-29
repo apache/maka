@@ -76,9 +76,6 @@ export interface SharedUiCopy {
     automations: {
       title: string;
       description: string;
-      selectorLabel: (module: string) => string;
-      scheduledTasks: string;
-      dailyReview: string;
     };
   };
   modules: {
@@ -86,11 +83,6 @@ export interface SharedUiCopy {
     loadingSkills: string;
     automations: string;
     loadingAutomations: string;
-    dailyReview: string;
-    loadingDailyReview: string;
-    dailyReviewDescription: string;
-    dailyReviewDisconnectedTitle: string;
-    dailyReviewDisconnectedBody: string;
   };
   primitives: {
     loading: string;
@@ -182,9 +174,6 @@ const SHARED_UI_COPY = {
       automations: {
         title: '定时任务',
         description: '安排定时运行，并回顾本机任务的工作进展。',
-        selectorLabel: (module) => `定时任务内容：${module}`,
-        scheduledTasks: '定时任务',
-        dailyReview: '每日回顾',
       },
     },
     modules: {
@@ -192,11 +181,6 @@ const SHARED_UI_COPY = {
       loadingSkills: '正在加载技能…',
       automations: '定时任务',
       loadingAutomations: '正在加载定时任务…',
-      dailyReview: '每日回顾',
-      loadingDailyReview: '正在加载每日回顾…',
-      dailyReviewDescription: '自动汇总本机任务，生成摘要、遗漏提醒与深度分析；可在设置中开启定时执行。',
-      dailyReviewDisconnectedTitle: '等待连接每日回顾数据',
-      dailyReviewDisconnectedBody: '桌面端数据桥当前未连接。',
     },
     primitives: { loading: '加载中', close: '关闭', resizeHandle: '调整宽度' },
     taskLedger: {
@@ -271,9 +255,6 @@ const SHARED_UI_COPY = {
       automations: {
         title: 'Scheduled tasks',
         description: 'Schedule recurring runs and review progress across local tasks.',
-        selectorLabel: (module) => `Scheduled task content: ${module}`,
-        scheduledTasks: 'Scheduled tasks',
-        dailyReview: 'Daily review',
       },
     },
     modules: {
@@ -281,11 +262,6 @@ const SHARED_UI_COPY = {
       loadingSkills: 'Loading skills…',
       automations: 'Scheduled tasks',
       loadingAutomations: 'Loading scheduled tasks…',
-      dailyReview: 'Daily review',
-      loadingDailyReview: 'Loading daily review…',
-      dailyReviewDescription: 'Summarize local tasks into highlights, missed items, and deeper analysis. Scheduled runs can be enabled in Settings.',
-      dailyReviewDisconnectedTitle: 'Waiting for daily review data',
-      dailyReviewDisconnectedBody: 'The desktop data bridge is not connected.',
     },
     primitives: { loading: 'Loading', close: 'Close', resizeHandle: 'Resize handle' },
     taskLedger: {

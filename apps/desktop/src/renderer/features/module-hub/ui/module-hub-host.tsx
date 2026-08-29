@@ -18,7 +18,6 @@
  */
 
 import {
-  DailyReviewPage,
   ModuleHubSelector,
   ScheduledTasksPage,
   SkillsPage,
@@ -43,7 +42,6 @@ export function ModuleHubHost(props: { model: ModuleHubHostModel }) {
       subtitle: copy.extensions.description,
       badge: (
         <ModuleHubSelector
-          hub="extensions"
           value={route}
           onChange={(module) =>
             model.selectModule({ section: 'extensions', module })
@@ -65,55 +63,33 @@ export function ModuleHubHost(props: { model: ModuleHubHostModel }) {
     );
   }
 
-  if (route === 'scheduled-tasks' || route === 'daily-review') {
+  if (route === 'scheduled-tasks') {
     const header: ModuleHubHeader = {
       title: copy.automations.title,
       subtitle: copy.automations.description,
-      badge: (
-        <ModuleHubSelector
-          hub="automations"
-          value={route}
-          onChange={(module) =>
-            model.selectModule({ section: 'automations', module })
-          }
-        />
-      ),
+      badge: null,
     };
-    if (route === 'scheduled-tasks') {
-      const keepAwake = model.keepSystemAwake;
-      const tasks = model.scheduledTasks;
-      return (
-        <ScheduledTasksPage
-          hubHeader={header}
-          tasks={tasks.scheduledTasks}
-          createRequestNonce={tasks.createRequestNonce}
-          onCreateRequestHandled={tasks.handleCreateRequest}
-          keepSystemAwake={
-            keepAwake.supported ? keepAwake.keepSystemAwake : undefined
-          }
-          onKeepSystemAwakeChange={
-            keepAwake.supported ? keepAwake.setKeepSystemAwake : undefined
-          }
-          onRefresh={tasks.refreshSurface}
-          onCreate={tasks.create}
-          onUpdate={tasks.update}
-          onToggle={tasks.toggle}
-          onTriggerNow={tasks.triggerNow}
-          onSnooze={tasks.snooze}
-          onClearRunHistory={tasks.clearRunHistory}
-          onDelete={tasks.delete}
-        />
-      );
-    }
-    const dailyReview = model.dailyReview;
+    const keepAwake = model.keepSystemAwake;
+    const tasks = model.scheduledTasks;
     return (
-      <DailyReviewPage
+      <ScheduledTasksPage
         hubHeader={header}
-        bridge={dailyReview.bridge}
-        onSelectSession={model.openSession}
-        onCopyMarkdown={dailyReview.copyMarkdown}
-        onAppendMarkdown={dailyReview.appendMarkdown}
-        onSaveMarkdown={dailyReview.saveMarkdown}
+        tasks={tasks.scheduledTasks}
+        agentRunTemplateEffect={model.agentRunTemplateEffect}
+        createRequestNonce={tasks.createRequestNonce}
+        onCreateRequestHandled={tasks.handleCreateRequest}
+        keepSystemAwake={keepAwake.supported ? keepAwake.keepSystemAwake : undefined}
+        onKeepSystemAwakeChange={
+          keepAwake.supported ? keepAwake.setKeepSystemAwake : undefined
+        }
+        onRefresh={tasks.refreshSurface}
+        onCreate={tasks.create}
+        onUpdate={tasks.update}
+        onToggle={tasks.toggle}
+        onTriggerNow={tasks.triggerNow}
+        onSnooze={tasks.snooze}
+        onClearRunHistory={tasks.clearRunHistory}
+        onDelete={tasks.delete}
       />
     );
   }

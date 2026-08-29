@@ -47,7 +47,7 @@ function isExtensionModule(value: unknown): value is ExtensionModule {
 }
 
 function isAutomationModule(value: unknown): value is AutomationModule {
-  return value === 'scheduled-tasks' || value === 'daily-review';
+  return value === 'scheduled-tasks';
 }
 
 function parseSelection(value: unknown): NavSelection | null {
@@ -66,6 +66,9 @@ function parseSelection(value: unknown): NavSelection | null {
   if (candidate.section === 'automations' && candidate.module === 'plan-reminders') {
     return { section: 'automations', module: 'scheduled-tasks' };
   }
+  if (candidate.section === 'automations' && candidate.module === 'daily-review') {
+    return { section: 'automations', module: 'scheduled-tasks' };
+  }
   return null;
 }
 
@@ -74,7 +77,10 @@ function parseModuleMemory(value: unknown): NavModuleMemory {
   const candidate = value as { extensions?: unknown; automations?: unknown };
   return {
     extensions: isExtensionModule(candidate.extensions) ? candidate.extensions : DEFAULT_MODULE_MEMORY.extensions,
-    automations: isAutomationModule(candidate.automations) ? candidate.automations : DEFAULT_MODULE_MEMORY.automations,
+    automations:
+      isAutomationModule(candidate.automations) || candidate.automations === 'daily-review'
+        ? 'scheduled-tasks'
+        : DEFAULT_MODULE_MEMORY.automations,
   };
 }
 

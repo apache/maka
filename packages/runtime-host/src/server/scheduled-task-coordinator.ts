@@ -593,10 +593,7 @@ export class HostScheduledTaskCoordinator implements ScheduledTaskToolAuthority 
       );
     }
 
-    // Persisted agent-run templates currently identify their model connection
-    // by reusable slug only. Do not resolve that slug to a potentially
-    // different Connection entity. #3927 will make the exact ID durable.
-    if (task.effect.kind === 'agent_run') {
+    if (task.effect.kind === 'agent_run' && !task.effect.execution.llmConnectionId) {
       return this.#settleFailure(claim, SCHEDULED_AGENT_RUN_IDENTITY_REQUIRED);
     }
 
@@ -648,7 +645,9 @@ export class HostScheduledTaskCoordinator implements ScheduledTaskToolAuthority 
     const execution = task.effect.execution;
     const catalog = await this.#runtimePolicy.connectionCatalog.getSnapshot();
     const connection = catalog.connections.find(
-      (candidate) => candidate.slug === execution.llmConnectionSlug,
+      (candidate) =>
+        candidate.connectionId === execution.llmConnectionId &&
+        candidate.slug === execution.llmConnectionSlug,
     );
     if (!connection) {
       throw new Error('ScheduledTask model connection does not exist');
@@ -826,6 +825,7 @@ function executionTemplateFromHeader(header: SessionHeader): ScheduledTaskExecut
   return {
     cwd: header.cwd,
     ...(header.projectId === undefined ? {} : { projectId: header.projectId }),
+    ...(header.llmConnectionId === null ? {} : { llmConnectionId: header.llmConnectionId }),
     llmConnectionSlug: header.llmConnectionSlug,
     model: header.model,
     ...(header.thinkingLevel === undefined ? {} : { thinkingLevel: header.thinkingLevel }),

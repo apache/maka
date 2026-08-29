@@ -44,7 +44,6 @@ import { withFixtureWindow } from './fixture-window.mjs';
 const FIXTURES = [
   ['module-skills', '.maka-module-main'],
   ['module-mcp', '.maka-module-main'],
-  ['module-daily-review', '.maka-module-main'],
   ['scheduled-tasks', '.maka-module-main'],
   ['settings-general', '.settingsSurface'],
   ['settings-models', '.settingsSurface'],

@@ -126,21 +126,6 @@ export interface HostSessionEffectModel {
 
 export type HostSessionEffectModelInput = Omit<HostGoalEvaluatorInput, 'readSessionHeader'>;
 
-export type HostDailyReviewModelResult =
-  | { readonly ok: true; readonly text: string; readonly modelKey: string }
-  | {
-      readonly ok: false;
-      readonly errorClass: HostAuxiliaryModelFailureClass;
-    };
-
-export interface HostDailyReviewModel {
-  generate(input: {
-    readonly modelKey: string;
-    readonly prompt: string;
-    readonly abortSignal: AbortSignal;
-  }): Promise<HostDailyReviewModelResult>;
-}
-
 export interface HostMemoryExtractionModel {
   generate(input: {
     readonly snapshot: MemoryExtractionSourceSnapshot;
@@ -203,45 +188,6 @@ export function createHostMemoryExtractionModel(
         return {
           ok: false as const,
           errorClass: auxiliaryModelErrorClass(error, abortSignal),
-        };
-      }
-    },
-  });
-}
-
-/** Creates root-scoped Daily Review calls on the canonical Host model authority. */
-export function createHostDailyReviewModel(
-  input: HostSessionEffectModelInput,
-): HostDailyReviewModel {
-  const authority = createAuxiliaryModelCallAuthority(input);
-  return Object.freeze({
-    generate: async ({
-      modelKey,
-      prompt,
-      abortSignal,
-    }: Parameters<HostDailyReviewModel['generate']>[0]) => {
-      const effectiveAbortSignal = AbortSignal.any([abortSignal, AbortSignal.timeout(60_000)]);
-      try {
-        const header = await readAuxiliaryPreflight(authority, effectiveAbortSignal, () =>
-          resolveDailyReviewHeader(authority.runtimePolicy, modelKey),
-        );
-        const result = await runHostAuxiliaryModelCall(authority, {
-          transportContextId: 'daily-review',
-          header,
-          callKind: 'daily_review',
-          callId: `daily_review_${authority.newId()}`,
-          abortSignal: effectiveAbortSignal,
-          buildRequest: () => ({ prompt, maxOutputTokens: 2_048 }),
-        });
-        return {
-          ok: true as const,
-          text: result.text,
-          modelKey: `${header.llmConnectionSlug}::${result.modelId}`,
-        };
-      } catch (error) {
-        return {
-          ok: false as const,
-          errorClass: auxiliaryModelErrorClass(error, effectiveAbortSignal),
         };
       }
     },
@@ -737,53 +683,6 @@ interface ResolvedExecutionTarget {
   readonly oauthBinding?: HostOAuthExecutionBinding;
   readonly networkProxy: RuntimePolicy['networkProxy'];
   readonly proxySecret?: string;
-}
-
-async function resolveDailyReviewHeader(
-  runtimePolicy: RuntimePolicyStoresWriter,
-  modelKey: string,
-): Promise<
-  Pick<SessionHeader, 'llmConnectionId' | 'llmConnectionSlug' | 'model' | 'thinkingLevel'>
-> {
-  const explicit = parseDailyReviewModelKey(modelKey);
-  if (modelKey.trim() && !explicit) {
-    throw new AuxiliaryModelCallConfigurationError('Daily Review model key is invalid');
-  }
-  if (explicit) {
-    return {
-      llmConnectionSlug: explicit.connectionSlug,
-      model: explicit.modelId,
-      thinkingLevel: 'off',
-    };
-  }
-  const catalog = await runtimePolicy.connectionCatalog.getSnapshot();
-  const target = catalog.defaultTarget;
-  const connection = target
-    ? catalog.connections.find((candidate) => candidate.connectionId === target.connectionId)
-    : undefined;
-  if (!target || !connection) {
-    throw new AuxiliaryModelCallConfigurationError(
-      'Daily Review has no canonical default model target',
-    );
-  }
-  return {
-    llmConnectionId: connection.connectionId,
-    llmConnectionSlug: connection.slug,
-    model: target.modelId,
-    thinkingLevel: 'off',
-  };
-}
-
-function parseDailyReviewModelKey(
-  modelKey: string,
-): { readonly connectionSlug: string; readonly modelId: string } | undefined {
-  const trimmed = modelKey.trim();
-  if (!trimmed) return undefined;
-  const separator = trimmed.indexOf('::');
-  if (separator <= 0 || separator >= trimmed.length - 2) return undefined;
-  const connectionSlug = trimmed.slice(0, separator).trim();
-  const modelId = trimmed.slice(separator + 2).trim();
-  return connectionSlug && modelId ? { connectionSlug, modelId } : undefined;
 }
 
 export async function resolveExecutionTarget(

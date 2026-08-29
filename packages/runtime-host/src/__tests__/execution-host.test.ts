@@ -34,6 +34,7 @@ import { createServer, type Server } from 'node:http';
 import { connect, type Socket } from 'node:net';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
 import { test } from 'node:test';
 import { TOOL_BOUNDARY_PROTOCOL_V1 } from '@maka/core/runtime-event';
 import { canonicalToolArgsHash } from '@maka/core/tool-args-identity';
@@ -161,23 +162,315 @@ test('production Host resumes a Session through the ScheduledTask authority', {
   });
 });
 
-test('production Host fails slug-only ScheduledTask Agent runs before binding execution identity', {
+test('production Host migrates Daily Review into ScheduledTask Session and Artifact authorities', {
   timeout: 30_000,
 }, async () => {
   await withExecutionRoot(async (fixture) => {
+    const archive = {
+      id: '2026-08-28-1d',
+      day: { fromMs: 1_772_140_800_000, toMs: 1_772_227_200_000 },
+      range: 1,
+      status: 'ok',
+      generatedAt: 1_772_227_200_001,
+      trigger: 'cron',
+      modelKey: 'fake::fake-model',
+      sections: { summary: 'A migrated report.' },
+      totals: {
+        sessionCount: 2,
+        requestCount: 3,
+        totalTokens: 4,
+        costUsd: 0.01,
+        errorCount: 0,
+      },
+    } as const;
+    const database = new DatabaseSync(join(fixture.root, 'runtime.sqlite'));
+    database.exec(`
+      CREATE TABLE workflow_daily_review_state (
+        singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+        config_json TEXT NOT NULL
+      );
+      CREATE TABLE workflow_daily_review_authority_state (
+        singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+        revision INTEGER NOT NULL CHECK (revision >= 0)
+      );
+      CREATE TABLE workflow_daily_review_archives (
+        archive_id TEXT PRIMARY KEY,
+        generated_at INTEGER NOT NULL,
+        day_from_ms INTEGER NOT NULL,
+        record_json TEXT NOT NULL
+      );
+      CREATE INDEX workflow_daily_review_archives_order
+        ON workflow_daily_review_archives(generated_at DESC, day_from_ms DESC, archive_id);
+    `);
+    database
+      .prepare('INSERT INTO workflow_daily_review_state(singleton, config_json) VALUES (1, ?)')
+      .run(
+        JSON.stringify({
+          enabled: true,
+          executeTime: '23:58',
+          modelKey: archive.modelKey,
+        }),
+      );
+    database
+      .prepare(
+        `INSERT INTO workflow_daily_review_archives(
+          archive_id, generated_at, day_from_ms, record_json
+        ) VALUES (?, ?, ?, ?)`,
+      )
+      .run(archive.id, archive.generatedAt, archive.day.fromMs, JSON.stringify(archive));
+    database.close();
+
+    const unresolvedHost = await fixture.startHost();
+    const unresolvedDesktop = await connectClient(fixture.root);
+    try {
+      const taskPage = await unresolvedDesktop.request('scheduled-task.query', { kind: 'list' });
+      assert.equal(taskPage.kind, 'page');
+      if (taskPage.kind !== 'page') return;
+      assert.equal(
+        taskPage.tasks.some((candidate) => candidate.id === 'system-daily-review'),
+        false,
+      );
+      const artifacts = await unresolvedDesktop.request('artifact.query', {
+        kind: 'list_start',
+        sessionId: 'daily-review-archive-2026-08-28-1d',
+      });
+      assert.equal(artifacts.kind, 'page');
+      if (artifacts.kind !== 'page') return;
+      assert.equal(artifacts.artifacts.length, 1);
+    } finally {
+      await unresolvedDesktop.close();
+      await fixture.stopHost(unresolvedHost);
+    }
+
+    const pending = new DatabaseSync(join(fixture.root, 'runtime.sqlite'), { readOnly: true });
+    try {
+      assert.equal(
+        Boolean(
+          pending
+            .prepare(
+              "SELECT 1 FROM sqlite_schema WHERE type = 'table' AND name = 'workflow_daily_review_state'",
+            )
+            .get(),
+        ),
+        true,
+      );
+    } finally {
+      pending.close();
+    }
+
+    const policyOwner = await tryAcquireInteractiveRootOwner(fixture.capability);
+    assert.ok(policyOwner);
+    if (!policyOwner) return;
+    const policy = await openInteractiveRuntimePolicyStoresForWrite(policyOwner.lease);
+    const current = await policy.connectionCatalog.getSnapshot();
+    const createdConnection = await policy.connectionCatalog.create({
+      expectedCatalogRevision: current.revision,
+      connection: {
+        slug: 'fake',
+        name: 'Migrated Daily Review fixture',
+        providerType: 'moonshot',
+        enabled: true,
+        enabledModelIds: ['fake-model'],
+      },
+    });
+    assert.equal(createdConnection.kind, 'committed');
+    if (createdConnection.kind !== 'committed') return;
+    const connection = createdConnection.snapshot.connections.find(({ slug }) => slug === 'fake');
+    assert.ok(connection);
+    if (!connection) return;
+    const credential = await policy.credentialVault.set({
+      locator: {
+        scope: 'connection',
+        connectionId: connection.connectionId,
+        kind: 'api_key',
+      },
+      expected: null,
+      secret: 'daily-review-migration-test-key',
+    });
+    assert.equal(credential.kind, 'committed');
+    await policyOwner.close();
+
+    const host = await fixture.startHost();
+    const desktop = await connectClient(fixture.root);
+    try {
+      const taskPage = await desktop.request('scheduled-task.query', { kind: 'list' });
+      assert.equal(taskPage.kind, 'page');
+      if (taskPage.kind !== 'page') return;
+      const task = taskPage.tasks.find((candidate) => candidate.id === 'system-daily-review');
+      assert.ok(task);
+      assert.equal(task?.createdBy.kind, 'system');
+      assert.equal(task?.status, 'active');
+      assert.equal(
+        task?.effect.kind === 'agent_run' ? task.effect.execution.llmConnectionId : undefined,
+        connection.connectionId,
+      );
+      assert.deepEqual(task?.schedule, {
+        kind: 'calendar',
+        recurrence: 'daily',
+        anchorAt: task?.schedule.kind === 'calendar' ? task.schedule.anchorAt : -1,
+      });
+      if (task?.schedule.kind === 'calendar') {
+        const anchor = new Date(task.schedule.anchorAt);
+        assert.equal(
+          `${anchor.getHours()}:${String(anchor.getMinutes()).padStart(2, '0')}`,
+          '23:58',
+        );
+      }
+
+      const sessionId = 'daily-review-archive-2026-08-28-1d';
+      const session = await desktop.request('session.catalog.query', { kind: 'get', sessionId });
+      assert.equal(session.kind, 'session');
+      assert.equal(session.session?.id, sessionId);
+      assert.ok(session.session && !('kind' in session.session));
+      if (!session.session || 'kind' in session.session) return;
+      assert.deepEqual(session.session.labels, ['migrated:daily-review']);
+
+      const artifacts = await desktop.request('artifact.query', { kind: 'list_start', sessionId });
+      assert.equal(artifacts.kind, 'page');
+      if (artifacts.kind !== 'page') return;
+      assert.equal(artifacts.artifacts.length, 1);
+      const artifact = artifacts.artifacts[0];
+      assert.equal(artifact?.id, 'daily-review-report-2026-08-28-1d');
+      const report = await desktop.request('artifact.query', {
+        kind: 'read_text',
+        sessionId,
+        artifactId: artifact!.id,
+      });
+      assert.equal(report.kind, 'text');
+      if (report.kind !== 'text' || !report.preview.ok) return;
+      assert.match(report.preview.text, /A migrated report\./u);
+      assert.match(report.preview.text, /Archive ID: 2026-08-28-1d/u);
+      assert.match(report.preview.text, /Trigger: cron/u);
+      assert.match(report.preview.text, /Model: fake::fake-model/u);
+      assert.match(report.preview.text, /Generated at: 1772227200001/u);
+
+      const fired = await desktop.request('scheduled-task.mutate', {
+        kind: 'trigger_now',
+        taskId: 'system-daily-review',
+      });
+      assert.equal(fired.kind, 'task');
+      if (fired.kind !== 'task') return;
+      assert.equal(fired.task.runs.length, 1);
+      assert.ok(fired.task.runs[0]?.sessionId);
+      assert.ok(fired.task.runs[0]?.runId);
+      const runSession = await desktop.request('session.catalog.query', {
+        kind: 'get',
+        sessionId: fired.task.runs[0]!.sessionId!,
+      });
+      assert.equal(runSession.kind, 'session');
+      assert.ok(
+        runSession.session && !('kind' in runSession.session),
+        `${fired.task.lastError ?? 'ScheduledTask Session missing'}: ${JSON.stringify(runSession)}`,
+      );
+      assert.equal(runSession.session?.id, fired.task.runs[0]?.sessionId);
+    } finally {
+      await desktop.close();
+      await fixture.stopHost(host);
+    }
+
+    const owner = await tryAcquireInteractiveRootOwner(fixture.capability);
+    assert.ok(owner);
+    if (!owner) return;
+    let stores: Awaited<ReturnType<typeof openInteractiveExecutionStoresForWrite>> | undefined;
+    try {
+      stores = await openInteractiveExecutionStoresForWrite(owner.lease);
+      const messages = await stores.sessionStore.readMessagesSnapshot(
+        'daily-review-archive-2026-08-28-1d',
+      );
+      assert.equal(messages.length, 1);
+      assert.equal(messages[0]?.type, 'assistant');
+      assert.match(messages[0]?.text ?? '', /A migrated report\./u);
+    } finally {
+      await stores?.sessionStore.close?.();
+      await owner.close();
+    }
+
+    const retired = new DatabaseSync(join(fixture.root, 'runtime.sqlite'), { readOnly: true });
+    try {
+      const tables = retired
+        .prepare(
+          "SELECT name FROM sqlite_schema WHERE type = 'table' AND name LIKE 'workflow_daily_review_%'",
+        )
+        .all();
+      assert.deepEqual(tables, []);
+    } finally {
+      retired.close();
+    }
+
+    const restartedHost = await fixture.startHost();
+    const restartedDesktop = await connectClient(fixture.root);
+    try {
+      const taskPage = await restartedDesktop.request('scheduled-task.query', { kind: 'list' });
+      assert.equal(taskPage.kind, 'page');
+      if (taskPage.kind !== 'page') return;
+      assert.equal(
+        taskPage.tasks.filter((candidate) => candidate.id === 'system-daily-review').length,
+        1,
+      );
+      const artifacts = await restartedDesktop.request('artifact.query', {
+        kind: 'list_start',
+        sessionId: 'daily-review-archive-2026-08-28-1d',
+      });
+      assert.equal(artifacts.kind, 'page');
+      if (artifacts.kind !== 'page') return;
+      assert.equal(artifacts.artifacts.length, 1);
+    } finally {
+      await restartedDesktop.close();
+      await fixture.stopHost(restartedHost);
+    }
+  });
+});
+
+test('production Host starts ScheduledTask Agent runs in an ordinary Session', {
+  timeout: 30_000,
+}, async () => {
+  await withExecutionRoot(async (fixture) => {
+    const owner = await tryAcquireInteractiveRootOwner(fixture.capability);
+    assert.ok(owner);
+    if (!owner) return;
+    const policy = await openInteractiveRuntimePolicyStoresForWrite(owner.lease);
+    const current = await policy.connectionCatalog.getSnapshot();
+    const createdConnection = await policy.connectionCatalog.create({
+      expectedCatalogRevision: current.revision,
+      connection: {
+        slug: 'fake',
+        name: 'ScheduledTask fixture',
+        providerType: 'moonshot',
+        enabled: true,
+        enabledModelIds: ['fake-model'],
+      },
+    });
+    assert.equal(createdConnection.kind, 'committed');
+    if (createdConnection.kind !== 'committed') return;
+    const connection = createdConnection.snapshot.connections.find(({ slug }) => slug === 'fake');
+    assert.ok(connection);
+    if (!connection) return;
+    const credential = await policy.credentialVault.set({
+      locator: {
+        scope: 'connection',
+        connectionId: connection.connectionId,
+        kind: 'api_key',
+      },
+      expected: null,
+      secret: 'scheduled-task-test-key',
+    });
+    assert.equal(credential.kind, 'committed');
+    await owner.close();
+
     const host = await fixture.startHost();
     const desktop = await connectClient(fixture.root);
     try {
       const created = await desktop.request('scheduled-task.mutate', {
         kind: 'create',
         input: {
-          title: 'legacy agent-run identity proof',
-          intentBody: 'Do not execute with a replacement account.',
+          title: 'scheduled agent-run Session proof',
+          intentBody: 'Run through the ordinary Session authority.',
           schedule: { kind: 'once', runAt: Date.now() + 60_000 },
           effect: {
             kind: 'agent_run',
             execution: {
               cwd: fixture.root,
+              llmConnectionId: connection.connectionId,
               llmConnectionSlug: 'fake',
               model: 'fake-model',
               permissionMode: 'ask',
@@ -196,14 +489,17 @@ test('production Host fails slug-only ScheduledTask Agent runs before binding ex
       });
       assert.equal(fired.kind, 'task');
       if (fired.kind !== 'task') return;
-      assert.equal(
-        fired.task.lastError,
-        'ScheduledTask Agent runs require an immutable model connection identity',
-      );
       assert.equal(fired.task.runs.length, 1);
-      assert.equal(fired.task.runs[0]?.outcome, 'failed');
-      assert.equal(fired.task.runs[0]?.sessionId, undefined);
-      assert.equal(fired.task.runs[0]?.runId, undefined);
+      const sessionId = fired.task.runs[0]?.sessionId;
+      assert.ok(sessionId);
+      assert.ok(fired.task.runs[0]?.runId);
+      const session = await desktop.request('session.catalog.query', {
+        kind: 'get',
+        sessionId: sessionId!,
+      });
+      assert.equal(session.kind, 'session');
+      assert.ok(session.session, fired.task.lastError ?? 'ScheduledTask Session was not created');
+      assert.equal(session.session?.id, sessionId);
     } finally {
       await desktop.close();
       await fixture.stopHost(host);

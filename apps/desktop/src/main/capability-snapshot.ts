@@ -80,7 +80,7 @@ export function buildCapabilitySnapshotCollection(input: {
       feature: {
         state: 'partial',
         source: 'runtime',
-        reason: 'Daily Review 已聚合本地任务 / 工具 / 模型活动；当前不包含屏幕与应用级录制',
+        reason: '普通任务与产物可保留本地任务 / 工具 / 模型活动；当前不包含屏幕与应用级录制',
       },
       requiredPermissions: [
         { id: 'screen_recording', required: false, status: permissions.screen_recording.status },
@@ -90,7 +90,7 @@ export function buildCapabilitySnapshotCollection(input: {
       runtimeProbe: {
         state: 'not_run',
         source: 'runtime_probe',
-        reason: '打开 Daily Review 可查看本地活动聚合结果',
+        reason: '在普通任务历史与定时任务执行记录中查看本地活动结果',
       },
     }),
     staticCapability({

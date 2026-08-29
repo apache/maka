@@ -86,13 +86,6 @@ import type {
 } from '@maka/core/oauth-subscription';
 import type { CreateScheduledTaskInput, ScheduledTask, UpdateScheduledTaskInput } from '@maka/core/scheduled-task';
 import type { ProjectRecord } from '@maka/core/project';
-import type {
-  DailyReviewArchive,
-  DailyReviewArchiveSummary,
-  DailyReviewConfig,
-  DailyReviewRange,
-  DailyReviewSummary,
-} from '@maka/core/daily-review';
 import type { WebSearchProvider, WebSearchResponse } from '@maka/core/web-search';
 import type { BrowserState, BrowserViewRect } from '@maka/core/browser';
 import type { Task, TaskLedgerChangedEvent } from '@maka/core/task-ledger';
@@ -1515,27 +1508,6 @@ export interface MakaBridge {
       apiKey?: string;
     }, host?: DesktopRuntimeHostRef): Promise<WebSearchResponse>;
     test(input: { provider?: WebSearchProvider; apiKey?: string }, host?: DesktopRuntimeHostRef): Promise<WebSearchResponse>;
-  };
-  dailyReview: {
-    day(offsetDays: number, daySpan?: number, host?: DesktopRuntimeHostRef): Promise<Result<DailyReviewSummary>>;
-    getConfig?(host?: DesktopRuntimeHostRef): Promise<DailyReviewConfig>;
-    setConfig?(patch: Partial<DailyReviewConfig>, host?: DesktopRuntimeHostRef): Promise<DailyReviewConfig>;
-    runOnce?(input: { range: DailyReviewRange; offsetDays?: number; modelKey?: string }): Promise<{ archiveId: string }>;
-    listArchives?(): Promise<DailyReviewArchiveSummary[]>;
-    getArchive?(archiveId: string): Promise<DailyReviewArchive | null>;
-    saveMarkdownToFile(input: {
-      markdown: string;
-      defaultName: string;
-    }): Promise<
-      { ok: true; path: string } | { ok: false; reason: 'canceled' | 'write_failed' | 'invalid_input' }
-    >;
-    /**
-     * PR-DAILY-REVIEW-FULL-0 — pipeline + archive surface. Each
-     * method may reject with a string error code when the
-     * backend is not yet wired or when prerequisites are missing
-     * (e.g. no model configured). Renderer gracefully handles
-     * rejection by showing the disabled / fallback form.
-     */
   };
   appWindow: {
     setTitlebarControlsVisible(visible: boolean): Promise<void>;

@@ -66,7 +66,6 @@ import { ProjectsSettingsPage } from './projects-settings-page';
 import { AboutSettingsPage } from './about-settings-page';
 import { AppearanceSettingsPage } from './appearance-settings-page';
 import { BotChatSettingsPage } from './bot-chat-settings-page';
-import { DailyReviewSettingsPage } from './daily-review-settings-page';
 import { DataSettingsPage } from './data-settings-page';
 import { GeneralSettingsPage } from './general-settings-page';
 import { HealthCenterPage } from './health-center-page';
@@ -159,7 +158,6 @@ export function SettingsSurface(props: {
   initialConnectionSlug?: string;
   initialCreateProviderType?: ProviderType;
   initialFocusRef: RefObject<HTMLButtonElement | null>;
-  onOpenDailyReview?(): void;
   onOpenKeyboardHelp?(): void;
   onOpenSession?(sessionId: string): void;
   archivedTasks: ArchivedTasksBridge;
@@ -414,7 +412,7 @@ export function SettingsSurface(props: {
     return () => props.onSelectedRuntimeHostProfileIdChange(undefined);
   }, [props.onSelectedRuntimeHostProfileIdChange, selectedProfileId, showsRuntimeHost]);
   const sectionNeedsSettings = ['general', 'subagents', 'memory', 'search'].includes(section);
-  const sectionNeedsConnections = ['general', 'models', 'subagents', 'daily-review'].includes(section);
+  const sectionNeedsConnections = ['general', 'models', 'subagents'].includes(section);
   const runtimeHostAvailabilityStatus: RuntimeHostAvailabilityStatus =
     selectedRuntimeHost
       ? 'ready'
@@ -1026,7 +1024,6 @@ export function SettingsSurface(props: {
                             onReloadUsage={reloadUsage}
                             onThemeChange={props.onThemeChange}
                             onThemePaletteChange={props.onThemePaletteChange}
-                            onOpenDailyReview={props.onOpenDailyReview}
                             onOpenKeyboardHelp={props.onOpenKeyboardHelp}
                             onOpenSession={props.onOpenSession}
                             archivedTasks={props.archivedTasks}
@@ -1081,7 +1078,6 @@ function SettingsPageBody(props: {
   onReloadUsage(range?: UsageRange): Promise<void>;
   onThemeChange(pref: ThemePreference): void;
   onThemePaletteChange(palette: ThemePalette): void;
-  onOpenDailyReview?(): void;
   onOpenKeyboardHelp?(): void;
   onOpenSession?(sessionId: string): void;
   archivedTasks: ArchivedTasksBridge;
@@ -1220,8 +1216,6 @@ function SettingsPageBody(props: {
           onReloadSettings={props.onReloadSettings}
         />
       );
-    case 'daily-review':
-      return <DailyReviewSettingsPage connections={props.connections} />;
     case 'search':
       return (
         <WebSearchSettingsPage

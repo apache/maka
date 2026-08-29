@@ -21,10 +21,11 @@
 
 ## Problem
 
-Maka previously had two clocks:
+Maka previously had multiple clocks:
 
 1. Desktop-owned notification schedules
 2. Runtime Host standalone session schedules
+3. Daily Review's private scheduler, resident state, archive, and model-call path
 
 The product word was one (“定时任务”), the data paths were two. Agent-created work never appeared in the desktop catalog.
 
@@ -47,6 +48,15 @@ One noun: **`ScheduledTask`**.
 - `session_resume` — continue the creating Session with a new Turn and durable ScheduledTask origin.
 - `agent_run` — freeze the execution template at create; on fire, Host creates a stable Session and
   admits the root AgentRun itself.
+
+Daily Review is a Scheduled Tasks preset, not an effect or runtime domain. Existing enabled
+Daily Review configuration upgrades once to a system-owned `ScheduledTask`. Existing reports
+upgrade to ordinary Sessions with Markdown artifacts and transcript messages, after which the
+legacy tables are retired. New review executions use `agent_run`; their transcript, recovery, and
+artifacts therefore have the same owners as any other Session. If the old configuration cannot yet
+resolve an immutable model Connection, report projection remains idempotent but retirement waits;
+the inert legacy rows are retried on a later Host start after model setup and are never scheduled or
+written by the new runtime.
 
 ### UI
 
@@ -78,6 +88,7 @@ the same Host protocol. The separate Headless runtime is outside this interactiv
 
 - `packages/core/src/scheduled-task.ts`
 - `packages/storage/src/scheduled-task-store.ts`
+- `packages/storage/src/legacy-daily-review-migration.ts` (one-time upgrade only)
 - `packages/runtime/src/scheduled-task-tools.ts`
 - `packages/runtime-host/src/protocol/scheduled-task.ts`
 - `packages/runtime-host/src/server/scheduled-task-coordinator.ts`

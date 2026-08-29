@@ -5,7 +5,7 @@ Each row is one on-disk product surface file. Regenerated inventory must stay in
 
 Wiki bar: Design Conventions · API Use-the-System · Theming · Container Padding.
 
-**Totals:** 225 files — blocker 0, polish 1, aligned 224.
+**Totals:** 220 files — blocker 0, polish 1, aligned 219.
 
 ## Exclusions (explicit)
 
@@ -82,7 +82,6 @@ Wiki bar: Design Conventions · API Use-the-System · Theming · Container Paddi
 | `apps/desktop/src/renderer/settings/bot-onboarding-modal.tsx` | settings-page | Button, Dialog, DialogHeader, Layout, LayoutContent, Spinner | aligned — uses Astryx (Button, Dialog, DialogHeader, Layout, LayoutContent, Spinner) | aligned |
 | `apps/desktop/src/renderer/settings/bot-wechat-login.tsx` | settings-module | Banner, Button, Collapsible, Dialog, DialogHeader, EmptyState, Layout, LayoutContent, Spinner | aligned — uses Astryx (Banner, Button, Collapsible, Dialog, DialogHeader, EmptyState, Layout, LayoutContent) | aligned |
 | `apps/desktop/src/renderer/settings/custom-pet-settings-section.tsx` | settings-module | Badge, Button, EmptyState | aligned — uses Astryx (Badge, Button, EmptyState) | aligned |
-| `apps/desktop/src/renderer/settings/daily-review-settings-page.tsx` | settings-page | Banner, Selector | aligned — uses Astryx (Banner, Selector) | aligned |
 | `apps/desktop/src/renderer/settings/data-settings-page.tsx` | settings-page | Banner, Button, Selector | aligned — uses Astryx (Banner, Button, Selector) | aligned |
 | `apps/desktop/src/renderer/settings/general-settings-page.tsx` | settings-page | Banner, Button, Selector | aligned — uses Astryx (Banner, Button, Selector) | aligned |
 | `apps/desktop/src/renderer/settings/health-center-page.tsx` | settings-page | Banner, Button, Text, VStack | aligned — uses Astryx (Banner, Button, Text, VStack) | aligned |
@@ -136,7 +135,6 @@ Wiki bar: Design Conventions · API Use-the-System · Theming · Container Paddi
 | `apps/desktop/src/renderer/styles/composer-mention.css` | shell-chrome-or-panel | n/a (css) | aligned — no off-rhythm control heights flagged | aligned |
 | `apps/desktop/src/renderer/styles/composer.css` | shell-chrome-or-panel | n/a (css) | aligned — no off-rhythm control heights flagged | aligned |
 | `apps/desktop/src/renderer/styles/custom-pet-companion.css` | styles | n/a (css) | aligned — no off-rhythm control heights flagged | aligned |
-| `apps/desktop/src/renderer/styles/daily-review.css` | module-hub | n/a (css) | aligned — no off-rhythm control heights flagged | aligned |
 | `apps/desktop/src/renderer/styles/deep-research.css` | styles | n/a (css) | aligned — no off-rhythm control heights flagged | aligned |
 | `apps/desktop/src/renderer/styles/error.css` | styles | n/a (css) | aligned — no off-rhythm control heights flagged | aligned |
 | `apps/desktop/src/renderer/styles/help.css` | styles | n/a (css) | aligned — no off-rhythm control heights flagged | aligned |
@@ -205,7 +203,6 @@ Wiki bar: Design Conventions · API Use-the-System · Theming · Container Paddi
 | `packages/ui/src/components.tsx` | ui-composition | none | aligned — no raw controls; no Astryx JSX usage | aligned |
 | `packages/ui/src/composer-message-queue.tsx` | shell-chrome-or-panel | Button, IconButton, List, ListItem | raw `<textarea` (API Use-the-System) | polish |
 | `packages/ui/src/composer.tsx` | shell-chrome-or-panel | Button, ChatComposer, IconButton, Lightbox, Token, Tooltip | aligned — uses Astryx (Button, ChatComposer, IconButton, Lightbox, Token, Tooltip) | aligned |
-| `packages/ui/src/daily-review-panel.tsx` | module-hub | Banner, Button, Divider, EmptyState, HStack, Heading, List, ListItem, SegmentedControl, SegmentedControlItem, Text, Toolbar, VStack | aligned — uses Astryx (Banner, Button, Divider, EmptyState, HStack, Heading, List, ListItem) | aligned |
 | `packages/ui/src/icons.tsx` | ui-composition | none | aligned — no raw controls; no Astryx JSX usage | aligned |
 | `packages/ui/src/inline-reference.tsx` | ui-composition | none | aligned — no raw controls; no Astryx JSX usage | aligned |
 | `packages/ui/src/inline-rename-input.tsx` | ui-composition | TextInput | aligned — uses Astryx (TextInput) | aligned |
@@ -217,7 +214,7 @@ Wiki bar: Design Conventions · API Use-the-System · Theming · Container Paddi
 | `packages/ui/src/mermaid-diagram.tsx` | ui-composition | Button, Collapsible, Dialog, IconButton, Toolbar | aligned — uses Astryx (Button, Collapsible, Dialog, IconButton, Toolbar) | aligned |
 | `packages/ui/src/model-picker.tsx` | ui-composition | Selector | aligned — uses Astryx (Selector) | aligned |
 | `packages/ui/src/module-hub-selector.tsx` | ui-composition | Tab, TabList | aligned — uses Astryx (Tab, TabList) | aligned |
-| `packages/ui/src/module-pages.tsx` | ui-composition | EmptyState, Spinner | aligned — uses Astryx (EmptyState, Spinner) | aligned |
+| `packages/ui/src/module-pages.tsx` | ui-composition | Spinner | aligned — uses Astryx (Spinner) | aligned |
 | `packages/ui/src/permission-mode-menu.tsx` | ui-composition | Selector | aligned — uses Astryx (Selector) | aligned |
 | `packages/ui/src/primitives/chat.tsx` | primitive | none | aligned — no raw controls; no Astryx JSX usage | aligned |
 | `packages/ui/src/primitives/module-page.tsx` | primitive | Dialog, DialogHeader, HStack, Heading, Layout, LayoutContent, LayoutHeader, LayoutPanel, ResizeHandle, Text, VStack | aligned — uses Astryx (Dialog, DialogHeader, HStack, Heading, Layout, LayoutContent, LayoutHeader, LayoutPanel) | aligned |

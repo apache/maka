@@ -51,7 +51,14 @@ export function isCurrentOperationalTargetSchema(database: DatabaseSync): boolea
 
 export function assertCurrentOperationalTargetSchema(database: DatabaseSync): void {
   const target = (cachedTargetSchema ??= buildOperationalTargetSchema());
-  const actual = readSchema(database);
+  const actual = new Map(readSchema(database));
+  const dailyReviewObjects = readSchemaObjects(database).filter((object) =>
+    DAILY_REVIEW_MIGRATION_TABLES.has(object.tableName),
+  );
+  if (dailyReviewObjects.length > 0) {
+    assertReleasedDailyReviewMigrationShape(database);
+    for (const object of dailyReviewObjects) actual.delete(object.key);
+  }
   for (const [name, required] of target) {
     const observed = actual.get(name);
     if (observed === undefined) throw incomplete(`missing required schema object ${name}`);
@@ -140,7 +147,44 @@ const RELEASED_LEGACY_RETIREMENT_DDL: ReadonlyMap<string, string> = new Map([
       FOREIGN KEY(session_id) REFERENCES session_metadata(session_id) ON DELETE CASCADE
     )`,
   ],
+  [
+    'workflow_daily_review_state',
+    `CREATE TABLE workflow_daily_review_state (
+      singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+      config_json TEXT NOT NULL
+    )`,
+  ],
+  [
+    'workflow_daily_review_authority_state',
+    `CREATE TABLE workflow_daily_review_authority_state (
+      singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+      revision INTEGER NOT NULL CHECK (revision >= 0)
+    )`,
+  ],
+  [
+    'workflow_daily_review_archives',
+    `CREATE TABLE workflow_daily_review_archives (
+      archive_id TEXT PRIMARY KEY,
+      generated_at INTEGER NOT NULL,
+      day_from_ms INTEGER NOT NULL,
+      record_json TEXT NOT NULL
+    );
+    CREATE INDEX workflow_daily_review_archives_order
+      ON workflow_daily_review_archives(generated_at DESC, day_from_ms DESC, archive_id)`,
+  ],
 ]);
+
+const DAILY_REVIEW_MIGRATION_TABLES = new Set([
+  'workflow_daily_review_state',
+  'workflow_daily_review_authority_state',
+  'workflow_daily_review_archives',
+]);
+
+export function assertReleasedDailyReviewMigrationShape(database: DatabaseSync): void {
+  for (const table of DAILY_REVIEW_MIGRATION_TABLES) {
+    assertReleasedLegacyRetirementShape(database, table);
+  }
+}
 
 let cachedLegacyRetirementSchema: ReadonlyMap<string, ReadonlyMap<string, string>> | undefined;
 

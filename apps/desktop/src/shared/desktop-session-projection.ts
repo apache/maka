@@ -17,7 +17,6 @@
  * under the License.
  */
 
-import type { DailyReviewSummary } from '@maka/core/daily-review';
 import type {
   AttachmentRef,
   MessageContent,
@@ -224,19 +223,6 @@ export function projectDesktopSessionSummary(
     profileId: host.profileId,
     profileName: host.profileName,
     profileKind: host.profileKind,
-  };
-}
-
-export function projectDesktopDailyReviewSummary(
-  host: DesktopHostRef,
-  summary: DailyReviewSummary,
-): DailyReviewSummary {
-  return {
-    ...summary,
-    sessions: summary.sessions.map((session) => ({
-      ...session,
-      id: projectSessionId(host, session.id),
-    })),
   };
 }
 

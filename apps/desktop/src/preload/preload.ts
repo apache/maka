@@ -165,13 +165,6 @@ import type {
 } from '@maka/core/oauth-subscription';
 import type { CreateScheduledTaskInput, ScheduledTask, UpdateScheduledTaskInput } from '@maka/core/scheduled-task';
 import type { ProjectRecord } from '@maka/core/project';
-import type {
-  DailyReviewArchive,
-  DailyReviewArchiveSummary,
-  DailyReviewConfig,
-  DailyReviewRange,
-  DailyReviewSummary,
-} from '@maka/core/daily-review';
 import type { WebSearchProvider, WebSearchResponse } from '@maka/core/web-search';
 import type { BrowserState, BrowserViewRect } from '@maka/core/browser';
 import { createBrowserSelectionCoordinator } from './browser-selection.js';
@@ -187,10 +180,6 @@ import {
   isSessionTrace,
 } from '@maka/core/session-trace';
 import type { ContextDiagnosticsResult } from '@maka/runtime-host/protocol';
-import {
-  DAILY_REVIEW_RANGES,
-  normalizeDailyReviewConfig,
-} from '@maka/core/daily-review';
 import type {
   AgentGraphClientSnapshot,
   AgentGraphClientSnapshotOptions,
@@ -237,7 +226,6 @@ import {
 } from './projected-session-runtime-host.js';
 import {
   projectDesktopAttachmentRefs,
-  projectDesktopDailyReviewSummary,
   projectDesktopSessionEvent,
   projectDesktopSessionSummary,
   projectDesktopTurnRecord,
@@ -1021,46 +1009,6 @@ async function loadSessionUsageSummary(
     session.scope,
     { range: 'all', sessionId: session.sessionId },
   ) as Promise<Result<DesktopSessionUsageSummary>>;
-}
-
-async function updateDailyReviewConfig(
-  patch: Partial<DailyReviewConfig>,
-  target?: DesktopRuntimeHostRef,
-): Promise<DailyReviewConfig> {
-  const host = scopedRuntimeHost(await selectedRuntimeHostScope(target));
-  for (let attempt = 0; attempt < 3; attempt += 1) {
-    const current = await host.query('daily-review.query', { kind: 'config' });
-    if (current.kind !== 'config') throw new Error('Invalid Daily Review config');
-    const config = normalizeDailyReviewConfig({ ...current.config, ...patch });
-    const result = await host.command('daily-review.mutate', {
-      kind: 'update_config',
-      expectedRevision: current.revision,
-      config,
-    });
-    if (result.kind === 'config_committed' || result.kind === 'config_unchanged') {
-      return result.config;
-    }
-  }
-  throw new Error('Daily Review config kept changing while Desktop updated it');
-}
-
-async function listDailyReviewArchives(): Promise<DailyReviewArchiveSummary[]> {
-  const host = scopedRuntimeHost(await activeRuntimeHostRef());
-  const archives: DailyReviewArchiveSummary[] = [];
-  let beforeArchiveId: string | null = null;
-  do {
-    const result: OperationOutput<'daily-review.query'> = await host.query(
-      'daily-review.query', {
-      kind: 'archives',
-      beforeArchiveId,
-      limit: 32,
-      },
-    );
-    if (result.kind !== 'archives') throw new Error('Invalid Daily Review archive page');
-    archives.push(...result.archives);
-    beforeArchiveId = result.nextBeforeArchiveId;
-  } while (beforeArchiveId !== null);
-  return archives;
 }
 
 function executeWebSearchQuery(input: {
@@ -2968,68 +2916,6 @@ const makaBridge = {
         },
         'INSPECTOR_CONTEXT_FAILED',
       );
-    },
-  },
-  dailyReview: {
-    day(offsetDays: number, daySpan?: number, host?: DesktopRuntimeHostRef): Promise<Result<DailyReviewSummary>> {
-      return bridgeResult(async () => {
-        const scope = await selectedRuntimeHostScope(host);
-        const result = await scopedRuntimeHost(scope).query('daily-review.query', {
-          kind: 'summary',
-          offsetDays: integer(offsetDays, 0),
-          daySpan: Math.max(1, Math.min(30, integer(daySpan, 1))),
-        });
-        if (result.kind !== 'summary') throw new Error('Invalid Daily Review summary');
-        return projectDesktopDailyReviewSummary(scope, result.summary);
-      }, 'DAILY_REVIEW_DAY_FAILED');
-    },
-    async getConfig(host?: DesktopRuntimeHostRef): Promise<DailyReviewConfig> {
-      const result = await scopedRuntimeHost(
-        await selectedRuntimeHostScope(host),
-      ).query('daily-review.query', {
-        kind: 'config',
-      });
-      if (result.kind !== 'config') throw new Error('Invalid Daily Review config');
-      return result.config;
-    },
-    setConfig(patch: Partial<DailyReviewConfig>, host?: DesktopRuntimeHostRef): Promise<DailyReviewConfig> {
-      return updateDailyReviewConfig(patch, host);
-    },
-    async runOnce(input: { range: DailyReviewRange; offsetDays?: number; modelKey?: string }): Promise<{ archiveId: string }> {
-      const result = await runtimeHost.command('daily-review.mutate', {
-        kind: 'run',
-        range: DAILY_REVIEW_RANGES.includes(input.range) ? input.range : 1,
-        offsetDays: integer(input.offsetDays, 0),
-        modelKeyOverride: input.modelKey ?? '',
-        replaceExisting: false,
-      });
-      if (result.kind !== 'archive') throw new Error('Invalid Daily Review run');
-      return { archiveId: result.archive.id };
-    },
-    listArchives(): Promise<DailyReviewArchiveSummary[]> {
-      return listDailyReviewArchives();
-    },
-    async getArchive(archiveId: string): Promise<DailyReviewArchive | null> {
-      const result = await runtimeHost.query('daily-review.query', {
-        kind: 'archive',
-        archiveId,
-      });
-      if (result.kind !== 'archive') throw new Error('Invalid Daily Review archive');
-      return result.archive;
-    },
-    /**
-     * PR-DAILY-REVIEW-EXPORT-FILE-0: render the markdown in the renderer
-     * (where the human-readable title context lives) and ship the bytes
-     * to main for the save dialog + write. Main never sees the raw
-     * telemetry; only the formatted output.
-     */
-    saveMarkdownToFile(input: {
-      markdown: string;
-      defaultName: string;
-    }): Promise<
-      { ok: true; path: string } | { ok: false; reason: 'canceled' | 'write_failed' | 'invalid_input' }
-    > {
-      return ipcRenderer.invoke('daily-review:saveMarkdownToFile', input);
     },
   },
   webSearch: {

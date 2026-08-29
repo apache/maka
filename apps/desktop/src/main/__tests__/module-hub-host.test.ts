@@ -25,12 +25,11 @@ import { fileURLToPath } from 'node:url';
 import type { NavSelection } from '@maka/ui';
 import { resolveModuleHubHostRoute } from '../../renderer/features/module-hub/testing.js';
 
-test('Module Hub resolves all four leaf routes and no chat route', () => {
+test('Module Hub resolves its three leaf routes and no chat route', () => {
   const cases: Array<[NavSelection, ReturnType<typeof resolveModuleHubHostRoute>]> = [
     [{ section: 'extensions', module: 'skills' }, 'skills'],
     [{ section: 'extensions', module: 'mcp' }, 'mcp'],
     [{ section: 'automations', module: 'scheduled-tasks' }, 'scheduled-tasks'],
-    [{ section: 'automations', module: 'daily-review' }, 'daily-review'],
     [{ section: 'sessions' }, null],
   ];
   for (const [selection, expected] of cases) {
@@ -53,7 +52,6 @@ test('Host maps each route to one existing leaf and preserves the MCP exception'
     '<SkillsPage',
     '<McpPage',
     '<ScheduledTasksPage',
-    '<DailyReviewPage',
   ]) {
     assert.equal(source.split(leaf).length - 1, 1, leaf);
   }

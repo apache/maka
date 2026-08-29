@@ -23,7 +23,6 @@ export type ModuleHubHostRoute =
   | 'skills'
   | 'mcp'
   | 'scheduled-tasks'
-  | 'daily-review'
   | null;
 
 export function resolveModuleHubHostRoute(

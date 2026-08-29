@@ -90,10 +90,6 @@ function request(
   switch (operation) {
     case 'context.diagnostics.query':
       return client.request(operation, HOST_OPERATION_SPECS[operation].decodeInput(value));
-    case 'daily-review.mutate':
-      return client.request(operation, HOST_OPERATION_SPECS[operation].decodeInput(value));
-    case 'daily-review.query':
-      return client.request(operation, HOST_OPERATION_SPECS[operation].decodeInput(value));
     case 'execution.inspect.query':
       return client.request(operation, HOST_OPERATION_SPECS[operation].decodeInput(value));
     case 'scheduled-task.mutate':

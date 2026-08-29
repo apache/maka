@@ -38,6 +38,7 @@ import type {
 import type { SessionSummary } from '@maka/core/session';
 import type { OrchestrationMode } from '@maka/core/orchestration';
 import type { ChatDefaultPermissionMode } from '@maka/core/settings';
+import type { ScheduledTaskEffect } from '@maka/core/scheduled-task';
 import type { SlashCommandIdForSurface } from '@maka/core/slash-command-catalog';
 import type { UiLocale, UiLocalePreference } from '@maka/core/ui-locale';
 import { collapseSessionRevisions } from '@maka/core/session-revisions';
@@ -272,7 +273,7 @@ type FirstSendObservationWaiter = {
  * `data-agents-view`; the toolbar now lives in the window titlebar, which is not
  * a descendant of the detail panel, so the condition belongs here.
  */
-const VIEWS_WITHOUT_WORKSPACE_ACTIONS = new Set(['skills', 'cron', 'daily-review']);
+const VIEWS_WITHOUT_WORKSPACE_ACTIONS = new Set(['skills', 'cron']);
 
 type AppShellProps = {
   /** Pre-mount snapshot prefetched by main.tsx — see prefetchOnboardingSnapshot. */
@@ -1473,32 +1474,29 @@ function AppShellContent({
     },
     toastApi,
   });
-  const captureActiveComposerClaim = useCallback(() => {
-    const sessionId = activeIdRef.current;
-    const composer = composerRef.current;
-    if (
-      !sessionId ||
-      !composer ||
-      navSelectionRef.current.section !== 'sessions'
-    ) {
-      return undefined;
-    }
-    return {
-      isCurrent: () =>
-        activeIdRef.current === sessionId &&
-        navSelectionRef.current.section === 'sessions' &&
-        composerRef.current === composer,
-      append: (text: string) => composer.appendText(text),
-    };
-  }, []);
   const moduleHub = useModuleHubController({
     selection: navSelection,
     selectModule: setNavSelection,
     ...(projectCapabilities.viewClientPath ? { openSkillsFolder } : {}),
     useSkillInChat,
-    openSession: (sessionId) => openSessionInChatRef.current(sessionId),
-    appendComposerText: (text) => composerRef.current?.appendText(text),
-    captureActiveComposerClaim,
+    ...(newChatModel && taskEntry.selectors.projectPath && taskEntry.selectors.target
+      ? {
+          agentRunTemplateEffect: {
+            kind: 'agent_run',
+            execution: {
+              cwd: taskEntry.selectors.projectPath,
+              projectId: taskEntry.selectors.target.projectId,
+              llmConnectionId: newChatModel.llmConnectionId,
+              llmConnectionSlug: newChatModel.llmConnectionSlug,
+              model: newChatModel.model,
+              ...(newChatThinkingLevel ? { thinkingLevel: newChatThinkingLevel } : {}),
+              permissionMode: newTaskPermissionMode,
+              collaborationMode: newChatPlanModeActive ? 'plan' : 'agent',
+              orchestrationMode: newChatOrchestrationMode,
+            },
+          } satisfies Extract<ScheduledTaskEffect, { kind: 'agent_run' }>,
+        }
+      : {}),
   });
   refreshProjectSkillsRef.current = moduleHub.commands.refreshProjectSkills;
   const workHubProjectsRef = useRef(projects);
@@ -2690,9 +2688,6 @@ function AppShellContent({
     openSkillsFolder,
     openWorkspaceFolder,
     refreshConnections: defaultHostConnections.refreshConnections,
-    copyTodayDailyReview: moduleHub.commands.copyTodayDailyReview,
-    pasteTodayDailyReview: moduleHub.commands.pasteTodayDailyReview,
-    saveTodayDailyReview: moduleHub.commands.saveTodayDailyReview,
     setNavSelection,
     setPermissionMode,
     setThemePref,
@@ -2701,9 +2696,7 @@ function AppShellContent({
 
   const agentsView =
     navSelection.section === 'automations'
-      ? navSelection.module === 'daily-review'
-        ? 'daily-review'
-        : 'cron'
+      ? 'cron'
       : navSelection.section === 'extensions'
         ? navSelection.module
         : 'im_hub';
@@ -3291,10 +3284,6 @@ function AppShellContent({
         settingsProviderCatalogOpen={settingsProviderCatalogOpen}
         settingsConnectionDetailSlug={settingsConnectionDetailSlug}
         settingsCreateProviderType={settingsCreateProviderType}
-        onOpenDailyReview={() => {
-          closeSettings();
-          setNavSelection({ section: 'automations', module: 'daily-review' });
-        }}
         onOpenKeyboardHelp={openHelp}
         onOpenSettingsSession={(sessionId) => {
           closeSettings();

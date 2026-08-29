@@ -18,13 +18,11 @@
  */
 
 import type { Meta, StoryObj } from '@storybook/react-vite';
-import type { DailyReviewArchive, DailyReviewSummary } from '@maka/core/daily-review';
 import type { ScheduledTask, ScheduledTaskRun } from '@maka/core/scheduled-task';
 import type { McpConfigFile, McpServerStatus } from '@maka/core/mcp';
 import { MCP_CONFIG_VERSION } from '@maka/core/mcp';
 import {
   ScheduledTasksPage,
-  DailyReviewPage,
   getSharedUiCopy,
   ModuleHubSelector,
   SkillsPage,
@@ -384,63 +382,6 @@ const LONG_CONTENT_TASKS: ScheduledTask[] = ([
   },
 ] satisfies StoryScheduledTask[]).map(storyScheduledTask);
 
-const DAILY_REVIEW_SUMMARY: DailyReviewSummary = {
-  day: { fromMs: Date.UTC(2026, 6, 1), toMs: Date.UTC(2026, 6, 2) },
-  totals: {
-    sessionCount: 6,
-    requestCount: 42,
-    totalTokens: 18_320,
-    costUsd: 0.21,
-    errorCount: 1,
-  },
-  sessions: [
-    {
-      id: 's-1',
-      name: '整理 Storybook 表面覆盖',
-      lastMessageAt: NOW - 12 * 60_000,
-      lastMessagePreview: '先把高频页面补齐。',
-    },
-    {
-      id: 's-2',
-      name: 'PR #435 发布风险清单',
-      lastMessageAt: NOW - 2 * 60 * 60_000,
-      lastMessagePreview: '权限弹窗的状态要全。',
-    },
-  ],
-  topTools: [
-    { key: 'Bash', label: 'Bash', requests: 18, totalTokens: 4_200, costUsd: 0.05 },
-    { key: 'Read', label: 'Read', requests: 12, totalTokens: 2_100, costUsd: 0.02 },
-  ],
-  topModels: [
-    {
-      key: 'claude-sonnet-4-5',
-      label: 'Claude Sonnet 4.5',
-      requests: 28,
-      totalTokens: 12_400,
-      costUsd: 0.16,
-    },
-  ],
-};
-
-const DAILY_REVIEW_ARCHIVE: DailyReviewArchive = {
-  id: '2026-07-01-1d',
-  day: DAILY_REVIEW_SUMMARY.day,
-  range: 1,
-  status: 'ok',
-  generatedAt: NOW - 5 * 60_000,
-  trigger: 'manual',
-  modelKey: 'openai::gpt-5',
-  totals: DAILY_REVIEW_SUMMARY.totals,
-  sections: {
-    summary: '今天聚焦 Daily Review 的信息架构和页面重构，完成了时间范围、活动概览与报告详情的职责拆分。',
-    gaps: '报告导出仍需在真实桌面环境验证文件保存路径。',
-    usage: '共完成 42 次模型请求，主要活动集中在六个对话中。',
-    code: '继续让设置页只承载持久配置，把即时动作留在功能主页面。',
-  },
-};
-
-type DailyReviewBridge = NonNullable<ComponentProps<typeof DailyReviewPage>['bridge']>;
-
 const configuredMcpConfig: McpConfigFile = {
   version: MCP_CONFIG_VERSION,
   mcpServers: {
@@ -590,7 +531,7 @@ const withFailedMcpBridge = withScopedMakaBridge({
 
 function ModuleSurface(props: {
   children: ReactNode;
-  agentsView: 'skills' | 'mcp' | 'cron' | 'daily-review';
+  agentsView: 'skills' | 'mcp' | 'cron';
 }) {
   return (
     <div
@@ -632,7 +573,7 @@ function ExtensionsSkillsSurface(props: {
         hubHeader={{
           title: copy.title,
           subtitle: copy.description,
-          badge: <ModuleHubSelector hub="extensions" value="skills" onChange={() => {}} />,
+          badge: <ModuleHubSelector value="skills" onChange={() => {}} />,
         }}
         skills={props.skills ?? []}
         managedSkillSources={[]}
@@ -664,7 +605,7 @@ function ExtensionsMcpSurface() {
         hubHeader={{
           title: copy.title,
           subtitle: copy.description,
-          badge: <ModuleHubSelector hub="extensions" value="mcp" onChange={() => {}} />,
+          badge: <ModuleHubSelector value="mcp" onChange={() => {}} />,
         }}
       />
     </ModuleSurface>
@@ -683,7 +624,7 @@ function ScheduledTasksSurface(props: {
         hubHeader={{
           title: copy.title,
           subtitle: copy.description,
-          badge: <ModuleHubSelector hub="automations" value="scheduled-tasks" onChange={() => {}} />,
+          badge: null,
         }}
         tasks={props.tasks ?? []}
         keepSystemAwake={props.keepSystemAwake ?? false}
@@ -703,34 +644,10 @@ function ScheduledTasksSurface(props: {
   );
 }
 
-function ScheduledDailyReviewSurface(
-  props: { bridge: DailyReviewBridge } & Pick<
-    ComponentProps<typeof DailyReviewPage>,
-    'onCopyMarkdown' | 'onAppendMarkdown' | 'onSaveMarkdown'
-  >,
-) {
-  const copy = getSharedUiCopy(useUiLocale()).moduleHubs.automations;
-  return (
-    <ModuleSurface agentsView="daily-review">
-      <DailyReviewPage
-        hubHeader={{
-          title: copy.title,
-          subtitle: copy.description,
-          badge: <ModuleHubSelector hub="automations" value="daily-review" onChange={() => {}} />,
-        }}
-        bridge={props.bridge}
-        onCopyMarkdown={props.onCopyMarkdown}
-        onAppendMarkdown={props.onAppendMarkdown}
-        onSaveMarkdown={props.onSaveMarkdown}
-      />
-    </ModuleSurface>
-  );
-}
-
 function ModuleHubHostSurface(props: {
   selection:
     | { section: 'extensions'; module: 'skills' | 'mcp' }
-    | { section: 'automations'; module: 'scheduled-tasks' | 'daily-review' };
+    | { section: 'automations'; module: 'scheduled-tasks' };
 }) {
   const base = createFakeModuleHubHostModel(props.selection);
   const model = {
@@ -744,18 +661,10 @@ function ModuleHubHostSurface(props: {
       ...base.scheduledTasks,
       scheduledTasks: CONFIGURED_TASKS,
     },
-    dailyReview: {
-      ...base.dailyReview,
-      bridge: {
-        fetchDay: async () => DAILY_REVIEW_SUMMARY,
-      },
-    },
   };
   const agentsView = props.selection.section === 'extensions'
     ? props.selection.module
-    : props.selection.module === 'daily-review'
-      ? 'daily-review'
-      : 'cron';
+    : 'cron';
   return (
     <ModuleSurface agentsView={agentsView}>
       <ModuleHubHost model={model} />
@@ -822,14 +731,6 @@ export const HostAutomationsScheduledTasks: Story = {
   render: () => (
     <ModuleHubHostSurface
       selection={{ section: 'automations', module: 'scheduled-tasks' }}
-    />
-  ),
-};
-
-export const HostAutomationsDailyReview: Story = {
-  render: () => (
-    <ModuleHubHostSurface
-      selection={{ section: 'automations', module: 'daily-review' }}
     />
   ),
 };
@@ -1101,103 +1002,4 @@ export const ScheduledTasksNarrow: Story = {
 // Real path: sidebar → 定时任务 → 定时任务, with user-authored content at storage limits.
 export const ScheduledTasksLongContent: Story = {
   render: () => <ScheduledTasksSurface tasks={LONG_CONTENT_TASKS} />,
-};
-
-// Real path: sidebar → 定时任务 → 每日回顾, with reviews already generated.
-export const ScheduledDailyReview: Story = {
-  render: () => (
-    <ScheduledDailyReviewSurface
-      bridge={{
-        fetchDay: async () => DAILY_REVIEW_SUMMARY,
-        listArchives: async () => [],
-        runOnce: async () => ({ archiveId: DAILY_REVIEW_ARCHIVE.id }),
-        getArchive: async () => DAILY_REVIEW_ARCHIVE,
-      }}
-    />
-  ),
-};
-
-// Real path: sidebar → scheduled tasks → Daily Review after the initial activity request fails.
-export const ScheduledDailyReviewInitialLoadFailed: Story = {
-  render: () => (
-    <ScheduledDailyReviewSurface
-      bridge={{
-        fetchDay: async () => {
-          throw new Error('activity fixture unavailable');
-        },
-        listArchives: async () => [],
-        runOnce: async () => ({ archiveId: DAILY_REVIEW_ARCHIVE.id }),
-        getArchive: async () => DAILY_REVIEW_ARCHIVE,
-      }}
-    />
-  ),
-};
-
-// Real path: sidebar → scheduled tasks → Daily Review while a new range loads.
-export const ScheduledDailyReviewRefreshing: Story = {
-  render: () => (
-    <ScheduledDailyReviewSurface
-      bridge={{
-        fetchDay: async (_offsetDays, range) => {
-          if (range === 1) return DAILY_REVIEW_SUMMARY;
-          return new Promise<DailyReviewSummary>(() => undefined);
-        },
-        listArchives: async () => [],
-        runOnce: async () => ({ archiveId: DAILY_REVIEW_ARCHIVE.id }),
-        getArchive: async () => DAILY_REVIEW_ARCHIVE,
-      }}
-    />
-  ),
-  play: async ({ canvasElement }) => {
-    const button = await waitForStoryButton(
-      canvasElement,
-      (candidate) => candidate.textContent?.includes('最近 7 天') === true,
-    );
-    button.click();
-    await waitForStorySelector<HTMLElement>(canvasElement, '.maka-daily-review-content');
-  },
-};
-
-// Real path after an analysis exists and the user opens its dedicated detail route.
-// Real path: sidebar → scheduled tasks → Daily Review → view analysis.
-export const ScheduledDailyReviewReport: Story = {
-  render: function Render() {
-    const staleSummary = {
-      ...DAILY_REVIEW_SUMMARY,
-      day: {
-        fromMs: DAILY_REVIEW_SUMMARY.day.fromMs - 86_400_000,
-        toMs: DAILY_REVIEW_SUMMARY.day.toMs - 86_400_000,
-      },
-      totals: { ...DAILY_REVIEW_SUMMARY.totals, requestCount: 999 },
-    };
-    return (
-      <ScheduledDailyReviewSurface
-        bridge={{
-          fetchDay: async (_offsetDays, range) => range === 1 ? DAILY_REVIEW_SUMMARY : staleSummary,
-          listArchives: async () => [{
-            id: DAILY_REVIEW_ARCHIVE.id,
-            day: DAILY_REVIEW_ARCHIVE.day,
-            range: DAILY_REVIEW_ARCHIVE.range,
-            status: DAILY_REVIEW_ARCHIVE.status,
-            generatedAt: DAILY_REVIEW_ARCHIVE.generatedAt,
-            trigger: DAILY_REVIEW_ARCHIVE.trigger,
-            modelKey: DAILY_REVIEW_ARCHIVE.modelKey,
-            totals: DAILY_REVIEW_ARCHIVE.totals,
-          }],
-          getArchive: async () => {
-            await new Promise((resolve) => globalThis.setTimeout(resolve, 100));
-            return DAILY_REVIEW_ARCHIVE;
-          },
-        }}
-      />
-    );
-  },
-  play: async ({ canvasElement }) => {
-    const view = await waitForStoryButton(
-      canvasElement,
-      (candidate) => candidate.textContent?.includes('查看分析') === true,
-    );
-    view.click();
-    await waitForStoryText(canvasElement, '返回活动');
-  },
 };

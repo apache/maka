@@ -146,7 +146,6 @@ export type ScheduledTaskOperationKey = Extract<OperationKey, `scheduled-task.${
 export type PlanOperationKey = Extract<OperationKey, `plan.${string}`>;
 export type ProjectCatalogOperationKey = Extract<OperationKey, `project.catalog.${string}`>;
 export type DeepResearchOperationKey = Extract<OperationKey, `deep-research.${string}`>;
-export type DailyReviewOperationKey = Extract<OperationKey, `daily-review.${string}`>;
 export type WebSearchOperationKey = Extract<OperationKey, `web-search.${string}`>;
 export type NetworkProxyOperationKey = Extract<OperationKey, `network-proxy.${string}`>;
 export type ConfigurationOperationKey = Extract<OperationKey, `configuration.${string}`>;
@@ -213,7 +212,6 @@ export type ProjectCatalogOperationHandlerMap = Pick<
   ProjectCatalogOperationKey
 >;
 export type DeepResearchOperationHandlerMap = Pick<OperationHandlerMap, DeepResearchOperationKey>;
-export type DailyReviewOperationHandlerMap = Pick<OperationHandlerMap, DailyReviewOperationKey>;
 export type WebSearchOperationHandlerMap = Pick<OperationHandlerMap, WebSearchOperationKey>;
 export type NetworkProxyOperationHandlerMap = Pick<OperationHandlerMap, NetworkProxyOperationKey>;
 export type ConfigurationOperationHandlerMap = Pick<OperationHandlerMap, ConfigurationOperationKey>;

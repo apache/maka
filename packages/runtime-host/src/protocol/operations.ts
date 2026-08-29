@@ -24,7 +24,6 @@ import { requireExactRecord, requireId, requireRecord, requireString } from './c
 import { CONNECTION_EFFECT_OPERATION_SPECS } from './connection-effects.js';
 import { CONFIGURATION_OPERATION_SPECS } from './configuration.js';
 import { DEEP_RESEARCH_OPERATION_SPECS } from './deep-research.js';
-import { DAILY_REVIEW_OPERATION_SPECS } from './daily-review.js';
 import { CONTEXT_OPERATION_SPECS } from './context.js';
 import { EXECUTION_INSPECT_OPERATION_SPECS } from './execution-inspect.js';
 import { EXTERNAL_SESSION_OPERATION_SPECS } from './external-session.js';
@@ -152,7 +151,6 @@ export * from './connection-effects.js';
 export * from './access-authority.js';
 export * from './configuration.js';
 export * from './deep-research.js';
-export * from './daily-review.js';
 export * from './context.js';
 export * from './agent-graph.js';
 export * from './execution-inspect.js';
@@ -190,7 +188,6 @@ export const HOST_OPERATION_SPECS = composeOperationSpecMaps(
   CONTEXT_OPERATION_SPECS,
   CONNECTION_EFFECT_OPERATION_SPECS,
   DEEP_RESEARCH_OPERATION_SPECS,
-  DAILY_REVIEW_OPERATION_SPECS,
   EXECUTION_INSPECT_OPERATION_SPECS,
   EXTERNAL_SESSION_OPERATION_SPECS,
   RUNTIME_POLICY_OPERATION_SPECS,
@@ -259,8 +256,6 @@ export const REMOTE_OWNER_OPERATION_GRANTS = Object.freeze([
   'credential.vault.delete',
   'credential.vault.query',
   'credential.vault.set',
-  'daily-review.mutate',
-  'daily-review.query',
   'deep-research.query',
   'execution.inspect.query',
   'external-session.catalog.query',

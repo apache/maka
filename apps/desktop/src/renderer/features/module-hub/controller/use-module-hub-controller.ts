@@ -18,16 +18,11 @@
  */
 
 import { useEffect, useMemo, useRef } from 'react';
-import type { ScheduledTask } from '@maka/core/scheduled-task';
+import type { ScheduledTask, ScheduledTaskEffect } from '@maka/core/scheduled-task';
 import type { NavSelection } from '@maka/ui';
 import { useToast, useUiLocale } from '@maka/ui';
 import { useModuleHubServices } from '../services-context.js';
 import { startModuleHubLifecycle } from './module-hub-lifecycle.js';
-import {
-  useDailyReviewController,
-  type ActiveComposerClaim,
-  type DailyReviewController,
-} from './use-daily-review-controller.js';
 import {
   useKeepSystemAwakeController,
   type KeepSystemAwakeController,
@@ -47,8 +42,7 @@ export interface ModuleHubHostModel {
   readonly skills: SkillsHostModel;
   readonly scheduledTasks: ScheduledTasksController;
   readonly keepSystemAwake: KeepSystemAwakeController;
-  readonly dailyReview: DailyReviewController;
-  readonly openSession: (sessionId: string) => void;
+  readonly agentRunTemplateEffect?: Extract<ScheduledTaskEffect, { kind: 'agent_run' }>;
 }
 
 export interface ModuleHubController {
@@ -56,9 +50,6 @@ export interface ModuleHubController {
   readonly commands: {
     refreshProjectSkills(): Promise<void>;
     openScheduledTaskCreate(): void;
-    copyTodayDailyReview(): Promise<void>;
-    pasteTodayDailyReview(): Promise<void>;
-    saveTodayDailyReview(): Promise<void>;
   };
   readonly selectors: {
     readonly scheduledTasks: readonly ScheduledTask[];
@@ -72,9 +63,7 @@ export interface UseModuleHubControllerInput {
   readonly selectModule: (selection: NavSelection) => void;
   readonly openSkillsFolder?: () => void | Promise<void>;
   readonly useSkillInChat: (skillId: string, skillName: string) => void;
-  readonly openSession: (sessionId: string) => void;
-  readonly appendComposerText: (text: string) => void;
-  readonly captureActiveComposerClaim: () => ActiveComposerClaim | undefined;
+  readonly agentRunTemplateEffect?: Extract<ScheduledTaskEffect, { kind: 'agent_run' }>;
 }
 
 /** Public ownership boundary for every Module Hub surface except the MCP leaf. */
@@ -101,19 +90,6 @@ export function useModuleHubController(
     selectModule: input.selectModule,
   });
   const keepSystemAwake = useKeepSystemAwakeController(services);
-  const selectionRef = useRef(input.selection);
-  selectionRef.current = input.selection;
-  const dailyReview = useDailyReviewController({
-    services,
-    uiLocale,
-    toastApi,
-    appendComposerText: input.appendComposerText,
-    captureActiveComposerClaim: input.captureActiveComposerClaim,
-    isDailyReviewSurfaceActive: () =>
-      selectionRef.current.section === 'automations' &&
-      selectionRef.current.module === 'daily-review',
-  });
-
   const refreshProjectSkillsRef = useRef(skills.refreshProjectSkills);
   const refreshScheduledTasksRef = useRef(scheduledTasks.refresh);
   refreshProjectSkillsRef.current = skills.refreshProjectSkills;
@@ -135,15 +111,11 @@ export function useModuleHubController(
         skills: skills.host,
         scheduledTasks,
         keepSystemAwake,
-        dailyReview,
-        openSession: input.openSession,
+        agentRunTemplateEffect: input.agentRunTemplateEffect,
       },
       commands: {
         refreshProjectSkills: skills.refreshProjectSkills,
         openScheduledTaskCreate: scheduledTasks.openCreate,
-        copyTodayDailyReview: dailyReview.copyToday,
-        pasteTodayDailyReview: dailyReview.pasteToday,
-        saveTodayDailyReview: dailyReview.saveToday,
       },
       selectors: {
         scheduledTasks: scheduledTasks.scheduledTasks,
@@ -151,10 +123,9 @@ export function useModuleHubController(
       },
     }),
     [
-      dailyReview,
-      input.openSession,
       input.selectModule,
       input.selection,
+      input.agentRunTemplateEffect,
       keepSystemAwake,
       scheduledTasks,
       skills.host,

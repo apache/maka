@@ -169,6 +169,7 @@ function agentRunEffect(projectId: string | null | undefined): ScheduledTaskEffe
     execution: {
       cwd: '/workspace',
       ...(projectId === undefined ? {} : { projectId }),
+      llmConnectionId: 'connection-openai',
       llmConnectionSlug: 'openai',
       model: 'gpt-5',
       permissionMode: 'ask',

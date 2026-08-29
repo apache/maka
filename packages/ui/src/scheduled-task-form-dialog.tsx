@@ -38,7 +38,11 @@ import { useEffect, useRef, useState, type FormEvent } from 'react';
 import { useMountedRef } from './use-mounted-ref.js';
 import { BotBrandLogo } from './bot-brand-logo.js';
 import type { BotProvider } from '@maka/core/bot-chat-settings';
-import type { ScheduledTask, ScheduledTaskSchedule } from '@maka/core/scheduled-task';
+import type {
+  ScheduledTask,
+  ScheduledTaskEffect,
+  ScheduledTaskSchedule,
+} from '@maka/core/scheduled-task';
 import { BOT_DELIVERY_PROVIDERS } from '@maka/core/bot-chat-settings';
 import { botDisplayLabel } from '@maka/core/bot-events';
 import {
@@ -84,6 +88,7 @@ export function ScheduledTaskFormDialog(props: {
   seed: ScheduledTaskFormSeed;
   /** Current tasks, so an open edit form resets if its task vanishes. */
   tasks: ScheduledTask[];
+  agentRunTemplateEffect?: Extract<ScheduledTaskEffect, { kind: 'agent_run' }>;
   onOpenChange(open: boolean): void;
   onCreate?(input: ScheduledTaskDraftInput): boolean | Promise<boolean> | void | Promise<void>;
   onUpdate?(id: string, patch: ScheduledTaskUpdatePatch): boolean | Promise<boolean> | void | Promise<void>;
@@ -101,6 +106,7 @@ export function ScheduledTaskFormDialog(props: {
   const [deliveryPlatform, setDeliveryPlatform] = useState<BotProvider>(props.seed.deliveryPlatform);
   const [deliveryChatId, setDeliveryChatId] = useState(props.seed.deliveryChatId);
   const [editingId, setEditingId] = useState<string | null>(props.seed.editingId);
+  const [lockedEffect, setLockedEffect] = useState(props.seed.lockedEffect);
   const [submitPending, setSubmitPending] = useState(false);
   // The empty form is invalid by definition; showing the title error before
   // the user has typed anything reads as a scolding. Gate it on first input.
@@ -109,7 +115,7 @@ export function ScheduledTaskFormDialog(props: {
   const submitPendingRef = useRef(false);
   const parsedRunAt = Date.parse(runAtLocal);
   const effect = deliveryMethod === 'agent_run'
-    ? props.seed.lockedEffect
+    ? lockedEffect
     : deliveryMethod === 'bot'
       ? { kind: 'notify' as const, channel: 'bot' as const, platform: deliveryPlatform, chatId: deliveryChatId.trim() }
       : { kind: 'notify' as const, channel: 'local' as const };
@@ -152,6 +158,7 @@ export function ScheduledTaskFormDialog(props: {
     setDeliveryMethod('local');
     setDeliveryPlatform('telegram');
     setDeliveryChatId('');
+    setLockedEffect(undefined);
     setRunAtLocal(toScheduledTaskLocalDateTimeValue(Date.now() + 60 * 60 * 1000));
     setEditingId(null);
     setTitleTouched(false);
@@ -164,7 +171,7 @@ export function ScheduledTaskFormDialog(props: {
   }
 
   function applyTemplate(template: ScheduledTaskExampleTemplate) {
-    const seed = scheduledTaskTemplateSeed(template);
+    const seed = scheduledTaskTemplateSeed(template, Date.now(), props.agentRunTemplateEffect);
     setTitle(seed.title);
     setNote(seed.note);
     setRunAtLocal(seed.runAtLocal);
@@ -173,6 +180,7 @@ export function ScheduledTaskFormDialog(props: {
     setDeliveryMethod(seed.deliveryMethod);
     setDeliveryPlatform(seed.deliveryPlatform);
     setDeliveryChatId(seed.deliveryChatId);
+    setLockedEffect(seed.lockedEffect);
   }
 
   async function submit(event: FormEvent<HTMLFormElement>) {
@@ -250,14 +258,16 @@ export function ScheduledTaskFormDialog(props: {
                 }}
                 menuWidth={240}
               >
-                {templates.map((template) => (
+                {templates
+                  .filter((template) => !template.agentRun || props.agentRunTemplateEffect)
+                  .map((template) => (
                   <DropdownMenuItem
                     key={template.id}
                     onClick={() => applyTemplate(template)}
                     label={template.title}
                     endContent={template.scheduleLabel}
                   />
-                ))}
+                  ))}
               </DropdownMenu>
             ) : undefined}
           />

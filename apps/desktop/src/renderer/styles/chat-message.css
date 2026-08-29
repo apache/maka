@@ -305,7 +305,7 @@
    argument for flattening the document ladder is unchanged; what changed is
    where it is expressed. These rules keyed on a `.maka-turn` ancestor, which
    made the heading scale a function of DOM position: the same MarkdownBody
-   rendered document-sized headings in the Daily Review and flat ones in a
+   rendered document-sized headings in report Artifacts and flat ones in a
    turn, and no Storybook story could reproduce the transcript without
    remembering to wrap one. The rhythm table keys on Astryx's own
    `data-density` instead, so the scale follows the `density` prop that already

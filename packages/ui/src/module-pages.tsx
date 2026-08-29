@@ -18,19 +18,15 @@
  */
 
 import { lazy, Suspense } from 'react';
-import type { ScheduledTask } from '@maka/core/scheduled-task';
+import type { ScheduledTask, ScheduledTaskEffect } from '@maka/core/scheduled-task';
 import { deriveCapabilityAuditReport } from '@maka/core/capability-audit';
-import { ICON_SIZE, CalendarDays } from './icons.js';
-import { EmptyState, Spinner } from '@astryxdesign/core';
-import { ModulePage } from './primitives/module-page.js';
+import { Spinner } from '@astryxdesign/core';
 import { useUiLocale } from './locale-context.js';
 import { getSharedUiCopy } from './shared-ui-copy.js';
 import { getSkillsCopy } from './skills-copy.js';
 import type { ModuleHubHeader } from './module-hub-selector.js';
 import type {
   BundledSkillCatalogEntry,
-  DailyReviewBridge,
-  DailyReviewMarkdownActionInput,
   ManagedSkillSourceEntry,
   ManagedSkillUpdatePreview,
   ScheduledTaskDraftInput,
@@ -39,7 +35,6 @@ import type {
 } from './module-panel-types.js';
 
 const SkillsModuleMain = lazy(() => import('./skills-panel.js').then((module) => ({ default: module.SkillsModuleMain })));
-const DailyReviewPanel = lazy(() => import('./daily-review-panel.js').then((module) => ({ default: module.DailyReviewPanel })));
 const ScheduledTaskPanel = lazy(() => import('./scheduled-task-panel.js').then((module) => ({ default: module.ScheduledTaskPanel })));
 
 /** Skills renders its own labelled region inside the lazy chunk, so its fallback must too. */
@@ -97,6 +92,7 @@ export function SkillsPage(props: {
 export function ScheduledTasksPage(props: {
   hubHeader?: ModuleHubHeader;
   tasks?: ScheduledTask[];
+  agentRunTemplateEffect?: Extract<ScheduledTaskEffect, { kind: 'agent_run' }>;
   createRequestNonce?: number;
   onCreateRequestHandled?: () => void;
   keepSystemAwake?: boolean;
@@ -117,42 +113,6 @@ export function ScheduledTasksPage(props: {
       <Suspense fallback={<ModulePanelFallback message={copy.loadingAutomations} />}>
         <ScheduledTaskPanel {...props} tasks={props.tasks ?? []} />
       </Suspense>
-    </section>
-  );
-}
-
-export function DailyReviewPage(props: {
-  bridge?: DailyReviewBridge;
-  hubHeader?: ModuleHubHeader;
-  onSelectSession?: (sessionId: string) => void;
-  onCopyMarkdown?: (input: DailyReviewMarkdownActionInput) => Promise<void> | void;
-  onAppendMarkdown?: (input: DailyReviewMarkdownActionInput) => Promise<void> | void;
-  onSaveMarkdown?: (input: DailyReviewMarkdownActionInput) => Promise<void> | void;
-}) {
-  const copy = getSharedUiCopy(useUiLocale()).modules;
-  const label = props.hubHeader?.title ?? copy.dailyReview;
-  return (
-    <section className="maka-main detailPane maka-module-main agents-chat-panel" data-page-shell="layout" data-module="daily-review" aria-label={label}>
-      {props.bridge ? (
-        // The page header lives INSIDE the panel: its primary action (生成分析 /
-        // 查看分析) rides the panel's run state, exactly like 定时任务's 新建.
-        // The bridge-less fallback keeps its own static header below.
-        (<Suspense fallback={<ModulePanelFallback message={copy.loadingDailyReview} />}>
-          <DailyReviewPanel {...props} bridge={props.bridge} />
-        </Suspense>)
-      ) : (
-        // The disconnected state keeps the module switch: it is the only
-        // in-page way back to 定时任务, and a page you cannot leave is a worse
-        // failure than the one it is reporting.
-        (<ModulePage
-          title={label}
-          toolbar={props.hubHeader?.badge ? <div className="maka-module-page-bar">{props.hubHeader.badge}</div> : undefined}
-        >
-          <div className="maka-module-page-panel">
-            <EmptyState icon={<CalendarDays size={ICON_SIZE.empty} />} title={copy.dailyReviewDisconnectedTitle} description={copy.dailyReviewDisconnectedBody} />
-          </div>
-        </ModulePage>)
-      )}
     </section>
   );
 }

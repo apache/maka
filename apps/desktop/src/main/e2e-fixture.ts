@@ -51,7 +51,6 @@ import { seedMcpFixture, seedSkillsMarketFixture } from './e2e-fixture/scenarios
 import { longSidebarSessions } from './e2e-fixture/scenarios-sessions.js';
 import {
   writeConnections,
-  writeDailyReviewArchives,
   writeScheduledTasks,
   writeSettings,
 } from './e2e-fixture/scenarios-settings.js';
@@ -70,7 +69,6 @@ const E2E_FIXTURE_SCENARIOS = new Set<E2eFixtureScenario>([
   'settings-usage',
   'module-skills',
   'module-mcp',
-  'module-daily-review',
   'scheduled-tasks',
   'sidebar-search-modal-open',
 ]);
@@ -199,8 +197,6 @@ export function getE2eFixtureState(fixture: E2eFixture | null): E2eFixtureState 
       return { ...state, activeSessionId: TURN_SESSION_ID, sidebarSection: 'skills', sidebarCollapsed: false };
     case 'module-mcp':
       return { ...state, activeSessionId: TURN_SESSION_ID, sidebarSection: 'mcp', sidebarCollapsed: false };
-    case 'module-daily-review':
-      return { ...state, activeSessionId: TURN_SESSION_ID, sidebarSection: 'daily-review', sidebarCollapsed: false };
     case 'scheduled-tasks':
       return { ...state, activeSessionId: TURN_SESSION_ID, sidebarSection: 'automations', sidebarCollapsed: false };
     case 'sidebar-search-modal-open':
@@ -254,7 +250,6 @@ export async function seedE2eFixture(input: {
     }
   }
   if (scenario === 'scheduled-tasks') await writeScheduledTasks(input.workspaceRoot, now);
-  if (scenario === 'module-daily-review') await writeDailyReviewArchives(input.workspaceRoot, now);
   if (scenario === 'module-skills') await seedSkillsMarketFixture(input.workspaceRoot);
   if (scenario === 'module-mcp') await seedMcpFixture(input.workspaceRoot);
   if (scenario === 'settings-usage') {

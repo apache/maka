@@ -34,6 +34,7 @@ export interface RuntimeHostUpgradeDialog {
 type ActivityKey =
   | 'goal'
   | 'scheduledTask'
+  // Decode-only copy for an older Host that is still resident during upgrade.
   | 'dailyReview'
   | 'execution'
   | 'resource'

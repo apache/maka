@@ -83,7 +83,8 @@ An explicit `BackendFactoryContext.tools` list is a hard ceiling. Root surfaces
 may add native search, but scoped child agents do not gain it unless their
 supplied tool list already contains `WebSearch`. Dedicated model experiments
 and auxiliary calls such as title generation, history compaction, goal judging,
-connection tests, and daily review do not receive search implicitly.
+connection tests do not receive search implicitly. Scheduled agent runs use the ordinary Session
+tool ceiling captured in their execution template.
 
 Privacy mode removes both provider-native and client-executed `WebSearch`
 before the model request is built.

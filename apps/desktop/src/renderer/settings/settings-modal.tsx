@@ -57,12 +57,6 @@ export function SettingsModal(props: {
   openProviderCatalog?: boolean;
   initialConnectionSlug?: string;
   initialCreateProviderType?: ProviderType;
-  /**
-   * PR-DAILY-REVIEW-MVP-0 follow-up: navigate to the sidebar's
-   * Daily Review module. Optional so the settings page degrades
-   * gracefully when the shell does not provide the jump.
-   */
-  onOpenDailyReview?(): void;
   /** Opens the keyboard sheet; 关于 is its click-reachable home. */
   onOpenKeyboardHelp?(): void;
   /**
@@ -110,7 +104,6 @@ export function SettingsModal(props: {
         initialConnectionSlug={props.initialConnectionSlug}
         initialCreateProviderType={props.initialCreateProviderType}
         initialFocusRef={activeNavRef}
-        onOpenDailyReview={props.onOpenDailyReview}
         onOpenKeyboardHelp={props.onOpenKeyboardHelp}
         onOpenSession={props.onOpenSession}
         archivedTasks={props.archivedTasks}

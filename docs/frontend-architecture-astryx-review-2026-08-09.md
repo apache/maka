@@ -217,7 +217,6 @@ These were **not** invent-from-whole-cloth “logo false positives” in the abs
 | Sev | Gap | Anchors | Fix |
 |-----|-----|---------|-----|
 | **medium** | Usage ad-hoc toolbar CSS | `usage-settings-page.tsx`, `settings/usage.css` | `Toolbar` |
-| **medium** | Daily review metrics hand layout | `daily-review-panel.tsx` | optional `StatTile` |
 | **aligned** | Settings empty/error/skeleton after #2580 | memory, permission, web-search, providers list… | keep kit |
 | **intentional** | Providers catalog/setup not own `SettingsPage` | nested multi-level under Models | do not force rows kit |
 
@@ -276,7 +275,6 @@ Empty/error largely share Astryx. **Loading** still has 6+ dialects:
 | P2.2 | Workbar launcher → `Kbd` | **Done** |
 | P2.3 | Keyboard help headings → `Heading` | **Done** |
 | P2.4 | Web tool links → `Link` | **Done** |
-| P2.5 | Optional StatTile for daily-review metrics | Open (polish) |
 | P2.6 | `SurfaceLoading` kit; retire ad-hoc fallbacks | Open (architecture follow-up) |
 | P2.7 | Usage settings toolbar → `Toolbar` | Open (polish) |
 

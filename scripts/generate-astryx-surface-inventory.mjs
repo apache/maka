@@ -195,7 +195,7 @@ export function listProductSurfaceFiles(repoRoot = root) {
 function roleFor(rel) {
   if (rel.includes('/settings/') && /-(page|modal)\.tsx$/.test(rel)) return 'settings-page';
   if (rel.includes('/settings/')) return 'settings-module';
-  if (/mcp-page|skills-panel|scheduled-task|daily-review/.test(rel)) return 'module-hub';
+  if (/mcp-page|skills-panel|scheduled-task/.test(rel)) return 'module-hub';
   if (/dialog|modal|command-palette|keyboard-help|onboarding/.test(rel)) return 'dialog-overlay';
   if (
     /panel|workbar|inspector|terminal|browser|artifact|composer|chat-|app-shell|titlebar|sidebar|session-/.test(

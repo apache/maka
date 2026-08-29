@@ -44,7 +44,7 @@ function methodRecorder(calls: Call[], prefix: string) {
 }
 
 describe('createDesktopModuleHubServices', () => {
-  it('maps host-scoped Skills, Scheduled Tasks, Daily Review, and clipboard operations', async () => {
+  it('maps host-scoped Skills and Scheduled Tasks operations', async () => {
     const calls: Call[] = [];
     const host: ModuleHubRuntimeHostRef = {
       profileId: 'remote-a',
@@ -60,14 +60,8 @@ describe('createDesktopModuleHubServices', () => {
         catalog: methodRecorder(calls, 'skills.catalog'),
       }),
       scheduledTasks: methodRecorder(calls, 'scheduledTasks'),
-      dailyReview: methodRecorder(calls, 'dailyReview'),
     } as unknown as DesktopModuleHubBridge;
-    const clipboard = {
-      async writeText(text: string) {
-        calls.push({ name: 'clipboard.writeText', args: [text] });
-      },
-    };
-    const services = createDesktopModuleHubServices(bridge, { clipboard });
+    const services = createDesktopModuleHubServices(bridge);
 
     assert.deepEqual(await services.runtimeHosts.getDefault(), host);
     await services.skills.list(host);
@@ -98,16 +92,6 @@ describe('createDesktopModuleHubServices', () => {
     await services.scheduledTasks.clearRunHistory('task', host);
     await services.scheduledTasks.delete('task', host);
 
-    await services.dailyReview.day(0, 7, host);
-    await services.dailyReview.runOnce({ range: 7, offsetDays: -1 });
-    await services.dailyReview.listArchives();
-    await services.dailyReview.getArchive('archive');
-    await services.dailyReview.saveMarkdownToFile({
-      markdown: '# Review',
-      defaultName: 'review.md',
-    });
-    await services.clipboard.writeText('review');
-
     assert.deepEqual(calls, [
       { name: 'skills.list', args: [host] },
       { name: 'skills.sources.list', args: [host] },
@@ -129,15 +113,6 @@ describe('createDesktopModuleHubServices', () => {
       { name: 'scheduledTasks.snooze', args: ['task', host] },
       { name: 'scheduledTasks.clearRunHistory', args: ['task', host] },
       { name: 'scheduledTasks.delete', args: ['task', host] },
-      { name: 'dailyReview.day', args: [0, 7, host] },
-      { name: 'dailyReview.runOnce', args: [{ range: 7, offsetDays: -1 }] },
-      { name: 'dailyReview.listArchives', args: [] },
-      { name: 'dailyReview.getArchive', args: ['archive'] },
-      {
-        name: 'dailyReview.saveMarkdownToFile',
-        args: [{ markdown: '# Review', defaultName: 'review.md' }],
-      },
-      { name: 'clipboard.writeText', args: ['review'] },
     ]);
   });
 
@@ -176,11 +151,8 @@ describe('createDesktopModuleHubServices', () => {
           scheduledDueHandler = handler;
         }),
       }),
-      dailyReview: methodRecorder([], 'dailyReview'),
     } as unknown as DesktopModuleHubBridge;
-    const services = createDesktopModuleHubServices(bridge, {
-      clipboard: { writeText: async () => undefined },
-    });
+    const services = createDesktopModuleHubServices(bridge);
     const hostEvents: unknown[] = [];
     const taskEvents: unknown[] = [];
     const dueEvents: unknown[] = [];
@@ -238,7 +210,6 @@ describe('createDesktopModuleHubServices', () => {
         catalog: methodRecorder([], 'skills.catalog'),
       }),
       scheduledTasks: methodRecorder([], 'scheduledTasks'),
-      dailyReview: methodRecorder([], 'dailyReview'),
     };
     const services = createDesktopModuleHubServices(
       {
@@ -259,7 +230,6 @@ describe('createDesktopModuleHubServices', () => {
           },
         },
       } as unknown as DesktopModuleHubBridge,
-      { clipboard: { writeText: async () => undefined } },
     );
     assert.equal(services.clientSettings.supported, true);
     assert.equal(await services.clientSettings.getKeepSystemAwake(), true);
@@ -276,7 +246,6 @@ describe('createDesktopModuleHubServices', () => {
 
     const oldPreload = createDesktopModuleHubServices(
       base as unknown as DesktopModuleHubBridge,
-      { clipboard: { writeText: async () => undefined } },
     );
     assert.equal(oldPreload.clientSettings.supported, false);
     oldPreload.clientSettings.subscribeChanges(() => undefined)();

@@ -175,6 +175,7 @@ describe('scheduled-task catalog', () => {
     const now = Date.UTC(2026, 0, 5, 8, 0, 0);
     const execution = {
       cwd: '/tmp/project',
+      llmConnectionId: 'connection-anthropic',
       llmConnectionSlug: 'anthropic',
       model: 'claude-sonnet-4-5-20250929',
       permissionMode: 'ask',
@@ -240,6 +241,7 @@ describe('decodePersistedScheduledTask', () => {
       kind: 'agent_run',
       execution: {
         cwd: '/repo',
+        llmConnectionId: 'connection-anthropic',
         llmConnectionSlug: 'anthropic',
         model: 'claude',
         permissionMode: 'ask',

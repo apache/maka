@@ -329,7 +329,7 @@
 
    - Only `[data-density="compact"]`. The document mode is not broken (its
      lists sit 10px apart against 12px paragraphs, which is already in order),
-     and the Daily Review renders through it. Fixing only the broken half keeps
+     and report Artifacts render through it. Fixing only the broken half keeps
      that surface out of the blast radius. Compact is not the transcript
      alone, though — the desktop Artifact Preview asks for it too, so it takes
      these gaps as well. For the block rung that is the point rather than a
