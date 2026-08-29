@@ -356,7 +356,7 @@ function decodeTurnStartInput(value: unknown): TurnStartInput {
   return {
     sessionId: requireEntityId(record.sessionId, 'sessionId'),
     turnId: requireEntityId(record.turnId, 'turnId'),
-    content: decodeMessageContent(record.content, skillIds.length > 0),
+    content: decodeMessageAdmissionContent(record.content, skillIds.length > 0),
     ...(skillIds.length > 0 ? { skillIds } : {}),
     ...(record.turnOrchestration !== undefined
       ? { turnOrchestration: decodeTurnOrchestration(record.turnOrchestration) }
@@ -435,14 +435,16 @@ export function decodeMessageContent(value: unknown, allowEmptyText = false): Me
     if (attachment.bytes > MAX_ATTACHMENT_BYTES) {
       throw invalidProtocolFrame('Invalid AttachmentRef bytes');
     }
-    if (attachment.ref.kind === 'session_file') {
+    if (attachment.ref.kind === 'session_file' || attachment.ref.kind === 'session_context') {
       requireEntityId(attachment.ref.sessionId, 'AttachmentRef sessionId');
     }
-    const path =
+    const identity =
       attachment.ref.kind === 'external_file'
         ? attachment.ref.absolutePath
-        : attachment.ref.relativePath;
-    requireUtf8String(path, 'AttachmentRef path', ATTACHMENT_PATH_MAX_BYTES, false);
+        : attachment.ref.kind === 'session_context'
+          ? attachment.ref.refId
+          : attachment.ref.relativePath;
+    requireUtf8String(identity, 'AttachmentRef identity', ATTACHMENT_PATH_MAX_BYTES, false);
   }
   if ((content.quotes?.length ?? 0) > TURN_MESSAGE_QUOTE_MAX_COUNT) {
     throw invalidProtocolFrame('Invalid Message quotes');
@@ -457,6 +459,18 @@ export function decodeMessageContent(value: unknown, allowEmptyText = false): Me
     }
   }
   requireEncodedByteLimit(content, 'Message content', TURN_MESSAGE_CONTENT_MAX_BYTES);
+  return content;
+}
+
+/** Client-authored Messages cannot claim Host-owned Session context references. */
+export function decodeMessageAdmissionContent(
+  value: unknown,
+  allowEmptyText = false,
+): MessageContent {
+  const content = decodeMessageContent(value, allowEmptyText);
+  if (content.attachments?.some((attachment) => attachment.ref.kind === 'session_context')) {
+    throw invalidProtocolFrame('Session context references are Host-owned');
+  }
   return content;
 }
 

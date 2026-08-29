@@ -57,6 +57,7 @@ import {
 
 const require = createRequire(import.meta.url);
 const FAKE_CONNECTION_ID = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+const CONTEXT_OFFLOAD_DATABASE_NAME = 'context-offload.sqlite';
 
 test('filesystem worker follows the candidate executable runtime', () => {
   assert.equal(runtimeHostFilesystemWorkerRuntime({ electron: '43.1.1' }), 'electron');
@@ -93,6 +94,27 @@ test('production composition owns the long-term memory database lifecycle', asyn
       assert.equal(counts.operation_count, 0);
     } finally {
       database.close();
+    }
+  });
+});
+
+test('production composition reaches Ready when the optional context reader cannot open', async () => {
+  await withCompositionRoot(async ({ root, owner }) => {
+    await mkdir(join(root, CONTEXT_OFFLOAD_DATABASE_NAME));
+    const originalConsoleError = console.error;
+    const diagnostics: string[] = [];
+    console.error = (...values: unknown[]) => diagnostics.push(values.map(String).join(' '));
+    let composition: Awaited<ReturnType<typeof createExecutionRuntimeHostComposition>> | undefined;
+    try {
+      composition = await createExecutionRuntimeHostComposition(compositionContext(owner));
+      assert.equal(composition.workspaceExecution.state, 'ready');
+      assert.equal(
+        diagnostics.some((message) => message.includes('optional context-offload reader')),
+        true,
+      );
+    } finally {
+      console.error = originalConsoleError;
+      await composition?.close();
     }
   });
 });

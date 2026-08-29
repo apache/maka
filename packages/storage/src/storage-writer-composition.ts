@@ -18,6 +18,8 @@
  */
 
 import { openInteractiveArtifactStoreForWrite } from './artifact-stores.js';
+import type { ContextOffloadLimits } from '@maka/core/context-offload';
+import { openInteractiveContextOffloadStoreForWrite } from './context-offload-store.js';
 import { openInteractiveDailyReviewAuthorityForWrite } from './daily-review-authority.js';
 import { openInteractiveDeepResearchStoreForWrite } from './deep-research-authority.js';
 import { openInteractiveExecutionStoresForWrite } from './execution-stores.js';
@@ -38,6 +40,8 @@ export interface OpenStorageWriterCompositionOptions {
   afterRuntimePolicyOpened?: (
     stores: Awaited<ReturnType<typeof openInteractiveRuntimePolicyStoresForWrite>>,
   ) => void | Promise<void>;
+  /** Opens the context-offload authority only when a reader or writer is composed. */
+  contextOffloadLimits?: ContextOffloadLimits;
 }
 
 export interface StorageWriterComposition {
@@ -53,6 +57,9 @@ export interface StorageWriterComposition {
   readonly longTermMemory: Awaited<ReturnType<typeof openInteractiveLongTermMemoryStoreForWrite>>;
   readonly taskLedger: Awaited<ReturnType<typeof openInteractiveTaskLedgerStoreForWrite>>;
   readonly artifacts: Awaited<ReturnType<typeof openInteractiveArtifactStoreForWrite>>;
+  readonly contextOffload?: Awaited<ReturnType<typeof openInteractiveContextOffloadStoreForWrite>>;
+  /** Present when the optional context-offload capability could not be opened. */
+  readonly contextOffloadUnavailable?: { readonly cause: unknown };
   readonly usage: Awaited<ReturnType<typeof openInteractiveUsageStoresForWrite>>;
   readonly shellRuns: Awaited<ReturnType<typeof openInteractiveShellRunStoreForWrite>>;
   close(): Promise<void>;
@@ -153,6 +160,22 @@ async function createComposition(
     () => openInteractiveArtifactStoreForWrite(lease),
     closeWriter,
   );
+  const contextOffloadLimits = options.contextOffloadLimits;
+  let contextOffload:
+    | Awaited<ReturnType<typeof openInteractiveContextOffloadStoreForWrite>>
+    | undefined;
+  let contextOffloadUnavailable: { readonly cause: unknown } | undefined;
+  if (contextOffloadLimits) {
+    try {
+      const openedContextOffload = await openInteractiveContextOffloadStoreForWrite(lease, {
+        limits: contextOffloadLimits,
+      });
+      contextOffload = openedContextOffload;
+      closes.push(() => closeWriter(openedContextOffload));
+    } catch (cause) {
+      contextOffloadUnavailable = Object.freeze({ cause });
+    }
+  }
   const usage = await openWriter(() => openInteractiveUsageStoresForWrite(lease), closeWriter);
   const shellRuns = await openWriter(
     () => openInteractiveShellRunStoreForWrite(lease),
@@ -171,6 +194,8 @@ async function createComposition(
     longTermMemory,
     taskLedger,
     artifacts,
+    ...(contextOffload ? { contextOffload } : {}),
+    ...(contextOffloadUnavailable ? { contextOffloadUnavailable } : {}),
     usage,
     shellRuns,
     close,

@@ -25,10 +25,14 @@ import { after, test } from 'node:test';
 import { MAX_READ_IMAGE_BYTES } from '@maka/core/attachments';
 import { ReadImageSnapshotStoreError, type ContextOffloadLimits } from '@maka/core/context-offload';
 import {
+  createInteractiveContextOffloadReader,
   openInteractiveContextOffloadStoreForWrite,
   type InteractiveContextOffloadWriter,
 } from '../context-offload-store.js';
-import { createReadImageSnapshotStore } from '../read-image-snapshot-store.js';
+import {
+  createReadImageSnapshotReader,
+  createReadImageSnapshotStore,
+} from '../read-image-snapshot-store.js';
 import {
   resolveStorageRoot,
   tryAcquireInteractiveRootOwner,
@@ -82,6 +86,12 @@ test('snapshots one stable Read image identity and authorizes reads by Session',
     assert.equal(read.record.owner.ownerId, 'read-call-1');
     assert.equal(read.record.mediaType, 'image/png');
     assert.deepEqual(read.bytes, new TextEncoder().encode('image'));
+    const reader = createReadImageSnapshotReader(
+      createInteractiveContextOffloadReader(writer),
+      'session-1',
+    );
+    assert.deepEqual(await reader.read(ref), read);
+    assert.deepEqual(Object.keys(reader), ['read']);
     assert.deepEqual(await images.read({ ...ref, sessionId: 'session-2' }), {
       ok: false,
       reason: 'session_mismatch',

@@ -24,8 +24,11 @@ import { join } from 'node:path';
 import { after, test } from 'node:test';
 import type { ContextOffloadLimits } from '@maka/core/context-offload';
 import {
+  authenticateInteractiveContextOffloadReader,
   authenticateInteractiveContextOffloadWriter,
+  createInteractiveContextOffloadReader,
   openInteractiveContextOffloadStoreForWrite,
+  type InteractiveContextOffloadReader,
   type InteractiveContextOffloadWriter,
 } from '../context-offload-store.js';
 import {
@@ -55,6 +58,10 @@ test('requires authentic Storage Root leases and writer facades', async () => {
     () => authenticateInteractiveContextOffloadWriter({} as InteractiveContextOffloadWriter),
     invalidLease,
   );
+  assert.throws(
+    () => authenticateInteractiveContextOffloadReader({} as InteractiveContextOffloadReader),
+    invalidLease,
+  );
 });
 
 test('single-flights one limit-bound writer and snapshots admitted inputs', async () => {
@@ -79,6 +86,10 @@ test('single-flights one limit-bound writer and snapshots admitted inputs', asyn
       await conflictingOpening;
       assert.strictEqual(second, first);
       assert.strictEqual(authenticateInteractiveContextOffloadWriter(first), first);
+      const reader = createInteractiveContextOffloadReader(first);
+      assert.strictEqual(createInteractiveContextOffloadReader(first), reader);
+      assert.strictEqual(authenticateInteractiveContextOffloadReader(reader), reader);
+      assert.deepEqual(Object.keys(reader).sort(), ['access', 'kind', 'read']);
       assert.equal((await stat(join(root, CONTEXT_OFFLOAD_DATABASE_NAME))).isFile(), true);
 
       const bytes = new TextEncoder().encode('safe');
@@ -100,7 +111,7 @@ test('single-flights one limit-bound writer and snapshots admitted inputs', asyn
       assert.equal(stored.record.owner.ownerId, 'source-owner');
       assert.equal(stored.record.mediaType, 'application/json');
       assert.deepEqual(
-        await first.read({ sessionId: 'source', refId: stored.record.refId, maxBytes: 64 }),
+        await reader.read({ sessionId: 'source', refId: stored.record.refId, maxBytes: 64 }),
         { ok: true, record: stored.record, bytes: new TextEncoder().encode('safe') },
       );
 
@@ -150,6 +161,7 @@ test('close drains admitted work, revokes the facade, and permits a clean reopen
       bytes: new TextEncoder().encode('image'),
       mediaType: 'image/png',
     });
+    const reader = createInteractiveContextOffloadReader(writer);
     const closing = writer.close();
     const reopening = openInteractiveContextOffloadStoreForWrite(owner.lease, {
       limits: testLimits(),
@@ -158,6 +170,11 @@ test('close drains admitted work, revokes the facade, and permits a clean reopen
     await closing;
     await assert.rejects(writer.usage(), invalidLease);
     assert.throws(() => authenticateInteractiveContextOffloadWriter(writer), invalidLease);
+    assert.throws(() => authenticateInteractiveContextOffloadReader(reader), invalidLease);
+    await assert.rejects(
+      reader.read({ sessionId: 'session-1', refId: 'ref-1', maxBytes: 64 }),
+      invalidLease,
+    );
 
     const reopened = await reopening;
     try {

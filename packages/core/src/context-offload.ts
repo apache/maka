@@ -23,6 +23,9 @@ export interface SessionContextRef {
   readonly refId: string;
 }
 
+/** Maximum Unicode code points accepted for durable context-offload identities. */
+export const CONTEXT_OFFLOAD_ID_MAX_CODE_POINTS = 512;
+
 export type ContextOffloadOwner =
   | {
       readonly kind: 'read_image_snapshot';
@@ -115,15 +118,17 @@ export class ReadImageSnapshotStoreError extends Error {
   }
 }
 
-export interface ReadImageSnapshotStore {
+export interface ReadImageSnapshotReader {
+  read(input: SessionContextRef): Promise<ContextOffloadReadResult>;
+}
+
+export interface ReadImageSnapshotStore extends ReadImageSnapshotReader {
   snapshot(input: {
     /** Stable identity of the Read result within its Session. */
     readonly ownerId: string;
     readonly bytes: Uint8Array;
     readonly mimeType: string;
   }): Promise<SessionContextRef>;
-
-  read(input: SessionContextRef): Promise<ContextOffloadReadResult>;
 }
 
 /**

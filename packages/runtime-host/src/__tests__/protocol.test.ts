@@ -59,6 +59,7 @@ import {
   TURN_MESSAGE_QUOTE_MAX_COUNT,
   TURN_MESSAGE_QUOTE_TEXT_MAX_LENGTH,
   TURN_FAILURE_MESSAGE_MAX_BYTES,
+  decodeMessageContent,
   TURN_SKILL_ID_MAX_COUNT,
   TURN_SKILL_ID_MAX_LENGTH,
 } from '../protocol/turn.js';
@@ -1563,6 +1564,18 @@ describe('Runtime Host bootstrap protocol', () => {
         ),
       }),
     );
+    const contextContent = {
+      text: 'valid context ref',
+      attachments: [
+        attachmentRef({
+          kind: 'session_context' as const,
+          sessionId: 'session-1',
+          refId: 'read-image:owner-1',
+        }),
+      ],
+    };
+    assert.throws(() => submit(contextContent), isInvalidFrame);
+    assert.deepEqual(decodeMessageContent(contextContent), contextContent);
     assert.throws(
       () =>
         submit({
@@ -1583,6 +1596,8 @@ describe('Runtime Host bootstrap protocol', () => {
       { ...attachmentRef({ kind: 'workspace_file', relativePath: 'a.ts' }), mimeType: '' },
       attachmentRef({ kind: 'workspace_file', relativePath: 'a'.repeat(4097) }),
       attachmentRef({ kind: 'session_file', sessionId: 'bad/id', relativePath: 'a.ts' }),
+      attachmentRef({ kind: 'session_context', sessionId: 'session-1', refId: '' }),
+      attachmentRef({ kind: 'session_context', sessionId: 'session-1', refId: 'a'.repeat(513) }),
       attachmentRef({ kind: 'workspace_file', relativePath: '../secret' }),
       attachmentRef({ kind: 'workspace_file', relativePath: 'src//a.ts' }),
       attachmentRef({ kind: 'external_file', absolutePath: 'relative/a.ts' }),
@@ -2063,6 +2078,7 @@ function retractedMessage(text = 'do this next') {
 function attachmentRef(
   ref:
     | { kind: 'session_file'; sessionId: string; relativePath: string }
+    | { kind: 'session_context'; sessionId: string; refId: string }
     | { kind: 'workspace_file'; relativePath: string }
     | { kind: 'external_file'; absolutePath: string },
 ) {

@@ -21,12 +21,44 @@ import { MAX_READ_IMAGE_BYTES } from '@maka/core/attachments';
 import {
   ReadImageSnapshotStoreError,
   type ContextOffloadReadResult,
+  type ReadImageSnapshotReader,
   type ReadImageSnapshotStore,
+  type SessionContextRef,
 } from '@maka/core/context-offload';
 import {
+  authenticateInteractiveContextOffloadReader,
   authenticateInteractiveContextOffloadWriter,
+  createInteractiveContextOffloadReader,
+  type InteractiveContextOffloadReader,
   type InteractiveContextOffloadWriter,
 } from './context-offload-store.js';
+
+/** Derives the Read image hydration contract from an authenticated reader. */
+export function createReadImageSnapshotReader(
+  reader: InteractiveContextOffloadReader,
+  sessionId: string,
+): ReadImageSnapshotReader {
+  const store = authenticateInteractiveContextOffloadReader(reader);
+  if (!sessionId) throw new Error('Read image snapshot Session id is required');
+  return Object.freeze({
+    async read(input: SessionContextRef): Promise<ContextOffloadReadResult> {
+      if (input.sessionId !== sessionId) return { ok: false, reason: 'session_mismatch' };
+      const result = await store.read({
+        sessionId,
+        refId: input.refId,
+        maxBytes: MAX_READ_IMAGE_BYTES,
+      });
+      if (!result.ok) return result;
+      if (
+        result.record.owner.kind !== 'read_image_snapshot' ||
+        !result.record.mediaType.toLowerCase().startsWith('image/')
+      ) {
+        return { ok: false, reason: 'corrupt' };
+      }
+      return result;
+    },
+  });
+}
 
 /** Derives the Read image domain contract from the authenticated byte authority. */
 export function createReadImageSnapshotStore(
@@ -35,6 +67,10 @@ export function createReadImageSnapshotStore(
 ): ReadImageSnapshotStore {
   const store = authenticateInteractiveContextOffloadWriter(writer);
   if (!sessionId) throw new Error('Read image snapshot Session id is required');
+  const reader = createReadImageSnapshotReader(
+    createInteractiveContextOffloadReader(store),
+    sessionId,
+  );
   const facade: ReadImageSnapshotStore = {
     async snapshot(input) {
       const accepted = Object.freeze({
@@ -73,22 +109,7 @@ export function createReadImageSnapshotStore(
       });
     },
 
-    async read(input): Promise<ContextOffloadReadResult> {
-      if (input.sessionId !== sessionId) return { ok: false, reason: 'session_mismatch' };
-      const result = await store.read({
-        sessionId,
-        refId: input.refId,
-        maxBytes: MAX_READ_IMAGE_BYTES,
-      });
-      if (!result.ok) return result;
-      if (
-        result.record.owner.kind !== 'read_image_snapshot' ||
-        !result.record.mediaType.toLowerCase().startsWith('image/')
-      ) {
-        return { ok: false, reason: 'corrupt' };
-      }
-      return result;
-    },
+    read: (input) => reader.read(input),
   };
   return Object.freeze(facade);
 }

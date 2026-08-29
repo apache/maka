@@ -31,6 +31,7 @@ import {
 import { defineOperation } from './operation-spec.js';
 import {
   decodeMessageContent,
+  decodeMessageAdmissionContent,
   decodeSkillIds,
   decodeTurnOrchestration,
   decodeTurnSnapshot,
@@ -328,7 +329,7 @@ function decodeTurnMessageSubmitInput(value: unknown): TurnMessageSubmitInput {
     originHostEpoch: requireId(record.originHostEpoch, 'originHostEpoch'),
     sessionId: requireEntityId(record.sessionId, 'sessionId'),
     messageId: requireEntityId(record.messageId, 'messageId'),
-    content: decodeMessageContent(record.content, skillIds.length > 0),
+    content: decodeMessageAdmissionContent(record.content, skillIds.length > 0),
     placement,
     ...(skillIds.length > 0 ? { skillIds } : {}),
     ...(turnOrchestration !== undefined ? { turnOrchestration } : {}),

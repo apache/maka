@@ -35,7 +35,10 @@ import {
 } from './sqlite-context-offload-store.js';
 
 const writerBrand: unique symbol = Symbol('InteractiveContextOffloadWriter');
+const readerBrand: unique symbol = Symbol('InteractiveContextOffloadReader');
 const writers = new WeakSet<object>();
+const readers = new WeakSet<object>();
+const readerByWriter = new WeakMap<object, InteractiveContextOffloadReader>();
 const writerByLease = new WeakMap<
   object,
   { readonly writer: InteractiveContextOffloadWriter; readonly limitsKey: string }
@@ -60,6 +63,12 @@ export interface InteractiveContextOffloadWriter extends Omit<ContextOffloadStor
   close(): Promise<void>;
 }
 
+export interface InteractiveContextOffloadReader extends Pick<ContextOffloadStore, 'read'> {
+  readonly kind: 'interactive';
+  readonly access: 'read';
+  readonly [readerBrand]: true;
+}
+
 export function authenticateInteractiveContextOffloadWriter(
   writer: InteractiveContextOffloadWriter,
 ): InteractiveContextOffloadWriter {
@@ -70,6 +79,37 @@ export function authenticateInteractiveContextOffloadWriter(
     );
   }
   return writer;
+}
+
+export function authenticateInteractiveContextOffloadReader(
+  reader: InteractiveContextOffloadReader,
+): InteractiveContextOffloadReader {
+  if (!readers.has(reader)) {
+    throw new StorageRootAuthorityError(
+      'invalid_lease',
+      'Expected an authentic interactive context-offload reader',
+    );
+  }
+  return reader;
+}
+
+/** Narrows an authenticated writer to the read-only authority used by model hydration. */
+export function createInteractiveContextOffloadReader(
+  writer: InteractiveContextOffloadWriter,
+): InteractiveContextOffloadReader {
+  const authenticated = authenticateInteractiveContextOffloadWriter(writer);
+  const existing = readerByWriter.get(authenticated);
+  if (existing) return existing;
+  const reader: InteractiveContextOffloadReader = Object.freeze({
+    kind: 'interactive',
+    access: 'read',
+    [readerBrand]: true as const,
+    read: (input: Parameters<ContextOffloadStore['read']>[0]) =>
+      authenticated.read(Object.freeze({ ...input })),
+  });
+  readers.add(reader);
+  readerByWriter.set(authenticated, reader);
+  return reader;
 }
 
 /**
@@ -203,6 +243,8 @@ function createWriterFacade(
       if (closeTask) return closeTask;
       closed = true;
       if (writerByLease.get(lease)?.writer === writer) writerByLease.delete(lease);
+      const reader = readerByWriter.get(writer);
+      if (reader) readers.delete(reader);
       writers.delete(writer);
       let pending!: Promise<void>;
       pending = (async () => {

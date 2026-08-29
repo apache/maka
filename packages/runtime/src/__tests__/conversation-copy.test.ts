@@ -887,6 +887,44 @@ test('conversation copy rewrites owned references without changing opaque tool p
   );
 });
 
+test('reader-only conversation copy rejects source-owned Session context refs', () => {
+  const message: StoredMessage = {
+    type: 'user',
+    id: 'user-context',
+    turnId: 'turn-1',
+    ts: 1,
+    text: 'context',
+    attachments: [
+      {
+        kind: 'image',
+        name: 'snapshot.png',
+        mimeType: 'image/png',
+        bytes: 4,
+        ref: {
+          kind: 'session_context',
+          sessionId: 'session-source',
+          refId: 'context-source',
+        },
+      },
+    ],
+  };
+  assert.throws(
+    () =>
+      rewriteConversationCopyMessage(message, {
+        mode: 'exact',
+        sourceSessionId: 'session-source',
+        targetSessionId: 'session-target',
+        artifactIds: new Map(),
+        relativePaths: new Map(),
+        linkedChildren: { mode: 'reject' },
+        runIds: new Map(),
+        runtimeEventIds: new Map(),
+        providerTraceIds: new Map(),
+      }),
+    /does not support Session context references yet/,
+  );
+});
+
 test('conversation copy rejects continuation authority selected through the child-run closure', async () => {
   const parent = agentRunHeader({ runId: 'run-parent', turnId: 'turn-parent' });
   const child = agentRunHeader({
