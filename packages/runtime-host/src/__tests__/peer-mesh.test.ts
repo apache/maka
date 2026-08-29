@@ -286,7 +286,7 @@ test('reconciles one selected Mesh into signed transit routes and native policy'
     });
 
     await authority.closeMesh(meshId);
-    assert.equal(authority.status()[0]?.transitEnabled, false);
+    assert.deepEqual(authority.status(), []);
     assert.deepEqual(authorityPeer.transitPolicy.allowedPeerIds, []);
   } finally {
     await Promise.allSettled([
