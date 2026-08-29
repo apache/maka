@@ -23,10 +23,19 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 import { decodeRuntimeHostOwnerConnectionCode } from '@maka/runtime-host/client';
+import {
+  INTERACTIVE_RUNTIME_HOST_COMPOSITION_ID,
+  RUNTIME_HOST_COMPATIBILITY_EPOCH,
+  RUNTIME_HOST_REGISTRATION_SCHEMA_VERSION,
+  type HostRegistration,
+} from '@maka/runtime-host/protocol';
 import type { RuntimeHostDesktopManager } from '../runtime-host-desktop-manager.js';
 
 const RECOVERY_DEPLOYMENT_ID = '33333333-3333-4333-8333-333333333333';
-import { createDesktopLocalRuntimeHostRemoteAccess } from '../runtime-host-local-remote-access.js';
+import {
+  createDesktopLocalRuntimeHostRemoteAccess,
+  stopConflictingEphemeralRuntimeHost,
+} from '../runtime-host-local-remote-access.js';
 import type { createDesktopRuntimeHostLocalOperator } from '../runtime-host-local-operator.js';
 
 test('enabling remote access hands the same root to one managed service before Desktop resumes', async (t) => {
@@ -226,6 +235,96 @@ test('keeps the managed service visible when Direct peer support is unavailable'
   const snapshot = await service.getSnapshot();
   assert.equal(snapshot.state, 'unsupported');
   assert.equal(snapshot.managedService, true);
+});
+
+test('replaces a conflicting supervised Host through its exact service authority', async (t) => {
+  const base = await mkdtemp(join(tmpdir(), 'maka-local-managed-conflict-'));
+  t.after(() => rm(base, { recursive: true, force: true }));
+  const clientDataRoot = join(base, 'client');
+  const rootPath = join(clientDataRoot, 'workspaces', 'default');
+  const rootId = 'a'.repeat(64);
+  await mkdir(rootPath, { recursive: true });
+  await writeManagedLifecycle(clientDataRoot, rootPath, rootId);
+  let updated = false;
+  const service = createDesktopLocalRuntimeHostRemoteAccess({
+    ipcMain: { handle() {}, removeHandler() {} },
+    clientDataRoot,
+    rootPath,
+    rootId,
+    directPeerAvailable: true,
+    manager: () => undefined,
+    resolveSetupPackage: async () => ({ kind: 'npm', specifier: 'maka-agent@0.2.0' }),
+    operator: {
+      async runUpdate(input: {
+        readonly target: { readonly rootId: string; readonly deploymentId?: string };
+        readonly allowInterruptActiveTasks?: boolean;
+      }) {
+        assert.equal(input.target.rootId, rootId);
+        assert.equal(input.target.deploymentId, RECOVERY_DEPLOYMENT_ID);
+        assert.equal(input.allowInterruptActiveTasks, true);
+        updated = true;
+        return {
+          kind: 'result' as const,
+          action: 'update' as const,
+          update: { kind: 'updated', previousVersion: '0.2.0', targetVersion: '0.2.0' },
+        } as never;
+      },
+      async close() {},
+    } as unknown as ReturnType<typeof createDesktopRuntimeHostLocalOperator>,
+  });
+  t.after(() => service.close());
+
+  await service.replaceConflictingHost(
+    hostRegistration({ rootId, lifecycleMode: 'service' }),
+    new AbortController().signal,
+  );
+  assert.equal(updated, true);
+});
+
+test('stops only the revalidated ephemeral Host identity', async () => {
+  const registration = hostRegistration({ lifecycleMode: 'ephemeral' });
+  let alive = true;
+  const signaled: number[] = [];
+  await stopConflictingEphemeralRuntimeHost(
+    {
+      rootPath: '/workspace',
+      registration,
+      signal: new AbortController().signal,
+    },
+    {
+      connectExisting: async () => ({
+        kind: 'upgrade_required',
+        registration,
+        restartable: false,
+      }) as never,
+      signalProcess(pid) {
+        signaled.push(pid);
+        alive = false;
+      },
+      isProcessAlive: () => alive,
+    },
+  );
+  assert.deepEqual(signaled, [registration.pid]);
+
+  await assert.rejects(
+    stopConflictingEphemeralRuntimeHost(
+      {
+        rootPath: '/workspace',
+        registration,
+        signal: new AbortController().signal,
+      },
+      {
+        connectExisting: async () => ({
+          kind: 'upgrade_required',
+          registration: { ...registration, hostEpoch: 'replacement' },
+          restartable: false,
+        }) as never,
+        signalProcess: () => assert.fail('a changed Host identity must not be signaled'),
+        isProcessAlive: () => true,
+      },
+    ),
+    /could not verify that the process still owns this workspace/u,
+  );
 });
 
 test('does not persist recoverable setup authority before Desktop ownership commits', async (t) => {
@@ -736,6 +835,27 @@ async function writeManagedLifecycle(
       deploymentId: RECOVERY_DEPLOYMENT_ID,
     })}\n`,
   );
+}
+
+function hostRegistration(
+  overrides: Partial<Pick<HostRegistration, 'rootId' | 'lifecycleMode'>> = {},
+): HostRegistration {
+  return {
+    kind: 'maka-runtime-host',
+    schemaVersion: RUNTIME_HOST_REGISTRATION_SCHEMA_VERSION,
+    rootId: 'a'.repeat(64),
+    hostEpoch: 'older-host',
+    endpoint: '/tmp/runtime-host.sock',
+    protocolMin: 0,
+    protocolMax: 0,
+    compatibilityEpoch: RUNTIME_HOST_COMPATIBILITY_EPOCH - 1,
+    compositionId: INTERACTIVE_RUNTIME_HOST_COMPOSITION_ID,
+    compositionRevision: 'legacy',
+    state: 'ready',
+    pid: 42,
+    createdAt: '2026-08-29T00:00:00.000Z',
+    ...overrides,
+  };
 }
 
 function sharedCredential(credentialId: string, status: 'active' | 'pending') {

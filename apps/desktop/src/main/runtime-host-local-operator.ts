@@ -346,8 +346,7 @@ export function createDesktopRuntimeHostLocalOperator(input: {
     },
     runUpdate(command, onProgress) {
       if (closed) throw new Error('Local Runtime Host operator is closed');
-      const deploymentId = command.target.deploymentId;
-      if (!deploymentId) {
+      if (!command.target.deploymentId) {
         return Promise.reject(new Error('Runtime Host update requires a deployment generation'));
       }
       const setupPackage = resolveLocalSetupPackage(command.setupPackage);
@@ -367,8 +366,6 @@ export function createDesktopRuntimeHostLocalOperator(input: {
             '--framed',
             '--managed-root-id',
             command.target.rootId,
-            '--operator-deployment-id',
-            deploymentId,
             ...managedTargetArgs(command.target),
             ...(command.allowInterruptActiveTasks ? ['--allow-interrupt-active-tasks'] : []),
           ],

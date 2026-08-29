@@ -1244,8 +1244,7 @@ function runtimeHostUpdateRemoteCommand(
   setupPackage: PreparedSetupPackage,
   input: DesktopRuntimeHostSshUpdateInput,
 ): string {
-  const deploymentId = input.expectedTarget.deploymentId;
-  if (!deploymentId) {
+  if (!input.expectedTarget.deploymentId) {
     throw new Error('Runtime Host update requires a deployment generation');
   }
   return runtimeHostPackageRemoteCommand(
@@ -1257,8 +1256,6 @@ function runtimeHostUpdateRemoteCommand(
       '--framed',
       '--managed-root-id',
       input.expectedTarget.rootId,
-      '--operator-deployment-id',
-      deploymentId,
       ...managedServiceTargetArgs(input.expectedTarget),
       ...(input.allowInterruptActiveTasks ? ['--allow-interrupt-active-tasks'] : []),
     ],

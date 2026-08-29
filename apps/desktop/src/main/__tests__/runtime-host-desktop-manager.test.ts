@@ -1056,7 +1056,7 @@ test('restarts an idle generation-aware Host without prompting', async () => {
     },
     upgradePrompts: {
       restartable: async () => assert.fail('idle Host must not prompt before restart'),
-      waitOnly: async () => assert.fail('restartable conflict used wait-only prompt'),
+      nonRestartable: async () => assert.fail('restartable conflict used non-restartable prompt'),
     },
   });
 
@@ -1077,7 +1077,7 @@ test('prompts before restarting a generation-aware Host with active work', async
         prompts += 1;
         return 'restart';
       },
-      waitOnly: async () => assert.fail('restartable conflict used wait-only prompt'),
+      nonRestartable: async () => assert.fail('restartable conflict used non-restartable prompt'),
     },
   });
 
@@ -1097,7 +1097,7 @@ test('prompts before restarting a generation-aware Host with a residency', async
         prompts += 1;
         return 'restart';
       },
-      waitOnly: async () => assert.fail('restartable conflict used wait-only prompt'),
+      nonRestartable: async () => assert.fail('restartable conflict used non-restartable prompt'),
     },
   });
 
@@ -1117,7 +1117,7 @@ test('prompts before restarting a generation-aware Host with connections', async
         prompts += 1;
         return 'restart';
       },
-      waitOnly: async () => assert.fail('restartable conflict used wait-only prompt'),
+      nonRestartable: async () => assert.fail('restartable conflict used non-restartable prompt'),
     },
   });
 
@@ -1137,7 +1137,7 @@ test('prompts when a restartable Host has no activity snapshot', async () => {
         prompts += 1;
         return 'restart';
       },
-      waitOnly: async () => assert.fail('restartable conflict used wait-only prompt'),
+      nonRestartable: async () => assert.fail('restartable conflict used non-restartable prompt'),
     },
   });
 
@@ -1160,7 +1160,7 @@ test('waits passively for a Host that cannot be taken over', async () => {
     },
     upgradePrompts: {
       restartable: async () => assert.fail('wait-only conflict used restart prompt'),
-      waitOnly: async () => 'wait',
+      nonRestartable: async () => 'wait',
     },
     waitForHostRetirement: async (registration) => {
       assert.equal(registration.hostEpoch, conflict.registration.hostEpoch);
@@ -1175,6 +1175,35 @@ test('waits passively for a Host that cannot be taken over', async () => {
   await owner.close();
 });
 
+test('replaces a non-restartable Local Host through the supplied authority and retries', async () => {
+  const conflict = upgradeRequired(false);
+  const replacement = candidateHarness();
+  let starts = 0;
+  let replaced: typeof conflict.registration | undefined;
+  const owner = await startRuntimeHostDesktopManager(
+    {} as DesktopRuntimeHostCandidateStartInput,
+    {
+      startCandidate: async () => {
+        starts += 1;
+        return starts === 1 ? conflict : ready(replacement.candidate);
+      },
+      upgradePrompts: {
+        restartable: async () => assert.fail('non-restartable conflict used restart prompt'),
+        nonRestartable: async (_conflict, canReplace) => {
+          assert.equal(canReplace, true);
+          return 'replace';
+        },
+      },
+      replaceLocalHost: async (registration) => {
+        replaced = registration;
+      },
+    },
+  );
+  assert.equal(starts, 2);
+  assert.equal(replaced?.hostEpoch, conflict.registration.hostEpoch);
+  await owner.close();
+});
+
 test('lets the user cancel startup when an incompatible Host owns the root', async () => {
   const conflict = incompatibleHost('blocked_by_residency');
   let presented: DesktopRuntimeHostCandidateStartResult | undefined;
@@ -1183,7 +1212,7 @@ test('lets the user cancel startup when an incompatible Host owns the root', asy
       startCandidate: async () => conflict,
       upgradePrompts: {
         restartable: async () => assert.fail('incompatible Host used restart prompt'),
-        waitOnly: async (actual) => {
+        nonRestartable: async (actual) => {
           presented = actual;
           return 'cancel';
         },

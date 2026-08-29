@@ -23,11 +23,17 @@ import { hostname } from 'node:os';
 import { dirname, isAbsolute, join } from 'node:path';
 import type { IpcMain } from 'electron';
 import {
+  connectExistingRuntimeHost,
   consumeAccessCredentialDelivery,
   encodeRuntimeHostOwnerConnectionCode,
 } from '@maka/runtime-host/client';
 import { resolveRuntimeHostManagedDeploymentAuthority } from '@maka/runtime-host/operator';
-import { REMOTE_OWNER_OPERATION_GRANTS } from '@maka/runtime-host/protocol';
+import {
+  INTERACTIVE_RUNTIME_HOST_COMPOSITION_ID,
+  REMOTE_OWNER_OPERATION_GRANTS,
+  RUNTIME_HOST_PROTOCOL_VERSION,
+  type HostRegistration,
+} from '@maka/runtime-host/protocol';
 import type {
   DesktopLocalRuntimeHostRemoteAccessEnableResult,
   DesktopLocalRuntimeHostRemoteAccessSnapshot,
@@ -100,6 +106,7 @@ export interface DesktopLocalRuntimeHostRemoteAccess {
   changeManaged<T>(
     operation: (target: DesktopRuntimeHostLocalManagementTarget) => Promise<T>,
   ): Promise<T>;
+  replaceConflictingHost(registration: HostRegistration, signal: AbortSignal): Promise<void>;
   recoverBeforeLocalHostStart(signal?: AbortSignal): Promise<boolean>;
   recover(): Promise<void>;
   close(): Promise<void>;
@@ -152,6 +159,10 @@ export function createDesktopLocalRuntimeHostRemoteAccess(input: {
   readonly resolveManagedDeploymentAuthority?: (
     rootId: string,
   ) => Promise<LocalManagedDeploymentAuthority | undefined>;
+  readonly replaceEphemeralHost?: (
+    registration: HostRegistration,
+    signal: AbortSignal,
+  ) => Promise<void>;
 }): DesktopLocalRuntimeHostRemoteAccess {
   const lifecyclePath = join(input.clientDataRoot, LIFECYCLE_FILE);
   const closing = new AbortController();
@@ -663,6 +674,50 @@ export function createDesktopLocalRuntimeHostRemoteAccess(input: {
         const managed = requireManagementTarget(lifecycle);
         return requireManager(input.manager).runManagedLocalHostChange(() => operation(managed));
       }),
+    replaceConflictingHost: (registration, signal) =>
+      serialize(async () => {
+        signal.throwIfAborted();
+        if (registration.rootId !== input.rootId) {
+          throw conflictReplacementError(registration.pid, 'the workspace identity changed');
+        }
+        if (registration.lifecycleMode !== 'service') {
+          await (input.replaceEphemeralHost ?? ((expected, operationSignal) =>
+            stopConflictingEphemeralRuntimeHost({
+              rootPath: input.rootPath,
+              registration: expected,
+              signal: operationSignal,
+            })))(registration, signal);
+          return;
+        }
+        const managed = requireManagementTarget(
+          await readLifecycle(lifecyclePath, input.rootPath, input.rootId),
+        );
+        const setupPackage = await input.resolveSetupPackage(signal);
+        const frame = await input.operator.runUpdate(
+          {
+            setupPackage,
+            target: managed,
+            allowInterruptActiveTasks: true,
+            signal,
+          },
+          () => undefined,
+        );
+        if (frame.kind === 'error') {
+          throw conflictReplacementError(registration.pid, frame.error.message);
+        }
+        if (frame.kind === 'progress' || frame.action !== 'update') {
+          throw conflictReplacementError(
+            registration.pid,
+            'the managed service returned an unrelated result',
+          );
+        }
+        if (frame.update.kind === 'active_tasks') {
+          throw conflictReplacementError(
+            registration.pid,
+            'the managed service refused to interrupt active work',
+          );
+        }
+      }),
     recoverBeforeLocalHostStart: async (signal) => {
       const operationSignal = signal ? AbortSignal.any([signal, closing.signal]) : closing.signal;
       operationSignal.throwIfAborted();
@@ -733,6 +788,121 @@ export function createDesktopLocalRuntimeHostRemoteAccess(input: {
       await mutation;
     },
   };
+}
+
+export async function stopConflictingEphemeralRuntimeHost(
+  input: {
+    readonly rootPath: string;
+    readonly registration: HostRegistration;
+    readonly signal: AbortSignal;
+  },
+  dependencies: {
+    readonly connectExisting?: typeof connectExistingRuntimeHost;
+    readonly signalProcess?: (pid: number) => void;
+    readonly isProcessAlive?: (pid: number) => boolean;
+    readonly wait?: (ms: number, signal: AbortSignal) => Promise<void>;
+  } = {},
+): Promise<void> {
+  if (input.registration.lifecycleMode === 'service') {
+    throw conflictReplacementError(
+      input.registration.pid,
+      'a system-supervised Host must be replaced through its service operator',
+    );
+  }
+  input.signal.throwIfAborted();
+  const current = await (dependencies.connectExisting ?? connectExistingRuntimeHost)({
+    rootPath: input.rootPath,
+    protocol: {
+      min: RUNTIME_HOST_PROTOCOL_VERSION,
+      max: RUNTIME_HOST_PROTOCOL_VERSION,
+    },
+    compositionId: INTERACTIVE_RUNTIME_HOST_COMPOSITION_ID,
+  });
+  if (current.kind === 'connected') {
+    await current.connection.close();
+    return;
+  }
+  const currentRegistration = 'registration' in current ? current.registration : undefined;
+  const isAlive = dependencies.isProcessAlive ?? processIsAlive;
+  if (!sameHostRegistration(currentRegistration, input.registration)) {
+    if (!isAlive(input.registration.pid)) return;
+    throw conflictReplacementError(
+      input.registration.pid,
+      'Maka could not verify that the process still owns this workspace',
+    );
+  }
+  if (current.kind === 'unavailable') {
+    throw conflictReplacementError(
+      input.registration.pid,
+      'Maka could not verify the Runtime Host endpoint',
+    );
+  }
+  input.signal.throwIfAborted();
+  try {
+    (dependencies.signalProcess ?? signalRuntimeHostProcess)(input.registration.pid);
+  } catch (error) {
+    if (!isMissingProcessError(error)) throw error;
+    return;
+  }
+  const wait = dependencies.wait ?? waitForAbortableDelay;
+  const deadline = Date.now() + 10_000;
+  while (isAlive(input.registration.pid)) {
+    if (Date.now() >= deadline) {
+      throw conflictReplacementError(
+        input.registration.pid,
+        'the process did not exit after Maka requested a graceful stop',
+      );
+    }
+    await wait(100, input.signal);
+  }
+}
+
+function sameHostRegistration(
+  current: HostRegistration | undefined,
+  expected: HostRegistration,
+): boolean {
+  return current?.rootId === expected.rootId &&
+    current.hostEpoch === expected.hostEpoch &&
+    current.pid === expected.pid &&
+    current.endpoint === expected.endpoint;
+}
+
+function signalRuntimeHostProcess(pid: number): void {
+  process.kill(pid, 'SIGTERM');
+}
+
+function processIsAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return !isMissingProcessError(error);
+  }
+}
+
+function isMissingProcessError(error: unknown): boolean {
+  return error instanceof Error &&
+    'code' in error &&
+    (error as NodeJS.ErrnoException).code === 'ESRCH';
+}
+
+function waitForAbortableDelay(ms: number, signal: AbortSignal): Promise<void> {
+  signal.throwIfAborted();
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      signal.removeEventListener('abort', onAbort);
+      resolve();
+    }, ms);
+    const onAbort = () => {
+      clearTimeout(timer);
+      reject(signal.reason);
+    };
+    signal.addEventListener('abort', onAbort, { once: true });
+  });
+}
+
+function conflictReplacementError(pid: number, reason: string): Error {
+  return new Error(`Maka could not replace Runtime Host process ${pid}: ${reason}`);
 }
 
 function supported(directPeerAvailable: boolean): boolean {

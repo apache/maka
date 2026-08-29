@@ -20,6 +20,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { buildRuntimeHostUpgradeDialogOptions } from '../runtime-host-upgrade-copy.js';
+import { createRuntimeHostUpgradePrompts } from '../runtime-host-upgrade-dialog.js';
 
 const conflict = {
   kind: 'upgrade_required',
@@ -39,8 +40,8 @@ const conflict = {
 } as never;
 
 test('localizes upgrade activity without changing decision indexes', () => {
-  const en = buildRuntimeHostUpgradeDialogOptions(conflict, true, 'en');
-  const zh = buildRuntimeHostUpgradeDialogOptions(conflict, true, 'zh');
+  const en = buildRuntimeHostUpgradeDialogOptions(conflict, 'restart', 'en');
+  const zh = buildRuntimeHostUpgradeDialogOptions(conflict, 'restart', 'zh');
   assert.deepEqual(en.buttons, ['Restart Runtime Host', 'Wait', 'Cancel Startup']);
   assert.deepEqual(zh.buttons, ['重启 Runtime Host', '等待', '取消启动']);
   assert.equal(en.defaultId, 1);
@@ -49,4 +50,61 @@ test('localizes upgrade activity without changing decision indexes', () => {
   assert.match(zh.detail ?? '', /每日回顾: 1/);
   assert.match(en.detail ?? '', /Scheduled Task: 2/);
   assert.match(zh.detail ?? '', /计划任务: 2/);
+  assert.match(en.detail ?? '', /Process ID \(PID\):/);
+});
+
+test('offers a non-default replacement action for a non-restartable Local Host', () => {
+  const options = buildRuntimeHostUpgradeDialogOptions(
+    {
+      kind: 'upgrade_required',
+      restartable: false,
+      registration: { pid: 42 },
+    } as never,
+    'replace',
+    'en',
+  );
+  assert.deepEqual(options.buttons, ['Stop Host and Continue', 'Wait', 'Cancel Startup']);
+  assert.equal(options.defaultId, 1);
+  assert.equal(options.cancelId, 2);
+  assert.match(options.detail ?? '', /Maka will stop this Host/);
+});
+
+test('maps the native replacement button to the replace decision', async () => {
+  const prompts = createRuntimeHostUpgradePrompts(
+    async () => 'en',
+    async (options) => {
+      assert.deepEqual(options.buttons, ['Stop Host and Continue', 'Wait', 'Cancel Startup']);
+      return { response: 0, checkboxChecked: false };
+    },
+  );
+  assert.equal(
+    await prompts.nonRestartable(
+      {
+        kind: 'upgrade_required',
+        restartable: false,
+        registration: { pid: 42 },
+      } as never,
+      true,
+    ),
+    'replace',
+  );
+});
+
+test('does not offer passive waiting for a supervised Host', async () => {
+  const conflict = {
+    kind: 'upgrade_required',
+    restartable: false,
+    registration: { pid: 42, lifecycleMode: 'service' },
+  } as never;
+  const prompts = createRuntimeHostUpgradePrompts(
+    async () => 'en',
+    async (options) => {
+      assert.deepEqual(options.buttons, ['Stop Host and Continue', 'Cancel Startup']);
+      assert.equal(options.defaultId, 1);
+      assert.equal(options.cancelId, 1);
+      assert.doesNotMatch(options.detail ?? '', /If you wait/u);
+      return { response: 1, checkboxChecked: false };
+    },
+  );
+  assert.equal(await prompts.nonRestartable(conflict, true), 'cancel');
 });

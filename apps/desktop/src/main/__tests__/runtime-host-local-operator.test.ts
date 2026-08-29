@@ -192,7 +192,6 @@ test('local update runs the selected package against the exact managed deploymen
     'exec', '--yes', '--package', 'maka-agent@0.3.0', '--',
     'maka', 'runtime-host', 'service', 'update', '--framed',
     '--managed-root-id', 'a'.repeat(64),
-    '--operator-deployment-id', deploymentId,
     '--expected-service-id', 'a'.repeat(64),
     '--expected-root-path', '/tmp/maka/root',
     '--expected-root-id', 'a'.repeat(64),

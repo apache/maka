@@ -22,7 +22,7 @@ import type { MessageBoxOptions, MessageBoxReturnValue } from 'electron';
 import type {
   RuntimeHostRestartDecision,
   RuntimeHostUpgradePrompts,
-  RuntimeHostWaitDecision,
+  RuntimeHostNonRestartableDecision,
 } from './runtime-host-desktop-manager.js';
 import { buildRuntimeHostUpgradeDialogOptions } from './runtime-host-upgrade-copy.js';
 
@@ -36,21 +36,29 @@ export function createRuntimeHostUpgradePrompts(
   return {
     restartable: async (conflict): Promise<RuntimeHostRestartDecision> => {
       const locale = await resolveLocale();
+      const canWait = conflict.registration.lifecycleMode !== 'service';
       const { response } = await showDialog(
-        buildRuntimeHostUpgradeDialogOptions(conflict, true, locale),
+        buildRuntimeHostUpgradeDialogOptions(conflict, 'restart', locale),
         locale,
       );
       if (response === 0) return 'restart';
-      if (response === 1) return 'wait';
+      if (canWait && response === 1) return 'wait';
       return 'cancel';
     },
-    waitOnly: async (conflict): Promise<RuntimeHostWaitDecision> => {
+    nonRestartable: async (
+      conflict,
+      canReplace,
+    ): Promise<RuntimeHostNonRestartableDecision> => {
       const locale = await resolveLocale();
+      const canWait = conflict.registration.lifecycleMode !== 'service';
       const { response } = await showDialog(
-        buildRuntimeHostUpgradeDialogOptions(conflict, false, locale),
+        buildRuntimeHostUpgradeDialogOptions(conflict, canReplace ? 'replace' : undefined, locale),
         locale,
       );
-      return response === 0 ? 'wait' : 'cancel';
+      if (!canReplace) return canWait && response === 0 ? 'wait' : 'cancel';
+      if (response === 0) return 'replace';
+      if (canWait && response === 1) return 'wait';
+      return 'cancel';
     },
   };
 }

@@ -79,6 +79,7 @@ import {
   canDiscardRuntimeHostLifecycleDesiredArtifacts,
   replaceRuntimeHostLifecycle,
   resolveRecoverableRuntimeHostManagedDeployment,
+  verifyRuntimeHostLifecycleProjection,
   type RuntimeHostLifecycleTransactionDeps,
 } from './runtime-host-lifecycle-transaction.js';
 import { manageRuntimeHostManagedLifecycle } from './runtime-host-managed-lifecycle-manager.js';
@@ -92,6 +93,7 @@ export interface RuntimeHostUpdateCliOptions {
   readonly clientDataRoot: string;
   readonly defaultRootPath: string;
   readonly sourcePackageRoot: string;
+  readonly sourcePackageIntegrity?: string;
   readonly version: string;
   readonly expectedTarget: RuntimeHostManagedServiceTarget;
   readonly managedRootId?: string;
@@ -248,7 +250,7 @@ export async function runManagedRuntimeHostUpdateCli(
         const targetCliPath = resolveRuntimeHostManagedPackageCliPath(
           deploymentRoot,
           options.version,
-          options.registrySelection?.integrity,
+          options.sourcePackageIntegrity ?? options.registrySelection?.integrity,
         );
         const expectedCurrent = options.registrySelection?.current;
         const selectedDeploymentStillCurrent =
@@ -328,8 +330,11 @@ export async function runManagedRuntimeHostUpdateCli(
                 clientDataRoot: options.clientDataRoot,
                 sourcePackageRoot: options.sourcePackageRoot,
                 version: options.version,
-                ...(options.registrySelection
-                  ? { packageIntegrity: options.registrySelection.integrity }
+                ...((options.sourcePackageIntegrity ?? options.registrySelection?.integrity)
+                  ? {
+                      packageIntegrity:
+                        options.sourcePackageIntegrity ?? options.registrySelection?.integrity,
+                    }
                   : {}),
               }),
         );
@@ -579,7 +584,7 @@ async function runCanonicalRuntimeHostUpdate(
         const recovered = await resolveRecoverableRuntimeHostManagedDeployment(
           options.managedRootId,
           lifecycleDeps,
-          { expectedTarget: options.expectedTarget, ensureAvailable: true },
+          { expectedTarget: options.expectedTarget },
         );
         if (recovered.kind === 'absent') {
           throw new RuntimeHostServiceManagerError(
@@ -588,6 +593,7 @@ async function runCanonicalRuntimeHostUpdate(
           );
         }
         const current = recovered.config;
+        await verifyRuntimeHostLifecycleProjection(current, lifecycleDeps);
         assertRuntimeHostManagedOperatorConfig(
           current,
           options.operatorDeploymentId,
@@ -606,6 +612,7 @@ async function runCanonicalRuntimeHostUpdate(
           { resolveProvider: resolveRuntimeHostLifecycleProvider },
         );
         const targetIntegrity =
+          options.sourcePackageIntegrity ??
           options.registrySelection?.integrity ??
           (options.version === current.launch.package.version
             ? current.launch.package.integrity
@@ -613,7 +620,7 @@ async function runCanonicalRuntimeHostUpdate(
         if (!targetIntegrity) {
           throw new RuntimeHostServiceManagerError(
             'invalid_launch',
-            'An exact registry package identity is required for a managed update',
+            'An exact package identity is required for a managed update',
           );
         }
         const expectedCurrent = options.registrySelection?.current;

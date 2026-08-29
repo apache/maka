@@ -338,6 +338,13 @@ export async function retireRuntimeHostLifecycleOwner(input: {
     },
   });
   if (connected.kind !== 'connected') {
+    if (input.allowInterruptActiveTasks && input.supervisor) {
+      const status = await input.supervisor.status();
+      if (status.active && status.pid !== null) {
+        await input.supervisor.retire();
+        return waitForRuntimeHostLifecycleOwner(capability, input.timeoutMs ?? 45_000);
+      }
+    }
     throw new RuntimeHostLifecycleTransactionError(
       'transition_failed',
       `Runtime Host cannot prepare for retirement: ${connected.kind}`,
@@ -370,7 +377,14 @@ export async function retireRuntimeHostLifecycleOwner(input: {
   } finally {
     await connected.connection.close().catch(() => undefined);
   }
-  const deadline = Date.now() + (input.timeoutMs ?? 45_000);
+  return waitForRuntimeHostLifecycleOwner(capability, input.timeoutMs ?? 45_000);
+}
+
+async function waitForRuntimeHostLifecycleOwner(
+  capability: Awaited<ReturnType<typeof resolveExistingStorageRoot>>,
+  timeoutMs: number,
+): Promise<Extract<RuntimeHostLifecycleRetirement, { readonly kind: 'retired' }>> {
+  const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     const owner = await tryAcquireStateRootOwner(capability);
     if (owner) return { kind: 'retired', owner };
@@ -646,23 +660,9 @@ export async function verifyRuntimeHostLifecycleReady(
   timeoutMs = 45_000,
 ): Promise<void> {
   const canonical = decodeRuntimeHostManagedDeploymentConfig(config);
-  await deps.verifyOperator(canonical);
+  await verifyRuntimeHostLifecycleProjection(canonical, deps);
   if (canonical.lifecycle.mode !== 'supervised') return;
   const provider = deps.resolveProvider(canonical.lifecycle.provider);
-  const supervisorDefinition = runtimeHostSupervisorDefinition(canonical);
-  await provider.supervisor.verify(supervisorDefinition);
-  if (canonical.reconciliation.trigger === 'scheduled') {
-    await provider.reconciliationTrigger.verify(
-      runtimeHostReconciliationTriggerDefinition(canonical),
-    );
-    const trigger = await provider.reconciliationTrigger.status();
-    if (!trigger.installed || !trigger.active) {
-      throw new RuntimeHostLifecycleTransactionError(
-        'transition_failed',
-        'Runtime Host reconciliation scheduling is not active',
-      );
-    }
-  }
   const deadline = Date.now() + timeoutMs;
   let lastFailure: unknown = new Error('Runtime Host is not ready');
   while (Date.now() < deadline) {
@@ -701,6 +701,29 @@ export async function verifyRuntimeHostLifecycleReady(
     `Runtime Host did not become ready: ${lastFailure instanceof Error ? lastFailure.message : String(lastFailure)}`,
     { cause: lastFailure },
   );
+}
+
+/** Verifies the durable operator and supervisor projection without requiring a compatible Host. */
+export async function verifyRuntimeHostLifecycleProjection(
+  config: RuntimeHostManagedDeploymentConfig,
+  deps: RuntimeHostLifecycleTransactionDeps,
+): Promise<void> {
+  const canonical = decodeRuntimeHostManagedDeploymentConfig(config);
+  await deps.verifyOperator(canonical);
+  if (canonical.lifecycle.mode !== 'supervised') return;
+  const provider = deps.resolveProvider(canonical.lifecycle.provider);
+  await provider.supervisor.verify(runtimeHostSupervisorDefinition(canonical));
+  if (canonical.reconciliation.trigger !== 'scheduled') return;
+  await provider.reconciliationTrigger.verify(
+    runtimeHostReconciliationTriggerDefinition(canonical),
+  );
+  const trigger = await provider.reconciliationTrigger.status();
+  if (!trigger.installed || !trigger.active) {
+    throw new RuntimeHostLifecycleTransactionError(
+      'transition_failed',
+      'Runtime Host reconciliation scheduling is not active',
+    );
+  }
 }
 
 export function runtimeHostSupervisorDefinition(
