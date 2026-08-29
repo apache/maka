@@ -241,6 +241,8 @@ export const REMOTE_OWNER_OPERATION_GRANTS = Object.freeze([
   'collaboration.grant.revoke',
   'collaboration.invitation.prepare',
   'collaboration.principal.revoke',
+  'collaboration.turn-request.decide',
+  'collaboration.turn-request.query',
   'connection.catalog.create',
   'connection.catalog.query',
   'connection.catalog.remove',

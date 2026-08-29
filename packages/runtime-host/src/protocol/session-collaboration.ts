@@ -21,11 +21,13 @@ import {
   requireEntityId,
   requireExactRecord,
   requireId,
+  requireRecord,
   requireShapedRecord,
   requireUtf8String,
 } from './codec.js';
 import { invalidProtocolFrame } from './errors.js';
 import { defineOperation } from './operation-spec.js';
+import { decodeTurnStartInput } from './turn.js';
 
 export const COLLABORATION_INVITATION_SCHEMA_VERSION = 1 as const;
 export const COLLABORATION_INVITATION_CODE_MAX_BYTES = 16 * 1024;
@@ -100,6 +102,66 @@ export interface CollaborationPrincipalRevokeResult {
   readonly revoked: boolean;
 }
 
+export type SessionTurnAccessRequestState =
+  | { readonly kind: 'pending' }
+  | {
+      readonly kind: 'rejected';
+      readonly decidedAt: string;
+      readonly decidedBy: string;
+    }
+  | {
+      readonly kind: 'approved';
+      readonly decidedAt: string;
+      readonly decidedBy: string;
+      readonly admission: 'pending' | 'started' | 'blocked' | 'failed';
+    };
+
+export interface SessionTurnRequestIntent {
+  readonly sessionId: string;
+  readonly turnId: string;
+  readonly content: { readonly text: string };
+}
+
+export interface SessionTurnAccessRequest {
+  readonly requestId: string;
+  readonly principalId: string;
+  readonly grantId: string;
+  readonly intent: SessionTurnRequestIntent;
+  readonly createdAt: string;
+  readonly state: SessionTurnAccessRequestState;
+}
+
+export interface CollaborationTurnRequestCreateInput {
+  readonly intent: SessionTurnRequestIntent;
+}
+
+export interface CollaborationTurnRequestQueryInput {
+  readonly sessionId: string;
+}
+
+export interface CollaborationTurnRequestQueryResult {
+  readonly requests: readonly SessionTurnAccessRequest[];
+}
+
+export interface CollaborationTurnRequestDecideInput {
+  readonly requestId: string;
+  readonly decision: 'approve' | 'reject';
+}
+
+export type CollaborationTurnRequestDecideResult =
+  | { readonly kind: 'not_found' }
+  | {
+      readonly kind: 'decided' | 'already_decided';
+      readonly request: SessionTurnAccessRequest;
+    };
+
+export interface CollaborationTurnRequestAcknowledgeInput {
+  readonly requestId: string;
+}
+
+export interface CollaborationTurnRequestAcknowledgeResult {
+  readonly acknowledged: boolean;
+}
 const COLLABORATION_ERRORS = [
   'host_not_ready',
   'host_draining',
@@ -154,6 +216,50 @@ export const SESSION_COLLABORATION_OPERATION_SPECS = {
     errors: COLLABORATION_ERRORS,
     decodeInput: decodeCollaborationPrincipalRevokeInput,
     decodeOutput: decodeCollaborationPrincipalRevokeResult,
+  }),
+  'collaboration.turn-request.create': defineOperation<
+    CollaborationTurnRequestCreateInput,
+    SessionTurnAccessRequest,
+    (typeof COLLABORATION_ERRORS)[number]
+  >({
+    mode: 'command',
+    availability: 'ready',
+    errors: COLLABORATION_ERRORS,
+    decodeInput: decodeCollaborationTurnRequestCreateInput,
+    decodeOutput: decodeSessionTurnAccessRequest,
+  }),
+  'collaboration.turn-request.query': defineOperation<
+    CollaborationTurnRequestQueryInput,
+    CollaborationTurnRequestQueryResult,
+    (typeof COLLABORATION_ERRORS)[number]
+  >({
+    mode: 'query',
+    availability: 'ready',
+    errors: COLLABORATION_ERRORS,
+    decodeInput: decodeCollaborationTurnRequestQueryInput,
+    decodeOutput: decodeCollaborationTurnRequestQueryResult,
+  }),
+  'collaboration.turn-request.acknowledge': defineOperation<
+    CollaborationTurnRequestAcknowledgeInput,
+    CollaborationTurnRequestAcknowledgeResult,
+    (typeof COLLABORATION_ERRORS)[number]
+  >({
+    mode: 'command',
+    availability: 'ready',
+    errors: COLLABORATION_ERRORS,
+    decodeInput: decodeCollaborationTurnRequestAcknowledgeInput,
+    decodeOutput: decodeCollaborationTurnRequestAcknowledgeResult,
+  }),
+  'collaboration.turn-request.decide': defineOperation<
+    CollaborationTurnRequestDecideInput,
+    CollaborationTurnRequestDecideResult,
+    (typeof COLLABORATION_ERRORS)[number]
+  >({
+    mode: 'command',
+    availability: 'ready',
+    errors: COLLABORATION_ERRORS,
+    decodeInput: decodeCollaborationTurnRequestDecideInput,
+    decodeOutput: decodeCollaborationTurnRequestDecideResult,
   }),
 } as const;
 
@@ -305,6 +411,174 @@ function decodeCollaborationPrincipalRevokeResult(
     throw invalidProtocolFrame('Invalid collaboration principal revoke result');
   }
   return { revoked: record.revoked };
+}
+
+function decodeCollaborationTurnRequestCreateInput(
+  value: unknown,
+): CollaborationTurnRequestCreateInput {
+  const record = requireExactRecord(value, 'collaboration Turn request input', ['intent']);
+  return { intent: decodeSessionTurnRequestIntent(record.intent) };
+}
+
+function decodeCollaborationTurnRequestQueryInput(
+  value: unknown,
+): CollaborationTurnRequestQueryInput {
+  const record = requireExactRecord(value, 'collaboration Turn request query', ['sessionId']);
+  return { sessionId: requireEntityId(record.sessionId, 'sessionId') };
+}
+
+function decodeCollaborationTurnRequestQueryResult(
+  value: unknown,
+): CollaborationTurnRequestQueryResult {
+  const record = requireExactRecord(value, 'collaboration Turn request query result', ['requests']);
+  if (!Array.isArray(record.requests)) {
+    throw invalidProtocolFrame('Invalid collaboration Turn request query result');
+  }
+  return { requests: record.requests.map(decodeSessionTurnAccessRequest) };
+}
+
+function decodeCollaborationTurnRequestAcknowledgeInput(
+  value: unknown,
+): CollaborationTurnRequestAcknowledgeInput {
+  const record = requireExactRecord(value, 'collaboration Turn request acknowledgement input', [
+    'requestId',
+  ]);
+  return { requestId: requireId(record.requestId, 'requestId') };
+}
+
+function decodeCollaborationTurnRequestAcknowledgeResult(
+  value: unknown,
+): CollaborationTurnRequestAcknowledgeResult {
+  const record = requireExactRecord(value, 'collaboration Turn request acknowledgement result', [
+    'acknowledged',
+  ]);
+  if (typeof record.acknowledged !== 'boolean') {
+    throw invalidProtocolFrame('Invalid collaboration Turn request acknowledgement result');
+  }
+  return { acknowledged: record.acknowledged };
+}
+
+function decodeCollaborationTurnRequestDecideInput(
+  value: unknown,
+): CollaborationTurnRequestDecideInput {
+  const record = requireExactRecord(value, 'collaboration Turn request decision', [
+    'requestId',
+    'decision',
+  ]);
+  if (record.decision !== 'approve' && record.decision !== 'reject') {
+    throw invalidProtocolFrame('Invalid collaboration Turn request decision');
+  }
+  return {
+    requestId: requireId(record.requestId, 'requestId'),
+    decision: record.decision,
+  };
+}
+
+function decodeCollaborationTurnRequestDecideResult(
+  value: unknown,
+): CollaborationTurnRequestDecideResult {
+  const candidate = requireRecord(value, 'collaboration Turn request decision result');
+  const record = requireExactRecord(
+    value,
+    'collaboration Turn request decision result',
+    candidate.kind === 'not_found' ? ['kind'] : ['kind', 'request'],
+  );
+  if (
+    record.kind !== 'decided' &&
+    record.kind !== 'already_decided' &&
+    record.kind !== 'not_found'
+  ) {
+    throw invalidProtocolFrame('Invalid collaboration Turn request decision result');
+  }
+  return record.kind === 'not_found'
+    ? { kind: record.kind }
+    : { kind: record.kind, request: decodeSessionTurnAccessRequest(record.request) };
+}
+
+export function decodeSessionTurnAccessRequest(value: unknown): SessionTurnAccessRequest {
+  const record = requireExactRecord(value, 'Session Turn access request', [
+    'requestId',
+    'principalId',
+    'grantId',
+    'intent',
+    'createdAt',
+    'state',
+  ]);
+  return {
+    requestId: requireId(record.requestId, 'requestId'),
+    principalId: decodePrincipalId(record.principalId),
+    grantId: requireId(record.grantId, 'grantId'),
+    intent: decodeSessionTurnRequestIntent(record.intent),
+    createdAt: decodeIsoTimestamp(record.createdAt, 'createdAt'),
+    state: decodeSessionTurnAccessRequestState(record.state),
+  };
+}
+
+function decodeSessionTurnRequestIntent(value: unknown): SessionTurnRequestIntent {
+  const record = requireExactRecord(value, 'Session Turn request intent', [
+    'sessionId',
+    'turnId',
+    'content',
+  ]);
+  const content = requireExactRecord(record.content, 'Session Turn request content', ['text']);
+  const decoded = decodeTurnStartInput({
+    sessionId: record.sessionId,
+    turnId: record.turnId,
+    content: { text: content.text },
+  });
+  return {
+    sessionId: decoded.sessionId,
+    turnId: decoded.turnId,
+    content: { text: decoded.content.text },
+  };
+}
+
+function decodeSessionTurnAccessRequestState(value: unknown): SessionTurnAccessRequestState {
+  const kind = requireShapedRecord(
+    value,
+    'Session Turn access request state',
+    ['kind'],
+    ['decidedAt', 'decidedBy', 'admission'],
+  ).kind;
+  if (kind === 'pending') {
+    requireExactRecord(value, 'pending Session Turn access request', ['kind']);
+    return { kind };
+  }
+  if (kind === 'rejected') {
+    const record = requireExactRecord(value, 'rejected Session Turn access request', [
+      'kind',
+      'decidedAt',
+      'decidedBy',
+    ]);
+    return {
+      kind,
+      decidedAt: decodeIsoTimestamp(record.decidedAt, 'decidedAt'),
+      decidedBy: decodePrincipalId(record.decidedBy),
+    };
+  }
+  if (kind !== 'approved') {
+    throw invalidProtocolFrame('Invalid Session Turn access request state');
+  }
+  const candidate = requireExactRecord(value, 'approved Session Turn access request', [
+    'kind',
+    'decidedAt',
+    'decidedBy',
+    'admission',
+  ]);
+  if (
+    candidate.admission !== 'pending' &&
+    candidate.admission !== 'started' &&
+    candidate.admission !== 'blocked' &&
+    candidate.admission !== 'failed'
+  ) {
+    throw invalidProtocolFrame('Invalid Session Turn access request admission');
+  }
+  return {
+    kind,
+    decidedAt: decodeIsoTimestamp(candidate.decidedAt, 'decidedAt'),
+    decidedBy: decodePrincipalId(candidate.decidedBy),
+    admission: candidate.admission,
+  };
 }
 
 export function decodeSessionCollaborationGrant(value: unknown): SessionCollaborationGrant {

@@ -25,10 +25,12 @@ import {
   HOST_OPERATION_SPECS,
   operationAllowsRemoteOwner,
   type SessionCollaborationGrant,
+  decodeSessionTurnAccessRequest,
+  type SessionTurnAccessRequest,
   type OperationKey,
 } from '../protocol/index.js';
 
-const ACCESS_FILE_SCHEMA_VERSION = 2;
+const ACCESS_FILE_SCHEMA_VERSION = 3;
 const ACCESS_FILE_MAX_BYTES = 512 * 1024;
 const LEGACY_TRANSCRIPT_QUERY_GRANT = 'session.transcript.query';
 const TRANSCRIPT_QUERY_REPLACEMENT_GRANTS = [
@@ -58,6 +60,9 @@ export const ACCESS_FILE_NAME = 'runtime-host-access.json';
 export const SESSION_GUEST_OPERATION_GRANTS = Object.freeze([
   'host.status',
   'artifact.query',
+  'collaboration.turn-request.create',
+  'collaboration.turn-request.acknowledge',
+  'collaboration.turn-request.query',
   'runtime.resource.query',
   'session.shared.query',
   'subscription.open',
@@ -86,6 +91,7 @@ export interface AccessCredentialFile {
   readonly schemaVersion: typeof ACCESS_FILE_SCHEMA_VERSION;
   readonly credentials: readonly StoredAccessCredential[];
   readonly sessionGrants: readonly SessionCollaborationGrant[];
+  readonly turnAccessRequests: readonly SessionTurnAccessRequest[];
 }
 
 export class RuntimeHostAccessInputError extends Error {
@@ -112,8 +118,14 @@ export class RuntimeHostAccessCommitOutcomeUnknownError extends Error {
 export function createAccessCredentialFile(
   credentials: readonly StoredAccessCredential[],
   sessionGrants: readonly SessionCollaborationGrant[] = [],
+  turnAccessRequests: readonly SessionTurnAccessRequest[] = [],
 ): AccessCredentialFile {
-  return { schemaVersion: ACCESS_FILE_SCHEMA_VERSION, credentials, sessionGrants };
+  return {
+    schemaVersion: ACCESS_FILE_SCHEMA_VERSION,
+    credentials,
+    sessionGrants,
+    turnAccessRequests,
+  };
 }
 
 export function issuedAccessGrants(grants: readonly OperationKey[]): readonly OperationKey[] {
@@ -132,8 +144,26 @@ export function assertAccessCredentialFileCapacity(file: AccessCredentialFile): 
           },
     ),
     file.sessionGrants,
+    file.turnAccessRequests.map(reserveTurnAccessRequestCompletionCapacity),
   );
   serializeAccessCredentialFile(fullyRevoked);
+}
+
+function reserveTurnAccessRequestCompletionCapacity(
+  request: SessionTurnAccessRequest,
+): SessionTurnAccessRequest {
+  if (request.state.kind !== 'pending' && request.state.kind !== 'approved') return request;
+  if (request.state.kind === 'approved' && request.state.admission !== 'pending') return request;
+  return {
+    ...request,
+    state: {
+      kind: 'approved',
+      decidedAt:
+        request.state.kind === 'approved' ? request.state.decidedAt : '9999-12-31T23:59:59.999Z',
+      decidedBy: request.state.kind === 'approved' ? request.state.decidedBy : 'x'.repeat(128),
+      admission: 'failed',
+    },
+  };
 }
 
 export async function readAccessCredentialFile(path: string): Promise<AccessCredentialFile> {
@@ -193,7 +223,10 @@ function serializeAccessCredentialFile(file: AccessCredentialFile): string {
 }
 
 function decodeAccessFile(value: unknown): AccessCredentialFile {
-  if (!isRecord(value) || (value.schemaVersion !== 1 && value.schemaVersion !== 2)) {
+  if (
+    !isRecord(value) ||
+    (value.schemaVersion !== 1 && value.schemaVersion !== 2 && value.schemaVersion !== 3)
+  ) {
     throw new Error('Unsupported Runtime Host access file');
   }
   if (!Array.isArray(value.credentials)) throw new Error('Invalid Runtime Host access file');
@@ -228,7 +261,21 @@ function decodeAccessFile(value: unknown): AccessCredentialFile {
     }
     sessionByGuest.set(grant.principalId, grant.sessionId);
   }
-  return createAccessCredentialFile(credentials, sessionGrants);
+  const turnAccessRequests =
+    value.schemaVersion < 3
+      ? []
+      : Array.isArray(value.turnAccessRequests)
+        ? value.turnAccessRequests.map(decodeSessionTurnAccessRequest)
+        : (() => {
+            throw new Error('Invalid Runtime Host Turn access requests');
+          })();
+  if (
+    new Set(turnAccessRequests.map((request) => request.requestId)).size !==
+    turnAccessRequests.length
+  ) {
+    throw new Error('Duplicate Runtime Host Turn access request identity');
+  }
+  return createAccessCredentialFile(credentials, sessionGrants, turnAccessRequests);
 }
 
 function decodeStoredCredential(value: unknown): StoredAccessCredential {

@@ -59,8 +59,12 @@ import {
 } from './operation-dispatcher.js';
 import {
   issueAccessCredential,
+  acknowledgeCollaborationTurnRequest,
+  createCollaborationTurnRequest,
+  decideCollaborationTurnRequest,
   finalizeAccessCredential,
   prepareCollaborationInvitation,
+  queryCollaborationTurnRequests,
   prepareAccessCredential,
   prepareAccessCredentialRotation,
   replaceAccessCredential,
@@ -121,7 +125,12 @@ export interface RuntimeHostCompositionContext {
   requestDrain(): void;
   sessionAccessAuthority?: Pick<
     RuntimeHostAccessAuthority,
-    'activeSessionGrant' | 'activeSessionGrantForPrincipal' | 'subscribeGrantRevocations'
+    | 'activeSessionGrant'
+    | 'activeSessionGrantForPrincipal'
+    | 'approvedTurnAccessRequests'
+    | 'completeTurnAccessRequest'
+    | 'subscribeGrantRevocations'
+    | 'subscribeApprovedTurnAccessRequests'
   >;
   waitForResidencies?(): Promise<void>;
   waitForResidenciesExcept?(excludedLabel: string): Promise<void>;
@@ -723,7 +732,10 @@ export class RuntimeHostKernel {
           ),
         'collaboration.access.query': async (input) =>
           this.#options.accessAuthority
-            ? { ok: true, result: this.#options.accessAuthority.queryCollaborationAccess(input) }
+            ? {
+                ok: true,
+                result: this.#options.accessAuthority.queryCollaborationAccess(input),
+              }
             : {
                 ok: false,
                 error: {
@@ -738,6 +750,31 @@ export class RuntimeHostKernel {
         'collaboration.principal.revoke': async (input) =>
           this.#settleAccessCredentialMutation(
             revokeCollaborationPrincipal(this.#options.accessAuthority, input.principalId),
+          ),
+        'collaboration.turn-request.create': async (input, context) =>
+          this.#settleAccessCredentialMutation(
+            createCollaborationTurnRequest(this.#options.accessAuthority, context.principal, input),
+          ),
+        'collaboration.turn-request.query': async (input, context) =>
+          queryCollaborationTurnRequests(
+            this.#options.accessAuthority,
+            {
+              principalId: context.principal,
+              principalKind: context.principalKind,
+            },
+            input,
+          ),
+        'collaboration.turn-request.acknowledge': async (input, context) =>
+          this.#settleAccessCredentialMutation(
+            acknowledgeCollaborationTurnRequest(
+              this.#options.accessAuthority,
+              context.principal,
+              input,
+            ),
+          ),
+        'collaboration.turn-request.decide': async (input, context) =>
+          this.#settleAccessCredentialMutation(
+            decideCollaborationTurnRequest(this.#options.accessAuthority, context.principal, input),
           ),
       },
       createPeerMeshOperationHandlers(this.#options.peerMesh, {

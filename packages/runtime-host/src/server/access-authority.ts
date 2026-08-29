@@ -43,9 +43,17 @@ import {
   type CollaborationInvitationPrepareInput,
   type CollaborationInvitationPrepareResult,
   type CollaborationPrincipalRevokeResult,
+  type CollaborationTurnRequestAcknowledgeInput,
+  type CollaborationTurnRequestAcknowledgeResult,
+  type CollaborationTurnRequestCreateInput,
+  type CollaborationTurnRequestDecideInput,
+  type CollaborationTurnRequestDecideResult,
+  type CollaborationTurnRequestQueryInput,
+  type CollaborationTurnRequestQueryResult,
   encodeCollaborationInvitationCode,
   type SessionCollaborationGrant,
   type SessionCollaborationGrantKind,
+  type SessionTurnAccessRequest,
 } from '../protocol/index.js';
 import {
   createRuntimeHostConnectionAuthority,
@@ -73,11 +81,21 @@ import {
 
 const ACCESS_CREDENTIAL_PREFIX = 'maka_rh_';
 const PENDING_CREDENTIAL_LIFETIME_MS = 15 * 60_000;
+const TURN_ACCESS_REQUEST_ACTIVE_MAX = 4;
 const CAPABILITY_PROVIDER_GRANTS = new Set([
   'host.status',
   'client.capability.replace',
   'client.capability.unregister',
 ]);
+
+function createNextAccessCredentialFile(
+  current: AccessCredentialFile,
+  credentials: readonly StoredAccessCredential[],
+  sessionGrants: readonly SessionCollaborationGrant[],
+  turnAccessRequests: readonly SessionTurnAccessRequest[] = current.turnAccessRequests,
+): AccessCredentialFile {
+  return createAccessCredentialFile(credentials, sessionGrants, turnAccessRequests);
+}
 
 export interface RuntimeHostAccessAuthority {
   authenticate(credential: string): RuntimeHostConnectionAuthority | undefined;
@@ -102,6 +120,27 @@ export interface RuntimeHostAccessAuthority {
     input: CollaborationGrantRevokeInput,
   ): Promise<CollaborationGrantRevokeResult>;
   revokeCollaborationPrincipal(principalId: string): Promise<CollaborationPrincipalRevokeResult>;
+  createTurnAccessRequest(
+    principalId: string,
+    input: CollaborationTurnRequestCreateInput,
+  ): Promise<SessionTurnAccessRequest>;
+  queryTurnAccessRequests(
+    principal: Pick<RuntimeHostConnectionAuthority, 'principalId' | 'principalKind'>,
+    input: CollaborationTurnRequestQueryInput,
+  ): CollaborationTurnRequestQueryResult;
+  acknowledgeTurnAccessRequest(
+    principalId: string,
+    input: CollaborationTurnRequestAcknowledgeInput,
+  ): Promise<CollaborationTurnRequestAcknowledgeResult>;
+  decideTurnAccessRequest(
+    principalId: string,
+    input: CollaborationTurnRequestDecideInput,
+  ): Promise<CollaborationTurnRequestDecideResult>;
+  completeTurnAccessRequest(
+    requestId: string,
+    admission: 'started' | 'blocked' | 'failed',
+  ): Promise<void>;
+  approvedTurnAccessRequests(): readonly SessionTurnAccessRequest[];
   activeSessionGrant(
     principalId: string,
     sessionId: string,
@@ -113,6 +152,9 @@ export interface RuntimeHostAccessAuthority {
   ): SessionCollaborationGrant | undefined;
   subscribeRevocations(listener: (credentialId: string) => void): () => void;
   subscribeGrantRevocations(listener: (grant: SessionCollaborationGrant) => void): () => void;
+  subscribeApprovedTurnAccessRequests(
+    listener: (request: SessionTurnAccessRequest) => void,
+  ): () => void;
   close(): Promise<void>;
 }
 
@@ -142,6 +184,9 @@ class FileRuntimeHostAccessAuthority implements RuntimeHostAccessAuthority {
   #closed = false;
   readonly #revocationListeners = new Set<(credentialId: string) => void>();
   readonly #grantRevocationListeners = new Set<(grant: SessionCollaborationGrant) => void>();
+  readonly #approvedTurnAccessRequestListeners = new Set<
+    (request: SessionTurnAccessRequest) => void
+  >();
 
   constructor(
     controlDirectory: string,
@@ -233,7 +278,8 @@ class FileRuntimeHostAccessAuthority implements RuntimeHostAccessAuthority {
           createdAt,
         }),
       );
-      const nextFile = createAccessCredentialFile(
+      const nextFile = createNextAccessCredentialFile(
+        this.#file,
         [...this.#file.credentials, stored],
         [...this.#file.sessionGrants, ...grants],
       );
@@ -290,9 +336,16 @@ class FileRuntimeHostAccessAuthority implements RuntimeHostAccessAuthority {
       const current = this.#file.sessionGrants.find((grant) => grant.grantId === input.grantId);
       if (!current) return { revoked: false };
       await this.#commit(
-        createAccessCredentialFile(
+        createNextAccessCredentialFile(
+          this.#file,
           this.#file.credentials,
           this.#file.sessionGrants.filter((grant) => grant !== current),
+          current.kind === 'session_turn_request'
+            ? removePendingTurnAccessRequests(
+                this.#file.turnAccessRequests,
+                (request) => request.grantId === current.grantId,
+              )
+            : this.#file.turnAccessRequests,
         ),
         [],
         [current],
@@ -302,7 +355,204 @@ class FileRuntimeHostAccessAuthority implements RuntimeHostAccessAuthority {
   }
 
   revokeCollaborationPrincipal(principalId: string): Promise<CollaborationPrincipalRevokeResult> {
-    return this.revokePrincipal({ principalKind: 'session_guest', principalId });
+    return this.revokePrincipal({
+      principalKind: 'session_guest',
+      principalId,
+    });
+  }
+
+  createTurnAccessRequest(
+    principalId: string,
+    input: CollaborationTurnRequestCreateInput,
+  ): Promise<SessionTurnAccessRequest> {
+    return this.#mutate(async () => {
+      const grant = this.activeSessionGrant(
+        principalId,
+        input.intent.sessionId,
+        'session_turn_request',
+      );
+      if (!grant) {
+        throw new RuntimeHostAccessInputError('This Guest cannot request a Turn in this Session');
+      }
+      const retainedRequests = this.#file.turnAccessRequests;
+      const existing = retainedRequests.find(
+        (request) =>
+          request.principalId === principalId &&
+          request.intent.sessionId === input.intent.sessionId &&
+          request.intent.turnId === input.intent.turnId,
+      );
+      if (existing) {
+        if (existing.intent.content.text !== input.intent.content.text) {
+          throw new RuntimeHostAccessInputError(
+            'A Turn access request already uses this Turn identity with different content',
+          );
+        }
+        return existing;
+      }
+      if (
+        retainedRequests.filter(isActiveTurnAccessRequest).length >= TURN_ACCESS_REQUEST_ACTIVE_MAX
+      ) {
+        throw new RuntimeHostAccessInputError(
+          'Too many Turn access requests are awaiting an Owner decision or admission',
+        );
+      }
+      if (
+        retainedRequests.filter(
+          (request) => request.principalId === principalId && !isActiveTurnAccessRequest(request),
+        ).length >= TURN_ACCESS_REQUEST_ACTIVE_MAX
+      ) {
+        throw new RuntimeHostAccessInputError(
+          'Review earlier Turn access request results before creating another request',
+        );
+      }
+      const request: SessionTurnAccessRequest = {
+        requestId: randomUUID(),
+        principalId,
+        grantId: grant.grantId,
+        intent: input.intent,
+        createdAt: new Date().toISOString(),
+        state: { kind: 'pending' },
+      };
+      const nextFile = createAccessCredentialFile(
+        this.#file.credentials,
+        this.#file.sessionGrants,
+        [...retainedRequests, request],
+      );
+      assertAccessCredentialFileCapacity(nextFile);
+      await this.#commit(nextFile);
+      return request;
+    });
+  }
+
+  queryTurnAccessRequests(
+    principal: Pick<RuntimeHostConnectionAuthority, 'principalId' | 'principalKind'>,
+    input: CollaborationTurnRequestQueryInput,
+  ): CollaborationTurnRequestQueryResult {
+    const guest = principal.principalKind === 'session_guest';
+    return {
+      requests: this.#file.turnAccessRequests.filter(
+        (request) =>
+          (!guest || request.principalId === principal.principalId) &&
+          request.intent.sessionId === input.sessionId,
+      ),
+    };
+  }
+
+  acknowledgeTurnAccessRequest(
+    principalId: string,
+    input: CollaborationTurnRequestAcknowledgeInput,
+  ): Promise<CollaborationTurnRequestAcknowledgeResult> {
+    return this.#mutate(async () => {
+      const current = this.#file.turnAccessRequests.find(
+        (request) => request.requestId === input.requestId && request.principalId === principalId,
+      );
+      if (
+        !current ||
+        current.state.kind === 'pending' ||
+        (current.state.kind === 'approved' && current.state.admission === 'pending')
+      ) {
+        return { acknowledged: false };
+      }
+      await this.#commit(
+        createAccessCredentialFile(
+          this.#file.credentials,
+          this.#file.sessionGrants,
+          this.#file.turnAccessRequests.filter((request) => request !== current),
+        ),
+      );
+      return { acknowledged: true };
+    });
+  }
+
+  decideTurnAccessRequest(
+    principalId: string,
+    input: CollaborationTurnRequestDecideInput,
+  ): Promise<CollaborationTurnRequestDecideResult> {
+    return this.#mutate(async () => {
+      const current = this.#file.turnAccessRequests.find(
+        (request) => request.requestId === input.requestId,
+      );
+      if (!current) return { kind: 'not_found' };
+      if (current.state.kind !== 'pending') {
+        return { kind: 'already_decided', request: current };
+      }
+      if (
+        input.decision === 'approve' &&
+        !this.activeSessionGrant(
+          current.principalId,
+          current.intent.sessionId,
+          'session_turn_request',
+        )
+      ) {
+        throw new RuntimeHostAccessInputError('The Guest can no longer request this Turn');
+      }
+      const decidedAt = new Date().toISOString();
+      const request: SessionTurnAccessRequest = {
+        ...current,
+        state:
+          input.decision === 'approve'
+            ? {
+                kind: 'approved',
+                decidedAt,
+                decidedBy: principalId,
+                admission: 'pending',
+              }
+            : { kind: 'rejected', decidedAt, decidedBy: principalId },
+      };
+      await this.#commit(
+        createAccessCredentialFile(
+          this.#file.credentials,
+          this.#file.sessionGrants,
+          replaceTurnAccessRequest(this.#file.turnAccessRequests, current, request),
+        ),
+        [],
+        [],
+        input.decision === 'approve' ? [request] : [],
+      );
+      return { kind: 'decided', request };
+    });
+  }
+
+  completeTurnAccessRequest(
+    requestId: string,
+    admission: 'started' | 'blocked' | 'failed',
+  ): Promise<void> {
+    return this.#mutate(async () => {
+      const current = this.#file.turnAccessRequests.find(
+        (request) => request.requestId === requestId,
+      );
+      if (!current || current.state.kind !== 'approved' || current.state.admission !== 'pending') {
+        return;
+      }
+      const guestCanObserve = this.#file.credentials.some(
+        (credential) =>
+          credential.principalKind === 'session_guest' &&
+          credential.principalId === current.principalId &&
+          credential.status !== 'revoked',
+      );
+      const request: SessionTurnAccessRequest = {
+        ...current,
+        state: {
+          ...current.state,
+          admission,
+        },
+      };
+      await this.#commit(
+        createAccessCredentialFile(
+          this.#file.credentials,
+          this.#file.sessionGrants,
+          guestCanObserve
+            ? replaceTurnAccessRequest(this.#file.turnAccessRequests, current, request)
+            : this.#file.turnAccessRequests.filter((candidate) => candidate !== current),
+        ),
+      );
+    });
+  }
+
+  approvedTurnAccessRequests(): readonly SessionTurnAccessRequest[] {
+    return this.#file.turnAccessRequests.filter(
+      (request) => request.state.kind === 'approved' && request.state.admission === 'pending',
+    );
   }
 
   activeSessionGrant(
@@ -418,7 +668,11 @@ class FileRuntimeHostAccessAuthority implements RuntimeHostAccessAuthority {
       replaced.length === 0
         ? this.#file.credentials
         : this.#file.credentials.filter((candidate) => !replaced.includes(candidate));
-    const nextFile = createAccessCredentialFile([...retained, stored], this.#file.sessionGrants);
+    const nextFile = createNextAccessCredentialFile(
+      this.#file,
+      [...retained, stored],
+      this.#file.sessionGrants,
+    );
     assertAccessCredentialFileCapacity(nextFile);
     const deliveryId = await createAccessCredentialDelivery(
       this.#controlDirectory,
@@ -474,9 +728,13 @@ class FileRuntimeHostAccessAuthority implements RuntimeHostAccessAuthority {
         return [{ ...revoked, status: 'revoked' as const, revokedAt }];
       });
       await this.#commit(
-        createAccessCredentialFile(
+        createNextAccessCredentialFile(
+          this.#file,
           credentials,
           this.#file.sessionGrants.filter((grant) => !activeGrants.includes(grant)),
+          input.principalKind === 'session_guest'
+            ? retirePrincipalTurnAccessRequests(this.#file.turnAccessRequests, input.principalId)
+            : this.#file.turnAccessRequests,
         ),
         [...matchedIds],
         activeGrants,
@@ -536,7 +794,7 @@ class FileRuntimeHostAccessAuthority implements RuntimeHostAccessAuthority {
               };
             });
     await this.#commit(
-      createAccessCredentialFile(credentials, this.#file.sessionGrants),
+      createNextAccessCredentialFile(this.#file, credentials, this.#file.sessionGrants),
       [current, ...pendingForPrincipal].map((credential) => credential.credentialId),
     );
     return { credentialId, revoked: true };
@@ -580,7 +838,8 @@ class FileRuntimeHostAccessAuthority implements RuntimeHostAccessAuthority {
         credential.principalKind === retained.principalKind &&
         credential.principalId === retained.principalId,
     );
-    const finalized = createAccessCredentialFile(
+    const finalized = createNextAccessCredentialFile(
+      this.#file,
       this.#file.credentials
         .filter((credential) => !revoked.includes(credential))
         .map((credential) =>
@@ -594,7 +853,9 @@ class FileRuntimeHostAccessAuthority implements RuntimeHostAccessAuthority {
       finalized,
       revoked.map((credential) => credential.credentialId),
     );
-    return { reconnectRequired: retained.bindClientInstanceOnFinalize === true };
+    return {
+      reconnectRequired: retained.bindClientInstanceOnFinalize === true,
+    };
   }
 
   subscribeRevocations(listener: (credentialId: string) => void): () => void {
@@ -609,6 +870,14 @@ class FileRuntimeHostAccessAuthority implements RuntimeHostAccessAuthority {
     return () => this.#grantRevocationListeners.delete(listener);
   }
 
+  subscribeApprovedTurnAccessRequests(
+    listener: (request: SessionTurnAccessRequest) => void,
+  ): () => void {
+    if (this.#closed) return () => undefined;
+    this.#approvedTurnAccessRequestListeners.add(listener);
+    return () => this.#approvedTurnAccessRequestListeners.delete(listener);
+  }
+
   close(): Promise<void> {
     if (!this.#closed) {
       this.#closed = true;
@@ -616,6 +885,7 @@ class FileRuntimeHostAccessAuthority implements RuntimeHostAccessAuthority {
       this.#expiryTimer = undefined;
       this.#revocationListeners.clear();
       this.#grantRevocationListeners.clear();
+      this.#approvedTurnAccessRequestListeners.clear();
     }
     return this.#mutation;
   }
@@ -636,6 +906,7 @@ class FileRuntimeHostAccessAuthority implements RuntimeHostAccessAuthority {
     file: AccessCredentialFile,
     revokedCredentialIds: readonly string[] = [],
     revokedGrants: readonly SessionCollaborationGrant[] = [],
+    approvedTurnAccessRequests: readonly SessionTurnAccessRequest[] = [],
   ): Promise<void> {
     let outcomeUnknown: RuntimeHostAccessCommitOutcomeUnknownError | undefined;
     try {
@@ -648,6 +919,11 @@ class FileRuntimeHostAccessAuthority implements RuntimeHostAccessAuthority {
     this.#schedulePendingExpiry();
     for (const credentialId of revokedCredentialIds) this.#publishRevocation(credentialId);
     for (const grant of revokedGrants) this.#publishGrantRevocation(grant);
+    if (!outcomeUnknown) {
+      for (const request of approvedTurnAccessRequests) {
+        for (const listener of this.#approvedTurnAccessRequestListeners) listener(request);
+      }
+    }
     if (outcomeUnknown) throw outcomeUnknown;
   }
 
@@ -669,7 +945,8 @@ class FileRuntimeHostAccessAuthority implements RuntimeHostAccessAuthority {
       expiredGuestPrincipals.has(grant.principalId),
     );
     await this.#commit(
-      createAccessCredentialFile(
+      createNextAccessCredentialFile(
+        this.#file,
         this.#file.credentials.filter((credential) => !expired.includes(credential)),
         this.#file.sessionGrants.filter((grant) => !expiredGrants.includes(grant)),
       ),
@@ -726,6 +1003,39 @@ class FileRuntimeHostAccessAuthority implements RuntimeHostAccessAuthority {
   }
 }
 
+function isActiveTurnAccessRequest(request: SessionTurnAccessRequest): boolean {
+  return (
+    request.state.kind === 'pending' ||
+    (request.state.kind === 'approved' && request.state.admission === 'pending')
+  );
+}
+
+function replaceTurnAccessRequest(
+  requests: readonly SessionTurnAccessRequest[],
+  current: SessionTurnAccessRequest,
+  replacement: SessionTurnAccessRequest,
+): readonly SessionTurnAccessRequest[] {
+  return [...requests.filter((request) => request !== current), replacement];
+}
+
+function removePendingTurnAccessRequests(
+  requests: readonly SessionTurnAccessRequest[],
+  matches: (request: SessionTurnAccessRequest) => boolean,
+): readonly SessionTurnAccessRequest[] {
+  return requests.filter((request) => request.state.kind !== 'pending' || !matches(request));
+}
+
+function retirePrincipalTurnAccessRequests(
+  requests: readonly SessionTurnAccessRequest[],
+  principalId: string,
+): readonly SessionTurnAccessRequest[] {
+  return requests.filter(
+    (request) =>
+      request.principalId !== principalId ||
+      (request.state.kind === 'approved' && request.state.admission === 'pending'),
+  );
+}
+
 function activatePendingCredential(
   credential: StoredAccessCredential,
   clientInstanceId: string,
@@ -767,7 +1077,10 @@ export async function issueAccessCredential(
     return { ok: true, result: await authority.issue(input) };
   } catch (error) {
     if (error instanceof RuntimeHostAccessInputError) {
-      return { ok: false, error: { code: 'invalid_request', message: error.message } };
+      return {
+        ok: false,
+        error: { code: 'invalid_request', message: error.message },
+      };
     }
     return accessPersistenceFailure(
       error,
@@ -786,7 +1099,10 @@ export async function replaceAccessCredential(
     return { ok: true, result: await authority.replace(input) };
   } catch (error) {
     if (error instanceof RuntimeHostAccessInputError) {
-      return { ok: false, error: { code: 'invalid_request', message: error.message } };
+      return {
+        ok: false,
+        error: { code: 'invalid_request', message: error.message },
+      };
     }
     return accessPersistenceFailure(
       error,
@@ -805,7 +1121,10 @@ export async function prepareAccessCredential(
     return { ok: true, result: await authority.prepare(input) };
   } catch (error) {
     if (error instanceof RuntimeHostAccessInputError) {
-      return { ok: false, error: { code: 'invalid_request', message: error.message } };
+      return {
+        ok: false,
+        error: { code: 'invalid_request', message: error.message },
+      };
     }
     return accessPersistenceFailure(
       error,
@@ -824,7 +1143,10 @@ export async function prepareAccessCredentialRotation(
     return { ok: true, result: await authority.prepareRotation(input) };
   } catch (error) {
     if (error instanceof RuntimeHostAccessInputError) {
-      return { ok: false, error: { code: 'invalid_request', message: error.message } };
+      return {
+        ok: false,
+        error: { code: 'invalid_request', message: error.message },
+      };
     }
     return accessPersistenceFailure(
       error,
@@ -843,7 +1165,10 @@ export async function revokeAccessCredential(
     return { ok: true, result: await authority.revoke(input) };
   } catch (error) {
     if (error instanceof RuntimeHostAccessInputError) {
-      return { ok: false, error: { code: 'invalid_request', message: error.message } };
+      return {
+        ok: false,
+        error: { code: 'invalid_request', message: error.message },
+      };
     }
     return accessPersistenceFailure(
       error,
@@ -878,7 +1203,10 @@ export async function revokeAccessCredentialRotation(
     return { ok: true, result: await authority.revokeRotation(input) };
   } catch (error) {
     if (error instanceof RuntimeHostAccessInputError) {
-      return { ok: false, error: { code: 'invalid_request', message: error.message } };
+      return {
+        ok: false,
+        error: { code: 'invalid_request', message: error.message },
+      };
     }
     return accessPersistenceFailure(
       error,
@@ -897,20 +1225,32 @@ export async function finalizeAccessCredential(
   if (!credentialId) {
     return {
       ok: false,
-      error: { code: 'invalid_request', message: 'A remote access credential is required' },
+      error: {
+        code: 'invalid_request',
+        message: 'A remote access credential is required',
+      },
     };
   }
   if (!clientInstanceId) {
     return {
       ok: false,
-      error: { code: 'invalid_request', message: 'A Client identity is required' },
+      error: {
+        code: 'invalid_request',
+        message: 'A Client identity is required',
+      },
     };
   }
   try {
-    return { ok: true, result: await authority.finalize(credentialId, clientInstanceId) };
+    return {
+      ok: true,
+      result: await authority.finalize(credentialId, clientInstanceId),
+    };
   } catch (error) {
     if (error instanceof RuntimeHostAccessInputError) {
-      return { ok: false, error: { code: 'invalid_request', message: error.message } };
+      return {
+        ok: false,
+        error: { code: 'invalid_request', message: error.message },
+      };
     }
     return accessPersistenceFailure(
       error,
@@ -927,10 +1267,16 @@ export async function prepareCollaborationInvitation(
 ): Promise<OperationOutcome<'collaboration.invitation.prepare'>> {
   if (!authority) return collaborationUnavailable('collaboration.invitation.prepare');
   try {
-    return { ok: true, result: await authority.prepareCollaborationInvitation(rootId, input) };
+    return {
+      ok: true,
+      result: await authority.prepareCollaborationInvitation(rootId, input),
+    };
   } catch (error) {
     if (error instanceof RuntimeHostAccessInputError) {
-      return { ok: false, error: { code: 'invalid_request', message: error.message } };
+      return {
+        ok: false,
+        error: { code: 'invalid_request', message: error.message },
+      };
     }
     return accessPersistenceFailure(
       error,
@@ -940,13 +1286,109 @@ export async function prepareCollaborationInvitation(
   }
 }
 
+export async function createCollaborationTurnRequest(
+  authority: RuntimeHostAccessAuthority | undefined,
+  principalId: string,
+  input: CollaborationTurnRequestCreateInput,
+): Promise<OperationOutcome<'collaboration.turn-request.create'>> {
+  if (!authority) return collaborationUnavailable('collaboration.turn-request.create');
+  try {
+    return {
+      ok: true,
+      result: await authority.createTurnAccessRequest(principalId, input),
+    };
+  } catch (error) {
+    if (error instanceof RuntimeHostAccessInputError) {
+      return {
+        ok: false,
+        error: { code: 'invalid_request', message: error.message },
+      };
+    }
+    return accessPersistenceFailure(
+      error,
+      'Turn access request outcome is unknown',
+      'Turn access request could not be created',
+    );
+  }
+}
+
+export function queryCollaborationTurnRequests(
+  authority: RuntimeHostAccessAuthority | undefined,
+  principal: {
+    readonly principalId: string;
+    readonly principalKind: RuntimeHostConnectionAuthority['principalKind'] | undefined;
+  },
+  input: CollaborationTurnRequestQueryInput,
+): OperationOutcome<'collaboration.turn-request.query'> {
+  return authority && principal.principalKind
+    ? {
+        ok: true,
+        result: authority.queryTurnAccessRequests(
+          {
+            principalId: principal.principalId,
+            principalKind: principal.principalKind,
+          },
+          input,
+        ),
+      }
+    : collaborationUnavailable('collaboration.turn-request.query');
+}
+
+export async function acknowledgeCollaborationTurnRequest(
+  authority: RuntimeHostAccessAuthority | undefined,
+  principalId: string,
+  input: CollaborationTurnRequestAcknowledgeInput,
+): Promise<OperationOutcome<'collaboration.turn-request.acknowledge'>> {
+  if (!authority) return collaborationUnavailable('collaboration.turn-request.acknowledge');
+  try {
+    return {
+      ok: true,
+      result: await authority.acknowledgeTurnAccessRequest(principalId, input),
+    };
+  } catch (error) {
+    return accessPersistenceFailure(
+      error,
+      'Turn access acknowledgement outcome is unknown',
+      'Turn access request could not be acknowledged',
+    );
+  }
+}
+
+export async function decideCollaborationTurnRequest(
+  authority: RuntimeHostAccessAuthority | undefined,
+  principalId: string,
+  input: CollaborationTurnRequestDecideInput,
+): Promise<OperationOutcome<'collaboration.turn-request.decide'>> {
+  if (!authority) return collaborationUnavailable('collaboration.turn-request.decide');
+  try {
+    return {
+      ok: true,
+      result: await authority.decideTurnAccessRequest(principalId, input),
+    };
+  } catch (error) {
+    if (error instanceof RuntimeHostAccessInputError) {
+      return {
+        ok: false,
+        error: { code: 'invalid_request', message: error.message },
+      };
+    }
+    return accessPersistenceFailure(
+      error,
+      'Turn access decision outcome is unknown',
+      'Turn access request could not be decided',
+    );
+  }
+}
 export async function revokeCollaborationGrant(
   authority: RuntimeHostAccessAuthority | undefined,
   input: CollaborationGrantRevokeInput,
 ): Promise<OperationOutcome<'collaboration.grant.revoke'>> {
   if (!authority) return collaborationUnavailable('collaboration.grant.revoke');
   try {
-    return { ok: true, result: await authority.revokeCollaborationGrant(input) };
+    return {
+      ok: true,
+      result: await authority.revokeCollaborationGrant(input),
+    };
   } catch (error) {
     return accessPersistenceFailure(
       error,
@@ -962,7 +1404,10 @@ export async function revokeCollaborationPrincipal(
 ): Promise<OperationOutcome<'collaboration.principal.revoke'>> {
   if (!authority) return collaborationUnavailable('collaboration.principal.revoke');
   try {
-    return { ok: true, result: await authority.revokeCollaborationPrincipal(principalId) };
+    return {
+      ok: true,
+      result: await authority.revokeCollaborationPrincipal(principalId),
+    };
   } catch (error) {
     return accessPersistenceFailure(
       error,
@@ -976,7 +1421,11 @@ function collaborationUnavailable<
   K extends
     | 'collaboration.invitation.prepare'
     | 'collaboration.grant.revoke'
-    | 'collaboration.principal.revoke',
+    | 'collaboration.principal.revoke'
+    | 'collaboration.turn-request.create'
+    | 'collaboration.turn-request.acknowledge'
+    | 'collaboration.turn-request.decide'
+    | 'collaboration.turn-request.query',
 >(operation: K): OperationOutcome<K> {
   return {
     ok: false,

@@ -19,6 +19,7 @@
 
 import { truncateUtf8 } from '@maka/core/diagnostic-log';
 import { redactSecrets } from '@maka/core/redaction';
+import type { RootTurnAdmissionAuthorization } from '@maka/storage/execution-stores';
 import {
   HOST_OPERATION_SPECS,
   decodeOperationOutcome,
@@ -45,6 +46,7 @@ export interface ConnectionContext {
   principalKind?: RuntimeHostConnectionAuthority['principalKind'];
   credentialId?: string;
   clientInstanceId?: string;
+  turnAdmissionAuthorization?: RootTurnAdmissionAuthorization;
   acquireResidency(): OperationResidency;
 }
 
@@ -360,6 +362,34 @@ export function createUnavailableAccessAuthorityOperationHandlers(): AccessAutho
       },
     }),
     'collaboration.principal.revoke': async () => ({
+      ok: false,
+      error: {
+        code: 'operation_unavailable',
+        message: 'Runtime Host collaboration authority is unavailable',
+      },
+    }),
+    'collaboration.turn-request.create': async () => ({
+      ok: false,
+      error: {
+        code: 'operation_unavailable',
+        message: 'Runtime Host collaboration authority is unavailable',
+      },
+    }),
+    'collaboration.turn-request.acknowledge': async () => ({
+      ok: false,
+      error: {
+        code: 'operation_unavailable',
+        message: 'Runtime Host collaboration authority is unavailable',
+      },
+    }),
+    'collaboration.turn-request.query': async () => ({
+      ok: false,
+      error: {
+        code: 'operation_unavailable',
+        message: 'Runtime Host collaboration authority is unavailable',
+      },
+    }),
+    'collaboration.turn-request.decide': async () => ({
       ok: false,
       error: {
         code: 'operation_unavailable',

@@ -108,7 +108,11 @@ import {
   type CollaborationAccessQueryResult,
   type CollaborationInvitationPrepareResult,
   type CollaborationPrincipalRevokeResult,
+  type CollaborationTurnRequestDecideResult,
+  type CollaborationTurnRequestQueryResult,
   type SessionCollaborationGrantKind,
+  type SessionTurnAccessRequest,
+  type SessionTurnRequestIntent,
   type SessionConfigurationPatch,
   type SessionAssistantStreamIdentity,
   type SessionContinuitySnapshot,
@@ -294,6 +298,24 @@ export class DesktopRuntimeHostClient {
     principalId: string,
   ): Promise<CollaborationPrincipalRevokeResult> {
     return this.request('collaboration.principal.revoke', { principalId });
+  }
+
+  createCollaborationTurnRequest(intent: SessionTurnRequestIntent): Promise<SessionTurnAccessRequest> {
+    return this.request('collaboration.turn-request.create', { intent });
+  }
+
+  queryCollaborationTurnRequests(sessionId: string): Promise<CollaborationTurnRequestQueryResult> {
+    return this.request('collaboration.turn-request.query', { sessionId });
+  }
+
+  decideCollaborationTurnRequest(
+    requestId: string,
+    decision: 'approve' | 'reject',
+  ): Promise<CollaborationTurnRequestDecideResult> {
+    return this.request('collaboration.turn-request.decide', {
+      requestId,
+      decision,
+    });
   }
 
   subscribeConfigurationChanges(listener: (revision: number) => void): () => void {
