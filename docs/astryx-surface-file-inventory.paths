@@ -47,6 +47,7 @@ apps/desktop/src/renderer/session-collaboration-dialog.tsx
 apps/desktop/src/renderer/session-turn-request-composer.tsx
 apps/desktop/src/renderer/settings/about-settings-page.tsx
 apps/desktop/src/renderer/settings/appearance-settings-page.tsx
+apps/desktop/src/renderer/settings/bedrock-sso-setup.tsx
 apps/desktop/src/renderer/settings/bot-chat-detail.tsx
 apps/desktop/src/renderer/settings/bot-chat-overview.tsx
 apps/desktop/src/renderer/settings/bot-chat-settings-page.tsx

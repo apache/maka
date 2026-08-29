@@ -30,6 +30,8 @@ const ATTEMPT_TTL_MS = 15 * 60_000;
 
 type StartAuthorization = typeof startBedrockSsoDeviceAuthorization;
 type PollAuthorization = typeof pollBedrockSsoDeviceAuthorization;
+type ListAccounts = typeof listBedrockSsoAccounts;
+type ListRoles = typeof listBedrockSsoRoles;
 type GetRoleCredentials = typeof getBedrockSsoRoleCredentials;
 type DiscoverModels = typeof discoverBedrockModels;
 type SerializeSession = typeof serializeBedrockSsoSession;
@@ -37,6 +39,8 @@ type SerializeSession = typeof serializeBedrockSsoSession;
 export interface BedrockSsoCoordinatorDependencies {
   readonly startAuthorization: StartAuthorization;
   readonly pollAuthorization: PollAuthorization;
+  readonly listAccounts: ListAccounts;
+  readonly listRoles: ListRoles;
   readonly getRoleCredentials: GetRoleCredentials;
   readonly discoverModels: DiscoverModels;
   readonly serializeSession: SerializeSession;
@@ -46,6 +50,8 @@ export interface BedrockSsoCoordinatorDependencies {
 const DEFAULT_DEPENDENCIES: BedrockSsoCoordinatorDependencies = {
   startAuthorization: startBedrockSsoDeviceAuthorization,
   pollAuthorization: pollBedrockSsoDeviceAuthorization,
+  listAccounts: listBedrockSsoAccounts,
+  listRoles: listBedrockSsoRoles,
   getRoleCredentials: getBedrockSsoRoleCredentials,
   discoverModels: discoverBedrockModels,
   serializeSession: serializeBedrockSsoSession,
@@ -90,6 +96,7 @@ export class HostBedrockSsoCoordinator {
   #active: Attempt | undefined;
   #accepting = true;
   #startAdmission = Promise.resolve();
+  readonly #inFlightOperations = new Set<Promise<void>>();
 
   constructor(
     private readonly stores: RuntimePolicyStoresWriter,
@@ -103,13 +110,16 @@ export class HostBedrockSsoCoordinator {
 
   beginDrain(): void {
     this.#accepting = false;
-    if (this.#active) this.#cancelAttempt(this.#active);
+    for (const attempt of this.#attempts.values()) this.#cancelAttempt(attempt);
   }
 
   async close(): Promise<void> {
     this.beginDrain();
     await this.#startAdmission;
-    await Promise.all([...this.#attempts.values()].map((attempt) => attempt.settlement));
+    await Promise.all([
+      ...[...this.#attempts.values()].map((attempt) => attempt.settlement),
+      ...this.#inFlightOperations,
+    ]);
     this.#attempts.clear();
     this.#committed.clear();
   }
@@ -269,12 +279,15 @@ export class HostBedrockSsoCoordinator {
     const attempt = this.#authenticated(attemptId);
     if (!attempt) return failure('not_found', 'Authenticated Bedrock SSO attempt was not found');
     try {
-      const accounts = await this.#withFetch((fetchFn) =>
-        listBedrockSsoAccounts({
-          accessToken: attempt.session!.accessToken,
-          ssoRegion: attempt.ssoRegion,
-          fetchFn,
-        }),
+      const accounts = await this.#runAttemptOperation(attempt, () =>
+        this.#withAttemptFetch(attempt, (fetchFn) =>
+          this.dependencies.listAccounts({
+            accessToken: attempt.session!.accessToken,
+            ssoRegion: attempt.ssoRegion,
+            fetchFn,
+            signal: attempt.abort.signal,
+          }),
+        ),
       );
       return { ok: true, result: { accounts } };
     } catch {
@@ -289,13 +302,16 @@ export class HostBedrockSsoCoordinator {
     const attempt = this.#authenticated(attemptId);
     if (!attempt) return failure('not_found', 'Authenticated Bedrock SSO attempt was not found');
     try {
-      const roles = await this.#withFetch((fetchFn) =>
-        listBedrockSsoRoles({
-          accessToken: attempt.session!.accessToken,
-          accountId,
-          ssoRegion: attempt.ssoRegion,
-          fetchFn,
-        }),
+      const roles = await this.#runAttemptOperation(attempt, () =>
+        this.#withAttemptFetch(attempt, (fetchFn) =>
+          this.dependencies.listRoles({
+            accessToken: attempt.session!.accessToken,
+            accountId,
+            ssoRegion: attempt.ssoRegion,
+            fetchFn,
+            signal: attempt.abort.signal,
+          }),
+        ),
       );
       return { ok: true, result: { roles } };
     } catch {
@@ -312,27 +328,32 @@ export class HostBedrockSsoCoordinator {
     const attempt = this.#authenticated(attemptId);
     if (!attempt) return failure('not_found', 'Authenticated Bedrock SSO attempt was not found');
     try {
-      const { credentials, models } = await this.#withFetch(async (fetchFn) => {
-        const credentials = await this.dependencies.getRoleCredentials({
-          accessToken: attempt.session!.accessToken,
-          accountId,
-          roleName,
-          ssoRegion: attempt.ssoRegion,
-          fetchFn,
-        });
-        const credentialProvider = async () => credentials;
-        const models = await this.dependencies.discoverModels({
-          region: attempt.region,
-          credentialProvider,
-          fetchFn,
-        });
-        for (const modelId of manualModelIds) {
-          if (models.some((model) => model.id === modelId)) continue;
-          await probeManualModel(attempt, modelId, credentials, fetchFn);
-          models.push(manualBedrockModel(modelId));
-        }
-        return { credentials, models };
-      });
+      const { credentials, models } = await this.#runAttemptOperation(attempt, () =>
+        this.#withAttemptFetch(attempt, async (fetchFn) => {
+          const credentials = await this.dependencies.getRoleCredentials({
+            accessToken: attempt.session!.accessToken,
+            accountId,
+            roleName,
+            ssoRegion: attempt.ssoRegion,
+            fetchFn,
+            signal: attempt.abort.signal,
+          });
+          const credentialProvider = async () => credentials;
+          const models = await this.dependencies.discoverModels({
+            region: attempt.region,
+            credentialProvider,
+            fetchFn,
+            signal: attempt.abort.signal,
+          });
+          for (const modelId of manualModelIds) {
+            if (models.some((model) => model.id === modelId)) continue;
+            await probeManualModel(attempt, modelId, credentials, fetchFn);
+            models.push(manualBedrockModel(modelId));
+          }
+          return { credentials, models };
+        }),
+      );
+      attempt.abort.signal.throwIfAborted();
       void credentials;
       attempt.accountId = accountId;
       attempt.roleName = roleName;
@@ -440,6 +461,29 @@ export class HostBedrockSsoCoordinator {
     attempt.models = undefined;
   }
 
+  async #runAttemptOperation<T>(attempt: Attempt, run: () => Promise<T>): Promise<T> {
+    const operation = run();
+    const tracked = operation.then(
+      () => undefined,
+      () => undefined,
+    );
+    this.#inFlightOperations.add(tracked);
+    attempt.settlement = Promise.all([attempt.settlement.catch(() => undefined), tracked]).then(
+      () => undefined,
+    );
+    try {
+      const result = await operation;
+      attempt.abort.signal.throwIfAborted();
+      return result;
+    } finally {
+      this.#inFlightOperations.delete(tracked);
+    }
+  }
+
+  #withAttemptFetch<T>(attempt: Attempt, run: (fetchFn: typeof fetch) => Promise<T>): Promise<T> {
+    return this.#withFetch((fetchFn) => run(fetchWithAbortSignal(fetchFn, attempt.abort.signal)));
+  }
+
   async #withFetch<T>(run: (fetchFn: typeof fetch) => Promise<T>): Promise<T> {
     if (this.dependencies.withFetch) return this.dependencies.withFetch(run);
     const proxy = await this.stores.operations.resolveNetworkProxyExecution();
@@ -453,6 +497,14 @@ export class HostBedrockSsoCoordinator {
       await transport.close();
     }
   }
+}
+
+function fetchWithAbortSignal(fetchFn: typeof fetch, signal: AbortSignal): typeof fetch {
+  return (input, init) =>
+    fetchFn(input, {
+      ...init,
+      signal: init?.signal ? AbortSignal.any([signal, init.signal]) : signal,
+    });
 }
 
 async function probeManualModel(

@@ -78,6 +78,8 @@ function fixture(input?: {
   const defaults: BedrockSsoCoordinatorDependencies = {
     startAuthorization: async () => AUTHORIZATION,
     pollAuthorization: async () => SESSION,
+    listAccounts: async () => [],
+    listRoles: async () => [],
     getRoleCredentials: async () => ({
       accessKeyId: 'access-key',
       secretAccessKey: 'secret-key',
@@ -180,6 +182,54 @@ test('concurrent Bedrock starts serialize admission and do not orphan the supers
   assert.equal(superseded.ok, false, 'the cancelled flow must not retain an orphan attempt');
   assert.equal(f.activeResidencies(), 0);
   await f.coordinator.close();
+});
+
+test('cancel aborts post-auth work and close waits for it to settle', async () => {
+  let operationEntered!: () => void;
+  const entered = new Promise<void>((resolve) => {
+    operationEntered = resolve;
+  });
+  let releaseOperation!: () => void;
+  const released = new Promise<void>((resolve) => {
+    releaseOperation = resolve;
+  });
+  let observedSignal: AbortSignal | undefined;
+  const f = fixture({
+    dependencies: {
+      listAccounts: async ({ signal }) => {
+        observedSignal = signal;
+        operationEntered();
+        await released;
+        return [{ accountId: '123456789012' }];
+      },
+    },
+  });
+  const attemptId = 'post-auth-cancel';
+  await f.coordinator.handlers['bedrock.sso.login.start']({ attemptId, ...START_INPUT }, context());
+  await waitForAuthenticated(f.coordinator, attemptId);
+  const accounts = f.coordinator.handlers['bedrock.sso.accounts.list']({ attemptId }, context());
+  await entered;
+
+  const cancelled = await f.coordinator.handlers['bedrock.sso.login.cancel'](
+    { attemptId },
+    context(),
+  );
+  assert.equal(cancelled.ok, true);
+  assert.equal(observedSignal?.aborted, true, 'Cancel must abort post-auth AWS work');
+
+  let closeSettled = false;
+  const close = f.coordinator.close().then(() => {
+    closeSettled = true;
+  });
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.equal(closeSettled, false, 'close must wait for admitted post-auth work');
+
+  releaseOperation();
+  const outcome = await accounts;
+  assert.equal(outcome.ok, false, 'cancelled post-auth work must not report stale success');
+  await close;
+  assert.equal(closeSettled, true);
+  assert.equal(f.activeResidencies(), 0);
 });
 
 test('Bedrock commit holds the activation gate through backend invalidation', async () => {

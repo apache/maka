@@ -6,6 +6,7 @@ import {
   type BedrockSsoSession,
 } from '../bedrock-sso.js';
 import { manualBedrockModel } from '../bedrock-model-discovery.js';
+import { getAIModel } from '../model-factory.js';
 import { buildPricingLookup, withBedrockSourcePricing } from '../telemetry/pricing.js';
 
 const session: BedrockSsoSession = {
@@ -28,6 +29,58 @@ test('Bedrock SSO session round-trips only its versioned bounded schema', () => 
     parseBedrockSsoSession(JSON.stringify({ ...session, roleSecret: 'forbidden' })),
     null,
   );
+});
+
+test('explicit SSO credentials cannot be overridden by AWS_BEARER_TOKEN_BEDROCK', async () => {
+  const previous = process.env.AWS_BEARER_TOKEN_BEDROCK;
+  process.env.AWS_BEARER_TOKEN_BEDROCK = 'ambient-wrong-identity';
+  let credentialCalls = 0;
+  let authorization = '';
+  try {
+    const model = getAIModel({
+      connection: {
+        slug: 'amazon-bedrock',
+        providerType: 'amazon-bedrock',
+        defaultModel: 'amazon.nova-pro-v1:0',
+        models: [manualBedrockModel('amazon.nova-pro-v1:0')],
+        bedrock: {
+          ssoStartUrl: 'https://example.awsapps.com/start',
+          ssoRegion: 'us-east-1',
+          region: 'us-east-1',
+          accountId: '123456789012',
+          roleName: 'Developer',
+        },
+      },
+      apiKey: '',
+      modelId: 'amazon.nova-pro-v1:0',
+      awsCredentialProvider: async () => {
+        credentialCalls += 1;
+        return {
+          accessKeyId: 'AKIATEST',
+          secretAccessKey: 'test-secret',
+          sessionToken: 'test-session',
+        };
+      },
+      fetch: (async (_input, init) => {
+        authorization = new Headers(init?.headers).get('authorization') ?? '';
+        return new Response('provider unavailable', { status: 503 });
+      }) as typeof fetch,
+    });
+
+    await assert.rejects(() =>
+      Promise.resolve(
+        model.doGenerate({
+          prompt: [{ role: 'user', content: [{ type: 'text', text: 'ping' }] }],
+        }),
+      ),
+    );
+    assert.ok(credentialCalls > 0, 'the explicit Host SSO provider must be invoked');
+    assert.match(authorization, /^AWS4-HMAC-SHA256 /);
+    assert.doesNotMatch(authorization, /ambient-wrong-identity/);
+  } finally {
+    if (previous === undefined) delete process.env.AWS_BEARER_TOKEN_BEDROCK;
+    else process.env.AWS_BEARER_TOKEN_BEDROCK = previous;
+  }
 });
 
 test('a single-source inference profile inherits Bedrock pricing without guessing multi-source rates', () => {

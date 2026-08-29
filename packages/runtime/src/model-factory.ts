@@ -123,6 +123,9 @@ export function getAIModel(input: ModelFactoryInput): LanguageModelV4 {
         throw new Error('Amazon Bedrock does not support custom request headers or body overlays');
       }
       return createAmazonBedrock({
+        // Explicitly suppress the SDK's AWS_BEARER_TOKEN_BEDROCK fallback: this
+        // connection is identity-bound to the Host-owned SSO credential provider.
+        apiKey: '',
         region: config.region,
         credentialProvider: awsCredentialProvider,
         fetch: requestFetch,

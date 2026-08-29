@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { Banner, HStack, MultiSelector, Selector, Text, VStack } from '@astryxdesign/core';
 import type { ModelInfo } from '@maka/core/llm-connections';
 import { Button, TextInput, useUiLocale } from '@maka/ui';
+import { runBedrockSsoLogin } from '../../shared/bedrock-sso-login-flow.js';
 import { useRuntimeHostSettingsTarget } from './runtime-host-settings-target.js';
 
 const POLL_MS = 500;
@@ -29,53 +30,43 @@ export function BedrockSsoSetup(props: {
   const [error, setError] = useState<string>();
   const mounted = useRef(true);
 
-  useEffect(() => () => {
-    mounted.current = false;
-    if (attemptId) void window.maka.amazonBedrockSso.cancel(attemptId, host).catch(() => undefined);
-  }, [attemptId, host]);
+  useEffect(
+    () => () => {
+      mounted.current = false;
+    },
+    [],
+  );
+
+  useEffect(
+    () => () => {
+      if (attemptId)
+        void window.maka.amazonBedrockSso.cancel(attemptId, host).catch(() => undefined);
+    },
+    [attemptId, host],
+  );
 
   async function login() {
     setBusy(true);
     setError(undefined);
     try {
-      const started = await window.maka.amazonBedrockSso.start({ ssoStartUrl, ssoRegion, region }, host);
-      setAttemptId(started.attemptId);
-      setUserCode(started.userCode);
-      let current = started;
-      while (mounted.current && current.phase === 'awaiting_authorization') {
-        await new Promise((resolve) => setTimeout(resolve, POLL_MS));
-        current = await window.maka.amazonBedrockSso.query(started.attemptId, host);
-        if (current.userCode) setUserCode(current.userCode);
-      }
-      if (!mounted.current) return;
-      if (current.phase !== 'authenticated') throw new Error(zh ? 'AWS SSO 登录未完成。' : 'AWS SSO sign-in did not complete.');
-      const listed = await window.maka.amazonBedrockSso.listAccounts(started.attemptId, host);
-      if (listed.accounts.length === 0) {
-        throw new Error(
-          zh
-            ? '该 IAM Identity Center 用户没有可用的 AWS 账号分配。'
-            : 'This IAM Identity Center user has no assigned AWS accounts.',
-        );
-      }
-      setAccounts([...listed.accounts]);
-      const firstAccount = listed.accounts[0];
-      if (firstAccount) {
-        setAccountId(firstAccount.accountId);
-        const roleResult = await window.maka.amazonBedrockSso.listRoles(
-          started.attemptId,
-          firstAccount.accountId,
-          host,
-        );
-        if (roleResult.roles.length === 0) {
-          throw new Error(
-            zh
-              ? '所选 AWS 账号没有可用的角色分配。'
-              : 'The selected AWS account has no assigned roles.',
-          );
-        }
-        setRoles([...roleResult.roles]);
-        setRoleName(roleResult.roles[0] ?? '');
-      }
+      const result = await runBedrockSsoLogin({
+        bridge: window.maka.amazonBedrockSso,
+        host,
+        ssoStartUrl,
+        ssoRegion,
+        region,
+        isActive: () => mounted.current,
+        wait: () => new Promise((resolve) => setTimeout(resolve, POLL_MS)),
+        onProjection: (projection) => {
+          setAttemptId(projection.attemptId);
+          if (projection.userCode) setUserCode(projection.userCode);
+        },
+      });
+      if (!result) return;
+      setAccounts([...result.accounts]);
+      setAccountId(result.accountId);
+      setRoles([...result.roles]);
+      setRoleName(result.roleName);
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : zh ? 'AWS SSO 登录失败。' : 'AWS SSO sign-in failed.');
     } finally {
