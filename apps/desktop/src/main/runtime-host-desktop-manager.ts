@@ -210,7 +210,7 @@ export async function startRuntimeHostDesktopManager(
       registration: HostRegistration,
       signal: AbortSignal,
     ) => Promise<void>;
-    recoverManagedLocalHost?: (signal: AbortSignal) => Promise<boolean>;
+    recoverLocalHost?: (signal: AbortSignal) => Promise<boolean>;
     reconnectBackoff?: RuntimeHostReconnectBackoff;
     pairingFinalizationTimeoutMs?: number;
     onTargetStateChanged?: (state: RuntimeHostDesktopTargetState) => void;
@@ -226,7 +226,7 @@ export async function startRuntimeHostDesktopManager(
     options.upgradePrompts,
     options.waitForHostExit ?? waitForProcessExit,
     options.waitForHostRetirement ?? waitForProcessRetirement,
-    options.recoverManagedLocalHost,
+    options.recoverLocalHost,
     options.reconnectBackoff,
     options.pairingFinalizationTimeoutMs ?? DEFAULT_PAIRING_FINALIZATION_TIMEOUT_MS,
     options.onTargetStateChanged,
@@ -266,7 +266,7 @@ class RuntimeHostDesktopManagerImpl implements RuntimeHostDesktopManager {
       registration: HostRegistration,
       signal: AbortSignal,
     ) => Promise<void>,
-    private readonly recoverManagedLocalHost:
+    private readonly recoverLocalHost:
       | ((signal: AbortSignal) => Promise<boolean>)
       | undefined,
     private readonly reconnectBackoff: RuntimeHostReconnectBackoff | undefined,
@@ -637,6 +637,7 @@ class RuntimeHostDesktopManagerImpl implements RuntimeHostDesktopManager {
         return result;
       }
       await this.waitForHostExit(result.pid);
+      target.lastCandidate = undefined;
       return this.#completeLocalHostRetirement(resume);
     } catch (error) {
       resume();
@@ -768,29 +769,43 @@ class RuntimeHostDesktopManagerImpl implements RuntimeHostDesktopManager {
     sshInteraction: RuntimeHostSshInteraction | undefined,
   ): Promise<DesktopRuntimeHostCandidate> {
     let takeoverHostEpoch: string | undefined;
-    let managedRecoveryAttempted = false;
+    let localRecoveryAttempted = false;
     const inheritedExit = target.input.onExit;
+    const tryRecoverLocalHost = async (): Promise<boolean> => {
+      if (target.input.profileTarget || localRecoveryAttempted || !this.recoverLocalHost) {
+        return false;
+      }
+      localRecoveryAttempted = true;
+      return this.recoverLocalHost(signal);
+    };
     while (true) {
-      const result = await this.startCandidate(
-        {
-          ...target.input,
-          onExit: (details) => this.#reportCandidateExit(inheritedExit, details),
-          ...(target.input.profileTarget
-            ? {
-                profileTarget: {
-                  ...target.input.profileTarget,
-                  ...(sshInteraction === undefined ? {} : { sshInteraction }),
-                },
-              }
-            : {}),
-          ipcMain: this.#ipcMain.createTarget(target.epoch),
-          isTargetActive: () => this.#ipcMain.isActive(target.epoch),
-          isTargetValid: () => target.valid,
-          signal,
-          ...(takeoverHostEpoch === undefined ? {} : { takeoverHostEpoch }),
-        },
-        target.observations,
-      );
+      let result: DesktopRuntimeHostCandidateStartResult;
+      try {
+        result = await this.startCandidate(
+          {
+            ...target.input,
+            onExit: (details) => this.#reportCandidateExit(inheritedExit, details),
+            ...(target.input.profileTarget
+              ? {
+                  profileTarget: {
+                    ...target.input.profileTarget,
+                    ...(sshInteraction === undefined ? {} : { sshInteraction }),
+                  },
+                }
+              : {}),
+            ipcMain: this.#ipcMain.createTarget(target.epoch),
+            isTargetActive: () => this.#ipcMain.isActive(target.epoch),
+            isTargetValid: () => target.valid,
+            signal,
+            ...(takeoverHostEpoch === undefined ? {} : { takeoverHostEpoch }),
+          },
+          target.observations,
+        );
+      } catch (error) {
+        signal.throwIfAborted();
+        if (await tryRecoverLocalHost()) continue;
+        throw error;
+      }
       if (result.kind === 'ready') {
         target.hostId = result.candidate.client.hostId;
         const previous = target.lastCandidate;
@@ -844,15 +859,7 @@ class RuntimeHostDesktopManagerImpl implements RuntimeHostDesktopManager {
         await this.waitForHostRetirement(result.registration, signal);
         continue;
       }
-      if (
-        !target.input.profileTarget &&
-        result.reason === 'managed_root_requires_operator' &&
-        !managedRecoveryAttempted &&
-        this.recoverManagedLocalHost
-      ) {
-        managedRecoveryAttempted = true;
-        if (await this.recoverManagedLocalHost(signal)) continue;
-      }
+      if (await tryRecoverLocalHost()) continue;
       throw runtimeHostStartupError(result.reason, result.diagnostic);
     }
   }

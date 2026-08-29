@@ -271,6 +271,33 @@ test('does not retire the local Host twice when an update handoff triggers quit'
   await owner.close();
 });
 
+test('does not block quit after a retired Local Host hands off to an unavailable supervisor', async () => {
+  const current = candidateHarness({ disconnectOnPrepare: true });
+  let starts = 0;
+  let reportFatal!: (error: Error) => void;
+  const fatalReported = new Promise<Error>((resolve) => {
+    reportFatal = resolve;
+  });
+  const owner = await startRuntimeHostDesktopManager({} as DesktopRuntimeHostCandidateStartInput, {
+    startCandidate: async () => {
+      starts += 1;
+      return starts === 1 ? ready(current.candidate) : incompatibleHost('wait_for_idle_exit');
+    },
+    waitForHostExit: async () => undefined,
+    onFatalError: reportFatal,
+  });
+
+  const handoff = await owner.retireOwnedLocalHost('interrupt_active_work');
+  assert.equal(handoff.kind, 'retired');
+  if (handoff.kind === 'retired') handoff.resume();
+  await fatalReported;
+
+  assert.deepEqual(await owner.retireOwnedLocalHost('interrupt_active_work'), {
+    kind: 'not_owned',
+  });
+  await owner.close();
+});
+
 test('coalesces concurrent retirement intents onto one exact Host request', async () => {
   const current = candidateHarness({ disconnectOnPrepare: true });
   let releaseExitWait!: () => void;
@@ -895,7 +922,7 @@ test('keeps reconnecting through transient startup failures until the Desktop ad
   await owner.close();
 });
 
-test('reconciles an interrupted managed handoff before retrying Local discovery', async () => {
+test('reconciles interrupted managed setup after a Local discovery result', async () => {
   const managed = candidateHarness({ ownership: 'supervised' });
   const events: string[] = [];
   let starts = 0;
@@ -907,7 +934,29 @@ test('reconciles an interrupted managed handoff before retrying Local discovery'
         ? { kind: 'failed', reason: 'managed_root_requires_operator' }
         : ready(managed.candidate);
     },
-    recoverManagedLocalHost: async () => {
+    recoverLocalHost: async () => {
+      events.push('reconcile');
+      return true;
+    },
+  });
+
+  assert.deepEqual(events, ['discover:1', 'reconcile', 'discover:2']);
+  assert.equal(owner.current('local')?.candidate?.hostOwnership, 'supervised');
+  await owner.close();
+});
+
+test('reconciles interrupted managed setup after Local discovery throws', async () => {
+  const managed = candidateHarness({ ownership: 'supervised' });
+  const events: string[] = [];
+  let starts = 0;
+  const owner = await startRuntimeHostDesktopManager({} as DesktopRuntimeHostCandidateStartInput, {
+    startCandidate: async () => {
+      starts += 1;
+      events.push(`discover:${starts}`);
+      if (starts === 1) throw new Error('managed deployment transition is in progress');
+      return ready(managed.candidate);
+    },
+    recoverLocalHost: async () => {
       events.push('reconcile');
       return true;
     },

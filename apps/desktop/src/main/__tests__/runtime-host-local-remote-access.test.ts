@@ -198,7 +198,58 @@ test('revokes the one Local sharing authority without changing peer connectivity
   ]);
 });
 
-test('reconciles a committed handoff when Local discovery finds a managed root gap', async (t) => {
+test('does not persist recoverable setup authority before Desktop ownership commits', async (t) => {
+  const base = await mkdtemp(join(tmpdir(), 'maka-local-remote-access-ownership-'));
+  t.after(() => rm(base, { recursive: true, force: true }));
+  const clientDataRoot = join(base, 'client');
+  const rootPath = join(clientDataRoot, 'workspaces', 'default');
+  const rootId = 'a'.repeat(64);
+  const lifecyclePath = join(clientDataRoot, 'runtime-host-local-service.json');
+  await mkdir(rootPath, { recursive: true });
+  const handlers = new Map<string, Parameters<Electron.IpcMain['handle']>[1]>();
+  let ownershipChecked = false;
+  let setupCalls = 0;
+  const service = createDesktopLocalRuntimeHostRemoteAccess({
+    ipcMain: {
+      handle: (channel, handler) => { handlers.set(channel, handler); },
+      removeHandler: (channel) => { handlers.delete(channel); },
+    },
+    clientDataRoot,
+    rootPath,
+    rootId,
+    directPeerAvailable: true,
+    manager: () =>
+      ({
+        async retireOwnedLocalHost() {
+          ownershipChecked = true;
+          await assert.rejects(readFile(lifecyclePath, 'utf8'), { code: 'ENOENT' });
+          return { kind: 'not_owned' as const };
+        },
+      }) as unknown as RuntimeHostDesktopManager,
+    resolveSetupPackage: async () => ({ kind: 'npm', specifier: 'maka-agent@0.2.0' }),
+    operator: {
+      async runSetup() {
+        setupCalls += 1;
+        throw new Error('setup must not run for an externally managed Host');
+      },
+      async close() {},
+    } as unknown as ReturnType<typeof createDesktopRuntimeHostLocalOperator>,
+  });
+  t.after(() => service.close());
+
+  const enable = handlers.get('local-runtime-host-remote-access:enable');
+  assert.ok(enable);
+  const enabling = enable({} as Electron.IpcMainInvokeEvent, {
+    allowInterruptActiveTasks: false,
+    coordinationRelays: [],
+  });
+  await assert.rejects(enabling, /already managed outside this Desktop/u);
+  assert.equal(ownershipChecked, true);
+  await assert.rejects(readFile(lifecyclePath, 'utf8'), { code: 'ENOENT' });
+  assert.equal(setupCalls, 0);
+});
+
+test('reconciles committed managed setup when Local discovery fails', async (t) => {
   const base = await mkdtemp(join(tmpdir(), 'maka-local-remote-access-prestart-'));
   t.after(() => rm(base, { recursive: true, force: true }));
   const clientDataRoot = join(base, 'client');
@@ -209,7 +260,7 @@ test('reconciles a committed handoff when Local discovery finds a managed root g
     join(clientDataRoot, 'runtime-host-local-service.json'),
     `${JSON.stringify({
       schemaVersion: 1,
-      state: 'handoff',
+      state: 'setupPending',
       rootPath,
       rootId,
       coordinationRelays: [],
@@ -248,7 +299,7 @@ test('reconciles a committed handoff when Local discovery finds a managed root g
   });
   t.after(() => service.close());
 
-  assert.equal(await service.recoverManagedHostForConnect(), true);
+  assert.equal(await service.recoverManagedSetup(), true);
 
   assert.equal(setupCalls, 1);
   assert.equal(
@@ -258,7 +309,7 @@ test('reconciles a committed handoff when Local discovery finds a managed root g
   );
 });
 
-test('an interrupted Local Host handoff converges to its exact managed service', async (t) => {
+test('interrupted Local Host setup converges to its exact managed service', async (t) => {
   const base = await mkdtemp(join(tmpdir(), 'maka-local-remote-access-recovery-'));
   t.after(() => rm(base, { recursive: true, force: true }));
   const clientDataRoot = join(base, 'client');
@@ -269,7 +320,7 @@ test('an interrupted Local Host handoff converges to its exact managed service',
     join(clientDataRoot, 'runtime-host-local-service.json'),
     `${JSON.stringify({
       schemaVersion: 1,
-      state: 'handoff',
+      state: 'setupPending',
       rootPath,
       rootId,
       coordinationRelays: [],
@@ -319,7 +370,7 @@ test('an interrupted Local Host handoff converges to its exact managed service',
   });
   t.after(() => service.close());
 
-  assert.equal(await service.recoverManagedHostForConnect(), false);
+  assert.equal(await service.recoverManagedSetup(), false);
   assert.equal(setupCalls, 0);
   await service.recover();
 

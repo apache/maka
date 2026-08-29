@@ -55,9 +55,10 @@ interface LocalServiceTarget extends DesktopRuntimeHostLocalServiceTarget {
   readonly deploymentId: string;
 }
 
-interface LocalServiceHandoff {
+interface LocalServiceSetupPending {
   readonly schemaVersion: 1;
-  readonly state: 'handoff';
+  /** Persisted only after the Desktop-owned Host has retired. */
+  readonly state: 'setupPending';
   readonly rootPath: string;
   readonly rootId: string;
   readonly coordinationRelays: readonly string[];
@@ -81,7 +82,7 @@ interface LocalServiceUninstalling extends LocalServiceTarget {
 }
 
 type LocalServiceLifecycle =
-  | LocalServiceHandoff
+  | LocalServiceSetupPending
   | LocalServiceManaged
   | LocalServicePeerChanging
   | LocalServiceUninstalling;
@@ -113,7 +114,7 @@ export function createDesktopLocalRuntimeHostRemoteAccess(input: {
   readonly operator: DesktopRuntimeHostLocalOperator;
   readonly hasManagedDeploymentAuthority?: (rootId: string) => Promise<boolean>;
 }): {
-  recoverManagedHostForConnect(signal?: AbortSignal): Promise<boolean>;
+  recoverManagedSetup(signal?: AbortSignal): Promise<boolean>;
   recover(): Promise<void>;
   close(): Promise<void>;
 } {
@@ -128,6 +129,10 @@ export function createDesktopLocalRuntimeHostRemoteAccess(input: {
     );
     return result;
   };
+  const hasManagedDeploymentAuthority =
+    input.hasManagedDeploymentAuthority ??
+    (async (rootId: string) =>
+      (await resolveRuntimeHostManagedDeploymentAuthority(rootId)) !== undefined);
 
   const getSnapshot = (): Promise<DesktopLocalRuntimeHostRemoteAccessSnapshot> =>
     serialize(async () => {
@@ -139,7 +144,7 @@ export function createDesktopLocalRuntimeHostRemoteAccess(input: {
           return {
             state: 'unavailable',
             message:
-              lifecycle.state === 'handoff'
+              lifecycle.state === 'setupPending'
                 ? 'Local Runtime Host setup is being recovered'
                 : lifecycle.state === 'peerChanging'
                   ? 'Local Runtime Host remote access is being recovered'
@@ -175,8 +180,8 @@ export function createDesktopLocalRuntimeHostRemoteAccess(input: {
         if (recovered.kind === 'active_tasks') return recovered;
         lifecycle = managedLifecycle(lifecycle);
       }
-      if (lifecycle?.state === 'handoff') {
-        const recovered = await finishHandoff(lifecycle, true);
+      if (lifecycle?.state === 'setupPending') {
+        const recovered = await finishSetup(lifecycle, 'recovery');
         if (recovered.kind === 'active_tasks') return recovered;
         lifecycle = recovered.managed;
       }
@@ -205,16 +210,15 @@ export function createDesktopLocalRuntimeHostRemoteAccess(input: {
         );
       }
 
-      const handoff: LocalServiceHandoff = {
+      const setup: LocalServiceSetupPending = {
         schemaVersion: 1,
-        state: 'handoff',
+        state: 'setupPending',
         rootPath: input.rootPath,
         rootId: input.rootId,
         coordinationRelays: request.coordinationRelays,
         allowInterruptActiveTasks: request.allowInterruptActiveTasks,
       };
-      await writeDocument(lifecyclePath, handoff);
-      const completed = await finishHandoff(handoff, false);
+      const completed = await finishSetup(setup, 'request');
       if (completed.kind === 'active_tasks') return completed;
       return enabledResult(
         encodeRuntimeHostOwnerConnectionCode({
@@ -226,9 +230,9 @@ export function createDesktopLocalRuntimeHostRemoteAccess(input: {
       );
     });
 
-  const finishHandoff = async (
-    handoff: LocalServiceHandoff,
-    allowAlreadyManaged: boolean,
+  const finishSetup = async (
+    setup: LocalServiceSetupPending,
+    origin: 'request' | 'recovery',
   ): Promise<
     | { readonly kind: 'active_tasks' }
     | {
@@ -241,18 +245,17 @@ export function createDesktopLocalRuntimeHostRemoteAccess(input: {
     const setupPackage = await input.resolveSetupPackage(closing.signal);
     const manager = requireManager(input.manager);
     const retirement = await manager.retireOwnedLocalHost(
-      handoff.allowInterruptActiveTasks ? 'interrupt_active_work' : 'refuse_active_work',
+      setup.allowInterruptActiveTasks ? 'interrupt_active_work' : 'refuse_active_work',
     );
     if (retirement.kind === 'active_tasks') {
-      if (!allowAlreadyManaged) await removeDocument(lifecyclePath);
       return { kind: 'active_tasks' };
     }
-    if (retirement.kind === 'not_owned' && !allowAlreadyManaged) {
-      await removeDocument(lifecyclePath);
+    if (retirement.kind === 'not_owned' && origin === 'request') {
       throw new Error('The Local Runtime Host is already managed outside this Desktop');
     }
     try {
-      const reconcile = () => reconcileHandoff(handoff, setupPackage);
+      if (origin === 'request') await writeDocument(lifecyclePath, setup);
+      const reconcile = () => reconcileSetup(setup, setupPackage);
       // Recovery may find that the operator already owns the root. Its setup
       // can still restart that Host, so keep Desktop reconnect quiesced across
       // the entire reconciliation just like every other managed-service change.
@@ -264,8 +267,8 @@ export function createDesktopLocalRuntimeHostRemoteAccess(input: {
     }
   };
 
-  const reconcileHandoff = async (
-    handoff: LocalServiceHandoff,
+  const reconcileSetup = async (
+    setup: LocalServiceSetupPending,
     setupPackage: DesktopRuntimeHostSetupPackage,
     signal: AbortSignal = closing.signal,
   ): Promise<{
@@ -280,22 +283,22 @@ export function createDesktopLocalRuntimeHostRemoteAccess(input: {
         {
           setupPackage,
           clientDataRoot: input.clientDataRoot,
-          rootPath: handoff.rootPath,
+          rootPath: setup.rootPath,
           principalId: LOCAL_REMOTE_ACCESS_PRINCIPAL_ID,
-          coordinationRelays: handoff.coordinationRelays,
+          coordinationRelays: setup.coordinationRelays,
           expectedTarget: {
-            serviceId: handoff.rootId,
-            rootPath: handoff.rootPath,
-            rootId: handoff.rootId,
+            serviceId: setup.rootId,
+            rootPath: setup.rootPath,
+            rootId: setup.rootId,
           },
           signal,
         },
         () => undefined,
       );
       if (
-        complete.serviceId !== handoff.rootId ||
-        complete.rootPath !== handoff.rootPath ||
-        complete.rootId !== handoff.rootId ||
+        complete.serviceId !== setup.rootId ||
+        complete.rootPath !== setup.rootPath ||
+        complete.rootId !== setup.rootId ||
         !DEPLOYMENT_ID_PATTERN.test(complete.deploymentId) ||
         !complete.directPeer
       ) {
@@ -310,7 +313,7 @@ export function createDesktopLocalRuntimeHostRemoteAccess(input: {
           rootId: complete.rootId,
           deploymentId: complete.deploymentId,
         },
-        handoff.rootPath,
+        setup.rootPath,
       );
       const peer = requireEnabledPeer({ state: 'enabled', ...complete.directPeer });
       const managed: LocalServiceManaged = { ...target, state: 'managed' };
@@ -510,30 +513,29 @@ export function createDesktopLocalRuntimeHostRemoteAccess(input: {
   input.ipcMain.handle(channels[5], (_event, value: unknown) => uninstall(value));
 
   return {
-    recoverManagedHostForConnect: (signal) =>
-      serialize(async () => {
-        if (!supported(input.directPeerAvailable)) return false;
-        const lifecycle = await readLifecycle(lifecyclePath, input.rootPath, input.rootId);
-        if (lifecycle?.state !== 'handoff') return false;
-        const hasAuthority =
-          input.hasManagedDeploymentAuthority ??
-          (async (rootId: string) =>
-            (await resolveRuntimeHostManagedDeploymentAuthority(rootId)) !== undefined);
-        if (!(await hasAuthority(lifecycle.rootId))) return false;
-        const operationSignal = signal
-          ? AbortSignal.any([signal, closing.signal])
-          : closing.signal;
+    recoverManagedSetup: async (signal) => {
+      if (!supported(input.directPeerAvailable)) return false;
+      const operationSignal = signal ? AbortSignal.any([signal, closing.signal]) : closing.signal;
+      operationSignal.throwIfAborted();
+      const observed = await readLifecycle(lifecyclePath, input.rootPath, input.rootId);
+      if (observed?.state !== 'setupPending') return false;
+      return serialize(async () => {
+        operationSignal.throwIfAborted();
+        const pending = await readLifecycle(lifecyclePath, input.rootPath, input.rootId);
+        if (pending?.state !== 'setupPending') return false;
+        if (!(await hasManagedDeploymentAuthority(pending.rootId))) return false;
         const setupPackage = await input.resolveSetupPackage(operationSignal);
-        await reconcileHandoff(lifecycle, setupPackage, operationSignal);
+        await reconcileSetup(pending, setupPackage, operationSignal);
         return true;
-      }),
+      });
+    },
     recover: () =>
       serialize(async () => {
         if (!supported(input.directPeerAvailable)) return;
         const lifecycle = await readLifecycle(lifecyclePath, input.rootPath, input.rootId);
         if (!lifecycle) return;
-        if (lifecycle.state === 'handoff') {
-          await finishHandoff(lifecycle, true);
+        if (lifecycle.state === 'setupPending') {
+          await finishSetup(lifecycle, 'recovery');
           return;
         }
         if (lifecycle.state === 'uninstalling') {
@@ -767,7 +769,7 @@ async function readLifecycle(
   ) {
     throw new Error('Local Runtime Host service lifecycle is invalid');
   }
-  if (value.state === 'handoff') {
+  if (value.state === 'setupPending') {
     assertExactKeys(value, [
       'schemaVersion',
       'state',
@@ -779,11 +781,11 @@ async function readLifecycle(
     if (
       typeof value.allowInterruptActiveTasks !== 'boolean'
     ) {
-      throw new Error('Local Runtime Host handoff intent is invalid');
+      throw new Error('Local Runtime Host pending setup is invalid');
     }
     return {
       schemaVersion: 1,
-      state: 'handoff',
+      state: 'setupPending',
       rootPath,
       rootId,
       coordinationRelays: requireAddresses(value.coordinationRelays),
