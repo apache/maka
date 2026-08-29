@@ -5216,6 +5216,8 @@ async function createFailureFixture(options: {
     drainRequested: () => drainRequested,
     dispose: async () => {
       requireContinuity(continuity).close();
+      artifacts?.close();
+      await stores.sessionStore.close?.();
       await owner.close();
       await rm(base, { recursive: true, force: true });
     },
