@@ -48,19 +48,13 @@ export interface DailyReviewCopy {
   schedule: {
     active: string;
     paused: string;
-    missingTitle: string;
-    missingBody: string;
   };
   history: {
     title: string;
-    ordinaryActions: string;
     count: (count: number) => string;
-    emptyTitle: string;
-    emptyBody: string;
     open: string;
     migrated: string;
-    migrationTitle: string;
-    migrationBody: string;
+    migrationNote: string;
   };
   activity: {
     title: string;
@@ -76,9 +70,9 @@ const COPY = {
     },
     range: { label: '活动范围', options: [[1, '今日'], [7, '最近 7 天'], [30, '最近 30 天']], earlier: '查看更早一天', later: '查看更晚一天', current: '回到当前范围' },
     overview: { tasks: '任务', modelCalls: '模型调用', tokens: 'Token', cost: '费用' },
-    schedule: { active: '每日回顾已启用', paused: '每日回顾已暂停', missingTitle: '设置每日回顾', missingBody: '选择执行时间后，Maka 会通过普通定时任务启动一个新任务，并把 Markdown 报告保存在该任务及其 Artifact 中。' },
-    history: { title: '回顾报告', ordinaryActions: '打开后可查看完整对话；Markdown Artifact 可直接预览、复制和另存。', count: (count) => `${count} 份`, emptyTitle: '还没有回顾报告', emptyBody: '每日回顾运行后会在这里出现。每份报告都是普通任务，附件保存在该任务的 Artifact 中。', open: '打开报告任务', migrated: '已迁移', migrationTitle: '旧报告已迁移', migrationBody: '旧版 Daily Review 报告已转换为普通任务和 Artifact；内容没有丢失，也不会继续写入旧归档。' },
-    activity: { title: '活跃任务', count: (count) => `${count} 个`, emptyTitle: '这个范围内还没有任务' },
+    schedule: { active: '每日回顾已启用', paused: '每日回顾已暂停' },
+    history: { title: '回顾报告', count: (count) => `${count} 份`, open: '打开报告任务', migrated: '已迁移', migrationNote: '旧报告已迁移为普通任务和 Artifact' },
+    activity: { title: '任务活动', count: (count) => `${count} 个任务`, emptyTitle: '这个范围内还没有任务' },
   },
   en: {
     page: {
@@ -86,9 +80,9 @@ const COPY = {
     },
     range: { label: 'Activity range', options: [[1, 'Today'], [7, 'Last 7 days'], [30, 'Last 30 days']], earlier: 'View one day earlier', later: 'View one day later', current: 'Return to the current range' },
     overview: { tasks: 'Tasks', modelCalls: 'Model calls', tokens: 'Tokens', cost: 'Cost' },
-    schedule: { active: 'Daily Review is active', paused: 'Daily Review is paused', missingTitle: 'Set up Daily Review', missingBody: 'Choose a time and Maka will use an ordinary scheduled task to start a new task, keeping the Markdown report in that task and its artifacts.' },
-    history: { title: 'Review reports', ordinaryActions: 'Open a report to view its full conversation. Its Markdown artifact can be previewed, copied, or saved as usual.', count: (count) => `${count} ${count === 1 ? 'report' : 'reports'}`, emptyTitle: 'No review reports yet', emptyBody: 'Daily Review runs appear here as ordinary tasks. Their files stay in the task artifacts.', open: 'Open report task', migrated: 'Migrated', migrationTitle: 'Earlier reports were migrated', migrationBody: 'Reports from the earlier Daily Review system are now ordinary tasks and artifacts. Nothing was discarded, and no new data is written to the retired archive.' },
-    activity: { title: 'Active tasks', count: (count) => `${count} ${count === 1 ? 'task' : 'tasks'}`, emptyTitle: 'No tasks in this range yet' },
+    schedule: { active: 'Daily Review is active', paused: 'Daily Review is paused' },
+    history: { title: 'Review reports', count: (count) => `${count} ${count === 1 ? 'report' : 'reports'}`, open: 'Open report task', migrated: 'Migrated', migrationNote: 'Earlier reports are ordinary tasks and artifacts now' },
+    activity: { title: 'Task activity', count: (count) => `${count} ${count === 1 ? 'task' : 'tasks'}`, emptyTitle: 'No tasks in this range yet' },
   },
 } satisfies UiCatalog<DailyReviewCopy>;
 

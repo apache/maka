@@ -21,11 +21,17 @@
   display: flex;
   min-height: 100%;
   flex-direction: column;
-  gap: var(--space-6);
+  gap: var(--space-4);
 }
 
 .maka-daily-review-toolbar {
   justify-content: space-between;
+}
+
+.maka-daily-review-period-controls {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
 }
 
 .maka-daily-review-range-navigation {
@@ -44,24 +50,53 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
+  gap: var(--space-3);
+}
+
+.maka-daily-review-schedule-summary {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.maka-daily-review-separator {
+  color: var(--muted-foreground);
+}
+
+.maka-daily-review-metrics {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: var(--space-4);
-  padding: var(--space-3) 0;
+  margin: 0;
+  padding: var(--space-2) 0 var(--space-4);
   border-bottom: 1px solid var(--border-soft);
 }
 
-.maka-daily-review-schedule > div {
+.maka-daily-review-metrics > div {
   display: flex;
   min-width: 0;
   flex-direction: column;
   gap: var(--space-1);
 }
 
-.maka-daily-review-metrics {
-  display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: var(--space-2);
+.maka-daily-review-metrics dd,
+.maka-daily-review-metrics dt {
+  margin: 0;
 }
 
+.maka-daily-review-metrics dd {
+  color: var(--foreground);
+  font: var(--maka-text-heading-4);
+  font-variant-numeric: tabular-nums;
+}
+
+.maka-daily-review-metrics dt {
+  color: var(--muted-foreground);
+  font: var(--maka-text-supporting);
+}
+
+.maka-daily-review-activity,
 .maka-daily-review-history {
   display: flex;
   min-width: 0;
@@ -85,9 +120,13 @@
 
 @media (max-width: 760px) {
   .maka-daily-review-toolbar,
-  .maka-daily-review-schedule {
+  .maka-daily-review-period-controls {
     align-items: stretch;
     flex-direction: column;
+  }
+
+  .maka-daily-review-schedule-summary {
+    flex-wrap: wrap;
   }
 
   .maka-daily-review-metrics {

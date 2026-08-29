@@ -21,7 +21,6 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import type { ScheduledTask } from '@maka/core/scheduled-task';
 import { uiLocaleToIntlLocale } from '@maka/core/ui-locale';
 import {
-  Banner,
   Button as UiButton,
   EmptyState,
   Heading,
@@ -39,9 +38,8 @@ import type { DailyReviewProjectionBridge } from './module-panel-types.js';
 import type { ModuleHubHeader } from './module-hub-selector.js';
 import { formatScheduledTaskRecurrence } from './scheduled-task-helpers.js';
 import { useUiLocale } from './locale-context.js';
-import { ChevronLeft, ChevronRight, ICON_SIZE, History, RefreshCcw, Sun } from './icons.js';
+import { ChevronLeft, ChevronRight, ICON_SIZE, RefreshCcw, Sun } from './icons.js';
 import { ModulePage } from './primitives/module-page.js';
-import { StatTile } from './primitives/stat-tile.js';
 import {
   dailyReviewRangeBounds,
   dailyReviewManualIntent,
@@ -109,6 +107,10 @@ export function DailyReviewPanel(props: {
   }
 
   const view = loadState.status === 'ready' ? loadState.value : undefined;
+  const reportSessionIds = new Set(view?.reports.map((report) => report.sessionId));
+  const activitySessions = view?.sessions.filter(
+    (session) => !reportSessionIds.has(session.sessionId),
+  ) ?? [];
   const formatter = new Intl.NumberFormat(uiLocaleToIntlLocale(locale));
   const costFormatter = new Intl.NumberFormat(uiLocaleToIntlLocale(locale), {
     style: 'currency',
@@ -126,8 +128,8 @@ export function DailyReviewPanel(props: {
     day: 'numeric',
   });
   const displayedBounds = dailyReviewRangeBounds(range, Date.now(), offsetDays);
-  const displayedRange = offsetDays === 0
-    ? copy.range.options.find(([value]) => value === range)?.[1]
+  const displayedRange = range === 1
+    ? rangeDateFormatter.format(displayedBounds.from)
     : `${rangeDateFormatter.format(displayedBounds.from)} – ${rangeDateFormatter.format(displayedBounds.to - 1)}`;
 
   const primaryAction = props.task ? (
@@ -145,7 +147,6 @@ export function DailyReviewPanel(props: {
   return (
     <ModulePage
       title={props.hubHeader?.title ?? copy.page.title}
-      meta={view ? copy.history.count(view.reports.length) : undefined}
       actions={(
         <>
           {primaryAction}
@@ -160,38 +161,43 @@ export function DailyReviewPanel(props: {
       toolbar={(
         <div className="maka-module-page-bar maka-daily-review-toolbar">
           {props.hubHeader?.badge}
-          <SegmentedControl
-            value={String(range)}
-            label={copy.range.label}
-            size="sm"
-            onChange={(value) => {
-              setRange(Number(value) as DailyReviewRange);
-              setOffsetDays(0);
-            }}
+          <div
+            className="maka-daily-review-period-controls"
+            aria-controls="maka-daily-review-activity"
           >
-            {copy.range.options.map(([value, label]) => (
-              <SegmentedControlItem key={value} value={String(value)} label={label} />
-            ))}
-          </SegmentedControl>
-          <div className="maka-daily-review-range-navigation">
-            <IconButton
-              variant="ghost"
+            <SegmentedControl
+              value={String(range)}
+              label={copy.range.label}
               size="sm"
-              label={copy.range.earlier}
-              tooltip={copy.range.earlier}
-              icon={<ChevronLeft size={ICON_SIZE.control} aria-hidden="true" />}
-              onClick={() => setOffsetDays((value) => value - 1)}
-            />
-            <Text type="supporting" color="secondary">{displayedRange}</Text>
-            <IconButton
-              variant="ghost"
-              size="sm"
-              label={offsetDays === 0 ? copy.range.current : copy.range.later}
-              tooltip={offsetDays === 0 ? copy.range.current : copy.range.later}
-              icon={<ChevronRight size={ICON_SIZE.control} aria-hidden="true" />}
-              isDisabled={offsetDays === 0}
-              onClick={() => setOffsetDays((value) => Math.min(0, value + 1))}
-            />
+              onChange={(value) => {
+                setRange(Number(value) as DailyReviewRange);
+                setOffsetDays(0);
+              }}
+            >
+              {copy.range.options.map(([value, label]) => (
+                <SegmentedControlItem key={value} value={String(value)} label={label} />
+              ))}
+            </SegmentedControl>
+            <div className="maka-daily-review-range-navigation">
+              <IconButton
+                variant="ghost"
+                size="sm"
+                label={copy.range.earlier}
+                tooltip={copy.range.earlier}
+                icon={<ChevronLeft size={ICON_SIZE.control} aria-hidden="true" />}
+                onClick={() => setOffsetDays((value) => value - 1)}
+              />
+              <Text type="supporting" color="secondary">{displayedRange}</Text>
+              <IconButton
+                variant="ghost"
+                size="sm"
+                label={offsetDays === 0 ? copy.range.current : copy.range.later}
+                tooltip={offsetDays === 0 ? copy.range.current : copy.range.later}
+                icon={<ChevronRight size={ICON_SIZE.control} aria-hidden="true" />}
+                isDisabled={offsetDays === 0}
+                onClick={() => setOffsetDays((value) => Math.min(0, value + 1))}
+              />
+            </div>
           </div>
         </div>
       )}
@@ -207,53 +213,51 @@ export function DailyReviewPanel(props: {
           />
         ) : view ? (
           <>
-            {view.hasMigratedReports && (
-              <Banner
-                status="info"
-                title={copy.history.migrationTitle}
-                description={copy.history.migrationBody}
-              />
-            )}
-
-            <div className="maka-daily-review-schedule">
-              <div>
-                <Text weight="medium">
-                  {props.task?.status === 'active'
-                    ? copy.schedule.active
-                    : props.task
-                      ? copy.schedule.paused
-                      : copy.schedule.missingTitle}
-                </Text>
-                <Text type="supporting" color="secondary">
-                  {props.task
-                    ? formatScheduledTaskRecurrence(props.task, locale)
-                    : copy.schedule.missingBody}
-                </Text>
+            {props.task ? (
+              <div className="maka-daily-review-schedule">
+                <div className="maka-daily-review-schedule-summary">
+                  <Text type="supporting" color="secondary">
+                    {props.task.status === 'active' ? copy.schedule.active : copy.schedule.paused}
+                  </Text>
+                  <span className="maka-daily-review-separator" aria-hidden="true">·</span>
+                  <Text type="supporting" color="secondary">
+                    {formatScheduledTaskRecurrence(props.task, locale)}
+                  </Text>
+                </div>
+                {props.onManageSchedule ? (
+                  <UiButton variant="ghost" size="sm" label={copy.page.manage} onClick={props.onManageSchedule} />
+                ) : null}
               </div>
-              {props.task && props.onManageSchedule ? (
-                <UiButton variant="ghost" size="sm" label={copy.page.manage} onClick={props.onManageSchedule} />
-              ) : null}
-            </div>
+            ) : null}
 
-            <section aria-label={copy.range.label}>
-              <div className="maka-daily-review-metrics">
-                <StatTile emphasis="filled" value={view.totals.sessionCount} label={copy.overview.tasks} />
-                <StatTile emphasis="filled" value={view.totals.totalRequests} label={copy.overview.modelCalls} />
-                <StatTile emphasis="filled" value={formatter.format(view.totals.totalTokens)} label={copy.overview.tokens} />
-                <StatTile emphasis="filled" value={costFormatter.format(view.totals.totalCostUsd)} label={copy.overview.cost} />
-              </div>
-            </section>
+            <section
+              id="maka-daily-review-activity"
+              className="maka-daily-review-activity"
+              aria-label={`${displayedRange} · ${copy.activity.title}`}
+            >
+              <dl className="maka-daily-review-metrics" aria-label={copy.range.label}>
+                {([
+                  [view.totals.sessionCount, copy.overview.tasks],
+                  [view.totals.totalRequests, copy.overview.modelCalls],
+                  [formatter.format(view.totals.totalTokens), copy.overview.tokens],
+                  [costFormatter.format(view.totals.totalCostUsd), copy.overview.cost],
+                ] as const).map(([value, label]) => (
+                  <div key={label}>
+                    <dd>{value}</dd>
+                    <dt>{label}</dt>
+                  </div>
+                ))}
+              </dl>
 
-            <section className="maka-daily-review-history" aria-labelledby="maka-daily-review-activity-title">
               <div className="maka-daily-review-section-heading">
                 <Heading level={2} id="maka-daily-review-activity-title">{copy.activity.title}</Heading>
-                <Text type="supporting" color="secondary">{copy.activity.count(view.sessions.length)}</Text>
+                <Text type="supporting" color="secondary">{copy.activity.count(activitySessions.length)}</Text>
               </div>
-              {view.sessions.length === 0 ? (
+              {activitySessions.length === 0 ? (
                 <EmptyState isCompact title={copy.activity.emptyTitle} />
               ) : (
                 <List density="balanced" hasDividers className="maka-module-page-rows" aria-label={copy.activity.title}>
-                  {view.sessions.map((session) => (
+                  {activitySessions.map((session) => (
                     <ListItem
                       key={session.sessionId}
                       label={session.title}
@@ -272,21 +276,17 @@ export function DailyReviewPanel(props: {
               )}
             </section>
 
-            <section className="maka-daily-review-history" aria-labelledby="maka-daily-review-history-title">
-              <div className="maka-daily-review-section-heading">
-                <div>
-                  <Heading level={2} id="maka-daily-review-history-title">{copy.history.title}</Heading>
-                  <Text type="supporting" color="secondary">{copy.history.ordinaryActions}</Text>
+            {view.reports.length > 0 ? (
+              <section className="maka-daily-review-history" aria-labelledby="maka-daily-review-history-title">
+                <div className="maka-daily-review-section-heading">
+                  <div>
+                    <Heading level={2} id="maka-daily-review-history-title">{copy.history.title}</Heading>
+                    {view.hasMigratedReports ? (
+                      <Text type="supporting" color="secondary">{copy.history.migrationNote}</Text>
+                    ) : null}
+                  </div>
+                  <Text type="supporting" color="secondary">{copy.history.count(view.reports.length)}</Text>
                 </div>
-                <Text type="supporting" color="secondary">{copy.history.count(view.reports.length)}</Text>
-              </div>
-              {view.reports.length === 0 ? (
-                <EmptyState
-                  icon={<History size={ICON_SIZE.empty} aria-hidden="true" />}
-                  title={copy.history.emptyTitle}
-                  description={copy.history.emptyBody}
-                />
-              ) : (
                 <List density="balanced" hasDividers className="maka-module-page-rows" aria-label={copy.history.title}>
                   {view.reports.map((report) => (
                     <ListItem
@@ -305,8 +305,8 @@ export function DailyReviewPanel(props: {
                     />
                   ))}
                 </List>
-              )}
-            </section>
+              </section>
+            ) : null}
           </>
         ) : null}
       </div>
