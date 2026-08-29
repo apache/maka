@@ -478,6 +478,81 @@ test('startup recovery replays one admitted safe-boundary continuation without a
   }
 });
 
+test('startup recovery closes a ScheduledTask Run after its pending fire was settled', async () => {
+  const validations: Array<'pending_fire_required' | 'run_recorded'> = [];
+  const fixture = await createFailureFixture({
+    registerBackend: (backends) =>
+      backends.register('ai-sdk', (context) => new FakeBackend(context)),
+    assertScheduledTaskRecoveryAdmission: async (_admission, state) => {
+      validations.push(state);
+    },
+  });
+  const turnId = 'turn-scheduled-task-settled-fire';
+  const runId = 'run-scheduled-task-settled-fire';
+  const userMessageId = 'message-scheduled-task-settled-fire';
+  let recovery: RootTurnCoordinator | undefined;
+  try {
+    await fixture.coordinator.close();
+    const session = await fixture.stores.sessionStore.readHeaderSnapshot(fixture.sessionId);
+    const admittedAt = Date.now();
+    const admission = await fixture.stores.agentRunStore.admitRootTurn({
+      sessionId: fixture.sessionId,
+      turnId,
+      proposedRunId: runId,
+      proposedUserMessageId: userMessageId,
+      execution: { kind: 'scheduled_task', scheduledTaskId: 'task-settled-fire' },
+      previousRootTurnId: null,
+      normalizedInput: { text: 'Continue the scheduled work.' },
+      sourceMessages: [],
+      admittedAt,
+    });
+    assert.equal(admission.kind, 'admitted');
+    await fixture.stores.sessionStore.appendMessage(fixture.sessionId, {
+      type: 'user',
+      id: userMessageId,
+      turnId,
+      ts: admittedAt,
+      text: 'Continue the scheduled work.',
+      origin: { kind: 'scheduled_task', scheduledTaskId: 'task-settled-fire' },
+    });
+    await fixture.stores.agentRunStore.createRun(
+      {
+        runId,
+        invocationId: runId,
+        sessionId: fixture.sessionId,
+        turnId,
+        status: 'created',
+        backendKind: 'fake',
+        llmConnectionId: session.llmConnectionId,
+        llmConnectionSlug: session.llmConnectionSlug,
+        modelId: session.model,
+        cwd: session.cwd,
+        scheduledTaskId: 'task-settled-fire',
+        permissionMode: session.permissionMode,
+        collaborationMode: session.collaborationMode,
+        createdAt: admittedAt,
+        updatedAt: admittedAt,
+      },
+      { durable: true },
+    );
+
+    recovery = fixture.createRecoveryCoordinator();
+    await recovery.prepareRecovery();
+    assert.deepEqual(validations, ['run_recorded']);
+    await fixture.manager.recoverInterruptedSessionsStrict(fixture.stores);
+    await recovery.recover();
+
+    const run = await fixture.stores.agentRunStore.readRun(fixture.sessionId, runId);
+    assert.equal(run.status, 'failed');
+    assert.equal(run.failureClass, 'app_restarted');
+    assert.deepEqual(recovery.readRootState(fixture.sessionId), { kind: 'idle' });
+  } finally {
+    await recovery?.close();
+    await fixture.messages.close();
+    await fixture.dispose();
+  }
+});
+
 test('a failed exact Capability retry does not poison the parked continuation binding', async () => {
   const capabilities = new HostClientCapabilityCoordinator({
     activation: new RuntimePolicyActivationGate(),
@@ -4961,6 +5036,10 @@ async function createFailureFixture(options: {
     text: string;
     skillIds: readonly string[];
   }): Promise<PreparedSkillInvocationMessage>;
+  assertScheduledTaskRecoveryAdmission?(
+    admission: RootTurnAdmission,
+    state: 'pending_fire_required' | 'run_recorded',
+  ): Promise<void>;
 }) {
   const base = await mkdtemp(join(tmpdir(), 'maka-root-turn-message-failure-'));
   const capability = await resolveStorageRoot({
@@ -5141,7 +5220,7 @@ async function createFailureFixture(options: {
       requestDrain,
       options.clientCapabilities,
       () => NO_EXECUTION_OBSERVER,
-      undefined,
+      options.assertScheduledTaskRecoveryAdmission,
       artifactAuthority,
       options.prepareSkillInvocation,
       options.agentGraphEpochs,

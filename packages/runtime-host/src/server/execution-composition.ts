@@ -1092,7 +1092,8 @@ export async function createExecutionRuntimeHostComposition(
       context.requestDrain,
       clientCapabilities,
       () => requireGoal(goal),
-      (admission) => requireScheduledTasks(scheduledTasks).assertRecoveryAdmission(admission),
+      (admission, state) =>
+        requireScheduledTasks(scheduledTasks).assertRecoveryAdmission(admission, state),
       artifacts,
       async ({ sessionId, text, skillIds }) => {
         const header = await stores.sessionStore.readHeaderSnapshot(sessionId);

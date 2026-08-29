@@ -327,6 +327,7 @@ export class RootTurnCoordinator implements HostedExecutionAuthority {
     private readonly resolveExecutionObserver: () => HostedExecutionObserver,
     private readonly assertScheduledTaskRecoveryAdmission?: (
       admission: RootTurnAdmission,
+      state: 'pending_fire_required' | 'run_recorded',
     ) => Promise<void>,
     attachmentValidator?: HostTurnAttachmentValidator,
     prepareSkillInvocation?: HostSkillInvocationPreparer,
