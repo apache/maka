@@ -75,6 +75,15 @@ describe('Runtime Host operator commands', () => {
       parseRuntimeHostCommand(['service', 'mesh', 'join', '--invitation', 'secret', ...base]).kind,
       'error',
     );
+    assert.deepEqual(parseRuntimeHostCommand(['service', 'mesh', 'transit', '--off', ...base]), {
+      kind: 'runtime-host-service-peer-mesh',
+      action: 'transit',
+      json: false,
+      managedRootId: target.rootId,
+      operatorDeploymentId: target.deploymentId,
+      expectedTarget: target,
+      transitOff: true,
+    });
   });
 
   test('parses and emits the stable framed managed activation contract', async () => {
@@ -380,6 +389,7 @@ describe('Runtime Host operator commands', () => {
         'peer.mesh.query',
         'peer.mesh.reconcile',
         'peer.mesh.remove',
+        'peer.mesh.transit.set',
       ],
     );
   });

@@ -33,20 +33,14 @@ export type PeerMeshOperationHandlers = Pick<
   | 'peer.mesh.leave'
   | 'peer.mesh.close'
   | 'peer.mesh.reconcile'
+  | 'peer.mesh.transit.set'
 >;
 
 export function createPeerMeshOperationHandlers(
   mesh: PeerMeshNode | undefined,
   options: { readonly requestDrain?: () => void } = {},
 ): PeerMeshOperationHandlers {
-  const query = (): PeerMeshQueryResult =>
-    mesh
-      ? {
-          available: true,
-          localPeerId: mesh.localPeerId(),
-          meshes: mesh.status().map(projectPeerMeshStatus),
-        }
-      : { available: false, meshes: [] };
+  const query = (): PeerMeshQueryResult => projectPeerMeshQuery(mesh);
   const unavailable = <K extends keyof PeerMeshOperationHandlers>(): OperationOutcome<K> =>
     ({
       ok: false,
@@ -144,6 +138,13 @@ export function createPeerMeshOperationHandlers(
         return { ok: true, result: query() };
       });
     },
+    'peer.mesh.transit.set': async (input) => {
+      if (!mesh) return unavailable();
+      return mutate(async () => {
+        await mesh.setTransitMesh(input.meshId);
+        return { ok: true, result: query() };
+      });
+    },
   };
 }
 
@@ -156,5 +157,29 @@ export function projectPeerMeshStatus(status: PeerMeshStatus): PeerMeshProjectio
     closed: status.roster.roster.closed,
     members: Object.freeze(status.memberRoutes.map((member) => Object.freeze({ ...member }))),
     pendingInvitationCount: status.pendingInvitationCount,
+    transitEnabled: status.transitEnabled,
+  });
+}
+
+export function projectPeerMeshQuery(mesh: PeerMeshNode | undefined): PeerMeshQueryResult {
+  if (!mesh) return { available: false, meshes: [] };
+  return Object.freeze({
+    available: true,
+    localPeerId: mesh.localPeerId(),
+    meshes: Object.freeze(mesh.status().map(projectPeerMeshStatus)),
+    transit: projectTransitSnapshot(mesh.transitSnapshot()),
+  });
+}
+
+function projectTransitSnapshot(snapshot: ReturnType<PeerMeshNode['transitSnapshot']>) {
+  return Object.freeze({
+    allowedMemberCount: snapshot.allowedPeerCount,
+    activeReservationCount: snapshot.activeReservationCount,
+    activeCircuitCount: snapshot.activeCircuitCount,
+    maxReservationCount: snapshot.maxReservationCount,
+    maxCircuitCount: snapshot.maxCircuitCount,
+    maxCircuitsPerPeer: snapshot.maxCircuitsPerPeer,
+    maxCircuitDurationSeconds: snapshot.maxCircuitDurationSeconds,
+    maxCircuitBytes: snapshot.maxCircuitBytes,
   });
 }

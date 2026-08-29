@@ -138,11 +138,32 @@ pub struct TransitPolicy {
     pub relays: Vec<Multiaddr>,
 }
 
-#[derive(Clone, Default)]
+#[derive(Clone)]
 pub struct TransitSnapshot {
     pub allowed_peer_count: usize,
     pub active_reservation_count: usize,
     pub active_circuit_count: usize,
+    pub max_reservation_count: usize,
+    pub max_circuit_count: usize,
+    pub max_circuits_per_peer: usize,
+    pub max_circuit_duration_seconds: u64,
+    pub max_circuit_bytes: u64,
+}
+
+impl Default for TransitSnapshot {
+    fn default() -> Self {
+        Self {
+            allowed_peer_count: 0,
+            trusted_relay_count: 0,
+            active_reservation_count: 0,
+            active_circuit_count: 0,
+            max_reservation_count: MAX_TRANSIT_RESERVATIONS,
+            max_circuit_count: MAX_TRANSIT_CIRCUITS,
+            max_circuits_per_peer: MAX_TRANSIT_CIRCUITS_PER_PEER,
+            max_circuit_duration_seconds: MAX_TRANSIT_CIRCUIT_DURATION.as_secs(),
+            max_circuit_bytes: MAX_TRANSIT_CIRCUIT_BYTES,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -1711,6 +1732,7 @@ fn publish_transit_snapshot(transit: &TransitRuntime) {
             allowed_peer_count,
             active_reservation_count: transit.reservations.len(),
             active_circuit_count: transit.circuits.values().sum(),
+            ..TransitSnapshot::default()
         };
     }
 }

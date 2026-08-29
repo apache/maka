@@ -28,12 +28,23 @@ import {
   Button,
   MoreMenu,
   redactSecrets,
+  Switch,
   Text,
   TextArea,
   useToast,
   useUiLocale,
 } from '@maka/ui';
-import { ArrowLeft, Copy, ICON_SIZE, KeyRound, Network, Plus, RefreshCcw } from '@maka/ui/icons';
+import {
+  ArrowLeft,
+  Copy,
+  HelpCircle,
+  ICON_SIZE,
+  KeyRound,
+  Network,
+  Plus,
+  RefreshCcw,
+  Workflow,
+} from '@maka/ui/icons';
 import type { DesktopRuntimeHostPeerMeshTarget } from '../../preload/bridge-contract.js';
 
 type PeerMeshDialogView =
@@ -158,6 +169,22 @@ export function RuntimeHostPeerMeshDialog(props: {
     }
   }
 
+  async function setTransit(meshId: string, enabled: boolean): Promise<void> {
+    setWorking(true);
+    setError(undefined);
+    try {
+      const result = await window.maka.runtimeHostPeerMesh.execute(props.target, 'transit', {
+        meshId: enabled ? meshId : null,
+      });
+      if (!isSnapshot(result)) throw new Error(copy.invalidResult);
+      setSnapshot(result);
+    } catch (failure) {
+      setError(peerMeshErrorMessage(failure, copy.unknownError));
+    } finally {
+      setWorking(false);
+    }
+  }
+
   async function copyInvitation(): Promise<void> {
     if (view.kind !== 'invitation') return;
     try {
@@ -209,6 +236,7 @@ export function RuntimeHostPeerMeshDialog(props: {
                   onJoin={() => setView({ kind: 'join' })}
                   onCreate={() => void run('create')}
                   onRefresh={() => void run('reconcile')}
+                  onSetTransit={(meshId, enabled) => void setTransit(meshId, enabled)}
                 />
               )}
             </div>
@@ -260,6 +288,7 @@ function Overview(props: {
   readonly onJoin: () => void;
   readonly onCreate: () => void;
   readonly onRefresh: () => void;
+  readonly onSetTransit: (meshId: string, enabled: boolean) => void;
 }) {
   const { snapshot, copy } = props;
   if (!snapshot) {
@@ -357,12 +386,14 @@ function Overview(props: {
               <MeshCard
                 key={mesh.meshId}
                 mesh={mesh}
+                transit={snapshot.transit}
                 copy={copy}
                 working={props.working}
                 onInvite={() => props.onInvite(mesh.meshId)}
                 onRemove={(peerId) => props.onRemove(mesh.meshId, peerId)}
                 onLeave={() => props.onLeave(mesh.meshId)}
                 onClose={() => props.onClose(mesh.meshId)}
+                onSetTransit={(enabled) => props.onSetTransit(mesh.meshId, enabled)}
               />
             ))}
           </div>
@@ -449,12 +480,14 @@ function InvitationView(props: {
 
 function MeshCard(props: {
   readonly mesh: PeerMeshProjection;
+  readonly transit: PeerMeshQueryResult['transit'];
   readonly copy: ReturnType<typeof peerMeshCopy>;
   readonly working: boolean;
   readonly onInvite: () => void;
   readonly onRemove: (peerId: string) => void;
   readonly onLeave: () => void;
   readonly onClose: () => void;
+  readonly onSetTransit: (enabled: boolean) => void;
 }) {
   const { mesh, copy } = props;
   return (
@@ -509,6 +542,56 @@ function MeshCard(props: {
         {copy.revision(mesh.revision)} · {copy.memberCount(mesh.members.length)}
         {mesh.pendingInvitationCount > 0 ? ` · ${copy.pending(mesh.pendingInvitationCount)}` : ''}
       </Text>
+      {!mesh.closed ? (
+        <div className="settingsPeerMeshTransit">
+          <div className="settingsPeerMeshTransitIdentity">
+            <span className="settingsPeerMeshTransitIcon" aria-hidden="true">
+              <Workflow size={ICON_SIZE.chrome} />
+            </span>
+            <div>
+              <div className="settingsPeerMeshTransitTitle">
+                <Text type="supporting" weight="semibold">
+                  {copy.transit}
+                </Text>
+                <span
+                  className="settingsPeerMeshTransitHelp"
+                  role="img"
+                  aria-label={copy.transitLimitsLabel}
+                  title={copy.transitLimits(props.transit)}
+                >
+                  <HelpCircle size={ICON_SIZE.meta} aria-hidden="true" />
+                </span>
+              </div>
+              <Text type="supporting" color="secondary">
+                {copy.transitHelp}
+              </Text>
+            </div>
+          </div>
+          <Switch
+            label={copy.transitToggle}
+            isLabelHidden
+            value={mesh.transitEnabled}
+            isDisabled={props.working}
+            onChange={props.onSetTransit}
+          />
+        </div>
+      ) : null}
+      {mesh.transitEnabled && props.transit ? (
+        <div className="settingsPeerMeshTransitMetrics" aria-label={copy.transitStatus}>
+          <TransitMetric
+            label={copy.allowedMembers}
+            value={String(props.transit.allowedMemberCount)}
+          />
+          <TransitMetric
+            label={copy.reservations}
+            value={`${props.transit.activeReservationCount}/${props.transit.maxReservationCount}`}
+          />
+          <TransitMetric
+            label={copy.circuits}
+            value={`${props.transit.activeCircuitCount}/${props.transit.maxCircuitCount}`}
+          />
+        </div>
+      ) : null}
       <div className="settingsPeerMeshMembersHeading">
         <Text type="supporting" color="secondary">
           {copy.members}
@@ -558,6 +641,19 @@ function MeshCard(props: {
         ))}
       </div>
     </section>
+  );
+}
+
+function TransitMetric(props: { readonly label: string; readonly value: string }) {
+  return (
+    <div>
+      <Text type="supporting" color="secondary">
+        {props.label}
+      </Text>
+      <Text type="body" weight="semibold">
+        {props.value}
+      </Text>
+    </div>
   );
 }
 
@@ -615,6 +711,18 @@ function peerMeshCopy(locale: string) {
         revision: (value: number) => `版本 ${value}`,
         memberCount: (value: number) => `${value} 个成员`,
         pending: (value: number) => `${value} 个待使用邀请`,
+        transit: '成员转发',
+        transitHelp: '允许此 Mesh 的成员通过本机建立连接；会使用本机带宽。',
+        transitToggle: '为此 Mesh 提供转发',
+        transitStatus: '成员转发状态',
+        transitLimitsLabel: '成员转发限制',
+        transitLimits: (value: PeerMeshQueryResult['transit']) =>
+          value
+            ? `固定上限：每个成员 ${value.maxCircuitsPerPeer} 条连接，每条最长 ${formatHours(value.maxCircuitDurationSeconds)}，最多 ${formatMebibytes(value.maxCircuitBytes)}。一次只能为一个 Mesh 开启。`
+            : '成员转发使用固定资源上限，一次只能为一个 Mesh 开启。',
+        allowedMembers: '允许成员',
+        reservations: 'Reservation',
+        circuits: '连接',
         routeState: {
           local: '本机',
           route_available: '路径可用',
@@ -669,6 +777,18 @@ function peerMeshCopy(locale: string) {
         revision: (value: number) => `Revision ${value}`,
         memberCount: (value: number) => `${value} members`,
         pending: (value: number) => `${value} pending invites`,
+        transit: 'Member transit',
+        transitHelp: 'Let members of this Mesh connect through this device using its bandwidth.',
+        transitToggle: 'Provide transit for this Mesh',
+        transitStatus: 'Member transit status',
+        transitLimitsLabel: 'Member transit limits',
+        transitLimits: (value: PeerMeshQueryResult['transit']) =>
+          value
+            ? `Fixed limits: ${value.maxCircuitsPerPeer} circuits per member, ${formatHours(value.maxCircuitDurationSeconds)} per circuit, and ${formatMebibytes(value.maxCircuitBytes)}. Only one Mesh can be served at a time.`
+            : 'Member transit uses fixed resource limits. Only one Mesh can be served at a time.',
+        allowedMembers: 'Allowed members',
+        reservations: 'Reservations',
+        circuits: 'Circuits',
         routeState: {
           local: 'Local',
           route_available: 'Route known',
@@ -702,4 +822,12 @@ function peerMeshCopy(locale: string) {
         meshActions: 'Mesh actions',
         memberActions: (peerId: string) => `Actions for ${peerId}`,
       };
+}
+
+function formatHours(seconds: number): string {
+  return `${seconds / 3_600}h`;
+}
+
+function formatMebibytes(bytes: number): string {
+  return `${bytes / (1024 * 1024)} MiB`;
 }

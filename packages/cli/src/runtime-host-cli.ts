@@ -172,7 +172,16 @@ export type RuntimeHostCliCommand =
     }
   | {
       kind: 'runtime-host-service-peer-mesh';
-      action: 'status' | 'create' | 'invite' | 'join' | 'remove' | 'leave' | 'close' | 'reconcile';
+      action:
+        | 'status'
+        | 'create'
+        | 'invite'
+        | 'join'
+        | 'remove'
+        | 'leave'
+        | 'close'
+        | 'reconcile'
+        | 'transit';
       json: boolean;
       framed?: true;
       managedRootId: string;
@@ -180,6 +189,7 @@ export type RuntimeHostCliCommand =
       expectedTarget: RuntimeHostManagedServiceTarget;
       meshId?: string;
       peerId?: string;
+      transitOff?: true;
     }
   | {
       kind: 'runtime-host-service-check-update';
@@ -1010,16 +1020,18 @@ function parseServicePeerMeshCommand(argv: string[]): RuntimeHostCliCommand {
     action !== 'remove' &&
     action !== 'leave' &&
     action !== 'close' &&
-    action !== 'reconcile'
+    action !== 'reconcile' &&
+    action !== 'transit'
   ) {
     return error(
       action
         ? `Unexpected runtime-host service mesh command: ${action}`
-        : 'runtime-host service mesh requires status, create, invite, join, remove, leave, close, or reconcile',
+        : 'runtime-host service mesh requires status, create, invite, join, remove, leave, close, reconcile, or transit',
     );
   }
   let meshId: string | undefined;
   let peerId: string | undefined;
+  let transitOff = false;
   const options = parseManagedServiceOptions(argv.slice(1), {
     allowConfiguration: false,
     allowFramed: true,
@@ -1035,6 +1047,12 @@ function parseServicePeerMeshCommand(argv: string[]): RuntimeHostCliCommand {
         peerId = value;
       },
     },
+    flagOptions: {
+      '--off': () => {
+        if (transitOff) return error('Duplicate --off');
+        transitOff = true;
+      },
+    },
   });
   if ('kind' in options) return options;
   if (!options.managedRootId || !options.operatorDeploymentId || !options.expectedTarget) {
@@ -1043,12 +1061,16 @@ function parseServicePeerMeshCommand(argv: string[]): RuntimeHostCliCommand {
     );
   }
   const needsMesh =
-    action === 'invite' || action === 'remove' || action === 'leave' || action === 'close';
+    action === 'invite' ||
+    action === 'remove' ||
+    action === 'leave' ||
+    action === 'close' ||
+    (action === 'transit' && !transitOff);
   if (needsMesh !== (meshId !== undefined)) {
     return error(
       needsMesh
         ? `runtime-host service mesh ${action} requires --mesh`
-        : '--mesh is only valid with mesh invite, remove, leave, or close',
+        : '--mesh is only valid with mesh invite, remove, leave, close, or transit',
     );
   }
   if ((action === 'remove') !== (peerId !== undefined)) {
@@ -1057,6 +1079,12 @@ function parseServicePeerMeshCommand(argv: string[]): RuntimeHostCliCommand {
         ? 'runtime-host service mesh remove requires --peer'
         : '--peer is only valid with mesh remove',
     );
+  }
+  if (transitOff && action !== 'transit') {
+    return error('--off is only valid with mesh transit');
+  }
+  if (transitOff && meshId !== undefined) {
+    return error('mesh transit accepts either --mesh or --off, not both');
   }
   return {
     kind: 'runtime-host-service-peer-mesh',
@@ -1068,6 +1096,7 @@ function parseServicePeerMeshCommand(argv: string[]): RuntimeHostCliCommand {
     expectedTarget: options.expectedTarget,
     ...(meshId ? { meshId } : {}),
     ...(peerId ? { peerId } : {}),
+    ...(transitOff ? { transitOff: true as const } : {}),
   };
 }
 

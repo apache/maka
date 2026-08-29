@@ -68,7 +68,7 @@ module.exports = {
       peerId: 'client',
       listenAddresses: [],
       activeCoordinationRelays: [],
-      transitSnapshot: { allowedPeerCount: 0, activeReservationCount: 0, activeCircuitCount: 0 },
+      transitSnapshot: { allowedPeerCount: 0, activeReservationCount: 0, activeCircuitCount: 0, maxReservationCount: 32, maxCircuitCount: 8, maxCircuitsPerPeer: 2, maxCircuitDurationSeconds: 7_200, maxCircuitBytes: 256 * 1024 * 1024 },
       connect: ({ requestId, peerId, routeHints, coordinationRelays, transitRelayPeerIds }) => {
         stats.requests.push({ requestId, peerId, routeHints, coordinationRelays, transitRelayPeerIds });
         if (peerId === 'ready') return Promise.resolve(stream);
@@ -214,7 +214,7 @@ module.exports = {
     peerId: 'peer',
     listenAddresses: [],
     activeCoordinationRelays: [],
-    transitSnapshot: { allowedPeerCount: 0, activeReservationCount: 0, activeCircuitCount: 0 },
+    transitSnapshot: { allowedPeerCount: 0, activeReservationCount: 0, activeCircuitCount: 0, maxReservationCount: 32, maxCircuitCount: 8, maxCircuitsPerPeer: 2, maxCircuitDurationSeconds: 7_200, maxCircuitBytes: 256 * 1024 * 1024 },
     connect: async () => stream,
     connectMeshControl: async () => stream,
     configureTransit: async () => {},

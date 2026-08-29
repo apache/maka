@@ -1380,7 +1380,11 @@ const makaBridge = {
     execute(
       target: import('./bridge-contract.js').DesktopRuntimeHostPeerMeshTarget,
       action: import('./bridge-contract.js').DesktopRuntimeHostPeerMeshAction,
-      input: { readonly meshId?: string; readonly peerId?: string; readonly invitation?: string } = {},
+      input: {
+        readonly meshId?: string | null;
+        readonly peerId?: string;
+        readonly invitation?: string;
+      } = {},
     ) {
       return ipcRenderer.invoke(
         'runtime-host-peer-mesh:execute',

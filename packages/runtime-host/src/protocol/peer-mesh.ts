@@ -54,6 +54,7 @@ export interface PeerMeshProjection {
   readonly closed: boolean;
   readonly members: readonly PeerMeshMemberProjection[];
   readonly pendingInvitationCount: number;
+  readonly transitEnabled: boolean;
 }
 
 export interface PeerMeshMemberProjection {
@@ -66,6 +67,18 @@ export interface PeerMeshQueryResult {
   readonly available: boolean;
   readonly localPeerId?: string;
   readonly meshes: readonly PeerMeshProjection[];
+  readonly transit?: PeerMeshTransitProjection;
+}
+
+export interface PeerMeshTransitProjection {
+  readonly allowedMemberCount: number;
+  readonly activeReservationCount: number;
+  readonly activeCircuitCount: number;
+  readonly maxReservationCount: number;
+  readonly maxCircuitCount: number;
+  readonly maxCircuitsPerPeer: number;
+  readonly maxCircuitDurationSeconds: number;
+  readonly maxCircuitBytes: number;
 }
 
 export interface PeerMeshTargetInput {
@@ -80,6 +93,10 @@ export interface PeerMeshJoinInput {
 
 export interface PeerMeshRemoveInput extends PeerMeshTargetInput {
   readonly peerId: string;
+}
+
+export interface PeerMeshTransitSetInput {
+  readonly meshId: string | null;
 }
 
 export interface PeerMeshInvitationResult {
@@ -150,6 +167,13 @@ export const PEER_MESH_OPERATION_SPECS = {
     availability: 'ready',
     errors: MUTATION_ERRORS,
     decodeInput: decodeEmptyInput,
+    decodeOutput: decodePeerMeshQueryResult,
+  }),
+  'peer.mesh.transit.set': defineOperation({
+    mode: 'command',
+    availability: 'ready',
+    errors: MUTATION_ERRORS,
+    decodeInput: decodePeerMeshTransitSetInput,
     decodeOutput: decodePeerMeshQueryResult,
   }),
 } as const;
@@ -236,6 +260,16 @@ function decodePeerMeshRemoveInput(value: unknown): PeerMeshRemoveInput {
   };
 }
 
+function decodePeerMeshTransitSetInput(value: unknown): PeerMeshTransitSetInput {
+  const record = requireExactRecord(value, 'Peer Mesh transit input', ['meshId']);
+  return {
+    meshId:
+      record.meshId === null
+        ? null
+        : requireString(record.meshId, 'Peer Mesh meshId', MESH_ID_MAX_BYTES),
+  };
+}
+
 export function decodePeerMeshQueryResult(value: unknown): PeerMeshQueryResult {
   const record = requireRecord(value, 'Peer Mesh query result');
   assertExactKeys(
@@ -243,7 +277,7 @@ export function decodePeerMeshQueryResult(value: unknown): PeerMeshQueryResult {
     'Peer Mesh query result',
     record.localPeerId === undefined
       ? ['available', 'meshes']
-      : ['available', 'localPeerId', 'meshes'],
+      : ['available', 'localPeerId', 'meshes', 'transit'],
   );
   if (
     typeof record.available !== 'boolean' ||
@@ -262,6 +296,7 @@ export function decodePeerMeshQueryResult(value: unknown): PeerMeshQueryResult {
       ? {}
       : {
           localPeerId: requireString(localPeerId, 'Peer Mesh localPeerId', PEER_ID_MAX_BYTES),
+          transit: decodePeerMeshTransitProjection(record.transit),
         }),
     meshes: Object.freeze(record.meshes.map(decodePeerMeshProjection)),
   };
@@ -276,10 +311,12 @@ export function decodePeerMeshProjection(value: unknown): PeerMeshProjection {
     'closed',
     'members',
     'pendingInvitationCount',
+    'transitEnabled',
   ]);
   if (
     (record.role !== 'authority' && record.role !== 'member') ||
     typeof record.closed !== 'boolean' ||
+    typeof record.transitEnabled !== 'boolean' ||
     !Array.isArray(record.members) ||
     record.members.length > PEER_MESH_MAX_MEMBERS
   ) {
@@ -304,6 +341,33 @@ export function decodePeerMeshProjection(value: unknown): PeerMeshProjection {
       record.pendingInvitationCount,
       'Peer Mesh pendingInvitationCount',
     ),
+    transitEnabled: record.transitEnabled,
+  };
+}
+
+function decodePeerMeshTransitProjection(value: unknown): PeerMeshTransitProjection {
+  const record = requireExactRecord(value, 'Peer Mesh transit projection', [
+    'allowedMemberCount',
+    'activeReservationCount',
+    'activeCircuitCount',
+    'maxReservationCount',
+    'maxCircuitCount',
+    'maxCircuitsPerPeer',
+    'maxCircuitDurationSeconds',
+    'maxCircuitBytes',
+  ]);
+  return {
+    allowedMemberCount: requireCount(record.allowedMemberCount, 'allowedMemberCount'),
+    activeReservationCount: requireCount(record.activeReservationCount, 'activeReservationCount'),
+    activeCircuitCount: requireCount(record.activeCircuitCount, 'activeCircuitCount'),
+    maxReservationCount: requireCount(record.maxReservationCount, 'maxReservationCount'),
+    maxCircuitCount: requireCount(record.maxCircuitCount, 'maxCircuitCount'),
+    maxCircuitsPerPeer: requireCount(record.maxCircuitsPerPeer, 'maxCircuitsPerPeer'),
+    maxCircuitDurationSeconds: requireCount(
+      record.maxCircuitDurationSeconds,
+      'maxCircuitDurationSeconds',
+    ),
+    maxCircuitBytes: requireCount(record.maxCircuitBytes, 'maxCircuitBytes'),
   };
 }
 

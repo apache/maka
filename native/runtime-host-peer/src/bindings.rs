@@ -72,6 +72,11 @@ pub struct PeerTransitSnapshot {
     pub allowed_peer_count: u32,
     pub active_reservation_count: u32,
     pub active_circuit_count: u32,
+    pub max_reservation_count: u32,
+    pub max_circuit_count: u32,
+    pub max_circuits_per_peer: u32,
+    pub max_circuit_duration_seconds: u32,
+    pub max_circuit_bytes: u32,
 }
 
 #[napi(object)]
@@ -124,6 +129,11 @@ impl PeerEndpoint {
             allowed_peer_count: snapshot.allowed_peer_count as u32,
             active_reservation_count: snapshot.active_reservation_count as u32,
             active_circuit_count: snapshot.active_circuit_count as u32,
+            max_reservation_count: snapshot.max_reservation_count as u32,
+            max_circuit_count: snapshot.max_circuit_count as u32,
+            max_circuits_per_peer: snapshot.max_circuits_per_peer as u32,
+            max_circuit_duration_seconds: snapshot.max_circuit_duration_seconds as u32,
+            max_circuit_bytes: snapshot.max_circuit_bytes as u32,
         }
     }
 

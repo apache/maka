@@ -24,7 +24,7 @@ import {
   type PeerMeshInvitationResult,
   type PeerMeshQueryResult,
 } from '@maka/runtime-host/protocol';
-import { projectPeerMeshStatus } from '@maka/runtime-host/server';
+import { projectPeerMeshQuery } from '@maka/runtime-host/server';
 import type {
   DesktopRuntimeHostPeerMeshTarget,
 } from '../preload/bridge-contract.js';
@@ -52,7 +52,12 @@ export function createDesktopRuntimeHostPeerMeshManagement(input: {
   ): Promise<PeerMeshQueryResult | PeerMeshInvitationResult> => {
     const target = requireTarget(targetValue);
     const action = requireAction(actionValue);
-    const meshId = actionNeedsMesh(action) ? requireIdentifier(meshIdValue, 'Mesh ID') : undefined;
+    const meshId =
+      action === 'transit' && meshIdValue === null
+        ? null
+        : actionNeedsMesh(action)
+          ? requireIdentifier(meshIdValue, 'Mesh ID')
+          : undefined;
     const peerId = action === 'remove' ? requireIdentifier(peerIdValue, 'Peer ID') : undefined;
     const invitation = action === 'join' ? requireInvitation(invitationValue) : undefined;
     if (target.kind === 'desktop') {
@@ -81,6 +86,7 @@ export function createDesktopRuntimeHostPeerMeshManagement(input: {
         deploymentId: managed.deployment.deploymentId,
       },
       ...(meshId ? { meshId } : {}),
+      ...(action === 'transit' && meshId === null ? { transitOff: true as const } : {}),
       ...(peerId ? { peerId } : {}),
       ...(invitation ? { invitation: JSON.stringify(invitation) } : {}),
     });
@@ -101,7 +107,7 @@ export function createDesktopRuntimeHostPeerMeshManagement(input: {
 async function executeLocal(
   mesh: PeerMeshNode | undefined,
   action: PeerMeshAction,
-  meshId: string | undefined,
+  meshId: string | null | undefined,
   peerId: string | undefined,
   invitation: ReturnType<typeof decodePeerMeshInvitation> | undefined,
 ): Promise<PeerMeshQueryResult | PeerMeshInvitationResult> {
@@ -109,11 +115,7 @@ async function executeLocal(
     if (action === 'status') return { available: false, meshes: [] };
     throw new Error('This Desktop build does not include Direct peer support');
   }
-  const snapshot = (): PeerMeshQueryResult => ({
-    available: true,
-    localPeerId: mesh.localPeerId(),
-    meshes: mesh.status().map(projectPeerMeshStatus),
-  });
+  const snapshot = (): PeerMeshQueryResult => projectPeerMeshQuery(mesh);
   switch (action) {
     case 'status':
       return snapshot();
@@ -139,11 +141,14 @@ async function executeLocal(
     case 'reconcile':
       await mesh.reconcile();
       return snapshot();
+    case 'transit':
+      await mesh.setTransitMesh(meshId ?? null);
+      return snapshot();
   }
 }
 
-function requiredValue<T>(value: T | undefined, label: string): T {
-  if (value === undefined) throw new Error(`${label} is required`);
+function requiredValue<T>(value: T | null | undefined, label: string): NonNullable<T> {
+  if (value === undefined || value === null) throw new Error(`${label} is required`);
   return value;
 }
 
@@ -168,13 +173,23 @@ function requireTarget(value: unknown): DesktopRuntimeHostPeerMeshTarget {
 function requireAction(value: unknown): PeerMeshAction {
   if (
     value === 'status' || value === 'create' || value === 'invite' || value === 'join' ||
-    value === 'remove' || value === 'leave' || value === 'close' || value === 'reconcile'
+    value === 'remove' ||
+    value === 'leave' ||
+    value === 'close' ||
+    value === 'reconcile' ||
+    value === 'transit'
   ) return value;
   throw new Error('Peer Mesh action is invalid');
 }
 
 function actionNeedsMesh(action: PeerMeshAction): boolean {
-  return action === 'invite' || action === 'remove' || action === 'leave' || action === 'close';
+  return (
+    action === 'invite' ||
+    action === 'remove' ||
+    action === 'leave' ||
+    action === 'close' ||
+    action === 'transit'
+  );
 }
 
 function requireIdentifier(value: unknown, label: string): string {

@@ -27,6 +27,7 @@ export { startExecutionRuntimeHostService } from './execution-service.js';
 export { runRuntimeHostProcessLifecycle } from './process-lifecycle.js';
 export {
   createPeerMeshOperationHandlers,
+  projectPeerMeshQuery,
   projectPeerMeshStatus,
 } from './peer-mesh-authority.js';
 export { installRuntimeHostLogCapture } from '../process-diagnostics.js';

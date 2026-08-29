@@ -61,6 +61,7 @@ export interface RuntimeHostPeerMeshManagementCliOptions {
   readonly expectedTarget: RuntimeHostManagedServiceTarget;
   readonly meshId?: string;
   readonly peerId?: string;
+  readonly transitOff?: true;
 }
 
 interface RuntimeHostPeerMeshManagementCliDeps {
@@ -201,6 +202,14 @@ async function executePeerMeshAction(
         kind: 'result',
         action: 'reconcile',
         result: await request('peer.mesh.reconcile', {}),
+      };
+    case 'transit':
+      return {
+        kind: 'result',
+        action: 'transit',
+        result: await request('peer.mesh.transit.set', {
+          meshId: options.transitOff ? null : requiredOption(options.meshId, 'Mesh ID'),
+        }),
       };
   }
 }

@@ -511,6 +511,11 @@ class MemoryPeerClient implements PeerMeshTransport {
       allowedPeerCount: this.transitPolicy.allowedPeerIds.length,
       activeReservationCount: 0,
       activeCircuitCount: 0,
+      maxReservationCount: 32,
+      maxCircuitCount: 8,
+      maxCircuitsPerPeer: 2,
+      maxCircuitDurationSeconds: 7_200,
+      maxCircuitBytes: 256 * 1024 * 1024,
     };
   }
 

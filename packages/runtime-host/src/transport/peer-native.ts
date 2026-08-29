@@ -95,6 +95,11 @@ export interface RuntimeHostPeerTransitSnapshot {
   readonly allowedPeerCount: number;
   readonly activeReservationCount: number;
   readonly activeCircuitCount: number;
+  readonly maxReservationCount: number;
+  readonly maxCircuitCount: number;
+  readonly maxCircuitsPerPeer: number;
+  readonly maxCircuitDurationSeconds: number;
+  readonly maxCircuitBytes: number;
 }
 
 export interface RuntimeHostPeerTransitRelayCandidate {
@@ -498,7 +503,17 @@ function isPeerTransitSnapshot(value: unknown): value is RuntimeHostPeerTransitS
     'activeReservationCount' in value &&
     isCount(value.activeReservationCount) &&
     'activeCircuitCount' in value &&
-    isCount(value.activeCircuitCount)
+    isCount(value.activeCircuitCount) &&
+    'maxReservationCount' in value &&
+    isCount(value.maxReservationCount) &&
+    'maxCircuitCount' in value &&
+    isCount(value.maxCircuitCount) &&
+    'maxCircuitsPerPeer' in value &&
+    isCount(value.maxCircuitsPerPeer) &&
+    'maxCircuitDurationSeconds' in value &&
+    isCount(value.maxCircuitDurationSeconds) &&
+    'maxCircuitBytes' in value &&
+    isCount(value.maxCircuitBytes)
   );
 }
 
