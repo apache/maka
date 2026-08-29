@@ -231,18 +231,14 @@ export function rewriteConversationCopyMessage(
   return message;
 }
 
-const ATTACHMENT_RESOURCE_REF_PATTERN =
-  /maka:\/\/runtime\/attachments\/[A-Za-z0-9_-]{1,128}(?![A-Za-z0-9_-])/g;
-
 function rewriteAttachmentResourceRefs(
   text: string,
   artifactIds: ReadonlyMap<string, string>,
 ): string {
-  return text.replace(ATTACHMENT_RESOURCE_REF_PATTERN, (resourceRef) => {
-    const parsed = parseAttachmentResourceRef(resourceRef);
-    if (!parsed) return resourceRef;
-    const artifactId = artifactIds.get(parsed.artifactId);
-    return artifactId ? `maka://runtime/attachments/${artifactId}` : resourceRef;
+  return text.replace(/maka:\/\/runtime\/attachments\/[^\s)\]}>`'",;:!]+/g, (candidate) => {
+    const parsed = parseAttachmentResourceRef(candidate);
+    const artifactId = parsed ? artifactIds.get(parsed.artifactId) : undefined;
+    return artifactId ? `maka://runtime/attachments/${artifactId}` : candidate;
   });
 }
 
@@ -1093,13 +1089,20 @@ function rewriteRuntimeEventReferences(
   references: ConversationCopyReferenceMap,
 ): RuntimeEvent {
   const content =
-    event.content?.kind === 'text' && event.content.attachments
+    event.content?.kind === 'text'
       ? {
           ...event.content,
-          attachments: event.content.attachments.map((attachment) => ({
-            ...attachment,
-            ref: rewriteStorageRef(attachment.ref, references),
-          })),
+          ...(references.mode === 'exact'
+            ? { text: rewriteAttachmentResourceRefs(event.content.text, references.artifactIds) }
+            : {}),
+          ...(event.content.attachments
+            ? {
+                attachments: event.content.attachments.map((attachment) => ({
+                  ...attachment,
+                  ref: rewriteStorageRef(attachment.ref, references),
+                })),
+              }
+            : {}),
         }
       : event.content?.kind === 'function_response'
         ? {
@@ -1509,6 +1512,14 @@ function rewriteStorageRef(
 ): StorageRef {
   if (ref.kind !== 'session_file' || ref.sessionId !== references.sourceSessionId) return ref;
   if (references.mode === 'preserve_external') return ref;
+  const artifactId = references.artifactIds.get(ref.relativePath);
+  if (artifactId) {
+    return {
+      ...ref,
+      sessionId: references.targetSessionId,
+      relativePath: artifactId,
+    };
+  }
   const relativePath = references.relativePaths.get(ref.relativePath);
   if (!relativePath) {
     throw new Error(`Conversation copy is missing Session file ${ref.relativePath}`);
