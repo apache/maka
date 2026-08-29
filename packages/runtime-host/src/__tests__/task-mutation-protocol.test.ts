@@ -106,14 +106,18 @@ describe('Task mutation protocol', () => {
       sessionId: 'session-1',
       revision,
       lookups: [
-        found(correlation, [
-          change(1, {
-            subject: 'Inspect <task-ledger> ghp_abcdefghijklmnopqrstuvwxyz123456',
-            previousStatus: 'in_progress',
-            nextStatus: 'completed',
-            evidence: 'Verified ghp_abcdefghijklmnopqrstuvwxyz123456',
-          }),
-        ]),
+        found(
+          correlation,
+          [
+            change(1, {
+              subject: 'Inspect <task-ledger> ghp_abcdefghijklmnopqrstuvwxyz123456',
+              previousStatus: 'in_progress',
+              nextStatus: 'completed',
+              evidence: 'Verified ghp_abcdefghijklmnopqrstuvwxyz123456',
+            }),
+          ],
+          'update',
+        ),
       ],
       nextCursor: null,
     });
@@ -138,6 +142,33 @@ describe('Task mutation protocol', () => {
             }),
           ]),
         ],
+        nextCursor: null,
+      }),
+    );
+  });
+
+  test('rejects operation-incompatible and duplicate forged changes', () => {
+    for (const changes of [
+      [change(1, { previousStatus: 'in_progress' })],
+      [change(1, { nextStatus: 'completed', evidence: 'Done' })],
+      [change(1), change(1)],
+    ]) {
+      assertInvalid(() =>
+        decodeTaskMutationQueryResult({
+          kind: 'page',
+          sessionId: 'session-1',
+          revision,
+          lookups: [found(correlation, changes)],
+          nextCursor: null,
+        }),
+      );
+    }
+    assertInvalid(() =>
+      decodeTaskMutationQueryResult({
+        kind: 'page',
+        sessionId: 'session-1',
+        revision,
+        lookups: [found(correlation, [change(1)], 'update')],
         nextCursor: null,
       }),
     );

@@ -325,7 +325,10 @@ interface TaskMutationCursorPayload {
   readonly throughSequence: number;
   readonly throughEventId: string;
   readonly offset: number;
+  readonly checksum: string;
 }
+
+type TaskMutationCursorContent = Omit<TaskMutationCursorPayload, 'checksum'>;
 
 function taskMutationWatermark(
   rows: readonly { sequence: number; event: { eventId: string } }[],
@@ -416,8 +419,19 @@ function createTaskMutationPage(
   });
 }
 
-function encodeTaskMutationCursor(cursor: TaskMutationCursorPayload): string {
-  return Buffer.from(JSON.stringify(cursor), 'utf8').toString('base64url');
+function encodeTaskMutationCursor(cursor: TaskMutationCursorContent): string {
+  const content: TaskMutationCursorContent = {
+    version: cursor.version,
+    sessionId: cursor.sessionId,
+    correlationDigest: cursor.correlationDigest,
+    throughSequence: cursor.throughSequence,
+    throughEventId: cursor.throughEventId,
+    offset: cursor.offset,
+  };
+  return Buffer.from(
+    JSON.stringify({ ...content, checksum: taskMutationCursorChecksum(content) }),
+    'utf8',
+  ).toString('base64url');
 }
 
 function decodeTaskMutationCursor(cursor: string): TaskMutationCursorPayload | undefined {
@@ -427,7 +441,7 @@ function decodeTaskMutationCursor(cursor: string): TaskMutationCursorPayload | u
       unknown
     >;
     if (
-      Object.keys(parsed).length !== 6 ||
+      Object.keys(parsed).length !== 7 ||
       parsed.version !== 1 ||
       typeof parsed.sessionId !== 'string' ||
       typeof parsed.correlationDigest !== 'string' ||
@@ -438,14 +452,32 @@ function decodeTaskMutationCursor(cursor: string): TaskMutationCursorPayload | u
       typeof parsed.throughEventId !== 'string' ||
       typeof parsed.offset !== 'number' ||
       !Number.isSafeInteger(parsed.offset) ||
-      parsed.offset <= 0
+      parsed.offset <= 0 ||
+      typeof parsed.checksum !== 'string' ||
+      !/^[a-f0-9]{64}$/.test(parsed.checksum)
     ) {
       return undefined;
     }
-    return parsed as unknown as TaskMutationCursorPayload;
+    const payload = parsed as unknown as TaskMutationCursorPayload;
+    const content: TaskMutationCursorContent = {
+      version: payload.version,
+      sessionId: payload.sessionId,
+      correlationDigest: payload.correlationDigest,
+      throughSequence: payload.throughSequence,
+      throughEventId: payload.throughEventId,
+      offset: payload.offset,
+    };
+    return payload.checksum === taskMutationCursorChecksum(content) ? payload : undefined;
   } catch {
     return undefined;
   }
+}
+
+function taskMutationCursorChecksum(content: TaskMutationCursorContent): string {
+  return createHash('sha256')
+    .update('maka.task-mutation-cursor.v1\0')
+    .update(JSON.stringify(content))
+    .digest('hex');
 }
 
 function mutationSuccess(result: TaskMutationQueryResult): OperationOutcome<'task.mutation.query'> {

@@ -275,10 +275,28 @@ function taskMutationPresentation(
   ) {
     throw invalidProtocolFrame('Invalid task mutation changes');
   }
+  const changes = record.changes.map((change) => taskMutationChange(change, direction));
+  if (record.operation === 'create') {
+    const taskIds = new Set<string>();
+    for (const change of changes) {
+      if (
+        change.previousStatus !== undefined ||
+        change.nextStatus !== 'pending' ||
+        change.reason !== undefined ||
+        change.evidence !== undefined ||
+        taskIds.has(change.taskId)
+      ) {
+        throw invalidProtocolFrame('Invalid create task mutation changes');
+      }
+      taskIds.add(change.taskId);
+    }
+  } else if (changes[0]?.previousStatus === undefined) {
+    throw invalidProtocolFrame('Invalid update task mutation change');
+  }
   return {
     operation: record.operation,
     correlation: taskMutationCorrelation(record.correlation),
-    changes: record.changes.map((change) => taskMutationChange(change, direction)),
+    changes,
   };
 }
 

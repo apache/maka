@@ -476,6 +476,21 @@ test('Task mutation cursor freezes appends and detects purged history incarnatio
       if (result.kind !== 'page') throw new Error('Expected initial Task mutation page');
       assert.ok(result.nextCursor);
       firstPage = result;
+      const tamperedCursor = JSON.parse(
+        Buffer.from(result.nextCursor, 'base64url').toString('utf8'),
+      ) as Record<string, unknown>;
+      tamperedCursor.offset = Number(tamperedCursor.offset) + 1;
+      await assert.rejects(
+        firstClient.request('task.mutation.query', {
+          kind: 'continue',
+          sessionId: fixture.sessionId,
+          correlations,
+          revision: result.revision,
+          cursor: Buffer.from(JSON.stringify(tamperedCursor), 'utf8').toString('base64url'),
+        }),
+        (error: unknown) =>
+          error instanceof RuntimeHostOperationError && error.code === 'invalid_request',
+      );
     } finally {
       await firstClient.close();
       await fixture.stopHost(firstHost);
