@@ -249,7 +249,7 @@ test('does not persist recoverable setup authority before Desktop ownership comm
   assert.equal(setupCalls, 0);
 });
 
-test('reconciles committed managed setup when Local discovery fails', async (t) => {
+test('migrates a legacy handoff after managed setup committed', async (t) => {
   const base = await mkdtemp(join(tmpdir(), 'maka-local-remote-access-prestart-'));
   t.after(() => rm(base, { recursive: true, force: true }));
   const clientDataRoot = join(base, 'client');
@@ -260,7 +260,7 @@ test('reconciles committed managed setup when Local discovery fails', async (t) 
     join(clientDataRoot, 'runtime-host-local-service.json'),
     `${JSON.stringify({
       schemaVersion: 1,
-      state: 'setupPending',
+      state: 'handoff',
       rootPath,
       rootId,
       coordinationRelays: [],
@@ -307,6 +307,57 @@ test('reconciles committed managed setup when Local discovery fails', async (t) 
       .state,
     'managed',
   );
+});
+
+test('discards a legacy handoff that belongs to an externally managed Host', async (t) => {
+  const base = await mkdtemp(join(tmpdir(), 'maka-local-remote-access-legacy-external-'));
+  t.after(() => rm(base, { recursive: true, force: true }));
+  const clientDataRoot = join(base, 'client');
+  const rootPath = join(clientDataRoot, 'workspaces', 'default');
+  const rootId = 'a'.repeat(64);
+  const lifecyclePath = join(clientDataRoot, 'runtime-host-local-service.json');
+  await mkdir(rootPath, { recursive: true });
+  await writeFile(
+    lifecyclePath,
+    `${JSON.stringify({
+      schemaVersion: 1,
+      state: 'handoff',
+      rootPath,
+      rootId,
+      coordinationRelays: [],
+      allowInterruptActiveTasks: false,
+    })}\n`,
+  );
+  let setupCalls = 0;
+  const service = createDesktopLocalRuntimeHostRemoteAccess({
+    ipcMain: { handle() {}, removeHandler() {} },
+    clientDataRoot,
+    rootPath,
+    rootId,
+    directPeerAvailable: true,
+    manager: () =>
+      ({
+        async retireOwnedLocalHost() {
+          return { kind: 'not_owned' as const };
+        },
+      }) as unknown as RuntimeHostDesktopManager,
+    hasManagedDeploymentAuthority: async () => false,
+    resolveSetupPackage: async () => ({ kind: 'npm', specifier: 'maka-agent@0.2.0' }),
+    operator: {
+      async runSetup() {
+        setupCalls += 1;
+        throw new Error('setup must not replace an externally managed Host');
+      },
+      async close() {},
+    } as unknown as ReturnType<typeof createDesktopRuntimeHostLocalOperator>,
+  });
+  t.after(() => service.close());
+
+  assert.equal(await service.recoverManagedSetup(), false);
+  await service.recover();
+
+  assert.equal(setupCalls, 0);
+  await assert.rejects(readFile(lifecyclePath, 'utf8'), { code: 'ENOENT' });
 });
 
 test('interrupted Local Host setup converges to its exact managed service', async (t) => {
