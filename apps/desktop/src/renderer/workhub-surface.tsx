@@ -405,10 +405,12 @@ export function WorkHubSurface(props: {
                   <div className="workhub-empty" role="alert">{copy.loadFailed}</div>
                 ) : null}
                 {visibleCoordinationTurns.map((turn) => (
-                  <CoordinationTurnView
+                  <WorkHubCoordinationTurnView
                     key={turn.messageId}
                     turn={turn}
-                    copy={copy}
+                    projection={projection}
+                    locale={props.locale}
+                    onOpenSession={props.onOpenSession}
                   />
                 ))}
                 {visibleLocalTurns.map((turn) => (
@@ -542,23 +544,44 @@ function WorkHubLoadingState(props: { label: string }) {
   );
 }
 
-function CoordinationTurnView(props: {
+/** @internal Presentational seam for durable Coordination turns. */
+export function WorkHubCoordinationTurnView(props: {
   turn: WorkHubCoordinationTurn;
-  copy: ReturnType<typeof workHubCopy>;
+  projection: WorkHubProjection;
+  locale: UiLocale;
+  onOpenSession(sessionId: string): void;
 }) {
+  const copy = workHubCopy(props.locale);
+  const assignment = props.turn.assignment;
+  const session = assignment
+    ? props.projection.sessions.find(
+        (candidate) => candidate.target.sessionId === assignment.targetSessionId,
+      )
+    : undefined;
   return (
-    <WorkHubMessageFrame text={props.turn.text} state={props.turn.state} projected>
-      {props.turn.assignment ? (
-        <p className="workhub-result">
-          {props.copy.sentTo} {props.turn.assignment.targetSessionName} · {props.copy.accepted}
-        </p>
+    <WorkHubMessageFrame
+      text={props.turn.text}
+      state={assignment?.feedbackState ?? props.turn.state}
+      projected
+    >
+      {assignment ? (
+        <SubmittedWorkView
+          session={session}
+          targetSessionId={assignment.targetSessionId}
+          fallbackName={assignment.targetSessionName}
+          heading={copy.sentTo}
+          state={copy.delegationStates[assignment.feedbackState]}
+          result={undefined}
+          copy={copy}
+          onOpenSession={props.onOpenSession}
+        />
       ) : props.turn.result ? (
         <p className="workhub-result">{props.turn.result}</p>
       ) : props.turn.state === 'running' ? (
-        <p className="workhub-status" role="status">{props.copy.answering}</p>
+        <p className="workhub-status" role="status">{copy.answering}</p>
       ) : (
         <p className="workhub-error" role="alert">
-          {props.copy.turnStates[props.turn.state]}
+          {copy.turnStates[props.turn.state]}
         </p>
       )}
     </WorkHubMessageFrame>
@@ -689,6 +712,7 @@ function WorkHubMessageFrame(props: {
 function SubmittedWorkView(props: {
   session: WorkHubSessionSummary | undefined;
   targetSessionId: string;
+  fallbackName?: string;
   heading: string;
   state: string;
   result: string | undefined;
@@ -696,17 +720,18 @@ function SubmittedWorkView(props: {
   onOpenSession(sessionId: string): void;
 }) {
   const { session, copy } = props;
+  const sessionName = session?.sessionName ?? props.fallbackName ?? copy.sessionFallback;
   return (
     <div className="workhub-submitted">
       <p>{props.heading}</p>
       <Button
-        label={`${session?.sessionName ?? copy.sessionFallback}, ${props.state}`}
+        label={`${sessionName}, ${props.state}`}
         variant="ghost"
         width="100%"
         onClick={() => props.onOpenSession(props.targetSessionId)}
         endContent={<span className="workhub-submitted-state">{props.state}</span>}>
         <span className="workhub-submitted-session">
-          <strong>{session?.sessionName ?? copy.sessionFallback}</strong>
+          <strong>{sessionName}</strong>
           {session?.projectName ? <small>{session.projectName}</small> : null}
         </span>
       </Button>
@@ -747,6 +772,15 @@ function workHubCopy(locale: UiLocale) {
         delivery_failed: '输入未能送达，请重试。',
       }, scrollToBottom: '滚动到底部', archived: '已归档',
       states: { active: '活跃', running: '进行中', waiting_for_user: '等待你', blocked: '受阻', aborted: '已中止' },
+      delegationStates: {
+        accepted: '已接收',
+        running: '进行中',
+        waiting_for_user: '等待你',
+        completed: '已完成',
+        failed: '失败',
+        aborted: '已中止',
+        recovering: '正在恢复',
+      },
       turnStates: { running: '进行中', completed: '已完成', aborted: '已中止', failed: '失败' },
     } as const;
   }
@@ -780,6 +814,15 @@ function workHubCopy(locale: UiLocale) {
       delivery_failed: 'The input could not be delivered. Try again.',
     }, scrollToBottom: 'Scroll to bottom', archived: 'Archived',
     states: { active: 'Active', running: 'Running', waiting_for_user: 'Waiting for you', blocked: 'Blocked', aborted: 'Aborted' },
+    delegationStates: {
+      accepted: 'Accepted',
+      running: 'Running',
+      waiting_for_user: 'Waiting for you',
+      completed: 'Completed',
+      failed: 'Failed',
+      aborted: 'Aborted',
+      recovering: 'Recovering',
+    },
     turnStates: { running: 'Running', completed: 'Completed', aborted: 'Aborted', failed: 'Failed' },
   } as const;
 }

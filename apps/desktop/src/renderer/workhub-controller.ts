@@ -62,6 +62,26 @@ export type WorkHubSessionSummary = Omit<WorkHubSessionFacts, 'kind' | 'runningT
 
 export type WorkHubProjectedTurnState = 'running' | 'completed' | 'aborted' | 'failed';
 
+export type WorkHubDelegationExecutionState =
+  | 'accepted'
+  | 'running'
+  | 'waiting_for_user'
+  | 'completed'
+  | 'failed'
+  | 'aborted'
+  | 'recovering';
+
+export interface WorkHubDelegationReference {
+  readonly delegationId: string;
+  readonly targetSessionId: string;
+  readonly targetTurnId: string;
+}
+
+export interface WorkHubDelegationFeedback {
+  readonly delegationId: string;
+  readonly state: WorkHubDelegationExecutionState;
+}
+
 export interface WorkHubProjectedTurn {
   messageId: string;
   target: WorkHubSessionTarget;
@@ -79,8 +99,11 @@ export interface WorkHubCoordinationTurn {
   state: WorkHubProjectedTurnState;
   result?: string;
   assignment?: {
+    readonly delegationId: string;
     readonly targetSessionId: string;
     readonly targetSessionName: string;
+    readonly targetTurnId: string;
+    readonly feedbackState: WorkHubDelegationExecutionState;
   };
   updatedAt: number;
 }
@@ -170,6 +193,14 @@ export interface WorkHubSessionPort {
    * transcripts. Missing transcripts are omitted rather than copied elsewhere.
    */
   recentTurns(targets: readonly WorkHubSessionTarget[]): Promise<WorkHubProjectedTurn[]>;
+  /**
+   * Rebuilds exact target-Turn execution facts for durable delegation links.
+   * The target Session remains authoritative; results are read-only and may
+   * conservatively report `recovering` while that authority is unavailable.
+   */
+  delegationFeedback(
+    references: readonly WorkHubDelegationReference[],
+  ): Promise<readonly WorkHubDelegationFeedback[]>;
   /**
    * Returns rebuildable routing evidence read from the authoritative Session
    * log. Implementations must not persist a second writable copy of it.
@@ -604,8 +635,72 @@ function createWorkHubControllerImplementation(deps: {
     if (failures.length > 0) throw failures[0];
   };
   return {
-    openConversation(handler, onError) {
-      return coordination.open(handler, onError);
+    async openConversation(handler, onError) {
+      let disposed = false;
+      let generation = 0;
+      let latestTurns: readonly WorkHubCoordinationTurn[] = [];
+
+      const refreshFeedback = async () => {
+        const refreshGeneration = ++generation;
+        const turns = latestTurns;
+        const references = turns.flatMap((turn) =>
+          turn.assignment
+            ? [{
+                delegationId: turn.assignment.delegationId,
+                targetSessionId: turn.assignment.targetSessionId,
+                targetTurnId: turn.assignment.targetTurnId,
+              }]
+            : [],
+        );
+        if (references.length === 0) return;
+        let feedback: readonly WorkHubDelegationFeedback[];
+        try {
+          feedback = await deps.sessions.delegationFeedback(references);
+        } catch {
+          feedback = references.map(({ delegationId }) => ({
+            delegationId,
+            state: 'recovering',
+          }));
+        }
+        if (disposed || refreshGeneration !== generation || turns !== latestTurns) return;
+        const feedbackByDelegationId = new Map(
+          feedback.map((entry) => [entry.delegationId, entry]),
+        );
+        handler(turns.map((turn) => {
+          if (!turn.assignment) return turn;
+          const next = feedbackByDelegationId.get(turn.assignment.delegationId);
+          return next
+            ? { ...turn, assignment: { ...turn.assignment, feedbackState: next.state } }
+            : turn;
+        }));
+      };
+
+      const unsubscribe = deps.sessions.subscribe(() => {
+        void refreshFeedback();
+      });
+      let handle: { close(): Promise<void> } | undefined;
+      try {
+        handle = await coordination.open((turns) => {
+          if (disposed) return;
+          latestTurns = turns;
+          generation += 1;
+          // The atomic assignment is already durable acknowledgement, so emit
+          // it immediately before enriching it with target-owned lifecycle.
+          handler(turns);
+          void refreshFeedback();
+        }, onError);
+      } catch (error) {
+        unsubscribe();
+        throw error;
+      }
+      return {
+        async close() {
+          disposed = true;
+          generation += 1;
+          unsubscribe();
+          await handle?.close();
+        },
+      };
     },
     async recordConversationTurn(input) {
       if (deps.coordination && input.disposition === 'clarify') {

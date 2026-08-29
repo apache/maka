@@ -148,8 +148,11 @@ test('projects the durable Coordination transcript into the WorkHub conversation
     text: 'Continue payments',
     state: 'completed',
     assignment: {
+      delegationId: 'payments-delegation',
       targetSessionId: 'payments',
       targetSessionName: 'Payments',
+      targetTurnId: 'payments-turn',
+      feedbackState: 'accepted',
     },
     updatedAt: 20,
   }]);
@@ -503,6 +506,76 @@ test('desktop adapter projects Session catalog facts without owning copies', asy
       runningTurnIds: [],
       updatedAt: 10,
     },
+  ]);
+});
+
+test('desktop adapter rebuilds delegation feedback from the exact authoritative Turn', async () => {
+  const sessions = [
+    desktopSession('accepted'),
+    desktopSession('running', { status: 'running', runningTurnIds: ['turn-running'] }),
+    desktopSession('waiting', {
+      status: 'waiting_for_user',
+      runningTurnIds: ['turn-waiting'],
+    }),
+    desktopSession('completed', {
+      status: 'waiting_for_user',
+      runningTurnIds: ['later-turn'],
+    }),
+    desktopSession('failed'),
+    desktopSession('aborted'),
+    desktopSession('recovering'),
+  ];
+  const turns = new Map<string, Array<{
+    turnId: string;
+    status: 'running' | 'completed' | 'failed' | 'aborted';
+    statusSource: 'recorded';
+  }>>([
+    ['running', [{ turnId: 'turn-running', status: 'running', statusSource: 'recorded' }]],
+    ['waiting', [{ turnId: 'turn-waiting', status: 'running', statusSource: 'recorded' }]],
+    ['completed', [{ turnId: 'turn-completed', status: 'completed', statusSource: 'recorded' }]],
+    ['failed', [{ turnId: 'turn-failed', status: 'failed', statusSource: 'recorded' }]],
+    ['aborted', [{ turnId: 'turn-aborted', status: 'aborted', statusSource: 'recorded' }]],
+  ]);
+  const adapter = createDesktopWorkHubSessionPort({
+    transcripts: unusedTranscripts,
+    sessions: {
+      list: async () => sessions,
+      listTurns: async (sessionId) => {
+        if (sessionId === 'recovering') throw new Error('Host is recovering');
+        return turns.get(sessionId) ?? [];
+      },
+      create: async () => { throw new Error('not used'); },
+      send: async () => { throw new Error('not used'); },
+      stop: async () => {},
+      subscribeChanges: () => () => {},
+    },
+    projectName: () => 'Maka',
+    newTurnId: () => 'unused',
+  });
+  const references = [
+    ['accepted', 'turn-accepted'],
+    ['running', 'turn-running'],
+    ['waiting', 'turn-waiting'],
+    ['completed', 'turn-completed'],
+    ['failed', 'turn-failed'],
+    ['aborted', 'turn-aborted'],
+    ['recovering', 'turn-recovering'],
+  ].map(([targetSessionId, targetTurnId]) => ({
+    delegationId: `delegation-${targetSessionId}`,
+    targetSessionId: targetSessionId!,
+    targetTurnId: targetTurnId!,
+  }));
+
+  const feedback = await adapter.delegationFeedback(references);
+
+  assert.deepEqual(feedback.map(({ delegationId, state }) => ({ delegationId, state })), [
+    { delegationId: 'delegation-accepted', state: 'accepted' },
+    { delegationId: 'delegation-running', state: 'running' },
+    { delegationId: 'delegation-waiting', state: 'waiting_for_user' },
+    { delegationId: 'delegation-completed', state: 'completed' },
+    { delegationId: 'delegation-failed', state: 'failed' },
+    { delegationId: 'delegation-aborted', state: 'aborted' },
+    { delegationId: 'delegation-recovering', state: 'recovering' },
   ]);
 });
 

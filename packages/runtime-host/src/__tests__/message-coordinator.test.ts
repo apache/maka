@@ -130,6 +130,51 @@ test('consumes an atomically committed active-target admission exactly once', as
   assert.equal(fixture.drainRequests(), 0);
 });
 
+test('idle recovery preserves the exact root identity chosen with a durable admission', async () => {
+  const fixture = createFixture();
+  fixture.setRootState({ kind: 'idle' });
+  const content = { text: 'recover the linked WorkHub assignment' };
+  await fixture.admissions.commitMessageAdmission({
+    ...ROOT,
+    messageId: 'workhub-linked-message',
+    content,
+    submittedContentDigest: messageContentDigest(content),
+    submittedPlacement: 'current_turn',
+    placement: 'current_turn',
+    disposition: 'steering',
+    admittedAt: 10,
+  });
+
+  await fixture.coordinator.consumePendingAdmissions([ROOT.sessionId]);
+
+  assert.equal(fixture.recoveredBatches.length, 1);
+  assert.deepEqual(fixture.recoveredBatches[0]?.rootIdentity, {
+    turnId: ROOT.turnId,
+    runId: ROOT.runId,
+  });
+});
+
+test('idle recovery does not reuse a predecessor identity for its queued successor', async () => {
+  const fixture = createFixture();
+  fixture.setRootState({ kind: 'idle' });
+  const content = { text: 'recover the queued successor' };
+  await fixture.admissions.commitMessageAdmission({
+    ...ROOT,
+    messageId: 'queued-successor-message',
+    content,
+    submittedContentDigest: messageContentDigest(content),
+    submittedPlacement: 'next_turn',
+    placement: 'next_turn',
+    disposition: 'followup',
+    admittedAt: 10,
+  });
+
+  await fixture.coordinator.consumePendingAdmissions([ROOT.sessionId]);
+
+  assert.equal(fixture.recoveredBatches.length, 1);
+  assert.equal(fixture.recoveredBatches[0]?.rootIdentity, undefined);
+});
+
 test('idle submit starts exactly one root Turn and retry identity is connection-independent', async () => {
   const fixture = createFixture();
   fixture.setRootState({ kind: 'idle' });

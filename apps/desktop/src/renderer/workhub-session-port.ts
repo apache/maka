@@ -17,7 +17,11 @@
  * under the License.
  */
 
-import { deriveTurnRecords, type StoredMessage } from '@maka/core/session';
+import {
+  deriveTurnRecords,
+  type StoredMessage,
+  type TurnRecord,
+} from '@maka/core/session';
 import type {
   DesktopTranscriptBatch,
   DesktopTranscriptHandle,
@@ -26,6 +30,8 @@ import { parseDesktopSessionKey } from '../shared/runtime-host-identity.js';
 import { DesktopTranscriptRangeStore } from './desktop-transcript-range-store.js';
 import type {
   WorkHubProjectedTurn,
+  WorkHubDelegationFeedback,
+  WorkHubDelegationReference,
   WorkHubSessionFacts,
   WorkHubSessionPort,
   WorkHubSessionState,
@@ -57,7 +63,9 @@ export interface WorkHubDesktopSessionBridge {
     sessions: readonly WorkHubDesktopSession[];
     completeHostIds: readonly string[];
   }>;
-  listTurns(sessionId: string): Promise<readonly { userPromptPreview?: string }[]>;
+  listTurns(
+    sessionId: string,
+  ): Promise<readonly Partial<Pick<TurnRecord, 'turnId' | 'status' | 'statusSource' | 'userPromptPreview'>>[]>;
   create(input: { name: string }): Promise<WorkHubDesktopSession>;
   send(
     sessionId: string,
@@ -170,6 +178,56 @@ export function createDesktopWorkHubSessionPort(deps: {
           left.messageId.localeCompare(right.messageId),
         )
         .slice(-WORKHUB_TIMELINE_TURN_LIMIT);
+    },
+    async delegationFeedback(references) {
+      let catalog: Awaited<ReturnType<typeof projectCatalog>> | undefined;
+      try {
+        catalog = await projectCatalog();
+      } catch {
+        // Exact Turn reads below may still recover terminal or running facts.
+      }
+      const sessionById = new Map(
+        catalog?.sessions.map((session) => [session.target.sessionId, session]) ?? [],
+      );
+      const referencesBySessionId = new Map<string, WorkHubDelegationReference[]>();
+      for (const reference of references) {
+        const grouped = referencesBySessionId.get(reference.targetSessionId) ?? [];
+        grouped.push(reference);
+        referencesBySessionId.set(reference.targetSessionId, grouped);
+      }
+      const projected = await Promise.all(
+        [...referencesBySessionId.entries()].map(async ([sessionId, grouped]) => {
+          let turns: readonly Partial<
+            Pick<TurnRecord, 'turnId' | 'status' | 'statusSource' | 'userPromptPreview'>
+          >[] = [];
+          let turnReadFailed = false;
+          try {
+            turns = await deps.sessions.listTurns(sessionId);
+          } catch {
+            turnReadFailed = true;
+          }
+          const turnById = new Map(
+            turns.flatMap((turn) => turn.turnId ? [[turn.turnId, turn] as const] : []),
+          );
+          const session = sessionById.get(sessionId);
+          return grouped.map((reference): WorkHubDelegationFeedback => ({
+            delegationId: reference.delegationId,
+            state: projectDelegationExecutionState({
+              reference,
+              session,
+              turn: turnById.get(reference.targetTurnId),
+              turnReadFailed,
+            }),
+          }));
+        }),
+      );
+      const feedbackByDelegationId = new Map(
+        projected.flat().map((feedback) => [feedback.delegationId, feedback]),
+      );
+      return references.flatMap((reference) => {
+        const feedback = feedbackByDelegationId.get(reference.delegationId);
+        return feedback ? [feedback] : [];
+      });
     },
     async routingEvidence(targets) {
       return Promise.all(targets.map(async (target) => {
@@ -352,4 +410,23 @@ function projectState(session: WorkHubDesktopSession): WorkHubSessionState {
     return 'running';
   }
   return session.status;
+}
+
+function projectDelegationExecutionState(input: {
+  reference: WorkHubDelegationReference;
+  session: WorkHubSessionFacts | undefined;
+  turn: Partial<Pick<TurnRecord, 'turnId' | 'status' | 'statusSource'>> | undefined;
+  turnReadFailed: boolean;
+}): WorkHubDelegationFeedback['state'] {
+  const { reference, session, turn } = input;
+  if (turn?.statusSource === 'recorded' && turn.status && turn.status !== 'running') {
+    return turn.status;
+  }
+  const ownsLiveTurn = session?.runningTurnIds?.includes(reference.targetTurnId) === true;
+  if (ownsLiveTurn && session?.state === 'waiting_for_user') return 'waiting_for_user';
+  if (ownsLiveTurn || (turn?.statusSource === 'recorded' && turn.status === 'running')) {
+    return 'running';
+  }
+  if (input.turnReadFailed || !session) return 'recovering';
+  return 'accepted';
 }

@@ -27,6 +27,7 @@ import {
   WORKHUB_ROUTING_STRATEGY_ID,
   type WorkHubSessionFacts,
   type WorkHubSessionPort,
+  type WorkHubCoordinationTurn,
 } from '../../renderer/workhub-controller.js';
 
 const appShellUrl = [
@@ -76,6 +77,8 @@ function port(sessions: WorkHubSessionFacts[]): WorkHubSessionPort {
   return {
     list: async () => sessions,
     recentTurns: async () => [],
+    delegationFeedback: async (references) =>
+      references.map(({ delegationId }) => ({ delegationId, state: 'accepted' })),
     routingEvidence: async () => [],
     create: async () => {
       throw new Error('create is not used by this read test');
@@ -89,6 +92,121 @@ function port(sessions: WorkHubSessionFacts[]): WorkHubSessionPort {
     subscribe: () => () => {},
   };
 }
+
+function coordinationAssignmentTurn(): WorkHubCoordinationTurn {
+  return {
+    messageId: 'assignment-1',
+    turnId: 'action-1',
+    text: 'Continue payments',
+    state: 'completed',
+    assignment: {
+      delegationId: 'delegation-1',
+      targetSessionId: 'payment',
+      targetSessionName: 'Payments',
+      targetTurnId: 'payment-turn',
+      feedbackState: 'accepted',
+    },
+    updatedAt: 10,
+  };
+}
+
+test('conversation acknowledges a durable assignment before projecting target execution', async () => {
+  const sessions = port([session('payment')]);
+  let onSessionChanged: (() => void) | undefined;
+  let feedbackState: 'completed' | 'waiting_for_user' = 'completed';
+  sessions.subscribe = (handler) => {
+    onSessionChanged = handler;
+    return () => {
+      onSessionChanged = undefined;
+    };
+  };
+  sessions.delegationFeedback = async (references) =>
+    references.map(({ delegationId }) => ({ delegationId, state: feedbackState }));
+  const assignment = coordinationAssignmentTurn();
+  const snapshots: string[] = [];
+  const controller = createGatedWorkHubController({
+    sessions,
+    coordination: {
+      open: async (handler) => {
+        handler([assignment]);
+        return { close: async () => undefined };
+      },
+      answer: async (input) => ({ turnId: input.turnId }),
+      record: async (input) => ({ turnId: input.turnId }),
+      candidates: async () => ({ candidateSetId: `sha256:${'a'.repeat(64)}`, candidates: [] }),
+      act: async () => ({ disposition: 'answer_here', coordinationTurnId: 'unused' }),
+    },
+  });
+
+  const handle = await controller.openConversation((turns) => {
+    snapshots.push(turns[0]?.assignment?.feedbackState ?? 'missing');
+  }, () => undefined);
+  await Promise.resolve();
+
+  assert.deepEqual(snapshots.slice(0, 2), ['accepted', 'completed']);
+
+  feedbackState = 'waiting_for_user';
+  onSessionChanged?.();
+  await Promise.resolve();
+  await Promise.resolve();
+  assert.equal(snapshots.at(-1), 'waiting_for_user');
+
+  await handle.close();
+});
+
+test('conversation feedback never lets an older refresh overwrite newer target state', async () => {
+  const sessions = port([session('payment')]);
+  let onSessionChanged: (() => void) | undefined;
+  sessions.subscribe = (handler) => {
+    onSessionChanged = handler;
+    return () => undefined;
+  };
+  type Feedback = Awaited<ReturnType<WorkHubSessionPort['delegationFeedback']>>;
+  const pending: Array<{
+    references: Parameters<WorkHubSessionPort['delegationFeedback']>[0];
+    resolve(feedback: Feedback): void;
+  }> = [];
+  sessions.delegationFeedback = (references) =>
+    new Promise((resolve) => pending.push({ references, resolve }));
+  const snapshots: string[] = [];
+  const controller = createGatedWorkHubController({
+    sessions,
+    coordination: {
+      open: async (handler) => {
+        handler([coordinationAssignmentTurn()]);
+        return { close: async () => undefined };
+      },
+      answer: async (input) => ({ turnId: input.turnId }),
+      record: async (input) => ({ turnId: input.turnId }),
+      candidates: async () => ({ candidateSetId: `sha256:${'b'.repeat(64)}`, candidates: [] }),
+      act: async () => ({ disposition: 'answer_here', coordinationTurnId: 'unused' }),
+    },
+  });
+
+  const handle = await controller.openConversation((turns) => {
+    snapshots.push(turns[0]?.assignment?.feedbackState ?? 'missing');
+  }, () => undefined);
+  assert.equal(pending.length, 1);
+  onSessionChanged?.();
+  assert.equal(pending.length, 2);
+
+  pending[1]!.resolve(pending[1]!.references.map(({ delegationId }) => ({
+    delegationId,
+    state: 'completed',
+  })));
+  await Promise.resolve();
+  await Promise.resolve();
+  pending[0]!.resolve(pending[0]!.references.map(({ delegationId }) => ({
+    delegationId,
+    state: 'failed',
+  })));
+  await Promise.resolve();
+  await Promise.resolve();
+
+  assert.equal(snapshots.at(-1), 'completed');
+  assert.equal(snapshots.includes('failed'), false);
+  await handle.close();
+});
 
 test('read exposes existing ordinary Sessions as factual Work summaries', async () => {
   const controller = createWorkHubController({

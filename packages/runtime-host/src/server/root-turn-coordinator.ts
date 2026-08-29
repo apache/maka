@@ -1170,7 +1170,14 @@ export class RootTurnCoordinator implements HostedExecutionAuthority {
       const reservation = this.reserveRootTurn(input.sessionId);
       if (!reservation) return { error: 'Another root Turn is being admitted' };
       try {
-        const turnId = randomUUID();
+        // A steering admission can preassign a future root while the Session
+        // is idle. An identity already in the owned chain instead names the
+        // predecessor that accepted the Message and must not become its own
+        // successor.
+        const latestAdmission = this.rootAdmissionOwner.latestAdmission(input.sessionId);
+        const rootIdentity =
+          input.rootIdentity?.turnId === latestAdmission?.turnId ? undefined : input.rootIdentity;
+        const turnId = rootIdentity?.turnId ?? randomUUID();
         // The recovered Message asked for this mode before the Host stopped;
         // admitting without it would run a different Turn than was requested.
         const turnOrchestration = input.submittedIntent?.turnOrchestration;
@@ -1178,7 +1185,7 @@ export class RootTurnCoordinator implements HostedExecutionAuthority {
         const admitted = await this.rootAdmissionOwner.admitRootTurn({
           sessionId: input.sessionId,
           turnId,
-          proposedRunId: randomUUID(),
+          proposedRunId: rootIdentity?.runId ?? randomUUID(),
           proposedUserMessageId: input.sources.length === 1 ? input.sources[0]!.messageId : null,
           execution: {
             kind: 'external_message',

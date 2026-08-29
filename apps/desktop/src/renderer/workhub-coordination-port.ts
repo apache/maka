@@ -128,8 +128,11 @@ export function projectWorkHubCoordinationTurns(
         text: boundedWorkHubTimelineText(message.userText),
         state: 'completed',
         assignment: {
+          delegationId: message.delegationId,
           targetSessionId: message.targetSessionId,
           targetSessionName: message.targetSessionName,
+          targetTurnId: message.targetTurnId,
+          feedbackState: 'accepted',
         },
         updatedAt: message.ts,
       });

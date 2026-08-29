@@ -24,6 +24,7 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import { AstryxLocaleProvider, LocaleProvider } from '@maka/ui';
 import {
   WorkHubCoordinationStatus,
+  WorkHubCoordinationTurnView,
   WorkHubProjectionRefreshGate,
   WorkHubSurfaceRouteGate,
   submitAndRecordWorkHubSurfaceInput,
@@ -37,6 +38,8 @@ import {
   createLegacyWorkHubControllerForTests as createWorkHubController,
   WORKHUB_ROUTING_STRATEGY_ID,
   type WorkHubController,
+  type WorkHubCoordinationTurn,
+  type WorkHubDelegationExecutionState,
   type WorkHubSubmitInput,
 } from '../../renderer/workhub-controller.js';
 import { WorkHubSendLease } from '../../renderer/workhub-send-lease.js';
@@ -105,6 +108,51 @@ test('Coordination lifecycle keeps a visible loading state and exposes failure r
   assert.match(failed, /role="alert"/);
   assert.match(failed, /Check the default model/);
   assert.match(failed, />Retry</);
+});
+
+test('durable delegation renders every projected target state as a navigable result', () => {
+  const states: Array<[WorkHubDelegationExecutionState, string]> = [
+    ['accepted', 'Accepted'],
+    ['running', 'Running'],
+    ['waiting_for_user', 'Waiting for you'],
+    ['completed', 'Completed'],
+    ['failed', 'Failed'],
+    ['aborted', 'Aborted'],
+    ['recovering', 'Recovering'],
+  ];
+  for (const [state, label] of states) {
+    const turn: WorkHubCoordinationTurn = {
+      messageId: 'assignment-1',
+      turnId: 'action-1',
+      text: 'Continue payments',
+      state: 'completed',
+      assignment: {
+        delegationId: 'delegation-1',
+        targetSessionId: 'payment',
+        targetSessionName: 'Payments',
+        targetTurnId: 'payment-turn',
+        feedbackState: state,
+      },
+      updatedAt: 10,
+    };
+    const markup = renderToStaticMarkup(
+      createElement(LocaleProvider, {
+        locale: 'en',
+        children: createElement(AstryxLocaleProvider, {
+          children: createElement(WorkHubCoordinationTurnView, {
+            turn,
+            projection: { sessions: [], turns: [] },
+            locale: 'en',
+            onOpenSession: () => undefined,
+          }),
+        }),
+      }),
+    );
+    assert.match(markup, /<button/u);
+    assert.match(markup, /Payments/u);
+    assert.match(markup, new RegExp(label, 'u'));
+    assert.match(markup, new RegExp(`data-state="${state}"`, 'u'));
+  }
 });
 
 test('surface projection refresh gate rejects older reads after a newer refresh starts', () => {

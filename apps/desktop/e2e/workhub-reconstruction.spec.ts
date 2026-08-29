@@ -19,7 +19,7 @@
 
 import { COMPOSER_INPUT, ensureSidebarExpanded, expect, test } from './fixtures';
 
-test('WorkHub rebuilds Session conversation after navigating away and back', async ({
+test('WorkHub rebuilds delegated execution feedback after navigating away and back', async ({
   window: page,
 }) => {
   const initialPrompt = '检查支付回调重复投递时的幂等性';
@@ -64,6 +64,10 @@ test('WorkHub rebuilds Session conversation after navigating away and back', asy
       hasText: routedPrompt,
     }),
   ).toBeVisible();
+  await expect(
+    page.locator('.workhub-projected-turn', { hasText: routedPrompt })
+      .locator('.workhub-submitted-state'),
+  ).toHaveText('进行中');
 });
 
 test('WorkHub defers destructive correction until linked delegation exists', async ({
