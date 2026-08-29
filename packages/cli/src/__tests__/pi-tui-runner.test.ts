@@ -818,6 +818,81 @@ describe('Maka Pi TUI runner', () => {
     ]);
   });
 
+  test('threads the selected same-provider account identity through verify and save', async () => {
+    const terminal = new FakeTerminal();
+    const driver = new SlashCommandDriver();
+    const verifyCalls: OnboardingVerifyInput[] = [];
+    const saveCalls: OnboardingSaveInput[] = [];
+    const provider = listApiKeyOnboardableProviders().find(
+      (candidate) => candidate.providerType === 'openai',
+    );
+    assert.ok(provider);
+    const providers: OnboardingProviderEntry[] = [
+      {
+        ...provider,
+        label: 'OpenAI · openai',
+        target: { kind: 'existing', connectionId: 'connection-openai-1' },
+        connectionSlug: 'openai',
+        enabledModelIds: [],
+      },
+      {
+        ...provider,
+        label: 'OpenAI · openai-2',
+        target: { kind: 'existing', connectionId: 'connection-openai-2' },
+        connectionSlug: 'openai-2',
+        enabledModelIds: [],
+      },
+    ];
+    const run = runMakaPiTui({
+      title: 'Maka',
+      driver,
+      cwd: '/repo',
+      model: 'gpt-5.5',
+      connectionId: 'connection-openai-1',
+      connectionSlug: 'openai',
+      providerType: 'openai',
+      permissionMode: 'bypass',
+      terminal,
+      onboarding: fakeOnboardingSurface({
+        providers,
+        verify: async (input) => {
+          verifyCalls.push(input);
+          return { kind: 'ok', models: [{ id: 'gpt-5.5' }] };
+        },
+        save: async (input) => {
+          saveCalls.push(input);
+          return { kind: 'ok', modelChoices: [] };
+        },
+      }),
+    });
+
+    await waitForTuiPaint(terminal);
+    terminal.input('/setup');
+    terminal.input('\r');
+    await waitFor(() => plainTerminalOutput(terminal.screenOutput()).includes('openai-2'));
+    terminal.input('\x1b[B');
+    terminal.input('\r');
+    await waitFor(() => plainTerminalOutput(terminal.screenOutput()).includes('API key'));
+    terminal.input('\r'); // reuse the selected account's stored key
+    await waitFor(() => verifyCalls.length === 1);
+    await waitFor(() => plainTerminalOutput(terminal.screenOutput()).includes('3/3'));
+    terminal.input(' ');
+    terminal.input('\r');
+    await waitFor(() => saveCalls.length === 1);
+
+    const expectedTarget = { kind: 'existing' as const, connectionId: 'connection-openai-2' };
+    assert.deepEqual(verifyCalls[0]?.target, expectedTarget);
+    assert.deepEqual(saveCalls[0]?.target, expectedTarget);
+
+    process.emit('SIGTERM');
+    await Promise.race([
+      run,
+      delay(CLOSE_BUDGET_MS).then(() => {
+        throw new Error('TUI did not close after SIGTERM');
+      }),
+    ]);
+  });
+
   test('an armed key prompt routes a slash command instead of swallowing it as the key', async () => {
     const terminal = new FakeTerminal();
     const driver = new SlashCommandDriver();
