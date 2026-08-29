@@ -326,7 +326,7 @@ export async function retireRuntimeHostLifecycleOwner(input: {
     try {
       if (input.expectedOwner && input.supervisor) {
         const status = await input.supervisor.status();
-        if (status.active) assertExpectedSupervisorOwner(input.expectedOwner, status);
+        assertExpectedSupervisorOwner(input.expectedOwner, status);
       }
       if (input.retireIdleSupervisor !== false) await input.supervisor?.retire();
       return { kind: 'retired', owner: idleOwner };

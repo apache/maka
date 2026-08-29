@@ -41,6 +41,7 @@ import {
   applyRuntimeHostLifecycleTransition,
   recoverRuntimeHostLifecycleTransition,
   replaceRuntimeHostLifecycle,
+  retireRuntimeHostLifecycleOwner,
   runtimeHostReconciliationTriggerDefinition,
   runtimeHostSupervisorDefinition,
 } from '../runtime-host-lifecycle-transaction.js';
@@ -462,6 +463,29 @@ test('interrupted activation compensation completes the previous semantics', asy
   );
   assert.deepEqual(operatorProjection, compensation);
   provider.assertInstalled(compensation);
+});
+
+test('does not consume replacement consent after the supervised Host exits', async (t) => {
+  const stateRoot = await mkdtemp(join(tmpdir(), 'maka-lifecycle-stale-owner-'));
+  t.after(() => rm(stateRoot, { recursive: true, force: true }));
+  const capability = await resolveStorageRoot({ path: stateRoot, kind: 'interactive' });
+  let retired = false;
+
+  await assert.rejects(
+    retireRuntimeHostLifecycleOwner({
+      rootPath: capability.canonicalPath,
+      rootId: capability.rootId,
+      expectedOwner: { hostEpoch: 'host-a', pid: 42 },
+      supervisor: {
+        status: async () => ({ active: false, pid: null }),
+        retire: async () => {
+          retired = true;
+        },
+      },
+    }),
+    { code: 'owner_changed' },
+  );
+  assert.equal(retired, false);
 });
 
 class FakeLifecycleProvider implements RuntimeHostLifecycleProvider {
