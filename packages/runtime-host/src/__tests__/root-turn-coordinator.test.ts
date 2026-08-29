@@ -3400,7 +3400,7 @@ test('an exact active retry preserves the Client Capability admission binding', 
   }
 });
 
-test('mixed-Client queued follow-ups use one Session successor without connection-local tools', {
+test('mixed-Client queued follow-ups use separate Session successors without connection-local tools', {
   timeout: 20_000,
 }, async () => {
   const clientCapabilities = new HostClientCapabilityCoordinator({
@@ -3510,6 +3510,8 @@ test('mixed-Client queued follow-ups use one Session successor without connectio
 
     await waitUntil(() => backend?.sendCount === 2);
     backend?.release();
+    await waitUntil(() => backend?.sendCount === 3);
+    backend?.release();
     await waitUntil(
       () => fixture.coordinator.readRootState(fixture.sessionId).kind === 'idle',
       5_000,
@@ -3519,7 +3521,7 @@ test('mixed-Client queued follow-ups use one Session successor without connectio
     );
     assert.deepEqual(
       admissions.map((admission) => admission.sourceMessages.map((source) => source.messageId)),
-      [[], ['followup-from-provider-b', 'followup-from-provider-a']],
+      [[], ['followup-from-provider-b'], ['followup-from-provider-a']],
     );
     assert.deepEqual(
       (await fixture.stores.sessionStore.readMessages(fixture.sessionId))

@@ -584,7 +584,7 @@ export class HostMessageCoordinator implements RuntimeMessageAuthority {
       this.#mutated(state);
     }
     state.run = undefined;
-    const entries = [...state.followup];
+    const entries = nextSuccessorItems(state.followup);
     const followup = canonicalFollowupBatch(entries);
     const transition: TerminalTransition = {
       transitionId: this.#createId(),
@@ -802,15 +802,20 @@ export class HostMessageCoordinator implements RuntimeMessageAuthority {
           'Message recovery authority is unavailable',
         );
       }
+      const recoveryOrder = [
+        ...pending.filter((entry) => entry.disposition === 'steering'),
+        ...pending.filter((entry) => entry.disposition !== 'steering'),
+      ];
+      const recoveryBatch = nextSuccessorItems(recoveryOrder);
       const started = await this.#root.startRecoveredMessages(
         {
           sessionId,
-          content: aggregateMessageContents(pending.map((entry) => entry.content)),
-          submittedContent: aggregateMessageContents(pending.map((entry) => entry.content)),
-          sources: pending.map(pendingMessageSource),
-          ...pendingSteeringRootIdentity(pending),
-          ...(pending.length === 1 && pending[0]!.submittedIntent
-            ? { submittedIntent: pending[0]!.submittedIntent }
+          content: aggregateMessageContents(recoveryBatch.map((entry) => entry.content)),
+          submittedContent: aggregateMessageContents(recoveryBatch.map((entry) => entry.content)),
+          sources: recoveryBatch.map(pendingMessageSource),
+          ...pendingSteeringRootIdentity(recoveryBatch),
+          ...(recoveryBatch.length === 1 && recoveryBatch[0]!.submittedIntent
+            ? { submittedIntent: recoveryBatch[0]!.submittedIntent }
             : {}),
         },
         admissionLease,
@@ -820,14 +825,32 @@ export class HostMessageCoordinator implements RuntimeMessageAuthority {
           `Durable Message recovery failed: ${started.error}`,
         );
       }
+      const recoveredMessageIds = new Set(recoveryBatch.map((entry) => entry.messageId));
+      const remaining = pending.filter((entry) => !recoveredMessageIds.has(entry.messageId));
+      if (remaining.length > 0) {
+        const active = await this.#root.readRootState(sessionId);
+        if (active.kind !== 'active') {
+          throw new RuntimeMessageAuthorityInvariantError(
+            'Recovered successor did not become the active root Turn',
+          );
+        }
+        this.#restorePendingAdmissions(sessionId, active, remaining);
+      }
       return;
     }
+    this.#restorePendingAdmissions(sessionId, rootState, pending);
+  }
+
+  #restorePendingAdmissions(
+    sessionId: string,
+    rootState: RuntimeMessageRunIdentity & { readonly kind: 'active' },
+    pending: readonly PendingMessageAdmission[],
+  ): void {
     if (!this.#sessions.has(sessionId)) this.#state(sessionId);
     const state = this.#requireState(sessionId);
     if (!state.reservedRoot) this.reserveRootTurn(rootState);
     if (!sameRun(state.reservedRoot!, rootState)) return;
     for (const admission of pending) {
-      if (admission.turnId !== rootState.turnId || admission.runId !== rootState.runId) continue;
       const existing = allLiveEntries(state).find(
         (entry) => entry.messageId === admission.messageId,
       );
@@ -836,8 +859,8 @@ export class HostMessageCoordinator implements RuntimeMessageAuthority {
       const entry: LiveEntry = {
         entryId: this.#createId(),
         messageId: admission.messageId,
-        turnId: admission.turnId,
-        runId: admission.runId,
+        turnId: rootState.turnId,
+        runId: rootState.runId,
         admittedAt: admission.admittedAt,
         content: submittedProjectionContent(admission.content),
         modelContent: admission.content,
@@ -1115,19 +1138,20 @@ export class HostMessageCoordinator implements RuntimeMessageAuthority {
         if (!interruptResultFits(candidate, rootState)) {
           return failure('session_busy', 'Message queue interrupt result capacity is full');
         }
-        const prospectiveSources = [
-          ...[...state.inFlight.values(), ...state.steering, ...state.followup].map(
-            sourceFromEntry,
-          ),
-          {
-            messageId: input.messageId,
-            content: prepared.content,
-            submittedContentDigest: messageContentDigest(payload.content),
-            placement: input.placement,
-            disposition,
-          },
-        ] satisfies RootTurnSourceMessage[];
-        if (!rootAdmissionPayloadFits(prospectiveSources)) {
+        const candidateSource = {
+          messageId: input.messageId,
+          content: prepared.content,
+          submittedContentDigest: messageContentDigest(payload.content),
+          placement: input.placement,
+          disposition,
+        } satisfies RootTurnSourceMessage;
+        const prospectiveSteering = [...state.inFlight.values(), ...state.steering].map(
+          sourceFromEntry,
+        );
+        const prospectiveFollowup = state.followup.map(sourceFromEntry);
+        if (disposition === 'steering') prospectiveSteering.push(candidateSource);
+        else prospectiveFollowup.push(candidateSource);
+        if (!successorAdmissionsFit(prospectiveSteering, prospectiveFollowup)) {
           return failure('session_busy', 'Message queue cannot form a durable follow-up Turn');
         }
         if (
@@ -1449,6 +1473,21 @@ export class HostMessageCoordinator implements RuntimeMessageAuthority {
       }
       return failure('not_found', 'Message queue entry does not exist');
     }
+    const promotedSource = {
+      ...sourceFromEntry(entry),
+      placement: 'current_turn',
+      disposition: 'steering',
+    } satisfies RootTurnSourceMessage;
+    const prospectiveSteering = [...state.inFlight.values(), ...state.steering].map(
+      sourceFromEntry,
+    );
+    prospectiveSteering.push(promotedSource);
+    const prospectiveFollowup = state.followup
+      .filter((queued) => queued !== entry)
+      .map(sourceFromEntry);
+    if (!successorAdmissionsFit(prospectiveSteering, prospectiveFollowup)) {
+      return failure('session_busy', 'Promoted Message exceeds steering admission capacity');
+    }
     await this.#admissions.updateMessageAdmission({
       sessionId: input.sessionId,
       turnId: entry.turnId,
@@ -1524,16 +1563,17 @@ export class HostMessageCoordinator implements RuntimeMessageAuthority {
     if (!projectionFitsEveryEntryState(updatedProjection)) {
       return failure('session_busy', 'Message queue projection capacity is full');
     }
-    const sources = allLiveEntries(state).map((entry) =>
+    const updatedSource = (entry: LiveEntry): RootTurnSourceMessage =>
       entry === queued.entry
         ? {
             ...sourceFromEntry(entry),
             content: modelContent,
             submittedContentDigest: messageContentDigest(content),
           }
-        : sourceFromEntry(entry),
-    ) satisfies RootTurnSourceMessage[];
-    if (!rootAdmissionPayloadFits(sources)) {
+        : sourceFromEntry(entry);
+    const steeringSources = [...state.inFlight.values(), ...state.steering].map(updatedSource);
+    const followupSources = state.followup.map(updatedSource);
+    if (!successorAdmissionsFit(steeringSources, followupSources)) {
       return failure('session_busy', 'Message queue mutation exceeds root admission capacity');
     }
     if (!(await this.#preflightSessionSnapshot(input.sessionId, { queue: updatedProjection }))) {
@@ -2496,6 +2536,25 @@ function canonicalFollowupBatch(entries: readonly LiveEntry[]): {
   }
 }
 
+/**
+ * One explicit next-turn Message owns one successor root Turn. Steering that
+ * missed the final provider boundary is different: those entries all targeted
+ * the finishing Turn, so keep their correction context together in the first
+ * successor rather than turning each interjection into unrelated future work.
+ */
+function nextSuccessorItems<
+  T extends { readonly disposition: 'steering' | 'followup' | 'turn_started' },
+>(entries: readonly T[]): T[] {
+  if (entries.length === 0) return [];
+  if (entries[0]!.disposition !== 'steering') return [entries[0]!];
+  const steering: T[] = [];
+  for (const entry of entries) {
+    if (entry.disposition !== 'steering') break;
+    steering.push(entry);
+  }
+  return steering;
+}
+
 function rootAdmissionPayloadFits(sources: readonly RootTurnSourceMessage[]): boolean {
   try {
     const content = aggregateMessageContent(sources.map((source) => source.content));
@@ -2504,6 +2563,16 @@ function rootAdmissionPayloadFits(sources: readonly RootTurnSourceMessage[]): bo
   } catch {
     return false;
   }
+}
+
+function successorAdmissionsFit(
+  steering: readonly RootTurnSourceMessage[],
+  followup: readonly RootTurnSourceMessage[],
+): boolean {
+  return (
+    (steering.length === 0 || rootAdmissionPayloadFits(steering)) &&
+    followup.every((source) => rootAdmissionPayloadFits([source]))
+  );
 }
 
 function interruptResultFits(

@@ -479,7 +479,7 @@ test('invalidates the canonical projection after each observable queue mutation'
   await fixture.coordinator.close();
 });
 
-test('hands a mixed-Client queue to one Session successor', async () => {
+test('hands each explicit follow-up to its own Session successor', async () => {
   const fixture = createFixture();
   fixture.coordinator.reserveRootTurn(ROOT);
   const owner = fixture.coordinator.bindRun(ROOT);
@@ -491,41 +491,55 @@ test('hands a mixed-Client queue to one Session successor', async () => {
     placement,
   });
 
-  const steering = await fixture.coordinator.handlers['turn.message.submit'](
-    input('steering-from-b', 'first aggregate source', 'current_turn'),
+  const first = await fixture.coordinator.handlers['turn.message.submit'](
+    input('followup-from-b', 'first successor', 'next_turn'),
     operationContext('connection-b'),
   );
-  const followup = await fixture.coordinator.handlers['turn.message.submit'](
-    input('followup-from-c', 'second aggregate source', 'next_turn'),
+  const second = await fixture.coordinator.handlers['turn.message.submit'](
+    input('followup-from-c', 'second successor', 'next_turn'),
     operationContext('connection-c'),
   );
-  assert.equal(steering.ok, true);
-  assert.equal(followup.ok, true);
+  assert.equal(first.ok, true);
+  assert.equal(second.ok, true);
 
   owner.release();
-  const batch = fixture.coordinator.beginTerminalTransition(ROOT);
+  const firstBatch = fixture.coordinator.beginTerminalTransition(ROOT);
   assert.deepEqual(
-    batch.sources.map((source) => source.messageId),
-    ['steering-from-b', 'followup-from-c'],
+    firstBatch.sources.map((source) => source.messageId),
+    ['followup-from-b'],
   );
 
-  fixture.coordinator.commitNextRoot(batch, {
+  const secondRoot = {
     sessionId: ROOT.sessionId,
     turnId: 'turn-2',
     runId: 'run-2',
+  };
+  fixture.coordinator.commitNextRoot(firstBatch, secondRoot);
+  assert.equal(fixture.liveResidencies(), 1);
+  const nextOwner = fixture.coordinator.bindRun(secondRoot);
+  nextOwner.release();
+  const secondBatch = fixture.coordinator.beginTerminalTransition(secondRoot);
+  assert.deepEqual(
+    secondBatch.sources.map((source) => source.messageId),
+    ['followup-from-c'],
+  );
+  fixture.coordinator.commitNextRoot(secondBatch, {
+    sessionId: ROOT.sessionId,
+    turnId: 'turn-3',
+    runId: 'run-3',
   });
   assert.equal(fixture.liveResidencies(), 0);
-  const nextOwner = fixture.coordinator.bindRun({
+  const finalOwner = fixture.coordinator.bindRun({
     sessionId: ROOT.sessionId,
-    turnId: 'turn-2',
-    runId: 'run-2',
+    turnId: 'turn-3',
+    runId: 'run-3',
   });
-  nextOwner.release();
+  finalOwner.release();
   fixture.coordinator.completeIdle(
     fixture.coordinator.beginTerminalTransition({
       sessionId: ROOT.sessionId,
-      turnId: 'turn-2',
-      runId: 'run-2',
+      turnId: 'turn-3',
+      runId: 'run-3',
     }),
   );
   await fixture.coordinator.close();
@@ -573,6 +587,79 @@ test('recovered followups without a connection owner still form one successor ba
       turnId: 'turn-recovered-successor',
       runId: 'run-recovered-successor',
     }),
+  );
+});
+
+test('recovery starts one explicit follow-up and keeps later messages queued', async () => {
+  const fixture = createFixture();
+  for (const [index, messageId] of ['recovered-first', 'recovered-second'].entries()) {
+    const content = { text: messageId };
+    await fixture.admissions.commitMessageAdmission({
+      sessionId: ROOT.sessionId,
+      turnId: ROOT.turnId,
+      runId: ROOT.runId,
+      messageId,
+      content,
+      submittedContentDigest: messageContentDigest(content),
+      submittedPlacement: 'next_turn',
+      placement: 'next_turn',
+      disposition: 'followup',
+      admittedAt: index + 1,
+    });
+  }
+
+  fixture.setRootState({ kind: 'idle' });
+  await fixture.coordinator.recoverPendingAfterHostRestart([ROOT.sessionId]);
+
+  assert.deepEqual(
+    fixture.recoveredBatches.map((batch) => batch.sources.map((source) => source.messageId)),
+    [['recovered-first']],
+  );
+  assert.deepEqual(
+    fixture.coordinator.projection(ROOT.sessionId).followup.map((entry) => entry.messageId),
+    ['recovered-second'],
+  );
+});
+
+test('recovery folds later steering ahead of an earlier explicit follow-up', async () => {
+  const fixture = createFixture();
+  for (const admission of [
+    {
+      messageId: 'recovered-followup',
+      content: { text: 'future work' },
+      submittedPlacement: 'next_turn' as const,
+      placement: 'next_turn' as const,
+      disposition: 'followup' as const,
+      admittedAt: 1,
+    },
+    {
+      messageId: 'recovered-steering',
+      content: { text: 'correct the current work' },
+      submittedPlacement: 'current_turn' as const,
+      placement: 'current_turn' as const,
+      disposition: 'steering' as const,
+      admittedAt: 2,
+    },
+  ]) {
+    await fixture.admissions.commitMessageAdmission({
+      sessionId: ROOT.sessionId,
+      turnId: ROOT.turnId,
+      runId: ROOT.runId,
+      ...admission,
+      submittedContentDigest: messageContentDigest(admission.content),
+    });
+  }
+
+  fixture.setRootState({ kind: 'idle' });
+  await fixture.coordinator.recoverPendingAfterHostRestart([ROOT.sessionId]);
+
+  assert.deepEqual(
+    fixture.recoveredBatches.map((batch) => batch.sources.map((source) => source.messageId)),
+    [['recovered-steering']],
+  );
+  assert.deepEqual(
+    fixture.coordinator.projection(ROOT.sessionId).followup.map((entry) => entry.messageId),
+    ['recovered-followup'],
   );
 });
 
@@ -779,24 +866,24 @@ test('full snapshot preflight rejection leaves queue, replay outcome, residency,
   await fixture.coordinator.close();
 });
 
-test('queue admission rejects content that cannot form a durable follow-up Turn', async () => {
+test('separate follow-ups do not share one root-admission capacity budget', async () => {
   const fixture = createFixture();
   fixture.coordinator.reserveRootTurn(ROOT);
 
   const first = await submit(fixture, 'large-followup', 'x'.repeat(40 * 1024), 'next_turn');
   assert.equal(first.ok && first.result.disposition, 'followup');
-  const projectionBefore = structuredClone(fixture.coordinator.projection(ROOT.sessionId));
-
-  const rejected = await submitContent(
+  const second = await submitContent(
     fixture,
     'display-followup',
     { text: 'model', displayText: 'human' },
     'next_turn',
   );
-  assert.equal(rejected.ok, false);
-  if (!rejected.ok) assert.equal(rejected.error.code, 'session_busy');
-  assert.deepEqual(fixture.coordinator.projection(ROOT.sessionId), projectionBefore);
-  assert.equal(fixture.liveResidencies(), 1);
+  assert.equal(second.ok && second.result.disposition, 'followup');
+  assert.deepEqual(
+    fixture.coordinator.projection(ROOT.sessionId).followup.map((entry) => entry.messageId),
+    ['large-followup', 'display-followup'],
+  );
+  assert.equal(fixture.liveResidencies(), 2);
 
   const retracted = await fixture.coordinator.handlers['queue.retract'](
     { originHostEpoch: 'epoch-1', sessionId: ROOT.sessionId, retractId: 'cleanup-large' },
@@ -1427,11 +1514,19 @@ test('queued mutations reject a queue that is draining into the next Turn', asyn
       originHostEpoch: 'epoch-1',
       sessionId: ROOT.sessionId,
       reorderId: 'reorder-after-commit',
-      entryIds: [],
+      entryIds: ['id-2'],
     },
     operationContext(),
   );
   assert.equal(after.ok, true);
+  await fixture.coordinator.handlers['queue.retract'](
+    {
+      originHostEpoch: 'epoch-1',
+      sessionId: ROOT.sessionId,
+      retractId: 'cleanup-after-commit',
+    },
+    operationContext(),
+  );
   fixture.coordinator.abandonRootReservation({
     sessionId: ROOT.sessionId,
     turnId: 'turn-2',
@@ -1795,10 +1890,10 @@ test('release folds unpulled steering ahead of follow-up without changing source
   owner.release();
   const batch = fixture.coordinator.beginTerminalTransition(ROOT);
   assert.deepEqual(batch.content, {
-    text: '<model>first</model>\n\nsecond\n\n<model>third</model>',
-    displayText: 'first\n\nsecond\n\nthird',
-    attachments: [firstAttachment, secondAttachment, thirdAttachment],
-    quotes: [...firstQuotes, ...secondQuotes, ...thirdQuotes],
+    text: '<model>first</model>\n\nsecond',
+    displayText: 'first\n\nsecond',
+    attachments: [firstAttachment, secondAttachment],
+    quotes: [...firstQuotes, ...secondQuotes],
   });
   assert.deepEqual(batch.sources, [
     {
@@ -1829,42 +1924,42 @@ test('release folds unpulled steering ahead of follow-up without changing source
       placement: 'current_turn',
       disposition: 'steering',
     },
-    {
-      messageId: 'follow-1',
-      content: {
-        text: '<model>third</model>',
-        displayText: 'third',
-        attachments: [thirdAttachment],
-        quotes: thirdQuotes,
-      },
-      submittedContentDigest: messageContentDigest({
-        text: '<model>third</model>',
-        displayText: 'third',
-        attachments: [thirdAttachment],
-        quotes: thirdQuotes,
-      }),
-      placement: 'next_turn',
-      disposition: 'followup',
-    },
   ]);
   assert.equal(fixture.liveResidencies(), 3);
 
-  fixture.coordinator.commitNextRoot(batch, {
+  const steeringSuccessor = {
     sessionId: ROOT.sessionId,
     turnId: 'turn-2',
     runId: 'run-2',
-  });
-  assert.equal(fixture.liveResidencies(), 0);
-  const next = fixture.coordinator.bindRun({
-    sessionId: ROOT.sessionId,
-    turnId: 'turn-2',
-    runId: 'run-2',
-  });
+  };
+  fixture.coordinator.commitNextRoot(batch, steeringSuccessor);
+  assert.equal(fixture.liveResidencies(), 1);
+  const next = fixture.coordinator.bindRun(steeringSuccessor);
   next.release();
+  const followupBatch = fixture.coordinator.beginTerminalTransition(steeringSuccessor);
+  assert.deepEqual(followupBatch.content, {
+    text: '<model>third</model>',
+    displayText: 'third',
+    attachments: [thirdAttachment],
+    quotes: thirdQuotes,
+  });
+  assert.deepEqual(
+    followupBatch.sources.map((source) => source.messageId),
+    ['follow-1'],
+  );
+  const followupSuccessor = {
+    sessionId: ROOT.sessionId,
+    turnId: 'turn-3',
+    runId: 'run-3',
+  };
+  fixture.coordinator.commitNextRoot(followupBatch, followupSuccessor);
+  assert.equal(fixture.liveResidencies(), 0);
+  const final = fixture.coordinator.bindRun(followupSuccessor);
+  final.release();
   const empty = fixture.coordinator.beginTerminalTransition({
     sessionId: ROOT.sessionId,
-    turnId: 'turn-2',
-    runId: 'run-2',
+    turnId: 'turn-3',
+    runId: 'run-3',
   });
   fixture.coordinator.completeIdle(empty);
 });
