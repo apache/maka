@@ -22,7 +22,6 @@ import type {
   RuntimeHostServiceManagementFrame,
 } from '@maka/runtime-host/operator';
 import type {
-  DesktopRuntimeHostDirectPeerSnapshot,
   DesktopRuntimeHostManagementAction,
   DesktopRuntimeHostManagementProgress,
   DesktopRuntimeHostManagementResponse,
@@ -256,36 +255,6 @@ export function createDesktopRuntimeHostLocalManagement(input: {
           },
         };
       }
-    },
-    getDirectPeer: async (): Promise<DesktopRuntimeHostDirectPeerSnapshot> => {
-      const snapshot = await input.remoteAccess.getSnapshot();
-      return {
-        state:
-          snapshot.state === 'on'
-            ? 'enabled'
-            : snapshot.state === 'off' && snapshot.managedService
-              ? 'disabled'
-              : 'unsupported',
-        routeHints: [],
-        coordinationRelays: [],
-        automaticRelayDiscovery: false,
-        profilePresent: true,
-        profileEnabled: false,
-        clientAvailable: false,
-        managementAvailable: false,
-      };
-    },
-    configureDirectPeer: async () => {
-      throw new Error('Manage access to this computer from the Remote access controls');
-    },
-    listCredentials: async () => {
-      throw new Error('Manage access to this computer from the Remote access controls');
-    },
-    rotateCredential: async () => {
-      throw new Error('The Local Runtime Host does not use a remote profile credential');
-    },
-    revokeCredential: async () => {
-      throw new Error('Manage access to this computer from the Remote access controls');
     },
   };
 }

@@ -392,7 +392,12 @@ export function createDesktopRuntimeHostManagement(input: {
   ): Promise<DesktopRuntimeHostDirectPeerSnapshot> => {
     const providerProfileId = requireProfileId(profileIdValue);
     const provider = providers.get(providerProfileId);
-    if (provider) return provider.getDirectPeer();
+    if (provider) {
+      if (!provider.directPeer) {
+        throw new Error('Direct peer management is not available for this Runtime Host');
+      }
+      return provider.directPeer.get();
+    }
     const { profileId, managed, transport, expectedTarget, available } =
       await peerManagementTarget(profileIdValue);
     if (!available) return unavailablePeerSnapshot(profileId);
@@ -429,7 +434,10 @@ export function createDesktopRuntimeHostManagement(input: {
     const providerProfileId = requireProfileId(profileIdValue);
     const provider = providers.get(providerProfileId);
     if (provider) {
-      return provider.configureDirectPeer(
+      if (!provider.directPeer) {
+        throw new Error('Direct peer management is not available for this Runtime Host');
+      }
+      return provider.directPeer.configure(
         enabledValue,
         coordinationRelays,
         automaticRelayDiscoveryValue,
@@ -747,7 +755,12 @@ export function createDesktopRuntimeHostManagement(input: {
   ): Promise<DesktopRuntimeHostAccessSnapshot> => {
     const resolvedProfileId = requireProfileId(profileId);
     const provider = providers.get(resolvedProfileId);
-    if (provider) return provider.listCredentials();
+    if (provider) {
+      if (!provider.access) {
+        throw new Error('Credential management is not available for this Runtime Host');
+      }
+      return provider.access.list();
+    }
     const access = await resolveAccess(profileId);
     const response = await input.runAccessManagement({
       ...access.target,
@@ -769,7 +782,12 @@ export function createDesktopRuntimeHostManagement(input: {
   ): Promise<DesktopRuntimeHostAccessSnapshot> => {
     const resolvedProfileId = requireProfileId(profileId);
     const provider = providers.get(resolvedProfileId);
-    if (provider) return provider.rotateCredential();
+    if (provider) {
+      if (!provider.access) {
+        throw new Error('Credential management is not available for this Runtime Host');
+      }
+      return provider.access.rotate();
+    }
     const access = await resolveAccess(profileId);
     if (!access.canRotate) {
       throw new Error('Enable this Runtime Host before rotating its access credential');
@@ -827,7 +845,12 @@ export function createDesktopRuntimeHostManagement(input: {
     }
     const resolvedProfileId = requireProfileId(profileId);
     const provider = providers.get(resolvedProfileId);
-    if (provider) return provider.revokeCredential(credentialId);
+    if (provider) {
+      if (!provider.access) {
+        throw new Error('Credential management is not available for this Runtime Host');
+      }
+      return provider.access.revoke(credentialId);
+    }
     const access = await resolveAccess(profileId);
     const response = await input.runAccessManagement({
       ...access.target,

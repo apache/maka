@@ -42,13 +42,17 @@ export interface DesktopRuntimeHostManagementProvider {
   getUpdatePolicy(): Promise<DesktopRuntimeHostUpdatePolicySnapshot>;
   setUpdatePolicy(policy: RuntimeHostManagedUpdatePolicy): Promise<DesktopRuntimeHostUpdatePolicySnapshot>;
   reconcileUpdate(): Promise<DesktopRuntimeHostUpdateReconciliationResponse>;
-  getDirectPeer(): Promise<DesktopRuntimeHostDirectPeerSnapshot>;
-  configureDirectPeer(
-    enabled: boolean,
-    coordinationRelays: readonly string[],
-    automaticRelayDiscovery: boolean,
-  ): Promise<DesktopRuntimeHostDirectPeerSnapshot>;
-  listCredentials(): Promise<DesktopRuntimeHostAccessSnapshot>;
-  rotateCredential(): Promise<DesktopRuntimeHostAccessSnapshot>;
-  revokeCredential(credentialId: string): Promise<DesktopRuntimeHostAccessSnapshot>;
+  readonly directPeer?: {
+    get(): Promise<DesktopRuntimeHostDirectPeerSnapshot>;
+    configure(
+      enabled: boolean,
+      coordinationRelays: readonly string[],
+      automaticRelayDiscovery: boolean,
+    ): Promise<DesktopRuntimeHostDirectPeerSnapshot>;
+  };
+  readonly access?: {
+    list(): Promise<DesktopRuntimeHostAccessSnapshot>;
+    rotate(): Promise<DesktopRuntimeHostAccessSnapshot>;
+    revoke(credentialId: string): Promise<DesktopRuntimeHostAccessSnapshot>;
+  };
 }

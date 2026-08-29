@@ -83,6 +83,7 @@ export interface RuntimeHostManagementTarget {
   readonly id: string;
   readonly name: string;
   readonly subtitle?: string;
+  readonly directPeerManagement: boolean;
 }
 
 export function RuntimeHostManagementDialog(props: {
@@ -161,7 +162,7 @@ export function RuntimeHostManagementDialog(props: {
           }
         }
       }
-      if (shouldLoadUpdatePolicy) {
+      if (shouldLoadUpdatePolicy && target.directPeerManagement) {
         try {
           const peer = await window.maka.runtimeHostManagement.getDirectPeer(target.id);
           if (!disposed) applyDirectPeer(peer);
@@ -699,7 +700,7 @@ export function RuntimeHostManagementDialog(props: {
                       <Fact label={copy.stateRoot} value={service.stateRoot} wide />
                     ) : null}
                   </dl>
-                  {serviceInstalled ? (
+                  {serviceInstalled && target?.directPeerManagement ? (
                     <section className="settingsRuntimeHostDirectPeer">
                       <div className="settingsRuntimeHostUpdatePolicyHeading">
                         <div>

@@ -70,6 +70,8 @@ test('manages the built-in Local profile through its managed-service authority',
   const status = await provider.run('status');
   assert.equal(status.kind, 'result');
   if (status.kind === 'result') assert.equal(status.accessManagementAvailable, false);
+  assert.equal(provider.directPeer, undefined);
+  assert.equal(provider.access, undefined);
 
   const updated = await provider.update(false);
   assert.equal(updated.kind, 'result');

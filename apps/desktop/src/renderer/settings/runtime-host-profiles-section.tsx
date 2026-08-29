@@ -357,7 +357,7 @@ export function RuntimeHostProfilesSection(props: {
   const connectedEntries = snapshot?.entries.filter((entry) => entry.profile.kind !== 'local') ?? [];
   const localProfile = snapshot?.entries.find((entry) => entry.profile.kind === 'local')?.profile;
   const localManagementTarget = localProfile
-    ? { id: localProfile.id, name: localProfile.name }
+    ? { id: localProfile.id, name: localProfile.name, directPeerManagement: false }
     : undefined;
   const profileOptions = (snapshot?.entries ?? [])
     .filter((entry) => entry.enabled)
@@ -670,6 +670,7 @@ export function RuntimeHostProfilesSection(props: {
                                   id: profile.id,
                                   name: profile.name,
                                   subtitle: profile.transport.destination,
+                                  directPeerManagement: true,
                                 }),
                               }, {
                                 label: copy.managePeerMesh,
