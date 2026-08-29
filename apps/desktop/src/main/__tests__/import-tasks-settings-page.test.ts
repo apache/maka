@@ -929,6 +929,70 @@ describe('ImportTasksSettingsPage source switching', () => {
 
     await act(async () => harness.root.unmount());
   });
+
+  it('keeps every loaded page when a revisited multi-page source refreshes', async () => {
+    const harness = await renderPage({
+      adapterIds: ['codex', 'claude-code'],
+      bySource: {
+        // [page 1, page 2 via Load More, refresh page 1, refresh page 2]
+        codex: [
+          {
+            sessions: [externalSession({ id: 's-codex-1', name: 'Codex page one' })],
+            nextCursor: 'codex-cursor-1',
+          },
+          { sessions: [externalSession({ id: 's-codex-2', name: 'Codex page two' })], nextCursor: null },
+          {
+            sessions: [externalSession({ id: 's-codex-1', name: 'Codex page one' })],
+            nextCursor: 'codex-cursor-1',
+          },
+          { sessions: [externalSession({ id: 's-codex-2', name: 'Codex page two' })], nextCursor: null },
+        ],
+        'claude-code': [catalog(externalSession({ id: 's-cc', name: 'CC conv' }))],
+      },
+    });
+
+    // Page in the second page of codex via Load More.
+    const loadMore = buttonWithText(harness.container, 'Load more');
+    assert.ok(loadMore, 'codex has a second page to load');
+    await act(async () => {
+      loadMore.click();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    assert.match(harness.container.textContent, /Codex page one/);
+    assert.match(harness.container.textContent, /Codex page two/, 'both pages are loaded');
+
+    // Switch away to claude-code, then back to codex.
+    await act(async () => {
+      segment(harness.container, 'claude-code')!.click();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    assert.match(harness.container.textContent, /CC conv/);
+
+    await act(async () => {
+      segment(harness.container, 'codex')!.click();
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    // The cache hit shows both pages instantly; the background refresh must
+    // re-read the *whole* loaded window rather than shrink the list back to the
+    // first page.
+    assert.match(harness.container.textContent, /Codex page one/, 'first page kept');
+    assert.match(
+      harness.container.textContent,
+      /Codex page two/,
+      'the second page survives the background refresh',
+    );
+    // codex page 1 + Load More + refresh page 1 + refresh page 2, plus the one
+    // claude-code load = 5. A first-page-only refresh would stop at 4.
+    assert.equal(harness.listCalls(), 5, 'the revisit refresh re-read every loaded page');
+
+    await act(async () => harness.root.unmount());
+  });
 });
 
 function externalSession(

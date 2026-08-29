@@ -297,12 +297,13 @@ export function ImportTasksSettingsPage(props: {
       const generation = ++requestGeneration.current;
       const append = cursor !== undefined;
       const key = catalogSelectionKey(sourceId, includeArchived, search);
+      const cached = append ? undefined : catalogCacheRef.current.get(key);
       if (append) {
         setLoadingMore(true);
-      } else if (catalogCacheRef.current.has(key)) {
+      } else if (cached !== undefined) {
         // Already loaded this selection once. Show it immediately and refresh in
         // the background instead of blanking to the spinner on every switch.
-        setCatalog(catalogCacheRef.current.get(key)!);
+        setCatalog(cached);
         // Clear any spinner/Load More lock left by a superseded request. A
         // still-pending search or pagination load from the previous selection
         // will never reach its own `finally` reset (its generation is now
@@ -320,21 +321,43 @@ export function ImportTasksSettingsPage(props: {
       setCatalogError(null);
       setImportError(null);
       try {
-        const result = await window.maka.externalSessions.list({
-          adapterId: sourceId,
-          includeArchived,
-          ...(search ? { text: search } : {}),
-          ...(cursor === undefined ? {} : { cursor }),
-        }, host);
-        if (generation !== requestGeneration.current) return;
-        const next: CatalogState = {
-          sessions: append
-            ? [...catalogStateRef.current.sessions, ...result.sessions]
-            : result.sessions,
-          nextCursor: result.nextCursor,
-        };
-        writeCatalogCache(catalogCacheRef.current, key, next);
-        setCatalog(next);
+        if (cached !== undefined) {
+          // Refresh a revisited selection by re-reading the *whole* loaded
+          // window, not just page one: the cache can be several pages deep from
+          // Load More, and a bare first-page read here would overwrite it and
+          // silently drop every page the user already paged in.
+          const refreshed = await readCatalogWindow({
+            adapterId: sourceId,
+            includeArchived,
+            text: search,
+            minimumItemCount: cached.sessions.length,
+            host,
+            isCurrent: () => mountedRef.current && generation === requestGeneration.current,
+          });
+          if (refreshed === undefined) return;
+          const next: CatalogState = {
+            sessions: refreshed.sessions,
+            nextCursor: refreshed.nextCursor,
+          };
+          writeCatalogCache(catalogCacheRef.current, key, next);
+          setCatalog(next);
+        } else {
+          const result = await window.maka.externalSessions.list({
+            adapterId: sourceId,
+            includeArchived,
+            ...(search ? { text: search } : {}),
+            ...(cursor === undefined ? {} : { cursor }),
+          }, host);
+          if (generation !== requestGeneration.current) return;
+          const next: CatalogState = {
+            sessions: append
+              ? [...catalogStateRef.current.sessions, ...result.sessions]
+              : result.sessions,
+            nextCursor: result.nextCursor,
+          };
+          writeCatalogCache(catalogCacheRef.current, key, next);
+          setCatalog(next);
+        }
       } catch (error) {
         if (generation !== requestGeneration.current) return;
         setCatalogError(localizedShellErrorMessage(error, copy.loadFailedFallback, locale));
@@ -345,7 +368,7 @@ export function ImportTasksSettingsPage(props: {
         }
       }
     },
-    [copy.loadFailedFallback, host, includeArchived, locale, search],
+    [copy.loadFailedFallback, host, includeArchived, locale, mountedRef, search],
   );
 
   const refreshLoadedCatalog = useCallback(
