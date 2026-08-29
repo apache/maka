@@ -41,6 +41,8 @@ interface FakeRoot {
   /** Dispatch the scroll event the browser would, one frame later. */
   emitScroll(): void;
   grow(by: number): void;
+  /** Take height away from the viewport, as a resize or a taller dock does. */
+  shrinkViewport(by: number): void;
 }
 
 function fakeRoot(options?: { scrollHeight?: number; clientHeight?: number }): FakeRoot {
@@ -61,6 +63,9 @@ function fakeRoot(options?: { scrollHeight?: number; clientHeight?: number }): F
     grow(by) {
       root.scrollHeight += by;
     },
+    shrinkViewport(by) {
+      root.clientHeight -= by;
+    },
   };
   // The browser clamps a write past the end; without that the "we wrote it"
   // and "the reader is at the tail" cases would not agree on any number.
@@ -80,9 +85,20 @@ function fakeRoot(options?: { scrollHeight?: number; clientHeight?: number }): F
  * the next frame, and every case below turns on whether the event arrives
  * before or after that.
  */
-function withFrames<T>(run: (flush: () => void) => T): T {
+function withFrames<T>(run: (flush: () => void, resize: () => void) => T): T {
   const pending: FrameRequestCallback[] = [];
+  const observers = new Set<() => void>();
   const originalWindow = (globalThis as { window?: unknown }).window;
+  const originalResizeObserver = (globalThis as { ResizeObserver?: unknown }).ResizeObserver;
+  (globalThis as { ResizeObserver?: unknown }).ResizeObserver = class {
+    constructor(private readonly callback: () => void) {
+      observers.add(callback);
+    }
+    observe(): void {}
+    disconnect(): void {
+      observers.delete(this.callback);
+    }
+  };
   const handles = new Map<number, FrameRequestCallback>();
   let nextHandle = 1;
   (globalThis as { window?: unknown }).window = {
@@ -100,12 +116,18 @@ function withFrames<T>(run: (flush: () => void) => T): T {
     },
   };
   try {
-    return run(() => {
-      const frame = pending.splice(0, pending.length);
-      for (const callback of frame) callback(0);
-    });
+    return run(
+      () => {
+        const frame = pending.splice(0, pending.length);
+        for (const callback of frame) callback(0);
+      },
+      () => {
+        for (const observer of [...observers]) observer();
+      },
+    );
   } finally {
     (globalThis as { window?: unknown }).window = originalWindow;
+    (globalThis as { ResizeObserver?: unknown }).ResizeObserver = originalResizeObserver;
   }
 }
 
@@ -180,5 +202,21 @@ test('a detached authority writes nothing and reports the tail', () => {
     root.grow(1_000);
     authority.notifyContentResize();
     assert.equal(root.scrollTop, 0);
+  });
+});
+
+test('a viewport that loses height takes the pinned reader back to the tail', () => {
+  withFrames((flush, resize) => {
+    const root = fakeRoot();
+    const authority = createTranscriptScrollAuthority();
+    authority.attach(root as unknown as HTMLElement);
+    flush();
+
+    // The transcript did not change at all — the box looking at it did, which
+    // is a window resize, a composer gaining a line, or a dock growing taller.
+    root.shrinkViewport(300);
+    resize();
+    assert.equal(root.scrollTop, 2_700);
+    assert.equal(authority.getSnapshot().pinned, true);
   });
 });

@@ -69,7 +69,12 @@ export function useChatScroll(input: {
     // request while one is in flight, and asking for history the reader
     // already has is idempotent anyway.
     const requestEarlier = (): void => {
-      authority.releasePin();
+      // Nothing here touches the pin. Asking for history is not a decision
+      // about where the viewport belongs: if the reader scrolled up to ask,
+      // the authority already saw that scroll and released; if the transcript
+      // is merely short enough that its tail is also near its start, they are
+      // still following it and must keep following it.
+      //
       // The browser anchors the reader against everything that lands above
       // them, with one exception: it declines while the scroller sits at zero,
       // which is exactly where a wheel asks for history. One pixel is the whole
@@ -95,7 +100,7 @@ export function useChatScroll(input: {
       root.removeEventListener('scroll', onScroll);
       root.removeEventListener('wheel', onWheel);
     };
-  }, [authority, input.hasOlderHistory, canLoadEarlier, input.scrollRef, input.sessionId]);
+  }, [input.hasOlderHistory, canLoadEarlier, input.scrollRef, input.sessionId]);
 
   useEffect(() => {
     const target = input.target;

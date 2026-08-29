@@ -134,8 +134,18 @@ export function createTranscriptScrollAuthority(): TranscriptScrollAuthority {
         publish();
       };
       target.addEventListener('scroll', onScroll, { passive: true });
+      // The tail moves when the viewport shrinks, not only when the content
+      // grows: a window resize, a composer that gains a line, a dock that
+      // changes height. None of those touch the transcript, so the content
+      // signal never fires for them, and a pinned reader would be left however
+      // many pixels the viewport lost away from the bottom.
+      const viewport = new ResizeObserver(() => {
+        if (pinned) writeToTail();
+      });
+      viewport.observe(target);
       if (pinned) writeToTail();
       return () => {
+        viewport.disconnect();
         target.removeEventListener('scroll', onScroll);
         if (writingFrame !== 0) {
           window.cancelAnimationFrame(writingFrame);

@@ -48,10 +48,29 @@ const LONG_PROMPT = Array.from(
 ).join('\n');
 
 function distanceToTail(page: Page): Promise<number> {
+  return scrollMetrics(page).then((metrics) => metrics.distance);
+}
+
+/**
+ * The distance plus the three numbers it came from. A failure that reports only
+ * the distance cannot say whether the transcript grew past the reader or the
+ * viewport shrank under them, and those have different causes.
+ */
+function scrollMetrics(page: Page): Promise<{
+  distance: number;
+  scrollTop: number;
+  scrollHeight: number;
+  clientHeight: number;
+}> {
   return page.evaluate((selector) => {
     const root = document.querySelector(selector);
     if (!root) throw new Error('the chat scroll container is missing');
-    return Math.round(root.scrollHeight - root.scrollTop - root.clientHeight);
+    return {
+      distance: Math.round(root.scrollHeight - root.scrollTop - root.clientHeight),
+      scrollTop: Math.round(root.scrollTop),
+      scrollHeight: root.scrollHeight,
+      clientHeight: root.clientHeight,
+    };
   }, SCROLLER);
 }
 
@@ -182,7 +201,8 @@ test('a streaming answer keeps the viewport at the tail', async ({ window: page 
   // every reading above is a stationary transcript and proves nothing.
   expect(lag.grewBy).toBeGreaterThan(lag.viewportHeight);
   expect(lag.worstLag).toBeLessThanOrEqual(lag.worstFrameGrowth + 8);
-  expect(await distanceToTail(page)).toBeLessThanOrEqual(4);
+  const settled = await scrollMetrics(page);
+  expect(settled.distance, JSON.stringify(settled)).toBeLessThanOrEqual(4);
   expect(await scrollButtonOffered(page)).toBe(false);
 });
 
@@ -227,7 +247,8 @@ test('a gesture a nested scroller consumed does not release the tail', async ({
   await page.setViewportSize({ width: 900, height: 700 });
   await sendPrompt(page, LONG_PROMPT);
   await expect(answeredTurns(page)).toHaveCount(1, { timeout: 30_000 });
-  expect(await distanceToTail(page)).toBeLessThanOrEqual(4);
+  const settled = await scrollMetrics(page);
+  expect(settled.distance, JSON.stringify(settled)).toBeLessThanOrEqual(4);
 
   // A real scroller inside the transcript, standing in for a tool-output box
   // (`.maka-tool-output-body`, `max-height: 256px; overflow-y: auto`) or a pty
