@@ -26,6 +26,7 @@
     "apps/desktop"
   ],
   "scripts": {
+    "prepare": "npm run sync:model-metadata",
     "postinstall": "node scripts/apply-dependency-patches.mjs && node scripts/install-electron-with-retry.mjs",
     "lint": "biome lint .",
     "format": "biome format --write .",

@@ -119,8 +119,6 @@ test('source legal authority and generated provenance select the ASF source gate
     'apps/desktop/src/renderer/assets/provider-brands/example.svg',
     'apps/desktop/resources/licenses/renderer/SIMPLE_ICONS_LICENSE.md',
     'packages/eval/harbor/deepseek-harness-profile/cordis.patch.yml',
-    'packages/core/src/model-metadata.generated.ts',
-    'packages/runtime/src/telemetry/model-pricing.generated.ts',
     'scripts/model-metadata/models-dev-api.snapshot.json',
     'scripts/sync-model-metadata.mjs',
   ]) {

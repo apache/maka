@@ -10,6 +10,8 @@ storybook-static
 # `link-workspace-packages` setting.
 pnpm-lock.yaml
 *.tsbuildinfo
+/packages/core/src/model-metadata.generated.ts
+/packages/runtime/src/telemetry/model-pricing.generated.ts
 __pycache__/
 *.pyc
 .agents-workspace-data
