@@ -49,6 +49,12 @@ import {
  * missing middle of the fix's own claim — identity is fixed so `memo` holds, and
  * `memo` holding means untouched rows produce no DOM work at all.
  *
+ * The last two assertions are the timing half, folded in from #4109's own rail
+ * budget rather than kept as a second spec: how much was rewritten does not say
+ * whether the user saw it. The selection must pass through exactly one row on
+ * its way to the clicked one, and the status badges — which belong to sessions
+ * whose state did not change — must not be torn down and rebuilt underneath it.
+ *
  * `styleWrites > 0` is the counter's own liveness check. Every write counted
  * here comes from an Astryx ref callback that is not wrapped in `useCallback`;
  * if that upstream detail is ever memoised, both the healthy and the regressed
@@ -64,6 +70,18 @@ interface RailCounters {
   styleWrites: number;
   rowIds: string[];
   rowRemounts: number;
+  /**
+   * The selected row after each batch of records, appended only when it moved.
+   * Counting `aria-current` writes instead would read a re-render that rewrites
+   * the same selection as the selection moving; this reads what the user sees.
+   */
+  selectedRowIds: (string | null)[];
+  /**
+   * Status badges added or removed. They belong to sessions whose state did not
+   * change, so rebuilding them is the visible half of a rail re-render: the
+   * badges flash. `rowRemounts` does not cover it — the row survives.
+   */
+  statusNodeChanges: number;
   /** Drained by every quiet poll, so it reports only the latest interval. */
   delta: number;
 }
@@ -113,7 +131,20 @@ test('switching sessions does not rewrite the whole Session rail', async ({
   await expect(target).toBeVisible();
 
   await page.evaluate(() => {
-    const counters = { styleWrites: 0, rowIds: [] as string[], rowRemounts: 0, delta: 0 };
+    const selectedRowId = (): string | null =>
+      document
+        .querySelector('.maka-session-row button.astryx-side-nav-item.selected')
+        ?.closest('.maka-session-row')
+        ?.getAttribute('data-session-id') ?? null;
+
+    const counters = {
+      styleWrites: 0,
+      rowIds: [] as string[],
+      rowRemounts: 0,
+      selectedRowIds: [selectedRowId()] as (string | null)[],
+      statusNodeChanges: 0,
+      delta: 0,
+    };
     (window as unknown as { __railCounters: typeof counters }).__railCounters = counters;
     const observer = new MutationObserver((records) => {
       for (const record of records) {
@@ -127,6 +158,16 @@ test('switching sessions does not rewrite the whole Session rail', async ({
             // cheaper than a rail re-render. Count the remounts directly.
             if (element.classList?.contains('maka-session-row')) counters.rowRemounts += 1;
           }
+          for (const node of [...record.addedNodes, ...record.removedNodes]) {
+            const element = node as Element;
+            if (element.nodeType !== 1) continue;
+            if (
+              element.matches?.('[data-session-status]') ||
+              element.querySelector?.('[data-session-status]')
+            ) {
+              counters.statusNodeChanges += 1;
+            }
+          }
           continue;
         }
         const row = (record.target as Element).closest?.('.maka-session-row');
@@ -136,6 +177,8 @@ test('switching sessions does not rewrite the whole Session rail', async ({
         const rowId = row.getAttribute('data-session-id');
         if (rowId && !counters.rowIds.includes(rowId)) counters.rowIds.push(rowId);
       }
+      const selected = selectedRowId();
+      if (selected !== counters.selectedRowIds.at(-1)) counters.selectedRowIds.push(selected);
     });
     observer.observe(document.body, {
       subtree: true,
@@ -153,8 +196,15 @@ test('switching sessions does not rewrite the whole Session rail', async ({
     counters.styleWrites = 0;
     counters.rowIds = [];
     counters.rowRemounts = 0;
+    counters.selectedRowIds = counters.selectedRowIds.slice(-1);
+    counters.statusNodeChanges = 0;
     counters.delta = 0;
   });
+
+  const targetId = await page
+    .locator('.maka-session-row', { hasText: 'Rail row 3' })
+    .getAttribute('data-session-id');
+  expect(targetId).toBeTruthy();
 
   await target.click();
   await expect(selected).toHaveText(/Rail row 3/);
@@ -164,8 +214,9 @@ test('switching sessions does not rewrite the whole Session rail', async ({
   const counted = await page.evaluate(() => {
     const scope = window as unknown as RailWindow & { __railObserver: MutationObserver };
     scope.__railObserver.disconnect();
-    const { styleWrites, rowIds, rowRemounts } = scope.__railCounters;
-    return { styleWrites, rowIds, rowRemounts };
+    const { styleWrites, rowIds, rowRemounts, selectedRowIds, statusNodeChanges } =
+      scope.__railCounters;
+    return { styleWrites, rowIds, rowRemounts, selectedRowIds, statusNodeChanges };
   });
 
   expect(
@@ -177,4 +228,13 @@ test('switching sessions does not rewrite the whole Session rail', async ({
   expect(counted.styleWrites, 'rail inline-style writes for one session switch').toBeLessThanOrEqual(
     RAIL_STYLE_WRITE_BUDGET,
   );
+
+  // The timing half. A budget says how much was rewritten, not whether the user
+  // saw it happen: a switch that lands the selection on a third row and takes it
+  // back stays well inside every count above (#4109).
+  expect(
+    counted.selectedRowIds.slice(1),
+    'rows the selection passed through during one switch',
+  ).toEqual([targetId]);
+  expect(counted.statusNodeChanges, 'status badges rebuilt by one session switch').toBe(0);
 });
