@@ -1349,12 +1349,14 @@ const makaBridge = {
       profileId: string,
       enabled: boolean,
       coordinationRelays: readonly string[],
+      automaticRelayDiscovery: boolean,
     ) {
       return ipcRenderer.invoke(
         'runtime-host-management:configure-direct-peer',
         profileId,
         enabled,
         coordinationRelays,
+        automaticRelayDiscovery,
       );
     },
     listCredentials(profileId: string): Promise<DesktopRuntimeHostAccessSnapshot> {

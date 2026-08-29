@@ -134,6 +134,9 @@ export type SettingsProjectsCopy = {
     directPeerRoutes: string;
     directPeerCoordinationRelays: string;
     directPeerCoordinationRelaysPlaceholder: string;
+    directPeerAdvancedCoordination: string;
+    directPeerAutomaticRelayDiscovery: string;
+    directPeerAutomaticRelayDiscoveryHelp: string;
     directPeerEnable: string;
     directPeerDisable: string;
     directPeerAddProfile: string;
@@ -298,7 +301,7 @@ const SETTINGS_PROJECTS_COPY_BY_LOCALE = {
       useConnectionCode: '使用连接码',
       configureManually: '手动配置',
       thisComputerRemoteAccess: '远程访问',
-      thisComputerRemoteAccessHelp: '让其他 Maka Desktop 通过实验性 Direct peer 连接此 Host',
+      thisComputerRemoteAccessHelp: '通过实验性端到端直连访问此 Host；可自动发现公共协调节点来辅助打洞',
       remoteAccessOn: '已开启',
       remoteAccessOff: '未开启',
       enableRemoteAccess: '开启',
@@ -407,7 +410,7 @@ const SETTINGS_PROJECTS_COPY_BY_LOCALE = {
         failed: '启动失败',
       },
       directPeer: 'Direct peer（实验性）',
-      directPeerDescription: '创建独立的实验性 Direct profile。受限 NAT 或被阻止的 UDP 可能使其不可达，且不会自动回退；保留 SSH profile 用于手动恢复。',
+      directPeerDescription: '创建独立的实验性 Direct profile。可自动发现或手动指定协调节点来辅助打洞；受限 NAT 或被阻止的 UDP 仍可能使其不可达，且不会回退到中继传输。保留 SSH profile 用于手动恢复。',
       directPeerState: {
         unsupported: '需要更新',
         not_configured: '未配置',
@@ -423,6 +426,10 @@ const SETTINGS_PROJECTS_COPY_BY_LOCALE = {
       directPeerRoutes: '可用路径',
       directPeerCoordinationRelays: '连接协调节点（可选）',
       directPeerCoordinationRelaysPlaceholder: '多个地址用逗号分隔',
+      directPeerAdvancedCoordination: '手动设置协调节点',
+      directPeerAutomaticRelayDiscovery: '自动发现协调节点',
+      directPeerAutomaticRelayDiscoveryHelp:
+        '协调节点使用 Circuit Relay v2 协议，仅帮助建立端到端直连，不承载应用流量。Maka 会通过公共 IPFS 网络尽力发现可用节点；手动设置的节点优先。',
       directPeerEnable: '启用并添加',
       directPeerDisable: '停用',
       directPeerAddProfile: '添加到 Desktop',
@@ -587,7 +594,7 @@ const SETTINGS_PROJECTS_COPY_BY_LOCALE = {
       useConnectionCode: 'Use connection code',
       configureManually: 'Configure manually',
       thisComputerRemoteAccess: 'Remote access',
-      thisComputerRemoteAccessHelp: 'Let another Maka Desktop reach this Host through experimental Direct peer',
+      thisComputerRemoteAccessHelp: 'Reach this Host through experimental end-to-end direct connections, with automatic public coordination discovery',
       remoteAccessOn: 'On',
       remoteAccessOff: 'Off',
       enableRemoteAccess: 'Enable',
@@ -696,7 +703,7 @@ const SETTINGS_PROJECTS_COPY_BY_LOCALE = {
         failed: 'Failed',
       },
       directPeer: 'Direct peer (experimental)',
-      directPeerDescription: 'Create an independent experimental Direct profile. Restrictive NAT or blocked UDP may make it unreachable, and it does not fall back automatically; keep the SSH profile for manual recovery.',
+      directPeerDescription: 'Create an independent experimental Direct profile. Discover coordination peers automatically or provide them manually to assist hole punching; restrictive NAT or blocked UDP may still make it unreachable, and traffic does not fall back to a relay. Keep the SSH profile for manual recovery.',
       directPeerState: {
         unsupported: 'Update required',
         not_configured: 'Not configured',
@@ -712,6 +719,10 @@ const SETTINGS_PROJECTS_COPY_BY_LOCALE = {
       directPeerRoutes: 'Routes',
       directPeerCoordinationRelays: 'Connection coordination peers (optional)',
       directPeerCoordinationRelaysPlaceholder: 'Separate multiple addresses with commas',
+      directPeerAdvancedCoordination: 'Set coordination peers manually',
+      directPeerAutomaticRelayDiscovery: 'Discover coordination peers automatically',
+      directPeerAutomaticRelayDiscoveryHelp:
+        'Coordination peers use Circuit Relay v2 only to establish an end-to-end direct connection; they never carry application traffic. Maka discovers candidates through the public IPFS network on a best-effort basis, while manually configured peers remain preferred.',
       directPeerEnable: 'Enable and add',
       directPeerDisable: 'Disable',
       directPeerAddProfile: 'Add to Desktop',

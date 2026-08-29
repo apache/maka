@@ -35,6 +35,7 @@ This page is the authority map for Maka documentation. Code and contract tests r
 - [Renderer architecture](../apps/desktop/src/renderer/README.md)
 - [Evaluation kernel](../packages/eval/README.md)
 - [Runtime package](../packages/runtime/README.md)
+- [Computer Use package](../packages/computer-use/README.md)
 - [UI package architecture](../packages/ui/README.md)
 - [Security policy](../SECURITY.md)
 

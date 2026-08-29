@@ -117,8 +117,12 @@ PeerId 和 listener 配置；`peer rotate` 会明确更换 PeerId；卸载 servi
 Root。执行 `peer enable --clear-coordination-relays` 可以删除所有已配置的 coordination relay。
 
 Direct-only 路径仍是实验能力，在受限 NAT 或禁用 UDP 的网络中可能失败。它不会替代已有的 TLS、SSH
-或 overlay network fallback；除非用户在 `peer enable` 时明确传入 `--coordination-relay`，否则不会使用
-公共 relay。
+或 overlay network fallback。Host 默认通过公共 IPFS DHT 的有界 client-only 视图发现 Circuit Relay v2
+候选；扣除手动 relay 后，自动池会补足两个已接受 reservation 的目标。手动配置的 relay 始终优先。使用
+`peer enable --no-automatic-relay-discovery` 可以关闭这项尽力而为的发现，使用
+`peer enable --automatic-relay-discovery` 可以重新开启；关闭不会删除手动 relay。公网 Peer 能观察到发现
+连接，也可能拒绝或中止 reservation。只有已接受的 reservation 才会向 Mesh Peer 发布，Maka 仍要求
+application stream 升级为直连，不会通过 relay 传输 Session traffic。
 
 ### Direct TLS
 

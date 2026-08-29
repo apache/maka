@@ -73,6 +73,8 @@ export interface RuntimeHostPeerManagementCliOptions {
   readonly operatorDeploymentId: string;
   readonly listenAddresses: readonly string[];
   readonly coordinationRelays?: readonly string[];
+  readonly automaticRelayDiscovery?: boolean;
+  readonly relayDiscoveryStatus?: boolean;
   readonly expectedTarget?: RuntimeHostManagedServiceTarget;
   readonly allowInterruptActiveTasks?: boolean;
 }
@@ -251,13 +253,14 @@ async function runCanonicalRuntimeHostPeerManagementLocked(
     if (options.action === 'descriptor') {
       throw new TypeError('Direct-peer descriptor does not support framed output');
     }
+    const framedStatus = options.relayDiscoveryStatus ? status : omitRelayDiscoveryStatus(status);
     writePeerFrame(
       options.action === 'status'
-        ? { kind: 'result', action: options.action, status }
+        ? { kind: 'result', action: options.action, status: framedStatus }
         : {
             kind: 'result',
             action: options.action,
-            status,
+            status: framedStatus,
             restarted: restarted!,
           },
       deps,
@@ -272,6 +275,11 @@ async function runCanonicalRuntimeHostPeerManagementLocked(
     deps.writeStdout(formatPeerStatus(status));
   }
   return 0;
+}
+
+function omitRelayDiscoveryStatus(status: RuntimeHostPeerStatus): RuntimeHostPeerStatus {
+  const { automaticRelayDiscovery: _automaticRelayDiscovery, ...legacy } = status;
+  return legacy;
 }
 
 async function prepareCanonicalPeer(
@@ -312,6 +320,8 @@ async function prepareCanonicalPeer(
     coordinationRelays: [
       ...new Set(options.coordinationRelays ?? current?.coordinationRelays ?? []),
     ],
+    automaticRelayDiscovery:
+      options.automaticRelayDiscovery ?? current?.automaticRelayDiscovery ?? true,
   };
 }
 
@@ -340,6 +350,7 @@ async function readCanonicalPeerStatus(
       serviceState: result.service.state,
       routeHints: [],
       coordinationRelays: [],
+      automaticRelayDiscovery: true,
     };
   }
   return {
@@ -349,6 +360,7 @@ async function readCanonicalPeerStatus(
     rootId: config.root.id,
     routeHints: expandWildcardListenAddresses(peer.listenAddresses),
     coordinationRelays: [...peer.coordinationRelays],
+    automaticRelayDiscovery: peer.automaticRelayDiscovery,
   };
 }
 

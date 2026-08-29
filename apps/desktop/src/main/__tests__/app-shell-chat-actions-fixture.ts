@@ -96,24 +96,21 @@ export function createActionsDeps() {
   return {
     uiLocale: 'en' as const,
     activeIdRef,
-    addPendingSessionAction: () => true,
     captureComposerImportOwner: () => ({
       sessionId: undefined,
       navSection: 'sessions' as const,
     }),
     checkTaskSubmissionReadiness: async () => true,
-    clearPendingSessionAction: () => undefined,
     isNewChatSendSurfaceActive: () => true,
     isShellSurfaceOwnerActive: () => true,
     markSessionReadLocally: () => undefined,
-    messageRetryPendingRef: { current: new Set<string>() },
+    messageRetryPending: { claim: () => true, release: () => undefined },
     refreshSessions: async () => [],
     activateSessionForFirstSend: async (sessionId: string) => {
       activeIdRef.current = sessionId;
     },
     setActiveId: () => undefined,
     setMessageLoadErrorBySession: () => undefined,
-    setMessageRetryPendingBySession: () => undefined,
     setMessages: () => undefined,
     addTransientMessage: () => undefined,
     updateTransientMessage: () => undefined,

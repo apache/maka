@@ -208,7 +208,7 @@ import {
   type LiveContentSeed,
 } from './live-content-seed';
 import { loadComposerDefaults, saveComposerDefaults } from './composer-defaults';
-import { useKeyedPendingRegistry } from './use-pending-action-registry';
+import { useTurnActionRegistry } from './use-turn-action-registry';
 import { useComposerAttachments } from './use-composer-attachments';
 import { useAppShellComposerQuotes } from './use-app-shell-composer-quotes';
 import { ComposerMentionsProvider, type ComposerMentionsSurface } from './composer-mentions';
@@ -371,22 +371,7 @@ function AppShellContent({
     transcriptRangeRef,
     messageLoadPending,
     setMessageLoadPending,
-    messageRetryPendingRef,
-    stopPendingRef,
     sessionUiController,
-    liveTurnBySessionRef,
-    sessionEventHealthBySessionRef,
-    setMessageLoadErrorBySession,
-    setMessageRetryPendingBySession,
-    setStopPendingBySession,
-    setLiveTurnBySession,
-    confirmLiveTurn,
-    setShellRunUpdatesBySession,
-    setInteractionBySession,
-    setMessageQueueBySession,
-    setSessionEventHealthBySession,
-    setPendingPermissionModeBySession,
-    setPendingSessionModelBySession,
   } = useAppShellSessionWorkspace(toastApi);
   const interactionHydrationEpochRef = useRef(new Map<string, number>());
   const markInteractionChanged = useCallback((sessionId: string) => {
@@ -916,57 +901,24 @@ function AppShellContent({
   // mask. Per @kenji PR109d review: pending state prevents double-click
   // duplicate sibling turns by disabling the action button between
   // click and `sessions:changed turn-status-change` arriving.
-  // These de-dup registries (turn-footer actions and per-session permission-mode
-  // / model changes) share the same keyed-Set shape; see
-  // useKeyedPendingRegistry. Session-row mutations live in Session Navigation.
-  const turnActionRegistry = useKeyedPendingRegistry({
-    trackState: true,
-    autoClearMs: 5000,
-  });
+  // Session-row mutations live in Session Navigation; the per-session mode and
+  // model claims live in the session UI store.
+  const turnActionRegistry = useTurnActionRegistry();
   const pendingTurnActions = turnActionRegistry.keys;
-  const permissionModeChangeRegistry = useKeyedPendingRegistry();
-  const sessionModelChangeRegistry = useKeyedPendingRegistry();
   const pendingKeyOf = (sessionId: string, turnId: string, actionId: string) =>
     `${sessionId}:${turnId}:${actionId}`;
-  function omitSessionKey<T>(current: Record<string, T>, sessionId: string): Record<string, T> {
-    if (!(sessionId in current)) return current;
-    const next = { ...current };
-    delete next[sessionId];
-    return next;
-  }
-
-  function addPendingSessionAction(
-    sessionId: string,
-    pendingRef: { current: Set<string> },
-    setPendingBySession?: (updater: (current: Record<string, boolean>) => Record<string, boolean>) => void,
-  ): boolean {
-    if (pendingRef.current.has(sessionId)) return false;
-    pendingRef.current.add(sessionId);
-    setPendingBySession?.((current) => ({ ...current, [sessionId]: true }));
-    return true;
-  }
-
-  function clearPendingSessionAction(
-    sessionId: string,
-    pendingRef: { current: Set<string> },
-    setPendingBySession?: (updater: (current: Record<string, boolean>) => Record<string, boolean>) => void,
-  ): void {
-    if (!pendingRef.current.has(sessionId)) return;
-    pendingRef.current.delete(sessionId);
-    setPendingBySession?.((current) => omitSessionKey(current, sessionId));
-  }
 
   // A hoisted declaration on purpose: `dropDisplayEvents` is destructured
   // hundreds of lines below, and the rail does not need this identity held
   // still — the rail's controller reads it through `portsRef`.
   function clearSessionRendererState(sessionId: string): void {
     dropDisplayEvents(sessionId);
+    // `clearOwnedSessionState` ends in `clearSessionUiState`, which drops this
+    // session from every session-UI map — the four pending claims included.
     clearOwnedSessionState(sessionId);
     turnActionRegistry.clearForSession(sessionId);
-    permissionModeChangeRegistry.keysRef.current.delete(sessionId);
     planModeIntent.clear(sessionId);
     orchestrationModeIntent.clear(sessionId);
-    sessionModelChangeRegistry.keysRef.current.delete(sessionId);
   }
 
   const {
@@ -978,14 +930,12 @@ function AppShellContent({
     activeIdRef,
     connections,
     messages,
-    pendingPermissionModeChangesRef: permissionModeChangeRegistry.keysRef,
-    pendingSessionModelChangesRef: sessionModelChangeRegistry.keysRef,
+    permissionModePending: sessionUiController.permissionModePending,
+    sessionModelPending: sessionUiController.sessionModelPending,
     refreshSessions,
     saveComposerDefaults,
     sessionsRef,
     setNewTaskPermissionMode,
-    setPendingPermissionModeBySession,
-    setPendingSessionModelBySession,
     toastApi,
   });
 
@@ -1266,22 +1216,22 @@ function AppShellContent({
         ) {
           return;
         }
-        setInteractionBySession((current) => reconcileInteractions(current, activeId, requests));
+        sessionUiController.setInteractionBySession((current) => reconcileInteractions(current, activeId, requests));
       })
       .catch(() => {});
     return () => {
       cancelled = true;
     };
-  }, [activeId, setInteractionBySession]);
+  }, [activeId, sessionUiController.setInteractionBySession]);
   useEffect(
     () =>
       window.maka.sessions.subscribeActiveInteractions(({ sessionId, interactions }) => {
         markInteractionChanged(sessionId);
-        setInteractionBySession((current) =>
+        sessionUiController.setInteractionBySession((current) =>
           reconcileInteractions(current, sessionId, interactions),
         );
       }),
-    [markInteractionChanged, setInteractionBySession],
+    [markInteractionChanged, sessionUiController.setInteractionBySession],
   );
   const activeBoundarySurface = deriveDesktopExecutionBoundarySurface(
     activeId,
@@ -1841,25 +1791,22 @@ function AppShellContent({
   } = useStableActions(createAppShellChatActions, {
     uiLocale,
     activeIdRef,
-    addPendingSessionAction,
     captureComposerImportOwner,
     checkTaskSubmissionReadiness: taskSubmissionReadyAtSend,
-    clearPendingSessionAction,
     isNewChatSendSurfaceActive,
     isShellSurfaceOwnerActive,
-    messageRetryPendingRef,
+    messageRetryPending: sessionUiController.messageRetryPending,
     refreshSessions,
     activateSessionForFirstSend,
     setActiveId,
-    setMessageLoadErrorBySession,
-    setMessageRetryPendingBySession,
+    setMessageLoadErrorBySession: sessionUiController.setMessageLoadErrorBySession,
     setMessages,
     addTransientMessage,
     updateTransientMessage,
     removeTransientMessage,
     transcriptRangeRef,
-    setLiveTurnBySession,
-    setInteractionBySession,
+    setLiveTurnBySession: sessionUiController.setLiveTurnBySession,
+    setInteractionBySession: sessionUiController.setInteractionBySession,
     onInteractionChanged: markInteractionChanged,
     onExecutionBoundaryChanged: reloadActiveExecutionBoundary,
     showModelSetupToast,
@@ -2001,7 +1948,7 @@ function AppShellContent({
       metadata?.workspaceFileReferences,
       sessionId ? retractedWorkspaceReferencesRef.current[sessionId] : undefined,
     );
-    const liveTurn = sessionId ? liveTurnBySessionRef.current[sessionId] : undefined;
+    const liveTurn = sessionId ? sessionUiController.liveTurnBySessionRef.current[sessionId] : undefined;
     const runningTurnIds = sessionId
       ? sessionsRef.current.find((session) => session.id === sessionId)?.runningTurnIds
       : undefined;
@@ -2263,10 +2210,7 @@ function AppShellContent({
   const stop = createAppShellStopAction({
     uiLocale,
     activeIdRef,
-    addPendingSessionAction,
-    clearPendingSessionAction,
-    setStopPendingBySession,
-    stopPendingRef,
+    stopPending: sessionUiController.stopPending,
     removeTransientMessage,
     toastApi,
   });
@@ -2283,12 +2227,12 @@ function AppShellContent({
   } = useStableActions(createAppShellSessionEventHandlers, {
     uiLocale,
     activeIdRef,
-    liveTurnBySessionRef,
+    liveTurnBySessionRef: sessionUiController.liveTurnBySessionRef,
     refreshMessages,
     refreshSessions,
-    setLiveTurnBySession,
-    setInteractionBySession,
-    setMessageQueueBySession,
+    setLiveTurnBySession: sessionUiController.setLiveTurnBySession,
+    setInteractionBySession: sessionUiController.setInteractionBySession,
+    setMessageQueueBySession: sessionUiController.setMessageQueueBySession,
     projectQueuedTransientMessages,
     removeTransientMessage,
     displayBatch: sessionDisplayBatch,
@@ -2336,16 +2280,13 @@ function AppShellContent({
     applyE2eFixture,
     bootstrapSessions,
     clearPendingTurnActionsForSession: turnActionRegistry.clearForSession,
-    confirmLiveTurn,
+    confirmLiveTurn: sessionUiController.confirmLiveTurn,
     clearSessionRendererState,
     createSession,
     handleConnectionEvent,
     openHelp,
     openSettings,
-    pendingPermissionModeChangesRef: permissionModeChangeRegistry.keysRef,
-    pendingSessionModelChangesRef: sessionModelChangeRegistry.keysRef,
-    pendingTurnActionTimersRef: turnActionRegistry.timersRef,
-    pendingTurnActionsRef: turnActionRegistry.keysRef,
+    clearPendingTurnActions: turnActionRegistry.clearAll,
     projectPickerPendingRef,
     projectPickerRequestRef,
     refreshConnections: refreshConnectionProjections,
@@ -2357,7 +2298,7 @@ function AppShellContent({
     rendererMountedRef,
     setActiveId,
     setMessages,
-    setSessionEventHealthBySession,
+    setSessionEventHealthBySession: sessionUiController.setSessionEventHealthBySession,
     toastApi,
   });
   useAppShellPersistenceEffects({
@@ -2399,11 +2340,11 @@ function AppShellContent({
     handleEvent,
     beginObservationSeed,
     completeObservationSeed,
-    setMessageLoadErrorBySession,
+    setMessageLoadErrorBySession: sessionUiController.setMessageLoadErrorBySession,
     setMessageLoadPending,
     setMessages,
     transcriptRangeRef,
-    setSessionEventHealthBySession,
+    setSessionEventHealthBySession: sessionUiController.setSessionEventHealthBySession,
     toastApi,
   });
   let newestDurablePromptSequence: number | null = null;
@@ -2462,7 +2403,7 @@ function AppShellContent({
       })
       .catch((error) => {
         if (disposed || activeIdRef.current !== target.sessionId) return;
-        setMessageLoadErrorBySession((current) => ({
+        sessionUiController.setMessageLoadErrorBySession((current) => ({
           ...current,
           [target.sessionId]: localizedShellErrorMessage(
             error,
@@ -2475,7 +2416,10 @@ function AppShellContent({
       disposed = true;
     };
   }, [activeId, searchScrollTarget?.nonce]);
-  useShellRunUpdates({ activeId, setShellRunUpdatesBySession });
+  useShellRunUpdates({
+    activeId,
+    setShellRunUpdatesBySession: sessionUiController.setShellRunUpdatesBySession,
+  });
   useSessionEventHealthPolling({
     activeId,
     activeInteraction,
@@ -2484,8 +2428,8 @@ function AppShellContent({
     hasInFlightLiveTools,
     refreshMessages,
     refreshSessions,
-    sessionEventHealthBySessionRef,
-    setSessionEventHealthBySession,
+    sessionEventHealthBySessionRef: sessionUiController.sessionEventHealthBySessionRef,
+    setSessionEventHealthBySession: sessionUiController.setSessionEventHealthBySession,
   });
   function captureComposerImportOwner(): ComposerImportOwner {
     return {

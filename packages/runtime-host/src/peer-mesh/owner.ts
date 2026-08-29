@@ -41,6 +41,7 @@ export async function openRuntimeHostPeerMeshOwner(input: {
   readonly dataRoot: string;
   readonly listenAddresses?: readonly string[];
   readonly coordinationRelays?: readonly string[];
+  readonly automaticRelayDiscovery?: boolean;
 }): Promise<RuntimeHostPeerMeshOwner> {
   let mesh: PeerMeshNode | undefined;
   let resolverMesh: PeerMeshNode | undefined;
@@ -55,6 +56,9 @@ export async function openRuntimeHostPeerMeshOwner(input: {
       ...(input.expectedPeerId ? { expectedPeerId: input.expectedPeerId } : {}),
       ...(input.listenAddresses ? { listenAddresses: input.listenAddresses } : {}),
       ...(input.coordinationRelays ? { coordinationRelays: input.coordinationRelays } : {}),
+      ...(input.automaticRelayDiscovery === undefined
+        ? {}
+        : { automaticRelayDiscovery: input.automaticRelayDiscovery }),
       routeResolver: {
         resolveRoutes: (peerId) => resolverMesh?.resolveRoutes(peerId),
       },

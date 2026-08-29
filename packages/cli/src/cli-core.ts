@@ -213,6 +213,13 @@ function helpText(cliCommand: string): string {
     '  --websocket-path <path>       Persist the upgrade path (default: /runtime-host)',
     '  --json                        Emit framed machine-readable progress and result records',
     '',
+    'Managed Runtime Host direct-peer options:',
+    '  --listen <multiaddr>          Persist a listener address (repeatable)',
+    '  --coordination-relay <addr>   Prefer a Circuit Relay v2 address (repeatable)',
+    '  --clear-coordination-relays   Remove every manually configured relay',
+    '  --automatic-relay-discovery   Enable best-effort public relay discovery',
+    '  --no-automatic-relay-discovery  Disable public discovery and retain manual relays',
+    '',
     'Runtime Host access issue options:',
     '  --root <path>                 Select the canonical data root',
     '  --kind <kind>                 remote-owner or capability-provider',
@@ -317,6 +324,7 @@ export async function runMakaCli(
                   expectedPeerId: peer.peerId,
                   listenAddresses: peer.listenAddresses,
                   coordinationRelays: peer.coordinationRelays,
+                  automaticRelayDiscovery: peer.automaticRelayDiscovery,
                   meshDataRoot: join(config.deploymentRoot, 'peer-mesh'),
                 },
               }
@@ -475,6 +483,10 @@ export async function runMakaCli(
         operatorDeploymentId: command.operatorDeploymentId,
         listenAddresses: command.listenAddresses,
         ...(command.coordinationRelays ? { coordinationRelays: command.coordinationRelays } : {}),
+        ...(command.automaticRelayDiscovery === undefined
+          ? {}
+          : { automaticRelayDiscovery: command.automaticRelayDiscovery }),
+        ...(command.relayDiscoveryStatus ? { relayDiscoveryStatus: true } : {}),
         ...(command.expectedTarget ? { expectedTarget: command.expectedTarget } : {}),
         ...(command.allowInterruptActiveTasks ? { allowInterruptActiveTasks: true } : {}),
       });

@@ -4,6 +4,7 @@ arrayref@0.3.9		X
 asn1-rs@0.7.2	X				X			
 asn1-rs-derive@0.6.0	X				X			
 asn1-rs-impl@0.2.0	X				X			
+asn1_der@0.7.7		X			X			
 async-trait@0.1.92	X				X			
 asynchronous-codec@0.7.0					X			
 autocfg@1.5.1	X				X			
@@ -30,6 +31,7 @@ critical-section@1.2.0	X				X
 crossbeam-channel@0.5.16	X				X			
 crossbeam-epoch@0.9.20	X				X			
 crossbeam-utils@0.8.22	X				X			
+crunchy@0.2.4					X			
 crypto-common@0.1.7	X				X			
 ctor@1.0.13	X				X			
 curve25519-dalek@4.1.3			X					
@@ -71,6 +73,7 @@ getrandom@0.4.3	X				X
 hashbrown@0.15.5	X				X			
 hashlink@0.10.0	X				X			
 heck@0.5.0	X				X			
+hex@0.4.3	X				X			
 hickory-proto@0.25.2	X				X			
 hickory-resolver@0.25.2	X				X			
 hkdf@0.12.4	X				X			
@@ -101,6 +104,7 @@ libp2p-dcutr@0.14.1					X
 libp2p-dns@0.44.0					X			
 libp2p-identify@0.47.0					X			
 libp2p-identity@0.2.14					X			
+libp2p-kad@0.48.0					X			
 libp2p-noise@0.46.1					X			
 libp2p-ping@0.47.0					X			
 libp2p-quic@0.13.1					X			
@@ -221,6 +225,7 @@ tracing@0.1.44					X
 tracing-attributes@0.1.31					X			
 tracing-core@0.1.36					X			
 typenum@1.20.1	X				X			
+uint@0.10.1	X				X			
 unicode-ident@1.0.24	X				X	X		
 unicode-segmentation@1.13.3	X				X			
 unsigned-varint@0.7.2					X			

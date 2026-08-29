@@ -49,6 +49,7 @@ export interface RuntimeHostServiceCliOptions {
     readonly expectedPeerId?: string;
     readonly listenAddresses?: readonly string[];
     readonly coordinationRelays?: readonly string[];
+    readonly automaticRelayDiscovery?: boolean;
     readonly meshDataRoot?: string;
   };
 }

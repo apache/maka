@@ -131,8 +131,15 @@ service uninstall removes its key while retaining the State Root. Pass
 `peer enable --clear-coordination-relays` to remove every configured coordination relay.
 
 This direct-only path is experimental and may fail on restrictive NAT or UDP-blocked networks. It
-does not replace an existing TLS, SSH, or overlay-network fallback and does not use a public relay
-unless one is explicitly configured with `peer enable --coordination-relay`.
+does not replace an existing TLS, SSH, or overlay-network fallback. By default, the Host uses a
+bounded client-only view of the public IPFS DHT to discover Circuit Relay v2 candidates and fills a
+target of two accepted reservations after accounting for manual relays. Manually configured relays
+remain preferred. Disable or restore this
+best-effort discovery with `peer enable --no-automatic-relay-discovery` or
+`peer enable --automatic-relay-discovery`; disabling it leaves manual relays intact. Public peers can
+observe the discovery connection and may refuse or drop reservations. Only accepted reservations
+are advertised to Mesh peers, and Maka still requires the application stream to upgrade to a direct
+connection instead of carrying Session traffic through the relay.
 
 ### Direct TLS
 

@@ -27,6 +27,7 @@ import { type RuntimeHostSshProcessFactory } from '@maka/runtime-host/client';
 import {
   encodeRuntimeHostActivationFrame,
   encodeRuntimeHostAccessManagementFrame,
+  encodeRuntimeHostPeerManagementFrame,
   encodeRuntimeHostServiceManagementFrame,
   encodeRuntimeHostSetupFrame,
   encodeRuntimeHostPeerMeshManagementFrame,
@@ -635,6 +636,45 @@ test('keeps a prepared access credential out of the SSH terminal projection', as
   assert.match(command, /--current-fingerprint/u);
   assert.match(command, new RegExp('b{32}', 'u'));
   assert.doesNotMatch(command, /secret-replacement/u);
+  await harness.terminal.close();
+});
+
+test('requests relay-discovery status only on the peer-management frame', async () => {
+  const harness = createHarness('pending');
+  const management = harness.terminal.runPeerManagement({
+    destination: 'operator@example.com',
+    operatorPath: '/home/operator/.local/share/maka/operator',
+    action: 'status',
+    expectedTarget: {
+      serviceId: 'b'.repeat(64),
+      rootPath: '/srv/maka',
+      rootId: 'a'.repeat(64),
+      deploymentId: '00000000-0000-4000-8000-000000000001',
+    },
+  });
+  await waitFor(() => harness.pty.hasDataListener());
+  const command = harness.launchArgs.at(-1)?.at(-1) ?? '';
+  assert.match(command, /peer.*status.*--framed.*--relay-discovery-status/u);
+
+  harness.pty.emitData(
+    encodeRuntimeHostPeerManagementFrame({
+      kind: 'result',
+      action: 'status',
+      status: {
+        state: 'enabled',
+        serviceState: 'running',
+        peerId: '12D3KooWpeer',
+        rootId: 'a'.repeat(64),
+        routeHints: ['/ip4/192.0.2.1/udp/41000/quic-v1'],
+        coordinationRelays: [],
+        automaticRelayDiscovery: true,
+      },
+    }),
+  );
+  harness.pty.exit(0);
+
+  const result = await management;
+  assert.equal(result.kind === 'result' && result.status.automaticRelayDiscovery, true);
   await harness.terminal.close();
 });
 

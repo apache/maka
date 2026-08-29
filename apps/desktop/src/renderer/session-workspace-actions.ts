@@ -22,13 +22,15 @@
  * list, and the transient (optimistic) message projection.
  *
  * Every dependency here is a ref box, a React state setter, or a method of the
- * once-created session-UI controller — all fixed for the renderer's lifetime.
- * The factory therefore runs ONCE (issue #1043's `useStableActions` exists for
- * factories whose closures capture changing deps; these capture none, so the
- * cheaper structural guarantee applies). Declaring these in the hook body
- * instead handed every consumer a fresh identity per render, and
- * `activateSession` alone rebuilt the Session rail's whole command chain, which
- * defeated `SessionNavRow`'s `memo` on every commit.
+ * once-created session-UI controller — all fixed for the renderer's lifetime —
+ * so the factory runs ONCE and the identities follow structurally.
+ *
+ * Declaring these in the hook body instead handed every consumer a fresh
+ * identity per render, and `activateSession` alone rebuilt the Session rail's
+ * whole command chain, which defeated `SessionNavRow`'s `memo` on every commit.
+ * That is asserted in `session-workspace-action-identity.test.ts`; whether a
+ * factory earns its identity this way or through `useStableActions` is an
+ * implementation choice the test does not care about.
  */
 
 import type { StoredMessage } from '@maka/core/session';
@@ -71,8 +73,6 @@ export function createSessionWorkspaceActions(deps: {
   transientMessagesBySessionRef: RefBox<Map<string, Map<string, TransientUserMessage>>>;
   transcriptRangeRef: RefBox<DesktopTranscriptRangeController | undefined>;
   selectionRevisionRef: RefBox<number>;
-  messageRetryPendingRef: RefBox<Set<string>>;
-  stopPendingRef: RefBox<Set<string>>;
   setActiveIdState: (next: string | undefined) => void;
   setMessagesState: (next: StoredMessage[]) => void;
   setTransientMessagesState: (next: TransientUserMessage[]) => void;
@@ -85,8 +85,6 @@ export function createSessionWorkspaceActions(deps: {
     transientMessagesBySessionRef,
     transcriptRangeRef,
     selectionRevisionRef,
-    messageRetryPendingRef,
-    stopPendingRef,
     setActiveIdState,
     setMessagesState,
     setTransientMessagesState,
@@ -220,8 +218,6 @@ export function createSessionWorkspaceActions(deps: {
   }
 
   function clearOwnedSessionState(sessionId: string): void {
-    messageRetryPendingRef.current.delete(sessionId);
-    stopPendingRef.current.delete(sessionId);
     transientMessagesBySessionRef.current.delete(sessionId);
     if (activeIdRef.current === sessionId) setTransientMessagesState([]);
     clearSessionUiState(sessionId);

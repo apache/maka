@@ -174,6 +174,7 @@ export interface DesktopRuntimeHostSshPeerManagementInput {
   readonly operatorPath: string;
   readonly action: Extract<RuntimeHostPeerManagementAction, 'enable' | 'disable' | 'status'>;
   readonly coordinationRelays?: readonly string[];
+  readonly automaticRelayDiscovery?: boolean;
   readonly expectedTarget: DesktopRuntimeHostSshManagementInput['expectedTarget'];
   readonly signal?: AbortSignal;
 }
@@ -1343,10 +1344,16 @@ function runtimeHostPeerManagementRemoteCommand(
     'peer',
     input.action,
     '--framed',
+    '--relay-discovery-status',
     ...(input.action === 'enable' && input.coordinationRelays
       ? input.coordinationRelays.length === 0
         ? ['--clear-coordination-relays']
         : input.coordinationRelays.flatMap((relay) => ['--coordination-relay', relay])
+      : []),
+    ...(input.action === 'enable' && input.automaticRelayDiscovery !== undefined
+      ? [input.automaticRelayDiscovery
+          ? '--automatic-relay-discovery'
+          : '--no-automatic-relay-discovery']
       : []),
     ...managedServiceTargetArgs(input.expectedTarget),
   ].map(quotePosix).join(' ');

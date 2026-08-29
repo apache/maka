@@ -20,9 +20,9 @@
 import type { UiLocale } from '@maka/core/ui-locale';
 import { localizedShellErrorMessage } from './locales/shell-copy.js';
 import { getDesktopConversationCopy } from './locales/conversation-copy.js';
+import type { SessionPendingClaim } from './app-shell-session-ui-state.js';
 
 type RefBox<T> = { current: T };
-type BooleanRecordUpdater = (updater: (current: Record<string, boolean>) => Record<string, boolean>) => void;
 
 type ToastApi = {
   error(
@@ -36,35 +36,21 @@ type ToastApi = {
 export function createAppShellStopAction(deps: {
   uiLocale: UiLocale;
   activeIdRef: RefBox<string | undefined>;
-  addPendingSessionAction: (
-    sessionId: string,
-    pendingRef: RefBox<Set<string>>,
-    setPendingBySession: BooleanRecordUpdater,
-  ) => boolean;
-  clearPendingSessionAction: (
-    sessionId: string,
-    pendingRef: RefBox<Set<string>>,
-    setPendingBySession: BooleanRecordUpdater,
-  ) => void;
-  setStopPendingBySession: BooleanRecordUpdater;
-  stopPendingRef: RefBox<Set<string>>;
+  stopPending: SessionPendingClaim;
   removeTransientMessage: (sessionId: string, messageId: string) => void;
   toastApi: ToastApi;
 }): () => Promise<void> {
   const {
     uiLocale,
     activeIdRef,
-    addPendingSessionAction,
-    clearPendingSessionAction,
-    setStopPendingBySession,
-    stopPendingRef,
+    stopPending,
     removeTransientMessage,
     toastApi,
   } = deps;
 
   async function stop() {
     const sessionId = activeIdRef.current;
-    if (!sessionId || !addPendingSessionAction(sessionId, stopPendingRef, setStopPendingBySession)) return;
+    if (!sessionId || !stopPending.claim(sessionId)) return;
     try {
       const result = await window.maka.sessions.stop(sessionId, { source: 'stop_button' });
       if (result?.kind === 'interrupted') {
@@ -89,7 +75,7 @@ export function createAppShellStopAction(deps: {
         );
       }
     } finally {
-      clearPendingSessionAction(sessionId, stopPendingRef, setStopPendingBySession);
+      stopPending.release(sessionId);
     }
   }
 

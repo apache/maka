@@ -121,7 +121,6 @@ export const ALLOWED = {
     useEffect: 14,
     useGoalController: 1,
     useKeyboardHelp: 1,
-    useKeyedPendingRegistry: 3,
     useLayoutEffect: 2,
     useModuleHubController: 1,
     useNewTaskChoice: 1,
@@ -153,6 +152,12 @@ export const ALLOWED = {
     useTaskEntryController: 1,
     useTaskSubmissionReadiness: 1,
     useToast: 1,
+    // The last of the three `useKeyedPendingRegistry` call sites this entry
+    // replaces: #4113 moved the other two onto the session UI store, which is
+    // already an external store, so their scope left this fiber entirely. This
+    // one stays because the shell body reads `keys` to build the turn footer's
+    // disabled mask.
+    useTurnActionRegistry: 1,
     useWorkbarController: 1,
   },
 };
