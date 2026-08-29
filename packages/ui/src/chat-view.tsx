@@ -519,7 +519,6 @@ export function ChatView(props: {
     scrollRef,
     targetTurnId: props.scrollTargetTurn?.turnId,
     targetKey: props.scrollTargetTurn?.nonce,
-    onContentResize: scrollAuthority.notifyContentResize,
   });
   const navigatePromptRailFallback = useCallback((turn: PromptAnchorRailTurn) => {
     if (turnIdsRef.current.has(turn.turnId)) revealTurn(turn.turnId);

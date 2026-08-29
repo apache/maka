@@ -36,6 +36,8 @@ interface FakeRoot {
   scrollTop: number;
   scrollHeight: number;
   clientHeight: number;
+  /** The boxes `scrollHeight` is made of, which is what the authority watches. */
+  children: readonly unknown[];
   addEventListener(type: string, listener: () => void): void;
   removeEventListener(type: string, listener: () => void): void;
   /** Dispatch the scroll event the browser would, one frame later. */
@@ -51,6 +53,7 @@ function fakeRoot(options?: { scrollHeight?: number; clientHeight?: number }): F
     scrollTop: 0,
     scrollHeight: options?.scrollHeight ?? 3_000,
     clientHeight: options?.clientHeight ?? 600,
+    children: [{}],
     addEventListener(type, listener) {
       if (type === 'scroll') listeners.add(listener);
     },
@@ -81,52 +84,68 @@ function fakeRoot(options?: { scrollHeight?: number; clientHeight?: number }): F
 }
 
 /**
- * The authority observes the scroller's own box as well as the content, so the
- * suite owns a `ResizeObserver`. Frames are not faked: nothing here schedules
- * one — whether a scroll event is this authority's own is answered by where the
- * scroller is, not by when the event arrives.
+ * The authority watches the scroller's box and its children's boxes, and keeps
+ * that set current with a `MutationObserver`, so the suite owns both. `resize`
+ * is every box changing at once, which is the only distinction the authority
+ * draws between them: none.
+ *
+ * Frames are not faked — nothing here schedules one. Whether a scroll event is
+ * this authority's own is answered by where the scroller is, not by when the
+ * event arrives.
  */
-function withResizeObserver<T>(run: (resize: () => void) => T): T {
+function withObservers<T>(run: (resize: () => void) => T): T {
   const observers = new Set<() => void>();
-  const original = (globalThis as { ResizeObserver?: unknown }).ResizeObserver;
-  (globalThis as { ResizeObserver?: unknown }).ResizeObserver = class {
-    constructor(private readonly callback: () => void) {
-      observers.add(callback);
+  const globals = globalThis as { ResizeObserver?: unknown; MutationObserver?: unknown };
+  const originalResize = globals.ResizeObserver;
+  const originalMutation = globals.MutationObserver;
+  globals.ResizeObserver = class {
+    constructor(private readonly callback: () => void) {}
+    // Registered on `observe` rather than on construction: the authority
+    // re-points one observer at a changing set of boxes, so a stub that ignored
+    // `disconnect` and `observe` would report a detached authority as live.
+    observe(): void {
+      observers.add(this.callback);
     }
-    observe(): void {}
     disconnect(): void {
       observers.delete(this.callback);
     }
+  };
+  // The set of children only changes when the transcript mounts or unmounts
+  // one, and `resize` already stands for every box in that set changing.
+  globals.MutationObserver = class {
+    observe(): void {}
+    disconnect(): void {}
   };
   try {
     return run(() => {
       for (const observer of [...observers]) observer();
     });
   } finally {
-    (globalThis as { ResizeObserver?: unknown }).ResizeObserver = original;
+    globals.ResizeObserver = originalResize;
+    globals.MutationObserver = originalMutation;
   }
 }
 
 test('content that grows under a pinned transcript keeps the tail on screen', () => {
-  withResizeObserver(() => {
+  withObservers((resize) => {
     const root = fakeRoot();
     const authority = createTranscriptScrollAuthority();
     authority.attach(root as unknown as HTMLElement);
     assert.equal(root.scrollTop, 2_400);
 
     root.grow(500);
-    authority.notifyContentResize();
+    resize();
     assert.equal(root.scrollTop, 2_900);
 
-    // The write's own scroll event lands before the frame that clears the flag,
-    // which is the whole reason the flag exists.
+    // Its own write echoes back as an ordinary scroll event, and finding the
+    // scroller still on the offset it wrote is how it knows.
     root.emitScroll();
     assert.equal(authority.getSnapshot().pinned, true);
   });
 });
 
 test('a scroll this authority did not write is the reader, and releases the tail', () => {
-  withResizeObserver(() => {
+  withObservers((resize) => {
     const root = fakeRoot();
     const authority = createTranscriptScrollAuthority();
     authority.attach(root as unknown as HTMLElement);
@@ -140,13 +159,13 @@ test('a scroll this authority did not write is the reader, and releases the tail
     // this authority writes nothing at all, and native anchoring holds the
     // position the reader chose.
     root.grow(4_000);
-    authority.notifyContentResize();
+    resize();
     assert.equal(root.scrollTop, 1_000);
   });
 });
 
 test('returning to the tail re-pins, and following resumes', () => {
-  withResizeObserver(() => {
+  withObservers((resize) => {
     const root = fakeRoot();
     const authority = createTranscriptScrollAuthority();
     authority.attach(root as unknown as HTMLElement);
@@ -159,26 +178,26 @@ test('returning to the tail re-pins, and following resumes', () => {
     assert.equal(authority.getSnapshot().awayFromTail, false);
 
     root.grow(600);
-    authority.notifyContentResize();
+    resize();
     assert.equal(root.scrollTop, 3_000);
   });
 });
 
 test('a detached authority writes nothing and reports the tail', () => {
-  withResizeObserver(() => {
+  withObservers((resize) => {
     const root = fakeRoot();
     const authority = createTranscriptScrollAuthority();
     const detach = authority.attach(root as unknown as HTMLElement);
     detach();
     root.scrollTop = 0;
     root.grow(1_000);
-    authority.notifyContentResize();
+    resize();
     assert.equal(root.scrollTop, 0);
   });
 });
 
 test('a viewport that loses height takes the pinned reader back to the tail', () => {
-  withResizeObserver((resize) => {
+  withObservers((resize) => {
     const root = fakeRoot();
     const authority = createTranscriptScrollAuthority();
     authority.attach(root as unknown as HTMLElement);
@@ -193,7 +212,7 @@ test('a viewport that loses height takes the pinned reader back to the tail', ()
 });
 
 test('a scroll event that arrives late is still this authority\'s own write', () => {
-  withResizeObserver(() => {
+  withObservers((resize) => {
     const root = fakeRoot();
     const authority = createTranscriptScrollAuthority();
     authority.attach(root as unknown as HTMLElement);
@@ -207,13 +226,13 @@ test('a scroll event that arrives late is still this authority\'s own write', ()
     root.emitScroll();
     assert.equal(authority.getSnapshot().pinned, true);
 
-    authority.notifyContentResize();
+    resize();
     assert.equal(root.scrollTop, 2_702);
   });
 });
 
 test('growth that outruns the write does not read as the reader scrolling up', () => {
-  withResizeObserver(() => {
+  withObservers((resize) => {
     const root = fakeRoot();
     const authority = createTranscriptScrollAuthority();
     authority.attach(root as unknown as HTMLElement);
@@ -230,13 +249,13 @@ test('growth that outruns the write does not read as the reader scrolling up', (
     // The affordance still knows how far the tail now is, and the next growth
     // signal takes the reader back to it.
     assert.equal(authority.getSnapshot().awayFromTail, true);
-    authority.notifyContentResize();
+    resize();
     assert.equal(root.scrollTop, 2_702);
   });
 });
 
 test('content landing above a released reader does not re-pin them', () => {
-  withResizeObserver(() => {
+  withObservers((resize) => {
     const root = fakeRoot();
     const authority = createTranscriptScrollAuthority();
     authority.attach(root as unknown as HTMLElement);
@@ -254,13 +273,13 @@ test('content landing above a released reader does not re-pin them', () => {
     root.emitScroll();
     assert.equal(authority.getSnapshot().pinned, false);
 
-    authority.notifyContentResize();
+    resize();
     assert.equal(root.scrollTop, 6_400);
   });
 });
 
 test('only the reader\'s own movement reaches a reader-scroll listener', () => {
-  withResizeObserver(() => {
+  withObservers(() => {
     const root = fakeRoot();
     const authority = createTranscriptScrollAuthority();
     let heard = 0;

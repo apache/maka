@@ -206,6 +206,46 @@ test('a streaming answer keeps the viewport at the tail', async ({ window: page 
   expect(await scrollButtonOffered(page)).toBe(false);
 });
 
+/**
+ * The turn wrappers are not the transcript. It also renders the optimistic user
+ * message, the no-tail live fallback and orphaned conversation items outside
+ * them, so a growth signal that watches turns has a blind spot the size of
+ * whatever else gets rendered next.
+ *
+ * Grown here rather than by sending a Follow Up: whether the optimistic message
+ * is ever on screen is the host's timing, and it was measured both appearing
+ * and being overtaken by its own answer within the same fixture. What is under
+ * test is not that message — it is that `scrollHeight` growing anywhere is
+ * enough, which is a property of the scroller and needs no help from the
+ * transcript to state.
+ */
+test('content that grows outside the turn wrappers is followed too', async ({
+  window: page,
+}) => {
+  test.slow();
+  await page.setViewportSize({ width: 900, height: 700 });
+  await sendPrompt(page, LONG_PROMPT);
+  await expect(answeredTurns(page)).toHaveCount(1, { timeout: 30_000 });
+  expect(await distanceToTail(page)).toBeLessThanOrEqual(4);
+
+  const outsideTurnWrapper = await page.evaluate(() => {
+    const list = document.querySelector('.maka-chat-message-list');
+    if (!list) throw new Error('the transcript content box is missing');
+    const grown = document.createElement('div');
+    grown.dataset.outsideTurnGrowth = 'true';
+    grown.style.height = '600px';
+    list.append(grown);
+    return grown.closest('[data-virtual-turn-id]') === null;
+  });
+  await waitForPaintedFrames(page);
+
+  // Outside a wrapper is what makes this the uncovered path: growth inside one
+  // is what every other test in this file already exercises.
+  expect(outsideTurnWrapper, 'the injected box landed inside a turn wrapper').toBe(true);
+  const settled = await scrollMetrics(page);
+  expect(settled.distance, JSON.stringify(settled)).toBeLessThanOrEqual(4);
+});
+
 test('content that arrives after the reader scrolls up does not pull them back', async ({
   window: page,
 }) => {

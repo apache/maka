@@ -57,13 +57,6 @@ export function useTurnVirtualizer(input: {
   targetTurnId?: string;
   targetKey?: string | number;
   scrollRef: RefObject<HTMLElement | null>;
-  /**
-   * The transcript's box changed. This hook already observes the scroller and
-   * every mounted turn to keep its height index, so the scroll authority reads
-   * its growth signal from here rather than installing a second observer over
-   * the same elements.
-   */
-  onContentResize?(): void;
 }) {
   const [geometryRevision, setGeometryRevision] = useState(0);
   const root = input.scrollRef.current;
@@ -138,8 +131,6 @@ export function useTurnVirtualizer(input: {
 
   const layoutRef = useRef(layout);
   const stateRef = useRef(current);
-  const contentResizeRef = useRef(input.onContentResize);
-  contentResizeRef.current = input.onContentResize;
   const pendingReveal = useRef<string | undefined>(undefined);
 
   useLayoutEffect(() => {
@@ -252,10 +243,6 @@ export function useTurnVirtualizer(input: {
         }
       }
       if (changed) setGeometryRevision((revision) => revision + 1);
-      // Before the window work, and synchronously: this is the observer
-      // callback, so the pin still writes `scrollTop` in the same frame the
-      // content grew and the reader never sees the tail slip.
-      contentResizeRef.current?.();
       scheduleWindow();
     });
     const observeTree = (node: Node): void => {

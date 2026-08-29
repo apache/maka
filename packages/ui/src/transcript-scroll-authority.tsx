@@ -64,11 +64,6 @@ export interface TranscriptScrollSnapshot {
 export interface TranscriptScrollAuthority {
   /** Take the scroller. Returns the detach for the effect that called it. */
   attach(root: HTMLElement | null): () => void;
-  /**
-   * The transcript's box changed. The only moment `pinned` writes `scrollTop`,
-   * and the only growth signal — there is no second observer.
-   */
-  notifyContentResize(): void;
   /** One-shot: put the tail back under the reader and follow it again. */
   pinToTail(): void;
   /**
@@ -183,31 +178,43 @@ export function createTranscriptScrollAuthority(): TranscriptScrollAuthority {
       lastScrollHeight = target.scrollHeight;
       lastClientHeight = target.clientHeight;
       target.addEventListener('scroll', onScroll, { passive: true });
-      // The tail moves when the viewport shrinks, not only when the content
-      // grows: a window resize, a composer that gains a line, a dock that
-      // changes height. None of those touch the transcript, so the content
-      // signal never fires for them, and a pinned reader would be left however
-      // many pixels the viewport lost away from the bottom.
-      const viewport = new ResizeObserver(() => {
-        if (pinned) writeToTail();
+      // Everything that moves the tail without the reader asking, watched in
+      // one place: the scroller's own box, because the tail also moves when the
+      // viewport shrinks (a window resize, a composer that gains a line), and
+      // its children's boxes, because that is what `scrollHeight` is made of.
+      //
+      // Children rather than the scroller: a ResizeObserver on a scroll
+      // container reports the viewport, never the overflow. And children rather
+      // than the transcript's own idea of what grew — a turn, a streaming
+      // message — because the transcript renders content outside turns too, and
+      // an observer that knows which nodes matter is an observer that can be
+      // wrong about it.
+      const box = new ResizeObserver(() => {
+        if (pinned) {
+          writeToTail();
+          return;
+        }
+        awayFromTail = distanceToTail() > BUTTON_THRESHOLD_PX;
+        publish();
       });
-      viewport.observe(target);
+      const observeBox = (): void => {
+        box.disconnect();
+        box.observe(target);
+        for (const child of target.children) box.observe(child);
+      };
+      // Only the direct children: anything deeper grows one of them on its way
+      // to growing `scrollHeight`, or is out of flow and does not grow it.
+      const childList = new MutationObserver(observeBox);
+      childList.observe(target, { childList: true });
+      observeBox();
       if (pinned) writeToTail();
       return () => {
-        viewport.disconnect();
+        childList.disconnect();
+        box.disconnect();
         target.removeEventListener('scroll', onScroll);
         lastWrittenTop = undefined;
         if (root === target) root = null;
       };
-    },
-    notifyContentResize() {
-      if (!root) return;
-      if (pinned) {
-        writeToTail();
-        return;
-      }
-      awayFromTail = distanceToTail() > BUTTON_THRESHOLD_PX;
-      publish();
     },
     pinToTail() {
       pinned = true;
