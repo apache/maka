@@ -19,6 +19,7 @@
 
 import {
   TASK_LEDGER_MAX_TASKS,
+  canTransitionTaskStatus,
   isSafeTaskId,
   isTaskKey,
   sanitizeTaskLedgerTask,
@@ -113,16 +114,21 @@ function isCompatibleCorrelationGroup(rows: readonly SequencedTaskLedgerEvent[])
 function isCompatibleCreate(rows: readonly SequencedTaskLedgerEvent[]): boolean {
   if (rows.length === 0 || rows.length > TASK_LEDGER_MAX_TASKS) return false;
   const taskIds = new Set<string>();
+  const taskKeys = new Set<string>();
   for (const { event } of rows) {
+    const key = event.task.key;
     if (
       event.type !== 'task_created' ||
       event.previousStatus !== undefined ||
       event.nextStatus !== 'pending' ||
-      taskIds.has(event.taskId)
+      !key ||
+      taskIds.has(event.taskId) ||
+      taskKeys.has(key)
     ) {
       return false;
     }
     taskIds.add(event.taskId);
+    taskKeys.add(key);
   }
   return true;
 }
@@ -130,8 +136,39 @@ function isCompatibleCreate(rows: readonly SequencedTaskLedgerEvent[]): boolean 
 function isCompatibleUpdate(rows: readonly SequencedTaskLedgerEvent[]): boolean {
   const event = rows.length === 1 ? rows[0]?.event : undefined;
   return (
-    event !== undefined && UPDATE_EVENT_TYPES.has(event.type) && event.previousStatus !== undefined
+    event !== undefined &&
+    UPDATE_EVENT_TYPES.has(event.type) &&
+    event.previousStatus !== undefined &&
+    canTransitionTaskStatus(event.previousStatus, event.nextStatus, {
+      explicitReopen: event.type === 'task_reopened',
+    }) &&
+    isCompatibleUpdateEventType(event)
   );
+}
+
+function isCompatibleUpdateEventType(event: TaskLedgerEvent): boolean {
+  switch (event.type) {
+    case 'task_updated':
+      return event.previousStatus === event.nextStatus;
+    case 'task_started':
+      return event.nextStatus === 'in_progress';
+    case 'task_blocked':
+      return event.nextStatus === 'blocked';
+    case 'task_completed':
+      return event.nextStatus === 'completed';
+    case 'task_failed':
+      return event.nextStatus === 'failed';
+    case 'task_cancelled':
+      return event.nextStatus === 'cancelled';
+    case 'task_reopened':
+      return (
+        (event.previousStatus === 'completed' && event.nextStatus === 'in_progress') ||
+        (event.previousStatus === 'cancelled' && event.nextStatus === 'pending') ||
+        (event.previousStatus === 'failed' && event.nextStatus === 'pending')
+      );
+    default:
+      return false;
+  }
 }
 
 function projectChange(event: TaskLedgerEvent): TaskMutationChange | undefined {

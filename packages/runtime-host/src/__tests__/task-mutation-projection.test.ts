@@ -105,6 +105,38 @@ describe('Task mutation projection', () => {
       { kind: 'incompatible', correlation: createCorrelation },
     ]);
   });
+
+  test('rejects non-canonical create keys and update transitions', () => {
+    const duplicateKeyRows = [
+      row(0, event('event-1', 'task_created', createCorrelation, 'First')),
+      row(
+        1,
+        event('event-2', 'task_created', createCorrelation, 'Second', {
+          taskIndex: 2,
+          taskKey: 'T1',
+        }),
+      ),
+    ];
+    assert.deepEqual(projectTaskMutationLookups(duplicateKeyRows, [createCorrelation]), [
+      { kind: 'incompatible', correlation: createCorrelation },
+    ]);
+
+    for (const updateEvent of [
+      event('event-3', 'task_completed', updateCorrelation, 'Skipped', {
+        previousStatus: 'pending',
+        nextStatus: 'completed',
+        evidence: 'Done',
+      }),
+      event('event-4', 'task_blocked', updateCorrelation, 'Mismatched type', {
+        previousStatus: 'pending',
+        nextStatus: 'in_progress',
+      }),
+    ]) {
+      assert.deepEqual(projectTaskMutationLookups([row(0, updateEvent)], [updateCorrelation]), [
+        { kind: 'incompatible', correlation: updateCorrelation },
+      ]);
+    }
+  });
 });
 
 function row(sequence: number, ledgerEvent: TaskLedgerEvent): SequencedTaskLedgerEvent {
@@ -122,13 +154,14 @@ function event(
     reason?: string;
     evidence?: string;
     taskIndex?: number;
+    taskKey?: string;
   } = {},
 ): TaskLedgerEvent {
   const taskIndex = options.taskIndex ?? 1;
   const nextStatus = options.nextStatus ?? 'pending';
   const task = {
     id: `task-${taskIndex}`,
-    key: `T${taskIndex}`,
+    key: options.taskKey ?? `T${taskIndex}`,
     subject,
     status: nextStatus,
     createdAt: 1,

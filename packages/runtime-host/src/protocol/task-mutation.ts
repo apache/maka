@@ -20,6 +20,7 @@
 import {
   TASK_EVIDENCE_MAX_CHARS,
   TASK_SUBJECT_MAX_CHARS,
+  canTransitionTaskStatus,
   isSafeTaskId,
   isTaskKey,
   isTaskStatus,
@@ -278,20 +279,29 @@ function taskMutationPresentation(
   const changes = record.changes.map((change) => taskMutationChange(change, direction));
   if (record.operation === 'create') {
     const taskIds = new Set<string>();
+    const taskKeys = new Set<string>();
     for (const change of changes) {
       if (
         change.previousStatus !== undefined ||
         change.nextStatus !== 'pending' ||
         change.reason !== undefined ||
         change.evidence !== undefined ||
-        taskIds.has(change.taskId)
+        taskIds.has(change.taskId) ||
+        taskKeys.has(change.key)
       ) {
         throw invalidProtocolFrame('Invalid create task mutation changes');
       }
       taskIds.add(change.taskId);
+      taskKeys.add(change.key);
     }
-  } else if (changes[0]?.previousStatus === undefined) {
-    throw invalidProtocolFrame('Invalid update task mutation change');
+  } else {
+    const change = changes[0];
+    if (
+      change?.previousStatus === undefined ||
+      !canTransitionTaskStatus(change.previousStatus, change.nextStatus, { explicitReopen: true })
+    ) {
+      throw invalidProtocolFrame('Invalid update task mutation change');
+    }
   }
   return {
     operation: record.operation,

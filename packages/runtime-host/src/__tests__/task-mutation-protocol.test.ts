@@ -152,6 +152,7 @@ describe('Task mutation protocol', () => {
       [change(1, { previousStatus: 'in_progress' })],
       [change(1, { nextStatus: 'completed', evidence: 'Done' })],
       [change(1), change(1)],
+      [change(1), change(2, { key: 'T1' })],
     ]) {
       assertInvalid(() =>
         decodeTaskMutationQueryResult({
@@ -172,13 +173,34 @@ describe('Task mutation protocol', () => {
         nextCursor: null,
       }),
     );
+    assertInvalid(() =>
+      decodeTaskMutationQueryResult({
+        kind: 'page',
+        sessionId: 'session-1',
+        revision,
+        lookups: [
+          found(
+            correlation,
+            [
+              change(1, {
+                previousStatus: 'pending',
+                nextStatus: 'completed',
+                evidence: 'Done',
+              }),
+            ],
+            'update',
+          ),
+        ],
+        nextCursor: null,
+      }),
+    );
   });
 
   test('fits one maximum legal create without splitting its presentation', () => {
     const changes = Array.from({ length: 200 }, (_, index) => {
       const taskId = `t-${index}-${'x.'.repeat(64)}`.slice(0, 64);
       const taskNumber = String(index + 1);
-      const key = `T${taskNumber}${'1'.repeat(63 - taskNumber.length)}`;
+      const key = `T${taskNumber}.${'1'.repeat(62 - taskNumber.length)}`;
       return change(index + 1, {
         taskId,
         key,
