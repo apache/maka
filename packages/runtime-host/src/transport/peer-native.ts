@@ -62,6 +62,7 @@ export interface RuntimeHostPeerIdentityProof {
 export interface RuntimeHostPeerNativeEndpoint {
   readonly peerId: string;
   readonly listenAddresses: readonly string[];
+  readonly activeCoordinationRelays: readonly string[];
   connect(options: {
     readonly requestId: number;
     readonly peerId: string;
@@ -100,6 +101,7 @@ interface RuntimeHostPeerNativeModule {
     readonly expectedPeerId?: string;
     readonly listenAddresses?: readonly string[];
     readonly coordinationRelays?: readonly string[];
+    readonly automaticRelayDiscovery?: boolean;
   }): unknown;
 }
 
@@ -170,6 +172,7 @@ export function startRuntimeHostPeerEndpoint(input: {
   readonly expectedPeerId?: string;
   readonly listenAddresses?: readonly string[];
   readonly coordinationRelays?: readonly string[];
+  readonly automaticRelayDiscovery?: boolean;
 }): RuntimeHostPeerNativeEndpoint {
   try {
     const endpoint = loadNativeModule(input.nativePath).startPeerEndpoint({
@@ -177,6 +180,9 @@ export function startRuntimeHostPeerEndpoint(input: {
       ...(input.expectedPeerId ? { expectedPeerId: input.expectedPeerId } : {}),
       ...(input.listenAddresses ? { listenAddresses: input.listenAddresses } : {}),
       ...(input.coordinationRelays ? { coordinationRelays: input.coordinationRelays } : {}),
+      ...(input.automaticRelayDiscovery === undefined
+        ? {}
+        : { automaticRelayDiscovery: input.automaticRelayDiscovery }),
     });
     if (!isPeerNativeEndpoint(endpoint)) {
       throw new RuntimeHostPeerError(
@@ -442,6 +448,9 @@ function isPeerNativeEndpoint(value: unknown): value is RuntimeHostPeerNativeEnd
     'listenAddresses' in value &&
     Array.isArray(value.listenAddresses) &&
     value.listenAddresses.every((address) => typeof address === 'string') &&
+    'activeCoordinationRelays' in value &&
+    Array.isArray(value.activeCoordinationRelays) &&
+    value.activeCoordinationRelays.every((address) => typeof address === 'string') &&
     'connect' in value &&
     typeof value.connect === 'function' &&
     'connectMeshControl' in value &&

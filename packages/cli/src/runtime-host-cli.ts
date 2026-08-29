@@ -165,6 +165,8 @@ export type RuntimeHostCliCommand =
       operatorDeploymentId: string;
       listenAddresses: string[];
       coordinationRelays?: string[];
+      automaticRelayDiscovery?: boolean;
+      relayDiscoveryStatus?: true;
       expectedTarget?: RuntimeHostManagedServiceTarget;
       allowInterruptActiveTasks?: true;
     }
@@ -892,6 +894,8 @@ function parseServicePeerCommand(argv: string[]): RuntimeHostCliCommand {
   const listenAddresses: string[] = [];
   const coordinationRelays: string[] = [];
   let clearCoordinationRelays = false;
+  let automaticRelayDiscovery: boolean | undefined;
+  let relayDiscoveryStatus = false;
   let allowInterruptActiveTasks = false;
   const options = parseManagedServiceOptions(argv.slice(1), {
     allowConfiguration: false,
@@ -904,6 +908,22 @@ function parseServicePeerCommand(argv: string[]): RuntimeHostCliCommand {
       '--allow-interrupt-active-tasks': () => {
         if (allowInterruptActiveTasks) return error('Duplicate --allow-interrupt-active-tasks');
         allowInterruptActiveTasks = true;
+      },
+      '--automatic-relay-discovery': () => {
+        if (automaticRelayDiscovery !== undefined) {
+          return error('Relay discovery mode was specified more than once');
+        }
+        automaticRelayDiscovery = true;
+      },
+      '--no-automatic-relay-discovery': () => {
+        if (automaticRelayDiscovery !== undefined) {
+          return error('Relay discovery mode was specified more than once');
+        }
+        automaticRelayDiscovery = false;
+      },
+      '--relay-discovery-status': () => {
+        if (relayDiscoveryStatus) return error('Duplicate --relay-discovery-status');
+        relayDiscoveryStatus = true;
       },
     },
     valueOptions: {
@@ -924,6 +944,9 @@ function parseServicePeerCommand(argv: string[]): RuntimeHostCliCommand {
   if (options.framed && (action === 'rotate' || action === 'descriptor')) {
     return error(`runtime-host service peer ${action} does not support --framed`);
   }
+  if (relayDiscoveryStatus && !options.framed) {
+    return error('--relay-discovery-status requires --framed');
+  }
   if (listenAddresses.some(hasEphemeralRuntimeHostPeerPort)) {
     return error('--listen requires a stable non-zero transport port');
   }
@@ -932,11 +955,12 @@ function parseServicePeerCommand(argv: string[]): RuntimeHostCliCommand {
   }
   if (
     action !== 'enable' &&
-    (listenAddresses.length > 0 || coordinationRelays.length > 0 || clearCoordinationRelays)
+    (listenAddresses.length > 0 ||
+      coordinationRelays.length > 0 ||
+      clearCoordinationRelays ||
+      automaticRelayDiscovery !== undefined)
   ) {
-    return error(
-      '--listen, --coordination-relay, and --clear-coordination-relays are only valid with peer enable',
-    );
+    return error('Peer listener options are only valid with peer enable');
   }
   if (allowInterruptActiveTasks && action !== 'enable' && action !== 'disable') {
     return error('--allow-interrupt-active-tasks is only valid with peer enable or peer disable');
@@ -969,6 +993,8 @@ function parseServicePeerCommand(argv: string[]): RuntimeHostCliCommand {
       : coordinationRelays.length > 0
         ? { coordinationRelays }
         : {}),
+    ...(automaticRelayDiscovery === undefined ? {} : { automaticRelayDiscovery }),
+    ...(relayDiscoveryStatus ? { relayDiscoveryStatus: true as const } : {}),
     ...(options.expectedTarget ? { expectedTarget: options.expectedTarget } : {}),
     ...(allowInterruptActiveTasks ? { allowInterruptActiveTasks: true } : {}),
   };

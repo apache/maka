@@ -38,6 +38,7 @@ import {
   RUNTIME_HOST_OPERATOR_ACCESS_MANAGEMENT_CAPABILITY,
   RUNTIME_HOST_OPERATOR_CAPABILITY_REQUEST_ENV,
   RUNTIME_HOST_OPERATOR_PEER_MANAGEMENT_CAPABILITY,
+  RUNTIME_HOST_OPERATOR_PEER_RELAY_DISCOVERY_CAPABILITY,
   RUNTIME_HOST_OPERATOR_PROJECT_DIRECTORY_CONFIGURATION_REQUEST_ENV,
   RUNTIME_HOST_OPERATOR_PROCESS_LIFETIME_LOCK_CAPABILITY,
   RUNTIME_HOST_SERVICE_LOG_MAX_BYTES,
@@ -160,6 +161,7 @@ describe('managed Runtime Host service', () => {
         '--listen',
         '/ip4/0.0.0.0/udp/44001/quic-v1',
         '--clear-coordination-relays',
+        '--no-automatic-relay-discovery',
         '--allow-interrupt-active-tasks',
         '--expected-service-id',
         'b'.repeat(64),
@@ -179,6 +181,7 @@ describe('managed Runtime Host service', () => {
         framed: true,
         listenAddresses: ['/ip4/0.0.0.0/udp/44001/quic-v1'],
         coordinationRelays: [],
+        automaticRelayDiscovery: false,
         allowInterruptActiveTasks: true,
         managedRootId: 'a'.repeat(64),
         operatorDeploymentId: '00000000-0000-4000-8000-000000000001',
@@ -1793,6 +1796,16 @@ describe('managed Runtime Host service', () => {
         ? peerFrame.operatorCapabilities
         : undefined,
       [RUNTIME_HOST_OPERATOR_PEER_MANAGEMENT_CAPABILITY],
+    );
+
+    process.env[RUNTIME_HOST_OPERATOR_CAPABILITY_REQUEST_ENV] =
+      RUNTIME_HOST_OPERATOR_PEER_RELAY_DISCOVERY_CAPABILITY;
+    const relayDiscoveryFrame = decodeRuntimeHostServiceManagementFrame(await run());
+    assert.deepEqual(
+      relayDiscoveryFrame?.kind === 'result' && relayDiscoveryFrame.action === 'status'
+        ? relayDiscoveryFrame.operatorCapabilities
+        : undefined,
+      [RUNTIME_HOST_OPERATOR_PEER_RELAY_DISCOVERY_CAPABILITY],
     );
 
     process.env[RUNTIME_HOST_OPERATOR_CAPABILITY_REQUEST_ENV] =

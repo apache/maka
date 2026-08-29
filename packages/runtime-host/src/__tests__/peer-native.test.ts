@@ -60,6 +60,7 @@ module.exports = {
     return {
       peerId: 'client',
       listenAddresses: [],
+      activeCoordinationRelays: [],
       connect: ({ requestId, peerId, routeHints, coordinationRelays }) => {
         stats.requests.push({ requestId, peerId, routeHints, coordinationRelays });
         if (peerId === 'ready') return Promise.resolve(stream);
@@ -198,6 +199,7 @@ module.exports = {
   startPeerEndpoint: () => ({
     peerId: 'peer',
     listenAddresses: [],
+    activeCoordinationRelays: [],
     connect: async () => stream,
     connectMeshControl: async () => stream,
     cancelConnect: async () => true,

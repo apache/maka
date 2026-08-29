@@ -20,6 +20,7 @@
 use std::{
     collections::{HashMap, HashSet},
     path::PathBuf,
+    sync::{Arc, RwLock},
     thread,
     time::{Duration, Instant},
 };
@@ -43,6 +44,7 @@ mod address;
 mod application_stream;
 mod identity_store;
 mod peer_stream;
+mod relay_discovery;
 
 use address::{
     address_with_expected_peer, address_with_peer, coordination_relay_peer_id, is_relayed_address,
@@ -64,7 +66,11 @@ const MAX_ESTABLISHED_CONNECTIONS: u32 = 1024;
 const MAX_CONNECTIONS_PER_PEER: u32 = 4;
 const LISTENER_ADDRESS_QUIET_PERIOD: Duration = Duration::from_millis(250);
 const COORDINATION_RETRY_INTERVAL: Duration = Duration::from_secs(1);
+const AUTOMATIC_RELAY_COOLDOWN: Duration = Duration::from_secs(30);
 const IDLE_CONNECTION_TIMEOUT: Duration = Duration::from_secs(10);
+const TARGET_COORDINATION_RESERVATIONS: usize = 2;
+const MAX_AUTOMATIC_RELAY_CANDIDATES: usize = 8;
+const MAX_RELAY_ADDRESSES_PER_PEER: usize = 4;
 
 #[derive(Clone)]
 pub struct StartOptions {
@@ -72,11 +78,13 @@ pub struct StartOptions {
     pub expected_peer_id: Option<PeerId>,
     pub listen_addresses: Vec<Multiaddr>,
     pub coordination_relays: Vec<Multiaddr>,
+    pub automatic_relay_discovery: bool,
 }
 
 pub struct StartedEndpoint {
     pub peer_id: PeerId,
     pub listen_addresses: Vec<Multiaddr>,
+    pub active_coordination_relays: Arc<RwLock<Vec<Multiaddr>>>,
     pub commands: mpsc::Sender<EngineCommand>,
     pub incoming: mpsc::Receiver<PeerStream>,
     pub mesh_incoming: mpsc::Receiver<PeerStream>,
@@ -178,11 +186,14 @@ struct DirectConnectState {
 
 struct CoordinationRelay {
     addresses: Vec<Multiaddr>,
+    automatic_addresses: Vec<Multiaddr>,
+    reservation_addresses: Vec<Multiaddr>,
     connections: HashSet<ConnectionId>,
     pending_connection: Option<ConnectionId>,
     identify_received: bool,
     identify_sent: bool,
     reserve: bool,
+    reservation_accepted: bool,
     client_references: usize,
     reservation_listener: Option<ListenerId>,
     next_connection_attempt: Instant,
@@ -194,11 +205,14 @@ impl Default for CoordinationRelay {
         let now = Instant::now();
         Self {
             addresses: Vec::new(),
+            automatic_addresses: Vec::new(),
+            reservation_addresses: Vec::new(),
             connections: HashSet::new(),
             pending_connection: None,
             identify_received: false,
             identify_sent: false,
             reserve: false,
+            reservation_accepted: false,
             client_references: 0,
             reservation_listener: None,
             next_connection_attempt: now,
@@ -208,6 +222,10 @@ impl Default for CoordinationRelay {
 }
 
 impl CoordinationRelay {
+    fn is_automatic(&self) -> bool {
+        !self.automatic_addresses.is_empty()
+    }
+
     fn is_active(&self) -> bool {
         self.reserve || self.client_references > 0
     }
@@ -216,7 +234,14 @@ impl CoordinationRelay {
         self.identify_received = false;
         self.identify_sent = false;
         self.next_connection_attempt = now;
-        self.next_reservation_attempt = now + COORDINATION_RETRY_INTERVAL;
+        self.next_reservation_attempt = now
+            + if self.is_automatic() {
+                AUTOMATIC_RELAY_COOLDOWN
+            } else {
+                COORDINATION_RETRY_INTERVAL
+            };
+        self.reservation_accepted = false;
+        self.reservation_addresses.clear();
         self.reservation_listener.take()
     }
 
@@ -225,7 +250,14 @@ impl CoordinationRelay {
             return false;
         }
         self.reservation_listener = None;
-        self.next_reservation_attempt = now + COORDINATION_RETRY_INTERVAL;
+        self.reservation_accepted = false;
+        self.reservation_addresses.clear();
+        self.next_reservation_attempt = now
+            + if self.is_automatic() {
+                AUTOMATIC_RELAY_COOLDOWN
+            } else {
+                COORDINATION_RETRY_INTERVAL
+            };
         true
     }
 }
@@ -291,6 +323,8 @@ pub fn start(options: StartOptions) -> Result<StartedEndpoint, PeerError> {
     let (incoming_tx, incoming_rx) = mpsc::channel(INCOMING_STREAM_CAPACITY);
     let (mesh_incoming_tx, mesh_incoming_rx) = mpsc::channel(MESH_INCOMING_STREAM_CAPACITY);
     let (terminal_tx, terminal_rx) = mpsc::channel(1);
+    let active_coordination_relays = Arc::new(RwLock::new(Vec::new()));
+    let active_coordination_relays_for_thread = Arc::clone(&active_coordination_relays);
     let thread = thread::Builder::new()
         .name("maka-runtime-host-peer".to_owned())
         .spawn(move || {
@@ -300,6 +334,7 @@ pub fn start(options: StartOptions) -> Result<StartedEndpoint, PeerError> {
                 incoming_tx,
                 mesh_incoming_tx,
                 ready_tx.clone(),
+                active_coordination_relays_for_thread,
             );
             if let Err(error) = result {
                 let _ = ready_tx.send(Err(error.clone()));
@@ -313,6 +348,7 @@ pub fn start(options: StartOptions) -> Result<StartedEndpoint, PeerError> {
     Ok(StartedEndpoint {
         peer_id: ready.0,
         listen_addresses: ready.1,
+        active_coordination_relays,
         commands: command_tx,
         incoming: incoming_rx,
         mesh_incoming: mesh_incoming_rx,
@@ -327,6 +363,7 @@ fn run_endpoint(
     incoming_tx: mpsc::Sender<PeerStream>,
     mesh_incoming_tx: mpsc::Sender<PeerStream>,
     ready_tx: std::sync::mpsc::SyncSender<Result<(PeerId, Vec<Multiaddr>), PeerError>>,
+    active_coordination_relays: Arc<RwLock<Vec<Multiaddr>>>,
 ) -> Result<(), PeerError> {
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
@@ -339,6 +376,7 @@ fn run_endpoint(
         incoming_tx,
         mesh_incoming_tx,
         ready_tx,
+        active_coordination_relays,
     ))
 }
 
@@ -348,6 +386,7 @@ async fn run_endpoint_async(
     incoming_tx: mpsc::Sender<PeerStream>,
     mesh_incoming_tx: mpsc::Sender<PeerStream>,
     ready_tx: std::sync::mpsc::SyncSender<Result<(PeerId, Vec<Multiaddr>), PeerError>>,
+    active_coordination_relays: Arc<RwLock<Vec<Multiaddr>>>,
 ) -> Result<(), PeerError> {
     let key = match options.expected_peer_id {
         Some(expected) => {
@@ -439,6 +478,9 @@ async fn run_endpoint_async(
     let mut external_candidate_ready = startup_external_candidate_ready;
     let mut deadline_tick = tokio::time::interval(Duration::from_millis(100));
     deadline_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    let mut discovered_relays = options
+        .automatic_relay_discovery
+        .then(relay_discovery::spawn);
 
     loop {
         tokio::select! {
@@ -549,6 +591,34 @@ async fn run_endpoint_async(
                     // Dropping the stream applies bounded backpressure to Mesh control callers.
                 }
             }
+            Some(candidate) = async {
+                match &mut discovered_relays {
+                    Some(receiver) => receiver.recv().await,
+                    None => std::future::pending().await,
+                }
+            } => {
+                discovery_debug(format_args!("candidate {}", candidate.peer_id));
+                register_automatic_relay_candidate(
+                    &mut coordination_relays,
+                    candidate,
+                    local_peer_id,
+                );
+                rebalance_automatic_relays(
+                    &mut swarm,
+                    &mut coordination_relays,
+                    Instant::now(),
+                );
+                publish_active_coordination_relays(
+                    &coordination_relays,
+                    &active_coordination_relays,
+                );
+                maintain_coordination_relays(
+                    &mut swarm,
+                    &mut coordination_relays,
+                    external_candidate_ready,
+                    Instant::now(),
+                );
+            }
             Some(completed) = stream_completed_rx.recv() => {
                 match completed.kind {
                     StreamCompletion::Application(connection_id) => {
@@ -644,6 +714,16 @@ async fn run_endpoint_async(
                     &mut coordination_relays,
                     &mut direct,
                     &mut external_candidate_ready,
+                    &active_coordination_relays,
+                );
+                rebalance_automatic_relays(
+                    &mut swarm,
+                    &mut coordination_relays,
+                    Instant::now(),
+                );
+                publish_active_coordination_relays(
+                    &coordination_relays,
+                    &active_coordination_relays,
                 );
                 maintain_coordination_relays(
                     &mut swarm,
@@ -665,6 +745,11 @@ async fn run_endpoint_async(
             }
             _ = deadline_tick.tick() => {
                 let now = Instant::now();
+                rebalance_automatic_relays(&mut swarm, &mut coordination_relays, now);
+                publish_active_coordination_relays(
+                    &coordination_relays,
+                    &active_coordination_relays,
+                );
                 maintain_coordination_relays(
                     &mut swarm,
                     &mut coordination_relays,
@@ -883,6 +968,7 @@ fn handle_swarm_event(
     coordination_relays: &mut HashMap<PeerId, CoordinationRelay>,
     direct: &mut DirectConnectState,
     external_candidate_ready: &mut bool,
+    active_coordination_relays: &Arc<RwLock<Vec<Multiaddr>>>,
 ) {
     match event {
         SwarmEvent::ConnectionEstablished {
@@ -926,12 +1012,27 @@ fn handle_swarm_event(
             if let Some(relay) = coordination_relays.get_mut(&peer_id) {
                 relay.connections.remove(&connection_id);
             }
+            let mut reservation_changed = false;
+            let mut discard_automatic = false;
             if !swarm.is_connected(&peer_id)
                 && let Some(relay) = coordination_relays.get_mut(&peer_id)
                 && relay.is_active()
-                && let Some(listener) = relay.connection_lost(Instant::now())
             {
-                swarm.remove_listener(listener);
+                let was_accepted = relay.reservation_accepted;
+                discovery_debug(format_args!(
+                    "connection to {peer_id} closed; reservation accepted={was_accepted}"
+                ));
+                if let Some(listener) = relay.connection_lost(Instant::now()) {
+                    swarm.remove_listener(listener);
+                }
+                reservation_changed = true;
+                discard_automatic = relay.is_automatic() && !was_accepted;
+            }
+            if discard_automatic {
+                discard_automatic_relay_candidate(swarm, coordination_relays, peer_id);
+            }
+            if reservation_changed {
+                publish_active_coordination_relays(coordination_relays, active_coordination_relays);
             }
         }
         SwarmEvent::OutgoingConnectionError { connection_id, .. } => {
@@ -939,11 +1040,18 @@ fn handle_swarm_event(
             for connect in direct.pending.values_mut() {
                 connect.dials.remove(&connection_id);
             }
-            for relay in coordination_relays.values_mut() {
+            let mut failed_automatic = None;
+            for (peer_id, relay) in coordination_relays.iter_mut() {
                 if relay.pending_connection == Some(connection_id) {
                     relay.pending_connection = None;
+                    if relay.is_automatic() && !relay.reservation_accepted {
+                        failed_automatic = Some(*peer_id);
+                    }
                     break;
                 }
+            }
+            if let Some(peer_id) = failed_automatic {
+                discard_automatic_relay_candidate(swarm, coordination_relays, peer_id);
             }
         }
         SwarmEvent::Behaviour(BehaviourEvent::Dcutr(dcutr::Event {
@@ -958,6 +1066,40 @@ fn handle_swarm_event(
             }
         }
         SwarmEvent::Behaviour(BehaviourEvent::Dcutr(_)) => {}
+        SwarmEvent::Behaviour(BehaviourEvent::RelayClient(
+            relay::client::Event::ReservationReqAccepted { relay_peer_id, .. },
+        )) => {
+            discovery_debug(format_args!("reservation accepted by {relay_peer_id}"));
+            if let Some(relay) = coordination_relays.get_mut(&relay_peer_id) {
+                relay.reservation_accepted = true;
+            }
+            publish_active_coordination_relays(coordination_relays, active_coordination_relays);
+        }
+        SwarmEvent::NewListenAddr {
+            listener_id,
+            address,
+        } if is_relayed_address(&address) => {
+            let relay_peer = coordination_relays.iter().find_map(|(peer_id, relay)| {
+                (relay.reservation_listener == Some(listener_id)).then_some(*peer_id)
+            });
+            if let Some(relay_peer) = relay_peer {
+                let automatic = coordination_relays
+                    .get(&relay_peer)
+                    .is_some_and(CoordinationRelay::is_automatic);
+                if let Some(base_address) = reservation_base_address(address, relay_peer, automatic)
+                {
+                    if let Some(relay) = coordination_relays.get_mut(&relay_peer) {
+                        remember_reservation_address(relay, base_address);
+                    }
+                } else if automatic {
+                    if let Some(relay) = coordination_relays.get_mut(&relay_peer) {
+                        relay.reservation_accepted = false;
+                    }
+                    discard_automatic_relay_candidate(swarm, coordination_relays, relay_peer);
+                }
+                publish_active_coordination_relays(coordination_relays, active_coordination_relays);
+            }
+        }
         SwarmEvent::Behaviour(BehaviourEvent::Identify(identify::Event::Received {
             peer_id,
             ..
@@ -999,11 +1141,31 @@ fn handle_swarm_event(
                 );
             }
         }
-        SwarmEvent::ListenerClosed { listener_id, .. } => {
-            for relay in coordination_relays.values_mut() {
+        SwarmEvent::ListenerClosed {
+            listener_id,
+            reason,
+            ..
+        } => {
+            discovery_debug(format_args!(
+                "reservation listener {listener_id:?} closed: {reason:?}"
+            ));
+            let mut changed = false;
+            let mut rejected_automatic = None;
+            for (peer_id, relay) in coordination_relays.iter_mut() {
+                let was_accepted = relay.reservation_accepted;
                 if relay.listener_closed(listener_id, Instant::now()) {
+                    if relay.is_automatic() && !was_accepted {
+                        rejected_automatic = Some(*peer_id);
+                    }
+                    changed = true;
                     break;
                 }
+            }
+            if let Some(peer_id) = rejected_automatic {
+                discard_automatic_relay_candidate(swarm, coordination_relays, peer_id);
+            }
+            if changed {
+                publish_active_coordination_relays(coordination_relays, active_coordination_relays);
             }
         }
         _ => {}
@@ -1023,6 +1185,7 @@ fn handle_startup_event(
         coordination_relays,
         &mut DirectConnectState::default(),
         external_candidate_ready,
+        &Arc::new(RwLock::new(Vec::new())),
     );
 }
 
@@ -1041,14 +1204,254 @@ fn register_coordination_relay(
         ));
     }
     let relay = relays.entry(relay_peer).or_default();
+    if reserve {
+        relay.automatic_addresses.clear();
+    }
     relay.reserve |= reserve;
     if add_client_reference {
         relay.client_references += 1;
     }
-    if !relay.addresses.contains(address) {
-        relay.addresses.push(address.clone());
-    }
+    remember_relay_address(&mut relay.addresses, address.clone());
     Ok(())
+}
+
+fn register_automatic_relay_candidate(
+    relays: &mut HashMap<PeerId, CoordinationRelay>,
+    candidate: relay_discovery::RelayCandidate,
+    local_peer_id: PeerId,
+) {
+    if candidate.peer_id == local_peer_id {
+        return;
+    }
+    if !relays
+        .get(&candidate.peer_id)
+        .is_some_and(CoordinationRelay::is_automatic)
+        && relays.values().filter(|relay| relay.is_automatic()).count()
+            >= MAX_AUTOMATIC_RELAY_CANDIDATES
+    {
+        return;
+    }
+    let addresses = bounded_relay_addresses(candidate.addresses);
+    if addresses.is_empty() {
+        return;
+    }
+    let relay = relays.entry(candidate.peer_id).or_default();
+    if relay.reserve && !relay.is_automatic() {
+        return;
+    }
+    relay.automatic_addresses = addresses;
+}
+
+fn rebalance_automatic_relays(
+    swarm: &mut Swarm<Behaviour>,
+    relays: &mut HashMap<PeerId, CoordinationRelay>,
+    now: Instant,
+) {
+    let manual_reservations = relays
+        .values()
+        .filter(|relay| {
+            !relay.is_automatic()
+                && relay.reservation_accepted
+                && !relay.reservation_addresses.is_empty()
+        })
+        .count();
+    let desired = TARGET_COORDINATION_RESERVATIONS.saturating_sub(manual_reservations);
+    let mut automatic = relays
+        .iter()
+        .filter(|(_, relay)| relay.is_automatic())
+        .map(|(peer_id, relay)| (*peer_id, relay.reservation_accepted, relay.reserve))
+        .collect::<Vec<_>>();
+    automatic.sort_unstable_by_key(|(peer_id, accepted, reserved)| {
+        (!*accepted, !*reserved, peer_id.to_string())
+    });
+
+    let mut selected = 0;
+    for (peer_id, accepted, _) in automatic {
+        let relay = relays
+            .get_mut(&peer_id)
+            .expect("automatic relay was collected from the same map");
+        let should_reserve = selected < desired
+            && (accepted
+                || relay.reservation_listener.is_some()
+                || relay.next_reservation_attempt <= now);
+        if should_reserve {
+            relay.reserve = true;
+            selected += 1;
+            continue;
+        }
+        relay.reserve = false;
+        relay.reservation_accepted = false;
+        relay.reservation_addresses.clear();
+        if let Some(listener) = relay.reservation_listener.take() {
+            discovery_debug(format_args!(
+                "removing reservation listener for deselected candidate {peer_id}"
+            ));
+            swarm.remove_listener(listener);
+        }
+        if relay.client_references == 0 {
+            for connection_id in relay.connections.drain() {
+                let _ = swarm.close_connection(connection_id);
+            }
+        }
+    }
+}
+
+fn publish_active_coordination_relays(
+    relays: &HashMap<PeerId, CoordinationRelay>,
+    snapshot: &Arc<RwLock<Vec<Multiaddr>>>,
+) {
+    let mut addresses = relays
+        .values()
+        .filter(|relay| relay.reservation_accepted)
+        .flat_map(|relay| relay.reservation_addresses.iter().cloned())
+        .collect::<Vec<_>>();
+    addresses.sort_unstable_by_key(ToString::to_string);
+    addresses.dedup();
+    if let Ok(mut current) = snapshot.write() {
+        *current = addresses;
+    }
+}
+
+fn bounded_relay_addresses(mut addresses: Vec<Multiaddr>) -> Vec<Multiaddr> {
+    addresses.sort_unstable_by_key(|address| (relay_route_class(address), address.to_string()));
+    let mut classes = HashSet::new();
+    addresses
+        .into_iter()
+        .filter(|address| classes.insert(relay_route_class(address)))
+        .take(MAX_RELAY_ADDRESSES_PER_PEER)
+        .collect()
+}
+
+fn relay_route_class(address: &Multiaddr) -> (u8, u8) {
+    let mut protocols = address.iter();
+    let host = match protocols.next() {
+        Some(Protocol::Ip4(_)) => 0,
+        Some(Protocol::Ip6(_)) => 1,
+        Some(Protocol::Dns(_) | Protocol::Dns4(_) | Protocol::Dns6(_)) => 2,
+        _ => 3,
+    };
+    let transport = match protocols.next() {
+        Some(Protocol::Udp(_)) => 0,
+        Some(Protocol::Tcp(_)) => 1,
+        _ => 2,
+    };
+    (host, transport)
+}
+
+fn reservation_base_address(
+    mut address: Multiaddr,
+    expected_peer: PeerId,
+    require_public: bool,
+) -> Option<Multiaddr> {
+    if !matches!(address.pop(), Some(Protocol::P2p(_)))
+        || !matches!(address.pop(), Some(Protocol::P2pCircuit))
+        || coordination_relay_peer_id(&address).ok()? != expected_peer
+        || !supported_relay_address(&address, require_public)
+    {
+        return None;
+    }
+    Some(address)
+}
+
+fn remember_reservation_address(relay: &mut CoordinationRelay, address: Multiaddr) {
+    remember_relay_address(&mut relay.reservation_addresses, address);
+}
+
+fn remember_relay_address(addresses: &mut Vec<Multiaddr>, address: Multiaddr) {
+    let class = relay_route_class(&address);
+    if let Some(existing) = addresses
+        .iter_mut()
+        .find(|existing| relay_route_class(existing) == class)
+    {
+        *existing = address;
+    } else if addresses.len() < MAX_RELAY_ADDRESSES_PER_PEER {
+        addresses.push(address);
+    }
+}
+
+fn supported_public_relay_address(address: &Multiaddr) -> bool {
+    supported_relay_address(address, true)
+}
+
+fn supported_relay_address(address: &Multiaddr, require_public: bool) -> bool {
+    let mut protocols = address.iter();
+    let host_supported = match protocols.next() {
+        Some(Protocol::Ip4(address)) => !require_public || public_ipv4(address),
+        Some(Protocol::Ip6(address)) => !require_public || public_ipv6(address),
+        Some(Protocol::Dns(_) | Protocol::Dns4(_) | Protocol::Dns6(_)) => !require_public,
+        _ => false,
+    };
+    if !host_supported {
+        return false;
+    }
+    match protocols.next() {
+        Some(Protocol::Tcp(_)) => {
+            matches!(protocols.next(), Some(Protocol::P2p(_))) && protocols.next().is_none()
+        }
+        Some(Protocol::Udp(_)) => {
+            matches!(protocols.next(), Some(Protocol::QuicV1))
+                && matches!(protocols.next(), Some(Protocol::P2p(_)))
+                && protocols.next().is_none()
+        }
+        _ => false,
+    }
+}
+
+fn public_ipv4(address: std::net::Ipv4Addr) -> bool {
+    let [first, second, third, _] = address.octets();
+    !(first == 0
+        || first == 10
+        || first == 127
+        || first >= 224
+        || (first == 100 && (64..=127).contains(&second))
+        || (first == 169 && second == 254)
+        || (first == 172 && (16..=31).contains(&second))
+        || (first == 192 && second == 0 && third == 0)
+        || (first == 192 && second == 0 && third == 2)
+        || (first == 192 && second == 168)
+        || (first == 198 && (second == 18 || second == 19))
+        || (first == 198 && second == 51 && third == 100)
+        || (first == 203 && second == 0 && third == 113))
+}
+
+fn public_ipv6(address: std::net::Ipv6Addr) -> bool {
+    if let Some(address) = address.to_ipv4() {
+        return public_ipv4(address);
+    }
+    let segments = address.segments();
+    segments[0] & 0xe000 == 0x2000
+        && !(segments[0] == 0x2001 && segments[1] < 0x0200)
+        && !(segments[0] == 0x2001 && segments[1] == 0x0db8)
+        && segments[0] != 0x2002
+        && segments[0] & 0xfff0 != 0x3ff0
+}
+
+fn discard_automatic_relay_candidate(
+    swarm: &mut Swarm<Behaviour>,
+    relays: &mut HashMap<PeerId, CoordinationRelay>,
+    peer_id: PeerId,
+) {
+    let Some(relay) = relays.get_mut(&peer_id) else {
+        return;
+    };
+    if !relay.is_automatic() || relay.reservation_accepted {
+        return;
+    }
+    relay.automatic_addresses.clear();
+    relay.reserve = false;
+    relay.reservation_addresses.clear();
+    if let Some(listener) = relay.reservation_listener.take() {
+        swarm.remove_listener(listener);
+    }
+    if relay.client_references > 0 {
+        return;
+    }
+    let mut relay = relays
+        .remove(&peer_id)
+        .expect("automatic relay candidate was read from the same map");
+    for connection_id in relay.connections.drain() {
+        let _ = swarm.close_connection(connection_id);
+    }
 }
 
 fn release_coordination_relays(
@@ -1092,7 +1495,7 @@ fn dial_coordination_relay(
     }
     relay.next_connection_attempt = now + COORDINATION_RETRY_INTERVAL;
     let options = DialOpts::peer_id(peer_id)
-        .addresses(relay.addresses.clone())
+        .addresses(relay_dial_addresses(relay))
         .build();
     let connection_id = options.connection_id();
     if swarm.dial(options).is_ok() {
@@ -1140,11 +1543,41 @@ fn request_coordination_reservation(
         return;
     }
     relay.next_reservation_attempt = now + COORDINATION_RETRY_INTERVAL;
-    for address in &relay.addresses {
-        if let Ok(listener) = swarm.listen_on(address.clone().with(Protocol::P2pCircuit)) {
-            relay.reservation_listener = Some(listener);
-            break;
+    for address in relay_reservation_addresses(relay) {
+        match swarm.listen_on(address.with(Protocol::P2pCircuit)) {
+            Ok(listener) => {
+                discovery_debug(format_args!("requesting reservation from {peer_id}"));
+                relay.reservation_listener = Some(listener);
+                break;
+            }
+            Err(error) => {
+                discovery_debug(format_args!(
+                    "reservation request for {peer_id} failed: {error}"
+                ));
+            }
         }
+    }
+}
+
+fn relay_dial_addresses(relay: &CoordinationRelay) -> Vec<Multiaddr> {
+    let mut addresses = relay.addresses.clone();
+    addresses.extend(relay.automatic_addresses.iter().cloned());
+    addresses.sort_unstable_by_key(ToString::to_string);
+    addresses.dedup();
+    addresses
+}
+
+fn relay_reservation_addresses(relay: &CoordinationRelay) -> Vec<Multiaddr> {
+    if relay.is_automatic() {
+        relay.automatic_addresses.clone()
+    } else {
+        relay.addresses.clone()
+    }
+}
+
+fn discovery_debug(message: std::fmt::Arguments<'_>) {
+    if std::env::var_os("MAKA_PEER_DISCOVERY_DEBUG").is_some() {
+        eprintln!("[peer-relay-pool] {message}");
     }
 }
 
@@ -1366,6 +1799,7 @@ mod tests {
                     .expect("test listen address"),
             ],
             coordination_relays: Vec::new(),
+            automatic_relay_discovery: false,
         }
     }
 
@@ -1448,6 +1882,12 @@ mod tests {
         let mut relay = CoordinationRelay {
             identify_received: true,
             identify_sent: true,
+            reservation_accepted: true,
+            reservation_addresses: vec![
+                "/ip4/192.0.2.1/tcp/4001"
+                    .parse()
+                    .expect("valid reservation address"),
+            ],
             reservation_listener: Some(listener),
             next_connection_attempt: now + Duration::from_secs(30),
             next_reservation_attempt: now + Duration::from_secs(30),
@@ -1456,12 +1896,51 @@ mod tests {
 
         assert!(relay.listener_closed(listener, now));
         assert!(relay.reservation_listener.is_none());
+        assert!(!relay.reservation_accepted);
+        assert!(relay.reservation_addresses.is_empty());
 
         relay.reservation_listener = Some(listener);
         assert_eq!(relay.connection_lost(now), Some(listener));
         assert!(!relay.identify_received);
         assert!(!relay.identify_sent);
         assert_eq!(relay.next_connection_attempt, now);
+    }
+
+    #[test]
+    fn active_coordination_routes_only_publish_accepted_reservations() {
+        let accepted_peer = PeerId::random();
+        let pending_peer = PeerId::random();
+        let accepted_address: Multiaddr = format!("/ip4/192.0.2.1/tcp/4001/p2p/{accepted_peer}")
+            .parse()
+            .expect("valid accepted relay address");
+        let pending_address: Multiaddr = format!("/ip4/192.0.2.2/tcp/4001/p2p/{pending_peer}")
+            .parse()
+            .expect("valid pending relay address");
+        let relays = HashMap::from([
+            (
+                accepted_peer,
+                CoordinationRelay {
+                    reservation_accepted: true,
+                    reservation_addresses: vec![accepted_address.clone()],
+                    ..CoordinationRelay::default()
+                },
+            ),
+            (
+                pending_peer,
+                CoordinationRelay {
+                    reservation_addresses: vec![pending_address],
+                    ..CoordinationRelay::default()
+                },
+            ),
+        ]);
+        let snapshot = Arc::new(RwLock::new(Vec::new()));
+
+        publish_active_coordination_relays(&relays, &snapshot);
+
+        assert_eq!(
+            *snapshot.read().expect("read snapshot"),
+            vec![accepted_address]
+        );
     }
 
     #[test]
@@ -1480,5 +1959,148 @@ mod tests {
             .parse()
             .expect("valid relayed address");
         assert!(coordination_relay_peer_id(&tunneled).is_err());
+    }
+
+    #[test]
+    fn relay_routes_enforce_origin_policy_identity_and_replacement() {
+        let relay = PeerId::random();
+        let local = PeerId::random();
+        let other = PeerId::random();
+        let public_quic: Multiaddr = format!("/ip4/1.1.1.1/udp/4001/quic-v1/p2p/{relay}")
+            .parse()
+            .expect("valid public QUIC address");
+        let private_tcp: Multiaddr = format!("/ip4/192.168.1.2/tcp/4001/p2p/{relay}")
+            .parse()
+            .expect("valid private TCP address");
+        let unsupported_websocket: Multiaddr = format!("/ip4/1.1.1.1/tcp/4001/ws/p2p/{relay}")
+            .parse()
+            .expect("valid WebSocket address");
+        let mapped_private: Multiaddr = format!("/ip6/::ffff:127.0.0.1/tcp/4001/p2p/{relay}")
+            .parse()
+            .expect("valid IPv4-mapped private address");
+        let compatible_private: Multiaddr = format!("/ip6/::127.0.0.1/tcp/4001/p2p/{relay}")
+            .parse()
+            .expect("valid IPv4-compatible private address");
+        let former_site_local: Multiaddr = format!("/ip6/fec0::1/tcp/4001/p2p/{relay}")
+            .parse()
+            .expect("valid former site-local address");
+
+        assert!(supported_public_relay_address(&public_quic));
+        assert!(!supported_public_relay_address(&private_tcp));
+        assert!(!supported_public_relay_address(&unsupported_websocket));
+        assert!(!supported_public_relay_address(&mapped_private));
+        assert!(!supported_public_relay_address(&compatible_private));
+        assert!(!supported_public_relay_address(&former_site_local));
+
+        let manual_route: Multiaddr = format!("{private_tcp}/p2p-circuit/p2p/{local}")
+            .parse()
+            .expect("valid manual reservation route");
+        assert_eq!(
+            reservation_base_address(manual_route.clone(), relay, false),
+            Some(private_tcp),
+        );
+        assert!(reservation_base_address(manual_route, other, false).is_none());
+
+        let dns_base: Multiaddr = format!("/dns4/relay.example/tcp/4001/p2p/{relay}")
+            .parse()
+            .expect("valid DNS relay address");
+        let dns_route: Multiaddr = format!("{dns_base}/p2p-circuit/p2p/{local}")
+            .parse()
+            .expect("valid DNS reservation route");
+        assert!(reservation_base_address(dns_route.clone(), relay, true).is_none());
+        assert_eq!(
+            reservation_base_address(dns_route, relay, false),
+            Some(dns_base),
+        );
+
+        let mut state = CoordinationRelay::default();
+        let first: Multiaddr = format!("/ip4/1.1.1.1/tcp/4001/p2p/{relay}")
+            .parse()
+            .expect("valid first relay route");
+        let renewed: Multiaddr = format!("/ip4/1.0.0.1/tcp/4001/p2p/{relay}")
+            .parse()
+            .expect("valid renewed relay route");
+        remember_reservation_address(&mut state, first);
+        remember_reservation_address(&mut state, renewed.clone());
+        assert_eq!(state.reservation_addresses, vec![renewed]);
+
+        let automatic_peer = PeerId::random();
+        let automatic_address: Multiaddr = format!("/ip4/1.1.1.1/tcp/4001/p2p/{automatic_peer}")
+            .parse()
+            .expect("valid automatic relay address");
+        let replacement: Multiaddr = format!("/ip4/8.8.8.8/tcp/4001/p2p/{automatic_peer}")
+            .parse()
+            .expect("valid replacement relay address");
+        let mut relays = HashMap::new();
+        register_automatic_relay_candidate(
+            &mut relays,
+            relay_discovery::RelayCandidate {
+                peer_id: automatic_peer,
+                addresses: vec![automatic_address],
+            },
+            local,
+        );
+        register_automatic_relay_candidate(
+            &mut relays,
+            relay_discovery::RelayCandidate {
+                peer_id: automatic_peer,
+                addresses: vec![replacement.clone()],
+            },
+            local,
+        );
+        let automatic = relays
+            .get_mut(&automatic_peer)
+            .expect("automatic relay is registered");
+        let private_client_address: Multiaddr =
+            format!("/ip4/192.168.1.20/tcp/4001/p2p/{automatic_peer}")
+                .parse()
+                .expect("valid private client relay address");
+        automatic.addresses.push(private_client_address);
+        assert_eq!(relay_reservation_addresses(automatic), vec![replacement]);
+
+        let mut bounded = HashMap::new();
+        for _ in 0..MAX_AUTOMATIC_RELAY_CANDIDATES {
+            let peer = PeerId::random();
+            let address = format!("/ip4/1.1.1.1/tcp/4001/p2p/{peer}")
+                .parse()
+                .expect("valid bounded relay address");
+            bounded.insert(
+                peer,
+                CoordinationRelay {
+                    automatic_addresses: vec![address],
+                    ..CoordinationRelay::default()
+                },
+            );
+        }
+        let client_peer = PeerId::random();
+        let client_address = format!("/ip4/1.1.1.1/tcp/4001/p2p/{client_peer}")
+            .parse()
+            .expect("valid client relay address");
+        register_coordination_relay(&mut bounded, &client_address, local, false, true)
+            .expect("client relay is registered");
+        let replacement_client_address = format!("/ip4/8.8.8.8/tcp/4001/p2p/{client_peer}")
+            .parse()
+            .expect("valid replacement client relay address");
+        register_coordination_relay(
+            &mut bounded,
+            &replacement_client_address,
+            local,
+            false,
+            false,
+        )
+        .expect("client relay address is refreshed");
+        assert_eq!(
+            bounded[&client_peer].addresses,
+            vec![replacement_client_address]
+        );
+        register_automatic_relay_candidate(
+            &mut bounded,
+            relay_discovery::RelayCandidate {
+                peer_id: client_peer,
+                addresses: vec![client_address],
+            },
+            local,
+        );
+        assert!(!bounded[&client_peer].is_automatic());
     }
 }

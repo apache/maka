@@ -651,6 +651,7 @@ async function prepareSupervisedDirectPeer(
     coordinationRelays: [
       ...(options.directPeer?.coordinationRelays ?? current?.coordinationRelays ?? []),
     ],
+    automaticRelayDiscovery: current?.automaticRelayDiscovery ?? true,
   };
 }
 

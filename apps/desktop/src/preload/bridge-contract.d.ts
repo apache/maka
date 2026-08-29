@@ -514,6 +514,7 @@ export interface DesktopRuntimeHostDirectPeerSnapshot {
   readonly peerId?: string;
   readonly routeHints: readonly string[];
   readonly coordinationRelays: readonly string[];
+  readonly automaticRelayDiscovery: boolean;
   readonly profilePresent: boolean;
   readonly profileEnabled: boolean;
   readonly clientAvailable: boolean;
@@ -731,6 +732,7 @@ export interface MakaBridge {
       profileId: string,
       enabled: boolean,
       coordinationRelays: readonly string[],
+      automaticRelayDiscovery: boolean,
     ): Promise<DesktopRuntimeHostDirectPeerSnapshot>;
     listCredentials(profileId: string): Promise<DesktopRuntimeHostAccessSnapshot>;
     rotateCredential(profileId: string): Promise<DesktopRuntimeHostAccessSnapshot>;

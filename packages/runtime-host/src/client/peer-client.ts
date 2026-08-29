@@ -76,6 +76,7 @@ export function createRuntimeHostPeerClientFromEnvironment(
   options: {
     readonly listenAddresses?: readonly string[];
     readonly coordinationRelays?: readonly string[];
+    readonly automaticRelayDiscovery?: boolean;
     readonly routeResolver?: RuntimeHostPeerRouteResolver;
   } = {},
 ): RuntimeHostPeerClient {
@@ -96,6 +97,7 @@ export function createRuntimeHostPeerClient(input: {
   readonly expectedPeerId?: string;
   readonly listenAddresses?: readonly string[];
   readonly coordinationRelays?: readonly string[];
+  readonly automaticRelayDiscovery?: boolean;
   readonly routeResolver?: RuntimeHostPeerRouteResolver;
 }): RuntimeHostPeerClient {
   return new RuntimeHostPeerClientImpl(input);
@@ -107,6 +109,7 @@ class RuntimeHostPeerClientImpl implements RuntimeHostPeerClient {
   readonly #expectedPeerId: string | undefined;
   readonly #listenAddresses: readonly string[] | undefined;
   readonly #coordinationRelays: readonly string[] | undefined;
+  readonly #automaticRelayDiscovery: boolean;
   readonly #routeResolver: RuntimeHostPeerRouteResolver | undefined;
   #endpoint: RuntimeHostPeerNativeEndpoint | undefined;
   #draining: Promise<void> | undefined;
@@ -125,6 +128,7 @@ class RuntimeHostPeerClientImpl implements RuntimeHostPeerClient {
     readonly expectedPeerId?: string;
     readonly listenAddresses?: readonly string[];
     readonly coordinationRelays?: readonly string[];
+    readonly automaticRelayDiscovery?: boolean;
     readonly routeResolver?: RuntimeHostPeerRouteResolver;
   }) {
     this.#nativePath = input.nativePath;
@@ -132,6 +136,7 @@ class RuntimeHostPeerClientImpl implements RuntimeHostPeerClient {
     this.#expectedPeerId = input.expectedPeerId;
     this.#listenAddresses = input.listenAddresses;
     this.#coordinationRelays = input.coordinationRelays;
+    this.#automaticRelayDiscovery = input.automaticRelayDiscovery ?? false;
     this.#routeResolver = input.routeResolver;
   }
 
@@ -144,7 +149,7 @@ class RuntimeHostPeerClientImpl implements RuntimeHostPeerClient {
     return Object.freeze({
       peerId: endpoint.peerId,
       listenAddresses: Object.freeze([...endpoint.listenAddresses]),
-      coordinationRelays: Object.freeze([...(this.#coordinationRelays ?? [])]),
+      coordinationRelays: Object.freeze([...endpoint.activeCoordinationRelays]),
     });
   }
 
@@ -328,6 +333,7 @@ class RuntimeHostPeerClientImpl implements RuntimeHostPeerClient {
       ...(this.#expectedPeerId ? { expectedPeerId: this.#expectedPeerId } : {}),
       ...(this.#listenAddresses ? { listenAddresses: this.#listenAddresses } : {}),
       ...(this.#coordinationRelays ? { coordinationRelays: this.#coordinationRelays } : {}),
+      automaticRelayDiscovery: this.#automaticRelayDiscovery,
     });
     this.#endpoint = endpoint;
     this.#draining = this.#drainInbound(endpoint);

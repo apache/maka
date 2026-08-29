@@ -19,7 +19,7 @@
 
 use std::{
     path::PathBuf,
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex, RwLock},
     time::Duration,
 };
 
@@ -39,6 +39,7 @@ pub struct StartPeerEndpointOptions {
     pub expected_peer_id: Option<String>,
     pub listen_addresses: Option<Vec<String>>,
     pub coordination_relays: Option<Vec<String>>,
+    pub automatic_relay_discovery: Option<bool>,
 }
 
 #[napi(object)]
@@ -60,6 +61,7 @@ pub struct PeerIdentitySignature {
 pub struct PeerEndpoint {
     peer_id: String,
     listen_addresses: Vec<String>,
+    active_coordination_relays: Arc<RwLock<Vec<Multiaddr>>>,
     commands: mpsc::Sender<EngineCommand>,
     incoming: Arc<AsyncMutex<mpsc::Receiver<engine::PeerStream>>>,
     mesh_incoming: Arc<AsyncMutex<mpsc::Receiver<engine::PeerStream>>>,
@@ -77,6 +79,14 @@ impl PeerEndpoint {
     #[napi(getter)]
     pub fn listen_addresses(&self) -> Vec<String> {
         self.listen_addresses.clone()
+    }
+
+    #[napi(getter)]
+    pub fn active_coordination_relays(&self) -> Vec<String> {
+        self.active_coordination_relays
+            .read()
+            .map(|addresses| addresses.iter().map(ToString::to_string).collect())
+            .unwrap_or_default()
     }
 
     #[napi]
@@ -283,6 +293,7 @@ pub fn start_peer_endpoint(options: StartPeerEndpointOptions) -> Result<PeerEndp
             options.coordination_relays.unwrap_or_default(),
             "coordination relay",
         )?,
+        automatic_relay_discovery: options.automatic_relay_discovery.unwrap_or(false),
     })
     .map_err(peer_error)?;
     Ok(PeerEndpoint {
@@ -292,6 +303,7 @@ pub fn start_peer_endpoint(options: StartPeerEndpointOptions) -> Result<PeerEndp
             .into_iter()
             .map(|address| address.to_string())
             .collect(),
+        active_coordination_relays: started.active_coordination_relays,
         commands: started.commands,
         incoming: Arc::new(AsyncMutex::new(started.incoming)),
         mesh_incoming: Arc::new(AsyncMutex::new(started.mesh_incoming)),

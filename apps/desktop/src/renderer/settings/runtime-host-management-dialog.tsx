@@ -21,10 +21,13 @@ import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { Dialog, DialogHeader } from '@astryxdesign/core/Dialog';
 import { Layout, LayoutContent, LayoutFooter } from '@astryxdesign/core/Layout';
 import { Text } from '@astryxdesign/core/Text';
+import { Switch } from '@astryxdesign/core/Switch';
+import { Tooltip } from '@astryxdesign/core/Tooltip';
 import {
   Badge,
   Banner,
   Button,
+  IconButton,
   MoreMenu,
   Selector,
   Spinner,
@@ -32,6 +35,7 @@ import {
   useToast,
   useUiLocale,
 } from '@maka/ui';
+import { HelpCircle, ICON_SIZE } from '@maka/ui/icons';
 import { uiLocaleToIntlLocale, type UiLocale } from '@maka/core/ui-locale';
 import type { RemoteRuntimeHostProfile } from '@maka/runtime-host/client';
 import type {
@@ -101,6 +105,7 @@ export function RuntimeHostManagementDialog(props: {
   const [directPeer, setDirectPeer] = useState<DesktopRuntimeHostDirectPeerSnapshot>();
   const [directPeerError, setDirectPeerError] = useState<string>();
   const [coordinationRelays, setCoordinationRelays] = useState('');
+  const [automaticRelayDiscovery, setAutomaticRelayDiscovery] = useState(true);
   const nextDirectoryRootId = useRef(1);
   const logsRef = useRef<HTMLPreElement>(null);
 
@@ -213,6 +218,7 @@ export function RuntimeHostManagementDialog(props: {
   function applyDirectPeer(snapshot: DesktopRuntimeHostDirectPeerSnapshot): void {
     setDirectPeer(snapshot);
     setCoordinationRelays(snapshot.coordinationRelays.join(', '));
+    setAutomaticRelayDiscovery(snapshot.automaticRelayDiscovery);
     setDirectPeerError(undefined);
   }
 
@@ -243,6 +249,7 @@ export function RuntimeHostManagementDialog(props: {
           profile.id,
           enabled,
           relays,
+          automaticRelayDiscovery,
         ),
       );
     } catch (failure) {
@@ -730,17 +737,46 @@ export function RuntimeHostManagementDialog(props: {
                               />
                             </dl>
                           ) : null}
-                          <TextInput
-                            label={copy.directPeerCoordinationRelays}
-                            value={coordinationRelays}
-                            placeholder={copy.directPeerCoordinationRelaysPlaceholder}
-                            isDisabled={
-                              loading ||
-                              directPeer.profileEnabled ||
-                              directPeer.state === 'enabled'
-                            }
-                            onChange={setCoordinationRelays}
-                          />
+                          <div className="settingsRuntimeHostDirectPeerDiscovery">
+                            <div className="settingsRuntimeHostDirectPeerDiscoveryLabel">
+                              <Text type="body" weight="semibold">
+                                {copy.directPeerAutomaticRelayDiscovery}
+                              </Text>
+                              <Tooltip content={copy.directPeerAutomaticRelayDiscoveryHelp}>
+                                <IconButton
+                                  label={copy.directPeerAutomaticRelayDiscoveryHelp}
+                                  icon={<HelpCircle size={ICON_SIZE.control} aria-hidden="true" />}
+                                  variant="ghost"
+                                  size="sm"
+                                />
+                              </Tooltip>
+                            </div>
+                            <Switch
+                              label={copy.directPeerAutomaticRelayDiscovery}
+                              isLabelHidden
+                              value={automaticRelayDiscovery}
+                              isDisabled={
+                                loading ||
+                                directPeer.profileEnabled ||
+                                directPeer.state === 'enabled'
+                              }
+                              onChange={setAutomaticRelayDiscovery}
+                            />
+                          </div>
+                          <details className="settingsRuntimeHostDirectPeerAdvanced">
+                            <summary>{copy.directPeerAdvancedCoordination}</summary>
+                            <TextInput
+                              label={copy.directPeerCoordinationRelays}
+                              value={coordinationRelays}
+                              placeholder={copy.directPeerCoordinationRelaysPlaceholder}
+                              isDisabled={
+                                loading ||
+                                directPeer.profileEnabled ||
+                                directPeer.state === 'enabled'
+                              }
+                              onChange={setCoordinationRelays}
+                            />
+                          </details>
                           <div className="settingsRuntimeHostUpdatePolicyActions">
                             <Button
                               variant="secondary"

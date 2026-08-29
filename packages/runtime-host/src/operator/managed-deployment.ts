@@ -176,6 +176,7 @@ const managedDeploymentConfigSchema = z
             peerId: boundedText(256),
             listenAddresses: z.array(boundedText(2_048)).min(1).max(16),
             coordinationRelays: z.array(boundedText(2_048)).max(16),
+            automaticRelayDiscovery: z.boolean().default(true),
           })
           .strict()
           .optional(),
