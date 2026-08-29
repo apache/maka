@@ -20,7 +20,7 @@
 import { useEffect, useId, useState, type ReactNode } from 'react';
 import { Badge, Link, List, ListItem } from '@astryxdesign/core';
 import { Kbd } from '@astryxdesign/core/Kbd';
-import { Sparkles } from '@maka/ui/icons';
+import { ICON_SIZE, Sparkles } from '@maka/ui/icons';
 import {
   Banner,
   Button,
@@ -167,7 +167,7 @@ export function AboutSettingsPage(props: { onOpenKeyboardHelp?(): void }) {
           as_wrapper="div"
           className="settingsAboutHero"
           as="h2"
-          icon={<Sparkles size={30} /> /* 64% of the 48px plate, matching .providerLogo's fill */}
+          icon={<Sparkles size={ICON_SIZE.plate} /> /* plate glyph inside the About hero mark */}
           iconClassName="settingsAboutLogo"
           headingRowClassName="settingsAboutHeading"
           title="Maka"

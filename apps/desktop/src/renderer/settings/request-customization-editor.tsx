@@ -26,7 +26,7 @@ import {
 } from '@maka/core/runtime-policy';
 import { type RequestHeaderUpdate } from '@maka/core/llm-connections';
 import { Button, IconButton, TextArea, TextInput } from '@maka/ui';
-import { Trash2 } from '@maka/ui/icons';
+import { ICON_SIZE, Trash2 } from '@maka/ui/icons';
 import { PasswordInput } from './password-input';
 
 export interface RequestHeaderDraft {
@@ -167,7 +167,7 @@ export function RequestHeadersEditor(props: {
               variant="ghost"
               size="sm"
               label={props.copy.removeHeader}
-              icon={<Trash2 size={16} aria-hidden="true" />}
+              icon={<Trash2 size={ICON_SIZE.chrome} aria-hidden="true" />}
               isDisabled={props.disabled}
               onClick={() =>
                 props.onHeadersChange(props.headers.filter(({ id }) => id !== header.id))

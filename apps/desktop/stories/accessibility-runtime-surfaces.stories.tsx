@@ -328,9 +328,13 @@ export const RemoteProjectDirectory: Story = {
     await userEvent.keyboard('{Enter}');
     const dialog = await body.findByRole('dialog', { name: /Build Host/ });
     await userEvent.click(await within(dialog).findByRole('button', { name: 'maka-agent' }));
-    await expect(within(dialog).findByRole('button', { name: 'apps' })).resolves.toBeTruthy();
+    const directoryButton = await within(dialog).findByRole('button', { name: 'apps' });
+    await expect(directoryButton.querySelector('svg')).toHaveAttribute('width', '14');
+    await expect(directoryButton.querySelector('svg')).toHaveAttribute('height', '14');
     await userEvent.click(within(dialog).getByRole('button', { name: /显示隐藏/ }));
-    await expect(within(dialog).getByRole('button', { name: '不显示隐藏目录' })).toBeTruthy();
+    const hiddenButton = within(dialog).getByRole('button', { name: '不显示隐藏目录' });
+    await expect(hiddenButton.querySelector('svg')).toHaveAttribute('width', '16');
+    await expect(hiddenButton.querySelector('svg')).toHaveAttribute('height', '16');
     registerDirectory.mockClear();
     await userEvent.click(within(dialog).getByRole('button', { name: '添加此文件夹' }));
     await waitFor(() =>

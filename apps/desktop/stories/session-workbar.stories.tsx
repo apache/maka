@@ -935,6 +935,15 @@ export const SideChat: Story = {
 export const Trace: Story = {
   decorators: [bridge({ trace: populatedTrace, context: populatedContext })],
   render: () => <Workbar tab="inspector" />,
+  play: async ({ canvasElement }) => {
+    await waitFor(() => {
+      const pricingKeyCopyIcon = canvasElement.querySelector(
+        '.maka-inspector-pricing-key button svg',
+      );
+      expect(pricingKeyCopyIcon).toHaveAttribute('width', '14');
+      expect(pricingKeyCopyIcon).toHaveAttribute('height', '14');
+    });
+  },
 };
 
 // Real path: resize the right workbar to its 320px floor while a failed turn

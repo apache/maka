@@ -28,7 +28,7 @@ import type {
   WorkBoardListQuery,
   WorkBoardScope,
 } from '@maka/core/work-board';
-import { ListTodo } from '@maka/ui/icons';
+import { ICON_SIZE, ListTodo } from '@maka/ui/icons';
 import { useWorkBoard } from './use-work-board.js';
 import { getDesktopConversationCopy } from './locales/conversation-copy.js';
 
@@ -315,7 +315,7 @@ export function WorkBoardPanel(props: {
                 <EmptyState
                   isCompact
                   className="maka-work-board-empty"
-                  icon={<ListTodo size={24} aria-hidden="true" />}
+                  icon={<ListTodo size={ICON_SIZE.empty} aria-hidden="true" />}
                   title={copy.empty}
                 />
               ) : (
