@@ -246,6 +246,16 @@ export interface ConnectionCatalogEntry extends ConnectionConfiguration {
   readonly lastTest?: ConnectionTestSummary;
 }
 
+export type ConnectionOnboardingTarget =
+  | {
+      readonly kind: 'create';
+      readonly providerType: ProviderType;
+    }
+  | {
+      readonly kind: 'existing';
+      readonly connectionId: EntityId;
+    };
+
 export type ConnectionCatalogEntryDraft = ConnectionConfiguration;
 
 export interface ConnectionCatalogEntryUpdate {
