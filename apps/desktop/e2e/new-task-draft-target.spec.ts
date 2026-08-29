@@ -71,7 +71,9 @@ test('the new-task draft follows the Project chosen under the composer', async (
   await expect(picker).toHaveAttribute('aria-label', new RegExp(NEW_TASK_PROJECT_NAME));
 
   await composer.click();
-  await page.keyboard.type(DRAFT);
+  // Two keystrokes in one frame — no human rate — make ChatComposerInput
+  // rewrite the editor and reset the caret.
+  await page.keyboard.type(DRAFT, { delay: 20 });
   await expect(composer).toHaveText(DRAFT);
 
   await picker.click();
