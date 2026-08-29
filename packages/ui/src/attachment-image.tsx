@@ -25,16 +25,18 @@ import {
   useState,
   type ReactNode,
 } from 'react';
+import type { ArtifactBinaryReadResult } from '@maka/core/artifacts';
+import { decideImageReadOutcome } from './artifact-preview-registry.js';
 
 /** Host capability for reading bytes from the Runtime Host attachment authority. */
 export type ReadAttachmentBytes = (
   sessionId: string,
   artifactId: string,
-) => Promise<{ ok: true; base64: string; mimeType: string } | { ok: false }>;
+) => Promise<ArtifactBinaryReadResult>;
 
 type SessionAttachmentContextValue = {
   sessionId: string;
-  readBytes: ReadAttachmentBytes;
+  loadImage: (sessionId: string, artifactId: string) => Promise<string | undefined>;
 };
 
 const SessionAttachmentContext = createContext<SessionAttachmentContextValue | undefined>(undefined);
@@ -46,9 +48,30 @@ export function SessionAttachmentProvider(props: {
   children: ReactNode;
 }) {
   const value = useMemo(
-    () => props.readBytes
-      ? { sessionId: props.sessionId, readBytes: props.readBytes }
-      : undefined,
+    () => {
+      const readBytes = props.readBytes;
+      if (!readBytes) return undefined;
+      const pending = new Map<string, Promise<string | undefined>>();
+      return {
+        sessionId: props.sessionId,
+        loadImage(sessionId: string, artifactId: string) {
+          const key = `${sessionId}\0${artifactId}`;
+          const existing = pending.get(key);
+          if (existing) return existing;
+          const loaded = readBytes(sessionId, artifactId)
+            .then((result) => {
+              if (!result.ok) return undefined;
+              const outcome = decideImageReadOutcome(result);
+              return outcome.kind === 'image'
+                ? `data:${outcome.safeMime};base64,${outcome.base64}`
+                : undefined;
+            })
+            .catch(() => undefined);
+          pending.set(key, loaded);
+          return loaded;
+        },
+      };
+    },
     [props.readBytes, props.sessionId],
   );
   return (
@@ -66,23 +89,21 @@ export function useAttachmentImageSource(ref: {
   const context = useContext(SessionAttachmentContext);
   const artifactId = ref?.artifactId;
   const sessionId = ref?.sessionId ?? context?.sessionId;
-  const readBytes = context?.readBytes;
+  const loadImage = context?.loadImage;
   const [src, setSrc] = useState<string | undefined>(undefined);
 
   useEffect(() => {
     setSrc(undefined);
-    if (!artifactId || !sessionId || !readBytes) return;
+    if (!artifactId || !sessionId || !loadImage) return;
     let cancelled = false;
-    readBytes(sessionId, artifactId)
-      .then((result) => {
-        if (cancelled || !result.ok) return;
-        setSrc(`data:${result.mimeType};base64,${result.base64}`);
+    loadImage(sessionId, artifactId)
+      .then((loaded) => {
+        if (!cancelled) setSrc(loaded);
       })
-      .catch(() => {});
     return () => {
       cancelled = true;
     };
-  }, [artifactId, readBytes, sessionId]);
+  }, [artifactId, loadImage, sessionId]);
 
   return src;
 }

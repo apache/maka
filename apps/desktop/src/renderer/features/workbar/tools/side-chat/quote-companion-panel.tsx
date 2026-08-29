@@ -303,6 +303,7 @@ export function QuoteCompanionPanel(props: {
           liveTurn={companion.liveTurn}
           runningStatus={companion.processing}
           activeSession={companion.companionSession}
+          onReadAttachmentBytes={attachments.readBytes}
           deriveTurnPresentation={deriveTurnPresentation}
           onTurnFooterAction={(turnId, actionId) => {
             if (actionId === 'regenerate') {

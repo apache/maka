@@ -23,7 +23,10 @@ import { act } from 'react';
 import { createRoot } from 'react-dom/client';
 import { parseHTML } from 'linkedom';
 import { TurnView } from '../chat-turn.js';
-import { SessionAttachmentProvider } from '../attachment-image.js';
+import {
+  SessionAttachmentProvider,
+  type ReadAttachmentBytes,
+} from '../attachment-image.js';
 import { LocaleProvider } from '../locale-context.js';
 import { MarkdownBody } from '../markdown-body.js';
 import type { TurnViewModel } from '../materialize.js';
@@ -63,6 +66,18 @@ function domRoot() {
   const root = createRoot(container);
   mountedRoots.push(root);
   return { container, root };
+}
+
+async function renderAttachmentMarkdown(text: string, readBytes: ReadAttachmentBytes) {
+  const { container, root } = domRoot();
+  await act(async () => {
+    root.render(
+      <SessionAttachmentProvider sessionId="session-1" readBytes={readBytes}>
+        <MarkdownBody text={text} />
+      </SessionAttachmentProvider>,
+    );
+  });
+  return container;
 }
 
 const TURN_WITH_IMAGE: TurnViewModel = {
@@ -113,25 +128,14 @@ test('loads a user attachment thumbnail through the injected session reader', as
 });
 
 test('renders a session attachment referenced by assistant Markdown', async () => {
-  const { container, root } = domRoot();
   let readRef: { sessionId: string; artifactId: string } | undefined;
-  await act(async () => {
-    root.render(
-      <SessionAttachmentProvider
-        sessionId="session-1"
-        readBytes={async (sessionId, artifactId) => {
-          readRef = { sessionId, artifactId };
-          return {
-            ok: true,
-            base64: 'aW1n',
-            mimeType: 'image/png',
-          };
-        }}
-      >
-        <MarkdownBody text="![preview](maka://runtime/attachments/attachment-123)" />
-      </SessionAttachmentProvider>,
-    );
-  });
+  const container = await renderAttachmentMarkdown(
+    '![preview](maka://runtime/attachments/attachment-123)',
+    async (sessionId, artifactId) => {
+      readRef = { sessionId, artifactId };
+      return { ok: true, base64: 'aW1n', mimeType: 'image/png' };
+    },
+  );
 
   const image = container.querySelector('img[alt="preview"]');
   assert.ok(image);
@@ -140,20 +144,54 @@ test('renders a session attachment referenced by assistant Markdown', async () =
 });
 
 test('keeps an unknown assistant attachment as a named placeholder', async () => {
-  const { container, root } = domRoot();
-  await act(async () => {
-    root.render(
-      <SessionAttachmentProvider
-        sessionId="session-1"
-        readBytes={async () => ({ ok: false })}
-      >
-        <MarkdownBody text="![missing](maka://runtime/attachments/attachment-missing)" />
-      </SessionAttachmentProvider>,
-    );
-  });
+  const container = await renderAttachmentMarkdown(
+    '![missing](maka://runtime/attachments/attachment-missing)',
+    async () => ({ ok: false, reason: 'not_found' }),
+  );
 
   assert.equal(container.querySelector('img'), null);
   assert.match(container.textContent, /\[missing\]/);
+});
+
+test('keeps a non-image assistant attachment as a named placeholder', async () => {
+  const container = await renderAttachmentMarkdown(
+    '![document](maka://runtime/attachments/attachment-pdf)',
+    async () => ({ ok: true, base64: 'cGRm', mimeType: 'application/pdf' }),
+  );
+
+  assert.equal(container.querySelector('img'), null);
+  assert.match(container.textContent, /\[document\]/);
+});
+
+test('keeps an oversized assistant image out of renderer state', async () => {
+  const container = await renderAttachmentMarkdown(
+    '![large](maka://runtime/attachments/attachment-large)',
+    async () => ({
+      ok: true,
+      base64: 'a'.repeat(3 * 1024 * 1024),
+      mimeType: 'image/png',
+    }),
+  );
+
+  assert.equal(container.querySelector('img'), null);
+  assert.match(container.textContent, /\[large\]/);
+});
+
+test('shares one attachment read across repeated Markdown image refs', async () => {
+  let reads = 0;
+  const container = await renderAttachmentMarkdown(
+    [
+      '![first](maka://runtime/attachments/attachment-123)',
+      '![second](maka://runtime/attachments/attachment-123)',
+    ].join('\n\n'),
+    async () => {
+      reads += 1;
+      return { ok: true, base64: 'aW1n', mimeType: 'image/png' };
+    },
+  );
+
+  assert.equal(container.querySelectorAll('img').length, 2);
+  assert.equal(reads, 1);
 });
 
 test('renders a restored attachment through the streaming Markdown path', async () => {

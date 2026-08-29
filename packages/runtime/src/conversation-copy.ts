@@ -26,6 +26,7 @@ import type {
 import type { RuntimeEvent } from '@maka/core/runtime-event';
 import type { RuntimeEventStore } from '@maka/core/runtime-event-store';
 import type { StorageRef, ToolResultContent } from '@maka/core/events';
+import { parseAttachmentResourceRef } from '@maka/core/attachments';
 import { markPersisted } from '@maka/core/persisted-value';
 import type { StoredMessage } from '@maka/core/session';
 import { decodePersistedToolResultContent } from '@maka/core/tool-result-record-schema';
@@ -196,6 +197,12 @@ export function rewriteConversationCopyMessage(
   message: StoredMessage,
   references: ConversationCopyMessageReferenceMap,
 ): StoredMessage {
+  if (message.type === 'assistant' && references.mode === 'exact') {
+    return {
+      ...message,
+      text: rewriteAttachmentResourceRefs(message.text, references.artifactIds),
+    };
+  }
   if (message.type === 'user' && message.attachments) {
     return {
       ...message,
@@ -222,6 +229,21 @@ export function rewriteConversationCopyMessage(
     };
   }
   return message;
+}
+
+const ATTACHMENT_RESOURCE_REF_PATTERN =
+  /maka:\/\/runtime\/attachments\/[A-Za-z0-9_-]{1,128}(?![A-Za-z0-9_-])/g;
+
+function rewriteAttachmentResourceRefs(
+  text: string,
+  artifactIds: ReadonlyMap<string, string>,
+): string {
+  return text.replace(ATTACHMENT_RESOURCE_REF_PATTERN, (resourceRef) => {
+    const parsed = parseAttachmentResourceRef(resourceRef);
+    if (!parsed) return resourceRef;
+    const artifactId = artifactIds.get(parsed.artifactId);
+    return artifactId ? `maka://runtime/attachments/${artifactId}` : resourceRef;
+  });
 }
 
 export async function prepareConversationRuntimeLedgerCopy(input: {

@@ -36,9 +36,9 @@ const BLUE_PNG =
 // @maka/ui is host-agnostic: image thumbnails read bytes through the injected
 // `onReadAttachmentBytes` prop, not a host global. The story supplies a fake
 // reader that echoes the two solid-color PNGs above.
-const mockReadBytes = async (_sessionId: string, relativePath: string) => ({
+const mockReadBytes = async (_sessionId: string, artifactId: string) => ({
   ok: true as const,
-  base64: relativePath.includes('metrics') ? BLUE_PNG : RED_PNG,
+  base64: artifactId.includes('metrics') ? BLUE_PNG : RED_PNG,
   mimeType: 'image/png',
 });
 

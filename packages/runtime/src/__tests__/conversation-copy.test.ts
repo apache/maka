@@ -860,6 +860,42 @@ test('conversation copy rewrites owned references without changing opaque tool p
   );
 });
 
+test('conversation copy rewrites assistant Markdown attachment refs to copied Artifact ids', () => {
+  const message: StoredMessage = {
+    type: 'assistant',
+    id: 'assistant-1',
+    turnId: 'turn-1',
+    ts: 1,
+    text: [
+      '![chart](maka://runtime/attachments/artifact-source)',
+      '`maka://runtime/attachments/artifact-source`',
+      '![external](https://example.com/chart.png)',
+    ].join('\n'),
+    modelId: 'model',
+  };
+
+  const rewritten = rewriteConversationCopyMessage(message, {
+    mode: 'exact',
+    linkedChildren: { mode: 'reject' },
+    sourceSessionId: 'session-source',
+    targetSessionId: 'session-target',
+    artifactIds: new Map([['artifact-source', 'artifact-target']]),
+    relativePaths: new Map(),
+    runIds: new Map(),
+    runtimeEventIds: new Map(),
+    providerTraceIds: new Map(),
+  });
+
+  assert.equal(
+    rewritten.type === 'assistant' ? rewritten.text : undefined,
+    [
+      '![chart](maka://runtime/attachments/artifact-target)',
+      '`maka://runtime/attachments/artifact-target`',
+      '![external](https://example.com/chart.png)',
+    ].join('\n'),
+  );
+});
+
 test('conversation copy rejects continuation authority selected through the child-run closure', async () => {
   const parent = agentRunHeader({ runId: 'run-parent', turnId: 'turn-parent' });
   const child = agentRunHeader({
