@@ -57,18 +57,27 @@ export const THINKING_LEVELS: readonly ThinkingLevel[] = [
 ];
 
 /**
- * The levels a generic-relay declaration may hold — the vocabulary the
- * settings surfaces offer and the one the data layer admits. `off` is the
- * sole exclusion: it is not an intensity tier but a *disable* wire
- * (`reasoning_effort: 'none'`), and no generic relay is presumed to honor
- * that encoding; built-in providers that support it get `off` from their own
- * metadata instead. `minimal` and every effort tier above are pure
- * intensity values — the user declaring them is the authority on what the
- * relay accepts.
+ * The levels a relay declaration may hold, per provider. This is the
+ * vocabulary the settings surfaces offer and the one the data layer admits.
+ * For the OpenAI-compatible relays `off` is excluded: it is not an intensity
+ * tier but a *disable* wire (`reasoning_effort: 'none'`), and no generic
+ * relay is presumed to honor that encoding; built-in providers that support
+ * it get `off` from their own metadata instead. The Anthropic-protocol relay
+ * has a true disable wire (`thinking: { type: 'disabled' }`), so its
+ * declarations may carry `off`. `minimal` is excluded there too: the relay's
+ * levels are emitted as `providerOptions.anthropic.effort`, and the pinned
+ * `@ai-sdk/anthropic` parses that option through a closed enum
+ * (`low|medium|high|xhigh|max`) before any request — `minimal` would throw
+ * locally. Every other effort tier is a pure intensity value — the user
+ * declaring them is the authority on what the relay accepts.
  */
-export const DECLARABLE_RELAY_THINKING_LEVELS: readonly ThinkingLevel[] = THINKING_LEVELS.filter(
-  (level) => level !== 'off',
-);
+export function declarableRelayThinkingLevels(
+  providerType: ProviderType,
+): readonly ThinkingLevel[] {
+  return providerType === 'anthropic-compatible'
+    ? THINKING_LEVELS.filter((level) => level !== 'minimal')
+    : THINKING_LEVELS.filter((level) => level !== 'off');
+}
 
 export function isThinkingLevel(value: unknown): value is ThinkingLevel {
   return typeof value === 'string' && (THINKING_LEVELS as readonly string[]).includes(value);
@@ -140,8 +149,11 @@ export function deriveThinkingChoices(
  * no way to state a context window Maka had no other way to learn (#1584).
  *
  * `thinkingLevels` and `serviceTier` stay relay-only: they name wire features
- * (`reasoning_effort` tiers, priority processing) that only the
- * OpenAI-compatible relays accept. `assertProfileFieldsFitProvider` in the
+ * (`reasoning_effort` / `thinking`-protocol tiers, priority processing) that
+ * only the custom relays accept. `thinkingLevels` is declarable on all three
+ * relays — the per-provider vocabulary (notably whether `off` is a real
+ * disable wire) lives in `declarableRelayThinkingLevels` — while `serviceTier`
+ * remains an OpenAI Responses fact. `assertProfileFieldsFitProvider` in the
  * catalog codec is the write seam that enforces it, so reads here do not
  * re-derive it; `supportsRelayFastServiceTier` below is a narrower read-side
  * question — which relay MODELS carry the tier.
@@ -164,7 +176,10 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
-function normalizeRelayModelProfile(entry: unknown): RelayModelProfile | undefined {
+function normalizeRelayModelProfile(
+  entry: unknown,
+  providerType?: ProviderType,
+): RelayModelProfile | undefined {
   if (!isRecord(entry)) return undefined;
   const declared: {
     thinkingLevels?: readonly ThinkingLevel[];
@@ -174,22 +189,24 @@ function normalizeRelayModelProfile(entry: unknown): RelayModelProfile | undefin
   } = {};
   if (Array.isArray(entry.thinkingLevels)) {
     // Declared levels are filtered to the declarable vocabulary, not merely
-    // the level vocabulary: `off` is a disable-wire encoding no generic
-    // relay is presumed to speak, and a declaration table has no business
-    // carrying it. The codec rejects it in persisted documents for the same
-    // reason; normalize silently drops it because it also sanitizes input
-    // that never passed a validator (settings drafts, hand-edited tables).
+    // the level vocabulary: the per-provider word in
+    // `declarableRelayThinkingLevels` says whether `off` — a disable-wire
+    // encoding — belongs on this connection's wire. Without a provider the
+    // sanitizer stays provider-blind (the full vocabulary): the host-wire
+    // decode fallback has no provider context, and the canonical store's
+    // codec has already validated provider fit before the value is stored.
+    // The codec rejects out-of-vocabulary values in persisted documents for
+    // the same reason; normalize silently drops them because it also
+    // sanitizes input that never passed a validator (settings drafts,
+    // hand-edited tables).
+    const vocabulary = providerType ? declarableRelayThinkingLevels(providerType) : THINKING_LEVELS;
     const declaredSet = new Set(
       entry.thinkingLevels.filter(
-        (level): level is ThinkingLevel =>
-          isThinkingLevel(level) &&
-          (DECLARABLE_RELAY_THINKING_LEVELS as readonly ThinkingLevel[]).includes(level),
+        (level): level is ThinkingLevel => isThinkingLevel(level) && vocabulary.includes(level),
       ),
     );
     if (declaredSet.size > 0) {
-      declared.thinkingLevels = DECLARABLE_RELAY_THINKING_LEVELS.filter((level) =>
-        declaredSet.has(level),
-      );
+      declared.thinkingLevels = vocabulary.filter((level) => declaredSet.has(level));
     }
   }
   if (typeof entry.vision === 'boolean') declared.vision = entry.vision;
@@ -218,12 +235,13 @@ function normalizeRelayModelProfile(entry: unknown): RelayModelProfile | undefin
  */
 export function normalizeRelayModelProfiles(
   table: unknown,
+  providerType?: ProviderType,
 ): Record<string, RelayModelProfile> | undefined {
   if (!isRecord(table)) return undefined;
   const parsed: [string, RelayModelProfile][] = [];
   for (const [modelId, entry] of Object.entries(table)) {
     if (modelId.length === 0 || modelId.length > 512) continue;
-    const declared = normalizeRelayModelProfile(entry);
+    const declared = normalizeRelayModelProfile(entry, providerType);
     if (declared) parsed.push([modelId, declared]);
   }
   return parsed.length > 0 ? Object.fromEntries(parsed) : undefined;
@@ -267,7 +285,10 @@ export function relayModelProfile(
   connection: ConnectionThinkingContext,
   modelId: string,
 ): RelayModelProfile | undefined {
-  return normalizeRelayModelProfile(connection.relayModelProfiles?.[modelId]);
+  return normalizeRelayModelProfile(
+    connection.relayModelProfiles?.[modelId],
+    connection.providerType,
+  );
 }
 
 /**
@@ -290,7 +311,8 @@ export function supportsRelayFastServiceTier(providerType: ProviderType, modelId
 }
 
 /**
- * OpenAI-compatible relay connections declare thinking support **per model** via
+ * Custom relay connections (OpenAI chat/responses or Anthropic protocol)
+ * declare thinking support **per model** via
  * `relayModelProfiles[modelId].thinkingLevels` — a relay may front a
  * DeepSeek-family reasoner and a plain instruct model side by side, so the
  * declaration granularity is the model, not the connection. Without a usable

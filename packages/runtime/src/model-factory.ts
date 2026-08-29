@@ -781,9 +781,21 @@ function buildFamilyWire(
         },
       };
     case 'anthropic':
-      // Anthropic-protocol models declare no `none` effort, so an off
-      // choice only exists where an explicit case wires it.
-      return level !== 'off' ? { anthropic: { effort: level } } : {};
+      // `off` reaches this branch from two sources, both with a true
+      // disable wire: a relay declaration (the user stated the relay's
+      // model accepts a disabled thinking request) and a per-model
+      // anthropic-adapter override resolved outside this switch. Effort
+      // tiers pass through unchanged — the provider's native values. For
+      // relay declarations that pass is guarded by
+      // `declarableRelayThinkingLevels`, whose Anthropic vocabulary is a
+      // subset of the SDK's closed `low|medium|high|xhigh|max` effort enum,
+      // so a declared level can never produce an option payload the SDK
+      // would reject before the request.
+      return level === 'off'
+        ? { anthropic: { thinking: { type: 'disabled' as const } } }
+        : level
+          ? { anthropic: { effort: level } }
+          : {};
     case 'google':
       return level !== 'off'
         ? { google: { thinkingConfig: { includeThoughts: true, thinkingLevel: level } } }

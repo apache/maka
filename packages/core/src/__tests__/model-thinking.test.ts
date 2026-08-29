@@ -21,6 +21,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import {
   type ConnectionThinkingContext,
+  declarableRelayThinkingLevels,
   normalizeRelayModelProfiles,
   relayModelProfile,
   resolveThinkingLevel,
@@ -32,18 +33,89 @@ import {
 } from '../model-thinking.js';
 import { isRelayProviderType } from '../llm-connections.js';
 
-test('declarable relay levels are every intensity tier but off', () => {
-  // `off` is a disable-wire encoding (reasoning_effort 'none'), not an
-  // intensity tier — a hybrid UI/data contract keeps it out of declarations.
+test('declarable relay levels are per provider: Anthropic relays may declare off', () => {
+  // OpenAI relays keep `off` out: it is a disable-wire encoding
+  // (reasoning_effort 'none') no generic relay is presumed to speak.
+  // Anthropic-protocol relays have a true disable wire
+  // (`thinking: { type: 'disabled' }`), so their declarations may carry it.
+  // They keep `minimal` out instead: their levels are emitted as
+  // `providerOptions.anthropic.effort`, which the SDK parses through a
+  // closed `low|medium|high|xhigh|max` enum before any request — `minimal`
+  // would throw locally.
+  assert.deepEqual(declarableRelayThinkingLevels('openai-compatible'), [
+    'minimal',
+    'low',
+    'medium',
+    'high',
+    'xhigh',
+    'max',
+  ]);
+  assert.deepEqual(declarableRelayThinkingLevels('openai-responses-compatible'), [
+    'minimal',
+    'low',
+    'medium',
+    'high',
+    'xhigh',
+    'max',
+  ]);
+  assert.deepEqual(declarableRelayThinkingLevels('anthropic-compatible'), [
+    'off',
+    'low',
+    'medium',
+    'high',
+    'xhigh',
+    'max',
+  ]);
+});
+
+test('normalize filters off per provider and is lenient without one', () => {
+  // Explicit provider: the openai vocabulary drops `off`...
+  assert.deepEqual(
+    normalizeRelayModelProfiles({ m: { thinkingLevels: ['off', 'low'] } }, 'openai-compatible'),
+    { m: { thinkingLevels: ['low'] } },
+  );
+  assert.equal(
+    normalizeRelayModelProfiles({ m: { thinkingLevels: ['off'] } }, 'openai-compatible'),
+    undefined,
+  );
+  // ...while an anthropic-compatible declaration keeps it.
+  assert.deepEqual(
+    normalizeRelayModelProfiles({ m: { thinkingLevels: ['off', 'high'] } }, 'anthropic-compatible'),
+    { m: { thinkingLevels: ['off', 'high'] } },
+  );
+  // `minimal` is the mirror image on the Anthropic wire: not an effort the
+  // SDK's closed enum accepts, so the sanitizer drops it there just as it
+  // drops `off` on the OpenAI wires.
+  assert.deepEqual(
+    normalizeRelayModelProfiles(
+      { m: { thinkingLevels: ['minimal', 'high'] } },
+      'anthropic-compatible',
+    ),
+    { m: { thinkingLevels: ['high'] } },
+  );
+  assert.equal(
+    normalizeRelayModelProfiles({ m: { thinkingLevels: ['minimal'] } }, 'anthropic-compatible'),
+    undefined,
+  );
+  // Without a provider (host-wire decode fallback) the sanitizer is
+  // provider-blind: the canonical store's codec has already validated
+  // provider fit, so decode keeps the full vocabulary and only drops junk.
   assert.deepEqual(normalizeRelayModelProfiles({ m: { thinkingLevels: ['off', 'low'] } }), {
-    m: { thinkingLevels: ['low'] },
+    m: { thinkingLevels: ['off', 'low'] },
   });
-  assert.equal(normalizeRelayModelProfiles({ m: { thinkingLevels: ['off'] } }), undefined);
+});
+
+test('anthropic-compatible declared levels surface through the read seam', () => {
   const declaredOff = {
     providerType: 'openai-compatible',
     relayModelProfiles: { m: { thinkingLevels: ['off', 'low'] } },
   } as const;
   assert.deepEqual([...thinkingVariantsForConnection(declaredOff, 'm')], ['low']);
+  const anthropicRelay = {
+    providerType: 'anthropic-compatible',
+    relayModelProfiles: { m: { thinkingLevels: ['off', 'high'] } },
+  } as const;
+  assert.deepEqual([...thinkingVariantsForConnection(anthropicRelay, 'm')], ['off', 'high']);
 });
 
 test('relay profiles preserve the fast service tier declaration', () => {
@@ -148,9 +220,10 @@ test('relayModelProfile honours a declaration on any provider', () => {
   );
 });
 
-test('isRelayProviderType only accepts the two custom OpenAI relay providers', () => {
+test('isRelayProviderType accepts the three custom relay providers', () => {
   assert.equal(isRelayProviderType('openai-compatible'), true);
   assert.equal(isRelayProviderType('openai-responses-compatible'), true);
+  assert.equal(isRelayProviderType('anthropic-compatible'), true);
   assert.equal(isRelayProviderType('openai'), false);
   assert.equal(isRelayProviderType('anthropic'), false);
 });

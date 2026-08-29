@@ -25,9 +25,10 @@ import {
   type ProviderType,
 } from '../llm-connections.js';
 import {
-  DECLARABLE_RELAY_THINKING_LEVELS,
+  declarableRelayThinkingLevels,
   isThinkingLevel,
   type RelayModelProfile,
+  THINKING_LEVELS,
   type ThinkingLevel,
 } from '../model-thinking.js';
 import type {
@@ -143,7 +144,7 @@ export function normalizeConnectionCatalogEntryDraft(value: unknown): Connection
   const profiles =
     item.relayModelProfiles === undefined
       ? {}
-      : nonEmptyRelayProfiles(item.relayModelProfiles, enabledModelIds);
+      : nonEmptyRelayProfiles(item.relayModelProfiles, enabledModelIds, providerType);
   assertProfileFieldsFitProvider(profiles.relayModelProfiles, providerType);
   return {
     slug: decodeConnectionSlug(item.slug),
@@ -159,6 +160,7 @@ export function normalizeConnectionCatalogEntryDraft(value: unknown): Connection
 
 export function normalizeConnectionCatalogEntryUpdate(
   value: unknown,
+  providerType?: ProviderType,
 ): ConnectionCatalogEntryUpdate {
   const item = exactRecord(
     value,
@@ -184,7 +186,7 @@ export function normalizeConnectionCatalogEntryUpdate(
     enabledModelIds,
     ...(item.relayModelProfiles === undefined
       ? {}
-      : profilesUpdateInstruction(item.relayModelProfiles, enabledModelIds)),
+      : profilesUpdateInstruction(item.relayModelProfiles, enabledModelIds, providerType)),
     ...(requestBodyOverlay === undefined ? {} : { requestBodyOverlay }),
   };
 }
@@ -192,12 +194,13 @@ export function normalizeConnectionCatalogEntryUpdate(
 function profilesUpdateInstruction(
   value: unknown,
   enabledModelIds: readonly string[],
+  providerType?: ProviderType,
 ): { readonly relayModelProfiles: Readonly<Record<string, RelayModelProfile>> | null } {
   return {
     relayModelProfiles:
       value === null
         ? null
-        : (nonEmptyRelayProfiles(value, enabledModelIds).relayModelProfiles ?? null),
+        : (nonEmptyRelayProfiles(value, enabledModelIds, providerType).relayModelProfiles ?? null),
   };
 }
 
@@ -205,7 +208,7 @@ export function normalizeConnectionCatalogEntryUpdateForProvider(
   value: unknown,
   providerType: ProviderType,
 ): ConnectionCatalogEntryUpdate {
-  const update = normalizeConnectionCatalogEntryUpdate(value);
+  const update = normalizeConnectionCatalogEntryUpdate(value, providerType);
   const baseUrl = normalizeCatalogConnectionBaseUrl(update.baseUrl, providerType);
   assertProfileFieldsFitProvider(update.relayModelProfiles, providerType);
   return {
@@ -233,6 +236,7 @@ export function normalizeConnectionCatalogEntryUpdateForProvider(
 export function decodeRelayModelProfilesTable(
   value: unknown,
   enabledModelIds: readonly string[],
+  providerType?: ProviderType,
 ): Readonly<Record<string, RelayModelProfile>> {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) {
     throw domainError('connection relay model profiles must be a record');
@@ -268,14 +272,18 @@ export function decodeRelayModelProfilesTable(
       if (new Set(entry.thinkingLevels).size !== entry.thinkingLevels.length) {
         throw domainError(`declared thinking levels for ${modelId} must not repeat`);
       }
+      // A missing provider keeps the full vocabulary: the host/storage
+      // edge decode has no provider yet, and the provider-fit re-check
+      // happens at the ForProvider seam.
+      const vocabulary = providerType
+        ? declarableRelayThinkingLevels(providerType)
+        : THINKING_LEVELS;
       for (const level of entry.thinkingLevels) {
-        if (
-          !isThinkingLevel(level) ||
-          !(DECLARABLE_RELAY_THINKING_LEVELS as readonly ThinkingLevel[]).includes(level)
-        ) {
-          // Not just "unknown": 'off' is a disable-wire encoding, not an
-          // intensity tier, and no declaration may carry it (normalize drops
-          // it at write; a persisted table containing it is foreign/corrupt).
+        if (!isThinkingLevel(level) || !vocabulary.includes(level)) {
+          // Not just "unknown": the declarable vocabulary is per provider —
+          // `off` is a disable-wire encoding legal only where the provider
+          // has a true disable wire (the Anthropic protocol relay); a
+          // persisted table carrying it elsewhere is foreign/corrupt.
           throw domainError(`declared thinking level for ${modelId} is not declarable`);
         }
       }
@@ -314,28 +322,39 @@ export function decodeRelayModelProfilesTable(
  * provider with no model-list endpoint — and that need is not confined to
  * relays (#1584), so they are legal everywhere.
  *
- * `thinkingLevels` and `serviceTier` name a wire feature instead. They encode
- * into request shapes only the OpenAI-compatible relays accept —
- * `reasoning_effort` tiers and priority processing — and
- * `supportsRelayFastServiceTier` gates the read side by provider for the same
- * reason. A table carrying them on another provider describes a request Maka
- * would never send: dead state at best, and on a provider whose wire rejects
- * the unknown value, a 400 the user cannot explain.
+ * `thinkingLevels` and `serviceTier` name a wire feature instead.
+ * `thinkingLevels` — `reasoning_effort` tiers on the OpenAI relays, the
+ * `thinking`/`effort` controls on the Anthropic-protocol relay — is legal
+ * on all three custom relays, with the per-provider vocabulary (notably
+ * `off` and `minimal`) enforced at table decode. `serviceTier` (priority
+ * processing) encodes into a request shape only the OpenAI Responses relay
+ * accepts — `supportsRelayFastServiceTier` gates the read side by provider
+ * for the same reason. A table carrying them on another provider describes a
+ * request Maka would never send: dead state at best, and on a provider
+ * whose wire rejects the unknown value, a 400 the user cannot explain.
  */
 function assertProfileFieldsFitProvider(
   profiles: Readonly<Record<string, RelayModelProfile>> | null | undefined,
   providerType: ProviderType,
 ): void {
-  if (!profiles || isRelayProviderType(providerType)) return;
+  if (!profiles) return;
+  const isRelay = isRelayProviderType(providerType);
+  const isResponsesRelay = providerType === 'openai-responses-compatible';
   for (const [modelId, profile] of Object.entries(profiles)) {
-    if (profile.thinkingLevels !== undefined) {
+    // `thinkingLevels` names a wire feature all three custom relays accept
+    // (per-provider vocabulary enforced at table decode); `serviceTier` is
+    // an OpenAI Responses wire fact — the Chat Completions relay has no
+    // tier to send, so a persisted declaration there is dead state the read
+    // seam would never honor. Elsewhere either is a request Maka would
+    // never send.
+    if (profile.thinkingLevels !== undefined && !isRelay) {
       throw domainError(
-        `declared thinking levels for ${modelId} require an OpenAI-compatible connection`,
+        `declared thinking levels for ${modelId} require a custom relay connection`,
       );
     }
-    if (profile.serviceTier !== undefined) {
+    if (profile.serviceTier !== undefined && !isResponsesRelay) {
       throw domainError(
-        `declared service tier for ${modelId} requires an OpenAI-compatible connection`,
+        `declared service tier for ${modelId} requires an OpenAI Responses relay connection`,
       );
     }
   }
@@ -346,10 +365,11 @@ function assertProfileFieldsFitProvider(
 function nonEmptyRelayProfiles(
   value: unknown,
   enabledModelIds: readonly string[],
+  providerType?: ProviderType,
 ): {
   readonly relayModelProfiles?: Readonly<Record<string, RelayModelProfile>>;
 } {
-  const table = decodeRelayModelProfilesTable(value, enabledModelIds);
+  const table = decodeRelayModelProfilesTable(value, enabledModelIds, providerType);
   return Object.keys(table).length > 0 ? { relayModelProfiles: table } : {};
 }
 

@@ -24,7 +24,7 @@ import {
   bulkThinkingLevelStates,
   relayProfileWithThinkingLevels,
 } from '../../renderer/settings/relay-thinking-bulk.js';
-import { DECLARABLE_RELAY_THINKING_LEVELS } from '@maka/core/model-thinking';
+import { declarableRelayThinkingLevels } from '@maka/core/model-thinking';
 import type { RelayModelProfile } from '@maka/core/model-thinking';
 
 const MODELS = ['alpha', 'beta', 'gamma'];
@@ -63,7 +63,7 @@ test('a repeated model id is one model, not two', () => {
 test('an empty selection ticks nothing rather than reading as fully covered', () => {
   // 0 === 0 is the trap: `declaredCount === total` is true of an empty
   // selection, which would present every level as declared everywhere.
-  for (const state of bulkThinkingLevelStates([], {}, DECLARABLE_RELAY_THINKING_LEVELS)) {
+  for (const state of bulkThinkingLevelStates([], {}, declarableRelayThinkingLevels('openai-compatible'))) {
     assert.equal(state.checked, false);
     assert.equal(state.total, 0);
   }

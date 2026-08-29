@@ -22,6 +22,7 @@ import {
   type RelayModelProfile,
   type RelayModelProfiles,
 } from '@maka/core/model-thinking';
+import type { ProviderType } from '@maka/core/llm-connections';
 
 /**
  * Reseed decision for the relay-profile editor's local draft. The editor is
@@ -66,6 +67,7 @@ export function relayProfileDraftReseedPlan(
  */
 export function relayProfileDraftSeed(
   profiles: RelayModelProfiles | undefined,
+  providerType: ProviderType,
 ): Record<string, RelayModelProfile> {
-  return normalizeRelayModelProfiles(profiles) ?? {};
+  return normalizeRelayModelProfiles(profiles, providerType) ?? {};
 }

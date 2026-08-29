@@ -1843,6 +1843,7 @@ const providerRegistry = {
     status: 'ready',
     protocol: 'anthropic',
     runtimeAdapter: { kind: 'anthropic', auth: 'api-key', normalizeBaseUrl: true },
+    relayModelProfiles: true,
     modelDiscovery: { kind: 'protocol' },
     category: 'custom',
     catalogGroup: 'aggregators',

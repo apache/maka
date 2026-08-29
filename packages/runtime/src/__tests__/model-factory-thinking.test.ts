@@ -140,6 +140,45 @@ describe('buildProviderOptions: thinking level', () => {
     });
   });
 
+  test('anthropic-compatible relay declarations map to effort and thinking.disabled', () => {
+    const relay = {
+      ...conn('anthropic-compatible'),
+      relayModelProfiles: { 'relay-claude': { thinkingLevels: ['off', 'high'] } },
+    } as LlmConnection;
+    // A declared effort level passes through as the Anthropic effort field.
+    assert.deepEqual(buildProviderOptions(relay, 'relay-claude', 'high'), {
+      anthropic: { effort: 'high' },
+    });
+    // Every level the vocabulary offers maps 1:1 onto the SDK's closed
+    // effort enum (low|medium|high|xhigh|max) — a declared choice must
+    // never produce a provider-options payload the SDK would reject
+    // before the request (the vocabulary excludes `minimal` for exactly
+    // that reason).
+    for (const level of ['low', 'medium', 'xhigh', 'max'] as const) {
+      assert.deepEqual(
+        buildProviderOptions(
+          {
+            ...conn('anthropic-compatible'),
+            relayModelProfiles: { 'relay-claude': { thinkingLevels: ['off', level] } },
+          } as LlmConnection,
+          'relay-claude',
+          level,
+        ),
+        { anthropic: { effort: level } },
+      );
+    }
+    // A declared off uses the protocol's true disable wire — unlike the
+    // native effort models, the declaration is the authority that the
+    // relay's models accept a disabled thinking request.
+    assert.deepEqual(buildProviderOptions(relay, 'relay-claude', 'off'), {
+      anthropic: { thinking: { type: 'disabled' } },
+    });
+    // A model with no declaration has no variants: the level is dropped
+    // before the wire and nothing is sent.
+    assert.deepEqual(buildProviderOptions(relay, 'other-model', 'high'), {});
+    assert.deepEqual(buildProviderOptions(relay, 'other-model', 'off'), {});
+  });
+
   test('Kimi K3 passes the chosen effort through adaptive thinking, defaulting to max', () => {
     assert.deepEqual(
       [...thinkingVariantsForModel('kimi-coding-plan', 'k3')],
@@ -849,9 +888,9 @@ describe('buildProviderOptions: openai-compatible namespace', () => {
     // Declared levels land under the provider-options key derived from the
     // connection slug. The SDK's canonical key for a dashed provider name is
     // its camelCase alias — using the raw form still works but returns a
-    // `deprecated` warning on every call. ('off' cannot appear in a
-    // declaration — see DECLARABLE_RELAY_THINKING_LEVELS — so no off→'none'
-    // mapping for relays is asserted here.)
+    // `deprecated` warning on every call. ('off' cannot appear in an
+    // OpenAI-relay declaration — see `declarableRelayThinkingLevels` — so no
+    // off→'none' mapping for relays is asserted here.)
     assert.deepEqual(buildProviderOptions(declared, 'dsv4-flash', 'high'), {
       myRelay: { reasoningEffort: 'high' },
     });

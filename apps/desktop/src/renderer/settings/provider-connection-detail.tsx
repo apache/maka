@@ -33,7 +33,7 @@ import {
 import { isRelayProviderType, PROVIDER_DEFAULTS } from '@maka/core/llm-connections';
 import { hasModelMetadata } from '@maka/core/model-metadata';
 import {
-  DECLARABLE_RELAY_THINKING_LEVELS,
+  declarableRelayThinkingLevels,
   THINKING_LEVELS,
   supportsRelayFastServiceTier,
   type RelayModelProfile,
@@ -201,12 +201,12 @@ function ConnectionDetailInner(props: ConnectionDetailProps) {
     refreshAfterRelogin,
   } = useConnectionDetail(props);
   // A model gets capability switches when Maka cannot describe it otherwise.
-  // On a custom OpenAI relay that is every model: the id is whatever the
-  // operator chose, so even one that collides with a known name may front
-  // something else entirely. Elsewhere it is the models the bundled metadata
-  // has never heard of — a model newer than this build, or one the user typed
-  // in on a provider whose key cannot call a model-list endpoint, which no
-  // refresh will ever describe (#1584).
+  // On a custom relay (OpenAI chat/responses or Anthropic protocol) that is
+  // every model: the id is whatever the operator chose, so even one that
+  // collides with a known name may front something else entirely. Elsewhere
+  // it is the models the bundled metadata has never heard of — a model newer
+  // than this build, or one the user typed in on a provider whose key cannot
+  // call a model-list endpoint, which no refresh will ever describe (#1584).
   //
   // A model that already carries a declaration always keeps its row, or a
   // stale declaration would be uneditable and unclearable.
@@ -707,15 +707,16 @@ function ConnectionDetailInner(props: ConnectionDetailProps) {
                     hasChevron
                     menuWidth={240}
                   >
-                    {/* The declarable vocabulary, which is the whole of what
-                        a draft can hold: the seed sanitizes through
-                        `normalizeRelayModelProfiles`, so `off` — a disable
-                        wire no generic relay is presumed to speak — cannot
-                        reach a row here either. */}
+                    {/* The per-provider declarable vocabulary, which is the
+                        whole of what a draft can hold: the seed sanitizes
+                        through `normalizeRelayModelProfiles` with the same
+                        provider, so `off` — legal only where the provider
+                        has a true disable wire — cannot reach an OpenAI
+                        relay row here either. */}
                     {bulkThinkingLevelStates(
                       capabilityModelIds,
                       relayProfileDraft,
-                      DECLARABLE_RELAY_THINKING_LEVELS,
+                      declarableRelayThinkingLevels(connection.providerType),
                     ).map((state) => (
                       <DropdownMenuCheckboxItem
                         key={state.level}
@@ -765,16 +766,15 @@ function ConnectionDetailInner(props: ConnectionDetailProps) {
                   connection.providerType,
                   modelId,
                 );
-                // The menu offers the five declarable levels PLUS anything
-                // the stored table already claims — a level saved while it
-                // was still declarable (or hand-written into the document)
-                // must stay visible and un-checkable, never an invisible
-                // selection the trigger counts but the menu cannot show.
+                // The menu offers the provider's declarable levels PLUS
+                // anything the stored table already claims — a level saved
+                // while it was still declarable (or hand-written into the
+                // document) must stay visible and un-checkable, never an
+                // invisible selection the trigger counts but the menu
+                // cannot show.
+                const declarableLevels = declarableRelayThinkingLevels(connection.providerType);
                 const menuLevels: readonly ThinkingLevel[] = THINKING_LEVELS.filter(
-                  (level) =>
-                    (DECLARABLE_RELAY_THINKING_LEVELS as readonly ThinkingLevel[]).includes(
-                      level,
-                    ) || draftLevels.includes(level),
+                  (level) => declarableLevels.includes(level) || draftLevels.includes(level),
                 );
                 return (
                   <VStack key={modelId} gap={3}>
@@ -784,11 +784,13 @@ function ConnectionDetailInner(props: ConnectionDetailProps) {
                         left, one compact control on the right (the 模型功能
                         row language). A CheckboxList wall was the reason this
                         section looked like a form from a different app. */}
-                    {/* Relay-only, like 快速模式 below: a declared level encodes
-                        into `reasoning_effort`, a wire field only the
-                        OpenAI-compatible relays accept. The catalog codec
-                        refuses to persist one elsewhere, so offering the
-                        control would promise an edit that cannot be saved. */}
+                    {/* Relay-only, like 快速模式 below: a declared level
+                        encodes into the relay's thinking wire —
+                        `reasoning_effort` on the OpenAI relays, the
+                        Anthropic `thinking`/`effort` controls on the
+                        Anthropic-protocol relay. The catalog codec refuses
+                        to persist one elsewhere, so offering the control
+                        would promise an edit that cannot be saved. */}
                     {isRelay && (
                     <CapabilityRow label={copy.thinkingEffort} description={copy.thinkingEffortHelp}>
                       {/* DropdownMenu, not MultiSelector: levels have a

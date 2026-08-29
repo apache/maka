@@ -384,8 +384,9 @@ export function useConnectionDetail(props: ConnectionDetailProps) {
     }
   }
 
-  // Per-model profile declarations for custom OpenAI relays, edited as a
-  // LOCAL DRAFT and committed by an explicit 保存 button — never keystroke by
+  // Per-model profile declarations for custom relays (OpenAI chat/responses
+  // or Anthropic protocol), edited as a LOCAL DRAFT and committed by an
+  // explicit 保存 button — never keystroke by
   // keystroke. A draft is `Record<modelId, RelayModelProfile>` seeded from the
   // saved table; entries a user empties fully drop out of the map, and the
   // ≥1-enabled-model invariant is honored live: the draft is pruned against
@@ -393,7 +394,7 @@ export function useConnectionDetail(props: ConnectionDetailProps) {
   // removes its unsaved declaration too (the store prunes the SAVED table the
   // same way on write).
   const [relayProfileDrafts, setRelayProfileDrafts] = useState<Record<string, RelayModelProfile>>(
-    () => relayProfileDraftSeed(connection.relayModelProfiles),
+    () => relayProfileDraftSeed(connection.relayModelProfiles, connection.providerType),
   );
   const [relayProfilesDirty, setRelayProfilesDirty] = useState(false);
   // The dirty flag names a slug: the same instance continues across the
@@ -479,9 +480,11 @@ export function useConnectionDetail(props: ConnectionDetailProps) {
   // path applies, so a reordered-but-equal draft doesn't keep 保存 lit.
   const savedRelayProfiles = normalizeRelayModelProfiles(
     pruneRelayModelProfiles(connection.relayModelProfiles, enabledModelIds) ?? {},
+    connection.providerType,
   );
   const draftedRelayProfiles = normalizeRelayModelProfiles(
     pruneRelayModelProfiles(relayProfileDrafts, enabledModelIds) ?? {},
+    connection.providerType,
   );
   const hasRelayProfileChanges = !relayProfilesEqual(draftedRelayProfiles, savedRelayProfiles);
 
@@ -496,7 +499,9 @@ export function useConnectionDetail(props: ConnectionDetailProps) {
     );
     relayProfileDraftOwnerRef.current = connection.slug;
     if (plan.reseed) {
-      setRelayProfileDrafts(relayProfileDraftSeed(connection.relayModelProfiles));
+      setRelayProfileDrafts(
+        relayProfileDraftSeed(connection.relayModelProfiles, connection.providerType),
+      );
     }
     if (plan.clearDirty) {
       setRelayProfilesDirty(false);

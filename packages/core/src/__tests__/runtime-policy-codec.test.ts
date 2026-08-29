@@ -236,12 +236,13 @@ test('rejects new connections for the retired Gemini CLI account provider', () =
 });
 
 test('relay model profiles round-trip canonical entries and drafts, strictly', () => {
-  const table = {
+  // `serviceTier` is a Responses-relay wire fact, so the Chat relay's
+  // round-trip table carries the profile fields its wire accepts.
+  const chatTable = {
     'relay-reasoner': {
       thinkingLevels: ['minimal', 'low'],
       vision: true,
       contextWindow: 128_000,
-      serviceTier: 'fast',
     },
   };
   const draft = normalizeCreateCatalogConnectionInput({
@@ -253,10 +254,14 @@ test('relay model profiles round-trip canonical entries and drafts, strictly', (
       baseUrl: 'https://relay.example/v1',
       enabled: true,
       enabledModelIds: ['relay-reasoner'],
-      relayModelProfiles: table,
+      relayModelProfiles: chatTable,
     },
   });
-  assert.deepEqual(draft.connection.relayModelProfiles, table);
+  assert.deepEqual(draft.connection.relayModelProfiles, chatTable);
+  const table = {
+    ...chatTable,
+    'relay-reasoner': { ...chatTable['relay-reasoner'], serviceTier: 'fast' },
+  };
   const responsesDraft = normalizeCreateCatalogConnectionInput({
     expectedCatalogRevision: 0,
     connection: {
@@ -271,13 +276,22 @@ test('relay model profiles round-trip canonical entries and drafts, strictly', (
   });
   assert.deepEqual(responsesDraft.connection.relayModelProfiles, table);
   // The canonical path re-decodes the same table (entry = draft + identity).
-  const entry = decodeCanonicalConnectionCatalogEntry({
+  // It exercises both wires: the Chat relay's table without the tier, and
+  // the Responses relay's with it.
+  const chatEntry = decodeCanonicalConnectionCatalogEntry({
     ...draft.connection,
     connectionId: '123e4567-e89b-42d3-a456-426614174000',
     revision: 1,
     models: [],
   });
-  assert.deepEqual(entry.relayModelProfiles, table);
+  assert.deepEqual(chatEntry.relayModelProfiles, chatTable);
+  const responsesEntry = decodeCanonicalConnectionCatalogEntry({
+    ...responsesDraft.connection,
+    connectionId: '123e4567-e89b-42d3-a456-426614174001',
+    revision: 1,
+    models: [],
+  });
+  assert.deepEqual(responsesEntry.relayModelProfiles, table);
 
   // An empty table is never a state: drafts omit the key, updates read it as
   // the same clear-instruction `null` gives.
@@ -356,9 +370,84 @@ test('relay model profiles round-trip canonical entries and drafts, strictly', (
     facts,
   );
 
-  // `thinkingLevels` and `serviceTier` name a wire feature only the
-  // OpenAI-compatible relays accept, so they stay relay-only on both write
-  // paths: elsewhere they are a request Maka would never send.
+  // `thinkingLevels` names a wire feature the relay declarations accept:
+  // all three custom relays (OpenAI chat/responses + Anthropic protocol)
+  // may declare them, with `off` legal only where the provider has a true
+  // disable wire. `serviceTier` stays OpenAI-relay-only on both write
+  // paths: elsewhere it is a request Maka would never send.
+  const anthropicRelayThinking = { 'relay-reasoner': { thinkingLevels: ['off', 'high'] } };
+  assert.deepEqual(
+    normalizeCreateCatalogConnectionInput({
+      expectedCatalogRevision: 0,
+      connection: {
+        slug: 'anthropic-relay',
+        name: 'Anthropic Relay',
+        providerType: 'anthropic-compatible',
+        baseUrl: 'https://relay.example',
+        enabled: true,
+        enabledModelIds: ['relay-reasoner'],
+        relayModelProfiles: anthropicRelayThinking,
+      },
+    }).connection.relayModelProfiles,
+    anthropicRelayThinking,
+  );
+  assert.deepEqual(
+    decodeCanonicalConnectionCatalogEntry({
+      ...normalizeCreateCatalogConnectionInput({
+        expectedCatalogRevision: 0,
+        connection: {
+          slug: 'anthropic-relay',
+          name: 'Anthropic Relay',
+          providerType: 'anthropic-compatible',
+          baseUrl: 'https://relay.example',
+          enabled: true,
+          enabledModelIds: ['relay-reasoner'],
+          relayModelProfiles: anthropicRelayThinking,
+        },
+      }).connection,
+      connectionId: '123e4567-e89b-42d3-a456-426614174000',
+      revision: 1,
+      models: [],
+    }).relayModelProfiles,
+    anthropicRelayThinking,
+  );
+  // `off` stays out of OpenAI-relay declarations: no such wire there.
+  assert.throws(
+    () =>
+      normalizeCreateCatalogConnectionInput({
+        expectedCatalogRevision: 0,
+        connection: {
+          slug: 'relay',
+          name: 'Relay',
+          providerType: 'openai-compatible',
+          baseUrl: 'https://relay.example/v1',
+          enabled: true,
+          enabledModelIds: ['relay-reasoner'],
+          relayModelProfiles: { 'relay-reasoner': { thinkingLevels: ['off', 'low'] } },
+        },
+      }),
+    /not declarable/,
+  );
+  // `minimal` is the mirror image: the Anthropic relay's levels are emitted
+  // as `providerOptions.anthropic.effort`, parsed by the SDK through a
+  // closed low|medium|high|xhigh|max enum before any request — persisting a
+  // choice that can only throw locally is dead state on arrival.
+  assert.throws(
+    () =>
+      normalizeCreateCatalogConnectionInput({
+        expectedCatalogRevision: 0,
+        connection: {
+          slug: 'anthropic-relay',
+          name: 'Anthropic Relay',
+          providerType: 'anthropic-compatible',
+          baseUrl: 'https://relay.example',
+          enabled: true,
+          enabledModelIds: ['relay-reasoner'],
+          relayModelProfiles: { 'relay-reasoner': { thinkingLevels: ['minimal', 'high'] } },
+        },
+      }),
+    /not declarable/,
+  );
   for (const wireShaped of [
     { 'relay-reasoner': { thinkingLevels: ['low'] } },
     { 'relay-reasoner': { serviceTier: 'fast' } },
@@ -376,7 +465,7 @@ test('relay model profiles round-trip canonical entries and drafts, strictly', (
             relayModelProfiles: wireShaped,
           },
         }),
-      /require[s]? an OpenAI-compatible connection/,
+      /require[s]? (a custom relay|an OpenAI Responses relay) connection/,
       JSON.stringify(wireShaped),
     );
     assert.throws(
@@ -390,10 +479,94 @@ test('relay model profiles round-trip canonical entries and drafts, strictly', (
           },
           'anthropic',
         ),
-      /require[s]? an OpenAI-compatible connection/,
+      /require[s]? (a custom relay|an OpenAI Responses relay) connection/,
       JSON.stringify(wireShaped),
     );
   }
+
+  // The update path accepts an anthropic-relay thinking declaration with
+  // `off` too — the same per-provider vocabulary the create path applies.
+  const anthropicRelayUpdate = {
+    name: 'Anthropic Relay',
+    enabled: true,
+    enabledModelIds: ['relay-reasoner'],
+    relayModelProfiles: { 'relay-reasoner': { thinkingLevels: ['off', 'high'] } },
+  };
+  assert.deepEqual(
+    normalizeConnectionCatalogEntryUpdateForProvider(anthropicRelayUpdate, 'anthropic-compatible')
+      .relayModelProfiles,
+    { 'relay-reasoner': { thinkingLevels: ['off', 'high'] } },
+  );
+
+  // `serviceTier` also stays off the Anthropic protocol relay: it is an
+  // OpenAI Responses wire fact (priority processing), not a thinking field.
+  assert.throws(
+    () =>
+      normalizeCreateCatalogConnectionInput({
+        expectedCatalogRevision: 0,
+        connection: {
+          slug: 'anthropic-relay',
+          name: 'Anthropic Relay',
+          providerType: 'anthropic-compatible',
+          baseUrl: 'https://relay.example',
+          enabled: true,
+          enabledModelIds: ['relay-reasoner'],
+          relayModelProfiles: { 'relay-reasoner': { serviceTier: 'fast' } },
+        },
+      }),
+    /requires an OpenAI Responses relay connection/,
+  );
+  // The gate is narrower than "any OpenAI relay": the Chat Completions
+  // relay (`openai-compatible`) has no tier wire to send, so a persisted
+  // `serviceTier` there is durable dead state — the read seam
+  // (`supportsRelayFastServiceTier`) is Responses-only. Reject it on every
+  // write path: create, provider-scoped update, and canonical decode.
+  const chatServiceTier = { 'relay-reasoner': { serviceTier: 'fast' } };
+  assert.throws(
+    () =>
+      normalizeCreateCatalogConnectionInput({
+        expectedCatalogRevision: 0,
+        connection: {
+          slug: 'chat-relay',
+          name: 'Chat Relay',
+          providerType: 'openai-compatible',
+          baseUrl: 'https://relay.example/v1',
+          enabled: true,
+          enabledModelIds: ['relay-reasoner'],
+          relayModelProfiles: chatServiceTier,
+        },
+      }),
+    /requires an OpenAI Responses relay connection/,
+  );
+  assert.throws(
+    () =>
+      normalizeConnectionCatalogEntryUpdateForProvider(
+        {
+          name: 'Chat Relay',
+          enabled: true,
+          enabledModelIds: ['relay-reasoner'],
+          relayModelProfiles: chatServiceTier,
+        },
+        'openai-compatible',
+      ),
+    /requires an OpenAI Responses relay connection/,
+  );
+  assert.throws(
+    () =>
+      decodeCanonicalConnectionCatalogEntry({
+        connectionId: '123e4567-e89b-42d3-a456-426614174000',
+        revision: 1,
+        slug: 'chat-relay',
+        name: 'Chat Relay',
+        providerType: 'openai-compatible',
+        baseUrl: 'https://relay.example/v1',
+        enabled: true,
+        enabledModelIds: ['relay-reasoner'],
+        relayModelProfiles: chatServiceTier,
+        models: [],
+      }),
+    /requires an OpenAI Responses relay connection/,
+  );
 
   assert.equal(
     normalizeConnectionCatalogEntryUpdateForProvider(
@@ -428,6 +601,7 @@ test('relay model profiles round-trip canonical entries and drafts, strictly', (
       '{"__proto__":{"vision":true},"constructor":{"vision":false},"toString":{"contextWindow":8192}}',
     ),
     ['__proto__', 'constructor', 'toString'],
+    'openai-compatible',
   );
   assert.deepEqual(Object.keys(hostileTable).sort(), ['__proto__', 'constructor', 'toString']);
   assert.equal(JSON.stringify(hostileTable).includes('"__proto__"'), true);
@@ -448,7 +622,7 @@ test('relay model profiles round-trip canonical entries and drafts, strictly', (
     { m: { vision: true, extra: 1 } }, // unknown key in the entry
   ]) {
     assert.throws(
-      () => decodeRelayModelProfilesTable(bad, ['m']),
+      () => decodeRelayModelProfilesTable(bad, ['m'], 'openai-compatible'),
       RuntimePolicyDomainDecodeError,
       JSON.stringify(bad),
     );

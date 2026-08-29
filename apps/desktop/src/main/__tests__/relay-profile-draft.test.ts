@@ -54,15 +54,26 @@ test('the draft seed sanitizes a hand-edited saved table', () => {
   // the same canonical view — a malformed local file degrades to no
   // declaration, not to UI state TypeScript does not model.
   assert.deepEqual(
-    relayProfileDraftSeed({
-      reasoner: { thinkingLevels: 'low' as never, contextWindow: '128000' as never },
-      ghost: { thinkingLevels: ['off', 'low'] },
-      visual: { vision: true },
-    }),
+    relayProfileDraftSeed(
+      {
+        reasoner: { thinkingLevels: 'low' as never, contextWindow: '128000' as never },
+        ghost: { thinkingLevels: ['off', 'low'] },
+        visual: { vision: true },
+      },
+      'openai-compatible',
+    ),
     {
       ghost: { thinkingLevels: ['low'] },
       visual: { vision: true },
     },
   );
-  assert.deepEqual(relayProfileDraftSeed(undefined), {});
+  assert.deepEqual(relayProfileDraftSeed(undefined, 'openai-compatible'), {});
+  // An Anthropic-protocol relay keeps `off`: its wire has a true disable.
+  assert.deepEqual(
+    relayProfileDraftSeed(
+      { ghost: { thinkingLevels: ['off', 'low'] } },
+      'anthropic-compatible',
+    ),
+    { ghost: { thinkingLevels: ['off', 'low'] } },
+  );
 });

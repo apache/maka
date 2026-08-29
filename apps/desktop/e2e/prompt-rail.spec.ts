@@ -292,6 +292,17 @@ test('evicting a turn-owned sibling interaction hands focus back to the transcri
   await scroller.waitFor();
   await loadPromptRailBeyondVirtualWindow(page);
   await scrollTranscriptTo(page, 'bottom');
+  // The bottom jump lands on a spacer layout sized by estimated turn heights.
+  // #3121 established this jump races the virtualizer's scroll-anchor restore:
+  // the window can settle against the estimates before the tail turn mounts,
+  // and with no further scroll event it stays settled short of the tail. The
+  // second-half jump below already re-asserts its intent for the same reason;
+  // re-assert the bottom scroll once the first paint lands, then dispatch the
+  // scroll event the window recompute listens for. A real regression (the
+  // tail turn never mounting at the bottom) still fails the assertion.
+  await waitForPaintedFrames(page);
+  await scrollTranscriptTo(page, 'bottom');
+  await notifyTranscriptScrolled(page);
   await expect(page.locator('[data-virtual-turn-id="turn-prompt-rail-120"]')).toHaveCount(1);
   const retainedTurnId = await page.evaluate(() => {
     const turns = document.querySelectorAll<HTMLElement>('[data-virtual-turn-id]');
