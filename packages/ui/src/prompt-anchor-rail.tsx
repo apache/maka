@@ -312,7 +312,8 @@ export const PromptAnchorRail = memo(function PromptAnchorRail({ turns, scrollRe
 
   useEffect(() => {
     const root = scrollRef.current;
-    if (!root || turns.length === 0) return;
+    const mountedTurnList = root?.querySelector('[data-virtual-turn-id]')?.parentElement;
+    if (!root || !mountedTurnList || turns.length === 0) return;
 
     const idByElement = new Map<Element, string>();
     const visible = new Set<string>();
@@ -381,7 +382,7 @@ export const PromptAnchorRail = memo(function PromptAnchorRail({ turns, scrollRe
       },
       { root, rootMargin: '0px 0px -66% 0px', threshold: 0 },
     );
-    for (const element of root.querySelectorAll('[data-turn-id]')) observeElement(element);
+    for (const element of mountedTurnList.querySelectorAll('[data-turn-id]')) observeElement(element);
 
     const mutationObserver = new MutationObserver((records) => {
       for (const record of records) {
@@ -390,7 +391,7 @@ export const PromptAnchorRail = memo(function PromptAnchorRail({ turns, scrollRe
       }
       resolveActive();
     });
-    mutationObserver.observe(root, { childList: true, subtree: true });
+    mutationObserver.observe(mountedTurnList, { childList: true });
 
     let frame = 0;
     const onScroll = (): void => {
