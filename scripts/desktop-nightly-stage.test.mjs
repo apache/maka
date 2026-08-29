@@ -129,8 +129,8 @@ test('the Desktop feed advances only to a newer npm run number', async (t) => {
   await assert.doesNotReject(
     assertDesktopNightlyFeedAdvance({
       directory,
-      candidateVersion: '0.2.0-dev.43.20260828',
-      productVersion: '0.2.0',
+      candidateVersion: '0.3.0-dev.43.20260828',
+      productVersion: '0.3.0',
     }),
   );
   await assert.rejects(

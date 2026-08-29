@@ -72,10 +72,14 @@ test('the version handoff CLI passes only the exact version to Desktop', async (
   assert.equal(await readFile(output, 'utf8'), `version=${version}\n`);
 });
 
-test('run number is the single monotonic Nightly authority across UTC dates', () => {
+test('run number is the single monotonic Nightly authority across dates and product versions', () => {
   assert.equal(
     assertProductNightlyAdvances('0.2.0-dev.43.20260828', '0.2.0-dev.42.20260829', '0.2.0'),
     '0.2.0-dev.43.20260828',
+  );
+  assert.equal(
+    assertProductNightlyAdvances('0.3.0-dev.43.20260830', '0.2.0-dev.42.20260829', '0.3.0'),
+    '0.3.0-dev.43.20260830',
   );
   for (const candidate of ['0.2.0-dev.42.20260830', '0.2.0-dev.41.20260830']) {
     assert.throws(
@@ -83,6 +87,17 @@ test('run number is the single monotonic Nightly authority across UTC dates', ()
       /does not advance current run/u,
     );
   }
+});
+
+test('the npm channel CLI advances across the checked-in product version boundary', async () => {
+  await assert.doesNotReject(
+    run(process.execPath, [
+      join(repoRoot, 'scripts', 'product-nightly.mjs'),
+      'assert-channel-advance',
+      '0.2.0-dev.43.20260830',
+      '0.1.0-dev.42.20260829',
+    ]),
+  );
 });
 
 test('the identity entrypoint runs before repository dependencies are installed', async (t) => {

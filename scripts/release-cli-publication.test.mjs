@@ -67,7 +67,10 @@ test('formal and Nightly versions map to their only public channels', () => {
     tarball: 'maka-agent-0.2.0-dev.42.20260829.tgz',
   });
   assert.throws(() => parseCliReleaseVersion('0.2.0-beta.1'), /must use a stable/u);
-  assert.throws(() => parseCliNightlyVersion('0.2.0-beta.1', '0.2.0'), /must be a dev build/u);
+  assert.throws(
+    () => parseCliNightlyVersion('0.2.0-beta.1', '0.2.0'),
+    /valid Product Nightly version/u,
+  );
   for (const version of ['01.0.0', '0.1', '0.1.0+local', '0.1.0-beta..1', '../0.1.0']) {
     assert.throws(() => parseCliReleaseVersion(version), /valid product release version/u);
   }
