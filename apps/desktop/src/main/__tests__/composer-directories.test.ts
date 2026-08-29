@@ -22,7 +22,10 @@ import { afterEach, test } from 'node:test';
 import { act, createElement } from 'react';
 import { LocaleProvider } from '@maka/ui';
 import { normalizeSessionSendCommand } from '../permission-response-guard.js';
-import { useComposerDirectories } from '../../renderer/use-composer-directories.js';
+import {
+  createComposerDirectoriesController,
+  useComposerDirectories,
+} from '../../renderer/use-composer-directories.js';
 import { cleanupFakeDom, installReactRenderer } from './fake-dom.js';
 
 afterEach(cleanupFakeDom);
@@ -35,7 +38,9 @@ async function mount(initial: Partial<Options> = {}) {
   const { root } = installReactRenderer();
   let state!: State;
   const errors: string[] = [];
+  const controller = createComposerDirectoriesController();
   let options: Options = {
+    controller,
     draftKey: 'draft-a', hostId: 'host-a',
     pick: async () => ({ ok: true, reference }),
     toastApi: { error: (title, description) => errors.push(description ?? title) },

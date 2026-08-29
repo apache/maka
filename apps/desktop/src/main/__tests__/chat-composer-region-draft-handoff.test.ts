@@ -24,6 +24,7 @@ import { createRoot, type Root } from 'react-dom/client';
 import { parseHTML } from 'linkedom';
 import { AstryxLocaleProvider, type ComposerHandle, LocaleProvider } from '@maka/ui';
 import { ChatComposerRegion } from '../../renderer/chat-composer-region.js';
+import { createComposerDirectoriesController } from '../../renderer/use-composer-directories.js';
 import {
   markNewTaskReloadIntent,
   UNRESOLVED_NEW_TASK_DRAFT_KEY,
@@ -96,6 +97,7 @@ async function mountRegion(): Promise<{
   const root = createRoot(container);
   mountedRoot = root;
   const composer = createRef<ComposerHandle>();
+  const directoryController = createComposerDirectoriesController();
 
   const render = async (
     activeId: string | undefined,
@@ -111,6 +113,11 @@ async function mountRegion(): Promise<{
             children: createElement(AstryxLocaleProvider, {
               children: createElement(ChatComposerRegion, {
               composerRef: composer,
+              directoryController,
+              directoryDraftKey: activeId ?? newTaskDraftKey,
+              directoryPickerEnabled: false,
+              pickDirectory: async () => ({ ok: false as const, reason: 'cancelled' as const }),
+              directoryToastApi: { error: () => {} },
               active: true,
               onboardingComposerHidden: false,
               activeInteraction: undefined,
