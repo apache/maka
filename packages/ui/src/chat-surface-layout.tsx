@@ -27,15 +27,12 @@ import {
 import { cn } from './utils.js';
 
 /**
- * Stock ChatLayoutProps plus the patch-package `autoScroll` seam
- * (`patches/@astryxdesign+core+0.5.0.patch`), which forwards Astryx's own
- * published `enabled` option down to `useChatStreamScroll`.
- *
- * Intersection is explicit because some TS resolutions only see the published
- * Astryx destructure list (which omits autoScroll) via ComponentProps.
+ * Stock ChatLayoutProps, minus `autoScroll`. That prop is the patch-package
+ * seam (`patches/@astryxdesign+core+0.5.0.patch`) forwarding Astryx's own
+ * published `enabled` option to `useChatStreamScroll`, and `scrollOwner`
+ * decides it — a caller-supplied value would be silently overwritten.
  */
-export type ChatSurfaceLayoutProps = ComponentProps<typeof ChatLayout> & {
-  autoScroll?: boolean;
+export type ChatSurfaceLayoutProps = Omit<ComponentProps<typeof ChatLayout>, 'autoScroll'> & {
   /**
    * Who positions this transcript.
    *
@@ -65,7 +62,7 @@ export type ChatSurfaceLayoutProps = ComponentProps<typeof ChatLayout> & {
  * message-area and dock-inner styles resolve to literally the same StyleX atoms
  * in both tiers, so this moves the dock and nothing else. It stays written out
  * rather than dropped entirely so an upstream default change cannot silently
- * retune the composer's gutters; `chat-surface-layout.test.tsx` holds the value.
+ * retune the composer's gutters.
  */
 export function ChatSurfaceLayout({
   className,
@@ -101,9 +98,9 @@ export function ChatSurfaceLayout({
   ) : (
     layout
   );
-  return hostOwned ? (
-    <TranscriptScrollAuthorityProvider>{localized}</TranscriptScrollAuthorityProvider>
-  ) : (
-    localized
-  );
+  // Unconditional: an authority nobody attaches a scroller to writes nothing
+  // and costs one object, and providing it always is what lets everything
+  // below treat it as present instead of carrying a second, unreachable
+  // behaviour for its absence.
+  return <TranscriptScrollAuthorityProvider>{localized}</TranscriptScrollAuthorityProvider>;
 }

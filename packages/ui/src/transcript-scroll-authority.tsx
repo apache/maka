@@ -189,11 +189,18 @@ export function TranscriptScrollAuthorityProvider({ children }: { children: Reac
   );
 }
 
-export function useTranscriptScrollAuthority(): TranscriptScrollAuthority | null {
-  return useContext(TranscriptScrollContext);
+/**
+ * Every `ChatSurfaceLayout` provides one, so a missing authority is a tree that
+ * was assembled wrong rather than a state to degrade into — the same contract
+ * `ChatView` already states about its layout.
+ */
+export function useTranscriptScrollAuthority(): TranscriptScrollAuthority {
+  const authority = useContext(TranscriptScrollContext);
+  if (!authority) {
+    throw new Error('useTranscriptScrollAuthority must be used inside ChatSurfaceLayout');
+  }
+  return authority;
 }
-
-const DETACHED_SNAPSHOT: TranscriptScrollSnapshot = { pinned: true, awayFromTail: false };
 
 /**
  * The dock's scroll-to-bottom affordance, driven by Maka's pin rather than
@@ -206,22 +213,14 @@ const DETACHED_SNAPSHOT: TranscriptScrollSnapshot = { pinned: true, awayFromTail
 export function TranscriptScrollButton() {
   const authority = useTranscriptScrollAuthority();
   const snapshot = useSyncExternalStore(
-    authority?.subscribe ?? noopSubscribe,
-    authority?.getSnapshot ?? detachedSnapshot,
-    detachedSnapshot,
+    authority.subscribe,
+    authority.getSnapshot,
+    authority.getSnapshot,
   );
   return (
     <ChatLayoutScrollButton
       isVisible={snapshot.awayFromTail}
-      onClick={() => authority?.pinToTail()}
+      onClick={() => authority.pinToTail()}
     />
   );
-}
-
-function noopSubscribe(): () => void {
-  return () => undefined;
-}
-
-function detachedSnapshot(): TranscriptScrollSnapshot {
-  return DETACHED_SNAPSHOT;
 }

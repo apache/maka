@@ -261,7 +261,6 @@ export function ChatView(props: {
   scrollTargetTurn?: { turnId: string; nonce: number };
   scrollBehavior: ScrollBehavior;
   hasOlderHistory?: boolean;
-  historyLoadPending?: boolean;
   onLoadEarlierHistory?(): Promise<void> | void;
   returnToLatest?: {
     title: string;
@@ -520,7 +519,7 @@ export function ChatView(props: {
     scrollRef,
     targetTurnId: props.scrollTargetTurn?.turnId,
     targetKey: props.scrollTargetTurn?.nonce,
-    onContentResize: scrollAuthority?.notifyContentResize,
+    onContentResize: scrollAuthority.notifyContentResize,
   });
   const navigatePromptRailFallback = useCallback((turn: PromptAnchorRailTurn) => {
     if (turnIdsRef.current.has(turn.turnId)) revealTurn(turn.turnId);
@@ -557,7 +556,6 @@ export function ChatView(props: {
     target: props.scrollTargetTurn,
     behavior: props.scrollBehavior,
     hasOlderHistory: props.hasOlderHistory,
-    historyLoadPending: props.historyLoadPending,
     onLoadEarlierHistory: props.onLoadEarlierHistory,
   });
   const { quote: selectionQuote, clear: clearSelectionQuote } = useMessageSelectionQuote(
@@ -676,7 +674,7 @@ export function ChatView(props: {
             // the range that arrives afterwards is growth, and growth is
             // already followed.
             await props.returnToLatest?.onClick();
-            scrollAuthority?.pinToTail();
+            scrollAuthority.pinToTail();
           }}
         />
       ) : null}
@@ -707,7 +705,7 @@ export function ChatView(props: {
           turns={promptRailTurns}
           scrollRef={scrollRef}
           onNavigateFallback={navigatePromptRailFallback}
-          onNavigateStart={scrollAuthority?.releasePin}
+          onNavigateStart={scrollAuthority.releasePin}
         />
         <ChatMessageList
           className="maka-chat-message-list maka-chatContent"

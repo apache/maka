@@ -426,6 +426,11 @@ function AppShellContent({
   const [newTaskPermissionChoice, setNewTaskPermissionChoice, clearNewTaskPermissionChoice] =
     useNewTaskChoice<ChatDefaultPermissionMode>(currentNewTaskDraftKey);
   const [historyLoadPendingSessionId, setHistoryLoadPendingSessionId] = useState<string>();
+  // The state above is what the transcript renders; this is what the guard
+  // reads. A scroller can ask twice in one task — two scroll events before
+  // React has re-rendered anything — and a state read is still the old value
+  // for both of them.
+  const historyLoadPendingRef = useRef(false);
   const [transcriptTurnIndex, setTranscriptTurnIndex] = useState<{
     sessionId: string;
     throughSequence: number | null;
@@ -2580,7 +2585,8 @@ function AppShellContent({
   async function loadTranscriptHistory(target: 'earlier' | 'latest') {
     const controller = transcriptRangeRef.current;
     const sessionId = activeId;
-    if (!controller || !sessionId || historyLoadPendingSessionId) return;
+    if (!controller || !sessionId || historyLoadPendingRef.current) return;
+    historyLoadPendingRef.current = true;
     setHistoryLoadPendingSessionId(sessionId);
     try {
       if (target === 'earlier') {
@@ -2605,6 +2611,7 @@ function AppShellContent({
         ),
       );
     } finally {
+      historyLoadPendingRef.current = false;
       setHistoryLoadPendingSessionId((current) => current === sessionId ? undefined : current);
     }
   }

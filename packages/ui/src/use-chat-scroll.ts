@@ -40,61 +40,45 @@ export function useChatScroll(input: {
   target?: { turnId: string; nonce: number };
   behavior: ScrollBehavior;
   hasOlderHistory?: boolean;
-  historyLoadPending?: boolean;
   onLoadEarlierHistory?(): Promise<void> | void;
 }) {
   const [highlightedTurnId, setHighlightedTurnId] = useState<string | null>(null);
   const authority = useTranscriptScrollAuthority();
-  const authorityRef = useRef(authority);
-  authorityRef.current = authority;
   const loadEarlierRef = useRef(input.onLoadEarlierHistory);
   loadEarlierRef.current = input.onLoadEarlierHistory;
-  const historyLoadPendingRef = useRef(input.historyLoadPending);
-  historyLoadPendingRef.current = input.historyLoadPending;
   const canLoadEarlier = input.onLoadEarlierHistory !== undefined;
-  const earlierLoadRequest = useRef<object | null>(null);
   const handledTarget = useRef<string | null>(null);
 
   // A passive effect, not a layout one: the scroller is Astryx's layout root,
   // an ancestor, and React attaches a parent's ref after its children's layout
   // effects have already run. The growth signal is a ResizeObserver delivery,
   // which lands after passive effects, so this is still installed in time.
-  useEffect(() => {
-    if (!authority) return;
-    return authority.attach(input.scrollRef.current);
-  }, [authority, input.scrollRef]);
+  useEffect(() => authority.attach(input.scrollRef.current), [authority, input.scrollRef]);
 
   // A new conversation arrives at its tail. Nothing special positions it: the
   // pin is set here and the first fill is growth like any other, so it takes
   // the one path instead of a first-fill path of its own.
   useEffect(() => {
-    authorityRef.current?.pinToTail();
-  }, [input.sessionId]);
-
-  useEffect(() => {
-    earlierLoadRequest.current = null;
+    authority.pinToTail();
   }, [input.sessionId]);
 
   useEffect(() => {
     const root = input.scrollRef.current;
     if (!root || !input.hasOlderHistory || !canLoadEarlier) return;
+    // Asking twice is the loader's problem, not this one's: it refuses a
+    // request while one is in flight, and asking for history the reader
+    // already has is idempotent anyway.
     const requestEarlier = (): void => {
-      if (historyLoadPendingRef.current || earlierLoadRequest.current) return;
-      const request = {};
-      earlierLoadRequest.current = request;
-      authorityRef.current?.releasePin();
+      authority.releasePin();
       // The browser anchors the reader against everything that lands above
       // them, with one exception: it declines while the scroller sits at zero,
       // which is exactly where a wheel asks for history. One pixel is the whole
       // fix — measured in Chromium, an insert of 501px above the reader moves
       // `scrollTop` by 501 at an offset of 1 and by 0 at an offset of 0.
       if (root.scrollTop < 1) root.scrollTop = 1;
-      void Promise.resolve(loadEarlierRef.current?.()).catch(() => undefined).finally(() => {
-        if (earlierLoadRequest.current === request) earlierLoadRequest.current = null;
-      });
+      void Promise.resolve(loadEarlierRef.current?.()).catch(() => undefined);
     };
-    // Position, not direction: a shrinking transcript also lowers `scrollTop`,
-    // and asking for history the reader already has is idempotent anyway.
+    // Position, not direction: a shrinking transcript also lowers `scrollTop`.
     const nearStart = (): boolean =>
       root.scrollTop <= Math.max(640, root.clientHeight * 2);
     const onScroll = (): void => {
@@ -111,13 +95,7 @@ export function useChatScroll(input: {
       root.removeEventListener('scroll', onScroll);
       root.removeEventListener('wheel', onWheel);
     };
-  }, [
-    input.hasOlderHistory,
-    input.historyLoadPending,
-    canLoadEarlier,
-    input.scrollRef,
-    input.sessionId,
-  ]);
+  }, [authority, input.hasOlderHistory, canLoadEarlier, input.scrollRef, input.sessionId]);
 
   useEffect(() => {
     const target = input.target;
@@ -128,7 +106,7 @@ export function useChatScroll(input: {
     // a reader who had already scrolled back to it.
     const chosen = `${input.sessionId ?? ''}:${target.turnId}:${target.nonce}`;
     if (handledTarget.current === chosen) return;
-    authorityRef.current?.releasePin();
+    authority.releasePin();
     const frame = window.requestAnimationFrame(() => {
       const root = input.scrollRef.current;
       if (!root) return;

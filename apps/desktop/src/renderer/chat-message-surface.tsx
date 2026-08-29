@@ -245,7 +245,6 @@ export function ChatMessageSurface({
         deepResearchRun={deepResearchRun}
         emptyOverride={emptyOverride}
         hasOlderHistory={hasOlderHistory}
-        historyLoadPending={historyLoadPending}
         onLoadEarlierHistory={onLoadEarlierHistory}
         returnToLatest={hasNewerHistory ? {
           title: transcriptCopy.partialHistoryTitle,
