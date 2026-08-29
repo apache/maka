@@ -36,7 +36,7 @@ test('creates the dedicated WAL schema with incremental auto-vacuum', async (t) 
   const database = new DatabaseSync(fixture.path);
   t.after(() => database.close());
 
-  assert.equal(pragmaNumber(database, 'user_version'), 1);
+  assert.equal(pragmaNumber(database, 'user_version'), 2);
   assert.equal(pragmaNumber(database, 'auto_vacuum'), 2);
   assert.equal(pragmaText(database, 'journal_mode'), 'wal');
   assert.deepEqual(
@@ -48,7 +48,13 @@ test('creates the dedicated WAL schema with incremental auto-vacuum', async (t) 
       )
       .all()
       .map((row) => row.name),
-    ['context_blobs', 'context_refs', 'context_session_usage', 'context_store_usage'],
+    [
+      'context_blobs',
+      'context_gc_candidates',
+      'context_refs',
+      'context_session_usage',
+      'context_store_usage',
+    ],
   );
 });
 
@@ -135,7 +141,7 @@ test('rejects a database schema newer than this authority understands', async (t
   const path = join(root, CONTEXT_OFFLOAD_DATABASE_NAME);
   t.after(() => rm(root, { recursive: true, force: true }));
   const database = new DatabaseSync(path);
-  database.exec('PRAGMA user_version = 2');
+  database.exec('PRAGMA user_version = 3');
   database.close();
 
   assert.throws(
@@ -147,7 +153,7 @@ test('rejects a database schema newer than this authority understands', async (t
           workspacePhysicalBytes: 1,
         },
       }),
-    /schema 2 is newer than supported version 1/u,
+    /schema 3 is newer than supported version 2/u,
   );
 });
 
@@ -356,6 +362,212 @@ test('releases only the authorized Session reference without deleting shared byt
     logicalBytes: 0,
     physicalBytes: bytes.byteLength,
   });
+});
+
+test('copies references atomically without copying physical bytes', async (t) => {
+  const fixture = await createFixture(t, {
+    ownerMaxBytes: TEST_OWNER_MAX_BYTES,
+    sessionLogicalBytes: 12,
+    workspacePhysicalBytes: 16,
+  });
+  const first = await fixture.store.put(
+    putInput('source', 'source-1', new TextEncoder().encode('first')),
+  );
+  const second = await fixture.store.put(
+    putInput('source', 'source-2', new TextEncoder().encode('second')),
+  );
+  assert.equal(first.ok, true);
+  assert.equal(second.ok, true);
+  if (!first.ok || !second.ok) return;
+
+  const copyInput = {
+    sourceSessionId: 'source',
+    targetSessionId: 'target',
+    references: [
+      {
+        sourceRefId: first.record.refId,
+        targetOwner: { kind: 'tool_result_archive' as const, ownerId: 'target-1' },
+      },
+      {
+        sourceRefId: second.record.refId,
+        targetOwner: { kind: 'tool_result_archive' as const, ownerId: 'target-2' },
+      },
+    ],
+  };
+  const copied = await fixture.store.copyReferences(copyInput);
+  assert.equal(copied.ok, true);
+  if (!copied.ok) return;
+  assert.deepEqual(await fixture.store.copyReferences(copyInput), copied);
+  assert.deepEqual(await fixture.store.usage('target'), {
+    references: 2,
+    logicalBytes: 11,
+    physicalBytes: 11,
+  });
+  assert.equal(
+    (
+      await fixture.store.read({
+        sessionId: 'target',
+        refId: copied.copied[0]?.targetRefId ?? '',
+        maxBytes: 16,
+      })
+    ).ok,
+    true,
+  );
+
+  assert.deepEqual(
+    await fixture.store.copyReferences({
+      sourceSessionId: 'source',
+      targetSessionId: 'target',
+      references: [
+        {
+          sourceRefId: first.record.refId,
+          targetOwner: { kind: 'tool_result_archive', ownerId: 'target-over-quota' },
+        },
+      ],
+    }),
+    { ok: false, reason: 'session_quota_exceeded' },
+  );
+
+  assert.deepEqual(
+    await fixture.store.copyReferences({
+      sourceSessionId: 'source',
+      targetSessionId: 'target',
+      references: [
+        {
+          sourceRefId: second.record.refId,
+          targetOwner: { kind: 'tool_result_archive', ownerId: 'new-before-conflict' },
+        },
+        {
+          sourceRefId: second.record.refId,
+          targetOwner: { kind: 'tool_result_archive', ownerId: 'target-1' },
+        },
+      ],
+    }),
+    { ok: false, reason: 'identity_conflict' },
+  );
+  assert.equal((await fixture.store.usage('target')).references, 2);
+});
+
+test('retires only one Session and collects shared blobs after the last reference', async (t) => {
+  const fixture = await createFixture(t);
+  const bytes = new TextEncoder().encode('shared');
+  await fixture.store.put(putInput('session-1', 'owner-1', bytes));
+  await fixture.store.put(putInput('session-2', 'owner-2', bytes));
+
+  assert.deepEqual(await fixture.store.retireSession('session-1'), {
+    releasedReferences: 1,
+    releasedLogicalBytes: bytes.byteLength,
+  });
+  assert.deepEqual(
+    await fixture.store.collectGarbage({ olderThan: 1_001, maxBlobs: 1, maxBytes: 16 }),
+    { deletedBlobs: 0, deletedBytes: 0, hasMore: false },
+  );
+  assert.equal((await fixture.store.usage('session-2')).references, 1);
+
+  assert.deepEqual(await fixture.store.retireSession('session-2'), {
+    releasedReferences: 1,
+    releasedLogicalBytes: bytes.byteLength,
+  });
+  assert.deepEqual(
+    await fixture.store.collectGarbage({ olderThan: 1_000, maxBlobs: 1, maxBytes: 16 }),
+    { deletedBlobs: 0, deletedBytes: 0, hasMore: false },
+  );
+  assert.deepEqual(
+    await fixture.store.collectGarbage({ olderThan: 1_001, maxBlobs: 1, maxBytes: 16 }),
+    { deletedBlobs: 1, deletedBytes: bytes.byteLength, hasMore: false },
+  );
+  assert.deepEqual(await fixture.store.usage(), {
+    references: 0,
+    logicalBytes: 0,
+    physicalBytes: 0,
+  });
+});
+
+test('garbage collection obeys both batch limits and rolls back failed deletion', async (t) => {
+  let failGc = false;
+  const fixture = await createFixture(t, undefined, (point) => {
+    if (point === 'after_gc_blob_delete' && failGc) throw new Error('injected GC failure');
+  });
+  const bytes = new TextEncoder().encode('four');
+  const first = await fixture.store.put(putInput('session-1', 'owner-1', bytes));
+  const second = await fixture.store.put(
+    putInput('session-1', 'owner-2', new TextEncoder().encode('five')),
+  );
+  assert.equal(first.ok, true);
+  assert.equal(second.ok, true);
+  if (!first.ok || !second.ok) return;
+  await fixture.store.releaseReference({ sessionId: 'session-1', refId: first.record.refId });
+  await fixture.store.releaseReference({ sessionId: 'session-1', refId: second.record.refId });
+
+  assert.deepEqual(
+    await fixture.store.collectGarbage({ olderThan: 1_001, maxBlobs: 2, maxBytes: 4 }),
+    { deletedBlobs: 1, deletedBytes: 4, hasMore: true },
+  );
+  failGc = true;
+  await assert.rejects(
+    fixture.store.collectGarbage({ olderThan: 1_001, maxBlobs: 1, maxBytes: 8 }),
+    /injected GC failure/u,
+  );
+  assert.equal((await fixture.store.usage()).physicalBytes, 4);
+  failGc = false;
+  assert.deepEqual(
+    await fixture.store.collectGarbage({ olderThan: 1_001, maxBlobs: 1, maxBytes: 8 }),
+    { deletedBlobs: 1, deletedBytes: 4, hasMore: false },
+  );
+});
+
+test('migrates v1 orphan blobs into the indexed garbage candidate set', async (t) => {
+  const fixture = await createFixture(t);
+  const stored = await fixture.store.put(
+    putInput('session-1', 'owner-1', new TextEncoder().encode('orphan')),
+  );
+  assert.equal(stored.ok, true);
+  if (!stored.ok) return;
+  await fixture.store.releaseReference({ sessionId: 'session-1', refId: stored.record.refId });
+  fixture.store.close();
+
+  const database = new DatabaseSync(fixture.path);
+  database.exec('DROP TABLE context_gc_candidates; PRAGMA user_version = 1');
+  database.close();
+  const migrated = new SqliteContextOffloadStore(fixture.path, { limits: fixture.limits });
+  t.after(() => migrated.close());
+  assert.deepEqual(await migrated.collectGarbage({ olderThan: 1_001, maxBlobs: 1, maxBytes: 16 }), {
+    deletedBlobs: 1,
+    deletedBytes: 6,
+    hasMore: false,
+  });
+});
+
+test('lifecycle queries use Session and garbage eligibility indexes', async (t) => {
+  const fixture = await createFixture(t);
+  fixture.store.close();
+  const database = new DatabaseSync(fixture.path);
+  t.after(() => database.close());
+
+  const retirementPlan = database
+    .prepare(
+      `EXPLAIN QUERY PLAN
+       SELECT r.blob_id, b.size_bytes
+       FROM context_refs r INDEXED BY context_refs_session
+       JOIN context_blobs b ON b.blob_id = r.blob_id
+       WHERE r.session_id = ?`,
+    )
+    .all('session-1');
+  assert.match(JSON.stringify(retirementPlan), /context_refs_session/u);
+
+  const garbagePlan = database
+    .prepare(
+      `EXPLAIN QUERY PLAN
+       SELECT c.blob_id, b.size_bytes
+       FROM context_gc_candidates c INDEXED BY context_gc_candidates_eligible
+       JOIN context_blobs b ON b.blob_id = c.blob_id
+       WHERE c.unreferenced_at < ?
+       ORDER BY c.unreferenced_at, c.blob_id
+       LIMIT ?`,
+    )
+    .all(1_001, 2);
+  assert.match(JSON.stringify(garbagePlan), /context_gc_candidates_eligible/u);
+  assert.doesNotMatch(JSON.stringify(garbagePlan), /SCAN b(?:\W|$)/u);
 });
 
 function putInput(sessionId: string, ownerId: string, bytes: Uint8Array) {

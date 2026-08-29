@@ -23,11 +23,14 @@ import { createRequire } from 'node:module';
 import { dirname } from 'node:path';
 import type { DatabaseSync } from 'node:sqlite';
 import {
+  type ContextOffloadCopyResult,
+  type ContextOffloadGarbageCollectionResult,
   type ContextOffloadLimits,
   type ContextOffloadOwner,
   type ContextOffloadPutResult,
   type ContextOffloadReadResult,
   type ContextOffloadRecord,
+  type ContextOffloadRetirementResult,
   type ContextOffloadStore,
   type ContextOffloadUsage,
 } from '@maka/core/context-offload';
@@ -43,7 +46,10 @@ const require = createRequire(import.meta.url);
 
 export const CONTEXT_OFFLOAD_DATABASE_NAME = 'context-offload.sqlite';
 
-export type SqliteContextOffloadStoreFailpoint = 'after_blob_insert' | 'after_ref_insert';
+export type SqliteContextOffloadStoreFailpoint =
+  | 'after_blob_insert'
+  | 'after_ref_insert'
+  | 'after_gc_blob_delete';
 
 export interface SqliteContextOffloadStoreOptions {
   readonly limits: ContextOffloadLimits;
@@ -77,6 +83,11 @@ interface SessionUsageRow {
 interface StoreUsageRow {
   blob_count: unknown;
   physical_bytes: unknown;
+}
+
+interface GarbageCandidateRow {
+  blob_id: unknown;
+  size_bytes: unknown;
 }
 
 export class SqliteContextOffloadStore implements ContextOffloadStore {
@@ -171,16 +182,20 @@ export class SqliteContextOffloadStore implements ContextOffloadStore {
     this.#writeTransaction(() => {
       const row = this.#database
         .prepare(
-          `SELECT r.session_id, b.size_bytes
+          `SELECT r.session_id, r.blob_id, b.size_bytes
            FROM context_refs r
            JOIN context_blobs b ON b.blob_id = r.blob_id
            WHERE r.ref_id = ?`,
         )
-        .get(input.refId) as { session_id?: unknown; size_bytes?: unknown } | undefined;
+        .get(input.refId) as
+        | { session_id?: unknown; blob_id?: unknown; size_bytes?: unknown }
+        | undefined;
       if (!row || row.session_id !== input.sessionId) return;
       if (!isNonNegativeSafeInteger(row.size_bytes)) {
         throw new Error('Invalid context reference size');
       }
+      const blobId = decodeBlobId(row.blob_id);
+      if (!blobId) throw new Error('Invalid context reference blob identity');
       const deleted = this.#database
         .prepare('DELETE FROM context_refs WHERE session_id = ? AND ref_id = ?')
         .run(input.sessionId, input.refId);
@@ -199,6 +214,159 @@ export class SqliteContextOffloadStore implements ContextOffloadStore {
            WHERE session_id = ? AND reference_count = 0 AND logical_bytes = 0`,
         )
         .run(input.sessionId);
+      this.#markBlobUnreferencedIfEligible(blobId, this.#readNow());
+    });
+  }
+
+  async copyReferences(input: {
+    readonly sourceSessionId: string;
+    readonly targetSessionId: string;
+    readonly references: readonly {
+      readonly sourceRefId: string;
+      readonly targetOwner: ContextOffloadOwner;
+    }[];
+  }): Promise<ContextOffloadCopyResult> {
+    assertBoundedIdentity(input.sourceSessionId, 'Source Session id');
+    assertBoundedIdentity(input.targetSessionId, 'Target Session id');
+    const references = input.references.map((reference) => {
+      assertBoundedIdentity(reference.sourceRefId, 'Source context reference id');
+      assertOwner(reference.targetOwner);
+      return Object.freeze({
+        sourceRefId: reference.sourceRefId,
+        targetOwner: Object.freeze({ ...reference.targetOwner }),
+      });
+    });
+    try {
+      this.#assertOpen();
+      return this.#writeTransaction(() =>
+        this.#copyReferences({
+          sourceSessionId: input.sourceSessionId,
+          targetSessionId: input.targetSessionId,
+          references,
+        }),
+      );
+    } catch (error) {
+      this.#onUnavailable?.(error);
+      return { ok: false, reason: 'unavailable' };
+    }
+  }
+
+  async retireSession(sessionId: string): Promise<ContextOffloadRetirementResult> {
+    assertBoundedIdentity(sessionId, 'Session id');
+    this.#assertOpen();
+    return this.#writeTransaction(() => {
+      const rows = this.#database
+        .prepare(
+          `SELECT r.blob_id, b.size_bytes
+           FROM context_refs r INDEXED BY context_refs_session
+           JOIN context_blobs b ON b.blob_id = r.blob_id
+           WHERE r.session_id = ?`,
+        )
+        .all(sessionId) as unknown as Array<{ blob_id?: unknown; size_bytes?: unknown }>;
+      let releasedLogicalBytes = 0;
+      const blobIds = new Map<string, Uint8Array>();
+      for (const row of rows) {
+        const blobId = decodeBlobId(row.blob_id);
+        if (!blobId || !isNonNegativeSafeInteger(row.size_bytes)) {
+          throw new Error('Invalid retiring context reference');
+        }
+        releasedLogicalBytes = addSafeInteger(
+          releasedLogicalBytes,
+          row.size_bytes,
+          'Retired context logical bytes',
+        );
+        blobIds.set(Buffer.from(blobId).toString('hex'), blobId);
+      }
+      const usage = this.#readSessionUsage(sessionId);
+      if (
+        readNonNegativeInteger(usage.reference_count, 'Session reference count') !== rows.length ||
+        readNonNegativeInteger(usage.logical_bytes, 'Session logical bytes') !==
+          releasedLogicalBytes
+      ) {
+        throw new Error('Context Session usage is inconsistent with retiring references');
+      }
+      const deleted = this.#database
+        .prepare('DELETE FROM context_refs WHERE session_id = ?')
+        .run(sessionId);
+      if (deleted.changes !== rows.length) {
+        throw new Error('Context Session retirement deleted an unexpected reference count');
+      }
+      this.#database
+        .prepare('DELETE FROM context_session_usage WHERE session_id = ?')
+        .run(sessionId);
+      const unreferencedAt = this.#readNow();
+      for (const blobId of blobIds.values()) {
+        this.#markBlobUnreferencedIfEligible(blobId, unreferencedAt);
+      }
+      return {
+        releasedReferences: rows.length,
+        releasedLogicalBytes,
+      };
+    });
+  }
+
+  async collectGarbage(input: {
+    readonly olderThan: number;
+    readonly maxBlobs: number;
+    readonly maxBytes: number;
+  }): Promise<ContextOffloadGarbageCollectionResult> {
+    assertNonNegativeSafeInteger(input.olderThan, 'Context garbage watermark');
+    assertPositiveSafeInteger(input.maxBlobs, 'Context garbage blob limit');
+    assertPositiveSafeInteger(input.maxBytes, 'Context garbage byte limit');
+    if (input.maxBlobs === Number.MAX_SAFE_INTEGER) {
+      throw new Error('Context garbage blob limit is too large');
+    }
+    this.#assertOpen();
+    return this.#writeTransaction(() => {
+      const rows = this.#database
+        .prepare(
+          `SELECT c.blob_id, b.size_bytes
+           FROM context_gc_candidates c INDEXED BY context_gc_candidates_eligible
+           JOIN context_blobs b ON b.blob_id = c.blob_id
+           WHERE c.unreferenced_at < ?
+           ORDER BY c.unreferenced_at, c.blob_id
+           LIMIT ?`,
+        )
+        .all(input.olderThan, input.maxBlobs + 1) as unknown as GarbageCandidateRow[];
+      const selected: Uint8Array[] = [];
+      let deletedBytes = 0;
+      for (const row of rows) {
+        if (selected.length === input.maxBlobs) break;
+        const blobId = decodeBlobId(row.blob_id);
+        if (!blobId || !isNonNegativeSafeInteger(row.size_bytes)) {
+          throw new Error('Invalid context garbage candidate');
+        }
+        if (exceedsLimit(deletedBytes, row.size_bytes, input.maxBytes)) break;
+        deletedBytes = addSafeInteger(deletedBytes, row.size_bytes, 'Collected context bytes');
+        selected.push(blobId);
+      }
+      const deleteBlob = this.#database.prepare(
+        `DELETE FROM context_blobs
+         WHERE blob_id = ?
+           AND NOT EXISTS (SELECT 1 FROM context_refs WHERE blob_id = ?)`,
+      );
+      for (const blobId of selected) {
+        const deleted = deleteBlob.run(blobId, blobId);
+        if (deleted.changes !== 1) {
+          throw new Error('Context garbage candidate is still referenced or missing');
+        }
+        this.#failpoint?.('after_gc_blob_delete');
+      }
+      if (selected.length > 0) {
+        const updated = this.#database
+          .prepare(
+            `UPDATE context_store_usage
+             SET blob_count = blob_count - ?, physical_bytes = physical_bytes - ?
+             WHERE singleton = 1`,
+          )
+          .run(selected.length, deletedBytes);
+        if (updated.changes !== 1) throw new Error('Missing context store usage row');
+      }
+      return {
+        deletedBlobs: selected.length,
+        deletedBytes,
+        hasMore: rows.length > selected.length,
+      };
     });
   }
 
@@ -276,8 +444,7 @@ export class SqliteContextOffloadStore implements ContextOffloadStore {
       }
     }
 
-    const createdAt = this.#now();
-    assertNonNegativeSafeInteger(createdAt, 'Context creation time');
+    const createdAt = this.#readNow();
     const refId = this.#idFactory();
     assertBoundedIdentity(refId, 'Context reference id');
     if (!existingBlob) {
@@ -321,6 +488,7 @@ export class SqliteContextOffloadStore implements ContextOffloadStore {
            logical_bytes = logical_bytes + excluded.logical_bytes`,
       )
       .run(input.sessionId, input.bytes.byteLength);
+    this.#database.prepare('DELETE FROM context_gc_candidates WHERE blob_id = ?').run(blobIdBytes);
     this.#failpoint?.('after_ref_insert');
     return {
       ok: true,
@@ -334,6 +502,130 @@ export class SqliteContextOffloadStore implements ContextOffloadStore {
         createdAt,
       },
     };
+  }
+
+  #copyReferences(input: {
+    readonly sourceSessionId: string;
+    readonly targetSessionId: string;
+    readonly references: readonly {
+      readonly sourceRefId: string;
+      readonly targetOwner: ContextOffloadOwner;
+    }[];
+  }): ContextOffloadCopyResult {
+    const createdAt = this.#readNow();
+    const pendingByOwner = new Map<
+      string,
+      {
+        readonly refId: string;
+        readonly owner: ContextOffloadOwner;
+        readonly blobId: string;
+        readonly sizeBytes: number;
+        readonly mediaType: string;
+      }
+    >();
+    const copied: Array<{ sourceRefId: string; targetRefId: string }> = [];
+    let addedLogicalBytes = 0;
+
+    for (const reference of input.references) {
+      const sourceRow = this.#database
+        .prepare(
+          `SELECT r.ref_id, r.session_id, r.owner_kind, r.owner_id, r.blob_id,
+                  b.size_bytes, r.media_type, r.created_at
+           FROM context_refs r
+           JOIN context_blobs b ON b.blob_id = r.blob_id
+           WHERE r.session_id = ? AND r.ref_id = ?`,
+        )
+        .get(input.sourceSessionId, reference.sourceRefId) as ContextReferenceRow | undefined;
+      if (!sourceRow) return { ok: false, reason: 'not_found' };
+      const source = decodeReferenceRow(sourceRow);
+      if (!source) throw new Error('Invalid source context reference');
+
+      const ownerKey = `${reference.targetOwner.kind}\0${reference.targetOwner.ownerId}`;
+      const pending = pendingByOwner.get(ownerKey);
+      if (pending) {
+        if (pending.blobId !== source.blobId) return { ok: false, reason: 'identity_conflict' };
+        copied.push({ sourceRefId: reference.sourceRefId, targetRefId: pending.refId });
+        continue;
+      }
+
+      const existing = this.#readReferenceByOwner(input.targetSessionId, reference.targetOwner);
+      if (existing) {
+        if (existing.blobId !== source.blobId) {
+          return { ok: false, reason: 'identity_conflict' };
+        }
+        pendingByOwner.set(ownerKey, {
+          refId: existing.refId,
+          owner: reference.targetOwner,
+          blobId: existing.blobId,
+          sizeBytes: existing.sizeBytes,
+          mediaType: existing.mediaType,
+        });
+        copied.push({ sourceRefId: reference.sourceRefId, targetRefId: existing.refId });
+        continue;
+      }
+
+      const refId = this.#idFactory();
+      assertBoundedIdentity(refId, 'Context reference id');
+      pendingByOwner.set(ownerKey, {
+        refId,
+        owner: reference.targetOwner,
+        blobId: source.blobId,
+        sizeBytes: source.sizeBytes,
+        mediaType: source.mediaType,
+      });
+      addedLogicalBytes = addSafeInteger(
+        addedLogicalBytes,
+        source.sizeBytes,
+        'Copied context logical bytes',
+      );
+      copied.push({ sourceRefId: reference.sourceRefId, targetRefId: refId });
+    }
+
+    const targetUsage = this.#readSessionUsage(input.targetSessionId);
+    const currentLogicalBytes = readNonNegativeInteger(
+      targetUsage.logical_bytes,
+      'Target Session logical bytes',
+    );
+    if (exceedsLimit(currentLogicalBytes, addedLogicalBytes, this.#limits.sessionLogicalBytes)) {
+      return { ok: false, reason: 'session_quota_exceeded' };
+    }
+
+    const newReferences = [...pendingByOwner.values()].filter(
+      (reference) => !this.#readReferenceByOwner(input.targetSessionId, reference.owner),
+    );
+    const insertReference = this.#database.prepare(
+      `INSERT INTO context_refs(
+         ref_id, session_id, owner_kind, owner_id, blob_id, media_type, created_at
+       ) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    );
+    const clearCandidate = this.#database.prepare(
+      'DELETE FROM context_gc_candidates WHERE blob_id = ?',
+    );
+    for (const reference of newReferences) {
+      const blobId = Buffer.from(reference.blobId, 'hex');
+      insertReference.run(
+        reference.refId,
+        input.targetSessionId,
+        reference.owner.kind,
+        reference.owner.ownerId,
+        blobId,
+        reference.mediaType,
+        createdAt,
+      );
+      clearCandidate.run(blobId);
+    }
+    if (newReferences.length > 0) {
+      this.#database
+        .prepare(
+          `INSERT INTO context_session_usage(session_id, reference_count, logical_bytes)
+           VALUES (?, ?, ?)
+           ON CONFLICT(session_id) DO UPDATE SET
+             reference_count = reference_count + excluded.reference_count,
+             logical_bytes = logical_bytes + excluded.logical_bytes`,
+        )
+        .run(input.targetSessionId, newReferences.length, addedLogicalBytes);
+    }
+    return { ok: true, copied };
   }
 
   #read(input: {
@@ -400,6 +692,23 @@ export class SqliteContextOffloadStore implements ContextOffloadStore {
       .prepare('SELECT payload, size_bytes FROM context_blobs WHERE blob_id = ?')
       .get(Buffer.from(blobId, 'hex')) as ContextBlobRow | undefined;
     return blob !== undefined && blobMatches(blob, blobId, bytes);
+  }
+
+  #markBlobUnreferencedIfEligible(blobId: Uint8Array, unreferencedAt: number): void {
+    this.#database
+      .prepare(
+        `INSERT INTO context_gc_candidates(blob_id, unreferenced_at)
+         SELECT ?, ?
+         WHERE NOT EXISTS (SELECT 1 FROM context_refs WHERE blob_id = ?)
+         ON CONFLICT(blob_id) DO NOTHING`,
+      )
+      .run(blobId, unreferencedAt, blobId);
+  }
+
+  #readNow(): number {
+    const now = this.#now();
+    assertNonNegativeSafeInteger(now, 'Context timestamp');
+    return now;
   }
 
   #readSessionUsage(sessionId: string): SessionUsageRow {
@@ -498,6 +807,11 @@ function decodeBytes(value: unknown): Uint8Array | undefined {
   return value instanceof Uint8Array ? new Uint8Array(value) : undefined;
 }
 
+function decodeBlobId(value: unknown): Uint8Array | undefined {
+  const bytes = decodeBytes(value);
+  return bytes?.byteLength === 32 ? bytes : undefined;
+}
+
 function usageFromRows(session: SessionUsageRow, store: StoreUsageRow): ContextOffloadUsage {
   return {
     references: readNonNegativeInteger(session.reference_count, 'Context reference count'),
@@ -547,6 +861,12 @@ function assertNonNegativeSafeInteger(value: number, label: string): void {
   }
 }
 
+function assertPositiveSafeInteger(value: number, label: string): void {
+  if (!Number.isSafeInteger(value) || value <= 0) {
+    throw new Error(`${label} must be a positive safe integer`);
+  }
+}
+
 function isNonNegativeSafeInteger(value: unknown): value is number {
   return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0;
 }
@@ -558,6 +878,12 @@ function readNonNegativeInteger(value: unknown, label: string): number {
 
 function exceedsLimit(current: number, added: number, limit: number): boolean {
   return current > limit - added;
+}
+
+function addSafeInteger(left: number, right: number, label: string): number {
+  const result = left + right;
+  if (!Number.isSafeInteger(result) || result < 0) throw new Error(`Invalid ${label}`);
+  return result;
 }
 
 function loadDatabaseSync(): typeof import('node:sqlite').DatabaseSync {

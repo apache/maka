@@ -82,6 +82,30 @@ export interface ContextOffloadUsage {
   readonly physicalBytes: number;
 }
 
+export type ContextOffloadCopyResult =
+  | {
+      readonly ok: true;
+      readonly copied: readonly {
+        readonly sourceRefId: string;
+        readonly targetRefId: string;
+      }[];
+    }
+  | {
+      readonly ok: false;
+      readonly reason: 'not_found' | 'session_quota_exceeded' | 'identity_conflict' | 'unavailable';
+    };
+
+export interface ContextOffloadRetirementResult {
+  readonly releasedReferences: number;
+  readonly releasedLogicalBytes: number;
+}
+
+export interface ContextOffloadGarbageCollectionResult {
+  readonly deletedBlobs: number;
+  readonly deletedBytes: number;
+  readonly hasMore: boolean;
+}
+
 /**
  * Storage contract for capped, whole-object Agent context offload.
  *
@@ -103,7 +127,24 @@ export interface ContextOffloadStore {
     readonly maxBytes: number;
   }): Promise<ContextOffloadReadResult>;
 
+  copyReferences(input: {
+    readonly sourceSessionId: string;
+    readonly targetSessionId: string;
+    readonly references: readonly {
+      readonly sourceRefId: string;
+      readonly targetOwner: ContextOffloadOwner;
+    }[];
+  }): Promise<ContextOffloadCopyResult>;
+
   releaseReference(input: { readonly sessionId: string; readonly refId: string }): Promise<void>;
+
+  retireSession(sessionId: string): Promise<ContextOffloadRetirementResult>;
+
+  collectGarbage(input: {
+    readonly olderThan: number;
+    readonly maxBlobs: number;
+    readonly maxBytes: number;
+  }): Promise<ContextOffloadGarbageCollectionResult>;
 
   /**
    * Session-scoped reference/logical usage when sessionId is supplied. Physical

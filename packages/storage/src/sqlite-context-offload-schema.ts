@@ -19,7 +19,7 @@
 
 import type { DatabaseSync } from 'node:sqlite';
 
-export const SQLITE_CONTEXT_OFFLOAD_SCHEMA_VERSION = 1;
+export const SQLITE_CONTEXT_OFFLOAD_SCHEMA_VERSION = 2;
 const SQLITE_INITIALIZATION_BUSY_TIMEOUT_MS = 5_000;
 const SQLITE_INITIALIZATION_RETRY_DELAY_MS = 10;
 const initializationRetryGate = new Int32Array(new SharedArrayBuffer(4));
@@ -51,6 +51,15 @@ const INITIAL_SCHEMA = `
   CREATE INDEX context_refs_blob
     ON context_refs(blob_id);
 
+  CREATE TABLE context_gc_candidates (
+    blob_id BLOB PRIMARY KEY
+      REFERENCES context_blobs(blob_id) ON DELETE CASCADE,
+    unreferenced_at INTEGER NOT NULL CHECK(unreferenced_at >= 0)
+  );
+
+  CREATE INDEX context_gc_candidates_eligible
+    ON context_gc_candidates(unreferenced_at, blob_id);
+
   CREATE TABLE context_session_usage (
     session_id TEXT PRIMARY KEY,
     reference_count INTEGER NOT NULL CHECK(reference_count >= 0),
@@ -67,13 +76,33 @@ const INITIAL_SCHEMA = `
     VALUES (1, 0, 0);
 `;
 
+const SCHEMA_V2_MIGRATION = `
+  CREATE TABLE context_gc_candidates (
+    blob_id BLOB PRIMARY KEY
+      REFERENCES context_blobs(blob_id) ON DELETE CASCADE,
+    unreferenced_at INTEGER NOT NULL CHECK(unreferenced_at >= 0)
+  );
+
+  CREATE INDEX context_gc_candidates_eligible
+    ON context_gc_candidates(unreferenced_at, blob_id);
+
+  INSERT INTO context_gc_candidates(blob_id, unreferenced_at)
+  SELECT b.blob_id, b.created_at
+  FROM context_blobs b
+  WHERE NOT EXISTS (
+    SELECT 1 FROM context_refs r WHERE r.blob_id = b.blob_id
+  );
+`;
+
 const REQUIRED_SCHEMA_OBJECTS = Object.freeze([
   ['table', 'context_blobs'],
   ['table', 'context_refs'],
   ['table', 'context_session_usage'],
   ['table', 'context_store_usage'],
+  ['table', 'context_gc_candidates'],
   ['index', 'context_refs_session'],
   ['index', 'context_refs_blob'],
+  ['index', 'context_gc_candidates_eligible'],
 ] as const);
 
 const REQUIRED_TABLE_COLUMNS = Object.freeze({
@@ -89,11 +118,13 @@ const REQUIRED_TABLE_COLUMNS = Object.freeze({
   ],
   context_session_usage: ['session_id', 'reference_count', 'logical_bytes'],
   context_store_usage: ['singleton', 'blob_count', 'physical_bytes'],
+  context_gc_candidates: ['blob_id', 'unreferenced_at'],
 } as const);
 
 const REQUIRED_INDEX_COLUMNS = Object.freeze({
   context_refs_session: ['session_id', 'created_at', 'ref_id'],
   context_refs_blob: ['blob_id'],
+  context_gc_candidates_eligible: ['unreferenced_at', 'blob_id'],
 } as const);
 
 export function configureSqliteContextOffloadDatabase(db: DatabaseSync): void {
@@ -128,6 +159,10 @@ export function migrateSqliteContextOffloadDatabase(db: DatabaseSync): void {
         throw new Error('Unversioned context-offload SQLite schema is not supported');
       }
       db.exec(INITIAL_SCHEMA);
+      db.exec(`PRAGMA user_version = ${SQLITE_CONTEXT_OFFLOAD_SCHEMA_VERSION}`);
+    }
+    if (current === 1) {
+      db.exec(SCHEMA_V2_MIGRATION);
       db.exec(`PRAGMA user_version = ${SQLITE_CONTEXT_OFFLOAD_SCHEMA_VERSION}`);
     }
     validateSchema(db);
