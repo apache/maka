@@ -394,8 +394,19 @@ function scheduledTaskFormSeedFromTask(task: ScheduledTask): ScheduledTaskFormSe
 }
 
 /** Edit-mode seed prefilled from an existing task. */
-export function scheduledTaskEditSeed(task: ScheduledTask): ScheduledTaskFormSeed {
-  return scheduledTaskFormSeedFromTask(task);
+export function scheduledTaskEditSeed(
+  task: ScheduledTask,
+  replacementAgentRunEffect?: Extract<ScheduledTaskEffect, { kind: 'agent_run' }>,
+): ScheduledTaskFormSeed {
+  const seed = scheduledTaskFormSeedFromTask(task);
+  if (
+    task.effect.kind === 'agent_run' &&
+    !task.effect.execution.llmConnectionId &&
+    replacementAgentRunEffect
+  ) {
+    return { ...seed, lockedEffect: replacementAgentRunEffect };
+  }
+  return seed;
 }
 
 /** Create-mode seed copying an existing task under a 副本 title. */

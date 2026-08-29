@@ -23,6 +23,7 @@ import type { ScheduledTask } from '@maka/core/scheduled-task';
 import { getScheduledTaskCopy } from './scheduled-task-copy.js';
 import {
   scheduledTaskDuplicateSeed,
+  scheduledTaskEditSeed,
   scheduledTaskEditableRunAt,
   scheduledTaskTemplateAvailable,
   scheduledTaskTemplateSeed,
@@ -94,4 +95,52 @@ test('paused calendar editing preserves its local execution time', () => {
   );
   assert.ok(template);
   assert.equal(scheduledTaskTemplateAvailable(template, [task]), false);
+});
+
+test('editing a legacy Agent task repairs its missing Connection identity', () => {
+  const now = Date.now();
+  const legacy: ScheduledTask = {
+    id: 'legacy-agent-task',
+    title: 'Legacy Agent task',
+    intent: { kind: 'text', body: 'Continue the scheduled work.' },
+    schedule: { kind: 'interval', everySeconds: 3_600, startAt: now + 3_600_000 },
+    effect: {
+      kind: 'agent_run',
+      execution: {
+        cwd: '/old-workspace',
+        llmConnectionSlug: 'removed',
+        model: 'removed-model',
+        permissionMode: 'ask',
+        collaborationMode: 'agent',
+        orchestrationMode: 'default',
+      },
+    },
+    status: 'paused',
+    nextFireAt: null,
+    lastFireAt: null,
+    fireCount: 0,
+    maxFires: null,
+    expiresAt: null,
+    createdBy: { kind: 'user' },
+    createdAt: now,
+    updatedAt: now,
+    runs: [],
+    lastError: null,
+  };
+  const replacement = {
+    kind: 'agent_run' as const,
+    execution: {
+      cwd: '/current-workspace',
+      llmConnectionId: 'current-connection-id',
+      llmConnectionSlug: 'current',
+      model: 'current-model',
+      permissionMode: 'ask' as const,
+      collaborationMode: 'agent' as const,
+      orchestrationMode: 'default' as const,
+    },
+  };
+
+  const seed = scheduledTaskEditSeed(legacy, replacement);
+
+  assert.deepEqual(seed.lockedEffect, replacement);
 });

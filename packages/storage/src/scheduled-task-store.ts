@@ -68,6 +68,11 @@ interface ScheduledTaskStore {
   get(id: string): Promise<ScheduledTask | undefined>;
   create(input: unknown, now?: number): Promise<ScheduledTask>;
   ensureSystemTask(id: string, input: unknown, now?: number): Promise<ScheduledTask>;
+  repairLegacyAgentRun(
+    id: string,
+    connectionId: string | null,
+    now?: number,
+  ): Promise<ScheduledTask>;
   update(id: string, patch: unknown, now?: number): Promise<ScheduledTask>;
   pause(id: string, now?: number): Promise<ScheduledTask>;
   resume(id: string, now?: number): Promise<ScheduledTask>;
@@ -202,6 +207,8 @@ function createWriterFacade(
     get: (id) => run(() => store.get(id)),
     create: (input, now) => run(() => store.create(input, now)),
     ensureSystemTask: (id, input, now) => run(() => store.ensureSystemTask(id, input, now)),
+    repairLegacyAgentRun: (id, connectionId, now) =>
+      run(() => store.repairLegacyAgentRun(id, connectionId, now)),
     update: (id, patch, now) => run(() => store.update(id, patch, now)),
     pause: (id, now) => run(() => store.pause(id, now)),
     resume: (id, now) => run(() => store.resume(id, now)),
@@ -338,6 +345,51 @@ class SqliteScheduledTaskStore implements ScheduledTaskStore {
       return { ...state, tasks: [...state.tasks, task] };
     });
     return result!;
+  }
+
+  async repairLegacyAgentRun(
+    id: string,
+    connectionId: string | null,
+    now = Date.now(),
+  ): Promise<ScheduledTask> {
+    const normalizedConnectionId = connectionId?.trim() ?? null;
+    if (connectionId !== null && !normalizedConnectionId) {
+      throw storeError('invalid_input', 'ScheduledTask Connection identity is required');
+    }
+    let updated: ScheduledTask | undefined;
+    await this.mutate((state) => {
+      const current = state.tasks.find((task) => task.id === id);
+      if (!current) return state;
+      if (normalizedConnectionId === null) {
+        if (current.effect.kind !== 'agent_run' || current.effect.execution.llmConnectionId) {
+          throw storeError('operation_conflict', 'ScheduledTask is not a legacy Agent task');
+        }
+        updated = pauseScheduledTask(current, now);
+        return {
+          ...state,
+          tasks: state.tasks.map((task) => (task.id === id ? updated! : task)),
+        };
+      }
+      updated = bindLegacyAgentRunConnection(current, normalizedConnectionId, now);
+      return {
+        ...state,
+        tasks: state.tasks.map((task) => (task.id === id ? updated! : task)),
+        claims: state.claims.map((claim) =>
+          claim.taskId === id
+            ? {
+                ...claim,
+                task: bindLegacyAgentRunConnection(
+                  claim.task,
+                  normalizedConnectionId,
+                  claim.task.updatedAt,
+                ),
+              }
+            : claim,
+        ),
+      };
+    });
+    if (!updated) throw storeError('not_found', `No such scheduled task: ${id}`);
+    return updated;
   }
 
   async update(id: string, patch: unknown, now = Date.now()): Promise<ScheduledTask> {
@@ -781,6 +833,29 @@ function assertNoPendingClaim(claims: readonly ScheduledTaskFireClaim[], taskId:
   if (claims.some((claim) => claim.taskId === taskId)) {
     throw storeError('operation_conflict', 'Scheduled task has a fire in progress');
   }
+}
+
+function bindLegacyAgentRunConnection(
+  task: ScheduledTask,
+  connectionId: string,
+  updatedAt: number,
+): ScheduledTask {
+  if (task.effect.kind !== 'agent_run') {
+    throw storeError('operation_conflict', 'ScheduledTask does not run an Agent');
+  }
+  const current = task.effect.execution.llmConnectionId;
+  if (current !== undefined && current !== connectionId) {
+    throw storeError('operation_conflict', 'ScheduledTask already has another Connection identity');
+  }
+  if (current === connectionId) return task;
+  return {
+    ...task,
+    effect: {
+      ...task.effect,
+      execution: { ...task.effect.execution, llmConnectionId: connectionId },
+    },
+    updatedAt,
+  };
 }
 
 function storeError(code: ScheduledTaskStoreErrorCode, message: string): ScheduledTaskStoreError {

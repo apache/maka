@@ -67,6 +67,7 @@ import {
   openInteractiveExecutionStoresForWrite,
 } from '@maka/storage/execution-stores';
 import { openInteractiveRuntimePolicyStoresForWrite } from '@maka/storage/runtime-policy-stores';
+import { openInteractiveScheduledTaskStoreForWrite } from '@maka/storage/scheduled-task-store';
 import {
   resolveRootControlNamespace,
   resolveStorageRoot,
@@ -553,6 +554,120 @@ test('production Host retires disabled Daily Review after projecting its reports
       assert.deepEqual(tables, []);
     } finally {
       retired.close();
+    }
+  });
+});
+
+test('production Host binds a legacy Agent ScheduledTask to its canonical Connection', {
+  timeout: 30_000,
+}, async () => {
+  await withExecutionRoot(async (fixture) => {
+    const owner = await tryAcquireInteractiveRootOwner(fixture.capability);
+    assert.ok(owner);
+    if (!owner) return;
+    const policy = await openInteractiveRuntimePolicyStoresForWrite(owner.lease);
+    const catalog = await policy.connectionCatalog.getSnapshot();
+    const created = await policy.connectionCatalog.create({
+      expectedCatalogRevision: catalog.revision,
+      connection: {
+        slug: 'legacy-ready',
+        name: 'Legacy ready task',
+        providerType: 'moonshot',
+        enabled: true,
+        enabledModelIds: ['legacy-model'],
+      },
+    });
+    assert.equal(created.kind, 'committed');
+    if (created.kind !== 'committed') return;
+    const connection = created.snapshot.connections.find(({ slug }) => slug === 'legacy-ready');
+    assert.ok(connection);
+    if (!connection) return;
+    assert.equal(
+      (
+        await policy.credentialVault.set({
+          locator: {
+            scope: 'connection',
+            connectionId: connection.connectionId,
+            kind: 'api_key',
+          },
+          expected: null,
+          secret: 'legacy-scheduled-task-key',
+        })
+      ).kind,
+      'committed',
+    );
+    const scheduledTasks = await openInteractiveScheduledTaskStoreForWrite(owner.lease);
+    const task = await scheduledTasks.create({
+      title: 'Legacy Agent task',
+      intentBody: 'Continue the scheduled work.',
+      schedule: { kind: 'interval', everySeconds: 3_600, startAt: Date.now() + 3_600_000 },
+      effect: {
+        kind: 'agent_run',
+        execution: {
+          cwd: fixture.root,
+          projectId: null,
+          llmConnectionId: connection.connectionId,
+          llmConnectionSlug: connection.slug,
+          model: 'legacy-model',
+          permissionMode: 'ask',
+          collaborationMode: 'agent',
+          orchestrationMode: 'default',
+        },
+      },
+      createdBy: { kind: 'user' },
+    });
+    const unresolvedTask = await scheduledTasks.create({
+      title: 'Unresolved legacy Agent task',
+      intentBody: 'Wait for a valid Connection.',
+      schedule: { kind: 'interval', everySeconds: 3_600, startAt: Date.now() + 3_600_000 },
+      effect: {
+        kind: 'agent_run',
+        execution: {
+          cwd: fixture.root,
+          projectId: null,
+          llmConnectionId: 'removed-connection',
+          llmConnectionSlug: 'removed-connection',
+          model: 'removed-model',
+          permissionMode: 'ask',
+          collaborationMode: 'agent',
+          orchestrationMode: 'default',
+        },
+      },
+      createdBy: { kind: 'user' },
+    });
+    scheduledTasks.close();
+    await owner.close();
+
+    const database = new DatabaseSync(join(fixture.root, 'runtime.sqlite'));
+    database
+      .prepare(
+        `UPDATE workflow_scheduled_tasks
+        SET record_json = json_remove(record_json, '$.effect.execution.llmConnectionId')
+        WHERE task_id IN (?, ?)`,
+      )
+      .run(task.id, unresolvedTask.id);
+    database.close();
+
+    const host = await fixture.startHost();
+    const desktop = await connectClient(fixture.root);
+    try {
+      const page = await desktop.request('scheduled-task.query', { kind: 'list' });
+      assert.equal(page.kind, 'page');
+      if (page.kind !== 'page') return;
+      const repaired = page.tasks.find((candidate) => candidate.id === task.id);
+      assert.equal(
+        repaired?.effect.kind === 'agent_run'
+          ? repaired.effect.execution.llmConnectionId
+          : undefined,
+        connection.connectionId,
+      );
+      assert.equal(
+        page.tasks.find((candidate) => candidate.id === unresolvedTask.id)?.status,
+        'paused',
+      );
+    } finally {
+      await desktop.close();
+      await fixture.stopHost(host);
     }
   });
 });

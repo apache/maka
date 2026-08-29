@@ -165,8 +165,34 @@ export class HostScheduledTaskCoordinator implements ScheduledTaskToolAuthority 
   async prepareRecovery(): Promise<void> {
     if (this.#prepared) return;
     await this.#store.ready();
+    await this.#bindLegacyAgentRunConnections();
     this.#prepared = true;
     await this.#refreshResidency();
+  }
+
+  async #bindLegacyAgentRunConnections(): Promise<void> {
+    const tasks = await this.#store.list();
+    for (const task of tasks) {
+      if (task.effect.kind !== 'agent_run' || task.effect.execution.llmConnectionId) continue;
+      const resolved = await this.#runtimePolicy.operations.resolveExecutionConnection({
+        kind: 'catalog_slug',
+        connectionSlug: task.effect.execution.llmConnectionSlug,
+      });
+      if (
+        resolved.kind !== 'ready' ||
+        !resolved.connection.enabledModelIds.includes(task.effect.execution.model)
+      ) {
+        if (task.status === 'active') {
+          await this.#store.repairLegacyAgentRun(task.id, null, this.#now());
+        }
+        continue;
+      }
+      await this.#store.repairLegacyAgentRun(
+        task.id,
+        resolved.connection.connectionId,
+        this.#now(),
+      );
+    }
   }
 
   async assertRecoveryAdmission(

@@ -368,7 +368,10 @@ export function ScheduledTaskPanel(props: {
               `${selectedTask.id}:toggle`,
               () => props.onToggle?.(selectedTask.id, enabled),
             )}
-            onEdit={() => openTaskDialog(scheduledTaskEditSeed(selectedTask))}
+            onEdit={() =>
+              openTaskDialog(
+                scheduledTaskEditSeed(selectedTask, props.agentRunTemplateEffect),
+              )}
             onDuplicate={() => openTaskDialog(scheduledTaskDuplicateSeed(selectedTask, locale))}
             onTriggerNow={() => void runScheduledTaskAction(
               `${selectedTask.id}:trigger`,
