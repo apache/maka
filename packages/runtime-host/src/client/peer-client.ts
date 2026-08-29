@@ -32,6 +32,7 @@ export interface RuntimeHostPeerConnectInput {
   readonly peerId: string;
   readonly routeHints: readonly string[];
   readonly coordinationRelays?: readonly string[];
+  readonly transitRelays?: readonly string[];
   readonly directDeadlineMs: number;
 }
 
@@ -40,6 +41,7 @@ export interface RuntimeHostPeerRouteResolver {
     | {
         readonly routeHints: readonly string[];
         readonly coordinationRelays: readonly string[];
+        readonly transitRelays?: readonly string[];
       }
     | undefined;
 }
@@ -52,6 +54,10 @@ export interface RuntimeHostPeerClient {
   }>;
   signIdentity(payload: Buffer): Promise<RuntimeHostPeerIdentityProof>;
   verifyIdentity(peerId: string, payload: Buffer, proof: RuntimeHostPeerIdentityProof): boolean;
+  configureTransit(input: {
+    readonly allowedPeerIds: readonly string[];
+    readonly trustedRelayPeerIds: readonly string[];
+  }): Promise<void>;
   connect(
     input: RuntimeHostPeerConnectInput,
     signal?: AbortSignal,
@@ -173,6 +179,13 @@ class RuntimeHostPeerClientImpl implements RuntimeHostPeerClient {
     });
   }
 
+  configureTransit(input: {
+    readonly allowedPeerIds: readonly string[];
+    readonly trustedRelayPeerIds: readonly string[];
+  }): Promise<void> {
+    return this.#requireEndpoint().configureTransit(input);
+  }
+
   async connect(
     input: RuntimeHostPeerConnectInput,
     signal?: AbortSignal,
@@ -287,6 +300,7 @@ class RuntimeHostPeerClientImpl implements RuntimeHostPeerClient {
         discovered?.coordinationRelays ?? [],
         input.coordinationRelays,
       ),
+      transitRelays: mergeAddresses(discovered?.transitRelays ?? [], input.transitRelays),
       requestId,
     });
     let settled = false;

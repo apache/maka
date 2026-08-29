@@ -61,16 +61,18 @@ module.exports = {
       peerId: 'client',
       listenAddresses: [],
       activeCoordinationRelays: [],
-      connect: ({ requestId, peerId, routeHints, coordinationRelays }) => {
-        stats.requests.push({ requestId, peerId, routeHints, coordinationRelays });
+      transitSnapshot: { allowedPeerCount: 0, trustedRelayCount: 0, activeReservationCount: 0, activeCircuitCount: 0 },
+      connect: ({ requestId, peerId, routeHints, coordinationRelays, transitRelays }) => {
+        stats.requests.push({ requestId, peerId, routeHints, coordinationRelays, transitRelays });
         if (peerId === 'ready') return Promise.resolve(stream);
         return new Promise((resolve, reject) => pending.set(requestId, { resolve, reject }));
       },
-      connectMeshControl: ({ requestId, peerId, routeHints, coordinationRelays }) => {
-        stats.requests.push({ requestId, peerId, routeHints, coordinationRelays });
+      connectMeshControl: ({ requestId, peerId, routeHints, coordinationRelays, transitRelays }) => {
+        stats.requests.push({ requestId, peerId, routeHints, coordinationRelays, transitRelays });
         if (peerId === 'ready') return Promise.resolve(stream);
         return new Promise((resolve, reject) => pending.set(requestId, { resolve, reject }));
       },
+      configureTransit: async () => {},
       cancelConnect: async (requestId) => {
         stats.cancellations.push(requestId);
         if (missFirstCancellation) {
@@ -96,6 +98,7 @@ module.exports = {
         resolveRoutes: () => ({
           routeHints: ['/memory/discovered'],
           coordinationRelays: ['/memory/relay'],
+          transitRelays: ['/memory/transit'],
         }),
       },
     });
@@ -132,24 +135,28 @@ module.exports = {
           peerId: 'pending',
           routeHints: ['/memory/discovered', '/memory/1'],
           coordinationRelays: ['/memory/relay'],
+          transitRelays: ['/memory/transit'],
         },
         {
           requestId: 2,
           peerId: 'shared',
           routeHints: ['/memory/discovered', '/memory/1'],
           coordinationRelays: ['/memory/relay'],
+          transitRelays: ['/memory/transit'],
         },
         {
           requestId: 3,
           peerId: 'shared',
           routeHints: ['/memory/1'],
           coordinationRelays: [],
+          transitRelays: [],
         },
         {
           requestId: 4,
           peerId: 'ready',
           routeHints: ['/memory/discovered', '/memory/1'],
           coordinationRelays: ['/memory/relay'],
+          transitRelays: ['/memory/transit'],
         },
       ],
       cancellations: [1, 1],
@@ -200,8 +207,10 @@ module.exports = {
     peerId: 'peer',
     listenAddresses: [],
     activeCoordinationRelays: [],
+    transitSnapshot: { allowedPeerCount: 0, trustedRelayCount: 0, activeReservationCount: 0, activeCircuitCount: 0 },
     connect: async () => stream,
     connectMeshControl: async () => stream,
+    configureTransit: async () => {},
     cancelConnect: async () => true,
     accept: async () => null,
     acceptMeshControl: async () => null,
