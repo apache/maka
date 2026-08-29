@@ -555,7 +555,6 @@ async fn run_endpoint_async(
     let (stream_completed_tx, mut stream_completed_rx) =
         mpsc::channel::<CompletedStream>(MAX_ESTABLISHED_CONNECTIONS as usize);
     let mut direct = DirectConnectState::default();
-    let mut relayed = HashMap::<PeerId, HashSet<ConnectionId>>::new();
     let mut external_candidate_ready = startup_external_candidate_ready;
     let mut deadline_tick = tokio::time::interval(Duration::from_millis(100));
     deadline_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
@@ -600,9 +599,7 @@ async fn run_endpoint_async(
                         Instant::now() + TRANSIT_FALLBACK_DELAY
                     };
                     let retry_coordination = stream_kind == StreamKind::Application
-                        && relayed
-                            .get(&options.peer_id)
-                            .is_some_and(|connections| !connections.is_empty());
+                        && stream_control.has_relayed_connection(options.peer_id);
                     direct.pending.insert(request_id, PendingConnect {
                         peer_id: options.peer_id,
                         result,
@@ -624,7 +621,6 @@ async fn run_endpoint_async(
                         &mut direct,
                         &coordination_relays,
                         &stream_control,
-                        &relayed,
                         external_candidate_ready,
                         Instant::now(),
                     );
@@ -839,7 +835,6 @@ async fn run_endpoint_async(
                 handle_swarm_event(
                     &mut swarm,
                     event,
-                    &mut relayed,
                     &mut coordination_relays,
                     &mut direct,
                     &mut external_candidate_ready,
@@ -893,7 +888,6 @@ async fn run_endpoint_async(
                     &mut direct,
                     &coordination_relays,
                     &stream_control,
-                    &relayed,
                     external_candidate_ready,
                     now,
                 );
@@ -1012,10 +1006,10 @@ fn build_swarm(
 fn transit_relay_config(allowed_peers: Arc<RwLock<HashSet<PeerId>>>) -> relay::Config {
     let mut config = relay::Config {
         max_reservations: MAX_TRANSIT_RESERVATIONS,
-        max_reservations_per_peer: 1,
+        max_reservations_per_peer: relay_excess_limit(1),
         reservation_duration: MAX_TRANSIT_CIRCUIT_DURATION,
         max_circuits: MAX_TRANSIT_CIRCUITS,
-        max_circuits_per_peer: MAX_TRANSIT_CIRCUITS_PER_PEER,
+        max_circuits_per_peer: relay_excess_limit(MAX_TRANSIT_CIRCUITS_PER_PEER),
         max_circuit_duration: MAX_TRANSIT_CIRCUIT_DURATION,
         max_circuit_bytes: MAX_TRANSIT_CIRCUIT_BYTES,
         ..relay::Config::default()
@@ -1028,6 +1022,15 @@ fn transit_relay_config(allowed_peers: Arc<RwLock<HashSet<PeerId>>>) -> relay::C
         .circuit_src_rate_limiters
         .push(Box::new(AllowedPeerLimiter(allowed_peers)));
     config
+}
+
+fn relay_excess_limit(maximum: usize) -> usize {
+    // libp2p-relay 0.21 rejects the next request only when the current count is
+    // greater than this value, so its configured boundary is one below the
+    // inclusive maximum exposed by Maka.
+    maximum
+        .checked_sub(1)
+        .expect("transit relay limits must be positive")
 }
 
 fn start_connect(
@@ -1188,7 +1191,6 @@ fn maybe_open_peer_stream(
 fn handle_swarm_event(
     swarm: &mut Swarm<Behaviour>,
     event: SwarmEvent<BehaviourEvent>,
-    relayed: &mut HashMap<PeerId, HashSet<ConnectionId>>,
     coordination_relays: &mut HashMap<PeerId, CoordinationRelay>,
     direct: &mut DirectConnectState,
     external_candidate_ready: &mut bool,
@@ -1222,16 +1224,12 @@ fn handle_swarm_event(
             for connect in direct.pending.values_mut() {
                 connect.dials.remove(&connection_id);
             }
-            if endpoint.is_relayed() {
-                relayed.entry(peer_id).or_default().insert(connection_id);
-            }
         }
         SwarmEvent::ConnectionClosed {
             peer_id,
             connection_id,
             ..
         } => {
-            remove_connection(relayed, peer_id, connection_id);
             direct.retiring_connections.remove(&connection_id);
             for connect in direct.pending.values_mut() {
                 connect.dials.remove(&connection_id);
@@ -1430,7 +1428,6 @@ fn handle_startup_event(
     handle_swarm_event(
         swarm,
         event,
-        &mut HashMap::new(),
         coordination_relays,
         &mut DirectConnectState::default(),
         external_candidate_ready,
@@ -1952,7 +1949,6 @@ fn retry_connect_routes(
     direct: &mut DirectConnectState,
     coordination_relays: &HashMap<PeerId, CoordinationRelay>,
     stream_control: &application_stream::Control,
-    relayed: &HashMap<PeerId, HashSet<ConnectionId>>,
     external_candidate_ready: bool,
     now: Instant,
 ) {
@@ -1982,8 +1978,7 @@ fn retry_connect_routes(
             .dials
             .values()
             .any(|origin| *origin == DialOrigin::Coordination)
-            && (connect.retry_coordination
-                || relayed.get(&peer_id).is_none_or(|ids| ids.is_empty()))
+            && (connect.retry_coordination || !stream_control.has_relayed_connection(peer_id))
         {
             let mut targets = Vec::new();
             for relay in &connect.coordination_relays {
@@ -2064,20 +2059,6 @@ fn retire_direct_dials(
         }
         retiring.insert(connection_id);
         let _ = swarm.close_connection(connection_id);
-    }
-}
-
-fn remove_connection(
-    connections: &mut HashMap<PeerId, HashSet<ConnectionId>>,
-    peer_id: PeerId,
-    connection_id: ConnectionId,
-) {
-    let Some(ids) = connections.get_mut(&peer_id) else {
-        return;
-    };
-    ids.remove(&connection_id);
-    if ids.is_empty() {
-        connections.remove(&peer_id);
     }
 }
 

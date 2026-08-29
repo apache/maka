@@ -196,6 +196,13 @@ impl Control {
             .is_some()
     }
 
+    pub(super) fn has_relayed_connection(&self, peer_id: PeerId) -> bool {
+        lock(&self.shared)
+            .connections
+            .values()
+            .any(|connection| connection.peer_id == peer_id && connection.relay_peer_id.is_some())
+    }
+
     pub(super) async fn open_stream(
         &mut self,
         peer_id: PeerId,
@@ -529,6 +536,7 @@ mod tests {
                 .is_none()
         );
         assert!(!control.has_connection(peer_id, &HashSet::new(), &HashSet::new()));
+        assert!(control.has_relayed_connection(peer_id));
 
         trusted
             .write()
