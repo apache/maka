@@ -18,14 +18,23 @@
  */
 
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
+import { mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { test } from 'node:test';
 import { createRuntimeHostSetupPackageResolver } from '../runtime-host-setup-package.js';
 
-test('development setup lazily caches CLI archives by peer target unless overridden', async () => {
+const ARCHIVE_BYTES = Buffer.from('development archive');
+const ARCHIVE_INTEGRITY = `sha512-${createHash('sha512').update(ARCHIVE_BYTES).digest('base64')}`;
+
+test('development setup lazily caches CLI archives by peer target unless overridden', async (t) => {
   const repoRoot = resolve('/workspace');
-  const archive = join(repoRoot, 'packages', 'cli', 'release', 'maka-agent-dev.tgz');
+  const directory = await mkdtemp(join(tmpdir(), 'maka-runtime-host-setup-package-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const archive = join(directory, 'maka-agent-dev.tgz');
+  await writeFile(archive, ARCHIVE_BYTES);
+  const canonicalArchive = await realpath(archive);
   let builds = 0;
   let closes = 0;
   const targets: string[] = [];
@@ -53,33 +62,59 @@ test('development setup lazily caches CLI archives by peer target unless overrid
   ]), [
     {
       kind: 'development_archive',
-      path: archive,
+      path: canonicalArchive,
+      integrity: ARCHIVE_INTEGRITY,
     },
     {
       kind: 'development_archive',
-      path: archive,
+      path: canonicalArchive,
+      integrity: ARCHIVE_INTEGRITY,
     },
   ]);
   await resolvePackage.resolve('none');
   assert.equal(builds, 2);
   assert.deepEqual(targets, ['linux-x64', 'none']);
 
-  const override = join(tmpdir(), 'explicit.tgz');
+  const override = join(directory, 'explicit.tgz');
+  await writeFile(override, ARCHIVE_BYTES);
   const resolveOverride = createRuntimeHostSetupPackageResolver({
     isPackaged: false,
     appPath: join(repoRoot, 'apps', 'desktop'),
     environment: { MAKA_RUNTIME_HOST_SETUP_ARCHIVE: override },
     startDevelopmentArchiveBuild: () => assert.fail('override must bypass the local build'),
   });
-  assert.deepEqual(await resolveOverride.resolve('none'), {
-    kind: 'development_archive',
-    path: override,
+  const snapshot = await resolveOverride.resolve('none');
+  assert.equal(snapshot.kind, 'development_archive');
+  assert.notEqual(snapshot.path, await realpath(override));
+  assert.equal(snapshot.integrity, ARCHIVE_INTEGRITY);
+  await writeFile(override, 'replacement archive');
+  assert.deepEqual(await readFile(snapshot.path), ARCHIVE_BYTES);
+  assert.deepEqual(await resolveOverride.resolve('none'), snapshot);
+
+  await resolveOverride.close();
+  await assert.rejects(readFile(snapshot.path), { code: 'ENOENT' });
+
+  const invalidOverride = join(directory, 'explicit.zip');
+  await writeFile(invalidOverride, ARCHIVE_BYTES);
+  const resolveInvalidOverride = createRuntimeHostSetupPackageResolver({
+    isPackaged: false,
+    appPath: join(repoRoot, 'apps', 'desktop'),
+    environment: { MAKA_RUNTIME_HOST_SETUP_ARCHIVE: invalidOverride },
   });
-  await Promise.all([resolvePackage.close(), resolveOverride.close()]);
+  await assert.rejects(resolveInvalidOverride.resolve('none'), /must be a \.tgz file/u);
+  await Promise.all([
+    resolvePackage.close(),
+    resolveInvalidOverride.close(),
+  ]);
   assert.equal(closes, 2);
 });
 
-test('cancelling the last waiter closes its build before a new setup starts', async () => {
+test('cancelling the last waiter closes its build before a new setup starts', async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), 'maka-runtime-host-setup-package-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const freshArchive = join(directory, 'fresh.tgz');
+  await writeFile(freshArchive, ARCHIVE_BYTES);
+  const canonicalFreshArchive = await realpath(freshArchive);
   const cancelled = new AbortController();
   let builds = 0;
   let rejectBuild!: (error: Error) => void;
@@ -99,7 +134,10 @@ test('cancelling the last waiter closes its build before a new setup starts', as
     startDevelopmentArchiveBuild: () => {
       builds += 1;
       if (builds > 1) {
-        return { result: Promise.resolve('/workspace/fresh.tgz'), close: async () => undefined };
+        return {
+          result: Promise.resolve(freshArchive),
+          close: async () => undefined,
+        };
       }
       return {
         result: new Promise((_resolve, reject) => {
@@ -126,7 +164,8 @@ test('cancelling the last waiter closes its build before a new setup starts', as
   await assert.rejects(first, /setup cancelled/u);
   assert.deepEqual(await second, {
     kind: 'development_archive',
-    path: '/workspace/fresh.tgz',
+    path: canonicalFreshArchive,
+    integrity: ARCHIVE_INTEGRITY,
   });
   assert.equal(builds, 2);
   assert.equal(closes, 1);

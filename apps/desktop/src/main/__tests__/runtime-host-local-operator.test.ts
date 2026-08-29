@@ -18,8 +18,19 @@
  */
 
 import assert from 'node:assert/strict';
+import type { spawn } from 'node:child_process';
+import { createHash } from 'node:crypto';
+import { EventEmitter } from 'node:events';
+import { PassThrough } from 'node:stream';
 import test from 'node:test';
-import { runtimeHostLocalSetupCommand } from '../runtime-host-local-operator.js';
+import {
+  encodeRuntimeHostSetupFrame,
+  RUNTIME_HOST_SETUP_SOURCE_PACKAGE_INTEGRITY_ENV,
+} from '@maka/runtime-host/operator';
+import {
+  createDesktopRuntimeHostLocalOperator,
+  runtimeHostLocalSetupCommand,
+} from '../runtime-host-local-operator.js';
 
 test('local setup installs one managed service for the Desktop root with Direct peer enabled', () => {
   assert.deepEqual(
@@ -55,4 +66,56 @@ test('local setup installs one managed service for the Desktop root with Direct 
       ],
     },
   );
+});
+
+test('local setup forwards the exact development archive evidence', async (t) => {
+  const archive = '/tmp/maka-agent-development.tgz';
+  const archiveBytes = Buffer.from('development package');
+  const integrity = `sha512-${createHash('sha512').update(archiveBytes).digest('base64')}`;
+  let environment: NodeJS.ProcessEnv | undefined;
+  const spawnProcess = ((_command, _args, options) => {
+    environment = options?.env;
+    const child = new EventEmitter() as ReturnType<typeof spawn>;
+    const stdout = new PassThrough();
+    const stderr = new PassThrough();
+    Object.assign(child, { pid: 1234, stdout, stderr, kill: () => true });
+    process.nextTick(() => {
+      stdout.end(encodeRuntimeHostSetupFrame({
+        schemaVersion: 1,
+        sequence: 0,
+        kind: 'complete',
+        version: '0.2.0-development',
+        serviceId: 'b'.repeat(64),
+        deploymentId: '00000000-0000-4000-8000-000000000001',
+        operatorPath: '/tmp/maka/operator',
+        rootPath: '/tmp/maka/root',
+        rootId: 'a'.repeat(64),
+        endpoint: 'ws://127.0.0.1:7443/runtime-host',
+        credentialId: 'credential-1',
+        credential: 'secret-access-token',
+      }));
+      stderr.end();
+      child.emit('close', 0, null);
+    });
+    return child;
+  }) as typeof spawn;
+  const operator = createDesktopRuntimeHostLocalOperator({
+    environment: { PATH: process.env.PATH },
+    spawnProcess,
+  });
+  t.after(() => operator.close());
+
+  await operator.runSetup({
+    setupPackage: { kind: 'development_archive', path: archive, integrity },
+    clientDataRoot: '/tmp/maka/client',
+    rootPath: '/tmp/maka/root',
+    principalId: 'desktop-owner:pairing',
+    expectedTarget: {
+      serviceId: 'b'.repeat(64),
+      rootPath: '/tmp/maka/root',
+      rootId: 'a'.repeat(64),
+    },
+  }, () => undefined);
+
+  assert.equal(environment?.[RUNTIME_HOST_SETUP_SOURCE_PACKAGE_INTEGRITY_ENV], integrity);
 });

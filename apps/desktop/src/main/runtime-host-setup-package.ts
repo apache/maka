@@ -18,18 +18,28 @@
  */
 
 import { spawn, type ChildProcess } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import { createReadStream, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { copyFile, mkdtemp, realpath, rm, stat } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
 import { isAbsolute, join, relative, resolve } from 'node:path';
 import {
   DEFAULT_PROCESS_TERMINATION_GRACE_MS,
   terminateChildProcessTree,
 } from '@maka/runtime/process-tree-terminator';
-import {
-  isExactRuntimeHostSetupPackageSpecifier,
-  type DesktopRuntimeHostSetupPackage,
-} from './runtime-host-ssh-terminal.js';
-
 const DEVELOPMENT_ARCHIVE_ENV = 'MAKA_RUNTIME_HOST_SETUP_ARCHIVE';
+
+export type DesktopRuntimeHostSetupPackage =
+  | { readonly kind: 'npm'; readonly specifier: string }
+  | {
+      readonly kind: 'development_archive';
+      readonly path: string;
+      readonly integrity: string;
+    };
+
+function isExactRuntimeHostSetupPackageSpecifier(value: unknown): value is string {
+  return typeof value === 'string' && /^maka-agent@[0-9][0-9A-Za-z.+-]*$/u.test(value);
+}
 
 interface DevelopmentArchiveBuild {
   readonly result: Promise<string>;
@@ -90,6 +100,15 @@ export function createRuntimeHostSetupPackageResolver(input: {
     DesktopRuntimeHostDevelopmentPeerTarget,
     DevelopmentBuildState
   >();
+  let overrideSnapshot: ReturnType<typeof snapshotDevelopmentSetupPackage> | undefined;
+
+  const resolveOverrideSnapshot = (path: string) => {
+    overrideSnapshot ??= snapshotDevelopmentSetupPackage(path).catch((error: unknown) => {
+      overrideSnapshot = undefined;
+      throw error;
+    });
+    return overrideSnapshot;
+  };
 
   const startBuild = (
     peerTarget: DesktopRuntimeHostDevelopmentPeerTarget,
@@ -99,10 +118,7 @@ export function createRuntimeHostSetupPackageResolver(input: {
       startDevelopmentArchiveBuild(repoRoot, input.environment, peerTarget);
     const build: DevelopmentBuildState = {
       task,
-      result: task.result.then((path) => ({
-        kind: 'development_archive' as const,
-        path,
-      })),
+      result: task.result.then(developmentSetupPackage),
       waiters: 0,
       settled: false,
     };
@@ -116,6 +132,7 @@ export function createRuntimeHostSetupPackageResolver(input: {
         if (developmentBuilds.get(peerTarget) === build) {
           developmentBuilds.delete(peerTarget);
         }
+        void stopBuild(peerTarget, build).catch(() => undefined);
       },
     );
     return build;
@@ -152,7 +169,10 @@ export function createRuntimeHostSetupPackageResolver(input: {
       if (input.isPackaged) return packagedSetupPackage(input.appPath);
 
       const override = input.environment[DEVELOPMENT_ARCHIVE_ENV];
-      if (override) return { kind: 'development_archive', path: override };
+      if (override) {
+        const snapshot = await waitForPackage(resolveOverrideSnapshot(override), signal);
+        return snapshot.setupPackage;
+      }
 
       const build = await acquireBuild(peerTarget, signal);
       build.waiters += 1;
@@ -171,6 +191,8 @@ export function createRuntimeHostSetupPackageResolver(input: {
       const builds = [...developmentBuilds.entries()];
       developmentBuilds.clear();
       await Promise.all(builds.map(([peerTarget, build]) => stopBuild(peerTarget, build)));
+      const snapshot = await overrideSnapshot?.catch(() => undefined);
+      if (snapshot) await rm(snapshot.root, { recursive: true, force: true });
     },
   };
 }
@@ -272,6 +294,47 @@ function startDevelopmentArchiveBuild(
       return closing;
     },
   };
+}
+
+async function developmentSetupPackage(path: string): Promise<DesktopRuntimeHostSetupPackage> {
+  const archive = await realpath(path);
+  if (!(await stat(archive)).isFile() || !archive.endsWith('.tgz')) {
+    throw new Error('Runtime Host development package must be a .tgz file');
+  }
+  return {
+    kind: 'development_archive',
+    path: archive,
+    integrity: await sha512Integrity(archive),
+  };
+}
+
+async function snapshotDevelopmentSetupPackage(path: string): Promise<{
+  readonly root: string;
+  readonly setupPackage: DesktopRuntimeHostSetupPackage;
+}> {
+  const source = await realpath(path);
+  if (!(await stat(source)).isFile() || !source.endsWith('.tgz')) {
+    throw new Error('Runtime Host development package must be a .tgz file');
+  }
+  const root = await mkdtemp(join(tmpdir(), 'maka-runtime-host-setup-override-'));
+  const snapshot = join(root, 'package.tgz');
+  try {
+    await copyFile(source, snapshot);
+    return { root, setupPackage: await developmentSetupPackage(snapshot) };
+  } catch (error) {
+    await rm(root, { recursive: true, force: true });
+    throw error;
+  }
+}
+
+function sha512Integrity(path: string): Promise<string> {
+  return new Promise((resolveIntegrity, reject) => {
+    const hash = createHash('sha512');
+    const stream = createReadStream(path);
+    stream.on('data', (chunk) => hash.update(chunk));
+    stream.once('error', reject);
+    stream.once('end', () => resolveIntegrity(`sha512-${hash.digest('base64')}`));
+  });
 }
 
 function waitForPackage<T>(promise: Promise<T>, signal?: AbortSignal): Promise<T> {

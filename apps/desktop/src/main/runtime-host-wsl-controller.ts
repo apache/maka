@@ -18,9 +18,6 @@
  */
 
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
-import { createHash } from 'node:crypto';
-import { createReadStream } from 'node:fs';
-import { realpath, stat } from 'node:fs/promises';
 import type { Readable } from 'node:stream';
 import {
   normalizeRuntimeHostWslDistribution,
@@ -35,10 +32,7 @@ import {
   type RuntimeHostSetupPhase,
 } from '@maka/runtime-host/operator';
 import { createRuntimeHostFramedOutputFilter } from './runtime-host-framed-output.js';
-import {
-  isExactRuntimeHostSetupPackageSpecifier,
-  type DesktopRuntimeHostSetupPackage,
-} from './runtime-host-ssh-terminal.js';
+import type { DesktopRuntimeHostSetupPackage } from './runtime-host-setup-package.js';
 
 const WSL_SETUP_TIMEOUT_MS = 10 * 60_000;
 const WSL_SETUP_OUTPUT_MAX_BYTES = 64 * 1024;
@@ -142,16 +136,9 @@ async function resolveWslPackageSpecifier(
   processFactory: RuntimeHostWslProcessFactory,
 ): Promise<{ readonly specifier: string; readonly integrity?: string }> {
   if (setupPackage.kind === 'npm') {
-    if (!isExactRuntimeHostSetupPackageSpecifier(setupPackage.specifier)) {
-      throw new Error('Runtime Host setup package is invalid');
-    }
     return { specifier: setupPackage.specifier };
   }
-  const archive = await realpath(setupPackage.path);
-  if (!(await stat(archive)).isFile() || !archive.endsWith('.tgz')) {
-    throw new Error('Runtime Host development package must be a .tgz file');
-  }
-  const child = processFactory(executable, ['--distribution', distribution, '--exec', 'wslpath', '-a', '-u', archive]);
+  const child = processFactory(executable, ['--distribution', distribution, '--exec', 'wslpath', '-a', '-u', setupPackage.path]);
   child.stdin.end();
   const stdout = collectBounded(child.stdout, 4 * 1024);
   const stderr = collectBounded(child.stderr, WSL_SETUP_STDERR_MAX_BYTES);
@@ -165,7 +152,7 @@ async function resolveWslPackageSpecifier(
     const diagnostic = formatBoundedDiagnostic(capturedStderr);
     throw new Error(`WSL could not resolve the setup package path${diagnostic ? `: ${diagnostic}` : ''}`);
   }
-  return { specifier: path, integrity: await sha512Integrity(archive) };
+  return { specifier: path, integrity: setupPackage.integrity };
 }
 
 function runtimeHostWslSetupCommand(
@@ -206,16 +193,6 @@ function runtimeHostWslSetupCommand(
   const command = `maka_prefix=$(mktemp -d) || exit 1; trap 'rm -rf -- "$maka_prefix"' EXIT; cd "$maka_prefix" || exit 1; ${environment}${invocation}`;
   const loginCommand = `exec /bin/sh -c ${quotePosix(command)}`;
   return `exec "\${SHELL:-/bin/sh}" -lic ${quotePosix(loginCommand)}`;
-}
-
-function sha512Integrity(path: string): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const hash = createHash('sha512');
-    const stream = createReadStream(path);
-    stream.on('data', (chunk) => hash.update(chunk));
-    stream.once('error', reject);
-    stream.once('end', () => resolve(`sha512-${hash.digest('base64')}`));
-  });
 }
 
 function quotePosix(value: string): string {

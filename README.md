@@ -124,6 +124,15 @@ npm run dev
 npm run dev:full
 ```
 
+Direct Peer and Peer Mesh development additionally requires Rust stable 1.98 or newer and the
+platform linker (Xcode Command Line Tools on macOS, MSVC Build Tools on Windows). Use the
+peer-enabled entry point so the native addon is built before Desktop starts:
+
+```sh
+npm run dev:peer       # HMR
+npm run dev:full:peer  # full build
+```
+
 If dependencies were installed with `ELECTRON_SKIP_BINARY_DOWNLOAD=1`, install the Electron platform binary before starting:
 
 ```sh

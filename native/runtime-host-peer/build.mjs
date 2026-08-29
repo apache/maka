@@ -17,9 +17,9 @@
  * under the License.
  */
 
-import { copyFile, readFile } from 'node:fs/promises';
+import { copyFile, mkdir, readFile } from 'node:fs/promises';
 import { spawn } from 'node:child_process';
-import { dirname, join } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const root = dirname(fileURLToPath(import.meta.url));
@@ -67,7 +67,10 @@ const library =
     : targetPlatform === 'darwin'
       ? 'libmaka_runtime_host_peer.dylib'
       : 'libmaka_runtime_host_peer.so';
-const destination = join(root, 'target', 'release', 'maka_runtime_host_peer.node');
+const destination = process.env.MAKA_RUNTIME_HOST_PEER_OUTPUT?.trim()
+  ? resolve(process.env.MAKA_RUNTIME_HOST_PEER_OUTPUT.trim())
+  : join(root, 'target', 'release', 'maka_runtime_host_peer.node');
+await mkdir(dirname(destination), { recursive: true });
 await copyFile(join(releaseDirectory, library), destination);
 if (targetPlatform === 'darwin' && process.platform === 'darwin') {
   await run('install_name_tool', ['-id', '@rpath/maka_runtime_host_peer.node', destination], root, {

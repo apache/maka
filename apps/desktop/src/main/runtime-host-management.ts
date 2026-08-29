@@ -49,12 +49,14 @@ import type {
   DesktopRuntimeHostSshUpdateInput,
   DesktopRuntimeHostSshUpdatePolicyInput,
   DesktopRuntimeHostSshUpdateReconciliationInput,
-  DesktopRuntimeHostSetupPackage,
   RuntimeHostServiceUpdatePolicyTerminalFrame,
   RuntimeHostServiceUpdateReconciliationTerminalFrame,
   RuntimeHostServiceUpdateTerminalFrame,
 } from './runtime-host-ssh-terminal.js';
-import type { DesktopRuntimeHostDevelopmentPeerTarget } from './runtime-host-setup-package.js';
+import type {
+  DesktopRuntimeHostDevelopmentPeerTarget,
+  DesktopRuntimeHostSetupPackage,
+} from './runtime-host-setup-package.js';
 
 const MANAGEMENT_ACTIONS = new Set<DesktopRuntimeHostManagementAction>([
   'status',

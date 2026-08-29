@@ -229,6 +229,7 @@ const buildInfo = resolveBuildInfo(app.isPackaged, app.getAppPath());
 const userDataDir = app.getPath("userData");
 const runtimeHostPeerConfiguration = await configureDesktopRuntimeHostPeerClient({
   isPackaged: app.isPackaged,
+  enableDevelopmentPeer: process.argv.includes('--runtime-host-peer'),
   appPath: app.getAppPath(),
   resourcesPath: process.resourcesPath,
   clientDataRoot: userDataDir,

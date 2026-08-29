@@ -24,6 +24,7 @@ const NATIVE_FILE = 'maka_runtime_host_peer.node';
 
 export async function configureDesktopRuntimeHostPeerClient(input: {
   readonly isPackaged: boolean;
+  readonly enableDevelopmentPeer?: boolean;
   readonly appPath: string;
   readonly resourcesPath: string;
   readonly clientDataRoot: string;
@@ -37,6 +38,7 @@ export async function configureDesktopRuntimeHostPeerClient(input: {
       ? { nativePath: explicitNativePath, keyPath: explicitKeyPath }
       : undefined;
   }
+  if (!input.isPackaged && !input.enableDevelopmentPeer) return undefined;
   const nativePath = input.isPackaged
     ? join(input.resourcesPath, 'runtime-host-peer', NATIVE_FILE)
     : join(

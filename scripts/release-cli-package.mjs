@@ -543,41 +543,31 @@ function copyReleaseDocuments() {
 }
 
 function copyRuntimeHostPeerPrebuilds(publishable) {
-  let sourceRoot = process.env.MAKA_RUNTIME_HOST_PEER_PREBUILDS?.trim();
-  let generatedRoot;
+  const sourceRoot = process.env.MAKA_RUNTIME_HOST_PEER_PREBUILDS?.trim();
   const targets = publishable
     ? peerPrebuildTargets
     : privatePeerTarget === 'none'
       ? []
       : [privatePeerTarget];
   if (targets.length === 0) return;
+  const destinationRoot = join(stageRoot, 'native/runtime-host-peer/prebuilds');
   if (!sourceRoot && !publishable) {
     const [target] = targets;
-    buildDevelopmentPeerAddon(target);
-    sourceRoot = generatedRoot = mkdtempSync(join(tmpdir(), 'maka-runtime-host-peer-prebuilds-'));
-    const targetRoot = join(sourceRoot, target);
-    mkdirSync(targetRoot, { recursive: true, mode: 0o755 });
-    copyFileSync(
-      join(repoRoot, 'native/runtime-host-peer/target/release/maka_runtime_host_peer.node'),
-      join(targetRoot, 'maka_runtime_host_peer.node'),
-    );
+    const destination = join(destinationRoot, target, 'maka_runtime_host_peer.node');
+    buildDevelopmentPeerAddon(target, destination);
+    return;
   }
   if (!sourceRoot) {
     throw new Error('MAKA_RUNTIME_HOST_PEER_PREBUILDS must contain all release platform addons');
   }
-  const destinationRoot = join(stageRoot, 'native/runtime-host-peer/prebuilds');
-  try {
-    for (const target of targets) {
-      const source = join(sourceRoot, target, 'maka_runtime_host_peer.node');
-      if (!existsSync(source) || !statSync(source).isFile()) {
-        throw new Error(`Runtime Host peer prebuild is missing: ${target}`);
-      }
-      const destination = join(destinationRoot, target, 'maka_runtime_host_peer.node');
-      mkdirSync(dirname(destination), { recursive: true, mode: 0o755 });
-      copyFileSync(source, destination);
+  for (const target of targets) {
+    const source = join(sourceRoot, target, 'maka_runtime_host_peer.node');
+    if (!existsSync(source) || !statSync(source).isFile()) {
+      throw new Error(`Runtime Host peer prebuild is missing: ${target}`);
     }
-  } finally {
-    if (generatedRoot) rmSync(generatedRoot, { recursive: true, force: true });
+    const destination = join(destinationRoot, target, 'maka_runtime_host_peer.node');
+    mkdirSync(dirname(destination), { recursive: true, mode: 0o755 });
+    copyFileSync(source, destination);
   }
 }
 
@@ -592,11 +582,15 @@ function resolveDevelopmentPeerTarget() {
   return target;
 }
 
-function buildDevelopmentPeerAddon(target) {
+function buildDevelopmentPeerAddon(target, output) {
   const hostTarget = `${process.platform}-${process.arch}`;
   const buildScript = join(repoRoot, 'native/runtime-host-peer/build.mjs');
   if (target === hostTarget) {
-    execFileSync(process.execPath, [buildScript], { cwd: repoRoot, stdio: 'inherit' });
+    execFileSync(process.execPath, [buildScript], {
+      cwd: repoRoot,
+      env: { ...process.env, MAKA_RUNTIME_HOST_PEER_OUTPUT: output },
+      stdio: 'inherit',
+    });
     return;
   }
   const rustTarget = {
@@ -624,6 +618,7 @@ function buildDevelopmentPeerAddon(target) {
       ...process.env,
       MAKA_RUNTIME_HOST_PEER_CARGO_SUBCOMMAND: 'zigbuild',
       MAKA_RUNTIME_HOST_PEER_CARGO_TARGET: rustTarget,
+      MAKA_RUNTIME_HOST_PEER_OUTPUT: output,
     },
     stdio: 'inherit',
   });

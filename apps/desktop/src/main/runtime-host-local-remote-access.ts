@@ -37,7 +37,7 @@ import type {
   createDesktopRuntimeHostLocalOperator,
   DesktopRuntimeHostLocalServiceTarget,
 } from './runtime-host-local-operator.js';
-import type { DesktopRuntimeHostSetupPackage } from './runtime-host-ssh-terminal.js';
+import type { DesktopRuntimeHostSetupPackage } from './runtime-host-setup-package.js';
 
 const LIFECYCLE_FILE = 'runtime-host-local-service.json';
 const SERVICE_ID_PATTERN = /^[a-f0-9]{64}$/u;

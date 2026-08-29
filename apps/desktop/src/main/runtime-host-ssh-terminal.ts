@@ -19,7 +19,6 @@
 
 import { homedir } from 'node:os';
 import { createHash, randomUUID } from 'node:crypto';
-import { realpath, stat } from 'node:fs/promises';
 import { posix as pathPosix } from 'node:path';
 import type { IpcMain } from 'electron';
 import type { IPty } from 'node-pty';
@@ -54,6 +53,7 @@ import {
   RUNTIME_HOST_PEER_MESH_MANAGEMENT_FRAME_PREFIX,
   RUNTIME_HOST_SERVICE_MANAGEMENT_FRAME_PREFIX,
   RUNTIME_HOST_SETUP_FRAME_PREFIX,
+  RUNTIME_HOST_SETUP_SOURCE_PACKAGE_INTEGRITY_ENV,
   type RuntimeHostAccessManagementFrame,
   type RuntimeHostActivationResult,
   type RuntimeHostManagedUpdatePolicy,
@@ -72,7 +72,10 @@ import type {
   DesktopRuntimeHostSshTerminalSnapshot,
 } from '../preload/bridge-contract.js';
 import { createRuntimeHostFramedOutputFilter } from './runtime-host-framed-output.js';
-import type { DesktopRuntimeHostDevelopmentPeerTarget } from './runtime-host-setup-package.js';
+import type {
+  DesktopRuntimeHostDevelopmentPeerTarget,
+  DesktopRuntimeHostSetupPackage,
+} from './runtime-host-setup-package.js';
 
 interface ActiveTerminal {
   readonly sessionId: string;
@@ -220,10 +223,6 @@ export type DesktopRuntimeHostSshAccessInput = DesktopRuntimeHostSshAccessTarget
       }
   );
 
-export type DesktopRuntimeHostSetupPackage =
-  | { readonly kind: 'npm'; readonly specifier: string }
-  | { readonly kind: 'development_archive'; readonly path: string };
-
 export type RuntimeHostServiceUpdateTerminalFrame =
   | Extract<RuntimeHostServiceManagementFrame, { kind: 'result'; action: 'update' }>
   | (Extract<RuntimeHostServiceManagementFrame, { kind: 'error' }> & {
@@ -239,10 +238,6 @@ export type RuntimeHostServiceUpdateReconciliationTerminalFrame = Extract<
   RuntimeHostServiceManagementFrame,
   { kind: 'result' | 'error'; action: 'reconcile_update' }
 >;
-
-export function isExactRuntimeHostSetupPackageSpecifier(value: unknown): value is string {
-  return typeof value === 'string' && /^maka-agent@[0-9][0-9A-Za-z.+-]*$/u.test(value);
-}
 
 type RuntimeHostSetupCompleteFrame = Extract<RuntimeHostSetupFrame, { kind: 'complete' }>;
 
@@ -1000,10 +995,14 @@ function cancellableUntilComplete(signal: AbortSignal | undefined): {
   };
 }
 
-interface PreparedSetupPackage {
-  readonly specifier: string;
-  readonly removeAfterSetup?: string;
-}
+type PreparedSetupPackage =
+  | { readonly kind: 'npm'; readonly specifier: string }
+  | {
+      readonly kind: 'development_archive';
+      readonly specifier: string;
+      readonly integrity: string;
+      readonly removeAfterSetup: string;
+    };
 
 async function prepareSetupPackage(
   setupPackage: DesktopRuntimeHostSetupPackage,
@@ -1022,16 +1021,9 @@ async function prepareSetupPackage(
   terminateTree: typeof terminateProcessTree | undefined,
 ): Promise<PreparedSetupPackage> {
   if (setupPackage.kind === 'npm') {
-    if (!isExactRuntimeHostSetupPackageSpecifier(setupPackage.specifier)) {
-      throw new Error('Runtime Host setup package is invalid');
-    }
-    return { specifier: setupPackage.specifier };
+    return setupPackage;
   }
   signal?.throwIfAborted();
-  const archive = await realpath(setupPackage.path);
-  if (!(await stat(archive)).isFile() || !archive.endsWith('.tgz')) {
-    throw new Error('Runtime Host development package must be a .tgz file');
-  }
   const remoteArchive = remoteDevelopmentArchivePath(principalId);
   const { process, terminal } = startTerminalProcess('scp', [
     '-o',
@@ -1045,7 +1037,7 @@ async function prepareSetupPackage(
     '-o',
     'ClearAllForwardings=yes',
     ...(sshPort === undefined ? [] : ['-P', String(sshPort)]),
-    archive,
+    setupPackage.path,
     `${destination}:${remoteArchive}`,
   ], undefined, true);
   const wait = await waitForTerminalProcess(process, {
@@ -1062,7 +1054,12 @@ async function prepareSetupPackage(
       `Uploading the Runtime Host development package exited with code ${String(wait.exit.code)}`,
     );
   }
-  return { specifier: remoteArchive, removeAfterSetup: remoteArchive };
+  return {
+    kind: 'development_archive',
+    specifier: remoteArchive,
+    integrity: setupPackage.integrity,
+    removeAfterSetup: remoteArchive,
+  };
 }
 
 function remoteDevelopmentArchivePath(principalId: string): string {
@@ -1414,14 +1411,19 @@ function runtimeHostPackageRemoteCommand(
   environment: Readonly<Record<string, string>> = {},
 ): string {
   const commandArgs = ['maka', ...args].map(quotePosix).join(' ');
-  const environmentPrefix = Object.entries(environment)
+  const environmentPrefix = Object.entries({
+    ...environment,
+    ...(setupPackage.kind === 'development_archive'
+      ? { [RUNTIME_HOST_SETUP_SOURCE_PACKAGE_INTEGRITY_ENV]: setupPackage.integrity }
+      : {}),
+  })
     .map(([name, value]) => `${name}=${quotePosix(value)}`)
     .join(' ');
   const invocationPrefix = environmentPrefix ? `${environmentPrefix} ` : '';
-  const commandInvocation = setupPackage.removeAfterSetup
+  const commandInvocation = setupPackage.kind === 'development_archive'
     ? `${invocationPrefix}npx --yes --package ${quotePosix(setupPackage.specifier)} ${commandArgs}`
     : `${invocationPrefix}npx --yes --prefix "$maka_command_prefix" --package ${quotePosix(setupPackage.specifier)} ${commandArgs}`;
-  const command = setupPackage.removeAfterSetup
+  const command = setupPackage.kind === 'development_archive'
     ? `cd "$HOME" || exit 1; maka_command_exit=0; ${commandInvocation} || maka_command_exit=$?; rm -f -- ${quotePosix(setupPackage.removeAfterSetup)}; exit "$maka_command_exit"`
     : `maka_command_prefix=$(mktemp -d) || exit 1; trap 'rm -rf -- "$maka_command_prefix"' EXIT; trap 'exit 129' HUP; trap 'exit 130' INT; trap 'exit 143' TERM; cd "$maka_command_prefix" || exit 1; ${commandInvocation}`;
   const loginCommand = `exec /bin/sh -c ${quotePosix(command)}`;

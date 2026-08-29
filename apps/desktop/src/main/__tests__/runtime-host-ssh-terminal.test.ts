@@ -18,6 +18,7 @@
  */
 
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -861,6 +862,7 @@ test('uploads a development release archive before running the same remote setup
   t.after(() => rm(directory, { recursive: true, force: true }));
   const archive = join(directory, 'maka-agent-development.tgz');
   await writeFile(archive, 'development package');
+  const integrity = `sha512-${createHash('sha512').update('development package').digest('base64')}`;
   const handlers = new Map<string, (...args: unknown[]) => unknown>();
   const launches: Array<{ file: string; args: string[]; pty: FakePty }> = [];
   const terminal = createDesktopRuntimeHostSshTerminal({
@@ -879,7 +881,11 @@ test('uploads a development release archive before running the same remote setup
 
   const setupInput = {
     destination: 'operator@example.com',
-    setupPackage: { kind: 'development_archive', path: archive } as const,
+    setupPackage: {
+      kind: 'development_archive',
+      path: archive,
+      integrity,
+    } as const,
     principalId: 'desktop:stable-client',
   };
   const setup = terminal.runSetup(setupInput, () => undefined);
@@ -896,6 +902,8 @@ test('uploads a development release archive before running the same remote setup
   assert.equal(launches[1]?.file, 'ssh');
   const remoteCommand = launches[1]?.args.at(-1) ?? '';
   assert.match(remoteCommand, /--package.*maka-runtime-host-setup-.+\.tgz/u);
+  assert.match(remoteCommand, /MAKA_RUNTIME_HOST_SETUP_SOURCE_PACKAGE_INTEGRITY=/u);
+  assert.ok(remoteCommand.includes(integrity));
   assert.match(remoteCommand, /--defer-pairing-commit/u);
   assert.match(remoteCommand, /cd.*\$HOME/u);
   assert.match(remoteCommand, /rm -f/u);
