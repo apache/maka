@@ -941,6 +941,9 @@ function formatAttachmentRefs(attachments: readonly AttachmentRef[]): string {
         ? resourceRef
           ? [
               `Read argument: ${JSON.stringify(readArgument)}`,
+              ...(attachment.kind === 'image'
+                ? [`Markdown image source: ${JSON.stringify(resourceRef)}`]
+                : []),
               'This is a Session resource, not a workspace file. Use the ref above; never use the display name as a path.',
             ].join('\n')
           : `Read argument: ${JSON.stringify(readArgument)}`

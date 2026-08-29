@@ -200,6 +200,30 @@ export const ImageThumbnails: Story = {
   ),
 };
 
+// Real path: the assistant cites a Session attachment ref in Markdown → the
+// chat's session-scoped reader resolves it through the same image authority as
+// the sent-message thumbnail above.
+export const AssistantMarkdownImage: Story = {
+  render: () => (
+    <Frame>
+      <AttachmentChat
+        {...baseChat}
+        messages={[
+          user('u-markdown', 't-markdown', '把这张图显示在回答里。', []),
+          {
+            type: 'assistant',
+            id: 'a-markdown',
+            turnId: 't-markdown',
+            ts: NOW + 1,
+            text: '会话附件预览：\n\n![dashboard](maka://runtime/attachments/attachment-dashboard)',
+            modelId: 'claude-sonnet-4-5',
+          },
+        ]}
+      />
+    </Frame>
+  ),
+};
+
 // Real path: send one prompt with every durable reference kind → file tokens sit
 // above the bubble, while inline Skill/file tokens, quote and image keep their own hierarchy.
 // The narrow frame verifies wrapping without inventing a second product layout.

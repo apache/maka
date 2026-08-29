@@ -71,6 +71,7 @@ import { getConversationCopy } from './conversation-copy.js';
 import { AstryxLocaleProvider } from './astryx-i18n.js';
 import { InlineReferenceText } from './inline-reference.js';
 import { redactSecrets } from './redact.js';
+import { useAttachmentImageSource } from './attachment-image.js';
 
 export function LocalizedChatMessage({
   accessibleLabel,
@@ -89,19 +90,6 @@ export function LocalizedChatMessage({
   );
 }
 
-/**
- * Injected host capability that reads a session attachment's bytes. @maka/ui is
- * host-agnostic: it never reaches into the desktop preload or any other host
- * global. The desktop renderer threads its attachment reader through this prop;
- * non-desktop hosts (Storybook, tests, a future web shell) can omit it or supply
- * their own reader,
- * in which case an image attachment stays in its pending skeleton.
- */
-export type ReadAttachmentBytes = (
-  sessionId: string,
-  relativePath: string,
-) => Promise<{ ok: true; base64: string; mimeType: string } | { ok: false }>;
-
 function legacySentSkillTokens(text: string) {
   const values = new Set(
     [...text.matchAll(new RegExp(SKILL_INVOCATION_TOKEN_SOURCE, 'g'))].map((match) => match[0]),
@@ -109,25 +97,14 @@ function legacySentSkillTokens(text: string) {
   return [...values].map((value) => ({ value, label: value, variant: 'neutral' as const }));
 }
 
-function AttachmentImage(props: { attachment: AttachmentRef; onReadAttachmentBytes?: ReadAttachmentBytes }) {
-  const [src, setSrc] = useState<string | undefined>(undefined);
-  const { onReadAttachmentBytes } = props;
-  useEffect(() => {
-    if (props.attachment.ref.kind !== 'session_file') return;
-    // No host reader (non-desktop host, or the capability wasn't wired): leave the
-    // thumbnail in its pending skeleton rather than reaching into a host global.
-    if (!onReadAttachmentBytes) return;
-    let cancelled = false;
-    onReadAttachmentBytes(props.attachment.ref.sessionId, props.attachment.ref.relativePath)
-      .then((result) => {
-        if (cancelled || !result.ok) return;
-        setSrc(`data:${result.mimeType};base64,${result.base64}`);
-      })
-      .catch(() => {});
-    return () => {
-      cancelled = true;
-    };
-  }, [props.attachment, onReadAttachmentBytes]);
+function AttachmentImage(props: { attachment: AttachmentRef }) {
+  const ref = props.attachment.ref.kind === 'session_file'
+    ? {
+        sessionId: props.attachment.ref.sessionId,
+        artifactId: props.attachment.ref.relativePath,
+      }
+    : undefined;
+  const src = useAttachmentImageSource(ref);
   if (!src) {
     return (
       <Thumbnail
@@ -171,7 +148,6 @@ const UserMessageBody = memo(function UserMessageBody(props: {
   attachments?: readonly AttachmentRef[];
   quotes?: readonly QuoteRef[];
   inlineReferences?: readonly InlineReference[];
-  onReadAttachmentBytes?: ReadAttachmentBytes;
   /** When set on a user message, show an edit affordance that starts a revision draft. */
   onEditUserMessage?: () => void;
   editDisabled?: boolean;
@@ -254,7 +230,6 @@ const UserMessageBody = memo(function UserMessageBody(props: {
             <AttachmentImage
               key={`${attachment.name}-${index}`}
               attachment={attachment}
-              onReadAttachmentBytes={props.onReadAttachmentBytes}
             />
           ))}
         </HStack>
@@ -277,7 +252,6 @@ const UserMessageBody = memo(function UserMessageBody(props: {
 
 export function TransientUserMessage(props: {
   message: TransientUserMessageProjection;
-  onReadAttachmentBytes?: ReadAttachmentBytes;
 }) {
   const copy = getConversationCopy(useUiLocale()).messages;
   const message = props.message;
@@ -295,7 +269,6 @@ export function TransientUserMessage(props: {
           attachments={message.attachments}
           quotes={message.quotes}
           inlineReferences={message.inlineReferences}
-          onReadAttachmentBytes={props.onReadAttachmentBytes}
         />
       </LocalizedChatMessage>
     </div>
@@ -456,13 +429,6 @@ export const TurnView = memo(function TurnView(props: {
     initialLiveContent?: ReadonlyMap<string, string>;
   };
   /**
-   * Injected host reader for image attachment bytes. Threaded down to the user
-   * message's `AttachmentImage` thumbnails; absent on non-desktop hosts, where
-   * image thumbnails stay in their pending skeleton. Keeps @maka/ui from
-   * reaching into the desktop preload directly.
-   */
-  onReadAttachmentBytes?: ReadAttachmentBytes;
-  /**
    * Open a linked subagent child session in the main chat column. Threaded into
    * linked subagent tool rows; omitted when the host has no navigation.
    */
@@ -580,7 +546,6 @@ export const TurnView = memo(function TurnView(props: {
             attachments={turn.user.attachments}
             quotes={turn.user.quotes}
             inlineReferences={turn.user.inlineReferences}
-            onReadAttachmentBytes={props.onReadAttachmentBytes}
             onEditUserMessage={
               props.onEditUserMessage && !turn.user.hostOrigin
                 ? () => props.onEditUserMessage?.(turn.turnId)
@@ -636,7 +601,6 @@ export const TurnView = memo(function TurnView(props: {
                 attachments={message.attachments}
                 quotes={message.quotes}
                 inlineReferences={message.inlineReferences}
-                onReadAttachmentBytes={props.onReadAttachmentBytes}
               />
             </LocalizedChatMessage>
           );
