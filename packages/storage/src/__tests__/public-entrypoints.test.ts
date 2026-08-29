@@ -54,6 +54,7 @@ const SQLITE_BACKED_ENTRYPOINTS = [
   './git-worktree-child-executor',
   './goal-authority',
   './interaction-store',
+  './legacy-daily-review-migration',
   './model-call-ledger',
   './operational-state-store',
   './plan-authority',
