@@ -85,8 +85,7 @@ export function createDesktopRuntimeHostPeerMeshManagement(input: {
         rootId: managed.profile.rootId,
         deploymentId: managed.deployment.deploymentId,
       },
-      ...(meshId ? { meshId } : {}),
-      ...(action === 'transit' && meshId === null ? { transitOff: true as const } : {}),
+      ...(meshId !== undefined ? { meshId } : {}),
       ...(peerId ? { peerId } : {}),
       ...(invitation ? { invitation: JSON.stringify(invitation) } : {}),
     });

@@ -59,9 +59,8 @@ export interface RuntimeHostPeerMeshManagementCliOptions {
   readonly operatorDeploymentId: string;
   readonly cliPath: string;
   readonly expectedTarget: RuntimeHostManagedServiceTarget;
-  readonly meshId?: string;
+  readonly meshId?: string | null;
   readonly peerId?: string;
-  readonly transitOff?: true;
 }
 
 interface RuntimeHostPeerMeshManagementCliDeps {
@@ -161,7 +160,7 @@ async function executePeerMeshAction(
         kind: 'result',
         action: 'invite',
         result: await request('peer.mesh.invite', {
-          meshId: requiredOption(options.meshId, 'Mesh ID'),
+          meshId: requiredMeshId(options.meshId),
         }),
       };
     case 'join':
@@ -177,7 +176,7 @@ async function executePeerMeshAction(
         kind: 'result',
         action: 'remove',
         result: await request('peer.mesh.remove', {
-          meshId: requiredOption(options.meshId, 'Mesh ID'),
+          meshId: requiredMeshId(options.meshId),
           peerId: requiredOption(options.peerId, 'Peer ID'),
         }),
       };
@@ -186,7 +185,7 @@ async function executePeerMeshAction(
         kind: 'result',
         action: 'leave',
         result: await request('peer.mesh.leave', {
-          meshId: requiredOption(options.meshId, 'Mesh ID'),
+          meshId: requiredMeshId(options.meshId),
         }),
       };
     case 'close':
@@ -194,7 +193,7 @@ async function executePeerMeshAction(
         kind: 'result',
         action: 'close',
         result: await request('peer.mesh.close', {
-          meshId: requiredOption(options.meshId, 'Mesh ID'),
+          meshId: requiredMeshId(options.meshId),
         }),
       };
     case 'reconcile':
@@ -208,7 +207,7 @@ async function executePeerMeshAction(
         kind: 'result',
         action: 'transit',
         result: await request('peer.mesh.transit.set', {
-          meshId: options.transitOff ? null : requiredOption(options.meshId, 'Mesh ID'),
+          meshId: requiredOption(options.meshId, 'Mesh ID'),
         }),
       };
   }
@@ -216,6 +215,11 @@ async function executePeerMeshAction(
 
 function requiredOption<T>(value: T | undefined, label: string): T {
   if (value === undefined) throw new Error(`${label} is required`);
+  return value;
+}
+
+function requiredMeshId(value: string | null | undefined): string {
+  if (typeof value !== 'string') throw new Error('Mesh ID is required');
   return value;
 }
 

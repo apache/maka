@@ -712,6 +712,7 @@ test('sends a Mesh invitation only after the authenticated remote operator reque
         localPeerId: 'peer-b',
         available: true,
         transit: {
+          meshId: null,
           allowedMemberCount: 0,
           activeReservationCount: 0,
           activeCircuitCount: 0,
@@ -733,7 +734,6 @@ test('sends a Mesh invitation only after the authenticated remote operator reque
               { peerId: 'peer-b', state: 'local' },
             ],
             pendingInvitationCount: 0,
-            transitEnabled: false,
           },
         ],
       },

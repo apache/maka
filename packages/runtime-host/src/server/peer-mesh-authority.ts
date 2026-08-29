@@ -157,7 +157,6 @@ export function projectPeerMeshStatus(status: PeerMeshStatus): PeerMeshProjectio
     closed: status.roster.roster.closed,
     members: Object.freeze(status.memberRoutes.map((member) => Object.freeze({ ...member }))),
     pendingInvitationCount: status.pendingInvitationCount,
-    transitEnabled: status.transitEnabled,
   });
 }
 
@@ -167,12 +166,16 @@ export function projectPeerMeshQuery(mesh: PeerMeshNode | undefined): PeerMeshQu
     available: true,
     localPeerId: mesh.localPeerId(),
     meshes: Object.freeze(mesh.status().map(projectPeerMeshStatus)),
-    transit: projectTransitSnapshot(mesh.transitSnapshot()),
+    transit: projectTransitSnapshot(mesh.transitMeshId(), mesh.transitSnapshot()),
   });
 }
 
-function projectTransitSnapshot(snapshot: ReturnType<PeerMeshNode['transitSnapshot']>) {
+function projectTransitSnapshot(
+  meshId: string | null,
+  snapshot: ReturnType<PeerMeshNode['transitSnapshot']>,
+) {
   return Object.freeze({
+    meshId,
     allowedMemberCount: snapshot.allowedPeerCount,
     activeReservationCount: snapshot.activeReservationCount,
     activeCircuitCount: snapshot.activeCircuitCount,

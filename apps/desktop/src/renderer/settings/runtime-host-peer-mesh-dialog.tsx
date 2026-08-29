@@ -490,6 +490,7 @@ function MeshCard(props: {
   readonly onSetTransit: (enabled: boolean) => void;
 }) {
   const { mesh, copy } = props;
+  const transitEnabled = props.transit?.meshId === mesh.meshId;
   return (
     <section className="settingsPeerMeshCard">
       <div className="settingsPeerMeshCardHeading">
@@ -570,13 +571,13 @@ function MeshCard(props: {
           <Switch
             label={copy.transitToggle}
             isLabelHidden
-            value={mesh.transitEnabled}
+            value={transitEnabled}
             isDisabled={props.working}
             onChange={props.onSetTransit}
           />
         </div>
       ) : null}
-      {mesh.transitEnabled && props.transit ? (
+      {transitEnabled && props.transit ? (
         <div className="settingsPeerMeshTransitMetrics" aria-label={copy.transitStatus}>
           <TransitMetric
             label={copy.allowedMembers}

@@ -82,7 +82,7 @@ describe('Runtime Host operator commands', () => {
       managedRootId: target.rootId,
       operatorDeploymentId: target.deploymentId,
       expectedTarget: target,
-      transitOff: true,
+      meshId: null,
     });
   });
 

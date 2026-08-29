@@ -255,7 +255,7 @@ test('reconciles one selected Mesh into signed transit routes and native policy'
     await authority.setTransitMesh(meshId);
     await authority.reconcile();
     await memberB.reconcile();
-    assert.equal(authority.status()[0]?.transitEnabled, true);
+    assert.equal(authority.transitMeshId(), meshId);
     assert.deepEqual(authorityPeer.transitPolicy.allowedPeerIds, ['peer-b', 'peer-c', 'peer-d']);
     assert.deepEqual(memberBPeer.transitPolicy.relayCandidates, [
       { peerId: 'peer-a', addresses: ['/memory/peer-a/p2p/peer-a'] },
@@ -287,6 +287,7 @@ test('reconciles one selected Mesh into signed transit routes and native policy'
 
     await authority.closeMesh(meshId);
     assert.deepEqual(authority.status(), []);
+    assert.equal(authority.transitMeshId(), null);
     assert.deepEqual(authorityPeer.transitPolicy.allowedPeerIds, []);
   } finally {
     await Promise.allSettled([

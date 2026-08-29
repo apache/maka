@@ -54,7 +54,6 @@ export interface PeerMeshProjection {
   readonly closed: boolean;
   readonly members: readonly PeerMeshMemberProjection[];
   readonly pendingInvitationCount: number;
-  readonly transitEnabled: boolean;
 }
 
 export interface PeerMeshMemberProjection {
@@ -71,6 +70,7 @@ export interface PeerMeshQueryResult {
 }
 
 export interface PeerMeshTransitProjection {
+  readonly meshId: string | null;
   readonly allowedMemberCount: number;
   readonly activeReservationCount: number;
   readonly activeCircuitCount: number;
@@ -311,12 +311,10 @@ export function decodePeerMeshProjection(value: unknown): PeerMeshProjection {
     'closed',
     'members',
     'pendingInvitationCount',
-    'transitEnabled',
   ]);
   if (
     (record.role !== 'authority' && record.role !== 'member') ||
     typeof record.closed !== 'boolean' ||
-    typeof record.transitEnabled !== 'boolean' ||
     !Array.isArray(record.members) ||
     record.members.length > PEER_MESH_MAX_MEMBERS
   ) {
@@ -341,12 +339,12 @@ export function decodePeerMeshProjection(value: unknown): PeerMeshProjection {
       record.pendingInvitationCount,
       'Peer Mesh pendingInvitationCount',
     ),
-    transitEnabled: record.transitEnabled,
   };
 }
 
 function decodePeerMeshTransitProjection(value: unknown): PeerMeshTransitProjection {
   const record = requireExactRecord(value, 'Peer Mesh transit projection', [
+    'meshId',
     'allowedMemberCount',
     'activeReservationCount',
     'activeCircuitCount',
@@ -357,6 +355,10 @@ function decodePeerMeshTransitProjection(value: unknown): PeerMeshTransitProject
     'maxCircuitBytes',
   ]);
   return {
+    meshId:
+      record.meshId === null
+        ? null
+        : requireString(record.meshId, 'Peer Mesh transit meshId', MESH_ID_MAX_BYTES),
     allowedMemberCount: requireCount(record.allowedMemberCount, 'allowedMemberCount'),
     activeReservationCount: requireCount(record.activeReservationCount, 'activeReservationCount'),
     activeCircuitCount: requireCount(record.activeCircuitCount, 'activeCircuitCount'),
